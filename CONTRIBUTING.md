@@ -94,3 +94,42 @@ Issues labeled **`good first issue`** are curated to be self-contained
 entry points with clear acceptance criteria. If you want to take a larger
 work package, comment on the corresponding WP issue first so scope can be
 agreed before you invest time.
+
+## 7. Local development hooks (recommended)
+
+Vokra ships version-controlled git hooks under `.githooks/` (no external
+hook manager — consistent with the zero-dependency policy). Activate them
+once per clone:
+
+```
+bash scripts/install-git-hooks.sh   # sets core.hooksPath -> .githooks
+```
+
+- **pre-commit** (fast, no compile): `cargo fmt --all -- --check`,
+  `scripts/check-forbidden-symbols.sh`, `scripts/check-zero-deps.sh`.
+- **pre-push** (full, mirrors CI's compiling checks):
+  `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace`.
+
+Bypass a run with `git commit --no-verify` / `git push --no-verify`, or
+`VOKRA_SKIP_HOOKS=1 git ...`. Uninstall with
+`git config --unset core.hooksPath`.
+
+`scripts/check-zero-deps.sh` enforces the **zero-external-dependency**
+invariant (NFR-DS-02): `Cargo.lock` must contain only first-party `vokra-*`
+crates. This is stricter than `cargo deny` and is a hard local + CI gate.
+
+### Claude Code
+
+The repository is configured for [Claude Code](https://claude.ai/code) via
+committed `.claude/settings.json` and `.claude/skills/`:
+
+- **Hooks** keep Rust edits formatted (`rustfmt` on write), re-assert the
+  zero-dependency invariant after `Cargo.toml` / `Cargo.lock` edits, and
+  block `cargo add` (which would introduce an external dependency). The hook
+  scripts live in `scripts/claude-hooks/`.
+- **Skills** encode the recurring, policy-heavy workflows so they stay
+  consistent: `add-speech-model`, `add-audio-operator`, `numerical-parity`,
+  `license-audit`.
+
+Personal, machine-local overrides go in `.claude/settings.local.json`
+(git-ignored).

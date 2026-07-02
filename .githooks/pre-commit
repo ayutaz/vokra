@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Vokra pre-commit hook (activate with scripts/install-git-hooks.sh).
+#
+# Fast, compile-free gate mirroring the cheap part of CI, so mistakes are
+# caught before they reach a PR. The slower compiling checks (clippy, test)
+# run in pre-push. Bypass with `git commit --no-verify` or VOKRA_SKIP_HOOKS=1.
+
+set -euo pipefail
+
+if [ "${VOKRA_SKIP_HOOKS:-0}" = "1" ]; then
+    echo "pre-commit: skipped (VOKRA_SKIP_HOOKS=1)"
+    exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+echo "pre-commit [1/3]: cargo fmt --all -- --check"
+cargo fmt --all -- --check
+
+echo "pre-commit [2/3]: forbidden symbols (strtod / locale-dependent parsers)"
+bash scripts/check-forbidden-symbols.sh
+
+echo "pre-commit [3/3]: zero-dependency invariant (Cargo.lock)"
+bash scripts/check-zero-deps.sh
+
+echo "pre-commit: OK"

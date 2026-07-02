@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Vokra pre-push hook (activate with scripts/install-git-hooks.sh).
+#
+# Full local gate mirroring CI's compiling checks, so a push does not fail CI
+# for something reproducible locally ("run the same commands before pushing",
+# CONTRIBUTING.md §2). Slower than pre-commit. Bypass with `git push
+# --no-verify` or VOKRA_SKIP_HOOKS=1.
+
+set -euo pipefail
+
+if [ "${VOKRA_SKIP_HOOKS:-0}" = "1" ]; then
+    echo "pre-push: skipped (VOKRA_SKIP_HOOKS=1)"
+    exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+echo "pre-push [1/2]: cargo clippy --all-targets -- -D warnings"
+cargo clippy --all-targets -- -D warnings
+
+echo "pre-push [2/2]: cargo test --workspace"
+cargo test --workspace
+
+echo "pre-push: OK"

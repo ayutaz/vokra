@@ -6,3 +6,7 @@
 
 # NOTE: Cargo.lock is intentionally COMMITTED (CI reproducibility) and must
 # not be ignored — see docs/adr/0001-crate-layout.md.
+
+# Claude Code: the shared config (.claude/settings.json) and .claude/skills/
+# ARE committed as project policy; only personal/local overrides are ignored.
+.claude/settings.local.json
