@@ -1,0 +1,108 @@
+//! `AsrEngine` implementation wiring Whisper into `session.asr().transcribe()`.
+//!
+//! [`WhisperAsr`] owns a loaded [`WhisperModel`] and an optional
+//! [`WhisperTokenizer`]. [`AsrEngine::transcribe`] runs PCM → log-mel → encoder
+//! → greedy decode → detokenize. Beam search (a model-independent host
+//! function, [`vokra_core::decode`]) is offered through
+//! [`WhisperAsr::transcribe_tokens_beam`]; the trait method uses greedy
+//! (equivalent to `beam_width = 1`).
+//!
+//! # Hand-off to M0-09 (C ABI)
+//!
+//! The Rust surface M0-09 wraps is: [`WhisperAsr::from_gguf`] /
+//! [`WhisperAsr::with_tokenizer`] to build, and the
+//! [`AsrEngine::transcribe`](vokra_core::AsrEngine::transcribe) trait method
+//! (plus [`WhisperAsr::transcribe_tokens`] for a tokenizer-free id stream).
+//! C-ABI export (`vokra_asr_transcribe`, FR-API-01) is out of this WP's scope.
+
+use vokra_core::engines::AsrEngine;
+use vokra_core::gguf::GgufFile;
+use vokra_core::tasks::Transcription;
+use vokra_core::{Result, VokraError};
+
+use super::WhisperModel;
+use super::decoder::DecoderState;
+use super::greedy::{DEFAULT_MAX_NEW_TOKENS, greedy_decode};
+use super::tokenizer::WhisperTokenizer;
+use crate::whisper::beam_glue::WhisperBeamScorer;
+use vokra_core::decode::{BeamSearchConfig, beam_search};
+
+/// Whisper ASR engine: a loaded model plus an optional detokenizer.
+pub struct WhisperAsr {
+    model: WhisperModel,
+    tokenizer: Option<WhisperTokenizer>,
+}
+
+impl WhisperAsr {
+    /// Loads the model from `file`. The tokenizer is attached separately with
+    /// [`with_tokenizer`](Self::with_tokenizer) (the M0 converter does not embed
+    /// it — see [`WhisperTokenizer`]); an attempt is still made to read an
+    /// embedded `vokra.tokenizer.model` blob for forward compatibility.
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let model = WhisperModel::from_gguf(file)?;
+        let tokenizer = WhisperTokenizer::from_gguf(file, model.config().eot).ok();
+        Ok(Self { model, tokenizer })
+    }
+
+    /// Attaches a detokenizer (from the parity fixture / sidecar in M0).
+    #[must_use]
+    pub fn with_tokenizer(mut self, tokenizer: WhisperTokenizer) -> Self {
+        self.tokenizer = Some(tokenizer);
+        self
+    }
+
+    /// The loaded model (encoder / decoder forwards, config).
+    pub fn model(&self) -> &WhisperModel {
+        &self.model
+    }
+
+    /// Transcribes `pcm` to the raw generated token id sequence (greedy),
+    /// without detokenizing. Useful when no tokenizer is attached and for
+    /// token-level parity tests.
+    pub fn transcribe_tokens(&self, pcm: &[f32]) -> Result<Vec<u32>> {
+        let encoder = self.model.encode_pcm(pcm)?;
+        let (cfg, dec) = self.model.decoder_state();
+        let mut state = DecoderState::new(cfg, dec, &encoder)?;
+        greedy_decode(
+            &mut state,
+            &cfg.decoder_start_ids,
+            cfg.eot,
+            DEFAULT_MAX_NEW_TOKENS,
+        )
+    }
+
+    /// Transcribes `pcm` with beam search, returning the best token id
+    /// sequence. `beam_width = 1` matches [`transcribe_tokens`](Self::transcribe_tokens).
+    pub fn transcribe_tokens_beam(
+        &self,
+        pcm: &[f32],
+        config: &BeamSearchConfig,
+    ) -> Result<Vec<u32>> {
+        let encoder = self.model.encode_pcm(pcm)?;
+        let (cfg, dec) = self.model.decoder_state();
+        let mut scorer = WhisperBeamScorer::new(cfg, dec, &encoder)?;
+        let hyps = beam_search(&mut scorer, &cfg.decoder_start_ids, cfg.eot, config)?;
+        hyps.into_iter().next().map(|h| h.tokens).ok_or_else(|| {
+            VokraError::ModelLoad("whisper beam search produced no hypothesis".into())
+        })
+    }
+
+    /// Detokenizes `ids`, or renders them as a bracketed id list when no
+    /// tokenizer is attached (keeps the demo useful without a vocabulary).
+    fn render(&self, ids: &[u32]) -> Result<String> {
+        match &self.tokenizer {
+            Some(t) => t.decode(ids),
+            None => Ok(format!(
+                "[no tokenizer; token ids: {}]",
+                ids.iter().map(u32::to_string).collect::<Vec<_>>().join(" ")
+            )),
+        }
+    }
+}
+
+impl AsrEngine for WhisperAsr {
+    fn transcribe(&self, pcm: &[f32]) -> Result<Transcription> {
+        let ids = self.transcribe_tokens(pcm)?;
+        Ok(Transcription::new(self.render(&ids)?))
+    }
+}

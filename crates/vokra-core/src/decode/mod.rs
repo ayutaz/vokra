@@ -8,12 +8,13 @@
 //!
 //! # Scope
 //!
-//! - **M0-06** adds `beam_search` (FR-OP-40: beam width, length normalization,
-//!   early stopping, n-best, word-level timestamps) as a submodule here, with
-//!   a `BeamScorer` trait so Whisper (and later models) plug in without this
+//! - **M0-06** adds [`beam_search`] (FR-OP-40: beam width, length
+//!   normalization, early stopping, n-best, word-level timestamps) with a
+//!   [`BeamScorer`] trait so Whisper (and later models) plug in without this
 //!   module knowing anything model-specific.
 //! - `ctc_decode` / `rnnt_decode` / `wfst_decode` (FR-OP-41..43) are later
 //!   milestones.
-//!
-//! This is a placeholder scaffold (M0 shared-surface coordination); the
-//! `beam_search` implementation lands with M0-06.
+
+pub mod beam_search;
+
+pub use beam_search::{BeamHypothesis, BeamScorer, BeamSearchConfig, beam_search};

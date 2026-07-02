@@ -40,8 +40,10 @@ fn whisper_safetensors_roundtrips_through_convert_file() {
 
     let summary = convert_file(ModelKind::WhisperBase, &input, &output).expect("convert");
     assert_eq!(summary.tensor_count, 2);
-    // 2 model keys + 13 frontend keys.
-    assert_eq!(summary.metadata_count, 15);
+    // 2 model keys + 13 frontend keys + 13 `vokra.whisper.*` hyperparameter keys
+    // (M0-06-T04: n_mels, n_audio_ctx/state/head/layer, n_text_ctx/state/head/
+    // layer, n_vocab, ffn_dim, eot, decoder_start_ids).
+    assert_eq!(summary.metadata_count, 28);
 
     let file = GgufFile::open(&output).expect("load output gguf");
     assert_eq!(file.tensors().len(), 2);

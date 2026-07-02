@@ -21,15 +21,82 @@
 //! consumer (M0-06) reads them in the same order; consistency within Vokra is
 //! the contract.
 
-use vokra_core::gguf::{FrontendSpec, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    FrontendSpec, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
 
 use crate::ConvertError;
-use crate::safetensors::SafeTensors;
+use crate::safetensors::{SafeTensor, SafeTensors};
 
 /// `vokra.model.arch` value written for Whisper GGUFs.
 pub(crate) const ARCH: &str = "whisper";
 /// `vokra.model.name` value written for the Whisper base GGUF.
 pub(crate) const NAME: &str = "whisper-base";
+
+// ---------------------------------------------------------------------------
+// `vokra.whisper.*` hyperparameter chunk (M0-06-T04)
+// ---------------------------------------------------------------------------
+//
+// The native Whisper implementation (M0-06, `vokra-models`) must read every
+// hyperparameter from GGUF metadata rather than hard-coding it (FR-LD-02 /
+// FR-MD-02). The M0-03 converter previously wrote only `vokra.model.*` and
+// `vokra.frontend.*`; this WP adds the architectural hyperparameters, derived
+// from the checkpoint's tensor shapes (never invented). Keys mirror the
+// familiar whisper.cpp names under the `vokra.` prefix (IF-07 / no collision
+// with llama.cpp's `general.*` / `tokenizer.*`).
+//
+// These key strings are duplicated verbatim in
+// `vokra-models/src/whisper/config.rs` because the two crates cannot depend on
+// each other (converter -> vokra-core only; model -> vokra-core / vokra-ops).
+// Centralising them in `vokra-core::gguf::chunks` is a follow-up once that
+// module is not owned by a parallel WP.
+
+/// `vokra.whisper.n_mels` — number of mel input channels (`UINT32`).
+const KEY_N_MELS: &str = "vokra.whisper.n_mels";
+/// `vokra.whisper.n_audio_ctx` — encoder positional length, 1500 (`UINT32`).
+const KEY_N_AUDIO_CTX: &str = "vokra.whisper.n_audio_ctx";
+/// `vokra.whisper.n_audio_state` — encoder/decoder hidden width `d_model` (`UINT32`).
+const KEY_N_AUDIO_STATE: &str = "vokra.whisper.n_audio_state";
+/// `vokra.whisper.n_audio_head` — encoder attention heads (`UINT32`).
+const KEY_N_AUDIO_HEAD: &str = "vokra.whisper.n_audio_head";
+/// `vokra.whisper.n_audio_layer` — encoder block count (`UINT32`).
+const KEY_N_AUDIO_LAYER: &str = "vokra.whisper.n_audio_layer";
+/// `vokra.whisper.n_text_ctx` — decoder positional length, 448 (`UINT32`).
+const KEY_N_TEXT_CTX: &str = "vokra.whisper.n_text_ctx";
+/// `vokra.whisper.n_text_state` — decoder hidden width (`UINT32`).
+const KEY_N_TEXT_STATE: &str = "vokra.whisper.n_text_state";
+/// `vokra.whisper.n_text_head` — decoder attention heads (`UINT32`).
+const KEY_N_TEXT_HEAD: &str = "vokra.whisper.n_text_head";
+/// `vokra.whisper.n_text_layer` — decoder block count (`UINT32`).
+const KEY_N_TEXT_LAYER: &str = "vokra.whisper.n_text_layer";
+/// `vokra.whisper.n_vocab` — token vocabulary size (`UINT32`).
+const KEY_N_VOCAB: &str = "vokra.whisper.n_vocab";
+/// `vokra.whisper.ffn_dim` — feed-forward inner width (`UINT32`).
+const KEY_FFN_DIM: &str = "vokra.whisper.ffn_dim";
+/// `vokra.whisper.eot` — end-of-transcript token id (`UINT32`).
+const KEY_EOT: &str = "vokra.whisper.eot";
+/// `vokra.whisper.decoder_start_ids` — default decode prefix (`UINT32` array).
+const KEY_DECODER_START_IDS: &str = "vokra.whisper.decoder_start_ids";
+
+/// Fixed Whisper attention head dimension across every model size (base /
+/// small / medium / large all use `head_dim = 64`); the head count is
+/// therefore `d_model / 64`. Source: openai/whisper `whisper/model.py`
+/// (`MultiHeadAttention`, `n_state // n_head` with the sizes tabulated so
+/// `head_dim == 64`).
+const WHISPER_HEAD_DIM: u64 = 64;
+
+/// End-of-transcript token id for the Whisper *multilingual* tokenizer
+/// (`<|endoftext|>`), fixed for every multilingual model including base.
+/// Source: openai/whisper `whisper/tokenizer.py`.
+const WHISPER_EOT: u32 = 50257;
+
+/// Default decode prefix for **English transcription** with the multilingual
+/// tokenizer: `<|startoftranscript|> <|en|> <|transcribe|> <|notimestamps|>`.
+/// Source: openai/whisper `whisper/tokenizer.py` special-token layout, verified
+/// against `transformers` `WhisperProcessor.get_decoder_prompt_ids`. Non-English
+/// / translation prefixes are a later (M1) concern; the runtime reads this
+/// array from metadata rather than hard-coding it.
+const WHISPER_DECODER_START_IDS: [u32; 4] = [50258, 50259, 50359, 50363];
 
 /// Maps an upstream safetensors tensor name to its GGUF name (identity in M0).
 pub(crate) fn gguf_tensor_name(hf_name: &str) -> String {
@@ -76,6 +143,7 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<GgufBuilder, ConvertError> {
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
     frontend_spec().write_into(&mut b);
+    write_hparams(&mut b, &st);
 
     for t in st.tensors() {
         b.add_tensor(
@@ -87,6 +155,76 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<GgufBuilder, ConvertError> {
     }
 
     Ok(b)
+}
+
+/// Derives the `vokra.whisper.*` hyperparameters from the checkpoint's tensor
+/// shapes and writes them into `b`.
+///
+/// Every value is read from a tensor shape (or a documented Whisper invariant),
+/// never invented. Derivation is best-effort: a checkpoint missing an expected
+/// tensor writes `0` for that key, which the runtime's `WhisperConfig` loader
+/// rejects at load time — the converter stays infallible so degenerate inputs
+/// still round-trip.
+fn write_hparams(b: &mut GgufBuilder, st: &SafeTensors) {
+    let dim = |name: &str, axis: usize| -> u64 {
+        st.tensors()
+            .iter()
+            .find(|t: &&SafeTensor| t.name == name)
+            .and_then(|t| t.shape.get(axis).copied())
+            .unwrap_or(0)
+    };
+
+    // d_model / n_mels from the first conv weight [d_model, n_mels, 3].
+    let d_model = dim("model.encoder.conv1.weight", 0);
+    let n_mels = dim("model.encoder.conv1.weight", 1);
+    let n_audio_ctx = dim("model.encoder.embed_positions.weight", 0);
+    let n_text_ctx = dim("model.decoder.embed_positions.weight", 0);
+    let n_vocab = dim("model.decoder.embed_tokens.weight", 0);
+    let ffn_dim = dim("model.encoder.layers.0.fc1.weight", 0);
+    let n_audio_layer = count_layers(st, "model.encoder.layers.");
+    let n_text_layer = count_layers(st, "model.decoder.layers.");
+    // Whisper invariant: head_dim == 64, so n_head == d_model / 64.
+    let n_head = if d_model >= WHISPER_HEAD_DIM {
+        d_model / WHISPER_HEAD_DIM
+    } else {
+        0
+    };
+
+    b.add_u32(KEY_N_MELS, n_mels as u32);
+    b.add_u32(KEY_N_AUDIO_CTX, n_audio_ctx as u32);
+    b.add_u32(KEY_N_AUDIO_STATE, d_model as u32);
+    b.add_u32(KEY_N_AUDIO_HEAD, n_head as u32);
+    b.add_u32(KEY_N_AUDIO_LAYER, n_audio_layer);
+    b.add_u32(KEY_N_TEXT_CTX, n_text_ctx as u32);
+    b.add_u32(KEY_N_TEXT_STATE, d_model as u32);
+    b.add_u32(KEY_N_TEXT_HEAD, n_head as u32);
+    b.add_u32(KEY_N_TEXT_LAYER, n_text_layer);
+    b.add_u32(KEY_N_VOCAB, n_vocab as u32);
+    b.add_u32(KEY_FFN_DIM, ffn_dim as u32);
+    b.add_u32(KEY_EOT, WHISPER_EOT);
+    b.add_metadata(
+        KEY_DECODER_START_IDS,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U32,
+            values: WHISPER_DECODER_START_IDS
+                .iter()
+                .map(|&id| GgufMetadataValue::U32(id))
+                .collect(),
+        }),
+    );
+}
+
+/// Counts contiguous transformer blocks named `<prefix><i>.` for `i = 0, 1, …`.
+fn count_layers(st: &SafeTensors, prefix: &str) -> u32 {
+    let mut n = 0u32;
+    loop {
+        let probe = format!("{prefix}{n}.");
+        if st.tensors().iter().any(|t| t.name.starts_with(&probe)) {
+            n += 1;
+        } else {
+            return n;
+        }
+    }
 }
 
 #[cfg(test)]

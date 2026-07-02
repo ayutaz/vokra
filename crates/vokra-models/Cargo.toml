@@ -10,6 +10,10 @@ publish.workspace = true
 [dependencies]
 vokra-core.workspace = true
 vokra-ops.workspace = true
+# M0-06 reuses the M0-08 CPU compute kernels (gemm / softmax / layer_norm /
+# gelu / conv1d) and the runtime ISA log directly, rather than re-implementing
+# them in the model layer. Native model forwards call these safe wrappers.
+vokra-backend-cpu.workspace = true
 
 [lints]
 workspace = true
