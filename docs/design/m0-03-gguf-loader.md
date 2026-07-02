@@ -18,7 +18,7 @@
 | alignment | `general.alignment`（UINT32、8 の倍数）。**未指定時は 32** | 「If the alignment is not specified, assume it is `32`」 |
 | tensor offset | tensor_data 起点、ALIGNMENT の倍数を検証 | gguf_tensor_info_t: 「Must be a multiple of `ALIGNMENT`」 |
 | key 制約 | ASCII / lower_snake_case / `.` 区切り / ≤65535 bytes | gguf_metadata_kv_t の caveats |
-| tensor name | ≤64 bytes | gguf_tensor_info_t の caveat |
+| tensor name | ≤64 bytes（仕様値。**M0 writer は非強制** — Vokra 内 round-trip は可、厳格な GGUF 互換強制は将来検討。Whisper base の HF 名は全 245 本が上限内） | gguf_tensor_info_t の caveat |
 | **tensor dtype（M0 範囲）** | **F32=0 / F16=1 のみ**。範囲外は明示エラー | `ggml_type` enum。K-quants（Q4_K=12/Q5_K=13/Q6_K=14）の**ロードは FR-LD-07 = v0.1 MVP（M1-02 管轄）でスコープ外** |
 
 ## 2. checkpoint 入手元の決定（出典付き）
