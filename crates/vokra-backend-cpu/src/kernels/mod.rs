@@ -1,0 +1,537 @@
+//! CPU compute kernels and their safe public wrappers (M0-08-T02, T05..T16).
+//!
+//! # Confirmed spike kernel set (M0-08-T02)
+//!
+//! Back-derived from the ops Whisper base (M0-06) and Silero VAD (M0-05)
+//! need. dtype is **f32 only** in the spike (aligned with the FP32 parity
+//! bound NFR-QL-01 atol = 0.01; f16 / K-quant kernels are FR-QT-01 = v0.1
+//! MVP and later). Threading is intentionally **not** introduced in M0 (the
+//! rayon / OpenMP-alternative decision is deferred — NFR-LC-03).
+//!
+//! | kernel | SIMD? | rationale |
+//! |--------|-------|-----------|
+//! | [`gemm_f32`] (bias = linear) | yes | dominant Whisper attention / FFN cost |
+//! | [`add_f32`] / [`mul_f32`] | yes | residual add, gating |
+//! | [`relu_f32`] | yes | Silero VAD conv stack |
+//! | [`sigmoid_f32`] | scalar-backed | VAD output / LSTM gate; exp-bound (SIMD exp is a follow-up) |
+//! | [`tanh_f32`] | scalar-backed | LSTM cell; exp-bound |
+//! | [`gelu_f32`] | scalar-backed | Whisper MLP (exact/erf form); exp-bound |
+//! | [`softmax_f32`] | yes | Whisper attention |
+//! | [`layer_norm_f32`] | yes | Whisper pre-norm blocks |
+//! | [`conv1d_f32`] | via GEMM | Whisper encoder stem; im2col + [`gemm_f32`] |
+//!
+//! **Deliberately not SIMD kernels here** (memory-bound / structural, left to
+//! scalar or the model layer's `vokra-ops` reference — M0-06-T03): embedding
+//! lookup, transpose, reshape.
+//!
+//! `conv1d_f32` has no dedicated SIMD kernel: it lowers to im2col + the
+//! dispatched [`gemm_f32`], so it inherits AVX2 / NEON automatically
+//! (M0-08-T08/T12/T15).
+//!
+//! # Boundary with `vokra-ops`
+//!
+//! This crate owns the **dispatch-target compute kernels** (the functions
+//! below). `vokra-ops` owns the **operator definitions** (front-end / speech
+//! ops and their attributes) and any scalar op *reference* used by the parity
+//! harness. New "missing op" requests raised by M0-06-T02 are folded in by
+//! appending to the table above and adding the kernel, up to (but not after)
+//! WP completion (M0-08-T19), to avoid re-opening a finished WP.
+//!
+//! # Function boundary for M0-06
+//!
+//! M0-06's encoder / decoder call these safe wrappers directly:
+//! [`gemm_f32`], [`add_f32`], [`mul_f32`], [`relu_f32`], [`sigmoid_f32`],
+//! [`tanh_f32`], [`gelu_f32`], [`softmax_f32`], [`layer_norm_f32`],
+//! [`conv1d_f32`], plus [`crate::active_isa`] for the demo's ISA log. Each
+//! validates its shapes at the boundary and returns
+//! [`VokraError::InvalidArgument`] on a mismatch (NFR-RL-07); the `*_on`
+//! variants force a specific [`IsaPath`] for differential testing.
+
+pub(crate) mod scalar;
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod avx2;
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod neon;
+
+use vokra_core::{Result, VokraError};
+
+use crate::dispatch;
+use crate::features::IsaPath;
+
+/// Default layer-norm epsilon (PyTorch `nn.LayerNorm` default `1e-5`, which
+/// OpenAI Whisper inherits). Exposed for M0-06 call sites.
+pub const LAYER_NORM_DEFAULT_EPS: f32 = scalar::LAYER_NORM_DEFAULT_EPS;
+
+// ---- boundary validation helpers (NFR-RL-07) ----
+
+fn checked_mul(a: usize, b: usize, what: &str) -> Result<usize> {
+    a.checked_mul(b).ok_or_else(|| {
+        VokraError::InvalidArgument(format!("{what}: dimension product overflows usize"))
+    })
+}
+
+fn expect_len(name: &str, got: usize, want: usize) -> Result<()> {
+    if got == want {
+        Ok(())
+    } else {
+        Err(VokraError::InvalidArgument(format!(
+            "{name} length {got} does not match expected {want}"
+        )))
+    }
+}
+
+fn validate_gemm(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    b: &[f32],
+    bias: Option<&[f32]>,
+    out: &[f32],
+) -> Result<()> {
+    expect_len("gemm a", a.len(), checked_mul(m, k, "gemm m*k")?)?;
+    expect_len("gemm b", b.len(), checked_mul(k, n, "gemm k*n")?)?;
+    expect_len("gemm out", out.len(), checked_mul(m, n, "gemm m*n")?)?;
+    if let Some(bias) = bias {
+        expect_len("gemm bias", bias.len(), n)?;
+    }
+    Ok(())
+}
+
+fn validate_binary(a: &[f32], b: &[f32], out: &[f32]) -> Result<()> {
+    expect_len("binary b", b.len(), a.len())?;
+    expect_len("binary out", out.len(), a.len())
+}
+
+fn validate_unary(x: &[f32], out: &[f32]) -> Result<()> {
+    expect_len("unary out", out.len(), x.len())
+}
+
+fn validate_rows_cols(input: &[f32], out: &[f32], rows: usize, cols: usize) -> Result<()> {
+    let total = checked_mul(rows, cols, "rows*cols")?;
+    expect_len("input", input.len(), total)?;
+    expect_len("out", out.len(), total)
+}
+
+// ---- dot product & GEMM (M0-08-T05) ----
+
+/// Dot product of two equal-length f32 slices.
+///
+/// A scalar building block (no dispatch table entry); a length mismatch is an
+/// explicit [`VokraError::InvalidArgument`].
+pub fn vec_dot_f32(a: &[f32], b: &[f32]) -> Result<f32> {
+    expect_len("vec_dot b", b.len(), a.len())?;
+    Ok(scalar::vec_dot(a, b))
+}
+
+/// Row-major GEMM with optional per-column bias (bias = affine `linear`):
+/// `out[i, j] = bias[j] + sum_l a[i, l] * b[l, j]`.
+///
+/// `a` is `m x k`, `b` is `k x n`, `out` is `m x n`, and `bias` (when `Some`)
+/// has length `n`. Runs on [`crate::active_isa`]. A shape mismatch is an
+/// explicit [`VokraError::InvalidArgument`].
+pub fn gemm_f32(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    b: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) -> Result<()> {
+    validate_gemm(m, n, k, a, b, bias, out)?;
+    (dispatch::table().gemm)(m, n, k, a, b, bias, out);
+    Ok(())
+}
+
+/// [`gemm_f32`] forced onto a specific `isa` (differential testing).
+#[allow(clippy::too_many_arguments)] // mirrors gemm_f32 plus the forced isa
+pub fn gemm_f32_on(
+    isa: IsaPath,
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    b: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) -> Result<()> {
+    validate_gemm(m, n, k, a, b, bias, out)?;
+    (dispatch::table_for(isa)?.gemm)(m, n, k, a, b, bias, out);
+    Ok(())
+}
+
+// ---- element-wise & activations (M0-08-T06) ----
+
+macro_rules! binary_wrapper {
+    ($name:ident, $name_on:ident, $field:ident, $doc:literal) => {
+        #[doc = $doc]
+        ///
+        /// `a`, `b`, `out` must have equal length. Runs on
+        /// [`crate::active_isa`].
+        pub fn $name(a: &[f32], b: &[f32], out: &mut [f32]) -> Result<()> {
+            validate_binary(a, b, out)?;
+            (dispatch::table().$field)(a, b, out);
+            Ok(())
+        }
+
+        #[doc = concat!("[`", stringify!($name), "`] forced onto a specific `isa`.")]
+        pub fn $name_on(isa: IsaPath, a: &[f32], b: &[f32], out: &mut [f32]) -> Result<()> {
+            validate_binary(a, b, out)?;
+            (dispatch::table_for(isa)?.$field)(a, b, out);
+            Ok(())
+        }
+    };
+}
+
+macro_rules! unary_wrapper {
+    ($name:ident, $name_on:ident, $field:ident, $doc:literal) => {
+        #[doc = $doc]
+        ///
+        /// `x` and `out` must have equal length. Runs on
+        /// [`crate::active_isa`].
+        pub fn $name(x: &[f32], out: &mut [f32]) -> Result<()> {
+            validate_unary(x, out)?;
+            (dispatch::table().$field)(x, out);
+            Ok(())
+        }
+
+        #[doc = concat!("[`", stringify!($name), "`] forced onto a specific `isa`.")]
+        pub fn $name_on(isa: IsaPath, x: &[f32], out: &mut [f32]) -> Result<()> {
+            validate_unary(x, out)?;
+            (dispatch::table_for(isa)?.$field)(x, out);
+            Ok(())
+        }
+    };
+}
+
+binary_wrapper!(add_f32, add_f32_on, add, "Element-wise `out = a + b`.");
+binary_wrapper!(mul_f32, mul_f32_on, mul, "Element-wise `out = a * b`.");
+unary_wrapper!(
+    relu_f32,
+    relu_f32_on,
+    relu,
+    "Element-wise ReLU `out = max(0, x)`."
+);
+unary_wrapper!(
+    sigmoid_f32,
+    sigmoid_f32_on,
+    sigmoid,
+    "Element-wise logistic sigmoid `out = 1 / (1 + exp(-x))`."
+);
+unary_wrapper!(
+    tanh_f32,
+    tanh_f32_on,
+    tanh,
+    "Element-wise hyperbolic tangent."
+);
+unary_wrapper!(
+    gelu_f32,
+    gelu_f32_on,
+    gelu,
+    "Element-wise exact (erf-based) GELU, matching Whisper's `nn.GELU()`."
+);
+
+// ---- softmax (M0-08-T07) ----
+
+/// Row-wise softmax over the innermost dimension of a `rows x cols`
+/// row-major buffer (numerically stabilised by the row max). Each output row
+/// sums to 1 within FP32 rounding. Runs on [`crate::active_isa`].
+pub fn softmax_f32(input: &[f32], out: &mut [f32], rows: usize, cols: usize) -> Result<()> {
+    validate_rows_cols(input, out, rows, cols)?;
+    (dispatch::table().softmax)(input, out, rows, cols);
+    Ok(())
+}
+
+/// [`softmax_f32`] forced onto a specific `isa`.
+pub fn softmax_f32_on(
+    isa: IsaPath,
+    input: &[f32],
+    out: &mut [f32],
+    rows: usize,
+    cols: usize,
+) -> Result<()> {
+    validate_rows_cols(input, out, rows, cols)?;
+    (dispatch::table_for(isa)?.softmax)(input, out, rows, cols);
+    Ok(())
+}
+
+// ---- layer norm (M0-08-T07) ----
+
+fn validate_layer_norm(
+    input: &[f32],
+    out: &[f32],
+    rows: usize,
+    cols: usize,
+    gamma: &[f32],
+    beta: &[f32],
+) -> Result<()> {
+    validate_rows_cols(input, out, rows, cols)?;
+    expect_len("layer_norm gamma", gamma.len(), cols)?;
+    expect_len("layer_norm beta", beta.len(), cols)
+}
+
+/// Row-wise layer normalisation with affine parameters over the innermost
+/// dimension: `out[r, c] = (x[r, c] - mean_r) / sqrt(var_r + eps) *
+/// gamma[c] + beta[c]`, using the biased (population) variance to match
+/// PyTorch `nn.LayerNorm`. `gamma` / `beta` have length `cols`. See
+/// [`LAYER_NORM_DEFAULT_EPS`]. Runs on [`crate::active_isa`].
+pub fn layer_norm_f32(
+    input: &[f32],
+    out: &mut [f32],
+    rows: usize,
+    cols: usize,
+    gamma: &[f32],
+    beta: &[f32],
+    eps: f32,
+) -> Result<()> {
+    validate_layer_norm(input, out, rows, cols, gamma, beta)?;
+    (dispatch::table().layer_norm)(input, out, rows, cols, gamma, beta, eps);
+    Ok(())
+}
+
+/// [`layer_norm_f32`] forced onto a specific `isa`.
+#[allow(clippy::too_many_arguments)] // mirrors layer_norm_f32 plus the forced isa
+pub fn layer_norm_f32_on(
+    isa: IsaPath,
+    input: &[f32],
+    out: &mut [f32],
+    rows: usize,
+    cols: usize,
+    gamma: &[f32],
+    beta: &[f32],
+    eps: f32,
+) -> Result<()> {
+    validate_layer_norm(input, out, rows, cols, gamma, beta)?;
+    (dispatch::table_for(isa)?.layer_norm)(input, out, rows, cols, gamma, beta, eps);
+    Ok(())
+}
+
+// ---- conv1d via im2col + GEMM (M0-08-T08) ----
+
+/// 1-D convolution via im2col + [`gemm_f32`], so it rides the dispatched
+/// SIMD GEMM (no dedicated conv SIMD kernel).
+///
+/// Layout: `input` is `in_ch x in_len` row-major, `weight` is
+/// `out_ch x in_ch x kernel`, optional `bias` has length `out_ch`, and `out`
+/// is `out_ch x out_len` where
+/// `out_len = (in_len + 2 * padding - kernel) / stride + 1`. `stride` and
+/// `kernel` must be non-zero and the padded length must be at least `kernel`;
+/// any shape mismatch is an explicit [`VokraError::InvalidArgument`]. The
+/// im2col buffer is allocated per call in M0; a static arena (M1-04, FR-EX-05)
+/// can replace it later without changing this signature.
+#[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
+pub fn conv1d_f32(
+    input: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    padding: usize,
+    out: &mut [f32],
+) -> Result<()> {
+    conv1d_dispatch(
+        None, input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
+    )
+}
+
+/// [`conv1d_f32`] forced onto a specific `isa` (drives the GEMM path).
+#[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
+pub fn conv1d_f32_on(
+    isa: IsaPath,
+    input: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    padding: usize,
+    out: &mut [f32],
+) -> Result<()> {
+    conv1d_dispatch(
+        Some(isa),
+        input,
+        in_ch,
+        in_len,
+        weight,
+        out_ch,
+        kernel,
+        bias,
+        stride,
+        padding,
+        out,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
+fn conv1d_dispatch(
+    force: Option<IsaPath>,
+    input: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    padding: usize,
+    out: &mut [f32],
+) -> Result<()> {
+    if stride == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv1d stride must be >= 1".into(),
+        ));
+    }
+    if kernel == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv1d kernel must be >= 1".into(),
+        ));
+    }
+    let padded = in_len
+        .checked_add(checked_mul(2, padding, "conv1d 2*padding")?)
+        .ok_or_else(|| VokraError::InvalidArgument("conv1d padded length overflow".into()))?;
+    if padded < kernel {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv1d padded length {padded} is smaller than kernel {kernel}"
+        )));
+    }
+    let out_len = (padded - kernel) / stride + 1;
+
+    expect_len(
+        "conv1d input",
+        input.len(),
+        checked_mul(in_ch, in_len, "conv1d in_ch*in_len")?,
+    )?;
+    let k = checked_mul(in_ch, kernel, "conv1d in_ch*kernel")?;
+    expect_len(
+        "conv1d weight",
+        weight.len(),
+        checked_mul(out_ch, k, "conv1d out_ch*k")?,
+    )?;
+    expect_len(
+        "conv1d out",
+        out.len(),
+        checked_mul(out_ch, out_len, "conv1d out_ch*out_len")?,
+    )?;
+    if let Some(bias) = bias {
+        expect_len("conv1d bias", bias.len(), out_ch)?;
+    }
+
+    // im2col: col is [in_ch*kernel, out_len] row-major.
+    let mut col = vec![0.0f32; k * out_len];
+    for c in 0..in_ch {
+        for kk in 0..kernel {
+            let row = c * kernel + kk;
+            for t in 0..out_len {
+                let pos = t * stride + kk;
+                if pos >= padding && pos < padding + in_len {
+                    col[row * out_len + t] = input[c * in_len + (pos - padding)];
+                }
+            }
+        }
+    }
+
+    // weight [out_ch, k] * col [k, out_len] = out [out_ch, out_len].
+    match force {
+        Some(isa) => gemm_f32_on(isa, out_ch, out_len, k, weight, &col, None, out)?,
+        None => gemm_f32(out_ch, out_len, k, weight, &col, None, out)?,
+    }
+
+    // Per-output-channel bias (broadcast over out_len).
+    if let Some(bias) = bias {
+        for (oc, &b) in bias.iter().enumerate() {
+            for v in &mut out[oc * out_len..oc * out_len + out_len] {
+                *v += b;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gemm_rejects_bad_shapes() {
+        let a = [1.0, 2.0];
+        let b = [1.0, 2.0];
+        let mut out = [0.0; 4];
+        // a should be m*k = 2*2 = 4 long, but it is 2 → explicit error.
+        let err = gemm_f32(2, 2, 2, &a, &b, None, &mut out).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn gemm_on_scalar_matches_hand_value() {
+        // [[1,2],[3,4]] * [[1,0],[0,1]] + bias[100,200].
+        let a = [1.0, 2.0, 3.0, 4.0];
+        let b = [1.0, 0.0, 0.0, 1.0];
+        let bias = [100.0, 200.0];
+        let mut out = [0.0; 4];
+        gemm_f32_on(IsaPath::Scalar, 2, 2, 2, &a, &b, Some(&bias), &mut out).unwrap();
+        assert_eq!(out, [101.0, 202.0, 103.0, 204.0]);
+    }
+
+    #[test]
+    fn binary_and_unary_reject_length_mismatch() {
+        let mut out2 = [0.0; 2];
+        assert!(add_f32(&[1.0, 2.0], &[1.0], &mut out2).is_err());
+        let mut out1 = [0.0; 1];
+        assert!(relu_f32(&[1.0, 2.0], &mut out1).is_err());
+    }
+
+    #[test]
+    fn conv1d_single_channel_hand_fixture() {
+        // input [1,5] = 1..5, weight [1,1,3] = [1,1,1], stride 1, pad 0.
+        // out_len = 5-3+1 = 3; sliding sums: 1+2+3, 2+3+4, 3+4+5.
+        let input = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let weight = [1.0, 1.0, 1.0];
+        let mut out = [0.0; 3];
+        conv1d_f32(&input, 1, 5, &weight, 1, 3, None, 1, 0, &mut out).unwrap();
+        assert_eq!(out, [6.0, 9.0, 12.0]);
+    }
+
+    #[test]
+    fn conv1d_padding_and_bias() {
+        // input [1,3] = [1,2,3], weight [1,1,3] = [1,0,-1], pad 1, stride 1,
+        // bias [10]. padded = [0,1,2,3,0], out_len = (5-3)/1+1 = 3.
+        // windows: [0,1,2]·[1,0,-1] = -2; [1,2,3] = -2; [2,3,0] = 2. +bias 10.
+        let input = [1.0, 2.0, 3.0];
+        let weight = [1.0, 0.0, -1.0];
+        let bias = [10.0];
+        let mut out = [0.0; 3];
+        conv1d_f32(&input, 1, 3, &weight, 1, 3, Some(&bias), 1, 1, &mut out).unwrap();
+        assert_eq!(out, [8.0, 8.0, 12.0]);
+    }
+
+    #[test]
+    fn conv1d_rejects_kernel_larger_than_padded_input() {
+        let input = [1.0, 2.0];
+        let weight = [1.0; 5];
+        let mut out = [0.0; 1];
+        let err = conv1d_f32(&input, 1, 2, &weight, 1, 5, None, 1, 0, &mut out).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn conv1d_multichannel_stride2() {
+        // 2 in-ch, len 4; 1 out-ch; kernel 2; stride 2; no pad.
+        // in ch0 = [1,2,3,4], ch1 = [10,20,30,40].
+        // weight [1,2,2] = ch0:[1,1], ch1:[1,1].
+        // out_len = (4-2)/2+1 = 2.
+        // t=0: ch0(1+2)+ch1(10+20)=3+30=33; t=1: ch0(3+4)+ch1(30+40)=7+70=77.
+        let input = [1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0];
+        let weight = [1.0, 1.0, 1.0, 1.0];
+        let mut out = [0.0; 2];
+        conv1d_f32(&input, 2, 4, &weight, 1, 2, None, 2, 0, &mut out).unwrap();
+        assert_eq!(out, [33.0, 77.0]);
+    }
+}

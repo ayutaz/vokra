@@ -10,5 +10,11 @@ publish.workspace = true
 [dependencies]
 vokra-core.workspace = true
 
+# Reference benchmarks (M0-08-T17): hand-rolled std::time measurement, no
+# external bench crate, so the workspace stays dependency-free.
+[[bench]]
+name = "kernels"
+harness = false
+
 [lints]
 workspace = true
