@@ -1,5 +1,7 @@
 # Vokra
 
+**English** | [日本語](README.ja.md)
+
 **Vokra** is an inference runtime specialized for speech AI — TTS, ASR,
 speech-to-speech, voice conversion, speaker identification, and VAD — built
 in Rust as an alternative to ONNX / ONNX Runtime for speech workloads.
