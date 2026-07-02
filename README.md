@@ -93,6 +93,52 @@ first natively implemented TTS model** (decided 2026-07-02):
   from piper-plus for the time being; a Rust port will be re-evaluated
   later.
 
+## Using the C ABI
+
+Vokra exposes a single C header, [`include/vokra.h`](include/vokra.h)
+(cbindgen-generated; regenerate with `scripts/gen-c-abi.sh`). Building the
+`vokra-capi` crate produces the shared and static libraries:
+
+```sh
+cargo build -p vokra-capi --release
+# -> target/release/libvokra.dylib | libvokra.so | vokra.dll  (+ libvokra.a)
+```
+
+A session is created from a GGUF model; the architecture is detected from the
+file's `vokra.model.arch` metadata and the matching task is wired
+automatically (Whisper → ASR, Silero VAD → VAD stream, piper-plus → TTS). All
+functions return a `vokra_status_t` (`VOKRA_OK` is 0); on error, a per-thread
+message is available from `vokra_last_error()`. Vokra-allocated outputs are
+released with their matching `vokra_*_free` / `vokra_*_destroy` function.
+
+```c
+#include "vokra.h"
+
+vokra_session_t *session = NULL;
+if (vokra_session_create_from_file("whisper-base.gguf", &session) != VOKRA_OK) {
+    fprintf(stderr, "load failed: %s\n", vokra_last_error());
+    return 1;
+}
+
+char *text = NULL;
+if (vokra_asr_transcribe(session, pcm, num_samples, 16000, &text) == VOKRA_OK) {
+    printf("%s\n", text);
+    vokra_string_free(text);
+}
+vokra_session_destroy(session);
+```
+
+Compile against the header and link the shared library:
+
+```sh
+cc app.c -Iinclude -Ltarget/release -lvokra -Wl,-rpath,target/release -o app
+```
+
+Runnable end-to-end examples (ASR / TTS / VAD) live in
+[`tests/capi/`](tests/capi); `scripts/run-capi-smoke.sh` builds and runs them.
+The M0 (v0.1 spike) ABI is **not** stable — it may change in breaking ways
+until the v1.0 semver commitment.
+
 ## Planned model support
 
 The official model zoo distributes **Apache-2.0 / MIT weights only**. See

@@ -8,18 +8,27 @@ license.workspace = true
 publish.workspace = true
 
 [lib]
+# Output name unified to `vokra` (M0-09-T02): libvokra.dylib / libvokra.so /
+# vokra.dll (cdylib) and libvokra.a (staticlib). The Rust crate is therefore
+# `use vokra::...` from the integration tests.
+name = "vokra"
 # C ABI artifacts (M0-02-T02): a shared library for dynamic consumers and a
-# static library for iOS (`DllImport("__Internal")`) / static embedding.
-# cbindgen header generation and the extern "C" API itself are M0-09
-# (FR-API-01).
-crate-type = ["cdylib", "staticlib"]
-# cdylib/staticlib targets cannot be linked by rustdoc's doctest runner, so
-# doctests are disabled; C ABI examples are exercised from M0-09's header /
-# integration tests instead.
+# static library for iOS (`DllImport("__Internal")`, NFR-RL-03) / static
+# embedding. `lib` (rlib) is also emitted so the Rust integration tests under
+# `tests/` can link the crate and call the extern "C" functions directly
+# (M0-09-T06..T09); it does not affect the C-facing artifacts.
+crate-type = ["lib", "cdylib", "staticlib"]
+# The C ABI examples live in the cbindgen-generated header and the C smoke
+# tests (tests/capi), not in rustdoc, so doctests stay disabled.
 doctest = false
 
 [dependencies]
 vokra-core.workspace = true
+# Native model implementations (Silero VAD / Whisper / piper-plus). The C ABI
+# builds the matching engine from the GGUF arch and injects it into a Session
+# (M0-09-T06). Runtime dep, unlike cbindgen which is a build-only CLI tool
+# (MPL-2.0, not a workspace dependency — see ADR-0003 / license-audit.md).
+vokra-models.workspace = true
 
 [lints]
 workspace = true

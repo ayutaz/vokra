@@ -9,10 +9,12 @@
 # introduced, including via future C glue code or FFI declarations.
 # (The policy is also recorded in the vokra-core crate-level rustdoc.)
 #
-# Scope: scans source files under crates/ (*.rs, *.c, *.h, *.cc, *.cpp,
-# *.hpp, *.m, *.mm). Comment-only lines (`//`, `///`, `//!`, `/*`, `*`) are
-# excluded so documentation may mention the forbidden symbol by name; any use
-# in actual code cannot live on a comment-only line and is caught.
+# Scope: scans source files under crates/ and the C ABI smoke tests under
+# tests/capi/ (M0-09-T01: the C ABI boundary must not introduce strtod either)
+# (*.rs, *.c, *.h, *.cc, *.cpp, *.hpp, *.m, *.mm). Comment-only lines (`//`,
+# `///`, `//!`, `/*`, `*`) are excluded so documentation may mention the
+# forbidden symbol by name; any use in actual code cannot live on a
+# comment-only line and is caught.
 #
 # Extending the symbol list to other locale-dependent APIs (strtof/strtold,
 # setlocale-sensitive printf/scanf families, ...) is a spike-time decision
@@ -24,13 +26,17 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SCAN_DIR="$ROOT/crates"
 
 # bash 3.2 (macOS default) compatible.
 FORBIDDEN_SYMBOLS=(strtod)
 
-if [ ! -d "$SCAN_DIR" ]; then
-    echo "error: scan directory not found: $SCAN_DIR" >&2
+# Scan the Rust crates plus the C ABI smoke tests (M0-09-T01). tests/capi is
+# added only when present so the check still runs in a crates-only checkout.
+SCAN_DIRS=("$ROOT/crates")
+[ -d "$ROOT/tests/capi" ] && SCAN_DIRS+=("$ROOT/tests/capi")
+
+if [ ! -d "$ROOT/crates" ]; then
+    echo "error: scan directory not found: $ROOT/crates" >&2
     exit 1
 fi
 
@@ -43,7 +49,7 @@ for sym in "${FORBIDDEN_SYMBOLS[@]}"; do
             --include='*.rs' --include='*.c' --include='*.h' \
             --include='*.cc' --include='*.cpp' --include='*.hpp' \
             --include='*.m' --include='*.mm' \
-            -e "$pattern" "$SCAN_DIR" 2>/dev/null \
+            -e "$pattern" "${SCAN_DIRS[@]}" 2>/dev/null \
             | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' || true
     )"
     if [ -n "$matches" ]; then
@@ -54,6 +60,6 @@ for sym in "${FORBIDDEN_SYMBOLS[@]}"; do
 done
 
 if [ "$status" -eq 0 ]; then
-    echo "check-forbidden-symbols: OK (no forbidden symbols under crates/)"
+    echo "check-forbidden-symbols: OK (no forbidden symbols under crates/ or tests/capi/)"
 fi
 exit "$status"
