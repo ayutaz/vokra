@@ -13,11 +13,13 @@
 //! behind an [`Arc`], and the only mutable bookkeeping uses atomics
 //! (see [`crate::stream`]).
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use crate::backend::BackendKind;
+use crate::engines::{AsrEngine, TtsEngine, VadEngine, VadStreamHandle};
 use crate::error::{Result, VokraError};
 use crate::gguf::GgufFile;
 
@@ -56,9 +58,30 @@ pub(crate) struct SessionInner {
 /// assert_eq!(session.backend_kind(), BackendKind::Cpu);
 /// # Ok::<(), vokra_core::VokraError>(())
 /// ```
-#[derive(Debug)]
+///
+/// Native model implementations (`vokra-models`) are attached as trait
+/// objects with [`with_asr_engine`](Self::with_asr_engine),
+/// [`with_tts_engine`](Self::with_tts_engine) and
+/// [`with_vad_engine`](Self::with_vad_engine); the task facades
+/// ([`asr`](Self::asr) / [`tts`](Self::tts)) then delegate to them.
 pub struct Session {
     pub(crate) inner: Arc<SessionInner>,
+    asr: Option<Arc<dyn AsrEngine>>,
+    tts: Option<Arc<dyn TtsEngine>>,
+    vad: Option<Arc<dyn VadEngine>>,
+}
+
+impl fmt::Debug for Session {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Engines are opaque trait objects; report presence, not contents.
+        f.debug_struct("Session")
+            .field("backend", &self.inner.backend)
+            .field("model_path", &self.inner.model.path)
+            .field("asr_engine", &self.asr.is_some())
+            .field("tts_engine", &self.tts.is_some())
+            .field("vad_engine", &self.vad.is_some())
+            .finish()
+    }
 }
 
 impl Session {
@@ -91,6 +114,51 @@ impl Session {
     /// [`GgufFile::get`].
     pub fn gguf(&self) -> &GgufFile {
         &self.inner.model.gguf
+    }
+
+    /// Attaches an ASR engine (Whisper base = M0-06); consumes and returns the
+    /// session so it can be chained after [`with_backend`](SessionBuilder::with_backend).
+    #[must_use]
+    pub fn with_asr_engine(mut self, engine: Arc<dyn AsrEngine>) -> Self {
+        self.asr = Some(engine);
+        self
+    }
+
+    /// Attaches a TTS engine (piper-plus native TTS = M0-07); see
+    /// [`with_asr_engine`](Self::with_asr_engine) (M0-07-T10).
+    #[must_use]
+    pub fn with_tts_engine(mut self, engine: Arc<dyn TtsEngine>) -> Self {
+        self.tts = Some(engine);
+        self
+    }
+
+    /// Attaches a VAD engine (Silero VAD v5 = M0-05).
+    #[must_use]
+    pub fn with_vad_engine(mut self, engine: Arc<dyn VadEngine>) -> Self {
+        self.vad = Some(engine);
+        self
+    }
+
+    /// The injected ASR engine, if any (used by the [`Asr`](crate::Asr) facade).
+    pub(crate) fn asr_engine(&self) -> Option<&Arc<dyn AsrEngine>> {
+        self.asr.as_ref()
+    }
+
+    /// The injected TTS engine, if any (used by the [`Tts`](crate::Tts) facade).
+    pub(crate) fn tts_engine(&self) -> Option<&Arc<dyn TtsEngine>> {
+        self.tts.as_ref()
+    }
+
+    /// Opens a streaming VAD handle from the injected VAD engine (M0-05).
+    ///
+    /// Returns [`VokraError::NotImplemented`] if no VAD engine is attached.
+    pub fn open_vad_stream(&self) -> Result<Box<dyn VadStreamHandle + Send>> {
+        match &self.vad {
+            Some(engine) => Ok(engine.open_stream()),
+            None => Err(VokraError::NotImplemented(
+                "no VAD engine injected (Silero VAD v5 = M0-05)",
+            )),
+        }
     }
 }
 
@@ -138,6 +206,9 @@ impl SessionBuilder {
                 next_stream_id: AtomicU64::new(0),
                 active_streams: AtomicU64::new(0),
             }),
+            asr: None,
+            tts: None,
+            vad: None,
         })
     }
 }

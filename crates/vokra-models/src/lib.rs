@@ -9,15 +9,24 @@
 //! (converted offline to GGUF). No ONNX graph is ever loaded at runtime
 //! (FR-LD-05, permanent constraint).
 //!
-//! M0-02 ships only the crate skeleton. Planned M0 content:
+//! M0 content, one submodule per work package:
 //!
-//! - **M0-05**: Silero VAD as a 1:1-preserved dedicated subgraph (LSTM
-//!   state h/c kept intact);
-//! - **M0-06**: Whisper base — encoder, decoder and beam search;
-//! - **M0-07**: the piper-plus inference core (MB-iSTFT-VITS2 text encoder /
-//!   duration predictor / flow / MB-iSTFT decoder) as **Vokra's first
-//!   native TTS** (FR-MD-03; client decision 2026-07-02 — the former wrap
+//! - [`silero_vad`] — **M0-05**: Silero VAD v5 as a 1:1-preserved dedicated
+//!   subgraph (LSTM state h/c kept intact);
+//! - [`whisper`] — **M0-06**: Whisper base — encoder, decoder and beam search;
+//! - [`piper_plus`] — **M0-07**: the piper-plus inference core (MB-iSTFT-VITS2
+//!   text encoder / duration predictor / flow / MB-iSTFT decoder) as **Vokra's
+//!   first native TTS** (FR-MD-03; client decision 2026-07-02 — the former wrap
 //!   approach is abolished). G2P stays in `vokra-piper-plus` for now.
+//!
+//! Each submodule implements the matching engine trait from
+//! [`vokra_core::engines`] (`VadEngine` / `AsrEngine` / `TtsEngine`) so it can
+//! be injected into a `Session` without `vokra-core` knowing any model
+//! specifics.
+
+pub mod piper_plus;
+pub mod silero_vad;
+pub mod whisper;
 
 #[cfg(test)]
 mod tests {

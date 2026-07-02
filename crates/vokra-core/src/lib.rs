@@ -74,6 +74,8 @@
 //! ```
 
 pub mod backend;
+pub mod decode;
+pub mod engines;
 pub mod error;
 pub mod gguf;
 pub mod ir;
@@ -83,6 +85,7 @@ pub mod stream;
 pub mod tasks;
 
 pub use backend::{Backend, BackendKind};
+pub use engines::{AsrEngine, SynthesisRequest, TtsEngine, VadEngine, VadStreamHandle};
 pub use error::{Result, VokraError};
 pub use gguf::{FrontendSpec, GgmlType, GgufBuilder, GgufError, GgufFile, GgufTensorInfo};
 pub use ir::{AudioGraph, DType, GraphBuilder, Node, OpKind, TensorDesc, TensorId};

@@ -12,6 +12,7 @@
 //! - S2S: supported models are **v1.0+** (SRS §2.9 / CLAUDE.md model table),
 //!   so [`S2s`] is a *long-term* stub.
 
+use crate::engines::SynthesisRequest;
 use crate::error::{Result, VokraError};
 use crate::session::Session;
 
@@ -35,40 +36,56 @@ impl Session {
 /// ASR facade borrowed from a [`Session`] (FR-API-02).
 #[derive(Debug)]
 pub struct Asr<'a> {
-    #[allow(dead_code)] // read once ASR wiring lands (M0-06); unused in the M0 skeleton
     session: &'a Session,
 }
 
 impl Asr<'_> {
     /// Transcribes mono `f32` PCM samples to text.
     ///
-    /// M0 stub: always returns
-    /// [`VokraError::NotImplemented`]. Wiring: Whisper base in **M0-06**
-    /// (VAD in M0-05).
-    pub fn transcribe(&self, _samples: &[f32]) -> Result<Transcription> {
-        Err(VokraError::NotImplemented(
-            "ASR wiring lands in M0-06 (Whisper base)",
-        ))
+    /// Delegates to the [`AsrEngine`](crate::engines::AsrEngine) injected via
+    /// [`Session::with_asr_engine`](crate::Session::with_asr_engine) (Whisper
+    /// base = M0-06). Without an injected engine it returns
+    /// [`VokraError::NotImplemented`].
+    pub fn transcribe(&self, samples: &[f32]) -> Result<Transcription> {
+        match self.session.asr_engine() {
+            Some(engine) => engine.transcribe(samples),
+            None => Err(VokraError::NotImplemented(
+                "no ASR engine injected (Whisper base = M0-06)",
+            )),
+        }
     }
 }
 
 /// TTS facade borrowed from a [`Session`] (FR-API-02).
 #[derive(Debug)]
 pub struct Tts<'a> {
-    #[allow(dead_code)] // read once TTS wiring lands (M0-07); unused in the M0 skeleton
     session: &'a Session,
 }
 
 impl Tts<'_> {
-    /// Synthesizes speech audio from `text`.
+    /// Synthesizes speech audio from `text` (voice defaults).
     ///
-    /// M0 stub: always returns
-    /// [`VokraError::NotImplemented`]. Wiring: piper-plus native TTS
-    /// (MB-iSTFT-VITS2) in **M0-07**.
-    pub fn synthesize(&self, _text: &str) -> Result<SynthesizedAudio> {
-        Err(VokraError::NotImplemented(
-            "TTS wiring lands in M0-07 (piper-plus native TTS)",
-        ))
+    /// The FR-API-02 verbatim shape. Delegates to the
+    /// [`TtsEngine`](crate::engines::TtsEngine) injected via
+    /// [`Session::with_tts_engine`](crate::Session::with_tts_engine)
+    /// (piper-plus native TTS = M0-07) with a default
+    /// [`SynthesisRequest`](crate::engines::SynthesisRequest). Use
+    /// [`synthesize_request`](Self::synthesize_request) for explicit options.
+    /// Without an injected engine it returns [`VokraError::NotImplemented`].
+    pub fn synthesize(&self, text: &str) -> Result<SynthesizedAudio> {
+        self.synthesize_request(&SynthesisRequest::new(text))
+    }
+
+    /// Synthesizes speech audio for an explicit
+    /// [`SynthesisRequest`](crate::engines::SynthesisRequest) (language,
+    /// determinism, ...).
+    pub fn synthesize_request(&self, request: &SynthesisRequest) -> Result<SynthesizedAudio> {
+        match self.session.tts_engine() {
+            Some(engine) => engine.synthesize(request),
+            None => Err(VokraError::NotImplemented(
+                "no TTS engine injected (piper-plus native TTS = M0-07)",
+            )),
+        }
     }
 }
 
@@ -95,8 +112,8 @@ impl S2s<'_> {
     }
 }
 
-/// Placeholder result of [`Asr::transcribe`] (fields grow with M0-06:
-/// timestamps, n-best, ...).
+/// Result of [`Asr::transcribe`] (fields grow with M0-06: timestamps,
+/// n-best, ...).
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Transcription {
@@ -104,7 +121,16 @@ pub struct Transcription {
     pub text: String,
 }
 
-/// Placeholder result of [`Tts::synthesize`] (fields grow with M0-07).
+impl Transcription {
+    /// A transcription carrying just `text` (the M0 shape). Provided so
+    /// engine crates (`vokra-models`) can construct this `#[non_exhaustive]`
+    /// type across the crate boundary.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into() }
+    }
+}
+
+/// Result of [`Tts::synthesize`] (fields grow with M0-07).
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct SynthesizedAudio {
@@ -112,6 +138,18 @@ pub struct SynthesizedAudio {
     pub samples: Vec<f32>,
     /// Sample rate in Hz.
     pub sample_rate: u32,
+}
+
+impl SynthesizedAudio {
+    /// Mono synthesized audio at `sample_rate` Hz. Provided so engine crates
+    /// (`vokra-models`) can construct this `#[non_exhaustive]` type across the
+    /// crate boundary.
+    pub fn new(samples: Vec<f32>, sample_rate: u32) -> Self {
+        Self {
+            samples,
+            sample_rate,
+        }
+    }
 }
 
 /// Placeholder result of [`S2s::dialog`] (v1.0+ scope).
@@ -154,5 +192,47 @@ mod tests {
         let (_file, session) = session("s2s");
         let result = session.s2s().dialog(&[0.0f32; 160]);
         assert!(matches!(result, Err(VokraError::NotImplemented(_))));
+    }
+
+    #[test]
+    fn facades_delegate_to_injected_engines() {
+        use crate::engines::{AsrEngine, TtsEngine};
+        use std::sync::Arc;
+
+        struct DummyAsr;
+        impl AsrEngine for DummyAsr {
+            fn transcribe(&self, _pcm: &[f32]) -> Result<Transcription> {
+                Ok(Transcription::new("delegated"))
+            }
+        }
+        struct DummyTts;
+        impl TtsEngine for DummyTts {
+            fn synthesize(&self, req: &SynthesisRequest) -> Result<SynthesizedAudio> {
+                // Echo the deterministic flag length so the test can observe
+                // the request reached the engine.
+                let n = if req.deterministic { 2 } else { 1 };
+                Ok(SynthesizedAudio::new(vec![0.0; n], 22_050))
+            }
+        }
+
+        let (_file, session) = session("delegate");
+        let session = session
+            .with_asr_engine(Arc::new(DummyAsr))
+            .with_tts_engine(Arc::new(DummyTts));
+
+        assert_eq!(
+            session.asr().transcribe(&[0.0; 160]).unwrap().text,
+            "delegated"
+        );
+        assert_eq!(session.tts().synthesize("hi").unwrap().sample_rate, 22_050);
+        assert_eq!(
+            session
+                .tts()
+                .synthesize_request(&SynthesisRequest::new("hi").deterministic())
+                .unwrap()
+                .samples
+                .len(),
+            2
+        );
     }
 }
