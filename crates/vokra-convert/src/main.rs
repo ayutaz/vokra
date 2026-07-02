@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use vokra_convert::{ModelKind, convert_file};
+use vokra_convert::{ModelKind, convert_file, convert_piper_plus_file};
 use vokra_core::gguf::{FrontendSpec, GgufFile};
 
 const USAGE: &str = "\
@@ -20,10 +20,13 @@ vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
     vokra-convert --model <whisper-base|silero-vad> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
 
 OPTIONS:
-    --model <kind>     whisper-base (safetensors) or silero-vad (ONNX)
+    --model <kind>     whisper-base (safetensors), silero-vad (ONNX) or
+                       piper-plus (MB-iSTFT-VITS2 voice: ONNX + config.json)
     --input <path>     upstream checkpoint file
+    --config <path>    piper-plus config.json (piper-plus only)
     --output <path>    GGUF file to write
     -h, --help         print this help
 ";
@@ -42,9 +45,25 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let (model, input, output) = parsed;
+    let Parsed {
+        model,
+        input,
+        config,
+        output,
+    } = parsed;
 
-    match convert_file(model, &input, &output) {
+    let result = match model {
+        ModelKind::PiperPlus => match &config {
+            Some(config) => convert_piper_plus_file(&input, config, &output),
+            None => {
+                eprintln!("error: --model piper-plus requires --config <config.json>\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+        },
+        _ => convert_file(model, &input, &output),
+    };
+
+    match result {
         Ok(summary) => {
             println!(
                 "converted {model}: {} tensors, {} metadata keys, {} bytes -> {}",
@@ -68,11 +87,17 @@ fn main() -> ExitCode {
     }
 }
 
-type ParsedArgs = (ModelKind, PathBuf, PathBuf);
+struct Parsed {
+    model: ModelKind,
+    input: PathBuf,
+    config: Option<PathBuf>,
+    output: PathBuf,
+}
 
-fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
+fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut model: Option<ModelKind> = None;
     let mut input: Option<PathBuf> = None;
+    let mut config: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
 
     let mut i = 0;
@@ -80,15 +105,20 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
         match args[i].as_str() {
             "--model" => {
                 let v = args.get(i + 1).ok_or("--model requires a value")?;
-                model =
-                    Some(ModelKind::from_arg(v).ok_or_else(|| {
-                        format!("unknown model `{v}` (whisper-base | silero-vad)")
-                    })?);
+                model = Some(ModelKind::from_arg(v).ok_or_else(|| {
+                    format!("unknown model `{v}` (whisper-base | silero-vad | piper-plus)")
+                })?);
                 i += 2;
             }
             "--input" => {
                 input = Some(PathBuf::from(
                     args.get(i + 1).ok_or("--input requires a value")?,
+                ));
+                i += 2;
+            }
+            "--config" => {
+                config = Some(PathBuf::from(
+                    args.get(i + 1).ok_or("--config requires a value")?,
                 ));
                 i += 2;
             }
@@ -102,11 +132,12 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
         }
     }
 
-    Ok((
-        model.ok_or("--model is required")?,
-        input.ok_or("--input is required")?,
-        output.ok_or("--output is required")?,
-    ))
+    Ok(Parsed {
+        model: model.ok_or("--model is required")?,
+        input: input.ok_or("--input is required")?,
+        config,
+        output: output.ok_or("--output is required")?,
+    })
 }
 
 /// Re-opens the produced GGUF through the runtime loader and prints a
@@ -144,6 +175,21 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("<none>");
             println!("; arch={arch}");
+        }
+        ModelKind::PiperPlus => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let sr = file
+                .get("vokra.piper.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_sym = file
+                .get("vokra.piper.num_symbols")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!("; arch={arch} sample_rate={sr} num_symbols={n_sym}");
         }
     }
     Ok(())

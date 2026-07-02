@@ -47,7 +47,18 @@ BSD license, Copyright (C) 2010-2019 Max-Planck-Society. The full license
 text is reproduced in crates/vokra-ops/THIRD_PARTY_LICENSES/pocketfft-LICENSE.txt.
 
 --------------------------------------------------------------------------
-4. Maintaining this file
+4. piper-plus (MB-iSTFT-VITS2 native TTS and G2P)
+--------------------------------------------------------------------------
+Vokra's native TTS (crates/vokra-models/src/piper_plus/*) is a from-scratch
+Rust reimplementation of the MB-iSTFT-VITS2 inference core of piper-plus
+(https://github.com/ayutaz/piper-plus), MIT-licensed. The voice model weights
+are converted offline from the upstream piper-plus voices (also MIT). The G2P
+(8-language text front-end) is bridged from piper-plus for now; the concrete
+reuse form is pending (M0-07-T04, docs/piper-plus-integration.md), so the M0
+build ships only a mock phonemizer and does not yet bundle piper-plus G2P.
+
+--------------------------------------------------------------------------
+5. Maintaining this file
 --------------------------------------------------------------------------
 Any pull request that adds support for a new model or introduces a new
 external dependency must run the license audit (docs/license-audit.md) and,

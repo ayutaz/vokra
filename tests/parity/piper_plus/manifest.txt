@@ -1,0 +1,13 @@
+# piper-plus MB-iSTFT-VITS2 parity fixture (M0-07-T21)
+# Generated offline by gen_reference.py via onnxruntime (deterministic).
+piper_version = 1.11.0
+phoneme_ids = 1 32 0 14 0 25 0 57 0 11 0 38 0 11 0 63 0 10 0 2
+lid = 0
+noise_scale = 0.0
+length_scale = 1.0
+noise_w = 0.0
+hidden = 192
+t_phonemes = 20
+t_frames = 49
+pcm_len = 12544
+sample_rate = 22050

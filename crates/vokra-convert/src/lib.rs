@@ -36,6 +36,11 @@ pub enum ModelKind {
     WhisperBase,
     /// `snakers4/silero-vad` v5 ONNX checkpoint.
     SileroVad,
+    /// A piper-plus (MB-iSTFT-VITS2) voice: ONNX graph + `config.json`
+    /// (M0-07). Convert with [`convert_piper_plus_file`] — it needs the extra
+    /// `config.json` input, so it is not a plain single-input [`convert_file`]
+    /// model.
+    PiperPlus,
 }
 
 impl ModelKind {
@@ -44,6 +49,7 @@ impl ModelKind {
         match s {
             "whisper-base" => Some(Self::WhisperBase),
             "silero-vad" => Some(Self::SileroVad),
+            "piper-plus" => Some(Self::PiperPlus),
             _ => None,
         }
     }
@@ -53,6 +59,7 @@ impl ModelKind {
         match self {
             Self::WhisperBase => "whisper-base",
             Self::SileroVad => "silero-vad",
+            Self::PiperPlus => "piper-plus",
         }
     }
 }
@@ -151,6 +158,11 @@ pub fn convert_file(
             )];
             (builder, notes)
         }
+        ModelKind::PiperPlus => {
+            return Err(ConvertError::Usage(
+                "piper-plus needs a --config config.json; use convert_piper_plus_file".to_owned(),
+            ));
+        }
     };
 
     let tensor_count = builder.tensor_count();
@@ -160,6 +172,41 @@ pub fn convert_file(
 
     Ok(ConvertSummary {
         model,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
+/// Converts a piper-plus voice (`onnx` graph + `config` JSON) into a GGUF
+/// written to `output`, returning a summary (M0-07-T07).
+///
+/// piper-plus voices are distributed as an FP16 ONNX graph plus a `config.json`
+/// (phoneme table, sample rate, inference defaults), so unlike the single-input
+/// [`convert_file`] models this one takes both. See
+/// [`models::piper_plus`](crate) for the naming / metadata contract.
+pub fn convert_piper_plus_file(
+    onnx: &Path,
+    config: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let onnx_bytes = std::fs::read(onnx)?;
+    let config_bytes = std::fs::read(config)?;
+    let (builder, report) = models::piper_plus::convert(&onnx_bytes, &config_bytes)?;
+
+    let notes = vec![format!(
+        "piper-plus: {} float weights written ({} onnx:: names recovered), {} non-float skipped, {} phoneme ids over num_symbols",
+        report.written, report.renamed, report.skipped_non_float, report.phoneme_ids_over_range
+    )];
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::PiperPlus,
         tensor_count,
         metadata_count,
         output_bytes: out_bytes.len() as u64,

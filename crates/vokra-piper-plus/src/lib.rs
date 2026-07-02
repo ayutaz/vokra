@@ -24,8 +24,16 @@
 //!   conversion of piper-plus voices (offline tooling side; the runtime
 //!   loader is M0-03).
 //!
-//! M0-02 ships only this crate skeleton; the G2P bridge and the native
-//! inference implementation are M0-07 work.
+//! M0-02 shipped the crate skeleton; **M0-07-T08** adds the G2P bridge trait
+//! boundary ([`Phonemizer`]) plus a mock ([`MockPhonemizer`]) CI scaffold. The
+//! real G2P reuse (the upstream pure-Rust `piper-plus-g2p` crate) is T09,
+//! blocked on the T04 client confirmation of the reuse form
+//! (`docs/piper-plus-integration.md` §7/§8); the native inference core lives in
+//! `vokra-models`.
+
+pub mod phonemizer;
+
+pub use phonemizer::{MockPhonemizer, PhonemeTable, Phonemizer};
 
 #[cfg(test)]
 mod tests {

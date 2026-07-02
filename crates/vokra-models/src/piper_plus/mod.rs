@@ -18,3 +18,338 @@
 //!   for reference parity against piper-plus onnxruntime.
 //!
 //! Implementation lands with M0-07 (T06–T24); see `docs/piper-plus-integration.md`.
+
+mod config;
+mod decoder;
+mod duration;
+mod flow;
+mod nn;
+mod text_encoder;
+mod weights;
+
+#[cfg(test)]
+mod parity;
+
+use std::path::Path;
+
+use vokra_core::gguf::GgufFile;
+use vokra_core::{Result, SynthesisRequest, SynthesizedAudio, TtsEngine};
+
+pub use config::PiperConfig;
+
+use config::{DP_FILTER, HIDDEN};
+use decoder::Decoder;
+use duration::DurationPredictor;
+use flow::Flow;
+use text_encoder::TextEncoder;
+use weights::TensorStore;
+
+/// A loaded piper-plus (MB-iSTFT-VITS2) voice: Vokra's first native TTS.
+///
+/// Built from a voice GGUF (produced offline by `vokra-convert`, M0-07-T07); no
+/// ONNX is touched at runtime (FR-LD-05). The MB-iSTFT-VITS2 inference core is
+/// assembled here from the loaded weights (M0-07-T11..T20).
+pub struct PiperPlusTts {
+    config: PiperConfig,
+    encoder: TextEncoder,
+    duration: DurationPredictor,
+    flow: Flow,
+    decoder: Decoder,
+    /// `prosody_proj.bias` `[PROSODY_DIM]`. With zero prosody features
+    /// (mock-G2P / EN path) `prosody_proj(0) = bias`, so these are the prosody
+    /// channels appended to the encoder output for the duration predictor.
+    /// Real A1/A2/A3 prosody (JA) needs the G2P bridge (T09) and the
+    /// `prosody_proj` weight — a followup.
+    prosody_bias: Vec<f32>,
+    #[allow(dead_code)] // retained for lazy weight access / future components
+    store: TensorStore,
+}
+
+impl PiperPlusTts {
+    /// Loads a voice from a GGUF file on disk.
+    ///
+    /// # Errors
+    ///
+    /// Propagates GGUF parse errors and any weight shape/metadata mismatch
+    /// (a wrong or corrupt voice fails loudly at load).
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
+        let file = GgufFile::open(path)
+            .map_err(|e| vokra_core::VokraError::ModelLoad(format!("piper voice GGUF: {e}")))?;
+        Self::from_gguf(file)
+    }
+
+    /// Loads a voice from an already-parsed GGUF.
+    pub fn from_gguf(file: GgufFile) -> Result<Self> {
+        let store = TensorStore::new(file);
+        let config = PiperConfig::from_gguf(store.file())?;
+        let encoder = TextEncoder::load(&store, config.num_symbols, config.num_languages)?;
+        let duration = DurationPredictor::load(&store)?;
+        let prosody_bias = store.tensor_shaped("prosody_proj.bias", &[config::PROSODY_DIM])?;
+        let flow = Flow::load(&store)?;
+        let decoder = Decoder::load(
+            &store,
+            config.istft_n_fft,
+            config.istft_hop,
+            config.pqmf_subbands,
+        )?;
+        Ok(Self {
+            config,
+            encoder,
+            duration,
+            prosody_bias,
+            flow,
+            decoder,
+            store,
+        })
+    }
+
+    /// The resolved voice configuration (sample rate, tables, scales, ...).
+    pub fn config(&self) -> &PiperConfig {
+        &self.config
+    }
+
+    /// Synthesizes PCM from a phoneme id sequence — the full native
+    /// MB-iSTFT-VITS2 path (encoder → duration predictor → length regulation →
+    /// flow → decoder), M0-07-T20.
+    ///
+    /// `noise_scale` / `noise_w` are the VITS stochastic knobs; passing `0` for
+    /// both makes the whole path deterministic (the parity setting, docs §5).
+    /// Non-zero scales draw Gaussian noise from a fixed-seed RNG (reproducible,
+    /// but not bit-matched to onnxruntime — that path is exercised only for
+    /// audio, not parity).
+    pub fn synthesize_phonemes(
+        &self,
+        phoneme_ids: &[i64],
+        lid: i64,
+        noise_scale: f32,
+        length_scale: f32,
+        noise_w: f32,
+    ) -> Result<SynthesizedAudio> {
+        let enc = self.encoder.forward(phoneme_ids, lid)?;
+        let g = self.encoder.lang_conditioning(lid);
+        let x_dp = build_x_dp(&enc.x, enc.t, &self.prosody_bias);
+        let logw = self.duration.logw(&x_dp, enc.t, &g, noise_w);
+        let w_ceil: Vec<usize> = logw
+            .iter()
+            .map(|&l| ((l.exp() * length_scale).ceil() as i64).max(1) as usize)
+            .collect();
+
+        let (mut z_p, t_frames) = length_regulate(&enc.m_p, HIDDEN, enc.t, &w_ceil);
+        if noise_scale != 0.0 {
+            let (logs_exp, _) = length_regulate(&enc.logs_p, HIDDEN, enc.t, &w_ceil);
+            let mut rng = Rng::new(0x5eed_1234_abcd_0007);
+            for (z, ls) in z_p.iter_mut().zip(&logs_exp) {
+                *z += rng.next_gaussian() * ls.exp() * noise_scale;
+            }
+        }
+        let z = self.flow.reverse(&z_p, t_frames, &g);
+        let pcm = self.decoder.forward(&z, t_frames, &g);
+        Ok(SynthesizedAudio::new(pcm, self.config.sample_rate))
+    }
+
+    /// A placeholder tokenizer: maps each input character to a phoneme id via
+    /// the voice's phoneme table and applies BOS/PAD/EOS framing (mirrors
+    /// `vokra_piper_plus::MockPhonemizer` — real G2P reuse is T09). Unknown
+    /// characters are dropped.
+    pub fn tokenize(&self, text: &str) -> Vec<i64> {
+        let id_of = |sym: &str| -> Option<i64> {
+            self.config
+                .phoneme_symbols
+                .iter()
+                .position(|s| s == sym)
+                .map(|i| i as i64)
+        };
+        let (bos, eos, pad) = (id_of("^"), id_of("$"), id_of("_"));
+        let mut ids: Vec<i64> = Vec::new();
+        if let Some(b) = bos {
+            ids.push(b);
+        }
+        let mut buf = [0u8; 4];
+        for c in text.chars() {
+            if let Some(id) = id_of(c.encode_utf8(&mut buf)) {
+                ids.push(id);
+                if let Some(p) = pad {
+                    ids.push(p);
+                }
+            }
+        }
+        if let Some(e) = eos {
+            ids.push(e);
+        }
+        ids
+    }
+
+    /// Runs the text encoder for a phoneme id sequence under language `lid`
+    /// (component boundary used by the M0-07-T13 parity test).
+    #[cfg(test)]
+    pub(crate) fn encode(&self, phoneme_ids: &[i64], lid: i64) -> Result<text_encoder::EncoderOut> {
+        self.encoder.forward(phoneme_ids, lid)
+    }
+
+    /// Runs the MB-iSTFT decoder on a decoder-input latent `z` `[HIDDEN, T]`
+    /// under language `lid` (component boundary used by the M0-07-T19 parity
+    /// test: reference latent → PCM).
+    #[cfg(test)]
+    pub(crate) fn decode(&self, z: &[f32], t_frames: usize, lid: i64) -> Vec<f32> {
+        let g = self.encoder.lang_conditioning(lid);
+        self.decoder.forward(z, t_frames, &g)
+    }
+
+    /// Runs the encoder + stochastic duration predictor and returns the raw
+    /// (pre-ceil) durations `w = exp(logw)·length_scale` `[T_phonemes]`
+    /// (component boundary for the M0-07-T14 parity test). Prosody features are
+    /// zero (the mock-G2P / EN path), so `x_dp` is the encoder output padded
+    /// with zero prosody channels.
+    #[cfg(test)]
+    pub(crate) fn durations(
+        &self,
+        phoneme_ids: &[i64],
+        lid: i64,
+        length_scale: f32,
+    ) -> Result<Vec<f32>> {
+        let enc = self.encoder.forward(phoneme_ids, lid)?;
+        let g = self.encoder.lang_conditioning(lid);
+        let x_dp = build_x_dp(&enc.x, enc.t, &self.prosody_bias);
+        // Deterministic (noise_w = 0) for parity (docs §5).
+        let logw = self.duration.logw(&x_dp, enc.t, &g, 0.0);
+        Ok(logw.iter().map(|&l| l.exp() * length_scale).collect())
+    }
+
+    /// The SDP body (proj output) for a phoneme sequence — component boundary
+    /// used to isolate the duration-predictor body from its spline flows in the
+    /// M0-07-T14 parity test.
+    #[cfg(test)]
+    pub(crate) fn sdp_body(&self, phoneme_ids: &[i64], lid: i64) -> Result<(Vec<f32>, usize)> {
+        let enc = self.encoder.forward(phoneme_ids, lid)?;
+        let g = self.encoder.lang_conditioning(lid);
+        let x_dp = build_x_dp(&enc.x, enc.t, &self.prosody_bias);
+        Ok((self.duration.body(&x_dp, enc.t, &g), enc.t))
+    }
+
+    /// Expands `m_p` by `w_ceil` (length regulation, T15) and runs the reverse
+    /// flow to the decoder-input latent `z` (component boundary for the
+    /// M0-07-T17 parity test: reference `m_p` + durations → `z`).
+    #[cfg(test)]
+    pub(crate) fn expand_and_flow(
+        &self,
+        m_p: &[f32],
+        t_phonemes: usize,
+        w_ceil: &[usize],
+        lid: i64,
+    ) -> (Vec<f32>, usize) {
+        let (z_p, t_frames) = length_regulate(m_p, HIDDEN, t_phonemes, w_ceil);
+        let g = self.encoder.lang_conditioning(lid);
+        let z = self.flow.reverse(&z_p, t_frames, &g);
+        (z, t_frames)
+    }
+}
+
+impl TtsEngine for PiperPlusTts {
+    /// Text → PCM via the placeholder [`tokenize`](Self::tokenize) then the
+    /// native path (M0-07-T20). `request.deterministic` disables the VITS noise
+    /// (parity mode); otherwise the voice's default scales apply. The language
+    /// hint maps through the voice's language table (default: id 0).
+    fn synthesize(&self, request: &SynthesisRequest) -> Result<SynthesizedAudio> {
+        let lid = request
+            .language
+            .as_deref()
+            .and_then(|c| self.config.language_id(c))
+            .unwrap_or(0);
+        let phoneme_ids = self.tokenize(&request.text);
+        if phoneme_ids.is_empty() {
+            return Err(vokra_core::VokraError::InvalidArgument(
+                "piper TTS: text produced no in-vocabulary phonemes (placeholder tokenizer)"
+                    .to_owned(),
+            ));
+        }
+        let (noise, noise_w) = if request.deterministic {
+            (0.0, 0.0)
+        } else {
+            (self.config.noise_scale, self.config.noise_w)
+        };
+        self.synthesize_phonemes(&phoneme_ids, lid, noise, self.config.length_scale, noise_w)
+    }
+}
+
+/// A tiny splitmix64 + Box-Muller Gaussian source for the non-deterministic
+/// synthesis noise. Fixed-seed and reproducible; not matched to onnxruntime's
+/// RNG (only the deterministic path is parity-checked).
+struct Rng {
+    state: u64,
+    spare: Option<f32>,
+}
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Self {
+            state: seed,
+            spare: None,
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform in `(0, 1)`.
+    fn next_f32(&mut self) -> f32 {
+        // Top 24 bits → [0,1); shift off zero.
+        let bits = (self.next_u64() >> 40) as f32;
+        (bits + 0.5) / (1u64 << 24) as f32
+    }
+
+    fn next_gaussian(&mut self) -> f32 {
+        if let Some(s) = self.spare.take() {
+            return s;
+        }
+        let u1 = self.next_f32();
+        let u2 = self.next_f32();
+        let r = (-2.0 * u1.ln()).sqrt();
+        let theta = 2.0 * std::f32::consts::PI * u2;
+        self.spare = Some(r * theta.sin());
+        r * theta.cos()
+    }
+}
+
+/// Builds the duration-predictor input `x_dp` `[DP_FILTER, T]` from the encoder
+/// output `[HIDDEN, T]` by appending the prosody channels. With zero prosody
+/// features `prosody_proj(0) = prosody_proj.bias`, so each appended channel is
+/// the constant bias broadcast over time.
+fn build_x_dp(x: &[f32], t: usize, prosody_bias: &[f32]) -> Vec<f32> {
+    let mut x_dp = vec![0.0f32; DP_FILTER * t];
+    x_dp[..HIDDEN * t].copy_from_slice(&x[..HIDDEN * t]);
+    for (c, &b) in prosody_bias.iter().enumerate() {
+        for ti in 0..t {
+            x_dp[(HIDDEN + c) * t + ti] = b;
+        }
+    }
+    x_dp
+}
+
+/// Expands per-phoneme features to frame resolution by repeating each phoneme
+/// column `w_ceil[j]` times (piper `commons.generate_path` — a monotonic,
+/// search-free expansion). `features` is `[channels, t_phonemes]`; returns
+/// `[channels, sum(w_ceil)]`.
+fn length_regulate(
+    features: &[f32],
+    channels: usize,
+    t_phonemes: usize,
+    w_ceil: &[usize],
+) -> (Vec<f32>, usize) {
+    let t_frames: usize = w_ceil.iter().take(t_phonemes).sum();
+    let mut out = vec![0.0f32; channels * t_frames];
+    let mut tf = 0;
+    for (j, &reps) in w_ceil.iter().take(t_phonemes).enumerate() {
+        for _ in 0..reps {
+            for c in 0..channels {
+                out[c * t_frames + tf] = features[c * t_phonemes + j];
+            }
+            tf += 1;
+        }
+    }
+    (out, t_frames)
+}
