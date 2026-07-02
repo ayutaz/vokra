@@ -10,5 +10,13 @@ publish.workspace = true
 [dependencies]
 vokra-core.workspace = true
 
+# M0-04-T19: FFT / RFFT / STFT micro-benchmarks. `harness = false` uses a plain
+# `fn main()` binary (std timing) instead of the unstable libtest `#[bench]`
+# harness or an external bench crate (criterion is an external dependency and
+# the workspace keeps zero third-party deps).
+[[bench]]
+name = "fft_bench"
+harness = false
+
 [lints]
 workspace = true

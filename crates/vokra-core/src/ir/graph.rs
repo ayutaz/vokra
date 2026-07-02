@@ -17,16 +17,326 @@ use crate::error::{Result, VokraError};
 
 use super::tensor::{TensorDesc, TensorId};
 
+// ===========================================================================
+// Audio front-end operator attributes (M0-04-T01; FR-OP-01 / FR-OP-03)
+// ===========================================================================
+//
+// These attribute types are embedded in the speech front-end [`OpKind`]
+// variants (`Stft` / `Istft` / `MelFilterbank` / `Mfcc` / `Dct`) so the audio
+// graph descriptor can *represent* a log-mel / MFCC front-end (the Whisper
+// front-end of M0-06 is assembled from these). The operator implementations
+// live in `vokra-ops`, which depends on `vokra-core` and consumes these exact
+// types; for ergonomics they are re-exported there as `vokra_ops::attrs::*`.
+//
+// Placement note — deviation from M0-04-T01, which proposed
+// `crates/vokra-ops/src/attrs.rs`: because [`OpKind`] lives in `vokra-core`
+// and `vokra-core` must not depend on `vokra-ops` (the crate dependency edge
+// runs the other way), any type an `OpKind` variant embeds has to be defined
+// in `vokra-core`. The types therefore live here in the IR module.
+//
+// STFT ≠ FFT (CLAUDE.md pitfall): an STFT is *window + framing + normalization
+// + causal mode* wrapped around an FFT, not a bare FFT. Every one of those
+// knobs is an explicit attribute below rather than an implicit default.
+//
+// Out of scope for M0-04 (kept representable so this maps 1:1 onto the future
+// `vokra.frontend.*` GGUF chunk): the chunk bit-exact check (FR-LD-03, M1),
+// streaming iSTFT (`istft_streaming`, FR-OP-02, v0.5), the GPU side of the FFT
+// lowering (FR-OP-05) and the public `complex64` IR dtype (FR-EX-09, v0.1
+// MVP — FFT complex values stay a `vokra-ops`-internal type for now).
+
+/// Analysis / synthesis window function
+/// (FR-OP-01: "window (Hann/Hamming/Blackman-Harris/Kaiser)").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Window {
+    /// Hann (raised-cosine) window.
+    Hann,
+    /// Hamming window.
+    Hamming,
+    /// Four-term Blackman-Harris window.
+    BlackmanHarris,
+    /// Kaiser window with shape parameter `beta`.
+    Kaiser {
+        /// Kaiser shape parameter β: larger β lowers side-lobes and widens the
+        /// main lobe.
+        beta: f32,
+    },
+}
+
+/// Whether a length-`N` window samples its periodic (DFT-even) or symmetric
+/// form.
+///
+/// STFT front-ends use the **periodic** form — it matches
+/// `torch.*_window(..., periodic=True)` and librosa's `sym=False`; filter
+/// design and one-shot analysis use the symmetric form. Kept explicit because
+/// reference implementations disagree on the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowSymmetry {
+    /// Periodic (DFT-even) window of period `N`: `w[n] = f(2πn / N)`.
+    Periodic,
+    /// Symmetric window: `w[n] = f(2πn / (N - 1))`.
+    Symmetric,
+}
+
+/// Signal-extension mode used by `center` padding (FR-OP-01: "pad_mode").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadMode {
+    /// Pad with zeros.
+    Constant,
+    /// Mirror the signal about the boundary sample without repeating the edge,
+    /// matching `torch` / librosa `pad_mode="reflect"`.
+    Reflect,
+    /// Repeat the edge sample.
+    Edge,
+}
+
+/// FFT normalization convention
+/// (FR-OP-01: "normalization ('forward'/'backward'/'ortho')").
+///
+/// For a length-`N` transform: `Forward` scales the forward transform by
+/// `1/N`, `Backward` scales the inverse by `1/N` (the engineering default),
+/// and `Ortho` scales both directions by `1/√N` (unitary / energy-preserving).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Normalization {
+    /// `1/N` applied on the forward transform only.
+    Forward,
+    /// `1/N` applied on the inverse transform only (default).
+    Backward,
+    /// `1/√N` applied on both directions (unitary).
+    Ortho,
+}
+
+/// Hz→mel warping convention (FR-OP-03: "Slaney/HTK 両対応").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MelScale {
+    /// HTK formula: `mel = 2595 · log10(1 + f / 700)`.
+    Htk,
+    /// Slaney (auditory-toolbox) scale — linear below 1 kHz, logarithmic above;
+    /// the librosa default.
+    Slaney,
+}
+
+/// Mel filter-bank normalization (FR-OP-03).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MelNorm {
+    /// No normalization; each triangular filter peaks at 1.0.
+    None,
+    /// Slaney normalization: each filter scaled to unit area (librosa
+    /// `norm="slaney"`).
+    Slaney,
+}
+
+/// Attributes of the `stft` operator (FR-OP-01).
+///
+/// Covers all eight FR-OP-01 knobs explicitly — `window`, `hop_length`,
+/// `n_fft`, `center` (padding), `pad_mode`, `normalization`, `causal` and
+/// `real_input` — plus `win_length` (a `vokra.frontend.*` key; a window
+/// shorter than `n_fft` is centered and zero-padded to `n_fft`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StftAttrs {
+    /// FFT size: the frame length in samples handed to the transform.
+    pub n_fft: usize,
+    /// Hop between successive frames, in samples.
+    pub hop_length: usize,
+    /// Window length in samples (`<= n_fft`; centered and zero-padded to
+    /// `n_fft`).
+    pub win_length: usize,
+    /// Window function.
+    pub window: Window,
+    /// Periodic vs symmetric sampling of the window.
+    pub window_symmetry: WindowSymmetry,
+    /// When `true`, the signal is padded by `n_fft / 2` on both ends so frame
+    /// `t` is centered on sample `t · hop_length`.
+    pub center: bool,
+    /// Padding mode applied when `center` is `true`.
+    pub pad_mode: PadMode,
+    /// FFT normalization convention.
+    pub normalization: Normalization,
+    /// Causal mode: no look-ahead. When `true`, framing pads only the left
+    /// (history) side, so frame `t` depends only on samples `<= t · hop_length`.
+    pub causal: bool,
+    /// Emit a real-input (RFFT) spectrum of `n_fft / 2 + 1` bins. When `false`,
+    /// the full `n_fft`-bin complex spectrum is produced.
+    pub real_input: bool,
+}
+
+impl StftAttrs {
+    /// Builds attributes with librosa/`torch`-like defaults: `win_length =
+    /// n_fft`, Hann window sampled periodically, `center = true` with reflect
+    /// padding, backward normalization, non-causal, real (RFFT) input.
+    pub fn new(n_fft: usize, hop_length: usize) -> Self {
+        Self {
+            n_fft,
+            hop_length,
+            win_length: n_fft,
+            window: Window::Hann,
+            window_symmetry: WindowSymmetry::Periodic,
+            center: true,
+            pad_mode: PadMode::Reflect,
+            normalization: Normalization::Backward,
+            causal: false,
+            real_input: true,
+        }
+    }
+}
+
+/// Attributes of the `istft` operator (FR-OP-01).
+///
+/// The inverse of [`StftAttrs`]; it mirrors the analysis parameters that must
+/// agree for a faithful overlap-add reconstruction. `istft_streaming`
+/// (FR-OP-02, tail buffering / per-layer state carry-over) is v0.5 and out of
+/// scope here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IstftAttrs {
+    /// FFT size used by the forward analysis.
+    pub n_fft: usize,
+    /// Hop between successive frames, in samples.
+    pub hop_length: usize,
+    /// Window length in samples (`<= n_fft`).
+    pub win_length: usize,
+    /// Synthesis window (must match the analysis window for exact inversion).
+    pub window: Window,
+    /// Periodic vs symmetric sampling of the window.
+    pub window_symmetry: WindowSymmetry,
+    /// Whether the forward transform used `center` padding (both ends are
+    /// trimmed on reconstruction when `true`).
+    pub center: bool,
+    /// FFT normalization convention used by the forward analysis.
+    pub normalization: Normalization,
+    /// Whether the input spectrum is a real (RFFT) half-spectrum.
+    pub real_input: bool,
+    /// Target output length in samples; `None` infers it from the frame count.
+    pub length: Option<usize>,
+}
+
+impl IstftAttrs {
+    /// Builds inverse attributes matching [`StftAttrs::new`] defaults.
+    pub fn new(n_fft: usize, hop_length: usize) -> Self {
+        Self {
+            n_fft,
+            hop_length,
+            win_length: n_fft,
+            window: Window::Hann,
+            window_symmetry: WindowSymmetry::Periodic,
+            center: true,
+            normalization: Normalization::Backward,
+            real_input: true,
+            length: None,
+        }
+    }
+}
+
+/// Attributes of the `mel_filterbank` operator (FR-OP-03).
+///
+/// Describes the triangular mel filter bank projecting an `n_fft / 2 + 1`-bin
+/// power (or magnitude) spectrum onto `n_mels` mel bands.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MelAttrs {
+    /// Sample rate of the analysed audio, in Hz.
+    pub sample_rate: u32,
+    /// FFT size the spectrum was produced with (bins = `n_fft / 2 + 1`).
+    pub n_fft: usize,
+    /// Number of mel bands.
+    pub n_mels: usize,
+    /// Lowest band edge, in Hz.
+    pub fmin: f32,
+    /// Highest band edge, in Hz; `None` uses the Nyquist frequency
+    /// (`sample_rate / 2`).
+    pub fmax: Option<f32>,
+    /// Hz→mel warping convention.
+    pub scale: MelScale,
+    /// Filter-bank normalization.
+    pub norm: MelNorm,
+}
+
+impl MelAttrs {
+    /// Builds attributes with librosa-like defaults: `fmin = 0`, `fmax =`
+    /// Nyquist, Slaney scale, Slaney normalization.
+    pub fn new(sample_rate: u32, n_fft: usize, n_mels: usize) -> Self {
+        Self {
+            sample_rate,
+            n_fft,
+            n_mels,
+            fmin: 0.0,
+            fmax: None,
+            scale: MelScale::Slaney,
+            norm: MelNorm::Slaney,
+        }
+    }
+}
+
+/// Attributes of the `dct` operator (FR-OP-03) — DCT-II.
+///
+/// `normalization` selects the scaling of the DCT-II: [`Normalization::Ortho`]
+/// is the orthonormal DCT-II (`scipy` `norm="ortho"`, torchaudio's MFCC DCT),
+/// while [`Normalization::Backward`] is the unnormalized DCT-II
+/// (`scipy` default). [`Normalization::Forward`] additionally scales the
+/// unnormalized transform by `1/N`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DctAttrs {
+    /// Number of leading coefficients to keep; `None` keeps all `N`.
+    pub n_out: Option<usize>,
+    /// Scaling convention of the DCT-II.
+    pub normalization: Normalization,
+}
+
+impl DctAttrs {
+    /// Builds an orthonormal DCT-II keeping all coefficients.
+    pub fn new() -> Self {
+        Self {
+            n_out: None,
+            normalization: Normalization::Ortho,
+        }
+    }
+}
+
+impl Default for DctAttrs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Attributes of the `mfcc` operator (FR-OP-03).
+///
+/// MFCCs are computed as `dct(ln(max(mel, log_floor)))`: a [`MelAttrs`] mel
+/// projection, a natural-log compression floored at `log_floor`, then a
+/// DCT-II keeping `n_mfcc` coefficients. Reference tools differ in the log
+/// stage (librosa's `power_to_db` uses `10·log10`); matching a specific one is
+/// a parity-fixture concern (M0-04-T16) rather than a structural one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MfccAttrs {
+    /// Mel filter-bank attributes feeding the cepstral transform.
+    pub mel: MelAttrs,
+    /// Number of cepstral coefficients (DCT-II outputs) to keep.
+    pub n_mfcc: usize,
+    /// Scaling convention of the DCT-II (typically [`Normalization::Ortho`]).
+    pub dct_norm: Normalization,
+    /// Lower floor applied before the natural log to avoid `ln(0)`.
+    pub log_floor: f32,
+}
+
+impl MfccAttrs {
+    /// Builds MFCC attributes: orthonormal DCT-II, `log_floor = 1e-10`.
+    pub fn new(mel: MelAttrs, n_mfcc: usize) -> Self {
+        Self {
+            mel,
+            n_mfcc,
+            dct_norm: Normalization::Ortho,
+            log_floor: 1e-10,
+        }
+    }
+}
+
 /// Operation kind — the ggml-style *flat op enum* of the Vokra IR (FR-EX-01).
 ///
-/// M0-02 carries only minimal **placeholder** variants so the graph plumbing
-/// can be exercised. Op families are added by their owning work packages —
+/// M0-02 carried only minimal **placeholder** variants so the graph plumbing
+/// could be exercised. Op families are added by their owning work packages —
 /// do not add them here ahead of schedule:
 ///
 /// - speech front-end ops (`stft` / `istft` / `mel_filterbank` / `mfcc` /
-///   `dct`, FR-OP-01/03) and their attribute definitions: **M0-04**
-/// - LSTM family for the Silero VAD subgraph: **M0-05**
-/// - attention / decoder family for Whisper: **M0-06**
+///   `dct`, FR-OP-01/03) and their attribute definitions: **M0-04** (landed —
+///   see [`StftAttrs`], [`MelAttrs`], … above);
+/// - LSTM family for the Silero VAD subgraph: **M0-05**;
+/// - attention / decoder family for Whisper: **M0-06**.
 ///
 /// The enum is `#[non_exhaustive]` so those additions do not break
 /// downstream matches; backends must treat unknown ops as unsupported
@@ -42,6 +352,20 @@ pub enum OpKind {
     Mul,
     /// Softmax over the innermost dimension (placeholder).
     Softmax,
+    /// Short-time Fourier transform (FR-OP-01). Real signal `[samples]` →
+    /// complex spectrogram `[frames, bins]`; implemented in `vokra-ops`.
+    Stft(StftAttrs),
+    /// Inverse STFT / overlap-add resynthesis (FR-OP-01). Complex spectrogram
+    /// `[frames, bins]` → real signal `[samples]`.
+    Istft(IstftAttrs),
+    /// Mel filter-bank projection of a power/magnitude spectrum
+    /// `[frames, bins]` → `[frames, n_mels]` (FR-OP-03).
+    MelFilterbank(MelAttrs),
+    /// Mel-frequency cepstral coefficients `[frames, bins]` → `[frames, n_mfcc]`
+    /// (FR-OP-03).
+    Mfcc(MfccAttrs),
+    /// Discrete cosine transform, type II, over the innermost axis (FR-OP-03).
+    Dct(DctAttrs),
 }
 
 /// One node of an [`AudioGraph`]: an op together with its tensor

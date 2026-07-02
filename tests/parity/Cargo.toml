@@ -10,5 +10,12 @@ publish = false
 
 [dependencies]
 
+# M0-04-T18: the parity suites exercise the vokra-ops front-end ops against
+# reference fixtures. These are dev-dependencies (used by tests/, not the
+# harness lib) and stay within the workspace (no third-party crates).
+[dev-dependencies]
+vokra-ops.workspace = true
+vokra-core.workspace = true
+
 [lints]
 workspace = true

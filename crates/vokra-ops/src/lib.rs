@@ -3,20 +3,23 @@
 //! Speech-specialized operators for the Vokra runtime (SRS §1.3:
 //! "音声オペレータ" — the audio operators crate).
 //!
-//! M0-02 ships only the crate skeleton. Operator implementations land with
-//! their owning work packages:
+//! Operator implementations land with their owning work packages:
 //!
-//! - **M0-04**: `stft` / `istft` / `mel_filterbank` / `mfcc` / `dct` with
-//!   explicit attributes (window / hop / n_fft / pad / normalization /
-//!   causal / `real_input` RFFT — FR-OP-01/03) and the CPU FFT lowering
-//!   (pocketfft, BSD-3, ported to Rust — FR-OP-05);
+//! - **M0-04** (this WP, landed): `stft` / `istft` / `mel_filterbank` /
+//!   `mfcc` / `dct` with explicit attributes (window / hop / n_fft / pad /
+//!   normalization / causal / `real_input` RFFT — FR-OP-01/03) and the CPU FFT
+//!   lowering (a from-scratch Rust reimplementation of the pocketfft algorithm,
+//!   BSD-3 — FR-OP-05). See [`fft`], [`window`], [`stft`], [`istft`], [`mel`],
+//!   [`dct`], [`mfcc`] and the [`dispatch`] bridge to the IR;
 //! - **M0-05**: LSTM family needed by the Silero VAD subgraph;
 //! - **M0-06**: attention / decoder family needed by Whisper;
 //! - later WPs: vocoder chains, flow-matching samplers, codec decode, and
 //!   the rest of the audio dialect (CLAUDE.md "音声特化オペレータ").
 //!
-//! The corresponding `OpKind` variants are added in `vokra-core` by those
-//! same WPs.
+//! The corresponding [`vokra_core::OpKind`] variants for the M0-04 ops are
+//! defined in `vokra-core` (the attribute types embedded in those variants
+//! live there because the crate dependency edge runs `vokra-ops → vokra-core`);
+//! remaining families are added by their own WPs.
 //!
 //! # Unsafe policy (NFR-RL-07, SRS §5-(1))
 //!
@@ -27,8 +30,29 @@
 //! `clippy::undocumented_unsafe_blocks` at the workspace level).
 
 // Local opt-out from the workspace `unsafe_code = "deny"` lint — see the
-// crate-level "Unsafe policy" docs above (M0-02-T03).
+// crate-level "Unsafe policy" docs above (M0-02-T03). The M0-04 ops are
+// written in safe Rust; the opt-out is kept for the SIMD kernels of later WPs.
 #![allow(unsafe_code)]
+
+mod complex;
+
+pub mod attrs;
+pub mod dct;
+pub mod dispatch;
+pub mod fft;
+pub mod istft;
+pub mod mel;
+pub mod mfcc;
+pub mod stft;
+pub mod window;
+
+pub use complex::Complex32;
+pub use dct::dct;
+pub use dispatch::{OpValue, dispatch};
+pub use istft::istft;
+pub use mel::mel_filterbank;
+pub use mfcc::mfcc;
+pub use stft::{Spectrogram, stft};
 
 #[cfg(test)]
 mod tests {

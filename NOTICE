@@ -38,7 +38,16 @@ Timing note: the CUDA backend is planned for the v0.5-v1.0 releases and is
 not part of the current v0.1 spike.
 
 --------------------------------------------------------------------------
-3. Maintaining this file
+3. pocketfft (algorithm reference for the CPU FFT implementation)
+--------------------------------------------------------------------------
+Vokra's CPU FFT lowering (crates/vokra-ops/src/fft/*) is a from-scratch Rust
+reimplementation of the algorithm of pocketfft by Martin Reinecke
+(https://gitlab.mpcdf.mpg.de/mtr/pocketfft), distributed under the 3-clause
+BSD license, Copyright (C) 2010-2019 Max-Planck-Society. The full license
+text is reproduced in crates/vokra-ops/THIRD_PARTY_LICENSES/pocketfft-LICENSE.txt.
+
+--------------------------------------------------------------------------
+4. Maintaining this file
 --------------------------------------------------------------------------
 Any pull request that adds support for a new model or introduces a new
 external dependency must run the license audit (docs/license-audit.md) and,

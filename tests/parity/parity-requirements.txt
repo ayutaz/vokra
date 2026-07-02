@@ -1,0 +1,15 @@
+# Python dependencies for tests/parity/gen_parity_fixtures.py (M0-04-T07).
+#
+# Only numpy is REQUIRED — it generates the committed fft/ and window/ fixtures
+# that the non-ignored parity tests consume. The others are OPTIONAL and only
+# needed to (re)generate the reference fixtures behind the #[ignore] suites in
+# an environment that has them.
+#
+# Pin versions when regenerating so fixtures stay byte-reproducible.
+
+numpy>=1.26,<3
+
+# Optional reference implementations:
+# torch>=2.2      # stft / istft  fixtures  (gen_parity_fixtures.py stft)
+# librosa>=0.10   # mel / mfcc    fixtures  (gen_parity_fixtures.py mel)
+# scipy>=1.11     # dct           fixtures  (gen_parity_fixtures.py dct)
