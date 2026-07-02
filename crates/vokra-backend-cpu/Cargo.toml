@@ -1,0 +1,14 @@
+[package]
+name = "vokra-backend-cpu"
+description = "Vokra CPU backend (x86-64 AVX2 / ARM64 NEON kernels with runtime ISA dispatch; kernels land in M0-08)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+vokra-core.workspace = true
+
+[lints]
+workspace = true

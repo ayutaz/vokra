@@ -1,0 +1,9 @@
+# Vokra rustfmt configuration (M0-02-T03).
+#
+# Policy: stick to rustfmt DEFAULTS (stable options only), so that
+# `cargo fmt --all -- --check` behaves identically on every contributor
+# toolchain and in CI (the fmt required check is wired by M0-01,
+# NFR-MT-07 (3)). This file therefore sets no options on purpose.
+#
+# Any future deviation from the defaults must be added here together with a
+# written rationale.

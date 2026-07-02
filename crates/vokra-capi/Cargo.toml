@@ -1,0 +1,25 @@
+[package]
+name = "vokra-capi"
+description = "C ABI surface of the Vokra runtime (cbindgen-generated header; extern \"C\" API lands in M0-09)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# C ABI artifacts (M0-02-T02): a shared library for dynamic consumers and a
+# static library for iOS (`DllImport("__Internal")`) / static embedding.
+# cbindgen header generation and the extern "C" API itself are M0-09
+# (FR-API-01).
+crate-type = ["cdylib", "staticlib"]
+# cdylib/staticlib targets cannot be linked by rustdoc's doctest runner, so
+# doctests are disabled; C ABI examples are exercised from M0-09's header /
+# integration tests instead.
+doctest = false
+
+[dependencies]
+vokra-core.workspace = true
+
+[lints]
+workspace = true

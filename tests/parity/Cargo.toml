@@ -1,0 +1,14 @@
+[package]
+name = "vokra-parity"
+description = "Numerical parity test harness against reference implementations (NFR-QL-01); test-only crate, never published"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# Test-only harness crate: never published.
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

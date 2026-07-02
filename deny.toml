@@ -1,0 +1,62 @@
+# cargo-deny configuration for the Vokra workspace.
+#
+# - License gate: M0-02-T04 (NFR-LC-02, NFR-LC-04).
+# - Dependency bans: M0-01-T12(b), delegated to M0-02 (FR-LD-05, NFR-DS-02, X-08).
+#
+# Run locally with:  cargo deny check licenses bans
+# CI wiring (PR blocker) is owned by M0-01 (license / vulnerability check job,
+# NFR-MT-07 required check (6)); this file is the single config it consumes.
+
+[graph]
+all-features = true
+
+[licenses]
+# NFR-LC-02 (verbatim policy): dependency crates may be Apache 2.0 / MIT / BSD
+# only. GPL/LGPL are forbidden. MPL-2.0 (symphonia etc.) may be used in a
+# limited fashion only after evaluating its file-level copyleft.
+#
+# cargo-deny semantics: every license NOT in this allow list is rejected, so
+# all GPL / LGPL / AGPL / SSPL / proprietary licenses are denied without
+# needing a separate deny list. Keep this list tight; extend it only together
+# with an entry in docs/license-audit.md.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+]
+# The allow list above is the forward-looking NFR-LC-02 policy; with zero
+# external dependencies most entries are unused for now, which is expected —
+# don't warn about it.
+unused-allowed-license = "allow"
+# MPL-2.0 policy (M0-02-T04): NOT allowed by default. If a limited use is
+# approved, do BOTH in the same PR:
+#   1. add a crate-scoped exception here, e.g.
+#        exceptions = [{ crate = "symphonia", allow = ["MPL-2.0"] }]
+#   2. record the evaluation in docs/license-audit.md.
+
+[bans]
+multiple-versions = "warn"
+# FR-LD-05 (permanent constraint) / NFR-DS-02 / X-08: Vokra NEVER loads ONNX
+# graphs at runtime and never links the protobuf / abseil / onnx stack; ONNX
+# is handled exclusively by the offline conversion tooling, outside the
+# runtime dependency graph. The list below is a representative, explicit ban
+# of the protobuf / ONNX-runtime crate families — extend it whenever a new
+# crate from these families appears.
+deny = [
+    # protobuf family
+    { crate = "protobuf", reason = "FR-LD-05 / NFR-DS-02 / X-08: no protobuf in the runtime dependency graph" },
+    { crate = "protobuf-codegen", reason = "FR-LD-05 / NFR-DS-02 / X-08: no protobuf in the runtime dependency graph" },
+    { crate = "protobuf-parse", reason = "FR-LD-05 / NFR-DS-02 / X-08: no protobuf in the runtime dependency graph" },
+    { crate = "prost", reason = "FR-LD-05 / NFR-DS-02 / X-08: no protobuf in the runtime dependency graph" },
+    { crate = "prost-build", reason = "FR-LD-05 / NFR-DS-02 / X-08: no protobuf in the runtime dependency graph" },
+    { crate = "prost-derive", reason = "FR-LD-05 / NFR-DS-02 / X-08: no protobuf in the runtime dependency graph" },
+    { crate = "prost-types", reason = "FR-LD-05 / NFR-DS-02 / X-08: no protobuf in the runtime dependency graph" },
+    # ONNX / onnxruntime family (ONNX is offline-conversion-only, FR-LD-05)
+    { crate = "onnx", reason = "FR-LD-05 / X-08: ONNX graphs are never loaded by the runtime" },
+    { crate = "onnxruntime", reason = "FR-LD-05 / X-08: ONNX graphs are never loaded by the runtime" },
+    { crate = "onnxruntime-sys", reason = "FR-LD-05 / X-08: ONNX graphs are never loaded by the runtime" },
+    { crate = "ort", reason = "FR-LD-05 / X-08: ONNX graphs are never loaded by the runtime" },
+    { crate = "ort-sys", reason = "FR-LD-05 / X-08: ONNX graphs are never loaded by the runtime" },
+    { crate = "tract-onnx", reason = "FR-LD-05 / X-08: ONNX graphs are never loaded by the runtime" },
+]

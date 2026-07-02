@@ -1,0 +1,15 @@
+[package]
+name = "vokra-models"
+description = "Native (whisper.cpp-style) model implementations for Vokra: Silero VAD, Whisper base, piper-plus MB-iSTFT-VITS2 native TTS, ..."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+vokra-core.workspace = true
+vokra-ops.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "vokra-core"
+description = "Vokra core: audio graph descriptor IR, execution-engine skeleton, and the public Rust API (Session / AudioPipeline / Stream)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# No external dependencies on purpose (NFR-DS-02 "dependency minimal"):
+# the M0 skeleton is std-only (M0-02-T02).
+[dependencies]
+
+[lints]
+workspace = true

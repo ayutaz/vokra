@@ -1,0 +1,32 @@
+//! # vokra-models
+//!
+//! Native model implementations for Vokra (SRS §1.3: "モデル自前実装。
+//! piper-plus native TTS を含む" — self-implemented models, including the
+//! piper-plus native TTS).
+//!
+//! Models are re-implemented in Rust in the whisper.cpp style: the model
+//! *definition* lives here and only upstream **checkpoints** are consumed
+//! (converted offline to GGUF). No ONNX graph is ever loaded at runtime
+//! (FR-LD-05, permanent constraint).
+//!
+//! M0-02 ships only the crate skeleton. Planned M0 content:
+//!
+//! - **M0-05**: Silero VAD as a 1:1-preserved dedicated subgraph (LSTM
+//!   state h/c kept intact);
+//! - **M0-06**: Whisper base — encoder, decoder and beam search;
+//! - **M0-07**: the piper-plus inference core (MB-iSTFT-VITS2 text encoder /
+//!   duration predictor / flow / MB-iSTFT decoder) as **Vokra's first
+//!   native TTS** (FR-MD-03; client decision 2026-07-02 — the former wrap
+//!   approach is abolished). G2P stays in `vokra-piper-plus` for now.
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn links_against_vokra_core_ir() {
+        // Smoke test for the crate wiring (M0-02-T02): vokra-models builds
+        // model graphs on top of the vokra-core IR (and, from M0-04 on, the
+        // vokra-ops operators).
+        let desc = vokra_core::TensorDesc::new("logits", vokra_core::DType::F32, [1, 51_865]);
+        assert_eq!(desc.num_elements(), Some(51_865));
+    }
+}

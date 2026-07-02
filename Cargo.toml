@@ -1,0 +1,52 @@
+# Vokra — speech-first inference runtime (ONNX / ONNX Runtime alternative for
+# speech AI). Virtual workspace manifest.
+#
+# Crate layout and the rationale for it are recorded in
+# docs/adr/0001-crate-layout.md (M0-02-T01). Members created in M0:
+# vokra-core / vokra-ops / vokra-backend-cpu / vokra-models /
+# vokra-piper-plus / vokra-capi, plus the test-only parity harness
+# `vokra-parity` under tests/parity (NFR-QL-01).
+
+[workspace]
+resolver = "3"
+members = ["crates/*", "tests/parity"]
+
+[workspace.package]
+version = "0.1.0-alpha.0"
+# Proposal per M0-02-T01: edition 2024; to be pinned together with the CI
+# toolchain during the spike (verified locally with rustc 1.95.0).
+edition = "2024"
+# Minimum toolchain that supports edition 2024. Final MSRV is pinned during
+# the spike together with the CI toolchain.
+rust-version = "1.85"
+# NFR-LC-01: the whole runtime is Apache-2.0.
+license = "Apache-2.0"
+# No crates.io publishing has been decided yet (private repo, v0.1 spike);
+# guard against accidental publishes.
+publish = false
+
+[workspace.dependencies]
+vokra-core = { path = "crates/vokra-core" }
+vokra-ops = { path = "crates/vokra-ops" }
+vokra-backend-cpu = { path = "crates/vokra-backend-cpu" }
+vokra-models = { path = "crates/vokra-models" }
+vokra-piper-plus = { path = "crates/vokra-piper-plus" }
+vokra-capi = { path = "crates/vokra-capi" }
+
+# Unsafe boundary policy (M0-02-T03; NFR-RL-07, SRS §5-(1)):
+# the workspace is safe-by-default (`unsafe_code = "deny"`). `unsafe` +
+# SIMD intrinsics / C ABI code are permitted ONLY in vokra-ops,
+# vokra-backend-cpu and vokra-capi, which opt out locally with
+# `#![allow(unsafe_code)]` at their crate root. Public API boundaries must
+# remain safe in every crate. Every `unsafe` block must carry a
+# `// SAFETY:` comment — enforced by `clippy::undocumented_unsafe_blocks`
+# below.
+[workspace.lints.rust]
+unsafe_code = "deny"
+# All public items must be documented (M0-02-T15); promoted to an error by
+# the `cargo clippy -- -D warnings` CI gate.
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# Operational rule (M0-02-T03): `unsafe` blocks require a `// SAFETY:` comment.
+undocumented_unsafe_blocks = "deny"
