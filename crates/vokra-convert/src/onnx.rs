@@ -525,4 +525,93 @@ mod tests {
             Err(OnnxError::ExternalData(_))
         ));
     }
+
+    #[test]
+    fn truncated_length_delimited_is_rejected() {
+        // A tensor whose raw_data (field 9) length header claims more bytes than
+        // remain in the buffer — a classic truncated/cut-short-mid-field file.
+        let mut t = Vec::new();
+        write_varint_field(&mut t, 2, ONNX_DTYPE_FLOAT as u64);
+        write_tag(&mut t, 9, WIRE_LEN);
+        write_varint(&mut t, 64); // declares 64 bytes ...
+        t.extend_from_slice(&[0u8; 4]); // ... but only 4 are present
+        let model = model_proto(&graph_proto(&[], &[t]));
+        assert!(matches!(
+            read_weight_tensors(&model),
+            Err(OnnxError::Truncated)
+        ));
+    }
+
+    #[test]
+    fn truncated_varint_is_rejected() {
+        // A single continuation byte with no successor: the varint runs off the
+        // end of the buffer.
+        assert!(matches!(
+            read_weight_tensors(&[0x80]),
+            Err(OnnxError::Truncated)
+        ));
+    }
+
+    #[test]
+    fn varint_overflow_is_rejected() {
+        // Eleven continuation bytes: a varint cannot exceed 10 bytes, so the
+        // shift passes 64 before terminating (never mis-decoded as a value).
+        let buf = vec![0x80u8; 11];
+        assert!(matches!(
+            read_weight_tensors(&buf),
+            Err(OnnxError::VarintOverflow)
+        ));
+    }
+
+    #[test]
+    fn group_wire_type_is_rejected() {
+        // Wire type 3 (start-group) is unsupported; it must error, not be
+        // silently skipped (which would desync the cursor).
+        let mut graph = Vec::new();
+        write_tag(&mut graph, 1, 3);
+        let model = model_proto(&graph);
+        assert!(matches!(
+            read_weight_tensors(&model),
+            Err(OnnxError::BadWireType(3))
+        ));
+    }
+
+    #[test]
+    fn subgraphs_nested_too_deep_are_rejected() {
+        // 33 nested If/then_branch graphs exceed MAX_GRAPH_DEPTH (32); the guard
+        // must return an error rather than overflow the stack.
+        let mut graph = graph_proto(&[], &[]);
+        for _ in 0..33 {
+            let if_node = node_proto("If", "out", &[attr_graph("then_branch", &graph)]);
+            graph = graph_proto(&[if_node], &[]);
+        }
+        let model = model_proto(&graph);
+        assert!(matches!(
+            read_weight_tensors(&model),
+            Err(OnnxError::GraphTooDeep)
+        ));
+    }
+
+    #[test]
+    fn decodes_unpacked_dims_and_i32_float_data() {
+        // The non-packed encodings: dims as repeated unpacked varints (field 1,
+        // wire VARINT) and float_data as repeated fixed32 (field 4, wire I32).
+        let mut t = Vec::new();
+        write_varint_field(&mut t, 1, 2); // dim[0]
+        write_varint_field(&mut t, 1, 3); // dim[1]
+        write_varint_field(&mut t, 2, ONNX_DTYPE_FLOAT as u64);
+        write_len_field(&mut t, 8, b"w");
+        let floats = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        for f in floats {
+            write_tag(&mut t, 4, WIRE_I32);
+            t.extend_from_slice(&f.to_le_bytes());
+        }
+        let model = model_proto(&graph_proto(&[], &[t]));
+
+        let inits = read_weight_tensors(&model).expect("decode");
+        assert_eq!(inits.len(), 1);
+        assert_eq!(inits[0].dims, vec![2, 3]);
+        let expected: Vec<u8> = floats.iter().flat_map(|f| f.to_le_bytes()).collect();
+        assert_eq!(inits[0].raw_le_bytes, expected);
+    }
 }

@@ -661,4 +661,52 @@ mod tests {
         b.mark_output(y);
         assert_graph_validation_err(b.finish(), "produced by both node #0 and node #1");
     }
+
+    #[test]
+    fn dangling_node_output_is_rejected() {
+        let mut b = GraphBuilder::new();
+        let x = b.add_tensor(desc("x"));
+        // An out-of-range node OUTPUT id (only a dangling node input and a
+        // dangling graph output are otherwise tested). This check_id call is
+        // what keeps the later single-producer `producer[id.0]` indexing from
+        // panicking out-of-bounds on an output id >= tensors.len().
+        b.add_node(OpKind::Softmax, &[x], &[TensorId(99)]);
+        match b.finish() {
+            Err(VokraError::GraphValidation(msg)) => {
+                assert!(
+                    msg.contains("output"),
+                    "message `{msg}` should mention the node output"
+                );
+                assert!(
+                    msg.contains("tensor id 99"),
+                    "message `{msg}` should name the out-of-range id"
+                );
+            }
+            other => panic!("expected GraphValidation error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dangling_graph_input_is_rejected() {
+        let mut b = GraphBuilder::new();
+        let _x = b.add_tensor(desc("x"));
+        // The graph-INPUT check_id site has its own distinct message; only the
+        // graph-OUTPUT list was covered before.
+        b.mark_input(TensorId(5));
+        assert_graph_validation_err(b.finish(), "graph input");
+    }
+
+    #[test]
+    fn tensor_getter_is_none_when_out_of_range() {
+        let mut b = GraphBuilder::new();
+        let x = b.add_tensor(desc("x"));
+        let y = b.add_tensor(desc("y"));
+        b.mark_output(y);
+        let graph = b.finish().expect("valid graph");
+        // In-range ids resolve; id 2 is one past the last tensor (len == 2) and
+        // returns None rather than panicking.
+        assert!(graph.tensor(x).is_some());
+        assert!(graph.tensor(y).is_some());
+        assert!(graph.tensor(TensorId(2)).is_none());
+    }
 }

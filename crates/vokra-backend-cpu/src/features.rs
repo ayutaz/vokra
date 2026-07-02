@@ -191,6 +191,13 @@ mod tests {
         fma: false,
         neon: true,
     };
+    // AVX2 present but FMA absent: the AVX2 kernels use `_mm256_fmadd_ps`, so
+    // this combination must NOT select the Avx2 path (it would SIGILL).
+    const AVX2_NO_FMA: CpuFeatures = CpuFeatures {
+        avx2: true,
+        fma: false,
+        neon: false,
+    };
 
     #[test]
     fn detect_matches_compiled_target() {
@@ -212,6 +219,21 @@ mod tests {
         assert_eq!(X86.best_isa(), IsaPath::Avx2);
         assert_eq!(X86_NO_AVX2.best_isa(), IsaPath::Scalar);
         assert_eq!(ARM.best_isa(), IsaPath::Neon);
+    }
+
+    #[test]
+    fn avx2_without_fma_never_selects_the_fma_kernels() {
+        // The AVX2 gemm / layer_norm kernels emit `_mm256_fmadd_ps`; selecting
+        // the Avx2 path on an AVX2-without-FMA host would execute an illegal
+        // instruction. The `&& self.fma` guard in `best_isa` / `supports` must
+        // keep this feature set on the scalar path.
+        assert_eq!(AVX2_NO_FMA.best_isa(), IsaPath::Scalar);
+        assert!(!AVX2_NO_FMA.supports(IsaPath::Avx2));
+        // Scalar is still always available.
+        assert!(AVX2_NO_FMA.supports(IsaPath::Scalar));
+        // Explicitly forcing Avx2 is an explicit error, never a silent switch.
+        let err = select_isa(Some(IsaPath::Avx2), &AVX2_NO_FMA).unwrap_err();
+        assert!(matches!(err, VokraError::BackendUnavailable(_)));
     }
 
     #[test]

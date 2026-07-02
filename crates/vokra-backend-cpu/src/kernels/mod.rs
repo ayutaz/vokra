@@ -534,4 +534,103 @@ mod tests {
         conv1d_f32(&input, 2, 4, &weight, 1, 2, None, 2, 0, &mut out).unwrap();
         assert_eq!(out, [33.0, 77.0]);
     }
+
+    #[test]
+    fn vec_dot_hand_value_and_length_mismatch() {
+        // 1*-1 + 2*0 + 3*2 = -1 + 0 + 6 = 5 (all terms exactly representable).
+        let dot = vec_dot_f32(&[1.0, 2.0, 3.0], &[-1.0, 0.0, 2.0]).unwrap();
+        assert!((dot - 5.0).abs() < 1e-6, "dot = {dot}, want 5.0");
+        // Unequal lengths are an explicit error.
+        let err = vec_dot_f32(&[1.0, 2.0], &[1.0]).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn conv1d_nondivisible_stride_drops_trailing_window() {
+        // input [1,6] = 1..=6, weight [1,1,2] = [1,1], stride 3, pad 0.
+        // out_len = (6-2)/3+1 = 2. Windows begin at pos 0 and 3:
+        // [1,2]·[1,1] = 3, [4,5]·[1,1] = 9. input[2]=3 and input[5]=6 lie past
+        // the last full window and are intentionally dropped (im2col guard).
+        let input = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let weight = [1.0, 1.0];
+        let mut out = [0.0; 2];
+        conv1d_f32(&input, 1, 6, &weight, 1, 2, None, 3, 0, &mut out).unwrap();
+        assert_eq!(out, [3.0, 9.0]);
+    }
+
+    #[test]
+    fn conv1d_padding_ge_in_len_zeros_outside_real_input() {
+        // input [1,2] = [2,3], weight [1,1,1] = [1], stride 1, pad 2.
+        // padded = 2 + 2*2 = 6, out_len = (6-1)/1+1 = 6. Only positions 2 and 3
+        // fall inside the real input; the rest are pure zero-padding.
+        let input = [2.0, 3.0];
+        let weight = [1.0];
+        let mut out = [0.0; 6];
+        conv1d_f32(&input, 1, 2, &weight, 1, 1, None, 1, 2, &mut out).unwrap();
+        assert_eq!(out, [0.0, 0.0, 2.0, 3.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn conv1d_rejects_zero_stride_and_zero_kernel() {
+        // stride == 0 would divide-by-zero in the out_len formula.
+        let mut out = [0.0; 1];
+        let err = conv1d_f32(&[1.0, 2.0], 1, 2, &[1.0], 1, 1, None, 0, 0, &mut out).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+        // kernel == 0 would mis-size the im2col matrix.
+        let err = conv1d_f32(&[1.0, 2.0], 1, 2, &[], 1, 0, None, 1, 0, &mut out).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn softmax_and_layer_norm_reject_shape_mismatch() {
+        // softmax: length 6 does not match rows*cols = 2*4 = 8.
+        let err = softmax_f32(&[0.0; 6], &mut [0.0; 6], 2, 4).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+        // layer_norm: rows*cols is consistent (8), but gamma length 3 != cols 4.
+        let err = layer_norm_f32(
+            &[0.0; 8],
+            &mut [0.0; 8],
+            2,
+            4,
+            &[1.0; 3],
+            &[0.0; 4],
+            LAYER_NORM_DEFAULT_EPS,
+        )
+        .unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+        // ... and a beta length != cols is rejected by the same validator.
+        let err = layer_norm_f32(
+            &[0.0; 8],
+            &mut [0.0; 8],
+            2,
+            4,
+            &[1.0; 4],
+            &[0.0; 3],
+            LAYER_NORM_DEFAULT_EPS,
+        )
+        .unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn gemm_rejects_bad_b_out_bias_and_overflow() {
+        // m=2, n=2, k=2: a needs 4, b needs k*n=4, out needs m*n=4, bias needs n=2.
+        let a = [0.0; 4];
+        let good_b = [0.0; 4];
+        let mut out = [0.0; 4];
+        // `b` too short (3 != k*n = 4).
+        let err = gemm_f32(2, 2, 2, &a, &[0.0; 3], None, &mut out).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+        // `out` too short (3 != m*n = 4).
+        let mut short_out = [0.0; 3];
+        let err = gemm_f32(2, 2, 2, &a, &good_b, None, &mut short_out).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+        // `bias` length != n (1 != 2).
+        let err = gemm_f32(2, 2, 2, &a, &good_b, Some(&[0.0; 1]), &mut out).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+        // m*k overflows usize -> explicit error via the checked_mul guard (and
+        // no kernel is ever entered with a bogus dimension product).
+        let err = gemm_f32(usize::MAX, 1, 2, &[], &[], None, &mut []).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
 }

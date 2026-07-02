@@ -588,4 +588,151 @@ mod tests {
             Err(GgufError::UnalignedTensorOffset { .. })
         ));
     }
+
+    // --- malformed metadata value / alignment safety ---------------------
+
+    /// Emits `magic + version 3 + tensor_count 0 + kv_count 1` and a
+    /// length-prefixed `key`, leaving the caller to append the raw value bytes
+    /// (type tag + payload). Pins the reader's handling of malformed metadata
+    /// independently of the writer, which cannot emit these files.
+    fn gguf_header_one_kv(key: &str) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(b"GGUF");
+        v.extend_from_slice(&3u32.to_le_bytes());
+        v.extend_from_slice(&0u64.to_le_bytes()); // tensor_count
+        v.extend_from_slice(&1u64.to_le_bytes()); // metadata_kv_count = 1
+        v.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        v.extend_from_slice(key.as_bytes());
+        v
+    }
+
+    #[test]
+    fn unsupported_value_type_tag_is_rejected() {
+        // A value-type tag of 13 is one past the spec's maximum (12 = FLOAT64).
+        let mut v = gguf_header_one_kv("k");
+        v.extend_from_slice(&13u32.to_le_bytes());
+        assert!(matches!(
+            GgufFile::parse(v),
+            Err(GgufError::UnsupportedValueType(13))
+        ));
+    }
+
+    #[test]
+    fn invalid_bool_byte_is_rejected() {
+        // BOOL (tag 7) accepts only 0 or 1; a byte of 2 is non-canonical
+        // (NFR-RL-07 strict-bool hardening).
+        let mut v = gguf_header_one_kv("b");
+        v.extend_from_slice(&7u32.to_le_bytes()); // value type: Bool
+        v.push(2); // illegal bool payload
+        assert!(matches!(GgufFile::parse(v), Err(GgufError::InvalidBool(2))));
+    }
+
+    #[test]
+    fn general_alignment_zero_is_rejected_without_panic() {
+        // SAFETY: a file-supplied alignment of 0 must be rejected by
+        // `resolve_alignment` *before* `align_up` computes `value % align`,
+        // which would divide by zero. The builder strips any user
+        // `general.alignment`, so this file can only be hand-built.
+        let mut v = gguf_header_one_kv(chunks::KEY_GENERAL_ALIGNMENT);
+        v.extend_from_slice(&4u32.to_le_bytes()); // value type: U32
+        v.extend_from_slice(&0u32.to_le_bytes()); // alignment = 0
+        assert!(matches!(
+            GgufFile::parse(v),
+            Err(GgufError::InvalidAlignment(0))
+        ));
+    }
+
+    #[test]
+    fn general_alignment_non_power_of_two_is_rejected() {
+        let mut v = gguf_header_one_kv(chunks::KEY_GENERAL_ALIGNMENT);
+        v.extend_from_slice(&4u32.to_le_bytes()); // value type: U32
+        v.extend_from_slice(&3u32.to_le_bytes()); // alignment = 3
+        assert!(matches!(
+            GgufFile::parse(v),
+            Err(GgufError::InvalidAlignment(3))
+        ));
+    }
+
+    #[test]
+    fn general_alignment_non_integer_is_rejected() {
+        // A string-typed `general.alignment` cannot widen to `u64`, so
+        // `resolve_alignment` reports the "not an integer" OffsetOutOfBounds.
+        let mut v = gguf_header_one_kv(chunks::KEY_GENERAL_ALIGNMENT);
+        v.extend_from_slice(&8u32.to_le_bytes()); // value type: String
+        v.extend_from_slice(&1u64.to_le_bytes()); // string length
+        v.extend_from_slice(b"x");
+        assert!(matches!(
+            GgufFile::parse(v),
+            Err(GgufError::OffsetOutOfBounds(_))
+        ));
+    }
+
+    #[test]
+    fn too_many_dimensions_is_rejected_by_reader() {
+        // GGUF caps tensor rank at MAX_TENSOR_DIMS (4); n_dims = 5 is malformed.
+        let mut v = Vec::new();
+        v.extend_from_slice(b"GGUF");
+        v.extend_from_slice(&3u32.to_le_bytes());
+        v.extend_from_slice(&1u64.to_le_bytes()); // tensor_count = 1
+        v.extend_from_slice(&0u64.to_le_bytes()); // kv_count = 0
+        v.extend_from_slice(&1u64.to_le_bytes()); // name length
+        v.extend_from_slice(b"t");
+        v.extend_from_slice(&5u32.to_le_bytes()); // n_dims = 5 (> 4)
+        for _ in 0..5 {
+            v.extend_from_slice(&1u64.to_le_bytes()); // five dims of 1
+        }
+        v.extend_from_slice(&0u32.to_le_bytes()); // dtype F32
+        v.extend_from_slice(&0u64.to_le_bytes()); // offset
+        assert!(matches!(
+            GgufFile::parse(v),
+            Err(GgufError::TooManyDimensions(5))
+        ));
+    }
+
+    #[test]
+    fn tensor_bytelen_overflow_is_rejected() {
+        // A single F32 tensor whose lone dimension is u64::MAX: element_count
+        // is u64::MAX and byte_len = u64::MAX * 4 overflows u64. The reader
+        // must surface Overflow, never panic or slice out of bounds.
+        let mut v = Vec::new();
+        v.extend_from_slice(b"GGUF");
+        v.extend_from_slice(&3u32.to_le_bytes());
+        v.extend_from_slice(&1u64.to_le_bytes()); // tensor_count = 1
+        v.extend_from_slice(&0u64.to_le_bytes()); // kv_count = 0
+        v.extend_from_slice(&1u64.to_le_bytes()); // name length
+        v.extend_from_slice(b"t");
+        v.extend_from_slice(&1u32.to_le_bytes()); // n_dims = 1
+        v.extend_from_slice(&u64::MAX.to_le_bytes()); // dim[0] = u64::MAX
+        v.extend_from_slice(&0u32.to_le_bytes()); // dtype F32
+        v.extend_from_slice(&0u64.to_le_bytes()); // offset = 0 (aligned)
+        // Pad so the aligned tensor-data region fits inside the file, letting
+        // parsing reach the byte_len overflow check rather than OffsetOutOfBounds.
+        let aligned = v.len().next_multiple_of(32);
+        v.resize(aligned, 0);
+        assert!(matches!(GgufFile::parse(v), Err(GgufError::Overflow)));
+    }
+
+    #[test]
+    fn array_nested_too_deep_is_rejected() {
+        // An array KV nested past MAX_ARRAY_DEPTH (64). The decoder must bail
+        // with ArrayTooDeep rather than recurse until the stack overflows.
+        let mut v = Vec::new();
+        v.extend_from_slice(b"GGUF");
+        v.extend_from_slice(&3u32.to_le_bytes());
+        v.extend_from_slice(&0u64.to_le_bytes()); // tensor_count = 0
+        v.extend_from_slice(&1u64.to_le_bytes()); // kv_count = 1
+        v.extend_from_slice(&1u64.to_le_bytes()); // key length
+        v.extend_from_slice(b"a");
+        v.extend_from_slice(&9u32.to_le_bytes()); // KV value type: Array
+        // 65 nested array headers (element_type Array, count 1); parsing stops
+        // at depth 64 before consuming them all.
+        for _ in 0..65 {
+            v.extend_from_slice(&9u32.to_le_bytes()); // element type: Array
+            v.extend_from_slice(&1u64.to_le_bytes()); // count = 1
+        }
+        assert!(matches!(
+            GgufFile::parse(v),
+            Err(GgufError::ArrayTooDeep(_))
+        ));
+    }
 }

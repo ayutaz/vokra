@@ -214,6 +214,98 @@ mod tests {
     }
 
     #[test]
+    fn istft_rejects_degenerate_sizes() {
+        // n_fft/hop_length/win_length guards fire before the bin-count check,
+        // so any correctly-binned spectrogram exercises them.
+        let spec = Spectrogram {
+            frames: 1,
+            bins: 201, // n_fft/2+1 for n_fft = 400, real input
+            re: vec![0.0; 201],
+            im: vec![0.0; 201],
+        };
+        let base = IstftAttrs::new(400, 160);
+
+        let mut a = base.clone();
+        a.n_fft = 0;
+        assert!(matches!(
+            istft(&spec, &a),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut a = base.clone();
+        a.hop_length = 0;
+        assert!(matches!(
+            istft(&spec, &a),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut a = base.clone();
+        a.win_length = 0;
+        assert!(matches!(
+            istft(&spec, &a),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut a = base.clone();
+        a.win_length = a.n_fft + 1;
+        assert!(matches!(
+            istft(&spec, &a),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn nola_violating_hop_stays_finite_and_zeros_boundaries() {
+        use vokra_core::ir::graph::Window;
+        // hop == n_fft ⇒ frames never overlap. A periodic Hann window is
+        // exactly 0 at index 0, so every frame-boundary output sample has
+        // window-sum-of-squares == 0 (≤ NOLA_EPS). The guard must leave those
+        // samples at 0.0 rather than dividing by ~0 (which would emit NaN/Inf).
+        let n_fft = 256;
+        let signal: Vec<f32> = (0..4 * n_fft).map(|t| (t as f32 * 0.021).sin()).collect();
+
+        let mut sa = StftAttrs::new(n_fft, n_fft);
+        sa.center = false;
+        sa.window = Window::Hann;
+        let spec = stft(&signal, &sa).unwrap();
+
+        let mut ia = IstftAttrs::new(n_fft, n_fft);
+        ia.center = false;
+        ia.window = Window::Hann;
+        let recon = istft(&spec, &ia).unwrap();
+
+        assert!(!recon.is_empty());
+        for (i, &v) in recon.iter().enumerate() {
+            assert!(v.is_finite(), "non-finite sample at {i}: {v}");
+        }
+        // Frame boundaries live at multiples of n_fft (w[0] == 0 ⇒ no coverage).
+        for f in 0..spec.frames {
+            let idx = f * n_fft;
+            assert_eq!(recon[idx], 0.0, "boundary sample {idx} not exactly 0");
+        }
+    }
+
+    #[test]
+    fn forward_normalization_roundtrips() {
+        use vokra_core::ir::graph::Normalization;
+        // Forward takes a distinct scale path (1/n on stft store, ×n unscale on
+        // istft); it must round-trip just like Backward/Ortho.
+        let signal: Vec<f32> = (0..2048).map(|t| (t as f32 * 0.05).sin()).collect();
+        let mut sa = StftAttrs::new(256, 64);
+        sa.normalization = Normalization::Forward;
+        let spec = stft(&signal, &sa).unwrap();
+        let mut ia = IstftAttrs::new(256, 64);
+        ia.normalization = Normalization::Forward;
+        ia.length = Some(signal.len());
+        let recon = istft(&spec, &ia).unwrap();
+        let mut max = 0.0f32;
+        for i in 256..signal.len() - 256 {
+            max = max.max((signal[i] - recon[i]).abs());
+        }
+        assert!(max < 1e-2, "forward reconstruction error {max}");
+    }
+
+    #[test]
     fn length_override_sets_output_length() {
         let signal = vec![0.1f32; 3000];
         let sa = StftAttrs::new(256, 64);

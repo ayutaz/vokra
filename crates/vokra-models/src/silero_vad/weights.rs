@@ -255,3 +255,145 @@ fn vec1d(gguf: &GgufFile, name: &str, expected: &[usize]) -> Result<Vec<f32>> {
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vokra_core::engines::VadEngine;
+    use vokra_core::gguf::GgufBuilder;
+
+    use crate::silero_vad::SileroVadV5;
+
+    /// Queues an all-zero `F32` tensor of the given logical shape.
+    fn add_zeros(b: &mut GgufBuilder, name: &str, dims: &[u64]) {
+        let n: u64 = dims.iter().product();
+        b.add_tensor(
+            name,
+            GgmlType::F32,
+            dims.to_vec(),
+            vec![0u8; n as usize * 4],
+        )
+        .expect("add zero tensor");
+    }
+
+    /// Adds the correctly-shaped 8 kHz `stft.forward_basis_buffer` (`[130,1,128]`)
+    /// under `prefix`, so `from_gguf` enters `load_rate` on the 8 kHz branch
+    /// (2*bins = 130, kernel = 128 -> 8 kHz).
+    fn add_stft_8k(b: &mut GgufBuilder, prefix: &str) {
+        add_zeros(
+            b,
+            &format!("{prefix}stft.forward_basis_buffer"),
+            &[130, 1, 128],
+        );
+    }
+
+    /// Adds all 15 correctly-shaped 8 kHz weight tensors (all zeros) under
+    /// `prefix` (mirrors `RateWeights::zeros_for_test` shapes; bins = 65).
+    fn add_all_8k(b: &mut GgufBuilder, prefix: &str) {
+        add_stft_8k(b, prefix);
+        for (suffix, dims) in [
+            ("encoder.0.reparam_conv.weight", &[128, 65, 3][..]),
+            ("encoder.0.reparam_conv.bias", &[128][..]),
+            ("encoder.1.reparam_conv.weight", &[64, 128, 3][..]),
+            ("encoder.1.reparam_conv.bias", &[64][..]),
+            ("encoder.2.reparam_conv.weight", &[64, 64, 3][..]),
+            ("encoder.2.reparam_conv.bias", &[64][..]),
+            ("encoder.3.reparam_conv.weight", &[128, 64, 3][..]),
+            ("encoder.3.reparam_conv.bias", &[128][..]),
+            ("decoder.rnn.weight_ih", &[512, 128][..]),
+            ("decoder.rnn.weight_hh", &[512, 128][..]),
+            ("decoder.rnn.bias_ih", &[512][..]),
+            ("decoder.rnn.bias_hh", &[512][..]),
+            ("decoder.decoder.2.weight", &[1, 128, 1][..]),
+            ("decoder.decoder.2.bias", &[1][..]),
+        ] {
+            let dims: Vec<u64> = dims.iter().map(|&d| d as u64).collect();
+            add_zeros(b, &format!("{prefix}{suffix}"), &dims);
+        }
+    }
+
+    fn to_gguf(b: &GgufBuilder) -> GgufFile {
+        GgufFile::parse(b.to_bytes().expect("serialize gguf")).expect("parse gguf")
+    }
+
+    // ---- weights-validation-error-paths (per-tensor presence/shape/dtype) ----
+
+    #[test]
+    fn from_gguf_rejects_missing_encoder_tensor() {
+        // stft present (enters load_rate) but encoder.0 weight absent.
+        let mut b = GgufBuilder::new();
+        add_stft_8k(&mut b, "sr8k.");
+        assert!(matches!(
+            SileroVadV5::from_gguf(&to_gguf(&b)),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
+    #[test]
+    fn from_gguf_rejects_wrong_encoder_shape() {
+        // Correct 8 kHz encoder.0 shape is [128,65,3]; [128,64,3] is wrong.
+        let mut b = GgufBuilder::new();
+        add_stft_8k(&mut b, "sr8k.");
+        add_zeros(&mut b, "sr8k.encoder.0.reparam_conv.weight", &[128, 64, 3]);
+        assert!(matches!(
+            SileroVadV5::from_gguf(&to_gguf(&b)),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
+    #[test]
+    fn from_gguf_rejects_non_f32_dtype() {
+        // Correct shape [128,65,3] but F16 dtype -> dtype check fires first.
+        let mut b = GgufBuilder::new();
+        add_stft_8k(&mut b, "sr8k.");
+        let n: usize = 128 * 65 * 3;
+        b.add_tensor(
+            "sr8k.encoder.0.reparam_conv.weight",
+            GgmlType::F16,
+            vec![128, 65, 3],
+            vec![0u8; n * 2],
+        )
+        .expect("add f16 tensor");
+        assert!(matches!(
+            SileroVadV5::from_gguf(&to_gguf(&b)),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
+    // ---- weights-legacy-single-rate (bare names + kernel->rate inference) ----
+
+    #[test]
+    fn loads_legacy_bare_name_single_rate_8k() {
+        // Bare (un-prefixed) names -> legacy scheme; kernel 128 -> 8 kHz only.
+        let mut b = GgufBuilder::new();
+        add_all_8k(&mut b, "");
+        let m = SileroVadV5::from_gguf(&to_gguf(&b)).expect("legacy 8 kHz model loads");
+
+        assert!(m.supports(SampleRate::Hz8000));
+        assert!(!m.supports(SampleRate::Hz16000));
+
+        // The absent rate is rejected at both entry points.
+        assert!(matches!(
+            m.forward_chunk(SampleRate::Hz16000, &[0.0; 512]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let mut s16 = m.open_stream();
+        assert!(s16.push_pcm(&[0.0; 512], 16000).is_err());
+
+        // The present rate is usable: a 256-sample frame yields one probability.
+        let mut s8 = m.open_stream();
+        assert_eq!(s8.push_pcm(&[0.0; 256], 8000).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn legacy_unknown_stft_kernel_is_rejected() {
+        // A bare stft buffer whose kernel length matches neither rate.
+        let mut b = GgufBuilder::new();
+        add_zeros(&mut b, "stft.forward_basis_buffer", &[1, 1, 200]);
+        let r = SileroVadV5::from_gguf(&to_gguf(&b));
+        assert!(
+            matches!(&r, Err(VokraError::ModelLoad(m)) if m.contains("matches no sample rate")),
+            "expected `matches no sample rate` ModelLoad"
+        );
+    }
+}

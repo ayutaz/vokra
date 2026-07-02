@@ -160,4 +160,100 @@ mod tests {
         wav[22] = 2;
         assert!(parse(&wav).is_err());
     }
+
+    /// A 16-byte `fmt ` body for mono `rate`/`bits` with format tag `fmt_tag`.
+    fn fmt_body(fmt_tag: u16, rate: u32, bits: u16) -> Vec<u8> {
+        let block_align = bits / 8;
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&fmt_tag.to_le_bytes());
+        fmt.extend_from_slice(&1u16.to_le_bytes()); // channels
+        fmt.extend_from_slice(&rate.to_le_bytes());
+        fmt.extend_from_slice(&(rate * u32::from(block_align)).to_le_bytes());
+        fmt.extend_from_slice(&block_align.to_le_bytes());
+        fmt.extend_from_slice(&bits.to_le_bytes());
+        fmt
+    }
+
+    /// Emits one RIFF sub-chunk (id, u32 LE size, body) plus the word-alignment
+    /// pad byte the spec requires after an odd-sized body.
+    fn chunk(id: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut c = Vec::new();
+        c.extend_from_slice(id);
+        c.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        c.extend_from_slice(body);
+        if body.len() % 2 == 1 {
+            c.push(0);
+        }
+        c
+    }
+
+    /// Wraps concatenated sub-chunks in a `RIFF....WAVE` container.
+    fn riff(chunks: &[u8]) -> Vec<u8> {
+        let mut r = Vec::new();
+        r.extend_from_slice(b"RIFF");
+        r.extend_from_slice(&((4 + chunks.len()) as u32).to_le_bytes());
+        r.extend_from_slice(b"WAVE");
+        r.extend_from_slice(chunks);
+        r
+    }
+
+    /// Unwraps the message of an expected `InvalidArgument` (WavData has no Debug).
+    fn err_msg(r: Result<WavData>) -> String {
+        match r {
+            Ok(_) => panic!("expected an error, got Ok"),
+            Err(VokraError::InvalidArgument(m)) => m,
+            Err(_) => panic!("expected InvalidArgument"),
+        }
+    }
+
+    #[test]
+    fn skips_odd_sized_chunk_before_data() {
+        // A 3-byte (odd) LIST chunk between `fmt ` and `data` forces the
+        // word-alignment pad-byte skip (`pos = body_end + (size & 1)`); the
+        // float samples after it must still be located and decoded correctly.
+        let body: Vec<u8> = [0.5f32, -0.25]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let mut chunks = Vec::new();
+        chunks.extend_from_slice(&chunk(b"fmt ", &fmt_body(3, 16000, 32)));
+        chunks.extend_from_slice(&chunk(b"LIST", b"INF")); // odd (3-byte) body
+        chunks.extend_from_slice(&chunk(b"data", &body));
+        let w = parse(&riff(&chunks)).unwrap();
+        assert_eq!(w.sample_rate, 16000);
+        assert_eq!(w.samples, vec![0.5, -0.25]);
+    }
+
+    #[test]
+    fn rejects_unsupported_format_and_bit_depth() {
+        // PCM tag (1) but 24-bit is unsupported.
+        assert!(
+            err_msg(parse(&build_wav(1, 24, 16000, &[0u8; 6]))).contains("unsupported WAV format")
+        );
+        // A-law tag (6) at 16-bit is unsupported.
+        assert!(
+            err_msg(parse(&build_wav(6, 16, 16000, &[0u8; 4]))).contains("unsupported WAV format")
+        );
+    }
+
+    #[test]
+    fn rejects_missing_data_and_missing_fmt() {
+        // `fmt ` present but no `data` chunk.
+        let only_fmt = riff(&chunk(b"fmt ", &fmt_body(3, 16000, 32)));
+        assert!(err_msg(parse(&only_fmt)).contains("no data chunk"));
+        // `data` present but no `fmt ` chunk (fmt is checked first).
+        let only_data = riff(&chunk(b"data", &0.5f32.to_le_bytes()));
+        assert!(err_msg(parse(&only_data)).contains("no fmt chunk"));
+    }
+
+    #[test]
+    fn rejects_data_chunk_size_out_of_range() {
+        // A `data` header declaring 1000 bytes with none present must be
+        // rejected, not read out of bounds.
+        let mut chunks = Vec::new();
+        chunks.extend_from_slice(&chunk(b"fmt ", &fmt_body(3, 16000, 32)));
+        chunks.extend_from_slice(b"data");
+        chunks.extend_from_slice(&1000u32.to_le_bytes());
+        assert!(err_msg(parse(&riff(&chunks))).contains("chunk size out of range"));
+    }
 }

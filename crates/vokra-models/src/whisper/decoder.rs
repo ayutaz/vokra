@@ -230,3 +230,235 @@ fn project_logits(
     }
     Ok(out)
 }
+
+/// Synthetic tiny-decoder builders, shared with the [`super::greedy`] tests so
+/// the KV-cache / greedy loops run in CI without a GGUF fixture. Everything is
+/// deterministic and small (`d_model = 2`, `n_vocab = 3`); the assertions are
+/// internal oracles (error variants, full-vs-cached agreement, determinism),
+/// never a reference number.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use crate::whisper::config::WhisperConfig;
+    use crate::whisper::encoder::EncoderOutput;
+    use crate::whisper::weights::{Attention, DecoderLayer, DecoderWeights, LayerNorm, Linear};
+
+    /// A tiny valid config with `n_layer` decoder blocks (`d_model = 2`,
+    /// `n_vocab = 3`, `n_text_ctx = 8`, single head).
+    pub(crate) fn tiny_cfg(n_layer: usize) -> WhisperConfig {
+        WhisperConfig {
+            n_mels: 80,
+            d_model: 2,
+            n_audio_ctx: 4,
+            n_audio_head: 1,
+            n_audio_layer: 0,
+            n_text_ctx: 8,
+            n_text_head: 1,
+            n_text_layer: n_layer,
+            n_vocab: 3,
+            ffn_dim: 2,
+            eot: 0,
+            decoder_start_ids: vec![1],
+        }
+    }
+
+    /// Deterministic encoder hidden states `[n_ctx, d_model]`.
+    pub(crate) fn tiny_encoder(d_model: usize, n_ctx: usize) -> EncoderOutput {
+        let hidden = (0..n_ctx * d_model)
+            .map(|i| 0.05 * i as f32 - 0.1)
+            .collect();
+        EncoderOutput {
+            hidden,
+            n_ctx,
+            d_model,
+        }
+    }
+
+    /// Decoder weights matching `cfg` (token / pos embeddings, `n_text_layer`
+    /// blocks, unit final LayerNorm), all deterministic small values.
+    pub(crate) fn tiny_weights(cfg: &WhisperConfig) -> DecoderWeights {
+        let d = cfg.d_model;
+        let token_emb = (0..cfg.n_vocab * d).map(|i| 0.1 * i as f32 - 0.2).collect();
+        let pos_emb = (0..cfg.n_text_ctx * d)
+            .map(|i| 0.05 - 0.02 * i as f32)
+            .collect();
+        let layers = (0..cfg.n_text_layer)
+            .map(|_| tiny_layer(d, cfg.ffn_dim))
+            .collect();
+        DecoderWeights {
+            token_emb,
+            pos_emb,
+            layers,
+            ln_post: unit_ln(d),
+        }
+    }
+
+    /// Unit-scale / zero-shift LayerNorm of width `d`.
+    fn unit_ln(d: usize) -> LayerNorm {
+        LayerNorm {
+            gamma: vec![1.0; d],
+            beta: vec![0.0; d],
+        }
+    }
+
+    /// A `Linear [in, out]` from an explicit row-major `w_t` and optional bias.
+    fn lin(
+        w_t: Vec<f32>,
+        in_features: usize,
+        out_features: usize,
+        bias: Option<Vec<f32>>,
+    ) -> Linear {
+        Linear {
+            w_t,
+            in_features,
+            out_features,
+            bias,
+        }
+    }
+
+    /// A deterministic `rows * cols` weight buffer with small distinct values.
+    fn rect(rows: usize, cols: usize, base: f32) -> Vec<f32> {
+        (0..rows * cols).map(|i| base + 0.03 * i as f32).collect()
+    }
+
+    /// A `[d, d]` attention block with deterministic projections (`k` has no
+    /// bias, matching Whisper).
+    fn tiny_attn(d: usize) -> Attention {
+        Attention {
+            q: lin(rect(d, d, 0.10), d, d, Some(vec![0.01; d])),
+            k: lin(rect(d, d, -0.07), d, d, None),
+            v: lin(rect(d, d, 0.05), d, d, Some(vec![0.02; d])),
+            out: lin(rect(d, d, -0.04), d, d, Some(vec![0.0; d])),
+        }
+    }
+
+    /// One decoder block (self-attn → cross-attn → MLP) with deterministic
+    /// weights; `ff` is the MLP inner width.
+    fn tiny_layer(d: usize, ff: usize) -> DecoderLayer {
+        DecoderLayer {
+            self_ln: unit_ln(d),
+            self_attn: tiny_attn(d),
+            cross_ln: unit_ln(d),
+            cross_attn: tiny_attn(d),
+            mlp_ln: unit_ln(d),
+            fc1: lin(rect(d, ff, 0.06), d, ff, Some(vec![0.0; ff])),
+            fc2: lin(rect(ff, d, -0.05), ff, d, Some(vec![0.0; d])),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{tiny_cfg, tiny_encoder, tiny_weights};
+    use super::*;
+
+    #[test]
+    fn new_rejects_encoder_dim_mismatch() {
+        let cfg = tiny_cfg(0);
+        let w = tiny_weights(&cfg);
+        // Encoder hidden width differs from the config d_model. (DecoderState is
+        // not Debug, so match instead of unwrap_err.)
+        let enc = tiny_encoder(cfg.d_model + 1, 4);
+        assert!(matches!(
+            DecoderState::new(&cfg, &w, &enc),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn step_rejects_out_of_range_token() {
+        let cfg = tiny_cfg(0);
+        let w = tiny_weights(&cfg);
+        let enc = tiny_encoder(cfg.d_model, 4);
+        let mut st = DecoderState::new(&cfg, &w, &enc).unwrap();
+        // 99 >= n_vocab (3): guarded before the embedding slice would panic.
+        let err = st.step(&[99]).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)), "{err:?}");
+    }
+
+    #[test]
+    fn step_rejects_exceeding_n_text_ctx() {
+        let cfg = tiny_cfg(0);
+        let w = tiny_weights(&cfg);
+        let enc = tiny_encoder(cfg.d_model, 4);
+        let mut st = DecoderState::new(&cfg, &w, &enc).unwrap();
+        // n_text_ctx = 8; an n_text_ctx+1 step overflows (ids stay in vocab).
+        let toks = vec![1u32; cfg.n_text_ctx + 1];
+        let err = st.step(&toks).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)), "{err:?}");
+    }
+
+    #[test]
+    fn empty_step_returns_empty_and_does_not_advance() {
+        let cfg = tiny_cfg(0);
+        let w = tiny_weights(&cfg);
+        let enc = tiny_encoder(cfg.d_model, 4);
+        let mut st = DecoderState::new(&cfg, &w, &enc).unwrap();
+        assert!(st.step(&[]).unwrap().is_empty());
+        assert_eq!(st.position(), 0);
+    }
+
+    /// Full-sequence `step` must reproduce the token-by-token cached path for
+    /// the last position — the KV-cache invariant the parity test owns at real
+    /// scale (verified here at synthetic scale, both with and without a layer).
+    fn assert_full_matches_cached(n_layer: usize) {
+        let cfg = tiny_cfg(n_layer);
+        let w = tiny_weights(&cfg);
+        let enc = tiny_encoder(cfg.d_model, 4);
+        let v = cfg.n_vocab;
+        let (a, b) = (1u32, 2u32);
+
+        let mut st = DecoderState::new(&cfg, &w, &enc).unwrap();
+        let full = st.step(&[a, b]).unwrap();
+        assert_eq!(full.len(), 2 * v);
+        let full_last = &full[v..2 * v];
+
+        // Token-by-token after reset must land on the same last-position logits.
+        st.reset();
+        assert_eq!(st.position(), 0);
+        let _ = st.step_last(&[a]).unwrap();
+        let cached_last = st.step_last(&[b]).unwrap();
+        assert_eq!(cached_last.len(), v);
+        for (i, (&f, &c)) in full_last.iter().zip(&cached_last).enumerate() {
+            assert!(
+                (f - c).abs() < 1e-4,
+                "layer {n_layer} idx {i}: full {f} vs cached {c}"
+            );
+        }
+    }
+
+    #[test]
+    fn full_forward_matches_cached_stepping() {
+        assert_full_matches_cached(0);
+        assert_full_matches_cached(1);
+    }
+
+    #[test]
+    fn reset_and_replay_is_bit_identical() {
+        let cfg = tiny_cfg(1);
+        let w = tiny_weights(&cfg);
+        let enc = tiny_encoder(cfg.d_model, 4);
+        let mut st = DecoderState::new(&cfg, &w, &enc).unwrap();
+
+        let run1 = st.step(&[1, 2, 1]).unwrap();
+        st.reset();
+        let run2 = st.step(&[1, 2, 1]).unwrap();
+        // Same code path, same inputs, same accumulation order → bit-identical.
+        assert_eq!(run1, run2);
+    }
+
+    #[test]
+    fn step_last_is_final_row_of_step() {
+        let cfg = tiny_cfg(1);
+        let w = tiny_weights(&cfg);
+        let enc = tiny_encoder(cfg.d_model, 4);
+        let v = cfg.n_vocab;
+
+        let mut st = DecoderState::new(&cfg, &w, &enc).unwrap();
+        let all = st.step(&[1, 2]).unwrap();
+        let last_slice = all[v..2 * v].to_vec();
+
+        st.reset();
+        let last = st.step_last(&[1, 2]).unwrap();
+        assert_eq!(last, last_slice);
+    }
+}

@@ -145,6 +145,28 @@ mod tests {
     }
 
     #[test]
+    fn conv1d_accumulates_over_input_channels() {
+        // c_in=2, c_out=1, k=1, stride 1, pad 0. Channel-major input:
+        // ch0 = [1,2], ch1 = [3,4]; weight [c_out,c_in,k] = [10, 1].
+        // y = 10*ch0 + 1*ch1 = [10*1+1*3, 10*2+1*4] = [13, 24].
+        let x = [1.0, 2.0, 3.0, 4.0];
+        let w = [10.0, 1.0];
+        let y = conv1d(&x, 2, 2, &w, None, 1, 1, 1, 0);
+        assert_eq!(y, vec![13.0, 24.0]);
+    }
+
+    #[test]
+    fn conv1d_strides_output_channels() {
+        // Same input; c_out=2, weight [c_out,c_in,k] = [[10,1],[1,0]].
+        // co0 = 10*ch0 + 1*ch1 = [13, 24]; co1 = 1*ch0 + 0*ch1 = [1, 2].
+        // Output is [c_out, l_out] row-major = [13,24, 1,2].
+        let x = [1.0, 2.0, 3.0, 4.0];
+        let w = [10.0, 1.0, 1.0, 0.0];
+        let y = conv1d(&x, 2, 2, &w, None, 2, 1, 1, 0);
+        assert_eq!(y, vec![13.0, 24.0, 1.0, 2.0]);
+    }
+
+    #[test]
     fn matvec_basic() {
         // [[1,2],[3,4]] @ [1,1] = [3,7]
         let y = matvec(&[1.0, 2.0, 3.0, 4.0], 2, 2, &[1.0, 1.0]);

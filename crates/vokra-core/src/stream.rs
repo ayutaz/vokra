@@ -152,4 +152,23 @@ mod tests {
         assert_eq!(session.active_stream_count(), 1);
         assert_eq!(stream.id(), 0);
     }
+
+    #[test]
+    fn stream_id_is_not_reused_after_drop() {
+        let (_file, session) = session("stream-id-reuse");
+        let s0 = session.open_stream().expect("s0");
+        assert_eq!(s0.id(), 0);
+        assert_eq!(session.active_stream_count(), 1);
+
+        // Freeing the only live stream returns the active count to zero...
+        drop(s0);
+        assert_eq!(session.active_stream_count(), 0);
+
+        // ...but `next_stream_id` is monotonic and never decremented, so the
+        // next stream gets id 1, not the freed id 0 (guards against sourcing
+        // ids from the decremented active-stream counter).
+        let s1 = session.open_stream().expect("s1");
+        assert_eq!(s1.id(), 1);
+        assert_eq!(session.active_stream_count(), 1);
+    }
 }

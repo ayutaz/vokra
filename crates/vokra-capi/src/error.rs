@@ -188,4 +188,71 @@ mod tests {
         assert_eq!(vokra_status_t::VOKRA_OK as i32, 0);
         assert_ne!(vokra_status_t::VOKRA_ERROR_PANIC as i32, 0);
     }
+
+    #[test]
+    fn fail_maps_every_variant_to_documented_status() {
+        // Each mapped `VokraError` variant must land on its distinct C status
+        // AND on the documented numeric value (the M0 ABI other hosts depend
+        // on). Oracle is the ADR-0003 §3-d spec pinned in this module's rustdoc;
+        // no reference implementation. `_ => VOKRA_ERROR_OTHER` is unreachable
+        // without an unmapped (future) variant, so it is left noted only.
+        let cases: Vec<(VokraError, vokra_status_t, i32)> = vec![
+            (
+                VokraError::Io(std::io::Error::other("disk gone")),
+                vokra_status_t::VOKRA_ERROR_IO,
+                1,
+            ),
+            (
+                VokraError::ModelLoad("bad magic".to_owned()),
+                vokra_status_t::VOKRA_ERROR_MODEL_LOAD,
+                2,
+            ),
+            (
+                VokraError::UnsupportedOp("Stft on cpu".to_owned()),
+                vokra_status_t::VOKRA_ERROR_UNSUPPORTED_OP,
+                3,
+            ),
+            (
+                VokraError::BackendUnavailable("cuda".to_owned()),
+                vokra_status_t::VOKRA_ERROR_BACKEND_UNAVAILABLE,
+                4,
+            ),
+            (
+                VokraError::InvalidArgument("bad rate".to_owned()),
+                vokra_status_t::VOKRA_ERROR_INVALID_ARGUMENT,
+                5,
+            ),
+            (
+                VokraError::GraphValidation("dangling output".to_owned()),
+                vokra_status_t::VOKRA_ERROR_GRAPH_VALIDATION,
+                6,
+            ),
+            (
+                VokraError::NotImplemented("speech-to-speech"),
+                vokra_status_t::VOKRA_ERROR_NOT_IMPLEMENTED,
+                7,
+            ),
+        ];
+        for (err, expected_status, expected_code) in cases {
+            let status = fail(&err);
+            assert_eq!(status, expected_status, "wrong status for {err:?}");
+            assert_eq!(status as i32, expected_code, "wrong ABI number for {err:?}");
+        }
+    }
+
+    #[test]
+    fn status_codes_pin_numeric_abi() {
+        // The full status enum's numeric layout is part of the M0 ABI; freeze
+        // every discriminant so a reorder / inserted variant fails loudly.
+        assert_eq!(vokra_status_t::VOKRA_OK as i32, 0);
+        assert_eq!(vokra_status_t::VOKRA_ERROR_IO as i32, 1);
+        assert_eq!(vokra_status_t::VOKRA_ERROR_MODEL_LOAD as i32, 2);
+        assert_eq!(vokra_status_t::VOKRA_ERROR_UNSUPPORTED_OP as i32, 3);
+        assert_eq!(vokra_status_t::VOKRA_ERROR_BACKEND_UNAVAILABLE as i32, 4);
+        assert_eq!(vokra_status_t::VOKRA_ERROR_INVALID_ARGUMENT as i32, 5);
+        assert_eq!(vokra_status_t::VOKRA_ERROR_GRAPH_VALIDATION as i32, 6);
+        assert_eq!(vokra_status_t::VOKRA_ERROR_NOT_IMPLEMENTED as i32, 7);
+        assert_eq!(vokra_status_t::VOKRA_ERROR_PANIC as i32, 8);
+        assert_eq!(vokra_status_t::VOKRA_ERROR_OTHER as i32, 9);
+    }
 }

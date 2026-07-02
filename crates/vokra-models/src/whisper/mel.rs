@@ -99,4 +99,23 @@ mod tests {
         // features sit within roughly [-1, 1]; assert a generous finite bound.
         assert!(out.iter().all(|v| v.is_finite() && *v > -2.0 && *v < 2.0));
     }
+
+    #[test]
+    fn empty_input_pads_to_full_frame_grid() {
+        // The pad branch with a zero-length slice: buf stays all-zero, so the
+        // output is still the full [n_mels, N_FRAMES] grid with finite values.
+        let out = log_mel(&[], 80);
+        assert_eq!(out.len(), 80 * N_FRAMES);
+        assert!(out.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn oversized_input_is_trimmed_to_full_frame_grid() {
+        // Longer than 30 s exercises the trim branch (pcm.len() > N_SAMPLES); the
+        // frame count is still fixed and every value stays finite.
+        let pcm = vec![0.1f32; N_SAMPLES + 5000];
+        let out = log_mel(&pcm, 80);
+        assert_eq!(out.len(), 80 * N_FRAMES);
+        assert!(out.iter().all(|v| v.is_finite()));
+    }
 }

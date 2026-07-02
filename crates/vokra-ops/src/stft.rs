@@ -240,6 +240,60 @@ mod tests {
     }
 
     #[test]
+    fn edge_and_constant_padding_at_out_of_range_indices() {
+        // signal [10,20,30], n=3.
+        let s = [10.0f32, 20.0, 30.0];
+        // Edge: clamp to the nearest boundary sample.
+        assert_eq!(sample_at(&s, -1, PadMode::Edge), 10.0);
+        assert_eq!(sample_at(&s, -2, PadMode::Edge), 10.0);
+        assert_eq!(sample_at(&s, 3, PadMode::Edge), 30.0);
+        assert_eq!(sample_at(&s, 4, PadMode::Edge), 30.0);
+        // Constant: zeros outside the support.
+        assert_eq!(sample_at(&s, -1, PadMode::Constant), 0.0);
+        assert_eq!(sample_at(&s, 3, PadMode::Constant), 0.0);
+        // In-range indices are returned verbatim for either mode.
+        for (i, &v) in s.iter().enumerate() {
+            assert_eq!(sample_at(&s, i as isize, PadMode::Edge), v);
+            assert_eq!(sample_at(&s, i as isize, PadMode::Constant), v);
+        }
+    }
+
+    #[test]
+    fn stft_rejects_degenerate_sizes() {
+        // The documented `# Errors` contract: n_fft/hop_length/win_length guards.
+        let signal = vec![0.0f32; 800];
+        let base = StftAttrs::new(400, 160);
+
+        let mut a = base.clone();
+        a.n_fft = 0;
+        assert!(matches!(
+            stft(&signal, &a),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut a = base.clone();
+        a.hop_length = 0;
+        assert!(matches!(
+            stft(&signal, &a),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut a = base.clone();
+        a.win_length = 0;
+        assert!(matches!(
+            stft(&signal, &a),
+            Err(VokraError::InvalidArgument(_))
+        ));
+
+        let mut a = base.clone();
+        a.win_length = a.n_fft + 1;
+        assert!(matches!(
+            stft(&signal, &a),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
     fn frame_count_matches_torch_center_formula() {
         // len=16000, n_fft=400, hop=160, center: padded=16400, frames=101.
         let signal = vec![0.0f32; 16000];

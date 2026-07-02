@@ -163,11 +163,91 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/parity/silero_vad")
     }
 
+    /// Creates a live session over the committed Silero VAD fixture GGUF (the
+    /// same asset `c_abi_stream_matches_direct_rust_api` loads). Caller frees it
+    /// with `vokra_session_destroy`.
+    fn create_silero_session() -> *mut vokra_session_t {
+        let gguf = parity_dir().join("silero-vad-v5.gguf");
+        let cpath = CString::new(gguf.to_str().unwrap()).unwrap();
+        let mut session: *mut vokra_session_t = std::ptr::null_mut();
+        // SAFETY: valid C path and out-pointer.
+        let st = unsafe { vokra_session_create_from_file(cpath.as_ptr(), &mut session) };
+        assert_eq!(st, vokra_status_t::VOKRA_OK);
+        session
+    }
+
     #[test]
     fn push_pcm_rejects_null_stream() {
         // SAFETY: NULL stream is the rejected branch; len 0 skips pcm deref.
         let status = unsafe { vokra_stream_push_pcm(std::ptr::null_mut(), std::ptr::null(), 0) };
         assert_eq!(status, vokra_status_t::VOKRA_ERROR_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn stream_open_rejects_null_session() {
+        let mut stream: *mut vokra_stream_t = std::ptr::null_mut();
+        // SAFETY: NULL session is the rejected branch; out_stream is a writable slot.
+        let st = unsafe { vokra_stream_open(std::ptr::null(), 16_000, &mut stream) };
+        assert_eq!(st, vokra_status_t::VOKRA_ERROR_INVALID_ARGUMENT);
+        assert!(stream.is_null(), "out_stream stays NULL on the reject path");
+    }
+
+    #[test]
+    fn stream_open_rejects_nonpositive_sample_rate() {
+        // The `sample_rate <= 0` guard runs before `open_vad_stream`, so it must
+        // reject a bogus rate even on a valid VAD session.
+        let session = create_silero_session();
+        for rate in [0, -1] {
+            let mut stream: *mut vokra_stream_t = std::ptr::null_mut();
+            // SAFETY: valid session/out-pointer; `rate <= 0` is the rejected branch.
+            let st = unsafe { vokra_stream_open(session, rate, &mut stream) };
+            assert_eq!(
+                st,
+                vokra_status_t::VOKRA_ERROR_INVALID_ARGUMENT,
+                "sample_rate {rate} must be rejected"
+            );
+            assert!(stream.is_null(), "no handle is written on the reject path");
+        }
+        // SAFETY: session from `create_silero_session`, freed once.
+        unsafe { vokra_session_destroy(session) };
+    }
+
+    #[test]
+    fn stream_poll_rejects_null_stream() {
+        let mut buf = [0.0f32; 4];
+        let mut count: usize = 7;
+        // SAFETY: NULL stream is the rejected branch; buf/count are writable.
+        let st = unsafe {
+            vokra_stream_poll(
+                std::ptr::null_mut(),
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut count,
+            )
+        };
+        assert_eq!(st, vokra_status_t::VOKRA_ERROR_INVALID_ARGUMENT);
+        assert_eq!(count, 7, "out_count is untouched on the reject path");
+    }
+
+    #[test]
+    fn stream_poll_rejects_null_out_count() {
+        let session = create_silero_session();
+        let mut stream: *mut vokra_stream_t = std::ptr::null_mut();
+        // SAFETY: valid session handle and out-pointer.
+        let st = unsafe { vokra_stream_open(session, 16_000, &mut stream) };
+        assert_eq!(st, vokra_status_t::VOKRA_OK);
+
+        let mut buf = [0.0f32; 4];
+        // SAFETY: valid stream/buffer; NULL out_count is the rejected branch.
+        let st =
+            unsafe { vokra_stream_poll(stream, buf.as_mut_ptr(), buf.len(), std::ptr::null_mut()) };
+        assert_eq!(st, vokra_status_t::VOKRA_ERROR_INVALID_ARGUMENT);
+
+        // SAFETY: handles from create/open, each freed once.
+        unsafe {
+            vokra_stream_destroy(stream);
+            vokra_session_destroy(session);
+        }
     }
 
     /// The C ABI push/poll must reproduce the M0-05 Rust API exactly (T09).

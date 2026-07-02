@@ -174,3 +174,106 @@ fn string_array(file: &GgufFile, key: &str) -> Result<Vec<String>> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vokra_core::gguf::{GgufArray, GgufBuilder, GgufValueType};
+
+    fn str_array(items: &[&str]) -> GgufMetadataValue {
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::String,
+            values: items
+                .iter()
+                .map(|s| GgufMetadataValue::String((*s).to_owned()))
+                .collect(),
+        })
+    }
+
+    /// A builder carrying all 11 `vokra.piper.*` keys, each numeric field a
+    /// distinct value so a field-swap regression is caught.
+    fn valid_builder() -> GgufBuilder {
+        let mut b = GgufBuilder::new();
+        b.add_u32("vokra.piper.sample_rate", 22050);
+        b.add_u32("vokra.piper.num_symbols", 256);
+        b.add_u32("vokra.piper.num_languages", 2);
+        b.add_u32("vokra.piper.istft.n_fft", 16);
+        b.add_u32("vokra.piper.istft.hop", 5);
+        b.add_u32("vokra.piper.pqmf.subbands", 3);
+        b.add_f32("vokra.piper.noise_scale", 0.667);
+        b.add_f32("vokra.piper.length_scale", 1.1);
+        b.add_f32("vokra.piper.noise_w", 0.8);
+        b.add_metadata(
+            "vokra.piper.phoneme_symbols",
+            str_array(&["_", "^", "$", "a"]),
+        );
+        b.add_metadata("vokra.piper.language_codes", str_array(&["ja", "en"]));
+        b
+    }
+
+    fn config_of(b: &GgufBuilder) -> Result<PiperConfig> {
+        let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+        PiperConfig::from_gguf(&file)
+    }
+
+    #[test]
+    fn parses_every_field_and_derives_lookups() {
+        let cfg = config_of(&valid_builder()).expect("valid config");
+        assert_eq!(cfg.sample_rate, 22050);
+        assert_eq!(cfg.num_symbols, 256);
+        assert_eq!(cfg.num_languages, 2);
+        assert_eq!(cfg.istft_n_fft, 16);
+        assert_eq!(cfg.istft_hop, 5);
+        assert_eq!(cfg.pqmf_subbands, 3);
+        assert_eq!(cfg.noise_scale, 0.667);
+        assert_eq!(cfg.length_scale, 1.1);
+        assert_eq!(cfg.noise_w, 0.8);
+        assert_eq!(cfg.phoneme_symbols, ["_", "^", "$", "a"]);
+        assert_eq!(cfg.language_codes, ["ja", "en"]);
+        // Language id = position in the code table; absent code = None.
+        assert_eq!(cfg.language_id("ja"), Some(0));
+        assert_eq!(cfg.language_id("en"), Some(1));
+        assert_eq!(cfg.language_id("zz"), None);
+        // samples_per_frame = DEC_UP_STRIDE^2 · hop · subbands = 16 · 5 · 3.
+        assert_eq!(cfg.samples_per_frame(), 4 * 4 * 5 * 3);
+    }
+
+    #[test]
+    fn missing_key_fails_with_missing_message() {
+        // Everything except sample_rate.
+        let mut b = GgufBuilder::new();
+        b.add_u32("vokra.piper.num_symbols", 256);
+        b.add_u32("vokra.piper.num_languages", 2);
+        b.add_u32("vokra.piper.istft.n_fft", 16);
+        b.add_u32("vokra.piper.istft.hop", 5);
+        b.add_u32("vokra.piper.pqmf.subbands", 3);
+        b.add_f32("vokra.piper.noise_scale", 0.667);
+        b.add_f32("vokra.piper.length_scale", 1.1);
+        b.add_f32("vokra.piper.noise_w", 0.8);
+        b.add_metadata("vokra.piper.phoneme_symbols", str_array(&["_"]));
+        b.add_metadata("vokra.piper.language_codes", str_array(&["ja"]));
+        match config_of(&b) {
+            Err(VokraError::InvalidArgument(msg)) => {
+                assert!(msg.contains("missing"), "message was: {msg}");
+            }
+            other => panic!("expected InvalidArgument(missing), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrong_type_for_scalar_key_is_rejected() {
+        // sample_rate written as FLOAT32 instead of UINT32 (add_metadata
+        // overwrites the earlier u32 in place).
+        let mut b = valid_builder();
+        b.add_f32("vokra.piper.sample_rate", 22050.0);
+        assert!(matches!(config_of(&b), Err(VokraError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn non_array_for_table_key_is_rejected() {
+        // phoneme_symbols written as a scalar u32 instead of a string array.
+        let mut b = valid_builder();
+        b.add_u32("vokra.piper.phoneme_symbols", 3);
+        assert!(matches!(config_of(&b), Err(VokraError::InvalidArgument(_))));
+    }
+}

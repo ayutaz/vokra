@@ -133,4 +133,101 @@ mod tests {
         // Row 1 non-constant → some AC energy.
         assert!(out[5].abs() > 1e-3);
     }
+
+    #[test]
+    fn backward_and_forward_norm_two_point_dct() {
+        // Re-derived from the DCT-II definition C[k] = Σ_i x[i]·cos(π·k·(2i+1)/2N).
+        // For x = [3, 1], N = 2:
+        //   C[0] = 3·cos0 + 1·cos0                        = 4
+        //   C[1] = 3·cos(π/4) + 1·cos(3π/4) = (3−1)·√2/2  = √2
+        // Backward scales every coefficient by 2      → [8, 2√2] = [8.0, 2.8284271]
+        // Forward  scales every coefficient by 2/N = 1 → [4, √2 ] = [4.0, 1.4142135]
+        use std::f32::consts::SQRT_2;
+        let input = [3.0f32, 1.0];
+
+        let backward = dct(
+            &input,
+            1,
+            2,
+            &DctAttrs {
+                n_out: None,
+                normalization: Normalization::Backward,
+            },
+        );
+        assert!((backward[0] - 8.0).abs() < 1e-5, "{}", backward[0]);
+        assert!((backward[1] - 2.0 * SQRT_2).abs() < 1e-5, "{}", backward[1]);
+
+        let forward = dct(
+            &input,
+            1,
+            2,
+            &DctAttrs {
+                n_out: None,
+                normalization: Normalization::Forward,
+            },
+        );
+        assert!((forward[0] - 4.0).abs() < 1e-5, "{}", forward[0]);
+        assert!((forward[1] - SQRT_2).abs() < 1e-5, "{}", forward[1]);
+    }
+
+    #[test]
+    fn norm_modes_relate_to_ortho_by_analytic_scale() {
+        // All three normalizations share the same raw sum C[k]; they differ
+        // only by a per-coefficient scale, so (exact algebraic identities):
+        //   backward[0]   == ortho[0] · 2·√N
+        //   backward[k≥1] == ortho[k] · √(2N)
+        //   forward[k]    == backward[k] / N
+        // Deterministic non-trivial rows stand in for "random" input; the
+        // identities hold for every input, so a fixed varied signal suffices.
+        let n = 12usize;
+        let rows = 3usize;
+        let input: Vec<f32> = (0..rows * n)
+            .map(|i| (i as f32 * 0.7).sin() + 0.3 * (i as f32 * 0.13).cos())
+            .collect();
+
+        let ortho = dct(&input, rows, n, &DctAttrs::new());
+        let backward = dct(
+            &input,
+            rows,
+            n,
+            &DctAttrs {
+                n_out: None,
+                normalization: Normalization::Backward,
+            },
+        );
+        let forward = dct(
+            &input,
+            rows,
+            n,
+            &DctAttrs {
+                n_out: None,
+                normalization: Normalization::Forward,
+            },
+        );
+
+        let nf = n as f32;
+        let two_sqrt_n = 2.0 * nf.sqrt();
+        let sqrt_2n = (2.0 * nf).sqrt();
+        for r in 0..rows {
+            for k in 0..n {
+                let idx = r * n + k;
+                let expect_bw = if k == 0 {
+                    ortho[idx] * two_sqrt_n
+                } else {
+                    ortho[idx] * sqrt_2n
+                };
+                assert!(
+                    (backward[idx] - expect_bw).abs() <= 1e-4 * (1.0 + expect_bw.abs()),
+                    "backward[{idx}]={} expect {expect_bw}",
+                    backward[idx]
+                );
+                let expect_fw = backward[idx] / nf;
+                assert!(
+                    (forward[idx] - expect_fw).abs() <= 1e-4 * (1.0 + expect_fw.abs()),
+                    "forward[{idx}]={} expect {expect_fw}",
+                    forward[idx]
+                );
+            }
+        }
+    }
 }

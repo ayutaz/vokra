@@ -353,3 +353,59 @@ fn length_regulate(
     }
     (out, t_frames)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::config::PROSODY_DIM;
+    use super::{DP_FILTER, HIDDEN, build_x_dp, length_regulate};
+
+    #[test]
+    fn length_regulate_repeats_each_phoneme_column() {
+        // channels=2, t_phonemes=3, channel-major [2,3]:
+        //   ch0 = [1,2,3], ch1 = [4,5,6];  w_ceil = [2,1,3].
+        let features = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let (out, t_frames) = length_regulate(&features, 2, 3, &[2, 1, 3]);
+        assert_eq!(t_frames, 6);
+        // ch0 → [1,1,2,3,3,3], ch1 → [4,4,5,6,6,6] (channel-major).
+        assert_eq!(
+            out,
+            [1.0, 1.0, 2.0, 3.0, 3.0, 3.0, 4.0, 4.0, 5.0, 6.0, 6.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn length_regulate_ignores_w_ceil_past_t_phonemes() {
+        // A trailing 99 beyond t_phonemes=3 must be dropped (take(t_phonemes)).
+        let features = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let (out, t_frames) = length_regulate(&features, 2, 3, &[2, 1, 3, 99]);
+        assert_eq!(t_frames, 6);
+        assert_eq!(
+            out,
+            [1.0, 1.0, 2.0, 3.0, 3.0, 3.0, 4.0, 4.0, 5.0, 6.0, 6.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn build_x_dp_copies_hidden_then_broadcasts_prosody_bias() {
+        let t = 2;
+        // x is a ramp over HIDDEN·t, laid out channel-major.
+        let x: Vec<f32> = (0..HIDDEN * t).map(|i| i as f32).collect();
+        // Distinct bias per prosody channel so a mis-index is caught.
+        let bias: Vec<f32> = (0..PROSODY_DIM).map(|k| 100.0 + k as f32).collect();
+        let out = build_x_dp(&x, t, &bias);
+
+        assert_eq!(out.len(), DP_FILTER * t);
+        // First HIDDEN channels are the encoder output verbatim.
+        for c in 0..HIDDEN {
+            for ti in 0..t {
+                assert_eq!(out[c * t + ti], x[c * t + ti]);
+            }
+        }
+        // Prosody channels HIDDEN..DP_FILTER hold the constant bias over time.
+        for k in 0..PROSODY_DIM {
+            for ti in 0..t {
+                assert_eq!(out[(HIDDEN + k) * t + ti], bias[k]);
+            }
+        }
+    }
+}

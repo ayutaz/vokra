@@ -278,4 +278,69 @@ mod tests {
         let err = dispatch(&OpKind::MatMul, &[]).unwrap_err();
         assert!(matches!(err, VokraError::UnsupportedOp(_)));
     }
+
+    #[test]
+    fn dispatch_rejects_arity_kind_shape_and_bounds() {
+        use vokra_core::ir::graph::{DctAttrs, IstftAttrs, Normalization};
+
+        // Arity: stft expects exactly one input, given zero.
+        let e = dispatch(&OpKind::Stft(StftAttrs::new(256, 128)), &[]).unwrap_err();
+        assert!(matches!(e, VokraError::InvalidArgument(_)), "arity: {e:?}");
+
+        // Wrong value-kind: stft wants a real input, given complex.
+        let cplx = OpValue::Complex {
+            shape: vec![1, 3],
+            re: vec![0.0; 3],
+            im: vec![0.0; 3],
+        };
+        let e = dispatch(&OpKind::Stft(StftAttrs::new(256, 128)), &[cplx]).unwrap_err();
+        assert!(matches!(e, VokraError::InvalidArgument(_)), "kind: {e:?}");
+
+        // istft wants a complex input, given real.
+        let e = dispatch(
+            &OpKind::Istft(IstftAttrs::new(256, 128)),
+            &[OpValue::real(vec![4], vec![0.0; 4])],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(e, VokraError::InvalidArgument(_)),
+            "istft real: {e:?}"
+        );
+
+        // istft complex input must be 2-D [frames, bins]; give it 1-D.
+        let one_d = OpValue::Complex {
+            shape: vec![4],
+            re: vec![0.0; 4],
+            im: vec![0.0; 4],
+        };
+        let e = dispatch(&OpKind::Istft(IstftAttrs::new(256, 128)), &[one_d]).unwrap_err();
+        assert!(
+            matches!(e, VokraError::InvalidArgument(_)),
+            "istft rank: {e:?}"
+        );
+
+        // mel_filterbank: freq-bin count must equal n_fft/2+1 (= 201 here).
+        let mel = MelAttrs::new(16000, 400, 40);
+        let wrong = OpValue::real(vec![2, 100], vec![0.0; 200]);
+        let e = dispatch(&OpKind::MelFilterbank(mel), &[wrong]).unwrap_err();
+        assert!(
+            matches!(e, VokraError::InvalidArgument(_)),
+            "mel freqs: {e:?}"
+        );
+
+        // dct: n_out must not exceed the transform length n.
+        let attrs = DctAttrs {
+            n_out: Some(5),
+            normalization: Normalization::Ortho,
+        };
+        let e = dispatch(
+            &OpKind::Dct(attrs),
+            &[OpValue::real(vec![2, 4], vec![0.0; 8])],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(e, VokraError::InvalidArgument(_)),
+            "dct n_out: {e:?}"
+        );
+    }
 }

@@ -111,6 +111,7 @@ impl Backend for CpuBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vokra_core::ir::graph::StftAttrs;
     use vokra_core::{DType, GraphBuilder, TensorDesc};
 
     fn tiny_graph() -> AudioGraph {
@@ -141,6 +142,26 @@ mod tests {
         let backend = CpuBackend::new();
         let result = backend.execute(&tiny_graph());
         assert!(matches!(result, Err(VokraError::NotImplemented(_))));
+    }
+
+    #[test]
+    fn execute_rejects_unsupported_op_explicitly() {
+        // A front-end op such as `stft` (owned by `vokra-ops`, no CPU kernel
+        // here) must surface as an explicit UnsupportedOp error, never a
+        // silent skip (FR-EX-08 "no silent fallback").
+        let backend = CpuBackend::new();
+        assert!(!backend.supports(&OpKind::Stft(StftAttrs::new(400, 160))));
+
+        let mut b = GraphBuilder::new();
+        let x = b.add_tensor(TensorDesc::new("x", DType::F32, [400]));
+        let y = b.add_tensor(TensorDesc::new("y", DType::F32, [2, 201]));
+        b.add_node(OpKind::Stft(StftAttrs::new(400, 160)), &[x], &[y]);
+        b.mark_input(x);
+        b.mark_output(y);
+        let graph = b.finish().expect("structurally valid graph");
+
+        let result = backend.execute(&graph);
+        assert!(matches!(result, Err(VokraError::UnsupportedOp(_))));
     }
 
     #[test]

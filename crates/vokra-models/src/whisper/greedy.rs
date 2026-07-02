@@ -69,10 +69,46 @@ fn argmax(logits: &[f32]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::whisper::decoder::test_support::{tiny_cfg, tiny_encoder, tiny_weights};
 
     #[test]
     fn argmax_picks_first_max_on_ties() {
         assert_eq!(argmax(&[0.1, 0.5, 0.5, 0.2]), 1);
         assert_eq!(argmax(&[-1.0, -2.0, -0.5]), 2);
+    }
+
+    #[test]
+    fn empty_start_ids_is_rejected() {
+        let cfg = tiny_cfg(1);
+        let w = tiny_weights(&cfg);
+        let enc = tiny_encoder(cfg.d_model, 4);
+        let mut st = DecoderState::new(&cfg, &w, &enc).unwrap();
+        // Documented empty-prefix guard (greedy.rs line 37).
+        let err = greedy_decode(&mut st, &[], /*eot*/ 999, 8).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)), "{err:?}");
+    }
+
+    #[test]
+    fn respects_max_new_and_is_deterministic() {
+        let cfg = tiny_cfg(1);
+        let w = tiny_weights(&cfg);
+        let enc = tiny_encoder(cfg.d_model, 4);
+        let mut st = DecoderState::new(&cfg, &w, &enc).unwrap();
+
+        // eot is outside the vocab (argmax is always < n_vocab), so it can never
+        // be produced: the loop runs to the max_new cap and yields exactly that
+        // many tokens.
+        let eot = cfg.n_vocab as u32 + 100;
+        let run1 = greedy_decode(&mut st, &[1], eot, 3).unwrap();
+        assert_eq!(run1.len(), 3, "should hit the max_new cap");
+        assert!(
+            run1.iter().all(|&t| (t as usize) < cfg.n_vocab),
+            "every generated id is a valid in-vocab argmax: {run1:?}"
+        );
+
+        // greedy_decode resets the state internally, so a second call reproduces
+        // the first bit-for-bit.
+        let run2 = greedy_decode(&mut st, &[1], eot, 3).unwrap();
+        assert_eq!(run1, run2);
     }
 }

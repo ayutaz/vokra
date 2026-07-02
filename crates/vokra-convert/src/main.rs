@@ -194,3 +194,105 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Turns a `&str` slice into the owned `Vec<String>` `parse_args` expects.
+    fn args(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// Extracts the error message from a `parse_args` result (`Parsed` is not
+    /// `Debug`, so `unwrap_err` cannot be used directly).
+    fn err_of(r: Result<Parsed, String>) -> String {
+        match r {
+            Ok(_) => panic!("expected parse_args to fail"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn parses_full_valid_invocation() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "whisper-base",
+            "--input",
+            "i",
+            "--output",
+            "o",
+        ]))
+        .expect("valid args");
+        assert_eq!(parsed.model, ModelKind::WhisperBase);
+        assert_eq!(parsed.input, PathBuf::from("i"));
+        assert_eq!(parsed.output, PathBuf::from("o"));
+        assert_eq!(parsed.config, None);
+    }
+
+    #[test]
+    fn parses_piper_plus_with_config() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "piper-plus",
+            "--input",
+            "v.onnx",
+            "--config",
+            "c.json",
+            "--output",
+            "o",
+        ]))
+        .expect("valid piper args");
+        assert_eq!(parsed.model, ModelKind::PiperPlus);
+        assert_eq!(parsed.config, Some(PathBuf::from("c.json")));
+    }
+
+    #[test]
+    fn rejects_unknown_model() {
+        let err = err_of(parse_args(&args(&[
+            "--model", "bogus", "--input", "i", "--output", "o",
+        ])));
+        assert!(err.contains("unknown model"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_flag_without_value() {
+        let err = err_of(parse_args(&args(&["--model"])));
+        assert_eq!(err, "--model requires a value");
+    }
+
+    #[test]
+    fn rejects_unexpected_argument() {
+        let err = err_of(parse_args(&args(&["--stray"])));
+        assert!(err.contains("unexpected argument"), "got: {err}");
+    }
+
+    #[test]
+    fn requires_each_mandatory_field() {
+        // Missing --model (present --input/--output).
+        assert_eq!(
+            err_of(parse_args(&args(&["--input", "i", "--output", "o"]))),
+            "--model is required"
+        );
+        // Missing --input.
+        assert_eq!(
+            err_of(parse_args(&args(&[
+                "--model",
+                "whisper-base",
+                "--output",
+                "o"
+            ]))),
+            "--input is required"
+        );
+        // Missing --output.
+        assert_eq!(
+            err_of(parse_args(&args(&[
+                "--model",
+                "whisper-base",
+                "--input",
+                "i"
+            ]))),
+            "--output is required"
+        );
+    }
+}

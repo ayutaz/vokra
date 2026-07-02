@@ -445,4 +445,76 @@ mod tests {
         let hyps = beam_search(&mut s, &[0], 1, &BeamSearchConfig::greedy(5)).unwrap();
         assert_eq!(hyps[0].tokens, vec![0, 1]);
     }
+
+    #[test]
+    fn returns_best_unfinished_when_budget_exhausted_before_eot() {
+        // A model that never emits eot: token 1 is certain, eot (token 0) is
+        // -inf. When max_new_tokens runs out before any hypothesis completes,
+        // the search must fall back to the best UNFINISHED beam rather than
+        // returning nothing (the `completed.is_empty() -> active` branch).
+        struct NeverEot;
+        impl BeamScorer for NeverEot {
+            fn logprobs(&mut self, _t: &[u32]) -> Result<Vec<f32>> {
+                Ok(vec![f32::NEG_INFINITY, 0.0]) // token 1 certain; token 0 (=eot) never
+            }
+            fn vocab_size(&self) -> usize {
+                2
+            }
+        }
+        let mut s = NeverEot;
+        let hyps = beam_search(
+            &mut s,
+            &[7],
+            /* eot = */ 0,
+            &BeamSearchConfig::greedy(3),
+        )
+        .unwrap();
+        assert!(!hyps.is_empty());
+        // Prefix [7] plus exactly max_new_tokens (3) generated tokens, all of
+        // which are token 1 (never the eot token 0).
+        assert_eq!(hyps[0].tokens, vec![7, 1, 1, 1]);
+        assert_ne!(*hyps[0].tokens.last().unwrap(), 0);
+    }
+
+    #[test]
+    fn scorer_wrong_logprobs_length_is_rejected() {
+        // The defensive length check between scorer.vocab_size() and the
+        // returned logprobs vector (the model<->search contract, FR-OP-40).
+        struct BadLenScorer;
+        impl BeamScorer for BadLenScorer {
+            fn logprobs(&mut self, _t: &[u32]) -> Result<Vec<f32>> {
+                Ok(vec![0.0, 0.0, 0.0]) // length 3 ...
+            }
+            fn vocab_size(&self) -> usize {
+                4 // ... but claims a vocab of 4.
+            }
+        }
+        let mut s = BadLenScorer;
+        match beam_search(&mut s, &[0], EOT, &BeamSearchConfig::greedy(4)) {
+            Err(VokraError::InvalidArgument(msg)) => {
+                assert!(msg.contains("logprobs"), "unexpected message: {msg}");
+            }
+            other => panic!("expected InvalidArgument for the length mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scorer_error_is_propagated() {
+        // An Err from the scorer surfaces verbatim through beam_search (the
+        // `scorer.logprobs(...)?` propagation).
+        struct ErrScorer;
+        impl BeamScorer for ErrScorer {
+            fn logprobs(&mut self, _t: &[u32]) -> Result<Vec<f32>> {
+                Err(VokraError::InvalidArgument("boom".into()))
+            }
+            fn vocab_size(&self) -> usize {
+                2
+            }
+        }
+        let mut s = ErrScorer;
+        match beam_search(&mut s, &[0], EOT, &BeamSearchConfig::greedy(4)) {
+            Err(VokraError::InvalidArgument(msg)) => assert_eq!(msg, "boom"),
+            other => panic!("expected the scorer's own InvalidArgument, got {other:?}"),
+        }
+    }
 }

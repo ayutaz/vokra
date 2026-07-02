@@ -299,4 +299,52 @@ pub(crate) mod tests {
         let _ = std::fs::remove_file(&path);
         assert!(matches!(result, Err(VokraError::ModelLoad(_))));
     }
+
+    #[test]
+    fn open_vad_stream_without_engine_is_not_implemented() {
+        // The None branch: no VAD engine injected -> explicit NotImplemented,
+        // mirroring the ASR/TTS facade fallbacks (never a silent no-op).
+        let file = TempModelFile::new("vad-none");
+        let session = Session::from_file(&file.0).build().expect("session builds");
+        assert!(matches!(
+            session.open_vad_stream(),
+            Err(VokraError::NotImplemented(_))
+        ));
+    }
+
+    #[test]
+    fn open_vad_stream_delegates_to_injected_engine() {
+        // A fake VAD engine whose stream yields canned probabilities, so the
+        // Some-branch delegation (with_vad_engine -> open_vad_stream -> handle)
+        // is verified in-crate without a real Silero model or fixture GGUF.
+        struct FakeVadStream;
+        impl VadStreamHandle for FakeVadStream {
+            fn push_pcm(&mut self, _pcm: &[f32], _sample_rate: u32) -> Result<Vec<f32>> {
+                Ok(vec![0.9, 0.1])
+            }
+            fn reset(&mut self) {}
+        }
+        struct FakeVad;
+        impl VadEngine for FakeVad {
+            fn open_stream(&self) -> Box<dyn VadStreamHandle + Send> {
+                Box::new(FakeVadStream)
+            }
+        }
+
+        let file = TempModelFile::new("vad-fake");
+        let session = Session::from_file(&file.0)
+            .build()
+            .expect("session builds")
+            .with_vad_engine(Arc::new(FakeVad));
+
+        let mut handle = session.open_vad_stream().expect("vad stream opens");
+        // The canned per-frame probabilities from the fake engine flow back
+        // through the boxed handle unchanged.
+        assert_eq!(
+            handle.push_pcm(&[0.0; 512], 16_000).unwrap(),
+            vec![0.9, 0.1]
+        );
+        // reset() is reachable through the trait object (a no-op on the fake).
+        handle.reset();
+    }
 }

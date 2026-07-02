@@ -67,3 +67,70 @@ impl TensorStore {
         self.tensor(name)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vokra_core::gguf::GgufBuilder;
+
+    fn f32_le(vals: &[f32]) -> Vec<u8> {
+        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    /// A store holding an F32 tensor `w = [1,2,3]` and an F16 tensor `h`.
+    fn store_with_w_and_h() -> TensorStore {
+        let mut b = GgufBuilder::new();
+        b.add_tensor("w", GgmlType::F32, vec![3], f32_le(&[1.0, 2.0, 3.0]))
+            .expect("add F32 tensor");
+        // Two bytes = one F16 element (value is irrelevant to the dtype check).
+        b.add_tensor("h", GgmlType::F16, vec![1], vec![0u8, 0u8])
+            .expect("add F16 tensor");
+        let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+        TensorStore::new(file)
+    }
+
+    #[test]
+    fn f32_tensor_and_shape_roundtrip() {
+        // Oracle is the exact bytes written in — a pure roundtrip.
+        let store = store_with_w_and_h();
+        assert_eq!(store.tensor("w").expect("w"), vec![1.0, 2.0, 3.0]);
+        assert_eq!(store.shape("w").expect("shape w"), vec![3]);
+        assert_eq!(
+            store.tensor_shaped("w", &[3]).expect("shaped w"),
+            vec![1.0, 2.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn missing_tensor_and_shape_fail_loudly() {
+        let store = store_with_w_and_h();
+        assert!(matches!(
+            store.tensor("nope"),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            store.shape("nope"),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn non_f32_dtype_is_rejected() {
+        // The converter widens every weight to F32; an F16 tensor is a bug and
+        // must be rejected rather than misread.
+        let store = store_with_w_and_h();
+        assert!(matches!(
+            store.tensor("h"),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn wrong_shape_assertion_is_rejected() {
+        let store = store_with_w_and_h();
+        assert!(matches!(
+            store.tensor_shaped("w", &[2]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+}

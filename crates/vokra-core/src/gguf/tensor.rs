@@ -95,3 +95,35 @@ impl GgufTensorInfo {
         elems.checked_mul(elem_size).ok_or(GgufError::Overflow)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{GgmlType, GgufTensorInfo};
+    use crate::gguf::{GgufBuilder, GgufFile};
+
+    #[test]
+    fn rank0_scalar_element_count_and_byte_len() {
+        // A rank-0 (no-dimension) tensor is a single scalar element, matching
+        // ggml: element_count is the empty product 1, byte_len is one F32.
+        let scalar = GgufTensorInfo {
+            name: "s".to_owned(),
+            dimensions: vec![],
+            dtype: GgmlType::F32,
+            offset: 0,
+        };
+        assert_eq!(scalar.element_count().unwrap(), 1);
+        assert_eq!(scalar.byte_len().unwrap(), 4);
+    }
+
+    #[test]
+    fn rank0_scalar_tensor_roundtrips() {
+        // Writing and reading a scalar F32 tensor preserves both its 4 payload
+        // bytes and its empty-dimensions shape.
+        let mut b = GgufBuilder::new();
+        b.add_tensor("s", GgmlType::F32, vec![], vec![7, 8, 9, 10])
+            .expect("scalar is a valid 4-byte F32 payload");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        assert_eq!(file.tensor_data("s").unwrap(), [7u8, 8, 9, 10].as_slice());
+        assert!(file.tensor_info("s").unwrap().dimensions.is_empty());
+    }
+}

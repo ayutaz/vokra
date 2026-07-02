@@ -352,6 +352,30 @@ mod tests {
     }
 
     #[test]
+    fn f16_decoding_handles_subnormals_and_nan() {
+        // exp == 0, mant != 0 (subnormal branch): 0x0001 is the smallest
+        // positive half, value = 1 * 2^-24; the sign bit negates it.
+        assert_eq!(f16_to_f32(0x0001), 2f32.powi(-24));
+        assert_eq!(f16_to_f32(0x8001), -2f32.powi(-24));
+        // exp == 0x1f, mant != 0 (NaN branch), both signs.
+        assert!(f16_to_f32(0x7E00).is_nan());
+        assert!(f16_to_f32(0xFE00).is_nan());
+    }
+
+    #[test]
+    fn decode_f32_rejects_misaligned_payload_length() {
+        // F32 payload must be a multiple of 4, F16 a multiple of 2.
+        assert!(matches!(
+            decode_f32("x", GgmlType::F32, &[0u8; 5]),
+            Err(VokraError::ModelLoad(_))
+        ));
+        assert!(matches!(
+            decode_f32("x", GgmlType::F16, &[0u8; 3]),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
+    #[test]
     fn linear_is_transposed_to_in_out() {
         // weight [out=2, in=3] = [[1,2,3],[4,5,6]]; bias [10,20].
         let mut b = GgufBuilder::new();

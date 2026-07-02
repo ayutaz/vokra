@@ -145,4 +145,28 @@ mod tests {
             assert!((w[i] - w[32 - i]).abs() < 1e-6);
         }
     }
+
+    #[test]
+    fn degenerate_lengths_hit_the_early_return_guards() {
+        // length 0 ⇒ empty; length 1 ⇒ [1.0]. The length-1 guard matters: the
+        // symmetric denom = length-1 = 0, so without it cosine_sum / kaiser
+        // would divide by zero and produce NaN.
+        assert!(window(Window::Hann, 0, WindowSymmetry::Periodic).is_empty());
+        assert!(window(Window::Hann, 0, WindowSymmetry::Symmetric).is_empty());
+        assert!(window(Window::Kaiser { beta: 8.0 }, 0, WindowSymmetry::Periodic).is_empty());
+        assert!(window(Window::Kaiser { beta: 8.0 }, 0, WindowSymmetry::Symmetric).is_empty());
+
+        for sym in [WindowSymmetry::Periodic, WindowSymmetry::Symmetric] {
+            for kind in [
+                Window::Hann,
+                Window::Hamming,
+                Window::BlackmanHarris,
+                Window::Kaiser { beta: 8.0 },
+            ] {
+                let w = window(kind, 1, sym);
+                assert_eq!(w, vec![1.0], "{kind:?}/{sym:?}");
+                assert!(w.iter().all(|v| v.is_finite()), "{kind:?}/{sym:?}");
+            }
+        }
+    }
 }

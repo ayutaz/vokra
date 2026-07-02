@@ -642,6 +642,46 @@ mod tests {
         assert!((half_to_f32(0x0001) - 2f32.powi(-24)).abs() < 1e-30);
     }
 
+    #[test]
+    fn half_to_f32_handles_inf_nan_and_signed_zero() {
+        // exp==0x1F, mant==0 -> +/-infinity.
+        assert_eq!(half_to_f32(0x7C00), f32::INFINITY);
+        assert_eq!(half_to_f32(0xFC00), f32::NEG_INFINITY);
+        // exp==0x1F, mant!=0 -> NaN (both signs).
+        assert!(half_to_f32(0x7E00).is_nan());
+        assert!(half_to_f32(0xFE00).is_nan());
+        // 0x8000 is negative zero: == 0.0 compares equal, so pin the sign bit.
+        let neg_zero = half_to_f32(0x8000);
+        assert_eq!(neg_zero, 0.0);
+        assert!(neg_zero.is_sign_negative());
+    }
+
+    #[test]
+    fn config_missing_required_fields_errors() {
+        let onnx = model(&[], &[]);
+        // Missing num_symbols.
+        assert!(matches!(
+            convert(&onnx, br#"{"audio": {"sample_rate": 22050}}"#),
+            Err(ConvertError::Parse(_))
+        ));
+        // Missing audio.sample_rate.
+        assert!(matches!(
+            convert(&onnx, br#"{"num_symbols": 3}"#),
+            Err(ConvertError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn config_noise_scale_w_alias_populates_noise_w() {
+        // piper-plus configs may spell the stochastic-duration noise scale
+        // `noise_scale_w`; the converter must read it into vokra.piper.noise_w.
+        let onnx = model(&[], &[]);
+        let cfg = br#"{"audio": {"sample_rate": 22050}, "num_symbols": 3, "inference": {"noise_scale_w": 0.5}}"#;
+        let (builder, _report) = convert(&onnx, cfg).unwrap();
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        assert_eq!(file.get(KEY_NOISE_W), Some(&GgufMetadataValue::F32(0.5)));
+    }
+
     // --- protobuf encoders (test-only) ---
     fn varint(out: &mut Vec<u8>, mut v: u64) {
         loop {

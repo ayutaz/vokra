@@ -424,6 +424,16 @@ mod tests {
     }
 
     #[test]
+    fn abs_to_rel_shifts_values() {
+        // T=2, x = [[1,2],[3,4]]. Algorithm: prepend T=2 zeros; per row append
+        // the row then T-1=1 zero → flat = [0,0, 1,2,0, 3,4,0]; view as [T,2T]
+        // = [[0,0,1,2],[0,3,4,0]] and drop the first column → [[0,1,2],[3,4,0]].
+        let x = [1., 2., 3., 4.];
+        let out = abs_to_rel(&x, 2);
+        assert_eq!(out, [0.0, 1.0, 2.0, 3.0, 4.0, 0.0]);
+    }
+
+    #[test]
     fn get_rel_embeddings_length() {
         // window=4 → 9 rows. T=3 → need 2T-1=5 rows, no padding (slice inside).
         let emb: Vec<f32> = (0..9 * K_CHANNELS).map(|i| i as f32).collect();

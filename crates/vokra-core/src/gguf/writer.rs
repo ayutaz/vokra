@@ -455,4 +455,15 @@ mod tests {
         assert_eq!(file.get("k"), Some(&GgufMetadataValue::U32(2)));
         assert_eq!(file.metadata().len(), 1);
     }
+
+    #[test]
+    fn too_many_dimensions_is_rejected() {
+        // The builder caps rank at MAX_TENSOR_DIMS (4); five dims is malformed
+        // and is rejected before the payload-length check runs.
+        let mut b = GgufBuilder::new();
+        let err = b
+            .add_tensor("t", GgmlType::F32, vec![1, 1, 1, 1, 1], vec![0u8; 4])
+            .unwrap_err();
+        assert!(matches!(err, GgufError::TooManyDimensions(5)));
+    }
 }

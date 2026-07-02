@@ -295,4 +295,81 @@ mod tests {
             );
         }
     }
+
+    /// Builds an all-F32 safetensors buffer from `(name, shape)` descriptors,
+    /// laid out contiguously with zero payloads. Only the shapes drive
+    /// hyperparameter derivation, so the data is left zeroed to keep the buffer
+    /// small (a full embed_tokens `[51865, 128]` would be ~26 MB).
+    fn synthetic_checkpoint(tensors: &[(&str, &[u64])]) -> Vec<u8> {
+        let mut cursor = 0usize;
+        let mut entries = Vec::new();
+        for &(name, shape) in tensors {
+            let elems: u64 = shape.iter().product();
+            let span = elems as usize * 4; // F32
+            let begin = cursor;
+            let end = cursor + span;
+            cursor = end;
+            let dims = shape
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            entries.push(format!(
+                r#""{name}":{{"dtype":"F32","shape":[{dims}],"data_offsets":[{begin},{end}]}}"#
+            ));
+        }
+        let header = format!("{{{}}}", entries.join(","));
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&vec![0u8; cursor]);
+        out
+    }
+
+    #[test]
+    fn write_hparams_derives_values_from_tensor_shapes() {
+        // Shapes chosen so every derived hparam is distinct and hand-verifiable.
+        // Trailing (unread) dims are shrunk to 1: derivation reads only shape[0]
+        // (or shape[1] for n_mels), so this changes no derived value.
+        let ckpt = synthetic_checkpoint(&[
+            ("model.encoder.conv1.weight", &[128, 80, 3]),
+            ("model.encoder.embed_positions.weight", &[1500, 1]),
+            ("model.decoder.embed_positions.weight", &[448, 1]),
+            ("model.decoder.embed_tokens.weight", &[51865, 1]),
+            ("model.encoder.layers.0.fc1.weight", &[512, 1]),
+            ("model.encoder.layers.1.mlp.fc2.weight", &[2, 2]),
+            ("model.decoder.layers.0.self_attn.q_proj.weight", &[2, 2]),
+        ]);
+
+        let file = GgufFile::parse(convert(ckpt).unwrap().to_bytes().unwrap()).unwrap();
+        let u = |k: &str| file.get(k).and_then(|v| v.as_u64());
+
+        // d_model / n_mels from conv1 [d_model, n_mels, 3]; n_head = d_model/64.
+        assert_eq!(u(KEY_N_AUDIO_STATE), Some(128));
+        assert_eq!(u(KEY_N_TEXT_STATE), Some(128));
+        assert_eq!(u(KEY_N_MELS), Some(80));
+        assert_eq!(u(KEY_N_AUDIO_HEAD), Some(2)); // 128 / 64
+        assert_eq!(u(KEY_N_TEXT_HEAD), Some(2));
+        // Positional / vocab / ffn widths from tensor shape[0].
+        assert_eq!(u(KEY_N_AUDIO_CTX), Some(1500));
+        assert_eq!(u(KEY_N_TEXT_CTX), Some(448));
+        assert_eq!(u(KEY_N_VOCAB), Some(51865));
+        assert_eq!(u(KEY_FFN_DIM), Some(512));
+        // Contiguous layer counts: encoder blocks 0 and 1, decoder only 0.
+        assert_eq!(u(KEY_N_AUDIO_LAYER), Some(2));
+        assert_eq!(u(KEY_N_TEXT_LAYER), Some(1));
+        // Fixed Whisper constants (documented in this module's source).
+        assert_eq!(u(KEY_EOT), Some(u64::from(WHISPER_EOT)));
+        assert_eq!(WHISPER_EOT, 50257);
+
+        let ids: Vec<u64> = file
+            .get(KEY_DECODER_START_IDS)
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .values
+            .iter()
+            .map(|v| v.as_u64().unwrap())
+            .collect();
+        assert_eq!(ids, vec![50258, 50259, 50359, 50363]);
+    }
 }

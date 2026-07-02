@@ -178,6 +178,49 @@ mod tests {
     }
 
     #[test]
+    fn build_session_rejects_unsupported_arch() {
+        // A GGUF whose `vokra.model.arch` is a valid string but not an M0 model.
+        // This is a *different* error class (InvalidArgument) from the missing
+        // -arch case (ModelLoad): a present-but-unknown arch is a bad argument.
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "gpt2");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!("vokra-capi-gpt2-{}.gguf", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = build_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(result, Err(VokraError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn create_from_file_rejects_null_path_and_null_out() {
+        // NULL path: rejected by `required_str` before anything is built.
+        let mut session: *mut vokra_session_t = std::ptr::null_mut();
+        // SAFETY: NULL path is the rejected branch; out_session is a writable slot.
+        let st = unsafe { vokra_session_create_from_file(std::ptr::null(), &mut session) };
+        assert_eq!(st, vokra_status_t::VOKRA_ERROR_INVALID_ARGUMENT);
+        assert!(
+            session.is_null(),
+            "out_session is untouched on the reject path"
+        );
+
+        // Valid (UTF-8) path but NULL out_session: rejected by `require_out_ptr`
+        // before `build_session`, so the path need not exist.
+        let cpath = std::ffi::CString::new("/no/such/vokra/model.gguf").unwrap();
+        // SAFETY: valid C path; NULL out_session is the rejected branch.
+        let st = unsafe { vokra_session_create_from_file(cpath.as_ptr(), std::ptr::null_mut()) };
+        assert_eq!(st, vokra_status_t::VOKRA_ERROR_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn destroy_null_is_noop() {
+        // Documented: `NULL` is a no-op (must not deref / panic).
+        // SAFETY: NULL handle is the explicit no-op branch.
+        unsafe { vokra_session_destroy(std::ptr::null_mut()) };
+    }
+
+    #[test]
     fn version_is_nul_terminated_and_matches_crate() {
         let ptr = vokra_version();
         assert!(!ptr.is_null());

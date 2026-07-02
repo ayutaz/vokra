@@ -274,4 +274,61 @@ mod tests {
             Err(VokraError::ModelLoad(_))
         ));
     }
+
+    #[test]
+    fn n_text_state_not_equal_d_model_is_rejected() {
+        // The encoder/decoder d_model cross-check (config.rs line 109): a
+        // mis-converted model whose text state disagrees with the audio state.
+        let mut b = valid_builder();
+        b.add_u32(KEY_N_TEXT_STATE, 256); // != n_audio_state (512)
+        assert!(matches!(
+            WhisperConfig::from_gguf(&parse(b)),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
+    #[test]
+    fn empty_decoder_start_ids_is_rejected() {
+        let mut b = valid_builder();
+        b.add_metadata(
+            KEY_DECODER_START_IDS,
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::U32,
+                values: Vec::new(),
+            }),
+        );
+        assert!(matches!(
+            WhisperConfig::from_gguf(&parse(b)),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
+    #[test]
+    fn non_array_decoder_start_ids_is_rejected() {
+        // A scalar overwrites the array: req_u32_array's not-an-array branch.
+        let mut b = valid_builder();
+        b.add_u32(KEY_DECODER_START_IDS, 50258);
+        assert!(matches!(
+            WhisperConfig::from_gguf(&parse(b)),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
+    #[test]
+    fn out_of_u32_range_decoder_start_element_is_rejected() {
+        // A u64 element beyond u32::MAX exercises req_u32_array's bad-element
+        // path (config.rs line 181).
+        let mut b = valid_builder();
+        b.add_metadata(
+            KEY_DECODER_START_IDS,
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::U64,
+                values: vec![GgufMetadataValue::U64(u64::from(u32::MAX) + 1)],
+            }),
+        );
+        assert!(matches!(
+            WhisperConfig::from_gguf(&parse(b)),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
 }

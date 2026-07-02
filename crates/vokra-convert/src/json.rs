@@ -384,4 +384,41 @@ mod tests {
     fn rejects_unterminated_string() {
         assert!(parse(br#""abc"#).is_err());
     }
+
+    #[test]
+    fn decodes_bmp_unicode_escapes() {
+        // é is 'é' (U+00E9); A is 'A' — both Basic-Multilingual-Plane.
+        assert_eq!(parse(br#""\u00e9""#).unwrap().as_str(), Some("é"));
+        assert_eq!(parse(br#""\u0041""#).unwrap().as_str(), Some("A"));
+    }
+
+    #[test]
+    fn decodes_utf16_surrogate_pair() {
+        // U+1F600 😀 is encoded as the UTF-16 surrogate pair 😀; the
+        // decoder must reconstruct 0x10000 + ((hi-0xD800)<<10) + (lo-0xDC00).
+        assert_eq!(parse(br#""\uD83D\uDE00""#).unwrap().as_str(), Some("😀"));
+    }
+
+    #[test]
+    fn rejects_bad_surrogates_and_invalid_hex() {
+        // Lone high surrogate with no following low surrogate.
+        assert!(parse(br#""\uD800""#).is_err());
+        // High surrogate followed by a non-low-surrogate code point (A).
+        assert!(parse(br#""\uD800A""#).is_err());
+        // Non-hex digits after \u.
+        assert!(parse(br#""\uZZZZ""#).is_err());
+        // Fewer than four hex digits before the closing quote (truncated).
+        assert!(parse(br#""\uD8""#).is_err());
+    }
+
+    #[test]
+    fn parses_number_edge_cases() {
+        assert_eq!(parse(b"-5").unwrap(), JsonValue::Int(-5));
+        assert_eq!(parse(b"1e3").unwrap(), JsonValue::Float(1000.0));
+        // An integer literal that overflows i64 falls back to Float.
+        assert!(matches!(
+            parse(b"99999999999999999999").unwrap(),
+            JsonValue::Float(_)
+        ));
+    }
 }

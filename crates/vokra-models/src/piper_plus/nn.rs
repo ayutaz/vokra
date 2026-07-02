@@ -254,6 +254,22 @@ mod tests {
     }
 
     #[test]
+    fn conv_transpose_with_padding_trims_symmetrically() {
+        // x=[1,2] (1ch,len2), weight [1,1,4]=[1,2,3,4], stride 2, pad 1.
+        // out_len = (2-1)·2 + 4 - 2·1 = 4.
+        // ConvTranspose1d scatters out[i·stride + k − pad] += x[i]·w[k], dropping
+        // taps outside [0,out_len). The full (pad=0) output is [1,2,5,8,6,8];
+        // trimming pad=1 from BOTH ends leaves the middle four = [2,5,8,6].
+        // (The audit's proposed [1,4,7,6] mixed the pad convention between the
+        //  two input taps and is not what this — standard — kernel produces.)
+        let x = [1.0, 2.0];
+        let w = [1.0, 2.0, 3.0, 4.0];
+        let (out, tout) = conv_transpose1d(&x, 1, 2, &w, 1, 4, None, 2, 1, 1);
+        assert_eq!(tout, 4);
+        assert_eq!(out, [2.0, 5.0, 8.0, 6.0]);
+    }
+
+    #[test]
     fn conv_transpose_groups_independent() {
         // 2 subbands, groups=2, stride 2, weight [2,1,2].
         let x = [1.0, 0.0, /* ch1 */ 0.0, 3.0];
@@ -281,6 +297,20 @@ mod tests {
         assert!(gelu(0.0).abs() < 1e-6);
         // GELU(1) ≈ 0.8413.
         assert!((gelu(1.0) - 0.841_345).abs() < 1e-4);
+    }
+
+    #[test]
+    fn softplus_reference_point_and_large_x_guard() {
+        // softplus(0) = ln(1+1) = ln 2.
+        assert!((softplus(0.0) - std::f32::consts::LN_2).abs() < 1e-6);
+        // Large-x guard (x > 20): returns x exactly, avoiding exp(x) overflow.
+        assert_eq!(softplus(40.0), 40.0);
+        // Large negative x: softplus is ln of a value >= 1, so it is
+        // non-negative and here underflows to ~0. (The audit's `> 0.0` is not
+        // reachable in f32: e^-40 vanishes in the `1.0 + ..` add, giving exactly
+        // 0.0 — so the sound bound is 0 <= softplus(-40) < 1e-6.)
+        let neg = softplus(-40.0);
+        assert!((0.0..1e-6).contains(&neg), "softplus(-40) = {neg}");
     }
 
     #[test]

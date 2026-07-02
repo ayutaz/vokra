@@ -11,8 +11,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use vokra_core::AsrEngine;
+use vokra_core::decode::BeamSearchConfig;
 use vokra_core::gguf::GgufFile;
 use vokra_models::whisper::WhisperModel;
+use vokra_models::whisper::asr::WhisperAsr;
 use vokra_models::whisper::greedy::greedy_decode;
 use vokra_models::whisper::mel::{self, N_FRAMES};
 use vokra_models::whisper::tokenizer::WhisperTokenizer;
@@ -127,6 +130,13 @@ fn load_model() -> Option<WhisperModel> {
     let path = std::env::var_os("VOKRA_WHISPER_GGUF")?;
     let file = GgufFile::open(&path).expect("open VOKRA_WHISPER_GGUF");
     Some(WhisperModel::from_gguf(&file).expect("load whisper model"))
+}
+
+/// Opens the converted GGUF named by `VOKRA_WHISPER_GGUF`, or `None` to skip
+/// (the `WhisperAsr` end-to-end test needs the file, not just the model).
+fn load_gguf_file() -> Option<GgufFile> {
+    let path = std::env::var_os("VOKRA_WHISPER_GGUF")?;
+    Some(GgufFile::open(&path).expect("open VOKRA_WHISPER_GGUF"))
 }
 
 macro_rules! require_model {
@@ -276,6 +286,71 @@ fn greedy_transcript_parity() {
         .find(|(ids, _)| ids == &tokens)
         .expect("greedy tokens present as a samples.txt case");
     assert_eq!(text, expected_text, "greedy transcript");
+}
+
+#[test]
+fn asr_beam_width_one_equals_greedy_and_renders() {
+    // Exercises the otherwise-untested asr.rs surface: WhisperBeamScorer (via
+    // transcribe_tokens_beam) and AsrEngine::transcribe / render. Same
+    // skip-cleanly gate as the other GGUF-backed tests.
+    let file = match load_gguf_file() {
+        Some(f) => f,
+        None => {
+            eprintln!("skip: set VOKRA_WHISPER_GGUF to the converted whisper-base.gguf");
+            return;
+        }
+    };
+    let pcm = read_f32("input_pcm.f32");
+
+    let asr = WhisperAsr::from_gguf(&file).expect("load whisper asr");
+    let prefix = asr.model().config().decoder_start_ids.clone();
+    let eot = asr.model().config().eot;
+
+    // Internal oracle: a width-1 beam makes the same argmax decisions as greedy.
+    // `beam_search` returns the whole hypothesis (forced prefix included) while
+    // `transcribe_tokens` (greedy) returns only the generated suffix, so the
+    // sound relationship is `beam == prefix ++ greedy`.
+    let greedy = asr.transcribe_tokens(&pcm).expect("greedy tokens");
+    let beam = asr
+        .transcribe_tokens_beam(&pcm, &BeamSearchConfig::greedy(64))
+        .expect("beam tokens");
+    let mut expected = prefix;
+    expected.extend_from_slice(&greedy);
+    assert_eq!(
+        beam, expected,
+        "beam_width=1 must reproduce greedy's decisions"
+    );
+
+    // Detokenized render: attach the fixture tokenizer and check the assembled
+    // transcription equals the greedy detokenization.
+    let blob = std::fs::read(fixtures_dir().join("tokenizer.bin")).expect("tokenizer.bin");
+    let tok = WhisperTokenizer::from_bytes(&blob, eot).expect("tokenizer");
+    let detok = tok.decode(&greedy).expect("decode");
+    let asr_with = WhisperAsr::from_gguf(&file)
+        .expect("load whisper asr")
+        .with_tokenizer(tok);
+    assert_eq!(
+        asr_with.transcribe(&pcm).expect("transcribe").text,
+        detok,
+        "AsrEngine::transcribe must equal the greedy detokenization"
+    );
+
+    // Without a tokenizer (the M0 converter embeds none) render falls back to
+    // the bracketed id list; a future GGUF that embeds one would detokenize
+    // instead, so accept either sound rendering.
+    let bracketed = format!(
+        "[no tokenizer; token ids: {}]",
+        greedy
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let default_text = asr.transcribe(&pcm).expect("transcribe").text;
+    assert!(
+        default_text == bracketed || default_text == detok,
+        "default render was neither the bracketed fallback nor the detokenization: {default_text:?}"
+    );
 }
 
 fn argmax(v: &[f32]) -> u32 {

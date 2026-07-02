@@ -102,11 +102,67 @@ mod tests {
     use vokra_core::engines::{VadEngine, VadStreamHandle};
 
     use crate::silero_vad::SileroVadV5;
+    use crate::silero_vad::wav::read_wav_f32;
+    use crate::silero_vad::{parity_dir, test_gguf_path};
 
     fn stream() -> Box<dyn VadStreamHandle + Send> {
-        SileroVadV5::open(crate::silero_vad::test_gguf_path())
+        SileroVadV5::open(test_gguf_path())
             .expect("load fixture gguf")
             .open_stream()
+    }
+
+    /// Minimal reproducible xorshift64* PRNG (same construction as
+    /// `vokra-backend-cpu/tests/differential.rs`), used to pick irregular chunk
+    /// boundaries without an external `rand` dependency.
+    struct Rng(u64);
+
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Rng(seed | 1)
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+    }
+
+    /// Property: with LSTM state carried across non-overlapping fixed frames,
+    /// the per-frame probabilities must not depend on how the *same* PCM is
+    /// split across `push_pcm` calls. A whole-utterance push and the identical
+    /// samples re-split into irregular chunks must yield bit-identical output.
+    /// Oracle is internal self-consistency; no external reference.
+    fn assert_chunk_invariant(wav_name: &str, hz: u32) {
+        let model = SileroVadV5::open(test_gguf_path()).expect("load fixture gguf");
+        let wav = read_wav_f32(parity_dir().join(wav_name)).expect("read fixture wav");
+        assert_eq!(wav.sample_rate, hz, "fixture rate");
+
+        // (a) one whole-utterance push.
+        let mut whole = model.open_stream();
+        let probs_whole = whole.push_pcm(&wav.samples, hz).unwrap();
+        assert!(!probs_whole.is_empty(), "fixture yields at least one frame");
+
+        // (b) the same samples re-split into irregular chunks (sizes 1..=700,
+        // straddling the 256/512-sample frame boundary and single-sample pushes).
+        let mut split = model.open_stream();
+        let mut probs_split = Vec::new();
+        let mut rng = Rng::new(0x5EED_51E1);
+        let mut i = 0;
+        while i < wav.samples.len() {
+            let remaining = wav.samples.len() - i;
+            let len = (1 + (rng.next_u64() % 700) as usize).min(remaining);
+            probs_split.extend(split.push_pcm(&wav.samples[i..i + len], hz).unwrap());
+            i += len;
+        }
+
+        assert_eq!(
+            probs_whole, probs_split,
+            "{hz} Hz: framing must be chunk-invariant"
+        );
     }
 
     #[test]
@@ -138,5 +194,15 @@ mod tests {
         s.reset();
         let b = s.push_pcm(&vec![0.1; 512 * 3], 16000).unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn push_pcm_is_chunk_invariant_16k() {
+        assert_chunk_invariant("test_16k.wav", 16000);
+    }
+
+    #[test]
+    fn push_pcm_is_chunk_invariant_8k() {
+        assert_chunk_invariant("test_8k.wav", 8000);
     }
 }

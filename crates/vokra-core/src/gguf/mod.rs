@@ -224,3 +224,29 @@ impl From<GgufError> for crate::VokraError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::VokraError;
+    use std::io;
+
+    #[test]
+    fn gguf_error_maps_to_vokra_error_at_boundary() {
+        // Every non-Io variant collapses to ModelLoad(string) (FR-API-02)...
+        let mapped = VokraError::from(GgufError::BadMagic([0; 4]));
+        assert!(matches!(mapped, VokraError::ModelLoad(_)));
+        // ...but Io is routed to Io so callers keep the io::ErrorKind source.
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "x");
+        let mapped = VokraError::from(GgufError::Io(io_err));
+        assert!(matches!(mapped, VokraError::Io(_)));
+    }
+
+    #[test]
+    fn open_nonexistent_path_is_io_error() {
+        // `open` is the only Io-producing entry point; a missing file must
+        // surface GgufError::Io rather than a parse error.
+        let err = GgufFile::open("/no/such/vokra/file.gguf").unwrap_err();
+        assert!(matches!(err, GgufError::Io(_)));
+    }
+}
