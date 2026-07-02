@@ -1,0 +1,18 @@
+[package]
+name = "vokra-convert"
+description = "Vokra offline model conversion tool: convert upstream safetensors / ONNX checkpoints into GGUF with vokra.* metadata (M0-03, FR-TL-01). NOT part of the runtime — it isolates the ONNX/protobuf handling that FR-LD-05 forbids in the runtime crates."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Dependency isolation is the whole point of this crate (FR-LD-05, NFR-DS-02):
+# the only dependency is `vokra-core` (for its GGUF writer). safetensors, JSON
+# and ONNX/protobuf decoding are all hand-written here with std only — no
+# external crates — so no protobuf/onnx dependency can leak toward the runtime.
+[dependencies]
+vokra-core.workspace = true
+
+[lints]
+workspace = true

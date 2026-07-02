@@ -75,6 +75,7 @@
 
 pub mod backend;
 pub mod error;
+pub mod gguf;
 pub mod ir;
 pub mod pipeline;
 pub mod session;
@@ -83,6 +84,7 @@ pub mod tasks;
 
 pub use backend::{Backend, BackendKind};
 pub use error::{Result, VokraError};
+pub use gguf::{FrontendSpec, GgmlType, GgufBuilder, GgufError, GgufFile, GgufTensorInfo};
 pub use ir::{AudioGraph, DType, GraphBuilder, Node, OpKind, TensorDesc, TensorId};
 pub use pipeline::{AudioPipeline, Pipeline, PipelineStage};
 pub use session::{Session, SessionBuilder};

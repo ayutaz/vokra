@@ -19,15 +19,18 @@ use std::sync::atomic::AtomicU64;
 
 use crate::backend::BackendKind;
 use crate::error::{Result, VokraError};
+use crate::gguf::GgufFile;
 
-/// Placeholder handle for the loaded model (M0-02).
+/// Handle for the loaded model.
 ///
-/// Only the source path is retained. Real model data arrives when the GGUF
-/// loader is wired in **M0-03** (FR-LD-01/02). An ONNX loader will *never*
-/// be wired (FR-LD-05, permanent constraint).
+/// Holds the source path and the parsed GGUF container. The GGUF loader is
+/// wired here in **M0-03** (FR-LD-01/02): the weights are lent as zero-copy
+/// slices by [`GgufFile`]. An ONNX loader will *never* be wired (FR-LD-05,
+/// permanent constraint).
 #[derive(Debug)]
 pub(crate) struct ModelHandle {
     pub(crate) path: PathBuf,
+    pub(crate) gguf: GgufFile,
 }
 
 /// Shared, immutable core of a [`Session`] (also referenced by
@@ -80,6 +83,15 @@ impl Session {
     pub fn model_path(&self) -> &Path {
         &self.inner.model.path
     }
+
+    /// The parsed GGUF container backing this session (wired in M0-03).
+    ///
+    /// Downstream native model implementations (e.g. Whisper base in M0-06)
+    /// read tensors from here via [`GgufFile::tensor_data`] and metadata via
+    /// [`GgufFile::get`].
+    pub fn gguf(&self) -> &GgufFile {
+        &self.inner.model.gguf
+    }
 }
 
 /// Builder returned by [`Session::from_file`] (FR-API-02).
@@ -102,9 +114,8 @@ impl SessionBuilder {
     pub fn build(self) -> Result<Session> {
         let backend = self.backend.unwrap_or(BackendKind::Cpu);
 
-        // Model loading is intentionally NOT wired in M0-02: only an
-        // existence check plus a placeholder `ModelHandle` (GGUF loader =
-        // M0-03; ONNX loader = never, FR-LD-05).
+        // Reject non-files early with a clear argument error; a missing path
+        // surfaces as `VokraError::Io` from the metadata call.
         let metadata = std::fs::metadata(&self.path)?;
         if !metadata.is_file() {
             return Err(VokraError::InvalidArgument(format!(
@@ -113,9 +124,16 @@ impl SessionBuilder {
             )));
         }
 
+        // M0-03: parse the GGUF container (ONNX loader = never, FR-LD-05).
+        // `GgufError` converts into `VokraError::ModelLoad` / `::Io`.
+        let gguf = GgufFile::open(&self.path)?;
+
         Ok(Session {
             inner: Arc::new(SessionInner {
-                model: ModelHandle { path: self.path },
+                model: ModelHandle {
+                    path: self.path,
+                    gguf,
+                },
                 backend,
                 next_stream_id: AtomicU64::new(0),
                 active_streams: AtomicU64::new(0),
@@ -128,15 +146,23 @@ impl SessionBuilder {
 pub(crate) mod tests {
     use super::*;
 
-    /// Creates a unique dummy model file under the OS temp dir; removed by
-    /// [`TempModelFile::drop`].
+    /// Creates a unique **valid minimal GGUF** model file under the OS temp
+    /// dir; removed by [`TempModelFile::drop`].
+    ///
+    /// Now that M0-03 wires real GGUF parsing into [`SessionBuilder::build`],
+    /// the fixture must be a parseable GGUF rather than arbitrary bytes.
     pub(crate) struct TempModelFile(pub(crate) PathBuf);
 
     impl TempModelFile {
         pub(crate) fn new(tag: &str) -> Self {
             let mut path = std::env::temp_dir();
             path.push(format!("vokra-core-test-{tag}-{}", std::process::id()));
-            std::fs::write(&path, b"vokra placeholder model").expect("write temp model file");
+            let mut b = crate::gguf::GgufBuilder::new();
+            b.add_string("vokra.model.arch", "test");
+            b.add_tensor("probe", crate::gguf::GgmlType::F32, vec![1], vec![0u8; 4])
+                .expect("valid probe tensor");
+            let bytes = b.to_bytes().expect("serialize test gguf");
+            std::fs::write(&path, &bytes).expect("write temp model file");
             Self(path)
         }
     }
@@ -176,5 +202,30 @@ pub(crate) mod tests {
         let file = TempModelFile::new("default-backend");
         let session = Session::from_file(&file.0).build().expect("session builds");
         assert_eq!(session.backend_kind(), BackendKind::Cpu);
+    }
+
+    #[test]
+    fn gguf_is_loaded_and_accessible() {
+        let file = TempModelFile::new("gguf-access");
+        let session = Session::from_file(&file.0).build().expect("session builds");
+        // Metadata and tensor data are reachable through the loaded container.
+        assert_eq!(
+            session
+                .gguf()
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str()),
+            Some("test")
+        );
+        assert_eq!(session.gguf().tensor_data("probe"), Some(&[0u8; 4][..]));
+    }
+
+    #[test]
+    fn non_gguf_file_is_a_model_load_error() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("vokra-core-test-nongguf-{}", std::process::id()));
+        std::fs::write(&path, b"not a gguf file at all").expect("write junk file");
+        let result = Session::from_file(&path).build();
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(result, Err(VokraError::ModelLoad(_))));
     }
 }

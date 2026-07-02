@@ -17,6 +17,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vokra-convert"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "vokra-core",
+]
+
+[[package]]
 name = "vokra-core"
 version = "0.1.0-alpha.0"
 
@@ -38,6 +45,10 @@ dependencies = [
 [[package]]
 name = "vokra-parity"
 version = "0.1.0-alpha.0"
+dependencies = [
+ "vokra-core",
+ "vokra-ops",
+]
 
 [[package]]
 name = "vokra-piper-plus"
