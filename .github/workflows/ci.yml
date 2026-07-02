@@ -1,0 +1,117 @@
+# Vokra CI quality gates (M0: 6 required checks — NFR-MT-07 subset, CLAUDE.md item 10).
+# Job names (build / test / fmt / clippy / parity / license) are fixed: they are
+# registered as branch-protection required checks in M0-01-T14. Matrix jobs expand
+# to "build (<os>)" / "test (<os>)" check names.
+#
+# M1+ extensions (not here yet): performance regression 5% gate (NFR-PF-13),
+# doc code example verification (NFR-MT-04), nightly audio quality (NFR-QL-04).
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs of the same ref (saves runner minutes), but never
+# cancel in-progress runs on main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (release)
+        run: cargo build --release
+
+  test:
+    name: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test (workspace)
+        run: cargo test --workspace
+
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: rustfmt check
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+  # Numerical parity harness (NFR-QL-01). At M0 this runs the tests/parity
+  # placeholder harness; real per-model parity tests are added by M0-04/05/06.
+  parity:
+    name: parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Numerical parity tests (tests/parity)
+        run: cargo test -p vokra-parity
+
+  # License / vulnerability / forbidden-dependency gate (NFR-LC-04, X-08).
+  # deny.toml is owned by M0-02 (allow: Apache-2.0/MIT/BSD; deny: GPL/LGPL;
+  # bans: protobuf/onnx-family crates). GPL/LGPL or onnx/protobuf deps block the PR.
+  license:
+    name: license
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Ensure Cargo.lock exists (cargo-audit requires a lockfile)
+        run: |
+          if [ ! -f Cargo.lock ]; then
+            cargo generate-lockfile
+          fi
+      - name: cargo-deny (licenses / advisories / bans)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses advisories bans
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: cargo-audit (RustSec advisories)
+        run: cargo audit
+      - name: Forbidden symbols / dependencies check
+        run: bash scripts/check-forbidden-symbols.sh

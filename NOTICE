@@ -1,0 +1,47 @@
+Vokra
+Copyright 2026 ayutaz
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file in the root of this repository.
+
+This NOTICE file records project-wide licensing and distribution decisions.
+It is updated whenever a new model, external dependency, or bundled
+third-party component with distribution-relevant terms is added.
+
+--------------------------------------------------------------------------
+1. BigVGAN: scratch (clean-room) reimplementation policy
+--------------------------------------------------------------------------
+The NVIDIA BigVGAN reference implementation is distributed under the
+NVIDIA Source Code License-NC (non-commercial), which is incompatible with
+Vokra's Apache 2.0 licensing. Vokra therefore does not use, port, or derive
+code from the NVIDIA reference implementation. The BigVGAN-compatible
+vocoder operator in Vokra will be reimplemented from scratch based on the
+published paper only.
+
+Timing note: this is a forward-looking policy statement. The BigVGAN
+operator is not implemented in the current v0.1 spike (milestone M0); it is
+planned for a future release, scheduled together with the models that
+require it (see docs/milestones.md §1.3).
+
+--------------------------------------------------------------------------
+2. NVIDIA CUDA / cuDNN / cuBLAS runtime dependencies (not bundled)
+--------------------------------------------------------------------------
+Vokra does not bundle or redistribute any NVIDIA runtime component
+(CUDA runtime / cudart, cuDNN, cuBLAS). When the CUDA backend is enabled,
+Vokra detects a system-installed CUDA at runtime via dynamic loading
+(e.g. dlopen("libcuda.so") on Linux, LoadLibrary("nvcuda.dll") on Windows).
+Installing NVIDIA components and accepting the corresponding NVIDIA EULAs
+is the responsibility of the end user or integrating developer. cuDNN is
+never a hard requirement of Vokra.
+
+Timing note: the CUDA backend is planned for the v0.5-v1.0 releases and is
+not part of the current v0.1 spike.
+
+--------------------------------------------------------------------------
+3. Maintaining this file
+--------------------------------------------------------------------------
+Any pull request that adds support for a new model or introduces a new
+external dependency must run the license audit (docs/license-audit.md) and,
+when the addition carries attribution or distribution-relevant terms,
+append the corresponding notice to this file in the same pull request.
+See CONTRIBUTING.md for the full policy.
