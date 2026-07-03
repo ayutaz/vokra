@@ -1,0 +1,24 @@
+[package]
+name = "vokra-cli"
+description = "Vokra umbrella CLI (M1-10a; FR-TL-*, NFR-PF-13): `run` loads a GGUF and runs VAD/ASR/TTS through the public session/model APIs, `convert` delegates to the offline vokra-convert library, and `bench` measures RTF / TTFA / jitter / p50-p95-p99 with a relative (>5%) regression gate against a committed baseline JSON. std-only, zero external deps (NFR-DS-02)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Zero external dependencies (NFR-DS-02): every dependency is a first-party
+# `vokra-*` crate. `vokra-convert` is pulled in (by path — it is not exposed as a
+# workspace dependency) only so `vokra-cli convert` can delegate to its offline
+# library; this embeds the ONNX/protobuf-parsing code in the CLI binary, which is
+# fine because the CLI is NOT the shipped runtime artifact (the libvokra cdylib in
+# vokra-capi stays clean and covered by the <10 MB size gate). The `run` path uses
+# the public session/model APIs directly (Session + WhisperAsr/SileroVadV5/
+# PiperPlusTts) and never loads ONNX (FR-LD-05).
+[dependencies]
+vokra-core.workspace = true
+vokra-models.workspace = true
+vokra-convert = { path = "../vokra-convert" }
+
+[lints]
+workspace = true
