@@ -24,10 +24,14 @@
 mod json;
 mod models;
 mod onnx;
+mod quantize;
 mod safetensors;
 
 use std::fmt;
 use std::path::Path;
+
+pub use quantize::QuantizeError;
+use vokra_core::gguf::GgmlType;
 
 /// Which model's conversion routine to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +141,12 @@ impl From<vokra_core::gguf::GgufError> for ConvertError {
     }
 }
 
+impl From<QuantizeError> for ConvertError {
+    fn from(e: QuantizeError) -> Self {
+        Self::Gguf(e.to_string())
+    }
+}
+
 /// Converts `input` into a GGUF written to `output`, returning a summary.
 ///
 /// This is the single entry point used by both the `vokra-convert` binary and
@@ -149,7 +159,7 @@ pub fn convert_file(
     let bytes = std::fs::read(input)?;
 
     let (builder, notes) = match model {
-        ModelKind::WhisperBase => (models::whisper::convert(bytes)?, Vec::new()),
+        ModelKind::WhisperBase => (models::whisper::convert(bytes, None)?, Vec::new()),
         ModelKind::SileroVad => {
             let (builder, report) = models::silero::convert(bytes)?;
             let notes = vec![format!(
@@ -176,6 +186,45 @@ pub fn convert_file(
         metadata_count,
         output_bytes: out_bytes.len() as u64,
         notes,
+    })
+}
+
+/// Like [`convert_file`], but K-quantizes the model's large weight matrices to
+/// `quant` (`Q4_K` / `Q5_K` / `Q6_K`) on the way out (M1-02, FR-QT-01).
+///
+/// Only `whisper-base` supports quantization in M1-02; other models return a
+/// [`ConvertError::Usage`]. Biases, norms and non-block-aligned tensors stay in
+/// full precision, and the emitted metadata is identical to the plain path —
+/// only the quantized tensors' dtype and bytes differ, so the runtime loads the
+/// result through the same GGUF path (dequantizing via `vokra_core::gguf::quant`).
+pub fn convert_file_quantized(
+    model: ModelKind,
+    input: &Path,
+    output: &Path,
+    quant: GgmlType,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+
+    let builder = match model {
+        ModelKind::WhisperBase => models::whisper::convert(bytes, Some(quant))?,
+        other => {
+            return Err(ConvertError::Usage(format!(
+                "quantization (--quantize) is only supported for whisper-base in M1-02, not {other}"
+            )));
+        }
+    };
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes: vec![format!("quantized weight matrices to {quant:?}")],
     })
 }
 

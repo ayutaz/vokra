@@ -1,6 +1,6 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
-**最終更新**: 2026-07-02
+**最終更新**: 2026-07-04（M1-02: GGUF K-quant + safetensors runtime direct-load のフォーマット参照を追記）
 **目的**: Vokra が依存するすべての Rust crate、モデル weight、音声 codec、vocoder、辞書、G2P、audio 前処理ライブラリのライセンスを列挙し、Apache 2.0 core との互換性、Unity/Godot Asset Store 配布可否、商用ゲーム組込可否を明示する。
 
 **運用**:
@@ -60,6 +60,10 @@
 - **libopenmp (LGPL)**: 排除、rayon で代替
 - **soxr (LGPL)**: 排除、speexdsp AEC/resampler の Rust port で代替
 - **rubberband (GPL)**: 排除
+
+**オンディスク・フォーマット参照（コードコピーではなくデータ仕様の transcribe）**:
+- **GGUF / ggml K-quant ブロックレイアウト** (`Q4_K`/`Q5_K`/`Q6_K` の `block_q*_K` 構造・`get_scale_min_k4` パッキング): ggml / llama.cpp (**MIT**) の `k_quants.h` / `dequantize_row_q*_K` から **フォーマット仕様のみ** を参照し、Vokra 独自の scalar・`unsafe`-free 実装を新規記述 (M1-02、`crates/vokra-core/src/gguf/quant/`)。バイトレイアウトはフォーマットそのものであり著作物のコピーではない (whisper.cpp 型 native 再実装、CLAUDE.md 方針)。正当性は外部ファイルに依存しない in-repo の analytic oracle (closed-form super-block + quantize→dequant roundtrip) で pin。外部 crate 依存はゼロ (NFR-DS-02)。
+- **safetensors ヘッダ (JSON) フォーマット**: Hugging Face の on-disk 仕様 (**Apache-2.0**) を参照し、reader / JSON パーサとも Vokra 独自記述 (std-only、外部 crate なし)。ONNX/protobuf は runtime に入らない。
 
 ---
 

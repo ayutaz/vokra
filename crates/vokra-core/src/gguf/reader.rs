@@ -19,7 +19,7 @@ use std::path::Path;
 
 use super::tensor::{GgmlType, GgufTensorInfo, MAX_TENSOR_DIMS};
 use super::value::{GgufArray, GgufMetadataValue, GgufValueType};
-use super::{DEFAULT_ALIGNMENT, GGUF_MAGIC, GGUF_VERSION, GgufError, align_up, chunks};
+use super::{DEFAULT_ALIGNMENT, GGUF_MAGIC, GGUF_VERSION, GgufError, align_up, chunks, quant};
 
 /// Maximum array nesting depth accepted while decoding metadata.
 ///
@@ -153,6 +153,21 @@ impl GgufFile {
         let start = (self.tensor_data_offset + info.offset) as usize;
         let len = info.byte_len().expect("byte_len validated during parse") as usize;
         &self.data[start..start + len]
+    }
+
+    /// Decodes a tensor's payload into owned `f32`, dequantizing K-quants.
+    ///
+    /// This is the canonical weight-decode entry point (FR-LD-07): dense
+    /// `F32` / `F16` and `Q4_K` / `Q5_K` / `Q6_K` all resolve through the one
+    /// [`quant::dequantize`] path, so native models decode once here instead of
+    /// open-coding per-dtype byte loops. Returns [`GgufError::MissingTensor`]
+    /// if no tensor has that name.
+    pub fn tensor_f32(&self, name: &str) -> Result<Vec<f32>, GgufError> {
+        let info = self
+            .tensor_info(name)
+            .ok_or_else(|| GgufError::MissingTensor(name.to_owned()))?;
+        let n = info.element_count()? as usize;
+        quant::dequantize(info.dtype, self.tensor_bytes(info), n)
     }
 }
 
@@ -430,6 +445,68 @@ mod tests {
             file.get(chunks::KEY_FRONTEND_N_FFT),
             Some(&GgufMetadataValue::U32(400))
         );
+    }
+
+    #[test]
+    fn kquant_tensor_roundtrips_through_builder_and_tensor_f32() {
+        // A Q4_K tensor (one all-zero super-block) and an F32 tensor both decode
+        // through the single tensor_f32 path: the zero block dequants to zeros,
+        // the F32 tensor to its stored values.
+        let mut b = GgufBuilder::new();
+        b.add_tensor("q", GgmlType::Q4K, vec![256], vec![0u8; 144])
+            .expect("valid one-block Q4_K payload");
+        let f32_bytes: Vec<u8> = [1.0f32, -2.0, 3.5]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        b.add_tensor("d", GgmlType::F32, vec![3], f32_bytes)
+            .unwrap();
+
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        assert_eq!(file.tensor_info("q").unwrap().dtype, GgmlType::Q4K);
+        assert_eq!(file.tensor_info("q").unwrap().byte_len().unwrap(), 144);
+
+        let q = file.tensor_f32("q").unwrap();
+        assert_eq!(q.len(), 256);
+        assert!(q.iter().all(|&v| v == 0.0));
+        assert_eq!(file.tensor_f32("d").unwrap(), vec![1.0, -2.0, 3.5]);
+    }
+
+    #[test]
+    fn tensor_f32_missing_name_is_missing_tensor() {
+        let file = GgufFile::parse(hand_built_empty()).unwrap();
+        assert!(matches!(
+            file.tensor_f32("nope"),
+            Err(GgufError::MissingTensor(_))
+        ));
+    }
+
+    #[test]
+    fn kquant_partial_block_tensor_is_rejected_by_reader() {
+        // A Q4_K (tag 12) tensor of 100 elements is not a whole super-block; the
+        // reader must reject it at parse via the block-aware byte_len check.
+        let mut v = Vec::new();
+        v.extend_from_slice(b"GGUF");
+        v.extend_from_slice(&3u32.to_le_bytes());
+        v.extend_from_slice(&1u64.to_le_bytes()); // tensor_count = 1
+        v.extend_from_slice(&0u64.to_le_bytes()); // kv_count = 0
+        v.extend_from_slice(&1u64.to_le_bytes()); // name length
+        v.extend_from_slice(b"q");
+        v.extend_from_slice(&1u32.to_le_bytes()); // n_dims = 1
+        v.extend_from_slice(&100u64.to_le_bytes()); // dim[0] = 100 (not %256)
+        v.extend_from_slice(&12u32.to_le_bytes()); // dtype Q4_K
+        v.extend_from_slice(&0u64.to_le_bytes()); // offset 0 (aligned)
+        // Pad so the aligned tensor-data region is inside the file, letting the
+        // validation loop reach byte_len() instead of failing earlier.
+        v.resize(v.len().next_multiple_of(32) + 256, 0);
+        assert!(matches!(
+            GgufFile::parse(v),
+            Err(GgufError::BlockSizeMisaligned {
+                block_size: 256,
+                elements: 100,
+                ..
+            })
+        ));
     }
 
     #[test]

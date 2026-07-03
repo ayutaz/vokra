@@ -23,14 +23,17 @@
 //!
 //! `vokra-models` forbids `unsafe` (workspace lint), so a raw `&[u8]` GGUF
 //! payload cannot be reinterpreted as `&[f32]` here. Weights are therefore
-//! decoded into owned `Vec<f32>` with safe `f32::from_le_bytes` (and a safe
-//! f16→f32 path). This also lets `nn.Linear` weights be pre-transposed once
-//! from the HF `[out, in]` layout to the `[in, out]` layout the row-major GEMM
-//! consumes directly. True lazy mmap (FR-LD-01 / NFR-PF-11) needs an
-//! `unsafe`-allowed crate and is a documented follow-up; note the GGUF reader
-//! itself already buffers the whole file (see `vokra_core::gguf::reader`).
+//! decoded into owned `Vec<f32>` through the single canonical
+//! [`GgufFile::tensor_f32`] path (M1-02), which handles dense `F32` / `F16`
+//! **and** dequantizes K-quants (`Q4_K` / `Q5_K` / `Q6_K`) — so a quantized
+//! Whisper GGUF loads with no changes here. This also lets `nn.Linear` weights
+//! be pre-transposed once from the HF `[out, in]` layout to the `[in, out]`
+//! layout the row-major GEMM consumes directly. True lazy mmap (FR-LD-01 /
+//! NFR-PF-11) needs an `unsafe`-allowed crate and is a documented follow-up;
+//! note the GGUF reader itself already buffers the whole file (see
+//! `vokra_core::gguf::reader`).
 
-use vokra_core::gguf::{GgmlType, GgufFile};
+use vokra_core::gguf::GgufFile;
 use vokra_core::{Result, VokraError};
 
 use super::config::WhisperConfig;
@@ -222,6 +225,10 @@ fn err(name: &str, msg: impl std::fmt::Display) -> VokraError {
 }
 
 /// Reads a tensor as owned f32 and checks its shape.
+///
+/// Decoding (dense `F32` / `F16` or K-quant dequant) goes through the shared
+/// [`GgufFile::tensor_f32`] path, so a K-quantized Whisper GGUF loads with no
+/// changes to this module.
 fn tensor(file: &GgufFile, name: &str, want: &[usize]) -> Result<Vec<f32>> {
     let info = file
         .tensor_info(name)
@@ -230,54 +237,7 @@ fn tensor(file: &GgufFile, name: &str, want: &[usize]) -> Result<Vec<f32>> {
     if got != want {
         return Err(err(name, format!("shape {got:?} != expected {want:?}")));
     }
-    let bytes = file
-        .tensor_data(name)
-        .ok_or_else(|| err(name, "no tensor data"))?;
-    decode_f32(name, info.dtype, bytes)
-}
-
-/// Decodes a little-endian F32/F16 payload into owned f32.
-fn decode_f32(name: &str, dtype: GgmlType, bytes: &[u8]) -> Result<Vec<f32>> {
-    match dtype {
-        GgmlType::F32 => {
-            if bytes.len() % 4 != 0 {
-                return Err(err(name, "f32 payload length is not a multiple of 4"));
-            }
-            Ok(bytes
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect())
-        }
-        GgmlType::F16 => {
-            if bytes.len() % 2 != 0 {
-                return Err(err(name, "f16 payload length is not a multiple of 2"));
-            }
-            Ok(bytes
-                .chunks_exact(2)
-                .map(|c| f16_to_f32(u16::from_le_bytes([c[0], c[1]])))
-                .collect())
-        }
-    }
-}
-
-/// IEEE-754 half → single precision (safe, exact; handles subnormals,
-/// inf and NaN).
-fn f16_to_f32(h: u16) -> f32 {
-    let sign = (h >> 15) & 1;
-    let exp = (h >> 10) & 0x1f;
-    let mant = h & 0x3ff;
-    let sign_f = if sign == 1 { -1.0f32 } else { 1.0f32 };
-    match exp {
-        0 => sign_f * (mant as f32) * 2.0f32.powi(-24), // subnormal / zero
-        0x1f => {
-            if mant == 0 {
-                sign_f * f32::INFINITY
-            } else {
-                f32::NAN
-            }
-        }
-        _ => sign_f * (1.0 + (mant as f32) / 1024.0) * 2.0f32.powi(exp as i32 - 15),
-    }
+    file.tensor_f32(name).map_err(|e| err(name, e))
 }
 
 /// Loads an `nn.Linear`, transposing the `[out, in]` weight to `[in, out]`.
@@ -342,37 +302,31 @@ mod tests {
     }
 
     #[test]
-    fn f16_decoding_matches_known_values() {
-        assert_eq!(f16_to_f32(0x3C00), 1.0); // 1.0
-        assert_eq!(f16_to_f32(0x4000), 2.0); // 2.0
-        assert_eq!(f16_to_f32(0xC000), -2.0); // -2.0
-        assert_eq!(f16_to_f32(0x0000), 0.0); // +0
-        assert!(f16_to_f32(0x7C00).is_infinite());
-        assert!(f16_to_f32(0xFC00) < 0.0 && f16_to_f32(0xFC00).is_infinite());
+    fn tensor_decodes_f16_through_shared_path() {
+        // 1.0, 2.0, -2.0 as half precision; `tensor` must route F16 through the
+        // shared core dequant, not a private loop.
+        let f16: Vec<u8> = [0x3C00u16, 0x4000, 0xC000]
+            .iter()
+            .flat_map(|h| h.to_le_bytes())
+            .collect();
+        let mut b = GgufBuilder::new();
+        b.add_tensor("h", GgmlType::F16, vec![3], f16).unwrap();
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        assert_eq!(tensor(&file, "h", &[3]).unwrap(), vec![1.0, 2.0, -2.0]);
     }
 
     #[test]
-    fn f16_decoding_handles_subnormals_and_nan() {
-        // exp == 0, mant != 0 (subnormal branch): 0x0001 is the smallest
-        // positive half, value = 1 * 2^-24; the sign bit negates it.
-        assert_eq!(f16_to_f32(0x0001), 2f32.powi(-24));
-        assert_eq!(f16_to_f32(0x8001), -2f32.powi(-24));
-        // exp == 0x1f, mant != 0 (NaN branch), both signs.
-        assert!(f16_to_f32(0x7E00).is_nan());
-        assert!(f16_to_f32(0xFE00).is_nan());
-    }
-
-    #[test]
-    fn decode_f32_rejects_misaligned_payload_length() {
-        // F32 payload must be a multiple of 4, F16 a multiple of 2.
-        assert!(matches!(
-            decode_f32("x", GgmlType::F32, &[0u8; 5]),
-            Err(VokraError::ModelLoad(_))
-        ));
-        assert!(matches!(
-            decode_f32("x", GgmlType::F16, &[0u8; 3]),
-            Err(VokraError::ModelLoad(_))
-        ));
+    fn tensor_loads_kquant_weight() {
+        // A Q6_K tensor (one all-zero super-block) loads through `tensor` and
+        // dequantizes to zeros — the K-quant weight path works in the model
+        // layer with no dtype-specific code here.
+        let mut b = GgufBuilder::new();
+        b.add_tensor("q", GgmlType::Q6K, vec![256], vec![0u8; 210])
+            .unwrap();
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let out = tensor(&file, "q", &[256]).unwrap();
+        assert_eq!(out.len(), 256);
+        assert!(out.iter().all(|&v| v == 0.0));
     }
 
     #[test]

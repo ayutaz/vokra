@@ -110,9 +110,12 @@ impl GgufBuilder {
     /// Queues a tensor for writing.
     ///
     /// `data` must be the little-endian payload whose length equals
-    /// `product(dimensions) * dtype.element_size()`; otherwise
-    /// [`GgufError::TensorSizeMismatch`] is returned. A duplicate tensor name
-    /// yields [`GgufError::DuplicateTensor`].
+    /// [`dtype.payload_size(product(dimensions))`](GgmlType::payload_size) —
+    /// `elements * type_size` for dense dtypes, or `(elements / 256) *
+    /// type_size` for K-quants; otherwise [`GgufError::TensorSizeMismatch`] is
+    /// returned. A K-quant element count that is not a whole number of
+    /// super-blocks yields [`GgufError::BlockSizeMisaligned`], and a duplicate
+    /// tensor name yields [`GgufError::DuplicateTensor`].
     pub fn add_tensor(
         &mut self,
         name: &str,
@@ -130,9 +133,7 @@ impl GgufBuilder {
         for &d in &dimensions {
             elems = elems.checked_mul(d).ok_or(GgufError::Overflow)?;
         }
-        let expected = elems
-            .checked_mul(dtype.element_size() as u64)
-            .ok_or(GgufError::Overflow)?;
+        let expected = dtype.payload_size(elems)?;
         if data.len() as u64 != expected {
             return Err(GgufError::TensorSizeMismatch {
                 name: name.to_owned(),
@@ -415,6 +416,45 @@ mod tests {
         for t in file.tensors() {
             assert_eq!(t.offset % 64, 0);
         }
+    }
+
+    #[test]
+    fn kquant_tensor_bytes_survive_roundtrip() {
+        // A correctly-sized Q5_K super-block (176 bytes for 256 elements) is
+        // accepted and its raw bytes come back byte-identical.
+        let mut b = GgufBuilder::new();
+        let payload: Vec<u8> = (0..176u32).map(|i| (i % 251) as u8).collect();
+        b.add_tensor("q", GgmlType::Q5K, vec![256], payload.clone())
+            .expect("valid one-block Q5_K payload");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        assert_eq!(file.tensor_data("q").unwrap(), payload.as_slice());
+    }
+
+    #[test]
+    fn kquant_wrong_payload_length_is_rejected() {
+        // One Q6_K block is 210 bytes; a 200-byte payload is a size mismatch.
+        let mut b = GgufBuilder::new();
+        let err = b
+            .add_tensor("q", GgmlType::Q6K, vec![256], vec![0u8; 200])
+            .unwrap_err();
+        assert!(matches!(err, GgufError::TensorSizeMismatch { .. }));
+    }
+
+    #[test]
+    fn kquant_partial_block_dims_are_rejected() {
+        // 300 is not a whole number of 256-element super-blocks.
+        let mut b = GgufBuilder::new();
+        let err = b
+            .add_tensor("q", GgmlType::Q4K, vec![300], vec![0u8; 144])
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            GgufError::BlockSizeMisaligned {
+                elements: 300,
+                block_size: 256,
+                ..
+            }
+        ));
     }
 
     #[test]

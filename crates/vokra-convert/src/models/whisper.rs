@@ -22,11 +22,11 @@
 //! the contract.
 
 use vokra_core::gguf::{
-    FrontendSpec, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+    FrontendSpec, GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
 };
 
 use crate::ConvertError;
-use crate::safetensors::{SafeTensor, SafeTensors};
+use crate::safetensors::{SafeTensorInfo, SafetensorsFile};
 
 /// `vokra.model.arch` value written for Whisper GGUFs.
 pub(crate) const ARCH: &str = "whisper";
@@ -136,8 +136,17 @@ pub(crate) fn frontend_spec() -> FrontendSpec {
 }
 
 /// Converts a Whisper base safetensors buffer into a populated GGUF builder.
-pub(crate) fn convert(bytes: Vec<u8>) -> Result<GgufBuilder, ConvertError> {
-    let st = SafeTensors::parse(bytes)?;
+///
+/// When `quantize` is `Some(qt)`, every *quantizable* weight (a dense tensor of
+/// rank ≥ 2 whose element count is a whole number of 256-element super-blocks)
+/// is K-quantized to `qt` (M1-02, FR-QT-01); biases, norms and other small or
+/// mis-sized tensors stay `F32` / `F16`. `None` reproduces the byte-exact M0
+/// behaviour. Metadata is identical either way — only tensor dtype/bytes change.
+pub(crate) fn convert(
+    bytes: Vec<u8>,
+    quantize: Option<GgmlType>,
+) -> Result<GgufBuilder, ConvertError> {
+    let st = SafetensorsFile::parse(bytes)?;
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
@@ -146,15 +155,29 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<GgufBuilder, ConvertError> {
     write_hparams(&mut b, &st);
 
     for t in st.tensors() {
-        b.add_tensor(
-            &gguf_tensor_name(&t.name),
-            t.dtype,
-            t.shape.clone(),
-            st.tensor_bytes(t).to_vec(),
-        )?;
+        let name = gguf_tensor_name(&t.name);
+        match quantize {
+            Some(qt) if is_quantizable(t) => {
+                // Decode to f32 through the shared path, then K-quantize offline.
+                let data = st.tensor_f32(&t.name)?;
+                let payload = crate::quantize::quantize(qt, &data)?;
+                b.add_tensor(&name, qt, t.shape.clone(), payload)?;
+            }
+            _ => {
+                b.add_tensor(&name, t.dtype, t.shape.clone(), st.tensor_bytes(t).to_vec())?;
+            }
+        }
     }
 
     Ok(b)
+}
+
+/// A tensor is K-quantizable iff it is at least rank-2 (a weight matrix, not a
+/// bias/norm vector) and its element count is a whole number of `QK_K`
+/// super-blocks. Mirrors the llama.cpp convention of leaving 1-D and
+/// non-block-aligned tensors in full precision.
+fn is_quantizable(t: &SafeTensorInfo) -> bool {
+    t.shape.len() >= 2 && t.element_count() % vokra_core::gguf::tensor::QK_K as u64 == 0
 }
 
 /// Derives the `vokra.whisper.*` hyperparameters from the checkpoint's tensor
@@ -165,11 +188,11 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<GgufBuilder, ConvertError> {
 /// tensor writes `0` for that key, which the runtime's `WhisperConfig` loader
 /// rejects at load time — the converter stays infallible so degenerate inputs
 /// still round-trip.
-fn write_hparams(b: &mut GgufBuilder, st: &SafeTensors) {
+fn write_hparams(b: &mut GgufBuilder, st: &SafetensorsFile) {
     let dim = |name: &str, axis: usize| -> u64 {
         st.tensors()
             .iter()
-            .find(|t: &&SafeTensor| t.name == name)
+            .find(|t: &&SafeTensorInfo| t.name == name)
             .and_then(|t| t.shape.get(axis).copied())
             .unwrap_or(0)
     };
@@ -215,7 +238,7 @@ fn write_hparams(b: &mut GgufBuilder, st: &SafeTensors) {
 }
 
 /// Counts contiguous transformer blocks named `<prefix><i>.` for `i = 0, 1, …`.
-fn count_layers(st: &SafeTensors, prefix: &str) -> u32 {
+fn count_layers(st: &SafetensorsFile, prefix: &str) -> u32 {
     let mut n = 0u32;
     loop {
         let probe = format!("{prefix}{n}.");
@@ -254,7 +277,10 @@ mod tests {
 
     #[test]
     fn converts_and_roundtrips_through_gguf() {
-        let gguf_bytes = convert(synthetic_whisper()).unwrap().to_bytes().unwrap();
+        let gguf_bytes = convert(synthetic_whisper(), None)
+            .unwrap()
+            .to_bytes()
+            .unwrap();
         let file = GgufFile::parse(gguf_bytes).unwrap();
 
         // Model + frontend metadata present (2 model keys + 13 frontend keys).
@@ -284,10 +310,15 @@ mod tests {
     #[test]
     fn coverage_is_total_by_construction() {
         // Every input tensor name appears in the output.
-        let st = SafeTensors::parse(synthetic_whisper()).unwrap();
+        let st = SafetensorsFile::parse(synthetic_whisper()).unwrap();
         let input_names: Vec<String> = st.tensors().iter().map(|t| t.name.clone()).collect();
-        let file =
-            GgufFile::parse(convert(synthetic_whisper()).unwrap().to_bytes().unwrap()).unwrap();
+        let file = GgufFile::parse(
+            convert(synthetic_whisper(), None)
+                .unwrap()
+                .to_bytes()
+                .unwrap(),
+        )
+        .unwrap();
         for name in input_names {
             assert!(
                 file.tensor_info(&gguf_tensor_name(&name)).is_some(),
@@ -341,7 +372,7 @@ mod tests {
             ("model.decoder.layers.0.self_attn.q_proj.weight", &[2, 2]),
         ]);
 
-        let file = GgufFile::parse(convert(ckpt).unwrap().to_bytes().unwrap()).unwrap();
+        let file = GgufFile::parse(convert(ckpt, None).unwrap().to_bytes().unwrap()).unwrap();
         let u = |k: &str| file.get(k).and_then(|v| v.as_u64());
 
         // d_model / n_mels from conv1 [d_model, n_mels, 3]; n_head = d_model/64.
@@ -371,5 +402,50 @@ mod tests {
             .map(|v| v.as_u64().unwrap())
             .collect();
         assert_eq!(ids, vec![50258, 50259, 50359, 50363]);
+    }
+
+    #[test]
+    fn quantized_conversion_produces_loadable_kquant_gguf() {
+        // A rank-2, 512-element weight (two super-blocks) is K-quantized; a
+        // rank-1 bias stays F32; metadata is byte-identical to the plain path.
+        let weight: Vec<f32> = (0..512).map(|i| (i as f32 - 256.0) * 0.01).collect();
+        let bias = [0.5f32, -0.5, 1.0, -1.0];
+        let mut data = Vec::new();
+        for v in &weight {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in &bias {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        let wbytes = weight.len() * 4;
+        let header = format!(
+            r#"{{"big.weight":{{"dtype":"F32","shape":[2,256],"data_offsets":[0,{wbytes}]}},"b.bias":{{"dtype":"F32","shape":[4],"data_offsets":[{wbytes},{}]}}}}"#,
+            wbytes + 16
+        );
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        buf.extend_from_slice(header.as_bytes());
+        buf.extend_from_slice(&data);
+
+        let unq = convert(buf.clone(), None).unwrap();
+        let q = convert(buf, Some(GgmlType::Q4K)).unwrap();
+        assert_eq!(unq.metadata_count(), q.metadata_count());
+        assert_eq!(unq.tensor_count(), q.tensor_count());
+
+        let file = GgufFile::parse(q.to_bytes().unwrap()).unwrap();
+        assert_eq!(file.tensor_info("big.weight").unwrap().dtype, GgmlType::Q4K);
+        assert_eq!(file.tensor_info("b.bias").unwrap().dtype, GgmlType::F32);
+
+        // The K-quantized weight decodes back within one Q4_K step of the range
+        // (~0.17 per block here); the untouched bias is byte-exact.
+        let back = file.tensor_f32("big.weight").unwrap();
+        assert_eq!(back.len(), 512);
+        for (i, &x) in weight.iter().enumerate() {
+            assert!((back[i] - x).abs() < 0.4, "elem {i}: {} vs {x}", back[i]);
+        }
+        assert_eq!(
+            file.tensor_f32("b.bias").unwrap(),
+            vec![0.5, -0.5, 1.0, -1.0]
+        );
     }
 }

@@ -12,8 +12,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use vokra_convert::{ModelKind, convert_file, convert_piper_plus_file};
-use vokra_core::gguf::{FrontendSpec, GgufFile};
+use vokra_convert::{ModelKind, convert_file, convert_file_quantized, convert_piper_plus_file};
+use vokra_core::gguf::{FrontendSpec, GgmlType, GgufFile};
 
 const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
@@ -28,6 +28,8 @@ OPTIONS:
     --input <path>     upstream checkpoint file
     --config <path>    piper-plus config.json (piper-plus only)
     --output <path>    GGUF file to write
+    --quantize <kind>  K-quantize large weight matrices: q4_k | q5_k | q6_k
+                       (whisper-base only; biases/norms stay F32)
     -h, --help         print this help
 ";
 
@@ -50,17 +52,29 @@ fn main() -> ExitCode {
         input,
         config,
         output,
+        quant,
     } = parsed;
 
     let result = match model {
-        ModelKind::PiperPlus => match &config {
-            Some(config) => convert_piper_plus_file(&input, config, &output),
-            None => {
-                eprintln!("error: --model piper-plus requires --config <config.json>\n\n{USAGE}");
+        ModelKind::PiperPlus => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper-base\n\n{USAGE}");
                 return ExitCode::from(2);
             }
+            match &config {
+                Some(config) => convert_piper_plus_file(&input, config, &output),
+                None => {
+                    eprintln!(
+                        "error: --model piper-plus requires --config <config.json>\n\n{USAGE}"
+                    );
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        _ => match quant {
+            Some(q) => convert_file_quantized(model, &input, &output, q),
+            None => convert_file(model, &input, &output),
         },
-        _ => convert_file(model, &input, &output),
     };
 
     match result {
@@ -92,6 +106,17 @@ struct Parsed {
     input: PathBuf,
     config: Option<PathBuf>,
     output: PathBuf,
+    quant: Option<GgmlType>,
+}
+
+/// Parses the `--quantize` argument into a K-quant target dtype.
+fn parse_quant(s: &str) -> Option<GgmlType> {
+    match s {
+        "q4_k" | "q4k" => Some(GgmlType::Q4K),
+        "q5_k" | "q5k" => Some(GgmlType::Q5K),
+        "q6_k" | "q6k" => Some(GgmlType::Q6K),
+        _ => None,
+    }
 }
 
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
@@ -99,6 +124,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut input: Option<PathBuf> = None;
     let mut config: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
+    let mut quant: Option<GgmlType> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -128,6 +154,14 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 ));
                 i += 2;
             }
+            "--quantize" => {
+                let v = args.get(i + 1).ok_or("--quantize requires a value")?;
+                quant = Some(
+                    parse_quant(v)
+                        .ok_or_else(|| format!("unknown --quantize `{v}` (q4_k | q5_k | q6_k)"))?,
+                );
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -137,6 +171,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         input: input.ok_or("--input is required")?,
         config,
         output: output.ok_or("--output is required")?,
+        quant,
     })
 }
 
@@ -228,6 +263,38 @@ mod tests {
         assert_eq!(parsed.input, PathBuf::from("i"));
         assert_eq!(parsed.output, PathBuf::from("o"));
         assert_eq!(parsed.config, None);
+        assert_eq!(parsed.quant, None);
+    }
+
+    #[test]
+    fn parses_quantize_flag() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "whisper-base",
+            "--input",
+            "i",
+            "--output",
+            "o",
+            "--quantize",
+            "q5_k",
+        ]))
+        .expect("valid args");
+        assert_eq!(parsed.quant, Some(GgmlType::Q5K));
+    }
+
+    #[test]
+    fn rejects_unknown_quantize_value() {
+        let err = err_of(parse_args(&args(&[
+            "--model",
+            "whisper-base",
+            "--input",
+            "i",
+            "--output",
+            "o",
+            "--quantize",
+            "q9_k",
+        ])));
+        assert!(err.contains("unknown --quantize"), "got: {err}");
     }
 
     #[test]

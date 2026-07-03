@@ -41,6 +41,7 @@ mod writer;
 
 pub mod chunks;
 pub mod frontend_spec;
+pub mod quant;
 pub mod tensor;
 pub mod value;
 
@@ -101,9 +102,26 @@ pub enum GgufError {
     InvalidBool(u8),
     /// A metadata value type tag was outside the range `0..=12`.
     UnsupportedValueType(u32),
-    /// A tensor declared a ggml type tag other than `F32` (0) or `F16` (1);
-    /// quantized types are deferred to M1-02 (FR-LD-07).
+    /// A tensor declared a ggml type tag Vokra does not load: the accepted set
+    /// is `F32` (0), `F16` (1) and the K-quants `Q4_K` (12) / `Q5_K` (13) /
+    /// `Q6_K` (14). Other quantized families (IQ2, Q2_K, Q8_0, …) are
+    /// intentionally unsupported.
     UnsupportedDtype(u32),
+    /// A quantized tensor's element count was not a whole multiple of its
+    /// block size (a K-quant row not divisible by [`tensor::QK_K`] = 256).
+    /// K-quants are stored as fixed-size super-blocks, so a partial block is
+    /// malformed.
+    BlockSizeMisaligned {
+        /// The ggml dtype tag whose block size was violated.
+        dtype: u32,
+        /// The element count that was not a whole number of blocks.
+        elements: u64,
+        /// The dtype's block size in elements.
+        block_size: usize,
+    },
+    /// A tensor requested by name (e.g. via [`GgufFile::tensor_f32`]) was not
+    /// present in the file.
+    MissingTensor(String),
     /// A tensor declared more than [`tensor::MAX_TENSOR_DIMS`] dimensions.
     TooManyDimensions(usize),
     /// Two tensors shared the same name.
@@ -164,9 +182,20 @@ impl fmt::Display for GgufError {
             Self::UnsupportedDtype(t) => {
                 write!(
                     f,
-                    "unsupported tensor dtype tag {t} (M0 accepts F32=0, F16=1)"
+                    "unsupported tensor dtype tag {t} \
+                     (accepted: F32=0, F16=1, Q4_K=12, Q5_K=13, Q6_K=14)"
                 )
             }
+            Self::BlockSizeMisaligned {
+                dtype,
+                elements,
+                block_size,
+            } => write!(
+                f,
+                "tensor element count {elements} is not a multiple of block size \
+                 {block_size} (dtype tag {dtype})"
+            ),
+            Self::MissingTensor(name) => write!(f, "tensor `{name}` not found in GGUF"),
             Self::TooManyDimensions(n) => write!(f, "tensor has too many dimensions: {n}"),
             Self::DuplicateTensor(name) => write!(f, "duplicate tensor name: {name}"),
             Self::OffsetOutOfBounds(name) => {
