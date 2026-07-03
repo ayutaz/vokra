@@ -18,6 +18,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vokra-cli"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "vokra-convert",
+ "vokra-core",
+ "vokra-models",
+]
+
+[[package]]
 name = "vokra-convert"
 version = "0.1.0-alpha.0"
 dependencies = [
@@ -27,6 +36,14 @@ dependencies = [
 [[package]]
 name = "vokra-core"
 version = "0.1.0-alpha.0"
+
+[[package]]
+name = "vokra-eval"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "vokra-core",
+ "vokra-ops",
+]
 
 [[package]]
 name = "vokra-models"
