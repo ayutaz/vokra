@@ -1,42 +1,55 @@
 //! Forward-pass building blocks shared by the encoder and decoder.
 //!
-//! These are thin, correctness-first wrappers over the M0-08
-//! `vokra-backend-cpu` compute kernels (`gemm_f32`, `layer_norm_f32`,
-//! `gelu_f32`, `add_f32`, `softmax_f32`), plus a plain-Rust multi-head
-//! attention assembled from them. Shapes are row-major throughout; a shape
-//! mismatch surfaces as the kernel's [`VokraError::InvalidArgument`]
-//! (NFR-RL-07). Static-arena buffer reuse (FR-EX-05) is M1 — M0 allocates per
-//! call, mirroring the existing `conv1d` im2col path.
+//! These are thin wrappers over the M0-08 `vokra-backend-cpu` compute kernels
+//! (`gemm_f32`, `layer_norm_f32`, `gelu_f32`, `softmax_f32`), plus a plain-Rust
+//! multi-head attention assembled from them. Shapes are row-major throughout; a
+//! shape mismatch surfaces as the kernel's [`VokraError::InvalidArgument`]
+//! (NFR-RL-07).
+//!
+//! # `*_into`: caller-owned buffers, zero hot-path malloc (FR-EX-05, M1-04)
+//!
+//! Each block op has an **`_into`** form that writes into a caller-owned buffer
+//! (a `super::scratch` field, or the nested [`AttnScratch`]): after the first
+//! sizing it does no heap allocation, so the autoregressive decode loop is
+//! malloc-free (proven by the capacity-stability oracle in the `super::decoder`
+//! tests). The two **allocating** wrappers kept here — `project_kv` and
+//! `attention_from_kv` — forward to the `_into` form with a fresh `Vec`; they
+//! serve the unit tests and the one-shot cross-attention K/V precomputation
+//! (computed once per audio window, off the hot path). Both forms run the
+//! **identical** kernel calls in the identical order, so results are bit-for-bit
+//! equal — reusing a buffer never perturbs the accumulation order.
 
 use vokra_backend_cpu::kernels::{
-    LAYER_NORM_DEFAULT_EPS, add_f32, gelu_f32, gemm_f32, layer_norm_f32, softmax_f32,
+    LAYER_NORM_DEFAULT_EPS, gelu_f32, gemm_f32, layer_norm_f32, softmax_f32,
 };
-use vokra_core::Result;
+use vokra_core::{Result, VokraError};
 
+use super::scratch::{AttnScratch, resize_zeroed};
 use super::weights::{Attention, LayerNorm, Linear};
 
-/// Affine layer norm over the innermost axis: `[rows, d] → [rows, d]`.
-///
-/// Uses the PyTorch/Whisper default epsilon (`1e-5`).
-pub(crate) fn layer_norm(x: &[f32], rows: usize, ln: &LayerNorm) -> Result<Vec<f32>> {
+// ---- `_into` forms (no allocation after the buffers are sized) --------------
+// ZERO-ALLOC-BEGIN — the functions below must not allocate on the hot path;
+// guarded by scripts/check-hot-path-allocs.sh (no vec![], Vec::with_capacity,
+// .to_vec(), .collect()). They only `resize` caller-owned scratch, which never
+// reallocates within the reserve (see super::scratch).
+
+/// Affine layer norm `[rows, d] → [rows, d]` into `out` (sized here), using the
+/// PyTorch/Whisper default epsilon (`1e-5`).
+pub(crate) fn layer_norm_into(
+    out: &mut Vec<f32>,
+    x: &[f32],
+    rows: usize,
+    ln: &LayerNorm,
+) -> Result<()> {
     let d = ln.gamma.len();
-    let mut out = vec![0.0f32; rows * d];
-    layer_norm_f32(
-        x,
-        &mut out,
-        rows,
-        d,
-        &ln.gamma,
-        &ln.beta,
-        LAYER_NORM_DEFAULT_EPS,
-    )?;
-    Ok(out)
+    resize_zeroed(out, rows * d);
+    layer_norm_f32(x, out, rows, d, &ln.gamma, &ln.beta, LAYER_NORM_DEFAULT_EPS)
 }
 
-/// Applies an `nn.Linear`: `y[t, o] = bias[o] + sum_i x[t, i] * w_t[i, o]`,
-/// with `x` shaped `[t, in_features]` and the result `[t, out_features]`.
-pub(crate) fn linear(x: &[f32], t: usize, lin: &Linear) -> Result<Vec<f32>> {
-    let mut out = vec![0.0f32; t * lin.out_features];
+/// `nn.Linear` into `out` (sized here):
+/// `out[t, o] = bias[o] + sum_i x[t, i] * w_t[i, o]`.
+pub(crate) fn linear_into(out: &mut Vec<f32>, x: &[f32], t: usize, lin: &Linear) -> Result<()> {
+    resize_zeroed(out, t * lin.out_features);
     gemm_f32(
         t,
         lin.out_features,
@@ -44,47 +57,60 @@ pub(crate) fn linear(x: &[f32], t: usize, lin: &Linear) -> Result<Vec<f32>> {
         x,
         &lin.w_t,
         lin.bias.as_deref(),
-        &mut out,
-    )?;
-    Ok(out)
+        out,
+    )
 }
 
-/// Exact (erf) GELU, matching Whisper's `nn.GELU()`.
-pub(crate) fn gelu(x: &[f32]) -> Result<Vec<f32>> {
-    let mut out = vec![0.0f32; x.len()];
-    gelu_f32(x, &mut out)?;
-    Ok(out)
-}
-
-/// Element-wise `a += b` (residual add).
-pub(crate) fn add_into(a: &mut [f32], b: &[f32]) -> Result<()> {
-    // add_f32 writes to a separate output; do it in place via a temp view.
-    let mut out = vec![0.0f32; a.len()];
-    add_f32(a, b, &mut out)?;
-    a.copy_from_slice(&out);
+/// In-place residual add `a += b` (kills the temporary the old `add_into`
+/// needed). Element-wise independent adds, so this is bit-identical to the
+/// out-of-place `add_f32` kernel it replaces.
+pub(crate) fn add_assign(a: &mut [f32], b: &[f32]) -> Result<()> {
+    if a.len() != b.len() {
+        return Err(VokraError::InvalidArgument(format!(
+            "add_assign: length mismatch {} != {}",
+            a.len(),
+            b.len()
+        )));
+    }
+    for (dst, &src) in a.iter_mut().zip(b) {
+        *dst += src;
+    }
     Ok(())
 }
 
-/// The MLP sub-block: `fc2(gelu(fc1(x)))`, `x` shaped `[t, d]`.
-pub(crate) fn mlp(x: &[f32], t: usize, fc1: &Linear, fc2: &Linear) -> Result<Vec<f32>> {
-    let h = linear(x, t, fc1)?;
-    let a = gelu(&h)?;
-    linear(&a, t, fc2)
+/// The MLP sub-block `fc2(gelu(fc1(x)))` into `out` (sized here), using `mlp_h`
+/// / `mlp_a` (both sized here) as the `[t, ffn_dim]` intermediates. `x` is
+/// `[t, d]`, `out` is `[t, d]`.
+pub(crate) fn mlp_into(
+    mlp_h: &mut Vec<f32>,
+    mlp_a: &mut Vec<f32>,
+    out: &mut Vec<f32>,
+    x: &[f32],
+    t: usize,
+    fc1: &Linear,
+    fc2: &Linear,
+) -> Result<()> {
+    linear_into(mlp_h, x, t, fc1)?;
+    resize_zeroed(mlp_a, mlp_h.len());
+    gelu_f32(mlp_h, mlp_a)?;
+    linear_into(out, mlp_a, t, fc2)
 }
 
-/// Projects the key/value inputs of an attention block: returns
-/// `(k, v)` each `[t_kv, d]`.
-pub(crate) fn project_kv(
+/// Projects the key/value inputs of an attention block into `k_out` / `v_out`
+/// (both sized here), each `[t_kv, d]`.
+pub(crate) fn project_kv_into(
+    k_out: &mut Vec<f32>,
+    v_out: &mut Vec<f32>,
     xkv: &[f32],
     t_kv: usize,
     attn: &Attention,
-) -> Result<(Vec<f32>, Vec<f32>)> {
-    let k = linear(xkv, t_kv, &attn.k)?;
-    let v = linear(xkv, t_kv, &attn.v)?;
-    Ok((k, v))
+) -> Result<()> {
+    linear_into(k_out, xkv, t_kv, &attn.k)?;
+    linear_into(v_out, xkv, t_kv, &attn.v)
 }
 
-/// Multi-head attention from **pre-projected** keys/values.
+/// Multi-head attention from **pre-projected** keys/values, into `out` (sized
+/// here) using `scratch` for every intermediate.
 ///
 /// - `xq` is `[t_q, d]`; `k` / `v` are `[t_kv, d]` (already `k_proj`/`v_proj`);
 /// - `q_pos_offset` is the absolute position of `xq[0]` (the keys span absolute
@@ -93,7 +119,114 @@ pub(crate) fn project_kv(
 /// - the query is scaled by `head_dim^-0.5` (Whisper applies the scale to the
 ///   query, not the scores).
 ///
-/// Returns the block output `[t_q, d]` after the output projection.
+/// Writes the block output `[t_q, d]` (after the output projection) into `out`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn attention_from_kv_into(
+    scratch: &mut AttnScratch,
+    xq: &[f32],
+    t_q: usize,
+    k: &[f32],
+    v: &[f32],
+    t_kv: usize,
+    q_lin: &Linear,
+    out_lin: &Linear,
+    n_head: usize,
+    causal: bool,
+    q_pos_offset: usize,
+    out: &mut Vec<f32>,
+) -> Result<()> {
+    let d = q_lin.out_features;
+    let hd = d / n_head;
+    let scale = (hd as f32).powf(-0.5);
+
+    scratch.ensure(t_q, t_kv, d, n_head);
+
+    // Scaled query projection into scratch.q (bias applied by the GEMM).
+    gemm_f32(
+        t_q,
+        d,
+        q_lin.in_features,
+        xq,
+        &q_lin.w_t,
+        q_lin.bias.as_deref(),
+        &mut scratch.q,
+    )?;
+    for val in &mut scratch.q {
+        *val *= scale;
+    }
+
+    for h in 0..n_head {
+        let c0 = h * hd;
+        // Gather this head's q [t_q, hd] and v [t_kv, hd]; k transposed [hd, t_kv].
+        for i in 0..t_q {
+            scratch.qh[i * hd..i * hd + hd]
+                .copy_from_slice(&scratch.q[i * d + c0..i * d + c0 + hd]);
+        }
+        for j in 0..t_kv {
+            scratch.vh[j * hd..j * hd + hd].copy_from_slice(&v[j * d + c0..j * d + c0 + hd]);
+            for c in 0..hd {
+                scratch.kh_t[c * t_kv + j] = k[j * d + c0 + c];
+            }
+        }
+        // scores [t_q, t_kv] = qh [t_q, hd] @ kh_t [hd, t_kv].
+        gemm_f32(
+            t_q,
+            t_kv,
+            hd,
+            &scratch.qh,
+            &scratch.kh_t,
+            None,
+            &mut scratch.scores,
+        )?;
+        // Causal mask: query i (abs pos q_pos_offset + i) may not attend key j
+        // when j > q_pos_offset + i.
+        if causal {
+            for i in 0..t_q {
+                let last = q_pos_offset + i;
+                for j in (last + 1)..t_kv {
+                    scratch.scores[i * t_kv + j] = f32::NEG_INFINITY;
+                }
+            }
+        }
+        softmax_f32(&scratch.scores, &mut scratch.probs, t_q, t_kv)?;
+        // ctx_h [t_q, hd] = probs [t_q, t_kv] @ vh [t_kv, hd].
+        gemm_f32(
+            t_q,
+            hd,
+            t_kv,
+            &scratch.probs,
+            &scratch.vh,
+            None,
+            &mut scratch.ctx_h,
+        )?;
+        for i in 0..t_q {
+            scratch.context[i * d + c0..i * d + c0 + hd]
+                .copy_from_slice(&scratch.ctx_h[i * hd..i * hd + hd]);
+        }
+    }
+
+    // Output projection: out [t_q, d] = context [t_q, d] @ out_lin.
+    linear_into(out, &scratch.context, t_q, out_lin)
+}
+// ZERO-ALLOC-END
+
+// ---- allocating wrappers (unit tests + one-shot cross-K/V precompute) -------
+
+/// Allocating [`project_kv_into`]: returns `(k, v)` each `[t_kv, d]`. Used by
+/// the decoder's one-shot cross-attention K/V precomputation and the tests.
+pub(crate) fn project_kv(
+    xkv: &[f32],
+    t_kv: usize,
+    attn: &Attention,
+) -> Result<(Vec<f32>, Vec<f32>)> {
+    let mut k = Vec::new();
+    let mut v = Vec::new();
+    project_kv_into(&mut k, &mut v, xkv, t_kv, attn)?;
+    Ok((k, v))
+}
+
+/// Allocating [`attention_from_kv_into`]: returns the block output `[t_q, d]`.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn attention_from_kv(
     xq: &[f32],
@@ -107,59 +240,23 @@ pub(crate) fn attention_from_kv(
     causal: bool,
     q_pos_offset: usize,
 ) -> Result<Vec<f32>> {
-    let d = q_lin.out_features;
-    let hd = d / n_head;
-    let scale = (hd as f32).powf(-0.5);
-
-    // Scaled query projection.
-    let mut q = linear(xq, t_q, q_lin)?;
-    for v in &mut q {
-        *v *= scale;
-    }
-
-    // Per-head attention, writing each head's output into the [t_q, d] concat.
-    let mut context = vec![0.0f32; t_q * d];
-    let mut scores = vec![0.0f32; t_q * t_kv];
-    let mut probs = vec![0.0f32; t_q * t_kv];
-    // Head slice buffers.
-    let mut qh = vec![0.0f32; t_q * hd];
-    let mut kh_t = vec![0.0f32; hd * t_kv]; // k head transposed to [hd, t_kv]
-    let mut vh = vec![0.0f32; t_kv * hd];
-    let mut ctx_h = vec![0.0f32; t_q * hd];
-
-    for h in 0..n_head {
-        let c0 = h * hd;
-        // Gather this head's q [t_q, hd] and v [t_kv, hd]; k transposed [hd, t_kv].
-        for i in 0..t_q {
-            qh[i * hd..i * hd + hd].copy_from_slice(&q[i * d + c0..i * d + c0 + hd]);
-        }
-        for j in 0..t_kv {
-            vh[j * hd..j * hd + hd].copy_from_slice(&v[j * d + c0..j * d + c0 + hd]);
-            for c in 0..hd {
-                kh_t[c * t_kv + j] = k[j * d + c0 + c];
-            }
-        }
-        // scores [t_q, t_kv] = qh [t_q, hd] @ kh_t [hd, t_kv].
-        gemm_f32(t_q, t_kv, hd, &qh, &kh_t, None, &mut scores)?;
-        // Causal mask: query i (abs pos q_pos_offset + i) may not attend key j
-        // when j > q_pos_offset + i.
-        if causal {
-            for i in 0..t_q {
-                let last = q_pos_offset + i;
-                for j in (last + 1)..t_kv {
-                    scores[i * t_kv + j] = f32::NEG_INFINITY;
-                }
-            }
-        }
-        softmax_f32(&scores, &mut probs, t_q, t_kv)?;
-        // ctx_h [t_q, hd] = probs [t_q, t_kv] @ vh [t_kv, hd].
-        gemm_f32(t_q, hd, t_kv, &probs, &vh, None, &mut ctx_h)?;
-        for i in 0..t_q {
-            context[i * d + c0..i * d + c0 + hd].copy_from_slice(&ctx_h[i * hd..i * hd + hd]);
-        }
-    }
-
-    linear(&context, t_q, out_lin)
+    let mut scratch = AttnScratch::with_reserve(t_q, t_kv, q_lin.out_features, n_head);
+    let mut out = Vec::new();
+    attention_from_kv_into(
+        &mut scratch,
+        xq,
+        t_q,
+        k,
+        v,
+        t_kv,
+        q_lin,
+        out_lin,
+        n_head,
+        causal,
+        q_pos_offset,
+        &mut out,
+    )?;
+    Ok(out)
 }
 
 #[cfg(test)]

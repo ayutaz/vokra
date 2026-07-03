@@ -68,6 +68,9 @@ pub mod encoder;
 pub mod greedy;
 pub mod mel;
 pub mod nn;
+/// Reusable per-forward scratch buffers (FR-EX-05, hot-path malloc elimination);
+/// internal to the whisper module.
+mod scratch;
 pub mod tokenizer;
 pub mod weights;
 
@@ -75,6 +78,8 @@ pub use asr::WhisperAsr;
 pub use config::WhisperConfig;
 pub use tokenizer::WhisperTokenizer;
 pub use weights::WhisperWeights;
+
+use std::sync::Arc;
 
 use vokra_core::Result;
 use vokra_core::gguf::GgufFile;
@@ -133,13 +138,24 @@ impl WhisperModel {
 
     /// Creates a decoder run bound to `encoder`, with fresh KV caches. Used by
     /// the greedy / beam drivers and by the decoder parity tests.
-    pub fn decoder<'a>(&'a self, encoder: &EncoderOutput) -> Result<decoder::DecoderState<'a>> {
-        decoder::DecoderState::new(&self.config, &self.weights.decoder, encoder)
+    ///
+    /// Takes `&Arc<Self>` and clones the `Arc` into the returned
+    /// [`DecoderState`](decoder::DecoderState), which therefore owns the model
+    /// and carries no lifetime (so it is `Send` and can outlive this borrow).
+    pub fn decoder(self: &Arc<Self>, encoder: &EncoderOutput) -> Result<decoder::DecoderState> {
+        decoder::DecoderState::new(Arc::clone(self), encoder)
     }
 
     /// Borrows the decoder weights / config for the [`decoder`] forward and the
     /// [`greedy`] / search drivers.
     pub(crate) fn decoder_state(&self) -> (&WhisperConfig, &weights::DecoderWeights) {
         (&self.config, &self.weights.decoder)
+    }
+
+    /// Test-only constructor from already-built parts, so the synthetic decoder
+    /// tests can assemble a tiny model without a GGUF fixture.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(config: WhisperConfig, weights: WhisperWeights) -> Self {
+        Self { config, weights }
     }
 }

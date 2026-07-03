@@ -12,35 +12,34 @@
 //! aliasing between beams. Efficient per-beam cache reuse / reordering
 //! (FR-EX-02 / M1-04) is a later optimization behind the same interface.
 
+use std::sync::Arc;
+
 use vokra_core::Result;
 use vokra_core::decode::BeamScorer;
 
-use super::config::WhisperConfig;
+use super::WhisperModel;
 use super::decoder::DecoderState;
 use super::encoder::EncoderOutput;
-use super::weights::DecoderWeights;
 
 /// [`BeamScorer`] over a Whisper decoder bound to one encoder output.
-pub struct WhisperBeamScorer<'a> {
-    state: DecoderState<'a>,
+///
+/// Owns its [`DecoderState`] (which owns the model via an [`Arc`]), so the
+/// scorer carries no lifetime.
+pub struct WhisperBeamScorer {
+    state: DecoderState,
     vocab: usize,
 }
 
-impl<'a> WhisperBeamScorer<'a> {
+impl WhisperBeamScorer {
     /// Builds a scorer for `encoder`'s audio (precomputes cross-attention K/V).
-    pub(crate) fn new(
-        cfg: &'a WhisperConfig,
-        w: &'a DecoderWeights,
-        encoder: &EncoderOutput,
-    ) -> Result<Self> {
-        Ok(Self {
-            state: DecoderState::new(cfg, w, encoder)?,
-            vocab: cfg.n_vocab,
-        })
+    pub(crate) fn new(model: Arc<WhisperModel>, encoder: &EncoderOutput) -> Result<Self> {
+        let vocab = model.config().n_vocab;
+        let state = model.decoder(encoder)?;
+        Ok(Self { state, vocab })
     }
 }
 
-impl BeamScorer for WhisperBeamScorer<'_> {
+impl BeamScorer for WhisperBeamScorer {
     fn logprobs(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
         self.state.reset();
         let logits = self.state.step_last(tokens)?;

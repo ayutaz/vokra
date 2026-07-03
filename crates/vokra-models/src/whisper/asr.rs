@@ -15,21 +15,27 @@
 //! (plus [`WhisperAsr::transcribe_tokens`] for a tokenizer-free id stream).
 //! C-ABI export (`vokra_asr_transcribe`, FR-API-01) is out of this WP's scope.
 
+use std::sync::Arc;
+
 use vokra_core::engines::AsrEngine;
 use vokra_core::gguf::GgufFile;
 use vokra_core::tasks::Transcription;
 use vokra_core::{Result, VokraError};
 
 use super::WhisperModel;
-use super::decoder::DecoderState;
 use super::greedy::{DEFAULT_MAX_NEW_TOKENS, greedy_decode};
 use super::tokenizer::WhisperTokenizer;
 use crate::whisper::beam_glue::WhisperBeamScorer;
 use vokra_core::decode::{BeamSearchConfig, beam_search};
 
 /// Whisper ASR engine: a loaded model plus an optional detokenizer.
+///
+/// The model is held behind an [`Arc`] so a per-utterance [`DecoderState`] (and
+/// the beam scorer) can own it without a lifetime; cloning the handle is cheap.
+///
+/// [`DecoderState`]: super::decoder::DecoderState
 pub struct WhisperAsr {
-    model: WhisperModel,
+    model: Arc<WhisperModel>,
     tokenizer: Option<WhisperTokenizer>,
 }
 
@@ -39,7 +45,7 @@ impl WhisperAsr {
     /// it — see [`WhisperTokenizer`]); an attempt is still made to read an
     /// embedded `vokra.tokenizer.model` blob for forward compatibility.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
-        let model = WhisperModel::from_gguf(file)?;
+        let model = Arc::new(WhisperModel::from_gguf(file)?);
         let tokenizer = WhisperTokenizer::from_gguf(file, model.config().eot).ok();
         Ok(Self { model, tokenizer })
     }
@@ -61,8 +67,8 @@ impl WhisperAsr {
     /// token-level parity tests.
     pub fn transcribe_tokens(&self, pcm: &[f32]) -> Result<Vec<u32>> {
         let encoder = self.model.encode_pcm(pcm)?;
-        let (cfg, dec) = self.model.decoder_state();
-        let mut state = DecoderState::new(cfg, dec, &encoder)?;
+        let mut state = self.model.decoder(&encoder)?;
+        let cfg = self.model.config();
         greedy_decode(
             &mut state,
             &cfg.decoder_start_ids,
@@ -79,8 +85,8 @@ impl WhisperAsr {
         config: &BeamSearchConfig,
     ) -> Result<Vec<u32>> {
         let encoder = self.model.encode_pcm(pcm)?;
-        let (cfg, dec) = self.model.decoder_state();
-        let mut scorer = WhisperBeamScorer::new(cfg, dec, &encoder)?;
+        let mut scorer = WhisperBeamScorer::new(Arc::clone(&self.model), &encoder)?;
+        let cfg = self.model.config();
         let hyps = beam_search(&mut scorer, &cfg.decoder_start_ids, cfg.eot, config)?;
         hyps.into_iter().next().map(|h| h.tokens).ok_or_else(|| {
             VokraError::ModelLoad("whisper beam search produced no hypothesis".into())

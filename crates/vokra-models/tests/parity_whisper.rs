@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use vokra_core::AsrEngine;
 use vokra_core::decode::BeamSearchConfig;
@@ -126,10 +127,15 @@ fn assert_close(got: &[f32], expected: &[f32], ctx: &str) {
 }
 
 /// Loads the converted GGUF named by `VOKRA_WHISPER_GGUF`, or `None` to skip.
-fn load_model() -> Option<WhisperModel> {
+///
+/// Returned behind an `Arc` because [`WhisperModel::decoder`] now takes
+/// `&Arc<Self>` (it clones the handle into the ownable, `Send` `DecoderState`).
+fn load_model() -> Option<Arc<WhisperModel>> {
     let path = std::env::var_os("VOKRA_WHISPER_GGUF")?;
     let file = GgufFile::open(&path).expect("open VOKRA_WHISPER_GGUF");
-    Some(WhisperModel::from_gguf(&file).expect("load whisper model"))
+    Some(Arc::new(
+        WhisperModel::from_gguf(&file).expect("load whisper model"),
+    ))
 }
 
 /// Opens the converted GGUF named by `VOKRA_WHISPER_GGUF`, or `None` to skip

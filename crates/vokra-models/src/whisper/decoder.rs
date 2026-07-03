@@ -24,45 +24,92 @@
 //! token-by-token cached call produce identical logits (verified by the parity
 //! tests), which is what the search integration (M0-06-T23) relies on.
 
-use vokra_backend_cpu::kernels::gemm_f32;
-use vokra_core::{Result, VokraError};
+use std::sync::Arc;
 
+use vokra_backend_cpu::kernels::gemm_f32;
+use vokra_core::{KvCache, Result, VokraError};
+
+use super::WhisperModel;
 use super::config::WhisperConfig;
 use super::encoder::EncoderOutput;
-use super::nn::{add_into, attention_from_kv, layer_norm, mlp, project_kv};
+use super::nn::{
+    add_assign, attention_from_kv_into, layer_norm_into, mlp_into, project_kv, project_kv_into,
+};
+use super::scratch::{BlockScratch, LogitsScratch, resize_zeroed};
 use super::weights::DecoderWeights;
 
+/// Initial reservation *hint* for the self-attention KV cache, in positions
+/// (tokens).
+///
+/// Deliberately **not** the static `n_text_ctx` maximum (448 for Whisper base):
+/// a variable-length decode is usually far shorter, so reserving the worst-case
+/// window upfront wastes memory on every short utterance (M1-04 sub-part 2).
+/// The cache is seeded to this hint (capped at `n_text_ctx`, the hard upper
+/// bound `step_into` enforces) and grows amortically if a longer decode needs
+/// it. The per-step *compute* scratch is still bounded to `n_text_ctx` in
+/// [`DecoderState::new`], so the arithmetic hot path stays allocation-free;
+/// only the cache's own key/value buffers grow.
+const SELF_KV_RESERVE_HINT: usize = 64;
+
 /// A decoder run bound to one encoder output, holding the KV caches.
-pub struct DecoderState<'a> {
-    cfg: &'a WhisperConfig,
-    w: &'a DecoderWeights,
+///
+/// Owns the model through an [`Arc`] rather than borrowing it, so the state has
+/// no lifetime and is [`Send`]: a decode can be moved across threads (the
+/// M1-08 streaming foundation). The growable self-attention cache is the
+/// first-class [`KvCache`]; the cross-attention K/V are computed once from the
+/// encoder output and kept alongside.
+///
+/// # Reusable scratch (M1-04, FR-EX-05)
+///
+/// The residual buffer [`h`](Self::h), the per-block [`BlockScratch`] and the
+/// [`LogitsScratch`] are owned here and **reused for every step and every
+/// layer**: each is reserved once (to the text-context / prefix bounds) in
+/// [`new`](Self::new) and thereafter only `clear()`/`resize()`-d, so the
+/// autoregressive decode loop performs no heap allocation at steady state. This
+/// is the whisper.cpp reused-buffer pattern in safe Rust; the capacity-stability
+/// test below is its oracle.
+pub struct DecoderState {
+    /// The loaded model (config + weights), shared and kept alive by this run.
+    model: Arc<WhisperModel>,
     /// Per-layer cross-attention `(k, v)`, each `[n_ctx, d]` (computed once).
     cross_kv: Vec<(Vec<f32>, Vec<f32>)>,
     /// Number of encoder context positions.
     n_ctx: usize,
-    /// Per-layer self-attention key cache, growable `[pos, d]`.
-    self_k: Vec<Vec<f32>>,
-    /// Per-layer self-attention value cache, growable `[pos, d]`.
-    self_v: Vec<Vec<f32>>,
-    /// Number of tokens already committed to the self-attention cache.
-    pos: usize,
+    /// Growable per-layer self-attention key/value cache (`positions` tracks the
+    /// committed token count).
+    self_kv: KvCache,
+    /// Residual hidden-state stream `[t, d]` for the current step (reused).
+    h: Vec<f32>,
+    /// Per-transformer-block scratch, reused across all layers of a step.
+    block: BlockScratch,
+    /// Tied-logits-head scratch; its `out` holds the last step's logits.
+    logits: LogitsScratch,
 }
 
-impl<'a> DecoderState<'a> {
+impl DecoderState {
     /// Binds to `encoder` and precomputes the cross-attention K/V for every
-    /// layer.
-    pub(crate) fn new(
-        cfg: &'a WhisperConfig,
-        w: &'a DecoderWeights,
-        encoder: &EncoderOutput,
-    ) -> Result<Self> {
+    /// layer. Takes ownership of a cloned [`Arc`] to the model (see
+    /// [`WhisperModel::decoder`]).
+    pub(crate) fn new(model: Arc<WhisperModel>, encoder: &EncoderOutput) -> Result<Self> {
+        let (cfg, w) = model.decoder_state();
         if encoder.d_model != cfg.d_model {
             return Err(VokraError::InvalidArgument(format!(
                 "whisper decoder: encoder d_model {} != config {}",
                 encoder.d_model, cfg.d_model
             )));
         }
-        let mut cross_kv = Vec::with_capacity(w.layers.len());
+        let n_layer = w.layers.len();
+        // Seed the self-attention cache to a typical-decode hint rather than the
+        // static `n_text_ctx` max (M1-04 sub-part 2): short utterances no longer
+        // pay for the worst-case window, and a longer decode grows the cache
+        // amortically. The hint is capped at `n_text_ctx` (the hard upper bound
+        // `step_into` enforces), so a tiny window never over-reserves.
+        let self_kv = KvCache::with_reserve(
+            n_layer,
+            cfg.d_model,
+            SELF_KV_RESERVE_HINT.min(cfg.n_text_ctx),
+        );
+        let mut cross_kv = Vec::with_capacity(n_layer);
         for layer in &w.layers {
             cross_kv.push(project_kv(
                 &encoder.hidden,
@@ -70,166 +117,255 @@ impl<'a> DecoderState<'a> {
                 &layer.cross_attn,
             )?);
         }
-        let n_layer = w.layers.len();
+        let n_ctx = encoder.n_ctx;
+
+        // Reusable scratch (sub-part 3). `t_q_max` is the prefix width — the
+        // largest single greedy step (post-prefix steps decode one token). The
+        // attention scratch must cover the largest `t_kv` seen: the self-
+        // attention window `n_text_ctx` *or* the cross-attention key count
+        // `n_ctx`, whichever is larger. Reserving to these bounds makes the
+        // greedy step loop allocation-free; a rare larger one-shot call (e.g. a
+        // full-window beam recompute) resizes up once, outside that loop.
+        let d = cfg.d_model;
+        let ff = cfg.ffn_dim;
+        let n_head = cfg.n_text_head;
+        let n_vocab = cfg.n_vocab;
+        let t_q_max = cfg.decoder_start_ids.len().max(1);
+        let attn_t_kv_max = cfg.n_text_ctx.max(n_ctx);
+        let h = Vec::with_capacity(t_q_max * d);
+        let block = BlockScratch::with_reserve(t_q_max, attn_t_kv_max, d, ff, n_head);
+        let logits = LogitsScratch::with_reserve(t_q_max, d, n_vocab);
+
+        // The `cfg` / `w` borrows of `model` end here, so `model` can be moved in.
         Ok(Self {
-            cfg,
-            w,
+            model,
             cross_kv,
-            n_ctx: encoder.n_ctx,
-            self_k: vec![Vec::new(); n_layer],
-            self_v: vec![Vec::new(); n_layer],
-            pos: 0,
+            n_ctx,
+            self_kv,
+            h,
+            block,
+            logits,
         })
     }
 
     /// Clears the self-attention cache (the cross K/V stay valid) so a fresh
-    /// decode of the same audio reproduces the first run.
+    /// decode of the same audio reproduces the first run. The reserved capacity
+    /// is kept.
     pub fn reset(&mut self) {
-        for k in &mut self.self_k {
-            k.clear();
-        }
-        for v in &mut self.self_v {
-            v.clear();
-        }
-        self.pos = 0;
+        self.self_kv.reset();
     }
 
     /// Number of tokens currently in the self-attention cache.
     pub fn position(&self) -> usize {
-        self.pos
+        self.self_kv.positions()
     }
 
     /// Advances the decoder by `tokens`, appending their K/V to the cache, and
     /// returns the logits for **every** new token, row-major `[tokens, n_vocab]`.
     ///
     /// The caller reads the last row for greedy / beam expansion; the parity
-    /// tests use all rows.
+    /// tests use all rows. Internally forwards to the allocation-free
+    /// [`step_into`](Self::step_into) and clones its logits scratch out.
     ///
     /// # Errors
     ///
     /// [`VokraError::InvalidArgument`] if a token id is out of range or the
     /// decode would exceed `n_text_ctx`.
     pub fn step(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
-        let d = self.cfg.d_model;
-        let t = tokens.len();
-        if t == 0 {
+        if tokens.is_empty() {
             return Ok(Vec::new());
         }
-        if self.pos + t > self.cfg.n_text_ctx {
+        self.step_into(tokens)?;
+        Ok(self.logits.out.clone())
+    }
+
+    /// Logits for the last token after advancing by `tokens` (greedy / beam).
+    /// `tokens` must be non-empty. Forwards to [`step_into`](Self::step_into)
+    /// and clones only the final row.
+    pub fn step_last(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
+        self.step_into(tokens)?;
+        Ok(self.last_logits_row().to_vec())
+    }
+
+    /// The allocation-free core of a decode step: runs the forward over
+    /// `tokens`, appends their self-attention K/V to the cache and leaves the
+    /// `[tokens, n_vocab]` logits in the reused logits scratch. Read the final
+    /// row back with [`last_logits_row`](Self::last_logits_row). Every transient
+    /// lives in the reused scratch, so after warm-up this allocates nothing (the
+    /// capacity-stability oracle proves it).
+    ///
+    /// A zero-length `tokens` is a no-op (does not touch the logits scratch or
+    /// advance the cache); the public [`step`](Self::step) guards it.
+    // ZERO-ALLOC-BEGIN — the decode step body must not allocate on the hot path
+    // (guarded by scripts/check-hot-path-allocs.sh). Every transient is reused
+    // scratch; only error paths (rare) build a `format!` string.
+    pub(crate) fn step_into(&mut self, tokens: &[u32]) -> Result<()> {
+        // `cfg` / `w` borrow `self.model`; every buffer mutated below lives in a
+        // *disjoint* field (`self.h`, `self.block`, `self.self_kv`,
+        // `self.logits`), so the shared model borrow coexists with them — and
+        // the distinct scratch fields let one attention call hold `&ln`,
+        // `&mut attn` and `&mut block_out` at once without aliasing.
+        let (cfg, w) = self.model.decoder_state();
+        let d = cfg.d_model;
+        let ff = cfg.ffn_dim;
+        let n_head = cfg.n_text_head;
+        let t = tokens.len();
+        if t == 0 {
+            return Ok(());
+        }
+        // The query offset for this step: the position count *before* it, held
+        // constant across all layers and committed once at the end.
+        let start = self.self_kv.positions();
+        if start + t > cfg.n_text_ctx {
             return Err(VokraError::InvalidArgument(format!(
                 "whisper decoder: position {} exceeds n_text_ctx {}",
-                self.pos + t,
-                self.cfg.n_text_ctx
+                start + t,
+                cfg.n_text_ctx
             )));
         }
 
-        // Token + positional embedding.
-        let mut h = vec![0.0f32; t * d];
+        // Token + positional embedding into the reused residual buffer.
+        resize_zeroed(&mut self.h, t * d);
         for (i, &tok) in tokens.iter().enumerate() {
             let tok = tok as usize;
-            if tok >= self.cfg.n_vocab {
+            if tok >= cfg.n_vocab {
                 return Err(VokraError::InvalidArgument(format!(
                     "whisper decoder: token id {tok} >= n_vocab {}",
-                    self.cfg.n_vocab
+                    cfg.n_vocab
                 )));
             }
-            let posidx = self.pos + i;
-            let emb = &self.w.token_emb[tok * d..tok * d + d];
-            let pe = &self.w.pos_emb[posidx * d..posidx * d + d];
+            let posidx = start + i;
+            let emb = &w.token_emb[tok * d..tok * d + d];
+            let pe = &w.pos_emb[posidx * d..posidx * d + d];
             for c in 0..d {
-                h[i * d + c] = emb[c] + pe[c];
+                self.h[i * d + c] = emb[c] + pe[c];
             }
         }
 
-        for (li, layer) in self.w.layers.iter().enumerate() {
+        let t_kv = start + t;
+        for (li, layer) in w.layers.iter().enumerate() {
+            self.block.ensure_residual(t, d, ff);
+
             // Causal self-attention over the growing cache.
-            let normed = layer_norm(&h, t, &layer.self_ln)?;
-            let (kh, vh) = project_kv(&normed, t, &layer.self_attn)?;
-            self.self_k[li].extend_from_slice(&kh);
-            self.self_v[li].extend_from_slice(&vh);
-            let t_kv = self.pos + t;
-            let attn = attention_from_kv(
-                &normed,
+            layer_norm_into(&mut self.block.ln, &self.h, t, &layer.self_ln)?;
+            project_kv_into(
+                &mut self.block.k,
+                &mut self.block.v,
+                &self.block.ln,
                 t,
-                &self.self_k[li],
-                &self.self_v[li],
+                &layer.self_attn,
+            )?;
+            self.self_kv.append(li, &self.block.k, &self.block.v);
+            attention_from_kv_into(
+                &mut self.block.attn,
+                &self.block.ln,
+                t,
+                self.self_kv.k(li),
+                self.self_kv.v(li),
                 t_kv,
                 &layer.self_attn.q,
                 &layer.self_attn.out,
-                self.cfg.n_text_head,
+                n_head,
                 true,
-                self.pos,
+                start,
+                &mut self.block.block_out,
             )?;
-            add_into(&mut h, &attn)?;
+            add_assign(&mut self.h, &self.block.block_out)?;
 
             // Cross-attention over the (fixed) encoder output.
-            let normed = layer_norm(&h, t, &layer.cross_ln)?;
+            layer_norm_into(&mut self.block.ln, &self.h, t, &layer.cross_ln)?;
             let (ck, cv) = &self.cross_kv[li];
-            let attn = attention_from_kv(
-                &normed,
+            attention_from_kv_into(
+                &mut self.block.attn,
+                &self.block.ln,
                 t,
                 ck,
                 cv,
                 self.n_ctx,
                 &layer.cross_attn.q,
                 &layer.cross_attn.out,
-                self.cfg.n_text_head,
+                n_head,
                 false,
                 0,
+                &mut self.block.block_out,
             )?;
-            add_into(&mut h, &attn)?;
+            add_assign(&mut self.h, &self.block.block_out)?;
 
             // MLP.
-            let normed = layer_norm(&h, t, &layer.mlp_ln)?;
-            let ff = mlp(&normed, t, &layer.fc1, &layer.fc2)?;
-            add_into(&mut h, &ff)?;
+            layer_norm_into(&mut self.block.ln, &self.h, t, &layer.mlp_ln)?;
+            mlp_into(
+                &mut self.block.mlp_h,
+                &mut self.block.mlp_a,
+                &mut self.block.block_out,
+                &self.block.ln,
+                t,
+                &layer.fc1,
+                &layer.fc2,
+            )?;
+            add_assign(&mut self.h, &self.block.block_out)?;
         }
 
-        let h = layer_norm(&h, t, &self.w.ln_post)?;
-        self.pos += t;
-        project_logits(&h, t, self.cfg, self.w)
+        // Final LayerNorm into the (now-free) block `ln` buffer, then the tied
+        // logits head into the logits scratch.
+        layer_norm_into(&mut self.block.ln, &self.h, t, &w.ln_post)?;
+        // Commit this step's positions once, after every layer was appended.
+        self.self_kv.advance(t);
+        project_logits_into(&mut self.logits, &self.block.ln, t, cfg, w)
     }
+    // ZERO-ALLOC-END
 
-    /// Logits for the last token after advancing by `tokens` (greedy / beam).
-    pub fn step_last(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
-        let all = self.step(tokens)?;
-        let v = self.cfg.n_vocab;
-        let t = tokens.len();
-        Ok(all[(t - 1) * v..t * v].to_vec())
+    /// The final token's logits `[n_vocab]` from the last
+    /// [`step_into`](Self::step_into) — the greedy / beam read. Must not be
+    /// called before a non-empty step (the logits scratch would be empty).
+    pub(crate) fn last_logits_row(&self) -> &[f32] {
+        let v = self.model.config().n_vocab;
+        let out = &self.logits.out;
+        &out[out.len() - v..]
     }
 }
 
-/// `logits[T, n_vocab] = h[T, d] · token_embᵀ` (tied weights, no bias).
+/// `logits[T, n_vocab] = h[T, d] · token_embᵀ` (tied weights, no bias) into the
+/// reused [`LogitsScratch`].
 ///
 /// Computed as `token_emb[n_vocab, d] · hᵀ[d, T] → [n_vocab, T]` (so the huge
-/// `token_emb` is never transposed), then transposed to `[T, n_vocab]`.
-fn project_logits(
+/// `token_emb` is never transposed), then transposed to `[T, n_vocab]`. Same
+/// arithmetic and order as the former allocating `project_logits`.
+// ZERO-ALLOC-BEGIN — tied-head projection into reused scratch, no allocation.
+fn project_logits_into(
+    scratch: &mut LogitsScratch,
     h: &[f32],
     t: usize,
     cfg: &WhisperConfig,
     w: &DecoderWeights,
-) -> Result<Vec<f32>> {
+) -> Result<()> {
     let d = cfg.d_model;
     let v = cfg.n_vocab;
+    scratch.ensure(t, d, v);
     // hᵀ [d, T].
-    let mut h_t = vec![0.0f32; d * t];
     for i in 0..t {
         for c in 0..d {
-            h_t[c * t + i] = h[i * d + c];
+            scratch.h_t[c * t + i] = h[i * d + c];
         }
     }
     // logits_t [v, T] = token_emb [v, d] @ hᵀ [d, T].
-    let mut logits_t = vec![0.0f32; v * t];
-    gemm_f32(v, t, d, &w.token_emb, &h_t, None, &mut logits_t)?;
+    gemm_f32(
+        v,
+        t,
+        d,
+        &w.token_emb,
+        &scratch.h_t,
+        None,
+        &mut scratch.logits_t,
+    )?;
     // Transpose to [T, v].
-    let mut out = vec![0.0f32; t * v];
     for row in 0..v {
         for col in 0..t {
-            out[col * v + row] = logits_t[row * t + col];
+            scratch.out[col * v + row] = scratch.logits_t[row * t + col];
         }
     }
-    Ok(out)
+    Ok(())
 }
+// ZERO-ALLOC-END
 
 /// Synthetic tiny-decoder builders, shared with the [`super::greedy`] tests so
 /// the KV-cache / greedy loops run in CI without a GGUF fixture. Everything is
@@ -238,9 +374,14 @@ fn project_logits(
 /// never a reference number.
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::sync::Arc;
+
+    use crate::whisper::WhisperModel;
     use crate::whisper::config::WhisperConfig;
     use crate::whisper::encoder::EncoderOutput;
-    use crate::whisper::weights::{Attention, DecoderLayer, DecoderWeights, LayerNorm, Linear};
+    use crate::whisper::weights::{
+        Attention, DecoderLayer, DecoderWeights, EncoderWeights, LayerNorm, Linear, WhisperWeights,
+    };
 
     /// A tiny valid config with `n_layer` decoder blocks (`d_model = 2`,
     /// `n_vocab = 3`, `n_text_ctx = 8`, single head).
@@ -290,6 +431,48 @@ pub(crate) mod test_support {
             layers,
             ln_post: unit_ln(d),
         }
+    }
+
+    /// Minimal encoder weights matching `cfg`. The decoder tests never run the
+    /// encoder, so every tensor is zero-filled at the correct shape (and there
+    /// are no encoder layers — `tiny_cfg` sets `n_audio_layer = 0`).
+    fn tiny_encoder_weights(cfg: &WhisperConfig) -> EncoderWeights {
+        let d = cfg.d_model;
+        EncoderWeights {
+            conv1_w: vec![0.0; d * cfg.n_mels * 3],
+            conv1_b: vec![0.0; d],
+            conv2_w: vec![0.0; d * d * 3],
+            conv2_b: vec![0.0; d],
+            pos_emb: vec![0.0; cfg.n_audio_ctx * d],
+            layers: Vec::new(),
+            ln_post: unit_ln(d),
+        }
+    }
+
+    /// A tiny loaded [`WhisperModel`] (config + weights) wrapped in an [`Arc`],
+    /// ready for [`WhisperModel::decoder`]. This is the construction the decoder
+    /// tests use now that [`super::DecoderState`] owns its model.
+    pub(crate) fn tiny_model(n_layer: usize) -> Arc<WhisperModel> {
+        let config = tiny_cfg(n_layer);
+        let weights = WhisperWeights {
+            encoder: tiny_encoder_weights(&config),
+            decoder: tiny_weights(&config),
+        };
+        Arc::new(WhisperModel::new_for_test(config, weights))
+    }
+
+    /// Like [`tiny_model`] but with an explicit `n_text_ctx` (decoder positional
+    /// length), so the variable-length regression test can use a text window
+    /// larger than the KV reserve hint. Positional embeddings are sized to the
+    /// chosen `n_text_ctx` by [`tiny_weights`].
+    pub(crate) fn tiny_model_ctx(n_layer: usize, n_text_ctx: usize) -> Arc<WhisperModel> {
+        let mut config = tiny_cfg(n_layer);
+        config.n_text_ctx = n_text_ctx;
+        let weights = WhisperWeights {
+            encoder: tiny_encoder_weights(&config),
+            decoder: tiny_weights(&config),
+        };
+        Arc::new(WhisperModel::new_for_test(config, weights))
     }
 
     /// Unit-scale / zero-shift LayerNorm of width `d`.
@@ -348,28 +531,26 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{tiny_cfg, tiny_encoder, tiny_weights};
+    use super::test_support::{tiny_encoder, tiny_model, tiny_model_ctx};
     use super::*;
 
     #[test]
     fn new_rejects_encoder_dim_mismatch() {
-        let cfg = tiny_cfg(0);
-        let w = tiny_weights(&cfg);
+        let model = tiny_model(0);
         // Encoder hidden width differs from the config d_model. (DecoderState is
         // not Debug, so match instead of unwrap_err.)
-        let enc = tiny_encoder(cfg.d_model + 1, 4);
+        let enc = tiny_encoder(model.config().d_model + 1, 4);
         assert!(matches!(
-            DecoderState::new(&cfg, &w, &enc),
+            model.decoder(&enc),
             Err(VokraError::InvalidArgument(_))
         ));
     }
 
     #[test]
     fn step_rejects_out_of_range_token() {
-        let cfg = tiny_cfg(0);
-        let w = tiny_weights(&cfg);
-        let enc = tiny_encoder(cfg.d_model, 4);
-        let mut st = DecoderState::new(&cfg, &w, &enc).unwrap();
+        let model = tiny_model(0);
+        let enc = tiny_encoder(model.config().d_model, 4);
+        let mut st = model.decoder(&enc).unwrap();
         // 99 >= n_vocab (3): guarded before the embedding slice would panic.
         let err = st.step(&[99]).unwrap_err();
         assert!(matches!(err, VokraError::InvalidArgument(_)), "{err:?}");
@@ -377,22 +558,20 @@ mod tests {
 
     #[test]
     fn step_rejects_exceeding_n_text_ctx() {
-        let cfg = tiny_cfg(0);
-        let w = tiny_weights(&cfg);
-        let enc = tiny_encoder(cfg.d_model, 4);
-        let mut st = DecoderState::new(&cfg, &w, &enc).unwrap();
+        let model = tiny_model(0);
+        let enc = tiny_encoder(model.config().d_model, 4);
+        let mut st = model.decoder(&enc).unwrap();
         // n_text_ctx = 8; an n_text_ctx+1 step overflows (ids stay in vocab).
-        let toks = vec![1u32; cfg.n_text_ctx + 1];
+        let toks = vec![1u32; model.config().n_text_ctx + 1];
         let err = st.step(&toks).unwrap_err();
         assert!(matches!(err, VokraError::InvalidArgument(_)), "{err:?}");
     }
 
     #[test]
     fn empty_step_returns_empty_and_does_not_advance() {
-        let cfg = tiny_cfg(0);
-        let w = tiny_weights(&cfg);
-        let enc = tiny_encoder(cfg.d_model, 4);
-        let mut st = DecoderState::new(&cfg, &w, &enc).unwrap();
+        let model = tiny_model(0);
+        let enc = tiny_encoder(model.config().d_model, 4);
+        let mut st = model.decoder(&enc).unwrap();
         assert!(st.step(&[]).unwrap().is_empty());
         assert_eq!(st.position(), 0);
     }
@@ -401,13 +580,12 @@ mod tests {
     /// the last position — the KV-cache invariant the parity test owns at real
     /// scale (verified here at synthetic scale, both with and without a layer).
     fn assert_full_matches_cached(n_layer: usize) {
-        let cfg = tiny_cfg(n_layer);
-        let w = tiny_weights(&cfg);
-        let enc = tiny_encoder(cfg.d_model, 4);
-        let v = cfg.n_vocab;
+        let model = tiny_model(n_layer);
+        let v = model.config().n_vocab;
+        let enc = tiny_encoder(model.config().d_model, 4);
         let (a, b) = (1u32, 2u32);
 
-        let mut st = DecoderState::new(&cfg, &w, &enc).unwrap();
+        let mut st = model.decoder(&enc).unwrap();
         let full = st.step(&[a, b]).unwrap();
         assert_eq!(full.len(), 2 * v);
         let full_last = &full[v..2 * v];
@@ -434,10 +612,9 @@ mod tests {
 
     #[test]
     fn reset_and_replay_is_bit_identical() {
-        let cfg = tiny_cfg(1);
-        let w = tiny_weights(&cfg);
-        let enc = tiny_encoder(cfg.d_model, 4);
-        let mut st = DecoderState::new(&cfg, &w, &enc).unwrap();
+        let model = tiny_model(1);
+        let enc = tiny_encoder(model.config().d_model, 4);
+        let mut st = model.decoder(&enc).unwrap();
 
         let run1 = st.step(&[1, 2, 1]).unwrap();
         st.reset();
@@ -448,17 +625,168 @@ mod tests {
 
     #[test]
     fn step_last_is_final_row_of_step() {
-        let cfg = tiny_cfg(1);
-        let w = tiny_weights(&cfg);
-        let enc = tiny_encoder(cfg.d_model, 4);
-        let v = cfg.n_vocab;
+        let model = tiny_model(1);
+        let v = model.config().n_vocab;
+        let enc = tiny_encoder(model.config().d_model, 4);
 
-        let mut st = DecoderState::new(&cfg, &w, &enc).unwrap();
+        let mut st = model.decoder(&enc).unwrap();
         let all = st.step(&[1, 2]).unwrap();
         let last_slice = all[v..2 * v].to_vec();
 
         st.reset();
         let last = st.step_last(&[1, 2]).unwrap();
         assert_eq!(last, last_slice);
+    }
+
+    /// Compile-time proof that the promoted cache and the whole decode state are
+    /// both thread-transferable — the point of dropping the lifetime and owning
+    /// the model via `Arc` (M1-08 streaming foundation).
+    fn assert_send<T: Send>() {}
+
+    #[test]
+    fn kv_cache_and_decoder_state_are_send() {
+        assert_send::<vokra_core::KvCache>();
+        assert_send::<DecoderState>();
+    }
+
+    #[test]
+    fn decoder_state_moves_across_threads_bit_identically() {
+        use std::thread;
+
+        // A fixed prefix decoded on the main thread and on an independent,
+        // identically-constructed state moved into a worker thread must agree
+        // bit-for-bit — the cross-thread oracle for the ownable `Send` state.
+        let prefix = [1u32, 2, 1];
+
+        let model = tiny_model(1);
+        let enc = tiny_encoder(model.config().d_model, 4);
+        let mut main_state = model.decoder(&enc).unwrap();
+        let main_logits = main_state.step(&prefix).unwrap();
+
+        let worker_model = tiny_model(1);
+        let worker_enc = tiny_encoder(worker_model.config().d_model, 4);
+        let mut worker_state = worker_model.decoder(&worker_enc).unwrap();
+        // Moving `worker_state` into the closure only compiles if it is `Send`.
+        let worker_logits = thread::spawn(move || worker_state.step(&prefix).unwrap())
+            .join()
+            .expect("worker thread panicked");
+
+        assert_eq!(
+            main_logits, worker_logits,
+            "cross-thread decode of the same prefix diverged"
+        );
+    }
+
+    /// Gathers every reusable-scratch capacity plus the KV cache's reserved
+    /// position count. A [`Vec`] reallocates *iff* a push/resize exceeds its
+    /// capacity, so a capacity that never changes across steps is a direct proof
+    /// that no reallocation (no `malloc`) happened.
+    fn all_capacities(st: &DecoderState) -> Vec<usize> {
+        let mut caps = st.block.capacities();
+        caps.extend_from_slice(&st.logits.capacities());
+        caps.push(st.h.capacity());
+        caps.push(st.self_kv.capacity_positions());
+        caps
+    }
+
+    /// Zero-malloc oracle (sub-part 3): after a warm-up, every scratch buffer's
+    /// capacity — and the KV cache's reserved length — must stay **constant**
+    /// across a run of further single-token decode steps, even as the cache (and
+    /// thus each attention's `t_kv`) grows. This is the capacity-stability proof
+    /// that the reused buffers eliminate the autoregressive hot path's `malloc`.
+    #[test]
+    fn scratch_capacity_is_stable_across_decode_steps() {
+        // Two layers so the block scratch is provably reused *across layers*
+        // within a step, not just across steps.
+        let model = tiny_model(2);
+        let enc = tiny_encoder(model.config().d_model, 4);
+        let mut st = model.decoder(&enc).unwrap();
+
+        // Warm up to steady state (single-token steps, as greedy decode does
+        // after the forced prefix).
+        st.step_into(&[1]).unwrap();
+        st.step_into(&[2]).unwrap();
+        let before = all_capacities(&st);
+
+        // The hot loop: more single-token steps. `t_kv = positions + 1` grows
+        // every step, so the scores / probs / key-transpose / value buffers are
+        // resized upward each time — yet must stay within the reserve.
+        for tok in [1u32, 2, 1, 2, 1] {
+            st.step_into(&[tok]).unwrap();
+        }
+        let after = all_capacities(&st);
+
+        assert_eq!(
+            before, after,
+            "a reusable scratch buffer reallocated during the decode loop \
+             (before {before:?}, after {after:?}) — the hot path is not malloc-free"
+        );
+        // Guard against a vacuous pass: the cache really did grow (so the
+        // t_kv-dependent buffers were exercised at increasing sizes).
+        assert_eq!(st.position(), 7, "decode loop did not advance as expected");
+    }
+
+    /// `step_into` + `last_logits_row` (the greedy read) must equal the last row
+    /// of the allocating `step` — same forward, same scratch, so bit-identical.
+    #[test]
+    fn step_into_last_row_matches_step() {
+        let model = tiny_model(1);
+        let v = model.config().n_vocab;
+        let enc = tiny_encoder(model.config().d_model, 4);
+        let mut st = model.decoder(&enc).unwrap();
+
+        let all = st.step(&[1, 2]).unwrap();
+        let step_last_row = all[v..2 * v].to_vec();
+
+        st.reset();
+        st.step_into(&[1, 2]).unwrap();
+        assert_eq!(st.last_logits_row(), step_last_row.as_slice());
+    }
+
+    /// Variable-length I/O regression (M1-04 sub-part 2): two DIFFERENT-length
+    /// prefixes decode through the SAME reset state, and the self-attention KV
+    /// cache is seeded to a hint *below* the static `n_text_ctx` max (proving we
+    /// no longer pre-allocate the worst case) yet still grows to serve a decode
+    /// longer than that hint.
+    #[test]
+    fn variable_length_prefixes_reuse_state_and_cache_grows() {
+        // A text window larger than the reserve hint, so the seeded capacity is
+        // strictly below `n_text_ctx`.
+        let n_text_ctx = SELF_KV_RESERVE_HINT * 2;
+        let model = tiny_model_ctx(1, n_text_ctx);
+        let v = model.config().n_vocab;
+        let enc = tiny_encoder(model.config().d_model, 4);
+        let mut st = model.decoder(&enc).unwrap();
+
+        // (1) A SHORT prefix decodes fine and leaves the cache at the hint.
+        let short = [1u32, 2, 1];
+        let short_logits = st.step(&short).unwrap();
+        assert_eq!(short_logits.len(), short.len() * v);
+        assert_eq!(st.position(), short.len());
+        // No static-max pre-alloc: the reserved capacity is strictly below the
+        // full text window (it is the hint, which the short decode did not
+        // exceed).
+        assert!(
+            st.self_kv.capacity_positions() < n_text_ctx,
+            "self-attention KV cache pre-allocated the static n_text_ctx max \
+             (capacity {} vs n_text_ctx {n_text_ctx})",
+            st.self_kv.capacity_positions()
+        );
+
+        // (2) Reset and decode a DIFFERENT, LONGER prefix through the same state.
+        st.reset();
+        assert_eq!(st.position(), 0);
+        let long_len = SELF_KV_RESERVE_HINT + 4; // > hint, <= n_text_ctx
+        assert!(long_len > SELF_KV_RESERVE_HINT && long_len <= n_text_ctx);
+        let long: Vec<u32> = (0..long_len).map(|i| (i % v) as u32).collect();
+        let long_logits = st.step(&long).unwrap();
+        assert_eq!(long_logits.len(), long_len * v);
+        assert_eq!(st.position(), long_len);
+        // The cache grew past the initial hint to serve the longer decode.
+        assert!(
+            st.self_kv.capacity_positions() >= long_len,
+            "KV cache did not grow to hold the longer decode (capacity {}, need {long_len})",
+            st.self_kv.capacity_positions()
+        );
     }
 }

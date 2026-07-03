@@ -18,7 +18,8 @@ use vokra_backend_cpu::kernels::{conv1d_f32, gelu_f32};
 use vokra_core::{Result, VokraError};
 
 use super::config::WhisperConfig;
-use super::nn::{add_into, attention_from_kv, layer_norm, mlp, project_kv};
+use super::nn::{add_assign, attention_from_kv_into, layer_norm_into, mlp_into, project_kv_into};
+use super::scratch::{BlockScratch, EncoderScratch};
 use super::weights::{EncoderLayer, EncoderWeights};
 
 /// Encoder hidden states `[n_ctx, d_model]` (row-major).
@@ -98,44 +99,84 @@ pub(crate) fn encode(
         }
     }
 
-    // Pre-norm self-attention blocks.
+    // Pre-norm self-attention blocks. One `EncoderScratch` is reserved to the
+    // audio context length and reused across every block — the encoder is
+    // bidirectional (`t_q == t_kv == t`), so nothing grows between blocks and
+    // the per-block transients allocate only on the first block.
+    let mut scratch = EncoderScratch::with_reserve(t, d, cfg.ffn_dim, cfg.n_audio_head);
     for layer in &w.layers {
-        encoder_block(&mut hidden, t, cfg.n_audio_head, layer)?;
+        encoder_block(
+            &mut scratch.block,
+            &mut hidden,
+            t,
+            d,
+            cfg.ffn_dim,
+            cfg.n_audio_head,
+            layer,
+        )?;
     }
 
-    // Final LayerNorm.
-    let hidden = layer_norm(&hidden, t, &w.ln_post)?;
+    // Final LayerNorm into the returned buffer.
+    let mut normed = Vec::new();
+    layer_norm_into(&mut normed, &hidden, t, &w.ln_post)?;
 
     Ok(EncoderOutput {
-        hidden,
+        hidden: normed,
         n_ctx: t,
         d_model: d,
     })
 }
 
-/// One encoder block: `h += self_attn(ln(h))`, then `h += mlp(ln(h))`.
-fn encoder_block(h: &mut [f32], t: usize, n_head: usize, layer: &EncoderLayer) -> Result<()> {
-    let normed = layer_norm(h, t, &layer.attn_ln)?;
-    let (k, v) = project_kv(&normed, t, &layer.attn)?;
-    let attn = attention_from_kv(
-        &normed,
+/// One encoder block: `h += self_attn(ln(h))`, then `h += mlp(ln(h))`, using the
+/// reused `scratch` for every intermediate (no per-block allocation).
+// ZERO-ALLOC-BEGIN — per-block forward into reused scratch; guarded by
+// scripts/check-hot-path-allocs.sh (no vec![], Vec::with_capacity, .to_vec(),
+// .collect()). The conv stem in `encode` above allocates once per utterance and
+// is intentionally outside this region.
+#[allow(clippy::too_many_arguments)] // block shape (d, ff, n_head) + scratch + h
+fn encoder_block(
+    scratch: &mut BlockScratch,
+    h: &mut [f32],
+    t: usize,
+    d: usize,
+    ff: usize,
+    n_head: usize,
+    layer: &EncoderLayer,
+) -> Result<()> {
+    scratch.ensure_residual(t, d, ff);
+
+    layer_norm_into(&mut scratch.ln, h, t, &layer.attn_ln)?;
+    project_kv_into(&mut scratch.k, &mut scratch.v, &scratch.ln, t, &layer.attn)?;
+    attention_from_kv_into(
+        &mut scratch.attn,
+        &scratch.ln,
         t,
-        &k,
-        &v,
+        &scratch.k,
+        &scratch.v,
         t,
         &layer.attn.q,
         &layer.attn.out,
         n_head,
         false,
         0,
+        &mut scratch.block_out,
     )?;
-    add_into(h, &attn)?;
+    add_assign(h, &scratch.block_out)?;
 
-    let normed = layer_norm(h, t, &layer.mlp_ln)?;
-    let ff = mlp(&normed, t, &layer.fc1, &layer.fc2)?;
-    add_into(h, &ff)?;
+    layer_norm_into(&mut scratch.ln, h, t, &layer.mlp_ln)?;
+    mlp_into(
+        &mut scratch.mlp_h,
+        &mut scratch.mlp_a,
+        &mut scratch.block_out,
+        &scratch.ln,
+        t,
+        &layer.fc1,
+        &layer.fc2,
+    )?;
+    add_assign(h, &scratch.block_out)?;
     Ok(())
 }
+// ZERO-ALLOC-END
 
 /// Conv1d output length for the given kernel / stride / padding.
 fn conv_out_len(in_len: usize, kernel: usize, stride: usize, pad: usize) -> usize {

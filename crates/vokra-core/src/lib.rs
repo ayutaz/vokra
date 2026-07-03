@@ -8,10 +8,14 @@
 //! (SRS §1.3), this crate hosts the *IR and execution engine* side:
 //!
 //! - the **audio graph descriptor IR** ([`ir`], FR-EX-01): a ggml-style flat
-//!   op enum — [`DType`], [`TensorDesc`], [`OpKind`], [`AudioGraph`],
+//!   op enum — [`DType`], [`Dim`] (fixed / symbolic axis extents for
+//!   variable-length I/O), [`TensorDesc`], [`OpKind`], [`AudioGraph`],
 //!   [`GraphBuilder`];
 //! - the **backend abstraction** ([`backend`]): [`Backend`] /
 //!   [`BackendKind`] with uniform op coverage (FR-EX-08);
+//! - the **decoder KV cache** ([`cache`], FR-EX-02): [`KvCache`], an ownable,
+//!   `Send` key/value cache promoted out of the models so a decode can be
+//!   moved across threads (the M1-08 streaming foundation);
 //! - the **error type** [`VokraError`] and the [`Result`] alias
 //!   (FR-API-02);
 //! - the **public Rust API skeleton** (FR-API-02): [`Session`] /
@@ -74,6 +78,7 @@
 //! ```
 
 pub mod backend;
+pub mod cache;
 pub mod decode;
 pub mod engines;
 pub mod error;
@@ -87,10 +92,11 @@ pub mod stream;
 pub mod tasks;
 
 pub use backend::{Backend, BackendKind};
+pub use cache::KvCache;
 pub use engines::{AsrEngine, SynthesisRequest, TtsEngine, VadEngine, VadStreamHandle};
 pub use error::{Result, VokraError};
 pub use gguf::{FrontendSpec, GgmlType, GgufBuilder, GgufError, GgufFile, GgufTensorInfo};
-pub use ir::{AudioGraph, DType, GraphBuilder, Node, OpKind, TensorDesc, TensorId};
+pub use ir::{AudioGraph, DType, Dim, GraphBuilder, Node, OpKind, TensorDesc, TensorId};
 pub use pipeline::{AudioPipeline, Pipeline, PipelineStage};
 pub use safetensors::{SafeTensorInfo, SafetensorsError, SafetensorsFile};
 pub use session::{Session, SessionBuilder};

@@ -10,4 +10,4 @@ pub mod graph;
 pub mod tensor;
 
 pub use graph::{AudioGraph, GraphBuilder, Node, OpKind};
-pub use tensor::{DType, TensorDesc, TensorId};
+pub use tensor::{DType, Dim, TensorDesc, TensorId};

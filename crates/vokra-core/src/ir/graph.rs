@@ -15,7 +15,7 @@ use std::collections::HashSet;
 
 use crate::error::{Result, VokraError};
 
-use super::tensor::{TensorDesc, TensorId};
+use super::tensor::{Dim, TensorDesc, TensorId};
 
 // ===========================================================================
 // Audio front-end operator attributes (M0-04-T01; FR-OP-01 / FR-OP-03)
@@ -441,6 +441,9 @@ impl AudioGraph {
     /// - every [`TensorId`] referenced by nodes and by the graph
     ///   input / output lists is in range (no dangling ids),
     /// - tensor names are unique,
+    /// - a fully-static tensor's element count does not overflow `usize`
+    ///   (element-count checks are **skipped on [`Dim::Dynamic`] axes**, whose
+    ///   extent is variable-length — M1-04 sub-part 2),
     /// - every tensor is produced by at most one node (single-producer
     ///   consistency of node outputs).
     ///
@@ -453,6 +456,21 @@ impl AudioGraph {
             if !names.insert(desc.name.as_str()) {
                 return Err(VokraError::GraphValidation(format!(
                     "duplicate tensor name `{}`",
+                    desc.name
+                )));
+            }
+        }
+
+        // Element-count sanity, skipping symbolic axes. A tensor with any
+        // `Dim::Dynamic` axis has a variable-length extent (M1-04 sub-part 2):
+        // its element count is intentionally unknown, so element-count checks do
+        // not apply. A *fully static* tensor whose fixed extents overflow
+        // `usize`, by contrast, can never be allocated and is rejected here.
+        for desc in &self.tensors {
+            let fully_static = desc.shape.iter().all(|d| matches!(d, Dim::Fixed(_)));
+            if fully_static && desc.num_elements().is_none() {
+                return Err(VokraError::GraphValidation(format!(
+                    "tensor `{}` has a static shape whose element count overflows usize",
                     desc.name
                 )));
             }
@@ -579,7 +597,7 @@ impl GraphBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::tensor::DType;
+    use crate::ir::tensor::{DType, Dim};
 
     fn desc(name: &str) -> TensorDesc {
         TensorDesc::new(name, DType::F32, [2, 2])
@@ -694,6 +712,38 @@ mod tests {
         // graph-OUTPUT list was covered before.
         b.mark_input(TensorId(5));
         assert_graph_validation_err(b.finish(), "graph input");
+    }
+
+    #[test]
+    fn dynamic_dim_tensor_validates() {
+        // A graph whose I/O tensors carry a symbolic (variable-length) axis must
+        // pass structural validation: element-count checks skip Dynamic axes
+        // (M1-04 sub-part 2), so a graph with `[Dynamic, 80]` inputs is valid.
+        let mut b = GraphBuilder::new();
+        let x = b.add_tensor(TensorDesc::from_dims(
+            "x",
+            DType::F32,
+            [Dim::Dynamic, Dim::Fixed(80)],
+        ));
+        let y = b.add_tensor(TensorDesc::from_dims(
+            "y",
+            DType::F32,
+            [Dim::Dynamic, Dim::Fixed(80)],
+        ));
+        b.add_node(OpKind::Softmax, &[x], &[y]);
+        b.mark_input(x);
+        b.mark_output(y);
+        assert!(b.finish().is_ok());
+    }
+
+    #[test]
+    fn static_overflowing_tensor_is_rejected() {
+        // A fully-static shape whose element count overflows `usize` can never
+        // be allocated → rejected. (A `Dim::Dynamic` axis would instead be
+        // skipped, as `dynamic_dim_tensor_validates` shows.)
+        let mut b = GraphBuilder::new();
+        let _x = b.add_tensor(TensorDesc::new("x", DType::F32, [usize::MAX, 2]));
+        assert_graph_validation_err(b.finish(), "overflows usize");
     }
 
     #[test]
