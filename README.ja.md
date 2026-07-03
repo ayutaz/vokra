@@ -38,7 +38,7 @@
 | フェーズ | 見積り期間 | 焦点 |
 |---|---|---|
 | **v0.1 spike**（現在） | 1.5〜2ヶ月 | Rust scaffold、GGUF ローダー + `vokra.*` メタデータ、STFT/iSTFT/mel op、Silero VAD、Whisper base、piper-plus native TTS、CPU バックエンド（AVX2/NEON）、C ABI、Unity デモ、リポジトリ public 化 + CI ゲート |
-| v0.1 MVP | 1.5〜2.5ヶ月 | Silero VAD v5 + Whisper base の公式サポート。リリース直後にモデル parity チェックポイント（Kill switch I） |
+| v0.1 MVP | 1.5〜2.5ヶ月 | Silero VAD v5 + Whisper base の公式サポート。リリース直後にモデル parity チェックポイント |
 | v0.5 | 2.5〜4ヶ月 | Metal バックエンド、CUDA バックエンド着手、Kokoro-82M、Whisper large-v3/turbo、OpenAI 互換サーバ API |
 | v1.0 | 4〜5ヶ月 | CUDA 完成、Vulkan、CosyVoice2、Voxtral、RVV 1.0 ベースライン |
 | v1.5 | 4〜5ヶ月 | WebGPU/WASM、Sesame CSM-1B、Moshi（full-duplex + AEC）、全プラットフォーム公式サポート完了 |

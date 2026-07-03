@@ -24,9 +24,9 @@ reference 実装との数値一致は Vokra の品質背骨（NFR-QL-01）。**C
    - モデル固有基準（MEL loss / UTMOS / WER / CER 等）は per-suite doc に記述。
 4. **検証**: `cargo test -p vokra-parity`（committed fixtures のみで green）。ignore shell は `cargo test -p vokra-parity -- --ignored`。
 
-## Kill switch（忘れない）
+## 品質ゲート（忘れない）
 
-- **Kill switch I**: v0.1 MVP でモデル6種中 **3種以上** が PyTorch reference 比で **MEL loss / UTMOS 5% 超劣化**なら撤退条件。parity 劣化は品質だけでなく事業判断に直結する。
+- v0.1 MVP でモデル6種中 **3種以上** が PyTorch reference 比で **MEL loss / UTMOS 5% 超劣化**した場合は品質ゲート違反（要調査・リリースブロック相当）。parity 劣化は音声品質に直結する。
 
 ## 落とし穴
 

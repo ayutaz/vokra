@@ -66,7 +66,7 @@ indications only** ("目安"), not commitments.
 | Phase | Estimated duration | Focus |
 |---|---|---|
 | **v0.1 spike** (current) | 1.5-2 months | Rust scaffold, GGUF loader + `vokra.*` metadata, STFT/iSTFT/mel ops, Silero VAD, Whisper base, piper-plus native TTS, CPU backend (AVX2/NEON), C ABI, Unity demo, public repo + CI gates |
-| v0.1 MVP | 1.5-2.5 months | Silero VAD v5 + Whisper base official support; model-parity checkpoint (Kill switch I) right after release |
+| v0.1 MVP | 1.5-2.5 months | Silero VAD v5 + Whisper base official support; model-parity checkpoint right after release |
 | v0.5 | 2.5-4 months | Metal backend, CUDA backend start, Kokoro-82M, Whisper large-v3/turbo, OpenAI-compatible server API |
 | v1.0 | 4-5 months | CUDA complete, Vulkan, CosyVoice2, Voxtral, RVV 1.0 baseline |
 | v1.5 | 4-5 months | WebGPU/WASM, Sesame CSM-1B, Moshi (full-duplex + AEC), all-platform official support complete |

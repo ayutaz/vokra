@@ -32,7 +32,7 @@ description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-
 
 ## 4. 数値 parity（必須）
 
-→ skill `numerical-parity`。PyTorch/onnxruntime reference と MEL loss / UTMOS / WER 等で照合。**Kill switch I: モデル6種中3種以上で 5% 超劣化なら撤退**。fixtures は必ずオフライン生成・実データをコミット（捏造厳禁）。
+→ skill `numerical-parity`。PyTorch/onnxruntime reference と MEL loss / UTMOS / WER 等で照合。**モデル6種中3種以上で 5% 超劣化は品質ゲート違反（要調査・リリースブロック相当）**。fixtures は必ずオフライン生成・実データをコミット（捏造厳禁）。
 
 ## 5. TTS / VC は法務チェックリスト
 
