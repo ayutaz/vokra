@@ -10,7 +10,7 @@
 //! Angles are evaluated in `f64` and rounded to `f32` so the stored roots carry
 //! full `f64` accuracy of the sine/cosine before the single rounding step.
 
-use crate::complex::Complex32;
+use vokra_core::Complex32;
 
 use std::f64::consts::PI;
 

@@ -1,37 +1,40 @@
-//! Adapter binding the Whisper decoder to the model-independent
-//! [`BeamScorer`](vokra_core::decode::BeamScorer) (M0-06-T23).
+//! Adapters binding the Whisper decoder to the model-independent decoding
+//! traits ([`LogitsSource`] / [`BeamScorer`], M0-06-T23 + M1-04).
 //!
-//! [`WhisperBeamScorer`] answers the search's only question — "log-probs of the
-//! next token given this prefix" — by running the decoder over the full prefix
-//! and `log_softmax`-ing the final logits.
+//! [`WhisperLogitsSource`] answers the raw-logits question — "logits of the next
+//! token given this prefix" — by running the decoder over the full prefix. It is
+//! the primitive both the [`Sampler`](vokra_core::decode::Sampler) and beam
+//! search consume; [`WhisperBeamScorer`] is a **thin adapter** layering the
+//! `log_softmax` that [`beam_search`](vokra_core::decode::beam_search) wants on
+//! top of it.
 //!
 //! # Per-beam KV cache (M0: recompute)
 //!
-//! The search hands each beam its full token sequence, so this scorer
-//! **recomputes** from a reset cache every call: correctness-first, no cache
-//! aliasing between beams. Efficient per-beam cache reuse / reordering
-//! (FR-EX-02 / M1-04) is a later optimization behind the same interface.
+//! Each query hands the full token sequence, so the source **recomputes** from a
+//! reset cache every call: correctness-first, no cache aliasing between beams.
+//! Efficient per-beam cache reuse / reordering (FR-EX-02 / M1-04) is a later
+//! optimization behind the same interface.
 
 use std::sync::Arc;
 
 use vokra_core::Result;
-use vokra_core::decode::BeamScorer;
+use vokra_core::decode::{BeamScorer, LogitsSource};
 
 use super::WhisperModel;
 use super::decoder::DecoderState;
 use super::encoder::EncoderOutput;
 
-/// [`BeamScorer`] over a Whisper decoder bound to one encoder output.
+/// [`LogitsSource`] over a Whisper decoder bound to one encoder output.
 ///
 /// Owns its [`DecoderState`] (which owns the model via an [`Arc`]), so the
-/// scorer carries no lifetime.
-pub struct WhisperBeamScorer {
+/// source carries no lifetime and can drive greedy, sampled or beam decoding.
+pub struct WhisperLogitsSource {
     state: DecoderState,
     vocab: usize,
 }
 
-impl WhisperBeamScorer {
-    /// Builds a scorer for `encoder`'s audio (precomputes cross-attention K/V).
+impl WhisperLogitsSource {
+    /// Builds a source for `encoder`'s audio (precomputes cross-attention K/V).
     pub(crate) fn new(model: Arc<WhisperModel>, encoder: &EncoderOutput) -> Result<Self> {
         let vocab = model.config().n_vocab;
         let state = model.decoder(encoder)?;
@@ -39,15 +42,39 @@ impl WhisperBeamScorer {
     }
 }
 
-impl BeamScorer for WhisperBeamScorer {
-    fn logprobs(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
+impl LogitsSource for WhisperLogitsSource {
+    fn logits(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
         self.state.reset();
-        let logits = self.state.step_last(tokens)?;
-        Ok(log_softmax(&logits))
+        self.state.step_last(tokens)
     }
 
     fn vocab_size(&self) -> usize {
         self.vocab
+    }
+}
+
+/// [`BeamScorer`] over a Whisper decoder: a thin `log_softmax` adapter on top of
+/// [`WhisperLogitsSource`].
+pub struct WhisperBeamScorer {
+    source: WhisperLogitsSource,
+}
+
+impl WhisperBeamScorer {
+    /// Builds a scorer for `encoder`'s audio (precomputes cross-attention K/V).
+    pub(crate) fn new(model: Arc<WhisperModel>, encoder: &EncoderOutput) -> Result<Self> {
+        Ok(Self {
+            source: WhisperLogitsSource::new(model, encoder)?,
+        })
+    }
+}
+
+impl BeamScorer for WhisperBeamScorer {
+    fn logprobs(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
+        Ok(log_softmax(&self.source.logits(tokens)?))
+    }
+
+    fn vocab_size(&self) -> usize {
+        self.source.vocab_size()
     }
 }
 
@@ -68,6 +95,10 @@ fn log_softmax(logits: &[f32]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vokra_core::decode::{SamplerConfig, sample_sequence};
+
+    use crate::whisper::decoder::test_support::{tiny_encoder, tiny_model};
+    use crate::whisper::greedy::greedy_decode;
 
     #[test]
     fn log_softmax_sums_to_one_in_prob_space() {
@@ -76,5 +107,29 @@ mod tests {
         assert!((s - 1.0).abs() < 1e-6, "sum {s}");
         // Monotonic: larger logit → larger log-prob.
         assert!(lp[2] > lp[1] && lp[1] > lp[0] && lp[0] > lp[3]);
+    }
+
+    /// Temperature-0 sampling through the [`WhisperLogitsSource`] must reproduce
+    /// the incremental greedy decoder token-for-token. This is the CI-runnable
+    /// oracle for the sampled-transcribe wiring: the recompute-per-step source
+    /// (reset + `step_last` on the full prefix) and the incremental greedy loop
+    /// agree because reset+replay is bit-identical to incremental decoding.
+    #[test]
+    fn greedy_sampling_over_logits_source_matches_greedy_decode() {
+        let model = tiny_model(2);
+        let enc = tiny_encoder(model.config().d_model, 4);
+        let start = model.config().decoder_start_ids.clone();
+        let eot = model.config().eot;
+
+        let mut st = model.decoder(&enc).unwrap();
+        let greedy = greedy_decode(&mut st, &start, eot, 6).unwrap();
+
+        let mut src = WhisperLogitsSource::new(Arc::clone(&model), &enc).unwrap();
+        let sampled = sample_sequence(&mut src, &start, eot, &SamplerConfig::greedy(), 6).unwrap();
+
+        assert_eq!(
+            greedy, sampled,
+            "temperature-0 sampling must equal greedy decode"
+        );
     }
 }

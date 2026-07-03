@@ -14,7 +14,7 @@
 //! half-length packing is a performance follow-up; correctness is covered by the
 //! `irfft(rfft(x)) == x` round-trip test and the iSTFT reconstruction tests.
 
-use crate::complex::Complex32;
+use vokra_core::Complex32;
 
 use super::plan::FftPlan;
 

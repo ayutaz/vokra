@@ -32,7 +32,7 @@
 //! recursion structure is arranged so that optimization does not require an
 //! API change.
 
-use crate::complex::Complex32;
+use vokra_core::Complex32;
 
 /// Read-only context threaded through the recursion so the recursive function
 /// stays within the clippy argument budget.

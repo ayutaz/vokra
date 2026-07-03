@@ -9,7 +9,8 @@
 //!
 //! Layout:
 //!
-//! - [`Complex32`] — the crate-internal complex value type ([`crate::complex`]);
+//! - [`Complex32`] — the complex value type, re-exported from `vokra_core`
+//!   (moved to the core crate in M1-04, FR-EX-09);
 //! - [`FftPlan`] — reusable complex-to-complex plan (mixed-radix + Bluestein);
 //! - [`RealFftPlan`] — real-input `r2c` / `c2r` plan;
 //! - [`norm_scale`] — maps a [`Normalization`] onto a scalar factor.
@@ -23,9 +24,9 @@ mod plan;
 mod real;
 mod twiddle;
 
-pub use crate::complex::Complex32;
 pub use plan::FftPlan;
 pub use real::RealFftPlan;
+pub use vokra_core::Complex32;
 
 use vokra_core::ir::graph::Normalization;
 

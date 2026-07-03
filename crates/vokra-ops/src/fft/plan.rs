@@ -7,7 +7,7 @@
 //! [`Normalization`](super::Normalization) scaling is applied by the wrappers in
 //! [`super`].
 
-use crate::complex::Complex32;
+use vokra_core::Complex32;
 
 use super::bluestein::BluesteinPlan;
 use super::cfft::{FftCtx, factorize, fft_rec, largest_factor};

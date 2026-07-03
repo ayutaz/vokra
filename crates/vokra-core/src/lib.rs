@@ -16,6 +16,9 @@
 //! - the **decoder KV cache** ([`cache`], FR-EX-02): [`KvCache`], an ownable,
 //!   `Send` key/value cache promoted out of the models so a decode can be
 //!   moved across threads (the M1-08 streaming foundation);
+//! - the **complex value type** ([`complex`], FR-EX-09): [`Complex32`], the
+//!   host pair-of-`f32` behind the [`DType::Complex64`] IR dtype, shared with
+//!   the audio ops and their FFT core;
 //! - the **error type** [`VokraError`] and the [`Result`] alias
 //!   (FR-API-02);
 //! - the **public Rust API skeleton** (FR-API-02): [`Session`] /
@@ -79,6 +82,7 @@
 
 pub mod backend;
 pub mod cache;
+pub mod complex;
 pub mod decode;
 pub mod engines;
 pub mod error;
@@ -86,6 +90,7 @@ pub mod gguf;
 pub mod ir;
 pub mod json;
 pub mod pipeline;
+pub mod rng;
 pub mod safetensors;
 pub mod session;
 pub mod stream;
@@ -93,11 +98,17 @@ pub mod tasks;
 
 pub use backend::{Backend, BackendKind};
 pub use cache::KvCache;
+pub use complex::Complex32;
+pub use decode::{
+    CfgMode, LogitsSource, Sampler, SamplerConfig, apply_cfg, apply_cfg_inplace, argmax,
+    sample_sequence,
+};
 pub use engines::{AsrEngine, SynthesisRequest, TtsEngine, VadEngine, VadStreamHandle};
 pub use error::{Result, VokraError};
 pub use gguf::{FrontendSpec, GgmlType, GgufBuilder, GgufError, GgufFile, GgufTensorInfo};
 pub use ir::{AudioGraph, DType, Dim, GraphBuilder, Node, OpKind, TensorDesc, TensorId};
 pub use pipeline::{AudioPipeline, Pipeline, PipelineStage};
+pub use rng::SplitMix64;
 pub use safetensors::{SafeTensorInfo, SafetensorsError, SafetensorsFile};
 pub use session::{Session, SessionBuilder};
 pub use stream::{Stream, StreamState};

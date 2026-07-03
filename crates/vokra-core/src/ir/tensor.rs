@@ -8,8 +8,9 @@
 /// Element data type of a tensor.
 ///
 /// The enum is `#[non_exhaustive]` to keep room for later additions:
-/// `complex64` (FR-EX-09) is a **v0.1 MVP requirement and intentionally not
-/// part of M0**; quantized types follow their own roadmap items.
+/// `complex64` ([`DType::Complex64`], FR-EX-09) landed in M1-04 for the
+/// interleaved spectrogram / FFT boundary; quantized types follow their own
+/// roadmap items.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum DType {
@@ -25,6 +26,10 @@ pub enum DType {
     U8,
     /// Boolean, stored as one byte per element.
     Bool,
+    /// 64-bit complex (`complex64`): a pair of `f32`, real then imaginary,
+    /// matching the host [`Complex32`](crate::Complex32) value type (FR-EX-09).
+    /// Backs interleaved spectrogram / FFT buffers at the ABI boundary.
+    Complex64,
 }
 
 impl DType {
@@ -33,7 +38,7 @@ impl DType {
         match self {
             Self::F32 | Self::I32 => 4,
             Self::F16 => 2,
-            Self::I64 => 8,
+            Self::I64 | Self::Complex64 => 8,
             Self::U8 | Self::Bool => 1,
         }
     }
@@ -178,6 +183,8 @@ mod tests {
         assert_eq!(DType::I64.size_in_bytes(), 8);
         assert_eq!(DType::U8.size_in_bytes(), 1);
         assert_eq!(DType::Bool.size_in_bytes(), 1);
+        // complex64 = two f32 (FR-EX-09, M1-04).
+        assert_eq!(DType::Complex64.size_in_bytes(), 8);
     }
 
     #[test]

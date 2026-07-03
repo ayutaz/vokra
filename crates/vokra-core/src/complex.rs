@@ -1,20 +1,26 @@
-//! Single-precision complex number used by the FFT core (M0-04-T03).
+//! Single-precision complex number `re + i·im` (a pair of `f32`).
 //!
-//! This is a `vokra-ops`-internal value type. It is deliberately **not** an IR
-//! dtype: exposing `complex64` on the [`vokra_core`] IR is FR-EX-09 (v0.1 MVP,
-//! out of scope for M0-04), so the complex representation stays inside this
-//! crate and the audio ops present their results as split real/imaginary
-//! `f32` buffers at the public boundary.
+//! This is the host value type behind the [`DType::Complex64`](crate::DType) IR
+//! dtype — numpy / torch name `complex64`, i.e. two 32-bit floats, 8 bytes per
+//! element (see [`DType::size_in_bytes`](crate::DType::size_in_bytes)).
 //!
-//! Storage is `f32` (`re`, `im`) per the ticket's `Complex32` naming. Twiddle
-//! factors are computed in `f64` and rounded to `f32` (see `fft::twiddle`); the
-//! FP32 parity budget is `atol = 0.01` (NFR-QL-01), comfortably above the
-//! accumulated `f32` FFT error for the sizes Vokra transforms.
+//! It was promoted out of `vokra-ops` into the core crate in M1-04 so the IR and
+//! the audio ops share a single definition (FR-EX-09); `vokra-ops` re-exports it
+//! and its from-scratch FFT core builds on it. Storage is `f32` (`re`, `im`) per
+//! the original `Complex32` naming; twiddle factors are computed in `f64` and
+//! rounded to `f32` inside the FFT, comfortably inside the FP32 parity budget
+//! (`atol = 0.01`, NFR-QL-01).
+//!
+//! The arithmetic here is pure, safe two-`f32` code (`vokra-core` is
+//! `unsafe_code = "deny"`). `#[repr(C)]` pins the field order to `[re, im]`, so a
+//! contiguous `[Complex32]` has the same layout as an interleaved
+//! `[re, im, re, im, …]` `f32` buffer at the C ABI / codec boundary.
 
 use std::ops::{Add, Mul, Sub};
 
 /// A single-precision complex number `re + i·im`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[repr(C)]
 pub struct Complex32 {
     /// Real part.
     pub re: f32,
@@ -120,5 +126,13 @@ mod tests {
         let p = a * a.conj();
         assert_eq!(p.re, 25.0);
         assert_eq!(p.im, 0.0);
+    }
+
+    #[test]
+    fn repr_c_layout_is_two_contiguous_f32() {
+        // `#[repr(C)]` pins size/align to a bare `[re, im]` f32 pair, which is
+        // what lets a `[Complex32]` alias an interleaved f32 buffer.
+        assert_eq!(core::mem::size_of::<Complex32>(), 8);
+        assert_eq!(core::mem::align_of::<Complex32>(), 4);
     }
 }

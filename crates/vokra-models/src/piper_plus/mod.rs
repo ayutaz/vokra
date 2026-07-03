@@ -33,6 +33,7 @@ mod parity;
 use std::path::Path;
 
 use vokra_core::gguf::GgufFile;
+use vokra_core::rng::GaussianSplitMix64;
 use vokra_core::{Result, SynthesisRequest, SynthesizedAudio, TtsEngine};
 
 pub use config::PiperConfig;
@@ -137,7 +138,7 @@ impl PiperPlusTts {
         let (mut z_p, t_frames) = length_regulate(&enc.m_p, HIDDEN, enc.t, &w_ceil);
         if noise_scale != 0.0 {
             let (logs_exp, _) = length_regulate(&enc.logs_p, HIDDEN, enc.t, &w_ceil);
-            let mut rng = Rng::new(0x5eed_1234_abcd_0007);
+            let mut rng = GaussianSplitMix64::new(0x5eed_1234_abcd_0007);
             for (z, ls) in z_p.iter_mut().zip(&logs_exp) {
                 *z += rng.next_gaussian() * ls.exp() * noise_scale;
             }
@@ -268,50 +269,6 @@ impl TtsEngine for PiperPlusTts {
             (self.config.noise_scale, self.config.noise_w)
         };
         self.synthesize_phonemes(&phoneme_ids, lid, noise, self.config.length_scale, noise_w)
-    }
-}
-
-/// A tiny splitmix64 + Box-Muller Gaussian source for the non-deterministic
-/// synthesis noise. Fixed-seed and reproducible; not matched to onnxruntime's
-/// RNG (only the deterministic path is parity-checked).
-struct Rng {
-    state: u64,
-    spare: Option<f32>,
-}
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        Self {
-            state: seed,
-            spare: None,
-        }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// Uniform in `(0, 1)`.
-    fn next_f32(&mut self) -> f32 {
-        // Top 24 bits → [0,1); shift off zero.
-        let bits = (self.next_u64() >> 40) as f32;
-        (bits + 0.5) / (1u64 << 24) as f32
-    }
-
-    fn next_gaussian(&mut self) -> f32 {
-        if let Some(s) = self.spare.take() {
-            return s;
-        }
-        let u1 = self.next_f32();
-        let u2 = self.next_f32();
-        let r = (-2.0 * u1.ln()).sqrt();
-        let theta = 2.0 * std::f32::consts::PI * u2;
-        self.spare = Some(r * theta.sin());
-        r * theta.cos()
     }
 }
 

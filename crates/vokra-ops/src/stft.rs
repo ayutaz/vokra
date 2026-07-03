@@ -25,8 +25,13 @@ use crate::window::window;
 
 /// A complex spectrogram, row-major `[frames, bins]`.
 ///
-/// `re` and `im` are the split real/imaginary parts (the complex value type
-/// stays internal — public `complex64` on the IR is FR-EX-09, out of M0 scope).
+/// `re` and `im` are stored split (struct-of-arrays): this is the layout the
+/// parity-tested STFT / iSTFT path and the mel front-end consume, so it is kept
+/// as-is. The lossless [`to_interleaved`](Self::to_interleaved) /
+/// [`from_interleaved`](Self::from_interleaved) bridges convert to and from a
+/// packed interleaved `[re, im, …]` `complex64` buffer
+/// ([`DType::Complex64`](vokra_core::DType)) for the C ABI / codec boundary
+/// (FR-EX-09, M1-04).
 #[derive(Debug, Clone)]
 pub struct Spectrogram {
     /// Number of time frames (rows).
@@ -56,6 +61,61 @@ impl Spectrogram {
             .zip(&self.im)
             .map(|(r, i)| (r * r + i * i).sqrt())
             .collect()
+    }
+
+    /// Flattens the split real/imaginary buffers into one interleaved
+    /// `[re, im, re, im, …]` `f32` vector (row-major `[frames, bins]`, two `f32`
+    /// per bin — the packed `complex64` layout,
+    /// [`DType::Complex64`](vokra_core::DType)).
+    ///
+    /// This is the lossless bridge to a packed complex buffer at the C ABI /
+    /// codec boundary; [`from_interleaved`](Self::from_interleaved) is its exact
+    /// inverse. No arithmetic is performed, so the round-trip is bit-identical.
+    pub fn to_interleaved(&self) -> Vec<f32> {
+        let mut out = Vec::with_capacity(2 * self.re.len());
+        for (&r, &i) in self.re.iter().zip(&self.im) {
+            out.push(r);
+            out.push(i);
+        }
+        out
+    }
+
+    /// Rebuilds a spectrogram from an interleaved `[re, im, re, im, …]` buffer
+    /// (the exact inverse of [`to_interleaved`](Self::to_interleaved)).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VokraError::InvalidArgument`] if `data.len()` is not exactly
+    /// `2 * frames * bins` (two `f32` — real then imaginary — per bin), or if
+    /// `2 * frames * bins` overflows `usize`.
+    pub fn from_interleaved(frames: usize, bins: usize, data: &[f32]) -> Result<Self> {
+        let expected = frames
+            .checked_mul(bins)
+            .and_then(|n| n.checked_mul(2))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "from_interleaved: 2 * frames * bins overflows usize".to_owned(),
+                )
+            })?;
+        if data.len() != expected {
+            return Err(VokraError::InvalidArgument(format!(
+                "from_interleaved: expected {expected} values (2 * {frames} * {bins}), got {}",
+                data.len()
+            )));
+        }
+        let count = expected / 2;
+        let mut re = Vec::with_capacity(count);
+        let mut im = Vec::with_capacity(count);
+        for pair in data.chunks_exact(2) {
+            re.push(pair[0]);
+            im.push(pair[1]);
+        }
+        Ok(Self {
+            frames,
+            bins,
+            re,
+            im,
+        })
     }
 }
 
@@ -228,6 +288,54 @@ fn reflect_index(i: isize, n: usize) -> usize {
 mod tests {
     use super::*;
     use vokra_core::ir::graph::WindowSymmetry;
+
+    #[test]
+    fn interleaved_roundtrip_is_bit_identical() {
+        // The bridge does no arithmetic, so split -> interleaved -> split must
+        // return the exact f32 bit patterns (M1-04 sp4).
+        let spec = Spectrogram {
+            frames: 2,
+            bins: 3,
+            re: vec![1.0, -2.0, 3.5, 0.0, -0.25, 7.0],
+            im: vec![0.5, 4.0, -1.5, 2.0, 8.0, -3.0],
+        };
+        let flat = spec.to_interleaved();
+        assert_eq!(flat.len(), 2 * spec.frames * spec.bins);
+        let back = Spectrogram::from_interleaved(spec.frames, spec.bins, &flat).unwrap();
+        assert_eq!(back.frames, spec.frames);
+        assert_eq!(back.bins, spec.bins);
+        assert_eq!(back.re, spec.re);
+        assert_eq!(back.im, spec.im);
+    }
+
+    #[test]
+    fn interleaved_pairs_match_source_complex_values() {
+        // Each [re, im] pair in the flat buffer reconstructs the source bin's
+        // Complex32 exactly (interleaved layout == the moved core value type).
+        let spec = Spectrogram {
+            frames: 1,
+            bins: 4,
+            re: vec![1.0, -2.0, 3.5, 0.0],
+            im: vec![0.5, 4.0, -1.5, 2.0],
+        };
+        let flat = spec.to_interleaved();
+        for i in 0..spec.frames * spec.bins {
+            assert_eq!(
+                Complex32::new(flat[2 * i], flat[2 * i + 1]),
+                Complex32::new(spec.re[i], spec.im[i]),
+            );
+        }
+    }
+
+    #[test]
+    fn from_interleaved_rejects_wrong_length() {
+        // 2 * frames * bins = 12 expected; a 10-element buffer is an error.
+        let bad = vec![0.0f32; 10];
+        assert!(matches!(
+            Spectrogram::from_interleaved(2, 3, &bad),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
 
     #[test]
     fn reflect_padding_mirrors_without_repeating_edge() {

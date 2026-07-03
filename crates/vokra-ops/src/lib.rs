@@ -34,8 +34,6 @@
 // written in safe Rust; the opt-out is kept for the SIMD kernels of later WPs.
 #![allow(unsafe_code)]
 
-mod complex;
-
 pub mod attrs;
 pub mod dct;
 pub mod dispatch;
@@ -46,13 +44,13 @@ pub mod mfcc;
 pub mod stft;
 pub mod window;
 
-pub use complex::Complex32;
 pub use dct::dct;
 pub use dispatch::{OpValue, dispatch};
 pub use istft::istft;
 pub use mel::mel_filterbank;
 pub use mfcc::mfcc;
 pub use stft::{Spectrogram, stft};
+pub use vokra_core::Complex32;
 
 #[cfg(test)]
 mod tests {

@@ -435,6 +435,7 @@ fn softmax(x: &[f32; RQS_NUM_BINS]) -> [f32; RQS_NUM_BINS] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vokra_core::rng::Xorshift64Star;
 
     #[test]
     fn rqs_identity_outside_tails() {
@@ -464,37 +465,16 @@ mod tests {
         assert_eq!(searchsorted(&edges, 4.9), 9);
     }
 
-    /// Minimal reproducible xorshift64* (no external `rand`), matching the
-    /// pattern in `vokra-backend-cpu/tests/differential.rs`.
-    struct Rng(u64);
-    impl Rng {
-        fn new(seed: u64) -> Self {
-            Rng(seed | 1)
-        }
-        fn next_u64(&mut self) -> u64 {
-            let mut x = self.0;
-            x ^= x >> 12;
-            x ^= x << 25;
-            x ^= x >> 27;
-            self.0 = x;
-            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-        }
-        /// Uniform f32 in `[-1, 1)`.
-        fn next_f32(&mut self) -> f32 {
-            let bits = (self.next_u64() >> 40) as u32;
-            (bits as f32 / (1u32 << 24) as f32) * 2.0 - 1.0
-        }
-    }
-
     #[test]
     fn rqs_inverse_maps_box_corners_and_is_monotonic() {
-        // Arbitrary but fixed (non-degenerate) spline params.
-        let mut rng = Rng::new(0x1234_5678_9abc_def0);
+        // Arbitrary but fixed (non-degenerate) spline params, drawn from the
+        // shared reproducible xorshift64* (uniform in [-1, 1)).
+        let mut rng = Xorshift64Star::new(0x1234_5678_9abc_def0);
         let mut w = [0.0f32; RQS_NUM_BINS];
         let mut h = [0.0f32; RQS_NUM_BINS];
         for b in 0..RQS_NUM_BINS {
-            w[b] = rng.next_f32();
-            h[b] = rng.next_f32();
+            w[b] = rng.next_signed_f32();
+            h[b] = rng.next_signed_f32();
         }
         let d = [0.1f32; RQS_NUM_BINS - 1];
         let tb = RQS_TAIL_BOUND;

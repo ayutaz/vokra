@@ -12,6 +12,7 @@
 //! not part of the model forward), so the reference dump uses the identical
 //! plain-argmax loop and the two agree token-for-token.
 
+use vokra_core::decode::argmax;
 use vokra_core::{Result, VokraError};
 
 use super::decoder::DecoderState;
@@ -55,19 +56,6 @@ pub fn greedy_decode(
         state.step_into(&[next])?;
     }
     Ok(generated)
-}
-
-/// Index of the maximum element (first on ties), i.e. the greedy token.
-fn argmax(logits: &[f32]) -> u32 {
-    let mut best = 0usize;
-    let mut best_v = f32::NEG_INFINITY;
-    for (i, &v) in logits.iter().enumerate() {
-        if v > best_v {
-            best_v = v;
-            best = i;
-        }
-    }
-    best as u32
 }
 
 #[cfg(test)]

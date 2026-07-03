@@ -15,7 +15,7 @@
 
 use std::f64::consts::PI;
 
-use crate::complex::Complex32;
+use vokra_core::Complex32;
 
 use super::cfft::{FftCtx, factorize, fft_rec};
 

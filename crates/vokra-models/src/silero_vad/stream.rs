@@ -100,6 +100,7 @@ impl VadStreamHandle for VadStream {
 #[cfg(test)]
 mod tests {
     use vokra_core::engines::{VadEngine, VadStreamHandle};
+    use vokra_core::rng::Xorshift64Star;
 
     use crate::silero_vad::SileroVadV5;
     use crate::silero_vad::wav::read_wav_f32;
@@ -109,26 +110,6 @@ mod tests {
         SileroVadV5::open(test_gguf_path())
             .expect("load fixture gguf")
             .open_stream()
-    }
-
-    /// Minimal reproducible xorshift64* PRNG (same construction as
-    /// `vokra-backend-cpu/tests/differential.rs`), used to pick irregular chunk
-    /// boundaries without an external `rand` dependency.
-    struct Rng(u64);
-
-    impl Rng {
-        fn new(seed: u64) -> Self {
-            Rng(seed | 1)
-        }
-
-        fn next_u64(&mut self) -> u64 {
-            let mut x = self.0;
-            x ^= x >> 12;
-            x ^= x << 25;
-            x ^= x >> 27;
-            self.0 = x;
-            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-        }
     }
 
     /// Property: with LSTM state carried across non-overlapping fixed frames,
@@ -150,7 +131,7 @@ mod tests {
         // straddling the 256/512-sample frame boundary and single-sample pushes).
         let mut split = model.open_stream();
         let mut probs_split = Vec::new();
-        let mut rng = Rng::new(0x5EED_51E1);
+        let mut rng = Xorshift64Star::new(0x5EED_51E1);
         let mut i = 0;
         while i < wav.samples.len() {
             let remaining = wav.samples.len() - i;

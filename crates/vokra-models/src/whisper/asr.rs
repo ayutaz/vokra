@@ -25,8 +25,8 @@ use vokra_core::{Result, VokraError};
 use super::WhisperModel;
 use super::greedy::{DEFAULT_MAX_NEW_TOKENS, greedy_decode};
 use super::tokenizer::WhisperTokenizer;
-use crate::whisper::beam_glue::WhisperBeamScorer;
-use vokra_core::decode::{BeamSearchConfig, beam_search};
+use crate::whisper::beam_glue::{WhisperBeamScorer, WhisperLogitsSource};
+use vokra_core::decode::{BeamSearchConfig, SamplerConfig, beam_search, sample_sequence};
 
 /// Whisper ASR engine: a loaded model plus an optional detokenizer.
 ///
@@ -91,6 +91,28 @@ impl WhisperAsr {
         hyps.into_iter().next().map(|h| h.tokens).ok_or_else(|| {
             VokraError::ModelLoad("whisper beam search produced no hypothesis".into())
         })
+    }
+
+    /// Transcribes `pcm` with stochastic sampling (temperature / top-k / top-p /
+    /// repetition penalty over the model-independent
+    /// [`Sampler`](vokra_core::decode::Sampler)), returning the generated token
+    /// id sequence. A `temperature == 0` config is greedy and reproduces
+    /// [`transcribe_tokens`](Self::transcribe_tokens) token-for-token.
+    pub fn transcribe_tokens_sampled(
+        &self,
+        pcm: &[f32],
+        config: &SamplerConfig,
+    ) -> Result<Vec<u32>> {
+        let encoder = self.model.encode_pcm(pcm)?;
+        let mut source = WhisperLogitsSource::new(Arc::clone(&self.model), &encoder)?;
+        let cfg = self.model.config();
+        sample_sequence(
+            &mut source,
+            &cfg.decoder_start_ids,
+            cfg.eot,
+            config,
+            DEFAULT_MAX_NEW_TOKENS,
+        )
     }
 
     /// Detokenizes `ids`, or renders them as a bracketed id list when no
