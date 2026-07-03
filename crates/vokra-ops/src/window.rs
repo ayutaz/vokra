@@ -68,9 +68,26 @@ fn kaiser(length: usize, denom: f64, beta: f64) -> Vec<f32> {
         .collect()
 }
 
+/// Normalized sinc, `sinc(x) = sin(πx) / (πx)` with `sinc(0) = 1`.
+///
+/// `pub(crate)` for the resampler (M1-06a), whose Kaiser-windowed-sinc
+/// interpolation kernel is `cutoff · sinc(cutoff · τ) · kaiser(τ)`.
+pub(crate) fn sinc(x: f64) -> f64 {
+    if x == 0.0 {
+        1.0
+    } else {
+        let px = PI * x;
+        px.sin() / px
+    }
+}
+
 /// Modified Bessel function of the first kind, order 0, by its power series
 /// `I0(x) = Σ_k ((x/2)^{2k} / (k!)²)`.
-fn bessel_i0(x: f64) -> f64 {
+///
+/// `pub(crate)` so the resampler (M1-06a) can evaluate the Kaiser envelope at
+/// the *continuous* fractional tap positions its interpolation kernel needs
+/// (the discrete [`window`] sampler above only yields integer-spaced taps).
+pub(crate) fn bessel_i0(x: f64) -> f64 {
     let half_sq = (x * 0.5) * (x * 0.5);
     let mut term = 1.0;
     let mut sum = 1.0;
@@ -127,6 +144,20 @@ mod tests {
         let peak = w[32];
         assert!((peak - 1.0).abs() < 1e-4, "peak {peak}");
         assert!(w[0] < 0.001 && w[64] < 0.001);
+    }
+
+    #[test]
+    fn sinc_hits_the_analytic_landmarks() {
+        // sinc(0) = 1 (the removable singularity), sinc(±integer) = 0, and
+        // sinc(0.5) = sin(π/2)/(π/2) = 2/π.
+        assert!((sinc(0.0) - 1.0).abs() < 1e-15);
+        for k in 1..=5 {
+            assert!(sinc(k as f64).abs() < 1e-12, "sinc({k})");
+            assert!(sinc(-(k as f64)).abs() < 1e-12, "sinc(-{k})");
+        }
+        assert!((sinc(0.5) - 2.0 / PI).abs() < 1e-12);
+        // Even function.
+        assert!((sinc(0.37) - sinc(-0.37)).abs() < 1e-15);
     }
 
     #[test]

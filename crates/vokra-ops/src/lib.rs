@@ -13,6 +13,10 @@
 //!   [`dct`], [`mfcc`] and the [`dispatch`] bridge to the IR;
 //! - **M0-05**: LSTM family needed by the Silero VAD subgraph;
 //! - **M0-06**: attention / decoder family needed by Whisper;
+//! - **M1-06** (landed): front-end preprocessing — [`resample`] (a native
+//!   Kaiser-windowed-sinc converter, GPL-free by construction) and the
+//!   `frontend_spec`-driven [`dc_offset_remove`] / [`pre_emphasis`] chain
+//!   ([`apply_frontend`]);
 //! - later WPs: vocoder chains, flow-matching samplers, codec decode, and
 //!   the rest of the audio dialect (CLAUDE.md "音声特化オペレータ").
 //!
@@ -41,6 +45,8 @@ pub mod fft;
 pub mod istft;
 pub mod mel;
 pub mod mfcc;
+pub mod preprocess;
+pub mod resample;
 pub mod stft;
 pub mod window;
 
@@ -49,6 +55,8 @@ pub use dispatch::{OpValue, dispatch};
 pub use istft::istft;
 pub use mel::mel_filterbank;
 pub use mfcc::mfcc;
+pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};
+pub use resample::resample;
 pub use stft::{Spectrogram, stft};
 pub use vokra_core::Complex32;
 
