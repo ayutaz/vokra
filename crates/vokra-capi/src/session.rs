@@ -112,13 +112,50 @@ pub unsafe extern "C" fn vokra_session_create_from_file(
     })
 }
 
-/// Frees a session handle from `vokra_session_create_from_file`. `NULL` is a
-/// no-op; using the handle after this call is undefined behaviour.
+/// Retains the session, producing an independent handle that shares the same
+/// loaded model via an atomic ref count (FR-API-03).
+///
+/// This is the C ABI atomic ref count: it clones the inner `Session` (a cheap
+/// atomic `Arc` bump), so the model is freed only when the last handle is passed
+/// to `vokra_session_destroy`. The new handle is safe to move to another thread
+/// (`Session` is `Send + Sync`).
+///
+/// # Parameters
+///
+/// - `session`: an existing session handle to retain.
+/// - `out_session`: on `VOKRA_OK`, receives a new handle to be freed with
+///   `vokra_session_destroy`. Untouched on error.
+///
+/// # Safety
+///
+/// `session` must be a valid session handle and `out_session` a writable
+/// `vokra_session_t*` location.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vokra_session_retain(
+    session: *const vokra_session_t,
+    out_session: *mut *mut vokra_session_t,
+) -> vokra_status_t {
+    ffi_guard::guard(|| {
+        // SAFETY: `session` validated (NULL rejected) by `required_ref`.
+        let handle = unsafe { ffi_guard::required_ref(session, "session")? };
+        ffi_guard::require_out_ptr(out_session, "out_session")?;
+        let boxed = handle::into_raw(vokra_session_t {
+            session: handle.session.clone(),
+        });
+        // SAFETY: `out_session` is non-null (checked) and writable per contract.
+        unsafe { *out_session = boxed };
+        Ok(())
+    })
+}
+
+/// Frees a session handle from `vokra_session_create_from_file` /
+/// `vokra_session_retain`. `NULL` is a no-op; using the handle after this call
+/// is undefined behaviour. The model is freed when the last handle is destroyed.
 ///
 /// # Safety
 ///
 /// `session` must be `NULL` or a handle from `vokra_session_create_from_file`
-/// that has not already been destroyed.
+/// or `vokra_session_retain` that has not already been destroyed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vokra_session_destroy(session: *mut vokra_session_t) {
     ffi_guard::guard_void(|| {

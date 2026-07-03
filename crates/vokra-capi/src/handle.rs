@@ -7,17 +7,17 @@
 //! matching `destroy` (ADR-0003 §1). Handles cross the boundary as
 //! `Box::into_raw` pointers and come back via `Box::from_raw`.
 
-use std::collections::VecDeque;
-
-use vokra_core::Session;
-use vokra_core::engines::VadStreamHandle;
+use vokra_core::{Session, Stream};
 
 /// Opaque session handle: one loaded model bound to one backend, with the
 /// matching native engine injected (ASR / TTS / VAD — see
 /// `crate::session::vokra_session_create_from_file`).
 ///
-/// Created by `vokra_session_create_from_file`, released by
-/// `vokra_session_destroy`. Opaque to C.
+/// Created by `vokra_session_create_from_file`, cloned by
+/// `vokra_session_retain` (atomic ref count, FR-API-03) and released by
+/// `vokra_session_destroy`. The loaded model stays alive until the last handle
+/// is destroyed. Backed by `Session: Send + Sync`, so a handle is safe to share
+/// across C threads. Opaque to C.
 //
 // C-style name so cbindgen emits `vokra_session_t` verbatim (see error.rs).
 #[allow(non_camel_case_types)]
@@ -25,21 +25,20 @@ pub struct vokra_session_t {
     pub(crate) session: Session,
 }
 
-/// Opaque VAD stream handle: a stateful Silero VAD stream plus a FIFO of speech
-/// probabilities computed by `vokra_stream_push_pcm` and drained by
-/// `vokra_stream_poll`.
+/// Opaque streaming handle: a native stepping [`Stream`] (M1-08) whose events
+/// flow through a lock-free ring, drained by `vokra_stream_poll` (VAD speech
+/// probabilities) or `vokra_stream_poll_events` (typed events).
 ///
-/// Created by `vokra_stream_open`, released by `vokra_stream_destroy`. Opaque
-/// to C. All recurrent state (LSTM `h`/`c`, framing) is hidden inside
-/// `handle` (FR-LD-06).
+/// Created by `vokra_stream_open`, released by `vokra_stream_destroy`. Opaque to
+/// C. All recurrent state (LSTM `h`/`c`, framing, KV cache) is hidden inside the
+/// stepper (FR-LD-06 / FR-ST-05).
 #[allow(non_camel_case_types)]
 pub struct vokra_stream_t {
-    /// The native VAD stream; hides the recurrent state.
-    pub(crate) handle: Box<dyn VadStreamHandle + Send>,
-    /// Sample rate fixed at open and passed to every `push_pcm`.
-    pub(crate) sample_rate: u32,
-    /// Frame probabilities awaiting `poll` (front = oldest).
-    pub(crate) pending: VecDeque<f32>,
+    /// A retained clone of the originating session, so a live stream keeps the
+    /// model (and its engine) alive independently of `vokra_session_destroy`.
+    /// Dropped after `stream` (declaration order = drop order).
+    pub(crate) stream: Stream,
+    pub(crate) _session: Session,
 }
 
 /// Moves `value` onto the heap and hands ownership to C as a raw pointer.

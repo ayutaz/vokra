@@ -55,22 +55,50 @@ typedef enum vokra_status_t {
     VOKRA_ERROR_OTHER = 9,
 } vokra_status_t;
 
+// Kind tag of a [`vokra_event_t`] (M1-08). The numeric values are part of the
+// (M0-unstable) ABI.
+typedef enum vokra_event_kind_t {
+    // Unknown / reserved event kind (forward-compat placeholder).
+    VOKRA_EVENT_UNKNOWN = 0,
+    // A VAD speech-probability event: `a` = frame index, `b` = probability.
+    VOKRA_EVENT_SPEECH_PROB = 1,
+    // An ASR token event: `a` = token id, `b` = reserved (`0`).
+    VOKRA_EVENT_TOKEN = 2,
+} vokra_event_kind_t;
+
 // Opaque session handle: one loaded model bound to one backend, with the
 // matching native engine injected (ASR / TTS / VAD — see
 // `crate::session::vokra_session_create_from_file`).
 //
-// Created by `vokra_session_create_from_file`, released by
-// `vokra_session_destroy`. Opaque to C.
+// Created by `vokra_session_create_from_file`, cloned by
+// `vokra_session_retain` (atomic ref count, FR-API-03) and released by
+// `vokra_session_destroy`. The loaded model stays alive until the last handle
+// is destroyed. Backed by `Session: Send + Sync`, so a handle is safe to share
+// across C threads. Opaque to C.
 typedef struct vokra_session_t vokra_session_t;
 
-// Opaque VAD stream handle: a stateful Silero VAD stream plus a FIFO of speech
-// probabilities computed by `vokra_stream_push_pcm` and drained by
-// `vokra_stream_poll`.
+// Opaque streaming handle: a native stepping [`Stream`] (M1-08) whose events
+// flow through a lock-free ring, drained by `vokra_stream_poll` (VAD speech
+// probabilities) or `vokra_stream_poll_events` (typed events).
 //
-// Created by `vokra_stream_open`, released by `vokra_stream_destroy`. Opaque
-// to C. All recurrent state (LSTM `h`/`c`, framing) is hidden inside
-// `handle` (FR-LD-06).
+// Created by `vokra_stream_open`, released by `vokra_stream_destroy`. Opaque to
+// C. All recurrent state (LSTM `h`/`c`, framing, KV cache) is hidden inside the
+// stepper (FR-LD-06 / FR-ST-05).
 typedef struct vokra_stream_t vokra_stream_t;
+
+// A generalized streaming event drained by `vokra_stream_poll_events` (M1-08).
+//
+// A fixed 12-byte POD (`kind` + `a` + `b`); the meaning of `a` / `b` depends on
+// `kind` (see [`vokra_event_kind_t`]). This layout is a new (M0-unstable) ABI
+// surface, pinned by the numeric-layout test.
+typedef struct vokra_event_t {
+    // Discriminates how `a` / `b` are interpreted.
+    enum vokra_event_kind_t kind;
+    // Primary integer field (frame index for VAD, token id for ASR).
+    uint32_t a;
+    // Secondary float field (probability for VAD; reserved `0` for ASR).
+    float b;
+} vokra_event_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -143,20 +171,42 @@ const char *vokra_last_error(void);
 enum vokra_status_t vokra_session_create_from_file(const char *path_utf8,
                                                    struct vokra_session_t **out_session);
 
-// Frees a session handle from `vokra_session_create_from_file`. `NULL` is a
-// no-op; using the handle after this call is undefined behaviour.
+// Retains the session, producing an independent handle that shares the same
+// loaded model via an atomic ref count (FR-API-03).
+//
+// This is the C ABI atomic ref count: it clones the inner `Session` (a cheap
+// atomic `Arc` bump), so the model is freed only when the last handle is passed
+// to `vokra_session_destroy`. The new handle is safe to move to another thread
+// (`Session` is `Send + Sync`).
+//
+// # Parameters
+//
+// - `session`: an existing session handle to retain.
+// - `out_session`: on `VOKRA_OK`, receives a new handle to be freed with
+//   `vokra_session_destroy`. Untouched on error.
+//
+// # Safety
+//
+// `session` must be a valid session handle and `out_session` a writable
+// `vokra_session_t*` location.
+enum vokra_status_t vokra_session_retain(const struct vokra_session_t *session,
+                                         struct vokra_session_t **out_session);
+
+// Frees a session handle from `vokra_session_create_from_file` /
+// `vokra_session_retain`. `NULL` is a no-op; using the handle after this call
+// is undefined behaviour. The model is freed when the last handle is destroyed.
 //
 // # Safety
 //
 // `session` must be `NULL` or a handle from `vokra_session_create_from_file`
-// that has not already been destroyed.
+// or `vokra_session_retain` that has not already been destroyed.
 void vokra_session_destroy(struct vokra_session_t *session);
 
 // Returns the Vokra runtime version as a static NUL-terminated UTF-8 string
 // (the `vokra-capi` crate version). The pointer is static — never free it.
 const char *vokra_version(void);
 
-// Opens a VAD stream over a session (FR-API-01, proposed lifecycle helper).
+// Opens a VAD stream over a session (FR-API-01 / FR-ST-02).
 //
 // # Parameters
 //
@@ -164,7 +214,8 @@ const char *vokra_version(void);
 // - `sample_rate`: the stream sample rate in Hz (Silero accepts 8000 or
 //   16000; other rates are rejected by the first `vokra_stream_push_pcm`).
 // - `out_stream`: on `VOKRA_OK`, receives a stream handle freed with
-//   `vokra_stream_destroy`.
+//   `vokra_stream_destroy`. The stream retains the session, so it keeps the
+//   model alive even after `vokra_session_destroy`.
 //
 // Returns `VOKRA_ERROR_NOT_IMPLEMENTED` if the session's model is not a VAD
 // model (no VAD engine was injected).
@@ -177,11 +228,9 @@ enum vokra_status_t vokra_stream_open(const struct vokra_session_t *session,
                                       int32_t sample_rate,
                                       struct vokra_stream_t **out_stream);
 
-// Pushes mono `f32` PCM into a VAD stream (FR-API-01).
-//
-// The stream buffers each completed frame's speech probability internally;
-// retrieve them with `vokra_stream_poll`. A trailing partial frame is held
-// until the next push.
+// Pushes mono `f32` PCM into a VAD stream (FR-API-01). Each completed frame's
+// event is enqueued on the stream's ring; drain them with `vokra_stream_poll`
+// or `vokra_stream_poll_events`. A trailing partial frame is held internally.
 //
 // # Safety
 //
@@ -204,6 +253,21 @@ enum vokra_status_t vokra_stream_poll(struct vokra_stream_t *stream,
                                       float *out_probs,
                                       size_t capacity,
                                       size_t *out_count);
+
+// Drains up to `capacity` typed events into `out_events` (M1-08). Non-blocking:
+// writes `*out_count` = number written. `out_events` may be `NULL` only when
+// `capacity == 0`. This is the generalized poll; `vokra_stream_poll` is the
+// f32-probability fast path over the same ring.
+//
+// # Safety
+//
+// `stream` must be a valid stream handle, `out_events` valid for `capacity`
+// writes (or `NULL` when `capacity == 0`), and `out_count` a writable
+// `size_t` location.
+enum vokra_status_t vokra_stream_poll_events(struct vokra_stream_t *stream,
+                                             struct vokra_event_t *out_events,
+                                             size_t capacity,
+                                             size_t *out_count);
 
 // Frees a stream handle from `vokra_stream_open`. `NULL` is a no-op.
 //

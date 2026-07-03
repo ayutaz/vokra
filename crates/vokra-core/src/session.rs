@@ -71,6 +71,22 @@ pub struct Session {
     vad: Option<Arc<dyn VadEngine>>,
 }
 
+/// `Session` is [`Clone`] via cheap atomic `Arc` bumps (FR-API-03): the clone
+/// shares the same immutable [`SessionInner`] (and its stream counters) and the
+/// same engine trait objects, so it is the Rust-level mechanism behind the C ABI
+/// atomic ref count (`vokra_session_retain`). A model stays alive until the last
+/// clone is dropped.
+impl Clone for Session {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            asr: self.asr.clone(),
+            tts: self.tts.clone(),
+            vad: self.vad.clone(),
+        }
+    }
+}
+
 impl fmt::Debug for Session {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Engines are opaque trait objects; report presence, not contents.
@@ -298,6 +314,46 @@ pub(crate) mod tests {
         let result = Session::from_file(&path).build();
         let _ = std::fs::remove_file(&path);
         assert!(matches!(result, Err(VokraError::ModelLoad(_))));
+    }
+
+    #[test]
+    fn clone_shares_inner_counters_and_outlives_the_original() {
+        // FR-API-03: Session: Clone is a cheap Arc bump; the clone shares the
+        // same SessionInner, so the stream counters stay consistent across
+        // handles, and dropping the original keeps the model alive for the clone.
+        let file = TempModelFile::new("session-clone");
+        let session = Session::from_file(&file.0).build().expect("session builds");
+        let clone = session.clone();
+
+        // A stream opened on `session` is visible through `clone` (shared inner).
+        let stream = session.open_stream().expect("stream opens");
+        assert_eq!(clone.active_stream_count(), 1);
+
+        // Dropping the original leaves the clone (and the loaded model) usable.
+        drop(session);
+        assert_eq!(clone.model_path(), file.0.as_path());
+        assert_eq!(clone.active_stream_count(), 1);
+        drop(stream);
+        assert_eq!(clone.active_stream_count(), 0);
+    }
+
+    #[test]
+    fn clone_is_moved_across_threads_and_used_independently() {
+        // Session: Send + Sync + Clone — move a clone onto a worker thread and
+        // open streams from both, over the shared inner counter.
+        let file = TempModelFile::new("session-clone-thread");
+        let session = Session::from_file(&file.0).build().expect("session builds");
+        let worker_clone = session.clone();
+        // Return the Stream (it is Send) so both stay alive simultaneously.
+        let handle = std::thread::spawn(move || worker_clone.open_stream().expect("worker stream"));
+        let main_stream = session.open_stream().expect("main stream");
+        let worker_stream = handle.join().expect("worker joins");
+        // Two streams from two threads share one monotonic id source ⇒ distinct,
+        // and the shared inner counter reflects both.
+        assert_ne!(worker_stream.id(), main_stream.id());
+        assert_eq!(session.active_stream_count(), 2);
+        drop(worker_stream);
+        assert_eq!(session.active_stream_count(), 1);
     }
 
     #[test]

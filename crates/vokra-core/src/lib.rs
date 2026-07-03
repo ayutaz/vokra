@@ -100,8 +100,8 @@ pub use backend::{Backend, BackendKind};
 pub use cache::KvCache;
 pub use complex::Complex32;
 pub use decode::{
-    CfgMode, LogitsSource, Sampler, SamplerConfig, apply_cfg, apply_cfg_inplace, argmax,
-    sample_sequence,
+    CfgMode, DecodeStepper, LogitsSource, Sampler, SamplerConfig, TOKEN_FLAG_EOT, apply_cfg,
+    apply_cfg_inplace, argmax, sample_sequence,
 };
 pub use engines::{AsrEngine, SynthesisRequest, TtsEngine, VadEngine, VadStreamHandle};
 pub use error::{Result, VokraError};
@@ -111,5 +111,8 @@ pub use pipeline::{AudioPipeline, Pipeline, PipelineStage};
 pub use rng::SplitMix64;
 pub use safetensors::{SafeTensorInfo, SafetensorsError, SafetensorsFile};
 pub use session::{Session, SessionBuilder};
-pub use stream::{Stream, StreamState};
+pub use stream::{
+    EventPoller, EventSink, RawEvent, RingConsumer, RingFull, RingProducer, Stream, StreamEvent,
+    StreamState, StreamStep, channel,
+};
 pub use tasks::{Asr, DialogTurn, S2s, SynthesizedAudio, Transcription, Tts};

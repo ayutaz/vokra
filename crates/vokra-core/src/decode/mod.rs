@@ -25,18 +25,22 @@
 //! - **M1-04** adds [`LogitsSource`], the [`Sampler`] / [`sample_sequence`]
 //!   stochastic decoder, and the classifier-free-guidance combiner
 //!   ([`apply_cfg`], [`CfgMode`], FR-EX-10).
+//! - **M1-08f** adds [`DecodeStepper`], the cache-based incremental decode
+//!   stepper (the FR-ST-01 cache pattern) over the same [`LogitsSource`].
 //! - `ctc_decode` / `rnnt_decode` / `wfst_decode` (FR-OP-41..43) are later
 //!   milestones.
 
 pub mod beam_search;
 pub mod cfg;
 pub mod sampler;
+pub mod stepper;
 
 use crate::error::Result;
 
 pub use beam_search::{BeamHypothesis, BeamScorer, BeamSearchConfig, beam_search};
 pub use cfg::{CfgMode, apply_cfg, apply_cfg_inplace};
 pub use sampler::{Sampler, SamplerConfig, argmax, sample_sequence};
+pub use stepper::{DecodeStepper, TOKEN_FLAG_EOT};
 
 /// Raw next-token logits for a model, the low-level model ↔ decoder primitive.
 ///
