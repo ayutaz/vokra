@@ -1,0 +1,19 @@
+[package]
+name = "vokra-eval"
+description = "Vokra evaluation metrics + the `vokra-eval` CLI (M1-09a; FR-TL-03, NFR-QL-04): algorithmic quality metrics — mel-loss (log-mel L1), WER and CER — behind a pluggable Metric interface reusable by the runtime and CI. Neural MOS predictors (UTMOS/DNSMOS, M1-09b) slot into the same traits once weights land. std-only, zero external deps (NFR-DS-02)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Zero external dependencies (NFR-DS-02): the metrics are original std code — no
+# jiwer / torchmetrics / librosa — reusing the first-party STFT/mel op path from
+# vokra-ops (the FFT/mel are NOT reimplemented here) and the IR attribute + error
+# types from vokra-core.
+[dependencies]
+vokra-core.workspace = true
+vokra-ops.workspace = true
+
+[lints]
+workspace = true
