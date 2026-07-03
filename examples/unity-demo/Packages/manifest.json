@@ -1,0 +1,14 @@
+{
+  "//": "Vokra Unity demo package manifest (M0-10-T01). Deliberately contains NO",
+  "//_2": "Unity Sentis / Inference Engine package (com.unity.sentis / com.unity.barracuda):",
+  "//_3": "all inference goes through the Vokra C ABI (SRS §5-(10), CLAUDE.md design note 5).",
+  "//_4": "Only Unity standard modules are used; the UI is IMGUI (OnGUI), see DemoUi.cs.",
+  "dependencies": {
+    "com.unity.ugui": "1.0.0",
+    "com.unity.modules.audio": "1.0.0",
+    "com.unity.modules.imgui": "1.0.0",
+    "com.unity.modules.jsonserialize": "1.0.0",
+    "com.unity.modules.uielements": "1.0.0",
+    "com.unity.modules.unitywebrequest": "1.0.0"
+  }
+}
