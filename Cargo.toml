@@ -50,3 +50,59 @@ missing_docs = "warn"
 [workspace.lints.clippy]
 # Operational rule (M0-02-T03): `unsafe` blocks require a `// SAFETY:` comment.
 undocumented_unsafe_blocks = "deny"
+
+# ---------------------------------------------------------------------------
+# Build profiles (M1-11a: binary-size levers + <10MB size gate).
+#
+# Profiles are honoured only in the workspace-root manifest, so they live here.
+# Rationale and the size budget are documented in docs/design/size-budget.md and
+# enforced by scripts/check-binary-size.sh (gates the shipped libvokra cdylib).
+# ---------------------------------------------------------------------------
+
+# The profile that builds the shipped runtime: the libvokra cdylib/staticlib
+# (crates/vokra-capi) and the release bins. It is tuned for size WITHOUT giving
+# up real-time performance.
+[profile.release]
+# RTF (real-time factor) is the first-priority NFR (NFR-PF-*), so the runtime hot
+# path keeps opt-level 3. The size reduction here comes from LTO + strip + a single
+# codegen unit — NOT from lowering opt-level. Do NOT switch this to "z"/"s": that
+# would slow the inference hot path that ships from this profile.
+opt-level = 3
+# Fat cross-crate LTO inlines across the vokra-* graph and removes duplicated /
+# monomorphised code — smaller *and* faster. Safe for the cdylib/staticlib.
+lto = "fat"
+# A single codegen unit maximises LTO/inlining and dead-code removal, at a modest
+# compile-time cost (acceptable: release builds are not the inner dev loop).
+codegen-units = 1
+# Strip symbols + debuginfo from the shipped artifacts. For a debug-symbol-heavy
+# library this is the single biggest size lever, and it is safe.
+strip = true
+# panic is LEFT AT THE DEFAULT ("unwind") ON PURPOSE — do NOT set panic="abort"
+# on this profile. crates/vokra-capi/src/ffi_guard.rs implements the FFI panic
+# firewall with std::panic::catch_unwind (turns a Rust panic into
+# VOKRA_ERROR_PANIC instead of unwinding into C). Under panic="abort" that
+# catch_unwind becomes a no-op and a panic would abort the entire host process
+# (Unity/Godot/iOS/Android app). Because `panic` is a whole-compilation setting
+# (it is NOT overridable per-package like opt-level/codegen-units), the libvokra
+# cdylib/staticlib MUST build with unwinding. Non-FFI standalone bins may opt into
+# abort via [profile.release-min] below.
+
+# Size-minimised profile for STANDALONE binaries that never cross the C ABI
+# (e.g. the offline vokra-convert tool, a future vokra CLI). Such bins have no
+# FFI panic firewall to preserve, so they may drop unwind tables via
+# panic="abort" for a small extra size win. It inherits every lever from
+# [profile.release] (opt-level 3 is kept so an inference-capable CLI keeps its
+# RTF).
+#
+#   USE IT TARGETED AT A BIN PACKAGE, e.g.:  cargo build --profile release-min -p vokra-convert
+#
+# NEVER invoke it workspace-wide or for `-p vokra-capi`: because `panic` is
+# compilation-wide, that would rebuild libvokra with abort and silently break the
+# FFI panic firewall described above. The size gate and every script/CI job build
+# the runtime with the `release` profile, never `release-min`.
+[profile.release-min]
+inherits = "release"
+# Drops landing pads / unwind tables. Sound ONLY for non-FFI standalone bins whose
+# call graph contains no catch_unwind boundary. (A pure size-first tool that never
+# runs the inference hot path may additionally set `opt-level = "s"` here.)
+panic = "abort"
