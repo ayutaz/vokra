@@ -22,3 +22,9 @@
 /docs/deliverables.md
 /docs/milestones.md
 /docs/_research/
+# Second batch (2026-07-04): internal PM tickets, ADRs, and research/integration
+# summaries — kept local, removed from the repo AND git history.
+/docs/tickets/
+/docs/adr/
+/docs/onnx-alternative-research.md
+/docs/piper-plus-integration.md
