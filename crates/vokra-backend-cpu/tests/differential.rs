@@ -36,8 +36,16 @@ const GEMM_RTOL: f32 = 1e-4;
 const ELTWISE_ATOL: f32 = 1e-6;
 /// Softmax / layer-norm tolerance (reductions + a division / rsqrt; the
 /// larger of the two is layer-norm, whose `1/sqrt(var + eps)` can amplify
-/// reduction-order differences on low-variance rows).
+/// reduction-order differences on low-variance rows). Also covers softmax's
+/// pass-2 `exp` once it is vectorized under `simd-transcendental` (the ULP
+/// delta mostly cancels after row normalization).
 const REDUCTION_ATOL: f32 = 1e-4;
+
+/// Activation tolerance under `simd-transcendental`: the native vectorized
+/// `exp` (M1-05-EXP) drifts from `std::f32::exp` by a few ULP, far under the
+/// NFR-QL-01 ceiling. Unused (bit-identical) when the feature is off.
+#[cfg(feature = "simd-transcendental")]
+const ACTIVATION_ATOL: f32 = 1e-4;
 
 /// The host's SIMD path (equals `Scalar` if the host has none).
 fn simd_isa() -> IsaPath {
@@ -160,10 +168,20 @@ fn elementwise_scalar_matches_simd() {
     }
 }
 
+/// Activation SIMD-vs-scalar comparison. Without `simd-transcendental` the
+/// SIMD paths are scalar-backed, so they must be **bit-for-bit** identical;
+/// with the feature they use the native vectorized `exp` (M1-05-EXP), so they
+/// match within the bounded [`ACTIVATION_ATOL`] ULP delta.
+#[track_caller]
+fn assert_activation(simd: &[f32], scalar: &[f32], ctx: &str) {
+    #[cfg(not(feature = "simd-transcendental"))]
+    assert_eq!(simd, scalar, "{ctx} must be bit-identical (scalar-backed)");
+    #[cfg(feature = "simd-transcendental")]
+    assert_close(simd, scalar, ACTIVATION_ATOL, 0.0, ctx);
+}
+
 #[test]
 fn activations_scalar_matches_simd() {
-    // sigmoid / tanh / gelu are scalar-backed on the SIMD paths in the spike,
-    // so they must match the scalar oracle exactly (bit-for-bit).
     let mut rng = Rng::new(0xABCD_1234);
     let lens = [1usize, 7, 8, 9, 16, 33];
     for len in lens {
@@ -172,16 +190,44 @@ fn activations_scalar_matches_simd() {
         let mut s = vec![0.0; len];
         kernels::sigmoid_f32_on(IsaPath::Scalar, &x, &mut r).unwrap();
         kernels::sigmoid_f32_on(simd_isa(), &x, &mut s).unwrap();
-        assert_eq!(r, s, "sigmoid len={len} must be identical (scalar-backed)");
+        assert_activation(&s, &r, &format!("sigmoid len={len}"));
 
         kernels::tanh_f32_on(IsaPath::Scalar, &x, &mut r).unwrap();
         kernels::tanh_f32_on(simd_isa(), &x, &mut s).unwrap();
-        assert_eq!(r, s, "tanh len={len} must be identical (scalar-backed)");
+        assert_activation(&s, &r, &format!("tanh len={len}"));
 
         kernels::gelu_f32_on(IsaPath::Scalar, &x, &mut r).unwrap();
         kernels::gelu_f32_on(simd_isa(), &x, &mut s).unwrap();
-        assert_eq!(r, s, "gelu len={len} must be identical (scalar-backed)");
+        assert_activation(&s, &r, &format!("gelu len={len}"));
     }
+}
+
+/// With the vectorized `exp`, the activations must still track the scalar
+/// oracle through **saturation** (well outside the `[-1, 1)` fuzzed range):
+/// `sigmoid → {0, 1}`, `tanh → {-1, 1}`, `gelu` grows ~linearly. This is where
+/// the `exp` domain clamp in `kernels::vexp` matters.
+#[cfg(feature = "simd-transcendental")]
+#[test]
+fn vectorized_activations_saturate_like_scalar() {
+    let xs: Vec<f32> = vec![
+        -40.0, -20.0, -8.0, -3.0, -1.0, -0.25, 0.0, 0.25, 1.0, 3.0, 8.0, 20.0, 40.0,
+    ];
+    let n = xs.len();
+    let mut r = vec![0.0; n];
+    let mut s = vec![0.0; n];
+
+    kernels::sigmoid_f32_on(IsaPath::Scalar, &xs, &mut r).unwrap();
+    kernels::sigmoid_f32_on(simd_isa(), &xs, &mut s).unwrap();
+    assert_close(&s, &r, ACTIVATION_ATOL, 0.0, "sigmoid wide-range");
+
+    kernels::tanh_f32_on(IsaPath::Scalar, &xs, &mut r).unwrap();
+    kernels::tanh_f32_on(simd_isa(), &xs, &mut s).unwrap();
+    assert_close(&s, &r, ACTIVATION_ATOL, 0.0, "tanh wide-range");
+
+    kernels::gelu_f32_on(IsaPath::Scalar, &xs, &mut r).unwrap();
+    kernels::gelu_f32_on(simd_isa(), &xs, &mut s).unwrap();
+    // gelu(x) ~ x for large x, so allow a relative term on the linear tail.
+    assert_close(&s, &r, ACTIVATION_ATOL, 1e-4, "gelu wide-range");
 }
 
 #[test]

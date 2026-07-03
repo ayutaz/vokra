@@ -180,4 +180,34 @@ fn main() {
         });
         report("add 1M", s, v, simd);
     }
+
+    // Transcendental activations over 1<<18 elements. With the
+    // `simd-transcendental` feature (M1-05-EXP) the SIMD column uses the native
+    // vectorized `exp` (`kernels::vexp`); without it, it is scalar-backed and
+    // the speedup is ~x1 (the reference baseline for the M1-11 RTF decision).
+    {
+        let n = 1 << 18;
+        let x = rand_vec(13, n);
+        let mut out = vec![0.0; n];
+        for (name, run) in [
+            ("sigmoid 256K", 0u8),
+            ("tanh 256K", 1u8),
+            ("gelu 256K", 2u8),
+        ] {
+            let call = |isa: IsaPath, out: &mut [f32]| match run {
+                0 => kernels::sigmoid_f32_on(isa, &x, out).unwrap(),
+                1 => kernels::tanh_f32_on(isa, &x, out).unwrap(),
+                _ => kernels::gelu_f32_on(isa, &x, out).unwrap(),
+            };
+            let s = time(50, || {
+                call(IsaPath::Scalar, &mut out);
+                black_box(&out);
+            });
+            let v = time(50, || {
+                call(simd, &mut out);
+                black_box(&out);
+            });
+            report(name, s, v, simd);
+        }
+    }
 }

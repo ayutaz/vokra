@@ -19,11 +19,17 @@
 //! function pointer.
 //!
 //! Transcendental activations (`sigmoid` / `tanh` / `gelu`) delegate to the
-//! scalar path for the same reason as the AVX2 module (M0-08-T14).
+//! scalar path by default; under the `simd-transcendental` feature (M1-05-EXP)
+//! they use the native vectorized `exp` in [`super::vexp`] (and softmax's
+//! pass-2 `exp` is vectorized too), mirroring the AVX2 module. The feature is
+//! OFF by default — a small controlled ULP delta vs `std::exp`, gated on the
+//! Whisper RTF + parity re-check in M1-11.
 
 use core::arch::aarch64::*;
 
 use super::scalar;
+#[cfg(feature = "simd-transcendental")]
+use super::vexp;
 
 /// # Safety
 /// Requires `neon` (baseline on AArch64); shapes as documented on
@@ -160,13 +166,39 @@ unsafe fn softmax_impl(input: &[f32], out: &mut [f32], rows: usize, cols: usize)
                 j += 1;
             }
 
-            // Pass 2: exp (scalar) and running sum.
-            let mut sum = 0.0f32;
-            for (o, &v) in out_row.iter_mut().zip(in_row) {
-                let e = (v - max).exp();
-                *o = e;
-                sum += e;
-            }
+            // Pass 2: out = exp(in - max); accumulate the row sum. The
+            // vectorized `exp` (feature `simd-transcendental`) still handles the
+            // ragged tail scalar for an exact-oracle match on `cols % 4`.
+            #[cfg(feature = "simd-transcendental")]
+            let sum = {
+                let vmaxb = vdupq_n_f32(max);
+                let mut vsum = vdupq_n_f32(0.0);
+                let mut j = 0;
+                while j + 4 <= cols {
+                    let e = vexp::exp_ps_neon(vsubq_f32(vld1q_f32(in_row[j..].as_ptr()), vmaxb));
+                    vst1q_f32(out_row[j..].as_mut_ptr(), e);
+                    vsum = vaddq_f32(vsum, e);
+                    j += 4;
+                }
+                let mut sum = vaddvq_f32(vsum);
+                while j < cols {
+                    let e = (in_row[j] - max).exp();
+                    out_row[j] = e;
+                    sum += e;
+                    j += 1;
+                }
+                sum
+            };
+            #[cfg(not(feature = "simd-transcendental"))]
+            let sum = {
+                let mut sum = 0.0f32;
+                for (o, &v) in out_row.iter_mut().zip(in_row) {
+                    let e = (v - max).exp();
+                    *o = e;
+                    sum += e;
+                }
+                sum
+            };
 
             // Pass 3: scale by 1/sum.
             let inv = 1.0 / sum;
@@ -292,17 +324,141 @@ pub(crate) fn relu(x: &[f32], out: &mut [f32]) {
     unsafe { relu_impl(x, out) }
 }
 
-/// Sigmoid — scalar-backed in the spike (see module docs; M0-08-T14).
+// ---- vectorized transcendentals (feature `simd-transcendental`, M1-05-EXP) ----
+
+/// # Safety
+/// Requires `neon` (baseline); `x.len() == out.len()`.
+#[cfg(feature = "simd-transcendental")]
+#[target_feature(enable = "neon")]
+unsafe fn sigmoid_impl(x: &[f32], out: &mut [f32]) {
+    // SAFETY: NEON baseline; `j + 4 <= len` bounds every load/store to the
+    // equal-length, wrapper-validated slices; the ragged tail is delegated to
+    // the scalar oracle for an exact tail match.
+    unsafe {
+        let len = out.len();
+        let one = vdupq_n_f32(1.0);
+        let mut j = 0;
+        while j + 4 <= len {
+            let xv = vld1q_f32(x[j..].as_ptr());
+            let e = vexp::exp_ps_neon(vnegq_f32(xv)); // exp(-x)
+            let r = vdivq_f32(one, vaddq_f32(one, e));
+            vst1q_f32(out[j..].as_mut_ptr(), r);
+            j += 4;
+        }
+        if j < len {
+            scalar::sigmoid(&x[j..], &mut out[j..]);
+        }
+    }
+}
+
+/// # Safety
+/// Requires `neon` (baseline); `x.len() == out.len()`.
+#[cfg(feature = "simd-transcendental")]
+#[target_feature(enable = "neon")]
+unsafe fn tanh_impl(x: &[f32], out: &mut [f32]) {
+    // SAFETY: NEON baseline; `j + 4 <= len` bounds every load/store; the ragged
+    // tail delegates to the scalar oracle.
+    unsafe {
+        let len = out.len();
+        let one = vdupq_n_f32(1.0);
+        let two = vdupq_n_f32(2.0);
+        let mut j = 0;
+        while j + 4 <= len {
+            let xv = vld1q_f32(x[j..].as_ptr());
+            // tanh(x) = 1 - 2/(e^{2x}+1); saturates correctly at ±1.
+            let e2 = vexp::exp_ps_neon(vmulq_f32(two, xv));
+            let r = vsubq_f32(one, vdivq_f32(two, vaddq_f32(e2, one)));
+            vst1q_f32(out[j..].as_mut_ptr(), r);
+            j += 4;
+        }
+        if j < len {
+            scalar::tanh(&x[j..], &mut out[j..]);
+        }
+    }
+}
+
+/// # Safety
+/// Requires `neon` (baseline); `x.len() == out.len()`.
+#[cfg(feature = "simd-transcendental")]
+#[target_feature(enable = "neon")]
+unsafe fn gelu_impl(x: &[f32], out: &mut [f32]) {
+    // SAFETY: NEON baseline; `j + 4 <= len` bounds every load/store; the ragged
+    // tail delegates to the scalar oracle. Reuses the exact A&S erf constants
+    // from `scalar` so only `exp(-z²)` differs.
+    unsafe {
+        let len = out.len();
+        let one = vdupq_n_f32(1.0);
+        let half = vdupq_n_f32(0.5);
+        let inv_sqrt2 = vdupq_n_f32(std::f32::consts::FRAC_1_SQRT_2);
+        let sign_mask = vdupq_n_u32(0x8000_0000);
+        let p = vdupq_n_f32(scalar::ERF_P);
+        let a1 = vdupq_n_f32(scalar::ERF_A1);
+        let a2 = vdupq_n_f32(scalar::ERF_A2);
+        let a3 = vdupq_n_f32(scalar::ERF_A3);
+        let a4 = vdupq_n_f32(scalar::ERF_A4);
+        let a5 = vdupq_n_f32(scalar::ERF_A5);
+        let mut j = 0;
+        while j + 4 <= len {
+            let xv = vld1q_f32(x[j..].as_ptr());
+            let z = vmulq_f32(xv, inv_sqrt2);
+            let az = vabsq_f32(z); // |z|
+            let t = vdivq_f32(one, vfmaq_f32(one, p, az)); // 1/(1+P|z|)
+            // poly = ((((A5*t + A4)*t + A3)*t + A2)*t + A1)*t
+            let mut poly = vfmaq_f32(a4, a5, t);
+            poly = vfmaq_f32(a3, poly, t);
+            poly = vfmaq_f32(a2, poly, t);
+            poly = vfmaq_f32(a1, poly, t);
+            poly = vmulq_f32(poly, t);
+            let ez2 = vexp::exp_ps_neon(vnegq_f32(vmulq_f32(az, az))); // e^{-z²}
+            let erf_abs = vsubq_f32(one, vmulq_f32(poly, ez2)); // erf(|z|) ≥ 0
+            // copysign(erf_abs, z): OR z's sign bit onto the non-negative magnitude.
+            let sign = vandq_u32(vreinterpretq_u32_f32(z), sign_mask);
+            let erf = vreinterpretq_f32_u32(vorrq_u32(sign, vreinterpretq_u32_f32(erf_abs)));
+            let g = vmulq_f32(vmulq_f32(half, xv), vaddq_f32(one, erf));
+            vst1q_f32(out[j..].as_mut_ptr(), g);
+            j += 4;
+        }
+        if j < len {
+            scalar::gelu(&x[j..], &mut out[j..]);
+        }
+    }
+}
+
+/// NEON sigmoid — vectorized `exp` under `simd-transcendental`, else scalar.
+#[cfg(feature = "simd-transcendental")]
+pub(crate) fn sigmoid(x: &[f32], out: &mut [f32]) {
+    // SAFETY: NEON baseline; equal slice lengths validated by the wrapper.
+    unsafe { sigmoid_impl(x, out) }
+}
+
+/// NEON sigmoid — scalar-backed (default; SIMD under `simd-transcendental`).
+#[cfg(not(feature = "simd-transcendental"))]
 pub(crate) fn sigmoid(x: &[f32], out: &mut [f32]) {
     scalar::sigmoid(x, out);
 }
 
-/// Tanh — scalar-backed in the spike (see module docs; M0-08-T14).
+/// NEON tanh — vectorized `exp` under `simd-transcendental`, else scalar.
+#[cfg(feature = "simd-transcendental")]
+pub(crate) fn tanh(x: &[f32], out: &mut [f32]) {
+    // SAFETY: NEON baseline; equal slice lengths validated by the wrapper.
+    unsafe { tanh_impl(x, out) }
+}
+
+/// NEON tanh — scalar-backed (default; SIMD under `simd-transcendental`).
+#[cfg(not(feature = "simd-transcendental"))]
 pub(crate) fn tanh(x: &[f32], out: &mut [f32]) {
     scalar::tanh(x, out);
 }
 
-/// GELU — scalar-backed in the spike (see module docs; M0-08-T14).
+/// NEON GELU — vectorized `exp` under `simd-transcendental`, else scalar.
+#[cfg(feature = "simd-transcendental")]
+pub(crate) fn gelu(x: &[f32], out: &mut [f32]) {
+    // SAFETY: NEON baseline; equal slice lengths validated by the wrapper.
+    unsafe { gelu_impl(x, out) }
+}
+
+/// NEON GELU — scalar-backed (default; SIMD under `simd-transcendental`).
+#[cfg(not(feature = "simd-transcendental"))]
 pub(crate) fn gelu(x: &[f32], out: &mut [f32]) {
     scalar::gelu(x, out);
 }

@@ -17,16 +17,20 @@
 //! (NFR-RL-05): these are ordinary statically compiled functions selected by
 //! a function pointer.
 //!
-//! The transcendental activations (`sigmoid` / `tanh` / `gelu`) currently
-//! delegate to the portable scalar path: their cost is dominated by the
-//! per-lane `exp`, so a vectorised `exp` approximation is a follow-up gated
-//! on differential parity (M0-08-T11). Keeping them here fills the AVX2
-//! kernel table for those op kinds so ISA-path coverage stays symmetric
-//! (M0-08-T12).
+//! The transcendental activations (`sigmoid` / `tanh` / `gelu`) delegate to
+//! the portable scalar path by default. Under the `simd-transcendental`
+//! feature (M1-05-EXP) they instead use the native vectorized `exp` in
+//! [`super::vexp`] — `sigmoid` = `1/(1+e^-x)`, `tanh` = `1 - 2/(e^{2x}+1)`,
+//! `gelu` via the A&S erf with a vectorized `e^{-z²}` — and softmax's pass-2
+//! `exp` is vectorized too. The feature is OFF by default: it moves these
+//! paths off the scalar `std::exp` (a small controlled ULP delta), so
+//! default-enablement is gated on the Whisper RTF + parity re-check in M1-11.
 
 use core::arch::x86_64::*;
 
 use super::scalar;
+#[cfg(feature = "simd-transcendental")]
+use super::vexp;
 
 /// Horizontal sum of the eight lanes of `v`.
 ///
@@ -175,10 +179,13 @@ unsafe fn relu_impl(x: &[f32], out: &mut [f32]) {
 }
 
 /// # Safety
-/// Requires `avx2`; `input.len() == out.len() == rows * cols`.
-#[target_feature(enable = "avx2")]
+/// Requires `avx2,fma`; `input.len() == out.len() == rows * cols`. (FMA is
+/// only actually used by the `simd-transcendental` pass-2 `exp`, but the
+/// `Avx2` dispatch path is only ever selected when `avx2 && fma`, so requiring
+/// it here is invariant-safe and keeps one attribute across feature configs.)
+#[target_feature(enable = "avx2,fma")]
 unsafe fn softmax_impl(input: &[f32], out: &mut [f32], rows: usize, cols: usize) {
-    // SAFETY: `avx2` guaranteed by dispatch. Every 8-wide access is guarded
+    // SAFETY: `avx2,fma` guaranteed by dispatch. Every 8-wide access is guarded
     // by `j + 8 <= cols` and confined to the length-`cols` row slices carved
     // from the wrapper-validated `rows * cols` buffers.
     unsafe {
@@ -199,13 +206,42 @@ unsafe fn softmax_impl(input: &[f32], out: &mut [f32], rows: usize, cols: usize)
                 j += 1;
             }
 
-            // Pass 2: exp (scalar) and running sum.
-            let mut sum = 0.0f32;
-            for (o, &v) in out_row.iter_mut().zip(in_row) {
-                let e = (v - max).exp();
-                *o = e;
-                sum += e;
-            }
+            // Pass 2: out = exp(in - max); accumulate the row sum. The
+            // vectorized `exp` (feature `simd-transcendental`) still handles the
+            // ragged tail scalar for an exact-oracle match on `cols % 8`.
+            #[cfg(feature = "simd-transcendental")]
+            let sum = {
+                let vmaxb = _mm256_set1_ps(max);
+                let mut vsum = _mm256_setzero_ps();
+                let mut j = 0;
+                while j + 8 <= cols {
+                    let e = vexp::exp_ps_avx2(_mm256_sub_ps(
+                        _mm256_loadu_ps(in_row[j..].as_ptr()),
+                        vmaxb,
+                    ));
+                    _mm256_storeu_ps(out_row[j..].as_mut_ptr(), e);
+                    vsum = _mm256_add_ps(vsum, e);
+                    j += 8;
+                }
+                let mut sum = hsum256(vsum);
+                while j < cols {
+                    let e = (in_row[j] - max).exp();
+                    out_row[j] = e;
+                    sum += e;
+                    j += 1;
+                }
+                sum
+            };
+            #[cfg(not(feature = "simd-transcendental"))]
+            let sum = {
+                let mut sum = 0.0f32;
+                for (o, &v) in out_row.iter_mut().zip(in_row) {
+                    let e = (v - max).exp();
+                    *o = e;
+                    sum += e;
+                }
+                sum
+            };
 
             // Pass 3: scale by 1/sum (SIMD).
             let vinv = _mm256_set1_ps(1.0 / sum);
@@ -334,17 +370,146 @@ pub(crate) fn relu(x: &[f32], out: &mut [f32]) {
     unsafe { relu_impl(x, out) }
 }
 
-/// Sigmoid — scalar-backed in the spike (see module docs; M0-08-T11).
+// ---- vectorized transcendentals (feature `simd-transcendental`, M1-05-EXP) ----
+
+/// # Safety
+/// Requires `avx2,fma`; `x.len() == out.len()`.
+#[cfg(feature = "simd-transcendental")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn sigmoid_impl(x: &[f32], out: &mut [f32]) {
+    // SAFETY: `avx2,fma` guaranteed by dispatch; `j + 8 <= len` bounds every
+    // load/store to the equal-length, wrapper-validated slices; the ragged
+    // tail is delegated to the scalar oracle for an exact tail match.
+    unsafe {
+        let len = out.len();
+        let one = _mm256_set1_ps(1.0);
+        let zero = _mm256_setzero_ps();
+        let mut j = 0;
+        while j + 8 <= len {
+            let xv = _mm256_loadu_ps(x[j..].as_ptr());
+            let e = vexp::exp_ps_avx2(_mm256_sub_ps(zero, xv)); // exp(-x)
+            let r = _mm256_div_ps(one, _mm256_add_ps(one, e));
+            _mm256_storeu_ps(out[j..].as_mut_ptr(), r);
+            j += 8;
+        }
+        if j < len {
+            scalar::sigmoid(&x[j..], &mut out[j..]);
+        }
+    }
+}
+
+/// # Safety
+/// Requires `avx2,fma`; `x.len() == out.len()`.
+#[cfg(feature = "simd-transcendental")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn tanh_impl(x: &[f32], out: &mut [f32]) {
+    // SAFETY: `avx2,fma` guaranteed by dispatch; `j + 8 <= len` bounds every
+    // load/store; the ragged tail delegates to the scalar oracle.
+    unsafe {
+        let len = out.len();
+        let one = _mm256_set1_ps(1.0);
+        let two = _mm256_set1_ps(2.0);
+        let mut j = 0;
+        while j + 8 <= len {
+            let xv = _mm256_loadu_ps(x[j..].as_ptr());
+            // tanh(x) = 1 - 2/(e^{2x}+1); saturates correctly at the clamped
+            // exp domain (±1 for large |x|).
+            let e2 = vexp::exp_ps_avx2(_mm256_mul_ps(two, xv));
+            let r = _mm256_sub_ps(one, _mm256_div_ps(two, _mm256_add_ps(e2, one)));
+            _mm256_storeu_ps(out[j..].as_mut_ptr(), r);
+            j += 8;
+        }
+        if j < len {
+            scalar::tanh(&x[j..], &mut out[j..]);
+        }
+    }
+}
+
+/// # Safety
+/// Requires `avx2,fma`; `x.len() == out.len()`.
+#[cfg(feature = "simd-transcendental")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn gelu_impl(x: &[f32], out: &mut [f32]) {
+    // SAFETY: `avx2,fma` guaranteed by dispatch; `j + 8 <= len` bounds every
+    // load/store; the ragged tail delegates to the scalar oracle. Reuses the
+    // exact A&S erf constants from `scalar` so only `exp(-z²)` differs.
+    unsafe {
+        let len = out.len();
+        let one = _mm256_set1_ps(1.0);
+        let zero = _mm256_setzero_ps();
+        let half = _mm256_set1_ps(0.5);
+        let inv_sqrt2 = _mm256_set1_ps(std::f32::consts::FRAC_1_SQRT_2);
+        let sign_mask = _mm256_set1_ps(-0.0); // 0x8000_0000
+        let p = _mm256_set1_ps(scalar::ERF_P);
+        let a1 = _mm256_set1_ps(scalar::ERF_A1);
+        let a2 = _mm256_set1_ps(scalar::ERF_A2);
+        let a3 = _mm256_set1_ps(scalar::ERF_A3);
+        let a4 = _mm256_set1_ps(scalar::ERF_A4);
+        let a5 = _mm256_set1_ps(scalar::ERF_A5);
+        let mut j = 0;
+        while j + 8 <= len {
+            let xv = _mm256_loadu_ps(x[j..].as_ptr());
+            let z = _mm256_mul_ps(xv, inv_sqrt2);
+            let az = _mm256_andnot_ps(sign_mask, z); // |z|
+            let t = _mm256_div_ps(one, _mm256_fmadd_ps(p, az, one)); // 1/(1+P|z|)
+            // poly = ((((A5*t + A4)*t + A3)*t + A2)*t + A1)*t
+            let mut poly = _mm256_fmadd_ps(a5, t, a4);
+            poly = _mm256_fmadd_ps(poly, t, a3);
+            poly = _mm256_fmadd_ps(poly, t, a2);
+            poly = _mm256_fmadd_ps(poly, t, a1);
+            poly = _mm256_mul_ps(poly, t);
+            let ez2 = vexp::exp_ps_avx2(_mm256_sub_ps(zero, _mm256_mul_ps(az, az))); // e^{-z²}
+            let erf_abs = _mm256_sub_ps(one, _mm256_mul_ps(poly, ez2)); // erf(|z|) ≥ 0
+            // copysign(erf_abs, z): OR z's sign bit onto the non-negative magnitude.
+            let erf = _mm256_or_ps(_mm256_and_ps(sign_mask, z), erf_abs);
+            let g = _mm256_mul_ps(_mm256_mul_ps(half, xv), _mm256_add_ps(one, erf));
+            _mm256_storeu_ps(out[j..].as_mut_ptr(), g);
+            j += 8;
+        }
+        if j < len {
+            scalar::gelu(&x[j..], &mut out[j..]);
+        }
+    }
+}
+
+/// AVX2 sigmoid — vectorized `exp` under `simd-transcendental`, else scalar.
+#[cfg(feature = "simd-transcendental")]
+pub(crate) fn sigmoid(x: &[f32], out: &mut [f32]) {
+    // SAFETY: reached only when AVX2+FMA were detected (dispatch invariant);
+    // equal slice lengths validated by the public wrapper.
+    unsafe { sigmoid_impl(x, out) }
+}
+
+/// AVX2 sigmoid — scalar-backed (default; SIMD under `simd-transcendental`).
+#[cfg(not(feature = "simd-transcendental"))]
 pub(crate) fn sigmoid(x: &[f32], out: &mut [f32]) {
     scalar::sigmoid(x, out);
 }
 
-/// Tanh — scalar-backed in the spike (see module docs; M0-08-T11).
+/// AVX2 tanh — vectorized `exp` under `simd-transcendental`, else scalar.
+#[cfg(feature = "simd-transcendental")]
+pub(crate) fn tanh(x: &[f32], out: &mut [f32]) {
+    // SAFETY: reached only when AVX2+FMA were detected (dispatch invariant);
+    // equal slice lengths validated by the public wrapper.
+    unsafe { tanh_impl(x, out) }
+}
+
+/// AVX2 tanh — scalar-backed (default; SIMD under `simd-transcendental`).
+#[cfg(not(feature = "simd-transcendental"))]
 pub(crate) fn tanh(x: &[f32], out: &mut [f32]) {
     scalar::tanh(x, out);
 }
 
-/// GELU — scalar-backed in the spike (see module docs; M0-08-T11).
+/// AVX2 GELU — vectorized `exp` under `simd-transcendental`, else scalar.
+#[cfg(feature = "simd-transcendental")]
+pub(crate) fn gelu(x: &[f32], out: &mut [f32]) {
+    // SAFETY: reached only when AVX2+FMA were detected (dispatch invariant);
+    // equal slice lengths validated by the public wrapper.
+    unsafe { gelu_impl(x, out) }
+}
+
+/// AVX2 GELU — scalar-backed (default; SIMD under `simd-transcendental`).
+#[cfg(not(feature = "simd-transcendental"))]
 pub(crate) fn gelu(x: &[f32], out: &mut [f32]) {
     scalar::gelu(x, out);
 }

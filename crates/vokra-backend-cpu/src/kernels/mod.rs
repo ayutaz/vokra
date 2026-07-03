@@ -13,10 +13,10 @@
 //! | [`gemm_f32`] (bias = linear) | yes | dominant Whisper attention / FFN cost |
 //! | [`add_f32`] / [`mul_f32`] | yes | residual add, gating |
 //! | [`relu_f32`] | yes | Silero VAD conv stack |
-//! | [`sigmoid_f32`] | scalar-backed | VAD output / LSTM gate; exp-bound (SIMD exp is a follow-up) |
-//! | [`tanh_f32`] | scalar-backed | LSTM cell; exp-bound |
-//! | [`gelu_f32`] | scalar-backed | Whisper MLP (exact/erf form); exp-bound |
-//! | [`softmax_f32`] | yes | Whisper attention |
+//! | [`sigmoid_f32`] | scalar-backed; SIMD under `simd-transcendental` | VAD output / LSTM gate; exp-bound (`vexp`, M1-05-EXP) |
+//! | [`tanh_f32`] | scalar-backed; SIMD under `simd-transcendental` | LSTM cell; exp-bound (`vexp`, M1-05-EXP) |
+//! | [`gelu_f32`] | scalar-backed; SIMD under `simd-transcendental` | Whisper MLP (exact/erf form); exp-bound (`vexp`, M1-05-EXP) |
+//! | [`softmax_f32`] | yes (exp scalar; SIMD under `simd-transcendental`) | Whisper attention |
 //! | [`layer_norm_f32`] | yes | Whisper pre-norm blocks |
 //! | [`conv1d_f32`] | via GEMM | Whisper encoder stem; im2col + [`gemm_f32`] |
 //!
@@ -48,6 +48,13 @@
 //! variants force a specific [`IsaPath`] for differential testing.
 
 pub(crate) mod scalar;
+
+// Native vectorized `exp` shared by the AVX2 / NEON transcendental kernels
+// (M1-05-EXP). Compiled only under the `simd-transcendental` feature; without
+// it, `sigmoid` / `tanh` / `gelu` / softmax-exp stay scalar-backed and this
+// module is not built.
+#[cfg(feature = "simd-transcendental")]
+pub(crate) mod vexp;
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod avx2;

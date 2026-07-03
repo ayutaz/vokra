@@ -10,6 +10,19 @@ publish.workspace = true
 [dependencies]
 vokra-core.workspace = true
 
+# Feature flags (no external crates — the workspace stays dependency-free,
+# NFR-DS-02).
+[features]
+default = []
+# M1-05-EXP: back the SIMD `sigmoid` / `tanh` / `gelu` / softmax-exp kernels
+# with the native vectorized `exp` in `kernels::vexp` instead of delegating the
+# transcendental to the scalar path. OFF by default: it introduces a small,
+# controlled ULP delta vs `std::f32::exp`, so default-enablement is gated on
+# the Whisper-base RTF + parity re-validation in M1-11 / M1-09 / M1-13 (the
+# vexp kernels are fully self-tested via the differential harness in the
+# meantime). See `kernels::vexp` and ADR-0004 (owned by the CI/docs WP).
+simd-transcendental = []
+
 # Reference benchmarks (M0-08-T17): hand-rolled std::time measurement, no
 # external bench crate, so the workspace stays dependency-free.
 [[bench]]

@@ -26,6 +26,44 @@
 //!   a portable Rust path reused as the SIMD differential oracle — **not** a
 //!   preview of a future SSE2-optimised tier (that is M1+).
 //!
+//! # Single-binary portable-baseline contract (M1-05)
+//!
+//! The completion bar for the x86-64 + ARM64 CPU backend is: **one binary**
+//! runs on both architectures, picking the fastest kernels at run time
+//! (FR-BE-01, FR-EX-06). Two invariants make that sound, and callers /
+//! packagers must preserve them:
+//!
+//! - **(1) Compile at the ISA baseline.** The whole crate must build for the
+//!   x86-64 baseline (`x86-64-v1`, i.e. SSE2 — every x86-64 CPU since 2003)
+//!   and the AArch64 baseline (NEON). All above-baseline code (AVX2 + FMA3)
+//!   lives **only** inside the per-function
+//!   `#[target_feature(enable = "avx2,fma")]` cores in [`kernels::avx2`],
+//!   reached only after [`CpuFeatures::detect`] confirms the feature. It is
+//!   therefore a load-bearing rule for NFR-PT-02 (2010-era CPU support) that
+//!   release builds **never raise the x86-64 baseline** — no
+//!   `-Ctarget-cpu=native` / `x86-64-v2+`, no `-Ctarget-feature=+avx2`, in
+//!   `.cargo/config.toml`, `RUSTFLAGS`, or `CARGO_ENCODED_RUSTFLAGS`. Raising
+//!   it would let the *scalar fallback* and even [`features`]'s own detection
+//!   code emit AVX2 and `SIGILL` on a pre-AVX2 CPU, defeating the whole
+//!   dispatch design.
+//! - **(2) No JIT, W^X-clean (NFR-RL-05).** Dispatch only swaps *function
+//!   pointers* to statically compiled kernels ([`dispatch`]); there is no
+//!   runtime code generation, no `PROT_EXEC` allocation, and no
+//!   `__clear_cache`. This is what lets a single signed binary run under
+//!   iOS / hardened-runtime W^X.
+//!
+//! [`selftest`] is the runtime proof of (1)+(2): a shipped binary can call it
+//! to confirm, on the real host, that its selected SIMD path matches the
+//! scalar oracle.
+//!
+//! The *formal* record of this contract (ADR-0004), the CI guard that fails a
+//! build whose `RUSTFLAGS` raise the baseline, the `VOKRA_CPU_ISA` forced-path
+//! CI leg, and the W^X forbidden-symbol scan live outside this crate and are
+//! owned by the CI / docs work package (as the M0-08 design record above notes
+//! for the ADR tree); the `tests/single_binary_dispatch.rs` integration test
+//! provides the in-crate, `cargo test`-level forced-path and self-consistency
+//! coverage so the guarantee does not depend on CI wiring.
+//!
 //! # Unsafe policy (NFR-RL-07, SRS §5-(1))
 //!
 //! SIMD intrinsics require `unsafe`, so this crate opts out of the
@@ -44,9 +82,11 @@
 mod dispatch;
 mod features;
 pub mod kernels;
+mod selftest;
 
 pub use dispatch::active_isa;
 pub use features::{CpuFeatures, IsaPath};
+pub use selftest::{SELFTEST_ATOL, SELFTEST_RTOL, SelftestReport, selftest};
 
 use vokra_core::{AudioGraph, Backend, OpKind, Result, VokraError};
 

@@ -98,25 +98,34 @@ pub(crate) fn tanh(x: &[f32], out: &mut [f32]) {
     }
 }
 
+// Abramowitz & Stegun 7.1.26 erf coefficients (max abs error 1.5e-7, well
+// inside the FP32 parity ceiling atol = 0.01, NFR-QL-01). Exposed at module
+// scope so the SIMD `gelu` kernels (M1-05-EXP) reuse the *identical* constants
+// — the only numeric difference between scalar and vectorized `gelu` is then
+// the vectorized `exp(-x^2)`, keeping them within a bounded ULP delta.
+#[allow(clippy::excessive_precision)] // canonical A&S constants kept verbatim (auditable); excess digits round to f32 harmlessly
+pub(crate) const ERF_P: f32 = 0.327_591_1;
+#[allow(clippy::excessive_precision)]
+pub(crate) const ERF_A1: f32 = 0.254_829_592;
+#[allow(clippy::excessive_precision)]
+pub(crate) const ERF_A2: f32 = -0.284_496_736;
+#[allow(clippy::excessive_precision)]
+pub(crate) const ERF_A3: f32 = 1.421_413_741;
+#[allow(clippy::excessive_precision)]
+pub(crate) const ERF_A4: f32 = -1.453_152_027;
+#[allow(clippy::excessive_precision)]
+pub(crate) const ERF_A5: f32 = 1.061_405_429;
+
 /// Error function approximation, Abramowitz & Stegun 7.1.26.
 ///
 /// Maximum absolute error 1.5e-7 over all `x` (A&S), i.e. well inside the
 /// FP32 parity ceiling atol = 0.01 (NFR-QL-01). Verified against reference
 /// `erf` values in the unit tests.
-#[allow(clippy::excessive_precision)] // canonical A&S 7.1.26 constants kept verbatim (auditable); excess digits round to f32 harmlessly
 fn erf(x: f32) -> f32 {
-    // A&S 7.1.26 coefficients.
-    const P: f32 = 0.327_591_1;
-    const A1: f32 = 0.254_829_592;
-    const A2: f32 = -0.284_496_736;
-    const A3: f32 = 1.421_413_741;
-    const A4: f32 = -1.453_152_027;
-    const A5: f32 = 1.061_405_429;
-
     let sign = if x < 0.0 { -1.0 } else { 1.0 };
     let x = x.abs();
-    let t = 1.0 / (1.0 + P * x);
-    let poly = ((((A5 * t + A4) * t + A3) * t + A2) * t + A1) * t;
+    let t = 1.0 / (1.0 + ERF_P * x);
+    let poly = ((((ERF_A5 * t + ERF_A4) * t + ERF_A3) * t + ERF_A2) * t + ERF_A1) * t;
     let y = 1.0 - poly * (-x * x).exp();
     sign * y
 }
