@@ -119,7 +119,7 @@ cc app.c -Iinclude -Ltarget/release -lvokra -Wl,-rpath,target/release -o app
 
 ## コミュニティ
 
-- **Discord**: 準備中 — サーバー開設後、招待リンクをここに掲載します（M0-01-T01 で管理）。
+- **質問・議論**: [GitHub issue](https://github.com/ayutaz/vokra/issues) をご利用ください。
 - **Issue / Pull Request**: [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。すべての変更は CI 品質ゲート付きの PR を経由します。
 
 ## ライセンス

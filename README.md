@@ -174,8 +174,8 @@ Notes:
 
 ## Community
 
-- **Discord**: TBD — the invite link will be published here once the server
-  is up (tracked as M0-01-T01).
+- **Questions & discussion**: open a
+  [GitHub issue](https://github.com/ayutaz/vokra/issues).
 - **Issues / pull requests**: see [CONTRIBUTING.md](CONTRIBUTING.md). All
   changes go through PRs with CI quality gates.
 
