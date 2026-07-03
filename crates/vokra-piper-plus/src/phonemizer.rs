@@ -155,6 +155,132 @@ impl Phonemizer for MockPhonemizer {
     }
 }
 
+/// A pass-through G2P for callers that already hold phoneme *content* — either
+/// phoneme ids or literal phoneme symbols — and only need the voice's
+/// BOS/EOS/PAD framing applied.
+///
+/// This is the **zero-dependency reuse boundary** (M1-01-A,
+/// `docs/piper-plus-integration.md` §7): the real 8-language G2P is reused out
+/// of the workspace (an in-workspace optional dependency would leak a
+/// non-`vokra-*` crate into `Cargo.lock` and break the zero-dependency gate,
+/// `scripts/check-zero-deps.sh` / NFR-DS-02). A downstream that runs the
+/// external `piper-plus-g2p` feeds its phoneme output through this phonemizer,
+/// or injects its own [`Phonemizer`] into
+/// `PiperPlusTts::synthesize_with`. Passthrough never guesses linguistics; it
+/// only parses and frames.
+///
+/// Two input forms are accepted. Both carry *unframed* phoneme content — the
+/// BOS/EOS/PAD wrapping is added here via [`PhonemeTable::frame`], exactly like
+/// [`MockPhonemizer`] (a caller with fully raw, already-framed ids should call
+/// `PiperPlusTts::synthesize_phonemes` directly, as the parity path does):
+///
+/// 1. **Bracket literals** — piper's `[[ … ]]` phoneme-escape syntax, e.g.
+///    `"[[a]] [[i]]"` or `"[[3]] [[4]]"`. Each bracketed token is a phoneme
+///    symbol resolved in the [`PhonemeTable`], or a bare non-negative integer id.
+/// 2. **A raw id sequence** — whitespace/comma-separated non-negative integers,
+///    e.g. `"3 4 5"`, for callers that already have the ids.
+#[derive(Debug, Clone)]
+pub struct PassthroughPhonemizer {
+    table: PhonemeTable,
+}
+
+impl PassthroughPhonemizer {
+    /// Creates a pass-through phonemizer over the voice's phoneme table.
+    pub fn new(table: PhonemeTable) -> Self {
+        Self { table }
+    }
+
+    /// Parses the unframed phoneme-content ids from `text` (bracket-literal or
+    /// raw-id form). Framing is applied by [`phonemize`](Self::phonemize).
+    fn parse_content(&self, text: &str) -> Result<Vec<i64>> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "PassthroughPhonemizer: empty input".to_owned(),
+            ));
+        }
+        if trimmed.contains("[[") {
+            self.parse_brackets(trimmed)
+        } else {
+            parse_id_sequence(trimmed)
+        }
+    }
+
+    /// Parses `[[ token ]]` occurrences; each token is a non-negative integer id
+    /// or a phoneme symbol resolved in the table. Text outside brackets is
+    /// ignored (piper interleaves literal text and escapes).
+    fn parse_brackets(&self, text: &str) -> Result<Vec<i64>> {
+        let mut ids = Vec::new();
+        let mut rest = text;
+        while let Some(open) = rest.find("[[") {
+            let after = &rest[open + 2..];
+            let close = after.find("]]").ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "PassthroughPhonemizer: unclosed `[[` in bracket input".to_owned(),
+                )
+            })?;
+            let token = after[..close].trim();
+            if !token.is_empty() {
+                let id = match token.parse::<i64>() {
+                    Ok(n) if n >= 0 => n,
+                    Ok(n) => {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "PassthroughPhonemizer: negative phoneme id {n}"
+                        )));
+                    }
+                    Err(_) => self.table.id_of(token).ok_or_else(|| {
+                        VokraError::InvalidArgument(format!(
+                            "PassthroughPhonemizer: unknown phoneme symbol `{token}`"
+                        ))
+                    })?,
+                };
+                ids.push(id);
+            }
+            rest = &after[close + 2..];
+        }
+        if ids.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "PassthroughPhonemizer: no `[[phoneme]]` tokens found".to_owned(),
+            ));
+        }
+        Ok(ids)
+    }
+}
+
+impl Phonemizer for PassthroughPhonemizer {
+    fn phonemize(&self, text: &str) -> Result<Vec<i64>> {
+        let ids = self.parse_content(text)?;
+        Ok(self.table.frame(&ids))
+    }
+}
+
+/// Parses a whitespace/comma-separated sequence of non-negative phoneme ids.
+fn parse_id_sequence(text: &str) -> Result<Vec<i64>> {
+    let mut ids = Vec::new();
+    for tok in text.split(|c: char| c.is_whitespace() || c == ',') {
+        if tok.is_empty() {
+            continue;
+        }
+        let id: i64 = tok.parse().map_err(|_| {
+            VokraError::InvalidArgument(format!(
+                "PassthroughPhonemizer: `{tok}` is not a phoneme id (use `[[symbol]]` for symbols)"
+            ))
+        })?;
+        if id < 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "PassthroughPhonemizer: negative phoneme id {id}"
+            )));
+        }
+        ids.push(id);
+    }
+    if ids.is_empty() {
+        return Err(VokraError::InvalidArgument(
+            "PassthroughPhonemizer: no phoneme ids parsed".to_owned(),
+        ));
+    }
+    Ok(ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +325,58 @@ mod tests {
         let mock = MockPhonemizer::new(table());
         assert!(matches!(
             mock.phonemize("xyz"),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn passthrough_bracket_symbols_are_resolved_and_framed() {
+        let pt = PassthroughPhonemizer::new(table());
+        // "[[a]] [[i]]" -> a(3), i(4); framed BOS a PAD i PAD EOS.
+        assert_eq!(pt.phonemize("[[a]] [[i]]").unwrap(), vec![1, 3, 0, 4, 0, 2]);
+    }
+
+    #[test]
+    fn passthrough_bracket_numeric_ids_are_framed() {
+        let pt = PassthroughPhonemizer::new(table());
+        // Bracketed integers pass through verbatim (no table lookup).
+        assert_eq!(pt.phonemize("[[3]] [[4]]").unwrap(), vec![1, 3, 0, 4, 0, 2]);
+    }
+
+    #[test]
+    fn passthrough_raw_id_sequence_is_framed() {
+        let pt = PassthroughPhonemizer::new(table());
+        // Whitespace/comma separated ids (already-computed sequence).
+        assert_eq!(pt.phonemize("3, 4").unwrap(), vec![1, 3, 0, 4, 0, 2]);
+        assert_eq!(pt.phonemize("3 4").unwrap(), vec![1, 3, 0, 4, 0, 2]);
+    }
+
+    #[test]
+    fn passthrough_rejects_bad_inputs() {
+        let pt = PassthroughPhonemizer::new(table());
+        // Empty input.
+        assert!(matches!(
+            pt.phonemize("   "),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // Unknown symbol in a bracket.
+        assert!(matches!(
+            pt.phonemize("[[zzz]]"),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // Non-integer token in id mode.
+        assert!(matches!(
+            pt.phonemize("3 x"),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // Negative id.
+        assert!(matches!(
+            pt.phonemize("-1"),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // Unclosed bracket.
+        assert!(matches!(
+            pt.phonemize("[[a"),
             Err(VokraError::InvalidArgument(_))
         ));
     }

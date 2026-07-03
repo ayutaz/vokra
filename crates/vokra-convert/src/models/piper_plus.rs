@@ -72,12 +72,27 @@ const KEY_PHONEME_SYMBOLS: &str = "vokra.piper.phoneme_symbols";
 /// `vokra.piper.language_codes` — language code per id (`ARRAY<STRING>`).
 const KEY_LANGUAGE_CODES: &str = "vokra.piper.language_codes";
 
-/// iSTFT / PQMF hyper-parameters, fixed by the MB-iSTFT-VITS2 medium
+/// iSTFT / PQMF hyper-parameter **fallbacks** for the MB-iSTFT-VITS2 *medium*
 /// architecture (piper-plus `mb_istft.py`: `n_fft=16`, `hop_length=4`,
-/// `subbands=4`). Stored so the runtime never hard-codes them.
-const ISTFT_N_FFT: u32 = 16;
-const ISTFT_HOP: u32 = 4;
-const PQMF_SUBBANDS: u32 = 4;
+/// `subbands=4`). The converter prefers to *derive* these per voice from the
+/// weight shapes + `config.json` (M1-01-E, [`DerivedParams`]) so non-medium /
+/// other-language voices convert correctly; these are used only when a value is
+/// not derivable. Stored in the GGUF so the runtime never hard-codes them.
+const DEFAULT_ISTFT_N_FFT: u32 = 16;
+const DEFAULT_ISTFT_HOP: u32 = 4;
+const DEFAULT_PQMF_SUBBANDS: u32 = 4;
+
+/// Total transposed-conv upsample factor before the iSTFT: two stride-4
+/// `ConvTranspose1d` stages (`DEC_UP_STRIDE^2 = 16`). With the PQMF sub-bands
+/// and the iSTFT hop it composes the 256 samples/frame the config's
+/// `audio.hop_size` default records (`docs/piper-plus-integration.md` §2.4:
+/// `4×4 × iSTFT_hop × subbands = hop_size`), which is how the iSTFT hop is
+/// recovered when it is not itself a stored field.
+const UPSAMPLE_STRIDE_TOTAL: u32 = 16;
+
+/// Default `audio.hop_size` when the field is absent (piper-plus
+/// `config.py`: total upsample = 256 samples/frame, `docs` §2.2/§2.4).
+const DEFAULT_HOP_SIZE: u32 = 256;
 
 /// Outcome of a piper-plus voice conversion.
 #[derive(Debug, Default)]
@@ -92,6 +107,133 @@ pub(crate) struct PiperPlusReport {
     /// M0-07 §8 A-4: kept in the symbol table but flagged; the runtime rejects
     /// them at tokenise time).
     pub(crate) phoneme_ids_over_range: usize,
+    /// Language ids present in `num_languages` that got no code from
+    /// `language_id_map` (a coverage gap; M1-01-E per-language validation).
+    pub(crate) language_codes_missing: usize,
+    /// Derived iSTFT FFT size written to the GGUF (M1-01-E).
+    pub(crate) istft_n_fft: u32,
+    /// Derived iSTFT hop written to the GGUF (M1-01-E).
+    pub(crate) istft_hop: u32,
+    /// Derived PQMF sub-band count written to the GGUF (M1-01-E).
+    pub(crate) pqmf_subbands: u32,
+    /// iSTFT/PQMF params that were **not** derivable from shapes/config and fell
+    /// back to the medium defaults (empty on a clean medium voice; M1-01-E).
+    pub(crate) params_defaulted: Vec<&'static str>,
+}
+
+impl PiperPlusReport {
+    /// Human-readable warnings a caller (converter CLI / `verify-piper-voices.sh`)
+    /// should surface. A non-empty list is not a hard failure — it flags
+    /// coverage gaps and defaulted params for the per-language voice matrix
+    /// (M1-01-E / M1-01-F).
+    ///
+    /// Surfacing this in the `convert_piper_plus_file` summary notes
+    /// (`lib.rs`) / the converter CLI is a followup — those files are outside
+    /// this WP's write scope; the method + its fields land here now so that
+    /// wiring is a one-liner and `verify-piper-voices.sh` has a contract.
+    #[allow(dead_code)]
+    pub(crate) fn warnings(&self) -> Vec<String> {
+        let mut w = Vec::new();
+        if self.phoneme_ids_over_range > 0 {
+            w.push(format!(
+                "{} phoneme id(s) exceed num_symbols (embedding-range; runtime rejects them at synth time — §8 A-4)",
+                self.phoneme_ids_over_range
+            ));
+        }
+        if self.language_codes_missing > 0 {
+            w.push(format!(
+                "{} language id slot(s) have no code in language_id_map",
+                self.language_codes_missing
+            ));
+        }
+        if !self.params_defaulted.is_empty() {
+            w.push(format!(
+                "iSTFT/PQMF param(s) not derivable from shapes/config; used medium defaults: {}",
+                self.params_defaulted.join(", ")
+            ));
+        }
+        w
+    }
+}
+
+/// iSTFT / PQMF parameters derived per voice from the weight shapes plus
+/// `config.json` `audio.hop_size` (M1-01-E), so a non-medium / other-language
+/// voice converts correctly instead of inheriting the medium hard-codes.
+struct DerivedParams {
+    n_fft: u32,
+    hop: u32,
+    subbands: u32,
+    /// Fields that were not derivable and fell back to a default.
+    defaulted: Vec<&'static str>,
+}
+
+impl DerivedParams {
+    /// Derives the params from the (renamed) initializer shapes and `hop_size`:
+    ///
+    /// - **subbands** — `dec.pqmf.synthesis_filter` `[1, subbands, taps+1]`
+    ///   dim 1, else `dec.pqmf.updown_filter` `[subbands, 1, subbands]` dim 0.
+    /// - **n_fft** — `dec.subband_conv_post.weight` `[subbands·(n_fft+2), …]`
+    ///   dim 0 → `dim0/subbands − 2` (validated even, ≥ 2).
+    /// - **hop** — `hop_size / (UPSAMPLE_STRIDE_TOTAL · subbands)` when it
+    ///   divides evenly (`docs` §2.4). Any non-derivable field defaults.
+    fn derive(graph: &Graph, rename: &HashMap<String, String>, hop_size: u32) -> Self {
+        // Effective (post-rename) clean name → dims.
+        let mut dims: HashMap<&str, &[u64]> = HashMap::new();
+        for t in &graph.initializers {
+            let name = rename
+                .get(&t.name)
+                .map(String::as_str)
+                .unwrap_or(t.name.as_str());
+            dims.insert(name, t.dims.as_slice());
+        }
+        let mut defaulted = Vec::new();
+
+        let subbands = dims
+            .get("dec.pqmf.synthesis_filter")
+            .and_then(|d| d.get(1).copied())
+            .or_else(|| {
+                dims.get("dec.pqmf.updown_filter")
+                    .and_then(|d| d.first().copied())
+            })
+            .filter(|&s| s >= 1)
+            .map(|s| s as u32)
+            .unwrap_or_else(|| {
+                defaulted.push("pqmf.subbands");
+                DEFAULT_PQMF_SUBBANDS
+            });
+
+        let n_fft = dims
+            .get("dec.subband_conv_post.weight")
+            .and_then(|d| d.first().copied())
+            .and_then(|sub_out| {
+                let sub_out = u32::try_from(sub_out).ok()?;
+                if subbands == 0 || sub_out % subbands != 0 {
+                    return None;
+                }
+                let per = sub_out / subbands;
+                let n = per.checked_sub(2)?;
+                (n >= 2 && n % 2 == 0).then_some(n)
+            })
+            .unwrap_or_else(|| {
+                defaulted.push("istft.n_fft");
+                DEFAULT_ISTFT_N_FFT
+            });
+
+        let denom = UPSAMPLE_STRIDE_TOTAL * subbands;
+        let hop = if denom > 0 && hop_size % denom == 0 && hop_size / denom >= 1 {
+            hop_size / denom
+        } else {
+            defaulted.push("istft.hop");
+            DEFAULT_ISTFT_HOP
+        };
+
+        Self {
+            n_fft,
+            hop,
+            subbands,
+            defaulted,
+        }
+    }
 }
 
 /// Converts a piper-plus voice (`onnx_bytes` + `config_bytes`) into a populated
@@ -103,6 +245,7 @@ pub(crate) fn convert(
     let graph = Graph::parse(onnx_bytes).map_err(|e| ConvertError::Parse(e.to_string()))?;
     let rename = build_rename_map(&graph);
     let config = Config::parse(config_bytes)?;
+    let derived = DerivedParams::derive(&graph, &rename, config.hop_size);
 
     let mut b = GgufBuilder::new();
     let mut report = PiperPlusReport::default();
@@ -115,12 +258,21 @@ pub(crate) fn convert(
     b.add_f32(KEY_NOISE_SCALE, config.noise_scale);
     b.add_f32(KEY_LENGTH_SCALE, config.length_scale);
     b.add_f32(KEY_NOISE_W, config.noise_w);
-    b.add_u32(KEY_ISTFT_N_FFT, ISTFT_N_FFT);
-    b.add_u32(KEY_ISTFT_HOP, ISTFT_HOP);
-    b.add_u32(KEY_PQMF_SUBBANDS, PQMF_SUBBANDS);
+    b.add_u32(KEY_ISTFT_N_FFT, derived.n_fft);
+    b.add_u32(KEY_ISTFT_HOP, derived.hop);
+    b.add_u32(KEY_PQMF_SUBBANDS, derived.subbands);
     add_string_array(&mut b, KEY_PHONEME_SYMBOLS, &config.phoneme_symbols);
     add_string_array(&mut b, KEY_LANGUAGE_CODES, &config.language_codes);
     report.phoneme_ids_over_range = config.phoneme_ids_over_range;
+    report.language_codes_missing = config
+        .language_codes
+        .iter()
+        .filter(|c| c.is_empty())
+        .count();
+    report.istft_n_fft = derived.n_fft;
+    report.istft_hop = derived.hop;
+    report.pqmf_subbands = derived.subbands;
+    report.params_defaulted = derived.defaulted;
 
     for t in &graph.initializers {
         // Skip non-float initializers (int64 shape/index constants).
@@ -222,6 +374,9 @@ struct Config {
     sample_rate: u32,
     num_symbols: u32,
     num_languages: u32,
+    /// `audio.hop_size` (default 256): total samples per encoder frame; used to
+    /// recover the iSTFT hop when it is not a stored field (M1-01-E).
+    hop_size: u32,
     noise_scale: f32,
     length_scale: f32,
     noise_w: f32,
@@ -258,6 +413,13 @@ impl Config {
             .get("num_languages")
             .and_then(JsonValue::as_u64)
             .unwrap_or(1) as u32;
+        let hop_size = root
+            .get("audio")
+            .and_then(|a| a.get("hop_size"))
+            .and_then(JsonValue::as_u64)
+            .map(|h| h as u32)
+            .filter(|&h| h >= 1)
+            .unwrap_or(DEFAULT_HOP_SIZE);
 
         let inference = root.get("inference");
         let noise_scale = inference
@@ -319,6 +481,7 @@ impl Config {
             sample_rate,
             num_symbols,
             num_languages,
+            hop_size,
             noise_scale,
             length_scale,
             noise_w,
@@ -850,5 +1013,127 @@ mod tests {
         let (_b, report) = convert(&onnx, CONFIG.as_bytes()).unwrap();
         assert_eq!(report.skipped_non_float, 1);
         assert_eq!(report.written, 0);
+    }
+
+    // --- M1-01-E: iSTFT/PQMF derivation from shapes + config -----------------
+
+    fn init(name: &str, dims: &[u64]) -> RawTensor {
+        RawTensor {
+            name: name.to_owned(),
+            dims: dims.to_vec(),
+            data_type: ONNX_FLOAT,
+            raw: Vec::new(),
+        }
+    }
+
+    /// A Conv node pairing an opaque weight with its named `.bias`, so
+    /// `build_rename_map` recovers `<module>.weight`.
+    fn conv_node(weight: &str, bias: &str) -> NodeInfo {
+        NodeInfo {
+            op_type: "Conv".to_owned(),
+            inputs: vec![
+                "x_fp32".to_owned(),
+                format!("{weight}_fp32"),
+                format!("{bias}_fp32"),
+            ],
+        }
+    }
+
+    /// A medium voice: subband_conv_post `[72,64,7]` (n_fft 16) + synthesis
+    /// filter `[1,4,63]` (subbands 4).
+    fn medium_graph() -> Graph {
+        Graph {
+            initializers: vec![
+                init("onnx::Conv_9", &[72, 64, 7]),
+                init("dec.subband_conv_post.bias", &[72]),
+                init("onnx::Gen_3", &[1, 4, 63]),
+            ],
+            nodes: vec![conv_node("onnx::Conv_9", "dec.subband_conv_post.bias")],
+        }
+    }
+
+    #[test]
+    fn derives_medium_istft_pqmf_from_shapes() {
+        let g = medium_graph();
+        let r = build_rename_map(&g);
+        let d = DerivedParams::derive(&g, &r, DEFAULT_HOP_SIZE);
+        assert_eq!((d.n_fft, d.hop, d.subbands), (16, 4, 4));
+        assert!(d.defaulted.is_empty(), "medium voice needs no defaults");
+    }
+
+    #[test]
+    fn derives_nonstandard_n_fft_from_subband_conv_post() {
+        // subband_conv_post [136,64,7] with subbands 4 → n_fft = 136/4 - 2 = 32
+        // (genuinely derived, not the medium default 16).
+        let g = Graph {
+            initializers: vec![
+                init("onnx::Conv_9", &[136, 64, 7]),
+                init("dec.subband_conv_post.bias", &[136]),
+                init("onnx::Gen_3", &[1, 4, 63]),
+            ],
+            nodes: vec![conv_node("onnx::Conv_9", "dec.subband_conv_post.bias")],
+        };
+        let r = build_rename_map(&g);
+        let d = DerivedParams::derive(&g, &r, DEFAULT_HOP_SIZE);
+        assert_eq!((d.n_fft, d.hop, d.subbands), (32, 4, 4));
+        assert!(d.defaulted.is_empty());
+    }
+
+    #[test]
+    fn derives_hop_from_hop_size() {
+        // hop_size 128 with subbands 4 → hop = 128 / (16·4) = 2.
+        let g = medium_graph();
+        let r = build_rename_map(&g);
+        let d = DerivedParams::derive(&g, &r, 128);
+        assert_eq!(d.hop, 2);
+        assert!(d.defaulted.is_empty());
+    }
+
+    #[test]
+    fn derives_subbands_from_updown_when_synthesis_absent() {
+        let g = Graph {
+            initializers: vec![
+                init("onnx::Conv_9", &[72, 64, 7]),
+                init("dec.subband_conv_post.bias", &[72]),
+                init("onnx::Up_1", &[4, 1, 4]), // updown_filter → subbands 4
+            ],
+            nodes: vec![conv_node("onnx::Conv_9", "dec.subband_conv_post.bias")],
+        };
+        let r = build_rename_map(&g);
+        let d = DerivedParams::derive(&g, &r, DEFAULT_HOP_SIZE);
+        assert_eq!((d.n_fft, d.hop, d.subbands), (16, 4, 4));
+        assert!(d.defaulted.is_empty());
+    }
+
+    #[test]
+    fn falls_back_to_defaults_when_shapes_absent() {
+        let g = Graph {
+            initializers: vec![],
+            nodes: vec![],
+        };
+        let r = build_rename_map(&g);
+        let d = DerivedParams::derive(&g, &r, DEFAULT_HOP_SIZE);
+        // No PQMF/subband_conv_post → subbands + n_fft default; hop is still
+        // recovered from hop_size + the defaulted subbands.
+        assert_eq!((d.n_fft, d.hop, d.subbands), (16, 4, 4));
+        assert!(d.defaulted.contains(&"pqmf.subbands"));
+        assert!(d.defaulted.contains(&"istft.n_fft"));
+    }
+
+    #[test]
+    fn report_warnings_surface_gaps_and_defaults() {
+        let mut report = PiperPlusReport {
+            phoneme_ids_over_range: 12,
+            language_codes_missing: 1,
+            ..PiperPlusReport::default()
+        };
+        report.params_defaulted.push("istft.n_fft");
+        let w = report.warnings();
+        assert_eq!(w.len(), 3, "one warning per non-empty category");
+        assert!(w.iter().any(|m| m.contains("phoneme id")));
+        assert!(w.iter().any(|m| m.contains("language id")));
+        assert!(w.iter().any(|m| m.contains("istft.n_fft")));
+        // A clean medium voice warns about nothing.
+        assert!(PiperPlusReport::default().warnings().is_empty());
     }
 }

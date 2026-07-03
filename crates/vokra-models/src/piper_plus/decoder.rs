@@ -166,7 +166,13 @@ impl Decoder {
 
     /// Generates fullband PCM from the decoder-input latent `z` `[HIDDEN, T]`
     /// under global conditioning `g` `[GIN]`.
-    pub(super) fn forward(&self, z: &[f32], t_frames: usize, g: &[f32]) -> Vec<f32> {
+    ///
+    /// # Errors
+    ///
+    /// Propagates a [`VokraError`](vokra_core::VokraError) from the sub-band
+    /// `istft` op (M0-04) rather than panicking, so a malformed spectrogram is a
+    /// clean error at the API boundary (M1-01-C).
+    pub(super) fn forward(&self, z: &[f32], t_frames: usize, g: &[f32]) -> Result<Vec<f32>> {
         // conv_pre + additive conditioning.
         let (cw, cb) = &self.conv_pre;
         let (mut x, _) = nn::conv1d(
@@ -233,12 +239,12 @@ impl Decoder {
         let sub_len = t * self.hop;
         let mut subbands_sig = vec![0.0f32; self.subbands * sub_len];
         for s in 0..self.subbands {
-            let wav = self.subband_istft(&spec_raw, s, t);
+            let wav = self.subband_istft(&spec_raw, s, t)?;
             subbands_sig[s * sub_len..(s + 1) * sub_len].copy_from_slice(&wav[..sub_len]);
         }
 
         // PQMF synthesis → fullband [1, T·256].
-        self.pqmf_synthesis(&subbands_sig, sub_len)
+        Ok(self.pqmf_synthesis(&subbands_sig, sub_len))
     }
 
     /// `cond(g)` = `Conv1d(GIN, DEC_INITIAL, 1)` applied to `g[GIN]`.
@@ -274,7 +280,7 @@ impl Decoder {
     /// output back to piper's constant-WSS convention exactly:
     /// `numerator[i] = op[i]·running_wss[i]` (or `op[i]` where the op left it
     /// un-normalised), then `/ const_wss`.
-    fn subband_istft(&self, spec_raw: &[f32], s: usize, t: usize) -> Vec<f32> {
+    fn subband_istft(&self, spec_raw: &[f32], s: usize, t: usize) -> Result<Vec<f32>> {
         let n_half = self.n_fft / 2 + 1;
         let per_sub = self.n_fft + 2;
         let base = s * per_sub;
@@ -298,7 +304,7 @@ impl Decoder {
         let mut attrs = IstftAttrs::new(self.n_fft, self.hop);
         attrs.center = false;
         attrs.length = Some(t * self.hop);
-        let mut wav = istft(&spec, &attrs).expect("istft op on subband spectrogram");
+        let mut wav = istft(&spec, &attrs)?;
 
         // Re-normalise the op's running-WSS output to piper's constant WSS.
         let total = if t > 0 {
@@ -322,7 +328,7 @@ impl Decoder {
             };
             *v = numerator / self.const_wss;
         }
-        wav
+        Ok(wav)
     }
 
     /// PQMF synthesis: upsample each sub-band (transposed conv, groups =

@@ -200,7 +200,7 @@ fn decoder_pcm_parity() {
     assert_eq!(dec_input.len(), hidden * t_frames, "dec_input shape");
     let ref_pcm = read_f32("pcm.f32");
 
-    let pcm = voice.decode(&dec_input, t_frames, lid);
+    let pcm = voice.decode(&dec_input, t_frames, lid).expect("decode");
     assert_eq!(pcm.len(), ref_pcm.len(), "pcm length");
     let d = max_abs_diff(&pcm, &ref_pcm);
     eprintln!("decoder parity: max|Δpcm|={d:.6} (atol={ATOL})");

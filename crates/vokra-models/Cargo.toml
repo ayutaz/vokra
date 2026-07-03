@@ -14,6 +14,19 @@ vokra-ops.workspace = true
 # gelu / conv1d) and the runtime ISA log directly, rather than re-implementing
 # them in the model layer. Native model forwards call these safe wrappers.
 vokra-backend-cpu.workspace = true
+# M1-01-A: the G2P reuse boundary. `PiperPlusTts::synthesize_with` accepts an
+# injected `Phonemizer` (the trait + Mock/Passthrough live here); the real
+# 8-language G2P is reused OUT of the workspace, so this stays a first-party
+# `vokra-*` dependency and the zero-dependency gate is preserved (NFR-DS-02).
+vokra-piper-plus.workspace = true
+
+# M1-01-D: reference RTF bench for the piper-plus native TTS (hand-rolled
+# std::time measurement, no external bench crate — NFR-DS-02). It is env-gated
+# on VOKRA_PIPER_GGUF and asserts nothing; the <0.5 RTF confirmation is M1-01-F
+# (real hardware + a converted voice). Run with `cargo bench -p vokra-models`.
+[[bench]]
+name = "piper_rtf"
+harness = false
 
 [lints]
 workspace = true

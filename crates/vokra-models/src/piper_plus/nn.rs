@@ -1,26 +1,111 @@
-//! Scalar compute primitives for the piper-plus native TTS (M0-07).
+//! Compute primitives for the piper-plus native TTS (M0-07 / M1-01-D).
 //!
 //! MB-iSTFT-VITS2 needs dilated, grouped and transposed 1-D convolutions plus
-//! per-position linear layers. The M0-08 CPU kernel set (`vokra-backend-cpu`)
-//! does not cover the convolution variants this model needs — its `conv1d_f32`
-//! has no dilation/groups and there is no transposed conv — so these ops are
-//! self-contained scalar f32 here (NFR-QL-01 parity is FP32). Routing the
-//! decoder/flow convolutions and the small attention matmuls through
-//! `vokra-backend-cpu` SIMD kernels (once it grows dilation/groups/transpose
-//! support, per ADR-0002) is an **M1 optimization follow-up** — M0 has no RTF
-//! gate (milestones.md §4.2 note 1) and the scalar path is correct.
+//! per-position linear layers, in the `[channels, time]` layout PyTorch/ONNX
+//! convolutions expect. Tensors are plain row-major `Vec<f32>` with explicit
+//! shapes; parity is FP32 (NFR-QL-01).
 //!
-//! Tensors are plain row-major `Vec<f32>` with explicit shapes; 1-D signals use
-//! the `[channels, time]` layout PyTorch/ONNX convolutions expect.
+//! # RTF hot path (M1-01-D, ADR-0002 follow-up)
+//!
+//! [`conv1d`] — the decoder/flow work-horse (conv_pre, the six dilated ResBlock
+//! convs, subband_conv_post, the flow WN dilated convs and the 1×1 pre/post
+//! projections) — no longer runs a scalar triple loop. It lowers to **im2col +
+//! [`gemm_f32`]**, so the dominant matmuls ride `vokra-backend-cpu`'s dispatched
+//! SIMD GEMM (AVX2 / NEON) at run time. The M0-08 `conv1d_f32` kernel has no
+//! dilation/groups, so the im2col lives here (per the design: keep the backend
+//! API unchanged; M1-05 may later absorb dilation/groups into the backend and
+//! this can call it directly). The FP32 reduction order differs from the scalar
+//! loop, so results match within the FP32 parity bound, not bit-for-bit — a
+//! differential test pins `conv1d` to the scalar oracle ([`conv1d_scalar`]).
+//!
+//! [`conv_transpose1d`] (the two decoder upsamples + PQMF synthesis) stays
+//! scalar for now: the MRF ResBlock stack dominates the FLOPs, and whether to
+//! route the transposed convs through GEMM+col2im is decided from the first RTF
+//! measurement (M1-01-F), not up front.
 
-/// 1-D convolution with stride / padding / dilation / groups.
+use vokra_backend_cpu::kernels::gemm_f32;
+
+/// 1-D convolution with stride / padding / dilation / groups, lowered to
+/// im2col + [`gemm_f32`] (M1-01-D).
 ///
 /// `x` is `[in_ch, in_len]`, `weight` is `[out_ch, in_ch/groups, kernel]`
 /// (PyTorch/ONNX layout), `bias` (when `Some`) is `[out_ch]`. Returns
 /// `[out_ch, out_len]` with `out_len = (in_len + 2·pad − dilation·(kernel−1) −
 /// 1) / stride + 1`.
+///
+/// The GEMM shapes are derived here and always consistent, so a GEMM shape
+/// error would be an internal bug — it panics rather than being threaded as a
+/// data error (unlike the `istft` op, whose runtime error the decoder
+/// propagates, M1-01-C).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn conv1d(
+    x: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    pad: usize,
+    dilation: usize,
+    groups: usize,
+) -> (Vec<f32>, usize) {
+    let eff = dilation * (kernel - 1) + 1;
+    let out_len = (in_len + 2 * pad - eff) / stride + 1;
+    let in_g = in_ch / groups;
+    let out_g = out_ch / groups;
+    let k = in_g * kernel; // GEMM reduction dim (im2col rows)
+    let mut out = vec![0.0f32; out_ch * out_len];
+    // Reused across groups (groups == 1 for every conv this model routes here).
+    let mut col = vec![0.0f32; k * out_len];
+    let mut og = vec![0.0f32; out_g * out_len];
+    for g in 0..groups {
+        // im2col: col[(ic·kernel + kk), ot] = x[g·in_g+ic, ot·stride + kk·dil − pad].
+        col.fill(0.0);
+        for ic in 0..in_g {
+            let xrow = (g * in_g + ic) * in_len;
+            for kk in 0..kernel {
+                let crow = (ic * kernel + kk) * out_len;
+                for ot in 0..out_len {
+                    let it = ot * stride + kk * dilation;
+                    if it >= pad && it - pad < in_len {
+                        col[crow + ot] = x[xrow + (it - pad)];
+                    }
+                }
+            }
+        }
+        // og[out_g, out_len] = weight_g[out_g, k] · col[k, out_len].
+        let wbase = g * out_g * k;
+        gemm_f32(
+            out_g,
+            out_len,
+            k,
+            &weight[wbase..wbase + out_g * k],
+            &col,
+            None,
+            &mut og,
+        )
+        .expect("piper conv1d gemm: internally-consistent shapes");
+        // Scatter into `out`, adding the per-output-channel bias (broadcast).
+        for oc in 0..out_g {
+            let out_channel = g * out_g + oc;
+            let b = bias.map_or(0.0, |b| b[out_channel]);
+            let dst = &mut out[out_channel * out_len..out_channel * out_len + out_len];
+            for (d, &s) in dst.iter_mut().zip(&og[oc * out_len..(oc + 1) * out_len]) {
+                *d = s + b;
+            }
+        }
+    }
+    (out, out_len)
+}
+
+/// Reference scalar 1-D convolution — the differential oracle `conv1d` (the
+/// im2col + GEMM path) is pinned against. Same signature/semantics as
+/// [`conv1d`]; kept test-only so the shipping path is the SIMD one.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn conv1d_scalar(
     x: &[f32],
     in_ch: usize,
     in_len: usize,
@@ -207,6 +292,60 @@ pub(crate) fn softmax_rows(x: &mut [f32], rows: usize, cols: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Deterministic xorshift `[-1, 1)` noise (no external RNG — NFR-DS-02).
+    fn rand_vec(seed: u64, n: usize) -> Vec<f32> {
+        let mut x = seed | 1;
+        (0..n)
+            .map(|_| {
+                x ^= x >> 12;
+                x ^= x << 25;
+                x ^= x >> 27;
+                let bits = (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40) as u32;
+                bits as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    #[test]
+    fn conv1d_gemm_matches_scalar_oracle() {
+        // Each tuple is (in_ch, out_ch, in_len, kernel, stride, pad, dilation,
+        // groups), covering every conv shape the decoder / flow route through
+        // conv1d (conv_pre & subband_conv_post k7 p3; the ResBlock dilated k3/5/7
+        // same-padding; the flow WN k5 d1 p2; the 1×1 pre/post/res_skip) plus a
+        // stride>1 and a depthwise (groups>1) case for defensive coverage.
+        let cases = [
+            (8, 16, 12, 7, 1, 3, 1, 1),   // conv_pre / subband_conv_post shape
+            (16, 16, 12, 3, 1, 1, 1, 1),  // ResBlock k3 d1
+            (16, 16, 12, 3, 1, 2, 2, 1),  // ResBlock k3 d2 (same padding)
+            (16, 16, 14, 5, 1, 4, 2, 1),  // ResBlock k5 d2
+            (16, 16, 20, 7, 1, 18, 6, 1), // ResBlock k7 d6 (pad = d*(k-1)/2)
+            (12, 24, 10, 5, 1, 2, 1, 1),  // flow WN in_layers k5 d1 p2
+            (16, 32, 10, 1, 1, 0, 1, 1),  // 1×1 projection
+            (8, 8, 12, 3, 2, 1, 1, 1),    // stride 2
+            (8, 8, 12, 3, 1, 1, 1, 2),    // depthwise groups=2
+        ];
+        for (i, &(in_ch, out_ch, in_len, k, stride, pad, dil, groups)) in cases.iter().enumerate() {
+            let x = rand_vec(1 + i as u64, in_ch * in_len);
+            let w = rand_vec(101 + i as u64, out_ch * (in_ch / groups) * k);
+            let bias = rand_vec(201 + i as u64, out_ch);
+            for b in [None, Some(bias.as_slice())] {
+                let (got, tg) = conv1d(
+                    &x, in_ch, in_len, &w, out_ch, k, b, stride, pad, dil, groups,
+                );
+                let (want, ts) = conv1d_scalar(
+                    &x, in_ch, in_len, &w, out_ch, k, b, stride, pad, dil, groups,
+                );
+                assert_eq!(tg, ts, "case {i}: out_len mismatch");
+                let d = got
+                    .iter()
+                    .zip(&want)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0f32, f32::max);
+                assert!(d < 1e-3, "case {i} (bias={}): max|Δ|={d}", b.is_some());
+            }
+        }
+    }
 
     #[test]
     fn conv1d_matches_hand_fixture() {

@@ -25,15 +25,20 @@
 //!   loader is M0-03).
 //!
 //! M0-02 shipped the crate skeleton; **M0-07-T08** adds the G2P bridge trait
-//! boundary ([`Phonemizer`]) plus a mock ([`MockPhonemizer`]) CI scaffold. The
-//! real G2P reuse (the upstream pure-Rust `piper-plus-g2p` crate) is T09,
-//! blocked on the T04 client confirmation of the reuse form
+//! boundary ([`Phonemizer`]) plus a mock ([`MockPhonemizer`]) CI scaffold.
+//! **M1-01-A** adds [`PassthroughPhonemizer`], the zero-dependency reuse
+//! boundary: callers that already hold phoneme content (ids or `[[symbol]]`
+//! literals) frame it here, so the real 8-language G2P can be reused *out of the
+//! workspace* (an in-workspace optional dependency would break the
+//! zero-dependency gate, `scripts/build-piper-plus-g2p.sh`). The real G2P reuse
+//! (the upstream pure-Rust `piper-plus-g2p` crate) is T09 / M1-01-B, blocked on
+//! the T04 client confirmation of the reuse form
 //! (`docs/piper-plus-integration.md` §7/§8); the native inference core lives in
 //! `vokra-models`.
 
 pub mod phonemizer;
 
-pub use phonemizer::{MockPhonemizer, PhonemeTable, Phonemizer};
+pub use phonemizer::{MockPhonemizer, PassthroughPhonemizer, PhonemeTable, Phonemizer};
 
 #[cfg(test)]
 mod tests {

@@ -35,10 +35,20 @@ use std::path::Path;
 use vokra_core::gguf::GgufFile;
 use vokra_core::rng::GaussianSplitMix64;
 use vokra_core::{Result, SynthesisRequest, SynthesizedAudio, TtsEngine};
+use vokra_piper_plus::{PhonemeTable, Phonemizer};
 
 pub use config::PiperConfig;
+// Re-export the G2P reuse-boundary types so downstreams can build the injected
+// phonemizer without also depending on `vokra-piper-plus` directly (M1-01-A).
+pub use vokra_piper_plus::{MockPhonemizer, PassthroughPhonemizer};
 
 use config::{DP_FILTER, HIDDEN};
+
+/// `vokra.model.arch` a piper-plus voice GGUF must carry (written by
+/// `vokra-convert`'s `models::piper_plus::ARCH`; kept in sync by that
+/// converter, M0-07-T06). A wrong arch fails loudly at load (M1-01-C).
+const EXPECTED_ARCH: &str = "piper-plus-mb-istft-vits2";
+
 use decoder::Decoder;
 use duration::DurationPredictor;
 use flow::Flow;
@@ -62,8 +72,6 @@ pub struct PiperPlusTts {
     /// Real A1/A2/A3 prosody (JA) needs the G2P bridge (T09) and the
     /// `prosody_proj` weight — a followup.
     prosody_bias: Vec<f32>,
-    #[allow(dead_code)] // retained for lazy weight access / future components
-    store: TensorStore,
 }
 
 impl PiperPlusTts {
@@ -80,8 +88,24 @@ impl PiperPlusTts {
     }
 
     /// Loads a voice from an already-parsed GGUF.
+    ///
+    /// The GGUF's `vokra.model.arch` is checked first, so a non-piper (or wrong
+    /// architecture) GGUF fails with a clear [`VokraError::ModelLoad`] rather
+    /// than a confusing missing-tensor error deep in a component loader
+    /// (M1-01-C). The retained GGUF backing bytes (~77 MB FP32) are dropped once
+    /// every component has copied its tensors out, halving resident memory: the
+    /// `TensorStore` is a function local and is freed at the end of load.
     pub fn from_gguf(file: GgufFile) -> Result<Self> {
         let store = TensorStore::new(file);
+        let arch = store
+            .file()
+            .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
+            .and_then(|v| v.as_str());
+        if arch != Some(EXPECTED_ARCH) {
+            return Err(vokra_core::VokraError::ModelLoad(format!(
+                "not a piper-plus voice GGUF: vokra.model.arch = {arch:?}, expected `{EXPECTED_ARCH}`"
+            )));
+        }
         let config = PiperConfig::from_gguf(store.file())?;
         let encoder = TextEncoder::load(&store, config.num_symbols, config.num_languages)?;
         let duration = DurationPredictor::load(&store)?;
@@ -93,6 +117,8 @@ impl PiperPlusTts {
             config.istft_hop,
             config.pqmf_subbands,
         )?;
+        // `store` (and its GGUF backing bytes) drops here — every component owns
+        // its own copies now, so nothing borrows it past load.
         Ok(Self {
             config,
             encoder,
@@ -100,7 +126,6 @@ impl PiperPlusTts {
             prosody_bias,
             flow,
             decoder,
-            store,
         })
     }
 
@@ -126,6 +151,7 @@ impl PiperPlusTts {
         length_scale: f32,
         noise_w: f32,
     ) -> Result<SynthesizedAudio> {
+        self.check_ids(phoneme_ids, lid)?;
         let enc = self.encoder.forward(phoneme_ids, lid)?;
         let g = self.encoder.lang_conditioning(lid);
         let x_dp = build_x_dp(&enc.x, enc.t, &self.prosody_bias);
@@ -144,8 +170,74 @@ impl PiperPlusTts {
             }
         }
         let z = self.flow.reverse(&z_p, t_frames, &g);
-        let pcm = self.decoder.forward(&z, t_frames, &g);
+        let pcm = self.decoder.forward(&z, t_frames, &g)?;
         Ok(SynthesizedAudio::new(pcm, self.config.sample_rate))
+    }
+
+    /// Defensive bounds check on the inputs to the embedding lookups, run before
+    /// any table indexing (M1-01-C). A real 8-language G2P can emit phoneme ids
+    /// that exceed this voice's table (e.g. the sv/ko PUA ids 173–184 that the
+    /// converter flags as over-range, `PiperPlusReport::phoneme_ids_over_range`,
+    /// `docs/piper-plus-integration.md` §8 A-4); catching them here turns a
+    /// panic in the embedding lookup into a clear [`VokraError::InvalidArgument`].
+    fn check_ids(&self, phoneme_ids: &[i64], lid: i64) -> Result<()> {
+        if let Some(&bad) = phoneme_ids
+            .iter()
+            .find(|&&id| id < 0 || id as usize >= self.config.num_symbols)
+        {
+            return Err(vokra_core::VokraError::InvalidArgument(format!(
+                "piper TTS: phoneme id {bad} out of range (num_symbols = {})",
+                self.config.num_symbols
+            )));
+        }
+        if lid < 0 || lid as usize >= self.config.num_languages {
+            return Err(vokra_core::VokraError::InvalidArgument(format!(
+                "piper TTS: language id {lid} out of range (num_languages = {})",
+                self.config.num_languages
+            )));
+        }
+        Ok(())
+    }
+
+    /// Builds a [`PhonemeTable`] from this voice's phoneme symbol table, for
+    /// driving [`synthesize_with`](Self::synthesize_with) with a [`Phonemizer`]
+    /// such as [`MockPhonemizer`] or [`PassthroughPhonemizer`] (M1-01-A).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the voice's table lacks the piper framing symbols `_`/`^`/`$`.
+    pub fn phoneme_table(&self) -> Result<PhonemeTable> {
+        PhonemeTable::from_symbols(&self.config.phoneme_symbols)
+    }
+
+    /// Synthesizes PCM for `request`, converting text → phoneme ids through an
+    /// injected [`Phonemizer`] — the **G2P reuse boundary** (M1-01-A,
+    /// `docs/piper-plus-integration.md` §7).
+    ///
+    /// The default [`TtsEngine::synthesize`] path uses the built-in placeholder
+    /// tokenizer so the zero-dependency build still emits audio for the demo.
+    /// `synthesize_with` is the escape hatch: a downstream that runs the
+    /// out-of-workspace 8-language `piper-plus-g2p` (or any other G2P) injects
+    /// it here, so the core never takes a non-`vokra-*` dependency (NFR-DS-02).
+    /// [`PassthroughPhonemizer`] covers callers that already hold phoneme
+    /// content. The resulting ids are range-checked before the embedding lookup.
+    pub fn synthesize_with(
+        &self,
+        request: &SynthesisRequest,
+        phonemizer: &dyn Phonemizer,
+    ) -> Result<SynthesizedAudio> {
+        let lid = request
+            .language
+            .as_deref()
+            .and_then(|c| self.config.language_id(c))
+            .unwrap_or(0);
+        let phoneme_ids = phonemizer.phonemize(&request.text)?;
+        let (noise, noise_w) = if request.deterministic {
+            (0.0, 0.0)
+        } else {
+            (self.config.noise_scale, self.config.noise_w)
+        };
+        self.synthesize_phonemes(&phoneme_ids, lid, noise, self.config.length_scale, noise_w)
     }
 
     /// A placeholder tokenizer: maps each input character to a phoneme id via
@@ -191,7 +283,7 @@ impl PiperPlusTts {
     /// under language `lid` (component boundary used by the M0-07-T19 parity
     /// test: reference latent → PCM).
     #[cfg(test)]
-    pub(crate) fn decode(&self, z: &[f32], t_frames: usize, lid: i64) -> Vec<f32> {
+    pub(crate) fn decode(&self, z: &[f32], t_frames: usize, lid: i64) -> Result<Vec<f32>> {
         let g = self.encoder.lang_conditioning(lid);
         self.decoder.forward(z, t_frames, &g)
     }
