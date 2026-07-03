@@ -326,6 +326,35 @@ impl MfccAttrs {
     }
 }
 
+/// Attributes of the `resample` operator (FR-OP-04, M1-06).
+///
+/// Polyphase Kaiser-windowed-sinc sample-rate conversion. Both rates are graph
+/// attributes — the audio graph fixes the capture rate at build time — so a
+/// node fully describes the conversion; the implementation lives in `vokra-ops`
+/// (`resample`). This is the [`OpKind::Resample`] wrapping of the standalone
+/// M1-06 op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResampleAttrs {
+    /// Input sample rate in Hz.
+    pub in_rate: u32,
+    /// Output sample rate in Hz.
+    pub out_rate: u32,
+    /// Filter quality (higher = sharper transition band, more taps).
+    pub quality: u8,
+}
+
+/// Attributes of the `pre_emphasis` operator (FR-OP-64, M1-06).
+///
+/// First-order high-pass applied ahead of framing; the [`OpKind::PreEmphasis`]
+/// wrapping of the standalone M1-06 op. DC-offset removal, its companion, takes
+/// no parameters and is the attribute-less [`OpKind::DcOffsetRemove`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreEmphasisAttrs {
+    /// Pre-emphasis coefficient `a` in `y[n] = x[n] − a·x[n−1]`; `0.0` is the
+    /// identity filter.
+    pub coeff: f32,
+}
+
 /// Operation kind — the ggml-style *flat op enum* of the Vokra IR (FR-EX-01).
 ///
 /// M0-02 carried only minimal **placeholder** variants so the graph plumbing
@@ -335,6 +364,9 @@ impl MfccAttrs {
 /// - speech front-end ops (`stft` / `istft` / `mel_filterbank` / `mfcc` /
 ///   `dct`, FR-OP-01/03) and their attribute definitions: **M0-04** (landed —
 ///   see [`StftAttrs`], [`MelAttrs`], … above);
+/// - amplitude preprocessing ops (`resample` / `dc_offset_remove` /
+///   `pre_emphasis`, FR-OP-04/64): **M1-06** (landed — see [`ResampleAttrs`],
+///   [`PreEmphasisAttrs`]);
 /// - LSTM family for the Silero VAD subgraph: **M0-05**;
 /// - attention / decoder family for Whisper: **M0-06**.
 ///
@@ -366,6 +398,15 @@ pub enum OpKind {
     Mfcc(MfccAttrs),
     /// Discrete cosine transform, type II, over the innermost axis (FR-OP-03).
     Dct(DctAttrs),
+    /// Sample-rate conversion (FR-OP-04). Real `[samples]` → real `[samples']`;
+    /// implemented in `vokra-ops`.
+    Resample(ResampleAttrs),
+    /// DC-offset removal — subtract the per-utterance mean (FR-OP-64). Real
+    /// `[samples]` → real `[samples]`.
+    DcOffsetRemove,
+    /// First-order pre-emphasis high-pass (FR-OP-64). Real `[samples]` → real
+    /// `[samples]`.
+    PreEmphasis(PreEmphasisAttrs),
 }
 
 /// One node of an [`AudioGraph`]: an op together with its tensor

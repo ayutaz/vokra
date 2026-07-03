@@ -54,9 +54,10 @@
 //!   checkpoint is consumed (FR-MD-02 / IF-06); no ONNX at runtime (FR-LD-05);
 //! - the KV cache is a **model-internal** detail here; promoting it to a
 //!   first-class session state (FR-EX-02) is M1-04;
-//! - `frontend_spec` bit-exact **checking** (FR-LD-03) and `resample`
-//!   (FR-OP-04) are M1 — this WP only *reads* `vokra.frontend.*` values and
-//!   requires the input to already be at the model sample rate;
+//! - `frontend_spec` bit-exact **checking** (FR-LD-03) landed in **M1-03**:
+//!   [`WhisperModel::from_gguf`] validates the `vokra.frontend.*` chunk via
+//!   [`mel::check_frontend_spec`]; `resample` (FR-OP-04) is M1-06 and the input
+//!   is still expected to already be at the model sample rate here;
 //! - word-level timestamps are a `beam_search` attribute (FR-OP-40) but not
 //!   implemented in M0 (WP completion = demo + parity).
 
@@ -81,8 +82,8 @@ pub use weights::WhisperWeights;
 
 use std::sync::Arc;
 
-use vokra_core::Result;
 use vokra_core::gguf::GgufFile;
+use vokra_core::{FrontendPolicy, Result};
 
 use encoder::EncoderOutput;
 
@@ -100,12 +101,28 @@ pub struct WhisperModel {
 impl WhisperModel {
     /// Loads config (`vokra.whisper.*`) and every weight tensor from `file`.
     ///
+    /// # Front-end check (FR-LD-03, M1-03)
+    ///
+    /// After the config is read, the model's declared `vokra.frontend.*` chunk
+    /// is validated bit-for-bit against the runtime Whisper front-end
+    /// ([`mel::runtime_frontend_spec`]) under the default
+    /// [`FrontendPolicy::Fail`](vokra_core::FrontendPolicy) — a mismatched or
+    /// missing chunk aborts the load *before* the (larger) weight tensors are
+    /// bound. Use [`mel::check_frontend_spec`] directly for a lenient
+    /// (`Warn`) load.
+    ///
     /// # Errors
     ///
     /// [`VokraError::ModelLoad`] if a hyperparameter key or a weight tensor is
-    /// missing, mistyped or mis-shaped.
+    /// missing, mistyped or mis-shaped, or the `vokra.frontend.*` chunk is
+    /// absent; [`VokraError::FrontendMismatch`](vokra_core::VokraError) if the
+    /// declared front-end differs from the runtime's.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let config = WhisperConfig::from_gguf(file)?;
+        // Whisper declares a front-end chunk; check it bit-exact before the
+        // heavier weight load. VAD / piper-plus loaders deliberately skip this
+        // (they write no `vokra.frontend.*`) — the gating is per-model, by caller.
+        mel::check_frontend_spec(file, config.n_mels, FrontendPolicy::Fail)?;
         let weights = WhisperWeights::load(file, &config)?;
         Ok(Self { config, weights })
     }
@@ -157,5 +174,71 @@ impl WhisperModel {
     #[cfg(test)]
     pub(crate) fn new_for_test(config: WhisperConfig, weights: WhisperWeights) -> Self {
         Self { config, weights }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vokra_core::VokraError;
+    use vokra_core::gguf::GgufBuilder;
+
+    /// Writes a full, valid `vokra.whisper.*` hyperparameter chunk (n_mels = 80).
+    fn write_valid_config(b: &mut GgufBuilder) {
+        b.add_u32("vokra.whisper.n_mels", 80);
+        b.add_u32("vokra.whisper.n_audio_ctx", 1500);
+        b.add_u32("vokra.whisper.n_audio_state", 512);
+        b.add_u32("vokra.whisper.n_audio_head", 8);
+        b.add_u32("vokra.whisper.n_audio_layer", 6);
+        b.add_u32("vokra.whisper.n_text_ctx", 448);
+        b.add_u32("vokra.whisper.n_text_state", 512);
+        b.add_u32("vokra.whisper.n_text_head", 8);
+        b.add_u32("vokra.whisper.n_text_layer", 6);
+        b.add_u32("vokra.whisper.n_vocab", 51865);
+        b.add_u32("vokra.whisper.ffn_dim", 2048);
+        b.add_u32("vokra.whisper.eot", 50257);
+        b.add_metadata(
+            "vokra.whisper.decoder_start_ids",
+            vokra_core::gguf::GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::U32,
+                values: [50258u32, 50259, 50359, 50363]
+                    .iter()
+                    .map(|&id| vokra_core::gguf::GgufMetadataValue::U32(id))
+                    .collect(),
+            }),
+        );
+    }
+
+    #[test]
+    fn from_gguf_aborts_on_a_mismatched_frontend_before_loading_weights() {
+        // A valid config plus a front-end chunk that differs in one field. The
+        // GGUF carries NO weight tensors — so reaching a FrontendMismatch (rather
+        // than a weight ModelLoad) proves the front-end check runs first and the
+        // wiring in `from_gguf` is live (FR-LD-03).
+        let mut b = GgufBuilder::new();
+        write_valid_config(&mut b);
+        let mut declared = mel::runtime_frontend_spec(80);
+        declared.n_fft = 512;
+        declared.write_into(&mut b);
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+
+        assert!(matches!(
+            WhisperModel::from_gguf(&file),
+            Err(VokraError::FrontendMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn from_gguf_reports_a_missing_frontend_chunk() {
+        // Whisper requires the chunk; a config-only GGUF (no `vokra.frontend.*`)
+        // fails the check as a ModelLoad, again before any weight is touched.
+        let mut b = GgufBuilder::new();
+        write_valid_config(&mut b);
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+
+        assert!(matches!(
+            WhisperModel::from_gguf(&file),
+            Err(VokraError::ModelLoad(_))
+        ));
     }
 }

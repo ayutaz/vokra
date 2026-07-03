@@ -1,4 +1,4 @@
-//! IR dispatch for the M0-04 front-end ops (M0-04-T17).
+//! IR dispatch for the front-end / preprocessing ops (M0-04-T17; M1-03).
 //!
 //! Bridges the `vokra-core` flat op enum ([`vokra_core::OpKind`]) to the
 //! `vokra-ops` implementations. M0 has no graph executor yet (the
@@ -6,18 +6,24 @@
 //! this is the op-level evaluation the executor will call once it lands: given
 //! an `OpKind` (a graph node's op, i.e. the "graph path") and its input
 //! [`OpValue`]s, it produces the outputs — identical to calling the op function
-//! directly (verified in the tests).
+//! directly (verified in the tests). It covers the M0-04 front-end ops and the
+//! M1-06 amplitude-preprocessing ops (`resample` / `dc_offset_remove` /
+//! `pre_emphasis`, wrapped as [`OpKind`] variants in M1-03).
 //!
-//! Ops outside the M0-04 set return [`VokraError::UnsupportedOp`] rather than
+//! Ops outside that set return [`VokraError::UnsupportedOp`] rather than
 //! silently doing nothing (FR-EX-08: no silent fallback).
 
-use vokra_core::ir::graph::{DctAttrs, IstftAttrs, MelAttrs, MfccAttrs, StftAttrs};
+use vokra_core::ir::graph::{
+    DctAttrs, IstftAttrs, MelAttrs, MfccAttrs, PreEmphasisAttrs, ResampleAttrs, StftAttrs,
+};
 use vokra_core::{OpKind, Result, VokraError};
 
 use crate::dct::dct;
 use crate::istft::istft;
 use crate::mel::MelFilterbank;
 use crate::mfcc::mfcc;
+use crate::preprocess::{dc_offset_remove, pre_emphasis};
+use crate::resample::resample;
 use crate::stft::{Spectrogram, stft};
 
 /// A runtime tensor value crossing an op boundary: real, or split-complex.
@@ -71,11 +77,15 @@ impl OpValue {
     }
 }
 
-/// Evaluates an M0-04 front-end op over `inputs`.
+/// Evaluates a front-end / preprocessing op over `inputs`.
+///
+/// Covers the M0-04 front-end ops (`stft` / `istft` / `mel_filterbank` /
+/// `mfcc` / `dct`) and the M1-06 amplitude-preprocessing ops (`resample` /
+/// `dc_offset_remove` / `pre_emphasis`).
 ///
 /// # Errors
 ///
-/// Returns [`VokraError::UnsupportedOp`] for ops outside the M0-04 set and
+/// Returns [`VokraError::UnsupportedOp`] for ops outside that set and
 /// [`VokraError::InvalidArgument`] for arity / kind / shape mismatches (plus any
 /// error from the underlying op).
 pub fn dispatch(op: &OpKind, inputs: &[OpValue]) -> Result<Vec<OpValue>> {
@@ -85,8 +95,11 @@ pub fn dispatch(op: &OpKind, inputs: &[OpValue]) -> Result<Vec<OpValue>> {
         OpKind::MelFilterbank(attrs) => run_mel(attrs, inputs),
         OpKind::Mfcc(attrs) => run_mfcc(attrs, inputs),
         OpKind::Dct(attrs) => run_dct(attrs, inputs),
+        OpKind::Resample(attrs) => run_resample(attrs, inputs),
+        OpKind::DcOffsetRemove => run_dc_offset_remove(inputs),
+        OpKind::PreEmphasis(attrs) => run_pre_emphasis(attrs, inputs),
         other => Err(VokraError::UnsupportedOp(format!(
-            "{other:?} is not an M0-04 front-end op"
+            "{other:?} is not a front-end / preprocessing op"
         ))),
     }
 }
@@ -190,6 +203,27 @@ fn run_dct(attrs: &DctAttrs, inputs: &[OpValue]) -> Result<Vec<OpValue>> {
     Ok(vec![OpValue::real(vec![rows, n_out], out)])
 }
 
+fn run_resample(attrs: &ResampleAttrs, inputs: &[OpValue]) -> Result<Vec<OpValue>> {
+    expect_arity(inputs, 1, "resample")?;
+    let (_, signal) = expect_real(&inputs[0], "resample")?;
+    let out = resample(signal, attrs.in_rate, attrs.out_rate, attrs.quality)?;
+    Ok(vec![OpValue::real(vec![out.len()], out)])
+}
+
+fn run_dc_offset_remove(inputs: &[OpValue]) -> Result<Vec<OpValue>> {
+    expect_arity(inputs, 1, "dc_offset_remove")?;
+    let (_, signal) = expect_real(&inputs[0], "dc_offset_remove")?;
+    let out = dc_offset_remove(signal);
+    Ok(vec![OpValue::real(vec![out.len()], out)])
+}
+
+fn run_pre_emphasis(attrs: &PreEmphasisAttrs, inputs: &[OpValue]) -> Result<Vec<OpValue>> {
+    expect_arity(inputs, 1, "pre_emphasis")?;
+    let (_, signal) = expect_real(&inputs[0], "pre_emphasis")?;
+    let out = pre_emphasis(signal, attrs.coeff);
+    Ok(vec![OpValue::real(vec![out.len()], out)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +311,73 @@ mod tests {
     fn non_m0_04_op_is_unsupported() {
         let err = dispatch(&OpKind::MatMul, &[]).unwrap_err();
         assert!(matches!(err, VokraError::UnsupportedOp(_)));
+    }
+
+    #[test]
+    fn preprocess_ops_dispatch_match_direct_calls() {
+        use vokra_core::ir::graph::{PreEmphasisAttrs, ResampleAttrs};
+
+        let sig: Vec<f32> = (0..128).map(|i| 0.3 + (i as f32 * 0.05).sin()).collect();
+
+        // dc_offset_remove: no attrs.
+        let out = dispatch(
+            &OpKind::DcOffsetRemove,
+            &[OpValue::real(vec![sig.len()], sig.clone())],
+        )
+        .unwrap();
+        assert_eq!(
+            out[0].as_real().unwrap().1,
+            crate::dc_offset_remove(&sig).as_slice()
+        );
+
+        // pre_emphasis: coeff attr.
+        let out = dispatch(
+            &OpKind::PreEmphasis(PreEmphasisAttrs { coeff: 0.97 }),
+            &[OpValue::real(vec![sig.len()], sig.clone())],
+        )
+        .unwrap();
+        assert_eq!(
+            out[0].as_real().unwrap().1,
+            crate::pre_emphasis(&sig, 0.97).as_slice()
+        );
+
+        // resample: rate-change attrs.
+        let attrs = ResampleAttrs {
+            in_rate: 16_000,
+            out_rate: 8_000,
+            quality: crate::resample::DEFAULT_QUALITY,
+        };
+        let out = dispatch(
+            &OpKind::Resample(attrs),
+            &[OpValue::real(vec![sig.len()], sig.clone())],
+        )
+        .unwrap();
+        let want = crate::resample(&sig, 16_000, 8_000, crate::resample::DEFAULT_QUALITY).unwrap();
+        assert_eq!(out[0].as_real().unwrap().1, want.as_slice());
+    }
+
+    #[test]
+    fn preprocess_ops_reject_wrong_arity_and_kind() {
+        use vokra_core::ir::graph::PreEmphasisAttrs;
+
+        // Arity: dc_offset_remove needs exactly one input.
+        assert!(matches!(
+            dispatch(&OpKind::DcOffsetRemove, &[]),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // Kind: a complex input where a real signal is required.
+        let cplx = OpValue::Complex {
+            shape: vec![1, 2],
+            re: vec![0.0; 2],
+            im: vec![0.0; 2],
+        };
+        assert!(matches!(
+            dispatch(
+                &OpKind::PreEmphasis(PreEmphasisAttrs { coeff: 0.5 }),
+                &[cplx]
+            ),
+            Err(VokraError::InvalidArgument(_))
+        ));
     }
 
     #[test]

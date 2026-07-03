@@ -1,21 +1,32 @@
-//! Typed view of the `vokra.frontend.*` metadata chunk (`frontend_spec`).
+//! Typed view of the `vokra.frontend.*` metadata chunk (`frontend_spec`), plus
+//! its bit-exact inspection against the runtime front-end (FR-LD-03, M1-03).
 //!
 //! [`FrontendSpec`] has one field per key defined in [`super::chunks`]; it can
 //! be written into a [`GgufBuilder`](super::GgufBuilder) and read back out of a
 //! [`GgufFile`](super::GgufFile).
 //!
-//! # Scope: read/write only (M0), not inspection (M1)
+//! # Inspection (M1-03)
 //!
-//! This type deliberately contains **no validation and no bit-exact match
-//! check**. Enforcing that a model's front-end matches the runtime's — warning
-//! or failing on mismatch — is FR-LD-03, a v0.1 MVP concern owned by **M1-03**
-//! (milestones.md §4.2 table note 1). Keeping inspection out of M0 prevents
-//! scope creep; a future `FrontendSpec::check_against` (or similar) belongs to
-//! that later work package.
+//! [`FrontendSpec::diff`] reports every field in which a model's declared
+//! front-end differs from the runtime's, and [`FrontendSpec::check_against`]
+//! turns that report into either a hard error or a stderr warning per a
+//! [`FrontendPolicy`]. The comparison is **bit-exact** — the three `f32` fields
+//! (`fmin` / `fmax` / `pre_emphasis`) are compared bit-for-bit (`f32::to_bits`),
+//! not with a tolerance, because they are carried verbatim from the upstream
+//! model: any difference is a genuine front-end mismatch (reviewer C note #2),
+//! not floating-point noise.
+//!
+//! The check is **per-model conditional**: a model that owns an STFT / mel
+//! front-end (Whisper) writes the chunk and is checked at load; models whose
+//! front-end Vokra does not control (Silero VAD, piper-plus) write no
+//! `vokra.frontend.*` keys and their loaders never invoke the check. Gating is
+//! therefore by *which loader calls* [`FrontendSpec::check_against`], not by a
+//! global pass — see `vokra_models::whisper::mel::check_frontend_spec`.
 
 use super::chunks;
 use super::value::{GgufMetadataValue, GgufValueType};
 use super::{GgufBuilder, GgufError, GgufFile};
+use crate::error::VokraError;
 
 /// The front-end feature-extraction parameters stored under `vokra.frontend.*`.
 ///
@@ -143,6 +154,123 @@ impl FrontendSpec {
             sample_rate: get_u32(file, chunks::KEY_FRONTEND_SAMPLE_RATE)?,
         })
     }
+
+    /// Lists every field in which `self` (a model's declared front-end) differs
+    /// from `runtime` (what the consuming model actually computes).
+    ///
+    /// An empty result means the two specs are **bit-exact**. Integer, boolean
+    /// and string fields are compared for equality; the three `f32` fields are
+    /// compared bit-for-bit via [`f32::to_bits`] (so `+0.0` and `-0.0` differ,
+    /// and two `NaN`s of the same bit pattern match) — a tolerance would hide a
+    /// real front-end change (reviewer C note #2).
+    pub fn diff(&self, runtime: &FrontendSpec) -> Vec<FieldMismatch> {
+        let mut out = Vec::new();
+        macro_rules! cmp {
+            ($field:ident) => {
+                if self.$field != runtime.$field {
+                    out.push(FieldMismatch {
+                        field: stringify!($field),
+                        model: format!("{:?}", self.$field),
+                        runtime: format!("{:?}", runtime.$field),
+                    });
+                }
+            };
+        }
+        macro_rules! cmp_f32 {
+            ($field:ident) => {
+                if self.$field.to_bits() != runtime.$field.to_bits() {
+                    out.push(FieldMismatch {
+                        field: stringify!($field),
+                        model: format!("{:?}", self.$field),
+                        runtime: format!("{:?}", runtime.$field),
+                    });
+                }
+            };
+        }
+        cmp!(n_fft);
+        cmp!(hop);
+        cmp!(win_length);
+        cmp!(window_type);
+        cmp!(mel_norm);
+        cmp!(htk_mode);
+        cmp_f32!(fmin);
+        cmp_f32!(fmax);
+        cmp!(n_mels);
+        cmp!(pad_mode);
+        cmp!(dc_offset_removal);
+        cmp_f32!(pre_emphasis);
+        cmp!(sample_rate);
+        out
+    }
+
+    /// Validates `self` (a model's declared front-end) against `runtime` under
+    /// `policy` (FR-LD-03).
+    ///
+    /// - a bit-exact match ([`diff`](Self::diff) empty) is always `Ok(())`;
+    /// - under [`FrontendPolicy::Fail`] (the load-time default) any mismatch is
+    ///   a [`VokraError::FrontendMismatch`] whose message lists the differing
+    ///   fields;
+    /// - under [`FrontendPolicy::Warn`] the same report is written to **stderr**
+    ///   (the zero-dependency runtime has no logging crate — NFR-DS-02) and
+    ///   loading continues with `Ok(())`.
+    pub fn check_against(
+        &self,
+        runtime: &FrontendSpec,
+        policy: FrontendPolicy,
+    ) -> crate::error::Result<()> {
+        let diffs = self.diff(runtime);
+        if diffs.is_empty() {
+            return Ok(());
+        }
+        let report = format_mismatch_report(&diffs);
+        match policy {
+            FrontendPolicy::Fail => Err(VokraError::FrontendMismatch(report)),
+            FrontendPolicy::Warn => {
+                eprintln!("vokra: frontend_spec mismatch (continuing, Warn policy): {report}");
+                Ok(())
+            }
+        }
+    }
+}
+
+/// How a [`FrontendSpec`] mismatch is handled at model load (FR-LD-03).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FrontendPolicy {
+    /// Bit-exact match is required; any mismatch is a hard
+    /// [`VokraError::FrontendMismatch`]. The default, so a silently
+    /// mis-configured front-end cannot corrupt features unnoticed.
+    #[default]
+    Fail,
+    /// Report the mismatch to stderr and continue loading. For lenient callers
+    /// that knowingly accept a non-matching front-end.
+    Warn,
+}
+
+/// One field that differs between a model's [`FrontendSpec`] and the runtime's,
+/// as reported by [`FrontendSpec::diff`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldMismatch {
+    /// The `frontend_spec` field name (e.g. `"htk_mode"`).
+    pub field: &'static str,
+    /// The model file's value, `Debug`-formatted.
+    pub model: String,
+    /// The runtime's expected value, `Debug`-formatted.
+    pub runtime: String,
+}
+
+/// Renders a non-empty list of field mismatches into a one-line-per-field report.
+fn format_mismatch_report(diffs: &[FieldMismatch]) -> String {
+    let mut s = format!(
+        "{} field(s) differ from the runtime front-end:",
+        diffs.len()
+    );
+    for d in diffs {
+        s.push_str(&format!(
+            " [{}: model={} runtime={}]",
+            d.field, d.model, d.runtime
+        ));
+    }
+    s
 }
 
 fn get_u32(file: &GgufFile, key: &str) -> Result<u32, GgufError> {
@@ -246,5 +374,82 @@ mod tests {
             FrontendSpec::from_gguf(&file),
             Err(GgufError::WrongType { .. })
         ));
+    }
+
+    // --- inspection (M1-03) --------------------------------------------------
+
+    #[test]
+    fn identical_specs_have_no_diff_and_pass_every_policy() {
+        let a = sample();
+        let b = sample();
+        assert!(a.diff(&b).is_empty());
+        assert!(a.check_against(&b, FrontendPolicy::Fail).is_ok());
+        assert!(a.check_against(&b, FrontendPolicy::Warn).is_ok());
+    }
+
+    #[test]
+    fn default_policy_is_fail() {
+        assert_eq!(FrontendPolicy::default(), FrontendPolicy::Fail);
+    }
+
+    #[test]
+    fn single_field_mismatch_is_pinpointed() {
+        let runtime = sample();
+        let mut model = sample();
+        model.htk_mode = true; // the model claims HTK; runtime computes Slaney.
+        let diffs = model.diff(&runtime);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].field, "htk_mode");
+        assert_eq!(diffs[0].model, "true");
+        assert_eq!(diffs[0].runtime, "false");
+    }
+
+    #[test]
+    fn fail_policy_errors_and_warn_policy_continues_on_mismatch() {
+        let runtime = sample();
+        let mut model = sample();
+        model.n_fft = 512;
+        // Fail: hard error naming the field.
+        match model.check_against(&runtime, FrontendPolicy::Fail) {
+            Err(VokraError::FrontendMismatch(msg)) => {
+                assert!(msg.contains("n_fft"), "report should name the field: {msg}");
+                assert!(msg.contains("512") && msg.contains("400"), "{msg}");
+            }
+            other => panic!("expected FrontendMismatch, got {other:?}"),
+        }
+        // Warn: the same mismatch is tolerated (report goes to stderr).
+        assert!(model.check_against(&runtime, FrontendPolicy::Warn).is_ok());
+    }
+
+    #[test]
+    fn f32_fields_are_compared_bit_exact_not_by_tolerance() {
+        let runtime = sample(); // fmin = 0.0
+        let mut model = sample();
+        // A minuscule but non-zero fmax change is a real front-end difference.
+        model.fmax = 8000.5;
+        assert_eq!(model.diff(&runtime).len(), 1);
+        assert_eq!(model.diff(&runtime)[0].field, "fmax");
+
+        // -0.0 differs from +0.0 bit-for-bit even though they are `==`.
+        let mut neg_zero = sample();
+        neg_zero.fmin = -0.0;
+        assert_eq!(neg_zero.fmin, runtime.fmin); // `==` says equal ...
+        assert_eq!(neg_zero.diff(&runtime).len(), 1); // ... but bits differ.
+        assert_eq!(neg_zero.diff(&runtime)[0].field, "fmin");
+    }
+
+    #[test]
+    fn multiple_field_mismatches_are_all_reported() {
+        let runtime = sample();
+        let mut model = sample();
+        model.hop = 200;
+        model.mel_norm = "none".to_owned();
+        model.pre_emphasis = 0.97;
+        let diffs = model.diff(&runtime);
+        assert_eq!(diffs.len(), 3);
+        let fields: Vec<&str> = diffs.iter().map(|d| d.field).collect();
+        assert!(fields.contains(&"hop"));
+        assert!(fields.contains(&"mel_norm"));
+        assert!(fields.contains(&"pre_emphasis"));
     }
 }

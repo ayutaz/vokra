@@ -17,6 +17,10 @@
 //!   Kaiser-windowed-sinc converter, GPL-free by construction) and the
 //!   `frontend_spec`-driven [`dc_offset_remove`] / [`pre_emphasis`] chain
 //!   ([`apply_frontend`]);
+//! - **M1-03** (landed): the [`frontend`] `frontend_spec` → `StftAttrs` /
+//!   `MelAttrs` translation ([`stft_attrs_from_spec`] / [`mel_attrs_from_spec`])
+//!   — the librosa/torchaudio/TF compat layer that makes the log-mel front-end
+//!   data-driven; the bit-exact *inspection* of the chunk lives in `vokra-core`;
 //! - later WPs: vocoder chains, flow-matching samplers, codec decode, and
 //!   the rest of the audio dialect (CLAUDE.md "音声特化オペレータ").
 //!
@@ -42,6 +46,7 @@ pub mod attrs;
 pub mod dct;
 pub mod dispatch;
 pub mod fft;
+pub mod frontend;
 pub mod istft;
 pub mod mel;
 pub mod mfcc;
@@ -52,6 +57,7 @@ pub mod window;
 
 pub use dct::dct;
 pub use dispatch::{OpValue, dispatch};
+pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};
 pub use istft::istft;
 pub use mel::mel_filterbank;
 pub use mfcc::mfcc;

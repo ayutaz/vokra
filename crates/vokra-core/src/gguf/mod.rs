@@ -45,7 +45,7 @@ pub mod quant;
 pub mod tensor;
 pub mod value;
 
-pub use frontend_spec::FrontendSpec;
+pub use frontend_spec::{FieldMismatch, FrontendPolicy, FrontendSpec};
 pub use reader::GgufFile;
 pub use tensor::{GgmlType, GgufTensorInfo};
 pub use value::{GgufArray, GgufMetadataValue, GgufValueType};

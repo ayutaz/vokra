@@ -105,7 +105,10 @@ pub use decode::{
 };
 pub use engines::{AsrEngine, SynthesisRequest, TtsEngine, VadEngine, VadStreamHandle};
 pub use error::{Result, VokraError};
-pub use gguf::{FrontendSpec, GgmlType, GgufBuilder, GgufError, GgufFile, GgufTensorInfo};
+pub use gguf::{
+    FieldMismatch, FrontendPolicy, FrontendSpec, GgmlType, GgufBuilder, GgufError, GgufFile,
+    GgufTensorInfo,
+};
 pub use ir::{AudioGraph, DType, Dim, GraphBuilder, Node, OpKind, TensorDesc, TensorId};
 pub use pipeline::{AudioPipeline, Pipeline, PipelineStage};
 pub use rng::SplitMix64;

@@ -28,6 +28,16 @@ pub enum VokraError {
     InvalidArgument(String),
     /// An [`AudioGraph`](crate::AudioGraph) failed validation.
     GraphValidation(String),
+    /// The model's `frontend_spec` (`vokra.frontend.*`) does not match the
+    /// runtime's front-end bit-for-bit (FR-LD-03, M1-03).
+    ///
+    /// Raised at model load under [`FrontendPolicy::Fail`](crate::FrontendPolicy)
+    /// when the declared feature-extraction parameters differ from what the
+    /// consuming model actually computes; the message lists the differing
+    /// fields. A distinct variant (rather than reusing [`Self::ModelLoad`]) so
+    /// callers can special-case a front-end mismatch — e.g. downgrade to a
+    /// warning — without string-matching.
+    FrontendMismatch(String),
     /// The API shape exists but its implementation has not landed yet
     /// (M0 skeleton; see the per-method rustdoc for the WP that wires it).
     NotImplemented(&'static str),
@@ -42,6 +52,7 @@ impl fmt::Display for VokraError {
             Self::BackendUnavailable(msg) => write!(f, "backend unavailable: {msg}"),
             Self::InvalidArgument(msg) => write!(f, "invalid argument: {msg}"),
             Self::GraphValidation(msg) => write!(f, "graph validation error: {msg}"),
+            Self::FrontendMismatch(msg) => write!(f, "frontend_spec mismatch: {msg}"),
             Self::NotImplemented(what) => write!(f, "not implemented (M0 skeleton): {what}"),
         }
     }
@@ -83,6 +94,11 @@ mod tests {
         assert_eq!(
             VokraError::NotImplemented("wired in M0-06").to_string(),
             "not implemented (M0 skeleton): wired in M0-06"
+        );
+        assert_eq!(
+            VokraError::FrontendMismatch("htk_mode: model=true runtime=false".to_owned())
+                .to_string(),
+            "frontend_spec mismatch: htk_mode: model=true runtime=false"
         );
     }
 
