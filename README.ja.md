@@ -24,14 +24,12 @@
 
 本プロジェクトは **v0.1 spike** フェーズ（Rust scaffold、GGUF ローダー、STFT/iSTFT/mel op、Silero VAD、Whisper base、piper-plus native TTS、CPU バックエンド、C ABI、Unity デモ）にあります。まだ本番利用できる段階ではありません。
 
-以下の設計文書が single source of truth です。現在は **日本語** で記述され、**Draft** ステータスです:
+公開リファレンス文書（日本語）:
 
-- [docs/requirements.md](docs/requirements.md) — 要求定義（ビジネス要求 BR）
-- [docs/system-requirements.md](docs/system-requirements.md) — 要件定義（機能要件 / 非機能要件 FR / NFR）
-- [docs/deliverables.md](docs/deliverables.md) — 最終成果物定義
-- [docs/milestones.md](docs/milestones.md) — マイルストーン計画（M0〜M5）
 - [docs/license-audit.md](docs/license-audit.md) — モデル / 依存ライセンス監査
 - [docs/legal-compliance.md](docs/legal-compliance.md) — EU AI Act, SB 942, ELVIS Act, C2PA 対応
+
+要求定義・要件定義・成果物定義・マイルストーン計画の詳細は作者が非公開で管理しており、下記のロードマップ概要がその要約です。
 
 ## ロードマップ
 

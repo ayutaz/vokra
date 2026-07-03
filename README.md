@@ -47,18 +47,15 @@ The project is in the **v0.1 spike** phase (Rust scaffold, GGUF loader,
 STFT/iSTFT/mel ops, Silero VAD, Whisper base, piper-plus native TTS, CPU
 backend, C ABI, Unity demo). Nothing is ready for production use yet.
 
-The design documents below are the source of truth. They are currently
-written in **Japanese** and are in **Draft** status:
+Public reference documents (Japanese):
 
-- [docs/requirements.md](docs/requirements.md) — business requirements (BR)
-- [docs/system-requirements.md](docs/system-requirements.md) — functional /
-  non-functional requirements (FR / NFR)
-- [docs/deliverables.md](docs/deliverables.md) — deliverables definition
-- [docs/milestones.md](docs/milestones.md) — milestone plan (M0-M5)
 - [docs/license-audit.md](docs/license-audit.md) — model / dependency
   license audit
 - [docs/legal-compliance.md](docs/legal-compliance.md) — EU AI Act, SB 942,
   ELVIS Act, C2PA compliance
+
+Detailed requirement / deliverable / milestone planning is maintained
+privately by the maintainer; the roadmap summary below reflects it.
 
 ## Roadmap
 

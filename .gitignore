@@ -10,3 +10,15 @@
 # Claude Code: the shared config (.claude/settings.json) and .claude/skills/
 # ARE committed as project policy; only personal/local overrides are ignored.
 .claude/settings.local.json
+
+# Client-private planning docs — removed from the repo AND from git history on
+# 2026-07-04 (maintainer decision). Kept locally as the source of truth; must
+# NOT be re-added to git / made public. Covers the 4 design docs, the internal
+# research set, and the CLAUDE.md project guide (which carries the kill-switch /
+# funding notes). Local Claude Code still reads the on-disk CLAUDE.md.
+/CLAUDE.md
+/docs/requirements.md
+/docs/system-requirements.md
+/docs/deliverables.md
+/docs/milestones.md
+/docs/_research/
