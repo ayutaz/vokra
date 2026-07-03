@@ -35,6 +35,7 @@ dependencies = [
  "vokra-backend-cpu",
  "vokra-core",
  "vokra-ops",
+ "vokra-piper-plus",
 ]
 
 [[package]]
