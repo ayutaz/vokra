@@ -12,7 +12,7 @@
 //! The comparison logic is fully implemented so the suite is exercise-ready the
 //! moment the fixtures land — this is a real harness, not a stub.
 
-use vokra_core::ir::graph::{DctAttrs, MelAttrs, MelNorm, MelScale, StftAttrs};
+use vokra_core::ir::graph::{DctAttrs, MelAttrs, MelInterp, MelNorm, MelScale, StftAttrs};
 use vokra_ops::dct::dct;
 use vokra_ops::mel::MelFilterbank;
 use vokra_ops::stft::stft;
@@ -62,6 +62,8 @@ fn mel_parity_against_librosa() {
                 MelScale::Slaney
             },
             norm: MelNorm::Slaney,
+            // librosa reference uses Hz-domain triangular ramps.
+            interp: MelInterp::Hz,
         };
         let fb = MelFilterbank::new(&attrs);
         assert_eq!(fb.n_freqs, f.usize("n_freqs"), "n_freqs");
