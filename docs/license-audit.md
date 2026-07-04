@@ -1,6 +1,6 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
-**最終更新**: 2026-07-04（M1-02: GGUF K-quant + safetensors runtime direct-load のフォーマット参照を追記）
+**最終更新**: 2026-07-04（M1-02: GGUF K-quant + safetensors runtime direct-load のフォーマット参照を追記 / M0-08: §3 CAM++ 行を Vokra が実際に変換対応した具体ソース `ayousanz/campplus-onnx`（上流 `iic/speech_campplus`）に更新）
 **目的**: Vokra が依存するすべての Rust crate、モデル weight、音声 codec、vocoder、辞書、G2P、audio 前処理ライブラリのライセンスを列挙し、Apache 2.0 core との互換性、Unity/Godot Asset Store 配布可否、商用ゲーム組込可否を明示する。
 
 **運用**:
@@ -84,7 +84,7 @@
 | **WavTokenizer** | MIT | MIT | ○ | ★ 公式 zoo | 中山大 |
 | **X-Codec 2 (Llasa)** | MIT | MIT | ○ | ★ 公式 zoo | HKUST |
 | **openWakeWord** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | dscripka |
-| **CAM++ Speaker Embedding** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Alibaba |
+| **CAM++ Speaker Embedding** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Alibaba 3D-Speaker `iic/speech_campplus`。`vokra-convert`（`ModelKind::CamPlus`）で GGUF 変換対応済、変換元 ONNX は `ayousanz/campplus-onnx`（約 27MB、Apache-2.0）。6.91M params、fbank80→192-d embedding（native forward） |
 | **ECAPA-TDNN (SpeechBrain)** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | SpeechBrain |
 | **WeSpeaker** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Duke Kunshan |
 | **DeepFilterNet3** | MIT | MIT | ○ | ★ 公式 zoo | Rikorose、Speech Enhancement |
