@@ -38,7 +38,9 @@
 
 pub mod phonemizer;
 
-pub use phonemizer::{MockPhonemizer, PassthroughPhonemizer, PhonemeTable, Phonemizer};
+pub use phonemizer::{
+    MockPhonemizer, PassthroughPhonemizer, PhonemeTable, PhonemizedUtterance, Phonemizer,
+};
 
 #[cfg(test)]
 mod tests {

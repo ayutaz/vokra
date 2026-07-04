@@ -429,6 +429,68 @@ impl PiperPlusTts {
         )
     }
 
+    /// Synthesizes PCM by running a **prosody- and language-aware** G2P over
+    /// `request.text`: the injected [`Phonemizer`] returns not just phoneme ids
+    /// but the per-phoneme prosody triples and detected language id
+    /// ([`Phonemizer::phonemize_full`]) that the multilingual piper-plus models
+    /// (e.g. the zero-shot 6-language v7) consume. This is the full text→speech
+    /// entry point for the out-of-workspace `piper-plus-g2p` reuse; the
+    /// zero-dependency core still never links a non-`vokra-*` crate — the G2P is
+    /// injected across the trait boundary (NFR-DS-02).
+    ///
+    /// Overrides applied to the phonemizer's output:
+    /// - `request.language`, when it names a known language, pins `lid` over the
+    ///   phonemizer's detected language;
+    /// - `request.speaker_embedding` supplies the zero-shot speaker (`None` → the
+    ///   zero vector, whose projection is still non-zero);
+    /// - `request.prosody_features`, when `Some`, overrides the phonemizer's
+    ///   prosody; otherwise the phonemizer's per-phoneme triples are used,
+    ///   aligned 1:1 with the ids.
+    ///
+    /// # Errors
+    ///
+    /// Propagates phonemization errors, and [`VokraError::InvalidArgument`] if a
+    /// phoneme / language id is out of range or a prosody length disagrees with
+    /// the phoneme count (see [`synthesize_phonemes`](Self::synthesize_phonemes)).
+    pub fn synthesize_full(
+        &self,
+        request: &SynthesisRequest,
+        phonemizer: &dyn Phonemizer,
+    ) -> Result<SynthesizedAudio> {
+        let utt = phonemizer.phonemize_full(&request.text)?;
+        // request.language override wins; otherwise trust the phonemizer's lid.
+        let lid = request
+            .language
+            .as_deref()
+            .and_then(|c| self.config.language_id(c))
+            .unwrap_or(utt.lid);
+        let (noise, noise_w) = if request.deterministic {
+            (0.0, 0.0)
+        } else {
+            (self.config.noise_scale, self.config.noise_w)
+        };
+        // request prosody overrides the phonemizer's; both are flattened [T · 3].
+        let g2p_prosody: Option<Vec<i64>> = if utt.prosody.is_empty() {
+            None
+        } else {
+            Some(utt.prosody.as_flattened().to_vec())
+        };
+        let prosody = request
+            .prosody_features
+            .as_deref()
+            .map(|p| p.as_flattened())
+            .or(g2p_prosody.as_deref());
+        self.synthesize_phonemes(
+            &utt.ids,
+            lid,
+            request.speaker_embedding.as_deref(),
+            prosody,
+            noise,
+            self.config.length_scale,
+            noise_w,
+        )
+    }
+
     /// A placeholder tokenizer: maps each input character to a phoneme id via
     /// the voice's phoneme table and applies BOS/PAD/EOS framing (mirrors
     /// `vokra_piper_plus::MockPhonemizer` — real G2P reuse is T09). Unknown

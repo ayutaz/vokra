@@ -25,6 +25,29 @@ use std::collections::HashMap;
 
 use vokra_core::{Result, VokraError};
 
+/// A fully phonemized utterance: framed phoneme ids plus the per-phoneme
+/// prosody and language id that the multilingual piper-plus models consume.
+///
+/// Returned by [`Phonemizer::phonemize_full`]. Only plain, owned types cross
+/// this boundary, so the trait — and everything downstream in the zero-`unsafe`,
+/// zero-dependency core — stays free of any non-`vokra-*` dependency (NFR-DS-02).
+/// The real 8-language `piper-plus-g2p`, which produces this from text, lives in
+/// an out-of-workspace integration crate and is injected across the trait.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhonemizedUtterance {
+    /// Framed phoneme ids (BOS/PAD/EOS already inserted), indexing the voice's
+    /// phoneme embedding table.
+    pub ids: Vec<i64>,
+    /// Per-phoneme `(A1, A2, A3)` prosody triples, aligned 1:1 with [`ids`] when
+    /// non-empty (the piper-plus JA accent feed). **Empty** when the phonemizer
+    /// supplies none — the model then uses bias-only prosody channels.
+    ///
+    /// [`ids`]: Self::ids
+    pub prosody: Vec<[i64; 3]>,
+    /// Language id for the multilingual model (`0` for single-language voices).
+    pub lid: i64,
+}
+
 /// Maps a text string to a phoneme id sequence ready for the native
 /// MB-iSTFT-VITS2 model (M0-07-T11..T20).
 ///
@@ -40,6 +63,26 @@ pub trait Phonemizer {
     /// Returns [`VokraError::InvalidArgument`] if `text` cannot be mapped to any
     /// in-vocabulary phoneme.
     fn phonemize(&self, text: &str) -> Result<Vec<i64>>;
+
+    /// Converts `text` to a full [`PhonemizedUtterance`] — phoneme ids **plus**
+    /// the per-phoneme prosody and detected language id the multilingual
+    /// piper-plus models (e.g. the zero-shot 6-language v7) consume.
+    ///
+    /// The default returns [`phonemize`](Self::phonemize)'s ids with **no**
+    /// prosody and `lid = 0`, which is exactly right for single-language,
+    /// prosody-free voices (and for [`MockPhonemizer`] / [`PassthroughPhonemizer`]).
+    /// Prosody- and language-aware G2P providers override it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any phonemization error (see [`phonemize`](Self::phonemize)).
+    fn phonemize_full(&self, text: &str) -> Result<PhonemizedUtterance> {
+        Ok(PhonemizedUtterance {
+            ids: self.phonemize(text)?,
+            prosody: Vec::new(),
+            lid: 0,
+        })
+    }
 }
 
 /// A voice's phoneme symbol → id table plus the special framing ids.
@@ -327,6 +370,20 @@ mod tests {
             mock.phonemize("xyz"),
             Err(VokraError::InvalidArgument(_))
         ));
+    }
+
+    #[test]
+    fn phonemize_full_default_is_ids_with_no_prosody_and_lid_zero() {
+        // The default `phonemize_full` must equal `phonemize` for ids, carry no
+        // prosody (bias-only channels), and language 0 — the exact single-
+        // language, prosody-free behaviour the multilingual G2P provider later
+        // overrides. Guards the back-compat contract of the trait extension.
+        let mock = MockPhonemizer::new(table());
+        let utt = mock.phonemize_full("a?i").unwrap();
+        assert_eq!(utt.ids, vec![1, 3, 0, 4, 0, 2]);
+        assert_eq!(utt.ids, mock.phonemize("a?i").unwrap());
+        assert!(utt.prosody.is_empty());
+        assert_eq!(utt.lid, 0);
     }
 
     #[test]
