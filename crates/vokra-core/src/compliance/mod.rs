@@ -32,7 +32,7 @@
 //! # Source of truth
 //!
 //! Every license classification is a transcription of `docs/license-audit.md`
-//! §3 (see [`license_class`]); this module introduces no independent judgement.
+//! §3 (see [`LicenseClass`]); this module introduces no independent judgement.
 //!
 //! # Fail-closed
 //!

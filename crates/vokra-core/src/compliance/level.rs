@@ -10,7 +10,7 @@
 //! # What is *not* here (2026-07-04 client drop)
 //!
 //! The watermark **embedding** backends (AudioSeal / C2PA, FR-CP-01/02) were
-//! dropped by the client; [`WatermarkConfig`](super::WatermarkConfig) keeps its
+//! dropped by the client; [`WatermarkConfig`] keeps its
 //! design-intent defaults but performs no embedding (deferred). Region
 //! auto-detection beyond a locale hint, and any IP-geolocation, are also
 //! deferred to preserve the zero-dependency invariant (NFR-DS-02). See the
