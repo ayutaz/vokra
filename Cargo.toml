@@ -10,6 +10,12 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "tests/parity"]
+# `integrations/` holds opt-in bridges that link NON-`vokra-*` crates (e.g. the
+# 8-language `piper-plus-g2p` for real G2P). They are their OWN isolated
+# workspaces (each with its own Cargo.lock) so the zero-dependency invariant of
+# this root workspace (NFR-DS-02, enforced on THIS Cargo.lock) is never touched.
+# Excluded here as belt-and-suspenders; the glob members above already skip them.
+exclude = ["integrations"]
 
 [workspace.package]
 version = "0.1.0-alpha.0"
