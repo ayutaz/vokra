@@ -88,6 +88,10 @@
 #![allow(unsafe_code)]
 
 mod dispatch;
+// Graph-level per-op evaluation (Phase 1): the `Backend::eval_op` surface that
+// `vokra_core::run_graph` drives, routing each op into `crate::kernels` (no
+// second kernel implementation).
+mod eval;
 mod features;
 pub mod kernels;
 // Persistent row-parallel worker pool (M1-12). Native-only + feature-gated: the
@@ -102,7 +106,7 @@ pub use dispatch::active_isa;
 pub use features::{CpuFeatures, IsaPath};
 pub use selftest::{SELFTEST_ATOL, SELFTEST_RTOL, SelftestReport, selftest};
 
-use vokra_core::{AudioGraph, Backend, OpKind, Result, VokraError};
+use vokra_core::{AudioGraph, Backend, OpKind, Result, Tensor, VokraError};
 
 /// CPU backend handle implementing the `vokra-core` [`Backend`] trait.
 ///
@@ -112,12 +116,13 @@ use vokra_core::{AudioGraph, Backend, OpKind, Result, VokraError};
 ///    `gemm_f32`, `softmax_f32`, `conv1d_f32`, … dispatched onto
 ///    [`active_isa`]. This is where the numeric work and the scalar/AVX2/NEON
 ///    parity (differential tests) live.
-/// 2. **Graph execution** ([`Backend::execute`]) validates op coverage and,
-///    per FR-EX-08, returns an explicit error for ops it does not support —
-///    never a silent fallback. The data-carrying graph evaluator is a later
-///    work package (the M0 IR [`AudioGraph`] is a descriptor without tensor
-///    storage), so `execute` reports [`VokraError::NotImplemented`] once
-///    coverage is satisfied.
+/// 2. **Graph execution.** [`Backend::eval_op`] evaluates one op on resolved
+///    input [`Tensor`]s by routing into the same [`kernels`] as (1) — no
+///    second implementation — and [`vokra_core::run_graph`] drives it node by
+///    node. [`Backend::execute`] remains the coverage-check entry point:
+///    per FR-EX-08 it returns an explicit error for ops it does not support
+///    (never a silent fallback) and, once coverage holds,
+///    [`VokraError::NotImplemented`] (it carries no tensor data).
 #[derive(Debug, Default)]
 pub struct CpuBackend;
 
@@ -153,12 +158,17 @@ impl Backend for CpuBackend {
                 )));
             }
         }
-        // Coverage is satisfied; the tensor-data-carrying graph evaluator is a
-        // later WP. Until then, call the kernels in `crate::kernels` directly
-        // (the M0-06 integration path).
+        // Coverage is satisfied. `execute` stays a coverage-only check; the
+        // data-carrying path is `vokra_core::run_graph`, which drives
+        // `eval_op` below. Direct kernel use (`crate::kernels`) remains the
+        // imperative M0-06 integration path.
         Err(VokraError::NotImplemented(
-            "graph-level execution needs the data-carrying engine (later WP); use crate::kernels directly",
+            "graph-level execution is vokra_core::run_graph (drives eval_op); execute is coverage-only",
         ))
+    }
+
+    fn eval_op(&self, op: &OpKind, inputs: &[&Tensor]) -> Result<Vec<Tensor>> {
+        crate::eval::eval_cpu_op(op, inputs)
     }
 }
 
@@ -229,5 +239,81 @@ mod tests {
         // Smoke check that M0-06's demo can query the selected path.
         let isa = active_isa();
         assert!(CpuFeatures::detect().supports(isa));
+    }
+
+    #[test]
+    fn run_graph_matmul_add_softmax_is_bit_identical_to_direct_kernels() {
+        // V1: a graph run through `vokra_core::run_graph(&CpuBackend, ..)` must
+        // equal the same three kernels called directly, bit-for-bit (atol = 0):
+        // the graph path routes into the very same `kernels::*` functions.
+        //   h = x @ w ; g = h + bias ; out = softmax(g)
+        let x_data: Vec<f32> = (0..8).map(|v| v as f32 * 0.25 - 1.0).collect(); // [2,4]
+        let w_data: Vec<f32> = (0..32).map(|v| v as f32 * 0.1 - 1.5).collect(); // [4,8]
+        let bias_data: Vec<f32> = (0..16).map(|v| v as f32 * 0.05).collect(); // [2,8]
+
+        let mut b = GraphBuilder::new();
+        let x = b.add_tensor(TensorDesc::new("x", DType::F32, [2, 4]));
+        let w = b.add_tensor(TensorDesc::new("w", DType::F32, [4, 8]));
+        let bias = b.add_tensor(TensorDesc::new("bias", DType::F32, [2, 8]));
+        let h = b.add_tensor(TensorDesc::new("h", DType::F32, [2, 8]));
+        let g = b.add_tensor(TensorDesc::new("g", DType::F32, [2, 8]));
+        let out = b.add_tensor(TensorDesc::new("out", DType::F32, [2, 8]));
+        b.add_node(OpKind::MatMul, &[x, w], &[h]);
+        b.add_node(OpKind::Add, &[h, bias], &[g]);
+        b.add_node(OpKind::Softmax, &[g], &[out]);
+        b.mark_input(x);
+        b.mark_output(out);
+        let graph = b.finish().expect("valid graph");
+
+        let outs = vokra_core::run_graph(
+            &CpuBackend::new(),
+            &graph,
+            &[
+                (x, Tensor::host_f32(vec![2, 4], x_data.clone()).unwrap()),
+                (w, Tensor::host_f32(vec![4, 8], w_data.clone()).unwrap()),
+                (
+                    bias,
+                    Tensor::host_f32(vec![2, 8], bias_data.clone()).unwrap(),
+                ),
+            ],
+        )
+        .expect("graph runs");
+
+        // Direct kernel sequence with byte-for-byte identical arguments.
+        let mut h_direct = vec![0.0f32; 16];
+        kernels::gemm_f32(2, 8, 4, &x_data, &w_data, None, &mut h_direct).unwrap();
+        let mut g_direct = vec![0.0f32; 16];
+        kernels::add_f32(&h_direct, &bias_data, &mut g_direct).unwrap();
+        let mut expected = vec![0.0f32; 16];
+        kernels::softmax_f32(&g_direct, &mut expected, 2, 8).unwrap();
+
+        assert_eq!(outs.len(), 1);
+        assert_eq!(
+            outs[0].as_f32().unwrap(),
+            expected.as_slice(),
+            "graph execution must be bit-identical to direct kernel calls"
+        );
+    }
+
+    #[test]
+    fn run_graph_rejects_unsupported_op_explicitly() {
+        // V5-cpu: an uncovered op (Stft) inside a graph surfaces as an explicit
+        // UnsupportedOp from the engine's coverage precheck — never a silent
+        // skip (FR-EX-08).
+        let mut b = GraphBuilder::new();
+        let x = b.add_tensor(TensorDesc::new("x", DType::F32, [400]));
+        let y = b.add_tensor(TensorDesc::new("y", DType::F32, [3, 201]));
+        b.add_node(OpKind::Stft(StftAttrs::new(400, 160)), &[x], &[y]);
+        b.mark_input(x);
+        b.mark_output(y);
+        let graph = b.finish().expect("structurally valid graph");
+
+        let err = vokra_core::run_graph(
+            &CpuBackend::new(),
+            &graph,
+            &[(x, Tensor::zeros_f32(vec![400]))],
+        )
+        .unwrap_err();
+        assert!(matches!(err, VokraError::UnsupportedOp(_)));
     }
 }

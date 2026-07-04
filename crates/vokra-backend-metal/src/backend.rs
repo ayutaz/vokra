@@ -4,13 +4,15 @@
 //!
 //! 1. **Direct kernels** — on Apple, [`MetalBackend::gemm_f32`] (delegating to
 //!    the wrapped [`MetalContext`]) is the surface the parity harness drives.
-//! 2. **Graph execution** — [`Backend::execute`] validates op coverage and, per
-//!    FR-EX-08, returns an explicit error for uncovered ops; it never silently
-//!    falls back to the CPU backend. The data-carrying graph evaluator is a
-//!    later WP, so once coverage is satisfied it returns
-//!    [`VokraError::NotImplemented`] — exactly as `CpuBackend::execute` does.
+//! 2. **Graph execution** — [`Backend::eval_op`] evaluates one op on resolved
+//!    [`Tensor`](vokra_core::Tensor) inputs by dispatching to the GPU, and
+//!    [`vokra_core::run_graph`] drives it node-by-node (Phase 2). `MatMul`
+//!    routes into `MetalContext::gemm_f32`; every uncovered op is an explicit
+//!    [`VokraError::UnsupportedOp`], never a silent CPU fallback (FR-EX-08).
+//!    [`Backend::execute`] stays a coverage-only check (symmetric with
+//!    `CpuBackend::execute`).
 
-use vokra_core::{AudioGraph, Backend, OpKind, Result, VokraError};
+use vokra_core::{AudioGraph, Backend, OpKind, Result, Tensor, VokraError};
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use crate::context::MetalContext;
@@ -122,12 +124,33 @@ impl Backend for MetalBackend {
                 )));
             }
         }
-        // Coverage is satisfied; the tensor-data-carrying graph engine is a
-        // later WP (symmetric with CpuBackend). Until then, drive the kernels
-        // directly via `MetalBackend::gemm_f32` / `MetalContext`.
+        // Coverage is satisfied. `execute` stays a coverage-only check; the
+        // data-carrying path is `vokra_core::run_graph`, which drives `eval_op`
+        // below (symmetric with CpuBackend). Direct kernel use
+        // (`MetalBackend::gemm_f32` / `MetalContext`) remains the imperative path.
         Err(VokraError::NotImplemented(
-            "metal graph-level execution needs the data-carrying engine (later WP); use MetalBackend::gemm_f32 directly",
+            "metal graph-level execution is vokra_core::run_graph (drives eval_op); execute is coverage-only",
         ))
+    }
+
+    fn eval_op(&self, op: &OpKind, inputs: &[&Tensor]) -> Result<Vec<Tensor>> {
+        // On Apple the wrapped `MetalContext` runs the GPU kernel; only `MatMul`
+        // is covered in this slice and the dispatcher rejects every other op
+        // with an explicit `UnsupportedOp` (FR-EX-08, no silent CPU fallback).
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        {
+            crate::eval::eval_metal_op(&self.ctx, op, inputs)
+        }
+        // Off Apple the backend cannot be constructed (`new()` errors), so this
+        // is unreachable in practice; it must still compile, and stays an
+        // explicit error rather than a silent CPU substitute (FR-EX-08).
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        {
+            let _ = inputs;
+            Err(VokraError::UnsupportedOp(format!(
+                "metal backend is not compiled for this target; no kernel for {op:?}"
+            )))
+        }
     }
 }
 

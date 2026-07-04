@@ -78,6 +78,12 @@ mod context;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod sys;
 
+// Graph-level per-op evaluation (Phase 2): the `Backend::eval_op` surface the
+// graph engine (`vokra_core::run_graph`) drives on the GPU. Apple-only — it
+// dispatches into `MetalContext`.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod eval;
+
 // The probe and the Backend trait handle exist on every target (with explicit
 // BackendUnavailable errors off Apple), so downstream code can always name
 // them.

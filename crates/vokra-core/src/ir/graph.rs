@@ -11,7 +11,7 @@
 //! (NFR-DS-02); the `deny.toml` bans list enforces this at the dependency
 //! level.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use crate::error::{Result, VokraError};
 
@@ -621,6 +621,73 @@ impl AudioGraph {
 
         Ok(())
     }
+
+    /// Returns node indices in a topological (dataflow) order: every node
+    /// appears after all nodes producing tensors it reads.
+    ///
+    /// The dependency edges are `producer(t) → consumer(t)` for each tensor `t`
+    /// a node reads that another node writes; leaf tensors (graph inputs,
+    /// constants / weights) contribute no edge. Ordering uses Kahn's algorithm
+    /// seeded and processed in ascending node index, so independent nodes keep
+    /// their insertion order and the schedule is deterministic run-to-run — a
+    /// property the graph evaluator ([`run_graph`](crate::run_graph)) and the
+    /// M2-04 fusion pass both rely on.
+    ///
+    /// This is the scheduling pass `nodes()` deliberately omits. It reuses the
+    /// single-producer table [`validate`](Self::validate) guarantees, so the
+    /// producer of each tensor is unambiguous.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::GraphValidation`] if the graph contains a cycle (a node
+    /// that transitively depends on its own output), for which no topological
+    /// order exists.
+    pub fn topo_order(&self) -> Result<Vec<usize>> {
+        let n_nodes = self.nodes.len();
+        let n_tensors = self.tensors.len();
+
+        // Single-producer table (post-`validate`, at most one writer per tensor).
+        let mut producer: Vec<Option<usize>> = vec![None; n_tensors];
+        for (i, node) in self.nodes.iter().enumerate() {
+            for id in &node.outputs {
+                producer[id.0] = Some(i);
+            }
+        }
+
+        // Dataflow edges producer → consumer, and each node's in-degree. A node
+        // consuming its own output creates a self-edge (in-degree never hits 0)
+        // and is reported as a cycle below. Duplicate edges (two inputs from the
+        // same producer) are kept: in-degree and adjacency stay consistent.
+        let mut successors: Vec<Vec<usize>> = vec![Vec::new(); n_nodes];
+        let mut in_degree: Vec<usize> = vec![0; n_nodes];
+        for (consumer, node) in self.nodes.iter().enumerate() {
+            for id in &node.inputs {
+                if let Some(producer_node) = producer[id.0] {
+                    successors[producer_node].push(consumer);
+                    in_degree[consumer] += 1;
+                }
+            }
+        }
+
+        let mut ready: VecDeque<usize> = (0..n_nodes).filter(|&i| in_degree[i] == 0).collect();
+        let mut order = Vec::with_capacity(n_nodes);
+        while let Some(node) = ready.pop_front() {
+            order.push(node);
+            for &consumer in &successors[node] {
+                in_degree[consumer] -= 1;
+                if in_degree[consumer] == 0 {
+                    ready.push_back(consumer);
+                }
+            }
+        }
+
+        if order.len() != n_nodes {
+            return Err(VokraError::GraphValidation(
+                "audio graph contains a cycle: no topological node order exists".to_owned(),
+            ));
+        }
+        Ok(order)
+    }
 }
 
 fn check_id(id: TensorId, len: usize, what: &str) -> Result<()> {
@@ -872,5 +939,96 @@ mod tests {
         assert!(graph.tensor(x).is_some());
         assert!(graph.tensor(y).is_some());
         assert!(graph.tensor(TensorId(2)).is_none());
+    }
+
+    #[test]
+    fn topo_order_of_empty_and_linear_graphs() {
+        // Empty graph → empty order.
+        let empty = GraphBuilder::new().finish().expect("empty graph is valid");
+        assert_eq!(empty.topo_order().unwrap(), Vec::<usize>::new());
+
+        // Linear chain inserted in order: identity schedule.
+        let mut b = GraphBuilder::new();
+        let x = b.add_tensor(desc("x"));
+        let h = b.add_tensor(desc("h"));
+        let y = b.add_tensor(desc("y"));
+        b.add_node(OpKind::Softmax, &[x], &[h]); // node 0
+        b.add_node(OpKind::Softmax, &[h], &[y]); // node 1
+        b.mark_output(y);
+        let graph = b.finish().expect("valid graph");
+        assert_eq!(graph.topo_order().unwrap(), vec![0, 1]);
+    }
+
+    #[test]
+    fn topo_order_reorders_when_insertion_violates_dataflow() {
+        // Insert the CONSUMER (node 0) before the PRODUCER (node 1): the only
+        // valid schedule is [1, 0], so this proves the pass is not just echoing
+        // insertion order.
+        let mut b = GraphBuilder::new();
+        let x = b.add_tensor(desc("x"));
+        let t1 = b.add_tensor(desc("t1"));
+        let t2 = b.add_tensor(desc("t2"));
+        b.add_node(OpKind::Softmax, &[t1], &[t2]); // node 0: needs t1
+        b.add_node(OpKind::Softmax, &[x], &[t1]); // node 1: produces t1
+        b.mark_input(x);
+        b.mark_output(t2);
+        let graph = b.finish().expect("valid graph");
+        assert_eq!(graph.topo_order().unwrap(), vec![1, 0]);
+    }
+
+    #[test]
+    fn topo_order_handles_a_diamond() {
+        // root → {left, right} → join. root is node 0; join must come last.
+        let mut b = GraphBuilder::new();
+        let x = b.add_tensor(desc("x"));
+        let r = b.add_tensor(desc("r"));
+        let l = b.add_tensor(desc("l"));
+        let rt = b.add_tensor(desc("rt"));
+        let j = b.add_tensor(desc("j"));
+        b.add_node(OpKind::Softmax, &[x], &[r]); // 0: root
+        b.add_node(OpKind::Softmax, &[r], &[l]); // 1: left
+        b.add_node(OpKind::Softmax, &[r], &[rt]); // 2: right
+        b.add_node(OpKind::Add, &[l, rt], &[j]); // 3: join
+        b.mark_input(x);
+        b.mark_output(j);
+        let graph = b.finish().expect("valid graph");
+
+        let order = graph.topo_order().unwrap();
+        let pos = |n: usize| order.iter().position(|&x| x == n).unwrap();
+        assert_eq!(order.len(), 4);
+        assert!(pos(0) < pos(1) && pos(0) < pos(2));
+        assert!(pos(1) < pos(3) && pos(2) < pos(3));
+    }
+
+    #[test]
+    fn topo_order_detects_a_cycle() {
+        // node0: ta → tb, node1: tb → ta. Structurally valid (each tensor has a
+        // single producer, ids in range) but has no topological order.
+        let mut b = GraphBuilder::new();
+        let ta = b.add_tensor(desc("ta"));
+        let tb = b.add_tensor(desc("tb"));
+        b.add_node(OpKind::Softmax, &[ta], &[tb]);
+        b.add_node(OpKind::Softmax, &[tb], &[ta]);
+        let graph = b
+            .finish()
+            .expect("structurally valid (validate() ignores cycles)");
+
+        match graph.topo_order() {
+            Err(VokraError::GraphValidation(msg)) => assert!(msg.contains("cycle")),
+            other => panic!("expected a cycle GraphValidation error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn topo_order_detects_a_self_cycle() {
+        // A node that reads its own output is a one-node cycle.
+        let mut b = GraphBuilder::new();
+        let t = b.add_tensor(desc("t"));
+        b.add_node(OpKind::Softmax, &[t], &[t]);
+        let graph = b.finish().expect("structurally valid");
+        assert!(matches!(
+            graph.topo_order(),
+            Err(VokraError::GraphValidation(_))
+        ));
     }
 }

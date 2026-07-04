@@ -13,6 +13,10 @@
 //!   [`GraphBuilder`];
 //! - the **backend abstraction** ([`backend`]): [`Backend`] /
 //!   [`BackendKind`] with uniform op coverage (FR-EX-08);
+//! - the **graph evaluator** ([`runtime`]): the data-carrying [`Tensor`] and
+//!   [`run_graph`], which threads real values through an [`AudioGraph`] on a
+//!   backend in topological order (one graph = one backend, no silent
+//!   fallback);
 //! - the **decoder KV cache** ([`cache`], FR-EX-02): [`KvCache`], an ownable,
 //!   `Send` key/value cache promoted out of the models so a decode can be
 //!   moved across threads (the M1-08 streaming foundation);
@@ -92,6 +96,7 @@ pub mod ir;
 pub mod json;
 pub mod pipeline;
 pub mod rng;
+pub mod runtime;
 pub mod safetensors;
 pub mod session;
 pub mod stream;
@@ -119,6 +124,7 @@ pub use gguf::{
 pub use ir::{AudioGraph, DType, Dim, GraphBuilder, Node, OpKind, TensorDesc, TensorId};
 pub use pipeline::{AudioPipeline, Pipeline, PipelineStage};
 pub use rng::SplitMix64;
+pub use runtime::{Tensor, run_graph};
 pub use safetensors::{SafeTensorInfo, SafetensorsError, SafetensorsFile};
 pub use session::{Session, SessionBuilder};
 pub use stream::{
