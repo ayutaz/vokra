@@ -221,7 +221,7 @@ fn e2e_pcm_parity() {
     let length_scale: f32 = m["length_scale"].parse().unwrap();
 
     let audio = voice
-        .synthesize_phonemes(&ids, lid, 0.0, length_scale, 0.0)
+        .synthesize_phonemes(&ids, lid, None, None, 0.0, length_scale, 0.0)
         .expect("synthesize");
     let ref_pcm = read_f32("pcm.f32");
     assert_eq!(audio.samples.len(), ref_pcm.len(), "pcm length");

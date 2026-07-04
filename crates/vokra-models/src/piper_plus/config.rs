@@ -12,33 +12,27 @@
 use vokra_core::gguf::{GgufFile, GgufMetadataValue};
 use vokra_core::{Result, VokraError};
 
+use super::weights::TensorStore;
+
 // --- fixed medium-config architecture constants (piper-plus vits/*.py) -------
 
 /// Text-encoder / flow hidden size (`enc_p.emb.weight` is `[n_vocab, 192]`).
 pub(crate) const HIDDEN: usize = 192;
-/// Attention heads (`window_size` relative attention, `k_channels = 192/2`).
+/// Attention heads (`window_size` relative attention, `k_channels = hidden/2`);
+/// the per-head channel count is derived ([`Dims::k_channels`]).
 pub(crate) const N_HEADS: usize = 2;
-/// Per-head channel count (`HIDDEN / N_HEADS`).
-pub(crate) const K_CHANNELS: usize = HIDDEN / N_HEADS;
-/// Encoder layers (`enc_p.encoder.attn_layers.0..5`).
-pub(crate) const N_LAYERS: usize = 6;
-/// FFN inner size (`ffn_layers.*.conv_1.weight` is `[768, 192, 3]`).
-pub(crate) const FFN_CHANNELS: usize = 768;
-/// FFN conv kernel (same-padding).
+/// FFN conv kernel (same-padding). The FFN inner *width* is shape-derived
+/// ([`Dims::ffn`]); the kernel is fixed.
 pub(crate) const FFN_KERNEL: usize = 3;
 /// Relative-attention window (`emb_rel_k` is `[1, 2·4+1, 96]`).
 pub(crate) const WINDOW_SIZE: usize = 4;
 /// Global conditioning width (`emb_lang.weight` is `[n_lang, 512]`).
 pub(crate) const GIN: usize = 512;
 
-/// Flow coupling layers (`flow.flows.{0,2,4,6}`; the odds are `Flip`).
-pub(crate) const FLOW_N_FLOWS: usize = 4;
-/// Flow WN dilated-conv layers per coupling block.
-pub(crate) const FLOW_WN_LAYERS: usize = 4;
-/// Flow WN conv kernel.
+/// Flow WN conv kernel (`flow.flows.*.enc.in_layers.*` weight dim 2). The
+/// coupling count, WN layer count and dilation base are shape-/architecture-
+/// derived ([`Dims`]); the kernel is fixed across configs.
 pub(crate) const FLOW_WN_KERNEL: usize = 5;
-/// Flow WN dilation (this voice exports every layer at dilation 1).
-pub(crate) const FLOW_WN_DILATION: usize = 1;
 
 /// Stochastic-duration-predictor hidden size (`dp.pre.weight` is
 /// `[208, 208, 1]`; 208 = `HIDDEN` + `PROSODY_DIM`).
@@ -72,6 +66,204 @@ pub(crate) const PQMF_TAPS: usize = 62;
 
 /// LayerNorm epsilon (`nn.LayerNorm` default; VITS inherits it).
 pub(crate) const LAYER_NORM_EPS: f32 = 1e-5;
+
+/// Language id whose prosody features (A1/A2/A3) are honoured; every other
+/// language gates them to zero (`Equal(lid, 0)` in the v7 graph). Consumed by
+/// the duration-predictor prosody feed ([`super::ProsodyProj::channels`]);
+/// declared here as the single baked source of truth.
+pub(crate) const PROSODY_LANG_ID: i64 = 0;
+
+/// Shape-derived model dimensions, read from the loaded voice's tensor shapes
+/// rather than assumed — so a single-speaker medium voice and the zero-shot v7
+/// voice (which adds `spk_proj` / FiLM / prosody) both resolve correctly. The
+/// *fixed* architecture constants above (attention window/heads, ResBlock
+/// kernels/dilations, upsample geometry, spline bins, LeakyReLU slope) are
+/// identical across those configs and stay as consts.
+#[derive(Debug, Clone)]
+pub(crate) struct Dims {
+    /// Global conditioning width `g` (`emb_lang.weight` dim 1).
+    pub gin: usize,
+    /// External speaker-embedding width (`spk_proj.0.weight` dim 1).
+    pub spk_emb_dim: usize,
+    /// Text-encoder / flow hidden size (`enc_p.emb.weight` dim 1).
+    pub hidden: usize,
+    /// Encoder transformer layers (`enc_p.encoder.attn_layers.*` count).
+    pub n_enc_layers: usize,
+    /// Encoder FFN inner width (`enc_p.encoder.ffn_layers.0.conv_1.weight` dim 0).
+    pub ffn: usize,
+    /// Duration-predictor input width (`dp.pre.weight` dim 0 = `hidden` + prosody).
+    pub dp_filter: usize,
+    /// Prosody feature width fed to the projection (`prosody_proj.weight` dim 0).
+    pub prosody_in: usize,
+    /// Prosody projection output width (`prosody_proj.weight` dim 1).
+    pub prosody_out: usize,
+    /// Decoder pre-conv output width (`dec.conv_pre.weight` dim 0).
+    pub dec_initial: usize,
+    /// Per-upsample output channel counts (`dec.ups.{i}.weight` dim 1).
+    pub dec_up_out: Vec<usize>,
+    /// Upsample stage count (`dec_up_out.len()`).
+    pub n_ups: usize,
+    /// FiLM stage target channels `[dec_initial, dec_up_out...]` (conditioning
+    /// is applied after `conv_pre` and after each upsample+MRF stage; also the
+    /// per-upsample input widths).
+    pub dec_channels: Vec<usize>,
+    /// Flow coupling-layer count (`flow.flows.{0,2,4,...}` with a WN conditioner).
+    pub flow_n_flows: usize,
+    /// Flow WN dilated-conv layers per coupling (`flow.flows.0.enc.in_layers.*`).
+    pub flow_wn_layers: usize,
+    /// Flow WN dilation base: layer `i` uses `dilation = flow_wn_dilation_rate^i`.
+    /// A Conv attribute (absent from the GGUF, so not shape-derivable); inferred
+    /// from the architecture discriminator — the zero-shot v7 (`film`) flow uses
+    /// `dilation_rate = 2` (dilations 1,2,4,8, the standard VITS WN), the legacy
+    /// single-speaker additive flow uses `1` (every layer dilation 1). Verified
+    /// against the v7 `flow_z` fixture (`parity_v7`).
+    pub flow_wn_dilation_rate: usize,
+    /// Decoder conditioning is multi-stage gated FiLM (`dec.cond_layers.*`
+    /// present) rather than the single additive `x + cond(g)`.
+    pub film: bool,
+}
+
+impl Dims {
+    /// Derives the model dimensions from the loaded voice's tensor shapes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VokraError::InvalidArgument`] if a shape-defining tensor is
+    /// missing/degenerate or the shapes are internally inconsistent (a
+    /// malformed voice fails loudly here rather than mid-forward).
+    pub(crate) fn derive(store: &TensorStore) -> Result<Self> {
+        let gin = axis(store, "emb_lang.weight", 1)?;
+        let spk_emb_dim = axis(store, "spk_proj.0.weight", 1)?;
+        let hidden = axis(store, "enc_p.emb.weight", 1)?;
+        let ffn = axis(store, "enc_p.encoder.ffn_layers.0.conv_1.weight", 0)?;
+        let dp_filter = axis(store, "dp.pre.weight", 0)?;
+        let prosody_in = axis(store, "prosody_proj.weight", 0)?;
+        let prosody_out = axis(store, "prosody_proj.weight", 1)?;
+        let dec_initial = axis(store, "dec.conv_pre.weight", 0)?;
+
+        let mut n_enc_layers = 0;
+        while store
+            .shape(&format!(
+                "enc_p.encoder.attn_layers.{n_enc_layers}.conv_q.weight"
+            ))
+            .is_ok()
+        {
+            n_enc_layers += 1;
+        }
+
+        let mut dec_up_out = Vec::new();
+        while let Ok(shape) = store.shape(&format!("dec.ups.{}.weight", dec_up_out.len())) {
+            dec_up_out.push(*shape.get(1).ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "piper voice: dec.ups.{} weight shape {shape:?} lacks an out-channel axis",
+                    dec_up_out.len()
+                ))
+            })?);
+        }
+        let n_ups = dec_up_out.len();
+        let mut dec_channels = Vec::with_capacity(n_ups + 1);
+        dec_channels.push(dec_initial);
+        dec_channels.extend_from_slice(&dec_up_out);
+
+        // Coupling blocks live at even flow indices (odds are `Flip`).
+        let mut flow_n_flows = 0;
+        while store
+            .shape(&format!(
+                "flow.flows.{}.enc.cond_layer.weight",
+                2 * flow_n_flows
+            ))
+            .is_ok()
+        {
+            flow_n_flows += 1;
+        }
+
+        // WN dilated-conv layers per coupling block (first coupling is `flows.0`).
+        let mut flow_wn_layers = 0;
+        while store
+            .shape(&format!(
+                "flow.flows.0.enc.in_layers.{flow_wn_layers}.weight"
+            ))
+            .is_ok()
+        {
+            flow_wn_layers += 1;
+        }
+
+        let film = store.shape("dec.cond_layers.0.weight").is_ok();
+
+        // The flow WN dilation base is a Conv attribute — not stored in the GGUF,
+        // so not shape-derivable. It travels with the architecture: the zero-shot
+        // v7 (FiLM) flow uses dilation_rate = 2 (per-layer dilations 1,2,4,8, the
+        // standard VITS WN); the legacy single-speaker additive flow used 1.
+        let flow_wn_dilation_rate = if film { 2 } else { 1 };
+
+        // Internal-consistency checks (fail loudly on a malformed voice).
+        if axis(store, "enc_p.cond_layer.weight", 1)? != gin {
+            return Err(VokraError::InvalidArgument(
+                "piper voice: enc_p.cond_layer conditioning width disagrees with emb_lang".into(),
+            ));
+        }
+        if hidden % N_HEADS != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "piper voice: hidden {hidden} not divisible by {N_HEADS} attention heads"
+            )));
+        }
+        if n_enc_layers == 0 || n_ups == 0 || flow_n_flows == 0 || flow_wn_layers == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "piper voice: degenerate structure (enc_layers={n_enc_layers}, ups={n_ups}, flows={flow_n_flows}, wn_layers={flow_wn_layers})"
+            )));
+        }
+        // The duration-predictor input concatenates the encoder output with the
+        // prosody channels, so its width must equal `hidden + prosody_out`; for
+        // the medium config (identical for the single-speaker and zero-shot v7
+        // voices) that is the documented `DP_FILTER = HIDDEN + PROSODY_DIM`. A
+        // mismatch is a wrongly-shaped or non-medium voice — fail loudly here
+        // rather than mid-forward.
+        if dp_filter != hidden + prosody_out {
+            return Err(VokraError::InvalidArgument(format!(
+                "piper voice: dp.pre width {dp_filter} != encoder hidden {hidden} + prosody {prosody_out}"
+            )));
+        }
+        if dp_filter != DP_FILTER || prosody_out != PROSODY_DIM {
+            return Err(VokraError::InvalidArgument(format!(
+                "piper voice: non-medium duration/prosody dims (dp_filter={dp_filter}, prosody_out={prosody_out}); expected {DP_FILTER} / {PROSODY_DIM}"
+            )));
+        }
+
+        Ok(Self {
+            gin,
+            spk_emb_dim,
+            hidden,
+            n_enc_layers,
+            ffn,
+            dp_filter,
+            prosody_in,
+            prosody_out,
+            dec_initial,
+            dec_up_out,
+            n_ups,
+            dec_channels,
+            flow_n_flows,
+            flow_wn_layers,
+            flow_wn_dilation_rate,
+            film,
+        })
+    }
+
+    /// Per-head channel count (`hidden / N_HEADS`).
+    pub(crate) fn k_channels(&self) -> usize {
+        self.hidden / N_HEADS
+    }
+}
+
+/// Reads dimension `i` of a tensor's stored shape, or a loud error.
+fn axis(store: &TensorStore, name: &str, i: usize) -> Result<usize> {
+    let shape = store.shape(name)?;
+    shape.get(i).copied().ok_or_else(|| {
+        VokraError::InvalidArgument(format!(
+            "piper voice: tensor `{name}` shape {shape:?} has no axis {i}"
+        ))
+    })
+}
 
 /// Resolved runtime configuration read from the voice GGUF metadata.
 #[derive(Debug, Clone)]

@@ -19,6 +19,7 @@
 //!
 //! Implementation lands with M0-07 (T06–T24); see `docs/piper-plus-integration.md`.
 
+mod conditioning;
 mod config;
 mod decoder;
 mod duration;
@@ -29,6 +30,8 @@ mod weights;
 
 #[cfg(test)]
 mod parity;
+#[cfg(test)]
+mod parity_v7;
 
 use std::path::Path;
 
@@ -42,13 +45,14 @@ pub use config::PiperConfig;
 // phonemizer without also depending on `vokra-piper-plus` directly (M1-01-A).
 pub use vokra_piper_plus::{MockPhonemizer, PassthroughPhonemizer};
 
-use config::{DP_FILTER, HIDDEN};
+use config::{Dims, HIDDEN};
 
 /// `vokra.model.arch` a piper-plus voice GGUF must carry (written by
 /// `vokra-convert`'s `models::piper_plus::ARCH`; kept in sync by that
 /// converter, M0-07-T06). A wrong arch fails loudly at load (M1-01-C).
 const EXPECTED_ARCH: &str = "piper-plus-mb-istft-vits2";
 
+use conditioning::Conditioning;
 use decoder::Decoder;
 use duration::DurationPredictor;
 use flow::Flow;
@@ -62,16 +66,68 @@ use weights::TensorStore;
 /// assembled here from the loaded weights (M0-07-T11..T20).
 pub struct PiperPlusTts {
     config: PiperConfig,
+    /// Global speaker/language conditioning `g = spk_proj(speaker) + emb_lang`
+    /// (M1 zero-shot v7): the single source of the vector shared by the encoder,
+    /// duration predictor, flow and decoder.
+    conditioning: Conditioning,
     encoder: TextEncoder,
     duration: DurationPredictor,
     flow: Flow,
     decoder: Decoder,
-    /// `prosody_proj.bias` `[PROSODY_DIM]`. With zero prosody features
-    /// (mock-G2P / EN path) `prosody_proj(0) = bias`, so these are the prosody
-    /// channels appended to the encoder output for the duration predictor.
-    /// Real A1/A2/A3 prosody (JA) needs the G2P bridge (T09) and the
-    /// `prosody_proj` weight — a followup.
-    prosody_bias: Vec<f32>,
+    /// Prosody projection (`prosody_proj`): the per-phoneme `(A1, A2, A3)` accent
+    /// features → `PROSODY_DIM` channels appended to the encoder output for the
+    /// duration predictor. With zero features (EN / mock-G2P path) it collapses
+    /// to the bias broadcast over time.
+    prosody_proj: ProsodyProj,
+}
+
+/// The v7 prosody projection: `channels = (features · gate) @ weight + bias`.
+///
+/// `weight` is the raw MatMul matrix `[in_dim, out_dim]` (row-major, **not** the
+/// PyTorch `[out, in]` Linear layout) and `bias` is `[out_dim]`. The features
+/// are gated to zero for every language except [`PROSODY_LANG_ID`] (JA), so a
+/// `None` (or non-JA) request leaves the projection at its bias — the reference
+/// parity setting (the committed v7 fixtures use zero prosody, so only the bias
+/// path is reference-verified; the MatMul orientation follows the ONNX graph and
+/// is pinned by a unit test).
+struct ProsodyProj {
+    weight: Vec<f32>,
+    bias: Vec<f32>,
+    in_dim: usize,
+    out_dim: usize,
+}
+
+impl ProsodyProj {
+    /// Prosody channels `[out_dim, t]` (channel-major) for the duration
+    /// predictor. `features` is `[t, in_dim]` i64 (per-phoneme `(A1, A2, A3)`);
+    /// `None`, or a non-JA `lid`, yields the bias broadcast over time. The caller
+    /// guarantees `features.len() == in_dim · t` (checked in
+    /// [`PiperPlusTts::check_prosody_len`]).
+    fn channels(&self, features: Option<&[i64]>, lid: i64, t: usize) -> Vec<f32> {
+        let (in_dim, out_dim) = (self.in_dim, self.out_dim);
+        // Bias, broadcast over time: out[o, ti] = bias[o].
+        let mut out = vec![0.0f32; out_dim * t];
+        for (o, chunk) in out.chunks_exact_mut(t).enumerate() {
+            chunk.fill(self.bias[o]);
+        }
+        // JA-only gate (`Equal(lid, PROSODY_LANG_ID)` in the graph): every other
+        // language (and a featureless request) leaves the bias-only channels.
+        if lid == config::PROSODY_LANG_ID {
+            if let Some(f) = features {
+                // out[o, ti] += Σ_i features[ti, i] · weight[i, o].
+                for ti in 0..t {
+                    for o in 0..out_dim {
+                        let mut acc = 0.0f32;
+                        for i in 0..in_dim {
+                            acc += f[ti * in_dim + i] as f32 * self.weight[i * out_dim + o];
+                        }
+                        out[o * t + ti] += acc;
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
 impl PiperPlusTts {
@@ -107,12 +163,23 @@ impl PiperPlusTts {
             )));
         }
         let config = PiperConfig::from_gguf(store.file())?;
-        let encoder = TextEncoder::load(&store, config.num_symbols, config.num_languages)?;
-        let duration = DurationPredictor::load(&store)?;
-        let prosody_bias = store.tensor_shaped("prosody_proj.bias", &[config::PROSODY_DIM])?;
-        let flow = Flow::load(&store)?;
+        // Shape-derived dimensions (single-speaker medium vs zero-shot v7 FiLM);
+        // threaded into the components, dropped after load.
+        let dims = Dims::derive(&store)?;
+        let conditioning = Conditioning::load(&store, &dims, config.num_languages)?;
+        let encoder = TextEncoder::load(&store, &dims, config.num_symbols)?;
+        let duration = DurationPredictor::load(&store, &dims)?;
+        let prosody_proj = ProsodyProj {
+            weight: store
+                .tensor_shaped("prosody_proj.weight", &[dims.prosody_in, dims.prosody_out])?,
+            bias: store.tensor_shaped("prosody_proj.bias", &[dims.prosody_out])?,
+            in_dim: dims.prosody_in,
+            out_dim: dims.prosody_out,
+        };
+        let flow = Flow::load(&store, &dims)?;
         let decoder = Decoder::load(
             &store,
+            &dims,
             config.istft_n_fft,
             config.istft_hop,
             config.pqmf_subbands,
@@ -121,9 +188,10 @@ impl PiperPlusTts {
         // its own copies now, so nothing borrows it past load.
         Ok(Self {
             config,
+            conditioning,
             encoder,
             duration,
-            prosody_bias,
+            prosody_proj,
             flow,
             decoder,
         })
@@ -138,23 +206,45 @@ impl PiperPlusTts {
     /// MB-iSTFT-VITS2 path (encoder → duration predictor → length regulation →
     /// flow → decoder), M0-07-T20.
     ///
+    /// The zero-shot conditioning inputs are `speaker_embedding`
+    /// (`speaker_embedding_dim` floats; `None` → the zero vector, which the
+    /// speaker projection still maps to a non-zero contribution) and
+    /// `prosody_features` (the flattened `[T_phonemes · 3]` `(A1, A2, A3)`
+    /// triples for the JA prosody feed; `None` → the bias-only channels). They
+    /// compose the global conditioning `g` shared by every stage.
+    ///
     /// `noise_scale` / `noise_w` are the VITS stochastic knobs; passing `0` for
     /// both makes the whole path deterministic (the parity setting, docs §5).
     /// Non-zero scales draw Gaussian noise from a fixed-seed RNG (reproducible,
     /// but not bit-matched to onnxruntime — that path is exercised only for
     /// audio, not parity).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`](vokra_core::VokraError::InvalidArgument)
+    /// if a phoneme / language id is out of range, or `prosody_features` is
+    /// present with a length other than `3 · phoneme_ids.len()`.
+    // The explicit low-level primitive takes the model's natural conditioning
+    // inputs (speaker embedding + prosody) and VITS knobs (two noise scales +
+    // length scale) individually; the ergonomic path is `synthesize_with` /
+    // `SynthesisRequest`.
+    #[allow(clippy::too_many_arguments)]
     pub fn synthesize_phonemes(
         &self,
         phoneme_ids: &[i64],
         lid: i64,
+        speaker_embedding: Option<&[f32]>,
+        prosody_features: Option<&[i64]>,
         noise_scale: f32,
         length_scale: f32,
         noise_w: f32,
     ) -> Result<SynthesizedAudio> {
         self.check_ids(phoneme_ids, lid)?;
-        let enc = self.encoder.forward(phoneme_ids, lid)?;
-        let g = self.encoder.lang_conditioning(lid);
-        let x_dp = build_x_dp(&enc.x, enc.t, &self.prosody_bias);
+        self.check_prosody_len(prosody_features, phoneme_ids.len())?;
+        let g = self.conditioning.g(speaker_embedding, lid);
+        let enc = self.encoder.forward(phoneme_ids, &g)?;
+        let prosody = self.prosody_proj.channels(prosody_features, lid, enc.t);
+        let x_dp = build_x_dp(&enc.x, &prosody, enc.t);
         let logw = self.duration.logw(&x_dp, enc.t, &g, noise_w);
         let w_ceil: Vec<usize> = logw
             .iter()
@@ -199,6 +289,25 @@ impl PiperPlusTts {
         Ok(())
     }
 
+    /// Checks that a supplied flattened prosody buffer carries exactly one
+    /// `(A1, A2, A3)` triple per phoneme (`in_dim · n_phonemes` values), so the
+    /// [`ProsodyProj::channels`] indexing is in-bounds. A `None` buffer (the
+    /// default / EN path) is always valid.
+    fn check_prosody_len(&self, prosody_features: Option<&[i64]>, n_phonemes: usize) -> Result<()> {
+        if let Some(pf) = prosody_features {
+            let want = self.prosody_proj.in_dim * n_phonemes;
+            if pf.len() != want {
+                return Err(vokra_core::VokraError::InvalidArgument(format!(
+                    "piper TTS: prosody_features has {} values, expected {want} \
+                     ({} features × {n_phonemes} phonemes)",
+                    pf.len(),
+                    self.prosody_proj.in_dim,
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Builds a [`PhonemeTable`] from this voice's phoneme symbol table, for
     /// driving [`synthesize_with`](Self::synthesize_with) with a [`Phonemizer`]
     /// such as [`MockPhonemizer`] or [`PassthroughPhonemizer`] (M1-01-A).
@@ -237,7 +346,19 @@ impl PiperPlusTts {
         } else {
             (self.config.noise_scale, self.config.noise_w)
         };
-        self.synthesize_phonemes(&phoneme_ids, lid, noise, self.config.length_scale, noise_w)
+        let prosody = request
+            .prosody_features
+            .as_deref()
+            .map(|p| p.as_flattened());
+        self.synthesize_phonemes(
+            &phoneme_ids,
+            lid,
+            request.speaker_embedding.as_deref(),
+            prosody,
+            noise,
+            self.config.length_scale,
+            noise_w,
+        )
     }
 
     /// A placeholder tokenizer: maps each input character to a phoneme id via
@@ -276,7 +397,15 @@ impl PiperPlusTts {
     /// (component boundary used by the M0-07-T13 parity test).
     #[cfg(test)]
     pub(crate) fn encode(&self, phoneme_ids: &[i64], lid: i64) -> Result<text_encoder::EncoderOut> {
-        self.encoder.forward(phoneme_ids, lid)
+        let g = self.conditioning.g(None, lid);
+        self.encoder.forward(phoneme_ids, &g)
+    }
+
+    /// The global conditioning `g = spk_proj(speaker) + emb_lang[lid]` `[gin]`
+    /// (component boundary for the v7 parity test; `None` speaker = zeros).
+    #[cfg(test)]
+    pub(crate) fn global_g(&self, speaker_embedding: Option<&[f32]>, lid: i64) -> Vec<f32> {
+        self.conditioning.g(speaker_embedding, lid)
     }
 
     /// Runs the MB-iSTFT decoder on a decoder-input latent `z` `[HIDDEN, T]`
@@ -284,7 +413,7 @@ impl PiperPlusTts {
     /// test: reference latent → PCM).
     #[cfg(test)]
     pub(crate) fn decode(&self, z: &[f32], t_frames: usize, lid: i64) -> Result<Vec<f32>> {
-        let g = self.encoder.lang_conditioning(lid);
+        let g = self.conditioning.g(None, lid);
         self.decoder.forward(z, t_frames, &g)
     }
 
@@ -300,9 +429,10 @@ impl PiperPlusTts {
         lid: i64,
         length_scale: f32,
     ) -> Result<Vec<f32>> {
-        let enc = self.encoder.forward(phoneme_ids, lid)?;
-        let g = self.encoder.lang_conditioning(lid);
-        let x_dp = build_x_dp(&enc.x, enc.t, &self.prosody_bias);
+        let g = self.conditioning.g(None, lid);
+        let enc = self.encoder.forward(phoneme_ids, &g)?;
+        let prosody = self.prosody_proj.channels(None, lid, enc.t);
+        let x_dp = build_x_dp(&enc.x, &prosody, enc.t);
         // Deterministic (noise_w = 0) for parity (docs §5).
         let logw = self.duration.logw(&x_dp, enc.t, &g, 0.0);
         Ok(logw.iter().map(|&l| l.exp() * length_scale).collect())
@@ -313,9 +443,10 @@ impl PiperPlusTts {
     /// M0-07-T14 parity test.
     #[cfg(test)]
     pub(crate) fn sdp_body(&self, phoneme_ids: &[i64], lid: i64) -> Result<(Vec<f32>, usize)> {
-        let enc = self.encoder.forward(phoneme_ids, lid)?;
-        let g = self.encoder.lang_conditioning(lid);
-        let x_dp = build_x_dp(&enc.x, enc.t, &self.prosody_bias);
+        let g = self.conditioning.g(None, lid);
+        let enc = self.encoder.forward(phoneme_ids, &g)?;
+        let prosody = self.prosody_proj.channels(None, lid, enc.t);
+        let x_dp = build_x_dp(&enc.x, &prosody, enc.t);
         Ok((self.duration.body(&x_dp, enc.t, &g), enc.t))
     }
 
@@ -331,7 +462,7 @@ impl PiperPlusTts {
         lid: i64,
     ) -> (Vec<f32>, usize) {
         let (z_p, t_frames) = length_regulate(m_p, HIDDEN, t_phonemes, w_ceil);
-        let g = self.encoder.lang_conditioning(lid);
+        let g = self.conditioning.g(None, lid);
         let z = self.flow.reverse(&z_p, t_frames, &g);
         (z, t_frames)
     }
@@ -360,22 +491,32 @@ impl TtsEngine for PiperPlusTts {
         } else {
             (self.config.noise_scale, self.config.noise_w)
         };
-        self.synthesize_phonemes(&phoneme_ids, lid, noise, self.config.length_scale, noise_w)
+        let prosody = request
+            .prosody_features
+            .as_deref()
+            .map(|p| p.as_flattened());
+        self.synthesize_phonemes(
+            &phoneme_ids,
+            lid,
+            request.speaker_embedding.as_deref(),
+            prosody,
+            noise,
+            self.config.length_scale,
+            noise_w,
+        )
     }
 }
 
-/// Builds the duration-predictor input `x_dp` `[DP_FILTER, T]` from the encoder
-/// output `[HIDDEN, T]` by appending the prosody channels. With zero prosody
-/// features `prosody_proj(0) = prosody_proj.bias`, so each appended channel is
-/// the constant bias broadcast over time.
-fn build_x_dp(x: &[f32], t: usize, prosody_bias: &[f32]) -> Vec<f32> {
-    let mut x_dp = vec![0.0f32; DP_FILTER * t];
-    x_dp[..HIDDEN * t].copy_from_slice(&x[..HIDDEN * t]);
-    for (c, &b) in prosody_bias.iter().enumerate() {
-        for ti in 0..t {
-            x_dp[(HIDDEN + c) * t + ti] = b;
-        }
-    }
+/// Builds the duration-predictor input `x_dp` `[HIDDEN + prosody, T]` by
+/// concatenating (on the channel axis) the encoder output `[HIDDEN, T]` with the
+/// prosody channels `[prosody, T]` from [`ProsodyProj::channels`]. Both are
+/// channel-major, so the concatenation is a contiguous copy; for the v7 voice
+/// the result is `[DP_FILTER, T]` = `[208, T]`.
+fn build_x_dp(enc_x: &[f32], prosody: &[f32], t: usize) -> Vec<f32> {
+    let hidden_len = HIDDEN * t;
+    let mut x_dp = Vec::with_capacity(hidden_len + prosody.len());
+    x_dp.extend_from_slice(&enc_x[..hidden_len]);
+    x_dp.extend_from_slice(prosody);
     x_dp
 }
 
@@ -405,8 +546,8 @@ fn length_regulate(
 
 #[cfg(test)]
 mod tests {
-    use super::config::PROSODY_DIM;
-    use super::{DP_FILTER, HIDDEN, build_x_dp, length_regulate};
+    use super::config::{DP_FILTER, PROSODY_DIM};
+    use super::{HIDDEN, ProsodyProj, build_x_dp, length_regulate};
 
     #[test]
     fn length_regulate_repeats_each_phoneme_column() {
@@ -435,26 +576,41 @@ mod tests {
     }
 
     #[test]
-    fn build_x_dp_copies_hidden_then_broadcasts_prosody_bias() {
+    fn build_x_dp_concatenates_hidden_then_prosody_channels() {
         let t = 2;
-        // x is a ramp over HIDDEN·t, laid out channel-major.
-        let x: Vec<f32> = (0..HIDDEN * t).map(|i| i as f32).collect();
-        // Distinct bias per prosody channel so a mis-index is caught.
-        let bias: Vec<f32> = (0..PROSODY_DIM).map(|k| 100.0 + k as f32).collect();
-        let out = build_x_dp(&x, t, &bias);
+        // enc_x is a ramp over HIDDEN·t, laid out channel-major.
+        let enc_x: Vec<f32> = (0..HIDDEN * t).map(|i| i as f32).collect();
+        // Distinct value per (prosody channel, time) so a mis-index is caught.
+        let prosody: Vec<f32> = (0..PROSODY_DIM * t).map(|i| 100.0 + i as f32).collect();
+        let out = build_x_dp(&enc_x, &prosody, t);
 
         assert_eq!(out.len(), DP_FILTER * t);
-        // First HIDDEN channels are the encoder output verbatim.
-        for c in 0..HIDDEN {
-            for ti in 0..t {
-                assert_eq!(out[c * t + ti], x[c * t + ti]);
-            }
-        }
-        // Prosody channels HIDDEN..DP_FILTER hold the constant bias over time.
-        for k in 0..PROSODY_DIM {
-            for ti in 0..t {
-                assert_eq!(out[(HIDDEN + k) * t + ti], bias[k]);
-            }
-        }
+        // First HIDDEN channels are the encoder output verbatim, the remaining
+        // PROSODY_DIM channels the prosody block verbatim (channel-major concat).
+        assert_eq!(&out[..HIDDEN * t], &enc_x[..]);
+        assert_eq!(&out[HIDDEN * t..], &prosody[..]);
+    }
+
+    #[test]
+    fn prosody_channels_bias_gate_and_matmul() {
+        // in_dim=2, out_dim=3, t=2. weight is [in, out] row-major (raw MatMul):
+        // W = [[1,2,3],[10,20,30]]; bias = [100,200,300].
+        let proj = ProsodyProj {
+            weight: vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0],
+            bias: vec![100.0, 200.0, 300.0],
+            in_dim: 2,
+            out_dim: 3,
+        };
+        // No features → bias broadcast over time, channel-major [out=3, t=2].
+        let bias_only = proj.channels(None, 0, 2);
+        assert_eq!(bias_only, [100.0, 100.0, 200.0, 200.0, 300.0, 300.0]);
+        // Features present but a non-JA language (gate off) → still bias only.
+        let feats = [1i64, 0, 0, 1]; // [t=2, in=2]: ti0=(1,0), ti1=(0,1)
+        assert_eq!(proj.channels(Some(&feats), 1, 2), bias_only);
+        // JA (lid == PROSODY_LANG_ID) with features → bias + features @ W:
+        //   ti0 (1,0): (1,2,3);  ti1 (0,1): (10,20,30).
+        // channel-major: o0=[101,110], o1=[202,220], o2=[303,330].
+        let on = proj.channels(Some(&feats), super::config::PROSODY_LANG_ID, 2);
+        assert_eq!(on, [101.0, 110.0, 202.0, 220.0, 303.0, 330.0]);
     }
 }

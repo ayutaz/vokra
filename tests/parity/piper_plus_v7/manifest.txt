@@ -1,0 +1,11 @@
+repo=ayousanz/piper-plus-zero-shot-multi-6lang-v7 file=v7-epoch32-zs.onnx
+phoneme_ids=[[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0]] lid=0 scales=[0,1,0] spk_emb=zeros192 prosody=zeros
+sr=22050 gin=512 t_phonemes=14
+pcm shape=[1, 1, 6912] len=6912 sha256=c57107e16bc66aa2
+durations shape=[1, 14] len=14 sha256=f662ce6b38d11e78
+m_p shape=[1, 192, 14] len=2688 sha256=abd33e4c2dc68b30
+logs_p shape=[1, 192, 14] len=2688 sha256=9b23e1996f5299d9
+flow_z shape=[1, 192, 27] len=5184 sha256=b8c8934eac4e7727
+dec_input shape=[1, 192, 27] len=5184 sha256=b8c8934eac4e7727
+sdp_body shape=[1, 208, 14] len=2912 sha256=b39332cd8a7b6a4e
+g shape=[1, 512, 1] len=512 sha256=ecdc19eb42688564

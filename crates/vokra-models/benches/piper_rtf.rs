@@ -49,7 +49,7 @@ fn main() {
     // Deterministic (noise scales 0) so the measurement is reproducible.
     let synth = |ids: &[i64]| {
         voice
-            .synthesize_phonemes(ids, 0, 0.0, length_scale, 0.0)
+            .synthesize_phonemes(ids, 0, None, None, 0.0, length_scale, 0.0)
             .expect("synthesize")
     };
 

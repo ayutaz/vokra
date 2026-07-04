@@ -1,12 +1,14 @@
 //! MB-iSTFT decoder (M0-07-T18/T19): latent → fullband PCM.
 //!
-//! Follows piper-plus `vits/mb_istft.py::MBiSTFTGenerator` for the
-//! **distributed voice generation** (`piper_version` 1.11.0): additive speaker
-//! conditioning (`x + cond(g)`), *not* the repo-HEAD Multi-scale FiLM
-//! (`docs/piper-plus-integration.md` §2.4; the distributed `dec.cond` is
-//! `[256, 512, 1]`). Two stride-4 transposed-conv upsample stages, an MRF of
-//! three ResBlock2 branches each, a sub-band iSTFT, and PQMF synthesis; total
-//! upsample = 4·4 (ups) · 4 (iSTFT hop) · 4 (PQMF) = 256 samples/frame.
+//! Follows piper-plus `vits/mb_istft.py::MBiSTFTGenerator`, supporting both
+//! conditioning modes (`docs/piper-plus-integration.md` §2.4): the distributed
+//! single-speaker voices (`piper_version` 1.11.0) use a single additive
+//! `x + cond(g)` after `conv_pre` (`dec.cond` is `[256, 512, 1]`); the zero-shot
+//! v7 voice uses multi-stage gated FiLM — `dec.cond` `[2·256, 512, 1]` after
+//! `conv_pre`, plus a `dec.cond_layers.{i}` after each upsample+MRF stage.
+//! Two stride-4 transposed-conv upsample stages, an MRF of three ResBlock2
+//! branches each, a sub-band iSTFT, and PQMF synthesis; total upsample = 4·4
+//! (ups) · 4 (iSTFT hop) · 4 (PQMF) = 256 samples/frame.
 //!
 //! The sub-band iSTFT is the **first real consumer of the M0-04 `istft` op**
 //! (`vokra-ops`), which is the point of doing piper-plus natively (ADR-0002
@@ -16,8 +18,8 @@ use vokra_core::ir::graph::IstftAttrs;
 use vokra_ops::{Spectrogram, istft};
 
 use super::config::{
-    DEC_INITIAL, DEC_UP_KERNEL, DEC_UP_PAD, DEC_UP_STRIDE, GIN, HIDDEN, LRELU_SLOPE, PQMF_TAPS,
-    RESBLOCK_DILATIONS, RESBLOCK_KERNELS,
+    DEC_INITIAL, DEC_UP_KERNEL, DEC_UP_PAD, DEC_UP_STRIDE, Dims, GIN, HIDDEN, LRELU_SLOPE,
+    PQMF_TAPS, RESBLOCK_DILATIONS, RESBLOCK_KERNELS,
 };
 use super::nn;
 use super::weights::TensorStore;
@@ -59,10 +61,69 @@ impl ResBlock {
     }
 }
 
+/// One gated-FiLM conditioning stage (zero-shot v7). `cond(g) =
+/// Conv1d(gin → 2·C, 1)` on the global conditioning splits into `gamma | beta`,
+/// applied as `y[c,t] = x[c,t]·(sigmoid(gamma[c]) + 0.5) + beta[c]`. The `+0.5`
+/// centres the multiplicative gate near 1 (`sigmoid(0)+0.5`), per piper-plus
+/// HEAD's multi-scale FiLM. Mul and add stay unfused (separate f32 ops) to
+/// match the onnxruntime reference's `Mul`/`Add`.
+struct FilmStage {
+    /// `{name}.weight` `[2·channels, gin, 1]`.
+    w: Vec<f32>,
+    /// `{name}.bias` `[2·channels]`.
+    b: Vec<f32>,
+    /// Conditioned-signal channel count `C` (`gamma` / `beta` each `C` wide).
+    channels: usize,
+}
+
+impl FilmStage {
+    /// Loads a stage from `{name}.weight` `[2·channels, gin, 1]` and
+    /// `{name}.bias` `[2·channels]` — the shape assertion is the FiLM
+    /// split-size cross-check (a mismatched voice fails loudly at load).
+    fn load(store: &TensorStore, name: &str, channels: usize, gin: usize) -> Result<Self> {
+        Ok(Self {
+            w: store.tensor_shaped(&format!("{name}.weight"), &[2 * channels, gin, 1])?,
+            b: store.tensor_shaped(&format!("{name}.bias"), &[2 * channels])?,
+            channels,
+        })
+    }
+
+    /// Applies gated FiLM in place to `sig` `[channels, t]` under `g` `[gin]`.
+    fn apply(&self, sig: &mut [f32], t: usize, g: &[f32]) {
+        // cond(g) → [2C]: first C = gamma (gate), last C = beta (shift).
+        let cond = cond_vector(&self.w, &self.b, g);
+        let c = self.channels;
+        for ch in 0..c {
+            let scale = nn::sigmoid(cond[ch]) + 0.5;
+            let shift = cond[c + ch];
+            for v in &mut sig[ch * t..ch * t + t] {
+                *v = *v * scale + shift;
+            }
+        }
+    }
+}
+
+/// Decoder speaker/language conditioning mode.
+///
+/// The distributed single-speaker voices (`piper_version` 1.11.0) use a single
+/// additive `x + cond(g)` after `conv_pre`. The zero-shot v7 voice uses
+/// multi-stage gated FiLM: `dec.cond` after `conv_pre` and one
+/// `dec.cond_layers.{i}` after each upsample+MRF stage.
+enum Cond {
+    /// `dec.cond` `[dec_initial, gin, 1]` added after `conv_pre`.
+    Additive { w: Vec<f32>, b: Vec<f32> },
+    /// Multi-stage gated FiLM: `pre` (`dec.cond`) after `conv_pre`, then
+    /// `stages[i]` (`dec.cond_layers.{i}`) after upsample+MRF stage `i`.
+    Film {
+        pre: FilmStage,
+        stages: Vec<FilmStage>,
+    },
+}
+
 /// The MB-iSTFT decoder.
 pub(super) struct Decoder {
     conv_pre: (Vec<f32>, Vec<f32>),               // [256, 192, 7]
-    cond: (Vec<f32>, Vec<f32>),                   // [256, 512, 1] (additive)
+    cond: Cond,                                   // additive (1.11.0) or FiLM (v7)
     ups: Vec<(Vec<f32>, Vec<f32>, usize, usize)>, // (w, b, in_ch, out_ch)
     resblocks: Vec<ResBlock>,
     subband_conv_post: (Vec<f32>, Vec<f32>), // [72, 64, 7]
@@ -85,26 +146,29 @@ const NOLA_EPS: f32 = 1e-8;
 impl Decoder {
     pub(super) fn load(
         store: &TensorStore,
+        dims: &Dims,
         n_fft: usize,
         hop: usize,
         subbands: usize,
     ) -> Result<Self> {
         let ch0 = DEC_INITIAL / 2; // 128
         let ch1 = DEC_INITIAL / 4; // 64
-        let ups = vec![
-            (
-                store.tensor_shaped("dec.ups.0.weight", &[DEC_INITIAL, ch0, DEC_UP_KERNEL])?,
-                store.tensor_shaped("dec.ups.0.bias", &[ch0])?,
-                DEC_INITIAL,
-                ch0,
-            ),
-            (
-                store.tensor_shaped("dec.ups.1.weight", &[ch0, ch1, DEC_UP_KERNEL])?,
-                store.tensor_shaped("dec.ups.1.bias", &[ch1])?,
-                ch0,
-                ch1,
-            ),
-        ];
+        // Upsample stages, shape-driven from Dims: `ups[i]` maps
+        // `dec_channels[i] → dec_up_out[i]` (`== dec_channels[i+1]`).
+        let mut ups = Vec::with_capacity(dims.n_ups);
+        for i in 0..dims.n_ups {
+            let in_ch = dims.dec_channels[i];
+            let out_ch = dims.dec_up_out[i];
+            ups.push((
+                store.tensor_shaped(
+                    &format!("dec.ups.{i}.weight"),
+                    &[in_ch, out_ch, DEC_UP_KERNEL],
+                )?,
+                store.tensor_shaped(&format!("dec.ups.{i}.bias"), &[out_ch])?,
+                in_ch,
+                out_ch,
+            ));
+        }
 
         let mut resblocks = Vec::with_capacity(6);
         for stage in 0..2 {
@@ -134,16 +198,38 @@ impl Decoder {
             }
         }
 
+        // Multi-stage gated FiLM (v7) vs single additive cond (1.11.0). FiLM
+        // applies `dec.cond` after `conv_pre` (C = dec_channels[0]) and
+        // `dec.cond_layers.{i}` after each upsample+MRF stage (C =
+        // dec_channels[i+1]); `FilmStage::load` shape-checks each `[2·C, gin, 1]`
+        // split. The additive path loads the single projection it uses.
+        let cond = if dims.film {
+            // Stage 0 conditions the conv_pre output (`dec_initial` channels).
+            let pre = FilmStage::load(store, "dec.cond", dims.dec_initial, dims.gin)?;
+            let mut stages = Vec::with_capacity(dims.n_ups);
+            for i in 0..dims.n_ups {
+                stages.push(FilmStage::load(
+                    store,
+                    &format!("dec.cond_layers.{i}"),
+                    dims.dec_channels[i + 1],
+                    dims.gin,
+                )?);
+            }
+            Cond::Film { pre, stages }
+        } else {
+            Cond::Additive {
+                w: store.tensor_shaped("dec.cond.weight", &[DEC_INITIAL, GIN, 1])?,
+                b: store.tensor_shaped("dec.cond.bias", &[DEC_INITIAL])?,
+            }
+        };
+
         let sub_out = subbands * (n_fft + 2);
         Ok(Self {
             conv_pre: (
                 store.tensor_shaped("dec.conv_pre.weight", &[DEC_INITIAL, HIDDEN, 7])?,
                 store.tensor_shaped("dec.conv_pre.bias", &[DEC_INITIAL])?,
             ),
-            cond: (
-                store.tensor_shaped("dec.cond.weight", &[DEC_INITIAL, GIN, 1])?,
-                store.tensor_shaped("dec.cond.bias", &[DEC_INITIAL])?,
-            ),
+            cond,
             ups,
             resblocks,
             subband_conv_post: (
@@ -173,7 +259,7 @@ impl Decoder {
     /// `istft` op (M0-04) rather than panicking, so a malformed spectrogram is a
     /// clean error at the API boundary (M1-01-C).
     pub(super) fn forward(&self, z: &[f32], t_frames: usize, g: &[f32]) -> Result<Vec<f32>> {
-        // conv_pre + additive conditioning.
+        // conv_pre, then the first conditioning stage.
         let (cw, cb) = &self.conv_pre;
         let (mut x, _) = nn::conv1d(
             z,
@@ -188,11 +274,17 @@ impl Decoder {
             1,
             1,
         );
-        let cg = self.cond_vector(g);
-        for c in 0..DEC_INITIAL {
-            for t in 0..t_frames {
-                x[c * t_frames + t] += cg[c];
+        match &self.cond {
+            Cond::Additive { w, b } => {
+                let cg = cond_vector(w, b, g);
+                for c in 0..DEC_INITIAL {
+                    for t in 0..t_frames {
+                        x[c * t_frames + t] += cg[c];
+                    }
+                }
             }
+            // FiLM stage 0 (`dec.cond`) on the conv_pre output.
+            Cond::Film { pre, .. } => pre.apply(&mut x, t_frames, g),
         }
 
         // Two upsample stages, each followed by the MRF average.
@@ -226,6 +318,11 @@ impl Decoder {
                 *v *= inv;
             }
             x = xs;
+            // FiLM stage i+1 (`dec.cond_layers.{i}`) after the MRF average; the
+            // additive single-speaker voice conditions only after conv_pre.
+            if let Cond::Film { stages, .. } = &self.cond {
+                stages[i].apply(&mut x, t, g);
+            }
         }
 
         // subband_conv_post → [subbands*(n_fft+2), T].
@@ -245,22 +342,6 @@ impl Decoder {
 
         // PQMF synthesis → fullband [1, T·256].
         Ok(self.pqmf_synthesis(&subbands_sig, sub_len))
-    }
-
-    /// `cond(g)` = `Conv1d(GIN, DEC_INITIAL, 1)` applied to `g[GIN]`.
-    #[allow(clippy::needless_range_loop)] // channel-major matrix indexing
-    fn cond_vector(&self, g: &[f32]) -> Vec<f32> {
-        let (w, b) = &self.cond;
-        let mut out = b.clone();
-        for c in 0..DEC_INITIAL {
-            let wrow = c * GIN;
-            let mut acc = out[c];
-            for i in 0..GIN {
-                acc += w[wrow + i] * g[i];
-            }
-            out[c] = acc;
-        }
-        out
     }
 
     /// iSTFT of sub-band `s` via the M0-04 `istft` op.
@@ -372,6 +453,24 @@ impl Decoder {
         );
         out
     }
+}
+
+/// `cond(g)` = `Conv1d(gin, out, 1)` applied to `g` → `[out]` (additive
+/// conditioning: `out = b.len()`, `gin = g.len()`).
+#[allow(clippy::needless_range_loop)] // channel-major matrix indexing
+fn cond_vector(w: &[f32], b: &[f32], g: &[f32]) -> Vec<f32> {
+    let out_ch = b.len();
+    let gin = g.len();
+    let mut out = b.to_vec();
+    for c in 0..out_ch {
+        let wrow = c * gin;
+        let mut acc = out[c];
+        for i in 0..gin {
+            acc += w[wrow + i] * g[i];
+        }
+        out[c] = acc;
+    }
+    out
 }
 
 /// Periodic Hann window of length `n` (`np.hanning(n+1)[:n]`,

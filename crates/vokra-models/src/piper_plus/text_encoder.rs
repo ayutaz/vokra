@@ -1,5 +1,5 @@
-//! VITS text encoder (M0-07-T12/T13): phoneme embedding + a 6-layer
-//! relative-position transformer + the `m_p` / `logs_p` projection.
+//! VITS text encoder (M0-07-T12/T13): phoneme embedding + a relative-position
+//! transformer + the `m_p` / `logs_p` projection.
 //!
 //! Follows piper-plus `vits/models.py::TextEncoder` and
 //! `vits/attentions.py::{Encoder, MultiHeadAttention, FFN}` exactly. Every
@@ -8,12 +8,16 @@
 //! against the onnxruntime reference, M0-07-T13). All tensors are the
 //! `[channels, time]` layout; batch is always 1 and every position is valid
 //! (no padding mask) in the M0 single-utterance path.
+//!
+//! The `hidden` / layer-count / FFN width are threaded from the shape-derived
+//! [`Dims`], and the global conditioning `g` (`spk_proj(speaker) + emb_lang`,
+//! composed once by [`super::conditioning`]) is passed in — the encoder no
+//! longer builds its own language-only conditioning. The fixed attention
+//! geometry (head count, relative-attention window, FFN kernel) stays as consts.
 
 use vokra_core::{Result, VokraError};
 
-use super::config::{
-    self, FFN_CHANNELS, FFN_KERNEL, GIN, HIDDEN, K_CHANNELS, N_HEADS, N_LAYERS, WINDOW_SIZE,
-};
+use super::config::{self, Dims, FFN_KERNEL, N_HEADS, WINDOW_SIZE};
 use super::nn;
 use super::weights::TensorStore;
 
@@ -28,7 +32,7 @@ struct AttnLayer {
     emb_rel_v: Vec<f32>,
 }
 
-/// One FFN layer's weights (`conv_1` 192→768 k3, `conv_2` 768→192 k3, ReLU).
+/// One FFN layer's weights (`conv_1` hidden→ffn k3, `conv_2` ffn→hidden k3, ReLU).
 struct FfnLayer {
     conv_1: (Vec<f32>, Vec<f32>),
     conv_2: (Vec<f32>, Vec<f32>),
@@ -42,107 +46,119 @@ struct Norm {
 
 /// The full text encoder.
 pub(super) struct TextEncoder {
-    emb: Vec<f32>, // [n_vocab, HIDDEN]
+    emb: Vec<f32>, // [n_vocab, hidden]
     n_vocab: usize,
     attn: Vec<AttnLayer>,
     norm1: Vec<Norm>,
     ffn: Vec<FfnLayer>,
     norm2: Vec<Norm>,
-    cond_layer: (Vec<f32>, Vec<f32>), // [HIDDEN, GIN, 1]
-    emb_lang: Vec<f32>,               // [n_lang, GIN]
-    proj: (Vec<f32>, Vec<f32>),       // [2*HIDDEN, HIDDEN, 1]
+    cond_layer: (Vec<f32>, Vec<f32>), // [hidden, gin, 1]
+    proj: (Vec<f32>, Vec<f32>),       // [2*hidden, hidden, 1]
+    hidden: usize,
+    n_layers: usize,
+    ffn_ch: usize,
+    gin: usize,
+    k_channels: usize,
 }
 
 /// Encoder output: the encoder features `x` and the split statistics.
 pub(crate) struct EncoderOut {
-    /// Encoder features `[HIDDEN, T]` (feeds the duration predictor).
+    /// Encoder features `[hidden, T]` (feeds the duration predictor).
     pub x: Vec<f32>,
-    /// Prior mean `m_p` `[HIDDEN, T]`.
+    /// Prior mean `m_p` `[hidden, T]`.
     pub m_p: Vec<f32>,
-    /// Prior log-std `logs_p` `[HIDDEN, T]`.
+    /// Prior log-std `logs_p` `[hidden, T]`.
     pub logs_p: Vec<f32>,
     /// Phoneme count `T`.
     pub t: usize,
 }
 
 impl TextEncoder {
-    pub(super) fn load(store: &TensorStore, n_vocab: usize, n_lang: usize) -> Result<Self> {
-        let conv1x1 = |name: &str| -> Result<(Vec<f32>, Vec<f32>)> {
+    pub(super) fn load(store: &TensorStore, dims: &Dims, n_vocab: usize) -> Result<Self> {
+        let (hidden, gin, n_layers, ffn_ch, k_channels) = (
+            dims.hidden,
+            dims.gin,
+            dims.n_enc_layers,
+            dims.ffn,
+            dims.k_channels(),
+        );
+        let conv1x1w = |name: &str| -> Result<(Vec<f32>, Vec<f32>)> {
             Ok((
-                store.tensor_shaped(&format!("{name}.weight"), &[HIDDEN, HIDDEN, 1])?,
-                store.tensor_shaped(&format!("{name}.bias"), &[HIDDEN])?,
+                store.tensor_shaped(&format!("{name}.weight"), &[hidden, hidden, 1])?,
+                store.tensor_shaped(&format!("{name}.bias"), &[hidden])?,
             ))
         };
-        let mut attn = Vec::with_capacity(N_LAYERS);
-        let mut ffn = Vec::with_capacity(N_LAYERS);
-        let mut norm1 = Vec::with_capacity(N_LAYERS);
-        let mut norm2 = Vec::with_capacity(N_LAYERS);
+        let mut attn = Vec::with_capacity(n_layers);
+        let mut ffn = Vec::with_capacity(n_layers);
+        let mut norm1 = Vec::with_capacity(n_layers);
+        let mut norm2 = Vec::with_capacity(n_layers);
         let rel = 2 * WINDOW_SIZE + 1;
-        for i in 0..N_LAYERS {
+        for i in 0..n_layers {
             let a = format!("enc_p.encoder.attn_layers.{i}");
             attn.push(AttnLayer {
-                conv_q: conv1x1(&format!("{a}.conv_q"))?,
-                conv_k: conv1x1(&format!("{a}.conv_k"))?,
-                conv_v: conv1x1(&format!("{a}.conv_v"))?,
-                conv_o: conv1x1(&format!("{a}.conv_o"))?,
-                emb_rel_k: store.tensor_shaped(&format!("{a}.emb_rel_k"), &[1, rel, K_CHANNELS])?,
-                emb_rel_v: store.tensor_shaped(&format!("{a}.emb_rel_v"), &[1, rel, K_CHANNELS])?,
+                conv_q: conv1x1w(&format!("{a}.conv_q"))?,
+                conv_k: conv1x1w(&format!("{a}.conv_k"))?,
+                conv_v: conv1x1w(&format!("{a}.conv_v"))?,
+                conv_o: conv1x1w(&format!("{a}.conv_o"))?,
+                emb_rel_k: store.tensor_shaped(&format!("{a}.emb_rel_k"), &[1, rel, k_channels])?,
+                emb_rel_v: store.tensor_shaped(&format!("{a}.emb_rel_v"), &[1, rel, k_channels])?,
             });
             let f = format!("enc_p.encoder.ffn_layers.{i}");
             ffn.push(FfnLayer {
                 conv_1: (
                     store.tensor_shaped(
                         &format!("{f}.conv_1.weight"),
-                        &[FFN_CHANNELS, HIDDEN, FFN_KERNEL],
+                        &[ffn_ch, hidden, FFN_KERNEL],
                     )?,
-                    store.tensor_shaped(&format!("{f}.conv_1.bias"), &[FFN_CHANNELS])?,
+                    store.tensor_shaped(&format!("{f}.conv_1.bias"), &[ffn_ch])?,
                 ),
                 conv_2: (
                     store.tensor_shaped(
                         &format!("{f}.conv_2.weight"),
-                        &[HIDDEN, FFN_CHANNELS, FFN_KERNEL],
+                        &[hidden, ffn_ch, FFN_KERNEL],
                     )?,
-                    store.tensor_shaped(&format!("{f}.conv_2.bias"), &[HIDDEN])?,
+                    store.tensor_shaped(&format!("{f}.conv_2.bias"), &[hidden])?,
                 ),
             });
             norm1.push(load_norm(
                 store,
                 &format!("enc_p.encoder.norm_layers_1.{i}"),
+                hidden,
             )?);
             norm2.push(load_norm(
                 store,
                 &format!("enc_p.encoder.norm_layers_2.{i}"),
+                hidden,
             )?);
         }
 
         Ok(Self {
-            emb: store.tensor_shaped("enc_p.emb.weight", &[n_vocab, HIDDEN])?,
+            emb: store.tensor_shaped("enc_p.emb.weight", &[n_vocab, hidden])?,
             n_vocab,
             attn,
             norm1,
             ffn,
             norm2,
             cond_layer: (
-                store.tensor_shaped("enc_p.cond_layer.weight", &[HIDDEN, GIN, 1])?,
-                store.tensor_shaped("enc_p.cond_layer.bias", &[HIDDEN])?,
+                store.tensor_shaped("enc_p.cond_layer.weight", &[hidden, gin, 1])?,
+                store.tensor_shaped("enc_p.cond_layer.bias", &[hidden])?,
             ),
-            emb_lang: store.tensor_shaped("emb_lang.weight", &[n_lang, GIN])?,
             proj: (
-                store.tensor_shaped("enc_p.proj.weight", &[2 * HIDDEN, HIDDEN, 1])?,
-                store.tensor_shaped("enc_p.proj.bias", &[2 * HIDDEN])?,
+                store.tensor_shaped("enc_p.proj.weight", &[2 * hidden, hidden, 1])?,
+                store.tensor_shaped("enc_p.proj.bias", &[2 * hidden])?,
             ),
+            hidden,
+            n_layers,
+            ffn_ch,
+            gin,
+            k_channels,
         })
     }
 
-    /// The global conditioning vector `g = emb_lang[lid]` `[GIN]` (shared by the
-    /// encoder, duration predictor, flow and decoder).
-    pub(super) fn lang_conditioning(&self, lid: i64) -> Vec<f32> {
-        let lid = lid.max(0) as usize;
-        self.emb_lang[lid * GIN..lid * GIN + GIN].to_vec()
-    }
-
-    /// Runs the encoder for a phoneme id sequence under language `lid`.
-    pub(super) fn forward(&self, phoneme_ids: &[i64], lid: i64) -> Result<EncoderOut> {
+    /// Runs the encoder for a phoneme id sequence under the global conditioning
+    /// `g` `[gin]` (composed by [`super::conditioning::Conditioning::g`]).
+    pub(super) fn forward(&self, phoneme_ids: &[i64], g: &[f32]) -> Result<EncoderOut> {
+        let hidden = self.hidden;
         let t = phoneme_ids.len();
         if t == 0 {
             return Err(VokraError::InvalidArgument(
@@ -150,9 +166,9 @@ impl TextEncoder {
             ));
         }
 
-        // Embedding × sqrt(HIDDEN), laid out [HIDDEN, T].
-        let scale = (HIDDEN as f32).sqrt();
-        let mut x = vec![0.0f32; HIDDEN * t];
+        // Embedding × sqrt(hidden), laid out [hidden, T].
+        let scale = (hidden as f32).sqrt();
+        let mut x = vec![0.0f32; hidden * t];
         for (ti, &id) in phoneme_ids.iter().enumerate() {
             if id < 0 || id as usize >= self.n_vocab {
                 return Err(VokraError::InvalidArgument(format!(
@@ -160,19 +176,19 @@ impl TextEncoder {
                     self.n_vocab
                 )));
             }
-            let row = id as usize * HIDDEN;
-            for c in 0..HIDDEN {
+            let row = id as usize * hidden;
+            for c in 0..hidden {
                 x[c * t + ti] = self.emb[row + c] * scale;
             }
         }
 
-        // 6 transformer layers.
-        for l in 0..N_LAYERS {
+        // Transformer layers.
+        for l in 0..self.n_layers {
             let y = self.attention(&x, l, t);
             let sum = add(&x, &y);
             x = nn::layer_norm_channels(
                 &sum,
-                HIDDEN,
+                hidden,
                 t,
                 &self.norm1[l].gamma,
                 &self.norm1[l].beta,
@@ -182,7 +198,7 @@ impl TextEncoder {
             let sum = add(&x, &y);
             x = nn::layer_norm_channels(
                 &sum,
-                HIDDEN,
+                hidden,
                 t,
                 &self.norm2[l].gamma,
                 &self.norm2[l].beta,
@@ -190,63 +206,50 @@ impl TextEncoder {
             );
         }
 
-        // Global conditioning: x += cond_layer(emb_lang[lid]) broadcast over T.
-        let lid = lid.max(0) as usize;
-        let g = &self.emb_lang[lid * GIN..lid * GIN + GIN];
-        // cond_layer is Conv1d(GIN, HIDDEN, 1): out[c] = sum_i W[c,i]·g[i] + b[c].
-        let mut cg = self.cond_layer.1.clone();
-        let (cw, _) = &self.cond_layer;
+        // Global conditioning: x += cond_layer(g) broadcast over T, where
+        // cond_layer is Conv1d(gin, hidden, 1): out[c] = Σ_i W[c,i]·g[i] + b[c].
+        let (cw, cb) = &self.cond_layer;
+        let mut cg = cb.clone();
         #[allow(clippy::needless_range_loop)] // channel-major matrix indexing
-        for c in 0..HIDDEN {
-            let wrow = c * GIN;
+        for c in 0..hidden {
+            let wrow = c * self.gin;
             let mut acc = cg[c];
-            for i in 0..GIN {
+            for i in 0..self.gin {
                 acc += cw[wrow + i] * g[i];
             }
             cg[c] = acc;
         }
-        for c in 0..HIDDEN {
+        for c in 0..hidden {
             for ti in 0..t {
                 x[c * t + ti] += cg[c];
             }
         }
 
-        // proj → stats [2*HIDDEN, T]; split into m_p / logs_p.
+        // proj → stats [2*hidden, T]; split into m_p / logs_p.
         let (pw, pb) = &self.proj;
-        let (stats, _) = nn::conv1d(&x, HIDDEN, t, pw, 2 * HIDDEN, 1, Some(pb), 1, 0, 1, 1);
-        let m_p = stats[..HIDDEN * t].to_vec();
-        let logs_p = stats[HIDDEN * t..].to_vec();
+        let (stats, _) = nn::conv1d(&x, hidden, t, pw, 2 * hidden, 1, Some(pb), 1, 0, 1, 1);
+        let m_p = stats[..hidden * t].to_vec();
+        let logs_p = stats[hidden * t..].to_vec();
         Ok(EncoderOut { x, m_p, logs_p, t })
     }
 
     /// FFN: conv_1 (same-pad k3) → ReLU → conv_2 (same-pad k3).
     fn ffn(&self, x: &[f32], layer: usize, t: usize) -> Vec<f32> {
+        let (hidden, ffn_ch) = (self.hidden, self.ffn_ch);
         let f = &self.ffn[layer];
         let pad = (FFN_KERNEL - 1) / 2;
         let (w1, b1) = &f.conv_1;
-        let (mut h, _) = nn::conv1d(
-            x,
-            HIDDEN,
-            t,
-            w1,
-            FFN_CHANNELS,
-            FFN_KERNEL,
-            Some(b1),
-            1,
-            pad,
-            1,
-            1,
-        );
+        let (mut h, _) = nn::conv1d(x, hidden, t, w1, ffn_ch, FFN_KERNEL, Some(b1), 1, pad, 1, 1);
         for v in &mut h {
             *v = v.max(0.0); // ReLU (default FFN activation)
         }
         let (w2, b2) = &f.conv_2;
         let (out, _) = nn::conv1d(
             &h,
-            FFN_CHANNELS,
+            ffn_ch,
             t,
             w2,
-            HIDDEN,
+            hidden,
             FFN_KERNEL,
             Some(b2),
             1,
@@ -259,26 +262,27 @@ impl TextEncoder {
 
     /// Relative-position multi-head self-attention (`window_size = 4`).
     fn attention(&self, x: &[f32], layer: usize, t: usize) -> Vec<f32> {
+        let (hidden, k_channels) = (self.hidden, self.k_channels);
         let a = &self.attn[layer];
-        let q = conv1x1(x, &a.conv_q, t);
-        let k = conv1x1(x, &a.conv_k, t);
-        let v = conv1x1(x, &a.conv_v, t);
-        let s = (K_CHANNELS as f32).sqrt();
+        let q = conv1x1(x, &a.conv_q, hidden, t);
+        let k = conv1x1(x, &a.conv_k, hidden, t);
+        let v = conv1x1(x, &a.conv_v, hidden, t);
+        let s = (k_channels as f32).sqrt();
 
         // Relative embeddings sliced/padded to length 2T-1 (shared over heads).
-        let rel_k = get_relative_embeddings(&a.emb_rel_k, t);
-        let rel_v = get_relative_embeddings(&a.emb_rel_v, t);
+        let rel_k = get_relative_embeddings(&a.emb_rel_k, k_channels, t);
+        let rel_v = get_relative_embeddings(&a.emb_rel_v, k_channels, t);
         let rel_len = 2 * t - 1;
 
-        let mut out = vec![0.0f32; HIDDEN * t]; // [n_heads*k_channels, T]
+        let mut out = vec![0.0f32; hidden * t]; // [n_heads*k_channels, T]
         for h in 0..N_HEADS {
-            let base = h * K_CHANNELS;
+            let base = h * k_channels;
             // scores[i][j] = sum_d (q_h[i][d]/s)·k_h[j][d] + rel_local.
             let mut scores = vec![0.0f32; t * t];
             for i in 0..t {
                 for j in 0..t {
                     let mut acc = 0.0f32;
-                    for d in 0..K_CHANNELS {
+                    for d in 0..k_channels {
                         acc += q[(base + d) * t + i] * k[(base + d) * t + j];
                     }
                     scores[i * t + j] = acc / s;
@@ -289,8 +293,8 @@ impl TextEncoder {
             for i in 0..t {
                 for m in 0..rel_len {
                     let mut acc = 0.0f32;
-                    for d in 0..K_CHANNELS {
-                        acc += q[(base + d) * t + i] * rel_k[m * K_CHANNELS + d];
+                    for d in 0..k_channels {
+                        acc += q[(base + d) * t + i] * rel_k[m * k_channels + d];
                     }
                     rel_logits[i * rel_len + m] = acc / s;
                 }
@@ -304,33 +308,33 @@ impl TextEncoder {
             // out_h[i][d] = sum_j p[i][j]·v_h[j][d] + rel-value term.
             let rel_weights = abs_to_rel(&scores, t);
             for i in 0..t {
-                for d in 0..K_CHANNELS {
+                for d in 0..k_channels {
                     let mut acc = 0.0f32;
                     for j in 0..t {
                         acc += scores[i * t + j] * v[(base + d) * t + j];
                     }
                     for m in 0..rel_len {
-                        acc += rel_weights[i * rel_len + m] * rel_v[m * K_CHANNELS + d];
+                        acc += rel_weights[i * rel_len + m] * rel_v[m * k_channels + d];
                     }
                     out[(base + d) * t + i] = acc;
                 }
             }
         }
-        conv1x1(&out, &a.conv_o, t)
+        conv1x1(&out, &a.conv_o, hidden, t)
     }
 }
 
-fn load_norm(store: &TensorStore, prefix: &str) -> Result<Norm> {
+fn load_norm(store: &TensorStore, prefix: &str, hidden: usize) -> Result<Norm> {
     Ok(Norm {
-        gamma: store.tensor_shaped(&format!("{prefix}.gamma"), &[HIDDEN])?,
-        beta: store.tensor_shaped(&format!("{prefix}.beta"), &[HIDDEN])?,
+        gamma: store.tensor_shaped(&format!("{prefix}.gamma"), &[hidden])?,
+        beta: store.tensor_shaped(&format!("{prefix}.beta"), &[hidden])?,
     })
 }
 
-/// Applies a `Conv1d(HIDDEN, HIDDEN, 1)` (a per-position linear) to `[HIDDEN, T]`.
-fn conv1x1(x: &[f32], layer: &(Vec<f32>, Vec<f32>), t: usize) -> Vec<f32> {
+/// Applies a `Conv1d(ch, ch, 1)` (a per-position linear) to `[ch, T]`.
+fn conv1x1(x: &[f32], layer: &(Vec<f32>, Vec<f32>), ch: usize, t: usize) -> Vec<f32> {
     let (w, b) = layer;
-    let (out, _) = nn::conv1d(x, HIDDEN, t, w, HIDDEN, 1, Some(b), 1, 0, 1, 1);
+    let (out, _) = nn::conv1d(x, ch, t, w, ch, 1, Some(b), 1, 0, 1, 1);
     out
 }
 
@@ -341,10 +345,9 @@ fn add(a: &[f32], b: &[f32]) -> Vec<f32> {
 /// Slices/pads the `[2·window+1, k_channels]` relative embedding table to the
 /// `[2T-1, k_channels]` window this sequence length needs
 /// (`attentions.py::_get_relative_embeddings`).
-fn get_relative_embeddings(emb: &[f32], t: usize) -> Vec<f32> {
+fn get_relative_embeddings(emb: &[f32], k: usize, t: usize) -> Vec<f32> {
     // emb stored as [1, 2*window+1, k] — drop the leading unit dim.
     let src_rows = 2 * WINDOW_SIZE + 1;
-    let k = K_CHANNELS;
     let pad = (t as isize - (WINDOW_SIZE as isize + 1)).max(0) as usize;
     let slice_start = ((WINDOW_SIZE as isize + 1) - t as isize).max(0) as usize;
     let rel_len = 2 * t - 1;
@@ -402,7 +405,11 @@ fn abs_to_rel(x: &[f32], t: usize) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::config::HIDDEN;
     use super::*;
+
+    /// Per-head channel count of the medium config (`hidden / heads`).
+    const K_CHANNELS: usize = HIDDEN / N_HEADS;
 
     #[test]
     fn rel_to_abs_shapes_and_shift() {
@@ -437,7 +444,7 @@ mod tests {
     fn get_rel_embeddings_length() {
         // window=4 → 9 rows. T=3 → need 2T-1=5 rows, no padding (slice inside).
         let emb: Vec<f32> = (0..9 * K_CHANNELS).map(|i| i as f32).collect();
-        let out = get_relative_embeddings(&emb, 3);
+        let out = get_relative_embeddings(&emb, K_CHANNELS, 3);
         assert_eq!(out.len(), 5 * K_CHANNELS);
     }
 }

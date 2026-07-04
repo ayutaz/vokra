@@ -205,6 +205,36 @@ pub(crate) fn conv_transpose1d(
     (out, out_len)
 }
 
+/// Per-position linear layer `y = W·x + b` — `W` is `[out, in]` row-major, `x`
+/// is `[in]`, `b` is `[out]`, returns `[out]`. The building block of the speaker
+/// projection (`spk_proj`) and the prosody / FiLM conditioning heads.
+pub(crate) fn linear(weight: &[f32], bias: &[f32], x: &[f32]) -> Vec<f32> {
+    let out = bias.len();
+    let inn = x.len();
+    debug_assert_eq!(
+        weight.len(),
+        out * inn,
+        "linear: weight len {} != out {out} · in {inn}",
+        weight.len()
+    );
+    let mut y = bias.to_vec();
+    #[allow(clippy::needless_range_loop)] // row-major matrix indexing
+    for o in 0..out {
+        let wrow = o * inn;
+        let mut acc = y[o];
+        for i in 0..inn {
+            acc += weight[wrow + i] * x[i];
+        }
+        y[o] = acc;
+    }
+    y
+}
+
+/// Logistic sigmoid `1/(1 + e^-x)`.
+pub(crate) fn sigmoid(x: f32) -> f32 {
+    1.0 / (1.0 + (-x).exp())
+}
+
 /// Layer norm over the channel axis of a `[channels, time]` signal (VITS
 /// `attentions.LayerNorm`: normalise the channel vector at each time step, then
 /// affine with `gamma`/`beta`).
@@ -450,6 +480,25 @@ mod tests {
         // 0.0 — so the sound bound is 0 <= softplus(-40) < 1e-6.)
         let neg = softplus(-40.0);
         assert!((0.0..1e-6).contains(&neg), "softplus(-40) = {neg}");
+    }
+
+    #[test]
+    fn linear_matches_hand_fixture() {
+        // W = [[1,2,3],[4,5,6]] (out=2,in=3), b=[10,20], x=[1,0,-1].
+        // y0 = 10 + (1-3) = 8; y1 = 20 + (4-6) = 18.
+        let w = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let b = [10.0, 20.0];
+        let x = [1.0, 0.0, -1.0];
+        assert_eq!(linear(&w, &b, &x), [8.0, 18.0]);
+    }
+
+    #[test]
+    fn sigmoid_reference_points() {
+        assert!((sigmoid(0.0) - 0.5).abs() < 1e-7);
+        // sigmoid(2) ≈ 0.880797.
+        assert!((sigmoid(2.0) - 0.880_797).abs() < 1e-5);
+        // Odd symmetry: sigmoid(-x) = 1 - sigmoid(x).
+        assert!((sigmoid(-2.0) - (1.0 - sigmoid(2.0))).abs() < 1e-6);
     }
 
     #[test]

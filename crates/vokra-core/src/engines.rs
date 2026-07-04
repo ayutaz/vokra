@@ -58,30 +58,48 @@ pub trait VadStreamHandle {
 
 /// Inputs to [`TtsEngine::synthesize`].
 ///
-/// M0 carries the text plus an optional language hint and a determinism knob
-/// used by parity tests (M0-07-T20: fix the VITS noise so the native output
-/// matches the piper-plus reference). The voice itself comes from the loaded
-/// GGUF. Fields grow with M0-07 (`#[non_exhaustive]`).
+/// Carries the text plus an optional language hint, a determinism knob used by
+/// parity tests (M0-07-T20: fix the VITS noise so the native output matches the
+/// piper-plus reference) and the zero-shot conditioning inputs the v7 voice
+/// accepts — an external speaker embedding and per-phoneme prosody features
+/// (M1). All conditioning fields are optional and default to the voice's
+/// zero-shot defaults; the voice itself comes from the loaded GGUF. Fields grow
+/// under `#[non_exhaustive]`.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct SynthesisRequest {
     /// Text to synthesize (already normalized by the caller if needed).
     pub text: String,
-    /// Optional language tag (e.g. `"ja"`, `"en"`); `None` = the voice default.
+    /// Optional language tag (e.g. `"ja"`, `"en"`); `None` = the voice default
+    /// (language id 0). The engine maps it to the voice's language id.
     pub language: Option<String>,
     /// When `true`, disable stochastic components (noise scale → 0) so the
     /// output is deterministic for reference parity (M0-07-T20).
     pub deterministic: bool,
+    /// Optional external zero-shot **speaker embedding** (`speaker_embedding_dim`
+    /// floats — 192 for the v7 voice). `None` uses the zero vector, the
+    /// deterministic zero-shot default; note the voice's speaker projection maps
+    /// even a zero embedding to a non-zero conditioning contribution
+    /// (bias / LayerNorm / GELU). A wrong-length vector is treated as zeros.
+    pub speaker_embedding: Option<Vec<f32>>,
+    /// Optional per-phoneme **prosody features** — one `(A1, A2, A3)` accent
+    /// triple per phoneme (piper-plus JA path). `None`, or any non-JA language,
+    /// leaves the prosody projection at its bias. When present the length must
+    /// match the phoneme count the engine's tokenizer / phonemizer produces, or
+    /// synthesis fails with a clear error.
+    pub prosody_features: Option<Vec<[i64; 3]>>,
 }
 
 impl SynthesisRequest {
     /// A request for `text` with the voice defaults (non-deterministic, no
-    /// explicit language).
+    /// explicit language, zero-shot conditioning defaults).
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
             language: None,
             deterministic: false,
+            speaker_embedding: None,
+            prosody_features: None,
         }
     }
 
@@ -96,6 +114,22 @@ impl SynthesisRequest {
     #[must_use]
     pub fn deterministic(mut self) -> Self {
         self.deterministic = true;
+        self
+    }
+
+    /// Sets the external zero-shot speaker embedding (`speaker_embedding_dim`
+    /// floats; the voice's zero vector is used when unset).
+    #[must_use]
+    pub fn with_speaker_embedding(mut self, embedding: impl Into<Vec<f32>>) -> Self {
+        self.speaker_embedding = Some(embedding.into());
+        self
+    }
+
+    /// Sets the per-phoneme prosody features — one `(A1, A2, A3)` accent triple
+    /// per phoneme, honoured only for the JA language of a prosody-aware voice.
+    #[must_use]
+    pub fn with_prosody_features(mut self, features: impl Into<Vec<[i64; 3]>>) -> Self {
+        self.prosody_features = Some(features.into());
         self
     }
 }

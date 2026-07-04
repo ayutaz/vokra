@@ -9,7 +9,7 @@
 //! ElementwiseAffine0]` (the "useless" `ConvFlow1` is dropped in inference —
 //! `docs/piper-plus-integration.md` §4/§9), and `logw = z0`.
 
-use super::config::{DP_CONV_LAYERS, DP_FILTER, DP_KERNEL, GIN, RQS_NUM_BINS, RQS_TAIL_BOUND};
+use super::config::{DP_CONV_LAYERS, DP_KERNEL, Dims, RQS_NUM_BINS, RQS_TAIL_BOUND};
 use super::nn;
 use super::weights::TensorStore;
 use vokra_core::Result;
@@ -122,40 +122,43 @@ impl DdsConv {
 
 /// A spline coupling flow (`ConvFlow`) over the 2-channel duration latent.
 struct ConvFlow {
-    pre: (Vec<f32>, Vec<f32>),  // [DP_FILTER, 1, 1]
-    convs: DdsConv,             // DP_FILTER channels
-    proj: (Vec<f32>, Vec<f32>), // [num_bins*3-1, DP_FILTER, 1]
+    pre: (Vec<f32>, Vec<f32>),  // [dp_filter, 1, 1]
+    convs: DdsConv,             // dp_filter channels
+    proj: (Vec<f32>, Vec<f32>), // [num_bins*3-1, dp_filter, 1]
+    dp_filter: usize,
 }
 
 impl ConvFlow {
-    fn load(store: &TensorStore, idx: usize) -> Result<Self> {
+    fn load(store: &TensorStore, idx: usize, dp_filter: usize) -> Result<Self> {
         let p = format!("dp.flows.{idx}");
         let out = RQS_NUM_BINS * 3 - 1;
         Ok(Self {
             pre: (
-                store.tensor_shaped(&format!("{p}.pre.weight"), &[DP_FILTER, 1, 1])?,
-                store.tensor_shaped(&format!("{p}.pre.bias"), &[DP_FILTER])?,
+                store.tensor_shaped(&format!("{p}.pre.weight"), &[dp_filter, 1, 1])?,
+                store.tensor_shaped(&format!("{p}.pre.bias"), &[dp_filter])?,
             ),
-            convs: DdsConv::load(store, &format!("{p}.convs"), DP_FILTER)?,
+            convs: DdsConv::load(store, &format!("{p}.convs"), dp_filter)?,
             proj: (
-                store.tensor_shaped(&format!("{p}.proj.weight"), &[out, DP_FILTER, 1])?,
+                store.tensor_shaped(&format!("{p}.proj.weight"), &[out, dp_filter, 1])?,
                 store.tensor_shaped(&format!("{p}.proj.bias"), &[out])?,
             ),
+            dp_filter,
         })
     }
 
     /// Reverse pass: transform `x1` (channel 1) by the per-time spline the
     /// conditioner predicts; keep `x0` (channel 0). `x` is `[2, T]`.
     fn reverse(&self, x: &[f32], t: usize, g: &[f32]) -> Vec<f32> {
+        let dp_filter = self.dp_filter;
         let x0 = &x[..t];
         let (pw, pb) = &self.pre;
-        let (h, _) = nn::conv1d(x0, 1, t, pw, DP_FILTER, 1, Some(pb), 1, 0, 1, 1);
+        let (h, _) = nn::conv1d(x0, 1, t, pw, dp_filter, 1, Some(pb), 1, 0, 1, 1);
         let h = self.convs.forward(&h, t, Some(g));
         let (jw, jb) = &self.proj;
         let out = RQS_NUM_BINS * 3 - 1;
-        let (params, _) = nn::conv1d(&h, DP_FILTER, t, jw, out, 1, Some(jb), 1, 0, 1, 1);
+        let (params, _) = nn::conv1d(&h, dp_filter, t, jw, out, 1, Some(jb), 1, 0, 1, 1);
 
-        let scale = (DP_FILTER as f32).sqrt();
+        let scale = (dp_filter as f32).sqrt();
         let mut result = x.to_vec();
         for ti in 0..t {
             // params[:, ti]: [0:10] widths, [10:20] heights, [20:29] derivatives.
@@ -178,39 +181,45 @@ impl ConvFlow {
 
 /// The stochastic duration predictor.
 pub(super) struct DurationPredictor {
-    pre: (Vec<f32>, Vec<f32>),  // [DP_FILTER, DP_FILTER, 1]
-    cond: (Vec<f32>, Vec<f32>), // [DP_FILTER, GIN, 1]
+    pre: (Vec<f32>, Vec<f32>),  // [dp_filter, dp_filter, 1]
+    cond: (Vec<f32>, Vec<f32>), // [dp_filter, gin, 1]
     convs: DdsConv,
-    proj: (Vec<f32>, Vec<f32>), // [DP_FILTER, DP_FILTER, 1]
+    proj: (Vec<f32>, Vec<f32>), // [dp_filter, dp_filter, 1]
     ea_m: Vec<f32>,             // [2, 1]
     ea_logs: Vec<f32>,          // [2, 1]
     flows: Vec<ConvFlow>,       // dp.flows.7, .5, .3 (reverse order)
+    gin: usize,
+    dp_filter: usize,
 }
 
 impl DurationPredictor {
-    pub(super) fn load(store: &TensorStore) -> Result<Self> {
+    pub(super) fn load(store: &TensorStore, dims: &Dims) -> Result<Self> {
+        let gin = dims.gin;
+        let dp_filter = dims.dp_filter;
         Ok(Self {
             pre: (
-                store.tensor_shaped("dp.pre.weight", &[DP_FILTER, DP_FILTER, 1])?,
-                store.tensor_shaped("dp.pre.bias", &[DP_FILTER])?,
+                store.tensor_shaped("dp.pre.weight", &[dp_filter, dp_filter, 1])?,
+                store.tensor_shaped("dp.pre.bias", &[dp_filter])?,
             ),
             cond: (
-                store.tensor_shaped("dp.cond.weight", &[DP_FILTER, GIN, 1])?,
-                store.tensor_shaped("dp.cond.bias", &[DP_FILTER])?,
+                store.tensor_shaped("dp.cond.weight", &[dp_filter, gin, 1])?,
+                store.tensor_shaped("dp.cond.bias", &[dp_filter])?,
             ),
-            convs: DdsConv::load(store, "dp.convs", DP_FILTER)?,
+            convs: DdsConv::load(store, "dp.convs", dp_filter)?,
             proj: (
-                store.tensor_shaped("dp.proj.weight", &[DP_FILTER, DP_FILTER, 1])?,
-                store.tensor_shaped("dp.proj.bias", &[DP_FILTER])?,
+                store.tensor_shaped("dp.proj.weight", &[dp_filter, dp_filter, 1])?,
+                store.tensor_shaped("dp.proj.bias", &[dp_filter])?,
             ),
             ea_m: store.tensor_shaped("dp.flows.0.m", &[2, 1])?,
             ea_logs: store.tensor_shaped("dp.flows.0.logs", &[2, 1])?,
-            // Inference reverse order: ConvFlow 7, 5, 3.
+            // Inference reverse order: ConvFlow 7, 5, 3 (ConvFlow 1 is dropped).
             flows: vec![
-                ConvFlow::load(store, 7)?,
-                ConvFlow::load(store, 5)?,
-                ConvFlow::load(store, 3)?,
+                ConvFlow::load(store, 7, dp_filter)?,
+                ConvFlow::load(store, 5, dp_filter)?,
+                ConvFlow::load(store, 3, dp_filter)?,
             ],
+            gin,
+            dp_filter,
         })
     }
 
@@ -222,17 +231,18 @@ impl DurationPredictor {
     /// The SDP body: `pre → + cond(g) → DDSConv → proj` `[DP_FILTER, T]`
     /// (the conditioning the flows read).
     pub(super) fn body(&self, x_dp: &[f32], t: usize, g: &[f32]) -> Vec<f32> {
+        let dp_filter = self.dp_filter;
         let (pw, pb) = &self.pre;
-        let (mut x, _) = nn::conv1d(x_dp, DP_FILTER, t, pw, DP_FILTER, 1, Some(pb), 1, 0, 1, 1);
-        let cg = cond_project(&self.cond, g);
-        for c in 0..DP_FILTER {
+        let (mut x, _) = nn::conv1d(x_dp, dp_filter, t, pw, dp_filter, 1, Some(pb), 1, 0, 1, 1);
+        let cg = cond_project(&self.cond, g, self.gin);
+        for c in 0..dp_filter {
             for ti in 0..t {
                 x[c * t + ti] += cg[c];
             }
         }
         x = self.convs.forward(&x, t, None);
         let (jw, jb) = &self.proj;
-        let (body, _) = nn::conv1d(&x, DP_FILTER, t, jw, DP_FILTER, 1, Some(jb), 1, 0, 1, 1);
+        let (body, _) = nn::conv1d(&x, dp_filter, t, jw, dp_filter, 1, Some(jb), 1, 0, 1, 1);
         body
     }
 
@@ -273,14 +283,14 @@ fn load_norm(store: &TensorStore, prefix: &str, channels: usize) -> Result<Norm>
 }
 
 #[allow(clippy::needless_range_loop)] // channel-major matrix indexing
-fn cond_project(layer: &(Vec<f32>, Vec<f32>), g: &[f32]) -> Vec<f32> {
+fn cond_project(layer: &(Vec<f32>, Vec<f32>), g: &[f32], gin: usize) -> Vec<f32> {
     let (w, b) = layer;
     let out_ch = b.len();
     let mut out = b.clone();
     for c in 0..out_ch {
-        let wrow = c * GIN;
+        let wrow = c * gin;
         let mut acc = out[c];
-        for i in 0..GIN {
+        for i in 0..gin {
             acc += w[wrow + i] * g[i];
         }
         out[c] = acc;
