@@ -177,6 +177,14 @@ pub fn selftest() -> Result<SelftestReport> {
     let ln = rng.vec(2 * 13);
     let gamma = rng.vec(13);
     let beta = rng.vec(13);
+    // GEMV 7x19 with per-row bias — k = 19 spans the 16-lane (NEON) /
+    // single-8-wide + scalar (AVX2) reduction remainders of the logits-head
+    // fast path. (Generated last so the other kernels' seeded inputs are
+    // unchanged.)
+    let (gvm, gvk) = (7usize, 19usize);
+    let gva = rng.vec(gvm * gvk);
+    let gvx = rng.vec(gvk);
+    let gvbias = rng.vec(gvm);
 
     // Scalar oracles (computed once).
     let mut o_gemm = vec![0.0; m * n];
@@ -189,6 +197,16 @@ pub fn selftest() -> Result<SelftestReport> {
         &gb,
         Some(&gbias),
         &mut o_gemm,
+    )?;
+    let mut o_gemv = vec![0.0; gvm];
+    kernels::gemv_f32_on(
+        IsaPath::Scalar,
+        gvm,
+        gvk,
+        &gva,
+        &gvx,
+        Some(&gvbias),
+        &mut o_gemv,
     )?;
     let mut o_add = vec![0.0; ex.len()];
     kernels::add_f32_on(IsaPath::Scalar, &ex, &ey, &mut o_add)?;
@@ -212,6 +230,10 @@ pub fn selftest() -> Result<SelftestReport> {
         let mut buf = vec![0.0; m * n];
         kernels::gemm_f32_on(isa, m, n, k, &ga, &gb, Some(&gbias), &mut buf)?;
         compare("gemm", isa, &o_gemm, &buf, &mut max_abs_diff)?;
+
+        let mut buf = vec![0.0; gvm];
+        kernels::gemv_f32_on(isa, gvm, gvk, &gva, &gvx, Some(&gvbias), &mut buf)?;
+        compare("gemv", isa, &o_gemv, &buf, &mut max_abs_diff)?;
 
         let mut buf = vec![0.0; ex.len()];
         kernels::add_f32_on(isa, &ex, &ey, &mut buf)?;

@@ -73,6 +73,36 @@ fn main() {
         report("gemm 128x128x128", s, v, simd);
     }
 
+    // Tied Whisper-base logits head: token_emb[v, d] @ h[d], v = 51865,
+    // d = 512 — the single biggest per-token decode matmul. As a `gemm` this is
+    // the `n = 1` case that falls through the scalar column tail; `gemv` streams
+    // each 512-wide row and reduces it with a wide SIMD FMA. Reports the raw
+    // gemv scalar→SIMD speedup and, below it, the real per-token decode swap
+    // (the old `gemm(n=1)` SIMD path → the new `gemv` SIMD path).
+    {
+        let (v, d) = (51865usize, 512usize);
+        let emb = rand_vec(11, v * d);
+        let h = rand_vec(12, d);
+        let mut out = vec![0.0; v];
+        let gemv_scalar = time(10, || {
+            kernels::gemv_f32_on(IsaPath::Scalar, v, d, &emb, &h, None, &mut out).unwrap();
+            black_box(&out);
+        });
+        let gemv_simd = time(10, || {
+            kernels::gemv_f32_on(simd, v, d, &emb, &h, None, &mut out).unwrap();
+            black_box(&out);
+        });
+        report("gemv 51865x512 (logits)", gemv_scalar, gemv_simd, simd);
+        let gemm_n1_simd = time(10, || {
+            kernels::gemm_f32_on(simd, v, 1, d, &emb, &h, None, &mut out).unwrap();
+            black_box(&out);
+        });
+        let speedup = gemm_n1_simd / gemv_simd;
+        println!(
+            "  per-token logits swap: gemm(n=1) {simd} {gemm_n1_simd:>10.1} ns  ->  gemv {simd} {gemv_simd:>10.1} ns   x{speedup:.2}"
+        );
+    }
+
     // conv1d 32ch -> 64ch, len 512, k=5.
     {
         let (in_ch, in_len, out_ch, kernel, stride, pad) = (32, 512, 64, 5, 1, 2);

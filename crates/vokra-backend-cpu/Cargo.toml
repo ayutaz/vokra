@@ -13,14 +13,27 @@ vokra-core.workspace = true
 # Feature flags (no external crates — the workspace stays dependency-free,
 # NFR-DS-02).
 [features]
-default = []
+# `parallel` is default-on for native desktop/server builds (M1-12): it enables
+# the persistent std::thread worker pool (`src/pool.rs`) that splits the large
+# GEMM / GEMV over disjoint output-row ranges — bit-identical to single-thread,
+# so it never perturbs the Whisper parity oracle. Opt out for a WASM or
+# deliberately single-threaded build with `--no-default-features` (WASM `std`
+# has no thread spawning; the module is additionally `cfg`-gated off WASM). Even
+# with the feature on, a single-core host spawns no threads and runs inline.
+default = ["parallel", "simd-transcendental"]
+parallel = []
 # M1-05-EXP: back the SIMD `sigmoid` / `tanh` / `gelu` / softmax-exp kernels
 # with the native vectorized `exp` in `kernels::vexp` instead of delegating the
-# transcendental to the scalar path. OFF by default: it introduces a small,
-# controlled ULP delta vs `std::f32::exp`, so default-enablement is gated on
-# the Whisper-base RTF + parity re-validation in M1-11 / M1-09 / M1-13 (the
-# vexp kernels are fully self-tested via the differential harness in the
-# meantime). See `kernels::vexp` and ADR-0004 (owned by the CI/docs WP).
+# transcendental to the scalar path. Default-ON since M1-11: the enablement was
+# gated on the Whisper-base RTF + parity re-validation, which passed — the
+# 4 GGUF-gated `parity_whisper` tests stay green with the vexp path live (exact
+# greedy tokens unchanged; encoder/logits max|Δ| ≪ the atol=0.01 NFR-QL-01
+# ceiling — vexp's worst-case rel error ≈1.2e-7, a few f32 ULP). It powers the
+# encoder attention-softmax (O(t²) exp) and MLP/stem GELU (erf) hot paths. Opt
+# out with `--no-default-features` for a build that wants bit-identical
+# `std::f32::exp`. The vexp kernels also carry a scalar differential oracle
+# (`tests/differential.rs`). See `kernels::vexp` and ADR-0004 (owned by the
+# CI/docs WP).
 simd-transcendental = []
 
 # Reference benchmarks (M0-08-T17): hand-rolled std::time measurement, no

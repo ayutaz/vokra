@@ -74,6 +74,14 @@
 //! [`CpuFeatures::detect`] confirms the feature (the dispatch invariant), and
 //! every `unsafe` block carries a `// SAFETY:` comment (enforced by
 //! `clippy::undocumented_unsafe_blocks`).
+//!
+//! The `parallel` worker pool (`pool`, M1-12) adds two further `unsafe` bridges
+//! — lifetime-erasing the borrowed job closure onto the persistent workers (the
+//! `std::thread::scope` pattern) and reconstructing each task's **disjoint**
+//! `&mut` output row range — both `// SAFETY:`-documented and sound because the
+//! completion barrier keeps the closure alive and the row ranges never overlap.
+//! It spawns nothing on a single-core host or a WASM target; it is `std`-only
+//! (no external crate), preserving NFR-DS-02.
 
 // Local opt-out from the workspace `unsafe_code = "deny"` lint — see the
 // crate-level "Unsafe policy" docs above (M0-02-T03).
@@ -82,6 +90,12 @@
 mod dispatch;
 mod features;
 pub mod kernels;
+// Persistent row-parallel worker pool (M1-12). Native-only + feature-gated: the
+// large GEMM/GEMV split over disjoint output rows (bit-identical to
+// single-thread). WASM `std` has no thread spawning, so it is excluded there and
+// the kernels run inline (see `pool` module docs, NFR-LC-03 / NFR-DS-02).
+#[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+mod pool;
 mod selftest;
 
 pub use dispatch::active_isa;

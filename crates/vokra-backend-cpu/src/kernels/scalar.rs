@@ -63,6 +63,32 @@ pub(crate) fn gemm(
     }
 }
 
+/// Row-major matrix-vector product with an optional per-row bias:
+/// `out[i] = bias[i] + sum_l a[i, l] * x[l]`.
+///
+/// Shapes (checked by the caller): `a` is `m x k`, `x` has length `k`,
+/// `out` has length `m`, and `bias` (when `Some`) has length `m`. The per-row
+/// accumulation is left-to-right over `l`; with `bias = None` this is exactly
+/// the `n = 1` column of [`gemm`], so a scalar-only host keeps **bit-identical**
+/// logits when the tied Whisper head switches from `gemm` to `gemv`.
+pub(crate) fn gemv(
+    m: usize,
+    k: usize,
+    a: &[f32],
+    x: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) {
+    for i in 0..m {
+        let row = &a[i * k..i * k + k];
+        let mut s = bias.map_or(0.0, |bias| bias[i]);
+        for (&av, &xv) in row.iter().zip(x) {
+            s += av * xv;
+        }
+        out[i] = s;
+    }
+}
+
 /// Element-wise `out[i] = a[i] + b[i]` (precondition: equal lengths).
 pub(crate) fn add(a: &[f32], b: &[f32], out: &mut [f32]) {
     for ((o, &x), &y) in out.iter_mut().zip(a).zip(b) {
@@ -233,6 +259,34 @@ mod tests {
         let mut out = [0.0; 1];
         gemm(1, 1, 3, &a, &b, None, &mut out);
         assert_eq!(out, [-2.0]);
+    }
+
+    #[test]
+    fn gemv_hand_computed_and_bias() {
+        // a = [[1,2,3],[4,5,6]] (2x3), x = [1,0,-1].
+        // row0 = 1 - 3 = -2; row1 = 4 - 6 = -2.
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let x = [1.0, 0.0, -1.0];
+        let mut out = [0.0; 2];
+        gemv(2, 3, &a, &x, None, &mut out);
+        assert_eq!(out, [-2.0, -2.0]);
+        // With per-row bias [10, 20].
+        gemv(2, 3, &a, &x, Some(&[10.0, 20.0]), &mut out);
+        assert_eq!(out, [8.0, 18.0]);
+    }
+
+    #[test]
+    fn gemv_equals_gemm_n1_column_bit_for_bit() {
+        // The tied-logits-head routing swaps `gemm(m, n=1, k)` for `gemv(m, k)`;
+        // with no bias the scalar oracle must be bit-identical (same left-to-right
+        // accumulation), so a scalar-only host sees no numeric change.
+        let a = [0.5, -1.5, 2.25, -0.75, 3.0, 0.125]; // 2x3
+        let x = [1.25, -0.5, 0.75];
+        let mut gemm_out = [0.0; 2];
+        gemm(2, 1, 3, &a, &x, None, &mut gemm_out);
+        let mut gemv_out = [0.0; 2];
+        gemv(2, 3, &a, &x, None, &mut gemv_out);
+        assert_eq!(gemm_out, gemv_out);
     }
 
     #[test]

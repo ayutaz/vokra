@@ -4,6 +4,15 @@
 //! FMA3 + F16C + BMI1/2 (Haswell 2013+) — 主力パス"). 256-bit vectors hold
 //! eight f32 lanes; the ragged tail (`n % 8`) is handled scalar.
 //!
+//! `gemm` is a **register-blocked** microkernel (M1-08): an `MR`×`NR` output
+//! tile is held in `MR * NR / 8` independent `__m256` accumulators (see
+//! [`MR`] / [`NR_VEC`]), so the `k`-loop keeps many FMA chains in flight and is
+//! no longer FMA-latency-bound — the win for the `m = 1500` Whisper encoder
+//! GEMMs. It stays a pure reordering of the same per-element FMA chains as the
+//! scalar oracle (lane-aligned shapes are bit-identical to the pre-blocking
+//! kernel), and the row/column remainders fall back to the original single-row
+//! vector + scalar paths.
+//!
 //! # Unsafe boundary (NFR-RL-07, M0-08-T01/T10)
 //!
 //! Each kernel splits into a private `#[target_feature(enable = "avx2,fma")]
@@ -62,9 +71,29 @@ unsafe fn hmax256(v: __m256) -> f32 {
     }
 }
 
+/// Register-block tile height (rows of `a` / `out` computed together).
+///
+/// `MR = 6` rows × `NR = 16` cols (two 8-lane vectors) holds `6 * 16 / 8 = 12`
+/// live `__m256` accumulators; with the two `b` vectors and one `a` broadcast
+/// (≈ 15) that stays inside x86-64's 16 YMM registers. This is the **tunable**
+/// default: 12 independent FMA chains lift the encoder GEMMs off the old
+/// single-accumulator, FMA-latency-bound path. See [`gemm_impl`].
+const MR: usize = 6;
+/// Register-block tile width in 8-lane AVX2 vectors (`NR = NR_VEC * 8 = 16`).
+const NR_VEC: usize = 2;
+
 /// # Safety
 /// Requires `avx2,fma`; shapes as documented on [`scalar::gemm`].
+///
+/// Register-blocked `MR`×`NR` microkernel (`NR = NR_VEC * 8`): each B-load is
+/// reused across the `MR` rows of the tile and each A-broadcast across the
+/// `NR_VEC` B-vectors, so the `k`-loop runs `MR * NR_VEC` **independent**
+/// accumulators and hides FMA latency. Every output element is still the same
+/// bias-seeded FMA chain over `l = 0..k` as the scalar oracle (just tiled), so
+/// results stay within the GEMM differential tolerance and — on lane-aligned
+/// shapes — bit-identical to the pre-blocking AVX2 kernel.
 #[target_feature(enable = "avx2,fma")]
+#[allow(clippy::needless_range_loop)] // explicit tile index math is clearer here
 unsafe fn gemm_impl(
     m: usize,
     n: usize,
@@ -75,13 +104,81 @@ unsafe fn gemm_impl(
     out: &mut [f32],
 ) {
     // SAFETY: `avx2,fma` are guaranteed by the safe wrapper's dispatch
-    // invariant. Every load/store below is bounded: the `j + 8 <= n` guard
-    // keeps 8-wide accesses inside the length-`n` rows of `b` / `out` / `bias`
-    // (all validated by the public wrapper), and the scalar tail covers the
-    // remainder.
+    // invariant. In the row-block loop `i + MR <= m` and `r < MR`, so
+    // `i + r <= m - 1`; the column guards (`j + 16 <= n`, `j + 8 <= n`,
+    // `j < n`) keep every 8-wide load/store inside the length-`n` rows of
+    // `b` / `out` / `bias` and every `a[(i + r) * k + l]` inside `a` (all
+    // lengths validated by the public wrapper). The row-tail loop repeats the
+    // original single-row path with the same guards.
     unsafe {
-        for i in 0..m {
-            let out_row = &mut out[i * n..i * n + n];
+        let mut i = 0;
+        // ---- main path: full blocks of MR rows ----
+        while i + MR <= m {
+            let mut j = 0;
+            // NR = NR_VEC * 8 columns: an MR × NR_VEC accumulator tile.
+            while j + NR_VEC * 8 <= n {
+                let (mut c0, mut c1) = match bias {
+                    Some(bias) => (
+                        [_mm256_loadu_ps(bias[j..].as_ptr()); MR],
+                        [_mm256_loadu_ps(bias[j + 8..].as_ptr()); MR],
+                    ),
+                    None => ([_mm256_setzero_ps(); MR], [_mm256_setzero_ps(); MR]),
+                };
+                for l in 0..k {
+                    let bl0 = _mm256_loadu_ps(b[l * n + j..].as_ptr());
+                    let bl1 = _mm256_loadu_ps(b[l * n + j + 8..].as_ptr());
+                    for r in 0..MR {
+                        let ar = _mm256_set1_ps(a[(i + r) * k + l]);
+                        c0[r] = _mm256_fmadd_ps(ar, bl0, c0[r]);
+                        c1[r] = _mm256_fmadd_ps(ar, bl1, c1[r]);
+                    }
+                }
+                for r in 0..MR {
+                    _mm256_storeu_ps(out[(i + r) * n + j..].as_mut_ptr(), c0[r]);
+                    _mm256_storeu_ps(out[(i + r) * n + j + 8..].as_mut_ptr(), c1[r]);
+                }
+                j += NR_VEC * 8;
+            }
+            // 8-wide column remainder: an MR × 1 accumulator tile.
+            while j + 8 <= n {
+                let mut c = match bias {
+                    Some(bias) => [_mm256_loadu_ps(bias[j..].as_ptr()); MR],
+                    None => [_mm256_setzero_ps(); MR],
+                };
+                for l in 0..k {
+                    let bl = _mm256_loadu_ps(b[l * n + j..].as_ptr());
+                    for r in 0..MR {
+                        c[r] = _mm256_fmadd_ps(_mm256_set1_ps(a[(i + r) * k + l]), bl, c[r]);
+                    }
+                }
+                for r in 0..MR {
+                    _mm256_storeu_ps(out[(i + r) * n + j..].as_mut_ptr(), c[r]);
+                }
+                j += 8;
+            }
+            // Scalar column remainder: MR independent scalar accumulators.
+            while j < n {
+                let mut s = [0.0f32; MR];
+                if let Some(bias) = bias {
+                    for r in 0..MR {
+                        s[r] = bias[j];
+                    }
+                }
+                for l in 0..k {
+                    let bv = b[l * n + j];
+                    for r in 0..MR {
+                        s[r] += a[(i + r) * k + l] * bv;
+                    }
+                }
+                for r in 0..MR {
+                    out[(i + r) * n + j] = s[r];
+                }
+                j += 1;
+            }
+            i += MR;
+        }
+        // ---- row tail: the leftover `m % MR` rows, one row at a time ----
+        while i < m {
             let mut j = 0;
             while j + 8 <= n {
                 let mut acc = match bias {
@@ -93,7 +190,7 @@ unsafe fn gemm_impl(
                     let b_lj = _mm256_loadu_ps(b[l * n + j..].as_ptr());
                     acc = _mm256_fmadd_ps(a_il, b_lj, acc);
                 }
-                _mm256_storeu_ps(out_row[j..].as_mut_ptr(), acc);
+                _mm256_storeu_ps(out[i * n + j..].as_mut_ptr(), acc);
                 j += 8;
             }
             while j < n {
@@ -101,9 +198,91 @@ unsafe fn gemm_impl(
                 for l in 0..k {
                     s += a[i * k + l] * b[l * n + j];
                 }
-                out_row[j] = s;
+                out[i * n + j] = s;
                 j += 1;
             }
+            i += 1;
+        }
+    }
+}
+
+/// # Safety
+/// Requires `avx2,fma`; shapes as documented on [`scalar::gemv`].
+///
+/// Per output row `i`, the dot product `sum_l a[i, l] * x[l]` is computed with
+/// four independent 8-lane FMA accumulators (32 lanes per iteration) so the
+/// `k`-loop keeps several FMA chains in flight and is not latency-bound, then
+/// reduced by a tree add + [`hsum256`]; the `k % 32` (8-wide) and `k % 8`
+/// (scalar) remainders follow. This is the same arithmetic as [`scalar::gemv`]
+/// with a reordered reduction (within the gemv differential tolerance), and it
+/// streams the `[m, k]` matrix `a` row-contiguously — the win over routing the
+/// tied logits head through the `gemm` `n = 1` scalar tail.
+#[target_feature(enable = "avx2,fma")]
+unsafe fn gemv_impl(
+    m: usize,
+    k: usize,
+    a: &[f32],
+    x: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) {
+    // SAFETY: `avx2,fma` guaranteed by the safe wrapper's dispatch invariant.
+    // For each row `i < m`, `base = i * k` and every 8-wide load is guarded by
+    // `l + 32 <= k` / `l + 8 <= k`, so the top index `base + l + 31` (resp.
+    // `+ 7`) stays inside the length-`m * k` slice `a` and each `x[l + ..]`
+    // inside the length-`k` slice `x` (both validated by the public wrapper).
+    // `out[i]` and `bias[i]` are inside their length-`m` slices.
+    unsafe {
+        for i in 0..m {
+            let base = i * k;
+            let mut acc0 = _mm256_setzero_ps();
+            let mut acc1 = _mm256_setzero_ps();
+            let mut acc2 = _mm256_setzero_ps();
+            let mut acc3 = _mm256_setzero_ps();
+            let mut l = 0;
+            while l + 32 <= k {
+                acc0 = _mm256_fmadd_ps(
+                    _mm256_loadu_ps(a[base + l..].as_ptr()),
+                    _mm256_loadu_ps(x[l..].as_ptr()),
+                    acc0,
+                );
+                acc1 = _mm256_fmadd_ps(
+                    _mm256_loadu_ps(a[base + l + 8..].as_ptr()),
+                    _mm256_loadu_ps(x[l + 8..].as_ptr()),
+                    acc1,
+                );
+                acc2 = _mm256_fmadd_ps(
+                    _mm256_loadu_ps(a[base + l + 16..].as_ptr()),
+                    _mm256_loadu_ps(x[l + 16..].as_ptr()),
+                    acc2,
+                );
+                acc3 = _mm256_fmadd_ps(
+                    _mm256_loadu_ps(a[base + l + 24..].as_ptr()),
+                    _mm256_loadu_ps(x[l + 24..].as_ptr()),
+                    acc3,
+                );
+                l += 32;
+            }
+            // 8-wide remainder folds into the first accumulator.
+            while l + 8 <= k {
+                acc0 = _mm256_fmadd_ps(
+                    _mm256_loadu_ps(a[base + l..].as_ptr()),
+                    _mm256_loadu_ps(x[l..].as_ptr()),
+                    acc0,
+                );
+                l += 8;
+            }
+            let acc = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+            let mut s = hsum256(acc);
+            // Scalar `k % 8` tail.
+            while l < k {
+                s += a[base + l] * x[l];
+                l += 1;
+            }
+            if let Some(bias) = bias {
+                s += bias[i];
+            }
+            out[i] = s;
         }
     }
 }
@@ -347,6 +526,20 @@ pub(crate) fn gemm(
     // SAFETY: reached only when AVX2+FMA were detected on this host (dispatch
     // invariant); slice shapes validated by the public wrapper in `super`.
     unsafe { gemm_impl(m, n, k, a, b, bias, out) }
+}
+
+/// AVX2 GEMV (matrix-vector). See [`scalar::gemv`] for shapes.
+pub(crate) fn gemv(
+    m: usize,
+    k: usize,
+    a: &[f32],
+    x: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) {
+    // SAFETY: reached only when AVX2+FMA were detected on this host (dispatch
+    // invariant); slice shapes validated by the public wrapper in `super`.
+    unsafe { gemv_impl(m, k, a, x, bias, out) }
 }
 
 /// AVX2 element-wise add.

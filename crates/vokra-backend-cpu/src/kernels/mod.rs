@@ -11,6 +11,7 @@
 //! | kernel | SIMD? | rationale |
 //! |--------|-------|-----------|
 //! | [`gemm_f32`] (bias = linear) | yes | dominant Whisper attention / FFN cost |
+//! | [`gemv_f32`] (bias = per-row) | yes | tied logits head `token_emb[v,d] @ h[d]` (the `gemm` `n=1` scalar-tail case, M1) |
 //! | [`add_f32`] / [`mul_f32`] | yes | residual add, gating |
 //! | [`relu_f32`] | yes | Silero VAD conv stack |
 //! | [`sigmoid_f32`] | scalar-backed; SIMD under `simd-transcendental` | VAD output / LSTM gate; exp-bound (`vexp`, M1-05-EXP) |
@@ -67,6 +68,54 @@ use vokra_core::{Result, VokraError};
 use crate::dispatch;
 use crate::features::IsaPath;
 
+// ---- production GEMM / GEMV execution (row-parallel when `parallel` is on) ----
+//
+// The `*_f32` public wrappers below route through these. When the `parallel`
+// feature is on (native, multi-core host) the large GEMM/GEMV are split over
+// disjoint output rows by `crate::pool` — bit-identical to the inline call (same
+// per-element FMA chain), so parity is preserved. The `*_f32_on` differential
+// entry points deliberately do NOT use the pool: they stay single-thread so a
+// forced-ISA run is the single-thread numeric reference the pool is compared
+// against. Off `parallel` (or on WASM / single core) both paths run inline.
+
+#[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+#[allow(clippy::too_many_arguments)]
+fn run_gemm(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    b: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) {
+    crate::pool::parallel_gemm(dispatch::table().gemm, m, n, k, a, b, bias, out);
+}
+
+#[cfg(not(all(feature = "parallel", not(target_family = "wasm"))))]
+#[allow(clippy::too_many_arguments)]
+fn run_gemm(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    b: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) {
+    (dispatch::table().gemm)(m, n, k, a, b, bias, out);
+}
+
+#[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+fn run_gemv(m: usize, k: usize, a: &[f32], x: &[f32], bias: Option<&[f32]>, out: &mut [f32]) {
+    crate::pool::parallel_gemv(dispatch::table().gemv, m, k, a, x, bias, out);
+}
+
+#[cfg(not(all(feature = "parallel", not(target_family = "wasm"))))]
+fn run_gemv(m: usize, k: usize, a: &[f32], x: &[f32], bias: Option<&[f32]>, out: &mut [f32]) {
+    (dispatch::table().gemv)(m, k, a, x, bias, out);
+}
+
 /// Default layer-norm epsilon (PyTorch `nn.LayerNorm` default `1e-5`, which
 /// OpenAI Whisper inherits). Exposed for M0-06 call sites.
 pub const LAYER_NORM_DEFAULT_EPS: f32 = scalar::LAYER_NORM_DEFAULT_EPS;
@@ -103,6 +152,23 @@ fn validate_gemm(
     expect_len("gemm out", out.len(), checked_mul(m, n, "gemm m*n")?)?;
     if let Some(bias) = bias {
         expect_len("gemm bias", bias.len(), n)?;
+    }
+    Ok(())
+}
+
+fn validate_gemv(
+    m: usize,
+    k: usize,
+    a: &[f32],
+    x: &[f32],
+    bias: Option<&[f32]>,
+    out: &[f32],
+) -> Result<()> {
+    expect_len("gemv a", a.len(), checked_mul(m, k, "gemv m*k")?)?;
+    expect_len("gemv x", x.len(), k)?;
+    expect_len("gemv out", out.len(), m)?;
+    if let Some(bias) = bias {
+        expect_len("gemv bias", bias.len(), m)?;
     }
     Ok(())
 }
@@ -149,11 +215,14 @@ pub fn gemm_f32(
     out: &mut [f32],
 ) -> Result<()> {
     validate_gemm(m, n, k, a, b, bias, out)?;
-    (dispatch::table().gemm)(m, n, k, a, b, bias, out);
+    run_gemm(m, n, k, a, b, bias, out);
     Ok(())
 }
 
 /// [`gemm_f32`] forced onto a specific `isa` (differential testing).
+///
+/// Always single-thread (never the pool): this is the numeric reference the
+/// row-parallel production path is checked bit-for-bit against.
 #[allow(clippy::too_many_arguments)] // mirrors gemm_f32 plus the forced isa
 pub fn gemm_f32_on(
     isa: IsaPath,
@@ -167,6 +236,48 @@ pub fn gemm_f32_on(
 ) -> Result<()> {
     validate_gemm(m, n, k, a, b, bias, out)?;
     (dispatch::table_for(isa)?.gemm)(m, n, k, a, b, bias, out);
+    Ok(())
+}
+
+/// Row-major matrix-vector product with an optional per-row bias:
+/// `out[i] = bias[i] + sum_l a[i, l] * x[l]`.
+///
+/// `a` is `m x k`, `x` has length `k`, `out` has length `m`, and `bias` (when
+/// `Some`) has length `m`. This is the `n = 1` case of [`gemm_f32`], but rather
+/// than falling through that kernel's scalar column tail it streams each row of
+/// `a` contiguously and reduces it with a wide SIMD FMA + horizontal sum. It is
+/// the fast path for Whisper's tied logits head (`token_emb[v, d] @ h[d]`, the
+/// single biggest per-token decode matmul). Runs on [`crate::active_isa`]; a
+/// shape mismatch is an explicit [`VokraError::InvalidArgument`].
+pub fn gemv_f32(
+    m: usize,
+    k: usize,
+    a: &[f32],
+    x: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) -> Result<()> {
+    validate_gemv(m, k, a, x, bias, out)?;
+    run_gemv(m, k, a, x, bias, out);
+    Ok(())
+}
+
+/// [`gemv_f32`] forced onto a specific `isa` (differential testing).
+///
+/// Always single-thread (never the pool): the numeric reference for the
+/// row-parallel production path.
+#[allow(clippy::too_many_arguments)] // mirrors gemv_f32 plus the forced isa
+pub fn gemv_f32_on(
+    isa: IsaPath,
+    m: usize,
+    k: usize,
+    a: &[f32],
+    x: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) -> Result<()> {
+    validate_gemv(m, k, a, x, bias, out)?;
+    (dispatch::table_for(isa)?.gemv)(m, k, a, x, bias, out);
     Ok(())
 }
 
@@ -485,6 +596,52 @@ mod tests {
         let mut out = [0.0; 4];
         gemm_f32_on(IsaPath::Scalar, 2, 2, 2, &a, &b, Some(&bias), &mut out).unwrap();
         assert_eq!(out, [101.0, 202.0, 103.0, 204.0]);
+    }
+
+    #[test]
+    fn gemv_on_scalar_matches_hand_value() {
+        // a = [[1,2,3],[4,5,6]] (2x3), x = [1,0,-1], bias = [100, 200].
+        // row0 = 1*1 + 2*0 + 3*-1 = -2 (+100 = 98); row1 = 4 - 6 = -2 (+200 = 198).
+        let a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let x = [1.0, 0.0, -1.0];
+        let bias = [100.0, 200.0];
+        let mut out = [0.0; 2];
+        gemv_f32_on(IsaPath::Scalar, 2, 3, &a, &x, Some(&bias), &mut out).unwrap();
+        assert_eq!(out, [98.0, 198.0]);
+        // No-bias variant: exactly the n=1 column of gemm on the same data.
+        gemv_f32_on(IsaPath::Scalar, 2, 3, &a, &x, None, &mut out).unwrap();
+        assert_eq!(out, [-2.0, -2.0]);
+    }
+
+    #[test]
+    fn gemv_matches_gemm_n1_column() {
+        // gemv(m,k) must equal gemm(m, n=1, k) with x as the single b-column
+        // (this is the equivalence the tied-logits-head routing relies on).
+        let a = [0.5, -1.0, 2.0, 3.0, 0.25, -0.5]; // 2x3
+        let x = [0.1, -0.2, 0.3];
+        let mut g_out = [0.0; 2];
+        gemm_f32(2, 1, 3, &a, &x, None, &mut g_out).unwrap();
+        let mut v_out = [0.0; 2];
+        gemv_f32_on(IsaPath::Scalar, 2, 3, &a, &x, None, &mut v_out).unwrap();
+        assert_eq!(g_out, v_out);
+    }
+
+    #[test]
+    fn gemv_rejects_bad_shapes() {
+        // m=2, k=3: a needs 6, x needs 3, out needs 2, bias needs 2.
+        let a = [0.0; 6];
+        let x = [0.0; 3];
+        let mut out = [0.0; 2];
+        // `a` too short (5 != m*k = 6).
+        assert!(gemv_f32(2, 3, &[0.0; 5], &x, None, &mut out).is_err());
+        // `x` length != k (2 != 3).
+        assert!(gemv_f32(2, 3, &a, &[0.0; 2], None, &mut out).is_err());
+        // `out` length != m (3 != 2).
+        assert!(gemv_f32(2, 3, &a, &x, None, &mut [0.0; 3]).is_err());
+        // `bias` length != m (1 != 2).
+        assert!(gemv_f32(2, 3, &a, &x, Some(&[0.0; 1]), &mut out).is_err());
+        // m*k overflows usize -> explicit error via checked_mul (no kernel run).
+        assert!(gemv_f32(usize::MAX, 2, &[], &[], None, &mut []).is_err());
     }
 
     #[test]

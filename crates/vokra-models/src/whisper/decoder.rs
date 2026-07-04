@@ -26,7 +26,7 @@
 
 use std::sync::Arc;
 
-use vokra_backend_cpu::kernels::gemm_f32;
+use vokra_backend_cpu::kernels::{gemm_f32, gemv_f32};
 use vokra_core::{KvCache, Result, VokraError};
 
 use super::WhisperModel;
@@ -341,6 +341,16 @@ fn project_logits_into(
     let d = cfg.d_model;
     let v = cfg.n_vocab;
     scratch.ensure(t, d, v);
+    // Steady-state greedy hot path: a single query position (`t == 1`) is a
+    // pure matrix-vector product `token_emb[v, d] @ h[d]` — the largest single
+    // per-token decode matmul. The general `gemm` below would run it as `n = 1`
+    // and fall entirely through the kernel's scalar column tail; route it
+    // through the vectorized `gemv` instead. With `t == 1` the transpose `hᵀ`
+    // equals `h[..d]` and the final `[T, v]` transpose is the identity, so the
+    // logits land directly in `out` with zero extra memory and zero copies.
+    if t == 1 {
+        return gemv_f32(v, d, &w.token_emb, &h[..d], None, &mut scratch.out[..v]);
+    }
     // hᵀ [d, T].
     for i in 0..t {
         for c in 0..d {

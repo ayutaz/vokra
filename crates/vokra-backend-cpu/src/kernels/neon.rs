@@ -8,6 +8,15 @@
 //! SVE / SVE2 / SME) are out of the spike scope (FR-BE-01; CLAUDE.md
 //! "ARM64 系").
 //!
+//! `gemm` is a **register-blocked** microkernel (M1-08): an `MR`×`NR` output
+//! tile is held in `MR * NR / 4` independent `float32x4_t` accumulators (see
+//! [`MR`] / [`NR_VEC`]), so the `k`-loop keeps many FMA chains in flight and
+//! is no longer FMA-latency-bound — the win for the `m = 1500` Whisper encoder
+//! GEMMs. It stays a pure reordering of the same per-element FMA chains as the
+//! scalar oracle (lane-aligned shapes are bit-identical to the pre-blocking
+//! kernel), and the row/column remainders fall back to the original single-row
+//! vector + scalar paths.
+//!
 //! # Unsafe boundary (NFR-RL-07, M0-08-T01/T13)
 //!
 //! Same structure as [`super::avx2`]: private
@@ -31,10 +40,31 @@ use super::scalar;
 #[cfg(feature = "simd-transcendental")]
 use super::vexp;
 
+/// Register-block tile height (rows of `a` / `out` computed together).
+///
+/// `MR = 8` rows × `NR = 8` cols (two 4-lane vectors) holds `8 * 8 / 4 = 16`
+/// live `float32x4_t` accumulators, comfortably inside AArch64's 32 SIMD
+/// registers (16 acc + 2 `b` vectors + 1 `a` broadcast ≈ 19). This is the
+/// **tunable** default: it gives 16 independent FMA chains, enough to cover
+/// the M1 FMA latency×throughput and lift the encoder GEMMs off the old
+/// single-accumulator, FMA-latency-bound path. See [`gemm_impl`].
+const MR: usize = 8;
+/// Register-block tile width in 4-lane NEON vectors (`NR = NR_VEC * 4 = 8`).
+const NR_VEC: usize = 2;
+
 /// # Safety
 /// Requires `neon` (baseline on AArch64); shapes as documented on
 /// [`scalar::gemm`].
+///
+/// Register-blocked `MR`×`NR` microkernel (`NR = NR_VEC * 4`): each B-load is
+/// reused across the `MR` rows of the tile and each A-broadcast across the
+/// `NR_VEC` B-vectors, so the `k`-loop runs `MR * NR_VEC` **independent**
+/// accumulators and hides FMA latency. Every output element is still the same
+/// bias-seeded FMA chain over `l = 0..k` as the scalar oracle (just tiled), so
+/// results stay within the GEMM differential tolerance and — on lane-aligned
+/// shapes — bit-identical to the pre-blocking NEON kernel.
 #[target_feature(enable = "neon")]
+#[allow(clippy::needless_range_loop)] // explicit tile index math is clearer here
 unsafe fn gemm_impl(
     m: usize,
     n: usize,
@@ -44,13 +74,81 @@ unsafe fn gemm_impl(
     bias: Option<&[f32]>,
     out: &mut [f32],
 ) {
-    // SAFETY: NEON is baseline on AArch64. Every 4-wide load/store is guarded
-    // by `j + 4 <= n`, keeping accesses inside the length-`n` rows of `b` /
-    // `out` / `bias` (all validated by the public wrapper); the scalar tail
-    // covers the remainder.
+    // SAFETY: NEON is baseline on AArch64. In the row-block loop `i + MR <= m`
+    // and `r < MR`, so `i + r <= m - 1`; the column guards (`j + 8 <= n`,
+    // `j + 4 <= n`, `j < n`) keep every 4-wide load/store inside the length-`n`
+    // rows of `b` / `out` / `bias` and every `a[(i + r) * k + l]` inside `a`
+    // (all lengths validated by the public wrapper). The row-tail loop repeats
+    // the original single-row path with the same guards.
     unsafe {
-        for i in 0..m {
-            let out_row = &mut out[i * n..i * n + n];
+        let mut i = 0;
+        // ---- main path: full blocks of MR rows ----
+        while i + MR <= m {
+            let mut j = 0;
+            // NR = NR_VEC * 4 columns: an MR × NR_VEC accumulator tile.
+            while j + NR_VEC * 4 <= n {
+                let (mut c0, mut c1) = match bias {
+                    Some(bias) => (
+                        [vld1q_f32(bias[j..].as_ptr()); MR],
+                        [vld1q_f32(bias[j + 4..].as_ptr()); MR],
+                    ),
+                    None => ([vdupq_n_f32(0.0); MR], [vdupq_n_f32(0.0); MR]),
+                };
+                for l in 0..k {
+                    let bl0 = vld1q_f32(b[l * n + j..].as_ptr());
+                    let bl1 = vld1q_f32(b[l * n + j + 4..].as_ptr());
+                    for r in 0..MR {
+                        let ar = vdupq_n_f32(a[(i + r) * k + l]);
+                        c0[r] = vfmaq_f32(c0[r], ar, bl0);
+                        c1[r] = vfmaq_f32(c1[r], ar, bl1);
+                    }
+                }
+                for r in 0..MR {
+                    vst1q_f32(out[(i + r) * n + j..].as_mut_ptr(), c0[r]);
+                    vst1q_f32(out[(i + r) * n + j + 4..].as_mut_ptr(), c1[r]);
+                }
+                j += NR_VEC * 4;
+            }
+            // 4-wide column remainder: an MR × 1 accumulator tile.
+            while j + 4 <= n {
+                let mut c = match bias {
+                    Some(bias) => [vld1q_f32(bias[j..].as_ptr()); MR],
+                    None => [vdupq_n_f32(0.0); MR],
+                };
+                for l in 0..k {
+                    let bl = vld1q_f32(b[l * n + j..].as_ptr());
+                    for r in 0..MR {
+                        c[r] = vfmaq_f32(c[r], vdupq_n_f32(a[(i + r) * k + l]), bl);
+                    }
+                }
+                for r in 0..MR {
+                    vst1q_f32(out[(i + r) * n + j..].as_mut_ptr(), c[r]);
+                }
+                j += 4;
+            }
+            // Scalar column remainder: MR independent scalar accumulators.
+            while j < n {
+                let mut s = [0.0f32; MR];
+                if let Some(bias) = bias {
+                    for r in 0..MR {
+                        s[r] = bias[j];
+                    }
+                }
+                for l in 0..k {
+                    let bv = b[l * n + j];
+                    for r in 0..MR {
+                        s[r] += a[(i + r) * k + l] * bv;
+                    }
+                }
+                for r in 0..MR {
+                    out[(i + r) * n + j] = s[r];
+                }
+                j += 1;
+            }
+            i += MR;
+        }
+        // ---- row tail: the leftover `m % MR` rows, one row at a time ----
+        while i < m {
             let mut j = 0;
             while j + 4 <= n {
                 let mut acc = match bias {
@@ -62,7 +160,7 @@ unsafe fn gemm_impl(
                     let b_lj = vld1q_f32(b[l * n + j..].as_ptr());
                     acc = vfmaq_f32(acc, a_il, b_lj);
                 }
-                vst1q_f32(out_row[j..].as_mut_ptr(), acc);
+                vst1q_f32(out[i * n + j..].as_mut_ptr(), acc);
                 j += 4;
             }
             while j < n {
@@ -70,9 +168,92 @@ unsafe fn gemm_impl(
                 for l in 0..k {
                     s += a[i * k + l] * b[l * n + j];
                 }
-                out_row[j] = s;
+                out[i * n + j] = s;
                 j += 1;
             }
+            i += 1;
+        }
+    }
+}
+
+/// # Safety
+/// Requires `neon` (baseline); shapes as documented on [`scalar::gemv`].
+///
+/// Per output row `i`, the dot product `sum_l a[i, l] * x[l]` is computed with
+/// four independent 4-lane FMA accumulators (16 lanes per iteration) so the
+/// `k`-loop keeps several FMA chains in flight and is not latency-bound, then
+/// reduced by a tree add + horizontal sum; the `k % 16` (4-wide) and `k % 4`
+/// (scalar) remainders follow. This is the same arithmetic as
+/// [`scalar::gemv`] with a reordered reduction (within the gemv differential
+/// tolerance), and it streams the `[m, k]` matrix `a` row-contiguously — the
+/// win over routing the tied logits head through the `gemm` `n = 1` scalar
+/// tail.
+#[target_feature(enable = "neon")]
+unsafe fn gemv_impl(
+    m: usize,
+    k: usize,
+    a: &[f32],
+    x: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) {
+    // SAFETY: NEON is baseline on AArch64. For each row `i < m`, `base = i * k`
+    // and every 4-wide load is guarded by `l + 16 <= k` / `l + 4 <= k`, so the
+    // top index `base + l + 15` (resp. `+ 3`) stays inside the length-`m * k`
+    // slice `a` and each `x[l + ..]` inside the length-`k` slice `x` (both
+    // validated by the public wrapper). `out[i]` and `bias[i]` are inside their
+    // length-`m` slices.
+    unsafe {
+        for i in 0..m {
+            let base = i * k;
+            let mut acc0 = vdupq_n_f32(0.0);
+            let mut acc1 = vdupq_n_f32(0.0);
+            let mut acc2 = vdupq_n_f32(0.0);
+            let mut acc3 = vdupq_n_f32(0.0);
+            let mut l = 0;
+            while l + 16 <= k {
+                acc0 = vfmaq_f32(
+                    acc0,
+                    vld1q_f32(a[base + l..].as_ptr()),
+                    vld1q_f32(x[l..].as_ptr()),
+                );
+                acc1 = vfmaq_f32(
+                    acc1,
+                    vld1q_f32(a[base + l + 4..].as_ptr()),
+                    vld1q_f32(x[l + 4..].as_ptr()),
+                );
+                acc2 = vfmaq_f32(
+                    acc2,
+                    vld1q_f32(a[base + l + 8..].as_ptr()),
+                    vld1q_f32(x[l + 8..].as_ptr()),
+                );
+                acc3 = vfmaq_f32(
+                    acc3,
+                    vld1q_f32(a[base + l + 12..].as_ptr()),
+                    vld1q_f32(x[l + 12..].as_ptr()),
+                );
+                l += 16;
+            }
+            // 4-wide remainder folds into the first accumulator.
+            while l + 4 <= k {
+                acc0 = vfmaq_f32(
+                    acc0,
+                    vld1q_f32(a[base + l..].as_ptr()),
+                    vld1q_f32(x[l..].as_ptr()),
+                );
+                l += 4;
+            }
+            let acc = vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3));
+            let mut s = vaddvq_f32(acc);
+            // Scalar `k % 4` tail.
+            while l < k {
+                s += a[base + l] * x[l];
+                l += 1;
+            }
+            if let Some(bias) = bias {
+                s += bias[i];
+            }
+            out[i] = s;
         }
     }
 }
@@ -304,6 +485,20 @@ pub(crate) fn gemm(
     // SAFETY: NEON is baseline on AArch64 (this module only compiles there);
     // slice shapes validated by the public wrapper in `super`.
     unsafe { gemm_impl(m, n, k, a, b, bias, out) }
+}
+
+/// NEON GEMV (matrix-vector). See [`scalar::gemv`] for shapes.
+pub(crate) fn gemv(
+    m: usize,
+    k: usize,
+    a: &[f32],
+    x: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) {
+    // SAFETY: NEON is baseline on AArch64 (this module only compiles there);
+    // slice shapes validated by the public wrapper in `super`.
+    unsafe { gemv_impl(m, k, a, x, bias, out) }
 }
 
 /// NEON element-wise add.

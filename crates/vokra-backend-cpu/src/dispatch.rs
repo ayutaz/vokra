@@ -23,6 +23,9 @@ use crate::kernels::scalar;
 
 /// GEMM kernel signature (see [`scalar::gemm`]); inputs are pre-validated.
 pub(crate) type GemmKernel = fn(usize, usize, usize, &[f32], &[f32], Option<&[f32]>, &mut [f32]);
+/// GEMV (matrix-vector) kernel signature (see [`scalar::gemv`]); inputs are
+/// pre-validated. `(m, k, a[m*k], x[k], bias?[m], out[m])`.
+pub(crate) type GemvKernel = fn(usize, usize, &[f32], &[f32], Option<&[f32]>, &mut [f32]);
 /// Element-wise binary kernel signature (`add` / `mul`).
 pub(crate) type BinaryKernel = fn(&[f32], &[f32], &mut [f32]);
 /// Element-wise unary kernel signature (`relu` / `sigmoid` / `tanh` / `gelu`).
@@ -37,6 +40,7 @@ pub(crate) type LayerNormKernel = fn(&[f32], &mut [f32], usize, usize, &[f32], &
 #[derive(Clone, Copy)]
 pub(crate) struct KernelTable {
     pub(crate) gemm: GemmKernel,
+    pub(crate) gemv: GemvKernel,
     pub(crate) add: BinaryKernel,
     pub(crate) mul: BinaryKernel,
     pub(crate) relu: UnaryKernel,
@@ -50,6 +54,7 @@ pub(crate) struct KernelTable {
 fn scalar_table() -> KernelTable {
     KernelTable {
         gemm: scalar::gemm,
+        gemv: scalar::gemv,
         add: scalar::add,
         mul: scalar::mul,
         relu: scalar::relu,
@@ -66,6 +71,7 @@ fn avx2_table() -> KernelTable {
     use crate::kernels::avx2;
     KernelTable {
         gemm: avx2::gemm,
+        gemv: avx2::gemv,
         add: avx2::add,
         mul: avx2::mul,
         relu: avx2::relu,
@@ -89,6 +95,7 @@ fn neon_table() -> KernelTable {
     use crate::kernels::neon;
     KernelTable {
         gemm: neon::gemm,
+        gemv: neon::gemv,
         add: neon::add,
         mul: neon::mul,
         relu: neon::relu,

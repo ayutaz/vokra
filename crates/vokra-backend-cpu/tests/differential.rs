@@ -25,13 +25,19 @@
 //! (M0-08-T10..T15).
 
 use vokra_backend_cpu::kernels;
-use vokra_backend_cpu::{CpuFeatures, IsaPath};
+use vokra_backend_cpu::{CpuFeatures, IsaPath, active_isa};
 
 /// FP32 parity ceiling (NFR-QL-01); per-kernel tolerances stay under it.
 const ATOL_CEILING: f32 = 0.01;
 /// GEMM tolerance — larger because error grows with the K-reduction length.
 const GEMM_ATOL: f32 = 1e-3;
 const GEMM_RTOL: f32 = 1e-4;
+/// GEMV tolerance: a per-row `k`-length dot product reordered from the scalar
+/// oracle's sequential sum into four lane-partial FMA accumulators. The
+/// absolute term is tight (1e-4, the design bound); [`GEMM_RTOL`] absorbs the
+/// magnitude scaling on large-`k` rows, and all of it stays far under the
+/// NFR-QL-01 ceiling.
+const GEMV_ATOL: f32 = 1e-4;
 /// Element-wise / activation tolerance.
 const ELTWISE_ATOL: f32 = 1e-6;
 /// Softmax / layer-norm tolerance (reductions + a division / rsqrt; the
@@ -130,6 +136,204 @@ fn gemm_scalar_matches_simd() {
                 GEMM_ATOL,
                 GEMM_RTOL,
                 &format!("gemm {m}x{n}x{k} bias={use_bias}"),
+            );
+        }
+    }
+}
+
+/// Register-blocked GEMM microkernel (M1-08) vs the scalar oracle over shapes
+/// that deliberately straddle the tile geometry. The NEON tile is `MR = 8` ×
+/// `NR = 8` and the AVX2 tile is `MR = 6` × `NR = 16`, so these sizes span:
+/// exact multiples of both `MR`s (pure main-path tiles), `m` values that are a
+/// multiple of neither `MR` (row tail on both ISAs), and `n` values that force
+/// the `NR` → 1-vector → scalar column-remainder cascade. Multi-tile sizes
+/// exercise the `i += MR` / `j += NR` advance more than once, and the large-`k`
+/// cases stress the accumulation the blocking reorders.
+#[test]
+fn blocked_gemm_matches_scalar_incl_ragged_tails() {
+    let mut rng = Rng::new(0x0BB1_0CE5);
+    // (m, n, k):
+    let shapes = [
+        // Multi-tile, fully ragged on both ISAs (row + all column remainders).
+        (13, 11, 9),
+        (25, 27, 17),
+        (41, 43, 33),
+        (50, 37, 24),
+        // m a multiple of neither 8 nor 6; n spans NR + 1-vector + scalar tail.
+        (17, 23, 16),
+        (100, 19, 40),
+        // Exact tile multiples (pure main path, no remainder) on each ISA.
+        (16, 16, 32), // NEON: 2×2 tiles exact
+        (48, 48, 10), // 48 = 6*8 = 8*6: exact rows/cols for both ISAs
+        (24, 32, 8),  // AVX2: 4 row-tiles × 2 col-tiles exact
+        // Wide-k accumulation with small tiles.
+        (12, 12, 129),
+        (7, 9, 200),
+        // Single-row and single-column degenerate shapes (all tail, no tile).
+        (1, 40, 17),
+        (40, 1, 17),
+        (5, 3, 6),
+    ];
+    for (m, n, k) in shapes {
+        let a = rng.vec(m * k);
+        let b = rng.vec(k * n);
+        let bias = rng.vec(n);
+        for use_bias in [false, true] {
+            let bias_opt = use_bias.then_some(bias.as_slice());
+            let mut out_ref = vec![0.0; m * n];
+            let mut out_simd = vec![0.0; m * n];
+            kernels::gemm_f32_on(IsaPath::Scalar, m, n, k, &a, &b, bias_opt, &mut out_ref).unwrap();
+            kernels::gemm_f32_on(simd_isa(), m, n, k, &a, &b, bias_opt, &mut out_simd).unwrap();
+            assert_close(
+                &out_simd,
+                &out_ref,
+                GEMM_ATOL,
+                GEMM_RTOL,
+                &format!("blocked gemm {m}x{n}x{k} bias={use_bias}"),
+            );
+        }
+    }
+}
+
+/// GEMV (matrix-vector, the tied-logits-head fast path) vs the scalar oracle.
+/// `k` deliberately spans the kernel's reduction geometry: the 16-lane (NEON)
+/// / 32-lane (AVX2) 4-accumulator inner loop, the 4-/8-wide single-accumulator
+/// remainder, and the scalar `k % 4` / `k % 8` tail — plus the `k = 512` shape
+/// of the real Whisper logits head (`token_emb[v, d] @ h[d]`, `d = 512`). `m`
+/// covers the single-row degenerate case and larger row counts.
+#[test]
+fn gemv_scalar_matches_simd() {
+    let mut rng = Rng::new(0x9E11_0AC7);
+    // (m, k):
+    let shapes = [
+        (1, 1),     // degenerate: pure scalar tail
+        (3, 4),     // NEON exact 4-wide, AVX2 scalar tail
+        (5, 7),     // NEON 4 + 3-tail; AVX2 all-scalar tail
+        (2, 8),     // AVX2 exact 8-wide; NEON 2×4
+        (4, 15),    // both ISAs ragged (8+7 / 4·3+3)
+        (8, 16),    // NEON exact 16 (one 4-acc iter); AVX2 8+8
+        (2, 20),    // NEON 16 + 4-remainder (no scalar tail); AVX2 8+8+4
+        (7, 31),    // AVX2 8·3 + 7-tail; NEON 4·7 + 3-tail
+        (6, 32),    // AVX2 exact 32 (one 4-acc iter); NEON 8×4
+        (3, 33),    // one full inner iter + 1 scalar (both ISAs)
+        (2, 129),   // 32·4 + 1: multi inner iters + scalar tail
+        (100, 200), // larger m; k = 32·6 + 8 (AVX2 8-remainder)
+        (51865, 1), // v×1 extreme: every element is the scalar tail
+        (64, 512),  // the real logits-head reduction width (d = 512)
+    ];
+    for (m, k) in shapes {
+        let a = rng.vec(m * k);
+        let x = rng.vec(k);
+        let bias = rng.vec(m);
+        for use_bias in [false, true] {
+            let bias_opt = use_bias.then_some(bias.as_slice());
+            let mut out_ref = vec![0.0; m];
+            let mut out_simd = vec![0.0; m];
+            kernels::gemv_f32_on(IsaPath::Scalar, m, k, &a, &x, bias_opt, &mut out_ref).unwrap();
+            kernels::gemv_f32_on(simd_isa(), m, k, &a, &x, bias_opt, &mut out_simd).unwrap();
+            assert_close(
+                &out_simd,
+                &out_ref,
+                GEMV_ATOL,
+                GEMM_RTOL,
+                &format!("gemv {m}x{k} bias={use_bias}"),
+            );
+        }
+    }
+}
+
+/// GEMV must equal the general GEMM's `n = 1` column on identical data — the
+/// numeric equivalence the decoder's tied-logits-head routing relies on (the
+/// scalar oracle is bit-identical; the SIMD paths agree within [`GEMV_ATOL`]).
+#[test]
+fn gemv_matches_gemm_n1_column() {
+    let mut rng = Rng::new(0x10A1_7ED5);
+    for (m, k) in [(1usize, 512usize), (17, 63), (2, 8), (129, 40)] {
+        let a = rng.vec(m * k);
+        let x = rng.vec(k); // the single b-column of an [k, 1] gemm b
+        let mut gemm_out = vec![0.0; m];
+        let mut gemv_out = vec![0.0; m];
+        // gemm(m, n=1, k): b is [k, 1] = x, out is [m, 1].
+        kernels::gemm_f32_on(simd_isa(), m, 1, k, &a, &x, None, &mut gemm_out).unwrap();
+        kernels::gemv_f32_on(simd_isa(), m, k, &a, &x, None, &mut gemv_out).unwrap();
+        assert_close(
+            &gemv_out,
+            &gemm_out,
+            GEMV_ATOL,
+            GEMM_RTOL,
+            &format!("gemv-vs-gemm-n1 {m}x{k}"),
+        );
+    }
+}
+
+/// The production `gemm_f32` (row-parallel over the `pool` when `feature =
+/// parallel` and the host is multi-core) must be **bit-for-bit identical** to
+/// the single-thread `gemm_f32_on(active_isa)` — splitting the output rows only
+/// reorders *which thread* runs a row, never the per-element FMA chain. Shapes
+/// straddle the pool's size threshold (`m*n*k ≥ GEMM_MIN_MACS`) and the row
+/// chunking (multi-task + ragged final chunk); the sub-threshold shape runs
+/// inline and is trivially identical. On a single-core host the pool is absent,
+/// so this degenerates to the same inline call on both sides (still exact).
+#[test]
+fn parallel_gemm_bit_identical_to_single_thread() {
+    let mut rng = Rng::new(0x9A2D_11FE);
+    let isa = active_isa();
+    // (m, n, k): large enough to trigger the pool, plus one tiny inline case.
+    let shapes = [
+        (1500, 64, 80), // ~7.7M MACs, encoder-height rows → many tasks
+        (300, 128, 64), // ~2.4M, ragged row chunks
+        (1001, 33, 41), // ~1.35M, ragged rows AND columns (kernel tails)
+        (512, 96, 64),  // ~3.1M
+        (3, 4, 5),      // sub-threshold: inline, trivially identical
+    ];
+    for (m, n, k) in shapes {
+        let a = rng.vec(m * k);
+        let b = rng.vec(k * n);
+        let bias = rng.vec(n);
+        for use_bias in [false, true] {
+            let bias_opt = use_bias.then_some(bias.as_slice());
+            let mut prod = vec![0.0; m * n];
+            let mut single = vec![0.0; m * n];
+            // Production path (pool-routed when parallel + multi-core).
+            kernels::gemm_f32(m, n, k, &a, &b, bias_opt, &mut prod).unwrap();
+            // Single-thread reference on the same ISA (never the pool).
+            kernels::gemm_f32_on(isa, m, n, k, &a, &b, bias_opt, &mut single).unwrap();
+            assert_eq!(
+                prod, single,
+                "gemm {m}x{n}x{k} bias={use_bias}: threaded output must be bit-identical to single-thread"
+            );
+        }
+    }
+}
+
+/// Same bit-identical guarantee for the tied-logits-head `gemv_f32` fast path
+/// (per-row bias is sliced to each task's rows). `m` spans the pool threshold
+/// (`m*k ≥ GEMV_MIN_MACS`) and multiple ragged row chunks.
+#[test]
+fn parallel_gemv_bit_identical_to_single_thread() {
+    let mut rng = Rng::new(0x9A2D_22FE);
+    let isa = active_isa();
+    // (m, k): logits-head-shaped row counts + a sub-threshold inline case.
+    let shapes = [
+        (60000, 32), // ~1.9M, many tasks
+        (4096, 300), // ~1.2M
+        (2000, 512), // ~1M, real logits reduction width (d = 512)
+        (1001, 257), // ragged rows + kernel k-tail
+        (3, 7),      // sub-threshold: inline, trivially identical
+    ];
+    for (m, k) in shapes {
+        let a = rng.vec(m * k);
+        let x = rng.vec(k);
+        let bias = rng.vec(m);
+        for use_bias in [false, true] {
+            let bias_opt = use_bias.then_some(bias.as_slice());
+            let mut prod = vec![0.0; m];
+            let mut single = vec![0.0; m];
+            kernels::gemv_f32(m, k, &a, &x, bias_opt, &mut prod).unwrap();
+            kernels::gemv_f32_on(isa, m, k, &a, &x, bias_opt, &mut single).unwrap();
+            assert_eq!(
+                prod, single,
+                "gemv {m}x{k} bias={use_bias}: threaded output must be bit-identical to single-thread"
             );
         }
     }
