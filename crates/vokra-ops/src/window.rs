@@ -68,6 +68,33 @@ fn kaiser(length: usize, denom: f64, beta: f64) -> Vec<f32> {
         .collect()
 }
 
+/// Kaldi **Povey** window of `length` points: a symmetric Hann raised to the
+/// power `0.85` (`w[n] = (0.5 − 0.5·cos(2πn / (N−1)))^0.85`).
+///
+/// This is Kaldi's default analysis window (`feature-window.cc`,
+/// `window_type = "povey"`) and the one the CosyVoice / 3D-Speaker CAM++
+/// `kaldi_fbank` front-end uses. It is *not* a member of the generic
+/// [`Window`] IR enum (which drives the STFT / vocoder ops); it is a
+/// standalone helper for the dedicated Kaldi fbank op. Returns `[1.0]` for
+/// `length == 1` and an empty vector for `length == 0` (the `N−1` denominator
+/// would otherwise divide by zero).
+pub fn povey(length: usize) -> Vec<f32> {
+    if length == 0 {
+        return Vec::new();
+    }
+    if length == 1 {
+        return vec![1.0];
+    }
+    let denom = (length - 1) as f64;
+    (0..length)
+        .map(|n| {
+            let hann = 0.5 - 0.5 * (2.0 * PI * n as f64 / denom).cos();
+            // hann ∈ [0, 1]; the 0.85 power is well-defined and non-negative.
+            hann.powf(0.85) as f32
+        })
+        .collect()
+}
+
 /// Normalized sinc, `sinc(x) = sin(πx) / (πx)` with `sinc(0) = 1`.
 ///
 /// `pub(crate)` for the resampler (M1-06a), whose Kaiser-windowed-sinc
@@ -175,6 +202,31 @@ mod tests {
         for i in 0..33 {
             assert!((w[i] - w[32 - i]).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn povey_is_symmetric_hann_to_the_0_85() {
+        // Povey = (symmetric Hann)^0.85: same zeros at the ends, unity at the
+        // center, palindromic, and exactly the elementwise 0.85-power of the
+        // symmetric Hann window of the same length.
+        let n = 400; // the CAM++ frame length.
+        let p = povey(n);
+        let hann = window(Window::Hann, n, WindowSymmetry::Symmetric);
+        assert_eq!(p.len(), n);
+        assert!(p[0].abs() < 1e-6 && p[n - 1].abs() < 1e-6);
+        // Even length ⇒ no exact center sample; the two middle taps ≈ 1.
+        assert!((p[n / 2 - 1] - 1.0).abs() < 1e-3 && (p[n / 2] - 1.0).abs() < 1e-3);
+        for i in 0..n {
+            assert!((p[i] - p[n - 1 - i]).abs() < 1e-6, "asymmetry at {i}");
+            assert!((p[i] - hann[i].powf(0.85)).abs() < 1e-6, "mismatch at {i}");
+            assert!((0.0..=1.0 + 1e-6).contains(&p[i]));
+        }
+        // Odd length has an exact unity center tap.
+        let po = povey(401);
+        assert!((po[200] - 1.0).abs() < 1e-6);
+        // Degenerate guards.
+        assert!(povey(0).is_empty());
+        assert_eq!(povey(1), vec![1.0]);
     }
 
     #[test]

@@ -10,7 +10,7 @@
 //! Frontend-spec parity (`vokra.frontend.*` bit-exact check, FR-LD-03) is M1;
 //! this op only produces the matrix and applies it.
 
-use vokra_core::ir::graph::{MelAttrs, MelNorm, MelScale};
+use vokra_core::ir::graph::{MelAttrs, MelInterp, MelNorm, MelScale};
 
 /// A precomputed mel filter-bank matrix.
 ///
@@ -39,40 +39,77 @@ impl MelFilterbank {
             .map(|k| k as f64 * sr / attrs.n_fft as f64)
             .collect();
 
-        // n_mels + 2 band edges, uniform on the mel scale.
+        // n_mels + 2 band edges, uniform on the mel scale. Both the mel and Hz
+        // coordinates of every edge are kept: the ramp between edges is
+        // interpolated in one domain or the other per `attrs.interp`.
         let min_mel = hz_to_mel(fmin, attrs.scale);
         let max_mel = hz_to_mel(fmax, attrs.scale);
-        let band_hz: Vec<f64> = (0..n_mels + 2)
-            .map(|i| {
-                let mel = min_mel + (max_mel - min_mel) * i as f64 / (n_mels + 1) as f64;
-                mel_to_hz(mel, attrs.scale)
-            })
+        let band_mel: Vec<f64> = (0..n_mels + 2)
+            .map(|i| min_mel + (max_mel - min_mel) * i as f64 / (n_mels + 1) as f64)
+            .collect();
+        let band_hz: Vec<f64> = band_mel
+            .iter()
+            .map(|&m| mel_to_hz(m, attrs.scale))
+            .collect();
+        // For the Kaldi (mel-domain) ramp, the FFT-bin mel coordinates are
+        // reused across all bands; precompute them once.
+        let fft_mel: Vec<f64> = fft_freqs
+            .iter()
+            .map(|&f| hz_to_mel(f, attrs.scale))
             .collect();
 
         let mut weights = vec![0.0f32; n_mels * n_freqs];
         for m in 0..n_mels {
-            let left = band_hz[m];
-            let center = band_hz[m + 1];
-            let right = band_hz[m + 2];
-            let fdiff_low = center - left;
-            let fdiff_high = right - center;
-            for (k, &f) in fft_freqs.iter().enumerate() {
-                let lower = if fdiff_low > 0.0 {
-                    (f - left) / fdiff_low
-                } else {
-                    0.0
-                };
-                let upper = if fdiff_high > 0.0 {
-                    (right - f) / fdiff_high
-                } else {
-                    0.0
-                };
-                let w = lower.min(upper).max(0.0);
-                weights[m * n_freqs + k] = w as f32;
+            match attrs.interp {
+                MelInterp::Hz => {
+                    // librosa: triangle linear in Hz.
+                    let left = band_hz[m];
+                    let center = band_hz[m + 1];
+                    let right = band_hz[m + 2];
+                    let fdiff_low = center - left;
+                    let fdiff_high = right - center;
+                    for (k, &f) in fft_freqs.iter().enumerate() {
+                        let lower = if fdiff_low > 0.0 {
+                            (f - left) / fdiff_low
+                        } else {
+                            0.0
+                        };
+                        let upper = if fdiff_high > 0.0 {
+                            (right - f) / fdiff_high
+                        } else {
+                            0.0
+                        };
+                        let w = lower.min(upper).max(0.0);
+                        weights[m * n_freqs + k] = w as f32;
+                    }
+                }
+                MelInterp::Mel => {
+                    // Kaldi `MelBanks`: triangle linear in the mel domain, with
+                    // strict `left_mel < mel(f) < right_mel` support (bins on
+                    // the exact edges — including the Nyquist bin, which Kaldi's
+                    // `num_fft_bins = n_fft/2` construction drops — get 0).
+                    let left_mel = band_mel[m];
+                    let center_mel = band_mel[m + 1];
+                    let right_mel = band_mel[m + 2];
+                    for (k, &mel) in fft_mel.iter().enumerate() {
+                        let w = if mel > left_mel && mel < right_mel {
+                            if mel <= center_mel {
+                                (mel - left_mel) / (center_mel - left_mel)
+                            } else {
+                                (right_mel - mel) / (right_mel - center_mel)
+                            }
+                        } else {
+                            0.0
+                        };
+                        weights[m * n_freqs + k] = w as f32;
+                    }
+                }
             }
             if matches!(attrs.norm, MelNorm::Slaney) {
                 // Slaney: scale each filter to unit area (2 / bandwidth in Hz).
-                let enorm = 2.0 / (right - left);
+                // The bandwidth is the Hz distance between the outer edges,
+                // independent of the ramp interpolation domain.
+                let enorm = 2.0 / (band_hz[m + 2] - band_hz[m]);
                 for k in 0..n_freqs {
                     weights[m * n_freqs + k] = (weights[m * n_freqs + k] as f64 * enorm) as f32;
                 }
@@ -228,5 +265,57 @@ mod tests {
         let mel = fb.apply(&spec, frames);
         assert_eq!(mel.len(), frames * 80);
         assert!(mel.iter().all(|&v| v >= 0.0));
+    }
+
+    /// The exact CAM++ / CosyVoice Kaldi fbank filter geometry.
+    fn kaldi_camplus_attrs() -> MelAttrs {
+        MelAttrs {
+            fmin: 20.0,
+            fmax: Some(8000.0),
+            scale: MelScale::Htk,
+            norm: MelNorm::None,
+            interp: MelInterp::Mel,
+            ..MelAttrs::new(16000, 512, 80)
+        }
+    }
+
+    #[test]
+    fn kaldi_mel_triangles_peak_at_center_and_drop_nyquist() {
+        // Mel-domain ramps: each filter peaks at 1.0 near its center mel edge,
+        // and (matching Kaldi's `num_fft_bins = n_fft/2` construction) the
+        // Nyquist bin `n_fft/2` carries zero weight in every band.
+        let fb = mel_filterbank(&kaldi_camplus_attrs());
+        assert_eq!(fb.n_mels, 80);
+        assert_eq!(fb.n_freqs, 257);
+        let nyq = 256;
+        for m in 0..fb.n_mels {
+            let row = &fb.weights[m * fb.n_freqs..(m + 1) * fb.n_freqs];
+            let peak = row.iter().cloned().fold(0.0f32, f32::max);
+            assert!(peak <= 1.0 + 1e-6 && peak > 0.3, "filter {m} peak {peak}");
+            assert!(row.iter().all(|&w| (0.0..=1.0 + 1e-6).contains(&w)));
+            assert_eq!(row[nyq], 0.0, "Nyquist bin must be dropped (filter {m})");
+        }
+        // Bin 0 (DC, 0 Hz < fmin=20) is excluded from every band.
+        for m in 0..fb.n_mels {
+            assert_eq!(fb.weights[m * fb.n_freqs], 0.0, "DC bin in filter {m}");
+        }
+    }
+
+    #[test]
+    fn kaldi_and_hz_interp_differ() {
+        // Same edges, different ramp domain: the two modes must not coincide
+        // (proves `MelInterp::Mel` is a genuinely distinct filter bank).
+        let mel_mode = mel_filterbank(&kaldi_camplus_attrs());
+        let hz_mode = mel_filterbank(&MelAttrs {
+            interp: MelInterp::Hz,
+            ..kaldi_camplus_attrs()
+        });
+        let max_diff = mel_mode
+            .weights
+            .iter()
+            .zip(&hz_mode.weights)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_diff > 1e-3, "mel/Hz ramps unexpectedly identical");
     }
 }

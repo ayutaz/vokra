@@ -14,6 +14,8 @@
 //! - [`silero_vad`] — **M0-05**: Silero VAD v5 as a 1:1-preserved dedicated
 //!   subgraph (LSTM state h/c kept intact);
 //! - [`whisper`] — **M0-06**: Whisper base — encoder, decoder and beam search;
+//! - [`speaker`] — **M0-08**: the native CAM++ (3D-Speaker) speaker encoder
+//!   (reference fbank → 192-d embedding) for zero-shot voice cloning;
 //! - [`piper_plus`] — **M0-07**: the piper-plus inference core (MB-iSTFT-VITS2
 //!   text encoder / duration predictor / flow / MB-iSTFT decoder) as **Vokra's
 //!   first native TTS** (FR-MD-03; client decision 2026-07-02 — the former wrap
@@ -26,6 +28,7 @@
 
 pub mod piper_plus;
 pub mod silero_vad;
+pub mod speaker;
 pub mod whisper;
 
 #[cfg(test)]

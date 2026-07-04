@@ -72,6 +72,10 @@ pub fn mel_attrs_from_spec(spec: &FrontendSpec) -> Result<MelAttrs> {
             MelScale::Slaney
         },
         norm: mel_norm_from_str(&spec.mel_norm)?,
+        // `frontend_spec` describes librosa/torchaudio Hz-domain fbanks; the
+        // Kaldi mel-domain ramp is selected only by the dedicated `kaldi_fbank`
+        // op (CAM++), never reconstructed from the chunk.
+        interp: vokra_core::ir::graph::MelInterp::Hz,
     })
 }
 

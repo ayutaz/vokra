@@ -19,12 +19,13 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper-base|silero-vad> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper-base|silero-vad|campplus> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
 
 OPTIONS:
-    --model <kind>     whisper-base (safetensors), silero-vad (ONNX) or
-                       piper-plus (MB-iSTFT-VITS2 voice: ONNX + config.json)
+    --model <kind>     whisper-base (safetensors), silero-vad (ONNX),
+                       campplus (CAM++ speaker-encoder ONNX) or piper-plus
+                       (MB-iSTFT-VITS2 voice: ONNX + config.json)
     --input <path>     upstream checkpoint file
     --config <path>    piper-plus config.json (piper-plus only)
     --output <path>    GGUF file to write
@@ -132,7 +133,9 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--model" => {
                 let v = args.get(i + 1).ok_or("--model requires a value")?;
                 model = Some(ModelKind::from_arg(v).ok_or_else(|| {
-                    format!("unknown model `{v}` (whisper-base | silero-vad | piper-plus)")
+                    format!(
+                        "unknown model `{v}` (whisper-base | silero-vad | piper-plus | campplus)"
+                    )
                 })?);
                 i += 2;
             }
@@ -225,6 +228,29 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
             println!("; arch={arch} sample_rate={sr} num_symbols={n_sym}");
+        }
+        ModelKind::CamPlus => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let embed = file
+                .get("vokra.campplus.embed_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let blocks = file
+                .get("vokra.campplus.block_config")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.values
+                        .iter()
+                        .filter_map(|v| v.as_u64())
+                        .map(|n| n.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .unwrap_or_default();
+            println!("; arch={arch} embed_dim={embed} block_config=[{blocks}]");
         }
     }
     Ok(())

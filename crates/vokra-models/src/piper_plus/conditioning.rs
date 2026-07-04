@@ -56,6 +56,14 @@ impl Conditioning {
         })
     }
 
+    /// The external speaker-embedding width this voice's `spk_proj` expects
+    /// (`spk_proj.0.weight` dim 1). For the zero-shot v7 voice this is 192 — the
+    /// CAM++ output — so [`PiperPlusTts::embed_reference`](super::PiperPlusTts::embed_reference)
+    /// can check the encoder matches before wiring its embedding in.
+    pub(super) fn spk_emb_dim(&self) -> usize {
+        self.spk_emb_dim
+    }
+
     /// Global conditioning `g = spk_proj(speaker_embedding) + emb_lang[lid]`
     /// (`[gin]`).
     ///

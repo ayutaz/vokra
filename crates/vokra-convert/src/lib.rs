@@ -45,6 +45,10 @@ pub enum ModelKind {
     /// `config.json` input, so it is not a plain single-input [`convert_file`]
     /// model.
     PiperPlus,
+    /// `iic/speech_campplus` (3D-Speaker CAM++) speaker-encoder ONNX checkpoint
+    /// (M0-08): 80-d fbank → 192-d speaker embedding for zero-shot voice
+    /// conditioning.
+    CamPlus,
 }
 
 impl ModelKind {
@@ -54,6 +58,7 @@ impl ModelKind {
             "whisper-base" => Some(Self::WhisperBase),
             "silero-vad" => Some(Self::SileroVad),
             "piper-plus" => Some(Self::PiperPlus),
+            "campplus" => Some(Self::CamPlus),
             _ => None,
         }
     }
@@ -64,6 +69,7 @@ impl ModelKind {
             Self::WhisperBase => "whisper-base",
             Self::SileroVad => "silero-vad",
             Self::PiperPlus => "piper-plus",
+            Self::CamPlus => "campplus",
         }
     }
 }
@@ -172,6 +178,19 @@ pub fn convert_file(
             return Err(ConvertError::Usage(
                 "piper-plus needs a --config config.json; use convert_piper_plus_file".to_owned(),
             ));
+        }
+        ModelKind::CamPlus => {
+            let (builder, report) = models::campplus::convert(&bytes)?;
+            let notes = vec![format!(
+                "campplus: {} weights written ({} onnx:: names recovered, {} affine-free BN params synthesized, {} unmapped, {} non-float skipped), block_config {:?}",
+                report.written,
+                report.renamed,
+                report.synthesized,
+                report.unmapped,
+                report.skipped_non_float,
+                report.block_config
+            )];
+            (builder, notes)
         }
     };
 

@@ -125,6 +125,21 @@ pub enum MelNorm {
     Slaney,
 }
 
+/// Domain in which the triangular filter slopes are interpolated (FR-OP-03).
+///
+/// The band *edges* are always uniform on the mel scale; this selects the
+/// domain of the rising/falling ramps between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MelInterp {
+    /// librosa/torchaudio convention: ramps are linear in **Hz** (the weight of
+    /// an FFT bin is a triangle over frequency). The Vokra default.
+    Hz,
+    /// Kaldi convention: ramps are linear in the **mel** domain (the weight of
+    /// an FFT bin is a triangle over `mel(f)`). Needed for the CosyVoice /
+    /// 3D-Speaker CAM++ Kaldi fbank front-end.
+    Mel,
+}
+
 /// Attributes of the `stft` operator (FR-OP-01).
 ///
 /// Covers all eight FR-OP-01 knobs explicitly — `window`, `hop_length`,
@@ -246,11 +261,14 @@ pub struct MelAttrs {
     pub scale: MelScale,
     /// Filter-bank normalization.
     pub norm: MelNorm,
+    /// Domain of the triangular filter ramps ([`MelInterp::Hz`] = librosa,
+    /// [`MelInterp::Mel`] = Kaldi).
+    pub interp: MelInterp,
 }
 
 impl MelAttrs {
     /// Builds attributes with librosa-like defaults: `fmin = 0`, `fmax =`
-    /// Nyquist, Slaney scale, Slaney normalization.
+    /// Nyquist, Slaney scale, Slaney normalization, Hz-domain interpolation.
     pub fn new(sample_rate: u32, n_fft: usize, n_mels: usize) -> Self {
         Self {
             sample_rate,
@@ -260,6 +278,7 @@ impl MelAttrs {
             fmax: None,
             scale: MelScale::Slaney,
             norm: MelNorm::Slaney,
+            interp: MelInterp::Hz,
         }
     }
 }

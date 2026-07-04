@@ -244,6 +244,105 @@ fn read_tensor(buf: &[u8]) -> Result<OnnxInitializer, OnnxError> {
     })
 }
 
+/// A graph node's identity and wiring: op type, scope `name`
+/// (e.g. `/head/conv1/Conv`) and the names of its input / output edges.
+///
+/// This is what a *topological* walk needs to reconstruct clean, module-scoped
+/// weight names from the ONNX scope path — the CAM++ converter's core trick
+/// (M0-08): a `Conv` at `/head/conv1/Conv` names its (possibly opaque
+/// `onnx::Conv_*`) weight input `head.conv1.weight`, independent of the
+/// export-run-specific initializer name. Attribute payloads and `Constant`
+/// values are deliberately not decoded here.
+#[derive(Debug, Clone)]
+pub(crate) struct OnnxNode {
+    /// `NodeProto.op_type` (field 4), e.g. `Conv` / `BatchNormalization`.
+    pub(crate) op_type: String,
+    /// `NodeProto.name` (field 3): the scoped node name (`/module/path/Op`).
+    pub(crate) name: String,
+    /// `NodeProto.input` (field 1): input edge names, in order.
+    pub(crate) inputs: Vec<String>,
+    /// `NodeProto.output` (field 2): output edge names, in order.
+    pub(crate) outputs: Vec<String>,
+}
+
+/// A decoded *top-level* `GraphProto`: its `initializer` weight tensors plus
+/// the node wiring, for a topological walk.
+///
+/// Unlike [`read_weight_tensors`], this does **not** recurse into subgraphs or
+/// collect `Constant` values: CAM++ is a single flat graph (no `If`/`Loop`)
+/// whose 617 weights all live in `graph.initializer`, so folding in its ~1000
+/// `Constant` shape nodes would be pure noise. Weight *values* still come from
+/// the initializers; the nodes are used only to recover names and topology.
+pub(crate) struct OnnxGraph {
+    pub(crate) initializers: Vec<OnnxInitializer>,
+    pub(crate) nodes: Vec<OnnxNode>,
+}
+
+/// Decodes a `ModelProto`, returning the top-level graph's initializer tensors
+/// and its node wiring (op type, scope name, input/output edge names).
+pub(crate) fn read_graph(buf: &[u8]) -> Result<OnnxGraph, OnnxError> {
+    let mut initializers = Vec::new();
+    let mut nodes = Vec::new();
+    let mut model = Reader::new(buf);
+    while let Some((field, wire)) = model.read_tag()? {
+        if field == 7 && wire == WIRE_LEN {
+            // ModelProto.graph = 7
+            let graph = model.read_len_delimited()?;
+            let mut r = Reader::new(graph);
+            while let Some((f, w)) = r.read_tag()? {
+                match (f, w) {
+                    // GraphProto.node = 1
+                    (1, WIRE_LEN) => nodes.push(read_node(r.read_len_delimited()?)?),
+                    // GraphProto.initializer = 5
+                    (5, WIRE_LEN) => initializers.push(read_tensor(r.read_len_delimited()?)?),
+                    _ => r.skip(w)?,
+                }
+            }
+        } else {
+            model.skip(wire)?;
+        }
+    }
+    Ok(OnnxGraph {
+        initializers,
+        nodes,
+    })
+}
+
+/// Decodes a `NodeProto`, keeping the op type, scope name and I/O edge names
+/// (attributes are skipped).
+fn read_node(buf: &[u8]) -> Result<OnnxNode, OnnxError> {
+    let mut r = Reader::new(buf);
+    let mut op_type = String::new();
+    let mut name = String::new();
+    let mut inputs = Vec::new();
+    let mut outputs = Vec::new();
+    while let Some((field, wire)) = r.read_tag()? {
+        match (field, wire) {
+            // NodeProto.input = 1 (repeated string)
+            (1, WIRE_LEN) => {
+                inputs.push(String::from_utf8_lossy(r.read_len_delimited()?).into_owned());
+            }
+            // NodeProto.output = 2 (repeated string)
+            (2, WIRE_LEN) => {
+                outputs.push(String::from_utf8_lossy(r.read_len_delimited()?).into_owned());
+            }
+            // NodeProto.name = 3
+            (3, WIRE_LEN) => name = String::from_utf8_lossy(r.read_len_delimited()?).into_owned(),
+            // NodeProto.op_type = 4
+            (4, WIRE_LEN) => {
+                op_type = String::from_utf8_lossy(r.read_len_delimited()?).into_owned()
+            }
+            _ => r.skip(wire)?,
+        }
+    }
+    Ok(OnnxNode {
+        op_type,
+        name,
+        inputs,
+        outputs,
+    })
+}
+
 /// A bounds-checked protobuf cursor.
 struct Reader<'a> {
     buf: &'a [u8],
@@ -590,6 +689,32 @@ mod tests {
             read_weight_tensors(&model),
             Err(OnnxError::GraphTooDeep)
         ));
+    }
+
+    #[test]
+    fn read_graph_exposes_node_wiring_and_initializers() {
+        // A Conv node with name / inputs / outputs, plus one initializer. The
+        // topo reader must surface the wiring (for canonical-name recovery) and
+        // the weight tensor together.
+        let payload: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|f| f.to_le_bytes()).collect();
+        let w = tensor_proto("onnx::Conv_7", &[2], ONNX_DTYPE_FLOAT, &payload);
+        let mut node = Vec::new();
+        write_len_field(&mut node, 1, b"x"); // input[0]
+        write_len_field(&mut node, 1, b"onnx::Conv_7"); // input[1] = weight
+        write_len_field(&mut node, 2, b"/head/conv1/Conv_output_0"); // output[0]
+        write_len_field(&mut node, 3, b"/head/conv1/Conv"); // name
+        write_len_field(&mut node, 4, b"Conv"); // op_type
+        let model = model_proto(&graph_proto(&[node], &[w]));
+
+        let g = read_graph(&model).expect("decode graph");
+        assert_eq!(g.initializers.len(), 1);
+        assert_eq!(g.initializers[0].name, "onnx::Conv_7");
+        assert_eq!(g.nodes.len(), 1);
+        let n = &g.nodes[0];
+        assert_eq!(n.op_type, "Conv");
+        assert_eq!(n.name, "/head/conv1/Conv");
+        assert_eq!(n.inputs, vec!["x", "onnx::Conv_7"]);
+        assert_eq!(n.outputs, vec!["/head/conv1/Conv_output_0"]);
     }
 
     #[test]

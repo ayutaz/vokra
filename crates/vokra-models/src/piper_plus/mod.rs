@@ -29,6 +29,8 @@ mod text_encoder;
 mod weights;
 
 #[cfg(test)]
+mod clone_integration;
+#[cfg(test)]
 mod parity;
 #[cfg(test)]
 mod parity_v7;
@@ -37,8 +39,11 @@ use std::path::Path;
 
 use vokra_core::gguf::GgufFile;
 use vokra_core::rng::GaussianSplitMix64;
-use vokra_core::{Result, SynthesisRequest, SynthesizedAudio, TtsEngine};
+use vokra_core::{Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError};
+use vokra_ops::{KaldiFbankOpts, kaldi_fbank, resample};
 use vokra_piper_plus::{PhonemeTable, Phonemizer};
+
+use crate::speaker::SpeakerEncoder;
 
 pub use config::PiperConfig;
 // Re-export the G2P reuse-boundary types so downstreams can build the injected
@@ -200,6 +205,67 @@ impl PiperPlusTts {
     /// The resolved voice configuration (sample rate, tables, scales, ...).
     pub fn config(&self) -> &PiperConfig {
         &self.config
+    }
+
+    /// The external speaker-embedding width this voice's `spk_proj` expects —
+    /// 192 (the CAM++ output) for the zero-shot v7 voice. Any embedding handed
+    /// to a request via [`SynthesisRequest::speaker_embedding`] must have this
+    /// length (a shorter/longer one falls back to the zero vector).
+    pub fn speaker_embedding_dim(&self) -> usize {
+        self.conditioning.spk_emb_dim()
+    }
+
+    /// Turns reference audio into the speaker embedding that drives zero-shot
+    /// voice cloning — the replacement for the zero-embedding fallback (M0-08).
+    ///
+    /// `reference_pcm` is mono PCM at `sample_rate`; it is resampled to the CAM++
+    /// encoder's 16 kHz when needed, converted to a Kaldi fbank
+    /// ([`kaldi_fbank`]), and run through the native `encoder`. The returned
+    /// `Vec<f32>` (length [`speaker_embedding_dim`](Self::speaker_embedding_dim))
+    /// is dropped straight into [`SynthesisRequest::speaker_embedding`] /
+    /// [`synthesize_phonemes`](Self::synthesize_phonemes). The encoder is passed
+    /// in rather than owned, so a voice still loads from a single GGUF and a
+    /// caller that never clones a voice pays nothing for the speaker model.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] if the `encoder`'s output width does not
+    ///   match this voice's `spk_proj` input (a mismatched speaker model), or if
+    ///   `reference_pcm` is shorter than one fbank frame (too short to embed);
+    /// - propagates resample / fbank / CAM++ forward errors.
+    pub fn embed_reference(
+        &self,
+        encoder: &SpeakerEncoder,
+        reference_pcm: &[f32],
+        sample_rate: u32,
+    ) -> Result<Vec<f32>> {
+        let opts = KaldiFbankOpts::camplus();
+        // The CAM++ encoder emits EMBED_DIM (192); reject a voice whose spk_proj
+        // was trained on a different width before doing any work.
+        let want = self.speaker_embedding_dim();
+        if crate::speaker::EMBED_DIM != want {
+            return Err(VokraError::InvalidArgument(format!(
+                "piper TTS: CAM++ embedding dim {} != voice speaker_embedding_dim {want}",
+                crate::speaker::EMBED_DIM
+            )));
+        }
+        // Resample to the encoder's rate (a bit-exact copy is avoided when the
+        // reference is already 16 kHz — the common case).
+        let owned;
+        let pcm16k: &[f32] = if sample_rate == opts.sample_rate {
+            reference_pcm
+        } else {
+            owned = resample(
+                reference_pcm,
+                sample_rate,
+                opts.sample_rate,
+                vokra_ops::resample::DEFAULT_QUALITY,
+            )?;
+            &owned
+        };
+        let (fbank, t) = kaldi_fbank(pcm16k, &opts)?;
+        let emb = encoder.embed(&fbank, t)?;
+        Ok(emb.to_vec())
     }
 
     /// Synthesizes PCM from a phoneme id sequence — the full native

@@ -21,6 +21,10 @@
 //!   `MelAttrs` translation ([`stft_attrs_from_spec`] / [`mel_attrs_from_spec`])
 //!   — the librosa/torchaudio/TF compat layer that makes the log-mel front-end
 //!   data-driven; the bit-exact *inspection* of the chunk lives in `vokra-core`;
+//! - **M0-08** (landed): the Kaldi fbank front-end the CAM++ speaker encoder
+//!   needs — the [`window::povey`] window, the [`mel`] Kaldi mel-domain ramp
+//!   (`MelInterp::Mel`), and [`kaldi_fbank`] (snip-edges framing, per-frame
+//!   DC/pre-emphasis, power spectrum, log, CMN);
 //! - later WPs: vocoder chains, flow-matching samplers, codec decode, and
 //!   the rest of the audio dialect (CLAUDE.md "音声特化オペレータ").
 //!
@@ -48,6 +52,7 @@ pub mod dispatch;
 pub mod fft;
 pub mod frontend;
 pub mod istft;
+pub mod kaldi_fbank;
 pub mod mel;
 pub mod mfcc;
 pub mod preprocess;
@@ -59,6 +64,7 @@ pub use dct::dct;
 pub use dispatch::{OpValue, dispatch};
 pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};
 pub use istft::istft;
+pub use kaldi_fbank::{KaldiFbankOpts, kaldi_fbank};
 pub use mel::mel_filterbank;
 pub use mfcc::mfcc;
 pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};
