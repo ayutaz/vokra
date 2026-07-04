@@ -27,11 +27,26 @@ vokra-piper-plus.workspace = true
 # WASM builds never even name it (NFR-PT-01). The `Compute::Metal` arm is
 # additionally `cfg(target_os = "macos"/"ios")`-gated inside the crate.
 vokra-backend-metal = { workspace = true, optional = true }
+# Phase 3 (GPU execution), CUDA arm: the imperative `Compute` dispatcher can
+# route the model GEMM hot path onto the CUDA backend. `vokra-backend-cuda` is a
+# first-party `vokra-*` crate with ZERO external deps (raw CUDA Driver API +
+# NVRTC FFI loaded at runtime via dlopen — NO cudarc/cust/rustacuda binding
+# crate, and no CUDA library bundled/linked, NVIDIA EULA install model), so the
+# zero-dependency gate (NFR-DS-02) still holds; it is kept OPTIONAL behind the
+# `cuda` feature so default builds never even name it (NFR-PT-01). The
+# `Compute::Cuda` arm is additionally `cfg(any(unix, windows))`-gated inside this
+# crate (CUDA needs a dynamic loader).
+vokra-backend-cuda = { workspace = true, optional = true }
 
 [features]
 # Off by default: enable with `--features metal` on macOS / iOS to route the
 # model GEMM hot path onto the GPU (and to build/run the Metal parity tests).
 metal = ["dep:vokra-backend-metal"]
+# Off by default: enable with `--features cuda` (on a Unix/Windows host, GPU not
+# required to BUILD — the CUDA/NVRTC libraries are dlopen'd at runtime) to route
+# the model GEMM hot path onto the CUDA backend. Real GPU parity/RTF is verified
+# on a vast.ai RTX 4090 (M2-03-T25), not in the default CI build.
+cuda = ["dep:vokra-backend-cuda"]
 
 # M1-01-D: reference RTF bench for the piper-plus native TTS (hand-rolled
 # std::time measurement, no external bench crate — NFR-DS-02). It is env-gated

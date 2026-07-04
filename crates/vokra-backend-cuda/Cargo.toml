@@ -1,0 +1,33 @@
+[package]
+name = "vokra-backend-cuda"
+description = "Vokra CUDA backend (Windows/Linux, NVIDIA): raw CUDA Driver API + NVRTC FFI loaded at RUNTIME via dlopen/LoadLibrary — NO binding crate (no cudarc/cust/rustacuda) — with an FP32 GEMM kernel (NVRTC-compiled PTX) and a device probe. Foundation slice of M2-03; the runtime bundles no CUDA library (NVIDIA EULA install model, FR-BE-08) and the workspace stays dependency-free (NFR-DS-02)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Zero external dependencies (NFR-DS-02): the only runtime dependency is the
+# first-party `vokra-core` (for the `Backend` trait / `OpKind` / `VokraError`).
+# The CUDA Driver API (libcuda / nvcuda.dll) and NVRTC (libnvrtc / nvrtc64_*.dll)
+# are NOT linked at build time and NOT bundled: they are loaded at RUNTIME with
+# dlopen / LoadLibrary (declared inline in `unsafe extern` blocks — the symbols
+# `std` already links: libdl on Unix, kernel32 on Windows). This is what lets a
+# CUDA-less machine (e.g. an Apple Mac) still `cargo build` this crate, and it is
+# the NVIDIA EULA "install model" — Vokra bundles no cudart/cudnn/cublas
+# (third_party/NVIDIA-EULA.md, FR-BE-08). NO cudarc / cust / rustacuda binding
+# crate is used, so Cargo.lock keeps only `vokra-*` crates
+# (verified by scripts/check-zero-deps.sh).
+[dependencies]
+vokra-core.workspace = true
+
+# Test-only differential oracle: the CPU backend's `gemm_f32` kernel is the
+# reference the CUDA GEMM is checked against (M2-03-T18/T19). It is a
+# first-party `vokra-*` crate, so it does not perturb the zero-dependency
+# invariant of the root Cargo.lock. The parity test itself is device-gated
+# (skips when no CUDA GPU is present) and is meant to run on a vast.ai RTX 4090.
+[dev-dependencies]
+vokra-backend-cpu.workspace = true
+
+[lints]
+workspace = true

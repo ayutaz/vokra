@@ -36,6 +36,7 @@ vokra-core = { path = "crates/vokra-core" }
 vokra-ops = { path = "crates/vokra-ops" }
 vokra-backend-cpu = { path = "crates/vokra-backend-cpu" }
 vokra-backend-metal = { path = "crates/vokra-backend-metal" }
+vokra-backend-cuda = { path = "crates/vokra-backend-cuda" }
 vokra-models = { path = "crates/vokra-models" }
 vokra-piper-plus = { path = "crates/vokra-piper-plus" }
 vokra-capi = { path = "crates/vokra-capi" }
@@ -44,12 +45,17 @@ vokra-mmap = { path = "crates/vokra-mmap" }
 # Unsafe boundary policy (M0-02-T03; NFR-RL-07, SRS §5-(1)):
 # the workspace is safe-by-default (`unsafe_code = "deny"`). `unsafe` +
 # SIMD intrinsics / C ABI code are permitted ONLY in vokra-ops,
-# vokra-backend-cpu, vokra-backend-metal, vokra-capi and vokra-mmap. The
+# vokra-backend-cpu, vokra-backend-metal, vokra-backend-cuda, vokra-capi and
+# vokra-mmap. The
 # vokra-mmap opt-out backs the self-declared POSIX `mmap` / Win32 file-mapping
 # FFI for true zero-copy GGUF loading; vokra-backend-metal backs the
 # self-declared Objective-C runtime + Metal / Foundation framework FFI (NO
-# `metal` / `objc2` binding crate — see its crate docs). Both add no external
-# crate. These crates opt out locally with `#![allow(unsafe_code)]` at their
+# `metal` / `objc2` binding crate — see its crate docs); vokra-backend-cuda backs
+# the self-declared CUDA Driver API + NVRTC FFI loaded at RUNTIME via dlopen /
+# LoadLibrary (NO `cudarc` / `cust` / `rustacuda` binding crate, and no CUDA
+# library is bundled or linked — NVIDIA EULA install model — see its crate docs).
+# All add no external crate. These crates opt out locally with
+# `#![allow(unsafe_code)]` at their
 # crate root. Public API boundaries must
 # remain safe in every crate. Every `unsafe` block must carry a
 # `// SAFETY:` comment — enforced by `clippy::undocumented_unsafe_blocks`

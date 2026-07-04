@@ -10,6 +10,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vokra-backend-cuda"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "vokra-backend-cpu",
+ "vokra-core",
+]
+
+[[package]]
 name = "vokra-backend-metal"
 version = "0.1.0-alpha.0"
 dependencies = [
@@ -65,6 +73,7 @@ name = "vokra-models"
 version = "0.1.0-alpha.0"
 dependencies = [
  "vokra-backend-cpu",
+ "vokra-backend-cuda",
  "vokra-backend-metal",
  "vokra-core",
  "vokra-ops",

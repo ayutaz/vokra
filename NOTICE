@@ -32,10 +32,15 @@ Vokra detects a system-installed CUDA at runtime via dynamic loading
 (e.g. dlopen("libcuda.so") on Linux, LoadLibrary("nvcuda.dll") on Windows).
 Installing NVIDIA components and accepting the corresponding NVIDIA EULAs
 is the responsibility of the end user or integrating developer. cuDNN is
-never a hard requirement of Vokra.
+never a hard requirement of Vokra. The full EULA-compliance strategy (the
+5 points: no bundling, runtime detection, explicit version probe, cuDNN
+optional, this record) is documented in third_party/NVIDIA-EULA.md, which
+is the authoritative reference for the vokra-backend-cuda crate.
 
-Timing note: the CUDA backend is planned for the v0.5-v1.0 releases and is
-not part of the current v0.1 spike.
+Timing note: the CUDA backend is planned for the v0.5-v1.0 releases (M2-03).
+The M2-03 foundation slice (crates/vokra-backend-cuda) lands the driver
+probe and an FP32 GEMM via raw CUDA Driver API + NVRTC loaded by dlopen,
+with NO cudarc/cust/rustacuda binding crate and no bundled CUDA runtime.
 
 --------------------------------------------------------------------------
 3. pocketfft (algorithm reference for the CPU FFT implementation)

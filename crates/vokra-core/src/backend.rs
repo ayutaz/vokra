@@ -92,6 +92,16 @@ pub enum BackendKind {
     /// [`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp) — never a
     /// silent CPU fall back (FR-EX-08).
     Metal,
+    /// CUDA backend (Windows / Linux NVIDIA GPUs, FR-BE-03). Implemented in
+    /// `vokra-backend-cuda` (M2-03) with raw CUDA Driver API + NVRTC FFI loaded
+    /// at runtime via dlopen (no `cudarc` binding crate, no bundled CUDA runtime
+    /// — NVIDIA EULA install model, FR-BE-08). Reached through the `vokra-models`
+    /// `Compute` dispatcher behind its `cuda` feature. A missing driver/GPU or an
+    /// op the CUDA backend does not yet cover is an explicit
+    /// [`VokraError::BackendUnavailable`](crate::VokraError::BackendUnavailable) /
+    /// [`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp) — never a
+    /// silent CPU fall back (FR-EX-08 / NFR-RL-06).
+    Cuda,
 }
 
 #[cfg(test)]
