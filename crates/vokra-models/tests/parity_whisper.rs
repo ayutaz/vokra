@@ -370,3 +370,87 @@ fn argmax(v: &[f32]) -> u32 {
     }
     best as u32
 }
+
+// --- Metal e2e parity (Phase 4) ---------------------------------------------
+
+/// Full Whisper on Metal: the encoder + decoder + greedy decode routed through
+/// `Compute::Metal` must match the `Compute::Cpu` path (the onnxruntime-agreeing
+/// reference) within the FP32 bound (NFR-QL-01, `atol = 0.01`), and the greedy
+/// token sequence must match **exactly**. Doubly gated — needs the whisper GGUF
+/// (`VOKRA_WHISPER_GGUF`) **and** a real Metal device — and skips cleanly (never
+/// a silent CPU substitute, FR-EX-08) when either is absent. Run with:
+///
+/// ```text
+/// VOKRA_WHISPER_GGUF=whisper-base.gguf cargo test -p vokra-models --features metal whisper_metal_e2e -- --nocapture
+/// ```
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+#[test]
+fn whisper_metal_e2e_matches_cpu() {
+    use vokra_core::BackendKind;
+    use vokra_models::{Compute, HotOp};
+
+    let Some(model) = load_model() else {
+        eprintln!("skip: set VOKRA_WHISPER_GGUF for the full Metal e2e");
+        return;
+    };
+    // The complete Whisper hot-op set (Metal must now cover all six).
+    let hot = [
+        HotOp::Gemm,
+        HotOp::Gemv,
+        HotOp::Softmax,
+        HotOp::LayerNorm,
+        HotOp::Gelu,
+        HotOp::Conv1d,
+    ];
+    // Device-gated: build a fully-covering Metal dispatcher, or skip on an
+    // explicit BackendUnavailable (no device) — never a silent CPU fall back.
+    let metal = match Compute::for_backend(BackendKind::Metal, &hot) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("skip Metal whisper e2e (no Metal device): {e}");
+            return;
+        }
+    };
+    assert_eq!(metal.backend_name(), "metal");
+
+    let pcm = read_f32("input_pcm.f32");
+
+    // 1) Encoder parity — same weights, two backends (conv stem + attention).
+    let cpu_enc = model.encode_pcm(&pcm).expect("cpu encode");
+    let metal_enc = model.encode_pcm_with(&metal, &pcm).expect("metal encode");
+    assert_close(
+        &metal_enc.hidden,
+        &cpu_enc.hidden,
+        "whisper encoder (Metal vs CPU)",
+    );
+
+    // 2) Decoder logits parity — full forward over the forced prefix.
+    let prefix = model.config().decoder_start_ids.clone();
+    let mut cpu_dec = model.decoder(&cpu_enc).expect("cpu decoder");
+    let mut metal_dec = model
+        .decoder_with_backend(&metal_enc, BackendKind::Metal)
+        .expect("metal decoder");
+    let cpu_logits = cpu_dec.step(&prefix).expect("cpu decoder step");
+    let metal_logits = metal_dec.step(&prefix).expect("metal decoder step");
+    assert_close(
+        &metal_logits,
+        &cpu_logits,
+        "whisper decoder logits (Metal vs CPU)",
+    );
+
+    // 3) Greedy token sequence — must match the CPU decode exactly (the strongest
+    // end-to-end check; argmax gaps dwarf the sub-atol per-logit differences).
+    let eot = model.config().eot;
+    cpu_dec.reset();
+    let cpu_tokens = greedy_decode(&mut cpu_dec, &prefix, eot, 64).expect("cpu greedy");
+    metal_dec.reset();
+    let metal_tokens = greedy_decode(&mut metal_dec, &prefix, eot, 64).expect("metal greedy");
+    assert_eq!(
+        metal_tokens, cpu_tokens,
+        "greedy token sequence (Metal vs CPU) must be identical"
+    );
+    eprintln!(
+        "[parity] whisper Metal e2e: {} greedy tokens match CPU exactly",
+        metal_tokens.len()
+    );
+}

@@ -26,12 +26,14 @@
 //!
 //! [`Compute::for_backend`] takes the model's *required* hot-op set and refuses
 //! to build a backend that does not cover **every** op in it — an explicit
-//! [`VokraError::UnsupportedOp`], never a per-op CPU fall back. This slice ships
-//! one real Metal kernel (the FP32 GEMM), so a GEMM-only model (CAM++,
-//! piper-plus) runs fully on Metal, while Whisper — which also needs
-//! softmax / layer-norm / GELU / conv1d / GEMV on the backend — is an explicit
-//! error on Metal until those kernels land (M2-01 T09-T13). Running on the CPU
-//! instead is the caller's *explicit* [`BackendKind::Cpu`] choice.
+//! [`VokraError::UnsupportedOp`], never a per-op CPU fall back. As of Phase 4
+//! (M2-01 T09-T13) the Metal backend has a real GPU kernel for every hot op
+//! (GEMM / GEMV / softmax / layer-norm / GELU / conv1d), so not only the
+//! GEMM-only models (CAM++, piper-plus) but the **full Whisper forward** runs on
+//! Metal through this seam. A backend that genuinely could not cover an op would
+//! still be an explicit `UnsupportedOp` rather than a silent CPU fall back;
+//! selecting the CPU instead is the caller's *explicit* [`BackendKind::Cpu`]
+//! choice.
 //!
 //! # `!Send` `MetalContext`, `Send + Sync` engines
 //!
@@ -56,7 +58,7 @@ use vokra_core::{Backend, Result, VokraError};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotOp {
     /// Row-major GEMM (`gemm_f32`) — the dominant matmul / linear / conv (via
-    /// im2col) cost. The one op this slice runs on the GPU.
+    /// im2col) cost. The first op wired onto the GPU (M2-01 slice).
     Gemm,
     /// Row-major matrix-vector product (`gemv_f32`) — Whisper's tied logits head.
     Gemv,
@@ -71,17 +73,28 @@ pub enum HotOp {
 }
 
 impl HotOp {
-    /// Whether the Metal backend covers this op in the current slice.
+    /// Whether the Metal backend's imperative [`Compute`] seam covers this op.
     ///
-    /// Kept in sync with `MetalBackend::supports` (MatMul only) and the Metal
-    /// arms of the [`Compute`] methods below; the `metal_coverage_is_consistent`
-    /// test pins the three together.
+    /// Kept in sync with the Metal arms of the [`Compute`] methods below; the
+    /// `metal_coverage_is_consistent` test pins the two together. As of Phase 4
+    /// (M2-01 T09-T13) every hot op has a `MetalContext` kernel, so the whole
+    /// Whisper set runs on the GPU through this seam. (The *graph* backend
+    /// `MetalBackend::supports` / `eval_op` is a separate path and still covers
+    /// only `MatMul` — the two coverage surfaces are intentionally independent.)
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     fn covered_by_metal(self) -> bool {
-        // M2-01 foundation slice: the FP32 GEMM (`MatMul`) is the only real
-        // Metal kernel. Activation / softmax / layer_norm / conv1d / gemv are the
-        // follow-on M2-01 T09-T13 tickets (Phase 4).
-        matches!(self, HotOp::Gemm)
+        // Phase 4 complete: GEMM (M2-01 slice) plus the five T09-T13 kernels
+        // (gemv / softmax / layer_norm / gelu / conv1d) are all real Metal
+        // kernels on `MetalContext`, so every HotOp is covered.
+        matches!(
+            self,
+            HotOp::Gemm
+                | HotOp::Gemv
+                | HotOp::Softmax
+                | HotOp::LayerNorm
+                | HotOp::Gelu
+                | HotOp::Conv1d
+        )
     }
 }
 
@@ -202,11 +215,8 @@ impl Compute {
     ) -> Result<()> {
         match &self.be {
             Be::Cpu => kernels::gemv_f32(m, k, a, x, bias, out),
-            // Not covered by Metal in this slice; `for_backend` rejects any model
-            // that needs it, so this is unreachable for a validly-built Metal
-            // `Compute` — kept an explicit error (never a silent CPU fall back).
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
-            Be::Metal(_) => Err(metal_uncovered(HotOp::Gemv)),
+            Be::Metal(ctx) => ctx.gemv_f32(m, k, a, x, bias, out),
         }
     }
 
@@ -221,7 +231,7 @@ impl Compute {
         match &self.be {
             Be::Cpu => kernels::softmax_f32(input, out, rows, cols),
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
-            Be::Metal(_) => Err(metal_uncovered(HotOp::Softmax)),
+            Be::Metal(ctx) => ctx.softmax_f32(input, out, rows, cols),
         }
     }
 
@@ -241,7 +251,7 @@ impl Compute {
         match &self.be {
             Be::Cpu => kernels::layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
-            Be::Metal(_) => Err(metal_uncovered(HotOp::LayerNorm)),
+            Be::Metal(ctx) => ctx.layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
         }
     }
 
@@ -250,7 +260,7 @@ impl Compute {
         match &self.be {
             Be::Cpu => kernels::gelu_f32(x, out),
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
-            Be::Metal(_) => Err(metal_uncovered(HotOp::Gelu)),
+            Be::Metal(ctx) => ctx.gelu_f32(x, out),
         }
     }
 
@@ -275,20 +285,11 @@ impl Compute {
                 input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
             ),
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
-            Be::Metal(_) => Err(metal_uncovered(HotOp::Conv1d)),
+            Be::Metal(ctx) => ctx.conv1d_f32(
+                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
+            ),
         }
     }
-}
-
-/// The explicit "Metal has no kernel for this op yet" error shared by the
-/// uncovered Metal arms (unreachable for a `for_backend`-validated `Compute`,
-/// kept honest per FR-EX-08).
-#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
-fn metal_uncovered(op: HotOp) -> VokraError {
-    VokraError::UnsupportedOp(format!(
-        "metal backend has no kernel for {op:?} in this slice (M2-01 T09-T13); \
-         no silent CPU fall back (FR-EX-08)"
-    ))
 }
 
 /// Builds a boxed [`Backend`] for the graph evaluator ([`vokra_core::run_graph`])
@@ -370,14 +371,32 @@ mod tests {
         ));
     }
 
-    /// On a Metal build, coverage is enforced: a GEMM-only model can build on
-    /// Metal (device permitting), but one that needs an uncovered op (softmax)
-    /// is rejected up front — before any device work — with `UnsupportedOp`.
+    /// On a Metal build, coverage is enforced. As of Phase 4 the Metal backend
+    /// covers the **whole** Whisper hot-op set, so `for_backend` never returns
+    /// `UnsupportedOp` for it — it either builds (device present) or reports an
+    /// explicit device unavailability (no silent CPU fall back).
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     #[test]
     fn metal_coverage_is_consistent() {
-        // Whisper's set includes softmax, which Metal does not cover: explicit
-        // UnsupportedOp regardless of whether a device is present.
+        // Every hot op is covered (this pins `covered_by_metal` to the wired
+        // Metal method arms — all now dispatch to a `MetalContext` kernel).
+        for op in [
+            HotOp::Gemm,
+            HotOp::Gemv,
+            HotOp::Softmax,
+            HotOp::LayerNorm,
+            HotOp::Gelu,
+            HotOp::Conv1d,
+        ] {
+            assert!(
+                op.covered_by_metal(),
+                "{op:?} unexpectedly NOT Metal-covered"
+            );
+        }
+
+        // Whisper's full set is therefore a covered request: it either builds
+        // (device present) or fails with an explicit device error — never a
+        // coverage `UnsupportedOp`, never a silent CPU fall back (FR-EX-08).
         let whisper = [
             HotOp::Gemm,
             HotOp::Gemv,
@@ -386,32 +405,12 @@ mod tests {
             HotOp::Gelu,
             HotOp::Conv1d,
         ];
-        assert!(matches!(
-            Compute::for_backend(BackendKind::Metal, &whisper),
-            Err(VokraError::UnsupportedOp(_))
-        ));
-
-        // The coverage predicate and the method arms agree: Gemm is covered, the
-        // rest are not (this pins `covered_by_metal` to the Metal method arms).
-        assert!(HotOp::Gemm.covered_by_metal());
-        for op in [
-            HotOp::Gemv,
-            HotOp::Softmax,
-            HotOp::LayerNorm,
-            HotOp::Gelu,
-            HotOp::Conv1d,
-        ] {
-            assert!(!op.covered_by_metal(), "{op:?} unexpectedly Metal-covered");
-        }
-
-        // A GEMM-only request either builds (device present) or fails with an
-        // explicit device error (no silent fall back) — never a coverage error.
-        match Compute::for_backend(BackendKind::Metal, &[HotOp::Gemm]) {
+        match Compute::for_backend(BackendKind::Metal, &whisper) {
             Ok(c) => assert_eq!(c.backend_name(), "metal"),
             Err(VokraError::BackendUnavailable(_)) => {
-                eprintln!("no Metal device; GEMM-only coverage path is device-gated");
+                eprintln!("no Metal device; full-coverage build path is device-gated");
             }
-            Err(e) => panic!("unexpected error for a covered request: {e}"),
+            Err(e) => panic!("unexpected error for a fully-covered request: {e}"),
         }
     }
 }
