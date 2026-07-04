@@ -1,0 +1,19 @@
+[package]
+name = "vokra-mmap"
+description = "True mmap GGUF loader for Vokra: maps a model file read-only via self-declared POSIX mmap / Win32 file-mapping FFI (NO external crates — the symbols std already links) and hands it to GgufFile::from_external for zero-copy, lazy cold-start loading (FR-LD-01 / NFR-PF-11)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Zero external dependencies (NFR-DS-02): the only dependency is the first-party
+# `vokra-core` (for `GgufFile` / `AsBytes`). The `mmap` / `munmap` (POSIX) and
+# `CreateFileMappingW` / `MapViewOfFile` (Win32) symbols are declared inline in
+# `unsafe extern` blocks — std already links libc / kernel32, so calling them
+# adds no crate to Cargo.lock (verified by scripts/check-zero-deps.sh).
+[dependencies]
+vokra-core.workspace = true
+
+[lints]
+workspace = true

@@ -1,15 +1,17 @@
 //! GGUF reader: parse a file into metadata and tensor descriptors, then lend
 //! tensor payloads as zero-copy `&[u8]` slices.
 //!
-//! # zero-copy strategy (std-I/O substitute for mmap)
+//! # byte source: owned buffer or external mapping
 //!
 //! `vokra-core` forbids `unsafe` (workspace lint `unsafe_code = "deny"`), so a
-//! true `mmap` (which requires `unsafe` or an external crate such as
-//! `memmap2`) cannot live here. [`GgufFile::open`] therefore reads the whole
-//! file into an owned buffer with `std::io` and lends `&[u8]` slices into that
-//! buffer — the tensor-access API is genuinely copy-free, but the *lazy*
-//! cold-start property of `mmap` (FR-LD-01 / NFR-PF-11) is a follow-up that
-//! needs either a dedicated `unsafe`-allowed crate or `memmap2`.
+//! true `mmap` (which requires `unsafe`) cannot live here. [`GgufFile::open`]
+//! therefore reads the whole file into an owned buffer with `std::io` and lends
+//! `&[u8]` slices into that buffer — the tensor-access API is genuinely
+//! copy-free. The *lazy* cold-start property of `mmap` (FR-LD-01 / NFR-PF-11) is
+//! supplied by the `unsafe`-allowed `vokra-mmap` crate: it maps a file
+//! read-only and hands the mapping to [`GgufFile::from_external`] as a boxed
+//! [`AsBytes`], so the exact same parser and zero-copy accessors run over
+//! mmap-backed bytes with no copy and no change to the parse logic.
 //!
 //! All offsets and lengths are bounds-checked at parse time, so the slice
 //! accessors never index out of range and never panic (NFR-RL-07).
@@ -27,13 +29,53 @@ use super::{DEFAULT_ALIGNMENT, GGUF_MAGIC, GGUF_VERSION, GgufError, align_up, ch
 /// (NFR-RL-07). Real models nest at most one level.
 const MAX_ARRAY_DEPTH: usize = 64;
 
-/// A parsed GGUF file: decoded header, metadata and tensor infos, plus the
-/// backing byte buffer that tensor slices borrow from.
+/// A byte source a [`GgufFile`] can borrow its tensor payloads from.
 ///
-/// Construct with [`GgufFile::open`] (from a path) or [`GgufFile::parse`]
-/// (from an in-memory buffer, used by the writer round-trip tests).
+/// The parser and every zero-copy accessor operate purely on the `&[u8]`
+/// returned by [`bytes`](AsBytes::bytes), so one [`GgufFile`] works over an
+/// owned in-memory buffer *or* an externally managed mapping. `vokra-core`
+/// itself only ever constructs the owned case (it forbids `unsafe`); the
+/// `unsafe`-allowed `vokra-mmap` crate implements this trait over a read-only
+/// `mmap` and installs it with [`GgufFile::from_external`].
+///
+/// Implementors must guarantee that [`bytes`](AsBytes::bytes) returns the same
+/// bytes for the life of the value (tensor ranges are bounds-checked once at
+/// parse time) and that those bytes are immutable (no aliasing `&mut`), so the
+/// returned slice is sound to share across threads — hence the `Send + Sync`
+/// bound, which also keeps a mapping-backed [`GgufFile`] `Send + Sync`.
+pub trait AsBytes: Send + Sync {
+    /// The complete GGUF file image as one contiguous, immutable byte slice.
+    fn bytes(&self) -> &[u8];
+}
+
+/// The backing bytes of a [`GgufFile`]: an owned buffer (the `std::io` /
+/// writer-roundtrip path) or an external mapping (the `vokra-mmap` path).
+enum GgufBytes {
+    /// Whole file read into memory by [`GgufFile::open`] / [`GgufFile::parse`].
+    Owned(Vec<u8>),
+    /// Bytes owned and kept alive by an external source (e.g. an `mmap`).
+    External(Box<dyn AsBytes>),
+}
+
+impl GgufBytes {
+    /// Borrows the backing bytes regardless of provenance.
+    fn bytes(&self) -> &[u8] {
+        match self {
+            GgufBytes::Owned(v) => v,
+            GgufBytes::External(src) => src.bytes(),
+        }
+    }
+}
+
+/// A parsed GGUF file: decoded header, metadata and tensor infos, plus the
+/// backing byte source that tensor slices borrow from.
+///
+/// Construct with [`GgufFile::open`] (from a path), [`GgufFile::parse`] (from an
+/// in-memory buffer, used by the writer round-trip tests) or
+/// [`GgufFile::from_external`] (from an [`AsBytes`] source such as a
+/// `vokra-mmap` mapping).
 pub struct GgufFile {
-    data: Vec<u8>,
+    data: GgufBytes,
     version: u32,
     alignment: u64,
     /// Metadata in file order (`vokra.*` keys included).
@@ -48,13 +90,14 @@ pub struct GgufFile {
 impl std::fmt::Debug for GgufFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Deliberately omit the (potentially large) backing buffer.
+        let file_len = self.data().len();
         f.debug_struct("GgufFile")
             .field("version", &self.version)
             .field("alignment", &self.alignment)
             .field("metadata_keys", &self.metadata.len())
             .field("tensors", &self.tensors.len())
             .field("tensor_data_offset", &self.tensor_data_offset)
-            .field("file_len", &self.data.len())
+            .field("file_len", &file_len)
             .finish()
     }
 }
@@ -72,9 +115,31 @@ impl GgufFile {
 
     /// Parses a GGUF file from an owned in-memory buffer.
     pub fn parse(data: Vec<u8>) -> Result<Self, GgufError> {
+        Self::from_bytes(GgufBytes::Owned(data))
+    }
+
+    /// Parses a GGUF file whose bytes are owned and kept alive by an external
+    /// source (e.g. a read-only `mmap` from the `vokra-mmap` crate).
+    ///
+    /// The bytes are parsed exactly as [`GgufFile::parse`] parses an owned
+    /// buffer — same layout checks, same bounds validation — so the tensor
+    /// accessors lend zero-copy `&[u8]` slices straight out of the mapping. The
+    /// `src` is kept alive for the life of the returned [`GgufFile`].
+    pub fn from_external(src: Box<dyn AsBytes>) -> Result<Self, GgufError> {
+        Self::from_bytes(GgufBytes::External(src))
+    }
+
+    /// Parses either byte provenance into a [`GgufFile`].
+    ///
+    /// Parsing borrows the bytes as `&[u8]` and produces fully owned metadata
+    /// and tensor descriptors ([`Parsed`]); only the tensor *payloads* keep
+    /// borrowing the stored [`GgufBytes`]. The numeric and bounds logic is
+    /// identical for both provenances.
+    fn from_bytes(data: GgufBytes) -> Result<Self, GgufError> {
         let parsed = {
-            let mut r = ByteReader::new(&data);
-            parse_all(&mut r, data.len())?
+            let bytes = data.bytes();
+            let mut r = ByteReader::new(bytes);
+            parse_all(&mut r, bytes.len())?
         };
         let Parsed {
             version,
@@ -146,13 +211,21 @@ impl GgufFile {
         Some(self.tensor_bytes(info))
     }
 
+    /// Borrows the whole backing file image (owned buffer or external mapping).
+    ///
+    /// The zero-copy tensor accessors index into this slice; every range they
+    /// use was bounds-checked once at parse time.
+    fn data(&self) -> &[u8] {
+        self.data.bytes()
+    }
+
     /// Lends the payload for a known tensor descriptor (see
     /// [`GgufFile::tensor_data`]).
     pub fn tensor_bytes(&self, info: &GgufTensorInfo) -> &[u8] {
         // Bounds were validated in `parse_all`; recompute the checked range.
         let start = (self.tensor_data_offset + info.offset) as usize;
         let len = info.byte_len().expect("byte_len validated during parse") as usize;
-        &self.data[start..start + len]
+        &self.data()[start..start + len]
     }
 
     /// Decodes a tensor's payload into owned `f32`, dequantizing K-quants.
@@ -434,6 +507,52 @@ mod tests {
         assert_eq!(file.alignment(), DEFAULT_ALIGNMENT);
         assert!(file.metadata().is_empty());
         assert!(file.tensors().is_empty());
+    }
+
+    #[test]
+    fn gguf_file_is_send_and_sync() {
+        // `GgufFile` is stored in `Session` and moved across threads, so it must
+        // stay `Send + Sync` even now that a payload can be an external mapping
+        // (`GgufBytes::External(Box<dyn AsBytes>)`). `AsBytes: Send + Sync`
+        // keeps the trait object thread-safe; this pins that at compile time.
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<GgufFile>();
+    }
+
+    #[test]
+    fn from_external_parses_like_parse_over_the_same_bytes() {
+        // An in-memory `AsBytes` proves the external path shares the parser with
+        // `parse`: identical version/alignment/metadata/tensor bytes.
+        struct InMem(Vec<u8>);
+        impl AsBytes for InMem {
+            fn bytes(&self) -> &[u8] {
+                &self.0
+            }
+        }
+        let mut b = GgufBuilder::new();
+        b.add_u32(chunks::KEY_FRONTEND_N_FFT, 400);
+        let f32_bytes: Vec<u8> = [1.0f32, -2.0, 3.5]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        b.add_tensor("d", GgmlType::F32, vec![3], f32_bytes)
+            .unwrap();
+        let raw = b.to_bytes().unwrap();
+
+        let owned = GgufFile::parse(raw.clone()).unwrap();
+        let external = GgufFile::from_external(Box::new(InMem(raw))).unwrap();
+
+        assert_eq!(owned.version(), external.version());
+        assert_eq!(owned.alignment(), external.alignment());
+        assert_eq!(owned.metadata(), external.metadata());
+        assert_eq!(
+            owned.tensor_data("d").unwrap(),
+            external.tensor_data("d").unwrap()
+        );
+        assert_eq!(
+            owned.tensor_f32("d").unwrap(),
+            external.tensor_f32("d").unwrap()
+        );
     }
 
     #[test]

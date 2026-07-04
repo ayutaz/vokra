@@ -38,11 +38,14 @@ vokra-backend-cpu = { path = "crates/vokra-backend-cpu" }
 vokra-models = { path = "crates/vokra-models" }
 vokra-piper-plus = { path = "crates/vokra-piper-plus" }
 vokra-capi = { path = "crates/vokra-capi" }
+vokra-mmap = { path = "crates/vokra-mmap" }
 
 # Unsafe boundary policy (M0-02-T03; NFR-RL-07, SRS §5-(1)):
 # the workspace is safe-by-default (`unsafe_code = "deny"`). `unsafe` +
 # SIMD intrinsics / C ABI code are permitted ONLY in vokra-ops,
-# vokra-backend-cpu and vokra-capi, which opt out locally with
+# vokra-backend-cpu, vokra-capi and vokra-mmap (the last for the self-declared
+# POSIX `mmap` / Win32 file-mapping FFI that backs true zero-copy GGUF loading —
+# no external crate; see its crate docs), which opt out locally with
 # `#![allow(unsafe_code)]` at their crate root. Public API boundaries must
 # remain safe in every crate. Every `unsafe` block must carry a
 # `// SAFETY:` comment — enforced by `clippy::undocumented_unsafe_blocks`
