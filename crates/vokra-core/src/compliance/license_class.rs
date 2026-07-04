@@ -206,6 +206,22 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         "rvc" | "rvc-v2" | "gpt-sovits" | "e2-tts" | "styletts2" | "styletts-2" => {
             LicenseClass::Unknown
         }
+        // First-party runtime model **families**: a specific variant id (e.g.
+        // `piper-plus-multilingual-6lang`, `whisper-base.en`) is still one of the
+        // Apache-2.0 / MIT first-party archs, so it resolves permissive like its
+        // canonical id above — otherwise a stock voice's untagged GGUF would
+        // fail-closed. The prefixes are the first-party families ONLY; the gated
+        // CC-BY-NC families are matched exactly above and any *unlisted* variant
+        // of them still falls through to `Unknown` (fail-closed), never permissive.
+        _ if id.starts_with("piper-plus")
+            || id.starts_with("whisper")
+            || id.starts_with("silero-vad")
+            || id.starts_with("campplus")
+            || id.starts_with("cam++")
+            || id.starts_with("kokoro") =>
+        {
+            LicenseClass::Permissive
+        }
         _ => return None,
     };
     Some(class)
@@ -324,6 +340,20 @@ mod tests {
         );
         // Case-insensitive.
         assert_eq!(registry_lookup("F5-TTS"), Some(LicenseClass::NonCommercial));
+        // First-party **variant** ids (not canonical) still resolve permissive by
+        // family prefix — a stock voice's untagged GGUF must not fail-closed.
+        for id in [
+            "piper-plus-multilingual-6lang", // the v7 zero-shot voice id
+            "whisper-base.en",
+            "silero-vad-v5",
+            "kokoro-82m",
+        ] {
+            assert_eq!(registry_lookup(id), Some(LicenseClass::Permissive), "{id}");
+        }
+        // But an unlisted variant of a GATED family still fails closed (not
+        // permissive): the family prefixes cover first-party archs only.
+        assert_eq!(registry_lookup("encodec-24khz-v2"), None);
+        assert_eq!(registry_lookup("fish-speech-v9"), None);
         // Unregistered -> None (caller fails closed to Unknown).
         assert_eq!(registry_lookup("totally-unknown-model"), None);
     }
