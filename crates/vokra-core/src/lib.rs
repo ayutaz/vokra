@@ -83,6 +83,7 @@
 pub mod backend;
 pub mod cache;
 pub mod complex;
+pub mod compliance;
 pub mod decode;
 pub mod engines;
 pub mod error;
@@ -99,6 +100,12 @@ pub mod tasks;
 pub use backend::{Backend, BackendKind};
 pub use cache::KvCache;
 pub use complex::Complex32;
+pub use compliance::{
+    ComplianceConfig, ComplianceLevel, CompliancePolicy, DisclosureConfig, LicenseClass,
+    LicenseResolution, ResolutionSource, SpeakerEmbeddingPolicy, VoiceCloningPolicy,
+    WatermarkBackendStatus, WatermarkConfig, check_weight_license, registry_lookup,
+    resolve_license_class, stamp_provenance,
+};
 pub use decode::{
     CfgMode, DecodeStepper, LogitsSource, Sampler, SamplerConfig, TOKEN_FLAG_EOT, apply_cfg,
     apply_cfg_inplace, argmax, sample_sequence,

@@ -41,7 +41,10 @@ use std::path::Path;
 
 use vokra_core::gguf::GgufFile;
 use vokra_core::rng::GaussianSplitMix64;
-use vokra_core::{Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError};
+use vokra_core::{
+    CompliancePolicy, Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError,
+    check_weight_license,
+};
 use vokra_ops::{KaldiFbankOpts, kaldi_fbank, resample};
 use vokra_piper_plus::{PhonemeTable, Phonemizer};
 
@@ -145,12 +148,26 @@ impl PiperPlusTts {
     /// Propagates GGUF parse errors and any weight shape/metadata mismatch
     /// (a wrong or corrupt voice fails loudly at load).
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
-        let file = GgufFile::open(path)
-            .map_err(|e| vokra_core::VokraError::ModelLoad(format!("piper voice GGUF: {e}")))?;
-        Self::from_gguf(file)
+        Self::from_path_with_policy(path, &CompliancePolicy::strict())
     }
 
-    /// Loads a voice from an already-parsed GGUF.
+    /// Loads a voice from disk under an explicit compliance `policy` — the
+    /// weight-license research-flag gate entry point (FR-CP-03, M2-13).
+    ///
+    /// [`from_path`](Self::from_path) is exactly this with the default
+    /// fail-closed [`CompliancePolicy::strict`]. A stock piper-plus voice is
+    /// MIT-weight (permissive) and always loads; the gate only bites a voice
+    /// GGUF explicitly tagged non-commercial (`vokra.provenance.*`).
+    pub fn from_path_with_policy(
+        path: impl AsRef<Path>,
+        policy: &CompliancePolicy,
+    ) -> Result<Self> {
+        let file = GgufFile::open(path)
+            .map_err(|e| vokra_core::VokraError::ModelLoad(format!("piper voice GGUF: {e}")))?;
+        Self::from_gguf_with_policy(file, policy)
+    }
+
+    /// Loads a voice from an already-parsed GGUF (default fail-closed policy).
     ///
     /// The GGUF's `vokra.model.arch` is checked first, so a non-piper (or wrong
     /// architecture) GGUF fails with a clear [`VokraError::ModelLoad`] rather
@@ -159,6 +176,22 @@ impl PiperPlusTts {
     /// every component has copied its tensors out, halving resident memory: the
     /// `TensorStore` is a function local and is freed at the end of load.
     pub fn from_gguf(file: GgufFile) -> Result<Self> {
+        Self::from_gguf_with_policy(file, &CompliancePolicy::strict())
+    }
+
+    /// Loads a voice from an already-parsed GGUF under an explicit compliance
+    /// `policy`.
+    ///
+    /// After the `vokra.model.arch` check, the **weight-license gate**
+    /// ([`check_weight_license`], FR-CP-03) runs on the container *before* any
+    /// weight tensor is bound: a non-commercial / unknown weight license
+    /// (`vokra.provenance.*`) without a research flag is refused with
+    /// [`VokraError::ResearchLicenseRequired`] — never a silent load. A stock
+    /// MIT piper voice classifies permissive (built-in registry, arch
+    /// `piper-plus-mb-istft-vits2`) and passes. This is the single M2-13
+    /// enforcement path wired in `vokra-models`; the other model loaders
+    /// (whisper / silero / campplus) are a follow-up.
+    pub fn from_gguf_with_policy(file: GgufFile, policy: &CompliancePolicy) -> Result<Self> {
         let store = TensorStore::new(file);
         let arch = store
             .file()
@@ -169,6 +202,10 @@ impl PiperPlusTts {
                 "not a piper-plus voice GGUF: vokra.model.arch = {arch:?}, expected `{EXPECTED_ARCH}`"
             )));
         }
+        // Weight-license research-flag gate (FR-CP-03): refuse a non-commercial
+        // / unknown-provenance voice unless the policy grants a research flag.
+        // Runs before the heavy weight load so a gated model fails fast.
+        check_weight_license(store.file(), policy)?;
         let config = PiperConfig::from_gguf(store.file())?;
         // Shape-derived dimensions (single-speaker medium vs zero-shot v7 FiLM);
         // threaded into the components, dropped after load.
@@ -742,5 +779,99 @@ mod tests {
         // channel-major: o0=[101,110], o1=[202,220], o2=[303,330].
         let on = proj.channels(Some(&feats), super::config::PROSODY_LANG_ID, 2);
         assert_eq!(on, [101.0, 110.0, 202.0, 220.0, 303.0, 330.0]);
+    }
+}
+
+/// Weight-license research-flag gate wiring (M2-13, FR-CP-03).
+///
+/// These prove the gate is live on the piper loader path. They use minimal
+/// (weightless) piper-arch GGUFs: a gated model is rejected by the gate before
+/// any weight is bound, and a permissive / research-unlocked model gets *past*
+/// the gate (then fails later on the absent weights — a different error, which
+/// is exactly what distinguishes "gate fired" from "gate passed").
+#[cfg(test)]
+mod compliance_gate_tests {
+    use super::{EXPECTED_ARCH, PiperPlusTts};
+    use vokra_core::gguf::{GgufBuilder, GgufFile, chunks};
+    use vokra_core::{ComplianceLevel, CompliancePolicy, VokraError};
+
+    /// A minimal piper-arch GGUF (no weight tensors), optionally carrying a
+    /// `vokra.provenance.license` string.
+    fn piper_gguf(license: Option<&str>) -> GgufFile {
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        if let Some(l) = license {
+            b.add_string(chunks::KEY_PROVENANCE_LICENSE, l);
+        }
+        GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse")
+    }
+
+    /// `PiperPlusTts` is not `Debug`, so unwrap the `Err` without touching `Ok`.
+    fn load_err(res: Result<PiperPlusTts, VokraError>) -> VokraError {
+        match res {
+            Ok(_) => panic!("expected a load error (fixture carries no weights)"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn noncommercial_voice_is_rejected_without_research_flag() {
+        // WP core: a CC-BY-NC-tagged voice, strict policy -> explicit gate error
+        // (before weight binding), never a silent load.
+        let err = load_err(PiperPlusTts::from_gguf_with_policy(
+            piper_gguf(Some("CC-BY-NC-4.0")),
+            &CompliancePolicy::strict(),
+        ));
+        assert!(
+            matches!(err, VokraError::ResearchLicenseRequired { .. }),
+            "expected the gate to fire, got {err}"
+        );
+    }
+
+    #[test]
+    fn research_flag_unlocks_the_gate_on_this_path() {
+        // Same tagged voice, but with a research flag: it clears the gate and
+        // only then fails on the absent weights — so the error is NOT the
+        // license gate. Proven for all three unlock routes.
+        for policy in [
+            CompliancePolicy::strict().with_research_license(true),
+            CompliancePolicy::new(ComplianceLevel::Research),
+            CompliancePolicy::new(ComplianceLevel::Disabled),
+        ] {
+            let err = load_err(PiperPlusTts::from_gguf_with_policy(
+                piper_gguf(Some("CC-BY-NC-4.0")),
+                &policy,
+            ));
+            assert!(
+                !matches!(err, VokraError::ResearchLicenseRequired { .. }),
+                "gate must be unlocked; got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn permissive_voice_passes_the_gate_under_strict() {
+        // A stock piper voice (no provenance -> registry: piper arch is
+        // permissive) clears the gate under the strictest policy; it then fails
+        // on the absent weights, NOT on the license gate.
+        let err = load_err(PiperPlusTts::from_gguf_with_policy(
+            piper_gguf(None),
+            &CompliancePolicy::strict(),
+        ));
+        assert!(
+            !matches!(err, VokraError::ResearchLicenseRequired { .. }),
+            "permissive voice must pass the gate; got {err}"
+        );
+    }
+
+    #[test]
+    fn wrong_arch_still_fails_before_the_gate() {
+        // The pre-existing arch check is unchanged: a non-piper GGUF is a plain
+        // ModelLoad, not a license error.
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, "whisper");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let err = load_err(PiperPlusTts::from_gguf(file));
+        assert!(matches!(err, VokraError::ModelLoad(_)), "got {err}");
     }
 }

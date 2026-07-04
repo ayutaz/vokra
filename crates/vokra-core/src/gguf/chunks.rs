@@ -45,9 +45,30 @@
 //! M0 covers only **writing and reading** these chunks. The *inspection* of
 //! `frontend_spec` — the bit-exact match check that must `warn`/`fail` when a
 //! model's front-end does not match the runtime's (FR-LD-03) — is a v0.1 MVP
-//! concern owned by **M1-03** and is deliberately absent here. The
-//! provenance / license metadata of FR-CP-05 (M1) is expected to land in this
-//! same `vokra.*` namespace later (e.g. `vokra.provenance.*`).
+//! concern owned by **M1-03** and is deliberately absent here.
+//!
+//! # `vokra.provenance.*` keys (FR-CP-05 / FR-CP-03, M2-13)
+//!
+//! The provenance / license metadata of FR-CP-05 lives in the
+//! `vokra.provenance.*` sub-namespace. These keys let the runtime classify a
+//! model's **weight license** and enforce the CC-BY-NC research-flag gate
+//! (FR-CP-03; see [`crate::compliance`]). They record the *weight* license,
+//! which is independent of the crate/source-code license (a model can be
+//! MIT-code but CC-BY-NC-weight, e.g. F5-TTS / EnCodec — see
+//! `docs/license-audit.md` §3).
+//!
+//! | key                              | GGUF value type | meaning |
+//! |----------------------------------|-----------------|---------|
+//! | `vokra.provenance.weight_license`| `STRING`        | resolved [`LicenseClass`](crate::compliance::LicenseClass) canonical name (e.g. `"non-commercial"`) — an explicit, highest-priority override |
+//! | `vokra.provenance.license`       | `STRING`        | raw weight license string (e.g. `"CC-BY-NC-4.0"`, `"MIT"`) |
+//! | `vokra.provenance.model_id`      | `STRING`        | model identifier used for the built-in registry lookup (e.g. `"f5-tts"`) |
+//! | `vokra.provenance.source`        | `STRING`        | free-form upstream source note (URL / repo), advisory only |
+//!
+//! The converter side of this chunk (writing it) is minimal in M2-13: see
+//! [`crate::compliance::stamp_provenance`]. When the chunk is absent the
+//! runtime falls back to the built-in registry keyed on `vokra.model.*`, and
+//! finally to [`LicenseClass::Unknown`](crate::compliance::LicenseClass) —
+//! which is **fail-closed** (gate required), never a silent pass.
 //!
 //! # Silero VAD note
 //!
@@ -92,6 +113,26 @@ pub const KEY_FRONTEND_DC_OFFSET_REMOVAL: &str = "vokra.frontend.dc_offset_remov
 pub const KEY_FRONTEND_PRE_EMPHASIS: &str = "vokra.frontend.pre_emphasis";
 /// `vokra.frontend.sample_rate` — input sample rate, Hz (`UINT32`).
 pub const KEY_FRONTEND_SAMPLE_RATE: &str = "vokra.frontend.sample_rate";
+
+/// `vokra.provenance.weight_license` — explicit resolved weight
+/// [`LicenseClass`](crate::compliance::LicenseClass) canonical name (`STRING`).
+///
+/// Highest-priority signal for the compliance gate (FR-CP-03): when present and
+/// parseable it wins over the raw license string and the registry. Written by
+/// [`crate::compliance::stamp_provenance`].
+pub const KEY_PROVENANCE_WEIGHT_LICENSE: &str = "vokra.provenance.weight_license";
+
+/// `vokra.provenance.license` — raw weight license string, e.g.
+/// `"CC-BY-NC-4.0"` / `"MIT"` (`STRING`, FR-CP-05).
+pub const KEY_PROVENANCE_LICENSE: &str = "vokra.provenance.license";
+
+/// `vokra.provenance.model_id` — model identifier for the built-in license
+/// registry lookup, e.g. `"f5-tts"` / `"encodec"` (`STRING`, FR-CP-05).
+pub const KEY_PROVENANCE_MODEL_ID: &str = "vokra.provenance.model_id";
+
+/// `vokra.provenance.source` — advisory upstream source note (URL / repo),
+/// not used for classification (`STRING`, FR-CP-05).
+pub const KEY_PROVENANCE_SOURCE: &str = "vokra.provenance.source";
 
 /// Standard GGUF key for the global tensor-data alignment (`UINT32`).
 ///

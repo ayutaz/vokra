@@ -1,6 +1,6 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
-**最終更新**: 2026-07-04（M1-02: GGUF K-quant + safetensors runtime direct-load のフォーマット参照を追記 / M0-08: §3 CAM++ 行を Vokra が実際に変換対応した具体ソース `ayousanz/campplus-onnx`（上流 `iic/speech_campplus`）に更新）
+**最終更新**: 2026-07-04（M2-13: research flag enforcement 機構の実装を §3 末尾に追記 / M1-02: GGUF K-quant + safetensors runtime direct-load のフォーマット参照を追記 / M0-08: §3 CAM++ 行を Vokra が実際に変換対応した具体ソース `ayousanz/campplus-onnx`（上流 `iic/speech_campplus`）に更新）
 **目的**: Vokra が依存するすべての Rust crate、モデル weight、音声 codec、vocoder、辞書、G2P、audio 前処理ライブラリのライセンスを列挙し、Apache 2.0 core との互換性、Unity/Godot Asset Store 配布可否、商用ゲーム組込可否を明示する。
 
 **運用**:
@@ -112,6 +112,16 @@
 - Tennessee **ELVIS Act (2024-07-01)** と連邦 **NO FAKES Act** (2025-04 再導入) の tool-distributor liability 対策
 
 **Speaker embedding は core に残す**: 話者クローンではなく話者特徴抽出 (現代 zero-shot TTS の必須入力)、ELVIS Act の "primary purpose" 判定を避けるため機能を限定 (embedding 抽出のみ、任意音声への転写機能は含めない)。
+
+### research flag enforcement 機構（M2-13 実装、2026-07-04）
+
+上表の weight license 分類を **機構として強制**する research-flag gate を実装した（FR-CP-03 / FR-MD-10 / FR-OP-32、`crates/vokra-core/src/compliance/`）。
+
+- **本表が SoT**: `LicenseClass`（`Permissive` / `AttributionRequired` / `NonCommercial` / `NonCommercialShareAlike` / `Unknown`）の built-in registry は本 §3 の各行の機械写像であり、独自のライセンス判定は導入しない。**F5-TTS = `NonCommercial`（CC-BY-NC 4.0）/ Fish-Speech v1.4/v1.5 = `NonCommercialShareAlike`（CC-BY-NC-SA 4.0）/ EnCodec = `NonCommercial`（CC-BY-NC 4.0）** が gate 要に分類され、**research flag なしでロード拒否**（`VokraError::ResearchLicenseRequired`、明示エラー・silent load 禁止）。
+- **fail-closed**: provenance（`vokra.provenance.*` GGUF chunk）も registry も引けない weight は `Unknown` に倒し、gate 要（研究フラグ必須）とする。分類不能を「商用可」と誤判定しない。
+- **weight license ≠ crate license（別機構）**: 本 gate は **モデル weight** の非商用ライセンスを対象とする。依存 crate の GPL/LGPL 排除は別機構 = `cargo-deny`（§2、NFR-LC-02/04、CI required check）が担い、本機構は変更しない。
+- **公式 zoo 非搭載の維持**: 公式 model zoo は Apache 2.0 / MIT / CC-BY（attribution）weight のみ（§「Vokra 公式配布」列の ★）。CC-BY-NC 系（F5-TTS / Fish-Speech / EnCodec）は `✕ research flag` のまま非搭載を維持する。
+- 解錠経路（研究/評価用途限定）: `CompliancePolicy::with_research_license(true)` / 環境変数 `VOKRA_ALLOW_RESEARCH_LICENSE=1` / `ComplianceLevel::Research`。EnCodec の商用代替は DAC / Mimi / WavTokenizer / X-Codec 2（§3）。警告・免責文言の法務的十分性は FR-MD-13 / X-03（依頼者判断）に従属。
 
 ---
 

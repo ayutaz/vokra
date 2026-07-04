@@ -1,6 +1,6 @@
 # legal-compliance.md — Vokra 音声 AI 法務対応
 
-**最終更新**: 2026-07-02
+**最終更新**: 2026-07-04（M2-13: §8 に compliance API 実装状況・watermark 据え置き・research flag 実挙動を追記）
 **目的**: EU AI Act、California SB 942、Tennessee ELVIS Act、連邦 NO FAKES Act、Apple App Store Guideline 5.5、Google Play Generative AI Content 等の音声 AI 特有の法的要件に対し、Vokra が実装すべき機能・運用・ドキュメントを列挙する。
 
 **責任分界**:
@@ -217,6 +217,15 @@ Vokra::init(VokraConfig {
 - CA (米カリフォルニア): Strict 推奨
 - TN (米テネシー): voice cloning 全機能無効
 - JP: 声優ライセンス警告表示
+
+### 実装状況（M2-13、2026-07-04）
+
+上記スケッチの **compliance 設定 API を `crates/vokra-core/src/compliance/` の型として実装**した（FR-CP-06）。実装と本スケッチの対応・乖離:
+
+- **`ComplianceLevel`（Strict/Standard/Research/Disabled）・`WatermarkConfig`・`VoiceCloningPolicy`・`SpeakerEmbeddingPolicy`・`DisclosureConfig`（beacon 22050Hz）を型として提供**（default = Strict、voice_cloning は core で常時 `Disabled`＝単一 variant で表現不能化、speaker_embedding = `RequireConsent`）。init 統合点は `Vokra::init` グローバルではなく、当面 **model ローダーへ明示的な `CompliancePolicy` を渡す**形で配線（SRS の Session 中心 API と整合、グローバル init は据え置き）。
+- **research flag の実挙動**: `ComplianceLevel::Research`（または `with_research_license(true)` / `VOKRA_ALLOW_RESEARCH_LICENSE=1`）が CC-BY-NC 系 weight（F5-TTS/Fish-Speech/EnCodec）を解錠する。Strict/Standard は解錠せず `VokraError::ResearchLicenseRequired` で拒否（fail-closed、`docs/license-audit.md` §3 参照）。
+- **watermark は config 面のみ・埋め込みは据え置き（2026-07-04 依頼者ドロップ）**: `WatermarkConfig` は default ON の設計意図（audioseal/c2pa=true・synthid=false・silent_cipher=true）と opt-out 経路を保持するが、埋め込みバックエンド（AudioSeal/C2PA、旧 M1-07）は未実装。`WatermarkConfig::backend_status()` は `Deferred` を返し、**「埋め込み済み」と偽装しない**。したがって **EU AI Act Article 50（NFR-LG-01）/ SB 942（NFR-LG-02）の marking 義務は現時点で未充足**。復帰接続点は `backend_status()` を将来 `Active` に変える 1 箇所。法務的十分性の判断は FR-MD-13 / X-03（依頼者）に従属。
+- **自動地域判定は locale ベース最小版のみ・IP geolocation は据え置き**: zero-dep 不変条件（NFR-DS-02）維持のため geoip 系 crate/DB を core に追加しない。locale ヒントによる Strict 強制/警告は後続の最小実装に委ね、実際の地域確定は deployer 責務（本節の EU 強制は deployer が最も安全側に倒す前提）。
 
 ---
 

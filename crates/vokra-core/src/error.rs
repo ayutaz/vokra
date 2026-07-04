@@ -38,6 +38,27 @@ pub enum VokraError {
     /// callers can special-case a front-end mismatch — e.g. downgrade to a
     /// warning — without string-matching.
     FrontendMismatch(String),
+    /// A model's **weight** license is non-commercial (CC-BY-NC / CC-BY-NC-SA)
+    /// or of unknown provenance, and no research flag was set to permit it
+    /// (FR-CP-03, M2-13). The weight-license gate raises this *explicitly*
+    /// rather than silently skipping or substituting the model — the same
+    /// "never a silent fallback" rule as [`Self::UnsupportedOp`]. Distinct from
+    /// [`Self::ModelLoad`] so callers can special-case it (e.g. surface the
+    /// unlock hint) without string-matching. See
+    /// [`crate::compliance::check_weight_license`].
+    ///
+    /// This is the *weight* license gate, wholly separate from the dependency
+    /// (crate) license gate (`cargo-deny`, NFR-LC-02/04).
+    ResearchLicenseRequired {
+        /// Best-effort model identifier (from provenance / registry).
+        model_id: String,
+        /// The detected weight license label (raw string or class name),
+        /// e.g. `"CC-BY-NC-4.0"`.
+        license: String,
+        /// Human-readable unlock hint: the research-flag routes and, where
+        /// known, commercial alternatives.
+        hint: String,
+    },
     /// The API shape exists but its implementation has not landed yet
     /// (M0 skeleton; see the per-method rustdoc for the WP that wires it).
     NotImplemented(&'static str),
@@ -53,6 +74,15 @@ impl fmt::Display for VokraError {
             Self::InvalidArgument(msg) => write!(f, "invalid argument: {msg}"),
             Self::GraphValidation(msg) => write!(f, "graph validation error: {msg}"),
             Self::FrontendMismatch(msg) => write!(f, "frontend_spec mismatch: {msg}"),
+            Self::ResearchLicenseRequired {
+                model_id,
+                license,
+                hint,
+            } => write!(
+                f,
+                "research license required: model `{model_id}` has non-commercial/unknown \
+                 weight license `{license}` — {hint}"
+            ),
             Self::NotImplemented(what) => write!(f, "not implemented (M0 skeleton): {what}"),
         }
     }
@@ -99,6 +129,28 @@ mod tests {
             VokraError::FrontendMismatch("htk_mode: model=true runtime=false".to_owned())
                 .to_string(),
             "frontend_spec mismatch: htk_mode: model=true runtime=false"
+        );
+        let gated = VokraError::ResearchLicenseRequired {
+            model_id: "f5-tts".to_owned(),
+            license: "CC-BY-NC-4.0".to_owned(),
+            hint: "set ComplianceLevel::Research".to_owned(),
+        }
+        .to_string();
+        assert!(gated.starts_with("research license required: model `f5-tts`"));
+        assert!(gated.contains("CC-BY-NC-4.0"));
+    }
+
+    #[test]
+    fn research_license_required_has_no_source() {
+        // Not an I/O error, so it exposes no source (source() `_ => None`).
+        assert!(
+            VokraError::ResearchLicenseRequired {
+                model_id: "m".to_owned(),
+                license: "l".to_owned(),
+                hint: "h".to_owned(),
+            }
+            .source()
+            .is_none()
         );
     }
 
