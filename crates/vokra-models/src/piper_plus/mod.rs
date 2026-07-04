@@ -34,6 +34,8 @@ mod clone_integration;
 mod parity;
 #[cfg(test)]
 mod parity_v7;
+#[cfg(test)]
+mod parity_v7_prosody;
 
 use std::path::Path;
 
