@@ -26,33 +26,66 @@
 //! `m = σ(linear2(ReLU(linear1(mean_t(x) + segpool(x)))))`, returning `y·m`
 //! dense-concatenated onto the block state (+32 channels).
 //!
-//! All convolutions are lowered to im2col + [`gemm_f32`] (the dispatched SIMD
-//! GEMM); this module is `unsafe`-free (workspace `unsafe_code = "deny"`).
+//! All convolutions are lowered to im2col + GEMM (the dispatched SIMD GEMM, or
+//! the Metal GPU GEMM when a Metal backend is selected — the convs route through
+//! the [`Compute`] seam, M2-01 Phase 3); this module is `unsafe`-free (workspace
+//! `unsafe_code = "deny"`).
 
-use vokra_backend_cpu::kernels::gemm_f32;
 use vokra_core::gguf::GgufFile;
-use vokra_core::{Result, VokraError};
+use vokra_core::{BackendKind, Result, VokraError};
 
 use super::weights::{Bn, CamPlusWeights, Conv1dW, Conv2dW, ResBlockW};
+use crate::compute::{Compute, HotOp};
 
 /// Output speaker-embedding dimension of the supported CAM++ voice.
 pub const EMBED_DIM: usize = 192;
+
+/// The backend hot ops CAM++ dispatches: **GEMM only**. Every convolution is
+/// lowered to im2col + GEMM here, and the ReLU / sigmoid / BatchNorm / stats glue
+/// is model-internal scalar work (not a backend op). So the Metal backend, which
+/// covers GEMM, runs the whole forward on the GPU (M2-01 Phase 3).
+const CAMPLUS_HOT_OPS: &[HotOp] = &[HotOp::Gemm];
 
 /// A native CAM++ speaker encoder: fbank → 192-d embedding.
 ///
 /// Load once with [`SpeakerEncoder::from_gguf`] / [`SpeakerEncoder::from_path`],
 /// then call [`SpeakerEncoder::embed`] per reference utterance. The forward is
 /// stateless and `Send + Sync`, so one instance can be shared across threads.
+/// The [`BackendKind`] it holds is `Copy` (never a live `!Send` backend), so a
+/// Metal-selected encoder stays `Send + Sync`; the `!Send` GPU context is built
+/// on the stack inside [`embed`](Self::embed) (M2-01 Phase 3).
 pub struct SpeakerEncoder {
     weights: CamPlusWeights,
+    backend_kind: BackendKind,
 }
 
 impl SpeakerEncoder {
-    /// Binds the encoder from a parsed CAM++ GGUF (FR-LD-01).
+    /// Binds the encoder from a parsed CAM++ GGUF (FR-LD-01). The backend
+    /// defaults to [`BackendKind::Cpu`]; select another with
+    /// [`with_backend`](Self::with_backend).
     pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
         Ok(Self {
             weights: CamPlusWeights::from_gguf(gguf)?,
+            backend_kind: BackendKind::Cpu,
         })
+    }
+
+    /// Selects the backend the forward runs on (default [`BackendKind::Cpu`]).
+    ///
+    /// CAM++ dispatches GEMM only, so a GEMM-covering backend (Metal) runs the
+    /// whole forward on that backend. Selecting a backend that does not cover the
+    /// GEMM hot op — or that has no device — is an explicit error at
+    /// [`embed`](Self::embed) time (FR-EX-08), never a silent CPU fall back.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend_kind = backend;
+        self
+    }
+
+    /// Builds the [`Compute`] dispatcher for the selected backend (GEMM
+    /// coverage), on the stack — the `!Send` Metal context never outlives it.
+    fn compute(&self) -> Result<Compute> {
+        Compute::for_backend(self.backend_kind, CAMPLUS_HOT_OPS)
     }
 
     /// Opens and binds a CAM++ GGUF from `path`.
@@ -80,7 +113,9 @@ impl SpeakerEncoder {
         Ok(out)
     }
 
-    /// Full forward pass, returning the raw 192-d embedding.
+    /// Full forward pass on the encoder's selected backend, returning the raw
+    /// 192-d embedding. Builds the [`Compute`] from `self.backend_kind` on the
+    /// stack and forwards to [`run_with`](Self::run_with).
     ///
     /// `capture(stage_name, activation)` is invoked at each parity checkpoint
     /// (`post_fcm_reshape`, `post_tdnn`, `post_block1/2/3`, `post_stats`,
@@ -89,6 +124,19 @@ impl SpeakerEncoder {
     /// localize any divergence from the onnxruntime reference.
     pub(crate) fn run<F: FnMut(&str, &[f32])>(
         &self,
+        fbank: &[f32],
+        t: usize,
+        capture: F,
+    ) -> Result<Vec<f32>> {
+        self.run_with(&self.compute()?, fbank, t, capture)
+    }
+
+    /// Full forward pass on an explicit [`Compute`] (the backend-parity entry:
+    /// the CAM++ Metal-vs-CPU test drives the same encoder under both). The CPU
+    /// dispatcher reproduces the pre-seam kernel calls bit-for-bit.
+    pub(crate) fn run_with<F: FnMut(&str, &[f32])>(
+        &self,
+        compute: &Compute,
         fbank: &[f32],
         t: usize,
         mut capture: F,
@@ -118,14 +166,14 @@ impl SpeakerEncoder {
         }
         // FCM output is [32, out_freq, t] contiguous == [32·out_freq, t]; that
         // reshape (320 = 32×10) is `post_fcm_reshape`.
-        let (post_fcm_reshape, out_freq, w_t) = self.fcm(&in_map, t)?;
+        let (post_fcm_reshape, out_freq, w_t) = self.fcm(compute, &in_map, t)?;
         debug_assert_eq!(w_t, t);
         let fcm_ch = w.fcm.conv2.c_out * out_freq; // 32 × 10 = 320
         debug_assert_eq!(post_fcm_reshape.len(), fcm_ch * t);
         capture("post_fcm_reshape", &post_fcm_reshape);
 
         // --- xvector.tdnn: conv1d(320→128, k5, stride2, pad2) + ReLU ------
-        let mut x = conv1d(&post_fcm_reshape, fcm_ch, t, &w.tdnn, 2, 2, 1)?;
+        let mut x = conv1d(compute, &post_fcm_reshape, fcm_ch, t, &w.tdnn, 2, 2, 1)?;
         let t_net = x.len() / w.tdnn.c_out;
         relu(&mut x);
         capture("post_tdnn", &x);
@@ -135,6 +183,7 @@ impl SpeakerEncoder {
         for (bi, block) in w.blocks.iter().enumerate() {
             for layer in &block.layers {
                 let cam_out = dtdnn_layer(
+                    compute,
                     &x,
                     channels,
                     t_net,
@@ -151,7 +200,7 @@ impl SpeakerEncoder {
             let tr = &w.transitions[bi];
             bn_apply(&mut x, channels, t_net, &tr.bn);
             relu(&mut x);
-            x = conv1d(&x, channels, t_net, &tr.linear, 1, 0, 1)?;
+            x = conv1d(compute, &x, channels, t_net, &tr.linear, 1, 0, 1)?;
             channels = tr.linear.c_out;
         }
 
@@ -161,30 +210,39 @@ impl SpeakerEncoder {
         capture("post_stats", &post_stats);
 
         // --- dense (1024→192, k1, no bias) + affine-free BN ---------------
-        let mut emb = conv1d(&post_stats, post_stats.len(), 1, &w.dense, 1, 0, 1)?;
+        let mut emb = conv1d(compute, &post_stats, post_stats.len(), 1, &w.dense, 1, 0, 1)?;
         bn_apply(&mut emb, w.dense.c_out, 1, &w.final_bn);
         capture("embedding", &emb);
         Ok(emb)
     }
 
     /// Runs the FCM front-end, returning `([32,10,t] map, out_freq=10, t)`.
-    fn fcm(&self, x: &[f32], t: usize) -> Result<(Vec<f32>, usize, usize)> {
+    fn fcm(&self, compute: &Compute, x: &[f32], t: usize) -> Result<(Vec<f32>, usize, usize)> {
         let f = &self.weights.fcm;
         // conv1: 1→32, 3×3, stride(1,1), pad(1,1); freq stays 80.
-        let mut h = conv2d(x, 1, self.weights.cfg.feat_dim, t, &f.conv1, (1, 1), (1, 1))?;
+        let mut h = conv2d(
+            compute,
+            x,
+            1,
+            self.weights.cfg.feat_dim,
+            t,
+            &f.conv1,
+            (1, 1),
+            (1, 1),
+        )?;
         relu(&mut h);
         let mut freq = self.weights.cfg.feat_dim;
 
         // layer1: downsample (freq→40) then identity.
-        let (h1, fr1) = res_block(&h, 32, freq, t, &f.layer1[0], 2)?;
-        let (h2, fr2) = res_block(&h1, 32, fr1, t, &f.layer1[1], 1)?;
+        let (h1, fr1) = res_block(compute, &h, 32, freq, t, &f.layer1[0], 2)?;
+        let (h2, fr2) = res_block(compute, &h1, 32, fr1, t, &f.layer1[1], 1)?;
         // layer2: downsample (freq→20) then identity.
-        let (h3, fr3) = res_block(&h2, 32, fr2, t, &f.layer2[0], 2)?;
-        let (h4, fr4) = res_block(&h3, 32, fr3, t, &f.layer2[1], 1)?;
+        let (h3, fr3) = res_block(compute, &h2, 32, fr2, t, &f.layer2[0], 2)?;
+        let (h4, fr4) = res_block(compute, &h3, 32, fr3, t, &f.layer2[1], 1)?;
         freq = fr4;
 
         // conv2: 32→32, 3×3, stride(2,1), pad(1,1); freq→10.
-        let mut out = conv2d(&h4, 32, freq, t, &f.conv2, (2, 1), (1, 1))?;
+        let mut out = conv2d(compute, &h4, 32, freq, t, &f.conv2, (2, 1), (1, 1))?;
         relu(&mut out);
         let out_freq = (freq + 2 - 3) / 2 + 1;
         Ok((out, out_freq, t))
@@ -200,6 +258,7 @@ const _: fn() = || {
 
 /// One D-TDNN dense layer → its 32-channel CAM output `[32, t]`.
 fn dtdnn_layer(
+    compute: &Compute,
     x_in: &[f32],
     c_in: usize,
     t: usize,
@@ -212,12 +271,13 @@ fn dtdnn_layer(
     bn_apply(&mut h, c_in, t, &layer.bn1);
     relu(&mut h);
     // linear1 (→128, with folded nonlinear2 bias) → ReLU  ⇒ CAM input `xc`.
-    let mut xc = conv1d(&h, c_in, t, &layer.linear1, 1, 0, 1)?;
+    let mut xc = conv1d(compute, &h, c_in, t, &layer.linear1, 1, 0, 1)?;
     relu(&mut xc);
     let bn_ch = layer.linear1.c_out; // 128
 
     // CAM value branch: dilated local conv (pad = dilation ⇒ same length).
     let y = conv1d(
+        compute,
         &xc,
         bn_ch,
         t,
@@ -238,10 +298,10 @@ fn dtdnn_layer(
         }
     }
     // linear1 (→64) → ReLU → linear2 (→32) → Sigmoid ⇒ gate `m`.
-    let mut ctx = conv1d(&ctx, bn_ch, t, &layer.cam.linear1, 1, 0, 1)?;
+    let mut ctx = conv1d(compute, &ctx, bn_ch, t, &layer.cam.linear1, 1, 0, 1)?;
     relu(&mut ctx);
     let cam_ctx = layer.cam.linear1.c_out; // 64
-    let mut gate = conv1d(&ctx, cam_ctx, t, &layer.cam.linear2, 1, 0, 1)?;
+    let mut gate = conv1d(compute, &ctx, cam_ctx, t, &layer.cam.linear2, 1, 0, 1)?;
     for v in &mut gate {
         *v = sigmoid(*v);
     }
@@ -259,6 +319,7 @@ fn dtdnn_layer(
 /// downsampling blocks, 1 for the identity blocks); the time axis is never
 /// strided.
 fn res_block(
+    compute: &Compute,
     x: &[f32],
     ch: usize,
     freq: usize,
@@ -266,15 +327,15 @@ fn res_block(
     rb: &ResBlockW,
     stride: usize,
 ) -> Result<(Vec<f32>, usize)> {
-    let mut c1 = conv2d(x, ch, freq, t, &rb.conv1, (stride, 1), (1, 1))?;
+    let mut c1 = conv2d(compute, x, ch, freq, t, &rb.conv1, (stride, 1), (1, 1))?;
     relu(&mut c1);
     let out_freq = (freq + 2 - 3) / stride + 1;
-    let mut out = conv2d(&c1, ch, out_freq, t, &rb.conv2, (1, 1), (1, 1))?;
+    let mut out = conv2d(compute, &c1, ch, out_freq, t, &rb.conv2, (1, 1), (1, 1))?;
 
     // Shortcut: 1×1 projection (downsample) or identity.
     match &rb.shortcut {
         Some(sc) => {
-            let proj = conv2d(x, ch, freq, t, sc, (stride, 1), (0, 0))?;
+            let proj = conv2d(compute, x, ch, freq, t, sc, (stride, 1), (0, 0))?;
             for (o, s) in out.iter_mut().zip(&proj) {
                 *o += *s;
             }
@@ -289,11 +350,13 @@ fn res_block(
     Ok((out, out_freq))
 }
 
-/// 1-D convolution `[c_in, t] → [c_out, t_out]` via im2col + [`gemm_f32`].
+/// 1-D convolution `[c_in, t] → [c_out, t_out]` via im2col + [`Compute::gemm_f32`].
 ///
 /// `weight` is `[c_out, c_in, k]`; the optional per-channel bias is added after
 /// the GEMM. `t_out = (t + 2·pad − dil·(k−1) − 1)/stride + 1`.
+#[allow(clippy::too_many_arguments)] // conv parameter set + the backend dispatcher
 fn conv1d(
+    compute: &Compute,
     input: &[f32],
     c_in: usize,
     t: usize,
@@ -330,7 +393,7 @@ fn conv1d(
     }
 
     let mut out = vec![0.0f32; c_out * t_out];
-    gemm_f32(c_out, t_out, c_in * k, &w.weight, &col, None, &mut out)?;
+    compute.gemm_f32(c_out, t_out, c_in * k, &w.weight, &col, None, &mut out)?;
     if let Some(bias) = &w.bias {
         for (&b, row) in bias.iter().zip(out.chunks_exact_mut(t_out)) {
             for v in row {
@@ -342,8 +405,10 @@ fn conv1d(
 }
 
 /// 2-D convolution `[c_in, h, w] → [c_out, h_out, w_out]` via im2col +
-/// [`gemm_f32`]; `weight` is `[c_out, c_in, kh, kw]` with a mandatory bias.
+/// [`Compute::gemm_f32`]; `weight` is `[c_out, c_in, kh, kw]` with a mandatory bias.
+#[allow(clippy::too_many_arguments)] // conv parameter set + the backend dispatcher
 fn conv2d(
+    compute: &Compute,
     input: &[f32],
     c_in: usize,
     h: usize,
@@ -392,7 +457,7 @@ fn conv2d(
     }
 
     let mut out = vec![0.0f32; c_out * spatial];
-    gemm_f32(c_out, spatial, patch, &cw.weight, &col, None, &mut out)?;
+    compute.gemm_f32(c_out, spatial, patch, &cw.weight, &col, None, &mut out)?;
     for (&b, row) in cw.bias.iter().zip(out.chunks_exact_mut(spatial)) {
         for v in row {
             *v += b;
@@ -523,7 +588,7 @@ mod tests {
             k: 1,
         };
         let x = [1.0f32, 2.0, 3.0, 4.0]; // [2 ch, t=2]
-        let out = conv1d(&x, 2, 2, &w, 1, 0, 1).unwrap();
+        let out = conv1d(&Compute::cpu(), &x, 2, 2, &w, 1, 0, 1).unwrap();
         assert_eq!(out, x);
     }
 }

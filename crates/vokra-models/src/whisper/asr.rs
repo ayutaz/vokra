@@ -20,11 +20,13 @@ use std::sync::Arc;
 use vokra_core::engines::AsrEngine;
 use vokra_core::gguf::GgufFile;
 use vokra_core::tasks::Transcription;
-use vokra_core::{Result, VokraError};
+use vokra_core::{BackendKind, Result, VokraError};
 
 use super::WhisperModel;
 use super::greedy::{DEFAULT_MAX_NEW_TOKENS, greedy_decode};
 use super::tokenizer::WhisperTokenizer;
+use crate::compute::Compute;
+use crate::whisper::WHISPER_HOT_OPS;
 use crate::whisper::beam_glue::{WhisperBeamScorer, WhisperLogitsSource};
 use vokra_core::decode::{BeamSearchConfig, SamplerConfig, beam_search, sample_sequence};
 
@@ -37,23 +39,46 @@ use vokra_core::decode::{BeamSearchConfig, SamplerConfig, beam_search, sample_se
 pub struct WhisperAsr {
     model: Arc<WhisperModel>,
     tokenizer: Option<WhisperTokenizer>,
+    /// Backend selector (`Copy`; the engine never holds a live `!Send`
+    /// backend, so it stays `Send + Sync`). A [`Compute`] is built from it at
+    /// each transcribe entry (M2-01 Phase 3).
+    backend_kind: BackendKind,
 }
 
 impl WhisperAsr {
     /// Loads the model from `file`. The tokenizer is attached separately with
     /// [`with_tokenizer`](Self::with_tokenizer) (the M0 converter does not embed
     /// it — see [`WhisperTokenizer`]); an attempt is still made to read an
-    /// embedded `vokra.tokenizer.model` blob for forward compatibility.
+    /// embedded `vokra.tokenizer.model` blob for forward compatibility. The
+    /// backend defaults to [`BackendKind::Cpu`].
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let model = Arc::new(WhisperModel::from_gguf(file)?);
         let tokenizer = WhisperTokenizer::from_gguf(file, model.config().eot).ok();
-        Ok(Self { model, tokenizer })
+        Ok(Self {
+            model,
+            tokenizer,
+            backend_kind: BackendKind::Cpu,
+        })
     }
 
     /// Attaches a detokenizer (from the parity fixture / sidecar in M0).
     #[must_use]
     pub fn with_tokenizer(mut self, tokenizer: WhisperTokenizer) -> Self {
         self.tokenizer = Some(tokenizer);
+        self
+    }
+
+    /// Selects the backend the transcription forward runs on (default
+    /// [`BackendKind::Cpu`]).
+    ///
+    /// Whisper needs softmax / layer-norm / GELU / conv1d / GEMV on the backend
+    /// as well as GEMM, which the Metal slice does not yet cover, so
+    /// `with_backend(BackendKind::Metal)` makes the transcribe entries an
+    /// explicit [`VokraError::UnsupportedOp`] until those Metal kernels land
+    /// (Phase 4) — never a silent CPU fall back (FR-EX-08).
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend_kind = backend;
         self
     }
 
@@ -66,8 +91,15 @@ impl WhisperAsr {
     /// without detokenizing. Useful when no tokenizer is attached and for
     /// token-level parity tests.
     pub fn transcribe_tokens(&self, pcm: &[f32]) -> Result<Vec<u32>> {
-        let encoder = self.model.encode_pcm(pcm)?;
-        let mut state = self.model.decoder(&encoder)?;
+        // Build the backend dispatcher once at the entry (errors here for a
+        // backend that does not cover the Whisper op set — e.g. Metal, Phase 4),
+        // and run the encoder on it; the decoder steps rebuild it from the same
+        // backend selection. The CPU path is bit-identical to before the seam.
+        let compute = Compute::for_backend(self.backend_kind, WHISPER_HOT_OPS)?;
+        let encoder = self.model.encode_pcm_with(&compute, pcm)?;
+        let mut state = self
+            .model
+            .decoder_with_backend(&encoder, self.backend_kind)?;
         let cfg = self.model.config();
         greedy_decode(
             &mut state,
@@ -84,7 +116,10 @@ impl WhisperAsr {
         pcm: &[f32],
         config: &BeamSearchConfig,
     ) -> Result<Vec<u32>> {
-        let encoder = self.model.encode_pcm(pcm)?;
+        // Metal is rejected here (Whisper op set uncovered until Phase 4); the
+        // scorer's per-step decoder runs on the CPU backend as before.
+        let compute = Compute::for_backend(self.backend_kind, WHISPER_HOT_OPS)?;
+        let encoder = self.model.encode_pcm_with(&compute, pcm)?;
         let mut scorer = WhisperBeamScorer::new(Arc::clone(&self.model), &encoder)?;
         let cfg = self.model.config();
         let hyps = beam_search(&mut scorer, &cfg.decoder_start_ids, cfg.eot, config)?;
@@ -103,7 +138,8 @@ impl WhisperAsr {
         pcm: &[f32],
         config: &SamplerConfig,
     ) -> Result<Vec<u32>> {
-        let encoder = self.model.encode_pcm(pcm)?;
+        let compute = Compute::for_backend(self.backend_kind, WHISPER_HOT_OPS)?;
+        let encoder = self.model.encode_pcm_with(&compute, pcm)?;
         let mut source = WhisperLogitsSource::new(Arc::clone(&self.model), &encoder)?;
         let cfg = self.model.config();
         sample_sequence(

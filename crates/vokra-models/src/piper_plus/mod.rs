@@ -42,13 +42,22 @@ use std::path::Path;
 use vokra_core::gguf::GgufFile;
 use vokra_core::rng::GaussianSplitMix64;
 use vokra_core::{
-    CompliancePolicy, Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError,
-    check_weight_license,
+    BackendKind, CompliancePolicy, Result, SynthesisRequest, SynthesizedAudio, TtsEngine,
+    VokraError, check_weight_license,
 };
 use vokra_ops::{KaldiFbankOpts, kaldi_fbank, resample};
 use vokra_piper_plus::{PhonemeTable, Phonemizer};
 
+use crate::compute::{Compute, HotOp};
 use crate::speaker::SpeakerEncoder;
+
+/// The backend hot ops the piper-plus native TTS dispatches: **GEMM only**.
+/// Every conv (text-encoder / duration DDSConv / flow WN / decoder MRF, all via
+/// [`nn::conv1d`]'s im2col + GEMM) routes through the backend; the LeakyReLU /
+/// sigmoid / softplus / iSTFT / PQMF glue is model-internal scalar work. So the
+/// Metal backend (which covers GEMM) runs the GEMM hot path on the GPU (M2-01
+/// Phase 3); the honest scope is "GEMM/conv offloaded, activations on host".
+const PIPER_HOT_OPS: &[HotOp] = &[HotOp::Gemm];
 
 pub use config::PiperConfig;
 // Re-export the G2P reuse-boundary types so downstreams can build the injected
@@ -89,6 +98,10 @@ pub struct PiperPlusTts {
     /// duration predictor. With zero features (EN / mock-G2P path) it collapses
     /// to the bias broadcast over time.
     prosody_proj: ProsodyProj,
+    /// Backend selector (`Copy`; never a live `!Send` backend). The `!Send` GPU
+    /// context is built on the stack at each synthesize entry, so the engine
+    /// stays `Send + Sync` (M2-01 Phase 3).
+    backend_kind: BackendKind,
 }
 
 /// The v7 prosody projection: `channels = (features · gate) @ weight + bias`.
@@ -238,12 +251,33 @@ impl PiperPlusTts {
             prosody_proj,
             flow,
             decoder,
+            backend_kind: BackendKind::Cpu,
         })
     }
 
     /// The resolved voice configuration (sample rate, tables, scales, ...).
     pub fn config(&self) -> &PiperConfig {
         &self.config
+    }
+
+    /// Selects the backend the synthesis hot path runs on (default
+    /// [`BackendKind::Cpu`]).
+    ///
+    /// piper-plus dispatches GEMM only, so a GEMM-covering backend (Metal) runs
+    /// the GEMM/conv hot path on that backend (the scalar activation / iSTFT /
+    /// PQMF glue stays on the host — not a silent fall back, it is never a
+    /// backend op). Selecting a backend that does not cover GEMM, or that has no
+    /// device, is an explicit error at synthesize time (FR-EX-08).
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend_kind = backend;
+        self
+    }
+
+    /// Builds the [`Compute`] dispatcher for the selected backend (GEMM
+    /// coverage), on the stack — the `!Send` Metal context never outlives it.
+    fn compute(&self) -> Result<Compute> {
+        Compute::for_backend(self.backend_kind, PIPER_HOT_OPS)
     }
 
     /// The external speaker-embedding width this voice's `spk_proj` expects —
@@ -346,11 +380,15 @@ impl PiperPlusTts {
     ) -> Result<SynthesizedAudio> {
         self.check_ids(phoneme_ids, lid)?;
         self.check_prosody_len(prosody_features, phoneme_ids.len())?;
+        // Build the backend dispatcher once at the synthesize entry and thread
+        // `&Compute` through every stage; the `!Send` Metal context lives only
+        // for this call, so the engine stays `Send + Sync` (M2-01 Phase 3).
+        let compute = self.compute()?;
         let g = self.conditioning.g(speaker_embedding, lid);
-        let enc = self.encoder.forward(phoneme_ids, &g)?;
+        let enc = self.encoder.forward(&compute, phoneme_ids, &g)?;
         let prosody = self.prosody_proj.channels(prosody_features, lid, enc.t);
         let x_dp = build_x_dp(&enc.x, &prosody, enc.t);
-        let logw = self.duration.logw(&x_dp, enc.t, &g, noise_w);
+        let logw = self.duration.logw(&compute, &x_dp, enc.t, &g, noise_w);
         let w_ceil: Vec<usize> = logw
             .iter()
             .map(|&l| ((l.exp() * length_scale).ceil() as i64).max(1) as usize)
@@ -364,8 +402,8 @@ impl PiperPlusTts {
                 *z += rng.next_gaussian() * ls.exp() * noise_scale;
             }
         }
-        let z = self.flow.reverse(&z_p, t_frames, &g);
-        let pcm = self.decoder.forward(&z, t_frames, &g)?;
+        let z = self.flow.reverse(&compute, &z_p, t_frames, &g);
+        let pcm = self.decoder.forward(&compute, &z, t_frames, &g)?;
         Ok(SynthesizedAudio::new(pcm, self.config.sample_rate))
     }
 
@@ -565,7 +603,7 @@ impl PiperPlusTts {
     #[cfg(test)]
     pub(crate) fn encode(&self, phoneme_ids: &[i64], lid: i64) -> Result<text_encoder::EncoderOut> {
         let g = self.conditioning.g(None, lid);
-        self.encoder.forward(phoneme_ids, &g)
+        self.encoder.forward(&Compute::cpu(), phoneme_ids, &g)
     }
 
     /// The global conditioning `g = spk_proj(speaker) + emb_lang[lid]` `[gin]`
@@ -581,7 +619,7 @@ impl PiperPlusTts {
     #[cfg(test)]
     pub(crate) fn decode(&self, z: &[f32], t_frames: usize, lid: i64) -> Result<Vec<f32>> {
         let g = self.conditioning.g(None, lid);
-        self.decoder.forward(z, t_frames, &g)
+        self.decoder.forward(&Compute::cpu(), z, t_frames, &g)
     }
 
     /// Runs the encoder + stochastic duration predictor and returns the raw
@@ -596,12 +634,13 @@ impl PiperPlusTts {
         lid: i64,
         length_scale: f32,
     ) -> Result<Vec<f32>> {
+        let compute = Compute::cpu();
         let g = self.conditioning.g(None, lid);
-        let enc = self.encoder.forward(phoneme_ids, &g)?;
+        let enc = self.encoder.forward(&compute, phoneme_ids, &g)?;
         let prosody = self.prosody_proj.channels(None, lid, enc.t);
         let x_dp = build_x_dp(&enc.x, &prosody, enc.t);
         // Deterministic (noise_w = 0) for parity (docs §5).
-        let logw = self.duration.logw(&x_dp, enc.t, &g, 0.0);
+        let logw = self.duration.logw(&compute, &x_dp, enc.t, &g, 0.0);
         Ok(logw.iter().map(|&l| l.exp() * length_scale).collect())
     }
 
@@ -610,11 +649,12 @@ impl PiperPlusTts {
     /// M0-07-T14 parity test.
     #[cfg(test)]
     pub(crate) fn sdp_body(&self, phoneme_ids: &[i64], lid: i64) -> Result<(Vec<f32>, usize)> {
+        let compute = Compute::cpu();
         let g = self.conditioning.g(None, lid);
-        let enc = self.encoder.forward(phoneme_ids, &g)?;
+        let enc = self.encoder.forward(&compute, phoneme_ids, &g)?;
         let prosody = self.prosody_proj.channels(None, lid, enc.t);
         let x_dp = build_x_dp(&enc.x, &prosody, enc.t);
-        Ok((self.duration.body(&x_dp, enc.t, &g), enc.t))
+        Ok((self.duration.body(&compute, &x_dp, enc.t, &g), enc.t))
     }
 
     /// Expands `m_p` by `w_ceil` (length regulation, T15) and runs the reverse
@@ -630,7 +670,7 @@ impl PiperPlusTts {
     ) -> (Vec<f32>, usize) {
         let (z_p, t_frames) = length_regulate(m_p, HIDDEN, t_phonemes, w_ceil);
         let g = self.conditioning.g(None, lid);
-        let z = self.flow.reverse(&z_p, t_frames, &g);
+        let z = self.flow.reverse(&Compute::cpu(), &z_p, t_frames, &g);
         (z, t_frames)
     }
 }

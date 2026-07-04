@@ -26,8 +26,7 @@
 
 use std::sync::Arc;
 
-use vokra_backend_cpu::kernels::{gemm_f32, gemv_f32};
-use vokra_core::{KvCache, Result, VokraError};
+use vokra_core::{BackendKind, KvCache, Result, VokraError};
 
 use super::WhisperModel;
 use super::config::WhisperConfig;
@@ -37,6 +36,7 @@ use super::nn::{
 };
 use super::scratch::{BlockScratch, LogitsScratch, resize_zeroed};
 use super::weights::DecoderWeights;
+use crate::compute::Compute;
 
 /// Initial reservation *hint* for the self-attention KV cache, in positions
 /// (tokens).
@@ -84,13 +84,38 @@ pub struct DecoderState {
     block: BlockScratch,
     /// Tied-logits-head scratch; its `out` holds the last step's logits.
     logits: LogitsScratch,
+    /// Backend selector for the step forward (`Copy`, so [`DecoderState`] stays
+    /// `Send` — it never holds a live `!Send` backend). A [`Compute`] is built
+    /// from it at each step entry (M2-01 Phase 3). Metal does not yet cover the
+    /// Whisper op set, so a Metal state is an explicit error at construction /
+    /// step (never a silent CPU fall back, FR-EX-08).
+    backend_kind: BackendKind,
 }
 
 impl DecoderState {
-    /// Binds to `encoder` and precomputes the cross-attention K/V for every
-    /// layer. Takes ownership of a cloned [`Arc`] to the model (see
-    /// [`WhisperModel::decoder`]).
+    /// Binds to `encoder` on the CPU backend and precomputes the
+    /// cross-attention K/V for every layer. Takes ownership of a cloned [`Arc`]
+    /// to the model (see [`WhisperModel::decoder`]).
     pub(crate) fn new(model: Arc<WhisperModel>, encoder: &EncoderOutput) -> Result<Self> {
+        Self::new_with_backend(model, encoder, BackendKind::Cpu)
+    }
+
+    /// Like [`new`](Self::new) but on an explicit backend (M2-01 Phase 3).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::UnsupportedOp`](vokra_core::VokraError) if `backend_kind`
+    /// does not cover the Whisper hot-op set (e.g. Metal, whose softmax /
+    /// layer-norm / … kernels are not yet landed) — an explicit error at
+    /// construction, never a silent CPU fall back (FR-EX-08).
+    pub(crate) fn new_with_backend(
+        model: Arc<WhisperModel>,
+        encoder: &EncoderOutput,
+        backend_kind: BackendKind,
+    ) -> Result<Self> {
+        // The cross-K/V precompute is a GEMM; build the backend dispatcher and
+        // reject up front any backend that does not cover the full step op set.
+        let compute = Compute::for_backend(backend_kind, super::WHISPER_HOT_OPS)?;
         let (cfg, w) = model.decoder_state();
         if encoder.d_model != cfg.d_model {
             return Err(VokraError::InvalidArgument(format!(
@@ -112,6 +137,7 @@ impl DecoderState {
         let mut cross_kv = Vec::with_capacity(n_layer);
         for layer in &w.layers {
             cross_kv.push(project_kv(
+                &compute,
                 &encoder.hidden,
                 encoder.n_ctx,
                 &layer.cross_attn,
@@ -145,6 +171,7 @@ impl DecoderState {
             h,
             block,
             logits,
+            backend_kind,
         })
     }
 
@@ -205,6 +232,9 @@ impl DecoderState {
         // `self.logits`), so the shared model borrow coexists with them — and
         // the distinct scratch fields let one attention call hold `&ln`,
         // `&mut attn` and `&mut block_out` at once without aliasing.
+        // Build the backend dispatcher for this step (Copy `backend_kind`, so
+        // the state stays `Send`; Metal is rejected here until its kernels land).
+        let compute = Compute::for_backend(self.backend_kind, super::WHISPER_HOT_OPS)?;
         let (cfg, w) = self.model.decoder_state();
         let d = cfg.d_model;
         let ff = cfg.ffn_dim;
@@ -247,8 +277,9 @@ impl DecoderState {
             self.block.ensure_residual(t, d, ff);
 
             // Causal self-attention over the growing cache.
-            layer_norm_into(&mut self.block.ln, &self.h, t, &layer.self_ln)?;
+            layer_norm_into(&compute, &mut self.block.ln, &self.h, t, &layer.self_ln)?;
             project_kv_into(
+                &compute,
                 &mut self.block.k,
                 &mut self.block.v,
                 &self.block.ln,
@@ -257,6 +288,7 @@ impl DecoderState {
             )?;
             self.self_kv.append(li, &self.block.k, &self.block.v);
             attention_from_kv_into(
+                &compute,
                 &mut self.block.attn,
                 &self.block.ln,
                 t,
@@ -273,9 +305,10 @@ impl DecoderState {
             add_assign(&mut self.h, &self.block.block_out)?;
 
             // Cross-attention over the (fixed) encoder output.
-            layer_norm_into(&mut self.block.ln, &self.h, t, &layer.cross_ln)?;
+            layer_norm_into(&compute, &mut self.block.ln, &self.h, t, &layer.cross_ln)?;
             let (ck, cv) = &self.cross_kv[li];
             attention_from_kv_into(
+                &compute,
                 &mut self.block.attn,
                 &self.block.ln,
                 t,
@@ -292,8 +325,9 @@ impl DecoderState {
             add_assign(&mut self.h, &self.block.block_out)?;
 
             // MLP.
-            layer_norm_into(&mut self.block.ln, &self.h, t, &layer.mlp_ln)?;
+            layer_norm_into(&compute, &mut self.block.ln, &self.h, t, &layer.mlp_ln)?;
             mlp_into(
+                &compute,
                 &mut self.block.mlp_h,
                 &mut self.block.mlp_a,
                 &mut self.block.block_out,
@@ -307,10 +341,10 @@ impl DecoderState {
 
         // Final LayerNorm into the (now-free) block `ln` buffer, then the tied
         // logits head into the logits scratch.
-        layer_norm_into(&mut self.block.ln, &self.h, t, &w.ln_post)?;
+        layer_norm_into(&compute, &mut self.block.ln, &self.h, t, &w.ln_post)?;
         // Commit this step's positions once, after every layer was appended.
         self.self_kv.advance(t);
-        project_logits_into(&mut self.logits, &self.block.ln, t, cfg, w)
+        project_logits_into(&compute, &mut self.logits, &self.block.ln, t, cfg, w)
     }
     // ZERO-ALLOC-END
 
@@ -332,6 +366,7 @@ impl DecoderState {
 /// arithmetic and order as the former allocating `project_logits`.
 // ZERO-ALLOC-BEGIN — tied-head projection into reused scratch, no allocation.
 fn project_logits_into(
+    compute: &Compute,
     scratch: &mut LogitsScratch,
     h: &[f32],
     t: usize,
@@ -349,7 +384,7 @@ fn project_logits_into(
     // equals `h[..d]` and the final `[T, v]` transpose is the identity, so the
     // logits land directly in `out` with zero extra memory and zero copies.
     if t == 1 {
-        return gemv_f32(v, d, &w.token_emb, &h[..d], None, &mut scratch.out[..v]);
+        return compute.gemv_f32(v, d, &w.token_emb, &h[..d], None, &mut scratch.out[..v]);
     }
     // hᵀ [d, T].
     for i in 0..t {
@@ -358,7 +393,7 @@ fn project_logits_into(
         }
     }
     // logits_t [v, T] = token_emb [v, d] @ hᵀ [d, T].
-    gemm_f32(
+    compute.gemm_f32(
         v,
         t,
         d,

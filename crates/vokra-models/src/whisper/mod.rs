@@ -83,9 +83,25 @@ pub use weights::WhisperWeights;
 use std::sync::Arc;
 
 use vokra_core::gguf::GgufFile;
-use vokra_core::{FrontendPolicy, Result};
+use vokra_core::{BackendKind, FrontendPolicy, Result};
 
+use crate::compute::{Compute, HotOp};
 use encoder::EncoderOutput;
+
+/// The backend hot ops the Whisper forward dispatches. Unlike CAM++ / piper
+/// (GEMM only), Whisper also routes softmax / layer-norm / GELU / conv1d / GEMV
+/// through the backend, so a backend must cover **all six** to run Whisper. The
+/// Metal backend covers only GEMM in this slice, so Whisper on Metal is an
+/// explicit [`VokraError::UnsupportedOp`](vokra_core::VokraError) until those
+/// kernels land (M2-01 T09-T13, Phase 4) — never a silent CPU fall back.
+pub(crate) const WHISPER_HOT_OPS: &[HotOp] = &[
+    HotOp::Gemm,
+    HotOp::Gemv,
+    HotOp::Softmax,
+    HotOp::LayerNorm,
+    HotOp::Gelu,
+    HotOp::Conv1d,
+];
 
 /// A loaded Whisper model: validated config plus bound weights.
 ///
@@ -141,26 +157,61 @@ impl WhisperModel {
     }
 
     /// Encodes `[n_mels, n_frames]` log-mel features into the encoder hidden
-    /// states `[n_audio_ctx, d_model]`.
+    /// states `[n_audio_ctx, d_model]` on the CPU backend.
     pub fn encode(&self, log_mel: &[f32], n_frames: usize) -> Result<EncoderOutput> {
-        encoder::encode(&self.config, &self.weights.encoder, log_mel, n_frames)
+        self.encode_with(&Compute::cpu(), log_mel, n_frames)
     }
 
-    /// Convenience: PCM → log-mel → encoder hidden states.
+    /// [`encode`](Self::encode) on an explicit [`Compute`] (M2-01 Phase 3). The
+    /// CPU dispatcher reproduces the pre-seam kernel calls bit-for-bit.
+    pub fn encode_with(
+        &self,
+        compute: &Compute,
+        log_mel: &[f32],
+        n_frames: usize,
+    ) -> Result<EncoderOutput> {
+        encoder::encode(
+            compute,
+            &self.config,
+            &self.weights.encoder,
+            log_mel,
+            n_frames,
+        )
+    }
+
+    /// Convenience: PCM → log-mel → encoder hidden states (CPU backend).
     pub fn encode_pcm(&self, pcm: &[f32]) -> Result<EncoderOutput> {
+        self.encode_pcm_with(&Compute::cpu(), pcm)
+    }
+
+    /// [`encode_pcm`](Self::encode_pcm) on an explicit [`Compute`] — the entry
+    /// [`WhisperAsr`] uses to run the encoder on the selected backend.
+    pub fn encode_pcm_with(&self, compute: &Compute, pcm: &[f32]) -> Result<EncoderOutput> {
         let n_frames = mel::N_FRAMES;
         let feats = self.log_mel(pcm);
-        self.encode(&feats, n_frames)
+        self.encode_with(compute, &feats, n_frames)
     }
 
-    /// Creates a decoder run bound to `encoder`, with fresh KV caches. Used by
-    /// the greedy / beam drivers and by the decoder parity tests.
+    /// Creates a decoder run bound to `encoder`, with fresh KV caches, on the
+    /// CPU backend. Used by the greedy / beam drivers and by the decoder parity
+    /// tests.
     ///
     /// Takes `&Arc<Self>` and clones the `Arc` into the returned
     /// [`DecoderState`](decoder::DecoderState), which therefore owns the model
     /// and carries no lifetime (so it is `Send` and can outlive this borrow).
     pub fn decoder(self: &Arc<Self>, encoder: &EncoderOutput) -> Result<decoder::DecoderState> {
         decoder::DecoderState::new(Arc::clone(self), encoder)
+    }
+
+    /// [`decoder`](Self::decoder) on an explicit backend (M2-01 Phase 3). Metal
+    /// is rejected until its full Whisper op set lands (Phase 4); on the CPU
+    /// backend this is identical to [`decoder`](Self::decoder).
+    pub fn decoder_with_backend(
+        self: &Arc<Self>,
+        encoder: &EncoderOutput,
+        backend_kind: BackendKind,
+    ) -> Result<decoder::DecoderState> {
+        decoder::DecoderState::new_with_backend(Arc::clone(self), encoder, backend_kind)
     }
 
     /// Borrows the decoder weights / config for the [`decoder`] forward and the

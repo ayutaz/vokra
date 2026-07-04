@@ -20,6 +20,7 @@ use vokra_core::{Result, VokraError};
 use super::config::{self, Dims, FFN_KERNEL, N_HEADS, WINDOW_SIZE};
 use super::nn;
 use super::weights::TensorStore;
+use crate::compute::Compute;
 
 /// One relative-position self-attention layer's weights.
 struct AttnLayer {
@@ -157,7 +158,12 @@ impl TextEncoder {
 
     /// Runs the encoder for a phoneme id sequence under the global conditioning
     /// `g` `[gin]` (composed by [`super::conditioning::Conditioning::g`]).
-    pub(super) fn forward(&self, phoneme_ids: &[i64], g: &[f32]) -> Result<EncoderOut> {
+    pub(super) fn forward(
+        &self,
+        compute: &Compute,
+        phoneme_ids: &[i64],
+        g: &[f32],
+    ) -> Result<EncoderOut> {
         let hidden = self.hidden;
         let t = phoneme_ids.len();
         if t == 0 {
@@ -184,7 +190,7 @@ impl TextEncoder {
 
         // Transformer layers.
         for l in 0..self.n_layers {
-            let y = self.attention(&x, l, t);
+            let y = self.attention(compute, &x, l, t);
             let sum = add(&x, &y);
             x = nn::layer_norm_channels(
                 &sum,
@@ -194,7 +200,7 @@ impl TextEncoder {
                 &self.norm1[l].beta,
                 config::LAYER_NORM_EPS,
             );
-            let y = self.ffn(&x, l, t);
+            let y = self.ffn(compute, &x, l, t);
             let sum = add(&x, &y);
             x = nn::layer_norm_channels(
                 &sum,
@@ -227,24 +233,51 @@ impl TextEncoder {
 
         // proj → stats [2*hidden, T]; split into m_p / logs_p.
         let (pw, pb) = &self.proj;
-        let (stats, _) = nn::conv1d(&x, hidden, t, pw, 2 * hidden, 1, Some(pb), 1, 0, 1, 1);
+        let (stats, _) = nn::conv1d(
+            compute,
+            &x,
+            hidden,
+            t,
+            pw,
+            2 * hidden,
+            1,
+            Some(pb),
+            1,
+            0,
+            1,
+            1,
+        );
         let m_p = stats[..hidden * t].to_vec();
         let logs_p = stats[hidden * t..].to_vec();
         Ok(EncoderOut { x, m_p, logs_p, t })
     }
 
     /// FFN: conv_1 (same-pad k3) → ReLU → conv_2 (same-pad k3).
-    fn ffn(&self, x: &[f32], layer: usize, t: usize) -> Vec<f32> {
+    fn ffn(&self, compute: &Compute, x: &[f32], layer: usize, t: usize) -> Vec<f32> {
         let (hidden, ffn_ch) = (self.hidden, self.ffn_ch);
         let f = &self.ffn[layer];
         let pad = (FFN_KERNEL - 1) / 2;
         let (w1, b1) = &f.conv_1;
-        let (mut h, _) = nn::conv1d(x, hidden, t, w1, ffn_ch, FFN_KERNEL, Some(b1), 1, pad, 1, 1);
+        let (mut h, _) = nn::conv1d(
+            compute,
+            x,
+            hidden,
+            t,
+            w1,
+            ffn_ch,
+            FFN_KERNEL,
+            Some(b1),
+            1,
+            pad,
+            1,
+            1,
+        );
         for v in &mut h {
             *v = v.max(0.0); // ReLU (default FFN activation)
         }
         let (w2, b2) = &f.conv_2;
         let (out, _) = nn::conv1d(
+            compute,
             &h,
             ffn_ch,
             t,
@@ -261,12 +294,12 @@ impl TextEncoder {
     }
 
     /// Relative-position multi-head self-attention (`window_size = 4`).
-    fn attention(&self, x: &[f32], layer: usize, t: usize) -> Vec<f32> {
+    fn attention(&self, compute: &Compute, x: &[f32], layer: usize, t: usize) -> Vec<f32> {
         let (hidden, k_channels) = (self.hidden, self.k_channels);
         let a = &self.attn[layer];
-        let q = conv1x1(x, &a.conv_q, hidden, t);
-        let k = conv1x1(x, &a.conv_k, hidden, t);
-        let v = conv1x1(x, &a.conv_v, hidden, t);
+        let q = conv1x1(compute, x, &a.conv_q, hidden, t);
+        let k = conv1x1(compute, x, &a.conv_k, hidden, t);
+        let v = conv1x1(compute, x, &a.conv_v, hidden, t);
         let s = (k_channels as f32).sqrt();
 
         // Relative embeddings sliced/padded to length 2T-1 (shared over heads).
@@ -320,7 +353,7 @@ impl TextEncoder {
                 }
             }
         }
-        conv1x1(&out, &a.conv_o, hidden, t)
+        conv1x1(compute, &out, &a.conv_o, hidden, t)
     }
 }
 
@@ -332,9 +365,15 @@ fn load_norm(store: &TensorStore, prefix: &str, hidden: usize) -> Result<Norm> {
 }
 
 /// Applies a `Conv1d(ch, ch, 1)` (a per-position linear) to `[ch, T]`.
-fn conv1x1(x: &[f32], layer: &(Vec<f32>, Vec<f32>), ch: usize, t: usize) -> Vec<f32> {
+fn conv1x1(
+    compute: &Compute,
+    x: &[f32],
+    layer: &(Vec<f32>, Vec<f32>),
+    ch: usize,
+    t: usize,
+) -> Vec<f32> {
     let (w, b) = layer;
-    let (out, _) = nn::conv1d(x, ch, t, w, ch, 1, Some(b), 1, 0, 1, 1);
+    let (out, _) = nn::conv1d(compute, x, ch, t, w, ch, 1, Some(b), 1, 0, 1, 1);
     out
 }
 

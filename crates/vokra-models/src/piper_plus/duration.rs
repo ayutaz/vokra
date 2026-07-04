@@ -12,6 +12,7 @@
 use super::config::{DP_CONV_LAYERS, DP_KERNEL, Dims, RQS_NUM_BINS, RQS_TAIL_BOUND};
 use super::nn;
 use super::weights::TensorStore;
+use crate::compute::Compute;
 use vokra_core::Result;
 
 const MIN_BIN_WIDTH: f32 = 1e-3;
@@ -76,7 +77,7 @@ impl DdsConv {
     }
 
     /// `g` (when `Some`) is added to the input first (the ConvFlow conditioning).
-    fn forward(&self, x: &[f32], t: usize, g: Option<&[f32]>) -> Vec<f32> {
+    fn forward(&self, compute: &Compute, x: &[f32], t: usize, g: Option<&[f32]>) -> Vec<f32> {
         let c = self.channels;
         let mut x = match g {
             Some(g) => x.iter().zip(g).map(|(a, b)| a + b).collect::<Vec<_>>(),
@@ -87,7 +88,20 @@ impl DdsConv {
             let pad = dilation * (DP_KERNEL - 1) / 2;
             let (sw, sb) = &self.convs_sep[i];
             // Depthwise (groups = channels).
-            let (mut y, _) = nn::conv1d(&x, c, t, sw, c, DP_KERNEL, Some(sb), 1, pad, dilation, c);
+            let (mut y, _) = nn::conv1d(
+                compute,
+                &x,
+                c,
+                t,
+                sw,
+                c,
+                DP_KERNEL,
+                Some(sb),
+                1,
+                pad,
+                dilation,
+                c,
+            );
             y = nn::layer_norm_channels(
                 &y,
                 c,
@@ -100,7 +114,7 @@ impl DdsConv {
                 *v = nn::gelu(*v);
             }
             let (cw, cb) = &self.convs_1x1[i];
-            let (mut y2, _) = nn::conv1d(&y, c, t, cw, c, 1, Some(cb), 1, 0, 1, 1);
+            let (mut y2, _) = nn::conv1d(compute, &y, c, t, cw, c, 1, Some(cb), 1, 0, 1, 1);
             y2 = nn::layer_norm_channels(
                 &y2,
                 c,
@@ -148,15 +162,15 @@ impl ConvFlow {
 
     /// Reverse pass: transform `x1` (channel 1) by the per-time spline the
     /// conditioner predicts; keep `x0` (channel 0). `x` is `[2, T]`.
-    fn reverse(&self, x: &[f32], t: usize, g: &[f32]) -> Vec<f32> {
+    fn reverse(&self, compute: &Compute, x: &[f32], t: usize, g: &[f32]) -> Vec<f32> {
         let dp_filter = self.dp_filter;
         let x0 = &x[..t];
         let (pw, pb) = &self.pre;
-        let (h, _) = nn::conv1d(x0, 1, t, pw, dp_filter, 1, Some(pb), 1, 0, 1, 1);
-        let h = self.convs.forward(&h, t, Some(g));
+        let (h, _) = nn::conv1d(compute, x0, 1, t, pw, dp_filter, 1, Some(pb), 1, 0, 1, 1);
+        let h = self.convs.forward(compute, &h, t, Some(g));
         let (jw, jb) = &self.proj;
         let out = RQS_NUM_BINS * 3 - 1;
-        let (params, _) = nn::conv1d(&h, dp_filter, t, jw, out, 1, Some(jb), 1, 0, 1, 1);
+        let (params, _) = nn::conv1d(compute, &h, dp_filter, t, jw, out, 1, Some(jb), 1, 0, 1, 1);
 
         let scale = (dp_filter as f32).sqrt();
         let mut result = x.to_vec();
@@ -230,24 +244,57 @@ impl DurationPredictor {
     /// path passes 0, making the initial latent all zeros.
     /// The SDP body: `pre → + cond(g) → DDSConv → proj` `[DP_FILTER, T]`
     /// (the conditioning the flows read).
-    pub(super) fn body(&self, x_dp: &[f32], t: usize, g: &[f32]) -> Vec<f32> {
+    pub(super) fn body(&self, compute: &Compute, x_dp: &[f32], t: usize, g: &[f32]) -> Vec<f32> {
         let dp_filter = self.dp_filter;
         let (pw, pb) = &self.pre;
-        let (mut x, _) = nn::conv1d(x_dp, dp_filter, t, pw, dp_filter, 1, Some(pb), 1, 0, 1, 1);
+        let (mut x, _) = nn::conv1d(
+            compute,
+            x_dp,
+            dp_filter,
+            t,
+            pw,
+            dp_filter,
+            1,
+            Some(pb),
+            1,
+            0,
+            1,
+            1,
+        );
         let cg = cond_project(&self.cond, g, self.gin);
         for c in 0..dp_filter {
             for ti in 0..t {
                 x[c * t + ti] += cg[c];
             }
         }
-        x = self.convs.forward(&x, t, None);
+        x = self.convs.forward(compute, &x, t, None);
         let (jw, jb) = &self.proj;
-        let (body, _) = nn::conv1d(&x, dp_filter, t, jw, dp_filter, 1, Some(jb), 1, 0, 1, 1);
+        let (body, _) = nn::conv1d(
+            compute,
+            &x,
+            dp_filter,
+            t,
+            jw,
+            dp_filter,
+            1,
+            Some(jb),
+            1,
+            0,
+            1,
+            1,
+        );
         body
     }
 
-    pub(super) fn logw(&self, x_dp: &[f32], t: usize, g: &[f32], noise_scale_w: f32) -> Vec<f32> {
-        let body = self.body(x_dp, t, g);
+    pub(super) fn logw(
+        &self,
+        compute: &Compute,
+        x_dp: &[f32],
+        t: usize,
+        g: &[f32],
+        noise_scale_w: f32,
+    ) -> Vec<f32> {
+        let body = self.body(compute, x_dp, t, g);
 
         // Reverse flow from a (zeroed, for noise_w=0) latent.
         let mut z = vec![0.0f32; 2 * t];
@@ -257,7 +304,7 @@ impl DurationPredictor {
         }
         for flow in &self.flows {
             flip2(&mut z, t);
-            z = flow.reverse(&z, t, &body);
+            z = flow.reverse(compute, &z, t, &body);
         }
         flip2(&mut z, t);
         // ElementwiseAffine reverse: x = (x - m) * exp(-logs). The exported

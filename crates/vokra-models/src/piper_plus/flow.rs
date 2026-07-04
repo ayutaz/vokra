@@ -17,6 +17,7 @@
 use super::config::{Dims, FLOW_WN_KERNEL};
 use super::nn;
 use super::weights::TensorStore;
+use crate::compute::Compute;
 use vokra_core::Result;
 
 /// A WaveNet conditioner (`WN`): `n_layers` gated dilated convs (dilation
@@ -31,7 +32,7 @@ struct Wn {
 }
 
 impl Wn {
-    fn forward(&self, x: &[f32], t: usize, g_cond: &[f32]) -> Vec<f32> {
+    fn forward(&self, compute: &Compute, x: &[f32], t: usize, g_cond: &[f32]) -> Vec<f32> {
         let hidden = self.hidden;
         let two_h = 2 * hidden;
         let mut h = x.to_vec();
@@ -42,6 +43,7 @@ impl Wn {
             let pad = dilation * (FLOW_WN_KERNEL - 1) / 2;
             let (iw, ib) = &self.in_layers[i];
             let (x_in, _) = nn::conv1d(
+                compute,
                 &h,
                 hidden,
                 t,
@@ -69,7 +71,20 @@ impl Wn {
             }
             let (rw, rb) = &self.res_skip_layers[i];
             let out_ch = if i < self.n_layers - 1 { two_h } else { hidden };
-            let (res_skip, _) = nn::conv1d(&acts, hidden, t, rw, out_ch, 1, Some(rb), 1, 0, 1, 1);
+            let (res_skip, _) = nn::conv1d(
+                compute,
+                &acts,
+                hidden,
+                t,
+                rw,
+                out_ch,
+                1,
+                Some(rb),
+                1,
+                0,
+                1,
+                1,
+            );
             if i < self.n_layers - 1 {
                 for c in 0..hidden {
                     for ti in 0..t {
@@ -98,15 +113,15 @@ struct Coupling {
 
 impl Coupling {
     /// Reverse pass: `x1 ← x1 − m(x0, g)`, keeping `x0`.
-    fn reverse(&self, x: &[f32], t: usize, g_cond: &[f32]) -> Vec<f32> {
+    fn reverse(&self, compute: &Compute, x: &[f32], t: usize, g_cond: &[f32]) -> Vec<f32> {
         let (hidden, half) = (self.hidden, self.half);
         // Channel split: x0 = x[..half], x1 = x[half..].
         let x0 = &x[..half * t];
         let (pw, pb) = &self.pre;
-        let (h, _) = nn::conv1d(x0, half, t, pw, hidden, 1, Some(pb), 1, 0, 1, 1);
-        let h = self.enc.forward(&h, t, g_cond);
+        let (h, _) = nn::conv1d(compute, x0, half, t, pw, hidden, 1, Some(pb), 1, 0, 1, 1);
+        let h = self.enc.forward(compute, &h, t, g_cond);
         let (sw, sb) = &self.post;
-        let (m, _) = nn::conv1d(&h, hidden, t, sw, half, 1, Some(sb), 1, 0, 1, 1);
+        let (m, _) = nn::conv1d(compute, &h, hidden, t, sw, half, 1, Some(sb), 1, 0, 1, 1);
         // x1 - m; x0 unchanged.
         let mut out = x.to_vec();
         for c in 0..half {
@@ -200,7 +215,7 @@ impl Flow {
     ///
     /// Runs `[Flip, Coupling_{2(N-1)}, …, Flip, Coupling_0]` (the `flows` list
     /// reversed), with a flip before every coupling.
-    pub(super) fn reverse(&self, z_p: &[f32], t: usize, g: &[f32]) -> Vec<f32> {
+    pub(super) fn reverse(&self, compute: &Compute, z_p: &[f32], t: usize, g: &[f32]) -> Vec<f32> {
         let mut x = z_p.to_vec();
         // Precompute each coupling's conditioning projection cond_layer(g).
         let cond: Vec<Vec<f32>> = self
@@ -210,7 +225,7 @@ impl Flow {
             .collect();
         for k in (0..self.n_flows).rev() {
             flip_channels(&mut x, self.hidden, t);
-            x = self.couplings[k].reverse(&x, t, &cond[k]);
+            x = self.couplings[k].reverse(compute, &x, t, &cond[k]);
         }
         x
     }

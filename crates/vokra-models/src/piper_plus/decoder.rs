@@ -23,6 +23,7 @@ use super::config::{
 };
 use super::nn;
 use super::weights::TensorStore;
+use crate::compute::Compute;
 use vokra_core::Result;
 
 /// A HiFi-GAN ResBlock2: two dilated convs, each `x += conv(leaky_relu(x))`.
@@ -34,13 +35,14 @@ struct ResBlock {
 }
 
 impl ResBlock {
-    fn forward(&self, mut x: Vec<f32>, t: usize) -> Vec<f32> {
+    fn forward(&self, compute: &Compute, mut x: Vec<f32>, t: usize) -> Vec<f32> {
         for (i, (w, b)) in self.convs.iter().enumerate() {
             let mut xt = x.clone();
             nn::leaky_relu(&mut xt, LRELU_SLOPE);
             let d = self.dilations[i];
             let pad = d * (self.kernel - 1) / 2; // same padding
             let (conv, _) = nn::conv1d(
+                compute,
                 &xt,
                 self.channels,
                 t,
@@ -258,10 +260,17 @@ impl Decoder {
     /// Propagates a [`VokraError`](vokra_core::VokraError) from the sub-band
     /// `istft` op (M0-04) rather than panicking, so a malformed spectrogram is a
     /// clean error at the API boundary (M1-01-C).
-    pub(super) fn forward(&self, z: &[f32], t_frames: usize, g: &[f32]) -> Result<Vec<f32>> {
+    pub(super) fn forward(
+        &self,
+        compute: &Compute,
+        z: &[f32],
+        t_frames: usize,
+        g: &[f32],
+    ) -> Result<Vec<f32>> {
         // conv_pre, then the first conditioning stage.
         let (cw, cb) = &self.conv_pre;
         let (mut x, _) = nn::conv1d(
+            compute,
             z,
             HIDDEN,
             t_frames,
@@ -308,7 +317,7 @@ impl Decoder {
             let mut xs = vec![0.0f32; out_ch * t];
             for branch in 0..num_kernels {
                 let rb = &self.resblocks[i * num_kernels + branch];
-                let out = rb.forward(up.clone(), t);
+                let out = rb.forward(compute, up.clone(), t);
                 for (a, b) in xs.iter_mut().zip(&out) {
                     *a += b;
                 }
@@ -330,7 +339,7 @@ impl Decoder {
         let ch1 = DEC_INITIAL / 4;
         let sub_out = self.subbands * (self.n_fft + 2);
         let (sw, sb) = &self.subband_conv_post;
-        let (spec_raw, _) = nn::conv1d(&x, ch1, t, sw, sub_out, 7, Some(sb), 1, 3, 1, 1);
+        let (spec_raw, _) = nn::conv1d(compute, &x, ch1, t, sw, sub_out, 7, Some(sb), 1, 3, 1, 1);
 
         // Per-subband iSTFT → sub-band waveforms, trimmed to T·hop.
         let sub_len = t * self.hop;
@@ -341,7 +350,7 @@ impl Decoder {
         }
 
         // PQMF synthesis → fullband [1, T·256].
-        Ok(self.pqmf_synthesis(&subbands_sig, sub_len))
+        Ok(self.pqmf_synthesis(compute, &subbands_sig, sub_len))
     }
 
     /// iSTFT of sub-band `s` via the M0-04 `istft` op.
@@ -414,7 +423,7 @@ impl Decoder {
 
     /// PQMF synthesis: upsample each sub-band (transposed conv, groups =
     /// sub-bands), pad, then the shared synthesis filter → fullband `[T·256]`.
-    fn pqmf_synthesis(&self, subbands_sig: &[f32], sub_len: usize) -> Vec<f32> {
+    fn pqmf_synthesis(&self, compute: &Compute, subbands_sig: &[f32], sub_len: usize) -> Vec<f32> {
         let m = self.subbands;
         // Upsample: ConvTranspose1d(updown·M, stride = M, groups = M).
         let (up, up_len) = nn::conv_transpose1d(
@@ -439,6 +448,7 @@ impl Decoder {
         }
         // synthesis_filter [1, M, taps+1]: conv1d M→1.
         let (out, _) = nn::conv1d(
+            compute,
             &padded,
             m,
             padded_len,

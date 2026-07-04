@@ -26,10 +26,13 @@
 //! be injected into a `Session` without `vokra-core` knowing any model
 //! specifics.
 
+pub mod compute;
 pub mod piper_plus;
 pub mod silero_vad;
 pub mod speaker;
 pub mod whisper;
+
+pub use compute::{Compute, HotOp, make_backend};
 
 #[cfg(test)]
 mod tests {

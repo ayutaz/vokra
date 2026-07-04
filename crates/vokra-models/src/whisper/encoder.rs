@@ -14,13 +14,13 @@
 //! `vokra-backend-cpu` kernels via [`super::nn`]; this file only wires shapes
 //! and residuals.
 
-use vokra_backend_cpu::kernels::{conv1d_f32, gelu_f32};
 use vokra_core::{Result, VokraError};
 
 use super::config::WhisperConfig;
 use super::nn::{add_assign, attention_from_kv_into, layer_norm_into, mlp_into, project_kv_into};
 use super::scratch::{BlockScratch, EncoderScratch};
 use super::weights::{EncoderLayer, EncoderWeights};
+use crate::compute::Compute;
 
 /// Encoder hidden states `[n_ctx, d_model]` (row-major).
 #[derive(Debug, Clone)]
@@ -33,8 +33,12 @@ pub struct EncoderOutput {
     pub d_model: usize,
 }
 
-/// Runs the encoder on `[n_mels, n_frames]` log-mel features.
+/// Runs the encoder on `[n_mels, n_frames]` log-mel features, dispatching the
+/// conv / GEMM / softmax / layer-norm / GELU hot path through `compute` (the
+/// backend seam; the CPU dispatcher reproduces the pre-seam kernel calls
+/// bit-for-bit — M2-01 Phase 3).
 pub(crate) fn encode(
+    compute: &Compute,
     cfg: &WhisperConfig,
     w: &EncoderWeights,
     log_mel: &[f32],
@@ -52,7 +56,7 @@ pub(crate) fn encode(
     // conv1: [n_mels, n_frames] -> [d, n_frames] (stride 1, pad 1), then GELU.
     let len1 = conv_out_len(n_frames, 3, 1, 1);
     let mut c1 = vec![0.0f32; d * len1];
-    conv1d_f32(
+    compute.conv1d_f32(
         log_mel,
         cfg.n_mels,
         n_frames,
@@ -64,12 +68,12 @@ pub(crate) fn encode(
         1,
         &mut c1,
     )?;
-    gelu_inplace(&mut c1)?;
+    gelu_inplace(compute, &mut c1)?;
 
     // conv2: [d, len1] -> [d, len2] (stride 2, pad 1), then GELU.
     let len2 = conv_out_len(len1, 3, 2, 1);
     let mut c2 = vec![0.0f32; d * len2];
-    conv1d_f32(
+    compute.conv1d_f32(
         &c1,
         d,
         len1,
@@ -81,7 +85,7 @@ pub(crate) fn encode(
         1,
         &mut c2,
     )?;
-    gelu_inplace(&mut c2)?;
+    gelu_inplace(compute, &mut c2)?;
 
     if len2 != cfg.n_audio_ctx {
         return Err(VokraError::InvalidArgument(format!(
@@ -106,6 +110,7 @@ pub(crate) fn encode(
     let mut scratch = EncoderScratch::with_reserve(t, d, cfg.ffn_dim, cfg.n_audio_head);
     for layer in &w.layers {
         encoder_block(
+            compute,
             &mut scratch.block,
             &mut hidden,
             t,
@@ -118,7 +123,7 @@ pub(crate) fn encode(
 
     // Final LayerNorm into the returned buffer.
     let mut normed = Vec::new();
-    layer_norm_into(&mut normed, &hidden, t, &w.ln_post)?;
+    layer_norm_into(compute, &mut normed, &hidden, t, &w.ln_post)?;
 
     Ok(EncoderOutput {
         hidden: normed,
@@ -135,6 +140,7 @@ pub(crate) fn encode(
 // is intentionally outside this region.
 #[allow(clippy::too_many_arguments)] // block shape (d, ff, n_head) + scratch + h
 fn encoder_block(
+    compute: &Compute,
     scratch: &mut BlockScratch,
     h: &mut [f32],
     t: usize,
@@ -145,9 +151,17 @@ fn encoder_block(
 ) -> Result<()> {
     scratch.ensure_residual(t, d, ff);
 
-    layer_norm_into(&mut scratch.ln, h, t, &layer.attn_ln)?;
-    project_kv_into(&mut scratch.k, &mut scratch.v, &scratch.ln, t, &layer.attn)?;
+    layer_norm_into(compute, &mut scratch.ln, h, t, &layer.attn_ln)?;
+    project_kv_into(
+        compute,
+        &mut scratch.k,
+        &mut scratch.v,
+        &scratch.ln,
+        t,
+        &layer.attn,
+    )?;
     attention_from_kv_into(
+        compute,
         &mut scratch.attn,
         &scratch.ln,
         t,
@@ -163,8 +177,9 @@ fn encoder_block(
     )?;
     add_assign(h, &scratch.block_out)?;
 
-    layer_norm_into(&mut scratch.ln, h, t, &layer.mlp_ln)?;
+    layer_norm_into(compute, &mut scratch.ln, h, t, &layer.mlp_ln)?;
     mlp_into(
+        compute,
         &mut scratch.mlp_h,
         &mut scratch.mlp_a,
         &mut scratch.block_out,
@@ -183,9 +198,9 @@ fn conv_out_len(in_len: usize, kernel: usize, stride: usize, pad: usize) -> usiz
     (in_len + 2 * pad - kernel) / stride + 1
 }
 
-fn gelu_inplace(x: &mut [f32]) -> Result<()> {
+fn gelu_inplace(compute: &Compute, x: &mut [f32]) -> Result<()> {
     let mut out = vec![0.0f32; x.len()];
-    gelu_f32(x, &mut out)?;
+    compute.gelu_f32(x, &mut out)?;
     x.copy_from_slice(&out);
     Ok(())
 }

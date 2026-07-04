@@ -10,8 +10,9 @@
 //! [`conv1d`] — the decoder/flow work-horse (conv_pre, the six dilated ResBlock
 //! convs, subband_conv_post, the flow WN dilated convs and the 1×1 pre/post
 //! projections) — no longer runs a scalar triple loop. It lowers to **im2col +
-//! [`gemm_f32`]**, so the dominant matmuls ride `vokra-backend-cpu`'s dispatched
-//! SIMD GEMM (AVX2 / NEON) at run time. The M0-08 `conv1d_f32` kernel has no
+//! [`Compute::gemm_f32`]**, so the dominant matmuls ride the selected backend's
+//! dispatched GEMM (CPU SIMD AVX2 / NEON, or the Metal GPU — M2-01 Phase 3) at
+//! run time. The M0-08 `conv1d_f32` kernel has no
 //! dilation/groups, so the im2col lives here (per the design: keep the backend
 //! API unchanged; M1-05 may later absorb dilation/groups into the backend and
 //! this can call it directly). The FP32 reduction order differs from the scalar
@@ -23,10 +24,11 @@
 //! route the transposed convs through GEMM+col2im is decided from the first RTF
 //! measurement (M1-01-F), not up front.
 
-use vokra_backend_cpu::kernels::gemm_f32;
+use crate::compute::Compute;
 
 /// 1-D convolution with stride / padding / dilation / groups, lowered to
-/// im2col + [`gemm_f32`] (M1-01-D).
+/// im2col + GEMM (M1-01-D), dispatched through the [`Compute`] seam so the model
+/// GEMM hot path can run on the CPU kernels or the Metal GPU (M2-01 Phase 3).
 ///
 /// `x` is `[in_ch, in_len]`, `weight` is `[out_ch, in_ch/groups, kernel]`
 /// (PyTorch/ONNX layout), `bias` (when `Some`) is `[out_ch]`. Returns
@@ -39,6 +41,7 @@ use vokra_backend_cpu::kernels::gemm_f32;
 /// propagates, M1-01-C).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn conv1d(
+    compute: &Compute,
     x: &[f32],
     in_ch: usize,
     in_len: usize,
@@ -77,16 +80,17 @@ pub(crate) fn conv1d(
         }
         // og[out_g, out_len] = weight_g[out_g, k] · col[k, out_len].
         let wbase = g * out_g * k;
-        gemm_f32(
-            out_g,
-            out_len,
-            k,
-            &weight[wbase..wbase + out_g * k],
-            &col,
-            None,
-            &mut og,
-        )
-        .expect("piper conv1d gemm: internally-consistent shapes");
+        compute
+            .gemm_f32(
+                out_g,
+                out_len,
+                k,
+                &weight[wbase..wbase + out_g * k],
+                &col,
+                None,
+                &mut og,
+            )
+            .expect("piper conv1d gemm: internally-consistent shapes");
         // Scatter into `out`, adding the per-output-channel bias (broadcast).
         for oc in 0..out_g {
             let out_channel = g * out_g + oc;
@@ -361,7 +365,18 @@ mod tests {
             let bias = rand_vec(201 + i as u64, out_ch);
             for b in [None, Some(bias.as_slice())] {
                 let (got, tg) = conv1d(
-                    &x, in_ch, in_len, &w, out_ch, k, b, stride, pad, dil, groups,
+                    &Compute::cpu(),
+                    &x,
+                    in_ch,
+                    in_len,
+                    &w,
+                    out_ch,
+                    k,
+                    b,
+                    stride,
+                    pad,
+                    dil,
+                    groups,
                 );
                 let (want, ts) = conv1d_scalar(
                     &x, in_ch, in_len, &w, out_ch, k, b, stride, pad, dil, groups,
@@ -382,7 +397,7 @@ mod tests {
         // 1 in-ch, len 5 = 1..5, weight [1,1,3]=[1,1,1], stride 1, pad 0, dil 1.
         let x = [1.0, 2.0, 3.0, 4.0, 5.0];
         let w = [1.0, 1.0, 1.0];
-        let (out, tout) = conv1d(&x, 1, 5, &w, 1, 3, None, 1, 0, 1, 1);
+        let (out, tout) = conv1d(&Compute::cpu(), &x, 1, 5, &w, 1, 3, None, 1, 0, 1, 1);
         assert_eq!(tout, 3);
         assert_eq!(out, [6.0, 9.0, 12.0]);
     }
@@ -392,7 +407,7 @@ mod tests {
         // len 5, kernel 3, dilation 2, pad 2 → same length 5.
         let x = [1.0, 2.0, 3.0, 4.0, 5.0];
         let w = [1.0, 0.0, -1.0]; // taps at t-2 and t+2 (dilation 2)
-        let (out, tout) = conv1d(&x, 1, 5, &w, 1, 3, None, 1, 2, 2, 1);
+        let (out, tout) = conv1d(&Compute::cpu(), &x, 1, 5, &w, 1, 3, None, 1, 2, 2, 1);
         assert_eq!(tout, 5);
         // out[t] = x[t-2]*1 + x[t+2]*(-1) (zero-padded).
         // t0: 0 - x2 = -3; t1: 0 - x3 = -4; t2: x0 - x4 = 1-5=-4;
@@ -405,7 +420,7 @@ mod tests {
         // 2 channels, groups=2 (depthwise): each channel its own kernel.
         let x = [1.0, 2.0, 3.0, /* ch1 */ 10.0, 20.0, 30.0];
         let w = [1.0, 1.0, /* ch1 */ 2.0, 2.0]; // [2,1,2]
-        let (out, tout) = conv1d(&x, 2, 3, &w, 2, 2, None, 1, 0, 1, 2);
+        let (out, tout) = conv1d(&Compute::cpu(), &x, 2, 3, &w, 2, 2, None, 1, 0, 1, 2);
         assert_eq!(tout, 2);
         // ch0: 1+2, 2+3 = 3,5; ch1: 2*(10+20), 2*(20+30) = 60,100.
         assert_eq!(out, [3.0, 5.0, 60.0, 100.0]);

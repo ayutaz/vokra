@@ -126,3 +126,65 @@ fn camplus_embed_rejects_wrong_length() {
     assert!(enc.embed(&[0.0; 79], 1).is_err());
     assert!(enc.embed(&[], 0).is_err());
 }
+
+/// Metal-vs-CPU parity for the GEMM-dominated CAM++ forward (M2-01 Phase 3):
+/// the same encoder run through the `Compute::Metal` GEMM path must match the
+/// `Compute::Cpu` path within the FP32 bound (NFR-QL-01, `atol = 0.01`). Every
+/// CAM++ conv is lowered to a GEMM, so this exercises the whole network on the
+/// GPU. Doubly gated — needs the CAM++ GGUF (`VOKRA_CAMPLUS_GGUF`) **and** a real
+/// Metal device — and skips cleanly (no silent CPU substitute) when either is
+/// absent. Run with:
+///
+/// ```text
+/// VOKRA_CAMPLUS_GGUF=campplus.gguf cargo test -p vokra-models --features metal camplus_metal -- --nocapture
+/// ```
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+#[test]
+fn camplus_metal_matches_cpu() {
+    use crate::compute::{Compute, HotOp};
+    use vokra_core::BackendKind;
+
+    let Some(enc) = load_encoder() else {
+        eprintln!("skipping CAM++ Metal parity: set VOKRA_CAMPLUS_GGUF to run");
+        return;
+    };
+    // Device-gated: build a GEMM-covering Metal dispatcher, or skip if there is
+    // no Metal device (an explicit BackendUnavailable — never a CPU fall back).
+    let metal = match Compute::for_backend(BackendKind::Metal, &[HotOp::Gemm]) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("skipping CAM++ Metal parity (no Metal device): {e}");
+            return;
+        }
+    };
+    assert_eq!(metal.backend_name(), "metal");
+
+    let fbank = read_f32("input_fbank.f32");
+    assert_eq!(fbank.len(), T * 80, "fbank fixture is [1, {T}, 80]");
+
+    // Same weights, two backends: the Metal GEMM path must match the CPU path.
+    let cpu_emb = enc
+        .run_with(&Compute::cpu(), &fbank, T, |_, _| {})
+        .expect("CPU forward");
+    let metal_emb = enc
+        .run_with(&metal, &fbank, T, |_, _| {})
+        .expect("Metal forward");
+
+    let d = max_abs_diff(&cpu_emb, &metal_emb);
+    eprintln!(
+        "camplus Metal vs CPU: max|Δ|={d:.6} len={} (atol={ATOL})",
+        cpu_emb.len()
+    );
+    assert!(
+        d <= ATOL,
+        "camplus Metal vs CPU parity {d} exceeds atol {ATOL}"
+    );
+
+    // And the GPU embedding still matches the committed onnxruntime fixture.
+    let reference = read_f32("embedding.f32");
+    let dref = max_abs_diff(&metal_emb, &reference);
+    assert!(
+        dref <= ATOL,
+        "camplus Metal vs reference parity {dref} exceeds atol {ATOL}"
+    );
+}

@@ -19,6 +19,19 @@ vokra-backend-cpu.workspace = true
 # 8-language G2P is reused OUT of the workspace, so this stays a first-party
 # `vokra-*` dependency and the zero-dependency gate is preserved (NFR-DS-02).
 vokra-piper-plus.workspace = true
+# Phase 3 (GPU execution): the imperative `Compute` dispatcher routes the model
+# hot path (GEMM first) onto the Metal backend. `vokra-backend-metal` is a
+# first-party `vokra-*` crate with ZERO external deps (raw Objective-C / Metal
+# FFI, no binding crate), so the zero-dependency gate (NFR-DS-02) still holds; it
+# is nonetheless kept OPTIONAL behind the `metal` feature so Linux / Windows /
+# WASM builds never even name it (NFR-PT-01). The `Compute::Metal` arm is
+# additionally `cfg(target_os = "macos"/"ios")`-gated inside the crate.
+vokra-backend-metal = { workspace = true, optional = true }
+
+[features]
+# Off by default: enable with `--features metal` on macOS / iOS to route the
+# model GEMM hot path onto the GPU (and to build/run the Metal parity tests).
+metal = ["dep:vokra-backend-metal"]
 
 # M1-01-D: reference RTF bench for the piper-plus native TTS (hand-rolled
 # std::time measurement, no external bench crate — NFR-DS-02). It is env-gated

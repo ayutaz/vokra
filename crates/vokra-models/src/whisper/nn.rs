@@ -19,13 +19,12 @@
 //! **identical** kernel calls in the identical order, so results are bit-for-bit
 //! equal — reusing a buffer never perturbs the accumulation order.
 
-use vokra_backend_cpu::kernels::{
-    LAYER_NORM_DEFAULT_EPS, gelu_f32, gemm_f32, layer_norm_f32, softmax_f32,
-};
+use vokra_backend_cpu::kernels::LAYER_NORM_DEFAULT_EPS;
 use vokra_core::{Result, VokraError};
 
 use super::scratch::{AttnScratch, resize_zeroed};
 use super::weights::{Attention, LayerNorm, Linear};
+use crate::compute::Compute;
 
 // ---- `_into` forms (no allocation after the buffers are sized) --------------
 // ZERO-ALLOC-BEGIN — the functions below must not allocate on the hot path;
@@ -36,6 +35,7 @@ use super::weights::{Attention, LayerNorm, Linear};
 /// Affine layer norm `[rows, d] → [rows, d]` into `out` (sized here), using the
 /// PyTorch/Whisper default epsilon (`1e-5`).
 pub(crate) fn layer_norm_into(
+    compute: &Compute,
     out: &mut Vec<f32>,
     x: &[f32],
     rows: usize,
@@ -43,14 +43,20 @@ pub(crate) fn layer_norm_into(
 ) -> Result<()> {
     let d = ln.gamma.len();
     resize_zeroed(out, rows * d);
-    layer_norm_f32(x, out, rows, d, &ln.gamma, &ln.beta, LAYER_NORM_DEFAULT_EPS)
+    compute.layer_norm_f32(x, out, rows, d, &ln.gamma, &ln.beta, LAYER_NORM_DEFAULT_EPS)
 }
 
 /// `nn.Linear` into `out` (sized here):
 /// `out[t, o] = bias[o] + sum_i x[t, i] * w_t[i, o]`.
-pub(crate) fn linear_into(out: &mut Vec<f32>, x: &[f32], t: usize, lin: &Linear) -> Result<()> {
+pub(crate) fn linear_into(
+    compute: &Compute,
+    out: &mut Vec<f32>,
+    x: &[f32],
+    t: usize,
+    lin: &Linear,
+) -> Result<()> {
     resize_zeroed(out, t * lin.out_features);
-    gemm_f32(
+    compute.gemm_f32(
         t,
         lin.out_features,
         lin.in_features,
@@ -81,7 +87,9 @@ pub(crate) fn add_assign(a: &mut [f32], b: &[f32]) -> Result<()> {
 /// The MLP sub-block `fc2(gelu(fc1(x)))` into `out` (sized here), using `mlp_h`
 /// / `mlp_a` (both sized here) as the `[t, ffn_dim]` intermediates. `x` is
 /// `[t, d]`, `out` is `[t, d]`.
+#[allow(clippy::too_many_arguments)] // MLP block operands + the backend dispatcher
 pub(crate) fn mlp_into(
+    compute: &Compute,
     mlp_h: &mut Vec<f32>,
     mlp_a: &mut Vec<f32>,
     out: &mut Vec<f32>,
@@ -90,23 +98,24 @@ pub(crate) fn mlp_into(
     fc1: &Linear,
     fc2: &Linear,
 ) -> Result<()> {
-    linear_into(mlp_h, x, t, fc1)?;
+    linear_into(compute, mlp_h, x, t, fc1)?;
     resize_zeroed(mlp_a, mlp_h.len());
-    gelu_f32(mlp_h, mlp_a)?;
-    linear_into(out, mlp_a, t, fc2)
+    compute.gelu_f32(mlp_h, mlp_a)?;
+    linear_into(compute, out, mlp_a, t, fc2)
 }
 
 /// Projects the key/value inputs of an attention block into `k_out` / `v_out`
 /// (both sized here), each `[t_kv, d]`.
 pub(crate) fn project_kv_into(
+    compute: &Compute,
     k_out: &mut Vec<f32>,
     v_out: &mut Vec<f32>,
     xkv: &[f32],
     t_kv: usize,
     attn: &Attention,
 ) -> Result<()> {
-    linear_into(k_out, xkv, t_kv, &attn.k)?;
-    linear_into(v_out, xkv, t_kv, &attn.v)
+    linear_into(compute, k_out, xkv, t_kv, &attn.k)?;
+    linear_into(compute, v_out, xkv, t_kv, &attn.v)
 }
 
 /// Multi-head attention from **pre-projected** keys/values, into `out` (sized
@@ -122,6 +131,7 @@ pub(crate) fn project_kv_into(
 /// Writes the block output `[t_q, d]` (after the output projection) into `out`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn attention_from_kv_into(
+    compute: &Compute,
     scratch: &mut AttnScratch,
     xq: &[f32],
     t_q: usize,
@@ -142,7 +152,7 @@ pub(crate) fn attention_from_kv_into(
     scratch.ensure(t_q, t_kv, d, n_head);
 
     // Scaled query projection into scratch.q (bias applied by the GEMM).
-    gemm_f32(
+    compute.gemm_f32(
         t_q,
         d,
         q_lin.in_features,
@@ -169,7 +179,7 @@ pub(crate) fn attention_from_kv_into(
             }
         }
         // scores [t_q, t_kv] = qh [t_q, hd] @ kh_t [hd, t_kv].
-        gemm_f32(
+        compute.gemm_f32(
             t_q,
             t_kv,
             hd,
@@ -188,9 +198,9 @@ pub(crate) fn attention_from_kv_into(
                 }
             }
         }
-        softmax_f32(&scratch.scores, &mut scratch.probs, t_q, t_kv)?;
+        compute.softmax_f32(&scratch.scores, &mut scratch.probs, t_q, t_kv)?;
         // ctx_h [t_q, hd] = probs [t_q, t_kv] @ vh [t_kv, hd].
-        gemm_f32(
+        compute.gemm_f32(
             t_q,
             hd,
             t_kv,
@@ -206,7 +216,7 @@ pub(crate) fn attention_from_kv_into(
     }
 
     // Output projection: out [t_q, d] = context [t_q, d] @ out_lin.
-    linear_into(out, &scratch.context, t_q, out_lin)
+    linear_into(compute, out, &scratch.context, t_q, out_lin)
 }
 // ZERO-ALLOC-END
 
@@ -215,13 +225,14 @@ pub(crate) fn attention_from_kv_into(
 /// Allocating [`project_kv_into`]: returns `(k, v)` each `[t_kv, d]`. Used by
 /// the decoder's one-shot cross-attention K/V precomputation and the tests.
 pub(crate) fn project_kv(
+    compute: &Compute,
     xkv: &[f32],
     t_kv: usize,
     attn: &Attention,
 ) -> Result<(Vec<f32>, Vec<f32>)> {
     let mut k = Vec::new();
     let mut v = Vec::new();
-    project_kv_into(&mut k, &mut v, xkv, t_kv, attn)?;
+    project_kv_into(compute, &mut k, &mut v, xkv, t_kv, attn)?;
     Ok((k, v))
 }
 
@@ -229,6 +240,7 @@ pub(crate) fn project_kv(
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn attention_from_kv(
+    compute: &Compute,
     xq: &[f32],
     t_q: usize,
     k: &[f32],
@@ -243,6 +255,7 @@ pub(crate) fn attention_from_kv(
     let mut scratch = AttnScratch::with_reserve(t_q, t_kv, q_lin.out_features, n_head);
     let mut out = Vec::new();
     attention_from_kv_into(
+        compute,
         &mut scratch,
         xq,
         t_q,
@@ -290,10 +303,23 @@ mod tests {
         };
         // Two key/value positions with distinct values.
         let xkv = vec![1.0, 0.0, 0.0, 1.0]; // k=v=[[1,0],[0,1]]
-        let (k, v) = project_kv(&xkv, 2, &attn).unwrap();
+        let (k, v) = project_kv(&Compute::cpu(), &xkv, 2, &attn).unwrap();
         // One query aligned with key 0.
         let xq = vec![10.0, 0.0];
-        let out = attention_from_kv(&xq, 1, &k, &v, 2, &attn.q, &attn.out, 1, false, 0).unwrap();
+        let out = attention_from_kv(
+            &Compute::cpu(),
+            &xq,
+            1,
+            &k,
+            &v,
+            2,
+            &attn.q,
+            &attn.out,
+            1,
+            false,
+            0,
+        )
+        .unwrap();
         // Large positive score on key 0 → context ≈ value 0 = [1,0].
         assert!((out[0] - 1.0).abs() < 1e-3, "{out:?}");
         assert!(out[1].abs() < 1e-3, "{out:?}");
@@ -310,9 +336,22 @@ mod tests {
         };
         // Keys/values at 3 positions; query at position 0 must only see key 0.
         let xkv = vec![5.0, 0.0, 0.0, 5.0, 0.0, -5.0]; // values [5,0],[0,5],[0,-5]
-        let (k, v) = project_kv(&xkv, 3, &attn).unwrap();
+        let (k, v) = project_kv(&Compute::cpu(), &xkv, 3, &attn).unwrap();
         let xq = vec![0.0, 0.0]; // uniform scores pre-mask
-        let out = attention_from_kv(&xq, 1, &k, &v, 3, &attn.q, &attn.out, 1, true, 0).unwrap();
+        let out = attention_from_kv(
+            &Compute::cpu(),
+            &xq,
+            1,
+            &k,
+            &v,
+            3,
+            &attn.q,
+            &attn.out,
+            1,
+            true,
+            0,
+        )
+        .unwrap();
         // Only key 0 visible → context == value 0 == [5,0].
         assert!((out[0] - 5.0).abs() < 1e-4, "{out:?}");
         assert!(out[1].abs() < 1e-4, "{out:?}");
