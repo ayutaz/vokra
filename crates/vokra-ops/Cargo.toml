@@ -18,5 +18,11 @@ vokra-core.workspace = true
 name = "fft_bench"
 harness = false
 
+# M2-05-T11: streaming iSTFT vs batch istft micro-benchmarks. `harness = false`
+# for the same zero-dependency reason as fft_bench (no criterion/libtest bench).
+[[bench]]
+name = "istft_streaming_bench"
+harness = false
+
 [lints]
 workspace = true

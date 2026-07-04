@@ -14,12 +14,14 @@
 //! silently doing nothing (FR-EX-08: no silent fallback).
 
 use vokra_core::ir::graph::{
-    DctAttrs, IstftAttrs, MelAttrs, MfccAttrs, PreEmphasisAttrs, ResampleAttrs, StftAttrs,
+    DctAttrs, IstftAttrs, IstftStreamingAttrs, MelAttrs, MfccAttrs, PreEmphasisAttrs,
+    ResampleAttrs, StftAttrs,
 };
 use vokra_core::{OpKind, Result, VokraError};
 
 use crate::dct::dct;
 use crate::istft::istft;
+use crate::istft_streaming::istft_streaming_oneshot;
 use crate::mel::MelFilterbank;
 use crate::mfcc::mfcc;
 use crate::preprocess::{dc_offset_remove, pre_emphasis};
@@ -92,6 +94,7 @@ pub fn dispatch(op: &OpKind, inputs: &[OpValue]) -> Result<Vec<OpValue>> {
     match op {
         OpKind::Stft(attrs) => run_stft(attrs, inputs),
         OpKind::Istft(attrs) => run_istft(attrs, inputs),
+        OpKind::IstftStreaming(attrs) => run_istft_streaming(attrs, inputs),
         OpKind::MelFilterbank(attrs) => run_mel(attrs, inputs),
         OpKind::Mfcc(attrs) => run_mfcc(attrs, inputs),
         OpKind::Dct(attrs) => run_dct(attrs, inputs),
@@ -147,6 +150,30 @@ fn run_istft(attrs: &IstftAttrs, inputs: &[OpValue]) -> Result<Vec<OpValue>> {
         im: im.to_vec(),
     };
     let signal = istft(&spec, attrs)?;
+    Ok(vec![OpValue::real(vec![signal.len()], signal)])
+}
+
+/// Streaming iSTFT as a graph node (FR-OP-02): a one-shot evaluation over the
+/// whole `[frames, bins]` chunk. The overlap tail is created and consumed inside
+/// this call, so it is never a graph tensor (FR-ST-05); the result equals a
+/// batch [`istft`] with the same parameters.
+fn run_istft_streaming(attrs: &IstftStreamingAttrs, inputs: &[OpValue]) -> Result<Vec<OpValue>> {
+    expect_arity(inputs, 1, "istft_streaming")?;
+    let (shape, re, im) = inputs[0].as_complex().ok_or_else(|| {
+        VokraError::InvalidArgument("istft_streaming: expected a complex input".to_owned())
+    })?;
+    if shape.len() != 2 {
+        return Err(VokraError::InvalidArgument(
+            "istft_streaming: input must be [frames, bins]".to_owned(),
+        ));
+    }
+    let spec = Spectrogram {
+        frames: shape[0],
+        bins: shape[1],
+        re: re.to_vec(),
+        im: im.to_vec(),
+    };
+    let signal = istft_streaming_oneshot(&spec, attrs)?;
     Ok(vec![OpValue::real(vec![signal.len()], signal)])
 }
 
@@ -305,6 +332,65 @@ mod tests {
             max = max.max((signal[i] - y[i]).abs());
         }
         assert!(max < 1e-2, "roundtrip error {max}");
+    }
+
+    #[test]
+    fn istft_streaming_dispatch_equals_batch_istft() {
+        // The IstftStreaming graph node (one-shot over the whole chunk) must
+        // equal both a direct istft_streaming_oneshot call and the batch istft
+        // (bit-for-bit) — the "graph path == direct call" contract (M2-05-T10),
+        // with the tail state never appearing as a graph tensor.
+        use vokra_core::ir::graph::IstftStreamingAttrs;
+
+        let signal: Vec<f32> = (0..4096).map(|t| (t as f32 * 0.03).sin()).collect();
+        let sa = StftAttrs::new(512, 128);
+        let spec = dispatch(
+            &OpKind::Stft(sa),
+            &[OpValue::real(vec![signal.len()], signal.clone())],
+        )
+        .unwrap();
+
+        let mut ia = IstftAttrs::new(512, 128);
+        ia.length = Some(signal.len());
+        let attrs = IstftStreamingAttrs::from_istft(ia.clone());
+
+        let via_graph = dispatch(&OpKind::IstftStreaming(attrs), &spec).unwrap();
+        let (_, streamed) = via_graph[0].as_real().unwrap();
+
+        let (shape, re, im) = spec[0].as_complex().unwrap();
+        let recon = Spectrogram {
+            frames: shape[0],
+            bins: shape[1],
+            re: re.to_vec(),
+            im: im.to_vec(),
+        };
+        let batch = istft(&recon, &ia).unwrap();
+        assert_eq!(
+            streamed,
+            batch.as_slice(),
+            "graph-path streaming must equal batch"
+        );
+    }
+
+    #[test]
+    fn istft_streaming_dispatch_rejects_real_and_rank() {
+        use vokra_core::ir::graph::IstftStreamingAttrs;
+        let attrs = IstftStreamingAttrs::new(256, 128);
+        // Wants complex, given real.
+        let e = dispatch(
+            &OpKind::IstftStreaming(attrs.clone()),
+            &[OpValue::real(vec![4], vec![0.0; 4])],
+        )
+        .unwrap_err();
+        assert!(matches!(e, VokraError::InvalidArgument(_)), "real: {e:?}");
+        // Complex input must be 2-D.
+        let one_d = OpValue::Complex {
+            shape: vec![4],
+            re: vec![0.0; 4],
+            im: vec![0.0; 4],
+        };
+        let e = dispatch(&OpKind::IstftStreaming(attrs), &[one_d]).unwrap_err();
+        assert!(matches!(e, VokraError::InvalidArgument(_)), "rank: {e:?}");
     }
 
     #[test]

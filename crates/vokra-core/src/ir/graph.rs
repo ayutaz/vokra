@@ -39,10 +39,11 @@ use super::tensor::{Dim, TensorDesc, TensorId};
 // knobs is an explicit attribute below rather than an implicit default.
 //
 // Out of scope for M0-04 (kept representable so this maps 1:1 onto the future
-// `vokra.frontend.*` GGUF chunk): the chunk bit-exact check (FR-LD-03, M1),
-// streaming iSTFT (`istft_streaming`, FR-OP-02, v0.5), the GPU side of the FFT
-// lowering (FR-OP-05) and the public `complex64` IR dtype (FR-EX-09, v0.1
-// MVP — FFT complex values stay a `vokra-ops`-internal type for now).
+// `vokra.frontend.*` GGUF chunk): the chunk bit-exact check (FR-LD-03, M1), the
+// GPU side of the FFT lowering (FR-OP-05) and the public `complex64` IR dtype
+// (FR-EX-09, v0.1 MVP — FFT complex values stay a `vokra-ops`-internal type for
+// now). Streaming iSTFT (`istft_streaming`, FR-OP-02) has since **landed in
+// M2-05** — see [`IstftStreamingAttrs`] and [`OpKind::IstftStreaming`] below.
 
 /// Analysis / synthesis window function
 /// (FR-OP-01: "window (Hann/Hamming/Blackman-Harris/Kaiser)").
@@ -240,6 +241,53 @@ impl IstftAttrs {
     }
 }
 
+/// Attributes of the `istft_streaming` operator (FR-OP-02; M2-05).
+///
+/// The chunked, tail-buffering variant of [`OpKind::Istft`]. It wraps the batch
+/// [`IstftAttrs`] verbatim — the streaming op reconstructs, chunk-by-chunk,
+/// *bit-for-bit* what the one-shot `istft` produces for the same parameters —
+/// and adds the FR-OP-02 knob the batch op has no need for: **`tail_len`**, the
+/// length of the overlap tail carried across chunk boundaries (the per-layer
+/// state the streaming reconstruction retains).
+///
+/// The overlap between two successive frames is `n_fft − hop_length` samples;
+/// that is the minimum `tail_len` a faithful carry-over needs, and the value
+/// [`new`](Self::new) / [`from_istft`](Self::from_istft) default to. A smaller
+/// `tail_len` cannot reconstruct the inter-frame overlap and the streaming op
+/// rejects it (`InvalidArgument`); a larger one is accepted (it merely reserves
+/// a deeper tail buffer). The `center` head/tail trim is handled internally and
+/// does *not* consume `tail_len`.
+///
+/// Per-layer carry-over: a vocoder chain may hold several iSTFT stages, each an
+/// independent streaming instance with its own tail state; this attribute set
+/// describes one such stage. The tail state itself is never a graph tensor — it
+/// lives in the stream handle (FR-ST-05).
+#[derive(Debug, Clone, PartialEq)]
+pub struct IstftStreamingAttrs {
+    /// The batch inverse-STFT parameters (the eight FR-OP-01 knobs + `length`).
+    /// The streaming variant reproduces this exact reconstruction.
+    pub istft: IstftAttrs,
+    /// Overlap tail length in samples carried across chunk boundaries
+    /// (FR-OP-02). Must be `>= n_fft − hop_length` (the inter-frame overlap).
+    pub tail_len: usize,
+}
+
+impl IstftStreamingAttrs {
+    /// Builds streaming attributes from [`IstftAttrs::new`] defaults, with
+    /// `tail_len` set to the inter-frame overlap `n_fft − hop_length`.
+    pub fn new(n_fft: usize, hop_length: usize) -> Self {
+        Self::from_istft(IstftAttrs::new(n_fft, hop_length))
+    }
+
+    /// Wraps an existing [`IstftAttrs`], defaulting `tail_len` to the
+    /// inter-frame overlap `n_fft − hop_length` (saturating at 0 when
+    /// `hop_length >= n_fft`, i.e. no overlap).
+    pub fn from_istft(istft: IstftAttrs) -> Self {
+        let tail_len = istft.n_fft.saturating_sub(istft.hop_length);
+        Self { istft, tail_len }
+    }
+}
+
 /// Attributes of the `mel_filterbank` operator (FR-OP-03).
 ///
 /// Describes the triangular mel filter bank projecting an `n_fft / 2 + 1`-bin
@@ -409,6 +457,12 @@ pub enum OpKind {
     /// Inverse STFT / overlap-add resynthesis (FR-OP-01). Complex spectrogram
     /// `[frames, bins]` → real signal `[samples]`.
     Istft(IstftAttrs),
+    /// Streaming inverse STFT (FR-OP-02, M2-05): the chunked, tail-buffering
+    /// variant of [`OpKind::Istft`]. A one-shot node (all frames in a single
+    /// evaluation) reconstructs bit-for-bit what `Istft` produces; the per-chunk
+    /// overlap tail is carried by the stream handle (FR-ST-05), never exposed as
+    /// a graph tensor.
+    IstftStreaming(IstftStreamingAttrs),
     /// Mel filter-bank projection of a power/magnitude spectrum
     /// `[frames, bins]` → `[frames, n_mels]` (FR-OP-03).
     MelFilterbank(MelAttrs),

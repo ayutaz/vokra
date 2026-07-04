@@ -10,7 +10,7 @@
 //! v0.5 and out of scope; the buffer layout here (contiguous overlap-add) does
 //! not preclude a streaming variant that flushes completed samples.
 
-use vokra_core::ir::graph::IstftAttrs;
+use vokra_core::ir::graph::{IstftAttrs, Normalization};
 use vokra_core::{Result, VokraError};
 
 use crate::Spectrogram;
@@ -19,7 +19,11 @@ use crate::window::window;
 
 /// Below this window-overlap energy a sample is treated as unreconstructable
 /// (NOLA violation) and left at zero instead of dividing by ~0.
-const NOLA_EPS: f32 = 1e-8;
+///
+/// `pub(crate)` so the streaming variant ([`crate::istft_streaming`]) applies
+/// the *identical* NOLA guard as the batch op, keeping the two bit-for-bit
+/// equal at frame boundaries.
+pub(crate) const NOLA_EPS: f32 = 1e-8;
 
 /// Reconstructs a real signal from a complex [`Spectrogram`] under `attrs`.
 ///
@@ -51,13 +55,7 @@ pub fn istft(spectrogram: &Spectrogram, attrs: &IstftAttrs) -> Result<Vec<f32>> 
     let hop = attrs.hop_length;
     let frames = spectrogram.frames;
     let synth_window = build_synth_window(attrs);
-    let inv_scale = norm_scale(attrs.normalization, n, true);
-    // Each stored bin = inv_scale · forward_raw; undo it before inverting.
-    let unscale = if inv_scale == 0.0 {
-        1.0
-    } else {
-        1.0 / inv_scale
-    };
+    let unscale = frame_unscale(attrs.normalization, n);
 
     let total = if frames > 0 {
         (frames - 1) * hop + n
@@ -69,35 +67,16 @@ pub fn istft(spectrogram: &Spectrogram, attrs: &IstftAttrs) -> Result<Vec<f32>> 
 
     let real_plan = attrs.real_input.then(|| RealFftPlan::new(n));
     let complex_plan = (!attrs.real_input).then(|| FftPlan::new(n));
+    let inverter = FrameInverter {
+        n,
+        unscale,
+        real_plan: real_plan.as_ref(),
+        complex_plan: complex_plan.as_ref(),
+    };
 
     for f in 0..frames {
         let base = f * spectrogram.bins;
-        let frame_time = if let Some(plan) = &real_plan {
-            let half: Vec<Complex32> = (0..spectrogram.bins)
-                .map(|b| {
-                    Complex32::new(
-                        spectrogram.re[base + b] * unscale,
-                        spectrogram.im[base + b] * unscale,
-                    )
-                })
-                .collect();
-            plan.inverse(&half)
-        } else {
-            let full: Vec<Complex32> = (0..n)
-                .map(|b| {
-                    Complex32::new(
-                        spectrogram.re[base + b] * unscale,
-                        spectrogram.im[base + b] * unscale,
-                    )
-                })
-                .collect();
-            let raw = complex_plan
-                .as_ref()
-                .expect("complex plan")
-                .inverse_raw(&full);
-            let inv_n = 1.0 / n as f32;
-            raw.iter().map(|c| c.re * inv_n).collect()
-        };
+        let frame_time = inverter.invert(&spectrogram.re, &spectrogram.im, base, spectrogram.bins);
 
         let start = f * hop;
         for i in 0..n {
@@ -130,7 +109,10 @@ pub fn istft(spectrogram: &Spectrogram, attrs: &IstftAttrs) -> Result<Vec<f32>> 
 }
 
 /// Builds the length-`n_fft` synthesis window (mirrors the analysis window).
-fn build_synth_window(attrs: &IstftAttrs) -> Vec<f32> {
+///
+/// `pub(crate)` so the streaming variant ([`crate::istft_streaming`]) builds the
+/// byte-identical synthesis window.
+pub(crate) fn build_synth_window(attrs: &IstftAttrs) -> Vec<f32> {
     let w = window(attrs.window, attrs.win_length, attrs.window_symmetry);
     if attrs.win_length == attrs.n_fft {
         return w;
@@ -139,6 +121,61 @@ fn build_synth_window(attrs: &IstftAttrs) -> Vec<f32> {
     let offset = (attrs.n_fft - attrs.win_length) / 2;
     full[offset..offset + attrs.win_length].copy_from_slice(&w);
     full
+}
+
+/// The per-bin factor that undoes the forward normalization before inverting.
+///
+/// Each stored bin is `inv_scale · forward_raw` where `inv_scale =
+/// norm_scale(norm, n, forward = true)`; multiplying by `1 / inv_scale`
+/// recovers the raw forward spectrum the inverse transform expects. `pub(crate)`
+/// so the batch and streaming iSTFT paths share one definition (bit-exactness).
+pub(crate) fn frame_unscale(normalization: Normalization, n: usize) -> f32 {
+    let inv_scale = norm_scale(normalization, n, true);
+    if inv_scale == 0.0 {
+        1.0
+    } else {
+        1.0 / inv_scale
+    }
+}
+
+/// One frame's inverse transform: reads `n_fft/2+1` (real) or `n_fft` (complex)
+/// bins at `base`, applies `unscale`, and returns the length-`n_fft` time-domain
+/// frame *before* windowing / overlap-add.
+///
+/// This is the single shared inverse used by both [`istft`] and the streaming
+/// [`crate::istft_streaming`] op, so the two produce identical `frame_time`
+/// values — the foundation of their bit-for-bit agreement. Built from borrowed
+/// plans at the call site (it holds no owned state), so it composes with either
+/// a one-shot loop or a per-chunk stepper.
+pub(crate) struct FrameInverter<'a> {
+    /// FFT size.
+    pub(crate) n: usize,
+    /// Forward-normalization undo factor (see [`frame_unscale`]).
+    pub(crate) unscale: f32,
+    /// Real (RFFT) inverse plan for the `real_input` path.
+    pub(crate) real_plan: Option<&'a RealFftPlan>,
+    /// Full complex inverse plan for the non-`real_input` path.
+    pub(crate) complex_plan: Option<&'a FftPlan>,
+}
+
+impl FrameInverter<'_> {
+    /// Inverts the frame whose `bins` complex values start at `re[base]` /
+    /// `im[base]`, returning the length-`n` real time-domain frame.
+    pub(crate) fn invert(&self, re: &[f32], im: &[f32], base: usize, bins: usize) -> Vec<f32> {
+        if let Some(plan) = self.real_plan {
+            let half: Vec<Complex32> = (0..bins)
+                .map(|b| Complex32::new(re[base + b] * self.unscale, im[base + b] * self.unscale))
+                .collect();
+            plan.inverse(&half)
+        } else {
+            let full: Vec<Complex32> = (0..self.n)
+                .map(|b| Complex32::new(re[base + b] * self.unscale, im[base + b] * self.unscale))
+                .collect();
+            let raw = self.complex_plan.expect("complex plan").inverse_raw(&full);
+            let inv_n = 1.0 / self.n as f32;
+            raw.iter().map(|c| c.re * inv_n).collect()
+        }
+    }
 }
 
 #[cfg(test)]
