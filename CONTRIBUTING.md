@@ -34,6 +34,15 @@ As of M0 (v0.1 spike) every PR must pass **6 required checks**:
 Run the same commands locally before pushing; the CI configuration is
 `.github/workflows/ci.yml`.
 
+Beyond the six required checks, CI also runs a **`gpu-backends`** job that
+keeps the optional `metal` / `cuda` GPU backends compiling and lint-clean
+(`cargo build`/`clippy`/`test -p vokra-models -p vokra-cli --features
+metal|cuda`). The `metal` leg runs its GPU parity tests on the Apple-silicon
+macOS runner; the `cuda` leg is build/lint-only (GitHub runners have no NVIDIA
+GPU, so the dlopen-probe-gated device tests skip cleanly). Both are
+first-party `vokra-*` crates, so this does not affect the zero-dependency
+invariant.
+
 Planned extension (M1 and later, completing the NFR-MT-07 set): a
 performance-regression gate (5% threshold) and execution checks for code
 examples in documentation will be added as required checks, and nightly
@@ -117,6 +126,22 @@ Bypass a run with `git commit --no-verify` / `git push --no-verify`, or
 `scripts/check-zero-deps.sh` enforces the **zero-external-dependency**
 invariant (NFR-DS-02): `Cargo.lock` must contain only first-party `vokra-*`
 crates. This is stricter than `cargo deny` and is a hard local + CI gate.
+
+Two patterns add functionality without breaking this invariant — they are the
+only sanctioned ways to reach outside the runtime graph:
+
+- **First-party optional features.** The GPU backends `vokra-backend-metal` /
+  `vokra-backend-cuda` are ordinary `vokra-*` crates (hand-written raw FFI —
+  no `metal` / `objc2` / `cudarc` binding crate), gated OFF by default behind
+  the `metal` / `cuda` Cargo features so default (and Linux / Windows / WASM)
+  builds never even name them. Adding a GPU/NPU path this way keeps
+  `Cargo.lock` vokra-only.
+- **Isolated integration workspaces.** Code that genuinely needs an external
+  crate (e.g. the real 8-language G2P in `integrations/vokra-piper-g2p`, which
+  pulls non-`vokra-*` crates) lives in its own workspace under `integrations/`
+  with its own `Cargo.lock`, excluded from the root workspace, and is wired in
+  across a trait boundary (`vokra_piper_plus::Phonemizer`) — never linked into
+  the runtime graph checked here.
 
 ### Claude Code
 

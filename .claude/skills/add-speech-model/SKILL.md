@@ -14,7 +14,8 @@ description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-
 
 ## 1. native 自前再実装（whisper.cpp 型）
 
-- モデル定義を Rust で自前実装し、**上流の safetensors checkpoint のみ**を使う（`torch.onnx.export` の dynamo/scriptmodule 分裂に耐性）。既存例: `crates/vokra-models/src/whisper/`, `.../piper_plus/`, `.../silero_vad/`。
+- モデル定義を Rust で自前実装し、**上流の safetensors checkpoint のみ**を使う（`torch.onnx.export` の dynamo/scriptmodule 分裂に耐性）。既存例: `crates/vokra-models/src/whisper/`（base〜large-v3）, `.../piper_plus/`, `.../silero_vad/`, `.../speaker/`（CAM++ speaker encoder）。
+- **GPU backend 対応は `Compute` seam 経由**（`vokra-models/src/compute.rs`）: モデルの hot op（GEMM/GEMV/softmax/layer_norm/gelu/conv1d）を CPU kernel 直呼びでなく `Compute` に通すと、feature=metal/cuda build 時に Metal/CUDA へ swap できる（既定 CPU、非対応 backend は明示 `UnsupportedOp` = silent CPU fallback 禁止 FR-EX-08）。Whisper / piper-plus / CAM++ は配線済み。GPU parity は device-gated で CPU を oracle にする（→ skill `numerical-parity`）。
 - **runtime に ONNX を絶対に入れない**（FR-LD-05、恒久）。onnxruntime / onnx / protobuf / prost / ort への依存禁止（deny.toml で ban 済み）。
 - **piper-plus 系は native 自前実装**（wrap 廃止・依頼者決定 2026-07-02）。G2P（8 言語）のみ当面 piper-plus 実装を流用。
 - **eSpeak-NG 禁止**（GPL-3.0）。G2P は piper-plus 独自 or IPA 辞書ベース。
@@ -36,7 +37,7 @@ description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-
 
 ## 5. TTS / VC は法務チェックリスト
 
-- `docs/legal-compliance.md` を通す（EU AI Act Article 50 / California SB 942）: **AudioSeal watermark を default ON**（opt-out）、C2PA manifest 対応、SynthID 検討。TTS/VC 出力の既定に "Vokra-generated" marker。
+- `docs/legal-compliance.md` を通す（EU AI Act Article 50 / California SB 942）。**watermark / C2PA 埋め込み（FR-CP-01 AudioSeal / FR-CP-02 C2PA）は 2026-07-04 依頼者ドロップで未実装**: `vokra-core` の `WatermarkConfig` は config 面のみで、`backend_status` は常に `Deferred`（埋め込み backend 未配線 — 偽の marker を付けない方針）。model-zoo 可否・weight license は下記 compliance gate（→ skill `license-audit`）で runtime 強制する。
 
 ## 6. ドキュメント更新（同一 PR 内）
 

@@ -30,12 +30,17 @@ Key design points:
 - **Speech-first operator set**: STFT/iSTFT (explicit window/hop/norm/RFFT
   attributes), mel filterbank, resampling, vocoder chains, flow-matching
   samplers, codec decode, beam search / CTC / RNN-T, streaming KV cache,
-  VAD, speech enhancement (AEC/denoise), speaker embedding, F0 extraction,
-  and audio watermarking (EU AI Act Article 50 readiness).
+  VAD, speech enhancement (AEC/denoise), speaker embedding, and F0
+  extraction. A weight-license compliance gate keeps CC-BY-NC weights out of
+  the default path unless a research flag is set (audio watermarking is
+  designed but not yet enabled).
 - **CPU as a first-class backend** (x86-64 SSE2 baseline through
   AVX2/AVX-512/AMX, ARM64 NEON through SVE/SME, with runtime dispatch),
   then staged GPU/NPU acceleration: Metal, CUDA, Vulkan, WebGPU, CoreML,
-  QNN.
+  QNN. **Metal and CUDA backends are already implemented and validated on
+  real hardware** (see Status); GPU support uses hand-written zero-dependency
+  FFI (no `metal-rs` / `cudarc` / binding crates) and never silently falls
+  back to CPU — an op a backend does not cover is an explicit error.
 - **All platforms are in scope**: Windows / macOS / Linux / Android / iOS /
   Web, plus x86-64 and ARM64 servers. The roadmap staggers *when* each
   backend gets official acceleration, not *whether* a platform is
@@ -43,9 +48,30 @@ Key design points:
 
 ## Status and design documents
 
-The project is in the **v0.1 spike** phase (Rust scaffold, GGUF loader,
-STFT/iSTFT/mel ops, Silero VAD, Whisper base, piper-plus native TTS, CPU
-backend, C ABI, Unity demo). Nothing is ready for production use yet.
+The v0.1 spike (Rust scaffold, GGUF loader, STFT/iSTFT/mel ops, Silero VAD,
+Whisper base, piper-plus native TTS, CPU backend, C ABI, Unity demo) is
+complete, and v0.5 (GPU) work is well underway. Nothing is ready for
+production use yet, but the following are implemented and validated:
+
+- **CPU speech stack**: Silero VAD, Whisper (base…large-v3, with an embedded
+  detokenizer for correct transcription), and piper-plus native TTS with the
+  real 8-language G2P and a native CAM++ speaker encoder for zero-shot voice
+  cloning. All are numerically parity-checked against reference runtimes
+  (onnxruntime / PyTorch) to FP32 `atol = 0.01`.
+- **GPU backends** (`vokra-backend-metal`, `vokra-backend-cuda`): a
+  data-carrying graph evaluator plus a per-model dispatch seam. **Whisper
+  runs end-to-end on both Metal (validated on Apple M1) and CUDA (validated
+  on an RTX 4090)** with greedy output matching the CPU path exactly. GPU
+  intermediates for the MLP and attention blocks stay device-resident to cut
+  host↔device readback (a first device-residency slice). Both backends are
+  hand-written FFI with zero external crates and are exercised in CI.
+- **Tooling**: `vokra-cli` (`run` / `convert` / `bench`, with
+  `bench --backend cpu|metal|cuda` for GPU RTF), an offline `vokra-convert`,
+  a `vokra-eval` metrics crate, and true zero-copy `mmap` GGUF loading.
+
+Everything above holds Vokra's **zero-external-dependency** invariant: the
+resolved dependency graph contains only first-party `vokra-*` crates,
+enforced in CI.
 
 Public reference documents (Japanese):
 
@@ -65,9 +91,9 @@ indications only** ("目安"), not commitments.
 
 | Phase | Estimated duration | Focus |
 |---|---|---|
-| **v0.1 spike** (current) | 1.5-2 months | Rust scaffold, GGUF loader + `vokra.*` metadata, STFT/iSTFT/mel ops, Silero VAD, Whisper base, piper-plus native TTS, CPU backend (AVX2/NEON), C ABI, Unity demo, public repo + CI gates |
-| v0.1 MVP | 1.5-2.5 months | Silero VAD v5 + Whisper base official support; model-parity checkpoint right after release |
-| v0.5 | 2.5-4 months | Metal backend, CUDA backend start, Kokoro-82M, Whisper large-v3/turbo, OpenAI-compatible server API |
+| v0.1 spike | 1.5-2 months | Rust scaffold, GGUF loader + `vokra.*` metadata, STFT/iSTFT/mel ops, Silero VAD, Whisper base, piper-plus native TTS, CPU backend (AVX2/NEON), C ABI, Unity demo, public repo + CI gates — **done** |
+| v0.1 MVP | 1.5-2.5 months | K-quant loader, engine, streaming, resample, `vokra-cli` / `vokra-eval`, real 8-language G2P wiring, native CAM++ zero-shot cloning, `vokra-mmap` — **done** |
+| **v0.5** (current) | 2.5-4 months | Metal + CUDA backends (graph evaluator + per-model GPU dispatch; Whisper end-to-end on both, validated on M1 / RTX 4090), Whisper large-v3 conversion + tokenizer, device-residency (readback reduction), `bench --backend`. **In progress**; remaining: Kokoro-82M, server API, deeper device residency for large-v3 RTF |
 | v1.0 | 4-5 months | CUDA complete, Vulkan, CosyVoice2, Voxtral, RVV 1.0 baseline |
 | v1.5 | 4-5 months | WebGPU/WASM, Sesame CSM-1B, Moshi (full-duplex + AEC), all-platform official support complete |
 | v2.0 | 8+ months | CoreML (ANE) / QNN delegates, MCU tier re-evaluation |

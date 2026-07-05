@@ -22,6 +22,14 @@ Vokra は Unity / Godot / 商用組み込みを標的にするため、ライセ
 - **Piper（OHF-Voice/piper1-gpl）は非対応**（GPL-3.0 + eSpeak-NG 二重汚染）。**eSpeak-NG（GPL-3.0）も core 非対応**。
 - **BigVGAN は NVIDIA Source Code License-NC → 論文からスクラッチ再実装**（`NOTICE` §1）。
 
+## compliance gate（runtime 強制、オフライン監査を補完）
+
+`docs/license-audit.md` は**オフライン監査**だが、runtime も weight license を強制する。
+
+- `vokra-core/src/compliance/` の `CompliancePolicy` + `LicenseClass` gate が **GGUF の `vokra.provenance.*` metadata**（`weight_license` / `license` / `model_id`）を読み、**CC-BY-NC 等の NC weight を research flag なしでロード拒否**する（`VokraError` を返す）。
+- research weight（F5-TTS / Fish-Speech / EnCodec）は **research flag を明示的に立てたときのみ**解禁（`CompliancePolicy::with_research_license`、または config level が Research / Disabled）。既定（Standard）は拒否。
+- 新 weight を公式 model-zoo に足すときは converter で `vokra.provenance.weight_license` に正準クラスを焼き込み、gate が読めるようにする（オフライン監査行と一致させる）。
+
 ## codec / DSP
 
 - **soxr / rubberband（GPL）禁止** → speexdsp(BSD) / pocketfft(BSD-3) 設計ベースの自前実装。AEC は SpeexDSP(BSD) / WebRTC AEC3 port。
@@ -30,7 +38,7 @@ Vokra は Unity / Godot / 商用組み込みを標的にするため、ライセ
 
 1. `docs/license-audit.md` に行追加（**code と weight 双方**のライセンス・商用可否・学習データ由来）。
 2. attribution / 配布条件があれば `NOTICE` に追記（credit 要・NC・scratch-reimpl の別を明記）。
-3. TTS/VC なら `docs/legal-compliance.md`（EU AI Act Art.50 / SB 942、AudioSeal default ON、C2PA）も通す → skill `add-speech-model`。
+3. TTS/VC なら `docs/legal-compliance.md`（EU AI Act Art.50 / SB 942）も通す → skill `add-speech-model`。**watermark / C2PA 埋め込み（FR-CP-01/02）は 2026-07-04 依頼者ドロップで未実装**（`WatermarkConfig` は config 面のみ・`backend_status`=Deferred）。weight license は上記 compliance gate で強制。
 4. ゲートを走らせる:
 
 ```

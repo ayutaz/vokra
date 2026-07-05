@@ -16,13 +16,19 @@
 
 - **Rust コア + C ABI**（cbindgen で生成）により Unity / Godot その他のエンジン・言語バインディングへ対応。Apache-2.0 で GPL/LGPL 依存はありません。
 - GGUF（`vokra.*` 音声メタデータ chunk 付き）と safetensors からの **weight 直接ロード**。**ランタイムは ONNX グラフを一切ロードしません** — ONNX モデルはオフライン変換ツールでのみ扱うため、ランタイムは onnx/protobuf 依存を持ちません。
-- **音声ファーストなオペレータ集合**: STFT/iSTFT（window/hop/norm/RFFT を明示的な属性として持つ）、mel filterbank、リサンプリング、vocoder chain、Flow Matching サンプラー、コーデックデコード、beam search / CTC / RNN-T、ストリーミング KV cache、VAD、音声強調（AEC/denoise）、話者埋め込み、F0 抽出、音声電子透かし（EU AI Act Article 50 対応準備）。
-- **CPU を第一級バックエンドに**（x86-64 は SSE2 ベースラインから AVX2/AVX-512/AMX まで、ARM64 は NEON から SVE/SME まで、ランタイムディスパッチ付き）。その後、GPU/NPU アクセラレーションを段階的に追加: Metal、CUDA、Vulkan、WebGPU、CoreML、QNN。
+- **音声ファーストなオペレータ集合**: STFT/iSTFT（window/hop/norm/RFFT を明示的な属性として持つ）、mel filterbank、リサンプリング、vocoder chain、Flow Matching サンプラー、コーデックデコード、beam search / CTC / RNN-T、ストリーミング KV cache、VAD、音声強調（AEC/denoise）、話者埋め込み、F0 抽出。CC-BY-NC ライセンスの weight を research フラグなしではデフォルト経路から締め出す weight ライセンス compliance ゲートを備えます（音声電子透かしは設計済みですが未有効化）。
+- **CPU を第一級バックエンドに**（x86-64 は SSE2 ベースラインから AVX2/AVX-512/AMX まで、ARM64 は NEON から SVE/SME まで、ランタイムディスパッチ付き）。その後、GPU/NPU アクセラレーションを段階的に追加: Metal、CUDA、Vulkan、WebGPU、CoreML、QNN。**Metal と CUDA バックエンドは実装済みで実機検証済み**（下記ステータス参照）。GPU 対応は zero-dependency の手書き FFI（`metal-rs` / `cudarc` 等の binding crate を使わない）で、未対応 op を CPU に暗黙フォールバックせず明示エラーにします。
 - **全プラットフォームがスコープ**: Windows / macOS / Linux / Android / iOS / Web、および x86-64・ARM64 サーバ。ロードマップが段階化しているのは各バックエンドが公式アクセラレーションを*いつ*得るかであって、あるプラットフォームを*対応するか否か*ではありません。
 
 ## ステータスと設計文書
 
-本プロジェクトは **v0.1 spike** フェーズ（Rust scaffold、GGUF ローダー、STFT/iSTFT/mel op、Silero VAD、Whisper base、piper-plus native TTS、CPU バックエンド、C ABI、Unity デモ）にあります。まだ本番利用できる段階ではありません。
+v0.1 spike（Rust scaffold、GGUF ローダー、STFT/iSTFT/mel op、Silero VAD、Whisper base、piper-plus native TTS、CPU バックエンド、C ABI、Unity デモ）は完了し、v0.5（GPU）が進行中です。まだ本番利用できる段階ではありませんが、以下は実装・検証済みです:
+
+- **CPU 音声スタック**: Silero VAD、Whisper（base〜large-v3、正しい転写のための detokenizer を埋め込み）、実 8 言語 G2P を配線した piper-plus native TTS、zero-shot 声クローン用の native CAM++ 話者エンコーダ。いずれも参照ランタイム（onnxruntime / PyTorch）に対し FP32 `atol = 0.01` で数値一致を検証済み。
+- **GPU バックエンド**（`vokra-backend-metal` / `vokra-backend-cuda`）: データ運搬グラフ評価器 + モデル単位のディスパッチ seam。**Whisper が Metal（Apple M1 で検証）と CUDA（RTX 4090 で検証）の両方で e2e 動作**し、greedy 出力が CPU 経路と完全一致。MLP・attention ブロックの GPU 中間を device 常駐にして host↔device readback を削減（device 常駐の第一スライス）。両バックエンドとも外部 crate ゼロの手書き FFI で、CI でも検証しています。
+- **ツール**: `vokra-cli`（`run` / `convert` / `bench`、GPU RTF 計測用の `bench --backend cpu|metal|cuda`）、オフライン `vokra-convert`、`vokra-eval` メトリクス crate、true zero-copy `mmap` GGUF ローディング。
+
+上記はすべて Vokra の **zero-external-dependency** 不変条件を保っています（解決後の依存グラフは first-party の `vokra-*` crate のみ、CI で強制）。
 
 公開リファレンス文書（日本語）:
 
@@ -37,9 +43,10 @@
 
 | フェーズ | 見積り期間 | 焦点 |
 |---|---|---|
-| **v0.1 spike**（現在） | 1.5〜2ヶ月 | Rust scaffold、GGUF ローダー + `vokra.*` メタデータ、STFT/iSTFT/mel op、Silero VAD、Whisper base、piper-plus native TTS、CPU バックエンド（AVX2/NEON）、C ABI、Unity デモ、リポジトリ public 化 + CI ゲート |
-| v0.1 MVP | 1.5〜2.5ヶ月 | Silero VAD v5 + Whisper base の公式サポート。リリース直後にモデル parity チェックポイント |
-| v0.5 | 2.5〜4ヶ月 | Metal バックエンド、CUDA バックエンド着手、Kokoro-82M、Whisper large-v3/turbo、OpenAI 互換サーバ API |
+| v0.1 spike | 1.5〜2ヶ月 | Rust scaffold、GGUF ローダー + `vokra.*` メタデータ、STFT/iSTFT/mel op、Silero VAD、Whisper base、piper-plus native TTS、CPU バックエンド（AVX2/NEON）、C ABI、Unity デモ、リポジトリ public 化 + CI ゲート — **完了** |
+| v0.1 MVP | 1.5〜2.5ヶ月 | K-quant ローダー、engine、streaming、resample、`vokra-cli` / `vokra-eval`、実 8 言語 G2P 配線、native CAM++ zero-shot クローン、`vokra-mmap` — **完了** |
+| **v0.5**（現在） | 2.5〜4ヶ月 | Metal + CUDA バックエンド（グラフ評価器 + モデル単位の GPU ディスパッチ。Whisper が両方で e2e、M1 / RTX 4090 で検証）、Whisper large-v3 変換 + tokenizer、device 常駐（readback 削減）、`bench --backend`。**進行中**。残: Kokoro-82M、サーバ API、large-v3 RTF 向けの深い device 常駐 |
+| v1.0 | 4〜5ヶ月 | CUDA 完成、Vulkan、CosyVoice2、Voxtral、RVV 1.0 ベースライン |
 | v1.0 | 4〜5ヶ月 | CUDA 完成、Vulkan、CosyVoice2、Voxtral、RVV 1.0 ベースライン |
 | v1.5 | 4〜5ヶ月 | WebGPU/WASM、Sesame CSM-1B、Moshi（full-duplex + AEC）、全プラットフォーム公式サポート完了 |
 | v2.0 | 8ヶ月以上 | CoreML（ANE）/ QNN delegate、MCU tier 再評価 |

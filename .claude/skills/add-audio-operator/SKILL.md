@@ -7,10 +7,13 @@ description: Vokra の audio-dialect オペレータ（STFT/vocoder/flow sampler
 
 「最新技術のオペレータ化」は Vokra の中核目標。op は**属性で挙動を明示**し、CPU を第一級 backend として必ず動かす。単一事実源は `CLAUDE.md`「音声特化オペレータ」節。
 
-## 1. 定義は `vokra-ops`、カーネルは `vokra-backend-cpu`
+## 1. 定義は `vokra-ops`、カーネルは各 backend（CPU 必須 / Metal / CUDA）
 
 - op の型・属性・shape 検査・reference forward を `crates/vokra-ops/` に定義。
-- 実カーネル（SIMD）は `crates/vokra-backend-cpu/`。**runtime dispatch**（x86-64: SSE2 baseline→AVX2+FMA 主力、ARM64: NEON baseline→dotprod/i8mm）。RTF 最優先で `unsafe` + SIMD intrinsics を積極使用してよいが、**各 `unsafe` に `// SAFETY:` 必須**（`undocumented_unsafe_blocks = deny`）。公開 API 境界は safe に保つ。`unsafe` 許可は `vokra-ops` / `vokra-backend-cpu` / `vokra-capi` のみ（crate root で `#![allow(unsafe_code)]`）。
+- 実カーネル（SIMD）は `crates/vokra-backend-cpu/`。**CPU は第一級 backend で必須**（全 backend の下限）。**runtime dispatch**（x86-64: SSE2 baseline→AVX2+FMA 主力、ARM64: NEON baseline→dotprod/i8mm）。RTF 最優先で `unsafe` + SIMD intrinsics を積極使用してよいが、**各 `unsafe` に `// SAFETY:` 必須**（`undocumented_unsafe_blocks = deny`）。公開 API 境界は safe に保つ。`unsafe` 許可 crate は `vokra-ops` / `vokra-backend-cpu` / `vokra-backend-metal` / `vokra-backend-cuda` / `vokra-capi` / `vokra-mmap`（crate root で `#![allow(unsafe_code)]`。`vokra-core` は unsafe-free）。
+- **GPU backend が要るなら 2 経路のどちらかに配線**（非対応 op は必ず明示 `UnsupportedOp`、**silent CPU fallback 禁止** = FR-EX-08）:
+  - **グラフ経路** — `vokra-core` の `Backend::eval_op`（default = `UnsupportedOp`）を `vokra-backend-metal` / `vokra-backend-cuda` が対応 op だけ override（`run_graph`（`vokra-core/src/runtime/`）が topo 順に駆動）。
+  - **imperative 経路（モデル hot op）** — `vokra-models/src/compute.rs` の `Compute` seam（Cpu/Metal/Cuda を enum dispatch、`HotOp` に列挙 = GEMM/GEMV/softmax/layer_norm/gelu/conv1d、`for_backend` が model 必要 op を全網羅しなければ `UnsupportedOp`）。Metal=objc_msgSend、CUDA=libcuda/libnvrtc の手書き生 FFI。metal/cuda は**既定 OFF の first-party optional feature** ゆえ zero-dep 不変条件は不変。音声 op 自体（STFT/vocoder 等）の GPU カーネルは現状ほぼ未配線で CPU 実行、GPU 化するなら上記いずれかに追加する。
 
 ## 2. 属性を明示的に設計する（暗黙のデフォルト禁止）
 

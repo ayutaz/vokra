@@ -1,6 +1,6 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
-**最終更新**: 2026-07-04（M2-13: research flag enforcement 機構の実装を §3 末尾に追記 / M1-02: GGUF K-quant + safetensors runtime direct-load のフォーマット参照を追記 / M0-08: §3 CAM++ 行を Vokra が実際に変換対応した具体ソース `ayousanz/campplus-onnx`（上流 `iic/speech_campplus`）に更新）
+**最終更新**: 2026-07-04（M2-13: research flag enforcement 機構の実装を §3 末尾に追記 / M1-02: GGUF K-quant + safetensors runtime direct-load のフォーマット参照を追記 / M0-08: §3 CAM++ 行を Vokra が実際に変換対応した具体ソース `ayousanz/campplus-onnx`（上流 `iic/speech_campplus`）に更新 / 2026-07-06: §2・§6 の backend binding crate（cudarc/metal-rs）を「実装は不採用＝手書き生 FFI」に、§2/§5 G2P を実装済 `integrations/vokra-piper-g2p` に、§6 CUDA を no-silent-fallback（explicit `BackendUnavailable`）に現物実装と整合）
 **目的**: Vokra が依存するすべての Rust crate、モデル weight、音声 codec、vocoder、辞書、G2P、audio 前処理ライブラリのライセンスを列挙し、Apache 2.0 core との互換性、Unity/Godot Asset Store 配布可否、商用ゲーム組込可否を明示する。
 
 **運用**:
@@ -31,8 +31,8 @@
 | **std** | Apache 2.0 / MIT | Rust 標準 | ○ | |
 | **rayon** | Apache 2.0 / MIT | work-stealing thread pool | ○ | libomp/OpenMP は使わない |
 | **wgpu** | Apache 2.0 / MIT | WebGPU/Vulkan/Metal/DX12 backend | ○ | v0.1-v1.5 |
-| **cudarc** | Apache 2.0 / MIT | CUDA driver API bindings | ○ | cudart bundle しない、system install 検出のみ |
-| **metal-rs** | MIT | Metal API bindings | ○ | macOS/iOS backend |
+| **cudarc** | Apache 2.0 / MIT | CUDA driver API bindings | ○ | **実装は不採用** — CUDA backend は binding crate（cudarc/cust/rustacuda）を使わず、Driver API + NVRTC を手書き生 FFI で `dlopen`（`libcuda`/`libnvrtc`）実装（NFR-DS-02 zero-dep、`third_party/NVIDIA-EULA.md` Binding-crate note）。cudart/cudnn/cublas は bundle せず system install 検出のみ |
+| **metal-rs** | MIT | Metal API bindings | ○ | **実装は不採用** — Metal backend は binding crate（metal-rs/objc2/objc/core-foundation）を使わず、Obj-C/Metal を手書き生 FFI（`#[link(kind="framework")]`）実装（NFR-DS-02 zero-dep） |
 | **ash** | Apache 2.0 / MIT | Vulkan bindings | ○ | Android/Linux backend |
 | **safetensors** | Apache 2.0 | tensor loader (HF) | ○ | pickle 回避 |
 | **realfft** | MIT / Apache 2.0 | Rust FFT (pocketfft port) | ○ | FFTW3 (GPL) 排除 |
@@ -50,7 +50,7 @@
 | **cbindgen** | MPL-2.0 | C ABI ヘッダ生成 | ○ (build-only) | ビルド時のみ、成果物には含まれない |
 
 **未確認 / 要検討**:
-- **G2P Rust crate 選定**: piper-plus 独自 G2P を Vokra からも呼べる形にするか、あるいは `phonemizer-rs` (要ライセンス確認)、`phonikud` (要確認) を検討。**eSpeak-NG (GPL-3.0) は排除**
+- **G2P（実装済、M0）**: 実 8 言語 G2P は依頼者作 MIT crate `piper-plus-g2p`（piper-plus repo 内）を **out-of-workspace の opt-in 統合 crate `integrations/vokra-piper-g2p`**（root workspace 非 member・独自 `Cargo.lock`・git `rev` pin）から呼び出して提供。`piper-plus-g2p` の非 `vokra-*` 推移依存（jpreprocess/regex/serde 等）は zero-dep runtime（NFR-DS-02）に入らず、`vokra_piper_plus::Phonemizer` trait 境界で注入。text→音声 JA/EN 実動、**eSpeak-NG (GPL-3.0) 不使用**。in-runtime Rust 化・`phonemizer-rs`/`phonikud` は将来検討
 - **RVC 系 F0 抽出**: RMVPE (MIT) / FCPE (MIT) / CREPE (MIT) の Rust port が未成熟 → 自前実装 or Python 呼び出し (server 用途のみ)
 - **soxr resampler (LGPL)**: **不採用**、代替 `speexdsp resampler` (BSD) 相当を Rust で独自実装
 
@@ -153,7 +153,7 @@
 
 ## 5. G2P (Grapheme-to-Phoneme) 戦略 — レビュアー C/D 指摘 #5 対応
 
-**eSpeak-NG (GPL-3.0) を Vokra core から完全排除**する。以下の戦略で対応:
+**eSpeak-NG (GPL-3.0) を Vokra core から完全排除**する。**実装状況（M0）**: 実 8 言語 G2P は out-of-workspace の opt-in crate `integrations/vokra-piper-g2p`（`piper-plus-g2p` を git 依存、zero-dep runtime 非干渉、§2 参照）で提供済。以下は言語別の対応方針:
 
 | 言語 | 戦略 | ライセンス |
 |-----|-----|----------|
@@ -179,10 +179,10 @@
    - NVIDIA EULA: "installed only in a private (non-shared) directory location that is used only by the application"
    - Unity Asset Store の `Assets/Plugins/x64/*.dll` は "shared plugins directory" 解釈可能 → EULA 違反リスク
 
-2. **開発者側 install モデル**:
-   - `dlopen("libcuda.so")` / `LoadLibrary("nvcuda.dll")` で system install CUDA を実行時検出
-   - 検出失敗時は CPU/Vulkan にフォールバック
-   - `cudarc` は Rust binding として MIT/Apache 2.0、CUDA runtime そのものは NVIDIA proprietary
+2. **開発者側 install モデル**（M2-03 実装済、`crates/vokra-backend-cuda`）:
+   - `dlopen("libcuda.so.1")` / `LoadLibrary("nvcuda.dll")`（+ NVRTC `libnvrtc`）で system install CUDA を実行時検出
+   - 検出失敗時は **explicit `VokraError::BackendUnavailable`**（silent CPU fallback しない、FR-EX-08）。CPU 選択は呼び出し側の明示的判断
+   - **binding crate（cudarc/cust/rustacuda）は不採用**、Driver API + NVRTC を手書き生 FFI で dlopen（NFR-DS-02、`third_party/NVIDIA-EULA.md`）。CUDA runtime そのものは NVIDIA proprietary
 
 3. **医療 / 車載 / 軍事向け SKU 分離**:
    - NVIDIA EULA: "not tested or certified by NVIDIA for use in critical applications such as avionics, navigation, autonomous vehicle applications, military, medical, life support"

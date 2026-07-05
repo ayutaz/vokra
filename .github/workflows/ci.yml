@@ -144,5 +144,11 @@ jobs:
           tool: cargo-audit
       - name: cargo-audit (RustSec advisories)
         run: cargo audit
+      - name: Zero-dependency invariant (NFR-DS-02)
+        # The strict "only vokra-* crates in Cargo.lock" check. cargo-deny's
+        # `bans` allows permitted third-party crates; this forbids ALL of them.
+        # It runs in the pre-commit hook too, but the hook is bypassable
+        # (`--no-verify`), so the invariant must also be enforced here.
+        run: bash scripts/check-zero-deps.sh
       - name: Forbidden symbols / dependencies check
         run: bash scripts/check-forbidden-symbols.sh

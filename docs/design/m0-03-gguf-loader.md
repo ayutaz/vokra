@@ -45,7 +45,7 @@
 
 - チケット提案は `memmap2` だったが、M0 実装は **`std::fs::read` 全読み + `&[u8]` slice 貸出**とした。理由: (a) `vokra-core` は workspace lint で `unsafe_code = "deny"`（NFR-RL-07 の「コアは 100% safe Rust」）であり、mmap は unsafe API（`memmap2::Mmap::map` は unsafe fn）を要する、(b) M0 は runtime 外部依存ゼロを維持した（`cargo tree -p vokra-core` = 依存ゼロ、NFR-DS-02 の最強形）。
 - ロードパスはヘッダ + metadata + tensor info のパース後、weight 本体はパース済みバッファからの **コピーなし slice 貸出**（offset は境界チェック済み）。
-- **真の mmap（cold start ほぼゼロ = FR-LD-01 / NFR-PF-11）は M1-02 の followup**: unsafe 境界の設計（専用 micro-crate か、gguf::reader モジュール限定 allow か）と `memmap2`（MIT/Apache、NFR-LC-02 許可リスト内）導入をセットで判断する。`gguf/reader.rs` モジュール docs に同旨を明記済み。
+- **真の mmap（cold start ほぼゼロ = FR-LD-01 / NFR-PF-11）は当初 M1-02 の followup としたが、専用 micro-crate `vokra-mmap` として実装済み（2026-07-06 追記）**: unsafe 境界は「専用 micro-crate」案を採用（`gguf::reader` モジュール限定 allow は不採用）。seam は `vokra-core` の `pub trait AsBytes: Send + Sync`（`fn bytes(&self) -> &[u8]`）+ `GgufFile::from_external(Box<dyn AsBytes>)` で、`vokra-core` は unsafe-free のまま owned buffer と mmap を同一パーサ・同一 zero-copy accessor で処理する（内部 `GgufBytes::{Owned, External}`）。`vokra-mmap` は read-only mapping `Mmap`（`impl AsBytes`、`Send + Sync`、`Drop` で解放）と `open_gguf(path) -> Result<GgufFile, GgufError>` を提供。**`memmap2` は導入せず**、POSIX `mmap`/`munmap`（`PROT_READ | MAP_PRIVATE`）・Win32 `CreateFileMappingW`/`MapViewOfFile`/`UnmapViewOfFile`/`CloseHandle`（`PAGE_READONLY`/`FILE_MAP_READ`）を `unsafe extern` ブロックで自前宣言 — std が既に libc/kernel32 をリンクするため Cargo.lock に外部 crate を追加せず zero-dep（NFR-DS-02）を維持する（memmap2 採用案より強い保証）。`gguf/reader.rs` モジュール docs も実装済みの記述に更新済み。
 
 ## 6. ローカル実行検証の結果（T13/T16/T17、2026-07-02 実測）
 

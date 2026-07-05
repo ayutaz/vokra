@@ -73,11 +73,21 @@ cargo build --profile release-min -p vokra-capi      # WRONG: breaks the FFI fir
 
 Every script and CI job builds the runtime with `release`, never `release-min`.
 
-## Feature-gating (future, coordinated with other WPs)
+## Feature-gating (off by default)
 
 Optional-but-heavy pieces should sit behind cargo features that are **off by
 default**, so the default and mobile builds stay lean:
 
+* **GPU backends** (Metal / CUDA — GPU execution). Already implemented as the
+  first-party, zero-external-dep crates `vokra-backend-metal` /
+  `vokra-backend-cuda`, gated **off by default** behind `vokra-models`'s `metal`
+  / `cuda` cargo features. The shipped/gated `libvokra` cdylib is built
+  `-p vokra-capi` with **default features only** — `vokra-capi` adds no
+  `metal`/`cuda` passthrough and `check-binary-size.sh` passes no `--features`,
+  so the gated artifact is **CPU-backend-only** and its size is **unchanged** by
+  the addition of the two GPU backend crates. Enabling a GPU feature grows *that*
+  build, not the gated default artifact (and adds no external crate — NFR-DS-02
+  still holds, both backends are hand-written FFI with no binding crate).
 * **Watermarking** (AudioSeal / C2PA — M1-07). If a C2PA path ever depends on the
   `c2pa-rs` crate (Apache-2.0), it **must** be an opt-in feature so the default
   build + CI stay zero-dependency (NFR-DS-02). Coordinate the feature name with
