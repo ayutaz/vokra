@@ -109,15 +109,18 @@ pub(crate) fn gguf_tensor_name(hf_name: &str) -> String {
 /// invented (frontend bit-exactness, reviewer C note #2). Sources:
 ///
 /// - `openai/whisper` `whisper/audio.py`: `SAMPLE_RATE = 16000`,
-///   `N_FFT = 400`, `HOP_LENGTH = 160`, `N_MELS = 80` (base),
+///   `N_FFT = 400`, `HOP_LENGTH = 160`, `N_MELS = 80` (base/small/medium) or
+///   **128 (large-v3)** — `n_mels` is passed in from the checkpoint's conv1
+///   shape, NOT hardcoded, so the spec matches the model (the runtime rejects a
+///   GGUF whose `vokra.frontend.n_mels` disagrees with `vokra.whisper.n_mels`).
 ///   `window = torch.hann_window(N_FFT)`, `torch.stft(..., center=True)`.
 /// - `win_length` defaults to `n_fft` in `torch.stft`; `pad_mode` defaults to
 ///   `"reflect"` in `torch.stft`.
-/// - The mel filterbank is `librosa.filters.mel(sr=16000, n_fft=400,
-///   n_mels=80)`; librosa defaults give Slaney normalization, non-HTK,
-///   `fmin = 0.0`, `fmax = sr/2 = 8000.0`.
+/// - The mel filterbank is `librosa.filters.mel(sr=16000, n_fft=400, n_mels)`;
+///   librosa defaults give Slaney normalization, non-HTK, `fmin = 0.0`,
+///   `fmax = sr/2 = 8000.0`.
 /// - Whisper applies no DC-offset removal and no pre-emphasis.
-pub(crate) fn frontend_spec() -> FrontendSpec {
+pub(crate) fn frontend_spec(n_mels: u32) -> FrontendSpec {
     FrontendSpec {
         n_fft: 400,
         hop: 160,
@@ -127,12 +130,23 @@ pub(crate) fn frontend_spec() -> FrontendSpec {
         htk_mode: false,
         fmin: 0.0,
         fmax: 8000.0,
-        n_mels: 80,
+        n_mels,
         pad_mode: "reflect".to_owned(),
         dc_offset_removal: false,
         pre_emphasis: 0.0,
         sample_rate: 16_000,
     }
+}
+
+/// Reads `n_mels` from the checkpoint's `model.encoder.conv1.weight`
+/// (`[d_model, n_mels, 3]`) — 80 for base/small/medium, 128 for large-v3. `0`
+/// when the tensor is absent (a degenerate checkpoint the runtime then rejects).
+fn checkpoint_n_mels(st: &SafetensorsFile) -> u32 {
+    st.tensors()
+        .iter()
+        .find(|t: &&SafeTensorInfo| t.name == "model.encoder.conv1.weight")
+        .and_then(|t| t.shape.get(1).copied())
+        .unwrap_or(0) as u32
 }
 
 /// Converts a Whisper base safetensors buffer into a populated GGUF builder.
@@ -151,7 +165,10 @@ pub(crate) fn convert(
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    frontend_spec().write_into(&mut b);
+    // The front-end spec's n_mels MUST come from the checkpoint (80 base / 128
+    // large-v3), matching the hparams written by `write_hparams`; a hardcoded 80
+    // makes the runtime's bit-exact front-end check reject a large-v3 GGUF.
+    frontend_spec(checkpoint_n_mels(&st)).write_into(&mut b);
     write_hparams(&mut b, &st);
 
     for t in st.tensors() {
@@ -288,8 +305,11 @@ mod tests {
             file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
             Some("whisper")
         );
+        // The written spec's n_mels tracks the checkpoint's conv1 shape
+        // ([_, n_mels, _] → 2 here), not a hardcoded 80 — this is what lets a
+        // 128-mel large-v3 checkpoint convert with a matching front-end spec.
         let spec = FrontendSpec::from_gguf(&file).unwrap();
-        assert_eq!(spec, frontend_spec());
+        assert_eq!(spec, frontend_spec(2));
 
         // Both tensors present verbatim, bytes intact.
         assert_eq!(file.tensors().len(), 2);
