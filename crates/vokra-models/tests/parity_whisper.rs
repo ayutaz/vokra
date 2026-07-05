@@ -454,3 +454,92 @@ fn whisper_metal_e2e_matches_cpu() {
         metal_tokens.len()
     );
 }
+
+// --- CUDA e2e parity (Phase 4) ----------------------------------------------
+
+/// Full Whisper on CUDA: the encoder + decoder + greedy decode routed through
+/// `Compute::Cuda` must match the `Compute::Cpu` path (the onnxruntime-agreeing
+/// reference) within the FP32 bound (NFR-QL-01, `atol = 0.01`), and the greedy
+/// token sequence must match **exactly**. Doubly gated — needs the whisper GGUF
+/// (`VOKRA_WHISPER_GGUF`) **and** a real NVIDIA GPU (dlopen'd `libcuda` + a
+/// device) — and skips cleanly (never a silent CPU substitute, FR-EX-08) when
+/// either is absent. This crate is authored on an Apple Mac with no NVIDIA GPU,
+/// so it skips here; it runs for real on the **vast.ai RTX 4090** (M2-03-T25):
+///
+/// ```text
+/// VOKRA_WHISPER_GGUF=whisper-base.gguf cargo test -p vokra-models --features cuda whisper_cuda_e2e -- --nocapture
+/// ```
+#[cfg(all(feature = "cuda", any(unix, windows)))]
+#[test]
+fn whisper_cuda_e2e_matches_cpu() {
+    use vokra_core::BackendKind;
+    use vokra_models::{Compute, HotOp};
+
+    let Some(model) = load_model() else {
+        eprintln!("skip: set VOKRA_WHISPER_GGUF for the full CUDA e2e");
+        return;
+    };
+    // The complete Whisper hot-op set (CUDA must now cover all six).
+    let hot = [
+        HotOp::Gemm,
+        HotOp::Gemv,
+        HotOp::Softmax,
+        HotOp::LayerNorm,
+        HotOp::Gelu,
+        HotOp::Conv1d,
+    ];
+    // Device-gated: build a fully-covering CUDA dispatcher, or skip on an
+    // explicit BackendUnavailable (no driver/device) — never a silent CPU fall
+    // back. A coverage `UnsupportedOp` here would be a real bug (Phase 4 covers
+    // every op), so it is NOT swallowed.
+    let cuda = match Compute::for_backend(BackendKind::Cuda, &hot) {
+        Ok(c) => c,
+        Err(vokra_core::VokraError::BackendUnavailable(e)) => {
+            eprintln!("skip CUDA whisper e2e (no CUDA device): {e}");
+            return;
+        }
+        Err(e) => panic!("unexpected error building a fully-covered CUDA dispatcher: {e}"),
+    };
+    assert_eq!(cuda.backend_name(), "cuda");
+
+    let pcm = read_f32("input_pcm.f32");
+
+    // 1) Encoder parity — same weights, two backends (conv stem + attention).
+    let cpu_enc = model.encode_pcm(&pcm).expect("cpu encode");
+    let cuda_enc = model.encode_pcm_with(&cuda, &pcm).expect("cuda encode");
+    assert_close(
+        &cuda_enc.hidden,
+        &cpu_enc.hidden,
+        "whisper encoder (CUDA vs CPU)",
+    );
+
+    // 2) Decoder logits parity — full forward over the forced prefix.
+    let prefix = model.config().decoder_start_ids.clone();
+    let mut cpu_dec = model.decoder(&cpu_enc).expect("cpu decoder");
+    let mut cuda_dec = model
+        .decoder_with_backend(&cuda_enc, BackendKind::Cuda)
+        .expect("cuda decoder");
+    let cpu_logits = cpu_dec.step(&prefix).expect("cpu decoder step");
+    let cuda_logits = cuda_dec.step(&prefix).expect("cuda decoder step");
+    assert_close(
+        &cuda_logits,
+        &cpu_logits,
+        "whisper decoder logits (CUDA vs CPU)",
+    );
+
+    // 3) Greedy token sequence — must match the CPU decode exactly (the strongest
+    // end-to-end check; argmax gaps dwarf the sub-atol per-logit differences).
+    let eot = model.config().eot;
+    cpu_dec.reset();
+    let cpu_tokens = greedy_decode(&mut cpu_dec, &prefix, eot, 64).expect("cpu greedy");
+    cuda_dec.reset();
+    let cuda_tokens = greedy_decode(&mut cuda_dec, &prefix, eot, 64).expect("cuda greedy");
+    assert_eq!(
+        cuda_tokens, cpu_tokens,
+        "greedy token sequence (CUDA vs CPU) must be identical"
+    );
+    eprintln!(
+        "[parity] whisper CUDA e2e: {} greedy tokens match CPU exactly",
+        cuda_tokens.len()
+    );
+}

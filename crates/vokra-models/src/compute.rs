@@ -99,16 +99,27 @@ impl HotOp {
 
     /// Whether the CUDA backend's imperative [`Compute`] seam covers this op.
     ///
-    /// Kept in sync with the `Be::Cuda` arms of the [`Compute`] methods below.
-    /// This M2-03 foundation slice ships one CUDA kernel — the FP32 GEMM — so
-    /// only [`HotOp::Gemm`] is covered; GEMV / softmax / layer_norm / gelu /
-    /// conv1d are follow-on tickets (T10–T14). Consequently a CUDA `Compute` is
-    /// only ever built for a Gemm-only model (CAM++, piper-plus); a model that
-    /// needs an uncovered op is an explicit `UnsupportedOp` at
-    /// [`Compute::for_backend`], never a silent CPU fall back (FR-EX-08).
+    /// Kept in sync with the `Be::Cuda` arms of the [`Compute`] methods below;
+    /// the `cuda_coverage_is_consistent` test pins the two together. As of
+    /// Phase 4 (M2-03 T10-T14) the CUDA backend has a real NVRTC-compiled kernel
+    /// for every hot op (GEMM plus gemv / softmax / layer_norm / gelu / conv1d),
+    /// so the whole Whisper set runs on the GPU through this seam. (The *graph*
+    /// backend `CudaBackend::supports` / `eval_op` is a separate path and still
+    /// covers only `MatMul` — the two coverage surfaces are independent.)
     #[cfg(all(feature = "cuda", any(unix, windows)))]
     fn covered_by_cuda(self) -> bool {
-        matches!(self, HotOp::Gemm)
+        // Phase 4 complete: GEMM (M2-03 slice) plus the five T10-T14 kernels
+        // (gemv / softmax / layer_norm / gelu / conv1d) are all real CUDA kernels
+        // on `CudaContext`, so every HotOp is covered.
+        matches!(
+            self,
+            HotOp::Gemm
+                | HotOp::Gemv
+                | HotOp::Softmax
+                | HotOp::LayerNorm
+                | HotOp::Gelu
+                | HotOp::Conv1d
+        )
     }
 }
 
@@ -133,12 +144,13 @@ enum Be {
     /// Metal GPU context. Covers every [`HotOp`] (Phase 4).
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     Metal(vokra_backend_metal::MetalContext),
-    /// CUDA GPU context. Covers [`HotOp::Gemm`] only in this M2-03 slice; the
-    /// other hot ops are follow-on tickets (T10–T14), so a `Compute::Cuda` is
-    /// only ever built for a Gemm-only model (guarded by [`Compute::for_backend`]
-    /// via [`HotOp::covered_by_cuda`]).
+    /// CUDA GPU context. Covers every [`HotOp`] (Phase 4). `Box`ed because
+    /// `CudaContext` embeds the whole `CudaDriver` (≈20 dlopen'd fn pointers) by
+    /// value, which would make the `Be` enum's inline size dwarf the other arms
+    /// (`clippy::large_enum_variant`); the heap alloc is negligible — a `Compute`
+    /// is built once per model entry, after a far costlier dlopen + NVRTC compile.
     #[cfg(all(feature = "cuda", any(unix, windows)))]
-    Cuda(vokra_backend_cuda::CudaContext),
+    Cuda(Box<vokra_backend_cuda::CudaContext>),
 }
 
 impl Compute {
@@ -196,7 +208,7 @@ impl Compute {
                     )));
                 }
                 Ok(Compute {
-                    be: Be::Cuda(vokra_backend_cuda::CudaContext::new()?),
+                    be: Be::Cuda(Box::new(vokra_backend_cuda::CudaContext::new()?)),
                 })
             }
             other => Err(VokraError::BackendUnavailable(format!(
@@ -260,7 +272,7 @@ impl Compute {
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             Be::Metal(ctx) => ctx.gemv_f32(m, k, a, x, bias, out),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
-            Be::Cuda(_) => Err(cuda_op_uncovered("gemv_f32")),
+            Be::Cuda(ctx) => ctx.gemv_f32(m, k, a, x, bias, out),
         }
     }
 
@@ -277,7 +289,7 @@ impl Compute {
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             Be::Metal(ctx) => ctx.softmax_f32(input, out, rows, cols),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
-            Be::Cuda(_) => Err(cuda_op_uncovered("softmax_f32")),
+            Be::Cuda(ctx) => ctx.softmax_f32(input, out, rows, cols),
         }
     }
 
@@ -299,7 +311,7 @@ impl Compute {
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             Be::Metal(ctx) => ctx.layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
-            Be::Cuda(_) => Err(cuda_op_uncovered("layer_norm_f32")),
+            Be::Cuda(ctx) => ctx.layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
         }
     }
 
@@ -310,7 +322,7 @@ impl Compute {
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             Be::Metal(ctx) => ctx.gelu_f32(x, out),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
-            Be::Cuda(_) => Err(cuda_op_uncovered("gelu_f32")),
+            Be::Cuda(ctx) => ctx.gelu_f32(x, out),
         }
     }
 
@@ -339,24 +351,11 @@ impl Compute {
                 input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
             ),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
-            Be::Cuda(_) => Err(cuda_op_uncovered("conv1d_f32")),
+            Be::Cuda(ctx) => ctx.conv1d_f32(
+                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
+            ),
         }
     }
-}
-
-/// The explicit error for a hot op the CUDA foundation slice does not yet cover
-/// (everything but `Gemm`). A `Compute::Cuda` is only ever built for a Gemm-only
-/// model — [`Compute::for_backend`] rejects an uncovered request up front via
-/// [`HotOp::covered_by_cuda`] — so these dispatch arms are unreachable in
-/// practice, but they keep every `match &self.be` exhaustive and honest: an
-/// uncovered op is an explicit [`VokraError::UnsupportedOp`], never a silent CPU
-/// fall back (FR-EX-08).
-#[cfg(all(feature = "cuda", any(unix, windows)))]
-fn cuda_op_uncovered(op: &str) -> VokraError {
-    VokraError::UnsupportedOp(format!(
-        "cuda backend covers only Gemm in this M2-03 slice; `{op}` is a follow-on ticket \
-         (T10–T14). Vokra does not silently run it on the CPU (FR-EX-08)."
-    ))
 }
 
 /// Builds a boxed [`Backend`] for the graph evaluator ([`vokra_core::run_graph`])
@@ -483,42 +482,47 @@ mod tests {
         }
     }
 
-    /// On a CUDA build the coverage gate is enforced. This M2-03 foundation
-    /// slice covers only `Gemm`, so: `covered_by_cuda` is `Gemm`-only; a model
-    /// needing an uncovered op is an explicit `UnsupportedOp` (checked before any
-    /// device touch, so it holds even off a GPU); and a Gemm-only request either
-    /// builds (device present) or reports explicit device unavailability — never
-    /// a silent CPU fall back (FR-EX-08 / NFR-RL-06). The device branch is
-    /// exercised on the vast.ai RTX 4090 (M2-03-T25); here it skips.
+    /// On a CUDA build, coverage is enforced. As of Phase 4 (M2-03 T10-T14) the
+    /// CUDA backend covers the **whole** Whisper hot-op set, so `for_backend`
+    /// never returns `UnsupportedOp` for it — it either builds (device present)
+    /// or reports an explicit device unavailability (no silent CPU fall back,
+    /// FR-EX-08 / NFR-RL-06). The device branch is exercised on the vast.ai
+    /// RTX 4090 (M2-03-T25); here it skips.
     #[cfg(all(feature = "cuda", any(unix, windows)))]
     #[test]
-    fn cuda_coverage_is_gemm_only() {
-        assert!(HotOp::Gemm.covered_by_cuda());
+    fn cuda_coverage_is_consistent() {
+        // Every hot op is covered (this pins `covered_by_cuda` to the wired
+        // CUDA method arms — all now dispatch to a `CudaContext` kernel).
         for op in [
+            HotOp::Gemm,
             HotOp::Gemv,
             HotOp::Softmax,
             HotOp::LayerNorm,
             HotOp::Gelu,
             HotOp::Conv1d,
         ] {
-            assert!(
-                !op.covered_by_cuda(),
-                "{op:?} unexpectedly CUDA-covered in this slice"
-            );
+            assert!(op.covered_by_cuda(), "{op:?} unexpectedly NOT CUDA-covered");
         }
-        // A model needing an uncovered op is rejected up front (no device work).
-        assert!(matches!(
-            Compute::for_backend(BackendKind::Cuda, &[HotOp::Gemm, HotOp::Softmax]),
-            Err(VokraError::UnsupportedOp(_))
-        ));
-        // A Gemm-only request builds on a GPU host or is an explicit
-        // unavailability error off one — never a coverage error, never CPU.
-        match Compute::for_backend(BackendKind::Cuda, &[HotOp::Gemm]) {
+
+        // Whisper's full set is therefore a covered request: it either builds
+        // (device present) or fails with an explicit device error — never a
+        // coverage `UnsupportedOp`, never a silent CPU fall back (FR-EX-08).
+        let whisper = [
+            HotOp::Gemm,
+            HotOp::Gemv,
+            HotOp::Softmax,
+            HotOp::LayerNorm,
+            HotOp::Gelu,
+            HotOp::Conv1d,
+        ];
+        match Compute::for_backend(BackendKind::Cuda, &whisper) {
             Ok(c) => assert_eq!(c.backend_name(), "cuda"),
             Err(VokraError::BackendUnavailable(_)) => {
-                eprintln!("no CUDA device; Gemm-only build path is device-gated (run on vast.ai)");
+                eprintln!(
+                    "no CUDA device; full-coverage build path is device-gated (run on vast.ai)"
+                );
             }
-            Err(e) => panic!("unexpected error for a covered CUDA request: {e}"),
+            Err(e) => panic!("unexpected error for a fully-covered CUDA request: {e}"),
         }
     }
 }
