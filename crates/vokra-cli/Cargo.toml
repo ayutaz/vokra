@@ -20,5 +20,13 @@ vokra-core.workspace = true
 vokra-models.workspace = true
 vokra-convert = { path = "../vokra-convert" }
 
+# Optional GPU backends for `bench --backend metal|cuda` (RTF on a real GPU).
+# Both are first-party `vokra-*` crates pulled through `vokra-models`, so the
+# zero-external-dependency invariant (NFR-DS-02) is preserved; they are OFF by
+# default so the stock CLI stays CPU-only and cross-builds everywhere.
+[features]
+metal = ["vokra-models/metal"]
+cuda = ["vokra-models/cuda"]
+
 [lints]
 workspace = true

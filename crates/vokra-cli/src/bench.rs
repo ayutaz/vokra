@@ -19,6 +19,8 @@
 use std::process::ExitCode;
 use std::time::Instant;
 
+use vokra_core::BackendKind;
+
 use crate::engine::{self, ModelTask};
 use crate::report::{self, BenchReport, RegressionCheck};
 use crate::wav;
@@ -47,6 +49,22 @@ struct BenchArgs {
     warmup: usize,
     format: Format,
     baseline: Option<String>,
+    /// Backend the model's hot ops run on (ASR only today). Default CPU; `metal`
+    /// / `cuda` require the CLI built with the matching feature, else inference
+    /// fails with an explicit unsupported-backend error (no silent CPU fallback).
+    backend: BackendKind,
+}
+
+/// Parses a `--backend` value. The variants always exist (core enum); whether
+/// they are *usable* depends on the CLI's compiled features — an unavailable
+/// backend fails loudly at inference, never silently on CPU.
+fn parse_backend(v: &str) -> Result<BackendKind, String> {
+    match v {
+        "cpu" => Ok(BackendKind::Cpu),
+        "metal" => Ok(BackendKind::Metal),
+        "cuda" => Ok(BackendKind::Cuda),
+        other => Err(format!("unknown --backend `{other}` (cpu | metal | cuda)")),
+    }
 }
 
 /// A finished bench run: the report plus the optional regression verdict.
@@ -70,6 +88,8 @@ OPTIONS:
     --warmup <n>         untimed warm-up iterations [default 3]
     --format kv|json     report format              [default kv]
     --baseline <path>    a previous JSON report; a >5% RTF regression exits non-zero
+    --backend <name>     cpu | metal | cuda — ASR hot ops backend [default cpu]
+                         (metal/cuda need the CLI built with that feature)
     -h, --help           print this help
 ";
 
@@ -81,6 +101,7 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
     let mut warmup: usize = 3;
     let mut format = Format::Kv;
     let mut baseline: Option<String> = None;
+    let mut backend = BackendKind::Cpu;
 
     let mut i = 0;
     while i < args.len() {
@@ -124,6 +145,11 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
                 );
                 i += 2;
             }
+            "--backend" => {
+                let v = args.get(i + 1).ok_or("--backend requires a value")?;
+                backend = parse_backend(v)?;
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -139,6 +165,7 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
         warmup,
         format,
         baseline,
+        backend,
     })
 }
 
@@ -164,7 +191,7 @@ where
 
 /// Loads the model, times the task and (optionally) checks the baseline.
 fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
-    let (session, task) = engine::load_session(&args.model)?;
+    let (session, task) = engine::load_session_with_backend(&args.model, args.backend)?;
 
     let (task_name, audio_seconds, samples) = match task {
         ModelTask::Vad => {
@@ -371,6 +398,7 @@ mod tests {
             warmup: 1,
             format: Format::Kv,
             baseline: None,
+            backend: BackendKind::Cpu,
         };
         let outcome = execute(&a).expect("bench runs");
         let _ = std::fs::remove_file(&wav_path);

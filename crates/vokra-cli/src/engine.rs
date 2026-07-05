@@ -38,8 +38,19 @@ const ARCH_PIPER_PLUS: &str = "piper-plus-mb-istft-vits2";
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
 pub(crate) fn load_session(path: &str) -> Result<(Session, ModelTask), String> {
+    load_session_with_backend(path, BackendKind::Cpu)
+}
+
+/// As [`load_session`], but runs the model's hot ops on `backend` (CPU / Metal /
+/// CUDA). Only the ASR (Whisper) path is backend-parameterised today; VAD/TTS
+/// stay on the CPU. A backend that does not cover the model's op set surfaces an
+/// explicit error at inference time (no silent CPU fall back, FR-EX-08).
+pub(crate) fn load_session_with_backend(
+    path: &str,
+    backend: BackendKind,
+) -> Result<(Session, ModelTask), String> {
     let session = Session::from_file(path)
-        .with_backend(BackendKind::Cpu)
+        .with_backend(backend)
         .map_err(|e| e.to_string())?;
 
     // Own the arch string so the immutable borrow of `session` ends before the
@@ -53,7 +64,9 @@ pub(crate) fn load_session(path: &str) -> Result<(Session, ModelTask), String> {
 
     match arch.as_str() {
         ARCH_WHISPER => {
-            let asr = WhisperAsr::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+            let asr = WhisperAsr::from_gguf(session.gguf())
+                .map_err(|e| e.to_string())?
+                .with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
         ARCH_SILERO_VAD => {
