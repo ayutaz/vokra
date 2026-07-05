@@ -356,6 +356,53 @@ impl Compute {
             ),
         }
     }
+
+    /// Fused MLP `fc2(gelu(fc1(x)))` — the Phase-5 device-residency slice.
+    ///
+    /// `x` is `[t, d]`; `fc1` maps `d → ffn` (`fc1_w` is `[d, ffn]`, bias
+    /// `[ffn]`); `fc2` maps `ffn → d` (`fc2_w` is `[ffn, d]`, bias `[d]`); `out`
+    /// is `[t, d]`. `mlp_h` / `mlp_a` are the two `[t, ffn]` intermediates.
+    ///
+    /// On the **CPU** arm this is the identical three-kernel sequence
+    /// (`gemm_f32` → `gelu_f32` → `gemm_f32`, into `mlp_h` / `mlp_a`) the
+    /// pre-fusion `whisper::nn::mlp_into` ran, so it is **bit-for-bit** the
+    /// pre-seam result (the parity suites stay green). On the **Metal / CUDA**
+    /// arms the same three kernels run in ONE GPU submission with the two
+    /// `[t, ffn]` intermediates resident on the device — only `out` is read back
+    /// — which is bit-identical to three separate GPU ops but pays one readback /
+    /// one sync instead of three. `mlp_h` / `mlp_a` are unused on the GPU arms
+    /// (the device holds those intermediates); the caller still sizes them so the
+    /// CPU arm and the zero-alloc reserve are unaffected.
+    #[allow(clippy::too_many_arguments)] // fused-MLP operand set (two Linears + scratch + dims)
+    pub fn mlp_f32(
+        &self,
+        t: usize,
+        d: usize,
+        ffn: usize,
+        x: &[f32],
+        fc1_w: &[f32],
+        fc1_bias: Option<&[f32]>,
+        fc2_w: &[f32],
+        fc2_bias: Option<&[f32]>,
+        mlp_h: &mut [f32],
+        mlp_a: &mut [f32],
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => {
+                // Bit-identical to the former `mlp_into`: fc1 GEMM → GELU → fc2
+                // GEMM through the same CPU kernels, in the same order, into the
+                // caller's scratch.
+                kernels::gemm_f32(t, ffn, d, x, fc1_w, fc1_bias, mlp_h)?;
+                kernels::gelu_f32(mlp_h, mlp_a)?;
+                kernels::gemm_f32(t, d, ffn, mlp_a, fc2_w, fc2_bias, out)
+            }
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.mlp_f32(t, d, ffn, x, fc1_w, fc1_bias, fc2_w, fc2_bias, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(ctx) => ctx.mlp_f32(t, d, ffn, x, fc1_w, fc1_bias, fc2_w, fc2_bias, out),
+        }
+    }
 }
 
 /// Builds a boxed [`Backend`] for the graph evaluator ([`vokra_core::run_graph`])

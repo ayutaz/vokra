@@ -307,3 +307,166 @@ fn kernels_reject_bad_shapes_explicitly() {
         .is_err()
     );
 }
+
+// ---- Phase-5: fused device-resident MLP -------------------------------------
+
+/// The fused `MetalContext::mlp_f32` (fc1 GEMM → GELU → fc2 GEMM in ONE command
+/// buffer, the `[t, ffn]` intermediates kept device-resident, one readback of
+/// `out`) must be **bit-identical** to running the same three GPU kernels
+/// per-op (`gemm_f32` → `gelu_f32` → `gemm_f32`, three readbacks) — same
+/// kernels, same order, same launch geometry — and must match the CPU
+/// three-kernel reference within the FP32 bound. `d` is the fc1-in / fc2-out
+/// width, `ffn` the fc1-out / fc2-in width.
+#[test]
+fn mlp_fused_matches_sequential_and_cpu() {
+    let ctx = ctx_or_skip!("mlp");
+    // (t, d, ffn): tiny, ragged non-16 multiples, and a Whisper-tiny-ish block.
+    let shapes = [
+        (1usize, 2usize, 4usize),
+        (3, 8, 16),
+        (7, 5, 9),
+        (16, 64, 128),
+        (30, 40, 50),
+    ];
+    let mut worst_seq = 0.0f32;
+    let mut worst_cpu = 0.0f32;
+    for &(t, d, ffn) in &shapes {
+        for with_bias in [false, true] {
+            let x = rand_vec(1, t * d);
+            let fc1_w = rand_vec(2, d * ffn);
+            let fc2_w = rand_vec(3, ffn * d);
+            let fc1_b = rand_vec(4, ffn);
+            let fc2_b = rand_vec(5, d);
+            let (b1, b2) = if with_bias {
+                (Some(fc1_b.as_slice()), Some(fc2_b.as_slice()))
+            } else {
+                (None, None)
+            };
+
+            // Fused GPU (device-resident intermediates, one readback).
+            let mut fused = vec![0.0f32; t * d];
+            ctx.mlp_f32(t, d, ffn, &x, &fc1_w, b1, &fc2_w, b2, &mut fused)
+                .expect("fused mlp");
+
+            // Per-op GPU (same kernels, three readbacks) — the bit-identical ref.
+            let mut h = vec![0.0f32; t * ffn];
+            ctx.gemm_f32(t, ffn, d, &x, &fc1_w, b1, &mut h).unwrap();
+            let mut a = vec![0.0f32; t * ffn];
+            ctx.gelu_f32(&h, &mut a).unwrap();
+            let mut seq = vec![0.0f32; t * d];
+            ctx.gemm_f32(t, d, ffn, &a, &fc2_w, b2, &mut seq).unwrap();
+
+            // CPU three-kernel reference.
+            let mut hc = vec![0.0f32; t * ffn];
+            cpu::gemm_f32(t, ffn, d, &x, &fc1_w, b1, &mut hc).unwrap();
+            let mut ac = vec![0.0f32; t * ffn];
+            cpu::gelu_f32(&hc, &mut ac).unwrap();
+            let mut cpu_out = vec![0.0f32; t * d];
+            cpu::gemm_f32(t, d, ffn, &ac, &fc2_w, b2, &mut cpu_out).unwrap();
+
+            let d_seq = max_abs_diff(&fused, &seq);
+            let d_cpu = max_abs_diff(&fused, &cpu_out);
+            assert_eq!(
+                d_seq, 0.0,
+                "fused vs per-op GPU must be bit-identical (t={t} d={d} ffn={ffn} bias={with_bias}); max|Δ|={d_seq:.3e}"
+            );
+            assert!(
+                d_cpu <= ATOL,
+                "fused GPU vs CPU max|Δ| {d_cpu:.3e} exceeds atol {ATOL} (t={t} d={d} ffn={ffn} bias={with_bias})"
+            );
+            worst_seq = worst_seq.max(d_seq);
+            worst_cpu = worst_cpu.max(d_cpu);
+        }
+    }
+    eprintln!(
+        "Metal fused MLP parity: vs per-op GPU max|Δ| = {worst_seq:.3e} (bit-identical), vs CPU max|Δ| = {worst_cpu:.3e} (atol = {ATOL})"
+    );
+}
+
+/// Reports the readback / sync reduction the fusion buys at a realistic Whisper
+/// MLP-block shape (`t = n_audio_ctx = 1500`, `d = 512`, `ffn = 2048` — base),
+/// and re-checks bit-identical parity at that scale. Fused issues ONE
+/// `waitUntilCompleted` + ONE readback per call; the per-op path issues THREE of
+/// each and additionally round-trips the two `[t, ffn]` (= 1500×2048 = 12 MB)
+/// intermediates through the shared-buffer boundary. Wall time is printed (not a
+/// hard gate — it is environment-sensitive), so run with `-- --nocapture`.
+#[test]
+fn mlp_fused_reduces_readback_at_whisper_scale() {
+    let ctx = ctx_or_skip!("mlp scale");
+    let (t, d, ffn) = (1500usize, 512usize, 2048usize);
+    let x = rand_vec(11, t * d);
+    let fc1_w = rand_vec(12, d * ffn);
+    let fc2_w = rand_vec(13, ffn * d);
+    let fc1_b = rand_vec(14, ffn);
+    let fc2_b = rand_vec(15, d);
+    let iters: u32 = 20;
+
+    // Correctness at scale: fused == per-op GPU, bit-for-bit.
+    let mut fused = vec![0.0f32; t * d];
+    ctx.mlp_f32(
+        t,
+        d,
+        ffn,
+        &x,
+        &fc1_w,
+        Some(&fc1_b),
+        &fc2_w,
+        Some(&fc2_b),
+        &mut fused,
+    )
+    .expect("fused mlp (scale)");
+    let mut h = vec![0.0f32; t * ffn];
+    ctx.gemm_f32(t, ffn, d, &x, &fc1_w, Some(&fc1_b), &mut h)
+        .unwrap();
+    let mut a = vec![0.0f32; t * ffn];
+    ctx.gelu_f32(&h, &mut a).unwrap();
+    let mut seq = vec![0.0f32; t * d];
+    ctx.gemm_f32(t, d, ffn, &a, &fc2_w, Some(&fc2_b), &mut seq)
+        .unwrap();
+    assert_eq!(
+        max_abs_diff(&fused, &seq),
+        0.0,
+        "fused vs per-op GPU must be bit-identical at Whisper scale"
+    );
+
+    // Fused: 1 readback + 1 sync per call.
+    let t0 = std::time::Instant::now();
+    for _ in 0..iters {
+        let mut o = vec![0.0f32; t * d];
+        ctx.mlp_f32(
+            t,
+            d,
+            ffn,
+            &x,
+            &fc1_w,
+            Some(&fc1_b),
+            &fc2_w,
+            Some(&fc2_b),
+            &mut o,
+        )
+        .unwrap();
+    }
+    let fused_dt = t0.elapsed();
+
+    // Per-op: 3 readbacks + 3 syncs, plus the two [t, ffn] intermediate crossings.
+    let t1 = std::time::Instant::now();
+    for _ in 0..iters {
+        let mut h = vec![0.0f32; t * ffn];
+        ctx.gemm_f32(t, ffn, d, &x, &fc1_w, Some(&fc1_b), &mut h)
+            .unwrap();
+        let mut a = vec![0.0f32; t * ffn];
+        ctx.gelu_f32(&h, &mut a).unwrap();
+        let mut o = vec![0.0f32; t * d];
+        ctx.gemm_f32(t, d, ffn, &a, &fc2_w, Some(&fc2_b), &mut o)
+            .unwrap();
+    }
+    let perop_dt = t1.elapsed();
+
+    eprintln!(
+        "Metal fused MLP (t={t} d={d} ffn={ffn}, {iters} iters): \
+         fused {fused_dt:?} ({:?}/it, 1 readback + 1 sync) vs \
+         per-op {perop_dt:?} ({:?}/it, 3 readbacks + 3 syncs)",
+        fused_dt / iters,
+        perop_dt / iters,
+    );
+}

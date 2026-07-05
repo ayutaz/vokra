@@ -1008,6 +1008,226 @@ impl MetalContext {
         read_back(&out_buf, out)
     }
 
+    // ---- Phase-5 fusion: device-resident MLP (readback elimination) ----------
+
+    /// Fused MLP `fc2(gelu(fc1(x)))` on the GPU with the two `[t, ffn]`
+    /// intermediates **resident on the device** — the Phase-5 readback-
+    /// elimination slice.
+    ///
+    /// `x` is `[t, d]`; `fc1` maps `d → ffn` (`fc1_w` is `[d, ffn]`, optional
+    /// bias `[ffn]`); `fc2` maps `ffn → d` (`fc2_w` is `[ffn, d]`, optional bias
+    /// `[d]`); `out` is `[t, d]`. It runs the very same three kernels
+    /// (`vokra_gemm_f32` → `vokra_gelu_f32` → `vokra_gemm_f32`) the per-op
+    /// [`Self::gemm_f32`] / [`Self::gelu_f32`] path runs, in the same order and
+    /// with the same launch geometry, so the result is **bit-identical** to three
+    /// separate calls — but the `[t, ffn]` intermediates `h` and `a` are never
+    /// copied back to the host, and the whole chain is ONE command buffer with
+    /// ONE `waitUntilCompleted` and ONE readback (of `out`) instead of three of
+    /// each.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on any shape mismatch or a zero dimension;
+    /// [`VokraError::BackendUnavailable`] on a Metal buffer / command failure.
+    #[allow(clippy::too_many_arguments)] // fused-MLP operand set (two Linears + dims)
+    pub fn mlp_f32(
+        &self,
+        t: usize,
+        d: usize,
+        ffn: usize,
+        x: &[f32],
+        fc1_w: &[f32],
+        fc1_bias: Option<&[f32]>,
+        fc2_w: &[f32],
+        fc2_bias: Option<&[f32]>,
+        out: &mut [f32],
+    ) -> Result<()> {
+        validate_mlp(t, d, ffn, x, fc1_w, fc1_bias, fc2_w, fc2_bias, out)?;
+        // Bracket the GPU work in an autorelease pool (as the per-op methods do).
+        // SAFETY: `objc_autoreleasePoolPush` returns a token consumed by the one
+        // matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_mlp(t, d, ffn, x, fc1_w, fc1_bias, fc2_w, fc2_bias, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    /// Fused-MLP body: copy the five inputs H2D, allocate the two `[t, ffn]`
+    /// intermediates **device-resident** (never read back) plus the `[t, d]`
+    /// output, encode the three passes (fc1 GEMM → GELU → fc2 GEMM) into ONE
+    /// command buffer, commit + wait ONCE, and read back only `out`. Runs inside
+    /// `mlp_f32`'s autorelease pool; shapes are already validated.
+    #[allow(clippy::too_many_arguments)] // fused-MLP operand set (two Linears + dims)
+    fn run_mlp(
+        &self,
+        t: usize,
+        d: usize,
+        ffn: usize,
+        x: &[f32],
+        fc1_w: &[f32],
+        fc1_bias: Option<&[f32]>,
+        fc2_w: &[f32],
+        fc2_bias: Option<&[f32]>,
+        out: &mut [f32],
+    ) -> Result<()> {
+        // Inputs copied H2D into shared storage (a failed alloc `?`-returns;
+        // already-built `OwnedBuf`s release on drop).
+        let x_buf = self.new_buffer_from_slice(x)?;
+        let fc1_w_buf = self.new_buffer_from_slice(fc1_w)?;
+        let dummy = [0.0f32];
+        let fc1_bias_buf = self.new_buffer_from_slice(fc1_bias.unwrap_or(&dummy))?;
+        let fc2_w_buf = self.new_buffer_from_slice(fc2_w)?;
+        let fc2_bias_buf = self.new_buffer_from_slice(fc2_bias.unwrap_or(&dummy))?;
+
+        // The two `[t, ffn]` intermediates live only on the GPU: uninitialised
+        // shared buffers the kernels write and read but that are NEVER copied
+        // back to the host (the readback this slice exists to eliminate). `out`
+        // is the single buffer read back.
+        let inter = checked_mul(t, ffn, "mlp t*ffn")?;
+        let h_buf = self.new_buffer_output(inter)?; // fc1 output [t, ffn]
+        let a_buf = self.new_buffer_output(inter)?; // gelu output [t, ffn]
+        let out_buf = self.new_buffer_output(out.len())?; // [t, d]
+
+        let fc1_dims = GemmDims {
+            m: t as u32,
+            n: ffn as u32,
+            k: d as u32,
+            has_bias: u32::from(fc1_bias.is_some()),
+        };
+        let gelu_dims = GeluDims { n: inter as u32 };
+        let fc2_dims = GemmDims {
+            m: t as u32,
+            n: d as u32,
+            k: ffn as u32,
+            has_bias: u32::from(fc2_bias.is_some()),
+        };
+
+        // One command buffer for the whole chain.
+        // SAFETY: `queue` is valid for the context's lifetime; `commandBuffer`
+        // returns an autoreleased command buffer drained by `mlp_f32`'s pool.
+        let cmd = unsafe { sys::send_id(self.queue, sys::sel(b"commandBuffer\0")) };
+        if cmd.is_null() {
+            return Err(VokraError::BackendUnavailable(
+                "mlp: MTLCommandQueue commandBuffer returned nil".to_owned(),
+            ));
+        }
+
+        // Pass 1: h = x[t,d] · fc1_w[d,ffn] (+bias) — GEMM (grid = N×M, 16×16).
+        let (fc1_grid, fc1_tg) = grid_2d(ffn, t);
+        self.encode_pass(
+            cmd,
+            self.gemm_pipeline,
+            &[&x_buf, &fc1_w_buf, &fc1_bias_buf, &h_buf],
+            (&fc1_dims as *const GemmDims).cast::<c_void>(),
+            size_of::<GemmDims>(),
+            fc1_grid,
+            fc1_tg,
+            "mlp fc1",
+        )?;
+        // Pass 2: a = gelu(h) — element-wise (1-D grid over t*ffn).
+        let (g_grid, g_tg) = grid_1d(inter);
+        self.encode_pass(
+            cmd,
+            self.gelu_pipeline,
+            &[&h_buf, &a_buf],
+            (&gelu_dims as *const GeluDims).cast::<c_void>(),
+            size_of::<GeluDims>(),
+            g_grid,
+            g_tg,
+            "mlp gelu",
+        )?;
+        // Pass 3: out = a[t,ffn] · fc2_w[ffn,d] (+bias) — GEMM (grid = N×M).
+        let (fc2_grid, fc2_tg) = grid_2d(d, t);
+        self.encode_pass(
+            cmd,
+            self.gemm_pipeline,
+            &[&a_buf, &fc2_w_buf, &fc2_bias_buf, &out_buf],
+            (&fc2_dims as *const GemmDims).cast::<c_void>(),
+            size_of::<GemmDims>(),
+            fc2_grid,
+            fc2_tg,
+            "mlp fc2",
+        )?;
+
+        // Commit the whole chain and wait ONCE, then surface any GPU-side error.
+        // SAFETY: `cmd` is the valid command buffer encoded above; `commit` then
+        // `waitUntilCompleted` submit and block; `error` is read after completion
+        // (no silent success).
+        unsafe {
+            sys::send_void(cmd, sys::sel(b"commit\0"));
+            sys::send_void(cmd, sys::sel(b"waitUntilCompleted\0"));
+            let cmd_err = sys::send_id(cmd, sys::sel(b"error\0"));
+            if !cmd_err.is_null() {
+                let detail = error_description(cmd_err);
+                return Err(VokraError::BackendUnavailable(format!(
+                    "mlp command buffer failed: {detail}"
+                )));
+            }
+        }
+
+        // Single readback of the final output; `h`/`a` stay resident and drop.
+        read_back(&out_buf, out)
+    }
+
+    /// Encodes ONE compute pass into `cmd` **without** committing or waiting: a
+    /// fresh compute encoder binds `buffers` at indices `0..buffers.len()`, sets
+    /// `dims` (a `constant` struct) at `buffers.len()` via `setBytes:`,
+    /// dispatches `grid` threadgroups of `tg`, and ends. The fused MLP
+    /// ([`Self::mlp_f32`]) chains three of these into one command buffer, then
+    /// commits + waits once. Each pass is its own encoder over hazard-tracked
+    /// shared buffers, so Metal orders a later pass's reads after an earlier
+    /// pass's writes (fc1 → gelu → fc2 see each other's outputs) with no host
+    /// round-trip. Distinct from [`Self::dispatch_compute`], which owns the whole
+    /// command-buffer lifecycle for a single per-op kernel (left untouched).
+    #[allow(clippy::too_many_arguments)] // cmd + pipeline + buffers + dims + grid/tg + label
+    fn encode_pass(
+        &self,
+        cmd: Id,
+        pipeline: Id,
+        buffers: &[&OwnedBuf],
+        dims: *const c_void,
+        dims_len: usize,
+        grid: MtlSize,
+        tg: MtlSize,
+        what: &str,
+    ) -> Result<()> {
+        // SAFETY: `cmd` is a valid command buffer from this context's queue;
+        // `computeCommandEncoder` returns an autoreleased encoder (drained by the
+        // caller's pool); `pipeline` is one of the context's compiled pipelines;
+        // each `buffers[i]` is a valid MTLBuffer bound at index `i`; `dims` points
+        // to `dims_len` readable bytes matching the kernel's `constant` struct at
+        // index `buffers.len()`; the two `MtlSize`s are passed per AAPCS64.
+        unsafe {
+            let enc = sys::send_id(cmd, sys::sel(b"computeCommandEncoder\0"));
+            if enc.is_null() {
+                return Err(VokraError::BackendUnavailable(format!(
+                    "{what}: MTLCommandBuffer computeCommandEncoder returned nil"
+                )));
+            }
+            sys::send_void_id(enc, sys::sel(b"setComputePipelineState:\0"), pipeline);
+            let set_buffer = sys::sel(b"setBuffer:offset:atIndex:\0");
+            for (i, buf) in buffers.iter().enumerate() {
+                sys::send_set_buffer(enc, set_buffer, buf.0, 0, i);
+            }
+            sys::send_set_bytes(
+                enc,
+                sys::sel(b"setBytes:length:atIndex:\0"),
+                dims,
+                dims_len,
+                buffers.len(),
+            );
+            sys::send_dispatch(
+                enc,
+                sys::sel(b"dispatchThreadgroups:threadsPerThreadgroup:\0"),
+                grid,
+                tg,
+            );
+            sys::send_void(enc, sys::sel(b"endEncoding\0"));
+            Ok(())
+        }
+    }
+
     /// Encodes a compute pass: binds `buffers` at indices `0..buffers.len()`, sets
     /// `dims` (a `constant` struct) at index `buffers.len()` via `setBytes:`,
     /// dispatches `grid` threadgroups of `tg` threads, waits, and surfaces a
@@ -1403,4 +1623,38 @@ fn validate_conv1d(
         expect_len("conv1d bias", bias.len(), out_ch)?;
     }
     Ok(out_len)
+}
+
+/// Validates the fused-MLP shapes: `x` is `[t, d]`, `fc1_w` is `[d, ffn]` (bias
+/// `[ffn]`), `fc2_w` is `[ffn, d]` (bias `[d]`), `out` is `[t, d]` — the
+/// composition of the two GEMM validators the fused path chains, so a mis-shaped
+/// call is an explicit `InvalidArgument` rather than a GPU fault.
+#[allow(clippy::too_many_arguments)] // fused-MLP operand set (two Linears + dims)
+fn validate_mlp(
+    t: usize,
+    d: usize,
+    ffn: usize,
+    x: &[f32],
+    fc1_w: &[f32],
+    fc1_bias: Option<&[f32]>,
+    fc2_w: &[f32],
+    fc2_bias: Option<&[f32]>,
+    out: &[f32],
+) -> Result<()> {
+    if t == 0 || d == 0 || ffn == 0 {
+        return Err(VokraError::InvalidArgument(
+            "mlp dimensions t, d, ffn must all be >= 1".to_owned(),
+        ));
+    }
+    expect_len("mlp x", x.len(), checked_mul(t, d, "mlp t*d")?)?;
+    expect_len("mlp fc1_w", fc1_w.len(), checked_mul(d, ffn, "mlp d*ffn")?)?;
+    if let Some(bias) = fc1_bias {
+        expect_len("mlp fc1_bias", bias.len(), ffn)?;
+    }
+    expect_len("mlp fc2_w", fc2_w.len(), checked_mul(ffn, d, "mlp ffn*d")?)?;
+    if let Some(bias) = fc2_bias {
+        expect_len("mlp fc2_bias", bias.len(), d)?;
+    }
+    expect_len("mlp out", out.len(), checked_mul(t, d, "mlp out t*d")?)?;
+    Ok(())
 }

@@ -87,6 +87,14 @@ pub(crate) fn add_assign(a: &mut [f32], b: &[f32]) -> Result<()> {
 /// The MLP sub-block `fc2(gelu(fc1(x)))` into `out` (sized here), using `mlp_h`
 /// / `mlp_a` (both sized here) as the `[t, ffn_dim]` intermediates. `x` is
 /// `[t, d]`, `out` is `[t, d]`.
+///
+/// Delegates to the fused [`Compute::mlp_f32`] seam (Phase 5): on the CPU arm
+/// that is the identical `fc1 GEMM → GELU → fc2 GEMM` sequence this used to run
+/// inline (bit-for-bit unchanged, still zero-alloc into the caller's scratch);
+/// on a GPU arm the three kernels run in one submission with the `[t, ffn]`
+/// intermediates resident on the device, so `mlp_h` / `mlp_a` are then written
+/// back only on the CPU arm — they are still sized here so the reserve and the
+/// CPU path are unaffected.
 #[allow(clippy::too_many_arguments)] // MLP block operands + the backend dispatcher
 pub(crate) fn mlp_into(
     compute: &Compute,
@@ -98,10 +106,33 @@ pub(crate) fn mlp_into(
     fc1: &Linear,
     fc2: &Linear,
 ) -> Result<()> {
-    linear_into(compute, mlp_h, x, t, fc1)?;
-    resize_zeroed(mlp_a, mlp_h.len());
-    compute.gelu_f32(mlp_h, mlp_a)?;
-    linear_into(compute, out, mlp_a, t, fc2)
+    let ffn = fc1.out_features;
+    let d = fc1.in_features;
+    if fc2.in_features != ffn || fc2.out_features != d {
+        return Err(VokraError::InvalidArgument(format!(
+            "mlp: fc2 ({}->{}) does not invert fc1 ({}->{})",
+            fc2.in_features, fc2.out_features, fc1.in_features, fc1.out_features
+        )));
+    }
+    // Size the two `[t, ffn]` intermediates and the `[t, d]` output (the same
+    // three `resize_zeroed` calls, to the same lengths, the former inline body
+    // ran via `linear_into` — so the zero-alloc reserve is unchanged).
+    resize_zeroed(mlp_h, t * ffn);
+    resize_zeroed(mlp_a, t * ffn);
+    resize_zeroed(out, t * d);
+    compute.mlp_f32(
+        t,
+        d,
+        ffn,
+        x,
+        &fc1.w_t,
+        fc1.bias.as_deref(),
+        &fc2.w_t,
+        fc2.bias.as_deref(),
+        mlp_h,
+        mlp_a,
+        out,
+    )
 }
 
 /// Projects the key/value inputs of an attention block into `k_out` / `v_out`

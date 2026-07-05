@@ -807,6 +807,206 @@ impl CudaContext {
         self.dtoh(&out_buf, out)
     }
 
+    // ---- Phase-5 fusion: device-resident MLP (readback elimination) ----------
+
+    /// Fused MLP `fc2(gelu(fc1(x)))` on the GPU with the two `[t, ffn]`
+    /// intermediates **resident on the device** — the Phase-5 readback-
+    /// elimination slice, mirroring [`vokra_backend_metal`]'s `mlp_f32`.
+    ///
+    /// `x` is `[t, d]`; `fc1` maps `d → ffn` (`fc1_w` is `[d, ffn]`, optional
+    /// bias `[ffn]`); `fc2` maps `ffn → d` (`fc2_w` is `[ffn, d]`, optional bias
+    /// `[d]`); `out` is `[t, d]`. It runs the very same three kernels
+    /// (`vokra_gemm_f32` → `vokra_gelu_f32` → `vokra_gemm_f32`) the per-op
+    /// [`Self::gemm_f32`] / [`Self::gelu_f32`] path runs, in the same order and
+    /// launch geometry, so the result is **bit-identical** to three separate
+    /// calls — but the `[t, ffn]` intermediates are never copied D2H, the three
+    /// launches share one stream, and there is ONE `cuStreamSynchronize` and ONE
+    /// D2H (of `out`) instead of three of each.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on any shape mismatch or a zero dimension;
+    /// [`VokraError::BackendUnavailable`] on a device allocation / launch failure.
+    #[allow(clippy::too_many_arguments)] // fused-MLP operand set (two Linears + dims)
+    pub fn mlp_f32(
+        &self,
+        t: usize,
+        d: usize,
+        ffn: usize,
+        x: &[f32],
+        fc1_w: &[f32],
+        fc1_bias: Option<&[f32]>,
+        fc2_w: &[f32],
+        fc2_bias: Option<&[f32]>,
+        out: &mut [f32],
+    ) -> Result<()> {
+        validate_mlp(t, d, ffn, x, fc1_w, fc1_bias, fc2_w, fc2_bias, out)?;
+        self.run_mlp(t, d, ffn, x, fc1_w, fc1_bias, fc2_w, fc2_bias, out)
+    }
+
+    /// Fused-MLP body: H2D the five inputs, allocate the two `[t, ffn]`
+    /// intermediates **device-resident** (never D2H'd) plus the `[t, d]` output,
+    /// launch the three kernels back to back on the one stream, synchronise ONCE,
+    /// and D2H only `out`. Shapes are already validated.
+    #[allow(clippy::too_many_arguments)] // fused-MLP operand set (two Linears + dims)
+    fn run_mlp(
+        &self,
+        t: usize,
+        d: usize,
+        ffn: usize,
+        x: &[f32],
+        fc1_w: &[f32],
+        fc1_bias: Option<&[f32]>,
+        fc2_w: &[f32],
+        fc2_bias: Option<&[f32]>,
+        out: &mut [f32],
+    ) -> Result<()> {
+        // Inputs H2D (a failed alloc `?`-returns; already-built DeviceBufs free
+        // on drop).
+        let x_buf = self.alloc(size_of_val(x))?;
+        self.htod(&x_buf, x)?;
+        let fc1_w_buf = self.alloc(size_of_val(fc1_w))?;
+        self.htod(&fc1_w_buf, fc1_w)?;
+        let dummy = [0.0f32];
+        let fc1_bias_slice = fc1_bias.unwrap_or(&dummy);
+        let fc1_bias_buf = self.alloc(size_of_val(fc1_bias_slice))?;
+        self.htod(&fc1_bias_buf, fc1_bias_slice)?;
+        let fc2_w_buf = self.alloc(size_of_val(fc2_w))?;
+        self.htod(&fc2_w_buf, fc2_w)?;
+        let fc2_bias_slice = fc2_bias.unwrap_or(&dummy);
+        let fc2_bias_buf = self.alloc(size_of_val(fc2_bias_slice))?;
+        self.htod(&fc2_bias_buf, fc2_bias_slice)?;
+
+        // The two `[t, ffn]` intermediates live only on the GPU: allocated device
+        // storage the kernels write and read but that is NEVER copied D2H (the
+        // readback this slice eliminates). `out` is the single buffer copied back.
+        let inter = checked_mul(t, ffn, "mlp t*ffn")?;
+        let inter_bytes = checked_mul(inter, size_of::<f32>(), "mlp t*ffn bytes")?;
+        let h_buf = self.alloc(inter_bytes)?; // fc1 output [t, ffn]
+        let a_buf = self.alloc(inter_bytes)?; // gelu output [t, ffn]
+        let out_buf = self.alloc(size_of_val(out))?; // [t, d]
+
+        // Scalars outlive the launches (their addresses go into `params`; the
+        // driver copies the values during each `cuLaunchKernel`, and the device
+        // buffers stay alive until the single synchronise below).
+        let t_u = t as c_uint;
+        let ffn_u = ffn as c_uint;
+        let d_u = d as c_uint;
+        let inter_u = inter as c_uint;
+        let has_bias1: c_uint = u32::from(fc1_bias.is_some());
+        let has_bias2: c_uint = u32::from(fc2_bias.is_some());
+
+        // GEMM arg order: (A, B, bias, C, M, N, K, has_bias).
+        // fc1: h = x[t,d] · fc1_w[d,ffn] (+bias) — M=t, N=ffn, K=d.
+        let mut p_fc1: [*mut c_void; 8] = [
+            ptr_arg(&x_buf.ptr),
+            ptr_arg(&fc1_w_buf.ptr),
+            ptr_arg(&fc1_bias_buf.ptr),
+            ptr_arg(&h_buf.ptr),
+            uint_arg(&t_u),
+            uint_arg(&ffn_u),
+            uint_arg(&d_u),
+            uint_arg(&has_bias1),
+        ];
+        // gelu: a = gelu(h) — n = t*ffn.
+        let mut p_gelu: [*mut c_void; 3] =
+            [ptr_arg(&h_buf.ptr), ptr_arg(&a_buf.ptr), uint_arg(&inter_u)];
+        // fc2: out = a[t,ffn] · fc2_w[ffn,d] (+bias) — M=t, N=d, K=ffn.
+        let mut p_fc2: [*mut c_void; 8] = [
+            ptr_arg(&a_buf.ptr),
+            ptr_arg(&fc2_w_buf.ptr),
+            ptr_arg(&fc2_bias_buf.ptr),
+            ptr_arg(&out_buf.ptr),
+            uint_arg(&t_u),
+            uint_arg(&d_u),
+            uint_arg(&ffn_u),
+            uint_arg(&has_bias2),
+        ];
+
+        // Launch geometries identical to the per-op path (GEMM 16×16 grid = N×M;
+        // gelu 1-D grid over t*ffn).
+        let fc1_grid = (
+            ffn.div_ceil(BLOCK as usize) as c_uint,
+            t.div_ceil(BLOCK as usize) as c_uint,
+            1,
+        );
+        let gelu_grid = (inter.div_ceil(BLOCK_1D as usize) as c_uint, 1, 1);
+        let fc2_grid = (
+            d.div_ceil(BLOCK as usize) as c_uint,
+            t.div_ceil(BLOCK as usize) as c_uint,
+            1,
+        );
+
+        // Three launches on the one stream, no intermediate synchronise.
+        self.launch_async(
+            self.gemm,
+            fc1_grid,
+            (BLOCK, BLOCK, 1),
+            &mut p_fc1,
+            "cuLaunchKernel(vokra_gemm_f32 mlp fc1)",
+        )?;
+        self.launch_async(
+            self.gelu,
+            gelu_grid,
+            (BLOCK_1D, 1, 1),
+            &mut p_gelu,
+            "cuLaunchKernel(vokra_gelu_f32 mlp gelu)",
+        )?;
+        self.launch_async(
+            self.gemm,
+            fc2_grid,
+            (BLOCK, BLOCK, 1),
+            &mut p_fc2,
+            "cuLaunchKernel(vokra_gemm_f32 mlp fc2)",
+        )?;
+
+        // ONE synchronise for the whole chain, then D2H only the final output.
+        // SAFETY: waits for the three launches on the owned stream to complete
+        // before the D2H below.
+        let sync = unsafe { (self.driver.cu_stream_synchronize)(self.stream) };
+        sys::check(&self.driver, sync, "cuStreamSynchronize")?;
+        self.dtoh(&out_buf, out)
+    }
+
+    /// Launches `func` on the context stream **without** synchronising — the
+    /// fused MLP path issues three launches back to back and synchronises the
+    /// stream once at the end. CUDA stream ordering guarantees each launch sees
+    /// the previous launch's device writes (fc1 → gelu → fc2), so the `[t, ffn]`
+    /// intermediates stay device-resident and are never copied D2H. Same launch
+    /// contract as [`Self::launch`], minus the trailing `cuStreamSynchronize`.
+    fn launch_async(
+        &self,
+        func: CUfunction,
+        grid: (c_uint, c_uint, c_uint),
+        block: (c_uint, c_uint, c_uint),
+        params: &mut [*mut c_void],
+        what: &str,
+    ) -> Result<()> {
+        let d = &self.driver;
+        // SAFETY: `func` is a loaded kernel function; the grid/block dims are all
+        // non-zero (validated t,d,ffn >= 1); `self.stream` is the owned stream;
+        // `params` holds one valid pointer per kernel argument, matching the
+        // kernel's signature and read by the driver during this launch; no dynamic
+        // shared memory (0) and no `extra` (null). No synchronise — the caller
+        // synchronises the stream once after chaining the launches.
+        let r = unsafe {
+            (d.cu_launch_kernel)(
+                func,
+                grid.0,
+                grid.1,
+                grid.2,
+                block.0,
+                block.1,
+                block.2,
+                0,
+                self.stream,
+                params.as_mut_ptr(),
+                core::ptr::null_mut(),
+            )
+        };
+        sys::check(d, r, what)
+    }
+
     /// Launches `func` with the given `grid`/`block` dims (all `>= 1`) and
     /// `params` (one pointer per kernel argument, in declared order, each alive
     /// across this synchronous call), then synchronises the stream and surfaces a
@@ -1276,4 +1476,39 @@ fn validate_conv1d(
         expect_len("conv1d bias", bias.len(), out_ch)?;
     }
     Ok(out_len)
+}
+
+/// Validates the fused-MLP shapes: `x` is `[t, d]`, `fc1_w` is `[d, ffn]` (bias
+/// `[ffn]`), `fc2_w` is `[ffn, d]` (bias `[d]`), `out` is `[t, d]` — the
+/// composition of the two GEMM validators the fused path chains (mirrors the
+/// Metal backend's `validate_mlp`), so a mis-shaped call is an explicit
+/// `InvalidArgument` rather than a device fault.
+#[allow(clippy::too_many_arguments)] // fused-MLP operand set (two Linears + dims)
+fn validate_mlp(
+    t: usize,
+    d: usize,
+    ffn: usize,
+    x: &[f32],
+    fc1_w: &[f32],
+    fc1_bias: Option<&[f32]>,
+    fc2_w: &[f32],
+    fc2_bias: Option<&[f32]>,
+    out: &[f32],
+) -> Result<()> {
+    if t == 0 || d == 0 || ffn == 0 {
+        return Err(VokraError::InvalidArgument(
+            "mlp dimensions t, d, ffn must all be >= 1".to_owned(),
+        ));
+    }
+    expect_len("mlp x", x.len(), checked_mul(t, d, "mlp t*d")?)?;
+    expect_len("mlp fc1_w", fc1_w.len(), checked_mul(d, ffn, "mlp d*ffn")?)?;
+    if let Some(bias) = fc1_bias {
+        expect_len("mlp fc1_bias", bias.len(), ffn)?;
+    }
+    expect_len("mlp fc2_w", fc2_w.len(), checked_mul(ffn, d, "mlp ffn*d")?)?;
+    if let Some(bias) = fc2_bias {
+        expect_len("mlp fc2_bias", bias.len(), d)?;
+    }
+    expect_len("mlp out", out.len(), checked_mul(t, d, "mlp out t*d")?)?;
+    Ok(())
 }
