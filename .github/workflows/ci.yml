@@ -77,6 +77,37 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
 
+  # GPU backend feature gates (M2-01 Metal / M2-03 CUDA). The default build/test
+  # jobs cover only the CPU path; this keeps the optional `metal` / `cuda`
+  # features compiling and lint-clean. Metal builds/tests on the Apple-silicon
+  # macOS runner (its GPU-backed parity tests actually execute); CUDA is
+  # build/lint only on Linux — GitHub runners have no NVIDIA GPU, so the dlopen'd,
+  # probe-gated device tests skip cleanly. Both are first-party `vokra-*` crates,
+  # so the zero-dependency invariant (checked in `license`) is unaffected.
+  gpu-backends:
+    name: gpu-backends
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            feature: metal
+          - os: ubuntu-latest
+            feature: cuda
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (--features ${{ matrix.feature }})
+        run: cargo build -p vokra-models -p vokra-cli --features ${{ matrix.feature }}
+      - name: Clippy (--features ${{ matrix.feature }})
+        run: cargo clippy -p vokra-models -p vokra-cli --features ${{ matrix.feature }} --all-targets -- -D warnings
+      - name: Test (--features ${{ matrix.feature }})
+        run: cargo test -p vokra-models --features ${{ matrix.feature }}
+
   # Numerical parity harness (NFR-QL-01). At M0 this runs the tests/parity
   # placeholder harness; real per-model parity tests are added by M0-04/05/06.
   parity:
