@@ -30,6 +30,8 @@ The checkpoint is fetched with ``WhisperForConditionalGeneration.from_pretrained
 are required.
 """
 
+from __future__ import annotations
+
 import json
 import struct
 import sys
@@ -53,6 +55,19 @@ MAX_NEW = 32  # greedy generation cap
 # WhisperProcessor.get_decoder_prompt_ids): sot / en / transcribe / notimestamps.
 PREFIX = [50258, 50259, 50359, 50363]
 EOT = 50257
+# Number of model-independent text tokens (ids 0..TEXT_VOCAB_LEN) in the Whisper
+# multilingual byte-level BPE vocab. Equals EOT and the special-token floor; the
+# first TEXT_VOCAB_LEN records are byte-identical across base..large-v3, so they
+# are also written to the vokra-convert resource that the GGUF converter embeds.
+TEXT_VOCAB_LEN = 50257
+# Where the converter loads the bundled text-vocab resource from (repo-relative).
+VOCAB_RESOURCE = (
+    Path(__file__).resolve().parents[2]
+    / "crates"
+    / "vokra-convert"
+    / "resources"
+    / "whisper_multilingual_text_vocab.bin"
+)
 
 
 def synth_pcm() -> np.ndarray:
@@ -73,28 +88,52 @@ def write_f32(path: Path, arr) -> None:
     path.write_bytes(a.tobytes())
 
 
-def dump_tokenizer(path: Path, tok: WhisperTokenizer) -> int:
-    """Writes the id -> bytes vocab blob (see whisper/tokenizer.rs)."""
+def dump_tokenizer(path: Path, tok: WhisperTokenizer, vocab_resource: Path | None = None) -> int:
+    """Writes the id -> bytes vocab blob (see whisper/tokenizer.rs).
+
+    When ``vocab_resource`` is given, the first ``TEXT_VOCAB_LEN`` records
+    (header-less) are ALSO written there — the model-independent text vocabulary
+    the GGUF converter embeds via ``include_bytes!`` (see
+    ``vokra-convert/src/models/whisper.rs``). Those records are byte-identical
+    across base..large-v3, so the resource can be regenerated from any
+    multilingual checkpoint.
+    """
     special_ids = set(tok.added_tokens_decoder.keys())
     n = len(tok)
     byte_decoder = tok.byte_decoder
     records = bytearray()
     records += struct.pack("<I", n)
+    text_vocab = bytearray()  # first TEXT_VOCAB_LEN records, no count header
     for i in range(n):
+        rec = bytearray()
         if i in special_ids:
-            records += struct.pack("<BH", 1, 0)
-            continue
-        s = tok.convert_ids_to_tokens(i)
-        try:
-            raw = bytes(byte_decoder[c] for c in s)
-        except KeyError:
-            # Any token whose chars fall outside the byte alphabet is treated as
-            # special (contributes no text) rather than guessed.
-            records += struct.pack("<BH", 1, 0)
-            continue
-        records += struct.pack("<BH", 0, len(raw))
-        records += raw
+            rec += struct.pack("<BH", 1, 0)
+        else:
+            s = tok.convert_ids_to_tokens(i)
+            try:
+                raw = bytes(byte_decoder[c] for c in s)
+            except KeyError:
+                # Any token whose chars fall outside the byte alphabet is treated
+                # as special (contributes no text) rather than guessed.
+                rec += struct.pack("<BH", 1, 0)
+            else:
+                rec += struct.pack("<BH", 0, len(raw))
+                rec += raw
+        records += rec
+        if i < TEXT_VOCAB_LEN:
+            text_vocab += rec
     path.write_bytes(records)
+
+    if vocab_resource is not None:
+        # The text floor must be exactly the first special id (== EOT); otherwise
+        # the +1-shift / embedding invariants in the converter would be wrong.
+        first_special = min(special_ids)
+        assert first_special == TEXT_VOCAB_LEN, (
+            f"text-vocab floor {TEXT_VOCAB_LEN} != first special id {first_special}"
+        )
+        vocab_resource.parent.mkdir(parents=True, exist_ok=True)
+        vocab_resource.write_bytes(text_vocab)
+
     return n
 
 
@@ -141,7 +180,7 @@ def main() -> None:
                 break
             tokens.append(nxt)
 
-    vocab_n = dump_tokenizer(out_dir / "tokenizer.bin", tok)
+    vocab_n = dump_tokenizer(out_dir / "tokenizer.bin", tok, vocab_resource=VOCAB_RESOURCE)
 
     # Detokenizer reference samples (ids -> text), including a multibyte case.
     samples = []
