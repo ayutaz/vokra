@@ -389,3 +389,350 @@ fn mlp_fused_matches_sequential_and_cpu() {
         "CUDA fused MLP parity: vs per-op GPU max|Δ| = {worst_seq:.3e} (bit-identical), vs CPU max|Δ| = {worst_cpu:.3e} (atol = {ATOL})"
     );
 }
+
+// ---- Phase-5: fused device-resident non-causal attention --------------------
+
+/// Per-op non-causal multi-head attention, replicating `whisper::nn::
+/// attention_from_kv_into`'s head loop **exactly** (q-proj GEMM → scale the whole
+/// `q` → per head {host gather qh/vh, host gather-transpose kh_t, scores GEMM,
+/// softmax, context GEMM, host scatter} → out-proj GEMM), with the GEMM / softmax
+/// supplied as closures — the CUDA twin of the Metal parity suite's helper.
+/// Passing the GPU (`ctx.*`) closures yields the bit-identical per-op reference
+/// the fused `attn_f32` must equal; passing the CPU (`cpu::*`) closures yields the
+/// FP32 oracle.
+/// GEMM closure for [`attn_reference`] (the `gemm_f32` contract: `m, n, k, a, b,
+/// bias, out`), factored out to keep the reference signature within
+/// `clippy::type_complexity`.
+type GemmFn<'a> = dyn Fn(usize, usize, usize, &[f32], &[f32], Option<&[f32]>, &mut [f32]) + 'a;
+/// Softmax closure for [`attn_reference`] (`input, out, rows, cols`).
+type SoftmaxFn<'a> = dyn Fn(&[f32], &mut [f32], usize, usize) + 'a;
+
+#[allow(clippy::too_many_arguments)] // faithful replica of the nn.rs attention operands
+fn attn_reference(
+    gemm: &GemmFn<'_>,
+    softmax: &SoftmaxFn<'_>,
+    t_q: usize,
+    t_kv: usize,
+    d: usize,
+    n_head: usize,
+    xq: &[f32],
+    q_w: &[f32],
+    q_bias: Option<&[f32]>,
+    k: &[f32],
+    v: &[f32],
+    out_w: &[f32],
+    out_bias: Option<&[f32]>,
+    scale: f32,
+) -> Vec<f32> {
+    let hd = d / n_head;
+    let mut q = vec![0.0f32; t_q * d];
+    gemm(t_q, d, d, xq, q_w, q_bias, &mut q);
+    for val in &mut q {
+        *val *= scale;
+    }
+    let mut context = vec![0.0f32; t_q * d];
+    let mut qh = vec![0.0f32; t_q * hd];
+    let mut vh = vec![0.0f32; t_kv * hd];
+    let mut kh_t = vec![0.0f32; hd * t_kv];
+    let mut scores = vec![0.0f32; t_q * t_kv];
+    let mut probs = vec![0.0f32; t_q * t_kv];
+    let mut ctx_h = vec![0.0f32; t_q * hd];
+    for h in 0..n_head {
+        let c0 = h * hd;
+        for i in 0..t_q {
+            qh[i * hd..i * hd + hd].copy_from_slice(&q[i * d + c0..i * d + c0 + hd]);
+        }
+        for j in 0..t_kv {
+            vh[j * hd..j * hd + hd].copy_from_slice(&v[j * d + c0..j * d + c0 + hd]);
+            for c in 0..hd {
+                kh_t[c * t_kv + j] = k[j * d + c0 + c];
+            }
+        }
+        gemm(t_q, t_kv, hd, &qh, &kh_t, None, &mut scores);
+        softmax(&scores, &mut probs, t_q, t_kv);
+        gemm(t_q, hd, t_kv, &probs, &vh, None, &mut ctx_h);
+        for i in 0..t_q {
+            context[i * d + c0..i * d + c0 + hd].copy_from_slice(&ctx_h[i * hd..i * hd + hd]);
+        }
+    }
+    let mut out = vec![0.0f32; t_q * d];
+    gemm(t_q, d, d, &context, out_w, out_bias, &mut out);
+    out
+}
+
+/// The fused `CudaContext::attn_f32` (q-proj → per-head {gather, QKᵀ, softmax,
+/// A·V, scatter} → out-proj on one stream, every intermediate device-resident,
+/// one D2H) must be **bit-identical** to the per-op path built from the same GPU
+/// kernels (`attn_reference` with the `ctx.*` closures — same kernels, order and
+/// launch geometry, the scale folded into the qh gather) and match the CPU
+/// reference within the FP32 bound. Device-gated: skips on this CUDA-less Mac;
+/// runs for real on the vast.ai RTX 4090 (M2-03-T25).
+#[test]
+fn attn_fused_matches_sequential_and_cpu() {
+    let ctx = ctx_or_skip!("attn");
+    // (t_q, t_kv, d, n_head); every d is divisible by n_head.
+    let shapes = [
+        (1usize, 4usize, 2usize, 1usize),
+        (3, 8, 16, 2),
+        (7, 5, 24, 3),
+        (16, 16, 64, 8),
+        (30, 20, 40, 5),
+    ];
+    let mut worst_seq = 0.0f32;
+    let mut worst_cpu = 0.0f32;
+    for &(t_q, t_kv, d, n_head) in &shapes {
+        let hd = d / n_head;
+        let scale = (hd as f32).powf(-0.5);
+        for with_bias in [false, true] {
+            let xq = rand_vec(0x1A ^ ((t_q * 7 + d) as u64), t_q * d);
+            let q_w = rand_vec(0x2B ^ (d as u64), d * d);
+            let k = rand_vec(0x3C ^ (t_kv as u64), t_kv * d);
+            let v = rand_vec(0x4D ^ ((t_kv * 3 + d) as u64), t_kv * d);
+            let out_w = rand_vec(0x5E ^ (d as u64 + 1), d * d);
+            let q_b = rand_vec(0x6F, d);
+            let o_b = rand_vec(0x70, d);
+            let (qb, ob) = if with_bias {
+                (Some(q_b.as_slice()), Some(o_b.as_slice()))
+            } else {
+                (None, None)
+            };
+
+            // Fused GPU (device-resident intermediates, one D2H).
+            let mut fused = vec![0.0f32; t_q * d];
+            ctx.attn_f32(
+                t_q, t_kv, d, n_head, &xq, &q_w, qb, &k, &v, &out_w, ob, scale, &mut fused,
+            )
+            .expect("fused attn");
+
+            // Per-op GPU (same kernels, host gather/scale/scatter) — bit-identical ref.
+            let gpu_gemm = |m: usize,
+                            n: usize,
+                            kk: usize,
+                            a: &[f32],
+                            b: &[f32],
+                            bias: Option<&[f32]>,
+                            o: &mut [f32]| {
+                ctx.gemm_f32(m, n, kk, a, b, bias, o).expect("gpu gemm");
+            };
+            let gpu_softmax = |i: &[f32], o: &mut [f32], r: usize, c: usize| {
+                ctx.softmax_f32(i, o, r, c).expect("gpu softmax");
+            };
+            let seq = attn_reference(
+                &gpu_gemm,
+                &gpu_softmax,
+                t_q,
+                t_kv,
+                d,
+                n_head,
+                &xq,
+                &q_w,
+                qb,
+                &k,
+                &v,
+                &out_w,
+                ob,
+                scale,
+            );
+
+            // CPU reference.
+            let cpu_gemm = |m: usize,
+                            n: usize,
+                            kk: usize,
+                            a: &[f32],
+                            b: &[f32],
+                            bias: Option<&[f32]>,
+                            o: &mut [f32]| {
+                cpu::gemm_f32(m, n, kk, a, b, bias, o).expect("cpu gemm");
+            };
+            let cpu_softmax = |i: &[f32], o: &mut [f32], r: usize, c: usize| {
+                cpu::softmax_f32(i, o, r, c).expect("cpu softmax");
+            };
+            let cpu_out = attn_reference(
+                &cpu_gemm,
+                &cpu_softmax,
+                t_q,
+                t_kv,
+                d,
+                n_head,
+                &xq,
+                &q_w,
+                qb,
+                &k,
+                &v,
+                &out_w,
+                ob,
+                scale,
+            );
+
+            let d_seq = max_abs_diff(&fused, &seq);
+            let d_cpu = max_abs_diff(&fused, &cpu_out);
+            assert_eq!(
+                d_seq, 0.0,
+                "fused vs per-op GPU must be bit-identical (t_q={t_q} t_kv={t_kv} d={d} n_head={n_head} bias={with_bias}); max|Δ|={d_seq:.3e}"
+            );
+            assert!(
+                d_cpu <= ATOL,
+                "fused GPU vs CPU max|Δ| {d_cpu:.3e} exceeds atol {ATOL} (t_q={t_q} t_kv={t_kv} d={d} n_head={n_head} bias={with_bias})"
+            );
+            worst_seq = worst_seq.max(d_seq);
+            worst_cpu = worst_cpu.max(d_cpu);
+        }
+    }
+    eprintln!(
+        "CUDA fused attn parity: vs per-op GPU max|Δ| = {worst_seq:.3e} (bit-identical), vs CPU max|Δ| = {worst_cpu:.3e} (atol = {ATOL})"
+    );
+}
+
+/// Reports the submission / readback reduction the attention fusion buys at a
+/// realistic Whisper-base encoder self-attention shape (`t_q = t_kv = 1500`,
+/// `d = 512`, `n_head = 8`) and re-checks bit-identical parity at that scale.
+/// Fused issues ONE `cuStreamSynchronize` + ONE D2H per call; the per-op path
+/// issues `2 + 3·n_head = 26` synchronised launches each with its own D2H, plus
+/// the host round-trips. Device-gated (runs on the vast.ai RTX 4090).
+#[test]
+fn attn_fused_reduces_readback_at_whisper_scale() {
+    let ctx = ctx_or_skip!("attn scale");
+    let (t_q, t_kv, d, n_head) = (1500usize, 1500usize, 512usize, 8usize);
+    let hd = d / n_head;
+    let scale = (hd as f32).powf(-0.5);
+    let xq = rand_vec(21, t_q * d);
+    let q_w = rand_vec(22, d * d);
+    let k = rand_vec(23, t_kv * d);
+    let v = rand_vec(24, t_kv * d);
+    let out_w = rand_vec(25, d * d);
+    let q_b = rand_vec(26, d);
+    let o_b = rand_vec(27, d);
+    let iters: u32 = 10;
+
+    let mut fused = vec![0.0f32; t_q * d];
+    ctx.attn_f32(
+        t_q,
+        t_kv,
+        d,
+        n_head,
+        &xq,
+        &q_w,
+        Some(&q_b),
+        &k,
+        &v,
+        &out_w,
+        Some(&o_b),
+        scale,
+        &mut fused,
+    )
+    .expect("fused attn (scale)");
+    let gpu_gemm = |m: usize,
+                    n: usize,
+                    kk: usize,
+                    a: &[f32],
+                    b: &[f32],
+                    bias: Option<&[f32]>,
+                    o: &mut [f32]| {
+        ctx.gemm_f32(m, n, kk, a, b, bias, o).expect("gpu gemm");
+    };
+    let gpu_softmax = |i: &[f32], o: &mut [f32], r: usize, c: usize| {
+        ctx.softmax_f32(i, o, r, c).expect("gpu softmax");
+    };
+    let seq = attn_reference(
+        &gpu_gemm,
+        &gpu_softmax,
+        t_q,
+        t_kv,
+        d,
+        n_head,
+        &xq,
+        &q_w,
+        Some(&q_b),
+        &k,
+        &v,
+        &out_w,
+        Some(&o_b),
+        scale,
+    );
+    assert_eq!(
+        max_abs_diff(&fused, &seq),
+        0.0,
+        "fused vs per-op GPU must be bit-identical at Whisper scale"
+    );
+
+    let t0 = std::time::Instant::now();
+    for _ in 0..iters {
+        let mut o = vec![0.0f32; t_q * d];
+        ctx.attn_f32(
+            t_q,
+            t_kv,
+            d,
+            n_head,
+            &xq,
+            &q_w,
+            Some(&q_b),
+            &k,
+            &v,
+            &out_w,
+            Some(&o_b),
+            scale,
+            &mut o,
+        )
+        .unwrap();
+    }
+    let fused_dt = t0.elapsed();
+
+    let t1 = std::time::Instant::now();
+    for _ in 0..iters {
+        let _ = attn_reference(
+            &gpu_gemm,
+            &gpu_softmax,
+            t_q,
+            t_kv,
+            d,
+            n_head,
+            &xq,
+            &q_w,
+            Some(&q_b),
+            &k,
+            &v,
+            &out_w,
+            Some(&o_b),
+            scale,
+        );
+    }
+    let perop_dt = t1.elapsed();
+
+    eprintln!(
+        "CUDA fused attn (t_q={t_q} t_kv={t_kv} d={d} n_head={n_head}, {iters} iters): \
+         fused {fused_dt:?} ({:?}/it, 1 D2H + 1 sync) vs \
+         per-op {perop_dt:?} ({:?}/it, {} D2Hs + {} syncs + host round-trips)",
+        fused_dt / iters,
+        perop_dt / iters,
+        2 + 3 * n_head,
+        2 + 3 * n_head,
+    );
+}
+
+/// `attn_f32` rejects mis-sized / mis-configured operands with an explicit
+/// `InvalidArgument` (never a device fault): here `d` (6) is not divisible by
+/// `n_head` (4). Validation runs before any device call, so this fires even on a
+/// CUDA-less host — hence it is NOT device-gated.
+#[test]
+fn attn_f32_rejects_missized() {
+    let ctx = match CudaContext::new() {
+        Ok(c) => c,
+        Err(_) => return, // no device: the shape guard is exercised on the 4090 run
+    };
+    let err = ctx.attn_f32(
+        1,
+        1,
+        6,
+        4, // d=6 not divisible by n_head=4
+        &[0.0; 6],
+        &[0.0; 36],
+        None,
+        &[0.0; 6],
+        &[0.0; 6],
+        &[0.0; 36],
+        None,
+        1.0,
+        &mut [0.0; 6],
+    );
+    assert!(err.is_err(), "d % n_head != 0 must be rejected");
+}

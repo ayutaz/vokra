@@ -230,6 +230,28 @@ impl Compute {
         }
     }
 
+    /// Whether this backend has the Phase-5 fused non-causal attention
+    /// ([`Self::attn_f32`]): `true` on the GPU arms (Metal / CUDA), `false` on
+    /// CPU.
+    ///
+    /// The caller (`whisper::nn::attention_from_kv_into`) gates the fused fast
+    /// path on this: only a GPU backend routes a non-causal block through
+    /// `attn_f32`; the CPU always runs the per-op head loop. This keeps the CPU
+    /// arm of `attn_f32` an explicit [`VokraError::UnsupportedOp`] that correct
+    /// code never reaches (no silent fall back, FR-EX-08), while `compute.rs`
+    /// hosts **zero** duplicated attention math (nn.rs is the single source of
+    /// truth for the head loop).
+    #[must_use]
+    pub fn attention_is_fused(&self) -> bool {
+        match &self.be {
+            Be::Cpu => false,
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(_) => true,
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => true,
+        }
+    }
+
     /// Row-major GEMM with optional per-column bias
     /// (`out[i,j] = bias[j] + Σ_l a[i,l]·b[l,j]`); `a` is `m×k`, `b` is `k×n`.
     ///
@@ -401,6 +423,74 @@ impl Compute {
             Be::Metal(ctx) => ctx.mlp_f32(t, d, ffn, x, fc1_w, fc1_bias, fc2_w, fc2_bias, out),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(ctx) => ctx.mlp_f32(t, d, ffn, x, fc1_w, fc1_bias, fc2_w, fc2_bias, out),
+        }
+    }
+
+    /// Fused **non-causal** multi-head attention — the Phase-5 device-residency
+    /// slice (the sibling of [`Self::mlp_f32`]).
+    ///
+    /// `xq` is `[t_q, d]`; `k` / `v` are the pre-projected `[t_kv, d]` keys /
+    /// values; `q_w` / `out_w` are `[d, d]` (both projections `d → d`), biases
+    /// `[d]`; `scale = head_dim^-0.5` (the caller folds the query scale in);
+    /// `out` is `[t_q, d]`.
+    ///
+    /// **GPU-only.** On the Metal / CUDA arms this runs the q-proj → per-head
+    /// {gather, QKᵀ, softmax, A·V, scatter} → out-proj chain in ONE GPU
+    /// submission with every intermediate resident on the device (bit-identical
+    /// to the per-op path, one readback instead of many). The **CPU arm is an
+    /// explicit [`VokraError::UnsupportedOp`]**: the CPU never fuses attention —
+    /// it runs the per-op head loop in `whisper::nn::attention_from_kv_into`,
+    /// which gates this call behind [`Self::attention_is_fused`], so correct code
+    /// never hits the CPU arm. This keeps the attention math in exactly one place
+    /// (nn.rs) with no silent CPU fall back (FR-EX-08).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::UnsupportedOp`] on the CPU arm; the GPU arms return
+    /// [`VokraError::InvalidArgument`] on a shape mismatch and
+    /// [`VokraError::BackendUnavailable`] on a device failure.
+    #[allow(clippy::too_many_arguments)]
+    // fused-attention operand set (two Linears + K/V + dims)
+    // Without a GPU arm compiled in, only the CPU arm (which reads none of the
+    // operands, just returns UnsupportedOp) remains, so every operand is unused —
+    // exactly as `for_backend` cfg-silences its `required` argument.
+    #[cfg_attr(
+        not(any(
+            all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+            all(feature = "cuda", any(unix, windows))
+        )),
+        allow(unused_variables)
+    )]
+    pub fn attn_f32(
+        &self,
+        t_q: usize,
+        t_kv: usize,
+        d: usize,
+        n_head: usize,
+        xq: &[f32],
+        q_w: &[f32],
+        q_bias: Option<&[f32]>,
+        k: &[f32],
+        v: &[f32],
+        out_w: &[f32],
+        out_bias: Option<&[f32]>,
+        scale: f32,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => Err(VokraError::UnsupportedOp(
+                "attn_f32 is the GPU fused attention path; the CPU uses the per-op attention loop \
+                 (whisper::nn::attention_from_kv_into gates it behind Compute::attention_is_fused)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.attn_f32(
+                t_q, t_kv, d, n_head, xq, q_w, q_bias, k, v, out_w, out_bias, scale, out,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(ctx) => ctx.attn_f32(
+                t_q, t_kv, d, n_head, xq, q_w, q_bias, k, v, out_w, out_bias, scale, out,
+            ),
         }
     }
 }

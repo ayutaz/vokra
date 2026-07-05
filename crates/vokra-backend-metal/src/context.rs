@@ -270,6 +270,92 @@ kernel void vokra_conv1d_f32(
     }
     out[oc * d.out_len + t] = acc;
 }
+
+// ---- Phase-5 attention fusion: three pure-copy column movers -----------------
+// These replace the host `copy_from_slice` / transpose / `*= scale` the per-op
+// `whisper::nn::attention_from_kv_into` runs between GPU ops. Each is a pure data
+// move (+ one FP32 multiply in the gather) — one thread per destination (gather /
+// gather_t) or source (scatter) element, ragged-tail guarded like every kernel
+// above — so the bits they move are trivially identical to the host code they
+// replace, keeping the fused path bit-for-bit equal to the per-op path.
+
+// col_gather: dst[i*hd + c] = src[i*width + c0 + c] * scale. Gathers one head's
+// `hd`-wide column block out of a `[rows, width]` row-major matrix, folding the
+// query scale (qh: scale = head_dim^-0.5; vh: scale = 1).
+struct ColGatherDims {
+    uint rows;
+    uint hd;
+    uint width;
+    uint c0;
+    float scale;
+};
+
+kernel void vokra_col_gather_f32(
+    device const float*     src [[buffer(0)]],
+    device float*           dst [[buffer(1)]],
+    constant ColGatherDims& d   [[buffer(2)]],
+    uint                    gid [[thread_position_in_grid]])
+{
+    const uint n = d.rows * d.hd;
+    if (gid >= n) {
+        return;
+    }
+    const uint i = gid / d.hd;
+    const uint c = gid % d.hd;
+    dst[gid] = src[i * d.width + d.c0 + c] * d.scale;
+}
+
+// col_gather_t: dst[c*t_kv + j] = src[j*width + c0 + c]. Gathers one head's key
+// column block AND transposes it to `[hd, t_kv]` (what the scores GEMM needs as
+// its right operand), replacing the host `kh_t[c*t_kv + j] = k[j*d + c0 + c]`.
+struct ColGatherTDims {
+    uint t_kv;
+    uint hd;
+    uint width;
+    uint c0;
+};
+
+kernel void vokra_col_gather_t_f32(
+    device const float*      src [[buffer(0)]],
+    device float*            dst [[buffer(1)]],
+    constant ColGatherTDims& d   [[buffer(2)]],
+    uint                     gid [[thread_position_in_grid]])
+{
+    const uint n = d.hd * d.t_kv;
+    if (gid >= n) {
+        return;
+    }
+    const uint c = gid / d.t_kv;
+    const uint j = gid % d.t_kv;
+    dst[gid] = src[j * d.width + d.c0 + c];
+}
+
+// col_scatter: dst[i*width + c0 + c] = src[i*hd + c]. Scatters this head's
+// `[rows, hd]` context back into its `hd`-wide column block of `[rows, width]`,
+// replacing the host `context[i*d + c0 + c] = ctx_h[i*hd + c]`. Because
+// n_head*hd == width every column is written by exactly one head, so `context`
+// needs no zeroing (it is fully overwritten, as on the CPU).
+struct ColScatterDims {
+    uint rows;
+    uint hd;
+    uint width;
+    uint c0;
+};
+
+kernel void vokra_col_scatter_f32(
+    device const float*      src [[buffer(0)]],
+    device float*            dst [[buffer(1)]],
+    constant ColScatterDims& d   [[buffer(2)]],
+    uint                     gid [[thread_position_in_grid]])
+{
+    const uint n = d.rows * d.hd;
+    if (gid >= n) {
+        return;
+    }
+    const uint i = gid / d.hd;
+    const uint c = gid % d.hd;
+    dst[i * d.width + d.c0 + c] = src[gid];
+}
 "#;
 
 /// GEMM dimension block handed to the kernel via `setBytes:` (buffer index 4).
@@ -334,6 +420,41 @@ struct Conv1dDims {
     has_bias: u32,
 }
 
+/// `col_gather` dims (`setBytes:` index 2). Field order / widths mirror the MSL
+/// `struct ColGatherDims`; the trailing `f32 scale` is folded into the copy (all
+/// fields 4-byte, so `#[repr(C)]` needs no padding).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ColGatherDims {
+    rows: u32,
+    hd: u32,
+    width: u32,
+    c0: u32,
+    scale: f32,
+}
+
+/// `col_gather_t` dims (`setBytes:` index 2). Mirrors the MSL `struct
+/// ColGatherTDims`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ColGatherTDims {
+    t_kv: u32,
+    hd: u32,
+    width: u32,
+    c0: u32,
+}
+
+/// `col_scatter` dims (`setBytes:` index 2). Mirrors the MSL `struct
+/// ColScatterDims`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ColScatterDims {
+    rows: u32,
+    hd: u32,
+    width: u32,
+    c0: u32,
+}
+
 /// RAII wrapper for a `+1`-owned Objective-C object, released once on drop unless
 /// defused with [`Owned::into_raw`]. Used for the transient device objects during
 /// [`MetalContext::build`] so an early `?`-return releases everything already
@@ -387,6 +508,9 @@ pub struct MetalContext {
     layer_norm_pipeline: Id,
     gelu_pipeline: Id,
     conv1d_pipeline: Id,
+    col_gather_pipeline: Id,
+    col_gather_t_pipeline: Id,
+    col_scatter_pipeline: Id,
 }
 
 impl MetalContext {
@@ -468,6 +592,16 @@ impl MetalContext {
         let gelu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_gelu_f32") }?;
         // SAFETY: as above.
         let conv1d_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_conv1d_f32") }?;
+        // The three Phase-5 attention column-mover kernels share the same library.
+        // SAFETY: as above.
+        let col_gather_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_col_gather_f32") }?;
+        // SAFETY: as above.
+        let col_gather_t_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_col_gather_t_f32") }?;
+        // SAFETY: as above.
+        let col_scatter_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_col_scatter_f32") }?;
         drop(klib);
 
         Ok(MetalContext {
@@ -479,6 +613,9 @@ impl MetalContext {
             layer_norm_pipeline: layer_norm_pipeline.into_raw(),
             gelu_pipeline: gelu_pipeline.into_raw(),
             conv1d_pipeline: conv1d_pipeline.into_raw(),
+            col_gather_pipeline: col_gather_pipeline.into_raw(),
+            col_gather_t_pipeline: col_gather_t_pipeline.into_raw(),
+            col_scatter_pipeline: col_scatter_pipeline.into_raw(),
         })
     }
 
@@ -1170,6 +1307,332 @@ impl MetalContext {
         read_back(&out_buf, out)
     }
 
+    // ---- Phase-5 fusion: device-resident non-causal attention ----------------
+
+    /// Fused **non-causal** multi-head attention on the GPU with every
+    /// intermediate **resident on the device** — the Phase-5 attention
+    /// readback-elimination slice (the sibling of [`Self::mlp_f32`]).
+    ///
+    /// Computes `out = out_proj( concat_h softmax(scale · qₕ·kₕᵀ) · vₕ )` for
+    /// `xq` `[t_q, d]`, pre-projected `k` / `v` `[t_kv, d]`, `q_w` / `out_w`
+    /// `[d, d]` (both projections are `d → d`), optional biases `[d]`, and
+    /// `scale = head_dim^-0.5` (the caller folds the query scale in). `out` is
+    /// `[t_q, d]`.
+    ///
+    /// It runs the **same** `vokra_gemm_f32` (q-proj, per-head scores, per-head
+    /// context, out-proj) and `vokra_softmax_f32` kernels the per-op
+    /// `whisper::nn::attention_from_kv_into` runs, in the same order and launch
+    /// geometry, with the head gather / transpose / scatter (formerly host
+    /// `copy_from_slice`) done by the three pure-copy `col_*` kernels — so the
+    /// result is **bit-identical** to the per-op path. The difference is that the
+    /// per-head scratch (`qh` / `vh` / `kh_t` / `scores` / `probs` / `ctx_h`) and
+    /// the `q` / `context` intermediates never leave the device: the whole chain
+    /// is ONE command buffer with ONE `waitUntilCompleted` and ONE readback (of
+    /// `out`) instead of the per-op path's per-op H2D/D2H round-trips.
+    ///
+    /// **Non-causal only** (encoder self-attention and decoder cross-attention).
+    /// Causal decoder self-attention stays on the per-op path (it needs the mask
+    /// write between the scores GEMM and the softmax).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on any shape mismatch, a zero dimension, or
+    /// `d % n_head != 0`; [`VokraError::BackendUnavailable`] on a Metal buffer /
+    /// command failure.
+    #[allow(clippy::too_many_arguments)] // fused-attention operand set (two Linears + K/V + dims)
+    pub fn attn_f32(
+        &self,
+        t_q: usize,
+        t_kv: usize,
+        d: usize,
+        n_head: usize,
+        xq: &[f32],
+        q_w: &[f32],
+        q_bias: Option<&[f32]>,
+        k: &[f32],
+        v: &[f32],
+        out_w: &[f32],
+        out_bias: Option<&[f32]>,
+        scale: f32,
+        out: &mut [f32],
+    ) -> Result<()> {
+        validate_attn(
+            t_q, t_kv, d, n_head, xq, q_w, q_bias, k, v, out_w, out_bias, out,
+        )?;
+        // Bracket the GPU work in an autorelease pool (as the per-op methods do).
+        // SAFETY: `objc_autoreleasePoolPush` returns a token consumed by the one
+        // matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_attn(
+            t_q, t_kv, d, n_head, xq, q_w, q_bias, k, v, out_w, out_bias, scale, out,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    /// Fused-attention body: copy the inputs H2D, allocate every intermediate
+    /// **device-resident** (never read back) plus the `[t_q, d]` output, encode
+    /// the `2 + 7·n_head` passes (q-proj GEMM → per head {gather qh, gather vh,
+    /// gather-transpose kh_t, scores GEMM, softmax, context GEMM, scatter} →
+    /// out-proj GEMM) into ONE command buffer, commit + wait ONCE, and read back
+    /// only `out`. Runs inside `attn_f32`'s autorelease pool; shapes are already
+    /// validated (so `hd = d / n_head` is exact).
+    #[allow(clippy::too_many_arguments)] // fused-attention operand set (two Linears + K/V + dims)
+    fn run_attn(
+        &self,
+        t_q: usize,
+        t_kv: usize,
+        d: usize,
+        n_head: usize,
+        xq: &[f32],
+        q_w: &[f32],
+        q_bias: Option<&[f32]>,
+        k: &[f32],
+        v: &[f32],
+        out_w: &[f32],
+        out_bias: Option<&[f32]>,
+        scale: f32,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let hd = d / n_head;
+
+        // Inputs copied H2D into shared storage (a failed alloc `?`-returns;
+        // already-built `OwnedBuf`s release on drop).
+        let xq_buf = self.new_buffer_from_slice(xq)?;
+        let q_w_buf = self.new_buffer_from_slice(q_w)?;
+        let dummy = [0.0f32];
+        let q_bias_buf = self.new_buffer_from_slice(q_bias.unwrap_or(&dummy))?;
+        let k_buf = self.new_buffer_from_slice(k)?;
+        let v_buf = self.new_buffer_from_slice(v)?;
+        let out_w_buf = self.new_buffer_from_slice(out_w)?;
+        let out_bias_buf = self.new_buffer_from_slice(out_bias.unwrap_or(&dummy))?;
+
+        // Device-resident intermediates: `q` / `context` `[t_q, d]` and the reused
+        // per-head scratch. None is ever read back — that is the readback this
+        // slice eliminates. `out` `[t_q, d]` is the single buffer read back.
+        let tqd = checked_mul(t_q, d, "attn t_q*d")?;
+        let tq_hd = checked_mul(t_q, hd, "attn t_q*hd")?;
+        let tkv_hd = checked_mul(t_kv, hd, "attn t_kv*hd")?;
+        let hd_tkv = checked_mul(hd, t_kv, "attn hd*t_kv")?;
+        let tq_tkv = checked_mul(t_q, t_kv, "attn t_q*t_kv")?;
+        let q_buf = self.new_buffer_output(tqd)?; // q-proj [t_q, d]
+        let context_buf = self.new_buffer_output(tqd)?; // per-head scatter target [t_q, d]
+        let qh_buf = self.new_buffer_output(tq_hd)?; // this head's q [t_q, hd]
+        let vh_buf = self.new_buffer_output(tkv_hd)?; // this head's v [t_kv, hd]
+        let kh_t_buf = self.new_buffer_output(hd_tkv)?; // this head's kᵀ [hd, t_kv]
+        let scores_buf = self.new_buffer_output(tq_tkv)?; // scores [t_q, t_kv]
+        let probs_buf = self.new_buffer_output(tq_tkv)?; // softmax [t_q, t_kv]
+        let ctx_h_buf = self.new_buffer_output(tq_hd)?; // this head's ctx [t_q, hd]
+        let out_buf = self.new_buffer_output(out.len())?; // [t_q, d]
+
+        // One command buffer for the whole chain.
+        // SAFETY: `queue` is valid for the context's lifetime; `commandBuffer`
+        // returns an autoreleased command buffer drained by `attn_f32`'s pool.
+        let cmd = unsafe { sys::send_id(self.queue, sys::sel(b"commandBuffer\0")) };
+        if cmd.is_null() {
+            return Err(VokraError::BackendUnavailable(
+                "attn: MTLCommandQueue commandBuffer returned nil".to_owned(),
+            ));
+        }
+
+        // Pass 1: q = xq[t_q,d] · q_w[d,d] (+q_bias) — GEMM (grid = N×M, 16×16).
+        // The query scale is NOT applied here; it is folded into the qh gather
+        // below (the same single FP32 multiply the CPU does after this GEMM).
+        let q_dims = GemmDims {
+            m: t_q as u32,
+            n: d as u32,
+            k: d as u32,
+            has_bias: u32::from(q_bias.is_some()),
+        };
+        let (q_grid, q_tg) = grid_2d(d, t_q);
+        self.encode_pass(
+            cmd,
+            self.gemm_pipeline,
+            &[&xq_buf, &q_w_buf, &q_bias_buf, &q_buf],
+            (&q_dims as *const GemmDims).cast::<c_void>(),
+            size_of::<GemmDims>(),
+            q_grid,
+            q_tg,
+            "attn q-proj",
+        )?;
+
+        // Per head: gather qh (scaled) / vh / kh_tᵀ, scores GEMM, softmax, context
+        // GEMM, scatter. The per-head scratch buffers are REUSED across heads;
+        // Metal hazard-tracks the shared buffers, so head h+1's gather into `qh`
+        // is ordered after head h's scores GEMM read of `qh` automatically (the
+        // same mechanism `mlp_f32` relies on for `h_buf`). `setBytes:` copies the
+        // dims eagerly, so the per-head dims locals need not outlive the loop.
+        for h in 0..n_head {
+            let c0 = (h * hd) as u32;
+            // qh[i,c] = q[i, c0+c] * scale.
+            let qh_dims = ColGatherDims {
+                rows: t_q as u32,
+                hd: hd as u32,
+                width: d as u32,
+                c0,
+                scale,
+            };
+            let (gq_grid, gq_tg) = grid_1d(tq_hd);
+            self.encode_pass(
+                cmd,
+                self.col_gather_pipeline,
+                &[&q_buf, &qh_buf],
+                (&qh_dims as *const ColGatherDims).cast::<c_void>(),
+                size_of::<ColGatherDims>(),
+                gq_grid,
+                gq_tg,
+                "attn gather qh",
+            )?;
+            // vh[j,c] = v[j, c0+c] (scale = 1).
+            let vh_dims = ColGatherDims {
+                rows: t_kv as u32,
+                hd: hd as u32,
+                width: d as u32,
+                c0,
+                scale: 1.0,
+            };
+            let (gv_grid, gv_tg) = grid_1d(tkv_hd);
+            self.encode_pass(
+                cmd,
+                self.col_gather_pipeline,
+                &[&v_buf, &vh_buf],
+                (&vh_dims as *const ColGatherDims).cast::<c_void>(),
+                size_of::<ColGatherDims>(),
+                gv_grid,
+                gv_tg,
+                "attn gather vh",
+            )?;
+            // kh_t[c,j] = k[j, c0+c] (gather + transpose to [hd, t_kv]).
+            let kh_dims = ColGatherTDims {
+                t_kv: t_kv as u32,
+                hd: hd as u32,
+                width: d as u32,
+                c0,
+            };
+            let (gk_grid, gk_tg) = grid_1d(hd_tkv);
+            self.encode_pass(
+                cmd,
+                self.col_gather_t_pipeline,
+                &[&k_buf, &kh_t_buf],
+                (&kh_dims as *const ColGatherTDims).cast::<c_void>(),
+                size_of::<ColGatherTDims>(),
+                gk_grid,
+                gk_tg,
+                "attn gather kh_t",
+            )?;
+            // scores[t_q,t_kv] = qh[t_q,hd] · kh_t[hd,t_kv].
+            let scores_dims = GemmDims {
+                m: t_q as u32,
+                n: t_kv as u32,
+                k: hd as u32,
+                has_bias: 0,
+            };
+            let (s_grid, s_tg) = grid_2d(t_kv, t_q);
+            self.encode_pass(
+                cmd,
+                self.gemm_pipeline,
+                &[&qh_buf, &kh_t_buf, &q_bias_buf, &scores_buf],
+                (&scores_dims as *const GemmDims).cast::<c_void>(),
+                size_of::<GemmDims>(),
+                s_grid,
+                s_tg,
+                "attn scores",
+            )?;
+            // probs = softmax_rows(scores) (no mask — non-causal).
+            let sm_dims = SoftmaxDims {
+                rows: t_q as u32,
+                cols: t_kv as u32,
+            };
+            let (sm_grid, sm_tg) = grid_1d(t_q);
+            self.encode_pass(
+                cmd,
+                self.softmax_pipeline,
+                &[&scores_buf, &probs_buf],
+                (&sm_dims as *const SoftmaxDims).cast::<c_void>(),
+                size_of::<SoftmaxDims>(),
+                sm_grid,
+                sm_tg,
+                "attn softmax",
+            )?;
+            // ctx_h[t_q,hd] = probs[t_q,t_kv] · vh[t_kv,hd].
+            let ctx_dims = GemmDims {
+                m: t_q as u32,
+                n: hd as u32,
+                k: t_kv as u32,
+                has_bias: 0,
+            };
+            let (c_grid, c_tg) = grid_2d(hd, t_q);
+            self.encode_pass(
+                cmd,
+                self.gemm_pipeline,
+                &[&probs_buf, &vh_buf, &q_bias_buf, &ctx_h_buf],
+                (&ctx_dims as *const GemmDims).cast::<c_void>(),
+                size_of::<GemmDims>(),
+                c_grid,
+                c_tg,
+                "attn context",
+            )?;
+            // context[i, c0+c] = ctx_h[i,c].
+            let scatter_dims = ColScatterDims {
+                rows: t_q as u32,
+                hd: hd as u32,
+                width: d as u32,
+                c0,
+            };
+            let (sc_grid, sc_tg) = grid_1d(tq_hd);
+            self.encode_pass(
+                cmd,
+                self.col_scatter_pipeline,
+                &[&ctx_h_buf, &context_buf],
+                (&scatter_dims as *const ColScatterDims).cast::<c_void>(),
+                size_of::<ColScatterDims>(),
+                sc_grid,
+                sc_tg,
+                "attn scatter",
+            )?;
+        }
+
+        // Pass last: out = context[t_q,d] · out_w[d,d] (+out_bias) — GEMM.
+        let out_dims = GemmDims {
+            m: t_q as u32,
+            n: d as u32,
+            k: d as u32,
+            has_bias: u32::from(out_bias.is_some()),
+        };
+        let (o_grid, o_tg) = grid_2d(d, t_q);
+        self.encode_pass(
+            cmd,
+            self.gemm_pipeline,
+            &[&context_buf, &out_w_buf, &out_bias_buf, &out_buf],
+            (&out_dims as *const GemmDims).cast::<c_void>(),
+            size_of::<GemmDims>(),
+            o_grid,
+            o_tg,
+            "attn out-proj",
+        )?;
+
+        // Commit the whole chain and wait ONCE, then surface any GPU-side error.
+        // SAFETY: `cmd` is the valid command buffer encoded above; `commit` then
+        // `waitUntilCompleted` submit and block; `error` is read after completion
+        // (no silent success).
+        unsafe {
+            sys::send_void(cmd, sys::sel(b"commit\0"));
+            sys::send_void(cmd, sys::sel(b"waitUntilCompleted\0"));
+            let cmd_err = sys::send_id(cmd, sys::sel(b"error\0"));
+            if !cmd_err.is_null() {
+                let detail = error_description(cmd_err);
+                return Err(VokraError::BackendUnavailable(format!(
+                    "attn command buffer failed: {detail}"
+                )));
+            }
+        }
+
+        // Single readback of the final output; every intermediate stays resident
+        // and drops.
+        read_back(&out_buf, out)
+    }
+
     /// Encodes ONE compute pass into `cmd` **without** committing or waiting: a
     /// fresh compute encoder binds `buffers` at indices `0..buffers.len()`, sets
     /// `dims` (a `constant` struct) at `buffers.len()` via `setBytes:`,
@@ -1304,6 +1767,9 @@ impl Drop for MetalContext {
         // SAFETY: every handle is a valid `+1`-owned object created in
         // `new` / `build`; release each exactly once.
         unsafe {
+            release(self.col_scatter_pipeline);
+            release(self.col_gather_t_pipeline);
+            release(self.col_gather_pipeline);
             release(self.conv1d_pipeline);
             release(self.gelu_pipeline);
             release(self.layer_norm_pipeline);
@@ -1656,5 +2122,56 @@ fn validate_mlp(
         expect_len("mlp fc2_bias", bias.len(), d)?;
     }
     expect_len("mlp out", out.len(), checked_mul(t, d, "mlp out t*d")?)?;
+    Ok(())
+}
+
+/// Validates the fused non-causal attention shapes: `xq` is `[t_q, d]`, `k` / `v`
+/// are `[t_kv, d]`, `q_w` / `out_w` are `[d, d]` (both projections `d → d`),
+/// biases `[d]`, `out` is `[t_q, d]`, and `d` splits evenly into `n_head` heads —
+/// so a mis-shaped call is an explicit `InvalidArgument` rather than a GPU fault
+/// (mirrors [`validate_mlp`]).
+#[allow(clippy::too_many_arguments)] // fused-attention operand set (two Linears + K/V + dims)
+fn validate_attn(
+    t_q: usize,
+    t_kv: usize,
+    d: usize,
+    n_head: usize,
+    xq: &[f32],
+    q_w: &[f32],
+    q_bias: Option<&[f32]>,
+    k: &[f32],
+    v: &[f32],
+    out_w: &[f32],
+    out_bias: Option<&[f32]>,
+    out: &[f32],
+) -> Result<()> {
+    if t_q == 0 || t_kv == 0 || d == 0 || n_head == 0 {
+        return Err(VokraError::InvalidArgument(
+            "attn dimensions t_q, t_kv, d, n_head must all be >= 1".to_owned(),
+        ));
+    }
+    if d % n_head != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "attn d ({d}) must be divisible by n_head ({n_head})"
+        )));
+    }
+    let dd = checked_mul(d, d, "attn d*d")?;
+    let tkvd = checked_mul(t_kv, d, "attn t_kv*d")?;
+    expect_len("attn xq", xq.len(), checked_mul(t_q, d, "attn t_q*d")?)?;
+    expect_len("attn q_w", q_w.len(), dd)?;
+    if let Some(bias) = q_bias {
+        expect_len("attn q_bias", bias.len(), d)?;
+    }
+    expect_len("attn k", k.len(), tkvd)?;
+    expect_len("attn v", v.len(), tkvd)?;
+    expect_len("attn out_w", out_w.len(), dd)?;
+    if let Some(bias) = out_bias {
+        expect_len("attn out_bias", bias.len(), d)?;
+    }
+    expect_len(
+        "attn out",
+        out.len(),
+        checked_mul(t_q, d, "attn out t_q*d")?,
+    )?;
     Ok(())
 }

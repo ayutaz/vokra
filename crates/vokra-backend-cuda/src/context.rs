@@ -245,6 +245,77 @@ extern "C" __global__ void vokra_conv1d_f32(
     }
     out[oc * out_len + t] = acc;
 }
+
+// ---- Phase-5 attention fusion: three pure-copy column movers -----------------
+// CUDA-C ports of the Metal `col_gather` / `col_gather_t` / `col_scatter`
+// kernels. Each replaces the host `copy_from_slice` / transpose / `*= scale` the
+// per-op `whisper::nn::attention_from_kv_into` runs between GPU ops: a pure data
+// move (+ one FP32 multiply in the gather), one thread per destination (gather /
+// gather_t) or source (scatter) element, ragged-tail guarded like every kernel
+// above — so the fused path stays bit-for-bit equal to the per-op path.
+
+// col_gather: dst[i*hd + c] = src[i*width + c0 + c] * scale (folds the query
+// scale; qh: scale = head_dim^-0.5, vh: scale = 1).
+extern "C" __global__ void vokra_col_gather_f32(
+    const float* src,
+    float* dst,
+    unsigned int rows,
+    unsigned int hd,
+    unsigned int width,
+    unsigned int c0,
+    float scale)
+{
+    unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int n = rows * hd;
+    if (gid >= n) {
+        return;
+    }
+    unsigned int i = gid / hd;
+    unsigned int c = gid % hd;
+    dst[gid] = src[i * width + c0 + c] * scale;
+}
+
+// col_gather_t: dst[c*t_kv + j] = src[j*width + c0 + c] (gather one head's key
+// block AND transpose it to [hd, t_kv], the scores GEMM's right operand).
+extern "C" __global__ void vokra_col_gather_t_f32(
+    const float* src,
+    float* dst,
+    unsigned int t_kv,
+    unsigned int hd,
+    unsigned int width,
+    unsigned int c0)
+{
+    unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int n = hd * t_kv;
+    if (gid >= n) {
+        return;
+    }
+    unsigned int c = gid / t_kv;
+    unsigned int j = gid % t_kv;
+    dst[gid] = src[j * width + c0 + c];
+}
+
+// col_scatter: dst[i*width + c0 + c] = src[i*hd + c] (scatter this head's
+// [rows, hd] context back into its column block of [rows, width]). Because
+// n_head*hd == width every column is written by exactly one head, so the target
+// needs no zeroing (fully overwritten, as on the CPU).
+extern "C" __global__ void vokra_col_scatter_f32(
+    const float* src,
+    float* dst,
+    unsigned int rows,
+    unsigned int hd,
+    unsigned int width,
+    unsigned int c0)
+{
+    unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int n = rows * hd;
+    if (gid >= n) {
+        return;
+    }
+    unsigned int i = gid / hd;
+    unsigned int c = gid % hd;
+    dst[i * width + c0 + c] = src[gid];
+}
 "#;
 
 /// 16×16 thread block (matches the Metal GEMM launch); the kernel guards the
@@ -295,6 +366,9 @@ pub struct CudaContext {
     layer_norm: CUfunction,
     gelu: CUfunction,
     conv1d: CUfunction,
+    col_gather: CUfunction,
+    col_gather_t: CUfunction,
+    col_scatter: CUfunction,
 }
 
 impl CudaContext {
@@ -351,6 +425,9 @@ impl CudaContext {
                 layer_norm: m.layer_norm,
                 gelu: m.gelu,
                 conv1d: m.conv1d,
+                col_gather: m.col_gather,
+                col_gather_t: m.col_gather_t,
+                col_scatter: m.col_scatter,
             }),
             Err(e) => {
                 // SAFETY: `context` is the just-created owned context; destroy it
@@ -968,6 +1045,325 @@ impl CudaContext {
         self.dtoh(&out_buf, out)
     }
 
+    // ---- Phase-5 fusion: device-resident non-causal attention ----------------
+
+    /// Fused **non-causal** multi-head attention on the GPU with every
+    /// intermediate **resident on the device** — the Phase-5 attention
+    /// readback-elimination slice, mirroring [`vokra_backend_metal`]'s
+    /// `attn_f32` (the sibling of [`Self::mlp_f32`]).
+    ///
+    /// Computes `out = out_proj( concat_h softmax(scale · qₕ·kₕᵀ) · vₕ )` for
+    /// `xq` `[t_q, d]`, pre-projected `k` / `v` `[t_kv, d]`, `q_w` / `out_w`
+    /// `[d, d]` (both projections `d → d`), optional biases `[d]`, and
+    /// `scale = head_dim^-0.5` (the caller folds the query scale in). `out` is
+    /// `[t_q, d]`.
+    ///
+    /// It runs the **same** `vokra_gemm_f32` (q-proj, per-head scores, per-head
+    /// context, out-proj) and `vokra_softmax_f32` kernels the per-op
+    /// `whisper::nn::attention_from_kv_into` runs, in the same order and launch
+    /// geometry, with the head gather / transpose / scatter (formerly host
+    /// `copy_from_slice`) done by the three pure-copy `col_*` kernels — so the
+    /// result is **bit-identical** to the per-op path. The per-head scratch
+    /// (`qh` / `vh` / `kh_t` / `scores` / `probs` / `ctx_h`) and the `q` /
+    /// `context` intermediates never leave the device: all `2 + 7·n_head`
+    /// launches share ONE stream with ONE `cuStreamSynchronize` and ONE D2H (of
+    /// `out`) instead of the per-op path's per-op H2D/D2H round-trips. Stream
+    /// ordering serialises the reused per-head scratch (head h+1's gather into
+    /// `qh` after head h's scores GEMM read of `qh`), the same guarantee
+    /// [`Self::mlp_f32`] relies on.
+    ///
+    /// **Non-causal only** (encoder self-attention and decoder cross-attention).
+    /// Causal decoder self-attention stays on the per-op path (it needs the mask
+    /// write between the scores GEMM and the softmax).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on any shape mismatch, a zero dimension, or
+    /// `d % n_head != 0`; [`VokraError::BackendUnavailable`] on a device
+    /// allocation / launch failure.
+    #[allow(clippy::too_many_arguments)] // fused-attention operand set (two Linears + K/V + dims)
+    pub fn attn_f32(
+        &self,
+        t_q: usize,
+        t_kv: usize,
+        d: usize,
+        n_head: usize,
+        xq: &[f32],
+        q_w: &[f32],
+        q_bias: Option<&[f32]>,
+        k: &[f32],
+        v: &[f32],
+        out_w: &[f32],
+        out_bias: Option<&[f32]>,
+        scale: f32,
+        out: &mut [f32],
+    ) -> Result<()> {
+        validate_attn(
+            t_q, t_kv, d, n_head, xq, q_w, q_bias, k, v, out_w, out_bias, out,
+        )?;
+        self.run_attn(
+            t_q, t_kv, d, n_head, xq, q_w, q_bias, k, v, out_w, out_bias, scale, out,
+        )
+    }
+
+    /// Fused-attention body: H2D the inputs, allocate every intermediate
+    /// **device-resident** (never D2H'd) plus the `[t_q, d]` output, launch the
+    /// `2 + 7·n_head` kernels back to back on the one stream (q-proj GEMM → per
+    /// head {gather qh, gather vh, gather-transpose kh_t, scores GEMM, softmax,
+    /// context GEMM, scatter} → out-proj GEMM), synchronise ONCE, and D2H only
+    /// `out`. Shapes are already validated (so `hd = d / n_head` is exact). Every
+    /// scalar kernel arg is captured by address in a `params` array read by the
+    /// driver during each synchronous `cuLaunchKernel`, so the per-head locals
+    /// (e.g. `c0`) need not outlive the loop; the device buffers stay alive until
+    /// the single synchronise below.
+    #[allow(clippy::too_many_arguments)] // fused-attention operand set (two Linears + K/V + dims)
+    fn run_attn(
+        &self,
+        t_q: usize,
+        t_kv: usize,
+        d: usize,
+        n_head: usize,
+        xq: &[f32],
+        q_w: &[f32],
+        q_bias: Option<&[f32]>,
+        k: &[f32],
+        v: &[f32],
+        out_w: &[f32],
+        out_bias: Option<&[f32]>,
+        scale: f32,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let hd = d / n_head;
+
+        // Inputs H2D (a failed alloc `?`-returns; already-built DeviceBufs free
+        // on drop).
+        let xq_buf = self.alloc(size_of_val(xq))?;
+        self.htod(&xq_buf, xq)?;
+        let q_w_buf = self.alloc(size_of_val(q_w))?;
+        self.htod(&q_w_buf, q_w)?;
+        let dummy = [0.0f32];
+        let q_bias_slice = q_bias.unwrap_or(&dummy);
+        let q_bias_buf = self.alloc(size_of_val(q_bias_slice))?;
+        self.htod(&q_bias_buf, q_bias_slice)?;
+        let k_buf = self.alloc(size_of_val(k))?;
+        self.htod(&k_buf, k)?;
+        let v_buf = self.alloc(size_of_val(v))?;
+        self.htod(&v_buf, v)?;
+        let out_w_buf = self.alloc(size_of_val(out_w))?;
+        self.htod(&out_w_buf, out_w)?;
+        let out_bias_slice = out_bias.unwrap_or(&dummy);
+        let out_bias_buf = self.alloc(size_of_val(out_bias_slice))?;
+        self.htod(&out_bias_buf, out_bias_slice)?;
+
+        // Device-resident intermediates: `q` / `context` `[t_q, d]` and the reused
+        // per-head scratch. None is ever D2H'd — that is the readback this slice
+        // eliminates. `out` `[t_q, d]` is the single buffer copied back.
+        let f = size_of::<f32>();
+        let tqd = checked_mul(checked_mul(t_q, d, "attn t_q*d")?, f, "attn t_q*d bytes")?;
+        let tq_hd_n = checked_mul(t_q, hd, "attn t_q*hd")?;
+        let tkv_hd_n = checked_mul(t_kv, hd, "attn t_kv*hd")?;
+        let hd_tkv_n = checked_mul(hd, t_kv, "attn hd*t_kv")?;
+        let tq_tkv_n = checked_mul(t_q, t_kv, "attn t_q*t_kv")?;
+        let q_buf = self.alloc(tqd)?; // q-proj [t_q, d]
+        let context_buf = self.alloc(tqd)?; // per-head scatter target [t_q, d]
+        let qh_buf = self.alloc(checked_mul(tq_hd_n, f, "attn qh bytes")?)?; // [t_q, hd]
+        let vh_buf = self.alloc(checked_mul(tkv_hd_n, f, "attn vh bytes")?)?; // [t_kv, hd]
+        let kh_t_buf = self.alloc(checked_mul(hd_tkv_n, f, "attn kh_t bytes")?)?; // [hd, t_kv]
+        let scores_buf = self.alloc(checked_mul(tq_tkv_n, f, "attn scores bytes")?)?; // [t_q, t_kv]
+        let probs_buf = self.alloc(checked_mul(tq_tkv_n, f, "attn probs bytes")?)?; // [t_q, t_kv]
+        let ctx_h_buf = self.alloc(checked_mul(tq_hd_n, f, "attn ctx_h bytes")?)?; // [t_q, hd]
+        let out_buf = self.alloc(size_of_val(out))?; // [t_q, d]
+
+        // Shared scalars (must outlive the launches; addresses go into `params`).
+        let t_q_u = t_q as c_uint;
+        let t_kv_u = t_kv as c_uint;
+        let d_u = d as c_uint;
+        let hd_u = hd as c_uint;
+        let zero_u: c_uint = 0; // has_bias / bias-less GEMMs
+        let has_bias_q: c_uint = u32::from(q_bias.is_some());
+        let has_bias_out: c_uint = u32::from(out_bias.is_some());
+        let scale_v = scale;
+        let one_v = 1.0f32;
+
+        let gemm_block = (BLOCK, BLOCK, 1);
+        let gemm_grid = |n: usize, m: usize| {
+            (
+                n.div_ceil(BLOCK as usize) as c_uint,
+                m.div_ceil(BLOCK as usize) as c_uint,
+                1,
+            )
+        };
+        let lin_block = (BLOCK_1D, 1, 1);
+        let lin_grid = |elems: usize| (elems.div_ceil(BLOCK_1D as usize) as c_uint, 1, 1);
+
+        // q = xq[t_q,d] · q_w[d,d] (+q_bias) — GEMM (M=t_q, N=d, K=d). The query
+        // scale is NOT applied here; it is folded into the qh gather below (the
+        // same single FP32 multiply the CPU does after this GEMM).
+        let mut p_q: [*mut c_void; 8] = [
+            ptr_arg(&xq_buf.ptr),
+            ptr_arg(&q_w_buf.ptr),
+            ptr_arg(&q_bias_buf.ptr),
+            ptr_arg(&q_buf.ptr),
+            uint_arg(&t_q_u),
+            uint_arg(&d_u),
+            uint_arg(&d_u),
+            uint_arg(&has_bias_q),
+        ];
+        self.launch_async(
+            self.gemm,
+            gemm_grid(d, t_q),
+            gemm_block,
+            &mut p_q,
+            "cuLaunchKernel(vokra_gemm_f32 attn q-proj)",
+        )?;
+
+        for h in 0..n_head {
+            let c0_u = (h * hd) as c_uint;
+            // qh[i,c] = q[i, c0+c] * scale.
+            let mut p_qh: [*mut c_void; 7] = [
+                ptr_arg(&q_buf.ptr),
+                ptr_arg(&qh_buf.ptr),
+                uint_arg(&t_q_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+                f32_arg(&scale_v),
+            ];
+            self.launch_async(
+                self.col_gather,
+                lin_grid(tq_hd_n),
+                lin_block,
+                &mut p_qh,
+                "cuLaunchKernel(vokra_col_gather_f32 attn qh)",
+            )?;
+            // vh[j,c] = v[j, c0+c] (scale = 1).
+            let mut p_vh: [*mut c_void; 7] = [
+                ptr_arg(&v_buf.ptr),
+                ptr_arg(&vh_buf.ptr),
+                uint_arg(&t_kv_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+                f32_arg(&one_v),
+            ];
+            self.launch_async(
+                self.col_gather,
+                lin_grid(tkv_hd_n),
+                lin_block,
+                &mut p_vh,
+                "cuLaunchKernel(vokra_col_gather_f32 attn vh)",
+            )?;
+            // kh_t[c,j] = k[j, c0+c] (gather + transpose to [hd, t_kv]).
+            let mut p_kh: [*mut c_void; 6] = [
+                ptr_arg(&k_buf.ptr),
+                ptr_arg(&kh_t_buf.ptr),
+                uint_arg(&t_kv_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+            ];
+            self.launch_async(
+                self.col_gather_t,
+                lin_grid(hd_tkv_n),
+                lin_block,
+                &mut p_kh,
+                "cuLaunchKernel(vokra_col_gather_t_f32 attn kh_t)",
+            )?;
+            // scores[t_q,t_kv] = qh[t_q,hd] · kh_t[hd,t_kv] (bias-less GEMM).
+            let mut p_scores: [*mut c_void; 8] = [
+                ptr_arg(&qh_buf.ptr),
+                ptr_arg(&kh_t_buf.ptr),
+                ptr_arg(&q_bias_buf.ptr),
+                ptr_arg(&scores_buf.ptr),
+                uint_arg(&t_q_u),
+                uint_arg(&t_kv_u),
+                uint_arg(&hd_u),
+                uint_arg(&zero_u),
+            ];
+            self.launch_async(
+                self.gemm,
+                gemm_grid(t_kv, t_q),
+                gemm_block,
+                &mut p_scores,
+                "cuLaunchKernel(vokra_gemm_f32 attn scores)",
+            )?;
+            // probs = softmax_rows(scores) (no mask — non-causal).
+            let mut p_soft: [*mut c_void; 4] = [
+                ptr_arg(&scores_buf.ptr),
+                ptr_arg(&probs_buf.ptr),
+                uint_arg(&t_q_u),
+                uint_arg(&t_kv_u),
+            ];
+            self.launch_async(
+                self.softmax,
+                lin_grid(t_q),
+                lin_block,
+                &mut p_soft,
+                "cuLaunchKernel(vokra_softmax_f32 attn)",
+            )?;
+            // ctx_h[t_q,hd] = probs[t_q,t_kv] · vh[t_kv,hd] (bias-less GEMM).
+            let mut p_ctx: [*mut c_void; 8] = [
+                ptr_arg(&probs_buf.ptr),
+                ptr_arg(&vh_buf.ptr),
+                ptr_arg(&q_bias_buf.ptr),
+                ptr_arg(&ctx_h_buf.ptr),
+                uint_arg(&t_q_u),
+                uint_arg(&hd_u),
+                uint_arg(&t_kv_u),
+                uint_arg(&zero_u),
+            ];
+            self.launch_async(
+                self.gemm,
+                gemm_grid(hd, t_q),
+                gemm_block,
+                &mut p_ctx,
+                "cuLaunchKernel(vokra_gemm_f32 attn context)",
+            )?;
+            // context[i, c0+c] = ctx_h[i,c].
+            let mut p_scatter: [*mut c_void; 6] = [
+                ptr_arg(&ctx_h_buf.ptr),
+                ptr_arg(&context_buf.ptr),
+                uint_arg(&t_q_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+            ];
+            self.launch_async(
+                self.col_scatter,
+                lin_grid(tq_hd_n),
+                lin_block,
+                &mut p_scatter,
+                "cuLaunchKernel(vokra_col_scatter_f32 attn)",
+            )?;
+        }
+
+        // out = context[t_q,d] · out_w[d,d] (+out_bias) — GEMM (M=t_q, N=d, K=d).
+        let mut p_out: [*mut c_void; 8] = [
+            ptr_arg(&context_buf.ptr),
+            ptr_arg(&out_w_buf.ptr),
+            ptr_arg(&out_bias_buf.ptr),
+            ptr_arg(&out_buf.ptr),
+            uint_arg(&t_q_u),
+            uint_arg(&d_u),
+            uint_arg(&d_u),
+            uint_arg(&has_bias_out),
+        ];
+        self.launch_async(
+            self.gemm,
+            gemm_grid(d, t_q),
+            gemm_block,
+            &mut p_out,
+            "cuLaunchKernel(vokra_gemm_f32 attn out-proj)",
+        )?;
+
+        // ONE synchronise for the whole chain, then D2H only the final output.
+        // SAFETY: waits for every launch on the owned stream to complete before
+        // the D2H below.
+        let sync = unsafe { (self.driver.cu_stream_synchronize)(self.stream) };
+        sys::check(&self.driver, sync, "cuStreamSynchronize")?;
+        self.dtoh(&out_buf, out)
+    }
+
     /// Launches `func` on the context stream **without** synchronising — the
     /// fused MLP path issues three launches back to back and synchronises the
     /// stream once at the end. CUDA stream ordering guarantees each launch sees
@@ -1127,6 +1523,9 @@ struct Modules {
     layer_norm: CUfunction,
     gelu: CUfunction,
     conv1d: CUfunction,
+    col_gather: CUfunction,
+    col_gather_t: CUfunction,
+    col_scatter: CUfunction,
 }
 
 /// Owns a loaded CUDA module, unloading it once on drop unless defused with
@@ -1204,6 +1603,10 @@ fn load_modules(driver: &CudaDriver) -> Result<Modules> {
     let layer_norm = get_function(driver, kernels_module.module, c"vokra_layer_norm_f32")?;
     let gelu = get_function(driver, kernels_module.module, c"vokra_gelu_f32")?;
     let conv1d = get_function(driver, kernels_module.module, c"vokra_conv1d_f32")?;
+    // The three Phase-5 attention column-mover kernels share the same module.
+    let col_gather = get_function(driver, kernels_module.module, c"vokra_col_gather_f32")?;
+    let col_gather_t = get_function(driver, kernels_module.module, c"vokra_col_gather_t_f32")?;
+    let col_scatter = get_function(driver, kernels_module.module, c"vokra_col_scatter_f32")?;
 
     // All resolved: defuse the guards into the owned handle set.
     Ok(Modules {
@@ -1215,6 +1618,9 @@ fn load_modules(driver: &CudaDriver) -> Result<Modules> {
         layer_norm,
         gelu,
         conv1d,
+        col_gather,
+        col_gather_t,
+        col_scatter,
     })
 }
 
@@ -1510,5 +1916,56 @@ fn validate_mlp(
         expect_len("mlp fc2_bias", bias.len(), d)?;
     }
     expect_len("mlp out", out.len(), checked_mul(t, d, "mlp out t*d")?)?;
+    Ok(())
+}
+
+/// Validates the fused non-causal attention shapes: `xq` is `[t_q, d]`, `k` / `v`
+/// are `[t_kv, d]`, `q_w` / `out_w` are `[d, d]` (both projections `d → d`),
+/// biases `[d]`, `out` is `[t_q, d]`, and `d` splits evenly into `n_head` heads —
+/// so a mis-shaped call is an explicit `InvalidArgument` rather than a device
+/// fault (mirrors the Metal backend's `validate_attn`).
+#[allow(clippy::too_many_arguments)] // fused-attention operand set (two Linears + K/V + dims)
+fn validate_attn(
+    t_q: usize,
+    t_kv: usize,
+    d: usize,
+    n_head: usize,
+    xq: &[f32],
+    q_w: &[f32],
+    q_bias: Option<&[f32]>,
+    k: &[f32],
+    v: &[f32],
+    out_w: &[f32],
+    out_bias: Option<&[f32]>,
+    out: &[f32],
+) -> Result<()> {
+    if t_q == 0 || t_kv == 0 || d == 0 || n_head == 0 {
+        return Err(VokraError::InvalidArgument(
+            "attn dimensions t_q, t_kv, d, n_head must all be >= 1".to_owned(),
+        ));
+    }
+    if d % n_head != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "attn d ({d}) must be divisible by n_head ({n_head})"
+        )));
+    }
+    let dd = checked_mul(d, d, "attn d*d")?;
+    let tkvd = checked_mul(t_kv, d, "attn t_kv*d")?;
+    expect_len("attn xq", xq.len(), checked_mul(t_q, d, "attn t_q*d")?)?;
+    expect_len("attn q_w", q_w.len(), dd)?;
+    if let Some(bias) = q_bias {
+        expect_len("attn q_bias", bias.len(), d)?;
+    }
+    expect_len("attn k", k.len(), tkvd)?;
+    expect_len("attn v", v.len(), tkvd)?;
+    expect_len("attn out_w", out_w.len(), dd)?;
+    if let Some(bias) = out_bias {
+        expect_len("attn out_bias", bias.len(), d)?;
+    }
+    expect_len(
+        "attn out",
+        out.len(),
+        checked_mul(t_q, d, "attn out t_q*d")?,
+    )?;
     Ok(())
 }

@@ -180,6 +180,43 @@ pub(crate) fn attention_from_kv_into(
     let hd = d / n_head;
     let scale = (hd as f32).powf(-0.5);
 
+    // Phase-5 fused fast path: a **non-causal** block on a GPU backend runs the
+    // whole q-proj → per-head {gather, QKᵀ, softmax, A·V, scatter} → out-proj
+    // chain in ONE device-resident submission (`Compute::attn_f32`), which is
+    // bit-identical to the per-op loop below but pays one readback instead of
+    // many. Gated on `attention_is_fused()` so the CPU (and any causal block)
+    // always takes the untouched per-op path — no silent fall back (FR-EX-08).
+    // The shape guards (`d → d` projections, `d` divisible into `n_head`) are the
+    // fused kernel's contract; a model that violates them falls through to the
+    // per-op loop with no correctness loss. `resize_zeroed` is a within-reserve
+    // resize of the caller's `out` scratch (already sized `t_q*d`), so this stays
+    // zero-alloc on the hot path.
+    if !causal
+        && compute.attention_is_fused()
+        && n_head != 0
+        && d % n_head == 0
+        && q_lin.in_features == d
+        && out_lin.in_features == d
+        && out_lin.out_features == d
+    {
+        resize_zeroed(out, t_q * d);
+        return compute.attn_f32(
+            t_q,
+            t_kv,
+            d,
+            n_head,
+            xq,
+            &q_lin.w_t,
+            q_lin.bias.as_deref(),
+            k,
+            v,
+            &out_lin.w_t,
+            out_lin.bias.as_deref(),
+            scale,
+            out,
+        );
+    }
+
     scratch.ensure(t_q, t_kv, d, n_head);
 
     // Scaled query projection into scratch.q (bias applied by the GEMM).
@@ -320,6 +357,33 @@ mod tests {
             out_features: d,
             bias: bias.then(|| vec![0.0f32; d]),
         }
+    }
+
+    #[test]
+    fn attention_is_fused_is_false_on_cpu() {
+        // The CPU never fuses attention: `attention_from_kv_into` therefore always
+        // takes the per-op head loop (the fused fast path is gated on this being
+        // true), and `Compute::attn_f32` on CPU is an explicit UnsupportedOp.
+        let cpu = Compute::cpu();
+        assert!(!cpu.attention_is_fused());
+        assert!(matches!(
+            cpu.attn_f32(
+                1,
+                1,
+                2,
+                1,
+                &[0.0; 2],
+                &[0.0; 4],
+                None,
+                &[0.0; 2],
+                &[0.0; 2],
+                &[0.0; 4],
+                None,
+                1.0,
+                &mut [0.0; 2],
+            ),
+            Err(VokraError::UnsupportedOp(_))
+        ));
     }
 
     #[test]
