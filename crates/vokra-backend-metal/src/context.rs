@@ -31,9 +31,11 @@
 //! at build time — that iOS precompile path is a followup for M2-02 (this slice
 //! is macOS, where `newLibraryWithSource:` is the pragmatic route).
 
+use core::cell::Cell;
 use core::ffi::c_void;
+use core::marker::PhantomData;
 
-use vokra_core::{Result, VokraError};
+use vokra_core::{PrenormLayer, Result, VokraError};
 
 use crate::sys::{self, Id, MtlSize};
 
@@ -356,6 +358,28 @@ kernel void vokra_col_scatter_f32(
     const uint c = gid % d.hd;
     dst[i * d.width + d.c0 + c] = src[gid];
 }
+
+// ---- Phase-5 follow-on: in-place residual add (dst[i] += src[i]) -------------
+// The device kernel for the encoder block's `h += sub_block` residual, replacing
+// the host `whisper::nn::add_assign` loop so `h` stays resident across a whole
+// device-resident encoder. `dst` is bound read-write at index 0. One thread per
+// element, ragged-tail guarded — a single FP32 add of the same two operands the
+// host loop adds, so it is bit-identical to `add_assign`.
+struct AddAssignDims {
+    uint n;
+};
+
+kernel void vokra_add_assign_f32(
+    device float*           dst [[buffer(0)]],
+    device const float*     src [[buffer(1)]],
+    constant AddAssignDims& d   [[buffer(2)]],
+    uint                    gid [[thread_position_in_grid]])
+{
+    if (gid >= d.n) {
+        return;
+    }
+    dst[gid] = dst[gid] + src[gid];
+}
 "#;
 
 /// GEMM dimension block handed to the kernel via `setBytes:` (buffer index 4).
@@ -455,6 +479,101 @@ struct ColScatterDims {
     c0: u32,
 }
 
+/// `add_assign` dims (`setBytes:` index 2). Mirrors the MSL `struct
+/// AddAssignDims`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AddAssignDims {
+    n: u32,
+}
+
+/// Scalar shape of one fused-MLP pass chain, shared by the host-in/out
+/// [`MetalContext::run_mlp`], the device-in/out [`MetalContext::mlp_dev`] and the
+/// whole-encoder [`MetalContext::encode_prenorm_stack`] so all three encode the
+/// same three passes.
+struct MlpPassDims {
+    t: usize,
+    d: usize,
+    ffn: usize,
+    has_fc1_bias: bool,
+    has_fc2_bias: bool,
+}
+
+/// The already-allocated device buffers for one fused-MLP pass chain (`x` `[t,d]`,
+/// `fc1_w` `[d,ffn]`, `fc2_w` `[ffn,d]`, biases `[ffn]`/`[d]` — a 1-float dummy
+/// when absent, `h`/`a` `[t,ffn]` device-resident intermediates, `out` `[t,d]`).
+struct MlpPassBufs<'b> {
+    x: &'b OwnedBuf,
+    fc1_w: &'b OwnedBuf,
+    fc1_bias: &'b OwnedBuf,
+    fc2_w: &'b OwnedBuf,
+    fc2_bias: &'b OwnedBuf,
+    h: &'b OwnedBuf,
+    a: &'b OwnedBuf,
+    out: &'b OwnedBuf,
+}
+
+/// Scalar shape of one fused non-causal attention pass chain, shared by
+/// [`MetalContext::run_attn`], [`MetalContext::attn_dev`] and
+/// [`MetalContext::encode_prenorm_stack`]. `scale = head_dim^-0.5` is folded into
+/// the qh gather.
+struct AttnPassDims {
+    t_q: usize,
+    t_kv: usize,
+    d: usize,
+    n_head: usize,
+    scale: f32,
+    has_q_bias: bool,
+    has_out_bias: bool,
+}
+
+/// The already-allocated device buffers for one fused-attention pass chain: the
+/// inputs (`xq` `[t_q,d]`, `q_w`/`out_w` `[d,d]`, biases `[d]`, pre-projected
+/// `k`/`v` `[t_kv,d]`), the device-resident scratch (`q`/`context` `[t_q,d]`,
+/// per-head `qh`/`ctx_h` `[t_q,hd]`, `vh` `[t_kv,hd]`, `kh_t` `[hd,t_kv]`,
+/// `scores`/`probs` `[t_q,t_kv]`), and `out` `[t_q,d]`.
+struct AttnPassBufs<'b> {
+    xq: &'b OwnedBuf,
+    q_w: &'b OwnedBuf,
+    q_bias: &'b OwnedBuf,
+    k: &'b OwnedBuf,
+    v: &'b OwnedBuf,
+    out_w: &'b OwnedBuf,
+    out_bias: &'b OwnedBuf,
+    q: &'b OwnedBuf,
+    context: &'b OwnedBuf,
+    qh: &'b OwnedBuf,
+    vh: &'b OwnedBuf,
+    kh_t: &'b OwnedBuf,
+    scores: &'b OwnedBuf,
+    probs: &'b OwnedBuf,
+    ctx_h: &'b OwnedBuf,
+    out: &'b OwnedBuf,
+}
+
+/// One pre-norm block's weights uploaded to the device (the on-GPU mirror of
+/// [`vokra_core::PrenormLayer`]), held for the life of an
+/// [`MetalContext::encode_prenorm_stack`] call. Absent biases (Whisper's `k`)
+/// stay `None` and bind the shared dummy at encode time.
+struct DevLayer<'c> {
+    attn_ln_g: MetalDeviceTensor<'c>,
+    attn_ln_b: MetalDeviceTensor<'c>,
+    q_w: MetalDeviceTensor<'c>,
+    q_bias: Option<MetalDeviceTensor<'c>>,
+    k_w: MetalDeviceTensor<'c>,
+    k_bias: Option<MetalDeviceTensor<'c>>,
+    v_w: MetalDeviceTensor<'c>,
+    v_bias: Option<MetalDeviceTensor<'c>>,
+    out_w: MetalDeviceTensor<'c>,
+    out_bias: Option<MetalDeviceTensor<'c>>,
+    mlp_ln_g: MetalDeviceTensor<'c>,
+    mlp_ln_b: MetalDeviceTensor<'c>,
+    fc1_w: MetalDeviceTensor<'c>,
+    fc1_bias: Option<MetalDeviceTensor<'c>>,
+    fc2_w: MetalDeviceTensor<'c>,
+    fc2_bias: Option<MetalDeviceTensor<'c>>,
+}
+
 /// RAII wrapper for a `+1`-owned Objective-C object, released once on drop unless
 /// defused with [`Owned::into_raw`]. Used for the transient device objects during
 /// [`MetalContext::build`] so an early `?`-return releases everything already
@@ -493,6 +612,43 @@ impl Drop for OwnedBuf {
     }
 }
 
+/// A public, cross-call handle to a device-resident `[f32]` buffer — the
+/// Phase-5-follow-on surface that lets a caller keep intermediates on the GPU
+/// between op calls (produced by [`MetalContext::upload`] / [`alloc_dev`], read
+/// back by [`download`], consumed by the `*_dev` ops).
+///
+/// - Owns its `MTLBuffer` through the existing [`OwnedBuf`] RAII (released once on
+///   drop), so it adds no new `unsafe`.
+/// - `len` is the f32 element count (buffer sizing / readback validation).
+/// - The `PhantomData<&'ctx MetalContext>` ties the handle's lifetime to the
+///   context it was allocated from: because every producer is an `&'ctx self`
+///   method returning `MetalDeviceTensor<'ctx>`, holding a tensor past the
+///   context's `Drop` is a **compile error**. It also inherits `OwnedBuf`'s
+///   `!Send`/`!Sync` (the raw `Id` is a `*mut c_void`), matching the context's
+///   thread affinity with no manual marker.
+///
+/// [`alloc_dev`]: MetalContext::alloc_dev
+/// [`download`]: MetalContext::download
+pub struct MetalDeviceTensor<'ctx> {
+    buf: OwnedBuf,
+    len: usize,
+    _ctx: PhantomData<&'ctx MetalContext>,
+}
+
+impl MetalDeviceTensor<'_> {
+    /// The number of `f32` elements this device buffer holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the device buffer is empty (holds zero elements).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 /// A Metal device + command queue + compiled GEMM pipeline.
 ///
 /// Holds three `+1`-owned Objective-C objects (device, queue, pipeline),
@@ -511,6 +667,13 @@ pub struct MetalContext {
     col_gather_pipeline: Id,
     col_gather_t_pipeline: Id,
     col_scatter_pipeline: Id,
+    add_assign_pipeline: Id,
+    /// Count of command-buffer submissions (`commit` + `waitUntilCompleted`)
+    /// issued through this context — the env-independent readback/sync metric the
+    /// Phase-5-follow-on encoder-residency slice proves against (the whole encoder
+    /// in ONE submission vs the per-op path's `6·N + 1`). `Cell` because every op
+    /// takes `&self` and the context is already thread-affine (`!Send`/`!Sync`).
+    submissions: Cell<u64>,
 }
 
 impl MetalContext {
@@ -602,6 +765,10 @@ impl MetalContext {
         // SAFETY: as above.
         let col_scatter_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_col_scatter_f32") }?;
+        // The Phase-5-follow-on residual-add kernel shares the same library.
+        // SAFETY: as above.
+        let add_assign_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_add_assign_f32") }?;
         drop(klib);
 
         Ok(MetalContext {
@@ -616,6 +783,8 @@ impl MetalContext {
             col_gather_pipeline: col_gather_pipeline.into_raw(),
             col_gather_t_pipeline: col_gather_t_pipeline.into_raw(),
             col_scatter_pipeline: col_scatter_pipeline.into_raw(),
+            add_assign_pipeline: add_assign_pipeline.into_raw(),
+            submissions: Cell::new(0),
         })
     }
 
@@ -779,6 +948,7 @@ impl MetalContext {
             );
 
             sys::send_void(enc, sys::sel(b"endEncoding\0"));
+            self.submissions.set(self.submissions.get() + 1);
             sys::send_void(cmd, sys::sel(b"commit\0"));
             sys::send_void(cmd, sys::sel(b"waitUntilCompleted\0"));
 
@@ -1226,36 +1396,69 @@ impl MetalContext {
         let a_buf = self.new_buffer_output(inter)?; // gelu output [t, ffn]
         let out_buf = self.new_buffer_output(out.len())?; // [t, d]
 
+        // One command buffer for the whole chain: encode the three passes (shared
+        // with `mlp_dev` / `encode_prenorm_stack` so the numerics are single-
+        // sourced), then commit + wait ONCE.
+        let cmd = self.new_command_buffer("mlp")?;
+        self.encode_mlp_passes(
+            cmd,
+            &MlpPassDims {
+                t,
+                d,
+                ffn,
+                has_fc1_bias: fc1_bias.is_some(),
+                has_fc2_bias: fc2_bias.is_some(),
+            },
+            &MlpPassBufs {
+                x: &x_buf,
+                fc1_w: &fc1_w_buf,
+                fc1_bias: &fc1_bias_buf,
+                fc2_w: &fc2_w_buf,
+                fc2_bias: &fc2_bias_buf,
+                h: &h_buf,
+                a: &a_buf,
+                out: &out_buf,
+            },
+        )?;
+        self.commit_and_wait(cmd, "mlp")?;
+
+        // Single readback of the final output; `h`/`a` stay resident and drop.
+        read_back(&out_buf, out)
+    }
+
+    /// Encodes the three fused-MLP passes (`fc1` GEMM → GELU → `fc2` GEMM) into
+    /// the already-open `cmd`, operating on already-allocated device buffers,
+    /// **without** committing / allocating / reading back. Factored out of
+    /// [`Self::run_mlp`] so the host-in/out [`Self::mlp_f32`], the device-in/out
+    /// [`Self::mlp_dev`] and the whole-encoder [`Self::encode_prenorm_stack`] run
+    /// byte-for-byte identical passes (same kernels, order, launch geometry). The
+    /// caller sized every buffer (`h` / `a` are `[t, ffn]`, `out` is `[t, d]`) and
+    /// commits + waits once afterwards.
+    fn encode_mlp_passes(&self, cmd: Id, dims: &MlpPassDims, bufs: &MlpPassBufs<'_>) -> Result<()> {
+        let (t, d, ffn) = (dims.t, dims.d, dims.ffn);
+        // `t*ffn` cannot overflow here: the caller allocated the `[t, ffn]`
+        // buffers, which required the same product to fit.
+        let inter = t * ffn;
         let fc1_dims = GemmDims {
             m: t as u32,
             n: ffn as u32,
             k: d as u32,
-            has_bias: u32::from(fc1_bias.is_some()),
+            has_bias: u32::from(dims.has_fc1_bias),
         };
         let gelu_dims = GeluDims { n: inter as u32 };
         let fc2_dims = GemmDims {
             m: t as u32,
             n: d as u32,
             k: ffn as u32,
-            has_bias: u32::from(fc2_bias.is_some()),
+            has_bias: u32::from(dims.has_fc2_bias),
         };
-
-        // One command buffer for the whole chain.
-        // SAFETY: `queue` is valid for the context's lifetime; `commandBuffer`
-        // returns an autoreleased command buffer drained by `mlp_f32`'s pool.
-        let cmd = unsafe { sys::send_id(self.queue, sys::sel(b"commandBuffer\0")) };
-        if cmd.is_null() {
-            return Err(VokraError::BackendUnavailable(
-                "mlp: MTLCommandQueue commandBuffer returned nil".to_owned(),
-            ));
-        }
 
         // Pass 1: h = x[t,d] · fc1_w[d,ffn] (+bias) — GEMM (grid = N×M, 16×16).
         let (fc1_grid, fc1_tg) = grid_2d(ffn, t);
         self.encode_pass(
             cmd,
             self.gemm_pipeline,
-            &[&x_buf, &fc1_w_buf, &fc1_bias_buf, &h_buf],
+            &[bufs.x, bufs.fc1_w, bufs.fc1_bias, bufs.h],
             (&fc1_dims as *const GemmDims).cast::<c_void>(),
             size_of::<GemmDims>(),
             fc1_grid,
@@ -1267,7 +1470,7 @@ impl MetalContext {
         self.encode_pass(
             cmd,
             self.gelu_pipeline,
-            &[&h_buf, &a_buf],
+            &[bufs.h, bufs.a],
             (&gelu_dims as *const GeluDims).cast::<c_void>(),
             size_of::<GeluDims>(),
             g_grid,
@@ -1279,32 +1482,14 @@ impl MetalContext {
         self.encode_pass(
             cmd,
             self.gemm_pipeline,
-            &[&a_buf, &fc2_w_buf, &fc2_bias_buf, &out_buf],
+            &[bufs.a, bufs.fc2_w, bufs.fc2_bias, bufs.out],
             (&fc2_dims as *const GemmDims).cast::<c_void>(),
             size_of::<GemmDims>(),
             fc2_grid,
             fc2_tg,
             "mlp fc2",
         )?;
-
-        // Commit the whole chain and wait ONCE, then surface any GPU-side error.
-        // SAFETY: `cmd` is the valid command buffer encoded above; `commit` then
-        // `waitUntilCompleted` submit and block; `error` is read after completion
-        // (no silent success).
-        unsafe {
-            sys::send_void(cmd, sys::sel(b"commit\0"));
-            sys::send_void(cmd, sys::sel(b"waitUntilCompleted\0"));
-            let cmd_err = sys::send_id(cmd, sys::sel(b"error\0"));
-            if !cmd_err.is_null() {
-                let detail = error_description(cmd_err);
-                return Err(VokraError::BackendUnavailable(format!(
-                    "mlp command buffer failed: {detail}"
-                )));
-            }
-        }
-
-        // Single readback of the final output; `h`/`a` stay resident and drop.
-        read_back(&out_buf, out)
+        Ok(())
     }
 
     // ---- Phase-5 fusion: device-resident non-causal attention ----------------
@@ -1426,15 +1611,72 @@ impl MetalContext {
         let ctx_h_buf = self.new_buffer_output(tq_hd)?; // this head's ctx [t_q, hd]
         let out_buf = self.new_buffer_output(out.len())?; // [t_q, d]
 
-        // One command buffer for the whole chain.
-        // SAFETY: `queue` is valid for the context's lifetime; `commandBuffer`
-        // returns an autoreleased command buffer drained by `attn_f32`'s pool.
-        let cmd = unsafe { sys::send_id(self.queue, sys::sel(b"commandBuffer\0")) };
-        if cmd.is_null() {
-            return Err(VokraError::BackendUnavailable(
-                "attn: MTLCommandQueue commandBuffer returned nil".to_owned(),
-            ));
-        }
+        // One command buffer for the whole chain: encode every pass (shared with
+        // `attn_dev` / `encode_prenorm_stack` so the numerics are single-sourced),
+        // then commit + wait ONCE.
+        let cmd = self.new_command_buffer("attn")?;
+        self.encode_attn_passes(
+            cmd,
+            &AttnPassDims {
+                t_q,
+                t_kv,
+                d,
+                n_head,
+                scale,
+                has_q_bias: q_bias.is_some(),
+                has_out_bias: out_bias.is_some(),
+            },
+            &AttnPassBufs {
+                xq: &xq_buf,
+                q_w: &q_w_buf,
+                q_bias: &q_bias_buf,
+                k: &k_buf,
+                v: &v_buf,
+                out_w: &out_w_buf,
+                out_bias: &out_bias_buf,
+                q: &q_buf,
+                context: &context_buf,
+                qh: &qh_buf,
+                vh: &vh_buf,
+                kh_t: &kh_t_buf,
+                scores: &scores_buf,
+                probs: &probs_buf,
+                ctx_h: &ctx_h_buf,
+                out: &out_buf,
+            },
+        )?;
+        self.commit_and_wait(cmd, "attn")?;
+
+        // Single readback of the final output; every intermediate stays resident
+        // and drops.
+        read_back(&out_buf, out)
+    }
+
+    /// Encodes the fused non-causal attention passes (q-proj GEMM → per head
+    /// {gather qh/vh, gather-transpose kh_t, scores GEMM, softmax, context GEMM,
+    /// scatter} → out-proj GEMM) into the already-open `cmd`, operating on
+    /// already-allocated device buffers, **without** committing / allocating /
+    /// reading back. Factored out of [`Self::run_attn`] so the host-in/out
+    /// [`Self::attn_f32`], the device-in/out [`Self::attn_dev`] and the
+    /// whole-encoder [`Self::encode_prenorm_stack`] run byte-for-byte identical
+    /// passes. The per-head scratch (`qh` / `vh` / `kh_t` / `scores` / `probs` /
+    /// `ctx_h`) is reused across heads; Metal hazard-tracks the shared buffers so
+    /// head h+1's gather into `qh` is ordered after head h's scores GEMM read of
+    /// it. `dims.scale` is folded into the qh gather (the query scale). Bias-less
+    /// GEMMs bind `bufs.q_bias` as the never-read dummy (`has_bias = 0`).
+    /// `hd = d / n_head` is exact (the caller validated it).
+    fn encode_attn_passes(
+        &self,
+        cmd: Id,
+        dims: &AttnPassDims,
+        bufs: &AttnPassBufs<'_>,
+    ) -> Result<()> {
+        let (t_q, t_kv, d, n_head) = (dims.t_q, dims.t_kv, dims.d, dims.n_head);
+        let hd = d / n_head;
+        // These products all fit: the caller allocated buffers of these sizes.
+        let tq_hd = t_q * hd;
+        let tkv_hd = t_kv * hd;
+        let hd_tkv = hd * t_kv;
 
         // Pass 1: q = xq[t_q,d] · q_w[d,d] (+q_bias) — GEMM (grid = N×M, 16×16).
         // The query scale is NOT applied here; it is folded into the qh gather
@@ -1443,13 +1685,13 @@ impl MetalContext {
             m: t_q as u32,
             n: d as u32,
             k: d as u32,
-            has_bias: u32::from(q_bias.is_some()),
+            has_bias: u32::from(dims.has_q_bias),
         };
         let (q_grid, q_tg) = grid_2d(d, t_q);
         self.encode_pass(
             cmd,
             self.gemm_pipeline,
-            &[&xq_buf, &q_w_buf, &q_bias_buf, &q_buf],
+            &[bufs.xq, bufs.q_w, bufs.q_bias, bufs.q],
             (&q_dims as *const GemmDims).cast::<c_void>(),
             size_of::<GemmDims>(),
             q_grid,
@@ -1458,11 +1700,8 @@ impl MetalContext {
         )?;
 
         // Per head: gather qh (scaled) / vh / kh_tᵀ, scores GEMM, softmax, context
-        // GEMM, scatter. The per-head scratch buffers are REUSED across heads;
-        // Metal hazard-tracks the shared buffers, so head h+1's gather into `qh`
-        // is ordered after head h's scores GEMM read of `qh` automatically (the
-        // same mechanism `mlp_f32` relies on for `h_buf`). `setBytes:` copies the
-        // dims eagerly, so the per-head dims locals need not outlive the loop.
+        // GEMM, scatter. `setBytes:` copies the dims eagerly, so the per-head dims
+        // locals need not outlive the loop.
         for h in 0..n_head {
             let c0 = (h * hd) as u32;
             // qh[i,c] = q[i, c0+c] * scale.
@@ -1471,13 +1710,13 @@ impl MetalContext {
                 hd: hd as u32,
                 width: d as u32,
                 c0,
-                scale,
+                scale: dims.scale,
             };
             let (gq_grid, gq_tg) = grid_1d(tq_hd);
             self.encode_pass(
                 cmd,
                 self.col_gather_pipeline,
-                &[&q_buf, &qh_buf],
+                &[bufs.q, bufs.qh],
                 (&qh_dims as *const ColGatherDims).cast::<c_void>(),
                 size_of::<ColGatherDims>(),
                 gq_grid,
@@ -1496,7 +1735,7 @@ impl MetalContext {
             self.encode_pass(
                 cmd,
                 self.col_gather_pipeline,
-                &[&v_buf, &vh_buf],
+                &[bufs.v, bufs.vh],
                 (&vh_dims as *const ColGatherDims).cast::<c_void>(),
                 size_of::<ColGatherDims>(),
                 gv_grid,
@@ -1514,7 +1753,7 @@ impl MetalContext {
             self.encode_pass(
                 cmd,
                 self.col_gather_t_pipeline,
-                &[&k_buf, &kh_t_buf],
+                &[bufs.k, bufs.kh_t],
                 (&kh_dims as *const ColGatherTDims).cast::<c_void>(),
                 size_of::<ColGatherTDims>(),
                 gk_grid,
@@ -1532,7 +1771,7 @@ impl MetalContext {
             self.encode_pass(
                 cmd,
                 self.gemm_pipeline,
-                &[&qh_buf, &kh_t_buf, &q_bias_buf, &scores_buf],
+                &[bufs.qh, bufs.kh_t, bufs.q_bias, bufs.scores],
                 (&scores_dims as *const GemmDims).cast::<c_void>(),
                 size_of::<GemmDims>(),
                 s_grid,
@@ -1548,7 +1787,7 @@ impl MetalContext {
             self.encode_pass(
                 cmd,
                 self.softmax_pipeline,
-                &[&scores_buf, &probs_buf],
+                &[bufs.scores, bufs.probs],
                 (&sm_dims as *const SoftmaxDims).cast::<c_void>(),
                 size_of::<SoftmaxDims>(),
                 sm_grid,
@@ -1566,7 +1805,7 @@ impl MetalContext {
             self.encode_pass(
                 cmd,
                 self.gemm_pipeline,
-                &[&probs_buf, &vh_buf, &q_bias_buf, &ctx_h_buf],
+                &[bufs.probs, bufs.vh, bufs.q_bias, bufs.ctx_h],
                 (&ctx_dims as *const GemmDims).cast::<c_void>(),
                 size_of::<GemmDims>(),
                 c_grid,
@@ -1584,7 +1823,7 @@ impl MetalContext {
             self.encode_pass(
                 cmd,
                 self.col_scatter_pipeline,
-                &[&ctx_h_buf, &context_buf],
+                &[bufs.ctx_h, bufs.context],
                 (&scatter_dims as *const ColScatterDims).cast::<c_void>(),
                 size_of::<ColScatterDims>(),
                 sc_grid,
@@ -1598,24 +1837,615 @@ impl MetalContext {
             m: t_q as u32,
             n: d as u32,
             k: d as u32,
-            has_bias: u32::from(out_bias.is_some()),
+            has_bias: u32::from(dims.has_out_bias),
         };
         let (o_grid, o_tg) = grid_2d(d, t_q);
         self.encode_pass(
             cmd,
             self.gemm_pipeline,
-            &[&context_buf, &out_w_buf, &out_bias_buf, &out_buf],
+            &[bufs.context, bufs.out_w, bufs.out_bias, bufs.out],
             (&out_dims as *const GemmDims).cast::<c_void>(),
             size_of::<GemmDims>(),
             o_grid,
             o_tg,
             "attn out-proj",
         )?;
+        Ok(())
+    }
 
-        // Commit the whole chain and wait ONCE, then surface any GPU-side error.
-        // SAFETY: `cmd` is the valid command buffer encoded above; `commit` then
-        // `waitUntilCompleted` submit and block; `error` is read after completion
-        // (no silent success).
+    // ---- Phase-5 follow-on: public device-resident handle + ops --------------
+
+    /// The number of command-buffer submissions (`commit` + `waitUntilCompleted`)
+    /// issued through this context so far. The env-independent readback/sync
+    /// metric: the whole-encoder [`Self::encode_prenorm_stack`] issues ONE, versus
+    /// the per-op path's `6·N + 1` for an `N`-block encoder.
+    #[must_use]
+    pub fn submission_count(&self) -> u64 {
+        self.submissions.get()
+    }
+
+    /// Uploads `data` into a fresh device-resident buffer (H2D once). The returned
+    /// [`MetalDeviceTensor`] borrows the context, so it cannot outlive it.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::BackendUnavailable`] if the Metal buffer cannot be created.
+    pub fn upload(&self, data: &[f32]) -> Result<MetalDeviceTensor<'_>> {
+        let buf = self.new_buffer_from_slice(data)?;
+        Ok(MetalDeviceTensor {
+            buf,
+            len: data.len(),
+            _ctx: PhantomData,
+        })
+    }
+
+    /// Allocates an uninitialised device-resident buffer of `len` f32s (the
+    /// residency slice's intermediates; never round-tripped to the host until an
+    /// explicit [`Self::download`]).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::BackendUnavailable`] if the Metal buffer cannot be created.
+    pub fn alloc_dev(&self, len: usize) -> Result<MetalDeviceTensor<'_>> {
+        let buf = self.new_buffer_output(len)?;
+        Ok(MetalDeviceTensor {
+            buf,
+            len,
+            _ctx: PhantomData,
+        })
+    }
+
+    /// Reads a device-resident buffer back into `out` (D2H). Call after the owning
+    /// submission has completed (the `*_dev` ops and [`Self::encode_prenorm_stack`]
+    /// wait before returning, so a tensor they produced is readable immediately).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] if `out.len()` differs from the tensor's
+    /// element count; [`VokraError::BackendUnavailable`] on a null contents
+    /// pointer.
+    pub fn download(&self, t: &MetalDeviceTensor<'_>, out: &mut [f32]) -> Result<()> {
+        expect_len("download out", out.len(), t.len)?;
+        read_back(&t.buf, out)
+    }
+
+    /// Device-in/out affine layer normalisation (one self-contained submission):
+    /// `out = layer_norm(x)·γ + β` over the innermost axis of a `rows × cols`
+    /// buffer. Bit-identical to the host-in/out [`Self::layer_norm_f32`] (same
+    /// kernel); `out` must be a distinct buffer from `x`.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a shape mismatch;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    #[allow(clippy::too_many_arguments)] // intrinsic layer-norm parameter set
+    pub fn layer_norm_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        x: &MetalDeviceTensor<'_>,
+        gamma: &MetalDeviceTensor<'_>,
+        beta: &MetalDeviceTensor<'_>,
+        rows: usize,
+        cols: usize,
+        eps: f32,
+    ) -> Result<()> {
+        let total = checked_mul(rows, cols, "layer_norm_dev rows*cols")?;
+        expect_len("layer_norm_dev x", x.len, total)?;
+        expect_len("layer_norm_dev out", out.len, total)?;
+        expect_len("layer_norm_dev gamma", gamma.len, cols)?;
+        expect_len("layer_norm_dev beta", beta.len, cols)?;
+        if total == 0 {
+            return Ok(());
+        }
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("layer_norm_dev")?;
+            self.encode_layer_norm(
+                cmd, &x.buf, &gamma.buf, &beta.buf, &out.buf, rows, cols, eps,
+            )?;
+            self.commit_and_wait(cmd, "layer_norm_dev")
+        })
+    }
+
+    /// Device-in/out in-place residual add (one self-contained submission):
+    /// `dst[i] += src[i]`. Bit-identical to the host `whisper::nn::add_assign`
+    /// loop (the same single FP32 add).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] if the lengths differ;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    pub fn residual_add_dev(
+        &self,
+        dst: &mut MetalDeviceTensor<'_>,
+        src: &MetalDeviceTensor<'_>,
+    ) -> Result<()> {
+        expect_len("residual_add_dev src", src.len, dst.len)?;
+        if dst.len == 0 {
+            return Ok(());
+        }
+        let n = dst.len;
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("residual_add_dev")?;
+            self.encode_residual_add(cmd, &dst.buf, &src.buf, n)?;
+            self.commit_and_wait(cmd, "residual_add_dev")
+        })
+    }
+
+    /// Device-in/out fused MLP `fc2(gelu(fc1(x)))` (one self-contained submission,
+    /// the two `[t, ffn]` intermediates allocated internally and never read back).
+    /// Bit-identical to the host-in/out [`Self::mlp_f32`] (same passes).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a shape mismatch;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    #[allow(clippy::too_many_arguments)] // fused-MLP operand set (two Linears + dims)
+    pub fn mlp_dev(
+        &self,
+        t: usize,
+        d: usize,
+        ffn: usize,
+        x: &MetalDeviceTensor<'_>,
+        fc1_w: &MetalDeviceTensor<'_>,
+        fc1_bias: Option<&MetalDeviceTensor<'_>>,
+        fc2_w: &MetalDeviceTensor<'_>,
+        fc2_bias: Option<&MetalDeviceTensor<'_>>,
+        out: &mut MetalDeviceTensor<'_>,
+    ) -> Result<()> {
+        if t == 0 || d == 0 || ffn == 0 {
+            return Err(VokraError::InvalidArgument(
+                "mlp_dev dimensions t, d, ffn must all be >= 1".to_owned(),
+            ));
+        }
+        expect_len("mlp_dev x", x.len, checked_mul(t, d, "mlp_dev t*d")?)?;
+        expect_len(
+            "mlp_dev fc1_w",
+            fc1_w.len,
+            checked_mul(d, ffn, "mlp_dev d*ffn")?,
+        )?;
+        expect_len(
+            "mlp_dev fc2_w",
+            fc2_w.len,
+            checked_mul(ffn, d, "mlp_dev ffn*d")?,
+        )?;
+        expect_len(
+            "mlp_dev out",
+            out.len,
+            checked_mul(t, d, "mlp_dev out t*d")?,
+        )?;
+        if let Some(b) = fc1_bias {
+            expect_len("mlp_dev fc1_bias", b.len, ffn)?;
+        }
+        if let Some(b) = fc2_bias {
+            expect_len("mlp_dev fc2_bias", b.len, d)?;
+        }
+        let inter = checked_mul(t, ffn, "mlp_dev t*ffn")?;
+        self.pooled(|| {
+            let dummy = self.new_buffer_from_slice(&[0.0f32])?;
+            let h_buf = self.new_buffer_output(inter)?;
+            let a_buf = self.new_buffer_output(inter)?;
+            let cmd = self.new_command_buffer("mlp_dev")?;
+            self.encode_mlp_passes(
+                cmd,
+                &MlpPassDims {
+                    t,
+                    d,
+                    ffn,
+                    has_fc1_bias: fc1_bias.is_some(),
+                    has_fc2_bias: fc2_bias.is_some(),
+                },
+                &MlpPassBufs {
+                    x: &x.buf,
+                    fc1_w: &fc1_w.buf,
+                    fc1_bias: bias_or_dummy(fc1_bias, &dummy),
+                    fc2_w: &fc2_w.buf,
+                    fc2_bias: bias_or_dummy(fc2_bias, &dummy),
+                    h: &h_buf,
+                    a: &a_buf,
+                    out: &out.buf,
+                },
+            )?;
+            self.commit_and_wait(cmd, "mlp_dev")
+        })
+    }
+
+    /// Device-in/out fused **non-causal** attention (one self-contained
+    /// submission, every intermediate allocated internally and never read back).
+    /// `xq` `[t_q,d]`; pre-projected `k`/`v` `[t_kv,d]`; `q_w`/`out_w` `[d,d]`;
+    /// `scale = head_dim^-0.5`; `out` `[t_q,d]`. Bit-identical to the host-in/out
+    /// [`Self::attn_f32`] (same passes).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a shape mismatch or `d % n_head != 0`;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    #[allow(clippy::too_many_arguments)] // fused-attention operand set (two Linears + K/V + dims)
+    pub fn attn_dev(
+        &self,
+        t_q: usize,
+        t_kv: usize,
+        d: usize,
+        n_head: usize,
+        xq: &MetalDeviceTensor<'_>,
+        q_w: &MetalDeviceTensor<'_>,
+        q_bias: Option<&MetalDeviceTensor<'_>>,
+        k: &MetalDeviceTensor<'_>,
+        v: &MetalDeviceTensor<'_>,
+        out_w: &MetalDeviceTensor<'_>,
+        out_bias: Option<&MetalDeviceTensor<'_>>,
+        scale: f32,
+        out: &mut MetalDeviceTensor<'_>,
+    ) -> Result<()> {
+        if t_q == 0 || t_kv == 0 || d == 0 || n_head == 0 {
+            return Err(VokraError::InvalidArgument(
+                "attn_dev dimensions t_q, t_kv, d, n_head must all be >= 1".to_owned(),
+            ));
+        }
+        if d % n_head != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "attn_dev d ({d}) must be divisible by n_head ({n_head})"
+            )));
+        }
+        let dd = checked_mul(d, d, "attn_dev d*d")?;
+        let tkvd = checked_mul(t_kv, d, "attn_dev t_kv*d")?;
+        expect_len(
+            "attn_dev xq",
+            xq.len,
+            checked_mul(t_q, d, "attn_dev t_q*d")?,
+        )?;
+        expect_len("attn_dev q_w", q_w.len, dd)?;
+        expect_len("attn_dev k", k.len, tkvd)?;
+        expect_len("attn_dev v", v.len, tkvd)?;
+        expect_len("attn_dev out_w", out_w.len, dd)?;
+        expect_len(
+            "attn_dev out",
+            out.len,
+            checked_mul(t_q, d, "attn_dev out")?,
+        )?;
+        if let Some(b) = q_bias {
+            expect_len("attn_dev q_bias", b.len, d)?;
+        }
+        if let Some(b) = out_bias {
+            expect_len("attn_dev out_bias", b.len, d)?;
+        }
+        let hd = d / n_head;
+        let tqd = checked_mul(t_q, d, "attn_dev t_q*d")?;
+        let tq_hd = checked_mul(t_q, hd, "attn_dev t_q*hd")?;
+        let tkv_hd = checked_mul(t_kv, hd, "attn_dev t_kv*hd")?;
+        let hd_tkv = checked_mul(hd, t_kv, "attn_dev hd*t_kv")?;
+        let tq_tkv = checked_mul(t_q, t_kv, "attn_dev t_q*t_kv")?;
+        self.pooled(|| {
+            let dummy = self.new_buffer_from_slice(&[0.0f32])?;
+            let q_buf = self.new_buffer_output(tqd)?;
+            let context_buf = self.new_buffer_output(tqd)?;
+            let qh_buf = self.new_buffer_output(tq_hd)?;
+            let vh_buf = self.new_buffer_output(tkv_hd)?;
+            let kh_t_buf = self.new_buffer_output(hd_tkv)?;
+            let scores_buf = self.new_buffer_output(tq_tkv)?;
+            let probs_buf = self.new_buffer_output(tq_tkv)?;
+            let ctx_h_buf = self.new_buffer_output(tq_hd)?;
+            let cmd = self.new_command_buffer("attn_dev")?;
+            self.encode_attn_passes(
+                cmd,
+                &AttnPassDims {
+                    t_q,
+                    t_kv,
+                    d,
+                    n_head,
+                    scale,
+                    has_q_bias: q_bias.is_some(),
+                    has_out_bias: out_bias.is_some(),
+                },
+                &AttnPassBufs {
+                    xq: &xq.buf,
+                    q_w: &q_w.buf,
+                    q_bias: bias_or_dummy(q_bias, &dummy),
+                    k: &k.buf,
+                    v: &v.buf,
+                    out_w: &out_w.buf,
+                    out_bias: bias_or_dummy(out_bias, &dummy),
+                    q: &q_buf,
+                    context: &context_buf,
+                    qh: &qh_buf,
+                    vh: &vh_buf,
+                    kh_t: &kh_t_buf,
+                    scores: &scores_buf,
+                    probs: &probs_buf,
+                    ctx_h: &ctx_h_buf,
+                    out: &out.buf,
+                },
+            )?;
+            self.commit_and_wait(cmd, "attn_dev")
+        })
+    }
+
+    // ---- Phase-5 follow-on: device-resident whole-encoder stack --------------
+
+    /// Runs the whole Whisper pre-norm **encoder** device-resident in ONE
+    /// submission: `n × [ln → attn → residual → ln → mlp → residual]` + final ln,
+    /// with the hidden state `h` and every intermediate kept on the GPU across all
+    /// blocks. `hidden` is the `[t, d]` post-conv-stem input (H2D once), `out` the
+    /// `[t, d]` final-LayerNorm output (D2H once); the per-block weights come as
+    /// [`PrenormLayer`] slices (uploaded once up front). `n_head` splits `d`,
+    /// `scale = (d / n_head)^-0.5`.
+    ///
+    /// It encodes **exactly** the per-op path's op sequence — the same
+    /// `layer_norm` / GEMM / [`encode_attn_passes`](Self::encode_attn_passes) /
+    /// [`encode_mlp_passes`](Self::encode_mlp_passes) / residual-add kernels, in
+    /// the same order and launch geometry — so it is **bit-identical** to running
+    /// the blocks per-op on the GPU, and matches the CPU within the FP32 bound. The
+    /// difference is the readback: ONE `commit` + `waitUntilCompleted` for the
+    /// whole encoder instead of the per-op path's `6·N + 1`. Intra-command-buffer
+    /// hazard tracking serialises the reused `ln`/`k`/`v`/`block_out`/per-head
+    /// scratch across blocks and the two residual adds' read-modify-write of `h`.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a shape mismatch or `d % n_head != 0`;
+    /// [`VokraError::BackendUnavailable`] on a Metal buffer / command failure.
+    #[allow(clippy::too_many_arguments)] // whole-encoder operand set (dims + weights + I/O)
+    pub fn encode_prenorm_stack(
+        &self,
+        t: usize,
+        d: usize,
+        ff: usize,
+        n_head: usize,
+        eps: f32,
+        hidden: &[f32],
+        layers: &[PrenormLayer<'_>],
+        final_ln_gamma: &[f32],
+        final_ln_beta: &[f32],
+        out: &mut [f32],
+    ) -> Result<()> {
+        validate_prenorm_stack(
+            t,
+            d,
+            ff,
+            n_head,
+            hidden,
+            layers,
+            final_ln_gamma,
+            final_ln_beta,
+            out,
+        )?;
+        self.pooled(|| {
+            self.run_prenorm_stack(
+                t,
+                d,
+                ff,
+                n_head,
+                eps,
+                hidden,
+                layers,
+                final_ln_gamma,
+                final_ln_beta,
+                out,
+            )
+        })
+    }
+
+    /// Body of [`Self::encode_prenorm_stack`]: uploads `h` + all weights, allocates
+    /// the device-resident scratch once, encodes every block's passes into ONE
+    /// command buffer, commits + waits ONCE, and reads back the final normed
+    /// output. Runs inside the caller's autorelease pool; shapes are validated.
+    #[allow(clippy::too_many_arguments)] // whole-encoder operand set (dims + weights + I/O)
+    fn run_prenorm_stack(
+        &self,
+        t: usize,
+        d: usize,
+        ff: usize,
+        n_head: usize,
+        eps: f32,
+        hidden: &[f32],
+        layers: &[PrenormLayer<'_>],
+        final_ln_gamma: &[f32],
+        final_ln_beta: &[f32],
+        out: &mut [f32],
+    ) -> Result<()> {
+        let hd = d / n_head;
+        let scale = (hd as f32).powf(-0.5);
+
+        // Up front (before any pass), H2D `h` + every layer's weights + the final
+        // LayerNorm + a 1-float dummy for absent biases (Whisper's `k`).
+        let h = self.upload(hidden)?;
+        let dummy = self.upload(&[0.0f32])?;
+        let mut dev_layers: Vec<DevLayer<'_>> = Vec::with_capacity(layers.len());
+        for l in layers {
+            dev_layers.push(DevLayer {
+                attn_ln_g: self.upload(l.attn_ln_gamma)?,
+                attn_ln_b: self.upload(l.attn_ln_beta)?,
+                q_w: self.upload(l.q_w)?,
+                q_bias: self.upload_opt(l.q_bias)?,
+                k_w: self.upload(l.k_w)?,
+                k_bias: self.upload_opt(l.k_bias)?,
+                v_w: self.upload(l.v_w)?,
+                v_bias: self.upload_opt(l.v_bias)?,
+                out_w: self.upload(l.out_w)?,
+                out_bias: self.upload_opt(l.out_bias)?,
+                mlp_ln_g: self.upload(l.mlp_ln_gamma)?,
+                mlp_ln_b: self.upload(l.mlp_ln_beta)?,
+                fc1_w: self.upload(l.fc1_w)?,
+                fc1_bias: self.upload_opt(l.fc1_bias)?,
+                fc2_w: self.upload(l.fc2_w)?,
+                fc2_bias: self.upload_opt(l.fc2_bias)?,
+            });
+        }
+        let ln_post_g = self.upload(final_ln_gamma)?;
+        let ln_post_b = self.upload(final_ln_beta)?;
+
+        // Persistent device scratch (mirrors `EncoderScratch`; `t_q == t_kv == t`,
+        // so nothing grows between blocks). All reused across blocks/heads.
+        let td = checked_mul(t, d, "prenorm t*d")?;
+        let thd = checked_mul(t, hd, "prenorm t*hd")?;
+        let tt = checked_mul(t, t, "prenorm t*t")?;
+        let tff = checked_mul(t, ff, "prenorm t*ff")?;
+        let ln = self.alloc_dev(td)?;
+        let k = self.alloc_dev(td)?;
+        let v = self.alloc_dev(td)?;
+        let block_out = self.alloc_dev(td)?;
+        let normed = self.alloc_dev(td)?;
+        let q = self.alloc_dev(td)?;
+        let context = self.alloc_dev(td)?;
+        let qh = self.alloc_dev(thd)?;
+        let vh = self.alloc_dev(thd)?;
+        let kh_t = self.alloc_dev(thd)?;
+        let scores = self.alloc_dev(tt)?;
+        let probs = self.alloc_dev(tt)?;
+        let ctx_h = self.alloc_dev(thd)?;
+        let mlp_h = self.alloc_dev(tff)?;
+        let mlp_a = self.alloc_dev(tff)?;
+
+        // One command buffer for the whole encoder.
+        let cmd = self.new_command_buffer("prenorm stack")?;
+        for layer in &dev_layers {
+            // h += attn(ln(h)):
+            // 1. ln = layer_norm(h, attn_ln)
+            self.encode_layer_norm(
+                cmd,
+                &h.buf,
+                &layer.attn_ln_g.buf,
+                &layer.attn_ln_b.buf,
+                &ln.buf,
+                t,
+                d,
+                eps,
+            )?;
+            // 2. k = ln · k_w (Whisper k has no bias)
+            self.encode_gemm(
+                cmd,
+                &ln.buf,
+                &layer.k_w.buf,
+                bias_or_dummy(layer.k_bias.as_ref(), &dummy.buf),
+                &k.buf,
+                t,
+                d,
+                d,
+                layer.k_bias.is_some(),
+            )?;
+            // 3. v = ln · v_w (+v_bias)
+            self.encode_gemm(
+                cmd,
+                &ln.buf,
+                &layer.v_w.buf,
+                bias_or_dummy(layer.v_bias.as_ref(), &dummy.buf),
+                &v.buf,
+                t,
+                d,
+                d,
+                layer.v_bias.is_some(),
+            )?;
+            // 4. attn: block_out = out_proj(concat_h softmax(scale·qₕ·kₕᵀ)·vₕ)
+            self.encode_attn_passes(
+                cmd,
+                &AttnPassDims {
+                    t_q: t,
+                    t_kv: t,
+                    d,
+                    n_head,
+                    scale,
+                    has_q_bias: layer.q_bias.is_some(),
+                    has_out_bias: layer.out_bias.is_some(),
+                },
+                &AttnPassBufs {
+                    xq: &ln.buf,
+                    q_w: &layer.q_w.buf,
+                    q_bias: bias_or_dummy(layer.q_bias.as_ref(), &dummy.buf),
+                    k: &k.buf,
+                    v: &v.buf,
+                    out_w: &layer.out_w.buf,
+                    out_bias: bias_or_dummy(layer.out_bias.as_ref(), &dummy.buf),
+                    q: &q.buf,
+                    context: &context.buf,
+                    qh: &qh.buf,
+                    vh: &vh.buf,
+                    kh_t: &kh_t.buf,
+                    scores: &scores.buf,
+                    probs: &probs.buf,
+                    ctx_h: &ctx_h.buf,
+                    out: &block_out.buf,
+                },
+            )?;
+            // 5. h += block_out
+            self.encode_residual_add(cmd, &h.buf, &block_out.buf, td)?;
+
+            // h += mlp(ln(h)):
+            // 6. ln = layer_norm(h, mlp_ln)
+            self.encode_layer_norm(
+                cmd,
+                &h.buf,
+                &layer.mlp_ln_g.buf,
+                &layer.mlp_ln_b.buf,
+                &ln.buf,
+                t,
+                d,
+                eps,
+            )?;
+            // 7. mlp: block_out = fc2(gelu(fc1(ln)))
+            self.encode_mlp_passes(
+                cmd,
+                &MlpPassDims {
+                    t,
+                    d,
+                    ffn: ff,
+                    has_fc1_bias: layer.fc1_bias.is_some(),
+                    has_fc2_bias: layer.fc2_bias.is_some(),
+                },
+                &MlpPassBufs {
+                    x: &ln.buf,
+                    fc1_w: &layer.fc1_w.buf,
+                    fc1_bias: bias_or_dummy(layer.fc1_bias.as_ref(), &dummy.buf),
+                    fc2_w: &layer.fc2_w.buf,
+                    fc2_bias: bias_or_dummy(layer.fc2_bias.as_ref(), &dummy.buf),
+                    h: &mlp_h.buf,
+                    a: &mlp_a.buf,
+                    out: &block_out.buf,
+                },
+            )?;
+            // 8. h += block_out
+            self.encode_residual_add(cmd, &h.buf, &block_out.buf, td)?;
+        }
+        // Final LayerNorm into `normed`.
+        self.encode_layer_norm(
+            cmd,
+            &h.buf,
+            &ln_post_g.buf,
+            &ln_post_b.buf,
+            &normed.buf,
+            t,
+            d,
+            eps,
+        )?;
+
+        self.commit_and_wait(cmd, "prenorm stack")?;
+        self.download(&normed, out)
+    }
+
+    /// Uploads an optional weight slice (a `None` bias stays `None`, bound as the
+    /// shared dummy at encode time).
+    fn upload_opt(&self, data: Option<&[f32]>) -> Result<Option<MetalDeviceTensor<'_>>> {
+        data.map(|d| self.upload(d)).transpose()
+    }
+
+    /// Opens a fresh command buffer on the context queue.
+    fn new_command_buffer(&self, what: &str) -> Result<Id> {
+        // SAFETY: `queue` is valid for the context's lifetime; `commandBuffer`
+        // returns an autoreleased command buffer drained by the caller's pool.
+        let cmd = unsafe { sys::send_id(self.queue, sys::sel(b"commandBuffer\0")) };
+        if cmd.is_null() {
+            return Err(VokraError::BackendUnavailable(format!(
+                "{what}: MTLCommandQueue commandBuffer returned nil"
+            )));
+        }
+        Ok(cmd)
+    }
+
+    /// Commits + waits on `cmd` ONCE (counting the submission) and surfaces a
+    /// GPU-side execution error explicitly. Shared by every device-resident op.
+    fn commit_and_wait(&self, cmd: Id, what: &str) -> Result<()> {
+        self.submissions.set(self.submissions.get() + 1);
+        // SAFETY: `cmd` is the valid command buffer with passes encoded above;
+        // `commit` then `waitUntilCompleted` submit and block; `error` is read
+        // after completion (no silent success).
         unsafe {
             sys::send_void(cmd, sys::sel(b"commit\0"));
             sys::send_void(cmd, sys::sel(b"waitUntilCompleted\0"));
@@ -1623,14 +2453,103 @@ impl MetalContext {
             if !cmd_err.is_null() {
                 let detail = error_description(cmd_err);
                 return Err(VokraError::BackendUnavailable(format!(
-                    "attn command buffer failed: {detail}"
+                    "{what} command buffer failed: {detail}"
                 )));
             }
         }
+        Ok(())
+    }
 
-        // Single readback of the final output; every intermediate stays resident
-        // and drops.
-        read_back(&out_buf, out)
+    /// Brackets `f` in an autorelease pool so the command buffer / encoders it
+    /// creates drain here rather than leaking on a plain worker thread.
+    fn pooled<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        // SAFETY: `objc_autoreleasePoolPush` returns a token consumed by the one
+        // matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = f();
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    /// Encodes an affine layer-norm pass into `cmd` (one row per thread).
+    #[allow(clippy::too_many_arguments)] // intrinsic layer-norm parameter set
+    fn encode_layer_norm(
+        &self,
+        cmd: Id,
+        inp: &OwnedBuf,
+        gamma: &OwnedBuf,
+        beta: &OwnedBuf,
+        out: &OwnedBuf,
+        rows: usize,
+        cols: usize,
+        eps: f32,
+    ) -> Result<()> {
+        let dims = LayerNormDims {
+            rows: rows as u32,
+            cols: cols as u32,
+            eps,
+        };
+        let (grid, tg) = grid_1d(rows);
+        self.encode_pass(
+            cmd,
+            self.layer_norm_pipeline,
+            &[inp, gamma, beta, out],
+            (&dims as *const LayerNormDims).cast::<c_void>(),
+            size_of::<LayerNormDims>(),
+            grid,
+            tg,
+            "prenorm layer_norm",
+        )
+    }
+
+    /// Encodes a GEMM pass into `cmd` (`out[m,n] = bias?[n] + a[m,k]·b[k,n]`).
+    #[allow(clippy::too_many_arguments)] // intrinsic GEMM parameter set
+    fn encode_gemm(
+        &self,
+        cmd: Id,
+        a: &OwnedBuf,
+        b: &OwnedBuf,
+        bias: &OwnedBuf,
+        out: &OwnedBuf,
+        m: usize,
+        n: usize,
+        k: usize,
+        has_bias: bool,
+    ) -> Result<()> {
+        let dims = GemmDims {
+            m: m as u32,
+            n: n as u32,
+            k: k as u32,
+            has_bias: u32::from(has_bias),
+        };
+        let (grid, tg) = grid_2d(n, m);
+        self.encode_pass(
+            cmd,
+            self.gemm_pipeline,
+            &[a, b, bias, out],
+            (&dims as *const GemmDims).cast::<c_void>(),
+            size_of::<GemmDims>(),
+            grid,
+            tg,
+            "prenorm gemm",
+        )
+    }
+
+    /// Encodes an in-place residual-add pass into `cmd` (`dst[i] += src[i]`).
+    fn encode_residual_add(&self, cmd: Id, dst: &OwnedBuf, src: &OwnedBuf, n: usize) -> Result<()> {
+        let dims = AddAssignDims { n: n as u32 };
+        let (grid, tg) = grid_1d(n);
+        self.encode_pass(
+            cmd,
+            self.add_assign_pipeline,
+            &[dst, src],
+            (&dims as *const AddAssignDims).cast::<c_void>(),
+            size_of::<AddAssignDims>(),
+            grid,
+            tg,
+            "prenorm residual add",
+        )
     }
 
     /// Encodes ONE compute pass into `cmd` **without** committing or waiting: a
@@ -1747,6 +2666,7 @@ impl MetalContext {
             );
 
             sys::send_void(enc, sys::sel(b"endEncoding\0"));
+            self.submissions.set(self.submissions.get() + 1);
             sys::send_void(cmd, sys::sel(b"commit\0"));
             sys::send_void(cmd, sys::sel(b"waitUntilCompleted\0"));
 
@@ -1767,6 +2687,7 @@ impl Drop for MetalContext {
         // SAFETY: every handle is a valid `+1`-owned object created in
         // `new` / `build`; release each exactly once.
         unsafe {
+            release(self.add_assign_pipeline);
             release(self.col_scatter_pipeline);
             release(self.col_gather_t_pipeline);
             release(self.col_gather_pipeline);
@@ -2173,5 +3094,93 @@ fn validate_attn(
         out.len(),
         checked_mul(t_q, d, "attn out t_q*d")?,
     )?;
+    Ok(())
+}
+
+/// The device bias buffer for a projection: the real bias when present, else the
+/// shared 1-float `dummy` the kernel never reads (`has_bias = 0`). The returned
+/// borrow lives as long as the shorter of the two inputs.
+fn bias_or_dummy<'a>(bias: Option<&'a MetalDeviceTensor<'_>>, dummy: &'a OwnedBuf) -> &'a OwnedBuf {
+    match bias {
+        Some(t) => &t.buf,
+        None => dummy,
+    }
+}
+
+/// Validates the whole-encoder pre-norm stack shapes: `hidden` / `out` are
+/// `[t, d]`, `d` splits evenly into `n_head`, the final LayerNorm `γ`/`β` are
+/// `[d]`, and every [`PrenormLayer`]'s LayerNorms are `[d]`, projections `[d, d]`
+/// (biases `[d]`), and MLP linears `[d, ff]` / `[ff, d]` (biases `[ff]` / `[d]`) —
+/// so a mis-shaped call is an explicit `InvalidArgument` rather than a GPU fault.
+#[allow(clippy::too_many_arguments)] // whole-encoder operand set (dims + weights + I/O)
+fn validate_prenorm_stack(
+    t: usize,
+    d: usize,
+    ff: usize,
+    n_head: usize,
+    hidden: &[f32],
+    layers: &[PrenormLayer<'_>],
+    final_ln_gamma: &[f32],
+    final_ln_beta: &[f32],
+    out: &[f32],
+) -> Result<()> {
+    if t == 0 || d == 0 || ff == 0 || n_head == 0 {
+        return Err(VokraError::InvalidArgument(
+            "prenorm stack dimensions t, d, ff, n_head must all be >= 1".to_owned(),
+        ));
+    }
+    if d % n_head != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "prenorm stack d ({d}) must be divisible by n_head ({n_head})"
+        )));
+    }
+    let td = checked_mul(t, d, "prenorm t*d")?;
+    let dd = checked_mul(d, d, "prenorm d*d")?;
+    let dff = checked_mul(d, ff, "prenorm d*ff")?;
+    let ffd = checked_mul(ff, d, "prenorm ff*d")?;
+    expect_len("prenorm hidden", hidden.len(), td)?;
+    expect_len("prenorm out", out.len(), td)?;
+    expect_len("prenorm final_ln_gamma", final_ln_gamma.len(), d)?;
+    expect_len("prenorm final_ln_beta", final_ln_beta.len(), d)?;
+    for (i, l) in layers.iter().enumerate() {
+        let opt = |name: &str, b: Option<&[f32]>, want: usize| -> Result<()> {
+            match b {
+                Some(s) => expect_len(&format!("prenorm layer {i} {name}"), s.len(), want),
+                None => Ok(()),
+            }
+        };
+        expect_len(
+            &format!("prenorm layer {i} attn_ln_gamma"),
+            l.attn_ln_gamma.len(),
+            d,
+        )?;
+        expect_len(
+            &format!("prenorm layer {i} attn_ln_beta"),
+            l.attn_ln_beta.len(),
+            d,
+        )?;
+        expect_len(&format!("prenorm layer {i} q_w"), l.q_w.len(), dd)?;
+        expect_len(&format!("prenorm layer {i} k_w"), l.k_w.len(), dd)?;
+        expect_len(&format!("prenorm layer {i} v_w"), l.v_w.len(), dd)?;
+        expect_len(&format!("prenorm layer {i} out_w"), l.out_w.len(), dd)?;
+        opt("q_bias", l.q_bias, d)?;
+        opt("k_bias", l.k_bias, d)?;
+        opt("v_bias", l.v_bias, d)?;
+        opt("out_bias", l.out_bias, d)?;
+        expect_len(
+            &format!("prenorm layer {i} mlp_ln_gamma"),
+            l.mlp_ln_gamma.len(),
+            d,
+        )?;
+        expect_len(
+            &format!("prenorm layer {i} mlp_ln_beta"),
+            l.mlp_ln_beta.len(),
+            d,
+        )?;
+        expect_len(&format!("prenorm layer {i} fc1_w"), l.fc1_w.len(), dff)?;
+        expect_len(&format!("prenorm layer {i} fc2_w"), l.fc2_w.len(), ffd)?;
+        opt("fc1_bias", l.fc1_bias, ff)?;
+        opt("fc2_bias", l.fc2_bias, d)?;
+    }
     Ok(())
 }

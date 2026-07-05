@@ -46,7 +46,7 @@
 
 use vokra_backend_cpu::kernels;
 use vokra_core::backend::BackendKind;
-use vokra_core::{Backend, Result, VokraError};
+use vokra_core::{Backend, PrenormLayer, Result, VokraError};
 
 /// A backend-dispatched hot op — the operators the imperative models route
 /// through a backend (as opposed to the model-internal scalar glue like
@@ -243,6 +243,29 @@ impl Compute {
     /// truth for the head loop).
     #[must_use]
     pub fn attention_is_fused(&self) -> bool {
+        match &self.be {
+            Be::Cpu => false,
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(_) => true,
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => true,
+        }
+    }
+
+    /// Whether this backend has the Phase-5-follow-on device-resident whole-encoder
+    /// stack ([`Self::encode_prenorm_encoder`]): `true` on the GPU arms (Metal /
+    /// CUDA), `false` on CPU.
+    ///
+    /// The caller (`whisper::encoder::encode`) gates the fused encoder on this:
+    /// only a GPU backend routes the whole pre-norm block stack through
+    /// `encode_prenorm_encoder` (one submission for the encoder); the CPU always
+    /// runs the per-op `encoder_block` loop. This keeps the CPU arm of
+    /// `encode_prenorm_encoder` an explicit [`VokraError::UnsupportedOp`] correct
+    /// code never reaches (no silent fall back, FR-EX-08), while the block math
+    /// lives in exactly one place (the CPU `encoder_block` loop is the single
+    /// source of truth — `compute.rs` hosts no duplicated encoder loop).
+    #[must_use]
+    pub fn prenorm_stack_is_fused(&self) -> bool {
         match &self.be {
             Be::Cpu => false,
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
@@ -493,6 +516,86 @@ impl Compute {
             ),
         }
     }
+
+    /// Device-resident **whole pre-norm encoder** (Phase-5 follow-on): runs
+    /// `n × [ln → attn → residual → ln → mlp → residual]` + a final LayerNorm with
+    /// the hidden state and every intermediate kept on the GPU across all blocks,
+    /// so the encoder pays ONE submission instead of the per-op path's `6·N + 1`.
+    ///
+    /// `hidden` is the `[t, d]` post-conv-stem input, `out` the `[t, d]` normed
+    /// output; `layers` are the per-block weight slices; `n_head` splits `d`;
+    /// `eps` is the LayerNorm epsilon (the caller passes the CPU-kernel constant,
+    /// which the backend cannot import).
+    ///
+    /// **GPU-only.** On the Metal / CUDA arms this is bit-identical to running the
+    /// blocks per-op on the GPU (same kernels, order, geometry) and matches the CPU
+    /// within the FP32 bound. The **CPU arm is an explicit
+    /// [`VokraError::UnsupportedOp`]**: the CPU never fuses the encoder — it runs
+    /// the per-op `encoder_block` loop in `whisper::encoder`, which gates this call
+    /// behind [`Self::prenorm_stack_is_fused`], so correct code never hits the CPU
+    /// arm (no silent CPU fall back, FR-EX-08).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::UnsupportedOp`] on the CPU arm; the GPU arms return
+    /// [`VokraError::InvalidArgument`] on a shape mismatch and
+    /// [`VokraError::BackendUnavailable`] on a device failure.
+    #[allow(clippy::too_many_arguments)] // whole-encoder operand set (dims + weights + I/O)
+    #[cfg_attr(
+        not(any(
+            all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+            all(feature = "cuda", any(unix, windows))
+        )),
+        allow(unused_variables)
+    )]
+    pub fn encode_prenorm_encoder(
+        &self,
+        t: usize,
+        d: usize,
+        ff: usize,
+        n_head: usize,
+        eps: f32,
+        hidden: &[f32],
+        layers: &[PrenormLayer<'_>],
+        final_ln_gamma: &[f32],
+        final_ln_beta: &[f32],
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => Err(VokraError::UnsupportedOp(
+                "encode_prenorm_encoder is the GPU device-resident encoder path; the CPU uses the \
+                 per-op encoder_block loop (whisper::encoder::encode gates it behind \
+                 Compute::prenorm_stack_is_fused)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.encode_prenorm_stack(
+                t,
+                d,
+                ff,
+                n_head,
+                eps,
+                hidden,
+                layers,
+                final_ln_gamma,
+                final_ln_beta,
+                out,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(ctx) => ctx.encode_prenorm_stack(
+                t,
+                d,
+                ff,
+                n_head,
+                eps,
+                hidden,
+                layers,
+                final_ln_gamma,
+                final_ln_beta,
+                out,
+            ),
+        }
+    }
 }
 
 /// Builds a boxed [`Backend`] for the graph evaluator ([`vokra_core::run_graph`])
@@ -538,6 +641,50 @@ mod tests {
         kernels::gemm_f32(2, 2, 3, &a, &b, Some(&bias), &mut direct).unwrap();
 
         assert_eq!(via_compute, direct, "Compute::cpu gemm != direct kernel");
+    }
+
+    #[test]
+    fn prenorm_stack_cpu_is_unsupported_no_silent_fallback() {
+        // The CPU never fuses the encoder: `prenorm_stack_is_fused()` is false (so
+        // `whisper::encoder::encode` keeps the per-op `encoder_block` loop), and
+        // `encode_prenorm_encoder` on CPU is an explicit UnsupportedOp — never a
+        // silent CPU substitute of the GPU-only device-resident path (FR-EX-08).
+        let cpu = Compute::cpu();
+        assert!(!cpu.prenorm_stack_is_fused());
+        let layer = PrenormLayer {
+            attn_ln_gamma: &[1.0, 1.0],
+            attn_ln_beta: &[0.0, 0.0],
+            q_w: &[1.0, 0.0, 0.0, 1.0],
+            q_bias: None,
+            k_w: &[1.0, 0.0, 0.0, 1.0],
+            k_bias: None,
+            v_w: &[1.0, 0.0, 0.0, 1.0],
+            v_bias: None,
+            out_w: &[1.0, 0.0, 0.0, 1.0],
+            out_bias: None,
+            mlp_ln_gamma: &[1.0, 1.0],
+            mlp_ln_beta: &[0.0, 0.0],
+            fc1_w: &[1.0, 0.0, 0.0, 1.0],
+            fc1_bias: None,
+            fc2_w: &[1.0, 0.0, 0.0, 1.0],
+            fc2_bias: None,
+        };
+        let mut out = [0.0f32; 2];
+        assert!(matches!(
+            cpu.encode_prenorm_encoder(
+                1,
+                2,
+                2,
+                1,
+                1e-5,
+                &[0.0, 0.0],
+                &[layer],
+                &[1.0, 1.0],
+                &[0.0, 0.0],
+                &mut out,
+            ),
+            Err(VokraError::UnsupportedOp(_))
+        ));
     }
 
     #[test]

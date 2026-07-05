@@ -13,6 +13,7 @@
 
 use vokra_backend_cpu::kernels as cpu;
 use vokra_backend_metal::MetalContext;
+use vokra_core::PrenormLayer;
 
 /// NFR-QL-01 FP32 parity ceiling.
 const ATOL: f32 = 0.01;
@@ -819,4 +820,486 @@ fn attn_f32_rejects_missized() {
         &mut [0.0; 6],
     );
     assert!(err.is_err(), "d % n_head != 0 must be rejected");
+}
+
+// ---- Phase-5 follow-on: device-resident whole-encoder stack -----------------
+
+/// LayerNorm epsilon (Whisper / the CPU kernel default), shared by the prenorm
+/// tests below.
+const PRENORM_EPS: f32 = 1e-5;
+
+/// Owned random weights for one pre-norm block (kept alive so the borrowed
+/// [`PrenormLayer`] views below outlive the encode). Biases match Whisper: `q` /
+/// `v` / `out` / `fc1` / `fc2` carry one, `k` does not.
+struct LayerData {
+    attn_ln_g: Vec<f32>,
+    attn_ln_b: Vec<f32>,
+    q_w: Vec<f32>,
+    q_b: Vec<f32>,
+    k_w: Vec<f32>,
+    v_w: Vec<f32>,
+    v_b: Vec<f32>,
+    out_w: Vec<f32>,
+    out_b: Vec<f32>,
+    mlp_ln_g: Vec<f32>,
+    mlp_ln_b: Vec<f32>,
+    fc1_w: Vec<f32>,
+    fc1_b: Vec<f32>,
+    fc2_w: Vec<f32>,
+    fc2_b: Vec<f32>,
+}
+
+fn make_layer(seed: u64, d: usize, ff: usize) -> LayerData {
+    LayerData {
+        attn_ln_g: rand_vec(seed ^ 0x01, d),
+        attn_ln_b: rand_vec(seed ^ 0x02, d),
+        q_w: rand_vec(seed ^ 0x03, d * d),
+        q_b: rand_vec(seed ^ 0x04, d),
+        k_w: rand_vec(seed ^ 0x05, d * d),
+        v_w: rand_vec(seed ^ 0x06, d * d),
+        v_b: rand_vec(seed ^ 0x07, d),
+        out_w: rand_vec(seed ^ 0x08, d * d),
+        out_b: rand_vec(seed ^ 0x09, d),
+        mlp_ln_g: rand_vec(seed ^ 0x0A, d),
+        mlp_ln_b: rand_vec(seed ^ 0x0B, d),
+        fc1_w: rand_vec(seed ^ 0x0C, d * ff),
+        fc1_b: rand_vec(seed ^ 0x0D, ff),
+        fc2_w: rand_vec(seed ^ 0x0E, ff * d),
+        fc2_b: rand_vec(seed ^ 0x0F, d),
+    }
+}
+
+fn layer_view(l: &LayerData) -> PrenormLayer<'_> {
+    PrenormLayer {
+        attn_ln_gamma: &l.attn_ln_g,
+        attn_ln_beta: &l.attn_ln_b,
+        q_w: &l.q_w,
+        q_bias: Some(&l.q_b),
+        k_w: &l.k_w,
+        k_bias: None, // Whisper's k_proj has no bias
+        v_w: &l.v_w,
+        v_bias: Some(&l.v_b),
+        out_w: &l.out_w,
+        out_bias: Some(&l.out_b),
+        mlp_ln_gamma: &l.mlp_ln_g,
+        mlp_ln_beta: &l.mlp_ln_b,
+        fc1_w: &l.fc1_w,
+        fc1_bias: Some(&l.fc1_b),
+        fc2_w: &l.fc2_w,
+        fc2_bias: Some(&l.fc2_b),
+    }
+}
+
+/// The **current** per-op GPU encoder path (what `whisper::encoder` runs today on
+/// a GPU backend): per block `layer_norm → k/v GEMM → fused attn_f32 → host
+/// residual add → layer_norm → fused mlp_f32 → host residual add`, then a final
+/// LayerNorm. Because the fused stack encodes the *same* kernels in the same order
+/// (its attn passes == `attn_f32`, its mlp passes == `mlp_f32`, ln/GEMM/add
+/// identical), this is the **bit-identical** reference — and it issues exactly
+/// `6·N + 1` submissions, the count the fused stack collapses to one.
+#[allow(clippy::too_many_arguments)]
+fn prenorm_reference_current(
+    ctx: &MetalContext,
+    t: usize,
+    d: usize,
+    ff: usize,
+    n_head: usize,
+    hidden: &[f32],
+    layers: &[PrenormLayer<'_>],
+    fg: &[f32],
+    fb: &[f32],
+) -> Vec<f32> {
+    let hd = d / n_head;
+    let scale = (hd as f32).powf(-0.5);
+    let mut h = hidden.to_vec();
+    let mut ln = vec![0.0f32; t * d];
+    for l in layers {
+        ctx.layer_norm_f32(
+            &h,
+            &mut ln,
+            t,
+            d,
+            l.attn_ln_gamma,
+            l.attn_ln_beta,
+            PRENORM_EPS,
+        )
+        .unwrap();
+        let mut k = vec![0.0f32; t * d];
+        ctx.gemm_f32(t, d, d, &ln, l.k_w, l.k_bias, &mut k).unwrap();
+        let mut v = vec![0.0f32; t * d];
+        ctx.gemm_f32(t, d, d, &ln, l.v_w, l.v_bias, &mut v).unwrap();
+        let mut bo = vec![0.0f32; t * d];
+        ctx.attn_f32(
+            t, t, d, n_head, &ln, l.q_w, l.q_bias, &k, &v, l.out_w, l.out_bias, scale, &mut bo,
+        )
+        .unwrap();
+        for (dst, &src) in h.iter_mut().zip(&bo) {
+            *dst += src;
+        }
+        ctx.layer_norm_f32(
+            &h,
+            &mut ln,
+            t,
+            d,
+            l.mlp_ln_gamma,
+            l.mlp_ln_beta,
+            PRENORM_EPS,
+        )
+        .unwrap();
+        let mut bo2 = vec![0.0f32; t * d];
+        ctx.mlp_f32(
+            t, d, ff, &ln, l.fc1_w, l.fc1_bias, l.fc2_w, l.fc2_bias, &mut bo2,
+        )
+        .unwrap();
+        for (dst, &src) in h.iter_mut().zip(&bo2) {
+            *dst += src;
+        }
+    }
+    let mut normed = vec![0.0f32; t * d];
+    ctx.layer_norm_f32(&h, &mut normed, t, d, fg, fb, PRENORM_EPS)
+        .unwrap();
+    normed
+}
+
+/// The per-op **CPU** encoder path (the onnxruntime-agreeing reference the whole
+/// Whisper CPU forward runs): same block structure via the `vokra-backend-cpu`
+/// kernels + the CPU head-loop attention (`attn_reference` with CPU closures). The
+/// fused GPU stack must match this within the FP32 bound (NFR-QL-01).
+#[allow(clippy::too_many_arguments)]
+fn prenorm_reference_cpu(
+    t: usize,
+    d: usize,
+    ff: usize,
+    n_head: usize,
+    hidden: &[f32],
+    layers: &[PrenormLayer<'_>],
+    fg: &[f32],
+    fb: &[f32],
+) -> Vec<f32> {
+    let hd = d / n_head;
+    let scale = (hd as f32).powf(-0.5);
+    let cpu_gemm = |m: usize,
+                    n: usize,
+                    kk: usize,
+                    a: &[f32],
+                    b: &[f32],
+                    bias: Option<&[f32]>,
+                    o: &mut [f32]| {
+        cpu::gemm_f32(m, n, kk, a, b, bias, o).expect("cpu gemm");
+    };
+    let cpu_softmax = |i: &[f32], o: &mut [f32], r: usize, c: usize| {
+        cpu::softmax_f32(i, o, r, c).expect("cpu softmax");
+    };
+    let mut h = hidden.to_vec();
+    let mut ln = vec![0.0f32; t * d];
+    for l in layers {
+        cpu::layer_norm_f32(
+            &h,
+            &mut ln,
+            t,
+            d,
+            l.attn_ln_gamma,
+            l.attn_ln_beta,
+            PRENORM_EPS,
+        )
+        .unwrap();
+        let mut k = vec![0.0f32; t * d];
+        cpu::gemm_f32(t, d, d, &ln, l.k_w, l.k_bias, &mut k).unwrap();
+        let mut v = vec![0.0f32; t * d];
+        cpu::gemm_f32(t, d, d, &ln, l.v_w, l.v_bias, &mut v).unwrap();
+        let bo = attn_reference(
+            &cpu_gemm,
+            &cpu_softmax,
+            t,
+            t,
+            d,
+            n_head,
+            &ln,
+            l.q_w,
+            l.q_bias,
+            &k,
+            &v,
+            l.out_w,
+            l.out_bias,
+            scale,
+        );
+        for (dst, &src) in h.iter_mut().zip(&bo) {
+            *dst += src;
+        }
+        cpu::layer_norm_f32(
+            &h,
+            &mut ln,
+            t,
+            d,
+            l.mlp_ln_gamma,
+            l.mlp_ln_beta,
+            PRENORM_EPS,
+        )
+        .unwrap();
+        let mut mh = vec![0.0f32; t * ff];
+        cpu::gemm_f32(t, ff, d, &ln, l.fc1_w, l.fc1_bias, &mut mh).unwrap();
+        let mut ma = vec![0.0f32; t * ff];
+        cpu::gelu_f32(&mh, &mut ma).unwrap();
+        let mut mo = vec![0.0f32; t * d];
+        cpu::gemm_f32(t, d, ff, &ma, l.fc2_w, l.fc2_bias, &mut mo).unwrap();
+        for (dst, &src) in h.iter_mut().zip(&mo) {
+            *dst += src;
+        }
+    }
+    let mut normed = vec![0.0f32; t * d];
+    cpu::layer_norm_f32(&h, &mut normed, t, d, fg, fb, PRENORM_EPS).unwrap();
+    normed
+}
+
+/// The device-resident whole-encoder `encode_prenorm_stack` must be
+/// **bit-identical** to the current per-op GPU path (same kernels, order, launch
+/// geometry — one submission vs `6·N + 1`) and match the CPU within the FP32
+/// bound. Shapes cover single-block, ragged non-16 dims and a Whisper-tiny-ish
+/// block, over 1-2 layers.
+#[test]
+fn prenorm_stack_matches_sequential_and_cpu() {
+    let ctx = ctx_or_skip!("prenorm stack");
+    // (t, d, ff, n_head, n_layers); every d divisible by n_head.
+    let shapes = [
+        (1usize, 2usize, 4usize, 1usize, 1usize),
+        (3, 8, 16, 2, 2),
+        (7, 24, 40, 3, 2),
+        (16, 64, 128, 8, 2),
+        (30, 40, 80, 5, 3),
+    ];
+    let mut worst_seq = 0.0f32;
+    let mut worst_cpu = 0.0f32;
+    for &(t, d, ff, n_head, n_layers) in &shapes {
+        let data: Vec<LayerData> = (0..n_layers)
+            .map(|i| make_layer((i * 97 + d) as u64, d, ff))
+            .collect();
+        let layers: Vec<PrenormLayer<'_>> = data.iter().map(layer_view).collect();
+        let hidden = rand_vec(0xABCD ^ ((t * 13 + d) as u64), t * d);
+        let fg = rand_vec(0x11, d);
+        let fb = rand_vec(0x22, d);
+
+        let mut fused = vec![0.0f32; t * d];
+        ctx.encode_prenorm_stack(
+            t,
+            d,
+            ff,
+            n_head,
+            PRENORM_EPS,
+            &hidden,
+            &layers,
+            &fg,
+            &fb,
+            &mut fused,
+        )
+        .expect("fused prenorm stack");
+
+        let seq = prenorm_reference_current(&ctx, t, d, ff, n_head, &hidden, &layers, &fg, &fb);
+        let cpuref = prenorm_reference_cpu(t, d, ff, n_head, &hidden, &layers, &fg, &fb);
+
+        let d_seq = max_abs_diff(&fused, &seq);
+        let d_cpu = max_abs_diff(&fused, &cpuref);
+        assert_eq!(
+            d_seq, 0.0,
+            "fused stack vs per-op GPU must be bit-identical (t={t} d={d} ff={ff} n_head={n_head} L={n_layers}); max|Δ|={d_seq:.3e}"
+        );
+        assert!(
+            d_cpu <= ATOL,
+            "fused stack vs CPU max|Δ| {d_cpu:.3e} exceeds atol {ATOL} (t={t} d={d} ff={ff} n_head={n_head} L={n_layers})"
+        );
+        worst_seq = worst_seq.max(d_seq);
+        worst_cpu = worst_cpu.max(d_cpu);
+    }
+    eprintln!(
+        "Metal prenorm-stack parity: vs per-op GPU max|Δ| = {worst_seq:.3e} (bit-identical), vs CPU max|Δ| = {worst_cpu:.3e} (atol = {ATOL})"
+    );
+}
+
+/// The whole-encoder residency's payoff: the fused stack issues **exactly ONE**
+/// submission (commit + waitUntilCompleted) for the whole encoder, versus the
+/// current per-op path's `6·N + 1`. The count is measured with the context's
+/// submission counter (env-independent, unlike wall time), and re-checked
+/// bit-identical at this scale; wall time is printed (run with `-- --nocapture`).
+#[test]
+fn prenorm_stack_reduces_readback() {
+    let ctx = ctx_or_skip!("prenorm stack readback");
+    // A few blocks at a moderate width — the submission count is shape-independent,
+    // so this stays quick while still exercising several layers / heads.
+    let (t, d, ff, n_head, n_layers) = (256usize, 128usize, 512usize, 8usize, 4usize);
+    let data: Vec<LayerData> = (0..n_layers)
+        .map(|i| make_layer((i * 31 + 7) as u64, d, ff))
+        .collect();
+    let layers: Vec<PrenormLayer<'_>> = data.iter().map(layer_view).collect();
+    let hidden = rand_vec(0x5151, t * d);
+    let fg = rand_vec(0x61, d);
+    let fb = rand_vec(0x62, d);
+
+    // Fused: exactly ONE submission for the whole encoder.
+    let s0 = ctx.submission_count();
+    let t0 = std::time::Instant::now();
+    let mut fused = vec![0.0f32; t * d];
+    ctx.encode_prenorm_stack(
+        t,
+        d,
+        ff,
+        n_head,
+        PRENORM_EPS,
+        &hidden,
+        &layers,
+        &fg,
+        &fb,
+        &mut fused,
+    )
+    .expect("fused prenorm stack (readback)");
+    let fused_dt = t0.elapsed();
+    let d_fused = ctx.submission_count() - s0;
+
+    // Current per-op path: 6·N + 1 submissions.
+    let s1 = ctx.submission_count();
+    let t1 = std::time::Instant::now();
+    let seq = prenorm_reference_current(&ctx, t, d, ff, n_head, &hidden, &layers, &fg, &fb);
+    let perop_dt = t1.elapsed();
+    let d_perop = ctx.submission_count() - s1;
+
+    assert_eq!(
+        max_abs_diff(&fused, &seq),
+        0.0,
+        "fused stack vs per-op GPU must be bit-identical at readback scale"
+    );
+    assert_eq!(d_fused, 1, "the fused encoder must be ONE submission");
+    assert_eq!(
+        d_perop,
+        (6 * n_layers + 1) as u64,
+        "the per-op path must be 6·N + 1 submissions"
+    );
+    eprintln!(
+        "Metal prenorm stack ({n_layers} layers, t={t} d={d} ff={ff} n_head={n_head}): \
+         fused {fused_dt:?} ({d_fused} submission) vs \
+         per-op {perop_dt:?} ({d_perop} submissions)"
+    );
+}
+
+/// Each public device-in/out op (`layer_norm_dev` / `residual_add_dev` /
+/// `mlp_dev` / `attn_dev`) is **bit-identical** to its host-in/out sibling
+/// (`layer_norm_f32` / host add / `mlp_f32` / `attn_f32`) — same kernels, only the
+/// buffer residency differs — and `download(upload(x)) == x` round-trips exactly.
+#[test]
+fn device_ops_match_host_in_out() {
+    let ctx = ctx_or_skip!("device ops");
+
+    // upload/download round-trip.
+    let x = rand_vec(1, 37);
+    let xt = ctx.upload(&x).expect("upload");
+    let mut back = vec![0.0f32; 37];
+    ctx.download(&xt, &mut back).expect("download");
+    assert_eq!(back, x, "download(upload(x)) must equal x");
+
+    // layer_norm_dev == layer_norm_f32.
+    let (rows, cols) = (5usize, 8usize);
+    let inp = rand_vec(2, rows * cols);
+    let g = rand_vec(3, cols);
+    let b = rand_vec(4, cols);
+    let it = ctx.upload(&inp).unwrap();
+    let gt = ctx.upload(&g).unwrap();
+    let bt = ctx.upload(&b).unwrap();
+    let mut ot = ctx.alloc_dev(rows * cols).unwrap();
+    ctx.layer_norm_dev(&mut ot, &it, &gt, &bt, rows, cols, PRENORM_EPS)
+        .expect("layer_norm_dev");
+    let mut dev = vec![0.0f32; rows * cols];
+    ctx.download(&ot, &mut dev).unwrap();
+    let mut host = vec![0.0f32; rows * cols];
+    ctx.layer_norm_f32(&inp, &mut host, rows, cols, &g, &b, PRENORM_EPS)
+        .unwrap();
+    assert_eq!(dev, host, "layer_norm_dev must equal layer_norm_f32");
+
+    // residual_add_dev == host add.
+    let a1 = rand_vec(5, 20);
+    let a2 = rand_vec(6, 20);
+    let mut dt = ctx.upload(&a1).unwrap();
+    let st = ctx.upload(&a2).unwrap();
+    ctx.residual_add_dev(&mut dt, &st)
+        .expect("residual_add_dev");
+    let mut dev = vec![0.0f32; 20];
+    ctx.download(&dt, &mut dev).unwrap();
+    let host: Vec<f32> = a1.iter().zip(&a2).map(|(x, y)| x + y).collect();
+    assert_eq!(dev, host, "residual_add_dev must equal a host += add");
+
+    // mlp_dev == mlp_f32.
+    let (t, d, ff) = (4usize, 6usize, 12usize);
+    let mx = rand_vec(7, t * d);
+    let f1 = rand_vec(8, d * ff);
+    let f2 = rand_vec(9, ff * d);
+    let b1 = rand_vec(10, ff);
+    let b2 = rand_vec(11, d);
+    let mxt = ctx.upload(&mx).unwrap();
+    let f1t = ctx.upload(&f1).unwrap();
+    let f2t = ctx.upload(&f2).unwrap();
+    let b1t = ctx.upload(&b1).unwrap();
+    let b2t = ctx.upload(&b2).unwrap();
+    let mut mot = ctx.alloc_dev(t * d).unwrap();
+    ctx.mlp_dev(t, d, ff, &mxt, &f1t, Some(&b1t), &f2t, Some(&b2t), &mut mot)
+        .expect("mlp_dev");
+    let mut dev = vec![0.0f32; t * d];
+    ctx.download(&mot, &mut dev).unwrap();
+    let mut host = vec![0.0f32; t * d];
+    ctx.mlp_f32(t, d, ff, &mx, &f1, Some(&b1), &f2, Some(&b2), &mut host)
+        .unwrap();
+    assert_eq!(dev, host, "mlp_dev must equal mlp_f32");
+
+    // attn_dev == attn_f32.
+    let (tq, tkv, dd, nh) = (7usize, 5usize, 24usize, 3usize);
+    let hd = dd / nh;
+    let scale = (hd as f32).powf(-0.5);
+    let xq = rand_vec(12, tq * dd);
+    let qw = rand_vec(13, dd * dd);
+    let kk = rand_vec(14, tkv * dd);
+    let vv = rand_vec(15, tkv * dd);
+    let ow = rand_vec(16, dd * dd);
+    let qb = rand_vec(17, dd);
+    let ob = rand_vec(18, dd);
+    let xqt = ctx.upload(&xq).unwrap();
+    let qwt = ctx.upload(&qw).unwrap();
+    let kt = ctx.upload(&kk).unwrap();
+    let vt = ctx.upload(&vv).unwrap();
+    let owt = ctx.upload(&ow).unwrap();
+    let qbt = ctx.upload(&qb).unwrap();
+    let obt = ctx.upload(&ob).unwrap();
+    let mut aot = ctx.alloc_dev(tq * dd).unwrap();
+    ctx.attn_dev(
+        tq,
+        tkv,
+        dd,
+        nh,
+        &xqt,
+        &qwt,
+        Some(&qbt),
+        &kt,
+        &vt,
+        &owt,
+        Some(&obt),
+        scale,
+        &mut aot,
+    )
+    .expect("attn_dev");
+    let mut dev = vec![0.0f32; tq * dd];
+    ctx.download(&aot, &mut dev).unwrap();
+    let mut host = vec![0.0f32; tq * dd];
+    ctx.attn_f32(
+        tq,
+        tkv,
+        dd,
+        nh,
+        &xq,
+        &qw,
+        Some(&qb),
+        &kk,
+        &vv,
+        &ow,
+        Some(&ob),
+        scale,
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(dev, host, "attn_dev must equal attn_f32");
+
+    eprintln!("Metal device-in/out ops all bit-identical to their host-in/out siblings");
 }

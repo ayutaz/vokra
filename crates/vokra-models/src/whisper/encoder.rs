@@ -14,7 +14,8 @@
 //! `vokra-backend-cpu` kernels via [`super::nn`]; this file only wires shapes
 //! and residuals.
 
-use vokra_core::{Result, VokraError};
+use vokra_backend_cpu::kernels::LAYER_NORM_DEFAULT_EPS;
+use vokra_core::{PrenormLayer, Result, VokraError};
 
 use super::config::WhisperConfig;
 use super::nn::{add_assign, attention_from_kv_into, layer_norm_into, mlp_into, project_kv_into};
@@ -101,6 +102,37 @@ pub(crate) fn encode(
         for i in 0..t {
             hidden[i * d + c] = c2[c * t + i] + w.pos_emb[i * d + c];
         }
+    }
+
+    // Phase-5-follow-on fused path: on a GPU backend run the WHOLE pre-norm block
+    // stack (+ final LayerNorm) device-resident in ONE submission
+    // (`Compute::encode_prenorm_encoder`), keeping the hidden state and every
+    // intermediate on the GPU across all blocks — bit-identical to the per-op
+    // `encoder_block` loop below but collapsing its `6·N + 1` command-buffer syncs
+    // to one. Gated on `prenorm_stack_is_fused()` so the CPU always takes the
+    // untouched per-op loop (no silent fall back, FR-EX-08). The `Vec<PrenormLayer>`
+    // + `normed` allocations sit here in `encode()`, OUTSIDE the ZERO-ALLOC
+    // `encoder_block` region, so the hot-path alloc guard stays green.
+    if compute.prenorm_stack_is_fused() {
+        let layers: Vec<PrenormLayer<'_>> = w.layers.iter().map(prenorm_view).collect();
+        let mut normed = vec![0.0f32; t * d];
+        compute.encode_prenorm_encoder(
+            t,
+            d,
+            cfg.ffn_dim,
+            cfg.n_audio_head,
+            LAYER_NORM_DEFAULT_EPS,
+            &hidden,
+            &layers,
+            &w.ln_post.gamma,
+            &w.ln_post.beta,
+            &mut normed,
+        )?;
+        return Ok(EncoderOutput {
+            hidden: normed,
+            n_ctx: t,
+            d_model: d,
+        });
     }
 
     // Pre-norm self-attention blocks. One `EncoderScratch` is reserved to the
@@ -192,6 +224,32 @@ fn encoder_block(
     Ok(())
 }
 // ZERO-ALLOC-END
+
+/// Borrows one [`EncoderLayer`]'s weights as a backend-agnostic
+/// [`PrenormLayer`] slice view for the fused device-resident encoder
+/// ([`Compute::encode_prenorm_encoder`]). Whisper's `k_proj` has no bias
+/// (`k_bias: None`); every other projection carries one. Called once per block in
+/// `encode()`, off the ZERO-ALLOC hot region.
+fn prenorm_view(l: &EncoderLayer) -> PrenormLayer<'_> {
+    PrenormLayer {
+        attn_ln_gamma: &l.attn_ln.gamma,
+        attn_ln_beta: &l.attn_ln.beta,
+        q_w: &l.attn.q.w_t,
+        q_bias: l.attn.q.bias.as_deref(),
+        k_w: &l.attn.k.w_t,
+        k_bias: l.attn.k.bias.as_deref(),
+        v_w: &l.attn.v.w_t,
+        v_bias: l.attn.v.bias.as_deref(),
+        out_w: &l.attn.out.w_t,
+        out_bias: l.attn.out.bias.as_deref(),
+        mlp_ln_gamma: &l.mlp_ln.gamma,
+        mlp_ln_beta: &l.mlp_ln.beta,
+        fc1_w: &l.fc1.w_t,
+        fc1_bias: l.fc1.bias.as_deref(),
+        fc2_w: &l.fc2.w_t,
+        fc2_bias: l.fc2.bias.as_deref(),
+    }
+}
 
 /// Conv1d output length for the given kernel / stride / padding.
 fn conv_out_len(in_len: usize, kernel: usize, stride: usize, pad: usize) -> usize {

@@ -38,9 +38,11 @@
 //! [`CudaContext::new`] returns an explicit [`VokraError::BackendUnavailable`]
 //! (never a silent CPU fall back — NFR-RL-06).
 
+use core::cell::Cell;
 use core::ffi::{c_char, c_uint, c_void};
+use core::marker::PhantomData;
 
-use vokra_core::{Result, VokraError};
+use vokra_core::{PrenormLayer, Result, VokraError};
 
 use crate::sys::{self, CUcontext, CUdeviceptr, CUfunction, CUmodule, CUstream, CudaDriver, Nvrtc};
 
@@ -316,6 +318,24 @@ extern "C" __global__ void vokra_col_scatter_f32(
     unsigned int c = gid % hd;
     dst[i * width + c0 + c] = src[gid];
 }
+
+// ---- Phase-5 follow-on: in-place residual add (dst[i] += src[i]) -------------
+// CUDA-C port of the Metal `add_assign` kernel: the device kernel for the encoder
+// block's `h += sub_block` residual, replacing the host `whisper::nn::add_assign`
+// loop so `h` stays resident across a whole device-resident encoder. One thread
+// per element, ragged-tail guarded — a single FP32 add of the same two operands
+// the host loop adds, so it is bit-identical to `add_assign`.
+extern "C" __global__ void vokra_add_assign_f32(
+    float* dst,
+    const float* src,
+    unsigned int n)
+{
+    unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= n) {
+        return;
+    }
+    dst[gid] = dst[gid] + src[gid];
+}
 "#;
 
 /// 16×16 thread block (matches the Metal GEMM launch); the kernel guards the
@@ -345,6 +365,126 @@ impl Drop for DeviceBuf<'_> {
     }
 }
 
+/// A public, cross-call handle to a device-resident `[f32]` buffer — the
+/// Phase-5-follow-on surface mirroring `vokra-backend-metal`'s `MetalDeviceTensor`
+/// (produced by [`CudaContext::upload`] / [`alloc_dev`], read back by
+/// [`download`], consumed by the `*_dev` ops).
+///
+/// - Owns its device allocation through the existing [`DeviceBuf`] RAII (freed
+///   once on drop via the borrowed driver), so it adds no new `unsafe`.
+/// - `len` is the f32 element count (buffer sizing / readback validation).
+/// - `DeviceBuf<'ctx>` already borrows `&'ctx CudaDriver` (which lives inside the
+///   context), so holding a tensor past the context's `Drop` is a **compile
+///   error**. `CUdeviceptr` (a `u64`) and `&CudaDriver` (fn pointers) are
+///   `Send + Sync`, so the `PhantomData<*const CudaContext>` forces the handle
+///   `!Send`/`!Sync` — thread-affine like the context (`cuMemFree` needs the
+///   creating context current), symmetric with Metal.
+///
+/// [`alloc_dev`]: CudaContext::alloc_dev
+/// [`download`]: CudaContext::download
+pub struct CudaDeviceTensor<'ctx> {
+    buf: DeviceBuf<'ctx>,
+    len: usize,
+    _aff: PhantomData<*const CudaContext>,
+}
+
+impl CudaDeviceTensor<'_> {
+    /// The number of `f32` elements this device buffer holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the device buffer is empty (holds zero elements).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+/// Scalar shape of one fused-MLP launch chain, shared by [`CudaContext::run_mlp`],
+/// [`CudaContext::mlp_dev`] and [`CudaContext::encode_prenorm_stack`].
+struct MlpChainDims {
+    t: usize,
+    d: usize,
+    ffn: usize,
+    has_fc1_bias: bool,
+    has_fc2_bias: bool,
+}
+
+/// Device pointers (`CUdeviceptr`, copied by value into the launch params) for one
+/// fused-MLP launch chain (`x` `[t,d]`, `fc1_w` `[d,ffn]`, `fc2_w` `[ffn,d]`,
+/// biases — a dummy when absent, `h`/`a` `[t,ffn]` intermediates, `out` `[t,d]`).
+struct MlpChainPtrs {
+    x: CUdeviceptr,
+    fc1_w: CUdeviceptr,
+    fc1_bias: CUdeviceptr,
+    fc2_w: CUdeviceptr,
+    fc2_bias: CUdeviceptr,
+    h: CUdeviceptr,
+    a: CUdeviceptr,
+    out: CUdeviceptr,
+}
+
+/// Scalar shape of one fused-attention launch chain, shared by
+/// [`CudaContext::run_attn`], [`CudaContext::attn_dev`] and
+/// [`CudaContext::encode_prenorm_stack`]. `scale = head_dim^-0.5` is folded into
+/// the qh gather.
+struct AttnChainDims {
+    t_q: usize,
+    t_kv: usize,
+    d: usize,
+    n_head: usize,
+    scale: f32,
+    has_q_bias: bool,
+    has_out_bias: bool,
+}
+
+/// Device pointers for one fused-attention launch chain: inputs (`xq`, `q_w`,
+/// `q_bias`, `k`, `v`, `out_w`, `out_bias`), device-resident scratch (`q`,
+/// `context`, `qh`, `vh`, `kh_t`, `scores`, `probs`, `ctx_h`) and `out`.
+struct AttnChainPtrs {
+    xq: CUdeviceptr,
+    q_w: CUdeviceptr,
+    q_bias: CUdeviceptr,
+    k: CUdeviceptr,
+    v: CUdeviceptr,
+    out_w: CUdeviceptr,
+    out_bias: CUdeviceptr,
+    q: CUdeviceptr,
+    context: CUdeviceptr,
+    qh: CUdeviceptr,
+    vh: CUdeviceptr,
+    kh_t: CUdeviceptr,
+    scores: CUdeviceptr,
+    probs: CUdeviceptr,
+    ctx_h: CUdeviceptr,
+    out: CUdeviceptr,
+}
+
+/// One pre-norm block's weights uploaded to the device (the on-GPU mirror of
+/// [`vokra_core::PrenormLayer`]), held for the life of an
+/// [`CudaContext::encode_prenorm_stack`] call. Absent biases (Whisper's `k`) stay
+/// `None` and bind the shared dummy at launch time.
+struct DevLayer<'c> {
+    attn_ln_g: CudaDeviceTensor<'c>,
+    attn_ln_b: CudaDeviceTensor<'c>,
+    q_w: CudaDeviceTensor<'c>,
+    q_bias: Option<CudaDeviceTensor<'c>>,
+    k_w: CudaDeviceTensor<'c>,
+    k_bias: Option<CudaDeviceTensor<'c>>,
+    v_w: CudaDeviceTensor<'c>,
+    v_bias: Option<CudaDeviceTensor<'c>>,
+    out_w: CudaDeviceTensor<'c>,
+    out_bias: Option<CudaDeviceTensor<'c>>,
+    mlp_ln_g: CudaDeviceTensor<'c>,
+    mlp_ln_b: CudaDeviceTensor<'c>,
+    fc1_w: CudaDeviceTensor<'c>,
+    fc1_bias: Option<CudaDeviceTensor<'c>>,
+    fc2_w: CudaDeviceTensor<'c>,
+    fc2_bias: Option<CudaDeviceTensor<'c>>,
+}
+
 /// A CUDA driver + device context + stream + compiled GEMM kernel.
 ///
 /// Holds the owned driver context, stream and module, released in [`Drop`] in
@@ -369,6 +509,13 @@ pub struct CudaContext {
     col_gather: CUfunction,
     col_gather_t: CUfunction,
     col_scatter: CUfunction,
+    add_assign: CUfunction,
+    /// Count of stream synchronisations issued through this context — the
+    /// env-independent readback/sync metric the Phase-5-follow-on encoder-residency
+    /// slice proves against (the whole encoder in ONE synchronise vs the per-op
+    /// path's `6·N + 1`). `Cell` because every op takes `&self` and the context is
+    /// already thread-affine (`!Send`/`!Sync`).
+    submissions: Cell<u64>,
 }
 
 impl CudaContext {
@@ -428,6 +575,8 @@ impl CudaContext {
                 col_gather: m.col_gather,
                 col_gather_t: m.col_gather_t,
                 col_scatter: m.col_scatter,
+                add_assign: m.add_assign,
+                submissions: Cell::new(0),
             }),
             Err(e) => {
                 // SAFETY: `context` is the just-created owned context; destroy it
@@ -553,10 +702,7 @@ impl CudaContext {
         };
         sys::check(d, launch, "cuLaunchKernel(vokra_gemm_f32)")?;
 
-        // SAFETY: waits for the launch on the owned stream to complete before D2H.
-        let sync = unsafe { (d.cu_stream_synchronize)(self.stream) };
-        sys::check(d, sync, "cuStreamSynchronize")?;
-
+        self.sync_stream("cuStreamSynchronize")?;
         self.dtoh(&c_buf, out)
     }
 
@@ -963,37 +1109,70 @@ impl CudaContext {
         let a_buf = self.alloc(inter_bytes)?; // gelu output [t, ffn]
         let out_buf = self.alloc(size_of_val(out))?; // [t, d]
 
-        // Scalars outlive the launches (their addresses go into `params`; the
-        // driver copies the values during each `cuLaunchKernel`, and the device
-        // buffers stay alive until the single synchronise below).
+        // Three launches on the one stream (shared with `mlp_dev` /
+        // `encode_prenorm_stack` so the numerics are single-sourced), no
+        // intermediate synchronise, then ONE synchronise + D2H of the output.
+        self.launch_mlp_chain(
+            &MlpChainDims {
+                t,
+                d,
+                ffn,
+                has_fc1_bias: fc1_bias.is_some(),
+                has_fc2_bias: fc2_bias.is_some(),
+            },
+            &MlpChainPtrs {
+                x: x_buf.ptr,
+                fc1_w: fc1_w_buf.ptr,
+                fc1_bias: fc1_bias_buf.ptr,
+                fc2_w: fc2_w_buf.ptr,
+                fc2_bias: fc2_bias_buf.ptr,
+                h: h_buf.ptr,
+                a: a_buf.ptr,
+                out: out_buf.ptr,
+            },
+        )?;
+        self.sync_stream("cuStreamSynchronize")?;
+        self.dtoh(&out_buf, out)
+    }
+
+    /// Issues the three fused-MLP launches (`fc1` GEMM → GELU → `fc2` GEMM) on the
+    /// one stream, **without** synchronising / allocating / copying. Factored out
+    /// of [`Self::run_mlp`] so the host-in/out [`Self::mlp_f32`], the device-in/out
+    /// [`Self::mlp_dev`] and the whole-encoder [`Self::encode_prenorm_stack`] issue
+    /// byte-for-byte identical launches. Every device pointer / scalar is passed by
+    /// value or captured by address in a local `params` array read during the
+    /// launch; the caller keeps the device buffers alive and synchronises once.
+    fn launch_mlp_chain(&self, dims: &MlpChainDims, ptrs: &MlpChainPtrs) -> Result<()> {
+        let (t, d, ffn) = (dims.t, dims.d, dims.ffn);
+        // `t*ffn` fits: the caller allocated the `[t, ffn]` buffers.
+        let inter = t * ffn;
         let t_u = t as c_uint;
         let ffn_u = ffn as c_uint;
         let d_u = d as c_uint;
         let inter_u = inter as c_uint;
-        let has_bias1: c_uint = u32::from(fc1_bias.is_some());
-        let has_bias2: c_uint = u32::from(fc2_bias.is_some());
+        let has_bias1: c_uint = u32::from(dims.has_fc1_bias);
+        let has_bias2: c_uint = u32::from(dims.has_fc2_bias);
 
         // GEMM arg order: (A, B, bias, C, M, N, K, has_bias).
         // fc1: h = x[t,d] · fc1_w[d,ffn] (+bias) — M=t, N=ffn, K=d.
         let mut p_fc1: [*mut c_void; 8] = [
-            ptr_arg(&x_buf.ptr),
-            ptr_arg(&fc1_w_buf.ptr),
-            ptr_arg(&fc1_bias_buf.ptr),
-            ptr_arg(&h_buf.ptr),
+            ptr_arg(&ptrs.x),
+            ptr_arg(&ptrs.fc1_w),
+            ptr_arg(&ptrs.fc1_bias),
+            ptr_arg(&ptrs.h),
             uint_arg(&t_u),
             uint_arg(&ffn_u),
             uint_arg(&d_u),
             uint_arg(&has_bias1),
         ];
         // gelu: a = gelu(h) — n = t*ffn.
-        let mut p_gelu: [*mut c_void; 3] =
-            [ptr_arg(&h_buf.ptr), ptr_arg(&a_buf.ptr), uint_arg(&inter_u)];
+        let mut p_gelu: [*mut c_void; 3] = [ptr_arg(&ptrs.h), ptr_arg(&ptrs.a), uint_arg(&inter_u)];
         // fc2: out = a[t,ffn] · fc2_w[ffn,d] (+bias) — M=t, N=d, K=ffn.
         let mut p_fc2: [*mut c_void; 8] = [
-            ptr_arg(&a_buf.ptr),
-            ptr_arg(&fc2_w_buf.ptr),
-            ptr_arg(&fc2_bias_buf.ptr),
-            ptr_arg(&out_buf.ptr),
+            ptr_arg(&ptrs.a),
+            ptr_arg(&ptrs.fc2_w),
+            ptr_arg(&ptrs.fc2_bias),
+            ptr_arg(&ptrs.out),
             uint_arg(&t_u),
             uint_arg(&d_u),
             uint_arg(&ffn_u),
@@ -1014,7 +1193,6 @@ impl CudaContext {
             1,
         );
 
-        // Three launches on the one stream, no intermediate synchronise.
         self.launch_async(
             self.gemm,
             fc1_grid,
@@ -1035,14 +1213,7 @@ impl CudaContext {
             (BLOCK, BLOCK, 1),
             &mut p_fc2,
             "cuLaunchKernel(vokra_gemm_f32 mlp fc2)",
-        )?;
-
-        // ONE synchronise for the whole chain, then D2H only the final output.
-        // SAFETY: waits for the three launches on the owned stream to complete
-        // before the D2H below.
-        let sync = unsafe { (self.driver.cu_stream_synchronize)(self.stream) };
-        sys::check(&self.driver, sync, "cuStreamSynchronize")?;
-        self.dtoh(&out_buf, out)
+        )
     }
 
     // ---- Phase-5 fusion: device-resident non-causal attention ----------------
@@ -1174,15 +1345,67 @@ impl CudaContext {
         let ctx_h_buf = self.alloc(checked_mul(tq_hd_n, f, "attn ctx_h bytes")?)?; // [t_q, hd]
         let out_buf = self.alloc(size_of_val(out))?; // [t_q, d]
 
-        // Shared scalars (must outlive the launches; addresses go into `params`).
+        // Issue the `2 + 7·n_head` launches on the one stream (shared with
+        // `attn_dev` / `encode_prenorm_stack`), then ONE synchronise + D2H.
+        self.launch_attn_chain(
+            &AttnChainDims {
+                t_q,
+                t_kv,
+                d,
+                n_head,
+                scale,
+                has_q_bias: q_bias.is_some(),
+                has_out_bias: out_bias.is_some(),
+            },
+            &AttnChainPtrs {
+                xq: xq_buf.ptr,
+                q_w: q_w_buf.ptr,
+                q_bias: q_bias_buf.ptr,
+                k: k_buf.ptr,
+                v: v_buf.ptr,
+                out_w: out_w_buf.ptr,
+                out_bias: out_bias_buf.ptr,
+                q: q_buf.ptr,
+                context: context_buf.ptr,
+                qh: qh_buf.ptr,
+                vh: vh_buf.ptr,
+                kh_t: kh_t_buf.ptr,
+                scores: scores_buf.ptr,
+                probs: probs_buf.ptr,
+                ctx_h: ctx_h_buf.ptr,
+                out: out_buf.ptr,
+            },
+        )?;
+        self.sync_stream("cuStreamSynchronize")?;
+        self.dtoh(&out_buf, out)
+    }
+
+    /// Issues the `2 + 7·n_head` fused-attention launches (q-proj GEMM → per head
+    /// {gather qh/vh, gather-transpose kh_t, scores GEMM, softmax, context GEMM,
+    /// scatter} → out-proj GEMM) on the one stream, **without** synchronising /
+    /// allocating / copying. Factored out of [`Self::run_attn`] so the host-in/out
+    /// [`Self::attn_f32`], the device-in/out [`Self::attn_dev`] and the
+    /// whole-encoder [`Self::encode_prenorm_stack`] issue byte-for-byte identical
+    /// launches. Stream ordering serialises the reused per-head scratch (head h+1's
+    /// gather into `qh` after head h's scores GEMM read of it). `hd = d / n_head`
+    /// is exact (the caller validated it). Bias-less GEMMs bind `ptrs.q_bias` as
+    /// the never-read dummy (`has_bias = 0`).
+    fn launch_attn_chain(&self, dims: &AttnChainDims, ptrs: &AttnChainPtrs) -> Result<()> {
+        let (t_q, t_kv, d, n_head) = (dims.t_q, dims.t_kv, dims.d, dims.n_head);
+        let hd = d / n_head;
+        // These products all fit: the caller allocated buffers of these sizes.
+        let tq_hd_n = t_q * hd;
+        let tkv_hd_n = t_kv * hd;
+        let hd_tkv_n = hd * t_kv;
+
         let t_q_u = t_q as c_uint;
         let t_kv_u = t_kv as c_uint;
         let d_u = d as c_uint;
         let hd_u = hd as c_uint;
         let zero_u: c_uint = 0; // has_bias / bias-less GEMMs
-        let has_bias_q: c_uint = u32::from(q_bias.is_some());
-        let has_bias_out: c_uint = u32::from(out_bias.is_some());
-        let scale_v = scale;
+        let has_bias_q: c_uint = u32::from(dims.has_q_bias);
+        let has_bias_out: c_uint = u32::from(dims.has_out_bias);
+        let scale_v = dims.scale;
         let one_v = 1.0f32;
 
         let gemm_block = (BLOCK, BLOCK, 1);
@@ -1200,10 +1423,10 @@ impl CudaContext {
         // scale is NOT applied here; it is folded into the qh gather below (the
         // same single FP32 multiply the CPU does after this GEMM).
         let mut p_q: [*mut c_void; 8] = [
-            ptr_arg(&xq_buf.ptr),
-            ptr_arg(&q_w_buf.ptr),
-            ptr_arg(&q_bias_buf.ptr),
-            ptr_arg(&q_buf.ptr),
+            ptr_arg(&ptrs.xq),
+            ptr_arg(&ptrs.q_w),
+            ptr_arg(&ptrs.q_bias),
+            ptr_arg(&ptrs.q),
             uint_arg(&t_q_u),
             uint_arg(&d_u),
             uint_arg(&d_u),
@@ -1221,8 +1444,8 @@ impl CudaContext {
             let c0_u = (h * hd) as c_uint;
             // qh[i,c] = q[i, c0+c] * scale.
             let mut p_qh: [*mut c_void; 7] = [
-                ptr_arg(&q_buf.ptr),
-                ptr_arg(&qh_buf.ptr),
+                ptr_arg(&ptrs.q),
+                ptr_arg(&ptrs.qh),
                 uint_arg(&t_q_u),
                 uint_arg(&hd_u),
                 uint_arg(&d_u),
@@ -1238,8 +1461,8 @@ impl CudaContext {
             )?;
             // vh[j,c] = v[j, c0+c] (scale = 1).
             let mut p_vh: [*mut c_void; 7] = [
-                ptr_arg(&v_buf.ptr),
-                ptr_arg(&vh_buf.ptr),
+                ptr_arg(&ptrs.v),
+                ptr_arg(&ptrs.vh),
                 uint_arg(&t_kv_u),
                 uint_arg(&hd_u),
                 uint_arg(&d_u),
@@ -1255,8 +1478,8 @@ impl CudaContext {
             )?;
             // kh_t[c,j] = k[j, c0+c] (gather + transpose to [hd, t_kv]).
             let mut p_kh: [*mut c_void; 6] = [
-                ptr_arg(&k_buf.ptr),
-                ptr_arg(&kh_t_buf.ptr),
+                ptr_arg(&ptrs.k),
+                ptr_arg(&ptrs.kh_t),
                 uint_arg(&t_kv_u),
                 uint_arg(&hd_u),
                 uint_arg(&d_u),
@@ -1271,10 +1494,10 @@ impl CudaContext {
             )?;
             // scores[t_q,t_kv] = qh[t_q,hd] · kh_t[hd,t_kv] (bias-less GEMM).
             let mut p_scores: [*mut c_void; 8] = [
-                ptr_arg(&qh_buf.ptr),
-                ptr_arg(&kh_t_buf.ptr),
-                ptr_arg(&q_bias_buf.ptr),
-                ptr_arg(&scores_buf.ptr),
+                ptr_arg(&ptrs.qh),
+                ptr_arg(&ptrs.kh_t),
+                ptr_arg(&ptrs.q_bias),
+                ptr_arg(&ptrs.scores),
                 uint_arg(&t_q_u),
                 uint_arg(&t_kv_u),
                 uint_arg(&hd_u),
@@ -1289,8 +1512,8 @@ impl CudaContext {
             )?;
             // probs = softmax_rows(scores) (no mask — non-causal).
             let mut p_soft: [*mut c_void; 4] = [
-                ptr_arg(&scores_buf.ptr),
-                ptr_arg(&probs_buf.ptr),
+                ptr_arg(&ptrs.scores),
+                ptr_arg(&ptrs.probs),
                 uint_arg(&t_q_u),
                 uint_arg(&t_kv_u),
             ];
@@ -1303,10 +1526,10 @@ impl CudaContext {
             )?;
             // ctx_h[t_q,hd] = probs[t_q,t_kv] · vh[t_kv,hd] (bias-less GEMM).
             let mut p_ctx: [*mut c_void; 8] = [
-                ptr_arg(&probs_buf.ptr),
-                ptr_arg(&vh_buf.ptr),
-                ptr_arg(&q_bias_buf.ptr),
-                ptr_arg(&ctx_h_buf.ptr),
+                ptr_arg(&ptrs.probs),
+                ptr_arg(&ptrs.vh),
+                ptr_arg(&ptrs.q_bias),
+                ptr_arg(&ptrs.ctx_h),
                 uint_arg(&t_q_u),
                 uint_arg(&hd_u),
                 uint_arg(&t_kv_u),
@@ -1321,8 +1544,8 @@ impl CudaContext {
             )?;
             // context[i, c0+c] = ctx_h[i,c].
             let mut p_scatter: [*mut c_void; 6] = [
-                ptr_arg(&ctx_h_buf.ptr),
-                ptr_arg(&context_buf.ptr),
+                ptr_arg(&ptrs.ctx_h),
+                ptr_arg(&ptrs.context),
                 uint_arg(&t_q_u),
                 uint_arg(&hd_u),
                 uint_arg(&d_u),
@@ -1339,10 +1562,10 @@ impl CudaContext {
 
         // out = context[t_q,d] · out_w[d,d] (+out_bias) — GEMM (M=t_q, N=d, K=d).
         let mut p_out: [*mut c_void; 8] = [
-            ptr_arg(&context_buf.ptr),
-            ptr_arg(&out_w_buf.ptr),
-            ptr_arg(&out_bias_buf.ptr),
-            ptr_arg(&out_buf.ptr),
+            ptr_arg(&ptrs.context),
+            ptr_arg(&ptrs.out_w),
+            ptr_arg(&ptrs.out_bias),
+            ptr_arg(&ptrs.out),
             uint_arg(&t_q_u),
             uint_arg(&d_u),
             uint_arg(&d_u),
@@ -1354,14 +1577,671 @@ impl CudaContext {
             gemm_block,
             &mut p_out,
             "cuLaunchKernel(vokra_gemm_f32 attn out-proj)",
+        )
+    }
+
+    // ---- Phase-5 follow-on: public device-resident handle + ops --------------
+
+    /// The number of stream synchronisations issued through this context so far.
+    /// The env-independent readback/sync metric: the whole-encoder
+    /// [`Self::encode_prenorm_stack`] issues ONE, versus the per-op path's
+    /// `6·N + 1` for an `N`-block encoder.
+    #[must_use]
+    pub fn submission_count(&self) -> u64 {
+        self.submissions.get()
+    }
+
+    /// Uploads `data` into a fresh device-resident buffer (H2D once). The returned
+    /// [`CudaDeviceTensor`] borrows the context, so it cannot outlive it.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::BackendUnavailable`] on an allocation / copy failure.
+    pub fn upload(&self, data: &[f32]) -> Result<CudaDeviceTensor<'_>> {
+        let buf = self.alloc(size_of_val(data))?;
+        self.htod(&buf, data)?;
+        Ok(CudaDeviceTensor {
+            buf,
+            len: data.len(),
+            _aff: PhantomData,
+        })
+    }
+
+    /// Allocates an uninitialised device-resident buffer of `len` f32s (the
+    /// residency slice's intermediates; never copied D2H until an explicit
+    /// [`Self::download`]).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on an overflowing byte count;
+    /// [`VokraError::BackendUnavailable`] on an allocation failure.
+    pub fn alloc_dev(&self, len: usize) -> Result<CudaDeviceTensor<'_>> {
+        let bytes = checked_mul(len, size_of::<f32>(), "alloc_dev bytes")?;
+        let buf = self.alloc(bytes)?;
+        Ok(CudaDeviceTensor {
+            buf,
+            len,
+            _aff: PhantomData,
+        })
+    }
+
+    /// Reads a device-resident buffer back into `out` (D2H). Call after the owning
+    /// submission has completed (the `*_dev` ops and [`Self::encode_prenorm_stack`]
+    /// synchronise before returning).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] if `out.len()` differs from the tensor's
+    /// element count; [`VokraError::BackendUnavailable`] on a copy failure.
+    pub fn download(&self, t: &CudaDeviceTensor<'_>, out: &mut [f32]) -> Result<()> {
+        expect_len("download out", out.len(), t.len)?;
+        self.dtoh(&t.buf, out)
+    }
+
+    /// Uploads an optional weight slice (a `None` bias stays `None`, bound as the
+    /// shared dummy at launch time).
+    fn upload_opt(&self, data: Option<&[f32]>) -> Result<Option<CudaDeviceTensor<'_>>> {
+        data.map(|d| self.upload(d)).transpose()
+    }
+
+    /// Device-in/out affine layer normalisation (one self-contained submission).
+    /// Bit-identical to the host-in/out [`Self::layer_norm_f32`]; `out` must be a
+    /// distinct buffer from `x`.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a shape mismatch;
+    /// [`VokraError::BackendUnavailable`] on a device failure.
+    #[allow(clippy::too_many_arguments)] // intrinsic layer-norm parameter set
+    pub fn layer_norm_dev(
+        &self,
+        out: &mut CudaDeviceTensor<'_>,
+        x: &CudaDeviceTensor<'_>,
+        gamma: &CudaDeviceTensor<'_>,
+        beta: &CudaDeviceTensor<'_>,
+        rows: usize,
+        cols: usize,
+        eps: f32,
+    ) -> Result<()> {
+        let total = checked_mul(rows, cols, "layer_norm_dev rows*cols")?;
+        expect_len("layer_norm_dev x", x.len, total)?;
+        expect_len("layer_norm_dev out", out.len, total)?;
+        expect_len("layer_norm_dev gamma", gamma.len, cols)?;
+        expect_len("layer_norm_dev beta", beta.len, cols)?;
+        if total == 0 {
+            return Ok(());
+        }
+        self.launch_layer_norm_async(
+            x.buf.ptr,
+            gamma.buf.ptr,
+            beta.buf.ptr,
+            out.buf.ptr,
+            rows,
+            cols,
+            eps,
+        )?;
+        self.sync_stream("cuStreamSynchronize")
+    }
+
+    /// Device-in/out in-place residual add `dst[i] += src[i]` (one self-contained
+    /// submission). Bit-identical to the host `whisper::nn::add_assign`.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] if the lengths differ;
+    /// [`VokraError::BackendUnavailable`] on a device failure.
+    pub fn residual_add_dev(
+        &self,
+        dst: &mut CudaDeviceTensor<'_>,
+        src: &CudaDeviceTensor<'_>,
+    ) -> Result<()> {
+        expect_len("residual_add_dev src", src.len, dst.len)?;
+        if dst.len == 0 {
+            return Ok(());
+        }
+        self.launch_residual_add_async(dst.buf.ptr, src.buf.ptr, dst.len)?;
+        self.sync_stream("cuStreamSynchronize")
+    }
+
+    /// Device-in/out fused MLP `fc2(gelu(fc1(x)))` (one self-contained submission,
+    /// the two `[t, ffn]` intermediates allocated internally and never copied D2H).
+    /// Bit-identical to the host-in/out [`Self::mlp_f32`].
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a shape mismatch;
+    /// [`VokraError::BackendUnavailable`] on a device failure.
+    #[allow(clippy::too_many_arguments)] // fused-MLP operand set (two Linears + dims)
+    pub fn mlp_dev(
+        &self,
+        t: usize,
+        d: usize,
+        ffn: usize,
+        x: &CudaDeviceTensor<'_>,
+        fc1_w: &CudaDeviceTensor<'_>,
+        fc1_bias: Option<&CudaDeviceTensor<'_>>,
+        fc2_w: &CudaDeviceTensor<'_>,
+        fc2_bias: Option<&CudaDeviceTensor<'_>>,
+        out: &mut CudaDeviceTensor<'_>,
+    ) -> Result<()> {
+        if t == 0 || d == 0 || ffn == 0 {
+            return Err(VokraError::InvalidArgument(
+                "mlp_dev dimensions t, d, ffn must all be >= 1".to_owned(),
+            ));
+        }
+        expect_len("mlp_dev x", x.len, checked_mul(t, d, "mlp_dev t*d")?)?;
+        expect_len(
+            "mlp_dev fc1_w",
+            fc1_w.len,
+            checked_mul(d, ffn, "mlp_dev d*ffn")?,
+        )?;
+        expect_len(
+            "mlp_dev fc2_w",
+            fc2_w.len,
+            checked_mul(ffn, d, "mlp_dev ffn*d")?,
+        )?;
+        expect_len(
+            "mlp_dev out",
+            out.len,
+            checked_mul(t, d, "mlp_dev out t*d")?,
+        )?;
+        if let Some(b) = fc1_bias {
+            expect_len("mlp_dev fc1_bias", b.len, ffn)?;
+        }
+        if let Some(b) = fc2_bias {
+            expect_len("mlp_dev fc2_bias", b.len, d)?;
+        }
+        let inter_bytes = checked_mul(
+            checked_mul(t, ffn, "mlp_dev t*ffn")?,
+            size_of::<f32>(),
+            "mlp_dev t*ffn bytes",
+        )?;
+        let dummy = self.alloc(size_of::<f32>())?;
+        let h_buf = self.alloc(inter_bytes)?;
+        let a_buf = self.alloc(inter_bytes)?;
+        self.launch_mlp_chain(
+            &MlpChainDims {
+                t,
+                d,
+                ffn,
+                has_fc1_bias: fc1_bias.is_some(),
+                has_fc2_bias: fc2_bias.is_some(),
+            },
+            &MlpChainPtrs {
+                x: x.buf.ptr,
+                fc1_w: fc1_w.buf.ptr,
+                fc1_bias: bias_ptr(fc1_bias, dummy.ptr),
+                fc2_w: fc2_w.buf.ptr,
+                fc2_bias: bias_ptr(fc2_bias, dummy.ptr),
+                h: h_buf.ptr,
+                a: a_buf.ptr,
+                out: out.buf.ptr,
+            },
+        )?;
+        self.sync_stream("cuStreamSynchronize")
+    }
+
+    /// Device-in/out fused **non-causal** attention (one self-contained
+    /// submission, every intermediate allocated internally and never copied D2H).
+    /// Bit-identical to the host-in/out [`Self::attn_f32`].
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a shape mismatch or `d % n_head != 0`;
+    /// [`VokraError::BackendUnavailable`] on a device failure.
+    #[allow(clippy::too_many_arguments)] // fused-attention operand set (two Linears + K/V + dims)
+    pub fn attn_dev(
+        &self,
+        t_q: usize,
+        t_kv: usize,
+        d: usize,
+        n_head: usize,
+        xq: &CudaDeviceTensor<'_>,
+        q_w: &CudaDeviceTensor<'_>,
+        q_bias: Option<&CudaDeviceTensor<'_>>,
+        k: &CudaDeviceTensor<'_>,
+        v: &CudaDeviceTensor<'_>,
+        out_w: &CudaDeviceTensor<'_>,
+        out_bias: Option<&CudaDeviceTensor<'_>>,
+        scale: f32,
+        out: &mut CudaDeviceTensor<'_>,
+    ) -> Result<()> {
+        if t_q == 0 || t_kv == 0 || d == 0 || n_head == 0 {
+            return Err(VokraError::InvalidArgument(
+                "attn_dev dimensions t_q, t_kv, d, n_head must all be >= 1".to_owned(),
+            ));
+        }
+        if d % n_head != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "attn_dev d ({d}) must be divisible by n_head ({n_head})"
+            )));
+        }
+        let dd = checked_mul(d, d, "attn_dev d*d")?;
+        let tkvd = checked_mul(t_kv, d, "attn_dev t_kv*d")?;
+        expect_len(
+            "attn_dev xq",
+            xq.len,
+            checked_mul(t_q, d, "attn_dev t_q*d")?,
+        )?;
+        expect_len("attn_dev q_w", q_w.len, dd)?;
+        expect_len("attn_dev k", k.len, tkvd)?;
+        expect_len("attn_dev v", v.len, tkvd)?;
+        expect_len("attn_dev out_w", out_w.len, dd)?;
+        expect_len(
+            "attn_dev out",
+            out.len,
+            checked_mul(t_q, d, "attn_dev out")?,
+        )?;
+        if let Some(b) = q_bias {
+            expect_len("attn_dev q_bias", b.len, d)?;
+        }
+        if let Some(b) = out_bias {
+            expect_len("attn_dev out_bias", b.len, d)?;
+        }
+        let hd = d / n_head;
+        let f = size_of::<f32>();
+        let tqd = checked_mul(
+            checked_mul(t_q, d, "attn_dev t_q*d")?,
+            f,
+            "attn_dev t_q*d bytes",
+        )?;
+        let tq_hd_b = checked_mul(
+            checked_mul(t_q, hd, "attn_dev t_q*hd")?,
+            f,
+            "attn_dev qh bytes",
+        )?;
+        let tkv_hd_b = checked_mul(
+            checked_mul(t_kv, hd, "attn_dev t_kv*hd")?,
+            f,
+            "attn_dev vh bytes",
+        )?;
+        let hd_tkv_b = checked_mul(
+            checked_mul(hd, t_kv, "attn_dev hd*t_kv")?,
+            f,
+            "attn_dev kh_t bytes",
+        )?;
+        let tq_tkv_b = checked_mul(
+            checked_mul(t_q, t_kv, "attn_dev t_q*t_kv")?,
+            f,
+            "attn_dev scores bytes",
+        )?;
+        let dummy = self.alloc(f)?;
+        let q_buf = self.alloc(tqd)?;
+        let context_buf = self.alloc(tqd)?;
+        let qh_buf = self.alloc(tq_hd_b)?;
+        let vh_buf = self.alloc(tkv_hd_b)?;
+        let kh_t_buf = self.alloc(hd_tkv_b)?;
+        let scores_buf = self.alloc(tq_tkv_b)?;
+        let probs_buf = self.alloc(tq_tkv_b)?;
+        let ctx_h_buf = self.alloc(tq_hd_b)?;
+        self.launch_attn_chain(
+            &AttnChainDims {
+                t_q,
+                t_kv,
+                d,
+                n_head,
+                scale,
+                has_q_bias: q_bias.is_some(),
+                has_out_bias: out_bias.is_some(),
+            },
+            &AttnChainPtrs {
+                xq: xq.buf.ptr,
+                q_w: q_w.buf.ptr,
+                q_bias: bias_ptr(q_bias, dummy.ptr),
+                k: k.buf.ptr,
+                v: v.buf.ptr,
+                out_w: out_w.buf.ptr,
+                out_bias: bias_ptr(out_bias, dummy.ptr),
+                q: q_buf.ptr,
+                context: context_buf.ptr,
+                qh: qh_buf.ptr,
+                vh: vh_buf.ptr,
+                kh_t: kh_t_buf.ptr,
+                scores: scores_buf.ptr,
+                probs: probs_buf.ptr,
+                ctx_h: ctx_h_buf.ptr,
+                out: out.buf.ptr,
+            },
+        )?;
+        self.sync_stream("cuStreamSynchronize")
+    }
+
+    // ---- Phase-5 follow-on: device-resident whole-encoder stack --------------
+
+    /// Runs the whole Whisper pre-norm **encoder** device-resident in ONE
+    /// synchronise: `n × [ln → attn → residual → ln → mlp → residual]` + final ln,
+    /// with the hidden state `h` and every intermediate kept on the GPU across all
+    /// blocks. Mirrors `vokra-backend-metal`'s `encode_prenorm_stack`: `hidden` is
+    /// the `[t, d]` post-conv-stem input (H2D once), `out` the `[t, d]` normed
+    /// output (D2H once); per-block weights come as [`PrenormLayer`] slices
+    /// (H2D'd once up front, before any launch, so the synchronous `cuMemcpyHtoD`
+    /// never stalls on pending launches). `n_head` splits `d`,
+    /// `scale = (d / n_head)^-0.5`.
+    ///
+    /// Bit-identical to running the blocks per-op on the GPU (same kernels, order,
+    /// launch geometry) and matches the CPU within the FP32 bound; the difference
+    /// is ONE `cuStreamSynchronize` for the whole encoder instead of the per-op
+    /// path's `6·N + 1`. Stream ordering serialises the reused scratch across
+    /// blocks and the two residual adds' read-modify-write of `h`.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a shape mismatch or `d % n_head != 0`;
+    /// [`VokraError::BackendUnavailable`] on a device allocation / launch failure.
+    #[allow(clippy::too_many_arguments)] // whole-encoder operand set (dims + weights + I/O)
+    pub fn encode_prenorm_stack(
+        &self,
+        t: usize,
+        d: usize,
+        ff: usize,
+        n_head: usize,
+        eps: f32,
+        hidden: &[f32],
+        layers: &[PrenormLayer<'_>],
+        final_ln_gamma: &[f32],
+        final_ln_beta: &[f32],
+        out: &mut [f32],
+    ) -> Result<()> {
+        validate_prenorm_stack(
+            t,
+            d,
+            ff,
+            n_head,
+            hidden,
+            layers,
+            final_ln_gamma,
+            final_ln_beta,
+            out,
+        )?;
+        self.run_prenorm_stack(
+            t,
+            d,
+            ff,
+            n_head,
+            eps,
+            hidden,
+            layers,
+            final_ln_gamma,
+            final_ln_beta,
+            out,
+        )
+    }
+
+    /// Body of [`Self::encode_prenorm_stack`]: H2D `h` + all weights, allocate the
+    /// device-resident scratch once, issue every block's launches on the one
+    /// stream, synchronise ONCE, and D2H the final normed output. Shapes validated.
+    #[allow(clippy::too_many_arguments)] // whole-encoder operand set (dims + weights + I/O)
+    fn run_prenorm_stack(
+        &self,
+        t: usize,
+        d: usize,
+        ff: usize,
+        n_head: usize,
+        eps: f32,
+        hidden: &[f32],
+        layers: &[PrenormLayer<'_>],
+        final_ln_gamma: &[f32],
+        final_ln_beta: &[f32],
+        out: &mut [f32],
+    ) -> Result<()> {
+        let hd = d / n_head;
+        let scale = (hd as f32).powf(-0.5);
+
+        // H2D `h` + every weight up front (before any launch).
+        let h = self.upload(hidden)?;
+        let dummy = self.upload(&[0.0f32])?;
+        let mut dev_layers: Vec<DevLayer<'_>> = Vec::with_capacity(layers.len());
+        for l in layers {
+            dev_layers.push(DevLayer {
+                attn_ln_g: self.upload(l.attn_ln_gamma)?,
+                attn_ln_b: self.upload(l.attn_ln_beta)?,
+                q_w: self.upload(l.q_w)?,
+                q_bias: self.upload_opt(l.q_bias)?,
+                k_w: self.upload(l.k_w)?,
+                k_bias: self.upload_opt(l.k_bias)?,
+                v_w: self.upload(l.v_w)?,
+                v_bias: self.upload_opt(l.v_bias)?,
+                out_w: self.upload(l.out_w)?,
+                out_bias: self.upload_opt(l.out_bias)?,
+                mlp_ln_g: self.upload(l.mlp_ln_gamma)?,
+                mlp_ln_b: self.upload(l.mlp_ln_beta)?,
+                fc1_w: self.upload(l.fc1_w)?,
+                fc1_bias: self.upload_opt(l.fc1_bias)?,
+                fc2_w: self.upload(l.fc2_w)?,
+                fc2_bias: self.upload_opt(l.fc2_bias)?,
+            });
+        }
+        let ln_post_g = self.upload(final_ln_gamma)?;
+        let ln_post_b = self.upload(final_ln_beta)?;
+
+        // Persistent device scratch (`t_q == t_kv == t`).
+        let td = checked_mul(t, d, "prenorm t*d")?;
+        let thd = checked_mul(t, hd, "prenorm t*hd")?;
+        let tt = checked_mul(t, t, "prenorm t*t")?;
+        let tff = checked_mul(t, ff, "prenorm t*ff")?;
+        let ln = self.alloc_dev(td)?;
+        let k = self.alloc_dev(td)?;
+        let v = self.alloc_dev(td)?;
+        let block_out = self.alloc_dev(td)?;
+        let normed = self.alloc_dev(td)?;
+        let q = self.alloc_dev(td)?;
+        let context = self.alloc_dev(td)?;
+        let qh = self.alloc_dev(thd)?;
+        let vh = self.alloc_dev(thd)?;
+        let kh_t = self.alloc_dev(thd)?;
+        let scores = self.alloc_dev(tt)?;
+        let probs = self.alloc_dev(tt)?;
+        let ctx_h = self.alloc_dev(thd)?;
+        let mlp_h = self.alloc_dev(tff)?;
+        let mlp_a = self.alloc_dev(tff)?;
+
+        for layer in &dev_layers {
+            // 1. ln = layer_norm(h, attn_ln)
+            self.launch_layer_norm_async(
+                h.buf.ptr,
+                layer.attn_ln_g.buf.ptr,
+                layer.attn_ln_b.buf.ptr,
+                ln.buf.ptr,
+                t,
+                d,
+                eps,
+            )?;
+            // 2. k = ln · k_w (Whisper k has no bias)
+            self.launch_gemm_async(
+                ln.buf.ptr,
+                layer.k_w.buf.ptr,
+                bias_ptr(layer.k_bias.as_ref(), dummy.buf.ptr),
+                k.buf.ptr,
+                t,
+                d,
+                d,
+                layer.k_bias.is_some(),
+            )?;
+            // 3. v = ln · v_w (+v_bias)
+            self.launch_gemm_async(
+                ln.buf.ptr,
+                layer.v_w.buf.ptr,
+                bias_ptr(layer.v_bias.as_ref(), dummy.buf.ptr),
+                v.buf.ptr,
+                t,
+                d,
+                d,
+                layer.v_bias.is_some(),
+            )?;
+            // 4. attn → block_out
+            self.launch_attn_chain(
+                &AttnChainDims {
+                    t_q: t,
+                    t_kv: t,
+                    d,
+                    n_head,
+                    scale,
+                    has_q_bias: layer.q_bias.is_some(),
+                    has_out_bias: layer.out_bias.is_some(),
+                },
+                &AttnChainPtrs {
+                    xq: ln.buf.ptr,
+                    q_w: layer.q_w.buf.ptr,
+                    q_bias: bias_ptr(layer.q_bias.as_ref(), dummy.buf.ptr),
+                    k: k.buf.ptr,
+                    v: v.buf.ptr,
+                    out_w: layer.out_w.buf.ptr,
+                    out_bias: bias_ptr(layer.out_bias.as_ref(), dummy.buf.ptr),
+                    q: q.buf.ptr,
+                    context: context.buf.ptr,
+                    qh: qh.buf.ptr,
+                    vh: vh.buf.ptr,
+                    kh_t: kh_t.buf.ptr,
+                    scores: scores.buf.ptr,
+                    probs: probs.buf.ptr,
+                    ctx_h: ctx_h.buf.ptr,
+                    out: block_out.buf.ptr,
+                },
+            )?;
+            // 5. h += block_out
+            self.launch_residual_add_async(h.buf.ptr, block_out.buf.ptr, td)?;
+            // 6. ln = layer_norm(h, mlp_ln)
+            self.launch_layer_norm_async(
+                h.buf.ptr,
+                layer.mlp_ln_g.buf.ptr,
+                layer.mlp_ln_b.buf.ptr,
+                ln.buf.ptr,
+                t,
+                d,
+                eps,
+            )?;
+            // 7. mlp → block_out
+            self.launch_mlp_chain(
+                &MlpChainDims {
+                    t,
+                    d,
+                    ffn: ff,
+                    has_fc1_bias: layer.fc1_bias.is_some(),
+                    has_fc2_bias: layer.fc2_bias.is_some(),
+                },
+                &MlpChainPtrs {
+                    x: ln.buf.ptr,
+                    fc1_w: layer.fc1_w.buf.ptr,
+                    fc1_bias: bias_ptr(layer.fc1_bias.as_ref(), dummy.buf.ptr),
+                    fc2_w: layer.fc2_w.buf.ptr,
+                    fc2_bias: bias_ptr(layer.fc2_bias.as_ref(), dummy.buf.ptr),
+                    h: mlp_h.buf.ptr,
+                    a: mlp_a.buf.ptr,
+                    out: block_out.buf.ptr,
+                },
+            )?;
+            // 8. h += block_out
+            self.launch_residual_add_async(h.buf.ptr, block_out.buf.ptr, td)?;
+        }
+        // Final LayerNorm into `normed`.
+        self.launch_layer_norm_async(
+            h.buf.ptr,
+            ln_post_g.buf.ptr,
+            ln_post_b.buf.ptr,
+            normed.buf.ptr,
+            t,
+            d,
+            eps,
         )?;
 
-        // ONE synchronise for the whole chain, then D2H only the final output.
-        // SAFETY: waits for every launch on the owned stream to complete before
-        // the D2H below.
-        let sync = unsafe { (self.driver.cu_stream_synchronize)(self.stream) };
-        sys::check(&self.driver, sync, "cuStreamSynchronize")?;
-        self.dtoh(&out_buf, out)
+        self.sync_stream("cuStreamSynchronize")?;
+        self.dtoh(&normed.buf, out)
+    }
+
+    /// Issues a single affine layer-norm launch on the stream (no synchronise).
+    #[allow(clippy::too_many_arguments)] // intrinsic layer-norm parameter set
+    fn launch_layer_norm_async(
+        &self,
+        inp: CUdeviceptr,
+        gamma: CUdeviceptr,
+        beta: CUdeviceptr,
+        out: CUdeviceptr,
+        rows: usize,
+        cols: usize,
+        eps: f32,
+    ) -> Result<()> {
+        let rows_u = rows as c_uint;
+        let cols_u = cols as c_uint;
+        let eps_v = eps;
+        let mut params: [*mut c_void; 7] = [
+            ptr_arg(&inp),
+            ptr_arg(&gamma),
+            ptr_arg(&beta),
+            ptr_arg(&out),
+            uint_arg(&rows_u),
+            uint_arg(&cols_u),
+            f32_arg(&eps_v),
+        ];
+        let grid = (rows.div_ceil(BLOCK_1D as usize) as c_uint, 1, 1);
+        self.launch_async(
+            self.layer_norm,
+            grid,
+            (BLOCK_1D, 1, 1),
+            &mut params,
+            "cuLaunchKernel(vokra_layer_norm_f32 prenorm)",
+        )
+    }
+
+    /// Issues a single GEMM launch on the stream (no synchronise):
+    /// `out[m,n] = bias?[n] + a[m,k]·b[k,n]`.
+    #[allow(clippy::too_many_arguments)] // intrinsic GEMM parameter set
+    fn launch_gemm_async(
+        &self,
+        a: CUdeviceptr,
+        b: CUdeviceptr,
+        bias: CUdeviceptr,
+        out: CUdeviceptr,
+        m: usize,
+        n: usize,
+        k: usize,
+        has_bias: bool,
+    ) -> Result<()> {
+        let m_u = m as c_uint;
+        let n_u = n as c_uint;
+        let k_u = k as c_uint;
+        let hb: c_uint = u32::from(has_bias);
+        let mut params: [*mut c_void; 8] = [
+            ptr_arg(&a),
+            ptr_arg(&b),
+            ptr_arg(&bias),
+            ptr_arg(&out),
+            uint_arg(&m_u),
+            uint_arg(&n_u),
+            uint_arg(&k_u),
+            uint_arg(&hb),
+        ];
+        let grid = (
+            n.div_ceil(BLOCK as usize) as c_uint,
+            m.div_ceil(BLOCK as usize) as c_uint,
+            1,
+        );
+        self.launch_async(
+            self.gemm,
+            grid,
+            (BLOCK, BLOCK, 1),
+            &mut params,
+            "cuLaunchKernel(vokra_gemm_f32 prenorm)",
+        )
+    }
+
+    /// Issues a single in-place residual-add launch on the stream (no synchronise):
+    /// `dst[i] += src[i]`.
+    fn launch_residual_add_async(
+        &self,
+        dst: CUdeviceptr,
+        src: CUdeviceptr,
+        n: usize,
+    ) -> Result<()> {
+        let n_u = n as c_uint;
+        let mut params: [*mut c_void; 3] = [ptr_arg(&dst), ptr_arg(&src), uint_arg(&n_u)];
+        let grid = (n.div_ceil(BLOCK_1D as usize) as c_uint, 1, 1);
+        self.launch_async(
+            self.add_assign,
+            grid,
+            (BLOCK_1D, 1, 1),
+            &mut params,
+            "cuLaunchKernel(vokra_add_assign_f32 prenorm)",
+        )
     }
 
     /// Launches `func` on the context stream **without** synchronising — the
@@ -1439,9 +2319,18 @@ impl CudaContext {
             )
         };
         sys::check(d, r, what)?;
-        // SAFETY: waits for the launch on the owned stream to complete before D2H.
-        let sync = unsafe { (d.cu_stream_synchronize)(self.stream) };
-        sys::check(d, sync, "cuStreamSynchronize")
+        self.sync_stream("cuStreamSynchronize")
+    }
+
+    /// Synchronises the context stream ONCE, counting the submission (the
+    /// env-independent readback/sync metric [`Self::submission_count`] reports),
+    /// and surfaces a sync error. Every op that waits on the stream routes through
+    /// here so the count is exact.
+    fn sync_stream(&self, what: &str) -> Result<()> {
+        self.submissions.set(self.submissions.get() + 1);
+        // SAFETY: waits for every launch on the owned stream to complete before D2H.
+        let sync = unsafe { (self.driver.cu_stream_synchronize)(self.stream) };
+        sys::check(&self.driver, sync, what)
     }
 
     /// Allocates `bytes` (min one float) of device memory, tied to `&self`.
@@ -1526,6 +2415,7 @@ struct Modules {
     col_gather: CUfunction,
     col_gather_t: CUfunction,
     col_scatter: CUfunction,
+    add_assign: CUfunction,
 }
 
 /// Owns a loaded CUDA module, unloading it once on drop unless defused with
@@ -1607,6 +2497,8 @@ fn load_modules(driver: &CudaDriver) -> Result<Modules> {
     let col_gather = get_function(driver, kernels_module.module, c"vokra_col_gather_f32")?;
     let col_gather_t = get_function(driver, kernels_module.module, c"vokra_col_gather_t_f32")?;
     let col_scatter = get_function(driver, kernels_module.module, c"vokra_col_scatter_f32")?;
+    // The Phase-5-follow-on residual-add kernel shares the same module.
+    let add_assign = get_function(driver, kernels_module.module, c"vokra_add_assign_f32")?;
 
     // All resolved: defuse the guards into the owned handle set.
     Ok(Modules {
@@ -1621,6 +2513,7 @@ fn load_modules(driver: &CudaDriver) -> Result<Modules> {
         col_gather,
         col_gather_t,
         col_scatter,
+        add_assign,
     })
 }
 
@@ -1967,5 +2860,89 @@ fn validate_attn(
         out.len(),
         checked_mul(t_q, d, "attn out t_q*d")?,
     )?;
+    Ok(())
+}
+
+/// The device bias pointer for a projection: the real bias when present, else the
+/// shared `dummy` the kernel never reads (`has_bias = 0`).
+fn bias_ptr(bias: Option<&CudaDeviceTensor<'_>>, dummy: CUdeviceptr) -> CUdeviceptr {
+    bias.map_or(dummy, |t| t.buf.ptr)
+}
+
+/// Validates the whole-encoder pre-norm stack shapes (mirrors the Metal backend's
+/// `validate_prenorm_stack`): `hidden` / `out` are `[t, d]`, `d` splits evenly
+/// into `n_head`, the final LayerNorm `γ`/`β` are `[d]`, and every
+/// [`PrenormLayer`]'s LayerNorms are `[d]`, projections `[d, d]` (biases `[d]`),
+/// MLP linears `[d, ff]` / `[ff, d]` (biases `[ff]` / `[d]`).
+#[allow(clippy::too_many_arguments)] // whole-encoder operand set (dims + weights + I/O)
+fn validate_prenorm_stack(
+    t: usize,
+    d: usize,
+    ff: usize,
+    n_head: usize,
+    hidden: &[f32],
+    layers: &[PrenormLayer<'_>],
+    final_ln_gamma: &[f32],
+    final_ln_beta: &[f32],
+    out: &[f32],
+) -> Result<()> {
+    if t == 0 || d == 0 || ff == 0 || n_head == 0 {
+        return Err(VokraError::InvalidArgument(
+            "prenorm stack dimensions t, d, ff, n_head must all be >= 1".to_owned(),
+        ));
+    }
+    if d % n_head != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "prenorm stack d ({d}) must be divisible by n_head ({n_head})"
+        )));
+    }
+    let td = checked_mul(t, d, "prenorm t*d")?;
+    let dd = checked_mul(d, d, "prenorm d*d")?;
+    let dff = checked_mul(d, ff, "prenorm d*ff")?;
+    let ffd = checked_mul(ff, d, "prenorm ff*d")?;
+    expect_len("prenorm hidden", hidden.len(), td)?;
+    expect_len("prenorm out", out.len(), td)?;
+    expect_len("prenorm final_ln_gamma", final_ln_gamma.len(), d)?;
+    expect_len("prenorm final_ln_beta", final_ln_beta.len(), d)?;
+    for (i, l) in layers.iter().enumerate() {
+        let opt = |name: &str, b: Option<&[f32]>, want: usize| -> Result<()> {
+            match b {
+                Some(s) => expect_len(&format!("prenorm layer {i} {name}"), s.len(), want),
+                None => Ok(()),
+            }
+        };
+        expect_len(
+            &format!("prenorm layer {i} attn_ln_gamma"),
+            l.attn_ln_gamma.len(),
+            d,
+        )?;
+        expect_len(
+            &format!("prenorm layer {i} attn_ln_beta"),
+            l.attn_ln_beta.len(),
+            d,
+        )?;
+        expect_len(&format!("prenorm layer {i} q_w"), l.q_w.len(), dd)?;
+        expect_len(&format!("prenorm layer {i} k_w"), l.k_w.len(), dd)?;
+        expect_len(&format!("prenorm layer {i} v_w"), l.v_w.len(), dd)?;
+        expect_len(&format!("prenorm layer {i} out_w"), l.out_w.len(), dd)?;
+        opt("q_bias", l.q_bias, d)?;
+        opt("k_bias", l.k_bias, d)?;
+        opt("v_bias", l.v_bias, d)?;
+        opt("out_bias", l.out_bias, d)?;
+        expect_len(
+            &format!("prenorm layer {i} mlp_ln_gamma"),
+            l.mlp_ln_gamma.len(),
+            d,
+        )?;
+        expect_len(
+            &format!("prenorm layer {i} mlp_ln_beta"),
+            l.mlp_ln_beta.len(),
+            d,
+        )?;
+        expect_len(&format!("prenorm layer {i} fc1_w"), l.fc1_w.len(), dff)?;
+        expect_len(&format!("prenorm layer {i} fc2_w"), l.fc2_w.len(), ffd)?;
+        opt("fc1_bias", l.fc1_bias, ff)?;
+        opt("fc2_bias", l.fc2_bias, d)?;
+    }
     Ok(())
 }
