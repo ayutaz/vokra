@@ -356,6 +356,190 @@ mod tests {
         assert!(matches!(e, VokraError::ModelLoad(_)));
     }
 
+    /// Turbo-shaped WhisperConfig using minimal per-layer dims to keep the
+    /// synthetic tensor bodies small while still exercising the 32/4 layer
+    /// counts (M2-06-T05).
+    fn turbo_config() -> WhisperConfig {
+        WhisperConfig {
+            n_mels: 8,
+            d_model: 32,
+            n_audio_ctx: 4,
+            n_audio_head: 4,
+            n_audio_layer: 32,
+            n_text_ctx: 4,
+            n_text_head: 4,
+            n_text_layer: 4,
+            n_vocab: 16,
+            ffn_dim: 64,
+            eot: 15,
+            decoder_start_ids: vec![0, 1, 2, 3],
+        }
+    }
+
+    /// Populates a GGUF with every Whisper tensor named by `WhisperWeights::load`
+    /// under `cfg`, with all-zero f32 bodies of the correct shape. Optionally
+    /// skips a single tensor whose name matches `skip` — used to drive the
+    /// negative branch of the missing-tensor path.
+    fn build_turbo_gguf(cfg: &WhisperConfig, skip: Option<&str>) -> GgufFile {
+        let mut b = GgufBuilder::new();
+        let d = cfg.d_model;
+        let ff = cfg.ffn_dim;
+
+        let mut add = |name: &str, dims: Vec<u64>| {
+            if Some(name) == skip {
+                return;
+            }
+            let n: usize = dims.iter().map(|&x| x as usize).product();
+            b.add_tensor(name, GgmlType::F32, dims, vec![0u8; n * 4])
+                .unwrap();
+        };
+
+        // Encoder-level tensors.
+        add(
+            "model.encoder.conv1.weight",
+            vec![d as u64, cfg.n_mels as u64, 3],
+        );
+        add("model.encoder.conv1.bias", vec![d as u64]);
+        add("model.encoder.conv2.weight", vec![d as u64, d as u64, 3]);
+        add("model.encoder.conv2.bias", vec![d as u64]);
+        add(
+            "model.encoder.embed_positions.weight",
+            vec![cfg.n_audio_ctx as u64, d as u64],
+        );
+
+        // Encoder layers × n_audio_layer.
+        for i in 0..cfg.n_audio_layer {
+            let p = format!("model.encoder.layers.{i}");
+            add(&format!("{p}.self_attn_layer_norm.weight"), vec![d as u64]);
+            add(&format!("{p}.self_attn_layer_norm.bias"), vec![d as u64]);
+            add(
+                &format!("{p}.self_attn.q_proj.weight"),
+                vec![d as u64, d as u64],
+            );
+            add(&format!("{p}.self_attn.q_proj.bias"), vec![d as u64]);
+            add(
+                &format!("{p}.self_attn.k_proj.weight"),
+                vec![d as u64, d as u64],
+            );
+            // k_proj has no bias in Whisper.
+            add(
+                &format!("{p}.self_attn.v_proj.weight"),
+                vec![d as u64, d as u64],
+            );
+            add(&format!("{p}.self_attn.v_proj.bias"), vec![d as u64]);
+            add(
+                &format!("{p}.self_attn.out_proj.weight"),
+                vec![d as u64, d as u64],
+            );
+            add(&format!("{p}.self_attn.out_proj.bias"), vec![d as u64]);
+            add(&format!("{p}.final_layer_norm.weight"), vec![d as u64]);
+            add(&format!("{p}.final_layer_norm.bias"), vec![d as u64]);
+            add(&format!("{p}.fc1.weight"), vec![ff as u64, d as u64]);
+            add(&format!("{p}.fc1.bias"), vec![ff as u64]);
+            add(&format!("{p}.fc2.weight"), vec![d as u64, ff as u64]);
+            add(&format!("{p}.fc2.bias"), vec![d as u64]);
+        }
+        add("model.encoder.layer_norm.weight", vec![d as u64]);
+        add("model.encoder.layer_norm.bias", vec![d as u64]);
+
+        // Decoder-level tensors.
+        add(
+            "model.decoder.embed_tokens.weight",
+            vec![cfg.n_vocab as u64, d as u64],
+        );
+        add(
+            "model.decoder.embed_positions.weight",
+            vec![cfg.n_text_ctx as u64, d as u64],
+        );
+
+        // Decoder layers × n_text_layer.
+        for i in 0..cfg.n_text_layer {
+            let p = format!("model.decoder.layers.{i}");
+            add(&format!("{p}.self_attn_layer_norm.weight"), vec![d as u64]);
+            add(&format!("{p}.self_attn_layer_norm.bias"), vec![d as u64]);
+            add(
+                &format!("{p}.self_attn.q_proj.weight"),
+                vec![d as u64, d as u64],
+            );
+            add(&format!("{p}.self_attn.q_proj.bias"), vec![d as u64]);
+            add(
+                &format!("{p}.self_attn.k_proj.weight"),
+                vec![d as u64, d as u64],
+            );
+            add(
+                &format!("{p}.self_attn.v_proj.weight"),
+                vec![d as u64, d as u64],
+            );
+            add(&format!("{p}.self_attn.v_proj.bias"), vec![d as u64]);
+            add(
+                &format!("{p}.self_attn.out_proj.weight"),
+                vec![d as u64, d as u64],
+            );
+            add(&format!("{p}.self_attn.out_proj.bias"), vec![d as u64]);
+            add(
+                &format!("{p}.encoder_attn_layer_norm.weight"),
+                vec![d as u64],
+            );
+            add(&format!("{p}.encoder_attn_layer_norm.bias"), vec![d as u64]);
+            add(
+                &format!("{p}.encoder_attn.q_proj.weight"),
+                vec![d as u64, d as u64],
+            );
+            add(&format!("{p}.encoder_attn.q_proj.bias"), vec![d as u64]);
+            add(
+                &format!("{p}.encoder_attn.k_proj.weight"),
+                vec![d as u64, d as u64],
+            );
+            add(
+                &format!("{p}.encoder_attn.v_proj.weight"),
+                vec![d as u64, d as u64],
+            );
+            add(&format!("{p}.encoder_attn.v_proj.bias"), vec![d as u64]);
+            add(
+                &format!("{p}.encoder_attn.out_proj.weight"),
+                vec![d as u64, d as u64],
+            );
+            add(&format!("{p}.encoder_attn.out_proj.bias"), vec![d as u64]);
+            add(&format!("{p}.final_layer_norm.weight"), vec![d as u64]);
+            add(&format!("{p}.final_layer_norm.bias"), vec![d as u64]);
+            add(&format!("{p}.fc1.weight"), vec![ff as u64, d as u64]);
+            add(&format!("{p}.fc1.bias"), vec![ff as u64]);
+            add(&format!("{p}.fc2.weight"), vec![d as u64, ff as u64]);
+            add(&format!("{p}.fc2.bias"), vec![d as u64]);
+        }
+        add("model.decoder.layer_norm.weight", vec![d as u64]);
+        add("model.decoder.layer_norm.bias", vec![d as u64]);
+
+        GgufFile::parse(b.to_bytes().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn loads_turbo_layer_counts() {
+        // Turbo's asymmetric split (32 encoder blocks, 4 decoder blocks) must
+        // round-trip through `WhisperWeights::load` driven only by cfg counts.
+        let cfg = turbo_config();
+        let file = build_turbo_gguf(&cfg, None);
+        let weights = WhisperWeights::load(&file, &cfg).expect("turbo weights load");
+        assert_eq!(weights.encoder.layers.len(), 32);
+        assert_eq!(weights.decoder.layers.len(), 4);
+
+        // Removing one decoder tensor must surface as an explicit ModelLoad
+        // error (FR-EX-08: no silent fallback).
+        let cfg2 = turbo_config();
+        let file2 = build_turbo_gguf(
+            &cfg2,
+            Some("model.decoder.layers.3.self_attn.q_proj.weight"),
+        );
+        // `WhisperWeights` intentionally lacks `Debug` (owned weight buffers
+        // would produce enormous dumps), so match the Result explicitly instead
+        // of `unwrap_err`.
+        match WhisperWeights::load(&file2, &cfg2) {
+            Ok(_) => panic!("expected ModelLoad error, weights loaded successfully"),
+            Err(VokraError::ModelLoad(_)) => {}
+            Err(other) => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
     #[test]
     fn shape_mismatch_is_rejected() {
         let mut b = GgufBuilder::new();

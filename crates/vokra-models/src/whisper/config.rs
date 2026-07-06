@@ -236,6 +236,85 @@ mod tests {
         assert_eq!(cfg.decoder_start_ids, vec![50258, 50259, 50359, 50363]);
     }
 
+    /// M2-06-T03: verifies `WhisperConfig::from_gguf` faithfully round-trips
+    /// the hparam quintuple for all 5 supported whisper sizes. The runtime
+    /// stays fully data-driven — these values are the expected outputs for
+    /// synthetic GGUF stubs, sourced from OpenAI's published whisper
+    /// `config.json` files (n_mels, n_vocab, n_audio_layer, n_text_layer,
+    /// d_model, n_audio_head, n_text_head, ffn_dim). No runtime hardcoding.
+    #[test]
+    fn reads_all_whisper_size_hparams() {
+        // (name, n_audio_layer, n_text_layer, n_mels, n_vocab, d_model,
+        //  n_head, ffn_dim, n_audio_ctx, n_text_ctx)
+        // n_head = d_model / 64 (WHISPER_HEAD_DIM invariant across sizes);
+        // ffn_dim = 4 * d_model per Whisper architecture.
+        let rows: &[(&str, u32, u32, u32, u32, u32, u32, u32, u32, u32)] = &[
+            ("base", 6, 6, 80, 51865, 512, 8, 2048, 1500, 448),
+            ("small", 12, 12, 80, 51865, 768, 12, 3072, 1500, 448),
+            ("medium", 24, 24, 80, 51865, 1024, 16, 4096, 1500, 448),
+            ("large-v3", 32, 32, 128, 51866, 1280, 20, 5120, 1500, 448),
+            ("turbo", 32, 4, 128, 51866, 1280, 20, 5120, 1500, 448),
+        ];
+
+        for &(
+            name,
+            n_audio_layer,
+            n_text_layer,
+            n_mels,
+            n_vocab,
+            d_model,
+            n_head,
+            ffn_dim,
+            n_audio_ctx,
+            n_text_ctx,
+        ) in rows
+        {
+            let mut b = GgufBuilder::new();
+            b.add_u32(KEY_N_MELS, n_mels);
+            b.add_u32(KEY_N_AUDIO_CTX, n_audio_ctx);
+            b.add_u32(KEY_N_AUDIO_STATE, d_model);
+            b.add_u32(KEY_N_AUDIO_HEAD, n_head);
+            b.add_u32(KEY_N_AUDIO_LAYER, n_audio_layer);
+            b.add_u32(KEY_N_TEXT_CTX, n_text_ctx);
+            b.add_u32(KEY_N_TEXT_STATE, d_model);
+            b.add_u32(KEY_N_TEXT_HEAD, n_head);
+            b.add_u32(KEY_N_TEXT_LAYER, n_text_layer);
+            b.add_u32(KEY_N_VOCAB, n_vocab);
+            b.add_u32(KEY_FFN_DIM, ffn_dim);
+            b.add_u32(KEY_EOT, 50257);
+            b.add_metadata(
+                KEY_DECODER_START_IDS,
+                GgufMetadataValue::Array(GgufArray {
+                    element_type: GgufValueType::U32,
+                    values: [50258u32, 50259, 50359, 50363]
+                        .iter()
+                        .map(|&id| GgufMetadataValue::U32(id))
+                        .collect(),
+                }),
+            );
+
+            let cfg = WhisperConfig::from_gguf(&parse(b))
+                .unwrap_or_else(|e| panic!("{name}: from_gguf failed: {e:?}"));
+
+            let expected = WhisperConfig {
+                n_mels: n_mels as usize,
+                d_model: d_model as usize,
+                n_audio_ctx: n_audio_ctx as usize,
+                n_audio_head: n_head as usize,
+                n_audio_layer: n_audio_layer as usize,
+                n_text_ctx: n_text_ctx as usize,
+                n_text_head: n_head as usize,
+                n_text_layer: n_text_layer as usize,
+                n_vocab: n_vocab as usize,
+                ffn_dim: ffn_dim as usize,
+                eot: 50257,
+                decoder_start_ids: vec![50258, 50259, 50359, 50363],
+            };
+            assert_eq!(cfg, expected, "{name}: WhisperConfig mismatch");
+            assert_eq!(cfg.head_dim(), 64, "{name}: head_dim must equal 64");
+        }
+    }
+
     #[test]
     fn missing_key_is_model_load_error() {
         let mut b = valid_builder();
