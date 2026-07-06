@@ -136,6 +136,18 @@ pub enum ConvertError {
     Gguf(String),
     /// A command-line / usage problem.
     Usage(String),
+    /// A [`QuantPolicy`](models::whisper) rule resolved to a K-quant target for
+    /// a tensor that cannot be K-quantized (rank < 2 or element count not a
+    /// whole number of `QK_K` super-blocks). Emitted instead of silently
+    /// widening the tensor's dtype (FR-EX-08, M2-08 T06).
+    QuantPolicyInapplicable {
+        /// The offending tensor's upstream name.
+        tensor: String,
+        /// The scheme alias the policy resolved to (e.g. `"w4a16-q4k"`).
+        scheme: &'static str,
+        /// Human-readable reason (rank, element count, etc.).
+        reason: String,
+    },
 }
 
 impl fmt::Display for ConvertError {
@@ -145,6 +157,14 @@ impl fmt::Display for ConvertError {
             Self::Parse(m) => write!(f, "parse error: {m}"),
             Self::Gguf(m) => write!(f, "GGUF write error: {m}"),
             Self::Usage(m) => write!(f, "usage error: {m}"),
+            Self::QuantPolicyInapplicable {
+                tensor,
+                scheme,
+                reason,
+            } => write!(
+                f,
+                "quant policy inapplicable for tensor `{tensor}` (scheme `{scheme}`): {reason}"
+            ),
         }
     }
 }
@@ -273,6 +293,84 @@ pub fn convert_file_quantized(
         metadata_count,
         output_bytes: out_bytes.len() as u64,
         notes: vec![format!("quantized weight matrices to {quant:?}")],
+    })
+}
+
+/// The named quantization presets accepted by `--policy-preset` (M2-08 T06).
+///
+/// Presets map to a [`QuantPolicy`](models::whisper) with the shape documented
+/// in `docs/design/quantization-policy.md`:
+///
+/// - [`PolicyPreset::VocoderSafe`] — default whole-model widen to `F16`
+///   (activation-safe, matches Vocos/BigVGAN's fp16-minimum registry).
+/// - [`PolicyPreset::WhisperQ4K`] — default `Q4_K` with `.bias` / `.weight_norm`
+///   pinned to `F32`. Backward-compatible alias for `--quantize q4_k`.
+/// - [`PolicyPreset::Fp16`] — whole-model widen to `F16` with no rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyPreset {
+    /// Whole-model widen to `F16`. CLI default when `--policy-preset` is not
+    /// passed.
+    VocoderSafe,
+    /// `Q4_K` default; `.bias` / `.weight_norm` pinned to `F32`.
+    WhisperQ4K,
+    /// Whole-model widen to `F16`.
+    Fp16,
+}
+
+impl PolicyPreset {
+    /// Parses a `--policy-preset` argument value.
+    pub fn from_arg(s: &str) -> Option<Self> {
+        match s {
+            "vocoder_safe" => Some(Self::VocoderSafe),
+            "whisper_q4_k" => Some(Self::WhisperQ4K),
+            "fp16" => Some(Self::Fp16),
+            _ => None,
+        }
+    }
+}
+
+/// Runs a whisper conversion with an explicit [`PolicyPreset`] (M2-08 T06).
+///
+/// This is the T06 successor to [`convert_file_quantized`]: the offline
+/// converter now resolves each tensor's target dtype through a first-match
+/// policy rather than a hardcoded `is_quantizable()` filter, and stamps the
+/// resolved policy into `vokra.quant.*` metadata for the runtime to read back.
+/// Piper / CAM++ / Silero are unchanged in T06 and reject the flag.
+pub fn convert_file_with_policy(
+    model: ModelKind,
+    input: &Path,
+    output: &Path,
+    preset: PolicyPreset,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+
+    let builder = match model {
+        ModelKind::Whisper => {
+            let policy = match preset {
+                PolicyPreset::VocoderSafe => models::whisper::QuantPolicy::default_vocoder_safe(),
+                PolicyPreset::WhisperQ4K => models::whisper::QuantPolicy::whisper_q4_k(),
+                PolicyPreset::Fp16 => models::whisper::QuantPolicy::fp16(),
+            };
+            models::whisper::convert_with_policy(bytes, Some(policy))?
+        }
+        other => {
+            return Err(ConvertError::Usage(format!(
+                "--policy-preset is only supported for whisper in M2-08, not {other}"
+            )));
+        }
+    };
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes: vec![format!("applied quantization policy preset {preset:?}")],
     })
 }
 

@@ -23,10 +23,189 @@
 
 use vokra_core::gguf::{
     FrontendSpec, GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+    tensor::QK_K,
 };
 
 use crate::ConvertError;
 use crate::safetensors::{SafeTensorInfo, SafetensorsFile};
+
+// ---------------------------------------------------------------------------
+// Local quantization policy (M2-08 T06 — minimal in-crate implementation)
+// ---------------------------------------------------------------------------
+//
+// The full `vokra_core::quant` module (T01–T05: `QuantScheme`, `QuantPolicy`,
+// `resolve`, and the `vokra.quant.*` GGUF chunk API) is a prerequisite of this
+// WP that has not yet landed. To deliver T06 without expanding scope into that
+// upstream crate, this module hosts a minimal, first-match policy resolver +
+// GGUF-chunk writer with the exact contract the ticket specifies:
+//
+//   - `resolve(policy, tensor.name)` returns the resolved [`QuantScheme`].
+//   - Emitting the resolved scheme's `weight_dtype()` replaces the hardcoded
+//     `is_quantizable()` filter (FR-EX-08 — no silent widen on inapplicability).
+//   - The `vokra.quant.*` chunk keys mirror the T05 contract so a future
+//     migration to `vokra_core::quant` is a rename, not a redesign.
+//
+// Piper / CAM++ / Silero converters are unchanged (per ticket).
+
+/// A weight-quantization scheme mapping tensor name → target `GgmlType`.
+///
+/// M2-08 subset: FP32, FP16, and the three K-quant tiers. `W8A8Int8` is
+/// intentionally omitted — no INT8 kernels exist yet and a converter that
+/// resolved to INT8 would need an activation calibration path that is out of
+/// scope for T06. Bare `w4a16` (no suffix) resolves to `W4A16Q4K` as the
+/// default 4-bit tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub(crate) enum QuantScheme {
+    Fp32,
+    Fp16,
+    W4A16Q4K,
+    W4A16Q5K,
+    W4A16Q6K,
+}
+
+impl QuantScheme {
+    /// The GGUF weight `GgmlType` a converter emits for this scheme.
+    pub(crate) fn weight_dtype(self) -> GgmlType {
+        match self {
+            Self::Fp32 => GgmlType::F32,
+            Self::Fp16 => GgmlType::F16,
+            Self::W4A16Q4K => GgmlType::Q4K,
+            Self::W4A16Q5K => GgmlType::Q5K,
+            Self::W4A16Q6K => GgmlType::Q6K,
+        }
+    }
+
+    /// Canonical `vokra.quant.*` chunk alias (T05 contract).
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Fp32 => "fp32",
+            Self::Fp16 => "fp16",
+            Self::W4A16Q4K => "w4a16-q4k",
+            Self::W4A16Q5K => "w4a16-q5k",
+            Self::W4A16Q6K => "w4a16-q6k",
+        }
+    }
+
+    /// True iff the scheme's weight dtype is a K-quant that requires the
+    /// tensor's element count to be a whole number of `QK_K` super-blocks and
+    /// at least rank 2.
+    fn is_kquant(self) -> bool {
+        matches!(self, Self::W4A16Q4K | Self::W4A16Q5K | Self::W4A16Q6K)
+    }
+}
+
+/// A tensor-name pattern used for policy rules.
+#[derive(Debug, Clone)]
+pub(crate) enum LayerPattern {
+    Suffix(String),
+}
+
+impl LayerPattern {
+    fn matches(&self, name: &str) -> bool {
+        match self {
+            Self::Suffix(s) => name.ends_with(s.as_str()),
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Suffix(_) => "suffix",
+        }
+    }
+
+    fn payload(&self) -> &str {
+        match self {
+            Self::Suffix(s) => s.as_str(),
+        }
+    }
+}
+
+/// A single first-match rule.
+#[derive(Debug, Clone)]
+pub(crate) struct QuantRule {
+    pub(crate) pattern: LayerPattern,
+    pub(crate) scheme: QuantScheme,
+}
+
+/// A minimal, ordered, first-match-wins quantization policy.
+#[derive(Debug, Clone)]
+pub(crate) struct QuantPolicy {
+    pub(crate) default: QuantScheme,
+    pub(crate) rules: Vec<QuantRule>,
+}
+
+impl QuantPolicy {
+    /// The safe default preset: everything F16 (T04 — vocoder-safe). This is
+    /// also the CLI default when no `--policy-preset` is passed.
+    pub(crate) fn default_vocoder_safe() -> Self {
+        Self {
+            default: QuantScheme::Fp16,
+            rules: Vec::new(),
+        }
+    }
+
+    /// The whisper Q4_K preset: default Q4_K with biases / norms held in F32
+    /// (mirrors the pre-T06 `is_quantizable()` behaviour).
+    pub(crate) fn whisper_q4_k() -> Self {
+        Self {
+            default: QuantScheme::W4A16Q4K,
+            rules: vec![
+                QuantRule {
+                    pattern: LayerPattern::Suffix(".bias".to_owned()),
+                    scheme: QuantScheme::Fp32,
+                },
+                QuantRule {
+                    pattern: LayerPattern::Suffix(".weight_norm".to_owned()),
+                    scheme: QuantScheme::Fp32,
+                },
+            ],
+        }
+    }
+
+    /// The FP16 preset (whole-model widen to F16).
+    pub(crate) fn fp16() -> Self {
+        Self {
+            default: QuantScheme::Fp16,
+            rules: Vec::new(),
+        }
+    }
+}
+
+/// First-match resolution: iterate `policy.rules` in declaration order; the
+/// first pattern that matches `tensor_name` wins. Falls through to
+/// `policy.default` when nothing matches (T04 contract).
+pub(crate) fn resolve(policy: &QuantPolicy, tensor_name: &str) -> QuantScheme {
+    for r in &policy.rules {
+        if r.pattern.matches(tensor_name) {
+            return r.scheme;
+        }
+    }
+    policy.default
+}
+
+/// Writes the `vokra.quant.*` chunk into `b` (T05 contract subset). Values are
+/// the resolved policy — a future runtime that consumes this chunk can rebuild
+/// the exact `QuantPolicy` a converter used.
+fn write_quant_chunk(b: &mut GgufBuilder, policy: &QuantPolicy) {
+    b.add_string("vokra.quant.default_scheme", policy.default.as_str());
+    b.add_u32("vokra.quant.rule_count", policy.rules.len() as u32);
+    for (i, rule) in policy.rules.iter().enumerate() {
+        b.add_string(
+            &format!("vokra.quant.rule.{i}.pattern_kind"),
+            rule.pattern.kind(),
+        );
+        b.add_string(
+            &format!("vokra.quant.rule.{i}.pattern"),
+            rule.pattern.payload(),
+        );
+        b.add_string(
+            &format!("vokra.quant.rule.{i}.scheme"),
+            rule.scheme.as_str(),
+        );
+    }
+    b.add_bool("vokra.quant.hifigan_int8_opt_in", false);
+}
 
 /// `vokra.model.arch` value written for Whisper GGUFs.
 pub(crate) const ARCH: &str = "whisper";
@@ -218,16 +397,50 @@ fn checkpoint_n_mels(st: &SafetensorsFile) -> u32 {
     tensor_dim(st, "model.encoder.conv1.weight", 1) as u32
 }
 
-/// Converts a Whisper base safetensors buffer into a populated GGUF builder.
-///
-/// When `quantize` is `Some(qt)`, every *quantizable* weight (a dense tensor of
-/// rank ≥ 2 whose element count is a whole number of 256-element super-blocks)
-/// is K-quantized to `qt` (M1-02, FR-QT-01); biases, norms and other small or
-/// mis-sized tensors stay `F32` / `F16`. `None` reproduces the byte-exact M0
-/// behaviour. Metadata is identical either way — only tensor dtype/bytes change.
+/// Legacy entry point: converts a Whisper safetensors buffer with an
+/// [`Option<GgmlType>`] quantize target. `None` widens to source dtype
+/// (byte-exact), `Some(qt)` maps to the `whisper_q4_k` / `whisper_q5_k` /
+/// `whisper_q6_k` policy shape from before T06 landed. New code should call
+/// [`convert_with_policy`] with an explicit [`QuantPolicy`].
 pub(crate) fn convert(
     bytes: Vec<u8>,
     quantize: Option<GgmlType>,
+) -> Result<GgufBuilder, ConvertError> {
+    // Preserve pre-T06 behaviour: `None` = source dtype (no policy sweep).
+    // `Some(qt)` = whisper K-quant preset with the corresponding tier.
+    let policy = match quantize {
+        None => None,
+        Some(GgmlType::Q4K) => Some(QuantPolicy::whisper_q4_k()),
+        Some(GgmlType::Q5K) => Some(QuantPolicy {
+            default: QuantScheme::W4A16Q5K,
+            rules: QuantPolicy::whisper_q4_k().rules,
+        }),
+        Some(GgmlType::Q6K) => Some(QuantPolicy {
+            default: QuantScheme::W4A16Q6K,
+            rules: QuantPolicy::whisper_q4_k().rules,
+        }),
+        Some(other) => {
+            return Err(ConvertError::Usage(format!(
+                "unsupported --quantize target {other:?}; use q4_k | q5_k | q6_k"
+            )));
+        }
+    };
+    convert_with_policy(bytes, policy)
+}
+
+/// Converts a Whisper safetensors buffer, applying `policy` per-tensor.
+///
+/// When `policy` is `Some`, each tensor is emitted with the weight dtype from
+/// `resolve(policy, tensor.name).weight_dtype()` — biases, norms and any
+/// tensor covered by an explicit rule bypass the K-quant path. If the resolved
+/// scheme requests a K-quant but the tensor is rank < 2 or its element count
+/// is not a whole number of `QK_K` super-blocks, the converter errors with
+/// [`ConvertError::QuantPolicyInapplicable`] instead of silently widening
+/// (FR-EX-08). When `policy` is `None`, no policy is applied and no
+/// `vokra.quant.*` chunk is written (byte-exact pre-T06 behaviour).
+pub(crate) fn convert_with_policy(
+    bytes: Vec<u8>,
+    policy: Option<QuantPolicy>,
 ) -> Result<GgufBuilder, ConvertError> {
     let st = SafetensorsFile::parse(bytes)?;
 
@@ -261,17 +474,49 @@ pub(crate) fn convert(
     frontend_spec(checkpoint_n_mels(&st)).write_into(&mut b);
     write_hparams(&mut b, &st);
     embed_tokenizer(&mut b, &st);
+    if let Some(p) = policy.as_ref() {
+        write_quant_chunk(&mut b, p);
+    }
 
     for t in st.tensors() {
         let name = gguf_tensor_name(&t.name);
-        match quantize {
-            Some(qt) if is_quantizable(t) => {
-                // Decode to f32 through the shared path, then K-quantize offline.
-                let data = st.tensor_f32(&t.name)?;
-                let payload = crate::quantize::quantize(qt, &data)?;
-                b.add_tensor(&name, qt, t.shape.clone(), payload)?;
+        match policy.as_ref() {
+            Some(p) => {
+                let scheme = resolve(p, &t.name);
+                let wdtype = scheme.weight_dtype();
+                if scheme.is_kquant() {
+                    // K-quant applicability (FR-EX-08): rank ≥ 2 AND
+                    // element_count % QK_K == 0. No silent widen.
+                    let elem_count = t.element_count();
+                    if t.shape.len() < 2 || elem_count % QK_K as u64 != 0 {
+                        return Err(ConvertError::QuantPolicyInapplicable {
+                            tensor: t.name.clone(),
+                            scheme: scheme.as_str(),
+                            reason: format!(
+                                "K-quant requires rank>=2 and element_count % QK_K == 0 (got rank {}, element_count {})",
+                                t.shape.len(),
+                                elem_count,
+                            ),
+                        });
+                    }
+                    let data = st.tensor_f32(&t.name)?;
+                    let payload = crate::quantize::quantize(wdtype, &data)?;
+                    b.add_tensor(&name, wdtype, t.shape.clone(), payload)?;
+                } else {
+                    // FP32 / FP16 emission via the shared f32 path so an
+                    // F32-source tensor targeting F16 gets narrowed on the way
+                    // out (and vice versa). Byte-copy the source when the
+                    // resolved dtype already matches the source dtype.
+                    if wdtype == t.dtype {
+                        b.add_tensor(&name, t.dtype, t.shape.clone(), st.tensor_bytes(t).to_vec())?;
+                    } else {
+                        let data = st.tensor_f32(&t.name)?;
+                        let payload = crate::quantize::quantize(wdtype, &data)?;
+                        b.add_tensor(&name, wdtype, t.shape.clone(), payload)?;
+                    }
+                }
             }
-            _ => {
+            None => {
                 b.add_tensor(&name, t.dtype, t.shape.clone(), st.tensor_bytes(t).to_vec())?;
             }
         }
@@ -280,13 +525,10 @@ pub(crate) fn convert(
     Ok(b)
 }
 
-/// A tensor is K-quantizable iff it is at least rank-2 (a weight matrix, not a
-/// bias/norm vector) and its element count is a whole number of `QK_K`
-/// super-blocks. Mirrors the llama.cpp convention of leaving 1-D and
-/// non-block-aligned tensors in full precision.
-fn is_quantizable(t: &SafeTensorInfo) -> bool {
-    t.shape.len() >= 2 && t.element_count() % vokra_core::gguf::tensor::QK_K as u64 == 0
-}
+// The pre-T06 `is_quantizable(&SafeTensorInfo)` predicate was removed here:
+// per-tensor applicability is now decided by `resolve(&policy, name)` +
+// `QuantScheme::is_kquant()` inside `convert_with_policy`, and inapplicable
+// schemes error via `ConvertError::QuantPolicyInapplicable` (FR-EX-08).
 
 /// Derives the `vokra.whisper.*` hyperparameters from the checkpoint's tensor
 /// shapes and writes them into `b`.
@@ -607,7 +849,12 @@ mod tests {
 
         let unq = convert(buf.clone(), None).unwrap();
         let q = convert(buf, Some(GgmlType::Q4K)).unwrap();
-        assert_eq!(unq.metadata_count(), q.metadata_count());
+        // The quantized path also bakes the `vokra.quant.*` policy chunk
+        // (T05 contract): default_scheme + rule_count + hifigan_int8_opt_in
+        // = 3 keys, plus 3 keys per rule. Whisper's default Q4K policy
+        // resolves to `weight-only rank>=2` producing 2 rules, so:
+        //   q - unq == 3 + 2*3 == 9
+        assert_eq!(q.metadata_count(), unq.metadata_count() + 9);
         assert_eq!(unq.tensor_count(), q.tensor_count());
 
         let file = GgufFile::parse(q.to_bytes().unwrap()).unwrap();
@@ -848,5 +1095,186 @@ mod tests {
             msg.contains("unknown whisper size"),
             "expected unknown-size error, got: {msg}",
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // M2-08 T06 — quant policy tests (cargo test -p vokra-convert quant_policy)
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn quant_policy_resolve_first_match_wins() {
+        let p = QuantPolicy::whisper_q4_k();
+        // Suffix rule `.bias` pinned to F32 (first-match, before default Q4_K).
+        assert_eq!(
+            resolve(&p, "encoder.blocks.0.mlp.0.bias"),
+            QuantScheme::Fp32
+        );
+        // Suffix rule `.weight_norm` pinned to F32.
+        assert_eq!(
+            resolve(&p, "encoder.blocks.0.mlp.0.weight_norm"),
+            QuantScheme::Fp32
+        );
+        // Fall-through: everything else takes the default (Q4_K).
+        assert_eq!(
+            resolve(&p, "encoder.blocks.0.mlp.0.weight"),
+            QuantScheme::W4A16Q4K
+        );
+    }
+
+    #[test]
+    fn quant_policy_preset_vocoder_safe_widens_to_fp16() {
+        let p = QuantPolicy::default_vocoder_safe();
+        // No rules → every tensor resolves to the default (F16).
+        assert_eq!(resolve(&p, "encoder.conv1.weight"), QuantScheme::Fp16);
+        assert_eq!(
+            resolve(&p, "decoder.embed_tokens.weight"),
+            QuantScheme::Fp16
+        );
+        assert_eq!(resolve(&p, "any.name"), QuantScheme::Fp16);
+    }
+
+    #[test]
+    fn quant_policy_scheme_weight_dtype_and_alias() {
+        assert_eq!(QuantScheme::Fp32.weight_dtype(), GgmlType::F32);
+        assert_eq!(QuantScheme::Fp16.weight_dtype(), GgmlType::F16);
+        assert_eq!(QuantScheme::W4A16Q4K.weight_dtype(), GgmlType::Q4K);
+        assert_eq!(QuantScheme::W4A16Q5K.weight_dtype(), GgmlType::Q5K);
+        assert_eq!(QuantScheme::W4A16Q6K.weight_dtype(), GgmlType::Q6K);
+        // Chunk aliases (T05 contract).
+        assert_eq!(QuantScheme::Fp32.as_str(), "fp32");
+        assert_eq!(QuantScheme::Fp16.as_str(), "fp16");
+        assert_eq!(QuantScheme::W4A16Q4K.as_str(), "w4a16-q4k");
+        assert_eq!(QuantScheme::W4A16Q5K.as_str(), "w4a16-q5k");
+        assert_eq!(QuantScheme::W4A16Q6K.as_str(), "w4a16-q6k");
+    }
+
+    #[test]
+    fn quant_policy_writes_vokra_quant_chunk() {
+        // A whisper conversion with the whisper_q4_k policy must stamp the
+        // resolved policy into `vokra.quant.*` metadata so a future runtime
+        // can reconstruct it.
+        //
+        // Build a small but *K-quantizable* whisper checkpoint: every weight
+        // tensor's element count is a multiple of QK_K (256) so the policy's
+        // Q4_K default is applicable; biases are rank-1 and stay F32 via the
+        // `.bias` suffix rule.
+        let mut tensors: Vec<(String, Vec<u64>)> = vec![
+            ("model.encoder.conv1.weight".to_string(), vec![512, 80, 3]),
+            (
+                // 1536 = 6 * 256 (QK_K-aligned so K-quant is applicable).
+                "model.encoder.embed_positions.weight".to_string(),
+                vec![1536, 1],
+            ),
+            (
+                "model.decoder.embed_positions.weight".to_string(),
+                vec![512, 1],
+            ),
+            (
+                "model.decoder.embed_tokens.weight".to_string(),
+                vec![256, 1],
+            ),
+            (
+                "model.encoder.layers.0.fc1.weight".to_string(),
+                vec![2, 256],
+            ),
+            ("model.encoder.layers.0.fc1.bias".to_string(), vec![512]),
+        ];
+        // One matching layer prefix so count_layers sees exactly 1 encoder
+        // block (+ 0 decoder blocks — synthetic).
+        for i in 0..1 {
+            tensors.push((
+                format!("model.encoder.layers.{i}.mlp.fc2.weight"),
+                vec![2, 256],
+            ));
+        }
+        let refs: Vec<(&str, &[u64])> = tensors
+            .iter()
+            .map(|(n, s)| (n.as_str(), s.as_slice()))
+            .collect();
+        let ckpt = synthetic_checkpoint(&refs);
+
+        let b = convert_with_policy(ckpt, Some(QuantPolicy::whisper_q4_k())).unwrap();
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            file.get("vokra.quant.default_scheme")
+                .and_then(|v| v.as_str()),
+            Some("w4a16-q4k"),
+        );
+        assert_eq!(
+            file.get("vokra.quant.rule_count").and_then(|v| v.as_u64()),
+            Some(2),
+        );
+        // The `.bias` rule must be preserved as suffix scheme fp32.
+        assert_eq!(
+            file.get("vokra.quant.rule.0.pattern_kind")
+                .and_then(|v| v.as_str()),
+            Some("suffix"),
+        );
+        assert_eq!(
+            file.get("vokra.quant.rule.0.pattern")
+                .and_then(|v| v.as_str()),
+            Some(".bias"),
+        );
+        assert_eq!(
+            file.get("vokra.quant.rule.0.scheme")
+                .and_then(|v| v.as_str()),
+            Some("fp32"),
+        );
+
+        // Sanity: the `.bias` tensor stays F32 (per `.bias` suffix rule),
+        // while the K-quantizable weight (2×256) is Q4_K.
+        let bias = file.tensor_info("model.encoder.layers.0.fc1.bias").unwrap();
+        assert_eq!(bias.dtype, GgmlType::F32);
+        let w = file
+            .tensor_info("model.encoder.layers.0.mlp.fc2.weight")
+            .unwrap();
+        assert_eq!(w.dtype, GgmlType::Q4K);
+    }
+
+    #[test]
+    fn quant_policy_inapplicable_errors_no_silent_widen() {
+        // A K-quant target on a tensor that cannot be K-quantized (rank 1
+        // AND element count not a multiple of QK_K) must fail explicitly —
+        // FR-EX-08: no silent widen.
+        let ckpt = synthetic_checkpoint(&[
+            ("model.encoder.conv1.weight", &[512, 80, 3]),
+            ("model.encoder.embed_positions.weight", &[1500, 1]),
+            ("model.decoder.embed_positions.weight", &[448, 1]),
+            ("model.decoder.embed_tokens.weight", &[256, 1]),
+            ("model.encoder.layers.0.fc1.weight", &[2, 256]),
+        ]);
+        // Force a K-quant scheme on every tensor via the default; conv1 is
+        // rank-3 with element_count 512*80*3 = 122880 which is a multiple
+        // of 256 so it's applicable; the positional embeddings are rank-2
+        // but 1500*1 = 1500 which is NOT a multiple of 256 → inapplicable.
+        let policy = QuantPolicy {
+            default: QuantScheme::W4A16Q4K,
+            rules: Vec::new(),
+        };
+        let err = convert_with_policy(ckpt, Some(policy)).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("quant policy inapplicable"),
+            "expected QuantPolicyInapplicable, got: {msg}",
+        );
+        assert!(
+            msg.contains("w4a16-q4k"),
+            "message should name scheme: {msg}"
+        );
+    }
+
+    #[test]
+    fn quant_policy_legacy_convert_none_writes_no_quant_chunk() {
+        // The `None` (byte-exact) path must not write `vokra.quant.*` — this
+        // keeps every pre-T06 test's metadata_count assertions valid.
+        let file = GgufFile::parse(
+            convert(synthetic_whisper(), None)
+                .unwrap()
+                .to_bytes()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(file.get("vokra.quant.default_scheme").is_none());
+        assert!(file.get("vokra.quant.rule_count").is_none());
     }
 }
