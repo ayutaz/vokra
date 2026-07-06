@@ -1,0 +1,175 @@
+# Vokra release / CD workflow.
+#
+# M2-02-T09: iOS XCFramework artifact registration on release tags.
+#
+# Trigger: git tag matching `v*` OR manual workflow_dispatch (dry-run).
+# Actual release invocation is gated by 依頼者 (tag push); this workflow
+# only wires the steps. workflow_dispatch supports dry-run without upload.
+#
+# Steps on a tagged release:
+#   1. Reuse `scripts/build-ios.sh` to produce `build/ios/Vokra.xcframework`
+#      (static-only, NFR-RL-03; JIT-free, NFR-RL-05; CUDA compile-error-gated
+#      on iOS via T04). Metal ON by default.
+#   2. `ditto -c -k --sequesterRsrc --keepParent …` to preserve XCFramework
+#      bundle structure inside the zip (Apple's recommended archiver for
+#      framework bundles — `zip -r` mangles symlinks / resource forks).
+#   3. `shasum -a 256` → `Vokra.xcframework.zip.sha256` (Swift Package
+#      `binaryTarget(url:checksum:)` requires the SHA256 hex).
+#   4. `gh release upload <tag>` publishes both artifacts to the GitHub
+#      Release created by the tag push.
+#   5. Post-release: patch `Package.swift` on a release branch (or a
+#      dedicated `vokra-swift-package` mirror repo — final split decided in
+#      T01 ADR 000N-ios-build.md) from the local `path:` binaryTarget to
+#      `url:` + `checksum:` form pointing at the uploaded asset.
+#
+# Zero-dep invariant unchanged (NFR-DS-02): all steps are shell + Xcode CLI
+# + `gh` (preinstalled on macos-latest); no new workspace crate, no cargo
+# dep added.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry-run (build + hash, skip gh release upload and Package.swift patch)"
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  ios-xcframework:
+    name: ios-xcframework
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install rustup iOS targets
+        run: |
+          rustup target add \
+            aarch64-apple-ios \
+            aarch64-apple-ios-sim \
+            x86_64-apple-ios
+
+      - name: Install cbindgen (locked)
+        run: cargo install cbindgen --locked
+
+      - name: Verify header drift (scripts/gen-c-abi.sh --check)
+        run: bash scripts/gen-c-abi.sh --check
+
+      - name: Build iOS XCFramework (Step 1 — reuse scripts/build-ios.sh)
+        run: bash scripts/build-ios.sh
+
+      - name: Verify XCFramework (static-only + symbol whitelist)
+        run: bash scripts/verify-ios-xcframework.sh build/ios/Vokra.xcframework
+
+      - name: Package XCFramework (Step 2 — ditto with sequesterRsrc + keepParent)
+        working-directory: build/ios
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            Vokra.xcframework Vokra.xcframework.zip
+
+      - name: Compute SHA256 (Step 3 — for Swift Package binaryTarget checksum)
+        working-directory: build/ios
+        run: |
+          shasum -a 256 Vokra.xcframework.zip | awk '{print $1}' \
+            > Vokra.xcframework.zip.sha256
+          echo "sha256=$(cat Vokra.xcframework.zip.sha256)" >> "$GITHUB_ENV"
+          echo "Artifact SHA256: $(cat Vokra.xcframework.zip.sha256)"
+
+      - name: Upload workflow artifact (always, for inspection)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vokra-xcframework-release
+          path: |
+            build/ios/Vokra.xcframework.zip
+            build/ios/Vokra.xcframework.zip.sha256
+          retention-days: 30
+
+      - name: Upload to GitHub Release (Step 4 — gh release upload)
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release upload "$TAG" \
+            build/ios/Vokra.xcframework.zip \
+            build/ios/Vokra.xcframework.zip.sha256 \
+            --clobber
+
+      - name: Patch Package.swift on release branch (Step 5)
+        # NOTE: mirror-repo vs release-branch split is decided in T01 ADR
+        # 000N-ios-build.md. This step targets the release branch path; if
+        # the ADR selects a dedicated `vokra-swift-package` mirror repo,
+        # this step is replaced by a repository_dispatch to that repo.
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA256: ${{ env.sha256 }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          REPO="${GITHUB_REPOSITORY}"
+          URL="https://github.com/${REPO}/releases/download/${TAG}/Vokra.xcframework.zip"
+          BRANCH="release/${TAG}"
+          git config user.name "vokra-release-bot"
+          git config user.email "release-bot@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          # Replace the local `path:` binaryTarget with the `url:` + `checksum:`
+          # form. The sentinel comment `// M2-02-T09: release binaryTarget` in
+          # Package.swift marks the block to substitute; T07 owns the exact
+          # sentinel placement.
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+          url = os.environ["URL"]
+          checksum = os.environ["SHA256"]
+          p = pathlib.Path("Package.swift")
+          src = p.read_text()
+          # Match the local path form emitted by T07:
+          #   .binaryTarget(name: "Vokra", path: "build/ios/Vokra.xcframework")
+          pat = re.compile(
+              r'\.binaryTarget\(\s*name:\s*"Vokra"\s*,\s*path:\s*"[^"]+"\s*\)'
+          )
+          if not pat.search(src):
+              raise SystemExit(
+                  "Package.swift: expected local .binaryTarget(path:) "
+                  "form not found; T07 sentinel missing."
+              )
+          new_target = (
+              f'.binaryTarget(name: "Vokra", url: "{url}", '
+              f'checksum: "{checksum}")'
+          )
+          p.write_text(pat.sub(new_target, src))
+          PY
+          git add Package.swift
+          git commit -m "release(${TAG}): pin Vokra.xcframework binaryTarget to release asset"
+          git push origin "$BRANCH"
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "release(${TAG}): pin Vokra.xcframework binaryTarget" \
+            --body "Automated by .github/workflows/release.yml (M2-02-T09). URL: ${URL}  SHA256: ${SHA256}"
+
+      - name: Dry-run summary
+        if: inputs.dry_run == true || !startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "== DRY RUN =="
+          echo "Would upload:"
+          ls -la build/ios/Vokra.xcframework.zip build/ios/Vokra.xcframework.zip.sha256
+          echo "SHA256: ${{ env.sha256 }}"
+          echo "Skipping: gh release upload, Package.swift patch."

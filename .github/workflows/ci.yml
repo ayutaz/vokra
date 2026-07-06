@@ -107,6 +107,43 @@ jobs:
       - name: Test (--features ${{ matrix.feature }})
         run: cargo test -p vokra-models --features ${{ matrix.feature }}
 
+  # iOS build scaffold (M2-02, NFR-RL-03 static-only, NFR-RL-05 JIT-free,
+  # FR-EX-08 no silent fallback). Cross-compiles vokra-capi to the 3 Apple
+  # triples (device arm64 + simulator arm64/x86_64), assembles
+  # `Vokra.xcframework` (2 slices: device + fat sim, static libvokra.a per
+  # slice), and confirms the Swift Package resolves. Registered as a required
+  # check on `main` per NFR-MT-07. cbindgen header drift is caught before the
+  # cross-compile via `gen-c-abi.sh --check` (M2-02 T08/R3). Simulator boot is
+  # deferred to an optional/nightly follow-up job (`ios-smoke-simulator`, D9);
+  # physical iPhone RTF (NFR-PF-03) is owned by M2-14. CUDA is unconditionally
+  # off for iOS (T04 red-line + `cfg(target_os = "ios")` compile_error in
+  # `vokra-backend-cuda`); Metal is on via `vokra-models/metal`. No new
+  # third-party crate deps — cbindgen stays build-only (MPL-2.0, D6) and the
+  # zero-dep invariant (NFR-DS-02) is unchanged.
+  ios-build:
+    name: ios-build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rustup iOS targets
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+      - name: Install cbindgen
+        run: cargo install cbindgen --locked
+      - name: Verify C header drift (gen-c-abi --check, R3)
+        run: scripts/gen-c-abi.sh --check
+      - name: Build iOS XCFramework
+        run: scripts/build-ios.sh
+      - name: Verify XCFramework (static-only, symbol whitelist)
+        run: scripts/verify-ios-xcframework.sh build/ios/Vokra.xcframework
+      - name: Verify Swift Package resolves
+        run: swift package describe
+      - name: Upload XCFramework artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vokra-xcframework
+          path: build/ios/Vokra.xcframework
+          retention-days: 7
+
   # Numerical parity harness (NFR-QL-01). At M0 this runs the tests/parity
   # placeholder harness; real per-model parity tests are added by M0-04/05/06.
   # M2-04: matrix expansion runs `parity_whisper` under both fusion states
