@@ -90,6 +90,15 @@ extern "C" __global__ void vokra_gemm_f32(
 /// or element (gelu), or per `(out_pos, out_channel)` pair (conv1d); the launch
 /// guards the ragged tail against the grid bound, exactly like the GEMM kernel.
 const KERNELS_CUDA: &str = r#"
+// NVRTC does not include <math.h> by default, so `INFINITY` from ISO C is not
+// visible. Define it once here using the IEEE 754 bit pattern for +∞ (identical
+// to `__int_as_float(0x7f800000)`; kept as a straight `#define` so the value is
+// a constant expression usable in `-INFINITY` initializers). Fixes the
+// "identifier "INFINITY" is undefined" NVRTC error observed on CUDA 12.6.
+#ifndef INFINITY
+#define INFINITY __int_as_float(0x7f800000)
+#endif
+
 // ---- gemv: out[i] = (has_bias ? bias[i] : 0) + Σ_l A[i*K + l] · x[l] --------
 // Bias-first accumulation matches vokra_backend_cpu::kernels' scalar `gemv`.
 extern "C" __global__ void vokra_gemv_f32(
