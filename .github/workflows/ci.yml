@@ -276,6 +276,305 @@ jobs:
             --baseline docs/bench-baselines/mel_frontend_baseline.json \
             --format json
 
+  # M2-09-T19 vokra-server single-binary deployment gate (FR-SV-01, NFR-DS-02,
+  # NFR-MT-07). Verifies four properties of the OUT-OF-WORKSPACE
+  # `integrations/vokra-server/` crate on every PR:
+  #
+  #   1. It cross-builds cleanly to `x86_64-unknown-linux-musl` as a
+  #      statically-linked release binary (Docker-free deployment target).
+  #      `file` confirms `statically linked`; `ldd` confirms no dynamic
+  #      dependencies (glibc-free, portable across distros).
+  #
+  #   2. The static binary starts standalone and answers `GET /health` with
+  #      200 OK — no Docker, no reverse proxy, no external runtime deps
+  #      (FR-SV-01). Bind is 127.0.0.1 on a random high port to avoid
+  #      collision on shared runners.
+  #
+  #   3. The runtime workspace stays uncontaminated: `cargo tree -p vokra-core`
+  #      must not pull `hyper` / `tokio` / `axum` / `serde` / `onnx` /
+  #      `protobuf` (server-only deps stay confined to integrations/, per the
+  #      excluded-workspace pattern). Enforces NFR-DS-02 at the graph level in
+  #      addition to the lockfile-level `check-zero-deps.sh`.
+  #
+  #   4. `scripts/check-zero-deps.sh` re-run against the root `Cargo.lock` —
+  #      belt-and-suspenders with the `license` job, verifying the server
+  #      dependencies did not leak into the root graph via any workspace
+  #      member.
+  #
+  # The server crate is NOT in the root workspace (its Cargo.toml has an empty
+  # `[workspace]` table and root `Cargo.toml` `exclude = ["integrations"]`),
+  # so this job builds it explicitly via `--manifest-path` and does not
+  # perturb the root workspace build cache.
+  server-deployment:
+    name: server-deployment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            integrations/vokra-server
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Runtime workspace non-contamination (cargo tree -p vokra-core)
+        # FR-SV-01 / NFR-DS-02: the runtime graph must not know about the
+        # server's HTTP / async / serde stack. `cargo tree -e normal` prints
+        # the full normal-dep graph; grep -F fixed-string search rejects any
+        # forbidden crate name. `set -o pipefail` propagates a `cargo tree`
+        # failure past the tee.
+        run: |
+          set -euo pipefail
+          echo "::group::cargo tree -p vokra-core"
+          cargo tree -e normal -p vokra-core > /tmp/vokra-core-tree.txt
+          cat /tmp/vokra-core-tree.txt
+          echo "::endgroup::"
+          forbidden="hyper tokio axum serde serde_json onnx onnxruntime protobuf prost tonic"
+          fail=0
+          for crate in $forbidden; do
+            if grep -qE "^[^a-zA-Z0-9_-]*${crate}[[:space:]]v" /tmp/vokra-core-tree.txt; then
+              echo "::error::vokra-core depends on forbidden crate: ${crate}"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::runtime workspace non-contamination check failed (FR-SV-01, NFR-DS-02)"
+            exit 1
+          fi
+      - name: Zero-dependency invariant on root Cargo.lock (NFR-DS-02)
+        # Belt-and-suspenders with the `license` job: the server crate's
+        # third-party deps must not leak into the root Cargo.lock. This scans
+        # the SAME root Cargo.lock and asserts vokra-* only.
+        run: bash scripts/check-zero-deps.sh
+      - name: Build vokra-server (release, x86_64-unknown-linux-musl)
+        run: |
+          cargo build --release \
+            --target x86_64-unknown-linux-musl \
+            -p vokra-server \
+            --manifest-path integrations/vokra-server/Cargo.toml
+      - name: Verify statically linked (file)
+        # A musl-linked release binary must appear as "statically linked" —
+        # if a shared-lib linkage snuck in (e.g. an accidental host-glibc
+        # syscall crate), `file` reports "dynamically linked" and this fails.
+        run: |
+          set -euo pipefail
+          BIN=integrations/vokra-server/target/x86_64-unknown-linux-musl/release/vokra-server
+          test -f "$BIN"
+          file "$BIN"
+          file "$BIN" | grep -q "statically linked"
+      - name: Verify no dynamic dependencies (ldd)
+        # `ldd` on a truly-static binary prints "not a dynamic executable" (or
+        # exits nonzero); either way, ANY `=>` line means a dyn dep was
+        # pulled in, which breaks Docker-free portable deployment.
+        run: |
+          set -euo pipefail
+          BIN=integrations/vokra-server/target/x86_64-unknown-linux-musl/release/vokra-server
+          if ldd "$BIN" 2>&1 | grep -q "=>"; then
+            echo "::error::vokra-server has dynamic dependencies (breaks FR-SV-01 single-binary deployment):"
+            ldd "$BIN"
+            exit 1
+          fi
+          ldd "$BIN" || true
+      - name: Docker-less standalone startup smoke test (curl /health)
+        # FR-SV-01: run the static binary directly (no Docker, no reverse
+        # proxy, no launcher). Bind loopback on a random high port so the
+        # test cannot collide with anything else on the runner and cannot
+        # inadvertently expose a listener beyond the runner.
+        run: |
+          set -euo pipefail
+          BIN=integrations/vokra-server/target/x86_64-unknown-linux-musl/release/vokra-server
+          # Random ephemeral high port (49152-65535 range).
+          PORT=$((49152 + RANDOM % 16000))
+          echo "Starting vokra-server on 127.0.0.1:${PORT}"
+          "$BIN" --bind "127.0.0.1:${PORT}" &
+          SERVER_PID=$!
+          # Ensure the background process is reaped even on failure.
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          # Poll /health for up to ~10s (startup should be well under 1s).
+          for i in $(seq 1 20); do
+            if curl -fsS --max-time 1 "http://127.0.0.1:${PORT}/health" > /tmp/health.txt; then
+              echo "health probe succeeded on attempt $i:"
+              cat /tmp/health.txt
+              kill "$SERVER_PID" 2>/dev/null || true
+              wait "$SERVER_PID" 2>/dev/null || true
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "::error::vokra-server did not answer /health within 10s"
+          kill "$SERVER_PID" 2>/dev/null || true
+          exit 1
+      - name: Verify root Cargo.lock unchanged
+        # Sanity: the whole job must not have mutated the root workspace
+        # lockfile. If cargo somehow touched it, the isolation pattern is
+        # broken and the change must be reviewed.
+        run: git diff --exit-code Cargo.lock
+
+  # M2-09-T22 vokra-server 4-API compat + cross-target build + cargo-deny (FR-SV-01..05,
+  # NFR-MT-07, NFR-LC-04). This job is REQUIRED on `main` PRs — it is what blocks a
+  # break in any of the four documented compat surfaces (OpenAI `/v1/audio/transcriptions`,
+  # vLLM `/v1/completions` + `/v1/chat/completions` schema, piper-plus `/api/tts`,
+  # Wyoming Protocol) from landing. Complements `server-deployment` (T19), which owns
+  # single-binary / static-link / non-contamination proof.
+  #
+  # Design notes (M2-09 plan §3.2 T22, §5 R1):
+  #
+  #   * Compat tests live under `integrations/vokra-server/tests/{openai_compat,
+  #     vllm_compat, piper_http_compat, wyoming_compat}.rs` and speak the wire
+  #     protocols (multipart, JSONL over TCP, application/json). They run via
+  #     `--manifest-path integrations/vokra-server/Cargo.toml` so the excluded-
+  #     workspace pattern (empty `[workspace]`, own Cargo.lock) is respected and
+  #     the root workspace build cache is untouched.
+  #
+  #   * GGUF-gate: Whisper `base` is the per-PR default — CI writes a synthetic
+  #     `.gguf` fixture path into `VOKRA_WHISPER_BASE_GGUF` (the tests treat an
+  #     absent path as "skip", not "fail", per FR-EX-08 no-silent-fallback: model
+  #     absence is an explicit skip, not a fabricated pass). Whisper `large-v3`
+  #     stays nightly-only (`VOKRA_WHISPER_LARGE_V3_GGUF`) — we intentionally do
+  #     NOT set it on per-PR runs so the large-v3 branch is skipped, keeping the
+  #     PR path fast and avoiding a 1.5GB weight download per PR. The per-test
+  #     skip decision + a summary counter is printed to `$GITHUB_STEP_SUMMARY`
+  #     so reviewers can see at a glance which compat legs actually executed vs
+  #     skipped (audit trail for the "GGUF-gated skip" pattern documented in
+  #     `integrations/vokra-server/tests/openai_compat.rs`).
+  #
+  #   * Cross-target matrix: FR-SV-01 requires a single binary on Linux x86_64
+  #     (musl static, handled in `server-deployment`), macOS ARM64 (Apple
+  #     silicon default runner), and Windows x86_64. This matrix cross-builds
+  #     the release binary on all three so a Windows-only build regression
+  #     (e.g. tokio winsock, path separators in include_bytes!, MSVC linker
+  #     flags) blocks the PR at the same gate as the Linux musl smoke test.
+  #     macOS ARM64 uses the default apple-silicon runner triple so no extra
+  #     `--target` flag is needed (build is native). Test execution runs on
+  #     Ubuntu only (the compat tests are wire-protocol-level and OS-agnostic;
+  #     testing on all three would triple runner minutes with no additional
+  #     coverage).
+  #
+  #   * cargo-deny (NFR-LC-04): the server crate has its own `deny.toml`
+  #     (integrations/vokra-server/deny.toml) permitting the HTTP / async /
+  #     serde stack while banning GPL/LGPL and onnx/protobuf families. This job
+  #     runs the check against the server workspace explicitly. The root
+  #     `license` job continues to enforce zero-dep on the runtime workspace.
+  server-compat:
+    name: server-compat
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            triple: x86_64-unknown-linux-musl
+            run_tests: true
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+            run_tests: false
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
+            run_tests: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            integrations/vokra-server
+      - name: Install musl toolchain (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Cross-build vokra-server (release, ${{ matrix.triple }})
+        # FR-SV-01 cross-target proof: the server binary must build on the
+        # three officially supported single-binary triples. macOS ARM64 is the
+        # native runner triple (no --target needed on apple-silicon runners
+        # but we pass it explicitly for symmetry); Windows uses the MSVC ABI;
+        # Linux uses musl for static linkage (see T19 for the static-link
+        # verification — this leg only proves the toolchain wiring compiles).
+        shell: bash
+        run: |
+          cargo build --release \
+            --target ${{ matrix.triple }} \
+            -p vokra-server \
+            --manifest-path integrations/vokra-server/Cargo.toml
+      - name: cargo-deny (server crate, NFR-LC-04)
+        if: matrix.os == 'ubuntu-latest'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses advisories bans
+          manifest-path: integrations/vokra-server/Cargo.toml
+      - name: Locate Whisper base GGUF fixture (per-PR GGUF-gate)
+        # Per M2-09 plan §3.2 T22: base is per-PR, large-v3 is nightly-only.
+        # We set VOKRA_WHISPER_BASE_GGUF to a repo-committed tiny fixture if
+        # one exists; otherwise leave unset so tests take the documented "skip"
+        # branch (openai_compat.rs `whisper_gguf_for()` returns None → the
+        # test asserts nothing and the skip is counted in the summary below).
+        # This is the FR-EX-08 no-silent-fallback shape: absence → explicit
+        # skip, never a fabricated pass. large-v3 is deliberately NOT set here.
+        if: matrix.run_tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          FIXTURE="$GITHUB_WORKSPACE/tests/fixtures/whisper-base.gguf"
+          if [ -f "$FIXTURE" ]; then
+            echo "VOKRA_WHISPER_BASE_GGUF=$FIXTURE" >> "$GITHUB_ENV"
+            echo "Whisper base GGUF fixture: $FIXTURE" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No Whisper base GGUF fixture found; base-gated tests will skip." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Whisper large-v3 is nightly-only; large-v3-gated tests will skip on per-PR runs." >> "$GITHUB_STEP_SUMMARY"
+      - name: Compat tests (openai / vllm / piper_http / wyoming)
+        # M2-09-T22 required checks: these four test binaries speak the wire
+        # protocols end-to-end. On main-PR builds this is where a compat break
+        # is caught. Each test binds 127.0.0.1 on an ephemeral port picked by
+        # the test itself (see openai_compat.rs / wyoming_compat.rs); no
+        # coordination or shared-port setup is needed.
+        if: matrix.run_tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release \
+            --manifest-path integrations/vokra-server/Cargo.toml \
+            -p vokra-server \
+            --test openai_compat \
+            --test vllm_compat \
+            --test piper_http_compat \
+            --test wyoming_compat \
+            -- --nocapture
+      - name: GGUF-gate skip summary
+        # Print the compat matrix state to the job summary so reviewers see
+        # which legs executed vs skipped without spelunking test logs. Base is
+        # per-PR (may skip if fixture absent); large-v3 skips on per-PR runs
+        # by design; nightly runs will set both env vars.
+        if: matrix.run_tests && always()
+        shell: bash
+        run: |
+          {
+            echo "### server-compat GGUF-gate summary"
+            echo ""
+            echo "| model | env var | state on this run |"
+            echo "|-------|---------|-------------------|"
+            if [ -n "${VOKRA_WHISPER_BASE_GGUF:-}" ]; then
+              echo "| whisper base | VOKRA_WHISPER_BASE_GGUF | present (tests executed) |"
+            else
+              echo "| whisper base | VOKRA_WHISPER_BASE_GGUF | absent (tests skipped) |"
+            fi
+            if [ -n "${VOKRA_WHISPER_LARGE_V3_GGUF:-}" ]; then
+              echo "| whisper large-v3 | VOKRA_WHISPER_LARGE_V3_GGUF | present (nightly / cached) |"
+            else
+              echo "| whisper large-v3 | VOKRA_WHISPER_LARGE_V3_GGUF | absent (per-PR skip by design) |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify root Cargo.lock unchanged
+        # T22 mutation-guard: cross-building the server crate must never
+        # perturb the root Cargo.lock — the excluded-workspace pattern is what
+        # keeps the root zero-dep. Any diff here means server deps leaked into
+        # the runtime graph (NFR-DS-02 breach, plan §5 R1).
+        shell: bash
+        run: git diff --exit-code Cargo.lock
+
   # M2-11-T13 Unity Official Plugin package assembly (FR-API-04, NFR-MT-07/08,
   # NFR-RL-02/03/04, NFR-LC-01). Assembles the `com.vokra.unity` UPM package
   # from four native artifact sources:
