@@ -18,6 +18,7 @@ use vokra_models::whisper::WhisperAsr;
 
 /// The task a loaded model performs (selected by its architecture).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub(crate) enum ModelTask {
     /// Voice activity detection (Silero VAD v5).
     Vad,
@@ -25,6 +26,26 @@ pub(crate) enum ModelTask {
     Asr,
     /// Text-to-speech (piper-plus native TTS).
     Tts,
+    /// Whisper log-mel front-end only (M2-04-T11). Runs
+    /// [`vokra_models::whisper::mel::log_mel`] against the input WAV without
+    /// touching the encoder / decoder, so bench-side RTF isolates the fused
+    /// vs unfused log-mel path (M2-04-T08 toggle) rather than folding Whisper
+    /// decode time into the measurement. Selected by `--task mel-frontend`
+    /// when the loaded GGUF has `vokra.model.arch = "whisper"`.
+    MelFrontend,
+}
+
+/// Optional caller-supplied hint that overrides the default task selection.
+///
+/// Today only the Whisper arch supports an override: `Some(TaskHint::MelFrontend)`
+/// switches from the full ASR pipeline to the log-mel-only front-end. Other
+/// architectures still resolve strictly by `vokra.model.arch` — passing a hint
+/// that the arch does not support is a hard error (FR-EX-08: no silent
+/// fallback).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaskHint {
+    /// Force the log-mel front-end task on a Whisper GGUF.
+    MelFrontend,
 }
 
 /// GGUF metadata key holding the model architecture (written by `vokra-convert`).
@@ -38,16 +59,19 @@ const ARCH_PIPER_PLUS: &str = "piper-plus-mb-istft-vits2";
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
 pub(crate) fn load_session(path: &str) -> Result<(Session, ModelTask), String> {
-    load_session_with_backend(path, BackendKind::Cpu)
+    load_session_with_backend(path, BackendKind::Cpu, None)
 }
 
 /// As [`load_session`], but runs the model's hot ops on `backend` (CPU / Metal /
-/// CUDA). Only the ASR (Whisper) path is backend-parameterised today; VAD/TTS
+/// CUDA) and lets the caller override the default arch → task mapping via
+/// `hint`. Only the ASR (Whisper) path is backend-parameterised today; VAD/TTS
 /// stay on the CPU. A backend that does not cover the model's op set surfaces an
-/// explicit error at inference time (no silent CPU fall back, FR-EX-08).
+/// explicit error at inference time (no silent CPU fall back, FR-EX-08); a hint
+/// that the loaded arch does not support is likewise a hard error.
 pub(crate) fn load_session_with_backend(
     path: &str,
     backend: BackendKind,
+    hint: Option<TaskHint>,
 ) -> Result<(Session, ModelTask), String> {
     let session = Session::from_file(path)
         .with_backend(backend)
@@ -64,16 +88,35 @@ pub(crate) fn load_session_with_backend(
 
     match arch.as_str() {
         ARCH_WHISPER => {
+            // The mel-frontend task never touches the encoder / decoder — skip
+            // the (potentially large-v3-sized) weight load and return a bare
+            // session. The bench harness calls `whisper::mel::log_mel` directly
+            // against the input WAV.
+            if matches!(hint, Some(TaskHint::MelFrontend)) {
+                return Ok((session, ModelTask::MelFrontend));
+            }
             let asr = WhisperAsr::from_gguf(session.gguf())
                 .map_err(|e| e.to_string())?
                 .with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
         ARCH_SILERO_VAD => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_SILERO_VAD}`)"
+                ));
+            }
             let vad = SileroVadV5::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
             Ok((session.with_vad_engine(Arc::new(vad)), ModelTask::Vad))
         }
         ARCH_PIPER_PLUS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_PIPER_PLUS}`)"
+                ));
+            }
             // `PiperPlusTts::from_gguf` consumes a `GgufFile`, but the session
             // only lends one by reference, so re-parse from the path (matches
             // vokra-capi; a shared-GGUF constructor is the same follow-up).

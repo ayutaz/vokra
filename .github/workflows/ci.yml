@@ -3,8 +3,7 @@
 # registered as branch-protection required checks in M0-01-T14. Matrix jobs expand
 # to "build (<os>)" / "test (<os>)" check names.
 #
-# M1+ extensions (not here yet): performance regression 5% gate (NFR-PF-13),
-# doc code example verification (NFR-MT-04), nightly audio quality (NFR-QL-04).
+# NFR-PF-13 5% regression gate: wired for mel-frontend task (M2-04).
 
 name: CI
 
@@ -110,15 +109,26 @@ jobs:
 
   # Numerical parity harness (NFR-QL-01). At M0 this runs the tests/parity
   # placeholder harness; real per-model parity tests are added by M0-04/05/06.
+  # M2-04: matrix expansion runs `parity_whisper` under both fusion states
+  # (`VOKRA_DISABLE_FUSION=1` and `=0`) so the fused log-mel path stays
+  # bit-close (FP32 atol=0.01, NFR-QL-01) to the imperative reference.
   parity:
     name: parity
+    strategy:
+      fail-fast: false
+      matrix:
+        fusion: ["0", "1"]
     runs-on: ubuntu-latest
+    env:
+      VOKRA_DISABLE_FUSION: ${{ matrix.fusion }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Numerical parity tests (tests/parity)
         run: cargo test -p vokra-parity
+      - name: Whisper frontend parity (fused vs unfused)
+        run: cargo test -p vokra-models --test parity_whisper
 
   # License / vulnerability / forbidden-dependency gate (NFR-LC-04, X-08).
   # deny.toml is owned by M0-02 (allow: Apache-2.0/MIT/BSD; deny: GPL/LGPL;
@@ -152,3 +162,38 @@ jobs:
         run: bash scripts/check-zero-deps.sh
       - name: Forbidden symbols / dependencies check
         run: bash scripts/check-forbidden-symbols.sh
+
+  # Performance regression gate (NFR-PF-13, M2-04). Runs the fused log-mel
+  # `mel-frontend` bench through `vokra-cli bench --baseline` against a
+  # committed baseline (`docs/bench-baselines/mel_frontend_baseline.json`,
+  # captured with fusion OFF). Fusion is ON by default here, so any run
+  # slower than baseline * 1.05 fails with exit code 3 (bench.rs
+  # REGRESSION_THRESHOLD = 0.05). Locked to `ubuntu-latest` for the
+  # deterministic scalar + AVX2 path — NEON on macos-latest has too much
+  # hardware skew to hold a strict 5% gate, so the gate stays off there.
+  bench-regression:
+    name: bench-regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build vokra-cli (release)
+        run: cargo build --release -p vokra-cli
+      - name: mel-frontend regression check (5% gate, fusion enabled)
+        # M2-04-T13 WP completion: fused log-mel PR merges only when this job
+        # (regression), build/test/fmt/clippy/gpu-backends/license (zero-dep),
+        # and `parity` (both fusion matrix legs) are all green. Reviewer
+        # verifies via `gh pr checks`; two followup issues are linked in the
+        # PR description: (a) Snake fusion kernel body + BigVGAN AMP fusion
+        # co-delivered with FR-OP-13/11/14 consumer arrival, and (b) GPU fused
+        # log-mel kernels (Metal MSL `MetalContext::fused_logmel_f32` + CUDA
+        # NVRTC `fused_logmel_kernel`).
+        run: |
+          ./target/release/vokra-cli bench \
+            --task mel-frontend \
+            --iters 30 \
+            --warmup 5 \
+            --baseline docs/bench-baselines/mel_frontend_baseline.json \
+            --format json
+

@@ -21,7 +21,7 @@ use std::time::Instant;
 
 use vokra_core::BackendKind;
 
-use crate::engine::{self, ModelTask};
+use crate::engine::{self, ModelTask, TaskHint};
 use crate::report::{self, BenchReport, RegressionCheck};
 use crate::wav;
 
@@ -53,6 +53,9 @@ struct BenchArgs {
     /// / `cuda` require the CLI built with the matching feature, else inference
     /// fails with an explicit unsupported-backend error (no silent CPU fallback).
     backend: BackendKind,
+    /// Optional task override — only `mel-frontend` (Whisper log-mel only,
+    /// M2-04-T11) is recognized today. Absent → default arch → task mapping.
+    task_hint: Option<TaskHint>,
 }
 
 /// Parses a `--backend` value. The variants always exist (core enum); whether
@@ -64,6 +67,15 @@ fn parse_backend(v: &str) -> Result<BackendKind, String> {
         "metal" => Ok(BackendKind::Metal),
         "cuda" => Ok(BackendKind::Cuda),
         other => Err(format!("unknown --backend `{other}` (cpu | metal | cuda)")),
+    }
+}
+
+/// Parses a `--task` value into an optional [`TaskHint`]. Unknown values are
+/// rejected loudly (no silent fallback to the arch default — FR-EX-08).
+fn parse_task_hint(v: &str) -> Result<TaskHint, String> {
+    match v {
+        "mel-frontend" => Ok(TaskHint::MelFrontend),
+        other => Err(format!("unknown --task `{other}` (mel-frontend)")),
     }
 }
 
@@ -90,6 +102,10 @@ OPTIONS:
     --baseline <path>    a previous JSON report; a >5% RTF regression exits non-zero
     --backend <name>     cpu | metal | cuda — ASR hot ops backend [default cpu]
                          (metal/cuda need the CLI built with that feature)
+    --task <name>        override the arch default task. Today the only value
+                         is `mel-frontend` (Whisper only): benches the log-mel
+                         front-end alone (M2-04-T11), so the fused vs unfused
+                         RTF isn't polluted by encoder / decoder time.
     -h, --help           print this help
 ";
 
@@ -102,6 +118,7 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
     let mut format = Format::Kv;
     let mut baseline: Option<String> = None;
     let mut backend = BackendKind::Cpu;
+    let mut task_hint: Option<TaskHint> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -150,6 +167,11 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
                 backend = parse_backend(v)?;
                 i += 2;
             }
+            "--task" => {
+                let v = args.get(i + 1).ok_or("--task requires a value")?;
+                task_hint = Some(parse_task_hint(v)?);
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -166,6 +188,7 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
         format,
         baseline,
         backend,
+        task_hint,
     })
 }
 
@@ -189,9 +212,14 @@ where
     Ok(samples)
 }
 
+/// GGUF metadata key holding the Whisper mel-band count. Kept in sync with the
+/// converter (see `vokra-models::whisper::mod.rs`).
+const KEY_WHISPER_N_MELS: &str = "vokra.whisper.n_mels";
+
 /// Loads the model, times the task and (optionally) checks the baseline.
 fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
-    let (session, task) = engine::load_session_with_backend(&args.model, args.backend)?;
+    let (session, task) =
+        engine::load_session_with_backend(&args.model, args.backend, args.task_hint)?;
 
     let (task_name, audio_seconds, samples) = match task {
         ModelTask::Vad => {
@@ -234,6 +262,37 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 Ok(())
             })?;
             ("tts", audio_seconds, samples)
+        }
+        ModelTask::MelFrontend => {
+            // M2-04-T11: bench the Whisper log-mel front-end alone. Running
+            // `whisper::mel::log_mel` directly against the input WAV keeps the
+            // measurement isolated to the fused / unfused STFT → power → mel →
+            // log10 → transpose path (M2-04-T08 toggle) — no encoder / decoder
+            // time leaks into the RTF. `n_mels` is read from the GGUF exactly
+            // the way `WhisperConfig` reads it, so the bench and the full ASR
+            // path exercise the same front-end shape.
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (mel-frontend): --input <in.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let audio_seconds = clip.samples.len() as f64 / f64::from(clip.sample_rate);
+            let pcm = clip.samples;
+            let n_mels = session
+                .gguf()
+                .get(KEY_WHISPER_N_MELS)
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| format!("GGUF is missing the `{KEY_WHISPER_N_MELS}` metadata key"))?
+                as usize;
+            let samples = time_iters(args.warmup, args.iters, || {
+                // `black_box` prevents LLVM from noticing the result is
+                // unused and dead-code-eliminating the whole call. Same trick
+                // used by the ops-crate benches (see `fft_bench.rs`).
+                let out = vokra_models::whisper::mel::log_mel(&pcm, n_mels);
+                std::hint::black_box(out);
+                Ok(())
+            })?;
+            ("mel-frontend", audio_seconds, samples)
         }
     };
 
@@ -362,6 +421,22 @@ mod tests {
                 .unwrap()
                 .contains("unexpected argument")
         );
+        assert!(
+            parse_args(&args(&["--model", "m", "--task", "asr"]))
+                .err()
+                .unwrap()
+                .contains("unknown --task")
+        );
+    }
+
+    #[test]
+    fn parses_task_mel_frontend_hint() {
+        let a = parse_args(&args(&["--model", "m.gguf", "--task", "mel-frontend"]))
+            .expect("valid --task");
+        assert_eq!(a.task_hint, Some(TaskHint::MelFrontend));
+        // Default: no hint.
+        let a = parse_args(&args(&["--model", "m.gguf"])).expect("valid");
+        assert_eq!(a.task_hint, None);
     }
 
     #[test]
@@ -383,6 +458,81 @@ mod tests {
         assert_eq!(r.err().unwrap(), "boom");
     }
 
+    /// Builds a bare Whisper GGUF sufficient for the `mel-frontend` task (arch
+    /// key + `n_mels` metadata). The bench arm skips weight loading and only
+    /// needs `vokra.whisper.n_mels`, so no encoder / decoder tensors are
+    /// required — this keeps the test asset synthetic and in-repo (no external
+    /// fixture needed for M2-04-T11's routing test).
+    fn write_bare_whisper_gguf() -> std::path::PathBuf {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "whisper");
+        b.add_u32("vokra.whisper.n_mels", 80);
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-bench-melfront-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn bench_mel_frontend_runs_log_mel_and_reports_rtf() {
+        // 1 s of silence @ 16 kHz — `log_mel` pads to 30 s internally.
+        let mut wav_path = std::env::temp_dir();
+        wav_path.push(format!("vokra-cli-bench-mel-{}.wav", std::process::id()));
+        wav::write_wav(&wav_path, &vec![0.0f32; 16_000], 16_000).expect("write wav");
+        let gguf_path = write_bare_whisper_gguf();
+
+        let a = BenchArgs {
+            model: gguf_path.to_string_lossy().into_owned(),
+            input: Some(wav_path.to_string_lossy().into_owned()),
+            text: None,
+            iters: 1,
+            warmup: 0,
+            format: Format::Kv,
+            baseline: None,
+            backend: BackendKind::Cpu,
+            task_hint: Some(TaskHint::MelFrontend),
+        };
+        let outcome = execute(&a).expect("bench runs");
+        let _ = std::fs::remove_file(&wav_path);
+        let _ = std::fs::remove_file(&gguf_path);
+
+        assert_eq!(outcome.report.task, "mel-frontend");
+        assert_eq!(outcome.report.iters, 1);
+        assert_eq!(outcome.report.latency.count, 1);
+        assert!(outcome.report.audio_seconds > 0.0);
+        assert!(outcome.report.rtf.is_finite() && outcome.report.rtf >= 0.0);
+        assert!(outcome.regression.is_none());
+    }
+
+    #[test]
+    fn bench_mel_frontend_rejects_non_whisper_arch() {
+        // The hint is Whisper-only: pointing it at Silero must fail loudly
+        // (FR-EX-08: no silent fallback to VAD).
+        let a = BenchArgs {
+            model: silero_fixture(),
+            input: None,
+            text: None,
+            iters: 1,
+            warmup: 0,
+            format: Format::Kv,
+            baseline: None,
+            backend: BackendKind::Cpu,
+            task_hint: Some(TaskHint::MelFrontend),
+        };
+        let err = match execute(&a) {
+            Err(e) => e,
+            Ok(_) => panic!("hint on non-whisper arch must be rejected"),
+        };
+        assert!(
+            err.contains("only supported on arch `whisper`"),
+            "got: {err}"
+        );
+    }
+
     #[test]
     fn bench_vad_over_committed_fixture_reports_well_formed_stats() {
         // Internal-oracle only: committed Silero GGUF + a generated silence WAV.
@@ -399,6 +549,7 @@ mod tests {
             format: Format::Kv,
             baseline: None,
             backend: BackendKind::Cpu,
+            task_hint: None,
         };
         let outcome = execute(&a).expect("bench runs");
         let _ = std::fs::remove_file(&wav_path);

@@ -1,0 +1,1 @@
+{"task":"mel-frontend","iters":30,"warmup":5,"audio_seconds":30.000000,"rtf":0.001842,"ttfa_ms":55.2600,"latency_ms":{"p50":55.1200,"p95":57.8400,"p99":58.9100,"mean":55.2600,"jitter":0.9420,"min":54.3100,"max":59.0400}}

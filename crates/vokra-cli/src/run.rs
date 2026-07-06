@@ -136,6 +136,16 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 }
             }
         }
+        // `mel-frontend` is a bench-only task (M2-04-T11) — it isolates the
+        // Whisper log-mel path so the fused / unfused RTF isn't polluted by
+        // encoder / decoder time. `vokra-cli run` has no analogous end-user
+        // output, so reject rather than silently print something (FR-EX-08).
+        ModelTask::MelFrontend => {
+            return Err(
+                "run: task `mel-frontend` is not supported (bench-only, see `vokra-cli bench --task mel-frontend`)"
+                    .to_owned(),
+            );
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
