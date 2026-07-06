@@ -12,6 +12,18 @@
 # these as Release assets; do not commit.
 bindings/unity/*.tgz
 bindings/unity/*.tgz.sha256
+# M2-12 Python bindings: bytecode cache, egg-info, build outputs, and the
+# CI-injected prebuilt native library payload. Wheels are produced by
+# cibuildwheel in release.yml and uploaded to PyPI + GH Releases.
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+bindings/python/build/
+bindings/python/dist/
+bindings/python/src/vokra/_lib/*.so
+bindings/python/src/vokra/_lib/*.dylib
+bindings/python/src/vokra/_lib/*.dll
 # Isolated integration workspaces (integrations/*) build to their own target/.
 # Their Cargo.lock IS committed (reproducible opt-in builds); only artifacts are
 # ignored. These crates are excluded from the root workspace (zero-dep invariant).
