@@ -14,6 +14,7 @@ description: Vokra の audio-dialect オペレータ（STFT/vocoder/flow sampler
 - **GPU backend が要るなら 2 経路のどちらかに配線**（非対応 op は必ず明示 `UnsupportedOp`、**silent CPU fallback 禁止** = FR-EX-08）:
   - **グラフ経路** — `vokra-core` の `Backend::eval_op`（default = `UnsupportedOp`）を `vokra-backend-metal` / `vokra-backend-cuda` が対応 op だけ override（`run_graph`（`vokra-core/src/runtime/`）が topo 順に駆動）。
   - **imperative 経路（モデル hot op）** — `vokra-models/src/compute.rs` の `Compute` seam（Cpu/Metal/Cuda を enum dispatch、`HotOp` に列挙 = GEMM/GEMV/softmax/layer_norm/gelu/conv1d、`for_backend` が model 必要 op を全網羅しなければ `UnsupportedOp`）。Metal=objc_msgSend、CUDA=libcuda/libnvrtc の手書き生 FFI。metal/cuda は**既定 OFF の first-party optional feature** ゆえ zero-dep 不変条件は不変。音声 op 自体（STFT/vocoder 等）の GPU カーネルは現状ほぼ未配線で CPU 実行、GPU 化するなら上記いずれかに追加する。
+- **device 常駐融合（readback 削減パターン）**: 複数連続 op を 1 submission に融合するときは、**中間を DeviceTensor（`!Send` / `'ctx` / Drop で release）として device 上に保持**し、host readback を削減する（例: `MetalContext::encode_prenorm_stack` = n blocks の ln→attn→residual→ln→mlp→residual+final ln を 1 submission、encoder 全体で 6N+1→1 readback。`MetalDecodeSession` / `CudaDecodeSession` = decoder-step の self KV append + causal fused attn + cross attn + MLP を device 常駐化、logits のみ D2H）。融合実装は **per-op GPU 経路と bit-identical** が要件（新しい数値を持ち込まない、readback 位置のみを動かす）。parity は skill `numerical-parity` の GPU backend parity 節。
 
 ## 2. 属性を明示的に設計する（暗黙のデフォルト禁止）
 
