@@ -27,9 +27,82 @@
 //! mismatch (FR-LD-03). STFT ≠ FFT — every knob is explicit, per the CLAUDE.md
 //! pitfall.
 
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
 use vokra_core::gguf::GgufFile;
 use vokra_core::{FrontendPolicy, FrontendSpec, Result};
-use vokra_ops::{mel_attrs_from_spec, mel_filterbank, stft, stft_attrs_from_spec};
+use vokra_ops::{
+    fused_log_mel_scalar, mel_attrs_from_spec, mel_filterbank, stft, stft_attrs_from_spec,
+};
+
+/// Runtime toggle for the fused log-mel path (M2-04-T08).
+///
+/// Defaults to **on**. The `VOKRA_DISABLE_FUSION=1` environment variable
+/// overrides this to off, but is read **exactly once** on the first call to
+/// [`log_mel`] and then locked for the process lifetime — this keeps the toggle
+/// state bit-stable across the 3001-frame run and avoids per-call env lookups
+/// on the hot path.
+///
+/// When disabled, [`log_mel`] falls through to the physically-unchanged
+/// imperative `stft` → `power` → `MelFilterbank::apply` → `log10` → transpose
+/// path that predates M2-04. This preserves the bit-identical unfused
+/// reference for parity (T07) and bench A/B (T11) — see the M2-04 fusion pass
+/// ADR at `crates/vokra-core/src/ir/fusion/mod.rs` for the two-face design.
+mod fusion {
+    use super::*;
+
+    /// Env-lock state machine: 0 = not yet read, 1 = enabled, 2 = disabled.
+    /// Using `u8` (not `bool`) lets us distinguish "not yet resolved" from
+    /// "resolved to enabled", which matters for the once-and-lock semantics
+    /// (once resolved, later env mutation is ignored — see `is_enabled`).
+    static ENV_STATE: AtomicU8 = AtomicU8::new(0);
+
+    /// Optional test-only override: when `Some(bool)`, wins over the env
+    /// resolution and is *not* locked by the env-once machinery. Tests that
+    /// need to toggle both states within a single process must go through
+    /// [`set_enabled_for_test`] rather than mutating `VOKRA_DISABLE_FUSION`.
+    static TEST_OVERRIDE_SET: AtomicBool = AtomicBool::new(false);
+    static TEST_OVERRIDE_VAL: AtomicBool = AtomicBool::new(true);
+
+    /// Reads the fused-path toggle, resolving `VOKRA_DISABLE_FUSION` on the
+    /// first uncached call and locking the result for the process lifetime
+    /// (safe: env is only sampled once, so no race between reads and later
+    /// `set_var`/`remove_var` in other threads).
+    pub(super) fn is_enabled() -> bool {
+        // Test override wins if set (used by the T08 snapshot test to exercise
+        // both toggle states without racing the once-lock).
+        if TEST_OVERRIDE_SET.load(Ordering::Acquire) {
+            return TEST_OVERRIDE_VAL.load(Ordering::Acquire);
+        }
+        let state = ENV_STATE.load(Ordering::Acquire);
+        if state != 0 {
+            return state == 1;
+        }
+        // Resolve the env exactly once; the CAS makes the "first reader
+        // decides" race benign (all readers converge on the same value).
+        let disabled = std::env::var("VOKRA_DISABLE_FUSION")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        let new_state: u8 = if disabled { 2 } else { 1 };
+        // If another thread already resolved, its value stands.
+        let _ = ENV_STATE.compare_exchange(0, new_state, Ordering::AcqRel, Ordering::Acquire);
+        ENV_STATE.load(Ordering::Acquire) == 1
+    }
+
+    /// Test-only toggle override. Bypasses the once-lock so both branches of
+    /// [`log_mel`] can be exercised within a single test process.
+    #[cfg(test)]
+    pub(super) fn set_enabled_for_test(enabled: bool) {
+        TEST_OVERRIDE_VAL.store(enabled, Ordering::Release);
+        TEST_OVERRIDE_SET.store(true, Ordering::Release);
+    }
+
+    /// Clears the test-only override (returns to env-driven resolution).
+    #[cfg(test)]
+    pub(super) fn clear_test_override() {
+        TEST_OVERRIDE_SET.store(false, Ordering::Release);
+    }
+}
 
 /// Model sample rate in Hz (Whisper is 16 kHz).
 pub const SAMPLE_RATE: u32 = 16_000;
@@ -56,10 +129,27 @@ pub fn log_mel(pcm: &[f32], n_mels: usize) -> Vec<f32> {
     let stft_attrs = stft_attrs_from_spec(&spec).expect("runtime frontend spec is well-formed");
     let mel_attrs = mel_attrs_from_spec(&spec).expect("runtime frontend spec is well-formed");
 
-    // 1. Pad / trim to exactly 30 s.
+    // 1. Pad / trim to exactly 30 s. Both paths pad to `N_SAMPLES` so the
+    //    STFT frame grid is fixed and independent of `pcm.len()`.
     let mut buf = vec![0.0f32; N_SAMPLES];
     let n = pcm.len().min(N_SAMPLES);
     buf[..n].copy_from_slice(&pcm[..n]);
+
+    // M2-04-T08: route through the fused single-pass kernel when enabled
+    // (default). Falls through to the pre-fusion imperative path when the
+    // toggle is off — that branch is kept physically identical to the
+    // pre-M2-04 code so it remains the bit-identical unfused reference for
+    // parity (T07) and bench A/B (T11). See the M2-04 ADR at
+    // `crates/vokra-core/src/ir/fusion/mod.rs` for the two-face design.
+    if fusion::is_enabled() {
+        let fb = mel_filterbank(&mel_attrs);
+        let floor_log = 1e-10f32.log10();
+        let mut out = vec![floor_log; n_mels * N_FRAMES];
+        fused_log_mel_scalar(&buf, &stft_attrs, &fb, N_FRAMES, &mut out);
+        return out;
+    }
+
+    // --- Unfused reference path (bit-identical to the pre-M2-04 code) --------
 
     // 2. STFT → power, drop the trailing frame.
     let stft_out = stft(&buf, &stft_attrs).expect("valid whisper STFT attrs");
@@ -182,6 +272,118 @@ mod tests {
         let out = log_mel(&pcm, 80);
         assert_eq!(out.len(), 80 * N_FRAMES);
         assert!(out.iter().all(|v| v.is_finite()));
+    }
+
+    // --- M2-04-T08: fusion toggle behaviour ---------------------------------
+
+    /// Serialises the fusion-toggle tests so they don't race the shared
+    /// [`super::fusion`] state machine (both the env-once lock and the
+    /// test-override cell live at module scope).
+    static FUSION_TOGGLE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The `fusion::is_enabled()` toggle must return the value we asked for and
+    /// stay stable across a run — otherwise the two-branch `log_mel` would race
+    /// the once-lock and pick the wrong path mid-way.
+    #[test]
+    fn fusion_toggle_reflects_test_override() {
+        let _guard = FUSION_TOGGLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        fusion::set_enabled_for_test(true);
+        assert!(fusion::is_enabled());
+        fusion::set_enabled_for_test(false);
+        assert!(!fusion::is_enabled());
+        fusion::clear_test_override();
+    }
+
+    /// With the fused path disabled, `log_mel` must produce values that are
+    /// element-wise bit-identical to the pre-M2-04 unfused implementation.
+    /// The reference here is the same imperative chain (kept physically
+    /// unchanged inside the `else` arm), so we recompute it locally with the
+    /// same input and assert exact equality — this pins the "toggle off = no
+    /// behaviour change" invariant that the T07 parity test and the T11 A/B
+    /// bench baseline both depend on.
+    #[test]
+    fn toggle_off_is_bit_identical_to_pre_fusion_baseline() {
+        let _guard = FUSION_TOGGLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Small deterministic input: a 100 ms tone at 440 Hz. Short enough to
+        // stay well below `N_SAMPLES` (so we exercise the pad branch, not the
+        // trim branch) and non-silent so the mel bands see real energy.
+        let n = SAMPLE_RATE as usize / 10;
+        let pcm: Vec<f32> = (0..n)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / SAMPLE_RATE as f32).sin())
+            .collect();
+
+        // Reference: the physically-preserved unfused branch inside `log_mel`.
+        fusion::set_enabled_for_test(false);
+        let reference = log_mel(&pcm, 80);
+
+        // Reproduce the pre-fusion baseline **out of band** (independent
+        // recomputation) so a silent regression in the `else` arm can't hide
+        // behind a comparison against itself.
+        let spec = runtime_frontend_spec(80);
+        let stft_attrs = stft_attrs_from_spec(&spec).unwrap();
+        let mel_attrs = mel_attrs_from_spec(&spec).unwrap();
+        let mut buf = vec![0.0f32; N_SAMPLES];
+        buf[..pcm.len()].copy_from_slice(&pcm);
+        let stft_out = stft(&buf, &stft_attrs).unwrap();
+        let bins = stft_out.bins;
+        let frames = stft_out.frames.min(N_FRAMES + 1);
+        let kept = frames.min(N_FRAMES);
+        let power = stft_out.power();
+        let fb = mel_filterbank(&mel_attrs);
+        let mel = fb.apply(&power[..kept * bins], kept);
+        let floor_log = 1e-10f32.log10();
+        let mut baseline = vec![floor_log; 80 * N_FRAMES];
+        let mut gmax = f32::NEG_INFINITY;
+        for t in 0..kept {
+            for m in 0..80 {
+                let l = mel[t * 80 + m].max(1e-10).log10();
+                baseline[m * N_FRAMES + t] = l;
+                if l > gmax {
+                    gmax = l;
+                }
+            }
+        }
+        let dyn_floor = gmax - 8.0;
+        for v in &mut baseline {
+            *v = (v.max(dyn_floor) + 4.0) / 4.0;
+        }
+
+        assert_eq!(reference.len(), baseline.len());
+        for (i, (a, b)) in reference.iter().zip(baseline.iter()).enumerate() {
+            // Bit-identical: same input → same allocations → same float ops
+            // → same rounding. If this ever drifts, the `else` arm has been
+            // touched — that would break the T07 parity oracle.
+            assert_eq!(a.to_bits(), b.to_bits(), "drift at index {i}: {a} vs {b}");
+        }
+        fusion::clear_test_override();
+    }
+
+    /// With the fused path enabled the shape / finiteness contract must still
+    /// hold, and the values must remain bit-close to the unfused reference
+    /// (within the T07 atol = 0.01). This is the T08 hookup smoke check; the
+    /// full three-input parity fixture lives in `vokra-ops` (T07).
+    #[test]
+    fn fused_path_matches_unfused_within_atol() {
+        let _guard = FUSION_TOGGLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let n = SAMPLE_RATE as usize / 10;
+        let pcm: Vec<f32> = (0..n)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / SAMPLE_RATE as f32).sin())
+            .collect();
+
+        fusion::set_enabled_for_test(false);
+        let unfused = log_mel(&pcm, 80);
+        fusion::set_enabled_for_test(true);
+        let fused = log_mel(&pcm, 80);
+
+        assert_eq!(fused.len(), 80 * N_FRAMES);
+        assert!(fused.iter().all(|v| v.is_finite()));
+        for (i, (f, u)) in fused.iter().zip(unfused.iter()).enumerate() {
+            assert!(
+                (f - u).abs() < 0.01,
+                "fused vs unfused delta > 0.01 at index {i}: {f} vs {u}"
+            );
+        }
+        fusion::clear_test_override();
     }
 
     // --- frontend_spec check (M1-03) -----------------------------------------
