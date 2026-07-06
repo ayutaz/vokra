@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vokra"
+version = "0.1.0.dev0"
+description = "Vokra — audio-specialized inference runtime (Python binding, pre-1.0)"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [{ name = "ayutaz" }]
+keywords = ["speech", "tts", "asr", "audio", "inference", "runtime"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Rust",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# NFR-DS-02 zero-dep: runtime dependencies MUST remain empty.
+# numpy is an optional interop only (imported lazily inside vokra.audio).
+dependencies = []
+
+[project.optional-dependencies]
+numpy = ["numpy>=1.23"]
+dev = [
+    "pytest>=7.4",
+    "pip-licenses>=4.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/ayutaz/vokra"
+Repository = "https://github.com/ayutaz/vokra"
+Issues = "https://github.com/ayutaz/vokra/issues"
+
+# --- hatchling: package under src/ layout ---
+# The prebuilt native library is injected into src/vokra/_lib/ by CI
+# (see .github/workflows/ci.yml python-wheel-build job, plan D5/D12).
+# hatchling ships everything under `packages` into the wheel, including
+# non-.py files inside _lib/, so no separate force-include is needed.
+[tool.hatch.build.targets.wheel]
+packages = ["src/vokra"]
+
+# Source distribution: exclude prebuilt native libs (per-platform, CI-injected).
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/vokra/**/*.py",
+    "src/vokra/_lib/.gitkeep",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "pyproject.toml",
+]
+exclude = [
+    "src/vokra/_lib/*.so",
+    "src/vokra/_lib/*.dylib",
+    "src/vokra/_lib/*.dll",
+]

@@ -1,0 +1,7 @@
+# Placeholder so the _lib/ directory exists in git before CI injects the
+# platform-specific prebuilt native library (libvokra.dylib / libvokra.so /
+# vokra.dll). See plan D5 and .github/workflows/ci.yml (python-wheel-build).
+#
+# Do not commit prebuilt binaries here; they are per-platform CI artifacts
+# and are excluded from the sdist (see pyproject.toml [tool.hatch.build.
+# targets.sdist].exclude).
