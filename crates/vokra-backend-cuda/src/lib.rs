@@ -97,6 +97,8 @@ mod context;
 #[cfg(any(unix, windows))]
 mod eval;
 #[cfg(any(unix, windows))]
+pub mod session_pool;
+#[cfg(any(unix, windows))]
 mod sys;
 
 // The probe and the Backend trait handle exist on every target (with explicit
