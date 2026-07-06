@@ -3468,7 +3468,18 @@ impl CudaDecodeSession {
         // FR-EX-08) does NOT apply here — both paths are on the GPU.
         let hd = d / n_head;
         let opt_in_shared = ctx.max_shared_memory_per_block_optin().unwrap_or(0);
-        let use_flash_attn = hd == 64 && opt_in_shared >= FLASH_ATTN_V2_MIN_SHARED_BYTES;
+        let mut use_flash_attn = hd == 64 && opt_in_shared >= FLASH_ATTN_V2_MIN_SHARED_BYTES;
+        // Escape hatch for the M2-14 sanity gate on vast.ai / any other host
+        // where the FA v2 kernel launcher (`launch_flash_attn_v2`) still
+        // returns `BackendUnavailable` (the stub state, per T-follow-02/03).
+        // Setting `VOKRA_CUDA_DISABLE_FA_V2=1` forces the session onto the
+        // decomposed `2 + 7·n_head` chain, which is always correct — the
+        // measured RTF is then the honest steady-state number for the
+        // decomposed path (never a silent CPU escape; FR-EX-08 stays intact
+        // because both branches remain on the GPU).
+        if use_flash_attn && std::env::var_os("VOKRA_CUDA_DISABLE_FA_V2").is_some() {
+            use_flash_attn = false;
+        }
 
         Ok(CudaDecodeSession {
             layers: buffers.layers,
