@@ -103,8 +103,33 @@ mod pool;
 mod selftest;
 
 pub use dispatch::active_isa;
+pub use dispatch::fused_log_mel_dispatch;
 pub use features::{CpuFeatures, IsaPath};
 pub use selftest::{SELFTEST_ATOL, SELFTEST_RTOL, SelftestReport, selftest};
+
+/// Test-only probe exposing the M2-04-T06 fused log-mel `pub(crate)` kernels
+/// to the `tests/fused_logmel_isa_parity.rs` integration harness. Not part of
+/// the crate's public API — `#[doc(hidden)]` and only reachable via a
+/// deliberately-named path.
+#[doc(hidden)]
+#[cfg(target_arch = "x86_64")]
+pub mod fused_logmel_test_probe {
+    pub use crate::kernels::fused_logmel_avx2::{
+        fused_logmel_apply_frame_avx2, fused_logmel_apply_frame_scalar,
+    };
+}
+
+/// NEON companion of [`fused_logmel_test_probe`] (M2-04-T06). Exposes the
+/// `pub(crate)` NEON kernel + its scalar oracle to the AArch64 integration
+/// test in `tests/fused_logmel_isa_parity_neon.rs`. Not part of the crate's
+/// public API.
+#[doc(hidden)]
+#[cfg(target_arch = "aarch64")]
+pub mod fused_logmel_test_probe_neon {
+    pub use crate::kernels::fused_logmel_neon::{
+        fused_logmel_apply_frame_neon, fused_logmel_apply_frame_scalar,
+    };
+}
 
 use vokra_core::{AudioGraph, Backend, OpKind, Result, Tensor, VokraError};
 

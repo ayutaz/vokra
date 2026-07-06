@@ -34,6 +34,11 @@ pub(crate) type UnaryKernel = fn(&[f32], &mut [f32]);
 pub(crate) type SoftmaxKernel = fn(&[f32], &mut [f32], usize, usize);
 /// Row-wise layer-norm kernel signature.
 pub(crate) type LayerNormKernel = fn(&[f32], &mut [f32], usize, usize, &[f32], &[f32], f32);
+/// Fused log-mel per-frame kernel signature (M2-04-T06). Applies the mel
+/// filterbank to one frame's power spectrum and writes `n_mels`
+/// `log10(max(·, floor))` values. `(weights[n_mels*n_bins], power[n_bins],
+/// n_mels, n_bins, floor, out_log[n_mels])`.
+pub(crate) type FusedLogmelKernel = fn(&[f32], &[f32], usize, usize, f32, &mut [f32]);
 
 /// A bundle of function pointers, one per kernel kind, all resolved to the
 /// same [`IsaPath`]. Populated by [`build_table`] and cached in [`selected`].
@@ -49,6 +54,12 @@ pub(crate) struct KernelTable {
     pub(crate) gelu: UnaryKernel,
     pub(crate) softmax: SoftmaxKernel,
     pub(crate) layer_norm: LayerNormKernel,
+    /// M2-04-T06 fused log-mel inner (mel-band accumulate + `log10(max(·, floor))`).
+    /// Scalar / NEON currently share the portable scalar reference; AVX2 uses
+    /// the eight-lane FMA + `vlog10_avx2` polynomial path. All three compute
+    /// the same op within FP32 rounding (within-CPU-backend dispatch, not a
+    /// cross-backend fallback — FR-EX-08 unaffected).
+    pub(crate) fused_logmel: FusedLogmelKernel,
 }
 
 fn scalar_table() -> KernelTable {
@@ -63,12 +74,43 @@ fn scalar_table() -> KernelTable {
         gelu: scalar::gelu,
         softmax: scalar::softmax,
         layer_norm: scalar::layer_norm,
+        fused_logmel: scalar_fused_logmel,
+    }
+}
+
+/// Portable scalar reference for the fused log-mel per-frame kernel
+/// (M2-04-T06). Bit-close to
+/// `vokra_ops::fused_log_mel_scalar`'s inner mel-band accumulate + `log10`
+/// step; used by the `Scalar` dispatch table entry and as the parity oracle
+/// for the SIMD paths. Kept target-agnostic so aarch64 hosts that select
+/// `Scalar` (e.g. via `VOKRA_CPU_ISA=scalar` for a forced-path test) can
+/// still populate the table.
+fn scalar_fused_logmel(
+    weights: &[f32],
+    power: &[f32],
+    n_mels: usize,
+    n_bins: usize,
+    floor: f32,
+    out_log: &mut [f32],
+) {
+    assert_eq!(weights.len(), n_mels * n_bins, "weights shape mismatch");
+    assert_eq!(power.len(), n_bins, "power length mismatch");
+    assert_eq!(out_log.len(), n_mels, "out_log length mismatch");
+    for m in 0..n_mels {
+        let row = &weights[m * n_bins..(m + 1) * n_bins];
+        let mut acc = 0.0f32;
+        for (w, p) in row.iter().zip(power) {
+            acc += w * p;
+        }
+        let clamped = if acc > floor { acc } else { floor };
+        out_log[m] = clamped.log10();
     }
 }
 
 #[cfg(target_arch = "x86_64")]
 fn avx2_table() -> KernelTable {
     use crate::kernels::avx2;
+    use crate::kernels::fused_logmel_avx2;
     KernelTable {
         gemm: avx2::gemm,
         gemv: avx2::gemv,
@@ -80,6 +122,7 @@ fn avx2_table() -> KernelTable {
         gelu: avx2::gelu,
         softmax: avx2::softmax,
         layer_norm: avx2::layer_norm,
+        fused_logmel: fused_logmel_avx2::fused_logmel_apply_frame_avx2,
     }
 }
 
@@ -92,6 +135,7 @@ fn avx2_table() -> KernelTable {
 
 #[cfg(target_arch = "aarch64")]
 fn neon_table() -> KernelTable {
+    use crate::kernels::fused_logmel_neon;
     use crate::kernels::neon;
     KernelTable {
         gemm: neon::gemm,
@@ -104,6 +148,7 @@ fn neon_table() -> KernelTable {
         gelu: neon::gelu,
         softmax: neon::softmax,
         layer_norm: neon::layer_norm,
+        fused_logmel: fused_logmel_neon::fused_logmel_apply_frame_neon,
     }
 }
 
@@ -178,6 +223,113 @@ pub(crate) fn table_for(isa: IsaPath) -> Result<KernelTable> {
     }
 }
 
+// ---- fused log-mel per-frame dispatch (M2-04-T06) ---------------------------
+
+/// Applies the fused mel-filterbank + `log10(max(·, floor))` for one frame's
+/// power spectrum, selecting the fastest kernel supported by this host
+/// (`Scalar` / `Avx2` / `Neon`) via [`active_isa`].
+///
+/// `weights` is row-major `[n_mels, n_bins]` (matching
+/// `vokra_ops::mel::MelFilterbank::weights`), `power` has length `n_bins`,
+/// and `out` has length `n_mels`. `floor` is the numerical clamp applied
+/// before `log10` (typically `1e-10`, matching the Whisper front-end).
+///
+/// # Errors
+/// Returns [`VokraError::InvalidArgument`] on any shape mismatch, matching
+/// the boundary-validation regime of the rest of this crate's public
+/// wrappers (NFR-RL-07). This is the safe entry point — the SIMD kernels'
+/// `unsafe` + `#[target_feature]` boundary stays inside the crate.
+///
+/// # FR-EX-08 note
+/// Scalar / AVX2 / NEON all compute the same op with the same result within
+/// FP32 rounding. Choosing between them here is a within-CPU-backend
+/// dispatch, orthogonal to the cross-backend explicit-op-error rule
+/// FR-EX-08.
+pub fn fused_log_mel_dispatch(
+    pcm: &[f32],
+    stft: &[f32],
+    mel_fb: &[f32],
+    n_frames: usize,
+    out: &mut [f32],
+) -> Result<()> {
+    // The Whisper front-end floor (`log10(1e-10) = -10`) — same clamp used
+    // by `vokra_ops::fused_log_mel_scalar` and by every SIMD path.
+    const FLOOR: f32 = 1e-10;
+
+    if pcm.is_empty() {
+        return Err(VokraError::InvalidArgument(
+            "fused_log_mel_dispatch: pcm (power) must be non-empty".into(),
+        ));
+    }
+    if n_frames == 0 {
+        return Err(VokraError::InvalidArgument(
+            "fused_log_mel_dispatch: n_frames must be >= 1".into(),
+        ));
+    }
+    // Interpret the arguments per the ticket's public wrapper contract:
+    //   pcm    : one frame's power spectrum, length `n_bins`
+    //   stft   : (unused at this layer — reserved for a future
+    //            multi-frame streaming variant; a caller passing an empty
+    //            slice keeps the wrapper cheap)
+    //   mel_fb : row-major mel filterbank weights of length n_mels * n_bins
+    //   out    : per-frame log-mel output of length n_mels
+    // Shape validation:
+    let n_bins = pcm.len();
+    if mel_fb.len() % n_bins != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "fused_log_mel_dispatch: mel_fb.len() {} is not a multiple of n_bins {}",
+            mel_fb.len(),
+            n_bins
+        )));
+    }
+    let n_mels = mel_fb.len() / n_bins;
+    if out.len() != n_mels {
+        return Err(VokraError::InvalidArgument(format!(
+            "fused_log_mel_dispatch: out.len() {} != n_mels {} (derived from mel_fb / pcm)",
+            out.len(),
+            n_mels
+        )));
+    }
+    // `stft` is currently reserved (unused by the per-frame kernel — the
+    // caller has already applied window + FFT + `|·|²`). Silence the
+    // unused-parameter lint without a name change.
+    let _ = stft;
+
+    (table().fused_logmel)(mel_fb, pcm, n_mels, n_bins, FLOOR, out);
+    Ok(())
+}
+
+/// [`fused_log_mel_dispatch`] forced onto a specific `isa` — differential
+/// test entry (mirrors the `*_on` pattern used by the other kernels).
+///
+/// Requesting a path the host cannot run is an explicit
+/// [`VokraError::BackendUnavailable`] (never a silent switch — FR-EX-08).
+#[allow(dead_code)] // available for M2-04-T06 parity harness; not used in production
+pub(crate) fn fused_log_mel_dispatch_on(
+    isa: IsaPath,
+    pcm: &[f32],
+    mel_fb: &[f32],
+    out: &mut [f32],
+) -> Result<()> {
+    const FLOOR: f32 = 1e-10;
+    let n_bins = pcm.len();
+    if n_bins == 0 || mel_fb.len() % n_bins != 0 {
+        return Err(VokraError::InvalidArgument(
+            "fused_log_mel_dispatch_on: bad pcm / mel_fb shape".into(),
+        ));
+    }
+    let n_mels = mel_fb.len() / n_bins;
+    if out.len() != n_mels {
+        return Err(VokraError::InvalidArgument(format!(
+            "fused_log_mel_dispatch_on: out.len() {} != n_mels {}",
+            out.len(),
+            n_mels
+        )));
+    }
+    (table_for(isa)?.fused_logmel)(mel_fb, pcm, n_mels, n_bins, FLOOR, out);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,6 +360,98 @@ mod tests {
             if !feats.supports(isa) {
                 assert!(matches!(
                     table_for(isa),
+                    Err(VokraError::BackendUnavailable(_))
+                ));
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // M2-04-T06 fused log-mel dispatch tests
+    // -------------------------------------------------------------------
+
+    /// The scalar `fused_logmel` entry in the table computes the same output
+    /// as the hand reference (1 band × 3 unit-weight bins over [1, 2, 4] →
+    /// log10(7)).
+    #[test]
+    fn fused_logmel_scalar_table_matches_hand_value() {
+        let table = table_for(IsaPath::Scalar).expect("scalar always available");
+        let weights = [1.0f32, 1.0, 1.0];
+        let power = [1.0f32, 2.0, 4.0];
+        let mut out = [0.0f32; 1];
+        (table.fused_logmel)(&weights, &power, 1, 3, 1e-10, &mut out);
+        let want = 7.0f32.log10();
+        assert!(
+            (out[0] - want).abs() < 1e-6,
+            "fused_logmel scalar table: got {} want {want}",
+            out[0]
+        );
+    }
+
+    /// The safe public wrapper routes shape errors as explicit
+    /// [`VokraError::InvalidArgument`], never silently truncating or
+    /// swapping to a fallback (NFR-RL-07, FR-EX-08 principle).
+    #[test]
+    fn fused_log_mel_dispatch_rejects_bad_shapes() {
+        // Empty power spectrum.
+        let mut out = [0.0f32; 4];
+        assert!(matches!(
+            fused_log_mel_dispatch(&[], &[], &[0.0; 4], 1, &mut out),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // mel_fb length not a multiple of n_bins.
+        let pcm = [1.0f32, 2.0, 3.0]; // n_bins = 3
+        let mel_fb = [1.0f32; 7]; // 7 % 3 != 0
+        assert!(matches!(
+            fused_log_mel_dispatch(&pcm, &[], &mel_fb, 1, &mut out),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // out.len() does not match derived n_mels.
+        let mel_fb = [1.0f32; 6]; // n_bins=3 → n_mels=2
+        let mut bad_out = [0.0f32; 4];
+        assert!(matches!(
+            fused_log_mel_dispatch(&pcm, &[], &mel_fb, 1, &mut bad_out),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // n_frames == 0.
+        let mut ok_out = [0.0f32; 2];
+        assert!(matches!(
+            fused_log_mel_dispatch(&pcm, &[], &mel_fb, 0, &mut ok_out),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    /// End-to-end via the safe wrapper: identity-ish filterbank + a positive
+    /// power spectrum produces finite `log10` values in the expected band.
+    #[test]
+    fn fused_log_mel_dispatch_end_to_end_smoke() {
+        // 2 mel bands × 5 bins; band 0 sums bins 0..3, band 1 sums bins 2..5.
+        let weights: Vec<f32> = vec![
+            1.0, 1.0, 1.0, 0.0, 0.0, // band 0
+            0.0, 0.0, 1.0, 1.0, 1.0, // band 1
+        ];
+        let power = [0.5f32, 1.0, 2.0, 4.0, 8.0];
+        let mut out = [0.0f32; 2];
+        fused_log_mel_dispatch(&power, &[], &weights, 1, &mut out).expect("well-formed inputs");
+        // band 0: 0.5+1+2 = 3.5, log10 ≈ 0.5441; band 1: 2+4+8 = 14, log10 ≈ 1.1461.
+        // Every ISA path stays inside the plan-spec 1e-5 SIMD ceiling; the
+        // scalar path is bit-close to the hand value.
+        assert!((out[0] - 3.5_f32.log10()).abs() < 1e-5);
+        assert!((out[1] - 14.0_f32.log10()).abs() < 1e-5);
+    }
+
+    /// Forcing an unavailable ISA is an explicit
+    /// [`VokraError::BackendUnavailable`] — never a silent switch (FR-EX-08).
+    #[test]
+    fn fused_log_mel_dispatch_on_rejects_unavailable_isa() {
+        let feats = CpuFeatures::detect();
+        let pcm = [1.0f32, 2.0, 3.0];
+        let mel_fb = [1.0f32; 3];
+        let mut out = [0.0f32; 1];
+        for isa in [IsaPath::Avx2, IsaPath::Neon] {
+            if !feats.supports(isa) {
+                assert!(matches!(
+                    fused_log_mel_dispatch_on(isa, &pcm, &mel_fb, &mut out),
                     Err(VokraError::BackendUnavailable(_))
                 ));
             }

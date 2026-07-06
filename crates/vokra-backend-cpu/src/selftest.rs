@@ -25,7 +25,7 @@
 
 use vokra_core::{Result, VokraError};
 
-use crate::dispatch::active_isa;
+use crate::dispatch::{self, active_isa};
 use crate::features::{CpuFeatures, IsaPath};
 use crate::kernels;
 
@@ -258,6 +258,14 @@ pub fn selftest() -> Result<SelftestReport> {
         compare("layer_norm", isa, &o_ln, &buf, &mut max_abs_diff)?;
     }
 
+    // M2-04-T06: cross-check the fused log-mel dispatch path against the
+    // scalar oracle on fixed seeded inputs. Runs the same differential
+    // pattern as the other kernels — the failure surface is
+    // `VokraError::BackendUnavailable` with a diagnostic pointing at the
+    // fused_logmel kernel, so a shipped binary can report SIMD miscompile /
+    // CPU misdetection in the log-mel front-end at run time.
+    fused_logmel_selftest(&features, &checked_paths, &mut max_abs_diff)?;
+
     Ok(SelftestReport {
         active_isa,
         features,
@@ -265,6 +273,65 @@ pub fn selftest() -> Result<SelftestReport> {
         max_abs_diff,
         tolerance: SELFTEST_ATOL,
     })
+}
+
+/// M2-04-T06: cross-check the fused log-mel per-frame kernel across every
+/// host-supported ISA path against the scalar oracle. Called from
+/// [`selftest`] at feature-detect init and updates `max_abs_diff` with the
+/// worst deviation observed. On disagreement, returns
+/// [`VokraError::BackendUnavailable`] naming the fused_logmel kernel.
+///
+/// # Tolerance
+///
+/// The fused kernel's SIMD paths use polynomial `log10` approximations with
+/// worst-case per-element error ≪ 1e-6, and the surrounding mel-band
+/// accumulation is FMA-associated (bit-close to the scalar reduction). Uses
+/// the [`SELFTEST_ATOL`] + [`SELFTEST_RTOL`] band, matching the other
+/// kernels — still an order of magnitude inside the FP32 parity ceiling
+/// NFR-QL-01 `atol = 0.01`.
+fn fused_logmel_selftest(
+    features: &CpuFeatures,
+    checked_paths: &[IsaPath],
+    max_abs_diff: &mut f32,
+) -> Result<()> {
+    // A Whisper-shaped tile so both the AVX2 eight-lane FMA tail
+    // (`n_bins % 8 = 1`) and the NEON four-lane FMA tail (`n_bins % 4 = 1`)
+    // exercise the ragged-tail scalar cleanup that must match the scalar
+    // reference bit-close.
+    let (n_mels, n_bins) = (16usize, 41usize);
+    let mut rng = Rng::new(0x10E1_5EED);
+    let mut weights = Vec::with_capacity(n_mels * n_bins);
+    for _ in 0..n_mels * n_bins {
+        // Filterbank weights are non-negative — draw in [0, 1] to match the
+        // real Mel filter magnitudes; using signed inputs here would let
+        // opposite-sign cancellations dominate the FP32 error budget.
+        weights.push((rng.next_f32() + 1.0) * 0.5);
+    }
+    let mut power = Vec::with_capacity(n_bins);
+    for _ in 0..n_bins {
+        // Power spectrum entries are non-negative; magnitude range spans the
+        // Whisper log-mel domain (small-signal floor to peak power).
+        power.push(((rng.next_f32() + 1.0) * 0.5) * 1e3);
+    }
+
+    // Scalar oracle via the safe crate-public dispatch on `Scalar`.
+    let mut oracle = vec![0.0f32; n_mels];
+    let scalar_table = dispatch::table_for(IsaPath::Scalar)?;
+    (scalar_table.fused_logmel)(&weights, &power, n_mels, n_bins, 1e-10, &mut oracle);
+
+    for &isa in checked_paths {
+        // `table_for` on an unsupported path is an explicit error (already
+        // covered elsewhere); the filter here mirrors the invariant that
+        // `checked_paths` only contains ISAs the host reports as supported.
+        if !features.supports(isa) {
+            continue;
+        }
+        let table = dispatch::table_for(isa)?;
+        let mut buf = vec![0.0f32; n_mels];
+        (table.fused_logmel)(&weights, &power, n_mels, n_bins, 1e-10, &mut buf);
+        compare("fused_logmel", isa, &oracle, &buf, max_abs_diff)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -63,6 +63,22 @@ pub(crate) mod avx2;
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod neon;
 
+// Fused log-mel inner kernel (M2-04-T06): AVX2 8-lane FMA `_mm256_fmadd_ps`
+// over the filterbank weights row + `vlog10_avx2` polynomial approximation.
+// This is the CPU-side SIMD path for the log-mel front-end fusion. NEON
+// counterpart lives in a companion module; a portable scalar reference is
+// bundled alongside the AVX2 kernel so the ISA-parity test in
+// `tests/fused_logmel_isa_parity.rs` can cross-check without touching
+// vokra-ops (zero-dep at the crate boundary).
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod fused_logmel_avx2;
+
+// NEON companion (M2-04-T06): four-lane `vfmaq_f32` mel accumulation plus
+// `vlog10_neon` polynomial approximation reusing the `vexp_neon` IEEE-754
+// exponent-field pattern. Compiled only on AArch64.
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod fused_logmel_neon;
+
 use vokra_core::{Result, VokraError};
 
 use crate::dispatch;
