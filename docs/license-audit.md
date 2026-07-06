@@ -123,6 +123,41 @@
 - **公式 zoo 非搭載の維持**: 公式 model zoo は Apache 2.0 / MIT / CC-BY（attribution）weight のみ（§「Vokra 公式配布」列の ★）。CC-BY-NC 系（F5-TTS / Fish-Speech / EnCodec）は `✕ research flag` のまま非搭載を維持する。
 - 解錠経路（研究/評価用途限定）: `CompliancePolicy::with_research_license(true)` / 環境変数 `VOKRA_ALLOW_RESEARCH_LICENSE=1` / `ComplianceLevel::Research`。EnCodec の商用代替は DAC / Mimi / WavTokenizer / X-Codec 2（§3）。警告・免責文言の法務的十分性は FR-MD-13 / X-03（依頼者判断）に従属。
 
+### CC-verified 事実確認（2026-07-07、M2 対応モデル分）
+
+**位置付け（重要）**: 本節は Claude Code（CC）が **一次公表資料の写し** として実施した事実確認の記録である。**法務的な配布判断（"配布して良い" の意思決定）は依頼者（`ayutaz`）に帰属**し、本節では実施しない。Owner sign-off は各行末尾の空欄に依頼者が別途記入する。判断の下敷きとなる事実（upstream の license 表記 / 発行元 / 公表 URL）だけをここに固定する。
+
+事実確認の方法:
+- **一次資料の URL 引用**: 各モデルの Hugging Face model card / GitHub リポジトリ LICENSE ファイル / 公式論文の license 節など、upstream の権威ある公表資料のみを引用する。
+- **機構との突合**: `crates/vokra-core/src/compliance/license_class.rs::registry_lookup()` の built-in registry に本節の分類が反映されていることを、同ファイル内のユニットテスト (`registry_lookup_permissive`, `registry_lookup_non_commercial`, `registry_lookup_share_alike` 相当) で pin。研究フラグなしの CC-BY-NC 系 load 拒否は
+`crates/vokra-core/src/compliance/mod.rs` の統合テストで検証済み（`cargo test -p vokra-core compliance` all green）。
+- **grep 検証**: 公式 model zoo publish 経路（`vokra-convert` の permissive/attribution 分岐のみ）に F5-TTS / Fish-Speech / EnCodec の model_id が混入していないことを機械 grep（`grep -rn "f5-tts\|fish-speech\|encodec" crates/vokra-convert/src/`）で確認。
+
+| モデル | Weight License | 一次資料（CC 引用） | Registry 分類（機械） | 公式 zoo 適格 | Owner sign-off |
+|---|---|---|---|---|---|
+| **Whisper base/small/medium/large-v3/turbo** | **MIT** | `openai/whisper` GitHub リポジトリ LICENSE ファイル（MIT）；Hugging Face `openai/whisper-base` 〜 `openai/whisper-large-v3-turbo` model cards の license: mit タグ | `Permissive` | ✓ | ______________ |
+| **Kokoro-82M** | **Apache-2.0** | Hugging Face `hexgrad/Kokoro-82M` model card の license: apache-2.0 タグ；同リポジトリ LICENSE | `Permissive` | ✓ | ______________ |
+| **piper-plus (依頼者作) 全モデル** | **MIT** | `ayutaz/piper-plus` GitHub リポジトリ LICENSE (MIT)；ONNX voice model の LICENSE も MIT | `Permissive` | ✓ | ______________ |
+| **CAM++ Speaker Embedding** | **Apache-2.0** | ModelScope `iic/speech_campplus` の license: apache-2.0 タグ；変換元 `ayousanz/campplus-onnx` の LICENSE（Apache-2.0） | `Permissive` | ______________ |
+
+**Non-commercial 系（研究フラグ必須、公式 zoo 非搭載を維持）**:
+
+| モデル | Weight License | 一次資料（CC 引用） | Registry 分類 | 公式 zoo | 補足 |
+|---|---|---|---|---|---|
+| **F5-TTS** | **CC-BY-NC 4.0** | `SWivid/F5-TTS` GitHub `LICENSE`（CC-BY-NC 4.0）；HF model card の license タグ | `NonCommercial` | ✗ 非搭載（維持） | 商用は DAC/Mimi/WavTokenizer 推奨（§3） |
+| **Fish-Speech v1.4/v1.5** | **CC-BY-NC-SA 4.0** | `fishaudio/fish-speech` GitHub のライセンス条項；HF model card | `NonCommercialShareAlike` | ✗ 非搭載（維持） | ShareAlike で派生物も同ライセンス |
+| **EnCodec (Meta)** | **CC-BY-NC 4.0** | `facebookresearch/encodec` GitHub 内 `LICENSE_WEIGHTS`（CC-BY-NC 4.0） | `NonCommercial` | ✗ 非搭載（維持） | code は MIT だが weight のみ CC-BY-NC |
+
+**残るリスク**（CC が判断できず、依頼者法務判断に委ねる項目）:
+- **RVC v2 / GPT-SoVITS**: 学習データの権利関係が公表資料で確定できない（Reddit/GitHub issue で複数指摘）。CC は本節に事実（一次資料での不明確さ）だけを記す。判断は依頼者の `vokra-voiceclone-experimental` 別リポジトリ運用方針に従属。
+- **Bark (Suno)**: 元 CC-BY-NC → MIT へ変更された経緯が Suno 公式のライセンス方針（voice cloning 再学習禁止）と整合するかの判定は法務案件。CC は本節では判定しない。
+- **StyleTTS 2 (yl4579)**: weight license が公表資料で明示されていない（code は MIT）。CC の分類は `Unknown` → fail-closed（研究フラグ必須）に落ちるため、公式 zoo 非搭載側の安全側に倒れる。商用配布判断は依頼者。
+
+**Article 50 checklist（`docs/legal-compliance.md`）の現状**:
+- ✅ Machine-readable marking の設計面: `vokra.provenance.*` GGUF chunk（`crates/vokra-core/src/compliance/`）と `LicenseClass` 分類。
+- ⚠ **Deferred（残タスク）**: AudioSeal watermark の runtime embedding（FR-CP-01）と C2PA manifest sign/verify（FR-CP-02）は 2026-07-04 依頼者ドロップにより **config 面（`WatermarkConfig`）のみ実装**、実埋め込みは deferred。**NFR-LG-01（EU AI Act Article 50）と NFR-LG-02（California SB 942）の runtime marking 要件を完全には満たしていない**。運用側で TTS 出力に AI 生成表示（disclosure text）を必ず加える必要がある（M2-13 `WatermarkConfig::require_disclosure` の設定面はある）。
+- 詳細な checklist 通過は依頼者判断（sign-off はここでは行わない）。
+
 ---
 
 ## 4. Codec / Vocoder / 音声処理ライブラリ
