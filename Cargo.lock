@@ -85,6 +85,7 @@ name = "vokra-ops"
 version = "0.1.0-alpha.0"
 dependencies = [
  "vokra-core",
+ "vokra-models",
 ]
 
 [[package]]
