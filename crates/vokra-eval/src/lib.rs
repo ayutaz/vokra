@@ -19,10 +19,12 @@
 //! [`metrics::AudioMosMetric`] trait reserves their slot so they drop in later
 //! without changing any caller of [`metrics::Metric`].
 
+pub mod degradation;
 pub mod manifest;
 pub mod metrics;
 pub mod wav;
 
+pub use degradation::{DegradationReport, check_degradation, check_degradation_with_utmos};
 pub use manifest::{Manifest, Record};
 pub use metrics::{
     AudioMosMetric, AudioRefMetric, Cer, Direction, MelLoss, Metric, TextMetric, Wer, edit_distance,
