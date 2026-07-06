@@ -32,6 +32,7 @@ are required.
 
 from __future__ import annotations
 
+import argparse
 import json
 import struct
 import sys
@@ -45,7 +46,15 @@ from transformers import (
     WhisperTokenizer,
 )
 
-MODEL = "openai/whisper-base"
+# Fixed allowlist of supported sizes; each maps to the HF checkpoint id. No
+# silent fallback (FR-EX-08): unknown sizes are rejected by argparse `choices`.
+SUPPORTED_MODELS = {
+    "whisper-base": "openai/whisper-base",
+    "whisper-small": "openai/whisper-small",
+    "whisper-medium": "openai/whisper-medium",
+    "whisper-large-v3": "openai/whisper-large-v3",
+    "whisper-turbo": "openai/whisper-large-v3-turbo",
+}
 SEED = 1234
 PCM_LEN = 16000  # 1 s at 16 kHz
 MEL_FRAMES = 100  # frames of log-mel to dump for parity
@@ -138,13 +147,44 @@ def dump_tokenizer(path: Path, tok: WhisperTokenizer, vocab_resource: Path | Non
 
 
 def main() -> None:
-    out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("tests/parity/whisper_base")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Dump PyTorch (transformers) Whisper reference tensors for parity. "
+            "Regenerates fixtures under tests/parity/whisper_{size}/."
+        )
+    )
+    parser.add_argument(
+        "--model",
+        choices=sorted(SUPPORTED_MODELS.keys()),
+        default="whisper-base",
+        help="Which Whisper size to dump (fixed allowlist; no silent fallback).",
+    )
+    parser.add_argument(
+        "out_dir",
+        nargs="?",
+        default=None,
+        help=(
+            "Output directory. Defaults to tests/parity/whisper_{size}/ derived "
+            "from --model."
+        ),
+    )
+    args = parser.parse_args()
+
+    size = args.model
+    model_id = SUPPORTED_MODELS[size]
+    out_dir = Path(args.out_dir) if args.out_dir is not None else Path(f"tests/parity/{size.replace('-', '_')}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # The bundled text-vocab resource is regenerated only from the largest tail
+    # (whisper-large-v3) — the first 50257 records are byte-identical across all
+    # multilingual sizes, so any multilingual checkpoint is technically valid,
+    # but we standardise on large-v3 to avoid drift.
+    vocab_resource = VOCAB_RESOURCE if size == "whisper-large-v3" else None
+
     torch.manual_seed(SEED)
-    processor = WhisperProcessor.from_pretrained(MODEL)
-    tok = WhisperTokenizer.from_pretrained(MODEL)  # slow tokenizer (has byte_decoder)
-    model = WhisperForConditionalGeneration.from_pretrained(MODEL)
+    processor = WhisperProcessor.from_pretrained(model_id)
+    tok = WhisperTokenizer.from_pretrained(model_id)  # slow tokenizer (has byte_decoder)
+    model = WhisperForConditionalGeneration.from_pretrained(model_id)
     model.eval()
 
     pcm = synth_pcm()
@@ -180,7 +220,7 @@ def main() -> None:
                 break
             tokens.append(nxt)
 
-    vocab_n = dump_tokenizer(out_dir / "tokenizer.bin", tok, vocab_resource=VOCAB_RESOURCE)
+    vocab_n = dump_tokenizer(out_dir / "tokenizer.bin", tok, vocab_resource=vocab_resource)
 
     # Detokenizer reference samples (ids -> text), including a multibyte case.
     samples = []
@@ -201,7 +241,8 @@ def main() -> None:
             f.write("\n")
 
     manifest = {
-        "model": MODEL,
+        "model": model_id,
+        "size": size,
         "seed": SEED,
         "atol": 0.01,
         "pcm_len": PCM_LEN,

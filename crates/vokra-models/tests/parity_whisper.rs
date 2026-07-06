@@ -23,18 +23,38 @@ use vokra_models::whisper::tokenizer::WhisperTokenizer;
 
 const ATOL: f32 = 0.01;
 
-fn fixtures_dir() -> PathBuf {
+/// All whisper sizes tabled for T09/T11 (base is the historical default; the
+/// rest each need their own `VOKRA_WHISPER_{SIZE}_GGUF` env var + fixture dir).
+/// Rows skip cleanly when either the env var or the fixture dir is absent, so
+/// CI (which sets neither) still runs the fixture-only tests unchanged.
+const WHISPER_SIZES: &[&str] = &["base", "small", "medium", "large-v3", "turbo"];
+
+/// Env-var name for a size's converted GGUF (`base` → `VOKRA_WHISPER_BASE_GGUF`).
+fn size_env_var(size: &str) -> String {
+    format!(
+        "VOKRA_WHISPER_{}_GGUF",
+        size.to_ascii_uppercase().replace('-', "_")
+    )
+}
+
+/// Fixture dir for a size (`base` → `tests/parity/whisper_base/`).
+fn fixtures_dir_for(size: &str) -> PathBuf {
     // CARGO_MANIFEST_DIR = <repo>/crates/vokra-models.
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("tests")
         .join("parity")
-        .join("whisper_base")
+        .join(format!("whisper_{}", size.replace('-', "_")))
 }
 
-fn read_f32(name: &str) -> Vec<f32> {
-    let path = fixtures_dir().join(name);
+/// Historical single-size helper preserved for the fixture-only tests below.
+fn fixtures_dir() -> PathBuf {
+    fixtures_dir_for("base")
+}
+
+fn read_f32_at(dir: &Path, name: &str) -> Vec<f32> {
+    let path = dir.join(name);
     let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
     assert_eq!(bytes.len() % 4, 0, "{name}: not a whole number of f32");
     bytes
@@ -43,8 +63,12 @@ fn read_f32(name: &str) -> Vec<f32> {
         .collect()
 }
 
-fn manifest() -> HashMap<String, String> {
-    let text = std::fs::read_to_string(fixtures_dir().join("manifest.txt")).expect("manifest");
+fn read_f32(name: &str) -> Vec<f32> {
+    read_f32_at(&fixtures_dir(), name)
+}
+
+fn manifest_at(dir: &Path) -> HashMap<String, String> {
+    let text = std::fs::read_to_string(dir.join("manifest.txt")).expect("manifest");
     let mut m = HashMap::new();
     for line in text.lines() {
         let line = line.trim();
@@ -56,6 +80,10 @@ fn manifest() -> HashMap<String, String> {
         }
     }
     m
+}
+
+fn manifest() -> HashMap<String, String> {
+    manifest_at(&fixtures_dir())
 }
 
 fn man_usize(m: &HashMap<String, String>, k: &str) -> usize {
@@ -74,8 +102,8 @@ fn man_u32s(m: &HashMap<String, String>, k: &str) -> Vec<u32> {
 
 /// Parses `samples.txt` into `(ids, expected_text)` cases. The delimiter is
 /// ` | ` (one space each side); the text keeps any further leading spaces.
-fn load_samples() -> Vec<(Vec<u32>, String)> {
-    let text = std::fs::read_to_string(fixtures_dir().join("samples.txt")).expect("samples.txt");
+fn load_samples_at(dir: &Path) -> Vec<(Vec<u32>, String)> {
+    let text = std::fs::read_to_string(dir.join("samples.txt")).expect("samples.txt");
     let mut out = Vec::new();
     for line in text.lines() {
         let line = line.trim_end_matches('\n');
@@ -92,6 +120,10 @@ fn load_samples() -> Vec<(Vec<u32>, String)> {
         out.push((ids, expected));
     }
     out
+}
+
+fn load_samples() -> Vec<(Vec<u32>, String)> {
+    load_samples_at(&fixtures_dir())
 }
 
 /// Element-wise closeness with a diagnostic on the worst offender.
@@ -126,35 +158,62 @@ fn assert_close(got: &[f32], expected: &[f32], ctx: &str) {
     );
 }
 
-/// Loads the converted GGUF named by `VOKRA_WHISPER_GGUF`, or `None` to skip.
-///
-/// Returned behind an `Arc` because [`WhisperModel::decoder`] now takes
-/// `&Arc<Self>` (it clones the handle into the ownable, `Send` `DecoderState`).
-fn load_model() -> Option<Arc<WhisperModel>> {
-    let path = std::env::var_os("VOKRA_WHISPER_GGUF")?;
-    let file = GgufFile::open(&path).expect("open VOKRA_WHISPER_GGUF");
+/// Resolves the GGUF path for a whisper size. `VOKRA_WHISPER_GGUF` is preserved
+/// as an alias for `VOKRA_WHISPER_BASE_GGUF` (R5 back-compat): a local dev with
+/// only `VOKRA_WHISPER_GGUF` set still runs the base row unchanged. Returns
+/// `None` (→ skip row) if neither the size-specific env var nor the alias (for
+/// base only) is set.
+fn gguf_path_for(size: &str) -> Option<std::ffi::OsString> {
+    if let Some(p) = std::env::var_os(size_env_var(size)) {
+        return Some(p);
+    }
+    if size == "base" {
+        return std::env::var_os("VOKRA_WHISPER_GGUF");
+    }
+    None
+}
+
+/// Opens the converted GGUF for `size`, or `None` to skip cleanly. Skips also
+/// when the sibling fixture dir is absent (needed by every gated test to read
+/// `manifest.txt` / `input_pcm.f32` / `tokenizer.bin` alongside the GGUF).
+fn open_gguf_for(size: &str) -> Option<GgufFile> {
+    let path = gguf_path_for(size)?;
+    if !fixtures_dir_for(size).is_dir() {
+        return None;
+    }
+    Some(GgufFile::open(&path).unwrap_or_else(|e| panic!("open {}: {e}", size_env_var(size))))
+}
+
+/// Loads the converted GGUF for `size` behind an `Arc` (needed by
+/// [`WhisperModel::decoder`], which takes `&Arc<Self>` — the handle is cloned
+/// into the ownable, `Send` `DecoderState`).
+fn load_model_for(size: &str) -> Option<Arc<WhisperModel>> {
+    let file = open_gguf_for(size)?;
     Some(Arc::new(
         WhisperModel::from_gguf(&file).expect("load whisper model"),
     ))
 }
 
-/// Opens the converted GGUF named by `VOKRA_WHISPER_GGUF`, or `None` to skip
-/// (the `WhisperAsr` end-to-end test needs the file, not just the model).
-fn load_gguf_file() -> Option<GgufFile> {
-    let path = std::env::var_os("VOKRA_WHISPER_GGUF")?;
-    Some(GgufFile::open(&path).expect("open VOKRA_WHISPER_GGUF"))
-}
-
-macro_rules! require_model {
-    () => {
-        match load_model() {
-            Some(m) => m,
-            None => {
-                eprintln!("skip: set VOKRA_WHISPER_GGUF to the converted whisper-base.gguf");
-                return;
-            }
+/// Lists the whisper sizes that will actually exercise a table-driven row,
+/// eprint-ing once at test start (visible with `--nocapture`). Rows without an
+/// env var / fixture dir are skipped silently — the eprint is the only signal
+/// that CI does not silently degrade to zero coverage after the refactor.
+fn announce_active_sizes(test_name: &str) -> Vec<&'static str> {
+    let mut active: Vec<&'static str> = Vec::new();
+    for &size in WHISPER_SIZES {
+        if gguf_path_for(size).is_some() && fixtures_dir_for(size).is_dir() {
+            active.push(size);
         }
-    };
+    }
+    if active.is_empty() {
+        eprintln!(
+            "[parity/{test_name}] skip: set VOKRA_WHISPER_{{BASE,SMALL,MEDIUM,LARGE_V3,TURBO}}_GGUF \
+             (VOKRA_WHISPER_GGUF still works as an alias for base)"
+        );
+    } else {
+        eprintln!("[parity/{test_name}] running sizes: {}", active.join(", "));
+    }
+    active
 }
 
 // --- fixture-only tests (run in CI) -----------------------------------------
@@ -200,98 +259,145 @@ fn detokenizer_samples_match_reference() {
 
 #[test]
 fn weight_load_and_config_smoke() {
-    let model = require_model!();
-    let cfg = model.config();
-    let m = manifest();
-    assert_eq!(cfg.n_mels, man_usize(&m, "n_mels"));
-    assert_eq!(cfg.d_model, man_usize(&m, "d_model"));
-    assert_eq!(cfg.n_audio_ctx, man_usize(&m, "n_audio_ctx"));
-    assert_eq!(cfg.n_vocab, man_usize(&m, "vocab"));
-    assert_eq!(cfg.eot, man_u32s(&m, "eot")[0]);
-    assert_eq!(cfg.decoder_start_ids, man_u32s(&m, "prefix"));
+    let active = announce_active_sizes("weight_load_and_config_smoke");
+    for size in active {
+        let Some(model) = load_model_for(size) else {
+            continue;
+        };
+        let cfg = model.config();
+        let m = manifest_at(&fixtures_dir_for(size));
+        assert_eq!(cfg.n_mels, man_usize(&m, "n_mels"), "{size}: n_mels");
+        assert_eq!(cfg.d_model, man_usize(&m, "d_model"), "{size}: d_model");
+        assert_eq!(
+            cfg.n_audio_ctx,
+            man_usize(&m, "n_audio_ctx"),
+            "{size}: n_audio_ctx"
+        );
+        assert_eq!(cfg.n_vocab, man_usize(&m, "vocab"), "{size}: n_vocab");
+        assert_eq!(cfg.eot, man_u32s(&m, "eot")[0], "{size}: eot");
+        assert_eq!(
+            cfg.decoder_start_ids,
+            man_u32s(&m, "prefix"),
+            "{size}: decoder_start_ids"
+        );
+    }
 }
 
 #[test]
 fn encoder_parity() {
-    let model = require_model!();
-    let m = manifest();
-    let enc_pos = man_usize(&m, "enc_pos");
-    let d = man_usize(&m, "d_model");
-    let pcm = read_f32("input_pcm.f32");
-    let reference = read_f32("encoder.f32"); // [enc_pos, d]
+    let active = announce_active_sizes("encoder_parity");
+    for size in active {
+        let Some(model) = load_model_for(size) else {
+            continue;
+        };
+        let dir = fixtures_dir_for(size);
+        let m = manifest_at(&dir);
+        let enc_pos = man_usize(&m, "enc_pos");
+        let d = man_usize(&m, "d_model");
+        let pcm = read_f32_at(&dir, "input_pcm.f32");
+        let reference = read_f32_at(&dir, "encoder.f32"); // [enc_pos, d]
 
-    let enc = model.encode_pcm(&pcm).expect("encode");
-    assert_eq!(enc.n_ctx, man_usize(&m, "n_audio_ctx"));
-    assert_eq!(enc.d_model, d);
-    let got = &enc.hidden[..enc_pos * d];
-    assert_close(got, &reference, "encoder hidden states");
+        let enc = model.encode_pcm(&pcm).expect("encode");
+        assert_eq!(
+            enc.n_ctx,
+            man_usize(&m, "n_audio_ctx"),
+            "{size}: n_audio_ctx"
+        );
+        assert_eq!(enc.d_model, d, "{size}: d_model");
+        let got = &enc.hidden[..enc_pos * d];
+        assert_close(got, &reference, &format!("{size}: encoder hidden states"));
+    }
 }
 
 #[test]
 fn decoder_logits_parity_full_and_cached() {
-    let model = require_model!();
-    let m = manifest();
-    let prefix = man_u32s(&m, "prefix");
-    let vocab = man_usize(&m, "vocab");
-    let pcm = read_f32("input_pcm.f32");
-    let reference = read_f32("logits_last.f32"); // [vocab], last prefix position
+    let active = announce_active_sizes("decoder_logits_parity_full_and_cached");
+    for size in active {
+        let Some(model) = load_model_for(size) else {
+            continue;
+        };
+        let dir = fixtures_dir_for(size);
+        let m = manifest_at(&dir);
+        let prefix = man_u32s(&m, "prefix");
+        let vocab = man_usize(&m, "vocab");
+        let pcm = read_f32_at(&dir, "input_pcm.f32");
+        let reference = read_f32_at(&dir, "logits_last.f32"); // [vocab], last prefix position
 
-    let enc = model.encode_pcm(&pcm).expect("encode");
+        let enc = model.encode_pcm(&pcm).expect("encode");
 
-    // Full-sequence forward: logits for the whole prefix at once.
-    let mut state = model.decoder(&enc).expect("decoder");
-    let full = state.step(&prefix).expect("decoder step");
-    assert_eq!(full.len(), prefix.len() * vocab);
-    let full_last = &full[(prefix.len() - 1) * vocab..];
-    assert_close(full_last, &reference, "decoder logits (full forward)");
+        // Full-sequence forward: logits for the whole prefix at once.
+        let mut state = model.decoder(&enc).expect("decoder");
+        let full = state.step(&prefix).expect("decoder step");
+        assert_eq!(
+            full.len(),
+            prefix.len() * vocab,
+            "{size}: full logits length"
+        );
+        let full_last = &full[(prefix.len() - 1) * vocab..];
+        assert_close(
+            full_last,
+            &reference,
+            &format!("{size}: decoder logits (full forward)"),
+        );
 
-    // Cached (token-by-token) forward must reproduce the same last-position
-    // logits, validating the KV cache.
-    state.reset();
-    let mut cached_last = Vec::new();
-    for &tok in &prefix {
-        cached_last = state.step_last(&[tok]).expect("cached step");
-    }
-    assert_close(&cached_last, &reference, "decoder logits (cached)");
-    assert_close(
-        &cached_last,
-        full_last,
-        "cached vs full last-position logits",
-    );
+        // Cached (token-by-token) forward must reproduce the same last-position
+        // logits, validating the KV cache.
+        state.reset();
+        let mut cached_last = Vec::new();
+        for &tok in &prefix {
+            cached_last = state.step_last(&[tok]).expect("cached step");
+        }
+        assert_close(
+            &cached_last,
+            &reference,
+            &format!("{size}: decoder logits (cached)"),
+        );
+        assert_close(
+            &cached_last,
+            full_last,
+            &format!("{size}: cached vs full last-position logits"),
+        );
 
-    // Every prefix position's argmax should match the reference too.
-    let ref_argmax = man_u32s(&m, "prefix_argmax");
-    for (p, &want) in ref_argmax.iter().enumerate() {
-        let row = &full[p * vocab..(p + 1) * vocab];
-        let got = argmax(row);
-        assert_eq!(got, want, "prefix position {p} argmax");
+        // Every prefix position's argmax should match the reference too.
+        let ref_argmax = man_u32s(&m, "prefix_argmax");
+        for (p, &want) in ref_argmax.iter().enumerate() {
+            let row = &full[p * vocab..(p + 1) * vocab];
+            let got = argmax(row);
+            assert_eq!(got, want, "{size}: prefix position {p} argmax");
+        }
     }
 }
 
 #[test]
 fn greedy_transcript_parity() {
-    let model = require_model!();
-    let m = manifest();
-    let prefix = man_u32s(&m, "prefix");
-    let eot = man_u32s(&m, "eot")[0];
-    let expected_tokens = man_u32s(&m, "greedy_tokens");
-    let pcm = read_f32("input_pcm.f32");
+    let active = announce_active_sizes("greedy_transcript_parity");
+    for size in active {
+        let Some(model) = load_model_for(size) else {
+            continue;
+        };
+        let dir = fixtures_dir_for(size);
+        let m = manifest_at(&dir);
+        let prefix = man_u32s(&m, "prefix");
+        let eot = man_u32s(&m, "eot")[0];
+        let expected_tokens = man_u32s(&m, "greedy_tokens");
+        let pcm = read_f32_at(&dir, "input_pcm.f32");
 
-    let enc = model.encode_pcm(&pcm).expect("encode");
-    let mut state = model.decoder(&enc).expect("decoder");
-    let tokens = greedy_decode(&mut state, &prefix, eot, 64).expect("greedy");
-    assert_eq!(tokens, expected_tokens, "greedy token sequence");
+        let enc = model.encode_pcm(&pcm).expect("encode");
+        let mut state = model.decoder(&enc).expect("decoder");
+        let tokens = greedy_decode(&mut state, &prefix, eot, 64).expect("greedy");
+        assert_eq!(tokens, expected_tokens, "{size}: greedy token sequence");
 
-    // Detokenize and compare to the reference transcript (the first
-    // `samples.txt` case is exactly these greedy ids, whitespace preserved).
-    let blob = std::fs::read(fixtures_dir().join("tokenizer.bin")).expect("tokenizer.bin");
-    let tok = WhisperTokenizer::from_bytes(&blob, eot).expect("tokenizer");
-    let text = tok.decode(&tokens).expect("decode");
-    let (_, expected_text) = load_samples()
-        .into_iter()
-        .find(|(ids, _)| ids == &tokens)
-        .expect("greedy tokens present as a samples.txt case");
-    assert_eq!(text, expected_text, "greedy transcript");
+        // Detokenize and compare to the reference transcript (the first
+        // `samples.txt` case is exactly these greedy ids, whitespace preserved).
+        let blob = std::fs::read(dir.join("tokenizer.bin")).expect("tokenizer.bin");
+        let tok = WhisperTokenizer::from_bytes(&blob, eot).expect("tokenizer");
+        let text = tok.decode(&tokens).expect("decode");
+        let (_, expected_text) = load_samples_at(&dir)
+            .into_iter()
+            .find(|(ids, _)| ids == &tokens)
+            .expect("greedy tokens present as a samples.txt case");
+        assert_eq!(text, expected_text, "{size}: greedy transcript");
+    }
 }
 
 #[test]
@@ -299,64 +405,64 @@ fn asr_beam_width_one_equals_greedy_and_renders() {
     // Exercises the otherwise-untested asr.rs surface: WhisperBeamScorer (via
     // transcribe_tokens_beam) and AsrEngine::transcribe / render. Same
     // skip-cleanly gate as the other GGUF-backed tests.
-    let file = match load_gguf_file() {
-        Some(f) => f,
-        None => {
-            eprintln!("skip: set VOKRA_WHISPER_GGUF to the converted whisper-base.gguf");
-            return;
-        }
-    };
-    let pcm = read_f32("input_pcm.f32");
+    let active = announce_active_sizes("asr_beam_width_one_equals_greedy_and_renders");
+    for size in active {
+        let Some(file) = open_gguf_for(size) else {
+            continue;
+        };
+        let dir = fixtures_dir_for(size);
+        let pcm = read_f32_at(&dir, "input_pcm.f32");
 
-    let asr = WhisperAsr::from_gguf(&file).expect("load whisper asr");
-    let prefix = asr.model().config().decoder_start_ids.clone();
-    let eot = asr.model().config().eot;
+        let asr = WhisperAsr::from_gguf(&file).expect("load whisper asr");
+        let prefix = asr.model().config().decoder_start_ids.clone();
+        let eot = asr.model().config().eot;
 
-    // Internal oracle: a width-1 beam makes the same argmax decisions as greedy.
-    // `beam_search` returns the whole hypothesis (forced prefix included) while
-    // `transcribe_tokens` (greedy) returns only the generated suffix, so the
-    // sound relationship is `beam == prefix ++ greedy`.
-    let greedy = asr.transcribe_tokens(&pcm).expect("greedy tokens");
-    let beam = asr
-        .transcribe_tokens_beam(&pcm, &BeamSearchConfig::greedy(64))
-        .expect("beam tokens");
-    let mut expected = prefix;
-    expected.extend_from_slice(&greedy);
-    assert_eq!(
-        beam, expected,
-        "beam_width=1 must reproduce greedy's decisions"
-    );
+        // Internal oracle: a width-1 beam makes the same argmax decisions as greedy.
+        // `beam_search` returns the whole hypothesis (forced prefix included) while
+        // `transcribe_tokens` (greedy) returns only the generated suffix, so the
+        // sound relationship is `beam == prefix ++ greedy`.
+        let greedy = asr.transcribe_tokens(&pcm).expect("greedy tokens");
+        let beam = asr
+            .transcribe_tokens_beam(&pcm, &BeamSearchConfig::greedy(64))
+            .expect("beam tokens");
+        let mut expected = prefix;
+        expected.extend_from_slice(&greedy);
+        assert_eq!(
+            beam, expected,
+            "{size}: beam_width=1 must reproduce greedy's decisions"
+        );
 
-    // Detokenized render: attach the fixture tokenizer and check the assembled
-    // transcription equals the greedy detokenization.
-    let blob = std::fs::read(fixtures_dir().join("tokenizer.bin")).expect("tokenizer.bin");
-    let tok = WhisperTokenizer::from_bytes(&blob, eot).expect("tokenizer");
-    let detok = tok.decode(&greedy).expect("decode");
-    let asr_with = WhisperAsr::from_gguf(&file)
-        .expect("load whisper asr")
-        .with_tokenizer(tok);
-    assert_eq!(
-        asr_with.transcribe(&pcm).expect("transcribe").text,
-        detok,
-        "AsrEngine::transcribe must equal the greedy detokenization"
-    );
+        // Detokenized render: attach the fixture tokenizer and check the assembled
+        // transcription equals the greedy detokenization.
+        let blob = std::fs::read(dir.join("tokenizer.bin")).expect("tokenizer.bin");
+        let tok = WhisperTokenizer::from_bytes(&blob, eot).expect("tokenizer");
+        let detok = tok.decode(&greedy).expect("decode");
+        let asr_with = WhisperAsr::from_gguf(&file)
+            .expect("load whisper asr")
+            .with_tokenizer(tok);
+        assert_eq!(
+            asr_with.transcribe(&pcm).expect("transcribe").text,
+            detok,
+            "{size}: AsrEngine::transcribe must equal the greedy detokenization"
+        );
 
-    // Without a tokenizer (the M0 converter embeds none) render falls back to
-    // the bracketed id list; a future GGUF that embeds one would detokenize
-    // instead, so accept either sound rendering.
-    let bracketed = format!(
-        "[no tokenizer; token ids: {}]",
-        greedy
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(" ")
-    );
-    let default_text = asr.transcribe(&pcm).expect("transcribe").text;
-    assert!(
-        default_text == bracketed || default_text == detok,
-        "default render was neither the bracketed fallback nor the detokenization: {default_text:?}"
-    );
+        // Without a tokenizer (the M0 converter embeds none) render falls back to
+        // the bracketed id list; a future GGUF that embeds one would detokenize
+        // instead, so accept either sound rendering.
+        let bracketed = format!(
+            "[no tokenizer; token ids: {}]",
+            greedy
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let default_text = asr.transcribe(&pcm).expect("transcribe").text;
+        assert!(
+            default_text == bracketed || default_text == detok,
+            "{size}: default render was neither the bracketed fallback nor the detokenization: {default_text:?}"
+        );
+    }
 }
 
 fn argmax(v: &[f32]) -> u32 {
@@ -389,8 +495,12 @@ fn whisper_metal_e2e_matches_cpu() {
     use vokra_core::BackendKind;
     use vokra_models::{Compute, HotOp};
 
-    let Some(model) = load_model() else {
-        eprintln!("skip: set VOKRA_WHISPER_GGUF for the full Metal e2e");
+    // Metal e2e is unchanged by the T09/T11 size refactor — still base-only
+    // (the M2-01 target is whisper-base parity on M1 iMac).
+    let Some(model) = load_model_for("base") else {
+        eprintln!(
+            "skip: set VOKRA_WHISPER_BASE_GGUF (or VOKRA_WHISPER_GGUF) for the full Metal e2e"
+        );
         return;
     };
     // The complete Whisper hot-op set (Metal must now cover all six).
@@ -475,8 +585,12 @@ fn whisper_cuda_e2e_matches_cpu() {
     use vokra_core::BackendKind;
     use vokra_models::{Compute, HotOp};
 
-    let Some(model) = load_model() else {
-        eprintln!("skip: set VOKRA_WHISPER_GGUF for the full CUDA e2e");
+    // CUDA e2e is unchanged by the T09/T11 size refactor — still base-only
+    // (M2-03-T25 targets whisper-base parity on vast.ai RTX 4090).
+    let Some(model) = load_model_for("base") else {
+        eprintln!(
+            "skip: set VOKRA_WHISPER_BASE_GGUF (or VOKRA_WHISPER_GGUF) for the full CUDA e2e"
+        );
         return;
     };
     // The complete Whisper hot-op set (CUDA must now cover all six).
