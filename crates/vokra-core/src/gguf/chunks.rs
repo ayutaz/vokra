@@ -134,6 +134,41 @@ pub const KEY_PROVENANCE_MODEL_ID: &str = "vokra.provenance.model_id";
 /// not used for classification (`STRING`, FR-CP-05).
 pub const KEY_PROVENANCE_SOURCE: &str = "vokra.provenance.source";
 
+// `vokra.quant.*` — quantization policy metadata (M2-08, FR-QT-02).
+//
+// The runtime reads its quantization policy **only** from GGUF metadata (no
+// config-file / TOML / serde path exists — NFR-DS-02 zero-dep). The offline
+// converter writes these keys via `QuantPolicy::write_to_gguf_builder`, and
+// the runtime reads them back via `QuantPolicy::from_gguf`.
+
+/// `vokra.quant.default_scheme` — canonical alias of the policy's fallback
+/// [`QuantScheme`](crate::quant::QuantScheme) applied when no rule matches
+/// (`STRING`, e.g. `"fp16"`, `"w4a16-q4k"`).
+pub const KEY_QUANT_DEFAULT_SCHEME: &str = "vokra.quant.default_scheme";
+
+/// `vokra.quant.rule_count` — number of ordered
+/// [`QuantRule`](crate::quant::QuantRule) entries stored under
+/// `vokra.quant.rule.{i}.*` (`UINT64`).
+pub const KEY_QUANT_RULE_COUNT: &str = "vokra.quant.rule_count";
+
+/// Prefix under which each rule's three fields (`pattern_kind`, `pattern`,
+/// `scheme`) are stored, e.g. `vokra.quant.rule.0.pattern_kind`.
+pub const PREFIX_QUANT_RULE: &str = "vokra.quant.rule.";
+
+/// `vokra.quant.hifigan_int8_opt_in` — HiFi-GAN INT8 opt-in gate flag
+/// (`BOOL`, default `false`; FR-QT-03 / M2-08-T10).
+pub const KEY_QUANT_HIFIGAN_INT8_OPT_IN: &str = "vokra.quant.hifigan_int8_opt_in";
+
+/// `vokra.quant.hifigan_int8_calibration_ref` — opaque handle to the HiFi-GAN
+/// INT8 calibration blob (`STRING`, optional; required when
+/// [`KEY_QUANT_HIFIGAN_INT8_OPT_IN`] is `true`).
+pub const KEY_QUANT_HIFIGAN_INT8_CALIBRATION_REF: &str = "vokra.quant.hifigan_int8_calibration_ref";
+
+/// `vokra.quant.min_dtype_enforced` — audit record listing op-kind identifiers
+/// the converter validated against the built-in
+/// [`MinDtypeRegistry`](crate::quant) (`Array<String>`, optional; M2-08-T08).
+pub const KEY_QUANT_MIN_DTYPE_ENFORCED: &str = "vokra.quant.min_dtype_enforced";
+
 /// Standard GGUF key for the global tensor-data alignment (`UINT32`).
 ///
 /// Not a `vokra.*` key: this is the upstream `general.alignment` field. When

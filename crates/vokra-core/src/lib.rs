@@ -96,6 +96,7 @@ pub mod ir;
 pub mod json;
 pub mod pipeline;
 pub mod prenorm;
+pub mod quant;
 pub mod rng;
 pub mod runtime;
 pub mod safetensors;

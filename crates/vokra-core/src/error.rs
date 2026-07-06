@@ -62,6 +62,87 @@ pub enum VokraError {
     /// The API shape exists but its implementation has not landed yet
     /// (M0 skeleton; see the per-method rustdoc for the WP that wires it).
     NotImplemented(&'static str),
+    /// A quantization scheme requests an activation dtype (or weight/backend
+    /// combination) whose kernel path is not implemented in this build
+    /// (M2-08 T07 / T09). Per FR-EX-08 (permanent constraint) this is an
+    /// *explicit* error — Vokra never silently downgrades activation
+    /// precision or falls back to a different backend. Distinct from
+    /// [`Self::UnsupportedOp`] so callers can special-case a quantization
+    /// mismatch (e.g. surface a policy edit hint) without string-matching.
+    UnsupportedQuantPath {
+        /// Op-kind identifier that would consume the activation
+        /// (e.g. `"whisper::mlp"`, `"vocos_head"`), or a coarser scope
+        /// (`"whisper"`) when the mismatch is model-wide.
+        op: String,
+        /// The requested [`QuantScheme`](crate::quant::QuantScheme) as its
+        /// canonical alias string (e.g. `"w8a8"`).
+        scheme: String,
+        /// The [`BackendKind`](crate::BackendKind) that would have run the op.
+        backend: String,
+    },
+    /// A GGUF `vokra.quant.*` chunk (or a caller of
+    /// [`QuantScheme::from_alias_str`](crate::quant::QuantScheme::from_alias_str))
+    /// named a quantization scheme the runtime does not recognize.
+    ///
+    /// This is the "future scheme alias" case: a converter built with a newer
+    /// [`QuantScheme`](crate::quant::QuantScheme) variant may write an alias an
+    /// older runtime cannot parse, and this surfaces gracefully instead of
+    /// panicking (FR-QT-02, M2-08-T05).
+    UnknownQuantScheme(String),
+    /// A [`QuantPolicy`](crate::quant::QuantPolicy) resolves to a scheme whose
+    /// activation dtype falls below the minimum an op registered in the
+    /// [`MinDtypeRegistry`](crate::quant::MinDtypeRegistry) tolerates
+    /// (M2-08-T09). Per FR-EX-08 (permanent constraint) this is an *explicit*
+    /// error raised before any backend is invoked — Vokra never silently
+    /// widens activation precision or drops an op to CPU.
+    ///
+    /// Distinct from [`Self::UnsupportedQuantPath`] so callers can special-case
+    /// the "policy exceeded the op's minimum" case (e.g. surface the FR-OP-*
+    /// audit reference so the operator knows *why* the reject fired) without
+    /// string-matching.
+    MinDtypeViolation {
+        /// Op-kind identifier that raised the violation
+        /// (e.g. `"vocos_head"`, `"hifigan_generator"`).
+        op: String,
+        /// The requested [`QuantScheme`](crate::quant::QuantScheme) as its
+        /// canonical alias string (e.g. `"w8a8"`).
+        requested_scheme: String,
+        /// Minimum activation dtype the op tolerates (canonical string of the
+        /// [`MinDtype`](crate::quant::MinDtype) variant — `"fp16"` or `"fp32"`).
+        min_required: String,
+        /// FR-* identifier this violation anchors, from the registry entry
+        /// (e.g. `"FR-OP-10"`, `"FR-OP-12"`).
+        fr_ref: String,
+    },
+    /// A [`QuantPolicy`](crate::quant::QuantPolicy) enables HiFi-GAN INT8
+    /// (`hifigan_int8_opt_in = true`) AND the loaded model exercises the
+    /// HiFi-GAN op, but no fresh
+    /// [`DegradationReport`](crate::quant::DegradationReport) was attached at
+    /// session / bench construction (M2-08-T12).
+    ///
+    /// Per FR-EX-08 (permanent constraint) this is an *explicit* error — a
+    /// HiFi-GAN INT8 build cannot be run without an accompanying eval
+    /// verification, so the runtime refuses to start rather than silently
+    /// shipping an unverified INT8 vocoder. Distinct from
+    /// [`Self::HifiganInt8DegradationExceeded`] so callers can special-case
+    /// "verify not attempted" vs "verify attempted and failed" without
+    /// string-matching.
+    HifiganInt8VerifyMissing,
+    /// A [`QuantPolicy`](crate::quant::QuantPolicy) enables HiFi-GAN INT8
+    /// AND the loaded model exercises the HiFi-GAN op AND a fresh
+    /// [`DegradationReport`](crate::quant::DegradationReport) *was* attached,
+    /// but its MEL-loss relative delta exceeds the NFR-QL-02 5% gate
+    /// (M2-08-T12).
+    ///
+    /// Contrast with [`Self::HifiganInt8VerifyMissing`] (no report attached).
+    HifiganInt8DegradationExceeded {
+        /// Observed relative MEL-loss delta (`(loss_quant - loss_ref) /
+        /// max(loss_ref, ε)`) from the attached
+        /// [`DegradationReport`](crate::quant::DegradationReport).
+        delta: f64,
+        /// The gate threshold the delta exceeded (NFR-QL-02: 0.05).
+        threshold: f64,
+    },
 }
 
 impl fmt::Display for VokraError {
@@ -84,6 +165,40 @@ impl fmt::Display for VokraError {
                  weight license `{license}` — {hint}"
             ),
             Self::NotImplemented(what) => write!(f, "not implemented (M0 skeleton): {what}"),
+            Self::UnsupportedQuantPath {
+                op,
+                scheme,
+                backend,
+            } => write!(
+                f,
+                "unsupported quant path: op `{op}` with scheme `{scheme}` on backend \
+                 `{backend}` — no silent fallback (FR-EX-08)"
+            ),
+            Self::UnknownQuantScheme(alias) => {
+                write!(f, "unknown quantization scheme alias `{alias}`")
+            }
+            Self::MinDtypeViolation {
+                op,
+                requested_scheme,
+                min_required,
+                fr_ref,
+            } => write!(
+                f,
+                "min-dtype violation: op `{op}` requires activation >= `{min_required}` \
+                 ({fr_ref}), but policy resolves to scheme `{requested_scheme}` — no silent \
+                 widen (FR-EX-08)"
+            ),
+            Self::HifiganInt8VerifyMissing => write!(
+                f,
+                "hifigan int8 verify missing: policy enables hifigan_int8_opt_in but no \
+                 fresh DegradationReport was attached — attach one via \
+                 `check_degradation` before construction (M2-08-T12, NFR-QL-02, FR-EX-08)"
+            ),
+            Self::HifiganInt8DegradationExceeded { delta, threshold } => write!(
+                f,
+                "hifigan int8 degradation exceeded: relative MEL-loss delta {delta:.4} > \
+                 threshold {threshold:.4} (M2-08-T12, NFR-QL-02)"
+            ),
         }
     }
 }
