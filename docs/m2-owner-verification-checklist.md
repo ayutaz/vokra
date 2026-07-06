@@ -77,7 +77,8 @@ vastai destroy instance <instance_id>
 ### Exit 判定への寄与
 
 - NFR-PF-04（CUDA large-v3 RTF < 0.1）— v0.5 Exit criteria 2。
-- 実装は完了（FA v2 + inter-head + session pool、commits `88b17c8..1dede25`）。実測は運用側で確認。
+- 実装は完了（FA v2 kernel PTX + inter-head + session pool、commits `88b17c8..1dede25`）。**FA v2 launcher の wrapper 実装は M2-03-followup T-follow-02/03 に deferred** — kernel は compile されるが `launch_flash_attn_v2` は現状 stub（`BackendUnavailable`）で、`use_flash_attn=true` の経路は失敗する（NFR-PF-04 formal gate は M2-14/M3-01 引き渡し済）。
+- **CC 側実測（2026-07-07、`docs/bench-baselines/whisper_large_v3_cuda_rtf.json`）**: vast.ai RTX 4090（US、offer 36887008、$0.336/hr）で `VOKRA_CUDA_DISABLE_FA_V2=1` の decomposed path による 5 連続測定、**RTF = 0.1131–0.1135、median 0.1133**（30 s 音声 → 3.394–3.404 s wall）。sanity ceiling 0.15 パス。formal < 0.10 gate は FA v2 launcher 実装完了後（M2-14）に再測定して確定する。fix 2 件が測定過程で同定・修正済（`fix(cuda): INFINITY 未定義修正`（NVRTC 12.6+ 互換、コミット `83f8751`）と `feat(cuda): VOKRA_CUDA_DISABLE_FA_V2 override`（コミット `d469429`））。
 
 ---
 

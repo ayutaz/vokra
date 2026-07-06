@@ -1,0 +1,71 @@
+{
+  "$schema": "./whisper_large_v3_cuda_rtf.schema.json",
+  "measurement": {
+    "id": "m2-14-cuda-large-v3-rtf",
+    "date_utc": "2026-07-07T00:15:00Z",
+    "audio_seconds": 30.0,
+    "audio_source": "synthetic (deterministic 440 Hz tone + light noise, per whisper_cuda_large_v3_rtf.rs::make_sample_pcm)",
+    "runs": [
+      { "index": 1, "wall_seconds": 3.397, "rtf": 0.1132 },
+      { "index": 2, "wall_seconds": 3.400, "rtf": 0.1133 },
+      { "index": 3, "wall_seconds": 3.404, "rtf": 0.1135 },
+      { "index": 4, "wall_seconds": 3.394, "rtf": 0.1131 },
+      { "index": 5, "wall_seconds": 3.403, "rtf": 0.1134 }
+    ],
+    "statistics": {
+      "rtf_min": 0.1131,
+      "rtf_median": 0.1133,
+      "rtf_max": 0.1135,
+      "rtf_stddev_estimate": 0.00016,
+      "note": "5 consecutive measured passes (each preceded by an in-process warm-up transcribe that pays session build + weight upload + NVRTC JIT); wall clock is the second, timed pass."
+    },
+    "sanity_gate": {
+      "ceiling": 0.15,
+      "verdict": "PASS",
+      "reference_only": true,
+      "formal_gate_deferred_to": "M2-14 self-hosted CUDA runner + M3-01 5% regression gate (see whisper_cuda_large_v3_rtf.rs docstring)"
+    }
+  },
+  "backend": {
+    "family": "CUDA",
+    "path": "decomposed 2 + 7·n_head chain per decoder self-attention",
+    "flash_attention_v2": {
+      "kernel_ptx_compiled": true,
+      "launcher_wrapper_implemented": false,
+      "session_flag": "use_flash_attn = false (forced via VOKRA_CUDA_DISABLE_FA_V2=1)",
+      "note": "The FA v2 launcher stub returns BackendUnavailable per T-follow-02/03. The VOKRA_CUDA_DISABLE_FA_V2=1 override (context.rs commit d469429) forces the decomposed path so the sanity gate can measure a real number today. Once launch_flash_attn_v2 lands, this override becomes unnecessary and the measured RTF is expected to improve (target < 0.10 per M2-14 formal gate)."
+    },
+    "silent_cpu_fallback": "forbidden (FR-EX-08); both decomposed and FA v2 paths stay on the GPU"
+  },
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "gpu_memory_MiB": 24564,
+    "driver_version": "580.119.02",
+    "cuda_toolkit_version": "12.6.77",
+    "host": "vast.ai spot instance (US, offer id 36887008)",
+    "cost_per_hour_usd": 0.336,
+    "vokra_ffi_model": "raw dlopen(libcuda.so.1) + dlopen(libnvrtc.so.12); no cudart/cudnn/cublas/cudarc bundled (NVIDIA EULA install model + zero-dep NFR-DS-02)"
+  },
+  "model": {
+    "name": "openai/whisper-large-v3",
+    "source_upstream": "openai/whisper-large-v3 safetensors (HF)",
+    "gguf_bytes": 3087545600,
+    "gguf_sha256": "2ebfc46a95ad3831377ae5f4d9d30e35dd2d87fb0526769a02f78b237d30e761",
+    "converter": "vokra-cli convert --model whisper (no --quantize; F16 passthrough)"
+  },
+  "vokra_provenance": {
+    "commit": "d46942942b3258224ab024dd93483a92d1b959ec",
+    "toolchain": "rustc 1.86.0 (05f9846f8 2025-03-31)",
+    "how_to_reproduce": [
+      "vastai search offers 'gpu_name=RTX_4090 num_gpus=1 verified=true rentable=true'",
+      "vastai create instance <id> --image nvidia/cuda:12.6.2-devel-ubuntu22.04 --disk 40 --ssh",
+      "ssh in, install rust 1.86, git clone https://github.com/ayutaz/vokra.git",
+      "cargo build --release -p vokra-cli",
+      "download openai/whisper-large-v3 model.safetensors via huggingface_hub",
+      "./target/release/vokra-cli convert --model whisper --input model.safetensors --output whisper-large-v3.gguf",
+      "VOKRA_CUDA_DISABLE_FA_V2=1 VOKRA_WHISPER_LARGE_V3_GGUF=$PWD/whisper-large-v3.gguf cargo test --release -p vokra-backend-cuda --test whisper_cuda_large_v3_rtf -- --ignored --nocapture",
+      "vastai destroy instance <id>"
+    ]
+  },
+  "sanity_summary": "On an RTX 4090, whisper-large-v3 (F16, 3.09 GB GGUF) transcribes 30 s of audio in 3.394-3.404 s wall (median 3.400 s), RTF ≈ 0.1133 through the decomposed self-attention path. This is a reference number, not the formal < 0.10 always-on gate — that number requires the FA v2 launcher to be implemented (deferred to M2-03-followup-rtf-sub-0.1 T-follow-02/03) and lives as an always-on regression gate at M2-14 / M3-01."
+}
