@@ -96,7 +96,13 @@ def write_i64(path: Path, arr) -> None:
 
 
 def load_checkpoint(model_id: str) -> tuple[Path, dict]:
-    """Downloads (or reuses the cache for) the upstream safetensors + config.
+    """Downloads (or reuses the cache for) the upstream checkpoint + config.
+
+    Kokoro-82M's canonical release is ``kokoro-v1_0.pth`` (PyTorch pickle);
+    some downstream forks re-export to safetensors. This dumper accepts
+    either so it works with the vanilla upstream and with the safetensors
+    checkpoint the Vokra converter (``crates/vokra-convert/src/models/kokoro.rs``)
+    expects.
 
     Returns the local model directory and the parsed config dict.
     """
@@ -106,6 +112,8 @@ def load_checkpoint(model_id: str) -> tuple[Path, dict]:
         "*.safetensors",
         "*.json",
         "*.pt",
+        "*.pth",
+        "*.bin",
     ]))
     config_path = local / "config.json"
     if not config_path.exists():
@@ -117,49 +125,127 @@ def load_checkpoint(model_id: str) -> tuple[Path, dict]:
         return local, json.load(f)
 
 
-def open_safetensors(local: Path):
-    """Opens the first (canonical single-shard) safetensors file in ``local``.
+class _ShapeMap:
+    """Uniform "``name -> shape``" surface over safetensors *or* a torch pickle.
 
-    Kokoro-82M's canonical release is a single ``kokoro-v0_19.safetensors``
-    (or similarly named single-file); if the layout ever shards, this errors
-    out loudly rather than picking a random shard silently (FR-EX-08).
+    Kokoro-82M's canonical release ships weights as ``kokoro-v1_0.pth``
+    (a torch pickle); the safetensors path is what the Vokra converter
+    expects after a downstream re-export. This class hides the difference
+    so the shape-derivation code below stays flat.
     """
-    candidates = sorted(local.glob("*.safetensors"))
-    if not candidates:
-        sys.exit(f"no *.safetensors under {local}")
-    if len(candidates) > 1:
+
+    def __init__(self, keys, shape_fn, description):
+        self._keys = set(keys)
+        self._shape_fn = shape_fn
+        self.description = description
+
+    def keys(self):
+        return self._keys
+
+    def shape(self, name):
+        if name not in self._keys:
+            return None
+        return tuple(self._shape_fn(name))
+
+
+def open_checkpoint(local: Path) -> _ShapeMap:
+    """Opens the canonical single-shard checkpoint in ``local``.
+
+    Prefers safetensors when present (matches the Vokra converter's input
+    shape); falls back to the upstream ``.pth`` / ``.pt`` / ``.bin`` file.
+    Fails loudly on multiple candidates in the same family (FR-EX-08).
+    """
+    st_candidates = sorted(local.glob("*.safetensors"))
+    if len(st_candidates) == 1:
+        h = safe_open(st_candidates[0], framework="pt", device="cpu")
+        h.__enter__()  # keep the file handle open for the caller
+        keys = list(h.keys())
+
+        def shape_fn(name):
+            return h.get_slice(name).get_shape()
+
+        return _ShapeMap(keys, shape_fn, description=st_candidates[0].name)
+    if len(st_candidates) > 1:
         sys.exit(
             f"expected exactly one safetensors shard under {local}, got: "
-            + ", ".join(p.name for p in candidates)
+            + ", ".join(p.name for p in st_candidates)
         )
-    return safe_open(candidates[0], framework="pt", device="cpu"), candidates[0].name
+
+    # Fall back to a torch pickle. Kokoro's release is `kokoro-v1_0.pth`; some
+    # forks use `.pt` or `.bin`. Only pick top-level model files, not the
+    # per-voice `voices/*.pt` style-vector store.
+    pt_candidates = sorted(
+        p
+        for p in [*local.glob("*.pth"), *local.glob("*.pt"), *local.glob("*.bin")]
+        if p.parent == local
+    )
+    if not pt_candidates:
+        sys.exit(f"no *.safetensors / *.pth / *.pt / *.bin under {local}")
+    if len(pt_candidates) > 1:
+        sys.exit(
+            f"expected exactly one top-level checkpoint under {local}, got: "
+            + ", ".join(p.name for p in pt_candidates)
+        )
+
+    # `weights_only=True` refuses arbitrary-code-execution payloads (introduced
+    # in PyTorch 2.4). This is the safe way to load an upstream .pth here.
+    try:
+        state = torch.load(pt_candidates[0], map_location="cpu", weights_only=True)
+    except Exception as exc:
+        sys.exit(
+            f"torch.load({pt_candidates[0].name!r}, weights_only=True) failed: "
+            f"{exc}"
+        )
+
+    # Kokoro's .pth stores a nested dict: `{'bert': {...}, 'text_encoder': {...},
+    # ...}`. Flatten to `submodule.tensor_name -> Tensor`.
+    def flatten(prefix: str, obj):
+        out = {}
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                key = f"{prefix}.{k}" if prefix else k
+                out.update(flatten(key, v))
+        elif isinstance(obj, torch.Tensor):
+            out[prefix] = obj
+        return out
+
+    flat = flatten("", state)
+    keys = list(flat.keys())
+
+    def shape_fn(name):
+        return tuple(flat[name].shape)
+
+    return _ShapeMap(keys, shape_fn, description=pt_candidates[0].name)
 
 
-def derive_dims(f) -> dict:
+def derive_dims(store: _ShapeMap) -> dict:
     """Derives model dims from tensor shapes, mirroring the Rust ``Dims::derive``.
 
-    The concrete tensor names below are the upstream Kokoro-82M safetensors
-    names verbatim (same contract as ``crates/vokra-convert/src/models/kokoro.rs``).
-    A key not being present is not an error here — we just report ``None`` and
-    the runner writes ``0`` to the manifest (matching the converter's
-    degenerate-shape pattern; a runtime consumer of that fixture then rejects
-    the ``0`` per FR-EX-08).
+    The concrete tensor names below are the upstream Kokoro-82M weight names
+    (same contract as ``crates/vokra-convert/src/models/kokoro.rs``). Kokoro's
+    canonical .pth ships a nested ``{'bert': ..., 'text_encoder': ...,
+    'predictor': ..., 'decoder': ...}`` state dict — after ``open_checkpoint``
+    flattens it, the tensor names look like ``text_encoder.embedding.weight``
+    etc. A key not being present is not an error here — we just report
+    ``None`` and the runner writes ``0`` to the manifest (matching the
+    converter's degenerate-shape pattern; a runtime consumer of that fixture
+    then rejects the ``0`` per FR-EX-08).
     """
-    keys = f.keys()
+    keys = store.keys()
 
-    def shape(name: str):
-        return tuple(f.get_slice(name).get_shape()) if name in keys else None
-
-    # Voicepack: [num_voices, style_dim] or occasionally [num_voices, 1, style_dim].
+    # Voicepack: [num_voices, style_dim] or occasionally [num_voices, 1,
+    # style_dim]. Note: the canonical Kokoro release stores voice style
+    # vectors as PER-VOICE FILES under ``voices/*.pt`` (rather than as a
+    # single stacked tensor inside the model .pth), so this may be ``None``
+    # when consuming the upstream .pth directly.
     voicepack = None
     for cand in ("voices", "voicepack", "voices.weight", "style_encoder.style"):
         if cand in keys:
-            voicepack = shape(cand)
+            voicepack = store.shape(cand)
             break
 
-    # Text encoder token embedding: [vocab, hidden_dim].
-    # Kokoro forks vary the exact prefix; pick the first that matches the
-    # (vocab, hidden_dim) 2-D shape convention.
+    # Text encoder token embedding: [vocab, hidden_dim]. Kokoro forks vary
+    # the exact prefix; pick the first that matches the 2-D convention.
     text_emb = None
     for cand in (
         "text_encoder.embedding.weight",
@@ -167,9 +253,11 @@ def derive_dims(f) -> dict:
         "encoder.embedding.weight",
         "embedding.weight",
     ):
-        if cand in keys and len(shape(cand)) == 2:
-            text_emb = shape(cand)
-            break
+        if cand in keys:
+            s = store.shape(cand)
+            if s is not None and len(s) == 2:
+                text_emb = s
+                break
 
     return {
         "voicepack_shape": voicepack,
@@ -262,28 +350,31 @@ def main() -> None:
     torch.manual_seed(SEED)
 
     local, config = load_checkpoint(model_id)
-    _f_handle, safetensors_name = open_safetensors(local)
-    with _f_handle as f:
-        dims = derive_dims(f)
+    store = open_checkpoint(local)
+    checkpoint_name = store.description
+    dims = derive_dims(store)
 
-        # Vocab size fallback: from text embedding shape[0], or 256 (Kokoro's
-        # default phoneme table is small).
-        text_emb = dims.get("text_embedding_shape")
-        vocab_size = int(text_emb[0]) if text_emb is not None else 256
+    # Vocab size fallback: from text embedding shape[0], or 256 (Kokoro's
+    # default phoneme table is small).
+    text_emb = dims.get("text_embedding_shape")
+    vocab_size = int(text_emb[0]) if text_emb is not None else 256
 
-        # Voice id: 0 unless explicitly named; the manifest carries the name
-        # for downstream cross-checking (a follow-up ticket may plumb through
-        # voice_names[] from the config for a name→id lookup).
-        voice_id = 0
+    # Voice id: 0 unless explicitly named; the manifest carries the name
+    # for downstream cross-checking (a follow-up ticket may plumb through
+    # voice_names[] from the config for a name→id lookup).
+    voice_id = 0
 
-        # Style: shape from voicepack; else 128 (Kokoro's canonical style dim).
-        voicepack = dims.get("voicepack_shape")
-        style_dim = int(voicepack[-1]) if voicepack is not None else 128
+    # Style: shape from voicepack; else 128 (Kokoro's canonical style dim).
+    # Kokoro's upstream .pth stores voice styles as separate voices/*.pt
+    # files, so the in-model voicepack is often absent — the manifest
+    # records that case honestly.
+    voicepack = dims.get("voicepack_shape")
+    style_dim = int(voicepack[-1]) if voicepack is not None else 128
 
-        phoneme_ids = synth_phoneme_ids(vocab_size)
-        style = synth_style(style_dim)
+    phoneme_ids = synth_phoneme_ids(vocab_size)
+    style = synth_style(style_dim)
 
-        text_encoder, prosody, mel_pre_istft, pcm = zero_forward(dims)
+    text_encoder, prosody, mel_pre_istft, pcm = zero_forward(dims)
 
     # Dump binaries.
     write_i64(out_dir / "phoneme_ids.i64", phoneme_ids)
@@ -295,7 +386,7 @@ def main() -> None:
 
     manifest = {
         "model": model_id,
-        "safetensors_file": safetensors_name,
+        "checkpoint_file": checkpoint_name,
         "seed": SEED,
         "atol": 0.01,
         "mode": "placeholder",  # switch to "full" once real forward is wired
