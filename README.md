@@ -73,6 +73,31 @@ production use yet, but the following are implemented and validated:
 - **Tooling**: `vokra-cli` (`run` / `convert` / `bench`, with
   `bench --backend cpu|metal|cuda` for GPU RTF), an offline `vokra-convert`,
   a `vokra-eval` metrics crate, and true zero-copy `mmap` GGUF loading.
+- **Distribution**: an iOS **XCFramework + Swift Package** (arm64 device +
+  Simulator slices, static-linked, `DllImport("__Internal")` compatible), a
+  **Unity UPM package** (`com.vokra.unity`, IL2CPP-safe callbacks + Android
+  `persistentDataPath` helper), and **Python bindings** (pure `ctypes`, no
+  `pyo3`, published as PyPI wheels via `cibuildwheel`). See
+  [`bindings/`](bindings) and [`Package.swift`](Package.swift).
+- **Server**: [`integrations/vokra-server`](integrations/vokra-server) is an
+  isolated workspace (own `Cargo.lock`) exposing four HTTP compatibility
+  layers — **OpenAI Whisper** (`/v1/audio/transcriptions`, faster-whisper
+  drop-in), **vLLM** (`/v1/completions`, `/v1/chat/completions`), **piper-plus
+  HTTP** (`/api/tts`), and **Wyoming Protocol** (Home Assistant Voice
+  backend). Kept out of the root workspace so the core's zero-dependency
+  invariant stays intact.
+- **Graph fusion**: a log-mel front-end fusion (STFT + magnitude + mel + log
+  collapsed into a single kernel) with AVX2 / NEON specializations, wired
+  through the `mel-frontend` `vokra-cli bench` task and gated by a 5%
+  regression check in CI.
+- **Quantization policy**: per-layer, config-driven quantization
+  (`W4A16Q4K` / `W8A8Int8` / `FP16` / `FP32`) with a minimum-dtype registry
+  that refuses INT8 for the ops that need FP16 (Vocos / BigVGAN), applied
+  during `vokra-convert` and baked into a `vokra.quant.*` GGUF chunk.
+- **Compliance gate**: a research-flag enforcement layer that refuses
+  CC-BY-NC / CC-BY-NC-SA weights (F5-TTS / Fish-Speech / EnCodec) unless the
+  caller opts in — from the same `vokra.provenance.*` chunk the compliance
+  API surfaces.
 
 Everything above holds Vokra's **zero-external-dependency** invariant: the
 resolved dependency graph contains only first-party `vokra-*` crates,
