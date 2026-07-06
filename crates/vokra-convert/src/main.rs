@@ -23,7 +23,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus|kokoro> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
 
 OPTIONS:
@@ -31,7 +31,8 @@ OPTIONS:
                        checkpoint tensor shapes: base/small/medium/large-v3/
                        turbo — unknown shapes error out, no silent fallback
                        per FR-EX-08), silero-vad (ONNX), campplus (CAM++
-                       speaker-encoder ONNX) or piper-plus (MB-iSTFT-VITS2
+                       speaker-encoder ONNX), kokoro (Kokoro-82M StyleTTS 2
+                       派生 iSTFTNet safetensors) or piper-plus (MB-iSTFT-VITS2
                        voice: ONNX + config.json). `whisper-base` is accepted
                        as a backward-compatible alias for `whisper` (size is
                        still derived from the checkpoint, not the flag).
@@ -143,7 +144,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 let v = args.get(i + 1).ok_or("--model requires a value")?;
                 model = Some(ModelKind::from_arg(v).ok_or_else(|| {
                     format!(
-                        "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | piper-plus | campplus)"
+                        "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | piper-plus | campplus | kokoro)"
                     )
                 })?);
                 i += 2;
@@ -260,6 +261,27 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                 })
                 .unwrap_or_default();
             println!("; arch={arch} embed_dim={embed} block_config=[{blocks}]");
+        }
+        ModelKind::Kokoro => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let sr = file
+                .get("vokra.kokoro.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let style_dim = file
+                .get("vokra.kokoro.style_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let num_voices = file
+                .get("vokra.kokoro.num_voices")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} sample_rate={sr} style_dim={style_dim} num_voices={num_voices}"
+            );
         }
     }
     Ok(())

@@ -69,6 +69,11 @@ pub enum ModelKind {
     /// (M0-08): 80-d fbank → 192-d speaker embedding for zero-shot voice
     /// conditioning.
     CamPlus,
+    /// `hexgrad/Kokoro-82M` safetensors checkpoint (M2-07 foundation): a
+    /// StyleTTS 2 派生 iSTFTNet TTS model with a per-voice style-vector
+    /// voicepack. Weights are bound verbatim; hparams are shape-driven with
+    /// `0` placeholders on the iSTFT triple pending T02 upstream inspection.
+    Kokoro,
 }
 
 impl ModelKind {
@@ -87,6 +92,7 @@ impl ModelKind {
             "silero-vad" => Some(Self::SileroVad),
             "piper-plus" => Some(Self::PiperPlus),
             "campplus" => Some(Self::CamPlus),
+            "kokoro" => Some(Self::Kokoro),
             _ => None,
         }
     }
@@ -98,6 +104,7 @@ impl ModelKind {
             Self::SileroVad => "silero-vad",
             Self::PiperPlus => "piper-plus",
             Self::CamPlus => "campplus",
+            Self::Kokoro => "kokoro",
         }
     }
 }
@@ -237,6 +244,17 @@ pub fn convert_file(
                 report.unmapped,
                 report.skipped_non_float,
                 report.block_config
+            )];
+            (builder, notes)
+        }
+        ModelKind::Kokoro => {
+            let (builder, report) = models::kokoro::convert(bytes)?;
+            let notes = vec![format!(
+                "kokoro: {} float weights written, {} non-float skipped, style_dim {}, {} voices",
+                report.written,
+                report.skipped_non_float,
+                report.style_dim,
+                report.voices.len(),
             )];
             (builder, notes)
         }
