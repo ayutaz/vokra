@@ -1,9 +1,14 @@
 {
-  "//": "Vokra Unity demo package manifest (M0-10-T01). Deliberately contains NO",
-  "//_2": "Unity Sentis / Inference Engine package (com.unity.sentis / com.unity.barracuda):",
-  "//_3": "all inference goes through the Vokra C ABI (SRS §5-(10), CLAUDE.md design note 5).",
-  "//_4": "Only Unity standard modules are used; the UI is IMGUI (OnGUI), see DemoUi.cs.",
+  "//": "Vokra Unity demo package manifest. Consumes the local com.vokra.unity",
+  "//_2": "UPM package via a file: reference (M2-11-T11 §D11), so the M0 project",
+  "//_3": "shell remains a working consumer after the scene + scripts moved into",
+  "//_4": "Samples~/VadAsrTts/. Import that sample from Package Manager to populate",
+  "//_5": "Assets/Samples/Vokra/<version>/. Deliberately contains NO Unity Sentis /",
+  "//_6": "Inference Engine package (com.unity.sentis / com.unity.barracuda) — all",
+  "//_7": "inference goes through the Vokra C ABI (SRS §5-(10), CLAUDE.md design",
+  "//_8": "note 5). Only Unity standard modules are used; the UI is IMGUI (OnGUI).",
   "dependencies": {
+    "com.vokra.unity": "file:../../../bindings/unity/com.vokra.unity",
     "com.unity.ugui": "1.0.0",
     "com.unity.modules.audio": "1.0.0",
     "com.unity.modules.imgui": "1.0.0",
