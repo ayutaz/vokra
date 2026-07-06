@@ -3,6 +3,10 @@
 
 # Rust / Cargo build artifacts (M0-02-T01).
 /target
+# M2-02 iOS cross-compile artifacts (XCFramework staging + libvokra.a per triple).
+# The build/ tree is produced by scripts/build-ios.sh; it is not committed —
+# CI regenerates it, releases upload the .xcframework as a Release asset.
+/build/
 # Isolated integration workspaces (integrations/*) build to their own target/.
 # Their Cargo.lock IS committed (reproducible opt-in builds); only artifacts are
 # ignored. These crates are excluded from the root workspace (zero-dep invariant).

@@ -77,6 +77,18 @@
 // on the workspace's unsafe-boundary allow list (root Cargo.toml).
 #![allow(unsafe_code)]
 
+// M2-02 iOS build red line (belt-and-suspenders against the `cfg(unix)` loophole
+// noted in the iOS build ADR §1.3): `target_os = "ios"` satisfies `cfg(unix)`,
+// so `vokra-models/Cargo.toml`'s `cfg(any(unix, windows))` CUDA gate would
+// otherwise let `--features cuda` reach an iOS target. CUDA is absent on iOS
+// (no libcuda, no NVRTC) and user-side `dlopen` is App-Store-forbidden — turn
+// this into a compile-time failure rather than a runtime dlopen crash (R1).
+// FR-EX-08: explicit error, no silent fallback. NFR-RL-03: iOS is static-only.
+#[cfg(target_os = "ios")]
+compile_error!(
+    "vokra-backend-cuda cannot be built for iOS; do not pass --features cuda on iOS targets."
+);
+
 // The raw CUDA / NVRTC FFI and the GPU context need a dynamic loader (dlopen /
 // LoadLibrary), so they compile only on Unix / Windows. On other targets (WASM)
 // the probe / backend below fall back to explicit BackendUnavailable stubs.

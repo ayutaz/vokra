@@ -17,6 +17,11 @@ name = "vokra"
 # embedding. `lib` (rlib) is also emitted so the Rust integration tests under
 # `tests/` can link the crate and call the extern "C" functions directly
 # (M0-09-T06..T09); it does not affect the C-facing artifacts.
+# The `staticlib` slot is also the iOS XCFramework pipeline output
+# (M2-02 / ADR-0004 iOS build design): `cargo build --target
+# aarch64-apple-ios[-sim] -p vokra-capi` emits `libvokra.a`, which is then
+# assembled into `Vokra.xcframework` by `scripts/build-ios.sh` and consumed by
+# `Package.swift` as a `binaryTarget`. Do not remove `staticlib`.
 crate-type = ["lib", "cdylib", "staticlib"]
 # The C ABI examples live in the cbindgen-generated header and the C smoke
 # tests (tests/capi), not in rustdoc, so doctests stay disabled.
