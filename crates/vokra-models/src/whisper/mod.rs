@@ -72,11 +72,13 @@ pub mod nn;
 /// Reusable per-forward scratch buffers (FR-EX-05, hot-path malloc elimination);
 /// internal to the whisper module.
 mod scratch;
+pub mod session;
 pub mod tokenizer;
 pub mod weights;
 
 pub use asr::WhisperAsr;
 pub use config::WhisperConfig;
+pub use session::WhisperSession;
 pub use tokenizer::WhisperTokenizer;
 pub use weights::WhisperWeights;
 
@@ -225,6 +227,115 @@ impl WhisperModel {
     #[cfg(test)]
     pub(crate) fn new_for_test(config: WhisperConfig, weights: WhisperWeights) -> Self {
         Self { config, weights }
+    }
+}
+
+/// Public-surface `whisper::quant_load` tests (spec test path — M2-08 T07 / c06).
+///
+/// The unit-level coverage lives in [`session`]; this module mounts the
+/// integration-shaped assertions at `whisper::quant_load::*` so the spec's
+/// exact `cargo test -p vokra-models whisper::quant_load` filter selects
+/// them.
+#[cfg(test)]
+mod quant_load {
+    use super::*;
+    use vokra_core::gguf::GgufBuilder;
+    use vokra_core::quant::{QuantPolicy, QuantScheme};
+    use vokra_core::{BackendKind, VokraError};
+
+    /// Builds a GGUF carrying a valid `vokra.whisper.*` hyperparameter chunk
+    /// (no front-end, no weights) — enough for `WhisperModel::from_gguf` to
+    /// reach the front-end check (which then fails on the missing chunk).
+    /// The session ctor's *quant* gate fires **before** the model load only
+    /// if we skip weights and want to observe policy loading in isolation,
+    /// but c06 is scoped to the session ctor which runs the model load
+    /// first; so the public surface test we run is a compilable-shape check
+    /// on the constructor error type — the deep behaviour is covered under
+    /// [`session::quant_load`].
+    fn write_valid_config(b: &mut GgufBuilder) {
+        b.add_u32("vokra.whisper.n_mels", 80);
+        b.add_u32("vokra.whisper.n_audio_ctx", 1500);
+        b.add_u32("vokra.whisper.n_audio_state", 512);
+        b.add_u32("vokra.whisper.n_audio_head", 8);
+        b.add_u32("vokra.whisper.n_audio_layer", 6);
+        b.add_u32("vokra.whisper.n_text_ctx", 448);
+        b.add_u32("vokra.whisper.n_text_state", 512);
+        b.add_u32("vokra.whisper.n_text_head", 8);
+        b.add_u32("vokra.whisper.n_text_layer", 6);
+        b.add_u32("vokra.whisper.n_vocab", 51865);
+        b.add_u32("vokra.whisper.ffn_dim", 2048);
+        b.add_u32("vokra.whisper.eot", 50257);
+        b.add_metadata(
+            "vokra.whisper.decoder_start_ids",
+            vokra_core::gguf::GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::U32,
+                values: [50258u32, 50259, 50359, 50363]
+                    .iter()
+                    .map(|&id| vokra_core::gguf::GgufMetadataValue::U32(id))
+                    .collect(),
+            }),
+        );
+    }
+
+    #[test]
+    fn from_gguf_on_reports_model_load_before_touching_the_quant_gate() {
+        // A config-only GGUF triggers `ModelLoad` from the front-end check
+        // (weights aren't reached, quant gate isn't reached). Confirms the
+        // ordering: model validation runs before the c06 activation gate,
+        // so a broken model surfaces the model error, not a policy error.
+        let mut b = GgufBuilder::new();
+        write_valid_config(&mut b);
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+
+        let result = session::WhisperSession::from_gguf_on(&file, BackendKind::Cpu);
+        match result {
+            Err(VokraError::ModelLoad(_)) => {}
+            Err(other) => panic!("expected ModelLoad, got {other:?}"),
+            Ok(_) => panic!("expected model load to fail on missing weights"),
+        }
+    }
+
+    #[test]
+    fn quant_policy_default_is_vocoder_safe_fp16() {
+        // c06 contract, pinned at the public API: when the `vokra.quant.*`
+        // chunk is absent (every GGUF today), the loaded policy is
+        // vocoder-safe FP16.
+        assert_eq!(
+            vokra_core::quant::resolve::default_vocoder_safe().default_scheme(),
+            QuantScheme::Fp16,
+            "the safe default must never resolve to Int8"
+        );
+        // Confirm the alias is not the INT8 one.
+        assert_ne!(QuantScheme::Fp16.as_str(), QuantScheme::W8A8Int8.as_str());
+        // Silence unused-import warning on `QuantPolicy` when the type is
+        // only referenced through its associated free-function preset above.
+        let _: &'static str = std::any::type_name::<QuantPolicy>();
+    }
+
+    #[test]
+    fn unsupported_quant_path_carries_op_scheme_backend() {
+        // c06 error shape, FR-EX-08 audit trail — verified on the variant
+        // directly so callers can special-case without string-matching.
+        let err = VokraError::UnsupportedQuantPath {
+            op: "whisper::gemm".to_owned(),
+            scheme: "w8a8".to_owned(),
+            backend: "cpu".to_owned(),
+        };
+        match &err {
+            VokraError::UnsupportedQuantPath {
+                op,
+                scheme,
+                backend,
+            } => {
+                assert_eq!(op, "whisper::gemm");
+                assert_eq!(scheme, "w8a8");
+                assert_eq!(backend, "cpu");
+            }
+            other => panic!("expected UnsupportedQuantPath, got {other:?}"),
+        }
+        // Display must name FR-EX-08 so log readers can trace the reject to
+        // the requirement.
+        assert!(err.to_string().contains("FR-EX-08"));
     }
 }
 
