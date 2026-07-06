@@ -99,13 +99,17 @@ for size in whisper-small whisper-medium whisper-large-v3 whisper-turbo; do
 done
 # → tests/parity/whisper_{size}/ に fixture が入る
 
-# Kokoro-82M（M2-07 T11）— スクリプトは本 WP で提供済み（tools/parity/dump_kokoro_reference.py 相当）
-# 実装は WP 完了時点で bindings/kokoro/ 相当に含まれるが、run は依頼者側
+# Kokoro-82M（M2-07 T11）— スクリプトと Rust 側 parity ハーネスは提供済み。
+# script: tools/parity/dump_kokoro_reference.py
+# rust:   crates/vokra-models/tests/parity_kokoro.rs
 python3 tools/parity/dump_kokoro_reference.py --model hexgrad/Kokoro-82M
+# → tests/parity/kokoro/ に fixture が入る（mode=placeholder：shape/length のみ検証、
+#   mode=full にすると byte-level parity も自動で走る。full 化は follow-up）
 
 # fixture 揃った後
 cargo test -p vokra-models --test parity_whisper -- --nocapture
-cargo test -p vokra-models --test parity_kokoro -- --nocapture
+VOKRA_KOKORO_GGUF=$PWD/kokoro-82m.gguf \
+  cargo test -p vokra-models --test parity_kokoro -- --nocapture
 ```
 
 ### Exit 判定への寄与
