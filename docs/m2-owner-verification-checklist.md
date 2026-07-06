@@ -1,7 +1,7 @@
 # M2 (v0.5) Owner Verification Checklist
 
 **Owner**: 依頼者 (`ayutaz`) — 実機テスト・法務判断・鍵/秘密情報の provision を担当。
-**CC-side status**: v0.5 15 WP のうち **11 完了 + 3 CC 部完了 + 1 継続監視**（M2-15）。以下のチェックポイントを依頼者が消化することで v0.5 milestone Exit 判定に進める。
+**CC-side status**: v0.5 15 WP のうち **11 完了 + 2 CC 部完了 + 1 継続監視**（M2-15）+ **1 descoped**（M2-10 Discord bot デモは依頼者決定により Discord 全体を非採用、`vokra-server` 稼働実証は別形態で扱う）。以下のチェックポイントを依頼者が消化することで v0.5 milestone Exit 判定に進める。
 
 各項目は「必要な準備 → 実行手順 → Exit 判定への寄与」の 3 段で記述。CC が既に整備した scaffold（scripts / CI / docs）へのポインタを併記する。
 
@@ -134,37 +134,7 @@ cargo test -p vokra-models --test parity_kokoro -- --nocapture
 
 ---
 
-## 5. Discord bot デモ稼働（M2-10 / BR-08）
-
-**依頼者タスク**: Discord Application + bot token を発行し、`integrations/vokra-discord-bot`（提案）or 自前 client で `vokra-server` を経由した音声 bot が稼働することを実証する。
-
-### 必要な準備
-
-- [ ] Discord Developer Portal で application 作成 → bot token 発行。
-- [ ] `vokra-server` を起動できる Linux/macOS 環境（Docker 不要、`integrations/vokra-server` の single-binary）。
-
-### 実行手順
-
-`vokra-server` を起動:
-
-```bash
-cd integrations/vokra-server
-cargo run --release -- \
-  --bind 127.0.0.1:8080 \
-  --whisper-gguf /path/to/whisper-large-v3.gguf \
-  --piper-gguf /path/to/en-medium.gguf
-```
-
-Discord bot client（Python discord.py など）から `/v1/audio/transcriptions` + `/api/tts` を叩く。詳細は `integrations/vokra-server/docs/security-ops.md` の deploy 事例を参照。
-
-### Exit 判定への寄与
-
-- v0.5 Exit criteria 3（Discord bot デモ稼働）。
-- 未稼働の場合は原因を M2-15 review へ持ち込み。
-
----
-
-## 6. 言語バインディング初回対象合意（M2-12 T03）
+## 5. 言語バインディング初回対象合意（M2-12 T03）
 
 **依頼者タスク**: 初回言語 = **Python (PyPI wheel)** で確定するか判断し sign-off。他候補（Swift / Kotlin / JS/TS）は rolling wave 次段。
 
@@ -183,7 +153,7 @@ Discord bot client（Python discord.py など）から `/v1/audio/transcriptions
 
 ---
 
-## 7. PyPI 予約 + PYPI_API_TOKEN provision（M2-12 T17）
+## 6. PyPI 予約 + PYPI_API_TOKEN provision（M2-12 T17）
 
 **依頼者タスク**: PyPI に `vokra` パッケージ名を予約（trademark 保護）、`PYPI_API_TOKEN` を GH Actions secret に登録するか OIDC trusted publisher を設定する。
 
@@ -205,7 +175,7 @@ Discord bot client（Python discord.py など）から `/v1/audio/transcriptions
 
 ---
 
-## 8. Unity Editor license provision（M2-11 T-nightly）
+## 7. Unity Editor license provision（M2-11 T-nightly）
 
 **依頼者タスク**: `secrets.UNITY_LICENSE` を GH Actions secret に登録すると `nightly-il2cpp.yml` が IL2CPP スモークテストを nightly で実行するようになる。
 
@@ -227,7 +197,7 @@ Discord bot client（Python discord.py など）から `/v1/audio/transcriptions
 
 ---
 
-## 9. Wyoming / Home Assistant 統合検証（M2-15 Kill switch J）
+## 8. Wyoming / Home Assistant 統合検証（M2-15 Kill switch J）
 
 **依頼者タスク**: HA Voice PE + Wyoming Protocol クライアントで `vokra-server` を「推奨 Wyoming Server」として認識・接続する試験。採用可否は依頼者判断。
 
@@ -247,7 +217,7 @@ Discord bot client（Python discord.py など）から `/v1/audio/transcriptions
 
 ---
 
-## 10. Kill switch C/K 判定（M2-15 / 2026-12〜2027-01 目安）
+## 9. Kill switch C/K 判定（M2-15 / 2026-12〜2027-01 目安）
 
 **依頼者タスク**: v0.1 MVP 公開後 3 ヶ月時点（暦月目安 2026-12〜2027-01）に GitHub star 数と competitor community metric を再測し、以下を判定する。
 
@@ -282,13 +252,13 @@ Discord bot client（Python discord.py など）から `/v1/audio/transcriptions
 | M2-06 | Whisper large-v3/turbo | ✅ 部分完了 | § 3（parity fixture）+ § 4（audit） |
 | M2-07 | Kokoro-82M | ✅ 骨格完了 | § 3（parity fixture）+ § 4（audit） |
 | M2-08 | quantization policy | ✅ 完了 | — |
-| M2-09 | vokra-server 4 互換 API | ✅ 完了 | § 5（deploy 事例）|
-| M2-10 | Discord bot デモ | 🚧 部分（サーバ側） | § 5（bot token + 稼働）|
-| M2-11 | Unity official plugin | ✅ 完了（UPM CD） | § 8（Unity license）|
-| M2-12 | 言語バインディング（Python 初回） | ✅ 完了（wheel scaffold） | § 6（合意）+ § 7（PyPI token）|
+| M2-09 | vokra-server 4 互換 API | ✅ 完了 | — |
+| M2-10 | Discord bot デモ | ❌ descoped | Discord 全体を非採用（依頼者決定）。サーバ稼働実証は M2-15 review の別形態で扱う |
+| M2-11 | Unity official plugin | ✅ 完了（UPM CD） | § 7（Unity license）|
+| M2-12 | 言語バインディング（Python 初回） | ✅ 完了（wheel scaffold） | § 5（合意）+ § 6（PyPI token）|
 | M2-13 | compliance 拡張 | ✅ 完了 | — |
 | M2-14 | 実機ベンチ計測 | 引き渡し済み | § 1 + § 2 |
-| M2-15 | 四半期 Go/No-go review | 継続監視 | § 9（Kill switch J）+ § 10（C/K）|
+| M2-15 | 四半期 Go/No-go review | 継続監視 | § 8（Kill switch J）+ § 9（C/K）|
 
 ---
 
