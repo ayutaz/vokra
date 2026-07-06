@@ -1,0 +1,13 @@
+<!--
+  link.xml — IL2CPP managed-code stripping guard for com.vokra.unity (M2-11-T10 / R1).
+
+  Preserves the Vokra.Runtime assembly so [MonoPInvokeCallback] entry points and
+  their rooted delegate fields survive IL2CPP AOT tree-shaking. Without this,
+  static callbacks that are never invoked from managed code (only from native)
+  can be stripped, causing NullReferenceException in the native thread on device.
+
+  Paired with [Preserve] attributes in Runtime/Vokra/VokraCallbacks.cs.
+-->
+<linker>
+  <assembly fullname="Vokra.Runtime" preserve="all"/>
+</linker>

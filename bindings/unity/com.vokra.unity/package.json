@@ -1,0 +1,30 @@
+{
+  "name": "com.vokra.unity",
+  "version": "0.1.0-preview.1",
+  "displayName": "Vokra",
+  "description": "Vokra audio inference runtime for Unity (VAD/ASR/TTS/speaker).",
+  "unity": "2022.3",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Vokra contributors",
+    "url": "https://github.com/ayutaz/vokra"
+  },
+  "keywords": [
+    "audio",
+    "speech",
+    "tts",
+    "asr",
+    "vad",
+    "inference",
+    "onnx-alternative"
+  ],
+  "documentationUrl": "https://github.com/ayutaz/vokra",
+  "changelogUrl": "https://github.com/ayutaz/vokra/blob/main/bindings/unity/com.vokra.unity/CHANGELOG.md",
+  "samples": [
+    {
+      "displayName": "VAD -> ASR -> TTS demo",
+      "description": "Silero VAD v5 + Whisper base + piper-plus MB-iSTFT-VITS2 pipeline (MIT weights only).",
+      "path": "Samples~/VadAsrTts"
+    }
+  ]
+}

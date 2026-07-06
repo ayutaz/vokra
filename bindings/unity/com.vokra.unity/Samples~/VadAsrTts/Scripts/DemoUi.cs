@@ -62,7 +62,10 @@ namespace Vokra.Demo
 
         private PipelineConfig BuildConfig()
         {
-            string modelsDir = GetArg("-vokraModelsDir", Path.Combine(Application.streamingAssetsPath, "models"));
+            const string DefaultModelsSubdir = "models";
+
+            string modelsDirOverride = GetArg("-vokraModelsDir", null);
+            string modelsDir = modelsDirOverride ?? Path.Combine(Application.streamingAssetsPath, DefaultModelsSubdir);
             string input = GetArg("-vokraInput", Path.Combine(Application.streamingAssetsPath, "test_16k.wav"));
             string output = GetArg("-vokraOutput", null);
             string text = GetArg("-vokraText", null);
@@ -72,6 +75,12 @@ namespace Vokra.Demo
                 ModelsDir = modelsDir,
                 InputWavPath = input,
                 OutputWavPath = output,
+                // When no CLI override was given, resolve models through
+                // VokraAndroidAssets.EnsureLocalCopy so Android APK jar-URLs are
+                // expanded to persistentDataPath before the C ABI touches them
+                // (NFR-RL-04). Explicit -vokraModelsDir overrides use the given
+                // absolute path verbatim (headless / scripted runs).
+                StreamingAssetsModelsSubdir = modelsDirOverride == null ? DefaultModelsSubdir : null,
             };
             if (!string.IsNullOrEmpty(text))
             {

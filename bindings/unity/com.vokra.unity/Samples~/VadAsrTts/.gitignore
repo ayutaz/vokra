@@ -1,0 +1,5 @@
+# M2-11-T11 / plan §D9. Weights are downloaded on demand by
+# scripts/fetch-demo-models.sh; never commit them (NFR-DS-04). CC-BY-NC and
+# training-provenance-unresolved weights are excluded from the sample
+# entirely (M2-13 compliance).
+*.gguf

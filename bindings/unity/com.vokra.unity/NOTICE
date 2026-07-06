@@ -1,0 +1,52 @@
+Vokra Unity Package (com.vokra.unity)
+Copyright (c) Vokra contributors.
+
+Licensed under the Apache License, Version 2.0. See LICENSE.md for the
+full license text.
+
+--------------------------------------------------------------------------------
+NVIDIA CUDA runtime — NOT bundled
+--------------------------------------------------------------------------------
+
+This package (com.vokra.unity) does NOT bundle NVIDIA CUDA runtime
+libraries (cudart, cudnn, cublas, nvrtc, or the CUDA driver itself).
+
+When CUDA acceleration is enabled at runtime, Vokra dynamically loads the
+system-installed CUDA driver via:
+
+  * dlopen("libcuda.so")  on Linux
+  * LoadLibrary("nvcuda.dll")  on Windows
+
+and dynamically loads the system-installed NVRTC via the equivalent
+Driver API entry points. Vokra does not link against cudart_static and
+does not ship any file named cudart*, cudnn*, cublas*, or nvcuda*.
+
+This satisfies the NVIDIA CUDA EULA requirement that runtime
+redistributables be "installed only in a private (non-shared) directory
+location" — a constraint incompatible with Unity Asset Store / UPM
+plugin distribution, which places DLLs in a shared Plugins directory.
+
+Consumers requiring CUDA acceleration MUST install the NVIDIA CUDA
+Toolkit separately per NVIDIA's terms. Absence of a system CUDA install
+means the CUDA backend is unavailable; Vokra does NOT silently fall back
+to CPU (FR-EX-08) — an explicit error is raised.
+
+CI enforcement: scripts/check-unity-package-no-nvidia.sh runs on every
+release, scanning Plugins/** for banned filenames and each shipped
+.dll / .so / .dylib for undefined-symbol references to cudart / cudnn /
+cublasLt. Any hit fails the release job.
+
+--------------------------------------------------------------------------------
+Third-party attributions
+--------------------------------------------------------------------------------
+
+This package embeds the Vokra native runtime (vokra-capi cdylib), which
+is written from scratch in Rust. Attributions for upstream research
+weights and datasets consumed by Vokra models (Silero VAD, Whisper,
+piper-plus, CAM++, etc.) are recorded in docs/license-audit.md in the
+main Vokra repository.
+
+The bundled sample (Samples~/VadAsrTts) uses MIT-licensed model weights
+only. CC-BY-NC / CC-BY-NC-SA / non-commercial weights (F5-TTS,
+Fish-Speech, Bark, EnCodec) are excluded from the official model zoo
+per the M2-13 compliance gate.

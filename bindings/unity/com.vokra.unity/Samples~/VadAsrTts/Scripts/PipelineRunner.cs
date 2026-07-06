@@ -1,4 +1,5 @@
-// PipelineRunner.cs — VAD → ASR → TTS driver on a single worker thread (M0-10-T07).
+// PipelineRunner.cs — VAD → ASR → TTS driver on a single worker thread (M0-10-T07;
+// migrated into the com.vokra.unity UPM sample by M2-11-T11).
 //
 // The whole C ABI call sequence (session/stream create → use → destroy) runs on
 // ONE background thread. This is deliberate: FR-API-03 (Session Send+Sync, atomic
@@ -7,8 +8,14 @@
 // an error on the same thread is required (T04). Results are handed to the Unity
 // main thread only through a ConcurrentQueue<PipelineEvent> (drained in DemoUi.Update).
 //
-// This type is intentionally free of any UnityEngine dependency so the sequencing
-// is host-agnostic and side-effect-free apart from the queue and optional file out.
+// Model paths: when PipelineConfig.StreamingAssetsModelsSubdir is set (interactive
+// runs from Samples~/VadAsrTts), each model path is resolved via
+// VokraAndroidAssets.EnsureLocalCopy(...) so that on Android the file is copied
+// out of the APK jar (jar:file://…/base.apk!/assets/…) into persistentDataPath
+// before the C ABI fopen/mmap (NFR-RL-04). On non-Android platforms this reduces
+// to Path.Combine(Application.streamingAssetsPath, ...) so it is a no-op. When
+// StreamingAssetsModelsSubdir is null (headless CLI with -vokraModelsDir), the
+// absolute ModelsDir path is used verbatim so the runner remains scriptable.
 
 using System;
 using System.Collections.Concurrent;
@@ -52,6 +59,14 @@ namespace Vokra.Demo
 
         // Optional: when set (headless mode), the TTS output is written here.
         public string OutputWavPath;
+
+        // Optional: when set, the runner resolves each model as
+        //   VokraAndroidAssets.EnsureLocalCopy(Path.Combine(<subdir>, <file>))
+        // so Android StreamingAssets jar-URLs are expanded to persistentDataPath
+        // before the C ABI touches the file (M2-11-T08 / NFR-RL-04). If null,
+        // ModelsDir (an absolute path) is used verbatim for scripted / headless
+        // runs where the caller has already resolved the models directory.
+        public string StreamingAssetsModelsSubdir;
 
         // Demo model filenames placed by scripts/fetch-demo-models.sh (T09).
         public string SileroFile = "silero-vad-v5.gguf";
@@ -129,10 +144,26 @@ namespace Vokra.Demo
             }
         }
 
+        // Resolve a model file to an absolute filesystem path safe for the C ABI
+        // (fopen / mmap via FR-LD-01). Routes through VokraAndroidAssets when a
+        // StreamingAssets sub-path is configured so Android APK jar-URLs are
+        // expanded into persistentDataPath on first access (NFR-RL-04); other
+        // platforms fall through to a plain Path.Combine.
+        private string ResolveModelPath(string modelFile)
+        {
+            if (!string.IsNullOrEmpty(_config.StreamingAssetsModelsSubdir))
+            {
+                string relative = Path.Combine(_config.StreamingAssetsModelsSubdir, modelFile);
+                return VokraAndroidAssets.EnsureLocalCopy(relative);
+            }
+
+            return Path.Combine(_config.ModelsDir, modelFile);
+        }
+
         private string RunVadThenAsr(float[] pcm)
         {
             // --- VAD (always available: the Silero fixture is committed) ---
-            string sileroPath = Path.Combine(_config.ModelsDir, _config.SileroFile);
+            string sileroPath = ResolveModelPath(_config.SileroFile);
             if (File.Exists(sileroPath))
             {
                 try
@@ -174,7 +205,7 @@ namespace Vokra.Demo
             }
 
             // --- ASR (needs the uncommitted Whisper base GGUF) ---
-            string whisperPath = Path.Combine(_config.ModelsDir, _config.WhisperFile);
+            string whisperPath = ResolveModelPath(_config.WhisperFile);
             if (!File.Exists(whisperPath))
             {
                 Emit(PipelineStage.Asr, $"ASR skipped: {whisperPath} not found (place Whisper base GGUF — T09)");
@@ -197,7 +228,7 @@ namespace Vokra.Demo
 
         private void RunTts(string asrText)
         {
-            string piperPath = Path.Combine(_config.ModelsDir, _config.PiperFile);
+            string piperPath = ResolveModelPath(_config.PiperFile);
             if (!File.Exists(piperPath))
             {
                 Emit(PipelineStage.Tts, $"TTS skipped: {piperPath} not found (place piper-plus voice GGUF — T09)");
