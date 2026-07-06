@@ -46,7 +46,7 @@
 
 use vokra_backend_cpu::kernels;
 use vokra_core::backend::BackendKind;
-use vokra_core::{Backend, PrenormLayer, Result, VokraError};
+use vokra_core::{Backend, DecoderLayerView, PrenormLayer, Result, VokraError};
 
 /// A backend-dispatched hot op — the operators the imperative models route
 /// through a backend (as opposed to the model-internal scalar glue like
@@ -594,6 +594,248 @@ impl Compute {
                 final_ln_beta,
                 out,
             ),
+        }
+    }
+
+    /// Whether this backend has the Phase-3 device-resident **decoder-step**
+    /// session ([`Self::new_decoder_step_session`] on Metal; CUDA is Phase 3b
+    /// and returns `false` for now).
+    ///
+    /// The caller (`whisper::decoder::DecoderState`) gates the whole-step device
+    /// path on this: only a Metal backend builds a [`DecoderStepSession`] at
+    /// construction and routes every step through it; CPU and (for now) CUDA
+    /// keep the per-op step loop untouched. This keeps
+    /// [`Self::new_decoder_step_session`]'s CPU / CUDA arms an explicit
+    /// [`VokraError::UnsupportedOp`] correct code never hits (no silent fall
+    /// back, FR-EX-08), with zero duplicated decode-block math in `compute.rs`.
+    #[must_use]
+    pub fn decoder_step_is_session_backed(&self) -> bool {
+        match &self.be {
+            Be::Cpu => false,
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(_) => true,
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => false,
+        }
+    }
+
+    /// Builds a device-resident **decoder-step session** — the Phase-3 device-
+    /// residency slice sibling of [`Self::encode_prenorm_encoder`], for the
+    /// autoregressive decode (weights uploaded once, self-attention K/V kept on
+    /// the GPU and appended each step, cross-attention K/V uploaded once from
+    /// the pre-projected slices in `layers`).
+    ///
+    /// `dims` names the model shape; `layers` carries every decoder block's
+    /// weight slices (row-major, `[in, out]` layout — the same layout the CPU
+    /// per-op path uses) plus the pre-projected cross-K/V; `token_emb` is the
+    /// tied-head / embedding table `[n_vocab, d]`; `ln_post_gamma` /
+    /// `ln_post_beta` are the final decoder LayerNorm.
+    ///
+    /// **GPU-only.** On the Metal arm this returns a session ready for
+    /// [`DecoderStepSession::step`] (one command-buffer submission + one full
+    /// `[t, n_vocab]` logits readback per step; bit-identical to running the
+    /// step per-op on the GPU). The **CPU and CUDA arms are explicit
+    /// [`VokraError::UnsupportedOp`]** — the CPU never fuses the decoder step,
+    /// and CUDA is Phase 3b (not yet wired); the model layer gates this call
+    /// behind [`Self::decoder_step_is_session_backed`], so correct code never
+    /// hits either. No silent CPU fall back (FR-EX-08).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::UnsupportedOp`] on the CPU / CUDA arms; the Metal arm
+    /// returns [`VokraError::InvalidArgument`] on a shape mismatch and
+    /// [`VokraError::BackendUnavailable`] on a device failure.
+    #[cfg_attr(
+        not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))),
+        allow(unused_variables)
+    )]
+    pub fn new_decoder_step_session(
+        &self,
+        dims: DecoderStepDims,
+        layers: &[DecoderLayerView<'_>],
+        token_emb: &[f32],
+        ln_post_gamma: &[f32],
+        ln_post_beta: &[f32],
+    ) -> Result<DecoderStepSession> {
+        match &self.be {
+            Be::Cpu => Err(VokraError::UnsupportedOp(
+                "new_decoder_step_session is the GPU device-resident decoder-step driver; the CPU \
+                 runs the per-op step loop (whisper::decoder::DecoderState gates it behind \
+                 Compute::decoder_step_is_session_backed)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(_) => {
+                // The session owns its own `MetalContext` (weights + KV live inside
+                // it; the outer `Compute`'s context is used only for the cross-KV
+                // precompute at construction and dropped afterwards). Bit-identical
+                // to the per-op Metal path within the FP32 bound: same kernels,
+                // same launch geometry, one command-buffer submission per step.
+                let s = vokra_backend_metal::MetalDecodeSession::new(
+                    dims.d,
+                    dims.n_head,
+                    dims.ff,
+                    dims.n_text_ctx,
+                    dims.n_vocab,
+                    dims.n_ctx,
+                    dims.max_t_q,
+                    dims.eps,
+                    layers,
+                    token_emb,
+                    ln_post_gamma,
+                    ln_post_beta,
+                )?;
+                Ok(DecoderStepSession::Metal(Box::new(s)))
+            }
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "new_decoder_step_session on CUDA is Phase 3b (not yet wired); the CUDA backend \
+                 continues to run the per-op step loop (no silent CPU fall back, FR-EX-08). Wait \
+                 for CudaDecodeSession."
+                    .to_owned(),
+            )),
+        }
+    }
+}
+
+/// Immutable model shape for a device-resident decoder-step session
+/// ([`Compute::new_decoder_step_session`]).
+///
+/// Names the dims the backend needs at build time to size its resident buffers
+/// once (`n_text_ctx` bounds the self-attention KV cache; `max_t_q` bounds the
+/// per-step scratch and the tied-head logits buffer; `n_ctx` matches the encoder
+/// output width the pre-projected cross-K/V is `[n_ctx, d]` rows of). `eps` is
+/// the LayerNorm epsilon (the caller passes the CPU-kernel constant, which the
+/// backend cannot import).
+#[derive(Clone, Copy, Debug)]
+pub struct DecoderStepDims {
+    /// Hidden width.
+    pub d: usize,
+    /// Attention head count (must divide `d`).
+    pub n_head: usize,
+    /// MLP inner width.
+    pub ff: usize,
+    /// Max decoder-context length (the hard self-attention KV cache bound).
+    pub n_text_ctx: usize,
+    /// Vocabulary size (the tied logits head output width).
+    pub n_vocab: usize,
+    /// Encoder context length (the cross-attention key window; the
+    /// pre-projected `cross_k` / `cross_v` in each [`DecoderLayerView`] are
+    /// `[n_ctx, d]` rows).
+    pub n_ctx: usize,
+    /// Widest single decode step's query length (the forced-prefix width;
+    /// steady-state greedy decodes one token). Bounds the per-step scratch and
+    /// the `[max_t_q, n_vocab]` logits buffer.
+    pub max_t_q: usize,
+    /// LayerNorm epsilon (the backend cannot import the CPU-kernel constant).
+    pub eps: f32,
+}
+
+/// A backend-specific device-resident **decoder-step session** — the
+/// autoregressive-decode sibling of [`Compute::encode_prenorm_encoder`].
+///
+/// Built once at [`Compute::new_decoder_step_session`] (Metal only in this
+/// slice; CUDA is Phase 3b). Each [`Self::step`] runs the whole decode step
+/// device-resident in ONE command-buffer submission, then reads back the full
+/// `[t, n_vocab]` logits so the model layer can compare against the CPU
+/// decoder's row-major output (not only the greedy last row). The session owns
+/// its own backend context (weights + KV live inside it), so a Metal
+/// [`DecoderStepSession`] holds Metal handles — see the `unsafe impl Send` note
+/// below for why the model layer can still hold it inside a `Send`
+/// `DecoderState`.
+pub enum DecoderStepSession {
+    /// Metal (M2 Phase 3a) device-resident decoder-step session.
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    Metal(Box<vokra_backend_metal::MetalDecodeSession>),
+}
+
+// `DecoderStepSession` is `Send` because its only variant boxes a
+// `MetalDecodeSession`, which the backend crate declares `Send` (see the
+// backend crate for the SAFETY rationale — Metal handles are thread-safe;
+// unsafe impls live behind `vokra-backend-metal`'s `#![allow(unsafe_code)]`
+// opt-out because vokra-models stays under the workspace `unsafe_code = deny`).
+// The model-layer `DecoderState` therefore stays `Send` (its
+// `assert_send::<DecoderState>()` compile-time bound + the cross-thread decode
+// test both continue to hold) without either reuploading every weight per step
+// or duplicating attention math in `compute.rs`.
+
+impl DecoderStepSession {
+    /// Advances the decode by the `t` tokens whose `[t, d]` token+positional
+    /// embedding is `embedded`, starting at the committed position `start`.
+    /// Runs the whole step device-resident in ONE command-buffer submission +
+    /// ONE `[t, n_vocab]` logits readback (bit-identical to running the step
+    /// per-op on the GPU).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a bad `t` / `start` / `embedded`
+    /// length; [`VokraError::BackendUnavailable`] on a device failure.
+    #[cfg_attr(
+        not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))),
+        allow(unused_variables)
+    )]
+    pub fn step(&mut self, embedded: &[f32], t: usize, start: usize) -> Result<()> {
+        match self {
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            DecoderStepSession::Metal(s) => s.step(embedded, t, start),
+            // Off the Metal build the enum is uninhabited (no variants) and
+            // `Option<DecoderStepSession>` is only ever `None`; the model-layer
+            // caller (`whisper::decoder::DecoderState`) never constructs a
+            // session and so never calls this. `Self` still contains fields
+            // (`&mut self` binding), so the match falls through the empty
+            // never-reachable wildcard.
+            #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
+            _ => unreachable!("DecoderStepSession has no variants off the Metal build"),
+        }
+    }
+
+    /// Rewinds the decode position to 0 for a fresh decode of the same audio
+    /// (resident weights + cross-KV stay valid; the self-attention KV rows are
+    /// simply overwritten from row 0). Mirrors [`vokra_core::KvCache::reset`].
+    pub fn reset(&mut self) {
+        match self {
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            DecoderStepSession::Metal(s) => s.reset(),
+            #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
+            _ => unreachable!("DecoderStepSession has no variants off the Metal build"),
+        }
+    }
+
+    /// Committed token positions in the self-attention cache (the causal query
+    /// offset for the next [`Self::step`]).
+    #[must_use]
+    pub fn positions(&self) -> usize {
+        match self {
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            DecoderStepSession::Metal(s) => s.positions(),
+            #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
+            _ => unreachable!("DecoderStepSession has no variants off the Metal build"),
+        }
+    }
+
+    /// The last decoded row of the last [`Self::step`] — `[n_vocab]` logits,
+    /// the greedy / argmax read. Empty before the first step.
+    #[must_use]
+    pub fn last_logits(&self) -> &[f32] {
+        match self {
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            DecoderStepSession::Metal(s) => s.last_logits(),
+            #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
+            _ => unreachable!("DecoderStepSession has no variants off the Metal build"),
+        }
+    }
+
+    /// All `[t, n_vocab]` rows the last [`Self::step`] wrote, row-major
+    /// (row `i` at offset `i·n_vocab`). This is the full-row output the model-
+    /// layer path compares against the CPU decoder's `[t, n_vocab]` logits (not
+    /// only the greedy last row). Empty before the first step.
+    #[must_use]
+    pub fn all_logits(&self) -> &[f32] {
+        match self {
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            DecoderStepSession::Metal(s) => s.all_logits(),
+            #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
+            _ => unreachable!("DecoderStepSession has no variants off the Metal build"),
         }
     }
 }

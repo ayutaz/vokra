@@ -32,7 +32,7 @@ pub mod silero_vad;
 pub mod speaker;
 pub mod whisper;
 
-pub use compute::{Compute, HotOp, make_backend};
+pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 
 #[cfg(test)]
 mod tests {

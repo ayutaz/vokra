@@ -26,7 +26,8 @@
 
 use std::sync::Arc;
 
-use vokra_core::{BackendKind, KvCache, Result, VokraError};
+use vokra_backend_cpu::kernels::LAYER_NORM_DEFAULT_EPS;
+use vokra_core::{BackendKind, DecoderLayerView, KvCache, Result, VokraError};
 
 use super::WhisperModel;
 use super::config::WhisperConfig;
@@ -35,8 +36,8 @@ use super::nn::{
     add_assign, attention_from_kv_into, layer_norm_into, mlp_into, project_kv, project_kv_into,
 };
 use super::scratch::{BlockScratch, LogitsScratch, resize_zeroed};
-use super::weights::DecoderWeights;
-use crate::compute::Compute;
+use super::weights::{DecoderLayer, DecoderWeights};
+use crate::compute::{Compute, DecoderStepDims, DecoderStepSession};
 
 /// Initial reservation *hint* for the self-attention KV cache, in positions
 /// (tokens).
@@ -90,6 +91,15 @@ pub struct DecoderState {
     /// Whisper op set, so a Metal state is an explicit error at construction /
     /// step (never a silent CPU fall back, FR-EX-08).
     backend_kind: BackendKind,
+    /// Device-resident decoder-step session (Phase 3a, Metal-only in this slice).
+    ///
+    /// `Some(_)` when `Compute::for_backend(backend_kind, …)` reports
+    /// [`Compute::decoder_step_is_session_backed`] `= true` (Metal); `None` for
+    /// CPU and CUDA, which keep the per-op step loop untouched — so the CPU
+    /// path is byte-for-byte the pre-Phase-3 code (FR-EX-08). See
+    /// [`DecoderStepSession`] for the SAFETY note on why holding it here does
+    /// not violate `DecoderState: Send`.
+    device_session: Option<DecoderStepSession>,
 }
 
 impl DecoderState {
@@ -162,6 +172,47 @@ impl DecoderState {
         let block = BlockScratch::with_reserve(t_q_max, attn_t_kv_max, d, ff, n_head);
         let logits = LogitsScratch::with_reserve(t_q_max, d, n_vocab);
 
+        // Phase-3a Metal wiring: on a session-backed backend (Metal), build the
+        // device-resident decoder-step driver ONCE here — every weight uploaded,
+        // the pre-projected cross-K/V pinned, the self-KV cache reserved to
+        // `n_text_ctx`. Every `step_into` then advances the whole decode step
+        // device-resident in one command-buffer submission (see [`Self::step_into`]).
+        // On CPU (and, for now, CUDA — Phase 3b) this stays `None` and the per-op
+        // step loop below runs unchanged — the CPU path is byte-for-byte pre-Phase-3
+        // code (FR-EX-08, no silent fall back).
+        let device_session = if compute.decoder_step_is_session_backed() {
+            // Borrow every layer's slices as a plain-slice `DecoderLayerView`
+            // (row-major `[in, out]`, matching the CPU `Linear` layout) plus the
+            // pre-projected cross-K/V we just computed. This vector lives only in
+            // the constructor; `new_decoder_step_session` copies every slice into
+            // owned device buffers before returning, and the borrows end here.
+            let views: Vec<DecoderLayerView<'_>> = w
+                .layers
+                .iter()
+                .enumerate()
+                .map(|(li, l)| decoder_layer_view(l, &cross_kv[li].0, &cross_kv[li].1))
+                .collect();
+            let dims = DecoderStepDims {
+                d,
+                n_head,
+                ff,
+                n_text_ctx: cfg.n_text_ctx,
+                n_vocab,
+                n_ctx,
+                max_t_q: t_q_max,
+                eps: LAYER_NORM_DEFAULT_EPS,
+            };
+            Some(compute.new_decoder_step_session(
+                dims,
+                &views,
+                &w.token_emb,
+                &w.ln_post.gamma,
+                &w.ln_post.beta,
+            )?)
+        } else {
+            None
+        };
+
         // The `cfg` / `w` borrows of `model` end here, so `model` can be moved in.
         Ok(Self {
             model,
@@ -172,6 +223,7 @@ impl DecoderState {
             block,
             logits,
             backend_kind,
+            device_session,
         })
     }
 
@@ -180,6 +232,12 @@ impl DecoderState {
     /// is kept.
     pub fn reset(&mut self) {
         self.self_kv.reset();
+        // Mirror the host cache clear on the device: the resident weights + the
+        // pre-projected cross-K/V stay valid, the position clock rewinds to 0,
+        // and the next `step_into` starts writing self-KV rows from row 0 again.
+        if let Some(session) = self.device_session.as_mut() {
+            session.reset();
+        }
     }
 
     /// Number of tokens currently in the self-attention cache.
@@ -232,9 +290,6 @@ impl DecoderState {
         // `self.logits`), so the shared model borrow coexists with them — and
         // the distinct scratch fields let one attention call hold `&ln`,
         // `&mut attn` and `&mut block_out` at once without aliasing.
-        // Build the backend dispatcher for this step (Copy `backend_kind`, so
-        // the state stays `Send`; Metal is rejected here until its kernels land).
-        let compute = Compute::for_backend(self.backend_kind, super::WHISPER_HOT_OPS)?;
         let (cfg, w) = self.model.decoder_state();
         let d = cfg.d_model;
         let ff = cfg.ffn_dim;
@@ -254,7 +309,10 @@ impl DecoderState {
             )));
         }
 
-        // Token + positional embedding into the reused residual buffer.
+        // Token + positional embedding into the reused residual buffer. This is
+        // shared between the CPU per-op path (which consumes `self.h` block by
+        // block) and the Metal device-session path (which writes it into the
+        // session's resident `h` buffer via `session.step`).
         resize_zeroed(&mut self.h, t * d);
         for (i, &tok) in tokens.iter().enumerate() {
             let tok = tok as usize;
@@ -272,6 +330,29 @@ impl DecoderState {
             }
         }
 
+        // Phase-3a Metal device path: advance the whole step device-resident in
+        // ONE command-buffer submission through the pre-built session, then read
+        // back the full `[t, n_vocab]` logits into the reused scratch. The
+        // session tracks its own position clock; we mirror the advance on the
+        // host `self_kv` (never appending to it — the K/V rows live on the GPU)
+        // so `position()` / the CPU-side `start` invariant stay coherent for
+        // the next step. On the CPU (and, for now, CUDA) `device_session` is
+        // `None` and the per-op path below runs unchanged.
+        if let Some(session) = self.device_session.as_mut() {
+            let v = cfg.n_vocab;
+            session.step(&self.h, t, start)?;
+            resize_zeroed(&mut self.logits.out, t * v);
+            let all = session.all_logits();
+            debug_assert_eq!(all.len(), t * v);
+            self.logits.out.copy_from_slice(all);
+            self.self_kv.advance(t);
+            return Ok(());
+        }
+
+        // CPU / CUDA per-op path (unchanged from before Phase 3a): build the
+        // backend dispatcher for this step (Copy `backend_kind`, so the state
+        // stays `Send`) and drive the per-block kernels through `Compute`.
+        let compute = Compute::for_backend(self.backend_kind, super::WHISPER_HOT_OPS)?;
         let t_kv = start + t;
         for (li, layer) in w.layers.iter().enumerate() {
             self.block.ensure_residual(t, d, ff);
@@ -355,6 +436,47 @@ impl DecoderState {
         let v = self.model.config().n_vocab;
         let out = &self.logits.out;
         &out[out.len() - v..]
+    }
+}
+
+/// Borrows one Whisper [`DecoderLayer`]'s weights (+ its pre-projected cross
+/// K/V) as a backend-agnostic [`DecoderLayerView`] for the device-resident
+/// decoder-step session ([`Compute::new_decoder_step_session`]). Whisper's
+/// self-attention `k_proj` has no bias (`self_k_bias: None`); every other
+/// projection carries one; cross-attention `k`/`v` are supplied as the
+/// pre-projected `[n_ctx, d]` slices (`ck`/`cv`) rather than as `k`/`v` weight
+/// matrices, because they are identical for every step. Called once per block
+/// in `new_with_backend`, off the ZERO-ALLOC hot region.
+fn decoder_layer_view<'a>(
+    l: &'a DecoderLayer,
+    ck: &'a [f32],
+    cv: &'a [f32],
+) -> DecoderLayerView<'a> {
+    DecoderLayerView {
+        self_ln_gamma: &l.self_ln.gamma,
+        self_ln_beta: &l.self_ln.beta,
+        self_q_w: &l.self_attn.q.w_t,
+        self_q_bias: l.self_attn.q.bias.as_deref(),
+        self_k_w: &l.self_attn.k.w_t,
+        self_k_bias: l.self_attn.k.bias.as_deref(),
+        self_v_w: &l.self_attn.v.w_t,
+        self_v_bias: l.self_attn.v.bias.as_deref(),
+        self_out_w: &l.self_attn.out.w_t,
+        self_out_bias: l.self_attn.out.bias.as_deref(),
+        cross_ln_gamma: &l.cross_ln.gamma,
+        cross_ln_beta: &l.cross_ln.beta,
+        cross_q_w: &l.cross_attn.q.w_t,
+        cross_q_bias: l.cross_attn.q.bias.as_deref(),
+        cross_out_w: &l.cross_attn.out.w_t,
+        cross_out_bias: l.cross_attn.out.bias.as_deref(),
+        cross_k: ck,
+        cross_v: cv,
+        mlp_ln_gamma: &l.mlp_ln.gamma,
+        mlp_ln_beta: &l.mlp_ln.beta,
+        fc1_w: &l.fc1.w_t,
+        fc1_bias: l.fc1.bias.as_deref(),
+        fc2_w: &l.fc2.w_t,
+        fc2_bias: l.fc2.bias.as_deref(),
     }
 }
 

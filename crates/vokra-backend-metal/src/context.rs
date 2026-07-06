@@ -3078,15 +3078,17 @@ impl MetalContext {
     }
 
     /// Encodes a matrix-vector pass whose input vector `x` starts at element
-    /// offset `x_off` in its buffer: `out[i] = Σ_l a[i·k + l]·x[x_off + l]`
-    /// (bias-less). Used by the decode-step tied-logits head: only the **last**
-    /// decoded row's logits are needed for greedy, so the gemv reads
-    /// `normed[(t-1)·d ..]` (`x_off = (t-1)·d`) — the same reduction the CPU
-    /// [`project_logits_into`]'s `t == 1` fast path runs, so it is bit-identical
-    /// on that row.
+    /// offset `x_off` in its buffer and whose `[m]` output is written at
+    /// element offset `out_off` in `out`: `out[out_off + i] = Σ_l a[i·k + l]·
+    /// x[x_off + l]` (bias-less). Used by the decode-step tied-logits head:
+    /// the driver invokes this once per decoded row (`x_off = i·d`,
+    /// `out_off = i·n_vocab`), so ALL `[t, n_vocab]` rows are produced in ONE
+    /// command buffer while each row remains a plain per-row reduction (the
+    /// same math the CPU [`project_logits_into`]'s `t == 1` fast path runs on
+    /// its single row).
     ///
     /// [`project_logits_into`]: crate (whisper decoder)
-    #[allow(clippy::too_many_arguments)] // gemv operand set + input offset (Phase-3 decode head)
+    #[allow(clippy::too_many_arguments)] // gemv operand set + I/O offsets (Phase-3 decode head)
     fn encode_gemv_off(
         &self,
         cmd: Id,
@@ -3094,6 +3096,7 @@ impl MetalContext {
         x: &OwnedBuf,
         x_off: usize,
         out: &OwnedBuf,
+        out_off: usize,
         m: usize,
         k: usize,
     ) -> Result<()> {
@@ -3107,7 +3110,7 @@ impl MetalContext {
             cmd,
             self.gemv_pipeline,
             &[a, x, a, out], // bias buffer is unused (has_bias = 0); bind `a` as a valid dummy
-            Some(&[0, x_off * size_of::<f32>(), 0, 0]),
+            Some(&[0, x_off * size_of::<f32>(), 0, out_off * size_of::<f32>()]),
             (&dims as *const GemvDims).cast::<c_void>(),
             size_of::<GemvDims>(),
             grid,
@@ -3371,16 +3374,30 @@ struct DevDecoderLayer {
 /// CPU decoder within the FP32 bound — and the greedy argmax sequence is
 /// therefore identical.
 ///
-/// # `!Send`, single-thread by nature
+/// # `Send`, thread-affine at use
 ///
 /// The session **owns** its [`MetalContext`] and holds only raw [`OwnedBuf`]
 /// device buffers (no `MetalDeviceTensor<'ctx>`, so no self-referential
-/// lifetime). It is `!Send` (the context and buffers are thread-affine), which is
-/// fine: an autoregressive GPU decode is inherently single-threaded (one
-/// thread-affine GPU context, a sequential token dependency). This is distinct
-/// from the `Send` host-side `DecoderState` (the CPU path, unchanged): the
-/// cross-thread-move story is a CPU-path property and does not need to hold for
-/// the GPU device path.
+/// lifetime). Even though the raw `Id` handles in [`MetalContext`] / [`OwnedBuf`]
+/// are `!Send` at the Rust type level (`*mut c_void`), the objects they refer
+/// to — `MTLDevice`, `MTLCommandQueue`, `MTLBuffer` and compute-pipeline
+/// objects — are documented by Apple as thread-safe, and the one non-thread-
+/// safe class (`MTLCommandBuffer` / `MTLCommandEncoder`) is created, encoded,
+/// committed and released **within a single [`Self::step`] call** (inside one
+/// autorelease pool), never held across calls. So moving the session from the
+/// thread that built it to another thread is safe: the next step creates its
+/// command buffer / encoder on the new thread. `Send` is asserted here (in the
+/// backend crate, whose `#![allow(unsafe_code)]` opt-out permits it) so the
+/// model layer can hold `Option<MetalDecodeSession>` inside a `Send` host
+/// `DecoderState` — the compile-time `assert_send::<DecoderState>()` bound and
+/// the cross-thread decode test both stay green — **without** either
+/// reuploading every weight per step or forcing the CPU / GPU decode paths to
+/// diverge in shape. `Sync` is deliberately **not** asserted: an
+/// autoregressive step depends on the previous step's KV cache write, and the
+/// session sits behind a `&mut` on `DecoderState`, so Rust's ownership rules
+/// already enforce single-thread-at-a-time access — a shared-borrow `Sync`
+/// bound would add no correctness value and (unlike `Send`) is not what any
+/// caller needs.
 ///
 /// The device buffers are declared **before** `ctx` so Rust drops them first
 /// (every `MTLBuffer` released before the device the context owns is released).
@@ -3410,10 +3427,16 @@ pub struct MetalDecodeSession {
     probs: OwnedBuf,
     mlp_h: OwnedBuf,
     mlp_a: OwnedBuf,
-    /// Resident `[n_vocab]` logits (the single per-step readback).
+    /// Resident `[max_t_q, n_vocab]` logits (contiguous per-row, one per decoded
+    /// row of the last step). The step readback pulls only the `[t, n_vocab]`
+    /// prefix that step 実際に wrote; the tail past `t` is left untouched between
+    /// steps.
     logits: OwnedBuf,
-    /// Host copy of the last step's `[n_vocab]` logits (what [`Self::last_logits`]
-    /// returns; the driver argmaxes it on the host).
+    /// Host copy of the last step's `[max_t_q, n_vocab]` logits scratch — the
+    /// tied-head produces every decoded row (`[t, n_vocab]`) so the model layer
+    /// can compare against the CPU decoder's full-row output. [`Self::last_logits`]
+    /// returns the last row; [`Self::all_logits`] returns the `[last_t, n_vocab]`
+    /// prefix `step` wrote.
     logits_host: Vec<f32>,
     d: usize,
     n_head: usize,
@@ -3426,9 +3449,34 @@ pub struct MetalDecodeSession {
     scale: f32,
     /// Committed token positions (the causal query offset for the next step).
     pos: usize,
+    /// Row count the last [`Self::step`] wrote (`0` before the first step);
+    /// [`Self::all_logits`] returns `logits_host[..last_t * n_vocab]` and
+    /// [`Self::last_logits`] returns the last row of that prefix.
+    last_t: usize,
     /// Owned last so it drops **after** every device buffer above.
     ctx: MetalContext,
 }
+
+// SAFETY: The session owns a [`MetalContext`] and a set of [`OwnedBuf`]
+// (`MTLDevice`, `MTLCommandQueue`, `MTLBuffer` handles + compiled compute
+// pipelines). Apple's Metal "Thread-Safety Summary" documents `MTLDevice`,
+// `MTLCommandQueue`, `MTLBuffer` and pipeline-state objects as thread-safe:
+// their reference counts and use through the documented Objective-C APIs are
+// safe from any thread. The one non-thread-safe class family —
+// `MTLCommandBuffer` / `MTLCommandEncoder` — is created, encoded, committed
+// and released **inside a single [`Self::step`] call** (bracketed by one
+// autorelease pool); no command buffer or encoder is stored on the session
+// between calls. So moving the whole session across threads is safe: the next
+// `step` allocates its command buffer / encoder from the queue on the new
+// thread. This `Send` impl was deferred to keep the earlier per-op path
+// defensively thread-affine; asserting it here now lets the model-layer
+// `DecoderState` (the Whisper decoder session) stay `Send` — required by its
+// existing compile-time `assert_send::<DecoderState>()` bound + the
+// cross-thread decode test — while embedding this device-resident driver.
+// `Sync` is deliberately NOT asserted: every step depends on the previous
+// step's KV write, and the caller borrows the session `&mut`, so shared-borrow
+// concurrency has no meaning here.
+unsafe impl Send for MetalDecodeSession {}
 
 impl MetalDecodeSession {
     /// Builds a decode session: creates its own [`MetalContext`], uploads every
@@ -3550,7 +3598,7 @@ impl MetalDecodeSession {
             mlp_h: buffers.mlp_h.take().expect("mlp_h built"),
             mlp_a: buffers.mlp_a.take().expect("mlp_a built"),
             logits: buffers.logits.take().expect("logits built"),
-            logits_host: vec![0.0f32; n_vocab],
+            logits_host: vec![0.0f32; checked_mul(max_t_q, n_vocab, "decode max_t_q*n_vocab")?],
             d,
             n_head,
             ff,
@@ -3561,6 +3609,7 @@ impl MetalDecodeSession {
             eps,
             scale: ((d / n_head) as f32).powf(-0.5),
             pos: 0,
+            last_t: 0,
             ctx,
         })
     }
@@ -3597,6 +3646,11 @@ impl MetalDecodeSession {
         let tkvhd = checked_mul(max_tkv, hd, "decode max_tkv*hd")?;
         let ttkv = checked_mul(max_t_q, max_tkv, "decode max_t_q*max_tkv")?;
         let tff = checked_mul(max_t_q, ff, "decode max_t_q*ff")?;
+        // `[max_t_q, n_vocab]` — the tied head produces every decoded row, so the
+        // model-layer path can compare against the CPU decoder's `[t, n_vocab]`
+        // output (not just the greedy last-row read). `t == 1` uses only the first
+        // `n_vocab` entries; `t == max_t_q` (the forced prefix step) uses all.
+        let tv = checked_mul(max_t_q, _n_vocab, "decode max_t_q*n_vocab")?;
 
         let mut dev_layers = Vec::with_capacity(layers.len());
         for l in layers {
@@ -3649,7 +3703,7 @@ impl MetalDecodeSession {
             probs: Some(ctx.new_buffer_output(ttkv)?),
             mlp_h: Some(ctx.new_buffer_output(tff)?),
             mlp_a: Some(ctx.new_buffer_output(tff)?),
-            logits: Some(ctx.new_buffer_output(_n_vocab)?),
+            logits: Some(ctx.new_buffer_output(tv)?),
         };
         Ok((buffers, dummy))
     }
@@ -3657,8 +3711,10 @@ impl MetalDecodeSession {
     /// Advances the decode by the `t` tokens whose `[t, d]` token+positional
     /// embedding is `embedded` (the host gather; `t <= max_t_q`), starting at
     /// committed position `start`. Runs the whole step device-resident in ONE
-    /// command buffer and leaves the last token's `[n_vocab]` logits in the host
-    /// buffer [`Self::last_logits`] returns.
+    /// command buffer and leaves the full `[t, n_vocab]` logits (one row per
+    /// decoded token, row-major) in the host buffer [`Self::all_logits`]
+    /// returns; [`Self::last_logits`] reads the last of those rows for the greedy
+    /// / argmax path.
     ///
     /// # Errors
     ///
@@ -3702,9 +3758,13 @@ impl MetalDecodeSession {
         unsafe { sys::objc_autoreleasePoolPop(pool) };
         r?;
 
-        // Single per-step readback of the last row's logits.
-        read_back(&self.logits, &mut self.logits_host)?;
+        // Single per-step readback of ALL `[t, n_vocab]` rows the tied head wrote
+        // (only the `t·n_vocab` prefix — the `max_t_q` tail past `t` is left
+        // untouched and never observed).
+        let take = checked_mul(t, self.n_vocab, "decode step t*n_vocab")?;
+        read_back(&self.logits, &mut self.logits_host[..take])?;
         self.pos = t_kv;
+        self.last_t = t;
         Ok(())
     }
 
@@ -3874,9 +3934,15 @@ impl MetalDecodeSession {
                 .encode_residual_add(cmd, &self.h, &self.block_out, td)?;
         }
 
-        // Final LayerNorm into `normed`, then the tied-logits gemv on the LAST
-        // decoded row (greedy needs only that row; bit-identical to the CPU
-        // `t == 1` fast path on that row).
+        // Final LayerNorm into `normed`, then the tied-logits head on EVERY
+        // decoded row (`t` gemvs into `logits[i·n_vocab .. (i+1)·n_vocab]`,
+        // reading `normed[i·d .. (i+1)·d]`). One gemv per row keeps each
+        // reduction identical to the CPU decoder's `t == 1` fast path — the
+        // same math, just repeated `t` times inside the SAME command buffer, so
+        // the whole step still commits + waits exactly once (unchanged
+        // submission accounting). All `t` rows land in `logits_host` so the
+        // model-layer path can compare against the CPU decoder's full `[t,
+        // n_vocab]` output, not only the greedy last row.
         self.ctx.encode_layer_norm(
             cmd,
             &self.h,
@@ -3887,22 +3953,40 @@ impl MetalDecodeSession {
             d,
             eps,
         )?;
-        self.ctx.encode_gemv_off(
-            cmd,
-            &self.token_emb,
-            &self.normed,
-            (t - 1) * d,
-            &self.logits,
-            self.n_vocab,
-            d,
-        )?;
+        for i in 0..t {
+            self.ctx.encode_gemv_off(
+                cmd,
+                &self.token_emb,
+                &self.normed,
+                i * d,
+                &self.logits,
+                i * self.n_vocab,
+                self.n_vocab,
+                d,
+            )?;
+        }
         self.ctx.commit_and_wait(cmd, "decode step")
     }
 
-    /// The last step's `[n_vocab]` logits (the greedy / argmax read).
+    /// The last decoded row of the last [`Self::step`] — `[n_vocab]` logits, the
+    /// greedy / argmax read. Empty before any step (`last_t == 0`).
     #[must_use]
     pub fn last_logits(&self) -> &[f32] {
-        &self.logits_host
+        if self.last_t == 0 {
+            return &[];
+        }
+        let v = self.n_vocab;
+        let start = (self.last_t - 1) * v;
+        &self.logits_host[start..start + v]
+    }
+
+    /// All `[t, n_vocab]` rows the last [`Self::step`] wrote, row-major (row `i`
+    /// at offset `i·n_vocab`). This is the full-row output the model-layer path
+    /// compares against the CPU decoder's [`t, n_vocab]` logits (not just the
+    /// last row). Empty before any step.
+    #[must_use]
+    pub fn all_logits(&self) -> &[f32] {
+        &self.logits_host[..self.last_t * self.n_vocab]
     }
 
     /// Committed token positions in the self-attention cache (the causal query
@@ -3917,6 +4001,11 @@ impl MetalDecodeSession {
     /// overwritten from row 0 again). Mirrors [`vokra_core::KvCache::reset`].
     pub fn reset(&mut self) {
         self.pos = 0;
+        // `last_t = 0` invalidates the stale `all_logits` / `last_logits` views
+        // so a caller reading them before the next `step` sees an empty slice
+        // (the CPU decoder's post-reset semantics — its logits scratch is not
+        // observable until the next step writes it either).
+        self.last_t = 0;
     }
 
     /// Command-buffer submissions issued through the owned context — one per
