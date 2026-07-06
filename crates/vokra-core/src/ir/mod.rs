@@ -6,8 +6,10 @@
 //! no ONNX graph is ever loaded at runtime (FR-LD-05, permanent constraint)
 //! and no protobuf / abseil / onnx dependency exists (NFR-DS-02).
 
+pub mod fusion;
 pub mod graph;
 pub mod tensor;
 
+pub use fusion::FusedOp;
 pub use graph::{AudioGraph, GraphBuilder, Node, OpKind};
 pub use tensor::{DType, Dim, TensorDesc, TensorId};

@@ -11,5 +11,17 @@ publish.workspace = true
 # the M0 skeleton is std-only (M0-02-T02).
 [dependencies]
 
+# Opt-in cfg-only features (no dependency additions — zero-dep invariant
+# preserved per NFR-DS-02; features are Cargo's own primitive, not new
+# crates). See `./scripts/check-zero-deps.sh` — it inspects the root
+# Cargo.lock, which is unaffected by feature toggles.
+[features]
+# M2-04-T09 / T10: opt-in stub op-kind + matcher unit tests for the
+# `Conv1d → Snake` and `Upsample → Snake → Add(residual)` fusion
+# patterns. Default OFF — the real Snake / Conv1d / Upsample ops land
+# in `OpKind` co-delivered with their consumer model (FR-OP-11/13/14).
+# See `src/ir/fusion/patterns/snake.rs` for the co-delivery rationale.
+fusion-snake-stub = []
+
 [lints]
 workspace = true

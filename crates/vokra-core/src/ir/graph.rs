@@ -15,6 +15,7 @@ use std::collections::{HashSet, VecDeque};
 
 use crate::error::{Result, VokraError};
 
+use super::fusion::{FusedOp, FusionRewrite};
 use super::tensor::{Dim, TensorDesc, TensorId};
 
 // ===========================================================================
@@ -480,6 +481,19 @@ pub enum OpKind {
     /// First-order pre-emphasis high-pass (FR-OP-64). Real `[samples]` → real
     /// `[samples]`.
     PreEmphasis(PreEmphasisAttrs),
+    /// Fused op emitted by the M2-04 graph-fusion pass (see [`crate::ir::fusion`]).
+    ///
+    /// The pass rewrites recognized subgraphs (currently only `Stft → Power →
+    /// MelFilterbank → Log` for the log-mel front-end) into a single fused node.
+    /// Backends opt in by returning `true` from
+    /// [`Backend::supports`](crate::Backend::supports) for the corresponding
+    /// [`FusedOp`] variant and providing an `eval_op` kernel; the fusion pass
+    /// checks `supports` and, when the target backend does not cover a fused
+    /// variant, leaves the base ops in place (de-fusion — FR-EX-08 rules out
+    /// silent fallback). The wrapped `FusedOp` is itself `#[non_exhaustive]` so
+    /// new fused patterns (Snake / BigVGAN AMP …) can be added without breaking
+    /// downstream matches.
+    Fused(FusedOp),
 }
 
 /// One node of an [`AudioGraph`]: an op together with its tensor
@@ -560,6 +574,14 @@ impl AudioGraph {
     ///   extent is variable-length — M1-04 sub-part 2),
     /// - every tensor is produced by at most one node (single-producer
     ///   consistency of node outputs).
+    ///
+    /// Op-kind specific *shape* checks (e.g. that a
+    /// [`FusedOp::LogMel`](super::fusion::FusedOp::LogMel) input is a
+    /// `[samples]` real signal and its output a `[n_mels, n_frames]` mel
+    /// spectrogram) are **deferred to the backend**: `validate` only enforces
+    /// structural consistency and accepts every [`OpKind`] variant — including
+    /// [`OpKind::Fused`] added by the M2-04 fusion pass — uniformly by
+    /// walking `inputs` / `outputs`.
     ///
     /// Violations are reported as [`VokraError::GraphValidation`].
     pub fn validate(&self) -> Result<()> {
@@ -687,6 +709,48 @@ impl AudioGraph {
             ));
         }
         Ok(order)
+    }
+}
+
+impl AudioGraph {
+    // M2-04: mutations restricted to ir::fusion pass
+    /// Applies fusion rewrites in-place (M2-04-T02). Restricted to the fusion
+    /// pass in [`crate::ir::fusion`] — no code path outside the IR module may
+    /// mutate an `AudioGraph` after construction (§R2 of the M2-04 plan; the
+    /// public builder-only invariant is preserved).
+    ///
+    /// This is the *only* mutation entry point on [`AudioGraph`] outside
+    /// [`GraphBuilder`], and its visibility is narrowed to
+    /// `pub(in crate::ir)`; the `#[doc(hidden)]` attribute keeps it off the
+    /// public rustdoc surface (see risk register R2).
+    ///
+    /// Each [`FusionRewrite`](super::fusion::FusionRewrite) is applied in
+    /// order: nodes whose indices appear in `removed_nodes` are dropped, and
+    /// each rewrite's `inserted_node` is appended. Callers must guarantee the
+    /// resulting node set is still structurally valid — `run_graph` calls
+    /// [`topo_order`](Self::topo_order) which will detect any residual cycles.
+    #[doc(hidden)]
+    pub(in crate::ir) fn rewrite_with(&mut self, rewrites: Vec<FusionRewrite>) {
+        if rewrites.is_empty() {
+            return;
+        }
+        // Collect every removed index across all rewrites, then drop them in a
+        // single pass (avoids O(n·r) shifts and preserves relative order of the
+        // survivors).
+        let mut removed: HashSet<usize> = HashSet::new();
+        let mut inserted: Vec<Node> = Vec::with_capacity(rewrites.len());
+        for r in rewrites {
+            removed.extend(r.removed_nodes.iter().copied());
+            inserted.push(r.inserted_node);
+        }
+        let mut kept: Vec<Node> = Vec::with_capacity(self.nodes.len() - removed.len());
+        for (i, node) in self.nodes.drain(..).enumerate() {
+            if !removed.contains(&i) {
+                kept.push(node);
+            }
+        }
+        kept.extend(inserted);
+        self.nodes = kept;
     }
 }
 
@@ -1030,5 +1094,116 @@ mod tests {
             graph.topo_order(),
             Err(VokraError::GraphValidation(_))
         ));
+    }
+
+    // ---- M2-04-T02: OpKind::Fused(FusedOp) + AudioGraph::rewrite_with ----
+    //
+    // These tests exercise the two additions this ticket makes:
+    //  (a) `OpKind::Fused(FusedOp)` is a valid, structurally-checked variant
+    //      of the `#[non_exhaustive]` op enum — `validate()` walks its
+    //      inputs / outputs uniformly, no per-variant shape check;
+    //  (b) `AudioGraph::rewrite_with` swaps a set of source nodes for one
+    //      fused node in-place, and is the *only* mutation entry point
+    //      outside `GraphBuilder`.
+
+    fn logmel_fused_op() -> FusedOp {
+        FusedOp::LogMel {
+            stft: StftAttrs::new(400, 160),
+            mel: MelAttrs::new(16_000, 400, 80),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_fused_logmel_variant() {
+        // Structural check: a graph containing `OpKind::Fused(FusedOp::LogMel)`
+        // — the M2-04-T02 variant added to the `#[non_exhaustive]` op enum —
+        // must pass `validate()` just like any other op. Shape checks are
+        // backend-deferred; this only proves the tensor-id walk handles the
+        // new variant.
+        let mut b = GraphBuilder::new();
+        let pcm = b.add_tensor(desc("pcm"));
+        let mel = b.add_tensor(desc("mel"));
+        b.add_node(OpKind::Fused(logmel_fused_op()), &[pcm], &[mel]);
+        b.mark_input(pcm);
+        b.mark_output(mel);
+        let graph = b.finish().expect("Fused(LogMel) is structurally valid");
+        assert_eq!(graph.nodes().len(), 1);
+        assert!(matches!(
+            graph.nodes()[0].op(),
+            OpKind::Fused(FusedOp::LogMel { .. })
+        ));
+        assert!(graph.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_fused_variant_with_dangling_input() {
+        // Structural checks apply uniformly. A `Fused` node with an
+        // out-of-range input id must still be rejected by `validate()` — the
+        // new variant is *not* a bypass of the tensor-id walk.
+        let mut b = GraphBuilder::new();
+        let out = b.add_tensor(desc("out"));
+        b.add_node(OpKind::Fused(logmel_fused_op()), &[TensorId(99)], &[out]);
+        b.mark_output(out);
+        assert_graph_validation_err(b.finish(), "tensor id 99");
+    }
+
+    #[test]
+    fn rewrite_with_swaps_base_ops_for_fused_node() {
+        // The `pub(in crate::ir)` mutator drops the source nodes and appends
+        // the fused replacement. This test lives in `crate::ir::graph`, i.e.
+        // *inside* the `ir` module, so calling `rewrite_with` compiles — an
+        // external caller outside `ir::` would fail to compile, which is
+        // exactly the R2 mutation-restriction invariant.
+        let mut b = GraphBuilder::new();
+        let pcm = b.add_tensor(desc("pcm"));
+        let spec = b.add_tensor(desc("spec"));
+        let mel = b.add_tensor(desc("mel"));
+        let fused_out = b.add_tensor(desc("fused_out"));
+        b.add_node(OpKind::Stft(StftAttrs::new(400, 160)), &[pcm], &[spec]); // 0
+        b.add_node(
+            OpKind::MelFilterbank(MelAttrs::new(16_000, 400, 80)),
+            &[spec],
+            &[mel],
+        ); // 1
+        b.mark_input(pcm);
+        b.mark_output(fused_out);
+        let mut graph = b.finish().expect("valid base graph");
+        assert_eq!(graph.nodes().len(), 2);
+
+        // Apply one rewrite: drop nodes {0,1} (Stft + MelFilterbank), insert
+        // one fused LogMel replacement `pcm → fused_out`. `tensor_remap` is
+        // empty here — the rewrite produces the exact same graph-output
+        // tensor id, so no downstream consumer needs redirecting.
+        let rewrite = FusionRewrite {
+            removed_nodes: vec![0, 1],
+            inserted_node: Node {
+                op: OpKind::Fused(logmel_fused_op()),
+                inputs: vec![pcm],
+                outputs: vec![fused_out],
+            },
+            tensor_remap: std::collections::HashMap::new(),
+        };
+        graph.rewrite_with(vec![rewrite]);
+
+        assert_eq!(graph.nodes().len(), 1);
+        assert!(matches!(
+            graph.nodes()[0].op(),
+            OpKind::Fused(FusedOp::LogMel { .. })
+        ));
+        assert_eq!(graph.nodes()[0].inputs(), &[pcm]);
+        assert_eq!(graph.nodes()[0].outputs(), &[fused_out]);
+    }
+
+    #[test]
+    fn rewrite_with_is_a_no_op_when_given_no_rewrites() {
+        let mut b = GraphBuilder::new();
+        let x = b.add_tensor(desc("x"));
+        let y = b.add_tensor(desc("y"));
+        b.add_node(OpKind::Softmax, &[x], &[y]);
+        b.mark_output(y);
+        let mut graph = b.finish().expect("valid");
+        let before = graph.nodes().len();
+        graph.rewrite_with(Vec::new());
+        assert_eq!(graph.nodes().len(), before);
     }
 }
