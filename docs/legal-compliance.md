@@ -47,7 +47,7 @@
   - `options.disclosure_audio_beacon: bool = false` — 特定周波数の音声 beacon 埋込
 
 - **deployer 責任**:
-  - UI 上での視覚的 AI 表示 (例: Discord bot が "🤖 AI-generated voice" を発言前に表示)
+  - UI 上での視覚的 AI 表示 (例: サーバサイド API サーバー / Unity SDK / Web アプリが "🤖 AI-generated voice" を発言前に表示)
   - EU 地域判定に基づく強制表示
   - user consent 取得ダイアログの提供
 
@@ -161,7 +161,7 @@
 
 ### Vokra 対応
 - Vokra API に **`report_generated_content(content_hash, reason)`** 経路
-- Discord/Unity SDK に **"Report AI Voice"** ボタンサンプルコード提供
+- Unity SDK / サーバサイド API サーバー / モバイル SDK に **"Report AI Voice"** ボタンサンプルコード提供
 - deployer ドキュメントで Google Play submission checklist を提供
 
 ---
