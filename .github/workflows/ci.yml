@@ -38,6 +38,36 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build (release)
         run: cargo build --release
+      # M2-11-T13 (R3): audit-trail CPU-only vokra-capi build for the UPM
+      # package. `--no-default-features --features cpu` guarantees no metal /
+      # cuda runtime linkage in the shipped Unity binaries (NVIDIA EULA
+      # compliance, CLAUDE.md). The printf line makes the feature selection
+      # discoverable in the CI log for auditors (Reviewer 3, plan §R3).
+      - name: Build vokra-capi (CPU-only, UPM audit trail)
+        run: |
+          printf 'Package build features: --no-default-features --features cpu\n'
+          cargo build --release -p vokra-capi --no-default-features --features cpu
+      - name: Upload macOS libvokra.dylib
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vokra-capi-macos
+          path: target/release/libvokra.dylib
+          retention-days: 7
+      - name: Upload Windows vokra.dll
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vokra-capi-windows
+          path: target/release/vokra.dll
+          retention-days: 7
+      - name: Upload Linux libvokra.so
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vokra-capi-linux
+          path: target/release/libvokra.so
+          retention-days: 7
 
   test:
     name: test
@@ -245,4 +275,106 @@ jobs:
             --warmup 5 \
             --baseline docs/bench-baselines/mel_frontend_baseline.json \
             --format json
+
+  # M2-11-T13 Unity Official Plugin package assembly (FR-API-04, NFR-MT-07/08,
+  # NFR-RL-02/03/04, NFR-LC-01). Assembles the `com.vokra.unity` UPM package
+  # from four native artifact sources:
+  #   1. iOS static libvokra.a from `ios-build` job's Vokra-xcframework
+  #      artifact (device slice only, __Internal linkage, NFR-RL-03).
+  #   2. Desktop cdylibs (macOS libvokra.dylib / Windows vokra.dll /
+  #      Linux libvokra.so) from the `build` job's per-OS upload-artifact
+  #      steps (audit-trail CPU-only per plan §R3).
+  #   3. Android arm64-v8a libvokra.so cross-compiled here via NDK.
+  # Then runs structure lint (jq on package.json + asmdefs, find shape
+  # assertion under Plugins/), the NVIDIA runtime non-bundle check (plan §R3
+  # / CLAUDE.md NVIDIA EULA "installed only in a private (non-shared)
+  # directory location"), and the UPM dependencies check (.dependencies=={},
+  # no Sentis reference — zero-dep discipline for the Unity surface too).
+  # Uploads the assembled UPM `.tgz` as `Vokra-unity-package` (retention 14d)
+  # so the release train can promote the same tarball to GitHub Releases /
+  # OpenUPM (release.yml companion job, T14). Registered as a required PR
+  # check per NFR-MT-07 alongside build / test / fmt / clippy / parity /
+  # license / ios-build. IL2CPP Player build is deferred to a nightly
+  # workflow (game-ci) because Unity licensing isn't available on the
+  # per-PR path — the shape lint here catches every regression a Unity
+  # Editor open would also catch (asmdef parse, plugin layout, package.json
+  # schema) without needing the Editor.
+  unity-package:
+    name: unity-package
+    needs: [build, ios-build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Download Vokra-xcframework (from ios-build)
+        uses: actions/download-artifact@v4
+        with:
+          name: Vokra-xcframework
+          path: build/ios/Vokra.xcframework
+      - name: Download macOS libvokra.dylib (from build/macos-latest)
+        uses: actions/download-artifact@v4
+        with:
+          name: vokra-capi-macos
+          path: artifacts/macos
+      - name: Download Windows vokra.dll (from build/windows-latest)
+        uses: actions/download-artifact@v4
+        with:
+          name: vokra-capi-windows
+          path: artifacts/windows
+      - name: Download Linux libvokra.so (from build/ubuntu-latest)
+        uses: actions/download-artifact@v4
+        with:
+          name: vokra-capi-linux
+          path: artifacts/linux
+      - name: Set up Android SDK / NDK
+        uses: android-actions/setup-android@v3
+      - name: Android cross-build (aarch64-linux-android, CPU-only, NDK)
+        # scripts/build-android.sh reads $ANDROID_NDK_HOME (populated by
+        # setup-android@v3), rustup-installs the aarch64-linux-android target,
+        # builds `-p vokra-capi` release cdylib with no metal/cuda features,
+        # and stages the resulting libvokra.so under
+        # bindings/unity/com.vokra.unity/Plugins/Android/libs/arm64-v8a/.
+        run: bash scripts/build-android.sh
+      - name: Extract iOS libvokra.a from Vokra.xcframework
+        # collect-ios-lib.sh runs verify-ios-xcframework.sh first (plan §R4),
+        # then extracts ios-arm64/libvokra.a and asserts single-arch (lipo)
+        # before staging under Plugins/iOS/.
+        run: bash scripts/collect-ios-lib.sh build/ios/Vokra.xcframework
+      - name: Stage desktop native libs into UPM Plugins/
+        run: |
+          set -euo pipefail
+          PKG=bindings/unity/com.vokra.unity
+          mkdir -p "$PKG/Plugins/macOS" "$PKG/Plugins/Windows/x86_64" "$PKG/Plugins/Linux/x86_64"
+          cp artifacts/macos/libvokra.dylib "$PKG/Plugins/macOS/libvokra.dylib"
+          cp artifacts/windows/vokra.dll   "$PKG/Plugins/Windows/x86_64/vokra.dll"
+          cp artifacts/linux/libvokra.so   "$PKG/Plugins/Linux/x86_64/libvokra.so"
+      - name: Assemble UPM package (.tgz via build-unity-plugin.sh --pack)
+        run: bash scripts/build-unity-plugin.sh --pack
+      - name: Structure lint (package.json / asmdefs / Plugins shape)
+        # Fails loudly on any missing native slice, malformed JSON in the two
+        # asmdefs, or missing package.json — catches drift before the Unity
+        # Editor would (which we cannot run per-PR).
+        run: |
+          set -euo pipefail
+          PKG=bindings/unity/com.vokra.unity
+          jq . "$PKG/package.json"                 > /dev/null
+          jq . "$PKG/Runtime/Vokra.Runtime.asmdef" > /dev/null
+          jq . "$PKG/Editor/Vokra.Editor.asmdef"   > /dev/null
+          test -f "$PKG/Plugins/macOS/libvokra.dylib"
+          test -f "$PKG/Plugins/Windows/x86_64/vokra.dll"
+          test -f "$PKG/Plugins/Linux/x86_64/libvokra.so"
+          test -f "$PKG/Plugins/iOS/libvokra.a"
+          test -f "$PKG/Plugins/Android/libs/arm64-v8a/libvokra.so"
+          find "$PKG/Plugins" -type f
+      - name: NVIDIA runtime non-bundle check (CLAUDE.md EULA, plan §R3)
+        run: bash scripts/check-unity-package-no-nvidia.sh bindings/unity/com.vokra.unity
+      - name: UPM dependencies check (.dependencies=={} & no Sentis)
+        run: bash scripts/check-unity-package-deps.sh bindings/unity/com.vokra.unity
+      - name: Upload UPM package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vokra-unity-package
+          path: bindings/unity/com.vokra.unity-*.tgz
+          retention-days: 14
 

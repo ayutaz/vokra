@@ -7,6 +7,11 @@
 # The build/ tree is produced by scripts/build-ios.sh; it is not committed —
 # CI regenerates it, releases upload the .xcframework as a Release asset.
 /build/
+# M2-11 Unity UPM package tarball artifacts (produced by
+# scripts/build-unity-package.sh). CI regenerates and release.yml uploads
+# these as Release assets; do not commit.
+bindings/unity/*.tgz
+bindings/unity/*.tgz.sha256
 # Isolated integration workspaces (integrations/*) build to their own target/.
 # Their Cargo.lock IS committed (reproducible opt-in builds); only artifacts are
 # ignored. These crates are excluded from the root workspace (zero-dep invariant).

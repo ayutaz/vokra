@@ -1,0 +1,176 @@
+# Vokra nightly IL2CPP smoke — M2-11-T15.
+#
+# Purpose: exercise the `com.vokra.unity` UPM package under the IL2CPP scripting
+# backend on Linux headless, running the VadAsrTts sample's DemoUi.RunHeadless()
+# entrypoint (see Samples~/VadAsrTts/Scripts/DemoUi.cs, invoked automatically
+# when `Application.isBatchMode` is true).
+#
+# Coverage goal: validate the IL2CPP AOT-safe callback pattern (D5/R1 in the
+# M2-11 plan), the __Internal / native-lib platform conditional (D4), and the
+# VokraAndroidAssets.EnsureLocalCopy passthrough on non-Android paths (D6).
+#
+# License handling: game-ci/unity-builder@v4 and unity-test-runner@v3 require
+# `secrets.UNITY_LICENSE` (a Unity Personal / Pro license file exported to
+# base64). This repository does NOT provision that secret by default — the WP
+# spec explicitly defers the license decision to the owner. When the secret is
+# absent, the entire job is skipped with a WARNING annotation and TESTING.md
+# instructs the owner to run the same commands locally.
+#
+# Zero-dep invariant: this workflow does NOT modify Cargo.lock; it only builds
+# the C ABI cdylib with `--no-default-features --features cpu` so no CUDA or
+# Metal transitive linkage lands in the sample player (NFR-DS-02, D7).
+
+name: nightly-il2cpp
+
+on:
+  schedule:
+    # 04:17 UTC daily — offset from the top of the hour to avoid GitHub Actions
+    # cron congestion, well outside CI PR peaks.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Skip the Unity build, only run the pre-flight (license check + native cdylib)."
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-il2cpp
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Non-secret Unity project path lives under the UPM package's Samples~/ so
+  # the Unity Editor doesn't auto-import it into the outer host project. The
+  # nightly job stages a throwaway consumer project pointing at the package
+  # via `file:` reference.
+  VOKRA_PKG_DIR: bindings/unity/com.vokra.unity
+  VOKRA_SAMPLE_NAME: VadAsrTts
+
+jobs:
+  preflight:
+    name: preflight (license check)
+    runs-on: ubuntu-latest
+    outputs:
+      has_license: ${{ steps.check.outputs.has_license }}
+    steps:
+      - name: Check Unity license secret presence
+        id: check
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+        run: |
+          if [ -n "${UNITY_LICENSE:-}" ]; then
+            echo "has_license=true" >> "$GITHUB_OUTPUT"
+            echo "Unity license present — IL2CPP job will run."
+          else
+            echo "has_license=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=IL2CPP nightly skipped::secrets.UNITY_LICENSE is not configured. See bindings/unity/com.vokra.unity/TESTING.md for the local IL2CPP invocation fallback."
+          fi
+
+  il2cpp-linux-headless:
+    name: IL2CPP Linux headless (Standalone)
+    needs: preflight
+    if: needs.preflight.outputs.has_license == 'true' && github.event.inputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build vokra-capi (CPU only, no CUDA / no Metal)
+        run: |
+          # Zero-dep + NVIDIA non-bundle policy: explicit --no-default-features.
+          cargo build --release -p vokra-capi --no-default-features --features cpu
+          mkdir -p "${VOKRA_PKG_DIR}/Plugins/Linux/x86_64"
+          cp target/release/libvokra.so "${VOKRA_PKG_DIR}/Plugins/Linux/x86_64/libvokra.so"
+
+      - name: Stage throwaway Unity consumer project
+        run: |
+          set -euo pipefail
+          PROJ=nightly-consumer
+          mkdir -p "$PROJ/Assets" "$PROJ/Packages" "$PROJ/ProjectSettings"
+          # Reference the UPM package by relative path so the local build is
+          # authoritative — no OpenUPM / GitHub tarball dependency.
+          cat > "$PROJ/Packages/manifest.json" <<EOF
+          {
+            "dependencies": {
+              "com.vokra.unity": "file:../../${VOKRA_PKG_DIR}"
+            }
+          }
+          EOF
+          # Minimal ProjectSettings/ProjectVersion.txt — unity-builder rewrites
+          # this to its own version, but the file must exist.
+          echo "m_EditorVersion: 2022.3.40f1" > "$PROJ/ProjectSettings/ProjectVersion.txt"
+
+      - name: Cache Unity Library folder
+        uses: actions/cache@v4
+        with:
+          path: nightly-consumer/Library
+          key: unity-library-il2cpp-${{ hashFiles('nightly-consumer/Packages/manifest.json') }}
+          restore-keys: |
+            unity-library-il2cpp-
+
+      - name: Build Linux IL2CPP Standalone (headless)
+        uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+        with:
+          projectPath: nightly-consumer
+          unityVersion: 2022.3.40f1
+          targetPlatform: StandaloneLinux64
+          # IL2CPP is the whole point of this workflow (NFR-RL-02, D5, R1).
+          customParameters: "-buildTarget StandaloneLinux64 -scriptingBackend IL2CPP -importPackage ../${{ env.VOKRA_PKG_DIR }}/Samples~/${{ env.VOKRA_SAMPLE_NAME }} -nographics"
+          allowDirtyBuild: true
+
+      - name: Execute DemoUi.RunHeadless() batch-mode entrypoint
+        id: run_headless
+        run: |
+          set -euo pipefail
+          BUILD_DIR="nightly-consumer/build/StandaloneLinux64"
+          BIN="$(find "$BUILD_DIR" -maxdepth 2 -type f -name '*.x86_64' | head -n1)"
+          if [ -z "$BIN" ]; then
+            echo "::error::IL2CPP build did not produce a Linux Standalone binary" >&2
+            find "$BUILD_DIR" -maxdepth 3 -type f >&2 || true
+            exit 1
+          fi
+          chmod +x "$BIN"
+          LOG_DIR="$RUNNER_TEMP/vokra-nightly"
+          mkdir -p "$LOG_DIR"
+          LOG_FILE="$LOG_DIR/player.log"
+          # DemoUi.Start() invokes RunHeadless() when Application.isBatchMode is
+          # true; -vokraInput / -vokraOutput are honored by DemoUi.GetArg().
+          set +e
+          "$BIN" \
+            -batchmode -nographics -logFile "$LOG_FILE" \
+            -vokraInput "${VOKRA_PKG_DIR}/Samples~/${VOKRA_SAMPLE_NAME}/StreamingAssets/test_16k.wav" \
+            -vokraOutput "$LOG_DIR/out.wav"
+          RC=$?
+          set -e
+          echo "player exit code: $RC"
+          echo "----- Application.consoleLogPath -----"
+          cat "$LOG_FILE" || true
+          echo "--------------------------------------"
+          # DemoUi.RunHeadless() exits 0 on success, 1 on any stage error.
+          if [ "$RC" -ne 0 ]; then
+            echo "::error::DemoUi.RunHeadless exited with code $RC" >&2
+            exit 1
+          fi
+          # Sanity marker written by DemoUi.Append("Vokra Unity demo — models: ...").
+          if ! grep -q "Vokra Unity demo" "$LOG_FILE"; then
+            echo "::error::expected 'Vokra Unity demo' marker missing from player log" >&2
+            exit 1
+          fi
+
+      - name: Upload player log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-il2cpp-player-log
+          path: ${{ runner.temp }}/vokra-nightly/
+          retention-days: 7

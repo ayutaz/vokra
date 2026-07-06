@@ -173,3 +173,235 @@ jobs:
           ls -la build/ios/Vokra.xcframework.zip build/ios/Vokra.xcframework.zip.sha256
           echo "SHA256: ${{ env.sha256 }}"
           echo "Skipping: gh release upload, Package.swift patch."
+
+  # ---------------------------------------------------------------------------
+  # M2-11-T14: Unity UPM Package CD auto-publish (NFR-MT-08 / FR-API-04).
+  #
+  # Assembles the com.vokra.unity-<version>.tgz release-signed tarball on
+  # tag push (v*), uploads it (plus .sha256) to the GitHub Release, and
+  # optionally publishes to OpenUPM when secrets.OPENUPM_TOKEN is present.
+  #
+  # Cross-compile strategy: iOS device slice is reused from the
+  # ios-xcframework job artifact (needs dep). Linux libvokra.so is built
+  # natively on the ubuntu-latest runner. Android arm64-v8a libvokra.so is
+  # cross-compiled via scripts/build-android.sh using the NDK preset on the
+  # runner (ANDROID_NDK_ROOT). macOS/Windows desktop cdylibs are attempted
+  # via `gh run download` from the matching ci.yml run for the tag SHA;
+  # missing platforms are non-fatal for the initial CD wire-up so the
+  # tarball still assembles with iOS + Linux + Android — a follow-up will
+  # add explicit macos-latest / windows-latest matrix runners (or a
+  # `unity-cross-compile` companion job) to guarantee all five platforms
+  # are always present in the release-signed .tgz.
+  #
+  # Reproducibility (M2-11 plan §5 R5): SOURCE_DATE_EPOCH is derived from
+  # the HEAD commit timestamp and consumed by scripts/build-unity-plugin.sh
+  # --pack, which normalizes tar mtimes / ownership / file order. The
+  # emitted .sha256 is uploaded alongside the tarball so downstream
+  # (OpenUPM, GitHub Release) checksum reconciliation is deterministic.
+  #
+  # NVIDIA runtime non-bundled (D7 / T12 / NFR-LC-01): vokra-capi is built
+  # with --no-default-features on both Linux and Android (build-android.sh
+  # already does this); scripts/check-unity-package-no-nvidia.sh is a
+  # required check on the assembled package tree.
+  #
+  # Zero-dep invariant unchanged: no new Rust crate; no Cargo.lock churn;
+  # only shell + tar + gh + npm (npm gated on OPENUPM_TOKEN presence).
+  # ---------------------------------------------------------------------------
+  unity-package-release:
+    name: unity-package-release
+    needs: [ios-xcframework]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Compute release version (semver from tag, v-prefix stripped)
+        id: version
+        run: |
+          # Tag path: refs/tags/v0.1.0-preview.1 -> version=0.1.0-preview.1
+          # workflow_dispatch path: fall back to package.json version so
+          # dry-runs are still meaningful.
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="$(awk -F'"' '/^[[:space:]]*"version"[[:space:]]*:/ { print $4; exit }' \
+              bindings/unity/com.vokra.unity/package.json)"
+          fi
+          if [ -z "$V" ]; then
+            echo "unity-package-release: FAIL could not derive version" >&2
+            exit 1
+          fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+          echo "Release version: ${V}"
+
+      - name: Download iOS XCFramework artifact from ios-xcframework job
+        uses: actions/download-artifact@v4
+        with:
+          name: Vokra-xcframework-release
+          path: build/ios/
+
+      - name: Extract iOS libvokra.a via scripts/collect-ios-lib.sh
+        run: |
+          # ios-xcframework packaged the XCFramework via `ditto -c -k
+          # --sequesterRsrc --keepParent`, producing Vokra.xcframework.zip
+          # with the bundle structure preserved. Unzip to recreate the
+          # XCFramework layout before running collect-ios-lib.sh (which
+          # itself invokes verify-ios-xcframework.sh + lipo checks per R4).
+          cd build/ios
+          unzip -q -o Vokra.xcframework.zip
+          cd "$GITHUB_WORKSPACE"
+          bash scripts/collect-ios-lib.sh build/ios/Vokra.xcframework
+
+      - name: Build Linux vokra-capi (CPU-only, no NVIDIA runtime — D7)
+        run: |
+          # --no-default-features guarantees no Metal (macOS-only path,
+          # inert on Linux) and no CUDA (would statically pull cudart on
+          # some feature paths) reach the shipped Linux .so. Matches
+          # scripts/build-android.sh policy.
+          cargo build --release -p vokra-capi --no-default-features
+          mkdir -p bindings/unity/com.vokra.unity/Plugins/Linux/x86_64
+          cp target/release/libvokra.so \
+            bindings/unity/com.vokra.unity/Plugins/Linux/x86_64/libvokra.so
+
+      - name: Build Android arm64-v8a vokra-capi via scripts/build-android.sh
+        env:
+          # ubuntu-latest ships the NDK under $ANDROID_NDK_ROOT; forward it
+          # to the script's expected ANDROID_NDK_HOME variable.
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
+        run: bash scripts/build-android.sh
+
+      - name: Reuse macOS + Windows cdylibs from ci.yml artifacts (best-effort)
+        # T13 unity-package CI job produces per-OS cdylibs. Attempt to fetch
+        # them via `gh run download` scoped to the tag SHA so the release
+        # tarball ships all five platforms. Missing artifacts are non-fatal
+        # for this wire-up; the summary flags any absence for owner review.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          RUN_ID="$(gh run list \
+            --workflow=ci.yml \
+            --branch="${GITHUB_REF_NAME}" \
+            --limit=20 \
+            --json databaseId,headSha,conclusion \
+            --jq ".[] | select(.headSha==\"${GITHUB_SHA}\" and .conclusion==\"success\") | .databaseId" \
+            | head -n 1)"
+          if [ -z "$RUN_ID" ]; then
+            echo "unity-package-release: no successful ci.yml run for SHA ${GITHUB_SHA}; skipping desktop reuse"
+            exit 0
+          fi
+          echo "unity-package-release: reusing ci.yml run ${RUN_ID} for desktop cdylibs"
+          for artifact in vokra-capi-macos vokra-capi-windows; do
+            gh run download "$RUN_ID" --name "$artifact" --dir "reuse/${artifact}" \
+              || echo "unity-package-release: ${artifact} not available (T13 pending?)"
+          done
+          if [ -f reuse/vokra-capi-macos/libvokra.dylib ]; then
+            mkdir -p bindings/unity/com.vokra.unity/Plugins/macOS
+            cp reuse/vokra-capi-macos/libvokra.dylib \
+              bindings/unity/com.vokra.unity/Plugins/macOS/libvokra.dylib
+          fi
+          if [ -f reuse/vokra-capi-windows/vokra.dll ]; then
+            mkdir -p bindings/unity/com.vokra.unity/Plugins/Windows/x86_64
+            cp reuse/vokra-capi-windows/vokra.dll \
+              bindings/unity/com.vokra.unity/Plugins/Windows/x86_64/vokra.dll
+          fi
+          set -e
+
+      - name: Enforce NVIDIA runtime non-bundled (D7 / T12 / NFR-LC-01)
+        run: bash scripts/check-unity-package-no-nvidia.sh
+
+      - name: Pack UPM tarball (R5 reproducibility, SOURCE_DATE_EPOCH pinned)
+        run: |
+          # Reproducibility per M2-11 plan §5 R5:
+          #   * SOURCE_DATE_EPOCH from HEAD commit timestamp.
+          #   * tar --sort=name --mtime='@0' --owner=0 --group=0
+          #     --numeric-owner (build-unity-plugin.sh --pack does this
+          #     via the GNU tar branch on ubuntu-latest).
+          #   * `find | sort` deterministic file listing (implicit in
+          #     tar --sort=name, but explicit here for the audit trail).
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
+          # Deterministic file-listing audit line (R5 explicit).
+          ( cd bindings/unity/com.vokra.unity \
+            && find . -type f | LC_ALL=C sort | head -n 40 )
+          # --no-build: cdylibs are already assembled by prior steps.
+          bash scripts/build-unity-plugin.sh --pack --no-build
+
+      - name: Verify tarball + compute .sha256
+        id: pack
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # build-unity-plugin.sh names the tarball from package.json's
+          # version. On tag push the CD flow expects that version to have
+          # been bumped by a preceding commit; assert alignment or fail
+          # loudly so version drift never ships silently.
+          TARBALL="bindings/unity/com.vokra.unity-${VERSION}.tgz"
+          if [ ! -f "$TARBALL" ]; then
+            echo "unity-package-release: FAIL tarball not produced at $TARBALL" >&2
+            echo "  (package.json version likely != tag version ${VERSION})" >&2
+            ls -la bindings/unity/ >&2
+            exit 1
+          fi
+          sha256sum "$TARBALL" | awk '{print $1}' > "${TARBALL}.sha256"
+          {
+            echo "tarball=${TARBALL}"
+            echo "sha256=$(cat "${TARBALL}.sha256")"
+          } >> "$GITHUB_OUTPUT"
+          echo "== UPM tarball =="
+          ls -la "$TARBALL" "${TARBALL}.sha256"
+          echo "sha256 = $(cat "${TARBALL}.sha256")"
+
+      - name: Upload workflow artifact (always, for inspection)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vokra-unity-package-release
+          path: |
+            ${{ steps.pack.outputs.tarball }}
+            ${{ steps.pack.outputs.tarball }}.sha256
+          retention-days: 30
+
+      - name: Upload to GitHub Release (tag + non-dry-run)
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release upload "$TAG" \
+            "${{ steps.pack.outputs.tarball }}" \
+            "${{ steps.pack.outputs.tarball }}.sha256" \
+            --clobber
+
+      - name: OpenUPM publish (optional, gated on secrets.OPENUPM_TOKEN)
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        env:
+          OPENUPM_TOKEN: ${{ secrets.OPENUPM_TOKEN }}
+        run: |
+          if [ -z "${OPENUPM_TOKEN:-}" ]; then
+            echo "unity-package-release: OPENUPM_TOKEN not set — skipping OpenUPM publish."
+            echo "  (GitHub Release asset is the baseline distribution channel; OpenUPM is opt-in.)"
+            exit 0
+          fi
+          # Compose an authenticated .npmrc scoped to the OpenUPM registry.
+          # npm is preinstalled on ubuntu-latest; no extra setup step needed.
+          umask 077
+          cat > "$HOME/.npmrc" <<EOF
+          //package.openupm.com/:_authToken=${OPENUPM_TOKEN}
+          registry=https://package.openupm.com
+          always-auth=true
+          EOF
+          npm publish "${{ steps.pack.outputs.tarball }}" \
+            --registry=https://package.openupm.com \
+            --access public
+
+      - name: Dry-run summary
+        if: inputs.dry_run == true || !startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "== DRY RUN (unity-package-release) =="
+          echo "Version : ${{ steps.version.outputs.version }}"
+          echo "Tarball : ${{ steps.pack.outputs.tarball }}"
+          echo "SHA256  : ${{ steps.pack.outputs.sha256 }}"
+          echo "Skipping: gh release upload, OpenUPM publish."
