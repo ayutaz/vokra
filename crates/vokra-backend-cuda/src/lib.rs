@@ -97,4 +97,4 @@ pub use backend::CudaBackend;
 pub use probe::{CudaCapabilities, vokra_cuda_probe};
 
 #[cfg(any(unix, windows))]
-pub use context::CudaContext;
+pub use context::{CudaContext, CudaKvCache};

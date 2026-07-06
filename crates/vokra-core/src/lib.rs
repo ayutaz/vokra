@@ -124,7 +124,7 @@ pub use gguf::{
 };
 pub use ir::{AudioGraph, DType, Dim, GraphBuilder, Node, OpKind, TensorDesc, TensorId};
 pub use pipeline::{AudioPipeline, Pipeline, PipelineStage};
-pub use prenorm::PrenormLayer;
+pub use prenorm::{DecoderLayerView, PrenormLayer};
 pub use rng::SplitMix64;
 pub use runtime::{Tensor, run_graph};
 pub use safetensors::{SafeTensorInfo, SafetensorsError, SafetensorsFile};

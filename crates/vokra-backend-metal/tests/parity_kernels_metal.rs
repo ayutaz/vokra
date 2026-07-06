@@ -13,7 +13,7 @@
 
 use vokra_backend_cpu::kernels as cpu;
 use vokra_backend_metal::MetalContext;
-use vokra_core::PrenormLayer;
+use vokra_core::{KvCache, PrenormLayer};
 
 /// NFR-QL-01 FP32 parity ceiling.
 const ATOL: f32 = 0.01;
@@ -1302,4 +1302,270 @@ fn device_ops_match_host_in_out() {
     assert_eq!(dev, host, "attn_dev must equal attn_f32");
 
     eprintln!("Metal device-in/out ops all bit-identical to their host-in/out siblings");
+}
+
+// ---- Decoder-step Phase 2: device-resident self-attention K/V cache ---------
+
+/// The device [`MetalContext::kv_append`] primitive must reproduce a host
+/// [`KvCache`] project-and-concatenate: each step's `k = x·Wk (+b)` /
+/// `v = x·Wv (+b)` is written in place at the running row `len`. The multi-step
+/// result must equal
+/// (a) a single **monolithic** projection of all rows at once on the GPU — proving
+///     the offset write neither shifts nor corrupts rows (`max|Δ| == 0`), and
+/// (b) the host `KvCache` fed the same weights through the CPU GEMM oracle
+///     (within the FP32 `ATOL`).
+///
+/// Covers a forced multi-row prefix followed by single-token steps, bias on/off,
+/// and asserts the reserve is a true capacity the append never reallocates.
+#[test]
+fn kv_cache_append_matches_host_project_concat() {
+    let ctx = ctx_or_skip!("kv cache append");
+    // (d, width, step sizes). `width` is the projected K/V hidden size (== d for
+    // whisper self-attention, kept distinct here to exercise a general [d,width]
+    // projection).
+    let cases: [(usize, usize, &[usize]); 3] = [
+        (4, 4, &[1, 1, 1, 1]),
+        (16, 16, &[3, 1, 1, 2, 1]), // forced prefix (3) then single-token steps
+        (24, 24, &[5, 2, 1]),
+    ];
+    let mut worst_cpu = 0.0f32;
+    for (ci, &(d, width, steps)) in cases.iter().enumerate() {
+        let total: usize = steps.iter().sum();
+        let cap_rows = total + 5; // reserve strictly more than the decode needs
+        for with_bias in [false, true] {
+            let seed = 0x4B56_0001u64 ^ ((ci * 131 + usize::from(with_bias)) as u64);
+            let x_full = rand_vec(seed, total * d);
+            let k_w = rand_vec(seed ^ 0xA1, d * width);
+            let v_w = rand_vec(seed ^ 0xB2, d * width);
+            let k_b = rand_vec(seed ^ 0xC3, width);
+            let v_b = rand_vec(seed ^ 0xD4, width);
+            let (kb, vb) = if with_bias {
+                (Some(k_b.as_slice()), Some(v_b.as_slice()))
+            } else {
+                (None, None)
+            };
+
+            // Weights + biases uploaded once (constant across steps).
+            let kw_dev = ctx.upload(&k_w).unwrap();
+            let vw_dev = ctx.upload(&v_w).unwrap();
+            let kb_dev = kb.map(|b| ctx.upload(b).unwrap());
+            let vb_dev = vb.map(|b| ctx.upload(b).unwrap());
+
+            // (a) Device multi-step append.
+            let mut cache = ctx.new_kv_cache(cap_rows, width).expect("new_kv_cache");
+            assert!(cache.is_empty(), "a fresh cache is empty");
+            assert_eq!(cache.capacity_rows(), cap_rows, "reserve is the hard cap");
+            assert_eq!(cache.width(), width);
+            let mut row = 0usize;
+            for &t in steps {
+                let x_dev = ctx.upload(&x_full[row * d..(row + t) * d]).unwrap();
+                ctx.kv_append(
+                    &mut cache,
+                    t,
+                    d,
+                    &x_dev,
+                    &kw_dev,
+                    kb_dev.as_ref(),
+                    &vw_dev,
+                    vb_dev.as_ref(),
+                )
+                .expect("kv_append");
+                row += t;
+                assert_eq!(cache.len(), row, "len advances by each step's rows");
+            }
+            assert_eq!(cache.len(), total);
+            let mut dev_k = vec![0.0f32; total * width];
+            let mut dev_v = vec![0.0f32; total * width];
+            ctx.kv_download(&cache, &mut dev_k, &mut dev_v)
+                .expect("kv_download");
+
+            // (b) Device single-shot append of ALL rows at offset 0 (monolithic).
+            let mut mono = ctx.new_kv_cache(cap_rows, width).unwrap();
+            let x_all = ctx.upload(&x_full).unwrap();
+            ctx.kv_append(
+                &mut mono,
+                total,
+                d,
+                &x_all,
+                &kw_dev,
+                kb_dev.as_ref(),
+                &vw_dev,
+                vb_dev.as_ref(),
+            )
+            .unwrap();
+            let mut mono_k = vec![0.0f32; total * width];
+            let mut mono_v = vec![0.0f32; total * width];
+            ctx.kv_download(&mono, &mut mono_k, &mut mono_v).unwrap();
+            assert_eq!(
+                max_abs_diff(&dev_k, &mono_k),
+                0.0,
+                "K offset-append must be bit-identical to a monolithic projection (case {ci} bias={with_bias})"
+            );
+            assert_eq!(
+                max_abs_diff(&dev_v, &mono_v),
+                0.0,
+                "V offset-append must be bit-identical to a monolithic projection (case {ci} bias={with_bias})"
+            );
+
+            // (c) Host KvCache project+concat through the CPU GEMM oracle.
+            let mut host = KvCache::with_reserve(1, width, cap_rows);
+            let mut row = 0usize;
+            for &t in steps {
+                let x_step = &x_full[row * d..(row + t) * d];
+                let mut k_row = vec![0.0f32; t * width];
+                let mut v_row = vec![0.0f32; t * width];
+                cpu::gemm_f32(t, width, d, x_step, &k_w, kb, &mut k_row).unwrap();
+                cpu::gemm_f32(t, width, d, x_step, &v_w, vb, &mut v_row).unwrap();
+                host.append(0, &k_row, &v_row);
+                host.advance(t);
+                row += t;
+            }
+            let dk = max_abs_diff(&dev_k, host.k(0));
+            let dv = max_abs_diff(&dev_v, host.v(0));
+            assert!(
+                dk <= ATOL,
+                "device K vs host KvCache max|Δ| {dk:.3e} > {ATOL} (case {ci} bias={with_bias})"
+            );
+            assert!(
+                dv <= ATOL,
+                "device V vs host KvCache max|Δ| {dv:.3e} > {ATOL} (case {ci} bias={with_bias})"
+            );
+            worst_cpu = worst_cpu.max(dk).max(dv);
+        }
+    }
+    eprintln!(
+        "Metal KV cache append: offset-write bit-identical (Δ=0) to monolithic projection; vs host KvCache max|Δ| = {worst_cpu:.3e} (atol {ATOL})"
+    );
+}
+
+/// Feeding a device K/V cache (built by the [`MetalContext::kv_append`]
+/// primitive) into the Phase-1 causal fused attention
+/// ([`MetalContext::attn_causal_f32`]) must match the host path — a [`KvCache`]
+/// filled by the CPU projection, then the same causal multi-head attention on the
+/// CPU — within the FP32 `ATOL`. This closes the loop the primitive exists for:
+/// append K/V on the device across steps, then attend over the whole cache
+/// causally. The queries are the last `t_q` positions (`q_offset = t_kv - t_q`),
+/// so the final query attends every cached key.
+#[test]
+fn kv_cache_feeds_causal_attention_matches_cpu() {
+    let ctx = ctx_or_skip!("kv cache causal attn");
+    // (d, n_head, key-append steps, t_q); every d is divisible by n_head.
+    let cases: [(usize, usize, &[usize], usize); 3] = [
+        (16, 2, &[3, 1, 1], 2),
+        (24, 3, &[4, 2, 1, 1], 1),
+        (32, 8, &[6, 1, 1], 3),
+    ];
+    let mut worst = 0.0f32;
+    for (ci, &(d, n_head, steps, t_q)) in cases.iter().enumerate() {
+        let t_kv: usize = steps.iter().sum();
+        assert!(t_q <= t_kv);
+        let q_offset = t_kv - t_q;
+        let hd = d / n_head;
+        let scale = (hd as f32).powf(-0.5);
+        let seed = 0x4B56_1000u64 ^ (ci as u64 * 17);
+
+        // Self-attention K/V projection weights (width == d) + query operands.
+        let x_full = rand_vec(seed, t_kv * d);
+        let k_w = rand_vec(seed ^ 0x11, d * d);
+        let v_w = rand_vec(seed ^ 0x22, d * d);
+        let xq = rand_vec(seed ^ 0x33, t_q * d);
+        let q_w = rand_vec(seed ^ 0x44, d * d);
+        let out_w = rand_vec(seed ^ 0x55, d * d);
+
+        let kw_dev = ctx.upload(&k_w).unwrap();
+        let vw_dev = ctx.upload(&v_w).unwrap();
+
+        // Device cache: append the keys/values step by step.
+        let mut cache = ctx.new_kv_cache(t_kv, d).unwrap();
+        let mut row = 0usize;
+        for &t in steps {
+            let x_dev = ctx.upload(&x_full[row * d..(row + t) * d]).unwrap();
+            ctx.kv_append(&mut cache, t, d, &x_dev, &kw_dev, None, &vw_dev, None)
+                .unwrap();
+            row += t;
+        }
+        let mut dev_k = vec![0.0f32; t_kv * d];
+        let mut dev_v = vec![0.0f32; t_kv * d];
+        ctx.kv_download(&cache, &mut dev_k, &mut dev_v).unwrap();
+
+        // Device causal attention over the downloaded cache.
+        let mut dev_out = vec![0.0f32; t_q * d];
+        ctx.attn_causal_f32(
+            t_q,
+            t_kv,
+            d,
+            n_head,
+            &xq,
+            &q_w,
+            None,
+            &dev_k,
+            &dev_v,
+            &out_w,
+            None,
+            scale,
+            q_offset,
+            &mut dev_out,
+        )
+        .expect("attn_causal_f32");
+
+        // Host reference: KvCache (CPU projection) + CPU causal attention.
+        let mut host = KvCache::with_reserve(1, d, t_kv);
+        let mut row = 0usize;
+        for &t in steps {
+            let x_step = &x_full[row * d..(row + t) * d];
+            let mut k_row = vec![0.0f32; t * d];
+            let mut v_row = vec![0.0f32; t * d];
+            cpu::gemm_f32(t, d, d, x_step, &k_w, None, &mut k_row).unwrap();
+            cpu::gemm_f32(t, d, d, x_step, &v_w, None, &mut v_row).unwrap();
+            host.append(0, &k_row, &v_row);
+            host.advance(t);
+            row += t;
+        }
+        let cpu_gemm = |m: usize,
+                        n: usize,
+                        kk: usize,
+                        a: &[f32],
+                        b: &[f32],
+                        bias: Option<&[f32]>,
+                        o: &mut [f32]| {
+            cpu::gemm_f32(m, n, kk, a, b, bias, o).expect("cpu gemm");
+        };
+        // Causal softmax: mask keys `j > q_offset + i` before the plain softmax —
+        // exactly the host `-inf` mask the GPU causal kernel replicates.
+        let causal_softmax = |inp: &[f32], o: &mut [f32], rows: usize, cols: usize| {
+            let mut masked = inp.to_vec();
+            for i in 0..rows {
+                for j in (q_offset + i + 1)..cols {
+                    masked[i * cols + j] = f32::NEG_INFINITY;
+                }
+            }
+            cpu::softmax_f32(&masked, o, rows, cols).expect("cpu softmax");
+        };
+        let cpu_out = attn_reference(
+            &cpu_gemm,
+            &causal_softmax,
+            t_q,
+            t_kv,
+            d,
+            n_head,
+            &xq,
+            &q_w,
+            None,
+            host.k(0),
+            host.v(0),
+            &out_w,
+            None,
+            scale,
+        );
+
+        let diff = max_abs_diff(&dev_out, &cpu_out);
+        assert!(
+            diff <= ATOL,
+            "device KV → causal attn vs host KvCache + CPU causal attn max|Δ| {diff:.3e} > {ATOL} (case {ci})"
+        );
+        worst = worst.max(diff);
+    }
+    eprintln!(
+        "Metal KV cache → causal attention vs host KvCache + CPU: global max|Δ| = {worst:.3e} (atol {ATOL})"
+    );
 }

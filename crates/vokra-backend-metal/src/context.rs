@@ -35,7 +35,7 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::marker::PhantomData;
 
-use vokra_core::{PrenormLayer, Result, VokraError};
+use vokra_core::{DecoderLayerView, PrenormLayer, Result, VokraError};
 
 use crate::sys::{self, Id, MtlSize};
 
@@ -150,6 +150,65 @@ kernel void vokra_softmax_f32(
     const float inv = 1.0f / sum;
     for (uint j = 0; j < d.cols; ++j) {
         out[base + j] *= inv;
+    }
+}
+
+// ---- softmax_causal: row-wise softmax over the causally-visible key prefix ---
+// The decoder self-attention mask, fused into the softmax so the causal decode
+// step needs no separate mask write. Row `r` (query at absolute position
+// `q_offset + r`) attends keys `[0, q_offset + r]`; keys beyond that are the
+// "future" the causal mask hides. This is BIT-IDENTICAL to writing -INF into
+// scores[r, j>last] and running the plain softmax above:
+//   * max: column 0 is always visible (0 <= q_offset+r), the same seed; masked
+//     columns j>last would be -INF and never the max — so max over [0,last] is
+//     the same value;
+//   * sum: the masked columns contribute exp(-INF - m) = 0.0f, and `acc + 0.0f`
+//     is exactly `acc` (IEEE-754), so summing only [0,last] gives the identical
+//     partial sums in the identical ascending order;
+//   * out: masked columns get exactly 0.0f (as `0 * inv`), visible columns get
+//     `exp * inv` — identical.
+// For a single new token (t_q = 1) `last = q_offset = t_kv - 1`, so ALL keys are
+// visible and this is the plain softmax bit-for-bit; the mask only bites on the
+// multi-token prefix step (t_q > 1).
+struct SoftmaxCausalDims {
+    uint rows;
+    uint cols;
+    uint q_offset; // absolute position of query row 0
+};
+
+kernel void vokra_softmax_causal_f32(
+    device const float*         inp [[buffer(0)]],
+    device float*               out [[buffer(1)]],
+    constant SoftmaxCausalDims& d   [[buffer(2)]],
+    uint                        gid [[thread_position_in_grid]])
+{
+    const uint r = gid;
+    if (r >= d.rows) {
+        return;
+    }
+    const uint base = r * d.cols;
+    // Last visible key column for this row (clamped; the caller guarantees
+    // last < cols, so the clamp is defensive only).
+    uint last = d.q_offset + r;
+    if (last >= d.cols) {
+        last = d.cols - 1u;
+    }
+    float m = inp[base]; // column 0 is always visible (0 <= q_offset + r)
+    for (uint j = 1u; j <= last; ++j) {
+        m = fmax(m, inp[base + j]);
+    }
+    float sum = 0.0f;
+    for (uint j = 0u; j <= last; ++j) {
+        float e = exp(inp[base + j] - m);
+        out[base + j] = e;
+        sum += e;
+    }
+    const float inv = 1.0f / sum;
+    for (uint j = 0u; j <= last; ++j) {
+        out[base + j] *= inv;
+    }
+    for (uint j = last + 1u; j < d.cols; ++j) {
+        out[base + j] = 0.0f; // future keys -> 0 (exactly as the host mask does)
     }
 }
 
@@ -411,6 +470,16 @@ struct SoftmaxDims {
     cols: u32,
 }
 
+/// Causal-softmax dims (`setBytes:` index 2). Mirrors the MSL `struct
+/// SoftmaxCausalDims`; `q_offset` is the absolute position of query row 0.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SoftmaxCausalDims {
+    rows: u32,
+    cols: u32,
+    q_offset: u32,
+}
+
 /// Layer-norm dims (`setBytes:` index 4). The trailing `f32 eps` matches the MSL
 /// `struct LayerNormDims` (all fields 4-byte, so `#[repr(C)]` needs no padding).
 #[repr(C)]
@@ -525,6 +594,15 @@ struct AttnPassDims {
     scale: f32,
     has_q_bias: bool,
     has_out_bias: bool,
+    /// Whether the softmax over each query row masks the causal future
+    /// (`vokra_softmax_causal_f32`); `false` = the plain softmax (encoder
+    /// self-attention and decoder cross-attention). Decoder self-attention sets
+    /// this `true`.
+    causal: bool,
+    /// Absolute position of query row 0 (only read when `causal`): row `i`
+    /// attends keys `[0, q_offset + i]`. For a steady-state single-token step
+    /// this is `t_kv - 1` (all keys visible); for the prefix step it is 0.
+    q_offset: usize,
 }
 
 /// The already-allocated device buffers for one fused-attention pass chain: the
@@ -649,6 +727,66 @@ impl MetalDeviceTensor<'_> {
     }
 }
 
+/// A device-resident autoregressive self-attention key/value cache — the
+/// decoder-step Phase 2 primitive (create with [`MetalContext::new_kv_cache`],
+/// grow with [`MetalContext::kv_append`], read with
+/// [`MetalContext::kv_download`]).
+///
+/// Two `[cap_rows, width]` row-major buffers are reserved **once** to the hard
+/// `cap_rows` bound (the decoder's `n_text_ctx`); each decode step appends its
+/// new `[t, width]` rows by having the k/v-projection GEMM write in place at row
+/// `len`, so the cache never reallocates or copies mid-decode — the device
+/// analogue of the host [`vokra_core::KvCache`] (same append semantics, same
+/// bytes, only the destination is a device buffer at a row offset).
+///
+/// It owns raw [`OwnedBuf`]s (no `MetalDeviceTensor<'ctx>` borrow), so — like the
+/// [`MetalDecodeSession`]'s inline self-KV — it can outlive any single op and be
+/// carried across decode steps. `cap`/`len`/`width` are plain `usize`.
+pub struct MetalKvCache {
+    /// Key rows `[cap_rows, width]`, filled `[0, len)` from row 0 up.
+    k: OwnedBuf,
+    /// Value rows `[cap_rows, width]`, filled in lockstep with `k`.
+    v: OwnedBuf,
+    /// Reserved row capacity — the hard bound `kv_append` never exceeds.
+    cap_rows: usize,
+    /// Width (hidden size) of one cached row.
+    width: usize,
+    /// Committed rows (positions) currently in the cache.
+    len: usize,
+}
+
+impl MetalKvCache {
+    /// Committed rows (positions) currently in the cache.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether no rows have been appended yet.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The reserved row capacity (the hard `n_text_ctx` bound, never exceeded).
+    #[must_use]
+    pub fn capacity_rows(&self) -> usize {
+        self.cap_rows
+    }
+
+    /// The width (hidden size) of one cached key / value row.
+    #[must_use]
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// Rewinds to empty, keeping the reserved buffers so a fresh decode of the
+    /// same audio overwrites from row 0. Mirrors [`vokra_core::KvCache::reset`].
+    pub fn reset(&mut self) {
+        self.len = 0;
+    }
+}
+
 /// A Metal device + command queue + compiled GEMM pipeline.
 ///
 /// Holds three `+1`-owned Objective-C objects (device, queue, pipeline),
@@ -661,6 +799,7 @@ pub struct MetalContext {
     gemm_pipeline: Id,
     gemv_pipeline: Id,
     softmax_pipeline: Id,
+    softmax_causal_pipeline: Id,
     layer_norm_pipeline: Id,
     gelu_pipeline: Id,
     conv1d_pipeline: Id,
@@ -749,6 +888,9 @@ impl MetalContext {
         // SAFETY: as above.
         let softmax_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_softmax_f32") }?;
         // SAFETY: as above.
+        let softmax_causal_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_softmax_causal_f32") }?;
+        // SAFETY: as above.
         let layer_norm_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_layer_norm_f32") }?;
         // SAFETY: as above.
@@ -777,6 +919,7 @@ impl MetalContext {
             gemm_pipeline: gemm_pipeline.into_raw(),
             gemv_pipeline: gemv_pipeline.into_raw(),
             softmax_pipeline: softmax_pipeline.into_raw(),
+            softmax_causal_pipeline: softmax_causal_pipeline.into_raw(),
             layer_norm_pipeline: layer_norm_pipeline.into_raw(),
             gelu_pipeline: gelu_pipeline.into_raw(),
             conv1d_pipeline: conv1d_pipeline.into_raw(),
@@ -1121,6 +1264,66 @@ impl MetalContext {
             grid,
             tg,
             "softmax",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Row-wise **causal** softmax over a `rows × cols` buffer: row `r` (query at
+    /// absolute position `q_offset + r`) normalises over the visible key prefix
+    /// `[0, q_offset + r]` and writes `0.0` for future columns — bit-identical to
+    /// writing `-inf` into those columns and running [`Self::softmax_f32`] (see
+    /// the `vokra_softmax_causal_f32` kernel proof). The decode-step primitive;
+    /// exposed so the causal fused attention is unit-testable against the
+    /// host-mask + plain-softmax reference.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a shape mismatch;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    pub fn softmax_causal_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+        q_offset: usize,
+    ) -> Result<()> {
+        validate_rows_cols(input, out, rows, cols)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_softmax_causal(input, out, rows, cols, q_offset);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    fn run_softmax_causal(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+        q_offset: usize,
+    ) -> Result<()> {
+        let in_buf = self.new_buffer_from_slice(input)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = SoftmaxCausalDims {
+            rows: rows as u32,
+            cols: cols as u32,
+            q_offset: q_offset as u32,
+        };
+        let (grid, tg) = grid_1d(rows);
+        self.dispatch_compute(
+            self.softmax_causal_pipeline,
+            &[&in_buf, &out_buf],
+            (&dims as *const SoftmaxCausalDims).cast::<c_void>(),
+            size_of::<SoftmaxCausalDims>(),
+            grid,
+            tg,
+            "softmax_causal",
         )?;
         read_back(&out_buf, out)
     }
@@ -1549,7 +1752,53 @@ impl MetalContext {
         // matching pop below.
         let pool = unsafe { sys::objc_autoreleasePoolPush() };
         let r = self.run_attn(
-            t_q, t_kv, d, n_head, xq, q_w, q_bias, k, v, out_w, out_bias, scale, out,
+            t_q, t_kv, d, n_head, xq, q_w, q_bias, k, v, out_w, out_bias, scale, false, 0, out,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    /// Fused **causal** multi-head attention (host-in/out) — the decoder
+    /// self-attention sibling of [`Self::attn_f32`]. Query row `i` (absolute
+    /// position `q_offset + i`) attends keys `[0, q_offset + i]`; the causal mask
+    /// is fused into the softmax (`vokra_softmax_causal_f32`), so this is
+    /// bit-identical to writing `-inf` into the future scores and running the
+    /// plain fused attention. Every other pass is shared with [`Self::attn_f32`],
+    /// so the two chains are single-sourced. Used by the decode-step parity tests
+    /// and (via [`Self::encode_attn_passes`]) by [`MetalDecodeSession`].
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on any shape mismatch or `d % n_head != 0`;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    #[allow(clippy::too_many_arguments)] // fused-attention operand set (two Linears + K/V + dims)
+    pub fn attn_causal_f32(
+        &self,
+        t_q: usize,
+        t_kv: usize,
+        d: usize,
+        n_head: usize,
+        xq: &[f32],
+        q_w: &[f32],
+        q_bias: Option<&[f32]>,
+        k: &[f32],
+        v: &[f32],
+        out_w: &[f32],
+        out_bias: Option<&[f32]>,
+        scale: f32,
+        q_offset: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        validate_attn(
+            t_q, t_kv, d, n_head, xq, q_w, q_bias, k, v, out_w, out_bias, out,
+        )?;
+        // SAFETY: `objc_autoreleasePoolPush` returns a token consumed by the one
+        // matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_attn(
+            t_q, t_kv, d, n_head, xq, q_w, q_bias, k, v, out_w, out_bias, scale, true, q_offset,
+            out,
         );
         // SAFETY: `pool` is the token from the push above.
         unsafe { sys::objc_autoreleasePoolPop(pool) };
@@ -1578,6 +1827,8 @@ impl MetalContext {
         out_w: &[f32],
         out_bias: Option<&[f32]>,
         scale: f32,
+        causal: bool,
+        q_offset: usize,
         out: &mut [f32],
     ) -> Result<()> {
         let hd = d / n_head;
@@ -1625,6 +1876,8 @@ impl MetalContext {
                 scale,
                 has_q_bias: q_bias.is_some(),
                 has_out_bias: out_bias.is_some(),
+                causal,
+                q_offset,
             },
             &AttnPassBufs {
                 xq: &xq_buf,
@@ -1778,22 +2031,45 @@ impl MetalContext {
                 s_tg,
                 "attn scores",
             )?;
-            // probs = softmax_rows(scores) (no mask — non-causal).
-            let sm_dims = SoftmaxDims {
-                rows: t_q as u32,
-                cols: t_kv as u32,
-            };
+            // probs = softmax_rows(scores). Causal decoder self-attention masks
+            // the future in the fused `vokra_softmax_causal_f32` (the ONLY pass
+            // that differs from the non-causal chain); everything else — gather,
+            // transpose, both GEMMs, scatter — is byte-for-byte identical, so the
+            // numerics stay single-sourced. The dims locals are copied eagerly by
+            // `setBytes:`, so they need not outlive this pass.
             let (sm_grid, sm_tg) = grid_1d(t_q);
-            self.encode_pass(
-                cmd,
-                self.softmax_pipeline,
-                &[bufs.scores, bufs.probs],
-                (&sm_dims as *const SoftmaxDims).cast::<c_void>(),
-                size_of::<SoftmaxDims>(),
-                sm_grid,
-                sm_tg,
-                "attn softmax",
-            )?;
+            if dims.causal {
+                let smc_dims = SoftmaxCausalDims {
+                    rows: t_q as u32,
+                    cols: t_kv as u32,
+                    q_offset: dims.q_offset as u32,
+                };
+                self.encode_pass(
+                    cmd,
+                    self.softmax_causal_pipeline,
+                    &[bufs.scores, bufs.probs],
+                    (&smc_dims as *const SoftmaxCausalDims).cast::<c_void>(),
+                    size_of::<SoftmaxCausalDims>(),
+                    sm_grid,
+                    sm_tg,
+                    "attn softmax causal",
+                )?;
+            } else {
+                let sm_dims = SoftmaxDims {
+                    rows: t_q as u32,
+                    cols: t_kv as u32,
+                };
+                self.encode_pass(
+                    cmd,
+                    self.softmax_pipeline,
+                    &[bufs.scores, bufs.probs],
+                    (&sm_dims as *const SoftmaxDims).cast::<c_void>(),
+                    size_of::<SoftmaxDims>(),
+                    sm_grid,
+                    sm_tg,
+                    "attn softmax",
+                )?;
+            }
             // ctx_h[t_q,hd] = probs[t_q,t_kv] · vh[t_kv,hd].
             let ctx_dims = GemmDims {
                 m: t_q as u32,
@@ -2135,6 +2411,8 @@ impl MetalContext {
                     scale,
                     has_q_bias: q_bias.is_some(),
                     has_out_bias: out_bias.is_some(),
+                    causal: false,
+                    q_offset: 0,
                 },
                 &AttnPassBufs {
                     xq: &xq.buf,
@@ -2157,6 +2435,227 @@ impl MetalContext {
             )?;
             self.commit_and_wait(cmd, "attn_dev")
         })
+    }
+
+    /// Device-in/out row-major GEMM writing its `[m, n]` output at **row**
+    /// `out_row_offset` of `out` (one self-contained submission):
+    /// `out[out_row_offset + i, j] = bias?[j] + Σ_l a[i,l]·b[l,j]`. The
+    /// device-resident KV-cache append primitive — the k/v-proj GEMM writes the
+    /// step's new `[t, d]` rows directly into the resident `[n_text_ctx, d]` cache
+    /// at row `start`, so no separate copy is needed. Bit-identical to a plain
+    /// GEMM into a fresh `[m, n]` buffer (same kernel, same order, only the
+    /// destination is a byte offset into a bigger buffer).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a shape mismatch or if the offset region
+    /// `[out_row_offset, out_row_offset + m)` exceeds `out`'s rows;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    #[allow(clippy::too_many_arguments)] // intrinsic GEMM parameter set + the output row offset
+    pub fn gemm_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        out_row_offset: usize,
+        a: &MetalDeviceTensor<'_>,
+        b: &MetalDeviceTensor<'_>,
+        bias: Option<&MetalDeviceTensor<'_>>,
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<()> {
+        if m == 0 || n == 0 || k == 0 {
+            return Err(VokraError::InvalidArgument(
+                "gemm_dev dimensions m, n, k must all be >= 1".to_owned(),
+            ));
+        }
+        expect_len("gemm_dev a", a.len, checked_mul(m, k, "gemm_dev m*k")?)?;
+        expect_len("gemm_dev b", b.len, checked_mul(k, n, "gemm_dev k*n")?)?;
+        // The written region ends at row (out_row_offset + m); it must fit `out`.
+        let end_rows = out_row_offset.checked_add(m).ok_or_else(|| {
+            VokraError::InvalidArgument("gemm_dev row offset overflow".to_owned())
+        })?;
+        let need = checked_mul(end_rows, n, "gemm_dev (offset+m)*n")?;
+        if out.len < need {
+            return Err(VokraError::InvalidArgument(format!(
+                "gemm_dev out holds {} f32 but the offset write needs {need}",
+                out.len
+            )));
+        }
+        if let Some(bs) = bias {
+            expect_len("gemm_dev bias", bs.len, n)?;
+        }
+        self.pooled(|| {
+            let dummy = self.new_buffer_from_slice(&[0.0f32])?;
+            let cmd = self.new_command_buffer("gemm_dev")?;
+            self.encode_gemm_off(
+                cmd,
+                &a.buf,
+                &b.buf,
+                bias_or_dummy(bias, &dummy),
+                &out.buf,
+                out_row_offset * n,
+                m,
+                n,
+                k,
+                bias.is_some(),
+            )?;
+            self.commit_and_wait(cmd, "gemm_dev")
+        })
+    }
+
+    // ---- Decoder-step Phase 2: device-resident self-attention K/V cache ------
+
+    /// Reserves a device-resident autoregressive self-attention K/V cache
+    /// ([`MetalKvCache`]): two `[cap_rows, width]` buffers allocated **once** to
+    /// the hard `cap_rows` bound (the decoder's `n_text_ctx`), starting empty.
+    ///
+    /// This is the decode-step Phase 2 primitive: a growable-by-append device KV
+    /// cache whose rows are written in place by the k/v-projection GEMM (see
+    /// [`Self::kv_append`]), matching the host [`vokra_core::KvCache`] semantics
+    /// on the GPU without any per-step reallocation or copy. The
+    /// **cross**-attention encoder K/V, being fixed, is uploaded once with
+    /// [`Self::upload`] instead — it needs no reserve/append.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] if `cap_rows` or `width` is zero;
+    /// [`VokraError::BackendUnavailable`] if a buffer cannot be created.
+    pub fn new_kv_cache(&self, cap_rows: usize, width: usize) -> Result<MetalKvCache> {
+        if cap_rows == 0 || width == 0 {
+            return Err(VokraError::InvalidArgument(
+                "kv cache cap_rows and width must both be >= 1".to_owned(),
+            ));
+        }
+        let cap = checked_mul(cap_rows, width, "kv cache cap_rows*width")?;
+        Ok(MetalKvCache {
+            k: self.new_buffer_output(cap)?,
+            v: self.new_buffer_output(cap)?,
+            cap_rows,
+            width,
+            len: 0,
+        })
+    }
+
+    /// Appends one decode step's `t` new rows to `cache`, projected from the
+    /// device-resident `x` `[t, d]` by the key / value weight matrices
+    /// `k_w` / `v_w` `[d, width]` (+ optional `[width]` bias): the two projection
+    /// GEMMs write their `[t, width]` outputs **in place at row `cache.len`** of
+    /// the resident K / V buffers within **one** command buffer, then the
+    /// committed length advances by `t`.
+    ///
+    /// This is **bit-identical** to a host `project_kv` + [`vokra_core::KvCache`]
+    /// `append`: the very same GEMM kernel and operands, the only difference being
+    /// that the destination is a resident device buffer at a row byte-offset
+    /// (`cache.len * width * 4`) rather than a fresh host buffer — exactly the
+    /// offset write [`Self::gemm_dev`] proves. Reserve is a hard bound: appending
+    /// past `cache.capacity_rows()` is an explicit error, never a realloc.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a zero `t`/`d`, an operand-shape
+    /// mismatch, or an append that would exceed the reserved capacity;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    #[allow(clippy::too_many_arguments)] // k/v projection operand set (x + two weights + biases)
+    pub fn kv_append(
+        &self,
+        cache: &mut MetalKvCache,
+        t: usize,
+        d: usize,
+        x: &MetalDeviceTensor<'_>,
+        k_w: &MetalDeviceTensor<'_>,
+        k_bias: Option<&MetalDeviceTensor<'_>>,
+        v_w: &MetalDeviceTensor<'_>,
+        v_bias: Option<&MetalDeviceTensor<'_>>,
+    ) -> Result<()> {
+        if t == 0 || d == 0 {
+            return Err(VokraError::InvalidArgument(
+                "kv_append t and d must both be >= 1".to_owned(),
+            ));
+        }
+        let width = cache.width;
+        expect_len("kv_append x", x.len, checked_mul(t, d, "kv_append t*d")?)?;
+        let dw = checked_mul(d, width, "kv_append d*width")?;
+        expect_len("kv_append k_w", k_w.len, dw)?;
+        expect_len("kv_append v_w", v_w.len, dw)?;
+        if let Some(b) = k_bias {
+            expect_len("kv_append k_bias", b.len, width)?;
+        }
+        if let Some(b) = v_bias {
+            expect_len("kv_append v_bias", b.len, width)?;
+        }
+        // The new rows [len, len + t) must fit the reserved capacity (a hard
+        // bound: a device cache cannot grow mid-command-buffer).
+        let end = cache
+            .len
+            .checked_add(t)
+            .ok_or_else(|| VokraError::InvalidArgument("kv_append position overflow".to_owned()))?;
+        if end > cache.cap_rows {
+            return Err(VokraError::InvalidArgument(format!(
+                "kv_append: appending {t} rows at row {} exceeds the reserved capacity of {} rows",
+                cache.len, cache.cap_rows
+            )));
+        }
+        let off = checked_mul(cache.len, width, "kv_append len*width")?;
+        self.pooled(|| {
+            let dummy = self.new_buffer_from_slice(&[0.0f32])?;
+            let cmd = self.new_command_buffer("kv_append")?;
+            // K = x[t,d] @ k_w[d,width] (+k_bias) written at row `len`.
+            self.encode_gemm_off(
+                cmd,
+                &x.buf,
+                &k_w.buf,
+                bias_or_dummy(k_bias, &dummy),
+                &cache.k,
+                off,
+                t,
+                width,
+                d,
+                k_bias.is_some(),
+            )?;
+            // V = x[t,d] @ v_w[d,width] (+v_bias) written at the same row `len`.
+            self.encode_gemm_off(
+                cmd,
+                &x.buf,
+                &v_w.buf,
+                bias_or_dummy(v_bias, &dummy),
+                &cache.v,
+                off,
+                t,
+                width,
+                d,
+                v_bias.is_some(),
+            )?;
+            self.commit_and_wait(cmd, "kv_append")
+        })?;
+        cache.len = end;
+        Ok(())
+    }
+
+    /// Reads the committed `[len, width]` key and value rows back into host
+    /// buffers (`k_out` / `v_out`, each `len * width` f32). Appended rows occupy
+    /// the front of the reserved buffers (growth is from row 0), so this is a
+    /// prefix copy; call after the last [`Self::kv_append`] (which waits, so the
+    /// rows are readable immediately).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] if either output length differs from
+    /// `cache.len() * cache.width()`; [`VokraError::BackendUnavailable`] on a null
+    /// contents pointer.
+    pub fn kv_download(
+        &self,
+        cache: &MetalKvCache,
+        k_out: &mut [f32],
+        v_out: &mut [f32],
+    ) -> Result<()> {
+        let committed = checked_mul(cache.len, cache.width, "kv_download len*width")?;
+        expect_len("kv_download k_out", k_out.len(), committed)?;
+        expect_len("kv_download v_out", v_out.len(), committed)?;
+        if committed == 0 {
+            return Ok(());
+        }
+        read_back(&cache.k, k_out)?;
+        read_back(&cache.v, v_out)
     }
 
     // ---- Phase-5 follow-on: device-resident whole-encoder stack --------------
@@ -2345,6 +2844,8 @@ impl MetalContext {
                     scale,
                     has_q_bias: layer.q_bias.is_some(),
                     has_out_bias: layer.out_bias.is_some(),
+                    causal: false,
+                    q_offset: 0,
                 },
                 &AttnPassBufs {
                     xq: &ln.buf,
@@ -2536,6 +3037,85 @@ impl MetalContext {
         )
     }
 
+    /// Encodes a GEMM pass whose `[m, n]` output is written at element offset
+    /// `out_off` in `out` (the destination buffer bound at byte offset
+    /// `out_off·4`). Used by the decode-step KV-cache append: the k/v-proj GEMM
+    /// writes the step's new rows directly at cache row `start` (`out_off =
+    /// start·d`). `a`/`b`/`bias` are bound at offset 0. Same kernel / geometry as
+    /// [`Self::encode_gemm`]; the only difference is the output offset.
+    #[allow(clippy::too_many_arguments)] // intrinsic GEMM parameter set + the output offset
+    fn encode_gemm_off(
+        &self,
+        cmd: Id,
+        a: &OwnedBuf,
+        b: &OwnedBuf,
+        bias: &OwnedBuf,
+        out: &OwnedBuf,
+        out_off: usize,
+        m: usize,
+        n: usize,
+        k: usize,
+        has_bias: bool,
+    ) -> Result<()> {
+        let dims = GemmDims {
+            m: m as u32,
+            n: n as u32,
+            k: k as u32,
+            has_bias: u32::from(has_bias),
+        };
+        let (grid, tg) = grid_2d(n, m);
+        self.encode_pass_off(
+            cmd,
+            self.gemm_pipeline,
+            &[a, b, bias, out],
+            Some(&[0, 0, 0, out_off * size_of::<f32>()]),
+            (&dims as *const GemmDims).cast::<c_void>(),
+            size_of::<GemmDims>(),
+            grid,
+            tg,
+            "decode gemm@offset",
+        )
+    }
+
+    /// Encodes a matrix-vector pass whose input vector `x` starts at element
+    /// offset `x_off` in its buffer: `out[i] = Σ_l a[i·k + l]·x[x_off + l]`
+    /// (bias-less). Used by the decode-step tied-logits head: only the **last**
+    /// decoded row's logits are needed for greedy, so the gemv reads
+    /// `normed[(t-1)·d ..]` (`x_off = (t-1)·d`) — the same reduction the CPU
+    /// [`project_logits_into`]'s `t == 1` fast path runs, so it is bit-identical
+    /// on that row.
+    ///
+    /// [`project_logits_into`]: crate (whisper decoder)
+    #[allow(clippy::too_many_arguments)] // gemv operand set + input offset (Phase-3 decode head)
+    fn encode_gemv_off(
+        &self,
+        cmd: Id,
+        a: &OwnedBuf,
+        x: &OwnedBuf,
+        x_off: usize,
+        out: &OwnedBuf,
+        m: usize,
+        k: usize,
+    ) -> Result<()> {
+        let dims = GemvDims {
+            m: m as u32,
+            k: k as u32,
+            has_bias: 0,
+        };
+        let (grid, tg) = grid_1d(m);
+        self.encode_pass_off(
+            cmd,
+            self.gemv_pipeline,
+            &[a, x, a, out], // bias buffer is unused (has_bias = 0); bind `a` as a valid dummy
+            Some(&[0, x_off * size_of::<f32>(), 0, 0]),
+            (&dims as *const GemvDims).cast::<c_void>(),
+            size_of::<GemvDims>(),
+            grid,
+            tg,
+            "decode logits gemv@offset",
+        )
+    }
+
     /// Encodes an in-place residual-add pass into `cmd` (`dst[i] += src[i]`).
     fn encode_residual_add(&self, cmd: Id, dst: &OwnedBuf, src: &OwnedBuf, n: usize) -> Result<()> {
         let dims = AddAssignDims { n: n as u32 };
@@ -2574,12 +3154,41 @@ impl MetalContext {
         tg: MtlSize,
         what: &str,
     ) -> Result<()> {
+        self.encode_pass_off(cmd, pipeline, buffers, None, dims, dims_len, grid, tg, what)
+    }
+
+    /// Like [`Self::encode_pass`] but binds each buffer at an explicit **byte**
+    /// offset (`offsets[i]`, or `0` for every buffer when `offsets` is `None`).
+    /// The device-resident KV-cache append binds the k/v-proj GEMM output at the
+    /// cache row `start` (`offset = start·d·4`), and the tied-logits gemv binds
+    /// its input at the last decoded row — both a plain `setBuffer:offset:` on a
+    /// buffer the caller sized to hold the offset region. `offsets`, when `Some`,
+    /// must be exactly `buffers.len()` long.
+    #[allow(clippy::too_many_arguments)] // cmd + pipeline + buffers + offsets + dims + grid/tg + label
+    fn encode_pass_off(
+        &self,
+        cmd: Id,
+        pipeline: Id,
+        buffers: &[&OwnedBuf],
+        offsets: Option<&[usize]>,
+        dims: *const c_void,
+        dims_len: usize,
+        grid: MtlSize,
+        tg: MtlSize,
+        what: &str,
+    ) -> Result<()> {
+        debug_assert!(
+            offsets.is_none_or(|o| o.len() == buffers.len()),
+            "encode_pass_off: offsets length must match buffers length"
+        );
         // SAFETY: `cmd` is a valid command buffer from this context's queue;
         // `computeCommandEncoder` returns an autoreleased encoder (drained by the
         // caller's pool); `pipeline` is one of the context's compiled pipelines;
-        // each `buffers[i]` is a valid MTLBuffer bound at index `i`; `dims` points
-        // to `dims_len` readable bytes matching the kernel's `constant` struct at
-        // index `buffers.len()`; the two `MtlSize`s are passed per AAPCS64.
+        // each `buffers[i]` is a valid MTLBuffer bound at index `i` with byte
+        // offset `offsets[i]` (0 when `None`), which the caller guarantees lies
+        // within that buffer's length; `dims` points to `dims_len` readable bytes
+        // matching the kernel's `constant` struct at index `buffers.len()`; the
+        // two `MtlSize`s are passed per AAPCS64.
         unsafe {
             let enc = sys::send_id(cmd, sys::sel(b"computeCommandEncoder\0"));
             if enc.is_null() {
@@ -2590,7 +3199,8 @@ impl MetalContext {
             sys::send_void_id(enc, sys::sel(b"setComputePipelineState:\0"), pipeline);
             let set_buffer = sys::sel(b"setBuffer:offset:atIndex:\0");
             for (i, buf) in buffers.iter().enumerate() {
-                sys::send_set_buffer(enc, set_buffer, buf.0, 0, i);
+                let off = offsets.map_or(0, |o| o[i]);
+                sys::send_set_buffer(enc, set_buffer, buf.0, off, i);
             }
             sys::send_set_bytes(
                 enc,
@@ -2694,6 +3304,7 @@ impl Drop for MetalContext {
             release(self.conv1d_pipeline);
             release(self.gelu_pipeline);
             release(self.layer_norm_pipeline);
+            release(self.softmax_causal_pipeline);
             release(self.softmax_pipeline);
             release(self.gemv_pipeline);
             release(self.gemm_pipeline);
@@ -2701,6 +3312,645 @@ impl Drop for MetalContext {
             release(self.device);
         }
     }
+}
+
+// ---- Phase-5 decoder-step: device-resident autoregressive decode session -----
+
+/// One decoder layer's device-resident weights + KV cache for
+/// [`MetalDecodeSession`]. All buffers are `OwnedBuf` (no lifetime), uploaded /
+/// reserved once in [`MetalDecodeSession::new`] and reused for every decode step.
+/// Absent biases (Whisper's `k_proj`) stay `None` and bind the session's shared
+/// dummy at encode time.
+struct DevDecoderLayer {
+    self_ln_g: OwnedBuf,
+    self_ln_b: OwnedBuf,
+    self_q_w: OwnedBuf,
+    self_q_bias: Option<OwnedBuf>,
+    self_k_w: OwnedBuf,
+    self_k_bias: Option<OwnedBuf>,
+    self_v_w: OwnedBuf,
+    self_v_bias: Option<OwnedBuf>,
+    self_out_w: OwnedBuf,
+    self_out_bias: Option<OwnedBuf>,
+    cross_ln_g: OwnedBuf,
+    cross_ln_b: OwnedBuf,
+    cross_q_w: OwnedBuf,
+    cross_q_bias: Option<OwnedBuf>,
+    cross_out_w: OwnedBuf,
+    cross_out_bias: Option<OwnedBuf>,
+    /// Pre-projected cross-attention keys `[n_ctx, d]`, resident (uploaded once).
+    cross_k: OwnedBuf,
+    /// Pre-projected cross-attention values `[n_ctx, d]`, resident.
+    cross_v: OwnedBuf,
+    mlp_ln_g: OwnedBuf,
+    mlp_ln_b: OwnedBuf,
+    fc1_w: OwnedBuf,
+    fc1_bias: Option<OwnedBuf>,
+    fc2_w: OwnedBuf,
+    fc2_bias: Option<OwnedBuf>,
+    /// Resident self-attention **key** cache `[n_text_ctx, d]`; each step's k-proj
+    /// GEMM writes the new `[t, d]` rows at row `start` (`encode_gemm_off`).
+    self_k: OwnedBuf,
+    /// Resident self-attention **value** cache `[n_text_ctx, d]`.
+    self_v: OwnedBuf,
+}
+
+/// A device-resident autoregressive Whisper **decode session** (Phase-5
+/// decoder-step residency). Weights are uploaded **once**, the self-attention
+/// key/value cache is kept **on the GPU** and appended each step, the
+/// cross-attention keys/values are uploaded **once** from the (already projected)
+/// encoder output, and each decode step is collapsed to **one command-buffer
+/// submission + one logits readback** — versus the per-op path's `~20·N`
+/// submissions *and* a full-weight H2D on every op, every token.
+///
+/// It runs **exactly** the per-op decoder's op sequence (the same layer-norm /
+/// GEMM / fused attention / fused MLP / residual-add kernels, in the same order
+/// and launch geometry, with the causal self-attention using the fused
+/// masked-softmax proven bit-identical to the host `-inf` mask), so it is
+/// bit-identical to running the decoder step per-op on the GPU, and matches the
+/// CPU decoder within the FP32 bound — and the greedy argmax sequence is
+/// therefore identical.
+///
+/// # `!Send`, single-thread by nature
+///
+/// The session **owns** its [`MetalContext`] and holds only raw [`OwnedBuf`]
+/// device buffers (no `MetalDeviceTensor<'ctx>`, so no self-referential
+/// lifetime). It is `!Send` (the context and buffers are thread-affine), which is
+/// fine: an autoregressive GPU decode is inherently single-threaded (one
+/// thread-affine GPU context, a sequential token dependency). This is distinct
+/// from the `Send` host-side `DecoderState` (the CPU path, unchanged): the
+/// cross-thread-move story is a CPU-path property and does not need to hold for
+/// the GPU device path.
+///
+/// The device buffers are declared **before** `ctx` so Rust drops them first
+/// (every `MTLBuffer` released before the device the context owns is released).
+pub struct MetalDecodeSession {
+    layers: Vec<DevDecoderLayer>,
+    /// Tied logits head `[n_vocab, d]`, resident (also the token embedding table,
+    /// but the token gather is a host op, so only the logits projection needs it
+    /// on the device).
+    token_emb: OwnedBuf,
+    ln_post_g: OwnedBuf,
+    ln_post_b: OwnedBuf,
+    /// A 1-float never-read buffer bound where a bias is absent (`has_bias = 0`).
+    dummy: OwnedBuf,
+    /// Residual hidden stream `[max_t_q, d]` (each step's `[t, d]` embedding is
+    /// written here, then the residual adds mutate it in place).
+    h: OwnedBuf,
+    ln: OwnedBuf,
+    block_out: OwnedBuf,
+    normed: OwnedBuf,
+    q: OwnedBuf,
+    context: OwnedBuf,
+    qh: OwnedBuf,
+    ctx_h: OwnedBuf,
+    vh: OwnedBuf,
+    kh_t: OwnedBuf,
+    scores: OwnedBuf,
+    probs: OwnedBuf,
+    mlp_h: OwnedBuf,
+    mlp_a: OwnedBuf,
+    /// Resident `[n_vocab]` logits (the single per-step readback).
+    logits: OwnedBuf,
+    /// Host copy of the last step's `[n_vocab]` logits (what [`Self::last_logits`]
+    /// returns; the driver argmaxes it on the host).
+    logits_host: Vec<f32>,
+    d: usize,
+    n_head: usize,
+    ff: usize,
+    n_text_ctx: usize,
+    n_vocab: usize,
+    n_ctx: usize,
+    max_t_q: usize,
+    eps: f32,
+    scale: f32,
+    /// Committed token positions (the causal query offset for the next step).
+    pos: usize,
+    /// Owned last so it drops **after** every device buffer above.
+    ctx: MetalContext,
+}
+
+impl MetalDecodeSession {
+    /// Builds a decode session: creates its own [`MetalContext`], uploads every
+    /// decoder weight + the pre-projected cross-attention K/V (from `layers`) and
+    /// the tied logits head, and reserves the self-attention KV cache to the hard
+    /// `n_text_ctx` bound and the per-step scratch to `max_t_q` × the key window —
+    /// all **once**. `max_t_q` is the widest single step (the forced-prefix
+    /// width; steady-state steps decode one token).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a zero / mismatched dimension or a
+    /// weight-slice shape mismatch; [`VokraError::BackendUnavailable`] if there is
+    /// no Metal device or a buffer cannot be created.
+    #[allow(clippy::too_many_arguments)] // whole-decoder operand set (dims + weights + I/O)
+    pub fn new(
+        d: usize,
+        n_head: usize,
+        ff: usize,
+        n_text_ctx: usize,
+        n_vocab: usize,
+        n_ctx: usize,
+        max_t_q: usize,
+        eps: f32,
+        layers: &[DecoderLayerView<'_>],
+        token_emb: &[f32],
+        ln_post_gamma: &[f32],
+        ln_post_beta: &[f32],
+    ) -> Result<MetalDecodeSession> {
+        if d == 0 || n_head == 0 || ff == 0 || n_vocab == 0 || n_ctx == 0 {
+            return Err(VokraError::InvalidArgument(
+                "decode session dims d, n_head, ff, n_vocab, n_ctx must all be >= 1".to_owned(),
+            ));
+        }
+        if d % n_head != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "decode session d ({d}) must be divisible by n_head ({n_head})"
+            )));
+        }
+        if n_text_ctx == 0 || max_t_q == 0 || max_t_q > n_text_ctx {
+            return Err(VokraError::InvalidArgument(format!(
+                "decode session needs 1 <= max_t_q ({max_t_q}) <= n_text_ctx ({n_text_ctx})"
+            )));
+        }
+        let dd = checked_mul(d, d, "decode d*d")?;
+        let dff = checked_mul(d, ff, "decode d*ff")?;
+        let nctx_d = checked_mul(n_ctx, d, "decode n_ctx*d")?;
+        expect_len(
+            "decode token_emb",
+            token_emb.len(),
+            checked_mul(n_vocab, d, "decode n_vocab*d")?,
+        )?;
+        expect_len("decode ln_post_gamma", ln_post_gamma.len(), d)?;
+        expect_len("decode ln_post_beta", ln_post_beta.len(), d)?;
+        // Validate each layer's weight shapes before touching the GPU.
+        for (li, l) in layers.iter().enumerate() {
+            let w = |name: &str, got: usize, want: usize| {
+                expect_len(&format!("decode layer {li} {name}"), got, want)
+            };
+            w("self_ln_gamma", l.self_ln_gamma.len(), d)?;
+            w("self_ln_beta", l.self_ln_beta.len(), d)?;
+            w("self_q_w", l.self_q_w.len(), dd)?;
+            w("self_k_w", l.self_k_w.len(), dd)?;
+            w("self_v_w", l.self_v_w.len(), dd)?;
+            w("self_out_w", l.self_out_w.len(), dd)?;
+            w("cross_ln_gamma", l.cross_ln_gamma.len(), d)?;
+            w("cross_ln_beta", l.cross_ln_beta.len(), d)?;
+            w("cross_q_w", l.cross_q_w.len(), dd)?;
+            w("cross_out_w", l.cross_out_w.len(), dd)?;
+            w("cross_k", l.cross_k.len(), nctx_d)?;
+            w("cross_v", l.cross_v.len(), nctx_d)?;
+            w("mlp_ln_gamma", l.mlp_ln_gamma.len(), d)?;
+            w("mlp_ln_beta", l.mlp_ln_beta.len(), d)?;
+            w("fc1_w", l.fc1_w.len(), dff)?;
+            w("fc2_w", l.fc2_w.len(), dff)?;
+        }
+
+        let ctx = MetalContext::new()?;
+        // Upload is bracketed by one autorelease pool (the buffer creations send
+        // Objective-C messages).
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let built = Self::build(
+            &ctx,
+            d,
+            n_head,
+            ff,
+            n_text_ctx,
+            n_vocab,
+            n_ctx,
+            max_t_q,
+            layers,
+            token_emb,
+            ln_post_gamma,
+            ln_post_beta,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        let (mut buffers, dummy) = built?;
+
+        Ok(MetalDecodeSession {
+            layers: buffers.layers,
+            token_emb: buffers.token_emb.take().expect("token_emb built"),
+            ln_post_g: buffers.ln_post_g.take().expect("ln_post_g built"),
+            ln_post_b: buffers.ln_post_b.take().expect("ln_post_b built"),
+            dummy,
+            h: buffers.h.take().expect("h built"),
+            ln: buffers.ln.take().expect("ln built"),
+            block_out: buffers.block_out.take().expect("block_out built"),
+            normed: buffers.normed.take().expect("normed built"),
+            q: buffers.q.take().expect("q built"),
+            context: buffers.context.take().expect("context built"),
+            qh: buffers.qh.take().expect("qh built"),
+            ctx_h: buffers.ctx_h.take().expect("ctx_h built"),
+            vh: buffers.vh.take().expect("vh built"),
+            kh_t: buffers.kh_t.take().expect("kh_t built"),
+            scores: buffers.scores.take().expect("scores built"),
+            probs: buffers.probs.take().expect("probs built"),
+            mlp_h: buffers.mlp_h.take().expect("mlp_h built"),
+            mlp_a: buffers.mlp_a.take().expect("mlp_a built"),
+            logits: buffers.logits.take().expect("logits built"),
+            logits_host: vec![0.0f32; n_vocab],
+            d,
+            n_head,
+            ff,
+            n_text_ctx,
+            n_vocab,
+            n_ctx,
+            max_t_q,
+            eps,
+            scale: ((d / n_head) as f32).powf(-0.5),
+            pos: 0,
+            ctx,
+        })
+    }
+
+    /// Uploads all weights + the pre-projected cross-KV, reserves the self-KV
+    /// cache and the per-step scratch. Factored out of [`Self::new`] so the whole
+    /// H2D / allocation burst runs inside one autorelease pool. Returns the
+    /// buffers (in a builder holder) plus the shared bias dummy.
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        ctx: &MetalContext,
+        d: usize,
+        n_head: usize,
+        ff: usize,
+        n_text_ctx: usize,
+        _n_vocab: usize,
+        n_ctx: usize,
+        max_t_q: usize,
+        layers: &[DecoderLayerView<'_>],
+        token_emb: &[f32],
+        ln_post_gamma: &[f32],
+        ln_post_beta: &[f32],
+    ) -> Result<(SessionBuffers, OwnedBuf)> {
+        let up = |s: &[f32]| ctx.new_buffer_from_slice(s);
+        let up_opt = |s: Option<&[f32]>| -> Result<Option<OwnedBuf>> {
+            s.map(|d| ctx.new_buffer_from_slice(d)).transpose()
+        };
+        let hd = d / n_head;
+        let max_tkv = n_text_ctx.max(n_ctx);
+        // Reserve amounts (all fit — validated in `new`).
+        let ntc_d = checked_mul(n_text_ctx, d, "decode n_text_ctx*d")?;
+        let td = checked_mul(max_t_q, d, "decode max_t_q*d")?;
+        let thd = checked_mul(max_t_q, hd, "decode max_t_q*hd")?;
+        let tkvhd = checked_mul(max_tkv, hd, "decode max_tkv*hd")?;
+        let ttkv = checked_mul(max_t_q, max_tkv, "decode max_t_q*max_tkv")?;
+        let tff = checked_mul(max_t_q, ff, "decode max_t_q*ff")?;
+
+        let mut dev_layers = Vec::with_capacity(layers.len());
+        for l in layers {
+            dev_layers.push(DevDecoderLayer {
+                self_ln_g: up(l.self_ln_gamma)?,
+                self_ln_b: up(l.self_ln_beta)?,
+                self_q_w: up(l.self_q_w)?,
+                self_q_bias: up_opt(l.self_q_bias)?,
+                self_k_w: up(l.self_k_w)?,
+                self_k_bias: up_opt(l.self_k_bias)?,
+                self_v_w: up(l.self_v_w)?,
+                self_v_bias: up_opt(l.self_v_bias)?,
+                self_out_w: up(l.self_out_w)?,
+                self_out_bias: up_opt(l.self_out_bias)?,
+                cross_ln_g: up(l.cross_ln_gamma)?,
+                cross_ln_b: up(l.cross_ln_beta)?,
+                cross_q_w: up(l.cross_q_w)?,
+                cross_q_bias: up_opt(l.cross_q_bias)?,
+                cross_out_w: up(l.cross_out_w)?,
+                cross_out_bias: up_opt(l.cross_out_bias)?,
+                cross_k: up(l.cross_k)?,
+                cross_v: up(l.cross_v)?,
+                mlp_ln_g: up(l.mlp_ln_gamma)?,
+                mlp_ln_b: up(l.mlp_ln_beta)?,
+                fc1_w: up(l.fc1_w)?,
+                fc1_bias: up_opt(l.fc1_bias)?,
+                fc2_w: up(l.fc2_w)?,
+                fc2_bias: up_opt(l.fc2_bias)?,
+                self_k: ctx.new_buffer_output(ntc_d)?,
+                self_v: ctx.new_buffer_output(ntc_d)?,
+            });
+        }
+        let dummy = ctx.new_buffer_from_slice(&[0.0f32])?;
+        let buffers = SessionBuffers {
+            layers: dev_layers,
+            token_emb: Some(up(token_emb)?),
+            ln_post_g: Some(up(ln_post_gamma)?),
+            ln_post_b: Some(up(ln_post_beta)?),
+            h: Some(ctx.new_buffer_output(td)?),
+            ln: Some(ctx.new_buffer_output(td)?),
+            block_out: Some(ctx.new_buffer_output(td)?),
+            normed: Some(ctx.new_buffer_output(td)?),
+            q: Some(ctx.new_buffer_output(td)?),
+            context: Some(ctx.new_buffer_output(td)?),
+            qh: Some(ctx.new_buffer_output(thd)?),
+            ctx_h: Some(ctx.new_buffer_output(thd)?),
+            vh: Some(ctx.new_buffer_output(tkvhd)?),
+            kh_t: Some(ctx.new_buffer_output(tkvhd)?),
+            scores: Some(ctx.new_buffer_output(ttkv)?),
+            probs: Some(ctx.new_buffer_output(ttkv)?),
+            mlp_h: Some(ctx.new_buffer_output(tff)?),
+            mlp_a: Some(ctx.new_buffer_output(tff)?),
+            logits: Some(ctx.new_buffer_output(_n_vocab)?),
+        };
+        Ok((buffers, dummy))
+    }
+
+    /// Advances the decode by the `t` tokens whose `[t, d]` token+positional
+    /// embedding is `embedded` (the host gather; `t <= max_t_q`), starting at
+    /// committed position `start`. Runs the whole step device-resident in ONE
+    /// command buffer and leaves the last token's `[n_vocab]` logits in the host
+    /// buffer [`Self::last_logits`] returns.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a bad `t` / `start` / `embedded` length;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    pub fn step(&mut self, embedded: &[f32], t: usize, start: usize) -> Result<()> {
+        let d = self.d;
+        if t == 0 {
+            return Err(VokraError::InvalidArgument(
+                "decode step: t must be >= 1".to_owned(),
+            ));
+        }
+        if t > self.max_t_q {
+            return Err(VokraError::InvalidArgument(format!(
+                "decode step: t ({t}) exceeds the session's max_t_q ({})",
+                self.max_t_q
+            )));
+        }
+        expect_len(
+            "decode step embedded",
+            embedded.len(),
+            checked_mul(t, d, "decode step t*d")?,
+        )?;
+        let t_kv = start.checked_add(t).ok_or_else(|| {
+            VokraError::InvalidArgument("decode step position overflow".to_owned())
+        })?;
+        if t_kv > self.n_text_ctx {
+            return Err(VokraError::InvalidArgument(format!(
+                "decode step: position {t_kv} exceeds n_text_ctx {}",
+                self.n_text_ctx
+            )));
+        }
+        // Write this step's embedding into the resident `h` buffer (host copy on
+        // unified memory; no new device allocation).
+        write_buf(&self.h, embedded)?;
+
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_decode_step(t, start, t_kv);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r?;
+
+        // Single per-step readback of the last row's logits.
+        read_back(&self.logits, &mut self.logits_host)?;
+        self.pos = t_kv;
+        Ok(())
+    }
+
+    /// Encodes the whole decode step (`n_text_layer` blocks + final LayerNorm +
+    /// tied-logits gemv) into ONE command buffer and commits it once. `&self`: it
+    /// only reads the resident buffers and encodes passes (the host `pos` is
+    /// advanced by the caller after the readback). `t_kv = start + t`.
+    fn run_decode_step(&self, t: usize, start: usize, t_kv: usize) -> Result<()> {
+        let d = self.d;
+        let n_head = self.n_head;
+        let scale = self.scale;
+        let eps = self.eps;
+        let td = t * d;
+        let cmd = self.ctx.new_command_buffer("decode step")?;
+        for layer in &self.layers {
+            // --- causal self-attention over the growing KV cache ---
+            // ln = layer_norm(h, self_ln)
+            self.ctx.encode_layer_norm(
+                cmd,
+                &self.h,
+                &layer.self_ln_g,
+                &layer.self_ln_b,
+                &self.ln,
+                t,
+                d,
+                eps,
+            )?;
+            // Append this step's k/v rows AT cache row `start` (GEMM-writes-at-offset).
+            self.ctx.encode_gemm_off(
+                cmd,
+                &self.ln,
+                &layer.self_k_w,
+                opt_buf_or(layer.self_k_bias.as_ref(), &self.dummy),
+                &layer.self_k,
+                start * d,
+                t,
+                d,
+                d,
+                layer.self_k_bias.is_some(),
+            )?;
+            self.ctx.encode_gemm_off(
+                cmd,
+                &self.ln,
+                &layer.self_v_w,
+                opt_buf_or(layer.self_v_bias.as_ref(), &self.dummy),
+                &layer.self_v,
+                start * d,
+                t,
+                d,
+                d,
+                layer.self_v_bias.is_some(),
+            )?;
+            // Causal fused attention over the whole cache `[0, t_kv)`.
+            self.ctx.encode_attn_passes(
+                cmd,
+                &AttnPassDims {
+                    t_q: t,
+                    t_kv,
+                    d,
+                    n_head,
+                    scale,
+                    has_q_bias: layer.self_q_bias.is_some(),
+                    has_out_bias: layer.self_out_bias.is_some(),
+                    causal: true,
+                    q_offset: start,
+                },
+                &AttnPassBufs {
+                    xq: &self.ln,
+                    q_w: &layer.self_q_w,
+                    q_bias: opt_buf_or(layer.self_q_bias.as_ref(), &self.dummy),
+                    k: &layer.self_k,
+                    v: &layer.self_v,
+                    out_w: &layer.self_out_w,
+                    out_bias: opt_buf_or(layer.self_out_bias.as_ref(), &self.dummy),
+                    q: &self.q,
+                    context: &self.context,
+                    qh: &self.qh,
+                    vh: &self.vh,
+                    kh_t: &self.kh_t,
+                    scores: &self.scores,
+                    probs: &self.probs,
+                    ctx_h: &self.ctx_h,
+                    out: &self.block_out,
+                },
+            )?;
+            self.ctx
+                .encode_residual_add(cmd, &self.h, &self.block_out, td)?;
+
+            // --- cross-attention over the (fixed) encoder output ---
+            self.ctx.encode_layer_norm(
+                cmd,
+                &self.h,
+                &layer.cross_ln_g,
+                &layer.cross_ln_b,
+                &self.ln,
+                t,
+                d,
+                eps,
+            )?;
+            self.ctx.encode_attn_passes(
+                cmd,
+                &AttnPassDims {
+                    t_q: t,
+                    t_kv: self.n_ctx,
+                    d,
+                    n_head,
+                    scale,
+                    has_q_bias: layer.cross_q_bias.is_some(),
+                    has_out_bias: layer.cross_out_bias.is_some(),
+                    causal: false,
+                    q_offset: 0,
+                },
+                &AttnPassBufs {
+                    xq: &self.ln,
+                    q_w: &layer.cross_q_w,
+                    q_bias: opt_buf_or(layer.cross_q_bias.as_ref(), &self.dummy),
+                    k: &layer.cross_k,
+                    v: &layer.cross_v,
+                    out_w: &layer.cross_out_w,
+                    out_bias: opt_buf_or(layer.cross_out_bias.as_ref(), &self.dummy),
+                    q: &self.q,
+                    context: &self.context,
+                    qh: &self.qh,
+                    vh: &self.vh,
+                    kh_t: &self.kh_t,
+                    scores: &self.scores,
+                    probs: &self.probs,
+                    ctx_h: &self.ctx_h,
+                    out: &self.block_out,
+                },
+            )?;
+            self.ctx
+                .encode_residual_add(cmd, &self.h, &self.block_out, td)?;
+
+            // --- MLP ---
+            self.ctx.encode_layer_norm(
+                cmd,
+                &self.h,
+                &layer.mlp_ln_g,
+                &layer.mlp_ln_b,
+                &self.ln,
+                t,
+                d,
+                eps,
+            )?;
+            self.ctx.encode_mlp_passes(
+                cmd,
+                &MlpPassDims {
+                    t,
+                    d,
+                    ffn: self.ff,
+                    has_fc1_bias: layer.fc1_bias.is_some(),
+                    has_fc2_bias: layer.fc2_bias.is_some(),
+                },
+                &MlpPassBufs {
+                    x: &self.ln,
+                    fc1_w: &layer.fc1_w,
+                    fc1_bias: opt_buf_or(layer.fc1_bias.as_ref(), &self.dummy),
+                    fc2_w: &layer.fc2_w,
+                    fc2_bias: opt_buf_or(layer.fc2_bias.as_ref(), &self.dummy),
+                    h: &self.mlp_h,
+                    a: &self.mlp_a,
+                    out: &self.block_out,
+                },
+            )?;
+            self.ctx
+                .encode_residual_add(cmd, &self.h, &self.block_out, td)?;
+        }
+
+        // Final LayerNorm into `normed`, then the tied-logits gemv on the LAST
+        // decoded row (greedy needs only that row; bit-identical to the CPU
+        // `t == 1` fast path on that row).
+        self.ctx.encode_layer_norm(
+            cmd,
+            &self.h,
+            &self.ln_post_g,
+            &self.ln_post_b,
+            &self.normed,
+            t,
+            d,
+            eps,
+        )?;
+        self.ctx.encode_gemv_off(
+            cmd,
+            &self.token_emb,
+            &self.normed,
+            (t - 1) * d,
+            &self.logits,
+            self.n_vocab,
+            d,
+        )?;
+        self.ctx.commit_and_wait(cmd, "decode step")
+    }
+
+    /// The last step's `[n_vocab]` logits (the greedy / argmax read).
+    #[must_use]
+    pub fn last_logits(&self) -> &[f32] {
+        &self.logits_host
+    }
+
+    /// Committed token positions in the self-attention cache (the causal query
+    /// offset for the next [`Self::step`]).
+    #[must_use]
+    pub fn positions(&self) -> usize {
+        self.pos
+    }
+
+    /// Rewinds the position clock to 0 for a fresh decode of the same audio
+    /// (the resident weights + cross-KV stay valid; the self-KV rows are simply
+    /// overwritten from row 0 again). Mirrors [`vokra_core::KvCache::reset`].
+    pub fn reset(&mut self) {
+        self.pos = 0;
+    }
+
+    /// Command-buffer submissions issued through the owned context — one per
+    /// [`Self::step`] (plus the session's construction issues none).
+    #[must_use]
+    pub fn submission_count(&self) -> u64 {
+        self.ctx.submission_count()
+    }
+}
+
+/// Owned-buffer holder used only while [`MetalDecodeSession::new`] assembles the
+/// session: every scratch/weight buffer starts here (as `Option`, `take`n into
+/// the final struct) so the whole allocation burst can happen inside one
+/// autorelease pool before the `MetalDecodeSession` is formed.
+struct SessionBuffers {
+    layers: Vec<DevDecoderLayer>,
+    token_emb: Option<OwnedBuf>,
+    ln_post_g: Option<OwnedBuf>,
+    ln_post_b: Option<OwnedBuf>,
+    h: Option<OwnedBuf>,
+    ln: Option<OwnedBuf>,
+    block_out: Option<OwnedBuf>,
+    normed: Option<OwnedBuf>,
+    q: Option<OwnedBuf>,
+    context: Option<OwnedBuf>,
+    qh: Option<OwnedBuf>,
+    ctx_h: Option<OwnedBuf>,
+    vh: Option<OwnedBuf>,
+    kh_t: Option<OwnedBuf>,
+    scores: Option<OwnedBuf>,
+    probs: Option<OwnedBuf>,
+    mlp_h: Option<OwnedBuf>,
+    mlp_a: Option<OwnedBuf>,
+    logits: Option<OwnedBuf>,
 }
 
 /// 1-D launch: `count` threads in `TG`-wide threadgroups (grid measured in
@@ -2755,6 +4005,35 @@ fn read_back(buf: &OwnedBuf, out: &mut [f32]) -> Result<()> {
     // shared memory; copy them into the caller's slice.
     unsafe { core::ptr::copy_nonoverlapping(contents, out.as_mut_ptr(), out.len()) };
     Ok(())
+}
+
+/// Copies `data` into the first `data.len()` f32s of a shared buffer's `contents`
+/// (H2D on Apple unified memory). The decode session writes each step's
+/// `[t, d]` token embedding into its resident `h` buffer this way — one small
+/// host copy, no new device allocation. The write is host-ordered before the
+/// step's command buffer is committed, and shared storage is coherent, so the
+/// GPU sees it. `buf` must hold at least `data.len()` f32s.
+fn write_buf(buf: &OwnedBuf, data: &[f32]) -> Result<()> {
+    // SAFETY: `buf` is a valid shared MTLBuffer of at least `data.len()` f32s; its
+    // `contents` is host-writable (shared storage) before the buffer is used by a
+    // committed command buffer.
+    let contents = unsafe { sys::send_ptr(buf.0, sys::sel(b"contents\0")) } as *mut f32;
+    if contents.is_null() {
+        return Err(VokraError::BackendUnavailable(
+            "input MTLBuffer contents pointer is null".to_owned(),
+        ));
+    }
+    // SAFETY: `data` is valid for `data.len()` f32s; `contents` is the base of at
+    // least that many valid, non-overlapping f32s in shared memory.
+    unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), contents, data.len()) };
+    Ok(())
+}
+
+/// Picks the real `bias` buffer or the shared 1-float `dummy` (for an absent
+/// bias, bound but never read because `has_bias = 0`) — the `OwnedBuf` sibling of
+/// [`bias_or_dummy`].
+fn opt_buf_or<'a>(bias: Option<&'a OwnedBuf>, dummy: &'a OwnedBuf) -> &'a OwnedBuf {
+    bias.unwrap_or(dummy)
 }
 
 /// Compiles MSL `source` into an `MTLLibrary` on `device` (returned owned).

@@ -402,6 +402,67 @@ impl CudaDeviceTensor<'_> {
     }
 }
 
+/// A device-resident autoregressive self-attention key/value cache — the
+/// decoder-step Phase 2 primitive (create with [`CudaContext::new_kv_cache`],
+/// grow with [`CudaContext::kv_append`], read with [`CudaContext::kv_download`]),
+/// the CUDA analogue of `vokra-backend-metal`'s `MetalKvCache`.
+///
+/// Two `[cap_rows, width]` row-major buffers are reserved **once** to the hard
+/// `cap_rows` bound (the decoder's `n_text_ctx`); each decode step appends its new
+/// `[t, width]` rows by launching the k/v-projection GEMM with its output pointer
+/// advanced to row `len`, so the cache never reallocates or copies mid-decode —
+/// matching the host [`vokra_core::KvCache`] semantics on the device (same GEMM,
+/// same bytes, only the destination is the resident buffer at a row offset). The
+/// fixed **cross**-attention encoder K/V is uploaded once with
+/// [`CudaContext::upload`] instead; it needs no reserve/append.
+///
+/// Holds two [`CudaDeviceTensor`]s, so it borrows the context like every other
+/// device handle and cannot outlive it (`cuMemFree` needs the creating context).
+pub struct CudaKvCache<'ctx> {
+    /// Key rows `[cap_rows, width]`, filled `[0, len)` from row 0 up.
+    k: CudaDeviceTensor<'ctx>,
+    /// Value rows `[cap_rows, width]`, filled in lockstep with `k`.
+    v: CudaDeviceTensor<'ctx>,
+    /// Reserved row capacity — the hard bound `kv_append` never exceeds.
+    cap_rows: usize,
+    /// Width (hidden size) of one cached row.
+    width: usize,
+    /// Committed rows (positions) currently in the cache.
+    len: usize,
+}
+
+impl CudaKvCache<'_> {
+    /// Committed rows (positions) currently in the cache.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether no rows have been appended yet.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The reserved row capacity (the hard `n_text_ctx` bound, never exceeded).
+    #[must_use]
+    pub fn capacity_rows(&self) -> usize {
+        self.cap_rows
+    }
+
+    /// The width (hidden size) of one cached key / value row.
+    #[must_use]
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// Rewinds to empty, keeping the reserved buffers so a fresh decode of the
+    /// same audio overwrites from row 0. Mirrors [`vokra_core::KvCache::reset`].
+    pub fn reset(&mut self) {
+        self.len = 0;
+    }
+}
+
 /// Scalar shape of one fused-MLP launch chain, shared by [`CudaContext::run_mlp`],
 /// [`CudaContext::mlp_dev`] and [`CudaContext::encode_prenorm_stack`].
 struct MlpChainDims {
@@ -1636,6 +1697,162 @@ impl CudaContext {
     pub fn download(&self, t: &CudaDeviceTensor<'_>, out: &mut [f32]) -> Result<()> {
         expect_len("download out", out.len(), t.len)?;
         self.dtoh(&t.buf, out)
+    }
+
+    // ---- Decoder-step Phase 2: device-resident self-attention K/V cache ------
+
+    /// Reserves a device-resident autoregressive self-attention K/V cache
+    /// ([`CudaKvCache`]): two `[cap_rows, width]` buffers allocated **once** to the
+    /// hard `cap_rows` bound (the decoder's `n_text_ctx`), starting empty — the
+    /// CUDA analogue of `MetalContext::new_kv_cache`. The fixed cross-attention
+    /// encoder K/V is uploaded once with [`Self::upload`] instead.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] if `cap_rows` or `width` is zero;
+    /// [`VokraError::BackendUnavailable`] if a device buffer cannot be allocated.
+    pub fn new_kv_cache(&self, cap_rows: usize, width: usize) -> Result<CudaKvCache<'_>> {
+        if cap_rows == 0 || width == 0 {
+            return Err(VokraError::InvalidArgument(
+                "kv cache cap_rows and width must both be >= 1".to_owned(),
+            ));
+        }
+        let cap = checked_mul(cap_rows, width, "kv cache cap_rows*width")?;
+        Ok(CudaKvCache {
+            k: self.alloc_dev(cap)?,
+            v: self.alloc_dev(cap)?,
+            cap_rows,
+            width,
+            len: 0,
+        })
+    }
+
+    /// Appends one decode step's `t` new rows to `cache`, projected from the
+    /// device-resident `x` `[t, d]` by the key / value weight matrices
+    /// `k_w` / `v_w` `[d, width]` (+ optional `[width]` bias): the two projection
+    /// GEMMs launch with their output pointer **advanced to row `cache.len`** of the
+    /// resident K / V buffers (one stream, one synchronise), then the committed
+    /// length advances by `t`.
+    ///
+    /// Bit-identical to a host `project_kv` + [`vokra_core::KvCache`] `append`: the
+    /// same GEMM kernel and operands, the only difference being the destination is a
+    /// resident device buffer at a row byte-offset (`cache.len * width * 4`) rather
+    /// than a fresh host buffer. The reserve is a hard bound — appending past
+    /// `cache.capacity_rows()` is an explicit error, never a realloc.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a zero `t`/`d`, an operand-shape mismatch,
+    /// or an append exceeding the reserved capacity;
+    /// [`VokraError::BackendUnavailable`] on a device launch / sync failure.
+    #[allow(clippy::too_many_arguments)] // k/v projection operand set (x + two weights + biases)
+    pub fn kv_append(
+        &self,
+        cache: &mut CudaKvCache<'_>,
+        t: usize,
+        d: usize,
+        x: &CudaDeviceTensor<'_>,
+        k_w: &CudaDeviceTensor<'_>,
+        k_bias: Option<&CudaDeviceTensor<'_>>,
+        v_w: &CudaDeviceTensor<'_>,
+        v_bias: Option<&CudaDeviceTensor<'_>>,
+    ) -> Result<()> {
+        if t == 0 || d == 0 {
+            return Err(VokraError::InvalidArgument(
+                "kv_append t and d must both be >= 1".to_owned(),
+            ));
+        }
+        let width = cache.width;
+        expect_len("kv_append x", x.len, checked_mul(t, d, "kv_append t*d")?)?;
+        let dw = checked_mul(d, width, "kv_append d*width")?;
+        expect_len("kv_append k_w", k_w.len, dw)?;
+        expect_len("kv_append v_w", v_w.len, dw)?;
+        if let Some(b) = k_bias {
+            expect_len("kv_append k_bias", b.len, width)?;
+        }
+        if let Some(b) = v_bias {
+            expect_len("kv_append v_bias", b.len, width)?;
+        }
+        // The new rows [len, len + t) must fit the reserved capacity (a hard
+        // bound: a device cache cannot grow between launches).
+        let end = cache
+            .len
+            .checked_add(t)
+            .ok_or_else(|| VokraError::InvalidArgument("kv_append position overflow".to_owned()))?;
+        if end > cache.cap_rows {
+            return Err(VokraError::InvalidArgument(format!(
+                "kv_append: appending {t} rows at row {} exceeds the reserved capacity of {} rows",
+                cache.len, cache.cap_rows
+            )));
+        }
+        // Byte offset of row `len` in each resident buffer — the k/v GEMM writes
+        // its `[t, width]` output starting there.
+        let off = checked_mul(cache.len, width, "kv_append len*width")?;
+        let off_bytes =
+            checked_mul(off, size_of::<f32>(), "kv_append offset bytes")? as CUdeviceptr;
+        let k_out = cache.k.buf.ptr.checked_add(off_bytes).ok_or_else(|| {
+            VokraError::InvalidArgument("kv_append device offset overflow".to_owned())
+        })?;
+        let v_out = cache.v.buf.ptr.checked_add(off_bytes).ok_or_else(|| {
+            VokraError::InvalidArgument("kv_append device offset overflow".to_owned())
+        })?;
+        // A 1-float never-read device dummy bound where a bias is absent (the
+        // kernel reads bias only when has_bias != 0).
+        let dummy = self.alloc_dev(1)?;
+        let k_bias_ptr = k_bias.map_or(dummy.buf.ptr, |b| b.buf.ptr);
+        let v_bias_ptr = v_bias.map_or(dummy.buf.ptr, |b| b.buf.ptr);
+        // K = x[t,d] @ k_w[d,width] (+k_bias) at row `len`; V likewise. Two
+        // stream-ordered launches into distinct buffers, synchronised once.
+        self.launch_gemm_async(
+            x.buf.ptr,
+            k_w.buf.ptr,
+            k_bias_ptr,
+            k_out,
+            t,
+            width,
+            d,
+            k_bias.is_some(),
+        )?;
+        self.launch_gemm_async(
+            x.buf.ptr,
+            v_w.buf.ptr,
+            v_bias_ptr,
+            v_out,
+            t,
+            width,
+            d,
+            v_bias.is_some(),
+        )?;
+        self.sync_stream("cuStreamSynchronize")?;
+        cache.len = end;
+        Ok(())
+    }
+
+    /// Reads the committed `[len, width]` key and value rows back into host buffers
+    /// (`k_out` / `v_out`, each `len * width` f32). Appended rows occupy the front
+    /// of the reserved buffers (growth from row 0), so this is a prefix copy; call
+    /// after the last [`Self::kv_append`] (which synchronises, so the rows are
+    /// readable).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] if either output length differs from
+    /// `cache.len() * cache.width()`; [`VokraError::BackendUnavailable`] on a copy
+    /// failure.
+    pub fn kv_download(
+        &self,
+        cache: &CudaKvCache<'_>,
+        k_out: &mut [f32],
+        v_out: &mut [f32],
+    ) -> Result<()> {
+        let committed = checked_mul(cache.len, cache.width, "kv_download len*width")?;
+        expect_len("kv_download k_out", k_out.len(), committed)?;
+        expect_len("kv_download v_out", v_out.len(), committed)?;
+        if committed == 0 {
+            return Ok(());
+        }
+        self.dtoh(&cache.k.buf, k_out)?;
+        self.dtoh(&cache.v.buf, v_out)
     }
 
     /// Uploads an optional weight slice (a `None` bias stays `None`, bound as the
