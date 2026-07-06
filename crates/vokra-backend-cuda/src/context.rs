@@ -42,7 +42,7 @@ use core::cell::Cell;
 use core::ffi::{c_char, c_uint, c_void};
 use core::marker::PhantomData;
 
-use vokra_core::{PrenormLayer, Result, VokraError};
+use vokra_core::{DecoderLayerView, PrenormLayer, Result, VokraError};
 
 use crate::sys::{self, CUcontext, CUdeviceptr, CUfunction, CUmodule, CUstream, CudaDriver, Nvrtc};
 
@@ -140,6 +140,55 @@ extern "C" __global__ void vokra_softmax_f32(
     float inv = 1.0f / sum;
     for (unsigned int j = 0; j < cols; ++j) {
         out[base + j] *= inv;
+    }
+}
+
+// ---- softmax_causal: row-wise softmax over the causally-visible key prefix ---
+// The decoder self-attention mask, fused into the softmax so the causal decode
+// step needs no separate mask write. Row `r` (query at absolute position
+// `q_offset + r`) attends keys `[0, q_offset + r]`; keys beyond that are the
+// "future" the causal mask hides. This is BIT-IDENTICAL to writing -INF into
+// scores[r, j>last] and running the plain softmax above (same IEEE-754 argument
+// as the Metal `vokra_softmax_causal_f32` kernel: masked columns contribute
+// exp(-INF - m) = 0, and adding 0.0 leaves the accumulator unchanged; masked
+// output columns get exactly 0.0 as `0 * inv`).
+// For a single new token (t_q = 1) `last = q_offset = t_kv - 1`, so ALL keys are
+// visible and this is the plain softmax bit-for-bit; the mask only bites on the
+// multi-token prefix step (t_q > 1).
+extern "C" __global__ void vokra_softmax_causal_f32(
+    const float* inp,
+    float* out,
+    unsigned int rows,
+    unsigned int cols,
+    unsigned int q_offset)
+{
+    unsigned int r = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r >= rows) {
+        return;
+    }
+    unsigned int base = r * cols;
+    // Last visible key column for this row (clamped; the caller guarantees
+    // last < cols, so the clamp is defensive only).
+    unsigned int last = q_offset + r;
+    if (last >= cols) {
+        last = cols - 1u;
+    }
+    float m = inp[base]; // column 0 is always visible (0 <= q_offset + r)
+    for (unsigned int j = 1u; j <= last; ++j) {
+        m = fmaxf(m, inp[base + j]);
+    }
+    float sum = 0.0f;
+    for (unsigned int j = 0u; j <= last; ++j) {
+        float e = expf(inp[base + j] - m);
+        out[base + j] = e;
+        sum += e;
+    }
+    float inv = 1.0f / sum;
+    for (unsigned int j = 0u; j <= last; ++j) {
+        out[base + j] *= inv;
+    }
+    for (unsigned int j = last + 1u; j < cols; ++j) {
+        out[base + j] = 0.0f; // future keys -> 0 (exactly as the host mask does)
     }
 }
 
@@ -365,6 +414,44 @@ impl Drop for DeviceBuf<'_> {
     }
 }
 
+/// A `+`-owned device allocation that carries its own `cuMemFree` fn pointer
+/// (a copy of the driver's, since fn pointers are `Copy`), so it drops without a
+/// live borrow of the driver — the CUDA sibling of `vokra-backend-metal`'s
+/// `OwnedBuf`. Used by [`CudaDecodeSession`], which owns both the buffers and
+/// the [`CudaContext`] whose driver they were allocated from: `DeviceBuf<'ctx>`
+/// would be a self-referential struct in that setting (a field borrowing another
+/// field), so the session uses `OwnedDeviceBuf` instead. Drop order is enforced
+/// by putting `ctx` last in the session struct (Rust drops fields top-to-bottom,
+/// so every buffer's `cuMemFree` runs before the context's `cuCtxDestroy` and
+/// the `dlclose` in `_lib` that unloads `libcuda`).
+///
+/// `ptr = 0` is the empty sentinel (never allocated / already freed); Drop skips
+/// it, matching [`DeviceBuf`].
+struct OwnedDeviceBuf {
+    ptr: CUdeviceptr,
+    /// Element count (f32s) held in the buffer — only used for shape validation
+    /// inside the session; the drop only needs `ptr`.
+    len: usize,
+    /// Snapshot of the driver's `cuMemFree` fn pointer (copied at allocation).
+    /// Fn pointers are `Copy` and stay valid as long as `libcuda` is loaded; the
+    /// owning session drops its [`CudaContext`] (and hence `_lib`) only AFTER
+    /// every `OwnedDeviceBuf` has run its Drop.
+    free_fn: sys::FnCuMemFree,
+}
+
+impl Drop for OwnedDeviceBuf {
+    fn drop(&mut self) {
+        if self.ptr == 0 {
+            return;
+        }
+        // SAFETY: `ptr` is a live device allocation from `cuMemAlloc`, freed once
+        // via the driver-loaded `cuMemFree` fn pointer. `libcuda` is guaranteed
+        // loaded because the owning session's [`CudaContext`] (which owns the
+        // `DynLib` handle) is dropped strictly after this buffer (field order).
+        unsafe { (self.free_fn)(self.ptr) };
+    }
+}
+
 /// A public, cross-call handle to a device-resident `[f32]` buffer — the
 /// Phase-5-follow-on surface mirroring `vokra-backend-metal`'s `MetalDeviceTensor`
 /// (produced by [`CudaContext::upload`] / [`alloc_dev`], read back by
@@ -488,9 +575,15 @@ struct MlpChainPtrs {
 }
 
 /// Scalar shape of one fused-attention launch chain, shared by
-/// [`CudaContext::run_attn`], [`CudaContext::attn_dev`] and
-/// [`CudaContext::encode_prenorm_stack`]. `scale = head_dim^-0.5` is folded into
-/// the qh gather.
+/// [`CudaContext::run_attn`], [`CudaContext::attn_dev`],
+/// [`CudaContext::encode_prenorm_stack`] and the decoder-step Phase-3b
+/// `CudaDecodeSession`. `scale = head_dim^-0.5` is folded into the qh gather.
+/// `causal = true` swaps in `vokra_softmax_causal_f32` for the decoder
+/// self-attention (`q_offset` = the absolute position of query row 0); every
+/// other pass — gather, transpose, both GEMMs, scatter — is byte-for-byte
+/// identical to the non-causal chain, so the numerics stay single-sourced. On
+/// `causal = false` the plain `vokra_softmax_f32` runs and `q_offset` is
+/// ignored.
 struct AttnChainDims {
     t_q: usize,
     t_kv: usize,
@@ -499,6 +592,15 @@ struct AttnChainDims {
     scale: f32,
     has_q_bias: bool,
     has_out_bias: bool,
+    /// Whether the softmax over each query row masks the causal future
+    /// (`vokra_softmax_causal_f32`); `false` = the plain softmax (encoder /
+    /// cross-attention path).
+    causal: bool,
+    /// Absolute position of query row 0 (only read when `causal`): row `i`
+    /// attends keys `[0, q_offset + i]`. For a steady-state single-token step
+    /// `t_q == 1` and `q_offset == t_kv - 1`; for a prefix step (`t_q > 1`)
+    /// `q_offset == t_kv - t_q`.
+    q_offset: usize,
 }
 
 /// Device pointers for one fused-attention launch chain: inputs (`xq`, `q_w`,
@@ -564,6 +666,10 @@ pub struct CudaContext {
     gemm: CUfunction,
     gemv: CUfunction,
     softmax: CUfunction,
+    /// Causal softmax fused with the decoder self-attention mask (decoder-step
+    /// Phase 3b, byte-for-byte parity with the Metal `vokra_softmax_causal_f32`
+    /// kernel). Distinct kernel — never a runtime branch inside `softmax`.
+    softmax_causal: CUfunction,
     layer_norm: CUfunction,
     gelu: CUfunction,
     conv1d: CUfunction,
@@ -630,6 +736,7 @@ impl CudaContext {
                 gemm: m.gemm,
                 gemv: m.gemv,
                 softmax: m.softmax,
+                softmax_causal: m.softmax_causal,
                 layer_norm: m.layer_norm,
                 gelu: m.gelu,
                 conv1d: m.conv1d,
@@ -1417,6 +1524,8 @@ impl CudaContext {
                 scale,
                 has_q_bias: q_bias.is_some(),
                 has_out_bias: out_bias.is_some(),
+                causal: false,
+                q_offset: 0,
             },
             &AttnChainPtrs {
                 xq: xq_buf.ptr,
@@ -1571,20 +1680,43 @@ impl CudaContext {
                 &mut p_scores,
                 "cuLaunchKernel(vokra_gemm_f32 attn scores)",
             )?;
-            // probs = softmax_rows(scores) (no mask — non-causal).
-            let mut p_soft: [*mut c_void; 4] = [
-                ptr_arg(&ptrs.scores),
-                ptr_arg(&ptrs.probs),
-                uint_arg(&t_q_u),
-                uint_arg(&t_kv_u),
-            ];
-            self.launch_async(
-                self.softmax,
-                lin_grid(t_q),
-                lin_block,
-                &mut p_soft,
-                "cuLaunchKernel(vokra_softmax_f32 attn)",
-            )?;
+            // probs = softmax_rows(scores). Causal decoder self-attention masks
+            // the future in the fused `vokra_softmax_causal_f32` (the ONLY pass
+            // that differs from the non-causal chain); everything else — gather,
+            // transpose, both GEMMs, scatter — is byte-for-byte identical, so the
+            // numerics stay single-sourced (Metal parity: mirror of
+            // `encode_attn_passes`'s causal branch).
+            if dims.causal {
+                let q_offset_u = dims.q_offset as c_uint;
+                let mut p_soft_c: [*mut c_void; 5] = [
+                    ptr_arg(&ptrs.scores),
+                    ptr_arg(&ptrs.probs),
+                    uint_arg(&t_q_u),
+                    uint_arg(&t_kv_u),
+                    uint_arg(&q_offset_u),
+                ];
+                self.launch_async(
+                    self.softmax_causal,
+                    lin_grid(t_q),
+                    lin_block,
+                    &mut p_soft_c,
+                    "cuLaunchKernel(vokra_softmax_causal_f32 attn)",
+                )?;
+            } else {
+                let mut p_soft: [*mut c_void; 4] = [
+                    ptr_arg(&ptrs.scores),
+                    ptr_arg(&ptrs.probs),
+                    uint_arg(&t_q_u),
+                    uint_arg(&t_kv_u),
+                ];
+                self.launch_async(
+                    self.softmax,
+                    lin_grid(t_q),
+                    lin_block,
+                    &mut p_soft,
+                    "cuLaunchKernel(vokra_softmax_f32 attn)",
+                )?;
+            }
             // ctx_h[t_q,hd] = probs[t_q,t_kv] · vh[t_kv,hd] (bias-less GEMM).
             let mut p_ctx: [*mut c_void; 8] = [
                 ptr_arg(&ptrs.probs),
@@ -1697,6 +1829,44 @@ impl CudaContext {
     pub fn download(&self, t: &CudaDeviceTensor<'_>, out: &mut [f32]) -> Result<()> {
         expect_len("download out", out.len(), t.len)?;
         self.dtoh(&t.buf, out)
+    }
+
+    /// Allocates an uninitialised `len`-f32 [`OwnedDeviceBuf`] — the
+    /// lifetime-free sibling of [`Self::alloc_dev`], used by [`CudaDecodeSession`]
+    /// which owns both the buffers and this context.
+    fn alloc_owned(&self, len: usize) -> Result<OwnedDeviceBuf> {
+        let bytes = checked_mul(len, size_of::<f32>(), "alloc_owned bytes")?;
+        let buf = self.alloc(bytes)?;
+        // Defuse the borrowed-driver `DeviceBuf` into an `OwnedDeviceBuf` that
+        // carries a copy of the free fn: the raw device ptr moves ownership, and
+        // `core::mem::forget(buf)` cancels the borrowed-driver `Drop`.
+        let ptr = buf.ptr;
+        core::mem::forget(buf);
+        Ok(OwnedDeviceBuf {
+            ptr,
+            len,
+            free_fn: self.driver.cu_mem_free,
+        })
+    }
+
+    /// H2D upload of `data` into a fresh [`OwnedDeviceBuf`] (allocate + copy).
+    fn upload_owned(&self, data: &[f32]) -> Result<OwnedDeviceBuf> {
+        let buf = self.alloc_owned(data.len())?;
+        // Use `htod` with a temporary borrowed `DeviceBuf` view; `htod` only
+        // reads `ptr`, so this borrows the driver just for the copy.
+        let view = DeviceBuf {
+            driver: &self.driver,
+            ptr: buf.ptr,
+        };
+        let r = self.htod(&view, data);
+        core::mem::forget(view); // buf owns the alloc; don't double-free
+        r?;
+        Ok(buf)
+    }
+
+    /// Optional upload: `Some(slice) -> Some(OwnedDeviceBuf)`, `None -> None`.
+    fn upload_owned_opt(&self, data: Option<&[f32]>) -> Result<Option<OwnedDeviceBuf>> {
+        data.map(|d| self.upload_owned(d)).transpose()
     }
 
     // ---- Decoder-step Phase 2: device-resident self-attention K/V cache ------
@@ -2100,6 +2270,8 @@ impl CudaContext {
                 scale,
                 has_q_bias: q_bias.is_some(),
                 has_out_bias: out_bias.is_some(),
+                causal: false,
+                q_offset: 0,
             },
             &AttnChainPtrs {
                 xq: xq.buf.ptr,
@@ -2295,6 +2467,8 @@ impl CudaContext {
                     scale,
                     has_q_bias: layer.q_bias.is_some(),
                     has_out_bias: layer.out_bias.is_some(),
+                    causal: false,
+                    q_offset: 0,
                 },
                 &AttnChainPtrs {
                     xq: ln.buf.ptr,
@@ -2438,6 +2612,48 @@ impl CudaContext {
             (BLOCK, BLOCK, 1),
             &mut params,
             "cuLaunchKernel(vokra_gemm_f32 prenorm)",
+        )
+    }
+
+    /// Issues a single bias-less gemv launch on the stream (no synchronise):
+    /// `out[i] = Σ_l A[i·k + l] · x[l]` for `i in 0..m` (has_bias = 0). Used by
+    /// the decoder-step Phase-3b `CudaDecodeSession` tied-logits head — the
+    /// caller pre-advances `x` / `out` to the current decoded row's byte offset
+    /// (`x + i·d·4`, `out + i·n_vocab·4`), so ALL `[t, n_vocab]` rows are
+    /// produced in ONE synchronise while each row remains a plain per-row
+    /// reduction (the same math the CPU
+    /// `whisper::decoder::project_logits_into`'s `t == 1` fast path runs on its
+    /// single row). `bias` is bound but never read (`has_bias = 0`); the caller
+    /// passes a valid dummy pointer.
+    #[allow(clippy::too_many_arguments)] // intrinsic bias-less gemv parameter set
+    fn launch_gemv_async(
+        &self,
+        a: CUdeviceptr,
+        x: CUdeviceptr,
+        bias: CUdeviceptr,
+        out: CUdeviceptr,
+        m: usize,
+        k: usize,
+    ) -> Result<()> {
+        let m_u = m as c_uint;
+        let k_u = k as c_uint;
+        let hb: c_uint = 0; // tied logits head is bias-less
+        let mut params: [*mut c_void; 7] = [
+            ptr_arg(&a),
+            ptr_arg(&x),
+            ptr_arg(&bias),
+            ptr_arg(&out),
+            uint_arg(&m_u),
+            uint_arg(&k_u),
+            uint_arg(&hb),
+        ];
+        let grid = (m.div_ceil(BLOCK_1D as usize) as c_uint, 1, 1);
+        self.launch_async(
+            self.gemv,
+            grid,
+            (BLOCK_1D, 1, 1),
+            &mut params,
+            "cuLaunchKernel(vokra_gemv_f32 decode logits)",
         )
     }
 
@@ -2618,6 +2834,782 @@ impl core::fmt::Debug for CudaContext {
     }
 }
 
+// =====================================================================
+// Decoder-step Phase 3b: device-resident CUDA decode session
+// =====================================================================
+//
+// The autoregressive-decode sibling of [`CudaContext::encode_prenorm_stack`],
+// bit-for-bit mirroring `vokra-backend-metal`'s `MetalDecodeSession` (Phase 3a):
+// every decoder weight + the pre-projected cross-K/V is uploaded ONCE at
+// construction, the self-attention K/V cache is reserved ONCE to the hard
+// `n_text_ctx` bound, and each [`CudaDecodeSession::step`] issues the whole
+// decode step's launches on the owned stream and synchronises ONCE + reads back
+// the full `[t, n_vocab]` tied-head logits — no per-step allocation, no per-op
+// synchronise.
+//
+// The same math the CPU per-op decode step runs (whisper::decoder::step), just
+// re-emitted as launches on the single CUDA stream: `n_text_layer × [ln → self-
+// attn (causal, KV-append via GEMM writing at row offset `start`) → residual →
+// ln → cross-attn (non-causal, resident cross K/V) → residual → ln → mlp →
+// residual]` + final ln + `t × gemv` into the resident logits scratch. The
+// per-head attention chain is the exact `launch_attn_chain` the encoder /
+// per-op `attn_dev` use (single-sourced kernel numerics), with the softmax
+// swapped for `vokra_softmax_causal_f32` on the self-attention pass (`causal =
+// true, q_offset = start`). The FP32 accumulation order / reduction shape are
+// unchanged, so the session is bit-for-bit within the FP32 bound of the per-op
+// GPU path AND the CPU decoder (parity: same as Metal Phase 3a, proven on M1).
+
+/// One decoder block's weights + its per-layer self-attention K/V cache,
+/// resident on the device — the CUDA sibling of the Metal `DevDecoderLayer`
+/// used by `MetalDecodeSession`. Every field is an [`OwnedDeviceBuf`] so the
+/// session can own both the buffers and the [`CudaContext`] whose driver
+/// allocated them (Drop order: buffers first, ctx last — enforced by field
+/// order in [`CudaDecodeSession`]). Absent biases (Whisper's `k`) stay `None`
+/// and bind the shared 1-float dummy at launch time.
+struct DevDecoderLayer {
+    // Pre-self-attention LayerNorm (γ, β) — `[d]`.
+    self_ln_g: OwnedDeviceBuf,
+    self_ln_b: OwnedDeviceBuf,
+    // Self-attention projections (`[d, d]`, biases `[d]`; Whisper `k` has no bias).
+    self_q_w: OwnedDeviceBuf,
+    self_q_bias: Option<OwnedDeviceBuf>,
+    self_k_w: OwnedDeviceBuf,
+    self_k_bias: Option<OwnedDeviceBuf>,
+    self_v_w: OwnedDeviceBuf,
+    self_v_bias: Option<OwnedDeviceBuf>,
+    self_out_w: OwnedDeviceBuf,
+    self_out_bias: Option<OwnedDeviceBuf>,
+    // Pre-cross-attention LayerNorm + cross Q / out projections (`[d, d]`).
+    cross_ln_g: OwnedDeviceBuf,
+    cross_ln_b: OwnedDeviceBuf,
+    cross_q_w: OwnedDeviceBuf,
+    cross_q_bias: Option<OwnedDeviceBuf>,
+    cross_out_w: OwnedDeviceBuf,
+    cross_out_bias: Option<OwnedDeviceBuf>,
+    // Pre-projected cross-attention K/V (`[n_ctx, d]`; computed by the model
+    // layer from the encoder output once and uploaded once here).
+    cross_k: OwnedDeviceBuf,
+    cross_v: OwnedDeviceBuf,
+    // Pre-MLP LayerNorm + MLP linears.
+    mlp_ln_g: OwnedDeviceBuf,
+    mlp_ln_b: OwnedDeviceBuf,
+    fc1_w: OwnedDeviceBuf,
+    fc1_bias: Option<OwnedDeviceBuf>,
+    fc2_w: OwnedDeviceBuf,
+    fc2_bias: Option<OwnedDeviceBuf>,
+    // Resident self-attention KV cache `[n_text_ctx, d]`, filled `[0, pos)`
+    // (the k/v-proj GEMMs write at row `start` each step; see `step`).
+    self_k: OwnedDeviceBuf,
+    self_v: OwnedDeviceBuf,
+}
+
+/// A device-resident Whisper decoder-step driver — the CUDA (M2 Phase 3b)
+/// sibling of `vokra-backend-metal`'s `MetalDecodeSession`.
+///
+/// Built once at [`CudaDecodeSession::new`]: every decoder weight (all
+/// `n_text_layer` blocks, the tied logits head, the final LayerNorm) and the
+/// pre-projected cross-attention K/V are H2D uploaded, the self-attention KV
+/// cache is reserved to the hard `n_text_ctx` bound, and the per-step scratch
+/// (`[max_t_q, ·]` intermediates for `h`, `ln`, `q`, per-head `qh/vh/kh_t`,
+/// `scores/probs`, `mlp_h/mlp_a`, and the `[max_t_q, n_vocab]` logits buffer)
+/// is allocated ONCE. Each [`Self::step`] then advances the decode
+/// device-resident: writes the caller's `[t, d]` token+positional embedding
+/// into the resident `h`, issues every layer's launches on the owned CUDA
+/// stream (no synchronise between them), fires `t` bias-less gemvs for the
+/// tied-logits head, and does ONE `cuStreamSynchronize` + ONE D2H of the
+/// `[t · n_vocab]` logits prefix into [`Self::all_logits`] / [`Self::last_logits`].
+///
+/// # `Send`, thread-affine at use
+///
+/// The session **owns** its [`CudaContext`] and holds only [`OwnedDeviceBuf`]
+/// device buffers (a raw `CUdeviceptr` + a copy of `cuMemFree`; no
+/// `CudaDeviceTensor<'ctx>`, so no self-referential lifetime). Even though the
+/// `CudaContext` handles (`CUcontext`, `CUstream`, `CUmodule`, `CUfunction` —
+/// each `*mut c_void`) are `!Send` at the Rust type level, moving the whole
+/// session across threads is safe: an [`OwnedDeviceBuf`]'s `ptr` is a `u64` and
+/// its `free_fn` is a Copy fn pointer (both `Send`), and no CUDA state is held
+/// mid-flight between calls — every launch is enqueued and awaited inside a
+/// single [`Self::step`] call. Callers moving a session between threads must
+/// ensure the owned [`CudaContext`] is bound to the calling thread (via
+/// `cuCtxSetCurrent`) before the first `step` on the new thread — the same
+/// contract the CUDA driver documents for its context handles. `Send` is
+/// asserted here (in the backend crate, whose `#![allow(unsafe_code)]` opt-out
+/// permits it) so the model-layer `DecoderState` (whose
+/// `assert_send::<DecoderState>()` compile-time bound + cross-thread decode
+/// test both cover the cuda feature via CI's `--features cuda` matrix) stays
+/// `Send`. `Sync` is deliberately NOT asserted: an autoregressive step depends
+/// on the previous step's KV cache write and the session sits behind a `&mut`
+/// on `DecoderState`, so Rust's ownership rules already enforce
+/// single-thread-at-a-time access.
+///
+/// The device buffers are declared **before** `ctx` so Rust drops them first
+/// (every `OwnedDeviceBuf`'s `cuMemFree` runs before `CudaContext`'s
+/// `cuCtxDestroy` + the `dlclose` in `_lib` that unloads `libcuda`).
+pub struct CudaDecodeSession {
+    layers: Vec<DevDecoderLayer>,
+    /// Tied logits head `[n_vocab, d]` — also the token embedding table, but
+    /// the token gather is a host op, so only the logits projection needs it
+    /// on the device.
+    token_emb: OwnedDeviceBuf,
+    /// Final decoder LayerNorm (γ, β), each `[d]`.
+    ln_post_g: OwnedDeviceBuf,
+    ln_post_b: OwnedDeviceBuf,
+    /// A 1-float never-read device buffer bound where a bias is absent
+    /// (`has_bias = 0`).
+    dummy: OwnedDeviceBuf,
+    /// Residual hidden stream `[max_t_q, d]` (each step's `[t, d]` embedding is
+    /// written here, then the residual adds mutate it in place).
+    h: OwnedDeviceBuf,
+    ln: OwnedDeviceBuf,
+    block_out: OwnedDeviceBuf,
+    normed: OwnedDeviceBuf,
+    q: OwnedDeviceBuf,
+    context: OwnedDeviceBuf,
+    qh: OwnedDeviceBuf,
+    ctx_h: OwnedDeviceBuf,
+    vh: OwnedDeviceBuf,
+    kh_t: OwnedDeviceBuf,
+    scores: OwnedDeviceBuf,
+    probs: OwnedDeviceBuf,
+    mlp_h: OwnedDeviceBuf,
+    mlp_a: OwnedDeviceBuf,
+    /// Resident `[max_t_q, n_vocab]` logits (row-major). Each step's tied head
+    /// produces every decoded row (`[t, n_vocab]`); the readback pulls only the
+    /// `t · n_vocab` prefix `step` wrote.
+    logits: OwnedDeviceBuf,
+    /// Host copy of the last step's `[max_t_q, n_vocab]` logits scratch.
+    /// [`Self::last_logits`] returns the last row; [`Self::all_logits`] returns
+    /// the `[last_t, n_vocab]` prefix `step` wrote.
+    logits_host: Vec<f32>,
+    d: usize,
+    n_head: usize,
+    ff: usize,
+    n_text_ctx: usize,
+    n_vocab: usize,
+    n_ctx: usize,
+    max_t_q: usize,
+    eps: f32,
+    scale: f32,
+    /// Committed token positions (the causal query offset for the next step).
+    pos: usize,
+    /// Row count the last [`Self::step`] wrote (`0` before the first step).
+    last_t: usize,
+    /// Owned last so it drops **after** every device buffer above.
+    ctx: CudaContext,
+}
+
+// SAFETY: The session owns a [`CudaContext`] and a set of [`OwnedDeviceBuf`]
+// (raw device pointers + a Copy fn pointer). `CudaContext` is `!Send` at the
+// Rust type level because it holds `*mut c_void` module / function / context /
+// stream handles, but every one of those handles refers to CUDA driver state
+// that is thread-transferable: the driver contract lets a context be made
+// current on any thread via `cuCtxSetCurrent`, streams / modules / functions
+// are just handles into the (transferable) context, and there is no interior
+// non-thread-safe state held **between** [`Self::step`] calls — each step
+// enqueues launches on the owned stream and awaits them inside the same call.
+// So moving the whole session across threads is safe: the caller ensures the
+// owned context is bound to the new thread before the first `step` there (the
+// documented CUDA contract). This `Send` impl lets the model-layer
+// `DecoderState` (which holds `Option<DecoderStepSession>`) stay `Send` — the
+// compile-time `assert_send::<DecoderState>()` bound and the cross-thread
+// decode test both stay green under `--features cuda`, without either
+// reuploading every weight per step or duplicating attention math in
+// `compute.rs`. `Sync` is deliberately NOT asserted: every step depends on the
+// previous step's KV write and the caller borrows the session `&mut`, so
+// shared-borrow concurrency has no meaning here.
+unsafe impl Send for CudaDecodeSession {}
+
+impl CudaDecodeSession {
+    /// Builds a decode session: creates its own [`CudaContext`], uploads every
+    /// decoder weight + the pre-projected cross-attention K/V (from `layers`) +
+    /// the tied logits head, and reserves the self-attention KV cache to the
+    /// hard `n_text_ctx` bound and the per-step scratch to `max_t_q` × the key
+    /// window — all **once**. `max_t_q` is the widest single step (the
+    /// forced-prefix width; steady-state steps decode one token).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a zero / mismatched dimension or a
+    /// weight-slice shape mismatch; [`VokraError::BackendUnavailable`] if there
+    /// is no CUDA driver / GPU or a device allocation / copy fails.
+    #[allow(clippy::too_many_arguments)] // whole-decoder operand set (dims + weights + I/O)
+    pub fn new(
+        d: usize,
+        n_head: usize,
+        ff: usize,
+        n_text_ctx: usize,
+        n_vocab: usize,
+        n_ctx: usize,
+        max_t_q: usize,
+        eps: f32,
+        layers: &[DecoderLayerView<'_>],
+        token_emb: &[f32],
+        ln_post_gamma: &[f32],
+        ln_post_beta: &[f32],
+    ) -> Result<CudaDecodeSession> {
+        if d == 0 || n_head == 0 || ff == 0 || n_vocab == 0 || n_ctx == 0 {
+            return Err(VokraError::InvalidArgument(
+                "decode session dims d, n_head, ff, n_vocab, n_ctx must all be >= 1".to_owned(),
+            ));
+        }
+        if d % n_head != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "decode session d ({d}) must be divisible by n_head ({n_head})"
+            )));
+        }
+        if n_text_ctx == 0 || max_t_q == 0 || max_t_q > n_text_ctx {
+            return Err(VokraError::InvalidArgument(format!(
+                "decode session needs 1 <= max_t_q ({max_t_q}) <= n_text_ctx ({n_text_ctx})"
+            )));
+        }
+        let dd = checked_mul(d, d, "decode d*d")?;
+        let dff = checked_mul(d, ff, "decode d*ff")?;
+        let nctx_d = checked_mul(n_ctx, d, "decode n_ctx*d")?;
+        expect_len(
+            "decode token_emb",
+            token_emb.len(),
+            checked_mul(n_vocab, d, "decode n_vocab*d")?,
+        )?;
+        expect_len("decode ln_post_gamma", ln_post_gamma.len(), d)?;
+        expect_len("decode ln_post_beta", ln_post_beta.len(), d)?;
+        // Validate each layer's weight shapes before touching the GPU.
+        for (li, l) in layers.iter().enumerate() {
+            let w = |name: &str, got: usize, want: usize| {
+                expect_len(&format!("decode layer {li} {name}"), got, want)
+            };
+            w("self_ln_gamma", l.self_ln_gamma.len(), d)?;
+            w("self_ln_beta", l.self_ln_beta.len(), d)?;
+            w("self_q_w", l.self_q_w.len(), dd)?;
+            w("self_k_w", l.self_k_w.len(), dd)?;
+            w("self_v_w", l.self_v_w.len(), dd)?;
+            w("self_out_w", l.self_out_w.len(), dd)?;
+            w("cross_ln_gamma", l.cross_ln_gamma.len(), d)?;
+            w("cross_ln_beta", l.cross_ln_beta.len(), d)?;
+            w("cross_q_w", l.cross_q_w.len(), dd)?;
+            w("cross_out_w", l.cross_out_w.len(), dd)?;
+            w("cross_k", l.cross_k.len(), nctx_d)?;
+            w("cross_v", l.cross_v.len(), nctx_d)?;
+            w("mlp_ln_gamma", l.mlp_ln_gamma.len(), d)?;
+            w("mlp_ln_beta", l.mlp_ln_beta.len(), d)?;
+            w("fc1_w", l.fc1_w.len(), dff)?;
+            w("fc2_w", l.fc2_w.len(), dff)?;
+        }
+
+        let ctx = CudaContext::new()?;
+        let built = Self::build(
+            &ctx,
+            d,
+            n_head,
+            ff,
+            n_text_ctx,
+            n_vocab,
+            n_ctx,
+            max_t_q,
+            layers,
+            token_emb,
+            ln_post_gamma,
+            ln_post_beta,
+        );
+        let (mut buffers, dummy) = built?;
+
+        Ok(CudaDecodeSession {
+            layers: buffers.layers,
+            token_emb: buffers.token_emb.take().expect("token_emb built"),
+            ln_post_g: buffers.ln_post_g.take().expect("ln_post_g built"),
+            ln_post_b: buffers.ln_post_b.take().expect("ln_post_b built"),
+            dummy,
+            h: buffers.h.take().expect("h built"),
+            ln: buffers.ln.take().expect("ln built"),
+            block_out: buffers.block_out.take().expect("block_out built"),
+            normed: buffers.normed.take().expect("normed built"),
+            q: buffers.q.take().expect("q built"),
+            context: buffers.context.take().expect("context built"),
+            qh: buffers.qh.take().expect("qh built"),
+            ctx_h: buffers.ctx_h.take().expect("ctx_h built"),
+            vh: buffers.vh.take().expect("vh built"),
+            kh_t: buffers.kh_t.take().expect("kh_t built"),
+            scores: buffers.scores.take().expect("scores built"),
+            probs: buffers.probs.take().expect("probs built"),
+            mlp_h: buffers.mlp_h.take().expect("mlp_h built"),
+            mlp_a: buffers.mlp_a.take().expect("mlp_a built"),
+            logits: buffers.logits.take().expect("logits built"),
+            logits_host: vec![0.0f32; checked_mul(max_t_q, n_vocab, "decode max_t_q*n_vocab")?],
+            d,
+            n_head,
+            ff,
+            n_text_ctx,
+            n_vocab,
+            n_ctx,
+            max_t_q,
+            eps,
+            scale: ((d / n_head) as f32).powf(-0.5),
+            pos: 0,
+            last_t: 0,
+            ctx,
+        })
+    }
+
+    /// Uploads all weights + the pre-projected cross-KV, reserves the self-KV
+    /// cache and the per-step scratch. Factored out of [`Self::new`] so the
+    /// whole H2D + allocation burst is a single pass; a failure mid-way frees
+    /// every buffer already allocated (their [`OwnedDeviceBuf`] `Drop`s do).
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        ctx: &CudaContext,
+        d: usize,
+        n_head: usize,
+        ff: usize,
+        n_text_ctx: usize,
+        n_vocab: usize,
+        n_ctx: usize,
+        max_t_q: usize,
+        layers: &[DecoderLayerView<'_>],
+        token_emb: &[f32],
+        ln_post_gamma: &[f32],
+        ln_post_beta: &[f32],
+    ) -> Result<(CudaSessionBuffers, OwnedDeviceBuf)> {
+        let up = |s: &[f32]| ctx.upload_owned(s);
+        let up_opt = |s: Option<&[f32]>| ctx.upload_owned_opt(s);
+        let hd = d / n_head;
+        let max_tkv = n_text_ctx.max(n_ctx);
+        // Reserve amounts (all fit — validated in `new`).
+        let ntc_d = checked_mul(n_text_ctx, d, "decode n_text_ctx*d")?;
+        let td = checked_mul(max_t_q, d, "decode max_t_q*d")?;
+        let thd = checked_mul(max_t_q, hd, "decode max_t_q*hd")?;
+        let tkvhd = checked_mul(max_tkv, hd, "decode max_tkv*hd")?;
+        let ttkv = checked_mul(max_t_q, max_tkv, "decode max_t_q*max_tkv")?;
+        let tff = checked_mul(max_t_q, ff, "decode max_t_q*ff")?;
+        // `[max_t_q, n_vocab]` — the tied head produces every decoded row, so
+        // the model-layer path can compare against the CPU decoder's
+        // `[t, n_vocab]` output (not just the greedy last-row read).
+        let tv = checked_mul(max_t_q, n_vocab, "decode max_t_q*n_vocab")?;
+
+        let mut dev_layers = Vec::with_capacity(layers.len());
+        for l in layers {
+            dev_layers.push(DevDecoderLayer {
+                self_ln_g: up(l.self_ln_gamma)?,
+                self_ln_b: up(l.self_ln_beta)?,
+                self_q_w: up(l.self_q_w)?,
+                self_q_bias: up_opt(l.self_q_bias)?,
+                self_k_w: up(l.self_k_w)?,
+                self_k_bias: up_opt(l.self_k_bias)?,
+                self_v_w: up(l.self_v_w)?,
+                self_v_bias: up_opt(l.self_v_bias)?,
+                self_out_w: up(l.self_out_w)?,
+                self_out_bias: up_opt(l.self_out_bias)?,
+                cross_ln_g: up(l.cross_ln_gamma)?,
+                cross_ln_b: up(l.cross_ln_beta)?,
+                cross_q_w: up(l.cross_q_w)?,
+                cross_q_bias: up_opt(l.cross_q_bias)?,
+                cross_out_w: up(l.cross_out_w)?,
+                cross_out_bias: up_opt(l.cross_out_bias)?,
+                cross_k: up(l.cross_k)?,
+                cross_v: up(l.cross_v)?,
+                mlp_ln_g: up(l.mlp_ln_gamma)?,
+                mlp_ln_b: up(l.mlp_ln_beta)?,
+                fc1_w: up(l.fc1_w)?,
+                fc1_bias: up_opt(l.fc1_bias)?,
+                fc2_w: up(l.fc2_w)?,
+                fc2_bias: up_opt(l.fc2_bias)?,
+                self_k: ctx.alloc_owned(ntc_d)?,
+                self_v: ctx.alloc_owned(ntc_d)?,
+            });
+        }
+        let dummy = ctx.upload_owned(&[0.0f32])?;
+        let buffers = CudaSessionBuffers {
+            layers: dev_layers,
+            token_emb: Some(up(token_emb)?),
+            ln_post_g: Some(up(ln_post_gamma)?),
+            ln_post_b: Some(up(ln_post_beta)?),
+            h: Some(ctx.alloc_owned(td)?),
+            ln: Some(ctx.alloc_owned(td)?),
+            block_out: Some(ctx.alloc_owned(td)?),
+            normed: Some(ctx.alloc_owned(td)?),
+            q: Some(ctx.alloc_owned(td)?),
+            context: Some(ctx.alloc_owned(td)?),
+            qh: Some(ctx.alloc_owned(thd)?),
+            ctx_h: Some(ctx.alloc_owned(thd)?),
+            vh: Some(ctx.alloc_owned(tkvhd)?),
+            kh_t: Some(ctx.alloc_owned(tkvhd)?),
+            scores: Some(ctx.alloc_owned(ttkv)?),
+            probs: Some(ctx.alloc_owned(ttkv)?),
+            mlp_h: Some(ctx.alloc_owned(tff)?),
+            mlp_a: Some(ctx.alloc_owned(tff)?),
+            logits: Some(ctx.alloc_owned(tv)?),
+        };
+        Ok((buffers, dummy))
+    }
+
+    /// Advances the decode by the `t` tokens whose `[t, d]` token+positional
+    /// embedding is `embedded` (the host gather; `t <= max_t_q`), starting at
+    /// committed position `start`. Runs the whole step device-resident on the
+    /// owned stream and reads back the full `[t, n_vocab]` tied-head logits
+    /// (one row per decoded token, row-major) into [`Self::all_logits`];
+    /// [`Self::last_logits`] reads the last of those rows for the greedy /
+    /// argmax path.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a bad `t` / `start` / `embedded`
+    /// length; [`VokraError::BackendUnavailable`] on a CUDA failure.
+    pub fn step(&mut self, embedded: &[f32], t: usize, start: usize) -> Result<()> {
+        let d = self.d;
+        if t == 0 {
+            return Err(VokraError::InvalidArgument(
+                "decode step: t must be >= 1".to_owned(),
+            ));
+        }
+        if t > self.max_t_q {
+            return Err(VokraError::InvalidArgument(format!(
+                "decode step: t ({t}) exceeds the session's max_t_q ({})",
+                self.max_t_q
+            )));
+        }
+        expect_len(
+            "decode step embedded",
+            embedded.len(),
+            checked_mul(t, d, "decode step t*d")?,
+        )?;
+        let t_kv = start.checked_add(t).ok_or_else(|| {
+            VokraError::InvalidArgument("decode step position overflow".to_owned())
+        })?;
+        if t_kv > self.n_text_ctx {
+            return Err(VokraError::InvalidArgument(format!(
+                "decode step: position {t_kv} exceeds n_text_ctx {}",
+                self.n_text_ctx
+            )));
+        }
+
+        // H2D the `[t, d]` embedding into the resident `h` buffer (borrowed
+        // driver just for the copy; `h` owns the alloc).
+        self.htod_owned(&self.h, embedded)?;
+
+        self.run_decode_step(t, start, t_kv)?;
+
+        // Single per-step readback of ALL `[t, n_vocab]` rows the tied head
+        // wrote (only the `t · n_vocab` prefix — the `max_t_q` tail past `t` is
+        // left untouched and never observed).
+        let take = checked_mul(t, self.n_vocab, "decode step t*n_vocab")?;
+        // Split-borrow the ctx (immutable, for the driver + `dtoh`) and the
+        // host mirror (mutable, the readback target) explicitly — they are
+        // disjoint fields of `self`.
+        {
+            let logits_ptr = self.logits.ptr;
+            let ctx = &self.ctx;
+            let host_slice = &mut self.logits_host[..take];
+            let view = DeviceBuf {
+                driver: &ctx.driver,
+                ptr: logits_ptr,
+            };
+            let r = ctx.dtoh(&view, host_slice);
+            core::mem::forget(view); // `logits` owns the alloc
+            r?;
+        }
+        self.pos = t_kv;
+        self.last_t = t;
+        Ok(())
+    }
+
+    /// Encodes the whole decode step (`n_text_layer` blocks + final LayerNorm +
+    /// `t` tied-logits gemvs) on the owned CUDA stream and issues ONE
+    /// `cuStreamSynchronize`. `t_kv = start + t`.
+    fn run_decode_step(&self, t: usize, start: usize, t_kv: usize) -> Result<()> {
+        let d = self.d;
+        let n_head = self.n_head;
+        let scale = self.scale;
+        let eps = self.eps;
+        let td = t * d;
+        let f = size_of::<f32>();
+        // Byte offset of row `start` inside a `[cap, d]` KV buffer — the k/v
+        // projection GEMMs write their `[t, d]` output at this offset each
+        // step, matching the CPU `KvCache::append` semantics on the device.
+        let kv_off_bytes = (start * d * f) as CUdeviceptr;
+
+        for layer in &self.layers {
+            // --- causal self-attention over the growing KV cache ---
+            // ln = layer_norm(h, self_ln)
+            self.ctx.launch_layer_norm_async(
+                self.h.ptr,
+                layer.self_ln_g.ptr,
+                layer.self_ln_b.ptr,
+                self.ln.ptr,
+                t,
+                d,
+                eps,
+            )?;
+            // Append this step's k/v rows AT cache row `start` (GEMM writes at
+            // the resident-buffer's row-`start` byte offset — the same trick
+            // `kv_append` uses on the encoder-KV cache).
+            let self_k_out = layer.self_k.ptr.checked_add(kv_off_bytes).ok_or_else(|| {
+                VokraError::InvalidArgument("decode step: self_k offset overflow".to_owned())
+            })?;
+            let self_v_out = layer.self_v.ptr.checked_add(kv_off_bytes).ok_or_else(|| {
+                VokraError::InvalidArgument("decode step: self_v offset overflow".to_owned())
+            })?;
+            self.ctx.launch_gemm_async(
+                self.ln.ptr,
+                layer.self_k_w.ptr,
+                bias_ptr_owned(layer.self_k_bias.as_ref(), self.dummy.ptr),
+                self_k_out,
+                t,
+                d,
+                d,
+                layer.self_k_bias.is_some(),
+            )?;
+            self.ctx.launch_gemm_async(
+                self.ln.ptr,
+                layer.self_v_w.ptr,
+                bias_ptr_owned(layer.self_v_bias.as_ref(), self.dummy.ptr),
+                self_v_out,
+                t,
+                d,
+                d,
+                layer.self_v_bias.is_some(),
+            )?;
+            // Causal fused attention over the whole cache `[0, t_kv)`.
+            self.ctx.launch_attn_chain(
+                &AttnChainDims {
+                    t_q: t,
+                    t_kv,
+                    d,
+                    n_head,
+                    scale,
+                    has_q_bias: layer.self_q_bias.is_some(),
+                    has_out_bias: layer.self_out_bias.is_some(),
+                    causal: true,
+                    q_offset: start,
+                },
+                &AttnChainPtrs {
+                    xq: self.ln.ptr,
+                    q_w: layer.self_q_w.ptr,
+                    q_bias: bias_ptr_owned(layer.self_q_bias.as_ref(), self.dummy.ptr),
+                    k: layer.self_k.ptr,
+                    v: layer.self_v.ptr,
+                    out_w: layer.self_out_w.ptr,
+                    out_bias: bias_ptr_owned(layer.self_out_bias.as_ref(), self.dummy.ptr),
+                    q: self.q.ptr,
+                    context: self.context.ptr,
+                    qh: self.qh.ptr,
+                    vh: self.vh.ptr,
+                    kh_t: self.kh_t.ptr,
+                    scores: self.scores.ptr,
+                    probs: self.probs.ptr,
+                    ctx_h: self.ctx_h.ptr,
+                    out: self.block_out.ptr,
+                },
+            )?;
+            self.ctx
+                .launch_residual_add_async(self.h.ptr, self.block_out.ptr, td)?;
+
+            // --- cross-attention over the (fixed) encoder output ---
+            self.ctx.launch_layer_norm_async(
+                self.h.ptr,
+                layer.cross_ln_g.ptr,
+                layer.cross_ln_b.ptr,
+                self.ln.ptr,
+                t,
+                d,
+                eps,
+            )?;
+            self.ctx.launch_attn_chain(
+                &AttnChainDims {
+                    t_q: t,
+                    t_kv: self.n_ctx,
+                    d,
+                    n_head,
+                    scale,
+                    has_q_bias: layer.cross_q_bias.is_some(),
+                    has_out_bias: layer.cross_out_bias.is_some(),
+                    causal: false,
+                    q_offset: 0,
+                },
+                &AttnChainPtrs {
+                    xq: self.ln.ptr,
+                    q_w: layer.cross_q_w.ptr,
+                    q_bias: bias_ptr_owned(layer.cross_q_bias.as_ref(), self.dummy.ptr),
+                    k: layer.cross_k.ptr,
+                    v: layer.cross_v.ptr,
+                    out_w: layer.cross_out_w.ptr,
+                    out_bias: bias_ptr_owned(layer.cross_out_bias.as_ref(), self.dummy.ptr),
+                    q: self.q.ptr,
+                    context: self.context.ptr,
+                    qh: self.qh.ptr,
+                    vh: self.vh.ptr,
+                    kh_t: self.kh_t.ptr,
+                    scores: self.scores.ptr,
+                    probs: self.probs.ptr,
+                    ctx_h: self.ctx_h.ptr,
+                    out: self.block_out.ptr,
+                },
+            )?;
+            self.ctx
+                .launch_residual_add_async(self.h.ptr, self.block_out.ptr, td)?;
+
+            // --- MLP ---
+            self.ctx.launch_layer_norm_async(
+                self.h.ptr,
+                layer.mlp_ln_g.ptr,
+                layer.mlp_ln_b.ptr,
+                self.ln.ptr,
+                t,
+                d,
+                eps,
+            )?;
+            self.ctx.launch_mlp_chain(
+                &MlpChainDims {
+                    t,
+                    d,
+                    ffn: self.ff,
+                    has_fc1_bias: layer.fc1_bias.is_some(),
+                    has_fc2_bias: layer.fc2_bias.is_some(),
+                },
+                &MlpChainPtrs {
+                    x: self.ln.ptr,
+                    fc1_w: layer.fc1_w.ptr,
+                    fc1_bias: bias_ptr_owned(layer.fc1_bias.as_ref(), self.dummy.ptr),
+                    fc2_w: layer.fc2_w.ptr,
+                    fc2_bias: bias_ptr_owned(layer.fc2_bias.as_ref(), self.dummy.ptr),
+                    h: self.mlp_h.ptr,
+                    a: self.mlp_a.ptr,
+                    out: self.block_out.ptr,
+                },
+            )?;
+            self.ctx
+                .launch_residual_add_async(self.h.ptr, self.block_out.ptr, td)?;
+        }
+
+        // Final LayerNorm into `normed`, then the tied-logits head on EVERY
+        // decoded row (`t` gemvs into `logits[i·n_vocab .. (i+1)·n_vocab]`,
+        // reading `normed[i·d .. (i+1)·d]`). One gemv per row keeps each
+        // reduction identical to the CPU decoder's `t == 1` fast path — the
+        // same math, just repeated `t` times inside the same stream, so the
+        // whole step still synchronises exactly once at the end.
+        self.ctx.launch_layer_norm_async(
+            self.h.ptr,
+            self.ln_post_g.ptr,
+            self.ln_post_b.ptr,
+            self.normed.ptr,
+            t,
+            d,
+            eps,
+        )?;
+        for i in 0..t {
+            let x_off = (i * d * f) as CUdeviceptr;
+            let out_off = (i * self.n_vocab * f) as CUdeviceptr;
+            let x_ptr = self.normed.ptr.checked_add(x_off).ok_or_else(|| {
+                VokraError::InvalidArgument("decode step: normed offset overflow".to_owned())
+            })?;
+            let out_ptr = self.logits.ptr.checked_add(out_off).ok_or_else(|| {
+                VokraError::InvalidArgument("decode step: logits offset overflow".to_owned())
+            })?;
+            self.ctx.launch_gemv_async(
+                self.token_emb.ptr,
+                x_ptr,
+                self.dummy.ptr,
+                out_ptr,
+                self.n_vocab,
+                d,
+            )?;
+        }
+        self.ctx.sync_stream("cuStreamSynchronize decode step")
+    }
+
+    /// H2D copy `data` into an [`OwnedDeviceBuf`]'s prefix (used by [`Self::step`]
+    /// to write the per-step embedding into the resident `h` buffer).
+    fn htod_owned(&self, buf: &OwnedDeviceBuf, data: &[f32]) -> Result<()> {
+        expect_len("decode htod", data.len().min(buf.len), data.len())?;
+        let view = DeviceBuf {
+            driver: &self.ctx.driver,
+            ptr: buf.ptr,
+        };
+        let r = self.ctx.htod(&view, data);
+        core::mem::forget(view); // buf owns the alloc
+        r
+    }
+
+    /// The last decoded row of the last [`Self::step`] — `[n_vocab]` logits,
+    /// the greedy / argmax read. Empty before any step (`last_t == 0`).
+    #[must_use]
+    pub fn last_logits(&self) -> &[f32] {
+        if self.last_t == 0 {
+            return &[];
+        }
+        let v = self.n_vocab;
+        let start = (self.last_t - 1) * v;
+        &self.logits_host[start..start + v]
+    }
+
+    /// All `[t, n_vocab]` rows the last [`Self::step`] wrote, row-major (row
+    /// `i` at offset `i·n_vocab`). This is the full-row output the model-layer
+    /// path compares against the CPU decoder's `[t, n_vocab]` logits (not just
+    /// the last row). Empty before any step.
+    #[must_use]
+    pub fn all_logits(&self) -> &[f32] {
+        &self.logits_host[..self.last_t * self.n_vocab]
+    }
+
+    /// Committed token positions in the self-attention cache (the causal query
+    /// offset for the next [`Self::step`]).
+    #[must_use]
+    pub fn positions(&self) -> usize {
+        self.pos
+    }
+
+    /// Rewinds the position clock to 0 for a fresh decode of the same audio
+    /// (the resident weights + cross-KV stay valid; the self-KV rows are simply
+    /// overwritten from row 0 again). Mirrors [`vokra_core::KvCache::reset`].
+    pub fn reset(&mut self) {
+        self.pos = 0;
+        // `last_t = 0` invalidates the stale `all_logits` / `last_logits` views
+        // so a caller reading them before the next `step` sees an empty slice
+        // (the CPU decoder's post-reset semantics — its logits scratch is not
+        // observable until the next step writes it either).
+        self.last_t = 0;
+    }
+
+    /// Stream synchronisations issued through the owned context — one per
+    /// [`Self::step`] (the session's construction issues none — every H2D
+    /// upload is a synchronous `cuMemcpyHtoD` that does not touch the stream).
+    #[must_use]
+    pub fn submission_count(&self) -> u64 {
+        self.ctx.submission_count()
+    }
+}
+
+/// Owned-buffer holder used only while [`CudaDecodeSession::new`] assembles the
+/// session: every scratch / weight buffer starts here (as `Option`, `take`n
+/// into the final struct) so the whole allocation burst can be validated /
+/// unwound as one — a `?` mid-way runs every already-taken `OwnedDeviceBuf`'s
+/// Drop, releasing its device allocation.
+struct CudaSessionBuffers {
+    layers: Vec<DevDecoderLayer>,
+    token_emb: Option<OwnedDeviceBuf>,
+    ln_post_g: Option<OwnedDeviceBuf>,
+    ln_post_b: Option<OwnedDeviceBuf>,
+    h: Option<OwnedDeviceBuf>,
+    ln: Option<OwnedDeviceBuf>,
+    block_out: Option<OwnedDeviceBuf>,
+    normed: Option<OwnedDeviceBuf>,
+    q: Option<OwnedDeviceBuf>,
+    context: Option<OwnedDeviceBuf>,
+    qh: Option<OwnedDeviceBuf>,
+    ctx_h: Option<OwnedDeviceBuf>,
+    vh: Option<OwnedDeviceBuf>,
+    kh_t: Option<OwnedDeviceBuf>,
+    scores: Option<OwnedDeviceBuf>,
+    probs: Option<OwnedDeviceBuf>,
+    mlp_h: Option<OwnedDeviceBuf>,
+    mlp_a: Option<OwnedDeviceBuf>,
+    logits: Option<OwnedDeviceBuf>,
+}
+
+/// Picks the real `bias` buffer's device pointer or the shared 1-float `dummy`
+/// (for an absent bias, bound but never read because `has_bias = 0`) — the
+/// `OwnedDeviceBuf` sibling of [`bias_ptr`].
+fn bias_ptr_owned(bias: Option<&OwnedDeviceBuf>, dummy: CUdeviceptr) -> CUdeviceptr {
+    bias.map_or(dummy, |b| b.ptr)
+}
+
 /// The compiled modules + resolved kernel functions built by [`load_modules`]
 /// (everything the [`CudaContext`] owns except the driver / context / stream).
 struct Modules {
@@ -2626,6 +3618,7 @@ struct Modules {
     gemm: CUfunction,
     gemv: CUfunction,
     softmax: CUfunction,
+    softmax_causal: CUfunction,
     layer_norm: CUfunction,
     gelu: CUfunction,
     conv1d: CUfunction,
@@ -2707,6 +3700,7 @@ fn load_modules(driver: &CudaDriver) -> Result<Modules> {
     };
     let gemv = get_function(driver, kernels_module.module, c"vokra_gemv_f32")?;
     let softmax = get_function(driver, kernels_module.module, c"vokra_softmax_f32")?;
+    let softmax_causal = get_function(driver, kernels_module.module, c"vokra_softmax_causal_f32")?;
     let layer_norm = get_function(driver, kernels_module.module, c"vokra_layer_norm_f32")?;
     let gelu = get_function(driver, kernels_module.module, c"vokra_gelu_f32")?;
     let conv1d = get_function(driver, kernels_module.module, c"vokra_conv1d_f32")?;
@@ -2724,6 +3718,7 @@ fn load_modules(driver: &CudaDriver) -> Result<Modules> {
         gemm,
         gemv,
         softmax,
+        softmax_causal,
         layer_norm,
         gelu,
         conv1d,

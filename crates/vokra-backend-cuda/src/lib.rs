@@ -98,3 +98,9 @@ pub use probe::{CudaCapabilities, vokra_cuda_probe};
 
 #[cfg(any(unix, windows))]
 pub use context::{CudaContext, CudaKvCache};
+// `CudaDecodeSession` is the M2 Phase-3b device-resident decoder-step driver
+// (the CUDA sibling of `vokra-backend-metal`'s `MetalDecodeSession`); re-exported
+// here so `vokra-models`' `Compute::new_decoder_step_session` (its Cuda arm)
+// can build it.
+#[cfg(any(unix, windows))]
+pub use context::CudaDecodeSession;

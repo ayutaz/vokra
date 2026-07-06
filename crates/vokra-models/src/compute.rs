@@ -598,14 +598,14 @@ impl Compute {
     }
 
     /// Whether this backend has the Phase-3 device-resident **decoder-step**
-    /// session ([`Self::new_decoder_step_session`] on Metal; CUDA is Phase 3b
-    /// and returns `false` for now).
+    /// session ([`Self::new_decoder_step_session`] on Metal (Phase 3a) and CUDA
+    /// (Phase 3b)).
     ///
     /// The caller (`whisper::decoder::DecoderState`) gates the whole-step device
-    /// path on this: only a Metal backend builds a [`DecoderStepSession`] at
-    /// construction and routes every step through it; CPU and (for now) CUDA
-    /// keep the per-op step loop untouched. This keeps
-    /// [`Self::new_decoder_step_session`]'s CPU / CUDA arms an explicit
+    /// path on this: only a session-backed backend builds a
+    /// [`DecoderStepSession`] at construction and routes every step through it;
+    /// CPU keeps the per-op step loop untouched. This keeps
+    /// [`Self::new_decoder_step_session`]'s CPU arm an explicit
     /// [`VokraError::UnsupportedOp`] correct code never hits (no silent fall
     /// back, FR-EX-08), with zero duplicated decode-block math in `compute.rs`.
     #[must_use]
@@ -615,7 +615,7 @@ impl Compute {
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             Be::Metal(_) => true,
             #[cfg(all(feature = "cuda", any(unix, windows)))]
-            Be::Cuda(_) => false,
+            Be::Cuda(_) => true,
         }
     }
 
@@ -631,22 +631,25 @@ impl Compute {
     /// tied-head / embedding table `[n_vocab, d]`; `ln_post_gamma` /
     /// `ln_post_beta` are the final decoder LayerNorm.
     ///
-    /// **GPU-only.** On the Metal arm this returns a session ready for
-    /// [`DecoderStepSession::step`] (one command-buffer submission + one full
-    /// `[t, n_vocab]` logits readback per step; bit-identical to running the
-    /// step per-op on the GPU). The **CPU and CUDA arms are explicit
-    /// [`VokraError::UnsupportedOp`]** — the CPU never fuses the decoder step,
-    /// and CUDA is Phase 3b (not yet wired); the model layer gates this call
-    /// behind [`Self::decoder_step_is_session_backed`], so correct code never
-    /// hits either. No silent CPU fall back (FR-EX-08).
+    /// **GPU-only.** On the Metal (Phase 3a) or CUDA (Phase 3b) arm this
+    /// returns a session ready for [`DecoderStepSession::step`] (one GPU
+    /// submission + one full `[t, n_vocab]` logits readback per step;
+    /// bit-identical to running the step per-op on the GPU). The **CPU arm is
+    /// an explicit [`VokraError::UnsupportedOp`]** — the CPU never fuses the
+    /// decoder step; the model layer gates this call behind
+    /// [`Self::decoder_step_is_session_backed`], so correct code never hits the
+    /// CPU arm. No silent CPU fall back (FR-EX-08).
     ///
     /// # Errors
     ///
-    /// [`VokraError::UnsupportedOp`] on the CPU / CUDA arms; the Metal arm
-    /// returns [`VokraError::InvalidArgument`] on a shape mismatch and
+    /// [`VokraError::UnsupportedOp`] on the CPU arm; the Metal / CUDA arms
+    /// return [`VokraError::InvalidArgument`] on a shape mismatch and
     /// [`VokraError::BackendUnavailable`] on a device failure.
     #[cfg_attr(
-        not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))),
+        not(any(
+            all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+            all(feature = "cuda", any(unix, windows))
+        )),
         allow(unused_variables)
     )]
     pub fn new_decoder_step_session(
@@ -688,12 +691,30 @@ impl Compute {
                 Ok(DecoderStepSession::Metal(Box::new(s)))
             }
             #[cfg(all(feature = "cuda", any(unix, windows)))]
-            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
-                "new_decoder_step_session on CUDA is Phase 3b (not yet wired); the CUDA backend \
-                 continues to run the per-op step loop (no silent CPU fall back, FR-EX-08). Wait \
-                 for CudaDecodeSession."
-                    .to_owned(),
-            )),
+            Be::Cuda(_) => {
+                // Same construction contract as the Metal arm: the session owns
+                // its own `CudaContext` (weights + KV live inside it; the outer
+                // `Compute`'s context is used only for the cross-KV precompute
+                // at construction and dropped afterwards). Bit-identical to the
+                // per-op CUDA path within the FP32 bound — same NVRTC kernels,
+                // same launch geometry — with ONE `cuStreamSynchronize` per step
+                // instead of the per-op path's per-op synchronise.
+                let s = vokra_backend_cuda::CudaDecodeSession::new(
+                    dims.d,
+                    dims.n_head,
+                    dims.ff,
+                    dims.n_text_ctx,
+                    dims.n_vocab,
+                    dims.n_ctx,
+                    dims.max_t_q,
+                    dims.eps,
+                    layers,
+                    token_emb,
+                    ln_post_gamma,
+                    ln_post_beta,
+                )?;
+                Ok(DecoderStepSession::Cuda(Box::new(s)))
+            }
         }
     }
 }
@@ -734,36 +755,41 @@ pub struct DecoderStepDims {
 /// A backend-specific device-resident **decoder-step session** — the
 /// autoregressive-decode sibling of [`Compute::encode_prenorm_encoder`].
 ///
-/// Built once at [`Compute::new_decoder_step_session`] (Metal only in this
-/// slice; CUDA is Phase 3b). Each [`Self::step`] runs the whole decode step
-/// device-resident in ONE command-buffer submission, then reads back the full
-/// `[t, n_vocab]` logits so the model layer can compare against the CPU
-/// decoder's row-major output (not only the greedy last row). The session owns
-/// its own backend context (weights + KV live inside it), so a Metal
-/// [`DecoderStepSession`] holds Metal handles — see the `unsafe impl Send` note
-/// below for why the model layer can still hold it inside a `Send`
-/// `DecoderState`.
+/// Built once at [`Compute::new_decoder_step_session`] (Metal Phase 3a and
+/// CUDA Phase 3b). Each [`Self::step`] runs the whole decode step device-
+/// resident in ONE GPU submission, then reads back the full `[t, n_vocab]`
+/// logits so the model layer can compare against the CPU decoder's row-major
+/// output (not only the greedy last row). The session owns its own backend
+/// context (weights + KV live inside it), so a Metal / CUDA
+/// [`DecoderStepSession`] holds Metal / CUDA handles — see the
+/// `unsafe impl Send` notes on the backend types for why the model layer can
+/// still hold it inside a `Send` `DecoderState`.
 pub enum DecoderStepSession {
     /// Metal (M2 Phase 3a) device-resident decoder-step session.
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     Metal(Box<vokra_backend_metal::MetalDecodeSession>),
+    /// CUDA (M2 Phase 3b) device-resident decoder-step session.
+    #[cfg(all(feature = "cuda", any(unix, windows)))]
+    Cuda(Box<vokra_backend_cuda::CudaDecodeSession>),
 }
 
-// `DecoderStepSession` is `Send` because its only variant boxes a
-// `MetalDecodeSession`, which the backend crate declares `Send` (see the
-// backend crate for the SAFETY rationale — Metal handles are thread-safe;
-// unsafe impls live behind `vokra-backend-metal`'s `#![allow(unsafe_code)]`
-// opt-out because vokra-models stays under the workspace `unsafe_code = deny`).
-// The model-layer `DecoderState` therefore stays `Send` (its
-// `assert_send::<DecoderState>()` compile-time bound + the cross-thread decode
-// test both continue to hold) without either reuploading every weight per step
-// or duplicating attention math in `compute.rs`.
+// `DecoderStepSession` is `Send` because every variant boxes a backend session
+// (`MetalDecodeSession` / `CudaDecodeSession`) the backend crate declares `Send`
+// via `unsafe impl` (see each backend crate for the SAFETY rationale — Metal
+// handles are documented thread-safe; CUDA context / stream / module handles
+// are transferable via the driver's `cuCtxSetCurrent` contract). Those unsafe
+// impls live behind each backend's `#![allow(unsafe_code)]` opt-out because
+// `vokra-models` stays under the workspace `unsafe_code = deny`. The model-
+// layer `DecoderState` therefore stays `Send` (its `assert_send::<DecoderState>()`
+// compile-time bound + the cross-thread decode test both continue to hold
+// under `--features cuda`) without either reuploading every weight per step or
+// duplicating attention math in `compute.rs`.
 
 impl DecoderStepSession {
     /// Advances the decode by the `t` tokens whose `[t, d]` token+positional
     /// embedding is `embedded`, starting at the committed position `start`.
-    /// Runs the whole step device-resident in ONE command-buffer submission +
-    /// ONE `[t, n_vocab]` logits readback (bit-identical to running the step
+    /// Runs the whole step device-resident in ONE GPU submission + ONE
+    /// `[t, n_vocab]` logits readback (bit-identical to running the step
     /// per-op on the GPU).
     ///
     /// # Errors
@@ -771,21 +797,29 @@ impl DecoderStepSession {
     /// [`VokraError::InvalidArgument`] on a bad `t` / `start` / `embedded`
     /// length; [`VokraError::BackendUnavailable`] on a device failure.
     #[cfg_attr(
-        not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))),
+        not(any(
+            all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+            all(feature = "cuda", any(unix, windows))
+        )),
         allow(unused_variables)
     )]
     pub fn step(&mut self, embedded: &[f32], t: usize, start: usize) -> Result<()> {
         match self {
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             DecoderStepSession::Metal(s) => s.step(embedded, t, start),
-            // Off the Metal build the enum is uninhabited (no variants) and
-            // `Option<DecoderStepSession>` is only ever `None`; the model-layer
-            // caller (`whisper::decoder::DecoderState`) never constructs a
-            // session and so never calls this. `Self` still contains fields
-            // (`&mut self` binding), so the match falls through the empty
-            // never-reachable wildcard.
-            #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
-            _ => unreachable!("DecoderStepSession has no variants off the Metal build"),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            DecoderStepSession::Cuda(s) => s.step(embedded, t, start),
+            // Off every session-backed build the enum is uninhabited (no
+            // variants) and `Option<DecoderStepSession>` is only ever `None`;
+            // the model-layer caller (`whisper::decoder::DecoderState`) never
+            // constructs a session and so never calls this. `Self` still
+            // contains fields (`&mut self` binding), so the match falls through
+            // the empty never-reachable wildcard.
+            #[cfg(not(any(
+                all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+                all(feature = "cuda", any(unix, windows))
+            )))]
+            _ => unreachable!("DecoderStepSession has no variants off the Metal/CUDA build"),
         }
     }
 
@@ -796,8 +830,13 @@ impl DecoderStepSession {
         match self {
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             DecoderStepSession::Metal(s) => s.reset(),
-            #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
-            _ => unreachable!("DecoderStepSession has no variants off the Metal build"),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            DecoderStepSession::Cuda(s) => s.reset(),
+            #[cfg(not(any(
+                all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+                all(feature = "cuda", any(unix, windows))
+            )))]
+            _ => unreachable!("DecoderStepSession has no variants off the Metal/CUDA build"),
         }
     }
 
@@ -808,8 +847,13 @@ impl DecoderStepSession {
         match self {
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             DecoderStepSession::Metal(s) => s.positions(),
-            #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
-            _ => unreachable!("DecoderStepSession has no variants off the Metal build"),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            DecoderStepSession::Cuda(s) => s.positions(),
+            #[cfg(not(any(
+                all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+                all(feature = "cuda", any(unix, windows))
+            )))]
+            _ => unreachable!("DecoderStepSession has no variants off the Metal/CUDA build"),
         }
     }
 
@@ -820,8 +864,13 @@ impl DecoderStepSession {
         match self {
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             DecoderStepSession::Metal(s) => s.last_logits(),
-            #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
-            _ => unreachable!("DecoderStepSession has no variants off the Metal build"),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            DecoderStepSession::Cuda(s) => s.last_logits(),
+            #[cfg(not(any(
+                all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+                all(feature = "cuda", any(unix, windows))
+            )))]
+            _ => unreachable!("DecoderStepSession has no variants off the Metal/CUDA build"),
         }
     }
 
@@ -834,8 +883,13 @@ impl DecoderStepSession {
         match self {
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             DecoderStepSession::Metal(s) => s.all_logits(),
-            #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
-            _ => unreachable!("DecoderStepSession has no variants off the Metal build"),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            DecoderStepSession::Cuda(s) => s.all_logits(),
+            #[cfg(not(any(
+                all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+                all(feature = "cuda", any(unix, windows))
+            )))]
+            _ => unreachable!("DecoderStepSession has no variants off the Metal/CUDA build"),
         }
     }
 }
