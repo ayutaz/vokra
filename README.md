@@ -62,9 +62,13 @@ production use yet, but the following are implemented and validated:
   data-carrying graph evaluator plus a per-model dispatch seam. **Whisper
   runs end-to-end on both Metal (validated on Apple M1) and CUDA (validated
   on an RTX 4090)** with greedy output matching the CPU path exactly. GPU
-  intermediates for the MLP and attention blocks stay device-resident to cut
-  host↔device readback (a first device-residency slice). Both backends are
-  hand-written FFI with zero external crates and are exercised in CI.
+  intermediates stay device-resident across the whole Whisper encoder (all
+  pre-norm blocks fused into one submission) and across each autoregressive
+  decoder step (fused causal attention with an on-device KV cache), cutting
+  host↔device readback to a small constant. With that, **Whisper large-v3
+  reaches RTF ≈ 0.08 on an RTX 4090** (measured on 30 s of audio, 15× the CPU
+  path). Both backends are hand-written FFI with zero external crates and are
+  exercised in CI.
 - **Tooling**: `vokra-cli` (`run` / `convert` / `bench`, with
   `bench --backend cpu|metal|cuda` for GPU RTF), an offline `vokra-convert`,
   a `vokra-eval` metrics crate, and true zero-copy `mmap` GGUF loading.
@@ -93,7 +97,7 @@ indications only** ("目安"), not commitments.
 |---|---|---|
 | v0.1 spike | 1.5-2 months | Rust scaffold, GGUF loader + `vokra.*` metadata, STFT/iSTFT/mel ops, Silero VAD, Whisper base, piper-plus native TTS, CPU backend (AVX2/NEON), C ABI, Unity demo, public repo + CI gates — **done** |
 | v0.1 MVP | 1.5-2.5 months | K-quant loader, engine, streaming, resample, `vokra-cli` / `vokra-eval`, real 8-language G2P wiring, native CAM++ zero-shot cloning, `vokra-mmap` — **done** |
-| **v0.5** (current) | 2.5-4 months | Metal + CUDA backends (graph evaluator + per-model GPU dispatch; Whisper end-to-end on both, validated on M1 / RTX 4090), Whisper large-v3 conversion + tokenizer, device-residency (readback reduction), `bench --backend`. **In progress**; remaining: Kokoro-82M, server API, deeper device residency for large-v3 RTF |
+| **v0.5** (current) | 2.5-4 months | Metal + CUDA backends (graph evaluator + per-model GPU dispatch; Whisper end-to-end on both, validated on M1 / RTX 4090), Whisper large-v3 conversion + tokenizer, whole-encoder and per-decoder-step device residency (large-v3 RTF ≈ 0.08 on RTX 4090), `bench --backend`. **In progress**; remaining: Kokoro-82M, server API |
 | v1.0 | 4-5 months | CUDA complete, Vulkan, CosyVoice2, Voxtral, RVV 1.0 baseline |
 | v1.5 | 4-5 months | WebGPU/WASM, Sesame CSM-1B, Moshi (full-duplex + AEC), all-platform official support complete |
 | v2.0 | 8+ months | CoreML (ANE) / QNN delegates, MCU tier re-evaluation |
