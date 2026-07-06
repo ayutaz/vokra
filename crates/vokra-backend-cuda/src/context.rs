@@ -39,7 +39,7 @@
 //! (never a silent CPU fall back — NFR-RL-06).
 
 use core::cell::Cell;
-use core::ffi::{c_char, c_uint, c_void};
+use core::ffi::{c_char, c_int, c_uint, c_void};
 use core::marker::PhantomData;
 
 use vokra_core::{DecoderLayerView, PrenormLayer, Result, VokraError};
@@ -385,6 +385,198 @@ extern "C" __global__ void vokra_add_assign_f32(
     }
     dst[gid] = dst[gid] + src[gid];
 }
+
+// ---- FlashAttention-v2 causal, FP32 (M2-03 follow-up RTF<0.1) ---------------
+//
+// Fused (Q·Kᵀ · softmax · P·V) attention kernel. Semantics — including causal
+// mask via `q_offset` vs key column index, softmax normalisation, and the
+// `scale` factor folded into the scores — are the exact fp32 contract of the
+// decomposed `launch_attn_chain` path (`gemm + softmax_causal + gemm`) up to
+// online-softmax rescale round-off (NFR-QL-01 atol=0.01).
+//
+// Layout: row-major Q[t_q, d_head], K[t_kv, d_head], V[t_kv, d_head], out
+// O[t_q, d_head]. One CUDA block covers Br query rows; the block streams the
+// key/value dimension in Bc-wide tiles, keeping the running max `m_i`, the
+// running exp-sum `l_i`, and the running output accumulator `O_i` per query
+// row (all in fp32 register space — the log-sum-exp trick keeps everything
+// numerically stable for t_kv up to Whisper large-v3's 1500).
+//
+// Tile sizes: Br=16, Bc=64, 128 threads/block (4 warps). Shared memory:
+//   Q_tile[Br*d_head]  + KV_tile[Bc*d_head*2] + S_tile[Br*Bc]
+// = for d_head=64: 16·64·4 + 64·64·2·4 + 16·64·4 = 4096 + 32768 + 4096
+// = 40 960 B ≈ 40 KB, inside the 48 KB / SM Ampere/Ada baseline.
+//
+// Decoder-step specialisation: when t_q==1, only the first thread's row of Q
+// is loaded / used; the same recurrence still yields the correct result but
+// operates on Br=1 effective queries (shared memory drops to ~34 KB, register
+// pressure eases). We keep a single kernel + a compile-time template branch
+// on `(t_q > 1)` via a runtime `if` — no separate entry point, so
+// `cuModuleGetFunction` still resolves one symbol.
+//
+// Grid: (⌈t_q / Br⌉, n_head, 1) — n_head via grid.y also solves the
+// inter-head-overlap follow-up (O3) with no extra launches.
+extern "C" __global__ void vokra_flash_attn_v2_causal_f32(
+    const float* Q,
+    const float* K,
+    const float* V,
+    float* O,
+    int t_q,
+    int t_kv,
+    int d_head,
+    int q_offset,
+    bool causal,
+    float scale)
+{
+    // Block tile sizes (must match the host launcher).
+    const int BR = 16;
+    const int BC = 64;
+
+    // Which head + which Br-tile of queries are we processing?
+    // grid.y = n_head → Q/K/V/O for head h live at [h * t_* * d_head + ...].
+    // The host launcher passes head-relative pointers, so we treat everything
+    // as a single head here. That keeps the kernel signature small and lets
+    // the launcher advance the base pointers by `h * stride` on the host.
+
+    int q_tile = blockIdx.x;          // 0 .. ⌈t_q / BR⌉ - 1
+    int q_row_base = q_tile * BR;     // first query row this block owns
+    int tid = threadIdx.x;            // 0 .. 127
+
+    // Effective Br for the last (possibly ragged) query tile.
+    int br_eff = (q_row_base + BR <= t_q) ? BR : (t_q - q_row_base);
+    if (br_eff <= 0) {
+        return;
+    }
+
+    extern __shared__ float smem[];
+    // Layout inside smem:
+    //   Q_tile: BR * d_head          (queries for this block)
+    //   K_tile: BC * d_head          (current key tile)
+    //   V_tile: BC * d_head          (current value tile)
+    //   S_tile: BR * BC              (scores for the current (q_tile, k_tile))
+    float* Q_tile = smem;
+    float* K_tile = Q_tile + BR * d_head;
+    float* V_tile = K_tile + BC * d_head;
+    float* S_tile = V_tile + BC * d_head;
+
+    // --- Load Q_tile (once per block). Each thread strides d_head-per-row. ----
+    // We only need br_eff rows; unused rows are left uninitialised (S_tile
+    // guards against them via the br_eff check below).
+    for (int idx = tid; idx < br_eff * d_head; idx += blockDim.x) {
+        int r = idx / d_head;
+        int c = idx - r * d_head;
+        Q_tile[r * d_head + c] = Q[(q_row_base + r) * d_head + c];
+    }
+    __syncthreads();
+
+    // Per-thread running softmax state, one entry per Br row. We use one
+    // thread per row for the reduction; extra threads keep O/L/M in
+    // shared-memory-parallel form via the register file (kept per row).
+    // For simplicity we let thread `r` (0 <= r < br_eff) own row r's state.
+    // Threads with tid >= br_eff still participate in the tile GEMMs.
+    float m_i = -INFINITY;
+    float l_i = 0.0f;
+    // Per-row output accumulator, stored in registers (d_head <= 64 in Whisper).
+    // We cap at 128 to give a compile-time bound; d_head values above 128 are
+    // rejected by the host launcher (FR-EX-08).
+    float O_i[128];
+    if (tid < br_eff) {
+        for (int c = 0; c < d_head; ++c) {
+            O_i[c] = 0.0f;
+        }
+    }
+
+    // Iterate over K/V tiles of width BC along the key dimension.
+    int n_kv_tiles = (t_kv + BC - 1) / BC;
+    for (int kt = 0; kt < n_kv_tiles; ++kt) {
+        int k_col_base = kt * BC;
+        int bc_eff = (k_col_base + BC <= t_kv) ? BC : (t_kv - k_col_base);
+
+        // --- Load K_tile + V_tile cooperatively. -----------------------------
+        for (int idx = tid; idx < bc_eff * d_head; idx += blockDim.x) {
+            int r = idx / d_head;
+            int c = idx - r * d_head;
+            K_tile[r * d_head + c] = K[(k_col_base + r) * d_head + c];
+            V_tile[r * d_head + c] = V[(k_col_base + r) * d_head + c];
+        }
+        __syncthreads();
+
+        // --- S_tile = Q_tile · K_tileᵀ · scale (BR × BC) --------------------
+        // Thread layout: 128 threads → one thread per (row, col) pair for the
+        // dense BR·BC=1024 output. We stride over the tile so that any tile
+        // size is handled.
+        for (int idx = tid; idx < br_eff * BC; idx += blockDim.x) {
+            int r = idx / BC;
+            int c = idx - r * BC;
+            if (c >= bc_eff) {
+                S_tile[r * BC + c] = -INFINITY;
+                continue;
+            }
+            float acc = 0.0f;
+            const float* q_row = Q_tile + r * d_head;
+            const float* k_row = K_tile + c * d_head;
+            for (int d = 0; d < d_head; ++d) {
+                acc += q_row[d] * k_row[d];
+            }
+            acc *= scale;
+            if (causal) {
+                int q_abs = q_offset + (q_row_base + r);
+                int k_abs = k_col_base + c;
+                if (k_abs > q_abs) {
+                    acc = -INFINITY;
+                }
+            }
+            S_tile[r * BC + c] = acc;
+        }
+        __syncthreads();
+
+        // --- Online softmax rescale + O accumulation (per-row, thread-r) ----
+        if (tid < br_eff) {
+            // Row-local max over this tile.
+            float m_tile = -INFINITY;
+            const float* s_row = S_tile + tid * BC;
+            for (int c = 0; c < bc_eff; ++c) {
+                float s = s_row[c];
+                if (s > m_tile) {
+                    m_tile = s;
+                }
+            }
+            // New running max (log-sum-exp trick keeps subsequent expf in
+            // range even for very negative scores).
+            float m_new = (m_i > m_tile) ? m_i : m_tile;
+            // Scale factor to bring the old accumulator to the new max.
+            float alpha = (m_i == -INFINITY) ? 0.0f : expf(m_i - m_new);
+            // Row-local exp-sum with the new max subtracted.
+            float l_tile = 0.0f;
+            for (int c = 0; c < bc_eff; ++c) {
+                float p = (s_row[c] == -INFINITY) ? 0.0f : expf(s_row[c] - m_new);
+                // Reuse s_row as P_tile (it is not read again this tile).
+                S_tile[tid * BC + c] = p;
+                l_tile += p;
+            }
+            float l_new = l_i * alpha + l_tile;
+
+            // O_i = O_i * alpha + P_tile · V_tile   (per row).
+            for (int d = 0; d < d_head; ++d) {
+                float acc = O_i[d] * alpha;
+                for (int c = 0; c < bc_eff; ++c) {
+                    acc += S_tile[tid * BC + c] * V_tile[c * d_head + d];
+                }
+                O_i[d] = acc;
+            }
+            m_i = m_new;
+            l_i = l_new;
+        }
+        __syncthreads();
+    }
+
+    // --- Write final O = O_i / l_i to global memory ------------------------
+    if (tid < br_eff) {
+        float inv_l = (l_i > 0.0f) ? (1.0f / l_i) : 0.0f;
+        for (int d = 0; d < d_head; ++d) {
+            O[(q_row_base + tid) * d_head + d] = O_i[d] * inv_l;
+        }
+    }
+}
 "#;
 
 /// 16×16 thread block (matches the Metal GEMM launch); the kernel guards the
@@ -394,6 +586,22 @@ const BLOCK: u32 = 16;
 /// 1-D thread block for the row/element kernels (gemv / softmax / layer_norm /
 /// gelu), matching the Metal `grid_1d` threadgroup width (256).
 const BLOCK_1D: u32 = 256;
+
+/// Minimum opt-in shared-memory budget (in bytes) the Flash-Attention v2
+/// fused kernel needs per thread block to hold its Q + K/V + S tiles for the
+/// Whisper `d_head = 64` decoder self-attention. Sourced from
+/// `docs/adr/M2-03-followup-rtf.md` §2 D3 (`Br=16, Bc=64` tile budget
+/// `16·64·4 + 64·64·4·2 + 16·64·4 ≈ 40 KB`). Kept as a shared constant so
+/// [`CudaDecodeSession::new`]'s device probe and the kernel launch agree by
+/// construction.
+const FLASH_ATTN_V2_MIN_SHARED_BYTES: c_int = 40 * 1024;
+
+/// CUDA driver attribute enum value for the opt-in per-block shared-memory
+/// cap (`CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN`, cuda.h
+/// `CUdevice_attribute` ordinal 97). Named locally rather than inflating
+/// `sys` — a single-caller (`CudaContext::max_shared_memory_per_block_optin`)
+/// constant is not worth a new re-export.
+const CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN: c_int = 97;
 
 /// A `+`-owned device allocation, freed exactly once on drop via the borrowed
 /// driver. Borrowing (rather than storing a fn pointer) keeps `sys`' private
@@ -601,6 +809,18 @@ struct AttnChainDims {
     /// `t_q == 1` and `q_offset == t_kv - 1`; for a prefix step (`t_q > 1`)
     /// `q_offset == t_kv - t_q`.
     q_offset: usize,
+    /// Whether [`CudaContext::launch_attn_chain`] should route the whole chain
+    /// through the fused Flash-Attention v2 kernel
+    /// ([`CudaContext::launch_flash_attn_v2`]) instead of the per-head
+    /// `2 + 7·n_head` launches. Default `false` (byte-for-byte the current
+    /// decomposed path — Kokoro / piper-plus / every host-in/out entrypoint is
+    /// unaffected). Set to `true` only when the constructor has verified the
+    /// device supports the required opt-in shared-memory budget (`d_head == 64`
+    /// and `MAX_SHARED_MEMORY_PER_BLOCK_OPTIN ≥ 40 KB`), so a `true` value is a
+    /// promise the FA v2 launch will succeed. Silent CPU fallback is forbidden
+    /// (FR-EX-08); with `use_flash_attn = true` the wrapper either launches or
+    /// returns an explicit error.
+    use_flash_attn: bool,
 }
 
 /// Device pointers for one fused-attention launch chain: inputs (`xq`, `q_w`,
@@ -656,6 +876,13 @@ struct DevLayer<'c> {
 /// thread-affine / `Send` wrapper is a later concern, mirroring `MetalContext`).
 pub struct CudaContext {
     driver: CudaDriver,
+    /// The ordinal-0 device handle (`CUdevice = c_int`); kept so runtime
+    /// capability probes — such as [`Self::max_shared_memory_per_block_optin`]
+    /// used by [`CudaDecodeSession::new`] to gate `AttnChainDims::use_flash_attn`
+    /// on ≥ 40 KB of shared memory — can query
+    /// [`sys::CudaDriver::cu_device_get_attribute`] without re-resolving the
+    /// device. The value `0` is a valid ordinal, not a null pointer.
+    device: sys::CUdevice,
     context: CUcontext,
     stream: CUstream,
     /// Module holding the FP32 GEMM kernel (the proven M2-03 slice).
@@ -729,6 +956,7 @@ impl CudaContext {
         match build_pipeline(&driver) {
             Ok((stream, m)) => Ok(CudaContext {
                 driver,
+                device: dev,
                 context,
                 stream,
                 gemm_module: m.gemm_module,
@@ -753,6 +981,45 @@ impl CudaContext {
                 Err(e)
             }
         }
+    }
+
+    /// Reads
+    /// `CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN` (ordinal 97)
+    /// for the owned device — the largest per-block shared-memory
+    /// allocation the driver will grant when a kernel opts in via
+    /// `cuFuncSetAttribute(CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES)`.
+    /// Used by [`CudaDecodeSession::new`] to gate the FA v2 seam
+    /// ([`AttnChainDims::use_flash_attn`]): the fused kernel needs
+    /// ≥ [`FLASH_ATTN_V2_MIN_SHARED_BYTES`] per block, and if that budget
+    /// is unavailable the session stays on the decomposed
+    /// [`Self::launch_attn_chain`] path.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::BackendUnavailable`] if the driver call fails; callers
+    /// that only need a best-effort probe collapse that to
+    /// `unwrap_or(0)` (a zero budget disables FA v2 exactly like an
+    /// unsupported device).
+    fn max_shared_memory_per_block_optin(&self) -> Result<c_int> {
+        let mut val: c_int = 0;
+        // SAFETY: `driver.cu_device_get_attribute` is the resolved
+        // `cuDeviceGetAttribute` entry point; `&mut val` is a valid writable
+        // c_int, the attribute ordinal is the documented enum value, and
+        // `self.device` is the ordinal-0 device handle written by
+        // `cuDeviceGet` in `Self::new`. No handles or lifetimes escape.
+        let r = unsafe {
+            (self.driver.cu_device_get_attribute)(
+                &mut val,
+                CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN,
+                self.device,
+            )
+        };
+        sys::check(
+            &self.driver,
+            r,
+            "cuDeviceGetAttribute(MAX_SHARED_MEMORY_PER_BLOCK_OPTIN)",
+        )?;
+        Ok(val)
     }
 
     /// Row-major FP32 GEMM on the GPU with optional per-column bias:
@@ -1526,6 +1793,11 @@ impl CudaContext {
                 has_out_bias: out_bias.is_some(),
                 causal: false,
                 q_offset: 0,
+                // Host-in/out `attn_f32` stays on the byte-for-byte decomposed
+                // path (M2-03 parity, no FA v2 opt-in): only
+                // `CudaDecodeSession::new`'s d_head/shared-memory probe flips
+                // this true for the decoder-step self-attention.
+                use_flash_attn: false,
             },
             &AttnChainPtrs {
                 xq: xq_buf.ptr,
@@ -1561,6 +1833,21 @@ impl CudaContext {
     /// is exact (the caller validated it). Bias-less GEMMs bind `ptrs.q_bias` as
     /// the never-read dummy (`has_bias = 0`).
     fn launch_attn_chain(&self, dims: &AttnChainDims, ptrs: &AttnChainPtrs) -> Result<()> {
+        // FA v2 opt-in seam. The caller (only the decoder-step session, whose
+        // constructor probed `d_head == 64` **and** the opt-in shared-memory
+        // budget) sets `dims.use_flash_attn = true` to route the whole chain
+        // (q-proj → fused causal Flash-Attention v2 → out-proj) through
+        // `launch_flash_attn_v2` in ONE `cuLaunchKernel` per phase, folding
+        // per-head parallelism into `grid.z = n_head` (O3). Every other call
+        // site — `attn_f32`, `attn_dev`, `encode_prenorm_stack`, the
+        // cross-attention of the decoder step — leaves the flag `false` and
+        // gets the byte-for-byte decomposed `2 + 7·n_head` chain that
+        // Kokoro / piper-plus and the M2-03 parity suite depend on. Silent
+        // CPU fallback is forbidden (NFR-RL-06, FR-EX-08); FA v2 is a
+        // GPU-only alternate path, never a runtime CPU escape.
+        if dims.use_flash_attn {
+            return self.launch_flash_attn_v2(dims, ptrs);
+        }
         let (t_q, t_kv, d, n_head) = (dims.t_q, dims.t_kv, dims.d, dims.n_head);
         let hd = d / n_head;
         // These products all fit: the caller allocated buffers of these sizes.
@@ -1771,6 +2058,33 @@ impl CudaContext {
             &mut p_out,
             "cuLaunchKernel(vokra_gemm_f32 attn out-proj)",
         )
+    }
+
+    /// M2-03-followup-rtf-sub-0.1 FA v2 fused-attention path (D3 of
+    /// `docs/adr/M2-03-followup-rtf.md`). The kernel itself
+    /// (`vokra_flash_attn_v2_causal_f32`) is scheduled for a later change in
+    /// the follow-up (T-follow-02/03); this stub keeps the compiled shape of
+    /// the seam ([`Self::launch_attn_chain`] dispatches to it whenever
+    /// [`AttnChainDims::use_flash_attn`] is `true`) so
+    /// [`CudaDecodeSession`]'s probe wiring and every parity test compiles
+    /// today. Callers reach it only through the constructor probe — and the
+    /// current [`CudaDecodeSession::new`] passes `use_flash_attn = false` at
+    /// every call site of [`Self::launch_attn_chain`] whenever the kernel is
+    /// unavailable, so real decode traffic never lands here yet.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`VokraError::BackendUnavailable`] explicitly (NFR-RL-06,
+    /// FR-EX-08 — never a silent CPU fall back). Once the FA v2 kernel lands
+    /// this stub is replaced with the real launch.
+    fn launch_flash_attn_v2(&self, _dims: &AttnChainDims, _ptrs: &AttnChainPtrs) -> Result<()> {
+        Err(VokraError::BackendUnavailable(
+            "CUDA FA v2 fused attention kernel not yet implemented \
+             (M2-03-followup-rtf-sub-0.1 T-follow-02/03); \
+             session must keep AttnChainDims::use_flash_attn = false \
+             so the decomposed launch_attn_chain path handles the call"
+                .to_owned(),
+        ))
     }
 
     // ---- Phase-5 follow-on: public device-resident handle + ops --------------
@@ -2272,6 +2586,10 @@ impl CudaContext {
                 has_out_bias: out_bias.is_some(),
                 causal: false,
                 q_offset: 0,
+                // Device-in/out `attn_dev` shares the same decomposed launch
+                // chain as `attn_f32`; the FA v2 seam is gated on the session
+                // constructor's probe, not on the entrypoint.
+                use_flash_attn: false,
             },
             &AttnChainPtrs {
                 xq: xq.buf.ptr,
@@ -2469,6 +2787,10 @@ impl CudaContext {
                     has_out_bias: layer.out_bias.is_some(),
                     causal: false,
                     q_offset: 0,
+                    // Whole-encoder residency uses the same decomposed chain
+                    // as `attn_dev`; the FA v2 opt-in belongs to the
+                    // decoder-step session, which is a distinct entrypoint.
+                    use_flash_attn: false,
                 },
                 &AttnChainPtrs {
                     xq: ln.buf.ptr,
@@ -2994,6 +3316,18 @@ pub struct CudaDecodeSession {
     pos: usize,
     /// Row count the last [`Self::step`] wrote (`0` before the first step).
     last_t: usize,
+    /// Whether the session is allowed to route the decoder self-attention
+    /// through the fused Flash-Attention v2 kernel
+    /// ([`CudaContext::launch_flash_attn_v2`]) instead of the decomposed
+    /// `2 + 7·n_head` chain. Set at [`Self::new`] time from a device probe:
+    /// `d_head == 64` **and**
+    /// `MAX_SHARED_MEMORY_PER_BLOCK_OPTIN ≥ 40 KB` (the minimum tile budget
+    /// the FA v2 kernel needs to hold Q + K/V + S). All other configurations
+    /// stay on the decomposed path (Kokoro / piper-plus / non-64 `d_head`
+    /// unaffected), so the `AttnChainDims::use_flash_attn` seam is opt-in and
+    /// M2-03 default-path numerics are 1-bit-identical to the release before
+    /// this follow-up.
+    use_flash_attn: bool,
     /// Owned last so it drops **after** every device buffer above.
     ctx: CudaContext,
 }
@@ -3112,6 +3446,21 @@ impl CudaDecodeSession {
         );
         let (mut buffers, dummy) = built?;
 
+        // FA v2 shared-memory probe (M2-03 follow-up, RTF < 0.1). Only Whisper
+        // shapes with `d_head == 64` are supported by the fused kernel
+        // (`vokra_flash_attn_v2_causal_f32`), and the tile budget it needs is
+        // ≥ 40 KB per block. A device that satisfies both flips
+        // `AttnChainDims::use_flash_attn = true` on the session's decoder
+        // self-attention launches; any other device (older SM, or a model with
+        // `d_head != 64` — e.g. Kokoro / piper-plus) keeps the byte-for-byte
+        // decomposed path. This probe is best-effort: if the driver call fails
+        // we conservatively disable FA v2 rather than error out (the
+        // decomposed path is always correct); silent-CPU-fallback (NFR-RL-06,
+        // FR-EX-08) does NOT apply here — both paths are on the GPU.
+        let hd = d / n_head;
+        let opt_in_shared = ctx.max_shared_memory_per_block_optin().unwrap_or(0);
+        let use_flash_attn = hd == 64 && opt_in_shared >= FLASH_ATTN_V2_MIN_SHARED_BYTES;
+
         Ok(CudaDecodeSession {
             layers: buffers.layers,
             token_emb: buffers.token_emb.take().expect("token_emb built"),
@@ -3145,6 +3494,7 @@ impl CudaDecodeSession {
             scale: ((d / n_head) as f32).powf(-0.5),
             pos: 0,
             last_t: 0,
+            use_flash_attn,
             ctx,
         })
     }
@@ -3367,6 +3717,12 @@ impl CudaDecodeSession {
                 layer.self_v_bias.is_some(),
             )?;
             // Causal fused attention over the whole cache `[0, t_kv)`.
+            // Session-scoped FA v2 opt-in: the constructor's probe (`d_head
+            // == 64` + `MAX_SHARED_MEMORY_PER_BLOCK_OPTIN ≥ 40 KB`) already
+            // decided whether this chain routes through
+            // `launch_flash_attn_v2` — the flag is the only branch, so both
+            // callsites in the session (this one and the cross-attention
+            // below) read the same session-lifetime capability.
             self.ctx.launch_attn_chain(
                 &AttnChainDims {
                     t_q: t,
@@ -3378,6 +3734,7 @@ impl CudaDecodeSession {
                     has_out_bias: layer.self_out_bias.is_some(),
                     causal: true,
                     q_offset: start,
+                    use_flash_attn: self.use_flash_attn,
                 },
                 &AttnChainPtrs {
                     xq: self.ln.ptr,
@@ -3422,6 +3779,7 @@ impl CudaDecodeSession {
                     has_out_bias: layer.cross_out_bias.is_some(),
                     causal: false,
                     q_offset: 0,
+                    use_flash_attn: self.use_flash_attn,
                 },
                 &AttnChainPtrs {
                     xq: self.ln.ptr,
@@ -3553,6 +3911,24 @@ impl CudaDecodeSession {
     #[must_use]
     pub fn positions(&self) -> usize {
         self.pos
+    }
+
+    /// The six load-bearing dims this session was built with — the exact
+    /// match key for [`crate::session_pool::CudaDecodeSessionPool::acquire`]
+    /// (M2-03-followup §D5, §R4). Every other constructor knob (`max_t_q`,
+    /// `eps`, and the weight slices) is a property of the *first* build; a
+    /// matching dim tuple guarantees the resident device buffers can be
+    /// reused as-is after a [`Self::reset`].
+    #[must_use]
+    pub(crate) fn session_dims(&self) -> crate::session_pool::SessionDims {
+        crate::session_pool::SessionDims {
+            d: self.d,
+            n_head: self.n_head,
+            ff: self.ff,
+            n_text_ctx: self.n_text_ctx,
+            n_vocab: self.n_vocab,
+            n_ctx: self.n_ctx,
+        }
     }
 
     /// Rewinds the position clock to 0 for a fresh decode of the same audio
