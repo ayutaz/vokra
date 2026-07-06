@@ -1,0 +1,42 @@
+# cargo-deny configuration for the vokra-server integration crate (M2-09-T02).
+#
+# This crate lives in its own workspace (`integrations/vokra-server/`) with
+# its own `Cargo.lock`. The root workspace's `deny.toml` does NOT see this
+# graph (root is zero-dep, NFR-DS-02, enforced by
+# `scripts/check-zero-deps.sh` on the root `Cargo.lock`). To keep the HTTP
+# stack itself free of GPL/LGPL contamination (NFR-LC-02) we run cargo-deny
+# separately here with this config.
+#
+# Run locally with:  cd integrations/vokra-server && cargo deny check licenses
+
+[graph]
+all-features = true
+
+[licenses]
+# NFR-LC-02 (verbatim policy): dependency crates may be Apache 2.0 / MIT /
+# BSD only. GPL / LGPL / AGPL / SSPL are forbidden. Unicode-3.0 covers the
+# ICU4X-derived text tables that ship transitively through several MIT
+# crates in the ecosystem; it is permissive and Apache-2.0-compatible.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+[bans]
+# Forward-compat guard: the ADR (docs/adr-http-stack.md) explicitly rejects
+# tiny_http (blocking thread-per-conn), warp (development stalled), and
+# actix-web (legacy actor model). Ban them so an incidental `cargo add`
+# fails cargo-deny in CI instead of quietly reintroducing a rejected stack.
+deny = [
+    { name = "tiny_http" },
+    { name = "warp" },
+    { name = "actix-web" },
+]
+
+[advisories]
+version = 2
