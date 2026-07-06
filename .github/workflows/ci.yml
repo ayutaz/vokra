@@ -112,6 +112,14 @@ jobs:
   # M2-04: matrix expansion runs `parity_whisper` under both fusion states
   # (`VOKRA_DISABLE_FUSION=1` and `=0`) so the fused log-mel path stays
   # bit-close (FP32 atol=0.01, NFR-QL-01) to the imperative reference.
+  # M2-08-T15: extends `parity` to run `quant_parity` (K-quant weight →
+  # dequantize → GEMM parity against F32 reference, FP16 atol=0.01, INT8 branch
+  # asserts `MinDtypeViolation`/`UnsupportedQuantPath`) and `policy_e2e` (offline
+  # converter → runtime reload → `check_degradation` mel-loss 5% gate, and the
+  # negative cases for Vocos/BigVGAN W8A8 rejection + HiFi-GAN opt-in verify).
+  # Both are required checks so an M2-08 quant policy regression blocks the PR
+  # in the same job that gates fused-frontend parity; `license` remains the
+  # zero-dep enforcer (no new deps means cargo-deny continues passing).
   parity:
     name: parity
     strategy:
@@ -129,6 +137,10 @@ jobs:
         run: cargo test -p vokra-parity
       - name: Whisper frontend parity (fused vs unfused)
         run: cargo test -p vokra-models --test parity_whisper
+      - name: Quant parity (M2-08, K-quant dequant → GEMM, FP16 atol=0.01)
+        run: cargo test -p vokra-core --test quant_parity
+      - name: Policy e2e (M2-08, converter → runtime → 5% mel-loss gate)
+        run: cargo test -p vokra-cli --test policy_e2e
 
   # License / vulnerability / forbidden-dependency gate (NFR-LC-04, X-08).
   # deny.toml is owned by M0-02 (allow: Apache-2.0/MIT/BSD; deny: GPL/LGPL;

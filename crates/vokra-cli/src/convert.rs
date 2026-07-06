@@ -10,7 +10,10 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use vokra_convert::{ModelKind, convert_file, convert_file_quantized, convert_piper_plus_file};
+use vokra_convert::{
+    ModelKind, PolicyPreset, convert_file, convert_file_quantized, convert_file_with_policy,
+    convert_piper_plus_file,
+};
 use vokra_core::gguf::GgmlType;
 
 pub(crate) const USAGE: &str = "\
@@ -21,12 +24,15 @@ USAGE:
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
 
 OPTIONS:
-    --model <kind>     whisper-base | silero-vad | piper-plus
-    --input <path>     upstream checkpoint file
-    --config <path>    piper-plus config.json (piper-plus only)
-    --output <path>    GGUF file to write
-    --quantize <kind>  K-quantize weight matrices: q4_k | q5_k | q6_k (whisper-base only)
-    -h, --help         print this help
+    --model <kind>            whisper-base | silero-vad | piper-plus
+    --input <path>            upstream checkpoint file
+    --config <path>           piper-plus config.json (piper-plus only)
+    --output <path>           GGUF file to write
+    --quantize <kind>         K-quantize weight matrices: q4_k | q5_k | q6_k (whisper only)
+                              Alias for --policy-preset whisper_q4_k (when kind=q4_k).
+    --policy-preset <preset>  M2-08 quantization policy preset (whisper only):
+                              vocoder_safe (default) | whisper_q4_k | fp16
+    -h, --help                print this help
 ";
 
 /// Parsed `convert` arguments.
@@ -36,6 +42,7 @@ struct Parsed {
     config: Option<PathBuf>,
     output: PathBuf,
     quant: Option<GgmlType>,
+    policy: Option<PolicyPreset>,
 }
 
 /// Parses the `--quantize` argument into a K-quant target dtype.
@@ -54,6 +61,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut config: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut quant: Option<GgmlType> = None;
+    let mut policy: Option<PolicyPreset> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -91,8 +99,19 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 );
                 i += 2;
             }
+            "--policy-preset" => {
+                let v = args.get(i + 1).ok_or("--policy-preset requires a value")?;
+                policy = Some(PolicyPreset::from_arg(v).ok_or_else(|| {
+                    format!("unknown --policy-preset `{v}` (vocoder_safe | whisper_q4_k | fp16)")
+                })?);
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
+    }
+
+    if quant.is_some() && policy.is_some() {
+        return Err("--quantize and --policy-preset are mutually exclusive".to_owned());
     }
 
     Ok(Parsed {
@@ -101,6 +120,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         config,
         output: output.ok_or("--output is required")?,
         quant,
+        policy,
     })
 }
 
@@ -118,6 +138,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             if p.quant.is_some() {
                 return Err("--quantize is only supported for whisper-base".to_owned());
             }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
             match &p.config {
                 Some(config) => convert_piper_plus_file(&p.input, config, &p.output),
                 None => {
@@ -125,10 +148,24 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 }
             }
         }
-        _ => match p.quant {
-            Some(q) => convert_file_quantized(model, &p.input, &p.output, q),
-            None => convert_file(model, &p.input, &p.output),
-        },
+        _ => {
+            // Ticket precedence: an explicit --policy-preset wins; else the
+            // legacy --quantize q4_k alias maps to the whisper_q4_k preset;
+            // else fall through to convert_file_quantized (Q5/Q6 legacy
+            // shapes) or the plain byte-exact path.
+            if let Some(preset) = p.policy {
+                convert_file_with_policy(model, &p.input, &p.output, preset)
+            } else if let Some(q) = p.quant {
+                if q == GgmlType::Q4K {
+                    // Backward-compat alias per T06 spec.
+                    convert_file_with_policy(model, &p.input, &p.output, PolicyPreset::WhisperQ4K)
+                } else {
+                    convert_file_quantized(model, &p.input, &p.output, q)
+                }
+            } else {
+                convert_file(model, &p.input, &p.output)
+            }
+        }
     };
 
     match result {

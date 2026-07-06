@@ -28,5 +28,11 @@ vokra-convert = { path = "../vokra-convert" }
 metal = ["vokra-models/metal"]
 cuda = ["vokra-models/cuda"]
 
+# dev-only: M2-08 T14 policy e2e test uses `vokra-eval::check_degradation` for
+# the NFR-QL-02 5% gate; `vokra-eval` is a first-party `vokra-*` crate with no
+# external deps of its own, so the NFR-DS-02 zero-dep invariant is preserved.
+[dev-dependencies]
+vokra-eval = { path = "../vokra-eval" }
+
 [lints]
 workspace = true

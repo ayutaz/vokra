@@ -20,6 +20,9 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use vokra_core::BackendKind;
+use vokra_core::quant::{
+    DegradationReport, QuantPolicy, verify_hifigan_int8 as core_verify_hifigan_int8,
+};
 
 use crate::engine::{self, ModelTask, TaskHint};
 use crate::report::{self, BenchReport, RegressionCheck};
@@ -77,6 +80,47 @@ fn parse_task_hint(v: &str) -> Result<TaskHint, String> {
         "mel-frontend" => Ok(TaskHint::MelFrontend),
         other => Err(format!("unknown --task `{other}` (mel-frontend)")),
     }
+}
+
+/// Returns `true` if the loaded model exercises the HiFi-GAN op.
+///
+/// M2-08-T12 gate: only piper-plus (MB-iSTFT-VITS2's HiFi-GAN ResBlock2
+/// stack, `vokra-models::piper_plus::decoder`) uses HiFi-GAN today. Whisper,
+/// Silero VAD, and the mel-frontend task do not, so they short-circuit the
+/// verify gate. Kokoro (M2-07, future) uses an iSTFTNet head that is
+/// deliberately *not* registered as HiFi-GAN (CLAUDE.md レビュアー A 修正) —
+/// the registry marker (`quant::HIFIGAN_GENERATOR_OP`) matches piper-plus's
+/// TTS decoder only.
+fn hifigan_in_use(task: ModelTask) -> bool {
+    matches!(task, ModelTask::Tts)
+}
+
+/// Runs the HiFi-GAN INT8 opt-in verification gate at bench construction
+/// (M2-08-T12).
+///
+/// Three branches (`vokra_core::quant::verify_hifigan_int8`):
+/// - opt-in + eval pass → `Ok(())`
+/// - opt-in + eval not run → `VokraError::HifiganInt8VerifyMissing`
+/// - opt-in + eval fail → `VokraError::HifiganInt8DegradationExceeded`
+///
+/// `policy` is `None` until the runtime chunk reader lands (T05 landing pad
+/// in `vokra_core::quant::chunk`); until then bench uses the safe default
+/// (no opt-in) and the gate is a no-op. The signature accepts an optional
+/// [`DegradationReport`] so a follow-up ticket can wire
+/// `vokra-cli bench --check-degradation …` into this seam without touching
+/// the branching logic.
+fn verify_hifigan_int8(
+    task: ModelTask,
+    policy: Option<&QuantPolicy>,
+    report: Option<&DegradationReport>,
+) -> Result<(), String> {
+    let Some(policy) = policy else {
+        // No policy attached (chunk reader not yet wired): the safe default
+        // is `no opt-in` per M2-08 (see `resolve::default_vocoder_safe`), so
+        // the gate is a no-op.
+        return Ok(());
+    };
+    core_verify_hifigan_int8(policy, hifigan_in_use(task), report).map_err(|e| e.to_string())
 }
 
 /// A finished bench run: the report plus the optional regression verdict.
@@ -221,6 +265,13 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
     let (session, task) =
         engine::load_session_with_backend(&args.model, args.backend, args.task_hint)?;
 
+    // M2-08-T12: HiFi-GAN INT8 opt-in verify gate. `None` policy short-circuits
+    // (the `vokra.quant.*` chunk reader is a T05 landing pad — see
+    // `vokra_core::quant::chunk`). When T05 lands this reads
+    // `QuantPolicy::from_gguf(session.gguf())?` and threads a caller-supplied
+    // `DegradationReport` (`--check-degradation`) into the same seam.
+    verify_hifigan_int8(task, None, None)?;
+
     let (task_name, audio_seconds, samples) = match task {
         ModelTask::Vad => {
             let path = args
@@ -363,9 +414,81 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vokra_core::quant::{CalibrationRef, DEGRADATION_THRESHOLD, QuantPolicy, QuantScheme};
 
     fn args(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    // ----- M2-08-T12: HiFi-GAN INT8 opt-in verify gate --------------------
+
+    fn opt_in_policy() -> QuantPolicy {
+        QuantPolicy::new(QuantScheme::Fp16)
+            .with_hifigan_int8_opt_in(CalibrationRef::new("hifigan-int8-cal-v1"))
+    }
+
+    #[test]
+    fn hifigan_int8_verify_no_policy_short_circuits() {
+        // No `vokra.quant.*` chunk (today's steady state — T05 landing pad):
+        // the gate is a no-op even on a TTS session (piper-plus HiFi-GAN).
+        verify_hifigan_int8(ModelTask::Tts, None, None).unwrap();
+        verify_hifigan_int8(ModelTask::Asr, None, None).unwrap();
+    }
+
+    #[test]
+    fn hifigan_int8_verify_opt_in_but_no_tts_short_circuits() {
+        // A Whisper session with an opt-in policy (e.g. shared policy across
+        // a batch of models) does not exercise the HiFi-GAN op — the gate
+        // short-circuits without demanding a report.
+        let policy = opt_in_policy();
+        verify_hifigan_int8(ModelTask::Asr, Some(&policy), None).unwrap();
+        verify_hifigan_int8(ModelTask::Vad, Some(&policy), None).unwrap();
+        verify_hifigan_int8(ModelTask::MelFrontend, Some(&policy), None).unwrap();
+    }
+
+    #[test]
+    fn hifigan_int8_verify_opt_in_plus_tts_without_report_errors_verify_missing() {
+        // Branch (b): opt-in + piper-plus TTS + no attached report → hard
+        // error mentioning verify-missing.
+        let policy = opt_in_policy();
+        let err = verify_hifigan_int8(ModelTask::Tts, Some(&policy), None).unwrap_err();
+        assert!(
+            err.contains("hifigan int8 verify missing"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn hifigan_int8_verify_opt_in_plus_tts_with_passing_report_ok() {
+        // Branch (a): opt-in + piper-plus TTS + passing report → allowed.
+        let policy = opt_in_policy();
+        let report = DegradationReport::from_mel_loss(1.0, 1.02, DEGRADATION_THRESHOLD);
+        assert!(report.passes_5pct_gate);
+        verify_hifigan_int8(ModelTask::Tts, Some(&policy), Some(&report)).unwrap();
+    }
+
+    #[test]
+    fn hifigan_int8_verify_opt_in_plus_tts_with_failing_report_errors_degradation_exceeded() {
+        // Branch (c): opt-in + piper-plus TTS + failing report → hard error
+        // mentioning degradation-exceeded and carrying the delta.
+        let policy = opt_in_policy();
+        let report = DegradationReport::from_mel_loss(1.0, 1.20, DEGRADATION_THRESHOLD);
+        assert!(!report.passes_5pct_gate);
+        let err = verify_hifigan_int8(ModelTask::Tts, Some(&policy), Some(&report)).unwrap_err();
+        assert!(
+            err.contains("hifigan int8 degradation exceeded"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("threshold 0.0500"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn hifigan_int8_verify_no_opt_in_never_errors() {
+        // Policy present but opt-in is off → gate is a no-op regardless of
+        // task or report.
+        let policy = QuantPolicy::new(QuantScheme::Fp16);
+        verify_hifigan_int8(ModelTask::Tts, Some(&policy), None).unwrap();
+        verify_hifigan_int8(ModelTask::Asr, Some(&policy), None).unwrap();
     }
 
     fn silero_fixture() -> String {
