@@ -27,6 +27,7 @@
 //! specifics.
 
 pub mod compute;
+pub mod kokoro;
 pub mod piper_plus;
 pub mod silero_vad;
 pub mod speaker;
