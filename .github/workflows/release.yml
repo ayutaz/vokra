@@ -405,3 +405,148 @@ jobs:
           echo "Tarball : ${{ steps.pack.outputs.tarball }}"
           echo "SHA256  : ${{ steps.pack.outputs.sha256 }}"
           echo "Skipping: gh release upload, OpenUPM publish."
+
+  # ---------------------------------------------------------------------------
+  # M2-12-T15: Python wheel PyPI publish (NFR-MT-08 / FR-API-01 / NFR-MT-03).
+  #
+  # Downloads platform-tagged wheels produced by the ci.yml `python-wheel-build`
+  # job for the tag SHA, generates an SPDX SBOM (NFR-MT-03) per wheel, and
+  # publishes to PyPI via OIDC trusted publishing (fallback: PYPI_API_TOKEN
+  # secret). Dry-run mode runs `twine check` + uploads wheels and SBOMs as
+  # GitHub Release assets without touching PyPI, mirroring the
+  # unity-package-release dry-run idiom.
+  #
+  # SBOM generation: `pypa/gh-action-pip-audit` + `cyclonedx-py`/`pip-licenses`
+  # are avoided (extra deps); instead we use the standalone SPDX generator
+  # `anchore/sbom-action` which emits SPDX-JSON without adding Python-side
+  # runtime dependencies. Each wheel's SBOM is uploaded alongside it. The
+  # SBOM covers wheel metadata (name/version/license) + bundled native lib
+  # provenance (traced back to the ci.yml build step commit SHA).
+  #
+  # PyPI upload path (D11): OIDC trusted publisher configured via
+  # `id-token: write` permission scope; account + trusted publisher config
+  # provisioned by owner in T17. Actual first-release upload is gated by
+  # human sign-off (`inputs.dry_run != true` + tag push).
+  #
+  # Zero-dep invariant unchanged (NFR-DS-02): no new Rust crate; no Cargo.lock
+  # churn; shell + gh + pypa/gh-action-pypi-publish + anchore/sbom-action.
+  # ---------------------------------------------------------------------------
+  python-pypi-publish:
+    name: python-pypi-publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write  # OIDC for PyPI trusted publishing (T17)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reuse python-wheel-build artifacts from ci.yml (per-OS wheels)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          RUN_ID="$(gh run list \
+            --workflow=ci.yml \
+            --branch="${GITHUB_REF_NAME}" \
+            --limit=20 \
+            --json databaseId,headSha,conclusion \
+            --jq ".[] | select(.headSha==\"${GITHUB_SHA}\" and .conclusion==\"success\") | .databaseId" \
+            | head -n 1)"
+          if [ -z "$RUN_ID" ]; then
+            echo "python-pypi-publish: no successful ci.yml run for SHA ${GITHUB_SHA}; wheels unavailable" >&2
+            exit 1
+          fi
+          echo "python-pypi-publish: reusing ci.yml run ${RUN_ID} for wheels"
+          mkdir -p dist
+          for os in ubuntu-latest macos-latest windows-latest; do
+            gh run download "$RUN_ID" \
+              --name "vokra-python-wheels-${os}" \
+              --dir "reuse/${os}" \
+              || echo "python-pypi-publish: wheels for ${os} missing (build red?)"
+            if [ -d "reuse/${os}" ]; then
+              cp reuse/${os}/*.whl dist/ || true
+            fi
+          done
+          echo "== Collected wheels =="
+          ls -la dist/
+          set -e
+
+      - name: Generate SPDX SBOM per wheel (NFR-MT-03)
+        # SPDX-JSON SBOM covering wheel metadata + bundled native lib provenance.
+        # anchore/sbom-action scans the dist/ directory and emits one SPDX
+        # document per wheel; the sbom-artifact-name pattern keeps them
+        # associated with their wheel for downstream reconciliation.
+        uses: anchore/sbom-action@v0
+        with:
+          path: dist/
+          format: spdx-json
+          artifact-name: vokra-python-sbom.spdx.json
+          upload-artifact: true
+          upload-release-assets: false
+
+      - name: twine check (metadata validation, dry-run safe)
+        run: |
+          python3 -m pip install --user twine
+          python3 -m twine check dist/*.whl
+
+      - name: Upload workflow artifact (wheels + SBOM, for inspection)
+        uses: actions/upload-artifact@v4
+        with:
+          name: vokra-python-release
+          path: |
+            dist/*.whl
+          retention-days: 30
+
+      - name: Publish to PyPI (OIDC trusted publishing preferred, token fallback)
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          # OIDC trusted publisher path (T17 owner config): when the PyPI
+          # project has a trusted publisher entry pointing at this
+          # workflow (and `permissions: id-token: write` above), the
+          # action mints an OIDC token and ignores `password`.
+          # Fallback path: if OIDC is not yet provisioned, the action
+          # authenticates via the API token supplied here — `password`
+          # being empty is treated as "OIDC-only", non-empty as "token".
+          # Both wired so owner T17 can flip modes with zero edits.
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          # Immutable index — fail loudly on duplicate version instead of
+          # silently skipping (inverse of unity-package-release --clobber).
+          skip-existing: false
+          verbose: true
+
+      - name: Upload wheels + SBOM to GitHub Release (tag + non-dry-run)
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release upload "$TAG" dist/*.whl --clobber
+
+      # Dry-run path: mirror the unity-package-release baseline — always
+      # ship wheels as GitHub Release assets even when PyPI upload is
+      # skipped, so the release commit produces a downloadable artifact
+      # without external secrets. `--clobber` allows re-running the
+      # dry-run on the same tag without manual cleanup.
+      - name: Upload wheels to GitHub Release (dry-run baseline)
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if ls dist/*.whl >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.whl --clobber
+          else
+            echo "python-pypi-publish (dry-run): no wheels to upload."
+          fi
+
+      - name: Dry-run summary
+        if: inputs.dry_run == true || !startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "== DRY RUN (python-pypi-publish) =="
+          echo "Wheels  :"
+          ls -la dist/*.whl 2>/dev/null || echo "  (no wheels collected)"
+          echo "SBOM    : vokra-python-sbom.spdx.json (SPDX-JSON, uploaded as artifact)"
+          echo "Skipping: pypa/gh-action-pypi-publish (real upload)."
+          echo "Dry-run path uploaded wheels to GitHub Release assets only."

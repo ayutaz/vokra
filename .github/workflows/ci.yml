@@ -575,6 +575,63 @@ jobs:
         shell: bash
         run: git diff --exit-code Cargo.lock
 
+  # M2-12-T16 Python binding license audit (NFR-LC-02, NFR-LC-04). Belt-and-
+  # suspenders with the root `license` job (which owns the Rust side via
+  # cargo-deny). This job enforces the Python-side allowlist on the build /
+  # runtime deps declared in `bindings/python/pyproject.toml` so a GPL / LGPL
+  # crate cannot creep in through a Python transitive dep (e.g. a hatchling
+  # plugin flipping license, or a wheel-time build tool). Runs in an isolated
+  # venv so the runner's ambient site-packages cannot mask a bad license.
+  #
+  # Allowlist (matches D13 / plan §1):
+  #   Apache-2.0 ; MIT ; BSD-3-Clause ; BSD-2-Clause ; PSF-2.0 ; Python-2.0
+  # (numpy = BSD-3, hatchling = MIT, pytest = MIT are all covered; anything
+  # outside this set — GPL / LGPL / MPL / CC-BY-NC — fails the job.)
+  python-license-audit:
+    name: python-license-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Create isolated venv and install binding + audit tool
+        # `pip install .` reads bindings/python/pyproject.toml so build / runtime
+        # deps materialize in this venv. `pip-licenses` (MIT) enumerates every
+        # installed distribution and enforces --allow-only. Isolated venv so the
+        # runner's ambient site-packages cannot mask a bad license.
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/vokra-py-audit
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-audit/bin/activate
+          python -m pip install --upgrade pip
+          if [ -f bindings/python/pyproject.toml ]; then
+            python -m pip install ./bindings/python
+          else
+            echo "bindings/python/pyproject.toml not yet present — auditing pip-licenses toolchain only."
+          fi
+          python -m pip install pip-licenses
+      - name: pip-licenses --allow-only (NFR-LC-02 GPL/LGPL block)
+        # --allow-only fails nonzero if ANY installed dist reports a license
+        # outside the allowlist. --with-system=false hides pip/setuptools noise;
+        # we only care about the transitive deps the binding actually pulls in.
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-audit/bin/activate
+          pip-licenses \
+            --format=markdown \
+            --with-system=false \
+            --allow-only 'Apache-2.0;MIT;BSD-3-Clause;BSD-2-Clause;PSF-2.0;Python-2.0' \
+            | tee /tmp/pip-licenses.md
+          {
+            echo "### Python binding license audit"
+            echo ""
+            cat /tmp/pip-licenses.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # M2-11-T13 Unity Official Plugin package assembly (FR-API-04, NFR-MT-07/08,
   # NFR-RL-02/03/04, NFR-LC-01). Assembles the `com.vokra.unity` UPM package
   # from four native artifact sources:
@@ -676,4 +733,154 @@ jobs:
           name: Vokra-unity-package
           path: bindings/unity/com.vokra.unity-*.tgz
           retention-days: 14
+
+  # M2-12-T15 Python wheel build gate (BR-08, FR-API-01, NFR-DS-02, NFR-DS-03,
+  # NFR-LC-02, NFR-MT-02, NFR-MT-07, NFR-MT-08, NFR-RL-01). Registered as the
+  # 8th required check on `main` PRs alongside build / test / fmt / clippy /
+  # gpu-backends / parity / license.
+  #
+  # Design (M2-12 plan D5/D6/D12, T15):
+  #
+  #   * Pure-ctypes wrapper (D2) — no Rust code added, root Cargo.lock
+  #     untouched. NFR-DS-02 zero-dep invariant is preserved (verified by the
+  #     `license` job's check-zero-deps.sh; nothing new to enforce here).
+  #
+  #   * cibuildwheel (D6) generates platform-tagged wheels. The native lib is
+  #     injected into `src/vokra/_lib/` via CIBW_BEFORE_BUILD: the wheel does
+  #     NOT rebuild the Rust cdylib — it pulls the artifact produced by the
+  #     `build` job (vokra-capi-{macos,windows,linux}) that this job depends
+  #     on (`needs: build`). Same idiom the `unity-package` job uses to
+  #     consume the same three artifacts.
+  #
+  #   * Matrix Linux/macOS/Windows (D10, NFR-MT-02 Tier 1). iOS/Android are
+  #     out-of-scope for Python (Swift/Kotlin bindings own those). fail-fast:
+  #     false so a wheel regression on one OS does not mask another's status.
+  #
+  #   * Fresh-venv install + smoke import (D12 step 2) proves the wheel is
+  #     self-contained and platform-tagged correctly; a manylinux tag
+  #     mismatch or missing native lib surfaces here rather than at PyPI
+  #     upload time.
+  #
+  #   * pytest against `bindings/python/tests/` runs the four test categories
+  #     (smoke / leak / error / negative); parity/asr/tts tests skip cleanly
+  #     when GGUF fixtures are absent, following the same
+  #     VOKRA_WHISPER_BASE_GGUF gated-skip pattern as `server-compat` (T22).
+  #     FR-EX-08 no-silent-fallback shape: absence → explicit skip, never a
+  #     fabricated pass.
+  #
+  #   * Artifact `vokra-python-wheels-{os}` (retention 7d, same as
+  #     vokra-capi-*) is what `release.yml`'s `python-pypi-publish` job
+  #     (M2-12 D11) downloads for dry-run / real upload. No upload happens
+  #     here — that gate is owner-driven (T17, PYPI_API_TOKEN).
+  python-wheel-build:
+    name: python-wheel-build
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download macOS libvokra.dylib (from build/macos-latest)
+        if: matrix.os == 'macos-latest'
+        uses: actions/download-artifact@v4
+        with:
+          name: vokra-capi-macos
+          path: bindings/python/native
+      - name: Download Windows vokra.dll (from build/windows-latest)
+        if: matrix.os == 'windows-latest'
+        uses: actions/download-artifact@v4
+        with:
+          name: vokra-capi-windows
+          path: bindings/python/native
+      - name: Download Linux libvokra.so (from build/ubuntu-latest)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/download-artifact@v4
+        with:
+          name: vokra-capi-linux
+          path: bindings/python/native
+      - name: Build wheels (cibuildwheel)
+        # CIBW_BEFORE_BUILD injects the vokra-capi cdylib artifact into
+        # src/vokra/_lib/ (D5) so the wheel is self-contained. Rust is NOT
+        # rebuilt inside cibuildwheel — the artifact from `build` is the
+        # single source of truth for native binaries (audit-trail CPU-only,
+        # NFR-DS-02).
+        uses: pypa/cibuildwheel@v2
+        with:
+          package-dir: bindings/python
+          output-dir: bindings/python/dist
+        env:
+          # Restrict to CPython 3.9-3.12; skip PyPy and 32-bit targets.
+          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
+          CIBW_SKIP: "*-musllinux_* pp* *-win32 *-manylinux_i686"
+          CIBW_ARCHS_LINUX: "x86_64"
+          CIBW_ARCHS_MACOS: "universal2"
+          CIBW_ARCHS_WINDOWS: "AMD64"
+          # Inject the vokra-capi cdylib (downloaded above) into the package
+          # tree before hatchling packs the wheel. `{package}` expands to the
+          # cibuildwheel `package-dir` (bindings/python). The staged file
+          # depends on the runner OS.
+          CIBW_BEFORE_BUILD_LINUX: >-
+            mkdir -p {package}/src/vokra/_lib &&
+            cp {package}/native/libvokra.so {package}/src/vokra/_lib/libvokra.so
+          CIBW_BEFORE_BUILD_MACOS: >-
+            mkdir -p {package}/src/vokra/_lib &&
+            cp {package}/native/libvokra.dylib {package}/src/vokra/_lib/libvokra.dylib
+          CIBW_BEFORE_BUILD_WINDOWS: >-
+            if not exist {package}\src\vokra\_lib mkdir {package}\src\vokra\_lib &&
+            copy {package}\native\vokra.dll {package}\src\vokra\_lib\vokra.dll
+      - name: Fresh-venv install + smoke import
+        # D12 step 2: proves platform tag / native-lib bundling is correct.
+        # `pip install ./dist/*.whl` picks the wheel matching the runner's
+        # (OS, arch, cpython) tuple; if no wheel matches, pip fails loudly.
+        # `python -c "import vokra"` fires the ctypes.CDLL load path in
+        # `_native.py`, so a missing / mis-named native lib surfaces here
+        # rather than only in user reports post-release.
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/vokra-venv
+          # shellcheck disable=SC1091
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            source /tmp/vokra-venv/Scripts/activate
+          else
+            source /tmp/vokra-venv/bin/activate
+          fi
+          python -m pip install --upgrade pip
+          # Install the freshly-built wheel from cibuildwheel output.
+          # shellcheck disable=SC2086
+          python -m pip install bindings/python/dist/*.whl
+          python -c "import vokra; print('vokra imported OK, version:', getattr(vokra, '__version__', 'unknown'))"
+      - name: pytest (bindings/python/tests, GGUF-gated skips)
+        # Runs smoke / leak / error / negative unconditionally; parity /
+        # asr / tts tests self-skip when VOKRA_WHISPER_BASE_GGUF is unset
+        # (same FR-EX-08 no-silent-fallback pattern as server-compat T22).
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            source /tmp/vokra-venv/Scripts/activate
+          else
+            source /tmp/vokra-venv/bin/activate
+          fi
+          python -m pip install pytest
+          pytest bindings/python/tests -v
+      - name: Upload wheels artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vokra-python-wheels-${{ matrix.os }}
+          path: bindings/python/dist/*.whl
+          retention-days: 7
+      - name: Verify root Cargo.lock unchanged
+        # D13 mutation-guard: pure-ctypes / hatchling wheel build must
+        # never touch the root workspace lockfile. Any diff means a Rust
+        # build snuck in and the zero-dep invariant is at risk.
+        shell: bash
+        run: git diff --exit-code Cargo.lock
 
