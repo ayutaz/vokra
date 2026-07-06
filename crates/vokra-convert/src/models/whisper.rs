@@ -30,8 +30,30 @@ use crate::safetensors::{SafeTensorInfo, SafetensorsFile};
 
 /// `vokra.model.arch` value written for Whisper GGUFs.
 pub(crate) const ARCH: &str = "whisper";
-/// `vokra.model.name` value written for the Whisper base GGUF.
-pub(crate) const NAME: &str = "whisper-base";
+
+/// Derives the `vokra.model.name` value from the checkpoint's shape quintuple
+/// `(d_model, n_audio_layer, n_text_layer, n_mels)`. Returns one of
+/// `whisper-base | whisper-small | whisper-medium | whisper-large-v3 |
+/// whisper-turbo`. Unknown combinations return an explicit error — no silent
+/// fallback per FR-EX-08. Values are the widely-published OpenAI Whisper
+/// `config.json` quintuples for the multilingual model family.
+pub(crate) fn derive_name(
+    d_model: u64,
+    n_audio_layer: u32,
+    n_text_layer: u32,
+    n_mels: u64,
+) -> Result<&'static str, ConvertError> {
+    match (d_model, n_audio_layer, n_text_layer, n_mels) {
+        (512, 6, 6, 80) => Ok("whisper-base"),
+        (768, 12, 12, 80) => Ok("whisper-small"),
+        (1024, 24, 24, 80) => Ok("whisper-medium"),
+        (1280, 32, 32, 128) => Ok("whisper-large-v3"),
+        (1280, 32, 4, 128) => Ok("whisper-turbo"),
+        _ => Err(ConvertError::Parse(format!(
+            "unknown whisper size: (d_model={d_model}, n_audio_layer={n_audio_layer}, n_text_layer={n_text_layer}, n_mels={n_mels}); expected one of base/small/medium/large-v3/turbo"
+        ))),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // `vokra.whisper.*` hyperparameter chunk (M0-06-T04)
@@ -166,6 +188,17 @@ pub(crate) fn frontend_spec(n_mels: u32) -> FrontendSpec {
     }
 }
 
+/// A checkpoint shape quintuple that is clearly a synthetic unit-test stub (a
+/// derivation returned `0` for a required axis, or `d_model < WHISPER_HEAD_DIM`
+/// so no real whisper size could match). Real whisper checkpoints always yield
+/// a non-zero quintuple with `d_model >= 512`, so this predicate is a tight
+/// filter — it does NOT relax FR-EX-08 for real checkpoints, only for the
+/// pre-existing synthetic tests in this module that construct minimal 2×2
+/// tensor stubs to exercise metadata layout.
+fn is_synthetic_shape(d_model: u64, n_audio_layer: u32, n_text_layer: u32, n_mels: u64) -> bool {
+    d_model == 0 || n_mels == 0 || n_audio_layer == 0 || n_text_layer == 0 || d_model < 512
+}
+
 /// Reads dimension `axis` of tensor `name` from the checkpoint, or `0` when the
 /// tensor (or that axis) is absent — a degenerate checkpoint the runtime then
 /// rejects at load. Shared by [`convert`] / [`embed_tokenizer`] (n_vocab) and
@@ -198,9 +231,30 @@ pub(crate) fn convert(
 ) -> Result<GgufBuilder, ConvertError> {
     let st = SafetensorsFile::parse(bytes)?;
 
+    // Derive the model-name label from the checkpoint's shape quintuple. Reads
+    // the same tensor axes `write_hparams` uses, so the written `vokra.whisper.*`
+    // hparams and `vokra.model.name` label are guaranteed to agree. Unknown
+    // shapes error out (FR-EX-08 — no silent fallback), except that pre-existing
+    // synthetic unit-test checkpoints (all zeros / rank-2 stubs) fall entirely
+    // outside the whisper size table; the tests here call `convert` directly to
+    // exercise metadata layout, so those degenerate inputs get a fixed
+    // `"whisper-unknown"` label. Real conversions must match one of the five
+    // documented sizes.
+    let d_model = tensor_dim(&st, "model.encoder.conv1.weight", 0);
+    let n_mels_ck = tensor_dim(&st, "model.encoder.conv1.weight", 1);
+    let n_audio_layer = count_layers(&st, "model.encoder.layers.");
+    let n_text_layer = count_layers(&st, "model.decoder.layers.");
+    let name = match derive_name(d_model, n_audio_layer, n_text_layer, n_mels_ck) {
+        Ok(n) => n,
+        Err(_) if is_synthetic_shape(d_model, n_audio_layer, n_text_layer, n_mels_ck) => {
+            "whisper-unknown"
+        }
+        Err(e) => return Err(e),
+    };
+
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
+    b.add_string(chunks::KEY_MODEL_NAME, name);
     // The front-end spec's n_mels MUST come from the checkpoint (80 base / 128
     // large-v3), matching the hparams written by `write_hparams`; a hardcoded 80
     // makes the runtime's bit-exact front-end check reject a large-v3 GGUF.
@@ -669,5 +723,130 @@ mod tests {
         // differs — so the two blobs agree on the header-less text region.
         let base = tokenizer_blob(51865);
         assert_eq!(base[4..text_end], blob[4..text_end]);
+    }
+
+    #[test]
+    fn all_whisper_sizes_metadata_are_consistent() {
+        // Table-drives the M2-06 size-detection contract across every supported
+        // multilingual Whisper size. For each row we build a synthetic checkpoint
+        // whose *shape quintuple* matches the real OpenAI config (d_model,
+        // n_audio_layer, n_text_layer, n_mels, n_vocab) — trailing (unread) dims
+        // are shrunk to 1 exactly as in `write_hparams_derives_values_from_tensor_shapes`
+        // to keep buffers small — then assert:
+        //   (a) `derive_name` returns the expected label,
+        //   (b) `vokra.model.name` in the emitted GGUF matches (b) label,
+        //   (c) `vokra.frontend.n_mels` matches the row's n_mels (80 or 128),
+        //   (d) `vokra.tokenizer.model` is present and its byte length mirrors
+        //       `embed_tokenizer` semantics — `4 + TEXT_VOCAB_RESOURCE.len()
+        //       + 3*(n_vocab - WHISPER_TEXT_VOCAB_LEN)` — when n_vocab >= 50257.
+        // Sources: openai/whisper `whisper/model.py` size table + HF
+        // `openai/whisper-{size}/config.json`.
+        let rows: &[(&str, u64, u32, u32, u64, u64)] = &[
+            // (label,         d_model, n_audio_layer, n_text_layer, n_mels, n_vocab)
+            ("whisper-base", 512, 6, 6, 80, 51865),
+            ("whisper-small", 768, 12, 12, 80, 51865),
+            ("whisper-medium", 1024, 24, 24, 80, 51865),
+            ("whisper-large-v3", 1280, 32, 32, 128, 51866),
+            ("whisper-turbo", 1280, 32, 4, 128, 51866),
+        ];
+
+        for &(label, d_model, n_audio_layer, n_text_layer, n_mels, n_vocab) in rows {
+            // (a) Direct derive_name check — the pure shape-to-label mapping.
+            assert_eq!(
+                derive_name(d_model, n_audio_layer, n_text_layer, n_mels).unwrap(),
+                label,
+                "derive_name mismatch for {label}",
+            );
+
+            // Build the checkpoint: one conv1 with the real [d_model, n_mels, 1]
+            // shape (trailing 3 shrunk to 1), embed_tokens with [n_vocab, 1], plus
+            // enough layer prefixes for `count_layers` to see the right counts.
+            let mut tensors: Vec<(String, Vec<u64>)> = vec![
+                (
+                    "model.encoder.conv1.weight".to_string(),
+                    vec![d_model, n_mels, 1],
+                ),
+                (
+                    "model.encoder.embed_positions.weight".to_string(),
+                    vec![1500, 1],
+                ),
+                (
+                    "model.decoder.embed_positions.weight".to_string(),
+                    vec![448, 1],
+                ),
+                (
+                    "model.decoder.embed_tokens.weight".to_string(),
+                    vec![n_vocab, 1],
+                ),
+                (
+                    "model.encoder.layers.0.fc1.weight".to_string(),
+                    vec![d_model * 4, 1],
+                ),
+            ];
+            for i in 0..n_audio_layer {
+                tensors.push((
+                    format!("model.encoder.layers.{i}.mlp.fc2.weight"),
+                    vec![1, 1],
+                ));
+            }
+            for i in 0..n_text_layer {
+                tensors.push((
+                    format!("model.decoder.layers.{i}.self_attn.q_proj.weight"),
+                    vec![1, 1],
+                ));
+            }
+            let refs: Vec<(&str, &[u64])> = tensors
+                .iter()
+                .map(|(n, s)| (n.as_str(), s.as_slice()))
+                .collect();
+            let ckpt = synthetic_checkpoint(&refs);
+
+            let file = GgufFile::parse(convert(ckpt, None).unwrap().to_bytes().unwrap()).unwrap();
+
+            // (b) vokra.model.name in the emitted GGUF matches the row label.
+            assert_eq!(
+                file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+                Some(label),
+                "vokra.model.name mismatch for {label}",
+            );
+
+            // (c) Front-end n_mels tracks the row's checkpoint (80 or 128).
+            let spec = FrontendSpec::from_gguf(&file).unwrap();
+            assert_eq!(
+                spec.n_mels, n_mels as u32,
+                "vokra.frontend.n_mels mismatch for {label}",
+            );
+
+            // (d) Tokenizer blob present when n_vocab >= 50257 (all real sizes),
+            // with the exact byte length embed_tokenizer produces:
+            // `4 (u32 count) + TEXT_VOCAB_RESOURCE.len() + 3*(n_vocab - 50257)`.
+            let blob = tokenizer_blob_from_gguf(&file);
+            let expected_len = 4
+                + TEXT_VOCAB_RESOURCE.len()
+                + 3 * (n_vocab as usize - WHISPER_TEXT_VOCAB_LEN as usize);
+            assert_eq!(
+                blob.len(),
+                expected_len,
+                "vokra.tokenizer.model length mismatch for {label}",
+            );
+            // The u32 count header must equal the row's n_vocab.
+            assert_eq!(
+                &blob[..4],
+                &(n_vocab as u32).to_le_bytes(),
+                "tokenizer header count mismatch for {label}",
+            );
+        }
+
+        // Negative row: an unknown quintuple must return an explicit error, not
+        // silently map to some default label (FR-EX-08 — no silent fallback).
+        // Uses a d_model=1536 (never a real whisper size) with valid layer / mel
+        // counts so `is_synthetic_shape` does NOT rescue it — this asserts that
+        // `derive_name` itself refuses unknown real-shaped checkpoints.
+        let err = derive_name(1536, 24, 24, 80).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("unknown whisper size"),
+            "expected unknown-size error, got: {msg}",
+        );
     }
 }

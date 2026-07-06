@@ -1,8 +1,12 @@
 //! `vokra-convert` command-line entry point (M0-03, FR-TL-01).
 //!
 //! ```text
-//! vokra-convert --model <whisper-base|silero-vad> --input <ckpt> --output <out.gguf>
+//! vokra-convert --model <whisper|silero-vad> --input <ckpt> --output <out.gguf>
 //! ```
+//!
+//! `whisper` auto-detects the size (base / small / medium / large-v3 / turbo)
+//! from the checkpoint tensor shapes (M2-06-T06); `whisper-base` is kept as a
+//! backward-compatible alias.
 //!
 //! After writing the GGUF, the tool re-opens it with the runtime loader and
 //! prints a verification line, giving direct evidence that the output is
@@ -19,18 +23,23 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper-base|silero-vad|campplus> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
 
 OPTIONS:
-    --model <kind>     whisper-base (safetensors), silero-vad (ONNX),
-                       campplus (CAM++ speaker-encoder ONNX) or piper-plus
-                       (MB-iSTFT-VITS2 voice: ONNX + config.json)
+    --model <kind>     whisper (safetensors; size auto-detected from
+                       checkpoint tensor shapes: base/small/medium/large-v3/
+                       turbo — unknown shapes error out, no silent fallback
+                       per FR-EX-08), silero-vad (ONNX), campplus (CAM++
+                       speaker-encoder ONNX) or piper-plus (MB-iSTFT-VITS2
+                       voice: ONNX + config.json). `whisper-base` is accepted
+                       as a backward-compatible alias for `whisper` (size is
+                       still derived from the checkpoint, not the flag).
     --input <path>     upstream checkpoint file
     --config <path>    piper-plus config.json (piper-plus only)
     --output <path>    GGUF file to write
     --quantize <kind>  K-quantize large weight matrices: q4_k | q5_k | q6_k
-                       (whisper-base only; biases/norms stay F32)
+                       (whisper only; biases/norms stay F32)
     -h, --help         print this help
 ";
 
@@ -59,7 +68,7 @@ fn main() -> ExitCode {
     let result = match model {
         ModelKind::PiperPlus => {
             if quant.is_some() {
-                eprintln!("error: --quantize is only supported for whisper-base\n\n{USAGE}");
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
                 return ExitCode::from(2);
             }
             match &config {
@@ -134,7 +143,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 let v = args.get(i + 1).ok_or("--model requires a value")?;
                 model = Some(ModelKind::from_arg(v).ok_or_else(|| {
                     format!(
-                        "unknown model `{v}` (whisper-base | silero-vad | piper-plus | campplus)"
+                        "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | piper-plus | campplus)"
                     )
                 })?);
                 i += 2;
@@ -196,7 +205,7 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         file.metadata().len()
     );
     match model {
-        ModelKind::WhisperBase => match FrontendSpec::from_gguf(&file) {
+        ModelKind::Whisper => match FrontendSpec::from_gguf(&file) {
             Ok(spec) => println!(
                 "; frontend n_fft={} hop={} n_mels={} sample_rate={}",
                 spec.n_fft, spec.hop, spec.n_mels, spec.sample_rate
@@ -277,6 +286,26 @@ mod tests {
     #[test]
     fn parses_full_valid_invocation() {
         let parsed = parse_args(&args(&[
+            "--model", "whisper", "--input", "i", "--output", "o",
+        ]))
+        .expect("valid args");
+        assert_eq!(parsed.model, ModelKind::Whisper);
+        assert_eq!(parsed.input, PathBuf::from("i"));
+        assert_eq!(parsed.output, PathBuf::from("o"));
+        assert_eq!(parsed.config, None);
+        assert_eq!(parsed.quant, None);
+    }
+
+    /// The legacy `whisper-base` label from pre-M2-06 CLI invocations must
+    /// keep dispatching to the same size-detecting path as the canonical
+    /// `whisper`. Both should resolve to `ModelKind::Whisper` (M2-06-T06).
+    #[test]
+    fn whisper_base_alias_dispatches_to_same_kind_as_whisper() {
+        let via_whisper = parse_args(&args(&[
+            "--model", "whisper", "--input", "i", "--output", "o",
+        ]))
+        .expect("valid args (whisper)");
+        let via_alias = parse_args(&args(&[
             "--model",
             "whisper-base",
             "--input",
@@ -284,12 +313,10 @@ mod tests {
             "--output",
             "o",
         ]))
-        .expect("valid args");
-        assert_eq!(parsed.model, ModelKind::WhisperBase);
-        assert_eq!(parsed.input, PathBuf::from("i"));
-        assert_eq!(parsed.output, PathBuf::from("o"));
-        assert_eq!(parsed.config, None);
-        assert_eq!(parsed.quant, None);
+        .expect("valid args (whisper-base alias)");
+        assert_eq!(via_whisper.model, ModelKind::Whisper);
+        assert_eq!(via_alias.model, ModelKind::Whisper);
+        assert_eq!(via_whisper.model, via_alias.model);
     }
 
     #[test]

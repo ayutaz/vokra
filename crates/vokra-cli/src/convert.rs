@@ -177,7 +177,7 @@ mod tests {
             "q5_k",
         ]))
         .expect("valid");
-        assert_eq!(p.model, ModelKind::WhisperBase);
+        assert_eq!(p.model, ModelKind::Whisper);
         assert_eq!(p.input, PathBuf::from("i"));
         assert_eq!(p.output, PathBuf::from("o"));
         assert_eq!(p.quant, Some(GgmlType::Q5K));

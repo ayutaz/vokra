@@ -50,8 +50,14 @@ use vokra_core::gguf::GgmlType;
 /// Which model's conversion routine to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelKind {
-    /// `openai/whisper-base` safetensors checkpoint.
-    WhisperBase,
+    /// An OpenAI Whisper safetensors checkpoint (M2-06-T06). The specific size
+    /// (base / small / medium / large-v3 / turbo) is **auto-detected from the
+    /// checkpoint tensor shapes** (see `models::whisper` — `d_model`,
+    /// `n_audio_layer`, `n_text_layer`, `n_mels` uniquely identify a size); the
+    /// caller passes a single `whisper` label. The CLI keeps `whisper-base` as
+    /// a backward-compatible alias for pre-M2-06 invocations, and both dispatch
+    /// to the same size-detecting path.
+    Whisper,
     /// `snakers4/silero-vad` v5 ONNX checkpoint.
     SileroVad,
     /// A piper-plus (MB-iSTFT-VITS2) voice: ONNX graph + `config.json`
@@ -67,9 +73,17 @@ pub enum ModelKind {
 
 impl ModelKind {
     /// Parses the `--model` argument value.
+    ///
+    /// `whisper` is the canonical spelling (size is auto-detected from the
+    /// checkpoint shapes); `whisper-base` is kept as a backward-compatible
+    /// alias for pre-M2-06 invocations — both dispatch to the same
+    /// size-detecting path (M2-06-T06).
     pub fn from_arg(s: &str) -> Option<Self> {
         match s {
-            "whisper-base" => Some(Self::WhisperBase),
+            // Canonical M2-06+ spelling: size auto-detected from checkpoint.
+            "whisper" => Some(Self::Whisper),
+            // Backward-compatible alias for pre-M2-06 invocations.
+            "whisper-base" => Some(Self::Whisper),
             "silero-vad" => Some(Self::SileroVad),
             "piper-plus" => Some(Self::PiperPlus),
             "campplus" => Some(Self::CamPlus),
@@ -80,7 +94,7 @@ impl ModelKind {
     /// The canonical `--model` argument value for this kind.
     pub fn as_arg(self) -> &'static str {
         match self {
-            Self::WhisperBase => "whisper-base",
+            Self::Whisper => "whisper",
             Self::SileroVad => "silero-vad",
             Self::PiperPlus => "piper-plus",
             Self::CamPlus => "campplus",
@@ -179,7 +193,7 @@ pub fn convert_file(
     let bytes = std::fs::read(input)?;
 
     let (builder, notes) = match model {
-        ModelKind::WhisperBase => (models::whisper::convert(bytes, None)?, Vec::new()),
+        ModelKind::Whisper => (models::whisper::convert(bytes, None)?, Vec::new()),
         ModelKind::SileroVad => {
             let (builder, report) = models::silero::convert(bytes)?;
             let notes = vec![format!(
@@ -225,11 +239,12 @@ pub fn convert_file(
 /// Like [`convert_file`], but K-quantizes the model's large weight matrices to
 /// `quant` (`Q4_K` / `Q5_K` / `Q6_K`) on the way out (M1-02, FR-QT-01).
 ///
-/// Only `whisper-base` supports quantization in M1-02; other models return a
-/// [`ConvertError::Usage`]. Biases, norms and non-block-aligned tensors stay in
-/// full precision, and the emitted metadata is identical to the plain path —
-/// only the quantized tensors' dtype and bytes differ, so the runtime loads the
-/// result through the same GGUF path (dequantizing via `vokra_core::gguf::quant`).
+/// Only `whisper` (all Whisper sizes) supports quantization in M1-02; other
+/// models return a [`ConvertError::Usage`]. Biases, norms and non-block-aligned
+/// tensors stay in full precision, and the emitted metadata is identical to
+/// the plain path — only the quantized tensors' dtype and bytes differ, so the
+/// runtime loads the result through the same GGUF path (dequantizing via
+/// `vokra_core::gguf::quant`).
 pub fn convert_file_quantized(
     model: ModelKind,
     input: &Path,
@@ -239,10 +254,10 @@ pub fn convert_file_quantized(
     let bytes = std::fs::read(input)?;
 
     let builder = match model {
-        ModelKind::WhisperBase => models::whisper::convert(bytes, Some(quant))?,
+        ModelKind::Whisper => models::whisper::convert(bytes, Some(quant))?,
         other => {
             return Err(ConvertError::Usage(format!(
-                "quantization (--quantize) is only supported for whisper-base in M1-02, not {other}"
+                "quantization (--quantize) is only supported for whisper in M1-02, not {other}"
             )));
         }
     };

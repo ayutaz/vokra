@@ -38,7 +38,7 @@ fn whisper_safetensors_roundtrips_through_convert_file() {
     let output = tmp_path("whisper-out");
     std::fs::write(&input, synthetic_safetensors()).expect("write input");
 
-    let summary = convert_file(ModelKind::WhisperBase, &input, &output).expect("convert");
+    let summary = convert_file(ModelKind::Whisper, &input, &output).expect("convert");
     assert_eq!(summary.tensor_count, 2);
     // 2 model keys + 13 frontend keys + 13 `vokra.whisper.*` hyperparameter keys
     // (M0-06-T04: n_mels, n_audio_ctx/state/head/layer, n_text_ctx/state/head/
