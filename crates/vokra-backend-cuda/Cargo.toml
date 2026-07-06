@@ -26,8 +26,18 @@ vokra-core.workspace = true
 # first-party `vokra-*` crate, so it does not perturb the zero-dependency
 # invariant of the root Cargo.lock. The parity test itself is device-gated
 # (skips when no CUDA GPU is present) and is meant to run on a vast.ai RTX 4090.
+#
+# `vokra-models` + `vokra-core` are dev-only wiring for the RTF sanity test
+# (`whisper_cuda_large_v3_rtf.rs`, M2-03-followup-rtf-sub-0.1 T-follow-08) —
+# they let the test drive `WhisperAsr::from_gguf(...).with_backend(Cuda).transcribe()`
+# without duplicating the model surface here. All three are first-party
+# `vokra-*` crates so the zero-dep invariant on the root Cargo.lock is unchanged
+# (NFR-DS-02). `vokra-models` is pulled with its `cuda` feature so the model
+# crate's own CUDA routing (compute.rs) matches what the test measures.
 [dev-dependencies]
 vokra-backend-cpu.workspace = true
+vokra-core.workspace = true
+vokra-models = { workspace = true, features = ["cuda"] }
 
 [lints]
 workspace = true
