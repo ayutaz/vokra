@@ -244,19 +244,84 @@ mod tests {
     /// d_model, n_audio_head, n_text_head, ffn_dim). No runtime hardcoding.
     #[test]
     fn reads_all_whisper_size_hparams() {
-        // (name, n_audio_layer, n_text_layer, n_mels, n_vocab, d_model,
-        //  n_head, ffn_dim, n_audio_ctx, n_text_ctx)
         // n_head = d_model / 64 (WHISPER_HEAD_DIM invariant across sizes);
         // ffn_dim = 4 * d_model per Whisper architecture.
-        let rows: &[(&str, u32, u32, u32, u32, u32, u32, u32, u32, u32)] = &[
-            ("base", 6, 6, 80, 51865, 512, 8, 2048, 1500, 448),
-            ("small", 12, 12, 80, 51865, 768, 12, 3072, 1500, 448),
-            ("medium", 24, 24, 80, 51865, 1024, 16, 4096, 1500, 448),
-            ("large-v3", 32, 32, 128, 51866, 1280, 20, 5120, 1500, 448),
-            ("turbo", 32, 4, 128, 51866, 1280, 20, 5120, 1500, 448),
+        struct Row {
+            name: &'static str,
+            n_audio_layer: u32,
+            n_text_layer: u32,
+            n_mels: u32,
+            n_vocab: u32,
+            d_model: u32,
+            n_head: u32,
+            ffn_dim: u32,
+            n_audio_ctx: u32,
+            n_text_ctx: u32,
+        }
+        let rows = [
+            Row {
+                name: "base",
+                n_audio_layer: 6,
+                n_text_layer: 6,
+                n_mels: 80,
+                n_vocab: 51865,
+                d_model: 512,
+                n_head: 8,
+                ffn_dim: 2048,
+                n_audio_ctx: 1500,
+                n_text_ctx: 448,
+            },
+            Row {
+                name: "small",
+                n_audio_layer: 12,
+                n_text_layer: 12,
+                n_mels: 80,
+                n_vocab: 51865,
+                d_model: 768,
+                n_head: 12,
+                ffn_dim: 3072,
+                n_audio_ctx: 1500,
+                n_text_ctx: 448,
+            },
+            Row {
+                name: "medium",
+                n_audio_layer: 24,
+                n_text_layer: 24,
+                n_mels: 80,
+                n_vocab: 51865,
+                d_model: 1024,
+                n_head: 16,
+                ffn_dim: 4096,
+                n_audio_ctx: 1500,
+                n_text_ctx: 448,
+            },
+            Row {
+                name: "large-v3",
+                n_audio_layer: 32,
+                n_text_layer: 32,
+                n_mels: 128,
+                n_vocab: 51866,
+                d_model: 1280,
+                n_head: 20,
+                ffn_dim: 5120,
+                n_audio_ctx: 1500,
+                n_text_ctx: 448,
+            },
+            Row {
+                name: "turbo",
+                n_audio_layer: 32,
+                n_text_layer: 4,
+                n_mels: 128,
+                n_vocab: 51866,
+                d_model: 1280,
+                n_head: 20,
+                ffn_dim: 5120,
+                n_audio_ctx: 1500,
+                n_text_ctx: 448,
+            },
         ];
 
-        for &(
+        for Row {
             name,
             n_audio_layer,
             n_text_layer,
@@ -267,7 +332,7 @@ mod tests {
             ffn_dim,
             n_audio_ctx,
             n_text_ctx,
-        ) in rows
+        } in rows
         {
             let mut b = GgufBuilder::new();
             b.add_u32(KEY_N_MELS, n_mels);
