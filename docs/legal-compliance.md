@@ -1,6 +1,6 @@
 # legal-compliance.md — Vokra 音声 AI 法務対応
 
-**最終更新**: 2026-07-04（M2-13: §8 に compliance API 実装状況・watermark 据え置き・research flag 実挙動を追記）
+**最終更新**: 2026-07-07（§1.4 に watermark embedding が Deferred の期間の deployment-side disclosure 必須運用を追記）
 **目的**: EU AI Act、California SB 942、Tennessee ELVIS Act、連邦 NO FAKES Act、Apple App Store Guideline 5.5、Google Play Generative AI Content 等の音声 AI 特有の法的要件に対し、Vokra が実装すべき機能・運用・ドキュメントを列挙する。
 
 **責任分界**:
@@ -55,6 +55,20 @@
 
 - Vokra README に **"Vokra implements EU AI Act Article 50 compliance mechanisms. Deployers are responsible for user-facing disclosure in their applications."** を明記
 - `docs/legal-compliance.md` にこの文書を配置し、SDK ユーザーに周知
+
+#### 1.4 Deployment-side disclosure requirement (watermark embedding が Deferred の期間、必須運用)
+
+§1.1 の machine-readable marking（AudioSeal / C2PA / SynthID / SilentCipher）は §8 実装状況のとおり **2026-07-04 依頼者ドロップにより Deferred**（`crates/vokra-core/src/compliance/watermark.rs` の `WatermarkConfig::backend_status()` は常に `WatermarkBackendStatus::Deferred` を返し、runtime は生成音声に watermark を埋め込まない）。この deferred 期間、**Vokra 生成音声に対し Article 50(2)/(3) の "detectable" AI 生成 cue を提供する唯一の手段は、deployer 側の UI レベルでの visible AI-generated disclosure である**。本節は §1.2 の deployer 責任・§1.3 の README 記述・§11 の deployer checklist に散在する運用義務を、埋め込みが復活するまでの **MUST 運用要件**として集約する（法的分析の新規追加ではなく、既存要件の consolidation）。
+
+- **a. Vokra TTS/VC 音声の再生 UI に、ユーザーが視認可能な "AI-generated voice" 表示を必ず表示する** — §1.2 の "UI 上での視覚的 AI 表示" と `crates/vokra-core/src/compliance/level.rs` の `DisclosureConfig::require_visible_ui = true`（default）に対応。表示形態（アイコン・テキスト・ラベル）は deployer 判断だが「表示すること自体」は EU AI Act Article 50(2)/(3) が deployer に義務付ける。
+- **b. EU 地域配信では user 設定によらず常時表示** — §1.2 の "EU 地域判定に基づく強制表示" と [`docs/system-requirements.md`](system-requirements.md) NFR-LG-01（EU AI Act Article 50、2026-08-02 enforcement）に対応。deployer は EU 地域判定機構と強制表示 UI を実装する（Vokra core の自動地域判定は §8 実装状況のとおり locale ヒント最小版のみ、IP geolocation は据え置き）。
+- **c. California SB 942 対象サービスは manifest disclosure workflow も併走** — §2 の "If your service exceeds 1M CA users/month, SB 942 applies." に対応し、月間 100 万 CA ユーザー超のサービスは SB 942（2026-01-01 施行）対象で、視覚的 disclosure に加え SB 942 の manifest-disclosure workflow を deployer 側で実装する。
+- **d. Tennessee ELVIS Act（2024-07-01 施行）／ 連邦 NO FAKES Act（審議中）** — §3 / §4 のとおり、deployer は Vokra を「identifiable な個人音声の consent なき合成」に使用しない。これは disclosure 項目ではなく use-restriction だが、deployer の compliance stack は disclosure と use-restriction を組み合わせて成立するため §1.4 で cross-reference する。
+- **e. 音声録音 / speaker embedding 抽出時の consent-taking dialog** — §1.2 の "user consent 取得ダイアログの提供" と §3.2 の signed consent manifest 要件に対応し、deployer が実装する。
+
+**Owner 責任の再確認**: visible indicator の具体的文言・地域強制の実装方式・consent workflow の法的十分性は **deployer / 依頼者の判断**（FR-MD-13 / X-03、[`docs/m2-owner-verification-checklist.md`](m2-owner-verification-checklist.md) §4 の Article 50 checklist owner sign-off point）。Vokra は `ComplianceConfig::disclosure.require_visible_ui = true`（`crates/vokra-core/src/compliance/level.rs`）を設計意図としての default に据えるが、UI 実装・法的レビュー・地域判定の enforcement は Vokra は提供しない。§8 実装状況 の "法務的十分性の判断は FR-MD-13 / X-03（依頼者）に従属" 原則をここでも保持する（本節は既存の deployer 責務を集約するのみで、新規の法的義務を課すものではない）。
+
+**関連参照**: §1.1（machine-readable marking、現状 Deferred）／ §1.2（deployer 責任 bullets、本節が MUST 化）／ §1.3（README 記述）／ §8 実装状況（Deferred 事実・`WatermarkConfig::backend_status()` の復帰接続点）／ §11 deployer checklist（項目別）／ §2（SB 942）／ §3（ELVIS Act）／ §4（NO FAKES Act）／ [`docs/license-audit.md`](license-audit.md) §Article 50 checklist（"運用側で TTS 出力に AI 生成表示（disclosure text）を必ず加える必要がある" 記述）／ `crates/vokra-core/src/compliance/level.rs`（`DisclosureConfig::require_visible_ui`）／ `crates/vokra-core/src/compliance/watermark.rs`（`WatermarkConfig::backend_status()` が `Deferred` を返す事実）。
 
 ### 罰則リスク
 - Article 50 違反: **全世界売上高の 3% or €15M のいずれか高い方** の罰金
