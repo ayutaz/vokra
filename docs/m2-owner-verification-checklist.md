@@ -1,7 +1,7 @@
 # M2 (v0.5) Owner Verification Checklist
 
 **Owner**: 依頼者 (`ayutaz`) — 実機テスト・法務判断・鍵/秘密情報の provision を担当。
-**CC-side status**: v0.5 15 WP のうち **11 完了 + 2 CC 部完了 + 1 継続監視**（M2-15）+ **1 descoped**（M2-10 Discord bot デモは依頼者決定により Discord 全体を非採用、`vokra-server` 稼働実証は別形態で扱う）。以下のチェックポイントを依頼者が消化することで v0.5 milestone Exit 判定に進める。
+**CC-side status**（2026-07-07 更新）: v0.5 15 WP のうち **11 完了 + 2 CC 部完了 + 1 継続監視**（M2-15）+ **1 descoped**（M2-10 Discord bot デモは依頼者決定により Discord 全体を非採用、`vokra-server` 稼働実証は別形態で扱う）。**M2-14 の CC 側計測は今回のワークフローで完了**: CUDA large-v3 RTF は decomposed path で 0.1133（sanity <0.15 パス、FA v2 wrapper は 0.1914 で revert → § 2）、Whisper parity fixture は 4 サイズ生成済で small/medium partial・large-v3/turbo failed（§ 3）、Kokoro parity は placeholder mode のみで failed（§ 3）、Wyoming HA smoke は wire-level PASS（§ 8）、Owner sign-off template と Kill switch metrics runbook は整備済（§ 4）。以下のチェックポイントを依頼者が消化することで v0.5 milestone Exit 判定に進める。
 
 各項目は「必要な準備 → 実行手順 → Exit 判定への寄与」の 3 段で記述。CC が既に整備した scaffold（scripts / CI / docs）へのポインタを併記する。
 
@@ -77,8 +77,9 @@ vastai destroy instance <instance_id>
 ### Exit 判定への寄与
 
 - NFR-PF-04（CUDA large-v3 RTF < 0.1）— v0.5 Exit criteria 2。
-- 実装は完了（FA v2 kernel PTX + inter-head + session pool、commits `88b17c8..1dede25`）。**FA v2 launcher の wrapper 実装は M2-03-followup T-follow-02/03 に deferred** — kernel は compile されるが `launch_flash_attn_v2` は現状 stub（`BackendUnavailable`）で、`use_flash_attn=true` の経路は失敗する（NFR-PF-04 formal gate は M2-14/M3-01 引き渡し済）。
-- **CC 側実測（2026-07-07、`docs/bench-baselines/whisper_large_v3_cuda_rtf.json`）**: vast.ai RTX 4090（US、offer 36887008、$0.336/hr）で `VOKRA_CUDA_DISABLE_FA_V2=1` の decomposed path による 5 連続測定、**RTF = 0.1131–0.1135、median 0.1133**（30 s 音声 → 3.394–3.404 s wall）。sanity ceiling 0.15 パス。formal < 0.10 gate は FA v2 launcher 実装完了後（M2-14）に再測定して確定する。fix 2 件が測定過程で同定・修正済（`fix(cuda): INFINITY 未定義修正`（NVRTC 12.6+ 互換、コミット `83f8751`）と `feat(cuda): VOKRA_CUDA_DISABLE_FA_V2 override`（コミット `d469429`））。
+- 実装は完了（FA v2 kernel PTX + inter-head + session pool、commits `88b17c8..1dede25`）。**FA v2 launcher の wrapper 実装は 2026-07-07 に一度着地（コミット `bc919da`）したが同日 revert（コミット `c04d344`）**: 実測で decomposed path より遅く（後述）、`vokra-core` の unsafe 0 ルール（生 FFI は backend crate 内に限定）との整合性見直しが必要な範囲まで踏み込んだため、いったん巻き戻して T-follow-02/03 として保留。したがって formal < 0.10 always-on gate は引き続き **M2-14 self-hosted runner + M3-01 5% regression gate** に deferred。
+- **CC 側実測（2026-07-07、`docs/bench-baselines/whisper_large_v3_cuda_rtf.json`）**: vast.ai RTX 4090（US、offer 36887008、$0.336/hr）で `VOKRA_CUDA_DISABLE_FA_V2=1` の decomposed path による 5 連続測定、**RTF = 0.1131–0.1135、median 0.1133**（30 s 音声 → 3.394–3.404 s wall）。sanity ceiling 0.15 パス。fix 2 件が測定過程で同定・修正済（`fix(cuda): INFINITY 未定義修正`（NVRTC 12.6+ 互換、コミット `83f8751`）と `feat(cuda): VOKRA_CUDA_DISABLE_FA_V2 override`（コミット `d469429`））。
+- **Formal FA v2 wrapper 実測（2026-07-07、`bc919da` 上で 5 連続測定）**: **RTF median 0.1914（range 0.1902–0.1925）**、decomposed path の 0.1133 より **遅い**（+69 %）。FA v2 kernel launcher に inter-head parallelism / online softmax rescale の追加チューニングが必要と判明し、tuning 完了までは wrapper を revert（`c04d344`）し decomposed path を default に据える。次回計測（M2-14 self-hosted runner）で (a) FA v2 wrapper の再着地、(b) shared memory occupancy 調整、(c) weight caching 有無、を切り分けて < 0.10 の formal gate を目指す。
 
 ---
 
@@ -117,6 +118,25 @@ VOKRA_KOKORO_GGUF=$PWD/kokoro-82m.gguf \
 
 - v0.5 の Exit criteria には直接含まれないが、model zoo publish（M2-06 T16、M2-07 T24）と法務 audit（T18/T20、T25/T26）の前提。
 
+### CC 側実測状況（2026-07-07、commit `9d3eaae`）
+
+**Whisper 4 サイズ — partial / failed（per-size 詳細）**:
+
+| Size | manifest 生成 | vocab_tokenizer | greedy tokens | greedy_text | 判定 |
+|-----|---|---|---|---|-----|
+| whisper-small | ✅ 生成済 | 51865 | 522 1363 37174 8 50257 | ` (whistling)` | **partial** — 出力は非空だが 1s 合成入力に対する意味出力ではない（reference dumper の設計上、input=deterministic noise なので参考値どまり） |
+| whisper-medium | ✅ 生成済 | 51865 | 522 82 18833 261 6227 8 50257 | ` (siren wails)` | **partial** — 同上 |
+| whisper-large-v3 | ✅ 生成済 | 51866 | 50257 (eot only) | (empty) | **failed** — greedy 初手で eot を選択、byte-level parity には使えるが behavior parity には使えない |
+| whisper-turbo | ✅ 生成済 | 51866 | 50257 (eot only) | (empty) | **failed** — 同上 |
+
+fixture 自体（`logmel.f32` / `encoder.f32` / `logits_last.f32` / `tokenizer.bin`）は 4 サイズ全部で揃っているので、Rust 側 parity テスト（M2-06 T09/T11）の byte-level 一致検証は走らせられる。**greedy_text は "空 or 参考値どまり" のサイズがあるため behavior-level assertion は依頼者側で判断**（synthetic 1s noise 入力の性質による設計上の限界）。
+
+**Kokoro-82M — failed（placeholder mode どまり）**:
+
+- `mode = placeholder`（`vocab_size = 256`、`num_phonemes = 24` 等 shape のみ検証）で fixture 生成、byte-level parity は取れていない。
+- 根拠: `hexgrad/Kokoro-82M` は `kokoro-v1_0.pth`（torch pickle）で配布されており safetensors 版が無い、dumper 側で `torch.load(weights_only=True)` の nested state dict flatten まで対応したが（`tools/parity/dump_kokoro_reference.py` 側 refactor 済）、**モデル本体の native 再 forward が未完了で `mode = full` に上げられなかった**。
+- 現状 Rust 側 `parity_kokoro.rs` は manifest の `mode = placeholder` marker を読んで shape/length のみ検証する gated harness で動く。M2-07 T11 完了（byte-level parity）は follow-up。
+
 ---
 
 ## 4. モデル license audit + legal-compliance checklist 承認（M2-06 T18/T20、M2-07 T25/T26）
@@ -132,6 +152,12 @@ VOKRA_KOKORO_GGUF=$PWD/kokoro-82m.gguf \
 ### 実行手順
 
 `docs/license-audit.md` の各行に `Owner sign-off: <date>` を追記、`docs/legal-compliance.md` の Article 50 checklist を通す。
+
+### CC 側整備状況（2026-07-07）
+
+- **Owner sign-off template を `docs/license-audit.md` §3.1 に追加済み**（Task #78 agent、コミット `8d01b36`）。CC-verified 事実確認 subsection と、依頼者記入用の空欄 sign-off テーブル（Model / Weight License / CC-verified date / Owner sign-off (YYYY-MM-DD) / Approval / Notes）を提供。空欄行は fail-closed（未サインオフ＝公式配布不可）扱い。
+- **Kill switch C/K メトリクス収集手順を独立 runbook 化**（Task #78 agent）: `docs/governance/kill-switch-metrics-runbook.md`（VOKRA-GOV-001）。GitHub stars / non-bot non-CC contributors / Issues + Discussions active participants の集計コマンド、集約 bash スクリプト、四半期 review 記録 template（`docs/governance/quarterly-reviews/YYYY-QN.md`）を規定。Discord 非採用（2026-07-04 依頼者決定）に伴う代替判定を含む。
+- **Article 50 の runtime 面**: AudioSeal / C2PA 埋め込みは 2026-07-04 に依頼者ドロップ、M2-13 は `WatermarkConfig` の config surface のみを残す。NFR-LG-01/02 の runtime marking は未達 — deployment guide への disclosure text 要件記載は owner-side follow-up。
 
 ### Exit 判定への寄与
 
@@ -215,6 +241,15 @@ VOKRA_KOKORO_GGUF=$PWD/kokoro-82m.gguf \
 
 `integrations/vokra-server/docs/wyoming-design.md` の HA 接続例を参照。
 
+### CC 側実測状況（2026-07-07、commit `c3f0fce`）
+
+**Wyoming HA smoke — PASS（wire-level reachable）**:
+
+- 環境: M1 iMac + Docker Desktop 24.0.6 + `homeassistant/home-assistant:stable`（sha256 `f73512ba...`）。詳細手順は `integrations/vokra-server/tests/wyoming-ha-smoke.md`。
+- **合格点**: HA container が `vokra-server` を host:10300 経由で `host.docker.internal` (2.6 ms) と LAN IP の両方から reach できることを wire-level で確認。Kill switch J に必要な「Wyoming エンドポイントに接続可能」条件は満たす。
+- **既知の未達**: Wyoming info reply は返っていない（T14/T15/T16 の event loop が `wyoming_accept_loop` に未 wire、および `run_with_config` が `spawn_server` return 直後に tokio runtime を drop してしまう挙動を smoke で発見／文書化）。fix は `signal.wait().await` を `block_on` の戻り前に挟む方向で、依頼者判断のもと follow-up。
+- **判定範囲**: 本 smoke は wire-level reachability のみを確認するもので、Kill switch J の採用可否（HA 側が Vokra を「推奨 Wyoming Server」として案内するか）は依頼者判断領域。
+
 ### Exit 判定への寄与
 
 - Kill switch J 判定（HA 採用可否）。v0.5 時点で判定。
@@ -245,25 +280,25 @@ VOKRA_KOKORO_GGUF=$PWD/kokoro-82m.gguf \
 
 ---
 
-## Summary 進捗表（2026-07-06 時点）
+## Summary 進捗表（2026-07-07 時点）
 
 | WP | 内容 | CC 進捗 | 依頼者残タスク |
 |----|------|--------|--------------|
 | M2-01 | Metal backend | ✅ 完了 | — |
 | M2-02 | iOS build scaffold | ✅ 完了（scaffold） | § 1（iOS 実機 RTF） |
-| M2-03 | CUDA backend + RTF<0.1 保証 | ✅ 完了（実装） | § 2（CUDA 実測） |
+| M2-03 | CUDA backend + RTF<0.1 保証 | ✅ 実装完了 / 実測は decomposed path で **RTF 0.1133**（sanity <0.15 パス）、FA v2 wrapper は **RTF 0.1914** で revert（§ 2 参照） | § 2（formal <0.10 は M2-14 self-hosted runner で再検証） |
 | M2-04 | graph fusion（log-mel 1 kernel） | ✅ 完了 | — |
 | M2-05 | istft_streaming op | ✅ 完了 | — |
-| M2-06 | Whisper large-v3/turbo | ✅ 部分完了 | § 3（parity fixture）+ § 4（audit） |
-| M2-07 | Kokoro-82M | ✅ 骨格完了 | § 3（parity fixture）+ § 4（audit） |
+| M2-06 | Whisper large-v3/turbo | ✅ 部分完了 / parity fixture は 4 サイズ生成済（small/medium は partial、large-v3/turbo は greedy = eot のみで failed。§ 3 参照） | § 3（reference generator 見直し）+ § 4（audit） |
+| M2-07 | Kokoro-82M | ✅ 骨格完了 / parity fixture は placeholder mode のみ（§ 3 参照） | § 3（byte-level full mode）+ § 4（audit） |
 | M2-08 | quantization policy | ✅ 完了 | — |
 | M2-09 | vokra-server 4 互換 API | ✅ 完了 | — |
 | M2-10 | Discord bot デモ | ❌ descoped | Discord 全体を非採用（依頼者決定）。サーバ稼働実証は M2-15 review の別形態で扱う |
 | M2-11 | Unity official plugin | ✅ 完了（UPM CD） | § 7（Unity license）|
 | M2-12 | 言語バインディング（Python 初回） | ✅ 完了（wheel scaffold） | § 5（合意）+ § 6（PyPI token）|
 | M2-13 | compliance 拡張 | ✅ 完了 | — |
-| M2-14 | 実機ベンチ計測 | 引き渡し済み | § 1 + § 2 |
-| M2-15 | 四半期 Go/No-go review | 継続監視 | § 8（Kill switch J）+ § 9（C/K）|
+| M2-14 | 実機ベンチ計測 | 引き渡し済み / CUDA reference 計測は完了、iOS 実機は依頼者側 | § 1 + § 2 |
+| M2-15 | 四半期 Go/No-go review | 継続監視 / metrics runbook 整備済（§ 4 参照） | § 8（Kill switch J — wire-level PASS）+ § 9（C/K）|
 
 ---
 
