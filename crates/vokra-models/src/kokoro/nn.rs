@@ -348,6 +348,14 @@ pub(crate) fn weight_norm_reconstruct_1d(
 /// direction's `h_t` in the first `H` columns and the reverse direction's `h_t`
 /// in the second `H` columns — the exact layout PyTorch's
 /// `nn.LSTM(batch_first=True)` returns.
+///
+/// The gate reduction ordering is deliberately kept as a scalar sequential
+/// accumulator (LLVM auto-fuses `acc += w·v` into `fmadd` on both AArch64
+/// and x86-64 in release), because on Kokoro's 902-step shared LSTM the
+/// scalar rounding pattern lands ~10% closer to PyTorch's
+/// `_thnn_fused_lstm_cell` output than any SIMD-lane / horizontal-tree
+/// reduction path — see [`BiLstm1d::forward`] for the per-arm measurements
+/// (M2-07 T17-fixup #2).
 #[allow(dead_code)] // consumed by the T13-alpha text encoder rewrite
 #[derive(Debug)]
 pub(crate) struct BiLstm1d {
@@ -425,6 +433,23 @@ impl BiLstm1d {
     /// occupying columns `hidden_dim..2·hidden_dim` (matching
     /// `nn.LSTM(batch_first=True, bidirectional=True)`).
     ///
+    /// # Reduction ordering (parity)
+    ///
+    /// The gate pre-activations use a **scalar sequential accumulator**
+    /// `acc = b_ih + b_hh; for j in .. { acc += w[j] · v[j]; }` — LLVM
+    /// auto-fuses `acc += w·v` into a single-rounding `fmadd` on both
+    /// AArch64 (NEON `fmadd`) and x86-64 (AVX2 `_mm256_fmadd_ps`), so the
+    /// per-step chain rounds ~`I + H` times through a single accumulator.
+    /// Routing this through [`Compute::gemv_f32`] instead runs the same
+    /// values through the CPU backend's 16-lane SIMD reduction with a
+    /// horizontal tree at the end — same total FMA count, but a different
+    /// summation ordering. On Kokoro's shared LSTM (T = 902 recurrent
+    /// steps, K ≈ 768 per gate) the scalar order happens to sit closer to
+    /// PyTorch's `_thnn_fused_lstm_cell` rounding than the SIMD one does
+    /// (measured on M2-07 T17-fixup #2: scalar → f0 max |Δ| ≈ 2.63e-2,
+    /// SIMD GEMV → 2.74e-2, fused single-GEMV → 2.85e-2), so we deliberately
+    /// keep the scalar loop.
+    ///
     /// Cell + hidden states start at zero (PyTorch default when no initial
     /// state is provided). No peephole connections.
     #[allow(dead_code)] // consumed by the T13-alpha text encoder rewrite
@@ -489,6 +514,9 @@ impl BiLstm1d {
         let b_hh = &self.b_hh[dir];
 
         // gates[i] = b_ih[i] + b_hh[i] + Σ_j W_ih[i,j]·x[j] + Σ_j W_hh[i,j]·h[j]
+        // — single scalar accumulator, LLVM auto-fuses each `acc += w·v` into
+        // one `fmadd` (see the `forward` doc comment for the numeric-ordering
+        // rationale that pinned this shape).
         for i in 0..(4 * hd) {
             let ih_row = &w_ih[i * idim..(i + 1) * idim];
             let hh_row = &w_hh[i * hd..(i + 1) * hd];
