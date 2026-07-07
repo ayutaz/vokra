@@ -11,8 +11,10 @@ checklist.md` §3) can reach it without an extra fetch step.
 
 | Path | Provenance | Rate / channels / codec | Size |
 |------|------------|-------------------------|------|
-| `jfk-30s.wav` | openai-whisper `tests/jfk.flac` — Public Domain LibriVox recording of JFK's 1961 inaugural address ("Ask not what your country can do for you…") | 16 kHz mono PCM16 (WAV) | ~960 KB (30 s × 16 000 × 2 bytes + RIFF header) |
+| `jfk-30s.wav` | openai-whisper `tests/jfk.flac` — Public Domain LibriVox recording of JFK's 1961 inaugural address ("Ask not what your country can do for you…") | 16 kHz mono PCM16 (WAV) | ~344 KB (11 s of actual speech × 16 000 × 2 bytes + RIFF header; the dumper `load_pcm()` zero-pads this to 30 s = 480 000 samples internally to match Whisper's `N_SAMPLES`) |
 | `jfk-30s.wav.sha256` | `sha256sum tests/fixtures/audio/jfk-30s.wav` output | text sidecar (`<hash>  <path>` — repo-relative) | ~90 bytes |
+
+**File-name vs actual length note**: the file name `jfk-30s.wav` reflects the *window Whisper processes* (`N_SAMPLES = 480 000` samples = 30 s), not the actual clip duration. The source `tests/jfk.flac` from `openai/whisper` is only ~11 s of speech; the dumper's `load_pcm(path, n_samples=480_000)` right-pads the shorter clip with zeros, matching Whisper's own internal front-end padding. Keeping the shorter file avoids committing ~600 KB of silence to the repo.
 
 ## Why real audio (not synthetic PCM)
 
