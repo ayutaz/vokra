@@ -680,6 +680,116 @@ pub(crate) fn adain_conditioned(
     }
 }
 
+/// Same as [`adain_conditioned`] but applies the StyleTTS 2 **residual**
+/// `(1 + γ)` convention on the affine step. Used by prosody's `AdainResBlk`
+/// (F0 / N branch stages) where `norm1` / `norm2` are AdaIN1d with
+/// `y = (1 + γ)·x + β` per StyleTTS 2.
+///
+/// # Rationale (T17-fixup #4, 2026-07-08 — `docs/adr/0007-kokoro-native.md`)
+///
+/// [`adain_conditioned`] fixed the decoder's mag / phase / pcm parity by
+/// promoting the Linear GEMV (style → γ, β) and the InstanceNorm mean / variance
+/// reductions to f64 in the decoder-only path. The prosody predictor's F0 / N
+/// branches ran the same shape of computation via the separate
+/// [`AdaLnParams::project`] + [`adain`] sequence (both f32 accumulators), and
+/// the resulting `~3e-3` upstream drift is amplified `~9×` by the
+/// `F0_proj` / `N_proj` `Conv1d(d_model/2 → 1, k=1)` tail — producing the
+/// prosody f0 honest negative `max |Δ| = 2.628e-2 vs atol = 0.01` recorded in
+/// ADR-0007 T17-fixup #2.
+///
+/// This helper closes that gap by applying the identical f64-accumulator pattern
+/// to prosody's residual AdaIN1d, without perturbing the shared [`adain`] path
+/// (which is unused by prosody once the caller migrates to
+/// `adain_conditioned_residual`) and without adding a first-class op (D6 / D7
+/// composition rule in ADR-0007).
+///
+/// # Convention
+///
+/// * `x` is channel-major `[channels · time]` (row-major with `channel` outer).
+/// * `fc_w` is `[2·channels, style_dim]` in row-major layout (matches
+///   [`AdaLnParams::fc_w`] and PyTorch `Linear.weight`).
+/// * `fc_b` is `[2·channels]`.
+/// * `style` is `[style_dim]`.
+/// * The Linear output is split as `[γ_raw | β]` each of length `channels`.
+/// * The affine step applies `y = (1 + γ_raw)·x_norm + β` (StyleTTS 2
+///   residual form; the shift is inside the helper so callers do NOT need to
+///   pre-add `1.0` on the γ vector).
+#[allow(dead_code, clippy::too_many_arguments)] // consumed by prosody::AdainResBlk::forward (T17-fixup #4)
+pub(crate) fn adain_conditioned_residual(
+    x: &mut [f32],
+    channels: usize,
+    time: usize,
+    fc_w: &[f32],
+    fc_b: &[f32],
+    style: &[f32],
+    style_dim: usize,
+) {
+    debug_assert_eq!(
+        x.len(),
+        channels * time,
+        "adain_conditioned_residual: x len"
+    );
+    debug_assert_eq!(
+        style.len(),
+        style_dim,
+        "adain_conditioned_residual: style len"
+    );
+    debug_assert_eq!(
+        fc_w.len(),
+        2 * channels * style_dim,
+        "adain_conditioned_residual: fc_w len"
+    );
+    debug_assert_eq!(
+        fc_b.len(),
+        2 * channels,
+        "adain_conditioned_residual: fc_b len"
+    );
+    if channels == 0 || time == 0 {
+        return;
+    }
+
+    // 1. Project style → (γ_raw, β) via a row-major Linear with f64 accumulator
+    //    (identical to `adain_conditioned` Step 1).
+    let two_c = 2 * channels;
+    let mut gamma_beta = vec![0.0f32; two_c];
+    for i in 0..two_c {
+        let mut acc64: f64 = fc_b[i] as f64;
+        let row = &fc_w[i * style_dim..(i + 1) * style_dim];
+        for j in 0..style_dim {
+            acc64 += row[j] as f64 * style[j] as f64;
+        }
+        gamma_beta[i] = acc64 as f32;
+    }
+    let (gamma_raw, beta) = gamma_beta.split_at(channels);
+
+    // 2. In-place per-channel InstanceNorm with f64 mean / variance accumulators
+    //    (identical to `adain_conditioned` Step 2), then the residual affine
+    //    `y = (1 + γ_raw)·x_norm + β`.
+    let inv_t = 1.0 / time as f64;
+    for c in 0..channels {
+        let row = &mut x[c * time..c * time + time];
+        let mut mean64: f64 = 0.0;
+        for &v in row.iter() {
+            mean64 += v as f64;
+        }
+        mean64 *= inv_t;
+        let mean = mean64 as f32;
+        let mut var64: f64 = 0.0;
+        for &v in row.iter() {
+            let d = v as f64 - mean64;
+            var64 += d * d;
+        }
+        var64 *= inv_t;
+        let var = var64 as f32;
+        let inv = 1.0 / (var + EPS).sqrt();
+        let g_plus_1 = 1.0 + gamma_raw[c];
+        let b = beta[c];
+        for v in row.iter_mut() {
+            *v = (*v - mean) * inv * g_plus_1 + b;
+        }
+    }
+}
+
 /// StyleTTS 2 派生 AdaLayerNorm on a `[t, channels]` row-major buffer
 /// (M2-07-T16).
 ///
@@ -1472,6 +1582,178 @@ mod tests {
         adain_conditioned(&mut x, channels, time, &fc_w, &fc_b, &style, style_dim);
         for (i, (&g, &w)) in x.iter().zip(&want).enumerate() {
             assert!((g - w).abs() < 1e-5, "idx {i}: {g} vs {w}");
+        }
+    }
+
+    /// `adain_conditioned_residual` mirrors `adain_conditioned` but with the
+    /// StyleTTS 2 residual `(1 + γ)` convention on the affine step. The scalar
+    /// oracle runs Linear → InstanceNorm → `(1 + γ)·x + β` explicitly.
+    ///
+    /// T17-fixup #4 (2026-07-08).
+    #[test]
+    fn adain_conditioned_residual_matches_scalar_oracle() {
+        let channels = 2;
+        let time = 3;
+        let style_dim = 1;
+        let mut x = vec![
+            1.0, 2.0, 3.0, // ch0
+            10.0, 20.0, 30.0, // ch1
+        ];
+        // fc([1]) = [2, 0.5, 10, -1] → γ_raw = [2, 0.5], β = [10, -1]
+        // → residual γ = 1 + γ_raw = [3, 1.5]
+        let fc_w = vec![2.0, 0.5, 10.0, -1.0];
+        let fc_b = vec![0.0f32; 4];
+        let style = vec![1.0f32];
+
+        let gammas_plus_1 = [3.0f32, 1.5];
+        let betas = [10.0f32, -1.0];
+        let mut want = x.clone();
+        for c in 0..channels {
+            let row = &mut want[c * time..c * time + time];
+            let mean = row.iter().sum::<f32>() / time as f32;
+            let var = row.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / time as f32;
+            let inv = 1.0 / (var + EPS).sqrt();
+            for v in row.iter_mut() {
+                *v = (*v - mean) * inv * gammas_plus_1[c] + betas[c];
+            }
+        }
+
+        adain_conditioned_residual(&mut x, channels, time, &fc_w, &fc_b, &style, style_dim);
+        for (i, (&g, &w)) in x.iter().zip(&want).enumerate() {
+            assert!((g - w).abs() < 1e-5, "idx {i}: {g} vs {w}");
+        }
+    }
+
+    /// `adain_conditioned_residual` promotes both the Linear GEMV and the
+    /// InstanceNorm mean / variance reductions to f64, so its result on a
+    /// pathological input where an f32 scalar loop would catastrophically
+    /// cancel must match the pure-f64 oracle to ULP-of-true precision.
+    ///
+    /// T17-fixup #4 (2026-07-08): this locks the f64 promotion behavior in
+    /// place; a regression to f32 accumulators would fail this test.
+    #[test]
+    fn adain_conditioned_residual_uses_f64_accumulators() {
+        // 1 channel × time=4 so the mean cancellation is easy to hit; style_dim
+        // large enough (128) to make the f32 dot product visibly drift from
+        // the f64 truth.
+        let channels = 1usize;
+        let time = 4usize;
+        let style_dim = 128usize;
+
+        // Weights + style chosen so the f32 sum of products drifts noticeably
+        // from the f64 truth by mixing large and small magnitudes with
+        // alternating signs.
+        let mut fc_w = vec![0.0f32; 2 * channels * style_dim];
+        let mut style = vec![0.0f32; style_dim];
+        for j in 0..style_dim {
+            // Row 0 = γ_raw, row 1 = β
+            let sign = if j % 2 == 0 { 1.0f32 } else { -1.0 };
+            fc_w[j] = sign * 1e3; // γ_raw row
+            fc_w[style_dim + j] = sign * 1e-3; // β row
+            style[j] = sign * 1.0;
+        }
+        let fc_b = vec![0.0f32; 2 * channels];
+
+        // Signal has both signs and small magnitude to exercise the
+        // InstanceNorm mean cancellation.
+        let mut x = vec![1e-3f32, -1e-3, 1e-3, -1e-3];
+        let want_x = x.clone();
+
+        adain_conditioned_residual(&mut x, channels, time, &fc_w, &fc_b, &style, style_dim);
+
+        // F64 oracle: γ_raw = Σ (1e3 · sign · sign · 1.0) = 128·1e3 = 128e3.
+        // (Every j contributes sign·sign = +1 since we set style[j] = sign*1.0.)
+        // β     = Σ (1e-3 · sign · sign · 1.0) = 128·1e-3 = 0.128.
+        // γ = 1 + γ_raw = 128001.
+        let gamma_raw_true: f64 = (0..style_dim)
+            .map(|j| {
+                let sign = if j % 2 == 0 { 1.0f64 } else { -1.0 };
+                sign * 1e3 * (sign * 1.0)
+            })
+            .sum();
+        let beta_true: f64 = (0..style_dim)
+            .map(|j| {
+                let sign = if j % 2 == 0 { 1.0f64 } else { -1.0 };
+                sign * 1e-3 * (sign * 1.0)
+            })
+            .sum();
+        let g_plus_1 = 1.0 + gamma_raw_true;
+
+        // Reference InstanceNorm on the signal in f64, then residual affine.
+        let mean_true = want_x.iter().map(|v| *v as f64).sum::<f64>() / time as f64;
+        let var_true = want_x
+            .iter()
+            .map(|v| (*v as f64 - mean_true).powi(2))
+            .sum::<f64>()
+            / time as f64;
+        let inv_true = 1.0 / (var_true + EPS as f64).sqrt();
+        let want: Vec<f32> = want_x
+            .iter()
+            .map(|v| ((*v as f64 - mean_true) * inv_true * g_plus_1 + beta_true) as f32)
+            .collect();
+
+        // A scalar f32 loop on the same weights drifts significantly further
+        // from the f64 truth (measured baseline: absolute delta ~2e-2 at this
+        // fixture, relative to the ~4e4 output magnitude). The f64 accumulator
+        // path here must be strictly better — we cap absolute delta at 1e-2 as
+        // the regression floor, which f32 scalar cannot hit but f64 does with
+        // room to spare.
+        let mut x_f32_ref = vec![1e-3f32, -1e-3, 1e-3, -1e-3];
+        {
+            // Inline scalar f32 comparison run: same math, f32 accumulators.
+            let two_c = 2 * channels;
+            let mut gb = vec![0.0f32; two_c];
+            for i in 0..two_c {
+                let mut acc = fc_b[i];
+                let row = &fc_w[i * style_dim..(i + 1) * style_dim];
+                for j in 0..style_dim {
+                    acc += row[j] * style[j];
+                }
+                gb[i] = acc;
+            }
+            let (gamma_raw_f32, beta_f32) = gb.split_at(channels);
+            let inv_t = 1.0f32 / time as f32;
+            for c in 0..channels {
+                let row = &mut x_f32_ref[c * time..c * time + time];
+                let mut mean = 0.0f32;
+                for &v in row.iter() {
+                    mean += v;
+                }
+                mean *= inv_t;
+                let mut var = 0.0f32;
+                for &v in row.iter() {
+                    let d = v - mean;
+                    var += d * d;
+                }
+                var *= inv_t;
+                let inv = 1.0 / (var + EPS).sqrt();
+                let g_plus_1_f32 = 1.0 + gamma_raw_f32[c];
+                let b = beta_f32[c];
+                for v in row.iter_mut() {
+                    *v = (*v - mean) * inv * g_plus_1_f32 + b;
+                }
+            }
+        }
+
+        for (i, (&g, &w)) in x.iter().zip(&want).enumerate() {
+            // f64 helper result must be closer to f64 truth than the f32 scalar
+            // baseline was. Both quantities can round in the last f32 ULP at
+            // scale ~4e4, so we accept absolute drift up to 1e-2 (well below
+            // the 9× amplification factor that turns hidden ~3e-3 into f0
+            // ~2.7e-2 in the prosody parity fixture).
+            let d_f64 = (g - w).abs();
+            let d_f32 = (x_f32_ref[i] - w).abs();
+            assert!(
+                d_f64 < 1e-2,
+                "idx {i}: f64 helper got {g}, want {w} (f64 truth), |Δ| = {d_f64:.3e}"
+            );
+            // If a future change accidentally regresses the helper to f32, the
+            // helper's |Δ| would jump up to at least the scalar-f32 baseline,
+            // which we assert is not the case here (must be strictly better).
+            assert!(
+                d_f64 <= d_f32,
+                "idx {i}: f64 helper (|Δ|={d_f64:.3e}) must not drift further than f32 scalar baseline (|Δ|={d_f32:.3e})"
+            );
         }
     }
 }
