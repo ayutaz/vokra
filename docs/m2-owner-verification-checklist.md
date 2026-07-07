@@ -1,7 +1,7 @@
 # M2 (v0.5) Owner Verification Checklist
 
 **Owner**: 依頼者 (`ayutaz`) — 実機テスト・法務判断・鍵/秘密情報の provision を担当。
-**CC-side status**（2026-07-07 更新、T17 完了反映）: v0.5 15 WP のうち **12 完了 + 1 CC 部完了 + 1 継続監視**（M2-15）+ **1 descoped**（M2-10 Discord bot デモは依頼者決定により Discord 全体を非採用、`vokra-server` 稼働実証は別形態で扱う）。**M2-14 の CC 側計測は完了**: CUDA large-v3 RTF は decomposed path で 0.1133（sanity <0.15 パス、FA v2 gated wrapper が 0.1323、`t_q >= 16` gating で hot path 保存 → § 2）、Whisper parity は 5 サイズ全対応で `weight_load_and_config_smoke` を含めた 7 tests pass（§ 3）、**Kokoro parity は T17 完了で 4 モジュール全ての mode=full parity を実測**（text_encoder + bert byte-level PASS、prosody f0 + decoder mag/phase/pcm は honest deltas で localized bug として記録、§ 3）、Wyoming HA smoke は wire-level PASS（§ 8）、Owner sign-off template と Kill switch metrics runbook は整備済（§ 4）。**M2-07 は "12 完了" にカウント**（T13-alpha/beta + T14 + T15 + T18 wiring + T17 all-modules-full-parity 完了、mag/phase/f0/pcm の 4 tensor で atol 超過は localized bug の follow-up 化）。以下のチェックポイントを依頼者が消化することで v0.5 milestone Exit 判定に進める。
+**CC-side status**（2026-07-07 更新、workflow `wf_b891d85d-2f3` による 6 件の M2 follow-up 消化を反映）: v0.5 15 WP のうち **12 完了 + 1 CC 部完了 + 1 継続監視**（M2-15）+ **1 descoped**（M2-10 Discord bot デモは依頼者決定により Discord 全体を非採用、`vokra-server` 稼働実証は別形態で扱う）。**M2-14 の CC 側計測は完了**: CUDA large-v3 RTF は decomposed path で 0.1133（sanity <0.15 パス、FA v2 gated wrapper が 0.1323、`t_q >= 16` gating で hot path 保存 → § 2）、Whisper parity は 5 サイズ全対応で `weight_load_and_config_smoke` を含めた 7 tests pass（§ 3）、**Kokoro parity は T17-fixup #1（decoder）で完全解決**（commit `e18efe0`: `adain_conditioned` の Linear + InstanceNorm reduction を f64 accumulator 化し FP32 catastrophic cancellation を除去。mag=1.21e-4 / phase=7.92e-5 / pcm=6.84e-3 = **全て atol=0.01 PASS**）、**T17-fixup #2（prosody f0）は honest negative** で確定（commit `7527c7c`: 3 種の GEMV rewrite 実測がむしろ regression、根因は F0_proj Conv1d 256→1 が hidden の 3e-3 delta を ~9× 増幅する downstream amplification と特定、f0=2.628e-2 は f64 accumulator を prosody 側に適用する follow-up として残す）、**T17-fixup #3（phoneme_symbols/voice_names wiring）完了**（commit `e060f97`: `vokra-cli convert --model kokoro --config <path>.json` で misaki phoneme table + voice names を受理、配布物ゼロ依存で config なし path は backward compat）。**Whisper reference-dumper は real audio 読み込みに置換**（commit `4665d74`: synthetic PCM 廃止、`--audio PATH` 追加、`pcm_sha256` を manifest に記録。fixture 再生成は依頼者側 follow-up）。**Wyoming info reply が unit test で hard-assert される**（commit `0bb73bb`: 3 tests 追加、120+16 tests all green）。**Article 50 deployment-side disclosure MUST を docs/legal-compliance.md §1.4 として consolidate**（commit `7f9db0b`: watermark embedding deferred 期間の運用要件を restatement のみで elevate、新規法解釈なし）。以下のチェックポイントを依頼者が消化することで v0.5 milestone Exit 判定に進める。
 
 各項目は「必要な準備 → 実行手順 → Exit 判定への寄与」の 3 段で記述。CC が既に整備した scaffold（scripts / CI / docs）へのポインタを併記する。
 
@@ -154,29 +154,31 @@ fixture 自体（`logmel.f32` / `encoder.f32` / `logits_last.f32` / `tokenizer.b
 - **T17 parity — text_encoder + bert byte-level PASS（commit `b0935fc`）**: PyTorch re-forward を `dump_kokoro_reference.py` の mode=full 分岐に実装。text_encoder max |Δ| = **4.34e-6**（atol 0.01 に対して headroom 2300×）、bert max |Δ| = **6.56e-6**（headroom 1500×）。GGUF-gated tests は `VOKRA_KOKORO_GGUF` 未設定時に clean skip。
 - **T17 parity — prosody + decoder honest deltas（commits `899249c`, `edae9f0`）**: 実 Kokoro-82M .pth → safetensors → GGUF まで通し、gated tests を実行して以下の測定値を確定（`docs/bench-baselines/` の Whisper baseline と同じ **honest reporting** 規律、`atol = 0.01` は変更なし）:
 
-  | 対象 | max \|Δ\| | atol 判定 | 備考 |
+  | 対象 | max \|Δ\| (post-fixup) | atol 判定 | 備考 |
   |------|---------|--------|------|
   | text_encoder head | 4.34e-6 | ✅ PASS | 4096 elems |
   | bert head | 6.56e-6 | ✅ PASS | 4096 elems |
   | prosody durations | 0 (bit-exact) | ✅ PASS | 24-length integer array |
   | prosody n | 8.30e-4 | ✅ PASS | 1804 elems |
   | prosody hidden | 3.08e-3 | ✅ PASS | 24×512 elems |
-  | **prosody f0** | **2.63e-2** | ❌ FAIL | scalar BiLSTM ~902-step accumulation + F0_proj 16× GEMV amplification（root cause identified） |
-  | **decoder mag** | **6.55e-1** | ❌ FAIL | 92% <1e-3, 7% <1e-2, 0.13% >0.1 — localized boundary bug |
-  | **decoder phase** | **7.46e-1** | ❌ FAIL | 91% <1e-3, 4% <1e-2, 0.10% >0.1 — 同上 |
-  | **decoder pcm** | **26.98** | ❌ FAIL | 99.7% <1e-4（near-perfect on 538 947 samples）、97 samples >1（edge/overflow chain） |
+  | **prosody f0** | **2.628e-2** | ❌ FAIL | T17-fixup #2 で honest negative 確定。3 GEMV variants を実測、いずれも regression。F0_proj Conv1d 256→1 が hidden の 3e-3 delta を ~9× 増幅、cell computation ではなく downstream amplification が atol-blocker と特定（`7527c7c` で nn.rs に rationale pin）。次 follow-up 候補: A1 と同型の f64 accumulator 局所適用 |
+  | decoder mag | **1.21e-4** | ✅ PASS | T17-fixup #1 で **完全解決**（`e18efe0`）: `adain_conditioned` の Linear + InstanceNorm reduction を f64 accumulator 化、FP32 catastrophic cancellation を除去。分布 [1189957, 23, 0, 0, 0, 0] = 99.998% <1e-4 |
+  | decoder phase | **7.92e-5** | ✅ PASS | 同 fixup で 100% <1e-4 |
+  | decoder pcm | **6.84e-3** | ✅ PASS | 同 fixup で 99.97% <1e-4、102 samples が <1e-3 bucket |
 
-  **honest 解釈**: 3/9 tensor が atol 超過だが、いずれも **分布は殆どが 1e-4 未満**で pipeline math 自体は概ね正しい。失敗は「特定 op / 境界フレーム / activation overflow」の localized bug で、architectural rewrite の必要はない。分布 histogram + `finite_worst_delta` + `VOKRA_KOKORO_PARITY_DUMP` の 3 診断機構を parity_kokoro.rs に追加、次回の T17-fixup で正確に絞り込める状態にした。
+  **honest 解釈（2026-07-07 workflow 後）**: 9 tensor 中 **8 が atol=0.01 PASS**、残る 1 tensor（prosody f0）は「computation は正しく、F0_proj downstream amplification が atol-blocker」という具体的な root cause が特定済み。A1（decoder）で有効だった **`adain_conditioned` の f64 accumulator パターン** を prosody の F0_proj/F0_conv 系にも局所適用する follow-up が最も筋の良い次手。診断機構（分布 histogram + `finite_worst_delta` + `VOKRA_KOKORO_PARITY_DUMP` + 新規 `tools/parity/kokoro_bisect.py` 200 行 stdlib-only）は既に整備済み。
 
-- **副次的な発見・修正**:
-  - Kokoro converter が iSTFT hparams（`n_fft`, `hop`, `win_length`）を `0` で書いていた placeholder を **20/5/20 (Kokoro canonical)** に修正（`aa52c8f`）。以前は真の Kokoro GGUF がロードで degenerate-dims エラーになっていた。
-  - `e2e_forward_matches_reference_shape` は `decoder_mode = full` 時に legacy `pcm.f32`（placeholder 16000 samples）との byte 比較を skip するよう更新（authoritative reference は `decoder_pcm.f32` へ移行、`decoder_forward_bit_parity` が担当）。
+- **副次的な発見・修正（cumulative）**:
+  - **Bisection surface**（T17-fixup #1 副産物、commit `e18efe0`）: `decoder.rs`/`generator.rs` に `maybe_dump_stage` を追加、`dump_kokoro_reference.py` に対応する `_maybe_dump_stage`、`tools/parity/kokoro_bisect.py`（stdlib-only pairwise diff）を新規追加。env `VOKRA_KOKORO_PARITY_DUMP=<dir>` 未設定時は no-op。
+  - Kokoro converter が iSTFT hparams（`n_fft`, `hop`, `win_length`）を `0` で書いていた placeholder を **20/5/20 (Kokoro canonical)** に修正（`aa52c8f`）。
+  - `e2e_forward_matches_reference_shape` は `decoder_mode = full` 時に legacy `pcm.f32`（placeholder 16000 samples）との byte 比較を skip（authoritative reference は `decoder_pcm.f32`、`decoder_forward_bit_parity` が担当）。
   - Converter roundtrip test の istft placeholder 期待値を `Some(0)` → `Some(20)/Some(5)/Some(20)` に更新。
+  - **Converter `--config <config.json>` 追加**（T17-fixup #3、commit `e060f97`）: `KokoroJsonConfig::parse` が `vocab: {sym:id}` / `phoneme_symbols: [str]` / `symbols: [str]` および `voices: [str]` / `voice_names: [str]` を alias 対応。missing families は loud `ConvertError::Parse`（silent fallback 無し）。CLI: `vokra-cli convert --model kokoro --config <path>.json`。config 無しの path は backward-compat placeholder。upstream `hexgrad/Kokoro-82M/config.json` の実 schema は unaccessible なので、テストは 178-symbol / 3-voice の plausible synthesis に basd、実 upstream JSON 到着時に refine 予定。
 
-- **残（T17-fixup follow-up、次回セッション or 別 WP で消化）**:
-  1. **decoder mag/phase の localized bug**: 92-99% は accurate なので特定 op を疑う（MRF residual? Snake AMP α scaling? conv_transpose output_padding? tanh 飽和?）。`VOKRA_KOKORO_PARITY_DUMP=<dir>` で native/ref 両方を落として diff 可能。
-  2. **prosody f0 の GEMV amplification**: scalar BiLSTM を GEMM ベースに書き換え（PyTorch fused CPU LSTM と累積順を合わせる）。`n`/`hidden` は 100× 以内でパス済なので F0_proj downstream 分だけ効いている。
-  3. **`--config config.json`-driven phoneme_symbols**: 現状は placeholder `p0..p177`、voice_names 空。misaki phoneme table wiring は M2-07 T13-alpha の外部依存として ADR で未 track。
+- **残（follow-up、次回セッション or 別 WP で消化）**:
+  1. **prosody f0 f64 accumulator 局所適用**: A1 の `adain_conditioned` パターンを F0_proj / F0_conv 系に horizontal transplant。`n`/`hidden` は既に PASS なので、F0-specific downstream の局所 f64 化のみで atol=0.01 到達を狙う。semantic divergence リスクは限定的（decoder で先例あり）。
+  2. **Whisper reference-dumper: 実 fixture 再生成**（B: script 面は完了 = commit `4665d74`）: `tests/fixtures/audio/jfk-30s.wav` を owner が配置し、`python3 tools/parity/dump_whisper_reference.py --audio ...` で 5 サイズ全再生成。task rubric で download 禁止のため CC 側では script only を land。
+  3. **Kokoro upstream `config.json` 到着時の parser refine**: 現在の alias set が正解に一致するか実 upstream JSON で確認、必要なら key 名を追加。
 
 ---
 
@@ -282,14 +284,15 @@ fixture 自体（`logmel.f32` / `encoder.f32` / `logits_last.f32` / `tokenizer.b
 
 `integrations/vokra-server/docs/wyoming-design.md` の HA 接続例を参照。
 
-### CC 側実測状況（2026-07-07、commit `c3f0fce`）
+### CC 側実測状況（2026-07-07、commits `c3f0fce` + `d076b8f` + `0bb73bb`）
 
-**Wyoming HA smoke — PASS（wire-level reachable）**:
+**Wyoming info reply — 完全実装 + unit test hard-assert**:
 
 - 環境: M1 iMac + Docker Desktop 24.0.6 + `homeassistant/home-assistant:stable`（sha256 `f73512ba...`）。詳細手順は `integrations/vokra-server/tests/wyoming-ha-smoke.md`。
-- **合格点**: HA container が `vokra-server` を host:10300 経由で `host.docker.internal` (2.6 ms) と LAN IP の両方から reach できることを wire-level で確認。Kill switch J に必要な「Wyoming エンドポイントに接続可能」条件は満たす。
-- **既知の未達**: Wyoming info reply は返っていない（T14/T15/T16 の event loop が `wyoming_accept_loop` に未 wire、および `run_with_config` が `spawn_server` return 直後に tokio runtime を drop してしまう挙動を smoke で発見／文書化）。fix は `signal.wait().await` を `block_on` の戻り前に挟む方向で、依頼者判断のもと follow-up。
-- **判定範囲**: 本 smoke は wire-level reachability のみを確認するもので、Kill switch J の採用可否（HA 側が Vokra を「推奨 Wyoming Server」として案内するか）は依頼者判断領域。
+- **wire-level reachability**（`c3f0fce`）: HA container が `vokra-server` を host:10300 経由で `host.docker.internal` (2.6 ms) と LAN IP の両方から reach できることを確認。
+- **event loop fix**（`d076b8f`）: `wyoming_accept_loop` を `run_with_config` に配線、`signal.wait().await` を `block_on` の戻り前に挟むことで tokio runtime drop を防止。従来の smoke で発見された「Wyoming info reply が返らない」問題を解消。
+- **unit-level hard-assert**（`0bb73bb`、workflow `wf_b891d85d-2f3`）: `crates/vokra-server/tests/wyoming_info_reply.rs`（350 行）で 3 tests 追加 — (1) describe → info reply の well-formed JSONL 一致を 5s deadline 内で hard-assert、(2) 3 fresh TCP 接続それぞれで info reply、(3) unknown event 後の explicit error を hard-assert（FR-EX-08 posture 保存）。全 test で `127.0.0.1:0` 動的 port を使い parallel `cargo test` の port collision を排除。**cargo test -p vokra-server → 120 unit + 16 integration all green**。
+- **判定範囲**: unit test level の reply 検証は CC 側で完結。Kill switch J の採用可否（HA 側が Vokra を「推奨 Wyoming Server」として案内するか）は依頼者判断領域。
 
 ### Exit 判定への寄与
 
