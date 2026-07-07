@@ -1,0 +1,14 @@
+# tests/fixtures/audio/jfk-30s.wav SHA256 anchor.
+#
+# Placeholder — the actual hash must be written by the owner after running
+# the ffmpeg conversion (see README.md "Recipe (owner)" section). The CI
+# workflow (.github/workflows/parity-whisper-real.yml) verifies against
+# this file with `sha256sum -c`. Until the owner commits both the WAV and
+# a real hash line, the workflow's `setup` job detects the absent WAV /
+# unusable sidecar and skips the parity leg with an explicit annotation.
+#
+# Owner recipe:
+#   sha256sum tests/fixtures/audio/jfk-30s.wav > tests/fixtures/audio/jfk-30s.wav.sha256
+#
+# Expected format (one line, two-space-separated, no BOM, no trailing text):
+#   <64-hex-chars>  tests/fixtures/audio/jfk-30s.wav

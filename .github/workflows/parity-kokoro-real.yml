@@ -1,0 +1,432 @@
+# Kokoro-82M real-checkpoint parity CI (M2 owner checklist item 3).
+#
+# Acid test for T17-fixup #4 (commit 58a18a8: prosody f0 f64 accumulator in
+# AdainResBlk + F0_proj/N_proj). The Rust parity harness
+# `crates/vokra-models/tests/parity_kokoro.rs` compares 9 tensors against a
+# PyTorch reference at FP32 atol=0.01 (NFR-QL-01). Kokoro parity depends on a
+# 327 MB `kokoro-v1_0.pth` weight file + 54 per-voice `voices/*.pt` files, so
+# it is impractical to run on every PR — this workflow is opt-in
+# (workflow_dispatch, weekly cron, and a narrow pull_request paths filter that
+# only fires on kokoro-adjacent code changes).
+#
+# Design (M2 item 3, honest reporting):
+#
+#   * Trigger: workflow_dispatch (owner-driven) + weekly schedule (Mondays
+#     04:00 UTC) + pull_request scoped to a narrow paths filter (kokoro
+#     source, tests, converter, dumper, this workflow itself, and the parity
+#     shim scripts). PRs that don't touch those paths never trigger this job.
+#
+#   * HF fetch is pinned by SHA (env.KOKORO_REVISION) and cached
+#     (actions/cache@v4 on HF_HOME). The pin catches an upstream re-upload;
+#     an anchor-size mismatch on kokoro-v1_0.pth surfaces as a WARNING (not a
+#     FAIL) so a benign re-upload doesn't spuriously break the job.
+#
+#   * Python parity venv is installed inline (root Cargo.lock is untouched;
+#     NFR-DS-02 zero-dep invariant is preserved — verified by the final
+#     `git diff --exit-code Cargo.lock` step).
+#
+#   * The Rust converter takes safetensors only, but the upstream release
+#     ships a .pth pickle + per-voice .pt files. `tools/parity/kokoro_prepare_checkpoint.py`
+#     is the sidecar that: (a) torch.loads and flattens the .pth, (b) stacks
+#     the voices/*.pt into a `voicepack` tensor, (c) saves the merged flat
+#     dict via safetensors.torch.save_file, and (d) emits an "enriched"
+#     config.json that adds `voices: [...]` derived from the .pt filenames
+#     (the upstream config lacks a voices field, so the Rust
+#     `KokoroJsonConfig::parse` would otherwise refuse it).
+#
+#   * The parity harness itself is unchanged from what M2-07-T17-fixup #4
+#     lands. This workflow's contribution is the *infrastructure* that
+#     regularly reproduces the fixture dumps against the real checkpoint and
+#     runs the harness with `VOKRA_KOKORO_GGUF` pointing at the just-built
+#     GGUF. If the harness passes, that is proof that the local T17-fixup
+#     wins are still holding; if it fails, the per-tensor max |Δ| table
+#     tells the owner exactly which tensor drifted.
+#
+#   * Honest reporting (project posture, FR-EX-08):
+#     - The `atol = 0.01` in `parity_kokoro.rs` is not moved by this workflow.
+#     - The per-tensor summary shows max |Δ| for every tensor, PASS or FAIL,
+#       so a f0 regression cannot be silently masked.
+#     - Fixture drift (regenerated `tests/parity/kokoro/*.f32` differing from
+#       what's committed) is reported as an artifact + step-summary hint but
+#       not auto-committed — the owner reviews and lands intentionally.
+#     - `PARITY_EXIT != 0` at the end of the tests step gates the job status.
+#
+#   * Not registered as a required check (no branch-protection promotion at
+#     this time). It's a scheduled + owner-triggered gate until Stage D
+#     stabilises. Once the acid test is green for 4+ consecutive weekly
+#     runs, the owner can promote it.
+
+name: parity-kokoro-real
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly Monday 04:00 UTC. Chosen to be off-peak US/EU business hours so
+    # a HF hub outage that morning surfaces without blocking active development.
+    - cron: '0 4 * * 1'
+  pull_request:
+    # Narrow paths filter — kokoro parity fixtures / native forward /
+    # converter / dumper / sidecar / this workflow. PRs touching any of these
+    # will re-run the acid test on top of the pinned checkpoint. Anything
+    # else uses the fast per-PR ci.yml `parity` job (fixture-only, no HF DL).
+    paths:
+      - '.github/workflows/parity-kokoro-real.yml'
+      - 'tools/parity/dump_kokoro_reference.py'
+      - 'tools/parity/kokoro_bisect.py'
+      - 'tools/parity/kokoro_prepare_checkpoint.py'
+      - 'scripts/parity/download-kokoro.sh'
+      - 'crates/vokra-models/src/kokoro/**'
+      - 'crates/vokra-models/tests/parity_kokoro.rs'
+      - 'crates/vokra-convert/src/models/kokoro.rs'
+
+# Cancel superseded runs on the same ref. The job is a ~40 minute one-shot
+# (HF DL + convert + parity), so a rapid re-push should not double-book the
+# runner. `cancel-in-progress: true` is safe here because the job has no
+# side effects that outlive the workspace (no PyPI upload, no branch-write).
+concurrency:
+  group: parity-kokoro-real-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Pinned SHA on hexgrad/Kokoro-82M (Apache 2.0 code + weight,
+  # docs/license-audit.md L139). Bumping this is a deliberate act — the
+  # anchor size on kokoro-v1_0.pth (327,212,226 B) is verified by
+  # scripts/parity/download-kokoro.sh and any mismatch surfaces as a
+  # warning in the job log.
+  KOKORO_REVISION: f3ff3571791e39611d31c381e3a41a3af07b4987
+  # Python venv path (built once at job start, reused by later steps).
+  PARITY_VENV: /tmp/vokra-py-parity
+  CARGO_TERM_COLOR: always
+
+jobs:
+  kokoro-parity-real:
+    name: kokoro-parity-real
+    runs-on: ubuntu-latest
+    # HF DL + safetensors merge + cargo build + parity run averages ~35 min
+    # on a warm cache; the 60 min cap catches a truly stuck run.
+    timeout-minutes: 60
+    env:
+      # HF cache lives under $GITHUB_WORKSPACE so actions/cache@v4 keys stay
+      # workspace-relative and stable across jobs. `HF_HUB_CACHE` is checked
+      # by newer huggingface_hub versions, `HF_HOME` by older ones — set both.
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      # Python 3.12 — the parity-venv target the local repo uses (3.11 also
+      # works but 3.12 is CI's default modern LTS).
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Rust toolchain — `stable` matches every other job in ci.yml.
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      # HF cache. Key includes the pinned revision + a workflow-owned version
+      # tag ("v1") so a future scheme change (e.g. adding `samples/*.wav` to
+      # the download) can bump the tag and invalidate the cache cleanly.
+      - name: Cache Kokoro-82M HF checkpoint
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.HF_HOME }}
+          key: kokoro-hf-${{ env.KOKORO_REVISION }}-v1
+
+      # Install torch + safetensors + numpy + huggingface_hub into an
+      # isolated venv. Pinned versions match tests/parity/parity-venv locally
+      # (torch 2.12.1, numpy 2.4.6, safetensors 0.8.0, huggingface_hub 0.36.2)
+      # so the CI reproduction is bit-close to the developer's workstation.
+      # Root Cargo.lock is untouched (verified by the final zero-dep guard).
+      - name: Provision parity venv (torch + safetensors + huggingface_hub)
+        run: |
+          set -euo pipefail
+          python -m venv "${PARITY_VENV}"
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python -m pip install --upgrade pip
+          python -m pip install \
+            'torch==2.12.1' \
+            'numpy==2.4.6' \
+            'safetensors==0.8.0' \
+            'huggingface_hub==0.36.2'
+          # hf_transfer is optional but massively speeds the .pth download.
+          python -m pip install 'hf_transfer>=0.1.9' || true
+          python - <<'PY'
+          import torch, numpy, safetensors, huggingface_hub
+          print(f"parity venv: torch={torch.__version__} "
+                f"numpy={numpy.__version__} "
+                f"safetensors={safetensors.__version__} "
+                f"huggingface_hub={huggingface_hub.__version__}")
+          PY
+
+      - name: Download Kokoro-82M @ pinned SHA (HF hub)
+        env:
+          KOKORO_VENV: ${{ env.PARITY_VENV }}
+          KOKORO_CACHE_DIR: ${{ env.HF_HOME }}
+          KOKORO_STAGE_DIR: ${{ runner.temp }}/kokoro-stage
+          KOKORO_REVISION: ${{ env.KOKORO_REVISION }}
+          # Speed up the 327 MB .pth pull if hf_transfer installed cleanly.
+          HF_HUB_ENABLE_HF_TRANSFER: '1'
+        run: |
+          set -euo pipefail
+          bash scripts/parity/download-kokoro.sh
+          cat "${KOKORO_STAGE_DIR}/download-summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # Sidecar: torch.load(.pth) → flatten + stack voices → safetensors +
+      # enriched config. The vokra-convert crate is safetensors-only by
+      # design (zero-dep, no .pth pickle parser), and the upstream config
+      # lacks a `voices:` field — this sidecar fixes both.
+      - name: Merge .pth + voices/*.pt → safetensors (kokoro_prepare_checkpoint.py)
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          STAGE="${RUNNER_TEMP}/kokoro-stage"
+          python tools/parity/kokoro_prepare_checkpoint.py \
+            --pth "${STAGE}/kokoro-v1_0.pth" \
+            --voices-dir "${STAGE}/voices" \
+            --config "${STAGE}/config.json" \
+            --output "${RUNNER_TEMP}/kokoro-merged.safetensors" \
+            --enriched-config "${RUNNER_TEMP}/kokoro-enriched-config.json" \
+            --voicepack-report "${RUNNER_TEMP}/voicepack-report.md"
+          cat "${RUNNER_TEMP}/voicepack-report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # vokra-cli release build. Uses Swatinem/rust-cache above so a warm
+      # cache reduces this to ~2 min. `--release` is required because the
+      # parity harness runs against --release performance-sensitive paths
+      # (matches the local reproduction command in
+      # docs/m2-owner-verification-checklist.md §3).
+      - name: Build vokra-cli (release)
+        run: cargo build --release -p vokra-cli
+
+      - name: Convert safetensors → Vokra GGUF
+        run: |
+          set -euo pipefail
+          ./target/release/vokra-cli convert \
+            --model kokoro \
+            --input "${RUNNER_TEMP}/kokoro-merged.safetensors" \
+            --config "${RUNNER_TEMP}/kokoro-enriched-config.json" \
+            --output "${RUNNER_TEMP}/kokoro-82m.gguf"
+          echo "GGUF size: $(wc -c < "${RUNNER_TEMP}/kokoro-82m.gguf") bytes"
+          {
+            echo "### Vokra GGUF"
+            echo ""
+            echo "- Path: \`${RUNNER_TEMP}/kokoro-82m.gguf\`"
+            echo "- Size: $(wc -c < "${RUNNER_TEMP}/kokoro-82m.gguf" | numfmt --to=iec) (raw: $(wc -c < "${RUNNER_TEMP}/kokoro-82m.gguf") bytes)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Regenerate reference fixtures against the real checkpoint. The dumper
+      # snapshot_downloads from the same HF_HOME cache the download step
+      # populated, so this doesn't re-hit the network for the .pth. Writes
+      # into tests/parity/kokoro/ so `git diff` in the next step surfaces
+      # drift.
+      - name: Regenerate reference fixtures (mode=full)
+        env:
+          KOKORO_VENV: ${{ env.PARITY_VENV }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python tools/parity/dump_kokoro_reference.py \
+            --mode full \
+            --model hexgrad/Kokoro-82M \
+            tests/parity/kokoro
+
+      - name: Detect fixture drift (informational only, never auto-commits)
+        if: always()
+        run: |
+          set +e
+          git diff --stat tests/parity/kokoro/ > "${RUNNER_TEMP}/fixture-drift.txt"
+          if [ -s "${RUNNER_TEMP}/fixture-drift.txt" ]; then
+            {
+              echo "### Fixture drift detected (informational)"
+              echo ""
+              echo "Regenerated fixtures differ from what is committed:"
+              echo ""
+              echo '```'
+              cat "${RUNNER_TEMP}/fixture-drift.txt"
+              echo '```'
+              echo ""
+              echo "**Owner action**: if this drift is intentional (e.g. a T17 followup"
+              echo "landed a new tensor), run \`python tools/parity/dump_kokoro_reference.py"
+              echo "--mode full\` locally and commit \`tests/parity/kokoro/\`. If not"
+              echo "intentional, inspect the diff — a silent fixture change would"
+              echo "invalidate every previous parity claim."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### No fixture drift" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # The acid test. Captures the parity log so the summary-parse step
+      # below can extract per-tensor max |Δ|. Exit code preserved via
+      # PIPESTATUS so `tee` does not mask a failure.
+      - name: Run kokoro parity tests (VOKRA_KOKORO_GGUF)
+        id: parity
+        env:
+          VOKRA_KOKORO_GGUF: ${{ runner.temp }}/kokoro-82m.gguf
+          VOKRA_KOKORO_PARITY_DUMP: ${{ runner.temp }}/parity-dump
+        run: |
+          set +e
+          mkdir -p "${VOKRA_KOKORO_PARITY_DUMP}"
+          cargo test --release -p vokra-models --test parity_kokoro -- --nocapture \
+            2>&1 | tee "${RUNNER_TEMP}/parity-log.txt"
+          exit_code=${PIPESTATUS[0]}
+          echo "PARITY_EXIT=${exit_code}" >> "$GITHUB_ENV"
+          echo "parity cargo test exited with ${exit_code}"
+
+      # Parse the parity log and emit a per-tensor markdown table. Uses only
+      # the standard library + regex so a torch/numpy import here would be
+      # pure overhead. All 9 tracked tensors are enumerated whether the log
+      # yielded a match or not — a missing row (marked "?" verdict) is a
+      # signal that the parity harness didn't reach that tensor (e.g. skipped
+      # because GGUF was mis-shaped), not that it silently passed.
+      - name: Extract per-tensor max |Δ| summary
+        if: always()
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import re
+          import sys
+
+          LOG = os.path.join(os.environ["RUNNER_TEMP"], "parity-log.txt")
+          if not os.path.exists(LOG):
+              print("::warning::no parity log at", LOG, "; cannot build summary table")
+              sys.exit(0)
+          log = open(LOG, "r", errors="replace").read()
+
+          ATOL = 0.01
+
+          def find(pattern, flags=0):
+              m = re.search(pattern, log, flags)
+              return m.group(1) if m else None
+
+          # parity_kokoro.rs emits these eprintln! lines:
+          #   [parity] kokoro text_encoder head: max |Δ| = <val> ...   (assert_close)
+          #   [parity] kokoro bert head: max |Δ| = <val> ...             (assert_close)
+          #   [parity] kokoro prosody per-tensor max |Δ|:
+          #     f0     max = <val> at idx ...
+          #     n      max = <val> at idx ...
+          #     hidden max = <val> at idx ...
+          #   [parity] kokoro decoder per-tensor max |Δ| (finite-only):
+          #     mag    max = <val> at idx ...
+          #     phase  max = <val> at idx ...
+          #     pcm    max = <val> at idx ...
+          # prosody durations is bit-exact (integer): if it mismatches the
+          # whole prosody block short-circuits BEFORE the "per-tensor max |Δ|"
+          # block prints. So detecting the "per-tensor max |Δ|" header is
+          # our signal that durations passed.
+
+          num = r"([0-9]+\.[0-9]+e[+\-]?[0-9]+|[0-9]+\.[0-9]+|[0-9]+)"
+          M = re.MULTILINE
+          rows = [
+              ("text_encoder",       find(r"kokoro text_encoder head: max \|Δ\| = " + num)),
+              ("bert",               find(r"kokoro bert head: max \|Δ\| = " + num)),
+              ("prosody_durations",  "0" if re.search(
+                  r"kokoro prosody per-tensor max \|Δ\|", log
+              ) else None),
+              ("prosody_f0",         find(r"^\s*f0\s+max = "     + num, M)),
+              ("prosody_n",          find(r"^\s*n\s+max = "      + num, M)),
+              ("prosody_hidden",     find(r"^\s*hidden\s+max = " + num, M)),
+              ("decoder_mag",        find(r"^\s*mag\s+max = "    + num, M)),
+              ("decoder_phase",      find(r"^\s*phase\s+max = "  + num, M)),
+              ("decoder_pcm",        find(r"^\s*pcm\s+max = "    + num, M)),
+          ]
+
+          out = [
+              "### Kokoro-82M parity acid test — per-tensor max |Δ|",
+              "",
+              f"atol = {ATOL}  (see `crates/vokra-models/tests/parity_kokoro.rs` ATOL)",
+              "",
+              "| tensor | max |Δ| | verdict | notes |",
+              "|--------|---------|---------|-------|",
+          ]
+          any_fail = False
+          for name, raw in rows:
+              if raw is None:
+                  out.append(f"| `{name}` | (not observed) | ? | log did not contain a max \\|Δ\\| line for this tensor |")
+                  continue
+              try:
+                  val = float(raw)
+              except ValueError:
+                  out.append(f"| `{name}` | `{raw}` | ? | non-numeric value in log |")
+                  continue
+              verdict = "PASS" if val <= ATOL else "FAIL"
+              if verdict == "FAIL":
+                  any_fail = True
+              out.append(f"| `{name}` | `{raw}` | {verdict} | |")
+
+          out.extend([
+              "",
+              f"**Overall**: {'FAIL — at least one tensor exceeded atol' if any_fail else 'all observed tensors within atol'}",
+              "",
+              "**T17-fixup #4 acid test result**: this workflow's PASS/FAIL is the",
+              "canonical answer to whether the prosody f0 f64 accumulator fixup",
+              "(commit 58a18a8) actually clears atol = 0.01 on the real Kokoro-82M",
+              "checkpoint. Honest reporting: no atol relaxation, no silent skip.",
+          ])
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(out) + "\n")
+          print("\n".join(out))
+          PY
+
+      # Optional bisection artifact — populated only when the tests emitted
+      # native_*.f32 / ref_*.f32 pairs into VOKRA_KOKORO_PARITY_DUMP. When
+      # empty, the tool just prints "no paired stages found" — no failure.
+      - name: Run kokoro_bisect (best-effort, non-fatal)
+        if: always() && env.PARITY_EXIT != '0'
+        env:
+          VOKRA_KOKORO_PARITY_DUMP: ${{ runner.temp }}/parity-dump
+        run: |
+          set +e
+          python tools/parity/kokoro_bisect.py "${VOKRA_KOKORO_PARITY_DUMP}" \
+            > "${RUNNER_TEMP}/bisect.txt" 2>&1 || true
+          if [ -s "${RUNNER_TEMP}/bisect.txt" ]; then
+            {
+              echo "### kokoro_bisect (post-failure)"
+              echo ""
+              echo '```'
+              head -c 8192 "${RUNNER_TEMP}/bisect.txt"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Zero-dependency invariant (root Cargo.lock unchanged, NFR-DS-02)
+        # Belt-and-suspenders: pip-installing torch inside the parity venv
+        # must not touch the root Rust lockfile. Any diff means a `cargo
+        # something` step accidentally added a dependency.
+        run: git diff --exit-code Cargo.lock
+
+      # Everything the owner needs to triage a failed acid test, retained 7d.
+      # GGUF alone is ~330 MB; artifact quota is 500 MB/single, 10 GB/workflow.
+      - name: Upload parity artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kokoro-parity-artifacts
+          path: |
+            ${{ runner.temp }}/parity-log.txt
+            ${{ runner.temp }}/fixture-drift.txt
+            ${{ runner.temp }}/voicepack-report.md
+            ${{ runner.temp }}/bisect.txt
+            ${{ runner.temp }}/parity-dump
+            ${{ runner.temp }}/kokoro-82m.gguf
+          retention-days: 7
+          if-no-files-found: warn
+
+      # Fail the job based on the parity exit code captured above. Keeping
+      # this at the end (after artifact upload) means a FAIL always ships
+      # the diagnostic artifacts.
+      - name: Fail if parity FAILed (honest exit propagation)
+        if: env.PARITY_EXIT != '0'
+        run: |
+          echo "::error::kokoro parity_kokoro exited with ${PARITY_EXIT} — see summary + artifacts"
+          exit ${PARITY_EXIT}
