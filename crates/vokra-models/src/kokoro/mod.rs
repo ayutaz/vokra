@@ -355,6 +355,45 @@ impl KokoroTts {
 
         Ok(SynthesizedAudio::new(pcm, self.config.sample_rate))
     }
+
+    /// Runs the internal text encoder forward for one phoneme id sequence and
+    /// returns its `[t · hidden_dim]` row-major output. Test-only bridge for
+    /// the M2-07-T17 per-module parity harness
+    /// (`crates/vokra-models/tests/parity_kokoro.rs::text_encoder_forward_bit_parity`);
+    /// hidden behind a `#[doc(hidden)]` so it stays out of the public API.
+    ///
+    /// The layout matches the T17 dumper's `text_encoder.f32` fixture: the
+    /// first `enc_pos · hidden_dim` floats of the returned `Vec` are compared
+    /// byte-for-byte against the reference at `atol = 0.01`.
+    #[doc(hidden)]
+    pub fn text_encoder_forward_for_parity(&self, phoneme_ids: &[i64]) -> Result<Vec<f32>> {
+        let arr = self.text_encoder.forward(phoneme_ids)?;
+        // The text encoder returns an internal `Array2<f32>` (row-major
+        // `[t, hidden_dim]`); expose the raw `data` so the parity harness can
+        // slice `[..enc_pos * hidden_dim]` without a shape-conversion loop.
+        Ok(arr.data)
+    }
+
+    /// Runs the internal PL-BERT forward for one phoneme id sequence and
+    /// returns its `[t · 512]` row-major output. Test-only bridge for the
+    /// M2-07-T17 per-module parity harness. When the voice GGUF does not
+    /// carry the PL-BERT branch (canary tensor
+    /// [`BERT_CANARY_TENSOR`] absent), returns a loud
+    /// [`VokraError::InvalidArgument`] naming the missing branch rather than
+    /// a silent zero-shaped result (FR-EX-08).
+    #[doc(hidden)]
+    pub fn bert_forward_for_parity(&self, phoneme_ids: &[i64]) -> Result<Vec<f32>> {
+        let Some(bert) = &self.bert else {
+            return Err(VokraError::InvalidArgument(
+                "kokoro TTS: bert branch absent — parity dump asserts bert_mode = full \
+                 but the loaded voice GGUF has no `bert.module.*` tensors. Rebuild the \
+                 GGUF from the upstream Kokoro-82M checkpoint (the canary tensor \
+                 `bert.module.embeddings.word_embeddings.weight` must be present)."
+                    .to_owned(),
+            ));
+        };
+        bert.forward(phoneme_ids)
+    }
 }
 
 impl TtsEngine for KokoroTts {

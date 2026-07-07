@@ -6,29 +6,61 @@ the runtime). It regenerates the fixtures under ``tests/parity/kokoro/`` that
 the Rust parity tests (``crates/vokra-models/tests/parity_kokoro.rs``) compare
 against at FP32 ``atol = 0.01`` (NFR-QL-01).
 
-The reference is the upstream **hexgrad/Kokoro-82M** safetensors checkpoint —
-weights only, per IF-06 / FR-MD-02. Model code is not imported: the reference
-forward is a from-scratch NumPy re-implementation that mirrors the native Rust
-path (StyleTTS 2 派生 iSTFTNet head, レビュアー A 修正 / CLAUDE.md モデル表 —
-vocos_head is **not** used).
+The reference is the upstream **hexgrad/Kokoro-82M** checkpoint — weights
+only, per IF-06 / FR-MD-02. Model **code** is not imported: the reference
+forward is a from-scratch PyTorch re-implementation (used strictly as a
+tensor evaluator; f32 ops are the same math the native Rust path implements)
+that mirrors the layer-by-layer pipeline in
+``crates/vokra-models/src/kokoro/{text_encoder,bert}.rs`` (StyleTTS 2 派生
+iSTFTNet head, レビュアー A 修正 / CLAUDE.md モデル表 — vocos_head is **not**
+used).
 
-What is dumped (kept small to avoid repo bloat):
+# Modes
 
-* ``phoneme_ids.i64``      – deterministic short phoneme sequence (seeded);
-* ``style.f32``            – style vector (deterministic seed);
-* ``text_encoder.f32``     – first ``ENC_POS`` rows of the text encoder output
-                             (shape ``[ENC_POS, hidden_dim]``);
-* ``prosody.f32``          – prosody predictor output at the first ``ENC_POS``
-                             phonemes (per-phoneme duration + F0/energy pair);
-* ``mel_pre_istft.f32``    – decoder output just before the iSTFT head
-                             (magnitude / phase channels flattened, first
-                             ``DEC_FRAMES`` frames);
-* ``pcm.f32``              – synthesised PCM, first ``PCM_LEN`` samples;
-* ``manifest.txt``         – shapes / voice id / seed / atol, ``key = value``.
+* ``--mode placeholder`` (default): seed-derived, shape-correct tensors.
+  The Rust parity harness reads ``mode = placeholder`` from the manifest and
+  runs shape / length checks only (byte-level parity is intentionally skipped).
+* ``--mode full``: byte-level parity mode. Runs a PyTorch re-implementation
+  of the Rust forward for every module that has landed
+  (T02→T18); dumps its output at the first ``ENC_POS`` positions. Modules
+  whose NumPy re-forward is not yet implemented are marked
+  ``<module>_mode = placeholder`` in the manifest and the Rust harness
+  skips byte-level parity for those.
 
-Run (from the repo root)::
+# Fixture files
+
+* ``phoneme_ids.i64``       – deterministic short phoneme sequence (seeded);
+* ``style.f32``             – style vector (deterministic seed; not consumed
+                              by text_encoder / bert but needed by prosody /
+                              decoder when those land);
+* ``text_encoder.f32``      – first ``ENC_POS`` rows of the text encoder output
+                              (shape ``[ENC_POS, hidden_dim]``);
+* ``bert.f32``              – first ``ENC_POS`` rows of the bert output
+                              (shape ``[ENC_POS, 512]``) — only written in
+                              ``mode = full`` when the bert branch NumPy
+                              re-forward is enabled;
+* ``prosody.f32``           – per-phoneme duration + F0/energy pair (shape
+                              ``[ENC_POS, 2]``) — placeholder until prosody
+                              re-forward lands;
+* ``mel_pre_istft.f32``     – decoder pre-iSTFT tensor (shape
+                              ``[DEC_FRAMES, mel_channels]``) — placeholder
+                              until decoder re-forward lands;
+* ``pcm.f32``               – first ``PCM_LEN`` synthesised PCM samples —
+                              placeholder until decoder re-forward lands;
+* ``manifest.txt``          – shapes / voice id / seed / atol / per-module
+                              modes, ``key = value``.
+
+# Determinism
+
+Idempotent: rerunning with the same ``--mode`` and inputs produces byte-
+identical output. Fixed seeds (``SEED = 1234``) and ``torch.manual_seed``.
+
+# Usage (from the repo root)
+
+::
 
     tools/parity/parity-venv/bin/python tools/parity/dump_kokoro_reference.py \\
+        --mode {placeholder,full} \\
         --model hexgrad/Kokoro-82M \\
         [--voice af]              # optional; default = first voice in voicepack
         [tests/parity/kokoro]     # optional out_dir
@@ -39,8 +71,7 @@ Only ``torch`` / ``safetensors`` / ``huggingface_hub`` / ``numpy`` are required.
 .. note::
 
    Kokoro-82M is Apache 2.0 code + weight (docs/license-audit.md), so the
-   fixtures can be committed. This script is deterministic (fixed seeds) and
-   idempotent — running it twice must produce byte-identical output.
+   fixtures can be committed.
 """
 
 from __future__ import annotations
@@ -67,6 +98,32 @@ PCM_LEN = 16000       # 1 s at Kokoro's 24 kHz output → first 16000 samples
 
 # Repo-relative default output directory.
 DEFAULT_OUT_DIR = Path("tests/parity/kokoro")
+
+# --- Architectural constants pinned by the upstream manifest ---------------
+#
+# Every constant here corresponds to a shape axis in
+# ``crates/vokra-models/src/kokoro/data/upstream_tensors_v1_0.tsv``. They
+# match the Rust-side constants in ``bert.rs`` (N_VOCAB, EMBED_SIZE, HIDDEN,
+# FFN_HIDDEN, MAX_POS, N_TOKEN_TYPES, N_LAYERS, OUT_DIM, N_HEADS,
+# LAYER_NORM_EPS). If the checkpoint's tensor shape disagrees, we abort
+# loudly rather than silently reshape.
+
+BERT_N_VOCAB = 178
+BERT_EMBED_SIZE = 128
+BERT_HIDDEN = 768
+BERT_FFN_HIDDEN = 2048
+BERT_MAX_POS = 512
+BERT_N_TOKEN_TYPES = 2
+BERT_N_LAYERS = 4
+BERT_OUT_DIM = 512
+BERT_N_HEADS = 12
+BERT_LAYER_NORM_EPS = 1e-12
+
+# Text encoder constants (kokoro-v1_0.pth):
+TE_KERNEL = 5
+TE_PAD = 2
+TE_NUM_CNN_BLOCKS = 3
+TE_LRELU_SLOPE = 0.1
 
 
 def synth_phoneme_ids(vocab_size: int) -> np.ndarray:
@@ -134,10 +191,11 @@ class _ShapeMap:
     so the shape-derivation code below stays flat.
     """
 
-    def __init__(self, keys, shape_fn, description):
+    def __init__(self, keys, shape_fn, description, tensor_fn=None):
         self._keys = set(keys)
         self._shape_fn = shape_fn
         self.description = description
+        self._tensor_fn = tensor_fn  # optional: name -> torch.Tensor (for mode=full)
 
     def keys(self):
         return self._keys
@@ -146,6 +204,17 @@ class _ShapeMap:
         if name not in self._keys:
             return None
         return tuple(self._shape_fn(name))
+
+    def tensor(self, name):
+        """Fetch full tensor (torch.Tensor). Only available for the .pth path."""
+        if self._tensor_fn is None:
+            raise RuntimeError(
+                f"tensor({name!r}): shape-only ShapeMap (safetensors path). "
+                "mode=full needs the .pth backend."
+            )
+        if name not in self._keys:
+            raise KeyError(f"tensor {name!r} not in checkpoint")
+        return self._tensor_fn(name)
 
 
 def open_checkpoint(local: Path) -> _ShapeMap:
@@ -164,7 +233,12 @@ def open_checkpoint(local: Path) -> _ShapeMap:
         def shape_fn(name):
             return h.get_slice(name).get_shape()
 
-        return _ShapeMap(keys, shape_fn, description=st_candidates[0].name)
+        def tensor_fn(name):
+            return h.get_tensor(name)
+
+        return _ShapeMap(
+            keys, shape_fn, description=st_candidates[0].name, tensor_fn=tensor_fn
+        )
     if len(st_candidates) > 1:
         sys.exit(
             f"expected exactly one safetensors shard under {local}, got: "
@@ -215,7 +289,12 @@ def open_checkpoint(local: Path) -> _ShapeMap:
     def shape_fn(name):
         return tuple(flat[name].shape)
 
-    return _ShapeMap(keys, shape_fn, description=pt_candidates[0].name)
+    def tensor_fn(name):
+        return flat[name]
+
+    return _ShapeMap(
+        keys, shape_fn, description=pt_candidates[0].name, tensor_fn=tensor_fn
+    )
 
 
 def derive_dims(store: _ShapeMap) -> dict:
@@ -225,11 +304,11 @@ def derive_dims(store: _ShapeMap) -> dict:
     (same contract as ``crates/vokra-convert/src/models/kokoro.rs``). Kokoro's
     canonical .pth ships a nested ``{'bert': ..., 'text_encoder': ...,
     'predictor': ..., 'decoder': ...}`` state dict — after ``open_checkpoint``
-    flattens it, the tensor names look like ``text_encoder.embedding.weight``
-    etc. A key not being present is not an error here — we just report
-    ``None`` and the runner writes ``0`` to the manifest (matching the
-    converter's degenerate-shape pattern; a runtime consumer of that fixture
-    then rejects the ``0`` per FR-EX-08).
+    flattens it, the tensor names include the ``.module.`` ``nn.DataParallel``
+    prefix (e.g. ``text_encoder.module.embedding.weight``). A key not being
+    present is not an error here — we just report ``None`` and the runner writes
+    ``0`` to the manifest (matching the converter's degenerate-shape pattern; a
+    runtime consumer of that fixture then rejects the ``0`` per FR-EX-08).
     """
     keys = store.keys()
 
@@ -244,10 +323,13 @@ def derive_dims(store: _ShapeMap) -> dict:
             voicepack = store.shape(cand)
             break
 
-    # Text encoder token embedding: [vocab, hidden_dim]. Kokoro forks vary
-    # the exact prefix; pick the first that matches the 2-D convention.
+    # Text encoder token embedding: [vocab, hidden_dim]. Kokoro's real .pth
+    # uses the ``text_encoder.module.embedding.weight`` name (nn.DataParallel
+    # prefix). We look at that first; a downstream fork may drop the
+    # ``.module.`` prefix, so the alternates below are kept for compatibility.
     text_emb = None
     for cand in (
+        "text_encoder.module.embedding.weight",
         "text_encoder.embedding.weight",
         "text_encoder.embed.weight",
         "encoder.embedding.weight",
@@ -265,14 +347,12 @@ def derive_dims(store: _ShapeMap) -> dict:
     }
 
 
-def zero_forward(dims: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def placeholder_forward(dims: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Deterministic *placeholder* reference forward.
 
-    This dumper deliberately does **not** attempt a from-scratch NumPy
-    re-implementation of the full Kokoro forward — that would duplicate the
-    Rust native path and is out of scope for a parity dumper. Instead, it
-    writes seed-derived, shape-correct tensors that the Rust ``parity_kokoro``
-    harness compares byte-for-byte after a native forward. Concretely:
+    Writes seed-derived, shape-correct tensors that the Rust ``parity_kokoro``
+    harness compares byte-for-byte after a native forward (in ``mode = full``)
+    or shape-only (in ``mode = placeholder``). Concretely:
 
     * ``text_encoder`` = zero-mean unit-variance noise, shape
       ``[ENC_POS, hidden_dim]``;
@@ -281,16 +361,6 @@ def zero_forward(dims: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.nda
     * ``mel_pre_istft`` = zero-mean unit-variance noise, shape
       ``[DEC_FRAMES, mel_channels]``;
     * ``pcm`` = zero-mean unit-variance noise, first ``PCM_LEN`` samples.
-
-    The Rust side reads the manifest's ``mode = placeholder`` marker and skips
-    the byte-level parity assertion in that case, running only the shape /
-    length checks. This lets the Rust parity harness ship with a committed
-    (small, deterministic) fixture set now, and be upgraded to a real forward
-    once the native forward path is in place and a NumPy re-implementation of
-    it is written (a follow-up ticket).
-
-    Set ``mode = full`` in the manifest and populate real tensors below to
-    switch a fixture set into byte-level parity mode.
     """
     text_emb = dims.get("text_embedding_shape")
     voicepack = dims.get("voicepack_shape")
@@ -304,9 +374,257 @@ def zero_forward(dims: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.nda
     prosody = rng.standard_normal((ENC_POS, 2)).astype(np.float32)
     mel_pre_istft = rng.standard_normal((DEC_FRAMES, mel_channels)).astype(np.float32)
     pcm = rng.standard_normal(PCM_LEN).astype(np.float32) * 0.1  # low-amplitude
-    # Suppress unused variable warnings while the module is placeholder-only.
+    # Suppress unused variable warnings.
     _ = (hidden_dim, style_dim)
     return text_encoder, prosody, mel_pre_istft, pcm
+
+
+# ---------------------------------------------------------------------------
+# mode = full — PyTorch re-implementation of the Rust forward path per module
+# ---------------------------------------------------------------------------
+#
+# Each module below mirrors the exact layer-by-layer pipeline in the Rust
+# implementation. The re-forwards use torch's F.conv1d / F.layer_norm / etc.
+# but at f32 with the same math the native Rust path uses. Byte-level parity
+# vs the Rust forward holds at ``atol = 0.01`` (NFR-QL-01).
+
+
+def _forward_text_encoder(store: _ShapeMap, phoneme_ids: np.ndarray) -> np.ndarray:
+    """PyTorch re-implementation of ``kokoro::text_encoder::TextEncoder::forward``.
+
+    Pipeline (see ``crates/vokra-models/src/kokoro/text_encoder.rs``):
+
+    1. Embedding lookup   → [t, hidden]
+    2. Transpose          → [1, hidden, t]  (channel-major batch-first)
+    3. 3× (WeightNormed Conv1d(k=5, pad=2, stride=1) + bias + γ·x+β + LeakyReLU(0.1))
+    4. Transpose          → [1, t, hidden]
+    5. BiLSTM(hidden → hidden/2, bidirectional) → [t, hidden]
+
+    WeightNorm reconstruction: ``w = g · v / ||v||_2`` per output channel,
+    matching ``kokoro::nn::weight_norm_reconstruct_1d``. Zero-norm rows
+    degrade to zero (matches Rust's guard).
+    """
+    import torch.nn.functional as F
+    from torch.nn import LSTM
+
+    device = torch.device("cpu")
+    dtype = torch.float32
+
+    # ---- Load weights ----
+    emb = store.tensor("text_encoder.module.embedding.weight").to(device=device, dtype=dtype)
+    n_vocab, hidden = int(emb.shape[0]), int(emb.shape[1])
+    if hidden % 2 != 0:
+        raise RuntimeError(f"text_encoder hidden ({hidden}) must be even for BiLSTM")
+
+    # 1. Embedding
+    ids = torch.from_numpy(phoneme_ids.astype(np.int64))
+    if (ids < 0).any() or (ids >= n_vocab).any():
+        raise RuntimeError(
+            f"text_encoder: phoneme id out of range 0..{n_vocab}; "
+            f"got ids in [{int(ids.min())}, {int(ids.max())}]"
+        )
+    x = F.embedding(ids, emb)  # [t, hidden]
+
+    # 2. Transpose → [1, hidden, t] for F.conv1d
+    x = x.transpose(0, 1).unsqueeze(0).contiguous()
+
+    # 3. Three CNN blocks
+    for i in range(TE_NUM_CNN_BLOCKS):
+        wg = store.tensor(f"text_encoder.module.cnn.{i}.0.weight_g").to(dtype=dtype)  # [hidden,1,1]
+        wv = store.tensor(f"text_encoder.module.cnn.{i}.0.weight_v").to(dtype=dtype)  # [hidden,hidden,K]
+        bias = store.tensor(f"text_encoder.module.cnn.{i}.0.bias").to(dtype=dtype)
+        gamma = store.tensor(f"text_encoder.module.cnn.{i}.1.gamma").to(dtype=dtype)
+        beta = store.tensor(f"text_encoder.module.cnn.{i}.1.beta").to(dtype=dtype)
+
+        # WeightNorm reconstruct: w = g * v / ||v||_2 per output channel.
+        # ||v||_2 is L2 over (in_ch, kernel) axes.
+        norm = wv.reshape(hidden, -1).norm(dim=1).view(hidden, 1, 1)
+        # Zero-norm guard (matches Rust). Use a mask; a well-trained checkpoint
+        # never triggers this.
+        safe = torch.where(norm > 0, norm, torch.ones_like(norm))
+        w = wg * wv / safe
+        w = torch.where(norm > 0, w, torch.zeros_like(w))
+
+        # Conv1d k=5, pad=2, stride=1
+        x = F.conv1d(x, w, bias=bias, stride=1, padding=TE_PAD)
+
+        # Per-channel affine (γ · x + β)
+        x = x * gamma.view(1, -1, 1) + beta.view(1, -1, 1)
+
+        # LeakyReLU(0.1)
+        x = F.leaky_relu(x, TE_LRELU_SLOPE)
+
+    # 4. Transpose to [1, t, hidden] for LSTM
+    x = x.squeeze(0).transpose(0, 1).unsqueeze(0).contiguous()
+
+    # 5. BiLSTM
+    lstm_hidden = hidden // 2
+    lstm = LSTM(
+        input_size=hidden,
+        hidden_size=lstm_hidden,
+        num_layers=1,
+        bias=True,
+        batch_first=True,
+        bidirectional=True,
+    ).to(device=device, dtype=dtype)
+    state_dict = {
+        "weight_ih_l0": store.tensor("text_encoder.module.lstm.weight_ih_l0").to(dtype=dtype),
+        "weight_hh_l0": store.tensor("text_encoder.module.lstm.weight_hh_l0").to(dtype=dtype),
+        "bias_ih_l0": store.tensor("text_encoder.module.lstm.bias_ih_l0").to(dtype=dtype),
+        "bias_hh_l0": store.tensor("text_encoder.module.lstm.bias_hh_l0").to(dtype=dtype),
+        "weight_ih_l0_reverse": store.tensor(
+            "text_encoder.module.lstm.weight_ih_l0_reverse"
+        ).to(dtype=dtype),
+        "weight_hh_l0_reverse": store.tensor(
+            "text_encoder.module.lstm.weight_hh_l0_reverse"
+        ).to(dtype=dtype),
+        "bias_ih_l0_reverse": store.tensor(
+            "text_encoder.module.lstm.bias_ih_l0_reverse"
+        ).to(dtype=dtype),
+        "bias_hh_l0_reverse": store.tensor(
+            "text_encoder.module.lstm.bias_hh_l0_reverse"
+        ).to(dtype=dtype),
+    }
+    lstm.load_state_dict(state_dict)
+    lstm.eval()
+    with torch.no_grad():
+        y, _ = lstm(x)  # [1, t, 2·lstm_hidden] = [1, t, hidden]
+    return y.squeeze(0).detach().cpu().numpy().astype(np.float32)
+
+
+def _forward_bert(store: _ShapeMap, phoneme_ids: np.ndarray) -> np.ndarray:
+    """PyTorch re-implementation of ``kokoro::bert::Bert::forward``.
+
+    Pipeline (see ``crates/vokra-models/src/kokoro/bert.rs``):
+
+    1. Embedding sum: word[id] + position[i] + token_type[0]  → [t, 128]
+    2. LayerNorm across channels                              → [t, 128]
+    3. mapping_in Linear (128 → 768)                          → [t, 768]
+    4. 4× ALBERT-shared block:
+       * Q/K/V/O linears
+       * per-head attention (12 heads, head_dim = 64)
+       * scale Q by 1/sqrt(head_dim)
+       * residual + LayerNorm (attn_ln)
+       * FFN (768 → 2048 → GELU → 768)
+       * residual + LayerNorm (full_ln)
+    5. Pooler Linear + tanh per-token                         → [t, 768]
+    6. Downstream projection (768 → 512)                      → [t, 512]
+
+    LayerNorm eps = 1e-12 (ALBERT convention, distinct from Whisper's 1e-5).
+    """
+    import torch.nn.functional as F
+
+    device = torch.device("cpu")
+    dtype = torch.float32
+
+    def get(name):
+        return store.tensor(name).to(device=device, dtype=dtype)
+
+    # ---- Embeddings ----
+    word_emb = get("bert.module.embeddings.word_embeddings.weight")
+    pos_emb = get("bert.module.embeddings.position_embeddings.weight")
+    type_emb = get("bert.module.embeddings.token_type_embeddings.weight")
+    emb_ln_w = get("bert.module.embeddings.LayerNorm.weight")
+    emb_ln_b = get("bert.module.embeddings.LayerNorm.bias")
+
+    # Shape gates (a mismatch here means the .pth doesn't match the manifest).
+    if tuple(word_emb.shape) != (BERT_N_VOCAB, BERT_EMBED_SIZE):
+        raise RuntimeError(
+            f"bert.word_embeddings shape {tuple(word_emb.shape)} != expected "
+            f"({BERT_N_VOCAB}, {BERT_EMBED_SIZE})"
+        )
+    if tuple(pos_emb.shape) != (BERT_MAX_POS, BERT_EMBED_SIZE):
+        raise RuntimeError(
+            f"bert.position_embeddings shape {tuple(pos_emb.shape)} != expected "
+            f"({BERT_MAX_POS}, {BERT_EMBED_SIZE})"
+        )
+
+    ids = torch.from_numpy(phoneme_ids.astype(np.int64))
+    if (ids < 0).any() or (ids >= BERT_N_VOCAB).any():
+        raise RuntimeError(
+            f"bert: phoneme id out of range 0..{BERT_N_VOCAB}; "
+            f"got ids in [{int(ids.min())}, {int(ids.max())}]"
+        )
+    t = ids.shape[0]
+    if t > BERT_MAX_POS:
+        raise RuntimeError(f"bert: sequence length {t} exceeds MAX_POS {BERT_MAX_POS}")
+
+    # 1. Embedding sum
+    word_e = F.embedding(ids, word_emb)  # [t, 128]
+    pos_e = pos_emb[:t]  # [t, 128]
+    # token_type_id = 0 for every position (single segment)
+    type_e = type_emb[0].unsqueeze(0).expand(t, -1)  # [t, 128]
+    embeds = word_e + pos_e + type_e
+
+    # 2. LayerNorm across the innermost axis (channels)
+    x = F.layer_norm(embeds, (BERT_EMBED_SIZE,), emb_ln_w, emb_ln_b, eps=BERT_LAYER_NORM_EPS)
+
+    # 3. mapping_in Linear (128 → 768)
+    mapping_w = get("bert.module.encoder.embedding_hidden_mapping_in.weight")  # [768, 128]
+    mapping_b = get("bert.module.encoder.embedding_hidden_mapping_in.bias")    # [768]
+    x = F.linear(x, mapping_w, mapping_b)  # [t, 768]
+
+    # ---- Shared ALBERT block (loaded ONCE, applied N_LAYERS times) ----
+    prefix = "bert.module.encoder.albert_layer_groups.0.albert_layers.0"
+    q_w = get(f"{prefix}.attention.query.weight")
+    q_b = get(f"{prefix}.attention.query.bias")
+    k_w = get(f"{prefix}.attention.key.weight")
+    k_b = get(f"{prefix}.attention.key.bias")
+    v_w = get(f"{prefix}.attention.value.weight")
+    v_b = get(f"{prefix}.attention.value.bias")
+    o_w = get(f"{prefix}.attention.dense.weight")
+    o_b = get(f"{prefix}.attention.dense.bias")
+    attn_ln_w = get(f"{prefix}.attention.LayerNorm.weight")
+    attn_ln_b = get(f"{prefix}.attention.LayerNorm.bias")
+    ffn_w = get(f"{prefix}.ffn.weight")
+    ffn_b = get(f"{prefix}.ffn.bias")
+    ffn_out_w = get(f"{prefix}.ffn_output.weight")
+    ffn_out_b = get(f"{prefix}.ffn_output.bias")
+    full_ln_w = get(f"{prefix}.full_layer_layer_norm.weight")
+    full_ln_b = get(f"{prefix}.full_layer_layer_norm.bias")
+
+    head_dim = BERT_HIDDEN // BERT_N_HEADS  # 64
+    scale = head_dim ** -0.5
+
+    for _layer_idx in range(BERT_N_LAYERS):
+        # Q/K/V/O — F.linear does out = x @ W^T + b (matches PyTorch nn.Linear)
+        q = F.linear(x, q_w, q_b) * scale        # [t, 768]
+        k = F.linear(x, k_w, k_b)
+        v = F.linear(x, v_w, v_b)
+        # Per-head reshape: [t, 768] → [t, N_HEADS, head_dim] → [N_HEADS, t, head_dim]
+        q = q.view(t, BERT_N_HEADS, head_dim).transpose(0, 1)  # [12, t, 64]
+        k = k.view(t, BERT_N_HEADS, head_dim).transpose(0, 1)
+        v = v.view(t, BERT_N_HEADS, head_dim).transpose(0, 1)
+        # scores [12, t, t] = q @ k^T (no causal mask; ALBERT is bidirectional)
+        scores = q @ k.transpose(-1, -2)
+        probs = F.softmax(scores, dim=-1)
+        ctx = probs @ v  # [12, t, 64]
+        ctx = ctx.transpose(0, 1).contiguous().view(t, BERT_HIDDEN)  # [t, 768]
+        # Attention output projection
+        attn_out = F.linear(ctx, o_w, o_b)  # [t, 768]
+        # Residual + LayerNorm
+        x = F.layer_norm(
+            attn_out + x, (BERT_HIDDEN,), attn_ln_w, attn_ln_b, eps=BERT_LAYER_NORM_EPS
+        )
+        # FFN: 768 → 2048 → GELU → 768
+        ffn_h = F.linear(x, ffn_w, ffn_b)
+        ffn_h = F.gelu(ffn_h)  # PyTorch default is erf-based, matches Rust
+        ffn_o = F.linear(ffn_h, ffn_out_w, ffn_out_b)
+        x = F.layer_norm(
+            ffn_o + x, (BERT_HIDDEN,), full_ln_w, full_ln_b, eps=BERT_LAYER_NORM_EPS
+        )
+
+    # 5. Pooler (per-token): Linear + tanh
+    pooler_w = get("bert.module.pooler.weight")  # [768, 768]
+    pooler_b = get("bert.module.pooler.bias")
+    pooled = torch.tanh(F.linear(x, pooler_w, pooler_b))  # [t, 768]
+
+    # 6. Downstream projection 768 → 512
+    proj_w = get("bert_encoder.module.weight")   # [512, 768]
+    proj_b = get("bert_encoder.module.bias")     # [512]
+    out = F.linear(pooled, proj_w, proj_b)       # [t, 512]
+
+    return out.detach().cpu().numpy().astype(np.float32)
 
 
 PROSODY_CHANNELS = 2  # duration, F0/energy pair
@@ -334,6 +652,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--mode",
+        choices=("placeholder", "full"),
+        default="placeholder",
+        help=(
+            "placeholder: seed-derived shape-correct tensors, Rust harness "
+            "runs shape/length checks only. full: PyTorch re-implementation of "
+            "the Rust forward for every module that has landed; Rust harness "
+            "runs byte-level parity vs the reference."
+        ),
+    )
+    parser.add_argument(
         "out_dir",
         nargs="?",
         default=None,
@@ -354,8 +683,9 @@ def main() -> None:
     checkpoint_name = store.description
     dims = derive_dims(store)
 
-    # Vocab size fallback: from text embedding shape[0], or 256 (Kokoro's
-    # default phoneme table is small).
+    # Vocab size: derived from the text embedding when present (Kokoro-82M is
+    # 178). Falls back to 256 only when the tensor is absent (shape-only
+    # ShapeMap without the expected key).
     text_emb = dims.get("text_embedding_shape")
     vocab_size = int(text_emb[0]) if text_emb is not None else 256
 
@@ -364,32 +694,132 @@ def main() -> None:
     # voice_names[] from the config for a name→id lookup).
     voice_id = 0
 
-    # Style: shape from voicepack; else 128 (Kokoro's canonical style dim).
-    # Kokoro's upstream .pth stores voice styles as separate voices/*.pt
-    # files, so the in-model voicepack is often absent — the manifest
-    # records that case honestly.
+    # Style: shape from voicepack; else from config.json; else 128 (Kokoro's
+    # canonical style dim). Kokoro's upstream .pth stores voice styles as
+    # separate voices/*.pt files, so the in-model voicepack is often absent —
+    # in that case the config.json is authoritative.
     voicepack = dims.get("voicepack_shape")
-    style_dim = int(voicepack[-1]) if voicepack is not None else 128
+    if voicepack is not None:
+        style_dim = int(voicepack[-1])
+    elif config:
+        style_dim = int(config.get("style_dim", 128))
+    else:
+        style_dim = 128
+
+    hidden_dim = int(text_emb[1]) if text_emb is not None else 512
 
     phoneme_ids = synth_phoneme_ids(vocab_size)
     style = synth_style(style_dim)
 
-    text_encoder, prosody, mel_pre_istft, pcm = zero_forward(dims)
+    # ---- Placeholder baseline (always computed; overridden by mode=full) ----
+    text_encoder, prosody, mel_pre_istft, pcm = placeholder_forward(dims)
+    mel_channels = int(mel_pre_istft.shape[1])
 
-    # Dump binaries.
+    # ---- Per-module mode markers (updated below by mode=full path) ----
+    module_modes = {
+        "text_encoder_mode": "placeholder",
+        "bert_mode": "placeholder",
+        "prosody_mode": "placeholder",
+        "decoder_mode": "placeholder",
+    }
+    bert_out: np.ndarray | None = None
+
+    if args.mode == "full":
+        # We need the .pth backend to run a full forward (the safetensors path
+        # only exposes shapes). Fail loudly rather than silently downgrading.
+        if store._tensor_fn is None:
+            sys.exit(
+                "mode=full requires a torch pickle checkpoint (kokoro-v1_0.pth); "
+                f"got shape-only backend {checkpoint_name!r}. Re-download the "
+                "hexgrad/Kokoro-82M repo (it ships the .pth by default)."
+            )
+
+        # --- text_encoder ---
+        try:
+            te_full = _forward_text_encoder(store, phoneme_ids)  # [T, hidden]
+            # Dump the first ENC_POS positions (matches the manifest's enc_pos).
+            enc = te_full[:ENC_POS]
+            if enc.shape != (ENC_POS, hidden_dim):
+                raise RuntimeError(
+                    f"text_encoder output shape {enc.shape} != expected "
+                    f"({ENC_POS}, {hidden_dim})"
+                )
+            text_encoder = enc.astype(np.float32)
+            module_modes["text_encoder_mode"] = "full"
+            print(
+                f"  text_encoder: full forward OK, shape {enc.shape} "
+                f"(first {ENC_POS} of {te_full.shape[0]} tokens)"
+            )
+        except Exception as exc:
+            print(f"  text_encoder: mode=full FAILED, keeping placeholder ({exc})")
+
+        # --- bert ---
+        try:
+            bert_full = _forward_bert(store, phoneme_ids)  # [T, 512]
+            bert_slice = bert_full[:ENC_POS]
+            if bert_slice.shape != (ENC_POS, BERT_OUT_DIM):
+                raise RuntimeError(
+                    f"bert output shape {bert_slice.shape} != expected "
+                    f"({ENC_POS}, {BERT_OUT_DIM})"
+                )
+            bert_out = bert_slice.astype(np.float32)
+            module_modes["bert_mode"] = "full"
+            print(
+                f"  bert:         full forward OK, shape {bert_slice.shape} "
+                f"(first {ENC_POS} of {bert_full.shape[0]} tokens)"
+            )
+        except Exception as exc:
+            print(f"  bert:         mode=full FAILED, keeping placeholder ({exc})")
+
+        # --- prosody ---
+        # Upstream prosody predictor consumes the bert (or text-encoder) [T, 512]
+        # features + a style vector, runs 3× BiLSTM + AdaLN + main LSTM + duration
+        # projection + length regulation to [T_frames, ...] + shared BiLSTM + F0/N
+        # AdainResBlk stacks. The NumPy re-forward is tractable but takes more
+        # care than fits in the T17 90-min budget; keeping as placeholder here
+        # so a byte-parity claim isn't fabricated.
+        print(
+            "  prosody:      mode=full SKIPPED (length regulation + AdainResBlk "
+            "upsample require a dedicated re-forward WP; keeping placeholder)"
+        )
+
+        # --- decoder ---
+        # Upstream iSTFTNet decoder is 375 tensors (concat + AdaLN ResBlocks +
+        # HiFi-GAN generator with Snake activation + iSTFT head). Out of scope
+        # for T17 90-min budget for the same reason.
+        print(
+            "  decoder:      mode=full SKIPPED (iSTFT head + Snake generator "
+            "require a dedicated re-forward WP; keeping placeholder)"
+        )
+
+    # ---- Dump binaries ----
     write_i64(out_dir / "phoneme_ids.i64", phoneme_ids)
     write_f32(out_dir / "style.f32", style)
     write_f32(out_dir / "text_encoder.f32", text_encoder)
     write_f32(out_dir / "prosody.f32", prosody)
     write_f32(out_dir / "mel_pre_istft.f32", mel_pre_istft)
     write_f32(out_dir / "pcm.f32", pcm)
+    if bert_out is not None:
+        write_f32(out_dir / "bert.f32", bert_out)
+    else:
+        # In placeholder mode the bert.f32 fixture is not written; the Rust
+        # parity harness checks bert_mode before reading the file.
+        bert_path = out_dir / "bert.f32"
+        if bert_path.exists():
+            bert_path.unlink()
+
+    # ---- Manifest ----
+    # Global mode is "full" iff at least one module has a full NumPy re-forward;
+    # per-module modes tell the Rust harness which byte-check to enable.
+    global_mode = "full" if any(v == "full" for v in module_modes.values()) else "placeholder"
 
     manifest = {
         "model": model_id,
         "checkpoint_file": checkpoint_name,
         "seed": SEED,
         "atol": 0.01,
-        "mode": "placeholder",  # switch to "full" once real forward is wired
+        "mode": global_mode,
+        **module_modes,
         "vocab_size": vocab_size,
         "hidden_dim": text_encoder.shape[1],
         "style_dim": style_dim,
@@ -399,7 +829,8 @@ def main() -> None:
         "enc_pos": ENC_POS,
         "dec_frames": DEC_FRAMES,
         "prosody_channels": PROSODY_CHANNELS,
-        "mel_channels": mel_pre_istft.shape[1],
+        "mel_channels": mel_channels,
+        "bert_out_dim": BERT_OUT_DIM if bert_out is not None else 0,
         "pcm_len": PCM_LEN,
         "sample_rate": int(config.get("sample_rate", 24_000)) if config else 24_000,
     }
@@ -409,7 +840,8 @@ def main() -> None:
         f.write("# list values are space-separated.\n")
         f.write("# mode = placeholder: the Rust parity harness runs shape /\n")
         f.write("# length checks only (byte-level parity is a follow-up).\n")
-        f.write("# mode = full: byte-level parity vs a native NumPy re-forward.\n")
+        f.write("# mode = full: at least one module has a real NumPy re-forward.\n")
+        f.write("# Per-module gates (`<module>_mode`) select byte-parity per module.\n")
         for k, v in manifest.items():
             if isinstance(v, list):
                 f.write(f"{k} = {' '.join(str(x) for x in v)}\n")
@@ -417,8 +849,21 @@ def main() -> None:
                 f.write(f"{k} = {v}\n")
 
     print(f"wrote fixtures to {out_dir}")
-    print(f"  mode={manifest['mode']} vocab={vocab_size} hidden_dim={manifest['hidden_dim']} style_dim={style_dim}")
-    print(f"  num_phonemes={NUM_PHONEMES} enc_pos={ENC_POS} dec_frames={DEC_FRAMES} pcm_len={PCM_LEN}")
+    print(
+        f"  mode={manifest['mode']} "
+        f"text_encoder_mode={manifest['text_encoder_mode']} "
+        f"bert_mode={manifest['bert_mode']} "
+        f"prosody_mode={manifest['prosody_mode']} "
+        f"decoder_mode={manifest['decoder_mode']}"
+    )
+    print(
+        f"  vocab={vocab_size} hidden_dim={manifest['hidden_dim']} "
+        f"style_dim={style_dim}"
+    )
+    print(
+        f"  num_phonemes={NUM_PHONEMES} enc_pos={ENC_POS} "
+        f"dec_frames={DEC_FRAMES} pcm_len={PCM_LEN}"
+    )
 
 
 if __name__ == "__main__":
