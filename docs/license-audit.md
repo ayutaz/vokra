@@ -158,6 +158,27 @@
 - ⚠ **Deferred（残タスク）**: AudioSeal watermark の runtime embedding（FR-CP-01）と C2PA manifest sign/verify（FR-CP-02）は 2026-07-04 依頼者ドロップにより **config 面（`WatermarkConfig`）のみ実装**、実埋め込みは deferred。**NFR-LG-01（EU AI Act Article 50）と NFR-LG-02（California SB 942）の runtime marking 要件を完全には満たしていない**。運用側で TTS 出力に AI 生成表示（disclosure text）を必ず加える必要がある（M2-13 `WatermarkConfig::require_disclosure` の設定面はある）。
 - 詳細な checklist 通過は依頼者判断（sign-off はここでは行わない）。
 
+### Owner sign-off template（依頼者記入）
+
+**位置付け（重要）**: 前節 §CC-verified 事実確認は Claude Code（CC）が一次公表資料（upstream の LICENSE ファイル / model card / GitHub 等）を写した **事実の記録** である。本節は、その事実を踏まえて **依頼者（`ayutaz`）が下す配布可否の法務的意思決定** を記録する場である。CC はライセンス facts の verification（upstream の license 表記の引用）のみを担い、"このモデルを商用配布して良いか / research-only で扱うか / 拒否するか" という distribute-or-not の法務判断は本節で依頼者が明示的にサインオフする。
+
+依頼者は各行の "Owner sign-off (YYYY-MM-DD)" 欄に日付、"Approval" 欄で該当箱にチェック（`☑`）、必要に応じて "Notes" 欄に判断根拠を記入する。空欄のままの行は「未サインオフ＝公式配布不可」の運用とする（fail-closed）。
+
+| Model | Weight License | CC-verified date | Owner sign-off (YYYY-MM-DD) | Approval | Notes |
+|---|---|---|---|---|---|
+| **Whisper base** | MIT | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
+| **Whisper small** | MIT | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
+| **Whisper medium** | MIT | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
+| **Whisper large-v3** | MIT | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
+| **Whisper turbo** | MIT | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
+| **Kokoro-82M** | Apache-2.0 | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
+| **piper-plus** | MIT | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
+| **CAM++** | Apache-2.0 | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
+| **F5-TTS** | CC-BY-NC 4.0 | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
+| **Fish-Speech v1.4** | CC-BY-NC-SA 4.0 | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
+| **Fish-Speech v1.5** | CC-BY-NC-SA 4.0 | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
+| **EnCodec** | CC-BY-NC 4.0 | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
+
 ---
 
 ## 4. Codec / Vocoder / 音声処理ライブラリ
