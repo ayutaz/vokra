@@ -60,10 +60,54 @@ PCM_LEN = 16000  # 1 s at 16 kHz
 MEL_FRAMES = 100  # frames of log-mel to dump for parity
 ENC_POS = 32  # encoder positions to dump for parity
 MAX_NEW = 32  # greedy generation cap
-# English-transcribe decode prefix (verified against
-# WhisperProcessor.get_decoder_prompt_ids): sot / en / transcribe / notimestamps.
-PREFIX = [50258, 50259, 50359, 50363]
-EOT = 50257
+
+
+def resolve_special_tokens(tok: WhisperTokenizer) -> tuple[list[int], int]:
+    """Look up the English-transcribe decode prefix + EOT via the tokenizer.
+
+    The token TEXTS are the same across every multilingual Whisper size but
+    the IDs shift when the vocab grows — e.g. large-v3 added `<|yue|>`
+    (Cantonese) at 50358, pushing `<|transcribe|>` from 50359 to 50360 and
+    `<|notimestamps|>` from 50363 to 50364 (the turbo tokenizer inherits the
+    same layout). Hard-coding the base-vocab IDs and reusing them for
+    large-v3 / turbo produces a manifest that fights the runtime, which is
+    exactly the failure that `weight_load_and_config_smoke` surfaces (its
+    assertion compares the manifest prefix against the model's own
+    `decoder_start_ids`).
+
+    Returns `(prefix, eot)` where `prefix = [sot, en, transcribe,
+    notimestamps]` — the four-token English-transcribe decode prefix used
+    for both greedy generation and the decoder-logits fixture.
+    """
+    # Round-trip validate the special-token names against the tokenizer.
+    # `convert_tokens_to_ids` falls back to `unk_token_id` for unknown tokens,
+    # and Whisper tokenizers register `<|endoftext|>` AS the unk (both id
+    # 50257 on base/small/medium, both 50257 on large-v3/turbo despite the
+    # vocab growing — the shift only touches task/language tokens). So the
+    # ambiguity is real, and the safest check is: the id must round-trip
+    # back through `convert_ids_to_tokens` to the same source string.
+    names = (
+        "<|startoftranscript|>",
+        "<|en|>",
+        "<|transcribe|>",
+        "<|notimestamps|>",
+        "<|endoftext|>",
+    )
+    ids = [tok.convert_tokens_to_ids(n) for n in names]
+    for name, tid in zip(names, ids):
+        if tid is None:
+            sys.exit(
+                f"tokenizer for this model has no {name} special token — "
+                "cannot build the parity prefix (got None)"
+            )
+        rt = tok.convert_ids_to_tokens(tid)
+        if rt != name:
+            sys.exit(
+                f"tokenizer round-trip failed for {name}: id={tid} -> {rt!r}"
+            )
+    prefix = ids[:4]
+    eot = ids[4]
+    return prefix, eot
 # Number of model-independent text tokens (ids 0..TEXT_VOCAB_LEN) in the Whisper
 # multilingual byte-level BPE vocab. Equals EOT and the special-token floor; the
 # first TEXT_VOCAB_LEN records are byte-identical across base..large-v3, so they
@@ -187,6 +231,8 @@ def main() -> None:
     model = WhisperForConditionalGeneration.from_pretrained(model_id)
     model.eval()
 
+    prefix, eot = resolve_special_tokens(tok)
+
     pcm = synth_pcm()
     write_f32(out_dir / "input_pcm.f32", pcm)
 
@@ -203,20 +249,20 @@ def main() -> None:
 
         # Decoder logits over the forced prefix; dump the last-position vector
         # and every position's argmax.
-        prefix_t = torch.tensor([PREFIX], dtype=torch.long)
+        prefix_t = torch.tensor([prefix], dtype=torch.long)
         logits = model(input_features=feats, decoder_input_ids=prefix_t).logits  # [1, P, vocab]
         vocab = logits.shape[-1]
         write_f32(out_dir / "logits_last.f32", logits[0, -1, :].numpy())
         prefix_argmax = logits[0].argmax(dim=-1).tolist()
 
         # Plain greedy (argmax, no logit suppression) — matches the Rust loop.
-        tokens = list(PREFIX)
+        tokens = list(prefix)
         greedy = []
         for _ in range(MAX_NEW):
             lg = model(input_features=feats, decoder_input_ids=torch.tensor([tokens])).logits
             nxt = int(lg[0, -1, :].argmax().item())
             greedy.append(nxt)
-            if nxt == EOT:
+            if nxt == eot:
                 break
             tokens.append(nxt)
 
@@ -253,8 +299,8 @@ def main() -> None:
         "n_audio_ctx": int(enc.shape[1]),
         "vocab": int(vocab),
         "vocab_tokenizer": int(vocab_n),
-        "prefix": PREFIX,
-        "eot": EOT,
+        "prefix": prefix,
+        "eot": eot,
         "prefix_argmax": prefix_argmax,
         "greedy_tokens": greedy,
         "greedy_text": greedy_text,

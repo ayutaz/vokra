@@ -1,6 +1,6 @@
 # Detokenizer parity: one case per line, `ids | text`.
 # ids are space-separated; text is the raw HF decode.
-50257 | 
+506 12506 1986 0 50257 |  Whoooooo!
 15947 1002 | Hello world
 53 453 424 220 18034 32045 1500 | Vokra 音声 test
 496 69 526 12027 9732 | café déjà vu

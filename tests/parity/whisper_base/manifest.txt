@@ -2,6 +2,7 @@
 # tools/parity/dump_whisper_reference.py. `key = value`;
 # list values are space-separated.
 model = openai/whisper-base
+size = whisper-base
 seed = 1234
 atol = 0.01
 pcm_len = 16000
