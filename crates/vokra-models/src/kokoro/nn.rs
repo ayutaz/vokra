@@ -1656,8 +1656,8 @@ mod tests {
 
         // Signal has both signs and small magnitude to exercise the
         // InstanceNorm mean cancellation.
-        let mut x = vec![1e-3f32, -1e-3, 1e-3, -1e-3];
-        let want_x = x.clone();
+        let mut x = [1e-3f32, -1e-3, 1e-3, -1e-3];
+        let want_x = x;
 
         adain_conditioned_residual(&mut x, channels, time, &fc_w, &fc_b, &style, style_dim);
 
@@ -1698,7 +1698,7 @@ mod tests {
         // path here must be strictly better — we cap absolute delta at 1e-2 as
         // the regression floor, which f32 scalar cannot hit but f64 does with
         // room to spare.
-        let mut x_f32_ref = vec![1e-3f32, -1e-3, 1e-3, -1e-3];
+        let mut x_f32_ref = [1e-3f32, -1e-3, 1e-3, -1e-3];
         {
             // Inline scalar f32 comparison run: same math, f32 accumulators.
             let two_c = 2 * channels;
