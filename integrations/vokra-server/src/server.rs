@@ -35,14 +35,19 @@ pub fn run_with_config(cfg: Config) -> std::io::Result<()> {
         .build()?;
     rt.block_on(async move {
         let (signal, _trigger) = install_shutdown_signal();
-        let handles = spawn_server(cfg, signal).await?;
+        let handles = spawn_server(cfg, signal.clone()).await?;
         eprintln!(
             "vokra-server: HTTP listening on {}, Wyoming listening on {}",
             handles.http_actual, handles.wyoming_actual
         );
-        // spawn_server's returned future above already awaits shutdown on the
-        // background tasks it spawns; we're just holding the runtime alive
-        // for their drain. Wait a beat to let logs flush.
+        // `spawn_server` returns as soon as the listeners are bound and the
+        // per-listener event loops are spawned as background tasks. Those
+        // tasks live on the runtime until the shutdown signal fires — if we
+        // returned from `block_on` here the runtime would be dropped and
+        // every accept loop would stop mid-flight before ever seeing a
+        // connection. Wait on the same signal the loops watch so this
+        // future co-terminates with them (graceful drain).
+        signal.wait().await;
         Ok::<_, std::io::Error>(())
     })
 }
@@ -83,10 +88,18 @@ pub async fn spawn_server(cfg: Config, signal: ShutdownSignal) -> std::io::Resul
     })
 }
 
-/// Wyoming Protocol accept loop. T03 only accepts + closes connections; the
-/// JSONL event loop lands in T14/T15/T16 with the reference to the official
-/// protocol spec confirmed (per plan D8 / R5: never line-buffer the binary
-/// payload region).
+/// Wyoming Protocol accept loop. When no [`InferenceService`] is wired
+/// (the T03 default startup path), we fall back to a describe-only handler
+/// so Home Assistant's Wyoming discovery probe (`describe` → `info`)
+/// still completes cleanly — without this, the accept-and-drop stub made
+/// even wire-level discovery fail (see the smoke report at
+/// `integrations/vokra-server/tests/wyoming-ha-smoke.md`). Once T04 wires
+/// model paths through the CLI and a service is built at startup, this
+/// same loop can be switched to [`run_asr_connection`] with an `Arc<InferenceService>`.
+///
+/// Each connection is served on its own tokio task so a slow client
+/// cannot stall discovery for another one (NFR-RL-07 spirit — panic in a
+/// single task is isolated).
 async fn wyoming_accept_loop(listener: TcpListener, signal: ShutdownSignal) {
     loop {
         let signal = signal.clone();
@@ -94,10 +107,24 @@ async fn wyoming_accept_loop(listener: TcpListener, signal: ShutdownSignal) {
             _ = signal.clone().wait() => break,
             accept = listener.accept() => {
                 match accept {
-                    Ok((stream, _peer)) => {
-                        // Per-connection task; T14+ replaces this with the real event loop.
+                    Ok((stream, peer)) => {
                         tokio::spawn(async move {
-                            drop(stream); // T03 placeholder: accept-and-close.
+                            let (reader, mut writer) = stream.into_split();
+                            if let Err(err) = crate::api::wyoming::run_describe_only_connection(
+                                reader,
+                                &mut writer,
+                            )
+                            .await
+                            {
+                                // Client dropped mid-message, malformed
+                                // header past the cap, or the socket closed
+                                // — all expected under adversarial input.
+                                // Log so operators can see it, but never
+                                // panic (the accept loop must survive).
+                                eprintln!(
+                                    "vokra-server: wyoming session with {peer} ended: {err}"
+                                );
+                            }
                         });
                     }
                     Err(err) => {

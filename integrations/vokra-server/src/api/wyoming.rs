@@ -489,6 +489,89 @@ where
     Ok(())
 }
 
+/// Discovery-only Wyoming loop for the "no service configured" startup path.
+///
+/// This is the accept-loop's fallback when [`spawn_server`] runs without an
+/// [`InferenceService`] (the M2-09 T03 default, before T04 wires model
+/// paths through the CLI). Home Assistant probes a Wyoming Assist endpoint
+/// with `describe`; if the server never answers, HA gives up on the
+/// server. Before this handler existed the accept loop drop-closed the
+/// socket right after `accept`, so even wire-level discovery failed — the
+/// exact failure captured in `integrations/vokra-server/tests/wyoming-ha-smoke.md`.
+///
+/// Behaviour:
+/// * `describe` → an `info` event whose `asr` list is EMPTY. HA will
+///   register the server exists but list no ASR programs — accurate,
+///   because no models are actually loaded.
+/// * Any other message type → an `error` event explaining that the server
+///   needs a model registry (FR-EX-08: honest, never a silent no-op).
+/// * Clean EOF from the client → loop exits without an error.
+///
+/// This is a wire-level compatibility path, not an ASR path. When a
+/// service IS configured, [`run_asr_connection`] takes over; this handler
+/// exists only so `describe` succeeds in the meantime.
+pub async fn run_describe_only_connection<R, W>(reader: R, writer: &mut W) -> io::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buf_reader = BufReader::new(reader);
+    let mut header_line = Vec::with_capacity(1024);
+    loop {
+        header_line.clear();
+        let n = read_header_line(&mut buf_reader, &mut header_line).await?;
+        if n == 0 {
+            break; // clean EOF
+        }
+        let header: WyomingHeader = match serde_json::from_slice(&header_line) {
+            Ok(h) => h,
+            Err(e) => {
+                write_error_event(writer, &format!("invalid JSON header: {e}")).await?;
+                continue;
+            }
+        };
+        // Consume any data/payload the client attached — we never look at it
+        // in describe-only mode, but the wire framing still requires us to
+        // read the announced bytes before the next header.
+        if header.payload_length > MAX_PAYLOAD_BYTES {
+            write_error_event(
+                writer,
+                &format!(
+                    "payload_length {} exceeds cap {MAX_PAYLOAD_BYTES}",
+                    header.payload_length
+                ),
+            )
+            .await?;
+            break;
+        }
+        let mut _data = vec![0u8; header.data_length];
+        if header.data_length > 0 {
+            buf_reader.read_exact(&mut _data).await?;
+        }
+        let mut _payload = vec![0u8; header.payload_length];
+        if header.payload_length > 0 {
+            buf_reader.read_exact(&mut _payload).await?;
+        }
+        match header.type_.as_str() {
+            "describe" => {
+                write_response(writer, AsrResponse::Info(InfoBody { asr: vec![] })).await?;
+            }
+            other => {
+                write_error_event(
+                    writer,
+                    &format!(
+                        "wyoming server is running in discovery-only mode \
+                         (no model registry configured); only `describe` is \
+                         answered, got `{other}`"
+                    ),
+                )
+                .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Read one JSONL header line into `buf` (without the trailing `\n`).
 /// Enforces `MAX_HEADER_BYTES` to bound memory before parsing. Returns the
 /// number of bytes read including the newline (0 = clean EOF).
