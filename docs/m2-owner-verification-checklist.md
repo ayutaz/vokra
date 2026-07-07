@@ -137,6 +137,8 @@ fixture 自体（`logmel.f32` / `encoder.f32` / `logits_last.f32` / `tokenizer.b
 - 根拠: `hexgrad/Kokoro-82M` は `kokoro-v1_0.pth`（torch pickle）で配布されており safetensors 版が無い、dumper 側で `torch.load(weights_only=True)` の nested state dict flatten まで対応したが（`tools/parity/dump_kokoro_reference.py` 側 refactor 済）、**モデル本体の native 再 forward が未完了で `mode = full` に上げられなかった**。
 - 現状 Rust 側 `parity_kokoro.rs` は manifest の `mode = placeholder` marker を読んで shape/length のみ検証する gated harness で動く。M2-07 T11 完了（byte-level parity）は follow-up。
 
+**2026-07-07 追加**: 実 upstream tensor manifest を dump し `crates/vokra-models/src/kokoro/data/upstream_tensors_v1_0.tsv`（548 tensors）に commit。ADR-0007 に T02 upstream inspection findings を追加、scaffold の LayerNorm+Linear 仮 architecture と upstream の Embedding+3×WeightNormedConv1d+BiLSTM (text encoder) / 6-stack BiLSTM+AdaLN F0/N heads (prosody) / AdaLN ResBlock+MRF+mag/phase (decoder) / ALBERT-4 shared-weight backbone (bert) の乖離を具体的な tensor 名レベルで記録。**M2-07 T13–T17 は「rename ではなく architectural rewrite」であることが確定**（`text_encoder.norm.weight` 等の Rust scaffold が期待する tensor 名は upstream に存在しないため、単純 remap では成立しない）。T13-alpha/beta/T14/T15/T16/T17 の follow-up ticket を ADR-0007 §T02 findings §Follow-up plan に列挙、次回セッション or 別 WP で consume 可能な形にした。
+
 ---
 
 ## 4. モデル license audit + legal-compliance checklist 承認（M2-06 T18/T20、M2-07 T25/T26）

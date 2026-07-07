@@ -1,16 +1,42 @@
 //! Kokoro-82M text encoder — phoneme_ids → `[t, hidden_dim]` features
 //! (M2-07-T12).
 //!
-//! Scaffold-level concrete forward, as documented in the M2-07 plan §3
-//! "Edit group C": embedding lookup → per-token LayerNorm(gamma, beta) →
-//! linear projection. Every weight is loaded verbatim from the GGUF the
-//! `vokra-convert::models::kokoro` converter (M2-07-T07) will emit, using
-//! the tensor-name mirror rule (safetensors → GGUF verbatim). The exact
-//! Kokoro upstream module wiring (BiLSTM vs. transformer, activation kind)
-//! is TBD pending the M2-07-T02 upstream inspection; when the real
-//! architecture lands, this file's `forward` is the seam that is refined,
-//! and the loader-side shape checks in [`Self::new`] keep guarding against
-//! silent mis-loads (FR-EX-08).
+//! # 2026-07-07 status: scaffold does NOT match upstream architecture
+//!
+//! This module was authored during the M2-07 T01–T08 design phase as a
+//! placeholder: an `Embedding` + `LayerNorm(γ, β)` + `Linear` layout that
+//! was chosen while T02 (upstream inspection) was still open. The
+//! `crates/vokra-models/src/kokoro/data/upstream_tensors_v1_0.tsv`
+//! manifest (dumped from the real `hexgrad/Kokoro-82M kokoro-v1_0.pth` on
+//! 2026-07-07) shows the actual upstream layout is:
+//!
+//! - `text_encoder.module.embedding.weight` — `[178, 512]`
+//! - `text_encoder.module.cnn.{0,1,2}.0.{weight_g, weight_v, bias}` — three
+//!   WeightNormed Conv1d 512→512 blocks (kernel 5, `weight_g[512,1,1]` /
+//!   `weight_v[512,512,5]`)
+//! - `text_encoder.module.cnn.{0,1,2}.1.{gamma, beta}` — per-block layer
+//!   norm affine
+//! - `text_encoder.module.lstm.{weight_ih_l0, weight_hh_l0, bias_ih_l0,
+//!   bias_hh_l0}` (+ `_reverse`) — a bidirectional LSTM (input 512,
+//!   hidden 256, so `weight_ih_l0[1024, 512]`)
+//!
+//! There is no `text_encoder.norm.weight` / `text_encoder.norm.bias` /
+//! `text_encoder.proj.weight` / `text_encoder.proj.bias` in the real
+//! checkpoint. The scaffold's `Self::new` will therefore fail at load
+//! time on a real GGUF with `missing tensor
+//! `text_encoder.embedding.weight`` (note the missing `.module.` prefix)
+//! and cannot be salvaged by a simple rename — the whole forward has to
+//! be reimplemented against the CNN + BiLSTM layout.
+//!
+//! **Follow-up**: M2-07 T13–T17 re-opens the text encoder rewrite bound
+//! to the manifest above. Until it lands, `Self::new` still runs against
+//! the scaffold tensor names (so the module's own unit tests exercise
+//! the forward path with a synthetic GGUF fixture) but `Self::new` on a
+//! **real** Kokoro-82M GGUF fails at the very first tensor lookup with
+//! `missing tensor "text_encoder.embedding.weight"` — honest per
+//! FR-EX-08 (never silently succeed with a wrong architecture; the real
+//! name is `text_encoder.module.embedding.weight` and the scaffold cannot
+//! consume the rest of the CNN + BiLSTM layout anyway).
 //!
 //! Determinism: no RNG. Two identical inputs produce identical outputs
 //! (asserted by the synthetic parity test at the bottom of this file).

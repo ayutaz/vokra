@@ -1,0 +1,548 @@
+bert_encoder.module.bias	(512,)	torch.float32
+bert_encoder.module.weight	(512, 768)	torch.float32
+bert.module.embeddings.LayerNorm.bias	(128,)	torch.float32
+bert.module.embeddings.LayerNorm.weight	(128,)	torch.float32
+bert.module.embeddings.position_embeddings.weight	(512, 128)	torch.float32
+bert.module.embeddings.token_type_embeddings.weight	(2, 128)	torch.float32
+bert.module.embeddings.word_embeddings.weight	(178, 128)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.attention.dense.bias	(768,)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.attention.dense.weight	(768, 768)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.attention.key.bias	(768,)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.attention.key.weight	(768, 768)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.attention.LayerNorm.bias	(768,)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.attention.LayerNorm.weight	(768,)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.attention.query.bias	(768,)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.attention.query.weight	(768, 768)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.attention.value.bias	(768,)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.attention.value.weight	(768, 768)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.ffn_output.bias	(768,)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.ffn_output.weight	(768, 2048)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.ffn.bias	(2048,)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.ffn.weight	(2048, 768)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.full_layer_layer_norm.bias	(768,)	torch.float32
+bert.module.encoder.albert_layer_groups.0.albert_layers.0.full_layer_layer_norm.weight	(768,)	torch.float32
+bert.module.encoder.embedding_hidden_mapping_in.bias	(768,)	torch.float32
+bert.module.encoder.embedding_hidden_mapping_in.weight	(768, 128)	torch.float32
+bert.module.pooler.bias	(768,)	torch.float32
+bert.module.pooler.weight	(768, 768)	torch.float32
+decoder.module.asr_res.0.bias	(64,)	torch.float32
+decoder.module.asr_res.0.weight_g	(64, 1, 1)	torch.float32
+decoder.module.asr_res.0.weight_v	(64, 512, 1)	torch.float32
+decoder.module.decode.0.conv1.bias	(1024,)	torch.float32
+decoder.module.decode.0.conv1.weight_g	(1024, 1, 1)	torch.float32
+decoder.module.decode.0.conv1.weight_v	(1024, 1090, 3)	torch.float32
+decoder.module.decode.0.conv1x1.weight_g	(1024, 1, 1)	torch.float32
+decoder.module.decode.0.conv1x1.weight_v	(1024, 1090, 1)	torch.float32
+decoder.module.decode.0.conv2.bias	(1024,)	torch.float32
+decoder.module.decode.0.conv2.weight_g	(1024, 1, 1)	torch.float32
+decoder.module.decode.0.conv2.weight_v	(1024, 1024, 3)	torch.float32
+decoder.module.decode.0.norm1.fc.bias	(2180,)	torch.float32
+decoder.module.decode.0.norm1.fc.weight	(2180, 128)	torch.float32
+decoder.module.decode.0.norm2.fc.bias	(2048,)	torch.float32
+decoder.module.decode.0.norm2.fc.weight	(2048, 128)	torch.float32
+decoder.module.decode.1.conv1.bias	(1024,)	torch.float32
+decoder.module.decode.1.conv1.weight_g	(1024, 1, 1)	torch.float32
+decoder.module.decode.1.conv1.weight_v	(1024, 1090, 3)	torch.float32
+decoder.module.decode.1.conv1x1.weight_g	(1024, 1, 1)	torch.float32
+decoder.module.decode.1.conv1x1.weight_v	(1024, 1090, 1)	torch.float32
+decoder.module.decode.1.conv2.bias	(1024,)	torch.float32
+decoder.module.decode.1.conv2.weight_g	(1024, 1, 1)	torch.float32
+decoder.module.decode.1.conv2.weight_v	(1024, 1024, 3)	torch.float32
+decoder.module.decode.1.norm1.fc.bias	(2180,)	torch.float32
+decoder.module.decode.1.norm1.fc.weight	(2180, 128)	torch.float32
+decoder.module.decode.1.norm2.fc.bias	(2048,)	torch.float32
+decoder.module.decode.1.norm2.fc.weight	(2048, 128)	torch.float32
+decoder.module.decode.2.conv1.bias	(1024,)	torch.float32
+decoder.module.decode.2.conv1.weight_g	(1024, 1, 1)	torch.float32
+decoder.module.decode.2.conv1.weight_v	(1024, 1090, 3)	torch.float32
+decoder.module.decode.2.conv1x1.weight_g	(1024, 1, 1)	torch.float32
+decoder.module.decode.2.conv1x1.weight_v	(1024, 1090, 1)	torch.float32
+decoder.module.decode.2.conv2.bias	(1024,)	torch.float32
+decoder.module.decode.2.conv2.weight_g	(1024, 1, 1)	torch.float32
+decoder.module.decode.2.conv2.weight_v	(1024, 1024, 3)	torch.float32
+decoder.module.decode.2.norm1.fc.bias	(2180,)	torch.float32
+decoder.module.decode.2.norm1.fc.weight	(2180, 128)	torch.float32
+decoder.module.decode.2.norm2.fc.bias	(2048,)	torch.float32
+decoder.module.decode.2.norm2.fc.weight	(2048, 128)	torch.float32
+decoder.module.decode.3.conv1.bias	(512,)	torch.float32
+decoder.module.decode.3.conv1.weight_g	(512, 1, 1)	torch.float32
+decoder.module.decode.3.conv1.weight_v	(512, 1090, 3)	torch.float32
+decoder.module.decode.3.conv1x1.weight_g	(512, 1, 1)	torch.float32
+decoder.module.decode.3.conv1x1.weight_v	(512, 1090, 1)	torch.float32
+decoder.module.decode.3.conv2.bias	(512,)	torch.float32
+decoder.module.decode.3.conv2.weight_g	(512, 1, 1)	torch.float32
+decoder.module.decode.3.conv2.weight_v	(512, 512, 3)	torch.float32
+decoder.module.decode.3.norm1.fc.bias	(2180,)	torch.float32
+decoder.module.decode.3.norm1.fc.weight	(2180, 128)	torch.float32
+decoder.module.decode.3.norm2.fc.bias	(1024,)	torch.float32
+decoder.module.decode.3.norm2.fc.weight	(1024, 128)	torch.float32
+decoder.module.decode.3.pool.bias	(1090,)	torch.float32
+decoder.module.decode.3.pool.weight_g	(1090, 1, 1)	torch.float32
+decoder.module.decode.3.pool.weight_v	(1090, 1, 3)	torch.float32
+decoder.module.encode.conv1.bias	(1024,)	torch.float32
+decoder.module.encode.conv1.weight_g	(1024, 1, 1)	torch.float32
+decoder.module.encode.conv1.weight_v	(1024, 514, 3)	torch.float32
+decoder.module.encode.conv1x1.weight_g	(1024, 1, 1)	torch.float32
+decoder.module.encode.conv1x1.weight_v	(1024, 514, 1)	torch.float32
+decoder.module.encode.conv2.bias	(1024,)	torch.float32
+decoder.module.encode.conv2.weight_g	(1024, 1, 1)	torch.float32
+decoder.module.encode.conv2.weight_v	(1024, 1024, 3)	torch.float32
+decoder.module.encode.norm1.fc.bias	(1028,)	torch.float32
+decoder.module.encode.norm1.fc.weight	(1028, 128)	torch.float32
+decoder.module.encode.norm2.fc.bias	(2048,)	torch.float32
+decoder.module.encode.norm2.fc.weight	(2048, 128)	torch.float32
+decoder.module.F0_conv.bias	(1,)	torch.float32
+decoder.module.F0_conv.weight_g	(1, 1, 1)	torch.float32
+decoder.module.F0_conv.weight_v	(1, 1, 3)	torch.float32
+decoder.module.generator.conv_post.bias	(22,)	torch.float32
+decoder.module.generator.conv_post.weight_g	(22, 1, 1)	torch.float32
+decoder.module.generator.conv_post.weight_v	(22, 128, 7)	torch.float32
+decoder.module.generator.m_source.l_linear.bias	(1,)	torch.float32
+decoder.module.generator.m_source.l_linear.weight	(1, 9)	torch.float32
+decoder.module.generator.noise_convs.0.bias	(256,)	torch.float32
+decoder.module.generator.noise_convs.0.weight	(256, 22, 12)	torch.float32
+decoder.module.generator.noise_convs.1.bias	(128,)	torch.float32
+decoder.module.generator.noise_convs.1.weight	(128, 22, 1)	torch.float32
+decoder.module.generator.noise_res.0.adain1.0.fc.bias	(512,)	torch.float32
+decoder.module.generator.noise_res.0.adain1.0.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.noise_res.0.adain1.1.fc.bias	(512,)	torch.float32
+decoder.module.generator.noise_res.0.adain1.1.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.noise_res.0.adain1.2.fc.bias	(512,)	torch.float32
+decoder.module.generator.noise_res.0.adain1.2.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.noise_res.0.adain2.0.fc.bias	(512,)	torch.float32
+decoder.module.generator.noise_res.0.adain2.0.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.noise_res.0.adain2.1.fc.bias	(512,)	torch.float32
+decoder.module.generator.noise_res.0.adain2.1.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.noise_res.0.adain2.2.fc.bias	(512,)	torch.float32
+decoder.module.generator.noise_res.0.adain2.2.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.noise_res.0.alpha1.0	(1, 256, 1)	torch.float32
+decoder.module.generator.noise_res.0.alpha1.1	(1, 256, 1)	torch.float32
+decoder.module.generator.noise_res.0.alpha1.2	(1, 256, 1)	torch.float32
+decoder.module.generator.noise_res.0.alpha2.0	(1, 256, 1)	torch.float32
+decoder.module.generator.noise_res.0.alpha2.1	(1, 256, 1)	torch.float32
+decoder.module.generator.noise_res.0.alpha2.2	(1, 256, 1)	torch.float32
+decoder.module.generator.noise_res.0.convs1.0.bias	(256,)	torch.float32
+decoder.module.generator.noise_res.0.convs1.0.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.noise_res.0.convs1.0.weight_v	(256, 256, 7)	torch.float32
+decoder.module.generator.noise_res.0.convs1.1.bias	(256,)	torch.float32
+decoder.module.generator.noise_res.0.convs1.1.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.noise_res.0.convs1.1.weight_v	(256, 256, 7)	torch.float32
+decoder.module.generator.noise_res.0.convs1.2.bias	(256,)	torch.float32
+decoder.module.generator.noise_res.0.convs1.2.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.noise_res.0.convs1.2.weight_v	(256, 256, 7)	torch.float32
+decoder.module.generator.noise_res.0.convs2.0.bias	(256,)	torch.float32
+decoder.module.generator.noise_res.0.convs2.0.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.noise_res.0.convs2.0.weight_v	(256, 256, 7)	torch.float32
+decoder.module.generator.noise_res.0.convs2.1.bias	(256,)	torch.float32
+decoder.module.generator.noise_res.0.convs2.1.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.noise_res.0.convs2.1.weight_v	(256, 256, 7)	torch.float32
+decoder.module.generator.noise_res.0.convs2.2.bias	(256,)	torch.float32
+decoder.module.generator.noise_res.0.convs2.2.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.noise_res.0.convs2.2.weight_v	(256, 256, 7)	torch.float32
+decoder.module.generator.noise_res.1.adain1.0.fc.bias	(256,)	torch.float32
+decoder.module.generator.noise_res.1.adain1.0.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.noise_res.1.adain1.1.fc.bias	(256,)	torch.float32
+decoder.module.generator.noise_res.1.adain1.1.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.noise_res.1.adain1.2.fc.bias	(256,)	torch.float32
+decoder.module.generator.noise_res.1.adain1.2.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.noise_res.1.adain2.0.fc.bias	(256,)	torch.float32
+decoder.module.generator.noise_res.1.adain2.0.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.noise_res.1.adain2.1.fc.bias	(256,)	torch.float32
+decoder.module.generator.noise_res.1.adain2.1.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.noise_res.1.adain2.2.fc.bias	(256,)	torch.float32
+decoder.module.generator.noise_res.1.adain2.2.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.noise_res.1.alpha1.0	(1, 128, 1)	torch.float32
+decoder.module.generator.noise_res.1.alpha1.1	(1, 128, 1)	torch.float32
+decoder.module.generator.noise_res.1.alpha1.2	(1, 128, 1)	torch.float32
+decoder.module.generator.noise_res.1.alpha2.0	(1, 128, 1)	torch.float32
+decoder.module.generator.noise_res.1.alpha2.1	(1, 128, 1)	torch.float32
+decoder.module.generator.noise_res.1.alpha2.2	(1, 128, 1)	torch.float32
+decoder.module.generator.noise_res.1.convs1.0.bias	(128,)	torch.float32
+decoder.module.generator.noise_res.1.convs1.0.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.noise_res.1.convs1.0.weight_v	(128, 128, 11)	torch.float32
+decoder.module.generator.noise_res.1.convs1.1.bias	(128,)	torch.float32
+decoder.module.generator.noise_res.1.convs1.1.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.noise_res.1.convs1.1.weight_v	(128, 128, 11)	torch.float32
+decoder.module.generator.noise_res.1.convs1.2.bias	(128,)	torch.float32
+decoder.module.generator.noise_res.1.convs1.2.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.noise_res.1.convs1.2.weight_v	(128, 128, 11)	torch.float32
+decoder.module.generator.noise_res.1.convs2.0.bias	(128,)	torch.float32
+decoder.module.generator.noise_res.1.convs2.0.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.noise_res.1.convs2.0.weight_v	(128, 128, 11)	torch.float32
+decoder.module.generator.noise_res.1.convs2.1.bias	(128,)	torch.float32
+decoder.module.generator.noise_res.1.convs2.1.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.noise_res.1.convs2.1.weight_v	(128, 128, 11)	torch.float32
+decoder.module.generator.noise_res.1.convs2.2.bias	(128,)	torch.float32
+decoder.module.generator.noise_res.1.convs2.2.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.noise_res.1.convs2.2.weight_v	(128, 128, 11)	torch.float32
+decoder.module.generator.resblocks.0.adain1.0.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.0.adain1.0.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.0.adain1.1.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.0.adain1.1.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.0.adain1.2.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.0.adain1.2.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.0.adain2.0.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.0.adain2.0.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.0.adain2.1.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.0.adain2.1.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.0.adain2.2.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.0.adain2.2.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.0.alpha1.0	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.0.alpha1.1	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.0.alpha1.2	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.0.alpha2.0	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.0.alpha2.1	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.0.alpha2.2	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.0.convs1.0.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.0.convs1.0.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.0.convs1.0.weight_v	(256, 256, 3)	torch.float32
+decoder.module.generator.resblocks.0.convs1.1.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.0.convs1.1.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.0.convs1.1.weight_v	(256, 256, 3)	torch.float32
+decoder.module.generator.resblocks.0.convs1.2.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.0.convs1.2.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.0.convs1.2.weight_v	(256, 256, 3)	torch.float32
+decoder.module.generator.resblocks.0.convs2.0.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.0.convs2.0.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.0.convs2.0.weight_v	(256, 256, 3)	torch.float32
+decoder.module.generator.resblocks.0.convs2.1.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.0.convs2.1.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.0.convs2.1.weight_v	(256, 256, 3)	torch.float32
+decoder.module.generator.resblocks.0.convs2.2.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.0.convs2.2.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.0.convs2.2.weight_v	(256, 256, 3)	torch.float32
+decoder.module.generator.resblocks.1.adain1.0.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.1.adain1.0.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.1.adain1.1.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.1.adain1.1.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.1.adain1.2.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.1.adain1.2.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.1.adain2.0.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.1.adain2.0.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.1.adain2.1.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.1.adain2.1.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.1.adain2.2.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.1.adain2.2.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.1.alpha1.0	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.1.alpha1.1	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.1.alpha1.2	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.1.alpha2.0	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.1.alpha2.1	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.1.alpha2.2	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.1.convs1.0.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.1.convs1.0.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.1.convs1.0.weight_v	(256, 256, 7)	torch.float32
+decoder.module.generator.resblocks.1.convs1.1.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.1.convs1.1.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.1.convs1.1.weight_v	(256, 256, 7)	torch.float32
+decoder.module.generator.resblocks.1.convs1.2.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.1.convs1.2.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.1.convs1.2.weight_v	(256, 256, 7)	torch.float32
+decoder.module.generator.resblocks.1.convs2.0.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.1.convs2.0.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.1.convs2.0.weight_v	(256, 256, 7)	torch.float32
+decoder.module.generator.resblocks.1.convs2.1.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.1.convs2.1.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.1.convs2.1.weight_v	(256, 256, 7)	torch.float32
+decoder.module.generator.resblocks.1.convs2.2.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.1.convs2.2.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.1.convs2.2.weight_v	(256, 256, 7)	torch.float32
+decoder.module.generator.resblocks.2.adain1.0.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.2.adain1.0.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.2.adain1.1.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.2.adain1.1.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.2.adain1.2.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.2.adain1.2.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.2.adain2.0.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.2.adain2.0.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.2.adain2.1.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.2.adain2.1.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.2.adain2.2.fc.bias	(512,)	torch.float32
+decoder.module.generator.resblocks.2.adain2.2.fc.weight	(512, 128)	torch.float32
+decoder.module.generator.resblocks.2.alpha1.0	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.2.alpha1.1	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.2.alpha1.2	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.2.alpha2.0	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.2.alpha2.1	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.2.alpha2.2	(1, 256, 1)	torch.float32
+decoder.module.generator.resblocks.2.convs1.0.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.2.convs1.0.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.2.convs1.0.weight_v	(256, 256, 11)	torch.float32
+decoder.module.generator.resblocks.2.convs1.1.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.2.convs1.1.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.2.convs1.1.weight_v	(256, 256, 11)	torch.float32
+decoder.module.generator.resblocks.2.convs1.2.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.2.convs1.2.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.2.convs1.2.weight_v	(256, 256, 11)	torch.float32
+decoder.module.generator.resblocks.2.convs2.0.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.2.convs2.0.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.2.convs2.0.weight_v	(256, 256, 11)	torch.float32
+decoder.module.generator.resblocks.2.convs2.1.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.2.convs2.1.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.2.convs2.1.weight_v	(256, 256, 11)	torch.float32
+decoder.module.generator.resblocks.2.convs2.2.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.2.convs2.2.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.resblocks.2.convs2.2.weight_v	(256, 256, 11)	torch.float32
+decoder.module.generator.resblocks.3.adain1.0.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.3.adain1.0.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.3.adain1.1.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.3.adain1.1.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.3.adain1.2.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.3.adain1.2.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.3.adain2.0.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.3.adain2.0.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.3.adain2.1.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.3.adain2.1.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.3.adain2.2.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.3.adain2.2.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.3.alpha1.0	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.3.alpha1.1	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.3.alpha1.2	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.3.alpha2.0	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.3.alpha2.1	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.3.alpha2.2	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.3.convs1.0.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.3.convs1.0.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.3.convs1.0.weight_v	(128, 128, 3)	torch.float32
+decoder.module.generator.resblocks.3.convs1.1.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.3.convs1.1.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.3.convs1.1.weight_v	(128, 128, 3)	torch.float32
+decoder.module.generator.resblocks.3.convs1.2.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.3.convs1.2.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.3.convs1.2.weight_v	(128, 128, 3)	torch.float32
+decoder.module.generator.resblocks.3.convs2.0.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.3.convs2.0.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.3.convs2.0.weight_v	(128, 128, 3)	torch.float32
+decoder.module.generator.resblocks.3.convs2.1.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.3.convs2.1.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.3.convs2.1.weight_v	(128, 128, 3)	torch.float32
+decoder.module.generator.resblocks.3.convs2.2.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.3.convs2.2.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.3.convs2.2.weight_v	(128, 128, 3)	torch.float32
+decoder.module.generator.resblocks.4.adain1.0.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.4.adain1.0.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.4.adain1.1.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.4.adain1.1.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.4.adain1.2.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.4.adain1.2.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.4.adain2.0.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.4.adain2.0.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.4.adain2.1.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.4.adain2.1.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.4.adain2.2.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.4.adain2.2.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.4.alpha1.0	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.4.alpha1.1	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.4.alpha1.2	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.4.alpha2.0	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.4.alpha2.1	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.4.alpha2.2	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.4.convs1.0.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.4.convs1.0.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.4.convs1.0.weight_v	(128, 128, 7)	torch.float32
+decoder.module.generator.resblocks.4.convs1.1.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.4.convs1.1.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.4.convs1.1.weight_v	(128, 128, 7)	torch.float32
+decoder.module.generator.resblocks.4.convs1.2.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.4.convs1.2.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.4.convs1.2.weight_v	(128, 128, 7)	torch.float32
+decoder.module.generator.resblocks.4.convs2.0.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.4.convs2.0.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.4.convs2.0.weight_v	(128, 128, 7)	torch.float32
+decoder.module.generator.resblocks.4.convs2.1.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.4.convs2.1.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.4.convs2.1.weight_v	(128, 128, 7)	torch.float32
+decoder.module.generator.resblocks.4.convs2.2.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.4.convs2.2.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.4.convs2.2.weight_v	(128, 128, 7)	torch.float32
+decoder.module.generator.resblocks.5.adain1.0.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.5.adain1.0.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.5.adain1.1.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.5.adain1.1.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.5.adain1.2.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.5.adain1.2.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.5.adain2.0.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.5.adain2.0.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.5.adain2.1.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.5.adain2.1.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.5.adain2.2.fc.bias	(256,)	torch.float32
+decoder.module.generator.resblocks.5.adain2.2.fc.weight	(256, 128)	torch.float32
+decoder.module.generator.resblocks.5.alpha1.0	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.5.alpha1.1	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.5.alpha1.2	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.5.alpha2.0	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.5.alpha2.1	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.5.alpha2.2	(1, 128, 1)	torch.float32
+decoder.module.generator.resblocks.5.convs1.0.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.5.convs1.0.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.5.convs1.0.weight_v	(128, 128, 11)	torch.float32
+decoder.module.generator.resblocks.5.convs1.1.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.5.convs1.1.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.5.convs1.1.weight_v	(128, 128, 11)	torch.float32
+decoder.module.generator.resblocks.5.convs1.2.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.5.convs1.2.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.5.convs1.2.weight_v	(128, 128, 11)	torch.float32
+decoder.module.generator.resblocks.5.convs2.0.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.5.convs2.0.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.5.convs2.0.weight_v	(128, 128, 11)	torch.float32
+decoder.module.generator.resblocks.5.convs2.1.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.5.convs2.1.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.5.convs2.1.weight_v	(128, 128, 11)	torch.float32
+decoder.module.generator.resblocks.5.convs2.2.bias	(128,)	torch.float32
+decoder.module.generator.resblocks.5.convs2.2.weight_g	(128, 1, 1)	torch.float32
+decoder.module.generator.resblocks.5.convs2.2.weight_v	(128, 128, 11)	torch.float32
+decoder.module.generator.ups.0.bias	(256,)	torch.float32
+decoder.module.generator.ups.0.weight_g	(512, 1, 1)	torch.float32
+decoder.module.generator.ups.0.weight_v	(512, 256, 20)	torch.float32
+decoder.module.generator.ups.1.bias	(128,)	torch.float32
+decoder.module.generator.ups.1.weight_g	(256, 1, 1)	torch.float32
+decoder.module.generator.ups.1.weight_v	(256, 128, 12)	torch.float32
+decoder.module.N_conv.bias	(1,)	torch.float32
+decoder.module.N_conv.weight_g	(1, 1, 1)	torch.float32
+decoder.module.N_conv.weight_v	(1, 1, 3)	torch.float32
+predictor.module.duration_proj.linear_layer.bias	(50,)	torch.float32
+predictor.module.duration_proj.linear_layer.weight	(50, 512)	torch.float32
+predictor.module.F0_proj.bias	(1,)	torch.float32
+predictor.module.F0_proj.weight	(1, 256, 1)	torch.float32
+predictor.module.F0.0.conv1.bias	(512,)	torch.float32
+predictor.module.F0.0.conv1.weight_g	(512, 1, 1)	torch.float32
+predictor.module.F0.0.conv1.weight_v	(512, 512, 3)	torch.float32
+predictor.module.F0.0.conv2.bias	(512,)	torch.float32
+predictor.module.F0.0.conv2.weight_g	(512, 1, 1)	torch.float32
+predictor.module.F0.0.conv2.weight_v	(512, 512, 3)	torch.float32
+predictor.module.F0.0.norm1.fc.bias	(1024,)	torch.float32
+predictor.module.F0.0.norm1.fc.weight	(1024, 128)	torch.float32
+predictor.module.F0.0.norm2.fc.bias	(1024,)	torch.float32
+predictor.module.F0.0.norm2.fc.weight	(1024, 128)	torch.float32
+predictor.module.F0.1.conv1.bias	(256,)	torch.float32
+predictor.module.F0.1.conv1.weight_g	(256, 1, 1)	torch.float32
+predictor.module.F0.1.conv1.weight_v	(256, 512, 3)	torch.float32
+predictor.module.F0.1.conv1x1.weight_g	(256, 1, 1)	torch.float32
+predictor.module.F0.1.conv1x1.weight_v	(256, 512, 1)	torch.float32
+predictor.module.F0.1.conv2.bias	(256,)	torch.float32
+predictor.module.F0.1.conv2.weight_g	(256, 1, 1)	torch.float32
+predictor.module.F0.1.conv2.weight_v	(256, 256, 3)	torch.float32
+predictor.module.F0.1.norm1.fc.bias	(1024,)	torch.float32
+predictor.module.F0.1.norm1.fc.weight	(1024, 128)	torch.float32
+predictor.module.F0.1.norm2.fc.bias	(512,)	torch.float32
+predictor.module.F0.1.norm2.fc.weight	(512, 128)	torch.float32
+predictor.module.F0.1.pool.bias	(512,)	torch.float32
+predictor.module.F0.1.pool.weight_g	(512, 1, 1)	torch.float32
+predictor.module.F0.1.pool.weight_v	(512, 1, 3)	torch.float32
+predictor.module.F0.2.conv1.bias	(256,)	torch.float32
+predictor.module.F0.2.conv1.weight_g	(256, 1, 1)	torch.float32
+predictor.module.F0.2.conv1.weight_v	(256, 256, 3)	torch.float32
+predictor.module.F0.2.conv2.bias	(256,)	torch.float32
+predictor.module.F0.2.conv2.weight_g	(256, 1, 1)	torch.float32
+predictor.module.F0.2.conv2.weight_v	(256, 256, 3)	torch.float32
+predictor.module.F0.2.norm1.fc.bias	(512,)	torch.float32
+predictor.module.F0.2.norm1.fc.weight	(512, 128)	torch.float32
+predictor.module.F0.2.norm2.fc.bias	(512,)	torch.float32
+predictor.module.F0.2.norm2.fc.weight	(512, 128)	torch.float32
+predictor.module.lstm.bias_hh_l0	(1024,)	torch.float32
+predictor.module.lstm.bias_hh_l0_reverse	(1024,)	torch.float32
+predictor.module.lstm.bias_ih_l0	(1024,)	torch.float32
+predictor.module.lstm.bias_ih_l0_reverse	(1024,)	torch.float32
+predictor.module.lstm.weight_hh_l0	(1024, 256)	torch.float32
+predictor.module.lstm.weight_hh_l0_reverse	(1024, 256)	torch.float32
+predictor.module.lstm.weight_ih_l0	(1024, 640)	torch.float32
+predictor.module.lstm.weight_ih_l0_reverse	(1024, 640)	torch.float32
+predictor.module.N_proj.bias	(1,)	torch.float32
+predictor.module.N_proj.weight	(1, 256, 1)	torch.float32
+predictor.module.N.0.conv1.bias	(512,)	torch.float32
+predictor.module.N.0.conv1.weight_g	(512, 1, 1)	torch.float32
+predictor.module.N.0.conv1.weight_v	(512, 512, 3)	torch.float32
+predictor.module.N.0.conv2.bias	(512,)	torch.float32
+predictor.module.N.0.conv2.weight_g	(512, 1, 1)	torch.float32
+predictor.module.N.0.conv2.weight_v	(512, 512, 3)	torch.float32
+predictor.module.N.0.norm1.fc.bias	(1024,)	torch.float32
+predictor.module.N.0.norm1.fc.weight	(1024, 128)	torch.float32
+predictor.module.N.0.norm2.fc.bias	(1024,)	torch.float32
+predictor.module.N.0.norm2.fc.weight	(1024, 128)	torch.float32
+predictor.module.N.1.conv1.bias	(256,)	torch.float32
+predictor.module.N.1.conv1.weight_g	(256, 1, 1)	torch.float32
+predictor.module.N.1.conv1.weight_v	(256, 512, 3)	torch.float32
+predictor.module.N.1.conv1x1.weight_g	(256, 1, 1)	torch.float32
+predictor.module.N.1.conv1x1.weight_v	(256, 512, 1)	torch.float32
+predictor.module.N.1.conv2.bias	(256,)	torch.float32
+predictor.module.N.1.conv2.weight_g	(256, 1, 1)	torch.float32
+predictor.module.N.1.conv2.weight_v	(256, 256, 3)	torch.float32
+predictor.module.N.1.norm1.fc.bias	(1024,)	torch.float32
+predictor.module.N.1.norm1.fc.weight	(1024, 128)	torch.float32
+predictor.module.N.1.norm2.fc.bias	(512,)	torch.float32
+predictor.module.N.1.norm2.fc.weight	(512, 128)	torch.float32
+predictor.module.N.1.pool.bias	(512,)	torch.float32
+predictor.module.N.1.pool.weight_g	(512, 1, 1)	torch.float32
+predictor.module.N.1.pool.weight_v	(512, 1, 3)	torch.float32
+predictor.module.N.2.conv1.bias	(256,)	torch.float32
+predictor.module.N.2.conv1.weight_g	(256, 1, 1)	torch.float32
+predictor.module.N.2.conv1.weight_v	(256, 256, 3)	torch.float32
+predictor.module.N.2.conv2.bias	(256,)	torch.float32
+predictor.module.N.2.conv2.weight_g	(256, 1, 1)	torch.float32
+predictor.module.N.2.conv2.weight_v	(256, 256, 3)	torch.float32
+predictor.module.N.2.norm1.fc.bias	(512,)	torch.float32
+predictor.module.N.2.norm1.fc.weight	(512, 128)	torch.float32
+predictor.module.N.2.norm2.fc.bias	(512,)	torch.float32
+predictor.module.N.2.norm2.fc.weight	(512, 128)	torch.float32
+predictor.module.shared.bias_hh_l0	(1024,)	torch.float32
+predictor.module.shared.bias_hh_l0_reverse	(1024,)	torch.float32
+predictor.module.shared.bias_ih_l0	(1024,)	torch.float32
+predictor.module.shared.bias_ih_l0_reverse	(1024,)	torch.float32
+predictor.module.shared.weight_hh_l0	(1024, 256)	torch.float32
+predictor.module.shared.weight_hh_l0_reverse	(1024, 256)	torch.float32
+predictor.module.shared.weight_ih_l0	(1024, 640)	torch.float32
+predictor.module.shared.weight_ih_l0_reverse	(1024, 640)	torch.float32
+predictor.module.text_encoder.lstms.0.bias_hh_l0	(1024,)	torch.float32
+predictor.module.text_encoder.lstms.0.bias_hh_l0_reverse	(1024,)	torch.float32
+predictor.module.text_encoder.lstms.0.bias_ih_l0	(1024,)	torch.float32
+predictor.module.text_encoder.lstms.0.bias_ih_l0_reverse	(1024,)	torch.float32
+predictor.module.text_encoder.lstms.0.weight_hh_l0	(1024, 256)	torch.float32
+predictor.module.text_encoder.lstms.0.weight_hh_l0_reverse	(1024, 256)	torch.float32
+predictor.module.text_encoder.lstms.0.weight_ih_l0	(1024, 640)	torch.float32
+predictor.module.text_encoder.lstms.0.weight_ih_l0_reverse	(1024, 640)	torch.float32
+predictor.module.text_encoder.lstms.1.fc.bias	(1024,)	torch.float32
+predictor.module.text_encoder.lstms.1.fc.weight	(1024, 128)	torch.float32
+predictor.module.text_encoder.lstms.2.bias_hh_l0	(1024,)	torch.float32
+predictor.module.text_encoder.lstms.2.bias_hh_l0_reverse	(1024,)	torch.float32
+predictor.module.text_encoder.lstms.2.bias_ih_l0	(1024,)	torch.float32
+predictor.module.text_encoder.lstms.2.bias_ih_l0_reverse	(1024,)	torch.float32
+predictor.module.text_encoder.lstms.2.weight_hh_l0	(1024, 256)	torch.float32
+predictor.module.text_encoder.lstms.2.weight_hh_l0_reverse	(1024, 256)	torch.float32
+predictor.module.text_encoder.lstms.2.weight_ih_l0	(1024, 640)	torch.float32
+predictor.module.text_encoder.lstms.2.weight_ih_l0_reverse	(1024, 640)	torch.float32
+predictor.module.text_encoder.lstms.3.fc.bias	(1024,)	torch.float32
+predictor.module.text_encoder.lstms.3.fc.weight	(1024, 128)	torch.float32
+predictor.module.text_encoder.lstms.4.bias_hh_l0	(1024,)	torch.float32
+predictor.module.text_encoder.lstms.4.bias_hh_l0_reverse	(1024,)	torch.float32
+predictor.module.text_encoder.lstms.4.bias_ih_l0	(1024,)	torch.float32
+predictor.module.text_encoder.lstms.4.bias_ih_l0_reverse	(1024,)	torch.float32
+predictor.module.text_encoder.lstms.4.weight_hh_l0	(1024, 256)	torch.float32
+predictor.module.text_encoder.lstms.4.weight_hh_l0_reverse	(1024, 256)	torch.float32
+predictor.module.text_encoder.lstms.4.weight_ih_l0	(1024, 640)	torch.float32
+predictor.module.text_encoder.lstms.4.weight_ih_l0_reverse	(1024, 640)	torch.float32
+predictor.module.text_encoder.lstms.5.fc.bias	(1024,)	torch.float32
+predictor.module.text_encoder.lstms.5.fc.weight	(1024, 128)	torch.float32
+text_encoder.module.cnn.0.0.bias	(512,)	torch.float32
+text_encoder.module.cnn.0.0.weight_g	(512, 1, 1)	torch.float32
+text_encoder.module.cnn.0.0.weight_v	(512, 512, 5)	torch.float32
+text_encoder.module.cnn.0.1.beta	(512,)	torch.float32
+text_encoder.module.cnn.0.1.gamma	(512,)	torch.float32
+text_encoder.module.cnn.1.0.bias	(512,)	torch.float32
+text_encoder.module.cnn.1.0.weight_g	(512, 1, 1)	torch.float32
+text_encoder.module.cnn.1.0.weight_v	(512, 512, 5)	torch.float32
+text_encoder.module.cnn.1.1.beta	(512,)	torch.float32
+text_encoder.module.cnn.1.1.gamma	(512,)	torch.float32
+text_encoder.module.cnn.2.0.bias	(512,)	torch.float32
+text_encoder.module.cnn.2.0.weight_g	(512, 1, 1)	torch.float32
+text_encoder.module.cnn.2.0.weight_v	(512, 512, 5)	torch.float32
+text_encoder.module.cnn.2.1.beta	(512,)	torch.float32
+text_encoder.module.cnn.2.1.gamma	(512,)	torch.float32
+text_encoder.module.embedding.weight	(178, 512)	torch.float32
+text_encoder.module.lstm.bias_hh_l0	(1024,)	torch.float32
+text_encoder.module.lstm.bias_hh_l0_reverse	(1024,)	torch.float32
+text_encoder.module.lstm.bias_ih_l0	(1024,)	torch.float32
+text_encoder.module.lstm.bias_ih_l0_reverse	(1024,)	torch.float32
+text_encoder.module.lstm.weight_hh_l0	(1024, 256)	torch.float32
+text_encoder.module.lstm.weight_hh_l0_reverse	(1024, 256)	torch.float32
+text_encoder.module.lstm.weight_ih_l0	(1024, 512)	torch.float32
+text_encoder.module.lstm.weight_ih_l0_reverse	(1024, 512)	torch.float32
