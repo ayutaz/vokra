@@ -473,47 +473,96 @@ mod tests {
         );
         b.add_metadata(KEY_VOICE_NAMES, str_array(&["af", "am"]));
 
-        // Text-encoder tensors (see kokoro/text_encoder.rs::new).
-        //  - `norm.weight = 1` / `norm.bias = 0`: non-degenerate LayerNorm
-        //    (a `gamma = 0` collapse would still succeed but skip the affine
-        //    branch, hiding a scale-path regression);
-        //  - all other weights zero so the numeric output is bounded and
-        //    finite by construction — plenty for a smoke assertion.
+        // Text-encoder tensors — bound to the upstream Kokoro-82M manifest
+        // (T13-alpha, 2026-07-07):
+        //   Embedding(n_vocab, hidden)
+        //   → 3× [WeightNormedConv1d(hidden→hidden, k=5) + affine + LeakyReLU]
+        //   → BiLSTM(input=hidden, hidden=hidden/2, bidir → out=hidden)
+        //
+        // All Conv1d + LSTM weights are zero — the smoke test asserts shape /
+        // finiteness / determinism, not numeric parity. `γ = 1` / `β = 0` per
+        // block keeps the affine-branch on so a scale-path regression is
+        // visible (a `γ = 0` collapse would silently skip that branch).
+        //
+        // The BiLSTM has `hidden / 2` inner width per direction, so
+        // `hidden = 16` gives `lstm_hidden = 8` and `4·lstm_hidden = 32`.
+        let lstm_hidden = hidden / 2;
+        let four_h = 4 * lstm_hidden;
+
         b.add_tensor(
-            "text_encoder.embedding.weight",
+            "text_encoder.module.embedding.weight",
             GgmlType::F32,
             vec![n_vocab as u64, hidden as u64],
             zeros(n_vocab * hidden),
         )
         .expect("emb");
-        b.add_tensor(
-            "text_encoder.norm.weight",
-            GgmlType::F32,
-            vec![hidden as u64],
-            ones(hidden),
-        )
-        .expect("ln_g");
-        b.add_tensor(
-            "text_encoder.norm.bias",
-            GgmlType::F32,
-            vec![hidden as u64],
-            zeros(hidden),
-        )
-        .expect("ln_b");
-        b.add_tensor(
-            "text_encoder.proj.weight",
-            GgmlType::F32,
-            vec![hidden as u64, hidden as u64],
-            zeros(hidden * hidden),
-        )
-        .expect("proj_w");
-        b.add_tensor(
-            "text_encoder.proj.bias",
-            GgmlType::F32,
-            vec![hidden as u64],
-            zeros(hidden),
-        )
-        .expect("proj_b");
+        for i in 0..3usize {
+            b.add_tensor(
+                &format!("text_encoder.module.cnn.{i}.0.weight_g"),
+                GgmlType::F32,
+                vec![hidden as u64, 1, 1],
+                zeros(hidden),
+            )
+            .expect("weight_g");
+            b.add_tensor(
+                &format!("text_encoder.module.cnn.{i}.0.weight_v"),
+                GgmlType::F32,
+                vec![hidden as u64, hidden as u64, 5],
+                zeros(hidden * hidden * 5),
+            )
+            .expect("weight_v");
+            b.add_tensor(
+                &format!("text_encoder.module.cnn.{i}.0.bias"),
+                GgmlType::F32,
+                vec![hidden as u64],
+                zeros(hidden),
+            )
+            .expect("cnn bias");
+            b.add_tensor(
+                &format!("text_encoder.module.cnn.{i}.1.gamma"),
+                GgmlType::F32,
+                vec![hidden as u64],
+                ones(hidden),
+            )
+            .expect("gamma");
+            b.add_tensor(
+                &format!("text_encoder.module.cnn.{i}.1.beta"),
+                GgmlType::F32,
+                vec![hidden as u64],
+                zeros(hidden),
+            )
+            .expect("beta");
+        }
+        for suffix in ["", "_reverse"] {
+            b.add_tensor(
+                &format!("text_encoder.module.lstm.weight_ih_l0{suffix}"),
+                GgmlType::F32,
+                vec![four_h as u64, hidden as u64],
+                zeros(four_h * hidden),
+            )
+            .expect("lstm w_ih");
+            b.add_tensor(
+                &format!("text_encoder.module.lstm.weight_hh_l0{suffix}"),
+                GgmlType::F32,
+                vec![four_h as u64, lstm_hidden as u64],
+                zeros(four_h * lstm_hidden),
+            )
+            .expect("lstm w_hh");
+            b.add_tensor(
+                &format!("text_encoder.module.lstm.bias_ih_l0{suffix}"),
+                GgmlType::F32,
+                vec![four_h as u64],
+                zeros(four_h),
+            )
+            .expect("lstm b_ih");
+            b.add_tensor(
+                &format!("text_encoder.module.lstm.bias_hh_l0{suffix}"),
+                GgmlType::F32,
+                vec![four_h as u64],
+                zeros(four_h),
+            )
+            .expect("lstm b_hh");
+        }
 
         let bytes = b.to_bytes().expect("serialize");
         let tts =
