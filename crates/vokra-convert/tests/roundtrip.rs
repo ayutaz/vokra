@@ -156,11 +156,15 @@ fn kokoro_safetensors_roundtrips_through_convert_file() {
     assert_eq!(u("vokra.kokoro.hidden_dim"), Some(8));
     assert_eq!(u("vokra.kokoro.n_text_layers"), Some(2));
     assert_eq!(u("vokra.kokoro.n_decoder_layers"), Some(1));
-    // iSTFT triple: TBD-placeholder `0`s pending T02 upstream inspection —
-    // a runtime consumer rejects `0` at load (FR-EX-08).
-    assert_eq!(u("vokra.kokoro.istft.n_fft"), Some(0));
-    assert_eq!(u("vokra.kokoro.istft.hop"), Some(0));
-    assert_eq!(u("vokra.kokoro.istft.win_length"), Some(0));
+    // iSTFT triple: pinned to Kokoro-82M's canonical values (n_fft=20,
+    // hop=5, win_length=20) as of the T02 upstream inspection captured in
+    // `crates/vokra-models/src/kokoro/data/upstream_tensors_v1_0.tsv` and
+    // matching the module-level `KOKORO_ISTFT_*` constants. The runtime
+    // consumer still rejects `0` for FR-EX-08, but the values are no
+    // longer placeholders.
+    assert_eq!(u("vokra.kokoro.istft.n_fft"), Some(20));
+    assert_eq!(u("vokra.kokoro.istft.hop"), Some(5));
+    assert_eq!(u("vokra.kokoro.istft.win_length"), Some(20));
     assert!(file.get("vokra.kokoro.phoneme_symbols").is_some());
     assert!(file.get("vokra.kokoro.voice_names").is_some());
 

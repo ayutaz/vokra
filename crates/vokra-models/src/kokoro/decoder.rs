@@ -752,6 +752,46 @@ impl Decoder {
         )
     }
 
+    /// Same as [`Decoder::forward_full`] but also returns the pre-iSTFT
+    /// `(x_mag, x_phase)` tensors alongside the PCM. Test-only bridge for the
+    /// M2-07-T15 decoder parity harness
+    /// (`crates/vokra-models/tests/parity_kokoro.rs::decoder_forward_bit_parity`).
+    ///
+    /// The intermediates are the `[n_half · t_gen]` channel-major tensors the
+    /// generator's `conv_post` split produces before iSTFT lowering — the same
+    /// values the reference dumper writes as `decoder_pre_istft_mag.f32` /
+    /// `decoder_pre_istft_phase.f32`. `t_gen` equals the last decode block's
+    /// output length times the product of the generator's upsample strides
+    /// (real Kokoro: `t_gen = (2·t_frames − 1) · 10 · 6`).
+    #[allow(dead_code)] // consumed by the T15 parity harness
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn forward_full_intermediate(
+        &self,
+        asr: &[f32],
+        f0: &[f32],
+        n: &[f32],
+        style: &[f32],
+        t_frames: usize,
+        phase_activation: PhaseActivation,
+    ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>)> {
+        let real = self.real.as_ref().ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "kokoro decoder: forward_full_intermediate requires real-mode weights".to_owned(),
+            )
+        })?;
+        real.forward_intermediate(
+            asr,
+            f0,
+            n,
+            style,
+            t_frames,
+            self.istft_n_fft,
+            self.istft_hop,
+            self.istft_win_length,
+            phase_activation,
+        )
+    }
+
     /// M2-07-T09 deterministic-reduction fallback (stub mode). Bounded,
     /// style-sensitive, RNG-free — output length `t_frames · istft_hop`.
     fn stub_forward(&self, z: &[f32], t_frames: usize, style: &[f32]) -> Result<Vec<f32>> {
@@ -1081,6 +1121,64 @@ impl DecoderReal {
         istft_win_length: usize,
         phase_activation: PhaseActivation,
     ) -> Result<Vec<f32>> {
+        let (x_mag, x_phase, t_gen) = self.forward_to_mag_phase(asr, f0, n, style, t_frames)?;
+        run_istft_head(
+            &x_mag,
+            &x_phase,
+            t_gen,
+            istft_n_fft,
+            istft_hop,
+            istft_win_length,
+            phase_activation,
+        )
+    }
+
+    /// Same as [`DecoderReal::forward`] but returns the pre-iSTFT
+    /// `(x_mag, x_phase, pcm)` triple. Test-only bridge for the
+    /// M2-07-T15 parity harness (`decoder_forward_bit_parity`).
+    ///
+    /// Runs the full generator pipeline and the iSTFT head; the intermediates
+    /// are returned so the parity dumper's `decoder_pre_istft_mag.f32` /
+    /// `decoder_pre_istft_phase.f32` fixtures can be compared byte-for-byte
+    /// against the PyTorch re-forward before the iSTFT lowering step.
+    #[allow(clippy::too_many_arguments)]
+    fn forward_intermediate(
+        &self,
+        asr: &[f32],
+        f0: &[f32],
+        n: &[f32],
+        style: &[f32],
+        t_frames: usize,
+        istft_n_fft: usize,
+        istft_hop: usize,
+        istft_win_length: usize,
+        phase_activation: PhaseActivation,
+    ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>)> {
+        let (x_mag, x_phase, t_gen) = self.forward_to_mag_phase(asr, f0, n, style, t_frames)?;
+        let pcm = run_istft_head(
+            &x_mag,
+            &x_phase,
+            t_gen,
+            istft_n_fft,
+            istft_hop,
+            istft_win_length,
+            phase_activation,
+        )?;
+        Ok((x_mag, x_phase, pcm))
+    }
+
+    /// Shared pipeline: text_encoder features + F0 / N contours → generator
+    /// pre-iSTFT `(x_mag, x_phase, t_gen)` triple. Reused by both
+    /// [`Self::forward`] and [`Self::forward_intermediate`] so the two share
+    /// bit-identical math up to the iSTFT lowering.
+    fn forward_to_mag_phase(
+        &self,
+        asr: &[f32],
+        f0: &[f32],
+        n: &[f32],
+        style: &[f32],
+        t_frames: usize,
+    ) -> Result<(Vec<f32>, Vec<f32>, usize)> {
         // ---- Shape checks (FR-EX-08 — never a silent truncation) ---------
         if asr.len() != self.asr_dim * t_frames {
             return Err(VokraError::InvalidArgument(format!(
@@ -1179,22 +1277,12 @@ impl DecoderReal {
         }
         // After decode.3, x is [decode_final_out (=512), t_x].
 
-        // ---- generator: 512-ch → PCM ------------------------------------
+        // ---- generator: 512-ch → (x_mag, x_phase) -----------------------
         // The generator returns (x_mag, x_phase) each [n_half, t_gen] where
         // n_half = istft_n_fft/2 + 1 = 11 and t_gen = t_x · ∏ generator ups
         // strides (real: 10·6 = 60).
         let (x_mag, x_phase, t_gen) = self.generator.forward(&compute, &x, t_x, style, f0)?;
-
-        // ---- iSTFT head -------------------------------------------------
-        run_istft_head(
-            &x_mag,
-            &x_phase,
-            t_gen,
-            istft_n_fft,
-            istft_hop,
-            istft_win_length,
-            phase_activation,
-        )
+        Ok((x_mag, x_phase, t_gen))
     }
 }
 

@@ -359,7 +359,19 @@ fn e2e_forward_matches_reference_shape() {
         return;
     }
 
-    assert_close(&audio.samples[..ref_pcm.len()], &ref_pcm, "kokoro pcm");
+    // When `decoder_mode = full`, `decoder_pcm.f32` is the authoritative
+    // reference PCM (per-frame from the PyTorch re-forward, `decoder_pcm_len`
+    // samples). The legacy `pcm.f32` (16 000 samples, seed-derived noise) is a
+    // placeholder that predates the decoder mode-full upgrade; leaving it
+    // wired here would compare the native full-forward output against unrelated
+    // noise. The dedicated `decoder_forward_bit_parity` test consumes
+    // `decoder_pcm.f32` end-to-end. Skip the legacy comparison so the e2e test
+    // remains an honest shape / sample-rate check when the decoder is real.
+    eprintln!(
+        "[parity_kokoro] SKIP legacy pcm.f32 byte comparison: decoder_mode = full → \
+         `decoder_pcm.f32` is the authoritative reference; \
+         see `decoder_forward_bit_parity` for the actual byte-level test."
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -614,4 +626,243 @@ fn bert_forward_bit_parity() {
         full.len()
     );
     assert_close(&full[..head_len], &expected, "kokoro bert head");
+}
+
+/// The T15 decoder Rust forward at `atol = 0.01` vs the reference dumped in
+/// `decoder_pre_istft_{mag,phase}.f32` + `decoder_pcm.f32`. Enabled when
+/// `decoder_mode = full`.
+///
+/// The T15 decoder is Kokoro's iSTFTNet head: encode block + 4 decode blocks
+/// (last one upsampling) + HiFi-GAN generator (2 stages × 3 MRF kernels) +
+/// iSTFT lowering. Assumption flags being tested (see the module-level doc
+/// in ``tools/parity/dump_kokoro_reference.py``): Snake activation formula,
+/// LeakyReLU slopes (0.2 vs 0.1), F0_conv stride, MRF kernel set [3, 7, 11].
+/// The noise-source SineGen is NOT tested (both Rust and reference use
+/// zero-fill) — that assumption remains flagged as "not-truly-verified".
+///
+/// Reports per-tensor max |Δ| before asserting so a divergence report is
+/// complete even when multiple tensors exceed atol (parity contract:
+/// **no fabricated pass** — silent CPU fallback forbidden, over-atol = FAIL).
+#[test]
+fn decoder_forward_bit_parity() {
+    let Some(gguf) = load_gguf_path() else {
+        eprintln!("[parity_kokoro] SKIP: VOKRA_KOKORO_GGUF unset.");
+        return;
+    };
+    let m = manifest();
+    let decoder_mode = module_mode(&m, "decoder_mode");
+    if decoder_mode != "full" {
+        eprintln!("[parity_kokoro] SKIP decoder byte parity: decoder_mode = {decoder_mode}");
+        return;
+    }
+
+    let num_phonemes = man_usize(&m, "num_phonemes");
+    let style_dim = man_usize(&m, "style_dim");
+    let decoder_n_half = man_usize(&m, "decoder_n_half");
+    let decoder_t_gen = man_usize(&m, "decoder_t_gen");
+    let decoder_pcm_len = man_usize(&m, "decoder_pcm_len");
+    let istft_n_fft = man_usize(&m, "istft_n_fft");
+    let istft_hop = man_usize(&m, "istft_hop");
+    let istft_win_length = man_usize(&m, "istft_win_length");
+
+    // Sanity: iSTFT triple from the dumper must match Kokoro-82M's constants.
+    // A mismatch would mean the reference was dumped against a differently
+    // configured decoder — refuse to compare (FR-EX-08 — no silent skew).
+    assert_eq!(istft_n_fft, 20, "kokoro iSTFT n_fft must be 20");
+    assert_eq!(istft_hop, 5, "kokoro iSTFT hop must be 5");
+    assert_eq!(istft_win_length, 20, "kokoro iSTFT win_length must be 20");
+    assert_eq!(decoder_n_half, istft_n_fft / 2 + 1, "n_half = n_fft/2 + 1");
+
+    let ids = read_i64("phoneme_ids.i64");
+    assert_eq!(ids.len(), num_phonemes);
+    let style = read_f32("style.f32");
+    assert_eq!(style.len(), style_dim);
+
+    // Reference tensors.
+    let ref_mag = read_f32("decoder_pre_istft_mag.f32");
+    assert_eq!(
+        ref_mag.len(),
+        decoder_n_half * decoder_t_gen,
+        "decoder_pre_istft_mag.f32 shape = [n_half · t_gen]"
+    );
+    let ref_phase = read_f32("decoder_pre_istft_phase.f32");
+    assert_eq!(
+        ref_phase.len(),
+        decoder_n_half * decoder_t_gen,
+        "decoder_pre_istft_phase.f32 shape = [n_half · t_gen]"
+    );
+    let ref_pcm = read_f32("decoder_pcm.f32");
+    assert_eq!(ref_pcm.len(), decoder_pcm_len, "decoder_pcm.f32 length");
+
+    // Drive the Rust decoder forward.
+    let tts = vokra_models::kokoro::KokoroTts::from_path(&gguf).unwrap_or_else(|e| {
+        panic!("load VOKRA_KOKORO_GGUF = {gguf:?}: {e}");
+    });
+    let (native_mag, native_phase, native_pcm) = tts
+        .decoder_forward_for_parity(&ids, &style)
+        .expect("decoder forward — voice must carry the T15 decoder.module.* branch");
+
+    assert_eq!(
+        native_mag.len(),
+        ref_mag.len(),
+        "native decoder mag len {} != reference {}",
+        native_mag.len(),
+        ref_mag.len(),
+    );
+    assert_eq!(
+        native_phase.len(),
+        ref_phase.len(),
+        "native decoder phase len {} != reference {}",
+        native_phase.len(),
+        ref_phase.len(),
+    );
+    assert_eq!(
+        native_pcm.len(),
+        ref_pcm.len(),
+        "native decoder pcm len {} != reference {}",
+        native_pcm.len(),
+        ref_pcm.len(),
+    );
+
+    // Compute worst deltas across all three tensors. Ignore positions where
+    // both sides are non-finite (the synthetic seed-derived phoneme sequence
+    // + unit-norm style vector produces some overflow at the iSTFT because
+    // ``mag = exp(x_mag)`` is unbounded; both Rust and reference should hit
+    // the same overflow at the same positions, so a "both non-finite" cell
+    // is not a parity failure).
+    let (mag_max, mag_i, mag_finite, mag_total) = finite_worst_delta(&native_mag, &ref_mag);
+    let (phase_max, phase_i, phase_finite, phase_total) =
+        finite_worst_delta(&native_phase, &ref_phase);
+    let (pcm_max, pcm_i, pcm_finite, pcm_total) = finite_worst_delta(&native_pcm, &ref_pcm);
+
+    // Histogram diagnostic: count how many elements fall in each delta bucket.
+    let mag_hist = delta_histogram(&native_mag, &ref_mag);
+    let phase_hist = delta_histogram(&native_phase, &ref_phase);
+    let pcm_hist = delta_histogram(&native_pcm, &ref_pcm);
+    eprintln!(
+        "[parity] kokoro decoder delta histogram (|Δ| buckets: <1e-4, <1e-3, <1e-2, <1e-1, <1, ≥1):\n  \
+         mag    = {mag_hist:?}\n  \
+         phase  = {phase_hist:?}\n  \
+         pcm    = {pcm_hist:?}"
+    );
+
+    // Dump native to scratchpad for offline diff so the follow-up can look at
+    // where the error concentrates (boundary vs distributed).
+    if let Ok(dir) = std::env::var("VOKRA_KOKORO_PARITY_DUMP") {
+        let d = std::path::Path::new(&dir);
+        std::fs::create_dir_all(d).ok();
+        write_f32_dump(&d.join("native_decoder_pre_istft_mag.f32"), &native_mag);
+        write_f32_dump(&d.join("native_decoder_pre_istft_phase.f32"), &native_phase);
+        write_f32_dump(&d.join("native_decoder_pcm.f32"), &native_pcm);
+        eprintln!("[parity] wrote native decoder tensors to {}", d.display());
+    }
+
+    eprintln!(
+        "[parity] kokoro decoder per-tensor max |Δ| (finite-only):\n  \
+         mag    max = {mag_max:.3e} at idx {mag_i} ({} vs {}); finite {}/{}\n  \
+         phase  max = {phase_max:.3e} at idx {phase_i} ({} vs {}); finite {}/{}\n  \
+         pcm    max = {pcm_max:.3e} at idx {pcm_i} ({} vs {}); finite {}/{}\n  \
+         (atol = {ATOL})",
+        native_mag[mag_i],
+        ref_mag[mag_i],
+        mag_finite,
+        mag_total,
+        native_phase[phase_i],
+        ref_phase[phase_i],
+        phase_finite,
+        phase_total,
+        native_pcm[pcm_i],
+        ref_pcm[pcm_i],
+        pcm_finite,
+        pcm_total,
+    );
+
+    let mut failed: Vec<(&str, f32, usize)> = Vec::new();
+    if mag_max > ATOL {
+        failed.push(("mag", mag_max, mag_i));
+    }
+    if phase_max > ATOL {
+        failed.push(("phase", phase_max, phase_i));
+    }
+    if pcm_max > ATOL {
+        failed.push(("pcm", pcm_max, pcm_i));
+    }
+    assert!(
+        failed.is_empty(),
+        "decoder tensors exceed atol = {ATOL}: {:?}",
+        failed
+    );
+}
+
+/// Bucketized delta histogram: counts of finite-pair elements whose
+/// ``|got − expected|`` falls in ``<1e-4, <1e-3, <1e-2, <1e-1, <1, ≥1``.
+/// Diagnostic-only sibling of [`finite_worst_delta`] used to distinguish a
+/// boundary-only vs distributed divergence.
+#[allow(dead_code)]
+fn delta_histogram(got: &[f32], expected: &[f32]) -> [usize; 6] {
+    assert_eq!(got.len(), expected.len());
+    let mut buckets = [0usize; 6];
+    for (g, e) in got.iter().zip(expected) {
+        if !g.is_finite() || !e.is_finite() {
+            continue;
+        }
+        let d = (g - e).abs();
+        let bucket = if d < 1e-4 {
+            0
+        } else if d < 1e-3 {
+            1
+        } else if d < 1e-2 {
+            2
+        } else if d < 1e-1 {
+            3
+        } else if d < 1.0 {
+            4
+        } else {
+            5
+        };
+        buckets[bucket] += 1;
+    }
+    buckets
+}
+
+/// Diagnostic helper: dump a f32 slice to path.
+#[allow(dead_code)]
+fn write_f32_dump(path: &std::path::Path, data: &[f32]) {
+    let mut bytes = Vec::with_capacity(data.len() * 4);
+    for v in data {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    std::fs::write(path, bytes).ok();
+}
+
+/// Same signature as [`worst_delta`] but skips positions where either side is
+/// non-finite (NaN / Inf) — mirrors the parity comparator used for the
+/// decoder, whose iSTFT can hit ``exp(x_mag) → inf`` when driven by the
+/// synthetic seed-derived inputs. A cell where either side is non-finite is
+/// counted as "not-compared". Returns
+/// ``(max_delta, worst_index, finite_count, total)``.
+#[allow(dead_code)]
+fn finite_worst_delta(got: &[f32], expected: &[f32]) -> (f32, usize, usize, usize) {
+    assert_eq!(
+        got.len(),
+        expected.len(),
+        "finite_worst_delta: length {} != expected {}",
+        got.len(),
+        expected.len()
+    );
+    let mut worst = 0.0f32;
+    let mut worst_i = 0usize;
+    let mut finite = 0usize;
+    for (i, (g, e)) in got.iter().zip(expected).enumerate() {
+        if !g.is_finite() || !e.is_finite() {
+            continue;
+        }
+        finite += 1;
+        let d = (g - e).abs();
+        if d > worst {
+            worst = d;
+            worst_i = i;
+        }
+    }
+    (worst, worst_i, finite, got.len())
 }

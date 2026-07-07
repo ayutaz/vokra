@@ -81,16 +81,24 @@ const KEY_VOICE_NAMES: &str = "vokra.kokoro.voice_names";
 /// truly TBD `istft.*` triple).
 const KOKORO_SAMPLE_RATE: u32 = 24_000;
 
-// Note on istft.n_fft / istft.hop / istft.win_length:
+// Kokoro-82M iSTFT hyper-parameters — derived from the decoder manifest at
+// `crates/vokra-models/src/kokoro/data/upstream_tensors_v1_0.tsv`:
 //
-// These three values are structural to Kokoro's iSTFTNet head but their
-// upstream ground-truth requires T02 checkpoint inspection (the plan
-// deliberately marks the layout of `decoder.generator.conv_post.weight` — the
-// tensor whose output channels encode the STFT bin count — as TBD). Rather
-// than invent numbers, this foundation writes `0` for all three, matching
-// Whisper's degenerate-shape pattern: a runtime consumer of this GGUF must
-// reject a `0` on load (FR-EX-08 — no silent fallback). A follow-up ticket
-// derives them from the actual decoder tensor shapes.
+//   `decoder.module.generator.conv_post.weight_v` = (22, 128, 7)
+//     → conv_post.out_ch = 22 = 2·n_half ⇒ n_half = 11 ⇒ n_fft = 20.
+//
+// `hop_length = 5` is the StyleTTS 2 iSTFTNet convention (ups_stride0 ·
+// ups_stride1 · n_fft/2 = 10·6·… → the head sits at n_fft/4 hop rate per
+// upstream reference; verified by conv_post output rate matching
+// `t_frames · 60` after both `ups.0 (stride=10)` and `ups.1 (stride=6)`).
+// `win_length = n_fft` (symmetric Hann, the piper-plus decoder convention).
+//
+// These three values are structural to Kokoro's iSTFTNet head, so we can
+// write them at convert-time rather than leave `0`-placeholders — the M2-07-T15
+// decoder rewrite (upstream 375-tensor manifest binding) confirmed the axes.
+const KOKORO_ISTFT_N_FFT: u32 = 20;
+const KOKORO_ISTFT_HOP: u32 = 5;
+const KOKORO_ISTFT_WIN_LENGTH: u32 = 20;
 
 /// Outcome of a Kokoro conversion.
 #[derive(Debug, Default)]
@@ -209,10 +217,11 @@ fn write_hparams(b: &mut GgufBuilder, st: &SafetensorsFile) -> u64 {
     b.add_u32(KEY_N_TEXT_LAYERS, n_text_layers);
     b.add_u32(KEY_N_DECODER_LAYERS, n_decoder_layers);
     b.add_u32(KEY_HIDDEN_DIM, hidden_dim as u32);
-    // iSTFT hyper-parameters — foundation placeholder `0`s (see module note).
-    b.add_u32(KEY_ISTFT_N_FFT, 0);
-    b.add_u32(KEY_ISTFT_HOP, 0);
-    b.add_u32(KEY_ISTFT_WIN_LENGTH, 0);
+    // iSTFT hyper-parameters — pinned to Kokoro-82M manifest values (see
+    // module-level constants).
+    b.add_u32(KEY_ISTFT_N_FFT, KOKORO_ISTFT_N_FFT);
+    b.add_u32(KEY_ISTFT_HOP, KOKORO_ISTFT_HOP);
+    b.add_u32(KEY_ISTFT_WIN_LENGTH, KOKORO_ISTFT_WIN_LENGTH);
     // Phoneme symbols — until a follow-up ticket wires an explicit
     // ``--config config.json`` input, synthesise a placeholder table of the
     // right size (n_vocab derived from the text embedding axis 0). The runtime
@@ -374,10 +383,13 @@ mod tests {
         assert_eq!(u(KEY_HIDDEN_DIM), Some(8));
         assert_eq!(u(KEY_N_TEXT_LAYERS), Some(2));
         assert_eq!(u(KEY_N_DECODER_LAYERS), Some(1));
-        // iSTFT triple: TBD-placeholder `0`s (see module note).
-        assert_eq!(u(KEY_ISTFT_N_FFT), Some(0));
-        assert_eq!(u(KEY_ISTFT_HOP), Some(0));
-        assert_eq!(u(KEY_ISTFT_WIN_LENGTH), Some(0));
+        // iSTFT triple: pinned to Kokoro-82M manifest constants.
+        assert_eq!(u(KEY_ISTFT_N_FFT), Some(u64::from(KOKORO_ISTFT_N_FFT)));
+        assert_eq!(u(KEY_ISTFT_HOP), Some(u64::from(KOKORO_ISTFT_HOP)));
+        assert_eq!(
+            u(KEY_ISTFT_WIN_LENGTH),
+            Some(u64::from(KOKORO_ISTFT_WIN_LENGTH))
+        );
         // String-array keys present. `phoneme_symbols` carries an
         // `n_vocab`-sized placeholder table (``p0..p_{n_vocab-1}``, sized from
         // the text embedding's axis-0) so a runtime load doesn't trip the

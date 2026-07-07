@@ -964,6 +964,680 @@ def _forward_prosody(
     )
 
 
+# ---------------------------------------------------------------------------
+# T15 decoder re-forward (M2-07 task)
+# ---------------------------------------------------------------------------
+#
+# The Kokoro-82M iSTFTNet decoder pipeline (see
+# ``crates/vokra-models/src/kokoro/decoder.rs`` + ``.../decoder/generator.rs``):
+#
+#   1. F0_conv / N_conv  (1 → 1, k=3, stride=2, pad=1)   f0[T_f] → f0_ds[T_ds]
+#   2. Upsample_nearest  f0_ds/n_ds back to T_frames
+#   3. Encode input      concat([asr, f0_up, n_up]) → [514, T_frames]
+#   4. encode            AdainResBlock1(514 → 1024)
+#   5. asr_res           WeightNormedConv1d(512 → 64, k=1) on asr
+#   6. decode.0/1/2      AdainResBlock1(1090 → 1024) at T_x = T_frames
+#      decode.3          AdainResBlock1(1090 → 512, has_pool=True) → T_x' = 2·T_x − 1
+#   7. Generator         2-stage upsample [k=20 s=10, k=12 s=6] w/ MRF (3
+#                        kernels [3,7,11]), Snake activation on each resblock;
+#                        conv_post → mag/phase at [11, T_gen] where
+#                        T_gen = T_x' · 10 · 6.
+#   8. iSTFT             Hann/periodic, hop=5, win=20, backward norm, no
+#                        center, real_input; length = T_gen · 5.
+#
+# Assumptions being tested (M2-07 T15 flags):
+#
+#  * Snake formula = BigVGAN AMP `x + sin²(αx)/(α + eps)` (eps=1e-9)
+#  * LeakyReLU slope inside decode blocks = 0.2 (StyleTTS 2 default)
+#  * LeakyReLU slope inside generator = 0.1 (HiFi-GAN default)
+#  * F0_conv stride=2, pad=1
+#  * Generator resblocks = 3 kernels [3, 7, 11] per stage
+#  * Noise source = zero-fill (mirrors Rust's T15 simplification — NOT a
+#    true SineGen; the parity test therefore validates the ZERO-source math
+#    path, and pcm parity does not verify the SineGen assumption).
+#
+# The reference intentionally mirrors the Rust simplifications so a byte-parity
+# pass validates the decoder math (weight_norm reconstruction, AdaIN, Snake,
+# LeakyReLU, ConvTranspose, MRF averaging, iSTFT) rather than architectural
+# assumptions. The SineGen assumption remains flagged "not-truly-verified" in
+# the report — a future WP would replace the zero-source with a real SineGen
+# and re-parity.
+
+DECODE_LRELU_SLOPE = 0.2  # StyleTTS 2 default (distinct from generator's 0.1)
+GEN_LRELU_SLOPE = 0.1  # HiFi-GAN default
+SNAKE_EPS = 1e-9  # Snake α+eps stability (matches Rust nn::snake_activation)
+
+
+def _adain_channel_major_no_shift(
+    x: "torch.Tensor",
+    channels: int,
+    fc_w: "torch.Tensor",
+    fc_b: "torch.Tensor",
+    style: "torch.Tensor",
+) -> "torch.Tensor":
+    """Channel-major ``[channels, time]`` AdaIN with ``γ·norm(x) + β``
+    (NO ``+1`` shift). Mirrors Rust ``nn::adain_conditioned`` used in the
+    decoder's ``AdaIN1d::apply`` and the generator's ``AmpResBlock::forward``
+    — the decoder / generator convention differs from the prosody predictor's
+    (which passes ``gamma_plus_1`` to Rust's ``adain``, hence the shifted
+    ``_adain_channel_major`` helper above).
+    """
+    import torch as _torch
+    import torch.nn.functional as F
+
+    gb = F.linear(style.unsqueeze(0), fc_w, fc_b).squeeze(0)  # [2·channels]
+    gamma_raw = gb[:channels]
+    beta = gb[channels:]
+    # InstanceNorm across time per channel — biased var, eps=1e-5.
+    mean = x.mean(dim=-1, keepdim=True)
+    var = x.var(dim=-1, keepdim=True, unbiased=False)
+    norm = (x - mean) / _torch.sqrt(var + PROSODY_ADALN_EPS)
+    return norm * gamma_raw.unsqueeze(-1) + beta.unsqueeze(-1)
+
+
+def _dec_adain_res_blk(
+    store,
+    x: "torch.Tensor",
+    prefix: str,
+    dim_in: int,
+    dim_out: int,
+    has_pool: bool,
+    style_t: "torch.Tensor",
+) -> "torch.Tensor":
+    """StyleTTS 2 ``AdainResBlk1`` — mirrors Rust ``AdainResBlock1::forward``
+    (channel-major layout, ``DECODE_LRELU_SLOPE = 0.2``, pool without
+    ``output_padding`` so ``t_out = 2·t_in − 1``).
+
+    Residual: ``norm1(x, s) → LeakyReLU(0.2) → pool(x)? → conv1 → norm2 → LeakyReLU → conv2``
+    Shortcut: ``pool(x)? → conv1x1(x)``  (conv1x1 always present since ``dim_in != dim_out``)
+    Out    : ``(residual + shortcut) / sqrt(2)``
+    """
+    import torch as _torch
+    import torch.nn.functional as F
+
+    def get(name):
+        return store.tensor(name).to(dtype=_torch.float32)
+
+    # --- Residual path -----------------------------------------------------
+    # Decoder AdaIN uses ``γ·norm(x) + β`` (no +1 shift) — Rust's
+    # ``adain_conditioned`` convention. Prosody's ``+1`` shift lives in
+    # ``_adain_channel_major`` above.
+    fc_w = get(f"{prefix}.norm1.fc.weight")
+    fc_b = get(f"{prefix}.norm1.fc.bias")
+    r = _adain_channel_major_no_shift(x, dim_in, fc_w, fc_b, style_t)
+    r = F.leaky_relu(r, DECODE_LRELU_SLOPE)
+    if has_pool:
+        pg = get(f"{prefix}.pool.weight_g")
+        pv = get(f"{prefix}.pool.weight_v")  # [dim_in, 1, 3] depthwise
+        pb = get(f"{prefix}.pool.bias")
+        pw = _wn_reconstruct(pg, pv)
+        # Depthwise ConvTranspose1d, output_padding=0 → t_out = 2·t_in − 1
+        r = F.conv_transpose1d(
+            r.unsqueeze(0), pw, pb,
+            stride=2, padding=1, output_padding=0, groups=dim_in,
+        ).squeeze(0)
+    # conv1: [dim_in → dim_out, k=3, pad=1]
+    wg = get(f"{prefix}.conv1.weight_g")
+    wv = get(f"{prefix}.conv1.weight_v")
+    b_conv1 = get(f"{prefix}.conv1.bias")
+    w = _wn_reconstruct(wg, wv)
+    r = F.conv1d(r.unsqueeze(0), w, bias=b_conv1, stride=1, padding=1).squeeze(0)
+    # norm2 + LeakyReLU (no +1 shift, matching decoder convention)
+    fc_w = get(f"{prefix}.norm2.fc.weight")
+    fc_b = get(f"{prefix}.norm2.fc.bias")
+    r = _adain_channel_major_no_shift(r, dim_out, fc_w, fc_b, style_t)
+    r = F.leaky_relu(r, DECODE_LRELU_SLOPE)
+    # conv2: [dim_out → dim_out, k=3, pad=1]
+    wg = get(f"{prefix}.conv2.weight_g")
+    wv = get(f"{prefix}.conv2.weight_v")
+    b_conv2 = get(f"{prefix}.conv2.bias")
+    w = _wn_reconstruct(wg, wv)
+    r = F.conv1d(r.unsqueeze(0), w, bias=b_conv2, stride=1, padding=1).squeeze(0)
+
+    # --- Shortcut path (conv1x1 always present here) ----------------------
+    if has_pool:
+        pg2 = get(f"{prefix}.pool.weight_g")
+        pv2 = get(f"{prefix}.pool.weight_v")
+        pb2 = get(f"{prefix}.pool.bias")
+        pw2 = _wn_reconstruct(pg2, pv2)
+        sc = F.conv_transpose1d(
+            x.unsqueeze(0), pw2, pb2,
+            stride=2, padding=1, output_padding=0, groups=dim_in,
+        ).squeeze(0)
+    else:
+        sc = x.clone()
+    wg = get(f"{prefix}.conv1x1.weight_g")
+    wv = get(f"{prefix}.conv1x1.weight_v")
+    w = _wn_reconstruct(wg, wv)  # [dim_out, dim_in, 1] — NO BIAS
+    sc = F.conv1d(sc.unsqueeze(0), w, bias=None, stride=1, padding=0).squeeze(0)
+
+    # (r + sc) / sqrt(2) — StyleTTS 2 normalisation
+    inv_sqrt2 = 1.0 / (2.0 ** 0.5)
+    return (r + sc) * inv_sqrt2
+
+
+def _snake_activation_torch(
+    x: "torch.Tensor",
+    alpha: "torch.Tensor",
+    channels: int,
+    time: int,
+) -> "torch.Tensor":
+    """BigVGAN AMP Snake activation ``x + sin²(αx) / (α + eps)`` — mirrors Rust
+    ``nn::snake_activation`` (per-channel α, eps = 1e-9 for numerical stability,
+    α = 0 degrades to identity)."""
+    import torch as _torch
+
+    # alpha shape [1, channels, 1] → flatten to [channels]
+    a = alpha.reshape(-1)
+    assert a.shape[0] == channels, f"snake: alpha channels {a.shape[0]} != {channels}"
+    assert x.shape == (channels, time), f"snake: x shape {tuple(x.shape)} != ({channels}, {time})"
+    inv_a = 1.0 / (a + SNAKE_EPS)
+    ax = a.unsqueeze(-1) * x  # [channels, time]
+    s = _torch.sin(ax)
+    return x + inv_a.unsqueeze(-1) * s * s
+
+
+def _amp_resblock_forward(
+    store,
+    x: "torch.Tensor",
+    prefix: str,
+    channels: int,
+    kernel: int,
+    style_t: "torch.Tensor",
+) -> "torch.Tensor":
+    """HiFi-GAN AMP ResBlock (BigVGAN) — mirrors Rust ``AmpResBlock::forward``.
+
+    3 dilated Conv1d pairs (dilations [1, 3, 5]) with per-sub-block AdaIN + Snake;
+    additive residual over 3 sub-blocks.
+    """
+    import torch as _torch
+    import torch.nn.functional as F
+
+    def get(name):
+        return store.tensor(name).to(dtype=_torch.float32)
+
+    dilations = [1, 3, 5]
+    time = x.shape[1]
+    for j in range(3):
+        d = dilations[j]
+        pad1 = (kernel - 1) * d // 2
+        pad2 = (kernel - 1) // 2
+
+        xj = x.clone()
+        # adain1 + snake α1 + convs1[j] (dilated) — no-shift AdaIN (decoder convention)
+        fc_w = get(f"{prefix}.adain1.{j}.fc.weight")
+        fc_b = get(f"{prefix}.adain1.{j}.fc.bias")
+        xj = _adain_channel_major_no_shift(xj, channels, fc_w, fc_b, style_t)
+        alpha1 = get(f"{prefix}.alpha1.{j}")
+        xj = _snake_activation_torch(xj, alpha1, channels, time)
+        wg = get(f"{prefix}.convs1.{j}.weight_g")
+        wv = get(f"{prefix}.convs1.{j}.weight_v")
+        b = get(f"{prefix}.convs1.{j}.bias")
+        w = _wn_reconstruct(wg, wv)
+        xj = F.conv1d(
+            xj.unsqueeze(0), w, bias=b,
+            stride=1, padding=pad1, dilation=d,
+        ).squeeze(0)
+
+        # adain2 + snake α2 + convs2[j] (dilation 1) — no-shift AdaIN
+        fc_w = get(f"{prefix}.adain2.{j}.fc.weight")
+        fc_b = get(f"{prefix}.adain2.{j}.fc.bias")
+        xj = _adain_channel_major_no_shift(xj, channels, fc_w, fc_b, style_t)
+        alpha2 = get(f"{prefix}.alpha2.{j}")
+        xj = _snake_activation_torch(xj, alpha2, channels, time)
+        wg = get(f"{prefix}.convs2.{j}.weight_g")
+        wv = get(f"{prefix}.convs2.{j}.weight_v")
+        b = get(f"{prefix}.convs2.{j}.bias")
+        w = _wn_reconstruct(wg, wv)
+        xj = F.conv1d(
+            xj.unsqueeze(0), w, bias=b,
+            stride=1, padding=pad2, dilation=1,
+        ).squeeze(0)
+
+        x = x + xj
+
+    return x
+
+
+def _nearest_align_torch(x: "torch.Tensor", t_in: int, t_out: int) -> "torch.Tensor":
+    """Nearest-neighbor align ``[channels, t_in]`` → ``[channels, t_out]``.
+    Mirrors Rust ``upsample_nearest`` / ``nearest_align`` bit-for-bit
+    (integer division: ``src = (t · t_in) // t_out``, clamped to ``t_in − 1``).
+    """
+    import torch as _torch
+
+    if t_in == t_out:
+        return x.clone()
+    channels = x.shape[0]
+    if t_in == 0:
+        return _torch.zeros(channels, t_out, dtype=x.dtype)
+    out = _torch.zeros(channels, t_out, dtype=x.dtype)
+    for t in range(t_out):
+        src = min((t * t_in) // t_out, t_in - 1)
+        out[:, t] = x[:, src]
+    return out
+
+
+def _forward_generator_torch(
+    store,
+    x: "torch.Tensor",
+    style_t: "torch.Tensor",
+) -> tuple:
+    """iSTFTNet generator forward — mirrors Rust ``Generator::forward``.
+
+    Args:
+        x: ``[in_ch=512, t]`` channel-major torch tensor.
+        style_t: ``[style_dim=128]`` torch tensor.
+
+    Returns:
+        ``(x_mag, x_phase, t_gen)`` — each tensor is ``[n_half, t_gen]``.
+
+    Uses zero-fill for the source_spec (mirrors Rust's T15 simplification;
+    SineGen is not implemented — see module note).
+    """
+    import torch as _torch
+    import torch.nn.functional as F
+
+    g = "decoder.module.generator"
+
+    def get(name):
+        return store.tensor(name).to(dtype=_torch.float32)
+
+    # Discover ups stages by probing ups.{i}.weight_v.
+    stages = []
+    cur_in = x.shape[0]
+    for i in range(8):  # safety cap; real Kokoro has 2 stages
+        try:
+            wv = store.tensor(f"{g}.ups.{i}.weight_v")
+        except KeyError:
+            break
+        wg = get(f"{g}.ups.{i}.weight_g")
+        wv_f = wv.to(dtype=_torch.float32)
+        b = get(f"{g}.ups.{i}.bias")
+        # ConvTranspose1d weight: [in_ch, out_ch/groups, kernel]
+        in_ch, out_ch, kernel = int(wv_f.shape[0]), int(wv_f.shape[1]), int(wv_f.shape[2])
+        assert in_ch == cur_in, f"ups.{i}: in_ch mismatch {in_ch} vs {cur_in}"
+        stride = kernel // 2
+        assert 2 * stride == kernel, f"ups.{i}: kernel {kernel} must be 2·stride"
+        pad = (kernel - stride) // 2
+        stages.append((in_ch, out_ch, kernel, stride, pad, wg, wv_f, b))
+        cur_in = out_ch
+    assert stages, "generator: no ups stages found"
+    n_stages = len(stages)
+    gen_final = stages[-1][1]
+
+    # conv_post: split gives (mag, phase) channels — derives n_half.
+    cp_wg = get(f"{g}.conv_post.weight_g")
+    cp_wv = get(f"{g}.conv_post.weight_v")  # [source_ch=2·n_half, gen_final, k=7]
+    cp_b = get(f"{g}.conv_post.bias")
+    source_ch = int(cp_wv.shape[0])
+    assert source_ch % 2 == 0, f"conv_post out_ch {source_ch} must be even"
+    n_half = source_ch // 2
+    assert cp_wv.shape[1] == gen_final
+    conv_post_kernel = int(cp_wv.shape[2])
+    conv_post_pad = (conv_post_kernel - 1) // 2
+    cp_w = _wn_reconstruct(cp_wg, cp_wv)
+
+    cur = x.clone()
+    for stage in range(n_stages):
+        in_ch, out_ch, kernel, stride, pad, wg, wv_f, b = stages[stage]
+        # 1. LeakyReLU(0.1) → ups
+        cur = F.leaky_relu(cur, GEN_LRELU_SLOPE)
+        w = _wn_reconstruct(wg, wv_f)  # [in_ch, out_ch, kernel]
+        up = F.conv_transpose1d(
+            cur.unsqueeze(0), w, b,
+            stride=stride, padding=pad, output_padding=0, groups=1,
+        ).squeeze(0)  # [out_ch, t_up]
+        t_up = up.shape[1]
+
+        # 2. Noise / source contribution — zero-fill (mirrors Rust T15).
+        source_spec = _torch.zeros(source_ch, t_up, dtype=_torch.float32)
+        nc_w = get(f"{g}.noise_convs.{stage}.weight")  # [out_ch, source_ch, k]
+        nc_b = get(f"{g}.noise_convs.{stage}.bias")
+        nc_kernel = int(nc_w.shape[2])
+        # Rust's stride/pad from kernel — matches decoder/generator.rs::PlainConv1d
+        if nc_kernel > 1:
+            nc_stride = (nc_kernel + 1) // 2  # div_ceil(2)
+            nc_pad = (nc_stride + 1) // 2  # div_ceil(2)
+        else:
+            nc_stride = 1
+            nc_pad = 0
+        noise_x = F.conv1d(
+            source_spec.unsqueeze(0), nc_w, bias=nc_b,
+            stride=nc_stride, padding=nc_pad,
+        ).squeeze(0)
+        t_noise = noise_x.shape[1]
+        if t_noise != t_up:
+            noise_x = _nearest_align_torch(noise_x, t_noise, t_up)
+
+        # noise_res[stage] AmpResBlock — probe kernel from convs1.0.weight_v
+        nr_probe = store.tensor(f"{g}.noise_res.{stage}.convs1.0.weight_v")
+        nr_kernel = int(nr_probe.shape[2])
+        noise_x = _amp_resblock_forward(
+            store, noise_x, f"{g}.noise_res.{stage}", out_ch, nr_kernel, style_t,
+        )
+
+        # 3. Fuse
+        fused = up + noise_x
+
+        # 4. MRF: average over 3 resblocks per stage.
+        n_kernels = 3
+        mrf = _torch.zeros_like(fused)
+        for k in range(n_kernels):
+            rb_idx = stage * n_kernels + k
+            rb_probe = store.tensor(f"{g}.resblocks.{rb_idx}.convs1.0.weight_v")
+            rb_kernel = int(rb_probe.shape[2])
+            branch = _amp_resblock_forward(
+                store, fused, f"{g}.resblocks.{rb_idx}", out_ch, rb_kernel, style_t,
+            )
+            mrf = mrf + branch
+        mrf = mrf / float(n_kernels)
+        cur = mrf
+
+    # 5. Head: LeakyReLU → conv_post → split (mag, phase).
+    cur = F.leaky_relu(cur, GEN_LRELU_SLOPE)
+    post = F.conv1d(
+        cur.unsqueeze(0), cp_w, bias=cp_b,
+        stride=1, padding=conv_post_pad,
+    ).squeeze(0)  # [source_ch, t_gen]
+    t_gen = int(post.shape[1])
+    x_mag = post[:n_half].contiguous()
+    x_phase = post[n_half:].contiguous()
+    return x_mag, x_phase, t_gen
+
+
+def _forward_decoder(
+    store: _ShapeMap,
+    encoder_features_ch: np.ndarray,
+    durations: np.ndarray,
+    style: np.ndarray,
+    istft_n_fft: int,
+    istft_hop: int,
+    istft_win_length: int,
+) -> tuple:
+    """PyTorch re-implementation of Rust ``Decoder::forward_full``.
+
+    Args:
+        encoder_features_ch: ``[hidden=512, t_in]`` channel-major np.ndarray
+            (post-bert / post-text_encoder features that the mainline
+            [`crate::kokoro::mod::synthesize_phonemes`] length-regulates before
+            calling the decoder).
+        durations: ``[t_in]`` np.int64 array — the prosody predictor's
+            duration output.
+        style: ``[128]`` np.ndarray voice style vector.
+        istft_n_fft / istft_hop / istft_win_length: Kokoro-82M iSTFT
+            hyper-parameters (20 / 5 / 20 in the upstream release).
+
+    Returns:
+        ``(pre_istft_mag, pre_istft_phase, pcm)``:
+
+        * ``pre_istft_mag``: np.ndarray ``[n_half, t_gen]`` channel-major
+        * ``pre_istft_phase``: np.ndarray ``[n_half, t_gen]`` channel-major
+        * ``pcm``: np.ndarray ``[t_gen · hop]`` audio at 24 kHz
+
+    Note on f0 / n contours: Rust's mainline ``Decoder::forward`` (called by
+    ``synthesize_phonemes``) feeds ZERO f0 / n contours to the decoder — the
+    prosody predictor's F0 / N branch outputs are currently unused by the
+    mainline. This reference matches that behaviour so a parity pass here
+    validates the decoder math (weight_norm reconstruction, AdaIN, Snake,
+    ConvTranspose, MRF averaging, iSTFT) rather than the yet-unwired F0
+    handling. A future WP would wire the prosody F0 / N contours through
+    ``Decoder::forward_full`` and re-parity.
+    """
+    import torch as _torch
+    import torch.nn.functional as F
+
+    if encoder_features_ch.ndim != 2:
+        raise RuntimeError(
+            f"decoder: encoder_features_ch must be 2D [hidden, t_in], got shape {encoder_features_ch.shape}"
+        )
+    hidden, t_in = encoder_features_ch.shape
+    if int(durations.sum()) == 0:
+        raise RuntimeError("decoder: sum(durations) = 0 — no frames to synthesise")
+    if hidden != 512:
+        raise RuntimeError(
+            f"decoder: encoder_features_ch hidden {hidden} != 512 (Kokoro-82M is fixed)"
+        )
+    t_frames = int(durations.sum())
+
+    # 1. length_regulate: [hidden, t_in] → [hidden, t_frames]
+    z = np.zeros((hidden, t_frames), dtype=np.float32)
+    tf = 0
+    for j in range(t_in):
+        reps = int(durations[j])
+        for _ in range(reps):
+            z[:, tf] = encoder_features_ch[:, j]
+            tf += 1
+    asr = _torch.from_numpy(z).contiguous()  # [512, t_frames]
+    style_t = _torch.from_numpy(style.astype(np.float32))
+
+    def get(name):
+        return store.tensor(name).to(dtype=_torch.float32)
+
+    # 2. Feed zero f0 / n at t_frames (mirrors Rust mainline path).
+    f0 = _torch.zeros(t_frames, dtype=_torch.float32)
+    n_energy = _torch.zeros(t_frames, dtype=_torch.float32)
+
+    # 3. F0_conv / N_conv (1 → 1, k=3, stride=2, pad=1) → t_ds = ceil(t_frames/2)
+    f0_conv_wg = get("decoder.module.F0_conv.weight_g")
+    f0_conv_wv = get("decoder.module.F0_conv.weight_v")
+    f0_conv_b = get("decoder.module.F0_conv.bias")
+    f0_conv_w = _wn_reconstruct(f0_conv_wg, f0_conv_wv)
+    f0_ds = F.conv1d(
+        f0.reshape(1, 1, -1), f0_conv_w, bias=f0_conv_b,
+        stride=2, padding=1,
+    ).reshape(-1)
+    t_ds = f0_ds.shape[0]
+
+    n_conv_wg = get("decoder.module.N_conv.weight_g")
+    n_conv_wv = get("decoder.module.N_conv.weight_v")
+    n_conv_b = get("decoder.module.N_conv.bias")
+    n_conv_w = _wn_reconstruct(n_conv_wg, n_conv_wv)
+    n_ds = F.conv1d(
+        n_energy.reshape(1, 1, -1), n_conv_w, bias=n_conv_b,
+        stride=2, padding=1,
+    ).reshape(-1)
+
+    # 4. Upsample_nearest f0_ds/n_ds back to t_frames — matches Rust's
+    #    ``upsample_nearest``.
+    def upsample_nearest_1d(v: "_torch.Tensor", t_in_: int, t_out_: int) -> "_torch.Tensor":
+        if t_in_ == t_out_:
+            return v.clone()
+        if t_in_ == 0:
+            return _torch.zeros(t_out_, dtype=v.dtype)
+        out_ = _torch.zeros(t_out_, dtype=v.dtype)
+        for t in range(t_out_):
+            src = min((t * t_in_) // t_out_, t_in_ - 1)
+            out_[t] = v[src]
+        return out_
+
+    f0_up = upsample_nearest_1d(f0_ds, t_ds, t_frames)  # [t_frames]
+    n_up = upsample_nearest_1d(n_ds, t_ds, t_frames)
+
+    # 5. Build encode_input = concat [asr | f0_up | n_up] → [514, t_frames]
+    encode_in = _torch.cat([
+        asr,
+        f0_up.unsqueeze(0),
+        n_up.unsqueeze(0),
+    ], dim=0)
+
+    # 6. encode block: AdainResBlock1(514 → 1024, no pool)
+    encode_in_ch = 512 + 2  # asr_dim + F0 + N = 514
+    decode_hidden = 1024
+    x = _dec_adain_res_blk(
+        store, encode_in, "decoder.module.encode",
+        dim_in=encode_in_ch, dim_out=decode_hidden,
+        has_pool=False, style_t=style_t,
+    )  # [1024, t_frames]
+
+    # 7. asr_res bridge: WeightNormedConv1d(512 → 64, k=1) on the raw asr.
+    asr_res_wg = get("decoder.module.asr_res.0.weight_g")
+    asr_res_wv = get("decoder.module.asr_res.0.weight_v")
+    asr_res_b = get("decoder.module.asr_res.0.bias")
+    asr_res_w = _wn_reconstruct(asr_res_wg, asr_res_wv)
+    asr_res_out = F.conv1d(
+        asr.unsqueeze(0), asr_res_w, bias=asr_res_b,
+        stride=1, padding=0,
+    ).squeeze(0)  # [64, t_frames]
+    asr_res_out_ch = 64
+
+    # 8. decode.0/1/2/3: concat [x, asr_res, f0_up, n_up] → [1090, t_x]
+    concat_in = decode_hidden + asr_res_out_ch + 2  # 1090
+    t_x = t_frames
+
+    # Cached per-frame contours as [C, T] channel-major.
+    asr_res_ch = asr_res_out  # [64, t_frames]
+    f0_up_ch = f0_up.unsqueeze(0)  # [1, t_frames]
+    n_up_ch = n_up.unsqueeze(0)
+
+    def interp_ch(v: "_torch.Tensor", t_target: int) -> "_torch.Tensor":
+        t_cur = v.shape[1]
+        if t_cur == t_target:
+            return v.clone()
+        return _nearest_align_torch(v, t_cur, t_target)
+
+    for i in range(4):
+        has_pool = (i == 3)
+        dim_out_i = decode_hidden if i < 3 else 512  # decode.3 → decode_final_out=512
+
+        # Interpolate asr_res / f0 / n to current t_x (identity for i=0..2)
+        asr_res_i = interp_ch(asr_res_ch, t_x)
+        f0_i = interp_ch(f0_up_ch, t_x)
+        n_i = interp_ch(n_up_ch, t_x)
+
+        concat = _torch.cat([x, asr_res_i, f0_i, n_i], dim=0)
+        assert concat.shape == (concat_in, t_x), (
+            f"decoder decode.{i}: concat shape {tuple(concat.shape)} != ({concat_in}, {t_x})"
+        )
+
+        x = _dec_adain_res_blk(
+            store, concat, f"decoder.module.decode.{i}",
+            dim_in=concat_in, dim_out=dim_out_i,
+            has_pool=has_pool, style_t=style_t,
+        )
+        t_x = x.shape[1]
+
+    # x is now [512, t_x] where t_x = 2·t_frames − 1 (decode.3 pool applied).
+
+    # 9. Generator forward → (x_mag, x_phase, t_gen)
+    x_mag, x_phase, t_gen = _forward_generator_torch(store, x, style_t)
+
+    # 10. iSTFT: Hann/periodic window, backward norm, center=False, length = t_gen · hop.
+    n_half = istft_n_fft // 2 + 1
+    assert x_mag.shape == (n_half, t_gen)
+    assert x_phase.shape == (n_half, t_gen)
+
+    # Rust's iSTFT head lowering:
+    #   mag   = exp(x_mag)
+    #   phase = PhaseActivation::Sin(x_phase) · π   ← Kokoro's dispatched activation
+    #   re[f, k]  = mag[k, f] · cos(phase[k, f])
+    #   im[f, k]  = mag[k, f] · sin(phase[k, f])
+    # (see decoder.rs::run_istft_head).
+    mag = _torch.exp(x_mag)
+    phase_pi = _torch.sin(x_phase) * float(np.pi)
+    re = mag * _torch.cos(phase_pi)  # [n_half, t_gen]
+    im = mag * _torch.sin(phase_pi)
+
+    # torch.istft's strict NOLA check fires at the boundaries with hop=5,
+    # win=20, center=False (samples n < win_length may have window-sum-of-
+    # squares == 0 at position 0). Rust's ``vokra_ops::istft`` leaves those
+    # samples as 0 via the NOLA_EPS = 1e-8 guard (see istft.rs). We mirror
+    # that behaviour with a manual overlap-add so byte-parity holds at frame
+    # boundaries too.
+    pcm = _manual_istft(
+        re.detach().cpu().numpy().astype(np.float32),
+        im.detach().cpu().numpy().astype(np.float32),
+        n_fft=istft_n_fft,
+        hop=istft_hop,
+        win_length=istft_win_length,
+        t_gen=t_gen,
+        length=t_gen * istft_hop,
+    )
+
+    return (
+        x_mag.detach().cpu().numpy().astype(np.float32),
+        x_phase.detach().cpu().numpy().astype(np.float32),
+        pcm,
+    )
+
+
+# --- Manual iSTFT (mirrors Rust ``vokra_ops::istft``) ----------------------
+
+
+def _manual_istft(
+    re: np.ndarray,
+    im: np.ndarray,
+    n_fft: int,
+    hop: int,
+    win_length: int,
+    t_gen: int,
+    length: int,
+) -> np.ndarray:
+    """NumPy port of Rust ``vokra_ops::istft`` for the Kokoro settings.
+
+    Reproduces the exact overlap-add / NOLA-guard semantics of Rust's
+    ``crates/vokra-ops/src/istft.rs`` so byte-parity holds at frame boundaries
+    (torch.istft's strict NOLA check would fail here for hop=5 / win=20 /
+    center=False, since the length-20 periodic Hann's first sample is 0).
+
+    Args:
+        re / im: ``[n_half, t_gen]`` channel-major real / imag bins (numpy).
+        n_fft: FFT size (real inverse takes ``n_fft/2+1`` bins).
+        hop / win_length: iSTFT parameters. ``win_length ≤ n_fft`` — the
+            Rust helper ``build_synth_window`` centers the Hann inside a
+            length-``n_fft`` zero-padded window when they differ; here we
+            use ``win_length == n_fft`` (Kokoro's setting) so the synth
+            window is Hann-of-length-``n_fft`` directly.
+        t_gen: number of iSTFT frames (spectrogram time axis width).
+        length: target output length (Kokoro passes ``t_gen · hop``).
+
+    Returns:
+        ``[length]`` float32 audio (NOLA-violating samples stay 0).
+    """
+    NOLA_EPS = 1e-8
+    # Hann/periodic window matching Rust's ``Window::Hann`` + ``WindowSymmetry::Periodic``:
+    # ``w[n] = 0.5 · (1 − cos(2π · n / win_length))`` for n in [0, win_length).
+    w = 0.5 - 0.5 * np.cos(
+        2.0 * np.pi * np.arange(win_length, dtype=np.float32) / float(win_length)
+    )
+    if win_length == n_fft:
+        synth_window = w.astype(np.float32)
+    else:
+        # Rust ``build_synth_window`` centers the analysis window inside a
+        # length-n_fft zero pad.
+        synth_window = np.zeros(n_fft, dtype=np.float32)
+        offset = (n_fft - win_length) // 2
+        synth_window[offset:offset + win_length] = w
+
+    if t_gen == 0:
+        return np.zeros(length, dtype=np.float32)
+
+    total = (t_gen - 1) * hop + n_fft
+    acc = np.zeros(total, dtype=np.float32)
+    wss = np.zeros(total, dtype=np.float32)
+
+    # `unscale = 1.0` for Backward normalization (see Rust ``frame_unscale``).
+    # np.fft.irfft with default norm='backward' includes the 1/n factor.
+    for f in range(t_gen):
+        spec_bin = re[:, f].astype(np.complex64) + 1j * im[:, f].astype(np.complex64)
+        # `norm='backward'` = 1/n on inverse (matches Rust's RealFftPlan::inverse).
+        frame_time = np.fft.irfft(spec_bin, n=n_fft).astype(np.float32)
+        start = f * hop
+        acc[start:start + n_fft] += frame_time * synth_window
+        wss[start:start + n_fft] += synth_window * synth_window
+
+    mask = wss > NOLA_EPS
+    acc[mask] /= wss[mask]
+    # NOLA-violating samples remain 0 (matches Rust).
+
+    # center=False → no trim; honor the target length by truncation / zero-pad.
+    if length <= len(acc):
+        return acc[:length].astype(np.float32)
+    padded = np.zeros(length, dtype=np.float32)
+    padded[:len(acc)] = acc
+    return padded
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -1057,6 +1731,19 @@ def main() -> None:
         "decoder_mode": "placeholder",
     }
     bert_out: np.ndarray | None = None
+    # Decoder T15 outputs — initialised at outer scope so the manifest block
+    # can reference them regardless of whether mode=full computed them.
+    decoder_mag: np.ndarray | None = None
+    decoder_phase: np.ndarray | None = None
+    decoder_pcm: np.ndarray | None = None
+    decoder_t_gen = 0
+    decoder_n_half = 0
+    # Prosody T14 outputs — same rationale.
+    prosody_durations = None
+    prosody_f0 = None
+    prosody_n = None
+    prosody_hidden = None
+    prosody_t_frames = 0
 
     if args.mode == "full":
         # We need the .pth backend to run a full forward (the safetensors path
@@ -1111,11 +1798,9 @@ def main() -> None:
         # projection + length regulation to [T_frames, ...] + shared BiLSTM + F0/N
         # AdainResBlk stacks. See ``_forward_prosody`` for the layer-by-layer
         # port of ``crates/vokra-models/src/kokoro/prosody.rs::forward_upstream``.
-        prosody_durations = None
-        prosody_f0 = None
-        prosody_n = None
-        prosody_hidden = None
-        prosody_t_frames = 0
+        # (prosody_durations / prosody_f0 / prosody_n / prosody_hidden /
+        # prosody_t_frames initialised at the outer scope so the manifest
+        # block can reference them regardless of whether the try below succeeds.)
         # Feed the full (non-truncated) bert output if available; else fall back
         # to the full text_encoder output. Rust's ``synthesize_phonemes`` uses
         # ``bert_out`` when the canary tensor is present (real Kokoro-82M
@@ -1153,12 +1838,51 @@ def main() -> None:
 
         # --- decoder ---
         # Upstream iSTFTNet decoder is 375 tensors (concat + AdaLN ResBlocks +
-        # HiFi-GAN generator with Snake activation + iSTFT head). Out of scope
-        # for T17 90-min budget for the same reason.
-        print(
-            "  decoder:      mode=full SKIPPED (iSTFT head + Snake generator "
-            "require a dedicated re-forward WP; keeping placeholder)"
-        )
+        # HiFi-GAN generator with Snake activation + iSTFT head). This branch
+        # runs the M2-07-T15 re-forward that mirrors Rust's
+        # ``Decoder::forward_full`` (see ``_forward_decoder`` above).
+        # (decoder_mag / decoder_phase / decoder_pcm / decoder_t_gen /
+        # decoder_n_half initialised at the outer scope.)
+        try:
+            if module_modes["prosody_mode"] != "full":
+                raise RuntimeError(
+                    "prosody_mode != full — decoder re-forward requires "
+                    "the prosody predictor's duration output for length regulation"
+                )
+            assert prosody_durations is not None
+            # Encoder features → channel-major [hidden, T_in]. Prefer bert
+            # output (matches Rust's ``synthesize_phonemes`` mainline); fall
+            # back to text-encoder output otherwise. Both are [T, 512] row-major.
+            if bert_out is not None:
+                enc_full = _forward_bert(store, phoneme_ids)  # [T, 512]
+            else:
+                enc_full = _forward_text_encoder(store, phoneme_ids)  # [T, 512]
+            enc_ch = np.ascontiguousarray(enc_full.T)  # [hidden=512, T]
+
+            (
+                decoder_mag,
+                decoder_phase,
+                decoder_pcm,
+            ) = _forward_decoder(
+                store,
+                enc_ch,
+                prosody_durations,
+                style,
+                istft_n_fft=20,   # Kokoro-82M constants
+                istft_hop=5,
+                istft_win_length=20,
+            )
+            decoder_n_half = int(decoder_mag.shape[0])
+            decoder_t_gen = int(decoder_mag.shape[1])
+            module_modes["decoder_mode"] = "full"
+            print(
+                f"  decoder:      full forward OK, t_gen = {decoder_t_gen} frames "
+                f"(n_half = {decoder_n_half}), pcm = {decoder_pcm.shape[0]} samples"
+            )
+        except Exception as exc:  # noqa: BLE001 — dumper-side surface diagnostic
+            print(f"  decoder:      mode=full FAILED, keeping placeholder ({exc})")
+            import traceback
+            traceback.print_exc()
 
     # ---- Dump binaries ----
     write_i64(out_dir / "phoneme_ids.i64", phoneme_ids)
@@ -1197,6 +1921,27 @@ def main() -> None:
         write_f32(out_dir / "prosody_hidden.f32", prosody_hidden)
     else:
         for name in prosody_files:
+            p = out_dir / name
+            if p.exists():
+                p.unlink()
+
+    # T15 decoder fixtures (only when mode=full computed them). Rust parity
+    # harness gates on ``decoder_mode = full`` before reading; absent leaves
+    # the placeholder `mel_pre_istft.f32` and `pcm.f32` from `placeholder_forward`.
+    decoder_files = (
+        "decoder_pre_istft_mag.f32",
+        "decoder_pre_istft_phase.f32",
+        "decoder_pcm.f32",
+    )
+    if module_modes["decoder_mode"] == "full":
+        assert decoder_mag is not None
+        assert decoder_phase is not None
+        assert decoder_pcm is not None
+        write_f32(out_dir / "decoder_pre_istft_mag.f32", decoder_mag)
+        write_f32(out_dir / "decoder_pre_istft_phase.f32", decoder_phase)
+        write_f32(out_dir / "decoder_pcm.f32", decoder_pcm)
+    else:
+        for name in decoder_files:
             p = out_dir / name
             if p.exists():
                 p.unlink()
@@ -1240,6 +1985,24 @@ def main() -> None:
             if module_modes["prosody_mode"] == "full" and prosody_n is not None
             else 0
         ),
+        # Decoder T15 fixture dimensions. Zero when decoder_mode = placeholder;
+        # the Rust harness gates on ``decoder_mode == "full"`` before reading.
+        # `decoder_pcm_len` may differ from `pcm_len` (the placeholder key) because
+        # the real decoder's pcm length depends on prosody durations, generator
+        # upsampling factors, and the iSTFT hop.
+        "decoder_n_half": decoder_n_half if module_modes["decoder_mode"] == "full" else 0,
+        "decoder_t_gen": decoder_t_gen if module_modes["decoder_mode"] == "full" else 0,
+        "decoder_pcm_len": (
+            int(decoder_pcm.shape[0])
+            if module_modes["decoder_mode"] == "full" and decoder_pcm is not None
+            else 0
+        ),
+        # Kokoro-82M iSTFT hyper-parameters — dumped so the Rust harness can
+        # cross-check against the loaded GGUF (converter M2-07-T06 writes
+        # `vokra.kokoro.istft.n_fft` = 20 / `.hop` = 5 / `.win_length` = 20).
+        "istft_n_fft": 20 if module_modes["decoder_mode"] == "full" else 0,
+        "istft_hop": 5 if module_modes["decoder_mode"] == "full" else 0,
+        "istft_win_length": 20 if module_modes["decoder_mode"] == "full" else 0,
     }
     with (out_dir / "manifest.txt").open("w", encoding="utf-8") as f:
         f.write("# Kokoro-82M parity manifest (M2-07). Generated by\n")
@@ -1271,6 +2034,13 @@ def main() -> None:
         f"  num_phonemes={NUM_PHONEMES} enc_pos={ENC_POS} "
         f"dec_frames={DEC_FRAMES} pcm_len={PCM_LEN}"
     )
+    if module_modes["decoder_mode"] == "full":
+        print(
+            f"  decoder: n_half={manifest['decoder_n_half']} "
+            f"t_gen={manifest['decoder_t_gen']} "
+            f"decoder_pcm_len={manifest['decoder_pcm_len']} "
+            f"istft={manifest['istft_n_fft']}/{manifest['istft_hop']}/{manifest['istft_win_length']}"
+        )
 
 
 if __name__ == "__main__":

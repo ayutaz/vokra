@@ -473,6 +473,106 @@ impl KokoroTts {
         let durations_i64: Vec<i64> = out.durations.iter().map(|&d| d as i64).collect();
         Ok((durations_i64, out.f0, out.n, out.hidden, t_frames))
     }
+
+    /// Runs the internal decoder forward for one phoneme id sequence and
+    /// returns the pre-iSTFT `(x_mag, x_phase, pcm)` triple. Test-only bridge
+    /// for the M2-07-T15 decoder parity harness
+    /// (`crates/vokra-models/tests/parity_kokoro.rs::decoder_forward_bit_parity`).
+    ///
+    /// Pipeline mirrors [`Self::synthesize_phonemes`] up to the decoder call:
+    /// 1. `text_encoder.forward(phoneme_ids)` → `[t, hidden_dim]` row-major.
+    /// 2. If `bert` present, override with `bert.forward(phoneme_ids)`.
+    /// 3. Transpose to `[hidden_dim, t_in]` channel-major.
+    /// 4. Prosody predictor via `forward_upstream` for the durations (F0/N are
+    ///    NOT fed downstream — mirrors the mainline `Decoder::forward` which
+    ///    feeds zero F0 / N contours).
+    /// 5. Length-regulate the encoder features → `[hidden, t_frames]`.
+    /// 6. Call [`Decoder::forward_full_intermediate`] with zero F0 / N and
+    ///    `PhaseActivation::Sin` (matches the mainline path).
+    ///
+    /// The mag / phase tensors returned are `[n_half · t_gen]` channel-major
+    /// (same layout as the reference dumper's
+    /// `decoder_pre_istft_mag.f32` / `decoder_pre_istft_phase.f32`).
+    ///
+    /// # Errors
+    ///
+    /// * `style` length mismatch vs `config.style_dim` — a loud
+    ///   [`VokraError::InvalidArgument`] rather than a silent zero-pad.
+    /// * Stub-mode voice (no decoder tensors) — the intermediate accessor
+    ///   requires real-mode weights and fails loudly.
+    /// * Any component error propagates verbatim (text encoder / bert /
+    ///   prosody / decoder shape mismatches).
+    #[doc(hidden)]
+    #[allow(clippy::type_complexity)]
+    pub fn decoder_forward_for_parity(
+        &self,
+        phoneme_ids: &[i64],
+        style: &[f32],
+    ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>)> {
+        if style.len() != self.config.style_dim {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro TTS: decoder parity style len {} != style_dim ({})",
+                style.len(),
+                self.config.style_dim,
+            )));
+        }
+        // 1. Text encoder → [t_in, hidden] row-major.
+        let enc_arr = self.text_encoder.forward(phoneme_ids)?;
+        let t_in = enc_arr.rows;
+        let hidden = enc_arr.cols;
+        if hidden != self.config.hidden_dim {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro TTS: text encoder cols {} != hidden_dim ({})",
+                hidden, self.config.hidden_dim,
+            )));
+        }
+        // 2. Prefer bert output as encoder features when the branch is present
+        //    (matches `synthesize_phonemes` and the reference dumper).
+        let features_row: Vec<f32> = if let Some(bert) = &self.bert {
+            let bert_out = bert.forward(phoneme_ids)?;
+            let bert_cols = bert_out.len() / t_in;
+            if bert_cols != hidden {
+                return Err(VokraError::InvalidArgument(format!(
+                    "kokoro TTS: bert output width {} != hidden_dim ({})",
+                    bert_cols, hidden,
+                )));
+            }
+            bert_out
+        } else {
+            enc_arr.data.clone()
+        };
+        // 3. Transpose to channel-major [hidden, t_in].
+        let mut encoded_ch = vec![0.0f32; hidden * t_in];
+        for ti in 0..t_in {
+            for c in 0..hidden {
+                encoded_ch[c * t_in + ti] = features_row[ti * hidden + c];
+            }
+        }
+        // 4. Prosody (upstream path) — we only need durations. F0 / N are not
+        //    fed to the decoder in this parity harness (matches the reference
+        //    dumper's ``_forward_decoder``: both feed zero f0 / n contours,
+        //    validating decoder math rather than the yet-unwired F0 handling).
+        let pros = self.prosody.forward_upstream(&encoded_ch, style, t_in)?;
+        // 5. Length-regulate encoder features → [hidden, t_frames].
+        let (z, t_frames) = nn::length_regulate(&encoded_ch, hidden, t_in, &pros.durations);
+        if t_frames == 0 {
+            return Err(VokraError::InvalidArgument(
+                "kokoro TTS: decoder parity produced t_frames = 0".to_owned(),
+            ));
+        }
+        // 6. Zero F0 / N (mirrors mainline `Decoder::forward`).
+        let f0 = vec![0.0f32; t_frames];
+        let n = vec![0.0f32; t_frames];
+        // Dispatch through the intermediate accessor.
+        self.decoder.forward_full_intermediate(
+            &z,
+            &f0,
+            &n,
+            style,
+            t_frames,
+            decoder::PhaseActivation::Sin,
+        )
+    }
 }
 
 impl TtsEngine for KokoroTts {
