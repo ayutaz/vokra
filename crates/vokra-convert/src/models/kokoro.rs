@@ -149,20 +149,59 @@ fn count_layers(st: &SafetensorsFile, prefix: &str) -> u32 {
 /// but a `0` on a required hparam is rejected by the runtime loader at load
 /// time (FR-EX-08 — no silent fallback in the runtime).
 fn write_hparams(b: &mut GgufBuilder, st: &SafetensorsFile) -> u64 {
-    // Shape-driven derivations. The tensor names below are the *foundation*
-    // guesses used to shape-drive hparams from typical StyleTTS 2 派生 iSTFTNet
-    // exports; a follow-up ticket refines them against the actual
-    // hexgrad/Kokoro-82M safetensors layout. Missing tensors yield `0`.
+    // Shape-driven derivations. Real Kokoro-82M ships with the
+    // ``nn.DataParallel`` ``.module.`` prefix baked into every tensor name
+    // (canonical `kokoro-v1_0.pth`); the "plain" alternates below stay as
+    // fallbacks for downstream forks that strip the prefix and for the
+    // synthetic-tensor tests in this file (which do not carry the prefix).
     //
     // - voicepack[num_voices, style_dim]           — style-vector table
-    // - text_encoder.embedding.weight[n_sym, hidden] — text embedding
-    // - text_encoder.layers.<i>.                    — encoder blocks
-    // - decoder.generator.upsamples.<i>.            — decoder upsample stages
+    //   (present only on forks that stack voices inline; upstream stores
+    //   them as separate ``voices/*.pt`` files → derive style_dim from the
+    //   AdaLN fc.weight ``[2·d_model, style_dim]`` axis 1 instead).
+    // - text_encoder.module.embedding.weight[n_sym, hidden] — text embedding
+    // - predictor.module.F0.0.norm1.fc.weight[2·d, style_dim] — StyleTTS 2
+    //   AdaLN, gives style_dim when the voicepack tensor is absent.
+    // - text_encoder.module.cnn.<i>.                — encoder CNN blocks
+    //   (the ``lstm`` at the tail is a fixed final BiLSTM, not a counted
+    //   layer, matching ``text_encoder::TextEncoder``).
+    // - decoder.module.generator.ups.<i>.           — iSTFTNet upsample stages.
     let num_voices = tensor_dim(st, "voicepack", 0);
-    let style_dim = tensor_dim(st, "voicepack", 1);
-    let hidden_dim = tensor_dim(st, "text_encoder.embedding.weight", 1);
-    let n_text_layers = count_layers(st, "text_encoder.layers.");
-    let n_decoder_layers = count_layers(st, "decoder.generator.upsamples.");
+    // Prefer the ``voicepack`` axis 1 (a downstream fork's stacked style
+    // table); fall back to the upstream ``predictor.module.F0.0.norm1.fc.weight``
+    // whose axis 1 is exactly ``style_dim`` (StyleTTS 2 AdaLN structure).
+    let style_dim = {
+        let v = tensor_dim(st, "voicepack", 1);
+        if v > 0 {
+            v
+        } else {
+            tensor_dim(st, "predictor.module.F0.0.norm1.fc.weight", 1)
+        }
+    };
+    let hidden_dim = {
+        let v = tensor_dim(st, "text_encoder.embedding.weight", 1);
+        if v > 0 {
+            v
+        } else {
+            tensor_dim(st, "text_encoder.module.embedding.weight", 1)
+        }
+    };
+    let n_text_layers = {
+        let v = count_layers(st, "text_encoder.layers.");
+        if v > 0 {
+            v
+        } else {
+            count_layers(st, "text_encoder.module.cnn.")
+        }
+    };
+    let n_decoder_layers = {
+        let v = count_layers(st, "decoder.generator.upsamples.");
+        if v > 0 {
+            v
+        } else {
+            count_layers(st, "decoder.module.generator.ups.")
+        }
+    };
 
     b.add_u32(KEY_SAMPLE_RATE, KOKORO_SAMPLE_RATE);
     b.add_u32(KEY_STYLE_DIM, style_dim as u32);
@@ -174,13 +213,31 @@ fn write_hparams(b: &mut GgufBuilder, st: &SafetensorsFile) -> u64 {
     b.add_u32(KEY_ISTFT_N_FFT, 0);
     b.add_u32(KEY_ISTFT_HOP, 0);
     b.add_u32(KEY_ISTFT_WIN_LENGTH, 0);
-    // Empty tables — populated by a follow-up ticket that wires an explicit
-    // `--config config.json` input (same shape as piper-plus).
+    // Phoneme symbols — until a follow-up ticket wires an explicit
+    // ``--config config.json`` input, synthesise a placeholder table of the
+    // right size (n_vocab derived from the text embedding axis 0). The runtime
+    // rejects an empty table (`kokoro text encoder: config.phoneme_symbols is
+    // empty`), so a zero fallback would block loading altogether — this way a
+    // caller who doesn't yet have the misaki phoneme table can still exercise
+    // the numeric path (T14/T15/T17 parity) with phoneme *ids* directly. The
+    // strings are diagnostic-only; the runtime consumes the count via
+    // ``n_vocab = phoneme_symbols.len()``, not the string contents.
+    let n_vocab = {
+        let v = tensor_dim(st, "text_encoder.embedding.weight", 0);
+        if v > 0 {
+            v
+        } else {
+            tensor_dim(st, "text_encoder.module.embedding.weight", 0)
+        }
+    } as usize;
+    let phoneme_symbols: Vec<GgufMetadataValue> = (0..n_vocab)
+        .map(|i| GgufMetadataValue::String(format!("p{i}")))
+        .collect();
     b.add_metadata(
         KEY_PHONEME_SYMBOLS,
         GgufMetadataValue::Array(GgufArray {
             element_type: GgufValueType::String,
-            values: Vec::new(),
+            values: phoneme_symbols,
         }),
     );
     b.add_metadata(
@@ -321,14 +378,20 @@ mod tests {
         assert_eq!(u(KEY_ISTFT_N_FFT), Some(0));
         assert_eq!(u(KEY_ISTFT_HOP), Some(0));
         assert_eq!(u(KEY_ISTFT_WIN_LENGTH), Some(0));
-        // String-array keys present, empty (populated by follow-up config
-        // wiring).
+        // String-array keys present. `phoneme_symbols` carries an
+        // `n_vocab`-sized placeholder table (``p0..p_{n_vocab-1}``, sized from
+        // the text embedding's axis-0) so a runtime load doesn't trip the
+        // "empty vocab" check before the misaki phoneme table is wired via
+        // ``--config config.json`` (follow-up ticket). ``voice_names`` stays
+        // empty because voice styles ship as separate ``voices/*.pt`` files
+        // in the canonical release.
         let syms = file
             .get(KEY_PHONEME_SYMBOLS)
             .and_then(|v| v.as_array())
             .expect("phoneme_symbols present");
         assert_eq!(syms.element_type, GgufValueType::String);
-        assert!(syms.values.is_empty());
+        // n_vocab = 3 in this synthetic buffer (embedding [3, 8]).
+        assert_eq!(syms.values.len(), 3);
         let voices = file
             .get(KEY_VOICE_NAMES)
             .and_then(|v| v.as_array())

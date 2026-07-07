@@ -629,6 +629,340 @@ def _forward_bert(store: _ShapeMap, phoneme_ids: np.ndarray) -> np.ndarray:
 
 PROSODY_CHANNELS = 2  # duration, F0/energy pair
 
+# Prosody predictor constants (kokoro-v1_0.pth):
+PROSODY_STYLE_DIM = 128  # matches the .fc.weight shape [1024, 128] on AdaLN
+PROSODY_D_MODEL = 512    # BiLSTM output width; matches .lstm.weight_hh_l0 [1024, 256]
+PROSODY_HALF = 256       # d_model / 2; F0/N branch shrinks to this in block 1
+PROSODY_MAX_DUR = 50     # duration_proj.linear_layer.weight [50, 512]
+PROSODY_LSTM_HIDDEN = 256  # d_model / 2
+PROSODY_LRELU_SLOPE = 0.1
+PROSODY_ADALN_EPS = 1e-5
+
+
+def _forward_bilstm(store, prefix: str, x: "torch.Tensor", input_dim: int, hidden_dim: int) -> "torch.Tensor":
+    """Runs one PyTorch nn.LSTM(bidirectional=True) forward matching the Rust
+    [`BiLstm1d`] layout. ``x`` is ``[t, input_dim]`` row-major; returns
+    ``[t, 2·hidden_dim]`` row-major.
+    """
+    from torch.nn import LSTM
+    import torch as _torch
+
+    device = _torch.device("cpu")
+    dtype = _torch.float32
+    lstm = LSTM(
+        input_size=input_dim,
+        hidden_size=hidden_dim,
+        num_layers=1,
+        bias=True,
+        batch_first=True,
+        bidirectional=True,
+    ).to(device=device, dtype=dtype)
+    sd = {
+        "weight_ih_l0": store.tensor(f"{prefix}.weight_ih_l0").to(dtype=dtype),
+        "weight_hh_l0": store.tensor(f"{prefix}.weight_hh_l0").to(dtype=dtype),
+        "bias_ih_l0": store.tensor(f"{prefix}.bias_ih_l0").to(dtype=dtype),
+        "bias_hh_l0": store.tensor(f"{prefix}.bias_hh_l0").to(dtype=dtype),
+        "weight_ih_l0_reverse": store.tensor(f"{prefix}.weight_ih_l0_reverse").to(dtype=dtype),
+        "weight_hh_l0_reverse": store.tensor(f"{prefix}.weight_hh_l0_reverse").to(dtype=dtype),
+        "bias_ih_l0_reverse": store.tensor(f"{prefix}.bias_ih_l0_reverse").to(dtype=dtype),
+        "bias_hh_l0_reverse": store.tensor(f"{prefix}.bias_hh_l0_reverse").to(dtype=dtype),
+    }
+    lstm.load_state_dict(sd)
+    lstm.eval()
+    with _torch.no_grad():
+        y, _ = lstm(x.unsqueeze(0))  # [1, t, 2·hidden]
+    return y.squeeze(0)
+
+
+def _wn_reconstruct(g: "torch.Tensor", v: "torch.Tensor") -> "torch.Tensor":
+    """Reconstruct ``w = g · v / ||v||_2`` matching the Rust
+    [`weight_norm_reconstruct_1d`]. ``g`` shape ``[out_ch, 1, 1]``, ``v`` shape
+    ``[out_ch, in_ch, k]``. Zero-norm rows degrade to zero, matching Rust.
+    """
+    import torch as _torch
+    oc = v.shape[0]
+    norm = v.reshape(oc, -1).norm(dim=1).view(oc, 1, 1)
+    safe = _torch.where(norm > 0, norm, _torch.ones_like(norm))
+    w = g * v / safe
+    return _torch.where(norm > 0, w, _torch.zeros_like(w))
+
+
+def _adaln_layernorm_1d(
+    x: "torch.Tensor",
+    channels: int,
+    fc_w: "torch.Tensor",
+    fc_b: "torch.Tensor",
+    style: "torch.Tensor",
+) -> "torch.Tensor":
+    """Row-major ``[t, channels]`` LayerNorm-across-channels + ``(1+γ)·norm(x) + β``.
+
+    Mirrors Rust [`adaln_layernorm_1d`] exactly:
+    * γ, β = fc(style)[:channels], fc(style)[channels:] (fc = Linear(style_dim → 2·channels)).
+    * eps = 1e-5 (nn.LayerNorm default).
+    * variance is biased (division by C, not C-1) — matches Rust's
+      ``inv_c = 1/channels`` reduction.
+    """
+    import torch as _torch
+    import torch.nn.functional as F
+
+    # 1. Project style → (γ, β) via row-major Linear.
+    gb = F.linear(style.unsqueeze(0), fc_w, fc_b).squeeze(0)  # [2·channels]
+    gamma_raw = gb[:channels]
+    beta = gb[channels:]
+    # 2. LayerNorm across channels per row (biased var, eps=1e-5).
+    mean = x.mean(dim=-1, keepdim=True)
+    var = x.var(dim=-1, keepdim=True, unbiased=False)
+    norm = (x - mean) / _torch.sqrt(var + PROSODY_ADALN_EPS)
+    # 3. (1+γ)·norm(x) + β, broadcasting [channels] across rows.
+    return norm * (1.0 + gamma_raw).unsqueeze(0) + beta.unsqueeze(0)
+
+
+def _adain_channel_major(
+    x: "torch.Tensor",
+    channels: int,
+    fc_w: "torch.Tensor",
+    fc_b: "torch.Tensor",
+    style: "torch.Tensor",
+) -> "torch.Tensor":
+    """Channel-major ``[channels, time]`` AdaIN with ``(1+γ)·norm(x) + β``.
+
+    Mirrors Rust ``AdainResBlk::forward``'s norm1/norm2 pattern: the caller
+    passes ``gamma_plus_1`` to Rust's [`adain`], so the effective transform is
+    ``(1+γ)·norm(x) + β``. Here we fold that shift into this helper so the
+    forward chain reads like the ADR.
+    """
+    import torch as _torch
+    import torch.nn.functional as F
+
+    gb = F.linear(style.unsqueeze(0), fc_w, fc_b).squeeze(0)  # [2·channels]
+    gamma_raw = gb[:channels]
+    beta = gb[channels:]
+    # InstanceNorm across time per channel — biased var, eps=1e-5.
+    mean = x.mean(dim=-1, keepdim=True)
+    var = x.var(dim=-1, keepdim=True, unbiased=False)
+    norm = (x - mean) / _torch.sqrt(var + PROSODY_ADALN_EPS)
+    return norm * (1.0 + gamma_raw).unsqueeze(-1) + beta.unsqueeze(-1)
+
+
+def _adain_res_blk(
+    store,
+    x: "torch.Tensor",
+    prefix: str,
+    dim_in: int,
+    dim_out: int,
+    upsample: bool,
+    style: "torch.Tensor",
+) -> "torch.Tensor":
+    """One StyleTTS 2 AdainResBlk1d — mirrors Rust ``AdainResBlk::forward``.
+
+    ``x`` is channel-major ``[dim_in, t_in]``; returns
+    ``[dim_out, t_out]`` with ``t_out = 2·t_in`` when ``upsample`` else ``t_in``.
+    ``(residual + shortcut) / sqrt(2)`` at the tail.
+    """
+    import torch as _torch
+    import torch.nn.functional as F
+
+    def get(name):
+        return store.tensor(name).to(dtype=_torch.float32)
+
+    learned_sc = dim_in != dim_out
+
+    # --- Shortcut path ---
+    if upsample:
+        sc = F.interpolate(x.unsqueeze(0), scale_factor=2, mode="nearest").squeeze(0)
+    else:
+        sc = x.clone()
+    if learned_sc:
+        wg = get(f"{prefix}.conv1x1.weight_g")
+        wv = get(f"{prefix}.conv1x1.weight_v")
+        w = _wn_reconstruct(wg, wv)  # [dim_out, dim_in, 1] — NO BIAS in manifest
+        sc = F.conv1d(sc.unsqueeze(0), w, bias=None, stride=1, padding=0).squeeze(0)
+
+    # --- Residual path ---
+    fc_w = get(f"{prefix}.norm1.fc.weight")
+    fc_b = get(f"{prefix}.norm1.fc.bias")
+    r = _adain_channel_major(x, dim_in, fc_w, fc_b, style)
+    r = F.leaky_relu(r, PROSODY_LRELU_SLOPE)
+    if upsample:
+        pg = get(f"{prefix}.pool.weight_g")
+        pv = get(f"{prefix}.pool.weight_v")  # [dim_in, 1, 3]
+        pw = _wn_reconstruct(pg, pv)
+        pb = get(f"{prefix}.pool.bias")
+        r = F.conv_transpose1d(
+            r.unsqueeze(0), pw, pb,
+            stride=2, padding=1, output_padding=1, groups=dim_in,
+        ).squeeze(0)
+    # conv1: [dim_in → dim_out, k=3, pad=1]
+    wg = get(f"{prefix}.conv1.weight_g")
+    wv = get(f"{prefix}.conv1.weight_v")
+    w = _wn_reconstruct(wg, wv)
+    b_conv1 = get(f"{prefix}.conv1.bias")
+    r = F.conv1d(r.unsqueeze(0), w, bias=b_conv1, stride=1, padding=1).squeeze(0)
+    # norm2
+    fc_w = get(f"{prefix}.norm2.fc.weight")
+    fc_b = get(f"{prefix}.norm2.fc.bias")
+    r = _adain_channel_major(r, dim_out, fc_w, fc_b, style)
+    r = F.leaky_relu(r, PROSODY_LRELU_SLOPE)
+    # conv2: [dim_out → dim_out, k=3, pad=1]
+    wg = get(f"{prefix}.conv2.weight_g")
+    wv = get(f"{prefix}.conv2.weight_v")
+    w = _wn_reconstruct(wg, wv)
+    b_conv2 = get(f"{prefix}.conv2.bias")
+    r = F.conv1d(r.unsqueeze(0), w, bias=b_conv2, stride=1, padding=1).squeeze(0)
+
+    # (residual + shortcut) / sqrt(2)
+    inv_sqrt2 = 1.0 / (2.0 ** 0.5)
+    return (r + sc) * inv_sqrt2
+
+
+def _run_prosody_branch(
+    store,
+    hidden_ch: "torch.Tensor",
+    prefix: str,
+    style: "torch.Tensor",
+) -> "torch.Tensor":
+    """One F0/N branch: 3× AdainResBlk → conv1x1 → squeeze → ``[2·T_frames]``."""
+    import torch as _torch
+    import torch.nn.functional as F
+
+    d = PROSODY_D_MODEL
+    h = PROSODY_HALF
+    # Block 0: (d, d, no upsample)
+    x = _adain_res_blk(store, hidden_ch, f"{prefix}.0", d, d, False, style)
+    # Block 1: (d, half, upsample=True)
+    x = _adain_res_blk(store, x, f"{prefix}.1", d, h, True, style)
+    # Block 2: (half, half, no upsample)
+    x = _adain_res_blk(store, x, f"{prefix}.2", h, h, False, style)
+    # Projection Conv1d(half → 1, k=1) — NOT weight-normed.
+    proj_w = store.tensor(f"{prefix}_proj.weight").to(dtype=_torch.float32)  # [1, half, 1]
+    proj_b = store.tensor(f"{prefix}_proj.bias").to(dtype=_torch.float32)
+    out = F.conv1d(x.unsqueeze(0), proj_w, bias=proj_b).squeeze(0).squeeze(0)  # [2·T_frames]
+    return out
+
+
+def _forward_prosody(
+    store: _ShapeMap,
+    prosody_input: np.ndarray,
+    style: np.ndarray,
+) -> tuple:
+    """PyTorch re-implementation of Rust ``ProsodyPredictor::forward_upstream``.
+
+    Pipeline (mirrors ``crates/vokra-models/src/kokoro/prosody.rs``):
+
+    1. ``prosody_input [T, 512]`` row-major ⊕ style ``[128]`` → ``[T, 640]``.
+    2. 3× ( BiLSTM(640 → 512) → AdaLayerNorm(x, style, (1+γ)·norm(x)+β) →
+       concat style → ``[T, 640]`` ).
+    3. Main LSTM(640 → 512) → ``[T, 512]``.
+    4. duration_proj Linear(512 → 50) → ``sigmoid.sum.round.clamp(1, 1024)``
+       per phoneme → ``[T]``.
+    5. Length regulate ``[T, 640] → [T_frames, 640]`` (repeat each phoneme
+       ``durations[j]`` times).
+    6. Shared LSTM(640 → 512) → ``[T_frames, 512]`` row-major.
+    7. Transpose to ``[512, T_frames]`` channel-major.
+    8. F0 branch: 3× AdainResBlk → 1×1 Conv1d → ``[2·T_frames]``.
+    9. N branch: same.
+
+    Returns tuple ``(durations, f0, n, hidden, t_frames)``:
+    * ``durations`` np.int64 ``[T]``
+    * ``f0`` np.float32 ``[2·T_frames]``
+    * ``n`` np.float32 ``[2·T_frames]``
+    * ``hidden`` np.float32 ``[d_model, T_frames]`` channel-major (matches
+      Rust's ``ProsodyOutput.hidden`` layout).
+    * ``t_frames`` int
+    """
+    import torch as _torch
+    import torch.nn.functional as F
+
+    if prosody_input.shape[1] != PROSODY_D_MODEL:
+        raise RuntimeError(
+            f"prosody_input width {prosody_input.shape[1]} != PROSODY_D_MODEL "
+            f"({PROSODY_D_MODEL}); Kokoro-82M is fixed at hidden_dim = 512."
+        )
+    if style.shape[0] != PROSODY_STYLE_DIM:
+        raise RuntimeError(
+            f"style width {style.shape[0]} != PROSODY_STYLE_DIM ({PROSODY_STYLE_DIM})"
+        )
+    T = prosody_input.shape[0]
+    d = PROSODY_D_MODEL
+    sd = PROSODY_STYLE_DIM
+    d_te_in = d + sd  # 640
+    lstm_h = PROSODY_LSTM_HIDDEN  # 256
+
+    x = _torch.from_numpy(np.ascontiguousarray(prosody_input.astype(np.float32)))  # [T, 512]
+    style_t = _torch.from_numpy(style.astype(np.float32))  # [128]
+
+    def concat_style_row(z: "_torch.Tensor") -> "_torch.Tensor":
+        s = style_t.unsqueeze(0).expand(z.shape[0], -1)
+        return _torch.cat([z, s], dim=-1)
+
+    x_cat = concat_style_row(x)  # [T, 640]
+
+    # --- Duration-encoder stack: 3× BiLSTM + AdaLN + concat style ---
+    for i in range(3):
+        bilstm_idx = 2 * i
+        adaln_idx = 2 * i + 1
+        y = _forward_bilstm(
+            store,
+            f"predictor.module.text_encoder.lstms.{bilstm_idx}",
+            x_cat, d_te_in, lstm_h,
+        )
+        # AdaLN LayerNorm-across-channels + (1+γ)·x + β.
+        fc_w = store.tensor(f"predictor.module.text_encoder.lstms.{adaln_idx}.fc.weight").to(dtype=_torch.float32)
+        fc_b = store.tensor(f"predictor.module.text_encoder.lstms.{adaln_idx}.fc.bias").to(dtype=_torch.float32)
+        norm_out = _adaln_layernorm_1d(y, d, fc_w, fc_b, style_t)
+        x_cat = concat_style_row(norm_out)  # [T, 640]
+
+    d_features = x_cat  # [T, 640]
+
+    # --- Main LSTM (640 → 512) ---
+    main_out = _forward_bilstm(store, "predictor.module.lstm", d_features, d_te_in, lstm_h)  # [T, 512]
+
+    # --- Duration projection ---
+    dur_w = store.tensor("predictor.module.duration_proj.linear_layer.weight").to(dtype=_torch.float32)  # [50, 512]
+    dur_b = store.tensor("predictor.module.duration_proj.linear_layer.bias").to(dtype=_torch.float32)    # [50]
+    dur_row = F.linear(main_out, dur_w, dur_b)  # [T, 50]
+    dur_sigmoid = _torch.sigmoid(dur_row)  # [T, 50]
+    sum_dur = dur_sigmoid.sum(dim=-1)  # [T]
+    # Round + clamp to [1, 1024]. Non-finite ⇒ 1 (matches Rust's guard).
+    finite = _torch.isfinite(sum_dur)
+    rounded = _torch.round(sum_dur)
+    durations = _torch.where(
+        finite,
+        _torch.clamp(rounded, min=1, max=1024),
+        _torch.ones_like(sum_dur),
+    ).to(dtype=_torch.int64)
+    t_frames = int(durations.sum().item())
+
+    if t_frames == 0:
+        return (
+            durations.numpy().astype(np.int64),
+            np.zeros(0, dtype=np.float32),
+            np.zeros(0, dtype=np.float32),
+            np.zeros((d, 0), dtype=np.float32),
+            0,
+        )
+
+    # --- Length regulation: [T, 640] → [T_frames, 640] ---
+    d_features_rep = d_features.repeat_interleave(durations, dim=0)  # [T_frames, 640]
+
+    # --- Frame-rate shared BiLSTM (640 → 512) ---
+    shared_out = _forward_bilstm(store, "predictor.module.shared", d_features_rep, d_te_in, lstm_h)  # [T_frames, 512]
+
+    # --- Transpose to channel-major [512, T_frames] ---
+    hidden_ch = shared_out.transpose(0, 1).contiguous()  # [512, T_frames]
+
+    # --- F0 / N branches ---
+    f0 = _run_prosody_branch(store, hidden_ch, "predictor.module.F0", style_t)
+    n = _run_prosody_branch(store, hidden_ch, "predictor.module.N", style_t)
+
+    return (
+        durations.numpy().astype(np.int64),
+        f0.detach().cpu().numpy().astype(np.float32),
+        n.detach().cpu().numpy().astype(np.float32),
+        hidden_ch.detach().cpu().numpy().astype(np.float32),
+        t_frames,
+    )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -775,13 +1109,47 @@ def main() -> None:
         # Upstream prosody predictor consumes the bert (or text-encoder) [T, 512]
         # features + a style vector, runs 3× BiLSTM + AdaLN + main LSTM + duration
         # projection + length regulation to [T_frames, ...] + shared BiLSTM + F0/N
-        # AdainResBlk stacks. The NumPy re-forward is tractable but takes more
-        # care than fits in the T17 90-min budget; keeping as placeholder here
-        # so a byte-parity claim isn't fabricated.
-        print(
-            "  prosody:      mode=full SKIPPED (length regulation + AdainResBlk "
-            "upsample require a dedicated re-forward WP; keeping placeholder)"
-        )
+        # AdainResBlk stacks. See ``_forward_prosody`` for the layer-by-layer
+        # port of ``crates/vokra-models/src/kokoro/prosody.rs::forward_upstream``.
+        prosody_durations = None
+        prosody_f0 = None
+        prosody_n = None
+        prosody_hidden = None
+        prosody_t_frames = 0
+        # Feed the full (non-truncated) bert output if available; else fall back
+        # to the full text_encoder output. Rust's ``synthesize_phonemes`` uses
+        # ``bert_out`` when the canary tensor is present (real Kokoro-82M
+        # carries it), otherwise the text-encoder features.
+        try:
+            if bert_out is not None:
+                # bert_out is the truncated [ENC_POS, 512] slice; re-run for the
+                # full [T, 512] input the prosody consumes.
+                prosody_input = _forward_bert(store, phoneme_ids)
+            else:
+                prosody_input = _forward_text_encoder(store, phoneme_ids)
+            if prosody_input.shape[1] != hidden_dim:
+                raise RuntimeError(
+                    f"prosody_input width {prosody_input.shape[1]} != hidden_dim ({hidden_dim})"
+                )
+            (
+                prosody_durations,
+                prosody_f0,
+                prosody_n,
+                prosody_hidden,
+                prosody_t_frames,
+            ) = _forward_prosody(store, prosody_input, style)
+            module_modes["prosody_mode"] = "full"
+            print(
+                f"  prosody:      full forward OK, T={prosody_input.shape[0]} phonemes → "
+                f"T_frames={prosody_t_frames}, "
+                f"durations={list(prosody_durations)}, "
+                f"f0 shape=({prosody_f0.shape[0]},), n shape=({prosody_n.shape[0]},), "
+                f"hidden shape={prosody_hidden.shape}"
+            )
+        except Exception as exc:
+            print(f"  prosody:      mode=full FAILED, keeping placeholder ({exc})")
+            import traceback
+            traceback.print_exc()
 
         # --- decoder ---
         # Upstream iSTFTNet decoder is 375 tensors (concat + AdaLN ResBlocks +
@@ -808,6 +1176,31 @@ def main() -> None:
         if bert_path.exists():
             bert_path.unlink()
 
+    # Prosody T14 fixtures (only when mode=full computed them). Rust parity
+    # harness gates on ``prosody_mode = full``; when absent the fixtures are
+    # cleared so a stale byte-level parity claim isn't accidentally kept.
+    prosody_files = (
+        "prosody_durations.i64",
+        "prosody_f0.f32",
+        "prosody_n.f32",
+        "prosody_hidden.f32",
+    )
+    if module_modes["prosody_mode"] == "full":
+        assert prosody_durations is not None
+        assert prosody_f0 is not None
+        assert prosody_n is not None
+        assert prosody_hidden is not None
+        write_i64(out_dir / "prosody_durations.i64", prosody_durations)
+        write_f32(out_dir / "prosody_f0.f32", prosody_f0)
+        write_f32(out_dir / "prosody_n.f32", prosody_n)
+        # prosody_hidden shape is [d_model, T_frames] channel-major (matches Rust).
+        write_f32(out_dir / "prosody_hidden.f32", prosody_hidden)
+    else:
+        for name in prosody_files:
+            p = out_dir / name
+            if p.exists():
+                p.unlink()
+
     # ---- Manifest ----
     # Global mode is "full" iff at least one module has a full NumPy re-forward;
     # per-module modes tell the Rust harness which byte-check to enable.
@@ -833,6 +1226,20 @@ def main() -> None:
         "bert_out_dim": BERT_OUT_DIM if bert_out is not None else 0,
         "pcm_len": PCM_LEN,
         "sample_rate": int(config.get("sample_rate", 24_000)) if config else 24_000,
+        # Prosody T14 fixture dimensions. Zero when prosody_mode = placeholder;
+        # the Rust harness gates on ``prosody_mode == "full"`` before reading.
+        "prosody_t_frames": prosody_t_frames,
+        "prosody_d_model": PROSODY_D_MODEL if module_modes["prosody_mode"] == "full" else 0,
+        "prosody_f0_len": (
+            int(prosody_f0.shape[0])
+            if module_modes["prosody_mode"] == "full" and prosody_f0 is not None
+            else 0
+        ),
+        "prosody_n_len": (
+            int(prosody_n.shape[0])
+            if module_modes["prosody_mode"] == "full" and prosody_n is not None
+            else 0
+        ),
     }
     with (out_dir / "manifest.txt").open("w", encoding="utf-8") as f:
         f.write("# Kokoro-82M parity manifest (M2-07). Generated by\n")

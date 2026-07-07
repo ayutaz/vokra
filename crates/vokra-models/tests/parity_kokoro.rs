@@ -417,6 +417,154 @@ fn text_encoder_forward_bit_parity() {
     assert_close(&full[..head_len], &expected, "kokoro text_encoder head");
 }
 
+/// The prosody Rust forward at `atol = 0.01` vs the reference dumped in
+/// `prosody_{durations,f0,n,hidden}.*`. Enabled when `prosody_mode = full`.
+///
+/// The T14 prosody predictor consumes the bert output (or, on a voice without
+/// the PL-BERT branch, the text-encoder output) + a style vector and returns
+/// `(durations[T], f0[2·T_frames], n[2·T_frames], hidden[d_model, T_frames])`.
+/// Both the reference and the Rust forward:
+/// 1. run the same text encoder + bert forward on the fixture's phoneme_ids;
+/// 2. transpose to channel-major and feed to the prosody predictor;
+/// 3. use the fixture's `style.f32` as the style override.
+///
+/// The comparison order matters: `durations` are integer and must match
+/// exactly (a mismatch there would silently propagate a T_frames delta,
+/// invalidating f0/n/hidden shape comparisons). If durations match, the
+/// downstream tensors are compared byte-for-byte at `atol = 0.01`.
+#[test]
+fn prosody_forward_bit_parity() {
+    let Some(gguf) = load_gguf_path() else {
+        eprintln!("[parity_kokoro] SKIP: VOKRA_KOKORO_GGUF unset.");
+        return;
+    };
+    let m = manifest();
+    let prosody_mode = module_mode(&m, "prosody_mode");
+    if prosody_mode != "full" {
+        eprintln!("[parity_kokoro] SKIP prosody byte parity: prosody_mode = {prosody_mode}");
+        return;
+    }
+
+    let num_phonemes = man_usize(&m, "num_phonemes");
+    let style_dim = man_usize(&m, "style_dim");
+    let t_frames_expected = man_usize(&m, "prosody_t_frames");
+    let d_model_expected = man_usize(&m, "prosody_d_model");
+    let f0_len_expected = man_usize(&m, "prosody_f0_len");
+    let n_len_expected = man_usize(&m, "prosody_n_len");
+
+    let ids = read_i64("phoneme_ids.i64");
+    assert_eq!(ids.len(), num_phonemes);
+    let style = read_f32("style.f32");
+    assert_eq!(style.len(), style_dim);
+
+    // Read the reference tensors.
+    let ref_durations = read_i64("prosody_durations.i64");
+    assert_eq!(
+        ref_durations.len(),
+        num_phonemes,
+        "prosody_durations.i64 length"
+    );
+    let ref_t_frames: i64 = ref_durations.iter().sum();
+    assert_eq!(
+        ref_t_frames as usize, t_frames_expected,
+        "manifest prosody_t_frames disagrees with sum(prosody_durations)",
+    );
+    let ref_f0 = read_f32("prosody_f0.f32");
+    assert_eq!(ref_f0.len(), f0_len_expected, "prosody_f0.f32 length");
+    let ref_n = read_f32("prosody_n.f32");
+    assert_eq!(ref_n.len(), n_len_expected, "prosody_n.f32 length");
+    let ref_hidden = read_f32("prosody_hidden.f32");
+    assert_eq!(
+        ref_hidden.len(),
+        d_model_expected * t_frames_expected,
+        "prosody_hidden.f32 length (channel-major [d_model, T_frames])",
+    );
+
+    // Drive the Rust prosody forward.
+    let tts = vokra_models::kokoro::KokoroTts::from_path(&gguf).unwrap_or_else(|e| {
+        panic!("load VOKRA_KOKORO_GGUF = {gguf:?}: {e}");
+    });
+    let (native_durations, native_f0, native_n, native_hidden, native_t_frames) = tts
+        .prosody_forward_for_parity(&ids, &style)
+        .expect("prosody forward — voice must carry the T14 predictor.module.* branch");
+
+    // Durations: integer equality (a mismatch here invalidates every downstream
+    // shape). Report full arrays on failure so a per-phoneme drift is
+    // diagnosable.
+    if native_durations != ref_durations {
+        panic!(
+            "prosody durations differ:\n  native = {:?}\n  ref    = {:?}",
+            native_durations, ref_durations
+        );
+    }
+    assert_eq!(
+        native_t_frames, t_frames_expected,
+        "native t_frames {} != manifest {}",
+        native_t_frames, t_frames_expected
+    );
+
+    // Downstream tensors — compute max |Δ| per tensor first (all three, not
+    // just the first to fail) so a divergence report is complete before the
+    // atol check panics. Fail at the end iff any tensor exceeds atol; the
+    // per-tensor prints let the caller triage which layer diverged.
+    let (f0_max, f0_i) = worst_delta(&native_f0, &ref_f0);
+    let (n_max, n_i) = worst_delta(&native_n, &ref_n);
+    let (h_max, h_i) = worst_delta(&native_hidden, &ref_hidden);
+    eprintln!(
+        "[parity] kokoro prosody per-tensor max |Δ|:\n  \
+         f0     max = {f0_max:.3e} at idx {f0_i} ({} vs {})\n  \
+         n      max = {n_max:.3e} at idx {n_i} ({} vs {})\n  \
+         hidden max = {h_max:.3e} at idx {h_i} ({} vs {})\n  \
+         (atol = {ATOL})",
+        native_f0[f0_i],
+        ref_f0[f0_i],
+        native_n[n_i],
+        ref_n[n_i],
+        native_hidden[h_i],
+        ref_hidden[h_i],
+    );
+
+    let mut failed = Vec::new();
+    if f0_max > ATOL {
+        failed.push(("f0", f0_max, f0_i));
+    }
+    if n_max > ATOL {
+        failed.push(("n", n_max, n_i));
+    }
+    if h_max > ATOL {
+        failed.push(("hidden", h_max, h_i));
+    }
+    assert!(
+        failed.is_empty(),
+        "prosody tensors exceed atol = {ATOL}: {:?}",
+        failed
+    );
+}
+
+/// Compute (max |Δ|, index) between `got` and `expected`, panicking if their
+/// lengths differ. Diagnostic-only sibling of [`assert_close`] used when we
+/// want all per-tensor deltas printed before the assertion trips.
+#[allow(dead_code)]
+fn worst_delta(got: &[f32], expected: &[f32]) -> (f32, usize) {
+    assert_eq!(
+        got.len(),
+        expected.len(),
+        "worst_delta: length {} != expected {}",
+        got.len(),
+        expected.len()
+    );
+    let mut worst = 0.0f32;
+    let mut worst_i = 0usize;
+    for (i, (g, e)) in got.iter().zip(expected).enumerate() {
+        let d = (g - e).abs();
+        if d > worst {
+            worst = d;
+            worst_i = i;
+        }
+    }
+    (worst, worst_i)
+}
+
 /// The bert Rust forward at `atol = 0.01` vs the reference dumped in
 /// `bert.f32`. Enabled when `bert_mode = full`; requires the voice GGUF to
 /// carry the PL-BERT branch (the canary tensor

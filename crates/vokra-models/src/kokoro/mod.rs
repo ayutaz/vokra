@@ -394,6 +394,85 @@ impl KokoroTts {
         };
         bert.forward(phoneme_ids)
     }
+
+    /// Runs the internal prosody predictor forward via the T14
+    /// [`ProsodyPredictor::forward_upstream`] path (bypassing the
+    /// per-phoneme downgrade adapter used by `synthesize_phonemes`).
+    /// Test-only bridge for the M2-07-T17 per-module parity harness.
+    ///
+    /// Pipeline mirrors [`Self::synthesize_phonemes`] up to and including the
+    /// prosody call:
+    /// 1. `text_encoder.forward(phoneme_ids)` → `[t, hidden_dim]` row-major.
+    /// 2. If `bert` present, `bert.forward(phoneme_ids)` overrides the
+    ///    features; else falls through to the text-encoder output.
+    /// 3. Transpose to `[hidden_dim, t]` channel-major (the layout prosody
+    ///    consumes).
+    /// 4. Call [`ProsodyPredictor::forward_upstream`] with the caller-supplied
+    ///    `style` vector (validated against `config.style_dim`).
+    ///
+    /// Returns a tuple `(durations, f0, n, hidden, t_frames)`:
+    /// * `durations` — per-phoneme integer duration counts as `Vec<i64>`
+    ///   (converted from the internal `Vec<usize>` so callers can dump as
+    ///   little-endian i64 without further conversion).
+    /// * `f0` — F0 contour at 2·T_frames resolution.
+    /// * `n` — N (energy) contour at 2·T_frames resolution.
+    /// * `hidden` — `[d_model, T_frames]` channel-major frame-rate features
+    ///   from `predictor.shared`.
+    /// * `t_frames` — `sum(durations)`, so the caller can validate lengths.
+    ///
+    /// # Errors
+    ///
+    /// * `style` length mismatch vs `config.style_dim` — a loud
+    ///   [`VokraError::InvalidArgument`] rather than a silent zero-pad.
+    /// * Any component error propagates verbatim (text encoder / bert /
+    ///   prosody shape mismatches).
+    #[doc(hidden)]
+    #[allow(clippy::type_complexity)]
+    pub fn prosody_forward_for_parity(
+        &self,
+        phoneme_ids: &[i64],
+        style: &[f32],
+    ) -> Result<(Vec<i64>, Vec<f32>, Vec<f32>, Vec<f32>, usize)> {
+        if style.len() != self.config.style_dim {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro TTS: prosody parity style len {} != style_dim ({})",
+                style.len(),
+                self.config.style_dim,
+            )));
+        }
+        let enc_arr = self.text_encoder.forward(phoneme_ids)?;
+        let t_in = enc_arr.rows;
+        let hidden = enc_arr.cols;
+        if hidden != self.config.hidden_dim {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro TTS: text encoder produced cols {} != config.hidden_dim ({})",
+                hidden, self.config.hidden_dim,
+            )));
+        }
+        let features_row: Vec<f32> = if let Some(bert) = &self.bert {
+            let bert_out = bert.forward(phoneme_ids)?;
+            let bert_cols = bert_out.len() / t_in;
+            if bert_cols != hidden {
+                return Err(VokraError::InvalidArgument(format!(
+                    "kokoro TTS: bert output width {} != hidden_dim ({})",
+                    bert_cols, hidden,
+                )));
+            }
+            bert_out
+        } else {
+            enc_arr.data.clone()
+        };
+        let mut encoded_ch = vec![0.0f32; hidden * t_in];
+        for ti in 0..t_in {
+            for c in 0..hidden {
+                encoded_ch[c * t_in + ti] = features_row[ti * hidden + c];
+            }
+        }
+        let out = self.prosody.forward_upstream(&encoded_ch, style, t_in)?;
+        let t_frames: usize = out.durations.iter().sum();
+        let durations_i64: Vec<i64> = out.durations.iter().map(|&d| d as i64).collect();
+        Ok((durations_i64, out.f0, out.n, out.hidden, t_frames))
+    }
 }
 
 impl TtsEngine for KokoroTts {
