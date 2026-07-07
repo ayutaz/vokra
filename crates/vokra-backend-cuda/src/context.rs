@@ -913,6 +913,13 @@ pub struct CudaContext {
     col_gather_t: CUfunction,
     col_scatter: CUfunction,
     add_assign: CUfunction,
+    /// FA v2 fused causal attention kernel handle (`vokra_flash_attn_v2_causal_f32`).
+    /// Always resolved at context construction (its symbol is baked into the
+    /// same PTX as the other Phase-5 attention kernels); actually dispatched
+    /// only when the [`CudaDecodeSession`] probe (`hd == 64` +
+    /// `MAX_SHARED_MEMORY_PER_BLOCK_OPTIN ≥ 40 KB`) flips
+    /// [`AttnChainDims::use_flash_attn`] `true`. Owned via `kernels_module`.
+    flash_attn_v2: CUfunction,
     /// Count of stream synchronisations issued through this context — the
     /// env-independent readback/sync metric the Phase-5-follow-on encoder-residency
     /// slice proves against (the whole encoder in ONE synchronise vs the per-op
@@ -981,6 +988,7 @@ impl CudaContext {
                 col_gather_t: m.col_gather_t,
                 col_scatter: m.col_scatter,
                 add_assign: m.add_assign,
+                flash_attn_v2: m.flash_attn_v2,
                 submissions: Cell::new(0),
             }),
             Err(e) => {
@@ -1854,7 +1862,21 @@ impl CudaContext {
         // Kokoro / piper-plus and the M2-03 parity suite depend on. Silent
         // CPU fallback is forbidden (NFR-RL-06, FR-EX-08); FA v2 is a
         // GPU-only alternate path, never a runtime CPU escape.
-        if dims.use_flash_attn {
+        //
+        // t_q gate (Approach A, M2-03-followup-rtf T-follow-04): the FA v2
+        // kernel's query tile is `BR = 16`, so a launch with `t_q < 16`
+        // wastes at least half of every score-compute tile (`BR·BC = 1024`
+        // entries, only `t_q·BC ≤ 15·64 = 960` valid) and drives the online
+        // softmax through a single thread. The Whisper decoder's
+        // steady-state hot path is `t_q == 1` — the FA v2 fusion cost
+        // (extra gather + kh reshape) then dominates, and the wrapper
+        // regresses vs the decomposed path. The gate keeps the code alive
+        // for prefix steps (`t_q > 1`) and non-Whisper models where
+        // `t_q ≫ BR` will amortise the fusion, but skips it whenever the
+        // tile would be wasted. Not a CPU fallback — falls through to the
+        // decomposed GPU path below (FR-EX-08 preserved).
+        const FA_V2_MIN_TQ: usize = 16; // BR tile size — below this ≥50% of the tile is wasted
+        if dims.use_flash_attn && dims.t_q >= FA_V2_MIN_TQ {
             return self.launch_flash_attn_v2(dims, ptrs);
         }
         let (t_q, t_kv, d, n_head) = (dims.t_q, dims.t_kv, dims.d, dims.n_head);
@@ -2069,31 +2091,236 @@ impl CudaContext {
         )
     }
 
-    /// M2-03-followup-rtf-sub-0.1 FA v2 fused-attention path (D3 of
-    /// `docs/adr/M2-03-followup-rtf.md`). The kernel itself
-    /// (`vokra_flash_attn_v2_causal_f32`) is scheduled for a later change in
-    /// the follow-up (T-follow-02/03); this stub keeps the compiled shape of
-    /// the seam ([`Self::launch_attn_chain`] dispatches to it whenever
-    /// [`AttnChainDims::use_flash_attn`] is `true`) so
-    /// [`CudaDecodeSession`]'s probe wiring and every parity test compiles
-    /// today. Callers reach it only through the constructor probe — and the
-    /// current [`CudaDecodeSession::new`] passes `use_flash_attn = false` at
-    /// every call site of [`Self::launch_attn_chain`] whenever the kernel is
-    /// unavailable, so real decode traffic never lands here yet.
+    /// M2-03-followup-rtf-sub-0.1 FA v2 fused-attention path (D3/D4 of
+    /// `docs/adr/M2-03-followup-rtf.md`). Same chain shape as the decomposed
+    /// [`Self::launch_attn_chain`] — q-proj GEMM → per-head {qh/vh/kh gather →
+    /// **fused causal Flash-Attention v2** → scatter} → out-proj GEMM — but
+    /// the middle three per-head launches (scores GEMM + causal softmax +
+    /// context GEMM) collapse into ONE `vokra_flash_attn_v2_causal_f32` launch
+    /// per head. Launch count per attention block drops from
+    /// `2 + 7·n_head` (decomposed) to `2 + 5·n_head` (gather qh + gather vh +
+    /// gather kh + FA v2 + scatter). The tile budget (`Br=16, Bc=64`) matches
+    /// `FLASH_ATTN_V2_MIN_SHARED_BYTES` and the constructor's shared-memory
+    /// probe.
+    ///
+    /// The `qh` gather pre-multiplies Q by `dims.scale`, and the FA v2 kernel
+    /// receives `scale = 1.0` — mathematically equivalent to un-scaled Q with
+    /// `scale = dims.scale`, chosen so the qh gather kernel is reused verbatim
+    /// (byte-identical numerics with the decomposed path's Q pre-scaling
+    /// convention). The `kh_t` scratch buffer is reused as non-transposed `kh`
+    /// (`vokra_col_gather_f32` writes it in `[t_kv, hd]` row-major layout, the
+    /// shape FA v2 consumes; the transposed variant `col_gather_t` used by the
+    /// decomposed scores GEMM is never launched on this path).
+    ///
+    /// Handles both `causal = true` (self-attention with `q_offset`) and
+    /// `causal = false` (cross-attention) — the FA v2 kernel branches on the
+    /// `causal` parameter internally, and both variants come out of the same
+    /// probe (the session's `use_flash_attn` flag routes both attention chains
+    /// per decoder step).
     ///
     /// # Errors
     ///
-    /// Always returns [`VokraError::BackendUnavailable`] explicitly (NFR-RL-06,
-    /// FR-EX-08 — never a silent CPU fall back). Once the FA v2 kernel lands
-    /// this stub is replaced with the real launch.
-    fn launch_flash_attn_v2(&self, _dims: &AttnChainDims, _ptrs: &AttnChainPtrs) -> Result<()> {
-        Err(VokraError::BackendUnavailable(
-            "CUDA FA v2 fused attention kernel not yet implemented \
-             (M2-03-followup-rtf-sub-0.1 T-follow-02/03); \
-             session must keep AttnChainDims::use_flash_attn = false \
-             so the decomposed launch_attn_chain path handles the call"
-                .to_owned(),
-        ))
+    /// [`VokraError::BackendUnavailable`] on a driver launch failure. Never a
+    /// silent CPU fall back (NFR-RL-06, FR-EX-08); a device without the FA v2
+    /// tile budget must keep the session's probe result `use_flash_attn = false`
+    /// so this method is not reached at all.
+    fn launch_flash_attn_v2(&self, dims: &AttnChainDims, ptrs: &AttnChainPtrs) -> Result<()> {
+        let (t_q, t_kv, d, n_head) = (dims.t_q, dims.t_kv, dims.d, dims.n_head);
+        let hd = d / n_head;
+
+        // Tile constants — MUST match the kernel-side `const int BR/BC` in
+        // `vokra_flash_attn_v2_causal_f32`. Encoded once as `usize` for
+        // arithmetic then narrowed at the launch dims / shared-memory budget.
+        const BR_HOST: usize = 16;
+        const BC_HOST: usize = 64;
+        // Dynamic shared memory: `BR·hd + BC·hd + BC·hd + BR·BC` floats.
+        // For hd=64 this is `16·64 + 64·64 + 64·64 + 16·64 = 10240 floats =
+        // 40 KiB`, matching [`FLASH_ATTN_V2_MIN_SHARED_BYTES`]. Under the
+        // per-block default (48 KiB, compute capability ≥ 2.0) so no opt-in
+        // via `cuFuncSetAttribute` is needed for the current Whisper shapes.
+        let shared_bytes: c_uint =
+            ((BR_HOST * hd + BC_HOST * hd + BC_HOST * hd + BR_HOST * BC_HOST) * 4) as c_uint;
+
+        // Pre-cast scalars: every c_int / c_uint / f32 the launches read via
+        // pointer must outlive the whole per-head loop (the driver reads them
+        // during `cuLaunchKernel`), so they live on this function's stack.
+        let tq_hd_n = t_q * hd;
+        let tkv_hd_n = t_kv * hd;
+        let t_q_u = t_q as c_uint;
+        let t_kv_u = t_kv as c_uint;
+        let d_u = d as c_uint;
+        let hd_u = hd as c_uint;
+        let has_bias_q: c_uint = u32::from(dims.has_q_bias);
+        let has_bias_out: c_uint = u32::from(dims.has_out_bias);
+        let scale_v = dims.scale;
+        let one_v = 1.0f32;
+
+        // FA v2 kernel scalar args. `scale = 1.0` because Q is pre-scaled in
+        // the qh gather (matches the decomposed path's numerics convention).
+        let t_q_i = t_q as c_int;
+        let t_kv_i = t_kv as c_int;
+        let hd_i = hd as c_int;
+        let q_offset_i = dims.q_offset as c_int;
+        let causal_b = dims.causal;
+        let fa_scale = 1.0f32;
+
+        let gemm_block = (BLOCK, BLOCK, 1);
+        let gemm_grid = |n: usize, m: usize| {
+            (
+                n.div_ceil(BLOCK as usize) as c_uint,
+                m.div_ceil(BLOCK as usize) as c_uint,
+                1,
+            )
+        };
+        let lin_block = (BLOCK_1D, 1, 1);
+        let lin_grid = |elems: usize| (elems.div_ceil(BLOCK_1D as usize) as c_uint, 1, 1);
+
+        // 1. q = xq · q_w (+q_bias) — byte-for-byte identical to the decomposed
+        // path's q-proj (same kernel, same grid/block, same params).
+        let mut p_q: [*mut c_void; 8] = [
+            ptr_arg(&ptrs.xq),
+            ptr_arg(&ptrs.q_w),
+            ptr_arg(&ptrs.q_bias),
+            ptr_arg(&ptrs.q),
+            uint_arg(&t_q_u),
+            uint_arg(&d_u),
+            uint_arg(&d_u),
+            uint_arg(&has_bias_q),
+        ];
+        self.launch_async(
+            self.gemm,
+            gemm_grid(d, t_q),
+            gemm_block,
+            &mut p_q,
+            "cuLaunchKernel(vokra_gemm_f32 attn q-proj [FA v2])",
+        )?;
+
+        // 2. Per-head: gather → FA v2 → scatter. Stream ordering guarantees
+        // head `h+1`'s gather sees head `h`'s scatter completion in the shared
+        // qh/vh/kh_t/ctx_h scratches (the same reuse pattern the decomposed
+        // path relies on).
+        for h in 0..n_head {
+            let c0_u = (h * hd) as c_uint;
+
+            // qh[i,c] = q[i, c0+c] * scale — pre-scale Q so FA v2 uses scale=1.
+            let mut p_qh: [*mut c_void; 7] = [
+                ptr_arg(&ptrs.q),
+                ptr_arg(&ptrs.qh),
+                uint_arg(&t_q_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+                f32_arg(&scale_v),
+            ];
+            self.launch_async(
+                self.col_gather,
+                lin_grid(tq_hd_n),
+                lin_block,
+                &mut p_qh,
+                "cuLaunchKernel(vokra_col_gather_f32 attn qh [FA v2])",
+            )?;
+            // vh[j,c] = v[j, c0+c] (scale = 1) — identical to the decomposed path.
+            let mut p_vh: [*mut c_void; 7] = [
+                ptr_arg(&ptrs.v),
+                ptr_arg(&ptrs.vh),
+                uint_arg(&t_kv_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+                f32_arg(&one_v),
+            ];
+            self.launch_async(
+                self.col_gather,
+                lin_grid(tkv_hd_n),
+                lin_block,
+                &mut p_vh,
+                "cuLaunchKernel(vokra_col_gather_f32 attn vh [FA v2])",
+            )?;
+            // kh[j,c] = k[j, c0+c] — NON-transposed K gather (FA v2's contract).
+            // Reuses the `kh_t` buffer as `kh` (same element count `t_kv·hd`);
+            // the transposed variant is never used on this code path.
+            let mut p_kh: [*mut c_void; 7] = [
+                ptr_arg(&ptrs.k),
+                ptr_arg(&ptrs.kh_t),
+                uint_arg(&t_kv_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+                f32_arg(&one_v),
+            ];
+            self.launch_async(
+                self.col_gather,
+                lin_grid(tkv_hd_n),
+                lin_block,
+                &mut p_kh,
+                "cuLaunchKernel(vokra_col_gather_f32 attn kh [FA v2])",
+            )?;
+            // FA v2 fused per-head launch. Grid: `⌈t_q / BR⌉` blocks along
+            // queries; head parallelism is expressed by the per-head loop (the
+            // kernel treats Q/K/V/O as single-head via head-relative pointers).
+            // Block: 128 threads is inside the kernel's stride-loop contract
+            // (`for idx = tid; idx < ...; idx += blockDim.x`); no strict
+            // `blockDim.x == BC` constraint anywhere in the body. Dynamic
+            // shared memory sized above.
+            let mut p_fa: [*mut c_void; 10] = [
+                ptr_arg(&ptrs.qh),
+                ptr_arg(&ptrs.kh_t), // reused: non-transposed kh, [t_kv, hd].
+                ptr_arg(&ptrs.vh),
+                ptr_arg(&ptrs.ctx_h),
+                int_arg(&t_q_i),
+                int_arg(&t_kv_i),
+                int_arg(&hd_i),
+                int_arg(&q_offset_i),
+                bool_arg(&causal_b),
+                f32_arg(&fa_scale),
+            ];
+            let fa_grid = (t_q.div_ceil(BR_HOST) as c_uint, 1, 1);
+            let fa_block: (c_uint, c_uint, c_uint) = (128, 1, 1);
+            self.launch_async_shared(
+                self.flash_attn_v2,
+                fa_grid,
+                fa_block,
+                shared_bytes,
+                &mut p_fa,
+                "cuLaunchKernel(vokra_flash_attn_v2_causal_f32 attn)",
+            )?;
+            // context[i, c0+c] = ctx_h[i,c] — same scatter as decomposed path.
+            let mut p_scatter: [*mut c_void; 6] = [
+                ptr_arg(&ptrs.ctx_h),
+                ptr_arg(&ptrs.context),
+                uint_arg(&t_q_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+            ];
+            self.launch_async(
+                self.col_scatter,
+                lin_grid(tq_hd_n),
+                lin_block,
+                &mut p_scatter,
+                "cuLaunchKernel(vokra_col_scatter_f32 attn [FA v2])",
+            )?;
+        }
+
+        // 3. out = context · out_w (+out_bias) — byte-for-byte identical to
+        // the decomposed path's out-proj (same kernel, same params).
+        let mut p_out: [*mut c_void; 8] = [
+            ptr_arg(&ptrs.context),
+            ptr_arg(&ptrs.out_w),
+            ptr_arg(&ptrs.out_bias),
+            ptr_arg(&ptrs.out),
+            uint_arg(&t_q_u),
+            uint_arg(&d_u),
+            uint_arg(&d_u),
+            uint_arg(&has_bias_out),
+        ];
+        self.launch_async(
+            self.gemm,
+            gemm_grid(d, t_q),
+            gemm_block,
+            &mut p_out,
+            "cuLaunchKernel(vokra_gemm_f32 attn out-proj [FA v2])",
+        )
     }
 
     // ---- Phase-5 follow-on: public device-resident handle + ops --------------
@@ -3039,6 +3266,44 @@ impl CudaContext {
                 block.1,
                 block.2,
                 0,
+                self.stream,
+                params.as_mut_ptr(),
+                core::ptr::null_mut(),
+            )
+        };
+        sys::check(d, r, what)
+    }
+
+    /// [`Self::launch_async`] variant that reserves `shared_bytes` bytes of
+    /// dynamic per-block shared memory for the launch. Used by the FA v2 fused
+    /// causal attention kernel (`vokra_flash_attn_v2_causal_f32`), which sizes
+    /// its Q + K/V + S tiles at launch time via `extern __shared__`. Every
+    /// other kernel keeps [`Self::launch_async`] (0 shared bytes).
+    fn launch_async_shared(
+        &self,
+        func: CUfunction,
+        grid: (c_uint, c_uint, c_uint),
+        block: (c_uint, c_uint, c_uint),
+        shared_bytes: c_uint,
+        params: &mut [*mut c_void],
+        what: &str,
+    ) -> Result<()> {
+        let d = &self.driver;
+        // SAFETY: identical to [`Self::launch_async`] except the shared-memory
+        // argument is non-zero. `shared_bytes` must be within the device's
+        // per-block shared-memory budget (the caller — the decoder-step session
+        // constructor — already checked
+        // `MAX_SHARED_MEMORY_PER_BLOCK_OPTIN ≥ 40 KB` in the FA v2 probe).
+        let r = unsafe {
+            (d.cu_launch_kernel)(
+                func,
+                grid.0,
+                grid.1,
+                grid.2,
+                block.0,
+                block.1,
+                block.2,
+                shared_bytes,
                 self.stream,
                 params.as_mut_ptr(),
                 core::ptr::null_mut(),
@@ -4022,6 +4287,12 @@ struct Modules {
     col_gather_t: CUfunction,
     col_scatter: CUfunction,
     add_assign: CUfunction,
+    /// M2-03 follow-up FA v2 fused causal attention kernel handle
+    /// (`vokra_flash_attn_v2_causal_f32`, defined in `KERNELS_CUDA`). Resolved
+    /// alongside the Phase-5 attention kernels so a single module load carries
+    /// the whole decoder-step attention chain; the decoder-step session's
+    /// `d_head == 64` + shared-memory probe decides whether it is dispatched.
+    flash_attn_v2: CUfunction,
 }
 
 /// Owns a loaded CUDA module, unloading it once on drop unless defused with
@@ -4106,6 +4377,16 @@ fn load_modules(driver: &CudaDriver) -> Result<Modules> {
     let col_scatter = get_function(driver, kernels_module.module, c"vokra_col_scatter_f32")?;
     // The Phase-5-follow-on residual-add kernel shares the same module.
     let add_assign = get_function(driver, kernels_module.module, c"vokra_add_assign_f32")?;
+    // M2-03 follow-up: the FA v2 fused causal attention kernel lives in the
+    // same module. The kernel is always resolved (a missing symbol means the
+    // NVRTC compile lost it, which is a hard error — never a silent CPU
+    // fallback, FR-EX-08); whether it is actually dispatched is decided by the
+    // decoder-step session probe (`hd == 64` + shared-memory budget).
+    let flash_attn_v2 = get_function(
+        driver,
+        kernels_module.module,
+        c"vokra_flash_attn_v2_causal_f32",
+    )?;
 
     // All resolved: defuse the guards into the owned handle set.
     Ok(Modules {
@@ -4122,6 +4403,7 @@ fn load_modules(driver: &CudaDriver) -> Result<Modules> {
         col_gather_t,
         col_scatter,
         add_assign,
+        flash_attn_v2,
     })
 }
 
@@ -4168,6 +4450,21 @@ fn uint_arg(p: &c_uint) -> *mut c_void {
 /// A kernel-argument pointer to an `f32` scalar (must outlive the launch).
 fn f32_arg(p: &f32) -> *mut c_void {
     (p as *const f32).cast::<c_void>().cast_mut()
+}
+
+/// A kernel-argument pointer to a `c_int` scalar (must outlive the launch).
+/// The FA v2 kernel declares its integer args as `int` (host `c_int`, 4 bytes
+/// on every supported target), so it consumes this shape verbatim.
+fn int_arg(p: &c_int) -> *mut c_void {
+    (p as *const c_int).cast::<c_void>().cast_mut()
+}
+
+/// A kernel-argument pointer to a `bool` scalar (must outlive the launch).
+/// The FA v2 kernel declares its `causal` arg as `bool`; CUDA / C++ `bool`
+/// matches the host `bool` (1-byte, non-zero = true) when the parameter is
+/// passed via the `cuLaunchKernel` pointer-of-arg array.
+fn bool_arg(p: &bool) -> *mut c_void {
+    (p as *const bool).cast::<c_void>().cast_mut()
 }
 
 /// NVRTC-compiles a CUDA C `source` to a PTX byte buffer (NUL-terminated),
