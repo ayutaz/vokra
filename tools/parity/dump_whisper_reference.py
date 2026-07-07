@@ -1,39 +1,51 @@
 #!/usr/bin/env python3
-"""Dump PyTorch (transformers) Whisper-base reference tensors for M0-06 parity.
+"""Dump PyTorch (transformers) Whisper reference tensors for M0-06 / M2-06 parity.
 
 This is an **offline** tool (FR-LD-05: no Python/PyTorch is ever pulled into the
-runtime). It regenerates the fixtures under ``tests/parity/whisper_base/`` that
-the Rust parity tests compare against at FP32 ``atol = 0.01`` (NFR-QL-01).
+runtime). It regenerates the fixtures under ``tests/parity/whisper_{size}/``
+that the Rust parity tests compare against at FP32 ``atol = 0.01`` (NFR-QL-01).
 
 The reference is ``transformers`` ``WhisperForConditionalGeneration`` /
-``WhisperProcessor`` for ``openai/whisper-base`` — the same Hugging Face
-checkpoint the Vokra GGUF is converted from, so the weights are identical and
-parity is meaningful.
+``WhisperProcessor`` for one of the fixed ``SUPPORTED_MODELS`` checkpoints — the
+same Hugging Face checkpoints the Vokra GGUFs are converted from, so the weights
+are identical and parity is meaningful.
+
+Input audio is a **real 16 kHz mono WAV** (PCM16 or IEEE_FLOAT32) at
+``tests/fixtures/audio/jfk-30s.wav`` by default, truncated / zero-padded to the
+first 30 s (the fixed Whisper audio window, ``N_SAMPLES`` in
+``crates/vokra-models/src/whisper/mel.rs``). Deterministic synthetic PCM was
+used previously (M0-06) but produced ASR-meaningless "parody" transcripts — see
+the M2-06 §3 follow-up notes — and was removed to prevent silent drift back to
+synthetic input. FR-EX-08 (no silent fallback) is enforced: unsupported audio
+(non-mono, wrong sample rate, exotic PCM format) is a hard error, not a
+resample-behind-your-back.
 
 What is dumped (kept minimal to avoid repo bloat):
 
-* ``input_pcm.f32``           – deterministic synthetic mono PCM (seeded);
-* ``logmel.f32``              – HF log-mel, first ``MEL_FRAMES`` frames ``[80, F]``;
+* ``input_pcm.f32``           – first 30 s of the real input WAV as mono f32;
+* ``logmel.f32``              – HF log-mel, first ``MEL_FRAMES`` frames ``[n_mels, F]``;
 * ``encoder.f32``             – encoder ``last_hidden_state`` first ``ENC_POS`` rows;
 * ``logits_last.f32``         – decoder logits at the last prefix position ``[vocab]``;
 * ``tokenizer.bin``           – id → bytes vocab (see ``whisper/tokenizer.rs``);
-* ``manifest.txt``            – shapes / ids / greedy tokens / atol, ``key = value``;
+* ``manifest.txt``            – shapes / ids / greedy tokens / atol / provenance,
+                                ``key = value``; ``pcm_source`` and ``pcm_sha256``
+                                pin which WAV produced this fixture set;
 * ``samples.txt``             – detokenizer ``ids -> text`` cases.
 
 Run (from the repo root)::
 
     tools/parity/parity-venv/bin/python tools/parity/dump_whisper_reference.py \
-        tests/parity/whisper_base
+        --model whisper-base --audio tests/fixtures/audio/jfk-30s.wav
 
 The checkpoint is fetched with ``WhisperForConditionalGeneration.from_pretrained``
 (cached by the Hugging Face hub). Only ``torch`` / ``transformers`` / ``numpy``
-are required.
+are required at runtime; WAV parsing uses the stdlib ``struct`` module.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
+import hashlib
 import struct
 import sys
 from pathlib import Path
@@ -55,8 +67,24 @@ SUPPORTED_MODELS = {
     "whisper-large-v3": "openai/whisper-large-v3",
     "whisper-turbo": "openai/whisper-large-v3-turbo",
 }
-SEED = 1234
-PCM_LEN = 16000  # 1 s at 16 kHz
+# Determinism knob for PyTorch tie-breaking during decoder greedy sampling. Not
+# used for input synthesis — inputs are real audio (see load_pcm).
+TORCH_SEED = 1234
+# 30 s at 16 kHz — matches N_SAMPLES in crates/vokra-models/src/whisper/mel.rs
+# (the fixed Whisper audio window). Real audio shorter than this is zero-padded
+# on the right (Whisper does this internally anyway); longer audio is truncated
+# to the first 30 s.
+PCM_LEN = 30 * 16000
+# Repo-relative path to the default input WAV. The file itself is intentionally
+# NOT committed alongside this script — see M2-06 §3 honest note. Owner places
+# a real 16 kHz mono WAV here before regenerating fixtures.
+DEFAULT_AUDIO = (
+    Path(__file__).resolve().parents[2]
+    / "tests"
+    / "fixtures"
+    / "audio"
+    / "jfk-30s.wav"
+)
 MEL_FRAMES = 100  # frames of log-mel to dump for parity
 ENC_POS = 32  # encoder positions to dump for parity
 MAX_NEW = 32  # greedy generation cap
@@ -123,17 +151,92 @@ VOCAB_RESOURCE = (
 )
 
 
-def synth_pcm() -> np.ndarray:
-    """Deterministic sine + linear chirp + light noise, amplitude < 1."""
-    rng = np.random.default_rng(SEED)
-    t = np.arange(PCM_LEN, dtype=np.float64) / 16000.0
-    tone = 0.3 * np.sin(2 * np.pi * 220.0 * t)
-    # Linear chirp 300 -> 2000 Hz.
-    f0, f1 = 300.0, 2000.0
-    inst = f0 * t + 0.5 * (f1 - f0) / t[-1] * t * t
-    chirp = 0.2 * np.sin(2 * np.pi * inst)
-    noise = 0.05 * rng.standard_normal(PCM_LEN)
-    return (tone + chirp + noise).astype(np.float32)
+def load_pcm(path: Path, n_samples: int) -> np.ndarray:
+    """Load ``n_samples`` of mono 16 kHz PCM from a real WAV.
+
+    Mirrors ``crates/vokra-cli/src/wav.rs::parse`` byte-for-byte:
+
+    * PCM16 (``audio_format = 1``, ``bits = 16``) → scaled by ``1 / 32768``;
+    * IEEE_FLOAT32 (``audio_format = 3``, ``bits = 32``) → passthrough;
+    * everything else is an explicit error (FR-EX-08: no silent normalisation,
+      no resample, no channel mixdown — fix your input WAV).
+
+    Shorter clips are zero-padded on the right (Whisper does the same
+    internally); longer clips are truncated to ``n_samples``.
+    """
+    if not path.is_file():
+        sys.exit(
+            f"audio file not found: {path}\n"
+            "  --audio must point at a real 16 kHz mono WAV (PCM16 or "
+            "IEEE_FLOAT32).\n"
+            "  Recipe: ffmpeg -i input.flac -ac 1 -ar 16000 -c:a pcm_s16le "
+            f"{path}\n"
+            "  The canonical clip is the openai-whisper `tests/jfk.flac` "
+            "excerpt resampled to 16 kHz mono 30 s WAV."
+        )
+    data = path.read_bytes()
+    if len(data) < 12 or data[0:4] != b"RIFF" or data[8:12] != b"WAVE":
+        sys.exit(f"{path}: not a RIFF/WAVE file")
+
+    fmt = None
+    payload = None
+    pos = 12
+    while pos + 8 <= len(data):
+        cid = data[pos : pos + 4]
+        (size,) = struct.unpack_from("<I", data, pos + 4)
+        body_start = pos + 8
+        body_end = body_start + size
+        if body_end > len(data):
+            sys.exit(f"{path}: chunk {cid!r} size {size} exceeds file length")
+        body = data[body_start:body_end]
+        if cid == b"fmt ":
+            if size < 16:
+                sys.exit(f"{path}: fmt chunk too small ({size} bytes)")
+            audio_format, channels, sample_rate = struct.unpack_from(
+                "<HHI", body, 0
+            )
+            (bits,) = struct.unpack_from("<H", body, 14)
+            fmt = (audio_format, channels, sample_rate, bits)
+        elif cid == b"data":
+            payload = body
+        # RIFF chunks are word-aligned: skip a pad byte after an odd-sized body.
+        pos = body_end + (size & 1)
+
+    if fmt is None:
+        sys.exit(f"{path}: no fmt chunk")
+    if payload is None:
+        sys.exit(f"{path}: no data chunk")
+
+    audio_format, channels, sample_rate, bits = fmt
+    if channels != 1:
+        sys.exit(
+            f"{path}: expected mono, got {channels} channels. Fix with "
+            "`ffmpeg -ac 1 ...`; FR-EX-08 forbids silent mixdown."
+        )
+    if sample_rate != 16000:
+        sys.exit(
+            f"{path}: expected 16 kHz, got {sample_rate} Hz. Fix with "
+            "`ffmpeg -ar 16000 ...`; FR-EX-08 forbids silent resample."
+        )
+
+    if audio_format == 3 and bits == 32:
+        samples = np.frombuffer(payload, dtype="<f4").astype(np.float32)
+    elif audio_format == 1 and bits == 16:
+        ints = np.frombuffer(payload, dtype="<i2").astype(np.float32)
+        samples = ints / 32768.0
+    else:
+        sys.exit(
+            f"{path}: unsupported PCM format (audio_format={audio_format}, "
+            f"bits={bits}); use mono float32 or int16"
+        )
+
+    if samples.size >= n_samples:
+        return np.ascontiguousarray(samples[:n_samples], dtype=np.float32)
+    # Short clip: right-pad with zeros to n_samples (matches Whisper's own
+    # internal padding to N_SAMPLES).
+    padded = np.zeros(n_samples, dtype=np.float32)
+    padded[: samples.size] = samples
+    return padded
 
 
 def write_f32(path: Path, arr) -> None:
@@ -204,6 +307,16 @@ def main() -> None:
         help="Which Whisper size to dump (fixed allowlist; no silent fallback).",
     )
     parser.add_argument(
+        "--audio",
+        default=str(DEFAULT_AUDIO),
+        help=(
+            "Path to a real 16 kHz mono WAV (PCM16 or IEEE_FLOAT32). Truncated "
+            "or zero-padded to the first 30 s. Default: %(default)s. FR-EX-08: "
+            "unsupported format / rate / channel count is a hard error, not a "
+            "silent conversion."
+        ),
+    )
+    parser.add_argument(
         "out_dir",
         nargs="?",
         default=None,
@@ -219,13 +332,24 @@ def main() -> None:
     out_dir = Path(args.out_dir) if args.out_dir is not None else Path(f"tests/parity/{size.replace('-', '_')}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    audio_path = Path(args.audio).resolve()
+    pcm = load_pcm(audio_path, PCM_LEN)
+    pcm_sha256 = hashlib.sha256(audio_path.read_bytes()).hexdigest()
+    # Repo-relative source for the manifest; falls back to absolute if the WAV
+    # lives outside the repo (auditability > prettiness).
+    repo_root = Path(__file__).resolve().parents[2]
+    try:
+        pcm_source = audio_path.relative_to(repo_root).as_posix()
+    except ValueError:
+        pcm_source = str(audio_path)
+
     # The bundled text-vocab resource is regenerated only from the largest tail
     # (whisper-large-v3) — the first 50257 records are byte-identical across all
     # multilingual sizes, so any multilingual checkpoint is technically valid,
     # but we standardise on large-v3 to avoid drift.
     vocab_resource = VOCAB_RESOURCE if size == "whisper-large-v3" else None
 
-    torch.manual_seed(SEED)
+    torch.manual_seed(TORCH_SEED)
     processor = WhisperProcessor.from_pretrained(model_id)
     tok = WhisperTokenizer.from_pretrained(model_id)  # slow tokenizer (has byte_decoder)
     model = WhisperForConditionalGeneration.from_pretrained(model_id)
@@ -233,7 +357,6 @@ def main() -> None:
 
     prefix, eot = resolve_special_tokens(tok)
 
-    pcm = synth_pcm()
     write_f32(out_dir / "input_pcm.f32", pcm)
 
     with torch.no_grad():
@@ -289,9 +412,11 @@ def main() -> None:
     manifest = {
         "model": model_id,
         "size": size,
-        "seed": SEED,
+        "torch_seed": TORCH_SEED,
         "atol": 0.01,
         "pcm_len": PCM_LEN,
+        "pcm_source": pcm_source,
+        "pcm_sha256": pcm_sha256,
         "n_mels": int(n_mels),
         "mel_frames": MEL_FRAMES,
         "enc_pos": ENC_POS,
@@ -306,9 +431,10 @@ def main() -> None:
         "greedy_text": greedy_text,
     }
     with (out_dir / "manifest.txt").open("w", encoding="utf-8") as f:
-        f.write("# Whisper base parity manifest (M0-06). Generated by\n")
+        f.write("# Whisper parity manifest (M0-06 / M2-06 §3). Generated by\n")
         f.write("# tools/parity/dump_whisper_reference.py. `key = value`;\n")
-        f.write("# list values are space-separated.\n")
+        f.write("# list values are space-separated. `pcm_source` /\n")
+        f.write("# `pcm_sha256` pin the exact WAV that produced this fixture.\n")
         for k, v in manifest.items():
             if isinstance(v, list):
                 f.write(f"{k} = {' '.join(str(x) for x in v)}\n")
