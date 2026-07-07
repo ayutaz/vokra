@@ -17,9 +17,12 @@
 //!   plus a private [`nn::adain`] helper (StyleTTS 2 AdaIN as a composition
 //!   of instance-norm + affine, **not** a new first-class op — FR-EX-08
 //!   permits composition);
-//! - [`text_encoder`] / [`prosody`] / [`decoder`] — component skeletons; the
-//!   concrete forward paths land at T12–T17. The iSTFT head uses FR-OP-01
-//!   `istft`, **not** the FR-OP-12 `vocos_head` — Kokoro is iSTFTNet 系.
+//! - [`text_encoder`] / [`bert`] / [`prosody`] / [`decoder`] — component
+//!   skeletons; the concrete forward paths land at T12–T17. `bert` is the
+//!   T13-beta PL-BERT branch (`bert.module.*` + `bert_encoder.module.*`,
+//!   loaded only when the canary tensor is present — see
+//!   [`BERT_CANARY_TENSOR`]). The iSTFT head uses FR-OP-01 `istft`, **not**
+//!   the FR-OP-12 `vocos_head` — Kokoro is iSTFTNet 系.
 //!
 //! # Hot ops (M2-08 alignment)
 //!
@@ -30,6 +33,7 @@
 //! consumer, so it does not opt in to any `vocos_head` FP16-forbidden
 //! registry entry in M2-08 (`docs/adr/0007-kokoro-native.md` §Op gap).
 
+mod bert;
 mod config;
 mod decoder;
 mod nn;
@@ -49,11 +53,18 @@ use crate::compute::HotOp;
 
 pub use config::KokoroConfig;
 
+use bert::Bert;
 use config::Dims;
 use decoder::Decoder;
 use prosody::ProsodyPredictor;
 use text_encoder::TextEncoder;
 use weights::TensorStore;
+
+/// Canary tensor whose presence marks a GGUF as carrying the upstream Kokoro-82M
+/// PL-BERT branch. Absent on slim fixture voices; when absent the runtime
+/// bypasses [`Bert`] and falls back to the [`TextEncoder`] features as the
+/// prosody-predictor input (documented at the wire-up call site).
+const BERT_CANARY_TENSOR: &str = "bert.module.embeddings.word_embeddings.weight";
 
 /// The backend hot ops the Kokoro-82M native TTS dispatches: **GEMM only**
 /// (same rationale as [`crate::piper_plus`]).
@@ -73,11 +84,15 @@ pub struct KokoroTts {
     config: KokoroConfig,
     #[allow(dead_code)] // consumed by the T12–T17 forward path
     dims: Dims,
-    #[allow(dead_code)] // consumed by the T12–T17 forward path
     text_encoder: TextEncoder,
-    #[allow(dead_code)] // consumed by the T13/T15 wire-up
+    /// Upstream Kokoro-82M PL-BERT branch (`bert.module.*` +
+    /// `bert_encoder.module.*`, 178 → 128 → 4× ALBERT → 768 → 512). When present
+    /// its `[t, 512]` output replaces the [`TextEncoder`] output as the prosody
+    /// predictor's input, matching the upstream Kokoro pipeline. Absent on slim
+    /// fixture voices (fall-through to text-encoder features documented at the
+    /// call site); dispatched by [`BERT_CANARY_TENSOR`] at load time.
+    bert: Option<Bert>,
     prosody: ProsodyPredictor,
-    #[allow(dead_code)] // consumed by the T16/T17 wire-up
     decoder: Decoder,
     /// Backend selector (`Copy`; never a live `!Send` backend, same rationale
     /// as [`crate::piper_plus::PiperPlusTts`]).
@@ -137,6 +152,19 @@ impl KokoroTts {
         let config = KokoroConfig::from_gguf(store.file())?;
         let dims = Dims::derive(&store, &config)?;
         let text_encoder = TextEncoder::load(&store, &config)?;
+        // Upstream Kokoro-82M carries a PL-BERT branch (`bert.module.*` +
+        // `bert_encoder.module.*`); a slim fixture voice may omit it. The
+        // canary tensor decides the dispatch — if absent the runtime uses the
+        // text-encoder features as the prosody-predictor input (the T13-beta
+        // seam documented in `docs/adr/0007-kokoro-native.md`). The load itself
+        // is strict when the canary IS present: a partial bert set fails
+        // loudly at [`Bert::new`] rather than silently falling back
+        // (FR-EX-08).
+        let bert = if store.shape(BERT_CANARY_TENSOR).is_ok() {
+            Some(Bert::new(&store, &config)?)
+        } else {
+            None
+        };
         let prosody = ProsodyPredictor::load(&store, &config)?;
         let decoder = Decoder::load(&store, &config)?;
         // `store` (and its GGUF backing bytes) drops here.
@@ -144,6 +172,7 @@ impl KokoroTts {
             config,
             dims,
             text_encoder,
+            bert,
             prosody,
             decoder,
             backend_kind: BackendKind::Cpu,
@@ -167,11 +196,14 @@ impl KokoroTts {
     /// native path, mirroring [`crate::piper_plus::PiperPlusTts::synthesize_phonemes`].
     ///
     /// The pipeline is
-    /// `text_encoder → prosody → length_regulate → decoder → PCM`, with the
-    /// text-encoder output transposed from `[t, hidden]` row-major to
-    /// `[hidden, t]` channel-major (the layout every downstream stage
-    /// consumes; the layout mismatch is pinned at the module boundary here,
-    /// not silently inside a component).
+    /// `text_encoder → [bert →] prosody → length_regulate → decoder → PCM`.
+    /// When the optional PL-BERT branch is loaded (upstream Kokoro-82M carries
+    /// it), its `[t, 512]` output replaces the text-encoder output as the
+    /// prosody-predictor input (the T13-beta seam documented in
+    /// `docs/adr/0007-kokoro-native.md`). The chosen features are transposed
+    /// from `[t, hidden]` row-major to `[hidden, t]` channel-major (the layout
+    /// every downstream stage consumes; the layout mismatch is pinned at the
+    /// module boundary here, not silently inside a component).
     ///
     /// # Style resolution
     ///
@@ -243,9 +275,7 @@ impl KokoroTts {
             ));
         };
 
-        // 2) Text encoder → [t, hidden_dim] row-major, then transpose to
-        //    [hidden_dim, T] channel-major (the layout prosody / length
-        //    regulation / decoder consume — piper's convention).
+        // 2) Text encoder → [t, hidden_dim] row-major.
         let enc_arr = self.text_encoder.forward(phoneme_ids)?;
         let t_in = enc_arr.rows;
         let hidden = enc_arr.cols;
@@ -255,21 +285,51 @@ impl KokoroTts {
                 hidden, self.config.hidden_dim,
             )));
         }
+
+        // 3) Prosody-input features. Upstream Kokoro feeds the PL-BERT branch's
+        //    `[t, 512]` output (not the text encoder's) to `predictor.text_encoder`;
+        //    the T13-beta seam (`docs/adr/0007-kokoro-native.md`) makes bert the
+        //    prosody source when the branch is present, and falls back to the
+        //    text-encoder output otherwise. Both sources produce `[t, hidden_dim]`
+        //    row-major features; a bert-vs-hidden width mismatch is a loud error
+        //    rather than a silent fallback (FR-EX-08).
+        let features_row: Vec<f32> = if let Some(bert) = &self.bert {
+            let bert_out = bert.forward(phoneme_ids)?;
+            let bert_cols = bert_out.len() / t_in;
+            if bert_cols != hidden {
+                return Err(VokraError::InvalidArgument(format!(
+                    "kokoro TTS: bert output width {} != hidden_dim ({}); \
+                     the bert branch expects a Kokoro-82M-shaped voice \
+                     (hidden_dim = 512)",
+                    bert_cols, hidden,
+                )));
+            }
+            bert_out
+        } else {
+            enc_arr.data.clone()
+        };
+
+        // 4) Transpose to [hidden_dim, T] channel-major (the layout prosody /
+        //    length regulation / decoder consume — piper's convention).
         let mut encoded_ch = vec![0.0f32; hidden * t_in];
         for ti in 0..t_in {
             for c in 0..hidden {
-                encoded_ch[c * t_in + ti] = enc_arr.data[ti * hidden + c];
+                encoded_ch[c * t_in + ti] = features_row[ti * hidden + c];
             }
         }
 
-        // 3) Prosody predictor → (log_dur, f0, energy) each [T]. `deterministic
-        //    = true`: the stochastic path is deferred and returns
-        //    NotImplemented rather than being silently skipped.
+        // 5) Prosody predictor → (log_dur, f0, energy) each [T] via the
+        //    backward-compat adapter. The upstream forward
+        //    ([`ProsodyPredictor::forward_upstream`]) is used by the T17 parity
+        //    landing; the adapter is called here so the wiring stays stable
+        //    across the phase-3 → parity boundary. `deterministic = true`: the
+        //    stochastic path is deferred and returns NotImplemented rather
+        //    than being silently skipped.
         let (log_dur, _f0, _energy) =
             self.prosody
                 .forward(&encoded_ch, &style, t_in, /*deterministic=*/ true)?;
 
-        // 4) Length regulation: `w = max(1, ceil(exp(log_dur) · length_scale))`
+        // 6) Length regulation: `w = max(1, ceil(exp(log_dur) · length_scale))`
         //    (piper convention). Values are clamped to `[1, 1024]` per phoneme
         //    to keep a degenerate scaffold-time `log_dur` from allocating an
         //    unbounded frame buffer via a `+inf as usize` saturation.
@@ -286,9 +346,11 @@ impl KokoroTts {
             .collect();
         let (z, t_frames) = nn::length_regulate(&encoded_ch, hidden, t_in, &durations);
 
-        // 5) Decoder → PCM at `config.sample_rate`. The decoder scaffold
-        //    checks its own shapes and produces `t_frames · istft_hop` samples
-        //    of bounded, finite audio.
+        // 7) Decoder → PCM at `config.sample_rate`. [`Decoder::forward`]
+        //    dispatches to stub / real mode internally based on the canary
+        //    tensor seen at load time; real-mode currently feeds zero F0/N
+        //    contours (M2-07-T17 landing wires the real prosody contours via
+        //    [`Decoder::forward_full`]).
         let pcm = self.decoder.forward(&z, t_frames, &style)?;
 
         Ok(SynthesizedAudio::new(pcm, self.config.sample_rate))
@@ -433,30 +495,22 @@ mod tests {
         }
     }
 
-    /// The T18 e2e smoke test: an in-memory synthetic GGUF loads through the
-    /// weight-license gate, [`KokoroTts::synthesize_phonemes`] orchestrates
-    /// `text_encoder → prosody → length_regulate → decoder`, and the returned
-    /// PCM satisfies the shape / finiteness / sample-rate assertions the
-    /// M2-07-T18 spec calls out. Small synthetic dims (kokoro's converter is
-    /// shape-driven so dimensions are not baked into the runtime); all-zero
-    /// projections + LN affine (`gamma = 1`, `beta = 0`) keep the numeric path
-    /// bounded so the "all finite" assertion holds by construction — the
-    /// non-trivial variations of the decoder / prosody scaffolds are covered
-    /// in their own unit tests.
-    #[test]
-    fn synthesize_smoke_produces_expected_shape() {
-        let n_vocab: usize = 6;
-        let hidden: usize = 16;
-        let style_dim: usize = 8;
-        let sample_rate: u32 = 24_000;
-
-        // F32 helpers — length-`n` payloads laid out as GGUF-ready LE bytes.
+    /// Text-encoder-only in-memory fixture (arch string + config metadata +
+    /// text-encoder tensors, everything else absent). Used by the wiring tests
+    /// below to reach `from_gguf_with_policy` past the arch / config gates and
+    /// exercise the downstream (bert / prosody / decoder) loader chain. Kept
+    /// distinct from the T13-alpha text-encoder synthetic fixture so its
+    /// coverage remains focused on the wiring seam.
+    fn text_encoder_only_bytes(hidden: usize, n_vocab: usize, style_dim: usize) -> Vec<u8> {
+        assert_eq!(hidden % 2, 0, "text encoder hidden must be even");
+        let lstm_hidden = hidden / 2;
+        let four_h = 4 * lstm_hidden;
         let zeros = |n: usize| -> Vec<u8> { vec![0u8; n * 4] };
         let ones = |n: usize| -> Vec<u8> { (0..n).flat_map(|_| 1.0f32.to_le_bytes()).collect() };
 
         let mut b = GgufBuilder::new();
         b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
-        b.add_u32(KEY_SAMPLE_RATE, sample_rate);
+        b.add_u32(KEY_SAMPLE_RATE, 24_000);
         b.add_u32(KEY_STYLE_DIM, style_dim as u32);
         b.add_u32(KEY_NUM_VOICES, 2);
         b.add_u32(KEY_HIDDEN_DIM, hidden as u32);
@@ -465,29 +519,10 @@ mod tests {
         b.add_u32(KEY_ISTFT_N_FFT, 20);
         b.add_u32(KEY_ISTFT_HOP, 5);
         b.add_u32(KEY_ISTFT_WIN_LENGTH, 20);
-        // num_symbols ≥ 5 so `phoneme_ids = [0,1,2,3,4]` stays in range
-        // (FR-EX-08: text encoder rejects an id ≥ num_symbols).
-        b.add_metadata(
-            KEY_PHONEME_SYMBOLS,
-            str_array(&["_", "^", "$", "a", "b", "c"]),
-        );
+        let phoneme_symbols: Vec<String> = (0..n_vocab).map(|i| format!("p{i}")).collect();
+        let phoneme_refs: Vec<&str> = phoneme_symbols.iter().map(String::as_str).collect();
+        b.add_metadata(KEY_PHONEME_SYMBOLS, str_array(&phoneme_refs));
         b.add_metadata(KEY_VOICE_NAMES, str_array(&["af", "am"]));
-
-        // Text-encoder tensors — bound to the upstream Kokoro-82M manifest
-        // (T13-alpha, 2026-07-07):
-        //   Embedding(n_vocab, hidden)
-        //   → 3× [WeightNormedConv1d(hidden→hidden, k=5) + affine + LeakyReLU]
-        //   → BiLSTM(input=hidden, hidden=hidden/2, bidir → out=hidden)
-        //
-        // All Conv1d + LSTM weights are zero — the smoke test asserts shape /
-        // finiteness / determinism, not numeric parity. `γ = 1` / `β = 0` per
-        // block keeps the affine-branch on so a scale-path regression is
-        // visible (a `γ = 0` collapse would silently skip that branch).
-        //
-        // The BiLSTM has `hidden / 2` inner width per direction, so
-        // `hidden = 16` gives `lstm_hidden = 8` and `4·lstm_hidden = 32`.
-        let lstm_hidden = hidden / 2;
-        let four_h = 4 * lstm_hidden;
 
         b.add_tensor(
             "text_encoder.module.embedding.weight",
@@ -564,27 +599,214 @@ mod tests {
             .expect("lstm b_hh");
         }
 
-        let bytes = b.to_bytes().expect("serialize");
-        let tts =
-            KokoroTts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict()).expect("load ok");
+        b.to_bytes().expect("serialize")
+    }
 
-        // Explicit `style_override` — the voicepack lookup path is TBD until
-        // M2-07-T02 (`docs/adr/0007-kokoro-native.md` §Voicepack), so a
-        // `voice` name would return `NotImplemented`. `noise_scale = 0` /
-        // `length_scale = 1` = the parity / deterministic setting.
-        let style = vec![0.0f32; style_dim];
+    /// FR-EX-08 wiring check: with only the text-encoder tensors present,
+    /// [`KokoroTts::from_gguf_with_policy`] must reach the prosody loader and
+    /// fail LOUDLY at the first missing `predictor.module.*` tensor. A
+    /// silent stub (the pre-T13/T14/T15 placeholder) would return `Ok`; the
+    /// wiring test pins the fail-fast contract that the phase-3 rewrite
+    /// requires. Also confirms the bert branch stays optional — its absence is
+    /// NOT what surfaces (the bert canary is checked first).
+    #[test]
+    fn from_gguf_reaches_prosody_loader_and_fails_loudly_on_missing_tensor() {
+        let bytes = text_encoder_only_bytes(16, 6, 8);
+        // Use `match` on the Result rather than `expect_err` — `KokoroTts`
+        // does not implement `Debug` (it owns non-Debug component buffers).
+        match KokoroTts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict()) {
+            Ok(_) => panic!("prosody tensors absent — loader must fail loudly"),
+            Err(VokraError::InvalidArgument(msg)) => {
+                assert!(
+                    msg.contains("predictor.module."),
+                    "error must name the missing predictor tensor (FR-EX-08); got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// Bert is optional — a voice GGUF whose only bert tensor is the canary
+    /// (missing the rest) fails LOUDLY at [`Bert::new`] rather than silently
+    /// falling back to text-encoder features (FR-EX-08). This pins the "if
+    /// the canary is present, load strictly" half of the two-armed dispatch.
+    ///
+    /// Builds on the same text-encoder-only fixture (so the text-encoder loader
+    /// clears) plus a bare bert canary at the exact upstream shape `[178, 128]`
+    /// but WITHOUT any of the other bert tensors. `Bert::new` then fails at the
+    /// second lookup (`position_embeddings.weight`), naming the offending
+    /// tensor — the wiring test asserts the error surfaces from the bert
+    /// subtree, not from a downstream loader.
+    #[test]
+    fn from_gguf_rejects_partial_bert_branch() {
+        // Start from the text-encoder-only bytes (so the text encoder clears
+        // and the loader reaches the bert canary check), then rebuild carrying
+        // an extra bert canary tensor via a fresh builder mirroring
+        // [`text_encoder_only_bytes`]. Rebuilding is necessary because
+        // `GgufBuilder` does not expose an append-to-existing-file API.
+        let hidden: usize = 16;
+        let n_vocab: usize = 6;
+        let style_dim: usize = 8;
+        let lstm_hidden = hidden / 2;
+        let four_h = 4 * lstm_hidden;
+        let zeros = |n: usize| -> Vec<u8> { vec![0u8; n * 4] };
+        let ones = |n: usize| -> Vec<u8> { (0..n).flat_map(|_| 1.0f32.to_le_bytes()).collect() };
+
+        let mut b = GgufBuilder::new();
+        b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        b.add_u32(KEY_SAMPLE_RATE, 24_000);
+        b.add_u32(KEY_STYLE_DIM, style_dim as u32);
+        b.add_u32(KEY_NUM_VOICES, 2);
+        b.add_u32(KEY_HIDDEN_DIM, hidden as u32);
+        b.add_u32(KEY_N_TEXT_LAYERS, 2);
+        b.add_u32(KEY_N_DECODER_LAYERS, 2);
+        b.add_u32(KEY_ISTFT_N_FFT, 20);
+        b.add_u32(KEY_ISTFT_HOP, 5);
+        b.add_u32(KEY_ISTFT_WIN_LENGTH, 20);
+        let phoneme_symbols: Vec<String> = (0..n_vocab).map(|i| format!("p{i}")).collect();
+        let phoneme_refs: Vec<&str> = phoneme_symbols.iter().map(String::as_str).collect();
+        b.add_metadata(KEY_PHONEME_SYMBOLS, str_array(&phoneme_refs));
+        b.add_metadata(KEY_VOICE_NAMES, str_array(&["af", "am"]));
+        // Text-encoder tensors (so the text encoder loader clears).
+        b.add_tensor(
+            "text_encoder.module.embedding.weight",
+            GgmlType::F32,
+            vec![n_vocab as u64, hidden as u64],
+            zeros(n_vocab * hidden),
+        )
+        .expect("emb");
+        for i in 0..3usize {
+            b.add_tensor(
+                &format!("text_encoder.module.cnn.{i}.0.weight_g"),
+                GgmlType::F32,
+                vec![hidden as u64, 1, 1],
+                zeros(hidden),
+            )
+            .expect("weight_g");
+            b.add_tensor(
+                &format!("text_encoder.module.cnn.{i}.0.weight_v"),
+                GgmlType::F32,
+                vec![hidden as u64, hidden as u64, 5],
+                zeros(hidden * hidden * 5),
+            )
+            .expect("weight_v");
+            b.add_tensor(
+                &format!("text_encoder.module.cnn.{i}.0.bias"),
+                GgmlType::F32,
+                vec![hidden as u64],
+                zeros(hidden),
+            )
+            .expect("cnn bias");
+            b.add_tensor(
+                &format!("text_encoder.module.cnn.{i}.1.gamma"),
+                GgmlType::F32,
+                vec![hidden as u64],
+                ones(hidden),
+            )
+            .expect("gamma");
+            b.add_tensor(
+                &format!("text_encoder.module.cnn.{i}.1.beta"),
+                GgmlType::F32,
+                vec![hidden as u64],
+                zeros(hidden),
+            )
+            .expect("beta");
+        }
+        for suffix in ["", "_reverse"] {
+            b.add_tensor(
+                &format!("text_encoder.module.lstm.weight_ih_l0{suffix}"),
+                GgmlType::F32,
+                vec![four_h as u64, hidden as u64],
+                zeros(four_h * hidden),
+            )
+            .expect("lstm w_ih");
+            b.add_tensor(
+                &format!("text_encoder.module.lstm.weight_hh_l0{suffix}"),
+                GgmlType::F32,
+                vec![four_h as u64, lstm_hidden as u64],
+                zeros(four_h * lstm_hidden),
+            )
+            .expect("lstm w_hh");
+            b.add_tensor(
+                &format!("text_encoder.module.lstm.bias_ih_l0{suffix}"),
+                GgmlType::F32,
+                vec![four_h as u64],
+                zeros(four_h),
+            )
+            .expect("lstm b_ih");
+            b.add_tensor(
+                &format!("text_encoder.module.lstm.bias_hh_l0{suffix}"),
+                GgmlType::F32,
+                vec![four_h as u64],
+                zeros(four_h),
+            )
+            .expect("lstm b_hh");
+        }
+        // Bert canary — real Kokoro-82M shape [178, 128] — but NO other bert
+        // tensors. `Bert::new` must fail loudly at the second lookup
+        // (`bert.module.embeddings.position_embeddings.weight`).
+        b.add_tensor(
+            BERT_CANARY_TENSOR,
+            GgmlType::F32,
+            vec![178, 128],
+            zeros(178 * 128),
+        )
+        .expect("canary");
+        let bytes = b.to_bytes().expect("serialize");
+
+        // Use `match` on Result rather than `expect_err` — `KokoroTts` is not
+        // `Debug`.
+        match KokoroTts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict()) {
+            Ok(_) => panic!("partial bert branch must fail loudly"),
+            Err(VokraError::InvalidArgument(msg)) => {
+                assert!(
+                    msg.contains("bert.module."),
+                    "error must name a bert tensor (FR-EX-08); got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// End-to-end smoke against a REAL Kokoro-82M voice GGUF, gated on
+    /// `VOKRA_KOKORO_GGUF` (same pattern as `tests/parity_kokoro.rs`).
+    /// Skipped cleanly when the env var is unset, so CI stays green without
+    /// the 82M-parameter fixture. The full loader chain (text_encoder + bert +
+    /// prosody + decoder) must succeed and `synthesize_phonemes` must return
+    /// non-empty finite PCM at the voice's declared sample rate.
+    #[test]
+    fn synthesize_from_real_gguf_gated() {
+        let Some(gguf_path) = std::env::var_os("VOKRA_KOKORO_GGUF") else {
+            eprintln!(
+                "[kokoro::mod::synthesize_from_real_gguf_gated] SKIP: \
+                 set VOKRA_KOKORO_GGUF to a converted Kokoro-82M voice GGUF."
+            );
+            return;
+        };
+        let tts = KokoroTts::from_path(&gguf_path).unwrap_or_else(|e| {
+            panic!(
+                "load VOKRA_KOKORO_GGUF = {gguf_path:?}: {e}. Convert via \
+                 `vokra-cli convert --model kokoro-82m ...` first."
+            )
+        });
+        // Style vector matched to the voice's declared style_dim; explicit
+        // override so the voicepack lookup path (`NotImplemented` until T02)
+        // is not exercised.
+        let style = vec![0.0f32; tts.config().style_dim];
+        // Two arbitrary in-range ids — the voice's phoneme table has ≥ 4
+        // entries in every shipped Kokoro-82M voice.
         let audio = tts
-            .synthesize_phonemes(&[0, 1, 2, 3, 4], None, Some(&style), 0.0, 1.0)
-            .expect("synth ok");
+            .synthesize_phonemes(&[0, 1, 2, 3], None, Some(&style), 0.0, 1.0)
+            .expect("real GGUF synthesize");
         assert!(
             !audio.samples.is_empty(),
-            "T18 orchestration must produce non-empty PCM"
+            "real GGUF synthesize must produce non-empty PCM"
         );
         assert!(
             audio.samples.iter().all(|s| s.is_finite()),
-            "PCM must be all-finite (FR-EX-08)"
+            "real GGUF PCM must be all-finite (FR-EX-08)"
         );
-        assert_eq!(audio.sample_rate, sample_rate);
+        assert_eq!(audio.sample_rate, tts.config().sample_rate);
     }
 
     #[test]
