@@ -1242,10 +1242,12 @@ impl DecoderReal {
 
         // ---- encode: AdainResBlock1(514 → 1024) --------------------------
         let (mut x, mut t_x) = self.encode.forward(&compute, &enc_input, t_frames, style);
+        maybe_dump_stage("dec_encode", &x);
 
         // ---- asr_res: bridge asr features (512 → 64) --------------------
         let (asr_res_out, t_asr_res) = self.asr_res.forward(&compute, asr, t_frames);
         debug_assert_eq!(t_asr_res, t_frames);
+        maybe_dump_stage("dec_asr_res", &asr_res_out);
 
         // ---- decode.0/1/2/3 ----------------------------------------------
         // Each block: concat [x, asr_res, F0_ds, N_ds] → block(concat).
@@ -1271,11 +1273,12 @@ impl DecoderReal {
             let n_off = f0_off + t_x;
             concat[n_off..n_off + t_x].copy_from_slice(&n_i[..t_x]);
             let (out, t_out) = block.forward(&compute, &concat, t_x, style);
-            let _ = i; // silence unused-index lint
             x = out;
             t_x = t_out;
+            maybe_dump_stage(&format!("dec_decode_{i}"), &x);
         }
         // After decode.3, x is [decode_final_out (=512), t_x].
+        maybe_dump_stage("dec_pre_generator", &x);
 
         // ---- generator: 512-ch → (x_mag, x_phase) -----------------------
         // The generator returns (x_mag, x_phase) each [n_half, t_gen] where
@@ -1284,6 +1287,28 @@ impl DecoderReal {
         let (x_mag, x_phase, t_gen) = self.generator.forward(&compute, &x, t_x, style, f0)?;
         Ok((x_mag, x_phase, t_gen))
     }
+}
+
+/// Writes `data` as little-endian f32 bytes to `$VOKRA_KOKORO_PARITY_DUMP/<file>`
+/// when that env var is set (T17-fixup #1 bisection). No-op when unset so the
+/// release forward path pays only a single `std::env::var_os` per call — used
+/// by [`DecoderReal::forward_to_mag_phase`] and [`super::generator::Generator::forward`]
+/// to emit per-stage intermediates that pair 1:1 with the reference dumper's
+/// `ref_<file>` files under the same directory.
+#[allow(dead_code)] // consumed by the bisection tooling
+pub(super) fn maybe_dump_stage(name: &str, data: &[f32]) {
+    let Ok(dir) = std::env::var("VOKRA_KOKORO_PARITY_DUMP") else {
+        return;
+    };
+    let path = std::path::Path::new(&dir).join(format!("native_{name}.f32"));
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut bytes = Vec::with_capacity(data.len() * 4);
+    for v in data {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    let _ = std::fs::write(&path, bytes);
 }
 
 /// Nearest-neighbor upsample a channel-major `[channels, t_in]` buffer to

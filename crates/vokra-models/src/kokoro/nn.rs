@@ -610,21 +610,74 @@ pub(crate) fn adain_conditioned(
         return;
     }
 
+    // Root cause of T17-fixup #1 (Kokoro decoder mag/phase/pcm parity):
+    //
+    // The Kokoro decoder's AmpResBlock inside `noise_res` is fed a zero
+    // ``source_spec`` (M2-07-T15 simplification), so ``noise_convs`` emits a
+    // constant per-channel bias signal. The subsequent InstanceNorm at the
+    // ``adain2`` step then divides by ``sqrt(var + eps)`` where var is tiny
+    // (≪ 1e-3) — a regime where any per-row drift in the Linear projection
+    // for ``(γ, β)`` gets amplified ~300x. A **sequential Rust f32 sum** over
+    // style_dim = 128 terms catastrophically cancels when the products span
+    // both signs and the final γ / β are near zero, producing a per-row
+    // drift on the order of 1e-3 which then propagates through ``convs1``
+    // and blows the atol=0.01 decoder gate.
+    //
+    // PyTorch's ``F.linear`` uses a blocked SGEMV whose lane-parallel
+    // reduction gives ~1e-6 precision at k=128; f64 accumulator on the
+    // Linear brings Rust to ULP-of-true precision, so the residual delta vs
+    // PyTorch is bounded by PyTorch's own imprecision. The InstanceNorm
+    // mean / variance reductions here use the same f64 promotion for the
+    // same reason on the long time axis (~18 000 samples per channel in the
+    // generator body).
+    //
+    // Kept as an *inlined* f64 path in this decoder-only helper rather than
+    // pushed down into ``adain`` because prosody's F0 / N branches also call
+    // ``adain`` (via ``AdainResBlk::forward`` in
+    // ``crates/vokra-models/src/kokoro/prosody.rs``) and their existing
+    // parity delta is calibrated against Rust's f32 sum-order — a global
+    // promotion there would touch the prosody predictor's numeric envelope
+    // (which is a separate follow-up).
+
     // 1. Project style → (γ, β) via a row-major Linear.
     let two_c = 2 * channels;
     let mut gamma_beta = vec![0.0f32; two_c];
     for i in 0..two_c {
-        let mut acc = fc_b[i];
+        let mut acc64: f64 = fc_b[i] as f64;
         let row = &fc_w[i * style_dim..(i + 1) * style_dim];
         for j in 0..style_dim {
-            acc += row[j] * style[j];
+            acc64 += row[j] as f64 * style[j] as f64;
         }
-        gamma_beta[i] = acc;
+        gamma_beta[i] = acc64 as f32;
     }
     let (gamma, beta) = gamma_beta.split_at(channels);
 
-    // 2. In-place InstanceNorm + affine on channel-major x.
-    adain(x, gamma, beta, channels, time);
+    // 2. In-place per-channel InstanceNorm + affine on channel-major x
+    // (inlined here with f64 mean / variance accumulators; keeps prosody's
+    // ``adain`` path unchanged).
+    let inv_t = 1.0 / time as f64;
+    for c in 0..channels {
+        let row = &mut x[c * time..c * time + time];
+        let mut mean64: f64 = 0.0;
+        for &v in row.iter() {
+            mean64 += v as f64;
+        }
+        mean64 *= inv_t;
+        let mean = mean64 as f32;
+        let mut var64: f64 = 0.0;
+        for &v in row.iter() {
+            let d = v as f64 - mean64;
+            var64 += d * d;
+        }
+        var64 *= inv_t;
+        let var = var64 as f32;
+        let inv = 1.0 / (var + EPS).sqrt();
+        let g = gamma[c];
+        let b = beta[c];
+        for v in row.iter_mut() {
+            *v = (*v - mean) * inv * g + b;
+        }
+    }
 }
 
 /// StyleTTS 2 派生 AdaLayerNorm on a `[t, channels]` row-major buffer

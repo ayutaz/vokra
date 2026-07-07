@@ -194,22 +194,56 @@ impl AmpResBlock {
 
     /// In-place forward pass on `[channels, t]` channel-major `x`.
     pub(super) fn forward(&self, compute: &Compute, x: &mut [f32], t: usize, style: &[f32]) {
-        for sub in &self.subs {
+        self.forward_with_dump(compute, x, t, style, None);
+    }
+
+    /// Same as [`forward`] with per-sub-block dumps when `dump_prefix` is set
+    /// (T17-fixup #1 bisection). Emits `<prefix>_sub_<j>_{adain1,snake1,c1,adain2,snake2,c2,acc}`.
+    pub(super) fn forward_with_dump(
+        &self,
+        compute: &Compute,
+        x: &mut [f32],
+        t: usize,
+        style: &[f32],
+        dump_prefix: Option<&str>,
+    ) {
+        for (j, sub) in self.subs.iter().enumerate() {
             let mut xj = x.to_vec();
             // adain1 + snake + convs1
             sub.adain1.apply(&mut xj, t, style);
+            if let Some(p) = dump_prefix {
+                super::maybe_dump_stage(&format!("{p}_sub_{j}_adain1"), &xj);
+            }
             snake(&mut xj, &sub.alpha1, self.channels, t);
+            if let Some(p) = dump_prefix {
+                super::maybe_dump_stage(&format!("{p}_sub_{j}_snake1"), &xj);
+            }
             let (xj, t_after_c1) = sub.convs1.forward(compute, &xj, t);
             debug_assert_eq!(t_after_c1, t, "AMP convs1 must be same-padding");
+            if let Some(p) = dump_prefix {
+                super::maybe_dump_stage(&format!("{p}_sub_{j}_c1"), &xj);
+            }
             // adain2 + snake + convs2
             let mut xj = xj;
             sub.adain2.apply(&mut xj, t, style);
+            if let Some(p) = dump_prefix {
+                super::maybe_dump_stage(&format!("{p}_sub_{j}_adain2"), &xj);
+            }
             snake(&mut xj, &sub.alpha2, self.channels, t);
+            if let Some(p) = dump_prefix {
+                super::maybe_dump_stage(&format!("{p}_sub_{j}_snake2"), &xj);
+            }
             let (xj, t_after_c2) = sub.convs2.forward(compute, &xj, t);
             debug_assert_eq!(t_after_c2, t, "AMP convs2 must be same-padding");
+            if let Some(p) = dump_prefix {
+                super::maybe_dump_stage(&format!("{p}_sub_{j}_c2"), &xj);
+            }
             // Additive residual
             for (a, b) in x.iter_mut().zip(&xj) {
                 *a += b;
+            }
+            if let Some(p) = dump_prefix {
+                super::maybe_dump_stage(&format!("{p}_sub_{j}_acc"), x);
             }
         }
     }
@@ -569,9 +603,11 @@ impl Generator {
         for stage in 0..self.n_stages {
             // 1. LeakyReLU → ups
             nn::leaky_relu(&mut cur, GEN_LRELU_SLOPE);
+            super::maybe_dump_stage(&format!("gen_stage_{stage}_pre_ups"), &cur);
             let (up, t_up) = self.ups[stage].forward(&cur, cur_len);
             let stage_ch = self.stage_channels[stage];
             debug_assert_eq!(up.len(), stage_ch * t_up);
+            super::maybe_dump_stage(&format!("gen_stage_{stage}_ups"), &up);
 
             // 2. Noise / source contribution.
             //    Source spec = zeros (simplification; see module-doc). Shape
@@ -587,15 +623,30 @@ impl Generator {
             } else {
                 nearest_align(&noise_x, stage_ch, t_noise, t_up)
             };
+            super::maybe_dump_stage(&format!("gen_stage_{stage}_noise_pre_res"), &noise_aligned);
             // Noise resblock (in-place additive residual over 3 sub-blocks).
             let mut noise_aligned_mut = noise_aligned;
-            self.noise_res[stage].forward(compute, &mut noise_aligned_mut, t_up, style);
+            // Dump per-sub-block intermediates for the noise_res AmpResBlock
+            // when VOKRA_KOKORO_PARITY_DUMP is set (T17-fixup #1 bisection).
+            let dump_prefix = format!("gen_stage_{stage}_noise_res");
+            self.noise_res[stage].forward_with_dump(
+                compute,
+                &mut noise_aligned_mut,
+                t_up,
+                style,
+                Some(&dump_prefix),
+            );
+            super::maybe_dump_stage(
+                &format!("gen_stage_{stage}_noise_post_res"),
+                &noise_aligned_mut,
+            );
 
             // 3. Main + noise fusion.
             let mut fused = up;
             for (a, b) in fused.iter_mut().zip(&noise_aligned_mut) {
                 *a += b;
             }
+            super::maybe_dump_stage(&format!("gen_stage_{stage}_fused"), &fused);
 
             // 4. MRF: average over `n_kernels` main resblocks for this stage.
             let mut mrf = vec![0.0f32; stage_ch * t_up];
@@ -603,6 +654,7 @@ impl Generator {
                 let rb_idx = stage * self.n_kernels + k;
                 let mut branch = fused.clone();
                 self.resblocks[rb_idx].forward(compute, &mut branch, t_up, style);
+                super::maybe_dump_stage(&format!("gen_stage_{stage}_rb_{k}"), &branch);
                 for (a, b) in mrf.iter_mut().zip(&branch) {
                     *a += b;
                 }
@@ -611,6 +663,7 @@ impl Generator {
             for v in &mut mrf {
                 *v *= inv;
             }
+            super::maybe_dump_stage(&format!("gen_stage_{stage}_mrf"), &mrf);
 
             cur = mrf;
             cur_len = t_up;
@@ -620,8 +673,10 @@ impl Generator {
 
         // 5. Head: LeakyReLU → conv_post → split (mag, phase)
         nn::leaky_relu(&mut cur, GEN_LRELU_SLOPE);
+        super::maybe_dump_stage("gen_pre_conv_post", &cur);
         let (post, t_gen) = self.conv_post.forward(compute, &cur, cur_len);
         debug_assert_eq!(post.len(), self.source_ch * t_gen);
+        super::maybe_dump_stage("gen_conv_post", &post);
         let n_half = self.source_ch / 2;
         let x_mag = post[..n_half * t_gen].to_vec();
         let x_phase = post[n_half * t_gen..].to_vec();

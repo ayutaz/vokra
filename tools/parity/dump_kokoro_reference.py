@@ -1008,6 +1008,28 @@ GEN_LRELU_SLOPE = 0.1  # HiFi-GAN default
 SNAKE_EPS = 1e-9  # Snake α+eps stability (matches Rust nn::snake_activation)
 
 
+def _maybe_dump_stage(name: str, tensor) -> None:
+    """Bisection helper (T17-fixup #1): write `tensor` as little-endian F32 to
+    ``$VOKRA_KOKORO_PARITY_DUMP/ref_<name>.f32`` when that env is set.
+
+    Pairs 1:1 with Rust's ``super::maybe_dump_stage("<name>", ...)`` so
+    ``tools/parity/kokoro_bisect.py`` can diff each stage in isolation.
+    """
+    import os
+
+    dump_dir = os.environ.get("VOKRA_KOKORO_PARITY_DUMP")
+    if not dump_dir:
+        return
+    os.makedirs(dump_dir, exist_ok=True)
+    try:
+        arr = tensor.detach().cpu().numpy().astype(np.float32).reshape(-1)
+    except AttributeError:
+        arr = np.asarray(tensor, dtype=np.float32).reshape(-1)
+    path = os.path.join(dump_dir, f"ref_{name}.f32")
+    with open(path, "wb") as f:
+        f.write(arr.tobytes())
+
+
 def _adain_channel_major_no_shift(
     x: "torch.Tensor",
     channels: int,
@@ -1144,11 +1166,16 @@ def _amp_resblock_forward(
     channels: int,
     kernel: int,
     style_t: "torch.Tensor",
+    dump_prefix: str = "",
 ) -> "torch.Tensor":
     """HiFi-GAN AMP ResBlock (BigVGAN) — mirrors Rust ``AmpResBlock::forward``.
 
     3 dilated Conv1d pairs (dilations [1, 3, 5]) with per-sub-block AdaIN + Snake;
     additive residual over 3 sub-blocks.
+
+    When ``dump_prefix`` is non-empty AND ``VOKRA_KOKORO_PARITY_DUMP`` is set,
+    emits per-sub-block intermediates via ``_maybe_dump_stage`` under
+    ``ref_<dump_prefix>_sub_<j>_{adain1,snake1,c1,adain2,snake2,c2,acc}``.
     """
     import torch as _torch
     import torch.nn.functional as F
@@ -1168,8 +1195,12 @@ def _amp_resblock_forward(
         fc_w = get(f"{prefix}.adain1.{j}.fc.weight")
         fc_b = get(f"{prefix}.adain1.{j}.fc.bias")
         xj = _adain_channel_major_no_shift(xj, channels, fc_w, fc_b, style_t)
+        if dump_prefix:
+            _maybe_dump_stage(f"{dump_prefix}_sub_{j}_adain1", xj)
         alpha1 = get(f"{prefix}.alpha1.{j}")
         xj = _snake_activation_torch(xj, alpha1, channels, time)
+        if dump_prefix:
+            _maybe_dump_stage(f"{dump_prefix}_sub_{j}_snake1", xj)
         wg = get(f"{prefix}.convs1.{j}.weight_g")
         wv = get(f"{prefix}.convs1.{j}.weight_v")
         b = get(f"{prefix}.convs1.{j}.bias")
@@ -1178,13 +1209,19 @@ def _amp_resblock_forward(
             xj.unsqueeze(0), w, bias=b,
             stride=1, padding=pad1, dilation=d,
         ).squeeze(0)
+        if dump_prefix:
+            _maybe_dump_stage(f"{dump_prefix}_sub_{j}_c1", xj)
 
         # adain2 + snake α2 + convs2[j] (dilation 1) — no-shift AdaIN
         fc_w = get(f"{prefix}.adain2.{j}.fc.weight")
         fc_b = get(f"{prefix}.adain2.{j}.fc.bias")
         xj = _adain_channel_major_no_shift(xj, channels, fc_w, fc_b, style_t)
+        if dump_prefix:
+            _maybe_dump_stage(f"{dump_prefix}_sub_{j}_adain2", xj)
         alpha2 = get(f"{prefix}.alpha2.{j}")
         xj = _snake_activation_torch(xj, alpha2, channels, time)
+        if dump_prefix:
+            _maybe_dump_stage(f"{dump_prefix}_sub_{j}_snake2", xj)
         wg = get(f"{prefix}.convs2.{j}.weight_g")
         wv = get(f"{prefix}.convs2.{j}.weight_v")
         b = get(f"{prefix}.convs2.{j}.bias")
@@ -1193,8 +1230,12 @@ def _amp_resblock_forward(
             xj.unsqueeze(0), w, bias=b,
             stride=1, padding=pad2, dilation=1,
         ).squeeze(0)
+        if dump_prefix:
+            _maybe_dump_stage(f"{dump_prefix}_sub_{j}_c2", xj)
 
         x = x + xj
+        if dump_prefix:
+            _maybe_dump_stage(f"{dump_prefix}_sub_{j}_acc", x)
 
     return x
 
@@ -1283,12 +1324,14 @@ def _forward_generator_torch(
         in_ch, out_ch, kernel, stride, pad, wg, wv_f, b = stages[stage]
         # 1. LeakyReLU(0.1) → ups
         cur = F.leaky_relu(cur, GEN_LRELU_SLOPE)
+        _maybe_dump_stage(f"gen_stage_{stage}_pre_ups", cur)
         w = _wn_reconstruct(wg, wv_f)  # [in_ch, out_ch, kernel]
         up = F.conv_transpose1d(
             cur.unsqueeze(0), w, b,
             stride=stride, padding=pad, output_padding=0, groups=1,
         ).squeeze(0)  # [out_ch, t_up]
         t_up = up.shape[1]
+        _maybe_dump_stage(f"gen_stage_{stage}_ups", up)
 
         # 2. Noise / source contribution — zero-fill (mirrors Rust T15).
         source_spec = _torch.zeros(source_ch, t_up, dtype=_torch.float32)
@@ -1309,16 +1352,20 @@ def _forward_generator_torch(
         t_noise = noise_x.shape[1]
         if t_noise != t_up:
             noise_x = _nearest_align_torch(noise_x, t_noise, t_up)
+        _maybe_dump_stage(f"gen_stage_{stage}_noise_pre_res", noise_x)
 
         # noise_res[stage] AmpResBlock — probe kernel from convs1.0.weight_v
         nr_probe = store.tensor(f"{g}.noise_res.{stage}.convs1.0.weight_v")
         nr_kernel = int(nr_probe.shape[2])
         noise_x = _amp_resblock_forward(
             store, noise_x, f"{g}.noise_res.{stage}", out_ch, nr_kernel, style_t,
+            dump_prefix=f"gen_stage_{stage}_noise_res",
         )
+        _maybe_dump_stage(f"gen_stage_{stage}_noise_post_res", noise_x)
 
         # 3. Fuse
         fused = up + noise_x
+        _maybe_dump_stage(f"gen_stage_{stage}_fused", fused)
 
         # 4. MRF: average over 3 resblocks per stage.
         n_kernels = 3
@@ -1330,16 +1377,20 @@ def _forward_generator_torch(
             branch = _amp_resblock_forward(
                 store, fused, f"{g}.resblocks.{rb_idx}", out_ch, rb_kernel, style_t,
             )
+            _maybe_dump_stage(f"gen_stage_{stage}_rb_{k}", branch)
             mrf = mrf + branch
         mrf = mrf / float(n_kernels)
+        _maybe_dump_stage(f"gen_stage_{stage}_mrf", mrf)
         cur = mrf
 
     # 5. Head: LeakyReLU → conv_post → split (mag, phase).
     cur = F.leaky_relu(cur, GEN_LRELU_SLOPE)
+    _maybe_dump_stage("gen_pre_conv_post", cur)
     post = F.conv1d(
         cur.unsqueeze(0), cp_w, bias=cp_b,
         stride=1, padding=conv_post_pad,
     ).squeeze(0)  # [source_ch, t_gen]
+    _maybe_dump_stage("gen_conv_post", post)
     t_gen = int(post.shape[1])
     x_mag = post[:n_half].contiguous()
     x_phase = post[n_half:].contiguous()
@@ -1469,6 +1520,7 @@ def _forward_decoder(
         dim_in=encode_in_ch, dim_out=decode_hidden,
         has_pool=False, style_t=style_t,
     )  # [1024, t_frames]
+    _maybe_dump_stage("dec_encode", x)
 
     # 7. asr_res bridge: WeightNormedConv1d(512 → 64, k=1) on the raw asr.
     asr_res_wg = get("decoder.module.asr_res.0.weight_g")
@@ -1479,6 +1531,7 @@ def _forward_decoder(
         asr.unsqueeze(0), asr_res_w, bias=asr_res_b,
         stride=1, padding=0,
     ).squeeze(0)  # [64, t_frames]
+    _maybe_dump_stage("dec_asr_res", asr_res_out)
     asr_res_out_ch = 64
 
     # 8. decode.0/1/2/3: concat [x, asr_res, f0_up, n_up] → [1090, t_x]
@@ -1516,8 +1569,10 @@ def _forward_decoder(
             has_pool=has_pool, style_t=style_t,
         )
         t_x = x.shape[1]
+        _maybe_dump_stage(f"dec_decode_{i}", x)
 
     # x is now [512, t_x] where t_x = 2·t_frames − 1 (decode.3 pool applied).
+    _maybe_dump_stage("dec_pre_generator", x)
 
     # 9. Generator forward → (x_mag, x_phase, t_gen)
     x_mag, x_phase, t_gen = _forward_generator_torch(store, x, style_t)
