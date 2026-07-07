@@ -32,15 +32,43 @@
 //! Foundation WP only: verbatim safetensors → GGUF, shape-driven hparams where
 //! possible with `0` placeholders (mirroring Whisper's degenerate-shape
 //! pattern) for values that need T02 upstream inspection. Voicepack layout,
-//! phoneme table, and voice name list are deliberately left as empty
-//! placeholders here — the follow-up ticket wires them in with an explicit
-//! `--config config.json` input (same shape as piper-plus).
+//! phoneme table, and voice name list default to synthesized placeholders — a
+//! caller who has the real misaki phoneme table + voicepack index passes them
+//! via [`convert_with_config`] and its CLI surface `--config config.json`
+//! (same shape as piper-plus).
+//!
+//! # `config.json` schema (accepted by [`convert_with_config`])
+//!
+//! The parser is lenient about field names to accommodate the varied upstream
+//! forks. All keys are optional individually, but **at least one field from
+//! each family** (symbols + voices) must be present; missing both raises
+//! [`ConvertError::Parse`]. First-match wins per family:
+//!
+//! Symbol family (in precedence order):
+//!
+//! 1. `vocab: { "<symbol>": <id>, … }` — Kokoro / misaki-style symbol→id map.
+//!    Table length = `max(id)+1`. Missing slots stay as `""`.
+//! 2. `phoneme_symbols: [<str>, …]` — id-indexed symbol array.
+//! 3. `symbols: [<str>, …]` — alias of `phoneme_symbols`.
+//!
+//! Voice family (in precedence order):
+//!
+//! 1. `voices: [<str>, …]` — voice-name list (canonical release ships these as
+//!    separate `voices/*.pt` files, so this is authoritative for `num_voices`
+//!    when present).
+//! 2. `voice_names: [<str>, …]` — alias of `voices`.
+//!
+//! When a config is passed, `num_voices` is overridden from
+//! `voice_names.len()` and a note is emitted on any tensor-vs-metadata
+//! disagreement (converter stays infallible; runtime rejects at load per
+//! FR-EX-08).
 
 use vokra_core::gguf::{
     GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
 };
 
 use crate::ConvertError;
+use crate::json::{self, JsonValue};
 use crate::safetensors::{SafeTensorInfo, SafetensorsFile};
 
 /// `vokra.model.arch` value written for Kokoro-82M GGUFs.
@@ -114,12 +142,22 @@ pub(crate) struct KokoroReport {
     /// reader is later extended to admit non-float dtypes (e.g. INT8 quant),
     /// the skip path already exists and the report already reports.
     pub(crate) skipped_non_float: usize,
-    /// Voice names in voicepack order (populated by a follow-up ticket that
-    /// wires `--config config.json`).
+    /// Voice names in voicepack order (populated by [`convert_with_config`]
+    /// when a `--config config.json` is passed; empty on the placeholder path).
     pub(crate) voices: Vec<String>,
     /// Per-voice style vector dimension (derived from `voicepack` shape[1]
     /// when the tensor is present, else `0`).
     pub(crate) style_dim: usize,
+    /// Number of phoneme symbols in the emitted `vokra.kokoro.phoneme_symbols`
+    /// array. Matches either the placeholder count (n_vocab from
+    /// `text_encoder.embedding.weight[0]`) or the config-supplied count.
+    pub(crate) phoneme_symbol_count: usize,
+    /// Diagnostic notes surfaced to the CLI operator (e.g. tensor vs. config
+    /// mismatch on `phoneme_symbols` count, or `voicepack` rows vs.
+    /// `voice_names` length). The converter never fails on a mismatch — the
+    /// runtime is the authoritative gate (FR-EX-08) — but a loud warning is
+    /// printed so the operator does not learn about it only at load time.
+    pub(crate) notes: Vec<String>,
 }
 
 /// Reads dimension `axis` of tensor `name` from the checkpoint, or `0` when
@@ -148,15 +186,110 @@ fn count_layers(st: &SafetensorsFile, prefix: &str) -> u32 {
     }
 }
 
-/// Derives the `vokra.kokoro.*` hparams from tensor shapes and writes them
-/// into `b`.
+/// Parsed `config.json` payload used by [`convert_with_config`].
 ///
-/// Every value is read from a tensor shape (or a well-documented model-card
-/// invariant like `sample_rate = 24_000`). Missing tensors write `0` — the
-/// converter stays infallible so degenerate synthetic inputs still round-trip,
-/// but a `0` on a required hparam is rejected by the runtime loader at load
-/// time (FR-EX-08 — no silent fallback in the runtime).
-fn write_hparams(b: &mut GgufBuilder, st: &SafetensorsFile) -> u64 {
+/// The parser (see [`KokoroJsonConfig::parse`]) recognizes multiple upstream
+/// spellings of each field; see the module docstring for the accepted schema.
+#[derive(Debug, Default)]
+pub(crate) struct KokoroJsonConfig {
+    /// Phoneme symbol per id; index = id. Length is `max(id)+1` for the
+    /// `vocab: {…}` shape or the array length for the `phoneme_symbols` /
+    /// `symbols` shapes.
+    pub(crate) phoneme_symbols: Vec<String>,
+    /// Voice name per id; index = id (`voice_names` == `voices`).
+    pub(crate) voice_names: Vec<String>,
+}
+
+impl KokoroJsonConfig {
+    /// Parses a Kokoro `config.json` payload. See the module docstring for
+    /// the accepted schema (first-match wins per field family; at least one
+    /// of `{vocab, phoneme_symbols, symbols}` **and** one of `{voices,
+    /// voice_names}` must be present).
+    pub(crate) fn parse(bytes: &[u8]) -> Result<Self, ConvertError> {
+        let root = json::parse(bytes).map_err(|e| ConvertError::Parse(e.to_string()))?;
+
+        // Symbol family: vocab (map) > phoneme_symbols (array) > symbols (array).
+        let phoneme_symbols = if let Some(vocab) = root.get("vocab").and_then(JsonValue::as_object)
+        {
+            // symbol → id map. Table length = max(id)+1; missing slots left "".
+            let mut table: Vec<String> = Vec::new();
+            for (symbol, id) in vocab {
+                if let Some(id) = id.as_u64() {
+                    let id = id as usize;
+                    if id >= table.len() {
+                        table.resize(id + 1, String::new());
+                    }
+                    table[id] = symbol.clone();
+                }
+            }
+            table
+        } else if let Some(arr) = root.get("phoneme_symbols").and_then(JsonValue::as_array) {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        } else if let Some(arr) = root.get("symbols").and_then(JsonValue::as_array) {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        } else {
+            return Err(ConvertError::Parse(
+                "kokoro config: no phoneme symbols found (expected `vocab`, \
+                 `phoneme_symbols`, or `symbols`)"
+                    .to_owned(),
+            ));
+        };
+
+        // Voice family: voices > voice_names.
+        let voice_names = if let Some(arr) = root.get("voices").and_then(JsonValue::as_array) {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        } else if let Some(arr) = root.get("voice_names").and_then(JsonValue::as_array) {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        } else {
+            return Err(ConvertError::Parse(
+                "kokoro config: no voice list found (expected `voices` or `voice_names`)"
+                    .to_owned(),
+            ));
+        };
+
+        Ok(Self {
+            phoneme_symbols,
+            voice_names,
+        })
+    }
+}
+
+/// Result of writing the `vokra.kokoro.*` hparam chunk. Aggregates the value
+/// derivations the [`convert_with_config`] caller needs for its [`KokoroReport`].
+struct HparamOutcome {
+    style_dim: u64,
+    phoneme_symbol_count: usize,
+    voice_names: Vec<String>,
+    notes: Vec<String>,
+}
+
+/// Derives the `vokra.kokoro.*` hparams from tensor shapes (and optional
+/// config overrides) and writes them into `b`.
+///
+/// Every numeric value is read from a tensor shape (or a well-documented
+/// model-card invariant like `sample_rate = 24_000`). Missing tensors write
+/// `0` — the converter stays infallible so degenerate synthetic inputs still
+/// round-trip, but a `0` on a required hparam is rejected by the runtime
+/// loader at load time (FR-EX-08 — no silent fallback in the runtime).
+///
+/// When `config` is `Some`, the `phoneme_symbols` and `voice_names` arrays
+/// (plus `num_voices`) are taken from the config verbatim. Otherwise the
+/// placeholder path is used: `p0..p_{n_vocab-1}` symbols and an empty voice
+/// list — the same values the module has emitted since M2-07 T06 (kept for
+/// backward compatibility with the roundtrip test that does not pass a config).
+fn write_hparams(
+    b: &mut GgufBuilder,
+    st: &SafetensorsFile,
+    config: Option<&KokoroJsonConfig>,
+) -> HparamOutcome {
     // Shape-driven derivations. Real Kokoro-82M ships with the
     // ``nn.DataParallel`` ``.module.`` prefix baked into every tensor name
     // (canonical `kokoro-v1_0.pth`); the "plain" alternates below stay as
@@ -211,9 +344,31 @@ fn write_hparams(b: &mut GgufBuilder, st: &SafetensorsFile) -> u64 {
         }
     };
 
+    // Config overrides (when passed): `voice_names.len()` becomes authoritative
+    // for `num_voices` — Kokoro's canonical release ships voice styles as
+    // separate ``voices/*.pt`` files (per the reference dumper's
+    // ``open_checkpoint`` doc at ``tools/parity/dump_kokoro_reference.py``), so
+    // the in-checkpoint ``voicepack`` tensor is often absent and the config is
+    // the true source of truth. When both are present and disagree, we emit a
+    // note rather than silently masking the mismatch.
+    let mut notes: Vec<String> = Vec::new();
+    let (num_voices_written, voice_names_out) = if let Some(cfg) = config {
+        let cfg_n = cfg.voice_names.len();
+        if num_voices > 0 && (num_voices as usize) != cfg_n {
+            notes.push(format!(
+                "kokoro config: voicepack rows ({}) != voice_names length ({}); \
+                 using config-authoritative num_voices = {}",
+                num_voices, cfg_n, cfg_n,
+            ));
+        }
+        (cfg_n as u32, cfg.voice_names.clone())
+    } else {
+        (num_voices as u32, Vec::new())
+    };
+
     b.add_u32(KEY_SAMPLE_RATE, KOKORO_SAMPLE_RATE);
     b.add_u32(KEY_STYLE_DIM, style_dim as u32);
-    b.add_u32(KEY_NUM_VOICES, num_voices as u32);
+    b.add_u32(KEY_NUM_VOICES, num_voices_written);
     b.add_u32(KEY_N_TEXT_LAYERS, n_text_layers);
     b.add_u32(KEY_N_DECODER_LAYERS, n_decoder_layers);
     b.add_u32(KEY_HIDDEN_DIM, hidden_dim as u32);
@@ -222,16 +377,15 @@ fn write_hparams(b: &mut GgufBuilder, st: &SafetensorsFile) -> u64 {
     b.add_u32(KEY_ISTFT_N_FFT, KOKORO_ISTFT_N_FFT);
     b.add_u32(KEY_ISTFT_HOP, KOKORO_ISTFT_HOP);
     b.add_u32(KEY_ISTFT_WIN_LENGTH, KOKORO_ISTFT_WIN_LENGTH);
-    // Phoneme symbols — until a follow-up ticket wires an explicit
-    // ``--config config.json`` input, synthesise a placeholder table of the
-    // right size (n_vocab derived from the text embedding axis 0). The runtime
-    // rejects an empty table (`kokoro text encoder: config.phoneme_symbols is
-    // empty`), so a zero fallback would block loading altogether — this way a
-    // caller who doesn't yet have the misaki phoneme table can still exercise
-    // the numeric path (T14/T15/T17 parity) with phoneme *ids* directly. The
-    // strings are diagnostic-only; the runtime consumes the count via
-    // ``n_vocab = phoneme_symbols.len()``, not the string contents.
-    let n_vocab = {
+    // Phoneme symbols — when a caller passes ``--config config.json`` the real
+    // misaki phoneme table lands in the GGUF verbatim. Otherwise synthesise a
+    // placeholder table of the right size (n_vocab derived from the text
+    // embedding axis 0). The runtime rejects an empty table (`kokoro text
+    // encoder: config.phoneme_symbols is empty`), so a zero fallback would
+    // block loading altogether — the placeholder path exists so a caller
+    // without the misaki table can still exercise the numeric path
+    // (T14/T15/T17 parity) with phoneme *ids* directly.
+    let n_vocab_tensor = {
         let v = tensor_dim(st, "text_encoder.embedding.weight", 0);
         if v > 0 {
             v
@@ -239,43 +393,94 @@ fn write_hparams(b: &mut GgufBuilder, st: &SafetensorsFile) -> u64 {
             tensor_dim(st, "text_encoder.module.embedding.weight", 0)
         }
     } as usize;
-    let phoneme_symbols: Vec<GgufMetadataValue> = (0..n_vocab)
-        .map(|i| GgufMetadataValue::String(format!("p{i}")))
-        .collect();
+    let phoneme_symbols_values: Vec<GgufMetadataValue> = if let Some(cfg) = config {
+        if n_vocab_tensor > 0 && cfg.phoneme_symbols.len() != n_vocab_tensor {
+            notes.push(format!(
+                "kokoro config: phoneme_symbols length ({}) != \
+                 text_encoder.embedding.weight rows ({}); runtime will reject at load",
+                cfg.phoneme_symbols.len(),
+                n_vocab_tensor,
+            ));
+        }
+        cfg.phoneme_symbols
+            .iter()
+            .map(|s| GgufMetadataValue::String(s.clone()))
+            .collect()
+    } else {
+        (0..n_vocab_tensor)
+            .map(|i| GgufMetadataValue::String(format!("p{i}")))
+            .collect()
+    };
+    let phoneme_symbol_count = phoneme_symbols_values.len();
     b.add_metadata(
         KEY_PHONEME_SYMBOLS,
         GgufMetadataValue::Array(GgufArray {
             element_type: GgufValueType::String,
-            values: phoneme_symbols,
+            values: phoneme_symbols_values,
         }),
     );
+    let voice_name_values: Vec<GgufMetadataValue> = voice_names_out
+        .iter()
+        .map(|s| GgufMetadataValue::String(s.clone()))
+        .collect();
     b.add_metadata(
         KEY_VOICE_NAMES,
         GgufMetadataValue::Array(GgufArray {
             element_type: GgufValueType::String,
-            values: Vec::new(),
+            values: voice_name_values,
         }),
     );
 
-    style_dim
+    HparamOutcome {
+        style_dim,
+        phoneme_symbol_count,
+        voice_names: voice_names_out,
+        notes,
+    }
 }
 
 /// Converts a Kokoro-82M safetensors buffer into a populated GGUF builder
 /// plus a report of what was written vs. skipped.
 ///
+/// Thin delegate to [`convert_with_config`] with `None` — kept as a stable
+/// entry point for the `convert_file(ModelKind::Kokoro, …)` placeholder path
+/// (backward compat: caller without a `--config config.json` still gets the
+/// `p0..p_{n_vocab-1}` phoneme placeholders and an empty `voice_names` array).
+pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, KokoroReport), ConvertError> {
+    convert_with_config(bytes, None)
+}
+
+/// Converts a Kokoro-82M safetensors buffer (plus an optional Kokoro
+/// `config.json` payload) into a populated GGUF builder and a report.
+///
 /// Every tensor is written verbatim (bytes, dtype and shape preserved); no
 /// FP16 → FP32 widening (M2-07 keeps the source dtype so the follow-up
 /// quantization policy can act on the same bytes the checkpoint shipped).
-pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, KokoroReport), ConvertError> {
+///
+/// When `config_bytes` is `Some`, the parsed [`KokoroJsonConfig`] populates the
+/// `vokra.kokoro.phoneme_symbols` / `.voice_names` arrays verbatim and
+/// overrides `vokra.kokoro.num_voices` from `voice_names.len()`. Otherwise the
+/// placeholder path is used (see [`convert`]).
+pub(crate) fn convert_with_config(
+    bytes: Vec<u8>,
+    config_bytes: Option<&[u8]>,
+) -> Result<(GgufBuilder, KokoroReport), ConvertError> {
     let st = SafetensorsFile::parse(bytes)?;
+    let config = match config_bytes {
+        Some(bytes) => Some(KokoroJsonConfig::parse(bytes)?),
+        None => None,
+    };
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    let style_dim = write_hparams(&mut b, &st);
+    let outcome = write_hparams(&mut b, &st, config.as_ref());
 
     let mut report = KokoroReport {
-        style_dim: style_dim as usize,
+        style_dim: outcome.style_dim as usize,
+        phoneme_symbol_count: outcome.phoneme_symbol_count,
+        voices: outcome.voice_names,
+        notes: outcome.notes,
         ..Default::default()
     };
 
@@ -462,6 +667,132 @@ mod tests {
         assert!(
             msg.contains("I64") || msg.contains("dtype"),
             "expected parse-side non-float rejection, got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // KokoroJsonConfig parser + convert_with_config
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn config_parses_vocab_map_and_voices_array() {
+        // `vocab: {symbol: id}` (Kokoro / misaki spelling), `voices: [str]`
+        // (canonical release spelling). Table length = max(id)+1; missing
+        // slots stay as "".
+        let raw = br#"{"vocab":{"_":0,"a":1,"b":3},"voices":["af","am_michael","bf_emma"]}"#;
+        let cfg = KokoroJsonConfig::parse(raw).expect("parse vocab+voices");
+        assert_eq!(cfg.phoneme_symbols.len(), 4);
+        assert_eq!(cfg.phoneme_symbols[0], "_");
+        assert_eq!(cfg.phoneme_symbols[1], "a");
+        assert_eq!(cfg.phoneme_symbols[2], ""); // gap left blank
+        assert_eq!(cfg.phoneme_symbols[3], "b");
+        assert_eq!(cfg.voice_names, vec!["af", "am_michael", "bf_emma"]);
+    }
+
+    #[test]
+    fn config_parses_phoneme_symbols_and_voice_names_aliases() {
+        // Fallback shape: `phoneme_symbols: [str]` array + `voice_names: [str]`
+        // alias. First-match wins so this only fires when `vocab` / `voices`
+        // are absent.
+        let raw = br#"{"phoneme_symbols":["_","a","b"],"voice_names":["v0","v1"]}"#;
+        let cfg = KokoroJsonConfig::parse(raw).expect("parse array shapes");
+        assert_eq!(cfg.phoneme_symbols, vec!["_", "a", "b"]);
+        assert_eq!(cfg.voice_names, vec!["v0", "v1"]);
+    }
+
+    #[test]
+    fn config_parses_symbols_alias() {
+        // Third accepted shape for the symbol family: `symbols: [str]`.
+        let raw = br#"{"symbols":["_","a"],"voices":["v0"]}"#;
+        let cfg = KokoroJsonConfig::parse(raw).expect("parse symbols alias");
+        assert_eq!(cfg.phoneme_symbols, vec!["_", "a"]);
+        assert_eq!(cfg.voice_names, vec!["v0"]);
+    }
+
+    #[test]
+    fn config_rejects_missing_symbol_family() {
+        let raw = br#"{"voices":["v0"]}"#;
+        let err = KokoroJsonConfig::parse(raw).expect_err("missing symbols");
+        assert!(
+            format!("{err}").contains("no phoneme symbols found"),
+            "expected missing-symbols error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn config_rejects_missing_voice_family() {
+        let raw = br#"{"symbols":["_","a"]}"#;
+        let err = KokoroJsonConfig::parse(raw).expect_err("missing voices");
+        assert!(
+            format!("{err}").contains("no voice list found"),
+            "expected missing-voices error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn convert_with_config_overrides_symbols_and_voices() {
+        // Synthetic checkpoint: `text_encoder.embedding.weight [3, 8]` ⇒
+        // n_vocab = 3, and `voicepack [2, 4]` ⇒ tensor num_voices = 2. Pass a
+        // config with 3 symbols and 3 voices — the config voice count wins
+        // (voicepack-vs-config mismatch surfaces as a note, not a fail).
+        let ckpt = synthetic_kokoro_safetensors();
+        let cfg = br#"{"phoneme_symbols":["_","a","b"],"voices":["af","am_michael","bf_emma"]}"#;
+        let (builder, report) = convert_with_config(ckpt, Some(cfg)).expect("convert_with_config");
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+
+        let syms = file
+            .get(KEY_PHONEME_SYMBOLS)
+            .and_then(|v| v.as_array())
+            .expect("phoneme_symbols present");
+        assert_eq!(syms.values.len(), 3);
+        // First symbol is the actual name, not the `p0` placeholder.
+        assert_eq!(
+            syms.values[0],
+            GgufMetadataValue::String("_".to_owned()),
+            "config symbols override the p{{i}} placeholder"
+        );
+
+        let voices = file
+            .get(KEY_VOICE_NAMES)
+            .and_then(|v| v.as_array())
+            .expect("voice_names present");
+        assert_eq!(voices.values.len(), 3);
+        assert_eq!(
+            voices.values[1],
+            GgufMetadataValue::String("am_michael".to_owned())
+        );
+
+        // `num_voices` is config-authoritative (=3), not the voicepack tensor
+        // count (=2). Disagreement surfaces as a report note.
+        assert_eq!(
+            file.get(KEY_NUM_VOICES).and_then(|v| v.as_u64()),
+            Some(3),
+            "config voice_names.len() overrides voicepack rows"
+        );
+        assert_eq!(report.voices.len(), 3);
+        assert_eq!(report.phoneme_symbol_count, 3);
+        assert!(
+            report.notes.iter().any(|n| n.contains("voicepack rows")),
+            "expected voicepack-vs-voice_names mismatch note, got: {:?}",
+            report.notes
+        );
+    }
+
+    #[test]
+    fn convert_with_config_notes_phoneme_count_mismatch() {
+        // n_vocab tensor axis-0 = 3; config supplies only 2 symbols. Runtime
+        // will reject at load — the converter surfaces a note but does not
+        // fail (FR-EX-08: runtime is the authoritative gate).
+        let ckpt = synthetic_kokoro_safetensors();
+        let cfg = br#"{"phoneme_symbols":["_","a"],"voices":["v0"]}"#;
+        let (_, report) = convert_with_config(ckpt, Some(cfg)).expect("convert_with_config");
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| n.contains("phoneme_symbols length")),
+            "expected phoneme-symbol-count mismatch note, got: {:?}",
+            report.notes
         );
     }
 }

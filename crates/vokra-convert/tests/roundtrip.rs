@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use vokra_convert::{ModelKind, convert_file};
+use vokra_convert::{ModelKind, convert_file, convert_kokoro_file};
 use vokra_core::gguf::{FrontendSpec, GgufFile};
 
 /// A unique temp path for this test process.
@@ -191,5 +191,182 @@ fn kokoro_safetensors_roundtrips_through_convert_file() {
     );
 
     let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+}
+
+/// Builds a Kokoro-82M-*canonical-shaped* safetensors buffer:
+///
+/// - `text_encoder.embedding.weight` = `[178, 512]` (n_vocab = 178, hidden = 512)
+/// - `voicepack` = `[3, 128]` (num_voices = 3, style_dim = 128 — matches the
+///   canonical release's per-voice style vector width)
+///
+/// Payload is all-zero apart from a fingerprint on `voicepack` so a byte-exact
+/// round-trip check on `voicepack` is still meaningful (mirroring the M2-07 T06
+/// placeholder-path test's fingerprint pattern). Total buffer is well under
+/// 1 MB (178·512·4 = 365 KB + 3·128·4 = 1.5 KB), comparable to the Whisper
+/// synthetic checkpoint.
+fn synthetic_kokoro_82m_shaped_safetensors() -> Vec<u8> {
+    // (name, shape) — element count = product; F32 payload = 4 * elems.
+    let entries: &[(&str, &[u64])] = &[
+        // voicepack [num_voices=3, style_dim=128] → 1536 bytes.
+        ("voicepack", &[3, 128]),
+        // text_encoder.embedding.weight [n_vocab=178, hidden=512] → 364,544 bytes.
+        ("text_encoder.embedding.weight", &[178, 512]),
+    ];
+
+    let mut cursor = 0usize;
+    let mut header_entries = Vec::new();
+    let mut sizes = Vec::new();
+    for &(name, shape) in entries {
+        let elems: u64 = shape.iter().product();
+        let span = elems as usize * 4;
+        let begin = cursor;
+        let end = cursor + span;
+        cursor = end;
+        sizes.push(span);
+        let dims = shape
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        header_entries.push(format!(
+            r#""{name}":{{"dtype":"F32","shape":[{dims}],"data_offsets":[{begin},{end}]}}"#
+        ));
+    }
+    let header = format!("{{{}}}", header_entries.join(","));
+
+    // Fingerprint on `voicepack` so we can assert byte-exact round-trip on the
+    // voicepack tensor even though the payload is otherwise all-zero.
+    let voicepack_bytes = sizes[0];
+    let mut payload = vec![0u8; cursor];
+    for (i, chunk) in payload[..voicepack_bytes].chunks_mut(4).enumerate() {
+        let f = (i as f32) * 0.125 + 0.5;
+        chunk.copy_from_slice(&f.to_le_bytes());
+    }
+
+    let mut out = Vec::new();
+    out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(&payload);
+    out
+}
+
+/// Builds a synthetic Kokoro `config.json`:
+///
+/// - 178 phoneme symbols under the primary `vocab: {symbol: id}` shape
+///   (Kokoro / misaki-style — matches upstream `KOTA` phoneme id assignment,
+///   though the exact symbols here are placeholders because the upstream
+///   `hexgrad/Kokoro-82M/config.json` is not accessible in this workspace);
+/// - 3 voice names under the primary `voices: [str]` shape (again the exact
+///   `af` / `am_michael` / `bf_emma` names are the standard hexgrad naming
+///   convention but the ordering is our best-guess pending upstream access).
+///
+/// This is a **synthesized** config — the task instructions call this out
+/// explicitly as an accepted fallback. When a real config.json becomes
+/// available, this test's assertions on the exact symbol strings should stay
+/// unchanged (they only check that the config's values, not the placeholder
+/// `p{i}` synth, ended up in the GGUF).
+fn synthetic_kokoro_config_json() -> Vec<u8> {
+    // Build the vocab map: symbol → id. Symbols are `sym0`..`sym177` so the
+    // assertion "no `p{i}` prefix" is meaningful (`sym` starts with `s`, not
+    // `p`, and matches nothing the placeholder path emits).
+    let mut vocab_pairs: Vec<String> = Vec::with_capacity(178);
+    for i in 0..178 {
+        vocab_pairs.push(format!(r#""sym{i}":{i}"#));
+    }
+    let vocab = format!("{{{}}}", vocab_pairs.join(","));
+    let voices = r#"["af","am_michael","bf_emma"]"#;
+    format!(r#"{{"vocab":{vocab},"voices":{voices}}}"#).into_bytes()
+}
+
+#[test]
+fn kokoro_safetensors_with_config_roundtrips_through_convert_kokoro_file() {
+    // M2-07-T17-fixup #3: exercise the config-driven Kokoro conversion.
+    // Assumption: the exact `config.json` schema + voice-name choices are
+    // synthesized because the upstream `hexgrad/Kokoro-82M/config.json` is
+    // not accessible in this workspace. When a real config lands the parser
+    // already accepts multiple aliases (`vocab` / `phoneme_symbols` /
+    // `symbols`; `voices` / `voice_names`) so no test change should be
+    // needed — only the schema documentation.
+
+    let input = tmp_path("kokoro-cfg-in");
+    let config = tmp_path("kokoro-cfg-json");
+    let output = tmp_path("kokoro-cfg-out");
+    std::fs::write(&input, synthetic_kokoro_82m_shaped_safetensors()).expect("write input");
+    std::fs::write(&config, synthetic_kokoro_config_json()).expect("write config");
+
+    let summary = convert_kokoro_file(&input, &config, &output).expect("convert_kokoro_file");
+    // 2 F32 tensors in the synthetic checkpoint.
+    assert_eq!(summary.tensor_count, 2);
+    // Same 13-key surface as the placeholder path — the config path never
+    // introduces new metadata keys, only replaces the *values* on
+    // `phoneme_symbols` / `voice_names` / `num_voices`.
+    assert_eq!(
+        summary.metadata_count, 13,
+        "config path emits the same 13 metadata keys as the placeholder path \
+         (2 model + 11 kokoro)"
+    );
+
+    let file = GgufFile::open(&output).expect("load output gguf");
+    assert_eq!(file.tensors().len(), 2);
+
+    // Numeric hparams:
+    //   - hidden_dim  = embedding rows-axis-1 = 512
+    //   - style_dim   = voicepack cols-axis-1 = 128
+    //   - num_voices  = config voice_names.len() (= 3), not voicepack rows
+    //     (= 3 here; happens to agree, so no warning note).
+    let u = |k: &str| file.get(k).and_then(|v| v.as_u64());
+    assert_eq!(u("vokra.kokoro.sample_rate"), Some(24_000));
+    assert_eq!(u("vokra.kokoro.style_dim"), Some(128));
+    assert_eq!(u("vokra.kokoro.num_voices"), Some(3));
+    assert_eq!(u("vokra.kokoro.hidden_dim"), Some(512));
+    // iSTFT triple: unchanged from the placeholder path.
+    assert_eq!(u("vokra.kokoro.istft.n_fft"), Some(20));
+    assert_eq!(u("vokra.kokoro.istft.hop"), Some(5));
+    assert_eq!(u("vokra.kokoro.istft.win_length"), Some(20));
+
+    // `phoneme_symbols` carries the real 178-entry table from the config, not
+    // the `p{i}` placeholder.
+    let syms = file
+        .get("vokra.kokoro.phoneme_symbols")
+        .and_then(|v| v.as_array())
+        .expect("phoneme_symbols present");
+    assert_eq!(syms.values.len(), 178);
+    // Every string starts with `sym`, not `p` — proves the placeholder path
+    // did not fire. (`vokra.kokoro.*` values are `GgufMetadataValue::String`.)
+    for (i, v) in syms.values.iter().enumerate() {
+        let s = v.as_str().expect("string element");
+        assert!(
+            !s.starts_with('p') && s.starts_with("sym"),
+            "phoneme_symbols[{i}] = {s:?} — expected `sym{i}` from config, \
+             not the `p{i}` placeholder"
+        );
+    }
+
+    // `voice_names` carries the config voice list.
+    let voices = file
+        .get("vokra.kokoro.voice_names")
+        .and_then(|v| v.as_array())
+        .expect("voice_names present");
+    assert_eq!(voices.values.len(), 3);
+    assert_eq!(voices.values[0].as_str(), Some("af"));
+    assert_eq!(voices.values[1].as_str(), Some("am_michael"));
+    assert_eq!(voices.values[2].as_str(), Some("bf_emma"));
+
+    // No `vokra.frontend.*` chunk (Kokoro is TTS-only, no input front-end).
+    assert!(file.get("vokra.frontend.n_fft").is_none());
+
+    // `voicepack` bytes round-trip verbatim (fingerprint check).
+    let voicepack_expected: Vec<u8> = (0..(3 * 128))
+        .map(|i| (i as f32) * 0.125 + 0.5)
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    assert_eq!(
+        file.tensor_data("voicepack").unwrap(),
+        voicepack_expected.as_slice()
+    );
+
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&config);
     let _ = std::fs::remove_file(&output);
 }

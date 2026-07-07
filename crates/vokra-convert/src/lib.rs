@@ -249,13 +249,19 @@ pub fn convert_file(
         }
         ModelKind::Kokoro => {
             let (builder, report) = models::kokoro::convert(bytes)?;
-            let notes = vec![format!(
+            // Backward-compat: the placeholder path (no --config) emits the
+            // same 3-field summary M2-07 T06 shipped, plus any diagnostic
+            // notes the model routine surfaced. When the caller has a
+            // `config.json`, use `convert_kokoro_file` instead — it enriches
+            // the summary with the phoneme-symbol count.
+            let mut notes = vec![format!(
                 "kokoro: {} float weights written, {} non-float skipped, style_dim {}, {} voices",
                 report.written,
                 report.skipped_non_float,
                 report.style_dim,
                 report.voices.len(),
             )];
+            notes.extend(report.notes.iter().map(|n| format!("kokoro warning: {n}")));
             (builder, notes)
         }
     };
@@ -420,6 +426,61 @@ pub fn convert_piper_plus_file(
 
     Ok(ConvertSummary {
         model: ModelKind::PiperPlus,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
+/// Converts a Kokoro-82M safetensors checkpoint plus a Kokoro `config.json`
+/// (misaki phoneme symbol table + voice-name list) into a GGUF written to
+/// `output`, returning a summary (M2-07-T17-fixup #3).
+///
+/// This is the config-aware sibling of the plain [`convert_file`] path for
+/// Kokoro. The safetensors bytes are converted exactly as with
+/// `convert_file(ModelKind::Kokoro, …)`; the additional config JSON supplies
+/// the real `vokra.kokoro.phoneme_symbols` (misaki phoneme table) and
+/// `vokra.kokoro.voice_names` arrays (canonical release ships voices as
+/// separate `voices/*.pt` files, so a config is authoritative for the voice
+/// list). Callers who do not yet have the misaki phoneme table can still use
+/// [`convert_file`] and get the `p0..p_{n_vocab-1}` placeholder for the same
+/// legacy round-trip contract.
+///
+/// The accepted `config.json` schema is documented on
+/// [`models::kokoro`](crate) — briefly: at least one of `{vocab: {symbol:id},
+/// phoneme_symbols: [str], symbols: [str]}` plus at least one of `{voices:
+/// [str], voice_names: [str]}` must be present; first-match wins per family.
+pub fn convert_kokoro_file(
+    input: &Path,
+    config: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let config_bytes = std::fs::read(config)?;
+    let (builder, report) = models::kokoro::convert_with_config(bytes, Some(&config_bytes))?;
+
+    let mut notes = vec![format!(
+        "kokoro: {} float weights written, {} non-float skipped, style_dim {}, \
+         {} voices, {} phoneme symbols",
+        report.written,
+        report.skipped_non_float,
+        report.style_dim,
+        report.voices.len(),
+        report.phoneme_symbol_count,
+    )];
+    // Surface any per-tensor-vs-config mismatch diagnostics recorded by the
+    // model routine. The converter never fails on these — the runtime is the
+    // authoritative gate (FR-EX-08) — but the operator gets a loud warning.
+    notes.extend(report.notes.iter().map(|n| format!("kokoro warning: {n}")));
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::Kokoro,
         tensor_count,
         metadata_count,
         output_bytes: out_bytes.len() as u64,

@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 use vokra_convert::{
     ModelKind, PolicyPreset, convert_file, convert_file_quantized, convert_file_with_policy,
-    convert_piper_plus_file,
+    convert_kokoro_file, convert_piper_plus_file,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -20,13 +20,16 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper-base|silero-vad> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper-base|silero-vad|campplus> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
+    vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
 
 OPTIONS:
-    --model <kind>            whisper-base | silero-vad | piper-plus
+    --model <kind>            whisper-base | silero-vad | piper-plus | campplus | kokoro
     --input <path>            upstream checkpoint file
-    --config <path>           piper-plus config.json (piper-plus only)
+    --config <path>           piper-plus config.json (piper-plus only) OR Kokoro
+                              config.json (misaki phoneme symbols + voice names;
+                              omit to emit the p0..p_{n-1} placeholder table)
     --output <path>           GGUF file to write
     --quantize <kind>         K-quantize weight matrices: q4_k | q5_k | q6_k (whisper only)
                               Alias for --policy-preset whisper_q4_k (when kind=q4_k).
@@ -69,7 +72,10 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--model" => {
                 let v = args.get(i + 1).ok_or("--model requires a value")?;
                 model = Some(ModelKind::from_arg(v).ok_or_else(|| {
-                    format!("unknown model `{v}` (whisper-base | silero-vad | piper-plus)")
+                    format!(
+                        "unknown model `{v}` \
+                         (whisper-base | silero-vad | piper-plus | campplus | kokoro)"
+                    )
                 })?);
                 i += 2;
             }
@@ -146,6 +152,24 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 None => {
                     return Err("--model piper-plus requires --config <config.json>".to_owned());
                 }
+            }
+        }
+        ModelKind::Kokoro => {
+            // Kokoro is whisper-only for quantization surface in M2-08 (T06);
+            // reject the flag rather than silently ignoring it.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            match &p.config {
+                // Real misaki phoneme table + voice list wired in.
+                Some(config) => convert_kokoro_file(&p.input, config, &p.output),
+                // Backward-compatible placeholder path: emits `p{i}` symbols
+                // and an empty voice_names array (matches the M2-07 T06
+                // roundtrip test contract).
+                None => convert_file(model, &p.input, &p.output),
             }
         }
         _ => {
@@ -235,6 +259,31 @@ mod tests {
         .expect("valid");
         assert_eq!(p.model, ModelKind::PiperPlus);
         assert_eq!(p.config, Some(PathBuf::from("c.json")));
+    }
+
+    #[test]
+    fn parses_kokoro_with_config() {
+        // Config-driven Kokoro path (M2-07-T17-fixup #3): the CLI accepts
+        // `--config <path>.json` so the misaki phoneme table + voice list get
+        // wired into the emitted GGUF verbatim. The plain `--input`-only path
+        // still works (see the placeholder-path roundtrip test).
+        let p = parse_args(&args(&[
+            "--model",
+            "kokoro",
+            "--input",
+            "kokoro.safetensors",
+            "--config",
+            "c.json",
+            "--output",
+            "o.gguf",
+        ]))
+        .expect("valid");
+        assert_eq!(p.model, ModelKind::Kokoro);
+        assert_eq!(p.input, PathBuf::from("kokoro.safetensors"));
+        assert_eq!(p.config, Some(PathBuf::from("c.json")));
+        assert_eq!(p.output, PathBuf::from("o.gguf"));
+        assert!(p.quant.is_none());
+        assert!(p.policy.is_none());
     }
 
     #[test]
