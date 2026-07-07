@@ -515,6 +515,90 @@ impl BiLstm1d {
     }
 }
 
+/// Snake activation (BigVGAN AMP style) applied per-channel on a channel-major
+/// `[channels, time]` buffer (M2-07-T15).
+///
+/// Formula: `y = x + (1 / (α + eps)) · sin²(α · x)` per channel, where `α` is
+/// a per-channel learnable scale. Introduced by
+/// [Ziyin et al. 2020](https://arxiv.org/abs/2006.08195) and adopted by BigVGAN
+/// for the anti-aliased multi-periodic activation path; Kokoro-82M's iSTFTNet
+/// generator uses per-channel Snake (see `resblocks.*.alpha{1,2}.*` tensors in
+/// `data/upstream_tensors_v1_0.tsv`, shape `[1, channels, 1]`).
+///
+/// The `EPS_SNAKE = 1e-9` softens the divide (matching the BigVGAN reference);
+/// `α = 0` reduces to a pass-through identity.
+#[allow(dead_code)] // consumed by the T15 decoder generator rewrite
+pub(crate) fn snake_activation(x: &mut [f32], alpha: &[f32], channels: usize, time: usize) {
+    debug_assert_eq!(x.len(), channels * time, "snake: x len mismatch");
+    debug_assert_eq!(alpha.len(), channels, "snake: alpha len mismatch");
+    const EPS_SNAKE: f32 = 1e-9;
+    for c in 0..channels {
+        let a = alpha[c];
+        let inv_a = 1.0 / (a + EPS_SNAKE);
+        let row = &mut x[c * time..c * time + time];
+        for v in row.iter_mut() {
+            let s = (a * *v).sin();
+            *v += inv_a * s * s;
+        }
+    }
+}
+
+/// StyleTTS 2 派生 AdaIN on a `[channels, time]` channel-major buffer with
+/// a style-conditioned `(γ, β)` projection (M2-07-T15).
+///
+/// Composition of two existing ops (FR-EX-08 permits composition; the ADR
+/// records why no new first-class op is added):
+///
+/// 1. Project the style vector `[style_dim]` through a Linear
+///    `fc_w[2·channels, style_dim]` + `fc_b[2·channels]` to get `(γ, β)`,
+///    split at index `channels`.
+/// 2. Apply [`adain`] (per-channel InstanceNorm + affine) on the channel-major
+///    buffer.
+///
+/// This differs from [`adaln_1d`] only in the input layout:
+/// [`adain_conditioned`] operates on channel-major `[channels, time]` (the
+/// decoder body convention), while [`adaln_1d`] operates on row-major
+/// `[t, channels]`. The math is identical. Both are compositions per D7; no
+/// new first-class op is introduced.
+#[allow(dead_code, clippy::too_many_arguments)] // consumed by the T15 decoder rewrite
+pub(crate) fn adain_conditioned(
+    x: &mut [f32],
+    channels: usize,
+    time: usize,
+    fc_w: &[f32],
+    fc_b: &[f32],
+    style: &[f32],
+    style_dim: usize,
+) {
+    debug_assert_eq!(x.len(), channels * time, "adain_conditioned: x len");
+    debug_assert_eq!(style.len(), style_dim, "adain_conditioned: style len");
+    debug_assert_eq!(
+        fc_w.len(),
+        2 * channels * style_dim,
+        "adain_conditioned: fc_w len"
+    );
+    debug_assert_eq!(fc_b.len(), 2 * channels, "adain_conditioned: fc_b len");
+    if channels == 0 || time == 0 {
+        return;
+    }
+
+    // 1. Project style → (γ, β) via a row-major Linear.
+    let two_c = 2 * channels;
+    let mut gamma_beta = vec![0.0f32; two_c];
+    for i in 0..two_c {
+        let mut acc = fc_b[i];
+        let row = &fc_w[i * style_dim..(i + 1) * style_dim];
+        for j in 0..style_dim {
+            acc += row[j] * style[j];
+        }
+        gamma_beta[i] = acc;
+    }
+    let (gamma, beta) = gamma_beta.split_at(channels);
+
+    // 2. In-place InstanceNorm + affine on channel-major x.
+    adain(x, gamma, beta, channels, time);
+}
+
 /// StyleTTS 2 派生 AdaLayerNorm on a `[t, channels]` row-major buffer
 /// (M2-07-T16).
 ///
@@ -591,6 +675,166 @@ pub(crate) fn adaln_1d(
             out[ti * channels + c] = g * (src - mean) * inv + b;
         }
     }
+}
+
+/// StyleTTS 2 AdaLayerNorm on a `[t, channels]` row-major buffer, with the
+/// **`(1 + γ)`** residual affine form used by the upstream prosody predictor's
+/// text-encoder AdaLN blocks (M2-07-T14).
+///
+/// This differs from [`adaln_1d`] in two ways matching the actual StyleTTS 2
+/// reference (`class AdaLayerNorm(nn.Module)` in the upstream `models.py`):
+///
+/// 1. The normalisation is **LayerNorm across channels per row**
+///    (`(x - mean_c) / sqrt(var_c + EPS)`), NOT InstanceNorm across time — a
+///    LayerNorm zero-means each token across its channels, an InstanceNorm
+///    would zero-mean each channel across time. `predictor.module.text_encoder`
+///    uses LayerNorm (`F.layer_norm(x, (self.channels,))`).
+/// 2. The affine is `(1 + γ) · norm(x) + β`, NOT `γ · norm(x) + β` — a
+///    StyleTTS 2 upstream convention that lets `γ` initialise at zero and
+///    still produce a non-trivial output (residual-friendly).
+///
+/// Layout: `x` and `out` are row-major `[t, channels]`; `fc_w` is row-major
+/// `[2·channels, style_dim]`; `fc_b` is `[2·channels]`; `style` is `[style_dim]`.
+/// The projection splits `fc(style)` at index `channels` — first half is `γ`,
+/// second half is `β`. `EPS = 1e-5` per `nn.LayerNorm` default.
+#[allow(dead_code, clippy::too_many_arguments)] // consumed by the T14 prosody rewrite
+pub(crate) fn adaln_layernorm_1d(
+    x: &[f32],
+    t: usize,
+    channels: usize,
+    fc_w: &[f32],
+    fc_b: &[f32],
+    style: &[f32],
+    style_dim: usize,
+    out: &mut [f32],
+) {
+    debug_assert_eq!(x.len(), t * channels, "adaln_layernorm_1d: x len mismatch");
+    debug_assert_eq!(
+        out.len(),
+        t * channels,
+        "adaln_layernorm_1d: out len mismatch"
+    );
+    debug_assert_eq!(
+        style.len(),
+        style_dim,
+        "adaln_layernorm_1d: style len mismatch"
+    );
+    debug_assert_eq!(
+        fc_w.len(),
+        2 * channels * style_dim,
+        "adaln_layernorm_1d: fc_w len mismatch"
+    );
+    debug_assert_eq!(
+        fc_b.len(),
+        2 * channels,
+        "adaln_layernorm_1d: fc_b len mismatch"
+    );
+    if t == 0 || channels == 0 {
+        return;
+    }
+
+    // 1. Project style → (γ, β) via row-major Linear.
+    let mut gamma_beta = vec![0.0f32; 2 * channels];
+    for i in 0..(2 * channels) {
+        let mut acc = fc_b[i];
+        let row = &fc_w[i * style_dim..(i + 1) * style_dim];
+        for j in 0..style_dim {
+            acc += row[j] * style[j];
+        }
+        gamma_beta[i] = acc;
+    }
+    let (gamma, beta) = gamma_beta.split_at(channels);
+
+    // 2. Per-token LayerNorm across channels, then residual affine `(1+γ)·x + β`.
+    let inv_c = 1.0 / channels as f32;
+    for ti in 0..t {
+        let mut mean = 0.0f32;
+        let row = &x[ti * channels..ti * channels + channels];
+        for &v in row.iter() {
+            mean += v;
+        }
+        mean *= inv_c;
+        let mut var = 0.0f32;
+        for &v in row.iter() {
+            let d = v - mean;
+            var += d * d;
+        }
+        var *= inv_c;
+        let inv = 1.0 / (var + EPS).sqrt();
+        let dst = &mut out[ti * channels..ti * channels + channels];
+        for (c, o) in dst.iter_mut().enumerate() {
+            let src = row[c];
+            *o = (1.0 + gamma[c]) * (src - mean) * inv + beta[c];
+        }
+    }
+}
+
+/// Extended transposed 1-D convolution with `output_padding` — matches
+/// PyTorch `nn.ConvTranspose1d(..., output_padding=P)` exactly (M2-07-T14).
+///
+/// The StyleTTS 2 prosody predictor's F0/N branch upsample pool is
+/// `ConvTranspose1d(dim_in, dim_in, kernel=3, stride=2, groups=dim_in,
+/// padding=1, output_padding=1)`, which the existing [`conv_transpose1d`]
+/// helper cannot express (it fixes `output_padding = 0`). Rather than change
+/// that helper's signature and risk churn across the piper decoder + kokoro
+/// decoder call sites, this variant adds the parameter and is otherwise a
+/// verbatim copy of the semantics.
+///
+/// Formula: `out_len = (in_len − 1) · stride + kernel − 2 · pad + output_padding`.
+/// Tail `output_padding` positions are left zero-filled (except for the bias
+/// broadcast, matching PyTorch).
+///
+/// Weight layout is PyTorch's `nn.ConvTranspose1d`:
+/// `[in_channels, out_channels / groups, kernel_size]` row-major.
+#[allow(clippy::too_many_arguments, dead_code)] // consumed by the T14 prosody rewrite
+pub(crate) fn conv_transpose1d_ext(
+    x: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    pad: usize,
+    output_padding: usize,
+    groups: usize,
+) -> (Vec<f32>, usize) {
+    let out_len = (in_len - 1) * stride + kernel - 2 * pad + output_padding;
+    let in_g = in_ch / groups;
+    let out_g = out_ch / groups;
+    let mut out = vec![0.0f32; out_ch * out_len];
+    for in_channel in 0..in_ch {
+        let g = in_channel / in_g;
+        let xrow = in_channel * in_len;
+        for it in 0..in_len {
+            let xv = x[xrow + it];
+            if xv == 0.0 {
+                continue;
+            }
+            for oc in 0..out_g {
+                let out_channel = g * out_g + oc;
+                let wrow = (in_channel * out_g + oc) * kernel;
+                for kk in 0..kernel {
+                    let pos = it * stride + kk;
+                    if pos >= pad {
+                        let ot = pos - pad;
+                        if ot < out_len {
+                            out[out_channel * out_len + ot] += xv * weight[wrow + kk];
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(bias) = bias {
+        for (oc, &bv) in bias.iter().enumerate() {
+            for v in &mut out[oc * out_len..oc * out_len + out_len] {
+                *v += bv;
+            }
+        }
+    }
+    (out, out_len)
 }
 
 #[cfg(test)]
@@ -910,5 +1154,163 @@ mod tests {
             assert!(mean.abs() < 1e-5, "channel {c}: mean = {mean}");
             assert!((var - 1.0).abs() < 1e-3, "channel {c}: var = {var}");
         }
+    }
+
+    /// [`adaln_layernorm_1d`] must reproduce
+    /// `(1 + γ) · (x - mean_c)/sqrt(var_c + eps) + β` per token, where the
+    /// mean/variance are computed across the **channels** (LayerNorm), NOT
+    /// across time. This distinguishes it from [`adaln_1d`] (InstanceNorm).
+    /// The scalar oracle explicitly runs `Linear` + LayerNorm + `(1+γ)`-affine
+    /// as three steps and compares pointwise — any mis-index in the split,
+    /// the wrong normalisation axis, or a missing `1+` shift is instantly
+    /// visible.
+    #[test]
+    fn adaln_layernorm_1d_matches_scalar_oracle() {
+        let t = 3;
+        let channels = 2;
+        let style_dim = 1;
+        // Row-major [t, channels] with different per-token means so
+        // LayerNorm-across-channels gives distinct outputs per row.
+        let x = vec![
+            1.0, 10.0, // t=0: mean=5.5
+            2.0, 20.0, // t=1: mean=11
+            3.0, 30.0, // t=2: mean=16.5
+        ];
+        // fc([1]) = [2, 0.5, 10, -1] → γ = [2, 0.5], β = [10, -1].
+        let fc_w = vec![2.0, 0.5, 10.0, -1.0];
+        let fc_b = vec![0.0f32; 4];
+        let style = vec![1.0f32];
+
+        let mut out = vec![0.0f32; t * channels];
+        adaln_layernorm_1d(&x, t, channels, &fc_w, &fc_b, &style, style_dim, &mut out);
+
+        // Oracle: LayerNorm-across-channels per row + `(1+γ)`-affine.
+        let gammas = [2.0f32, 0.5];
+        let betas = [10.0f32, -1.0];
+        let mut want = vec![0.0f32; t * channels];
+        for ti in 0..t {
+            let row: Vec<f32> = (0..channels).map(|c| x[ti * channels + c]).collect();
+            let mean = row.iter().sum::<f32>() / channels as f32;
+            let var = row.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / channels as f32;
+            let inv = 1.0 / (var + EPS).sqrt();
+            for c in 0..channels {
+                let src = x[ti * channels + c];
+                want[ti * channels + c] = (1.0 + gammas[c]) * (src - mean) * inv + betas[c];
+            }
+        }
+        for (i, (&g, &w)) in out.iter().zip(&want).enumerate() {
+            assert!((g - w).abs() < 1e-5, "idx {i}: got {g}, want {w}");
+        }
+    }
+
+    /// With `γ_proj = 0` (fc weights all zero, fc bias all zero for γ), the
+    /// residual affine collapses to `1 · norm(x) + β`. Setting `β = 0` too,
+    /// each row of the output must have ≈ zero mean and ≈ unit variance
+    /// across channels — the LayerNorm identity behaviour.
+    #[test]
+    fn adaln_layernorm_1d_gamma_zero_beta_zero_yields_layernorm_identity() {
+        let t = 4;
+        let channels = 3;
+        let style_dim = 2;
+        // 3-channel per-token distributions with very different means so
+        // any cross-row leakage is visible.
+        let x = vec![
+            1.0, 2.0, 3.0, // t=0
+            100.0, 200.0, 300.0, // t=1
+            5.0, 5.0, 5.0, // t=2 (constant — LayerNorm var=0, output = β / small)
+            -1.0, 0.0, 1.0, // t=3
+        ];
+        // fc_w = 0, fc_b = 0 → γ = 0, β = 0 → out[ti] = 1·norm_ch(x[ti]) + 0.
+        let fc_w = vec![0.0f32; 2 * channels * style_dim];
+        let fc_b = vec![0.0f32; 2 * channels];
+        let style = vec![0.5f32, -0.3];
+
+        let mut out = vec![0.0f32; t * channels];
+        adaln_layernorm_1d(&x, t, channels, &fc_w, &fc_b, &style, style_dim, &mut out);
+
+        // Each row (except the constant-input one) must have ≈ 0 mean and
+        // ≈ 1 variance across its channels — the LayerNorm identity signature.
+        for ti in [0usize, 1, 3] {
+            let row: Vec<f32> = (0..channels).map(|c| out[ti * channels + c]).collect();
+            let mean = row.iter().sum::<f32>() / channels as f32;
+            let var = row.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / channels as f32;
+            assert!(mean.abs() < 1e-4, "row {ti}: mean = {mean}");
+            assert!((var - 1.0).abs() < 1e-2, "row {ti}: var = {var}");
+        }
+    }
+
+    /// [`conv_transpose1d_ext`] must match [`conv_transpose1d`] when
+    /// `output_padding = 0` (regression against the pre-existing kokoro / piper
+    /// decoder callers). The oracle: run both functions on the same inputs
+    /// and compare pointwise.
+    #[test]
+    fn conv_transpose1d_ext_matches_base_when_output_padding_is_zero() {
+        // Inputs mirroring an existing kokoro decoder call site (see
+        // decoder.rs line ~199): in_ch=2, in_len=3, kernel=2, stride=2,
+        // pad=0, groups=1, no bias.
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // [2, 3] channel-major
+        let w = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]; // [2, 2, 2]
+        let (base, base_len) = conv_transpose1d(
+            &x, /*in_ch*/ 2, /*in_len*/ 3, &w, /*out_ch*/ 2, /*kernel*/ 2,
+            None, /*stride*/ 2, /*pad*/ 0, /*groups*/ 1,
+        );
+        let (ext, ext_len) =
+            conv_transpose1d_ext(&x, 2, 3, &w, 2, 2, None, 2, 0, /*output_padding*/ 0, 1);
+        assert_eq!(base_len, ext_len);
+        assert_eq!(base, ext);
+    }
+
+    /// [`conv_transpose1d_ext`] with `output_padding = 1` must extend the
+    /// output by exactly one time step, matching PyTorch's semantics for the
+    /// StyleTTS 2 prosody pool. The oracle: length is
+    /// `(in-1)·2 + kernel - 2·pad + output_padding`. The extra tail position
+    /// can be populated by convolution contributions that would otherwise be
+    /// clipped by the base (`output_padding = 0`) helper — the two are
+    /// therefore expected to differ on the boundary, and agree on interior
+    /// positions.
+    #[test]
+    fn conv_transpose1d_ext_output_padding_1_extends_length_by_one() {
+        // Depthwise pool inputs: in_ch=out_ch=2, groups=2, kernel=3, stride=2,
+        // pad=1, output_padding=1. Predicted out_len =
+        // (3-1)·2 + 3 - 2·1 + 1 = 4 + 3 - 2 + 1 = 6. Without output_padding it
+        // would be 5.
+        let x = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // [2, 3]
+        let w = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6]; // [2, 1, 3] (groups=2)
+        let (out, out_len) =
+            conv_transpose1d_ext(&x, 2, 3, &w, 2, 3, None, 2, 1, /*output_padding*/ 1, 2);
+        assert_eq!(out_len, 6);
+        assert_eq!(out.len(), 2 * 6);
+        let (out_no_pad, out_no_pad_len) = conv_transpose1d(&x, 2, 3, &w, 2, 3, None, 2, 1, 2);
+        assert_eq!(out_no_pad_len, 5);
+        assert_eq!(out_no_pad.len(), 2 * 5);
+        // The two must agree on positions strictly interior to the base range
+        // (0..4). Position 4 in the base is at the edge; in the ext form, an
+        // extra output_padding slot can absorb a convolution contribution that
+        // the base clipped, so the two need not agree beyond index 3.
+        for c in 0..2 {
+            for i in 0..4 {
+                assert!(
+                    (out[c * 6 + i] - out_no_pad[c * 5 + i]).abs() < 1e-6,
+                    "channel {c}, i {i}: ext {} vs base {}",
+                    out[c * 6 + i],
+                    out_no_pad[c * 5 + i]
+                );
+            }
+        }
+        // The predicted contribution at the extra tail slot (index 5) comes
+        // from the last input (position 2) via kernel offset 2. On channel 0
+        // that is x[0,2]·w[0,0,2] = 3.0·0.3 = 0.9; on channel 1 that is
+        // x[1,2]·w[1,0,2] = 6.0·0.6 = 3.6. Pins the "output_padding actually
+        // widens the reachable output positions" invariant.
+        assert!(
+            (out[5] - 0.9).abs() < 1e-5,
+            "channel 0 tail slot: got {}, want 0.9",
+            out[5]
+        );
+        assert!(
+            (out[6 + 5] - 3.6).abs() < 1e-5,
+            "channel 1 tail slot: got {}, want 3.6",
+            out[6 + 5]
+        );
     }
 }
