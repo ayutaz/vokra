@@ -1313,4 +1313,84 @@ mod tests {
             out[6 + 5]
         );
     }
+
+    /// Snake `x + (1/(α+eps)) · sin²(αx)` per channel — matches a scalar
+    /// oracle on a 4-sample-per-channel input. Two distinct α values so a
+    /// mis-index across channels is visible.
+    #[test]
+    fn snake_activation_matches_scalar_oracle() {
+        let channels = 2;
+        let time = 4;
+        let mut x = vec![
+            0.5, 1.0, -0.5, -1.0, // ch0
+            0.25, 0.5, 0.75, 1.0, // ch1
+        ];
+        let alpha = [0.5f32, 2.0];
+
+        let mut want = x.clone();
+        const EPS_SNAKE: f32 = 1e-9;
+        for c in 0..channels {
+            let a = alpha[c];
+            let inv_a = 1.0 / (a + EPS_SNAKE);
+            let row = &mut want[c * time..c * time + time];
+            for v in row.iter_mut() {
+                let s = (a * *v).sin();
+                *v += inv_a * s * s;
+            }
+        }
+
+        snake_activation(&mut x, &alpha, channels, time);
+        for (i, (&g, &w)) in x.iter().zip(&want).enumerate() {
+            assert!((g - w).abs() < 1e-6, "idx {i}: {g} vs {w}");
+        }
+    }
+
+    /// Snake with `α = 0` reduces to a pass-through (sin(0)·sin(0) = 0).
+    #[test]
+    fn snake_activation_zero_alpha_is_near_identity() {
+        let mut x = vec![0.1f32, 0.2, -0.3, 0.4];
+        let orig = x.clone();
+        snake_activation(&mut x, &[0.0f32], 1, 4);
+        for (i, (&g, &o)) in x.iter().zip(&orig).enumerate() {
+            assert!(
+                (g - o).abs() < 1e-6,
+                "α=0 must leave x unchanged; idx {i}: got {g}, want {o}"
+            );
+        }
+    }
+
+    /// `adain_conditioned` projects style → (γ, β) via Linear then applies
+    /// channel-major AdaIN. Scalar oracle runs both steps explicitly.
+    #[test]
+    fn adain_conditioned_matches_scalar_oracle() {
+        let channels = 2;
+        let time = 3;
+        let style_dim = 1;
+        let mut x = vec![
+            1.0, 2.0, 3.0, // ch0
+            10.0, 20.0, 30.0, // ch1
+        ];
+        // fc([1]) = [2, 0.5, 10, -1] → γ = [2, 0.5], β = [10, -1].
+        let fc_w = vec![2.0, 0.5, 10.0, -1.0];
+        let fc_b = vec![0.0f32; 4];
+        let style = vec![1.0f32];
+
+        let gammas = [2.0f32, 0.5];
+        let betas = [10.0f32, -1.0];
+        let mut want = x.clone();
+        for c in 0..channels {
+            let row = &mut want[c * time..c * time + time];
+            let mean = row.iter().sum::<f32>() / time as f32;
+            let var = row.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / time as f32;
+            let inv = 1.0 / (var + EPS).sqrt();
+            for v in row.iter_mut() {
+                *v = (*v - mean) * inv * gammas[c] + betas[c];
+            }
+        }
+
+        adain_conditioned(&mut x, channels, time, &fc_w, &fc_b, &style, style_dim);
+        for (i, (&g, &w)) in x.iter().zip(&want).enumerate() {
+            assert!((g - w).abs() < 1e-5, "idx {i}: {g} vs {w}");
+        }
+    }
 }
