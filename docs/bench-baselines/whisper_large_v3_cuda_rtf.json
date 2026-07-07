@@ -67,5 +67,91 @@
       "vastai destroy instance <id>"
     ]
   },
-  "sanity_summary": "On an RTX 4090, whisper-large-v3 (F16, 3.09 GB GGUF) transcribes 30 s of audio in 3.394-3.404 s wall (median 3.400 s), RTF ≈ 0.1133 through the decomposed self-attention path. This is a reference number, not the formal < 0.10 always-on gate — that number requires the FA v2 launcher to be implemented (deferred to M2-03-followup-rtf-sub-0.1 T-follow-02/03) and lives as an always-on regression gate at M2-14 / M3-01."
+  "sanity_summary": "On an RTX 4090, whisper-large-v3 (F16, 3.09 GB GGUF) transcribes 30 s of audio in 3.394-3.404 s wall (median 3.400 s), RTF ≈ 0.1133 through the decomposed self-attention path. This is a reference number, not the formal < 0.10 always-on gate — that number requires the FA v2 launcher to be implemented (deferred to M2-03-followup-rtf-sub-0.1 T-follow-02/03) and lives as an always-on regression gate at M2-14 / M3-01.",
+  "gated_fa_v2": {
+    "measurement": {
+      "id": "m2-14-cuda-large-v3-rtf-gated-fa-v2",
+      "date_utc": "2026-07-07T15:30:00Z",
+      "audio_seconds": 30.0,
+      "audio_source": "synthetic (deterministic 440 Hz tone + light noise, per whisper_cuda_large_v3_rtf.rs::make_sample_pcm)",
+      "runs": [
+        { "index": 1, "wall_seconds": 3.968, "rtf": 0.1323 },
+        { "index": 2, "wall_seconds": 3.969, "rtf": 0.1323 },
+        { "index": 3, "wall_seconds": 4.025, "rtf": 0.1342 },
+        { "index": 4, "wall_seconds": 3.962, "rtf": 0.1321 },
+        { "index": 5, "wall_seconds": 3.980, "rtf": 0.1327 }
+      ],
+      "statistics": {
+        "rtf_min": 0.1321,
+        "rtf_median": 0.1323,
+        "rtf_max": 0.1342,
+        "rtf_stddev_estimate": 0.00086,
+        "wall_seconds_median": 3.969,
+        "note": "5 consecutive measured passes (each preceded by an in-process warm-up transcribe that pays session build + weight upload + NVRTC JIT); wall clock is the second, timed pass. Default configuration: FA v2 wrapper enabled, gated by t_q >= 16 (autoregressive decoder-step t_q=1 falls through to decomposed path; encoder self-attn t_q=1500 hits FA v2)."
+      },
+      "sanity_gate": {
+        "ceiling": 0.15,
+        "verdict": "PASS",
+        "reference_only": true,
+        "note": "Well below the 0.15 sanity ceiling but above the 0.10 formal target. This is a stability confirmation measurement following the FA v2 gating landing (commit 3317683)."
+      }
+    },
+    "backend": {
+      "family": "CUDA",
+      "path": "FA v2 gated (t_q >= 16 → FA v2 kernel); decomposed 2 + 7·n_head chain elsewhere (t_q < 16, i.e., autoregressive decoder-step with t_q=1)",
+      "flash_attention_v2": {
+        "kernel_ptx_compiled": true,
+        "launcher_wrapper_implemented": true,
+        "session_flag": "use_flash_attn = true (default; no VOKRA_CUDA_DISABLE_FA_V2 override)",
+        "gate_threshold": "t_q >= 16 (M2-03-followup T-follow-04)",
+        "landed_in_commit": "3317683 (feat(cuda): re-land FA v2 launcher with t_q gating (M2-03-followup T-follow-02/03/04))",
+        "note": "FA v2 is invoked for encoder self-attention (t_q=1500) but not for autoregressive decoder-step (t_q=1). This means the decoder critical path — which dominates whisper-large-v3 RTF because n_text_ctx up to 448 tokens can be generated — still runs through the decomposed path."
+      },
+      "silent_cpu_fallback": "forbidden (FR-EX-08); both decomposed and FA v2 paths stay on the GPU"
+    },
+    "parity": {
+      "test": "flash_attn_v2_causal_vs_decomposed_f32",
+      "worst_abs_delta": 0.0,
+      "worst_rel_delta": 0.0,
+      "atol": 0.01,
+      "rtol": 1e-5,
+      "t_kv_values_tested": [1, 2, 4, 8, 16, 64, 448, 1500],
+      "verdict": "PASS (bit-identical)",
+      "note": "The FA v2 kernel produces bit-identical output vs the decomposed path across all tested t_kv values, confirming numerical equivalence."
+    },
+    "comparison_to_decomposed_baseline": {
+      "decomposed_median_rtf": 0.1133,
+      "gated_fa_v2_median_rtf": 0.1323,
+      "absolute_delta_rtf": 0.0190,
+      "relative_delta_pct": 16.77,
+      "expected_5pct_band": [0.1076, 0.1190],
+      "within_5pct_baseline_noise": false,
+      "note": "The gated FA v2 path is ~17% slower than the pure decomposed path in this stability confirmation. This is outside the 5% baseline-noise band. Hypothesis: (a) FA v2 kernel is not faster than the decomposed path for encoder self-attn at t_q=t_kv=1500 on RTX 4090 with the current (Br=16, Bc=64, d_head=64) tile layout, and/or (b) the wrapper dispatch adds per-launch overhead. Full analysis and follow-up (weight caching, larger tiles, per-shape dispatch tuning) is tracked under M2-03-followup-rtf-sub-0.1 T-follow-05 / M2-14."
+    },
+    "hardware": {
+      "gpu": "NVIDIA GeForce RTX 4090",
+      "gpu_memory_MiB": 23028,
+      "driver_version": "580.126.09",
+      "cuda_toolkit_version": "12.6.77",
+      "host": "vast.ai spot instance (US, ssh8.vast.ai:18118, instance 44098119)",
+      "vokra_ffi_model": "raw dlopen(libcuda.so.1) + dlopen(libnvrtc.so.12); no cudart/cudnn/cublas/cudarc bundled (NVIDIA EULA install model + zero-dep NFR-DS-02)"
+    },
+    "model": {
+      "name": "openai/whisper-large-v3",
+      "gguf_path": "/root/whisper-large-v3.gguf (same GGUF as decomposed baseline)"
+    },
+    "vokra_provenance": {
+      "commit": "c732b0272de64c0f5b8e9a37a68fc29e3a1ec05c",
+      "commit_message_short": "feat(kokoro): T13-alpha text encoder rewrite + T16 nn helpers (M2-07)",
+      "relevant_prior_commit": "3317683 feat(cuda): re-land FA v2 launcher with t_q gating (M2-03-followup T-follow-02/03/04)",
+      "toolchain": "rustc 1.86.0 (05f9846f8 2025-03-31)",
+      "how_to_reproduce": [
+        "same steps as decomposed baseline, EXCEPT: do NOT set VOKRA_CUDA_DISABLE_FA_V2=1",
+        "VOKRA_WHISPER_LARGE_V3_GGUF=$PWD/whisper-large-v3.gguf cargo test --release -p vokra-backend-cuda --test whisper_cuda_large_v3_rtf -- --ignored --nocapture",
+        "for i in 1..5; do repeat above; end",
+        "verify parity: cargo test --release -p vokra-backend-cuda --test parity_kernels_cuda flash_attn -- --nocapture"
+      ]
+    },
+    "sanity_summary": "On the same RTX 4090 as the decomposed baseline, whisper-large-v3 with FA v2 gated (t_q >= 16) transcribes 30 s of audio in 3.962-4.025 s wall (median 3.969 s), RTF ≈ 0.1323. Parity vs decomposed path is bit-identical (worst |Δ| = 0.0 over t_kv ∈ {1,2,4,8,16,64,448,1500}). The RTF is 16.77% slower than the decomposed baseline (0.1133 → 0.1323), outside the ~5% baseline-noise band; this is a real performance regression, not statistical noise. The formal < 0.10 always-on gate remains deferred to M2-14 (self-hosted runner) + M3-01 (5% regression gate), and the FA v2 tile / dispatch tuning needed to actually beat the decomposed path is tracked under M2-03-followup-rtf-sub-0.1 T-follow-05."
+  }
 }
