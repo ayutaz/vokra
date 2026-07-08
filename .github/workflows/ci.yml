@@ -891,6 +891,42 @@ jobs:
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: ""
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: ""
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""
+      - name: Retag wheel to platform-manylinux / macosx / win form
+        # cibuildwheel + hatch_build.py stamps the wheel with the raw
+        # interpreter platform tag: `linux_x86_64` / `macosx_11_0_arm64` /
+        # `win_amd64`. Modern pip (25.x+) refuses to install `linux_*`
+        # tags because they are ambiguous about the glibc version — you
+        # must retag to `manylinux_X_Y_x86_64`. Same treatment for macOS
+        # (`macosx_11_0_arm64` is already accepted on macos-latest but
+        # we normalise for consistency). Windows `win_amd64` needs no
+        # retag. We call `python -m wheel tags` because it edits the
+        # wheel's RECORD and Wheel-Version metadata correctly instead of
+        # just renaming the file.
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip wheel
+          cd bindings/python/dist
+          case "${{ matrix.os }}" in
+            ubuntu-*)
+              # Ubuntu 24.04 runner has glibc 2.39. `manylinux_2_28_x86_64`
+              # is the modern PEP 600 tag that most pip / manylinux-aware
+              # loaders accept — anything newer than 2_17 still installs
+              # on the same-runner smoke test we do below.
+              for whl in *.whl; do
+                python -m wheel tags --platform-tag manylinux_2_28_x86_64 "$whl"
+                rm "$whl"
+              done ;;
+            macos-*)
+              # Already-tagged `macosx_11_0_arm64` is fine; no-op. If the
+              # cibuildwheel matrix ever adds `macosx_10_9_x86_64` this
+              # branch is where the retag would go.
+              ls -la ;;
+            windows-*)
+              # `win_amd64` is pip's canonical Windows platform tag; no
+              # retag needed.
+              ls -la ;;
+          esac
       - name: Fresh-venv install + smoke import
         # D12 step 2: proves platform tag / native-lib bundling is correct.
         # `pip install ./dist/*.whl` picks the wheel matching the runner's
@@ -910,8 +946,26 @@ jobs:
           fi
           python -m pip install --upgrade pip
           # Install the freshly-built wheel from cibuildwheel output.
-          # shellcheck disable=SC2086
-          python -m pip install bindings/python/dist/*.whl
+          # cibuildwheel emits one wheel per matrix cell (cp39 / cp310 /
+          # cp311 / cp312). The runner's active Python here is 3.12
+          # (setup-python step above), so a bare `pip install *.whl`
+          # would ask pip to install every wheel — including cp39/10/11
+          # ones that don't match — and fail with
+          #   ERROR: vokra-...-cp310-cp310-*.whl is not a supported wheel
+          #   on this platform.
+          # `pip install --find-links dist vokra --no-index` instead lets
+          # pip's own tag-compatibility resolver pick the wheel whose
+          # `<pyver>-<abi>-<platform>` triple matches the runner. `--no-
+          # index` blocks any PyPI fallback so we only ever use the freshly
+          # built local wheels, and `--force-reinstall --no-deps` keeps
+          # the smoke idempotent (a cached wheel from an earlier run
+          # cannot mask a broken new build).
+          python -m pip install \
+              --find-links bindings/python/dist \
+              --no-index \
+              --force-reinstall \
+              --no-deps \
+              vokra
           python -c "import vokra; print('vokra imported OK, version:', getattr(vokra, '__version__', 'unknown'))"
       - name: pytest (bindings/python/tests, GGUF-gated skips)
         # Runs smoke / leak / error / negative unconditionally; parity /

@@ -209,10 +209,20 @@ TMP="$(mktemp -d -t vokra-verify-ios.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Minimal C TU that pulls the module map and touches an API symbol so the
-# preprocessor + modules loader actually parses vokra.h through the modulemap.
+# preprocessor + modules loader actually parses vokra.h through the
+# modulemap. `vokra_version(void)` (returning `const char *`) is a
+# forever-stable smoke symbol declared at `include/vokra.h`; the probe just
+# needs it to compile against the header. Prior versions of the probe
+# referenced `vokra_version_major()`, which was never declared in the C
+# ABI — the actual header only exposes the `vokra_version` string form —
+# so the probe failed with `undeclared function 'vokra_version_major'`.
+# The check DOES NOT need to LINK against the archive, only compile-check
+# the modulemap-imported header, so casting the returned pointer to `int`
+# via `(intptr_t)` keeps the probe minimal without adding a link stage.
 cat >"$TMP/probe.c" <<'PROBE'
+#include <stdint.h>
 #include "vokra.h"
-int probe(void) { return (int)vokra_version_major(); }
+int probe(void) { return (int)(intptr_t)vokra_version(); }
 PROBE
 
 if ! clang -x c -fsyntax-only \
