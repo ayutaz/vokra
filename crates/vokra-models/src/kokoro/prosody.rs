@@ -73,8 +73,8 @@ use vokra_core::{Result, VokraError};
 
 use super::config::KokoroConfig;
 use super::nn::{
-    BiLstm1d, EPS, LRELU_SLOPE, adain, adaln_layernorm_1d, conv_transpose1d_ext, conv1d,
-    leaky_relu, length_regulate, sigmoid, weight_norm_reconstruct_1d,
+    BiLstm1d, EPS, LRELU_SLOPE, adain_conditioned_residual, adaln_layernorm_1d,
+    conv_transpose1d_ext, conv1d, leaky_relu, length_regulate, sigmoid, weight_norm_reconstruct_1d,
 };
 use super::weights::TensorStore;
 use crate::compute::Compute;
@@ -107,7 +107,11 @@ struct AdaLnParams {
     fc_w: Vec<f32>,
     /// `[2·channels]`.
     fc_b: Vec<f32>,
-    /// Output channel count `C` (the fc output is `2·C`).
+    /// Output channel count `C` (the fc output is `2·C`). Kept as a load-time
+    /// invariant even though the forward path derives `channels` from the
+    /// caller's tensor shape (T17-fixup #4 moved the forward to
+    /// [`super::nn::adain_conditioned_residual`]).
+    #[allow(dead_code)]
     channels: usize,
 }
 
@@ -128,6 +132,14 @@ impl AdaLnParams {
     /// Projects `style` through `fc` and splits into `(γ_raw, β)` each of
     /// length `channels`. `γ_raw` is NOT yet shifted by `+1` — callers that
     /// need the residual `(1+γ)` form (StyleTTS 2 AdaIN1d) add the shift.
+    ///
+    /// **Retained for load-time / diagnostic use only** after T17-fixup #4:
+    /// `AdainResBlk::forward` now calls [`super::nn::adain_conditioned_residual`]
+    /// directly with `self.fc_w` / `self.fc_b`, fusing this Linear projection
+    /// with the InstanceNorm + affine step under f64 accumulators. This method
+    /// is kept as documentation of the Linear layout the loader expects and to
+    /// preserve a scalar oracle for future unit tests.
+    #[allow(dead_code)]
     fn project(&self, style: &[f32], style_dim: usize) -> (Vec<f32>, Vec<f32>) {
         debug_assert_eq!(style.len(), style_dim);
         let two_c = 2 * self.channels;
@@ -299,11 +311,22 @@ impl AdainResBlk {
 
         // --- Residual path ---------------------------------------------------
         // norm1(x, style) — AdaIN1d over `[dim_in, t_in]` channel-major
-        // (InstanceNorm across time + `(1+γ)·x + β`).
+        // (InstanceNorm across time + `(1+γ)·x + β`). T17-fixup #4 (2026-07-08):
+        // route through the f64-accumulator helper that fused the Linear
+        // projection and the InstanceNorm reductions, replacing the previous
+        // `self.norm1.project(...) + adain(...)` f32 sequence. See
+        // `docs/adr/0007-kokoro-native.md` §"T17-fixup #4" for the rationale
+        // (prosody f0 honest negative closure via decoder-precedent pattern).
         let mut r = x.to_vec();
-        let (gamma_raw, beta) = self.norm1.project(style, style_dim);
-        let gamma_plus_1: Vec<f32> = gamma_raw.iter().map(|&g| 1.0 + g).collect();
-        adain(&mut r, &gamma_plus_1, &beta, self.dim_in, t_in);
+        adain_conditioned_residual(
+            &mut r,
+            self.dim_in,
+            t_in,
+            &self.norm1.fc_w,
+            &self.norm1.fc_b,
+            style,
+            style_dim,
+        );
 
         // LeakyReLU(0.1).
         leaky_relu(&mut r, LRELU_SLOPE);
@@ -349,10 +372,17 @@ impl AdainResBlk {
         debug_assert_eq!(len_after_conv1, t_out);
 
         // norm2(x, style) — AdaIN1d over `[dim_out, t_out]` channel-major.
+        // T17-fixup #4: same f64-accumulator promotion as norm1 above.
         let mut r = r_after_conv1;
-        let (gamma_raw, beta) = self.norm2.project(style, style_dim);
-        let gamma_plus_1: Vec<f32> = gamma_raw.iter().map(|&g| 1.0 + g).collect();
-        adain(&mut r, &gamma_plus_1, &beta, self.dim_out, t_out);
+        adain_conditioned_residual(
+            &mut r,
+            self.dim_out,
+            t_out,
+            &self.norm2.fc_w,
+            &self.norm2.fc_b,
+            style,
+            style_dim,
+        );
 
         // LeakyReLU(0.1).
         leaky_relu(&mut r, LRELU_SLOPE);
@@ -782,20 +812,29 @@ impl ProsodyPredictor {
             cur = out;
         }
         // Final projection Conv1d(cur_ch → 1, k=1) → [1, cur_len] → squeeze.
-        let (proj_out, proj_len) = conv1d(
-            compute,
-            &cur,
-            cur_ch,
-            cur_len,
-            proj_w,
-            /*out_ch*/ 1,
-            /*kernel*/ 1,
-            Some(proj_b),
-            /*stride*/ 1,
-            /*pad*/ 0,
-            /*dilation*/ 1,
-            /*groups*/ 1,
-        );
+        //
+        // T17-fixup #4 (2026-07-08): inline an f64-accumulator GEMV for this
+        // specific 1×k×in_ch case instead of routing through the generic
+        // `conv1d` → `compute.gemm_f32` (which uses an f32 dot product per
+        // output element). Rationale: `F0_proj` / `N_proj` is a linear
+        // combination of all `cur_ch` = `d_model/2` = 256 hidden channels per
+        // time step; the f32 sum-of-products at k=256 accumulates ULP drift on
+        // the order of `sqrt(k) · ULP · ||x||` which stacks on top of the ~9×
+        // amplification of the upstream ~3e-3 hidden delta. See
+        // `docs/adr/0007-kokoro-native.md` §"T17-fixup #4" for the full
+        // analysis + decoder-precedent link (`adain_conditioned` in nn.rs).
+        debug_assert_eq!(proj_w.len(), cur_ch);
+        debug_assert_eq!(proj_b.len(), 1);
+        let bias0 = proj_b[0];
+        let mut proj_out = vec![0.0f32; cur_len];
+        for ti in 0..cur_len {
+            let mut acc64: f64 = bias0 as f64;
+            for c in 0..cur_ch {
+                acc64 += proj_w[c] as f64 * cur[c * cur_len + ti] as f64;
+            }
+            proj_out[ti] = acc64 as f32;
+        }
+        let proj_len = cur_len;
         debug_assert_eq!(proj_len, cur_len);
         // proj_out is [1, cur_len]; already flat.
         proj_out

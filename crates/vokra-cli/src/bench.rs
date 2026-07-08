@@ -45,7 +45,12 @@ enum Format {
 
 /// Parsed `bench` arguments.
 struct BenchArgs {
-    model: String,
+    /// GGUF path. Required for every task except `mel-frontend`, which reads
+    /// its `n_mels` from `vokra.whisper.n_mels` if a GGUF is given and
+    /// otherwise defaults to `n_mels = 80` (Whisper base / small / medium /
+    /// large-v3 all use 80). Keeping the CLI self-contained lets the CI
+    /// `bench-regression` job run without shipping a Whisper GGUF fixture.
+    model: Option<String>,
     input: Option<String>,
     text: Option<String>,
     iters: usize,
@@ -223,8 +228,16 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
     if iters == 0 {
         return Err("--iters must be > 0".to_owned());
     }
+    // `--model` is required for every task except `mel-frontend`. Enforce that
+    // asymmetry at parse time so the CLI keeps its FR-EX-08 "loud errors, no
+    // silent fallback" posture for the model-driven tasks while letting the
+    // self-contained mel-frontend bench (M2-04-T11 → CI `bench-regression`)
+    // run without shipping a Whisper GGUF fixture.
+    if model.is_none() && !matches!(task_hint, Some(TaskHint::MelFrontend)) {
+        return Err("--model is required".to_owned());
+    }
     Ok(BenchArgs {
-        model: model.ok_or("--model is required")?,
+        model,
         input,
         text,
         iters,
@@ -262,8 +275,20 @@ const KEY_WHISPER_N_MELS: &str = "vokra.whisper.n_mels";
 
 /// Loads the model, times the task and (optionally) checks the baseline.
 fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
+    // Special-case: `--task mel-frontend` without `--model`. Skip the GGUF
+    // load entirely and run `whisper::mel::log_mel` on either the caller's
+    // `--input` WAV or a self-contained 30 s deterministic PCM. `n_mels` is
+    // fixed at 80 (the value all shipping Whisper sizes carry in their
+    // `vokra.whisper.n_mels` metadata). Wired to feed the CI `bench-regression`
+    // job (`docs/bench-baselines/mel_frontend_baseline.json`) without shipping
+    // a Whisper GGUF fixture.
+    if args.model.is_none() {
+        debug_assert!(matches!(args.task_hint, Some(TaskHint::MelFrontend)));
+        return execute_mel_frontend_standalone(args);
+    }
+    let model_path = args.model.as_deref().expect("model is Some here");
     let (session, task) =
-        engine::load_session_with_backend(&args.model, args.backend, args.task_hint)?;
+        engine::load_session_with_backend(model_path, args.backend, args.task_hint)?;
 
     // M2-08-T12: HiFi-GAN INT8 opt-in verify gate. `None` policy short-circuits
     // (the `vokra.quant.*` chunk reader is a T05 landing pad — see
@@ -377,6 +402,81 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
         None => None,
     };
 
+    Ok(BenchOutcome { report, regression })
+}
+
+/// Default mel-band count used by the standalone mel-frontend bench when no
+/// GGUF is provided. Matches `vokra.whisper.n_mels` for every shipping
+/// Whisper size (base / small / medium / large-v3 / turbo all carry 80).
+const MEL_FRONTEND_STANDALONE_N_MELS: usize = 80;
+
+/// Whisper's fixed audio window in samples (30 s at 16 kHz). Matches
+/// `whisper::mel::N_SAMPLES` (kept as a local const so this file compiles
+/// even when the model crate is stripped).
+const MEL_FRONTEND_STANDALONE_N_SAMPLES: usize = 30 * 16000;
+
+/// Runs the `--task mel-frontend` bench without touching a GGUF. Called from
+/// [`execute`] when `args.model` is `None`. Uses the caller's `--input` WAV
+/// if given, otherwise a deterministic 30 s PCM (three sine tones + light
+/// pseudo-noise, byte-reproducible on every runner) so the CI
+/// `bench-regression` job runs against a fixed baseline JSON without
+/// shipping any external WAV / GGUF fixture.
+fn execute_mel_frontend_standalone(args: &BenchArgs) -> Result<BenchOutcome, String> {
+    let (pcm, audio_seconds) = if let Some(path) = args.input.as_deref() {
+        let clip = wav::read_wav(path)?;
+        let audio_seconds = clip.samples.len() as f64 / f64::from(clip.sample_rate);
+        (clip.samples, audio_seconds)
+    } else {
+        let mut pcm = Vec::with_capacity(MEL_FRONTEND_STANDALONE_N_SAMPLES);
+        // Three-tone chord (220 / 440 / 660 Hz) + phase-shifted small noise.
+        // Deterministic (no RNG, no time), amplitude bounded well inside f32
+        // range so `log_mel` exercises the mel-band accumulator and the log10
+        // approximation on non-trivial values.
+        for k in 0..MEL_FRONTEND_STANDALONE_N_SAMPLES {
+            let t = k as f32 / 16_000.0;
+            let phi = t * std::f32::consts::TAU;
+            let s = 0.3 * (phi * 220.0).sin()
+                + 0.2 * (phi * 440.0).sin()
+                + 0.1 * (phi * 660.0).sin()
+                + 0.02 * (phi * 12_345.6).sin();
+            pcm.push(s);
+        }
+        (pcm, 30.0)
+    };
+
+    let n_mels = MEL_FRONTEND_STANDALONE_N_MELS;
+    let samples = time_iters(args.warmup, args.iters, || {
+        let out = vokra_models::whisper::mel::log_mel(&pcm, n_mels);
+        std::hint::black_box(out);
+        Ok(())
+    })?;
+    let stats = report::summarize(&samples).ok_or("no timing samples (iters must be > 0)")?;
+    let rtf = if audio_seconds > 0.0 {
+        stats.mean / audio_seconds
+    } else {
+        0.0
+    };
+    let report = BenchReport {
+        task: "mel-frontend".to_owned(),
+        iters: args.iters,
+        warmup: args.warmup,
+        audio_seconds,
+        rtf,
+        ttfa_ms: stats.mean * 1e3,
+        latency: stats,
+    };
+    let regression = match &args.baseline {
+        Some(path) => {
+            let bytes = std::fs::read(path).map_err(|e| format!("reading baseline {path}: {e}"))?;
+            let baseline_rtf = report::parse_baseline_rtf(&bytes)?;
+            Some(report::compare(
+                baseline_rtf,
+                report.rtf,
+                REGRESSION_THRESHOLD,
+            ))
+        }
+        None => None,
+    };
     Ok(BenchOutcome { report, regression })
 }
 
@@ -562,6 +662,24 @@ mod tests {
         assert_eq!(a.task_hint, None);
     }
 
+    /// `--task mel-frontend` without `--model` parses cleanly — the standalone
+    /// mel-frontend path (`execute_mel_frontend_standalone`) uses default
+    /// `n_mels = 80` and synthesizes a 30 s PCM. Wired to feed the CI
+    /// `bench-regression` job without a GGUF fixture.
+    #[test]
+    fn parses_mel_frontend_without_model() {
+        let a = parse_args(&args(&["--task", "mel-frontend"])).expect("valid");
+        assert_eq!(a.model, None);
+        assert_eq!(a.task_hint, Some(TaskHint::MelFrontend));
+    }
+
+    /// The `--model` requirement asymmetry: every non-mel-frontend task still
+    /// rejects a missing `--model`.
+    #[test]
+    fn rejects_missing_model_for_non_mel_frontend() {
+        assert_eq!(parse_args(&args(&[])).err().unwrap(), "--model is required");
+    }
+
     #[test]
     fn time_iters_warms_up_then_times_each_iteration() {
         let mut calls = 0u32;
@@ -609,7 +727,7 @@ mod tests {
         let gguf_path = write_bare_whisper_gguf();
 
         let a = BenchArgs {
-            model: gguf_path.to_string_lossy().into_owned(),
+            model: Some(gguf_path.to_string_lossy().into_owned()),
             input: Some(wav_path.to_string_lossy().into_owned()),
             text: None,
             iters: 1,
@@ -636,7 +754,7 @@ mod tests {
         // The hint is Whisper-only: pointing it at Silero must fail loudly
         // (FR-EX-08: no silent fallback to VAD).
         let a = BenchArgs {
-            model: silero_fixture(),
+            model: Some(silero_fixture()),
             input: None,
             text: None,
             iters: 1,
@@ -664,7 +782,7 @@ mod tests {
         wav::write_wav(&wav_path, &vec![0.0f32; 16_000], 16_000).expect("write wav");
 
         let a = BenchArgs {
-            model: silero_fixture(),
+            model: Some(silero_fixture()),
             input: Some(wav_path.to_string_lossy().into_owned()),
             text: None,
             iters: 2,

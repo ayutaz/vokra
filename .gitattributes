@@ -1,0 +1,25 @@
+# Vokra .gitattributes — pins committed binary fixtures to plain-blob storage.
+#
+# NFR-DS-02 / M2-06 §3 red-line: parity fixtures under tests/parity/whisper_*/
+# and the audio input under tests/fixtures/audio/ MUST NOT be Git LFS pointers.
+# Downstream consumers (parity_whisper.rs, the parity-whisper-real CI job,
+# the openai-whisper-agreeing reference dumper, and future test binaries)
+# rely on a plain `git clone` producing the actual bytes without needing
+# `git lfs install` / `git lfs pull`. The `-filter` attribute clears any
+# filter (including LFS's `filter=lfs`), so a stray `git lfs track "*.f32"`
+# or `git lfs track "*.wav"` elsewhere in the tree cannot silently reroute
+# these paths through the LFS pipeline.
+#
+# The `-diff` / `-merge` pins are additional guards: they prevent gitattributes
+# filters (e.g. binary-diff drivers) from mangling the raw byte payloads.
+
+# Whisper (and future model) parity f32 fixtures — see tests/parity/whisper_*/
+tests/parity/whisper_*/*.f32 -filter -diff -merge
+tests/parity/whisper_*/*.bin -filter -diff -merge
+
+# Real-audio input consumed by tools/parity/dump_whisper_reference.py.
+tests/fixtures/audio/*.wav -filter -diff -merge
+
+# C ABI raw-PCM fixtures (mirror of the whisper input_pcm.f32; see
+# tests/capi/fixtures/gen_fixtures.py). Same LFS-free contract.
+tests/capi/fixtures/*.f32 -filter -diff -merge

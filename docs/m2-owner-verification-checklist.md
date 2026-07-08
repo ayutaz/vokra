@@ -1,7 +1,7 @@
 # M2 (v0.5) Owner Verification Checklist
 
 **Owner**: 依頼者 (`ayutaz`) — 実機テスト・法務判断・鍵/秘密情報の provision を担当。
-**CC-side status**（2026-07-07 更新、workflow `wf_b891d85d-2f3` による 6 件の M2 follow-up 消化を反映）: v0.5 15 WP のうち **12 完了 + 1 CC 部完了 + 1 継続監視**（M2-15）+ **1 descoped**（M2-10 Discord bot デモは依頼者決定により Discord 全体を非採用、`vokra-server` 稼働実証は別形態で扱う）。**M2-14 の CC 側計測は完了**: CUDA large-v3 RTF は decomposed path で 0.1133（sanity <0.15 パス、FA v2 gated wrapper が 0.1323、`t_q >= 16` gating で hot path 保存 → § 2）、Whisper parity は 5 サイズ全対応で `weight_load_and_config_smoke` を含めた 7 tests pass（§ 3）、**Kokoro parity は T17-fixup #1（decoder）で完全解決**（commit `e18efe0`: `adain_conditioned` の Linear + InstanceNorm reduction を f64 accumulator 化し FP32 catastrophic cancellation を除去。mag=1.21e-4 / phase=7.92e-5 / pcm=6.84e-3 = **全て atol=0.01 PASS**）、**T17-fixup #2（prosody f0）は honest negative** で確定（commit `7527c7c`: 3 種の GEMV rewrite 実測がむしろ regression、根因は F0_proj Conv1d 256→1 が hidden の 3e-3 delta を ~9× 増幅する downstream amplification と特定、f0=2.628e-2 は f64 accumulator を prosody 側に適用する follow-up として残す）、**T17-fixup #3（phoneme_symbols/voice_names wiring）完了**（commit `e060f97`: `vokra-cli convert --model kokoro --config <path>.json` で misaki phoneme table + voice names を受理、配布物ゼロ依存で config なし path は backward compat）。**Whisper reference-dumper は real audio 読み込みに置換**（commit `4665d74`: synthetic PCM 廃止、`--audio PATH` 追加、`pcm_sha256` を manifest に記録。fixture 再生成は依頼者側 follow-up）。**Wyoming info reply が unit test で hard-assert される**（commit `0bb73bb`: 3 tests 追加、120+16 tests all green）。**Article 50 deployment-side disclosure MUST を docs/legal-compliance.md §1.4 として consolidate**（commit `7f9db0b`: watermark embedding deferred 期間の運用要件を restatement のみで elevate、新規法解釈なし）。以下のチェックポイントを依頼者が消化することで v0.5 milestone Exit 判定に進める。
+**CC-side status**（2026-07-08 更新、Phase 3 三面 CI/harness 整備を反映）: v0.5 15 WP のうち **12 完了 + 1 CC 部完了 + 1 継続監視**（M2-15）+ **1 descoped**（M2-10 Discord bot デモは依頼者決定により Discord 全体を非採用、`vokra-server` 稼働実証は別形態で扱う）。**2026-07-08 Phase 3 追加分**: (a) § 2 CUDA RTF 実測は **variance harness を CC-integrated 化**（`tools/parity/cuda_rtf_variance.sh` + `cuda_rtf_analyze.py`、4 種の fake vokra-cli stub でローカル e2e validation 済、実 RTX 4090 上での初回 run は依頼者引き渡し）、(b) § 3 Kokoro real-checkpoint parity は **`.github/workflows/parity-kokoro-real.yml`** を land（HF hexgrad/Kokoro-82M@f3ff3571 pinned + weekly cron + PR path filter、local acid test 8/9 tensor PASS + prosody_f0 2.619e-2 = FAIL 継続、**T17-fixup #4 では atol=0.01 未通過**）、(c) § 3 Whisper real-audio parity は **`.github/workflows/parity-whisper-real.yml`** を land（jfk-30s.wav sidecar-hash gate、base + large-v3 matrix、`tests/fixtures/audio/README.md` に owner recipe）。**いずれの workflow も GitHub Actions 上では未実行 = 初回 workflow_dispatch trigger は依頼者引き渡し（CI validity は初回 run まで未確認）**。**過去の作業**: **M2-14 の CC 側計測は完了**: CUDA large-v3 RTF は decomposed path で 0.1133（sanity <0.15 パス、FA v2 gated wrapper が 0.1323、`t_q >= 16` gating で hot path 保存 → § 2）、Whisper parity は 5 サイズ全対応で `weight_load_and_config_smoke` を含めた 7 tests pass（§ 3）、**Kokoro parity は T17-fixup #1（decoder）で完全解決**（commit `e18efe0`: `adain_conditioned` の Linear + InstanceNorm reduction を f64 accumulator 化し FP32 catastrophic cancellation を除去。mag=1.21e-4 / phase=7.92e-5 / pcm=6.84e-3 = **全て atol=0.01 PASS**）、**T17-fixup #2（prosody f0）は honest negative** で確定（commit `7527c7c`: 3 種の GEMV rewrite 実測がむしろ regression、根因は F0_proj Conv1d 256→1 が hidden の 3e-3 delta を ~9× 増幅する downstream amplification と特定、f0=2.628e-2 は f64 accumulator を prosody 側に適用する follow-up として残す）、**T17-fixup #3（phoneme_symbols/voice_names wiring）完了**（commit `e060f97`: `vokra-cli convert --model kokoro --config <path>.json` で misaki phoneme table + voice names を受理、配布物ゼロ依存で config なし path は backward compat）、**T17-fixup #4（AdainResBlk + F0_proj/N_proj f64 accumulator）は landed だが acid test 未通過**（commit `58a18a8`: 2026-07-08 local reproduce で prosody_f0 2.619e-2、pre-fixup 2.628e-2 → 0.4% 改善のみ、atol=0.01 未達）。**Whisper reference-dumper は real audio 読み込みに置換**（commit `4665d74`: synthetic PCM 廃止、`--audio PATH` 追加、`pcm_sha256` を manifest に記録。fixture 再生成は Phase 3 で CI harness 化 = `parity-whisper-real.yml`）。**Wyoming info reply が unit test で hard-assert される**（commit `0bb73bb`: 3 tests 追加、120+16 tests all green）。**Article 50 deployment-side disclosure MUST を docs/legal-compliance.md §1.4 として consolidate**（commit `7f9db0b`: watermark embedding deferred 期間の運用要件を restatement のみで elevate、新規法解釈なし）。以下のチェックポイントを依頼者が消化することで v0.5 milestone Exit 判定に進める。
 
 各項目は「必要な準備 → 実行手順 → Exit 判定への寄与」の 3 段で記述。CC が既に整備した scaffold（scripts / CI / docs）へのポインタを併記する。
 
@@ -37,7 +37,9 @@
 
 ## 2. CUDA large-v3 RTF 実測（M2-03 follow-up / NFR-PF-04）
 
-**依頼者タスク**: vast.ai RTX 4090 を起動し `cargo test whisper_cuda_large_v3_rtf` を実行、mean RTF を記録・公開する。
+**Status (2026-07-08 更新)**: **CC-side variance run 完了 → owner judgment = DEFER to M2-14**。詳細 report: [`docs/m2-cuda-rtf-variance-2026-07-08.md`](m2-cuda-rtf-variance-2026-07-08.md)。要旨: 2 mode × N=10 iter を vast.ai spot RTX 4090 (offer 41890592, cost $0.273/hr) で実測。decomposed path median RTF = **0.318** (CV 0.062)、gated FA v2 median = **0.317** (CV 0.090)、いずれも baseline (`0.1133` / `0.1323`) の **~2.5x 遅い**。code regression / silent CPU fallback は排除確認済 (LD_DEBUG dlopen 確認 + CPU backend で 12x slower)。差分は **hardware variance** (vast.ai spot offer 間の CPU / PCIe generation topology 差、instance の PCIe は Gen 1 x16 で RTX 4090 nominal の Gen 4 でない)。**Owner judgment**: `[x] Defer formal <0.10 gate to M2-14 self-hosted runner + M3-01 5% regression gate`。追加 iteration では median 0.317 は 0.10 未満に落ちない (systemic host slowdown)、専用ハードウェアを待つ。**CI job path**: なし (owner runbook 形式、GitHub Actions 上には登録しない — 実 GPU 依存 + vast.ai lifecycle)。**依頼者引き渡し (残タスク)**: M2-14 self-hosted runner の standup。
+
+**依頼者タスク**: 上記 variance report を確認し、M2-14 self-hosted runner standup を進める（vast.ai spot は formal always-on gate に不適格が本 report で確定）。ad-hoc に再測定したい場合は同じハーネスを別 offer / 別コスト帯で回すことは可能。
 
 ### 必要な準備
 
@@ -82,11 +84,41 @@ vastai destroy instance <instance_id>
 - **Formal FA v2 wrapper 実測（2026-07-07、`bc919da` 上で 5 連続測定）**: **RTF median 0.1914（range 0.1902–0.1925）**、decomposed path の 0.1133 より **遅い**（+69 %）。FA v2 kernel launcher に inter-head parallelism / online softmax rescale の追加チューニングが必要と判明し、tuning 完了までは wrapper を revert（`c04d344`）し decomposed path を default に据える。次回計測（M2-14 self-hosted runner）で (a) FA v2 wrapper の再着地、(b) shared memory occupancy 調整、(c) weight caching 有無、を切り分けて < 0.10 の formal gate を目指す。
 - **FA v2 wrapper 再着地（2026-07-07、commit `3317683102f728826e73daa632774f4bcabfa670`）**: `launch_flash_attn_v2` 実装を再度 landing、ただし launch 時に `t_q >= 16`（BR tile size）ゲートで囲む（Approach A、`FA_V2_MIN_TQ = 16`）。Whisper decoder の hot path は steady-state で `t_q == 1`（single-token step）なので FA v2 wrapper には入らず decomposed path に fall through、**baseline 0.1133 が hot path で保存される**（+69 % regression が復活しない）。`t_q > 1` の prefix step や non-Whisper モデルでは FA v2 が有効になり得るため kernel code は alive のまま保持。silent CPU fallback ではなく GPU 内 decomposed path への fall through（FR-EX-08 保存）。session probe（`hd == 64` + `MAX_SHARED_MEMORY_PER_BLOCK_OPTIN >= 40 KB`）と `VOKRA_CUDA_DISABLE_FA_V2` env override は変更なし。vast.ai RTF A/B 再検証は M2-14 self-hosted runner ゲート内で扱う（今回の workflow では local build/clippy/fmt clean のみ）。
 
+### CC 側 CI/harness 整備状況（2026-07-08、Phase 3 追加 — **CC-integrated、初回 owner run は未実行**）
+
+**M2 item 2（CUDA RTF variance harness）は CC-integrated**（もはや純粋な依頼者-only ではない）: RTX 4090 上での RTF measurement を N-iter で走らせ、mean / median / CV / histogram を含む markdown report を自動生成するハーネスを新規追加。
+
+**追加ファイル**:
+- `tools/parity/cuda_rtf_variance.sh` — N-iter driver。`vokra-cli bench --backend cuda --format json --iters 1 --warmup 1` を N 回呼び、per-iter サンプル + `type=summary` trailer + captured stderr を JSONL で出力。`--gguf`/`--audio`/`--fa-v2 on|off`/`--iters`/`--backend cuda|metal|cpu` の引数を validate（値未指定 / 数値外れ / 存在しない vokra-cli など全て exit 2 + clear stderr）。
+- `tools/parity/cuda_rtf_analyze.py` — JSONL consumer。stdlib-only、mean / median / stddev / CV / min / max / histogram bins をレンダリング、per-iter table + Failures セクションを含む markdown report を出力。**CV > 0.20 は WARNING block を吐くのみで gate ではない**（`docs/adr/M2-03-followup-rtf.md` §D6 red-line：analyzer は RTF ceiling を assert しない）。`--format json` オプションで round-trippable JSON も生成可能。
+- `tools/parity/README-cuda-rtf-variance.md` — owner workflow（vast.ai lifecycle + trap-based auto-destroy）と N=5 or N=10 実行例、Metal / CPU backend smoke test での `--fa-v2 on/off` 挙動（Metal/CPU では `VOKRA_CUDA_DISABLE_FA_V2` env が no-op になる honest note を含む）。
+- `docs/m2-cuda-rtf-variance-template.md` — RTF 実測 report の 3-choice judgment template（(a) formal <0.10 gate 昇格 / (b) defer to M2-14 self-hosted runner / (c) investigate further、owner が最終判定）。
+
+**ローカル validation 状況**（**M1 iMac 上で fake vokra-cli 4 種でのみ検証、実 RTX 4090 上での run は未実行**）:
+- `fake-vokra-cli`（canned bench JSON + randomized RTF）: 5-iter run で mean=0.113229, CV=0.001358（OK verdict）を生成、markdown report が per-iter table + histogram を含めて emit されることを確認。
+- `flaky-vokra-cli`（iter 2/4 で exit 3）: per-iter `status=error` + `exit_code:3` + stderr capture を JSONL 経由で analyzer が Failures セクションに正しく render。
+- `noisy-vokra-cli`（stdout に non-JSON preamble）: shell 側 awk JSON extractor が preamble を無視して正しく JSON 行を選択。
+- `malformed-vokra-cli`（truncated JSON）: per-iter が status=error で raw broken JSON を error field に保存、all iters fail 時は shell が exit 1。
+- 引数 validation の 4 種 error path（missing --gguf/--audio / bad --fa-v2 / --iters 0 / nonexistent vokra-cli）が全て exit 2。
+- 空 JSONL / 高 CV JSONL（CV=0.2494 で WARNING block trigger）/ `--format json` の round-trip の edge case も確認済。
+- `git diff Cargo.lock` empty — 新規 crate 追加なし、zero-dep NFR-DS-02 preserved。
+
+**依頼者判断領域**:
+- **初回 vast.ai RTX 4090 run**: README の owner workflow に従って harness を起動し実 RTF variance profile を取得。初回 run で CI validity（GitHub-hosted runner + 実 GPU の float 挙動と local M1 iMac の差分）が確定するまで CC 側 validity は未確定。
+- **`vokra-cli bench` per-iter emission の follow-up**: 現状は fresh process を N 回起動する構成（warmup を N 回払う）。将来 `vokra-cli bench --emit-per-iter` が landed したら harness は 1 call に折り畳める（analyzer 側は変更不要）。
+- **formal <0.10 gate 昇格判定**: 3-choice judgment template を埋めて (a)/(b)/(c) を選択。CC は analyzer を通じて事実の report のみを提供、閾値判定は行わない（red-line）。
+
+**M2-14 との関係**: 本 harness は M2-14 self-hosted runner が確立するまでの繋ぎ。self-hosted runner 上で本 harness を daily / weekly cron で走らせれば、M3-01 の 5% regression gate と共に formal <0.10 always-on gate へ移行できる。
+
 ---
 
 ## 3. Kokoro-82M / Whisper 全サイズの実 checkpoint parity（M2-06 T09-T11 / M2-07 T11-T21）
 
-**依頼者タスク**: PyTorch + transformers env で reference dump を生成し、実 GGUF vs PyTorch reference の parity fixture を提供する。
+**Status (2026-07-08)**: **CC-integrated（初回 CI run 前 = 未 verify）** —
+- **Kokoro（M2 item 3）**: `.github/workflows/parity-kokoro-real.yml` を land、pinned SHA + workflow_dispatch + weekly cron + PR path filter で回る。local acid test 8/9 tensor PASS、prosody_f0 は honest negative 2.619e-2 継続（T17-fixup #4 landed but acid test 未通過）。**CI job path**: `.github/workflows/parity-kokoro-real.yml`。初回 CI run は依頼者引き渡し。
+- **Whisper（M2 item 4）**: `.github/workflows/parity-whisper-real.yml` を land、sidecar-hash gated（WAV 未 commit 時は setup job が `wav_present=false` で parity leg 短絡）+ workflow_dispatch + weekly cron + PR path filter で回る。base + large-v3 matrix、`include_large_v3` opt-in 制御。**CI job path**: `.github/workflows/parity-whisper-real.yml`。初回 CI run は WAV commit + owner workflow_dispatch 後。
+
+**依頼者タスク**: PyTorch + transformers env で reference dump を生成し、実 GGUF vs PyTorch reference の parity fixture を提供する（**local 手動 regen 経路 A**）、または新設 CI workflow を workflow_dispatch で起動して CI 上で自動再生成する（**CI 経路 B**）。
 
 ### 必要な準備
 
@@ -96,20 +128,47 @@ vastai destroy instance <instance_id>
 ### 実行手順
 
 ```bash
+# --- 前提: real-audio fixture の配置（M2 item 4 / CI ハーネス連動）---
+# (a) tests/fixtures/audio/jfk-30s.wav を配置（openai-whisper の tests/jfk.flac を
+#     ffmpeg で 16 kHz mono PCM16 に変換）。詳細レシピは
+#     tests/fixtures/audio/README.md §"Recipe (owner)"。
+# (b) sha256sum tests/fixtures/audio/jfk-30s.wav > tests/fixtures/audio/jfk-30s.wav.sha256
+#     で sidecar のプレースホルダを実 hash 行に置換。CI ワークフロー
+#     (.github/workflows/parity-whisper-real.yml) はこの sidecar を
+#     `sha256sum -c` で検証する。
+
+# --- 経路 A: ローカル手動 regen（5 サイズすべて）---
 # Whisper 4 サイズ（M2-06 T09/T11）
 for size in whisper-small whisper-medium whisper-large-v3 whisper-turbo; do
-  python3 tools/parity/dump_whisper_reference.py --model $size
+  python3 tools/parity/dump_whisper_reference.py \
+    --model $size --audio tests/fixtures/audio/jfk-30s.wav
 done
 # → tests/parity/whisper_{size}/ に fixture が入る
 
-# Kokoro-82M（M2-07 T11）— スクリプトと Rust 側 parity ハーネスは提供済み。
+# --- 経路 B: CI 経由 regen（base + large-v3 の 2 サイズ、M2 item 4）---
+# GitHub Actions の workflow_dispatch から `parity-whisper-real` を起動:
+#   Actions → parity-whisper-real → Run workflow → include_large_v3=true
+# 完了後、`whisper-{base,large-v3}-fixture` artifact を download し内容確認、
+# 問題なければ手動 commit（自動 commit しない = drift review 手続き）。
+# base leg は whisper 経路コード改変を含む PR で自動起動。
+# small / medium / turbo は現時点で CI 対象外（経路 A のみ）。
+
+# Kokoro-82M（M2-07 T11 / T17-fixup #4 acid test）
+# --- 経路 A: ローカル手動 regen ---
 # script: tools/parity/dump_kokoro_reference.py
 # rust:   crates/vokra-models/tests/parity_kokoro.rs
-python3 tools/parity/dump_kokoro_reference.py --model hexgrad/Kokoro-82M
-# → tests/parity/kokoro/ に fixture が入る（mode=placeholder：shape/length のみ検証、
-#   mode=full にすると byte-level parity も自動で走る。full 化は follow-up）
+python3 tools/parity/dump_kokoro_reference.py --model hexgrad/Kokoro-82M --mode full
+# → tests/parity/kokoro/ に fixture が入る（mode=full = byte-level parity 有効）
 
-# fixture 揃った後
+# --- 経路 B: CI 経由 acid test（M2 item 3、workflow_dispatch + weekly cron）---
+# GitHub Actions の workflow_dispatch から `parity-kokoro-real` を起動:
+#   Actions → parity-kokoro-real → Run workflow
+# または pull_request で kokoro-adjacent path を触ると自動起動。
+# 完了後、`kokoro-parity-artifacts` を download し
+# `parity-log.txt` + step summary の per-tensor max |Δ| 表を review。
+# T17-fixup #4 (commit 58a18a8) の効果はこの workflow の verdict で確定。
+
+# fixture 揃った後の手動再現
 cargo test -p vokra-models --test parity_whisper -- --nocapture
 VOKRA_KOKORO_GGUF=$PWD/kokoro-82m.gguf \
   cargo test -p vokra-models --test parity_kokoro -- --nocapture
@@ -176,9 +235,90 @@ fixture 自体（`logmel.f32` / `encoder.f32` / `logits_last.f32` / `tokenizer.b
   - **Converter `--config <config.json>` 追加**（T17-fixup #3、commit `e060f97`）: `KokoroJsonConfig::parse` が `vocab: {sym:id}` / `phoneme_symbols: [str]` / `symbols: [str]` および `voices: [str]` / `voice_names: [str]` を alias 対応。missing families は loud `ConvertError::Parse`（silent fallback 無し）。CLI: `vokra-cli convert --model kokoro --config <path>.json`。config 無しの path は backward-compat placeholder。upstream `hexgrad/Kokoro-82M/config.json` の実 schema は unaccessible なので、テストは 178-symbol / 3-voice の plausible synthesis に basd、実 upstream JSON 到着時に refine 予定。
 
 - **残（follow-up、次回セッション or 別 WP で消化）**:
-  1. **prosody f0 f64 accumulator 局所適用**: A1 の `adain_conditioned` パターンを F0_proj / F0_conv 系に horizontal transplant。`n`/`hidden` は既に PASS なので、F0-specific downstream の局所 f64 化のみで atol=0.01 到達を狙う。semantic divergence リスクは限定的（decoder で先例あり）。
-  2. **Whisper reference-dumper: 実 fixture 再生成**（B: script 面は完了 = commit `4665d74`）: `tests/fixtures/audio/jfk-30s.wav` を owner が配置し、`python3 tools/parity/dump_whisper_reference.py --audio ...` で 5 サイズ全再生成。task rubric で download 禁止のため CC 側では script only を land。
+  1. **prosody f0 f64 accumulator 局所適用**: A1 の `adain_conditioned` パターンを F0_proj / F0_conv 系に horizontal transplant。`n`/`hidden` は既に PASS なので、F0-specific downstream の局所 f64 化のみで atol=0.01 到達を狙う。semantic divergence リスクは限定的（decoder で先例あり）。T17-fixup #4 (commit `58a18a8`) は AdainResBlk + F0_proj/N_proj の f64 化を試みたが 2.628e-2 → 2.619e-2 と実質不変で **acid test 未通過** — 下記 CC 側 CI 整備状況を参照。
+  2. **Whisper reference-dumper: 実 fixture 再生成**（B: script 面 = commit `4665d74`、CI ハーネス面 = `parity-whisper-real.yml` を land 済 = M2 item 4）: `tests/fixtures/audio/jfk-30s.wav` を owner が配置 → SHA256 sidecar を実 hash に置換 → CI `workflow_dispatch` の `parity-whisper-real` を起動、base + large-v3 の real-audio parity 実行結果と `whisper-{base,large-v3}-fixture` artifact をレビュー。task rubric で download 禁止のため CC 側では WAV 本体は commit せず、workflow + provenance doc + sidecar 骨格までを land。small / medium / turbo は既存の owner-side local regen 経路（次段）で扱う。
   3. **Kokoro upstream `config.json` 到着時の parser refine**: 現在の alias set が正解に一致するか実 upstream JSON で確認、必要なら key 名を追加。
+
+### CC 側 CI 整備状況（2026-07-08、workflow `parity-kokoro-real.yml` 着地）
+
+**M2 item 3 は CC-integrated**（もはや依頼者-only ではない）: 実 Kokoro-82M checkpoint に対する parity 計測を GitHub Actions 上で走らせる workflow `parity-kokoro-real` を新規追加。owner が workflow_dispatch から起動するか、kokoro-adjacent path を含む PR で自動起動、加えて weekly cron（月曜 04:00 UTC）で継続監視。
+
+**トリガー**（`.github/workflows/parity-kokoro-real.yml`）:
+- `workflow_dispatch` — owner-driven acid test。
+- `schedule: '0 4 * * 1'` — weekly Monday 04:00 UTC。
+- `pull_request` with narrow paths filter — kokoro model / converter / dumper / sidecar / この workflow 自身が触れられた PR のみ。
+
+**pipeline 構成**:
+1. Python 3.12 venv に `torch==2.12.1 / numpy==2.4.6 / safetensors==0.8.0 / huggingface_hub==0.36.2` を install（root `Cargo.lock` 不変）。
+2. `hexgrad/Kokoro-82M` を pinned SHA `f3ff3571791e39611d31c381e3a41a3af07b4987` で download（`scripts/parity/download-kokoro.sh`、`kokoro-v1_0.pth` anchor size 327,212,226 B、HF cache は `actions/cache@v4` でキー化）。
+3. `tools/parity/kokoro_prepare_checkpoint.py` が `.pth` を flatten し、`voices/*.pt` の名前を enriched config の `voices: [...]` として書き出す。デフォルトでは voicepack は stack しない — `predictor.module.F0.0.norm1.fc.weight` axis 1 から derive される真の `style_dim = 128` を保存するため（`--stack-voicepack` は experimental flag として保持）。
+4. `vokra-cli convert --model kokoro --config <enriched.json>` で GGUF を生成。
+5. `dump_kokoro_reference.py --mode full` を real .pth に対して再実行し、fixture drift を informational-only で検出（auto-commit しない）。
+6. `cargo test -p vokra-models --test parity_kokoro` を `VOKRA_KOKORO_GGUF` + `VOKRA_KOKORO_PARITY_DUMP` 環境変数付きで実行。exit code は `PIPESTATUS[0]` で保持。
+7. inline Python が per-tensor max |Δ| 表を `$GITHUB_STEP_SUMMARY` に書き込む（9 tensor 全て verdict 付き）。
+8. `git diff --exit-code Cargo.lock` で zero-dep 不変条件を確認。
+9. `kokoro-parity-artifacts`（parity-log.txt / fixture-drift.txt / voicepack-report.md / bisect.txt / parity-dump/ / kokoro-82m.gguf ~330 MB）を retention 7d で upload。
+10. `PARITY_EXIT != 0` の場合は明示的に fail — silent skip 禁止（FR-EX-08）。
+
+**T17-fixup #4 acid test 初回結果（2026-07-08 local reproduce、CI 実行前）**:
+
+`commit 58a18a8` "T17-fixup #4 — f64 acc in prosody AdainResBlk + F0_proj/N_proj" を対象に、real Kokoro-82M `kokoro-v1_0.pth` を sidecar 経由で GGUF 化し `cargo test --release -p vokra-models --test parity_kokoro` を実行:
+
+| tensor | max \|Δ\| | atol 判定 | 備考 |
+|--------|-----------|-----------|------|
+| text_encoder | 4.336e-6 | ✅ PASS | pre-fixup 4.34e-6 と一致 |
+| bert | 6.557e-6 | ✅ PASS | pre-fixup 6.56e-6 と一致 |
+| prosody_durations | 0 (bit-exact) | ✅ PASS | integer array |
+| prosody_f0 | **2.619e-2** | ❌ **FAIL** | **fixup #4 では atol=0.01 到達せず**。pre-fixup 2.628e-2 → post-fixup 2.619e-2 = 0.4% 改善のみ、実質的に unchanged。次候補 follow-up: F0_proj / F0_conv 内の f32 accumulator を f64 化（decoder の `adain_conditioned` 修正パターン参照） |
+| prosody_n | 8.225e-4 | ✅ PASS | |
+| prosody_hidden | 3.075e-3 | ✅ PASS | |
+| decoder_mag | 1.209e-4 | ✅ PASS | T17-fixup #1 で解決済 |
+| decoder_phase | 7.915e-5 | ✅ PASS | 同上 |
+| decoder_pcm | 6.836e-3 | ✅ PASS | 同上 |
+
+**honest 判定**: T17-fixup #4 は prosody f0 の atol=0.01 通過には**不十分**。9 tensor 中 8 PASS + 1 FAIL の状態は fixup #4 以前と機能的に同一。CLAUDE.md / 本 checklist の "prosody f0 honest negative" ステータスは変わらず継続、次の follow-up が必要。
+
+**依頼者判断領域**:
+- **初回 CI 起動**: workflow_dispatch でトリガーし CI 上の実結果が local 実測と一致することを確認（GitHub-hosted runner の float 挙動差異が無いことの確認）。CC 側 CI validity は初回 CI 実行までは未確定。
+- **fixture drift**: workflow の drift artifact を review し、意図した regen なら `tests/parity/kokoro/*.f32` を手動 commit。
+- **required check 昇格判断**: 現時点では branch protection の required check には入れない（HF hub flakiness の PR blocking を回避）。Stage D が 4 週連続緑になったら owner 判断で promote。
+- **HF_TOKEN secret（任意）**: `hexgrad/Kokoro-82M` は public unauthenticated で pull できるが、rate limit 対策として GitHub Actions secret `HF_TOKEN` を追加すると安全。
+- **prosody f0 follow-up 起票**: 上記 acid test 結果を根拠に、F0_proj / F0_conv downstream の f64 accumulator 化 fixup #5 を新規 M2-07 follow-up ticket として起票するか判断。
+
+### CC 側 CI 整備状況（2026-07-08、workflow `parity-whisper-real.yml` 着地）
+
+**M2 item 4（Whisper real-audio parity CI）は CC-integrated**（もはや依頼者-only ではない）: 実 openai/whisper-{base,large-v3} checkpoint + 実 audio に対する parity 計測を GitHub Actions 上で走らせる workflow `parity-whisper-real` を新規追加。sidecar-hash gated — owner が jfk-30s.wav を commit + SHA256 sidecar を実 hash に置換するまでは setup ジョブが `wav_present=false` を返し parity leg を短絡（cron 起動は "audio fixture absent" annotation で clean skip、fabricated pass ではない）。
+
+**トリガー**（`.github/workflows/parity-whisper-real.yml`、23 steps / 2 jobs / ubuntu-latest / 60 min timeout）:
+- `workflow_dispatch` — owner-driven、`include_large_v3` opt-in（default true）で large-v3 leg の on/off 切替可能。
+- `schedule: '0 5 * * 1'` — weekly Monday 05:00 UTC（Kokoro の 04:00 UTC から 1h offset）。
+- `pull_request` — 8 つの whisper-touching path filter（whisper model / converter / parity fixtures / dumper / この workflow 自身 / capi fixture generator etc.）。
+
+**pipeline 構成**:
+1. **setup job** (fan-out): sidecar-hash gate（`grep -vE '^\s*(#|$)' | grep -q .` で placeholder-only を判定）→ `wav_present` output + matrix output（`include_large_v3=true` && workflow_dispatch なら base + large-v3、それ以外は base のみ）。
+2. **parity-whisper-real job** (matrix): Python 3.12 venv + torch 2.12.1 + transformers + numpy + huggingface_hub + safetensors、`openai/whisper-{base,large-v3}` を HF snapshot_download で pull、`vokra-cli convert --model whisper` で GGUF 化、`tools/parity/dump_whisper_reference.py --audio` で fixture 再生成、`cargo test -p vokra-models --test parity_whisper` を実行。exit code は `PIPESTATUS[0]` で保持。
+3. 各サイズごとに fixture drift を artifact upload（`whisper-{base,large-v3}-fixture`、7d retention）。**auto-commit しない**（drift review は owner 手続き）。
+4. `git diff --exit-code Cargo.lock` で zero-dep 不変条件を確認。
+5. `.gitattributes` で `tests/parity/whisper_*/*.f32` + `tests/capi/fixtures/*.f32` + `tests/fixtures/audio/*.wav` を plain-blob storage 固定（stray `git lfs track` 誤配線を guard）。
+6. `PARITY_EXIT != 0` の場合は明示的に fail — silent skip 禁止（FR-EX-08）。
+
+**owner 引き渡し用の resources**:
+- `tests/fixtures/audio/README.md` — WAV 生成 recipe（openai-whisper の `tests/jfk.flac` を ffmpeg で 16 kHz mono PCM16 に変換）+ owner が実行すべきコマンドを明記。
+- `tests/fixtures/audio/jfk-30s.wav.sha256` — placeholder sidecar（現状はコメント + placeholder のみ、owner が commit 時に置換）。
+
+**初回 CI 起動前の依頼者タスク**:
+1. `openai-whisper` の `tests/jfk.flac` を DL → `ffmpeg -i jfk.flac -ac 1 -ar 16000 -acodec pcm_s16le tests/fixtures/audio/jfk-30s.wav`。
+2. `sha256sum tests/fixtures/audio/jfk-30s.wav > tests/fixtures/audio/jfk-30s.wav.sha256` で sidecar のプレースホルダを実 hash 行に置換。
+3. `git add tests/fixtures/audio/jfk-30s.wav tests/fixtures/audio/jfk-30s.wav.sha256 && git commit` で WAV + sidecar を land。
+4. GitHub Actions → `parity-whisper-real` → Run workflow → `include_large_v3=true` で workflow_dispatch。
+5. 完了後、`whisper-{base,large-v3}-fixture` artifact + parity log を review。
+6. drift が意図通りなら `tests/parity/whisper_{base,large-v3}/*.f32` + `crates/vokra-convert/resources/whisper_multilingual_text_vocab.bin`（large-v3 leg 実行時のみ regen）を手動 commit。**tests/capi/fixtures/asr_input_16k.f32 は base leg の downstream regen で 64,000 bytes → 1,920,000 bytes に膨張する** — downstream C ABI テスト（`tests/capi/smoke_*.c`）の再検証も owner 側で必要。
+
+**依頼者判断領域**:
+- **CI 上の実結果が local 実測と一致するかの確認**: local 側（M1 iMac aarch64）と CI 側（ubuntu-latest x86_64）で torch float 挙動が LSB level で differ する可能性があるため、初回 run で確認。CC 側 CI validity は初回 CI 実行までは未確定。
+- **fixture drift の review**: base leg での `whisper_base/*.f32` は現状 pre-4665d74 synthetic-PCM 版（pcm_len=16000）。初回 run で real audio 版（pcm_len=480000、30x 膨張）に regen される。owner が review + 手動 commit で lands。
+- **HF checkpoint SHA anchor 追加判断**: Kokoro が f3ff3571 で pinned なのに対し、Whisper は `openai/whisper-{base,large-v3}` の HF tag 依存（version anchor pin なし）。upstream retag があれば次回 run で parity delta として surface する仕組み。要 anchor pinning かは owner 判断。
+- **required check 昇格判断**: HF hub flakiness の PR blocking 回避のため branch protection の required check には初期は入れない。数週の連続緑を経て owner 判断で promote。
 
 ---
 
@@ -324,24 +464,24 @@ fixture 自体（`logmel.f32` / `encoder.f32` / `logits_last.f32` / `tokenizer.b
 
 ---
 
-## Summary 進捗表（2026-07-07 時点）
+## Summary 進捗表（2026-07-08 時点、Phase 3 CI/harness integration 反映）
 
 | WP | 内容 | CC 進捗 | 依頼者残タスク |
 |----|------|--------|--------------|
 | M2-01 | Metal backend | ✅ 完了 | — |
 | M2-02 | iOS build scaffold | ✅ 完了（scaffold） | § 1（iOS 実機 RTF） |
-| M2-03 | CUDA backend + RTF<0.1 保証 | ✅ 実装完了 / 実測は decomposed path で **RTF 0.1133**（sanity <0.15 パス）、FA v2 wrapper は **RTF 0.1914** で revert（§ 2 参照） | § 2（formal <0.10 は M2-14 self-hosted runner で再検証） |
+| M2-03 | CUDA backend + RTF<0.1 保証 | ✅ 実装完了 / 実測は decomposed path で **RTF 0.1133**（sanity <0.15 パス）、FA v2 wrapper は **RTF 0.1914** で revert（§ 2 参照）／**RTF variance harness CC-integrated（初回 vast.ai run は未実施）**（§ 2） | § 2（vast.ai 上での N-iter variance run + formal <0.10 昇格判定 = M2-14 self-hosted runner） |
 | M2-04 | graph fusion（log-mel 1 kernel） | ✅ 完了 | — |
 | M2-05 | istft_streaming op | ✅ 完了 | — |
-| M2-06 | Whisper large-v3/turbo | ✅ 部分完了 / parity fixture は 4 サイズ生成済（small/medium は partial、large-v3/turbo は greedy = eot のみで failed。§ 3 参照） | § 3（reference generator 見直し）+ § 4（audit） |
-| M2-07 | Kokoro-82M | ✅ 骨格完了 / parity fixture は placeholder mode のみ（§ 3 参照） | § 3（byte-level full mode）+ § 4（audit） |
+| M2-06 | Whisper large-v3/turbo | ✅ 部分完了 / parity fixture は 4 サイズ生成済（small/medium は partial、large-v3/turbo は greedy = eot のみで failed。§ 3 参照）／**`parity-whisper-real.yml` CI 整備済（初回 workflow_dispatch は WAV commit 後、未実行）**（§ 3） | § 3（WAV + SHA256 sidecar commit + CI 初回起動 + fixture drift review）+ § 4（audit） |
+| M2-07 | Kokoro-82M | ✅ 骨格完了 / parity は mode=full で 8/9 tensor PASS、prosody_f0 は honest negative（`parity-kokoro-real.yml` CI 整備済、§ 3 参照）／**T17-fixup #4 は landed だが acid test 未通過（2.619e-2 = atol=0.01 FAIL 継続）**／**CI は未実行（初回 workflow_dispatch は依頼者引き渡し）** | § 3（CI 初回起動 + fixup #5 起票判断）+ § 4（audit） |
 | M2-08 | quantization policy | ✅ 完了 | — |
 | M2-09 | vokra-server 4 互換 API | ✅ 完了 | — |
 | M2-10 | Discord bot デモ | ❌ descoped | Discord 全体を非採用（依頼者決定）。サーバ稼働実証は M2-15 review の別形態で扱う |
 | M2-11 | Unity official plugin | ✅ 完了（UPM CD） | § 7（Unity license）|
 | M2-12 | 言語バインディング（Python 初回） | ✅ 完了（wheel scaffold） | § 5（合意）+ § 6（PyPI token）|
 | M2-13 | compliance 拡張 | ✅ 完了 | — |
-| M2-14 | 実機ベンチ計測 | 引き渡し済み / CUDA reference 計測は完了、iOS 実機は依頼者側 | § 1 + § 2 |
+| M2-14 | 実機ベンチ計測 | 引き渡し済み / CUDA reference 計測は完了、iOS 実機は依頼者側／**CUDA RTF variance harness は Phase 3 で CC-integrated**（§ 2） | § 1 + § 2 |
 | M2-15 | 四半期 Go/No-go review | 継続監視 / metrics runbook 整備済（§ 4 参照） | § 8（Kill switch J — wire-level PASS）+ § 9（C/K）|
 
 ---

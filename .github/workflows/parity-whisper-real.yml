@@ -1,0 +1,492 @@
+# Vokra whisper real-audio parity regen (M2-06 T09/T11/T12 CI wiring).
+#
+# Purpose: on-demand (workflow_dispatch) and whisper-touching-PR runs that
+# actually exercise the PyTorch parity dumper end-to-end — the dumper was
+# switched to real audio in commit 4665d74 (M2-06 §3 follow-up), but the
+# committed fixture in tests/parity/whisper_base/ is still the pre-4665d74
+# synthetic-PCM snapshot (docs/m2-owner-verification-checklist.md §3), so no
+# job in the tree today verifies that the dumper actually produces fixtures
+# that the Rust parity_whisper harness accepts against a real GGUF. This
+# workflow fills that gap: HF download → vokra-cli convert → dump reference
+# → cargo test parity_whisper with VOKRA_WHISPER_{SIZE}_GGUF pointing at the
+# freshly-built GGUF.
+#
+# Matrix scope (task rubric §CI job 設計要件 #2):
+#   * base       — runs on every whisper-touching PR AND on workflow_dispatch
+#   * large-v3   — runs ONLY on workflow_dispatch (2.9 GB HF DL + 3 GB GGUF
+#                  artifact make it too expensive for per-PR use)
+# The other three sizes in the parity_whisper table (small / medium / turbo)
+# stay under the "owner-driven local regen" path from
+# docs/m2-owner-verification-checklist.md §3; the CC design phase considered
+# a 5-way matrix but the task rubric narrows CI to [base, large-v3] to keep
+# runner minutes bounded and avoid a per-PR ~6.6 GB HF download.
+#
+# Zero-dep invariant (NFR-DS-02): this workflow does NOT modify root
+# Cargo.lock. The dumper Python venv is /tmp-scoped; vokra-cli convert
+# operates on already-checked-in workspace; a final `git diff --exit-code
+# Cargo.lock` guard catches any accidental root-lockfile mutation.
+#
+# LFS guard: parity fixtures are committed as plain binary (see
+# .gitattributes `-filter` pin). This workflow uploads any drift as
+# artifact — owner reviews and commits manually, matching the "no
+# auto-commit of regenerated fixtures" red-line in docs/tickets/m2/
+# M2-06-whisper-large-v3.md T08.
+#
+# Audio fixture provenance: tests/fixtures/audio/jfk-30s.wav is the
+# openai-whisper repo `tests/jfk.flac` (Public Domain LibriVox recording of
+# JFK's 1961 inaugural address) resampled to 16 kHz mono PCM16. See
+# tests/fixtures/audio/README.md for the ffmpeg recipe and SHA256 anchor.
+# If the WAV is absent (owner has not yet committed it), this workflow
+# skips cleanly with an explicit annotation — an FR-EX-08-shaped "missing
+# input is announced, never silently substituted" rather than a synthetic
+# fallback that fabricates parity numbers.
+
+name: parity-whisper-real
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_large_v3:
+        description: "Also run large-v3 leg (2.9 GB HF DL + 3 GB GGUF artifact)."
+        required: false
+        default: "true"
+  # Weekly schedule matches the Kokoro parity workflow's cadence
+  # (parity-kokoro-real.yml uses Monday 04:00 UTC). Offsetting by 1 h
+  # (Monday 05:00 UTC) avoids GH Actions cron collisions with the Kokoro
+  # job and spreads HF hub load across the hour. Cron runs only the `base`
+  # leg — the `large-v3` leg's 2.9 GB HF DL is opt-in via
+  # workflow_dispatch (see matrix logic in the `setup` job).
+  schedule:
+    - cron: "0 5 * * 1"
+  pull_request:
+    paths:
+      - "tools/parity/dump_whisper_reference.py"
+      - "crates/vokra-models/src/whisper/**"
+      - "crates/vokra-models/tests/parity_whisper.rs"
+      - "crates/vokra-convert/src/models/whisper.rs"
+      - "crates/vokra-convert/resources/whisper_multilingual_text_vocab.bin"
+      - "crates/vokra-cli/src/convert.rs"
+      - ".github/workflows/parity-whisper-real.yml"
+      - "tests/fixtures/audio/jfk-30s.wav.sha256"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parity-whisper-real-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Preflight: (1) compute the size matrix (base only on PR, base + large-v3
+  # on workflow_dispatch when the input opt-in is not "false"), (2) detect
+  # whether tests/fixtures/audio/jfk-30s.wav has been committed yet. The
+  # parity leg is gated on the WAV being present so this workflow can be
+  # landed BEFORE the owner commits the audio without breaking whisper PR
+  # CI; once the WAV is committed, the gate flips green automatically.
+  setup:
+    name: setup
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      wav_present: ${{ steps.wav.outputs.present }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute size matrix
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          include='{"size":"base","hf_id":"openai/whisper-base","env_var":"VOKRA_WHISPER_BASE_GGUF","fixture_dir":"tests/parity/whisper_base","gguf":"whisper-base.gguf"}'
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.include_large_v3 }}" != "false" ]; then
+            include="${include},"'{"size":"large-v3","hf_id":"openai/whisper-large-v3","env_var":"VOKRA_WHISPER_LARGE_V3_GGUF","fixture_dir":"tests/parity/whisper_large_v3","gguf":"whisper-large-v3.gguf"}'
+          fi
+          echo "matrix={\"include\":[${include}]}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### parity-whisper-real matrix"
+            echo ""
+            echo "trigger: \`${{ github.event_name }}\`"
+            echo ""
+            echo "leg selection:"
+            echo "\`\`\`json"
+            echo "{\"include\":[${include}]}"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Detect audio fixture presence
+        id: wav
+        shell: bash
+        run: |
+          set -euo pipefail
+          WAV=tests/fixtures/audio/jfk-30s.wav
+          SIDECAR=tests/fixtures/audio/jfk-30s.wav.sha256
+          # The sidecar file is committed with a comment-only placeholder body
+          # from day one so that PRs can lint it. The workflow only treats the
+          # fixture as "present" when the sidecar carries at least one
+          # non-comment non-empty line (which by convention is the
+          # `<hash>  <path>` line that `sha256sum -c` consumes).
+          sidecar_has_hash=0
+          if [ -f "$SIDECAR" ] && grep -vE '^\s*(#|$)' "$SIDECAR" | grep -q .; then
+            sidecar_has_hash=1
+          fi
+          if [ -f "$WAV" ] && [ "$sidecar_has_hash" -eq 1 ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            {
+              echo ""
+              echo "audio fixture: **present** (\`$WAV\` + \`$SIDECAR\`)"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            missing_reason="unknown"
+            if [ ! -f "$WAV" ]; then
+              missing_reason="WAV file absent"
+            elif [ ! -f "$SIDECAR" ]; then
+              missing_reason="SHA256 sidecar absent"
+            elif [ "$sidecar_has_hash" -eq 0 ]; then
+              missing_reason="SHA256 sidecar is placeholder-only (no non-comment line)"
+            fi
+            {
+              echo ""
+              echo "audio fixture: **absent** (\`$missing_reason\`) — parity leg will skip."
+              echo ""
+              echo "See \`tests/fixtures/audio/README.md\` for the ffmpeg recipe."
+              echo "The dumper was switched to real audio in commit 4665d74; the WAV"
+              echo "is public-domain LibriVox JFK 1961 inaugural, ~960 KB after ffmpeg"
+              echo "\`-ac 1 -ar 16000 -c:a pcm_s16le\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning file=$WAV::audio fixture unusable ($missing_reason) — parity-whisper-real skipping (FR-EX-08 explicit skip, not a synthetic fallback)"
+          fi
+
+  parity-whisper-real:
+    name: parity (${{ matrix.size }})
+    needs: setup
+    if: needs.setup.outputs.wav_present == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    # HF DL + convert + dump + parity averages ~15 min for base, ~45 min
+    # for large-v3 (2.9 GB checkpoint DL + 3 GB GGUF write dominates).
+    # 60 min cap matches parity-kokoro-real.yml so a truly stuck run is
+    # bounded consistently across the two model families.
+    timeout-minutes: 60
+    env:
+      SIZE: ${{ matrix.size }}
+      HF_ID: ${{ matrix.hf_id }}
+      ENV_VAR: ${{ matrix.env_var }}
+      FIXTURE_DIR: ${{ matrix.fixture_dir }}
+      GGUF: ${{ matrix.gguf }}
+      # Steer HF cache into a repo-local path so actions/cache@v4 can
+      # snapshot it deterministically. Kokoro workflow uses the same
+      # pattern (parity-kokoro-real.yml env.HF_HOME).
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Namespace the cache per size so the base leg's target/ doesn't
+          # collide with the large-v3 leg on shared runners.
+          key: parity-whisper-real-${{ matrix.size }}
+      - name: Cache HF Hub download (${{ matrix.size }})
+        # Per-model cache key. hashFiles() on the dumper is what makes the
+        # cache invalidate whenever we bump the dumper's HF checkpoint id or
+        # feature-extractor knobs — that ties cache invalidation to the
+        # actual reference-generation contract, not to arbitrary source
+        # churn elsewhere. Restore key gives a warm hit if the dumper file
+        # changed but the checkpoint set didn't. Path is the whole HF_HOME
+        # (matches parity-kokoro-real.yml's HF cache pattern).
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.HF_HOME }}
+          key: hf-hub-${{ matrix.size }}-${{ hashFiles('tools/parity/dump_whisper_reference.py') }}
+          restore-keys: |
+            hf-hub-${{ matrix.size }}-
+      - name: Verify audio fixture SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The sidecar is `<hash>  tests/fixtures/audio/jfk-30s.wav`.
+          # `sha256sum -c` runs cwd-relative, so we invoke it from repo root.
+          sha256sum -c tests/fixtures/audio/jfk-30s.wav.sha256
+      - name: Preflight — disk / matrix / env
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== parity-whisper-real preflight =="
+          echo "size=$SIZE hf_id=$HF_ID env_var=$ENV_VAR gguf=$GGUF"
+          df -h .
+          python3 --version
+          cargo --version
+      - name: Install Python dumper deps (transformers / torch / numpy / hf_hub)
+        # We inline the pins here rather than modify tests/parity/parity-requirements.txt
+        # because that file is scoped to the mel-frontend dumper (numpy only).
+        # torch is CPU-only (Ubuntu runner has no NVIDIA GPU); transformers is
+        # pinned to a range that still exports WhisperTokenizer.byte_decoder
+        # (the dumper's assumption in resolve_special_tokens + dump_tokenizer).
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/vokra-py-whisper
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-whisper/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "numpy>=1.26,<3" \
+            "torch==2.4.*" \
+            "transformers>=4.44,<4.60" \
+            "huggingface_hub>=0.24,<1"
+          echo "installed:"
+          python -m pip list | grep -Ei '^(numpy|torch|transformers|huggingface[-_]hub)\b'
+      - name: Build vokra-cli (release)
+        run: cargo build --release -p vokra-cli
+      - name: Download HF checkpoint via snapshot_download
+        # Explicit `snapshot_download` populates HF_HOME/hub. We then let
+        # vokra-cli convert read the safetensors from the cache snapshot
+        # dir. This is the same cache path the dumper's `.from_pretrained`
+        # calls hit, so the next step reuses the cache without a second
+        # network round-trip. Python writes the resolved paths directly to
+        # a tempfile so tqdm progress bars on stdout cannot pollute the
+        # env-var file. The shell then sources it into the current process
+        # AND appends to $GITHUB_ENV so subsequent steps see the paths too.
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-whisper/bin/activate
+          python3 - <<'PYEOF'
+          import os
+          from huggingface_hub import snapshot_download
+          repo_id = os.environ["HF_ID"]
+          # allow_patterns keeps the cache tight (weights + config + tokenizer only).
+          # We also grab preprocessor_config.json + generation_config.json which
+          # the WhisperProcessor / model.generate paths use.
+          local_dir = snapshot_download(
+              repo_id=repo_id,
+              allow_patterns=[
+                  "model.safetensors",
+                  "config.json",
+                  "generation_config.json",
+                  "preprocessor_config.json",
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "vocab.json",
+                  "merges.txt",
+                  "added_tokens.json",
+                  "normalizer.json",
+                  "special_tokens_map.json",
+              ],
+          )
+          # Write to a tempfile (not stdout) so tqdm / hf progress can't
+          # smuggle progress lines into the KEY=VAL file that bash sources.
+          with open("/tmp/hf-paths.env", "w") as f:
+              f.write(f"HF_LOCAL_DIR={local_dir}\n")
+              f.write(f"HF_SAFETENSORS={local_dir}/model.safetensors\n")
+          print(f"snapshot_download OK: {local_dir}")
+          PYEOF
+          cat /tmp/hf-paths.env
+          # Source into the CURRENT step's environment (later `case`/`test`
+          # lines in this step need it) AND propagate to subsequent steps
+          # via $GITHUB_ENV. `set -a` toggles auto-export for the source.
+          set -a
+          # shellcheck disable=SC1091
+          . /tmp/hf-paths.env
+          set +a
+          cat /tmp/hf-paths.env >> "$GITHUB_ENV"
+          test -f "$HF_SAFETENSORS"
+      - name: Convert safetensors → GGUF (vokra-cli convert)
+        # `--model whisper` auto-detects size from the checkpoint tensor
+        # shape quintuple (see crates/vokra-convert/src/models/whisper.rs
+        # WHISPER_SIZE_MAP). No --quantize: parity fixture must be compared
+        # against fp16 weights so K-quant dequant error is not conflated
+        # with implementation drift (NFR-QL-01 atol=0.01).
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./target/release/vokra-cli convert \
+            --model whisper \
+            --input "$HF_SAFETENSORS" \
+            --output "$GGUF"
+          ls -lh "$GGUF"
+      - name: Regenerate parity fixture (dump_whisper_reference.py)
+        # The Rust parity harness reads fixtures from tests/parity/whisper_{size}/;
+        # the dumper writes there by default when --model whisper-{size} maps to
+        # that directory (see out_dir resolution in main()). --audio pins the
+        # WAV whose sha256 we already verified. If the dumper decides the fixture
+        # would drift from the currently-committed one, that's captured in the
+        # next step's git-diff artifact — not silently overwritten in git.
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-whisper/bin/activate
+          # Map matrix size to dumper --model arg:
+          #   base       -> whisper-base
+          #   large-v3   -> whisper-large-v3
+          case "$SIZE" in
+            base) DUMPER_MODEL=whisper-base ;;
+            large-v3) DUMPER_MODEL=whisper-large-v3 ;;
+            *) echo "::error::unknown SIZE=$SIZE"; exit 2 ;;
+          esac
+          python3 tools/parity/dump_whisper_reference.py \
+            --model "$DUMPER_MODEL" \
+            --audio tests/fixtures/audio/jfk-30s.wav
+          ls -lh "$FIXTURE_DIR"
+      - name: Regenerate C ABI fixture (base only)
+        # tests/capi/fixtures/asr_input_16k.f32 is a verbatim copy of
+        # tests/parity/whisper_base/input_pcm.f32 (see gen_fixtures.py). When
+        # the base fixture regenerates against real audio, the C ABI fixture
+        # grows from 16 000 samples (synthetic 1 s) to 480 000 samples
+        # (real 30 s). Only the base leg touches this file; large-v3 has no
+        # downstream C ABI mirror.
+        if: matrix.size == 'base'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-whisper/bin/activate
+          python3 tests/capi/fixtures/gen_fixtures.py
+          ls -lh tests/capi/fixtures/
+      - name: Detect fixture drift and emit report
+        # `git diff --stat` on the fixture dir + resource file + capi fixtures.
+        # We don't fail here — drift is expected on the initial run after the
+        # dumper switch (M2-06 §3), and honest reporting means uploading the
+        # artifact for owner review, not auto-committing. The parity test in
+        # the next step is what actually asserts numerical correctness.
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Fixture drift report — ${SIZE}"
+            echo ""
+            echo "\`\`\`"
+            git diff --stat -- \
+              "$FIXTURE_DIR" \
+              crates/vokra-convert/resources/whisper_multilingual_text_vocab.bin \
+              tests/capi/fixtures || true
+            echo "\`\`\`"
+            echo ""
+            if git diff --quiet -- "$FIXTURE_DIR" crates/vokra-convert/resources/whisper_multilingual_text_vocab.bin tests/capi/fixtures; then
+              echo "no drift vs committed fixture."
+            else
+              echo "drift detected — fixture artifact uploaded for owner review; no auto-commit."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Run parity test (VOKRA_WHISPER_${{ matrix.size }}_GGUF)
+        # The doubly-gated harness (env var + fixture dir) will now light up
+        # the row for this size. `--nocapture` surfaces the `[parity] ... max
+        # |Δ| = ...` diagnostic that assert_close() prints so honest atol
+        # headroom shows up in the CI log instead of just pass/fail.
+        # PIPESTATUS[0] preserves cargo's exit code across the `tee` pipe so
+        # the failure signal is not masked by tee always succeeding — the
+        # same pattern parity-kokoro-real.yml uses.
+        id: parity
+        shell: bash
+        env:
+          # Set the matrix-scoped GGUF env var to the freshly-built GGUF.
+          # Rust harness reads it via `gguf_path_for(size)` -> `size_env_var`.
+          # We compute the actual variable name (VOKRA_WHISPER_BASE_GGUF or
+          # VOKRA_WHISPER_LARGE_V3_GGUF) at step time.
+          _GGUF_PATH: ${{ github.workspace }}/${{ matrix.gguf }}
+        run: |
+          set +e
+          declare -x "${ENV_VAR}=${_GGUF_PATH}"
+          echo "running parity_whisper with ${ENV_VAR}=${_GGUF_PATH}"
+          cargo test --release -p vokra-models --test parity_whisper -- --nocapture 2>&1 | tee /tmp/parity.log
+          exit_code=${PIPESTATUS[0]}
+          echo "PARITY_EXIT=${exit_code}" >> "$GITHUB_ENV"
+          echo "cargo test parity_whisper exited with ${exit_code}"
+          {
+            echo ""
+            echo "### parity_whisper — ${SIZE} (exit ${exit_code})"
+            echo ""
+            echo "\`\`\`"
+            grep -E '^\[parity\]' /tmp/parity.log || echo "(no [parity] diagnostic lines emitted)"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Zero-dep guard (root Cargo.lock unchanged)
+        # NFR-DS-02: the whole regen must not have mutated the root workspace
+        # lockfile. Any diff means we accidentally pulled a new dep during
+        # vokra-cli convert / cargo test — the invariant that check-zero-deps.sh
+        # enforces on every PR must survive this workflow too.
+        if: always()
+        shell: bash
+        run: git diff --exit-code Cargo.lock
+      - name: LFS guard (parity f32 files must not be LFS-tracked)
+        # Belt-and-suspenders with .gitattributes: even if a future edit
+        # accidentally adds `filter=lfs` for one of these paths, this job
+        # catches it before the drift artifact is uploaded as a bogus LFS
+        # pointer instead of the actual f32 payload.
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in "$FIXTURE_DIR"/*.f32; do
+            [ -f "$f" ] || continue
+            attr=$(git check-attr filter -- "$f" | awk '{print $NF}')
+            case "$attr" in
+              unspecified|""|unset)
+                # `unspecified` — no `.gitattributes` rule matches (plain blob
+                # is the default). `unset` — the repo's `.gitattributes`
+                # explicitly clears the `filter` attribute via the leading
+                # `-filter` token (see `.gitattributes` `-filter -diff -merge`
+                # on parity fixtures). Both states guarantee the file is a
+                # plain binary blob, not an LFS pointer — which is exactly
+                # what this guard needs to enforce.
+                :  # OK — plain binary, not LFS
+                ;;
+              *)
+                echo "::error file=$f::filter attribute is '${attr}' — parity f32 fixtures must be plain binary (see .gitattributes)"
+                fail=1
+                ;;
+            esac
+          done
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+      - name: Upload regenerated fixture (drift artifact)
+        # Always upload — the artifact is the review surface even when there
+        # is no drift (owner can pull down the exact regen output produced
+        # against the pinned WAV + HF checkpoint on this run). `if: always()`
+        # so a parity FAIL still ships the artifact for owner triage.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-${{ matrix.size }}-fixture
+          path: |
+            ${{ matrix.fixture_dir }}
+            crates/vokra-convert/resources/whisper_multilingual_text_vocab.bin
+            tests/capi/fixtures/asr_input_16k.f32
+            /tmp/parity.log
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Upload regenerated GGUF (artifact)
+        # Retention 7d: this is what an owner-side nightly could `download-
+        # artifact` and inject as VOKRA_WHISPER_{SIZE}_GGUF for the
+        # full-checkpoint parity gate on `main`. Not shipped — model-zoo
+        # publish is M2-06 T16 (owner audit gated). `if: always() && GGUF
+        # produced` so an OOM during cargo test still gives owner the GGUF
+        # to reproduce locally.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-${{ matrix.size }}-gguf
+          path: ${{ matrix.gguf }}
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Fail if parity FAILed (honest exit propagation)
+        # Placed AFTER artifact upload so a failing job still ships the
+        # diagnostic bundle. Same tail-position gate parity-kokoro-real.yml
+        # uses; keeps the artifacts-first, exit-last ordering that lets an
+        # owner triage without re-running.
+        if: env.PARITY_EXIT != '0'
+        shell: bash
+        run: |
+          echo "::error::parity_whisper (${SIZE}) exited with ${PARITY_EXIT} — see summary + artifacts"
+          exit "${PARITY_EXIT}"

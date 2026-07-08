@@ -35,5 +35,26 @@ vokra-core.workspace = true
 # (MPL-2.0, not a workspace dependency — see ADR-0003 / license-audit.md).
 vokra-models.workspace = true
 
+[features]
+# --------------------------------------------------------------------------
+# CPU-only audit-trail (M2-11-T13 / plan §R3, Reviewer 3).
+#
+# The Unity UPM package ships a CPU-only cdylib to guarantee no NVIDIA
+# runtime linkage sneaks into the shipped Unity binaries (NVIDIA EULA
+# compliance, CLAUDE.md). The CI job under `.github/workflows/ci.yml` calls
+# `cargo build --release -p vokra-capi --no-default-features --features cpu`
+# so the feature name has to exist even though the underlying model crate
+# already has all GPU backends off by default (`vokra-models/metal` and
+# `vokra-models/cuda` are opt-in). Empty stub: the feature carries no
+# transitive activations, it just names the CPU-only build for the audit
+# trail. Do not add `= ["vokra-models/metal", ...]` here — that would be
+# the exact anti-pattern this feature is documenting the absence of.
+# --------------------------------------------------------------------------
+cpu = []
+# Explicit no-op default so `--no-default-features` on the audit-trail
+# build does not need to be paired with anything else — the CPU-only
+# build is the default shape.
+default = []
+
 [lints]
 workspace = true

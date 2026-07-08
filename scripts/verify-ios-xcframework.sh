@@ -25,8 +25,17 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # would silently defeat ffi_guard's catch_unwind (root Cargo.toml:99-107,
 # panic = "unwind" is mandatory for iOS). Checked first so a stale artifact
 # does not mask a poisoned build env.
-if [ "${RUSTFLAGS:-}" != "${RUSTFLAGS/panic/}" ]; then
-    echo "verify-ios-xcframework: FAIL RUSTFLAGS contains 'panic' override: $RUSTFLAGS" >&2
+#
+# Both sides of the comparison MUST use the `${VAR:-DEFAULT}` form to avoid
+# an unbound-variable error under `set -u` (this script sets `-euo pipefail`
+# at the top). `${RUSTFLAGS/panic/}` alone triggers `unbound variable` when
+# RUSTFLAGS is unset in the caller environment (e.g. `.github/workflows/
+# ci.yml` unity-package job's `collect-ios-lib` step, which invokes this
+# script without exporting RUSTFLAGS). A caller that intentionally sets
+# `RUSTFLAGS='… panic=abort'` still trips the check the same way.
+RUSTFLAGS_SAFE="${RUSTFLAGS:-}"
+if [ "$RUSTFLAGS_SAFE" != "${RUSTFLAGS_SAFE/panic/}" ]; then
+    echo "verify-ios-xcframework: FAIL RUSTFLAGS contains 'panic' override: $RUSTFLAGS_SAFE" >&2
     echo "  iOS build must keep panic = \"unwind\" (ffi_guard requirement)." >&2
     exit 1
 fi
@@ -44,9 +53,33 @@ if [ ! -f "$PLIST" ]; then
     echo "verify-ios-xcframework: FAIL missing $PLIST" >&2
     exit 1
 fi
-PLIST_XML="$(plutil -convert xml1 -o - "$PLIST")"
+# Convert the XCFramework's Info.plist to XML for shell-friendly grep.
+# Prefer `plutil` (macOS-native, fast, exact) when available; fall back to
+# python's stdlib `plistlib` on Linux. `plutil` is not installed on
+# GitHub-hosted ubuntu-latest runners, so the unity-package job's
+# `collect-ios-lib` step (which invokes this script from a Linux runner
+# to sanity-check the ios-build artifact it downloaded) needs the
+# fallback. Both paths emit an identical XML plist to stdout — the
+# subsequent `<string>$id</string>` grep does not care which produced it.
+if command -v plutil >/dev/null 2>&1; then
+    PLIST_XML="$(plutil -convert xml1 -o - "$PLIST")"
+elif command -v python3 >/dev/null 2>&1; then
+    PLIST_XML="$(python3 -c '
+import plistlib, sys
+with open(sys.argv[1], "rb") as f:
+    data = plistlib.load(f)
+sys.stdout.buffer.write(plistlib.dumps(data, fmt=plistlib.FMT_XML))
+' "$PLIST")"
+else
+    echo "verify-ios-xcframework: FAIL neither plutil nor python3 available; cannot read $PLIST" >&2
+    exit 1
+fi
 for id in ios-arm64 ios-arm64_x86_64-simulator; do
-    if ! printf '%s' "$PLIST_XML" | grep -qF "<string>$id</string>"; then
+    # See (b) below for why we use herestrings here instead of pipes — with
+    # `set -o pipefail`, a large enough $PLIST_XML causes `printf` to see
+    # SIGPIPE after `grep -q` closes stdin, which trips pipefail even though
+    # the pattern was found. The herestring keeps a single-command form.
+    if ! grep -qF "<string>$id</string>" <<<"$PLIST_XML"; then
         echo "verify-ios-xcframework: FAIL Info.plist missing LibraryIdentifier '$id'" >&2
         exit 1
     fi
@@ -85,12 +118,33 @@ verify_slice() {
     # (b) otool -hv per slice: MH_MAGIC_64 + expected arch (T06)
     local hdrs
     hdrs="$(otool -hv -arch "$arch" "$lib" 2>/dev/null || true)"
-    if ! printf '%s' "$hdrs" | grep -q 'MH_MAGIC_64'; then
+    # Use `grep -c` (count) + shell arithmetic rather than piping into
+    # `grep -q`: with `set -o pipefail`, the archive of an XCFramework
+    # produces enough header output that `grep -q` closes stdin before
+    # `printf` finishes writing (`printf: write error: Broken pipe`), and
+    # the SIGPIPE-triggered `printf` exit trips the pipefail gate even
+    # though the pattern was found. Using a herestring keeps a single
+    # command and no pipe, so pipefail never fires here.
+    if ! grep -q 'MH_MAGIC_64' <<<"$hdrs"; then
         echo "verify-ios-xcframework: FAIL $lib ($arch) missing MH_MAGIC_64" >&2
         printf '%s\n' "$hdrs" >&2
         exit 1
     fi
-    if ! printf '%s' "$hdrs" | grep -qE "\\b$arch\\b"; then
+    # otool -hv prints the CPU type in the mach header as `ARM64` / `X86_64`
+    # (uppercase). Match case-insensitively against the uppercased form —
+    # `\bARM64\b` matches every `MH_MAGIC_64    ARM64` header line the arch
+    # selection produced. The prior form (`\barm64\b`) only ever passed by
+    # coincidence on the device slice because the archive PATH
+    # (`.../ios-arm64/libvokra.a`) contained the lowercase word `arm64`;
+    # the simulator slice's identifier `ios-arm64_x86_64-simulator` has
+    # `arm64_x86_64` (underscore is a word char, no `\b` boundary between
+    # `arm64` and `_x86_64`), so the same regex silently missed and reported
+    # "does not contain arch 'arm64'" even though otool did list `ARM64`
+    # headers throughout. Uppercase + case-insensitive is what the actual
+    # header field looks like.
+    local arch_upper
+    arch_upper="$(printf '%s' "$arch" | tr '[:lower:]' '[:upper:]')"
+    if ! grep -qE "\\b$arch_upper\\b" <<<"$hdrs"; then
         echo "verify-ios-xcframework: FAIL $lib does not contain arch '$arch'" >&2
         printf '%s\n' "$hdrs" >&2
         exit 1
@@ -98,13 +152,49 @@ verify_slice() {
 
     # (c) symbol whitelist — Mach-O `_vokra_` form (T12; extends
     # run-capi-smoke.sh:52-58 ^vokra_ gate). nm -g -arch selects the slice; we
-    # keep only defined externs (T/S/D/C/B) and require every one to be
+    # keep only defined externs (T/S/D/C/B) and require every "user" one to be
     # _vokra_-prefixed. Undefined refs are checked separately below.
+    #
+    # Rust's static library form (`libvokra.a`) also exports a handful of
+    # Rust-runtime / compiler-builtins symbols that *cannot* be stripped
+    # without breaking linkage. These are namespaced and cannot collide with
+    # the Vokra C ABI surface, so we allow them explicitly:
+    #   * `__rust_*`   — allocator shims (`__rust_alloc`, `__rust_dealloc`,
+    #                    `__rust_realloc`, `__rust_no_alloc_shim_is_unstable`,
+    #                    `__rust_alloc_error_handler`, etc.)
+    #   * `__R[a-z]*`  — Rust v0 mangled symbols (`__RNvCs...`, `__RINvNtCs...`).
+    #                    These are internal Rust items marked `#[used]` or
+    #                    `#[no_mangle]` in unusual ways; they cannot conflict
+    #                    with any C caller because of the `_R` prefix.
+    #   * `_atomic_*`  — compiler-builtins atomic fences (`_atomic_thread_fence`).
+    #                    Emitted by the toolchain when std spawns anything
+    #                    atomic-shaped.
+    #   * `___[cdlp]*` / `___divti3` etc. — LLVM compiler-rt intrinsics
+    #                    (integer / float helpers). Some Rust math paths
+    #                    emit these; the leading `___` triple underscore
+    #                    is the Mach-O form of `__` C-symbol double-underscore.
+    #   * `__aarch64_*` — LLVM AArch64 atomic outlined helpers
+    #                    (`__aarch64_cas{1,2,4,8}_{relax,acq,rel,acq_rel}`,
+    #                    `__aarch64_ldadd*`, `__aarch64_swp*`). These are
+    #                    generated by the compiler for `AtomicUsize::cmpxchg`
+    #                    et al. when targeting `aarch64-apple-ios` and are
+    #                    NOT vendored — they live in `compiler-builtins`.
+    #                    Cannot conflict with a C caller (leading double
+    #                    underscore is a reserved namespace in ISO C).
+    #
+    # Non-allowlisted defined externs (i.e. anything that doesn't start with
+    # `_vokra_` or one of the runtime allowances above) still fail this gate.
     local defined unexpected count
     defined="$(nm -g -arch "$arch" "$lib" 2>/dev/null \
         | awk '/^[0-9a-fA-F]+ [TSDCB] / {print $3}' || true)"
     unexpected="$(printf '%s\n' "$defined" \
-        | grep -vE '^_vokra_' | grep -vE '^_?$' || true)"
+        | grep -vE '^_vokra_' \
+        | grep -vE '^__rust_' \
+        | grep -vE '^__R[a-zA-Z]' \
+        | grep -vE '^_atomic_' \
+        | grep -vE '^___[a-z]' \
+        | grep -vE '^__aarch64_' \
+        | grep -vE '^_?$' || true)"
     if [ -n "$unexpected" ]; then
         echo "verify-ios-xcframework: FAIL unexpected defined symbols in $lib ($arch):" >&2
         printf '  %s\n' "$unexpected" >&2
@@ -148,10 +238,20 @@ TMP="$(mktemp -d -t vokra-verify-ios.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Minimal C TU that pulls the module map and touches an API symbol so the
-# preprocessor + modules loader actually parses vokra.h through the modulemap.
+# preprocessor + modules loader actually parses vokra.h through the
+# modulemap. `vokra_version(void)` (returning `const char *`) is a
+# forever-stable smoke symbol declared at `include/vokra.h`; the probe just
+# needs it to compile against the header. Prior versions of the probe
+# referenced `vokra_version_major()`, which was never declared in the C
+# ABI — the actual header only exposes the `vokra_version` string form —
+# so the probe failed with `undeclared function 'vokra_version_major'`.
+# The check DOES NOT need to LINK against the archive, only compile-check
+# the modulemap-imported header, so casting the returned pointer to `int`
+# via `(intptr_t)` keeps the probe minimal without adding a link stage.
 cat >"$TMP/probe.c" <<'PROBE'
+#include <stdint.h>
 #include "vokra.h"
-int probe(void) { return (int)vokra_version_major(); }
+int probe(void) { return (int)(intptr_t)vokra_version(); }
 PROBE
 
 if ! clang -x c -fsyntax-only \

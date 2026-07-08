@@ -51,6 +51,18 @@ Issues = "https://github.com/ayutaz/vokra/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/vokra"]
 
+# Force a platform-tagged wheel. The Vokra binding bundles a pre-built native
+# shared library injected under `src/vokra/_lib/` by CI (see
+# `.github/workflows/ci.yml` `python-wheel-build`). Without this hook,
+# hatchling emits a `py3-none-any` (pure-Python) wheel, which
+# cibuildwheel v2.20+ hard-rejects. `hatch_build.py::CustomBuildHook`
+# sets `pure_python = False` + `infer_tag = True` so the wheel is
+# stamped with the running interpreter's (Python, ABI, platform) triple
+# (`cp39-cp39-linux_x86_64` etc.) instead. See the hook module for the
+# full rationale.
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
 # Source distribution: exclude prebuilt native libs (per-platform, CI-injected).
 [tool.hatch.build.targets.sdist]
 include = [

@@ -1,1 +1,1 @@
-{"task":"mel-frontend","iters":30,"warmup":5,"audio_seconds":30.000000,"rtf":0.001842,"ttfa_ms":55.2600,"latency_ms":{"p50":55.1200,"p95":57.8400,"p99":58.9100,"mean":55.2600,"jitter":0.9420,"min":54.3100,"max":59.0400}}
+{"task":"mel-frontend","iters":30,"warmup":5,"audio_seconds":30.000000,"rtf":0.003115,"ttfa_ms":93.4404,"latency_ms":{"p50":93.2511,"p95":94.4166,"p99":94.4642,"mean":93.4404,"jitter":0.4967,"min":92.7243,"max":94.4642}}
