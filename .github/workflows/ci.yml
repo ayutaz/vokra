@@ -637,7 +637,7 @@ jobs:
           . /tmp/vokra-py-audit/bin/activate
           pip-licenses \
             --format=markdown \
-            --allow-only 'Apache-2.0;MIT;MIT License;BSD-3-Clause;BSD License;BSD-2-Clause;PSF-2.0;Python-2.0' \
+            --allow-only 'Apache-2.0;Apache Software License;MIT;MIT License;BSD-3-Clause;BSD License;BSD-2-Clause;PSF-2.0;Python-2.0' \
             | tee /tmp/pip-licenses.md
           {
             echo "### Python binding license audit"
