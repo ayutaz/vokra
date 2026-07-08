@@ -25,8 +25,17 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # would silently defeat ffi_guard's catch_unwind (root Cargo.toml:99-107,
 # panic = "unwind" is mandatory for iOS). Checked first so a stale artifact
 # does not mask a poisoned build env.
-if [ "${RUSTFLAGS:-}" != "${RUSTFLAGS/panic/}" ]; then
-    echo "verify-ios-xcframework: FAIL RUSTFLAGS contains 'panic' override: $RUSTFLAGS" >&2
+#
+# Both sides of the comparison MUST use the `${VAR:-DEFAULT}` form to avoid
+# an unbound-variable error under `set -u` (this script sets `-euo pipefail`
+# at the top). `${RUSTFLAGS/panic/}` alone triggers `unbound variable` when
+# RUSTFLAGS is unset in the caller environment (e.g. `.github/workflows/
+# ci.yml` unity-package job's `collect-ios-lib` step, which invokes this
+# script without exporting RUSTFLAGS). A caller that intentionally sets
+# `RUSTFLAGS='… panic=abort'` still trips the check the same way.
+RUSTFLAGS_SAFE="${RUSTFLAGS:-}"
+if [ "$RUSTFLAGS_SAFE" != "${RUSTFLAGS_SAFE/panic/}" ]; then
+    echo "verify-ios-xcframework: FAIL RUSTFLAGS contains 'panic' override: $RUSTFLAGS_SAFE" >&2
     echo "  iOS build must keep panic = \"unwind\" (ffi_guard requirement)." >&2
     exit 1
 fi
