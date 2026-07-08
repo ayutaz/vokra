@@ -74,7 +74,7 @@ use vokra_core::{Result, VokraError};
 use super::config::KokoroConfig;
 use super::nn::{
     BiLstm1d, EPS, LRELU_SLOPE, adain_conditioned_residual, adaln_layernorm_1d,
-    conv_transpose1d_ext, conv1d, leaky_relu, length_regulate, sigmoid, weight_norm_reconstruct_1d,
+    conv_transpose1d_ext, leaky_relu, length_regulate, sigmoid, weight_norm_reconstruct_1d,
 };
 use super::weights::TensorStore;
 use crate::compute::Compute;
@@ -110,18 +110,20 @@ fn conv1d_f64_acc(
     weight: &[f32],
     out_ch: usize,
     kernel: usize,
-    bias: &[f32],
+    bias: Option<&[f32]>,
     stride: usize,
     pad: usize,
 ) -> (Vec<f32>, usize) {
     debug_assert_eq!(x.len(), in_ch * in_len);
     debug_assert_eq!(weight.len(), out_ch * in_ch * kernel);
-    debug_assert_eq!(bias.len(), out_ch);
+    if let Some(b) = bias {
+        debug_assert_eq!(b.len(), out_ch);
+    }
     let out_len = (in_len + 2 * pad - kernel) / stride + 1;
     let mut out = vec![0.0f32; out_ch * out_len];
     for oc in 0..out_ch {
         let w_row = &weight[oc * in_ch * kernel..(oc + 1) * in_ch * kernel];
-        let b64 = bias[oc] as f64;
+        let b64 = bias.map_or(0.0f64, |b| b[oc] as f64);
         let dst = &mut out[oc * out_len..(oc + 1) * out_len];
         for (ot, dst_ot) in dst.iter_mut().enumerate() {
             let mut acc64: f64 = b64;
@@ -350,8 +352,17 @@ impl AdainResBlk {
         // Length after upsample.
         let sc_len = if self.upsample { 2 * t_in } else { t_in };
         if let Some(w) = &self.conv1x1_w {
-            let (out, out_len) = conv1d(
-                compute,
+            // T17-fixup #6 (2026-07-08): same f64-accumulator conv1d as the
+            // residual `conv1` / `conv2` path (T17-fixup #5). This is the
+            // Conv1d(dim_in → dim_out, k=1) shortcut projection used only
+            // when `dim_in != dim_out` (F0.1 stage of the F0 branch). Its
+            // reduction dimension is `in_ch` (up to 256) — same order of
+            // magnitude as `conv1`'s `k · in_ch = 768`, so the same
+            // f32-sum-of-products drift applies. Routing through
+            // `conv1d_f64_acc` (with `bias=None`; conv1x1 has no bias per
+            // the upstream manifest) preserves the composition-only
+            // design constraint (D6/D7).
+            let (out, out_len) = conv1d_f64_acc(
                 &sc,
                 self.dim_in,
                 sc_len,
@@ -361,8 +372,6 @@ impl AdainResBlk {
                 None,
                 /*stride*/ 1,
                 /*pad*/ 0,
-                /*dilation*/ 1,
-                /*groups*/ 1,
             );
             debug_assert_eq!(out_len, sc_len);
             debug_assert_eq!(out.len(), self.dim_out * sc_len);
@@ -436,7 +445,7 @@ impl AdainResBlk {
             &self.conv1_w,
             self.dim_out,
             /*kernel*/ 3,
-            &self.conv1_b,
+            Some(&self.conv1_b),
             /*stride*/ 1,
             /*pad*/ 1,
         );
@@ -467,7 +476,7 @@ impl AdainResBlk {
             &self.conv2_w,
             self.dim_out,
             3,
-            &self.conv2_b,
+            Some(&self.conv2_b),
             1,
             1,
         );
