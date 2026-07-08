@@ -53,7 +53,27 @@ if [ ! -f "$PLIST" ]; then
     echo "verify-ios-xcframework: FAIL missing $PLIST" >&2
     exit 1
 fi
-PLIST_XML="$(plutil -convert xml1 -o - "$PLIST")"
+# Convert the XCFramework's Info.plist to XML for shell-friendly grep.
+# Prefer `plutil` (macOS-native, fast, exact) when available; fall back to
+# python's stdlib `plistlib` on Linux. `plutil` is not installed on
+# GitHub-hosted ubuntu-latest runners, so the unity-package job's
+# `collect-ios-lib` step (which invokes this script from a Linux runner
+# to sanity-check the ios-build artifact it downloaded) needs the
+# fallback. Both paths emit an identical XML plist to stdout — the
+# subsequent `<string>$id</string>` grep does not care which produced it.
+if command -v plutil >/dev/null 2>&1; then
+    PLIST_XML="$(plutil -convert xml1 -o - "$PLIST")"
+elif command -v python3 >/dev/null 2>&1; then
+    PLIST_XML="$(python3 -c '
+import plistlib, sys
+with open(sys.argv[1], "rb") as f:
+    data = plistlib.load(f)
+sys.stdout.buffer.write(plistlib.dumps(data, fmt=plistlib.FMT_XML))
+' "$PLIST")"
+else
+    echo "verify-ios-xcframework: FAIL neither plutil nor python3 available; cannot read $PLIST" >&2
+    exit 1
+fi
 for id in ios-arm64 ios-arm64_x86_64-simulator; do
     # See (b) below for why we use herestrings here instead of pipes — with
     # `set -o pipefail`, a large enough $PLIST_XML causes `printf` to see
