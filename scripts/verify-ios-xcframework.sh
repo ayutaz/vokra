@@ -109,13 +109,40 @@ verify_slice() {
 
     # (c) symbol whitelist — Mach-O `_vokra_` form (T12; extends
     # run-capi-smoke.sh:52-58 ^vokra_ gate). nm -g -arch selects the slice; we
-    # keep only defined externs (T/S/D/C/B) and require every one to be
+    # keep only defined externs (T/S/D/C/B) and require every "user" one to be
     # _vokra_-prefixed. Undefined refs are checked separately below.
+    #
+    # Rust's static library form (`libvokra.a`) also exports a handful of
+    # Rust-runtime / compiler-builtins symbols that *cannot* be stripped
+    # without breaking linkage. These are namespaced and cannot collide with
+    # the Vokra C ABI surface, so we allow them explicitly:
+    #   * `__rust_*`   — allocator shims (`__rust_alloc`, `__rust_dealloc`,
+    #                    `__rust_realloc`, `__rust_no_alloc_shim_is_unstable`,
+    #                    `__rust_alloc_error_handler`, etc.)
+    #   * `__R[a-z]*`  — Rust v0 mangled symbols (`__RNvCs...`, `__RINvNtCs...`).
+    #                    These are internal Rust items marked `#[used]` or
+    #                    `#[no_mangle]` in unusual ways; they cannot conflict
+    #                    with any C caller because of the `_R` prefix.
+    #   * `_atomic_*`  — compiler-builtins atomic fences (`_atomic_thread_fence`).
+    #                    Emitted by the toolchain when std spawns anything
+    #                    atomic-shaped.
+    #   * `___[cdlp]*` / `___divti3` etc. — LLVM compiler-rt intrinsics
+    #                    (integer / float helpers). Some Rust math paths
+    #                    emit these; the leading `___` triple underscore
+    #                    is the Mach-O form of `__` C-symbol double-underscore.
+    #
+    # Non-allowlisted defined externs (i.e. anything that doesn't start with
+    # `_vokra_` or one of the runtime allowances above) still fail this gate.
     local defined unexpected count
     defined="$(nm -g -arch "$arch" "$lib" 2>/dev/null \
         | awk '/^[0-9a-fA-F]+ [TSDCB] / {print $3}' || true)"
     unexpected="$(printf '%s\n' "$defined" \
-        | grep -vE '^_vokra_' | grep -vE '^_?$' || true)"
+        | grep -vE '^_vokra_' \
+        | grep -vE '^__rust_' \
+        | grep -vE '^__R[a-zA-Z]' \
+        | grep -vE '^_atomic_' \
+        | grep -vE '^___[a-z]' \
+        | grep -vE '^_?$' || true)"
     if [ -n "$unexpected" ]; then
         echo "verify-ios-xcframework: FAIL unexpected defined symbols in $lib ($arch):" >&2
         printf '  %s\n' "$unexpected" >&2
