@@ -37,9 +37,9 @@
 
 ## 2. CUDA large-v3 RTF 実測（M2-03 follow-up / NFR-PF-04）
 
-**Status (2026-07-08)**: **CC-integrated（初回 CI run 前 = 未 verify）** — variance harness `tools/parity/cuda_rtf_variance.sh` + `cuda_rtf_analyze.py` を land、4 fake vokra-cli stub での local e2e validation 済。実 RTX 4090 上での初回 run は依頼者引き渡し。**CI job path**: なし（依頼者が vast.ai 上で shell script を直接起動する owner runbook 形式、GitHub Actions 上には登録しない — 実 GPU 依存 + vast.ai lifecycle）。
+**Status (2026-07-08 更新)**: **CC-side variance run 完了 → owner judgment = DEFER to M2-14**。詳細 report: [`docs/m2-cuda-rtf-variance-2026-07-08.md`](m2-cuda-rtf-variance-2026-07-08.md)。要旨: 2 mode × N=10 iter を vast.ai spot RTX 4090 (offer 41890592, cost $0.273/hr) で実測。decomposed path median RTF = **0.318** (CV 0.062)、gated FA v2 median = **0.317** (CV 0.090)、いずれも baseline (`0.1133` / `0.1323`) の **~2.5x 遅い**。code regression / silent CPU fallback は排除確認済 (LD_DEBUG dlopen 確認 + CPU backend で 12x slower)。差分は **hardware variance** (vast.ai spot offer 間の CPU / PCIe generation topology 差、instance の PCIe は Gen 1 x16 で RTX 4090 nominal の Gen 4 でない)。**Owner judgment**: `[x] Defer formal <0.10 gate to M2-14 self-hosted runner + M3-01 5% regression gate`。追加 iteration では median 0.317 は 0.10 未満に落ちない (systemic host slowdown)、専用ハードウェアを待つ。**CI job path**: なし (owner runbook 形式、GitHub Actions 上には登録しない — 実 GPU 依存 + vast.ai lifecycle)。**依頼者引き渡し (残タスク)**: M2-14 self-hosted runner の standup。
 
-**依頼者タスク**: vast.ai RTX 4090 を起動し `cargo test whisper_cuda_large_v3_rtf` を実行、mean RTF を記録・公開する。もしくは新設された variance harness（`tools/parity/cuda_rtf_variance.sh`）を N=5 or N=10 で実行し `cuda_rtf_analyze.py` で markdown report を生成する。
+**依頼者タスク**: 上記 variance report を確認し、M2-14 self-hosted runner standup を進める（vast.ai spot は formal always-on gate に不適格が本 report で確定）。ad-hoc に再測定したい場合は同じハーネスを別 offer / 別コスト帯で回すことは可能。
 
 ### 必要な準備
 
