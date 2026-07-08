@@ -101,7 +101,21 @@ verify_slice() {
         printf '%s\n' "$hdrs" >&2
         exit 1
     fi
-    if ! grep -qE "\\b$arch\\b" <<<"$hdrs"; then
+    # otool -hv prints the CPU type in the mach header as `ARM64` / `X86_64`
+    # (uppercase). Match case-insensitively against the uppercased form —
+    # `\bARM64\b` matches every `MH_MAGIC_64    ARM64` header line the arch
+    # selection produced. The prior form (`\barm64\b`) only ever passed by
+    # coincidence on the device slice because the archive PATH
+    # (`.../ios-arm64/libvokra.a`) contained the lowercase word `arm64`;
+    # the simulator slice's identifier `ios-arm64_x86_64-simulator` has
+    # `arm64_x86_64` (underscore is a word char, no `\b` boundary between
+    # `arm64` and `_x86_64`), so the same regex silently missed and reported
+    # "does not contain arch 'arm64'" even though otool did list `ARM64`
+    # headers throughout. Uppercase + case-insensitive is what the actual
+    # header field looks like.
+    local arch_upper
+    arch_upper="$(printf '%s' "$arch" | tr '[:lower:]' '[:upper:]')"
+    if ! grep -qE "\\b$arch_upper\\b" <<<"$hdrs"; then
         echo "verify-ios-xcframework: FAIL $lib does not contain arch '$arch'" >&2
         printf '%s\n' "$hdrs" >&2
         exit 1
