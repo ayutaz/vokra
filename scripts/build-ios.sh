@@ -116,7 +116,16 @@ done
 # --- lipo simulator slices into a fat archive --------------------------------
 
 mkdir -p "$OUT_DIR"
-LIB_SIM_FAT="$OUT_DIR/libvokra-sim.a"
+# Name the simulator fat archive `libvokra.a` (matching the device slice)
+# rather than `libvokra-sim.a`. `xcodebuild -create-xcframework` preserves
+# the input file name inside the resulting `.xcframework`, so any downstream
+# consumer that walks the tree (`scripts/verify-ios-xcframework.sh`, Swift
+# Package Manager, Unity Package Manager) sees the same `libvokra.a` in
+# both `ios-arm64/` and `ios-arm64_x86_64-simulator/`. Keep the two inputs
+# in separate subdirectories so `xcodebuild` can distinguish them.
+SIM_FAT_DIR="$OUT_DIR/sim-fat"
+mkdir -p "$SIM_FAT_DIR"
+LIB_SIM_FAT="$SIM_FAT_DIR/libvokra.a"
 echo "build-ios: lipo -create → $LIB_SIM_FAT"
 lipo -create "$LIB_SIM_ARM" "$LIB_SIM_X86" -output "$LIB_SIM_FAT"
 
@@ -169,7 +178,7 @@ xcodebuild -create-xcframework \
 # xcodebuild has been observed to return 0 even when a plug-in load failure
 # (IDESimulatorFoundation etc.) prevents the output from being written. Assert
 # the artifact + both slices are actually on disk before declaring success.
-for expected in "$XCF" "$XCF/ios-arm64/libvokra.a" "$XCF/ios-arm64_x86_64-simulator/libvokra-sim.a"; do
+for expected in "$XCF" "$XCF/ios-arm64/libvokra.a" "$XCF/ios-arm64_x86_64-simulator/libvokra.a"; do
     if [ ! -e "$expected" ]; then
         echo "error: xcodebuild returned 0 but $expected is missing." >&2
         echo "       If IDESimulatorFoundation warnings appeared above, run" >&2

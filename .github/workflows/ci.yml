@@ -828,15 +828,23 @@ jobs:
         # rebuilt inside cibuildwheel — the artifact from `build` is the
         # single source of truth for native binaries (audit-trail CPU-only,
         # NFR-DS-02).
-        # cibuildwheel: pin to a specific major.minor tag. Bare `v2` no
-        # longer resolves (upstream deprecated the moving `v2` alias in
-        # favour of explicit `vX.Y[.Z]` tags — see
-        # https://github.com/pypa/cibuildwheel/releases). `v4.1` is the
-        # current stable tag that supports all our target Pythons
-        # (CPython 3.10..3.13, per the wheel matrix below); bump to a
-        # newer point release only when a target Python we care about
-        # is missing.
-        uses: pypa/cibuildwheel@v4.1
+        # cibuildwheel: pin to `v2.23.4` (last v2 release). Bare `v2`
+        # stopped resolving (upstream deprecated the moving major alias in
+        # favour of explicit `vX.Y[.Z]` tags), and jumping straight to v3+
+        # trips a new "Build failed because a pure Python wheel was
+        # generated" hard failure — cibuildwheel v3.0 assumes any user of
+        # the tool is compiling native code inside the wheel. Our binding
+        # is a hybrid: pure-Python at the Python layer with a pre-built
+        # `libvokra.so` / `libvokra.dylib` / `vokra.dll` injected under
+        # `src/vokra/_lib/` via `CIBW_BEFORE_BUILD_*`. Hatchling packs the
+        # result as a pure-python wheel, which is exactly what we want
+        # (one wheel per OS+arch, no per-Python native ABI). v2.23.4 is
+        # the last release that accepts that shape without a repair step.
+        # See https://github.com/pypa/cibuildwheel/blob/main/docs/changelog.md
+        # (v3.0.0 changelog for the enforcement addition). Bump to v3+
+        # only after threading a proper `CIBW_REPAIR_WHEEL_COMMAND` that
+        # retags each wheel to a platform-specific slot.
+        uses: pypa/cibuildwheel@v2.23.4
         with:
           package-dir: bindings/python
           output-dir: bindings/python/dist
