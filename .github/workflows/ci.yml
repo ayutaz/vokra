@@ -187,8 +187,8 @@ jobs:
   # Both are required checks so an M2-08 quant policy regression blocks the PR
   # in the same job that gates fused-frontend parity; `license` remains the
   # zero-dep enforcer (no new deps means cargo-deny continues passing).
-  parity:
-    name: parity
+  parity-matrix:
+    name: parity-matrix
     strategy:
       fail-fast: false
       matrix:
@@ -208,6 +208,31 @@ jobs:
         run: cargo test -p vokra-core --test quant_parity
       - name: Policy e2e (M2-08, converter → runtime → 5% mel-loss gate)
         run: cargo test -p vokra-cli --test policy_e2e
+
+  # Aggregator job that fans in on the parity matrix so branch protection
+  # can require a single `parity` check context instead of the per-matrix-
+  # cell `parity (0)` / `parity (1)` names GitHub emits by default.
+  #
+  # Rationale: when a job with `strategy.matrix` runs, GitHub reports one
+  # status check per matrix cell (e.g. `parity (0)`, `parity (1)`) and
+  # NEVER a raw check with the bare job name (e.g. `parity`). If the
+  # branch-protection required-check list references the bare name (as
+  # ours does — `parity` is one of the 10 required contexts on `main`),
+  # that context never gets a report and the PR stays permanently in
+  # "Expected — Waiting for status to be reported" limbo.
+  #
+  # The classic fix: rename the matrix job (here `parity-matrix`) and add
+  # a downstream job that `needs:` it and reports itself under the
+  # required name. All matrix cells must pass (`needs: parity-matrix`
+  # implicitly gates on ALL of them; a single cell failure short-circuits
+  # this job to `skipped`, which the required-check list treats as fail).
+  parity:
+    name: parity
+    needs: parity-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: All parity matrix cells passed
+        run: echo "parity matrix (fusion=0, fusion=1) both green"
 
   # License / vulnerability / forbidden-dependency gate (NFR-LC-04, X-08).
   # deny.toml is owned by M0-02 (allow: Apache-2.0/MIT/BSD; deny: GPL/LGPL;
