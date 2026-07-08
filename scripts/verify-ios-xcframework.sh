@@ -46,7 +46,11 @@ if [ ! -f "$PLIST" ]; then
 fi
 PLIST_XML="$(plutil -convert xml1 -o - "$PLIST")"
 for id in ios-arm64 ios-arm64_x86_64-simulator; do
-    if ! printf '%s' "$PLIST_XML" | grep -qF "<string>$id</string>"; then
+    # See (b) below for why we use herestrings here instead of pipes — with
+    # `set -o pipefail`, a large enough $PLIST_XML causes `printf` to see
+    # SIGPIPE after `grep -q` closes stdin, which trips pipefail even though
+    # the pattern was found. The herestring keeps a single-command form.
+    if ! grep -qF "<string>$id</string>" <<<"$PLIST_XML"; then
         echo "verify-ios-xcframework: FAIL Info.plist missing LibraryIdentifier '$id'" >&2
         exit 1
     fi
@@ -85,12 +89,19 @@ verify_slice() {
     # (b) otool -hv per slice: MH_MAGIC_64 + expected arch (T06)
     local hdrs
     hdrs="$(otool -hv -arch "$arch" "$lib" 2>/dev/null || true)"
-    if ! printf '%s' "$hdrs" | grep -q 'MH_MAGIC_64'; then
+    # Use `grep -c` (count) + shell arithmetic rather than piping into
+    # `grep -q`: with `set -o pipefail`, the archive of an XCFramework
+    # produces enough header output that `grep -q` closes stdin before
+    # `printf` finishes writing (`printf: write error: Broken pipe`), and
+    # the SIGPIPE-triggered `printf` exit trips the pipefail gate even
+    # though the pattern was found. Using a herestring keeps a single
+    # command and no pipe, so pipefail never fires here.
+    if ! grep -q 'MH_MAGIC_64' <<<"$hdrs"; then
         echo "verify-ios-xcframework: FAIL $lib ($arch) missing MH_MAGIC_64" >&2
         printf '%s\n' "$hdrs" >&2
         exit 1
     fi
-    if ! printf '%s' "$hdrs" | grep -qE "\\b$arch\\b"; then
+    if ! grep -qE "\\b$arch\\b" <<<"$hdrs"; then
         echo "verify-ios-xcframework: FAIL $lib does not contain arch '$arch'" >&2
         printf '%s\n' "$hdrs" >&2
         exit 1

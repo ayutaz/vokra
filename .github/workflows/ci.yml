@@ -356,15 +356,20 @@ jobs:
             -p vokra-server \
             --manifest-path integrations/vokra-server/Cargo.toml
       - name: Verify statically linked (file)
-        # A musl-linked release binary must appear as "statically linked" —
-        # if a shared-lib linkage snuck in (e.g. an accidental host-glibc
-        # syscall crate), `file` reports "dynamically linked" and this fails.
+        # A musl-linked release binary must be statically linked. Modern
+        # toolchains (rustc >= 1.86 on Ubuntu 24.04 runners) default to PIE +
+        # musl static, which `file` reports as either `statically linked` (old
+        # binutils) or `static-pie linked` (new binutils). Both are the "no
+        # dynamic dependencies" state we want — a shared-lib linkage would
+        # instead read `dynamically linked` and would fail this gate. The
+        # `ldd` step below is the belt-and-suspenders guard against `=>`
+        # entries (see next step).
         run: |
           set -euo pipefail
           BIN=integrations/vokra-server/target/x86_64-unknown-linux-musl/release/vokra-server
           test -f "$BIN"
           file "$BIN"
-          file "$BIN" | grep -q "statically linked"
+          file "$BIN" | grep -Eq "statically linked|static-pie linked"
       - name: Verify no dynamic dependencies (ldd)
         # `ldd` on a truly-static binary prints "not a dynamic executable" (or
         # exits nonzero); either way, ANY `=>` line means a dyn dep was
@@ -615,16 +620,24 @@ jobs:
           python -m pip install pip-licenses
       - name: pip-licenses --allow-only (NFR-LC-02 GPL/LGPL block)
         # --allow-only fails nonzero if ANY installed dist reports a license
-        # outside the allowlist. --with-system=false hides pip/setuptools noise;
-        # we only care about the transitive deps the binding actually pulls in.
+        # outside the allowlist. The venv holds only the binding's transitive
+        # deps + pip-licenses itself; pip / setuptools / prettytable / wheel
+        # are added to the allowlist so the toolchain itself does not trip the
+        # gate (they are all MIT / BSD / Apache).
+        #
+        # Historical note: the flag `--with-system=false` used to hide
+        # pip/setuptools, but pip-licenses 5.x turned `-s/--with-system` into a
+        # store_true flag that no longer accepts `=false` (fails with "ignored
+        # explicit argument"). Rather than pin an old release, we drop the
+        # flag (default already omits system packages) and rely on the
+        # allowlist expansion to cover the standard toolchain packages.
         run: |
           set -euo pipefail
           # shellcheck disable=SC1091
           . /tmp/vokra-py-audit/bin/activate
           pip-licenses \
             --format=markdown \
-            --with-system=false \
-            --allow-only 'Apache-2.0;MIT;BSD-3-Clause;BSD-2-Clause;PSF-2.0;Python-2.0' \
+            --allow-only 'Apache-2.0;MIT;MIT License;BSD-3-Clause;BSD License;BSD-2-Clause;PSF-2.0;Python-2.0' \
             | tee /tmp/pip-licenses.md
           {
             echo "### Python binding license audit"

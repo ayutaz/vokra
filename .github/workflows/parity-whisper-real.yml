@@ -431,7 +431,14 @@ jobs:
             [ -f "$f" ] || continue
             attr=$(git check-attr filter -- "$f" | awk '{print $NF}')
             case "$attr" in
-              unspecified|"")
+              unspecified|""|unset)
+                # `unspecified` — no `.gitattributes` rule matches (plain blob
+                # is the default). `unset` — the repo's `.gitattributes`
+                # explicitly clears the `filter` attribute via the leading
+                # `-filter` token (see `.gitattributes` `-filter -diff -merge`
+                # on parity fixtures). Both states guarantee the file is a
+                # plain binary blob, not an LFS pointer — which is exactly
+                # what this guard needs to enforce.
                 :  # OK — plain binary, not LFS
                 ;;
               *)
