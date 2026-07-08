@@ -394,7 +394,12 @@ jobs:
           # Random ephemeral high port (49152-65535 range).
           PORT=$((49152 + RANDOM % 16000))
           echo "Starting vokra-server on 127.0.0.1:${PORT}"
-          "$BIN" --bind "127.0.0.1:${PORT}" &
+          # `--http-bind` sets the HTTP listener (OpenAI / vLLM / piper-plus
+          # endpoints). The Wyoming listener defaults to 127.0.0.1:10300;
+          # since it is not what this smoke tests, letting it use its
+          # default is fine (loopback + a different port, no collision on
+          # the random ephemeral HTTP port).
+          "$BIN" --http-bind "127.0.0.1:${PORT}" &
           SERVER_PID=$!
           # Ensure the background process is reaped even on failure.
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
@@ -823,7 +828,15 @@ jobs:
         # rebuilt inside cibuildwheel — the artifact from `build` is the
         # single source of truth for native binaries (audit-trail CPU-only,
         # NFR-DS-02).
-        uses: pypa/cibuildwheel@v2
+        # cibuildwheel: pin to a specific major.minor tag. Bare `v2` no
+        # longer resolves (upstream deprecated the moving `v2` alias in
+        # favour of explicit `vX.Y[.Z]` tags — see
+        # https://github.com/pypa/cibuildwheel/releases). `v4.1` is the
+        # current stable tag that supports all our target Pythons
+        # (CPython 3.10..3.13, per the wheel matrix below); bump to a
+        # newer point release only when a target Python we care about
+        # is missing.
+        uses: pypa/cibuildwheel@v4.1
         with:
           package-dir: bindings/python
           output-dir: bindings/python/dist
