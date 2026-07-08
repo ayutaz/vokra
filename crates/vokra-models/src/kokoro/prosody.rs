@@ -74,74 +74,10 @@ use vokra_core::{Result, VokraError};
 use super::config::KokoroConfig;
 use super::nn::{
     BiLstm1d, EPS, LRELU_SLOPE, adain_conditioned_residual, adaln_layernorm_1d,
-    conv_transpose1d_ext, leaky_relu, length_regulate, sigmoid, weight_norm_reconstruct_1d,
+    conv_transpose1d_ext, conv1d, leaky_relu, length_regulate, sigmoid, weight_norm_reconstruct_1d,
 };
 use super::weights::TensorStore;
 use crate::compute::Compute;
-
-/// Bit-identical mirror of [`super::nn::conv1d`] (im2col + GEMM) but with the
-/// GEMM inner product accumulated in `f64` before rounding back to `f32`.
-///
-/// # Rationale (T17-fixup #5, 2026-07-08)
-///
-/// After [`super::nn::adain_conditioned_residual`] (T17-fixup #4) closed the
-/// `norm1` / `norm2` + `F0_proj` / `N_proj` GEMV seams under f64, the only
-/// remaining f32 accumulators inside `AdainResBlk::forward` were the two
-/// k=3 convs (`conv1`: `dim_in → dim_out`, `conv2`: `dim_out → dim_out`).
-/// Their reduction dimension is `kernel · in_ch` (up to `3·256 = 768`) — big
-/// enough that the sum-of-products drift against pure f64 truth measurably
-/// contributes to the propagated hidden delta that F0_proj later amplifies.
-///
-/// Groups / dilation are unused by the prosody F0 / N branches (all
-/// `groups = 1`, `dilation = 1`, `bias = Some(...)`), so those parameters
-/// are elided from the signature to keep the call sites readable — the
-/// generic form would just add complexity for no consumer.
-///
-/// Layout matches [`super::nn::conv1d`]:
-/// * `x`: `[in_ch · in_len]` channel-major
-/// * `weight`: `[out_ch · in_ch · kernel]` (PyTorch / ONNX layout)
-/// * `bias`: `[out_ch]`
-/// * returns `[out_ch · out_len]`, `out_len`
-#[allow(clippy::too_many_arguments)] // matches nn::conv1d's operand set minus groups / dilation
-fn conv1d_f64_acc(
-    x: &[f32],
-    in_ch: usize,
-    in_len: usize,
-    weight: &[f32],
-    out_ch: usize,
-    kernel: usize,
-    bias: Option<&[f32]>,
-    stride: usize,
-    pad: usize,
-) -> (Vec<f32>, usize) {
-    debug_assert_eq!(x.len(), in_ch * in_len);
-    debug_assert_eq!(weight.len(), out_ch * in_ch * kernel);
-    if let Some(b) = bias {
-        debug_assert_eq!(b.len(), out_ch);
-    }
-    let out_len = (in_len + 2 * pad - kernel) / stride + 1;
-    let mut out = vec![0.0f32; out_ch * out_len];
-    for oc in 0..out_ch {
-        let w_row = &weight[oc * in_ch * kernel..(oc + 1) * in_ch * kernel];
-        let b64 = bias.map_or(0.0f64, |b| b[oc] as f64);
-        let dst = &mut out[oc * out_len..(oc + 1) * out_len];
-        for (ot, dst_ot) in dst.iter_mut().enumerate() {
-            let mut acc64: f64 = b64;
-            for ic in 0..in_ch {
-                for kk in 0..kernel {
-                    let it_signed = (ot * stride) as isize + kk as isize - pad as isize;
-                    if it_signed < 0 || it_signed >= in_len as isize {
-                        continue;
-                    }
-                    let it = it_signed as usize;
-                    acc64 += w_row[ic * kernel + kk] as f64 * x[ic * in_len + it] as f64;
-                }
-            }
-            *dst_ot = acc64 as f32;
-        }
-    }
-    (out, out_len)
-}
 
 /// Number of BiLSTM stacks in `predictor.text_encoder.lstms` at positions
 /// `.0`, `.2`, `.4` — pinned by the upstream manifest.
@@ -352,17 +288,8 @@ impl AdainResBlk {
         // Length after upsample.
         let sc_len = if self.upsample { 2 * t_in } else { t_in };
         if let Some(w) = &self.conv1x1_w {
-            // T17-fixup #6 (2026-07-08): same f64-accumulator conv1d as the
-            // residual `conv1` / `conv2` path (T17-fixup #5). This is the
-            // Conv1d(dim_in → dim_out, k=1) shortcut projection used only
-            // when `dim_in != dim_out` (F0.1 stage of the F0 branch). Its
-            // reduction dimension is `in_ch` (up to 256) — same order of
-            // magnitude as `conv1`'s `k · in_ch = 768`, so the same
-            // f32-sum-of-products drift applies. Routing through
-            // `conv1d_f64_acc` (with `bias=None`; conv1x1 has no bias per
-            // the upstream manifest) preserves the composition-only
-            // design constraint (D6/D7).
-            let (out, out_len) = conv1d_f64_acc(
+            let (out, out_len) = conv1d(
+                compute,
                 &sc,
                 self.dim_in,
                 sc_len,
@@ -372,6 +299,8 @@ impl AdainResBlk {
                 None,
                 /*stride*/ 1,
                 /*pad*/ 0,
+                /*dilation*/ 1,
+                /*groups*/ 1,
             );
             debug_assert_eq!(out_len, sc_len);
             debug_assert_eq!(out.len(), self.dim_out * sc_len);
@@ -426,19 +355,8 @@ impl AdainResBlk {
         debug_assert_eq!(len_after_pool, t_out);
 
         // conv1(k=3, pad=1): dim_in → dim_out.
-        //
-        // T17-fixup #5 (2026-07-08): drop through the f64-accumulator path
-        // instead of the shared `nn::conv1d`. The prosody parity acid test
-        // (`parity_kokoro`) shows the F0 tail delta = 2.619e-2 after
-        // T17-fixup #4 promoted `norm1`/`norm2` + `F0_proj` GEMV to f64;
-        // the remaining f32 seams inside `AdainResBlk` are the two k=3
-        // convs. Their accumulator dimension is `k · dim_in` (up to
-        // 3·256 = 768) which is large enough that the f32 dot product
-        // measurably drifts against the pure-f64 truth. Promoting both
-        // convs preserves the design constraint of "no new first-class
-        // op" (D6/D7) — this is a composition helper local to
-        // `AdainResBlk`, not a new `vokra-ops` entry.
-        let (r_after_conv1, len_after_conv1) = conv1d_f64_acc(
+        let (r_after_conv1, len_after_conv1) = conv1d(
+            compute,
             &r_after_pool,
             self.dim_in,
             len_after_pool,
@@ -448,6 +366,8 @@ impl AdainResBlk {
             Some(&self.conv1_b),
             /*stride*/ 1,
             /*pad*/ 1,
+            /*dilation*/ 1,
+            /*groups*/ 1,
         );
         debug_assert_eq!(len_after_conv1, t_out);
 
@@ -467,9 +387,9 @@ impl AdainResBlk {
         // LeakyReLU(0.1).
         leaky_relu(&mut r, LRELU_SLOPE);
 
-        // conv2(k=3, pad=1): dim_out → dim_out. Same T17-fixup #5 f64
-        // promotion as conv1 above.
-        let (r_final, r_final_len) = conv1d_f64_acc(
+        // conv2(k=3, pad=1): dim_out → dim_out.
+        let (r_final, r_final_len) = conv1d(
+            compute,
             &r,
             self.dim_out,
             t_out,
@@ -479,13 +399,10 @@ impl AdainResBlk {
             Some(&self.conv2_b),
             1,
             1,
+            1,
+            1,
         );
         debug_assert_eq!(r_final_len, t_out);
-
-        let _ = compute; // `compute` was previously required for `conv1d`; the
-        // T17-fixup #5 f64 path is CPU-only (the AdainResBlk hot path is
-        // small, and prosody parity is measured against the CPU forward),
-        // so we drop the compute-dispatch cost here.
 
         // (residual + shortcut) / sqrt(2)
         let mut out = r_final;
