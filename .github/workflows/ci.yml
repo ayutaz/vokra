@@ -868,6 +868,29 @@ jobs:
           CIBW_BEFORE_BUILD_WINDOWS: >-
             if not exist {package}\src\vokra\_lib mkdir {package}\src\vokra\_lib &&
             copy {package}\native\vokra.dll {package}\src\vokra\_lib\vokra.dll
+          # Skip the platform-repair step (`auditwheel repair` on Linux,
+          # `delocate-wheel` on macOS, `delvewheel repair` on Windows).
+          # Rationale: cibuildwheel's repair pipeline is designed for
+          # wheels that COMPILE native code — it rewrites RPATHs and
+          # normalises the wheel tag to `manylinux2014` / `macosx_11_0`
+          # / `win_amd64`. Our binding INJECTS a pre-built shared
+          # library that was already produced by the sibling `build`
+          # job against the runner's own glibc / macOS SDK / MSVCRT.
+          # On Linux this trips
+          #   auditwheel: error: cannot repair … because of the presence
+          #   of too-recent versioned symbols
+          # because the `libvokra.so` from the `build` job was built on
+          # Ubuntu 24.04 (glibc 2.39) and auditwheel wants to reach
+          # manylinux2014 (glibc 2.17). The wheels emitted here are for
+          # CI smoke (install → import → pytest on the SAME runner OS),
+          # not for PyPI publish (that pipeline lives in
+          # release.yml/publish-pypi.yml and would rebuild the native
+          # lib against manylinux-compatible SDKs). Non-empty repair
+          # commands are the correct answer for a real publish flow;
+          # here they are wrong.
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: ""
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: ""
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""
       - name: Fresh-venv install + smoke import
         # D12 step 2: proves platform tag / native-lib bundling is correct.
         # `pip install ./dist/*.whl` picks the wheel matching the runner's
