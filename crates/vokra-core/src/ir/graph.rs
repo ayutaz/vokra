@@ -742,6 +742,22 @@ pub enum OpKind {
     Mul,
     /// Softmax over the innermost dimension (placeholder).
     Softmax,
+    /// Identity element-wise copy — `dst[i] = src[i]`. Single-input,
+    /// single-output; the output shape is bit-for-bit the input shape.
+    ///
+    /// This is a **runtime-verification op** (M3-02-T14 partial / T24 /
+    /// T26): it exercises a backend's single-SSBO descriptor binding + GPU
+    /// dispatch chain end-to-end without needing a full compute kernel like
+    /// GEMM. The Vulkan backend routes this into the hand-crafted `copy_f32`
+    /// SPIR-V module (foundation-slice smoke test — see
+    /// `vokra-backend-vulkan/kernels/handcrafted/copy_f32.spv.rs` and the ADR
+    /// note in `spirv::SHADERS`). Other backends inherit the default
+    /// `Backend::eval_op` behaviour (explicit `UnsupportedOp` — never a
+    /// silent CPU fall back, FR-EX-08).
+    ///
+    /// Production graphs today do not carry this op; it exists so `run_graph`
+    /// can be exercised over a live GPU dispatch during CI.
+    Copy,
     /// Short-time Fourier transform (FR-OP-01). Real signal `[samples]` →
     /// complex spectrogram `[frames, bins]`; implemented in `vokra-ops`.
     Stft(StftAttrs),
