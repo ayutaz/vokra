@@ -455,41 +455,584 @@ pub(crate) type FnVkGetPhysicalDeviceQueueFamilyProperties =
 // ---------------------------------------------------------------------------
 
 /// `VkDevice` — dispatchable logical device handle.
-#[allow(dead_code)] // consumers land with M3-02-T08
 pub(crate) type VkDevice = VkHandle;
 /// `VkQueue` — dispatchable queue handle.
-#[allow(dead_code)] // consumers land with M3-02-T08
 pub(crate) type VkQueue = VkHandle;
 /// `VkCommandPool` — non-dispatchable handle.
-#[allow(dead_code)] // consumers land with M3-02-T09
 pub(crate) type VkCommandPool = u64;
 /// `VkCommandBuffer` — dispatchable handle.
-#[allow(dead_code)] // consumers land with M3-02-T09
 pub(crate) type VkCommandBuffer = VkHandle;
 /// `VkBuffer` — non-dispatchable handle.
-#[allow(dead_code)] // consumers land with M3-02-T12
 pub(crate) type VkBuffer = u64;
 /// `VkDeviceMemory` — non-dispatchable handle.
-#[allow(dead_code)] // consumers land with M3-02-T12
 pub(crate) type VkDeviceMemory = u64;
+/// `VkFence` — non-dispatchable handle (host-visible GPU sync primitive).
+pub(crate) type VkFence = u64;
 /// `VkDescriptorSetLayout` — non-dispatchable handle.
-#[allow(dead_code)] // consumers land with M3-02-T10
 pub(crate) type VkDescriptorSetLayout = u64;
 /// `VkDescriptorPool` — non-dispatchable handle.
-#[allow(dead_code)] // consumers land with M3-02-T10
 pub(crate) type VkDescriptorPool = u64;
 /// `VkDescriptorSet` — non-dispatchable handle.
-#[allow(dead_code)] // consumers land with M3-02-T10
 pub(crate) type VkDescriptorSet = u64;
 /// `VkPipelineLayout` — non-dispatchable handle.
-#[allow(dead_code)] // consumers land with M3-02-T11
 pub(crate) type VkPipelineLayout = u64;
 /// `VkPipeline` — non-dispatchable handle.
-#[allow(dead_code)] // consumers land with M3-02-T11
 pub(crate) type VkPipeline = u64;
+/// `VkPipelineCache` — non-dispatchable handle. Vokra never uses a pipeline
+/// cache (SPIR-V blobs are already compiled) so this stays as an alias for
+/// `VK_NULL_HANDLE` (0) at every call site.
+pub(crate) type VkPipelineCache = u64;
 /// `VkShaderModule` — non-dispatchable handle.
-#[allow(dead_code)] // consumers land with M3-02-T14
 pub(crate) type VkShaderModule = u64;
+
+// ---------------------------------------------------------------------------
+// M3-02-T08〜T12 + T25 + T30 API surface: struct definitions, constants, and
+// function pointer typedefs for the device-side objects (VkDevice / queue /
+// command pool / command buffer / buffer / memory / fence / descriptor /
+// pipeline / shader module / extension enumeration).
+//
+// Every field mirrors the exact C struct declared in vulkan_core.h (Vulkan
+// 1.1+, ABI-stable). Constants are copied from the spec verbatim so this file
+// stays cross-referenceable against the Khronos headers.
+// ---------------------------------------------------------------------------
+
+/// `VkDeviceSize` — 64-bit unsigned integer used for buffer offsets and sizes.
+pub(crate) type VkDeviceSize = u64;
+
+// -- Additional VkResult codes we recognise --------------------------------
+
+/// `VK_TIMEOUT` — a wait on a fence timed out before the fence was signalled.
+pub(crate) const VK_TIMEOUT: VkResult = 2;
+
+// -- VkStructureType selectors we use ---------------------------------------
+
+/// `VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO: c_uint = 2;
+/// `VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO: c_uint = 3;
+/// `VK_STRUCTURE_TYPE_SUBMIT_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_SUBMIT_INFO: c_uint = 4;
+/// `VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO: c_uint = 5;
+/// `VK_STRUCTURE_TYPE_FENCE_CREATE_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_FENCE_CREATE_INFO: c_uint = 8;
+/// `VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO: c_uint = 12;
+/// `VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO: c_uint = 16;
+/// `VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO: c_uint = 32;
+/// `VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO: c_uint = 33;
+/// `VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO: c_uint = 34;
+/// `VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET`.
+pub(crate) const VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET: c_uint = 35;
+/// `VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO: c_uint = 18;
+/// `VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO: c_uint = 29;
+/// `VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO: c_uint = 30;
+/// `VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO: c_uint = 39;
+/// `VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO: c_uint = 40;
+/// `VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO`.
+pub(crate) const VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO: c_uint = 42;
+
+// -- Buffer usage / memory property / other bitmask constants --------------
+
+/// `VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_SRC_BIT`.
+pub(crate) const VK_BUFFER_USAGE_TRANSFER_SRC_BIT: u32 = 0x0000_0001;
+/// `VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_DST_BIT`.
+pub(crate) const VK_BUFFER_USAGE_TRANSFER_DST_BIT: u32 = 0x0000_0002;
+/// `VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT`.
+pub(crate) const VK_BUFFER_USAGE_STORAGE_BUFFER_BIT: u32 = 0x0000_0020;
+
+/// `VkMemoryPropertyFlagBits.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT`.
+pub(crate) const VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT: u32 = 0x0000_0001;
+/// `VkMemoryPropertyFlagBits.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT`.
+pub(crate) const VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT: u32 = 0x0000_0002;
+/// `VkMemoryPropertyFlagBits.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT`.
+pub(crate) const VK_MEMORY_PROPERTY_HOST_COHERENT_BIT: u32 = 0x0000_0004;
+
+/// `VkCommandPoolCreateFlagBits.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT`.
+pub(crate) const VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT: u32 = 0x0000_0002;
+
+/// `VkCommandBufferUsageFlagBits.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT`.
+pub(crate) const VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT: u32 = 0x0000_0001;
+
+/// `VkCommandBufferLevel.VK_COMMAND_BUFFER_LEVEL_PRIMARY`.
+pub(crate) const VK_COMMAND_BUFFER_LEVEL_PRIMARY: u32 = 0;
+
+/// `VkSharingMode.VK_SHARING_MODE_EXCLUSIVE` — buffer memory access is
+/// exclusive to a single queue family (Vokra uses one compute queue only).
+pub(crate) const VK_SHARING_MODE_EXCLUSIVE: u32 = 0;
+
+/// `VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER` — the only descriptor
+/// type Vokra's compute shaders use (SSBO for tensor storage).
+pub(crate) const VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: u32 = 7;
+
+/// `VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT`.
+pub(crate) const VK_SHADER_STAGE_COMPUTE_BIT: u32 = 0x0000_0020;
+
+/// `VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_COMPUTE`.
+#[allow(dead_code)] // T14+ dispatch code lands the consumer (vkCmdBindPipeline)
+pub(crate) const VK_PIPELINE_BIND_POINT_COMPUTE: u32 = 1;
+
+// -- Memory / device / queue create structs --------------------------------
+
+/// `VkDeviceQueueCreateInfo` (spec §5.2).
+#[repr(C)]
+pub(crate) struct VkDeviceQueueCreateInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub queue_family_index: u32,
+    pub queue_count: u32,
+    pub p_queue_priorities: *const f32,
+}
+
+/// `VkDeviceCreateInfo` (spec §5.2). `p_enabled_features` stays null in Vokra
+/// (default features — no shader int64 / float16 requests until T14+).
+#[repr(C)]
+pub(crate) struct VkDeviceCreateInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub queue_create_info_count: u32,
+    pub p_queue_create_infos: *const VkDeviceQueueCreateInfo,
+    pub enabled_layer_count: u32,
+    pub pp_enabled_layer_names: *const *const c_char,
+    pub enabled_extension_count: u32,
+    pub pp_enabled_extension_names: *const *const c_char,
+    pub p_enabled_features: *const c_void,
+}
+
+pub(crate) type FnVkCreateDevice = unsafe extern "system" fn(
+    VkPhysicalDevice,
+    *const VkDeviceCreateInfo,
+    *const c_void,
+    *mut VkDevice,
+) -> VkResult;
+pub(crate) type FnVkDestroyDevice = unsafe extern "system" fn(VkDevice, *const c_void);
+pub(crate) type FnVkGetDeviceQueue = unsafe extern "system" fn(VkDevice, u32, u32, *mut VkQueue);
+/// `vkGetDeviceProcAddr` — device-level entry-point resolution. Vokra
+/// currently loads every device fn via `vkGetInstanceProcAddr` (spec-valid,
+/// loader trampoline dispatches to the ICD). T14+ dispatch code may switch
+/// to `vkGetDeviceProcAddr` for hot-path fns to bypass the trampoline.
+#[allow(dead_code)] // T14+ dispatch code lands the consumer
+pub(crate) type FnVkGetDeviceProcAddr =
+    unsafe extern "system" fn(VkDevice, *const c_char) -> PFN_vkVoidFunction;
+pub(crate) type FnVkDeviceWaitIdle = unsafe extern "system" fn(VkDevice) -> VkResult;
+
+// -- Physical device memory properties -------------------------------------
+
+/// `VK_MAX_MEMORY_TYPES` (spec §5.3.2).
+pub(crate) const VK_MAX_MEMORY_TYPES: usize = 32;
+/// `VK_MAX_MEMORY_HEAPS`.
+pub(crate) const VK_MAX_MEMORY_HEAPS: usize = 16;
+
+/// `VkMemoryType` (spec §11.3).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkMemoryType {
+    pub property_flags: u32,
+    pub heap_index: u32,
+}
+
+/// `VkMemoryHeap` (spec §11.3).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkMemoryHeap {
+    pub size: VkDeviceSize,
+    pub flags: u32,
+}
+
+/// `VkPhysicalDeviceMemoryProperties` (spec §11.3).
+#[repr(C)]
+pub(crate) struct VkPhysicalDeviceMemoryProperties {
+    pub memory_type_count: u32,
+    pub memory_types: [VkMemoryType; VK_MAX_MEMORY_TYPES],
+    pub memory_heap_count: u32,
+    pub memory_heaps: [VkMemoryHeap; VK_MAX_MEMORY_HEAPS],
+}
+
+pub(crate) type FnVkGetPhysicalDeviceMemoryProperties =
+    unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceMemoryProperties);
+
+// -- Command pool / command buffer -----------------------------------------
+
+/// `VkCommandPoolCreateInfo` (spec §6.2).
+#[repr(C)]
+pub(crate) struct VkCommandPoolCreateInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub queue_family_index: u32,
+}
+
+pub(crate) type FnVkCreateCommandPool = unsafe extern "system" fn(
+    VkDevice,
+    *const VkCommandPoolCreateInfo,
+    *const c_void,
+    *mut VkCommandPool,
+) -> VkResult;
+pub(crate) type FnVkDestroyCommandPool =
+    unsafe extern "system" fn(VkDevice, VkCommandPool, *const c_void);
+pub(crate) type FnVkResetCommandPool =
+    unsafe extern "system" fn(VkDevice, VkCommandPool, u32) -> VkResult;
+
+/// `VkCommandBufferAllocateInfo` (spec §6.3).
+#[repr(C)]
+pub(crate) struct VkCommandBufferAllocateInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub command_pool: VkCommandPool,
+    pub level: u32,
+    pub command_buffer_count: u32,
+}
+
+pub(crate) type FnVkAllocateCommandBuffers = unsafe extern "system" fn(
+    VkDevice,
+    *const VkCommandBufferAllocateInfo,
+    *mut VkCommandBuffer,
+) -> VkResult;
+pub(crate) type FnVkFreeCommandBuffers =
+    unsafe extern "system" fn(VkDevice, VkCommandPool, u32, *const VkCommandBuffer);
+
+/// `VkCommandBufferBeginInfo` (spec §6.4).
+#[repr(C)]
+pub(crate) struct VkCommandBufferBeginInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub p_inheritance_info: *const c_void,
+}
+
+pub(crate) type FnVkBeginCommandBuffer =
+    unsafe extern "system" fn(VkCommandBuffer, *const VkCommandBufferBeginInfo) -> VkResult;
+pub(crate) type FnVkEndCommandBuffer = unsafe extern "system" fn(VkCommandBuffer) -> VkResult;
+pub(crate) type FnVkResetCommandBuffer =
+    unsafe extern "system" fn(VkCommandBuffer, u32) -> VkResult;
+
+/// `VkBufferCopy` (spec §20.4).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkBufferCopy {
+    pub src_offset: VkDeviceSize,
+    pub dst_offset: VkDeviceSize,
+    pub size: VkDeviceSize,
+}
+
+pub(crate) type FnVkCmdCopyBuffer =
+    unsafe extern "system" fn(VkCommandBuffer, VkBuffer, VkBuffer, u32, *const VkBufferCopy);
+
+// -- Queue submit / fence --------------------------------------------------
+
+/// `VkSubmitInfo` (spec §7.3).
+#[repr(C)]
+pub(crate) struct VkSubmitInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub wait_semaphore_count: u32,
+    pub p_wait_semaphores: *const u64,
+    pub p_wait_dst_stage_mask: *const u32,
+    pub command_buffer_count: u32,
+    pub p_command_buffers: *const VkCommandBuffer,
+    pub signal_semaphore_count: u32,
+    pub p_signal_semaphores: *const u64,
+}
+
+pub(crate) type FnVkQueueSubmit =
+    unsafe extern "system" fn(VkQueue, u32, *const VkSubmitInfo, VkFence) -> VkResult;
+pub(crate) type FnVkQueueWaitIdle = unsafe extern "system" fn(VkQueue) -> VkResult;
+
+/// `VkFenceCreateInfo` (spec §7.3.2).
+#[repr(C)]
+pub(crate) struct VkFenceCreateInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub flags: u32,
+}
+
+pub(crate) type FnVkCreateFence = unsafe extern "system" fn(
+    VkDevice,
+    *const VkFenceCreateInfo,
+    *const c_void,
+    *mut VkFence,
+) -> VkResult;
+pub(crate) type FnVkDestroyFence = unsafe extern "system" fn(VkDevice, VkFence, *const c_void);
+pub(crate) type FnVkWaitForFences = unsafe extern "system" fn(
+    VkDevice,
+    u32,
+    *const VkFence,
+    u32, // waitAll
+    u64, // timeout ns
+) -> VkResult;
+pub(crate) type FnVkResetFences =
+    unsafe extern "system" fn(VkDevice, u32, *const VkFence) -> VkResult;
+
+// -- Buffer + memory --------------------------------------------------------
+
+/// `VkBufferCreateInfo` (spec §12.2).
+#[repr(C)]
+pub(crate) struct VkBufferCreateInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub size: VkDeviceSize,
+    pub usage: u32,
+    pub sharing_mode: u32,
+    pub queue_family_index_count: u32,
+    pub p_queue_family_indices: *const u32,
+}
+
+pub(crate) type FnVkCreateBuffer = unsafe extern "system" fn(
+    VkDevice,
+    *const VkBufferCreateInfo,
+    *const c_void,
+    *mut VkBuffer,
+) -> VkResult;
+pub(crate) type FnVkDestroyBuffer = unsafe extern "system" fn(VkDevice, VkBuffer, *const c_void);
+
+/// `VkMemoryRequirements` (spec §11.6).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkMemoryRequirements {
+    pub size: VkDeviceSize,
+    pub alignment: VkDeviceSize,
+    pub memory_type_bits: u32,
+}
+
+pub(crate) type FnVkGetBufferMemoryRequirements =
+    unsafe extern "system" fn(VkDevice, VkBuffer, *mut VkMemoryRequirements);
+
+/// `VkMemoryAllocateInfo` (spec §11.6).
+#[repr(C)]
+pub(crate) struct VkMemoryAllocateInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub allocation_size: VkDeviceSize,
+    pub memory_type_index: u32,
+}
+
+pub(crate) type FnVkAllocateMemory = unsafe extern "system" fn(
+    VkDevice,
+    *const VkMemoryAllocateInfo,
+    *const c_void,
+    *mut VkDeviceMemory,
+) -> VkResult;
+pub(crate) type FnVkFreeMemory = unsafe extern "system" fn(VkDevice, VkDeviceMemory, *const c_void);
+pub(crate) type FnVkBindBufferMemory =
+    unsafe extern "system" fn(VkDevice, VkBuffer, VkDeviceMemory, VkDeviceSize) -> VkResult;
+pub(crate) type FnVkMapMemory = unsafe extern "system" fn(
+    VkDevice,
+    VkDeviceMemory,
+    VkDeviceSize,
+    VkDeviceSize,
+    u32, // flags (reserved, must be 0)
+    *mut *mut c_void,
+) -> VkResult;
+pub(crate) type FnVkUnmapMemory = unsafe extern "system" fn(VkDevice, VkDeviceMemory);
+
+// -- Descriptor set layout / pool / set / update ---------------------------
+
+/// `VkDescriptorSetLayoutBinding` (spec §14.2).
+#[repr(C)]
+pub(crate) struct VkDescriptorSetLayoutBinding {
+    pub binding: u32,
+    pub descriptor_type: u32,
+    pub descriptor_count: u32,
+    pub stage_flags: u32,
+    pub p_immutable_samplers: *const u64,
+}
+
+/// `VkDescriptorSetLayoutCreateInfo`.
+#[repr(C)]
+pub(crate) struct VkDescriptorSetLayoutCreateInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub binding_count: u32,
+    pub p_bindings: *const VkDescriptorSetLayoutBinding,
+}
+
+pub(crate) type FnVkCreateDescriptorSetLayout = unsafe extern "system" fn(
+    VkDevice,
+    *const VkDescriptorSetLayoutCreateInfo,
+    *const c_void,
+    *mut VkDescriptorSetLayout,
+) -> VkResult;
+pub(crate) type FnVkDestroyDescriptorSetLayout =
+    unsafe extern "system" fn(VkDevice, VkDescriptorSetLayout, *const c_void);
+
+/// `VkDescriptorPoolSize` (spec §14.2.3).
+#[repr(C)]
+pub(crate) struct VkDescriptorPoolSize {
+    pub ty: u32,
+    pub descriptor_count: u32,
+}
+
+/// `VkDescriptorPoolCreateInfo`.
+#[repr(C)]
+pub(crate) struct VkDescriptorPoolCreateInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub max_sets: u32,
+    pub pool_size_count: u32,
+    pub p_pool_sizes: *const VkDescriptorPoolSize,
+}
+
+pub(crate) type FnVkCreateDescriptorPool = unsafe extern "system" fn(
+    VkDevice,
+    *const VkDescriptorPoolCreateInfo,
+    *const c_void,
+    *mut VkDescriptorPool,
+) -> VkResult;
+pub(crate) type FnVkDestroyDescriptorPool =
+    unsafe extern "system" fn(VkDevice, VkDescriptorPool, *const c_void);
+
+/// `VkDescriptorSetAllocateInfo`.
+#[repr(C)]
+pub(crate) struct VkDescriptorSetAllocateInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub descriptor_pool: VkDescriptorPool,
+    pub descriptor_set_count: u32,
+    pub p_set_layouts: *const VkDescriptorSetLayout,
+}
+
+pub(crate) type FnVkAllocateDescriptorSets = unsafe extern "system" fn(
+    VkDevice,
+    *const VkDescriptorSetAllocateInfo,
+    *mut VkDescriptorSet,
+) -> VkResult;
+
+/// `VkDescriptorBufferInfo` (spec §14.4).
+#[repr(C)]
+pub(crate) struct VkDescriptorBufferInfo {
+    pub buffer: VkBuffer,
+    pub offset: VkDeviceSize,
+    pub range: VkDeviceSize,
+}
+
+/// `VkWriteDescriptorSet` (spec §14.4).
+#[repr(C)]
+pub(crate) struct VkWriteDescriptorSet {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub dst_set: VkDescriptorSet,
+    pub dst_binding: u32,
+    pub dst_array_element: u32,
+    pub descriptor_count: u32,
+    pub descriptor_type: u32,
+    pub p_image_info: *const c_void,
+    pub p_buffer_info: *const VkDescriptorBufferInfo,
+    pub p_texel_buffer_view: *const u64,
+}
+
+pub(crate) type FnVkUpdateDescriptorSets =
+    unsafe extern "system" fn(VkDevice, u32, *const VkWriteDescriptorSet, u32, *const c_void);
+
+// -- Pipeline layout / shader module / compute pipeline --------------------
+
+/// `VkPipelineLayoutCreateInfo` (spec §14.2.1).
+#[repr(C)]
+pub(crate) struct VkPipelineLayoutCreateInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub set_layout_count: u32,
+    pub p_set_layouts: *const VkDescriptorSetLayout,
+    pub push_constant_range_count: u32,
+    pub p_push_constant_ranges: *const c_void,
+}
+
+pub(crate) type FnVkCreatePipelineLayout = unsafe extern "system" fn(
+    VkDevice,
+    *const VkPipelineLayoutCreateInfo,
+    *const c_void,
+    *mut VkPipelineLayout,
+) -> VkResult;
+pub(crate) type FnVkDestroyPipelineLayout =
+    unsafe extern "system" fn(VkDevice, VkPipelineLayout, *const c_void);
+
+/// `VkShaderModuleCreateInfo` (spec §9.1).
+#[repr(C)]
+pub(crate) struct VkShaderModuleCreateInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub code_size: usize,
+    pub p_code: *const u32,
+}
+
+pub(crate) type FnVkCreateShaderModule = unsafe extern "system" fn(
+    VkDevice,
+    *const VkShaderModuleCreateInfo,
+    *const c_void,
+    *mut VkShaderModule,
+) -> VkResult;
+pub(crate) type FnVkDestroyShaderModule =
+    unsafe extern "system" fn(VkDevice, VkShaderModule, *const c_void);
+
+/// `VkPipelineShaderStageCreateInfo` (spec §9.1).
+#[repr(C)]
+pub(crate) struct VkPipelineShaderStageCreateInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub stage: u32,
+    pub module: VkShaderModule,
+    pub p_name: *const c_char,
+    pub p_specialization_info: *const c_void,
+}
+
+/// `VkComputePipelineCreateInfo` (spec §9.4).
+#[repr(C)]
+pub(crate) struct VkComputePipelineCreateInfo {
+    pub s_type: c_uint,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub stage: VkPipelineShaderStageCreateInfo,
+    pub layout: VkPipelineLayout,
+    pub base_pipeline_handle: VkPipeline,
+    pub base_pipeline_index: i32,
+}
+
+pub(crate) type FnVkCreateComputePipelines = unsafe extern "system" fn(
+    VkDevice,
+    VkPipelineCache,
+    u32,
+    *const VkComputePipelineCreateInfo,
+    *const c_void,
+    *mut VkPipeline,
+) -> VkResult;
+pub(crate) type FnVkDestroyPipeline =
+    unsafe extern "system" fn(VkDevice, VkPipeline, *const c_void);
+
+// -- Device extension enumeration (M3-02-T30) ------------------------------
+
+/// `VK_MAX_EXTENSION_NAME_SIZE`.
+pub(crate) const VK_MAX_EXTENSION_NAME_SIZE: usize = 256;
+
+/// `VkExtensionProperties` (spec §37.3).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkExtensionProperties {
+    pub extension_name: [c_char; VK_MAX_EXTENSION_NAME_SIZE],
+    pub spec_version: u32,
+}
+
+pub(crate) type FnVkEnumerateDeviceExtensionProperties = unsafe extern "system" fn(
+    VkPhysicalDevice,
+    *const c_char,
+    *mut u32,
+    *mut VkExtensionProperties,
+) -> VkResult;
 
 // ---------------------------------------------------------------------------
 // Loader (loader-level entry points resolved via dlopen + vkGetInstanceProcAddr).

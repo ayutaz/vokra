@@ -1,16 +1,13 @@
-//! M3-02 host↔device round-trip surface (foundation slice).
+//! M3-02 host↔device round-trip surface (T08 device create + T09 command pool
+//! + T12 buffer/memory alloc + T25 host↔device copy + T30 coop-matrix
+//!   extension walk).
 //!
-//! In the foundation slice the `VulkanBuffer` / `VulkanDevice` stubs return
-//! [`VokraError::NotImplemented`] rather than pretending to succeed
-//! (FR-EX-08 — no silent CPU fall back). This test **pins** that stub
-//! contract so a future refactor that adds a real memory API cannot silently
-//! degrade to a synthetic host allocation without a matching test update. As
-//! T08 / T12 / T25 land, this test evolves op-by-op into a real device round-
-//! trip parity gate (host → device → host must be bit-identical, atol = 0).
-//!
-//! On a Vulkan-capable host the probe additionally verifies that a compute
-//! queue family is selected — the M3-02-T07 selection surface, host-gated so
-//! it skips cleanly on the Apple Mac authoring host.
+//! On a Vulkan-capable host (Linux + lavapipe or a real GPU), backend
+//! construction runs the full T08〜T12 runtime object stack smoke test at
+//! init time, so a driver bug surfaces as
+//! [`VokraError::BackendUnavailable`] rather than mid-dispatch. On the Apple
+//! Mac authoring host — with no `libvulkan` — the tests fall through to the
+//! deliberate `BackendUnavailable` stub (FR-EX-08 / NFR-RL-06).
 
 use vokra_backend_vulkan::{VulkanBackend, vokra_vulkan_probe};
 use vokra_core::VokraError;
@@ -101,5 +98,44 @@ fn backend_stub_off_target_is_explicit_backend_unavailable() {
         Err(VokraError::BackendUnavailable(_)) => {}
         Ok(_) => panic!("VulkanBackend must not construct off Vulkan targets / feature-off"),
         Err(other) => panic!("expected BackendUnavailable, got {other}"),
+    }
+}
+
+/// M3-02-T30 upgrade — the probe now walks device extensions to detect
+/// cooperative-matrix support (KHR or NV). On a Vulkan host the reported
+/// state is consistent (both extension flags cannot be true while
+/// `coop_matrix_precondition_met` is false); off-Vulkan hosts return
+/// `BackendUnavailable` and skip.
+#[test]
+fn probe_reports_coop_matrix_extension_walk() {
+    match vokra_vulkan_probe() {
+        Ok(caps) => {
+            // Consistency: precondition-met implies at least one of the
+            // extensions is present.
+            if caps.coop_matrix_precondition_met {
+                assert!(
+                    caps.has_khr_cooperative_matrix || caps.has_nv_cooperative_matrix,
+                    "coop-matrix precondition met but neither KHR nor NV extension present — \
+                     summary: {}",
+                    caps.summary()
+                );
+            }
+            // Consistency: if the API is <1.3 the precondition MUST be false
+            // regardless of extension presence (Vokra requires both).
+            if caps.api_version_major < 1
+                || (caps.api_version_major == 1 && caps.api_version_minor < 3)
+            {
+                assert!(
+                    !caps.coop_matrix_precondition_met,
+                    "coop-matrix precondition met on API <1.3 — summary: {}",
+                    caps.summary()
+                );
+            }
+            eprintln!("coop-matrix extension walk: {}", caps.summary());
+        }
+        Err(VokraError::BackendUnavailable(msg)) => {
+            eprintln!("no Vulkan; extension walk skipped: {msg}");
+        }
+        Err(other) => panic!("unexpected: {other}"),
     }
 }

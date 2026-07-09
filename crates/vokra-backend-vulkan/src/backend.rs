@@ -98,7 +98,10 @@ pub enum GemmPipelinePreference {
     any(target_os = "linux", target_os = "android", target_os = "windows")
 ))]
 pub struct VulkanBackend {
-    _instance: crate::context::VulkanInstance,
+    // Owns the whole VulkanDevice → VulkanInstance chain (M3-02-T08). The
+    // instance is nested inside the device so `vkDestroyDevice` runs before
+    // `vkDestroyInstance` on shutdown — Vulkan spec ordering constraint.
+    _device: crate::context::VulkanDevice,
     caps: crate::probe::VulkanCapabilities,
 }
 
@@ -166,10 +169,25 @@ impl VulkanBackend {
             )));
         }
         let instance = crate::context::VulkanInstance::new()?;
+        // Upgrade to a full VulkanDevice — M3-02-T08 wired all the way through
+        // so backend construction actually opens a compute queue on the GPU.
+        let device = crate::context::VulkanDevice::new(instance)?;
+        // Smoke-test the T08〜T12 runtime object stack against the live device
+        // so a broken driver surfaces at construction time rather than
+        // silently getting a `NotImplemented` mid-dispatch (FR-EX-08).
+        crate::context::smoke_test_runtime_object_stack(&device)?;
         Ok(VulkanBackend {
-            _instance: instance,
+            _device: device,
             caps,
         })
+    }
+
+    /// Access the owned [`crate::context::VulkanDevice`] — used by T14+
+    /// dispatch code to allocate buffers / descriptor sets / pipelines.
+    #[must_use]
+    #[allow(dead_code)] // T14+ dispatch code lands the consumer
+    pub(crate) fn device(&self) -> &crate::context::VulkanDevice {
+        &self._device
     }
 
     /// Access the discovered [`crate::probe::VulkanCapabilities`].
@@ -323,6 +341,8 @@ mod tests {
             device_type: 2,    // discrete
             subgroup_ready: subgroup,
             coop_matrix_precondition_met: coop_matrix,
+            has_khr_cooperative_matrix: coop_matrix,
+            has_nv_cooperative_matrix: false,
             compute_queue_family_index: Some(0),
         }
     }

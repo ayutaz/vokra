@@ -60,12 +60,19 @@ pub struct VulkanCapabilities {
     /// M3-02 subgroup-only fallback path (Vulkan 1.1+, device type is not
     /// `OTHER`).
     pub subgroup_ready: bool,
-    /// Whether the reported Vulkan API version is `>= 1.3`. Vokra treats this
-    /// as a **necessary but not sufficient** precondition for the
-    /// cooperative-matrix path (T14 GEMM); a follow-up check will walk the
-    /// extension list and confirm `VK_KHR_cooperative_matrix` presence before
-    /// the coop-matrix pipeline is bound. Kept coarse here.
+    /// Whether the reported Vulkan API version is `>= 1.3` **AND** either
+    /// `VK_KHR_cooperative_matrix` or `VK_NV_cooperative_matrix` is present
+    /// on the device (M3-02-T30 real extension walk, upgraded from the
+    /// foundation-slice coarse "API >= 1.3" gate). Both preconditions are
+    /// necessary; the coop-matrix pipeline is only bound when this is `true`.
     pub coop_matrix_precondition_met: bool,
+    /// Whether the device exposes the promoted `VK_KHR_cooperative_matrix`
+    /// (Vulkan 1.3+ KHR extension). `false` on either an older device or one
+    /// with only the NVIDIA vendor extension.
+    pub has_khr_cooperative_matrix: bool,
+    /// Whether the device exposes the NVIDIA `VK_NV_cooperative_matrix`
+    /// (older, pre-KHR promotion; still shipped on Turing / Ampere / Ada).
+    pub has_nv_cooperative_matrix: bool,
     /// The index of the compute-capable queue family on device 0
     /// (M3-02-T07). `None` on a physical device that exposes no queue family
     /// with the compute bit set — impossible on any Vulkan-conformant GPU
@@ -96,8 +103,17 @@ impl VulkanCapabilities {
             4 => "CPU",
             _ => "unknown",
         };
+        // Report the extension source when we detect coop-matrix support.
         let coop = if self.coop_matrix_precondition_met {
-            "precondition"
+            if self.has_khr_cooperative_matrix {
+                "khr"
+            } else if self.has_nv_cooperative_matrix {
+                "nv"
+            } else {
+                // Both false with precondition true is impossible (see
+                // `vokra_vulkan_probe`), but keep the surface honest.
+                "unknown"
+            }
         } else {
             "no"
         };
@@ -199,16 +215,27 @@ pub fn vokra_vulkan_probe() -> Result<VulkanCapabilities> {
     // hardware).
     let subgroup_ready = (major > 1 || (major == 1 && minor >= 1))
         && props.device_type != crate::sys::VK_PHYSICAL_DEVICE_TYPE_OTHER;
-    // Coarse precondition for the cooperative-matrix path: Vulkan 1.3+ (the
-    // core version that promotes many extension paths coop-matrix depends
-    // on). The extension-list check that actually gates dispatch to
-    // `gemm_coopmat.spv` is M3-02-T30 follow-up — see backend.rs.
-    let coop_matrix_precondition_met = major > 1 || (major == 1 && minor >= 3);
-    // M3-02-T07 compute queue-family selection. `None` is impossible on a
-    // conformant Vulkan GPU (spec §5.3.1); if the driver were to report no
-    // compute-capable family, `VulkanBackend::new` would fail upstream
-    // (subgroup_ready being true but the queue index being `None` is treated
-    // as a driver bug — explicit `BackendUnavailable`).
+    // Cooperative-matrix path (M3-02-T30 upgraded from the coarse "API >= 1.3"
+    // check to a real extension walk):
+    //
+    //   coop_matrix_precondition_met = api_1.3+ AND (VK_KHR_cooperative_matrix
+    //                                                 OR VK_NV_cooperative_matrix)
+    //
+    // Vokra checks BOTH the promoted KHR and the NVIDIA vendor extension.
+    // KHR was promoted in Vulkan 1.3, but NV's older extension is still the
+    // only shipping form on Turing / Ampere / early Ada, so we accept either
+    // for the "coop-matrix capable" verdict — the actual pipeline binding
+    // (T14+) will select the correct dispatch path based on which extension
+    // is present.
+    let exts = instance.enumerate_device_extensions(devices[0])?;
+    let has_khr_cooperative_matrix =
+        crate::context::VulkanInstance::has_extension(&exts, "VK_KHR_cooperative_matrix");
+    let has_nv_cooperative_matrix =
+        crate::context::VulkanInstance::has_extension(&exts, "VK_NV_cooperative_matrix");
+    let api_geq_1_3 = major > 1 || (major == 1 && minor >= 3);
+    let coop_matrix_precondition_met =
+        api_geq_1_3 && (has_khr_cooperative_matrix || has_nv_cooperative_matrix);
+    // M3-02-T07 compute queue-family selection.
     let compute_queue_family_index = instance.find_compute_queue_family(devices[0]);
 
     Ok(VulkanCapabilities {
@@ -221,6 +248,8 @@ pub fn vokra_vulkan_probe() -> Result<VulkanCapabilities> {
         device_type: props.device_type,
         subgroup_ready,
         coop_matrix_precondition_met,
+        has_khr_cooperative_matrix,
+        has_nv_cooperative_matrix,
         compute_queue_family_index,
     })
 }
@@ -298,6 +327,8 @@ mod tests {
 
                 subgroup_ready: true,
                 coop_matrix_precondition_met: false,
+                has_khr_cooperative_matrix: false,
+                has_nv_cooperative_matrix: false,
                 compute_queue_family_index: Some(0),
             };
             assert_eq!(caps.vendor_family(), expected, "vendor 0x{id:x}");
@@ -319,6 +350,8 @@ mod tests {
             device_type: 1,    // integrated
             subgroup_ready: true,
             coop_matrix_precondition_met: false,
+            has_khr_cooperative_matrix: false,
+            has_nv_cooperative_matrix: false,
             compute_queue_family_index: Some(1),
         };
         let s = caps.summary();
@@ -331,5 +364,41 @@ mod tests {
         caps.compute_queue_family_index = None;
         let s = caps.summary();
         assert!(s.contains("compute-q:none"));
+    }
+
+    /// M3-02-T30 upgrade — the "precondition met" verdict now requires an
+    /// actual extension (KHR or NV) in addition to Vulkan 1.3+. Report the
+    /// source (khr / nv) in the summary so debugging on Android is
+    /// unambiguous.
+    #[test]
+    fn summary_reports_coop_matrix_source() {
+        let base = VulkanCapabilities {
+            api_version: 0x0040_3000,
+            api_version_major: 1,
+            api_version_minor: 3,
+            device_count: 1,
+            device_name: "gemm-capable".to_owned(),
+            vendor_id: 0x10de, // NVIDIA
+            device_type: 2,
+            subgroup_ready: true,
+            coop_matrix_precondition_met: true,
+            has_khr_cooperative_matrix: true,
+            has_nv_cooperative_matrix: false,
+            compute_queue_family_index: Some(0),
+        };
+        assert!(base.summary().contains("coop-matrix:khr"));
+        let nv = VulkanCapabilities {
+            has_khr_cooperative_matrix: false,
+            has_nv_cooperative_matrix: true,
+            ..base.clone()
+        };
+        assert!(nv.summary().contains("coop-matrix:nv"));
+        let none = VulkanCapabilities {
+            coop_matrix_precondition_met: false,
+            has_khr_cooperative_matrix: false,
+            has_nv_cooperative_matrix: false,
+            ..base
+        };
+        assert!(none.summary().contains("coop-matrix:no"));
     }
 }

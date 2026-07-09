@@ -25,6 +25,8 @@ fn caps_with(coop_matrix: bool, subgroup: bool) -> VulkanCapabilities {
         device_type: 2,
         subgroup_ready: subgroup,
         coop_matrix_precondition_met: coop_matrix,
+        has_khr_cooperative_matrix: coop_matrix,
+        has_nv_cooperative_matrix: false,
         compute_queue_family_index: Some(0),
     }
 }
