@@ -69,4 +69,28 @@ deny = [
     { crate = "android-nnapi-sys", reason = "FR-BE-07 / M3-02 red line: NNAPI is permanently unsupported; use Vulkan on Android" },
     { crate = "nnapi", reason = "FR-BE-07 / M3-02 red line: NNAPI is permanently unsupported; use Vulkan on Android" },
     { crate = "nnapi-sys", reason = "FR-BE-07 / M3-02 red line: NNAPI is permanently unsupported; use Vulkan on Android" },
+    # Vulkan binding crates — M3-02 red line (NFR-DS-02 / T01(b)): the Vulkan
+    # backend loads libvulkan.so.1 / vulkan-1.dll at RUNTIME via dlopen and
+    # transmutes each symbol to its exact C signature. Binding crates would add
+    # non-`vokra-*` entries to Cargo.lock. Ban the common ones so a stray
+    # dependency cannot introduce them.
+    { crate = "ash", reason = "M3-02 red line / NFR-DS-02: Vokra loads libvulkan via dlopen; no binding crate allowed" },
+    { crate = "ash-window", reason = "M3-02 red line / NFR-DS-02: Vokra loads libvulkan via dlopen; no binding crate allowed" },
+    { crate = "vulkano", reason = "M3-02 red line / NFR-DS-02: Vokra loads libvulkan via dlopen; no binding crate allowed" },
+    { crate = "vulkano-shaders", reason = "M3-02 red line / NFR-DS-02: Vokra ships pre-compiled SPIR-V; no shader-toolchain crate" },
+    { crate = "erupt", reason = "M3-02 red line / NFR-DS-02: Vokra loads libvulkan via dlopen; no binding crate allowed" },
+    { crate = "gpu-alloc", reason = "M3-02 red line / NFR-DS-02: Vokra allocates VkDeviceMemory directly; no allocator crate" },
+    { crate = "gpu-alloc-ash", reason = "M3-02 red line / NFR-DS-02: Vokra allocates VkDeviceMemory directly; no allocator crate" },
+    { crate = "gpu-alloc-vulkanalia", reason = "M3-02 red line / NFR-DS-02: Vokra allocates VkDeviceMemory directly; no allocator crate" },
+    { crate = "vulkanalia", reason = "M3-02 red line / NFR-DS-02: Vokra loads libvulkan via dlopen; no binding crate allowed" },
+    { crate = "vulkanalia-sys", reason = "M3-02 red line / NFR-DS-02: Vokra loads libvulkan via dlopen; no binding crate allowed" },
+    # Shader-toolchain crates — Vokra ships pre-compiled SPIR-V (`kernels/precompiled/*.spv`)
+    # committed to the repo. build.rs never invokes `glslc`; runtime never generates SPIR-V
+    # (NFR-RL-05 W^X constraint). Ban shader-toolchain crates so no build-time toolchain leaks
+    # in via a transitive dep.
+    { crate = "spirv-tools", reason = "M3-02 T13 red line / NFR-DS-02: SPIR-V is committed pre-compiled; no shader-toolchain crate" },
+    { crate = "shaderc-rs", reason = "M3-02 T13 red line / NFR-DS-02: SPIR-V is committed pre-compiled; no shader-toolchain crate" },
+    { crate = "shaderc", reason = "M3-02 T13 red line / NFR-DS-02: SPIR-V is committed pre-compiled; no shader-toolchain crate" },
+    { crate = "glslang-sys", reason = "M3-02 T13 red line / NFR-DS-02: SPIR-V is committed pre-compiled; no shader-toolchain crate" },
+    { crate = "naga", reason = "M3-02 T13 red line / NFR-DS-02: SPIR-V is committed pre-compiled; no shader-toolchain crate" },
 ]

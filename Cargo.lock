@@ -85,6 +85,7 @@ dependencies = [
  "vokra-backend-cpu",
  "vokra-backend-cuda",
  "vokra-backend-metal",
+ "vokra-backend-vulkan",
  "vokra-core",
  "vokra-ops",
  "vokra-piper-plus",

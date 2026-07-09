@@ -121,6 +121,30 @@ impl HotOp {
                 | HotOp::Conv1d
         )
     }
+
+    /// Whether the Vulkan backend's imperative [`Compute`] seam covers this op.
+    ///
+    /// **M3-02 foundation slice (2026-07-09):** no SPIR-V kernel is wired yet
+    /// (`crates/vokra-backend-vulkan/kernels/precompiled/` ships no `.spv`
+    /// blob), so **every** hot op is uncovered — `covered_by_vulkan(_) = false`
+    /// for every variant. As T14〜T22 land, this method flips to `true` op-by-
+    /// op, in lock-step with the `Be::Vulkan` arms of the `Compute` methods
+    /// below (the `vulkan_coverage_is_consistent` test pins the two together).
+    ///
+    /// The consequence today is that `Compute::for_backend(BackendKind::Vulkan,
+    /// &required)` returns an explicit [`VokraError::UnsupportedOp`] for every
+    /// non-empty `required` — never a silent CPU fall back (FR-EX-08).
+    #[cfg(all(
+        feature = "vulkan",
+        any(target_os = "linux", target_os = "android", target_os = "windows")
+    ))]
+    fn covered_by_vulkan(self) -> bool {
+        // Foundation slice: the Vulkan backend has NO wired kernels. This is
+        // the honest state — as ticket M3-02-T14 ships the GEMM `.spv`, its
+        // arm becomes `HotOp::Gemm => true`; T15 flips GEMV, and so on.
+        let _ = self;
+        false
+    }
 }
 
 /// A typed, zero-malloc compute dispatcher the imperative model hot path calls
@@ -173,12 +197,16 @@ impl Compute {
     ///   binary (e.g. `Metal` without the `metal` feature, or off an Apple
     ///   target), or if the device probe fails (no Metal device).
     pub fn for_backend(kind: BackendKind, required: &[HotOp]) -> Result<Self> {
-        // `required` is consulted only by the Metal / CUDA coverage gates;
-        // without either GPU arm compiled in, the CPU / unavailable arms do not
-        // read it.
+        // `required` is consulted only by the Metal / CUDA / Vulkan coverage
+        // gates; without any GPU arm compiled in, the CPU / unavailable arms do
+        // not read it.
         #[cfg(not(any(
             all(feature = "metal", any(target_os = "macos", target_os = "ios")),
-            all(feature = "cuda", any(unix, windows))
+            all(feature = "cuda", any(unix, windows)),
+            all(
+                feature = "vulkan",
+                any(target_os = "linux", target_os = "android", target_os = "windows")
+            )
         )))]
         let _ = required;
         match kind {
@@ -211,9 +239,38 @@ impl Compute {
                     be: Be::Cuda(Box::new(vokra_backend_cuda::CudaContext::new()?)),
                 })
             }
+            #[cfg(all(
+                feature = "vulkan",
+                any(target_os = "linux", target_os = "android", target_os = "windows")
+            ))]
+            BackendKind::Vulkan => {
+                if let Some(op) = required.iter().copied().find(|op| !op.covered_by_vulkan()) {
+                    return Err(VokraError::UnsupportedOp(format!(
+                        "vulkan backend has no wired kernel for {op:?} in the M3-02 foundation \
+                         slice; the model requires {required:?}. \
+                         `crates/vokra-backend-vulkan/kernels/precompiled/` ships no .spv blob \
+                         yet — every hot op is uncovered. One model = one backend — Vokra does \
+                         not silently run the uncovered ops on the CPU (FR-EX-08). Select \
+                         BackendKind::Cpu, or wait for the SPIR-V kernels (M3-02-T14〜T22)."
+                    )));
+                }
+                // `required` is empty AND every hot op is uncovered — the
+                // foundation slice cannot construct a useful `Compute::Vulkan`
+                // dispatcher (no callable kernel). Surface an explicit error
+                // rather than pretending a coverage-empty dispatcher is usable.
+                // Once T14+ lands, this branch becomes an
+                // `Ok(Compute { be: Be::Vulkan(...) })` — the same shape as the
+                // Metal / CUDA arms above.
+                Err(VokraError::UnsupportedOp(
+                    "vulkan Compute path has no wired kernels in the M3-02 foundation slice — \
+                     no covered required set exists. Wait for M3-02-T14+ SPIR-V kernels."
+                        .to_owned(),
+                ))
+            }
             other => Err(VokraError::BackendUnavailable(format!(
                 "{other:?} backend is not built into vokra-models (build with the `metal` feature \
-                 on macOS / iOS for Metal; CUDA / Vulkan / … are later roadmap backends)"
+                 on macOS / iOS for Metal, the `cuda` feature on Windows / Linux for CUDA, or the \
+                 `vulkan` feature on Linux / Android / Windows for Vulkan)"
             ))),
         }
     }
@@ -909,9 +966,15 @@ pub fn make_backend(kind: BackendKind) -> Result<Box<dyn Backend>> {
         BackendKind::Metal => Ok(Box::new(vokra_backend_metal::MetalBackend::new()?)),
         #[cfg(all(feature = "cuda", any(unix, windows)))]
         BackendKind::Cuda => Ok(Box::new(vokra_backend_cuda::CudaBackend::new()?)),
+        #[cfg(all(
+            feature = "vulkan",
+            any(target_os = "linux", target_os = "android", target_os = "windows")
+        ))]
+        BackendKind::Vulkan => Ok(Box::new(vokra_backend_vulkan::VulkanBackend::new()?)),
         other => Err(VokraError::BackendUnavailable(format!(
             "{other:?} backend is not built into vokra-models (build with the `metal` feature on \
-             macOS / iOS for Metal, or the `cuda` feature on Windows / Linux for CUDA)"
+             macOS / iOS for Metal, the `cuda` feature on Windows / Linux for CUDA, or the \
+             `vulkan` feature on Linux / Android / Windows for Vulkan)"
         ))),
     }
 }
@@ -1104,5 +1167,103 @@ mod tests {
             }
             Err(e) => panic!("unexpected error for a fully-covered CUDA request: {e}"),
         }
+    }
+
+    /// M3-02 Vulkan seam contract in the foundation slice: **no hot op is
+    /// covered**, so any non-empty required set surfaces `UnsupportedOp` (never
+    /// silent CPU). This pins the lock-step between `covered_by_vulkan` and
+    /// `for_backend(Vulkan, …)` — as T14〜T22 land, this test tightens.
+    #[cfg(all(
+        feature = "vulkan",
+        any(target_os = "linux", target_os = "android", target_os = "windows")
+    ))]
+    #[test]
+    fn vulkan_coverage_is_consistent() {
+        // Foundation slice: `covered_by_vulkan` is `false` for every variant.
+        for op in [
+            HotOp::Gemm,
+            HotOp::Gemv,
+            HotOp::Softmax,
+            HotOp::LayerNorm,
+            HotOp::Gelu,
+            HotOp::Conv1d,
+        ] {
+            assert!(
+                !op.covered_by_vulkan(),
+                "{op:?} unexpectedly covered by the M3-02 foundation-slice Vulkan backend \
+                 (kernels/precompiled/ still ships no .spv). If T14+ has just landed a kernel, \
+                 update `HotOp::covered_by_vulkan` to `true` for the covered variants and shrink \
+                 this test's negative-assertion set accordingly.",
+            );
+        }
+        // Every non-empty required set therefore fails coverage with an
+        // explicit `UnsupportedOp` — no silent CPU fall back (FR-EX-08).
+        for op in [
+            HotOp::Gemm,
+            HotOp::Gemv,
+            HotOp::Softmax,
+            HotOp::LayerNorm,
+            HotOp::Gelu,
+            HotOp::Conv1d,
+        ] {
+            assert!(matches!(
+                Compute::for_backend(BackendKind::Vulkan, &[op]),
+                Err(VokraError::UnsupportedOp(_))
+            ));
+        }
+        // Empty required set is also explicit `UnsupportedOp` (no callable
+        // kernel exists to build a `Be::Vulkan` around today).
+        assert!(matches!(
+            Compute::for_backend(BackendKind::Vulkan, &[]),
+            Err(VokraError::UnsupportedOp(_))
+        ));
+    }
+
+    /// `make_backend(Vulkan)` returns a real `VulkanBackend` on a Vulkan-
+    /// capable Linux/Android/Windows build, or an explicit
+    /// `BackendUnavailable` off Vulkan — never a silent CPU substitute.
+    #[cfg(all(
+        feature = "vulkan",
+        any(target_os = "linux", target_os = "android", target_os = "windows")
+    ))]
+    #[test]
+    fn vulkan_make_backend_is_honest_on_any_host() {
+        match make_backend(BackendKind::Vulkan) {
+            Ok(b) => assert_eq!(b.name(), "vulkan"),
+            Err(VokraError::BackendUnavailable(msg)) => {
+                eprintln!("no Vulkan loader/device; make_backend(Vulkan) errored: {msg}");
+            }
+            Err(other) => panic!(
+                "expected BackendUnavailable off Vulkan, got {other} (never a silent CPU \
+                 substitute, FR-EX-08)"
+            ),
+        }
+    }
+
+    /// Default-feature build (no `--features vulkan`): `BackendKind::Vulkan`
+    /// falls to the target-agnostic error path — the compile-out is honest,
+    /// never a silent CPU substitute.
+    #[cfg(not(all(
+        feature = "vulkan",
+        any(target_os = "linux", target_os = "android", target_os = "windows")
+    )))]
+    #[test]
+    fn vulkan_not_compiled_in_is_explicit_backend_unavailable() {
+        // `for_backend` falls through to the catch-all `_ =>` arm — the
+        // error mentions the `vulkan` feature, so the caller knows exactly
+        // what to enable. `Compute` does not derive `Debug`, so unwrap the
+        // error manually instead of `expect_err`.
+        let err = match Compute::for_backend(BackendKind::Vulkan, &[HotOp::Gemm]) {
+            Ok(_) => panic!("Vulkan must fail explicitly when not compiled in"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, VokraError::BackendUnavailable(_)),
+            "expected BackendUnavailable, got {err:?}"
+        );
+        assert!(matches!(
+            make_backend(BackendKind::Vulkan),
+            Err(VokraError::BackendUnavailable(_))
+        ));
     }
 }

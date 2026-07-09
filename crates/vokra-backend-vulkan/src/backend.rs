@@ -20,6 +20,71 @@
 
 use vokra_core::{AudioGraph, Backend, OpKind, Result, Tensor, VokraError};
 
+use crate::spirv::ShaderVariant;
+
+/// Which GEMM SPIR-V pipeline the runtime binds for a given device
+/// (M3-02-T14 selection surface).
+///
+/// The probe (`vokra_vulkan_probe`) reports whether the device meets the
+/// cooperative-matrix preconditions (Vulkan 1.3+, `VK_KHR_cooperative_matrix`);
+/// [`VulkanBackend::select_gemm_pipeline_variant`] combines that with the
+/// caller's *preference* (see [`GemmPipelinePreference`]) to pick either the
+/// fast cooperative-matrix pipeline (Ampere+ / RDNA3+ / Adreno 750+) or the
+/// subgroup-only fallback (broad Android — Adreno 6xx+ / Mali G7x+).
+///
+/// This is **capability-driven pipeline selection**, not a silent-fallback op
+/// behaviour: the GEMM op still runs, it just picks the shader the hardware
+/// actually supports. When *no* SPIR-V blob has been produced yet (the
+/// foundation slice), [`VulkanBackend::select_gemm_pipeline_variant`] still
+/// returns the *would-be* variant so callers can log the decision — the
+/// actual pipeline create call sites (T14+) surface `UnsupportedOp` when
+/// [`crate::spirv::load_spv`] returns `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GemmPipelineVariant {
+    /// Cooperative-matrix + subgroup pipeline
+    /// (`gemm_coopmat.spv`). Selected on Ampere+ / RDNA3+ / Adreno 750+.
+    CoopMatrix,
+    /// Subgroup-only pipeline (`gemm_subgroup.spv`). The Android baseline
+    /// (Adreno 6xx+ / Mali G7x+ / Immortalis).
+    Subgroup,
+}
+
+impl GemmPipelineVariant {
+    /// Basename of the corresponding [`crate::spirv::SpirvShader`]
+    /// (e.g. `"gemm_coopmat"`).
+    #[must_use]
+    pub fn shader_name(self) -> &'static str {
+        match self {
+            GemmPipelineVariant::CoopMatrix => "gemm_coopmat",
+            GemmPipelineVariant::Subgroup => "gemm_subgroup",
+        }
+    }
+}
+
+impl From<GemmPipelineVariant> for ShaderVariant {
+    fn from(v: GemmPipelineVariant) -> Self {
+        match v {
+            GemmPipelineVariant::CoopMatrix => ShaderVariant::CoopMatrix,
+            GemmPipelineVariant::Subgroup => ShaderVariant::Subgroup,
+        }
+    }
+}
+
+/// Caller preference for [`VulkanBackend::select_gemm_pipeline_variant`].
+/// The final decision is `min(preference, hardware_capability)` — a caller
+/// that prefers cooperative-matrix STILL falls back to subgroup on hardware
+/// that lacks the preconditions (capability-driven, not silent).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GemmPipelinePreference {
+    /// Prefer the cooperative-matrix pipeline; fall back to subgroup on
+    /// devices that lack the preconditions (Vokra's default).
+    #[default]
+    PreferCoopMatrix,
+    /// Force the subgroup pipeline (useful for CI parity gating against the
+    /// broad Android baseline; T33 parity harness uses this).
+    ForceSubgroup,
+}
+
 /// Vulkan backend handle.
 ///
 /// On Vulkan-capable targets it holds a [`crate::context::VulkanInstance`]
@@ -112,6 +177,23 @@ impl VulkanBackend {
     pub fn capabilities(&self) -> &crate::probe::VulkanCapabilities {
         &self.caps
     }
+
+    /// Selects the GEMM pipeline variant this device should bind
+    /// (M3-02-T14 dispatcher entry).
+    ///
+    /// `preference` is the caller's *ideal* pipeline; the final decision is
+    /// clamped to what the hardware supports. On devices that do not meet the
+    /// cooperative-matrix preconditions (`caps.coop_matrix_precondition_met =
+    /// false`), the result is always [`GemmPipelineVariant::Subgroup`] — this
+    /// is capability-driven pipeline selection, not silent op fallback (the
+    /// GEMM op still runs, it just picks the shader the hardware can execute).
+    #[must_use]
+    pub fn select_gemm_pipeline_variant(
+        &self,
+        preference: GemmPipelinePreference,
+    ) -> GemmPipelineVariant {
+        select_gemm_pipeline_variant(&self.caps, preference)
+    }
 }
 
 #[cfg(not(all(
@@ -132,6 +214,31 @@ impl VulkanBackend {
              on Linux / Android / Windows)."
                 .to_owned(),
         ))
+    }
+}
+
+/// Pure-function form of [`VulkanBackend::select_gemm_pipeline_variant`] —
+/// takes a [`crate::VulkanCapabilities`] directly so this decision surface
+/// can be exercised host-independently (no Vulkan device required for
+/// tests, and downstream crates on non-Vulkan targets can still reason
+/// about which pipeline *would* be selected).
+///
+/// Callers on a Vulkan host normally go through
+/// [`VulkanBackend::select_gemm_pipeline_variant`], which forwards here.
+#[must_use]
+pub fn select_gemm_pipeline_variant(
+    caps: &crate::probe::VulkanCapabilities,
+    preference: GemmPipelinePreference,
+) -> GemmPipelineVariant {
+    match preference {
+        GemmPipelinePreference::ForceSubgroup => GemmPipelineVariant::Subgroup,
+        GemmPipelinePreference::PreferCoopMatrix => {
+            if caps.coop_matrix_precondition_met {
+                GemmPipelineVariant::CoopMatrix
+            } else {
+                GemmPipelineVariant::Subgroup
+            }
+        }
     }
 }
 
@@ -201,6 +308,88 @@ impl Backend for VulkanBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::probe::VulkanCapabilities;
+
+    /// Build a synthetic `VulkanCapabilities` — used only in tests so
+    /// pipeline-selection is exercisable without a Vulkan host.
+    fn caps_with(coop_matrix: bool, subgroup: bool) -> VulkanCapabilities {
+        VulkanCapabilities {
+            api_version: 0x0040_3000, // encoded 1.3.0 (unused by selector)
+            api_version_major: 1,
+            api_version_minor: if coop_matrix { 3 } else { 1 },
+            device_count: 1,
+            device_name: "synthetic".to_owned(),
+            vendor_id: 0x1002, // AMD (arbitrary, unused by selector)
+            device_type: 2,    // discrete
+            subgroup_ready: subgroup,
+            coop_matrix_precondition_met: coop_matrix,
+            compute_queue_family_index: Some(0),
+        }
+    }
+
+    /// M3-02-T14 selection surface: cooperative-matrix preferred and available
+    /// → coop-matrix; cooperative-matrix preferred but unavailable → subgroup
+    /// fallback; forced subgroup → subgroup regardless.
+    #[test]
+    fn select_gemm_pipeline_variant_is_capability_driven() {
+        // Prefer coop-matrix on a device that supports it — pick coop-matrix.
+        assert_eq!(
+            select_gemm_pipeline_variant(
+                &caps_with(true, true),
+                GemmPipelinePreference::PreferCoopMatrix,
+            ),
+            GemmPipelineVariant::CoopMatrix,
+        );
+
+        // Prefer coop-matrix on a device that cannot — fall back to subgroup
+        // (capability-driven, NOT silent op fallback).
+        assert_eq!(
+            select_gemm_pipeline_variant(
+                &caps_with(false, true),
+                GemmPipelinePreference::PreferCoopMatrix,
+            ),
+            GemmPipelineVariant::Subgroup,
+        );
+
+        // Force subgroup — always subgroup even when coop-matrix is available
+        // (T33 parity harness path — hard baseline for Android).
+        assert_eq!(
+            select_gemm_pipeline_variant(
+                &caps_with(true, true),
+                GemmPipelinePreference::ForceSubgroup,
+            ),
+            GemmPipelineVariant::Subgroup,
+        );
+
+        // Preference::default() is PreferCoopMatrix.
+        assert_eq!(
+            GemmPipelinePreference::default(),
+            GemmPipelinePreference::PreferCoopMatrix,
+        );
+    }
+
+    /// The variant → shader-name mapping is stable and matches the manifest.
+    #[test]
+    fn gemm_variant_shader_names_match_manifest() {
+        use crate::spirv::{SHADERS, ShaderVariant};
+        for v in [
+            GemmPipelineVariant::CoopMatrix,
+            GemmPipelineVariant::Subgroup,
+        ] {
+            let name = v.shader_name();
+            let matches: Vec<_> = SHADERS.iter().filter(|s| s.name == name).collect();
+            assert_eq!(
+                matches.len(),
+                1,
+                "shader `{name}` from GemmPipelineVariant not found in SHADERS",
+            );
+            let expected_variant: ShaderVariant = v.into();
+            assert_eq!(
+                matches[0].variant, expected_variant,
+                "manifest ShaderVariant for `{name}` does not match GemmPipelineVariant",
+            );
+        }
+    }
 
     #[test]
     fn backend_name_is_vulkan() {

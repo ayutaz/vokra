@@ -395,6 +395,52 @@ pub(crate) struct VkPhysicalDeviceProperties {
 pub(crate) type FnVkGetPhysicalDeviceProperties =
     unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceProperties);
 
+/// `VkQueueFlagBits` (spec §5.3.1) — capability bits for a queue family. Vokra
+/// only cares about `_COMPUTE_BIT` (M3-02-T07 compute queue selection); the
+/// others are declared for context.
+///
+/// `_GRAPHICS_BIT`. Graphics-capable queue (superset of compute per spec).
+#[allow(dead_code)] // consumers land with M3-02-T08+
+pub(crate) const VK_QUEUE_GRAPHICS_BIT: u32 = 0x0000_0001;
+/// `_COMPUTE_BIT`. Compute-capable queue (Vokra's target).
+pub(crate) const VK_QUEUE_COMPUTE_BIT: u32 = 0x0000_0002;
+/// `_TRANSFER_BIT`. Transfer-only queue (dedicated DMA path — a follow-up may
+/// route staging → device-local copies via this queue).
+#[allow(dead_code)] // consumers land with M3-02-T25 (host↔device copy)
+pub(crate) const VK_QUEUE_TRANSFER_BIT: u32 = 0x0000_0004;
+
+/// `VkExtent3D` — used inside `VkQueueFamilyProperties.minImageTransferGranularity`.
+/// The image-transfer field is unused by Vokra (compute-only), but must be
+/// declared so `VkQueueFamilyProperties`'s layout matches vulkan_core.h.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkExtent3D {
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+}
+
+/// `VkQueueFamilyProperties` (spec §5.3.1). Written by
+/// `vkGetPhysicalDeviceQueueFamilyProperties` — one entry per queue family.
+///
+/// Vokra reads `queue_flags` (to pick a compute-capable family) and
+/// `queue_count` (to sanity-check we can request a queue at all). The
+/// timestamp / min-image-transfer fields are declared for layout fidelity but
+/// unused.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct VkQueueFamilyProperties {
+    pub queue_flags: u32,
+    pub queue_count: u32,
+    pub timestamp_valid_bits: u32,
+    pub min_image_transfer_granularity: VkExtent3D,
+}
+
+/// `vkGetPhysicalDeviceQueueFamilyProperties(VkPhysicalDevice, *uint32_t,
+/// *VkQueueFamilyProperties)`.
+pub(crate) type FnVkGetPhysicalDeviceQueueFamilyProperties =
+    unsafe extern "system" fn(VkPhysicalDevice, *mut u32, *mut VkQueueFamilyProperties);
+
 // ---------------------------------------------------------------------------
 // The rest of the API used by `context.rs` (device / queue / command /
 // descriptor / pipeline / memory / buffer / shader / dispatch) is intentionally

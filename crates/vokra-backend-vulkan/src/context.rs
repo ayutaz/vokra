@@ -52,6 +52,7 @@ pub(crate) struct VulkanInstance {
     // load what the probe needs (T30/T31); more entries are added in T07/T08.
     enumerate_physical_devices: sys::FnVkEnumeratePhysicalDevices,
     get_physical_device_properties: sys::FnVkGetPhysicalDeviceProperties,
+    get_physical_device_queue_family_properties: sys::FnVkGetPhysicalDeviceQueueFamilyProperties,
     destroy_instance: sys::FnVkDestroyInstance,
 }
 
@@ -145,6 +146,23 @@ impl VulkanInstance {
                             .to_owned(),
                     )
                 })?;
+        // SAFETY: pairs vkGetPhysicalDeviceQueueFamilyProperties's C symbol
+        // name with its exact FnVkGetPhysicalDeviceQueueFamilyProperties alias.
+        // Required for compute queue family selection (M3-02-T07).
+        let get_physical_device_queue_family_properties: sys::FnVkGetPhysicalDeviceQueueFamilyProperties = unsafe {
+            sys::instance_proc(
+                &loader,
+                instance,
+                b"vkGetPhysicalDeviceQueueFamilyProperties\0",
+            )
+        }
+        .ok_or_else(|| {
+            VokraError::BackendUnavailable(
+                "Vulkan driver is missing `vkGetPhysicalDeviceQueueFamilyProperties` \
+                     (impossible on any conforming ICD)."
+                    .to_owned(),
+            )
+        })?;
         let destroy_instance: sys::FnVkDestroyInstance =
             // SAFETY: pairs vkDestroyInstance's C symbol name with its exact
             // FnVkDestroyInstance alias.
@@ -164,6 +182,7 @@ impl VulkanInstance {
             instance,
             enumerate_physical_devices,
             get_physical_device_properties,
+            get_physical_device_queue_family_properties,
             destroy_instance,
         })
     }
@@ -212,6 +231,89 @@ impl VulkanInstance {
         unsafe { (self.get_physical_device_properties)(device, props.as_mut_ptr()) };
         // SAFETY: the driver call above fully initialises the struct.
         unsafe { props.assume_init() }
+    }
+
+    /// Enumerate queue-family properties for a physical device (M3-02-T07).
+    /// Every driver conformant with Vulkan 1.0+ exposes at least one queue
+    /// family; the result is never empty on a device the loader accepted.
+    pub(crate) fn get_queue_family_properties(
+        &self,
+        device: sys::VkPhysicalDevice,
+    ) -> Vec<sys::VkQueueFamilyProperties> {
+        // Two-call idiom: null out-pointer to size, then fill.
+        let mut count: u32 = 0;
+        // SAFETY: `get_physical_device_queue_family_properties` is the
+        // resolved instance entry; `count` is a valid writable u32; null out-
+        // pointer is the spec-defined "count only" mode.
+        unsafe {
+            (self.get_physical_device_queue_family_properties)(
+                device,
+                &mut count,
+                core::ptr::null_mut(),
+            );
+        }
+        if count == 0 {
+            return Vec::new();
+        }
+        // Pre-fill with zeroed structs; the driver overwrites every slot.
+        let mut props: Vec<sys::VkQueueFamilyProperties> = vec![
+            sys::VkQueueFamilyProperties {
+                queue_flags: 0,
+                queue_count: 0,
+                timestamp_valid_bits: 0,
+                min_image_transfer_granularity: sys::VkExtent3D {
+                    width: 0,
+                    height: 0,
+                    depth: 0,
+                },
+            };
+            count as usize
+        ];
+        // SAFETY: `props.as_mut_ptr()` is a valid pointer to `count` writable
+        // `VkQueueFamilyProperties` slots; the driver call fully initialises
+        // every entry.
+        unsafe {
+            (self.get_physical_device_queue_family_properties)(
+                device,
+                &mut count,
+                props.as_mut_ptr(),
+            );
+        }
+        props
+    }
+
+    /// Find the index of a compute-capable queue family on `device`, or
+    /// `None` if no such family exists (impossible on any Vulkan-conformant
+    /// GPU — the spec §5.3.1 requires every physical device to expose at
+    /// least one queue family whose flags include either `_GRAPHICS_BIT` or
+    /// `_COMPUTE_BIT`, and `_GRAPHICS_BIT` implicitly grants `_COMPUTE_BIT`).
+    ///
+    /// **Selection policy** (M3-02-T07):
+    /// 1. Prefer a compute-only family (compute bit set, graphics bit
+    ///    unset) — dedicated compute queues avoid contention with the
+    ///    display path on Adreno / Mali.
+    /// 2. Otherwise pick the first family with the compute bit set (a
+    ///    graphics + compute universal queue).
+    /// 3. Otherwise `None` — Vokra rejects this device upstream.
+    #[must_use]
+    pub(crate) fn find_compute_queue_family(&self, device: sys::VkPhysicalDevice) -> Option<u32> {
+        let families = self.get_queue_family_properties(device);
+        // Pass 1 — compute-only family with at least one queue.
+        for (i, f) in families.iter().enumerate() {
+            if f.queue_count > 0
+                && (f.queue_flags & sys::VK_QUEUE_COMPUTE_BIT) != 0
+                && (f.queue_flags & sys::VK_QUEUE_GRAPHICS_BIT) == 0
+            {
+                return Some(i as u32);
+            }
+        }
+        // Pass 2 — first compute-capable family (graphics + compute).
+        for (i, f) in families.iter().enumerate() {
+            if f.queue_count > 0 && (f.queue_flags & sys::VK_QUEUE_COMPUTE_BIT) != 0 {
+                return Some(i as u32);
+            }
+        }
+        None
     }
 }
 

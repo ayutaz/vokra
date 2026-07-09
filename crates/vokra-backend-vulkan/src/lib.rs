@@ -139,6 +139,13 @@ mod sys;
 // downstream code can always name them.
 mod backend;
 mod probe;
+// The SPIR-V manifest / dispatcher lives at the crate root (no Vulkan target
+// gating): it is the structural surface T14〜T22 landings extend, and the
+// manifest is compile-time-only (no dlopen), so exposing it uniformly keeps
+// the module tree stable.
+pub mod spirv;
 
-pub use backend::VulkanBackend;
+pub use backend::{
+    GemmPipelinePreference, GemmPipelineVariant, VulkanBackend, select_gemm_pipeline_variant,
+};
 pub use probe::{VendorFamily, VulkanCapabilities, vokra_vulkan_probe};

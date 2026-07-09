@@ -37,6 +37,18 @@ vokra-backend-metal = { workspace = true, optional = true }
 # `Compute::Cuda` arm is additionally `cfg(any(unix, windows))`-gated inside this
 # crate (CUDA needs a dynamic loader).
 vokra-backend-cuda = { workspace = true, optional = true }
+# Phase 3 (GPU execution), Vulkan arm: symmetric with the Metal / CUDA arms —
+# an OPTIONAL first-party dep behind the `vulkan` feature, so default builds
+# never even name it (NFR-PT-01). `vokra-backend-vulkan` is a first-party
+# `vokra-*` crate with ZERO external deps (raw Vulkan API FFI loaded at runtime
+# via dlopen — NO ash / vulkano / erupt binding crate, no libvulkan bundled),
+# so the zero-dependency gate (NFR-DS-02) still holds. The `Compute::Vulkan`
+# arm is additionally cfg-gated on Linux / Android / Windows targets inside
+# this crate (Vulkan is not a macOS / iOS backend — those use Metal). In the
+# M3-02 foundation slice the `covered_by_vulkan` set is empty; every hot op
+# routed through this feature therefore surfaces as an explicit `UnsupportedOp`
+# from `Compute::for_backend` — never a silent CPU fall back (FR-EX-08).
+vokra-backend-vulkan = { workspace = true, optional = true }
 
 [features]
 # Off by default: enable with `--features metal` on macOS / iOS to route the
@@ -47,6 +59,12 @@ metal = ["dep:vokra-backend-metal"]
 # the model GEMM hot path onto the CUDA backend. Real GPU parity/RTF is verified
 # on a vast.ai RTX 4090 (M2-03-T25), not in the default CI build.
 cuda = ["dep:vokra-backend-cuda"]
+# Off by default: enable with `--features vulkan` on Linux / Android / Windows
+# to route the model hot path onto the Vulkan backend. In the M3-02 foundation
+# slice the Vulkan backend covers no hot op, so any `Compute::for_backend` with
+# `BackendKind::Vulkan` currently returns `UnsupportedOp` — never a silent CPU
+# fall back. Real GPU parity is verified once T14〜T22 SPIR-V kernels land.
+vulkan = ["dep:vokra-backend-vulkan"]
 
 # M1-01-D: reference RTF bench for the piper-plus native TTS (hand-rolled
 # std::time measurement, no external bench crate — NFR-DS-02). It is env-gated

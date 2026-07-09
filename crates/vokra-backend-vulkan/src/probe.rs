@@ -66,6 +66,18 @@ pub struct VulkanCapabilities {
     /// extension list and confirm `VK_KHR_cooperative_matrix` presence before
     /// the coop-matrix pipeline is bound. Kept coarse here.
     pub coop_matrix_precondition_met: bool,
+    /// The index of the compute-capable queue family on device 0
+    /// (M3-02-T07). `None` on a physical device that exposes no queue family
+    /// with the compute bit set — impossible on any Vulkan-conformant GPU
+    /// (spec §5.3.1 requires it), so `None` means Vokra will reject the
+    /// device upstream with an explicit `BackendUnavailable`.
+    ///
+    /// The selection policy prefers a compute-*only* family (no graphics bit)
+    /// where available — dedicated compute queues avoid contention with the
+    /// display path on Adreno / Mali. See
+    /// [`crate::context::VulkanInstance::find_compute_queue_family`] for the
+    /// full algorithm.
+    pub compute_queue_family_index: Option<u32>,
 }
 
 impl VulkanCapabilities {
@@ -90,8 +102,13 @@ impl VulkanCapabilities {
             "no"
         };
         let subgroup = if self.subgroup_ready { "yes" } else { "no" };
+        let queue = match self.compute_queue_family_index {
+            Some(idx) => format!("compute-q:{idx}"),
+            None => "compute-q:none".to_owned(),
+        };
         format!(
-            "{} — Vulkan {}.{}, type={ty}, vendor=0x{:x} — subgroup:{subgroup} coop-matrix:{coop}",
+            "{} — Vulkan {}.{}, type={ty}, vendor=0x{:x} — subgroup:{subgroup} coop-matrix:{coop} \
+             {queue}",
             self.device_name, self.api_version_major, self.api_version_minor, self.vendor_id,
         )
     }
@@ -187,6 +204,12 @@ pub fn vokra_vulkan_probe() -> Result<VulkanCapabilities> {
     // on). The extension-list check that actually gates dispatch to
     // `gemm_coopmat.spv` is M3-02-T30 follow-up — see backend.rs.
     let coop_matrix_precondition_met = major > 1 || (major == 1 && minor >= 3);
+    // M3-02-T07 compute queue-family selection. `None` is impossible on a
+    // conformant Vulkan GPU (spec §5.3.1); if the driver were to report no
+    // compute-capable family, `VulkanBackend::new` would fail upstream
+    // (subgroup_ready being true but the queue index being `None` is treated
+    // as a driver bug — explicit `BackendUnavailable`).
+    let compute_queue_family_index = instance.find_compute_queue_family(devices[0]);
 
     Ok(VulkanCapabilities {
         api_version: api,
@@ -198,6 +221,7 @@ pub fn vokra_vulkan_probe() -> Result<VulkanCapabilities> {
         device_type: props.device_type,
         subgroup_ready,
         coop_matrix_precondition_met,
+        compute_queue_family_index,
     })
 }
 
@@ -274,8 +298,38 @@ mod tests {
 
                 subgroup_ready: true,
                 coop_matrix_precondition_met: false,
+                compute_queue_family_index: Some(0),
             };
             assert_eq!(caps.vendor_family(), expected, "vendor 0x{id:x}");
         }
+    }
+
+    #[test]
+    fn summary_mentions_compute_queue_and_subgroup() {
+        // The summary format is human-readable log surface; keep the queue-
+        // index reporting explicit so an owner-side log dump on Android tells
+        // us at a glance which family Vokra picked (M3-02-T07 observability).
+        let mut caps = VulkanCapabilities {
+            api_version: 0x0040_1000,
+            api_version_major: 1,
+            api_version_minor: 1,
+            device_count: 1,
+            device_name: "test-device".to_owned(),
+            vendor_id: 0x5143, // Adreno
+            device_type: 1,    // integrated
+            subgroup_ready: true,
+            coop_matrix_precondition_met: false,
+            compute_queue_family_index: Some(1),
+        };
+        let s = caps.summary();
+        assert!(s.contains("compute-q:1"), "summary missing queue: `{s}`");
+        assert!(s.contains("subgroup:yes"));
+        assert!(s.contains("coop-matrix:no"));
+
+        // A device with no compute queue family (impossible in the spec, but
+        // the format must still be honest).
+        caps.compute_queue_family_index = None;
+        let s = caps.summary();
+        assert!(s.contains("compute-q:none"));
     }
 }

@@ -102,6 +102,21 @@ pub enum BackendKind {
     /// [`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp) — never a
     /// silent CPU fall back (FR-EX-08 / NFR-RL-06).
     Cuda,
+    /// Vulkan backend (Android / Linux / non-NVIDIA Windows GPUs, FR-BE-04).
+    /// Implemented in `vokra-backend-vulkan` (M3-02) with raw Vulkan API FFI
+    /// loaded at runtime via dlopen / LoadLibrary (no `ash` / `vulkano` / `erupt`
+    /// binding crate) and pre-compiled SPIR-V compute shaders (subgroup + coop-
+    /// matrix + subgroup-only fallback). Reached through the `vokra-models`
+    /// `Compute` dispatcher behind its `vulkan` feature. Foundation slice
+    /// (M3-02-T01〜T13 landed): SPIR-V kernels for GEMM / GEMV / softmax / … land
+    /// in M3-02-T14 onwards, so every hot op is currently reported as
+    /// [`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp) — never a
+    /// silent CPU fall back (FR-EX-08 / NFR-RL-06). A missing loader / device is
+    /// [`VokraError::BackendUnavailable`](crate::VokraError::BackendUnavailable).
+    ///
+    /// **NNAPI is permanently unsupported** — Vokra's Android GPU path is
+    /// Vulkan-only from day one (FR-BE-07 / CLAUDE.md design constraint 8).
+    Vulkan,
 }
 
 #[cfg(test)]

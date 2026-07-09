@@ -74,7 +74,14 @@ fn parse_backend(v: &str) -> Result<BackendKind, String> {
         "cpu" => Ok(BackendKind::Cpu),
         "metal" => Ok(BackendKind::Metal),
         "cuda" => Ok(BackendKind::Cuda),
-        other => Err(format!("unknown --backend `{other}` (cpu | metal | cuda)")),
+        // Vulkan (M3-02) — recognised at parse time so the CLI accepts the name;
+        // the foundation slice has no SPIR-V kernel wired yet, so any actual run
+        // surfaces an explicit `UnsupportedOp` from `Compute::for_backend` (no
+        // silent CPU fall back, FR-EX-08).
+        "vulkan" => Ok(BackendKind::Vulkan),
+        other => Err(format!(
+            "unknown --backend `{other}` (cpu | metal | cuda | vulkan)"
+        )),
     }
 }
 
