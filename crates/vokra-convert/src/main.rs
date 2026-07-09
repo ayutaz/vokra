@@ -309,6 +309,31 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  hidden_dim={hidden_dim}"
             );
         }
+        ModelKind::Voxtral => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let ae_n_layer = file
+                .get("vokra.voxtral.audio_encoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let td_n_layer = file
+                .get("vokra.voxtral.text_decoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let vocab = file
+                .get("vokra.voxtral.text_decoder.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let mode = file
+                .get("vokra.voxtral.mode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} audio_layers={ae_n_layer} text_layers={td_n_layer} vocab={vocab} mode={mode}"
+            );
+        }
     }
     Ok(())
 }
