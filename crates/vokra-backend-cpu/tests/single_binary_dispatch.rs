@@ -140,7 +140,9 @@ fn forced_isa_paths_via_subprocess() {
     }
 
     // Forcing a path the host cannot run must fail fast, never silently switch.
-    for isa in [IsaPath::Avx2, IsaPath::Neon] {
+    // Includes IsaPath::Rvv (M3-13) — on x86-64 / aarch64 CI runners the RVV
+    // path is unavailable and forcing it must be an explicit error.
+    for isa in [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv] {
         if !feats.supports(isa) {
             let name = isa.to_string();
             assert!(

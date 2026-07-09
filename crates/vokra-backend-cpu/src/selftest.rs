@@ -65,11 +65,13 @@ impl core::fmt::Display for SelftestReport {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
-            "cpu selftest OK: active={} features(avx2={} fma={} neon={}) checked={:?} max_abs_diff={:.3e} (atol {:.0e})",
+            "cpu selftest OK: active={} features(avx2={} fma={} neon={} rvv_v={} zvfh={}) checked={:?} max_abs_diff={:.3e} (atol {:.0e})",
             self.active_isa,
             self.features.avx2,
             self.features.fma,
             self.features.neon,
+            self.features.rvv_v,
+            self.features.rvv_zvfh,
             self.checked_paths,
             self.max_abs_diff,
             self.tolerance,
@@ -151,8 +153,9 @@ pub fn selftest() -> Result<SelftestReport> {
     let active_isa = active_isa();
 
     // The SIMD paths this host can actually run (Scalar is the oracle, not a
-    // "checked" path). At most one of Avx2 / Neon is supported on any host.
-    let checked_paths: Vec<IsaPath> = [IsaPath::Avx2, IsaPath::Neon]
+    // "checked" path). At most one of Avx2 / Neon / Rvv is supported on any
+    // given host (they are arch-exclusive). RVV is added in M3-13.
+    let checked_paths: Vec<IsaPath> = [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv]
         .into_iter()
         .filter(|&isa| features.supports(isa))
         .collect();
