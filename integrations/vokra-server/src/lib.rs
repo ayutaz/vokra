@@ -44,8 +44,19 @@ pub mod config;
 pub mod server;
 pub mod shutdown;
 
+// M3-15 multi-session support.
+pub mod latency;
+pub mod scheduler;
+pub mod session;
+
 pub use config::{Config, ConfigError, HELP_TEXT, parse_args};
+pub use latency::{LatencyRecorder, LatencyReport};
+pub use scheduler::{Scheduler, SchedulerConfig, SchedulerError, SchedulerSession};
 pub use server::{ServerHandles, run_with_config, spawn_server, spawn_server_for_test};
+pub use session::{
+    RegistryError, ServerSession, SessionGuard, SessionId, SessionRegistry, SessionRegistryConfig,
+    StreamSlot,
+};
 pub use shutdown::{ShutdownSignal, ShutdownTrigger, install_shutdown_signal};
 
 /// Pin `LC_NUMERIC=C` (and `LC_ALL=C`) BEFORE the tokio runtime spawns
