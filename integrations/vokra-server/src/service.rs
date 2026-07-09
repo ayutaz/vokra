@@ -41,6 +41,7 @@ use std::sync::Arc;
 // `WatermarkBackendStatus` is referenced only in doc-links below (rustdoc
 // intra-doc link); dropping it from the `use` list avoids the unused-import
 // warning while keeping the doc reference valid via its full path.
+use vokra_core::decode::BeamSearchConfig;
 use vokra_core::{
     AsrEngine, BackendKind, CompliancePolicy, GgufFile, SynthesisRequest, SynthesizedAudio,
     VokraError, WatermarkConfig,
@@ -50,6 +51,7 @@ use vokra_models::piper_plus::PiperPlusTts;
 use vokra_models::silero_vad::SileroVadV5;
 use vokra_models::voxtral::VoxtralAsr;
 use vokra_models::whisper::asr::WhisperAsr;
+use vokra_models::whisper::greedy::DEFAULT_MAX_NEW_TOKENS as WHISPER_DEFAULT_MAX_NEW_TOKENS;
 use vokra_models::whisper::tokenizer::WhisperTokenizer;
 use vokra_piper_plus::{PassthroughPhonemizer, Phonemizer};
 
@@ -712,14 +714,21 @@ impl TranscribeService for InferenceService {
         Err(ServiceError::UnknownModel(model.to_owned()))
     }
 
-    /// Beam-search transcribe (M3-15 Wave 10 A). Routing rules:
+    /// Beam-search transcribe (M3-15 Wave 10 A / Wave 11 whisper wiring).
+    /// Routing rules:
     ///
-    /// * Whisper (`whisper-*`) — greedy for `beam_size == None || Some(0..=1)`;
-    ///   a caller-requested `beam_size > 1` surfaces
-    ///   [`ServiceError::Inference`]([`VokraError::UnsupportedOp`]). Whisper's
-    ///   `WhisperBeamScorer` is not currently threaded through the
-    ///   [`AsrEngine`] trait, so honouring the flag on this path would be a
-    ///   silent no-op — the wiring is a follow-up ticket.
+    /// * Whisper (`whisper-*`) — greedy for `beam_size == None || Some(0..=1)`
+    ///   (via `AsrEngine::transcribe`). `beam_size > 1` now routes through
+    ///   [`vokra_models::whisper::asr::WhisperAsr::transcribe_tokens_beam_nbest`]
+    ///   returning the full n-best list (Wave 11 lift of the "not threaded
+    ///   through AsrEngine" limitation), then detokenizes each hypothesis via
+    ///   [`WhisperAsr::render_ids`]. `length_penalty` maps to the
+    ///   [`vokra_core::decode::BeamSearchConfig::length_normalization`] α
+    ///   attribute (HF `length_penalty`). `no_repeat_ngram > 0` surfaces an
+    ///   explicit [`ServiceError::Inference`]([`VokraError::UnsupportedOp`]) —
+    ///   the model-independent [`vokra_core::decode::BeamSearchConfig`] has
+    ///   no such attribute, so silently ignoring it would be a fabrication
+    ///   (FR-EX-08).
     /// * Voxtral (`voxtral*`) — greedy on `beam_size <= 1`; `> 1` routes
     ///   through
     ///   [`vokra_models::voxtral::VoxtralAsr::transcribe_beam_with_config_overrides`],
@@ -737,10 +746,11 @@ impl TranscribeService for InferenceService {
         pcm: &[f32],
         req: &TranscribeBeamRequest,
     ) -> Result<TranscribeBeamResponse, ServiceError> {
-        // ---- Whisper: greedy only through this trait today. ------------
+        // ---- Whisper: greedy + beam wired end-to-end (M3-15 Wave 11). ---
         if let Some(engine) = self.resolve_asr(model) {
-            match req.beam_size {
-                None | Some(0..=1) => {
+            let beam_size_effective = req.beam_size.unwrap_or(0);
+            match beam_size_effective {
+                0 | 1 => {
                     let text = engine
                         .transcribe(pcm)
                         .map(|t| t.text)
@@ -750,13 +760,81 @@ impl TranscribeService for InferenceService {
                         alternatives: Vec::new(),
                     });
                 }
-                Some(n) => {
-                    return Err(ServiceError::Inference(VokraError::UnsupportedOp(format!(
-                        "transcribe_beam: model `{model}` (whisper backend) does not expose \
-                         beam search through the vokra-server today (WhisperBeamScorer is not \
-                         threaded through AsrEngine yet — follow-up ticket). Requested \
-                         beam_size = {n}. FR-EX-08 — no silent fall back to greedy.",
-                    ))));
+                n => {
+                    // FR-EX-08: whisper's model-independent `BeamSearchConfig`
+                    // has no `no_repeat_ngram_size` attribute. Accepting the
+                    // schema field and silently ignoring it would be a
+                    // fabrication; surface an explicit `UnsupportedOp`.
+                    let ngram = req.no_repeat_ngram.unwrap_or(0);
+                    if ngram > 0 {
+                        return Err(ServiceError::Inference(VokraError::UnsupportedOp(format!(
+                            "transcribe_beam: model `{model}` (whisper backend) does not support \
+                             no_repeat_ngram_size (vokra_core::decode::BeamSearchConfig has no \
+                             such attribute — the Voxtral beam search is a separate primitive). \
+                             Requested no_repeat_ngram = {ngram}. FR-EX-08 — accepting the field \
+                             in the schema and silently ignoring it would be a fabrication.",
+                        ))));
+                    }
+
+                    // length_penalty defaults to 1.0 to match
+                    // `BeamSearchConfig::new` (HF length_penalty), NOT the
+                    // Voxtral default of 0.6 — the two engines use different
+                    // ranking primitives. A negative or non-finite value is
+                    // rejected up-front (FR-EX-08 — the ranking would be
+                    // undefined).
+                    let length_penalty = req.length_penalty.unwrap_or(1.0);
+                    if !length_penalty.is_finite() || length_penalty < 0.0 {
+                        return Err(ServiceError::Inference(VokraError::InvalidArgument(
+                            format!(
+                                "transcribe_beam: model `{model}` (whisper backend) requires \
+                                 length_penalty to be a non-negative finite float (maps to \
+                                 BeamSearchConfig::length_normalization), got {length_penalty}",
+                            ),
+                        )));
+                    }
+                    let max_new = req
+                        .max_new_tokens
+                        .filter(|&v| v > 0)
+                        .unwrap_or(WHISPER_DEFAULT_MAX_NEW_TOKENS);
+
+                    // `BeamSearchConfig::new(n, max_new)` seeds
+                    // `length_normalization = 1.0`, `n_best = 1`,
+                    // `early_stopping = true`, `word_timestamps = false`.
+                    // Overlay the caller fields (length_penalty and n_best).
+                    let mut cfg = BeamSearchConfig::new(n, max_new);
+                    cfg.length_normalization = length_penalty;
+                    cfg.n_best = n;
+
+                    let hyps = engine
+                        .transcribe_tokens_beam_nbest(pcm, &cfg)
+                        .map_err(ServiceError::Inference)?;
+                    // FR-EX-08: an empty n-best list is a bug in the beam
+                    // driver, not a "return greedy" fallback.
+                    if hyps.is_empty() {
+                        return Err(ServiceError::Inference(VokraError::ModelLoad(
+                            "transcribe_beam: whisper beam search produced no hypothesis".into(),
+                        )));
+                    }
+                    let mut alternatives: Vec<TranscribeAlternative> =
+                        Vec::with_capacity(hyps.len());
+                    for h in &hyps {
+                        let text = engine
+                            .render_ids(&h.tokens)
+                            .map_err(ServiceError::Inference)?;
+                        alternatives.push(TranscribeAlternative {
+                            text,
+                            log_prob: h.score as f64,
+                            length_normalized_score: h.normalized_score as f64,
+                        });
+                    }
+                    // Top-1 mirrored into `text` (backward-compat with the
+                    // legacy top-1 shape — the `alternatives[0].text` is the
+                    // same string).
+                    let text = alternatives
+                        .first()
+                        .map(|a| a.text.clone())
+                        .unwrap_or_default();
+                    return Ok(TranscribeBeamResponse { text, alternatives });
                 }
             }
         }
@@ -1213,12 +1291,21 @@ mod registry {
     //     fields None).
     //  5. Unknown model → `UnknownModel` (routing invariant preserved).
 
-    /// Test double: `voxtral*` supports beam; whisper is greedy-only.
+    /// Test double: both `voxtral*` and `whisper*` support beam search.
     /// Mirrors the shape the real `InferenceService::transcribe_beam`
-    /// override implements (Whisper hard-errors on `beam_size > 1`,
-    /// Voxtral fills alternatives). Emitted alternatives are synthesized
-    /// but ranked, so the assertions can exercise the schema without a
-    /// real engine.
+    /// override implements after Wave 11:
+    ///
+    /// * Whisper — greedy on `beam_size <= 1`; beam decode on `> 1`,
+    ///   `length_penalty` maps to `BeamSearchConfig::length_normalization`,
+    ///   `no_repeat_ngram > 0` is an explicit `UnsupportedOp` (whisper's
+    ///   model-independent `BeamSearchConfig` has no such attribute —
+    ///   FR-EX-08).
+    /// * Voxtral — greedy on `beam_size <= 1`; beam decode on `> 1`,
+    ///   `length_penalty` and `no_repeat_ngram` both honoured.
+    ///
+    /// Emitted alternatives are synthesized but ranked (and, on whisper,
+    /// carry the `length_penalty` in the top text so the length-penalty-
+    /// honored test can inspect it without a real engine).
     struct VoxtralAsBeamCapable;
     impl TranscribeService for VoxtralAsBeamCapable {
         fn transcribe(&self, model: &str, pcm: &[f32]) -> Result<String, ServiceError> {
@@ -1244,19 +1331,46 @@ mod registry {
             pcm: &[f32],
             req: &TranscribeBeamRequest,
         ) -> Result<TranscribeBeamResponse, ServiceError> {
-            // Whisper: greedy through this trait.
+            // Whisper: beam supported (Wave 11 wiring), but no_repeat_ngram
+            // is an explicit UnsupportedOp — mirrors the real code path.
             if matches!(model, model_names::WHISPER_1 | model_names::WHISPER_BASE) {
-                return match req.beam_size {
-                    None | Some(0..=1) => Ok(TranscribeBeamResponse {
+                let bs = req.beam_size.unwrap_or(0);
+                if bs <= 1 {
+                    return Ok(TranscribeBeamResponse {
                         text: self.transcribe(model, pcm)?,
                         alternatives: Vec::new(),
-                    }),
-                    Some(n) => Err(ServiceError::Inference(VokraError::UnsupportedOp(format!(
-                        "whisper beam not exposed (requested beam_size = {n})"
-                    )))),
-                };
+                    });
+                }
+                let ngram = req.no_repeat_ngram.unwrap_or(0);
+                if ngram > 0 {
+                    return Err(ServiceError::Inference(VokraError::UnsupportedOp(format!(
+                        "whisper beam does not support no_repeat_ngram (BeamSearchConfig has no \
+                         such attribute); requested no_repeat_ngram = {ngram} on model `{model}`",
+                    ))));
+                }
+                let length_penalty = req.length_penalty.unwrap_or(1.0);
+                if !length_penalty.is_finite() || length_penalty < 0.0 {
+                    return Err(ServiceError::Inference(VokraError::InvalidArgument(
+                        format!(
+                            "whisper beam: length_penalty must be non-negative finite float, got \
+                         {length_penalty}",
+                        ),
+                    )));
+                }
+                // Emit `bs` synthetic ranked alternatives — the top-1 text
+                // carries `length_penalty` verbatim so the honor test can
+                // observe it flowed through unchanged.
+                let alternatives: Vec<TranscribeAlternative> = (0..bs)
+                    .map(|i| TranscribeAlternative {
+                        text: format!("whisper-beam[{i}]@lp={length_penalty}://{model}"),
+                        log_prob: -(i as f64),
+                        length_normalized_score: -(i as f64) * 0.5,
+                    })
+                    .collect();
+                let text = alternatives[0].text.clone();
+                return Ok(TranscribeBeamResponse { text, alternatives });
             }
-            // Voxtral: beam supported.
+            // Voxtral: beam supported (Wave 10).
             if matches!(
                 model,
                 model_names::VOXTRAL
@@ -1403,15 +1517,82 @@ mod registry {
         assert!(!resp.text.is_empty());
     }
 
+    // -----------------------------------------------------------------
+    // M3-15 Wave 11 — Whisper beam surface tests. Mirrors the shape of the
+    // Wave 10 A Voxtral tests one-to-one; the mock (`VoxtralAsBeamCapable`)
+    // implements whisper beam with the same semantic as the real
+    // `InferenceService::transcribe_beam` override (Wave 11).
+    // -----------------------------------------------------------------
+
+    /// `beam_size = 1` must match greedy — the response carries the top-1
+    /// text and an empty `alternatives` list (backward-compat with the
+    /// pre-beam top-1 shape). Bit-identical to the greedy path.
     #[test]
-    fn beam_override_hard_errors_on_beam_size_gt_one_for_whisper() {
-        // On the beam-capable double, whisper still errors on
-        // beam_size > 1 (matches the real InferenceService override:
-        // WhisperBeamScorer is not yet threaded through the trait).
+    fn whisper_beam_size_1_matches_greedy() {
         let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsBeamCapable);
-        let pcm = vec![0.0f32; 16];
+        let pcm = vec![0.1f32; 16_000];
+        let greedy_text = svc.transcribe(model_names::WHISPER_BASE, &pcm).unwrap();
+
+        // beam_size = 1 -> same greedy text, no alternatives.
+        for beam_size in [None, Some(0usize), Some(1usize)] {
+            let req = TranscribeBeamRequest {
+                beam_size,
+                ..Default::default()
+            };
+            let resp = svc
+                .transcribe_beam(model_names::WHISPER_BASE, &pcm, &req)
+                .expect("beam_size <= 1 must fold to greedy");
+            assert_eq!(
+                resp.text, greedy_text,
+                "beam_size = {beam_size:?} must match greedy tokens bit-identically",
+            );
+            assert!(
+                resp.alternatives.is_empty(),
+                "beam_size = {beam_size:?} must not populate alternatives (backward compat)",
+            );
+        }
+    }
+
+    /// `beam_size = 4` must return the full ranked n-best list, sorted
+    /// descending by `length_normalized_score`, with the top-1 mirrored
+    /// into `text`.
+    #[test]
+    fn whisper_beam_size_4_returns_ranked_alternatives() {
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsBeamCapable);
+        let pcm = vec![0.1f32; 16_000];
         let req = TranscribeBeamRequest {
             beam_size: Some(4),
+            length_penalty: Some(1.0),
+            no_repeat_ngram: None,
+            max_new_tokens: None,
+        };
+        let resp = svc
+            .transcribe_beam(model_names::WHISPER_BASE, &pcm, &req)
+            .expect("whisper beam must return n-best");
+        assert_eq!(resp.alternatives.len(), 4);
+        // Ranked descending by length_normalized_score.
+        for pair in resp.alternatives.windows(2) {
+            assert!(
+                pair[0].length_normalized_score >= pair[1].length_normalized_score,
+                "n-best must be ranked descending: {} vs {}",
+                pair[0].length_normalized_score,
+                pair[1].length_normalized_score,
+            );
+        }
+        // Top-1 mirrored into `text`.
+        assert_eq!(resp.text, resp.alternatives[0].text);
+    }
+
+    /// `no_repeat_ngram > 0` on whisper is an explicit UnsupportedOp —
+    /// FR-EX-08. The whisper `BeamSearchConfig` has no such attribute, so
+    /// silently accepting the schema field would be a fabrication.
+    #[test]
+    fn whisper_no_repeat_ngram_positive_is_unsupported() {
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsBeamCapable);
+        let pcm = vec![0.1f32; 16_000];
+        let req = TranscribeBeamRequest {
+            beam_size: Some(3),
+            no_repeat_ngram: Some(2),
             ..Default::default()
         };
         let err = svc
@@ -1419,9 +1600,59 @@ mod registry {
             .unwrap_err();
         match err {
             ServiceError::Inference(VokraError::UnsupportedOp(msg)) => {
-                assert!(msg.contains("beam"), "must name beam search: {msg}");
+                assert!(
+                    msg.contains("no_repeat_ngram"),
+                    "error message must name no_repeat_ngram: {msg}",
+                );
             }
-            other => panic!("expected UnsupportedOp, got {other}"),
+            other => panic!(
+                "expected Inference(UnsupportedOp) for no_repeat_ngram > 0 on whisper, got \
+                 {other}",
+            ),
+        }
+    }
+
+    /// A finite, non-negative `length_penalty` must actually reach the
+    /// engine's `BeamSearchConfig::length_normalization` — the mock echoes
+    /// the value verbatim into the top-1 text so the assertion can
+    /// observe the round-trip (guards against silently ignoring the field
+    /// — FR-EX-08).
+    #[test]
+    fn whisper_length_penalty_finite_is_honored() {
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsBeamCapable);
+        let pcm = vec![0.1f32; 16_000];
+        let req = TranscribeBeamRequest {
+            beam_size: Some(2),
+            length_penalty: Some(0.7),
+            ..Default::default()
+        };
+        let resp = svc
+            .transcribe_beam(model_names::WHISPER_BASE, &pcm, &req)
+            .expect("finite non-negative length_penalty must be honoured");
+        assert!(
+            resp.text.contains("lp=0.7"),
+            "length_penalty must reach the engine verbatim; got text `{}`",
+            resp.text,
+        );
+
+        // Negative length_penalty must hard-error — the ranking would be
+        // undefined.
+        let req_neg = TranscribeBeamRequest {
+            beam_size: Some(2),
+            length_penalty: Some(-0.1),
+            ..Default::default()
+        };
+        let err = svc
+            .transcribe_beam(model_names::WHISPER_BASE, &pcm, &req_neg)
+            .unwrap_err();
+        match err {
+            ServiceError::Inference(VokraError::InvalidArgument(msg)) => {
+                assert!(
+                    msg.contains("length_penalty"),
+                    "error message must name length_penalty: {msg}",
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other}"),
         }
     }
 
