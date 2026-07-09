@@ -11,8 +11,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, PolicyPreset, convert_file, convert_file_quantized, convert_file_with_policy,
-    convert_kokoro_file, convert_piper_plus_file,
+    ModelKind, PolicyPreset, VoxtralConfig, convert_file, convert_file_quantized,
+    convert_file_with_policy, convert_kokoro_file, convert_piper_plus_file,
+    convert_voxtral_file_with_adapter_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -23,13 +24,20 @@ USAGE:
     vokra-cli convert --model <whisper-base|silero-vad|campplus> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
+    vokra-cli convert --model voxtral --input <ckpt.safetensors> [--adapter-config <adapter.json>] --output <out.gguf>
 
 OPTIONS:
-    --model <kind>            whisper-base | silero-vad | piper-plus | campplus | kokoro
+    --model <kind>            whisper-base | silero-vad | piper-plus | campplus | kokoro | voxtral
     --input <path>            upstream checkpoint file
     --config <path>           piper-plus config.json (piper-plus only) OR Kokoro
                               config.json (misaki phoneme symbols + voice names;
                               omit to emit the p0..p_{n-1} placeholder table)
+    --adapter-config <path>   Voxtral audio-adapter side-car JSON (M3-10 Wave 8):
+                              writes `vokra.voxtral.adapter.*` metadata so the
+                              runtime binds the checkpoint's adapter tensors
+                              and routes ASR through the audio-conditioned
+                              soft-prefix path (see docs/tickets/m3/M3-10*.md).
+                              Omit for the honest LM-continuation path.
     --output <path>           GGUF file to write
     --quantize <kind>         K-quantize weight matrices: q4_k | q5_k | q6_k (whisper only)
                               Alias for --policy-preset whisper_q4_k (when kind=q4_k).
@@ -43,6 +51,11 @@ struct Parsed {
     model: ModelKind,
     input: PathBuf,
     config: Option<PathBuf>,
+    /// M3-10 Wave 8 — Voxtral only. When present, `convert` routes through
+    /// [`convert_voxtral_file_with_adapter_config`] and emits the adapter
+    /// metadata chunk into the GGUF so the runtime binds real adapter tensors
+    /// and does audio-conditioned ASR.
+    adapter_config: Option<PathBuf>,
     output: PathBuf,
     quant: Option<GgmlType>,
     policy: Option<PolicyPreset>,
@@ -62,6 +75,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut model: Option<ModelKind> = None;
     let mut input: Option<PathBuf> = None;
     let mut config: Option<PathBuf> = None;
+    let mut adapter_config: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut quant: Option<GgmlType> = None;
     let mut policy: Option<PolicyPreset> = None;
@@ -74,7 +88,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 model = Some(ModelKind::from_arg(v).ok_or_else(|| {
                     format!(
                         "unknown model `{v}` \
-                         (whisper-base | silero-vad | piper-plus | campplus | kokoro)"
+                         (whisper-base | silero-vad | piper-plus | campplus | kokoro | voxtral)"
                     )
                 })?);
                 i += 2;
@@ -88,6 +102,12 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--config" => {
                 config = Some(PathBuf::from(
                     args.get(i + 1).ok_or("--config requires a value")?,
+                ));
+                i += 2;
+            }
+            "--adapter-config" => {
+                adapter_config = Some(PathBuf::from(
+                    args.get(i + 1).ok_or("--adapter-config requires a value")?,
                 ));
                 i += 2;
             }
@@ -124,6 +144,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         model: model.ok_or("--model is required")?,
         input: input.ok_or("--input is required")?,
         config,
+        adapter_config,
         output: output.ok_or("--output is required")?,
         quant,
         policy,
@@ -170,6 +191,34 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 // and an empty voice_names array (matches the M2-07 T06
                 // roundtrip test contract).
                 None => convert_file(model, &p.input, &p.output),
+            }
+        }
+        ModelKind::Voxtral => {
+            // Voxtral is whisper-only for quantization surface; reject rather
+            // than silently ignoring.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            match (&p.config, &p.adapter_config) {
+                // M3-10 Wave 8: adapter-conditioned convert. The base config
+                // JSON path is currently unused for Voxtral (VoxtralConfig is
+                // populated by the future --side-car path in T04 follow-up);
+                // for now, the audio-adapter path uses an empty base config
+                // plus the adapter JSON side-car. When --side-car lands, the
+                // Voxtral path will merge both.
+                (_, Some(adapter_json)) => convert_voxtral_file_with_adapter_config(
+                    &p.input,
+                    &VoxtralConfig::default(),
+                    adapter_json,
+                    &p.output,
+                ),
+                // No adapter → shape-only conversion (honest LM-continuation
+                // posture, Wave 7 semantic). Same behavior as the pre-Wave-8
+                // path.
+                (_, None) => convert_file(model, &p.input, &p.output),
             }
         }
         _ => {
@@ -314,6 +363,60 @@ mod tests {
         assert_eq!(
             err_of(parse_args(&args(&["--model"]))),
             "--model requires a value"
+        );
+    }
+
+    #[test]
+    fn parses_voxtral_with_adapter_config() {
+        // M3-10 Wave 8: the voxtral path accepts an `--adapter-config
+        // adapter.json` argument that, at run time, emits the
+        // `vokra.voxtral.adapter.*` metadata chunk so the runtime binds real
+        // adapter tensors and does audio-conditioned ASR.
+        let p = parse_args(&args(&[
+            "--model",
+            "voxtral",
+            "--input",
+            "voxtral.safetensors",
+            "--adapter-config",
+            "adapter.json",
+            "--output",
+            "voxtral.gguf",
+        ]))
+        .expect("valid");
+        assert_eq!(p.model, ModelKind::Voxtral);
+        assert_eq!(p.input, PathBuf::from("voxtral.safetensors"));
+        assert_eq!(p.adapter_config, Some(PathBuf::from("adapter.json")));
+        assert_eq!(p.output, PathBuf::from("voxtral.gguf"));
+    }
+
+    #[test]
+    fn parses_voxtral_without_adapter_config_is_ok() {
+        // No `--adapter-config` → shape-only convert path (honest
+        // LM-continuation Wave 7 posture).
+        let p = parse_args(&args(&[
+            "--model",
+            "voxtral",
+            "--input",
+            "voxtral.safetensors",
+            "--output",
+            "voxtral.gguf",
+        ]))
+        .expect("valid");
+        assert_eq!(p.model, ModelKind::Voxtral);
+        assert!(p.adapter_config.is_none());
+    }
+
+    #[test]
+    fn adapter_config_requires_value() {
+        assert!(
+            err_of(parse_args(&args(&[
+                "--model",
+                "voxtral",
+                "--input",
+                "i",
+                "--adapter-config",
+            ])))
+            .contains("--adapter-config requires a value")
         );
     }
 }

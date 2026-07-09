@@ -212,6 +212,44 @@ impl<'m> TextDecoderSession<'m> {
         Ok(())
     }
 
+    /// Runs one decode step where the hidden state is a caller-supplied raw
+    /// **embedding** rather than a token id sequence. This is the entry point
+    /// the audio-conditioned ASR path (M3-10 Wave 8) uses to feed the audio
+    /// adapter's soft-prefix output straight into the decoder residual stream.
+    ///
+    /// `prefix_embed` is `[t_prefix, hidden_dim]` row-major.
+    /// A zero-length `prefix_embed` is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// See [`text_decoder::forward_step_with_embed_prefix`] for the full error
+    /// taxonomy — the same shape / config / n_ctx checks apply.
+    pub fn step_into_with_embed_prefix(
+        &mut self,
+        prefix_embed: &[f32],
+        t_prefix: usize,
+    ) -> Result<()> {
+        if t_prefix == 0 {
+            return Ok(());
+        }
+        let position_offset = self.position;
+        text_decoder::forward_step_with_embed_prefix(
+            &self.compute,
+            self.config,
+            self.decoder,
+            &mut self.scratch,
+            &mut self.kv_cache,
+            prefix_embed,
+            t_prefix,
+            position_offset,
+        )?;
+        self.position += t_prefix;
+        if self.position > self.max_t_kv {
+            self.max_t_kv = self.position;
+        }
+        Ok(())
+    }
+
     /// Returns the logits for the last position (`[vocab_size]`) — the
     /// greedy / beam read. Must not be called before a non-empty
     /// [`step_into`](Self::step_into) (the logits scratch would be empty).
@@ -320,6 +358,58 @@ pub fn greedy_decode(
     let mut generated = Vec::with_capacity(max_new.min(64));
     let cap = max_new.max(1);
     let n_ctx_cap = session.config.text.n_ctx.saturating_sub(start_ids.len());
+    let cap = cap.min(n_ctx_cap);
+    for _ in 0..cap {
+        let next = argmax(session.last_logits_row());
+        generated.push(next);
+        if next == eos {
+            break;
+        }
+        session.step_into(&[next])?;
+    }
+    Ok(generated)
+}
+
+/// Audio-conditioned greedy decode (M3-10 Wave 8): prefill the decoder with a
+/// caller-supplied soft-prefix embedding sequence (from the audio adapter),
+/// then the standard `[bos_id]` prefix, then greedy-loop until `eos_id` or
+/// `max_new` tokens. Returns only the generated tokens (prefix embed + BOS
+/// are NOT included).
+///
+/// This is the counterpart of [`greedy_decode`] for the audio-conditioned
+/// path: the tokens the caller sees are conditioned on the audio via the
+/// adapter's projected representation, rather than the LM-only prior from
+/// BOS. The session is `reset()` at the top so a second call reproduces the
+/// first.
+///
+/// # Errors
+///
+/// - [`VokraError::InvalidArgument`] if `t_prefix == 0` (use plain
+///   [`greedy_decode`] instead) or `prefix_embed.len() != t_prefix *
+///   hidden_dim` (surfaced from
+///   [`step_into_with_embed_prefix`](TextDecoderSession::step_into_with_embed_prefix)).
+pub fn greedy_decode_with_prefix(
+    session: &mut TextDecoderSession<'_>,
+    prefix_embed: &[f32],
+    t_prefix: usize,
+    bos_id: u32,
+    eos: u32,
+    max_new: usize,
+) -> Result<Vec<u32>> {
+    if t_prefix == 0 {
+        return Err(VokraError::InvalidArgument(
+            "voxtral::greedy_decode_with_prefix: t_prefix must be > 0 (use greedy_decode instead)"
+                .into(),
+        ));
+    }
+    session.reset();
+    session.step_into_with_embed_prefix(prefix_embed, t_prefix)?;
+    session.step_into(&[bos_id])?;
+    let mut generated = Vec::with_capacity(max_new.min(64));
+    let cap = max_new.max(1);
+    // n_ctx budget accounts for the prefix + the bos token already consumed.
+    let consumed = t_prefix.saturating_add(1);
+    let n_ctx_cap = session.config.text.n_ctx.saturating_sub(consumed);
     let cap = cap.min(n_ctx_cap);
     for _ in 0..cap {
         let next = argmax(session.last_logits_row());

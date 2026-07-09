@@ -122,6 +122,40 @@ const KEY_MODE: &str = "vokra.voxtral.mode";
 /// (NFR-DS-02).
 pub(crate) const KEY_TOKENIZER_MODEL: &str = "vokra.tokenizer.model";
 
+// --- vokra.voxtral.adapter.* metadata keys (M3-10 Wave 8) -------------------
+//
+// Kept in lock-step with the runtime loader in
+// `vokra-models/src/voxtral/adapter.rs`.
+
+/// `vokra.voxtral.adapter.kind` (`STRING`).
+const KEY_ADAPTER_KIND: &str = "vokra.voxtral.adapter.kind";
+/// `vokra.voxtral.adapter.tensor_prefix` (`STRING`).
+const KEY_ADAPTER_TENSOR_PREFIX: &str = "vokra.voxtral.adapter.tensor_prefix";
+/// `vokra.voxtral.adapter.weight_name` (`STRING`, optional).
+const KEY_ADAPTER_WEIGHT_NAME: &str = "vokra.voxtral.adapter.weight_name";
+/// `vokra.voxtral.adapter.bias_name` (`STRING`, optional).
+const KEY_ADAPTER_BIAS_NAME: &str = "vokra.voxtral.adapter.bias_name";
+/// `vokra.voxtral.adapter.layernorm_gamma_name` (`STRING`, optional).
+const KEY_ADAPTER_LN_GAMMA_NAME: &str = "vokra.voxtral.adapter.layernorm_gamma_name";
+/// `vokra.voxtral.adapter.layernorm_beta_name` (`STRING`, optional).
+const KEY_ADAPTER_LN_BETA_NAME: &str = "vokra.voxtral.adapter.layernorm_beta_name";
+/// `vokra.voxtral.adapter.in_dim` (`UINT32`).
+const KEY_ADAPTER_IN_DIM: &str = "vokra.voxtral.adapter.in_dim";
+/// `vokra.voxtral.adapter.out_dim` (`UINT32`).
+const KEY_ADAPTER_OUT_DIM: &str = "vokra.voxtral.adapter.out_dim";
+/// `vokra.voxtral.adapter.has_bias` (`BOOL`).
+const KEY_ADAPTER_HAS_BIAS: &str = "vokra.voxtral.adapter.has_bias";
+/// `vokra.voxtral.adapter.has_layernorm` (`BOOL`).
+const KEY_ADAPTER_HAS_LN: &str = "vokra.voxtral.adapter.has_layernorm";
+/// `vokra.voxtral.adapter.activation` (`STRING`).
+const KEY_ADAPTER_ACTIVATION: &str = "vokra.voxtral.adapter.activation";
+/// `vokra.voxtral.adapter.time_stride` (`UINT32`, downsample_linear only).
+const KEY_ADAPTER_TIME_STRIDE: &str = "vokra.voxtral.adapter.time_stride";
+/// `vokra.voxtral.adapter.mlp_hidden_dims` (`STRING`, comma-sep u32 list).
+const KEY_ADAPTER_MLP_HIDDEN_DIMS: &str = "vokra.voxtral.adapter.mlp_hidden_dims";
+/// `vokra.voxtral.adapter.mlp_layer_names` (`STRING`, comma-sep list).
+const KEY_ADAPTER_MLP_LAYER_NAMES: &str = "vokra.voxtral.adapter.mlp_layer_names";
+
 /// The subset of Voxtral hparams that cannot be derived from a shape-only
 /// safetensors sweep — these come from the checkpoint's `config.json` (or a
 /// caller who has them from the upstream card). `None` for any field means
@@ -170,6 +204,96 @@ pub struct VoxtralConfig {
     /// Optional raw Mistral tokenizer file bytes. Embedded verbatim into
     /// `vokra.tokenizer.model`.
     pub tokenizer_bytes: Option<Vec<u8>>,
+    /// Optional audio-adapter side-car (M3-10 Wave 8). Passing `Some(spec)`
+    /// makes the converter emit `vokra.voxtral.adapter.*` metadata so the
+    /// runtime `AudioAdapter::from_gguf` loader binds the checkpoint's
+    /// adapter tensors and the ASR head routes through the audio-conditioned
+    /// soft-prefix decode. `None` (or `AdapterSpec::none()`) keeps the honest
+    /// LM-continuation posture — the runtime stays on Wave 7.
+    ///
+    /// Every tensor name / hparam here comes from the caller (real Voxtral
+    /// checkpoint inspection); nothing is invented in the runtime (FR-EX-08,
+    /// FR-LD-02 / FR-MD-02). The offline `AdapterSpec` is documented on
+    /// [`AdapterSpec`].
+    pub adapter: Option<AdapterSpec>,
+}
+
+/// Offline adapter side-car (M3-10 Wave 8). Written verbatim into
+/// `vokra.voxtral.adapter.*` so the runtime can locate and bind the
+/// checkpoint's adapter tensors without inventing names.
+///
+/// # Where the values come from
+///
+/// A real Voxtral checkpoint's adapter tensor names / dims are documented on
+/// the release card (e.g. `audio_adapter.linear.weight`,
+/// `mm_projector.proj.weight`). The caller passes them here through the
+/// `--adapter-config adapter.json` CLI option (see `vokra-cli convert`);
+/// nothing here is derived from string constants inside the converter or
+/// runtime.
+#[derive(Debug, Clone)]
+pub struct AdapterSpec {
+    /// One of `"none"` (no adapter, honest posture), `"linear"`,
+    /// `"mlp"`, `"downsample_linear"`.
+    pub kind: String,
+    /// Common prefix for the adapter tensor names, e.g.
+    /// `"audio_adapter."` or `"mm_projector."`. May be empty.
+    pub tensor_prefix: String,
+    /// Sub-name of the (or each) linear weight tensor. Combined with
+    /// `tensor_prefix` and — for MLP — a `mlp_layer_names[i]` sub-name.
+    /// Defaults to `"weight"` at load time.
+    pub weight_name: Option<String>,
+    /// Sub-name of the (or each) linear bias tensor. Ignored unless
+    /// `has_bias` is true. Defaults to `"bias"`.
+    pub bias_name: Option<String>,
+    /// Sub-name of the (or each) LayerNorm γ tensor. Ignored unless
+    /// `has_layernorm` is true. Defaults to `"layernorm.weight"`.
+    pub layernorm_gamma_name: Option<String>,
+    /// Sub-name of the (or each) LayerNorm β tensor. Ignored unless
+    /// `has_layernorm` is true. Defaults to `"layernorm.bias"`.
+    pub layernorm_beta_name: Option<String>,
+    /// Input channel width — must match audio encoder `hidden_dim`.
+    pub in_dim: u32,
+    /// Output channel width — must match text decoder `hidden_dim`.
+    pub out_dim: u32,
+    /// Whether the adapter's linear layer(s) ship a bias tensor.
+    pub has_bias: bool,
+    /// Whether the adapter's linear layer(s) ship a post-projection LayerNorm.
+    pub has_layernorm: bool,
+    /// Activation between MLP layers. One of `"gelu"`, `"silu"`, `"relu"`,
+    /// `"identity"`. Ignored for non-MLP kinds.
+    pub activation: Option<String>,
+    /// Time downsample stride for `kind = "downsample_linear"`. `>= 1`.
+    pub time_stride: Option<u32>,
+    /// MLP hidden dims between input and output (empty ⇒ single linear).
+    /// Only meaningful for `kind = "mlp"`.
+    pub mlp_hidden_dims: Vec<u32>,
+    /// MLP per-layer tensor sub-names (e.g. `["layers.0", "layers.1"]`).
+    /// Empty ⇒ default `"layers.{i}"`.
+    pub mlp_layer_names: Vec<String>,
+}
+
+impl AdapterSpec {
+    /// A stub `kind = "none"` spec — writes only the `kind` key so the runtime
+    /// picks the honest LM-continuation path.
+    #[must_use]
+    pub fn none() -> Self {
+        Self {
+            kind: "none".to_owned(),
+            tensor_prefix: String::new(),
+            weight_name: None,
+            bias_name: None,
+            layernorm_gamma_name: None,
+            layernorm_beta_name: None,
+            in_dim: 0,
+            out_dim: 0,
+            has_bias: false,
+            has_layernorm: false,
+            activation: None,
+            time_stride: None,
+            mlp_hidden_dims: Vec::new(),
+            mlp_layer_names: Vec::new(),
+        }
+    }
 }
 
 /// A summary of what the converter wrote for the caller's CLI note.
@@ -479,6 +603,60 @@ fn write_hparams(
             .and_then(|c| c.s2s_watermark_default_on)
             .unwrap_or(s2s_wm_default),
     );
+
+    // Audio adapter (M3-10 Wave 8). Only write the chunk when the caller
+    // supplied an [`AdapterSpec`]. Absent / `None` = no adapter → honest
+    // LM-continuation path (Wave 7 posture).
+    if let Some(spec) = config.and_then(|c| c.adapter.as_ref()) {
+        write_adapter_spec(b, spec);
+    }
+}
+
+/// Writes the `vokra.voxtral.adapter.*` metadata chunk from a caller-supplied
+/// [`AdapterSpec`]. The tensor data itself is copied verbatim by the outer
+/// `convert()` loop (it walks every float tensor in the safetensors) — this
+/// function only writes the metadata that the runtime's
+/// [`vokra_models::voxtral::AudioAdapter::from_gguf`](../../vokra-models/src/voxtral/adapter.rs)
+/// loader consults to locate them.
+fn write_adapter_spec(b: &mut GgufBuilder, spec: &AdapterSpec) {
+    b.add_string(KEY_ADAPTER_KIND, spec.kind.as_str());
+    // For `kind = "none"` we only need the kind key — the runtime loader
+    // returns the identity `AudioAdapter::none()` when it sees this. Skip the
+    // rest to keep the GGUF metadata compact and avoid writing spurious
+    // dims / tensor sub-names.
+    if spec.kind == "none" {
+        return;
+    }
+    b.add_string(KEY_ADAPTER_TENSOR_PREFIX, spec.tensor_prefix.as_str());
+    b.add_u32(KEY_ADAPTER_IN_DIM, spec.in_dim);
+    b.add_u32(KEY_ADAPTER_OUT_DIM, spec.out_dim);
+    b.add_bool(KEY_ADAPTER_HAS_BIAS, spec.has_bias);
+    b.add_bool(KEY_ADAPTER_HAS_LN, spec.has_layernorm);
+    if let Some(a) = spec.activation.as_deref() {
+        b.add_string(KEY_ADAPTER_ACTIVATION, a);
+    }
+    if let Some(stride) = spec.time_stride {
+        b.add_u32(KEY_ADAPTER_TIME_STRIDE, stride);
+    }
+    if let Some(w) = spec.weight_name.as_deref() {
+        b.add_string(KEY_ADAPTER_WEIGHT_NAME, w);
+    }
+    if let Some(bn) = spec.bias_name.as_deref() {
+        b.add_string(KEY_ADAPTER_BIAS_NAME, bn);
+    }
+    if let Some(g) = spec.layernorm_gamma_name.as_deref() {
+        b.add_string(KEY_ADAPTER_LN_GAMMA_NAME, g);
+    }
+    if let Some(bt) = spec.layernorm_beta_name.as_deref() {
+        b.add_string(KEY_ADAPTER_LN_BETA_NAME, bt);
+    }
+    if !spec.mlp_hidden_dims.is_empty() {
+        let joined: Vec<String> = spec.mlp_hidden_dims.iter().map(|d| d.to_string()).collect();
+        b.add_string(KEY_ADAPTER_MLP_HIDDEN_DIMS, &joined.join(","));
+    }
+    if !spec.mlp_layer_names.is_empty() {
+        b.add_string(KEY_ADAPTER_MLP_LAYER_NAMES, &spec.mlp_layer_names.join(","));
+    }
 }
 
 /// Embeds the raw Mistral tokenizer model file as a `U8` array under
@@ -498,6 +676,142 @@ fn embed_tokenizer(b: &mut GgufBuilder, bytes: &[u8]) {
 /// the same contract Whisper uses).
 pub(crate) fn gguf_tensor_name(hf_name: &str) -> String {
     hf_name.to_owned()
+}
+
+/// Parses an adapter-config JSON payload into an [`AdapterSpec`].
+///
+/// # Accepted schema
+///
+/// A JSON object with fields:
+///
+/// ```json
+/// {
+///   "kind": "linear" | "mlp" | "downsample_linear" | "none",
+///   "tensor_prefix": "audio_adapter.",
+///   "in_dim": 1280,
+///   "out_dim": 3072,
+///   "has_bias": true,
+///   "has_layernorm": false,
+///   "activation": "gelu",           // MLP only
+///   "time_stride": 2,               // downsample_linear only
+///   "weight_name": "linear.weight", // optional overrides
+///   "bias_name": "linear.bias",
+///   "layernorm_gamma_name": "ln.weight",
+///   "layernorm_beta_name": "ln.bias",
+///   "mlp_hidden_dims": [4096],      // MLP only
+///   "mlp_layer_names": ["layers.0", "layers.1"] // MLP only
+/// }
+/// ```
+///
+/// `kind = "none"` is a valid short-form that writes only the kind key
+/// (identity adapter). Every other kind requires `in_dim` and `out_dim`;
+/// `downsample_linear` additionally requires `time_stride`.
+///
+/// # Errors
+///
+/// [`ConvertError::Parse`] with a byte-offset context when the JSON is
+/// malformed or a required field is missing / has the wrong type.
+pub(crate) fn parse_adapter_config(bytes: &[u8]) -> Result<AdapterSpec, ConvertError> {
+    use crate::json::{JsonValue, parse as json_parse};
+    let root = json_parse(bytes).map_err(|e| ConvertError::Parse(e.to_string()))?;
+    let kind = root
+        .get("kind")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| ConvertError::Parse("adapter config: missing `kind`".to_owned()))?
+        .to_owned();
+    if kind == "none" {
+        return Ok(AdapterSpec::none());
+    }
+    if !matches!(kind.as_str(), "linear" | "mlp" | "downsample_linear") {
+        return Err(ConvertError::Parse(format!(
+            "adapter config: unknown kind `{kind}` (expected none|linear|mlp|downsample_linear)"
+        )));
+    }
+    let in_dim = root
+        .get("in_dim")
+        .and_then(JsonValue::as_u64)
+        .ok_or_else(|| ConvertError::Parse("adapter config: missing `in_dim`".to_owned()))?
+        as u32;
+    let out_dim = root
+        .get("out_dim")
+        .and_then(JsonValue::as_u64)
+        .ok_or_else(|| ConvertError::Parse("adapter config: missing `out_dim`".to_owned()))?
+        as u32;
+    if in_dim == 0 || out_dim == 0 {
+        return Err(ConvertError::Parse(format!(
+            "adapter config: in_dim / out_dim must be > 0 (got {in_dim}, {out_dim})"
+        )));
+    }
+    let tensor_prefix = root
+        .get("tensor_prefix")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let has_bias = matches!(root.get("has_bias"), Some(JsonValue::Bool(true)));
+    let has_layernorm = matches!(root.get("has_layernorm"), Some(JsonValue::Bool(true)));
+    let activation = root
+        .get("activation")
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned);
+    let time_stride = root
+        .get("time_stride")
+        .and_then(JsonValue::as_u64)
+        .map(|n| n as u32);
+    if kind == "downsample_linear" && time_stride.is_none() {
+        return Err(ConvertError::Parse(
+            "adapter config: `downsample_linear` requires `time_stride`".to_owned(),
+        ));
+    }
+    let weight_name = root
+        .get("weight_name")
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned);
+    let bias_name = root
+        .get("bias_name")
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned);
+    let layernorm_gamma_name = root
+        .get("layernorm_gamma_name")
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned);
+    let layernorm_beta_name = root
+        .get("layernorm_beta_name")
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned);
+    let mlp_hidden_dims = root
+        .get("mlp_hidden_dims")
+        .and_then(JsonValue::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_u64().map(|n| n as u32))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mlp_layer_names = root
+        .get("mlp_layer_names")
+        .and_then(JsonValue::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(AdapterSpec {
+        kind,
+        tensor_prefix,
+        weight_name,
+        bias_name,
+        layernorm_gamma_name,
+        layernorm_beta_name,
+        in_dim,
+        out_dim,
+        has_bias,
+        has_layernorm,
+        activation,
+        time_stride,
+        mlp_hidden_dims,
+        mlp_layer_names,
+    })
 }
 
 fn tensor_dim(st: &SafetensorsFile, name: &str, axis: usize) -> u64 {
@@ -598,6 +912,7 @@ mod tests {
             s2s_watermark_default_on: Some(true),
             mode: Some("s2s".to_owned()),
             tokenizer_bytes: Some(b"fake-tokenizer".to_vec()),
+            adapter: None,
         };
         let (builder, report) = convert(synthetic_voxtral(), Some(&cfg)).unwrap();
         let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
@@ -648,5 +963,226 @@ mod tests {
         assert_eq!(derive_name(5120, 40, None).unwrap(), NAME_SMALL);
         // Unknown shape → explicit error (never a silent fall back, FR-EX-08).
         assert!(derive_name(1234, 5, None).is_err());
+    }
+
+    // ----- Adapter (M3-10 Wave 8) --------------------------------------------
+
+    #[test]
+    fn adapter_spec_none_writes_only_kind_key() {
+        let cfg = VoxtralConfig {
+            adapter: Some(AdapterSpec::none()),
+            ..Default::default()
+        };
+        let (builder, _r) = convert(synthetic_voxtral(), Some(&cfg)).unwrap();
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            file.get(KEY_ADAPTER_KIND).and_then(|v| v.as_str()),
+            Some("none")
+        );
+        // The other adapter keys are not written when kind = "none".
+        assert!(file.get(KEY_ADAPTER_IN_DIM).is_none());
+    }
+
+    #[test]
+    fn adapter_spec_linear_writes_full_chunk() {
+        let spec = AdapterSpec {
+            kind: "linear".to_owned(),
+            tensor_prefix: "audio_adapter.".to_owned(),
+            weight_name: None,
+            bias_name: None,
+            layernorm_gamma_name: None,
+            layernorm_beta_name: None,
+            in_dim: 1280,
+            out_dim: 3072,
+            has_bias: true,
+            has_layernorm: false,
+            activation: None,
+            time_stride: None,
+            mlp_hidden_dims: Vec::new(),
+            mlp_layer_names: Vec::new(),
+        };
+        let cfg = VoxtralConfig {
+            adapter: Some(spec),
+            ..Default::default()
+        };
+        let (builder, _r) = convert(synthetic_voxtral(), Some(&cfg)).unwrap();
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+
+        assert_eq!(
+            file.get(KEY_ADAPTER_KIND).and_then(|v| v.as_str()),
+            Some("linear")
+        );
+        assert_eq!(
+            file.get(KEY_ADAPTER_TENSOR_PREFIX).and_then(|v| v.as_str()),
+            Some("audio_adapter.")
+        );
+        assert_eq!(
+            file.get(KEY_ADAPTER_IN_DIM).and_then(|v| v.as_u64()),
+            Some(1280)
+        );
+        assert_eq!(
+            file.get(KEY_ADAPTER_OUT_DIM).and_then(|v| v.as_u64()),
+            Some(3072)
+        );
+        assert_eq!(
+            file.get(KEY_ADAPTER_HAS_BIAS).and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            file.get(KEY_ADAPTER_HAS_LN).and_then(|v| v.as_bool()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn adapter_spec_mlp_writes_hidden_dims_and_layer_names() {
+        let spec = AdapterSpec {
+            kind: "mlp".to_owned(),
+            tensor_prefix: "adap.".to_owned(),
+            weight_name: None,
+            bias_name: None,
+            layernorm_gamma_name: None,
+            layernorm_beta_name: None,
+            in_dim: 1024,
+            out_dim: 3072,
+            has_bias: false,
+            has_layernorm: false,
+            activation: Some("gelu".to_owned()),
+            time_stride: None,
+            mlp_hidden_dims: vec![4096, 4096],
+            mlp_layer_names: vec![
+                "layers.0".to_owned(),
+                "layers.1".to_owned(),
+                "layers.2".to_owned(),
+            ],
+        };
+        let cfg = VoxtralConfig {
+            adapter: Some(spec),
+            ..Default::default()
+        };
+        let (builder, _r) = convert(synthetic_voxtral(), Some(&cfg)).unwrap();
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            file.get(KEY_ADAPTER_MLP_HIDDEN_DIMS)
+                .and_then(|v| v.as_str()),
+            Some("4096,4096")
+        );
+        assert_eq!(
+            file.get(KEY_ADAPTER_MLP_LAYER_NAMES)
+                .and_then(|v| v.as_str()),
+            Some("layers.0,layers.1,layers.2")
+        );
+        assert_eq!(
+            file.get(KEY_ADAPTER_ACTIVATION).and_then(|v| v.as_str()),
+            Some("gelu")
+        );
+    }
+
+    #[test]
+    fn adapter_spec_downsample_writes_time_stride() {
+        let spec = AdapterSpec {
+            kind: "downsample_linear".to_owned(),
+            tensor_prefix: "adap.".to_owned(),
+            weight_name: None,
+            bias_name: None,
+            layernorm_gamma_name: None,
+            layernorm_beta_name: None,
+            in_dim: 1024,
+            out_dim: 3072,
+            has_bias: false,
+            has_layernorm: false,
+            activation: None,
+            time_stride: Some(5),
+            mlp_hidden_dims: Vec::new(),
+            mlp_layer_names: Vec::new(),
+        };
+        let cfg = VoxtralConfig {
+            adapter: Some(spec),
+            ..Default::default()
+        };
+        let (builder, _r) = convert(synthetic_voxtral(), Some(&cfg)).unwrap();
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            file.get(KEY_ADAPTER_TIME_STRIDE).and_then(|v| v.as_u64()),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn parse_adapter_config_reads_linear_shape() {
+        let json = br#"{
+            "kind": "linear",
+            "tensor_prefix": "audio_adapter.",
+            "in_dim": 1280,
+            "out_dim": 3072,
+            "has_bias": true,
+            "has_layernorm": false
+        }"#;
+        let spec = parse_adapter_config(json).unwrap();
+        assert_eq!(spec.kind, "linear");
+        assert_eq!(spec.in_dim, 1280);
+        assert_eq!(spec.out_dim, 3072);
+        assert!(spec.has_bias);
+        assert!(!spec.has_layernorm);
+    }
+
+    #[test]
+    fn parse_adapter_config_reads_none() {
+        let json = br#"{"kind": "none"}"#;
+        let spec = parse_adapter_config(json).unwrap();
+        assert_eq!(spec.kind, "none");
+        assert_eq!(spec.in_dim, 0);
+    }
+
+    #[test]
+    fn parse_adapter_config_reads_mlp_hidden_dims_array() {
+        let json = br#"{
+            "kind": "mlp",
+            "in_dim": 1280,
+            "out_dim": 3072,
+            "activation": "gelu",
+            "mlp_hidden_dims": [4096, 4096],
+            "mlp_layer_names": ["layers.0", "layers.1", "layers.2"]
+        }"#;
+        let spec = parse_adapter_config(json).unwrap();
+        assert_eq!(spec.kind, "mlp");
+        assert_eq!(spec.mlp_hidden_dims, vec![4096, 4096]);
+        assert_eq!(
+            spec.mlp_layer_names,
+            vec!["layers.0", "layers.1", "layers.2"]
+        );
+        assert_eq!(spec.activation.as_deref(), Some("gelu"));
+    }
+
+    #[test]
+    fn parse_adapter_config_rejects_missing_dims() {
+        // `kind = "linear"` but `in_dim` missing.
+        let json = br#"{"kind": "linear", "out_dim": 3072}"#;
+        assert!(matches!(
+            parse_adapter_config(json),
+            Err(ConvertError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn parse_adapter_config_rejects_unknown_kind() {
+        let json = br#"{"kind": "attention_pool", "in_dim": 4, "out_dim": 4}"#;
+        assert!(matches!(
+            parse_adapter_config(json),
+            Err(ConvertError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn parse_adapter_config_rejects_downsample_without_stride() {
+        let json = br#"{
+            "kind": "downsample_linear",
+            "in_dim": 1280,
+            "out_dim": 3072
+        }"#;
+        assert!(matches!(
+            parse_adapter_config(json),
+            Err(ConvertError::Parse(_))
+        ));
     }
 }

@@ -544,6 +544,12 @@ pub fn convert_kokoro_file(
 /// module.
 pub use models::voxtral::VoxtralConfig;
 
+/// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through
+/// [`convert_voxtral_file_with_adapter_config`] (a JSON path) or by
+/// constructing an [`AdapterSpec`] directly and attaching it to a
+/// [`VoxtralConfig::adapter`] field.
+pub use models::voxtral::AdapterSpec;
+
 /// Convert a Voxtral safetensors checkpoint together with a Mistral-format
 /// side-car config into a Vokra GGUF (M3-10).
 ///
@@ -568,6 +574,70 @@ pub fn convert_voxtral_file(
     let notes = vec![format!(
         "voxtral: {} float weights written, {} non-float skipped, name {}, tokenizer embedded: {}",
         report.written, report.skipped_non_float, report.name, report.tokenizer_embedded
+    )];
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::Voxtral,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
+/// Convert a Voxtral safetensors checkpoint plus a [`VoxtralConfig`] plus a
+/// caller-supplied **adapter config JSON** into a Vokra GGUF (M3-10 Wave 8).
+///
+/// This is the audio-conditioning-aware sibling of
+/// [`convert_voxtral_file`]. In addition to the base config's tokenizer /
+/// RoPE / RMSNorm / GQA / vocab side-car, this path also writes the
+/// `vokra.voxtral.adapter.*` metadata chunk parsed from
+/// `adapter_config`. The chunk tells the runtime
+/// [`AudioAdapter::from_gguf`](../vokra_models/voxtral/adapter/struct.AudioAdapter.html)
+/// loader where to find the checkpoint's adapter weight tensors (kind, tensor
+/// prefix, in / out dims, activation, LayerNorm flags…). Tensor bytes
+/// themselves are carried through by the shared safetensors-copy loop —
+/// nothing invents upstream tensor names (FR-EX-08 / FR-LD-02 / FR-MD-02).
+///
+/// # Accepted schema
+///
+/// See [`AdapterSpec`] and the module docs on
+/// [`models::voxtral::parse_adapter_config`](self) for the JSON schema.
+///
+/// The shape-only [`convert_file`] path and the tokenizer-only
+/// [`convert_voxtral_file`] path stay adapter-less; the runtime then treats
+/// the model as `AdapterKind::None` and keeps the honest Wave 7
+/// LM-continuation posture.
+pub fn convert_voxtral_file_with_adapter_config(
+    input: &Path,
+    config: &VoxtralConfig,
+    adapter_config: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let adapter_bytes = std::fs::read(adapter_config)?;
+    let spec = models::voxtral::parse_adapter_config(&adapter_bytes)?;
+    let mut cfg = config.clone();
+    cfg.adapter = Some(spec);
+    let bytes = std::fs::read(input)?;
+    let (builder, report) = models::voxtral::convert(bytes, Some(&cfg))?;
+
+    let adapter_kind = cfg
+        .adapter
+        .as_ref()
+        .map(|a| a.kind.as_str())
+        .unwrap_or("none");
+    let notes = vec![format!(
+        "voxtral: {} float weights written, {} non-float skipped, name {}, tokenizer embedded: {}, adapter kind: {}",
+        report.written,
+        report.skipped_non_float,
+        report.name,
+        report.tokenizer_embedded,
+        adapter_kind,
     )];
 
     let tensor_count = builder.tensor_count();

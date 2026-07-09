@@ -108,9 +108,10 @@ This snapshot is what `scripts/check-abi-changelog.sh` diffs the working-tree
 
 ### 2026-07-09 — 0.9.0-dev
 
-| Crate / area      | Symbol                   | Kind  | Signature                                                                   | Rationale                              | Breaking? | PR    |
-| ----------------- | ------------------------ | ----- | --------------------------------------------------------------------------- | -------------------------------------- | --------- | ----- |
-| `include/vokra.h` | `vokra_stream_interrupt` | Added | `enum vokra_status_t vokra_stream_interrupt(struct vokra_stream_t *stream)` | Barge-in / cancel (FR-ST-03), WP M3-14 | no        | (TBD) |
+| Crate / area                    | Symbol                                        | Kind  | Signature                                                                   | Rationale                                                                                                                 | Breaking? | PR    |
+| ------------------------------- | --------------------------------------------- | ----- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | --------- | ----- |
+| `include/vokra.h`               | `vokra_stream_interrupt`                      | Added | `enum vokra_status_t vokra_stream_interrupt(struct vokra_stream_t *stream)` | Barge-in / cancel (FR-ST-03), WP M3-14                                                                                    | no        | (TBD) |
+| `gguf:vokra.voxtral.adapter.*`  | `vokra.voxtral.adapter.{kind,tensor_prefix,in_dim,out_dim,has_bias,has_layernorm,activation,time_stride,weight_name,bias_name,layernorm_gamma_name,layernorm_beta_name,mlp_hidden_dims,mlp_layer_names}` | Added | Kind = `string` \| dims = `u32` \| flags = `bool` \| names = `string` (see `crates/vokra-models/src/voxtral/adapter.rs` for the loader) | Voxtral audio-adapter (encoder → soft-prefix) framework — M3-10 Wave 8 (real ASR conditioning; absent = LM-continuation) | no        | (TBD) |
 
 <!-- Template — copy into an `### YYYY-MM-DD — vX.Y.Z-dev` section per PR-day:
 

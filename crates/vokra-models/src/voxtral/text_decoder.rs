@@ -401,13 +401,10 @@ pub(crate) fn forward_step(
     position_offset: usize,
 ) -> Result<()> {
     let d = cfg.text.hidden_dim;
-    let ffn_dim = cfg.text.ffn_dim;
     let vocab = cfg.text.vocab_size;
     let n_head_q = cfg.text.n_head_q;
     let n_head_kv = cfg.text.n_head_kv;
     let n_layer = cfg.text.n_layer;
-    let rope_base = cfg.text.rope_base;
-    let eps = cfg.text.rms_norm_eps;
     let t = tokens.len();
 
     if t == 0 {
@@ -427,27 +424,10 @@ pub(crate) fn forward_step(
             cfg.text.n_ctx
         )));
     }
-    if n_head_q % n_head_kv != 0 {
-        return Err(VokraError::InvalidArgument(format!(
-            "voxtral text_decoder.forward_step: n_head_q ({n_head_q}) must be divisible by n_head_kv ({n_head_kv}) — GQA"
-        )));
-    }
-    let head_dim = d / n_head_q;
-    let kv_hidden = n_head_kv * head_dim;
-    let n_kv_groups = n_head_q / n_head_kv;
-    let scale = 1.0f32 / (head_dim as f32).sqrt();
-
     if decoder.blocks.len() != n_layer {
         return Err(VokraError::ModelLoad(format!(
             "voxtral text_decoder.forward_step: loaded blocks {} != config n_layer {n_layer}",
             decoder.blocks.len()
-        )));
-    }
-    if decoder.token_emb.len() != vocab * d {
-        return Err(VokraError::ModelLoad(format!(
-            "voxtral text_decoder.forward_step: token_emb len {} != vocab*d {}",
-            decoder.token_emb.len(),
-            vocab * d
         )));
     }
 
@@ -463,6 +443,134 @@ pub(crate) fn forward_step(
         let src = &decoder.token_emb[tok * d..tok * d + d];
         let dst = &mut scratch.h[i * d..i * d + d];
         dst.copy_from_slice(src);
+    }
+
+    forward_step_body(compute, cfg, decoder, scratch, kv_cache, t, position_offset)
+}
+
+/// Runs one decoder step where the hidden state is a caller-supplied raw
+/// **embedding** rather than a token id sequence. Used by the audio-conditioned
+/// ASR path (M3-10 Wave 8): the audio adapter's output is a `[t_prefix, d]`
+/// soft-prefix embedding that must go straight into the decoder residual
+/// stream, bypassing the token-embedding table lookup.
+///
+/// `prefix_embed` must have length `t_prefix * cfg.text.hidden_dim`;
+/// `position_offset` is the absolute position of `prefix_embed[0]` (typically
+/// `0` on the first call). The block forward is identical to
+/// [`forward_step`] — RoPE, GQA self-attention with causal mask, KV cache
+/// append, SwiGLU FFN, final RMSNorm and tied-logits head — the only
+/// difference is where the initial hidden state comes from.
+///
+/// # Errors
+///
+/// - [`VokraError::InvalidArgument`] on shape mismatch or
+///   `position_offset + t_prefix > cfg.text.n_ctx`.
+/// - [`VokraError::ModelLoad`] on a `0`-sentinel config.
+// The 8 args mirror `forward_step` (compute + cfg + decoder + scratch +
+// kv_cache) plus the caller-owned embedding buffer + its length + the
+// starting position — an intrinsic parameter set for a forward step, same
+// bundle the token-id sibling carries.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn forward_step_with_embed_prefix(
+    compute: &Compute,
+    cfg: &VoxtralConfig,
+    decoder: &TextDecoder,
+    scratch: &mut StepScratch,
+    kv_cache: &mut KvCache,
+    prefix_embed: &[f32],
+    t_prefix: usize,
+    position_offset: usize,
+) -> Result<()> {
+    let d = cfg.text.hidden_dim;
+    let vocab = cfg.text.vocab_size;
+    let n_head_q = cfg.text.n_head_q;
+    let n_head_kv = cfg.text.n_head_kv;
+    let n_layer = cfg.text.n_layer;
+
+    if t_prefix == 0 {
+        return Ok(());
+    }
+    if d == 0 || vocab == 0 || n_head_q == 0 || n_head_kv == 0 || n_layer == 0 {
+        return Err(VokraError::ModelLoad(
+            "voxtral text_decoder.forward_step_with_embed_prefix: config carries 0-sentinel — \
+             re-convert with a full VoxtralConfig (FR-EX-08 — no silent default)."
+                .into(),
+        ));
+    }
+    if prefix_embed.len() != t_prefix * d {
+        return Err(VokraError::InvalidArgument(format!(
+            "voxtral text_decoder.forward_step_with_embed_prefix: prefix_embed len {} != \
+             t_prefix*hidden_dim ({}*{}={})",
+            prefix_embed.len(),
+            t_prefix,
+            d,
+            t_prefix * d
+        )));
+    }
+    if position_offset + t_prefix > cfg.text.n_ctx {
+        return Err(VokraError::InvalidArgument(format!(
+            "voxtral text_decoder.forward_step_with_embed_prefix: position {} > n_ctx {}",
+            position_offset + t_prefix,
+            cfg.text.n_ctx
+        )));
+    }
+    if decoder.blocks.len() != n_layer {
+        return Err(VokraError::ModelLoad(format!(
+            "voxtral text_decoder.forward_step_with_embed_prefix: loaded blocks {} != config n_layer {n_layer}",
+            decoder.blocks.len()
+        )));
+    }
+    // Prime the hidden state from the caller-supplied embeddings.
+    resize_zero(&mut scratch.h, t_prefix * d);
+    scratch.h.copy_from_slice(prefix_embed);
+
+    forward_step_body(
+        compute,
+        cfg,
+        decoder,
+        scratch,
+        kv_cache,
+        t_prefix,
+        position_offset,
+    )
+}
+
+/// Runs the per-block loop, final RMSNorm and tied-logits head assuming
+/// `scratch.h[..t*d]` already holds the initial residual state. This is the
+/// shared body of [`forward_step`] (token-id entry) and
+/// [`forward_step_with_embed_prefix`] (soft-prefix entry).
+fn forward_step_body(
+    compute: &Compute,
+    cfg: &VoxtralConfig,
+    decoder: &TextDecoder,
+    scratch: &mut StepScratch,
+    kv_cache: &mut KvCache,
+    t: usize,
+    position_offset: usize,
+) -> Result<()> {
+    let d = cfg.text.hidden_dim;
+    let ffn_dim = cfg.text.ffn_dim;
+    let vocab = cfg.text.vocab_size;
+    let n_head_q = cfg.text.n_head_q;
+    let n_head_kv = cfg.text.n_head_kv;
+    let rope_base = cfg.text.rope_base;
+    let eps = cfg.text.rms_norm_eps;
+    let head_dim = d / n_head_q;
+    let kv_hidden = n_head_kv * head_dim;
+    let n_kv_groups = n_head_q / n_head_kv;
+    let scale = 1.0f32 / (head_dim as f32).sqrt();
+
+    if n_head_q % n_head_kv != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "voxtral text_decoder.forward_step: n_head_q ({n_head_q}) must be divisible by n_head_kv ({n_head_kv}) — GQA"
+        )));
+    }
+    if decoder.token_emb.len() != vocab * d {
+        return Err(VokraError::ModelLoad(format!(
+            "voxtral text_decoder.forward_step: token_emb len {} != vocab*d {}",
+            decoder.token_emb.len(),
+            vocab * d
+        )));
     }
 
     // Pre-size mutable scratch (avoid per-block reallocation).

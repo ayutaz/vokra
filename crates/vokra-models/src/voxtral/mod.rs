@@ -34,6 +34,7 @@
 //! shape-only converter path) at forward time so a broken conversion cannot
 //! be papered over.
 
+pub mod adapter;
 pub mod asr;
 pub mod asr_head;
 pub mod audio_encoder;
@@ -44,6 +45,7 @@ pub mod text_decoder;
 pub mod text_decoder_session;
 pub mod tokenizer;
 
+pub use adapter::{AdapterActivation, AdapterKind, AudioAdapter, MlpLayerShape};
 pub use asr::VoxtralAsr;
 pub use asr_head::AsrHead;
 pub use audio_encoder::{AudioEncoder, AudioEncoderOutput};
@@ -82,6 +84,7 @@ pub struct VoxtralModel {
     config: VoxtralConfig,
     audio: AudioEncoder,
     text: TextDecoder,
+    audio_adapter: AudioAdapter,
 }
 
 impl VoxtralModel {
@@ -108,10 +111,16 @@ impl VoxtralModel {
         }
         let audio = AudioEncoder::load(file, &config)?;
         let text = TextDecoder::load(file, &config)?;
+        // Adapter is optional. `AudioAdapter::from_gguf` returns `None` (the
+        // stub identity variant) when the GGUF has no `vokra.voxtral.adapter.*`
+        // chunk (backward compatibility with pre-Wave 8 GGUFs) — the runtime
+        // then stays on the honest LM-continuation path (Wave 7 posture).
+        let audio_adapter = AudioAdapter::from_gguf(file)?;
         Ok(Self {
             config,
             audio,
             text,
+            audio_adapter,
         })
     }
 
@@ -128,6 +137,18 @@ impl VoxtralModel {
     /// The parsed text decoder module.
     pub fn text_decoder(&self) -> &TextDecoder {
         &self.text
+    }
+
+    /// The parsed audio adapter (M3-10 Wave 8).
+    ///
+    /// A GGUF whose `vokra.voxtral.adapter.kind = "none"` (or which omits the
+    /// chunk entirely) returns an [`AudioAdapter`] whose
+    /// [`is_active`](AudioAdapter::is_active) is `false` — the runtime then
+    /// stays on the Wave 7 LM-continuation path (honest limitation posture).
+    /// Only when [`AudioAdapter::is_active`] returns `true` will the ASR
+    /// head route through the soft-prefix audio-conditioning path.
+    pub fn audio_adapter(&self) -> &AudioAdapter {
+        &self.audio_adapter
     }
 }
 

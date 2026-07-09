@@ -20,16 +20,25 @@
 //! 3. Mistral text decoder greedy loop (KV cache, RoPE, GQA, SwiGLU,
 //!    RMSNorm, tied logits, EOS stop, `max_new_tokens` cap).
 //!
-//! # Audio conditioning — honest scope (see [`AsrHead`] module docs)
+//! # Audio conditioning — Wave 8 pluggable adapter (see [`AsrHead`] docs)
 //!
-//! Upstream Voxtral's audio adapter (encoder → text-decoder soft prefix
-//! projection) is **not wired** in the current implementation because the
-//! converter does not yet embed adapter weights. The returned tokens
-//! therefore reflect the language-model prior of the greedy decode from
-//! `bos_id`, not audio-conditioned ASR. This is intentional per FR-EX-08 —
-//! callers see either a real (honest) token sequence or an explicit error,
-//! never a fabricated audio-shaped transcript. Real ASR quality lands with
-//! the adapter follow-up + real-checkpoint parity dump (T19+).
+//! Wave 8 lands the pluggable [`AudioAdapter`] framework: a GGUF that carries
+//! a `vokra.voxtral.adapter.*` chunk with a non-`"none"` kind routes the
+//! encoder output through the adapter (linear / MLP / downsample-linear) and
+//! feeds the projection as a soft-prefix to the greedy decode — this is real
+//! audio-conditioned ASR.
+//!
+//! A GGUF whose adapter chunk is absent or declared `kind = "none"` keeps
+//! the Wave 7 posture: the returned tokens reflect the language-model prior
+//! of the greedy decode from `bos_id`, not audio-conditioned ASR. This is
+//! intentional per FR-EX-08 — callers see either a real (audio-conditioned)
+//! token sequence, an honest (LM-prior) token sequence, or an explicit error;
+//! never a fabricated audio-shaped transcript. Real ASR accuracy against a
+//! Voxtral checkpoint requires (a) the adapter tensors + hparams from the
+//! upstream release passed via `convert_voxtral_file`'s `--adapter-config`
+//! side-car, and (b) a real-checkpoint parity dump (T19+).
+//!
+//! [`AudioAdapter`]: super::AudioAdapter
 //!
 //! # Front-end
 //!
@@ -191,12 +200,16 @@ impl AsrEngine for VoxtralAsr {
         let n_frames = crate::whisper::mel::N_FRAMES;
 
         // 2) Autoregressive greedy through the AsrHead (encoder + text
-        //    decoder session + KV cache).
+        //    decoder session + KV cache). When the loaded GGUF carries an
+        //    active audio adapter (M3-10 Wave 8) the head routes through the
+        //    soft-prefix audio-conditioning path; otherwise it stays on the
+        //    honest Wave 7 LM-continuation path.
         let head = AsrHead::new(
             self.model.config(),
             self.model.audio_encoder(),
             self.model.text_decoder(),
-        );
+        )
+        .with_adapter(self.model.audio_adapter());
         let ids = head.transcribe(
             self.backend,
             &log_mel,
@@ -323,6 +336,7 @@ mod tests {
             config: cfg,
             audio,
             text,
+            audio_adapter: crate::voxtral::AudioAdapter::none(),
         }
     }
 
@@ -348,6 +362,7 @@ mod tests {
             config: cfg,
             audio,
             text,
+            audio_adapter: crate::voxtral::AudioAdapter::none(),
         }
     }
 
