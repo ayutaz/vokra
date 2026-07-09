@@ -78,6 +78,44 @@ use flow::Flow;
 use text_encoder::TextEncoder;
 use weights::TensorStore;
 
+/// Component-level intermediates from a deterministic
+/// [`PiperPlusTts::synthesize_with_intermediates`] run, for the M3-12 CPU vs
+/// GPU parity tests.
+///
+/// The three isolation points (`m_p` + `logs_p` from the text encoder, `z` from
+/// the reverse flow, and `pcm` from the MB-iSTFT decoder) let each stage's
+/// parity be measured independently. Buffer shapes and semantics match the
+/// internal boundaries the existing CPU parity tests
+/// (`piper_plus/parity_v7.rs`) use, so the two suites cover the same layer
+/// boundaries — this one against the CPU reference, the M0-07 suite against
+/// the piper-plus onnxruntime reference.
+///
+/// Buffer layouts (channel-major, the piper-plus native convention):
+///
+/// - `m_p`, `logs_p`: `[hidden, t_phonemes]` — the encoder output split
+///   statistics.
+/// - `z`: `[hidden, t_frames]` — the post-flow decoder-input latent (after
+///   `generate_path` length regulation and the reverse Normalizing Flow).
+/// - `pcm`: the full synthesized waveform at the voice's `sample_rate`.
+///
+/// `t_frames = Σ ceil(exp(logw) · length_scale)` and is >= `t_phonemes`.
+#[derive(Debug, Clone)]
+pub struct PiperIntermediates {
+    /// Prior mean `m_p` `[hidden, t_phonemes]` from the text encoder.
+    pub m_p: Vec<f32>,
+    /// Prior log-std `logs_p` `[hidden, t_phonemes]` from the text encoder.
+    pub logs_p: Vec<f32>,
+    /// Post-flow decoder-input latent `z` `[hidden, t_frames]` (after length
+    /// regulation and reverse Normalizing Flow).
+    pub z: Vec<f32>,
+    /// Final synthesized PCM at `PiperConfig::sample_rate`.
+    pub pcm: SynthesizedAudio,
+    /// Phoneme count `T_phonemes` (the encoder time dimension).
+    pub t_phonemes: usize,
+    /// Frame count `T_frames = Σ w_ceil` (the flow / decoder time dimension).
+    pub t_frames: usize,
+}
+
 /// A loaded piper-plus (MB-iSTFT-VITS2) voice: Vokra's first native TTS.
 ///
 /// Built from a voice GGUF (produced offline by `vokra-convert`, M0-07-T07); no
@@ -405,6 +443,79 @@ impl PiperPlusTts {
         let z = self.flow.reverse(&compute, &z_p, t_frames, &g);
         let pcm = self.decoder.forward(&compute, &z, t_frames, &g)?;
         Ok(SynthesizedAudio::new(pcm, self.config.sample_rate))
+    }
+
+    /// Deterministic synthesize (noise scales zeroed) on an **explicit** backend,
+    /// capturing the component-level intermediates for GPU vs CPU parity testing
+    /// (M3-12-T10..T13, `docs/adr/0012-piper-plus-gpu.md` §D3).
+    ///
+    /// The returned [`PiperIntermediates`] carries the encoder outputs (`m_p`,
+    /// `logs_p`), the post-flow decoder-input latent `z` and the final PCM — the
+    /// three isolation points the M3-12 parity tests diff between the CPU
+    /// reference and Metal / CUDA (atol=0.01 per component, atol=0.05 for PCM per
+    /// ADR-0012 §D3).
+    ///
+    /// This is the **only** synthesize entry point that takes a `backend`
+    /// argument explicitly (rather than reading `self.backend_kind`); the caller
+    /// uses it to run the same loaded voice on both CPU and GPU in one process
+    /// without reloading the GGUF. All other callers use
+    /// [`with_backend`](Self::with_backend) + [`synthesize_phonemes`](Self::synthesize_phonemes).
+    ///
+    /// Noise scales (`noise_scale`, `noise_w`) are zeroed unconditionally: the
+    /// intent is bit-comparable component parity, which requires deterministic
+    /// forwards on both backends. A non-deterministic parity study belongs on
+    /// [`synthesize_phonemes`](Self::synthesize_phonemes) via `with_backend`.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::UnsupportedOp`] / [`VokraError::BackendUnavailable`] if
+    /// `backend` cannot cover the piper hot-op set or has no device (no silent
+    /// CPU fall back, FR-EX-08); [`VokraError::InvalidArgument`] on out-of-range
+    /// phoneme / language ids or a prosody length mismatch (same as
+    /// [`synthesize_phonemes`](Self::synthesize_phonemes)).
+    pub fn synthesize_with_intermediates(
+        &self,
+        phoneme_ids: &[i64],
+        lid: i64,
+        backend: BackendKind,
+        speaker_embedding: Option<&[f32]>,
+        prosody_features: Option<&[i64]>,
+        length_scale: f32,
+    ) -> Result<PiperIntermediates> {
+        self.check_ids(phoneme_ids, lid)?;
+        self.check_prosody_len(prosody_features, phoneme_ids.len())?;
+        // Build a fresh dispatcher for the caller-selected backend — the
+        // `!Send` Metal / CUDA context lives only for this call.
+        let compute = Compute::for_backend(backend, PIPER_HOT_OPS)?;
+        let g = self.conditioning.g(speaker_embedding, lid);
+        let enc = self.encoder.forward(&compute, phoneme_ids, &g)?;
+        let m_p = enc.m_p.clone();
+        let logs_p = enc.logs_p.clone();
+        let t_phonemes = enc.t;
+
+        let prosody = self.prosody_proj.channels(prosody_features, lid, enc.t);
+        let x_dp = build_x_dp(&enc.x, &prosody, enc.t);
+        // Deterministic path (docs §5): noise_w=0 so the stochastic duration
+        // predictor collapses to the same trajectory on both backends.
+        let logw = self.duration.logw(&compute, &x_dp, enc.t, &g, 0.0);
+        let w_ceil: Vec<usize> = logw
+            .iter()
+            .map(|&l| ((l.exp() * length_scale).ceil() as i64).max(1) as usize)
+            .collect();
+
+        let (z_p, t_frames) = length_regulate(&enc.m_p, HIDDEN, enc.t, &w_ceil);
+        // noise_scale = 0 unconditionally in this path (see docstring).
+        let z = self.flow.reverse(&compute, &z_p, t_frames, &g);
+        let z_out = z.clone();
+        let pcm = self.decoder.forward(&compute, &z, t_frames, &g)?;
+        Ok(PiperIntermediates {
+            m_p,
+            logs_p,
+            z: z_out,
+            pcm: SynthesizedAudio::new(pcm, self.config.sample_rate),
+            t_phonemes,
+            t_frames,
+        })
     }
 
     /// Defensive bounds check on the inputs to the embedding lookups, run before
