@@ -19,6 +19,35 @@
 //! out of this change, see the M2-03 follow-up plan T-follow-06) opts a
 //! long-form transcription into the pool.
 //!
+//! # M3-01-T10: opt-in default-off invariant (rustdoc reinforcement)
+//!
+//! Re-affirmed at M3-01: **the default construction path is unchanged from
+//! M2-03**. Concretely, on the CUDA arm:
+//!
+//! - `Session::from_file(..).with_backend(BackendKind::Cuda)` builds a fresh
+//!   [`CudaDecodeSession`] via `CudaDecodeSession::new` on every call, exactly
+//!   as on M2-03 land day. No `PooledSession` is involved, no `Mutex` is
+//!   touched, and the emitted logits are bit-identical to the M2-03 land
+//!   commit.
+//! - Cross-segment reuse is opted in by (a) constructing a
+//!   [`CudaDecodeSessionPool`], (b) building the first session via
+//!   [`CudaDecodeSession::new`] then wrapping it with [`Self::wrap`], and
+//!   (c) subsequent segments calling [`Self::acquire`] to LIFO-reuse.
+//! - The CLI's `--reuse-cuda-session` flag is the intended surface; without
+//!   it, no user-facing binary flips this switch on.
+//!
+//! **Regression risk containment**: because the default path is a strict
+//! superset of the M2-03 land behaviour (M3-01 changes are purely additive —
+//! ADR §2 (d)), any parity regression introduced by M3-01 is either (a) not
+//! in the pool path (regression is a common issue) or (b) not in the default
+//! path (regression is limited to callers that explicitly opted in). Tests
+//! `session_reuse_bit_identical_cuda` (atol=0.0) and
+//! `flash_attn_v2_causal_vs_decomposed_f32` (atol=0.01) are the guards.
+//!
+//! **Thread safety**: [`PooledSession`] is `!Send + !Sync` (below), so
+//! multi-threaded servers (M3-15, `vokra-server`) express concurrency via one
+//! `CudaDecodeSessionPool` per worker rather than a shared pool.
+//!
 //! # Design (M2-03-followup §D5, §R4, §R5)
 //!
 //! - **Zero external deps.** `Mutex<Vec<CudaDecodeSession>>` on top of `std` —

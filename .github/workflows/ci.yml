@@ -136,6 +136,13 @@ jobs:
         run: cargo clippy -p vokra-models -p vokra-cli --features ${{ matrix.feature }} --all-targets -- -D warnings
       - name: Test (--features ${{ matrix.feature }})
         run: cargo test -p vokra-models --features ${{ matrix.feature }}
+      # M3-01-T22: also run vokra-backend-cuda's own probe/coverage/parity tests
+      # on the CUDA arm (the crate has no `cuda` feature of its own — see
+      # `Cargo.toml` — so it compiles unconditionally and its device-gated tests
+      # skip cleanly on the ubuntu-latest runner without a GPU).
+      - name: Test backend crate (${{ matrix.feature }})
+        if: matrix.feature == 'cuda'
+        run: cargo test -p vokra-backend-cuda
 
   # RISC-V RVV 1.0 cross-build (M3-13-T10, FR-BE-01, NFR-PT-01). The completion
   # bar for M3-13 (milestones.md §7.2) is "RVV 1.0 target のクロスビルドが CI
@@ -200,7 +207,6 @@ jobs:
         # the root Cargo.lock (the target is std-only). Any diff here means a
         # riscv64-only crate crept into vokra-backend-cpu — reject the PR.
         run: git diff --exit-code Cargo.lock
-
 
   # iOS build scaffold (M2-02, NFR-RL-03 static-only, NFR-RL-05 JIT-free,
   # FR-EX-08 no silent fallback). Cross-compiles vokra-capi to the 3 Apple

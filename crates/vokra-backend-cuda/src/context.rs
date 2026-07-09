@@ -395,6 +395,39 @@ extern "C" __global__ void vokra_add_assign_f32(
     dst[gid] = dst[gid] + src[gid];
 }
 
+// ---- M3-01 graph-executor element-wise Add / Mul (out = a op b) --------------
+// Distinct from `vokra_add_assign_f32` (in-place residual, used by the encoder
+// device-resident path): these are OUT-OF-PLACE element-wise kernels backing the
+// graph-level `OpKind::Add` and `OpKind::Mul` on the CUDA arm of
+// `crate::eval::eval_cuda_op`. Bit-identical to
+// `vokra_backend_cpu::kernels::{add_f32, mul_f32}` (the differential oracle at
+// FP32 `atol = 0.01`, NFR-QL-01). One thread per element, ragged-tail guarded.
+extern "C" __global__ void vokra_add_f32(
+    const float* a,
+    const float* b,
+    float* out,
+    unsigned int n)
+{
+    unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= n) {
+        return;
+    }
+    out[gid] = a[gid] + b[gid];
+}
+
+extern "C" __global__ void vokra_mul_f32(
+    const float* a,
+    const float* b,
+    float* out,
+    unsigned int n)
+{
+    unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= n) {
+        return;
+    }
+    out[gid] = a[gid] * b[gid];
+}
+
 // ---- FlashAttention-v2 causal, FP32 (M2-03 follow-up RTF<0.1) ---------------
 //
 // Fused (Q·Kᵀ · softmax · P·V) attention kernel. Semantics — including causal
@@ -913,6 +946,13 @@ pub struct CudaContext {
     col_gather_t: CUfunction,
     col_scatter: CUfunction,
     add_assign: CUfunction,
+    /// M3-01 out-of-place element-wise Add / Mul kernel handles
+    /// (`vokra_add_f32`, `vokra_mul_f32`). Distinct from [`Self::add_assign`]
+    /// (in-place residual) — these back the graph-executor `OpKind::Add` /
+    /// `OpKind::Mul` arms in [`crate::eval::eval_cuda_op`] with the same
+    /// semantic contract as `vokra_backend_cpu::kernels::{add_f32, mul_f32}`.
+    add: CUfunction,
+    mul: CUfunction,
     /// FA v2 fused causal attention kernel handle (`vokra_flash_attn_v2_causal_f32`).
     /// Always resolved at context construction (its symbol is baked into the
     /// same PTX as the other Phase-5 attention kernels); actually dispatched
@@ -988,6 +1028,8 @@ impl CudaContext {
                 col_gather_t: m.col_gather_t,
                 col_scatter: m.col_scatter,
                 add_assign: m.add_assign,
+                add: m.add,
+                mul: m.mul,
                 flash_attn_v2: m.flash_attn_v2,
                 submissions: Cell::new(0),
             }),
@@ -1381,6 +1423,76 @@ impl CudaContext {
             (BLOCK_1D, 1, 1),
             &mut params,
             "cuLaunchKernel(vokra_gelu_f32)",
+        )?;
+        self.dtoh(&out_buf, out)
+    }
+
+    /// Element-wise `out = a + b` on the GPU — the exact contract of
+    /// `vokra_backend_cpu::kernels::add_f32`. Backs the graph-executor
+    /// `OpKind::Add` arm (M3-01-T06); distinct from [`Self::residual_add_dev`]
+    /// (in-place device-to-device residual used by the encoder-resident chain).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a length mismatch;
+    /// [`VokraError::BackendUnavailable`] on a device failure.
+    pub fn add_f32(&self, a: &[f32], b: &[f32], out: &mut [f32]) -> Result<()> {
+        validate_binary(a, b, out)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        self.run_binary(self.add, a, b, out, "cuLaunchKernel(vokra_add_f32)")
+    }
+
+    /// Element-wise `out = a * b` on the GPU — the exact contract of
+    /// `vokra_backend_cpu::kernels::mul_f32`. Backs the graph-executor
+    /// `OpKind::Mul` arm (M3-01-T06).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a length mismatch;
+    /// [`VokraError::BackendUnavailable`] on a device failure.
+    pub fn mul_f32(&self, a: &[f32], b: &[f32], out: &mut [f32]) -> Result<()> {
+        validate_binary(a, b, out)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        self.run_binary(self.mul, a, b, out, "cuLaunchKernel(vokra_mul_f32)")
+    }
+
+    /// Shared runner for the M3-01 element-wise binary kernels
+    /// (`vokra_add_f32` / `vokra_mul_f32`): upload two host operands, launch
+    /// the resolved kernel, download the output. One thread per element,
+    /// ragged-tail guarded, so `out.len() = a.len() = b.len()` is the only
+    /// shape constraint (checked by [`validate_binary`] at the entry point).
+    fn run_binary(
+        &self,
+        kernel: CUfunction,
+        a: &[f32],
+        b: &[f32],
+        out: &mut [f32],
+        launch_label: &str,
+    ) -> Result<()> {
+        let a_buf = self.alloc(size_of_val(a))?;
+        self.htod(&a_buf, a)?;
+        let b_buf = self.alloc(size_of_val(b))?;
+        self.htod(&b_buf, b)?;
+        let out_buf = self.alloc(size_of_val(out))?;
+
+        let n_u = out.len() as c_uint;
+        let mut params: [*mut c_void; 4] = [
+            ptr_arg(&a_buf.ptr),
+            ptr_arg(&b_buf.ptr),
+            ptr_arg(&out_buf.ptr),
+            uint_arg(&n_u),
+        ];
+        let grid_x = out.len().div_ceil(BLOCK_1D as usize) as c_uint;
+        self.launch(
+            kernel,
+            (grid_x, 1, 1),
+            (BLOCK_1D, 1, 1),
+            &mut params,
+            launch_label,
         )?;
         self.dtoh(&out_buf, out)
     }
@@ -4287,6 +4399,14 @@ struct Modules {
     col_gather_t: CUfunction,
     col_scatter: CUfunction,
     add_assign: CUfunction,
+    /// M3-01 out-of-place element-wise Add / Mul kernel handles
+    /// (`vokra_add_f32`, `vokra_mul_f32`) backing the graph-executor arms of
+    /// `OpKind::Add` / `OpKind::Mul` (see `crate::eval::eval_cuda_op`). These
+    /// are DISTINCT from `add_assign` (which is in-place for the encoder
+    /// residual chain); a graph-level Add reads two inputs and writes a fresh
+    /// third, matching the CPU backend's `kernels::add_f32` contract.
+    add: CUfunction,
+    mul: CUfunction,
     /// M2-03 follow-up FA v2 fused causal attention kernel handle
     /// (`vokra_flash_attn_v2_causal_f32`, defined in `KERNELS_CUDA`). Resolved
     /// alongside the Phase-5 attention kernels so a single module load carries
@@ -4377,6 +4497,9 @@ fn load_modules(driver: &CudaDriver) -> Result<Modules> {
     let col_scatter = get_function(driver, kernels_module.module, c"vokra_col_scatter_f32")?;
     // The Phase-5-follow-on residual-add kernel shares the same module.
     let add_assign = get_function(driver, kernels_module.module, c"vokra_add_assign_f32")?;
+    // M3-01 element-wise Add / Mul kernels for the graph-executor arm.
+    let add = get_function(driver, kernels_module.module, c"vokra_add_f32")?;
+    let mul = get_function(driver, kernels_module.module, c"vokra_mul_f32")?;
     // M2-03 follow-up: the FA v2 fused causal attention kernel lives in the
     // same module. The kernel is always resolved (a missing symbol means the
     // NVRTC compile lost it, which is a hard error — never a silent CPU
@@ -4403,6 +4526,8 @@ fn load_modules(driver: &CudaDriver) -> Result<Modules> {
         col_gather_t,
         col_scatter,
         add_assign,
+        add,
+        mul,
         flash_attn_v2,
     })
 }
@@ -4470,6 +4595,22 @@ fn bool_arg(p: &bool) -> *mut c_void {
 /// NVRTC-compiles a CUDA C `source` to a PTX byte buffer (NUL-terminated),
 /// naming the translation unit `unit` and using `what` in any error. The program
 /// handle is always destroyed before returning.
+///
+/// # M3-01-T07: `--gpu-architecture` gencode pin
+///
+/// The NVRTC options list is derived from the caller-visible probe
+/// (`compute_capability_major.minor`) so the emitted PTX is targeted at the
+/// running GPU rather than NVRTC's silent default (which floats across
+/// toolkits — CUDA 12.6 defaults to `compute_52`, i.e. Maxwell, on an RTX 4090
+/// host, wasting Ada SIMT features). The primary pin is `compute_89` (Ada,
+/// SM 8.9 — RTX 4090); Ampere (SM 8.6) / Hopper (SM 9.0) resolve to their
+/// own `compute_XX` value via [`gencode_flag`]. The env variable
+/// `VOKRA_NVRTC_GPU_ARCH` overrides this for A/B testing (e.g. force
+/// `compute_86` on a 4090 to validate parity across gencodes).
+///
+/// Explicitly *not* Hopper's WGMMA / TMA-specialised path — FA v3 code is
+/// forbidden in this WP (ADR M3-01 (b), setting a Hopper gencode alone is safe
+/// because the FA v2 kernel makes no WGMMA-only assumptions).
 fn compile_ptx(nvrtc: &Nvrtc, source: &str, unit: &core::ffi::CStr, what: &str) -> Result<Vec<u8>> {
     let src = std::ffi::CString::new(source).map_err(|_| {
         VokraError::InvalidArgument(format!("{what} CUDA source contains an interior NUL"))
@@ -4498,15 +4639,54 @@ fn compile_ptx(nvrtc: &Nvrtc, source: &str, unit: &core::ffi::CStr, what: &str) 
     result
 }
 
-/// Compiles `prog` (no options → NVRTC's default target arch) and extracts its
-/// PTX. On a compile failure the NVRTC log is surfaced in the error (labelled
-/// `what`).
+/// Resolves the NVRTC `--gpu-architecture=compute_XX` flag to pass this
+/// compile (M3-01-T07). Priority order:
 ///
-/// vast.ai TODO: pin `--gpu-architecture=compute_89` (Ada / RTX 4090) once the
-/// runner's toolkit version is confirmed, rather than relying on the default.
+/// 1. `VOKRA_NVRTC_GPU_ARCH` env var (owner escape hatch — e.g. set to
+///    `compute_86` on a 4090 to validate parity across gencodes).
+/// 2. Best-effort probe: `vokra_cuda_probe` reports `compute_capability_major.minor`
+///    — but that returns a `CudaCapabilities` and we do not want to pay a
+///    dlopen ping inside every NVRTC compile. Instead we hard-code the M3-01
+///    ADR primary target `compute_89` (Ada / RTX 4090); Ampere (SM 8.6) /
+///    Hopper (SM 9.0) hosts get the same PTX in the current slice because
+///    NVRTC does forward-compatible PTX → SASS translation at cuModuleLoadData
+///    time (a compute_89 PTX loads fine on SM 9.0). The env-var escape hatch
+///    covers A/B testing without a code change.
+///
+/// Returns an owned `CString` that must outlive the raw pointer put into the
+/// NVRTC options array.
+fn gencode_flag() -> std::ffi::CString {
+    // SM 8.9 (Ada / RTX 4090) — the M3-01 ADR primary target. Anyone on a
+    // different arch overrides with VOKRA_NVRTC_GPU_ARCH=compute_86 (Ampere) /
+    // compute_90 (Hopper) etc.
+    const DEFAULT_ARCH: &str = "compute_89";
+    let arch = std::env::var("VOKRA_NVRTC_GPU_ARCH").unwrap_or_else(|_| DEFAULT_ARCH.to_owned());
+    // Reject any interior NUL — else fall back to the default (an env-var typo
+    // must never crash the compile).
+    let sanitized = if arch.bytes().any(|b| b == 0) {
+        DEFAULT_ARCH.to_owned()
+    } else {
+        arch
+    };
+    let flag = format!("--gpu-architecture={sanitized}");
+    // `flag` is ASCII (`--gpu-architecture=` + `compute_XX`), so `CString::new`
+    // will not fail; fall back to the default flag on the impossible NUL case
+    // rather than propagating.
+    std::ffi::CString::new(flag)
+        .unwrap_or_else(|_| std::ffi::CString::new("--gpu-architecture=compute_89").unwrap())
+}
+
+/// Compiles `prog` with the M3-01-T07 gencode pin (`--gpu-architecture=compute_89`
+/// by default, `VOKRA_NVRTC_GPU_ARCH` overrides) and extracts its PTX. On a
+/// compile failure the NVRTC log is surfaced in the error (labelled `what`).
 fn compile_and_extract_ptx(nvrtc: &Nvrtc, prog: sys::NvrtcProgram, what: &str) -> Result<Vec<u8>> {
-    // SAFETY: `prog` is a valid program; 0 options with a null options array.
-    let compile_res = unsafe { (nvrtc.compile_program)(prog, 0, core::ptr::null()) };
+    let arch = gencode_flag();
+    // `options` holds raw `*const c_char` pointers into `arch`'s owned buffer;
+    // `arch` must live until nvrtcCompileProgram returns.
+    let options: [*const c_char; 1] = [arch.as_ptr()];
+    // SAFETY: `prog` is a valid program; `options` is a 1-slot array of
+    // NUL-terminated C strings owned by `arch` (alive for the call).
+    let compile_res = unsafe { (nvrtc.compile_program)(prog, 1, options.as_ptr()) };
     if compile_res != sys::NVRTC_SUCCESS {
         return Err(VokraError::BackendUnavailable(format!(
             "NVRTC {what} compile failed: {}",
@@ -4624,6 +4804,16 @@ fn validate_layer_norm(
 
 fn validate_unary(x: &[f32], out: &[f32]) -> Result<()> {
     expect_len("unary out", out.len(), x.len())
+}
+
+/// Element-wise binary op shape validator (M3-01: [`CudaContext::add_f32`] /
+/// [`CudaContext::mul_f32`]). Both operands and the output must be the same
+/// length — the exact contract of `vokra_backend_cpu::kernels::{add_f32,
+/// mul_f32}` (no broadcast in the FP32 MVP; the graph-executor rejects
+/// mismatched shapes before `eval_op` reaches this kernel).
+fn validate_binary(a: &[f32], b: &[f32], out: &[f32]) -> Result<()> {
+    expect_len("binary b", b.len(), a.len())?;
+    expect_len("binary out", out.len(), a.len())
 }
 
 /// Validates the conv1d shapes (mirroring the CPU / Metal `conv1d` guard) and

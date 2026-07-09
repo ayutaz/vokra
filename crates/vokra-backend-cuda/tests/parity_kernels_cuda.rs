@@ -1832,3 +1832,107 @@ fn session_reuse_bit_identical() {
         "CUDA session reset() reuse: (a) fresh-per-run vs (b) reset()-between-runs are bit-identical over 2 steps × 2 replays (max|Δ| = 0.0)"
     );
 }
+
+// ---- M3-01-T11 / T19: long-form decoder session reuse ----------------------
+
+/// M3-01-T11 (long-form decoder session reuse) + T19 (session_reuse_bit_identical
+/// extension) — exercise the KV cache reset contract over the fixture's full
+/// `n_text_ctx` window. The M2-03 test above proves 2 steps × 2 replays; this
+/// test pushes to `n_text_ctx` steps (max the fixture allows without changing
+/// the resident KV cache shape), catching a leak that only shows up after
+/// several rows of the resident self-KV have been written and then re-cleared
+/// by `reset()`.
+///
+/// Positioning vs the M3-01 ticket: the ticket text asks for 60 s / 120 s
+/// long-form audio (~200 / ~400 steps at 25 tok/s). The fixture's
+/// `n_text_ctx = 8` is deliberately small (M2-03 land — keeps the parity
+/// contract tight and CI runs fast). Extending it to 8 fills the whole
+/// resident KV cache without shape churn; **the 60 / 120 s numbers in the
+/// ticket require the vast.ai / self-hosted runner test using a real
+/// whisper-large-v3 GGUF**, which is out of the CI scope. This test is the
+/// structural sibling that lives on the vast.ai path via the same
+/// `ctx_or_skip!` gate.
+#[test]
+fn session_reuse_bit_identical_long_form() {
+    let _probe = ctx_or_skip!("session reuse long-form");
+    drop(_probe);
+
+    let fix = DecoderFixture::build();
+    // Fill the whole n_text_ctx window (8 steps). Each step uses one of the
+    // two step embeddings the fixture publishes, alternating deterministically
+    // so the KV cache holds a mix — the same content on both paths so any
+    // divergence is a reset() leak, not an input asymmetry.
+    let n_steps = fix.n_text_ctx;
+    let step_seq: Vec<&[f32]> = (0..n_steps)
+        .map(|i| {
+            if i % 2 == 0 {
+                fix.step0_embedded.as_slice()
+            } else {
+                fix.step1_embedded.as_slice()
+            }
+        })
+        .collect();
+
+    // (a) Fresh sessions per replay — build → run all n_steps → collect
+    // last-step logits — twice (should be internally bit-identical, the
+    // fixture is deterministic).
+    let run_a = || -> Vec<f32> {
+        let mut s = fix.new_session().expect("(a) build session");
+        for (pos, emb) in step_seq.iter().enumerate() {
+            s.step(emb, 1, pos)
+                .unwrap_or_else(|e| panic!("(a) step pos {pos}: {e}"));
+        }
+        assert_eq!(s.positions(), n_steps, "(a) pos == n_steps");
+        s.all_logits().to_vec()
+    };
+    let a_run1 = run_a();
+    let a_run2 = run_a();
+    assert_eq!(
+        max_abs_diff(&a_run1, &a_run2),
+        0.0,
+        "(a) two independent long-form runs must be bit-identical (fixture is deterministic)"
+    );
+
+    // (b) One session, reset() between the two replays.
+    let mut s = fix.new_session().expect("(b) build session");
+    for (pos, emb) in step_seq.iter().enumerate() {
+        s.step(emb, 1, pos)
+            .unwrap_or_else(|e| panic!("(b) run 1 step pos {pos}: {e}"));
+    }
+    let b_run1 = s.all_logits().to_vec();
+    assert_eq!(s.positions(), n_steps, "(b) pos == n_steps after run 1");
+
+    s.reset();
+    assert_eq!(s.positions(), 0, "(b) reset() clears pos to 0");
+    assert!(s.last_logits().is_empty(), "(b) reset() clears last_t");
+
+    for (pos, emb) in step_seq.iter().enumerate() {
+        s.step(emb, 1, pos)
+            .unwrap_or_else(|e| panic!("(b) run 2 step pos {pos}: {e}"));
+    }
+    let b_run2 = s.all_logits().to_vec();
+    assert_eq!(s.positions(), n_steps, "(b) pos == n_steps after run 2");
+
+    // Long-form contract: reset() must fully clear the resident self-KV
+    // (n_text_ctx rows worth) + the pos clock + last-token logits scratch.
+    // Any residual state would surface as a non-zero Δ on the second replay.
+    let d_a_vs_b_run1 = max_abs_diff(&a_run1, &b_run1);
+    let d_a_vs_b_run2 = max_abs_diff(&a_run2, &b_run2);
+    let d_b_reset = max_abs_diff(&b_run1, &b_run2);
+    assert_eq!(
+        d_a_vs_b_run1, 0.0,
+        "(a run 1) vs (b run 1) long-form must be bit-identical (Δ={d_a_vs_b_run1:.3e})"
+    );
+    assert_eq!(
+        d_a_vs_b_run2, 0.0,
+        "(a run 2) vs (b run 2 after reset) long-form must be bit-identical (Δ={d_a_vs_b_run2:.3e})"
+    );
+    assert_eq!(
+        d_b_reset, 0.0,
+        "(b) reset() long-form replay must reproduce first replay bit-identically (Δ={d_b_reset:.3e})"
+    );
+
+    eprintln!(
+        "CUDA long-form session reuse: {n_steps} steps × 2 replays are bit-identical (fresh-per-run vs reset()-between-runs, max|Δ| = 0.0). Fixture: n_text_ctx = {n_steps}."
+    );
+}
