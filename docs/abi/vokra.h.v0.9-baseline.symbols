@@ -1,0 +1,29 @@
+# Vokra C ABI anchor snapshot — v0.9 window.
+#
+# Regenerate with: scripts/check-abi-changelog.sh --update-snapshot
+# Diff against with: scripts/check-abi-changelog.sh
+#
+# One line per exported symbol, format:
+#   FUNC <name>|<normalized prototype>
+#   TYPEDEF <name>|<normalized declaration>
+#
+# See docs/abi-changelog.md for the schema and freeze policy.
+FUNC vokra_asr_transcribe|enum vokra_status_t vokra_asr_transcribe(const struct vokra_session_t *session, const float *pcm, size_t num_samples, int32_t sample_rate, char **out_text_utf8)
+FUNC vokra_audio_free|void vokra_audio_free(float *pcm, size_t num_samples)
+FUNC vokra_last_error|const char *vokra_last_error(void)
+FUNC vokra_session_create_from_file|enum vokra_status_t vokra_session_create_from_file(const char *path_utf8, struct vokra_session_t **out_session)
+FUNC vokra_session_destroy|void vokra_session_destroy(struct vokra_session_t *session)
+FUNC vokra_session_retain|enum vokra_status_t vokra_session_retain(const struct vokra_session_t *session, struct vokra_session_t **out_session)
+FUNC vokra_stream_destroy|void vokra_stream_destroy(struct vokra_stream_t *stream)
+FUNC vokra_stream_open|enum vokra_status_t vokra_stream_open(const struct vokra_session_t *session, int32_t sample_rate, struct vokra_stream_t **out_stream)
+FUNC vokra_stream_poll_events|enum vokra_status_t vokra_stream_poll_events(struct vokra_stream_t *stream, struct vokra_event_t *out_events, size_t capacity, size_t *out_count)
+FUNC vokra_stream_poll|enum vokra_status_t vokra_stream_poll(struct vokra_stream_t *stream, float *out_probs, size_t capacity, size_t *out_count)
+FUNC vokra_stream_push_pcm|enum vokra_status_t vokra_stream_push_pcm(struct vokra_stream_t *stream, const float *pcm, size_t num_samples)
+FUNC vokra_string_free|void vokra_string_free(char *s)
+FUNC vokra_tts_synthesize|enum vokra_status_t vokra_tts_synthesize(const struct vokra_session_t *session, const char *text_utf8, float **out_pcm, size_t *out_num_samples, int32_t *out_sample_rate)
+FUNC vokra_version|const char *vokra_version(void)
+TYPEDEF vokra_event_kind_t|typedef enum vokra_event_kind_t { VOKRA_EVENT_UNKNOWN = 0, VOKRA_EVENT_SPEECH_PROB = 1, VOKRA_EVENT_TOKEN = 2, } vokra_event_kind_t
+TYPEDEF vokra_event_t|typedef struct vokra_event_t { enum vokra_event_kind_t kind; uint32_t a; float b; } vokra_event_t
+TYPEDEF vokra_session_t|typedef struct vokra_session_t vokra_session_t
+TYPEDEF vokra_status_t|typedef enum vokra_status_t { VOKRA_OK = 0, VOKRA_ERROR_IO = 1, VOKRA_ERROR_MODEL_LOAD = 2, VOKRA_ERROR_UNSUPPORTED_OP = 3, VOKRA_ERROR_BACKEND_UNAVAILABLE = 4, VOKRA_ERROR_INVALID_ARGUMENT = 5, VOKRA_ERROR_GRAPH_VALIDATION = 6, VOKRA_ERROR_NOT_IMPLEMENTED = 7, VOKRA_ERROR_PANIC = 8, VOKRA_ERROR_OTHER = 9, } vokra_status_t
+TYPEDEF vokra_stream_t|typedef struct vokra_stream_t vokra_stream_t
