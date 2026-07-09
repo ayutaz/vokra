@@ -33,6 +33,10 @@ integrations/**/target/
 # scripts/build-godot-gdextension.sh). CI regenerates and release.yml uploads
 # these as Release assets; do not commit.
 /dist/godot/
+# M3-11-T12: per-target flat staging tree used by the CI crossbuild matrix
+# (godot-crossbuild.yml uploads one artifact per Rust triple). Produced by
+# scripts/build-godot-gdextension.sh; never committed.
+integrations/vokra-godot/pkg/
 
 # NOTE: Cargo.lock is intentionally COMMITTED (CI reproducibility) and must
 # not be ignored — see docs/adr/0001-crate-layout.md.
