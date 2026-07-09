@@ -1,0 +1,214 @@
+# M3-02 Vulkan backend parity CI — lavapipe smoke dispatch on GitHub-hosted
+# ubuntu-latest.
+#
+# Purpose (docs/adr/M3-02-spirv-generation.md §4 Consequences, §5 cap):
+#   Exercise the hand-crafted `copy_f32` + `add_f32` SPIR-V blobs and the
+#   T08〜T12 + T25 Vulkan object stack (loader / instance / device / queue /
+#   command pool / buffer / memory / descriptor set / pipeline layout / shader
+#   module / compute pipeline / fence submission) end-to-end against a real
+#   Vulkan ICD, without requiring a physical GPU on the runner.
+#
+#   Mesa's `lavapipe` (LLVMpipe CPU-only ICD) satisfies this by exposing a
+#   full Vulkan 1.1+ implementation over the CPU — the compute-dispatch code
+#   paths under test are identical to what a discrete GPU would run, so a
+#   green run here proves the Rust FFI stack (dlopen'd libvulkan, descriptor
+#   binding, submission, readback) is correct even if the shader kernel body
+#   ends up executing on the CPU. lavapipe is the same ICD sherpa-onnx,
+#   whisper.cpp, and llama.cpp use for their Vulkan CI legs.
+#
+# Design (mirrors gpu-cuda-rtf.yml + parity-kokoro-real.yml):
+#
+#   * Trigger: workflow_dispatch (owner-driven) + weekly cron (Mondays 05:00
+#     UTC — 1h after parity-kokoro-real, 1h before gpu-cuda-rtf, so a runner
+#     used by all three doesn't stack them).
+#
+#   * Runner: GitHub-hosted `ubuntu-latest`. lavapipe ships in `mesa-vulkan-drivers`
+#     on Ubuntu 22.04+; `vulkan-tools` provides `vulkaninfo` for the
+#     "runner environment" summary step. NO self-hosted GPU runner is required
+#     for this workflow (unlike `gpu-cuda-rtf.yml` which does need an RTX 4090
+#     runner).
+#
+#   * ICD selection: `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json`
+#     forces the Vulkan loader to pick lavapipe even if other ICDs are present.
+#     Mesa upstream sometimes renames this file across releases — the workflow
+#     dumps `find /usr/share/vulkan/icd.d/` to the step summary so a rename is
+#     visible for triage (FR-EX-08: honest reporting, no silent fallback to a
+#     mock ICD).
+#
+#   * Tests: `cargo test -p vokra-backend-vulkan --features vulkan` runs
+#     every integration test under `crates/vokra-backend-vulkan/tests/`. As of
+#     Wave 8+9 (2026-07-09) that's 8 files / ~39 tests; new tests added by
+#     T14〜T22 auto-join the run.
+#
+#   * Not a required check: this workflow is opt-in until (a) lavapipe on
+#     GitHub-hosted runners has been stable across 4+ consecutive cron runs
+#     AND (b) the M3-02-T36 recompile-and-diff gate lands. lavapipe is a CPU
+#     fallback ICD and its exact SPIR-V behavior can drift with each Mesa
+#     release — pinning it via branch protection today would false-fail PRs
+#     that don't touch Vulkan code. See ADR M3-02-spirv-generation §3 (b) for
+#     the "no toolchain in the ubuntu-latest default; blob is committed"
+#     policy — this CI is the runtime dispatch analogue of that policy.
+#
+#   * Honest reporting (FR-EX-08):
+#     - The Vulkan tests already surface `VokraError::BackendUnavailable` as a
+#       clean skip when no ICD is present (see
+#       crates/vokra-backend-vulkan/tests/smoke_dispatch.rs comments). The CI
+#       job intentionally does NOT wrap them in an `if` block — if lavapipe
+#       fails to load, the tests exercise the same skip path they would on the
+#       Apple authoring host and the run is still green with the skip reasons
+#       visible in the test log.
+#     - Test failures upload the full `cargo test` output as an artifact so a
+#       lavapipe regression can be traced without re-running.
+#
+# Zero-dep (NFR-DS-02):
+#
+#   * No Rust dependency is added — the Vulkan backend loads libvulkan via
+#     dlopen (`crates/vokra-backend-vulkan/src/sys.rs`) so `--features vulkan`
+#     does not perturb the root Cargo.lock (verified by the last step).
+#   * `mesa-vulkan-drivers` / `vulkan-tools` are apt packages installed on the
+#     runner side — they are runner infrastructure, not Vokra dependencies.
+#
+# Untested on this machine: lavapipe's ability to load and dispatch the
+# `copy_f32` / `add_f32` hand-crafted SPIR-V modules has NOT been verified
+# from this CC session's environment (Apple Silicon macOS authoring host has
+# no libvulkan). The workflow is scaffolding; the initial workflow_dispatch
+# run is an owner handoff.
+
+name: gpu-vulkan-parity
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly Monday 05:00 UTC. 1h after parity-kokoro-real (04:00 UTC), 1h
+    # before gpu-cuda-rtf (06:00 UTC). Off-peak US/EU business hours so a
+    # Mesa hub / apt outage surfaces without blocking active development.
+    - cron: '0 5 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-vulkan-parity-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  parity:
+    name: parity
+    runs-on: ubuntu-latest
+    env:
+      # Force the Vulkan loader to pick lavapipe (Mesa's CPU LLVMpipe ICD).
+      # Without this, on a runner with multiple ICDs installed the loader's
+      # default order might select an ICD that lacks compute support. Setting
+      # this env var to lavapipe's JSON manifest is the standard pattern
+      # sherpa-onnx / llama.cpp / gguf-py CI legs use.
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      # Verbose Rust backtrace so a Vulkan panic (should never happen — the
+      # unsafe FFI is wrapped in Result-returning shims) surfaces stack.
+      RUST_BACKTRACE: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Cache scoped to the Vulkan feature: --features vulkan flips the
+          # cfg gate that turns `sys.rs` FFI from stub to real, so the compile
+          # artifacts diverge from the default-build cache.
+          shared-key: gpu-vulkan-parity
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install Mesa lavapipe (CPU-only Vulkan ICD) + Vulkan tools
+        # `mesa-vulkan-drivers` bundles lavapipe on Ubuntu 22.04+; `vulkan-tools`
+        # provides vulkaninfo + vkcube for the runner-environment summary step.
+        # apt-get -y is safe on GitHub-hosted runners (single-shot, no
+        # interactive prompts).
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers \
+            vulkan-tools
+
+      - name: Runner environment (ICD discovery + vulkaninfo)
+        # Emit the ICDs the loader can see + a truncated vulkaninfo dump so
+        # triage of a lavapipe regression is one click away (no artifact
+        # download needed). `vulkaninfo --summary` is short (< 60 lines) and
+        # covers device / driver / conformance-version + queue families.
+        #
+        # If lavapipe's JSON manifest was renamed by a Mesa release (Mesa
+        # occasionally reshuffles `/usr/share/vulkan/icd.d/`), the `find`
+        # output makes the new filename visible — no fabricated pass.
+        run: |
+          set -euo pipefail
+          echo "## Runner environment" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### ICDs registered under /usr/share/vulkan/icd.d/" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          find /usr/share/vulkan/icd.d/ -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort >> "$GITHUB_STEP_SUMMARY" || echo "(icd.d directory missing)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### VK_ICD_FILENAMES" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "$VK_ICD_FILENAMES" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### vulkaninfo --summary" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          vulkaninfo --summary 2>&1 | head -80 >> "$GITHUB_STEP_SUMMARY" || echo "(vulkaninfo unavailable)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build vokra-backend-vulkan (--features vulkan)
+        # Release build so the smoke dispatch tests exercise the same code the
+        # user would see when linking `--features vulkan`. Clippy is out of
+        # scope — the ci.yml `clippy` job already lints the Vulkan crate under
+        # the workspace's `-D warnings` policy.
+        run: cargo build --release -p vokra-backend-vulkan --features vulkan
+
+      - name: Run Vulkan integration tests (--features vulkan)
+        # `cargo test` runs every integration test under
+        # `crates/vokra-backend-vulkan/tests/`. Current inventory (Wave 8+9,
+        # 2026-07-09) is:
+        #
+        #   eval_op_dispatch.rs          — 6 tests (Copy / Add via graph
+        #                                   executor Vulkan arm)
+        #   gemm_pipeline_selection.rs   — 4 tests (subgroup vs coop-matrix
+        #                                   probe walk)
+        #   graph_executor_vulkan.rs     — 4 tests (run_graph dispatch chain)
+        #   handcrafted_add_f32.rs       — 6 tests (add_f32 bytecode + cap
+        #                                   assertion)
+        #   host_device_roundtrip.rs     — 4 tests (probe queue family +
+        #                                   device roundtrip)
+        #   no_silent_fallback.rs        — 2 tests (FR-EX-08 gate)
+        #   probe_honest.rs              — 3 tests (probe + BackendUnavailable)
+        #   smoke_dispatch.rs            — ~10 tests (copy_f32 / add_f32
+        #                                   round-trips)
+        #
+        # All are host-portable: they either run the round-trip on lavapipe
+        # or surface VokraError::BackendUnavailable and skip cleanly. New
+        # tests added by T14〜T22 auto-join without touching this workflow.
+        #
+        # `2>&1 | tee vulkan-test-output.log` captures stdout+stderr so an
+        # ICD failure that only shows in stderr is preserved for artifact
+        # upload. Note: cargo's exit status is preserved by `set -o pipefail`.
+        run: |
+          set -euo pipefail
+          cargo test --release -p vokra-backend-vulkan --features vulkan -- --nocapture 2>&1 | tee vulkan-test-output.log
+
+      - name: Zero-dep invariant (Cargo.lock unchanged by --features vulkan)
+        # NFR-DS-02: enabling `vulkan` must NOT add any crate to the root
+        # Cargo.lock (the Vulkan crate loads libvulkan via dlopen, no binding
+        # crate). If a future refactor accidentally introduces `ash` /
+        # `vulkano` / `naga` etc., cargo-deny catches it — but a `git diff`
+        # check here catches it one step earlier and gives the offending PR
+        # a clearer failure message.
+        run: git diff --exit-code Cargo.lock
+
+      - name: Upload test output (always, so failures are diagnosable)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulkan-test-output-${{ github.run_id }}
+          path: vulkan-test-output.log
+          retention-days: 30
+          if-no-files-found: warn
