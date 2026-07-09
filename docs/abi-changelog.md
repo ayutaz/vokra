@@ -113,6 +113,63 @@ This snapshot is what `scripts/check-abi-changelog.sh` diffs the working-tree
 | `include/vokra.h`               | `vokra_stream_interrupt`                      | Added | `enum vokra_status_t vokra_stream_interrupt(struct vokra_stream_t *stream)` | Barge-in / cancel (FR-ST-03), WP M3-14                                                                                    | no        | (TBD) |
 | `gguf:vokra.voxtral.adapter.*`  | `vokra.voxtral.adapter.{kind,tensor_prefix,in_dim,out_dim,has_bias,has_layernorm,activation,time_stride,weight_name,bias_name,layernorm_gamma_name,layernorm_beta_name,mlp_hidden_dims,mlp_layer_names}` | Added | Kind = `string` \| dims = `u32` \| flags = `bool` \| names = `string` (see `crates/vokra-models/src/voxtral/adapter.rs` for the loader) | Voxtral audio-adapter (encoder → soft-prefix) framework — M3-10 Wave 8 (real ASR conditioning; absent = LM-continuation) | no        | (TBD) |
 
+## GGUF Metadata additions (non-C-ABI, informational)
+
+The following GGUF metadata chunks were added during the M3 waves. **These
+are model-file (`.gguf`) additions only, NOT part of the C ABI surface** —
+`include/vokra.h` does not expose any GGUF key by name, so
+`scripts/check-abi-changelog.sh` does not gate on them. This section is
+informational and prepares the M3-16 changelog for the M4-12 v1.0 GA
+freeze, at which point the GGUF schema is co-frozen with the C ABI
+(baseline anchor `docs/abi/vokra.h.v0.9-baseline.symbols` covers C symbols
+only; a paired GGUF metadata anchor is out of scope for M3-16).
+
+Rationale for tracking this on-file (even though the gate does not care):
+
+- **Content-addressed compat**: model files are the exchange format between
+  the offline converter (`vokra-convert`) and the runtime (`vokra-models`).
+  A GGUF key rename is a compatibility break for on-disk artefacts even if
+  no C symbol moved. Recording it here lets a future consumer of a v0.9.x
+  `.gguf` file (produced by an older converter) find out from a single
+  document what keys they can expect.
+- **Trace to WP / commit**: each row names the M3 work-package that
+  introduced the chunk; a bisect against a `.gguf` regression can point at
+  the WP without re-reading commit logs.
+
+Recording rules for entries here:
+
+- **Do NOT overlap** with C-ABI entries. If a WP added both C symbols and
+  GGUF keys, the C symbols go in the `## Entries` sections above (gated by
+  `scripts/check-abi-changelog.sh`); the GGUF keys go here.
+- **Kind field** = the GGUF value type (`u32` / `f32` / `bool` / `string` /
+  `u8-array` etc.), matching the writer call in the converter
+  (`add_u32` / `add_string` / `add_bool` / `add_f32`).
+- **Status field**: `persisted` = the converter writes the key today;
+  `documented` = the runtime docstring references the key but the
+  converter does not yet emit it (the runtime falls back to defaults or
+  errors). `documented` rows become `persisted` when the corresponding
+  converter WP lands the writer call.
+
+### v0.9 window — GGUF metadata additions
+
+| WP    | Chunk prefix                   | Keys                                                                                                                                                                                                             | Kind          | Status      | Rationale                                                                                                                                                                              | Introducing wave / commit |
+| ----- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| M3-03 | `vokra.paged_kv.*`             | `vokra.paged_kv.block_size` (proposed; RVQ codec paths use `block_size = 4`, LLM decode paths use `block_size = 2` per CLAUDE.md §"paged KV cache")                                                                | `u32`         | documented  | Paged KV cache `[time, stream, codebook]` 3D layout. Converter-side emission lands with the M3-06 mimi_rvq / M3-09 CosyVoice2 wiring (M3-03-native paths use the runtime default today). | Wave 2                     |
+| M3-04 | `vokra.kv_quant.*`             | `vokra.kv_quant.format` (proposed; `"q4_0"` / `"q5_0"` / `"q8_0"` / absent = fp32/fp16 native), `vokra.kv_quant.block_size` (proposed; per-format tile size)                                                       | `string` + `u32` | documented | KV cache quantization discriminator. Persistence lands when the converter has weights whose scheme differs from `Q4_K/Q5_K/Q6_K` (which are model-weight quants, not KV-cache quants).   | Wave 2 / Wave 6            |
+| M3-06 | `vokra.mimi.*`                 | `vokra.mimi.n_codebooks` (canonical `8`), `vokra.mimi.codebook_size` (canonical `2048`), `vokra.mimi.d_model` (canonical `512`)                                                                                    | `u32`         | documented  | Static shape attributes for the Mimi RVQ decoder — read by `MimiRvqAttrs` in `crates/vokra-ops/src/mimi_rvq.rs` (see docstring L116–117). Converter-side emission lands with M3-09.       | Wave 3                     |
+| M3-07 | `vokra.hifigan.*`              | `vokra.hifigan.{initial_channel, n_upsample_stages, n_mrf_branches, conv_pre_kernel, conv_post_kernel, upsample_kernels[], upsample_strides[]}` + per-stage MRF descriptors                                        | `u32` + array | documented  | HiFi-GAN generator arch attributes — read by `HifiGanWeights` in `crates/vokra-ops/src/hifigan.rs` (see docstring L136–142). Converter-side emission lands when a dedicated HiFi-GAN converter or the M3-09 CosyVoice2 converter writes it. | Wave 3                     |
+| M3-09 | `vokra.cosyvoice2.*`           | `vokra.cosyvoice2.sample_rate` (`24000`), `vokra.cosyvoice2.arch.{vocab_size,hidden_dim,n_layer,n_head,ffn_dim}`, `vokra.cosyvoice2.flow.{nfe,schedule}`, `vokra.cosyvoice2.mimi.{n_codebooks,codebook_size,d_model}`, `vokra.cosyvoice2.streaming.{chunk_size,chunk_hop}` | `u32` + `string` | persisted  | CosyVoice2 architecture / Flow Matching / Mimi codec / streaming attributes — written by `crates/vokra-convert/src/models/cosyvoice2.rs` and read by `crates/vokra-models/src/cosyvoice2/mod.rs`. `flow.schedule` values: `"linear"` / `"sway"` / `"epss"` (M3-05 flow_sampler). | Wave 5                     |
+| M3-10 | `vokra.voxtral.audio_encoder.*` | `vokra.voxtral.audio_encoder.{n_layer,n_head,hidden_dim,n_mels}`                                                                                                                                                  | `u32`         | persisted   | Voxtral audio encoder (Whisper-family arch) attributes — written by `crates/vokra-convert/src/models/voxtral.rs`, read by `crates/vokra-models/src/voxtral/`.                            | Wave 5                     |
+| M3-10 | `vokra.voxtral.text_decoder.*`  | `vokra.voxtral.text_decoder.{n_layer,hidden_dim,ffn_dim,vocab_size}`                                                                                                                                              | `u32`         | persisted   | Voxtral Mistral-family text decoder attributes.                                                                                                                                          | Wave 5                     |
+| M3-10 | `vokra.voxtral.mode`           | `vokra.voxtral.mode`                                                                                                                                                                                             | `string`      | persisted   | Voxtral mode discriminator: `"asr"` (audio → text) or `"s2s"` (speech-to-speech scaffold). Read by `crates/vokra-convert/src/main.rs::convert_voxtral_file`.                             | Wave 5                     |
+| M3-10 | `vokra.voxtral.adapter.*`      | (see the C-ABI-adjacent entry above under `## Entries` → 2026-07-09 → `gguf:vokra.voxtral.adapter.*`)                                                                                                             | mixed         | persisted   | Audio-adapter framework — the primary changelog entry lives in the `## Entries` section above so both C-ABI and GGUF views find it; the row here cross-references only.                  | Wave 8                     |
+
+Notes:
+
+- **Existing baseline keys** (already stable pre-M3, not repeated here): `vokra.frontend.*`, `vokra.whisper.*`, `vokra.piper.*`, `vokra.campplus.*`, `vokra.tokenizer.model`, `vokra.provenance.*`, `vokra.quant.default_scheme` / `vokra.quant.rule_count`, `vokra.model.name` / `vokra.model.arch`. See ADR-0001 §"vokra.* namespace" (planning doc) for the pre-M3 chunk set.
+- **Namespace policy** (unchanged): every Vokra-specific chunk lives under the `vokra.*` prefix; llama.cpp-compatible chunks (e.g. `general.*`) are honored in read but the writer never emits them under the `vokra.*` namespace. This keeps a `.gguf` interoperable with llama.cpp inspection tools while giving Vokra its own reserved namespace (CLAUDE.md L146 / "vokra-audio dialect" clause).
+- **Removal rule**: a v0.9.x chunk MAY be renamed / removed pre-1.0 without a major bump, but a `documented` → `removed` transition must land a row here even though the C-ABI gate is silent about it. This is the honest-report contract for the pre-freeze window (mirrors the C-ABI pre-1.0 policy above).
+
 <!-- Template — copy into an `### YYYY-MM-DD — vX.Y.Z-dev` section per PR-day:
 
 ### 2026-07-XX — 0.9.0-dev
