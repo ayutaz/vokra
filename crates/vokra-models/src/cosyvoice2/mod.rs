@@ -71,6 +71,7 @@
 //! same session-level hook the piper-plus / Kokoro loaders use (wired at
 //! T17 follow-on when the CosyVoice2 GGUF is available).
 
+pub(crate) mod chunk_pipeline;
 pub(crate) mod config;
 pub(crate) mod flow_matching;
 pub(crate) mod mimi_bridge;
@@ -85,8 +86,9 @@ use vokra_core::{
 };
 use vokra_ops::{ApplyProsody, ProsodyControl};
 
+pub use chunk_pipeline::{ChunkAwareStreamingPipeline, PipelineChunk, PipelineOutput};
 pub use config::CosyVoice2Config;
-pub use flow_matching::{ChunkAwareCfm, FlowMatchingRuntimeParams};
+pub use flow_matching::{ChunkAwareCfm, ChunkContinuation, FlowMatchingRuntimeParams};
 pub use mimi_bridge::MimiBridge;
 pub use text_encoder::TextEncoderStub;
 
@@ -236,6 +238,56 @@ impl CosyVoice2Tts {
     #[must_use]
     pub fn watermark(&self) -> &WatermarkConfig {
         &self.watermark
+    }
+
+    /// Runs the chunk-aware streaming pipeline with caller-supplied
+    /// velocity and code closures (M3-09-T12/T13/T14 injection point).
+    ///
+    /// This is the **internal-oracle testable path** for the CosyVoice2
+    /// engine — the real LLM velocity closure (T07/T08) and Mimi
+    /// codebook binding (T13 real-checkpoint) will replace the caller's
+    /// injections once the upstream inspection (T02) fills in the
+    /// tensor names. Until then, tests use an identity Mimi decoder and
+    /// deterministic velocity/code closures to exercise the plumbing
+    /// without inventing upstream tensor names (CLAUDE.md「ハルシネー
+    /// ション厳禁」).
+    ///
+    /// # Arguments
+    ///
+    /// - `length_input` — M3-08 length_conditioning input (mode A / B).
+    /// - `initial_state` — Flow Matching starting state for the first
+    ///   chunk. Shape is preserved across all chunks (FR-EX-08).
+    /// - `velocity_fn` — the caller-supplied velocity closure.
+    /// - `code_fn` — the caller-supplied "state → codes" mapper.
+    ///
+    /// The Mimi bridge is constructed **with the M3-06 identity
+    /// decoder fixture** — the T13 follow-on replaces this with a real
+    /// codebook binding when the CosyVoice2 GGUF is fully populated.
+    ///
+    /// # Errors
+    ///
+    /// Propagates every downstream error verbatim.
+    pub fn synthesize_with_pipeline<V, C>(
+        &self,
+        length_input: vokra_core::ir::graph::LengthConditioningAttrs,
+        initial_state: &vokra_ops::FlowSamplerState,
+        velocity_fn: V,
+        code_fn: C,
+    ) -> Result<chunk_pipeline::PipelineOutput>
+    where
+        V: FnMut(
+            &vokra_ops::FlowSamplerState,
+            f32,
+            vokra_ops::ForwardPass,
+            &flow_matching::ChunkContinuation<'_>,
+        ) -> Result<vokra_ops::FlowSamplerState>,
+        C: FnMut(&vokra_ops::FlowSamplerState, usize, usize) -> Result<Vec<u32>>,
+    {
+        let cfm = flow_matching::ChunkAwareCfm::new(self.config.clone())?;
+        let bridge = mimi_bridge::MimiBridge::with_identity_decoder(&self.config)?;
+        let pipeline =
+            chunk_pipeline::ChunkAwareStreamingPipeline::new(&self.config, &cfm, &bridge)?;
+        pipeline.synthesize(length_input, initial_state, velocity_fn, code_fn)
     }
 }
 
@@ -400,5 +452,110 @@ mod tests {
             ctx, before,
             "T17-follow-on lands the folding; today passthrough"
         );
+    }
+
+    // ---- Pipeline integration through CosyVoice2Tts --------------------
+
+    fn nondegenerate_gguf_bytes() -> Vec<u8> {
+        // Same fixture as minimal_gguf_bytes but with sane mimi_* +
+        // streaming_* values so the pipeline can actually run.
+        let mut b = GgufBuilder::new();
+        b.add_string(KEY_MODEL_ARCH, "cosyvoice2");
+        b.add_string("vokra.model.name", "cosyvoice2-0.5b");
+        b.add_u32(config::KEY_SAMPLE_RATE, 24_000);
+        b.add_u32(config::KEY_VOCAB_SIZE, 32);
+        b.add_u32(config::KEY_HIDDEN_DIM, 16);
+        b.add_u32(config::KEY_N_LAYER, 2);
+        b.add_u32(config::KEY_N_HEAD, 2);
+        b.add_u32(config::KEY_FFN_DIM, 32);
+        b.add_u32(config::KEY_FLOW_NFE, 2);
+        b.add_u32(config::KEY_MIMI_N_CODEBOOKS, 2);
+        b.add_u32(config::KEY_MIMI_CODEBOOK_SIZE, 8);
+        b.add_u32(config::KEY_MIMI_D_MODEL, 4);
+        b.add_u32(config::KEY_STREAMING_CHUNK_SIZE, 4);
+        b.add_u32(config::KEY_STREAMING_CHUNK_HOP, 4);
+        b.add_metadata(
+            config::KEY_FLOW_SCHEDULE,
+            GgufMetadataValue::String("linear".to_owned()),
+        );
+        b.to_bytes().expect("gguf serialize")
+    }
+
+    #[test]
+    fn synthesize_with_pipeline_end_to_end_smoke() {
+        // Full pipeline run through the engine handle: length_conditioning
+        // → run_chunks → identity MimiDecoder → PipelineOutput.
+        //
+        // Uses a zero-velocity closure so each chunk's terminal is the
+        // chunk's initial state (predictable). The code closure emits
+        // constant 1s → identity decoder produces a predictable feature
+        // buffer. This is the internal-oracle path — no real safetensors
+        // checkpoint invoked (CLAUDE.md hallucination ban).
+        let bytes = nondegenerate_gguf_bytes();
+        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect("load");
+        let length_input =
+            vokra_core::ir::graph::LengthConditioningAttrs::user_specified_frames(6.0);
+        let x0 = vokra_ops::FlowSamplerState::new(vec![1], vec![0.0]).unwrap();
+        let out = tts
+            .synthesize_with_pipeline(
+                length_input,
+                &x0,
+                |s, _t, _p, _c| {
+                    Ok(vokra_ops::FlowSamplerState {
+                        shape: s.shape.clone(),
+                        data: vec![0.0; s.data.len()],
+                    })
+                },
+                |_s, chunk_frames, n_cb| Ok(vec![1u32; chunk_frames * n_cb]),
+            )
+            .expect("pipeline succeeds");
+        assert_eq!(out.target_frames, 6);
+        assert_eq!(out.chunks.len(), 2, "6 frames / 4 chunk_size → 2 chunks");
+        assert_eq!(out.chunks[0].chunk_frames, 4);
+        assert_eq!(out.chunks[1].chunk_frames, 2);
+        // Every feature must be finite (the "no NaN" invariant).
+        for c in &out.chunks {
+            for &v in &c.features {
+                assert!(v.is_finite(), "feature must be finite");
+            }
+        }
+    }
+
+    #[test]
+    fn synthesize_with_pipeline_propagates_synthesize_stub_rationale() {
+        // FR-EX-08: the top-level TtsEngine::synthesize returns
+        // NotImplemented (real LLM path unwired), but
+        // synthesize_with_pipeline succeeds because it accepts injected
+        // closures. This mirrors the T14 streaming pipeline promotion
+        // pattern: today's testable oracle path does not depend on
+        // upstream tensor names.
+        let bytes = nondegenerate_gguf_bytes();
+        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect("load");
+        // Native synthesize() still stub.
+        let err = tts
+            .synthesize(&SynthesisRequest::new("hello"))
+            .expect_err("no real LLM path yet");
+        assert!(matches!(err, VokraError::NotImplemented(_)));
+        // Pipeline path succeeds with injected closures.
+        let length_input =
+            vokra_core::ir::graph::LengthConditioningAttrs::user_specified_frames(4.0);
+        let x0 = vokra_ops::FlowSamplerState::new(vec![1], vec![0.0]).unwrap();
+        let out = tts
+            .synthesize_with_pipeline(
+                length_input,
+                &x0,
+                |s, _t, _p, _c| {
+                    Ok(vokra_ops::FlowSamplerState {
+                        shape: s.shape.clone(),
+                        data: vec![0.0; s.data.len()],
+                    })
+                },
+                |_s, chunk_frames, n_cb| Ok(vec![0u32; chunk_frames * n_cb]),
+            )
+            .expect("pipeline succeeds");
+        assert_eq!(out.target_frames, 4);
+        assert_eq!(out.chunks.len(), 1);
     }
 }
