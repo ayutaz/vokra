@@ -550,3 +550,219 @@ jobs:
           echo "SBOM    : vokra-python-sbom.spdx.json (SPDX-JSON, uploaded as artifact)"
           echo "Skipping: pypa/gh-action-pypi-publish (real upload)."
           echo "Dry-run path uploaded wheels to GitHub Release assets only."
+
+  # ---------------------------------------------------------------------------
+  # M3-11-T17: Godot GDExtension AssetLib package CD auto-publish
+  # (NFR-MT-08 / FR-API-05 / ADR-0011 §D10).
+  #
+  # Assembles the vokra-godot-<version>.zip release-signed AssetLib package
+  # on tag push (v*), runs the T18 compliance scanner (no NVIDIA runtime
+  # + LICENSE / NOTICE / vokra.gdextension presence), and uploads the zip
+  # + .sha256 to the GitHub Release. Optional Godot AssetLib official
+  # registration is documented but NOT wired here (initial submission is
+  # manual per ADR-0011 §D10; the second-and-onward `update` call is
+  # opt-in via a follow-up workflow once the AssetLib API auth flow is
+  # documented — mirrors the OPENUPM_TOKEN posture in unity-package-release).
+  #
+  # Cross-compile strategy: the godot-crossbuild.yml (T16) matrix already
+  # produces per-target cdylib artifacts (`vokra-godot-<triple>`). This
+  # release job pulls them via `gh run download` scoped to the tag SHA,
+  # reassembles the AssetLib layout, and packs the zip via
+  # scripts/build-godot-gdextension.sh --no-build --pack. Missing per-target
+  # artifacts are non-fatal for the initial CD wire-up so the zip still
+  # assembles with whatever platforms did build — matches unity-package-release
+  # `continue-on-error` idiom for reuse of ci.yml artifacts.
+  #
+  # Reproducibility (build-godot-gdextension.sh --pack § SOURCE_DATE_EPOCH):
+  # the pack path derives SOURCE_DATE_EPOCH from the HEAD commit timestamp
+  # and consumes it via `zip -X` (bypasses local timestamp variability).
+  # The emitted .sha256 is uploaded alongside the zip so downstream
+  # (GitHub Release, Godot AssetLib) checksum reconciliation is
+  # deterministic.
+  #
+  # NVIDIA runtime non-bundled (ADR-0011 §D7 / NFR-LC-01): the T18
+  # scanner runs on the assembled AssetLib tree BEFORE the zip is packed
+  # (belt-and-suspenders — a bundled cudart on any per-target artifact
+  # would fail loudly rather than shipping in the released .zip).
+  #
+  # Zero-dep invariant unchanged (NFR-DS-02): no new Rust crate; no
+  # Cargo.lock churn; only shell + gh + zip (all preinstalled on
+  # ubuntu-latest).
+  # ---------------------------------------------------------------------------
+  godot-package-release:
+    name: godot-package-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute release version (semver from tag, v-prefix stripped)
+        id: version
+        run: |
+          # Tag path: refs/tags/v0.1.0-preview.1 -> version=0.1.0-preview.1
+          # workflow_dispatch path: fall back to the Cargo.toml version so
+          # dry-runs are still meaningful. build-godot-gdextension.sh --pack
+          # names the zip from that Cargo.toml value; asserting alignment
+          # here surfaces version drift before the tarball ships silently.
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="$(awk -F'"' '/^[[:space:]]*version[[:space:]]*=/ { print $2; exit }' \
+              integrations/vokra-godot/Cargo.toml)"
+          fi
+          if [ -z "$V" ]; then
+            echo "godot-package-release: FAIL could not derive version" >&2
+            exit 1
+          fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+          echo "Release version: ${V}"
+
+      - name: Reuse per-target cdylibs from godot-crossbuild.yml matrix
+        # T16 crossbuild produces one vokra-godot-<triple> artifact per
+        # platform. Fetch each via `gh run download` scoped to the tag
+        # SHA and reassemble under integrations/vokra-godot/pkg/lib/.
+        # Missing artifacts are non-fatal so the release zip still
+        # assembles with whichever platforms did land — the T18 scan
+        # will then note the empty per-platform slot as a package
+        # completeness gap rather than a bundled-NVIDIA failure.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          RUN_ID="$(gh run list \
+            --workflow=godot-crossbuild.yml \
+            --branch="${GITHUB_REF_NAME}" \
+            --limit=20 \
+            --json databaseId,headSha,conclusion \
+            --jq ".[] | select(.headSha==\"${GITHUB_SHA}\" and .conclusion==\"success\") | .databaseId" \
+            | head -n 1)"
+          if [ -z "$RUN_ID" ]; then
+            echo "godot-package-release: no successful godot-crossbuild.yml run for SHA ${GITHUB_SHA}; skipping matrix reuse"
+            exit 0
+          fi
+          echo "godot-package-release: reusing godot-crossbuild.yml run ${RUN_ID}"
+          mkdir -p integrations/vokra-godot/pkg/lib
+          for TRIPLE in \
+            x86_64-apple-darwin \
+            aarch64-apple-darwin \
+            x86_64-unknown-linux-gnu \
+            x86_64-pc-windows-msvc \
+            aarch64-linux-android; do
+            gh run download "$RUN_ID" \
+              --name "vokra-godot-${TRIPLE}" \
+              --dir "integrations/vokra-godot/pkg/lib/${TRIPLE}" \
+              || echo "godot-package-release: ${TRIPLE} artifact missing (crossbuild leg red?)"
+          done
+          echo "== Collected per-target artifacts =="
+          find integrations/vokra-godot/pkg/lib -type f | LC_ALL=C sort
+          set -e
+
+      - name: Reassemble AssetLib layout from staged cdylibs
+        run: |
+          set -euo pipefail
+          mkdir -p dist/godot/vokra-godot/addons/vokra/bin
+          declare -A DEST_SUBDIR=(
+            [x86_64-apple-darwin]=macos/x86_64
+            [aarch64-apple-darwin]=macos/arm64
+            [x86_64-unknown-linux-gnu]=linux/x86_64
+            [x86_64-pc-windows-msvc]=windows/x86_64
+            [aarch64-linux-android]=android/arm64-v8a
+          )
+          for TRIPLE in "${!DEST_SUBDIR[@]}"; do
+            SRC_DIR="integrations/vokra-godot/pkg/lib/${TRIPLE}"
+            DEST="dist/godot/vokra-godot/addons/vokra/bin/${DEST_SUBDIR[$TRIPLE]}"
+            if [ -d "$SRC_DIR" ] && [ "$(ls -A "$SRC_DIR" 2>/dev/null)" ]; then
+              mkdir -p "$DEST"
+              cp -f "$SRC_DIR"/* "$DEST/" || true
+            fi
+          done
+          ADDON=dist/godot/vokra-godot/addons/vokra
+          cp -f integrations/vokra-godot/vokra.gdextension "$ADDON/vokra.gdextension"
+          for f in LICENSE NOTICE README.md; do
+            if [ -f "integrations/vokra-godot/$f" ]; then
+              cp -f "integrations/vokra-godot/$f" "$ADDON/$f"
+            elif [ -f "$f" ]; then
+              cp -f "$f" "$ADDON/$f"
+            fi
+          done
+          echo "== AssetLib tree =="
+          find dist/godot/vokra-godot -type f | LC_ALL=C sort
+
+      - name: Compliance scan (T18 — no NVIDIA runtime + LICENSE/NOTICE)
+        run: bash scripts/compliance/check-godot-package-no-nvidia.sh dist/godot/vokra-godot
+
+      - name: Pack AssetLib zip (SOURCE_DATE_EPOCH pinned, --no-build)
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
+          bash scripts/build-godot-gdextension.sh --no-build --pack
+
+      - name: Verify zip + compute .sha256
+        id: pack
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          # build-godot-gdextension.sh names the zip from
+          # integrations/vokra-godot/Cargo.toml's version. On tag push
+          # the CD flow expects that version to have been bumped by a
+          # preceding commit; assert alignment or fail loudly so version
+          # drift never ships silently. (Mirrors unity-package-release.)
+          ZIP="dist/godot/vokra-godot-${VERSION}.zip"
+          if [ ! -f "$ZIP" ]; then
+            echo "godot-package-release: FAIL zip not produced at $ZIP" >&2
+            echo "  (integrations/vokra-godot/Cargo.toml version likely != tag version ${VERSION})" >&2
+            ls -la dist/godot/ >&2
+            exit 1
+          fi
+          # build-godot-gdextension.sh --pack already emits ${ZIP}.sha256
+          # (via shasum/sha256sum). Assert it exists so the release upload
+          # is deterministic; recompute if the script's coreutils branch
+          # didn't fire.
+          if [ ! -f "${ZIP}.sha256" ]; then
+            sha256sum "$ZIP" > "${ZIP}.sha256"
+          fi
+          {
+            echo "zip=${ZIP}"
+            echo "sha256=$(awk '{print $1}' "${ZIP}.sha256")"
+          } >> "$GITHUB_OUTPUT"
+          echo "== AssetLib zip =="
+          ls -la "$ZIP" "${ZIP}.sha256"
+          echo "sha256 = $(cat "${ZIP}.sha256")"
+
+      - name: Upload workflow artifact (always, for inspection)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vokra-godot-assetlib-release
+          path: |
+            ${{ steps.pack.outputs.zip }}
+            ${{ steps.pack.outputs.zip }}.sha256
+          retention-days: 30
+
+      - name: Upload to GitHub Release (tag + non-dry-run)
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release upload "$TAG" \
+            "${{ steps.pack.outputs.zip }}" \
+            "${{ steps.pack.outputs.zip }}.sha256" \
+            --clobber
+
+      # Godot AssetLib official registration: NOT auto-wired here. The
+      # initial submission is a manual form-fill against
+      # https://godotengine.org/asset-library/asset per ADR-0011 §D10.
+      # A follow-up workflow can add the AssetLib API `update` call once
+      # the owner registers the asset and stashes the auth secret. Until
+      # then the GitHub Release asset is the baseline distribution
+      # channel (same posture unity-package-release takes toward OpenUPM).
+
+      - name: Dry-run summary
+        if: inputs.dry_run == true || !startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "== DRY RUN (godot-package-release) =="
+          echo "Version : ${{ steps.version.outputs.version }}"
+          echo "Zip     : ${{ steps.pack.outputs.zip }}"
+          echo "SHA256  : ${{ steps.pack.outputs.sha256 }}"
+          echo "Skipping: gh release upload, Godot AssetLib API update."

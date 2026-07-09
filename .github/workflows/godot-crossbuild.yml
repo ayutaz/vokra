@@ -1,0 +1,302 @@
+# M3-11-T16 Godot GDExtension crossbuild CI (ADR-0011 §D4 / §D9,
+# FR-API-05, NFR-MT-07).
+#
+# Purpose:
+#   Verify that the vokra-godot cdylib (integrations/vokra-godot/) builds
+#   for every M3-11 target platform. The matrix is the same one enumerated
+#   by scripts/build-godot-gdextension.sh's TARGET_TRIPLE selector:
+#
+#     x86_64-apple-darwin         (macOS Intel)
+#     aarch64-apple-darwin        (macOS Apple Silicon)
+#     x86_64-unknown-linux-gnu    (Linux x64)
+#     x86_64-pc-windows-msvc      (Windows x64)
+#     aarch64-linux-android       (Android arm64)
+#
+#   Runtime verification (opening the demo scenes in Godot 4.x Editor) is
+#   M3-11-T19 owner work — this workflow only proves the crossbuild
+#   toolchain wiring is intact and the cdylib artifacts exist per platform.
+#
+# Design (mirrors gpu-vulkan-parity.yml + gpu-cuda-rtf.yml + parity-*.yml
+# scheduling posture):
+#
+#   * Trigger: workflow_dispatch (owner-driven) + weekly cron (Mondays
+#     06:00 UTC — 1h after gpu-vulkan-parity, staggered so a shared runner
+#     capacity issue doesn't stack all three jobs).
+#
+#   * Runners: matrix runs on GitHub-hosted Ubuntu / macOS / Windows
+#     depending on the target host requirement. macOS builds need a mac
+#     runner (Apple's SDK licensing forbids cross-compiling to Darwin
+#     targets from Linux). Windows MSVC needs a Windows runner unless we
+#     opt into `cross` / `cargo-xwin`; sticking with native windows-latest
+#     is the simpler contract. Linux x64 + Android arm64 run on
+#     ubuntu-latest — Android uses the NDK preset from setup-android@v3
+#     the same way scripts/build-android.sh does in ci.yml.
+#
+#   * NOT a required check on `main` PRs. This workflow is opt-in until
+#     the toolchain wiring has been stable across 4+ consecutive cron
+#     runs (same "cool-off" policy as gpu-vulkan-parity.yml). CI required
+#     checks are the seven registered on ci.yml (build / test / fmt /
+#     clippy / gpu-backends / parity / license / ios-build / unity-package
+#     / python-wheel-build); this Godot leg joins that list after the
+#     owner smoke (T19) signs off.
+#
+#   * Honest reporting (FR-EX-08):
+#     - fail-fast: false so a Windows regression does not mask an Android
+#       regression and vice versa.
+#     - Each matrix leg uploads its per-target staging tree
+#       (`integrations/vokra-godot/pkg/lib/${TARGET_TRIPLE}/`) as its own
+#       artifact so the release train (T17) can pick them up individually.
+#
+# Zero-dep (NFR-DS-02):
+#
+#   * No Rust dependency is added — vokra-godot lives in the excluded
+#     integrations/ workspace, so its Cargo.lock does not intersect the
+#     root Cargo.lock. The final "zero-dep invariant" step re-checks the
+#     root Cargo.lock is untouched anyway (defensive; a future refactor
+#     that accidentally promoted vokra-godot into the root workspace
+#     would trip this immediately).
+#
+# Untested from CC's authoring host: cross-compilation to the four
+# non-Apple-Silicon triples has NOT been exercised from this session
+# (Apple M1 iMac has only aarch64-apple-darwin toolchain out of the box).
+# The workflow is scaffolding; the initial workflow_dispatch run is an
+# owner handoff.
+
+name: godot-crossbuild
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly Monday 06:00 UTC. 1h after gpu-vulkan-parity (05:00 UTC), 1h
+    # before gpu-cuda-rtf (07:00 UTC on the self-hosted runner). Off-peak
+    # US/EU business hours.
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: godot-crossbuild-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  crossbuild:
+    name: crossbuild (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # Show every regression, don't mask one behind another.
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            artifact_lib: libvokra_godot.dylib
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            artifact_lib: libvokra_godot.dylib
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            artifact_lib: libvokra_godot.so
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            artifact_lib: vokra_godot.dll
+          - target: aarch64-linux-android
+            runner: ubuntu-latest
+            artifact_lib: libvokra_godot.so
+    env:
+      TARGET_TRIPLE: ${{ matrix.target }}
+      RUST_BACKTRACE: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Per-target rustup component. When `target` is set the action
+          # runs `rustup target add ${target}` automatically — mirrors the
+          # ios-xcframework leg in release.yml.
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Cache scoped per-target so a Windows change doesn't invalidate
+          # the Android cache.
+          shared-key: godot-crossbuild-${{ matrix.target }}
+          workspaces: |
+            integrations/vokra-godot -> integrations/vokra-godot/target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # ---- Android toolchain (aarch64-linux-android only) ----------------
+      #
+      # The NDK ships with a set of `aarch64-linux-android*-clang` wrappers;
+      # Rust's linker for the aarch64-linux-android target needs one of
+      # those (min-SDK 24 is the common pin used by scripts/build-android.sh
+      # for the M2 Unity Android leg). setup-android@v3 populates
+      # $ANDROID_NDK_ROOT which we forward to Cargo via the standard env
+      # vars.
+      - name: Set up Android SDK / NDK (aarch64-linux-android only)
+        if: matrix.target == 'aarch64-linux-android'
+        uses: android-actions/setup-android@v3
+
+      - name: Configure NDK linker for aarch64-linux-android
+        if: matrix.target == 'aarch64-linux-android'
+        run: |
+          set -euo pipefail
+          NDK_ROOT="${ANDROID_NDK_ROOT}"
+          if [ -z "${NDK_ROOT}" ] || [ ! -d "${NDK_ROOT}" ]; then
+            echo "FAIL: ANDROID_NDK_ROOT is unset or missing" >&2
+            exit 1
+          fi
+          # setup-android@v3 puts host-tag'd toolchains under
+          # $NDK_ROOT/toolchains/llvm/prebuilt/<host>/. Ubuntu 22.04+ runners
+          # use `linux-x86_64` — verified via `ls` in the step summary so a
+          # future host-tag rename surfaces.
+          HOST_TAG=linux-x86_64
+          BIN="${NDK_ROOT}/toolchains/llvm/prebuilt/${HOST_TAG}/bin"
+          if [ ! -d "${BIN}" ]; then
+            echo "FAIL: NDK toolchain bin not found: ${BIN}" >&2
+            ls "${NDK_ROOT}/toolchains/llvm/prebuilt/" >&2 || true
+            exit 1
+          fi
+          # min-SDK 24 matches scripts/build-android.sh (Vokra ships to
+          # Android 7.0+; older devices are out-of-scope per BR-04).
+          LINKER="${BIN}/aarch64-linux-android24-clang"
+          if [ ! -x "${LINKER}" ]; then
+            echo "FAIL: expected NDK linker not executable: ${LINKER}" >&2
+            ls "${BIN}" | grep aarch64 | head -20 >&2 || true
+            exit 1
+          fi
+          {
+            echo "CC_aarch64_linux_android=${LINKER}"
+            echo "AR_aarch64_linux_android=${BIN}/llvm-ar"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${LINKER}"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_AR=${BIN}/llvm-ar"
+          } >> "$GITHUB_ENV"
+          echo "NDK linker resolved: ${LINKER}"
+
+      # ---- Build via the T12 driver script -------------------------------
+      #
+      # The build-godot-gdextension.sh script consumes TARGET_TRIPLE from
+      # the environment, runs `cargo build --release --target ${triple}`,
+      # and stages the resulting cdylib both into the AssetLib layout
+      # (dist/godot/vokra-godot/addons/vokra/bin/) AND into the flat
+      # per-triple staging tree (integrations/vokra-godot/pkg/lib/${triple}/)
+      # that this workflow uploads as its artifact.
+      #
+      # The Windows leg uses the Git Bash shell that ships with the
+      # windows-latest runner (`bash` on PATH). The macOS + Linux legs use
+      # the default runner shell.
+      - name: Build vokra-godot cdylib for ${{ matrix.target }}
+        shell: bash
+        run: bash scripts/build-godot-gdextension.sh
+
+      # Explicit staging check — an empty pkg/lib/<triple>/ would mean the
+      # cargo build silently produced no cdylib (e.g. wrong crate type).
+      # FR-EX-08: fail loudly instead of uploading an empty artifact.
+      - name: Verify pkg/lib/${{ matrix.target }}/${{ matrix.artifact_lib }} exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          F="integrations/vokra-godot/pkg/lib/${TARGET_TRIPLE}/${{ matrix.artifact_lib }}"
+          if [ ! -f "$F" ]; then
+            echo "FAIL: expected staged artifact missing: $F" >&2
+            find integrations/vokra-godot/pkg -maxdepth 4 -type f >&2 || true
+            exit 1
+          fi
+          ls -la "$F"
+
+      - name: Upload cdylib artifact (${{ matrix.target }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: vokra-godot-${{ matrix.target }}
+          path: integrations/vokra-godot/pkg/lib/${{ matrix.target }}/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Zero-dep invariant (root Cargo.lock unchanged by Godot build)
+        # NFR-DS-02: vokra-godot is an excluded workspace so its build
+        # cannot touch the root Cargo.lock. This step is defensive — a
+        # future refactor that accidentally promoted vokra-godot into the
+        # root workspace would flip this from a no-op into a loud fail.
+        shell: bash
+        run: git diff --exit-code Cargo.lock
+
+  # ---------------------------------------------------------------------------
+  # Aggregator: assemble the AssetLib package tree from every matrix leg's
+  # per-target artifact, run the compliance scanner (T18), upload the
+  # combined AssetLib zip as a workflow artifact. The release train (T17)
+  # picks up the same zip and promotes it to a GitHub Release asset.
+  # ---------------------------------------------------------------------------
+  package:
+    name: package (AssetLib zip + T18 compliance)
+    needs: crossbuild
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Downloading all matrix artifacts populates each per-target subdir
+      # under a common root; we then re-run build-godot-gdextension.sh in
+      # --no-build --pack mode to lay out the AssetLib tree.
+      - name: Download per-target cdylibs from crossbuild matrix
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vokra-godot-*
+          path: staging/
+
+      - name: Reassemble AssetLib layout from staged cdylibs
+        run: |
+          set -euo pipefail
+          mkdir -p integrations/vokra-godot/pkg/lib
+          for dir in staging/vokra-godot-*; do
+            TRIPLE="${dir#staging/vokra-godot-}"
+            mkdir -p "integrations/vokra-godot/pkg/lib/${TRIPLE}"
+            cp -r "${dir}/." "integrations/vokra-godot/pkg/lib/${TRIPLE}/"
+          done
+          # Also lay each artifact into the AssetLib bin/ tree Godot expects,
+          # replicating the per-triple → per-platform mapping the T12 build
+          # script uses.
+          mkdir -p dist/godot/vokra-godot/addons/vokra/bin
+          declare -A DEST_SUBDIR=(
+            [x86_64-apple-darwin]=macos/x86_64
+            [aarch64-apple-darwin]=macos/arm64
+            [x86_64-unknown-linux-gnu]=linux/x86_64
+            [x86_64-pc-windows-msvc]=windows/x86_64
+            [aarch64-linux-android]=android/arm64-v8a
+          )
+          for TRIPLE in "${!DEST_SUBDIR[@]}"; do
+            SRC_DIR="integrations/vokra-godot/pkg/lib/${TRIPLE}"
+            DEST="dist/godot/vokra-godot/addons/vokra/bin/${DEST_SUBDIR[$TRIPLE]}"
+            if [ -d "$SRC_DIR" ]; then
+              mkdir -p "$DEST"
+              cp -f "$SRC_DIR"/* "$DEST/" || true
+            fi
+          done
+          # LICENSE + NOTICE + vokra.gdextension come from the source tree.
+          ADDON=dist/godot/vokra-godot/addons/vokra
+          cp -f integrations/vokra-godot/vokra.gdextension "$ADDON/vokra.gdextension"
+          # Fall back to repo-root LICENSE / NOTICE if the crate doesn't
+          # ship its own — matches build-godot-gdextension.sh L153-L161.
+          for f in LICENSE NOTICE README.md; do
+            if [ -f "integrations/vokra-godot/$f" ]; then
+              cp -f "integrations/vokra-godot/$f" "$ADDON/$f"
+            elif [ -f "$f" ]; then
+              cp -f "$f" "$ADDON/$f"
+            fi
+          done
+          echo "== AssetLib tree =="
+          find dist/godot/vokra-godot -type f | LC_ALL=C sort
+
+      - name: Compliance scan (T18 — no NVIDIA runtime + LICENSE/NOTICE)
+        run: bash scripts/compliance/check-godot-package-no-nvidia.sh dist/godot/vokra-godot
+
+      - name: Pack AssetLib zip (deterministic, --no-build)
+        run: bash scripts/build-godot-gdextension.sh --no-build --pack
+
+      - name: Upload AssetLib package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vokra-godot-assetlib
+          path: |
+            dist/godot/vokra-godot-*.zip
+            dist/godot/vokra-godot-*.zip.sha256
+          retention-days: 30
+          if-no-files-found: error
