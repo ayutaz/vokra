@@ -19,7 +19,10 @@
 //!   fallback);
 //! - the **decoder KV cache** ([`cache`], FR-EX-02): [`KvCache`], an ownable,
 //!   `Send` key/value cache promoted out of the models so a decode can be
-//!   moved across threads (the M1-08 streaming foundation);
+//!   moved across threads (the M1-08 streaming foundation), and its M3-03
+//!   sibling [`PagedKvCache`] (FR-EX-03) with a `[time, stream, codebook]`
+//!   3D logical address and a session-lifetime page arena that keeps the hot
+//!   path free of system allocations (FR-EX-05);
 //! - the **complex value type** ([`complex`], FR-EX-09): [`Complex32`], the
 //!   host pair-of-`f32` behind the [`DType::Complex64`] IR dtype, shared with
 //!   the audio ops and their FFT core;
@@ -94,6 +97,7 @@ pub mod error;
 pub mod gguf;
 pub mod ir;
 pub mod json;
+pub mod kv_quant;
 pub mod pipeline;
 pub mod prenorm;
 pub mod quant;
@@ -106,6 +110,13 @@ pub mod tasks;
 
 pub use backend::{Backend, BackendKind};
 pub use cache::KvCache;
+pub use cache::paged::{
+    AllocatorSnapshot, BlockSize, GpuPagedKvCacheOps, KvDims, KvElement, KvSlot, PageId,
+    PagedKvCache, TimeRangeIter,
+};
+pub use cache::paged_quant::{
+    AllocatorSnapshot as QuantAllocatorSnapshot, AnyBlock, QuantizedPagedKvCache,
+};
 pub use complex::Complex32;
 pub use compliance::{
     ComplianceConfig, ComplianceLevel, CompliancePolicy, DisclosureConfig, LicenseClass,
@@ -124,6 +135,10 @@ pub use gguf::{
     GgufTensorInfo,
 };
 pub use ir::{AudioGraph, DType, Dim, GraphBuilder, Node, OpKind, TensorDesc, TensorId};
+pub use kv_quant::{
+    BlockQ4_0, BlockQ5_0, BlockQ8_0, F16Bits, KV_QUANT_BLOCK_SIZE, KvQuant, KvQuantBlock,
+    QuantKind, dequantize_bytes, pack_slice, unpack_slice,
+};
 pub use pipeline::{AudioPipeline, Pipeline, PipelineStage};
 pub use prenorm::{DecoderLayerView, PrenormLayer};
 pub use rng::SplitMix64;
