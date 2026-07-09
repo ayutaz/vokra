@@ -454,6 +454,10 @@ pub(crate) struct DeviceFns {
     pub(crate) end_command_buffer: sys::FnVkEndCommandBuffer,
     pub(crate) reset_command_buffer: sys::FnVkResetCommandBuffer,
     pub(crate) cmd_copy_buffer: sys::FnVkCmdCopyBuffer,
+    // Compute dispatch commands (M3-02 handcrafted smoke + T14+ dispatch).
+    pub(crate) cmd_bind_pipeline: sys::FnVkCmdBindPipeline,
+    pub(crate) cmd_bind_descriptor_sets: sys::FnVkCmdBindDescriptorSets,
+    pub(crate) cmd_dispatch: sys::FnVkCmdDispatch,
     // Buffer + memory.
     pub(crate) create_buffer: sys::FnVkCreateBuffer,
     pub(crate) destroy_buffer: sys::FnVkDestroyBuffer,
@@ -1003,6 +1007,12 @@ fn resolve_device_fns(instance: &VulkanInstance) -> Result<DeviceFns> {
         end_command_buffer: resolve!(sys::FnVkEndCommandBuffer, "vkEndCommandBuffer"),
         reset_command_buffer: resolve!(sys::FnVkResetCommandBuffer, "vkResetCommandBuffer"),
         cmd_copy_buffer: resolve!(sys::FnVkCmdCopyBuffer, "vkCmdCopyBuffer"),
+        cmd_bind_pipeline: resolve!(sys::FnVkCmdBindPipeline, "vkCmdBindPipeline"),
+        cmd_bind_descriptor_sets: resolve!(
+            sys::FnVkCmdBindDescriptorSets,
+            "vkCmdBindDescriptorSets"
+        ),
+        cmd_dispatch: resolve!(sys::FnVkCmdDispatch, "vkCmdDispatch"),
         create_buffer: resolve!(sys::FnVkCreateBuffer, "vkCreateBuffer"),
         destroy_buffer: resolve!(sys::FnVkDestroyBuffer, "vkDestroyBuffer"),
         get_buffer_memory_requirements: resolve!(
@@ -1762,6 +1772,235 @@ impl Drop for VulkanComputePipeline<'_> {
 
 // Suppress "unused import" for the placeholder `c_void` we pull in.
 const _: *const c_void = core::ptr::null();
+
+// ---------------------------------------------------------------------------
+// smoke_dispatch_copy_f32_impl — the end-to-end `Vulkan is real` proof point
+// (M3-02-T13 / ADR M3-02-spirv-generation §4 (d)). Uses the hand-crafted
+// `copy_f32` SPIR-V blob to dispatch a copy of an f32 array on the GPU and
+// reads the result back. Every T08〜T12 + T25 primitive is exercised by this
+// single function: device, command pool, buffer / memory, descriptor set,
+// pipeline layout, shader module, compute pipeline, fence — plus the three
+// new dispatch commands (`vkCmdBindPipeline` / `vkCmdBindDescriptorSets` /
+// `vkCmdDispatch`).
+// ---------------------------------------------------------------------------
+
+/// Round-trip `input` through the hand-crafted `copy_f32` compute kernel and
+/// return the GPU-observed output. On a working Vulkan host this is
+/// bit-identical to `input` — the shader body is `dst[i] = src[i]`.
+///
+/// The public wrapper is [`crate::smoke_dispatch_copy_f32`] (in `lib.rs`),
+/// which surfaces [`VokraError::BackendUnavailable`] on non-Vulkan targets.
+///
+/// # Errors
+///
+/// - [`VokraError::BackendUnavailable`] — no Vulkan loader / no ICD / no
+///   compute queue. The caller's test skips (no CPU fall back, FR-EX-08).
+/// - [`VokraError::UnsupportedOp`] — the SPIR-V module was rejected by the
+///   driver (VkResult != SUCCESS on `vkCreateShaderModule` /
+///   `vkCreateComputePipelines`). Bubble up so the caller can log the driver
+///   name.
+pub(crate) fn smoke_dispatch_copy_f32_impl(input: &[f32]) -> Result<Vec<f32>> {
+    // Trivial pass-through — no dispatch, no allocation.
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 1. Build the device (loader + instance + logical device + queue).
+    let instance = VulkanInstance::new()?;
+    let device = VulkanDevice::new(instance)?;
+
+    // 2. Encode input as little-endian bytes and upload to a device-local
+    //    SSBO. `upload_bytes` uses a host-visible staging buffer + a
+    //    device-local target buffer with STORAGE_BUFFER | TRANSFER_DST usage,
+    //    which is exactly what the shader wants.
+    let byte_len = input.len() * 4;
+    let mut src_bytes = Vec::with_capacity(byte_len);
+    for f in input {
+        src_bytes.extend_from_slice(&f.to_le_bytes());
+    }
+    let src_buf = device.upload_bytes(&src_bytes)?;
+
+    // 3. Allocate the destination SSBO — device-local, STORAGE_BUFFER +
+    //    TRANSFER_SRC so the compute pipeline can write to it and the
+    //    subsequent `download_bytes` can read it back via a staging copy.
+    let dst_buf = VulkanBuffer::new(
+        &device,
+        byte_len,
+        sys::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | sys::VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        sys::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+    )?;
+
+    // 4. Descriptor set layout + pool + set (2 storage-buffer bindings).
+    let dsl = VulkanDescriptorSetLayout::new_storage_buffers(
+        &device,
+        crate::spirv::handcrafted_copy_f32::BINDING_COUNT,
+    )?;
+    let dpool = VulkanDescriptorPool::new_storage_buffers(
+        &device,
+        1,
+        crate::spirv::handcrafted_copy_f32::BINDING_COUNT,
+    )?;
+    let set = dpool.allocate_set(&dsl)?;
+
+    // Update the set: binding 0 = src, binding 1 = dst.
+    let buffer_infos = [
+        sys::VkDescriptorBufferInfo {
+            buffer: src_buf.handle(),
+            offset: 0,
+            range: sys::VkDeviceSize::MAX, // VK_WHOLE_SIZE
+        },
+        sys::VkDescriptorBufferInfo {
+            buffer: dst_buf.handle(),
+            offset: 0,
+            range: sys::VkDeviceSize::MAX,
+        },
+    ];
+    let writes = [
+        sys::VkWriteDescriptorSet {
+            s_type: sys::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            p_next: ptr::null(),
+            dst_set: set,
+            dst_binding: 0,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: sys::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            p_image_info: ptr::null(),
+            p_buffer_info: &buffer_infos[0],
+            p_texel_buffer_view: ptr::null(),
+        },
+        sys::VkWriteDescriptorSet {
+            s_type: sys::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            p_next: ptr::null(),
+            dst_set: set,
+            dst_binding: 1,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: sys::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            p_image_info: ptr::null(),
+            p_buffer_info: &buffer_infos[1],
+            p_texel_buffer_view: ptr::null(),
+        },
+    ];
+    // SAFETY: resolved entry; live device; array of 2 valid VkWriteDescriptorSet
+    // on the stack; buffer_infos outlive the call.
+    unsafe {
+        (device.fns.update_descriptor_sets)(
+            device.device,
+            writes.len() as u32,
+            writes.as_ptr(),
+            0,
+            ptr::null(),
+        );
+    }
+
+    // 5. Pipeline layout (T11) + shader module (T11) + compute pipeline (T11).
+    let pl = VulkanPipelineLayout::new(&device, &dsl)?;
+    let spv = crate::spirv::handcrafted_copy_f32::bytes();
+    let shader = VulkanShaderModule::new(&device, &spv)?;
+    // `entry_name` MUST be NUL-terminated; a `c""` literal is a
+    // compile-time-validated `&'static CStr` matching the SPIR-V module's
+    // OpEntryPoint name ("main").
+    let entry_name = c"main";
+    let pipeline = VulkanComputePipeline::new(&device, &pl, &shader, entry_name)?;
+
+    // 6. Record the dispatch into a fresh primary command buffer.
+    let cmd_pool = VulkanCommandPool::new(&device)?;
+    let cmd = cmd_pool.command_buffer;
+
+    let begin_info = sys::VkCommandBufferBeginInfo {
+        s_type: sys::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        p_next: ptr::null(),
+        flags: sys::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        p_inheritance_info: ptr::null(),
+    };
+    // SAFETY: resolved entry; live command buffer; valid begin-info.
+    let r = unsafe { (device.fns.begin_command_buffer)(cmd, &begin_info) };
+    sys::check(r, "vkBeginCommandBuffer (copy_f32 dispatch)")?;
+
+    // SAFETY: resolved entry; live command buffer; live pipeline handle;
+    // bind point = compute.
+    unsafe {
+        (device.fns.cmd_bind_pipeline)(cmd, sys::VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.handle());
+    }
+    let set_arr = [set];
+    // SAFETY: resolved entry; live command buffer; live layout + set; array
+    // of 1 descriptor set on the stack; no dynamic offsets.
+    unsafe {
+        (device.fns.cmd_bind_descriptor_sets)(
+            cmd,
+            sys::VK_PIPELINE_BIND_POINT_COMPUTE,
+            pl.handle(),
+            0, // firstSet
+            1, // descriptorSetCount
+            set_arr.as_ptr(),
+            0,
+            ptr::null(),
+        );
+    }
+    let local_size_x = crate::spirv::handcrafted_copy_f32::LOCAL_SIZE_X as usize;
+    // `group_count_x = ceil(N / local_size_x)` — the shader tolerates trailing
+    // invocations that read/write out-of-range only because we round to an
+    // exact multiple: for arbitrary N we would need a bounds check in the
+    // shader. Assert the caller passed N that is a multiple of local_size_x
+    // to keep the smoke kernel small (no bounds check in the SPIR-V body).
+    assert!(
+        input.len() % local_size_x == 0,
+        "smoke_dispatch_copy_f32 requires input.len() ({}) to be a multiple of LOCAL_SIZE_X ({}) \
+         to avoid out-of-bounds shader invocations (the handcrafted kernel omits a bounds \
+         check by design; see kernels/handcrafted/copy_f32.spv.rs)",
+        input.len(),
+        local_size_x,
+    );
+    let group_x = input.len() / local_size_x;
+    // SAFETY: resolved entry; live command buffer; positive group counts.
+    unsafe {
+        (device.fns.cmd_dispatch)(cmd, group_x as u32, 1, 1);
+    }
+    // SAFETY: resolved entry; live command buffer.
+    let r = unsafe { (device.fns.end_command_buffer)(cmd) };
+    sys::check(r, "vkEndCommandBuffer (copy_f32 dispatch)")?;
+
+    // 7. Submit + wait for fence.
+    let fence = VulkanFence::new(&device)?;
+    let submit = sys::VkSubmitInfo {
+        s_type: sys::VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        p_next: ptr::null(),
+        wait_semaphore_count: 0,
+        p_wait_semaphores: ptr::null(),
+        p_wait_dst_stage_mask: ptr::null(),
+        command_buffer_count: 1,
+        p_command_buffers: &cmd,
+        signal_semaphore_count: 0,
+        p_signal_semaphores: ptr::null(),
+    };
+    // SAFETY: resolved entry; live queue; single submit-info on the stack;
+    // fence handle is live.
+    let r = unsafe { (device.fns.queue_submit)(device.queue, 1, &submit, fence.handle) };
+    sys::check(r, "vkQueueSubmit (copy_f32 dispatch)")?;
+    fence.wait()?;
+
+    // Guarantee any transient handles are dropped before we start the
+    // read-back submission. The pipeline/shader/pool objects reference the
+    // device via `&VulkanDevice`, so they must be released before the device
+    // itself goes out of scope; explicit drops keep the ordering clear.
+    drop(pipeline);
+    drop(shader);
+    drop(pl);
+    // `set` is a `u64` handle (Copy), not an RAII wrapper; the descriptor set
+    // is implicitly freed when its parent pool (`dpool`) is dropped below.
+    let _ = set;
+    drop(dpool);
+    drop(dsl);
+
+    // 8. Read the dst buffer back to host memory and decode f32s.
+    let mut out_bytes = vec![0u8; byte_len];
+    device.download_bytes(&dst_buf, &mut out_bytes)?;
+    let mut out = Vec::with_capacity(input.len());
+    for chunk in out_bytes.chunks_exact(4) {
+        out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(out)
+}
 
 #[cfg(test)]
 mod tests {

@@ -729,6 +729,35 @@ pub(crate) struct VkBufferCopy {
 pub(crate) type FnVkCmdCopyBuffer =
     unsafe extern "system" fn(VkCommandBuffer, VkBuffer, VkBuffer, u32, *const VkBufferCopy);
 
+// -- Compute dispatch commands (M3-02 handcrafted smoke + T24 dispatch) ----
+//
+// The three symbols below are the minimum required to record a compute
+// dispatch: bind a pipeline, bind its descriptor sets, and issue a workgroup
+// count. Push constants and pipeline barriers are deliberately NOT declared
+// here — the handcrafted `copy_f32` smoke does not need them, and T14+ will
+// add whatever additional primitives their kernels require.
+
+pub(crate) type FnVkCmdBindPipeline =
+    unsafe extern "system" fn(VkCommandBuffer, u32 /* VkPipelineBindPoint */, VkPipeline);
+
+pub(crate) type FnVkCmdBindDescriptorSets = unsafe extern "system" fn(
+    VkCommandBuffer,
+    u32, // VkPipelineBindPoint
+    VkPipelineLayout,
+    u32, // firstSet
+    u32, // descriptorSetCount
+    *const VkDescriptorSet,
+    u32,        // dynamicOffsetCount
+    *const u32, // pDynamicOffsets
+);
+
+pub(crate) type FnVkCmdDispatch = unsafe extern "system" fn(
+    VkCommandBuffer,
+    u32, // groupCountX
+    u32, // groupCountY
+    u32, // groupCountZ
+);
+
 // -- Queue submit / fence --------------------------------------------------
 
 /// `VkSubmitInfo` (spec §7.3).

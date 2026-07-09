@@ -149,3 +149,69 @@ pub use backend::{
     GemmPipelinePreference, GemmPipelineVariant, VulkanBackend, select_gemm_pipeline_variant,
 };
 pub use probe::{VendorFamily, VulkanCapabilities, vokra_vulkan_probe};
+
+// ---------------------------------------------------------------------------
+// smoke_dispatch_copy_f32 — the M3-02-T13 end-to-end proof point (ADR
+// M3-02-spirv-generation §4 (d)).
+// ---------------------------------------------------------------------------
+
+/// Round-trip `input` through the hand-crafted `copy_f32` SPIR-V kernel and
+/// return the GPU-observed output.
+///
+/// This is the smoke-test entry point that proves the entire T08〜T12 + T25
+/// Vulkan object stack — device, buffer, memory, descriptor set, pipeline,
+/// command buffer, fence, dispatch — actually functions against a real
+/// Vulkan driver. On a working Vulkan host the output is bit-identical to
+/// `input` (the SPIR-V body is `dst[i] = src[i]` — a pure copy). Uses the
+/// hand-crafted SPIR-V blob in
+/// [`spirv::handcrafted_copy_f32`]; **no** `glslc` is invoked at build time
+/// or runtime (NFR-DS-02 zero-dep + NFR-RL-05 no CPU-side JIT).
+///
+/// # Constraints
+///
+/// * `input.len()` must be a multiple of `spirv::handcrafted_copy_f32::LOCAL_SIZE_X`
+///   (`64`). The hand-crafted shader has no bounds check by design (keeps
+///   the bytecode small). This is a smoke-test API, not a general-purpose
+///   memcpy — pad the caller's data if necessary.
+///
+/// # Errors
+///
+/// - [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable)
+///   on non-Vulkan targets (macOS / iOS / WASM), default-features builds
+///   (feature `vulkan` off), or when no Vulkan loader / ICD / compute queue
+///   is present on the host. Callers **must** treat this as "the smoke test
+///   is not applicable here" and skip — never fall back to a CPU
+///   implementation (FR-EX-08).
+/// - Any other error is a driver-side failure worth logging.
+///
+/// # Portability
+///
+/// - `libvulkan.so.1` (Linux + lavapipe / any ICD), `vulkan-1.dll` (Windows),
+///   or an Android `libvulkan.so` present on-device — the dispatch runs
+///   normally.
+/// - macOS host **without** the LunarG SDK's MoltenVK ICD → returns
+///   `BackendUnavailable`. Installing MoltenVK exposes a Vulkan-on-Metal
+///   translator that would let this run on macOS as well.
+#[cfg(all(
+    feature = "vulkan",
+    any(target_os = "linux", target_os = "android", target_os = "windows")
+))]
+pub fn smoke_dispatch_copy_f32(input: &[f32]) -> vokra_core::Result<Vec<f32>> {
+    context::smoke_dispatch_copy_f32_impl(input)
+}
+
+/// Stub for non-Vulkan builds — returns an explicit `BackendUnavailable`
+/// error, never a silent CPU substitute (FR-EX-08 / NFR-RL-06).
+#[cfg(not(all(
+    feature = "vulkan",
+    any(target_os = "linux", target_os = "android", target_os = "windows")
+)))]
+pub fn smoke_dispatch_copy_f32(_input: &[f32]) -> vokra_core::Result<Vec<f32>> {
+    Err(vokra_core::VokraError::BackendUnavailable(
+        "vokra-backend-vulkan compiled without the `vulkan` feature or on a non-Vulkan target \
+         (macOS / iOS / WASM). The M3-02 smoke dispatch requires a Vulkan loader; install one \
+         (Linux: libvulkan1 + mesa-vulkan-drivers; macOS: LunarG Vulkan SDK w/ MoltenVK) and \
+         rebuild with `--features vulkan` on a supported target."
+            .to_owned(),
+    ))
+}
