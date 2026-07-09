@@ -5,7 +5,7 @@
 
 **ticket spec**: `docs/tickets/m3/` (gitignore) に 19 WP 全 file (M3-01〜M3-19) + README 完備、~340 tickets / 285h の内訳確定 (ultracode workflow 経由)。
 
-**実装コミット (16 WP)** — feat/m3-plan-and-wave1 で main から **51 commits ahead**、**+55,500 lines**:
+**実装コミット (16 WP)** — feat/m3-plan-and-wave1 で main から **53 commits ahead**、**+55,757 lines**:
 - **Wave 1** (dev-experience layer): M3-08 length_conditioning / M3-14 barge-in interrupt / M3-16 ABI changelog scaffold / M3-17 prosody_control API
 - **Wave 2** (foundation): M3-03 paged KV cache / M3-04 KV 量子化 (Q4_0/Q5_0/Q8_0 CPU path) / M3-05 flow_sampler + ODE solvers
 - **Wave 3** (codec/vocoder): M3-06 mimi_rvq / M3-07 hifigan_generator
