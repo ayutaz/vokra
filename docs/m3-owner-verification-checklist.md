@@ -1,9 +1,31 @@
 # M3 (v0.9) Owner Verification Checklist
 
 **Owner**: 依頼者 (`ayutaz`) — 実機テスト・法務判断・鍵/秘密情報の provision を担当。
-**CC-side status**（2026-07-09 時点、branch `feat/m3-plan-and-wave1`）: M3 は `docs/milestones.md` §7 に 19 WP (M3-01〜M3-19) が定義済。**チケット spec は現時点で M3-07 (hifigan_generator, 12 tickets / 6h) と M3-13 (RVV 1.0, 12 tickets / 6h) の 2 WP のみ Draft 済**、残 17 WP は rolling wave で着手ごとに spec 化する（M2 パターン、`docs/tickets/` はローカル gitignore 内部計画物）。**Wave 1 = M3-16 / M3-14 / M3-08 / M3-17**（docs-heavy + 小コード WP、依存が薄く並行着手可）の CC 実装を **working tree に land 済（本セッション時点で未 commit）** + **verify 5 面全 green**: cargo build succeeded（14.85s、全 12 crate）／cargo test 全体 = **1104 passed / 0 failed / 4 ignored**（4 ignored は scipy/librosa/torch fixture-gated parity で既存の internal-oracle 規律に沿った意図 skip）／cargo fmt --check clean／cargo clippy `-D warnings` clean（13 crate）／`scripts/check-zero-deps.sh` OK（root Cargo.lock は `vokra-*` のみ、NFR-DS-02 保存）。
+**CC-side status**（2026-07-09 更新、branch `feat/m3-plan-and-wave1`、**Wave 1〜Wave 5 の CC 実装分完了 = 19 WP 中 15 コミット済**）:
 
-**Wave 1 result payload の粒度差（正直な内訳、2026-07-09）**: orchestrator から詳細実装レポートが返ってきたのは **M3-14 と M3-16 のみ**（M3-14 = `Stream::interrupt()` / `InterruptHandle` の 10 in-crate unit tests + 4 hermetic integration tests + 3 C-ABI tests + `vokra_stream_interrupt` cbindgen export、M3-16 = `docs/abi-changelog.md` schema + `docs/abi/vokra.h.v0.9-baseline.symbols` machine-anchor + `scripts/check-abi-changelog.sh` の verify/list/update-snapshot/self-test/help modes と comment-strip + brace-aware `;`-splitter、cbindgen banner の M3-16/M4-12 参照、`gen-c-abi.sh --check` clean を報告）。**M3-08 / M3-17 は report text 未提供** — working tree の実ファイル存在（M3-08 = `crates/vokra-ops/src/length_conditioning.rs` 326 行 + tests `length_conditioning_ir_distinction.rs` 188 行 + `parity_length_conditioning.rs` 156 行 + attrs/dispatch/lib 配線 + `ir/graph.rs` 変更、M3-17 = `crates/vokra-ops/src/prosody.rs` 440 行 + attrs/dispatch/lib 配線）と ops crate export（`pub mod length_conditioning; pub use prosody::{ApplyProsody, ProsodyControl};`）と 1104 tests 全 pass で完了状態を裏付ける（証跡は `git status` + `cargo test` 出力）。**残る CC 側タスク**: 4 WP を分割コミット + push、Wave 1 4 WP の spec を `docs/tickets/m3/` に retro 追加（rolling wave 規律遵守）、Wave 2 着手。以下のチェックポイントは Wave 1 commit + push 後および M3 進行中に依頼者が消化する項目群。
+**ticket spec**: `docs/tickets/m3/` (gitignore) に 19 WP 全 file (M3-01〜M3-19) + README 完備、~340 tickets / 285h の内訳確定 (ultracode workflow 経由)。
+
+**実装コミット (15 WP)** — feat/m3-plan-and-wave1 で 15 commits ahead of main、+16,000 lines:
+- **Wave 1** (dev-experience layer): M3-08 length_conditioning / M3-14 barge-in interrupt / M3-16 ABI changelog scaffold / M3-17 prosody_control API
+- **Wave 2** (foundation): M3-03 paged KV cache / M3-04 KV 量子化 (Q4_0/Q5_0/Q8_0) / M3-05 flow_sampler + ODE solvers
+- **Wave 3** (codec/vocoder): M3-06 mimi_rvq / M3-07 hifigan_generator
+- **Wave 3.5** (standalone): M3-11 Godot GDExtension scaffold / M3-13 RVV 1.0 base dispatch + cross-build CI / M3-15 vokra-server multi-session + 75ms bench hooks
+- **Wave 4** (CUDA): M3-01 CUDA バックエンド完成 (graph-executor 拡張 + coverage + RTF gate scaffold)
+- **Wave 5** (Vulkan + models): M3-02 Vulkan backend scaffold (~30% of 41 tickets) / M3-09 CosyVoice2 scaffold (~40% of 28 CC tickets) / M3-10 Voxtral scaffold + config-aware converter (~40% of 24 CC tickets)
+
+**未実装 CC WP**:
+- **M3-12 piper-plus GPU** — workflow 実行中に API stall で失敗 (`impl-M3-12` agent、mid-stream)、Wave 6 として次セッションで再実行が必要。ticket spec は `docs/tickets/m3/M3-12*.md` に既存、依存は M3-01 完了済で unblock。
+- **M3-18 Android/Godot 実機テスト** — 依頼者専任 WP、CC 側実装なし。
+- **M3-19 Kill switch D 判定** — 依頼者専任 WP。
+
+**Verify (2026-07-09、Wave 5 merge 後)**: cargo build clean (全 12 crate + vokra-backend-vulkan opt-in feature) / cargo test 全体 **1386 passed / 0 failed / 4 ignored** / cargo fmt --check clean / cargo clippy `-D warnings` clean / `scripts/check-zero-deps.sh` OK (root Cargo.lock は vokra-* only、NFR-DS-02 保存) / `scripts/check-abi-changelog.sh` OK (M3-14 の `vokra_stream_interrupt` は abi-changelog に entry 記録済)。
+
+**Partial 実装 WP の残 ticket** (各 WP の spec file を参照して follow-up):
+- **M3-02 Vulkan** (~70% 残): 完全 SPIR-V shader library / Whisper base parity CI / probe.rs の Vulkan 1.1 subgroup + cooperative matrix 完全実装。
+- **M3-09 CosyVoice2** (~60% 残): 実 checkpoint parity / real-time streaming latency 実測 / MEL loss + UTMOS 検証。実 checkpoint は依頼者 HF pull 前提。
+- **M3-10 Voxtral** (~60% 残): 実 multilang WER 実測 / streaming e2e smoke / Whisper 互換 API endpoint 拡張。
+- **M3-04 KV 量子化** (~20% 残): CUDA/Metal fused dequant kernel (backend 側 co-update WP と同期)。
+- **M3-01 CUDA 完成**: 実 GPU 側 RTF<0.10 always-on gate は M2-14 self-hosted runner + M3-01 regression 5% gate へ defer 決定済 (docs/m2-cuda-rtf-variance-2026-07-08.md)。
 
 各項目は「必要な準備 → 実行手順 → Exit 判定への寄与」の 3 段で記述。CC が既に整備した scaffold（scripts / CI / docs）へのポインタを併記する。
 
