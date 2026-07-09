@@ -21,7 +21,7 @@
 //! normalization; both `mel_filterbank` and `mfcc` route through them.
 
 pub use vokra_core::ir::graph::{
-    DctAttrs, DurationUnit, IstftAttrs, IstftStreamingAttrs, LengthConditioningAttrs,
+    DctAttrs, DurationUnit, HifiGanAttrs, IstftAttrs, IstftStreamingAttrs, LengthConditioningAttrs,
     LengthConditioningMode, MelAttrs, MelNorm, MelScale, MfccAttrs, Normalization, PadMode,
     StftAttrs, Window, WindowSymmetry,
 };

@@ -80,7 +80,7 @@
 | **Moshi (Helium + Mimi)** | Apache 2.0 | **CC-BY 4.0** | ○ (要 credit) | ★ 公式 zoo | Kyutai、attribution 表示義務 → docs/legal-compliance.md 参照 |
 | **Voxtral (Mistral)** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Mistral、2025-07 リリース |
 | **DAC (Descript)** | MIT | MIT | ○ | ★ 公式 zoo | Descript 公式 |
-| **Mimi codec (Kyutai)** | Apache 2.0 | CC-BY 4.0 | ○ (要 credit) | ★ 公式 zoo | Moshi パッケージの一部 |
+| **Mimi codec (Kyutai)** | Apache 2.0 | CC-BY 4.0 | ○ (要 credit) | ★ 公式 zoo | Moshi パッケージの一部。**M3-06 で `mimi_rvq` op を実装**（`crates/vokra-ops/src/mimi_rvq.rs`、CC-BY 4.0 attribution は `NOTICE` §5 に記載、`registry_lookup("mimi") == AttributionRequired`）。 |
 | **WavTokenizer** | MIT | MIT | ○ | ★ 公式 zoo | 中山大 |
 | **X-Codec 2 (Llasa)** | MIT | MIT | ○ | ★ 公式 zoo | HKUST |
 | **openWakeWord** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | dscripka |
@@ -99,7 +99,7 @@
 | **Matcha-TTS** | MIT | MIT | ○ | ★ v2.0+ | |
 | **RVC v2** | MIT | **不明 / 学習権利疑い** | △ | ✕ **vokra-voiceclone-experimental** に分離 | training data copyright laundering の Reddit/GitHub Issue で複数指摘 |
 | **GPT-SoVITS** | MIT | 不明 | △ | ✕ voiceclone-experimental 分離 | |
-| **EnCodec (Meta)** | MIT | **CC-BY-NC 4.0** | ✕ 非商用 | ✕ research flag | 商用は DAC/Mimi/WavTokenizer 推奨 |
+| **EnCodec (Meta)** | MIT | **CC-BY-NC 4.0** | ✕ 非商用 | ✕ research flag | 商用は DAC/Mimi/WavTokenizer 推奨。**FR-OP-32 恒久制約**により公式 model zoo 非搭載を維持（M2-13 runtime gate + release CI 側の `scripts/compliance/check-encodec-exclusion.sh` 二重防御、M3-06 ADR §D2）。 |
 | **BigVGAN reference (NVIDIA)** | **NVIDIA Source Code License-NC** | 非商用 | ✕ | ✕ | Vokra は **論文からスクラッチ再実装**、reference 未使用 (NOTICE 明記) |
 | **HiFi-GAN reference** | MIT | MIT (公式) | ○ | ○ | Kaggle 系派生は要確認 |
 | **Vocos** | MIT | MIT | ○ | ★ 公式 zoo | Charactr AI |

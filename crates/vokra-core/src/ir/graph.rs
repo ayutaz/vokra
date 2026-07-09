@@ -423,6 +423,188 @@ pub struct PreEmphasisAttrs {
     pub coeff: f32,
 }
 
+/// Attributes of the `hifigan_generator` operator (FR-OP-10, M3-07).
+///
+/// HiFi-GAN is a mel-conditioned neural vocoder: the generator stack takes a
+/// `[n_mels, n_frames]` mel spectrogram and emits `[1, n_samples]` waveform via
+/// (1) an initial `conv1d` widening the mel width to `initial_channel`; (2) a
+/// sequence of `[transposed_conv1d → MRF]` stages, one per entry of
+/// `upsample_rates` (the multi-receptive-field fusion averages parallel residual
+/// stacks that differ in kernel size / dilation, per jik876/hifi-gan); (3) a
+/// final `conv1d` back to a single channel with a `tanh` head bounding the
+/// waveform to `(−1, 1)`.
+///
+/// This attribute struct is **shape metadata** — every field maps 1:1 onto the
+/// HiFi-GAN generator hyperparameters in the upstream config (jik876/hifi-gan,
+/// MIT). Concrete values (e.g. V1 vs V2 vs V3 presets) are baked into the model
+/// checkpoint by the M3-09 CosyVoice2 / future consumer converter via
+/// `vokra.hifigan.*` metadata chunks (FR-LD-02). This struct is deliberately
+/// *not* pre-populated with a preset — the op is HiFi-GAN-family, and choosing
+/// a specific preset belongs to the converter that reads the checkpoint.
+///
+/// # Distinct from `bigvgan_generator` / `vocos_head` (FR-OP-11 / FR-OP-12)
+///
+/// This op is HiFi-GAN family (leaky_relu + MRF). BigVGAN adds AMP snake
+/// activation and anti-aliased upsample — a separate op (FR-OP-11). Vocos is an
+/// iSTFTNet head (frequency-domain), also a separate op (FR-OP-12). Do not
+/// confuse the three; the M2-08 min-dtype registry keeps every one behind its
+/// own `DowngradePolicy` (Vocos and BigVGAN are `Forbidden` — fp16-minimum
+/// unconditional; HiFi-GAN is `HifiganOptIn` — INT8 opt-in with calibration).
+///
+/// # INT8 opt-in is enforced at the runtime function (FR-OP-10, FR-QT-03)
+///
+/// Every non-INT8 path (fp32, fp16 with fp32 accumulator) is unconditional. The
+/// INT8 path is opt-in and requires a per-channel calibration table plus a
+/// spectral check pass at the `hifigan_generator` runtime function boundary,
+/// not on this attribute struct. See `vokra_ops::hifigan::HifiGanConfig` and
+/// `vokra_core::quant::MinDtypeRegistry` (FR-OP-10 / FR-QT-03).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HifiGanAttrs {
+    /// Number of mel bins in the input spectrogram (rows of `[n_mels, n_frames]`).
+    ///
+    /// The initial `conv1d` widens this to `initial_channel`. Matches the
+    /// upstream `num_mels` field.
+    pub n_mels: usize,
+    /// Number of channels emitted by the initial `conv1d`, i.e. the width of
+    /// the first upsampling stage's input. Matches upstream `upsample_initial_channel`.
+    pub initial_channel: usize,
+    /// Per-stage transposed-conv upsampling factors, applied in order. The
+    /// product equals the total time-domain upsampling factor of the vocoder
+    /// (e.g. hop_length). Matches upstream `upsample_rates`.
+    pub upsample_rates: Vec<usize>,
+    /// Per-stage transposed-conv kernel sizes, one per `upsample_rates` entry.
+    /// Matches upstream `upsample_kernel_sizes`.
+    pub upsample_kernel_sizes: Vec<usize>,
+    /// MRF ResBlock kernel sizes (parallel residual branches per upsample stage).
+    /// Matches upstream `resblock_kernel_sizes`.
+    pub resblock_kernel_sizes: Vec<usize>,
+    /// MRF ResBlock dilations. Outer axis = one entry per `resblock_kernel_sizes`
+    /// entry; inner axis = per-layer dilations inside that ResBlock. Matches
+    /// upstream `resblock_dilation_sizes`.
+    pub resblock_dilation_sizes: Vec<Vec<usize>>,
+    /// Output sample rate in Hz. Recorded so callers can cross-check against
+    /// the frontend_spec `sample_rate` (FR-LD-03).
+    pub sample_rate: u32,
+    /// LeakyReLU negative-slope constant (upstream default is 0.1). Kept as an
+    /// attribute rather than hard-coded so a re-trained variant can override it
+    /// without requiring an op enum change (SRS §3, "上流の実装差異に耐性").
+    pub leaky_relu_slope: f32,
+}
+
+impl HifiGanAttrs {
+    /// Number of upsample stages. Every `upsample_*` slice must have this length.
+    #[inline]
+    #[must_use]
+    pub fn n_upsample_stages(&self) -> usize {
+        self.upsample_rates.len()
+    }
+
+    /// Number of MRF ResBlock branches (parallel kernel sizes). Every
+    /// `resblock_*` slice's *outer* axis must have this length.
+    #[inline]
+    #[must_use]
+    pub fn n_mrf_branches(&self) -> usize {
+        self.resblock_kernel_sizes.len()
+    }
+
+    /// Product of the per-stage upsample factors: the vocoder's total
+    /// time-domain upsampling ratio (mel-frame → waveform-sample).
+    #[inline]
+    #[must_use]
+    pub fn total_upsample_factor(&self) -> usize {
+        self.upsample_rates.iter().product()
+    }
+
+    /// Structural self-check for attribute consistency: every `upsample_*`
+    /// slice has the same length, every `resblock_*` slice's outer axis has the
+    /// same length, and every non-zero-axis constraint holds.
+    ///
+    /// The attribute struct is intentionally kept as a value type (no
+    /// constructor validation) so downstream test fixtures can build it
+    /// field-by-field. Consumers that route it through the runtime function
+    /// call this before invoking `hifigan_generator`, which repeats the check
+    /// on its own inputs.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on any structural mismatch.
+    pub fn validate_shape(&self) -> Result<()> {
+        if self.n_mels == 0 || self.initial_channel == 0 || self.sample_rate == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "HifiGanAttrs: n_mels/initial_channel/sample_rate must be > 0, got \
+                 n_mels={} initial_channel={} sample_rate={}",
+                self.n_mels, self.initial_channel, self.sample_rate
+            )));
+        }
+        if self.upsample_rates.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "HifiGanAttrs: upsample_rates must be non-empty".to_owned(),
+            ));
+        }
+        if self.upsample_kernel_sizes.len() != self.upsample_rates.len() {
+            return Err(VokraError::InvalidArgument(format!(
+                "HifiGanAttrs: upsample_kernel_sizes.len() {} != upsample_rates.len() {}",
+                self.upsample_kernel_sizes.len(),
+                self.upsample_rates.len()
+            )));
+        }
+        if self.resblock_kernel_sizes.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "HifiGanAttrs: resblock_kernel_sizes must be non-empty".to_owned(),
+            ));
+        }
+        if self.resblock_dilation_sizes.len() != self.resblock_kernel_sizes.len() {
+            return Err(VokraError::InvalidArgument(format!(
+                "HifiGanAttrs: resblock_dilation_sizes outer.len() {} != resblock_kernel_sizes.len() {}",
+                self.resblock_dilation_sizes.len(),
+                self.resblock_kernel_sizes.len()
+            )));
+        }
+        for (i, r) in self.upsample_rates.iter().enumerate() {
+            if *r == 0 {
+                return Err(VokraError::InvalidArgument(format!(
+                    "HifiGanAttrs: upsample_rates[{i}] must be > 0"
+                )));
+            }
+        }
+        for (i, k) in self.upsample_kernel_sizes.iter().enumerate() {
+            if *k == 0 {
+                return Err(VokraError::InvalidArgument(format!(
+                    "HifiGanAttrs: upsample_kernel_sizes[{i}] must be > 0"
+                )));
+            }
+        }
+        for (i, k) in self.resblock_kernel_sizes.iter().enumerate() {
+            if *k == 0 {
+                return Err(VokraError::InvalidArgument(format!(
+                    "HifiGanAttrs: resblock_kernel_sizes[{i}] must be > 0"
+                )));
+            }
+        }
+        for (i, dilations) in self.resblock_dilation_sizes.iter().enumerate() {
+            if dilations.is_empty() {
+                return Err(VokraError::InvalidArgument(format!(
+                    "HifiGanAttrs: resblock_dilation_sizes[{i}] must be non-empty"
+                )));
+            }
+            for (j, d) in dilations.iter().enumerate() {
+                if *d == 0 {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "HifiGanAttrs: resblock_dilation_sizes[{i}][{j}] must be > 0"
+                    )));
+                }
+            }
+        }
+        if !self.leaky_relu_slope.is_finite() {
+            return Err(VokraError::InvalidArgument(format!(
+                "HifiGanAttrs: leaky_relu_slope must be finite, got {}",
+                self.leaky_relu_slope
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Unit of a caller-supplied duration used by [`LengthConditioningAttrs`]
 /// (FR-OP-71, M3-08).
 ///
@@ -601,6 +783,21 @@ pub enum OpKind {
     /// (see ADR 0010 §D2 / §D6, `M3-08-length-conditioning.md`). Wiring into
     /// the CosyVoice2 Flow Matching path is deferred to M3-09.
     LengthConditioning(LengthConditioningAttrs),
+    /// HiFi-GAN neural vocoder generator (FR-OP-10, M3-07). Mel spectrogram
+    /// `[n_mels, n_frames]` → waveform `[1, n_samples]` via `conv1d → [transposed_conv1d →
+    /// MRF] × n_upsample → conv1d → tanh`.
+    ///
+    /// The attribute struct is shape metadata (upsample factors, kernel sizes,
+    /// MRF dilations, initial channel, sample rate, leaky_relu slope); actual
+    /// weights are carried by the model checkpoint alongside the graph. INT8 is
+    /// an *opt-in* precision path — the M2-08 `MinDtypeRegistry` records the
+    /// `HifiganOptIn` downgrade policy and the runtime function
+    /// (`vokra_ops::hifigan::hifigan_generator`) enforces per-channel
+    /// calibration + spectral check at eval time (FR-QT-03).
+    ///
+    /// Distinct from BigVGAN (FR-OP-11) and Vocos (FR-OP-12), which are separate
+    /// op variants once their WPs land — see `HifiGanAttrs` doc.
+    HifiGanGenerator(HifiGanAttrs),
     /// Fused op emitted by the M2-04 graph-fusion pass (see [`crate::ir::fusion`]).
     ///
     /// The pass rewrites recognized subgraphs (currently only `Stft → Power →
