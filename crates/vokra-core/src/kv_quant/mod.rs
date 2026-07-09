@@ -54,6 +54,7 @@
 //! ```
 
 pub mod dequant_gemm;
+pub mod gpu_ops;
 pub mod half;
 pub mod q4_0;
 pub mod q5_0;
@@ -64,6 +65,7 @@ pub use dequant_gemm::{
     dense_gemv_f32, dequant_gemv_scalar, max_relative_error, pack_matrix_to_bytes,
     quant_gemv_round_trip,
 };
+pub use gpu_ops::{KvQuantDequantGemvOps, validate_dequant_gemv};
 pub use half::{F16Bits, f16_bits_to_f32, f32_to_f16_bits};
 pub use q4_0::BlockQ4_0;
 pub use q5_0::BlockQ5_0;

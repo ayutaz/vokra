@@ -137,7 +137,8 @@ pub use gguf::{
 pub use ir::{AudioGraph, DType, Dim, GraphBuilder, Node, OpKind, TensorDesc, TensorId};
 pub use kv_quant::{
     BlockQ4_0, BlockQ5_0, BlockQ8_0, F16Bits, KV_QUANT_BLOCK_SIZE, KvQuant, KvQuantBlock,
-    QuantKind, dequantize_bytes, pack_slice, unpack_slice,
+    KvQuantDequantGemvOps, QuantKind, dequantize_bytes, pack_slice, unpack_slice,
+    validate_dequant_gemv,
 };
 pub use pipeline::{AudioPipeline, Pipeline, PipelineStage};
 pub use prenorm::{DecoderLayerView, PrenormLayer};

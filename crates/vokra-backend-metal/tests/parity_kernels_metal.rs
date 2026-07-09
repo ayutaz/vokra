@@ -1569,3 +1569,128 @@ fn kv_cache_feeds_causal_attention_matches_cpu() {
         "Metal KV cache → causal attention vs host KvCache + CPU: global max|Δ| = {worst:.3e} (atol {ATOL})"
     );
 }
+
+// =====================================================================
+// M3-04 fused KV-cache dequant + GEMV parity
+// =====================================================================
+//
+// The three MSL kernels (`vokra_dequant_gemv_q{4,5,8}_0_f32`) are the GPU
+// implementation of the [`vokra_core::KvQuantDequantGemvOps`] seam. Their CPU
+// differential oracle is
+// [`vokra_core::kv_quant::dequant_gemm::dequant_gemv_scalar`] — a scalar
+// row-major `y = A · x` GEMV with per-block dequant in the reduction. Because
+// both paths consume the identical on-wire byte layout produced by
+// [`vokra_core::kv_quant::dequant_gemm::pack_matrix_to_bytes`], the parity is
+// exact up to FP32 GEMV rounding.
+
+/// Shape parameters covering the two attention-head widths the current model
+/// zoo actually uses: Whisper `d_head = 64` (2 blocks / row) and Kokoro
+/// `d_head = 128` (4 blocks / row). The `1 × 1` and `1 × 8` shapes stress the
+/// tail-guard branch of the grid launch.
+const M3_04_SHAPES: &[(usize, usize)] = &[
+    (1, 1),
+    (1, 8),
+    (2, 2),
+    (4, 2),
+    (16, 2),
+    (32, 4),
+    (128, 2),
+    (256, 4),
+];
+
+#[test]
+fn dequant_gemv_metal_matches_cpu_q8_0() {
+    let ctx = ctx_or_skip!("dequant_gemv Q8_0");
+    dequant_gemv_parity(&ctx, vokra_core::KvQuant::Q8_0);
+}
+
+#[test]
+fn dequant_gemv_metal_matches_cpu_q5_0() {
+    let ctx = ctx_or_skip!("dequant_gemv Q5_0");
+    dequant_gemv_parity(&ctx, vokra_core::KvQuant::Q5_0);
+}
+
+#[test]
+fn dequant_gemv_metal_matches_cpu_q4_0() {
+    let ctx = ctx_or_skip!("dequant_gemv Q4_0");
+    dequant_gemv_parity(&ctx, vokra_core::KvQuant::Q4_0);
+}
+
+fn dequant_gemv_parity(ctx: &MetalContext, mode: vokra_core::KvQuant) {
+    let mut worst = 0.0f32;
+    for &(n_rows, n_bpr) in M3_04_SHAPES {
+        let per_row_len = n_bpr * 32;
+        // Deterministic FP32 matrix + x vector.
+        let a = rand_vec(0xD3 ^ ((n_rows * 131 + n_bpr) as u64), n_rows * per_row_len);
+        let x = rand_vec(0xE5 ^ (per_row_len as u64), per_row_len);
+
+        // Pack the matrix into on-wire bytes using the CPU packer — the exact
+        // same byte payload feeds the GPU kernel and the CPU differential
+        // oracle. Bit-identical bytes = bit-identical dequant → any difference
+        // is FP32 GEMV rounding only.
+        let bytes =
+            vokra_core::kv_quant::dequant_gemm::pack_matrix_to_bytes(mode, &a, n_rows, n_bpr)
+                .expect("pack");
+
+        // CPU oracle.
+        let cpu_y = vokra_core::kv_quant::dequant_gemm::dequant_gemv_scalar(
+            mode, &bytes, n_rows, n_bpr, &x,
+        )
+        .expect("cpu dequant_gemv_scalar");
+
+        // GPU kernel through the direct method, then the trait entry point;
+        // both must produce byte-identical outputs (same launcher).
+        let gpu_direct = ctx
+            .dequant_gemv_f32(mode, &bytes, n_rows, n_bpr, &x)
+            .expect("metal dequant_gemv_f32 (direct)");
+        let gpu_trait = {
+            use vokra_core::KvQuantDequantGemvOps;
+            ctx.fused_dequant_gemv(mode, &bytes, n_rows, n_bpr, &x)
+                .expect("metal fused_dequant_gemv (trait)")
+        };
+        assert_eq!(
+            gpu_direct, gpu_trait,
+            "trait and direct entry points must be identical for {mode:?}"
+        );
+
+        let d = max_abs_diff(&gpu_direct, &cpu_y);
+        eprintln!("dequant_gemv {mode:?} n_rows={n_rows:<4} n_bpr={n_bpr:<3} max|Δ|={d:.3e}");
+        assert!(
+            d <= 1e-4,
+            "{mode:?} n_rows={n_rows} n_bpr={n_bpr}: {d} > 1e-4 (fused kernel drift too large)"
+        );
+        worst = worst.max(d);
+    }
+    eprintln!("Metal fused dequant_gemv {mode:?} vs CPU: global max|Δ| = {worst:.3e} (bound 1e-4)");
+}
+
+#[test]
+fn dequant_gemv_metal_rejects_fp32_mode() {
+    let ctx = ctx_or_skip!("dequant_gemv Fp32 rejection");
+    // A well-formed byte payload for Q8_0 shape, but with mode=Fp32 — must
+    // surface as an explicit error (never a silent GPU fallback, FR-EX-08).
+    let bytes = vec![0u8; 4 * 2 * 34];
+    let x = vec![0.0f32; 64];
+    let err = ctx
+        .dequant_gemv_f32(vokra_core::KvQuant::Fp32, &bytes, 4, 2, &x)
+        .unwrap_err();
+    match err {
+        vokra_core::VokraError::InvalidArgument(msg) => {
+            assert!(msg.contains("Fp32"), "unexpected message: {msg}");
+        }
+        other => panic!("expected InvalidArgument, got {other:?}"),
+    }
+}
+
+#[test]
+fn dequant_gemv_metal_rejects_shape_mismatch() {
+    let ctx = ctx_or_skip!("dequant_gemv shape mismatch");
+    // Q8_0 with 4 rows × 2 bpr expects 272 bytes; feed 100 to trigger the
+    // shared validate.
+    let bytes = vec![0u8; 100];
+    let x = vec![0.0f32; 64];
+    let err = ctx
+        .dequant_gemv_f32(vokra_core::KvQuant::Q8_0, &bytes, 4, 2, &x)
+        .unwrap_err();
+    assert!(matches!(err, vokra_core::VokraError::InvalidArgument(_)));
+}
