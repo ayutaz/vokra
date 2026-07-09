@@ -266,16 +266,19 @@ impl Backend for VulkanBackend {
     }
 
     fn supports(&self, op: &OpKind) -> bool {
-        // Foundation slice: NO Vulkan kernel is wired yet. Every op therefore
-        // reports as unsupported. `execute` (below) will translate that into an
-        // explicit `UnsupportedOp` — never a silent CPU fall back (FR-EX-08).
+        // M3-02-T24 lock-step gate: `supports()` must mirror the op set
+        // covered by `crate::eval::eval_vulkan_op` exactly. Adding an arm
+        // here without a matching `eval_op` arm (or vice versa) breaks the
+        // FR-EX-08 contract; the `supports_and_eval_op_are_lock_step` test
+        // below asserts the invariant.
         //
-        // As T14〜T22 land, this becomes a match on the op set the SPIR-V
-        // kernels cover (GEMM / GEMV / softmax / softmax_causal / layer_norm /
-        // gelu / conv1d / add / mul / relu / sigmoid / tanh / transpose /
-        // gather).
-        let _ = op;
-        false
+        // Today: `Copy` (hand-crafted `copy_f32` SPIR-V, 2 SSBOs) and
+        // `Add` (hand-crafted `add_f32` SPIR-V, 3 SSBOs) — both dispatched
+        // through the M3-02-T13 / T24 smoke path. Every other op stays
+        // `false`; `execute` (below) translates that into an explicit
+        // `UnsupportedOp` — never a silent CPU fallback (FR-EX-08). T14〜T22
+        // widen this set as the `glslc`-produced SPIR-V blobs land.
+        matches!(op, OpKind::Copy | OpKind::Add)
     }
 
     fn execute(&self, graph: &AudioGraph) -> Result<()> {

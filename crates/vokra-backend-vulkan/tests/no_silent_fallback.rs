@@ -6,12 +6,12 @@
 //! [`Backend::execute`] with the same explicit error — never a silent
 //! success.
 //!
-//! In the foundation slice **no** SPIR-V kernel is wired yet, so the Vulkan
-//! backend's op coverage is the empty set. Every op is therefore an
-//! explicit-error test today; as T14〜T22 land, the covered set grows and
-//! the *uncovered* set (the negative-test surface) shrinks. This file stays
-//! useful throughout: the coverage table is the single source of truth for
-//! what IS covered, and the negative asserts cover the rest.
+//! In the M3-02 foundation slice the Vulkan backend covers `Copy` and `Add`
+//! only (both hand-crafted SPIR-V smoke kernels — M3-02-T13 / T24). Every
+//! other op is an explicit-error test today; as T14〜T22 SPIR-V shaders land
+//! the covered set widens and this file's negative-test surface shrinks.
+//! The coverage table (`VulkanBackend::supports`) is the single source of
+//! truth for what IS covered, and the asserts below pin the rest.
 //!
 //! Symmetric with `vokra-backend-metal` / `vokra-backend-cuda` where the
 //! same FR-EX-08 red line is enforced.
@@ -35,8 +35,7 @@ fn uncovered_graph_is_explicit_unsupported() {
         }
         Err(other) => panic!("expected BackendUnavailable off Vulkan, got {other}"),
     };
-    // Foundation-slice coverage set = ∅. A trivial MatMul graph is
-    // uncovered — must error explicitly.
+    // MatMul is not in the foundation-slice coverage set — must error.
     let mut mb = GraphBuilder::new();
     let a = mb.add_tensor(TensorDesc::new("a", DType::F32, [2, 4]));
     let b = mb.add_tensor(TensorDesc::new("b", DType::F32, [4, 8]));
@@ -50,11 +49,20 @@ fn uncovered_graph_is_explicit_unsupported() {
         matches!(err, VokraError::UnsupportedOp(_)),
         "execute() must return UnsupportedOp for uncovered ops, got {err}",
     );
-    // Also assert `supports()` and `execute()` are in lock-step — the two
-    // MUST NOT diverge (M3-02-T35 core invariant).
+    // `supports()` and `execute()` in lock-step — the two MUST NOT diverge
+    // (M3-02-T35 core invariant).
     assert!(!backend.supports(&OpKind::MatMul));
     assert!(!backend.supports(&OpKind::Softmax));
-    assert!(!backend.supports(&OpKind::Add));
+    assert!(!backend.supports(&OpKind::Mul));
+    // Covered ops today (M3-02-T14 partial / T24).
+    assert!(
+        backend.supports(&OpKind::Copy),
+        "Copy IS in the foundation-slice coverage set (hand-crafted `copy_f32`)"
+    );
+    assert!(
+        backend.supports(&OpKind::Add),
+        "Add IS in the foundation-slice coverage set (hand-crafted `add_f32`)"
+    );
 }
 
 /// Direct `eval_op` calls (which bypass the engine's coverage precheck) also

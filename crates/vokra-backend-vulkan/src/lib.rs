@@ -215,3 +215,52 @@ pub fn smoke_dispatch_copy_f32(_input: &[f32]) -> vokra_core::Result<Vec<f32>> {
             .to_owned(),
     ))
 }
+
+/// Element-wise sum `a[i] + b[i] → out[i]` through the hand-crafted
+/// `add_f32` SPIR-V kernel and return the GPU-observed output.
+///
+/// This is the M3-02-T24 three-SSBO proof point: it extends the
+/// [`smoke_dispatch_copy_f32`] contract to a compute pipeline that binds
+/// two readable SSBOs and one writable SSBO in the same dispatch, plus the
+/// smallest arithmetic op (`OpFAdd`). On a working Vulkan host the output
+/// equals the host sum under IEEE-754 f32 (bit-identical for the finite
+/// inputs the smoke tests send).
+///
+/// # Panics
+///
+/// Panics if `a.len() != b.len()` or if the length is not a multiple of
+/// [`spirv::handcrafted_add_f32::LOCAL_SIZE_X`] (`64`). The hand-crafted
+/// shader has no bounds check by design — pad the caller's data.
+///
+/// # Errors
+///
+/// - [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable)
+///   on non-Vulkan targets (macOS / iOS / WASM), default-features builds
+///   (feature `vulkan` off), or when no Vulkan loader / ICD / compute queue
+///   is present on the host. Callers **must** treat this as "the smoke test
+///   is not applicable here" and skip — never fall back to a CPU
+///   implementation (FR-EX-08).
+/// - Any other error is a driver-side failure worth logging.
+#[cfg(all(
+    feature = "vulkan",
+    any(target_os = "linux", target_os = "android", target_os = "windows")
+))]
+pub fn smoke_dispatch_add_f32(a: &[f32], b: &[f32]) -> vokra_core::Result<Vec<f32>> {
+    context::smoke_dispatch_add_f32_impl(a, b)
+}
+
+/// Stub for non-Vulkan builds — returns an explicit `BackendUnavailable`
+/// error, never a silent CPU substitute (FR-EX-08 / NFR-RL-06).
+#[cfg(not(all(
+    feature = "vulkan",
+    any(target_os = "linux", target_os = "android", target_os = "windows")
+)))]
+pub fn smoke_dispatch_add_f32(_a: &[f32], _b: &[f32]) -> vokra_core::Result<Vec<f32>> {
+    Err(vokra_core::VokraError::BackendUnavailable(
+        "vokra-backend-vulkan compiled without the `vulkan` feature or on a non-Vulkan target \
+         (macOS / iOS / WASM). The M3-02 smoke dispatch requires a Vulkan loader; install one \
+         (Linux: libvulkan1 + mesa-vulkan-drivers; macOS: LunarG Vulkan SDK w/ MoltenVK) and \
+         rebuild with `--features vulkan` on a supported target."
+            .to_owned(),
+    ))
+}

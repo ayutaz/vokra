@@ -2002,6 +2002,265 @@ pub(crate) fn smoke_dispatch_copy_f32_impl(input: &[f32]) -> Result<Vec<f32>> {
     Ok(out)
 }
 
+// ---------------------------------------------------------------------------
+// smoke_dispatch_add_f32_impl — the M3-02-T24 three-SSBO dispatch-chain proof
+// point. Uses the hand-crafted `add_f32` SPIR-V blob to compute the
+// element-wise sum `c[i] = a[i] + b[i]` on the GPU. Same structural pattern
+// as `smoke_dispatch_copy_f32_impl` (device / buffer / descriptor set /
+// pipeline / command buffer / fence / dispatch), but with THREE storage
+// buffers bound to descriptor set 0 (a @ binding 0, b @ binding 1, c @
+// binding 2). This is what the `OpKind::Add` arm of `eval::eval_vulkan_op`
+// routes into (M3-02-T24 / T26).
+// ---------------------------------------------------------------------------
+
+/// Element-wise add `a[i] + b[i] → c[i]` through the hand-crafted `add_f32`
+/// SPIR-V kernel and return the GPU-observed output. On a working Vulkan
+/// host the output is `a + b` under IEEE-754 f32 semantics — which for the
+/// smoke-test inputs (all pairs of finite floats we send) is bit-identical
+/// to the host sum.
+///
+/// The public wrapper is [`crate::smoke_dispatch_add_f32`] (in `lib.rs`),
+/// which surfaces [`VokraError::BackendUnavailable`] on non-Vulkan targets.
+///
+/// # Panics
+///
+/// Panics if `a.len() != b.len()` or if the length is not a multiple of
+/// [`crate::spirv::handcrafted_add_f32::LOCAL_SIZE_X`] — the hand-crafted
+/// shader has no bounds check by design (kept the bytecode small). Callers
+/// must pad their inputs, exactly the same contract as `smoke_dispatch_copy_f32`.
+///
+/// # Errors
+///
+/// - [`VokraError::BackendUnavailable`] — no Vulkan loader / no ICD / no
+///   compute queue. The caller's test skips (no CPU fall back, FR-EX-08).
+/// - [`VokraError::UnsupportedOp`] — the SPIR-V module was rejected by the
+///   driver (VkResult != SUCCESS on `vkCreateShaderModule` /
+///   `vkCreateComputePipelines`).
+pub(crate) fn smoke_dispatch_add_f32_impl(a: &[f32], b: &[f32]) -> Result<Vec<f32>> {
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "smoke_dispatch_add_f32 requires a.len() == b.len(); got {} and {}",
+        a.len(),
+        b.len()
+    );
+    // Trivial pass-through — no dispatch, no allocation.
+    if a.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 1. Build the device (loader + instance + logical device + queue).
+    let instance = VulkanInstance::new()?;
+    let device = VulkanDevice::new(instance)?;
+
+    // 2. Encode both inputs as little-endian bytes and upload to two
+    //    device-local SSBOs (a @ binding 0, b @ binding 1).
+    let byte_len = a.len() * 4;
+    let mut a_bytes = Vec::with_capacity(byte_len);
+    for f in a {
+        a_bytes.extend_from_slice(&f.to_le_bytes());
+    }
+    let a_buf = device.upload_bytes(&a_bytes)?;
+
+    let mut b_bytes = Vec::with_capacity(byte_len);
+    for f in b {
+        b_bytes.extend_from_slice(&f.to_le_bytes());
+    }
+    let b_buf = device.upload_bytes(&b_bytes)?;
+
+    // 3. Allocate the output SSBO (c @ binding 2) — device-local,
+    //    STORAGE_BUFFER + TRANSFER_SRC so the pipeline can write to it and
+    //    the subsequent `download_bytes` can read it back via a staging
+    //    copy.
+    let c_buf = VulkanBuffer::new(
+        &device,
+        byte_len,
+        sys::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | sys::VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        sys::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+    )?;
+
+    // 4. Descriptor set layout + pool + set (3 storage-buffer bindings).
+    //    This is what `add_f32` exercises differently from `copy_f32` — the
+    //    3-SSBO layout the M3-02-T24 graph arm needs.
+    let dsl = VulkanDescriptorSetLayout::new_storage_buffers(
+        &device,
+        crate::spirv::handcrafted_add_f32::BINDING_COUNT,
+    )?;
+    let dpool = VulkanDescriptorPool::new_storage_buffers(
+        &device,
+        1,
+        crate::spirv::handcrafted_add_f32::BINDING_COUNT,
+    )?;
+    let set = dpool.allocate_set(&dsl)?;
+
+    // Update the set: binding 0 = a, binding 1 = b, binding 2 = c.
+    let buffer_infos = [
+        sys::VkDescriptorBufferInfo {
+            buffer: a_buf.handle(),
+            offset: 0,
+            range: sys::VkDeviceSize::MAX, // VK_WHOLE_SIZE
+        },
+        sys::VkDescriptorBufferInfo {
+            buffer: b_buf.handle(),
+            offset: 0,
+            range: sys::VkDeviceSize::MAX,
+        },
+        sys::VkDescriptorBufferInfo {
+            buffer: c_buf.handle(),
+            offset: 0,
+            range: sys::VkDeviceSize::MAX,
+        },
+    ];
+    let writes = [
+        sys::VkWriteDescriptorSet {
+            s_type: sys::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            p_next: ptr::null(),
+            dst_set: set,
+            dst_binding: 0,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: sys::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            p_image_info: ptr::null(),
+            p_buffer_info: &buffer_infos[0],
+            p_texel_buffer_view: ptr::null(),
+        },
+        sys::VkWriteDescriptorSet {
+            s_type: sys::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            p_next: ptr::null(),
+            dst_set: set,
+            dst_binding: 1,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: sys::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            p_image_info: ptr::null(),
+            p_buffer_info: &buffer_infos[1],
+            p_texel_buffer_view: ptr::null(),
+        },
+        sys::VkWriteDescriptorSet {
+            s_type: sys::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            p_next: ptr::null(),
+            dst_set: set,
+            dst_binding: 2,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: sys::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            p_image_info: ptr::null(),
+            p_buffer_info: &buffer_infos[2],
+            p_texel_buffer_view: ptr::null(),
+        },
+    ];
+    // SAFETY: resolved entry; live device; array of 3 valid VkWriteDescriptorSet
+    // on the stack; buffer_infos outlive the call.
+    unsafe {
+        (device.fns.update_descriptor_sets)(
+            device.device,
+            writes.len() as u32,
+            writes.as_ptr(),
+            0,
+            ptr::null(),
+        );
+    }
+
+    // 5. Pipeline layout + shader module + compute pipeline.
+    let pl = VulkanPipelineLayout::new(&device, &dsl)?;
+    let spv = crate::spirv::handcrafted_add_f32::bytes();
+    let shader = VulkanShaderModule::new(&device, &spv)?;
+    // `entry_name` MUST be NUL-terminated; a `c""` literal is a
+    // compile-time-validated `&'static CStr` matching the SPIR-V module's
+    // OpEntryPoint name ("main").
+    let entry_name = c"main";
+    let pipeline = VulkanComputePipeline::new(&device, &pl, &shader, entry_name)?;
+
+    // 6. Record the dispatch into a fresh primary command buffer.
+    let cmd_pool = VulkanCommandPool::new(&device)?;
+    let cmd = cmd_pool.command_buffer;
+
+    let begin_info = sys::VkCommandBufferBeginInfo {
+        s_type: sys::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        p_next: ptr::null(),
+        flags: sys::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        p_inheritance_info: ptr::null(),
+    };
+    // SAFETY: resolved entry; live command buffer; valid begin-info.
+    let r = unsafe { (device.fns.begin_command_buffer)(cmd, &begin_info) };
+    sys::check(r, "vkBeginCommandBuffer (add_f32 dispatch)")?;
+
+    // SAFETY: resolved entry; live command buffer; live pipeline handle;
+    // bind point = compute.
+    unsafe {
+        (device.fns.cmd_bind_pipeline)(cmd, sys::VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.handle());
+    }
+    let set_arr = [set];
+    // SAFETY: resolved entry; live command buffer; live layout + set; array
+    // of 1 descriptor set on the stack; no dynamic offsets.
+    unsafe {
+        (device.fns.cmd_bind_descriptor_sets)(
+            cmd,
+            sys::VK_PIPELINE_BIND_POINT_COMPUTE,
+            pl.handle(),
+            0, // firstSet
+            1, // descriptorSetCount
+            set_arr.as_ptr(),
+            0,
+            ptr::null(),
+        );
+    }
+    let local_size_x = crate::spirv::handcrafted_add_f32::LOCAL_SIZE_X as usize;
+    assert!(
+        a.len() % local_size_x == 0,
+        "smoke_dispatch_add_f32 requires input.len() ({}) to be a multiple of LOCAL_SIZE_X ({}) \
+         to avoid out-of-bounds shader invocations (the handcrafted kernel omits a bounds \
+         check by design; see kernels/handcrafted/add_f32.spv.rs)",
+        a.len(),
+        local_size_x,
+    );
+    let group_x = a.len() / local_size_x;
+    // SAFETY: resolved entry; live command buffer; positive group counts.
+    unsafe {
+        (device.fns.cmd_dispatch)(cmd, group_x as u32, 1, 1);
+    }
+    // SAFETY: resolved entry; live command buffer.
+    let r = unsafe { (device.fns.end_command_buffer)(cmd) };
+    sys::check(r, "vkEndCommandBuffer (add_f32 dispatch)")?;
+
+    // 7. Submit + wait for fence.
+    let fence = VulkanFence::new(&device)?;
+    let submit = sys::VkSubmitInfo {
+        s_type: sys::VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        p_next: ptr::null(),
+        wait_semaphore_count: 0,
+        p_wait_semaphores: ptr::null(),
+        p_wait_dst_stage_mask: ptr::null(),
+        command_buffer_count: 1,
+        p_command_buffers: &cmd,
+        signal_semaphore_count: 0,
+        p_signal_semaphores: ptr::null(),
+    };
+    // SAFETY: resolved entry; live queue; single submit-info on the stack;
+    // fence handle is live.
+    let r = unsafe { (device.fns.queue_submit)(device.queue, 1, &submit, fence.handle) };
+    sys::check(r, "vkQueueSubmit (add_f32 dispatch)")?;
+    fence.wait()?;
+
+    // Drop transient handles in dependency order before the device goes out
+    // of scope. Same ordering rationale as `smoke_dispatch_copy_f32_impl`.
+    drop(pipeline);
+    drop(shader);
+    drop(pl);
+    let _ = set;
+    drop(dpool);
+    drop(dsl);
+
+    // 8. Read the c buffer back to host memory and decode f32s.
+    let mut out_bytes = vec![0u8; byte_len];
+    device.download_bytes(&c_buf, &mut out_bytes)?;
+    let mut out = Vec::with_capacity(a.len());
+    for chunk in out_bytes.chunks_exact(4) {
+        out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

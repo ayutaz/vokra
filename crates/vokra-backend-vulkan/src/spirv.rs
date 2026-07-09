@@ -52,11 +52,20 @@
 //! `copy_f32` blob's SHA-256 is pinned already (it never changes without a
 //! deliberate rewrite of `kernels/handcrafted/copy_f32.spv.rs`).
 
-// The hand-crafted `copy_f32` SPIR-V bytecode lives under `kernels/handcrafted/`
-// (ADR M3-02-spirv-generation §4 (c)). Rust doesn't automatically discover a
-// `.spv.rs` file in a non-standard directory, so include it here as a module
-// via `#[path]`. The file itself is standard Rust source — it just carries
-// the `.spv.rs` suffix to signal "this Rust source *is* the SPIR-V blob."
+// The hand-crafted SPIR-V bytecodes live under `kernels/handcrafted/` (ADR
+// M3-02-spirv-generation §4 (c)). Rust doesn't automatically discover a
+// `.spv.rs` file in a non-standard directory, so include each here as a
+// module via `#[path]`. The files themselves are standard Rust source — they
+// just carry the `.spv.rs` suffix to signal "this Rust source *is* the SPIR-V
+// blob."
+//
+// Two entries only. `copy_f32` proves the T08〜T12 + T25 single-SSBO dispatch
+// chain end-to-end; `add_f32` extends that proof to the three-SSBO layout
+// (`OpKind::Add`) that the M3-02-T24 graph executor needs. ADR §5 caps
+// hand-authored kernels at these two — the T14〜T22 real kernels come from
+// `glslc` (see `scripts/compile-vulkan-shaders.sh`).
+#[path = "../kernels/handcrafted/add_f32.spv.rs"]
+pub mod handcrafted_add_f32;
 #[path = "../kernels/handcrafted/copy_f32.spv.rs"]
 pub mod handcrafted_copy_f32;
 
@@ -77,10 +86,13 @@ pub enum ShaderVariant {
     /// Every non-GEMM shader (one blob per op).
     Standard,
     /// Hand-crafted SPIR-V bytecode authored directly in Rust source
-    /// (ADR M3-02-spirv-generation §2 Option D). Only used by the
-    /// `copy_f32` smoke-test kernel; **no other entry may be `Handcrafted`**
-    /// (ADR §5 forbids expanding this path — real kernels take Option A +
-    /// Option C via `glslc`).
+    /// (ADR M3-02-spirv-generation §2 Option D). Reserved for the two
+    /// smoke-test kernels that prove the T08〜T12 + T25 dispatch chain works
+    /// end-to-end against a real driver *before* the T14〜T22 `glslc`-produced
+    /// blobs land: `copy_f32` (single-SSBO copy, M3-02-T13) and `add_f32`
+    /// (three-SSBO element-wise add, M3-02-T24 partial). **Do NOT add more
+    /// `Handcrafted` entries** — ADR §5 caps hand-authored kernels at these
+    /// two, and every larger op takes the Option A + Option C `glslc` path.
     Handcrafted,
 }
 
@@ -114,29 +126,41 @@ pub struct SpirvShader {
 
 /// The manifest — every SPIR-V blob Vokra's Vulkan backend expects.
 ///
-/// **13 entries** = 12 `glslc`-produced kernels (11 op categories; GEMM has
-/// two variants sharing the op) + 1 hand-crafted smoke-test kernel
-/// (`copy_f32`, ADR M3-02-spirv-generation §2 Option D). This table is the
-/// single source of truth for what `.spv` blobs the runtime can load;
-/// adding a new kernel means adding a row here **and** a matching arm to
-/// [`load_spv`].
+/// **14 entries** = 12 `glslc`-produced kernels (11 op categories; GEMM has
+/// two variants sharing the op) + 2 hand-crafted smoke-test kernels
+/// (`copy_f32` and `add_f32`, ADR M3-02-spirv-generation §2 Option D — the
+/// ADR §5 cap holds: these two only). This table is the single source of
+/// truth for what `.spv` blobs the runtime can load; adding a new kernel
+/// means adding a row here **and** a matching arm to [`load_spv`] (or
+/// [`load_spv_owned`] for hand-crafted entries).
 pub const SHADERS: &[SpirvShader] = &[
     // ---- Hand-crafted (ADR M3-02-spirv-generation §2 Option D) ----
     //
-    // The only entry whose `.spv` is present in the foundation slice — the
-    // rest wait for `glslc` runs on the developer machine to populate them.
-    // The SHA-256 below is derived from
-    // `kernels/handcrafted/copy_f32.spv.rs::bytes()` (computed at test time
-    // via `verify_pinned_hashes` — no build-time hashing, keeps `cargo
-    // build` fast).
+    // Both entries whose `.spv` is present in the foundation slice — the rest
+    // wait for `glslc` runs on the developer machine to populate them. Each
+    // pinned SHA-256 is derived from the corresponding
+    // `kernels/handcrafted/*.spv.rs::bytes()` (computed at test time via
+    // `verify_pinned_hashes` — no build-time hashing, keeps `cargo build`
+    // fast).
     SpirvShader {
         name: "copy_f32",
         variant: ShaderVariant::Handcrafted,
         ticket: "M3-02-T13",
-        // Pinned at test time by `pinned_sha256_matches_runtime_blob_for_copy_f32`
+        // Pinned at test time by `verify_pinned_hashes_is_ok_for_foundation_slice`
         // below — the hex here is the value that test verifies.
         expected_sha256_hex: Some(
             "4d027c70da61cec3516b70c27ed1fad968ef0a91783c9d9bfe9898d79e4ee109",
+        ),
+    },
+    SpirvShader {
+        name: "add_f32",
+        variant: ShaderVariant::Handcrafted,
+        ticket: "M3-02-T24",
+        // Pinned by `verify_pinned_hashes_is_ok_for_foundation_slice` — the
+        // hex is the exact SHA-256 of the little-endian byte re-encoding of
+        // `handcrafted_add_f32::SPIRV_MODULE` (172 words / 688 bytes).
+        expected_sha256_hex: Some(
+            "3d9a65e44efbda13e7dfbd3913672a0f218bed06a5a0ec650db37d5fd8e697c5",
         ),
     },
     // ---- glslc-produced (ADR M3-02-spirv-generation §2 Option A + Option C) ----
@@ -281,6 +305,7 @@ pub fn load_spv(name: &str) -> Option<&'static [u8]> {
 pub fn load_spv_owned(name: &str) -> Option<Vec<u8>> {
     match name {
         "copy_f32" => Some(handcrafted_copy_f32::bytes()),
+        "add_f32" => Some(handcrafted_add_f32::bytes()),
         other => load_spv(other).map(<[u8]>::to_vec),
     }
 }
@@ -507,10 +532,12 @@ mod tests {
 
     #[test]
     fn shader_manifest_is_stable() {
-        // Foundation-slice pin: 13 shader entries = 12 glslc-produced kernels
-        // (11 op categories; GEMM has two variants) + 1 hand-crafted smoke
-        // kernel (`copy_f32`, ADR M3-02-spirv-generation §2 Option D).
-        assert_eq!(SHADERS.len(), 13);
+        // Foundation-slice pin: 14 shader entries = 12 glslc-produced kernels
+        // (11 op categories; GEMM has two variants) + 2 hand-crafted smoke
+        // kernels (`copy_f32` @ M3-02-T13 and `add_f32` @ M3-02-T24; ADR
+        // M3-02-spirv-generation §2 Option D + §5 caps hand-authored kernels
+        // at exactly these two — no more may be added).
+        assert_eq!(SHADERS.len(), 14);
         // Names are unique.
         let mut names: Vec<&str> = SHADERS.iter().map(|s| s.name).collect();
         names.sort_unstable();
@@ -524,16 +551,29 @@ mod tests {
             names.len(),
             "duplicate SPIR-V shader name in SHADERS"
         );
-        // Exactly one entry is `Handcrafted` (ADR §5: no expansion permitted).
+        // Exactly two entries are `Handcrafted` (ADR §5: no further expansion
+        // permitted — `copy_f32` proves 2-SSBO dispatch, `add_f32` proves
+        // 3-SSBO dispatch; every other kernel takes the `glslc` path).
         let handcrafted_count = SHADERS
             .iter()
             .filter(|s| matches!(s.variant, ShaderVariant::Handcrafted))
             .count();
         assert_eq!(
-            handcrafted_count, 1,
-            "ADR M3-02-spirv-generation §5 forbids adding more Handcrafted entries — only \
-             `copy_f32` may be hand-authored. Found {handcrafted_count}."
+            handcrafted_count, 2,
+            "ADR M3-02-spirv-generation §5 caps hand-authored kernels at exactly two \
+             (`copy_f32` + `add_f32`). Found {handcrafted_count}."
         );
+        // Both expected hand-crafted entries are present.
+        let hc_names: Vec<&str> = SHADERS
+            .iter()
+            .filter(|s| matches!(s.variant, ShaderVariant::Handcrafted))
+            .map(|s| s.name)
+            .collect();
+        assert!(
+            hc_names.contains(&"copy_f32"),
+            "missing copy_f32 Handcrafted"
+        );
+        assert!(hc_names.contains(&"add_f32"), "missing add_f32 Handcrafted");
     }
 
     #[test]
@@ -580,30 +620,46 @@ mod tests {
     }
 
     #[test]
-    fn load_spv_owned_reaches_the_handcrafted_copy_f32() {
-        // `copy_f32` is the only entry available in the foundation slice —
-        // via `load_spv_owned`, not `load_spv` (see the borrow/owned split in
-        // the module docs).
-        let blob = load_spv_owned("copy_f32").expect("copy_f32 handcrafted blob must load");
-        // SPIR-V spec §2.3: module length is always a multiple of 4.
-        assert_eq!(blob.len() % 4, 0);
-        // First 4 bytes decode as SPIR-V magic (little-endian 0x07230203).
-        let magic = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
-        assert_eq!(magic, 0x0723_0203, "copy_f32 SPIR-V magic mismatch");
+    fn load_spv_owned_reaches_the_handcrafted_kernels() {
+        // Both hand-crafted kernels are reachable through `load_spv_owned`
+        // (never `load_spv` — the borrowed API cannot serve a re-encoded
+        // `Vec<u8>`; see the borrow/owned split in the module docs).
+        for name in ["copy_f32", "add_f32"] {
+            let blob =
+                load_spv_owned(name).unwrap_or_else(|| panic!("{name} handcrafted blob must load"));
+            // SPIR-V spec §2.3: module length is always a multiple of 4.
+            assert_eq!(blob.len() % 4, 0, "{name} bytes must be 4-byte aligned");
+            // First 4 bytes decode as SPIR-V magic (little-endian 0x07230203).
+            let magic = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]);
+            assert_eq!(magic, 0x0723_0203, "{name} SPIR-V magic mismatch");
+        }
         // Unknown names remain honest.
         assert!(load_spv_owned("no_such_shader").is_none());
     }
 
     #[test]
     fn verify_pinned_hashes_is_ok_for_foundation_slice() {
-        // The only pinned entry is `copy_f32` — the hand-crafted blob whose
-        // SHA-256 the manifest carries. `verify_pinned_hashes` must confirm
-        // the runtime bytes hash to the same value.
-        assert!(
-            verify_pinned_hashes().is_ok(),
-            "copy_f32 SHA-256 pin does not match the bytes returned by \
-             `handcrafted_copy_f32::bytes()`; regenerate the pin"
-        );
+        // The pinned entries are the two hand-crafted blobs — `copy_f32` and
+        // `add_f32`. `verify_pinned_hashes` must confirm the runtime bytes
+        // hash to the SHA-256 values recorded in the manifest.
+        match verify_pinned_hashes() {
+            Ok(()) => {}
+            Err(name) => {
+                // Emit the *actual* SHA-256 so the developer updating the
+                // pin can copy it in. This is the intended workflow when
+                // regenerating the hand-crafted blob.
+                let blob =
+                    load_spv_owned(name).expect("shader with pinned hash must have a runtime blob");
+                let actual = sha256_hex(&blob);
+                let actual_hex = core::str::from_utf8(&actual).unwrap();
+                panic!(
+                    "SHA-256 pin for `{name}` does not match the bytes returned by \
+                     `handcrafted_{name}::bytes()`. Update the manifest entry's \
+                     `expected_sha256_hex` to `{actual_hex}` (regenerate only when a \
+                     deliberate rewrite of the hand-crafted SPIR-V module has occurred)."
+                );
+            }
+        }
     }
 
     // FIPS-180-4 §Appendix B.1 / B.2 test vectors + one additional NIST vector
