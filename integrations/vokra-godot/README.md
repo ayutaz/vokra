@@ -1,9 +1,20 @@
 # vokra-godot — Godot 4.x GDExtension binding for Vokra
 
-**State (2026-07-09, M3-11 initial)**: T02..T04 landed
-(crate skeleton + FFI declarations + entry point). T05..T18 (class
-registration + method binding + demos + CI/CD) are in progress. See
-[`docs/tickets/m3/M3-11-godot-gdextension.md`](../../docs/tickets/m3/M3-11-godot-gdextension.md).
+**State (2026-07-09, Wave 11)**: T02..T04 + T05..T10 + T13 landed. Class
+registration (`classdb_register_extension_class3`), method binding
+(`classdb_register_extension_class_method` for 6 methods across
+`VokraSession` + `VokraStream`), signal declaration
+(`classdb_register_extension_class_signal` for `asr_chunk` + `tts_chunk`),
+panic firewall at every trampoline, and compile-time layout guards for
+`GDExtensionClassCreationInfo3` (160 bytes) / `GDExtensionClassMethodInfo`
+(88 bytes) are all wired against the Godot 4.3-stable header. Trampoline
+runtime dispatch (Variant packing/unpacking to call real
+`crate::asr::transcribe` etc.) is **honest scope-out to M3-18 owner smoke**:
+each trampoline exists with correct signature + arity enforcement + panic
+firewall + `catch_unwind`, and returns `InvalidMethod` with a documented
+"runtime dispatch pending" marker until the real Variant plumbing lands.
+T11..T18 (Windows/macOS/Android crossbuild + AssetLib packaging + demo
+scenes + release CI) remain follow-up.
 
 ## What it is
 
@@ -51,7 +62,7 @@ iOS and Web (HTML5) are deferred to M4.
 ```
 cd integrations/vokra-godot
 cargo build --release            # host cdylib
-cargo test                       # 21 unit tests as of T04
+cargo test                       # 46 unit tests as of Wave 11 (T05..T10 + T13)
 ```
 
 or use the FR-TL-04 helper:
@@ -74,16 +85,19 @@ integrations/vokra-godot/
 ├── README.md               # this file
 ├── vokra.gdextension       # AssetLib config template (ADR-0011 §D9)
 └── src/
-    ├── lib.rs              # crate root + GDExtension entry point
+    ├── lib.rs              # crate root + GDExtension entry point + EXTENSION_STATE
     ├── error.rs            # panic firewall + status → VokraError
     ├── session.rs          # RAII wrapper over vokra_session_t
     ├── asr.rs              # transcribe(...)
     ├── tts.rs              # synthesize(...)
     ├── vad.rs              # VokraStream RAII + push_pcm/poll/...
+    ├── registry.rs         # T05 classdb_register_extension_class3 + methods + signals
+    ├── trampoline.rs       # T06 method call trampolines (catch_unwind firewalled)
     └── ffi/
         ├── mod.rs
         ├── capi.rs         # extern "C" for the Vokra C ABI
-        └── gdextension.rs  # extern "C" for gdextension_interface.h subset
+        ├── gdextension.rs  # extern "C" for gdextension_interface.h (4.3-stable) subset
+        └── interface.rs    # resolved GDExtension interface table (from p_get_proc_address)
 ```
 
 ## Godot usage (target GDScript surface, finalised in T05)

@@ -67,17 +67,21 @@ extern crate vokra as _;
 pub mod asr;
 pub mod error;
 pub mod ffi;
+pub mod registry;
 pub mod session;
+pub mod trampoline;
 pub mod tts;
 pub mod vad;
 
 use core::ffi::c_void;
 use core::ptr;
+use std::sync::Mutex;
 
 use crate::ffi::gdextension::{
     GDExtensionBool, GDExtensionClassLibraryPtr, GDExtensionInitialization,
     GDExtensionInitializationLevel, GDExtensionInterfaceGetProcAddress,
 };
+use crate::ffi::interface::InterfaceTable;
 
 // ---------------------------------------------------------------------------
 // Linker keepalive.
@@ -85,16 +89,48 @@ use crate::ffi::gdextension::{
 // The Vokra C ABI symbols are defined as `#[no_mangle] pub extern "C" fn` in
 // `crates/vokra-capi`, which we depend on as an rlib. Rust's linker WILL
 // dead-code-strip `no_mangle` symbols from a cdylib if nothing in the
-// cdylib's own code references them. At the T02..T04 milestone none of the
-// class-method trampolines are wired yet, so we need a static reference to
-// keep the ABI reachable. The T05+ class-method trampolines will make this
-// redundant but leaving it in is cheap and defends against future
-// dead-code-stripping regressions.
+// cdylib's own code references them. The class-method trampolines
+// (`crate::trampoline::*`) call into that ABI at runtime; we retain the
+// keepalive here as defense in depth against future dead-code-stripping
+// regressions.
 // ---------------------------------------------------------------------------
 
 /// See module doc above. `linkme` is deliberately NOT used (zero-dep).
 #[used]
 static LINKER_KEEPALIVE: fn() -> usize = ffi::capi::keepalive_c_abi_symbols;
+
+// ---------------------------------------------------------------------------
+// Extension-scoped state (T05).
+//
+// Godot invokes `vokra_initialize` and `vokra_deinitialize` separately from
+// the entry point; we need to hand off the library token + resolved
+// interface table between them. A `Mutex<Option<...>>` mirrors the exact
+// posture used by godot-cpp for its own registration state — contested at
+// most once per extension load, uncontested at every other read.
+//
+// The state IS NOT touched by method trampolines (they hold their own
+// references, if any). This keeps the lock's role narrow: `vokra_initialize`
+// populates it, `vokra_deinitialize` reads + clears it, and that's it.
+// ---------------------------------------------------------------------------
+
+/// State stashed at `vokra_gdextension_init` and consumed at
+/// `vokra_initialize` (Scene level) / `vokra_deinitialize` (Scene level).
+struct ExtensionState {
+    library: GDExtensionClassLibraryPtr,
+    interface: InterfaceTable,
+}
+
+// SAFETY: `ExtensionState` holds a `GDExtensionClassLibraryPtr` (opaque C
+// pointer) and an `InterfaceTable` (all `unsafe extern "C" fn` pointers).
+// Neither internally aliases process-lifetime mutable state that we own,
+// and Godot's C runtime is documented to invoke initialize / deinitialize
+// callbacks single-threaded on the main thread. The Mutex protects our
+// slot; these `unsafe impl`s just discharge the raw-pointer field's
+// auto-trait rejection.
+unsafe impl Send for ExtensionState {}
+unsafe impl Sync for ExtensionState {}
+
+static EXTENSION_STATE: Mutex<Option<ExtensionState>> = Mutex::new(None);
 
 // ---------------------------------------------------------------------------
 // GDExtension init/deinit callbacks.
@@ -111,12 +147,12 @@ static LINKER_KEEPALIVE: fn() -> usize = ffi::capi::keepalive_c_abi_symbols;
 ///
 /// This is a C entry point invoked by Godot. `userdata` is whatever we
 /// stored in `GDExtensionInitialization::userdata` (currently `NULL` — no
-/// per-load state).
+/// per-load state; extension state lives in [`EXTENSION_STATE`]).
 extern "C" fn vokra_initialize(_userdata: *mut c_void, p_level: GDExtensionInitializationLevel) {
     // Panic firewall (NFR-RL-07): a panic here would unwind through Godot's
     // C stack (compiled without unwind tables) = UB. `catch_panic` swallows
     // it; there is nothing meaningful we can report at this level without
-    // Godot's print system wired (T05 will add that path via
+    // Godot's print system wired (a future patch may add that path via
     // `get_proc_address("print_error")`).
     let _ = error::catch_panic(|| {
         // Force LINKER_KEEPALIVE to be reachable at runtime as well as at
@@ -125,13 +161,17 @@ extern "C" fn vokra_initialize(_userdata: *mut c_void, p_level: GDExtensionIniti
 
         match p_level {
             GDExtensionInitializationLevel::Scene => {
-                // TODO(T05): call `classdb_register_extension_class3` here
-                // to expose `VokraSession` as a Godot Object subclass.
-                // Resolution pattern (T05 will implement):
-                //   let register: extern "C" fn(...) = mem::transmute(
-                //       get_proc_address(c"classdb_register_extension_class3".as_ptr())
-                //   );
-                //   register(library, class_name, parent, &class_info);
+                let guard = EXTENSION_STATE.lock().ok();
+                if let Some(state_opt) = guard {
+                    if let Some(state) = state_opt.as_ref() {
+                        // SAFETY: `state.interface` was resolved at
+                        // `vokra_gdextension_init` and holds live Godot fn
+                        // pointers. `state.library` is the token Godot
+                        // handed us at the same call. `register` is
+                        // documented single-threaded (main-thread only).
+                        unsafe { registry::register(state.library, &state.interface) };
+                    }
+                }
             }
             _ => { /* Vokra does not register at Core/Servers/Editor. */ }
         }
@@ -139,13 +179,29 @@ extern "C" fn vokra_initialize(_userdata: *mut c_void, p_level: GDExtensionIniti
 }
 
 /// Called by Godot at each teardown level (descending). Symmetric with
-/// [`vokra_initialize`]. Currently a no-op because we own no per-load state
-/// beyond what's in the class registry (Godot itself unregisters on
-/// extension unload).
-extern "C" fn vokra_deinitialize(_userdata: *mut c_void, _p_level: GDExtensionInitializationLevel) {
+/// [`vokra_initialize`].
+///
+/// Unregisters both classes at Scene level and clears
+/// [`EXTENSION_STATE`] so the cdylib can be re-loaded cleanly.
+extern "C" fn vokra_deinitialize(_userdata: *mut c_void, p_level: GDExtensionInitializationLevel) {
     let _ = error::catch_panic(|| {
-        // TODO(T05): unregister classes here in reverse order of T05
-        // registration.
+        match p_level {
+            GDExtensionInitializationLevel::Scene => {
+                // Take the state so the slot is empty regardless of what
+                // happens inside `unregister`. Godot never re-calls
+                // Scene-level deinit for the same load, so this is safe
+                // even if unregister panics (`catch_panic` above catches
+                // it and the slot stays empty).
+                let taken = EXTENSION_STATE.lock().ok().and_then(|mut g| g.take());
+                if let Some(state) = taken {
+                    // SAFETY: mirror of `vokra_initialize` — the interface
+                    // and library are live and this runs on the main
+                    // thread.
+                    unsafe { registry::unregister(state.library, &state.interface) };
+                }
+            }
+            _ => { /* Nothing to do at other levels. */ }
+        }
     });
 }
 
@@ -168,8 +224,8 @@ extern "C" fn vokra_deinitialize(_userdata: *mut c_void, _p_level: GDExtensionIn
 /// the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vokra_gdextension_init(
-    _p_get_proc_address: GDExtensionInterfaceGetProcAddress,
-    _p_library: GDExtensionClassLibraryPtr,
+    p_get_proc_address: GDExtensionInterfaceGetProcAddress,
+    p_library: GDExtensionClassLibraryPtr,
     r_initialization: *mut GDExtensionInitialization,
 ) -> GDExtensionBool {
     // Panic firewall (NFR-RL-07). If ANY Rust panic escapes this
@@ -180,6 +236,35 @@ pub unsafe extern "C" fn vokra_gdextension_init(
         if r_initialization.is_null() {
             return false;
         }
+
+        // Resolve the GDExtension interface subset we depend on. If any
+        // required name is missing we bail cleanly with 0 — Godot will
+        // report "extension failed to load" without ever calling into
+        // our initialize/deinitialize callbacks.
+        //
+        // SAFETY: `p_get_proc_address` is a live fn pointer for the
+        // duration of this call (GDExtension contract). The resolver
+        // reads NUL-terminated static byte constants (checked by
+        // `InterfaceTable::from_proc_address` tests).
+        let Some(interface) = (unsafe { InterfaceTable::from_proc_address(p_get_proc_address) })
+        else {
+            return false;
+        };
+
+        // Stash extension state for `vokra_initialize` /
+        // `vokra_deinitialize`. Lock poisoning would only happen if a
+        // previous `catch_panic` failed AT the write itself, which is
+        // impossible on the happy path — treat it as init-failure.
+        {
+            let Ok(mut guard) = EXTENSION_STATE.lock() else {
+                return false;
+            };
+            *guard = Some(ExtensionState {
+                library: p_library,
+                interface,
+            });
+        }
+
         // SAFETY: Godot guarantees `r_initialization` is a valid writable
         // slot for the duration of this call (per GDExtension contract).
         unsafe {
@@ -243,11 +328,14 @@ mod tests {
         assert_eq!(result, 0, "NULL init struct must produce init-failure");
     }
 
-    // Happy path: with a real init struct, the entry point wires the
-    // callbacks and reports success.
+    // Entry point must return 0 when interface resolution fails (i.e.
+    // any required GDExtension API is missing). The dummy_gpa returns
+    // NULL for every name, which triggers `InterfaceTable::from_proc_address`
+    // to return None → the entry point bails cleanly instead of stashing
+    // half-populated state.
     #[test]
-    fn entry_point_populates_init_struct_on_success() {
-        unsafe extern "C" fn dummy_gpa(
+    fn entry_point_rejects_missing_interface() {
+        unsafe extern "C" fn null_gpa(
             _p_name: *const core::ffi::c_char,
         ) -> crate::ffi::gdextension::GDExtensionInterfaceFunctionPtr {
             None
@@ -259,9 +347,52 @@ mod tests {
             initialize: None,
             deinitialize: None,
         };
+        // SAFETY: `null_gpa` matches the resolver signature; init struct
+        // is a valid writable slot.
+        let result = unsafe { vokra_gdextension_init(null_gpa, ptr::null_mut(), &mut init) };
+
+        assert_eq!(
+            result, 0,
+            "missing interface resolution must produce init-failure",
+        );
+        // init struct MUST remain untouched — we bail before writing.
+        assert!(init.initialize.is_none());
+        assert!(init.deinitialize.is_none());
+    }
+
+    // Happy path: when the resolver returns Some for every name, the entry
+    // point stashes extension state, wires the callbacks, and reports
+    // success. The sentinel fn is a syntactically valid interface fn — we
+    // never call it because the tests don't invoke initialize/deinitialize.
+    #[test]
+    fn entry_point_populates_init_struct_on_success() {
+        // Sentinel fn — used only for its address; never invoked. Its
+        // signature is `unsafe extern "C" fn()` (the opaque
+        // `GDExtensionInterfaceFunctionPtr` inner type).
+        unsafe extern "C" fn sentinel() {}
+
+        unsafe extern "C" fn success_gpa(
+            _p_name: *const core::ffi::c_char,
+        ) -> crate::ffi::gdextension::GDExtensionInterfaceFunctionPtr {
+            Some(sentinel)
+        }
+
+        // Clear any leftover state from previous tests (they run in
+        // parallel by default; the Mutex serializes writes).
+        {
+            let mut guard = EXTENSION_STATE.lock().unwrap();
+            *guard = None;
+        }
+
+        let mut init = GDExtensionInitialization {
+            minimum_initialization_level: GDExtensionInitializationLevel::Core,
+            userdata: ptr::null_mut(),
+            initialize: None,
+            deinitialize: None,
+        };
         // SAFETY: `&mut init` is a valid writable slot for the duration
         // of the call.
-        let result = unsafe { vokra_gdextension_init(dummy_gpa, ptr::null_mut(), &mut init) };
+        let result = unsafe { vokra_gdextension_init(success_gpa, ptr::null_mut(), &mut init) };
 
         assert_eq!(result, 1, "successful init must return 1");
         assert_eq!(
@@ -270,5 +401,20 @@ mod tests {
         );
         assert!(init.initialize.is_some());
         assert!(init.deinitialize.is_some());
+
+        // Extension state MUST be populated.
+        {
+            let guard = EXTENSION_STATE.lock().unwrap();
+            assert!(
+                guard.is_some(),
+                "successful init must stash EXTENSION_STATE",
+            );
+        }
+
+        // Clear so the next test doesn't observe leftover state.
+        {
+            let mut guard = EXTENSION_STATE.lock().unwrap();
+            *guard = None;
+        }
     }
 }

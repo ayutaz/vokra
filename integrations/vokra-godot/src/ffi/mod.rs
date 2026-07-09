@@ -16,3 +16,4 @@
 
 pub mod capi;
 pub mod gdextension;
+pub mod interface;
