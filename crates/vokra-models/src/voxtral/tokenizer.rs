@@ -450,7 +450,7 @@ mod tests {
         // Count 1, first record header says 5 bytes but blob only has 2.
         let mut bad = vec![1u8, 0, 0, 0];
         bad.extend_from_slice(&[0u8, 5u8, 0u8]); // special=0, byte_len=5
-        bad.extend_from_slice(&[b'a', b'b']); // only 2 of 5 bytes
+        bad.extend_from_slice(b"ab"); // only 2 of 5 bytes
         assert!(matches!(
             VoxtralTokenizer::from_bytes(bad, 0),
             Err(VokraError::ModelLoad(_))
