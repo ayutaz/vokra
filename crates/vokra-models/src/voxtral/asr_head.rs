@@ -44,6 +44,7 @@
 use vokra_core::{BackendKind, Result, VokraError};
 
 use super::AudioAdapter;
+use super::beam_search::{BeamConfig, BeamResult, beam_search_decode};
 use super::text_decoder_session::{
     DEFAULT_MAX_NEW_TOKENS, TextDecoderSession, greedy_decode, greedy_decode_with_prefix,
 };
@@ -222,6 +223,110 @@ impl<'m> AsrHead<'m> {
     #[must_use]
     pub fn n_decoder_layer(&self) -> usize {
         self.text.n_layer()
+    }
+
+    /// Beam-search transcribe: audio → up to `config.beam_size` token
+    /// hypotheses, ranked by length-normalized score descending.
+    ///
+    /// This is the n-best sibling of [`Self::transcribe`]: same encoder
+    /// forward, same adapter routing, same session lifecycle — the only
+    /// difference is the decode driver. A `config.beam_size == 1` invocation
+    /// must reproduce the greedy sequence in [`Self::transcribe`] (see the
+    /// [`beam_search`](super::beam_search) module's greedy-equivalence
+    /// test).
+    ///
+    /// Every returned [`BeamResult::tokens`] contains only the generated
+    /// tokens (the BOS prefix is NOT included). A hypothesis that
+    /// terminated on `config.eos_token` has EOS as its last element.
+    ///
+    /// # Errors
+    ///
+    /// Same taxonomy as [`Self::transcribe`], plus every error surfaced by
+    /// [`beam_search_decode`] (empty prefix, `beam_size == 0`, etc.).
+    pub fn transcribe_beam(
+        &self,
+        backend: BackendKind,
+        log_mel: &[f32],
+        n_frames: usize,
+        bos_id: u32,
+        config: &BeamConfig,
+    ) -> Result<Vec<BeamResult>> {
+        if self.config.mode != "asr" && self.config.mode != "s2s" {
+            return Err(VokraError::ModelLoad(format!(
+                "voxtral asr_head.transcribe_beam: config.mode is `{}` — expected `asr` or `s2s`",
+                self.config.mode
+            )));
+        }
+        let vocab = self.config.text.vocab_size as u32;
+        if bos_id >= vocab {
+            return Err(VokraError::InvalidArgument(format!(
+                "voxtral asr_head.transcribe_beam: bos_id {bos_id} >= vocab_size {vocab}"
+            )));
+        }
+        // `config.eos_token` being out-of-vocab is TOLERATED (matches
+        // greedy — an unreachable EOS just means the search runs to
+        // `max_new_tokens` and returns the still-active pool).
+
+        let compute = crate::compute::Compute::for_backend(backend, super::VOXTRAL_HOT_OPS)?;
+        let encoder_out = self.encode(&compute, log_mel, n_frames)?;
+
+        let mut session = TextDecoderSession::new(self.config, self.text, backend)?;
+
+        // Route through the adapter if present and active. For beam search,
+        // the adapter's soft-prefix embedding is prepended to the session via
+        // step_into_with_embed_prefix, then the greedy/beam driver takes
+        // over with `[bos_id]` as the search's initial_tokens.
+        //
+        // NOTE: `beam_search_decode` calls `session.reset()` at the top —
+        // any state we prepend via the adapter path here would be discarded.
+        // So for the audio-conditioned adapter case, we hand-drive the
+        // prefix + initial_tokens ourselves and *do not* call
+        // `beam_search_decode` (which is prefix-only). We do the reset +
+        // prefix + step_into ourselves, then push the seed through a
+        // beam-search that snapshots after the prefix.
+        //
+        // To keep the code path simple and match the greedy adapter case,
+        // we call a specialised entry point below. For now, if an adapter is
+        // active, we fall back to the non-adapter path — real
+        // audio-conditioning through beam search follows the same
+        // TextDecoderSession pattern but needs the seed snapshot taken
+        // AFTER the adapter's soft-prefix step. This is handled by
+        // `beam_search_decode_with_prefix` below.
+        match self.adapter {
+            Some(adapter) if adapter.is_active() => {
+                let d = self.config.text.hidden_dim;
+                let adapter_out = super::adapter::out_dim(adapter.kind());
+                if adapter_out != d {
+                    return Err(VokraError::ModelLoad(format!(
+                        "voxtral asr_head.transcribe_beam: adapter out_dim ({adapter_out}) must \
+                         equal text_decoder.hidden_dim ({d}) — check the adapter config."
+                    )));
+                }
+                let prefix_embed = adapter.apply(
+                    &compute,
+                    &encoder_out.hidden,
+                    encoder_out.n_ctx,
+                    encoder_out.hidden_dim,
+                )?;
+                if d == 0 || prefix_embed.len() % d != 0 {
+                    return Err(VokraError::ModelLoad(format!(
+                        "voxtral asr_head.transcribe_beam: adapter output len {} not a multiple \
+                         of text_decoder.hidden_dim {}",
+                        prefix_embed.len(),
+                        d,
+                    )));
+                }
+                let t_prefix = prefix_embed.len() / d;
+                super::beam_search::beam_search_decode_with_prefix(
+                    &mut session,
+                    &prefix_embed,
+                    t_prefix,
+                    bos_id,
+                    config,
+                )
+            }
+            _ => beam_search_decode(&mut session, &[bos_id], config),
+        }
     }
 }
 
@@ -625,5 +730,150 @@ mod tests {
             matches!(err, VokraError::ModelLoad(_)),
             "expected ModelLoad, got {err:?}"
         );
+    }
+
+    // --------------------------------------------------------------------
+    // Beam-search transcribe tests
+    // --------------------------------------------------------------------
+
+    #[test]
+    fn transcribe_beam_size_one_matches_greedy() {
+        // beam_size=1 through transcribe_beam must produce the same token
+        // sequence as transcribe (greedy). Same encoder, same adapter (none),
+        // same BOS, same effective max_new.
+        let cfg = tiny_config();
+        let ae = tiny_encoder(&cfg);
+        let td = tiny_decoder(&cfg);
+        let head = AsrHead::new(&cfg, &ae, &td);
+        let n_frames = 8;
+        let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
+        let eos = cfg.text.vocab_size as u32 + 100;
+        let greedy = head
+            .transcribe(BackendKind::Cpu, &log_mel, n_frames, 1, eos, 3)
+            .unwrap();
+        let bc = BeamConfig::greedy(eos, 3);
+        let beams = head
+            .transcribe_beam(BackendKind::Cpu, &log_mel, n_frames, 1, &bc)
+            .unwrap();
+        assert_eq!(beams.len(), 1);
+        assert_eq!(beams[0].tokens, greedy);
+    }
+
+    #[test]
+    fn transcribe_beam_returns_up_to_beam_size_results() {
+        let cfg = tiny_config();
+        let ae = tiny_encoder(&cfg);
+        let td = tiny_decoder(&cfg);
+        let head = AsrHead::new(&cfg, &ae, &td);
+        let n_frames = 8;
+        let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
+        let bc = BeamConfig::with_beam_size(3, cfg.text.vocab_size as u32 + 100, 4);
+        let beams = head
+            .transcribe_beam(BackendKind::Cpu, &log_mel, n_frames, 1, &bc)
+            .unwrap();
+        assert!(!beams.is_empty());
+        assert!(beams.len() <= 3);
+        // Ranked descending.
+        for pair in beams.windows(2) {
+            assert!(
+                pair[0].length_normalized_score >= pair[1].length_normalized_score,
+                "beams not sorted"
+            );
+        }
+        // Every token is in-vocab.
+        for r in &beams {
+            assert!(r.tokens.iter().all(|&t| (t as usize) < cfg.text.vocab_size));
+        }
+    }
+
+    #[test]
+    fn transcribe_beam_rejects_bad_bos() {
+        let cfg = tiny_config();
+        let ae = tiny_encoder(&cfg);
+        let td = tiny_decoder(&cfg);
+        let head = AsrHead::new(&cfg, &ae, &td);
+        let n_frames = 8;
+        let log_mel = vec![0.0f32; cfg.audio.n_mels * n_frames];
+        let bad_bos = cfg.text.vocab_size as u32;
+        let bc = BeamConfig::greedy(2, 4);
+        assert!(matches!(
+            head.transcribe_beam(BackendKind::Cpu, &log_mel, n_frames, bad_bos, &bc),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn transcribe_beam_rejects_unknown_mode() {
+        let mut cfg = tiny_config();
+        cfg.mode = "not-an-arch".to_owned();
+        let ae = AudioEncoder {
+            conv1_w: Vec::new(),
+            conv1_b: Vec::new(),
+            conv2_w: Vec::new(),
+            conv2_b: Vec::new(),
+            pos_emb: Vec::new(),
+            has_learned_pos_emb: false,
+        };
+        let td = TextDecoder {
+            token_emb: Vec::new(),
+            blocks: Vec::new(),
+            final_norm_gamma: Vec::new(),
+            prefix: "",
+        };
+        let head = AsrHead::new(&cfg, &ae, &td);
+        let bc = BeamConfig::greedy(2, 4);
+        assert!(matches!(
+            head.transcribe_beam(BackendKind::Cpu, &[], 0, 1, &bc),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
+    #[test]
+    fn transcribe_beam_active_adapter_returns_results() {
+        // Adapter-conditioned beam decode: same routing as the adapter-active
+        // greedy test above (identity linear adapter) but through the beam
+        // path. The result must be a non-empty list of in-vocab beams.
+        use vokra_core::gguf::GgufFile;
+        let cfg = tiny_config();
+        // Non-zero pos_emb so the encoder hidden state is non-zero (see the
+        // adapter_active_produces_different_output_than_none test).
+        let mut ae = tiny_encoder(&cfg);
+        for (i, v) in ae.pos_emb.iter_mut().enumerate() {
+            *v = ((i as i32 % 3) - 1) as f32 * 0.1;
+        }
+        let td = tiny_decoder(&cfg);
+        let adapter_bytes = synth_linear_adapter_gguf(cfg.text.hidden_dim);
+        let file = GgufFile::parse(adapter_bytes).unwrap();
+        let adapter = super::super::AudioAdapter::from_gguf(&file).unwrap();
+        assert!(adapter.is_active());
+        let head = AsrHead::new(&cfg, &ae, &td).with_adapter(&adapter);
+        let n_frames = 8;
+        let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
+        let bc = BeamConfig::with_beam_size(2, cfg.text.vocab_size as u32 + 100, 3);
+        let beams = head
+            .transcribe_beam(BackendKind::Cpu, &log_mel, n_frames, 1, &bc)
+            .unwrap();
+        assert!(!beams.is_empty());
+        for r in &beams {
+            assert!(r.tokens.iter().all(|&t| (t as usize) < cfg.text.vocab_size));
+        }
+    }
+
+    #[test]
+    fn transcribe_beam_is_deterministic() {
+        let cfg = tiny_config();
+        let ae = tiny_encoder(&cfg);
+        let td = tiny_decoder(&cfg);
+        let head = AsrHead::new(&cfg, &ae, &td);
+        let n_frames = 8;
+        let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
+        let bc = BeamConfig::with_beam_size(2, cfg.text.vocab_size as u32 + 100, 3);
+        let a = head
+            .transcribe_beam(BackendKind::Cpu, &log_mel, n_frames, 1, &bc)
+            .unwrap();
+        let b = head
+            .transcribe_beam(BackendKind::Cpu, &log_mel, n_frames, 1, &bc)
+            .unwrap();
+        assert_eq!(a, b);
     }
 }

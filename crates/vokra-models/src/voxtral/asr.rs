@@ -53,6 +53,7 @@ use std::sync::Arc;
 use vokra_core::{AsrEngine, BackendKind, Result, Transcription, VokraError};
 
 use super::asr_head::{MISTRAL_BOS_ID, MISTRAL_EOS_ID};
+use super::beam_search::{BeamConfig, BeamResult};
 use super::{AsrHead, VoxtralModel, VoxtralTokenizer};
 
 /// A Voxtral engine that speaks the [`AsrEngine`] trait. Holds the loaded
@@ -174,6 +175,104 @@ impl VoxtralAsr {
         self.eos_id = eos_id;
         self
     }
+
+    /// Beam-search transcribe: PCM → up to `config.beam_size` decoded
+    /// text hypotheses ranked by length-normalized score descending.
+    ///
+    /// A parallel to [`AsrEngine::transcribe`] that returns the full
+    /// n-best set instead of collapsing to the top-1. `beam_size == 1` in
+    /// `config` reproduces the greedy sequence returned by
+    /// [`AsrEngine::transcribe`] (see the `beam_search` module's
+    /// greedy-equivalence test).
+    ///
+    /// The `config.eos_token` is honored if the caller supplies it; the
+    /// convenience wrapper [`Self::transcribe_beam_with_defaults`] fills
+    /// `eos_token` from the `VoxtralAsr`'s own configured `eos_id`
+    /// instead (see [`with_bos_eos`](Self::with_bos_eos)).
+    ///
+    /// # Errors
+    ///
+    /// Same taxonomy as [`AsrEngine::transcribe`], plus any error surfaced
+    /// by [`beam_search_decode`](super::beam_search::beam_search_decode).
+    pub fn transcribe_beam(
+        &self,
+        pcm: &[f32],
+        config: &BeamConfig,
+    ) -> Result<Vec<TranscribedBeam>> {
+        if pcm.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "voxtral::VoxtralAsr::transcribe_beam: pcm slice is empty".into(),
+            ));
+        }
+        let cfg = self.model.config();
+        let n_mels = cfg.audio.n_mels;
+        if n_mels == 0 {
+            return Err(VokraError::ModelLoad(
+                "voxtral::VoxtralAsr::transcribe_beam: config carries n_mels = 0 \
+                 (shape-only path). Re-convert with a full VoxtralConfig (FR-EX-08 — no silent \
+                 default)."
+                    .into(),
+            ));
+        }
+        let log_mel = crate::whisper::mel::log_mel(pcm, n_mels);
+        let n_frames = crate::whisper::mel::N_FRAMES;
+
+        let head = AsrHead::new(
+            self.model.config(),
+            self.model.audio_encoder(),
+            self.model.text_decoder(),
+        )
+        .with_adapter(self.model.audio_adapter());
+        let beams = head.transcribe_beam(self.backend, &log_mel, n_frames, self.bos_id, config)?;
+
+        // Detokenize each beam. A GGUF without an embedded tokenizer
+        // surfaces an explicit error — no fabrication.
+        let tok = self.tokenizer.as_ref().ok_or_else(|| {
+            VokraError::ModelLoad(
+                "voxtral::VoxtralAsr::transcribe_beam: model has no embedded tokenizer \
+                 (`vokra.tokenizer.model` chunk absent). Re-convert with tokenizer bytes in the \
+                 side-car, or attach one via `with_tokenizer(...)` (FR-EX-08 — never fabricate \
+                 detokenised text)."
+                    .into(),
+            )
+        })?;
+        let mut out = Vec::with_capacity(beams.len());
+        for b in beams {
+            let text = tok.decode(&b.tokens)?;
+            out.push(TranscribedBeam { text, result: b });
+        }
+        Ok(out)
+    }
+
+    /// Convenience wrapper around [`Self::transcribe_beam`] that fills the
+    /// `eos_token` from `self.eos_id` and passes through the other config
+    /// fields. Callers that only care about the beam width can use this
+    /// (mirrors how [`AsrEngine::transcribe`] wraps the plumbing).
+    pub fn transcribe_beam_with_defaults(
+        &self,
+        pcm: &[f32],
+        beam_size: usize,
+        max_new_tokens: usize,
+    ) -> Result<Vec<TranscribedBeam>> {
+        let effective_max = if max_new_tokens == 0 {
+            super::text_decoder_session::DEFAULT_MAX_NEW_TOKENS
+        } else {
+            max_new_tokens
+        };
+        let config = BeamConfig::with_beam_size(beam_size, self.eos_id, effective_max);
+        self.transcribe_beam(pcm, &config)
+    }
+}
+
+/// One decoded beam from [`VoxtralAsr::transcribe_beam`] — the tokenized
+/// output plus the underlying score metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TranscribedBeam {
+    /// Detokenized text.
+    pub text: String,
+    /// Underlying beam result (raw tokens + log_prob + length-normalized
+    /// score).
+    pub result: BeamResult,
 }
 
 impl AsrEngine for VoxtralAsr {
@@ -472,5 +571,98 @@ mod tests {
         // The vokra-server registry stores engines behind Arc<dyn AsrEngine>
         // so this is a load-bearing property.
         let _engine: Arc<dyn AsrEngine> = Arc::new(VoxtralAsr::new(tiny_model()).unwrap());
+    }
+
+    // -----------------------------------------------------------------
+    // Beam-search transcribe on VoxtralAsr
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn transcribe_beam_empty_pcm_is_invalid_argument() {
+        let asr = VoxtralAsr::new(tiny_model()).unwrap();
+        let bc = BeamConfig::greedy(2, 3);
+        assert!(matches!(
+            asr.transcribe_beam(&[], &bc),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn transcribe_beam_without_tokenizer_is_model_load_error() {
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(2)
+            .with_bos_eos(1, /*unreachable*/ 999);
+        let pcm = vec![0.0f32; 16_000];
+        let bc = BeamConfig::greedy(999, 2);
+        assert!(matches!(
+            asr.transcribe_beam(&pcm, &bc),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
+    #[test]
+    fn transcribe_beam_returns_ranked_beams_with_text() {
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(3)
+            .with_bos_eos(1, /*unreachable*/ vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999));
+        let pcm = vec![0.5f32; 16_000];
+        let bc = BeamConfig::with_beam_size(2, vocab as u32 + 10, 3);
+        let beams = asr
+            .transcribe_beam(&pcm, &bc)
+            .expect("beam decode must succeed");
+        assert!(!beams.is_empty());
+        assert!(beams.len() <= 2);
+        for b in &beams {
+            assert!(
+                !b.text.is_empty(),
+                "beam text must not be empty: {:?}",
+                b.text
+            );
+        }
+        // Ranked descending.
+        for pair in beams.windows(2) {
+            assert!(
+                pair[0].result.length_normalized_score >= pair[1].result.length_normalized_score
+            );
+        }
+    }
+
+    #[test]
+    fn transcribe_beam_size_one_matches_engine_transcribe() {
+        // beam_size=1 through transcribe_beam must produce the same top-1
+        // text as transcribe (greedy).
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(3)
+            .with_bos_eos(1, /*unreachable*/ vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999));
+        let pcm = vec![0.5f32; 16_000];
+
+        let greedy = asr.transcribe(&pcm).unwrap();
+        let bc = BeamConfig::greedy(vocab as u32 + 10, 3);
+        let beams = asr.transcribe_beam(&pcm, &bc).unwrap();
+        assert_eq!(beams.len(), 1);
+        assert_eq!(beams[0].text, greedy.text);
+    }
+
+    #[test]
+    fn transcribe_beam_with_defaults_wraps_config() {
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(3)
+            .with_bos_eos(1, vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999));
+        let pcm = vec![0.5f32; 16_000];
+        let beams = asr
+            .transcribe_beam_with_defaults(&pcm, 2, 3)
+            .expect("default-wrapped beam decode must succeed");
+        assert!(!beams.is_empty());
+        assert!(beams.len() <= 2);
     }
 }

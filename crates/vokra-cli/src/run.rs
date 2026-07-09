@@ -22,13 +22,23 @@ vokra-cli run — load a GGUF and run VAD / ASR / TTS
 
 USAGE:
     vokra-cli run --model <model.gguf> [--input <in.wav>] [--text <string>] [--output <out.wav>]
+                  [--beam-size <N>] [--length-penalty <α>] [--no-repeat-ngram <N>]
 
 OPTIONS:
-    --model <path>    GGUF model file (arch selects VAD / ASR / TTS)
-    --input <path>    mono WAV input (required for VAD and ASR)
-    --text <string>   text to synthesize (required for TTS)
-    --output <path>   WAV file for the TTS output (optional)
-    -h, --help        print this help
+    --model <path>              GGUF model file (arch selects VAD / ASR / TTS)
+    --input <path>              mono WAV input (required for VAD and ASR)
+    --text <string>             text to synthesize (required for TTS)
+    --output <path>             WAV file for the TTS output (optional)
+    --beam-size <N>             ASR beam-search width (default 1 = greedy).
+                                Currently only honored for `voxtral` arch —
+                                other archs error out on --beam-size > 1
+                                rather than silently ignoring the flag
+                                (FR-EX-08).
+    --length-penalty <α>        GNMT length-penalty exponent for beam search
+                                (default 0.6). See `voxtral::BeamConfig`.
+    --no-repeat-ngram <N>       Block repeated n-grams of length N during
+                                beam search (default 0 = disabled).
+    -h, --help                  print this help
 ";
 
 /// Parsed `run` arguments.
@@ -37,6 +47,15 @@ struct RunArgs {
     input: Option<String>,
     text: Option<String>,
     output: Option<String>,
+    /// Beam-search width (default 1 = greedy). Only honored for `voxtral`
+    /// arch — other archs error out on `> 1` rather than silently ignoring
+    /// (FR-EX-08).
+    beam_size: usize,
+    /// GNMT length-penalty exponent (default 0.6, per `BeamConfig`).
+    length_penalty: f32,
+    /// Block repeated n-grams of this length during beam search
+    /// (default 0 = disabled).
+    no_repeat_ngram: usize,
 }
 
 fn parse_args(args: &[String]) -> Result<RunArgs, String> {
@@ -44,6 +63,13 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut input: Option<String> = None;
     let mut text: Option<String> = None;
     let mut output: Option<String> = None;
+    // Beam-search defaults: greedy (beam_size = 1). Length-penalty 0.6 is
+    // only meaningful when beam_size > 1; the default is arbitrary but
+    // matches `voxtral::BeamConfig::with_beam_size` so the same value flows
+    // through if the user only passes `--beam-size`.
+    let mut beam_size: usize = 1;
+    let mut length_penalty: f32 = 0.6;
+    let mut no_repeat_ngram: usize = 0;
 
     let mut i = 0;
     while i < args.len() {
@@ -64,6 +90,37 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 output = Some(args.get(i + 1).ok_or("--output requires a value")?.clone());
                 i += 2;
             }
+            "--beam-size" => {
+                let v = args.get(i + 1).ok_or("--beam-size requires a value")?;
+                beam_size = v
+                    .parse()
+                    .map_err(|e| format!("--beam-size must be an unsigned integer: {e}"))?;
+                if beam_size == 0 {
+                    return Err("--beam-size must be >= 1".to_owned());
+                }
+                i += 2;
+            }
+            "--length-penalty" => {
+                let v = args.get(i + 1).ok_or("--length-penalty requires a value")?;
+                length_penalty = v
+                    .parse()
+                    .map_err(|e| format!("--length-penalty must be a float: {e}"))?;
+                if !length_penalty.is_finite() || length_penalty < 0.0 {
+                    return Err(format!(
+                        "--length-penalty must be a non-negative finite float (got {length_penalty})"
+                    ));
+                }
+                i += 2;
+            }
+            "--no-repeat-ngram" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or("--no-repeat-ngram requires a value")?;
+                no_repeat_ngram = v
+                    .parse()
+                    .map_err(|e| format!("--no-repeat-ngram must be an unsigned integer: {e}"))?;
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -73,6 +130,9 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         input,
         text,
         output,
+        beam_size,
+        length_penalty,
+        no_repeat_ngram,
     })
 }
 
@@ -108,6 +168,42 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .as_deref()
                 .ok_or("run (ASR): --input <in.wav> is required")?;
             let clip = wav::read_wav(path)?;
+            // Beam-search wiring for ASR (M3-10 Voxtral). The current
+            // `engine.rs` arch dispatch only wires Whisper on the ASR
+            // path — Voxtral's arch string is not yet routed here (that
+            // lands with a follow-up ticket alongside `ARCH_VOXTRAL`).
+            // Whisper's beam-search entry point lives on a separate
+            // `WhisperBeamScorer` and is not exposed through the shared
+            // `AsrEngine` trait, so passing `--beam-size > 1` today would
+            // be silently ignored on the Whisper path.
+            //
+            // FR-EX-08 posture: rather than silently dropping the flag,
+            // hard-error when a beam-only flag is set on an arch whose
+            // dispatch does not honor it.
+            if a.beam_size > 1 || a.no_repeat_ngram > 0 {
+                return Err(
+                    "run (ASR): --beam-size > 1 / --no-repeat-ngram are only supported for the \
+                     Voxtral arch. The current build's arch dispatch does not route Voxtral \
+                     through `vokra-cli run` yet (M3-10 follow-up). Run the Voxtral beam decode \
+                     via the `voxtral::VoxtralAsr::transcribe_beam` API directly or wait for the \
+                     arch wiring."
+                        .to_owned(),
+                );
+            }
+            // Length-penalty defaults to 0.6 (matching `BeamConfig`). A
+            // user who explicitly set --length-penalty AND beam_size = 1
+            // is passing a flag that has no effect (greedy ignores the
+            // penalty); we detect that combination by comparing to the
+            // parser default. Rather than surfacing that as a hard error
+            // (which would trip normal users who explored the flag), we
+            // print an informational note and continue.
+            #[allow(clippy::float_cmp)]
+            if a.beam_size == 1 && a.length_penalty != 0.6 {
+                eprintln!(
+                    "run (ASR): note — --length-penalty is only applied when --beam-size > 1 \
+                     (greedy ignores the length penalty)."
+                );
+            }
             let text = run_asr(&session, &clip.samples)?;
             println!("asr: {text}");
         }
@@ -203,6 +299,81 @@ mod tests {
         assert_eq!(a.input.as_deref(), Some("in.wav"));
         assert_eq!(a.output.as_deref(), Some("o.wav"));
         assert_eq!(a.text, None);
+        // Defaults for beam-search flags.
+        assert_eq!(a.beam_size, 1);
+        assert!((a.length_penalty - 0.6).abs() < 1e-6);
+        assert_eq!(a.no_repeat_ngram, 0);
+    }
+
+    #[test]
+    fn parses_beam_search_flags() {
+        let a = parse_args(&args(&[
+            "--model",
+            "m.gguf",
+            "--input",
+            "in.wav",
+            "--beam-size",
+            "5",
+            "--length-penalty",
+            "1.2",
+            "--no-repeat-ngram",
+            "3",
+        ]))
+        .expect("valid");
+        assert_eq!(a.beam_size, 5);
+        assert!((a.length_penalty - 1.2).abs() < 1e-6);
+        assert_eq!(a.no_repeat_ngram, 3);
+    }
+
+    #[test]
+    fn rejects_bad_beam_size_and_length_penalty() {
+        // --beam-size = 0 is rejected (matches BeamConfig invariant).
+        assert!(
+            parse_args(&args(&["--model", "m.gguf", "--beam-size", "0"]))
+                .err()
+                .unwrap()
+                .contains("beam-size must be >= 1")
+        );
+        // --beam-size non-integer.
+        assert!(
+            parse_args(&args(&["--model", "m.gguf", "--beam-size", "nope"]))
+                .err()
+                .unwrap()
+                .contains("--beam-size")
+        );
+        // --length-penalty negative.
+        assert!(
+            parse_args(&args(&["--model", "m.gguf", "--length-penalty", "-1"]))
+                .err()
+                .unwrap()
+                .contains("--length-penalty")
+        );
+        // --length-penalty NaN.
+        assert!(
+            parse_args(&args(&["--model", "m.gguf", "--length-penalty", "nan"]))
+                .err()
+                .unwrap()
+                .contains("--length-penalty")
+        );
+        // dangling values.
+        assert_eq!(
+            parse_args(&args(&["--model", "m.gguf", "--beam-size"]))
+                .err()
+                .unwrap(),
+            "--beam-size requires a value"
+        );
+        assert_eq!(
+            parse_args(&args(&["--model", "m.gguf", "--length-penalty"]))
+                .err()
+                .unwrap(),
+            "--length-penalty requires a value"
+        );
+        assert_eq!(
+            parse_args(&args(&["--model", "m.gguf", "--no-repeat-ngram"]))
+                .err()
+                .unwrap(),
+            "--no-repeat-ngram requires a value"
+        );
     }
 
     #[test]

@@ -292,6 +292,14 @@ impl<'m> TextDecoderSession<'m> {
         self.vocab_size
     }
 
+    /// Maximum sequence length the underlying config allows. Callers use
+    /// this to bound their own decode budget (e.g. beam search truncating
+    /// `max_new_tokens` to `n_ctx - initial_tokens.len()`).
+    #[must_use]
+    pub fn n_ctx(&self) -> usize {
+        self.config.text.n_ctx
+    }
+
     // Silence unused-field lints for the audio-adapter follow-up. These
     // dimensions are read by the future GPU session ctor + external
     // conditioning path; no runtime cost until then.
@@ -306,6 +314,126 @@ impl<'m> TextDecoderSession<'m> {
     #[doc(hidden)]
     pub fn ffn_dim(&self) -> usize {
         self.ffn_dim
+    }
+
+    // ---------------------------------------------------------------------
+    // KV cache snapshot / restore (beam search + n-best decode, M3-10)
+    // ---------------------------------------------------------------------
+
+    /// Snapshots the current session's KV cache + position clock into a
+    /// [`TextDecoderKvSnapshot`] the caller can [`Clone`] freely and later
+    /// hand back to [`kv_restore`](Self::kv_restore) to rewind this session
+    /// to the exact state at the moment of the call.
+    ///
+    /// Used by the Voxtral beam search + n-best decoder to branch a single
+    /// session across candidate hypotheses without recomputing the shared
+    /// prefix (M3-10).
+    ///
+    /// # Cost
+    ///
+    /// Deep-copies every layer's `k` / `v` buffer through
+    /// [`KvCache::clone`] — `O(n_layer * position * kv_hidden)` — plus the
+    /// (small) `position` usize. Intended for the beam-search hot path
+    /// (per-step branching at beam widths 1..~16), not for the general
+    /// per-token hot path (which the plain [`step_into`](Self::step_into)
+    /// serves).
+    ///
+    /// The transient step-scratch buffers (holding the per-step logits
+    /// row etc.) are **not** captured — a snapshot only records the
+    /// persistent decoder state (KV cache, position clock). A
+    /// [`kv_restore`](Self::kv_restore) followed by a fresh
+    /// [`step_into`](Self::step_into) recomputes the scratch, so callers
+    /// must not rely on [`last_logits_row`](Self::last_logits_row)
+    /// immediately after a restore — call `step_into` first, exactly as
+    /// one would after [`reset`](Self::reset).
+    #[must_use]
+    pub fn kv_snapshot(&self) -> TextDecoderKvSnapshot {
+        TextDecoderKvSnapshot {
+            kv_cache: self.kv_cache.clone(),
+            position: self.position,
+            max_t_kv: self.max_t_kv,
+        }
+    }
+
+    /// Restores the session's KV cache + position clock from a previous
+    /// [`kv_snapshot`](Self::kv_snapshot).
+    ///
+    /// After this call, a fresh [`step_into`](Self::step_into) resumes the
+    /// decode from the snapshotted state — bit-identical to what would happen
+    /// if the caller had never diverged. This is the "branch" primitive the
+    /// beam-search inner loop uses to explore several candidate continuations
+    /// from a shared prefix.
+    ///
+    /// The transient step-scratch buffers are **not** part of the snapshot
+    /// (see the [`kv_snapshot`](Self::kv_snapshot) docstring): callers must
+    /// call `step_into` before reading [`last_logits_row`](Self::last_logits_row).
+    ///
+    /// The snapshot is consumed by value (moved) so the caller cannot
+    /// accidentally re-use it on a different session — pair with `Clone`
+    /// if two restores from the same origin are needed.
+    pub fn kv_restore(&mut self, snapshot: TextDecoderKvSnapshot) {
+        self.kv_cache = snapshot.kv_cache;
+        self.position = snapshot.position;
+        // The scratch's `max_t_kv` bookkeeping tracks the largest KV window
+        // the caller has ever asked for; keeping the pre-snapshot value is
+        // strictly conservative (we never shrink it), and matches what the
+        // step_into path would have done at the moment the snapshot was
+        // taken.
+        if snapshot.max_t_kv > self.max_t_kv {
+            self.max_t_kv = snapshot.max_t_kv;
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// TextDecoderKvSnapshot — opaque handle
+// -----------------------------------------------------------------------------
+
+/// Opaque snapshot of a [`TextDecoderSession`]'s persistent state — the
+/// per-layer KV cache and the position clock.
+///
+/// Constructed by [`TextDecoderSession::kv_snapshot`] and consumed by
+/// [`TextDecoderSession::kv_restore`]. The type is [`Clone`] (deep-copies the
+/// KV cache) so a beam-search caller can branch a single "prefix" state
+/// across multiple candidate hypotheses.
+///
+/// # Layout
+///
+/// The struct is a value type — no interior mutability, no reference to the
+/// originating session. Two snapshots are independent objects: cloning one
+/// and evolving each half separately does not alias.
+///
+/// # Compatibility
+///
+/// A snapshot is only meaningful when restored into a session that shares the
+/// same model / config. This is enforced *at run time* by shape checks
+/// inside the subsequent [`step_into`](TextDecoderSession::step_into) call
+/// (the KV cache carries its own `width` and layer count); a mismatched
+/// restore leaves the session in a legal but semantically inconsistent state
+/// and the very next step will surface the mismatch as an
+/// [`InvalidArgument`](vokra_core::VokraError::InvalidArgument) or panic in
+/// debug builds. Callers should treat snapshots as **model-tied handles**.
+#[derive(Clone)]
+pub struct TextDecoderKvSnapshot {
+    /// Deep-cloned KV cache (per-layer `Vec<f32>` k/v pairs + committed
+    /// positions + hidden width).
+    kv_cache: vokra_core::KvCache,
+    /// Position clock (cached mirror of `kv_cache.positions()`, kept for the
+    /// same reason [`TextDecoderSession`] mirrors it — avoiding a per-call
+    /// method invocation on the hot path).
+    position: usize,
+    /// Largest KV window bookkeeping — same purpose as
+    /// [`TextDecoderSession::max_t_kv`].
+    max_t_kv: usize,
+}
+
+impl TextDecoderKvSnapshot {
+    /// The committed position count at the moment the snapshot was taken.
+    /// Useful for external bookkeeping (e.g. asserting a beam-search branch
+    /// point matches the expected prefix length).
+    #[must_use]
+    pub fn position(&self) -> usize {
+        self.position
     }
 }
 
@@ -672,5 +800,118 @@ mod tests {
         let a = greedy_decode(&mut sess, &[1u32], 9999, 3).unwrap();
         let b = greedy_decode(&mut sess, &[1u32], 9999, 3).unwrap();
         assert_eq!(a, b);
+    }
+
+    // -----------------------------------------------------------------------
+    // KV snapshot / restore (beam search)
+    // -----------------------------------------------------------------------
+
+    /// Round-trip identity — the state after snapshot → step → restore →
+    /// step must be identical to a plain step (from the snapshot point).
+    /// This proves `restore` truly rewinds to the original state.
+    #[test]
+    fn kv_snapshot_round_trip_restores_original_state() {
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let mut sess = TextDecoderSession::cpu(&cfg, &td).unwrap();
+
+        // Take a snapshot at position 2.
+        sess.step_into(&[1u32, 0]).unwrap();
+        let snap = sess.kv_snapshot();
+        assert_eq!(snap.position(), 2);
+
+        // Reference: from the snapshot point, take one more step and read the
+        // logits.
+        sess.step_into(&[2u32]).unwrap();
+        let reference: Vec<f32> = sess.last_logits_row().to_vec();
+
+        // Divergence: from the snapshot point, evolve the session with a
+        // different token sequence to prove that the snapshot really does
+        // capture the entire persistent state (position + KV).
+        let mut sess = TextDecoderSession::cpu(&cfg, &td).unwrap();
+        sess.step_into(&[1u32, 0]).unwrap();
+        let snap = sess.kv_snapshot();
+        sess.step_into(&[3u32]).unwrap();
+        sess.step_into(&[0u32]).unwrap();
+
+        // Restore + step: must match the reference bit-for-bit.
+        sess.kv_restore(snap);
+        assert_eq!(sess.position(), 2);
+        sess.step_into(&[2u32]).unwrap();
+        assert_eq!(sess.last_logits_row(), reference.as_slice());
+    }
+
+    /// Two clones of a single snapshot can evolve independently — extending
+    /// one branch must not perturb the other.
+    #[test]
+    fn kv_snapshot_branches_do_not_interfere() {
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let mut sess = TextDecoderSession::cpu(&cfg, &td).unwrap();
+
+        // Common prefix.
+        sess.step_into(&[1u32, 0]).unwrap();
+        let base_snap = sess.kv_snapshot();
+
+        // Branch A: continue with token 2.
+        sess.kv_restore(base_snap.clone());
+        sess.step_into(&[2u32]).unwrap();
+        let branch_a: Vec<f32> = sess.last_logits_row().to_vec();
+        let branch_a_pos = sess.position();
+
+        // Branch B: continue with token 3 — must land on a different logits
+        // row because the KV cache append content differs.
+        sess.kv_restore(base_snap.clone());
+        sess.step_into(&[3u32]).unwrap();
+        let branch_b: Vec<f32> = sess.last_logits_row().to_vec();
+        let branch_b_pos = sess.position();
+
+        assert_eq!(branch_a_pos, branch_b_pos, "both branches step by 1");
+        // The two logits vectors must not be exactly equal — a bit-identical
+        // match would mean the KV cache append had no effect, i.e. the
+        // snapshot/restore did not deep-copy. Use total-abs-difference for a
+        // finite-precision check.
+        let diff: f32 = branch_a
+            .iter()
+            .zip(&branch_b)
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(
+            diff > 1e-6,
+            "branches must diverge — got zero total diff (branches likely aliased)"
+        );
+
+        // Re-branching to A from the same base must reproduce branch A
+        // bit-for-bit (the snapshot is a true value snapshot, not a
+        // one-shot).
+        sess.kv_restore(base_snap.clone());
+        sess.step_into(&[2u32]).unwrap();
+        assert_eq!(
+            sess.last_logits_row(),
+            branch_a.as_slice(),
+            "re-branch to A must reproduce A bit-for-bit"
+        );
+    }
+
+    /// A snapshot taken at position 0 must be equivalent to a `reset()` —
+    /// the restore path must handle the empty cache correctly.
+    #[test]
+    fn kv_snapshot_at_position_zero_is_a_reset() {
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let mut sess = TextDecoderSession::cpu(&cfg, &td).unwrap();
+        let snap = sess.kv_snapshot();
+        assert_eq!(snap.position(), 0);
+
+        sess.step_into(&[1u32, 2, 0]).unwrap();
+        sess.kv_restore(snap);
+        assert_eq!(sess.position(), 0);
+
+        // Fresh reference decode from scratch must match a decode after
+        // restore.
+        let mut ref_sess = TextDecoderSession::cpu(&cfg, &td).unwrap();
+        ref_sess.step_into(&[1u32]).unwrap();
+        sess.step_into(&[1u32]).unwrap();
+        assert_eq!(sess.last_logits_row(), ref_sess.last_logits_row());
     }
 }

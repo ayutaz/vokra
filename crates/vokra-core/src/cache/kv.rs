@@ -29,6 +29,12 @@
 
 /// Per-layer key / value buffers, each row-major `[positions, width]` and grown
 /// in lockstep with every other layer.
+///
+/// `Clone` is derived so [`KvCache`] can be [`Clone`]d as a whole — used by
+/// beam search implementations that branch a session's state across candidate
+/// hypotheses (M3-10 Voxtral beam search + n-best decode). Cloning does a
+/// deep-copy of the `k` / `v` `Vec<f32>` buffers.
+#[derive(Clone)]
 struct LayerKv {
     /// Key rows, `positions * width` elements.
     k: Vec<f32>,
@@ -68,6 +74,16 @@ struct LayerKv {
 /// assert!(cache.k(0).is_empty());
 /// assert!(cache.capacity_positions() >= 16);
 /// ```
+///
+/// # Cloning for beam search
+///
+/// [`Clone`] is derived so a caller can snapshot the whole cache in one call
+/// — used by the Voxtral beam-search + n-best decode (M3-10) that branches
+/// a decoding session across candidate hypotheses. Cloning does a deep-copy
+/// of every layer's `k` / `v` buffer (`O(n_layers * positions * width)`),
+/// so it is intended for beam widths on the order of 1..~16 with per-utterance
+/// decode lengths, not for the general hot path.
+#[derive(Clone)]
 pub struct KvCache {
     /// One `(k, v)` buffer pair per layer.
     layers: Vec<LayerKv>,
