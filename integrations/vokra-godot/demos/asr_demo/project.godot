@@ -1,0 +1,33 @@
+; Vokra ASR demo — Godot 4.x project descriptor (M3-11-T14).
+;
+; Layout follows Godot 4.x native project.godot INI format (see the
+; upstream docs at https://docs.godotengine.org/en/stable/tutorials/best_practices/project_organization.html
+; and https://docs.godotengine.org/en/stable/classes/class_projectsettings.html).
+; The `config_version` value 5 is Godot 4.0+ (bumped from 4 in 4.0
+; alpha). ADR-0011 §D4 pins compatibility_minimum = 4.1, so 5 is the
+; only correct value here.
+;
+; Runtime verification (open in Godot Editor + press Play) is
+; M3-11-T19 owner work; this file only carries the scaffold Godot
+; needs to load the project (config_version, main_scene, feature
+; tags for the target renderer). GDExtension addon layout under
+; addons/vokra/ is populated by the CI build (T12 → T16), and the
+; consumer copies it into this demo's addons/ tree before opening.
+
+config_version=5
+
+[application]
+
+config/name="Vokra ASR Demo"
+config/description="Whisper base ASR via VokraSession (M3-11-T14).
+Reads a 16 kHz mono PCM sample from res://audio/jfk.wav and shows
+the transcription in a Label. Model files (whisper-base.gguf) are
+fetched by scripts/fetch-demo-models.sh (MIT-licensed weights only,
+per ADR-0011 §D5)."
+config/features=PackedStringArray("4.1", "GL Compatibility")
+run/main_scene="res://main.tscn"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
