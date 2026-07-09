@@ -1,0 +1,45 @@
+; vokra.gdextension — Godot 4.x GDExtension config for the Vokra binding
+; (ADR-0011 §D9). This file is copied verbatim by
+; scripts/build-godot-gdextension.sh into the AssetLib package under
+; addons/vokra/vokra.gdextension.
+;
+; Consumers install by unzipping vokra-godot-<version>.zip into their
+; Godot project root; Godot 4.1+ auto-discovers the `.gdextension` under
+; addons/ and dlopens the matching platform library from `bin/`.
+;
+; NOTE: Godot silently ignores library entries whose files are not present
+; on disk (so a Linux-only local build still produces a valid config).
+
+[configuration]
+
+; The `#[unsafe(no_mangle)]` symbol exported by
+; integrations/vokra-godot/src/lib.rs.
+entry_symbol = "vokra_gdextension_init"
+
+; Minimum Godot version. 4.1 pins GDExtension API v4.1+ (ADR-0011 §D9);
+; earlier 4.0.x had a flux GDExtension header.
+compatibility_minimum = "4.1"
+
+[libraries]
+
+; Desktop
+linux.debug.x86_64   = "bin/linux/x86_64/libvokra_godot.so"
+linux.release.x86_64 = "bin/linux/x86_64/libvokra_godot.so"
+
+macos.debug   = "bin/macos/arm64/libvokra_godot.dylib"
+macos.release = "bin/macos/arm64/libvokra_godot.dylib"
+
+windows.debug.x86_64   = "bin/windows/x86_64/vokra_godot.dll"
+windows.release.x86_64 = "bin/windows/x86_64/vokra_godot.dll"
+
+; Mobile — Android is the only mobile target in the M3-11 scope (ADR-0011
+; §D4). iOS is deferred to M4 alongside the Vokra iOS stack hardening.
+android.debug.arm64   = "bin/android/arm64-v8a/libvokra_godot.so"
+android.release.arm64 = "bin/android/arm64-v8a/libvokra_godot.so"
+
+[dependencies]
+
+; Vokra bundles no external dependencies (NFR-DS-02 zero-dep + NVIDIA EULA
+; install model — cudart/cudnn/cublas are dlopened at runtime, never bundled).
+; This section is intentionally empty; Godot AssetLib requires it to be
+; declared even when empty.
