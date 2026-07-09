@@ -27,6 +27,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vokra-backend-vulkan"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "vokra-backend-cpu",
+ "vokra-core",
+]
+
+[[package]]
 name = "vokra-capi"
 version = "0.1.0-alpha.0"
 dependencies = [

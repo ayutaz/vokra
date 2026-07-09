@@ -1,0 +1,28 @@
+// transpose.comp — M3-02-T22. 2-D transpose (row-major `[m, n]` → `[n, m]`).
+//
+// Higher-rank transposes lower to a sequence of 2-D swaps once T22 wires them
+// through the graph engine.
+//
+// Compile with:
+//   glslc --target-env=vulkan1.1 -o precompiled/transpose.spv glsl/transpose.comp
+
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(push_constant) uniform PC {
+    uint m;
+    uint n;
+} pc;
+
+layout(std430, set = 0, binding = 0) readonly buffer InBuf  { float in_buf[];  };
+layout(std430, set = 0, binding = 1) writeonly buffer OutBuf { float out_buf[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.y; // row of input, = col of output
+    uint j = gl_GlobalInvocationID.x; // col of input, = row of output
+    if (i >= pc.m || j >= pc.n) {
+        return;
+    }
+    out_buf[j * pc.m + i] = in_buf[i * pc.n + j];
+}

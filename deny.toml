@@ -59,4 +59,14 @@ deny = [
     { crate = "ort", reason = "FR-LD-05 / X-08: ONNX graphs are never loaded by the runtime" },
     { crate = "ort-sys", reason = "FR-LD-05 / X-08: ONNX graphs are never loaded by the runtime" },
     { crate = "tract-onnx", reason = "FR-LD-05 / X-08: ONNX graphs are never loaded by the runtime" },
+    # NNAPI is permanently unsupported (FR-BE-07, project design constraint 8,
+    # README §4 (2)): Google deprecated NNAPI in Android 15 (2024-10). Vokra's
+    # Android GPU path is Vulkan 1.1+ ONLY (M3-02). Ban the NNAPI shim crate
+    # family so a stray dependency cannot pull it in — M3-02-T38 wiring.
+    { crate = "android_neuralnetworks", reason = "FR-BE-07 / M3-02 red line: NNAPI is permanently unsupported; use Vulkan on Android" },
+    { crate = "neuralnetworks-sys", reason = "FR-BE-07 / M3-02 red line: NNAPI is permanently unsupported; use Vulkan on Android" },
+    { crate = "android-nnapi", reason = "FR-BE-07 / M3-02 red line: NNAPI is permanently unsupported; use Vulkan on Android" },
+    { crate = "android-nnapi-sys", reason = "FR-BE-07 / M3-02 red line: NNAPI is permanently unsupported; use Vulkan on Android" },
+    { crate = "nnapi", reason = "FR-BE-07 / M3-02 red line: NNAPI is permanently unsupported; use Vulkan on Android" },
+    { crate = "nnapi-sys", reason = "FR-BE-07 / M3-02 red line: NNAPI is permanently unsupported; use Vulkan on Android" },
 ]

@@ -1,0 +1,50 @@
+// gemv.comp — M3-02-T15 (matrix-vector multiply).
+// `y[i] = Σ_j A[i,j] * x[j]  (+ b[i])`.
+//
+// GEMV is the decoder-step hot path (Whisper decoder / MB-iSTFT-VITS2 flow /
+// CosyVoice2 CFM). The subgroup reduce turns the inner sum into a fast
+// shuffle+add.
+//
+// Layout: FP32, row-major A. Bias is optional — pass an empty buffer + zero
+// length via push-constant `bias_present` to skip.
+//
+// Compile with:
+//   glslc --target-env=vulkan1.1 -o precompiled/gemv.spv glsl/gemv.comp
+
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+// One workgroup per output element `i`; subgroups reduce the inner sum.
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform PC {
+    uint m;             // rows of A / length of y
+    uint n;             // cols of A / length of x
+    uint bias_present;  // 0 = skip bias, 1 = add bias
+} pc;
+
+layout(std430, set = 0, binding = 0) readonly buffer AMat { float A[]; };
+layout(std430, set = 0, binding = 1) readonly buffer XVec { float x[]; };
+layout(std430, set = 0, binding = 2) readonly buffer BVec { float b[]; };
+layout(std430, set = 0, binding = 3) writeonly buffer YVec { float y[]; };
+
+void main() {
+    uint i = gl_WorkGroupID.x;
+    uint lane = gl_SubgroupInvocationID;
+    uint sg_size = gl_SubgroupSize;
+    if (i >= pc.m) {
+        return;
+    }
+    float acc = 0.0;
+    // Each lane sums a strided slice of column j; subgroupAdd reduces.
+    for (uint j = lane; j < pc.n; j += sg_size) {
+        acc += A[i * pc.n + j] * x[j];
+    }
+    acc = subgroupAdd(acc);
+    if (subgroupElect()) {
+        if (pc.bias_present != 0u) {
+            acc += b[i];
+        }
+        y[i] = acc;
+    }
+}

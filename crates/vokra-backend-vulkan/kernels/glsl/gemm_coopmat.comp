@@ -1,0 +1,56 @@
+// gemm_coopmat.comp — M3-02-T14 fast path (cooperative-matrix GEMM).
+// Bound on Ampere+ / RDNA3+ / discrete NVIDIA on Linux (M3-02 probe reports
+// `coop_matrix_precondition_met` + `VK_KHR_cooperative_matrix` in the driver
+// extension list — the extension check itself is T30/T31 follow-up).
+//
+// Layout: FP32, row-major, `out[m,n] = Σ_k a[m,k] * b[k,n]`.
+//
+// Same public contract as `gemm_subgroup.comp` — the two shaders MUST produce
+// numerically compatible outputs (NFR-QL-01 FP32 atol=0.01; parity CI T33
+// checks the CPU backend as differential oracle). The probe selects one at
+// dispatch time; there is no runtime `if` inside the shader.
+//
+// Compile with:
+//   glslc --target-env=vulkan1.3 -o precompiled/gemm_coopmat.spv glsl/gemm_coopmat.comp
+//
+// Requires Vulkan 1.3 + `VK_KHR_cooperative_matrix`.
+
+#version 460
+#extension GL_KHR_shader_subgroup_basic : enable
+// The cooperative_matrix GLSL extension is available in glslc since 2023.
+#extension GL_KHR_cooperative_matrix : enable
+
+// Workgroup size — cooperative-matrix M=N=K=16 tile, one WG per output tile.
+// Matches the layout Vulkan's `VK_KHR_cooperative_matrix` scopes at
+// `gl_ScopeSubgroup` (32 lanes on Ampere+/Ada; 64 on RDNA3).
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform PC {
+    uint m;
+    uint n;
+    uint k;
+} pc;
+
+layout(std430, set = 0, binding = 0) readonly buffer LhsBuf { float lhs[]; };
+layout(std430, set = 0, binding = 1) readonly buffer RhsBuf { float rhs[]; };
+layout(std430, set = 0, binding = 2) writeonly buffer OutBuf { float out_buf[]; };
+
+void main() {
+    // NOTE: this is the skeleton. Full cooperative-matrix accumulation
+    //       (`coopMatLoad` / `coopMatMulAdd` / `coopMatStore`) lands with
+    //       T14 once T08〜T12 GEMM plumbing is in place. Kept as a "identical
+    //       to the subgroup path" today so the shader COMPILES and the
+    //       parity gate can be checked end-to-end via the fallback path
+    //       first, then flipped to coop-matrix once the extension check +
+    //       driver runtime are in the loop.
+    uint gm = gl_GlobalInvocationID.y;
+    uint gn = gl_GlobalInvocationID.x;
+    if (gm >= pc.m || gn >= pc.n) {
+        return;
+    }
+    float acc = 0.0;
+    for (uint kk = 0u; kk < pc.k; ++kk) {
+        acc += lhs[gm * pc.k + kk] * rhs[kk * pc.n + gn];
+    }
+    out_buf[gm * pc.n + gn] = acc;
+}

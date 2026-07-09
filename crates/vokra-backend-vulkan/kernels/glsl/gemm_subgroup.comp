@@ -1,0 +1,58 @@
+// gemm_subgroup.comp — M3-02-T14 fallback path (subgroup-only GEMM, no
+// cooperative-matrix). This is the *primary* Android path (Adreno 6xx+ /
+// Mali G7x+ / Immortalis: subgroup available, cooperative-matrix not).
+//
+// Layout:
+//   FP32, row-major, `out[m,n] = Σ_k a[m,k] * b[k,n]`.
+//
+// Design mirrors the CPU backend's `kernels::gemm_f32` shape/semantics so the
+// NFR-QL-01 parity gate (FP32 atol=0.01) is trivial to satisfy.
+//
+// This file is the load-bearing SKELETON — the workgroup layout, bindings and
+// push-constant layout are frozen so the Rust dispatcher (T14) can rely on
+// them; the inner loop is the "obvious" tiled GEMM, to be tuned in a follow-up
+// once real Android RTF numbers exist (M3-02-T40 owner run).
+//
+// Compile with:
+//   glslc --target-env=vulkan1.1 -o precompiled/gemm_subgroup.spv glsl/gemm_subgroup.comp
+//
+// Requires Vulkan 1.1 + `GL_KHR_shader_subgroup_basic` +
+// `GL_KHR_shader_subgroup_arithmetic` (broadly available since 2018).
+
+#version 450
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+// Workgroup size — 16×16 = 256 threads, matching a common subgroup width of
+// 32 on Adreno / Mali (2 subgroups per WG). Tune once we have real perf data.
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(push_constant) uniform PC {
+    uint m;
+    uint n;
+    uint k;
+} pc;
+
+// Storage buffers (SSBOs): std430 layout — FP32 packed contiguously, no
+// padding.
+layout(std430, set = 0, binding = 0) readonly buffer LhsBuf { float lhs[]; };
+layout(std430, set = 0, binding = 1) readonly buffer RhsBuf { float rhs[]; };
+layout(std430, set = 0, binding = 2) writeonly buffer OutBuf { float out_buf[]; };
+
+// Row-major indexing helpers (matching the CPU kernel).
+uint idx_lhs(uint mm, uint kk) { return mm * pc.k + kk; }
+uint idx_rhs(uint kk, uint nn) { return kk * pc.n + nn; }
+uint idx_out(uint mm, uint nn) { return mm * pc.n + nn; }
+
+void main() {
+    uint gm = gl_GlobalInvocationID.y; // row of C
+    uint gn = gl_GlobalInvocationID.x; // col of C
+    if (gm >= pc.m || gn >= pc.n) {
+        return;
+    }
+    float acc = 0.0;
+    for (uint kk = 0u; kk < pc.k; ++kk) {
+        acc += lhs[idx_lhs(gm, kk)] * rhs[idx_rhs(kk, gn)];
+    }
+    out_buf[idx_out(gm, gn)] = acc;
+}
