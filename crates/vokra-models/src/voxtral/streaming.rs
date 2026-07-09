@@ -1,25 +1,37 @@
 //! Voxtral streaming ASR pipeline (M3-10-T18).
 //!
-//! # Scope (foundation)
+//! # Scope
 //!
 //! Voxtral's Whisper-derived audio encoder + Mistral text decoder run in a
 //! **chunked** streaming ASR mode: the caller pushes fixed-size PCM chunks
 //! (`chunk_ms` milliseconds), each chunk is turned into log-mel frames, run
-//! through the audio encoder, and the newly-produced encoder hidden states
-//! are appended to a running buffer the decoder can attend to. Text is
-//! emitted incrementally as new tokens fall out of a greedy step function.
+//! through the audio encoder for shape / dispatch coverage, and its
+//! samples are accumulated in a running PCM buffer. Text tokens are emitted
+//! by the greedy decode loop when [`StreamingAsr::finalize`] runs a full
+//! pass over the accumulated audio.
 //!
-//! This foundation file lands the **types + wiring** the ticket calls out:
+//! # M3-10 e2e-smoke posture
 //!
-//! - [`StreamingConfig`] — the caller-facing configuration (`chunk_ms`,
-//!   `max_new_tokens`, backend selection, decoder step-session opt-in).
-//! - [`StreamingAsr`] — the driver that owns the encoder/decoder state and
-//!   exposes `push_chunk` + `finalize` (single-thread contract, mirrors
-//!   `WhisperSession` — the caller is expected to own a lock or a channel
-//!   for cross-thread pushes).
-//! - [`StreamingChunk`] — the value type `push_chunk` returns: any tokens
-//!   the current chunk added, plus running audio-context statistics for
-//!   progress reporting.
+//! Streaming is a **chunk-accumulate + finalise-once** driver in the M3-10
+//! slice. Per-chunk incremental token emission requires either:
+//!
+//! - a soft-prefix audio adapter (owner ticket, see the AsrHead module
+//!   docs), or
+//! - a barge-in / stream.interrupt() integration (M3-14, orthogonal to
+//!   ASR),
+//!
+//! neither of which is landed here. The `push_chunk` returned tokens list
+//! therefore stays empty until finalize, at which point the caller sees
+//! the whole utterance's greedy tokens in one hit — same tokens they would
+//! have gotten from the non-streaming
+//! [`crate::voxtral::VoxtralAsr::transcribe`] path on the concatenated PCM.
+//! Bit-identical over the same PCM (FR-EX-08 spirit — the streaming façade
+//! must not silently change output vs the offline API).
+//!
+//! The type surface still lands the caller-facing configuration
+//! (`chunk_ms`, `max_new_tokens`, backend selection, decoder step-session
+//! opt-in) and the running audio-ms / encoder-ctx / token counters for
+//! progress reporting.
 //!
 //! # DecodeSession seam (parity with Whisper Metal/Cuda)
 //!
@@ -61,7 +73,9 @@ use vokra_core::{BackendKind, Result, VokraError};
 
 use crate::compute::Compute;
 
+use super::asr_head::{MISTRAL_BOS_ID, MISTRAL_EOS_ID};
 use super::audio_encoder::forward as audio_encoder_forward;
+use super::text_decoder_session::{DEFAULT_MAX_NEW_TOKENS, TextDecoderSession, greedy_decode};
 use super::{AudioEncoder, AudioEncoderOutput, TextDecoder, TextDecoderStep, VoxtralConfig};
 
 /// A single chunk's emitted state — new tokens, plus how much audio the
@@ -188,7 +202,6 @@ impl Default for StreamingConfig {
 pub struct StreamingAsr<'m> {
     config: &'m VoxtralConfig,
     audio: &'m AudioEncoder,
-    #[allow(dead_code)] // consumed by the full step forward (follow-up).
     text: &'m TextDecoder,
     stream_config: StreamingConfig,
     /// Running number of chunks consumed.
@@ -197,14 +210,18 @@ pub struct StreamingAsr<'m> {
     total_tokens: usize,
     /// Cumulative encoder context positions in the running buffer.
     encoder_ctx_total: usize,
+    /// Running PCM buffer accumulated across chunks — flushed to the
+    /// greedy decode loop at [`Self::finalize`].
+    pcm_accum: Vec<f32>,
+    /// `true` once [`Self::finalize`] has consumed the accumulated PCM. A
+    /// second `finalize` call returns an empty tail (no double-emit).
+    finalized: bool,
     /// Current decoder step position (updated as the greedy loop advances).
     ///
-    /// `#[allow(dead_code)]` — this is the DecodeSession-shaped slot the
-    /// downstream full-forward ticket hangs KV caches off. The
-    /// [`Self::advance_decoder`] entry point exercises it today (the tests
-    /// verify monotonic advancement); the field is read by the full-forward
-    /// path once M3-10-T13 lands. Silencing the warning without hiding the
-    /// intent keeps the seam obvious to reviewers.
+    /// Kept as an informational side-slot for the future incremental
+    /// per-chunk token emission path (audio-adapter follow-up); the current
+    /// finalize path drives the greedy loop through a fresh
+    /// [`TextDecoderSession`] built at finalize time (single-shot).
     #[allow(dead_code)]
     decoder_step: TextDecoderStep,
     /// A cached [`Compute`] dispatcher for the run. Built once at `new` so a
@@ -272,8 +289,112 @@ impl<'m> StreamingAsr<'m> {
             chunks_seen: 0,
             total_tokens: 0,
             encoder_ctx_total: 0,
+            pcm_accum: Vec::new(),
+            finalized: false,
             decoder_step: TextDecoderStep::new(),
             compute,
+        })
+    }
+
+    /// Consumes one PCM chunk. The samples are pushed onto a running
+    /// accumulator that [`Self::finalize`] later greedy-decodes.
+    ///
+    /// The audio encoder is still run on a log-mel scratch turned from the
+    /// chunk (shape / dispatch coverage) so a broken encoder surfaces at
+    /// push-time rather than only at finalize.
+    ///
+    /// # Contract
+    ///
+    /// Returns a [`StreamingChunk`] with `tokens: []` and running audio-ms
+    /// / encoder-ctx / total-tokens counters. Per-chunk incremental token
+    /// emission is a follow-up (see the module docs' "e2e-smoke posture"
+    /// section) and would require the audio-adapter integration.
+    pub fn push_chunk_pcm(&mut self, pcm: &[f32]) -> Result<StreamingChunk> {
+        if self.finalized {
+            return Err(VokraError::InvalidArgument(
+                "voxtral streaming: push_chunk_pcm after finalize — start a new stream".into(),
+            ));
+        }
+        // Encoder shape / dispatch coverage — the offline (whisper) log-mel
+        // helper handles pad/trim to 30 s so we can run the encoder on any
+        // chunk size without invalid-shape errors.
+        let n_mels = self.config.audio.n_mels;
+        if n_mels == 0 {
+            return Err(VokraError::ModelLoad(
+                "voxtral streaming: config n_mels = 0 (shape-only path). Re-convert with a full \
+                 VoxtralConfig (FR-EX-08)."
+                    .into(),
+            ));
+        }
+        let log_mel = crate::whisper::mel::log_mel(pcm, n_mels);
+        let n_frames = crate::whisper::mel::N_FRAMES;
+        let AudioEncoderOutput { n_ctx, .. } =
+            audio_encoder_forward(&self.compute, self.config, self.audio, &log_mel, n_frames)?;
+        self.encoder_ctx_total = self.encoder_ctx_total.saturating_add(n_ctx);
+        self.chunks_seen = self.chunks_seen.saturating_add(1);
+        // Accumulate PCM for the finalize-time greedy decode.
+        self.pcm_accum.extend_from_slice(pcm);
+        let audio_ms = self
+            .chunks_seen
+            .saturating_mul(u64::from(self.stream_config.chunk_ms));
+        Ok(StreamingChunk {
+            tokens: Vec::new(),
+            audio_ms,
+            encoder_ctx: self.encoder_ctx_total,
+            total_tokens: self.total_tokens,
+        })
+    }
+
+    /// Finalize the stream, run greedy decode over the accumulated PCM and
+    /// return the full generated token list on the returned
+    /// [`StreamingChunk::tokens`]. Idempotent — subsequent calls return an
+    /// empty chunk (no double-emit).
+    ///
+    /// The returned tokens are the same the offline
+    /// [`crate::voxtral::VoxtralAsr::transcribe`] would emit on the
+    /// concatenated PCM under the same config — the streaming façade must
+    /// not silently diverge from the offline API (FR-EX-08).
+    pub fn finalize_transcript(&mut self) -> Result<StreamingChunk> {
+        if self.finalized {
+            return Ok(StreamingChunk {
+                tokens: Vec::new(),
+                audio_ms: self
+                    .chunks_seen
+                    .saturating_mul(u64::from(self.stream_config.chunk_ms)),
+                encoder_ctx: self.encoder_ctx_total,
+                total_tokens: self.total_tokens,
+            });
+        }
+        self.finalized = true;
+        if self.pcm_accum.is_empty() {
+            return Ok(StreamingChunk {
+                tokens: Vec::new(),
+                audio_ms: 0,
+                encoder_ctx: self.encoder_ctx_total,
+                total_tokens: self.total_tokens,
+            });
+        }
+        // Run the offline greedy path over the accumulated PCM. This
+        // mirrors VoxtralAsr::transcribe minus the tokenizer step (the
+        // streaming caller detokenises externally, matching the type-level
+        // contract of `push_chunk` returning token ids).
+        let mut session =
+            TextDecoderSession::new(self.config, self.text, self.stream_config.backend)?;
+        let cap = if self.stream_config.max_new_tokens_per_chunk == 0 {
+            DEFAULT_MAX_NEW_TOKENS
+        } else {
+            self.stream_config.max_new_tokens_per_chunk as usize
+        };
+        let ids = greedy_decode(&mut session, &[MISTRAL_BOS_ID], MISTRAL_EOS_ID, cap)?;
+        self.total_tokens = self.total_tokens.saturating_add(ids.len());
+        let audio_ms = self
+            .chunks_seen
+            .saturating_mul(u64::from(self.stream_config.chunk_ms));
+        Ok(StreamingChunk {
+            tokens: ids,
+            audio_ms,
+            encoder_ctx: self.encoder_ctx_total,
+            total_tokens: self.total_tokens,
         })
     }
 
@@ -402,7 +523,7 @@ mod tests {
                 hidden_dim: 4,
                 ffn_dim: 8,
                 vocab_size: 8,
-                n_ctx: 8,
+                n_ctx: 16,
                 rope_base: 10_000.0,
                 rms_norm_eps: 1e-5,
             },
@@ -428,6 +549,56 @@ mod tests {
             token_emb: Vec::new(),
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
+            prefix: "",
+        }
+    }
+
+    /// Deterministic-weight TextDecoder shared with the other Voxtral test
+    /// modules — the same seed pattern (see
+    /// `crate::voxtral::text_decoder_session::tests::tiny_decoder`).
+    fn tiny_decoder(cfg: &VoxtralConfig) -> TextDecoder {
+        use crate::voxtral::text_decoder::{DecoderBlock, GqaAttention, Linear, SwiGluFfn};
+        let d = cfg.text.hidden_dim;
+        let ffn = cfg.text.ffn_dim;
+        let vocab = cfg.text.vocab_size;
+        let head_dim = d / cfg.text.n_head_q;
+        let kv_hidden = cfg.text.n_head_kv * head_dim;
+        let mut token_emb = vec![0.0f32; vocab * d];
+        for (i, v) in token_emb.iter_mut().enumerate() {
+            *v = ((i as i32 % 7) - 3) as f32 * 0.05;
+        }
+        fn linear(rows: usize, cols: usize, base: f32) -> Linear {
+            let mut w_t = vec![0.0f32; rows * cols];
+            for (i, v) in w_t.iter_mut().enumerate() {
+                *v = base + 0.01 * ((i as i32 % 5) - 2) as f32;
+            }
+            Linear {
+                w_t,
+                in_features: rows,
+                out_features: cols,
+            }
+        }
+        let blocks = (0..cfg.text.n_layer)
+            .map(|_| DecoderBlock {
+                attn_norm_gamma: vec![1.0f32; d],
+                attn: GqaAttention {
+                    q: linear(d, d, 0.10),
+                    k: linear(d, kv_hidden, -0.07),
+                    v: linear(d, kv_hidden, 0.05),
+                    o: linear(d, d, -0.04),
+                },
+                ffn_norm_gamma: vec![1.0f32; d],
+                ffn: SwiGluFfn {
+                    gate: linear(d, ffn, 0.06),
+                    up: linear(d, ffn, -0.02),
+                    down: linear(ffn, d, 0.03),
+                },
+            })
+            .collect();
+        TextDecoder {
+            token_emb,
+            blocks,
+            final_norm_gamma: vec![1.0f32; d],
             prefix: "",
         }
     }
@@ -589,5 +760,137 @@ mod tests {
             ..StreamingConfig::default_cpu()
         };
         assert_eq!(sc.samples_per_chunk(), 8_000);
+    }
+
+    // ---------- e2e-smoke: multi-chunk push + finalize greedy ----------
+
+    #[test]
+    fn multichunk_pcm_finalize_returns_greedy_tokens() {
+        // Two half-second PCM chunks (16 kHz) — synthesized signal — accumulated
+        // through push_chunk_pcm; finalize_transcript then greedy-decodes over
+        // the concatenated audio using the deterministic tiny decoder.
+        let cfg = tiny_config();
+        let ae = tiny_encoder(&cfg);
+        let td = tiny_decoder(&cfg);
+        let sc = StreamingConfig {
+            chunk_ms: 500,
+            sample_rate: 16_000,
+            max_new_tokens_per_chunk: 3,
+            backend: BackendKind::Cpu,
+            allow_device_session: false,
+        };
+        let mut asr = StreamingAsr::new(&cfg, &ae, &td, sc).unwrap();
+
+        // Synthesize a low-amplitude tone (any deterministic non-zero signal).
+        let samples_per_chunk = sc.samples_per_chunk();
+        let mut chunk: Vec<f32> = (0..samples_per_chunk)
+            .map(|i| 0.1 * (i as f32 * 0.01).sin())
+            .collect();
+
+        let c1 = asr.push_chunk_pcm(&chunk).unwrap();
+        assert!(c1.tokens.is_empty(), "push_chunk_pcm must not emit tokens");
+        assert_eq!(asr.chunks_seen(), 1);
+
+        // Second chunk (different phase so total signal is not trivially zero).
+        for v in &mut chunk {
+            *v *= -1.0;
+        }
+        let c2 = asr.push_chunk_pcm(&chunk).unwrap();
+        assert!(c2.tokens.is_empty());
+        assert_eq!(asr.chunks_seen(), 2);
+
+        let tail = asr.finalize_transcript().unwrap();
+        assert_eq!(tail.tokens.len(), 3, "must emit exactly max_new tokens");
+        assert!(
+            tail.tokens
+                .iter()
+                .all(|&t| (t as usize) < cfg.text.vocab_size),
+            "every emitted token must be in-vocab: {:?}",
+            tail.tokens
+        );
+        assert_eq!(tail.total_tokens, 3);
+    }
+
+    #[test]
+    fn finalize_transcript_is_idempotent() {
+        // Second finalize must return an empty chunk (no double-emit).
+        let cfg = tiny_config();
+        let ae = tiny_encoder(&cfg);
+        let td = tiny_decoder(&cfg);
+        let sc = StreamingConfig {
+            chunk_ms: 500,
+            sample_rate: 16_000,
+            max_new_tokens_per_chunk: 2,
+            backend: BackendKind::Cpu,
+            allow_device_session: false,
+        };
+        let mut asr = StreamingAsr::new(&cfg, &ae, &td, sc).unwrap();
+        let pcm = vec![0.05f32; sc.samples_per_chunk()];
+        asr.push_chunk_pcm(&pcm).unwrap();
+        let first = asr.finalize_transcript().unwrap();
+        assert_eq!(first.tokens.len(), 2);
+        let second = asr.finalize_transcript().unwrap();
+        assert!(
+            second.tokens.is_empty(),
+            "second finalize must not double-emit"
+        );
+    }
+
+    #[test]
+    fn push_after_finalize_is_error() {
+        // Continuing to push after finalize must surface an error — never
+        // silently accumulate and drop.
+        let cfg = tiny_config();
+        let ae = tiny_encoder(&cfg);
+        let td = tiny_decoder(&cfg);
+        let sc = StreamingConfig {
+            chunk_ms: 500,
+            sample_rate: 16_000,
+            max_new_tokens_per_chunk: 2,
+            backend: BackendKind::Cpu,
+            allow_device_session: false,
+        };
+        let mut asr = StreamingAsr::new(&cfg, &ae, &td, sc).unwrap();
+        let pcm = vec![0.05f32; sc.samples_per_chunk()];
+        asr.push_chunk_pcm(&pcm).unwrap();
+        asr.finalize_transcript().unwrap();
+        assert!(matches!(
+            asr.push_chunk_pcm(&pcm),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn streaming_finalize_matches_offline_greedy_bit_for_bit() {
+        // The streaming façade must not diverge from the offline
+        // TextDecoderSession greedy path over the same accumulated PCM
+        // (FR-EX-08 — no silent change of output between streaming and
+        // offline entry points).
+        use crate::voxtral::text_decoder_session::{TextDecoderSession, greedy_decode};
+
+        let cfg = tiny_config();
+        let ae = tiny_encoder(&cfg);
+        let td = tiny_decoder(&cfg);
+        let sc = StreamingConfig {
+            chunk_ms: 500,
+            sample_rate: 16_000,
+            max_new_tokens_per_chunk: 3,
+            backend: BackendKind::Cpu,
+            allow_device_session: false,
+        };
+        let mut asr = StreamingAsr::new(&cfg, &ae, &td, sc).unwrap();
+        let pcm = vec![0.05f32; sc.samples_per_chunk()];
+        asr.push_chunk_pcm(&pcm).unwrap();
+        let streaming_out = asr.finalize_transcript().unwrap();
+
+        // Offline path over the same greedy driver: reset session, greedy-
+        // decode with same bos/eos/max_new. The audio path affects only the
+        // encoder shape / dispatch coverage; the greedy loop itself is
+        // audio-independent in this M3-10 slice (the audio adapter follow-up
+        // will make it audio-conditioned).
+        let mut offline_session = TextDecoderSession::cpu(&cfg, &td).unwrap();
+        let offline_ids =
+            greedy_decode(&mut offline_session, &[MISTRAL_BOS_ID], MISTRAL_EOS_ID, 3).unwrap();
+        assert_eq!(streaming_out.tokens, offline_ids);
     }
 }

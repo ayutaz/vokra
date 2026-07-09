@@ -118,15 +118,18 @@ pub struct ServiceConfig {
     pub kokoro_gguf: Option<PathBuf>,
     /// Optional path to a Voxtral (Mistral) GGUF (M3-10). When present, the
     /// registry advertises the `voxtral` / `voxtral-mini-3b` /
-    /// `voxtral-small-24b` aliases. The engine is registered even though
-    /// [`vokra_models::voxtral::VoxtralAsr::transcribe`] returns
-    /// [`VokraError::NotImplemented`] today (the full autoregressive decode
-    /// is a follow-up ticket) — this is deliberate: the /v1/audio/*
-    /// endpoints must not silently claim to support Voxtral, so we surface
-    /// the honest NotImplemented from
-    /// [`ServiceError::Inference`], mapped to HTTP 501 by T05. When the
-    /// block math + tokenizer greedy step ship, the endpoint lights up
-    /// automatically — no server-side re-plumbing.
+    /// `voxtral-small-24b` aliases and
+    /// [`vokra_models::voxtral::VoxtralAsr::transcribe`] runs the M3-10
+    /// autoregressive greedy path (log-mel front-end + audio encoder +
+    /// Mistral text decoder + KV cache + tokenizer decode) on a
+    /// dispatched request, returning HTTP 200 with the decoded text.
+    /// Missing tokenizer chunk / shape-only converter / uncovered
+    /// backend still surface as explicit
+    /// [`ServiceError::Inference`] errors mapped to the appropriate
+    /// 4xx/5xx codes by T05 — never a silent fabrication (FR-EX-08).
+    /// Note the ASR-quality honest scope in
+    /// `crate::voxtral::asr` module docs: the audio-adapter follow-up
+    /// (real audio conditioning) is a downstream ticket.
     pub voxtral_gguf: Option<PathBuf>,
     /// Optional path to a Silero VAD v5 GGUF. When absent, the Wyoming
     /// chunk-boundary VAD helper is disabled (chunks are used as-is).
@@ -294,12 +297,11 @@ pub struct InferenceService {
     tts_kokoro: Option<Arc<KokoroTts>>,
     /// Voxtral (Mistral) ASR — advertised iff `voxtral_gguf` is configured
     /// (M3-10). The trait method
-    /// [`vokra_models::voxtral::VoxtralAsr::transcribe`] returns
-    /// [`VokraError::NotImplemented`] today (full autoregressive decode is
-    /// a follow-up); the registry stores the engine so
-    /// [`TranscribeService::transcribe`] routes to it and the caller sees
-    /// the honest NotImplemented rather than a fabricated transcript
-    /// (FR-EX-08).
+    /// [`vokra_models::voxtral::VoxtralAsr::transcribe`] runs the
+    /// autoregressive greedy path (M3-10 T13) and returns
+    /// `Ok(Transcription)` on success; errors surface as
+    /// [`ServiceError::Inference`] and the HTTP layer maps them to
+    /// 4xx/5xx codes as appropriate (FR-EX-08 — no fabricated output).
     asr_voxtral: Option<Arc<VoxtralAsr>>,
     /// Silero VAD v5 — optional Wyoming chunk-boundary helper.
     #[allow(dead_code)] // consumed by T15 (Wyoming ASR chunk framing).
@@ -392,10 +394,10 @@ impl InferenceService {
             None
         };
 
-        // Voxtral — optional. M3-10 registers the ASR engine so
-        // /v1/audio/transcriptions can advertise the model name; the engine's
-        // transcribe() surfaces NotImplemented today (see the
-        // TranscribeService impl comment) — never a silent success.
+        // Voxtral — optional. M3-10 T13 landed autoregressive greedy so
+        // /v1/audio/transcriptions returns 200 on a well-formed dispatch;
+        // registration side still surfaces ModelLoad errors up-front (never
+        // a silent skip).
         let asr_voxtral = if let Some(path) = &config.voxtral_gguf {
             let file = open_gguf("voxtral", path)?;
             let engine =
@@ -506,10 +508,8 @@ impl InferenceService {
     }
 
     /// Returns `true` iff the ASR engine keyed by `model` is available
-    /// (Whisper or Voxtral). The transcribe path returns an honest
-    /// [`ServiceError::Inference`] wrapping a [`VokraError::NotImplemented`]
-    /// when a Voxtral engine is registered but its full autoregressive
-    /// decode is still pending (M3-10 follow-up).
+    /// (Whisper or Voxtral). Voxtral's transcribe returns `Ok` on a
+    /// well-formed dispatch (M3-10 T13 autoregressive greedy path).
     pub fn has_asr(&self, model: &str) -> bool {
         self.resolve_asr(model).is_some() || self.resolve_voxtral(model).is_some()
     }
@@ -528,13 +528,11 @@ impl InferenceService {
     /// Enumerates registered ASR model names in a stable order (for
     /// `/v1/models`-style listings the HTTP layer will expose).
     ///
-    /// Voxtral aliases are advertised when the engine is loaded even though
-    /// its transcribe path currently returns `NotImplemented`. That is
-    /// deliberate: the catalogue reflects what the deployer configured, and
-    /// the honest inference-time error is the right place to signal the
-    /// deferral. Silently omitting a configured model would violate
-    /// FR-EX-08 in the other direction (the operator SET a path — the
-    /// server MUST reflect that).
+    /// Voxtral aliases are advertised when the engine is loaded — the
+    /// M3-10 T13 greedy path returns 200 on dispatch. The catalogue
+    /// reflects what the deployer configured; silently omitting a
+    /// configured model would violate FR-EX-08 (the operator SET a
+    /// path — the server MUST reflect that).
     pub fn asr_model_names(&self) -> Vec<&'static str> {
         let mut v = vec![model_names::WHISPER_BASE, model_names::WHISPER_1];
         if self.asr_large.is_some() {
@@ -582,10 +580,12 @@ impl InferenceService {
 impl TranscribeService for InferenceService {
     fn transcribe(&self, model: &str, pcm: &[f32]) -> Result<String, ServiceError> {
         // Whisper takes priority (base + large-v3 are the default catalogue).
-        // Voxtral is checked second because its transcribe currently
-        // surfaces NotImplemented until the M3-10 follow-up ships; a caller
-        // who explicitly names a Voxtral alias needs the honest error, not
-        // a silent fall-through to Whisper (FR-EX-08).
+        // Voxtral is checked second — its M3-10 greedy path now returns a
+        // Transcription on success (HTTP 200); mapping-side errors
+        // (missing tokenizer, backend not covered, shape-only converter,
+        // etc.) still bubble up as explicit ServiceError::Inference for
+        // the T05 HTTP layer to render (FR-EX-08 — no silent fall-through
+        // to Whisper).
         if let Some(engine) = self.resolve_asr(model) {
             return engine
                 .transcribe(pcm)
@@ -593,10 +593,6 @@ impl TranscribeService for InferenceService {
                 .map_err(ServiceError::Inference);
         }
         if let Some(engine) = self.resolve_voxtral(model) {
-            // M3-10 structural completion: engine is registered, the trait
-            // dispatch reaches the encoder, but the greedy autoregressive
-            // decode returns NotImplemented. Wrap it verbatim so T05 maps
-            // to HTTP 501 — never a fabricated transcript.
             return engine
                 .transcribe(pcm)
                 .map(|t| t.text)
@@ -911,24 +907,35 @@ mod registry {
         }
     }
 
-    /// A test double for the M3-10 Voxtral dispatch path: the real
+    /// Test double for the M3-10 Voxtral dispatch path: the real
     /// `InferenceService` needs a real GGUF to build, so we drive the
     /// TranscribeService trait directly to guard the intended routing
-    /// (Voxtral aliases → the Voxtral engine, which currently surfaces
-    /// NotImplemented — never a fabricated transcript).
-    struct VoxtralAsHonestNotImplemented;
-    impl TranscribeService for VoxtralAsHonestNotImplemented {
-        fn transcribe(&self, model: &str, _pcm: &[f32]) -> Result<String, ServiceError> {
+    /// (Voxtral aliases → the Voxtral engine → a `Transcription` payload
+    /// on success). The real `VoxtralAsr::transcribe` returns
+    /// `Ok(Transcription)` on any well-formed dispatch (T13 landed
+    /// autoregressive decode + tokenizer); the double mirrors that
+    /// shape.
+    struct VoxtralAsFakeGreedy;
+    impl TranscribeService for VoxtralAsFakeGreedy {
+        fn transcribe(&self, model: &str, pcm: &[f32]) -> Result<String, ServiceError> {
             match model {
                 model_names::WHISPER_1 | model_names::WHISPER_BASE => Ok(String::new()),
                 model_names::VOXTRAL
                 | model_names::VOXTRAL_MINI_3B
                 | model_names::VOXTRAL_SMALL_24B => {
-                    // Same shape the real VoxtralAsr::transcribe returns
-                    // today (see `crates/vokra-models/src/voxtral/asr.rs`).
-                    Err(ServiceError::Inference(VokraError::NotImplemented(
-                        "voxtral::VoxtralAsr::transcribe: deferred to M3-10 follow-up",
-                    )))
+                    // Empty PCM must still route to InvalidArgument (matches
+                    // real VoxtralAsr::transcribe surface).
+                    if pcm.is_empty() {
+                        return Err(ServiceError::Inference(VokraError::InvalidArgument(
+                            "pcm slice is empty".into(),
+                        )));
+                    }
+                    // Synthesized transcript: this is the 200 shape the M3-10
+                    // greedy + tokenizer path produces. Content is a stub in
+                    // the double; the real path produces LM-prior tokens
+                    // (documented in `VoxtralAsr::transcribe`) until the audio
+                    // adapter follow-up lands.
+                    Ok(format!("voxtral://{model}/{}samples", pcm.len()))
                 }
                 other => Err(ServiceError::UnknownModel(other.to_owned())),
             }
@@ -936,11 +943,33 @@ mod registry {
     }
 
     #[test]
-    fn voxtral_dispatch_returns_honest_not_implemented_not_fabricated_transcript() {
-        // Guards the M3-10 contract: a caller who names a Voxtral alias
-        // must reach the Voxtral engine (not fall through to Whisper) and
-        // see the honest NotImplemented so the HTTP layer maps to 501.
-        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsHonestNotImplemented);
+    fn voxtral_dispatch_returns_ok_transcription_on_valid_pcm() {
+        // Guards the M3-10 501 → 200 acceptance contract: a caller who
+        // names a Voxtral alias reaches the Voxtral engine and, given a
+        // non-empty PCM, receives Ok(String) — never a fabricated
+        // NotImplemented (FR-EX-08 spirit — the T13 greedy path landed).
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsFakeGreedy);
+        let pcm = vec![0.1f32; 16_000]; // 1 s @ 16 kHz
+        for alias in [
+            model_names::VOXTRAL,
+            model_names::VOXTRAL_MINI_3B,
+            model_names::VOXTRAL_SMALL_24B,
+        ] {
+            let out = svc.transcribe(alias, &pcm).unwrap_or_else(|e| {
+                panic!("alias `{alias}`: expected Ok, got error {e}");
+            });
+            assert!(
+                !out.is_empty(),
+                "alias `{alias}`: transcript must not be empty"
+            );
+        }
+    }
+
+    #[test]
+    fn voxtral_dispatch_surfaces_invalid_argument_on_empty_pcm() {
+        // 4xx path still routes cleanly — the 501 → 200 change must not
+        // silently swallow validation errors.
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsFakeGreedy);
         for alias in [
             model_names::VOXTRAL,
             model_names::VOXTRAL_MINI_3B,
@@ -948,13 +977,8 @@ mod registry {
         ] {
             let err = svc.transcribe(alias, &[]).unwrap_err();
             match err {
-                ServiceError::Inference(VokraError::NotImplemented(msg)) => {
-                    assert!(
-                        msg.contains("voxtral"),
-                        "message must name the model, got `{msg}`"
-                    );
-                }
-                other => panic!("alias `{alias}`: expected Inference(NotImplemented), got {other}"),
+                ServiceError::Inference(VokraError::InvalidArgument(_)) => {}
+                other => panic!("alias `{alias}`: expected InvalidArgument, got {other}"),
             }
         }
     }

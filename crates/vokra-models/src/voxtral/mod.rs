@@ -41,6 +41,7 @@ pub mod config;
 pub mod s2s_head;
 pub mod streaming;
 pub mod text_decoder;
+pub mod text_decoder_session;
 pub mod tokenizer;
 
 pub use asr::VoxtralAsr;
@@ -50,6 +51,7 @@ pub use config::VoxtralConfig;
 pub use s2s_head::S2sHead;
 pub use streaming::{StreamingAsr, StreamingChunk, StreamingConfig};
 pub use text_decoder::{TextDecoder, TextDecoderStep};
+pub use text_decoder_session::{DEFAULT_MAX_NEW_TOKENS, TextDecoderSession, greedy_decode};
 pub use tokenizer::VoxtralTokenizer;
 
 use vokra_core::gguf::GgufFile;

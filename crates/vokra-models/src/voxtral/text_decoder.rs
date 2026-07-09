@@ -13,39 +13,41 @@
 //! - **RMSNorm** with the checkpoint's ε (Mistral ships `1e-5`);
 //! - **Tied logits**: the token embedding acts as the LM head.
 //!
-//! # Foundation scope (M3-10-T09 / T10)
+//! # Scope (M3-10-T09 / T10 + follow-up autoregressive forward)
 //!
-//! This foundation file:
+//! This file:
 //! - reads the Mistral text decoder weights out of the GGUF (recognising
 //!   both the packaged Voxtral prefix `language_model.model.*` and the plain
 //!   Mistral prefix `model.*`);
-//! - exposes small, unit-testable Rust primitives ([`rms_norm`], [`silu`],
-//!   [`rope_apply`]) that the eventual full forward will compose;
-//! - ships a [`TextDecoderStep`] type shaped like Whisper's `DecoderState`
-//!   so a future full decode loop has an obvious slot to hang KV caches
-//!   off (see M3-03 paged KV cache);
-//! - does **NOT** yet run a full autoregressive forward — the block math
-//!   (GQA + RoPE + SwiGLU) is a follow-on ticket once a real Mistral
-//!   checkpoint parity dump exists (T19+).
+//! - exposes small, unit-testable Rust primitives ([`rms_norm`],
+//!   [`silu_inplace`], [`rope_apply`]) that the block forward composes;
+//! - implements the full autoregressive block forward — pre-norm, GQA
+//!   self-attention with RoPE + causal mask + per-block K/V cache append,
+//!   pre-norm SwiGLU FFN, final RMSNorm and tied-logits head — through the
+//!   Compute seam so a GPU backend runs the same GEMM path (see
+//!   [`forward_step`]);
+//! - the KV cache lives on the caller side (`TextDecoderSession`) — one
+//!   `KvCache` with width `n_head_kv * head_dim` per layer.
 //!
-//! The primitives (RMSNorm / SwiGLU / RoPE) are already fully tested
-//! against internal oracles so downstream tickets can compose them without
-//! re-deriving the math.
+//! The primitives (RMSNorm / SwiGLU / RoPE) are covered by internal oracle
+//! tests; the block forward is covered by shape / determinism smoke tests on
+//! synthesized weights. Real-checkpoint parity is deferred to a follow-up
+//! ticket (T19+) that requires an upstream Voxtral safetensors dump.
 
 use vokra_core::gguf::GgufFile;
-use vokra_core::{Result, VokraError};
+use vokra_core::{KvCache, Result, VokraError};
 
 use super::VoxtralConfig;
+use crate::compute::Compute;
 
 /// A `nn.Linear` decoded for direct row-major GEMM (`w_t` is `[in, out]`).
 ///
 /// Mistral decoder projections are always **bias-less** (`bias = None`).
 ///
-/// # `dead_code` posture (foundation)
-///
-/// The fields are read by [`TextDecoder::load`]'s callers and by the future
-/// full forward — [`allow(dead_code)`] silences the foundation-only
-/// warning without hiding the intent.
+/// `in_features` / `out_features` are load-time invariants — kept alongside
+/// `w_t` for external validation (e.g. audio adapter follow-up sanity
+/// checks); silenced from `dead_code` because the block forward reads the
+/// shapes off the config, not this struct.
 #[allow(dead_code)]
 pub(crate) struct Linear {
     pub(crate) w_t: Vec<f32>,
@@ -55,7 +57,6 @@ pub(crate) struct Linear {
 
 /// A block's four attention projections. GQA: `q` is `[d, n_head_q*head_dim]`
 /// = `[d, d]`; `k` / `v` are `[d, n_head_kv*head_dim]`.
-#[allow(dead_code)]
 pub(crate) struct GqaAttention {
     pub(crate) q: Linear,
     pub(crate) k: Linear,
@@ -64,7 +65,6 @@ pub(crate) struct GqaAttention {
 }
 
 /// SwiGLU FFN weights: `w2(silu(w1(x)) * w3(x))`.
-#[allow(dead_code)]
 pub(crate) struct SwiGluFfn {
     pub(crate) gate: Linear, // = w1
     pub(crate) up: Linear,   // = w3
@@ -72,7 +72,6 @@ pub(crate) struct SwiGluFfn {
 }
 
 /// One Mistral decoder block.
-#[allow(dead_code)]
 pub(crate) struct DecoderBlock {
     /// RMSNorm γ vector (no bias — RMSNorm is scale-only, `[hidden_dim]`).
     pub(crate) attn_norm_gamma: Vec<f32>,
@@ -83,7 +82,6 @@ pub(crate) struct DecoderBlock {
 
 /// All text-decoder weights (tied logits head → the token embedding IS the
 /// LM head).
-#[allow(dead_code)]
 pub struct TextDecoder {
     /// Token embedding `[vocab_size, hidden_dim]` — also the tied LM head.
     pub(crate) token_emb: Vec<f32>,
@@ -302,6 +300,409 @@ pub fn rope_apply(
             row[j] = a * c - b * s;
             row[j + half] = a * s + b * c;
         }
+    }
+    Ok(())
+}
+
+// ---------- autoregressive block forward -----------------------------------
+
+/// Scratch buffers for [`forward_step`] — reused across steps by the caller
+/// (see [`crate::voxtral::TextDecoderSession`]). Sized to `[max_t_q * d]` at
+/// construction; steps up to `max_t_q` reuse without reallocating.
+pub(crate) struct StepScratch {
+    /// Residual hidden state `[t, d]`.
+    pub(crate) h: Vec<f32>,
+    /// Pre-norm buffer `[t, d]`.
+    pub(crate) norm: Vec<f32>,
+    /// Query projection `[t, d]` (n_head_q × head_dim).
+    pub(crate) q_proj: Vec<f32>,
+    /// Key projection `[t, kv_hidden]` (n_head_kv × head_dim).
+    pub(crate) k_proj: Vec<f32>,
+    /// Value projection `[t, kv_hidden]`.
+    pub(crate) v_proj: Vec<f32>,
+    /// One-head Q slice buffer for RoPE `[t, head_dim]`.
+    pub(crate) rope_scratch: Vec<f32>,
+    /// Attention scores per head `[t, t_kv]`.
+    pub(crate) scores: Vec<f32>,
+    /// Softmax'd probs per head `[t, t_kv]`.
+    pub(crate) probs: Vec<f32>,
+    /// Attention output per head `[t, head_dim]`.
+    pub(crate) head_out: Vec<f32>,
+    /// Concatenated multi-head attention output `[t, d]`.
+    pub(crate) attn_out: Vec<f32>,
+    /// Post-`o_proj` output `[t, d]`.
+    pub(crate) attn_o: Vec<f32>,
+    /// FFN gate `[t, ffn_dim]`.
+    pub(crate) ffn_gate: Vec<f32>,
+    /// FFN up `[t, ffn_dim]`.
+    pub(crate) ffn_up: Vec<f32>,
+    /// FFN down `[t, d]`.
+    pub(crate) ffn_down: Vec<f32>,
+    /// Logits per step `[t, vocab_size]`.
+    pub(crate) logits: Vec<f32>,
+}
+
+impl StepScratch {
+    pub(crate) fn with_reserve(
+        max_t_q: usize,
+        d: usize,
+        kv_hidden: usize,
+        head_dim: usize,
+        ffn_dim: usize,
+        vocab_size: usize,
+        max_t_kv: usize,
+    ) -> Self {
+        Self {
+            h: Vec::with_capacity(max_t_q * d),
+            norm: Vec::with_capacity(max_t_q * d),
+            q_proj: Vec::with_capacity(max_t_q * d),
+            k_proj: Vec::with_capacity(max_t_q * kv_hidden),
+            v_proj: Vec::with_capacity(max_t_q * kv_hidden),
+            rope_scratch: Vec::with_capacity(max_t_q * head_dim),
+            scores: Vec::with_capacity(max_t_q * max_t_kv),
+            probs: Vec::with_capacity(max_t_q * max_t_kv),
+            head_out: Vec::with_capacity(max_t_q * head_dim),
+            attn_out: Vec::with_capacity(max_t_q * d),
+            attn_o: Vec::with_capacity(max_t_q * d),
+            ffn_gate: Vec::with_capacity(max_t_q * ffn_dim),
+            ffn_up: Vec::with_capacity(max_t_q * ffn_dim),
+            ffn_down: Vec::with_capacity(max_t_q * d),
+            logits: Vec::with_capacity(max_t_q * vocab_size),
+        }
+    }
+}
+
+fn resize_zero(v: &mut Vec<f32>, len: usize) {
+    v.clear();
+    v.resize(len, 0.0);
+}
+
+/// Runs one decoder step: forwards `tokens` through every block with the
+/// caller-owned `kv_cache`, appending each block's K/V rows and leaving the
+/// `[t, vocab_size]` logits in `scratch.logits`.
+///
+/// `position_offset` is the absolute position of `tokens[0]` in the full
+/// decode (0 on the first call, then `cache.positions()` before each
+/// subsequent call). RoPE uses this offset; the causal mask uses
+/// `t_kv = position_offset + t` (past cache rows count) so a step past the
+/// first sees prior positions correctly.
+///
+/// # Errors
+///
+/// - [`VokraError::InvalidArgument`] on token out-of-range, decoder not
+///   initialised, or `position_offset + t > config.text.n_ctx`.
+pub(crate) fn forward_step(
+    compute: &Compute,
+    cfg: &VoxtralConfig,
+    decoder: &TextDecoder,
+    scratch: &mut StepScratch,
+    kv_cache: &mut KvCache,
+    tokens: &[u32],
+    position_offset: usize,
+) -> Result<()> {
+    let d = cfg.text.hidden_dim;
+    let ffn_dim = cfg.text.ffn_dim;
+    let vocab = cfg.text.vocab_size;
+    let n_head_q = cfg.text.n_head_q;
+    let n_head_kv = cfg.text.n_head_kv;
+    let n_layer = cfg.text.n_layer;
+    let rope_base = cfg.text.rope_base;
+    let eps = cfg.text.rms_norm_eps;
+    let t = tokens.len();
+
+    if t == 0 {
+        return Ok(());
+    }
+    if d == 0 || vocab == 0 || n_head_q == 0 || n_head_kv == 0 || n_layer == 0 {
+        return Err(VokraError::ModelLoad(
+            "voxtral text_decoder.forward_step: config carries 0-sentinel — re-convert with a \
+             full VoxtralConfig (FR-EX-08 — no silent default)."
+                .into(),
+        ));
+    }
+    if position_offset + t > cfg.text.n_ctx {
+        return Err(VokraError::InvalidArgument(format!(
+            "voxtral text_decoder.forward_step: position {} > n_ctx {}",
+            position_offset + t,
+            cfg.text.n_ctx
+        )));
+    }
+    if n_head_q % n_head_kv != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "voxtral text_decoder.forward_step: n_head_q ({n_head_q}) must be divisible by n_head_kv ({n_head_kv}) — GQA"
+        )));
+    }
+    let head_dim = d / n_head_q;
+    let kv_hidden = n_head_kv * head_dim;
+    let n_kv_groups = n_head_q / n_head_kv;
+    let scale = 1.0f32 / (head_dim as f32).sqrt();
+
+    if decoder.blocks.len() != n_layer {
+        return Err(VokraError::ModelLoad(format!(
+            "voxtral text_decoder.forward_step: loaded blocks {} != config n_layer {n_layer}",
+            decoder.blocks.len()
+        )));
+    }
+    if decoder.token_emb.len() != vocab * d {
+        return Err(VokraError::ModelLoad(format!(
+            "voxtral text_decoder.forward_step: token_emb len {} != vocab*d {}",
+            decoder.token_emb.len(),
+            vocab * d
+        )));
+    }
+
+    // Token embedding lookup into scratch.h.
+    resize_zero(&mut scratch.h, t * d);
+    for (i, &tok) in tokens.iter().enumerate() {
+        let tok = tok as usize;
+        if tok >= vocab {
+            return Err(VokraError::InvalidArgument(format!(
+                "voxtral text_decoder.forward_step: token id {tok} >= vocab {vocab}"
+            )));
+        }
+        let src = &decoder.token_emb[tok * d..tok * d + d];
+        let dst = &mut scratch.h[i * d..i * d + d];
+        dst.copy_from_slice(src);
+    }
+
+    // Pre-size mutable scratch (avoid per-block reallocation).
+    resize_zero(&mut scratch.norm, t * d);
+    resize_zero(&mut scratch.q_proj, t * d);
+    resize_zero(&mut scratch.k_proj, t * kv_hidden);
+    resize_zero(&mut scratch.v_proj, t * kv_hidden);
+    resize_zero(&mut scratch.rope_scratch, t * head_dim);
+    resize_zero(&mut scratch.attn_out, t * d);
+    resize_zero(&mut scratch.attn_o, t * d);
+    resize_zero(&mut scratch.ffn_gate, t * ffn_dim);
+    resize_zero(&mut scratch.ffn_up, t * ffn_dim);
+    resize_zero(&mut scratch.ffn_down, t * d);
+
+    for (layer_idx, block) in decoder.blocks.iter().enumerate() {
+        // ---------- Pre-norm self-attention ----------
+        rms_norm(
+            &scratch.h,
+            &block.attn_norm_gamma,
+            eps,
+            t,
+            &mut scratch.norm,
+        )?;
+
+        // Q = norm @ q.w_t: [t, d] × [d, d] → [t, d]
+        compute.gemm_f32(
+            t,
+            d,
+            d,
+            &scratch.norm,
+            &block.attn.q.w_t,
+            None,
+            &mut scratch.q_proj,
+        )?;
+        // K = norm @ k.w_t: [t, d] × [d, kv_hidden] → [t, kv_hidden]
+        compute.gemm_f32(
+            t,
+            kv_hidden,
+            d,
+            &scratch.norm,
+            &block.attn.k.w_t,
+            None,
+            &mut scratch.k_proj,
+        )?;
+        // V = norm @ v.w_t: [t, d] × [d, kv_hidden] → [t, kv_hidden]
+        compute.gemm_f32(
+            t,
+            kv_hidden,
+            d,
+            &scratch.norm,
+            &block.attn.v.w_t,
+            None,
+            &mut scratch.v_proj,
+        )?;
+
+        // Apply RoPE per-head to Q and K.
+        for h in 0..n_head_q {
+            // Extract head h's Q slice into rope_scratch, apply RoPE, write back.
+            for i in 0..t {
+                let src = &scratch.q_proj[i * d + h * head_dim..i * d + (h + 1) * head_dim];
+                scratch.rope_scratch[i * head_dim..(i + 1) * head_dim].copy_from_slice(src);
+            }
+            rope_apply(
+                &mut scratch.rope_scratch[..t * head_dim],
+                t,
+                head_dim,
+                rope_base,
+                position_offset,
+            )?;
+            for i in 0..t {
+                let dst = &mut scratch.q_proj[i * d + h * head_dim..i * d + (h + 1) * head_dim];
+                dst.copy_from_slice(&scratch.rope_scratch[i * head_dim..(i + 1) * head_dim]);
+            }
+        }
+        for h in 0..n_head_kv {
+            for i in 0..t {
+                let src = &scratch.k_proj
+                    [i * kv_hidden + h * head_dim..i * kv_hidden + (h + 1) * head_dim];
+                scratch.rope_scratch[i * head_dim..(i + 1) * head_dim].copy_from_slice(src);
+            }
+            rope_apply(
+                &mut scratch.rope_scratch[..t * head_dim],
+                t,
+                head_dim,
+                rope_base,
+                position_offset,
+            )?;
+            for i in 0..t {
+                let dst = &mut scratch.k_proj
+                    [i * kv_hidden + h * head_dim..i * kv_hidden + (h + 1) * head_dim];
+                dst.copy_from_slice(&scratch.rope_scratch[i * head_dim..(i + 1) * head_dim]);
+            }
+        }
+
+        // Append K/V to cache.
+        kv_cache.append(
+            layer_idx,
+            &scratch.k_proj[..t * kv_hidden],
+            &scratch.v_proj[..t * kv_hidden],
+        );
+        let t_kv = position_offset + t;
+        let k_cache = kv_cache.k(layer_idx);
+        let v_cache = kv_cache.v(layer_idx);
+        // K/V cache rows for layer_idx: [t_kv, kv_hidden].
+
+        // Attention: for each Q head h_q, use K/V head h_kv = h_q / n_kv_groups.
+        // scores[t, t_kv] = Q_h @ K_h.T * scale
+        // apply causal mask (row i can attend up to position_offset + i)
+        // probs = softmax(scores)
+        // attn_head[t, head_dim] = probs @ V_h
+        // scatter head output into scratch.attn_out [t, d].
+        resize_zero(&mut scratch.scores, t * t_kv);
+        resize_zero(&mut scratch.probs, t * t_kv);
+        resize_zero(&mut scratch.head_out, t * head_dim);
+        for h_q in 0..n_head_q {
+            let h_kv = h_q / n_kv_groups;
+            // scores[i, j] = Σ_c Q[i, h_q*head_dim + c] * K[j, h_kv*head_dim + c] * scale
+            for i in 0..t {
+                let q_row = &scratch.q_proj[i * d + h_q * head_dim..i * d + (h_q + 1) * head_dim];
+                let row_start = i * t_kv;
+                for j in 0..t_kv {
+                    let k_row = &k_cache
+                        [j * kv_hidden + h_kv * head_dim..j * kv_hidden + (h_kv + 1) * head_dim];
+                    let mut s = 0.0f32;
+                    for c in 0..head_dim {
+                        s += q_row[c] * k_row[c];
+                    }
+                    scratch.scores[row_start + j] = s * scale;
+                }
+                // Causal mask: row i's absolute position is position_offset + i,
+                // so keys at j > position_offset + i are masked out.
+                let cur_pos = position_offset + i;
+                for j in (cur_pos + 1)..t_kv {
+                    scratch.scores[row_start + j] = f32::NEG_INFINITY;
+                }
+            }
+            // Row-wise softmax.
+            compute.softmax_f32(&scratch.scores, &mut scratch.probs, t, t_kv)?;
+            // head_out[i, c] = Σ_j probs[i, j] * V[j, h_kv*head_dim + c]
+            for i in 0..t {
+                let dst = &mut scratch.head_out[i * head_dim..(i + 1) * head_dim];
+                for c in 0..head_dim {
+                    let mut sum = 0.0f32;
+                    for j in 0..t_kv {
+                        let v_row = &v_cache[j * kv_hidden + h_kv * head_dim
+                            ..j * kv_hidden + (h_kv + 1) * head_dim];
+                        sum += scratch.probs[i * t_kv + j] * v_row[c];
+                    }
+                    dst[c] = sum;
+                }
+                // Scatter into scratch.attn_out at the h_q head slot.
+                let out_dst =
+                    &mut scratch.attn_out[i * d + h_q * head_dim..i * d + (h_q + 1) * head_dim];
+                out_dst.copy_from_slice(dst);
+            }
+        }
+
+        // O projection: attn_out @ o.w_t: [t, d] × [d, d] → [t, d]
+        compute.gemm_f32(
+            t,
+            d,
+            d,
+            &scratch.attn_out,
+            &block.attn.o.w_t,
+            None,
+            &mut scratch.attn_o,
+        )?;
+
+        // Residual add.
+        for i in 0..t * d {
+            scratch.h[i] += scratch.attn_o[i];
+        }
+
+        // ---------- Pre-norm SwiGLU FFN ----------
+        rms_norm(&scratch.h, &block.ffn_norm_gamma, eps, t, &mut scratch.norm)?;
+        // gate = norm @ gate.w_t → [t, ffn_dim]
+        compute.gemm_f32(
+            t,
+            ffn_dim,
+            d,
+            &scratch.norm,
+            &block.ffn.gate.w_t,
+            None,
+            &mut scratch.ffn_gate,
+        )?;
+        // up = norm @ up.w_t → [t, ffn_dim]
+        compute.gemm_f32(
+            t,
+            ffn_dim,
+            d,
+            &scratch.norm,
+            &block.ffn.up.w_t,
+            None,
+            &mut scratch.ffn_up,
+        )?;
+        // silu(gate) * up
+        silu_inplace(&mut scratch.ffn_gate);
+        hadamard_inplace(&mut scratch.ffn_gate, &scratch.ffn_up)?;
+        // down = (silu(gate) * up) @ down.w_t → [t, d]
+        compute.gemm_f32(
+            t,
+            d,
+            ffn_dim,
+            &scratch.ffn_gate,
+            &block.ffn.down.w_t,
+            None,
+            &mut scratch.ffn_down,
+        )?;
+        // Residual add.
+        for i in 0..t * d {
+            scratch.h[i] += scratch.ffn_down[i];
+        }
+    }
+    // Advance the position clock once (after all layer appends).
+    kv_cache.advance(t);
+
+    // Final RMSNorm.
+    rms_norm(
+        &scratch.h,
+        &decoder.final_norm_gamma,
+        eps,
+        t,
+        &mut scratch.norm,
+    )?;
+
+    // Tied logits head: logits[t, vocab] = norm[t, d] × token_emb.T[d, vocab]
+    // token_emb is stored as [vocab, d] (row-major). For row-major GEMM the
+    // formulation is: logits = norm × (token_emb).T
+    // The gemm_f32 API is `C[m,n] = A[m,k] × B[k,n]`; we want
+    //   logits[t, vocab] = norm[t, d] × token_embT[d, vocab]
+    // and token_embT[d*vocab] can be gotten by treating token_emb as an
+    // [vocab, d] matrix and using gemm with an implicit transpose — but
+    // gemm_f32 has no transpose flag. So we compute row-by-row via gemv:
+    //   logits[i, v] = Σ_c norm[i, c] * token_emb[v, c]
+    //   ⇒ logits_row_i = gemv(m=vocab, k=d, a=token_emb, x=norm_row_i)
+    resize_zero(&mut scratch.logits, t * vocab);
+    for i in 0..t {
+        let x = &scratch.norm[i * d..(i + 1) * d];
+        let out = &mut scratch.logits[i * vocab..(i + 1) * vocab];
+        compute.gemv_f32(vocab, d, &decoder.token_emb, x, None, out)?;
     }
     Ok(())
 }
