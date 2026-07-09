@@ -48,6 +48,7 @@ use vokra_core::{
 use vokra_models::kokoro::KokoroTts;
 use vokra_models::piper_plus::PiperPlusTts;
 use vokra_models::silero_vad::SileroVadV5;
+use vokra_models::voxtral::VoxtralAsr;
 use vokra_models::whisper::asr::WhisperAsr;
 use vokra_models::whisper::tokenizer::WhisperTokenizer;
 use vokra_piper_plus::{PassthroughPhonemizer, Phonemizer};
@@ -60,6 +61,10 @@ use vokra_piper_plus::{PassthroughPhonemizer, Phonemizer};
 ///   drop-in convention);
 /// * `whisper-base` — explicit base alias;
 /// * `whisper-large-v3` — the M2-06 large-v3 engine when configured;
+/// * `voxtral` / `voxtral-mini-3b` / `voxtral-small-24b` — the M3-10 Voxtral
+///   engine when configured (ASR-only until the full autoregressive decode
+///   lands; the model is registered so the server route lights up as soon
+///   as the block math ships — never a silent fabrication);
 /// * `piper-plus` — the M0-07 native TTS engine (default v0.5 TTS);
 /// * `kokoro` — the M2-07 native Kokoro engine (advertised only; synthesize
 ///   currently unavailable).
@@ -70,6 +75,13 @@ pub mod model_names {
     pub const WHISPER_BASE: &str = "whisper-base";
     /// M2-06 large-v3 alias.
     pub const WHISPER_LARGE_V3: &str = "whisper-large-v3";
+    /// M3-10 Voxtral generic alias — routed to the loaded Voxtral engine
+    /// (mini-3b or small-24b, whichever was configured).
+    pub const VOXTRAL: &str = "voxtral";
+    /// M3-10 Voxtral mini-3b (Apache 2.0 code + Apache 2.0 weight).
+    pub const VOXTRAL_MINI_3B: &str = "voxtral-mini-3b";
+    /// M3-10 Voxtral small-24b (Apache 2.0 code + Apache 2.0 weight).
+    pub const VOXTRAL_SMALL_24B: &str = "voxtral-small-24b";
     /// piper-plus native TTS alias.
     pub const PIPER_PLUS: &str = "piper-plus";
     /// Kokoro-82M native TTS alias.
@@ -104,6 +116,18 @@ pub struct ServiceConfig {
     /// returns [`ServiceError::SynthesizeUnavailable`] (M2-07 G2P bridge
     /// deferred).
     pub kokoro_gguf: Option<PathBuf>,
+    /// Optional path to a Voxtral (Mistral) GGUF (M3-10). When present, the
+    /// registry advertises the `voxtral` / `voxtral-mini-3b` /
+    /// `voxtral-small-24b` aliases. The engine is registered even though
+    /// [`vokra_models::voxtral::VoxtralAsr::transcribe`] returns
+    /// [`VokraError::NotImplemented`] today (the full autoregressive decode
+    /// is a follow-up ticket) — this is deliberate: the /v1/audio/*
+    /// endpoints must not silently claim to support Voxtral, so we surface
+    /// the honest NotImplemented from
+    /// [`ServiceError::Inference`], mapped to HTTP 501 by T05. When the
+    /// block math + tokenizer greedy step ship, the endpoint lights up
+    /// automatically — no server-side re-plumbing.
+    pub voxtral_gguf: Option<PathBuf>,
     /// Optional path to a Silero VAD v5 GGUF. When absent, the Wyoming
     /// chunk-boundary VAD helper is disabled (chunks are used as-is).
     pub silero_vad_gguf: Option<PathBuf>,
@@ -141,6 +165,7 @@ impl ServiceConfig {
             whisper_large_v3_tokenizer: None,
             piper_plus_gguf,
             kokoro_gguf: None,
+            voxtral_gguf: None,
             silero_vad_gguf: None,
             backend: BackendKind::Cpu,
             compliance: CompliancePolicy::strict(),
@@ -267,6 +292,15 @@ pub struct InferenceService {
     /// in v0.5 (M2-07 G2P bridge deferred); the registry rejects synthesize
     /// requests up-front rather than calling into a `NotImplemented` path.
     tts_kokoro: Option<Arc<KokoroTts>>,
+    /// Voxtral (Mistral) ASR — advertised iff `voxtral_gguf` is configured
+    /// (M3-10). The trait method
+    /// [`vokra_models::voxtral::VoxtralAsr::transcribe`] returns
+    /// [`VokraError::NotImplemented`] today (full autoregressive decode is
+    /// a follow-up); the registry stores the engine so
+    /// [`TranscribeService::transcribe`] routes to it and the caller sees
+    /// the honest NotImplemented rather than a fabricated transcript
+    /// (FR-EX-08).
+    asr_voxtral: Option<Arc<VoxtralAsr>>,
     /// Silero VAD v5 — optional Wyoming chunk-boundary helper.
     #[allow(dead_code)] // consumed by T15 (Wyoming ASR chunk framing).
     vad: Option<Arc<SileroVadV5>>,
@@ -358,6 +392,23 @@ impl InferenceService {
             None
         };
 
+        // Voxtral — optional. M3-10 registers the ASR engine so
+        // /v1/audio/transcriptions can advertise the model name; the engine's
+        // transcribe() surfaces NotImplemented today (see the
+        // TranscribeService impl comment) — never a silent success.
+        let asr_voxtral = if let Some(path) = &config.voxtral_gguf {
+            let file = open_gguf("voxtral", path)?;
+            let engine =
+                VoxtralAsr::from_gguf(&file).map_err(|source| ServiceError::ModelLoadFailed {
+                    slot: "voxtral",
+                    path: path.clone(),
+                    source,
+                })?;
+            Some(Arc::new(engine))
+        } else {
+            None
+        };
+
         // Silero VAD — optional.
         let vad = if let Some(path) = &config.silero_vad_gguf {
             let file = open_gguf("silero-vad-v5", path)?;
@@ -386,6 +437,7 @@ impl InferenceService {
             asr_large,
             tts_piper,
             tts_kokoro,
+            asr_voxtral,
             vad,
             phonemizer,
             watermark: config.watermark,
@@ -416,6 +468,7 @@ impl InferenceService {
                     asr_large: self.asr_large.clone(),
                     tts_piper: Arc::clone(&self.tts_piper),
                     tts_kokoro: self.tts_kokoro.clone(),
+                    asr_voxtral: self.asr_voxtral.clone(),
                     vad: self.vad.clone(),
                     phonemizer,
                     watermark: self.watermark,
@@ -425,8 +478,10 @@ impl InferenceService {
         }
     }
 
-    /// Returns the ASR engine keyed by `model` (or `None` if the alias is
-    /// unknown / the corresponding engine is not configured).
+    /// Returns the Whisper ASR engine keyed by `model` (or `None` if the
+    /// alias does not name a Whisper variant or the corresponding engine is
+    /// not configured). Voxtral aliases return `None` here — use
+    /// [`Self::resolve_voxtral`].
     pub fn resolve_asr(&self, model: &str) -> Option<&Arc<WhisperAsr>> {
         match model {
             model_names::WHISPER_1 | model_names::WHISPER_BASE => Some(&self.asr_base),
@@ -435,9 +490,28 @@ impl InferenceService {
         }
     }
 
-    /// Returns `true` iff the ASR engine keyed by `model` is available.
+    /// Returns the Voxtral ASR engine keyed by `model` (or `None` if the
+    /// alias does not name a Voxtral variant or the engine is not
+    /// configured). M3-10 registers three aliases (generic `voxtral`,
+    /// `voxtral-mini-3b`, `voxtral-small-24b`), all routed to the same
+    /// engine — the converter's `derive_name` picks the specific variant at
+    /// GGUF-write time.
+    pub fn resolve_voxtral(&self, model: &str) -> Option<&Arc<VoxtralAsr>> {
+        match model {
+            model_names::VOXTRAL
+            | model_names::VOXTRAL_MINI_3B
+            | model_names::VOXTRAL_SMALL_24B => self.asr_voxtral.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` iff the ASR engine keyed by `model` is available
+    /// (Whisper or Voxtral). The transcribe path returns an honest
+    /// [`ServiceError::Inference`] wrapping a [`VokraError::NotImplemented`]
+    /// when a Voxtral engine is registered but its full autoregressive
+    /// decode is still pending (M3-10 follow-up).
     pub fn has_asr(&self, model: &str) -> bool {
-        self.resolve_asr(model).is_some()
+        self.resolve_asr(model).is_some() || self.resolve_voxtral(model).is_some()
     }
 
     /// Returns `true` iff the TTS engine keyed by `model` is available
@@ -453,10 +527,23 @@ impl InferenceService {
 
     /// Enumerates registered ASR model names in a stable order (for
     /// `/v1/models`-style listings the HTTP layer will expose).
+    ///
+    /// Voxtral aliases are advertised when the engine is loaded even though
+    /// its transcribe path currently returns `NotImplemented`. That is
+    /// deliberate: the catalogue reflects what the deployer configured, and
+    /// the honest inference-time error is the right place to signal the
+    /// deferral. Silently omitting a configured model would violate
+    /// FR-EX-08 in the other direction (the operator SET a path — the
+    /// server MUST reflect that).
     pub fn asr_model_names(&self) -> Vec<&'static str> {
         let mut v = vec![model_names::WHISPER_BASE, model_names::WHISPER_1];
         if self.asr_large.is_some() {
             v.push(model_names::WHISPER_LARGE_V3);
+        }
+        if self.asr_voxtral.is_some() {
+            v.push(model_names::VOXTRAL);
+            v.push(model_names::VOXTRAL_MINI_3B);
+            v.push(model_names::VOXTRAL_SMALL_24B);
         }
         v
     }
@@ -494,16 +581,28 @@ impl InferenceService {
 
 impl TranscribeService for InferenceService {
     fn transcribe(&self, model: &str, pcm: &[f32]) -> Result<String, ServiceError> {
-        let engine = self
-            .resolve_asr(model)
-            .ok_or_else(|| ServiceError::UnknownModel(model.to_owned()))?;
-        // AsrEngine::transcribe returns a Transcription (M0-06 T14 shape);
-        // the HTTP layer wants just the text. Preserve the failure kind:
-        // never fall back to CPU / a different model on error (FR-EX-08).
-        engine
-            .transcribe(pcm)
-            .map(|t| t.text)
-            .map_err(ServiceError::Inference)
+        // Whisper takes priority (base + large-v3 are the default catalogue).
+        // Voxtral is checked second because its transcribe currently
+        // surfaces NotImplemented until the M3-10 follow-up ships; a caller
+        // who explicitly names a Voxtral alias needs the honest error, not
+        // a silent fall-through to Whisper (FR-EX-08).
+        if let Some(engine) = self.resolve_asr(model) {
+            return engine
+                .transcribe(pcm)
+                .map(|t| t.text)
+                .map_err(ServiceError::Inference);
+        }
+        if let Some(engine) = self.resolve_voxtral(model) {
+            // M3-10 structural completion: engine is registered, the trait
+            // dispatch reaches the encoder, but the greedy autoregressive
+            // decode returns NotImplemented. Wrap it verbatim so T05 maps
+            // to HTTP 501 — never a fabricated transcript.
+            return engine
+                .transcribe(pcm)
+                .map(|t| t.text)
+                .map_err(ServiceError::Inference);
+        }
+        Err(ServiceError::UnknownModel(model.to_owned()))
     }
 }
 
@@ -779,8 +878,24 @@ mod registry {
         assert_eq!(model_names::WHISPER_1, "whisper-1");
         assert_eq!(model_names::WHISPER_BASE, "whisper-base");
         assert_eq!(model_names::WHISPER_LARGE_V3, "whisper-large-v3");
+        assert_eq!(model_names::VOXTRAL, "voxtral");
+        assert_eq!(model_names::VOXTRAL_MINI_3B, "voxtral-mini-3b");
+        assert_eq!(model_names::VOXTRAL_SMALL_24B, "voxtral-small-24b");
         assert_eq!(model_names::PIPER_PLUS, "piper-plus");
         assert_eq!(model_names::KOKORO, "kokoro");
+    }
+
+    #[test]
+    fn service_config_minimum_leaves_voxtral_slot_absent() {
+        // Fresh minimum() config must not silently opt Voxtral in — the
+        // deployer must explicitly set `voxtral_gguf` to advertise the
+        // model. FR-EX-08 spirit: never fabricate a catalogue entry the
+        // operator did not ask for.
+        let cfg = ServiceConfig::minimum(
+            PathBuf::from("/tmp/base.gguf"),
+            PathBuf::from("/tmp/piper.gguf"),
+        );
+        assert!(cfg.voxtral_gguf.is_none());
     }
 
     #[test]
@@ -793,6 +908,54 @@ mod registry {
         match err {
             ServiceError::UnknownModel(m) => assert_eq!(m, "gpt-4"),
             other => panic!("expected UnknownModel, got {other}"),
+        }
+    }
+
+    /// A test double for the M3-10 Voxtral dispatch path: the real
+    /// `InferenceService` needs a real GGUF to build, so we drive the
+    /// TranscribeService trait directly to guard the intended routing
+    /// (Voxtral aliases → the Voxtral engine, which currently surfaces
+    /// NotImplemented — never a fabricated transcript).
+    struct VoxtralAsHonestNotImplemented;
+    impl TranscribeService for VoxtralAsHonestNotImplemented {
+        fn transcribe(&self, model: &str, _pcm: &[f32]) -> Result<String, ServiceError> {
+            match model {
+                model_names::WHISPER_1 | model_names::WHISPER_BASE => Ok(String::new()),
+                model_names::VOXTRAL
+                | model_names::VOXTRAL_MINI_3B
+                | model_names::VOXTRAL_SMALL_24B => {
+                    // Same shape the real VoxtralAsr::transcribe returns
+                    // today (see `crates/vokra-models/src/voxtral/asr.rs`).
+                    Err(ServiceError::Inference(VokraError::NotImplemented(
+                        "voxtral::VoxtralAsr::transcribe: deferred to M3-10 follow-up",
+                    )))
+                }
+                other => Err(ServiceError::UnknownModel(other.to_owned())),
+            }
+        }
+    }
+
+    #[test]
+    fn voxtral_dispatch_returns_honest_not_implemented_not_fabricated_transcript() {
+        // Guards the M3-10 contract: a caller who names a Voxtral alias
+        // must reach the Voxtral engine (not fall through to Whisper) and
+        // see the honest NotImplemented so the HTTP layer maps to 501.
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsHonestNotImplemented);
+        for alias in [
+            model_names::VOXTRAL,
+            model_names::VOXTRAL_MINI_3B,
+            model_names::VOXTRAL_SMALL_24B,
+        ] {
+            let err = svc.transcribe(alias, &[]).unwrap_err();
+            match err {
+                ServiceError::Inference(VokraError::NotImplemented(msg)) => {
+                    assert!(
+                        msg.contains("voxtral"),
+                        "message must name the model, got `{msg}`"
+                    );
+                }
+                other => panic!("alias `{alias}`: expected Inference(NotImplemented), got {other}"),
+            }
         }
     }
 

@@ -483,4 +483,227 @@ mod tests {
         s.advance();
         assert_eq!(s.seq_len, 2);
     }
+
+    // ---------- extended oracle tests (M3-10 structural completion) --------
+
+    #[test]
+    fn rms_norm_scales_by_gamma_per_channel() {
+        // With a non-uniform γ, each column of the output should be scaled
+        // exactly by the corresponding γ[c] after the row is normalised.
+        // Craft a row whose RMS is a nice number so the effect of γ is
+        // isolated from the divisor.
+        let d = 4;
+        // row [2, 2, 2, 2] has mean(x^2)=4 → RMS=2 → x / RMS = [1, 1, 1, 1].
+        let x = vec![2.0f32; d];
+        // γ = [10, 20, 30, 40] → out = γ * 1.
+        let gamma = vec![10.0f32, 20.0, 30.0, 40.0];
+        let mut out = vec![0.0f32; d];
+        rms_norm(&x, &gamma, 0.0, 1, &mut out).unwrap();
+        for (i, &g) in gamma.iter().enumerate() {
+            assert!(
+                (out[i] - g).abs() < 1e-4,
+                "column {i}: expected {g}, got {}",
+                out[i]
+            );
+        }
+    }
+
+    #[test]
+    fn rms_norm_epsilon_prevents_divide_by_zero_and_scales_predictably() {
+        // Non-zero row with a large ε: the divisor becomes sqrt(mean_sq + ε).
+        // For row [2,2,2,2] mean_sq=4, ε=12 → divisor=sqrt(16)=4 → out = x/4 = [0.5,…].
+        let x = vec![2.0f32; 4];
+        let gamma = vec![1.0f32; 4];
+        let mut out = vec![0.0f32; 4];
+        rms_norm(&x, &gamma, 12.0, 1, &mut out).unwrap();
+        for v in &out {
+            assert!((v - 0.5).abs() < 1e-5, "expected 0.5, got {v}");
+        }
+    }
+
+    #[test]
+    fn rms_norm_multirow_processes_each_row_independently() {
+        // Two rows with different scales must be normalised to the same RMS.
+        let d = 4;
+        let x = vec![1.0f32, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0];
+        let gamma = vec![1.0f32; d];
+        let mut out = vec![0.0f32; d * 2];
+        rms_norm(&x, &gamma, 0.0, 2, &mut out).unwrap();
+        for row in 0..2 {
+            let slice = &out[row * d..(row + 1) * d];
+            let rms = (slice.iter().map(|v| v * v).sum::<f32>() / d as f32).sqrt();
+            assert!(
+                (rms - 1.0).abs() < 1e-4,
+                "row {row}: RMS should be 1, got {rms}"
+            );
+        }
+    }
+
+    #[test]
+    fn rms_norm_shape_mismatch_is_error_not_panic() {
+        // x/out length disagreeing with rows*d must surface as an error.
+        let gamma = vec![1.0f32; 4];
+        let x = vec![1.0f32; 3]; // should be 4 for one row
+        let mut out = vec![0.0f32; 4];
+        assert!(matches!(
+            rms_norm(&x, &gamma, 0.0, 1, &mut out),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn silu_derivative_positive_at_origin() {
+        // SiLU(0)=0 and SiLU'(0)=0.5. This is a small numerical check that
+        // silu_inplace matches the math (numerical derivative via
+        // (silu(h) - silu(-h)) / 2h).
+        let h = 1e-3f32;
+        let mut a = vec![h];
+        let mut b = vec![-h];
+        silu_inplace(&mut a);
+        silu_inplace(&mut b);
+        let d = (a[0] - b[0]) / (2.0 * h);
+        assert!((d - 0.5).abs() < 1e-2, "silu'(0) ≈ 0.5, got {d}");
+    }
+
+    #[test]
+    fn silu_asymptotic_saturation() {
+        // silu(large positive x) ≈ x; silu(large negative x) ≈ 0.
+        let mut pos = vec![50.0f32];
+        let mut neg = vec![-50.0f32];
+        silu_inplace(&mut pos);
+        silu_inplace(&mut neg);
+        assert!((pos[0] - 50.0).abs() < 1e-3, "silu(50)≈50, got {}", pos[0]);
+        assert!(neg[0].abs() < 1e-10, "silu(-50)≈0, got {}", neg[0]);
+    }
+
+    #[test]
+    fn swiglu_gate_up_roundtrip_pattern() {
+        // SwiGLU is `silu(gate(x)) * up(x)`. Verify the pattern element-wise
+        // using pre-computed gate and up projections on a small vector.
+        // For x=[1,2,3,4] with an identity gate and up: silu(x)*x should be
+        // silu-elementwise times x-elementwise.
+        let gate_out = vec![1.0f32, 2.0, 3.0, 4.0];
+        let up_out = vec![1.0f32, 2.0, 3.0, 4.0];
+        // Apply silu to a copy of gate_out.
+        let mut activated = gate_out.clone();
+        silu_inplace(&mut activated);
+        // Hadamard with up_out.
+        let mut swiglu = activated.clone();
+        hadamard_inplace(&mut swiglu, &up_out).unwrap();
+        // Verify each element: silu(gate[i]) * up[i].
+        for (i, ((&g, &u), &s)) in gate_out.iter().zip(&up_out).zip(&swiglu).enumerate() {
+            let expected = g * (1.0 / (1.0 + (-g).exp())) * u;
+            assert!(
+                (s - expected).abs() < 1e-4,
+                "swiglu[{i}] expected {expected}, got {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn rope_apply_frequency_formula_at_first_pair() {
+        // Verify the first frequency pair (j=0) rotates by angle m * θ_0 =
+        // m * rope_base^(-2*0/head_dim) = m * 1 = m radians (regardless of
+        // rope_base). This is a bedrock property: the θ_0 pair rotates at
+        // exactly the position rate.
+        let head_dim = 4;
+        let rope_base = 10_000.0f32;
+        let m = 5.0f32;
+        // Row [1, 0, 0, 0]: the (j=0) pair is (x[0]=1, x[2]=0).
+        // After RoPE at position m: x[0]=cos(m*1)*1 = cos(m), x[2]=sin(m).
+        let mut x = vec![1.0f32, 0.0, 0.0, 0.0];
+        rope_apply(&mut x, 1, head_dim, rope_base, m as usize).unwrap();
+        assert!(
+            (x[0] - m.cos()).abs() < 1e-4,
+            "x[0]={}, want cos({m})",
+            x[0]
+        );
+        assert!(
+            (x[2] - m.sin()).abs() < 1e-4,
+            "x[2]={}, want sin({m})",
+            x[2]
+        );
+    }
+
+    #[test]
+    fn rope_apply_second_pair_scales_frequency_with_rope_base() {
+        // For the j=1 pair, θ_1 = rope_base^(-2/head_dim).
+        // With head_dim=4 and rope_base=10_000, θ_1 = 10_000^(-0.5) = 0.01.
+        // Row [0, 1, 0, 0]: the (j=1) pair is (x[1]=1, x[3]=0).
+        // After RoPE at position m=1: x[1]=cos(θ_1), x[3]=sin(θ_1).
+        let head_dim = 4;
+        let rope_base = 10_000.0f32;
+        let theta_1 = rope_base.powf(-2.0 / head_dim as f32);
+        let mut x = vec![0.0f32, 1.0, 0.0, 0.0];
+        rope_apply(&mut x, 1, head_dim, rope_base, 1).unwrap();
+        assert!(
+            (x[1] - theta_1.cos()).abs() < 1e-5,
+            "x[1]={}, want cos({theta_1})",
+            x[1]
+        );
+        assert!(
+            (x[3] - theta_1.sin()).abs() < 1e-5,
+            "x[3]={}, want sin({theta_1})",
+            x[3]
+        );
+    }
+
+    #[test]
+    fn rope_apply_position_offset_advances_angles_by_one_row() {
+        // A single row at offset m must equal the m-th row of a run at
+        // offset 0 with m+1 rows. This is the incremental-decoding
+        // invariant that KV-cache-append depends on.
+        let head_dim = 4;
+        let rope_base = 10_000.0f32;
+        let orig = [1.0f32, 2.0, 3.0, 4.0];
+        // Full-range run at offset 0, 5 rows: use row 3.
+        let mut full = orig.repeat(5);
+        rope_apply(&mut full, 5, head_dim, rope_base, 0).unwrap();
+        let row_from_full = &full[3 * head_dim..4 * head_dim];
+        // Single-row run at offset 3.
+        let mut single = orig.to_vec();
+        rope_apply(&mut single, 1, head_dim, rope_base, 3).unwrap();
+        for (i, (&a, &b)) in single.iter().zip(row_from_full.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-4,
+                "offset invariance broken at index {i}: single={a}, cached={b}"
+            );
+        }
+    }
+
+    #[test]
+    fn rope_apply_length_mismatch_is_error_not_panic() {
+        let mut x = vec![1.0f32, 2.0, 3.0]; // 3 elements, seq_len*head_dim=4
+        assert!(matches!(
+            rope_apply(&mut x, 1, 4, 10_000.0, 0),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn gqa_head_split_derivation_from_config() {
+        // Voxtral-mini-3B ships (n_head_q=24, n_head_kv=8, hidden_dim=3072)
+        // → head_dim=128, n_kv_groups=24/8=3 → each K/V head is broadcast
+        // to 3 query heads. Verify the config's head_dim() computation.
+        use crate::voxtral::config::TextDecoderConfig;
+        let cfg = TextDecoderConfig {
+            n_layer: 28,
+            n_head_q: 24,
+            n_head_kv: 8,
+            hidden_dim: 3072,
+            ffn_dim: 8192,
+            vocab_size: 32_000,
+            n_ctx: 32_768,
+            rope_base: 1_000_000.0,
+            rms_norm_eps: 1e-5,
+        };
+        assert_eq!(cfg.head_dim(), 128);
+        assert_eq!(
+            cfg.n_head_q % cfg.n_head_kv,
+            0,
+            "GQA requires n_head_q % n_head_kv == 0"
+        );
+        // The number of query heads sharing one K/V head:
+        assert_eq!(cfg.n_head_q / cfg.n_head_kv, 3);
+    }
 }
