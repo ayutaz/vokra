@@ -74,7 +74,13 @@
 pub(crate) mod chunk_pipeline;
 pub(crate) mod config;
 pub(crate) mod flow_matching;
-pub(crate) mod llm;
+// Public so integration tests can reach the parity harness
+// (`vokra_models::cosyvoice2::llm::parity`). The internal-oracle path
+// through the `pub use` list below remains the primary surface; the
+// module handle is exposed only for `parity::forward_matches_step_by_step`
+// / `parity::assert_vs_hf_reference` — moving those to a top-level
+// re-export would drift as the parity API grows.
+pub mod llm;
 pub(crate) mod mimi_bridge;
 pub(crate) mod text_encoder;
 
@@ -136,20 +142,21 @@ pub struct CosyVoice2Tts {
     /// The resolved GGUF metadata (arch / vocab / streaming / flow / mimi
     /// hyperparameters — T04 chunk design).
     config: CosyVoice2Config,
-    /// LLM backbone (M3-09-T07/T08 scaffold): decoder-only transformer whose
-    /// output token stream drives the Flow Matching CFM. Held here so the
-    /// [`CosyVoice2Tts::synthesize`] chain can advertise the full
-    /// text-tokenize → LLM decode → Flow Matching → Mimi decode pipeline
-    /// through a single engine handle; the numeric forward is still
-    /// [`VokraError::NotImplemented`] on both the LLM backbone and the
-    /// top-level [`TtsEngine::synthesize`], so a caller who wires this
-    /// engine today receives a loud error (FR-EX-08 — no silent
-    /// fallback).
+    /// LLM backbone (M3-09-T07/T08 body). Decoder-only Mistral-style
+    /// transformer whose output token stream drives the Flow Matching CFM.
+    ///
+    /// `None` when the GGUF carries the 0-placeholder shape config the
+    /// scaffold converter emits — the LLM backbone refuses to bind a
+    /// synthesized fixture on zero dims (FR-EX-08 — the shape-only
+    /// converter path is not a silent-fallback path). A caller who wires
+    /// a real synthesized fixture receives a `Some(LlmBackbone)` and can
+    /// exercise the full Mistral forward via
+    /// [`CosyVoice2Tts::llm`] → [`llm::LlmBackbone::forward`].
     ///
     /// The LLM config is read from the same GGUF as the top-level config
     /// (`vokra.cosyvoice2.arch.*` LLM-side keys), so the two are always
     /// consistent — a mismatch is impossible by construction.
-    llm: llm::LlmBackbone,
+    llm: Option<llm::LlmBackbone>,
     /// Selected compute backend (default [`BackendKind::Cpu`], overridable
     /// via [`CosyVoice2Tts::with_backend`]; the numeric path lands with
     /// T19/T20).
@@ -210,11 +217,23 @@ impl CosyVoice2Tts {
         }
         check_weight_license(&file, policy)?;
         let config = CosyVoice2Config::from_gguf(&file)?;
-        // Bind the LLM backbone off the same GGUF so a caller cannot end up
-        // with an engine holding two configs that disagree. `from_gguf`
-        // reads the LLM-side `vokra.cosyvoice2.arch.*` keys; a wrong-type
-        // key is a loud [`VokraError::InvalidArgument`] (FR-EX-08).
-        let llm = llm::LlmBackbone::from_gguf(&file, &config)?;
+        // Try to bind the LLM backbone off the same GGUF. `from_gguf`
+        // reads the LLM-side `vokra.cosyvoice2.arch.*` keys and refuses
+        // the 0-placeholder shape config with `InvalidArgument`. That
+        // rejection is honest at the LLM level (a synthesized fixture
+        // needs real dims), but at the engine level a scaffold-only
+        // converter GGUF must still load — we surface the LLM handle as
+        // `None` in that case so downstream callers get a loud
+        // [`VokraError::NotImplemented`] from
+        // [`CosyVoice2Tts::synthesize`] rather than an
+        // [`VokraError::InvalidArgument`] on load. Wrong-type keys still
+        // bubble up as `InvalidArgument` (they are structural GGUF
+        // errors, not shape-config zeros).
+        let llm = match llm::LlmBackbone::from_gguf(&file, &config) {
+            Ok(b) => Some(b),
+            Err(VokraError::InvalidArgument(_)) => None,
+            Err(e) => return Err(e),
+        };
         Ok(Self {
             config,
             llm,
@@ -264,15 +283,16 @@ impl CosyVoice2Tts {
         &self.watermark
     }
 
-    /// Access to the LLM backbone (M3-09-T07/T08 scaffold).
+    /// Access to the LLM backbone (M3-09-T07/T08 body).
     ///
-    /// Follow-on sessions binding the real weight-store or wiring the
-    /// autoregressive decode loop pull this handle. Today the forward
-    /// path is [`VokraError::NotImplemented`], so this is only useful for
-    /// config introspection and internal-oracle tests.
+    /// `None` when the GGUF was the shape-only converter path (0-
+    /// placeholder dims — the synthesized fixture path requires real
+    /// dims). Real dims → `Some(LlmBackbone)` whose `forward` /
+    /// `step` / `greedy_decode` run against a synthesized fixture until
+    /// the T02 tensor manifest lands.
     #[must_use]
-    pub fn llm(&self) -> &llm::LlmBackbone {
-        &self.llm
+    pub fn llm(&self) -> Option<&llm::LlmBackbone> {
+        self.llm.as_ref()
     }
 
     /// Runs the chunk-aware streaming pipeline with caller-supplied
@@ -348,8 +368,9 @@ impl TtsEngine for CosyVoice2Tts {
     fn synthesize(&self, request: &SynthesisRequest) -> Result<SynthesizedAudio> {
         // Reference the LLM backbone handle so the engine's chain owner
         // is visible in-source (documented dependency, not consumed
-        // today).
-        let _ = self.llm.config();
+        // today). `None` on the shape-only converter path — the
+        // NotImplemented signal below still fires.
+        let _ = self.llm.as_ref().map(|l| l.config());
         let _ = request.text.as_str();
         Err(VokraError::NotImplemented(
             "CosyVoice2 TtsEngine::synthesize needs T06 tokenizer, T07/T08 LLM \
