@@ -1,8 +1,9 @@
 # vokra-godot — Godot 4.x GDExtension binding for Vokra
 
-**State (2026-07-09, Wave 11)**: T02..T04 + T05..T10 + T13 landed. Class
-registration (`classdb_register_extension_class3`), method binding
-(`classdb_register_extension_class_method` for 6 methods across
+**State (2026-07-10, Wave 13 — CC 側 100% 完成)**: **T01-T18 landed**.
+
+**Wave 11 (T05-T13)**: Class registration (`classdb_register_extension_class3`),
+method binding (`classdb_register_extension_class_method` for 6 methods across
 `VokraSession` + `VokraStream`), signal declaration
 (`classdb_register_extension_class_signal` for `asr_chunk` + `tts_chunk`),
 panic firewall at every trampoline, and compile-time layout guards for
@@ -13,8 +14,21 @@ runtime dispatch (Variant packing/unpacking to call real
 each trampoline exists with correct signature + arity enforcement + panic
 firewall + `catch_unwind`, and returns `InvalidMethod` with a documented
 "runtime dispatch pending" marker until the real Variant plumbing lands.
-T11..T18 (Windows/macOS/Android crossbuild + AssetLib packaging + demo
-scenes + release CI) remain follow-up.
+
+**Wave 13 (T12 + T14-T18)**: Crossbuild matrix (5 target: macOS Intel /
+Apple Silicon / Linux x64 / Windows MSVC / Android arm64) via
+`TARGET_TRIPLE` selector in `scripts/build-godot-gdextension.sh` (T12).
+GDScript demo scaffolds in `demos/asr_demo/` and `demos/tts_demo/` (T14 +
+T15). Crossbuild CI `.github/workflows/godot-crossbuild.yml` with 5-target
+matrix + aggregator package (T16). Release CI `godot-package-release` job
+in `.github/workflows/release.yml` with deterministic zip pack + GitHub
+Release upload (T17). NVIDIA non-bundle compliance scanner
+`scripts/compliance/check-godot-package-no-nvidia.sh` (T18, Unity mirror
+pattern + closed a latent glob gap that would miss `libcudart.so.12`).
+
+**Owner (`ayutaz`) 引き渡し**: T19 (実 Godot 4.3+ editor での
+`demos/asr_demo` + `demos/tts_demo` smoke) と T20 (M3-11 WP-close PR)。
+`godot-crossbuild.yml` の initial workflow_dispatch も owner。
 
 ## What it is
 

@@ -10,9 +10,9 @@
 //! zero-dependency invariant on the root `Cargo.lock` (NFR-DS-02) is
 //! untouched.
 //!
-//! # State (2026-07-09, T02..T04 initial)
+//! # State (2026-07-10, T01..T18 land — CC 側 100% 完成)
 //!
-//! Complete:
+//! Complete (CC 側 T01-T18):
 //! - [`vokra_gdextension_init`] entry point + init/deinit trampolines
 //!   (panic-firewalled) — Godot 4.1+ can `dlopen` the produced cdylib.
 //! - Safe RAII wrappers ([`session::VokraSession`], [`vad::VokraStream`])
@@ -23,19 +23,30 @@
 //!   and `vokra_last_error()` → [`error::VokraError`] translation.
 //! - `LINKER_KEEPALIVE` static that force-references every C ABI symbol so
 //!   the produced cdylib exports them (rlib dead-code stripping guard).
+//! - **T05-T13** (Wave 11): `classdb_register_extension_class3` +
+//!   [`ffi::interface::InterfaceTable`] resolving 8 GDExtension APIs via
+//!   `get_proc_address` + [`registry`] class registration pipeline +
+//!   [`trampoline`] method binding + `object_emit_signal` for streaming
+//!   signals + compile-time layout `const _: () = { assert!(...) };` guards
+//!   for the Godot 4.3-stable header structs.
+//! - **T12** (Wave 13): `scripts/build-godot-gdextension.sh` crossbuild
+//!   matrix (5 target: macOS Intel / Apple Silicon / Linux x64 / Windows
+//!   MSVC / Android arm64) via `TARGET_TRIPLE` selector.
+//! - **T14 + T15** (Wave 13): `demos/asr_demo/` + `demos/tts_demo/` Godot
+//!   4.x project scaffold (project.godot + main.tscn + main.gd).
+//! - **T16** (Wave 13): `.github/workflows/godot-crossbuild.yml` 5-target
+//!   matrix + aggregator package + AssetLib zip.
+//! - **T17** (Wave 13): `.github/workflows/release.yml` `godot-package-release`
+//!   job — deterministic zip pack + GitHub Release upload.
+//! - **T18** (Wave 13): `scripts/compliance/check-godot-package-no-nvidia.sh`
+//!   compliance scanner (Unity mirror pattern + latent gap closed).
 //!
-//! TODO (T05..T20):
-//! - **T05**: `classdb_register_extension_class3` — expose
-//!   [`session::VokraSession`] as a Godot Object subclass. Requires
-//!   resolving GDExtension's method-binding APIs by name via
-//!   `get_proc_address` and wiring the trampolines below into a
-//!   `GDExtensionClassCreationInfo2` struct.
-//! - **T09**: `object_emit_signal` — deliver streaming chunks as Godot
-//!   Signals. Same resolution pattern as T05.
-//! - **T12**: Windows / macOS universal / Android crossbuilds in
-//!   `scripts/build-godot-gdextension.sh` (linux path is functional at T11).
-//! - **T13..T18**: AssetLib package layout, CI, CD, NVIDIA non-bundle scanner.
-//! - **T14 / T15 / T19**: GDScript demo scenes + owner Godot-editor smoke.
+//! Owner (`ayutaz`) 引き渡し:
+//! - **T19**: 実 Godot 4.3+ editor での `demos/asr_demo` + `demos/tts_demo`
+//!   smoke — M3-18 と併走 runtime verification。
+//! - **T20**: M3-11 WP-close PR。
+//! - `TODO(M3-18)` markers in `trampoline.rs` (Variant unpack real dispatch)
+//!   — module doc §Bounded scope で owner smoke に委譲済み。
 //!
 //! # Unsafe policy (NFR-RL-07, workspace lint `unsafe_code = "deny"`)
 //!
