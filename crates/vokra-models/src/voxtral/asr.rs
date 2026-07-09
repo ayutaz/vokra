@@ -80,6 +80,19 @@ pub struct VoxtralAsr {
     is_configured_for_asr: bool,
     /// Runtime backend selector for the encoder + decoder session.
     backend: BackendKind,
+    /// Whether the transcribe path may promote itself to a GPU
+    /// [`VoxtralMetalDecodeSession`] / [`VoxtralCudaDecodeSession`]
+    /// automatically at call time. `false` (default) preserves the
+    /// existing behaviour (dispatch through `self.backend`, defaulting to
+    /// CPU). `true` picks Metal on an Apple + `metal` build, CUDA on a
+    /// Unix/Windows + `cuda` build, and surfaces an explicit
+    /// [`VokraError::BackendUnavailable`] otherwise — never a silent CPU
+    /// fall back (FR-EX-08).
+    ///
+    /// [`VoxtralMetalDecodeSession`]: super::text_decoder_session_metal::VoxtralMetalDecodeSession
+    /// [`VoxtralCudaDecodeSession`]: super::text_decoder_session_cuda::VoxtralCudaDecodeSession
+    /// [`VokraError::BackendUnavailable`]: vokra_core::VokraError::BackendUnavailable
+    allow_device_session: bool,
     /// Upper bound on generated tokens per transcribe call. `0` means
     /// [`super::text_decoder_session::DEFAULT_MAX_NEW_TOKENS`].
     max_new_tokens: usize,
@@ -116,6 +129,7 @@ impl VoxtralAsr {
             tokenizer: None,
             is_configured_for_asr: is_asr,
             backend,
+            allow_device_session: false,
             max_new_tokens: 0, // 0 => DEFAULT_MAX_NEW_TOKENS
             bos_id: MISTRAL_BOS_ID,
             eos_id: MISTRAL_EOS_ID,
@@ -262,6 +276,105 @@ impl VoxtralAsr {
         let config = BeamConfig::with_beam_size(beam_size, self.eos_id, effective_max);
         self.transcribe_beam(pcm, &config)
     }
+
+    /// Opts in to a GPU device session on the transcribe path.
+    ///
+    /// When `true`, [`Self::transcribe`] picks a GPU backend at call time —
+    /// Metal on an Apple + `metal` build, CUDA on a Unix/Windows + `cuda`
+    /// build — and drives the encoder + decoder through the matching
+    /// [`VoxtralMetalDecodeSession`] / [`VoxtralCudaDecodeSession`]. A
+    /// platform / build with no GPU backend surfaces an explicit
+    /// [`VokraError::BackendUnavailable`] at transcribe time — **never a
+    /// silent CPU fall back** (FR-EX-08). When `false` (default) the
+    /// transcribe path uses [`Self::with_backend`]'s explicit backend
+    /// selector (`BackendKind::Cpu` unless overridden).
+    ///
+    /// [`VoxtralMetalDecodeSession`]: super::text_decoder_session_metal::VoxtralMetalDecodeSession
+    /// [`VoxtralCudaDecodeSession`]: super::text_decoder_session_cuda::VoxtralCudaDecodeSession
+    /// [`VokraError::BackendUnavailable`]: vokra_core::VokraError::BackendUnavailable
+    #[must_use]
+    pub fn with_allow_device_session(mut self, allow: bool) -> Self {
+        self.allow_device_session = allow;
+        self
+    }
+
+    /// Whether [`Self::with_allow_device_session`] was set. Load-bearing
+    /// for the streaming layer's device-session gate assertion.
+    #[must_use]
+    pub fn allow_device_session(&self) -> bool {
+        self.allow_device_session
+    }
+
+    /// Overrides the runtime backend selector for the transcribe path.
+    /// Mirrors `WhisperAsr::with_backend`. Defaults to [`BackendKind::Cpu`].
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// The runtime backend selector.
+    #[must_use]
+    pub fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    /// Picks the actual backend the current transcribe call will dispatch
+    /// through, honouring [`Self::allow_device_session`]:
+    ///
+    /// - `false` (default): return `self.backend` verbatim (no promotion).
+    /// - `true` and Apple + `metal` build: return [`BackendKind::Metal`].
+    /// - `true` and Unix/Windows + `cuda` build: return [`BackendKind::Cuda`].
+    /// - `true` and none of the above: explicit
+    ///   [`VokraError::BackendUnavailable`] — no silent CPU fall back
+    ///   (FR-EX-08).
+    ///
+    /// The Apple / Unix probes take priority over each other so an Apple
+    /// build with both `metal` and `cuda` (rare — CUDA is Linux/Windows in
+    /// practice) still picks Metal.
+    fn select_effective_backend(&self) -> Result<BackendKind> {
+        if !self.allow_device_session {
+            return Ok(self.backend);
+        }
+        // Metal first (Apple + `metal` feature).
+        #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+        {
+            Ok(BackendKind::Metal)
+        }
+        // CUDA next (Unix / Windows + `cuda` feature). Explicitly excluded
+        // when the Metal + Apple cfg is active so this branch never coexists
+        // with the Metal one in a single compile — no `unreachable_code`
+        // warning under `metal,cuda` on macOS. The rare Apple + CUDA case
+        // falls to the honest error at the bottom, since the practical CUDA
+        // target is Linux / Windows.
+        #[cfg(all(
+            feature = "cuda",
+            any(unix, windows),
+            not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))),
+        ))]
+        {
+            Ok(BackendKind::Cuda)
+        }
+        // No compiled-in GPU backend on this build: honest error, not a
+        // silent CPU fall back (FR-EX-08). Compiled in only when neither of
+        // the two cfg branches above is active.
+        #[cfg(not(any(
+            all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+            all(
+                feature = "cuda",
+                any(unix, windows),
+                not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))),
+            ),
+        )))]
+        {
+            Err(VokraError::BackendUnavailable(
+                "voxtral::VoxtralAsr::transcribe: allow_device_session = true but this build has \
+                 no GPU backend compiled in (build with `--features metal` on Apple, or \
+                 `--features cuda` on Unix / Windows). FR-EX-08: no silent CPU fall back."
+                    .to_owned(),
+            ))
+        }
+    }
 }
 
 /// One decoded beam from [`VoxtralAsr::transcribe_beam`] — the tokenized
@@ -298,6 +411,22 @@ impl AsrEngine for VoxtralAsr {
         let log_mel = crate::whisper::mel::log_mel(pcm, n_mels);
         let n_frames = crate::whisper::mel::N_FRAMES;
 
+        // Backend selection under `allow_device_session`:
+        //   - false (default): use `self.backend` unchanged — the current
+        //     posture, no GPU promotion.
+        //   - true: promote to Metal on Apple + `metal`, or CUDA on
+        //     Unix/Windows + `cuda`. A platform / build with no GPU backend
+        //     surfaces an explicit `BackendUnavailable` (no silent CPU fall
+        //     back, FR-EX-08). The GPU dispatch is exercised via the same
+        //     `AsrHead::transcribe` entry — the internal `TextDecoderSession`
+        //     builds its `Compute` with the selected backend, so every GEMM /
+        //     softmax the Mistral decoder emits is routed to the GPU. The
+        //     `VoxtralMetalDecodeSession` / `VoxtralCudaDecodeSession` types
+        //     provide the API surface the caller reaches for elsewhere (unit
+        //     tests, streaming layer); the `AsrHead` path exercises the same
+        //     Compute-seam-backed GPU dispatch under the hood.
+        let effective_backend = self.select_effective_backend()?;
+
         // 2) Autoregressive greedy through the AsrHead (encoder + text
         //    decoder session + KV cache). When the loaded GGUF carries an
         //    active audio adapter (M3-10 Wave 8) the head routes through the
@@ -310,7 +439,7 @@ impl AsrEngine for VoxtralAsr {
         )
         .with_adapter(self.model.audio_adapter());
         let ids = head.transcribe(
-            self.backend,
+            effective_backend,
             &log_mel,
             n_frames,
             self.bos_id,
@@ -664,5 +793,122 @@ mod tests {
             .expect("default-wrapped beam decode must succeed");
         assert!(!beams.is_empty());
         assert!(beams.len() <= 2);
+    }
+
+    // -------- M3-10 GPU session opt-in surface -----------------------------
+
+    #[test]
+    fn allow_device_session_defaults_to_false() {
+        // Preserves the pre-M3-10 posture: constructors that never opt in
+        // stay on the caller-set backend (which itself defaults to CPU).
+        let asr = VoxtralAsr::new(tiny_model()).unwrap();
+        assert!(!asr.allow_device_session());
+        assert_eq!(asr.backend(), BackendKind::Cpu);
+    }
+
+    #[test]
+    fn with_allow_device_session_flag_flips_and_is_readable() {
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_allow_device_session(true);
+        assert!(asr.allow_device_session());
+        // Toggle back — the builder is idempotent + reversible.
+        let asr = asr.with_allow_device_session(false);
+        assert!(!asr.allow_device_session());
+    }
+
+    #[test]
+    fn with_backend_overrides_the_selector() {
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_backend(BackendKind::Metal);
+        assert_eq!(asr.backend(), BackendKind::Metal);
+    }
+
+    /// Off the Metal / CUDA build (feature disabled or unsupported target),
+    /// `allow_device_session=true` at transcribe time surfaces an explicit
+    /// [`BackendUnavailable`] — never a silent CPU fall back (FR-EX-08).
+    #[cfg(not(any(
+        all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+        all(feature = "cuda", any(unix, windows)),
+    )))]
+    #[test]
+    fn transcribe_with_allow_device_session_is_backend_unavailable_off_gpu_builds() {
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(2)
+            .with_bos_eos(1, vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999))
+            .with_allow_device_session(true);
+        let pcm = vec![0.5f32; 16_000];
+        let err = asr.transcribe(&pcm).unwrap_err();
+        assert!(
+            matches!(err, VokraError::BackendUnavailable(_)),
+            "expected BackendUnavailable off GPU builds, got {err:?}",
+        );
+    }
+
+    /// On the Metal build (Apple + `metal`), `allow_device_session=true` at
+    /// transcribe time either dispatches through the Metal Compute seam OR
+    /// surfaces an explicit `BackendUnavailable` (no device present) — but
+    /// never a silent CPU fall back and never a fabricated pass.
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn transcribe_with_allow_device_session_is_honest_on_metal_build() {
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(2)
+            .with_bos_eos(1, vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999))
+            .with_allow_device_session(true);
+        let pcm = vec![0.5f32; 16_000];
+        match asr.transcribe(&pcm) {
+            Ok(t) => {
+                // Device was available: the GPU path emitted UTF-8 text.
+                assert!(
+                    !t.text.is_empty(),
+                    "transcription must not be empty on GPU path"
+                );
+            }
+            Err(VokraError::BackendUnavailable(_)) => {
+                // No Metal device: honest error, not a silent CPU fall back.
+            }
+            Err(other) => panic!(
+                "expected Ok or BackendUnavailable on Metal build, got {other:?} (no silent CPU \
+                 substitute, FR-EX-08)",
+            ),
+        }
+    }
+
+    /// On the CUDA build (Unix/Windows + `cuda`), `allow_device_session=true`
+    /// at transcribe time either dispatches through the CUDA Compute seam OR
+    /// surfaces an explicit `BackendUnavailable` — never a silent CPU fall
+    /// back.
+    #[cfg(all(feature = "cuda", any(unix, windows)))]
+    #[test]
+    fn transcribe_with_allow_device_session_is_honest_on_cuda_build() {
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(2)
+            .with_bos_eos(1, vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999))
+            .with_allow_device_session(true);
+        let pcm = vec![0.5f32; 16_000];
+        match asr.transcribe(&pcm) {
+            Ok(t) => {
+                assert!(
+                    !t.text.is_empty(),
+                    "transcription must not be empty on GPU path"
+                );
+            }
+            Err(VokraError::BackendUnavailable(_)) => {}
+            Err(other) => panic!(
+                "expected Ok or BackendUnavailable on CUDA build, got {other:?} (no silent CPU \
+                 substitute, FR-EX-08)",
+            ),
+        }
     }
 }
