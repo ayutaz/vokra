@@ -131,7 +131,7 @@ pub use runtime::{Tensor, run_graph};
 pub use safetensors::{SafeTensorInfo, SafetensorsError, SafetensorsFile};
 pub use session::{Session, SessionBuilder};
 pub use stream::{
-    EventPoller, EventSink, RawEvent, RingConsumer, RingFull, RingProducer, Stream, StreamEvent,
-    StreamState, StreamStep, channel,
+    EventPoller, EventSink, InterruptHandle, RawEvent, RingConsumer, RingFull, RingProducer,
+    Stream, StreamEvent, StreamState, StreamStep, channel,
 };
 pub use tasks::{Asr, DialogTurn, S2s, SynthesizedAudio, Transcription, Tts};

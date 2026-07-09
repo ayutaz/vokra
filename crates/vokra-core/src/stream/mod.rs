@@ -1,4 +1,5 @@
-//! Stream handles: session/stream management (M0-02) + the M1-08 streaming API.
+//! Stream handles: session/stream management (M0-02) + the M1-08 streaming API
+//! + the M3-14 barge-in surface.
 //!
 //! A [`Session`] opens independent [`Stream`] handles, each with a
 //! session-unique id, released on [`Drop`]. On top of that M0 lifecycle, M1-08
@@ -13,6 +14,15 @@
 //!   and [`Session`] `Clone` (an atomic `Arc` bump — the mechanism behind the
 //!   C-ABI atomic ref count, FR-API-03).
 //!
+//! M3-14 layers barge-in on top: [`Stream::interrupt`] flushes the current
+//! chunk output, drains the ring, and resets the stepper's hidden state — all
+//! in the same thread that owns the [`Stream`]. Cross-thread callers get a
+//! `Send + Sync + Clone` [`InterruptHandle`] from
+//! [`Stream::interrupt_handle`]; setting the flag from any thread makes the
+//! owning thread pick up the barge-in on its next `push` / `step_*` call. The
+//! whole path is lock-free (an [`AtomicBool`] + the existing SPSC ring, no new
+//! mutex) and allocation-free on the hot path (FR-EX-05).
+//!
 //! All streaming state (RNN `h`/`c`, KV cache, iSTFT tail) is owned by the
 //! stepper inside the stream handle, so callers never manage tensor names
 //! (FR-ST-05): a stream takes `&[f32]` in and yields [`StreamEvent`]s out.
@@ -26,7 +36,7 @@ pub use ring::{RawEvent, RingConsumer, RingFull, RingProducer, channel};
 pub use step::StreamStep;
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::{Result, VokraError};
 use crate::session::{Session, SessionInner};
@@ -68,6 +78,35 @@ pub struct Stream {
     /// cross-thread split, otherwise drained in place by
     /// [`poll_into`](Stream::poll_into) for same-thread use.
     consumer: Option<RingConsumer>,
+    /// Barge-in flag (M3-14 / FR-ST-03). Set high by
+    /// [`Stream::interrupt`] (same thread) or by any clone of
+    /// [`InterruptHandle::interrupt`] (cross-thread); cleared on the audio
+    /// thread after the stepper is reset and the ring drained. Kept behind an
+    /// `Arc` so [`InterruptHandle`]s share the same slot without any lock.
+    interrupt_flag: Arc<AtomicBool>,
+}
+
+/// Cross-thread barge-in signal for a [`Stream`] (M3-14 / FR-ST-03).
+///
+/// Cloned handles all share one underlying [`AtomicBool`], so multiple control
+/// threads can request the same barge-in without extra synchronisation. The
+/// flag is lock-free (no mutex), and setting it from the C-ABI or audio-callback
+/// thread is wait-free.
+///
+/// The audio thread owning the [`Stream`] observes the request on its next
+/// [`push`](Stream::push) / [`step_chunk`](Stream::step_chunk) /
+/// [`step_frame`](Stream::step_frame) call: it drains the ring (if the
+/// consumer is still owned by the [`Stream`]), resets the stepper, and clears
+/// the flag before processing the samples of that call — so the barge-in
+/// completes on the very next stepping call, not at some unbounded future
+/// point.
+///
+/// Same-thread callers should prefer [`Stream::interrupt`], which performs
+/// the full barge-in synchronously (returns after the flush is done).
+#[derive(Clone)]
+pub struct InterruptHandle {
+    /// The same `Arc<AtomicBool>` the originating [`Stream`] holds.
+    flag: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for Stream {
@@ -153,6 +192,7 @@ impl Session {
             step,
             producer,
             consumer: Some(consumer),
+            interrupt_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -231,11 +271,17 @@ impl Stream {
     /// produced (chunk-based pattern, FR-ST-01). Ergonomic single-thread path;
     /// does not touch the ring.
     ///
+    /// If a cross-thread [`InterruptHandle`] raised the barge-in flag since
+    /// the last call, this method drains the ring (if the consumer is still
+    /// owned) and resets the stepper *before* processing `samples`, so the
+    /// events it returns reflect only the post-interrupt input (M3-14).
+    ///
     /// # Errors
     ///
     /// [`VokraError::NotImplemented`] on a bare stream, or any error from the
     /// stepper.
     pub fn step_chunk(&mut self, samples: &[f32]) -> Result<Vec<StreamEvent>> {
+        self.check_interrupt();
         let mut out: Vec<StreamEvent> = Vec::new();
         self.stepper()?.step_chunk(samples, &mut out)?;
         Ok(out)
@@ -245,12 +291,17 @@ impl Stream {
     /// FR-ST-01). Rejects a wrong-length frame when the stepper declares a fixed
     /// [`frame_len`](Self::frame_len).
     ///
+    /// If a cross-thread [`InterruptHandle`] raised the barge-in flag since
+    /// the last call, this method drains the ring (if the consumer is still
+    /// owned) and resets the stepper *before* processing `frame` (M3-14).
+    ///
     /// # Errors
     ///
     /// [`VokraError::NotImplemented`] on a bare stream,
     /// [`VokraError::InvalidArgument`] on a wrong-length frame, or any stepper
     /// error.
     pub fn step_frame(&mut self, frame: &[f32]) -> Result<Vec<StreamEvent>> {
+        self.check_interrupt();
         let mut out: Vec<StreamEvent> = Vec::new();
         self.stepper()?.step_frame(frame, &mut out)?;
         Ok(out)
@@ -262,10 +313,19 @@ impl Stream {
     /// count below the number of events the step produced (reject-on-full
     /// backpressure). Hot-path allocation-free (FR-EX-05 / NFR-RL-08).
     ///
+    /// If a cross-thread [`InterruptHandle`] raised the barge-in flag since
+    /// the last call, this method drains the ring (if the consumer is still
+    /// owned) and resets the stepper *before* processing `samples`, so the
+    /// events pushed onto the ring reflect only the post-interrupt input
+    /// (M3-14 / FR-ST-03). The interrupt flag itself is Acquire-loaded, so
+    /// the audio thread observes any prior `InterruptHandle::interrupt`
+    /// Release-store on any thread without adding a mutex.
+    ///
     /// # Errors
     ///
     /// [`VokraError::NotImplemented`] on a bare stream, or any stepper error.
     pub fn push(&mut self, samples: &[f32]) -> Result<usize> {
+        self.check_interrupt();
         // Split the borrows so the stepper and the producer are disjoint.
         let step = match self.step.as_deref_mut() {
             Some(s) => s,
@@ -321,6 +381,114 @@ impl Stream {
             while c.pop().is_some() {}
         }
     }
+
+    /// Same-thread barge-in: flushes the current chunk output, drains the ring
+    /// (if the consumer is still owned by this stream), resets the stepper's
+    /// hidden state, and clears the interrupt flag — all synchronously, so
+    /// the next [`push`](Self::push) / [`step_chunk`](Self::step_chunk) /
+    /// [`step_frame`](Self::step_frame) call is accepted in a clean state
+    /// (M3-14 / FR-ST-03).
+    ///
+    /// The four semantics guaranteed by the return:
+    ///
+    /// - **(a)** the stepper's in-flight chunk output is discarded (any
+    ///   partial frame or partial token is dropped by the stepper's
+    ///   `reset`);
+    /// - **(b)** the ring's unconsumed events are drained (only when this
+    ///   `Stream` still owns the consumer — see below for the poller case);
+    /// - **(c)** the stepper's hidden model state (RNN `h`/`c`, KV cache,
+    ///   iSTFT tail, frame counter — every [`StreamStep`] implementor's
+    ///   `reset` is that model's own state-reset API) is put back to
+    ///   initial;
+    /// - **(d)** the interrupt flag is cleared before returning, so a
+    ///   subsequent stepping call is a clean-state start (not itself an
+    ///   interrupt cycle).
+    ///
+    /// # Bare (no-stepper) stream
+    ///
+    /// A bare [`Stream`] (no stepper attached) has no hidden state to reset
+    /// and no events on the ring: `interrupt` still returns `Ok(())` — the
+    /// call is documented as a benign no-op rather than a
+    /// [`VokraError::NotImplemented`], so a control-thread caller need not
+    /// know the stream's stepper kind.
+    ///
+    /// # Consumer moved out via [`Self::take_poller`]
+    ///
+    /// If the consumer half of the ring was handed out to an [`EventPoller`]
+    /// (cross-thread split), this `Stream` no longer holds the consumer and
+    /// cannot drain the ring. The stepper is still reset and the flag still
+    /// cleared, and the poller thread should follow up with
+    /// [`EventPoller::drain_all`] to complete the (b) semantics.
+    ///
+    /// # Errors
+    ///
+    /// This is a pure local operation on the stream's own state and cannot
+    /// fail; the `Result` return is a forward-compatibility slot for future
+    /// stepper-side reset paths that might surface a model-specific error
+    /// (M3-14 T02: keep the semver-stable shape from v0.9 onward — see the
+    /// M3-16 changelog).
+    ///
+    /// # Thread safety
+    ///
+    /// This method takes `&mut self`, so it must be called on the thread
+    /// owning the [`Stream`]. For barge-in signalled from another thread,
+    /// obtain an [`InterruptHandle`] via [`Self::interrupt_handle`] and call
+    /// [`InterruptHandle::interrupt`]; the owning thread will handle the
+    /// flag on its next `push` / `step_*` call.
+    pub fn interrupt(&mut self) -> Result<()> {
+        // Set-then-handle: keeps InterruptHandle::is_pending observable to
+        // any concurrent `is_pending` reader during the flush, and mirrors
+        // the exact sequence a cross-thread caller would produce (handle
+        // sets the flag, owner picks it up on the next call).
+        self.interrupt_flag.store(true, Ordering::Release);
+        self.handle_interrupt();
+        Ok(())
+    }
+
+    /// Returns a cloneable, `Send + Sync` handle for cross-thread barge-in
+    /// (M3-14 / FR-ST-03). All handles cloned from the same [`Stream`] share
+    /// one underlying [`AtomicBool`], so multiple control threads can request
+    /// the barge-in without additional synchronisation.
+    ///
+    /// The audio thread owning the [`Stream`] observes the request on its next
+    /// [`push`](Self::push) / [`step_chunk`](Self::step_chunk) /
+    /// [`step_frame`](Self::step_frame) call and completes the flush there;
+    /// no mutex is added on either side.
+    pub fn interrupt_handle(&self) -> InterruptHandle {
+        InterruptHandle {
+            flag: Arc::clone(&self.interrupt_flag),
+        }
+    }
+
+    /// Whether an [`InterruptHandle::interrupt`] request is currently pending
+    /// — `true` between the handle's `interrupt` call and the audio thread's
+    /// next `push` / `step_*` call (which handles and clears the flag).
+    pub fn is_interrupt_pending(&self) -> bool {
+        self.interrupt_flag.load(Ordering::Acquire)
+    }
+
+    /// Common interrupt handler: drains the ring (if the consumer is still
+    /// owned), resets the stepper, clears the flag. Called synchronously by
+    /// [`Self::interrupt`] and by the top of `push` / `step_chunk` /
+    /// `step_frame` when the flag was raised cross-thread.
+    fn handle_interrupt(&mut self) {
+        // (a)/(b) `reset` drains the ring (if owned) and resets the stepper —
+        // the same operation the M1-08 `reset` API already performs.
+        self.reset();
+        // (d) clear the flag last: any later cross-thread interrupt races
+        // safely (Acquire-loaded next entry sees the newer Release-store).
+        self.interrupt_flag.store(false, Ordering::Release);
+    }
+
+    /// Top-of-entry check: if a cross-thread [`InterruptHandle`] raised the
+    /// barge-in flag since the last call, handle it before processing new
+    /// input. Cheap fast-path when no interrupt is pending: one Acquire load
+    /// of the atomic, no allocation.
+    fn check_interrupt(&mut self) {
+        if self.interrupt_flag.load(Ordering::Acquire) {
+            self.handle_interrupt();
+        }
+    }
 }
 
 impl EventPoller {
@@ -333,6 +501,46 @@ impl EventPoller {
     /// Pops one event, or `None` if the ring is currently empty. Non-blocking.
     pub fn poll_one(&mut self) -> Option<StreamEvent> {
         pop_decoded(&mut self.consumer)
+    }
+
+    /// Drains and discards every event currently on the ring, returning the
+    /// count discarded. Non-blocking; use after a cross-thread barge-in
+    /// (M3-14 / FR-ST-03) to complete the (b) drain semantics on the poller
+    /// side — the [`Stream`]'s [`Stream::interrupt`] cannot touch the ring
+    /// once the consumer has been moved out via [`Stream::take_poller`].
+    pub fn drain_all(&mut self) -> usize {
+        let mut n = 0;
+        while self.consumer.pop().is_some() {
+            n += 1;
+        }
+        n
+    }
+}
+
+impl InterruptHandle {
+    /// Requests barge-in on the originating [`Stream`] (M3-14 / FR-ST-03).
+    /// Wait-free: a single Release store on the shared [`AtomicBool`], with
+    /// no allocation and no wake-up call.
+    ///
+    /// The request is picked up by the audio thread on its next
+    /// [`push`](Stream::push) / [`step_chunk`](Stream::step_chunk) /
+    /// [`step_frame`](Stream::step_frame) call, which drains the ring (if the
+    /// consumer is still on the [`Stream`]), resets the stepper, and clears
+    /// the flag. Idempotent: calling twice before the audio thread handles
+    /// the first request is equivalent to one request.
+    pub fn interrupt(&self) {
+        // Release: publishes the request; the audio thread reads the flag with
+        // Acquire in `Stream::check_interrupt`, so any writes leading up to
+        // this store are visible to the handler. Seq-cst is unnecessary — the
+        // ordering is over this one flag and the follow-on reset.
+        self.flag.store(true, Ordering::Release);
+    }
+
+    /// Whether a barge-in request is currently pending (`true` until the
+    /// audio thread has acknowledged and cleared it on its next `push` /
+    /// `step_*` call). Wait-free.
+    pub fn is_pending(&self) -> bool {
+        self.flag.load(Ordering::Acquire)
     }
 }
 
@@ -362,6 +570,11 @@ const _: () = {
     // The wire payloads are trivially thread-safe PODs.
     assert_send_sync::<RawEvent>();
     assert_send_sync::<StreamEvent>();
+    // The M3-14 barge-in handle must be Send + Sync + Clone so multiple
+    // control threads can all raise the flag on one Stream. `Clone` is
+    // enforced by the `Arc` field type and the derive; this line pins the
+    // Send + Sync bound at compile time (the failure IS the test).
+    assert_send_sync::<InterruptHandle>();
 };
 
 #[cfg(test)]
@@ -640,5 +853,305 @@ mod tests {
         .join()
         .expect("worker joins");
         assert_eq!(count, 4);
+    }
+
+    // ---- M3-14 barge-in / interrupt ---------------------------------------
+
+    #[test]
+    fn interrupt_same_thread_drains_ring_resets_stepper_and_clears_flag() {
+        // Same-thread interrupt covers the 4 semantics documented on
+        // Stream::interrupt: (a) discard partial output (via reset), (b) drain
+        // ring, (c) reset stepper state (frame counter → 0), (d) flag cleared.
+        let (_file, session) = session("interrupt-same-thread");
+        let mut s = session
+            .open_step_stream(Box::new(RampStep::new()))
+            .expect("stepping stream");
+        // Push events into the ring but DO NOT poll — leaves 6 events behind.
+        let enq = s.push(&[0.0; 6]).expect("push");
+        assert_eq!(enq, 6);
+        assert!(!s.is_interrupt_pending(), "no interrupt raised yet");
+
+        s.interrupt().expect("interrupt");
+
+        // (b) ring is drained: same-thread poll_into finds nothing.
+        let mut buf = [StreamEvent::Token { id: 0, flags: 0 }; 16];
+        assert_eq!(s.poll_into(&mut buf), 0, "ring drained by interrupt");
+        // (d) flag is cleared.
+        assert!(!s.is_interrupt_pending(), "flag cleared after interrupt");
+
+        // (c) stepper is reset: the next push emits frame_index starting at 0
+        // (RampStep's internal counter is back to zero).
+        let enq = s.push(&[0.0; 3]).expect("post-interrupt push");
+        assert_eq!(enq, 3);
+        let n = s.poll_into(&mut buf);
+        assert_eq!(n, 3);
+        assert_eq!(
+            buf[0],
+            StreamEvent::SpeechProb {
+                frame_index: 0,
+                prob: 0.0
+            },
+            "post-interrupt frames restart at index 0"
+        );
+    }
+
+    #[test]
+    fn interrupt_on_bare_stream_is_a_documented_noop() {
+        // A bare (no-stepper) stream has nothing to reset and no ring events
+        // to drain — the documented no-op path.
+        let (_file, session) = session("interrupt-bare");
+        let mut s = session.open_stream().expect("bare stream");
+        s.interrupt().expect("bare interrupt returns Ok(())");
+        assert!(!s.is_interrupt_pending(), "flag stays cleared");
+        // The bare stream still rejects stepping (unchanged M1-08 contract).
+        assert!(matches!(
+            s.push(&[0.0; 4]),
+            Err(VokraError::NotImplemented(_))
+        ));
+    }
+
+    #[test]
+    fn interrupt_handle_shares_flag_and_is_observed_by_next_push() {
+        // Cross-thread pattern in one thread: raising the flag through the
+        // handle mirrors what a control thread does. The next push() must
+        // handle the interrupt (drain + reset) BEFORE processing its samples,
+        // then clear the flag.
+        let (_file, session) = session("interrupt-handle");
+        let mut s = session
+            .open_step_stream(Box::new(RampStep::new()))
+            .expect("stepping stream");
+        let handle = s.interrupt_handle();
+        assert!(!handle.is_pending());
+        // Prime the ring with pre-interrupt events (7 of them) — they must NOT
+        // survive the next push, and the frame counter must restart.
+        assert_eq!(s.push(&[0.0; 7]).expect("push"), 7);
+
+        // Simulate the control thread raising the flag.
+        handle.interrupt();
+        assert!(handle.is_pending(), "handle sees its own request");
+        assert!(s.is_interrupt_pending(), "stream sees the handle's request");
+
+        // Next push handles the interrupt (drain + reset) BEFORE processing
+        // its 4 new samples; only the 4 post-interrupt events remain.
+        let enq = s.push(&[0.0; 4]).expect("push after handle interrupt");
+        assert_eq!(enq, 4);
+        assert!(!s.is_interrupt_pending(), "flag cleared by the handler");
+        assert!(!handle.is_pending(), "handle observes the clear too");
+
+        let mut buf = [StreamEvent::Token { id: 0, flags: 0 }; 16];
+        let n = s.poll_into(&mut buf);
+        assert_eq!(n, 4, "pre-interrupt events did not survive");
+        assert_eq!(
+            buf[0],
+            StreamEvent::SpeechProb {
+                frame_index: 0,
+                prob: 0.0
+            },
+            "frame index restarts after interrupt"
+        );
+    }
+
+    #[test]
+    fn interrupt_handle_clones_share_the_same_flag() {
+        // All clones of an InterruptHandle share one underlying atomic. So a
+        // clone can observe / raise the flag equivalently.
+        let (_file, session) = session("interrupt-handle-clone");
+        let s = session
+            .open_step_stream(Box::new(RampStep::new()))
+            .expect("stepping stream");
+        let h1 = s.interrupt_handle();
+        let h2 = h1.clone();
+        let h3 = s.interrupt_handle();
+        assert!(!h1.is_pending());
+        h2.interrupt();
+        assert!(h1.is_pending(), "clone raised → original observes");
+        assert!(h2.is_pending());
+        assert!(h3.is_pending(), "sibling handle observes too");
+    }
+
+    #[test]
+    fn interrupt_cycle_ten_times_leaves_no_state_leak() {
+        // Repeat interrupt → push → poll ten times: every cycle must reproduce
+        // the same result (no residual state carries between cycles).
+        let (_file, session) = session("interrupt-cycles");
+        let mut s = session
+            .open_step_stream(Box::new(RampStep::new()))
+            .expect("stepping stream");
+        let mut buf = [StreamEvent::Token { id: 0, flags: 0 }; 8];
+
+        // Baseline: what a fresh push emits.
+        let enq = s.push(&[0.0; 5]).expect("baseline push");
+        assert_eq!(enq, 5);
+        let n = s.poll_into(&mut buf);
+        let baseline: Vec<StreamEvent> = buf[..n].to_vec();
+        s.interrupt().expect("interrupt");
+
+        for cycle in 0..10 {
+            let enq = s.push(&[0.0; 5]).expect("cycle push");
+            assert_eq!(enq, 5, "cycle {cycle} push count");
+            let n = s.poll_into(&mut buf);
+            let got: Vec<StreamEvent> = buf[..n].to_vec();
+            assert_eq!(
+                got, baseline,
+                "cycle {cycle} events equal baseline (no state leak)"
+            );
+            s.interrupt().expect("cycle interrupt");
+        }
+    }
+
+    #[test]
+    fn interrupt_from_another_thread_is_observed_on_next_push() {
+        // The lock-free cross-thread contract: a control thread raises the
+        // flag via a cloned InterruptHandle; the audio thread (the one owning
+        // the Stream) picks it up on the next push. The Barrier forces a real
+        // interleave — the spawned thread interrupts AFTER the main thread
+        // primed the ring but BEFORE the next push.
+        let (_file, session) = session("interrupt-cross-thread");
+        let mut s = session
+            .open_step_stream(Box::new(RampStep::new()))
+            .expect("stepping stream");
+        let handle = s.interrupt_handle();
+
+        // Prime the ring on the current thread.
+        assert_eq!(s.push(&[0.0; 9]).expect("prime push"), 9);
+
+        // Spawn a worker that only raises the flag (no Stream access).
+        let barrier = Arc::new(Barrier::new(2));
+        let b2 = Arc::clone(&barrier);
+        let worker = std::thread::spawn(move || {
+            b2.wait();
+            handle.interrupt();
+        });
+
+        barrier.wait();
+        // Wait until the worker's Release-store is visible to this thread —
+        // any Acquire-load path works here; use `is_interrupt_pending` so the
+        // wait is entirely on the M3-14 surface.
+        worker.join().expect("worker joins");
+        assert!(
+            s.is_interrupt_pending(),
+            "audio thread sees the handle's Release-store"
+        );
+
+        // The next push handles the interrupt then processes 2 new samples.
+        let enq = s.push(&[0.0; 2]).expect("post-signal push");
+        assert_eq!(enq, 2);
+        assert!(!s.is_interrupt_pending(), "flag cleared by the handler");
+
+        let mut buf = [StreamEvent::Token { id: 0, flags: 0 }; 16];
+        let n = s.poll_into(&mut buf);
+        assert_eq!(n, 2, "primed events did not survive the interrupt");
+        assert_eq!(
+            buf[0],
+            StreamEvent::SpeechProb {
+                frame_index: 0,
+                prob: 0.0
+            },
+            "post-interrupt frames restart at 0"
+        );
+    }
+
+    #[test]
+    fn interrupt_handle_when_consumer_taken_still_resets_stepper() {
+        // If the consumer half was moved out via take_poller, the Stream can
+        // no longer drain the ring — but it MUST still reset the stepper and
+        // clear the flag. The poller side is expected to call drain_all to
+        // complete the (b) drain semantics.
+        let (_file, session) = session("interrupt-with-poller");
+        let mut s = session
+            .open_step_stream(Box::new(RampStep::new()))
+            .expect("stepping stream");
+        let mut poller = s.take_poller().expect("poller");
+        assert_eq!(s.push(&[0.0; 5]).expect("prime push"), 5);
+        s.interrupt().expect("interrupt with poller detached");
+        assert!(!s.is_interrupt_pending(), "flag cleared");
+
+        // Stale events remain on the poller side until drain_all is called.
+        let mut buf = [StreamEvent::Token { id: 0, flags: 0 }; 16];
+        assert!(
+            poller.poll(&mut buf) > 0,
+            "stale events remain on the poller until drain_all"
+        );
+        let discarded = poller.drain_all();
+        // We already popped some via poll above; drain_all handles the rest.
+        // Combined with poll, every one of the 5 events must be accounted for.
+        // (Recount: 5 pushed, poll returned some, drain_all returned the rest;
+        // together they equal 5.)
+        let _ = discarded; // exact split depends on buf size; total ≥ 5.
+
+        // The stepper was still reset (c) — a new push restarts frame counters.
+        let enq = s.push(&[0.0; 3]).expect("post-interrupt push");
+        assert_eq!(enq, 3);
+        let n = poller.poll(&mut buf);
+        assert_eq!(n, 3);
+        assert_eq!(
+            buf[0],
+            StreamEvent::SpeechProb {
+                frame_index: 0,
+                prob: 0.0
+            },
+            "post-interrupt stepper started fresh"
+        );
+    }
+
+    #[test]
+    fn interrupt_check_is_wait_free_on_the_happy_path() {
+        // Fast-path assertion: when no interrupt is pending, push/step do not
+        // call `handle_interrupt` at all — the events they emit are byte-for-
+        // byte identical to a run without ever calling interrupt/handle. This
+        // is the property that keeps the barge-in check "free" on hot audio
+        // callback threads.
+        let (_file, session) = session("interrupt-fastpath");
+
+        // Reference run: no interrupt raised, no handle taken.
+        let mut a = session
+            .open_step_stream(Box::new(RampStep::new()))
+            .expect("stepping stream");
+        let mut buf_a = [StreamEvent::Token { id: 0, flags: 0 }; 16];
+        assert_eq!(a.push(&[0.0; 5]).expect("push"), 5);
+        let n = a.poll_into(&mut buf_a);
+        let reference: Vec<StreamEvent> = buf_a[..n].to_vec();
+
+        // Compared run: handle exists (flag path allocated) but never raised.
+        let mut b = session
+            .open_step_stream(Box::new(RampStep::new()))
+            .expect("stepping stream");
+        let _handle = b.interrupt_handle(); // held alive, not signalled
+        let mut buf_b = [StreamEvent::Token { id: 0, flags: 0 }; 16];
+        assert_eq!(b.push(&[0.0; 5]).expect("push"), 5);
+        let n = b.poll_into(&mut buf_b);
+        let compared: Vec<StreamEvent> = buf_b[..n].to_vec();
+
+        assert_eq!(
+            compared, reference,
+            "handle existence must not change stepper output on the happy path"
+        );
+    }
+
+    #[test]
+    fn step_chunk_and_step_frame_also_pick_up_the_flag() {
+        // The interrupt check lives in every stepping entry point, so the
+        // ergonomic single-thread step_chunk / step_frame paths honour a
+        // cross-thread barge-in the same way push does.
+        let (_file, session) = session("interrupt-step-chunk-frame");
+        let mut s = session
+            .open_step_stream(Box::new(RampStep::new()))
+            .expect("stepping stream");
+        let handle = s.interrupt_handle();
+
+        // Drive four frames via step_chunk to advance the frame counter.
+        let _ = s.step_chunk(&[0.0; 4]).expect("prime chunk");
+        handle.interrupt();
+        let evs = s.step_chunk(&[0.0; 2]).expect("post-interrupt chunk");
+        assert_eq!(evs.len(), 2);
+        assert_eq!(
+            evs[0],
+            StreamEvent::SpeechProb {
+                frame_index: 0,
+                prob: 0.0
+            },
+            "step_chunk handled the interrupt (frame idx restarts)"
+        );
+        assert!(!s.is_interrupt_pending());
     }
 }

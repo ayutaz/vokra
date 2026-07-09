@@ -106,8 +106,11 @@ This snapshot is what `scripts/check-abi-changelog.sh` diffs the working-tree
 
 ## Entries
 
-_(No entries yet — this is the baseline. New entries land here as M3-01
-through M3-15 land, one section per PR-day.)_
+### 2026-07-09 — 0.9.0-dev
+
+| Crate / area      | Symbol                   | Kind  | Signature                                                                   | Rationale                              | Breaking? | PR    |
+| ----------------- | ------------------------ | ----- | --------------------------------------------------------------------------- | -------------------------------------- | --------- | ----- |
+| `include/vokra.h` | `vokra_stream_interrupt` | Added | `enum vokra_status_t vokra_stream_interrupt(struct vokra_stream_t *stream)` | Barge-in / cancel (FR-ST-03), WP M3-14 | no        | (TBD) |
 
 <!-- Template — copy into an `### YYYY-MM-DD — vX.Y.Z-dev` section per PR-day:
 

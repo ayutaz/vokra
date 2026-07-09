@@ -8,9 +8,11 @@
  * Regenerate with `scripts/gen-c-abi.sh`; CI fails on drift
  * (`scripts/gen-c-abi.sh --check`).
  *
- * STABILITY: this is the v0.1 spike (M0). The ABI is NOT stable and MAY change
- * in breaking ways at any time. The semver ABI-stability commitment starts at
- * v1.0 (IF-01; docs/milestones.md §4.2 note 3).
+ * STABILITY: this is the v0.9 (M3) window. The ABI is NOT frozen; the semver
+ * ABI-stability commitment starts at v1.0 GA (IF-01; docs/milestones.md §4.2
+ * note 3, §8 M4-12). During the v0.9 window every symbol delta must be
+ * recorded in docs/abi-changelog.md and covered by an entry dated on the day
+ * the PR opens — scripts/check-abi-changelog.sh (M3-16) enforces this.
  */
 
 #ifndef VOKRA_H
@@ -268,6 +270,34 @@ enum vokra_status_t vokra_stream_poll_events(struct vokra_stream_t *stream,
                                              struct vokra_event_t *out_events,
                                              size_t capacity,
                                              size_t *out_count);
+
+// Barge-in: flushes the current chunk output, drains the stream's ring
+// (when the consumer half is still on this stream), resets the stepper's
+// hidden state, and clears the barge-in flag — all synchronously, so the
+// next `vokra_stream_push_pcm` is accepted in a clean state (M3-14 /
+// FR-ST-03).
+//
+// This is the C-ABI counterpart of [`Stream::interrupt`](vokra_core::Stream::interrupt).
+// A bare (no-stepper) stream is a documented no-op that still returns
+// `VOKRA_OK`.
+//
+// # Thread safety
+//
+// `vokra_stream_interrupt` takes exclusive access to the stream handle for
+// the duration of the call (mirroring the `&mut self` receiver on the Rust
+// API). A C caller that shares one `vokra_stream_t*` across threads MUST
+// serialise access — the underlying barge-in flag is lock-free, but the
+// handler mutates the ring and stepper state. For cross-thread barge-in
+// without ownership of the stream, hold the stream on one thread and drive
+// interrupts through a Rust-side [`InterruptHandle`](vokra_core::InterruptHandle);
+// a dedicated C ABI for the cross-thread handle is a follow-on (M3-16 v0.9
+// ABI changelog).
+//
+// # Safety
+//
+// `stream` must be a valid stream handle from `vokra_stream_open` and must
+// not be aliased on another thread for the duration of the call.
+enum vokra_status_t vokra_stream_interrupt(struct vokra_stream_t *stream);
 
 // Frees a stream handle from `vokra_stream_open`. `NULL` is a no-op.
 //

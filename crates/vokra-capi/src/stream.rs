@@ -1,13 +1,15 @@
 //! Streaming C ABI: open / push PCM / poll (probabilities or typed events) /
-//! destroy (M0-09-T09, generalized for M1-08).
+//! interrupt / destroy (M0-09-T09, generalized for M1-08, extended for M3-14).
 //!
 //! `vokra_stream_open` builds a native stepping [`Stream`](vokra_core::Stream)
 //! over the session's VAD engine (Silero VAD = M0-05); `vokra_stream_push_pcm`
 //! feeds PCM into the stepper, which emits events into a lock-free SPSC ring
 //! (FR-ST-02). `vokra_stream_poll` drains VAD speech probabilities (the f32 fast
 //! path) and `vokra_stream_poll_events` drains typed [`vokra_event_t`]s. Both
-//! polls are non-blocking. All recurrent state stays hidden inside the stepper
-//! (FR-LD-06 / FR-ST-05).
+//! polls are non-blocking. `vokra_stream_interrupt` (M3-14 / FR-ST-03) is the
+//! synchronous barge-in: it drains the ring, resets the stepper, and clears
+//! the barge-in flag so the next push starts clean. All recurrent state stays
+//! hidden inside the stepper (FR-LD-06 / FR-ST-05).
 
 use vokra_core::StreamEvent;
 
@@ -228,6 +230,42 @@ pub unsafe extern "C" fn vokra_stream_poll_events(
         }
         // SAFETY: `out_count` is non-null (checked above).
         unsafe { *out_count = n };
+        Ok(())
+    })
+}
+
+/// Barge-in: flushes the current chunk output, drains the stream's ring
+/// (when the consumer half is still on this stream), resets the stepper's
+/// hidden state, and clears the barge-in flag — all synchronously, so the
+/// next `vokra_stream_push_pcm` is accepted in a clean state (M3-14 /
+/// FR-ST-03).
+///
+/// This is the C-ABI counterpart of [`Stream::interrupt`](vokra_core::Stream::interrupt).
+/// A bare (no-stepper) stream is a documented no-op that still returns
+/// `VOKRA_OK`.
+///
+/// # Thread safety
+///
+/// `vokra_stream_interrupt` takes exclusive access to the stream handle for
+/// the duration of the call (mirroring the `&mut self` receiver on the Rust
+/// API). A C caller that shares one `vokra_stream_t*` across threads MUST
+/// serialise access — the underlying barge-in flag is lock-free, but the
+/// handler mutates the ring and stepper state. For cross-thread barge-in
+/// without ownership of the stream, hold the stream on one thread and drive
+/// interrupts through a Rust-side [`InterruptHandle`](vokra_core::InterruptHandle);
+/// a dedicated C ABI for the cross-thread handle is a follow-on (M3-16 v0.9
+/// ABI changelog).
+///
+/// # Safety
+///
+/// `stream` must be a valid stream handle from `vokra_stream_open` and must
+/// not be aliased on another thread for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vokra_stream_interrupt(stream: *mut vokra_stream_t) -> vokra_status_t {
+    ffi_guard::guard(|| {
+        // SAFETY: `stream` validated (NULL rejected) by `required_mut`.
+        let s = unsafe { ffi_guard::required_mut(stream, "stream")? };
+        s.stream.interrupt().map_err(|e| error::fail(&e))?;
         Ok(())
     })
 }
@@ -530,6 +568,95 @@ mod tests {
 
         // SAFETY: stream handle, freed once.
         unsafe { vokra_stream_destroy(stream) };
+    }
+
+    /// M3-14 T08 — the C ABI `vokra_stream_interrupt` behaves like
+    /// `Stream::interrupt`: after a prime push + interrupt, the next poll is
+    /// empty (ring drained) AND the frame-index counter restarts (stepper
+    /// reset).
+    #[test]
+    fn stream_interrupt_drains_ring_and_resets_stepper() {
+        let wav = read_wav_f32(parity_dir().join("test_16k.wav")).expect("read fixture wav");
+
+        let session = create_silero_session();
+        let mut stream: *mut vokra_stream_t = std::ptr::null_mut();
+        // SAFETY: valid session/out-pointer.
+        let st = unsafe { vokra_stream_open(session, 16_000, &mut stream) };
+        assert_eq!(st, vokra_status_t::VOKRA_OK);
+
+        // Prime the ring: push enough PCM to produce at least a few frames but
+        // do NOT poll — the frames sit on the ring until the interrupt drains
+        // them.
+        let prime_len = wav.samples.len().min(4096);
+        // SAFETY: valid stream; pcm slice valid for `prime_len`.
+        let st = unsafe { vokra_stream_push_pcm(stream, wav.samples.as_ptr(), prime_len) };
+        assert_eq!(st, vokra_status_t::VOKRA_OK);
+
+        // Interrupt.
+        // SAFETY: valid stream handle.
+        let st = unsafe { vokra_stream_interrupt(stream) };
+        assert_eq!(st, vokra_status_t::VOKRA_OK, "interrupt returns VOKRA_OK");
+
+        // Ring is empty right after the interrupt.
+        let mut probs = [0.0f32; 32];
+        let mut count: usize = 123;
+        // SAFETY: valid stream/buf/count.
+        let st = unsafe { vokra_stream_poll(stream, probs.as_mut_ptr(), probs.len(), &mut count) };
+        assert_eq!(st, vokra_status_t::VOKRA_OK);
+        assert_eq!(count, 0, "ring drained by interrupt");
+
+        // A subsequent push processes new PCM cleanly and yields events again.
+        // SAFETY: valid stream/pcm.
+        let st = unsafe { vokra_stream_push_pcm(stream, wav.samples.as_ptr(), prime_len) };
+        assert_eq!(st, vokra_status_t::VOKRA_OK);
+        let mut probs2 = vec![0.0f32; wav.samples.len()];
+        let mut count2: usize = 0;
+        // SAFETY: valid stream/buf/count.
+        let st =
+            unsafe { vokra_stream_poll(stream, probs2.as_mut_ptr(), probs2.len(), &mut count2) };
+        assert_eq!(st, vokra_status_t::VOKRA_OK);
+        assert!(
+            count2 > 0,
+            "post-interrupt push still produces frames (stepper is functional)"
+        );
+
+        // SAFETY: handles freed exactly once.
+        unsafe {
+            vokra_stream_destroy(stream);
+            vokra_session_destroy(session);
+        }
+    }
+
+    /// M3-14 T08 — NULL stream is rejected by the argument guard, mirroring
+    /// the other C-ABI stream calls.
+    #[test]
+    fn stream_interrupt_rejects_null_stream() {
+        // SAFETY: NULL is the rejected branch; no deref happens.
+        let st = unsafe { vokra_stream_interrupt(std::ptr::null_mut()) };
+        assert_eq!(st, vokra_status_t::VOKRA_ERROR_INVALID_ARGUMENT);
+    }
+
+    /// M3-14 T08 — interrupt on a live stream that had no pending events is a
+    /// benign no-op that still returns `VOKRA_OK` (matches the Rust API
+    /// contract: `Stream::interrupt` is a documented no-op on empty state).
+    #[test]
+    fn stream_interrupt_on_empty_stream_is_ok() {
+        let session = create_silero_session();
+        let mut stream: *mut vokra_stream_t = std::ptr::null_mut();
+        // SAFETY: valid session/out-pointer.
+        let st = unsafe { vokra_stream_open(session, 16_000, &mut stream) };
+        assert_eq!(st, vokra_status_t::VOKRA_OK);
+
+        // Interrupt with nothing pending.
+        // SAFETY: valid handle.
+        let st = unsafe { vokra_stream_interrupt(stream) };
+        assert_eq!(st, vokra_status_t::VOKRA_OK);
+
+        // SAFETY: handles freed exactly once.
+        unsafe {
+            vokra_stream_destroy(stream);
+            vokra_session_destroy(session);
+        }
     }
 
     /// Retain N times then destroy every handle: no panic / double-free (the
