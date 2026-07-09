@@ -283,6 +283,32 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                 "; arch={arch} sample_rate={sr} style_dim={style_dim} num_voices={num_voices}"
             );
         }
+        ModelKind::CosyVoice2 => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let sr = file
+                .get("vokra.cosyvoice2.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_layer = file
+                .get("vokra.cosyvoice2.arch.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_head = file
+                .get("vokra.cosyvoice2.arch.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let hidden_dim = file
+                .get("vokra.cosyvoice2.arch.hidden_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} sample_rate={sr} n_layer={n_layer} n_head={n_head} \
+                 hidden_dim={hidden_dim}"
+            );
+        }
     }
     Ok(())
 }

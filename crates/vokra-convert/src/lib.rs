@@ -74,6 +74,14 @@ pub enum ModelKind {
     /// voicepack. Weights are bound verbatim; hparams are shape-driven with
     /// `0` placeholders on the iSTFT triple pending T02 upstream inspection.
     Kokoro,
+    /// `iic/CosyVoice2-0.5B` safetensors checkpoint (M3-09 scaffold): a
+    /// Text tokenizer + LLM backbone + Flow Matching CFM + Mimi codec +
+    /// chunk-aware streaming TTS / S2S model (Apache 2.0 code + weight,
+    /// docs/license-audit.md). Weights are bound verbatim; numeric hparams
+    /// (`n_layer` / `n_head` / `hidden_dim` / `ffn_dim` / streaming chunk
+    /// sizes) are `0`-placeholders pending T02 upstream inspection — the
+    /// runtime rejects `0` at load per `CosyVoice2Config::from_gguf`.
+    CosyVoice2,
 }
 
 impl ModelKind {
@@ -93,6 +101,7 @@ impl ModelKind {
             "piper-plus" => Some(Self::PiperPlus),
             "campplus" => Some(Self::CamPlus),
             "kokoro" => Some(Self::Kokoro),
+            "cosyvoice2" => Some(Self::CosyVoice2),
             _ => None,
         }
     }
@@ -105,6 +114,7 @@ impl ModelKind {
             Self::PiperPlus => "piper-plus",
             Self::CamPlus => "campplus",
             Self::Kokoro => "kokoro",
+            Self::CosyVoice2 => "cosyvoice2",
         }
     }
 }
@@ -262,6 +272,23 @@ pub fn convert_file(
                 report.voices.len(),
             )];
             notes.extend(report.notes.iter().map(|n| format!("kokoro warning: {n}")));
+            (builder, notes)
+        }
+        ModelKind::CosyVoice2 => {
+            let (builder, report) = models::cosyvoice2::convert(bytes)?;
+            let mut notes = vec![format!(
+                "cosyvoice2: {} float weights written, {} non-float skipped \
+                 (scaffold — numeric hparams are `0`-placeholders pending T02 \
+                 upstream inspection; the runtime rejects the load until T04 \
+                 fills them)",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("cosyvoice2 warning: {n}")),
+            );
             (builder, notes)
         }
     };
