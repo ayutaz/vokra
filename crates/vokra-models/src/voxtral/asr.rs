@@ -231,13 +231,23 @@ impl VoxtralAsr {
         let log_mel = crate::whisper::mel::log_mel(pcm, n_mels);
         let n_frames = crate::whisper::mel::N_FRAMES;
 
+        // Backend selection mirrors [`AsrEngine::transcribe`] — Wave 9 shipped
+        // greedy + GPU session in two parallel worktrees, and the beam path
+        // was landed against `self.backend` verbatim before the
+        // `select_effective_backend` gate was factored out. Routing beam
+        // through the same gate ensures `allow_device_session = true` promotes
+        // to Metal / CUDA (or surfaces an explicit `BackendUnavailable` off
+        // GPU builds) — never a silent CPU fall back (FR-EX-08).
+        let effective_backend = self.select_effective_backend()?;
+
         let head = AsrHead::new(
             self.model.config(),
             self.model.audio_encoder(),
             self.model.text_decoder(),
         )
         .with_adapter(self.model.audio_adapter());
-        let beams = head.transcribe_beam(self.backend, &log_mel, n_frames, self.bos_id, config)?;
+        let beams =
+            head.transcribe_beam(effective_backend, &log_mel, n_frames, self.bos_id, config)?;
 
         // Detokenize each beam. A GGUF without an embedded tokenizer
         // surfaces an explicit error — no fabrication.
@@ -910,5 +920,159 @@ mod tests {
                  substitute, FR-EX-08)",
             ),
         }
+    }
+
+    // -------- Task 1 (Wave 10): `transcribe_beam` honors allow_device_session ---
+    //
+    // Wave 9 landed [`Self::transcribe_beam`] and [`Self::with_allow_device_session`]
+    // in two parallel worktrees; the merge left `transcribe_beam` dispatching
+    // through `self.backend` directly rather than
+    // [`select_effective_backend`]. The tests below pin the fix (Wave 10
+    // Agent A) so a future refactor cannot silently regress the symmetry
+    // with [`AsrEngine::transcribe`] (FR-EX-08 — beam path must honor the
+    // same GPU / no-fall-back rules the greedy path does).
+    //
+    // Small `beam_size` + real (non-zero) PCM keeps the test cost bounded
+    // while still driving through the mel front-end + backend gate.
+
+    /// Off every GPU build, `allow_device_session = true` on the beam path
+    /// surfaces an explicit `BackendUnavailable` — never a silent CPU
+    /// substitute. Mirrors
+    /// [`transcribe_with_allow_device_session_is_backend_unavailable_off_gpu_builds`]
+    /// but drives [`Self::transcribe_beam`] instead of [`AsrEngine::transcribe`].
+    #[cfg(not(any(
+        all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+        all(feature = "cuda", any(unix, windows)),
+    )))]
+    #[test]
+    fn transcribe_beam_with_allow_device_session_is_backend_unavailable_off_gpu_builds() {
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(2)
+            .with_bos_eos(1, vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999))
+            .with_allow_device_session(true);
+        let pcm = vec![0.5f32; 16_000];
+        let bc = BeamConfig::with_beam_size(2, vocab as u32 + 10, 3);
+        let err = asr.transcribe_beam(&pcm, &bc).unwrap_err();
+        assert!(
+            matches!(err, VokraError::BackendUnavailable(_)),
+            "expected BackendUnavailable off GPU builds, got {err:?} (FR-EX-08 — no silent CPU \
+             substitute on the beam path)",
+        );
+    }
+
+    /// On the Metal build, `allow_device_session = true` on the beam path
+    /// either dispatches through the Metal Compute seam OR surfaces an
+    /// explicit `BackendUnavailable`. Never a silent CPU fall back and
+    /// never a fabricated pass.
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn transcribe_beam_with_allow_device_session_is_honest_on_metal_build() {
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(2)
+            .with_bos_eos(1, vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999))
+            .with_allow_device_session(true);
+        let pcm = vec![0.5f32; 16_000];
+        let bc = BeamConfig::with_beam_size(2, vocab as u32 + 10, 3);
+        match asr.transcribe_beam(&pcm, &bc) {
+            Ok(beams) => {
+                // Device was available: the GPU path emitted a non-empty
+                // ranked n-best.
+                assert!(
+                    !beams.is_empty(),
+                    "beam decode must not return empty on GPU path"
+                );
+                for b in &beams {
+                    assert!(
+                        !b.text.is_empty(),
+                        "beam text must not be empty on GPU path"
+                    );
+                }
+            }
+            Err(VokraError::BackendUnavailable(_)) => {
+                // No Metal device: honest error, not a silent CPU fall back.
+            }
+            Err(other) => panic!(
+                "expected Ok or BackendUnavailable on Metal build, got {other:?} (no silent CPU \
+                 substitute on the beam path, FR-EX-08)",
+            ),
+        }
+    }
+
+    /// CUDA-build symmetric of the Metal test above.
+    #[cfg(all(feature = "cuda", any(unix, windows)))]
+    #[test]
+    fn transcribe_beam_with_allow_device_session_is_honest_on_cuda_build() {
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(2)
+            .with_bos_eos(1, vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999))
+            .with_allow_device_session(true);
+        let pcm = vec![0.5f32; 16_000];
+        let bc = BeamConfig::with_beam_size(2, vocab as u32 + 10, 3);
+        match asr.transcribe_beam(&pcm, &bc) {
+            Ok(beams) => {
+                assert!(
+                    !beams.is_empty(),
+                    "beam decode must not return empty on GPU path"
+                );
+                for b in &beams {
+                    assert!(
+                        !b.text.is_empty(),
+                        "beam text must not be empty on GPU path"
+                    );
+                }
+            }
+            Err(VokraError::BackendUnavailable(_)) => {}
+            Err(other) => panic!(
+                "expected Ok or BackendUnavailable on CUDA build, got {other:?} (no silent CPU \
+                 substitute on the beam path, FR-EX-08)",
+            ),
+        }
+    }
+
+    /// `allow_device_session = false` (default) is preserved verbatim on
+    /// the beam path: the beam decode dispatches through `self.backend`
+    /// exactly as it did before the Wave 10 fix. This locks the pre-Wave-9
+    /// posture in — a caller who explicitly opted out (or never opted in)
+    /// keeps the caller-set backend. This test runs on every build.
+    #[test]
+    fn transcribe_beam_no_op_when_allow_device_session_false() {
+        let vocab = tiny_config().text.vocab_size;
+        // Default = false; no builder call flips it on.
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(3)
+            .with_bos_eos(1, vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999));
+        assert!(!asr.allow_device_session());
+        // CPU backend default: the beam decode must complete without going
+        // through any GPU gate (i.e. it never surfaces BackendUnavailable).
+        let pcm = vec![0.5f32; 16_000];
+        let bc = BeamConfig::with_beam_size(2, vocab as u32 + 10, 3);
+        let beams = asr
+            .transcribe_beam(&pcm, &bc)
+            .expect("beam decode must succeed on the default CPU backend");
+        assert!(!beams.is_empty());
+        assert!(beams.len() <= 2);
+
+        // Explicitly flipping the flag off after opting in also stays on
+        // the CPU path — the builder is reversible and the beam path reads
+        // the same flag the greedy path does (no drift).
+        let asr = asr
+            .with_allow_device_session(true)
+            .with_allow_device_session(false);
+        assert!(!asr.allow_device_session());
+        let beams = asr
+            .transcribe_beam(&pcm, &bc)
+            .expect("beam decode must succeed after opting out");
+        assert!(!beams.is_empty());
     }
 }
