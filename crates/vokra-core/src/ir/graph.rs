@@ -423,6 +423,114 @@ pub struct PreEmphasisAttrs {
     pub coeff: f32,
 }
 
+/// Unit of a caller-supplied duration used by [`LengthConditioningAttrs`]
+/// (FR-OP-71, M3-08).
+///
+/// `Seconds` values are converted to frames using the attrs' `sample_rate` and
+/// `hop_length` (frontend_spec-derived — M0-04 / M1-03), i.e.
+/// `frames = round(seconds · sample_rate / hop_length)`. `Frames` values are
+/// used verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurationUnit {
+    /// Duration in seconds; converted via `sample_rate / hop_length` at eval.
+    Seconds,
+    /// Duration in frames (already at the model's frame rate).
+    Frames,
+}
+
+/// Estimation mode of the `length_conditioning` op (FR-OP-71, M3-08).
+///
+/// `length_conditioning` is F5-TTS / CosyVoice2 型 — target duration is either
+/// (A) supplied by the caller, or (B) linearly estimated from a reference
+/// utterance. It is **distinct from** `duration_expander` (FastSpeech2 型,
+/// per-phoneme scalar expansion, FR-OP-70 想定) — see ADR 0010.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LengthConditioningMode {
+    /// (A) Caller-specified target duration. The `duration` value is
+    /// interpreted according to [`LengthConditioningAttrs::unit`].
+    UserSpecified {
+        /// Target duration; unit given by [`LengthConditioningAttrs::unit`].
+        duration: f32,
+    },
+    /// (B) Linear estimation from a reference utterance: `target = round(
+    /// ref_speech_frames · text_ratio)` (F5-TTS / CosyVoice2 の最も単純な
+    /// 線形補間式; 消費者 WP M3-09 が上流実装で係数の細部を突き合わせる —
+    /// ADR 0010 §D4).
+    RefLinear {
+        /// Length of the reference utterance in frames.
+        ref_speech_frames: u32,
+        /// Ratio between target-text length and reference-text length.
+        text_ratio: f32,
+    },
+}
+
+/// Attributes of the `length_conditioning` operator (FR-OP-71, M3-08).
+///
+/// F5-TTS / CosyVoice2 型 Flow Matching 全長条件付け. Given either a
+/// caller-supplied duration or a reference utterance length + text ratio, this
+/// op produces the **target frame count** the Flow Matching sampler generates
+/// in one shot. It is a distinct op from `duration_expander` — see ADR 0010
+/// §D2 for the semantic boundary that the IR enforces (Rust's type system
+/// blocks any cross-use at compile time).
+///
+/// The op is **not embedded in the model graph** in the FR-EX-10 sense: the
+/// target length is materialised outside the sampler graph and then handed to
+/// Flow Matching. Wiring into a specific model (CosyVoice2) lands with M3-09.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LengthConditioningAttrs {
+    /// How the target duration is obtained (caller-specified or ref-linear).
+    pub mode: LengthConditioningMode,
+    /// Unit of `mode == UserSpecified { duration }` values. `RefLinear` always
+    /// works in frames and ignores this field, but it is kept on the attrs so
+    /// a graph node fully describes both modes.
+    pub unit: DurationUnit,
+    /// Sample rate of the analysed audio (Hz). Required for
+    /// `unit == Seconds` conversion; ignored otherwise. Must equal the
+    /// frontend_spec `sample_rate` (M1-03) when the model has one.
+    pub sample_rate: u32,
+    /// Hop length in samples. Required for `unit == Seconds` conversion;
+    /// ignored otherwise. Must equal the frontend_spec `hop_length`.
+    pub hop_length: u32,
+}
+
+impl LengthConditioningAttrs {
+    /// Builds mode (A) attributes with a caller-specified duration in
+    /// **frames** (no `sample_rate` / `hop_length` needed).
+    pub fn user_specified_frames(frames: f32) -> Self {
+        Self {
+            mode: LengthConditioningMode::UserSpecified { duration: frames },
+            unit: DurationUnit::Frames,
+            sample_rate: 0,
+            hop_length: 0,
+        }
+    }
+
+    /// Builds mode (A) attributes with a caller-specified duration in
+    /// **seconds** and the `sample_rate` / `hop_length` needed to convert it.
+    pub fn user_specified_seconds(seconds: f32, sample_rate: u32, hop_length: u32) -> Self {
+        Self {
+            mode: LengthConditioningMode::UserSpecified { duration: seconds },
+            unit: DurationUnit::Seconds,
+            sample_rate,
+            hop_length,
+        }
+    }
+
+    /// Builds mode (B) attributes: linear estimation from `ref_speech_frames`
+    /// and `text_ratio`.
+    pub fn ref_linear(ref_speech_frames: u32, text_ratio: f32) -> Self {
+        Self {
+            mode: LengthConditioningMode::RefLinear {
+                ref_speech_frames,
+                text_ratio,
+            },
+            unit: DurationUnit::Frames,
+            sample_rate: 0,
+            hop_length: 0,
+        }
+    }
+}
+
 /// Operation kind — the ggml-style *flat op enum* of the Vokra IR (FR-EX-01).
 ///
 /// M0-02 carried only minimal **placeholder** variants so the graph plumbing
@@ -481,6 +589,18 @@ pub enum OpKind {
     /// First-order pre-emphasis high-pass (FR-OP-64). Real `[samples]` → real
     /// `[samples]`.
     PreEmphasis(PreEmphasisAttrs),
+    /// F5-TTS / CosyVoice2 型 length conditioning for Flow Matching full-length
+    /// generation (FR-OP-71, M3-08). Given either a caller-specified duration
+    /// (mode A) or a reference utterance length + text ratio (mode B),
+    /// produces the **target frame count** (`u32` in a scalar tensor) the Flow
+    /// Matching sampler generates in one shot.
+    ///
+    /// Distinct from `duration_expander` (per-phoneme scalar expansion,
+    /// FastSpeech2 型 — FR-OP-70 想定): the IR variants and the attribute
+    /// structs are separate types, so mixing them is a **compile-time** error
+    /// (see ADR 0010 §D2 / §D6, `M3-08-length-conditioning.md`). Wiring into
+    /// the CosyVoice2 Flow Matching path is deferred to M3-09.
+    LengthConditioning(LengthConditioningAttrs),
     /// Fused op emitted by the M2-04 graph-fusion pass (see [`crate::ir::fusion`]).
     ///
     /// The pass rewrites recognized subgraphs (currently only `Stft → Power →

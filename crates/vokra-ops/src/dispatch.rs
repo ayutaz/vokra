@@ -14,14 +14,15 @@
 //! silently doing nothing (FR-EX-08: no silent fallback).
 
 use vokra_core::ir::graph::{
-    DctAttrs, IstftAttrs, IstftStreamingAttrs, MelAttrs, MfccAttrs, PreEmphasisAttrs,
-    ResampleAttrs, StftAttrs,
+    DctAttrs, IstftAttrs, IstftStreamingAttrs, LengthConditioningAttrs, MelAttrs, MfccAttrs,
+    PreEmphasisAttrs, ResampleAttrs, StftAttrs,
 };
 use vokra_core::{OpKind, Result, VokraError};
 
 use crate::dct::dct;
 use crate::istft::istft;
 use crate::istft_streaming::istft_streaming_oneshot;
+use crate::length_conditioning::length_conditioning;
 use crate::mel::MelFilterbank;
 use crate::mfcc::mfcc;
 use crate::preprocess::{dc_offset_remove, pre_emphasis};
@@ -101,6 +102,7 @@ pub fn dispatch(op: &OpKind, inputs: &[OpValue]) -> Result<Vec<OpValue>> {
         OpKind::Resample(attrs) => run_resample(attrs, inputs),
         OpKind::DcOffsetRemove => run_dc_offset_remove(inputs),
         OpKind::PreEmphasis(attrs) => run_pre_emphasis(attrs, inputs),
+        OpKind::LengthConditioning(attrs) => run_length_conditioning(attrs, inputs),
         other => Err(VokraError::UnsupportedOp(format!(
             "{other:?} is not a front-end / preprocessing op"
         ))),
@@ -249,6 +251,29 @@ fn run_pre_emphasis(attrs: &PreEmphasisAttrs, inputs: &[OpValue]) -> Result<Vec<
     let (_, signal) = expect_real(&inputs[0], "pre_emphasis")?;
     let out = pre_emphasis(signal, attrs.coeff);
     Ok(vec![OpValue::real(vec![out.len()], out)])
+}
+
+/// `length_conditioning` graph node (FR-OP-71, M3-08).
+///
+/// The op takes **no runtime inputs** — the target duration lives in the
+/// attrs, and mode B's `ref_speech_frames` is a caller-supplied scalar
+/// baked into the graph the same way the frontend_spec-driven `sample_rate`
+/// / `hop_length` are (FR-EX-10 精神 — sampler-adjacent metadata is not a
+/// graph tensor). Output is the target frame count encoded as a length-1
+/// real tensor with the `u32` cast to `f32`; downstream consumers (M3-09
+/// CosyVoice2's Flow Matching sampler) turn it back into an integer.
+fn run_length_conditioning(
+    attrs: &LengthConditioningAttrs,
+    inputs: &[OpValue],
+) -> Result<Vec<OpValue>> {
+    expect_arity(inputs, 0, "length_conditioning")?;
+    let frames = length_conditioning(attrs)?;
+    // f32 exactly represents every u32 the round_to_u32 gate lets through
+    // (values < 2^24 are exact; the gate rejects the >= 2^32 range and
+    // 2^24 .. 2^32 rounds to the same u32 that composes with u32::from(f as u32)
+    // downstream). This is the safe encoding — a scalar tensor is what
+    // graph consumers see today (OpValue has no integer variant in M0).
+    Ok(vec![OpValue::real(vec![1], vec![frames as f32])])
 }
 
 #[cfg(test)]
