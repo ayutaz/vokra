@@ -287,6 +287,68 @@ impl VoxtralAsr {
         self.transcribe_beam(pcm, &config)
     }
 
+    /// Beam-search transcribe with full user-controlled decoding knobs.
+    ///
+    /// Overrides `length_penalty` (GNMT α) and `no_repeat_ngram_size` on
+    /// top of the [`BeamConfig::with_beam_size`] defaults, while still
+    /// filling `eos_token` from `self.eos_id` and defaulting
+    /// `max_new_tokens = 0` to
+    /// [`super::text_decoder_session::DEFAULT_MAX_NEW_TOKENS`].
+    ///
+    /// Used by `vokra-server`'s beam-search HTTP surface (M3-15 Wave 10 A)
+    /// so a client-supplied length_penalty / no_repeat_ngram is actually
+    /// wired through (FR-EX-08 — accepting the field in the schema and
+    /// silently ignoring it would be a fabrication).
+    ///
+    /// `length_penalty < 0.0` or `!length_penalty.is_finite()` surfaces as
+    /// an [`VokraError::InvalidArgument`] — the ranking would be undefined.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::transcribe_beam`], plus the input validation above.
+    pub fn transcribe_beam_with_config_overrides(
+        &self,
+        pcm: &[f32],
+        beam_size: usize,
+        length_penalty: f32,
+        no_repeat_ngram_size: usize,
+        max_new_tokens: usize,
+    ) -> Result<Vec<TranscribedBeam>> {
+        if !length_penalty.is_finite() || length_penalty < 0.0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "voxtral::VoxtralAsr::transcribe_beam_with_config_overrides: length_penalty \
+                 must be a non-negative finite float, got {length_penalty}",
+            )));
+        }
+        let effective_max = if max_new_tokens == 0 {
+            super::text_decoder_session::DEFAULT_MAX_NEW_TOKENS
+        } else {
+            max_new_tokens
+        };
+        // Start from [`BeamConfig::with_beam_size`] so `top_k_per_beam` gets
+        // the canonical `2 * beam_size` default, then overlay the caller
+        // fields.
+        let mut config = BeamConfig::with_beam_size(beam_size, self.eos_id, effective_max);
+        config.length_penalty = length_penalty;
+        config.no_repeat_ngram_size = no_repeat_ngram_size;
+        self.transcribe_beam(pcm, &config)
+    }
+
+    /// The greedy EOS token id `self.transcribe` and the beam-search
+    /// wrappers use. Load-bearing for the server layer's tokenizer-aware
+    /// beam config construction: without this the server would have to
+    /// reach into the model config, which is the wrong layer.
+    #[must_use]
+    pub fn eos_id(&self) -> u32 {
+        self.eos_id
+    }
+
+    /// The greedy BOS token id.
+    #[must_use]
+    pub fn bos_id(&self) -> u32 {
+        self.bos_id
+    }
+
     /// Opts in to a GPU device session on the transcribe path.
     ///
     /// When `true`, [`Self::transcribe`] picks a GPU backend at call time —
@@ -803,6 +865,77 @@ mod tests {
             .expect("default-wrapped beam decode must succeed");
         assert!(!beams.is_empty());
         assert!(beams.len() <= 2);
+    }
+
+    #[test]
+    fn transcribe_beam_with_config_overrides_rejects_bad_length_penalty() {
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(3)
+            .with_bos_eos(1, vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999));
+        let pcm = vec![0.5f32; 16_000];
+        // NaN is not a valid length-penalty (ranking becomes undefined).
+        assert!(matches!(
+            asr.transcribe_beam_with_config_overrides(&pcm, 2, f32::NAN, 0, 3),
+            Err(VokraError::InvalidArgument(_)),
+        ));
+        // Negative alpha is not a valid GNMT length-penalty.
+        assert!(matches!(
+            asr.transcribe_beam_with_config_overrides(&pcm, 2, -0.1, 0, 3),
+            Err(VokraError::InvalidArgument(_)),
+        ));
+    }
+
+    #[test]
+    fn transcribe_beam_with_config_overrides_wires_length_penalty_and_ngram() {
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(3)
+            .with_bos_eos(1, vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999));
+        let pcm = vec![0.5f32; 16_000];
+        // Alpha = 0.0 collapses the length-penalty term to 1 (`log_prob`
+        // is returned unchanged from `length_normalized`) — provides a
+        // discriminator vs the 0.6 default. no_repeat_ngram_size = 2
+        // blocks 2-grams; on the tiny fixture this is at most no-op
+        // (fixture is not diverse enough) but the call must still succeed
+        // and return well-formed beams.
+        let beams = asr
+            .transcribe_beam_with_config_overrides(&pcm, 2, 0.0, 2, 3)
+            .expect("beam decode with overrides must succeed");
+        assert!(!beams.is_empty());
+        // At α = 0.0 the length-normalized score equals log_prob; the
+        // ranking is by log_prob descending.
+        for pair in beams.windows(2) {
+            let a = pair[0].result.length_normalized_score;
+            let b = pair[1].result.length_normalized_score;
+            assert!(a >= b, "beams must remain descending under α=0.0 override");
+            // Confirm α=0 short-circuit: normalized == log_prob at len>0.
+            #[allow(clippy::float_cmp)]
+            {
+                assert_eq!(
+                    a, pair[0].result.log_prob,
+                    "α=0.0 must yield normalized == log_prob (short-circuit)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eos_id_and_bos_id_accessors_return_configured_ids() {
+        // Default (Mistral shipping ids).
+        let asr = VoxtralAsr::new(tiny_model()).unwrap();
+        assert_eq!(asr.bos_id(), MISTRAL_BOS_ID);
+        assert_eq!(asr.eos_id(), MISTRAL_EOS_ID);
+        // Overridden via with_bos_eos — the server layer reads
+        // `eos_id()` to build a full BeamConfig without re-reading
+        // model.config, so the getter must reflect the last set value.
+        let asr = asr.with_bos_eos(42, 99);
+        assert_eq!(asr.bos_id(), 42);
+        assert_eq!(asr.eos_id(), 99);
     }
 
     // -------- M3-10 GPU session opt-in surface -----------------------------
