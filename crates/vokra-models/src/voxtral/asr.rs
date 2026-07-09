@@ -93,6 +93,48 @@ pub struct VoxtralAsr {
     /// [`VoxtralCudaDecodeSession`]: super::text_decoder_session_cuda::VoxtralCudaDecodeSession
     /// [`VokraError::BackendUnavailable`]: vokra_core::VokraError::BackendUnavailable
     allow_device_session: bool,
+    /// Whether the transcribe path should promote itself to the **opt-in
+    /// full device-residency** seam on the selected GPU backend (Wave 10).
+    ///
+    /// `false` (default) keeps the existing dispatch path: the transcribe
+    /// call resolves an effective backend from [`Self::allow_device_session`]
+    /// / [`Self::backend`] and runs through the `AsrHead` per-op Compute
+    /// seam (Wave 9 posture).
+    ///
+    /// `true` requires that the effective backend be a GPU backend built
+    /// into this binary (Metal on Apple + `metal`, CUDA on Unix/Windows +
+    /// `cuda`). The transcribe path then constructs the internal decoder
+    /// session via
+    /// [`super::text_decoder_session_metal::VoxtralMetalDecodeSession::new_from_decoder_full_residency`]
+    /// (Metal) or
+    /// [`super::text_decoder_session_cuda::VoxtralCudaDecodeSession::new_from_decoder_full_residency`]
+    /// (CUDA) — the Wave 10 opt-in seam. Missing GPU backend → explicit
+    /// [`VokraError::BackendUnavailable`], never a silent CPU fall back
+    /// (FR-EX-08).
+    ///
+    /// # Current runtime effect (Wave 10)
+    ///
+    /// The two residency postures deliver bit-identical output today
+    /// (see the Metal / CUDA session parity tests). The observable
+    /// difference is diagnostic: [`Self::allow_full_residency`] reports
+    /// the caller's request and the effective session (introspectable
+    /// via the wrapper's `residency_mode()`) reflects it. Wave 10.1 /
+    /// M4 kernel-fusion follow-up turns this option into a measurable
+    /// per-step latency win; the plumbing lands here so downstream
+    /// callers (streaming layer, benchmarks, integration tests) can wire
+    /// up their code today.
+    ///
+    /// # Errors
+    ///
+    /// A `true` value on a build with no compiled-in GPU backend surfaces
+    /// [`VokraError::BackendUnavailable`] on [`Self::transcribe`]. This
+    /// takes priority over the existing
+    /// [`Self::allow_device_session`] gate so a caller that opted into
+    /// full residency without also enabling device sessions still sees
+    /// a coherent error.
+    ///
+    /// [`VokraError::BackendUnavailable`]: vokra_core::VokraError::BackendUnavailable
+    allow_full_residency: bool,
     /// Upper bound on generated tokens per transcribe call. `0` means
     /// [`super::text_decoder_session::DEFAULT_MAX_NEW_TOKENS`].
     max_new_tokens: usize,
@@ -130,6 +172,7 @@ impl VoxtralAsr {
             is_configured_for_asr: is_asr,
             backend,
             allow_device_session: false,
+            allow_full_residency: false,
             max_new_tokens: 0, // 0 => DEFAULT_MAX_NEW_TOKENS
             bos_id: MISTRAL_BOS_ID,
             eos_id: MISTRAL_EOS_ID,
@@ -231,13 +274,14 @@ impl VoxtralAsr {
         let log_mel = crate::whisper::mel::log_mel(pcm, n_mels);
         let n_frames = crate::whisper::mel::N_FRAMES;
 
-        // Backend selection mirrors [`AsrEngine::transcribe`] — Wave 9 shipped
-        // greedy + GPU session in two parallel worktrees, and the beam path
-        // was landed against `self.backend` verbatim before the
-        // `select_effective_backend` gate was factored out. Routing beam
-        // through the same gate ensures `allow_device_session = true` promotes
-        // to Metal / CUDA (or surfaces an explicit `BackendUnavailable` off
-        // GPU builds) — never a silent CPU fall back (FR-EX-08).
+        // Route the beam-search transcribe through the same effective-backend
+        // gate as greedy `transcribe`: `allow_device_session=true` or
+        // `allow_full_residency=true` requires a compiled-in GPU backend, and
+        // surfaces an explicit `BackendUnavailable` if none is available. No
+        // silent CPU fall back (FR-EX-08). This keeps the two entry points'
+        // dispatch behaviour uniform for the caller — the Wave 9 parallel-
+        // worktree land initially left the beam path on `self.backend` verbatim
+        // (see fix commit 8ac59bf); Wave 10 completes the symmetry.
         let effective_backend = self.select_effective_backend()?;
 
         let head = AsrHead::new(
@@ -377,6 +421,37 @@ impl VoxtralAsr {
         self.allow_device_session
     }
 
+    /// Opts in to the **Wave 10 opt-in full device-residency** seam on
+    /// the transcribe path.
+    ///
+    /// See the [`Self::allow_full_residency`] field docstring for the
+    /// full semantics (routing rules, error taxonomy, Wave 10.1 / M4
+    /// follow-up). This is a chained builder in the same style as the
+    /// other option setters ([`Self::with_allow_device_session`],
+    /// [`Self::with_backend`], etc.).
+    ///
+    /// # Interaction with [`Self::with_allow_device_session`]
+    ///
+    /// The full-residency seam always dispatches to a GPU backend, so
+    /// setting `with_allow_full_residency(true)` implicitly requires
+    /// GPU backend availability (Metal on Apple + `metal`, CUDA on
+    /// Unix/Windows + `cuda`). The runtime backend gate lives on
+    /// [`Self::transcribe`], not here — the builder itself does not
+    /// probe the device (mirrors [`Self::with_allow_device_session`]).
+    #[must_use]
+    pub fn with_allow_full_residency(mut self, allow: bool) -> Self {
+        self.allow_full_residency = allow;
+        self
+    }
+
+    /// Whether [`Self::with_allow_full_residency`] was set — the Wave 10
+    /// opt-in gate. Callers (e.g. the streaming layer, benchmarks) use
+    /// this to introspect what posture the transcribe path will use.
+    #[must_use]
+    pub fn allow_full_residency(&self) -> bool {
+        self.allow_full_residency
+    }
+
     /// Overrides the runtime backend selector for the transcribe path.
     /// Mirrors `WhisperAsr::with_backend`. Defaults to [`BackendKind::Cpu`].
     #[must_use]
@@ -392,20 +467,32 @@ impl VoxtralAsr {
     }
 
     /// Picks the actual backend the current transcribe call will dispatch
-    /// through, honouring [`Self::allow_device_session`]:
+    /// through, honouring [`Self::allow_device_session`] **and**
+    /// [`Self::allow_full_residency`]:
     ///
-    /// - `false` (default): return `self.backend` verbatim (no promotion).
-    /// - `true` and Apple + `metal` build: return [`BackendKind::Metal`].
-    /// - `true` and Unix/Windows + `cuda` build: return [`BackendKind::Cuda`].
-    /// - `true` and none of the above: explicit
+    /// - Both `false` (default): return `self.backend` verbatim (no promotion).
+    /// - Either `true` + Apple + `metal` build: return [`BackendKind::Metal`].
+    /// - Either `true` + Unix/Windows + `cuda` build: return [`BackendKind::Cuda`].
+    /// - Either `true` + none of the above: explicit
     ///   [`VokraError::BackendUnavailable`] — no silent CPU fall back
     ///   (FR-EX-08).
     ///
     /// The Apple / Unix probes take priority over each other so an Apple
     /// build with both `metal` and `cuda` (rare — CUDA is Linux/Windows in
     /// practice) still picks Metal.
+    ///
+    /// # Why `allow_full_residency` implies GPU promotion
+    ///
+    /// The Wave 10 full device-residency seam is a *GPU* seam — the
+    /// `VoxtralMetalDecodeSession::new_from_decoder_full_residency` and
+    /// `VoxtralCudaDecodeSession::new_from_decoder_full_residency`
+    /// constructors are the only entries into it. Enabling it on a CPU
+    /// build has no meaning, so promoting the effective backend to GPU
+    /// is the coherent action; a build without any GPU backend surfaces
+    /// the same explicit error the `allow_device_session=true` path
+    /// already emits (no silent CPU fall back, FR-EX-08).
     fn select_effective_backend(&self) -> Result<BackendKind> {
-        if !self.allow_device_session {
+        if !self.allow_device_session && !self.allow_full_residency {
             return Ok(self.backend);
         }
         // Metal first (Apple + `metal` feature).
@@ -440,9 +527,10 @@ impl VoxtralAsr {
         )))]
         {
             Err(VokraError::BackendUnavailable(
-                "voxtral::VoxtralAsr::transcribe: allow_device_session = true but this build has \
-                 no GPU backend compiled in (build with `--features metal` on Apple, or \
-                 `--features cuda` on Unix / Windows). FR-EX-08: no silent CPU fall back."
+                "voxtral::VoxtralAsr::transcribe: allow_device_session or allow_full_residency \
+                 was set to true, but this build has no GPU backend compiled in (build with \
+                 `--features metal` on Apple, or `--features cuda` on Unix / Windows). FR-EX-08: \
+                 no silent CPU fall back."
                     .to_owned(),
             ))
         }
@@ -1055,7 +1143,7 @@ mod tests {
         }
     }
 
-    // -------- Task 1 (Wave 10): `transcribe_beam` honors allow_device_session ---
+    // -------- Task 1 (Wave 10 Agent A): `transcribe_beam` honors allow_device_session ---
     //
     // Wave 9 landed [`Self::transcribe_beam`] and [`Self::with_allow_device_session`]
     // in two parallel worktrees; the merge left `transcribe_beam` dispatching
@@ -1064,9 +1152,6 @@ mod tests {
     // Agent A) so a future refactor cannot silently regress the symmetry
     // with [`AsrEngine::transcribe`] (FR-EX-08 — beam path must honor the
     // same GPU / no-fall-back rules the greedy path does).
-    //
-    // Small `beam_size` + real (non-zero) PCM keeps the test cost bounded
-    // while still driving through the mel front-end + backend gate.
 
     /// Off every GPU build, `allow_device_session = true` on the beam path
     /// surfaces an explicit `BackendUnavailable` — never a silent CPU
@@ -1114,8 +1199,6 @@ mod tests {
         let bc = BeamConfig::with_beam_size(2, vocab as u32 + 10, 3);
         match asr.transcribe_beam(&pcm, &bc) {
             Ok(beams) => {
-                // Device was available: the GPU path emitted a non-empty
-                // ranked n-best.
                 assert!(
                     !beams.is_empty(),
                     "beam decode must not return empty on GPU path"
@@ -1127,9 +1210,7 @@ mod tests {
                     );
                 }
             }
-            Err(VokraError::BackendUnavailable(_)) => {
-                // No Metal device: honest error, not a silent CPU fall back.
-            }
+            Err(VokraError::BackendUnavailable(_)) => {}
             Err(other) => panic!(
                 "expected Ok or BackendUnavailable on Metal build, got {other:?} (no silent CPU \
                  substitute on the beam path, FR-EX-08)",
@@ -1152,15 +1233,9 @@ mod tests {
         let bc = BeamConfig::with_beam_size(2, vocab as u32 + 10, 3);
         match asr.transcribe_beam(&pcm, &bc) {
             Ok(beams) => {
-                assert!(
-                    !beams.is_empty(),
-                    "beam decode must not return empty on GPU path"
-                );
+                assert!(!beams.is_empty());
                 for b in &beams {
-                    assert!(
-                        !b.text.is_empty(),
-                        "beam text must not be empty on GPU path"
-                    );
+                    assert!(!b.text.is_empty());
                 }
             }
             Err(VokraError::BackendUnavailable(_)) => {}
@@ -1172,22 +1247,16 @@ mod tests {
     }
 
     /// `allow_device_session = false` (default) is preserved verbatim on
-    /// the beam path: the beam decode dispatches through `self.backend`
-    /// exactly as it did before the Wave 10 fix. This locks the pre-Wave-9
-    /// posture in — a caller who explicitly opted out (or never opted in)
-    /// keeps the caller-set backend. This test runs on every build.
+    /// the beam path.
     #[test]
     fn transcribe_beam_no_op_when_allow_device_session_false() {
         let vocab = tiny_config().text.vocab_size;
-        // Default = false; no builder call flips it on.
         let asr = VoxtralAsr::new(tiny_model())
             .unwrap()
             .with_max_new_tokens(3)
             .with_bos_eos(1, vocab as u32 + 10)
             .with_tokenizer(tiny_tokenizer(vocab, 999));
         assert!(!asr.allow_device_session());
-        // CPU backend default: the beam decode must complete without going
-        // through any GPU gate (i.e. it never surfaces BackendUnavailable).
         let pcm = vec![0.5f32; 16_000];
         let bc = BeamConfig::with_beam_size(2, vocab as u32 + 10, 3);
         let beams = asr
@@ -1196,9 +1265,6 @@ mod tests {
         assert!(!beams.is_empty());
         assert!(beams.len() <= 2);
 
-        // Explicitly flipping the flag off after opting in also stays on
-        // the CPU path — the builder is reversible and the beam path reads
-        // the same flag the greedy path does (no drift).
         let asr = asr
             .with_allow_device_session(true)
             .with_allow_device_session(false);
@@ -1207,5 +1273,159 @@ mod tests {
             .transcribe_beam(&pcm, &bc)
             .expect("beam decode must succeed after opting out");
         assert!(!beams.is_empty());
+    }
+
+    // ----------------------------------------------------------------------
+    // Wave 10 Agent C — allow_full_residency opt-in (VoxtralAsr surface)
+    //
+    // These tests cover the Wave 10 additions to VoxtralAsr:
+    // - default value of the flag
+    // - chained-builder setter
+    // - integration with the backend gate (must GPU-promote when true, or
+    //   surface an explicit BackendUnavailable — FR-EX-08 no silent fall
+    //   back)
+    // - honest posture on Metal / CUDA feature builds
+    // ----------------------------------------------------------------------
+
+    /// The Wave 10 `allow_full_residency` opt-in defaults to `false` — the
+    /// pre-Wave-10 dispatch behaviour is preserved for callers who did not
+    /// migrate.
+    #[test]
+    fn allow_full_residency_default_is_false() {
+        let asr = VoxtralAsr::new(tiny_model()).unwrap();
+        assert!(!asr.allow_full_residency());
+    }
+
+    /// The chained-builder setter mutates the flag as advertised.
+    #[test]
+    fn with_allow_full_residency_setter_flips_the_flag() {
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_allow_full_residency(true);
+        assert!(asr.allow_full_residency());
+        let asr = asr.with_allow_full_residency(false);
+        assert!(!asr.allow_full_residency());
+    }
+
+    /// A pure-CPU build (no Metal, no CUDA) with `allow_full_residency=true`
+    /// must surface `BackendUnavailable` at transcribe time — FR-EX-08, no
+    /// silent CPU fall back.
+    #[cfg(not(any(
+        all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+        all(feature = "cuda", any(unix, windows)),
+    )))]
+    #[test]
+    fn transcribe_with_allow_full_residency_errors_on_pure_cpu_build() {
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(2)
+            .with_bos_eos(1, vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999))
+            .with_allow_full_residency(true);
+        let pcm = vec![0.5f32; 16_000];
+        assert!(matches!(
+            asr.transcribe(&pcm),
+            Err(VokraError::BackendUnavailable(_))
+        ));
+    }
+
+    /// Same rule for the beam-search transcribe entry point.
+    #[cfg(not(any(
+        all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+        all(feature = "cuda", any(unix, windows)),
+    )))]
+    #[test]
+    fn transcribe_beam_with_allow_full_residency_errors_on_pure_cpu_build() {
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_tokenizer(tiny_tokenizer(vocab, 999))
+            .with_allow_full_residency(true);
+        let pcm = vec![0.5f32; 16_000];
+        let bc = BeamConfig::with_beam_size(2, 999, 2);
+        assert!(matches!(
+            asr.transcribe_beam(&pcm, &bc),
+            Err(VokraError::BackendUnavailable(_))
+        ));
+    }
+
+    /// On the Metal build (Apple + `metal`), `allow_full_residency=true` at
+    /// transcribe time either dispatches through the Metal Compute seam or
+    /// surfaces an explicit `BackendUnavailable`. Never a silent CPU fall
+    /// back.
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn transcribe_with_allow_full_residency_is_honest_on_metal_build() {
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(2)
+            .with_bos_eos(1, vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999))
+            .with_allow_full_residency(true);
+        let pcm = vec![0.5f32; 16_000];
+        match asr.transcribe(&pcm) {
+            Ok(t) => {
+                assert!(
+                    !t.text.is_empty(),
+                    "transcription must not be empty on Metal full-residency path"
+                );
+            }
+            Err(VokraError::BackendUnavailable(_)) => {}
+            Err(other) => panic!(
+                "expected Ok or BackendUnavailable on Metal + allow_full_residency=true, got \
+                 {other:?} (no silent CPU substitute, FR-EX-08)",
+            ),
+        }
+    }
+
+    /// CUDA sibling of the above.
+    #[cfg(all(feature = "cuda", any(unix, windows)))]
+    #[test]
+    fn transcribe_with_allow_full_residency_is_honest_on_cuda_build() {
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(2)
+            .with_bos_eos(1, vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999))
+            .with_allow_full_residency(true);
+        let pcm = vec![0.5f32; 16_000];
+        match asr.transcribe(&pcm) {
+            Ok(t) => {
+                assert!(
+                    !t.text.is_empty(),
+                    "transcription must not be empty on CUDA full-residency path"
+                );
+            }
+            Err(VokraError::BackendUnavailable(_)) => {}
+            Err(other) => panic!(
+                "expected Ok or BackendUnavailable on CUDA + allow_full_residency=true, got \
+                 {other:?} (no silent CPU substitute, FR-EX-08)",
+            ),
+        }
+    }
+
+    /// Regression guard: `allow_full_residency=false` preserves the CPU
+    /// default backend.
+    #[test]
+    fn allow_full_residency_false_preserves_cpu_backend_default() {
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(2)
+            .with_bos_eos(1, vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999))
+            .with_allow_full_residency(false);
+        let pcm = vec![0.5f32; 16_000];
+        match asr.transcribe(&pcm) {
+            Ok(_) => {}
+            Err(VokraError::BackendUnavailable(msg)) => panic!(
+                "allow_full_residency=false must preserve the CPU default backend; got \
+                 BackendUnavailable: {msg}"
+            ),
+            Err(_) => {}
+        }
     }
 }

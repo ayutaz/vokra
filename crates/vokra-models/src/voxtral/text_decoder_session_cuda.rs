@@ -29,6 +29,20 @@
 //!   [`step`], [`kv_cache_len`], [`reset`], [`last_logits`],
 //!   [`all_logits`].
 //!
+//! # Wave 10 — full device-residency opt-in seam
+//!
+//! [`Self::new_from_decoder_full_residency`] is the CUDA parallel of the
+//! Metal Wave 10 seam
+//! ([`super::text_decoder_session_metal::VoxtralMetalDecodeSession::new_from_decoder_full_residency`]).
+//! Semantics + scope split are identical: this constructor lands the API
+//! surface + [`ResidencyMode`] classification + the
+//! [`super::asr::VoxtralAsr::allow_full_residency`] opt-in routing seat,
+//! while the per-step forward is currently delegated to the same
+//! CUDA-backed [`TextDecoderSession`] the thin path uses (so the two
+//! posture flavours are bit-identical today under FP32 rounding). The
+//! Wave 10.1 / M4 follow-up will migrate the internal step to a bespoke
+//! fused NVRTC PTX kernel; the API surface will not change.
+//!
 //! [`step`]: Self::step
 //! [`kv_cache_len`]: Self::kv_cache_len
 //! [`reset`]: Self::reset
@@ -57,11 +71,40 @@ use vokra_core::{BackendKind, Result};
 
 use super::{TextDecoder, TextDecoderSession, VoxtralConfig};
 
+/// Which residency posture a [`VoxtralCudaDecodeSession`] was constructed
+/// with — the plumbing gate for the Wave 10 "深化" (opt-in
+/// full-device-residency) seam.
+///
+/// Semantically identical to the Metal sibling's
+/// [`super::text_decoder_session_metal::ResidencyMode`]; kept as a
+/// separate type so the two backend surfaces do not silently share an
+/// enum whose semantics diverge (each backend documents its own
+/// posture).
+///
+/// - [`ResidencyMode::Thin`] — the Wave 9 posture (`new_from_decoder`),
+///   per-op GEMM dispatch through `Compute::Cuda`.
+/// - [`ResidencyMode::FullResident`] — the Wave 10 seam
+///   (`new_from_decoder_full_residency`), API surface stable for the
+///   Wave 10.1 / M4 kernel-fusion follow-up. Bit-identical to the thin
+///   posture today (parity test asserts).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResidencyMode {
+    /// Thin Compute-seam wrapper (Wave 9). Per-op GEMM dispatch through
+    /// `Compute::Cuda`.
+    Thin,
+    /// Opt-in full device-residency (Wave 10). Bit-identical to
+    /// [`Self::Thin`] under the hood today; API surface stable for the
+    /// Wave 10.1 / M4 NVRTC kernel-fusion follow-up.
+    FullResident,
+}
+
 /// A CUDA-backed Voxtral text-decoder session.
 ///
 /// See the module-level docs for scope and the parity contract with the
-/// CPU baseline. Constructed via [`Self::new_from_decoder`]; [`Self::step`]
-/// drives the greedy / prefix decode loop.
+/// CPU baseline. Constructed via [`Self::new_from_decoder`] (thin, Wave 9
+/// posture) or [`Self::new_from_decoder_full_residency`] (opt-in
+/// full-device-residency seam, Wave 10); [`Self::step`] drives the greedy
+/// / prefix decode loop either way.
 ///
 /// # Lifetime
 ///
@@ -69,6 +112,9 @@ use super::{TextDecoder, TextDecoderSession, VoxtralConfig};
 /// Metal sibling and the CPU baseline [`TextDecoderSession`].
 pub struct VoxtralCudaDecodeSession<'m> {
     inner: TextDecoderSession<'m>,
+    /// The residency posture the session was constructed with. Read-only
+    /// after construction; observable via [`Self::residency_mode`].
+    residency_mode: ResidencyMode,
 }
 
 impl<'m> VoxtralCudaDecodeSession<'m> {
@@ -97,7 +143,82 @@ impl<'m> VoxtralCudaDecodeSession<'m> {
     /// [`VokraError::ModelLoad`]: vokra_core::VokraError::ModelLoad
     pub fn new_from_decoder(config: &'m VoxtralConfig, decoder: &'m TextDecoder) -> Result<Self> {
         let inner = TextDecoderSession::new(config, decoder, BackendKind::Cuda)?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            residency_mode: ResidencyMode::Thin,
+        })
+    }
+
+    /// Builds a CUDA-backed decoder session with the **opt-in full
+    /// device-residency** posture (Wave 10 seam) — the CUDA parallel of
+    /// [`super::text_decoder_session_metal::VoxtralMetalDecodeSession::new_from_decoder_full_residency`].
+    ///
+    /// # What this constructor is for
+    ///
+    /// 1. **Validates the config gate** (`0`-sentinel rejection, GQA head
+    ///    split, decoder block count — same taxonomy as
+    ///    [`Self::new_from_decoder`]).
+    /// 2. **Applies the FR-EX-08 backend gate** through the Compute seam
+    ///    (`Compute::for_backend(BackendKind::Cuda, VOXTRAL_HOT_OPS)`) —
+    ///    a missing CUDA driver / NVRTC / device surfaces an explicit
+    ///    error at *construction*, never a silent CPU fall back.
+    /// 3. **Types the session as [`ResidencyMode::FullResident`]** so
+    ///    downstream diagnostics + the parity tests can assert on the
+    ///    posture the caller asked for.
+    ///
+    /// # Current internal behaviour (Wave 10)
+    ///
+    /// The step body currently delegates to the **same** CUDA-backed
+    /// [`TextDecoderSession`] the thin constructor produces. Output is
+    /// bit-identical to [`Self::new_from_decoder`] for the same input
+    /// (parity test asserts). The Wave 10.1 / M4 kernel-fusion follow-up
+    /// will migrate the internal step to a bespoke NVRTC-compiled PTX
+    /// kernel that runs the whole Mistral step in one stream launch
+    /// chain; the API surface — [`Self::step`],
+    /// [`Self::step_with_embed_prefix`], [`Self::kv_cache_len`],
+    /// [`Self::reset`], [`Self::last_logits`], [`Self::all_logits`],
+    /// [`Self::backend_name`] — is **stable**.
+    ///
+    /// # Errors
+    ///
+    /// Same taxonomy as [`Self::new_from_decoder`]:
+    /// - [`VokraError::BackendUnavailable`] if `libcuda` / NVRTC cannot
+    ///   be `dlopen`-ed, no CUDA device is available, or a device query
+    ///   fails.
+    /// - [`VokraError::UnsupportedOp`] if a Voxtral hot op is not covered
+    ///   by the CUDA backend on this build.
+    /// - [`VokraError::ModelLoad`] on a `0`-sentinel config or a
+    ///   loaded-blocks / config `n_layer` mismatch.
+    ///
+    /// [`VokraError::BackendUnavailable`]: vokra_core::VokraError::BackendUnavailable
+    /// [`VokraError::UnsupportedOp`]: vokra_core::VokraError::UnsupportedOp
+    /// [`VokraError::ModelLoad`]: vokra_core::VokraError::ModelLoad
+    pub fn new_from_decoder_full_residency(
+        config: &'m VoxtralConfig,
+        decoder: &'m TextDecoder,
+    ) -> Result<Self> {
+        // See the Metal sibling for the design rationale — the Wave 10
+        // residency posture is a *type* over the same CUDA Compute seam
+        // today; the Wave 10.1 / M4 follow-up swaps the internal
+        // `TextDecoderSession` for a bespoke device-resident step driver
+        // with no API-surface change.
+        let inner = TextDecoderSession::new(config, decoder, BackendKind::Cuda)?;
+        Ok(Self {
+            inner,
+            residency_mode: ResidencyMode::FullResident,
+        })
+    }
+
+    /// The residency posture the session was constructed with — the
+    /// Wave 10 plumbing gate. See [`ResidencyMode`] for the semantics.
+    ///
+    /// This is a pure getter for the constructor-time classification;
+    /// nothing in the step path consults it (the two postures are
+    /// bit-identical today). It exists so downstream diagnostics + tests
+    /// can assert the caller reached the constructor they intended.
+    #[must_use]
+    pub fn residency_mode(&self) -> ResidencyMode {
+        self.residency_mode
     }
 
     /// The wrapped [`TextDecoderSession`] — exposed for the ASR / streaming
@@ -347,5 +468,260 @@ mod tests {
         let logits = sess.last_logits();
         assert_eq!(logits.len(), cfg.text.vocab_size);
         assert!(logits.iter().all(|v| v.is_finite()));
+    }
+
+    // ----------------------------------------------------------------------
+    // Wave 10 — opt-in full device-residency seam (CUDA parallel)
+    //
+    // Mirror of the Metal Wave 10 test set: covers the plumbing added by
+    // Wave 10 — `new_from_decoder_full_residency`, `residency_mode()`, the
+    // thin-vs-full parity contract, KV-cache / reset / snapshot semantics
+    // and the `0`-sentinel error path.
+    //
+    // All device-gated cases are `has_cuda_device()`-skipped so CI runners
+    // without CUDA drivers cleanly report skip (FR-EX-08: no silent CPU
+    // fall back).
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn thin_constructor_tags_residency_mode_thin() {
+        if !has_cuda_device() {
+            eprintln!("no CUDA device; residency-mode(thin) test skipped");
+            return;
+        }
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let sess = VoxtralCudaDecodeSession::new_from_decoder(&cfg, &td).unwrap();
+        assert_eq!(sess.residency_mode(), ResidencyMode::Thin);
+    }
+
+    #[test]
+    fn full_residency_constructor_tags_residency_mode_and_advances() {
+        if !has_cuda_device() {
+            eprintln!("no CUDA device; residency-mode(full) test skipped");
+            return;
+        }
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let mut sess =
+            VoxtralCudaDecodeSession::new_from_decoder_full_residency(&cfg, &td).unwrap();
+        assert_eq!(sess.residency_mode(), ResidencyMode::FullResident);
+        assert_eq!(sess.backend_name(), "cuda");
+        assert_eq!(sess.kv_cache_len(), 0);
+        sess.step(&[1u32, 2, 0]).unwrap();
+        assert_eq!(sess.kv_cache_len(), 3);
+        sess.reset();
+        assert_eq!(sess.kv_cache_len(), 0);
+    }
+
+    /// The Wave 10 seam's parity contract on CUDA: same-input → bit-identical
+    /// logits between thin and full-residency. The Wave 10.1 / M4 kernel
+    /// fusion follow-up must preserve this within FP32 rounding.
+    #[test]
+    fn full_residency_matches_thin_wrapper_bit_identical() {
+        if !has_cuda_device() {
+            eprintln!("no CUDA device; thin-vs-full parity test skipped");
+            return;
+        }
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let prefix = [1u32, 2, 0];
+
+        let mut thin = VoxtralCudaDecodeSession::new_from_decoder(&cfg, &td).unwrap();
+        thin.step(&prefix).unwrap();
+        let thin_last: Vec<f32> = thin.last_logits().to_vec();
+
+        let mut full =
+            VoxtralCudaDecodeSession::new_from_decoder_full_residency(&cfg, &td).unwrap();
+        full.step(&prefix).unwrap();
+        let full_last = full.last_logits();
+
+        assert_eq!(
+            thin_last.as_slice(),
+            full_last,
+            "Wave 10 parity contract broken: full-residency logits must equal thin logits \
+             (Wave 10.1 / M4 kernel fusion must preserve this within FP32 rounding)."
+        );
+    }
+
+    #[test]
+    fn full_residency_bit_identical_vs_cpu_on_tiny_fixture() {
+        if !has_cuda_device() {
+            eprintln!("no CUDA device; full-residency vs CPU parity test skipped");
+            return;
+        }
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+
+        let mut full =
+            VoxtralCudaDecodeSession::new_from_decoder_full_residency(&cfg, &td).unwrap();
+        let prefix = [1u32, 2, 0];
+        full.step(&prefix).unwrap();
+        let full_last: Vec<f32> = full.last_logits().to_vec();
+
+        let mut cpu = TextDecoderSession::cpu(&cfg, &td).unwrap();
+        cpu.step_into(&prefix).unwrap();
+        let cpu_last = cpu.last_logits_row();
+
+        assert_eq!(full_last.len(), cpu_last.len());
+        for (i, (&f, &c)) in full_last.iter().zip(cpu_last).enumerate() {
+            assert!(
+                (f - c).abs() < 5e-4,
+                "logit[{i}] cpu {c} vs full-residency {f} diff {}",
+                (f - c).abs(),
+            );
+        }
+    }
+
+    #[test]
+    fn full_residency_rejects_zero_sentinel_config() {
+        // Regardless of device presence: the config gate runs before the
+        // Compute build, so the error is deterministic.
+        let mut cfg = tiny_cfg();
+        cfg.text.n_layer = 0;
+        let td = TextDecoder {
+            token_emb: Vec::new(),
+            blocks: Vec::new(),
+            final_norm_gamma: Vec::new(),
+            prefix: "",
+        };
+        match VoxtralCudaDecodeSession::new_from_decoder_full_residency(&cfg, &td) {
+            Ok(_) => panic!("must fail on 0-sentinel config"),
+            Err(vokra_core::VokraError::ModelLoad(_)) => {}
+            Err(other) => {
+                assert!(
+                    matches!(other, vokra_core::VokraError::BackendUnavailable(_)),
+                    "expected ModelLoad or BackendUnavailable, got {other:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn full_residency_multi_session_isolation() {
+        if !has_cuda_device() {
+            eprintln!("no CUDA device; multi-session isolation test skipped");
+            return;
+        }
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+
+        let mut a = VoxtralCudaDecodeSession::new_from_decoder_full_residency(&cfg, &td).unwrap();
+        let mut b = VoxtralCudaDecodeSession::new_from_decoder_full_residency(&cfg, &td).unwrap();
+
+        a.step(&[1u32, 2, 0]).unwrap();
+        b.step(&[1u32, 2, 0]).unwrap();
+        let a_at_prefix: Vec<f32> = a.last_logits().to_vec();
+        let b_at_prefix: Vec<f32> = b.last_logits().to_vec();
+        assert_eq!(a.kv_cache_len(), 3);
+        assert_eq!(b.kv_cache_len(), 3);
+        assert_eq!(a_at_prefix, b_at_prefix);
+
+        a.step(&[1u32]).unwrap();
+        b.step(&[2u32]).unwrap();
+        assert_eq!(a.kv_cache_len(), 4);
+        assert_eq!(b.kv_cache_len(), 4);
+        let a_after: Vec<f32> = a.last_logits().to_vec();
+        let b_after: Vec<f32> = b.last_logits().to_vec();
+
+        let total_diff: f32 = a_after
+            .iter()
+            .zip(&b_after)
+            .map(|(x, y)| (x - y).abs())
+            .sum();
+        assert!(
+            total_diff > 1e-6,
+            "multi-session isolation broken: two sessions with different KV appends \
+             produced bit-identical logits (total_diff = {total_diff})"
+        );
+    }
+
+    #[test]
+    fn full_residency_reset_semantic_matches_thin() {
+        if !has_cuda_device() {
+            eprintln!("no CUDA device; full-residency reset test skipped");
+            return;
+        }
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+
+        let mut sess =
+            VoxtralCudaDecodeSession::new_from_decoder_full_residency(&cfg, &td).unwrap();
+        let prefix = [1u32, 2];
+        sess.step(&prefix).unwrap();
+        let first: Vec<f32> = sess.last_logits().to_vec();
+        assert_eq!(sess.kv_cache_len(), 2);
+
+        sess.reset();
+        assert_eq!(sess.kv_cache_len(), 0);
+
+        sess.step(&prefix).unwrap();
+        let second = sess.last_logits();
+        assert_eq!(
+            first.as_slice(),
+            second,
+            "reset() must return the session to a clean state so a replay is bit-identical"
+        );
+    }
+
+    #[test]
+    fn full_residency_step_with_embed_prefix_works() {
+        if !has_cuda_device() {
+            eprintln!("no CUDA device; full-residency embed-prefix test skipped");
+            return;
+        }
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let mut sess =
+            VoxtralCudaDecodeSession::new_from_decoder_full_residency(&cfg, &td).unwrap();
+        let d = cfg.text.hidden_dim;
+        let t_prefix = 2;
+        let mut prefix = vec![0.0f32; t_prefix * d];
+        for (i, v) in prefix.iter_mut().enumerate() {
+            *v = ((i as i32 % 3) - 1) as f32 * 0.1;
+        }
+        sess.step_with_embed_prefix(&prefix, t_prefix).unwrap();
+        assert_eq!(sess.kv_cache_len(), t_prefix);
+        let logits = sess.last_logits();
+        assert_eq!(logits.len(), cfg.text.vocab_size);
+        assert!(logits.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn full_residency_kv_snapshot_restore_works() {
+        if !has_cuda_device() {
+            eprintln!("no CUDA device; full-residency kv-snapshot test skipped");
+            return;
+        }
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let mut sess =
+            VoxtralCudaDecodeSession::new_from_decoder_full_residency(&cfg, &td).unwrap();
+
+        sess.step(&[1u32, 0]).unwrap();
+        let snap = sess.inner().kv_snapshot();
+        assert_eq!(snap.position(), 2);
+
+        sess.step(&[2u32]).unwrap();
+        let branch_a: Vec<f32> = sess.last_logits().to_vec();
+
+        sess.inner_mut().kv_restore(snap.clone());
+        assert_eq!(sess.kv_cache_len(), 2);
+        sess.step(&[3u32]).unwrap();
+        let branch_b: Vec<f32> = sess.last_logits().to_vec();
+
+        sess.inner_mut().kv_restore(snap);
+        sess.step(&[2u32]).unwrap();
+        assert_eq!(sess.last_logits(), branch_a.as_slice());
+
+        let diff: f32 = branch_a
+            .iter()
+            .zip(&branch_b)
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(
+            diff > 1e-6,
+            "kv snapshot branches under full-residency did not diverge (diff = {diff})"
+        );
     }
 }

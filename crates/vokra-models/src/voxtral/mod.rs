@@ -65,9 +65,11 @@ pub use text_decoder_session::{
     DEFAULT_MAX_NEW_TOKENS, TextDecoderKvSnapshot, TextDecoderSession, greedy_decode,
 };
 #[cfg(all(feature = "cuda", any(unix, windows)))]
-pub use text_decoder_session_cuda::VoxtralCudaDecodeSession;
+pub use text_decoder_session_cuda::{ResidencyMode as CudaResidencyMode, VoxtralCudaDecodeSession};
 #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
-pub use text_decoder_session_metal::VoxtralMetalDecodeSession;
+pub use text_decoder_session_metal::{
+    ResidencyMode as MetalResidencyMode, VoxtralMetalDecodeSession,
+};
 pub use tokenizer::VoxtralTokenizer;
 
 use vokra_core::gguf::GgufFile;
