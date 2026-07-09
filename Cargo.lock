@@ -50,6 +50,7 @@ dependencies = [
  "vokra-core",
  "vokra-eval",
  "vokra-models",
+ "vokra-ops",
 ]
 
 [[package]]

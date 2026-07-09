@@ -90,7 +90,10 @@ fn parse_backend(v: &str) -> Result<BackendKind, String> {
 fn parse_task_hint(v: &str) -> Result<TaskHint, String> {
     match v {
         "mel-frontend" => Ok(TaskHint::MelFrontend),
-        other => Err(format!("unknown --task `{other}` (mel-frontend)")),
+        "cosyvoice2-synthetic" => Ok(TaskHint::Cosyvoice2Synthetic),
+        other => Err(format!(
+            "unknown --task `{other}` (mel-frontend | cosyvoice2-synthetic)"
+        )),
     }
 }
 
@@ -158,10 +161,14 @@ OPTIONS:
     --baseline <path>    a previous JSON report; a >5% RTF regression exits non-zero
     --backend <name>     cpu | metal | cuda — ASR hot ops backend [default cpu]
                          (metal/cuda need the CLI built with that feature)
-    --task <name>        override the arch default task. Today the only value
-                         is `mel-frontend` (Whisper only): benches the log-mel
-                         front-end alone (M2-04-T11), so the fused vs unfused
-                         RTF isn't polluted by encoder / decoder time.
+    --task <name>        override the arch default task. Recognized values:
+                         - `mel-frontend` (Whisper only): benches the log-mel
+                           front-end alone (M2-04-T11), so the fused vs unfused
+                           RTF isn't polluted by encoder / decoder time;
+                         - `cosyvoice2-synthetic` (M3-09-T24 scaffold): runs the
+                           CosyVoice2 chunk-aware pipeline with injected
+                           deterministic closures + identity Mimi decoder over a
+                           fixed 1 s target — no --model required.
     -h, --help           print this help
 ";
 
@@ -235,12 +242,18 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
     if iters == 0 {
         return Err("--iters must be > 0".to_owned());
     }
-    // `--model` is required for every task except `mel-frontend`. Enforce that
-    // asymmetry at parse time so the CLI keeps its FR-EX-08 "loud errors, no
-    // silent fallback" posture for the model-driven tasks while letting the
-    // self-contained mel-frontend bench (M2-04-T11 → CI `bench-regression`)
-    // run without shipping a Whisper GGUF fixture.
-    if model.is_none() && !matches!(task_hint, Some(TaskHint::MelFrontend)) {
+    // `--model` is required for every task except the self-contained bench
+    // tasks (`mel-frontend`, `cosyvoice2-synthetic`). Enforce that asymmetry
+    // at parse time so the CLI keeps its FR-EX-08 "loud errors, no silent
+    // fallback" posture for the model-driven tasks while letting the
+    // self-contained benches (M2-04-T11 `mel-frontend`,
+    // M3-09-T24 `cosyvoice2-synthetic`) run without shipping any GGUF
+    // fixture.
+    let no_model_ok = matches!(
+        task_hint,
+        Some(TaskHint::MelFrontend) | Some(TaskHint::Cosyvoice2Synthetic)
+    );
+    if model.is_none() && !no_model_ok {
         return Err("--model is required".to_owned());
     }
     Ok(BenchArgs {
@@ -290,8 +303,15 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
     // job (`docs/bench-baselines/mel_frontend_baseline.json`) without shipping
     // a Whisper GGUF fixture.
     if args.model.is_none() {
-        debug_assert!(matches!(args.task_hint, Some(TaskHint::MelFrontend)));
-        return execute_mel_frontend_standalone(args);
+        debug_assert!(matches!(
+            args.task_hint,
+            Some(TaskHint::MelFrontend) | Some(TaskHint::Cosyvoice2Synthetic)
+        ));
+        return match args.task_hint {
+            Some(TaskHint::MelFrontend) => execute_mel_frontend_standalone(args),
+            Some(TaskHint::Cosyvoice2Synthetic) => execute_cosyvoice2_synthetic_standalone(args),
+            None => Err("unreachable: parse_args guarantees a task hint".to_owned()),
+        };
     }
     let model_path = args.model.as_deref().expect("model is Some here");
     let (session, task) =
@@ -376,6 +396,23 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 Ok(())
             })?;
             ("mel-frontend", audio_seconds, samples)
+        }
+        ModelTask::Cosyvoice2Synthetic => {
+            // The engine's load_session does NOT route the cosyvoice2 arch
+            // today (T07/T08 real forward path deferred), so this arm is
+            // strictly unreachable from a GGUF-driven bench: the standalone
+            // path (`execute_cosyvoice2_synthetic_standalone`) handles all
+            // Cosyvoice2Synthetic runs. Kept exhaustive so a future
+            // engine.rs change that DOES route cosyvoice2 arches surfaces
+            // an explicit unimplemented signal (FR-EX-08) instead of
+            // silently falling back to the standalone path.
+            return Err(
+                "bench (cosyvoice2-synthetic): --model is not accepted with this task \
+                 hint today; run without --model to exercise the standalone synthetic \
+                 bench (M3-09-T24). The GGUF-driven CosyVoice2 bench lands once the T07/\
+                 T08 LLM forward wires up."
+                    .to_owned(),
+            );
         }
     };
 
@@ -465,6 +502,159 @@ fn execute_mel_frontend_standalone(args: &BenchArgs) -> Result<BenchOutcome, Str
     };
     let report = BenchReport {
         task: "mel-frontend".to_owned(),
+        iters: args.iters,
+        warmup: args.warmup,
+        audio_seconds,
+        rtf,
+        ttfa_ms: stats.mean * 1e3,
+        latency: stats,
+    };
+    let regression = match &args.baseline {
+        Some(path) => {
+            let bytes = std::fs::read(path).map_err(|e| format!("reading baseline {path}: {e}"))?;
+            let baseline_rtf = report::parse_baseline_rtf(&bytes)?;
+            Some(report::compare(
+                baseline_rtf,
+                report.rtf,
+                REGRESSION_THRESHOLD,
+            ))
+        }
+        None => None,
+    };
+    Ok(BenchOutcome { report, regression })
+}
+
+// ---- CosyVoice2 synthetic bench (M3-09-T24 scaffold) ---------------------
+
+/// Runtime CosyVoice2 audio sample rate (Hz). Matches the Mimi codec native
+/// rate + the CosyVoice2 model card constant (24 kHz).
+const COSYVOICE2_SYNTHETIC_SAMPLE_RATE: u32 = 24_000;
+
+/// Target audio duration for the standalone synthetic bench. Fixed at 1 s
+/// so the RTF measurement path exercises multiple chunk boundaries (mimi
+/// native rate 12.5–50 Hz → 12–50 chunks per second in typical use).
+const COSYVOICE2_SYNTHETIC_TARGET_SECONDS: f64 = 1.0;
+
+/// Chunk size (frames per chunk boundary) for the synthetic bench. Chosen
+/// to be small enough that a 1 s target frame count yields several chunks
+/// (documents the chunk-aware streaming path, FR-EX-05 hot-path
+/// scheduling) without hard-coding an upstream-derived value.
+const COSYVOICE2_SYNTHETIC_CHUNK_SIZE: u32 = 4;
+
+/// Runs the `--task cosyvoice2-synthetic` bench without touching a GGUF or
+/// safetensors checkpoint. Called from [`execute`] when `args.model` is
+/// `None` and the task hint is [`TaskHint::Cosyvoice2Synthetic`].
+///
+/// Builds a synthetic CosyVoice2 GGUF in memory (arch, Mimi shape defaults,
+/// streaming chunk_size / hop), loads a [`CosyVoice2Tts`] from it, and runs
+/// the chunk-aware streaming pipeline with injected deterministic closures
+/// (zero velocity, constant-ones code closure) over a 1 s target-frame
+/// budget. This exercises the T24 RTF measurement API path without a real
+/// safetensors checkpoint — the identity Mimi decoder (M3-06 fixture)
+/// produces a deterministic feature buffer so the measurement is byte-
+/// reproducible on every runner.
+///
+/// The RTF reported here is **NOT** the real-model RTF (the LLM velocity
+/// path is stubbed — see [`TaskHint::Cosyvoice2Synthetic`] doc): it
+/// measures the pipeline's overhead (length_conditioning +
+/// flow_sample step scheduling + identity Mimi decode + code closure).
+/// The T24 real-checkpoint RTF < 1.0 hard-assert lands with the T19
+/// CUDA seam + a self-hosted CUDA runner (mirrors the M2-14 defer).
+fn execute_cosyvoice2_synthetic_standalone(args: &BenchArgs) -> Result<BenchOutcome, String> {
+    use vokra_core::gguf::GgufBuilder;
+    use vokra_core::gguf::chunks::KEY_MODEL_ARCH;
+    use vokra_core::{CompliancePolicy, ir::graph::LengthConditioningAttrs};
+    use vokra_models::cosyvoice2::CosyVoice2Tts;
+    use vokra_ops::FlowSamplerState;
+
+    // Non-degenerate synthetic GGUF (mirrors the internal-oracle fixture
+    // in vokra-models::cosyvoice2::tests::nondegenerate_gguf_bytes so a
+    // caller compiling against this bench sees the same pipeline path
+    // the crate's own unit tests exercise).
+    let mut b = GgufBuilder::new();
+    b.add_string(KEY_MODEL_ARCH, "cosyvoice2");
+    b.add_string("vokra.model.name", "cosyvoice2-synthetic-bench");
+    b.add_u32(
+        "vokra.cosyvoice2.sample_rate",
+        COSYVOICE2_SYNTHETIC_SAMPLE_RATE,
+    );
+    b.add_u32("vokra.cosyvoice2.arch.vocab_size", 32);
+    b.add_u32("vokra.cosyvoice2.arch.hidden_dim", 16);
+    b.add_u32("vokra.cosyvoice2.arch.n_layer", 2);
+    b.add_u32("vokra.cosyvoice2.arch.n_head", 2);
+    b.add_u32("vokra.cosyvoice2.arch.ffn_dim", 32);
+    b.add_u32("vokra.cosyvoice2.flow.nfe", 2);
+    b.add_string("vokra.cosyvoice2.flow.schedule", "linear");
+    b.add_u32("vokra.cosyvoice2.mimi.n_codebooks", 2);
+    b.add_u32("vokra.cosyvoice2.mimi.codebook_size", 8);
+    b.add_u32("vokra.cosyvoice2.mimi.d_model", 4);
+    b.add_u32(
+        "vokra.cosyvoice2.streaming.chunk_size",
+        COSYVOICE2_SYNTHETIC_CHUNK_SIZE,
+    );
+    b.add_u32(
+        "vokra.cosyvoice2.streaming.chunk_hop",
+        COSYVOICE2_SYNTHETIC_CHUNK_SIZE,
+    );
+    let bytes = b
+        .to_bytes()
+        .map_err(|e| format!("synthetic CosyVoice2 GGUF: {e}"))?;
+
+    // Compliance strict — the registry classifies `cosyvoice2` permissive,
+    // so a synthetic (unlabelled) GGUF passes. This exercises the same
+    // load path the real-checkpoint bench will use once T07/T08 lands.
+    let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+        .map_err(|e| format!("synthetic CosyVoice2 load: {e}"))?;
+    let backend_kind = args.backend;
+    let tts = tts.with_backend(backend_kind);
+
+    // Target frame count: 1 s of 24 kHz PCM. The pipeline treats target as
+    // "chunk-aware frames" (not raw samples), so the number here maps to
+    // the chunk_size boundary — pick a target that's a multiple of
+    // chunk_size to keep the last-chunk-shorter branch out of the RTF
+    // measurement (that branch is exercised in the crate's unit tests).
+    // For 1 s of audio at 24 kHz with chunk_size=4, we use 24 chunks =
+    // 96 frames — the pipeline generates 24 chunks in a run.
+    let target_frames = 96.0f32;
+    let audio_seconds = COSYVOICE2_SYNTHETIC_TARGET_SECONDS;
+
+    // Fixed initial Flow Matching state; the identity Mimi decoder does
+    // not care about the actual values (shape only).
+    let x0 = FlowSamplerState::new(vec![1], vec![0.0]).map_err(|e| e.to_string())?;
+
+    let samples = time_iters(args.warmup, args.iters, || {
+        let length_input = LengthConditioningAttrs::user_specified_frames(target_frames);
+        let out = tts
+            .synthesize_with_pipeline(
+                length_input,
+                &x0,
+                // Zero velocity: each chunk's terminal is the chunk's initial
+                // state. Deterministic; documents the "identity" oracle path.
+                |s, _t, _p, _c| {
+                    Ok(FlowSamplerState {
+                        shape: s.shape.clone(),
+                        data: vec![0.0; s.data.len()],
+                    })
+                },
+                // Constant-ones codes: identity Mimi decoder produces the same
+                // feature every step (col 1 = n_codebooks, else 0), so the
+                // measurement isolates pipeline overhead.
+                |_s, chunk_frames, n_cb| Ok(vec![1u32; chunk_frames * n_cb]),
+            )
+            .map_err(|e| e.to_string())?;
+        // Prevent LLVM DCE — same trick used by execute_mel_frontend_standalone.
+        std::hint::black_box(out);
+        Ok(())
+    })?;
+
+    let stats = report::summarize(&samples).ok_or("no timing samples (iters must be > 0)")?;
+    let rtf = if audio_seconds > 0.0 {
+        stats.mean / audio_seconds
+    } else {
+        0.0
+    };
+    let report = BenchReport {
+        task: "cosyvoice2-synthetic".to_owned(),
         iters: args.iters,
         warmup: args.warmup,
         audio_seconds,
@@ -685,6 +875,104 @@ mod tests {
     #[test]
     fn rejects_missing_model_for_non_mel_frontend() {
         assert_eq!(parse_args(&args(&[])).err().unwrap(), "--model is required");
+    }
+
+    #[test]
+    fn parses_task_cosyvoice2_synthetic_hint() {
+        // `--task cosyvoice2-synthetic` parses cleanly with or without
+        // `--model` (M3-09-T24 scaffold; standalone RTF bench).
+        let a = parse_args(&args(&["--task", "cosyvoice2-synthetic"])).expect("valid");
+        assert_eq!(a.model, None);
+        assert_eq!(a.task_hint, Some(TaskHint::Cosyvoice2Synthetic));
+    }
+
+    #[test]
+    fn bench_cosyvoice2_synthetic_measures_rtf_without_a_gguf_fixture() {
+        // The T24 scaffold: no --model, no --input, deterministic
+        // synthetic path. The measurement must run to completion and
+        // report well-formed RTF / latency stats.
+        let a = BenchArgs {
+            model: None,
+            input: None,
+            text: None,
+            iters: 2,
+            warmup: 1,
+            format: Format::Kv,
+            baseline: None,
+            backend: BackendKind::Cpu,
+            task_hint: Some(TaskHint::Cosyvoice2Synthetic),
+        };
+        let outcome = execute(&a).expect("cosyvoice2-synthetic bench runs");
+        assert_eq!(outcome.report.task, "cosyvoice2-synthetic");
+        assert_eq!(outcome.report.iters, 2);
+        assert_eq!(outcome.report.latency.count, 2);
+        // Audio duration is the fixed 1 s target-frame budget.
+        assert!(
+            (outcome.report.audio_seconds - 1.0).abs() < 1e-9,
+            "audio_seconds should be exactly 1.0, got {}",
+            outcome.report.audio_seconds
+        );
+        // RTF must be a finite non-negative — the identity Mimi decoder
+        // path is fast, so we expect RTF << 1.0 on any modern CPU, but
+        // we do NOT assert a hard upper bound here (that's the T24
+        // deferred always-on gate against a self-hosted CUDA runner —
+        // mirrors M2-14 defer, `docs/m2-cuda-rtf-variance-2026-07-08.md`).
+        assert!(outcome.report.rtf.is_finite() && outcome.report.rtf >= 0.0);
+        assert!(outcome.regression.is_none());
+        // The report round-trips through the baseline parser (same shape
+        // any future baseline comparison consumes).
+        let rtf = report::parse_baseline_rtf(outcome.report.to_json().as_bytes()).unwrap();
+        assert!(rtf.is_finite());
+    }
+
+    #[test]
+    fn bench_cosyvoice2_synthetic_ignores_input_flag_gracefully() {
+        // Passing --input for the synthetic path is a no-op (the standalone
+        // path does not read the WAV) — the current implementation simply
+        // does not consult args.input. Verify the outcome is unchanged.
+        let mut wav_path = std::env::temp_dir();
+        wav_path.push(format!(
+            "vokra-cli-bench-cosyv2-noise-{}.wav",
+            std::process::id()
+        ));
+        wav::write_wav(&wav_path, &vec![0.5f32; 24_000], 24_000).expect("write wav");
+        let a = BenchArgs {
+            model: None,
+            input: Some(wav_path.to_string_lossy().into_owned()),
+            text: None,
+            iters: 1,
+            warmup: 0,
+            format: Format::Kv,
+            baseline: None,
+            backend: BackendKind::Cpu,
+            task_hint: Some(TaskHint::Cosyvoice2Synthetic),
+        };
+        let outcome = execute(&a).expect("cosyvoice2-synthetic bench runs");
+        let _ = std::fs::remove_file(&wav_path);
+        // Audio duration is still the fixed 1 s target — the input WAV is
+        // not consulted for the synthetic path.
+        assert!((outcome.report.audio_seconds - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bench_cosyvoice2_synthetic_reports_deterministic_target_seconds() {
+        // Two runs with identical BenchArgs report identical target
+        // seconds (the deterministic-fixture invariant). Latencies will
+        // differ (CPU scheduling), but the audio window is fixed.
+        let mk = || BenchArgs {
+            model: None,
+            input: None,
+            text: None,
+            iters: 1,
+            warmup: 0,
+            format: Format::Kv,
+            baseline: None,
+            backend: BackendKind::Cpu,
+            task_hint: Some(TaskHint::Cosyvoice2Synthetic),
+        };
+        let a1 = execute(&mk()).expect("run 1");
+        let a2 = execute(&mk()).expect("run 2");
+        assert_eq!(a1.report.audio_seconds, a2.report.audio_seconds);
     }
 
     #[test]

@@ -146,6 +146,18 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                     .to_owned(),
             );
         }
+        // Same posture for `cosyvoice2-synthetic` (M3-09-T24): bench-only
+        // scaffold task. A real CosyVoice2 checkpoint's TTS run lands with
+        // T07/T08 (LLM backbone forward) + T14/T15 (streaming pipeline
+        // wired to a user-facing API) — that follow-on adds a
+        // `ModelTask::Cosyvoice2` arm alongside `Tts` for the arch dispatch.
+        ModelTask::Cosyvoice2Synthetic => {
+            return Err(
+                "run: task `cosyvoice2-synthetic` is not supported (bench-only, see \
+                 `vokra-cli bench --task cosyvoice2-synthetic`)"
+                    .to_owned(),
+            );
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

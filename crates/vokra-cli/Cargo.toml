@@ -18,6 +18,7 @@ publish.workspace = true
 [dependencies]
 vokra-core.workspace = true
 vokra-models.workspace = true
+vokra-ops.workspace = true
 vokra-convert = { path = "../vokra-convert" }
 
 # Optional GPU backends for `bench --backend metal|cuda` (RTF on a real GPU).

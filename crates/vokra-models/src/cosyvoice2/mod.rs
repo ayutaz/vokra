@@ -74,6 +74,7 @@
 pub(crate) mod chunk_pipeline;
 pub(crate) mod config;
 pub(crate) mod flow_matching;
+pub(crate) mod llm;
 pub(crate) mod mimi_bridge;
 pub(crate) mod text_encoder;
 
@@ -89,6 +90,9 @@ use vokra_ops::{ApplyProsody, ProsodyControl};
 pub use chunk_pipeline::{ChunkAwareStreamingPipeline, PipelineChunk, PipelineOutput};
 pub use config::CosyVoice2Config;
 pub use flow_matching::{ChunkAwareCfm, ChunkContinuation, FlowMatchingRuntimeParams};
+pub use llm::{
+    DEFAULT_RMS_NORM_EPS, DEFAULT_ROPE_BASE_QWEN2, LlmBackbone, LlmBackboneConfig, LlmBackboneStep,
+};
 pub use mimi_bridge::MimiBridge;
 pub use text_encoder::TextEncoderStub;
 
@@ -132,6 +136,20 @@ pub struct CosyVoice2Tts {
     /// The resolved GGUF metadata (arch / vocab / streaming / flow / mimi
     /// hyperparameters — T04 chunk design).
     config: CosyVoice2Config,
+    /// LLM backbone (M3-09-T07/T08 scaffold): decoder-only transformer whose
+    /// output token stream drives the Flow Matching CFM. Held here so the
+    /// [`CosyVoice2Tts::synthesize`] chain can advertise the full
+    /// text-tokenize → LLM decode → Flow Matching → Mimi decode pipeline
+    /// through a single engine handle; the numeric forward is still
+    /// [`VokraError::NotImplemented`] on both the LLM backbone and the
+    /// top-level [`TtsEngine::synthesize`], so a caller who wires this
+    /// engine today receives a loud error (FR-EX-08 — no silent
+    /// fallback).
+    ///
+    /// The LLM config is read from the same GGUF as the top-level config
+    /// (`vokra.cosyvoice2.arch.*` LLM-side keys), so the two are always
+    /// consistent — a mismatch is impossible by construction.
+    llm: llm::LlmBackbone,
     /// Selected compute backend (default [`BackendKind::Cpu`], overridable
     /// via [`CosyVoice2Tts::with_backend`]; the numeric path lands with
     /// T19/T20).
@@ -192,8 +210,14 @@ impl CosyVoice2Tts {
         }
         check_weight_license(&file, policy)?;
         let config = CosyVoice2Config::from_gguf(&file)?;
+        // Bind the LLM backbone off the same GGUF so a caller cannot end up
+        // with an engine holding two configs that disagree. `from_gguf`
+        // reads the LLM-side `vokra.cosyvoice2.arch.*` keys; a wrong-type
+        // key is a loud [`VokraError::InvalidArgument`] (FR-EX-08).
+        let llm = llm::LlmBackbone::from_gguf(&file, &config)?;
         Ok(Self {
             config,
+            llm,
             backend_kind: BackendKind::Cpu,
             watermark: WatermarkConfig::default(),
         })
@@ -238,6 +262,17 @@ impl CosyVoice2Tts {
     #[must_use]
     pub fn watermark(&self) -> &WatermarkConfig {
         &self.watermark
+    }
+
+    /// Access to the LLM backbone (M3-09-T07/T08 scaffold).
+    ///
+    /// Follow-on sessions binding the real weight-store or wiring the
+    /// autoregressive decode loop pull this handle. Today the forward
+    /// path is [`VokraError::NotImplemented`], so this is only useful for
+    /// config introspection and internal-oracle tests.
+    #[must_use]
+    pub fn llm(&self) -> &llm::LlmBackbone {
+        &self.llm
     }
 
     /// Runs the chunk-aware streaming pipeline with caller-supplied
@@ -299,16 +334,29 @@ impl TtsEngine for CosyVoice2Tts {
     /// Mimi bridge (T13) are wired end-to-end, this returns
     /// [`VokraError::NotImplemented`] with a clear next-step message —
     /// never a silent zero-fill fallback (FR-EX-08).
+    ///
+    /// # Chain wiring (M3-09 partial land)
+    ///
+    /// The module tree is chained today — a follow-on session composes
+    /// text → [`TextEncoderStub::encode`] → [`llm::LlmBackbone::forward`]
+    /// → [`ChunkAwareCfm::run_chunks`] → [`MimiBridge::decode_chunk`] by
+    /// filling in each stage's numeric path. The top-level `synthesize`
+    /// short-circuits with NotImplemented because the tokenizer (T06),
+    /// LLM weight binding (T07), and forward pass (T08) are all deferred.
+    /// The `synthesize_with_pipeline` entry point below exposes the
+    /// injected-closure oracle path for internal-oracle tests today.
     fn synthesize(&self, request: &SynthesisRequest) -> Result<SynthesizedAudio> {
-        // Reference the request text so the intent is documented in-source;
-        // the future path consumes this through
-        // [`text_encoder::TextEncoderStub::encode`] once a real GGUF binds
-        // the tokenizer.
+        // Reference the LLM backbone handle so the engine's chain owner
+        // is visible in-source (documented dependency, not consumed
+        // today).
+        let _ = self.llm.config();
         let _ = request.text.as_str();
         Err(VokraError::NotImplemented(
-            "CosyVoice2 TtsEngine::synthesize needs the T07/T08 LLM backbone, T10/T11 \
-             Flow Matching CFM, T13 Mimi decoder and T14/T15 chunk-aware streaming pipeline; \
-             this session lands the scaffold only",
+            "CosyVoice2 TtsEngine::synthesize needs T06 tokenizer, T07/T08 LLM \
+             backbone, T10/T11 Flow Matching CFM, T13 Mimi decoder and T14/T15 \
+             chunk-aware streaming pipeline; this session lands the scaffold + \
+             chain wiring only (call synthesize_with_pipeline for the injected-\
+             closure oracle path)",
         ))
     }
 }
