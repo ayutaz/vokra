@@ -75,10 +75,10 @@
 | **Whisper base/small/medium/large-v3/turbo** | MIT | MIT | ○ | ★ 公式 zoo | OpenAI 公式 |
 | **piper-plus (ayutaz) 全モデル** | MIT | MIT | ○ | ★ 公式 zoo | 依頼者作、8 言語、eSpeak-NG 依存なし |
 | **Kokoro-82M** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | hexgrad、iSTFTNet 系 vocoder |
-| **CosyVoice / CosyVoice2 / CosyVoice3** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Alibaba FunAudioLLM |
+| **CosyVoice / CosyVoice2 / CosyVoice3** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Alibaba FunAudioLLM。**M3-09 で自前実装 scaffold**（`crates/vokra-models/src/cosyvoice2/`、text encoder + Flow Matching stub + Mimi bridge + GGUF converter。実 checkpoint parity は依頼者 HF アクセス前提の follow-up）。 |
 | **Sesame CSM-1B** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Sesame AI Labs |
 | **Moshi (Helium + Mimi)** | Apache 2.0 | **CC-BY 4.0** | ○ (要 credit) | ★ 公式 zoo | Kyutai、attribution 表示義務 → docs/legal-compliance.md 参照 |
-| **Voxtral (Mistral)** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Mistral、2025-07 リリース |
+| **Voxtral (Mistral)** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Mistral、2025-07 リリース。**M3-10 で自前実装 scaffold**（`crates/vokra-models/src/voxtral/`、Whisper 派生 audio encoder + Mistral GQA/RoPE/SwiGLU/RMSNorm text decoder + ASR/S2S heads + config-aware converter `convert_voxtral_file`。実 multilang WER は follow-up）。 |
 | **DAC (Descript)** | MIT | MIT | ○ | ★ 公式 zoo | Descript 公式 |
 | **Mimi codec (Kyutai)** | Apache 2.0 | CC-BY 4.0 | ○ (要 credit) | ★ 公式 zoo | Moshi パッケージの一部。**M3-06 で `mimi_rvq` op を実装**（`crates/vokra-ops/src/mimi_rvq.rs`、CC-BY 4.0 attribution は `NOTICE` §5 に記載、`registry_lookup("mimi") == AttributionRequired`）。 |
 | **WavTokenizer** | MIT | MIT | ○ | ★ 公式 zoo | 中山大 |

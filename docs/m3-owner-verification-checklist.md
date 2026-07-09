@@ -5,7 +5,7 @@
 
 **ticket spec**: `docs/tickets/m3/` (gitignore) に 19 WP 全 file (M3-01〜M3-19) + README 完備、~340 tickets / 285h の内訳確定 (ultracode workflow 経由)。
 
-**実装コミット (15 WP)** — feat/m3-plan-and-wave1 で 15 commits ahead of main、+16,000 lines:
+**実装コミット (15 WP)** — feat/m3-plan-and-wave1 で main から 14 commits ahead（+ docs 更新 commit で最終 15+）、+16,000 lines:
 - **Wave 1** (dev-experience layer): M3-08 length_conditioning / M3-14 barge-in interrupt / M3-16 ABI changelog scaffold / M3-17 prosody_control API
 - **Wave 2** (foundation): M3-03 paged KV cache / M3-04 KV 量子化 (Q4_0/Q5_0/Q8_0) / M3-05 flow_sampler + ODE solvers
 - **Wave 3** (codec/vocoder): M3-06 mimi_rvq / M3-07 hifigan_generator
@@ -191,34 +191,34 @@ M2 checklist §1 と同じ。差分なし。
 
 ---
 
-## Summary 進捗表（2026-07-09 時点、Wave 1 実装未捕捉 = null）
+## Summary 進捗表（2026-07-09 更新、Wave 1〜Wave 5 land 完了時点、branch `feat/m3-plan-and-wave1`）
 
 | WP | 内容 | CC 進捗 | 依頼者残タスク |
 |----|------|--------|--------------|
-| M3-01 | CUDA 完成 + RTF<0.1 formal gate | ❌ 未着手 / spec 未 land | § 6（M2-14 self-hosted runner + RTF gate) |
-| M3-02 | Vulkan バックエンド | ❌ 未着手 / spec 未 land | § 1（Android 実機 RTF）|
-| M3-03 | paged KV cache | ❌ 未着手 / spec 未 land / **Wave 2 候補** | — |
-| M3-04 | KV cache 量子化 | ❌ 未着手 / spec 未 land / **Wave 2 候補** | — |
-| M3-05 | flow_sampler + ODE solver | ❌ 未着手 / spec 未 land / **Wave 2 候補** | — |
-| M3-06 | mimi_rvq codec | ❌ 未着手 / spec 未 land | § 3（CosyVoice2 audit と一括、Mimi CC-BY 4.0 attribution NOTICE 記載）|
-| M3-07 | hifigan_generator op | ✅ Draft spec land 済（`docs/tickets/m3/M3-07-hifigan-generator.md`、12 tickets / 6h、実装未着手）| — |
-| M3-08 | length_conditioning op | 🟢 **Wave 1 実装 land 済（working tree、未 commit）** / `crates/vokra-ops/src/length_conditioning.rs` 326 行 + tests 2 本（IR 区別 + parity） / spec は retro 追加予定 | — |
-| M3-09 | CosyVoice2 統合 | ❌ 未着手 / spec 未 land | § 3（audit）|
-| M3-10 | Voxtral 統合 | ❌ 未着手 / spec 未 land | § 3（audit）|
-| M3-11 | Godot GDExtension | ❌ 未着手 / spec 未 land | § 2（実機動作確認、M3-18 と連動）|
-| M3-12 | piper-plus native の GPU 対応 | ❌ 未着手 / spec 未 land | — |
-| M3-13 | RVV 1.0 基本対応 | ✅ Draft spec land 済（`docs/tickets/m3/M3-13-rvv-1.0-basic.md`、12 tickets / 6h、実装未着手）| — |
-| M3-14 | barge-in（stream.interrupt()）| 🟢 **Wave 1 実装 land 済（working tree、未 commit）** / `Stream::interrupt()` + `InterruptHandle`（`Arc<AtomicBool>` + `Clone+Send+Sync`）+ `EventPoller::drain_all()` + `vokra_stream_interrupt` C ABI + 10 unit + 4 integration + 3 C-ABI tests / spec は retro 追加予定 | — |
-| M3-15 | vokra-server multi-session + 75ms | ❌ 未着手 / spec 未 land | § 5（サーバ 75ms 実測）|
-| M3-16 | v0.9 ABI 変更点の changelog 記録（凍結は M4-12 へ移動）| 🟢 **Wave 1 実装 land 済（working tree、未 commit）** / `docs/abi-changelog.md` schema + `docs/abi/vokra.h.v0.9-baseline.symbols` machine-anchor + `scripts/check-abi-changelog.sh`（verify/list/update-snapshot/self-test/help modes、zero-dep = bash+awk+grep+diff）+ cbindgen banner に M3-16/M4-12 参照 / spec は retro 追加予定 | — |
-| M3-17 | prosody_control 統一 API | 🟢 **Wave 1 実装 land 済（working tree、未 commit）** / `crates/vokra-ops/src/prosody.rs` 440 行（`ApplyProsody` + `ProsodyControl`、attrs/dispatch/lib 配線） / spec は retro 追加予定 | — |
-| M3-18 | 実機テスト: Android + Godot | 依頼者ボトルネック | § 1 + § 2 |
-| M3-19 | Kill switch D + 四半期 review | 依頼者ボトルネック（暦月 2027-03〜05 頃）| § 4 |
+| M3-01 | CUDA 完成 + RTF<0.1 formal gate | ✅ **Wave 4 実装 land**（`3f1a4a5`、graph-executor 拡張 Gemv/Softmax/SoftmaxCausal/LayerNorm/Gelu/Conv1D + FA v2 compute_89 pin + coverage test + `gpu-cuda-rtf.yml` scaffold + long-form decoder dumper。RTF<0.10 always-on gate は M2-14 self-hosted runner + M3-01 5% regression gate へ defer 済） | § 6（M2-14 self-hosted runner + RTF gate）|
+| M3-02 | Vulkan バックエンド | ✅ **Wave 5 scaffold land**（`d11fac2`、`vokra-backend-vulkan` crate 新規、~30% = 生 FFI dlopen loader / `libvulkan.so.1` `vulkan-1.dll` / probe.rs Vulkan 1.1 subgroup + cooperative matrix detection / 11 GLSL shaders drafted / backend trait 骨組み、opt-in feature default OFF、~70% 残 = 完全 SPIR-V shader library / Whisper base parity CI / cooperative matrix 完全実装）| § 1（Android 実機 RTF、M3-18 と連動）|
+| M3-03 | paged KV cache | ✅ **Wave 2 実装 land**（`56b52a9`、`PagedKvCache<T>` + [time, stream, codebook] 3D + `KvElement` trait + `GpuPagedKvCacheOps` seam + 23 unit tests）| — |
+| M3-04 | KV cache 量子化 | ✅ **Wave 2 実装 land**（`56b52a9`、Q4_0（18 B）/ Q5_0（22 B）/ Q8_0（34 B）pack/unpack + `KvQuantVerifyReport` hook + SessionBuilder wire、~20% 残 = CUDA/Metal fused dequant kernel は backend co-update）| — |
+| M3-05 | flow_sampler + ODE solver | ✅ **Wave 2 実装 land**（`596c312`、`flow_sample()` runtime function（FR-EX-10、グラフ非埋込）+ CfgMode 3 種 + Schedule 3 種 + OdeSolver 5 種（DDIM/DPM++/Euler/Heun/Flow-ODE）+ 35 tests）| — |
+| M3-06 | mimi_rvq codec | ✅ **Wave 3 実装 land**（`596c312`、Mimi paged block_size 2/4 time-axis paging + CC-BY 4.0 attribution NOTICE §5 + EnCodec exclusion gate `scripts/compliance/check-encodec-exclusion.sh`）| § 3（CosyVoice2 audit と一括）|
+| M3-07 | hifigan_generator op | ✅ **Wave 3 実装 land**（`596c312`、FP32/fp16 + INT8 opt-in with per-channel calibration + `SPECTRAL_CHECK_THRESHOLD` spectral check gate）| — |
+| M3-08 | length_conditioning op | ✅ **Wave 1 実装 land**（`f61c649`、`crates/vokra-ops/src/length_conditioning.rs` 326 行 + tests 2 本（IR 区別 + parity）） | — |
+| M3-09 | CosyVoice2 統合 | ✅ **Wave 5 scaffold land**（`3507573`、~40% = module tree + text encoder + Flow Matching stub + Mimi bridge + GGUF converter、~60% 残 = 実 checkpoint parity / streaming latency / MEL loss + UTMOS 検証 = 依頼者 HF アクセス前提）| § 3（audit）|
+| M3-10 | Voxtral 統合 | ✅ **Wave 5 scaffold land**（`089b9c3`、~40% = Whisper 派生 audio encoder + Mistral GQA/RoPE/SwiGLU/RMSNorm text decoder + ASR/S2S heads + config-aware converter `convert_voxtral_file`、~60% 残 = 実 multilang WER / streaming e2e / Whisper 互換 API endpoint 拡張）| § 3（audit）|
+| M3-11 | Godot GDExtension | ✅ **Wave 3.5 実装 land**（`5fdb032`、excluded workspace `integrations/vokra-godot` + 生 GDExtension C ABI（godot-cpp binding crate 不使用）+ Rust panic → godot error via catch_unwind + Linux build path）| § 2（実機動作確認、M3-18 と連動）|
+| M3-12 | piper-plus native の GPU 対応 | ❌ **未実装**（workflow で `impl-M3-12` agent が API stall で失敗、Wave 6 として次セッション再実行。ticket spec 既存、M3-01 完了で依存 unblock）| — |
+| M3-13 | RVV 1.0 基本対応 | ✅ **Wave 3.5 実装 land**（`c6022cf`、`crates/vokra-backend-cpu/src/kernels/rvv.rs` + `vec_add_f32` intrinsics（`vsetvli`/`vle32`/`vfadd`/`vse32`）+ CI cross-build（`riscv64gc-unknown-linux-gnu`）+ asm mnemonic check）| — |
+| M3-14 | barge-in（stream.interrupt()）| ✅ **Wave 1 実装 land**（`9266f62`、`Stream::interrupt()` + `InterruptHandle`（`Arc<AtomicBool>` + `Clone+Send+Sync`）+ `EventPoller::drain_all()` + C ABI `vokra_stream_interrupt` + 10 unit + 4 integration + 3 C-ABI tests、ABI changelog に entry 記録済）| — |
+| M3-15 | vokra-server multi-session + 75ms | ✅ **Wave 3.5 実装 land**（`819acf3`、multi-session scheduler + paged KV cache 配線 + 75ms bench hooks（NFR-PF-05 v1.0 値））| § 5（サーバ 75ms 実測、実機ネットワーク条件下）|
+| M3-16 | v0.9 ABI 変更点の changelog 記録（凍結は M4-12 へ移動）| ✅ **Wave 1 実装 land**（`f864ade`、`docs/abi-changelog.md` schema + `docs/abi/vokra.h.v0.9-baseline.symbols` machine-anchor + `scripts/check-abi-changelog.sh`（verify/list/update-snapshot/self-test/help modes、zero-dep = bash+awk+grep+diff）+ cbindgen banner に M3-16/M4-12 参照）| — |
+| M3-17 | prosody_control 統一 API | ✅ **Wave 1 実装 land**（`f61c649`、`crates/vokra-ops/src/prosody.rs` 440 行（`ApplyProsody` + `ProsodyControl`、attrs/dispatch/lib 配線）） | — |
+| M3-18 | 実機テスト: Android + Godot | ⏸️ **依頼者ボトルネック**（実機必須、NFR-PF-06 Whisper base RTF <0.7）| § 1 + § 2 |
+| M3-19 | Kill switch D + 四半期 review | ⏸️ **依頼者ボトルネック**（暦月 2027-03〜05 頃、v0.5 公開後 3 ヶ月固定）| § 4 |
 | M2-14 carry-over | iOS 実機 RTF | 引き渡し済み | § 7 |
 
-**Wave 1 (M3-16 / M3-14 / M3-08 / M3-17) 実装状況（正直な報告、2026-07-09 更新）**: **4 WP すべての実装 land 済（working tree、未 commit）** + **verify 5 面全 green**: cargo build 14.85s ok（全 12 crate）／cargo test 全体 = **1104 passed / 0 failed / 4 ignored**（4 ignored は scipy/librosa/torch fixture-gated parity で既存 internal-oracle 規律通り）／cargo fmt --check clean／cargo clippy `-D warnings` clean（13 crate）／`scripts/check-zero-deps.sh` OK（root Cargo.lock は `vokra-*` のみ、NFR-DS-02 保存）。**粒度差の正直な内訳**: orchestrator から詳細実装レポートが返ってきたのは M3-14（`Stream::interrupt()` / `InterruptHandle` の tests 一覧・生成ファイルパス・per-check 表付き）と M3-16（`docs/abi-changelog.md` schema + machine-anchor snapshot + `scripts/check-abi-changelog.sh` の 4 modes 検証表付き）のみ。**M3-08 と M3-17 は report text 未提供** — working tree の実ファイル（M3-08 = 326 行 + tests 2 本 344 行、M3-17 = 440 行）と ops crate 側の export（`pub mod length_conditioning; pub use prosody::{ApplyProsody, ProsodyControl};`）と 1104 tests 全 pass で完了状態を裏付ける（証跡は `git status` + `cargo test` 出力）。**残る CC 側タスク**: 4 WP を分割コミット + push（M2 パターンの feedback「適度にコミットする」に準拠 = 完成したまとまりごとに段階コミット）、Wave 1 4 WP の spec を `docs/tickets/m3/` に retro 追加（rolling wave 規律遵守）、Wave 2 着手。M2 の per-WP CI green（28/28）に相当する Wave 1 完了根拠は verify 出力で担保、CI 側の per-PR green は commit + push 後に確定する。
+**Wave 1〜Wave 5 完了サマリ（2026-07-09）**: **19 WP 中 15 WP の CC 実装コミット完了**（Wave 1 = 4 WP / Wave 2 = 3 WP / Wave 3 = 2 WP / Wave 3.5 = 3 WP / Wave 4 = 1 WP / Wave 5 = 3 WP scaffold）。branch `feat/m3-plan-and-wave1`、main から 14 commits ahead。**verify 全 green**: cargo build clean（全 12 crate + vokra-backend-vulkan opt-in default OFF）／cargo test 全体 = **1386 passed / 0 failed / 4 ignored**（4 ignored は scipy/librosa/torch fixture-gated parity で既存 internal-oracle 規律通り）／cargo fmt --check clean／cargo clippy `-D warnings` clean／`scripts/check-zero-deps.sh` OK（root Cargo.lock は `vokra-*` のみ、NFR-DS-02 保存）／`scripts/check-abi-changelog.sh` OK（M3-14 の `vokra_stream_interrupt` entry 記録済）。**残 CC WP** = **M3-12**（次セッション、API stall で失敗）。**残依頼者専任 WP** = **M3-18** + **M3-19**。**Partial 実装 WP**（follow-up、blocking ではない）= M3-02 ~70% 残 / M3-09 ~60% 残 / M3-10 ~60% 残 / M3-04 ~20% 残 / M3-01 RTF gate（M2-14 defer）。
 
-**チケット spec 化進捗**: 19 WP 中 **2 WP（M3-07 / M3-13）のみ Draft spec land 済**（M2 パターン、30 分単位、`docs/tickets/m3/`）。残 17 WP は rolling wave で着手時に spec 化する。
+**チケット spec 化進捗（2026-07-09 更新）**: 19 WP 全 file（M3-01〜M3-19 + README）を `docs/tickets/m3/`（gitignore）に land 完了、**~340 tickets / 285h、Draft**。ultracode workflow 2 回（wave 1 + wave 2〜5）で作成した。M2 と同型（30 分単位・WP 別ファイル・README + tickets）。
 
 ---
 
