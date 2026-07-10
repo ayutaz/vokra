@@ -76,26 +76,38 @@
 //! Same design pattern as [`crate::flow_sampler`] (FR-EX-10 精神). See ADR
 //! M3-06 §D4 for the paged-cache re-use rationale.
 //!
-//! # GPU seam (Wave 5 follow-up — TODO)
+//! # GPU seam (Compute-seam awareness wired; MSL / NVRTC kernels still deferred)
 //!
-//! The Metal / CUDA `mimi_rvq` kernels are deferred to Wave 5 (see the M3-06
-//! T14 / T15 tickets). The imperative `Compute` seam in
-//! `vokra-models/src/compute.rs` does not yet know about this op. When it
-//! lands, the same "one kernel per (backend, op)" pattern the M2 seam uses
-//! applies here:
+//! The imperative `Compute` seam in `vokra-models/src/compute.rs` now knows
+//! about this op — it exposes a `HotOp::MimiRvq` variant and a
+//! `Compute::mimi_rvq_f32` method whose CPU arm delegates directly to
+//! [`mimi_rvq_decode`] (this file). The **Metal** and **CUDA** arms return
+//! an explicit [`VokraError::UnsupportedOp`] because the actual GPU kernels
+//! are still deferred to the M3-06 T14 (MSL) / T15 (NVRTC) tickets — this
+//! is the honest state today and is *never* a silent CPU fall back
+//! (FR-EX-08). The coverage gate on `Compute::for_backend` additionally
+//! rejects any model that lists `HotOp::MimiRvq` against Metal / CUDA /
+//! Vulkan, so a well-behaved consumer never even reaches the per-arm
+//! `UnsupportedOp`. (Cross-crate intra-doc links are omitted deliberately —
+//! `vokra-ops` does not depend on `vokra-models`, so a bare `[`Compute::...`]`
+//! would be a broken link.)
 //!
-//! - Add a `HotOp::MimiRvq` arm to `vokra-models/src/compute.rs`;
-//! - Add `Compute::mimi_rvq_f32(...)` returning `Result<Vec<f32>>` that
-//!   dispatches to `kernels::mimi_rvq_f32` on CPU, `MetalContext::mimi_rvq`
-//!   on Metal (M2-01 pattern — MSL kernel `vokra_mimi_rvq_f32.metal`), and
-//!   `libcuda`-loaded PTX (`vokra_mimi_rvq_f32.cu`) on CUDA (M2-03 pattern
-//!   — NVRTC compile via `CudaContext::compile_kernel`);
+//! When the T14 / T15 kernels land, the same "one kernel per (backend, op)"
+//! pattern the M2 seam uses applies here:
+//!
+//! - Wire `MetalContext::mimi_rvq_f32` (M2-01 pattern — MSL kernel
+//!   `vokra_mimi_rvq_f32.metal`) and swap the Metal arm of
+//!   `Compute::mimi_rvq_f32` from `UnsupportedOp` to a real dispatch.
+//! - Wire `libcuda`-loaded PTX (`vokra_mimi_rvq_f32.cu`) on CUDA (M2-03
+//!   pattern — NVRTC compile via `CudaContext::compile_kernel`) and swap
+//!   the CUDA arm similarly.
 //! - RVQ is embedding-lookup + FP32 fold, so a naive `blockDim.x = d_model,
 //!   gridDim.x = time, gridDim.y = n_stream` layout is enough; there is no
 //!   shared-memory tile to design (Wave 5 T14 rationale).
-//! - Update `HotOp::covered_by_metal` / `covered_by_cuda` accordingly; the
+//! - Flip `HotOp::covered_by_metal` / `covered_by_cuda` accordingly; the
 //!   `metal_coverage_is_consistent` / `cuda_coverage_is_consistent` tests
-//!   pin the coverage table.
+//!   pin the coverage table (both have a lock-step reminder in the panic
+//!   message so a divergence surfaces in CI, not in production).
 //!
 //! Silent host fallback is forbidden (FR-EX-08); an incomplete GPU arm
 //! must remain `UnsupportedOp` until the kernel lands.

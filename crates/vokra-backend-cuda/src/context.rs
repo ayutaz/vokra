@@ -1102,10 +1102,14 @@ pub struct CudaContext {
     mul: CUfunction,
     /// FA v2 fused causal attention kernel handle (`vokra_flash_attn_v2_causal_f32`).
     /// Always resolved at context construction (its symbol is baked into the
-    /// same PTX as the other Phase-5 attention kernels); actually dispatched
-    /// only when the [`CudaDecodeSession`] probe (`hd == 64` +
-    /// `MAX_SHARED_MEMORY_PER_BLOCK_OPTIN ≥ 40 KB`) flips
-    /// [`AttnChainDims::use_flash_attn`] `true`. Owned via `kernels_module`.
+    /// same PTX as the other Phase-5 attention kernels); dispatched
+    /// (a) on the runtime fast path when the [`CudaDecodeSession`] probe
+    /// (`hd == 64` + `MAX_SHARED_MEMORY_PER_BLOCK_OPTIN ≥ 40 KB`) flips
+    /// [`AttnChainDims::use_flash_attn`] `true`, and (b) unconditionally by the
+    /// public [`CudaContext::flash_attn_dev`] wrapper — the testing / diagnostic
+    /// entrypoint that primitive-parity tests use to exercise the kernel
+    /// (bypassing the `FA_V2_MIN_TQ = 16` gate the runtime path applies).
+    /// Owned via `kernels_module`.
     flash_attn_v2: CUfunction,
     /// M3-04 fused KV-cache dequant + GEMV kernel handles, one per quant format
     /// (`vokra_dequant_gemv_q4_0_f32` / `_q5_0_f32` / `_q8_0_f32`). Symmetric
@@ -2221,6 +2225,15 @@ impl CudaContext {
     /// gather into `qh` after head h's scores GEMM read of it). `hd = d / n_head`
     /// is exact (the caller validated it). Bias-less GEMMs bind `ptrs.q_bias` as
     /// the never-read dummy (`has_bias = 0`).
+    ///
+    /// The internal `FA_V2_MIN_TQ = 16` gate below is the runtime fast-path
+    /// heuristic — it lets FA v2 fire only when the query tile isn't wasted
+    /// (`t_q ≥ Br = 16`). The public testing wrapper
+    /// [`Self::flash_attn_dev`] deliberately BYPASSES this gate (calls
+    /// [`Self::launch_flash_attn_v2`] directly) so primitive-parity tests can
+    /// exercise the FA v2 kernel across arbitrary `t_q` shapes; that is a
+    /// diagnostic entrypoint, not the runtime path — the session and
+    /// `attn_f32` / `attn_dev` still funnel through this gated chain.
     fn launch_attn_chain(&self, dims: &AttnChainDims, ptrs: &AttnChainPtrs) -> Result<()> {
         // FA v2 opt-in seam. The caller (only the decoder-step session, whose
         // constructor probed `d_head == 64` **and** the opt-in shared-memory
@@ -3094,6 +3107,11 @@ impl CudaContext {
     /// submission, every intermediate allocated internally and never copied D2H).
     /// Bit-identical to the host-in/out [`Self::attn_f32`].
     ///
+    /// This is the DECOMPOSED path (`2 + 7·n_head` launches) — the same chain
+    /// [`Self::encode_prenorm_stack`] and Kokoro / piper-plus use. To dispatch
+    /// the fused Flash-Attention v2 kernel for primitive parity testing
+    /// instead, use [`Self::flash_attn_dev`] (Whisper `d_head = 64` only).
+    ///
     /// # Errors
     ///
     /// [`VokraError::InvalidArgument`] on a shape mismatch or `d % n_head != 0`;
@@ -3214,6 +3232,338 @@ impl CudaContext {
                 kh_t: kh_t_buf.ptr,
                 scores: scores_buf.ptr,
                 probs: probs_buf.ptr,
+                ctx_h: ctx_h_buf.ptr,
+                out: out.buf.ptr,
+            },
+        )?;
+        self.sync_stream("cuStreamSynchronize")
+    }
+
+    /// Device-in/out fused **causal** attention through the DECOMPOSED
+    /// `2 + 7·n_head` chain (never FA v2) — the sibling of
+    /// [`Self::attn_dev`] with `causal = true` and an explicit `q_offset`
+    /// naming the absolute position of query row 0 (row `i` attends keys
+    /// `[0, q_offset + i]`). Used by primitive parity tests as the reference
+    /// arm for [`Self::flash_attn_dev`]'s FA v2 causal candidate; the runtime
+    /// causal decoder-step still lives on `CudaDecodeSession`'s internal
+    /// chain (this wrapper is a public testing entrypoint, not a fast path).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, `d % n_head != 0`,
+    ///   or `q_offset + t_q > t_kv` (row `t_q - 1` would attend keys past the
+    ///   K/V window — the causal mask is undefined there).
+    /// - [`VokraError::BackendUnavailable`] on a device failure.
+    #[allow(clippy::too_many_arguments)] // fused-attention operand set + causal q_offset seam
+    pub fn attn_causal_dev(
+        &self,
+        t_q: usize,
+        t_kv: usize,
+        d: usize,
+        n_head: usize,
+        xq: &CudaDeviceTensor<'_>,
+        q_w: &CudaDeviceTensor<'_>,
+        q_bias: Option<&CudaDeviceTensor<'_>>,
+        k: &CudaDeviceTensor<'_>,
+        v: &CudaDeviceTensor<'_>,
+        out_w: &CudaDeviceTensor<'_>,
+        out_bias: Option<&CudaDeviceTensor<'_>>,
+        scale: f32,
+        q_offset: usize,
+        out: &mut CudaDeviceTensor<'_>,
+    ) -> Result<()> {
+        if t_q == 0 || t_kv == 0 || d == 0 || n_head == 0 {
+            return Err(VokraError::InvalidArgument(
+                "attn_causal_dev dimensions t_q, t_kv, d, n_head must all be >= 1".to_owned(),
+            ));
+        }
+        if d % n_head != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "attn_causal_dev d ({d}) must be divisible by n_head ({n_head})"
+            )));
+        }
+        if q_offset.saturating_add(t_q) > t_kv {
+            return Err(VokraError::InvalidArgument(format!(
+                "attn_causal_dev requires q_offset + t_q <= t_kv (got q_offset={q_offset}, t_q={t_q}, t_kv={t_kv})"
+            )));
+        }
+        let dd = checked_mul(d, d, "attn_causal_dev d*d")?;
+        let tkvd = checked_mul(t_kv, d, "attn_causal_dev t_kv*d")?;
+        expect_len(
+            "attn_causal_dev xq",
+            xq.len,
+            checked_mul(t_q, d, "attn_causal_dev t_q*d")?,
+        )?;
+        expect_len("attn_causal_dev q_w", q_w.len, dd)?;
+        expect_len("attn_causal_dev k", k.len, tkvd)?;
+        expect_len("attn_causal_dev v", v.len, tkvd)?;
+        expect_len("attn_causal_dev out_w", out_w.len, dd)?;
+        expect_len(
+            "attn_causal_dev out",
+            out.len,
+            checked_mul(t_q, d, "attn_causal_dev out")?,
+        )?;
+        if let Some(b) = q_bias {
+            expect_len("attn_causal_dev q_bias", b.len, d)?;
+        }
+        if let Some(b) = out_bias {
+            expect_len("attn_causal_dev out_bias", b.len, d)?;
+        }
+        let hd = d / n_head;
+        let f = size_of::<f32>();
+        let tqd = checked_mul(
+            checked_mul(t_q, d, "attn_causal_dev t_q*d")?,
+            f,
+            "attn_causal_dev t_q*d bytes",
+        )?;
+        let tq_hd_b = checked_mul(
+            checked_mul(t_q, hd, "attn_causal_dev t_q*hd")?,
+            f,
+            "attn_causal_dev qh bytes",
+        )?;
+        let tkv_hd_b = checked_mul(
+            checked_mul(t_kv, hd, "attn_causal_dev t_kv*hd")?,
+            f,
+            "attn_causal_dev vh bytes",
+        )?;
+        let hd_tkv_b = checked_mul(
+            checked_mul(hd, t_kv, "attn_causal_dev hd*t_kv")?,
+            f,
+            "attn_causal_dev kh_t bytes",
+        )?;
+        let tq_tkv_b = checked_mul(
+            checked_mul(t_q, t_kv, "attn_causal_dev t_q*t_kv")?,
+            f,
+            "attn_causal_dev scores bytes",
+        )?;
+        let dummy = self.alloc(f)?;
+        let q_buf = self.alloc(tqd)?;
+        let context_buf = self.alloc(tqd)?;
+        let qh_buf = self.alloc(tq_hd_b)?;
+        let vh_buf = self.alloc(tkv_hd_b)?;
+        let kh_t_buf = self.alloc(hd_tkv_b)?;
+        let scores_buf = self.alloc(tq_tkv_b)?;
+        let probs_buf = self.alloc(tq_tkv_b)?;
+        let ctx_h_buf = self.alloc(tq_hd_b)?;
+        self.launch_attn_chain(
+            &AttnChainDims {
+                t_q,
+                t_kv,
+                d,
+                n_head,
+                scale,
+                has_q_bias: q_bias.is_some(),
+                has_out_bias: out_bias.is_some(),
+                causal: true,
+                q_offset,
+                // Decomposed reference — force the byte-for-byte
+                // `2 + 7·n_head` chain, never FA v2. The FA v2 seam is on
+                // [`Self::flash_attn_dev`] / `CudaDecodeSession`.
+                use_flash_attn: false,
+            },
+            &AttnChainPtrs {
+                xq: xq.buf.ptr,
+                q_w: q_w.buf.ptr,
+                q_bias: bias_ptr(q_bias, dummy.ptr),
+                k: k.buf.ptr,
+                v: v.buf.ptr,
+                out_w: out_w.buf.ptr,
+                out_bias: bias_ptr(out_bias, dummy.ptr),
+                q: q_buf.ptr,
+                context: context_buf.ptr,
+                qh: qh_buf.ptr,
+                vh: vh_buf.ptr,
+                kh_t: kh_t_buf.ptr,
+                scores: scores_buf.ptr,
+                probs: probs_buf.ptr,
+                ctx_h: ctx_h_buf.ptr,
+                out: out.buf.ptr,
+            },
+        )?;
+        self.sync_stream("cuStreamSynchronize")
+    }
+
+    /// Device-in/out fused attention that **unconditionally** dispatches the
+    /// FA v2 fused causal kernel ([`Self::launch_flash_attn_v2`]) — the public
+    /// wrapper the primitive parity test needs to exercise the FA v2 code path
+    /// directly.
+    ///
+    /// Byte-for-byte equivalent to
+    /// [`Self::attn_dev`] on the shapes the FA v2 kernel supports
+    /// (`d_head == 64`), but takes the FA v2 path regardless of `t_q`:
+    /// [`Self::launch_attn_chain`]'s internal `FA_V2_MIN_TQ = 16` gate
+    /// (reserved for the decoder-step fast path where the fusion cost would
+    /// dominate on `t_q == 1`) is **bypassed** here — the whole point of the
+    /// wrapper is to route through `launch_flash_attn_v2` so a caller
+    /// (primitive parity test on vast.ai) can differentiate FA v2 vs the
+    /// decomposed chain. Callers with `t_q < 16` MUST use [`Self::attn_dev`]
+    /// instead, otherwise they pay the FA v2 fusion overhead for a wasted
+    /// tile (this is a testing / diagnostic entrypoint, never the runtime
+    /// fast path — the session's internal seam still gates on `t_q >= 16`).
+    ///
+    /// Supports both `causal = true` (with a `q_offset` naming the absolute
+    /// position of query row 0; row `i` attends keys `[0, q_offset + i]`)
+    /// and `causal = false` (cross-attention, `q_offset` ignored). The FA v2
+    /// kernel branches on the `causal` parameter internally.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, `d % n_head != 0`,
+    ///   `d / n_head != 64` (the FA v2 kernel's tile / register-array design
+    ///   assumes Whisper's `d_head = 64`; wider heads would exceed the 40 KB
+    ///   shared-memory budget the kernel is compiled against — no silent
+    ///   over-allocation, FR-EX-08), or a `causal = true` request with
+    ///   `q_offset + t_q > t_kv` (the causal mask would attend positions past
+    ///   the K/V window, undefined behaviour in the kernel).
+    /// - [`VokraError::BackendUnavailable`] on a device allocation / copy /
+    ///   launch failure.
+    #[allow(clippy::too_many_arguments)] // fused-attention operand set (two Linears + K/V + dims + causal seam)
+    pub fn flash_attn_dev(
+        &self,
+        t_q: usize,
+        t_kv: usize,
+        d: usize,
+        n_head: usize,
+        xq: &CudaDeviceTensor<'_>,
+        q_w: &CudaDeviceTensor<'_>,
+        q_bias: Option<&CudaDeviceTensor<'_>>,
+        k: &CudaDeviceTensor<'_>,
+        v: &CudaDeviceTensor<'_>,
+        out_w: &CudaDeviceTensor<'_>,
+        out_bias: Option<&CudaDeviceTensor<'_>>,
+        scale: f32,
+        causal: bool,
+        q_offset: usize,
+        out: &mut CudaDeviceTensor<'_>,
+    ) -> Result<()> {
+        if t_q == 0 || t_kv == 0 || d == 0 || n_head == 0 {
+            return Err(VokraError::InvalidArgument(
+                "flash_attn_dev dimensions t_q, t_kv, d, n_head must all be >= 1".to_owned(),
+            ));
+        }
+        if d % n_head != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "flash_attn_dev d ({d}) must be divisible by n_head ({n_head})"
+            )));
+        }
+        let hd = d / n_head;
+        // The FA v2 kernel's tile budget (`Br·hd + 2·Bc·hd + Br·Bc` floats) is
+        // hard-tuned for `d_head == 64` (`FLASH_ATTN_V2_MIN_SHARED_BYTES`
+        // ≈ 40 KB, inside the 48 KB default per-block cap without opt-in via
+        // `cuFuncSetAttribute`). A different `hd` would either exceed that
+        // budget or waste it — reject explicitly rather than launch a kernel
+        // whose shared-memory sizing doesn't match its compile-time tile
+        // constants (FR-EX-08).
+        if hd != 64 {
+            return Err(VokraError::InvalidArgument(format!(
+                "flash_attn_dev d/n_head ({hd}) must equal 64 (FA v2 kernel's tile budget is d_head-fixed; see FLASH_ATTN_V2_MIN_SHARED_BYTES)"
+            )));
+        }
+        if causal && q_offset.saturating_add(t_q) > t_kv {
+            return Err(VokraError::InvalidArgument(format!(
+                "flash_attn_dev causal=true requires q_offset + t_q <= t_kv (got q_offset={q_offset}, t_q={t_q}, t_kv={t_kv})"
+            )));
+        }
+        let dd = checked_mul(d, d, "flash_attn_dev d*d")?;
+        let tkvd = checked_mul(t_kv, d, "flash_attn_dev t_kv*d")?;
+        expect_len(
+            "flash_attn_dev xq",
+            xq.len,
+            checked_mul(t_q, d, "flash_attn_dev t_q*d")?,
+        )?;
+        expect_len("flash_attn_dev q_w", q_w.len, dd)?;
+        expect_len("flash_attn_dev k", k.len, tkvd)?;
+        expect_len("flash_attn_dev v", v.len, tkvd)?;
+        expect_len("flash_attn_dev out_w", out_w.len, dd)?;
+        expect_len(
+            "flash_attn_dev out",
+            out.len,
+            checked_mul(t_q, d, "flash_attn_dev out")?,
+        )?;
+        if let Some(b) = q_bias {
+            expect_len("flash_attn_dev q_bias", b.len, d)?;
+        }
+        if let Some(b) = out_bias {
+            expect_len("flash_attn_dev out_bias", b.len, d)?;
+        }
+        let f = size_of::<f32>();
+        let tqd = checked_mul(
+            checked_mul(t_q, d, "flash_attn_dev t_q*d")?,
+            f,
+            "flash_attn_dev t_q*d bytes",
+        )?;
+        let tq_hd_b = checked_mul(
+            checked_mul(t_q, hd, "flash_attn_dev t_q*hd")?,
+            f,
+            "flash_attn_dev qh bytes",
+        )?;
+        let tkv_hd_b = checked_mul(
+            checked_mul(t_kv, hd, "flash_attn_dev t_kv*hd")?,
+            f,
+            "flash_attn_dev vh bytes",
+        )?;
+        let hd_tkv_b = checked_mul(
+            checked_mul(hd, t_kv, "flash_attn_dev hd*t_kv")?,
+            f,
+            "flash_attn_dev kh bytes",
+        )?;
+        // FA v2 never touches `scores` / `probs` (the fused softmax lives in
+        // shared memory inside the kernel), but `AttnChainPtrs` still requires
+        // both fields. Bind them to the shared `dummy` — the FA v2 code path
+        // never dereferences them, matching the intent that unused pointers
+        // are typed but inert (mirrors how bias-less GEMMs bind `q_bias =
+        // dummy` on the decomposed chain).
+        let dummy = self.alloc(f)?;
+        let q_buf = self.alloc(tqd)?;
+        let context_buf = self.alloc(tqd)?;
+        let qh_buf = self.alloc(tq_hd_b)?;
+        let vh_buf = self.alloc(tkv_hd_b)?;
+        let kh_buf = self.alloc(hd_tkv_b)?;
+        let ctx_h_buf = self.alloc(tq_hd_b)?;
+        // Direct dispatch to `launch_flash_attn_v2` — deliberately NOT via
+        // `launch_attn_chain`, which would silently gate on `FA_V2_MIN_TQ = 16`
+        // and fall through to the decomposed path for smaller `t_q`. The
+        // wrapper's whole reason to exist is to exercise the FA v2 kernel
+        // unconditionally; downstream callers who want the gated fast-path
+        // behaviour must use `attn_dev` or the `CudaDecodeSession`.
+        self.launch_flash_attn_v2(
+            &AttnChainDims {
+                t_q,
+                t_kv,
+                d,
+                n_head,
+                scale,
+                has_q_bias: q_bias.is_some(),
+                has_out_bias: out_bias.is_some(),
+                causal,
+                q_offset,
+                // Marker only — `launch_flash_attn_v2` doesn't inspect it (it
+                // is called directly, not through the gate). Kept `true` for
+                // consistency with the field's contract ("FA v2 is on the
+                // current chain").
+                use_flash_attn: true,
+            },
+            &AttnChainPtrs {
+                xq: xq.buf.ptr,
+                q_w: q_w.buf.ptr,
+                q_bias: bias_ptr(q_bias, dummy.ptr),
+                k: k.buf.ptr,
+                v: v.buf.ptr,
+                out_w: out_w.buf.ptr,
+                out_bias: bias_ptr(out_bias, dummy.ptr),
+                q: q_buf.ptr,
+                context: context_buf.ptr,
+                qh: qh_buf.ptr,
+                vh: vh_buf.ptr,
+                // `kh_t` field name is a historical carry-over from the
+                // decomposed path; on the FA v2 code path this buffer holds
+                // the NON-transposed `kh[t_kv, hd]` (the FA v2 kernel's
+                // contract). See `launch_flash_attn_v2` for the col_gather
+                // launch that writes it.
+                kh_t: kh_buf.ptr,
+                // Unused by FA v2 — bound to the never-read dummy.
+                scores: dummy.ptr,
+                probs: dummy.ptr,
                 ctx_h: ctx_h_buf.ptr,
                 out: out.buf.ptr,
             },
