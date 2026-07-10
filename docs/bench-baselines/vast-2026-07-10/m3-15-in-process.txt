@@ -1,0 +1,5 @@
+[[reference-hardware]] M1 iMac (Apple Silicon, Metal backend, macOS)
+[[reference-hardware]] Reference desktop (x86_64 + RTX 4090, CUDA backend, Linux)
+[[reference-hardware-note]] NFR-PF-05 budget = 90 ms; this harness runs the schema+WAV layer only and uses a deterministic FakeSynth (see module doc for the GPU pre-warm assumption).
+[[measurement]] {"boundary":"http_end_to_end","short_utterance":"Hello world.","iterations":100,"warmup":10,"median_us":87,"p50_us":87,"p95_us":178,"max_us":207,"budget_ms":90}
+[[measurement]] {"boundary":"time_to_first_audio","short_utterance":"Hello world.","iterations":100,"warmup":10,"median_us":34,"p50_us":34,"p95_us":36,"max_us":55,"budget_ms":90}

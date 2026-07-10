@@ -1,0 +1,24 @@
+vokra-server — Vokra single-binary API server (v0.5 / M2-09).
+
+USAGE:
+    vokra-server [OPTIONS]
+
+OPTIONS:
+    --http-bind <ADDR>       HTTP (OpenAI/vLLM/piper-plus) listener.
+                             Default: 127.0.0.1:8080
+    --wyoming-bind <ADDR>    Wyoming Protocol TCP listener.
+                             Default: 127.0.0.1:10300
+    --config <PATH>          Optional TOML config file (overrides defaults,
+                             overridden by env and CLI flags).
+    -h, --help               Print this help and exit.
+    -V, --version            Print version and exit.
+
+ENVIRONMENT:
+    VOKRA_HTTP_BIND          Same as --http-bind.
+    VOKRA_WYOMING_BIND       Same as --wyoming-bind.
+    VOKRA_CONFIG             Same as --config.
+
+Bind defaults are LOOPBACK. Expose to the network only via a reverse proxy
+(nginx / Caddy) or by explicitly passing --http-bind 0.0.0.0:<port>.
+See docs/tickets/m2/M2-09-vokra-server for the full scope.
+
