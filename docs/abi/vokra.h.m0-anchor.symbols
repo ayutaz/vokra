@@ -1,11 +1,33 @@
-# Vokra C ABI anchor snapshot — v0.9 window.
+# Vokra C ABI historical anchor — M0 (v0.1 spike, cbindgen output at M0-09).
 #
-# Regenerate with: scripts/check-abi-changelog.sh --update-snapshot
-# Diff against with: scripts/check-abi-changelog.sh
+# Source: git commit fe9b67f (M0-09: C ABI + cbindgen — 単一 vokra.h から
+#         VAD/ASR/TTS 呼出、C スモーク 3本実走 PASS), captured 2026-07-03.
+#         M0-10 (Unity C# demo) did NOT touch include/vokra.h; this is the
+#         terminal M0 header. Regenerated from git via
+#         `git show fe9b67f:include/vokra.h | scripts/check-abi-changelog.sh --list`
+#         (piped through the same extractor used for the v0.9 baseline).
+#
+# Purpose: historical anchor for M3-16 (`scripts/abi-diff.sh` — added / removed
+#          / changed exports + typedefs vs. the current include/vokra.h) and
+#          for M4-12 preparation. Feeds the M3-16-T04 changelog aggregation.
+#
+# Regenerate with:
+#   git show fe9b67f:include/vokra.h > /tmp/vokra-m0.h
+#   HDR=/tmp/vokra-m0.h scripts/check-abi-changelog.sh --list \
+#     >  docs/abi/vokra.h.m0-anchor.symbols.tmp
+#   # (or use the same awk pipeline directly on /tmp/vokra-m0.h)
+#
+# Diff against with: scripts/abi-diff.sh
 #
 # One line per exported symbol, format:
 #   FUNC <name>|<normalized prototype>
 #   TYPEDEF <name>|<normalized declaration>
+#
+# NOT the v0.9 baseline: the freeze anchor for the v0.9 window is
+# docs/abi/vokra.h.v0.9-baseline.symbols (checked by
+# scripts/check-abi-changelog.sh). This file is IMMUTABLE — it records
+# history, not policy. Do not update it when the working-tree header
+# changes; regenerate it only if the M0 anchor commit is re-tagged.
 #
 # See docs/abi-changelog.md for the schema and freeze policy.
 FUNC vokra_asr_transcribe|enum vokra_status_t vokra_asr_transcribe(const struct vokra_session_t *session, const float *pcm, size_t num_samples, int32_t sample_rate, char **out_text_utf8)
@@ -13,18 +35,13 @@ FUNC vokra_audio_free|void vokra_audio_free(float *pcm, size_t num_samples)
 FUNC vokra_last_error|const char *vokra_last_error(void)
 FUNC vokra_session_create_from_file|enum vokra_status_t vokra_session_create_from_file(const char *path_utf8, struct vokra_session_t **out_session)
 FUNC vokra_session_destroy|void vokra_session_destroy(struct vokra_session_t *session)
-FUNC vokra_session_retain|enum vokra_status_t vokra_session_retain(const struct vokra_session_t *session, struct vokra_session_t **out_session)
 FUNC vokra_stream_destroy|void vokra_stream_destroy(struct vokra_stream_t *stream)
-FUNC vokra_stream_interrupt|enum vokra_status_t vokra_stream_interrupt(struct vokra_stream_t *stream)
 FUNC vokra_stream_open|enum vokra_status_t vokra_stream_open(const struct vokra_session_t *session, int32_t sample_rate, struct vokra_stream_t **out_stream)
-FUNC vokra_stream_poll_events|enum vokra_status_t vokra_stream_poll_events(struct vokra_stream_t *stream, struct vokra_event_t *out_events, size_t capacity, size_t *out_count)
 FUNC vokra_stream_poll|enum vokra_status_t vokra_stream_poll(struct vokra_stream_t *stream, float *out_probs, size_t capacity, size_t *out_count)
 FUNC vokra_stream_push_pcm|enum vokra_status_t vokra_stream_push_pcm(struct vokra_stream_t *stream, const float *pcm, size_t num_samples)
 FUNC vokra_string_free|void vokra_string_free(char *s)
 FUNC vokra_tts_synthesize|enum vokra_status_t vokra_tts_synthesize(const struct vokra_session_t *session, const char *text_utf8, float **out_pcm, size_t *out_num_samples, int32_t *out_sample_rate)
 FUNC vokra_version|const char *vokra_version(void)
-TYPEDEF vokra_event_kind_t|typedef enum vokra_event_kind_t { VOKRA_EVENT_UNKNOWN = 0, VOKRA_EVENT_SPEECH_PROB = 1, VOKRA_EVENT_TOKEN = 2, } vokra_event_kind_t
-TYPEDEF vokra_event_t|typedef struct vokra_event_t { enum vokra_event_kind_t kind; uint32_t a; float b; } vokra_event_t
 TYPEDEF vokra_session_t|typedef struct vokra_session_t vokra_session_t
 TYPEDEF vokra_status_t|typedef enum vokra_status_t { VOKRA_OK = 0, VOKRA_ERROR_IO = 1, VOKRA_ERROR_MODEL_LOAD = 2, VOKRA_ERROR_UNSUPPORTED_OP = 3, VOKRA_ERROR_BACKEND_UNAVAILABLE = 4, VOKRA_ERROR_INVALID_ARGUMENT = 5, VOKRA_ERROR_GRAPH_VALIDATION = 6, VOKRA_ERROR_NOT_IMPLEMENTED = 7, VOKRA_ERROR_PANIC = 8, VOKRA_ERROR_OTHER = 9, } vokra_status_t
 TYPEDEF vokra_stream_t|typedef struct vokra_stream_t vokra_stream_t
