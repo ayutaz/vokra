@@ -1,0 +1,74 @@
+# vokra-server-bench — OUT-OF-WORKSPACE integration (opt-in benchmarking tool).
+#
+# This crate is deliberately NOT a member of the Vokra root workspace. It links
+# an HTTP client (ureq) + serde_json — neither of which are `vokra-*` — so it
+# CANNOT live inside the zero-dependency runtime workspace (NFR-DS-02, enforced
+# on the ROOT `Cargo.lock` by scripts/check-zero-deps.sh). The empty
+# `[workspace]` table below makes this directory its own workspace root with
+# its own `Cargo.lock`, fully isolated from the root graph.
+#
+# Purpose: real-HTTP (loopback or LAN) TTFA / total-latency measurement client
+# against a running `vokra-server` process — the M3-15 handover § 4 "Option C"
+# gap-fill. The in-process bench at
+# `integrations/vokra-server/benches/tts_latency.rs` measures the schema-layer
+# floor (deterministic FakeSynth, no network); this crate measures the wire
+# boundary against a live `vokra-server` on localhost or a LAN peer, which is
+# what NFR-PF-05 (75 ms TTFA) actually specifies.
+#
+# See docs/m3-15-server-latency-handover.md § 4 "Option C" for the canonical
+# operator runbook, exit-code contract, and JSON output schema this binary
+# honours byte-for-byte.
+[package]
+name = "vokra-server-bench"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+publish = false
+description = "HTTP-boundary TTS latency benchmark client for vokra-server (M3-15 T11 gap-fill; NOT part of the zero-dependency runtime)."
+
+# Own workspace root — isolates this crate (and its non-vokra deps) from the
+# Vokra root workspace and gives it a separate Cargo.lock.
+[workspace]
+
+[[bin]]
+name = "vokra-server-bench"
+path = "src/main.rs"
+
+[lib]
+name = "vokra_server_bench"
+path = "src/lib.rs"
+
+[dependencies]
+# ureq 2.x — blocking, synchronous HTTP client (MIT/Apache-2.0). Chosen over
+# reqwest+tokio because a bench binary must not skew its own measurements with
+# an async runtime's scheduling jitter. `std::time::Instant` bracketing a
+# blocking `send_bytes(...)` gives an unambiguous wall-time for the request
+# round-trip. Concurrency is handled with `std::thread::scope` in
+# `src/bench.rs` — no async runtime, no `future.poll()` reordering the
+# "first byte" moment.
+#
+# Default features are `["tls", "gzip"]`; `tls` maps to rustls + webpki-roots
+# so no system OpenSSL / openssl-sys is pulled in. An operator can therefore
+# point this at either a plaintext local `http://127.0.0.1:8080` or a LAN
+# `https://` deployment without recompiling.
+ureq = "2"
+# Serialising the request JSON body via `serde_json::json!({...}).to_string()`
+# gives correct UTF-8 escaping for `--text` payloads (Unicode / control chars
+# are common in ASR/TTS smoke fixtures) without hand-rolling escape logic in
+# this crate. `serde_json` alone (no `serde` derives) keeps the transitive
+# dep-count small — the excluded-workspace `Cargo.lock` stays honest.
+serde_json = "1"
+
+[dev-dependencies]
+# No extra deps beyond the runtime set — the tests spawn their mock HTTP
+# server with `std::net::TcpListener` + `std::thread::spawn` (see
+# `tests/e2e.rs`). Deliberately NOT pulling reqwest / hyper / httpmock: the
+# whole point of this crate is to keep the wire-side dep-count auditable.
+
+[lints.rust]
+# This crate makes NO `unsafe` calls; the ureq / serde_json wire boundary is
+# entirely safe Rust. `forbid` is stronger than `deny` — a future edit that
+# introduces an `unsafe` block becomes a hard compile error.
+unsafe_code = "forbid"
+missing_docs = "warn"

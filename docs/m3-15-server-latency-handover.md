@@ -53,17 +53,20 @@ Server:
 - 非対応 backend を指定した場合は起動時に `BackendUnavailable` explicit error で終了、silent CPU fallback しない。
 - **CPU baseline は reference として計測しておく**と regression 判定が容易。
 
-## 4. TTS レイテンシ計測 (実 HTTP client、client-side は現時点 owner-side)
+## 4. TTS レイテンシ計測 (実 HTTP client)
 
-**Honest state**: `vokra-cli bench` は現時点 in-process の GGUF ベンチ (`--model` / `--input` / `--text` / `--iters` / `--warmup` / `--format` / `--baseline` / `--backend` / `--task` フラグ) のみサポートし、**`--server` / `--endpoint` / `--concurrent` フラグは未実装** (`crates/vokra-cli/src/bench.rs::parse_args`)。M3-15-T11 の ticket spec 上は "vokra-cli bench を multi-session server mode に拡張" と書かれているが、実 land は `integrations/vokra-server/benches/tts_latency.rs` に in-process bench として着地しており、実 HTTP round-trip 計測は分離されている。
+**Honest state (2026-07-12 更新)**: `vokra-cli bench` は 2026-07-12 land で **`--server` / `--endpoint` / `--concurrent` / `--voice` / `--budget-ms` / `--timeout-secs` フラグを recognise する** (`crates/vokra-cli/src/bench.rs::parse_args`) ようになった。ただし vokra-cli 自身は TCP ソケットを開かず、`--server` が渡されると FR-EX-08 の明示的な redirect (exit code = 4) を出して `integrations/vokra-cli-bench-server/` (pure-`std::net::TcpStream`、zero third-party deps) を指す。M3-15-T11 の ticket spec 上は "vokra-cli bench を multi-session server mode に拡張" と書かれていたが、実 land は 3 か所に分離した:
+1. **in-process (schema-layer floor)**: `integrations/vokra-server/benches/tts_latency.rs` (Wave 3.5 land)
+2. **HTTP-boundary (wire) — ureq/serde_json 版**: `integrations/vokra-server-bench/` (2026-07-11 land、excluded workspace、独自 Cargo.lock、ureq + serde_json ベース、TLS 対応)
+3. **HTTP-boundary (wire) — zero-dep pure-std 版**: `integrations/vokra-cli-bench-server/` (2026-07-12 land、excluded workspace、独自 Cargo.lock は自身のみ、pure-`std::net::TcpStream` + hand-written HTTP/1.1 + hand-crafted JSON、TLS 非対応)
 
-したがって v0.9 参考採取は以下の 3 経路のいずれか (推奨は A):
+以下 4 経路のいずれかで v0.9 参考採取する (推奨は **C = ureq 版 or D = pure-std 版**、次点で A = floor 値):
 
-### A. In-process reference bench を primary artifact として採用 (推奨、CC land 済)
+### A. In-process reference bench を primary artifact として採用 (floor 値、CC land 済)
 
-`benches/tts_latency.rs` (§2 参照) の JSON blob を v0.9 reference として記録。**FakeSynth 経由ゆえ engine backend 独立の floor 値**であり、実 engine (Metal / CUDA) の値ではない旨を明記する。
+`benches/tts_latency.rs` (§2 参照) の JSON blob を v0.9 reference として記録。**FakeSynth 経由ゆえ engine backend 独立の floor 値**であり、実 engine (Metal / CUDA) の値ではない旨を明記する。**wire (network + tokio scheduler) は含まない**。
 
-### B. `curl` + timing loop で HTTP レイテンシ実測 (owner-side、最小工数)
+### B. `curl` + timing loop で HTTP レイテンシ実測 (owner-side、最小工数、fallback)
 
 ```bash
 # server 側で /api/tts を LISTEN (§3 参照)
@@ -86,15 +89,107 @@ sort -n tts_curl_100.tsv | awk '{
 }'
 ```
 
-`curl` は真の TTFA (Time To First Audio byte) を測るには `-w '%{time_starttransfer}'` を使う (final byte を測るなら `%{time_total}`)。**両方採取して報告するのが正確**。
+`curl` は真の TTFA (Time To First Audio byte) を測るには `-w '%{time_starttransfer}'` を使う (final byte を測るなら `%{time_total}`)。**両方採取して報告するのが正確**。sustained concurrency は `xargs -P` で回すが sample の正確な quantile は awk で自前計算する必要があり、fragile な shell math ゆえ経路 C を推奨。
 
-### C. `vokra-cli bench` に server mode を CC follow-up で追加 (M4 スコープ、未着手)
+### C. `vokra-server-bench` binary で HTTP レイテンシ実測 (推奨、CC land 済 2026-07-11)
 
-M3-15-T11 の "server mode 拡張" は実装未完 = 現時点は in-process bench に着地。**follow-up として `--server` / `--endpoint` / `--concurrent` を追加する CC 実装は Investigation を再実行して "CC-implementable" 判定に載せることは可能** (工数見積 = 4〜8 時間、reqwest 等の HTTP client crate を root workspace 非干渉 = excluded workspace の追加で対応、zero-dep NFR-DS-02 を破らない設計が必要)。
+`integrations/vokra-server-bench/` = excluded workspace binary。ureq (blocking HTTP) + serde_json を含み **独自 Cargo.lock で isolate** (root workspace 非干渉、NFR-DS-02 保存)。**sustained concurrency + nearest-rank percentile + JSON schema 準拠** で経路 A/B の弱点を両方埋める。
+
+```bash
+# 一回きり (root workspace 非干渉なのでこの ディレクトリで build する)
+cd integrations/vokra-server-bench
+cargo build --release
+./target/release/vokra-server-bench --help  # 全フラグ + exit code contract
+
+# server 側で /api/tts を LISTEN (§3 参照)
+# client 側 (single-session baseline)
+./target/release/vokra-server-bench \
+    --server http://127.0.0.1:8080 \
+    --endpoint /api/tts \
+    --text "Hello world" \
+    --voice en_US-libritts-high \
+    --iters 100 --warmup 10 --concurrent 1 \
+    --format json --budget-ms 75 > tts_p1.json
+
+# 8-concurrent (multi-session dispatch)
+./target/release/vokra-server-bench \
+    --server http://127.0.0.1:8080 \
+    --iters 100 --warmup 10 --concurrent 8 \
+    --format json --budget-ms 75 > tts_p8.json
+
+# 過負荷 (default max_concurrent_sessions を超える設定、FR-SV-06 graceful degradation)
+./target/release/vokra-server-bench \
+    --server http://127.0.0.1:8080 \
+    --iters 500 --warmup 0 --concurrent 64 \
+    --format json --budget-ms 75 > tts_p64.json
+# → tts_p64.json の counters.over_capacity_503 と counters.ok_2xx で graceful degradation を判定
+```
+
+**出力 JSON schema** (M2-14 の schema と互換、`--format kv` は同キーの `key=value` 版):
+```json
+{"endpoint":"http://127.0.0.1:8080/api/tts","utterance":"Hello world","voice":"en_US-libritts-high",
+ "iterations":100,"warmup":10,"concurrent":8,
+ "ttfa_ms":{"p50":48.1,"p95":72.3,"p99":91.0,"median":48.1,"max":125.4},
+ "total_ms":{"p50":48.5,"p95":72.7,"p99":91.4,"median":48.5,"max":125.8},
+ "counters":{"ok_2xx":100,"over_capacity_503":0,"rate_limited_429":0,"client_error_4xx":0,"server_error_5xx":0,"transport_errors":0},
+ "budget_ms":75,"verdict":"PASS"}
+```
+
+**Exit code contract** (FR-EX-08、silent fallback 禁止):
+- `0` — 測定完了 (verdict は PASS / FAIL のいずれもあり得る、bench 側は判定を強制しない)
+- `2` — CLI 引数エラー
+- `3` — 全リクエストが transport 失敗 (server 不到達 = 実測不能)
+
+**Boundary** (`integrations/vokra-server-bench/src/lib.rs` module doc に詳細):
+- `ttfa_ms` = start → ureq の `send_bytes(...)` return (status + headers 受信、TTFA を近似; 現行 non-streaming vocoder では body drain とほぼ等価)
+- `total_ms` = start → response body 完全 drain
+
+### D. `vokra-cli-bench-server` binary で HTTP レイテンシ実測 (推奨 zero-dep、CC land 済 2026-07-12)
+
+`integrations/vokra-cli-bench-server/` = excluded workspace binary。**pure-`std::net::TcpStream` + hand-written HTTP/1.1 + hand-crafted JSON**、`Cargo.lock` は自身のみ (第三者クレート ゼロ)、TLS 非対応 (loopback 参照環境専用)。経路 C (ureq + serde_json) と **byte-for-byte 同一の JSON 出力スキーマ + KV スキーマ + exit code contract** を維持する。`vokra-cli bench --server URL` を打つと exit 4 で本 binary への redirect 案内が stderr に出る (silent fallback 禁止 = FR-EX-08)。
+
+```bash
+# 一回きり build (ureq 版と同じディレクトリ流儀)
+cd integrations/vokra-cli-bench-server
+cargo build --release
+./target/release/vokra-cli-bench-server --help  # 全フラグ + exit code contract
+
+# server 側で /api/tts を LISTEN (§3 参照)
+# client 側 (single-session baseline)
+./target/release/vokra-cli-bench-server \
+    --server http://127.0.0.1:8080 \
+    --endpoint /api/tts \
+    --text "Hello world" \
+    --voice en_US-libritts-high \
+    --iters 100 --warmup 10 --concurrent 1 \
+    --format json --budget-ms 75 > tts_p1.json
+
+# 8-concurrent (経路 C と同じフラグ)
+./target/release/vokra-cli-bench-server \
+    --server http://127.0.0.1:8080 \
+    --iters 100 --warmup 10 --concurrent 8 \
+    --format json --budget-ms 75 > tts_p8.json
+```
+
+**Boundary** (`integrations/vokra-cli-bench-server/src/lib.rs` module doc に詳細):
+- `ttfa_ms` = start → `\r\n\r\n` header terminator 受信 (経路 C の ureq `send_bytes(...)` return とほぼ等価、Content-Length'd body なら差はゼロ)
+- `total_ms` = start → response body 完全 drain (Content-Length OR chunked OR read-to-EOF)
+
+**経路 D と C の使い分け**:
+- **TLS が要る (LAN 越し `https://`、reverse proxy 経由)** → 経路 C (ureq + rustls)。経路 D は `https://` を URL parse 時 explicit error で拒否 (FR-EX-08)。
+- **`Cargo.lock` の第三者クレート ゼロを厳格に要求** (NFR-DS-02 belt-and-suspenders) → 経路 D。経路 C は excluded workspace ゆえ root `Cargo.lock` は汚さないが、excluded workspace の `Cargo.lock` は ureq + rustls + webpki-roots 系の transitive を含む。
+- **どちらも loopback で通したい** → 経路 C を primary 参考値、経路 D を cross-check とする ({ureq → std}, {rustls → 生 TCP} の 2 系統 で JSON が byte-一致することを確認)。
+
+**Exit code contract** (FR-EX-08 = 経路 C と同一):
+- `0` — 測定完了 (verdict は PASS / FAIL のいずれもあり得る)
+- `2` — CLI 引数エラー
+- `3` — 全リクエストが transport 失敗 (server 不到達 = 実測不能)
 
 **判定基準 (NFR-PF-05 v0.9)**:
 - **PASS reference (経路 A)**: `benches/tts_latency.rs` の `http_end_to_end.median_us` が `75_000` (= 75 ms) 未満。**FakeSynth 経路ゆえ floor 値であり実 engine 値ではない**旨を報告に明記。
 - **PASS 実測 (経路 B)**: `curl -w '%{time_starttransfer}'` (TTFA) の p50 が 75 ms 未満。
+- **PASS 実測 (経路 C、推奨・TLS 対応)**: `vokra-server-bench` の `ttfa_ms.p50` (JSON 出力) が 75 ms 未満。
+- **PASS 実測 (経路 D、推奨 zero-dep)**: `vokra-cli-bench-server` の `ttfa_ms.p50` (JSON 出力) が 75 ms 未満。
 - **未達**: 未達値をそのまま記録・公開 = 新規閾値を発明しない (M2-14 と同運用)。四半期 review (NFR-MT-05) に申し送り。
 
 ## 5. Multi-session smoke (FR-SV-06)
@@ -181,7 +276,10 @@ Multi-session graceful degradation (over-capacity):
 
 ## 8. 参考
 
-- `integrations/vokra-server/benches/tts_latency.rs` — in-process reference bench (Wave 3.5 land、CC 側参考値)
+- `integrations/vokra-server/benches/tts_latency.rs` — in-process reference bench (Wave 3.5 land、CC 側参考値 = 経路 A、schema-layer floor)
+- `integrations/vokra-server-bench/` — HTTP-boundary bench (2026-07-11 land、excluded workspace = 経路 C、推奨・TLS 対応。ureq + serde_json、独自 Cargo.lock、`--server` / `--endpoint` / `--concurrent` / `--budget-ms` / `--format kv|json` サポート、38 tests = 30 unit + 8 e2e mock)
+- `integrations/vokra-cli-bench-server/` — HTTP-boundary bench (2026-07-12 land、excluded workspace = 経路 D、推奨 zero-dep。pure-`std::net::TcpStream` + hand-written HTTP/1.1 + hand-crafted JSON、独自 Cargo.lock は自身のみ、`Cargo.lock` に第三者クレート ゼロ、`--server` / `--endpoint` / `--concurrent` / `--voice` / `--budget-ms` / `--timeout-secs` / `--format kv|json` サポート、66 tests = 53 unit + 13 e2e mock。`vokra-cli bench --server URL` を打つと exit 4 で本 binary への redirect 案内を stderr に出す)
+- `crates/vokra-cli/src/bench.rs` — `--server` / `--endpoint` / `--concurrent` / `--voice` / `--budget-ms` / `--timeout-secs` フラグの parse + FR-EX-08 redirect (2026-07-12 land、M3-15-T11 の gap-fill = handover doc §4 が指摘していた "vokra-cli には無い" 状態を解消。vokra-cli 自身は TCP を開かず、`--server` を渡すと exit 4 で `integrations/vokra-cli-bench-server` へ redirect。10 new tests + 6 test literal extensions)
 - `integrations/vokra-server/src/latency.rs` — latency recorder (`docs/tickets/m3/M3-15-vokra-server-multi-session.md` M3-15-T11)
 - `integrations/vokra-server/src/service.rs` — dispatch layer (Wave 11: Voxtral + Whisper beam 対称配線 / Wave 12: `no_repeat_ngram_size` core-side plumbing)
 - `docs/tickets/m3/M3-15-vokra-server-multi-session.md` — ticket spec (T01-T14 全 CC、依頼者チケット無し。実測は本 handover が引き取る)

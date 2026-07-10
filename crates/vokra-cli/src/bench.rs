@@ -64,6 +64,44 @@ struct BenchArgs {
     /// Optional task override — only `mel-frontend` (Whisper log-mel only,
     /// M2-04-T11) is recognized today. Absent → default arch → task mapping.
     task_hint: Option<TaskHint>,
+
+    // ---- M3-15-T11 HTTP-boundary bench routing --------------------------
+    //
+    // Recognising these flags in `parse_args` is the first half of the
+    // M3-15-T11 gap-fill: `docs/m3-15-server-latency-handover.md` § 4
+    // documents that `vokra-cli bench` did not accept `--server` /
+    // `--endpoint` / `--concurrent` before this WP. The second half — the
+    // actual HTTP-boundary measurement — happens in
+    // `integrations/vokra-cli-bench-server/` (excluded workspace,
+    // pure-`std::net::TcpStream`, zero third-party deps). This CLI does NOT
+    // route requests over the wire itself; when `--server` is supplied it
+    // emits an explicit FR-EX-08 error that points the operator at the
+    // dedicated binary. Rationale: putting a TCP client inside the
+    // root-workspace CLI would either (a) require a subprocess spawn per
+    // bench run (adds ~1 ms + doubles CLI parsing, easy to get wrong), or
+    // (b) duplicate the HTTP/1.1 client that lives — auditable — in the
+    // excluded workspace crate. See the redirect message emitted by
+    // `execute_http_bench_redirect` below for the operator's exact invocation.
+    /// `--server URL` — HTTP-boundary bench base URL. Trigger for the
+    /// FR-EX-08 redirect to `vokra-cli-bench-server`. Default None.
+    server: Option<String>,
+    /// `--endpoint PATH` — URL path appended to `--server` for the HTTP
+    /// bench. Default `/api/tts` (piper-plus HTTP). Recognised at parse
+    /// time even when `--server` is absent so a caller building an
+    /// argv list once for both paths does not need to strip the flag.
+    endpoint: String,
+    /// `--concurrent N` — concurrent worker count for the HTTP bench.
+    /// Default 1. Recognised at parse time (see `endpoint`).
+    concurrent: usize,
+    /// `--voice NAME` — Piper voice tag included in the TTS body.
+    /// Default `en_US-libritts-high` (matches the handover runbook).
+    voice: String,
+    /// `--budget-ms N` — latency budget echoed into the artifact by
+    /// the HTTP bench. Default 75 (NFR-PF-05 v0.9 value).
+    budget_ms: u64,
+    /// `--timeout-secs N` — per-request HTTP timeout used by the HTTP
+    /// bench. Default 30.
+    timeout_secs: u64,
 }
 
 /// Parses a `--backend` value. The variants always exist (core enum); whether
@@ -148,10 +186,15 @@ pub(crate) const USAGE: &str = "\
 vokra-cli bench — measure RTF / TTFA / jitter / p50-p95-p99
 
 USAGE:
-    vokra-cli bench --model <model.gguf> [--input <in.wav>] [--text <string>]
-                    [--iters <n>] [--warmup <n>] [--format kv|json] [--baseline <report.json>]
+    In-process GGUF bench (default):
+        vokra-cli bench --model <model.gguf> [--input <in.wav>] [--text <string>]
+                        [--iters <n>] [--warmup <n>] [--format kv|json] [--baseline <report.json>]
 
-OPTIONS:
+    HTTP-boundary bench (M3-15-T11): recognises the flags below and points at
+    the excluded-workspace binary `vokra-cli-bench-server` (pure-std, zero-dep).
+    See docs/m3-15-server-latency-handover.md § 4 Option C.
+
+IN-PROCESS OPTIONS:
     --model <path>       GGUF model file (arch selects VAD / ASR / TTS)
     --input <path>       mono WAV input (required for VAD and ASR)
     --text <string>      text to synthesize (TTS; defaults to a fixed phrase)
@@ -169,6 +212,23 @@ OPTIONS:
                            CosyVoice2 chunk-aware pipeline with injected
                            deterministic closures + identity Mimi decoder over a
                            fixed 1 s target — no --model required.
+
+HTTP-BOUNDARY OPTIONS (M3-15-T11):
+    --server <URL>       server base URL — TRIGGER for the HTTP-boundary bench.
+                         When present, vokra-cli emits an explicit FR-EX-08
+                         redirect: the actual TCP/HTTP client is the excluded-
+                         workspace binary `vokra-cli-bench-server` (pure-std,
+                         Cargo.lock contains only itself). Rationale: putting
+                         a TCP client inside the root workspace CLI would
+                         either add a subprocess spawn (~1 ms + doubled arg
+                         parsing) or duplicate ~500 lines of auditable HTTP/1.1
+                         code that lives — once — in the excluded workspace.
+    --endpoint <PATH>    URL path appended to --server [default /api/tts]
+    --concurrent <n>     concurrent worker threads for HTTP bench [default 1]
+    --voice <name>       Piper voice tag [default en_US-libritts-high]
+    --budget-ms <n>      latency budget echoed by HTTP bench [default 75]
+    --timeout-secs <n>   per-request HTTP timeout [default 30]
+
     -h, --help           print this help
 ";
 
@@ -182,6 +242,13 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
     let mut baseline: Option<String> = None;
     let mut backend = BackendKind::Cpu;
     let mut task_hint: Option<TaskHint> = None;
+    // ---- M3-15-T11 HTTP-boundary bench routing --------------------------
+    let mut server: Option<String> = None;
+    let mut endpoint: String = "/api/tts".to_owned();
+    let mut concurrent: usize = 1;
+    let mut voice: String = "en_US-libritts-high".to_owned();
+    let mut budget_ms: u64 = 75;
+    let mut timeout_secs: u64 = 30;
 
     let mut i = 0;
     while i < args.len() {
@@ -235,6 +302,51 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
                 task_hint = Some(parse_task_hint(v)?);
                 i += 2;
             }
+
+            // ---- M3-15-T11 HTTP-boundary bench routing ------------------
+            //
+            // These four flags are RECOGNISED (they parse cleanly and are
+            // stored on `BenchArgs`) but only `--server` triggers the
+            // redirect emitted from `main`. The other three flags land as
+            // defaults if not supplied — no interaction with the in-process
+            // GGUF path.
+            "--server" => {
+                server = Some(args.get(i + 1).ok_or("--server requires a value")?.clone());
+                i += 2;
+            }
+            "--endpoint" => {
+                endpoint = args
+                    .get(i + 1)
+                    .ok_or("--endpoint requires a value")?
+                    .clone();
+                i += 2;
+            }
+            "--concurrent" => {
+                let v = args.get(i + 1).ok_or("--concurrent requires a value")?;
+                concurrent = v
+                    .parse()
+                    .map_err(|_| format!("invalid --concurrent `{v}`"))?;
+                i += 2;
+            }
+            "--voice" => {
+                voice = args.get(i + 1).ok_or("--voice requires a value")?.clone();
+                i += 2;
+            }
+            "--budget-ms" => {
+                let v = args.get(i + 1).ok_or("--budget-ms requires a value")?;
+                budget_ms = v
+                    .parse()
+                    .map_err(|_| format!("invalid --budget-ms `{v}`"))?;
+                i += 2;
+            }
+            "--timeout-secs" => {
+                let v = args.get(i + 1).ok_or("--timeout-secs requires a value")?;
+                timeout_secs = v
+                    .parse()
+                    .map_err(|_| format!("invalid --timeout-secs `{v}`"))?;
+                i += 2;
+            }
+
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -242,17 +354,46 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
     if iters == 0 {
         return Err("--iters must be > 0".to_owned());
     }
+    if concurrent == 0 {
+        return Err("--concurrent must be > 0".to_owned());
+    }
+
+    // M3-15-T11: `--server` triggers the HTTP-boundary redirect path and
+    // is EXCLUSIVE with the in-process GGUF flags. Reject the combination
+    // at parse time so a caller doesn't quietly get "GGUF run, HTTP flags
+    // silently ignored" (FR-EX-08). `--model` is the canonical trigger for
+    // the in-process path; if both are supplied it is genuinely ambiguous.
+    if server.is_some() && model.is_some() {
+        return Err(
+            "--server (HTTP-boundary bench) and --model (in-process GGUF bench) are \
+             mutually exclusive; supply only one. See `vokra-cli bench --help`."
+                .to_owned(),
+        );
+    }
+    if server.is_some() && baseline.is_some() {
+        return Err(
+            "--baseline is only meaningful for the in-process GGUF bench; the \
+             HTTP-boundary bench emits P50/P95/P99 latency artifacts instead. \
+             See docs/m3-15-server-latency-handover.md § 4."
+                .to_owned(),
+        );
+    }
+    if server.is_some() && task_hint.is_some() {
+        return Err(
+            "--task is only meaningful for the in-process bench; --server routes to \
+             the HTTP-boundary bench binary. Drop --task if you intended --server."
+                .to_owned(),
+        );
+    }
+
     // `--model` is required for every task except the self-contained bench
-    // tasks (`mel-frontend`, `cosyvoice2-synthetic`). Enforce that asymmetry
-    // at parse time so the CLI keeps its FR-EX-08 "loud errors, no silent
-    // fallback" posture for the model-driven tasks while letting the
-    // self-contained benches (M2-04-T11 `mel-frontend`,
-    // M3-09-T24 `cosyvoice2-synthetic`) run without shipping any GGUF
-    // fixture.
+    // tasks (`mel-frontend`, `cosyvoice2-synthetic`) OR when `--server`
+    // takes over. Enforce that asymmetry at parse time so the CLI keeps
+    // its FR-EX-08 "loud errors, no silent fallback" posture.
     let no_model_ok = matches!(
         task_hint,
         Some(TaskHint::MelFrontend) | Some(TaskHint::Cosyvoice2Synthetic)
-    );
+    ) || server.is_some();
     if model.is_none() && !no_model_ok {
         return Err("--model is required".to_owned());
     }
@@ -266,6 +407,12 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
         baseline,
         backend,
         task_hint,
+        server,
+        endpoint,
+        concurrent,
+        voice,
+        budget_ms,
+        timeout_secs,
     })
 }
 
@@ -678,12 +825,87 @@ fn execute_cosyvoice2_synthetic_standalone(args: &BenchArgs) -> Result<BenchOutc
 }
 
 /// Entry point for `vokra-cli bench`.
+/// FR-EX-08 redirect: `--server` triggers the HTTP-boundary bench which lives
+/// in the excluded workspace crate `integrations/vokra-cli-bench-server/`
+/// (pure-`std::net::TcpStream`, zero third-party deps). vokra-cli itself does
+/// NOT open a socket. This function prints a byte-stable diagnostic that names
+/// the destination binary and reprints the operator's arguments so an
+/// automation pipeline can pipe the message into a `run.sh` re-invocation.
+///
+/// Returns exit code 4 (dedicated "wrong binary for this task" code, distinct
+/// from 2 = bad args and 3 = regression). Silent fallback to the in-process
+/// bench is deliberately NOT offered — that would silently ignore the
+/// operator's intent (FR-EX-08).
+fn execute_http_bench_redirect(a: &BenchArgs) -> Result<ExitCode, String> {
+    // Safe: the caller only reaches here after parse_args verified server.is_some().
+    let server = a.server.as_deref().expect("server checked by caller");
+    // The redirect is written to STDERR so a pipeline consuming stdout for a
+    // KV / JSON artifact does not accidentally slurp the diagnostic. The
+    // process exit code is what CI reads (see docstring above).
+    eprintln!(
+        "vokra-cli bench: --server routes HTTP-boundary latency to the excluded-\n\
+         workspace binary `vokra-cli-bench-server` (pure-std, zero third-party \n\
+         deps). vokra-cli itself does not open a socket — putting a TCP client \n\
+         inside the root workspace CLI would either require a subprocess spawn \n\
+         (~1 ms + doubled CLI parsing) or duplicate the HTTP/1.1 client that \n\
+         lives — once, auditable — in the excluded workspace crate.\n\
+         \n\
+         Build + run:\n\
+         \n\
+             cargo build --release \\\n\
+                 --manifest-path integrations/vokra-cli-bench-server/Cargo.toml\n\
+             integrations/vokra-cli-bench-server/target/release/vokra-cli-bench-server \\\n\
+                 --server {server} \\\n\
+                 --endpoint {endpoint} \\\n\
+                 --text \"{text}\" \\\n\
+                 --voice {voice} \\\n\
+                 --iters {iters} --warmup {warmup} --concurrent {concurrent} \\\n\
+                 --budget-ms {budget_ms} --timeout-secs {timeout_secs} \\\n\
+                 --format {format}\n\
+         \n\
+         See docs/m3-15-server-latency-handover.md § 4 Option C for the JSON \n\
+         schema, the exit-code contract, and the multi-session / graceful \n\
+         degradation semantics both binaries honour.",
+        server = server,
+        endpoint = a.endpoint,
+        // The utterance passes through as-is; if it contains a `"` the operator
+        // will notice and re-quote. We do not attempt shell-escape here because
+        // the exact escape rules differ across shells (bash / zsh / fish / cmd),
+        // and getting it silently wrong would be worse than a visible copy-paste
+        // fixup.
+        text = a.text.as_deref().unwrap_or("Hello world"),
+        voice = a.voice,
+        iters = a.iters,
+        warmup = a.warmup,
+        concurrent = a.concurrent,
+        budget_ms = a.budget_ms,
+        timeout_secs = a.timeout_secs,
+        format = match a.format {
+            Format::Kv => "kv",
+            Format::Json => "json",
+        },
+    );
+    // Exit 4 = "not in this binary — use the redirect target". Distinct from
+    // 2 (bad args, we could still parse them) and 3 (regression gate failure,
+    // which requires a real run). CI can add `|| test $? -eq 4` if it wants
+    // to auto-re-invoke the excluded workspace binary.
+    Ok(ExitCode::from(4))
+}
+
 pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     if args.iter().any(|a| a == "-h" || a == "--help") {
         print!("{USAGE}");
         return Ok(ExitCode::SUCCESS);
     }
     let a = parse_args(args)?;
+
+    // M3-15-T11: `--server` short-circuits into the HTTP-boundary redirect.
+    // Never reach `execute` (which would try to load a GGUF and fail with a
+    // confusing "--model required" error). The redirect is FR-EX-08 clean.
+    if a.server.is_some() {
+        return execute_http_bench_redirect(&a);
+    }
+
     let outcome = execute(&a)?;
 
     match a.format {
@@ -877,6 +1099,175 @@ mod tests {
         assert_eq!(parse_args(&args(&[])).err().unwrap(), "--model is required");
     }
 
+    // ---- M3-15-T11 --server / --endpoint / --concurrent flag parsing -----
+
+    /// `--server URL` is a valid trigger for the HTTP-boundary bench and
+    /// waives the `--model` requirement (the redirect target reads the
+    /// server URL directly, no GGUF is loaded here).
+    #[test]
+    fn parses_server_flag_and_waives_model_requirement() {
+        let a = parse_args(&args(&["--server", "http://127.0.0.1:8080"])).expect("valid");
+        assert_eq!(a.server.as_deref(), Some("http://127.0.0.1:8080"));
+        assert_eq!(a.endpoint, "/api/tts");
+        assert_eq!(a.concurrent, 1);
+        assert_eq!(a.voice, "en_US-libritts-high");
+        assert_eq!(a.budget_ms, 75);
+        assert_eq!(a.timeout_secs, 30);
+    }
+
+    /// All HTTP-boundary flags parse and set the expected fields.
+    #[test]
+    fn parses_all_http_boundary_flags() {
+        let a = parse_args(&args(&[
+            "--server",
+            "http://api.example:9000",
+            "--endpoint",
+            "/v1/audio/transcriptions",
+            "--concurrent",
+            "8",
+            "--voice",
+            "ja_JP-my-voice",
+            "--budget-ms",
+            "90",
+            "--timeout-secs",
+            "60",
+        ]))
+        .expect("valid");
+        assert_eq!(a.server.as_deref(), Some("http://api.example:9000"));
+        assert_eq!(a.endpoint, "/v1/audio/transcriptions");
+        assert_eq!(a.concurrent, 8);
+        assert_eq!(a.voice, "ja_JP-my-voice");
+        assert_eq!(a.budget_ms, 90);
+        assert_eq!(a.timeout_secs, 60);
+    }
+
+    /// `--concurrent 0` is rejected loudly (FR-EX-08: a zero-worker bench
+    /// silently does nothing, which is worse than a hard error).
+    #[test]
+    fn rejects_concurrent_zero() {
+        assert_eq!(
+            parse_args(&args(&["--server", "http://x:9", "--concurrent", "0"]))
+                .err()
+                .unwrap(),
+            "--concurrent must be > 0"
+        );
+    }
+
+    /// `--concurrent NON_INT` is rejected loudly.
+    #[test]
+    fn rejects_concurrent_non_integer() {
+        assert!(
+            parse_args(&args(&["--server", "http://x:9", "--concurrent", "many"]))
+                .err()
+                .unwrap()
+                .contains("invalid --concurrent")
+        );
+    }
+
+    /// `--budget-ms NON_INT` is rejected loudly.
+    #[test]
+    fn rejects_budget_ms_non_integer() {
+        assert!(
+            parse_args(&args(&["--server", "http://x:9", "--budget-ms", "fast"]))
+                .err()
+                .unwrap()
+                .contains("invalid --budget-ms")
+        );
+    }
+
+    /// `--server` and `--model` are mutually exclusive (FR-EX-08: without
+    /// this gate, a caller could get either "in-process bench with server
+    /// silently ignored" or vice versa — both are silent-fallback bugs).
+    #[test]
+    fn rejects_server_plus_model_combination() {
+        let err = parse_args(&args(&["--server", "http://x:9", "--model", "m.gguf"]))
+            .err()
+            .unwrap();
+        assert!(err.contains("mutually exclusive"), "got: {err}");
+    }
+
+    /// `--server` and `--baseline` are mutually exclusive — a baseline JSON
+    /// is only meaningful for the in-process RTF regression gate, not for
+    /// HTTP-boundary latency.
+    #[test]
+    fn rejects_server_plus_baseline_combination() {
+        let err = parse_args(&args(&[
+            "--server",
+            "http://x:9",
+            "--baseline",
+            "baseline.json",
+        ]))
+        .err()
+        .unwrap();
+        assert!(err.contains("--baseline"), "got: {err}");
+        assert!(err.contains("HTTP-boundary"), "got: {err}");
+    }
+
+    /// `--server` and `--task` are mutually exclusive — the redirect target
+    /// does not understand `--task`, so accepting it here would silently
+    /// discard the operator's intent.
+    #[test]
+    fn rejects_server_plus_task_combination() {
+        let err = parse_args(&args(&["--server", "http://x:9", "--task", "mel-frontend"]))
+            .err()
+            .unwrap();
+        assert!(err.contains("--task"), "got: {err}");
+        assert!(err.contains("HTTP-boundary"), "got: {err}");
+    }
+
+    /// The redirect message emitted from `execute_http_bench_redirect`
+    /// names the excluded workspace binary explicitly. Guard-rail: an
+    /// operator reading the message can copy-paste the invocation
+    /// verbatim, so the binary path and every documented flag MUST appear.
+    #[test]
+    fn http_bench_redirect_exit_code_is_4() {
+        let a = parse_args(&args(&[
+            "--server",
+            "http://127.0.0.1:8080",
+            "--endpoint",
+            "/api/tts",
+            "--concurrent",
+            "4",
+            "--iters",
+            "50",
+            "--warmup",
+            "5",
+        ]))
+        .expect("valid");
+        let code = execute_http_bench_redirect(&a).expect("redirect emits code");
+        // ExitCode does not derive PartialEq; format-print to compare (this
+        // is the same trick std uses internally). Testing the redirect exits
+        // 4 (not 0/2/3) makes it visible from CI without stdout parsing.
+        assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::from(4)));
+    }
+
+    /// The USAGE string documents every M3-15-T11 flag AND names the
+    /// redirect binary. Regression fence for the copy-paste UX.
+    #[test]
+    fn usage_documents_m3_15_t11_flags_and_redirect_binary() {
+        for flag in [
+            "--server",
+            "--endpoint",
+            "--concurrent",
+            "--voice",
+            "--budget-ms",
+            "--timeout-secs",
+        ] {
+            assert!(USAGE.contains(flag), "USAGE missing {flag}");
+        }
+        // The excluded-workspace binary MUST be named so an operator sees
+        // it in --help and doesn't have to grep the source for it.
+        assert!(
+            USAGE.contains("vokra-cli-bench-server"),
+            "USAGE missing redirect binary name",
+        );
+        // Cross-reference to the handover doc so the two never drift.
+        assert!(
+            USAGE.contains("m3-15-server-latency-handover.md"),
+            "USAGE missing handover doc reference",
+        );
+    }
+
     #[test]
     fn parses_task_cosyvoice2_synthetic_hint() {
         // `--task cosyvoice2-synthetic` parses cleanly with or without
@@ -901,6 +1292,12 @@ mod tests {
             baseline: None,
             backend: BackendKind::Cpu,
             task_hint: Some(TaskHint::Cosyvoice2Synthetic),
+            server: None,
+            endpoint: "/api/tts".to_owned(),
+            concurrent: 1,
+            voice: "en_US-libritts-high".to_owned(),
+            budget_ms: 75,
+            timeout_secs: 30,
         };
         let outcome = execute(&a).expect("cosyvoice2-synthetic bench runs");
         assert_eq!(outcome.report.task, "cosyvoice2-synthetic");
@@ -946,6 +1343,12 @@ mod tests {
             baseline: None,
             backend: BackendKind::Cpu,
             task_hint: Some(TaskHint::Cosyvoice2Synthetic),
+            server: None,
+            endpoint: "/api/tts".to_owned(),
+            concurrent: 1,
+            voice: "en_US-libritts-high".to_owned(),
+            budget_ms: 75,
+            timeout_secs: 30,
         };
         let outcome = execute(&a).expect("cosyvoice2-synthetic bench runs");
         let _ = std::fs::remove_file(&wav_path);
@@ -969,6 +1372,12 @@ mod tests {
             baseline: None,
             backend: BackendKind::Cpu,
             task_hint: Some(TaskHint::Cosyvoice2Synthetic),
+            server: None,
+            endpoint: "/api/tts".to_owned(),
+            concurrent: 1,
+            voice: "en_US-libritts-high".to_owned(),
+            budget_ms: 75,
+            timeout_secs: 30,
         };
         let a1 = execute(&mk()).expect("run 1");
         let a2 = execute(&mk()).expect("run 2");
@@ -1031,6 +1440,12 @@ mod tests {
             baseline: None,
             backend: BackendKind::Cpu,
             task_hint: Some(TaskHint::MelFrontend),
+            server: None,
+            endpoint: "/api/tts".to_owned(),
+            concurrent: 1,
+            voice: "en_US-libritts-high".to_owned(),
+            budget_ms: 75,
+            timeout_secs: 30,
         };
         let outcome = execute(&a).expect("bench runs");
         let _ = std::fs::remove_file(&wav_path);
@@ -1058,6 +1473,12 @@ mod tests {
             baseline: None,
             backend: BackendKind::Cpu,
             task_hint: Some(TaskHint::MelFrontend),
+            server: None,
+            endpoint: "/api/tts".to_owned(),
+            concurrent: 1,
+            voice: "en_US-libritts-high".to_owned(),
+            budget_ms: 75,
+            timeout_secs: 30,
         };
         let err = match execute(&a) {
             Err(e) => e,
@@ -1086,6 +1507,12 @@ mod tests {
             baseline: None,
             backend: BackendKind::Cpu,
             task_hint: None,
+            server: None,
+            endpoint: "/api/tts".to_owned(),
+            concurrent: 1,
+            voice: "en_US-libritts-high".to_owned(),
+            budget_ms: 75,
+            timeout_secs: 30,
         };
         let outcome = execute(&a).expect("bench runs");
         let _ = std::fs::remove_file(&wav_path);
