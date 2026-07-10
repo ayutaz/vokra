@@ -45,8 +45,13 @@
 //! - **T19**: 実 Godot 4.3+ editor での `demos/asr_demo` + `demos/tts_demo`
 //!   smoke — M3-18 と併走 runtime verification。
 //! - **T20**: M3-11 WP-close PR。
-//! - `TODO(M3-18)` markers in `trampoline.rs` (Variant unpack real dispatch)
-//!   — module doc §Bounded scope で owner smoke に委譲済み。
+//! - `TODO(future)` markers in `trampoline.rs` for the four PackedFloat32Array
+//!   / String Variant packers (`session_transcribe`, `session_synthesize`,
+//!   `stream_push_pcm`, `stream_poll` return path, `session_vad_open_stream`
+//!   return path). `stream_interrupt` is fully promoted past stub state as
+//!   of the T14 land — see `trampoline` module doc §T14 promotion for the
+//!   per-trampoline breakdown. The remaining Variant packers are deferred
+//!   to owner smoke per `trampoline` module doc §T14 promotion.
 //!
 //! # Unsafe policy (NFR-RL-07, workspace lint `unsafe_code = "deny"`)
 //!
@@ -83,6 +88,7 @@ pub mod session;
 pub mod trampoline;
 pub mod tts;
 pub mod vad;
+pub mod variant;
 
 use core::ffi::c_void;
 use core::ptr;
@@ -126,9 +132,15 @@ static LINKER_KEEPALIVE: fn() -> usize = ffi::capi::keepalive_c_abi_symbols;
 
 /// State stashed at `vokra_gdextension_init` and consumed at
 /// `vokra_initialize` (Scene level) / `vokra_deinitialize` (Scene level).
-struct ExtensionState {
-    library: GDExtensionClassLibraryPtr,
-    interface: InterfaceTable,
+///
+/// `pub(crate)` because sibling modules (in particular
+/// [`crate::trampoline`]) need to reach into the interface table for
+/// Variant packing / unpacking during method dispatch. External callers
+/// have no business touching this — it is not part of the extension's
+/// public C ABI surface.
+pub(crate) struct ExtensionState {
+    pub(crate) library: GDExtensionClassLibraryPtr,
+    pub(crate) interface: InterfaceTable,
 }
 
 // SAFETY: `ExtensionState` holds a `GDExtensionClassLibraryPtr` (opaque C
@@ -141,7 +153,25 @@ struct ExtensionState {
 unsafe impl Send for ExtensionState {}
 unsafe impl Sync for ExtensionState {}
 
-static EXTENSION_STATE: Mutex<Option<ExtensionState>> = Mutex::new(None);
+pub(crate) static EXTENSION_STATE: Mutex<Option<ExtensionState>> = Mutex::new(None);
+
+/// Run `f` with a borrowed reference to the extension's resolved
+/// GDExtension interface, if available. Returns `None` when the extension
+/// was never initialised (or has already been deinitialised) — trampoline
+/// callers surface that as an explicit `InvalidMethod` CallError (FR-EX-08:
+/// no silent fallback).
+///
+/// The mutex is uncontested during normal Godot operation because ClassDB
+/// dispatches methods single-threaded on the main thread; `EXTENSION_STATE`
+/// is only written during init/deinit and only read from trampolines.
+pub(crate) fn with_interface<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&InterfaceTable) -> R,
+{
+    let guard = EXTENSION_STATE.lock().ok()?;
+    let state = guard.as_ref()?;
+    Some(f(&state.interface))
+}
 
 // ---------------------------------------------------------------------------
 // GDExtension init/deinit callbacks.
@@ -373,21 +403,17 @@ mod tests {
 
     // Happy path: when the resolver returns Some for every name, the entry
     // point stashes extension state, wires the callbacks, and reports
-    // success. The sentinel fn is a syntactically valid interface fn — we
-    // never call it because the tests don't invoke initialize/deinitialize.
+    // success.
+    //
+    // Uses the sig-aware `get_proc_address` mock exposed by
+    // [`crate::ffi::interface::tests::sig_aware_gpa`] — after the T14
+    // Variant-support promotion `from_proc_address` actually INVOKES the
+    // resolved `get_variant_from_type_constructor` / `get_variant_to_type_constructor`
+    // fn pointers to obtain the Int packer/unpacker. A plain sentinel-fn
+    // mock (as used before T14) would be transmuted to a factory
+    // signature and CALLED — UB.
     #[test]
     fn entry_point_populates_init_struct_on_success() {
-        // Sentinel fn — used only for its address; never invoked. Its
-        // signature is `unsafe extern "C" fn()` (the opaque
-        // `GDExtensionInterfaceFunctionPtr` inner type).
-        unsafe extern "C" fn sentinel() {}
-
-        unsafe extern "C" fn success_gpa(
-            _p_name: *const core::ffi::c_char,
-        ) -> crate::ffi::gdextension::GDExtensionInterfaceFunctionPtr {
-            Some(sentinel)
-        }
-
         // Clear any leftover state from previous tests (they run in
         // parallel by default; the Mutex serializes writes).
         {
@@ -401,9 +427,16 @@ mod tests {
             initialize: None,
             deinitialize: None,
         };
-        // SAFETY: `&mut init` is a valid writable slot for the duration
-        // of the call.
-        let result = unsafe { vokra_gdextension_init(success_gpa, ptr::null_mut(), &mut init) };
+        // SAFETY: `sig_aware_gpa` matches the resolver signature; the
+        // Variant-support fields it returns match the true typed
+        // signatures `from_proc_address` invokes.
+        let result = unsafe {
+            vokra_gdextension_init(
+                crate::ffi::interface::tests::sig_aware_gpa,
+                ptr::null_mut(),
+                &mut init,
+            )
+        };
 
         assert_eq!(result, 1, "successful init must return 1");
         assert_eq!(
@@ -423,6 +456,65 @@ mod tests {
         }
 
         // Clear so the next test doesn't observe leftover state.
+        {
+            let mut guard = EXTENSION_STATE.lock().unwrap();
+            *guard = None;
+        }
+    }
+
+    // `with_interface` must:
+    //   1. Return `None` when EXTENSION_STATE is empty (pre-init or
+    //      post-deinit path).
+    //   2. Pass a borrowed interface to `f` when populated.
+    #[test]
+    fn with_interface_returns_none_when_uninitialised() {
+        {
+            let mut guard = EXTENSION_STATE.lock().unwrap();
+            *guard = None;
+        }
+        let called = std::sync::atomic::AtomicBool::new(false);
+        let out = super::with_interface(|_| {
+            called.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert!(out.is_none(), "unpopulated state must yield None");
+        assert!(
+            !called.load(std::sync::atomic::Ordering::SeqCst),
+            "closure must NOT run when state is empty",
+        );
+    }
+
+    #[test]
+    fn with_interface_dispatches_closure_when_initialised() {
+        // Populate via the entry point (uses the sig-aware mock).
+        {
+            let mut guard = EXTENSION_STATE.lock().unwrap();
+            *guard = None;
+        }
+        let mut init = GDExtensionInitialization {
+            minimum_initialization_level: GDExtensionInitializationLevel::Core,
+            userdata: ptr::null_mut(),
+            initialize: None,
+            deinitialize: None,
+        };
+        // SAFETY: sig-aware mock; init struct is a valid slot.
+        let ok = unsafe {
+            vokra_gdextension_init(
+                crate::ffi::interface::tests::sig_aware_gpa,
+                ptr::null_mut(),
+                &mut init,
+            )
+        };
+        assert_eq!(ok, 1);
+
+        // Now `with_interface` MUST hand us the resolved table.
+        let variant_get_type_addr = super::with_interface(|iface| iface.variant_get_type as usize);
+        assert_eq!(
+            variant_get_type_addr,
+            Some(crate::ffi::interface::tests::mock_variant_get_type as *const () as usize),
+            "with_interface must expose the resolved variant_get_type",
+        );
+
+        // Cleanup.
         {
             let mut guard = EXTENSION_STATE.lock().unwrap();
             *guard = None;

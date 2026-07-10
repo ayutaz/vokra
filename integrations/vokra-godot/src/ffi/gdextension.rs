@@ -62,11 +62,35 @@ pub enum GDExtensionInitializationLevel {
 /// unchanged.
 ///
 /// Vokra methods bind these types:
-/// - `PackedFloat32Array` (30): PCM in/out
+/// - `PackedFloat32Array` (32): PCM in/out
 /// - `String` (4): text in/out (ASR result, TTS text)
 /// - `Int` (2): sample rate
-/// - `Dictionary` (26): TTS output bag (`{pcm, sample_rate}`)
+/// - `Object` (24): VokraStream returned by `vad_open_stream`
+/// - `Dictionary` (27): TTS output bag (`{pcm, sample_rate}`)
 /// - `Nil` (0): void return
+///
+/// # Provenance
+///
+/// Variant type codes are pinned by the Godot 4.3-stable
+/// `core/extension/gdextension_interface.h` `GDExtensionVariantType` enum
+/// (a bare, sequentially-numbered C enum whose values match `Variant::Type`
+/// from `core/variant/variant.h` 1:1). The numeric values below were
+/// counted verbatim from the 4.3-stable header:
+///
+/// ```text
+///   0=NIL, 1=BOOL, 2=INT, 3=FLOAT, 4=STRING,
+///   5..19=math types (VECTOR2..PROJECTION),
+///   20=COLOR, 21=STRING_NAME, 22=NODE_PATH, 23=RID, 24=OBJECT,
+///   25=CALLABLE, 26=SIGNAL, 27=DICTIONARY, 28=ARRAY,
+///   29=PACKED_BYTE_ARRAY, 30=PACKED_INT32_ARRAY, 31=PACKED_INT64_ARRAY,
+///   32=PACKED_FLOAT32_ARRAY, 33=PACKED_FLOAT64_ARRAY, ...
+/// ```
+///
+/// A drift here (e.g. leaving `PackedFloat32Array = 30` — the value that
+/// held before the M3-11 T14-followup PackedFloat32Array unpack land) would
+/// cause `variant_get_type == PackedFloat32Array` to ALWAYS FALSE for real
+/// PackedFloat32Array Variants — silently poisoning every trampoline that
+/// type-checks a PackedFloat32Array arg.
 #[repr(C)]
 #[allow(dead_code)] // Tail variants unused; kept for future method surfaces.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -76,10 +100,16 @@ pub enum GDExtensionVariantType {
     Int = 2,
     Float = 3,
     String = 4,
+    /// `GDEXTENSION_VARIANT_TYPE_OBJECT` — used as the return type for
+    /// `VokraSession::vad_open_stream(sr: int) -> VokraStream`. We do not
+    /// pack/unpack Object Variants in this crate (Object wrapping is
+    /// deferred to a follow-up patch); the variant is declared here so
+    /// `variant_get_type` return-value matching stays exhaustive.
+    Object = 24,
     /// `GDEXTENSION_VARIANT_TYPE_DICTIONARY` — used for the TTS output bag.
-    Dictionary = 26,
+    Dictionary = 27,
     /// `GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY` — used for PCM I/O.
-    PackedFloat32Array = 30,
+    PackedFloat32Array = 32,
 }
 
 /// GDExtension call-error tag. Matches the `GDExtensionCallErrorType` enum in
@@ -169,11 +199,22 @@ pub type GDExtensionConstStringNamePtr = *const core::ffi::c_void;
 pub type GDExtensionUninitializedStringNamePtr = *mut core::ffi::c_void;
 pub type GDExtensionStringPtr = *mut core::ffi::c_void;
 pub type GDExtensionConstStringPtr = *const core::ffi::c_void;
+/// `typedef void *GDExtensionUninitializedStringPtr;` (Godot 4.3-stable
+/// `gdextension_interface.h` line 167). Same underlying representation as
+/// [`GDExtensionStringPtr`]; the "uninitialized" naming is a documented C-level
+/// intent marker on the destination side of a typed-String constructor
+/// (e.g. `string_new_with_utf8_chars_and_len`).
+pub type GDExtensionUninitializedStringPtr = *mut core::ffi::c_void;
 pub type GDExtensionVariantPtr = *mut core::ffi::c_void;
 pub type GDExtensionConstVariantPtr = *const core::ffi::c_void;
 pub type GDExtensionUninitializedVariantPtr = *mut core::ffi::c_void;
 pub type GDExtensionTypePtr = *mut core::ffi::c_void;
 pub type GDExtensionConstTypePtr = *const core::ffi::c_void;
+/// `typedef void *GDExtensionUninitializedTypePtr;` (Godot 4.3-stable
+/// `gdextension_interface.h`). Same underlying representation as
+/// [`GDExtensionTypePtr`]; the "uninitialized" naming is a documented C-level
+/// intent marker on the destination side of a per-type constructor.
+pub type GDExtensionUninitializedTypePtr = *mut core::ffi::c_void;
 
 /// `GDExtensionInitialization` struct — the mutable output of the extension
 /// entry point. `#[repr(C)]` order MUST match the Godot header exactly.
@@ -494,6 +535,529 @@ pub type GDExtensionInterfaceMemAlloc =
 
 /// `mem_free` (Godot 4.1). Companion to `mem_alloc`.
 pub type GDExtensionInterfaceMemFree = unsafe extern "C" fn(p_ptr: *mut core::ffi::c_void);
+
+// ---------------------------------------------------------------------------
+// Variant introspection + constructor factories.
+//
+// These are what the trampoline `Variant → typed value` unpack path uses.
+// Godot 4.3-stable `gdextension_interface.h` declares them as follows
+// (paraphrased from the header):
+//
+//   typedef GDExtensionVariantType (*GDExtensionInterfaceVariantGetType)
+//       (GDExtensionConstVariantPtr p_self);
+//
+//   typedef void (*GDExtensionInterfaceVariantNewNil)
+//       (GDExtensionUninitializedVariantPtr r_dest);
+//
+//   typedef void (*GDExtensionVariantFromTypeConstructorFunc)
+//       (GDExtensionUninitializedVariantPtr r_out,
+//        GDExtensionTypePtr p_in);
+//
+//   typedef void (*GDExtensionTypeFromVariantConstructorFunc)
+//       (GDExtensionUninitializedTypePtr r_out,
+//        GDExtensionVariantPtr p_in);
+//
+//   typedef GDExtensionVariantFromTypeConstructorFunc
+//       (*GDExtensionInterfaceGetVariantFromTypeConstructor)
+//       (GDExtensionVariantType p_type);
+//
+//   typedef GDExtensionTypeFromVariantConstructorFunc
+//       (*GDExtensionInterfaceGetVariantToTypeConstructor)
+//       (GDExtensionVariantType p_type);
+//
+// `get_variant_{from,to}_type_constructor` are factories: called ONCE per
+// Variant type at [`crate::ffi::interface::InterfaceTable::from_proc_address`]
+// time, they return the actual per-type packer/unpacker fn pointer. We cache
+// the resolved constructors for `Int` (the only type this crate packs/unpacks
+// today; String/PackedFloat32Array packing is deferred — see
+// [`crate::trampoline`] TODO(future) markers for rationale).
+// ---------------------------------------------------------------------------
+
+/// `variant_get_type` — reads the type tag of a Variant. Cheap, non-allocating,
+/// safe on any live Variant pointer.
+pub type GDExtensionInterfaceVariantGetType =
+    unsafe extern "C" fn(p_self: GDExtensionConstVariantPtr) -> GDExtensionVariantType;
+
+/// `variant_new_nil` — writes a Nil Variant into `r_dest`. The C canonical
+/// layout for a Nil Variant is all-zero, so this is effectively `memset`, but
+/// routing through the interface keeps us robust against a future Godot bump
+/// that changes the type-tag encoding.
+pub type GDExtensionInterfaceVariantNewNil =
+    unsafe extern "C" fn(r_dest: GDExtensionUninitializedVariantPtr);
+
+/// Per-type packer: writes a `GDExtensionVariantType`-typed Variant into
+/// `r_out`, reading the typed value from `p_in`. Nullable in the C header
+/// because unknown types can produce NULL; the null case is discharged at
+/// resolution time (see
+/// [`crate::ffi::interface::InterfaceTable::from_proc_address`]).
+pub type GDExtensionVariantFromTypeConstructorFunc = Option<
+    unsafe extern "C" fn(r_out: GDExtensionUninitializedVariantPtr, p_in: GDExtensionTypePtr),
+>;
+
+/// Per-type unpacker: writes a typed value into `r_out`, reading the Variant
+/// from `p_in`. Nullable for the same reason as
+/// [`GDExtensionVariantFromTypeConstructorFunc`]; same null discharge.
+pub type GDExtensionTypeFromVariantConstructorFunc = Option<
+    unsafe extern "C" fn(r_out: GDExtensionUninitializedTypePtr, p_in: GDExtensionVariantPtr),
+>;
+
+/// `get_variant_from_type_constructor` factory. Called with a
+/// `GDExtensionVariantType` at init and returns the per-type packer (or NULL
+/// for an unknown type).
+pub type GDExtensionInterfaceGetVariantFromTypeConstructor =
+    unsafe extern "C" fn(
+        p_type: GDExtensionVariantType,
+    ) -> GDExtensionVariantFromTypeConstructorFunc;
+
+/// `get_variant_to_type_constructor` factory. Same shape as the "from"
+/// factory but yields Variant→typed unpackers.
+pub type GDExtensionInterfaceGetVariantToTypeConstructor =
+    unsafe extern "C" fn(
+        p_type: GDExtensionVariantType,
+    ) -> GDExtensionTypeFromVariantConstructorFunc;
+
+/// Alias for the resolved Int-Variant packer (Option-unwrapped at
+/// resolution). Signature: `void (*)(GDExtensionUninitializedVariantPtr r_out,
+/// GDExtensionTypePtr p_in)`, where `p_in` must point to a valid `i64`.
+pub type VariantFromIntCtor =
+    unsafe extern "C" fn(r_out: GDExtensionUninitializedVariantPtr, p_in: GDExtensionTypePtr);
+
+/// Alias for the resolved Int-Variant unpacker (Option-unwrapped at
+/// resolution). Signature: `void (*)(GDExtensionUninitializedTypePtr r_out,
+/// GDExtensionVariantPtr p_in)`, where `r_out` must point to a writable `i64`
+/// and `p_in` must be a Variant whose type tag is
+/// [`GDExtensionVariantType::Int`].
+pub type VariantToIntCtor =
+    unsafe extern "C" fn(r_out: GDExtensionUninitializedTypePtr, p_in: GDExtensionVariantPtr);
+
+/// Generic alias for a Variant-from-typed constructor, Option-unwrapped at
+/// resolution. Every per-type factory result from
+/// `get_variant_from_type_constructor(TYPE)` — regardless of `TYPE` — shares
+/// the identical fn-pointer signature; the concrete `TYPE` only constrains
+/// what memory layout `p_in` must point at (e.g. `Object*` for OBJECT, an
+/// opaque typed-String handle for STRING). Rust cannot express that per-call
+/// constraint, so the caller MUST route each call through a typed helper that
+/// enforces the input shape (see `crate::variant::*`).
+pub type VariantFromTypeCtor =
+    unsafe extern "C" fn(r_out: GDExtensionUninitializedVariantPtr, p_in: GDExtensionTypePtr);
+
+/// Generic alias for a Variant-to-typed constructor, Option-unwrapped at
+/// resolution. Symmetric to [`VariantFromTypeCtor`]: same fn-ptr shape,
+/// per-call output layout is `TYPE`-specific and enforced by typed helpers.
+pub type VariantToTypeCtor =
+    unsafe extern "C" fn(r_out: GDExtensionUninitializedTypePtr, p_in: GDExtensionVariantPtr);
+
+// ---------------------------------------------------------------------------
+// Variant lifecycle + typed-container helpers (M3-11 T14/M3-18 unpack
+// foundation).
+//
+// Signatures below mirror the Godot 4.3-stable `gdextension_interface.h`
+// declarations verbatim; per-line provenance comments cite the header line
+// number the typedef was copied from (SHA-based blob fetched to the
+// scratchpad and grep'd before landing).
+// ---------------------------------------------------------------------------
+
+/// `variant_new_copy` (Godot 4.1, `gdextension_interface.h` line 912).
+///
+/// Deep-copies `p_src` into the uninitialized destination `r_dest`. For
+/// refcounted types (String, PackedArray, Dictionary, Object) this increments
+/// the source's refcount; the caller then owns the destination Variant and
+/// MUST pair it with a matching [`GDExtensionInterfaceVariantDestroy`] call.
+///
+/// Header signature:
+/// `void (*)(GDExtensionUninitializedVariantPtr r_dest, GDExtensionConstVariantPtr p_src)`.
+pub type GDExtensionInterfaceVariantNewCopy = unsafe extern "C" fn(
+    r_dest: GDExtensionUninitializedVariantPtr,
+    p_src: GDExtensionConstVariantPtr,
+);
+
+/// `variant_destroy` (Godot 4.1, `gdextension_interface.h` line 932).
+///
+/// Destroys a Variant, releasing any internal heap allocation (refcount
+/// decrement for CoW types). Idempotent on a Variant whose type tag is Nil.
+///
+/// Header signature: `void (*)(GDExtensionVariantPtr p_self)`.
+///
+/// # Not a typed-String destructor
+///
+/// This ONLY destroys Variants. To destroy a typed opaque handle produced by
+/// a `get_variant_to_type_constructor(TYPE)` unpacker (e.g. a typed String or
+/// PackedFloat32Array), callers must additionally resolve
+/// `variant_get_ptr_destructor` (out of scope for the current land — see
+/// module-doc `TODO(M3-18)` markers in [`crate::trampoline`]).
+pub type GDExtensionInterfaceVariantDestroy = unsafe extern "C" fn(p_self: GDExtensionVariantPtr);
+
+/// `packed_float32_array_operator_index_const` (Godot 4.1,
+/// `gdextension_interface.h` line 2052).
+///
+/// Returns a const `*const f32` pointer to the `p_index`-th element of a
+/// typed PackedFloat32Array opaque handle. `p_self` MUST be a typed handle
+/// (NOT a Variant); the standard call sequence is:
+///
+/// 1. Resolve `get_variant_to_type_constructor(PACKED_FLOAT32_ARRAY)` → typed
+///    unpacker (cached at init on
+///    [`crate::ffi::interface::InterfaceTable::variant_to_packed_float32_array_ctor`]).
+/// 2. Call the unpacker on an arg Variant → produces a typed PackedFloat32Array
+///    handle in an uninitialized buffer.
+/// 3. Call this fn with the typed handle + index → const-borrow the float.
+///
+/// # Not the size resolver
+///
+/// The companion `packed_float32_array_size` resolver is out of scope for the
+/// current land; callers reading elements MUST separately resolve it to know
+/// the count. See [`crate::trampoline`] `TODO(M3-18)` markers.
+///
+/// Header signature:
+/// `const float *(*)(GDExtensionConstTypePtr p_self, GDExtensionInt p_index)`.
+pub type GDExtensionInterfacePackedFloat32ArrayOperatorIndexConst =
+    unsafe extern "C" fn(p_self: GDExtensionConstTypePtr, p_index: GDExtensionInt) -> *const f32;
+
+/// `string_new_with_utf8_chars_and_len` (Godot 4.1,
+/// `gdextension_interface.h` line 1593; `@deprecated in 4.3` in favour of
+/// `..._and_len2` which returns a `GDExtensionInt` error code).
+///
+/// Constructs a typed String opaque in `r_dest` from a UTF-8 buffer of
+/// `p_size` BYTES (not codepoints). We deliberately bind the 4.1 shape
+/// because it matches `vokra.gdextension`'s `compatibility_minimum = "4.1"`
+/// (ADR-0011 §D9); when we bump the pin to 4.5+ this should be swapped for
+/// `..._and_len2` to gain the error-return channel.
+///
+/// # Not a Variant packer
+///
+/// This produces a typed opaque, NOT a Variant. Wrapping into a Variant is a
+/// subsequent call through
+/// [`crate::ffi::interface::InterfaceTable::variant_from_string_ctor`] with
+/// the typed handle as `p_in`.
+///
+/// Header signature:
+/// `void (*)(GDExtensionUninitializedStringPtr r_dest, const char *p_contents, GDExtensionInt p_size)`.
+pub type GDExtensionInterfaceStringNewWithUtf8CharsAndLen = unsafe extern "C" fn(
+    r_dest: GDExtensionUninitializedStringPtr,
+    p_contents: *const c_char,
+    p_size: GDExtensionInt,
+);
+
+// ---------------------------------------------------------------------------
+// PackedFloat32Array packing pipeline (T14-followup: `stream_poll` full
+// dispatch — pack `Vec<f32>` return into a Godot `PackedFloat32Array`
+// Variant).
+//
+// The pipeline is:
+//   1. Default-construct an empty PackedFloat32Array on a stack buffer via
+//      `variant_get_ptr_constructor(PACKED_FLOAT32_ARRAY, 0)`.
+//   2. Call its `resize(new_size)` builtin method via
+//      `variant_get_ptr_builtin_method(PACKED_FLOAT32_ARRAY, "resize", 848867239)`.
+//      The hash 848867239 is pinned from Godot 4.1..4.3 `extension_api.json`
+//      (`gdextension/extension_api.json` in godot-cpp, verified stable across
+//      all three tags before landing).
+//   3. Write payload via `packed_float32_array_operator_index` (mutable).
+//   4. Move-copy into the return Variant via
+//      `get_variant_from_type_constructor(PACKED_FLOAT32_ARRAY)`.
+//   5. Destroy the temp buffer via `variant_get_ptr_destructor(PACKED_FLOAT32_ARRAY)`.
+//
+// Every typedef below is verbatim from `godot/core/extension/gdextension_interface.h`
+// (`@since 4.1`, matches our `vokra.gdextension` `compatibility_minimum = "4.1"`).
+// ---------------------------------------------------------------------------
+
+/// `GDExtensionPtrConstructor` — per-type in-place constructor (`@since 4.1`).
+///
+/// `p_base` is a writable slot large enough for the target type
+/// (16 bytes for `PackedFloat32Array` on LP64, per `extension_api.json`
+/// builtin_class_sizes float_64, stable Godot 4.1-4.3). `p_args` is a
+/// pointer-to-array-of-pointer argument list (`NULL` for a 0-arg default
+/// constructor like idx=0 of `PackedFloat32Array`).
+///
+/// Header signature:
+/// `void (*)(GDExtensionUninitializedTypePtr p_base, const GDExtensionConstTypePtr *p_args)`.
+pub type GDExtensionPtrConstructor = unsafe extern "C" fn(
+    p_base: GDExtensionUninitializedTypePtr,
+    p_args: *const GDExtensionConstTypePtr,
+);
+
+/// `GDExtensionPtrBuiltInMethod` — resolved per-type builtin method call
+/// (`@since 4.1`).
+///
+/// `p_base` is the type instance, `p_args` is a pointer-to-array-of-pointer
+/// argument list (each element points to the raw typed argument value —
+/// e.g. `*const i64` for an Int arg), `r_return` is a writable slot for the
+/// return value's raw type (may be `NULL` for `void` returns), and
+/// `p_argument_count` is the argument count.
+///
+/// Header signature:
+/// `void (*)(GDExtensionTypePtr p_base, const GDExtensionConstTypePtr *p_args, GDExtensionTypePtr r_return, int p_argument_count)`.
+pub type GDExtensionPtrBuiltInMethod = unsafe extern "C" fn(
+    p_base: GDExtensionTypePtr,
+    p_args: *const GDExtensionConstTypePtr,
+    r_return: GDExtensionTypePtr,
+    p_argument_count: i32,
+);
+
+/// `GDExtensionPtrDestructor` — per-type in-place destructor (`@since 4.1`).
+///
+/// Frees any heap-owned state the type holds (for `PackedFloat32Array` this
+/// decrements the internal `CowData` refcount; the buffer contents become
+/// undefined).
+///
+/// Header signature: `void (*)(GDExtensionTypePtr p_base)`.
+pub type GDExtensionPtrDestructor = unsafe extern "C" fn(p_base: GDExtensionTypePtr);
+
+/// Factory: `variant_get_ptr_constructor(TYPE, ctor_index) -> Option<ctor>`
+/// (`@since 4.1`). Called once at
+/// [`crate::ffi::interface::InterfaceTable::from_proc_address`] to resolve
+/// the default `PackedFloat32Array` constructor (index 0). Returns `NULL`
+/// for an unknown type/index — the null case is discharged at resolution
+/// time.
+///
+/// Header signature:
+/// `GDExtensionPtrConstructor (*)(GDExtensionVariantType p_type, int32_t p_constructor)`.
+pub type GDExtensionInterfaceVariantGetPtrConstructor =
+    unsafe extern "C" fn(
+        p_type: GDExtensionVariantType,
+        p_constructor: i32,
+    ) -> Option<GDExtensionPtrConstructor>;
+
+/// Factory: `variant_get_ptr_builtin_method(TYPE, name, hash) -> Option<method>`
+/// (`@since 4.1`). Called once at
+/// [`crate::ffi::interface::InterfaceTable::from_proc_address`] to resolve
+/// the `PackedFloat32Array::resize` method. The `p_hash` guards against
+/// silent signature drift across Godot versions — a mismatch returns `NULL`
+/// and we bail cleanly at init.
+///
+/// `p_method` is a StringName pointer; the caller owns the underlying
+/// storage only for the duration of this call (Godot does not retain the
+/// StringName past the return).
+///
+/// Header signature:
+/// `GDExtensionPtrBuiltInMethod (*)(GDExtensionVariantType p_type, GDExtensionConstStringNamePtr p_method, GDExtensionInt p_hash)`.
+pub type GDExtensionInterfaceVariantGetPtrBuiltinMethod =
+    unsafe extern "C" fn(
+        p_type: GDExtensionVariantType,
+        p_method: GDExtensionConstStringNamePtr,
+        p_hash: GDExtensionInt,
+    ) -> Option<GDExtensionPtrBuiltInMethod>;
+
+/// Factory: `variant_get_ptr_destructor(TYPE) -> Option<destructor>`
+/// (`@since 4.1`). Called once at
+/// [`crate::ffi::interface::InterfaceTable::from_proc_address`] to resolve
+/// the `PackedFloat32Array` destructor (used to clean up the
+/// stack-allocated temp buffer after Variant packing).
+///
+/// Header signature:
+/// `GDExtensionPtrDestructor (*)(GDExtensionVariantType p_type)`.
+pub type GDExtensionInterfaceVariantGetPtrDestructor =
+    unsafe extern "C" fn(p_type: GDExtensionVariantType) -> Option<GDExtensionPtrDestructor>;
+
+/// `packed_float32_array_operator_index` — direct MUTABLE element pointer
+/// access (`@since 4.1`).
+///
+/// Returns a `*mut f32` pointer to the `p_index`-th element of a typed
+/// PackedFloat32Array opaque handle. NULL iff `p_index` is out of range.
+/// Used to bulk-write into a freshly-resized `PackedFloat32Array` from a
+/// Rust `&[f32]` slice.
+///
+/// Header signature:
+/// `float *(*)(GDExtensionTypePtr p_self, GDExtensionInt p_index)`.
+pub type GDExtensionInterfacePackedFloat32ArrayOperatorIndex =
+    unsafe extern "C" fn(p_self: GDExtensionTypePtr, p_index: GDExtensionInt) -> *mut f32;
+
+/// Alias for the resolved default `PackedFloat32Array` constructor (index 0,
+/// Option-unwrapped at resolution). Same shape as
+/// [`GDExtensionPtrConstructor`]; the alias is a documentation tag identifying
+/// the exact resolved fn.
+pub type PackedFloat32ArrayDefaultCtor = GDExtensionPtrConstructor;
+
+/// Alias for the resolved `PackedFloat32Array::resize(new_size: int) -> int`
+/// builtin method (hash 848867239, Option-unwrapped at resolution).
+pub type PackedFloat32ArrayResizeMethod = GDExtensionPtrBuiltInMethod;
+
+/// Alias for the resolved `PackedFloat32Array` destructor (Option-unwrapped
+/// at resolution).
+pub type PackedFloat32ArrayDestructor = GDExtensionPtrDestructor;
+
+/// Alias for the resolved `Variant`-from-`PackedFloat32Array` packer
+/// (Option-unwrapped at resolution). Signature:
+/// `void (*)(GDExtensionUninitializedVariantPtr r_out, GDExtensionTypePtr p_in)`,
+/// where `p_in` MUST point to a fully-constructed `PackedFloat32Array` C++
+/// object (16 bytes on LP64 across Godot 4.1-4.3, per `extension_api.json`
+/// builtin_class_sizes).
+pub type VariantFromPackedFloat32ArrayCtor =
+    unsafe extern "C" fn(r_out: GDExtensionUninitializedVariantPtr, p_in: GDExtensionTypePtr);
+
+/// The compile-time hash of `PackedFloat32Array::resize(new_size: int) -> int`
+/// per Godot's `extension_api.json`. Verified stable across
+/// `godot-cpp/gdextension/extension_api.json` at tags `godot-4.1-stable`,
+/// `godot-4.2-stable`, and `godot-4.3-stable` before landing.
+///
+/// A Godot version that drifts this hash returns NULL from
+/// `variant_get_ptr_builtin_method(PACKED_FLOAT32_ARRAY, "resize",
+/// PACKED_FLOAT32_ARRAY_RESIZE_HASH)`, which
+/// [`crate::ffi::interface::InterfaceTable::from_proc_address`] surfaces as
+/// an init-time `None` — the extension refuses to load cleanly (FR-EX-08),
+/// rather than binding to a stale signature.
+pub const PACKED_FLOAT32_ARRAY_RESIZE_HASH: GDExtensionInt = 848867239;
+
+/// The compile-time hash of `PackedFloat32Array::size() -> int` (const method)
+/// per Godot's `extension_api.json`. Verified against
+/// `godot-cpp/gdextension/extension_api.json` at tag `4.3` (branch
+/// `godot-4.3-stable`) — `builtin_classes.PackedFloat32Array.methods.size.hash
+/// = 3173160232`, `is_const = true`, `is_static = false`, `is_vararg = false`,
+/// `return_type = "int"`. Used by session_transcribe's PackedFloat32Array
+/// unpack path to compute the element count of an arg PackedFloat32Array
+/// before slice::from_raw_parts.
+///
+/// Header has NO dedicated `packed_float32_array_size` resolver (verified
+/// against the 4.3-stable `gdextension_interface.h` — the exhaustive
+/// `packed_*` @name list has only `operator_index` / `operator_index_const`
+/// variants), so we route through the generic
+/// `variant_get_ptr_builtin_method` factory. Hash drift bails init cleanly
+/// via FR-EX-08 (NULL from the factory → `?` propagation → extension refuses
+/// to load).
+pub const PACKED_FLOAT32_ARRAY_SIZE_HASH: GDExtensionInt = 3173160232;
+
+/// Alias for the resolved `PackedFloat32Array::size() -> int` builtin method
+/// (hash [`PACKED_FLOAT32_ARRAY_SIZE_HASH`], Option-unwrapped at resolution).
+/// Same call shape as [`PackedFloat32ArrayResizeMethod`]; the alias exists
+/// as a documentation tag for the unpack path.
+pub type PackedFloat32ArraySizeMethod = GDExtensionPtrBuiltInMethod;
+
+/// Alias for the resolved `String` destructor (`variant_get_ptr_destructor(STRING)`,
+/// Option-unwrapped at resolution). Called on a typed String opaque built by
+/// `string_new_with_utf8_chars_and_len` to release the CowData refcount after
+/// packing into a Variant via `variant_from_string_ctor`.
+pub type StringDestructor = GDExtensionPtrDestructor;
+
+// ---------------------------------------------------------------------------
+// Dictionary packing pipeline (M3-11 T14 followup: `session_synthesize` full
+// dispatch). All three of these resolve into their typed handles at
+// [`crate::ffi::interface::InterfaceTable::from_proc_address`] time; the
+// trampoline never resolves at runtime. See per-alias rustdoc for the
+// call-order contract.
+// ---------------------------------------------------------------------------
+
+/// Alias for the resolved default `Dictionary` constructor (index 0,
+/// Option-unwrapped at resolution). Same fn-ptr shape as
+/// [`GDExtensionPtrConstructor`] — the alias is a documentation tag pinning
+/// the type at the callsite.
+pub type DictionaryDefaultCtor = GDExtensionPtrConstructor;
+
+/// Alias for the resolved `Dictionary` destructor
+/// (`variant_get_ptr_destructor(DICTIONARY)`, Option-unwrapped at
+/// resolution). Called on the stack-allocated temp Dictionary after packing
+/// into a Variant to release the internal refcount.
+pub type DictionaryDestructor = GDExtensionPtrDestructor;
+
+/// `dictionary_operator_index` (Godot 4.1, `gdextension_interface.h`).
+///
+/// Given a raw Dictionary handle `p_self` and a Variant key `p_key`, returns
+/// a `*mut Variant` pointer to the value slot for that key. If the key does
+/// not yet exist in the dictionary, Godot creates a Nil-Variant slot for it
+/// and returns a pointer to that fresh Nil slot; if the key already exists,
+/// the returned pointer aliases the existing value slot (overwriting via
+/// `variant_new_copy` would leak the old value — caller MUST first
+/// `variant_destroy` the slot in that case).
+///
+/// Header signature:
+/// `GDExtensionVariantPtr (*)(GDExtensionTypePtr p_self, GDExtensionConstVariantPtr p_key)`.
+pub type GDExtensionInterfaceDictionaryOperatorIndex =
+    unsafe extern "C" fn(
+        p_self: GDExtensionTypePtr,
+        p_key: GDExtensionConstVariantPtr,
+    ) -> GDExtensionVariantPtr;
+
+/// `sizeof(Dictionary)` on LP64, per Godot 4.1..4.3 `extension_api.json`
+/// `builtin_class_sizes.Dictionary` = 8 (single opaque handle to
+/// `DictionaryPrivate`). We conservatively allocate a 16-byte stack buffer
+/// so a future header widening (e.g. adding a per-instance flag byte) stays
+/// covered without a re-audit of every `dict_new_variant`-style callsite.
+pub const DICTIONARY_SIZE: usize = 8;
+
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(
+        DICTIONARY_SIZE == 8,
+        "Dictionary size drift — audit variant.rs stack buffer + rebuild",
+    );
+};
+
+/// `sizeof(PackedFloat32Array)` on LP64 (float_64 build configuration), per
+/// Godot 4.1..4.3 `extension_api.json` builtin_class_sizes. A single 16-byte
+/// stack buffer is enough to hold one temp PackedFloat32Array through the
+/// construct → resize → copy → pack → destroy pipeline used by
+/// [`crate::variant::pack_f32_slice_into_variant`].
+pub const PACKED_FLOAT32_ARRAY_SIZE: usize = 16;
+
+/// `sizeof(String)` on LP64 (float_64 build configuration), per Godot 4.3
+/// `extension_api.json` builtin_class_sizes. A single pointer-word buffer
+/// holds one temp typed String through the
+/// `string_new_with_utf8_chars_and_len` → `variant_from_string_ctor` →
+/// `string_destructor` cleanup used by
+/// [`crate::variant::variant_from_string_utf8`].
+pub const STRING_SIZE: usize = 8;
+
+/// Compile-time guard for the PackedFloat32Array stack-buffer size. Godot's
+/// `extension_api.json` reports 16 bytes on LP64 for the `float_64` build
+/// configuration across Godot 4.1..4.3-stable — if our expectation ever
+/// drifts past 16 bytes (e.g. we build against a future header that widens
+/// it), we want to notice at compile time so `pack_f32_slice_into_variant`'s
+/// stack buffer stays honest.
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(
+        PACKED_FLOAT32_ARRAY_SIZE == 16,
+        "PackedFloat32Array size drift — audit variant.rs stack buffer + rebuild",
+    );
+    assert!(
+        STRING_SIZE == 8,
+        "String size drift — audit variant.rs stack buffer + rebuild",
+    );
+};
+
+/// `string_to_utf8_chars` (Godot 4.1, `gdextension_interface.h` line 1691).
+///
+/// Encodes a typed String opaque into a UTF-8 byte buffer. Two-phase probe
+/// pattern: passing `r_text = NULL` yields the length only (no bytes
+/// written); passing a `p_max_write_length` cap fills the buffer up to that
+/// cap and still returns the total encoded length (so callers can detect
+/// truncation).
+///
+/// Return value: encoded length in BYTES (not codepoints), NOT including a
+/// trailing NUL — Godot never writes a terminator via this API.
+///
+/// Header signature:
+/// `GDExtensionInt (*)(GDExtensionConstStringPtr p_self, char *r_text, GDExtensionInt p_max_write_length)`.
+pub type GDExtensionInterfaceStringToUtf8Chars = unsafe extern "C" fn(
+    p_self: GDExtensionConstStringPtr,
+    r_text: *mut c_char,
+    p_max_write_length: GDExtensionInt,
+) -> GDExtensionInt;
+
+// ---------------------------------------------------------------------------
+// PackedFloat32Array unpack completion (M3-11 T14 followup).
+//
+// The `variant_to_packed_float32_array_ctor` factory (already resolved in
+// [`crate::ffi::interface::InterfaceTable`]) yields a TYPED
+// PackedFloat32Array handle. Reading it into a Rust `&[f32]` requires three
+// additional pieces that are ALREADY resolved above:
+//
+// 1. Element pointer: [`GDExtensionInterfacePackedFloat32ArrayOperatorIndexConst`]
+//    (cached at `packed_float32_array_operator_index_const`).
+// 2. Element count: [`PackedFloat32ArraySizeMethod`] (cached at
+//    `pfa_size_method`, resolved via `variant_get_ptr_builtin_method(PFA,
+//    "size", PACKED_FLOAT32_ARRAY_SIZE_HASH)`). This is preferred over
+//    `variant_call("size", ...)` because it skips a full Variant boxing per
+//    call — the hash guards silent signature drift.
+// 3. Typed-handle cleanup: [`PackedFloat32ArrayDestructor`] (cached at
+//    `pfa_destructor`, resolved via `variant_get_ptr_destructor(PFA)`). The
+//    typed handle from the unpacker holds a refcount on Godot's shared
+//    CoW-backed buffer; calling the destructor decrements it. Without this,
+//    every push_pcm invocation would leak refcount-1 (a slow leak that
+//    manifests only under long-running streaming — exactly the M3-14
+//    barge-in scenario).
+//
+// All three resolvers were declared at Vokra-side land time as part of the
+// `stream_poll` pack pipeline. Re-using them for `stream_push_pcm` unpack
+// costs zero additional init-time proc-address resolves.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Compile-time layout guards.

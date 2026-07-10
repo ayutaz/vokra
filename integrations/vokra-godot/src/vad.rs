@@ -130,6 +130,25 @@ impl VokraStream {
         let status = unsafe { vokra_stream_interrupt(self.handle) };
         check(status)
     }
+
+    /// Test-only helper: construct a stream with a NULL C handle so sibling
+    /// unit tests (e.g. `stream_push_pcm` trampoline dispatch) can exercise
+    /// the backend-error branch without a real Silero VAD GGUF fixture. Any
+    /// C ABI call on the resulting stream returns a non-OK status because
+    /// `vokra-capi`'s `ffi_guard::required_mut` rejects NULL handles — see
+    /// `crates/vokra-capi/src/stream.rs`. `Drop` is a no-op for NULL
+    /// (see [`Drop::drop`]), so this is leak-free.
+    ///
+    /// Kept `pub(crate)` and gated on `#[cfg(test)]` to prevent accidental
+    /// use from application code; the RAII invariant of the type
+    /// (exactly-one-refcount-per-value) does NOT apply to a NULL handle
+    /// because there is nothing to refcount.
+    #[cfg(test)]
+    pub(crate) fn null_for_tests() -> Self {
+        Self {
+            handle: ptr::null_mut(),
+        }
+    }
 }
 
 impl Drop for VokraStream {

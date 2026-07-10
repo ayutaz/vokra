@@ -1,0 +1,151 @@
+Vokra Godot GDExtension (vokra-godot)
+Copyright (c) Vokra contributors.
+
+Licensed under the Apache License, Version 2.0. See the sibling LICENSE
+file for the full license text.
+
+This NOTICE covers the Godot 4.x AssetLib package produced by
+scripts/build-godot-gdextension.sh (M3-11 / ADR-0011 §D9). The layout
+that consumers unzip into their Godot project is:
+
+    addons/vokra/vokra.gdextension
+    addons/vokra/bin/<platform>/<arch>/{libvokra_godot.{so,dylib},vokra_godot.dll}
+    addons/vokra/LICENSE     (Apache-2.0 verbatim)
+    addons/vokra/NOTICE      (this file)
+
+--------------------------------------------------------------------------------
+Godot Engine — MIT (host runtime, not bundled)
+--------------------------------------------------------------------------------
+
+Vokra's Godot binding integrates with the Godot Engine
+(https://godotengine.org/), which is distributed under the MIT license,
+Copyright (c) 2007-present Juan Linietsky, Ariel Manzur and contributors.
+
+  Permission is hereby granted, free of charge, to any person obtaining
+  a copy of this software and associated documentation files (the
+  "Software"), to deal in the Software without restriction, including
+  without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to
+  permit persons to whom the Software is furnished to do so, subject to
+  the following conditions:
+
+  The above copyright notice and this permission notice shall be
+  included in all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+  CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+  TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+The Godot Engine binaries themselves are NOT bundled by this package —
+the AssetLib zip only ships Vokra's GDExtension shared library and the
+`vokra.gdextension` config file that Godot loads at project open. Vokra
+does NOT link `godot-cpp` or `gdext-rs`; the binding is a hand-written
+`extern "C"` bridge over `gdextension_interface.h` (ADR-0011 §D1/D3).
+
+--------------------------------------------------------------------------------
+NVIDIA CUDA runtime — NOT bundled
+--------------------------------------------------------------------------------
+
+This package (vokra-godot) does NOT bundle NVIDIA CUDA runtime
+libraries (cudart, cudnn, cublas, nvrtc, or the CUDA driver itself).
+
+When CUDA acceleration is enabled at runtime, Vokra dynamically loads
+the system-installed CUDA driver via:
+
+  * dlopen("libcuda.so")  on Linux
+  * LoadLibrary("nvcuda.dll")  on Windows
+
+and dynamically loads the system-installed NVRTC via the equivalent
+Driver API entry points. Vokra does not link against cudart_static and
+does not ship any file named cudart*, cudnn*, cublas*, or nvcuda*.
+
+This satisfies the NVIDIA CUDA EULA requirement that runtime
+redistributables be "installed only in a private (non-shared) directory
+location" — a constraint incompatible with Godot AssetLib distribution,
+which places the GDExtension shared library in a shared `addons/vokra/`
+directory under each consumer project.
+
+Consumers requiring CUDA acceleration MUST install the NVIDIA CUDA
+Toolkit separately per NVIDIA's terms. Absence of a system CUDA install
+means the CUDA backend is unavailable; Vokra does NOT silently fall
+back to CPU (FR-EX-08) — an explicit error surfaces through
+`vokra_last_error()` and reaches GDScript as a `VokraError` value.
+
+CI enforcement: scripts/compliance/check-godot-package-no-nvidia.sh
+runs on every release, scanning `addons/vokra/bin/**` for banned
+filenames (both `cudart*` and `libcudart*` forms — the Unity mirror's
+`cudart*` glob alone would miss Linux `libcudart.so.12`), inspecting
+each shipped .dll / .so / .dylib for undefined-symbol references to
+cudart / cudnn / cublasLt, and validating LICENSE + NOTICE +
+vokra.gdextension presence. Any hit fails the release job.
+
+--------------------------------------------------------------------------------
+Third-party attributions
+--------------------------------------------------------------------------------
+
+This package embeds the Vokra native runtime (vokra-capi cdylib), which
+is written from scratch in Rust and licensed Apache-2.0 in lock-step
+with the workspace-wide policy. Attributions for upstream research
+weights and datasets consumed by Vokra models (Silero VAD, Whisper,
+piper-plus, CAM++, Kokoro-82M, Mimi codec, etc.) are recorded in
+docs/license-audit.md and the root-level NOTICE file in the main Vokra
+repository (https://github.com/ayutaz/vokra).
+
+The Godot binding does not add any new third-party runtime dependency
+beyond what the main Vokra runtime already consumes — Cargo.lock for
+the vokra-godot crate contains only first-party `vokra-*` crates
+(zero-dep invariant NFR-DS-02 preserved even in this isolated
+workspace).
+
+--------------------------------------------------------------------------------
+Demo weights — MIT-only (fetch-demo-models.sh)
+--------------------------------------------------------------------------------
+
+The demo weight downloader shipped alongside this package
+(`addons/vokra/fetch-demo-models.sh`) fetches MIT-licensed models only:
+Silero VAD v5 (MIT), Whisper base (MIT), piper-plus voices (MIT).
+
+CC-BY-NC / CC-BY-NC-SA / non-commercial weights (F5-TTS, Fish-Speech,
+Bark, EnCodec) are excluded from the official model zoo per the M2-13
+compliance gate — the AssetLib channel is MIT-only by policy (BR-10 /
+FR-OP-32).
+
+Voice-clone models (RVC, GPT-SoVITS) are categorically banned from
+Vokra core per BR-08 (Tennessee ELVIS Act + federal NO FAKES Act
+compatibility) and are not exposed through the AssetLib package.
+
+--------------------------------------------------------------------------------
+Watermark / AI-generated audio disclosure (EU AI Act §50, SB 942)
+--------------------------------------------------------------------------------
+
+TTS output produced through this package is subject to Vokra's
+`WatermarkConfig` API in the main Vokra runtime. The watermark
+embedding path is `deferred` for the current release train (see the
+root NOTICE §5 attribution for the Mimi codec attribution note and
+docs/legal-compliance.md for the EU AI Act §50 / California SB 942
+policy status). Consumers integrating Vokra TTS in the EU or California
+market are responsible for meeting the applicable disclosure
+obligations.
+
+--------------------------------------------------------------------------------
+Maintaining this file
+--------------------------------------------------------------------------------
+
+Any change that adds a new third-party dependency to the vokra-godot
+crate, changes the AssetLib package contents, or alters the NVIDIA
+non-bundle posture MUST update this NOTICE in the same pull request.
+The M3-11-T18 compliance scanner
+(scripts/compliance/check-godot-package-no-nvidia.sh) validates that
+this file is present AND non-empty in every release build.
+
+See also:
+  * LICENSE (Apache-2.0 verbatim)
+  * ../../NOTICE (Vokra repository-wide NOTICE)
+  * ../../third_party/NVIDIA-EULA.md
+  * ../../docs/license-audit.md
+  * ../../docs/legal-compliance.md
+  * ../../docs/adr/0011-godot-gdextension.md §D9

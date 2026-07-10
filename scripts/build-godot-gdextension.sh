@@ -260,6 +260,33 @@ for f in LICENSE NOTICE README.md; do
     fi
 done
 
+# ---- fetch-demo-models.sh (M3-11 addons/vokra Godot mirror) --------------
+# Ship the MIT-only demo weight fetcher inside the AssetLib addon tree so
+# consumers can run `bash addons/vokra/fetch-demo-models.sh` from their
+# Godot project root (the demo GDScripts in `demos/asr_demo/main.gd:12`
+# and `demos/tts_demo/main.gd:11` document that exact invocation).
+#
+# Mirrors bindings/unity/com.vokra.unity/Samples~/VadAsrTts/Scripts/fetch-demo-models.sh
+# (Unity precedent) with Godot-flavored destination + filenames — see the
+# script header for the divergence points.
+#
+# `cp -p` preserves the source file's exec bit so consumers don't have to
+# `chmod +x` after unzip. Zero-dep: pure bash, no new tooling in the
+# packaging path.
+FETCH_SCRIPT_SRC="$GODOT_CRATE/addons/vokra/fetch-demo-models.sh"
+if [ -f "$FETCH_SCRIPT_SRC" ]; then
+    cp -p -f "$FETCH_SCRIPT_SRC" "$ADDONS_DIR/fetch-demo-models.sh"
+    # Belt + braces: some cp implementations (e.g., BSD `cp -p` without
+    # source exec bit; older busybox variants) don't materialize the exec
+    # bit. Explicitly stamp it so `bash addons/vokra/fetch-demo-models.sh`
+    # AND `./addons/vokra/fetch-demo-models.sh` both work post-unzip.
+    chmod +x "$ADDONS_DIR/fetch-demo-models.sh"
+else
+    echo "build-godot-gdextension: WARN fetch-demo-models.sh not found at $FETCH_SCRIPT_SRC" >&2
+    echo "                        (M3-11 addons/vokra/fetch-demo-models.sh is missing;" >&2
+    echo "                        demos will fail to bootstrap weights.)" >&2
+fi
+
 # ---- Optional: assemble the AssetLib zip (dev smoke-test) ----------------
 if [ "$DO_PACK" -eq 1 ]; then
     # Extract version from the crate's Cargo.toml without a TOML parser

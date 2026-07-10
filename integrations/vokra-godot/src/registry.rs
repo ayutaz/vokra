@@ -1091,6 +1091,18 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn make_mock_interface() -> InterfaceTable {
+        // Variant-support fields are unused by registry-side tests (no
+        // Variant packing during class registration). Route them through
+        // the sig-aware sibling mocks so the resulting table is
+        // structurally complete; individual tests may override fields.
+        //
+        // For the M3-11 T14/M3-18 unpack foundation fields
+        // (variant_new_copy, variant_destroy, packed_float32_array_*,
+        // string_*, and the additional cached typed constructors) route
+        // through simple no-op mocks defined below. Every mock has the
+        // documented C-header signature so the InterfaceTable is
+        // structurally valid; registry tests never invoke these fields.
+        use crate::ffi::interface::tests as iface_tests;
         InterfaceTable {
             classdb_register_extension_class3: mock_classdb_register_extension_class3,
             classdb_register_extension_class_method: mock_classdb_register_extension_class_method,
@@ -1100,7 +1112,146 @@ pub(crate) mod tests {
             string_name_new_with_latin1_chars: mock_string_name_new_with_latin1_chars,
             mem_alloc: mock_mem_alloc,
             mem_free: mock_mem_free,
+            variant_get_type: iface_tests::mock_variant_get_type,
+            variant_new_nil: iface_tests::mock_variant_new_nil,
+            variant_from_int_ctor: iface_tests::mock_variant_from_int,
+            variant_to_int_ctor: iface_tests::mock_variant_to_int,
+            // M3-11 T14/M3-18 unpack foundation additions. Registry-side
+            // tests never invoke these; the mocks below satisfy the fn-ptr
+            // shape only.
+            variant_new_copy: mock_variant_new_copy,
+            variant_destroy: mock_variant_destroy,
+            variant_from_string_ctor: iface_tests::mock_variant_from_int,
+            variant_to_string_ctor: iface_tests::mock_variant_to_int,
+            variant_from_packed_float32_array_ctor: iface_tests::mock_variant_from_int,
+            variant_to_packed_float32_array_ctor: iface_tests::mock_variant_to_int,
+            variant_from_dictionary_ctor: iface_tests::mock_variant_from_int,
+            variant_to_dictionary_ctor: iface_tests::mock_variant_to_int,
+            variant_from_object_ctor: iface_tests::mock_variant_from_int,
+            variant_to_object_ctor: iface_tests::mock_variant_to_int,
+            packed_float32_array_operator_index_const:
+                mock_packed_float32_array_operator_index_const,
+            packed_float32_array_operator_index: mock_packed_float32_array_operator_index,
+            string_new_with_utf8_chars_and_len: mock_string_new_with_utf8_chars_and_len,
+            string_to_utf8_chars: mock_string_to_utf8_chars,
+            variant_get_ptr_constructor: mock_variant_get_ptr_constructor,
+            variant_get_ptr_builtin_method: mock_variant_get_ptr_builtin_method,
+            variant_get_ptr_destructor: mock_variant_get_ptr_destructor,
+            pfa_default_ctor: mock_pfa_default_ctor,
+            pfa_resize_method: mock_pfa_builtin_method,
+            pfa_destructor: mock_pfa_destructor,
+            pfa_size_method: mock_pfa_builtin_method,
+            string_destructor: mock_string_destructor,
+            // Dictionary packing pipeline (hook-added; registry tests never
+            // invoke, but the struct literal requires every field).
+            dict_default_ctor: mock_pfa_default_ctor,
+            dict_destructor: mock_pfa_destructor,
+            dictionary_operator_index: mock_dictionary_operator_index,
         }
+    }
+
+    /// No-op mock matching the `dictionary_operator_index` signature.
+    /// Returns a null Variant pointer — registry tests never invoke this
+    /// field, so the null return is safe; if a future test needs it, the
+    /// caller overrides the field on the returned InterfaceTable.
+    unsafe extern "C" fn mock_dictionary_operator_index(
+        _p_self: crate::ffi::gdextension::GDExtensionTypePtr,
+        _p_key: crate::ffi::gdextension::GDExtensionConstVariantPtr,
+    ) -> crate::ffi::gdextension::GDExtensionVariantPtr {
+        core::ptr::null_mut()
+    }
+
+    // M3-11 T14/M3-18 unpack foundation: registry-side no-op mocks.
+    // Signatures match the C header verbatim so `InterfaceTable` builds
+    // cleanly; these are never invoked by registry tests. If a future
+    // test needs behaviour (e.g. record inputs), it should override
+    // the relevant field on the returned table before calling `register`.
+
+    unsafe extern "C" fn mock_variant_new_copy(
+        _r_dest: crate::ffi::gdextension::GDExtensionUninitializedVariantPtr,
+        _p_src: crate::ffi::gdextension::GDExtensionConstVariantPtr,
+    ) {
+    }
+
+    unsafe extern "C" fn mock_variant_destroy(
+        _p_self: crate::ffi::gdextension::GDExtensionVariantPtr,
+    ) {
+    }
+
+    unsafe extern "C" fn mock_packed_float32_array_operator_index_const(
+        _p_self: crate::ffi::gdextension::GDExtensionConstTypePtr,
+        _p_index: crate::ffi::gdextension::GDExtensionInt,
+    ) -> *const f32 {
+        core::ptr::null()
+    }
+
+    unsafe extern "C" fn mock_string_new_with_utf8_chars_and_len(
+        _r_dest: crate::ffi::gdextension::GDExtensionUninitializedStringPtr,
+        _p_contents: *const core::ffi::c_char,
+        _p_size: crate::ffi::gdextension::GDExtensionInt,
+    ) {
+    }
+
+    unsafe extern "C" fn mock_string_to_utf8_chars(
+        _p_self: crate::ffi::gdextension::GDExtensionConstStringPtr,
+        _r_text: *mut core::ffi::c_char,
+        _p_max_write_length: crate::ffi::gdextension::GDExtensionInt,
+    ) -> crate::ffi::gdextension::GDExtensionInt {
+        0
+    }
+
+    // T14-followup PackedFloat32Array packing/unpacking pipeline mocks.
+    // Registry-side tests never invoke these; signatures match the C header
+    // verbatim so the struct literal type-checks.
+
+    unsafe extern "C" fn mock_packed_float32_array_operator_index(
+        _p_self: crate::ffi::gdextension::GDExtensionTypePtr,
+        _p_index: crate::ffi::gdextension::GDExtensionInt,
+    ) -> *mut f32 {
+        core::ptr::null_mut()
+    }
+
+    unsafe extern "C" fn mock_variant_get_ptr_constructor(
+        _p_type: crate::ffi::gdextension::GDExtensionVariantType,
+        _p_constructor: i32,
+    ) -> Option<crate::ffi::gdextension::GDExtensionPtrConstructor> {
+        Some(mock_pfa_default_ctor)
+    }
+
+    unsafe extern "C" fn mock_variant_get_ptr_builtin_method(
+        _p_type: crate::ffi::gdextension::GDExtensionVariantType,
+        _p_method: crate::ffi::gdextension::GDExtensionConstStringNamePtr,
+        _p_hash: crate::ffi::gdextension::GDExtensionInt,
+    ) -> Option<crate::ffi::gdextension::GDExtensionPtrBuiltInMethod> {
+        Some(mock_pfa_builtin_method)
+    }
+
+    unsafe extern "C" fn mock_variant_get_ptr_destructor(
+        _p_type: crate::ffi::gdextension::GDExtensionVariantType,
+    ) -> Option<crate::ffi::gdextension::GDExtensionPtrDestructor> {
+        Some(mock_pfa_destructor)
+    }
+
+    unsafe extern "C" fn mock_pfa_default_ctor(
+        _p_base: crate::ffi::gdextension::GDExtensionUninitializedTypePtr,
+        _p_args: *const crate::ffi::gdextension::GDExtensionConstTypePtr,
+    ) {
+    }
+
+    unsafe extern "C" fn mock_pfa_builtin_method(
+        _p_base: crate::ffi::gdextension::GDExtensionTypePtr,
+        _p_args: *const crate::ffi::gdextension::GDExtensionConstTypePtr,
+        _r_return: crate::ffi::gdextension::GDExtensionTypePtr,
+        _p_argument_count: i32,
+    ) {
+    }
+
+    unsafe extern "C" fn mock_pfa_destructor(_p_base: crate::ffi::gdextension::GDExtensionTypePtr) {
+    }
+
+    unsafe extern "C" fn mock_string_destructor(
+        _p_base: crate::ffi::gdextension::GDExtensionTypePtr,
+    ) {
     }
 
     pub(crate) fn reset_recorder() {
