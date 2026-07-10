@@ -123,7 +123,7 @@
 - **公式 zoo 非搭載の維持**: 公式 model zoo は Apache 2.0 / MIT / CC-BY（attribution）weight のみ（§「Vokra 公式配布」列の ★）。CC-BY-NC 系（F5-TTS / Fish-Speech / EnCodec）は `✕ research flag` のまま非搭載を維持する。
 - 解錠経路（研究/評価用途限定）: `CompliancePolicy::with_research_license(true)` / 環境変数 `VOKRA_ALLOW_RESEARCH_LICENSE=1` / `ComplianceLevel::Research`。EnCodec の商用代替は DAC / Mimi / WavTokenizer / X-Codec 2（§3）。警告・免責文言の法務的十分性は FR-MD-13 / X-03（依頼者判断）に従属。
 
-### CC-verified 事実確認（2026-07-07、M2 対応モデル分）
+### CC-verified 事実確認（2026-07-07 M2 対応 / 2026-07-10 M3-09 + M3-10 追記）
 
 **位置付け（重要）**: 本節は Claude Code（CC）が **一次公表資料の写し** として実施した事実確認の記録である。**法務的な配布判断（"配布して良い" の意思決定）は依頼者（`ayutaz`）に帰属**し、本節では実施しない。Owner sign-off は各行末尾の空欄に依頼者が別途記入する。判断の下敷きとなる事実（upstream の license 表記 / 発行元 / 公表 URL）だけをここに固定する。
 
@@ -139,6 +139,15 @@
 | **Kokoro-82M** | **Apache-2.0** | Hugging Face `hexgrad/Kokoro-82M` model card の license: apache-2.0 タグ；同リポジトリ LICENSE | `Permissive` | ✓ | ______________ |
 | **piper-plus (依頼者作) 全モデル** | **MIT** | `ayutaz/piper-plus` GitHub リポジトリ LICENSE (MIT)；ONNX voice model の LICENSE も MIT | `Permissive` | ✓ | ______________ |
 | **CAM++ Speaker Embedding** | **Apache-2.0** | ModelScope `iic/speech_campplus` の license: apache-2.0 タグ；変換元 `ayousanz/campplus-onnx` の LICENSE（Apache-2.0） | `Permissive` | ______________ |
+| **CosyVoice2-0.5B** | **Apache-2.0** | Hugging Face `FunAudioLLM/CosyVoice2-0.5B` model card の license: apache-2.0 タグ；`FunAudioLLM/CosyVoice` GitHub リポジトリ LICENSE ファイル（Apache License Version 2.0） | `Permissive` | ✓ | ______________ |
+| **Voxtral-Mini-3B-2507** | **Apache-2.0** | Hugging Face `mistralai/Voxtral-Mini-3B-2507` model card の license: apache-2.0 タグ | `Permissive` | ✓ | ______________ |
+| **Voxtral-Small-24B-2507** | **Apache-2.0** | Hugging Face `mistralai/Voxtral-Small-24B-2507` model card の license: apache-2.0 タグ | `Permissive` | ✓ | ______________ |
+
+**Attribution 要（CC-BY 4.0、公式 zoo 搭載可、NOTICE 記載必須）**:
+
+| モデル | Weight License | 一次資料（CC 引用） | Registry 分類 | 公式 zoo | 補足 |
+|---|---|---|---|---|---|
+| **Mimi codec (Kyutai)** | **CC-BY 4.0** | Hugging Face `kyutai/mimi` model card の license: cc-by-4.0 タグ；同 model card 提供の BibTeX citation `@techreport{kyutai2024moshi, ..., institution = {Kyutai}, year={2024}, url={http://kyutai.org/Moshi.pdf}}` | `AttributionRequired` | ✓ | 商用 OK ただし attribution 要。`NOTICE` §5 に BibTeX citation 記載済（M3-06 で反映、`crates/vokra-ops/src/mimi_rvq.rs` の `registry_lookup("mimi") == AttributionRequired` gate で機構強制） |
 
 **Non-commercial 系（研究フラグ必須、公式 zoo 非搭載を維持）**:
 
@@ -178,6 +187,10 @@
 | **Fish-Speech v1.4** | CC-BY-NC-SA 4.0 | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
 | **Fish-Speech v1.5** | CC-BY-NC-SA 4.0 | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
 | **EnCodec** | CC-BY-NC 4.0 | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
+| **CosyVoice2-0.5B** | Apache-2.0 | 2026-07-10 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M3-09 対応 |
+| **Voxtral-Mini-3B-2507** | Apache-2.0 | 2026-07-10 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M3-10 対応 |
+| **Voxtral-Small-24B-2507** | Apache-2.0 | 2026-07-10 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M3-10 対応 |
+| **Mimi codec (Kyutai)** | CC-BY 4.0 | 2026-07-10 | ______________ | ☐ Commercial (attribution 込) / ☐ Research-only / ☐ Rejected | M3-06 で NOTICE §5 反映済、機構 gate 済 |
 
 ---
 
