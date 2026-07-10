@@ -54,7 +54,7 @@
 
 ### 実行手順
 
-M3-02（Vulkan バックエンド）完成後の owner runbook（別途 CC が `docs/m3-18-android-rtf-handover.md` を land 予定、現時点未着手 = TODO）に従う。
+M3-02（Vulkan バックエンド）完成後の owner runbook = **`docs/m3-18-android-rtf-handover.md` を CC 側で land 済（2026-07-11）**。CPU baseline で NFR-PF-06 を通す方針・build recipe・Android Studio app 骨格・iteration プロトコル・結果報告テンプレートを規定。
 
 1. Android Studio App 新規プロジェクト → `libvokra.so` + `libvokra_capi.h` を JNI/JNA 経由で bind。
 2. `whisper-base.gguf` + `jfk-30s.wav` を app target に bundle（`assets/` 経由、`VokraAndroidAssets` passthrough を利用）。
@@ -81,7 +81,7 @@ M3-02（Vulkan バックエンド）完成後の owner runbook（別途 CC が `
 
 ### 実行手順
 
-M3-11 完成後の owner runbook（CC 側で `docs/m3-11-godot-demo-handover.md` を land 予定、現時点未着手 = TODO）に従う。
+M3-11 完成後の owner runbook = **`docs/m3-11-godot-demo-handover.md` を CC 側で land 済（2026-07-11）**。ClassDB 登録・method dispatch (T19 の 3 option: Option A = 現状 InvalidMethod で M4 押し出し / Option B = owner 側 Variant unpack / Option C = CC follow-up 依頼) の意思決定樹・export template 設定・結果報告テンプレートを規定。
 
 1. Godot Editor で新規プロジェクト作成 → `vokra-godot.gdextension` を addon として import。
 2. GDScript から `Vokra.load_model()` / `Vokra.transcribe()` などの API を呼ぶデモシーンを作成。
@@ -155,7 +155,7 @@ M3-11 完成後の owner runbook（CC 側で `docs/m3-11-godot-demo-handover.md`
 
 ### 実行手順
 
-M3-15 完成後の owner runbook（CC 側で `docs/m3-15-server-latency-handover.md` を land 予定、現時点未着手 = TODO）に従う。
+M3-15 完成後の owner runbook = **`docs/m3-15-server-latency-handover.md` を CC 側で land 済（2026-07-11）**。in-process reference bench (`benches/tts_latency.rs` 経由、FakeSynth floor 値) と 実 HTTP 計測 (経路 B = `curl -w '%{time_starttransfer}'` + xargs `-P` で並列度制御) の 2 経路を明示。`vokra-cli bench` の `--server` mode は M3-15-T11 spec 上は書かれているが実 land は in-process 側に着地している旨も honest scope note として明記。
 
 ### Exit 判定への寄与
 
