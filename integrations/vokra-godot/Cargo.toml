@@ -1,0 +1,46 @@
+# vokra-godot — OUT-OF-WORKSPACE integration (opt-in Godot 4.x GDExtension binding).
+#
+# Same isolation pattern as `integrations/vokra-piper-g2p/` and
+# `integrations/vokra-server/`: this crate is deliberately NOT a member of the
+# Vokra root workspace. It exposes a Godot 4.x GDExtension surface (cdylib) via
+# hand-written `extern "C"` bindings to the Godot `gdextension_interface.h`
+# ABI — no `godot-cpp`, no `gdext-rs`, no third-party binding crate (ADR-0011
+# §D1/D3). The empty `[workspace]` table below makes this directory its own
+# workspace root with its own `Cargo.lock`, fully isolated from the root graph;
+# the zero-dependency invariant on the root `Cargo.lock` (NFR-DS-02, enforced
+# by scripts/check-zero-deps.sh) is untouched.
+#
+# What it does: registers a `VokraSession` Godot Object class + method bindings
+# (`transcribe`, `synthesize`, `vad_open_stream`, etc.) that delegate to the
+# Vokra C ABI (`crates/vokra-capi`, exported as `libvokra` symbols) via
+# `extern "C"` declarations. The cdylib IS the GDExtension shared library that
+# Godot loads at runtime (matched by `vokra.gdextension` in the AssetLib
+# package layout, ADR-0011 §D9).
+#
+# See docs/tickets/m3/M3-11-godot-gdextension.md for the ticket plan.
+[package]
+name = "vokra-godot"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+publish = false
+description = "Vokra Godot 4.x GDExtension binding — hand-written extern \"C\" bridge over the Vokra C ABI (NOT part of the zero-dependency runtime)."
+
+# Own workspace root — isolates this crate from the Vokra root workspace and
+# gives it a separate `Cargo.lock`.
+[workspace]
+
+[lib]
+name = "vokra_godot"
+# `cdylib` is the Godot GDExtension shared library shape (`.dll` / `.dylib` /
+# `.so`). No `staticlib` — Godot loads via dlopen, not static link. No `rlib`
+# — nothing in the Vokra tree consumes this crate as a Rust dependency.
+crate-type = ["cdylib"]
+
+[dependencies]
+# First-party runtime crate, by path. The `vokra-capi` rlib contributes the
+# `#[no_mangle] extern "C" fn vokra_*` symbols documented in `include/vokra.h`;
+# our `extern "C"` declarations in `src/ffi/capi.rs` reference them so the
+# linker keeps them in the produced cdylib.
+vokra-capi = { path = "../../crates/vokra-capi" }

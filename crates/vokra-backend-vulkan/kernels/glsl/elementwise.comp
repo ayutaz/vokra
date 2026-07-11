@@ -1,0 +1,39 @@
+// elementwise.comp — M3-02-T20. Elementwise binary ops (add / mul).
+//
+// Specialization constant `OP` selects the operation:
+//   0 = add       (`out[i] = a[i] + b[i]`)
+//   1 = mul       (`out[i] = a[i] * b[i]`)
+//
+// One shader ⇒ two pipelines (one per specialization value), so hot-path
+// dispatch stays branchless.
+//
+// Compile with (either — the .spv is created twice, once per specialization,
+// by the Rust dispatcher; only ONE compile happens here):
+//   glslc --target-env=vulkan1.1 -o precompiled/elementwise.spv glsl/elementwise.comp
+
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// Specialization constant — set at pipeline creation time.
+layout(constant_id = 0) const uint OP = 0u; // 0 = add, 1 = mul
+
+layout(push_constant) uniform PC {
+    uint n;
+} pc;
+
+layout(std430, set = 0, binding = 0) readonly buffer ABuf  { float a[]; };
+layout(std430, set = 0, binding = 1) readonly buffer BBuf  { float b[]; };
+layout(std430, set = 0, binding = 2) writeonly buffer OutBuf { float out_buf[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.n) {
+        return;
+    }
+    if (OP == 0u) {
+        out_buf[i] = a[i] + b[i];
+    } else {
+        out_buf[i] = a[i] * b[i];
+    }
+}

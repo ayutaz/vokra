@@ -418,17 +418,25 @@ pub(crate) struct Nvrtc {
 impl Nvrtc {
     /// Loads `libnvrtc` and resolves every NVRTC entry point.
     ///
+    /// # M3-01-T09: library search fallback
+    ///
+    /// Search order:
+    /// 1. `VOKRA_NVRTC_PATH` env var — an absolute path to `libnvrtc.so*` /
+    ///    `nvrtc64_*.dll` (owner escape hatch for hosts where the toolkit is in
+    ///    a non-standard prefix, e.g. `/opt/cuda-12.6/lib64/libnvrtc.so.12`).
+    /// 2. [`LIBNVRTC_CANDIDATES`] — the bare filenames the platform loader
+    ///    searches (`LD_LIBRARY_PATH` / `PATH` / the standard toolkit prefixes
+    ///    the loader consults).
+    ///
+    /// **Not** a silent CPU fall back on failure: on either 1 or 2 missing the
+    /// library, the returned error is an explicit
+    /// [`VokraError::BackendUnavailable`] (FR-EX-08 / NFR-RL-06).
+    ///
     /// # Errors
     /// [`VokraError::BackendUnavailable`] if NVRTC is not installed (it ships
     /// with the CUDA toolkit, not the bare driver) or a symbol is missing.
     pub(crate) fn load() -> Result<Nvrtc> {
-        let lib = DynLib::open(LIBNVRTC_CANDIDATES).ok_or_else(|| {
-            VokraError::BackendUnavailable(
-                "libnvrtc (NVRTC runtime compiler) not found: install the CUDA toolkit's NVRTC \
-                 component. Vokra bundles no NVIDIA library (EULA install model, FR-BE-08)."
-                    .to_owned(),
-            )
-        })?;
+        let lib = Self::load_lib_with_env_fallback()?;
         // SAFETY: each `get::<Fn…>` pairs the exact NVRTC symbol name with the
         // function-pointer alias declaring its true signature (nvrtc.h).
         unsafe {
@@ -444,6 +452,43 @@ impl Nvrtc {
                 _lib: lib,
             })
         }
+    }
+
+    /// Tries `VOKRA_NVRTC_PATH` env var first (M3-01-T09 fallback #1); on env
+    /// unset / empty / invalid it falls through to
+    /// [`LIBNVRTC_CANDIDATES`] (fallback #2). Both misses collapse into one
+    /// explicit [`VokraError::BackendUnavailable`] (FR-EX-08 / NFR-RL-06).
+    fn load_lib_with_env_fallback() -> Result<DynLib> {
+        // (1) env-var absolute path (if set + non-empty + NUL-free).
+        if let Ok(path) = std::env::var("VOKRA_NVRTC_PATH") {
+            if !path.is_empty() && !path.bytes().any(|b| b == 0) {
+                // Build a NUL-terminated candidate — DynLib::open expects one.
+                let mut c_path = path.into_bytes();
+                c_path.push(0);
+                if let Some(lib) = DynLib::open(&[&c_path]) {
+                    return Ok(lib);
+                }
+                // env var was set but load failed → explicit error, do NOT
+                // silently fall back to the platform candidates. The intent of
+                // setting VOKRA_NVRTC_PATH is to *pin* the location; falling
+                // through would hide a typo behind a lucky system default.
+                return Err(VokraError::BackendUnavailable(format!(
+                    "VOKRA_NVRTC_PATH set but library failed to load ({} bytes); \
+                     unset the env var to fall back to the system search path, \
+                     or point it at a valid libnvrtc / nvrtc64_XX_0.dll",
+                    c_path.len() - 1
+                )));
+            }
+        }
+        // (2) Platform bare-name candidates (the loader's own search path).
+        DynLib::open(LIBNVRTC_CANDIDATES).ok_or_else(|| {
+            VokraError::BackendUnavailable(
+                "libnvrtc (NVRTC runtime compiler) not found: install the CUDA toolkit's NVRTC \
+                 component (or set VOKRA_NVRTC_PATH to its absolute path). Vokra bundles no \
+                 NVIDIA library (EULA install model, FR-BE-08)."
+                    .to_owned(),
+            )
+        })
     }
 }
 

@@ -22,6 +22,7 @@ use crate::backend::BackendKind;
 use crate::engines::{AsrEngine, TtsEngine, VadEngine, VadStreamHandle};
 use crate::error::{Result, VokraError};
 use crate::gguf::GgufFile;
+use crate::kv_quant::KvQuant;
 
 /// Handle for the loaded model.
 ///
@@ -41,6 +42,9 @@ pub(crate) struct ModelHandle {
 pub(crate) struct SessionInner {
     pub(crate) model: ModelHandle,
     pub(crate) backend: BackendKind,
+    /// KV cache quantization mode (M3-04, FR-QT-05). Default `Fp32` preserves
+    /// pre-M3-04 behaviour for every existing consumer of `Session`.
+    pub(crate) kv_quant: KvQuant,
     /// Monotonic id source for [`Stream`](crate::Stream) handles.
     pub(crate) next_stream_id: AtomicU64,
     /// Number of currently open streams (M0 session/stream bookkeeping).
@@ -110,12 +114,19 @@ impl Session {
         SessionBuilder {
             path: path.as_ref().to_path_buf(),
             backend: None,
+            kv_quant: KvQuant::default(),
         }
     }
 
     /// Backend this session was built with.
     pub fn backend_kind(&self) -> BackendKind {
         self.inner.backend
+    }
+
+    /// KV cache quantization mode this session was built with (M3-04). Default
+    /// [`KvQuant::Fp32`] is bit-identical to the pre-M3-04 behaviour.
+    pub fn kv_quant(&self) -> KvQuant {
+        self.inner.kv_quant
     }
 
     /// Path of the model file this session was created from.
@@ -179,10 +190,30 @@ impl Session {
 }
 
 /// Builder returned by [`Session::from_file`] (FR-API-02).
+///
+/// Chain [`Self::with_backend`] to finish the FR-API-02 verbatim call, or
+/// interleave [`Self::with_kv_quant`] before finalising to select the M3-04
+/// runtime KV cache quantization mode:
+///
+/// ```no_run
+/// use vokra_core::{BackendKind, KvQuant, Session};
+///
+/// // FP32 KV cache (default, pre-M3-04 behaviour):
+/// let _ = Session::from_file("model.gguf")
+///     .with_backend(BackendKind::Cpu)?;
+///
+/// // Q8_0 KV cache:
+/// let session = Session::from_file("model.gguf")
+///     .with_kv_quant(KvQuant::Q8_0)
+///     .with_backend(BackendKind::Cpu)?;
+/// assert_eq!(session.kv_quant(), KvQuant::Q8_0);
+/// # Ok::<(), vokra_core::VokraError>(())
+/// ```
 #[derive(Debug)]
 pub struct SessionBuilder {
     path: PathBuf,
     backend: Option<BackendKind>,
+    kv_quant: KvQuant,
 }
 
 impl SessionBuilder {
@@ -191,6 +222,16 @@ impl SessionBuilder {
     pub fn with_backend(mut self, backend: BackendKind) -> Result<Session> {
         self.backend = Some(backend);
         self.build()
+    }
+
+    /// Selects the runtime KV cache quantization mode (M3-04, FR-QT-05).
+    ///
+    /// Chainable *before* [`Self::with_backend`] / [`Self::build`]; the
+    /// default is [`KvQuant::Fp32`] which preserves pre-M3-04 behaviour.
+    #[must_use]
+    pub fn with_kv_quant(mut self, kv_quant: KvQuant) -> Self {
+        self.kv_quant = kv_quant;
+        self
     }
 
     /// Finishes building without an explicit backend selection; the default
@@ -219,6 +260,7 @@ impl SessionBuilder {
                     gguf,
                 },
                 backend,
+                kv_quant: self.kv_quant,
                 next_stream_id: AtomicU64::new(0),
                 active_streams: AtomicU64::new(0),
             }),
@@ -289,6 +331,40 @@ pub(crate) mod tests {
         let file = TempModelFile::new("default-backend");
         let session = Session::from_file(&file.0).build().expect("session builds");
         assert_eq!(session.backend_kind(), BackendKind::Cpu);
+    }
+
+    #[test]
+    fn build_defaults_to_fp32_kv_quant() {
+        // M3-04: builder default must preserve pre-M3-04 behaviour.
+        let file = TempModelFile::new("default-kv-quant");
+        let session = Session::from_file(&file.0).build().expect("session builds");
+        assert_eq!(session.kv_quant(), KvQuant::Fp32);
+    }
+
+    #[test]
+    fn with_kv_quant_chains_before_backend() {
+        // M3-04: `.with_kv_quant(...)` is chainable and the choice survives
+        // to the finished session.
+        let file = TempModelFile::new("with-kv-quant-q8");
+        let session = Session::from_file(&file.0)
+            .with_kv_quant(KvQuant::Q8_0)
+            .with_backend(BackendKind::Cpu)
+            .expect("session builds");
+        assert_eq!(session.kv_quant(), KvQuant::Q8_0);
+        assert_eq!(session.backend_kind(), BackendKind::Cpu);
+    }
+
+    #[test]
+    fn with_kv_quant_all_three_modes_round_trip() {
+        // Every non-Fp32 mode reaches the finished session unchanged.
+        for mode in [KvQuant::Q4_0, KvQuant::Q5_0, KvQuant::Q8_0] {
+            let file = TempModelFile::new(&format!("with-kv-quant-{}", mode.tag()));
+            let session = Session::from_file(&file.0)
+                .with_kv_quant(mode)
+                .build()
+                .expect("session builds");
+            assert_eq!(session.kv_quant(), mode);
+        }
     }
 
     #[test]

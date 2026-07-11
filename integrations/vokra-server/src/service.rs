@@ -41,6 +41,7 @@ use std::sync::Arc;
 // `WatermarkBackendStatus` is referenced only in doc-links below (rustdoc
 // intra-doc link); dropping it from the `use` list avoids the unused-import
 // warning while keeping the doc reference valid via its full path.
+use vokra_core::decode::BeamSearchConfig;
 use vokra_core::{
     AsrEngine, BackendKind, CompliancePolicy, GgufFile, SynthesisRequest, SynthesizedAudio,
     VokraError, WatermarkConfig,
@@ -48,7 +49,9 @@ use vokra_core::{
 use vokra_models::kokoro::KokoroTts;
 use vokra_models::piper_plus::PiperPlusTts;
 use vokra_models::silero_vad::SileroVadV5;
+use vokra_models::voxtral::VoxtralAsr;
 use vokra_models::whisper::asr::WhisperAsr;
+use vokra_models::whisper::greedy::DEFAULT_MAX_NEW_TOKENS as WHISPER_DEFAULT_MAX_NEW_TOKENS;
 use vokra_models::whisper::tokenizer::WhisperTokenizer;
 use vokra_piper_plus::{PassthroughPhonemizer, Phonemizer};
 
@@ -60,6 +63,10 @@ use vokra_piper_plus::{PassthroughPhonemizer, Phonemizer};
 ///   drop-in convention);
 /// * `whisper-base` — explicit base alias;
 /// * `whisper-large-v3` — the M2-06 large-v3 engine when configured;
+/// * `voxtral` / `voxtral-mini-3b` / `voxtral-small-24b` — the M3-10 Voxtral
+///   engine when configured (ASR-only until the full autoregressive decode
+///   lands; the model is registered so the server route lights up as soon
+///   as the block math ships — never a silent fabrication);
 /// * `piper-plus` — the M0-07 native TTS engine (default v0.5 TTS);
 /// * `kokoro` — the M2-07 native Kokoro engine (advertised only; synthesize
 ///   currently unavailable).
@@ -70,6 +77,13 @@ pub mod model_names {
     pub const WHISPER_BASE: &str = "whisper-base";
     /// M2-06 large-v3 alias.
     pub const WHISPER_LARGE_V3: &str = "whisper-large-v3";
+    /// M3-10 Voxtral generic alias — routed to the loaded Voxtral engine
+    /// (mini-3b or small-24b, whichever was configured).
+    pub const VOXTRAL: &str = "voxtral";
+    /// M3-10 Voxtral mini-3b (Apache 2.0 code + Apache 2.0 weight).
+    pub const VOXTRAL_MINI_3B: &str = "voxtral-mini-3b";
+    /// M3-10 Voxtral small-24b (Apache 2.0 code + Apache 2.0 weight).
+    pub const VOXTRAL_SMALL_24B: &str = "voxtral-small-24b";
     /// piper-plus native TTS alias.
     pub const PIPER_PLUS: &str = "piper-plus";
     /// Kokoro-82M native TTS alias.
@@ -104,6 +118,21 @@ pub struct ServiceConfig {
     /// returns [`ServiceError::SynthesizeUnavailable`] (M2-07 G2P bridge
     /// deferred).
     pub kokoro_gguf: Option<PathBuf>,
+    /// Optional path to a Voxtral (Mistral) GGUF (M3-10). When present, the
+    /// registry advertises the `voxtral` / `voxtral-mini-3b` /
+    /// `voxtral-small-24b` aliases and
+    /// [`vokra_models::voxtral::VoxtralAsr::transcribe`] runs the M3-10
+    /// autoregressive greedy path (log-mel front-end + audio encoder +
+    /// Mistral text decoder + KV cache + tokenizer decode) on a
+    /// dispatched request, returning HTTP 200 with the decoded text.
+    /// Missing tokenizer chunk / shape-only converter / uncovered
+    /// backend still surface as explicit
+    /// [`ServiceError::Inference`] errors mapped to the appropriate
+    /// 4xx/5xx codes by T05 — never a silent fabrication (FR-EX-08).
+    /// Note the ASR-quality honest scope in
+    /// `crate::voxtral::asr` module docs: the audio-adapter follow-up
+    /// (real audio conditioning) is a downstream ticket.
+    pub voxtral_gguf: Option<PathBuf>,
     /// Optional path to a Silero VAD v5 GGUF. When absent, the Wyoming
     /// chunk-boundary VAD helper is disabled (chunks are used as-is).
     pub silero_vad_gguf: Option<PathBuf>,
@@ -141,6 +170,7 @@ impl ServiceConfig {
             whisper_large_v3_tokenizer: None,
             piper_plus_gguf,
             kokoro_gguf: None,
+            voxtral_gguf: None,
             silero_vad_gguf: None,
             backend: BackendKind::Cpu,
             compliance: CompliancePolicy::strict(),
@@ -230,6 +260,118 @@ pub trait TranscribeService: Send + Sync {
     /// * [`ServiceError::UnknownModel`] if `model` is not in the registry.
     /// * [`ServiceError::Inference`] if the underlying engine fails.
     fn transcribe(&self, model: &str, pcm: &[f32]) -> Result<String, ServiceError>;
+
+    /// Beam-search transcribe with an n-best response payload (M3-15 Wave
+    /// 10 A). Falls through to greedy [`Self::transcribe`] when
+    /// `req.beam_size` is `None` or `Some(1)` — the response then carries
+    /// an empty `alternatives` list, preserving backward-compat with the
+    /// legacy top-1 shape.
+    ///
+    /// Providers that DO NOT support beam search MUST NOT silently ignore
+    /// `beam_size > 1` (FR-EX-08). The stock default implementation below
+    /// enforces that by returning an explicit
+    /// [`ServiceError::Inference`]([`VokraError::UnsupportedOp`]) — the
+    /// HTTP layer maps that to 501. An engine that CAN honour beam search
+    /// (Voxtral today) overrides this method to route through its beam
+    /// path.
+    ///
+    /// # Errors
+    ///
+    /// Same taxonomy as [`Self::transcribe`], plus
+    /// [`ServiceError::Inference`] wrapping [`VokraError::UnsupportedOp`]
+    /// when a caller requests beam search from an engine that only
+    /// supports greedy through this trait.
+    fn transcribe_beam(
+        &self,
+        model: &str,
+        pcm: &[f32],
+        req: &TranscribeBeamRequest,
+    ) -> Result<TranscribeBeamResponse, ServiceError> {
+        // Default behaviour: fall through to greedy for beam_size 0..=1,
+        // hard-error for beam_size > 1. Concrete implementations override
+        // this to route their supported engines through a real beam path.
+        match req.beam_size {
+            None | Some(0..=1) => {
+                let text = self.transcribe(model, pcm)?;
+                Ok(TranscribeBeamResponse {
+                    text,
+                    alternatives: Vec::new(),
+                })
+            }
+            Some(_) => Err(ServiceError::Inference(VokraError::UnsupportedOp(format!(
+                "transcribe_beam: model `{model}` does not support beam search on this \
+                 TranscribeService implementation (FR-EX-08 — no silent fall back to greedy)",
+            )))),
+        }
+    }
+}
+
+/// Beam-search request knobs (M3-15 Wave 10 A). Passed as a value to
+/// [`TranscribeService::transcribe_beam`]. Every field is optional — an
+/// entirely-default request (all `None`) is greedy and matches the
+/// legacy [`TranscribeService::transcribe`] shape exactly.
+///
+/// # Backward compat
+///
+/// * `beam_size` `None` or `Some(0)` or `Some(1)` → greedy. The response's
+///   `alternatives` list is empty (the top-1 lives in `text`).
+/// * `beam_size` `Some(n)` for `n > 1` → beam search when supported.
+/// * `length_penalty` / `no_repeat_ngram` are honoured by engines that
+///   support them (Voxtral, and — since Wave 12 core-side plumbing — Whisper
+///   via `BeamSearchConfig::no_repeat_ngram_size`). Providers that only
+///   advertise greedy surface an explicit error when the caller requests
+///   `beam_size > 1` — never a silent no-op (FR-EX-08).
+#[derive(Debug, Clone, Default)]
+pub struct TranscribeBeamRequest {
+    /// Beam width. `None` or `Some(0..=1)` = greedy. `> 1` = beam search
+    /// on engines that support it.
+    pub beam_size: Option<usize>,
+    /// GNMT length-penalty exponent. Ignored on the greedy path. Defaults
+    /// on the engine to `0.6` when unset (matches
+    /// [`vokra_models::voxtral::BeamConfig::with_beam_size`]).
+    pub length_penalty: Option<f32>,
+    /// Block repeated n-grams of this length. `None` or `Some(0)` disables
+    /// blocking.
+    pub no_repeat_ngram: Option<usize>,
+    /// Upper bound on generated tokens. `None` picks the engine default
+    /// (`DEFAULT_MAX_NEW_TOKENS`).
+    pub max_new_tokens: Option<usize>,
+}
+
+/// One n-best alternative in the beam-search response.
+///
+/// Kept a plain struct (not `serde`-derived here) so the T04 layer stays
+/// free of `serde` on the internal dispatch surface; the OpenAI /
+/// vLLM-compatible HTTP layer wraps this into a serializable shape when
+/// the beam endpoint lands.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TranscribeAlternative {
+    /// Decoded text for this beam.
+    pub text: String,
+    /// Cumulative sum of per-step `log_softmax` values (raw,
+    /// unnormalized). See
+    /// [`vokra_models::voxtral::BeamResult::log_prob`].
+    pub log_prob: f64,
+    /// GNMT length-normalized ranking score — the value the response
+    /// list is sorted by, descending. See
+    /// [`vokra_models::voxtral::BeamResult::length_normalized_score`].
+    pub length_normalized_score: f64,
+}
+
+/// n-best transcribe response (M3-15 Wave 10 A). `text` always carries
+/// the top-1 (matches the legacy [`TranscribeService::transcribe`]
+/// response shape exactly). `alternatives` is empty on the greedy path,
+/// non-empty and ranked descending on the beam-search path — the top
+/// entry equals `text`.
+#[derive(Debug, Clone)]
+pub struct TranscribeBeamResponse {
+    /// Top-1 decoded text (matches [`TranscribeService::transcribe`]).
+    pub text: String,
+    /// Full n-best list ranked by descending
+    /// [`TranscribeAlternative::length_normalized_score`]. Empty when
+    /// the request was greedy — that preserves the legacy top-1 shape
+    /// verbatim so a caller who never sets `beam_size` sees no change.
+    pub alternatives: Vec<TranscribeAlternative>,
 }
 
 /// Text-to-speech dispatch trait, keyed by the request's `model` name.
@@ -267,6 +409,14 @@ pub struct InferenceService {
     /// in v0.5 (M2-07 G2P bridge deferred); the registry rejects synthesize
     /// requests up-front rather than calling into a `NotImplemented` path.
     tts_kokoro: Option<Arc<KokoroTts>>,
+    /// Voxtral (Mistral) ASR — advertised iff `voxtral_gguf` is configured
+    /// (M3-10). The trait method
+    /// [`vokra_models::voxtral::VoxtralAsr::transcribe`] runs the
+    /// autoregressive greedy path (M3-10 T13) and returns
+    /// `Ok(Transcription)` on success; errors surface as
+    /// [`ServiceError::Inference`] and the HTTP layer maps them to
+    /// 4xx/5xx codes as appropriate (FR-EX-08 — no fabricated output).
+    asr_voxtral: Option<Arc<VoxtralAsr>>,
     /// Silero VAD v5 — optional Wyoming chunk-boundary helper.
     #[allow(dead_code)] // consumed by T15 (Wyoming ASR chunk framing).
     vad: Option<Arc<SileroVadV5>>,
@@ -358,6 +508,23 @@ impl InferenceService {
             None
         };
 
+        // Voxtral — optional. M3-10 T13 landed autoregressive greedy so
+        // /v1/audio/transcriptions returns 200 on a well-formed dispatch;
+        // registration side still surfaces ModelLoad errors up-front (never
+        // a silent skip).
+        let asr_voxtral = if let Some(path) = &config.voxtral_gguf {
+            let file = open_gguf("voxtral", path)?;
+            let engine =
+                VoxtralAsr::from_gguf(&file).map_err(|source| ServiceError::ModelLoadFailed {
+                    slot: "voxtral",
+                    path: path.clone(),
+                    source,
+                })?;
+            Some(Arc::new(engine))
+        } else {
+            None
+        };
+
         // Silero VAD — optional.
         let vad = if let Some(path) = &config.silero_vad_gguf {
             let file = open_gguf("silero-vad-v5", path)?;
@@ -386,6 +553,7 @@ impl InferenceService {
             asr_large,
             tts_piper,
             tts_kokoro,
+            asr_voxtral,
             vad,
             phonemizer,
             watermark: config.watermark,
@@ -416,6 +584,7 @@ impl InferenceService {
                     asr_large: self.asr_large.clone(),
                     tts_piper: Arc::clone(&self.tts_piper),
                     tts_kokoro: self.tts_kokoro.clone(),
+                    asr_voxtral: self.asr_voxtral.clone(),
                     vad: self.vad.clone(),
                     phonemizer,
                     watermark: self.watermark,
@@ -425,8 +594,10 @@ impl InferenceService {
         }
     }
 
-    /// Returns the ASR engine keyed by `model` (or `None` if the alias is
-    /// unknown / the corresponding engine is not configured).
+    /// Returns the Whisper ASR engine keyed by `model` (or `None` if the
+    /// alias does not name a Whisper variant or the corresponding engine is
+    /// not configured). Voxtral aliases return `None` here — use
+    /// [`Self::resolve_voxtral`].
     pub fn resolve_asr(&self, model: &str) -> Option<&Arc<WhisperAsr>> {
         match model {
             model_names::WHISPER_1 | model_names::WHISPER_BASE => Some(&self.asr_base),
@@ -435,9 +606,26 @@ impl InferenceService {
         }
     }
 
-    /// Returns `true` iff the ASR engine keyed by `model` is available.
+    /// Returns the Voxtral ASR engine keyed by `model` (or `None` if the
+    /// alias does not name a Voxtral variant or the engine is not
+    /// configured). M3-10 registers three aliases (generic `voxtral`,
+    /// `voxtral-mini-3b`, `voxtral-small-24b`), all routed to the same
+    /// engine — the converter's `derive_name` picks the specific variant at
+    /// GGUF-write time.
+    pub fn resolve_voxtral(&self, model: &str) -> Option<&Arc<VoxtralAsr>> {
+        match model {
+            model_names::VOXTRAL
+            | model_names::VOXTRAL_MINI_3B
+            | model_names::VOXTRAL_SMALL_24B => self.asr_voxtral.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` iff the ASR engine keyed by `model` is available
+    /// (Whisper or Voxtral). Voxtral's transcribe returns `Ok` on a
+    /// well-formed dispatch (M3-10 T13 autoregressive greedy path).
     pub fn has_asr(&self, model: &str) -> bool {
-        self.resolve_asr(model).is_some()
+        self.resolve_asr(model).is_some() || self.resolve_voxtral(model).is_some()
     }
 
     /// Returns `true` iff the TTS engine keyed by `model` is available
@@ -453,10 +641,21 @@ impl InferenceService {
 
     /// Enumerates registered ASR model names in a stable order (for
     /// `/v1/models`-style listings the HTTP layer will expose).
+    ///
+    /// Voxtral aliases are advertised when the engine is loaded — the
+    /// M3-10 T13 greedy path returns 200 on dispatch. The catalogue
+    /// reflects what the deployer configured; silently omitting a
+    /// configured model would violate FR-EX-08 (the operator SET a
+    /// path — the server MUST reflect that).
     pub fn asr_model_names(&self) -> Vec<&'static str> {
         let mut v = vec![model_names::WHISPER_BASE, model_names::WHISPER_1];
         if self.asr_large.is_some() {
             v.push(model_names::WHISPER_LARGE_V3);
+        }
+        if self.asr_voxtral.is_some() {
+            v.push(model_names::VOXTRAL);
+            v.push(model_names::VOXTRAL_MINI_3B);
+            v.push(model_names::VOXTRAL_SMALL_24B);
         }
         v
     }
@@ -494,16 +693,197 @@ impl InferenceService {
 
 impl TranscribeService for InferenceService {
     fn transcribe(&self, model: &str, pcm: &[f32]) -> Result<String, ServiceError> {
-        let engine = self
-            .resolve_asr(model)
-            .ok_or_else(|| ServiceError::UnknownModel(model.to_owned()))?;
-        // AsrEngine::transcribe returns a Transcription (M0-06 T14 shape);
-        // the HTTP layer wants just the text. Preserve the failure kind:
-        // never fall back to CPU / a different model on error (FR-EX-08).
-        engine
-            .transcribe(pcm)
-            .map(|t| t.text)
-            .map_err(ServiceError::Inference)
+        // Whisper takes priority (base + large-v3 are the default catalogue).
+        // Voxtral is checked second — its M3-10 greedy path now returns a
+        // Transcription on success (HTTP 200); mapping-side errors
+        // (missing tokenizer, backend not covered, shape-only converter,
+        // etc.) still bubble up as explicit ServiceError::Inference for
+        // the T05 HTTP layer to render (FR-EX-08 — no silent fall-through
+        // to Whisper).
+        if let Some(engine) = self.resolve_asr(model) {
+            return engine
+                .transcribe(pcm)
+                .map(|t| t.text)
+                .map_err(ServiceError::Inference);
+        }
+        if let Some(engine) = self.resolve_voxtral(model) {
+            return engine
+                .transcribe(pcm)
+                .map(|t| t.text)
+                .map_err(ServiceError::Inference);
+        }
+        Err(ServiceError::UnknownModel(model.to_owned()))
+    }
+
+    /// Beam-search transcribe (M3-15 Wave 10 A / Wave 11 whisper wiring).
+    /// Routing rules:
+    ///
+    /// * Whisper (`whisper-*`) — greedy for `beam_size == None || Some(0..=1)`
+    ///   (via `AsrEngine::transcribe`). `beam_size > 1` now routes through
+    ///   [`vokra_models::whisper::asr::WhisperAsr::transcribe_tokens_beam_nbest`]
+    ///   returning the full n-best list (Wave 11 lift of the "not threaded
+    ///   through AsrEngine" limitation), then detokenizes each hypothesis via
+    ///   [`WhisperAsr::render_ids`]. `length_penalty` maps to the
+    ///   [`vokra_core::decode::BeamSearchConfig::length_normalization`] α
+    ///   attribute (HF `length_penalty`). `no_repeat_ngram` maps to
+    ///   [`vokra_core::decode::BeamSearchConfig::no_repeat_ngram_size`] (Wave
+    ///   12 core-side plumbing, M3-15 follow-up — was an explicit
+    ///   `UnsupportedOp` under Wave 11 while the core-side field was absent).
+    /// * Voxtral (`voxtral*`) — greedy on `beam_size <= 1`; `> 1` routes
+    ///   through
+    ///   [`vokra_models::voxtral::VoxtralAsr::transcribe_beam_with_config_overrides`],
+    ///   which honours `length_penalty` and `no_repeat_ngram` (FR-EX-08 —
+    ///   accepting the fields in the schema and silently ignoring them
+    ///   would be a fabrication).
+    /// * Unknown model — [`ServiceError::UnknownModel`].
+    ///
+    /// The `text` field of the response is always the top-1 (matches
+    /// [`Self::transcribe`]). The `alternatives` list is empty on greedy
+    /// (backward-compat) and ranked descending on beam.
+    fn transcribe_beam(
+        &self,
+        model: &str,
+        pcm: &[f32],
+        req: &TranscribeBeamRequest,
+    ) -> Result<TranscribeBeamResponse, ServiceError> {
+        // ---- Whisper: greedy + beam wired end-to-end (M3-15 Wave 11). ---
+        if let Some(engine) = self.resolve_asr(model) {
+            let beam_size_effective = req.beam_size.unwrap_or(0);
+            match beam_size_effective {
+                0 | 1 => {
+                    let text = engine
+                        .transcribe(pcm)
+                        .map(|t| t.text)
+                        .map_err(ServiceError::Inference)?;
+                    return Ok(TranscribeBeamResponse {
+                        text,
+                        alternatives: Vec::new(),
+                    });
+                }
+                n => {
+                    // Wave 12, M3-15 follow-up: `BeamSearchConfig` now carries
+                    // a `no_repeat_ngram_size` field (ported from Voxtral's
+                    // beam search); the Wave 11 explicit `UnsupportedOp` has
+                    // been lifted. `req.no_repeat_ngram.unwrap_or(0)` maps
+                    // straight into the config field — `0` is the schema
+                    // default and disables blocking.
+                    let ngram = req.no_repeat_ngram.unwrap_or(0);
+
+                    // length_penalty defaults to 1.0 to match
+                    // `BeamSearchConfig::new` (HF length_penalty), NOT the
+                    // Voxtral default of 0.6 — the two engines use different
+                    // ranking primitives. A negative or non-finite value is
+                    // rejected up-front (FR-EX-08 — the ranking would be
+                    // undefined).
+                    let length_penalty = req.length_penalty.unwrap_or(1.0);
+                    if !length_penalty.is_finite() || length_penalty < 0.0 {
+                        return Err(ServiceError::Inference(VokraError::InvalidArgument(
+                            format!(
+                                "transcribe_beam: model `{model}` (whisper backend) requires \
+                                 length_penalty to be a non-negative finite float (maps to \
+                                 BeamSearchConfig::length_normalization), got {length_penalty}",
+                            ),
+                        )));
+                    }
+                    let max_new = req
+                        .max_new_tokens
+                        .filter(|&v| v > 0)
+                        .unwrap_or(WHISPER_DEFAULT_MAX_NEW_TOKENS);
+
+                    // `BeamSearchConfig::new(n, max_new)` seeds
+                    // `length_normalization = 1.0`, `n_best = 1`,
+                    // `early_stopping = true`, `word_timestamps = false`,
+                    // `no_repeat_ngram_size = 0`. Overlay the caller fields
+                    // (length_penalty, n_best, no_repeat_ngram_size).
+                    let mut cfg = BeamSearchConfig::new(n, max_new);
+                    cfg.length_normalization = length_penalty;
+                    cfg.n_best = n;
+                    cfg.no_repeat_ngram_size = ngram;
+
+                    let hyps = engine
+                        .transcribe_tokens_beam_nbest(pcm, &cfg)
+                        .map_err(ServiceError::Inference)?;
+                    // FR-EX-08: an empty n-best list is a bug in the beam
+                    // driver, not a "return greedy" fallback.
+                    if hyps.is_empty() {
+                        return Err(ServiceError::Inference(VokraError::ModelLoad(
+                            "transcribe_beam: whisper beam search produced no hypothesis".into(),
+                        )));
+                    }
+                    let mut alternatives: Vec<TranscribeAlternative> =
+                        Vec::with_capacity(hyps.len());
+                    for h in &hyps {
+                        let text = engine
+                            .render_ids(&h.tokens)
+                            .map_err(ServiceError::Inference)?;
+                        alternatives.push(TranscribeAlternative {
+                            text,
+                            log_prob: h.score as f64,
+                            length_normalized_score: h.normalized_score as f64,
+                        });
+                    }
+                    // Top-1 mirrored into `text` (backward-compat with the
+                    // legacy top-1 shape — the `alternatives[0].text` is the
+                    // same string).
+                    let text = alternatives
+                        .first()
+                        .map(|a| a.text.clone())
+                        .unwrap_or_default();
+                    return Ok(TranscribeBeamResponse { text, alternatives });
+                }
+            }
+        }
+
+        // ---- Voxtral: greedy + beam wired end-to-end. ------------------
+        if let Some(engine) = self.resolve_voxtral(model) {
+            let beam_size_effective = req.beam_size.unwrap_or(0);
+            match beam_size_effective {
+                0 | 1 => {
+                    let text = engine
+                        .transcribe(pcm)
+                        .map(|t| t.text)
+                        .map_err(ServiceError::Inference)?;
+                    return Ok(TranscribeBeamResponse {
+                        text,
+                        alternatives: Vec::new(),
+                    });
+                }
+                _ => {
+                    // The Voxtral engine handles greedy-through-beam-config
+                    // itself (beam_size == 1 is equivalent). Wire
+                    // length_penalty (default 0.6 — matches BeamConfig::with_beam_size)
+                    // and no_repeat_ngram (default 0) explicitly, do NOT
+                    // silently coerce them.
+                    let length_penalty = req.length_penalty.unwrap_or(0.6);
+                    let no_repeat_ngram = req.no_repeat_ngram.unwrap_or(0);
+                    let max_new = req.max_new_tokens.unwrap_or(0);
+                    let beams = engine
+                        .transcribe_beam_with_config_overrides(
+                            pcm,
+                            beam_size_effective,
+                            length_penalty,
+                            no_repeat_ngram,
+                            max_new,
+                        )
+                        .map_err(ServiceError::Inference)?;
+                    let alternatives: Vec<TranscribeAlternative> = beams
+                        .iter()
+                        .map(|b| TranscribeAlternative {
+                            text: b.text.clone(),
+                            log_prob: b.result.log_prob,
+                            length_normalized_score: b.result.length_normalized_score,
+                        })
+                        .collect();
+                    let text = alternatives
+                        .first()
+                        .map(|a| a.text.clone())
+                        .unwrap_or_default();
+                    return Ok(TranscribeBeamResponse { text, alternatives });
+                }
+            }
+        }
+
+        Err(ServiceError::UnknownModel(model.to_owned()))
     }
 }
 
@@ -779,8 +1159,24 @@ mod registry {
         assert_eq!(model_names::WHISPER_1, "whisper-1");
         assert_eq!(model_names::WHISPER_BASE, "whisper-base");
         assert_eq!(model_names::WHISPER_LARGE_V3, "whisper-large-v3");
+        assert_eq!(model_names::VOXTRAL, "voxtral");
+        assert_eq!(model_names::VOXTRAL_MINI_3B, "voxtral-mini-3b");
+        assert_eq!(model_names::VOXTRAL_SMALL_24B, "voxtral-small-24b");
         assert_eq!(model_names::PIPER_PLUS, "piper-plus");
         assert_eq!(model_names::KOKORO, "kokoro");
+    }
+
+    #[test]
+    fn service_config_minimum_leaves_voxtral_slot_absent() {
+        // Fresh minimum() config must not silently opt Voxtral in — the
+        // deployer must explicitly set `voxtral_gguf` to advertise the
+        // model. FR-EX-08 spirit: never fabricate a catalogue entry the
+        // operator did not ask for.
+        let cfg = ServiceConfig::minimum(
+            PathBuf::from("/tmp/base.gguf"),
+            PathBuf::from("/tmp/piper.gguf"),
+        );
+        assert!(cfg.voxtral_gguf.is_none());
     }
 
     #[test]
@@ -794,6 +1190,546 @@ mod registry {
             ServiceError::UnknownModel(m) => assert_eq!(m, "gpt-4"),
             other => panic!("expected UnknownModel, got {other}"),
         }
+    }
+
+    /// Test double for the M3-10 Voxtral dispatch path: the real
+    /// `InferenceService` needs a real GGUF to build, so we drive the
+    /// TranscribeService trait directly to guard the intended routing
+    /// (Voxtral aliases → the Voxtral engine → a `Transcription` payload
+    /// on success). The real `VoxtralAsr::transcribe` returns
+    /// `Ok(Transcription)` on any well-formed dispatch (T13 landed
+    /// autoregressive decode + tokenizer); the double mirrors that
+    /// shape.
+    struct VoxtralAsFakeGreedy;
+    impl TranscribeService for VoxtralAsFakeGreedy {
+        fn transcribe(&self, model: &str, pcm: &[f32]) -> Result<String, ServiceError> {
+            match model {
+                model_names::WHISPER_1 | model_names::WHISPER_BASE => Ok(String::new()),
+                model_names::VOXTRAL
+                | model_names::VOXTRAL_MINI_3B
+                | model_names::VOXTRAL_SMALL_24B => {
+                    // Empty PCM must still route to InvalidArgument (matches
+                    // real VoxtralAsr::transcribe surface).
+                    if pcm.is_empty() {
+                        return Err(ServiceError::Inference(VokraError::InvalidArgument(
+                            "pcm slice is empty".into(),
+                        )));
+                    }
+                    // Synthesized transcript: this is the 200 shape the M3-10
+                    // greedy + tokenizer path produces. Content is a stub in
+                    // the double; the real path produces LM-prior tokens
+                    // (documented in `VoxtralAsr::transcribe`) until the audio
+                    // adapter follow-up lands.
+                    Ok(format!("voxtral://{model}/{}samples", pcm.len()))
+                }
+                other => Err(ServiceError::UnknownModel(other.to_owned())),
+            }
+        }
+    }
+
+    #[test]
+    fn voxtral_dispatch_returns_ok_transcription_on_valid_pcm() {
+        // Guards the M3-10 501 → 200 acceptance contract: a caller who
+        // names a Voxtral alias reaches the Voxtral engine and, given a
+        // non-empty PCM, receives Ok(String) — never a fabricated
+        // NotImplemented (FR-EX-08 spirit — the T13 greedy path landed).
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsFakeGreedy);
+        let pcm = vec![0.1f32; 16_000]; // 1 s @ 16 kHz
+        for alias in [
+            model_names::VOXTRAL,
+            model_names::VOXTRAL_MINI_3B,
+            model_names::VOXTRAL_SMALL_24B,
+        ] {
+            let out = svc.transcribe(alias, &pcm).unwrap_or_else(|e| {
+                panic!("alias `{alias}`: expected Ok, got error {e}");
+            });
+            assert!(
+                !out.is_empty(),
+                "alias `{alias}`: transcript must not be empty"
+            );
+        }
+    }
+
+    #[test]
+    fn voxtral_dispatch_surfaces_invalid_argument_on_empty_pcm() {
+        // 4xx path still routes cleanly — the 501 → 200 change must not
+        // silently swallow validation errors.
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsFakeGreedy);
+        for alias in [
+            model_names::VOXTRAL,
+            model_names::VOXTRAL_MINI_3B,
+            model_names::VOXTRAL_SMALL_24B,
+        ] {
+            let err = svc.transcribe(alias, &[]).unwrap_err();
+            match err {
+                ServiceError::Inference(VokraError::InvalidArgument(_)) => {}
+                other => panic!("alias `{alias}`: expected InvalidArgument, got {other}"),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // M3-15 Wave 10 A — beam-search dispatch + n-best response
+    // -----------------------------------------------------------------
+    //
+    // Guards the beam-search surface added to `TranscribeService`:
+    //
+    //  1. Default trait method: `beam_size == None || Some(0..=1)` folds
+    //     to greedy `transcribe`, `alternatives` empty (backward compat).
+    //  2. Default trait method: `beam_size > 1` on a greedy-only engine
+    //     surfaces `Inference(UnsupportedOp)` — FR-EX-08, no silent fall
+    //     back to greedy.
+    //  3. Override: an engine that supports beam search returns a
+    //     populated `alternatives` list ranked descending, with the
+    //     top-1 mirrored in `text`.
+    //  4. `TranscribeBeamRequest` default is genuinely greedy (all
+    //     fields None).
+    //  5. Unknown model → `UnknownModel` (routing invariant preserved).
+
+    /// Test double: both `voxtral*` and `whisper*` support beam search.
+    /// Mirrors the shape the real `InferenceService::transcribe_beam`
+    /// override implements after Wave 12:
+    ///
+    /// * Whisper — greedy on `beam_size <= 1`; beam decode on `> 1`,
+    ///   `length_penalty` maps to `BeamSearchConfig::length_normalization`,
+    ///   `no_repeat_ngram` maps to `BeamSearchConfig::no_repeat_ngram_size`
+    ///   (Wave 12 core-side plumbing; the Wave 11 explicit `UnsupportedOp`
+    ///   has been lifted).
+    /// * Voxtral — greedy on `beam_size <= 1`; beam decode on `> 1`,
+    ///   `length_penalty` and `no_repeat_ngram` both honoured.
+    ///
+    /// Emitted alternatives are synthesized but ranked (and, on whisper,
+    /// carry both `length_penalty` and `no_repeat_ngram` in the top text so
+    /// the honor tests can inspect the round-trip without a real engine).
+    struct VoxtralAsBeamCapable;
+    impl TranscribeService for VoxtralAsBeamCapable {
+        fn transcribe(&self, model: &str, pcm: &[f32]) -> Result<String, ServiceError> {
+            match model {
+                model_names::WHISPER_1 | model_names::WHISPER_BASE => Ok("whisper-greedy".into()),
+                model_names::VOXTRAL
+                | model_names::VOXTRAL_MINI_3B
+                | model_names::VOXTRAL_SMALL_24B => {
+                    if pcm.is_empty() {
+                        return Err(ServiceError::Inference(VokraError::InvalidArgument(
+                            "pcm slice is empty".into(),
+                        )));
+                    }
+                    Ok(format!("voxtral-greedy://{model}"))
+                }
+                other => Err(ServiceError::UnknownModel(other.to_owned())),
+            }
+        }
+
+        fn transcribe_beam(
+            &self,
+            model: &str,
+            pcm: &[f32],
+            req: &TranscribeBeamRequest,
+        ) -> Result<TranscribeBeamResponse, ServiceError> {
+            // Whisper: beam supported. Wave 12 lifts the Wave 11
+            // `no_repeat_ngram > 0` gate — the field now maps to
+            // `BeamSearchConfig::no_repeat_ngram_size`.
+            if matches!(model, model_names::WHISPER_1 | model_names::WHISPER_BASE) {
+                let bs = req.beam_size.unwrap_or(0);
+                if bs <= 1 {
+                    return Ok(TranscribeBeamResponse {
+                        text: self.transcribe(model, pcm)?,
+                        alternatives: Vec::new(),
+                    });
+                }
+                let ngram = req.no_repeat_ngram.unwrap_or(0);
+                let length_penalty = req.length_penalty.unwrap_or(1.0);
+                if !length_penalty.is_finite() || length_penalty < 0.0 {
+                    return Err(ServiceError::Inference(VokraError::InvalidArgument(
+                        format!(
+                            "whisper beam: length_penalty must be non-negative finite float, got \
+                         {length_penalty}",
+                        ),
+                    )));
+                }
+                // Emit `bs` synthetic ranked alternatives — the top-1 text
+                // carries both `length_penalty` and `no_repeat_ngram` verbatim
+                // so the honor tests can observe they flowed through
+                // unchanged (FR-EX-08 no silent drop).
+                let alternatives: Vec<TranscribeAlternative> = (0..bs)
+                    .map(|i| TranscribeAlternative {
+                        text: format!(
+                            "whisper-beam[{i}]@lp={length_penalty}@ngram={ngram}://{model}",
+                        ),
+                        log_prob: -(i as f64),
+                        length_normalized_score: -(i as f64) * 0.5,
+                    })
+                    .collect();
+                let text = alternatives[0].text.clone();
+                return Ok(TranscribeBeamResponse { text, alternatives });
+            }
+            // Voxtral: beam supported (Wave 10).
+            if matches!(
+                model,
+                model_names::VOXTRAL
+                    | model_names::VOXTRAL_MINI_3B
+                    | model_names::VOXTRAL_SMALL_24B
+            ) {
+                let bs = req.beam_size.unwrap_or(0);
+                if bs <= 1 {
+                    return Ok(TranscribeBeamResponse {
+                        text: self.transcribe(model, pcm)?,
+                        alternatives: Vec::new(),
+                    });
+                }
+                // Emit `bs` synthetic ranked alternatives so the response
+                // schema can be inspected.
+                let alternatives: Vec<TranscribeAlternative> = (0..bs)
+                    .map(|i| TranscribeAlternative {
+                        text: format!("voxtral-beam[{i}]://{model}"),
+                        // Rank descending: higher i → lower score.
+                        log_prob: -(i as f64),
+                        length_normalized_score: -(i as f64) * 0.5,
+                    })
+                    .collect();
+                let text = alternatives[0].text.clone();
+                return Ok(TranscribeBeamResponse { text, alternatives });
+            }
+            Err(ServiceError::UnknownModel(model.to_owned()))
+        }
+    }
+
+    #[test]
+    fn beam_request_default_is_genuinely_greedy() {
+        // A default-constructed request must be a greedy request — no
+        // silent beam-size default. This is FR-EX-08 spirit at the
+        // schema layer: a caller who never sets beam_size sees the
+        // legacy greedy behaviour.
+        let req = TranscribeBeamRequest::default();
+        assert!(req.beam_size.is_none());
+        assert!(req.length_penalty.is_none());
+        assert!(req.no_repeat_ngram.is_none());
+        assert!(req.max_new_tokens.is_none());
+    }
+
+    #[test]
+    fn beam_default_trait_folds_to_greedy_when_beam_size_none_or_one() {
+        // A greedy-only service (NoopTranscribe) whose default
+        // `transcribe_beam` folds to greedy must accept:
+        //   * None
+        //   * Some(0)
+        //   * Some(1)
+        // and return an empty `alternatives` list — that is the backward
+        // compat contract with legacy top-1 callers.
+        let svc: Box<dyn TranscribeService> = Box::new(NoopTranscribe);
+        for beam_size in [None, Some(0usize), Some(1usize)] {
+            let req = TranscribeBeamRequest {
+                beam_size,
+                ..Default::default()
+            };
+            let resp = svc
+                .transcribe_beam(model_names::WHISPER_BASE, &[], &req)
+                .expect("greedy fold must succeed");
+            assert!(
+                resp.alternatives.is_empty(),
+                "greedy fold must not populate alternatives (backward compat, beam_size = {beam_size:?})",
+            );
+            // NoopTranscribe returns empty; we assert on the shape.
+            assert!(resp.text.is_empty());
+        }
+    }
+
+    #[test]
+    fn beam_default_trait_hard_errors_on_beam_size_gt_one() {
+        // Default `transcribe_beam` on a greedy-only engine must NOT
+        // silently downgrade beam_size > 1 to greedy. FR-EX-08 spirit.
+        let svc: Box<dyn TranscribeService> = Box::new(NoopTranscribe);
+        let req = TranscribeBeamRequest {
+            beam_size: Some(4),
+            ..Default::default()
+        };
+        let err = svc
+            .transcribe_beam(model_names::WHISPER_BASE, &[], &req)
+            .unwrap_err();
+        match err {
+            ServiceError::Inference(VokraError::UnsupportedOp(msg)) => {
+                assert!(
+                    msg.contains("beam"),
+                    "error message must name beam search: {msg}"
+                );
+            }
+            other => panic!(
+                "expected Inference(UnsupportedOp), got {other} (no silent fall back to greedy)"
+            ),
+        }
+    }
+
+    #[test]
+    fn beam_override_populates_ranked_alternatives_on_voxtral() {
+        // The Voxtral-capable double emits `beam_size` synthetic
+        // alternatives ranked descending, mirroring the real Voxtral
+        // dispatch shape.
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsBeamCapable);
+        let pcm = vec![0.1f32; 16_000];
+        for alias in [
+            model_names::VOXTRAL,
+            model_names::VOXTRAL_MINI_3B,
+            model_names::VOXTRAL_SMALL_24B,
+        ] {
+            let req = TranscribeBeamRequest {
+                beam_size: Some(3),
+                length_penalty: Some(0.6),
+                no_repeat_ngram: Some(2),
+                max_new_tokens: Some(16),
+            };
+            let resp = svc
+                .transcribe_beam(alias, &pcm, &req)
+                .expect("beam decode must succeed on voxtral alias");
+            assert_eq!(resp.alternatives.len(), 3, "alias `{alias}`");
+            // Ranked descending by length_normalized_score.
+            for pair in resp.alternatives.windows(2) {
+                assert!(
+                    pair[0].length_normalized_score >= pair[1].length_normalized_score,
+                    "alias `{alias}`: alternatives must be ranked descending",
+                );
+            }
+            // Top-1 mirrored into `text`.
+            assert_eq!(resp.text, resp.alternatives[0].text);
+        }
+    }
+
+    #[test]
+    fn beam_override_folds_to_greedy_on_beam_size_one_on_voxtral() {
+        // A Voxtral-capable engine with beam_size = 1 must still fold to
+        // greedy (no alternatives) — matches the top-1 legacy shape.
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsBeamCapable);
+        let pcm = vec![0.1f32; 16_000];
+        let req = TranscribeBeamRequest {
+            beam_size: Some(1),
+            ..Default::default()
+        };
+        let resp = svc
+            .transcribe_beam(model_names::VOXTRAL, &pcm, &req)
+            .unwrap();
+        assert!(resp.alternatives.is_empty());
+        assert!(!resp.text.is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // M3-15 Wave 11 — Whisper beam surface tests. Mirrors the shape of the
+    // Wave 10 A Voxtral tests one-to-one; the mock (`VoxtralAsBeamCapable`)
+    // implements whisper beam with the same semantic as the real
+    // `InferenceService::transcribe_beam` override (Wave 11).
+    // -----------------------------------------------------------------
+
+    /// `beam_size = 1` must match greedy — the response carries the top-1
+    /// text and an empty `alternatives` list (backward-compat with the
+    /// pre-beam top-1 shape). Bit-identical to the greedy path.
+    #[test]
+    fn whisper_beam_size_1_matches_greedy() {
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsBeamCapable);
+        let pcm = vec![0.1f32; 16_000];
+        let greedy_text = svc.transcribe(model_names::WHISPER_BASE, &pcm).unwrap();
+
+        // beam_size = 1 -> same greedy text, no alternatives.
+        for beam_size in [None, Some(0usize), Some(1usize)] {
+            let req = TranscribeBeamRequest {
+                beam_size,
+                ..Default::default()
+            };
+            let resp = svc
+                .transcribe_beam(model_names::WHISPER_BASE, &pcm, &req)
+                .expect("beam_size <= 1 must fold to greedy");
+            assert_eq!(
+                resp.text, greedy_text,
+                "beam_size = {beam_size:?} must match greedy tokens bit-identically",
+            );
+            assert!(
+                resp.alternatives.is_empty(),
+                "beam_size = {beam_size:?} must not populate alternatives (backward compat)",
+            );
+        }
+    }
+
+    /// `beam_size = 4` must return the full ranked n-best list, sorted
+    /// descending by `length_normalized_score`, with the top-1 mirrored
+    /// into `text`.
+    #[test]
+    fn whisper_beam_size_4_returns_ranked_alternatives() {
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsBeamCapable);
+        let pcm = vec![0.1f32; 16_000];
+        let req = TranscribeBeamRequest {
+            beam_size: Some(4),
+            length_penalty: Some(1.0),
+            no_repeat_ngram: None,
+            max_new_tokens: None,
+        };
+        let resp = svc
+            .transcribe_beam(model_names::WHISPER_BASE, &pcm, &req)
+            .expect("whisper beam must return n-best");
+        assert_eq!(resp.alternatives.len(), 4);
+        // Ranked descending by length_normalized_score.
+        for pair in resp.alternatives.windows(2) {
+            assert!(
+                pair[0].length_normalized_score >= pair[1].length_normalized_score,
+                "n-best must be ranked descending: {} vs {}",
+                pair[0].length_normalized_score,
+                pair[1].length_normalized_score,
+            );
+        }
+        // Top-1 mirrored into `text`.
+        assert_eq!(resp.text, resp.alternatives[0].text);
+    }
+
+    /// Wave 12 lift of the Wave 11 gate: `no_repeat_ngram > 0` on whisper is
+    /// now dispatched into
+    /// [`vokra_core::decode::BeamSearchConfig::no_repeat_ngram_size`] — the
+    /// core-side beam search ported the mask from Voxtral. The test double
+    /// echoes the value into the top-1 text so we can verify the field flowed
+    /// through unchanged (guards against a silent drop / rename on the
+    /// service→engine boundary, FR-EX-08).
+    #[test]
+    fn whisper_no_repeat_ngram_positive_now_honored() {
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsBeamCapable);
+        let pcm = vec![0.1f32; 16_000];
+        let req = TranscribeBeamRequest {
+            beam_size: Some(3),
+            no_repeat_ngram: Some(2),
+            ..Default::default()
+        };
+        let resp = svc
+            .transcribe_beam(model_names::WHISPER_BASE, &pcm, &req)
+            .expect(
+                "no_repeat_ngram > 0 must now dispatch (Wave 12 core-side plumbing, M3-15 \
+                 follow-up); the Wave 11 UnsupportedOp gate was lifted",
+            );
+        // Response shape matches the ranked-alternatives path (bs = 3).
+        assert_eq!(resp.alternatives.len(), 3);
+        for pair in resp.alternatives.windows(2) {
+            assert!(pair[0].length_normalized_score >= pair[1].length_normalized_score);
+        }
+        assert!(
+            resp.text.contains("ngram=2"),
+            "no_repeat_ngram must reach the engine verbatim; got text `{}`",
+            resp.text,
+        );
+        // Top-1 mirrored into `text`.
+        assert_eq!(resp.text, resp.alternatives[0].text);
+    }
+
+    /// `no_repeat_ngram = 0` (and `None`, via the schema default) must
+    /// produce the same response as any pre-Wave-12 caller that never set
+    /// the field — i.e. bit-identical `text` and `alternatives` shape.
+    /// Guards against a stray "if ngram >= 0" that would flip the mask on
+    /// for the disabled case.
+    #[test]
+    fn whisper_no_repeat_ngram_zero_matches_previous_behavior() {
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsBeamCapable);
+        let pcm = vec![0.1f32; 16_000];
+        // Baseline: pre-Wave-12 shape (no_repeat_ngram omitted entirely).
+        let req_omitted = TranscribeBeamRequest {
+            beam_size: Some(2),
+            length_penalty: Some(0.6),
+            ..Default::default()
+        };
+        let resp_omitted = svc
+            .transcribe_beam(model_names::WHISPER_BASE, &pcm, &req_omitted)
+            .expect("baseline (ngram omitted) must succeed");
+        // Wave 12: explicit `no_repeat_ngram = 0` — must be bit-identical.
+        let req_zero = TranscribeBeamRequest {
+            beam_size: Some(2),
+            length_penalty: Some(0.6),
+            no_repeat_ngram: Some(0),
+            ..Default::default()
+        };
+        let resp_zero = svc
+            .transcribe_beam(model_names::WHISPER_BASE, &pcm, &req_zero)
+            .expect("no_repeat_ngram = 0 must succeed");
+        assert_eq!(
+            resp_omitted.text, resp_zero.text,
+            "no_repeat_ngram = 0 must produce the same text as omitting the field",
+        );
+        assert_eq!(
+            resp_omitted.alternatives.len(),
+            resp_zero.alternatives.len(),
+            "no_repeat_ngram = 0 must produce the same alternatives shape as omitting the field",
+        );
+        for (a, b) in resp_omitted
+            .alternatives
+            .iter()
+            .zip(resp_zero.alternatives.iter())
+        {
+            assert_eq!(a.text, b.text);
+            assert_eq!(a.log_prob, b.log_prob);
+            assert_eq!(a.length_normalized_score, b.length_normalized_score);
+        }
+    }
+
+    /// A finite, non-negative `length_penalty` must actually reach the
+    /// engine's `BeamSearchConfig::length_normalization` — the mock echoes
+    /// the value verbatim into the top-1 text so the assertion can
+    /// observe the round-trip (guards against silently ignoring the field
+    /// — FR-EX-08).
+    #[test]
+    fn whisper_length_penalty_finite_is_honored() {
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsBeamCapable);
+        let pcm = vec![0.1f32; 16_000];
+        let req = TranscribeBeamRequest {
+            beam_size: Some(2),
+            length_penalty: Some(0.7),
+            ..Default::default()
+        };
+        let resp = svc
+            .transcribe_beam(model_names::WHISPER_BASE, &pcm, &req)
+            .expect("finite non-negative length_penalty must be honoured");
+        assert!(
+            resp.text.contains("lp=0.7"),
+            "length_penalty must reach the engine verbatim; got text `{}`",
+            resp.text,
+        );
+
+        // Negative length_penalty must hard-error — the ranking would be
+        // undefined.
+        let req_neg = TranscribeBeamRequest {
+            beam_size: Some(2),
+            length_penalty: Some(-0.1),
+            ..Default::default()
+        };
+        let err = svc
+            .transcribe_beam(model_names::WHISPER_BASE, &pcm, &req_neg)
+            .unwrap_err();
+        match err {
+            ServiceError::Inference(VokraError::InvalidArgument(msg)) => {
+                assert!(
+                    msg.contains("length_penalty"),
+                    "error message must name length_penalty: {msg}",
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other}"),
+        }
+    }
+
+    #[test]
+    fn beam_override_unknown_model_never_silently_succeeds() {
+        // A caller who names an unknown model on the beam surface must
+        // still hit UnknownModel — the beam path must not fabricate a
+        // route around the greedy check.
+        let svc: Box<dyn TranscribeService> = Box::new(VoxtralAsBeamCapable);
+        let pcm = vec![0.1f32; 16_000];
+        let req = TranscribeBeamRequest {
+            beam_size: Some(2),
+            ..Default::default()
+        };
+        let err = svc.transcribe_beam("elevenlabs", &pcm, &req).unwrap_err();
+        match err {
+            ServiceError::UnknownModel(m) => assert_eq!(m, "elevenlabs"),
+            other => panic!("expected UnknownModel, got {other}"),
+        }
+    }
+
+    #[test]
+    fn beam_response_types_are_send_sync() {
+        // The beam response propagates across HTTP handlers, so keeping
+        // Send + Sync on the payload is load-bearing.
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<TranscribeBeamRequest>();
+        assert_send_sync::<TranscribeBeamResponse>();
+        assert_send_sync::<TranscribeAlternative>();
     }
 
     #[test]

@@ -63,7 +63,48 @@ reuse form is pending (M0-07-T04, docs/piper-plus-integration.md), so the M0
 build ships only a mock phonemizer and does not yet bundle piper-plus G2P.
 
 --------------------------------------------------------------------------
-5. Maintaining this file
+5. Mimi codec (Kyutai / Moshi authors) — CC-BY 4.0 attribution
+--------------------------------------------------------------------------
+The Mimi RVQ codec integrated by the M3-06 `mimi_rvq` operator
+(crates/vokra-ops/src/mimi_rvq.rs) is distributed by Kyutai as part of the
+Moshi project under the Creative Commons Attribution 4.0 International
+license (CC-BY 4.0). Commercial use is permitted; attribution is required.
+
+  Mimi Codec
+  Copyright (c) Kyutai / Moshi authors
+  Licensed under CC-BY 4.0
+  Source: https://github.com/kyutai-labs/moshi
+          https://huggingface.co/kyutai/mimi
+
+The Vokra runtime implements the Mimi decode side (residual codebook
+lookup + FP32 residual sum) from published documentation; upstream Mimi
+weights are loaded through the standard GGUF path and are subject to the
+M2-13 compliance gate (`AttributionRequired` license class).
+
+This attribution is separate from the EU AI Act §50 AI-generated-audio
+disclosure obligation. The disclosure obligation is enforced at output
+time by the runtime's `WatermarkConfig` API and is orthogonal to this
+codec-level credit.
+
+--------------------------------------------------------------------------
+6. EnCodec (Meta) — pretrained weights permanently excluded (FR-OP-32)
+--------------------------------------------------------------------------
+Pretrained EnCodec weights (Meta / Facebook Research) are licensed under
+CC-BY-NC 4.0 (non-commercial). Per FR-OP-32 (permanent constraint) and
+docs/license-audit.md §3, no EnCodec weight file ships with Vokra's
+official model zoo. The `mimi_rvq` op is codebook-shaped and could host
+an EnCodec code path, but any EnCodec use requires the caller to bring
+their own weight file and opt in through the M2-13 compliance research
+flag (`VOKRA_ALLOW_RESEARCH_LICENSE=1` /
+`CompliancePolicy::with_research_license(true)` /
+`ComplianceLevel::Research`) — the runtime never loads them by default.
+Release CI enforces the distribution-side exclusion via
+`scripts/compliance/check-encodec-exclusion.sh`. Commercial codec
+alternatives supported by Vokra: DAC (MIT), Mimi (CC-BY 4.0), WavTokenizer
+(MIT), X-Codec 2 (MIT).
+
+--------------------------------------------------------------------------
+7. Maintaining this file
 --------------------------------------------------------------------------
 Any pull request that adds support for a new model or introduces a new
 external dependency must run the license audit (docs/license-audit.md) and,

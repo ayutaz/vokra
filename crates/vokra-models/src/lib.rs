@@ -27,10 +27,12 @@
 //! specifics.
 
 pub mod compute;
+pub mod cosyvoice2;
 pub mod kokoro;
 pub mod piper_plus;
 pub mod silero_vad;
 pub mod speaker;
+pub mod voxtral;
 pub mod whisper;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};

@@ -395,6 +395,39 @@ extern "C" __global__ void vokra_add_assign_f32(
     dst[gid] = dst[gid] + src[gid];
 }
 
+// ---- M3-01 graph-executor element-wise Add / Mul (out = a op b) --------------
+// Distinct from `vokra_add_assign_f32` (in-place residual, used by the encoder
+// device-resident path): these are OUT-OF-PLACE element-wise kernels backing the
+// graph-level `OpKind::Add` and `OpKind::Mul` on the CUDA arm of
+// `crate::eval::eval_cuda_op`. Bit-identical to
+// `vokra_backend_cpu::kernels::{add_f32, mul_f32}` (the differential oracle at
+// FP32 `atol = 0.01`, NFR-QL-01). One thread per element, ragged-tail guarded.
+extern "C" __global__ void vokra_add_f32(
+    const float* a,
+    const float* b,
+    float* out,
+    unsigned int n)
+{
+    unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= n) {
+        return;
+    }
+    out[gid] = a[gid] + b[gid];
+}
+
+extern "C" __global__ void vokra_mul_f32(
+    const float* a,
+    const float* b,
+    float* out,
+    unsigned int n)
+{
+    unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= n) {
+        return;
+    }
+    out[gid] = a[gid] * b[gid];
+}
+
 // ---- FlashAttention-v2 causal, FP32 (M2-03 follow-up RTF<0.1) ---------------
 //
 // Fused (Q·Kᵀ · softmax · P·V) attention kernel. Semantics — including causal
@@ -585,6 +618,153 @@ extern "C" __global__ void vokra_flash_attn_v2_causal_f32(
             O[(q_row_base + tid) * d_head + d] = O_i[d] * inv_l;
         }
     }
+}
+
+// ---- M3-04 fused KV-cache dequant + GEMV kernels ----------------------------
+//
+// One thread per output row. Each block of 32 quantised values is dequantised
+// in-register (no shared / global scratch) and directly multiplied against 32
+// entries of the query vector `x` — the "fused" property. Byte layout mirrors
+// `vokra_core::kv_quant::dequantize_bytes` exactly (Q4_0 = 18 B, Q5_0 = 22 B,
+// Q8_0 = 34 B), so the same on-wire block payload feeds the CPU differential
+// oracle (`dequant_gemv_scalar`) and this GPU kernel.
+//
+// FP16 → FP32 for the block scale `d` is done inline here to avoid pulling in
+// `<cuda_fp16.h>` (kept out of the NVRTC compile keeps the compile hermetic).
+// The semantics match the CPU `vokra_core::kv_quant::half::f16_bits_to_f32`
+// helper verbatim; the small helper below is the same shape.
+__device__ float vokra_kv_f16_to_f32(unsigned short h) {
+    unsigned int sign = (h >> 15) & 1u;
+    unsigned int exp  = (h >> 10) & 0x1Fu;
+    unsigned int mant = h & 0x3FFu;
+    float sign_f = (sign == 1u) ? -1.0f : 1.0f;
+    if (exp == 0u) {
+        // Subnormal / zero (matches CPU: sign_f * mant * 2^-24). Practical KV
+        // scales never reach here; we keep the branch so a corrupted zero-mant
+        // half decodes to 0 rather than an undefined value.
+        return sign_f * (float)mant * ldexpf(1.0f, -24);
+    }
+    if (exp == 0x1Fu) {
+        // +/- inf if mantissa == 0, NaN otherwise. Also unreachable for a
+        // healthy quantised scale, but pinned so a corrupt scale surfaces as
+        // inf / NaN downstream instead of undefined.
+        if (mant == 0u) {
+            return sign_f * INFINITY;
+        }
+        return 0.0f / 0.0f;
+    }
+    return sign_f * (1.0f + (float)mant / 1024.0f) * ldexpf(1.0f, (int)exp - 15);
+}
+
+// Q4_0: 32 elems / block, 18 B (2 B FP16 scale + 16 B nibbles biased +8).
+// `qs[i]` low nibble = elem 2·i, high nibble = elem 2·i+1; each nibble decodes
+// as `(nib - 8) * d`. Symmetric quantisation (`_0` suffix), no zero-point.
+extern "C" __global__ void vokra_dequant_gemv_q4_0_f32(
+    const unsigned char* blocks,
+    const float*         x,
+    float*               y,
+    unsigned int         n_rows,
+    unsigned int         n_blocks_per_row)
+{
+    unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n_rows) {
+        return;
+    }
+    const unsigned int block_bytes = 18u;
+    unsigned int per_row_bytes = n_blocks_per_row * block_bytes;
+    unsigned int row_start = row * per_row_bytes;
+
+    float acc = 0.0f;
+    for (unsigned int b = 0; b < n_blocks_per_row; ++b) {
+        unsigned int block_off = row_start + b * block_bytes;
+        unsigned short d_bits = (unsigned short)blocks[block_off]
+                              | ((unsigned short)blocks[block_off + 1u] << 8);
+        float d = vokra_kv_f16_to_f32(d_bits);
+        unsigned int x_base = b * 32u;
+        // 16 packed bytes -> 32 nibbles -> 32 dequantised values.
+        for (unsigned int i = 0; i < 16u; ++i) {
+            unsigned char byte = blocks[block_off + 2u + i];
+            int lo = (int)(byte & 0x0Fu) - 8;
+            int hi = (int)((byte >> 4) & 0x0Fu) - 8;
+            acc += (float)lo * d * x[x_base + 2u * i];
+            acc += (float)hi * d * x[x_base + 2u * i + 1u];
+        }
+    }
+    y[row] = acc;
+}
+
+// Q5_0: 32 elems / block, 22 B (2 B FP16 scale + 4 B `qh` high bits + 16 B
+// `qs` low 4 bits). Elem `i` decodes as `((qh_bit(i) << 4) | qs_lo4(i)) - 16`
+// multiplied by `d`. Symmetric quantisation.
+extern "C" __global__ void vokra_dequant_gemv_q5_0_f32(
+    const unsigned char* blocks,
+    const float*         x,
+    float*               y,
+    unsigned int         n_rows,
+    unsigned int         n_blocks_per_row)
+{
+    unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n_rows) {
+        return;
+    }
+    const unsigned int block_bytes = 22u;
+    unsigned int per_row_bytes = n_blocks_per_row * block_bytes;
+    unsigned int row_start = row * per_row_bytes;
+
+    float acc = 0.0f;
+    for (unsigned int b = 0; b < n_blocks_per_row; ++b) {
+        unsigned int block_off = row_start + b * block_bytes;
+        unsigned short d_bits = (unsigned short)blocks[block_off]
+                              | ((unsigned short)blocks[block_off + 1u] << 8);
+        float d = vokra_kv_f16_to_f32(d_bits);
+        unsigned int qh_base = block_off + 2u; // 4 bytes, one high bit per elem
+        unsigned int qs_base = block_off + 6u; // 16 bytes, two lo4 nibbles each
+        unsigned int x_base  = b * 32u;
+        for (unsigned int i = 0; i < 32u; ++i) {
+            unsigned char lo4_byte = blocks[qs_base + (i >> 1)];
+            unsigned int lo4 = ((i & 1u) != 0u)
+                                   ? ((lo4_byte >> 4) & 0x0Fu)
+                                   : (lo4_byte & 0x0Fu);
+            unsigned char hi1_byte = blocks[qh_base + (i >> 3)];
+            unsigned int hi1 = (hi1_byte >> (i & 7u)) & 0x01u;
+            unsigned int biased = (hi1 << 4) | lo4;
+            int signed_v = (int)biased - 16;
+            acc += (float)signed_v * d * x[x_base + i];
+        }
+    }
+    y[row] = acc;
+}
+
+// Q8_0: 32 elems / block, 34 B (2 B FP16 scale + 32 B i8 qs). Elem `i` decodes
+// as `qs[i] * d`. Symmetric quantisation.
+extern "C" __global__ void vokra_dequant_gemv_q8_0_f32(
+    const unsigned char* blocks,
+    const float*         x,
+    float*               y,
+    unsigned int         n_rows,
+    unsigned int         n_blocks_per_row)
+{
+    unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n_rows) {
+        return;
+    }
+    const unsigned int block_bytes = 34u;
+    unsigned int per_row_bytes = n_blocks_per_row * block_bytes;
+    unsigned int row_start = row * per_row_bytes;
+
+    float acc = 0.0f;
+    for (unsigned int b = 0; b < n_blocks_per_row; ++b) {
+        unsigned int block_off = row_start + b * block_bytes;
+        unsigned short d_bits = (unsigned short)blocks[block_off]
+                              | ((unsigned short)blocks[block_off + 1u] << 8);
+        float d = vokra_kv_f16_to_f32(d_bits);
+        unsigned int x_base = b * 32u;
+        for (unsigned int i = 0; i < 32u; ++i) {
+            signed char q = (signed char)blocks[block_off + 2u + i];
+            acc += (float)q * d * x[x_base + i];
+        }
+    }
+    y[row] = acc;
 }
 "#;
 
@@ -913,13 +1093,34 @@ pub struct CudaContext {
     col_gather_t: CUfunction,
     col_scatter: CUfunction,
     add_assign: CUfunction,
+    /// M3-01 out-of-place element-wise Add / Mul kernel handles
+    /// (`vokra_add_f32`, `vokra_mul_f32`). Distinct from [`Self::add_assign`]
+    /// (in-place residual) — these back the graph-executor `OpKind::Add` /
+    /// `OpKind::Mul` arms in [`crate::eval::eval_cuda_op`] with the same
+    /// semantic contract as `vokra_backend_cpu::kernels::{add_f32, mul_f32}`.
+    add: CUfunction,
+    mul: CUfunction,
     /// FA v2 fused causal attention kernel handle (`vokra_flash_attn_v2_causal_f32`).
     /// Always resolved at context construction (its symbol is baked into the
-    /// same PTX as the other Phase-5 attention kernels); actually dispatched
-    /// only when the [`CudaDecodeSession`] probe (`hd == 64` +
-    /// `MAX_SHARED_MEMORY_PER_BLOCK_OPTIN ≥ 40 KB`) flips
-    /// [`AttnChainDims::use_flash_attn`] `true`. Owned via `kernels_module`.
+    /// same PTX as the other Phase-5 attention kernels); dispatched
+    /// (a) on the runtime fast path when the [`CudaDecodeSession`] probe
+    /// (`hd == 64` + `MAX_SHARED_MEMORY_PER_BLOCK_OPTIN ≥ 40 KB`) flips
+    /// [`AttnChainDims::use_flash_attn`] `true`, and (b) unconditionally by the
+    /// public [`CudaContext::flash_attn_dev`] wrapper — the testing / diagnostic
+    /// entrypoint that primitive-parity tests use to exercise the kernel
+    /// (bypassing the `FA_V2_MIN_TQ = 16` gate the runtime path applies).
+    /// Owned via `kernels_module`.
     flash_attn_v2: CUfunction,
+    /// M3-04 fused KV-cache dequant + GEMV kernel handles, one per quant format
+    /// (`vokra_dequant_gemv_q4_0_f32` / `_q5_0_f32` / `_q8_0_f32`). Symmetric
+    /// with the Metal `dequant_gemv_*` MSL pipelines; each is the GPU
+    /// implementation of the [`vokra_core::KvQuantDequantGemvOps`] trait, whose
+    /// CPU differential oracle is
+    /// [`vokra_core::kv_quant::dequant_gemm::dequant_gemv_scalar`]. Owned via
+    /// `kernels_module`.
+    dequant_gemv_q4_0: CUfunction,
+    dequant_gemv_q5_0: CUfunction,
+    dequant_gemv_q8_0: CUfunction,
     /// Count of stream synchronisations issued through this context — the
     /// env-independent readback/sync metric the Phase-5-follow-on encoder-residency
     /// slice proves against (the whole encoder in ONE synchronise vs the per-op
@@ -988,7 +1189,12 @@ impl CudaContext {
                 col_gather_t: m.col_gather_t,
                 col_scatter: m.col_scatter,
                 add_assign: m.add_assign,
+                add: m.add,
+                mul: m.mul,
                 flash_attn_v2: m.flash_attn_v2,
+                dequant_gemv_q4_0: m.dequant_gemv_q4_0,
+                dequant_gemv_q5_0: m.dequant_gemv_q5_0,
+                dequant_gemv_q8_0: m.dequant_gemv_q8_0,
                 submissions: Cell::new(0),
             }),
             Err(e) => {
@@ -1233,6 +1439,106 @@ impl CudaContext {
         self.dtoh(&out_buf, out)
     }
 
+    // ---- M3-04 fused KV-cache dequant + GEMV ------------------------------
+
+    /// GPU-side fused dequantisation + row-wise GEMV over a quantised KV block
+    /// matrix — the CUDA implementation of the
+    /// [`KvQuantDequantGemvOps`](vokra_core::KvQuantDequantGemvOps) seam
+    /// (M3-04-T09).
+    ///
+    /// The GPU kernel dequantises one 32-elem block at a time *inside* the
+    /// per-row GEMV loop, so the intermediate FP32 row is never materialised
+    /// (unlike the two-stage `dequantize_bytes → dense_gemv_f32` reference).
+    /// Byte layout is identical to the CPU differential oracle
+    /// [`vokra_core::kv_quant::dequant_gemm::dequant_gemv_scalar`], so both
+    /// paths consume the same on-wire payload.
+    ///
+    /// # Precision
+    ///
+    /// Output matches the CPU oracle within the FP32 GEMV rounding bound. The
+    /// backend parity test (`parity_kernels_cuda::dequant_gemv_matches_cpu`)
+    /// pins this to `atol = 1e-4`.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on shape mismatch or `mode ==
+    /// KvQuant::Fp32`; [`VokraError::BackendUnavailable`] on a device launch
+    /// failure.
+    pub fn dequant_gemv_f32(
+        &self,
+        mode: vokra_core::KvQuant,
+        blocks_bytes: &[u8],
+        n_rows: usize,
+        n_blocks_per_row: usize,
+        x: &[f32],
+    ) -> Result<Vec<f32>> {
+        vokra_core::validate_dequant_gemv(mode, blocks_bytes, n_rows, n_blocks_per_row, x)?;
+        if n_rows == 0 {
+            return Ok(Vec::new());
+        }
+        self.run_dequant_gemv(mode, blocks_bytes, n_rows, n_blocks_per_row, x)
+    }
+
+    fn run_dequant_gemv(
+        &self,
+        mode: vokra_core::KvQuant,
+        blocks_bytes: &[u8],
+        n_rows: usize,
+        n_blocks_per_row: usize,
+        x: &[f32],
+    ) -> Result<Vec<f32>> {
+        let kernel = match mode {
+            vokra_core::KvQuant::Q4_0 => self.dequant_gemv_q4_0,
+            vokra_core::KvQuant::Q5_0 => self.dequant_gemv_q5_0,
+            vokra_core::KvQuant::Q8_0 => self.dequant_gemv_q8_0,
+            vokra_core::KvQuant::Fp32 => {
+                // Guarded by `validate_dequant_gemv`; keep as an explicit error
+                // (never a silent fallback, FR-EX-08).
+                return Err(VokraError::InvalidArgument(
+                    "dequant_gemv_f32: mode=Fp32 rejected".to_owned(),
+                ));
+            }
+        };
+
+        // Device buffers: packed on-wire bytes (input), FP32 x, FP32 output.
+        // A zero-length input is impossible here (`n_rows == 0` early-returned),
+        // so `alloc` always receives a positive byte count.
+        let blocks_buf = self.alloc(blocks_bytes.len())?;
+        self.htod_bytes(&blocks_buf, blocks_bytes)?;
+        let x_buf = self.alloc(size_of_val(x))?;
+        self.htod(&x_buf, x)?;
+        let out_buf = self.alloc(n_rows * size_of::<f32>())?;
+
+        // Kernel signature: (blocks, x, y, n_rows, n_blocks_per_row).
+        let n_rows_u = n_rows as c_uint;
+        let n_bpr_u = n_blocks_per_row as c_uint;
+        let mut params: [*mut c_void; 5] = [
+            ptr_arg(&blocks_buf.ptr),
+            ptr_arg(&x_buf.ptr),
+            ptr_arg(&out_buf.ptr),
+            uint_arg(&n_rows_u),
+            uint_arg(&n_bpr_u),
+        ];
+        let grid_x = n_rows.div_ceil(BLOCK_1D as usize) as c_uint;
+        let launch_tag = match mode {
+            vokra_core::KvQuant::Q4_0 => "cuLaunchKernel(vokra_dequant_gemv_q4_0_f32)",
+            vokra_core::KvQuant::Q5_0 => "cuLaunchKernel(vokra_dequant_gemv_q5_0_f32)",
+            vokra_core::KvQuant::Q8_0 => "cuLaunchKernel(vokra_dequant_gemv_q8_0_f32)",
+            vokra_core::KvQuant::Fp32 => unreachable!("guarded above"),
+        };
+        self.launch(
+            kernel,
+            (grid_x, 1, 1),
+            (BLOCK_1D, 1, 1),
+            &mut params,
+            launch_tag,
+        )?;
+
+        let mut out = vec![0.0f32; n_rows];
+        self.dtoh(&out_buf, &mut out)?;
+        Ok(out)
+    }
+
     /// Row-wise softmax over the innermost axis of a `rows × cols` buffer,
     /// max-subtracted — the exact contract of
     /// `vokra_backend_cpu::kernels::softmax_f32` (a causal-mask `-inf` score maps
@@ -1381,6 +1687,76 @@ impl CudaContext {
             (BLOCK_1D, 1, 1),
             &mut params,
             "cuLaunchKernel(vokra_gelu_f32)",
+        )?;
+        self.dtoh(&out_buf, out)
+    }
+
+    /// Element-wise `out = a + b` on the GPU — the exact contract of
+    /// `vokra_backend_cpu::kernels::add_f32`. Backs the graph-executor
+    /// `OpKind::Add` arm (M3-01-T06); distinct from [`Self::residual_add_dev`]
+    /// (in-place device-to-device residual used by the encoder-resident chain).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a length mismatch;
+    /// [`VokraError::BackendUnavailable`] on a device failure.
+    pub fn add_f32(&self, a: &[f32], b: &[f32], out: &mut [f32]) -> Result<()> {
+        validate_binary(a, b, out)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        self.run_binary(self.add, a, b, out, "cuLaunchKernel(vokra_add_f32)")
+    }
+
+    /// Element-wise `out = a * b` on the GPU — the exact contract of
+    /// `vokra_backend_cpu::kernels::mul_f32`. Backs the graph-executor
+    /// `OpKind::Mul` arm (M3-01-T06).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a length mismatch;
+    /// [`VokraError::BackendUnavailable`] on a device failure.
+    pub fn mul_f32(&self, a: &[f32], b: &[f32], out: &mut [f32]) -> Result<()> {
+        validate_binary(a, b, out)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        self.run_binary(self.mul, a, b, out, "cuLaunchKernel(vokra_mul_f32)")
+    }
+
+    /// Shared runner for the M3-01 element-wise binary kernels
+    /// (`vokra_add_f32` / `vokra_mul_f32`): upload two host operands, launch
+    /// the resolved kernel, download the output. One thread per element,
+    /// ragged-tail guarded, so `out.len() = a.len() = b.len()` is the only
+    /// shape constraint (checked by [`validate_binary`] at the entry point).
+    fn run_binary(
+        &self,
+        kernel: CUfunction,
+        a: &[f32],
+        b: &[f32],
+        out: &mut [f32],
+        launch_label: &str,
+    ) -> Result<()> {
+        let a_buf = self.alloc(size_of_val(a))?;
+        self.htod(&a_buf, a)?;
+        let b_buf = self.alloc(size_of_val(b))?;
+        self.htod(&b_buf, b)?;
+        let out_buf = self.alloc(size_of_val(out))?;
+
+        let n_u = out.len() as c_uint;
+        let mut params: [*mut c_void; 4] = [
+            ptr_arg(&a_buf.ptr),
+            ptr_arg(&b_buf.ptr),
+            ptr_arg(&out_buf.ptr),
+            uint_arg(&n_u),
+        ];
+        let grid_x = out.len().div_ceil(BLOCK_1D as usize) as c_uint;
+        self.launch(
+            kernel,
+            (grid_x, 1, 1),
+            (BLOCK_1D, 1, 1),
+            &mut params,
+            launch_label,
         )?;
         self.dtoh(&out_buf, out)
     }
@@ -1849,6 +2225,15 @@ impl CudaContext {
     /// gather into `qh` after head h's scores GEMM read of it). `hd = d / n_head`
     /// is exact (the caller validated it). Bias-less GEMMs bind `ptrs.q_bias` as
     /// the never-read dummy (`has_bias = 0`).
+    ///
+    /// The internal `FA_V2_MIN_TQ = 16` gate below is the runtime fast-path
+    /// heuristic — it lets FA v2 fire only when the query tile isn't wasted
+    /// (`t_q ≥ Br = 16`). The public testing wrapper
+    /// [`Self::flash_attn_dev`] deliberately BYPASSES this gate (calls
+    /// [`Self::launch_flash_attn_v2`] directly) so primitive-parity tests can
+    /// exercise the FA v2 kernel across arbitrary `t_q` shapes; that is a
+    /// diagnostic entrypoint, not the runtime path — the session and
+    /// `attn_f32` / `attn_dev` still funnel through this gated chain.
     fn launch_attn_chain(&self, dims: &AttnChainDims, ptrs: &AttnChainPtrs) -> Result<()> {
         // FA v2 opt-in seam. The caller (only the decoder-step session, whose
         // constructor probed `d_head == 64` **and** the opt-in shared-memory
@@ -2722,6 +3107,11 @@ impl CudaContext {
     /// submission, every intermediate allocated internally and never copied D2H).
     /// Bit-identical to the host-in/out [`Self::attn_f32`].
     ///
+    /// This is the DECOMPOSED path (`2 + 7·n_head` launches) — the same chain
+    /// [`Self::encode_prenorm_stack`] and Kokoro / piper-plus use. To dispatch
+    /// the fused Flash-Attention v2 kernel for primitive parity testing
+    /// instead, use [`Self::flash_attn_dev`] (Whisper `d_head = 64` only).
+    ///
     /// # Errors
     ///
     /// [`VokraError::InvalidArgument`] on a shape mismatch or `d % n_head != 0`;
@@ -2842,6 +3232,338 @@ impl CudaContext {
                 kh_t: kh_t_buf.ptr,
                 scores: scores_buf.ptr,
                 probs: probs_buf.ptr,
+                ctx_h: ctx_h_buf.ptr,
+                out: out.buf.ptr,
+            },
+        )?;
+        self.sync_stream("cuStreamSynchronize")
+    }
+
+    /// Device-in/out fused **causal** attention through the DECOMPOSED
+    /// `2 + 7·n_head` chain (never FA v2) — the sibling of
+    /// [`Self::attn_dev`] with `causal = true` and an explicit `q_offset`
+    /// naming the absolute position of query row 0 (row `i` attends keys
+    /// `[0, q_offset + i]`). Used by primitive parity tests as the reference
+    /// arm for [`Self::flash_attn_dev`]'s FA v2 causal candidate; the runtime
+    /// causal decoder-step still lives on `CudaDecodeSession`'s internal
+    /// chain (this wrapper is a public testing entrypoint, not a fast path).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, `d % n_head != 0`,
+    ///   or `q_offset + t_q > t_kv` (row `t_q - 1` would attend keys past the
+    ///   K/V window — the causal mask is undefined there).
+    /// - [`VokraError::BackendUnavailable`] on a device failure.
+    #[allow(clippy::too_many_arguments)] // fused-attention operand set + causal q_offset seam
+    pub fn attn_causal_dev(
+        &self,
+        t_q: usize,
+        t_kv: usize,
+        d: usize,
+        n_head: usize,
+        xq: &CudaDeviceTensor<'_>,
+        q_w: &CudaDeviceTensor<'_>,
+        q_bias: Option<&CudaDeviceTensor<'_>>,
+        k: &CudaDeviceTensor<'_>,
+        v: &CudaDeviceTensor<'_>,
+        out_w: &CudaDeviceTensor<'_>,
+        out_bias: Option<&CudaDeviceTensor<'_>>,
+        scale: f32,
+        q_offset: usize,
+        out: &mut CudaDeviceTensor<'_>,
+    ) -> Result<()> {
+        if t_q == 0 || t_kv == 0 || d == 0 || n_head == 0 {
+            return Err(VokraError::InvalidArgument(
+                "attn_causal_dev dimensions t_q, t_kv, d, n_head must all be >= 1".to_owned(),
+            ));
+        }
+        if d % n_head != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "attn_causal_dev d ({d}) must be divisible by n_head ({n_head})"
+            )));
+        }
+        if q_offset.saturating_add(t_q) > t_kv {
+            return Err(VokraError::InvalidArgument(format!(
+                "attn_causal_dev requires q_offset + t_q <= t_kv (got q_offset={q_offset}, t_q={t_q}, t_kv={t_kv})"
+            )));
+        }
+        let dd = checked_mul(d, d, "attn_causal_dev d*d")?;
+        let tkvd = checked_mul(t_kv, d, "attn_causal_dev t_kv*d")?;
+        expect_len(
+            "attn_causal_dev xq",
+            xq.len,
+            checked_mul(t_q, d, "attn_causal_dev t_q*d")?,
+        )?;
+        expect_len("attn_causal_dev q_w", q_w.len, dd)?;
+        expect_len("attn_causal_dev k", k.len, tkvd)?;
+        expect_len("attn_causal_dev v", v.len, tkvd)?;
+        expect_len("attn_causal_dev out_w", out_w.len, dd)?;
+        expect_len(
+            "attn_causal_dev out",
+            out.len,
+            checked_mul(t_q, d, "attn_causal_dev out")?,
+        )?;
+        if let Some(b) = q_bias {
+            expect_len("attn_causal_dev q_bias", b.len, d)?;
+        }
+        if let Some(b) = out_bias {
+            expect_len("attn_causal_dev out_bias", b.len, d)?;
+        }
+        let hd = d / n_head;
+        let f = size_of::<f32>();
+        let tqd = checked_mul(
+            checked_mul(t_q, d, "attn_causal_dev t_q*d")?,
+            f,
+            "attn_causal_dev t_q*d bytes",
+        )?;
+        let tq_hd_b = checked_mul(
+            checked_mul(t_q, hd, "attn_causal_dev t_q*hd")?,
+            f,
+            "attn_causal_dev qh bytes",
+        )?;
+        let tkv_hd_b = checked_mul(
+            checked_mul(t_kv, hd, "attn_causal_dev t_kv*hd")?,
+            f,
+            "attn_causal_dev vh bytes",
+        )?;
+        let hd_tkv_b = checked_mul(
+            checked_mul(hd, t_kv, "attn_causal_dev hd*t_kv")?,
+            f,
+            "attn_causal_dev kh_t bytes",
+        )?;
+        let tq_tkv_b = checked_mul(
+            checked_mul(t_q, t_kv, "attn_causal_dev t_q*t_kv")?,
+            f,
+            "attn_causal_dev scores bytes",
+        )?;
+        let dummy = self.alloc(f)?;
+        let q_buf = self.alloc(tqd)?;
+        let context_buf = self.alloc(tqd)?;
+        let qh_buf = self.alloc(tq_hd_b)?;
+        let vh_buf = self.alloc(tkv_hd_b)?;
+        let kh_t_buf = self.alloc(hd_tkv_b)?;
+        let scores_buf = self.alloc(tq_tkv_b)?;
+        let probs_buf = self.alloc(tq_tkv_b)?;
+        let ctx_h_buf = self.alloc(tq_hd_b)?;
+        self.launch_attn_chain(
+            &AttnChainDims {
+                t_q,
+                t_kv,
+                d,
+                n_head,
+                scale,
+                has_q_bias: q_bias.is_some(),
+                has_out_bias: out_bias.is_some(),
+                causal: true,
+                q_offset,
+                // Decomposed reference — force the byte-for-byte
+                // `2 + 7·n_head` chain, never FA v2. The FA v2 seam is on
+                // [`Self::flash_attn_dev`] / `CudaDecodeSession`.
+                use_flash_attn: false,
+            },
+            &AttnChainPtrs {
+                xq: xq.buf.ptr,
+                q_w: q_w.buf.ptr,
+                q_bias: bias_ptr(q_bias, dummy.ptr),
+                k: k.buf.ptr,
+                v: v.buf.ptr,
+                out_w: out_w.buf.ptr,
+                out_bias: bias_ptr(out_bias, dummy.ptr),
+                q: q_buf.ptr,
+                context: context_buf.ptr,
+                qh: qh_buf.ptr,
+                vh: vh_buf.ptr,
+                kh_t: kh_t_buf.ptr,
+                scores: scores_buf.ptr,
+                probs: probs_buf.ptr,
+                ctx_h: ctx_h_buf.ptr,
+                out: out.buf.ptr,
+            },
+        )?;
+        self.sync_stream("cuStreamSynchronize")
+    }
+
+    /// Device-in/out fused attention that **unconditionally** dispatches the
+    /// FA v2 fused causal kernel ([`Self::launch_flash_attn_v2`]) — the public
+    /// wrapper the primitive parity test needs to exercise the FA v2 code path
+    /// directly.
+    ///
+    /// Byte-for-byte equivalent to
+    /// [`Self::attn_dev`] on the shapes the FA v2 kernel supports
+    /// (`d_head == 64`), but takes the FA v2 path regardless of `t_q`:
+    /// [`Self::launch_attn_chain`]'s internal `FA_V2_MIN_TQ = 16` gate
+    /// (reserved for the decoder-step fast path where the fusion cost would
+    /// dominate on `t_q == 1`) is **bypassed** here — the whole point of the
+    /// wrapper is to route through `launch_flash_attn_v2` so a caller
+    /// (primitive parity test on vast.ai) can differentiate FA v2 vs the
+    /// decomposed chain. Callers with `t_q < 16` MUST use [`Self::attn_dev`]
+    /// instead, otherwise they pay the FA v2 fusion overhead for a wasted
+    /// tile (this is a testing / diagnostic entrypoint, never the runtime
+    /// fast path — the session's internal seam still gates on `t_q >= 16`).
+    ///
+    /// Supports both `causal = true` (with a `q_offset` naming the absolute
+    /// position of query row 0; row `i` attends keys `[0, q_offset + i]`)
+    /// and `causal = false` (cross-attention, `q_offset` ignored). The FA v2
+    /// kernel branches on the `causal` parameter internally.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] on a shape mismatch, `d % n_head != 0`,
+    ///   `d / n_head != 64` (the FA v2 kernel's tile / register-array design
+    ///   assumes Whisper's `d_head = 64`; wider heads would exceed the 40 KB
+    ///   shared-memory budget the kernel is compiled against — no silent
+    ///   over-allocation, FR-EX-08), or a `causal = true` request with
+    ///   `q_offset + t_q > t_kv` (the causal mask would attend positions past
+    ///   the K/V window, undefined behaviour in the kernel).
+    /// - [`VokraError::BackendUnavailable`] on a device allocation / copy /
+    ///   launch failure.
+    #[allow(clippy::too_many_arguments)] // fused-attention operand set (two Linears + K/V + dims + causal seam)
+    pub fn flash_attn_dev(
+        &self,
+        t_q: usize,
+        t_kv: usize,
+        d: usize,
+        n_head: usize,
+        xq: &CudaDeviceTensor<'_>,
+        q_w: &CudaDeviceTensor<'_>,
+        q_bias: Option<&CudaDeviceTensor<'_>>,
+        k: &CudaDeviceTensor<'_>,
+        v: &CudaDeviceTensor<'_>,
+        out_w: &CudaDeviceTensor<'_>,
+        out_bias: Option<&CudaDeviceTensor<'_>>,
+        scale: f32,
+        causal: bool,
+        q_offset: usize,
+        out: &mut CudaDeviceTensor<'_>,
+    ) -> Result<()> {
+        if t_q == 0 || t_kv == 0 || d == 0 || n_head == 0 {
+            return Err(VokraError::InvalidArgument(
+                "flash_attn_dev dimensions t_q, t_kv, d, n_head must all be >= 1".to_owned(),
+            ));
+        }
+        if d % n_head != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "flash_attn_dev d ({d}) must be divisible by n_head ({n_head})"
+            )));
+        }
+        let hd = d / n_head;
+        // The FA v2 kernel's tile budget (`Br·hd + 2·Bc·hd + Br·Bc` floats) is
+        // hard-tuned for `d_head == 64` (`FLASH_ATTN_V2_MIN_SHARED_BYTES`
+        // ≈ 40 KB, inside the 48 KB default per-block cap without opt-in via
+        // `cuFuncSetAttribute`). A different `hd` would either exceed that
+        // budget or waste it — reject explicitly rather than launch a kernel
+        // whose shared-memory sizing doesn't match its compile-time tile
+        // constants (FR-EX-08).
+        if hd != 64 {
+            return Err(VokraError::InvalidArgument(format!(
+                "flash_attn_dev d/n_head ({hd}) must equal 64 (FA v2 kernel's tile budget is d_head-fixed; see FLASH_ATTN_V2_MIN_SHARED_BYTES)"
+            )));
+        }
+        if causal && q_offset.saturating_add(t_q) > t_kv {
+            return Err(VokraError::InvalidArgument(format!(
+                "flash_attn_dev causal=true requires q_offset + t_q <= t_kv (got q_offset={q_offset}, t_q={t_q}, t_kv={t_kv})"
+            )));
+        }
+        let dd = checked_mul(d, d, "flash_attn_dev d*d")?;
+        let tkvd = checked_mul(t_kv, d, "flash_attn_dev t_kv*d")?;
+        expect_len(
+            "flash_attn_dev xq",
+            xq.len,
+            checked_mul(t_q, d, "flash_attn_dev t_q*d")?,
+        )?;
+        expect_len("flash_attn_dev q_w", q_w.len, dd)?;
+        expect_len("flash_attn_dev k", k.len, tkvd)?;
+        expect_len("flash_attn_dev v", v.len, tkvd)?;
+        expect_len("flash_attn_dev out_w", out_w.len, dd)?;
+        expect_len(
+            "flash_attn_dev out",
+            out.len,
+            checked_mul(t_q, d, "flash_attn_dev out")?,
+        )?;
+        if let Some(b) = q_bias {
+            expect_len("flash_attn_dev q_bias", b.len, d)?;
+        }
+        if let Some(b) = out_bias {
+            expect_len("flash_attn_dev out_bias", b.len, d)?;
+        }
+        let f = size_of::<f32>();
+        let tqd = checked_mul(
+            checked_mul(t_q, d, "flash_attn_dev t_q*d")?,
+            f,
+            "flash_attn_dev t_q*d bytes",
+        )?;
+        let tq_hd_b = checked_mul(
+            checked_mul(t_q, hd, "flash_attn_dev t_q*hd")?,
+            f,
+            "flash_attn_dev qh bytes",
+        )?;
+        let tkv_hd_b = checked_mul(
+            checked_mul(t_kv, hd, "flash_attn_dev t_kv*hd")?,
+            f,
+            "flash_attn_dev vh bytes",
+        )?;
+        let hd_tkv_b = checked_mul(
+            checked_mul(hd, t_kv, "flash_attn_dev hd*t_kv")?,
+            f,
+            "flash_attn_dev kh bytes",
+        )?;
+        // FA v2 never touches `scores` / `probs` (the fused softmax lives in
+        // shared memory inside the kernel), but `AttnChainPtrs` still requires
+        // both fields. Bind them to the shared `dummy` — the FA v2 code path
+        // never dereferences them, matching the intent that unused pointers
+        // are typed but inert (mirrors how bias-less GEMMs bind `q_bias =
+        // dummy` on the decomposed chain).
+        let dummy = self.alloc(f)?;
+        let q_buf = self.alloc(tqd)?;
+        let context_buf = self.alloc(tqd)?;
+        let qh_buf = self.alloc(tq_hd_b)?;
+        let vh_buf = self.alloc(tkv_hd_b)?;
+        let kh_buf = self.alloc(hd_tkv_b)?;
+        let ctx_h_buf = self.alloc(tq_hd_b)?;
+        // Direct dispatch to `launch_flash_attn_v2` — deliberately NOT via
+        // `launch_attn_chain`, which would silently gate on `FA_V2_MIN_TQ = 16`
+        // and fall through to the decomposed path for smaller `t_q`. The
+        // wrapper's whole reason to exist is to exercise the FA v2 kernel
+        // unconditionally; downstream callers who want the gated fast-path
+        // behaviour must use `attn_dev` or the `CudaDecodeSession`.
+        self.launch_flash_attn_v2(
+            &AttnChainDims {
+                t_q,
+                t_kv,
+                d,
+                n_head,
+                scale,
+                has_q_bias: q_bias.is_some(),
+                has_out_bias: out_bias.is_some(),
+                causal,
+                q_offset,
+                // Marker only — `launch_flash_attn_v2` doesn't inspect it (it
+                // is called directly, not through the gate). Kept `true` for
+                // consistency with the field's contract ("FA v2 is on the
+                // current chain").
+                use_flash_attn: true,
+            },
+            &AttnChainPtrs {
+                xq: xq.buf.ptr,
+                q_w: q_w.buf.ptr,
+                q_bias: bias_ptr(q_bias, dummy.ptr),
+                k: k.buf.ptr,
+                v: v.buf.ptr,
+                out_w: out_w.buf.ptr,
+                out_bias: bias_ptr(out_bias, dummy.ptr),
+                q: q_buf.ptr,
+                context: context_buf.ptr,
+                qh: qh_buf.ptr,
+                vh: vh_buf.ptr,
+                // `kh_t` field name is a historical carry-over from the
+                // decomposed path; on the FA v2 code path this buffer holds
+                // the NON-transposed `kh[t_kv, hd]` (the FA v2 kernel's
+                // contract). See `launch_flash_attn_v2` for the col_gather
+                // launch that writes it.
+                kh_t: kh_buf.ptr,
+                // Unused by FA v2 — bound to the never-read dummy.
+                scores: dummy.ptr,
+                probs: dummy.ptr,
                 ctx_h: ctx_h_buf.ptr,
                 out: out.buf.ptr,
             },
@@ -3383,6 +4105,19 @@ impl CudaContext {
             (self.driver.cu_memcpy_htod)(buf.ptr, host.as_ptr().cast::<c_void>(), size_of_val(host))
         };
         sys::check(&self.driver, r, "cuMemcpyHtoD")
+    }
+
+    /// Byte-oriented sibling of [`Self::htod`] for the M3-04 packed KV block
+    /// payload (a byte slice, not `[f32]`). Kept as its own method so a
+    /// mistyped call site cannot silently upload the wrong element count.
+    fn htod_bytes(&self, buf: &DeviceBuf<'_>, host: &[u8]) -> Result<()> {
+        // SAFETY: `buf.ptr` is a device allocation of at least `host.len()`
+        // bytes (the caller allocates `blocks_bytes.len()`); `host.as_ptr()` is
+        // valid for that many bytes.
+        let r = unsafe {
+            (self.driver.cu_memcpy_htod)(buf.ptr, host.as_ptr().cast::<c_void>(), host.len())
+        };
+        sys::check(&self.driver, r, "cuMemcpyHtoD (bytes)")
     }
 
     /// Copies device buffer `buf` into `host` (device-to-host).
@@ -4287,12 +5022,25 @@ struct Modules {
     col_gather_t: CUfunction,
     col_scatter: CUfunction,
     add_assign: CUfunction,
+    /// M3-01 out-of-place element-wise Add / Mul kernel handles
+    /// (`vokra_add_f32`, `vokra_mul_f32`) backing the graph-executor arms of
+    /// `OpKind::Add` / `OpKind::Mul` (see `crate::eval::eval_cuda_op`). These
+    /// are DISTINCT from `add_assign` (which is in-place for the encoder
+    /// residual chain); a graph-level Add reads two inputs and writes a fresh
+    /// third, matching the CPU backend's `kernels::add_f32` contract.
+    add: CUfunction,
+    mul: CUfunction,
     /// M2-03 follow-up FA v2 fused causal attention kernel handle
     /// (`vokra_flash_attn_v2_causal_f32`, defined in `KERNELS_CUDA`). Resolved
     /// alongside the Phase-5 attention kernels so a single module load carries
     /// the whole decoder-step attention chain; the decoder-step session's
     /// `d_head == 64` + shared-memory probe decides whether it is dispatched.
     flash_attn_v2: CUfunction,
+    /// M3-04 fused KV-cache dequant + GEMV kernel handles, one per quant format
+    /// (`vokra_dequant_gemv_q4_0_f32` / `_q5_0_f32` / `_q8_0_f32`).
+    dequant_gemv_q4_0: CUfunction,
+    dequant_gemv_q5_0: CUfunction,
+    dequant_gemv_q8_0: CUfunction,
 }
 
 /// Owns a loaded CUDA module, unloading it once on drop unless defused with
@@ -4377,6 +5125,9 @@ fn load_modules(driver: &CudaDriver) -> Result<Modules> {
     let col_scatter = get_function(driver, kernels_module.module, c"vokra_col_scatter_f32")?;
     // The Phase-5-follow-on residual-add kernel shares the same module.
     let add_assign = get_function(driver, kernels_module.module, c"vokra_add_assign_f32")?;
+    // M3-01 element-wise Add / Mul kernels for the graph-executor arm.
+    let add = get_function(driver, kernels_module.module, c"vokra_add_f32")?;
+    let mul = get_function(driver, kernels_module.module, c"vokra_mul_f32")?;
     // M2-03 follow-up: the FA v2 fused causal attention kernel lives in the
     // same module. The kernel is always resolved (a missing symbol means the
     // NVRTC compile lost it, which is a hard error — never a silent CPU
@@ -4386,6 +5137,25 @@ fn load_modules(driver: &CudaDriver) -> Result<Modules> {
         driver,
         kernels_module.module,
         c"vokra_flash_attn_v2_causal_f32",
+    )?;
+    // M3-04 fused KV-cache dequant + GEMV kernels — one per Q_0 format. Every
+    // symbol is baked into the same PTX as the Phase-5 attention kernels; a
+    // missing symbol means the NVRTC compile lost it, which is a hard error
+    // (never a silent CPU fallback, FR-EX-08).
+    let dequant_gemv_q4_0 = get_function(
+        driver,
+        kernels_module.module,
+        c"vokra_dequant_gemv_q4_0_f32",
+    )?;
+    let dequant_gemv_q5_0 = get_function(
+        driver,
+        kernels_module.module,
+        c"vokra_dequant_gemv_q5_0_f32",
+    )?;
+    let dequant_gemv_q8_0 = get_function(
+        driver,
+        kernels_module.module,
+        c"vokra_dequant_gemv_q8_0_f32",
     )?;
 
     // All resolved: defuse the guards into the owned handle set.
@@ -4403,7 +5173,12 @@ fn load_modules(driver: &CudaDriver) -> Result<Modules> {
         col_gather_t,
         col_scatter,
         add_assign,
+        add,
+        mul,
         flash_attn_v2,
+        dequant_gemv_q4_0,
+        dequant_gemv_q5_0,
+        dequant_gemv_q8_0,
     })
 }
 
@@ -4470,6 +5245,22 @@ fn bool_arg(p: &bool) -> *mut c_void {
 /// NVRTC-compiles a CUDA C `source` to a PTX byte buffer (NUL-terminated),
 /// naming the translation unit `unit` and using `what` in any error. The program
 /// handle is always destroyed before returning.
+///
+/// # M3-01-T07: `--gpu-architecture` gencode pin
+///
+/// The NVRTC options list is derived from the caller-visible probe
+/// (`compute_capability_major.minor`) so the emitted PTX is targeted at the
+/// running GPU rather than NVRTC's silent default (which floats across
+/// toolkits — CUDA 12.6 defaults to `compute_52`, i.e. Maxwell, on an RTX 4090
+/// host, wasting Ada SIMT features). The primary pin is `compute_89` (Ada,
+/// SM 8.9 — RTX 4090); Ampere (SM 8.6) / Hopper (SM 9.0) resolve to their
+/// own `compute_XX` value via [`gencode_flag`]. The env variable
+/// `VOKRA_NVRTC_GPU_ARCH` overrides this for A/B testing (e.g. force
+/// `compute_86` on a 4090 to validate parity across gencodes).
+///
+/// Explicitly *not* Hopper's WGMMA / TMA-specialised path — FA v3 code is
+/// forbidden in this WP (ADR M3-01 (b), setting a Hopper gencode alone is safe
+/// because the FA v2 kernel makes no WGMMA-only assumptions).
 fn compile_ptx(nvrtc: &Nvrtc, source: &str, unit: &core::ffi::CStr, what: &str) -> Result<Vec<u8>> {
     let src = std::ffi::CString::new(source).map_err(|_| {
         VokraError::InvalidArgument(format!("{what} CUDA source contains an interior NUL"))
@@ -4498,15 +5289,54 @@ fn compile_ptx(nvrtc: &Nvrtc, source: &str, unit: &core::ffi::CStr, what: &str) 
     result
 }
 
-/// Compiles `prog` (no options → NVRTC's default target arch) and extracts its
-/// PTX. On a compile failure the NVRTC log is surfaced in the error (labelled
-/// `what`).
+/// Resolves the NVRTC `--gpu-architecture=compute_XX` flag to pass this
+/// compile (M3-01-T07). Priority order:
 ///
-/// vast.ai TODO: pin `--gpu-architecture=compute_89` (Ada / RTX 4090) once the
-/// runner's toolkit version is confirmed, rather than relying on the default.
+/// 1. `VOKRA_NVRTC_GPU_ARCH` env var (owner escape hatch — e.g. set to
+///    `compute_86` on a 4090 to validate parity across gencodes).
+/// 2. Best-effort probe: `vokra_cuda_probe` reports `compute_capability_major.minor`
+///    — but that returns a `CudaCapabilities` and we do not want to pay a
+///    dlopen ping inside every NVRTC compile. Instead we hard-code the M3-01
+///    ADR primary target `compute_89` (Ada / RTX 4090); Ampere (SM 8.6) /
+///    Hopper (SM 9.0) hosts get the same PTX in the current slice because
+///    NVRTC does forward-compatible PTX → SASS translation at cuModuleLoadData
+///    time (a compute_89 PTX loads fine on SM 9.0). The env-var escape hatch
+///    covers A/B testing without a code change.
+///
+/// Returns an owned `CString` that must outlive the raw pointer put into the
+/// NVRTC options array.
+fn gencode_flag() -> std::ffi::CString {
+    // SM 8.9 (Ada / RTX 4090) — the M3-01 ADR primary target. Anyone on a
+    // different arch overrides with VOKRA_NVRTC_GPU_ARCH=compute_86 (Ampere) /
+    // compute_90 (Hopper) etc.
+    const DEFAULT_ARCH: &str = "compute_89";
+    let arch = std::env::var("VOKRA_NVRTC_GPU_ARCH").unwrap_or_else(|_| DEFAULT_ARCH.to_owned());
+    // Reject any interior NUL — else fall back to the default (an env-var typo
+    // must never crash the compile).
+    let sanitized = if arch.bytes().any(|b| b == 0) {
+        DEFAULT_ARCH.to_owned()
+    } else {
+        arch
+    };
+    let flag = format!("--gpu-architecture={sanitized}");
+    // `flag` is ASCII (`--gpu-architecture=` + `compute_XX`), so `CString::new`
+    // will not fail; fall back to the default flag on the impossible NUL case
+    // rather than propagating.
+    std::ffi::CString::new(flag)
+        .unwrap_or_else(|_| std::ffi::CString::new("--gpu-architecture=compute_89").unwrap())
+}
+
+/// Compiles `prog` with the M3-01-T07 gencode pin (`--gpu-architecture=compute_89`
+/// by default, `VOKRA_NVRTC_GPU_ARCH` overrides) and extracts its PTX. On a
+/// compile failure the NVRTC log is surfaced in the error (labelled `what`).
 fn compile_and_extract_ptx(nvrtc: &Nvrtc, prog: sys::NvrtcProgram, what: &str) -> Result<Vec<u8>> {
-    // SAFETY: `prog` is a valid program; 0 options with a null options array.
-    let compile_res = unsafe { (nvrtc.compile_program)(prog, 0, core::ptr::null()) };
+    let arch = gencode_flag();
+    // `options` holds raw `*const c_char` pointers into `arch`'s owned buffer;
+    // `arch` must live until nvrtcCompileProgram returns.
+    let options: [*const c_char; 1] = [arch.as_ptr()];
+    // SAFETY: `prog` is a valid program; `options` is a 1-slot array of
+    // NUL-terminated C strings owned by `arch` (alive for the call).
+    let compile_res = unsafe { (nvrtc.compile_program)(prog, 1, options.as_ptr()) };
     if compile_res != sys::NVRTC_SUCCESS {
         return Err(VokraError::BackendUnavailable(format!(
             "NVRTC {what} compile failed: {}",
@@ -4624,6 +5454,16 @@ fn validate_layer_norm(
 
 fn validate_unary(x: &[f32], out: &[f32]) -> Result<()> {
     expect_len("unary out", out.len(), x.len())
+}
+
+/// Element-wise binary op shape validator (M3-01: [`CudaContext::add_f32`] /
+/// [`CudaContext::mul_f32`]). Both operands and the output must be the same
+/// length — the exact contract of `vokra_backend_cpu::kernels::{add_f32,
+/// mul_f32}` (no broadcast in the FP32 MVP; the graph-executor rejects
+/// mismatched shapes before `eval_op` reaches this kernel).
+fn validate_binary(a: &[f32], b: &[f32], out: &[f32]) -> Result<()> {
+    expect_len("binary b", b.len(), a.len())?;
+    expect_len("binary out", out.len(), a.len())
 }
 
 /// Validates the conv1d shapes (mirroring the CPU / Metal `conv1d` guard) and
@@ -4850,4 +5690,27 @@ fn validate_prenorm_stack(
         opt("fc2_bias", l.fc2_bias, d)?;
     }
     Ok(())
+}
+
+// =====================================================================
+// M3-04 fused KV-cache dequant + GEMV trait impl (CUDA backend arm)
+// =====================================================================
+//
+// The concrete GPU implementation of the
+// [`vokra_core::KvQuantDequantGemvOps`] trait: dispatches into
+// [`CudaContext::dequant_gemv_f32`] (defined above). Kept at the bottom of
+// the file so it sits alongside the other trait impls / helpers rather than
+// inside the impl block that owns the launcher — keeps grep-locality with the
+// Metal analogue.
+impl vokra_core::KvQuantDequantGemvOps for CudaContext {
+    fn fused_dequant_gemv(
+        &self,
+        mode: vokra_core::KvQuant,
+        blocks_bytes: &[u8],
+        n_rows: usize,
+        n_blocks_per_row: usize,
+        x: &[f32],
+    ) -> Result<Vec<f32>> {
+        self.dequant_gemv_f32(mode, blocks_bytes, n_rows, n_blocks_per_row, x)
+    }
 }

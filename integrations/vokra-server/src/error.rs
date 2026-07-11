@@ -100,6 +100,21 @@ pub enum ServerError {
         /// Best-effort panic message extracted from `panic_info.payload()`.
         message: String,
     },
+    /// The server is at multi-session capacity — the scheduler's max
+    /// concurrent-session cap (M3-15) or the paged KV cache page range is
+    /// exhausted (FR-EX-05). Distinct from `InferenceFailed` so clients can
+    /// safely retry after backoff. Maps to HTTP 503.
+    ///
+    /// # Invariants (M3-15, FR-EX-08)
+    ///
+    /// Silent CPU fallback / silent low-quality mode is forbidden — the
+    /// server MUST respond with 503 here rather than pretend to serve the
+    /// request under a degraded backend.
+    ServiceUnavailable {
+        /// Human-readable reason (e.g. `"max_concurrent_sessions reached"`,
+        /// `"kv cache page range exhausted"`).
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for ServerError {
@@ -111,6 +126,7 @@ impl std::fmt::Display for ServerError {
             Self::InferenceFailed { detail } => write!(f, "inference failed: {detail}"),
             Self::NotImplemented { detail } => write!(f, "not implemented: {detail}"),
             Self::InternalPanic { message } => write!(f, "internal panic: {message}"),
+            Self::ServiceUnavailable { detail } => write!(f, "service unavailable: {detail}"),
         }
     }
 }
@@ -129,6 +145,9 @@ impl ServerError {
             Self::InferenceFailed { .. } | Self::InternalPanic { .. } => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
+            // M3-15: multi-session overload / KV exhaustion — retryable
+            // after backoff. Distinct from 500 so clients can key off it.
+            Self::ServiceUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
 
@@ -142,6 +161,7 @@ impl ServerError {
             Self::InferenceFailed { .. } => "inference_failed",
             Self::NotImplemented { .. } => "not_implemented",
             Self::InternalPanic { .. } => "internal_panic",
+            Self::ServiceUnavailable { .. } => "service_unavailable",
         }
     }
 
@@ -482,6 +502,14 @@ mod tests {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_panic",
             ),
+            // M3-15: overload / KV exhaustion.
+            (
+                ServerError::ServiceUnavailable {
+                    detail: "at capacity".into(),
+                },
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service_unavailable",
+            ),
         ];
         for (err, want_status, want_tag) in cases {
             assert_eq!(err.status(), *want_status, "status for {err:?}");
@@ -494,6 +522,7 @@ mod tests {
                 ServerError::InferenceFailed { detail } => detail.as_str(),
                 ServerError::NotImplemented { detail } => detail.as_str(),
                 ServerError::InternalPanic { message } => message.as_str(),
+                ServerError::ServiceUnavailable { detail } => detail.as_str(),
             }));
         }
     }

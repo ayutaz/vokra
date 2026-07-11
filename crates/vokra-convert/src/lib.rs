@@ -74,6 +74,23 @@ pub enum ModelKind {
     /// voicepack. Weights are bound verbatim; hparams are shape-driven with
     /// `0` placeholders on the iSTFT triple pending T02 upstream inspection.
     Kokoro,
+    /// `iic/CosyVoice2-0.5B` safetensors checkpoint (M3-09 scaffold): a
+    /// Text tokenizer + LLM backbone + Flow Matching CFM + Mimi codec +
+    /// chunk-aware streaming TTS / S2S model (Apache 2.0 code + weight,
+    /// docs/license-audit.md). Weights are bound verbatim; numeric hparams
+    /// (`n_layer` / `n_head` / `hidden_dim` / `ffn_dim` / streaming chunk
+    /// sizes) are `0`-placeholders pending T02 upstream inspection — the
+    /// runtime rejects `0` at load per `CosyVoice2Config::from_gguf`.
+    CosyVoice2,
+    /// Mistral **Voxtral** safetensors checkpoint (M3-10 foundation): a
+    /// Whisper-derived audio encoder plus a Mistral (GQA/RoPE/SwiGLU/RMSNorm)
+    /// text decoder for ASR and S2S. The tokenizer and optional side-car
+    /// hparams (RoPE base, RMSNorm ε, GQA head split, vocab size, S2S codec
+    /// type) are supplied through the config-aware
+    /// [`convert_voxtral_file`] path — the shape-only [`convert_file`] path
+    /// writes `0` sentinels for those fields (which the runtime loader
+    /// rejects at forward time per FR-EX-08).
+    Voxtral,
 }
 
 impl ModelKind {
@@ -93,6 +110,8 @@ impl ModelKind {
             "piper-plus" => Some(Self::PiperPlus),
             "campplus" => Some(Self::CamPlus),
             "kokoro" => Some(Self::Kokoro),
+            "cosyvoice2" => Some(Self::CosyVoice2),
+            "voxtral" => Some(Self::Voxtral),
             _ => None,
         }
     }
@@ -105,6 +124,8 @@ impl ModelKind {
             Self::PiperPlus => "piper-plus",
             Self::CamPlus => "campplus",
             Self::Kokoro => "kokoro",
+            Self::CosyVoice2 => "cosyvoice2",
+            Self::Voxtral => "voxtral",
         }
     }
 }
@@ -262,6 +283,35 @@ pub fn convert_file(
                 report.voices.len(),
             )];
             notes.extend(report.notes.iter().map(|n| format!("kokoro warning: {n}")));
+            (builder, notes)
+        }
+        ModelKind::CosyVoice2 => {
+            let (builder, report) = models::cosyvoice2::convert(bytes)?;
+            let mut notes = vec![format!(
+                "cosyvoice2: {} float weights written, {} non-float skipped \
+                 (scaffold — numeric hparams are `0`-placeholders pending T02 \
+                 upstream inspection; the runtime rejects the load until T04 \
+                 fills them)",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("cosyvoice2 warning: {n}")),
+            );
+            (builder, notes)
+        }
+        ModelKind::Voxtral => {
+            // Foundation path (M3-10): shape-only conversion writes `0`
+            // sentinels for the RoPE / RMSNorm / GQA / vocab side-car values
+            // the runtime cannot recover from tensor shapes alone. Real
+            // conversions call `convert_voxtral_file` with a `VoxtralConfig`.
+            let (builder, report) = models::voxtral::convert(bytes, None)?;
+            let notes = vec![format!(
+                "voxtral: {} float weights written, {} non-float skipped, name {}, tokenizer embedded: {} (shape-only path — pass a --config for the full hparam chunk)",
+                report.written, report.skipped_non_float, report.name, report.tokenizer_embedded
+            )];
             (builder, notes)
         }
     };
@@ -481,6 +531,122 @@ pub fn convert_kokoro_file(
 
     Ok(ConvertSummary {
         model: ModelKind::Kokoro,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
+/// Voxtral (Mistral) side-car hparams supplied by the caller (M3-10-T04). Same
+/// shape as the module-private [`models::voxtral::VoxtralConfig`], re-exported
+/// here so external callers can build one without pulling in the private
+/// module.
+pub use models::voxtral::VoxtralConfig;
+
+/// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through
+/// [`convert_voxtral_file_with_adapter_config`] (a JSON path) or by
+/// constructing an [`AdapterSpec`] directly and attaching it to a
+/// [`VoxtralConfig::adapter`] field.
+pub use models::voxtral::AdapterSpec;
+
+/// Convert a Voxtral safetensors checkpoint together with a Mistral-format
+/// side-car config into a Vokra GGUF (M3-10).
+///
+/// This is the config-aware sibling of the plain [`convert_file`] path for
+/// Voxtral. The safetensors bytes are converted the same way as with
+/// `convert_file(ModelKind::Voxtral, …)`; the additional [`VoxtralConfig`]
+/// supplies the values shapes cannot recover (RoPE base, RMSNorm ε, GQA head
+/// split, vocab size, max sequence length, S2S codec identifier) plus the
+/// raw Mistral tokenizer bytes for `vokra.tokenizer.model`.
+///
+/// The shape-only [`convert_file`] path writes `0` sentinels for the missing
+/// side-car values; the runtime loader will still reject a forward attempt
+/// that needs them (FR-EX-08).
+pub fn convert_voxtral_file(
+    input: &Path,
+    config: &VoxtralConfig,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let (builder, report) = models::voxtral::convert(bytes, Some(config))?;
+
+    let notes = vec![format!(
+        "voxtral: {} float weights written, {} non-float skipped, name {}, tokenizer embedded: {}",
+        report.written, report.skipped_non_float, report.name, report.tokenizer_embedded
+    )];
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::Voxtral,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
+/// Convert a Voxtral safetensors checkpoint plus a [`VoxtralConfig`] plus a
+/// caller-supplied **adapter config JSON** into a Vokra GGUF (M3-10 Wave 8).
+///
+/// This is the audio-conditioning-aware sibling of
+/// [`convert_voxtral_file`]. In addition to the base config's tokenizer /
+/// RoPE / RMSNorm / GQA / vocab side-car, this path also writes the
+/// `vokra.voxtral.adapter.*` metadata chunk parsed from
+/// `adapter_config`. The chunk tells the runtime
+/// [`AudioAdapter::from_gguf`](../vokra_models/voxtral/adapter/struct.AudioAdapter.html)
+/// loader where to find the checkpoint's adapter weight tensors (kind, tensor
+/// prefix, in / out dims, activation, LayerNorm flags…). Tensor bytes
+/// themselves are carried through by the shared safetensors-copy loop —
+/// nothing invents upstream tensor names (FR-EX-08 / FR-LD-02 / FR-MD-02).
+///
+/// # Accepted schema
+///
+/// See [`AdapterSpec`] and the module docs on
+/// [`models::voxtral::parse_adapter_config`](self) for the JSON schema.
+///
+/// The shape-only [`convert_file`] path and the tokenizer-only
+/// [`convert_voxtral_file`] path stay adapter-less; the runtime then treats
+/// the model as `AdapterKind::None` and keeps the honest Wave 7
+/// LM-continuation posture.
+pub fn convert_voxtral_file_with_adapter_config(
+    input: &Path,
+    config: &VoxtralConfig,
+    adapter_config: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let adapter_bytes = std::fs::read(adapter_config)?;
+    let spec = models::voxtral::parse_adapter_config(&adapter_bytes)?;
+    let mut cfg = config.clone();
+    cfg.adapter = Some(spec);
+    let bytes = std::fs::read(input)?;
+    let (builder, report) = models::voxtral::convert(bytes, Some(&cfg))?;
+
+    let adapter_kind = cfg
+        .adapter
+        .as_ref()
+        .map(|a| a.kind.as_str())
+        .unwrap_or("none");
+    let notes = vec![format!(
+        "voxtral: {} float weights written, {} non-float skipped, name {}, tokenizer embedded: {}, adapter kind: {}",
+        report.written,
+        report.skipped_non_float,
+        report.name,
+        report.tokenizer_embedded,
+        adapter_kind,
+    )];
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::Voxtral,
         tensor_count,
         metadata_count,
         output_bytes: out_bytes.len() as u64,

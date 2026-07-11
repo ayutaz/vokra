@@ -1,0 +1,91 @@
+# vokra-cli-bench-server — ZERO-DEPENDENCY HTTP-boundary latency bench client.
+#
+# Excluded-workspace binary + library crate that measures real HTTP `POST`
+# round-trip latency against a running `vokra-server` process using ONLY the
+# Rust standard library. No third-party crates (NOT ureq, NOT serde_json).
+# The response protocol is HTTP/1.1 hand-written on `std::net::TcpStream` and
+# the request/response JSON is escaped and parsed by hand.
+#
+# ## Why a second bench binary?
+#
+# `integrations/vokra-server-bench/` (2026-07-11 land) already covers Option C
+# of `docs/m3-15-server-latency-handover.md` § 4 using `ureq` + `serde_json`.
+# It works and is documented. This crate exists specifically to remove even
+# the excluded-workspace's transitive third-party surface: an operator who
+# wants a bench binary that ships with a Cargo.lock containing ONLY `vokra-*`
+# names (belt-and-suspenders for the NFR-DS-02 posture) uses THIS binary
+# instead. Both binaries produce byte-compatible JSON output for the same
+# schema (`docs/m3-15-server-latency-handover.md` § 4).
+#
+# ## Zero-dep posture (NFR-DS-02)
+#
+# The `[dependencies]` table below is empty. `scripts/check-zero-deps.sh`
+# scans the ROOT `Cargo.lock`; this crate is excluded from that graph via
+# `Cargo.toml`'s workspace-level `exclude = ["integrations"]` (see the root
+# `Cargo.toml`). This Cargo.toml also declares its own workspace root
+# (empty `[workspace]`), which gives this crate its own `Cargo.lock`. That
+# `Cargo.lock` is generated on first build and must contain only
+# `vokra-cli-bench-server` (self) — no third-party crates.
+#
+# ## Trade-offs vs vokra-server-bench (ureq-based)
+#
+# * PRO: zero third-party deps, honest Cargo.lock.
+# * PRO: HTTPS / TLS is deliberately NOT supported — pure-std has no TLS.
+#        This is a feature for the `127.0.0.1:8080` reference environment
+#        the M3-15 handover documents (Option C default).
+# * CON: no cookie jar, no compression negotiation, no HTTP/2, no chunked
+#        request encoding. `vokra-server` returns Content-Length'd WAV
+#        bodies so none of that matters for `POST /api/tts`.
+# * CON: connection pooling is per-worker (each worker keeps one TCP
+#        connection, closed with `Connection: close` after each request) —
+#        the ureq-based bench pools per-agent. This is a deliberate
+#        simplification: the wall-time measurement window is dominated
+#        by server work at concurrent >= 1, and one connect() per
+#        iteration is < 1 ms on loopback.
+#
+# See `docs/m3-15-server-latency-handover.md` § 4 for the operator runbook
+# both binaries honour.
+[package]
+name = "vokra-cli-bench-server"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+publish = false
+description = "Zero-dep pure-std HTTP-boundary TTS/ASR latency benchmark client (M3-15 T11, alternative to integrations/vokra-server-bench)."
+
+# Own workspace root — isolates this crate (and its Cargo.lock) from the
+# Vokra root workspace. `integrations/` is `exclude`d from the root workspace
+# by root `Cargo.toml`; this line is belt-and-suspenders so that a naive
+# `cargo build` in this directory does not accidentally reach the root
+# workspace's manifest.
+[workspace]
+
+[[bin]]
+name = "vokra-cli-bench-server"
+path = "src/main.rs"
+
+[lib]
+name = "vokra_cli_bench_server"
+path = "src/lib.rs"
+
+# INTENTIONALLY EMPTY. Every module below uses only `std::*`.
+[dependencies]
+
+# No dev-deps. Integration tests bind a `std::net::TcpListener` in a
+# background `std::thread` and drive the client library directly.
+[dev-dependencies]
+
+[lints.rust]
+# NO `unsafe` anywhere; the pure-std wire boundary does not need it.
+# `forbid` is stricter than `deny` — a future edit that introduces an
+# `unsafe` block becomes a hard compile error, forcing an explicit design
+# review before we let raw pointers cross a networking module.
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+# Every unsafe block would need a `// SAFETY:` comment, but since
+# `unsafe_code` is `forbid`ed above, this is redundant. Kept for parity
+# with the workspace-level policy in the root `Cargo.toml`.
+undocumented_unsafe_blocks = "deny"

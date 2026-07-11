@@ -218,7 +218,13 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
             || id.starts_with("silero-vad")
             || id.starts_with("campplus")
             || id.starts_with("cam++")
-            || id.starts_with("kokoro") =>
+            || id.starts_with("kokoro")
+            // CosyVoice2 first-party family (Apache 2.0 code + weight,
+            // docs/license-audit.md, CLAUDE.md モデル表): a specific variant
+            // id like `cosyvoice2-0.5b` is still Apache 2.0. Guarded on the
+            // dash so `cosyvoicexyz` cannot slip through.
+            || id.starts_with("cosyvoice2-")
+            || id.starts_with("cosyvoice-") =>
         {
             LicenseClass::Permissive
         }
@@ -347,6 +353,10 @@ mod tests {
             "whisper-base.en",
             "silero-vad-v5",
             "kokoro-82m",
+            // CosyVoice2 first-party family (M3-09 scaffold): Apache 2.0 code
+            // + weight, so a variant id like `cosyvoice2-0.5b` still resolves
+            // permissive (docs/license-audit.md).
+            "cosyvoice2-0.5b",
         ] {
             assert_eq!(registry_lookup(id), Some(LicenseClass::Permissive), "{id}");
         }

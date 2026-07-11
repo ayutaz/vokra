@@ -50,28 +50,75 @@ pub mod attrs;
 pub mod dct;
 pub mod dispatch;
 pub mod fft;
+// ---- M3-05 flow_sampler / ODE solvers (runtime function, FR-EX-10) -----
+// New module + re-export block, kept as a single localized patch so Wave 3
+// (M3-06 / M3-07) has a clean rebase target. The op-only re-export follows
+// the M3-08 length_conditioning and M3-17 prosody pattern.
+pub mod flow_sampler;
+// -----------------------------------------------------------------------
 pub mod frontend;
 pub mod fused_logmel;
+// ---- M3-07 hifigan_generator (vocoder chain, FR-OP-10) ------------------
+// New module + re-export block. INT8 is an opt-in path (per-channel
+// calibration + NFR-QL-02 5% spectral check required); FR-EX-08 is preserved
+// at the runtime function (`VokraError::HifiganInt8VerifyMissing` when the
+// gate is un-satisfied, `VokraError::UnsupportedOp` while the INT8 kernel
+// stays deferred to the M3-09 consumer WP). ADR-equivalent rationale lives in
+// the module-level docstring.
+pub mod hifigan;
+// -------------------------------------------------------------------------
 pub mod istft;
 pub mod istft_streaming;
 pub mod kaldi_fbank;
+pub mod length_conditioning;
 pub mod mel;
 pub mod mfcc;
+// ---- M3-06 mimi_rvq codec decode (RVQ family, FR-OP-30) -----------------
+// New module + re-export block. Wave 3 (M3-07) will touch the same file, so
+// this block is kept localised for a clean rebase target. Mimi is CC-BY 4.0
+// (attribution recorded in NOTICE / docs/license-audit.md — ADR M3-06 §D3);
+// EnCodec weights (CC-BY-NC 4.0) are permanently excluded from the official
+// model zoo (FR-OP-32 — enforced by the M2-13 compliance gate and the
+// `scripts/compliance/check-encodec-exclusion.sh` release-side script).
+pub mod mimi_rvq;
+// -------------------------------------------------------------------------
 pub mod preprocess;
+pub mod prosody;
 pub mod resample;
 pub mod stft;
 pub mod window;
 
 pub use dct::dct;
 pub use dispatch::{OpValue, dispatch};
+// ---- M3-05 flow_sampler re-exports --------------------------------------
+pub use flow_sampler::{
+    CfgMode, CfgScaleProfile, FlowSamplerConfig, FlowSamplerState, ForwardPass, OdeSolver,
+    Schedule, flow_sample,
+};
+// -------------------------------------------------------------------------
 pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};
 pub use fused_logmel::fused_log_mel_scalar;
+// ---- M3-07 hifigan_generator re-exports ---------------------------------
+pub use hifigan::{
+    CalibrationStrategy, CalibrationTable, HifiGanCalibrator, HifiGanConfig, HifiGanPrecision,
+    HifiGanSpectralChecker, HifiGanWeights, MrfBranchWeights, ResBlockLayer,
+    SPECTRAL_CHECK_THRESHOLD, SpectralCheckResult, UpsampleStageWeights, hifigan_generator,
+};
+// -------------------------------------------------------------------------
 pub use istft::istft;
 pub use istft_streaming::{IstftStreamingState, istft_streaming_oneshot};
 pub use kaldi_fbank::{KaldiFbankOpts, kaldi_fbank};
+pub use length_conditioning::length_conditioning;
 pub use mel::mel_filterbank;
 pub use mfcc::mfcc;
+// ---- M3-06 mimi_rvq re-exports ------------------------------------------
+pub use mimi_rvq::{
+    CodebookTable, MimiDecoder, MimiRvqAttrs, codebook_lookup, mimi_paged_dims, mimi_rvq_decode,
+    mimi_rvq_decode_paged, mimi_rvq_read_summed,
+};
+// -------------------------------------------------------------------------
 pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};
+pub use prosody::{ApplyProsody, ProsodyControl};
 pub use resample::resample;
 pub use stft::{Spectrogram, stft};
 pub use vokra_core::Complex32;

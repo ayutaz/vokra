@@ -1,0 +1,53 @@
+[gd_scene load_steps=2 format=3 uid="uid://vokra_tts_demo_main"]
+
+; Vokra TTS demo main scene (M3-11-T15).
+;
+; Node tree:
+;   Main (Control)               ← root, script = res://main.gd
+;   ├── VBoxContainer
+;   │   ├── StatusLabel          ← current phase (loading / synth / done)
+;   │   ├── TextInput (LineEdit) ← text the user wants spoken
+;   │   └── SpeakButton          ← Button, triggers TTS on press
+;   └── AudioStreamPlayer        ← output; stream is AudioStreamGenerator
+;
+; Runtime verification in the Godot 4.x Editor is M3-11-T19 owner work.
+
+[ext_resource type="Script" path="res://main.gd" id="1_main"]
+
+[node name="Main" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_main")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+offset_left = 16.0
+offset_top = 16.0
+offset_right = -16.0
+offset_bottom = -16.0
+
+[node name="StatusLabel" type="Label" parent="VBoxContainer"]
+layout_mode = 2
+text = "Ready. Type below and press Speak."
+
+[node name="TextInput" type="LineEdit" parent="VBoxContainer"]
+layout_mode = 2
+placeholder_text = "Enter text to synthesize..."
+text = "Hello from Vokra."
+
+[node name="SpeakButton" type="Button" parent="VBoxContainer"]
+layout_mode = 2
+text = "Speak"
+
+[node name="AudioStreamPlayer" type="AudioStreamPlayer" parent="."]
+
+[connection signal="pressed" from="VBoxContainer/SpeakButton" to="." method="_on_speak_pressed"]

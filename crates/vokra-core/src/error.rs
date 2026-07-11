@@ -143,6 +143,23 @@ pub enum VokraError {
         /// The gate threshold the delta exceeded (NFR-QL-02: 0.05).
         threshold: f64,
     },
+    /// A [`PagedKvCache`](crate::cache::paged::PagedKvCache) exhausted its
+    /// pre-allocated page pool (M3-03).
+    ///
+    /// Per FR-EX-05 the paged cache must never invoke a system allocator on the
+    /// hot path, so page acquisition is a strictly O(1) free-list pop against a
+    /// bounded arena sized at session construction. A miss surfaces here rather
+    /// than growing the arena, so the caller can either (a) size the session
+    /// with a larger `max_time` / `n_stream` hint, or (b) reset the cache
+    /// between segments. Distinct from
+    /// [`Self::InvalidArgument`] so callers can special-case the exhaustion
+    /// (e.g. surface the pre-allocate hint) without string-matching.
+    KvCacheExhausted {
+        /// How many pages the arena was sized for at construction.
+        capacity: usize,
+        /// The number of pages that were already in use when the miss fired.
+        in_use: usize,
+    },
 }
 
 impl fmt::Display for VokraError {
@@ -198,6 +215,12 @@ impl fmt::Display for VokraError {
                 f,
                 "hifigan int8 degradation exceeded: relative MEL-loss delta {delta:.4} > \
                  threshold {threshold:.4} (M2-08-T12, NFR-QL-02)"
+            ),
+            Self::KvCacheExhausted { capacity, in_use } => write!(
+                f,
+                "paged KV cache exhausted: arena has {capacity} pages, {in_use} in use — \
+                 pre-allocate a larger max_time/n_stream at session construction \
+                 (M3-03, FR-EX-05)"
             ),
         }
     }

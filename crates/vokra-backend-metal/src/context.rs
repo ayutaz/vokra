@@ -439,6 +439,159 @@ kernel void vokra_add_assign_f32(
     }
     dst[gid] = dst[gid] + src[gid];
 }
+
+// ---- M3-04 fused KV-cache dequant + GEMV kernels ----------------------------
+//
+// One thread per output row. Each block of 32 quantised values is dequantised
+// into a per-thread scalar inside the GEMV reduction — no shared / threadgroup
+// scratch. Byte layout mirrors `vokra_core::kv_quant::dequantize_bytes` exactly
+// (Q4_0 = 18 B, Q5_0 = 22 B, Q8_0 = 34 B), so the same on-wire block payload
+// feeds the CPU differential oracle (`dequant_gemv_scalar`) and this GPU
+// kernel.
+//
+// MSL has no builtin `f16 → f32` helper for a raw `u16` bit pattern, so we
+// duplicate the CPU `vokra_core::kv_quant::half::f16_bits_to_f32` semantics in
+// device code here. Kept in the same file as the kernels so a future update
+// touches one place.
+inline float vokra_kv_f16_to_f32(uint h) {
+    uint sign = (h >> 15u) & 1u;
+    uint exp  = (h >> 10u) & 0x1Fu;
+    uint mant = h & 0x3FFu;
+    float sign_f = (sign == 1u) ? -1.0f : 1.0f;
+    if (exp == 0u) {
+        // Subnormal / zero (matches CPU: sign_f * mant * 2^-24).
+        return sign_f * (float)mant * ldexp(1.0f, -24);
+    }
+    if (exp == 0x1Fu) {
+        if (mant == 0u) {
+            return sign_f * INFINITY;
+        }
+        return 0.0f / 0.0f; // NaN, matching CPU `f32::NAN`.
+    }
+    return sign_f * (1.0f + (float)mant / 1024.0f) * ldexp(1.0f, (int)exp - 15);
+}
+
+// Dims common to the three Q_0 fused-dequant GEMV kernels. `n_rows` sizes the
+// output; `n_blocks_per_row` * 32 sizes `x` and the per-row byte length via
+// the format-specific `block_bytes` (18 / 22 / 34).
+struct DequantGemvDims {
+    uint n_rows;
+    uint n_blocks_per_row;
+};
+
+// Q4_0: 32 elems / block, 18 B (2 B FP16 scale + 16 B nibbles biased +8).
+kernel void vokra_dequant_gemv_q4_0_f32(
+    device const uchar*      blocks [[buffer(0)]],
+    device const float*      x      [[buffer(1)]],
+    device float*            y      [[buffer(2)]],
+    constant DequantGemvDims& d     [[buffer(3)]],
+    uint                     gid    [[thread_position_in_grid]])
+{
+    const uint row = gid;
+    if (row >= d.n_rows) {
+        return;
+    }
+    const uint block_bytes = 18u;
+    const uint per_row_bytes = d.n_blocks_per_row * block_bytes;
+    const uint row_start = row * per_row_bytes;
+
+    float acc = 0.0f;
+    for (uint b = 0; b < d.n_blocks_per_row; ++b) {
+        const uint block_off = row_start + b * block_bytes;
+        const uint d_bits = (uint)blocks[block_off]
+                          | ((uint)blocks[block_off + 1u] << 8u);
+        const float dq = vokra_kv_f16_to_f32(d_bits);
+        const uint x_base = b * 32u;
+        for (uint i = 0; i < 16u; ++i) {
+            const uchar byte = blocks[block_off + 2u + i];
+            const int lo = (int)(byte & 0x0Fu) - 8;
+            const int hi = (int)((byte >> 4) & 0x0Fu) - 8;
+            acc += (float)lo * dq * x[x_base + 2u * i];
+            acc += (float)hi * dq * x[x_base + 2u * i + 1u];
+        }
+    }
+    y[row] = acc;
+}
+
+// Q5_0: 32 elems / block, 22 B (2 B FP16 scale + 4 B qh + 16 B qs low 4 bits).
+kernel void vokra_dequant_gemv_q5_0_f32(
+    device const uchar*      blocks [[buffer(0)]],
+    device const float*      x      [[buffer(1)]],
+    device float*            y      [[buffer(2)]],
+    constant DequantGemvDims& d     [[buffer(3)]],
+    uint                     gid    [[thread_position_in_grid]])
+{
+    const uint row = gid;
+    if (row >= d.n_rows) {
+        return;
+    }
+    const uint block_bytes = 22u;
+    const uint per_row_bytes = d.n_blocks_per_row * block_bytes;
+    const uint row_start = row * per_row_bytes;
+
+    float acc = 0.0f;
+    for (uint b = 0; b < d.n_blocks_per_row; ++b) {
+        const uint block_off = row_start + b * block_bytes;
+        const uint d_bits = (uint)blocks[block_off]
+                          | ((uint)blocks[block_off + 1u] << 8u);
+        const float dq = vokra_kv_f16_to_f32(d_bits);
+        const uint qh_base = block_off + 2u;
+        const uint qs_base = block_off + 6u;
+        const uint x_base = b * 32u;
+        for (uint i = 0; i < 32u; ++i) {
+            const uchar lo4_byte = blocks[qs_base + (i >> 1u)];
+            const uint lo4 = ((i & 1u) != 0u)
+                                ? ((uint)(lo4_byte >> 4) & 0x0Fu)
+                                : ((uint)lo4_byte & 0x0Fu);
+            const uchar hi1_byte = blocks[qh_base + (i >> 3u)];
+            const uint hi1 = ((uint)hi1_byte >> (i & 7u)) & 0x01u;
+            const uint biased = (hi1 << 4u) | lo4;
+            const int signed_v = (int)biased - 16;
+            acc += (float)signed_v * dq * x[x_base + i];
+        }
+    }
+    y[row] = acc;
+}
+
+// Q8_0: 32 elems / block, 34 B (2 B FP16 scale + 32 B i8 qs).
+kernel void vokra_dequant_gemv_q8_0_f32(
+    device const uchar*      blocks [[buffer(0)]],
+    device const float*      x      [[buffer(1)]],
+    device float*            y      [[buffer(2)]],
+    constant DequantGemvDims& d     [[buffer(3)]],
+    uint                     gid    [[thread_position_in_grid]])
+{
+    const uint row = gid;
+    if (row >= d.n_rows) {
+        return;
+    }
+    const uint block_bytes = 34u;
+    const uint per_row_bytes = d.n_blocks_per_row * block_bytes;
+    const uint row_start = row * per_row_bytes;
+
+    float acc = 0.0f;
+    for (uint b = 0; b < d.n_blocks_per_row; ++b) {
+        const uint block_off = row_start + b * block_bytes;
+        const uint d_bits = (uint)blocks[block_off]
+                          | ((uint)blocks[block_off + 1u] << 8u);
+        const float dq = vokra_kv_f16_to_f32(d_bits);
+        const uint x_base = b * 32u;
+        for (uint i = 0; i < 32u; ++i) {
+            // uchar `bytes[off]` reinterpreted as signed i8. MSL does not
+            // expose an `int8_t` type on buffers; the explicit `>= 128 ? -256`
+            // fold is the portable sign-extension pattern for a byte -> int
+            // conversion (equivalent to `(int)(int8_t)byte`, no
+            // implementation-defined signed shift).
+            uint raw = (uint)blocks[block_off + 2u + i];
+            int q_ext = (int)raw;
+            if (raw >= 128u) {
+                q_ext -= 256;
+            }
+            acc += (float)q_ext * dq * x[x_base + i];
+        }
+    }
+    y[row] = acc;
+}
 "#;
 
 /// GEMM dimension block handed to the kernel via `setBytes:` (buffer index 4).
@@ -495,6 +648,17 @@ struct LayerNormDims {
 #[derive(Clone, Copy)]
 struct GeluDims {
     n: u32,
+}
+
+/// M3-04 fused dequant + GEMV dims (`setBytes:` index 3). Mirrors the MSL
+/// `struct DequantGemvDims`; `n_blocks_per_row * 32` sizes the FP32 `x`
+/// vector and the format-specific block byte count (18 / 22 / 34) sizes each
+/// row of the packed byte payload.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct DequantGemvDims {
+    n_rows: u32,
+    n_blocks_per_row: u32,
 }
 
 /// Conv1d dims (`setBytes:` index 4). Field order / `u32` widths mirror the MSL
@@ -807,6 +971,15 @@ pub struct MetalContext {
     col_gather_t_pipeline: Id,
     col_scatter_pipeline: Id,
     add_assign_pipeline: Id,
+    /// M3-04 fused KV-cache dequant + GEMV pipelines, one per Q_0 format
+    /// (`vokra_dequant_gemv_q4_0_f32` / `_q5_0_f32` / `_q8_0_f32`). Symmetric
+    /// with the CUDA `dequant_gemv_q*_0` kernels; each is the GPU
+    /// implementation of the [`vokra_core::KvQuantDequantGemvOps`] trait,
+    /// whose CPU differential oracle is
+    /// [`vokra_core::kv_quant::dequant_gemm::dequant_gemv_scalar`].
+    dequant_gemv_q4_0_pipeline: Id,
+    dequant_gemv_q5_0_pipeline: Id,
+    dequant_gemv_q8_0_pipeline: Id,
     /// Count of command-buffer submissions (`commit` + `waitUntilCompleted`)
     /// issued through this context — the env-independent readback/sync metric the
     /// Phase-5-follow-on encoder-residency slice proves against (the whole encoder
@@ -911,6 +1084,17 @@ impl MetalContext {
         // SAFETY: as above.
         let add_assign_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_add_assign_f32") }?;
+        // M3-04 fused KV-cache dequant + GEMV pipelines, one per Q_0 format;
+        // share the same library as every other Phase-4/5 kernel.
+        // SAFETY: as above.
+        let dequant_gemv_q4_0_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_dequant_gemv_q4_0_f32") }?;
+        // SAFETY: as above.
+        let dequant_gemv_q5_0_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_dequant_gemv_q5_0_f32") }?;
+        // SAFETY: as above.
+        let dequant_gemv_q8_0_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_dequant_gemv_q8_0_f32") }?;
         drop(klib);
 
         Ok(MetalContext {
@@ -927,6 +1111,9 @@ impl MetalContext {
             col_gather_t_pipeline: col_gather_t_pipeline.into_raw(),
             col_scatter_pipeline: col_scatter_pipeline.into_raw(),
             add_assign_pipeline: add_assign_pipeline.into_raw(),
+            dequant_gemv_q4_0_pipeline: dequant_gemv_q4_0_pipeline.into_raw(),
+            dequant_gemv_q5_0_pipeline: dequant_gemv_q5_0_pipeline.into_raw(),
+            dequant_gemv_q8_0_pipeline: dequant_gemv_q8_0_pipeline.into_raw(),
             submissions: Cell::new(0),
         })
     }
@@ -1132,6 +1319,33 @@ impl MetalContext {
         Ok(OwnedBuf(buf))
     }
 
+    /// Byte-oriented sibling of [`Self::new_buffer_from_slice`] used by the
+    /// M3-04 fused dequant GEMV path — the packed KV block payload is a
+    /// `&[u8]`, not `&[f32]`, and a mistyped call site here would silently
+    /// upload the wrong element count. Kept as its own method for that
+    /// reason.
+    fn new_buffer_from_bytes(&self, data: &[u8]) -> Result<OwnedBuf> {
+        let bytes = data.len().max(size_of::<f32>());
+        // SAFETY: `device` is valid; `data.as_ptr()` is valid for `data.len()`
+        // bytes (the buffer copies at most `bytes >= data.len()`; the tail
+        // padding is unread by the kernel); shared storage mode (0).
+        let buf = unsafe {
+            sys::send_new_buffer_bytes(
+                self.device,
+                sys::sel(b"newBufferWithBytes:length:options:\0"),
+                data.as_ptr().cast::<c_void>(),
+                bytes,
+                sys::STORAGE_MODE_SHARED,
+            )
+        };
+        if buf.is_null() {
+            return Err(VokraError::BackendUnavailable(
+                "MTLDevice newBufferWithBytes (u8) returned nil".to_owned(),
+            ));
+        }
+        Ok(OwnedBuf(buf))
+    }
+
     /// Allocates an uninitialised shared-storage `MTLBuffer` of `len` f32s.
     fn new_buffer_output(&self, len: usize) -> Result<OwnedBuf> {
         let bytes = (len * size_of::<f32>()).max(size_of::<f32>());
@@ -1218,6 +1432,93 @@ impl MetalContext {
             "gemv",
         )?;
         read_back(&out_buf, out)
+    }
+
+    // ---- M3-04 fused KV-cache dequant + GEMV ------------------------------
+
+    /// GPU-side fused dequantisation + row-wise GEMV over a quantised KV block
+    /// matrix — the Metal implementation of the
+    /// [`KvQuantDequantGemvOps`](vokra_core::KvQuantDequantGemvOps) seam
+    /// (M3-04-T10).
+    ///
+    /// The GPU kernel dequantises one 32-elem block at a time *inside* the
+    /// per-row GEMV loop, so the intermediate FP32 row is never materialised
+    /// (unlike the two-stage `dequantize_bytes → dense_gemv_f32` reference).
+    /// Byte layout is identical to the CPU differential oracle
+    /// [`vokra_core::kv_quant::dequant_gemm::dequant_gemv_scalar`], so both
+    /// paths consume the same on-wire payload.
+    ///
+    /// # Precision
+    ///
+    /// Output matches the CPU oracle within the FP32 GEMV rounding bound. The
+    /// backend parity test pins this to `atol = 1e-4`.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on shape mismatch or `mode ==
+    /// KvQuant::Fp32`; [`VokraError::BackendUnavailable`] on a Metal
+    /// allocation / command-buffer failure.
+    pub fn dequant_gemv_f32(
+        &self,
+        mode: vokra_core::KvQuant,
+        blocks_bytes: &[u8],
+        n_rows: usize,
+        n_blocks_per_row: usize,
+        x: &[f32],
+    ) -> Result<Vec<f32>> {
+        vokra_core::validate_dequant_gemv(mode, blocks_bytes, n_rows, n_blocks_per_row, x)?;
+        if n_rows == 0 {
+            return Ok(Vec::new());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_dequant_gemv(mode, blocks_bytes, n_rows, n_blocks_per_row, x);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    fn run_dequant_gemv(
+        &self,
+        mode: vokra_core::KvQuant,
+        blocks_bytes: &[u8],
+        n_rows: usize,
+        n_blocks_per_row: usize,
+        x: &[f32],
+    ) -> Result<Vec<f32>> {
+        let (pipeline, label) = match mode {
+            vokra_core::KvQuant::Q4_0 => (self.dequant_gemv_q4_0_pipeline, "dequant_gemv_q4_0"),
+            vokra_core::KvQuant::Q5_0 => (self.dequant_gemv_q5_0_pipeline, "dequant_gemv_q5_0"),
+            vokra_core::KvQuant::Q8_0 => (self.dequant_gemv_q8_0_pipeline, "dequant_gemv_q8_0"),
+            vokra_core::KvQuant::Fp32 => {
+                // Guarded by `validate_dequant_gemv`; keep as an explicit error
+                // (never a silent fallback, FR-EX-08).
+                return Err(VokraError::InvalidArgument(
+                    "dequant_gemv_f32: mode=Fp32 rejected".to_owned(),
+                ));
+            }
+        };
+
+        let blocks_buf = self.new_buffer_from_bytes(blocks_bytes)?;
+        let x_buf = self.new_buffer_from_slice(x)?;
+        let out_buf = self.new_buffer_output(n_rows)?;
+        let dims = DequantGemvDims {
+            n_rows: n_rows as u32,
+            n_blocks_per_row: n_blocks_per_row as u32,
+        };
+        let (grid, tg) = grid_1d(n_rows);
+        self.dispatch_compute(
+            pipeline,
+            &[&blocks_buf, &x_buf, &out_buf],
+            (&dims as *const DequantGemvDims).cast::<c_void>(),
+            size_of::<DequantGemvDims>(),
+            grid,
+            tg,
+            label,
+        )?;
+        let mut out = vec![0.0f32; n_rows];
+        read_back(&out_buf, &mut out)?;
+        Ok(out)
     }
 
     /// Row-wise softmax over the innermost axis of a `rows × cols` buffer,
@@ -3300,6 +3601,9 @@ impl Drop for MetalContext {
         // SAFETY: every handle is a valid `+1`-owned object created in
         // `new` / `build`; release each exactly once.
         unsafe {
+            release(self.dequant_gemv_q8_0_pipeline);
+            release(self.dequant_gemv_q5_0_pipeline);
+            release(self.dequant_gemv_q4_0_pipeline);
             release(self.add_assign_pipeline);
             release(self.col_scatter_pipeline);
             release(self.col_gather_t_pipeline);
@@ -4551,4 +4855,27 @@ fn validate_prenorm_stack(
         opt("fc2_bias", l.fc2_bias, d)?;
     }
     Ok(())
+}
+
+// =====================================================================
+// M3-04 fused KV-cache dequant + GEMV trait impl (Metal backend arm)
+// =====================================================================
+//
+// The concrete GPU implementation of the
+// [`vokra_core::KvQuantDequantGemvOps`] trait: dispatches into
+// [`MetalContext::dequant_gemv_f32`] (defined above). Kept at the bottom of
+// the file so it sits alongside the other trait impls / helpers rather than
+// inside the impl block that owns the launcher — keeps grep-locality with the
+// CUDA analogue.
+impl vokra_core::KvQuantDequantGemvOps for MetalContext {
+    fn fused_dequant_gemv(
+        &self,
+        mode: vokra_core::KvQuant,
+        blocks_bytes: &[u8],
+        n_rows: usize,
+        n_blocks_per_row: usize,
+        x: &[f32],
+    ) -> Result<Vec<f32>> {
+        self.dequant_gemv_f32(mode, blocks_bytes, n_rows, n_blocks_per_row, x)
+    }
 }

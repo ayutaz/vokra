@@ -108,12 +108,18 @@ impl QuantScheme {
     pub fn backend_supported(&self, backend: BackendKind) -> bool {
         match self {
             Self::Fp32 | Self::Fp16 | Self::W4A16Q4K | Self::W4A16Q5K | Self::W4A16Q6K => {
+                // Vulkan is explicitly excluded in the M3-02 foundation slice —
+                // no SPIR-V compute kernel is wired yet (`kernels/precompiled/`
+                // ships no `.spv`; kernels land in M3-02-T14 onwards). Reporting
+                // `false` here means the T09 validate pass will surface an
+                // explicit `UnsupportedOp` when a caller pairs Vulkan with a
+                // scheme, rather than a silent CPU fall back (FR-EX-08).
                 matches!(
                     backend,
                     BackendKind::Cpu | BackendKind::Metal | BackendKind::Cuda
                 )
             }
-            // W8A8 INT8 has no kernel on any backend in M2-08.
+            // W8A8 INT8 has no kernel on any backend in M2-08 / M3-02.
             Self::W8A8Int8 => false,
         }
     }
@@ -211,8 +217,13 @@ mod tests {
 
     #[test]
     fn backend_supported_matches_kernel_coverage() {
-        // W8A8 INT8 has no kernel on any backend in M2-08.
-        for backend in [BackendKind::Cpu, BackendKind::Metal, BackendKind::Cuda] {
+        // W8A8 INT8 has no kernel on any backend in M2-08 / M3-02.
+        for backend in [
+            BackendKind::Cpu,
+            BackendKind::Metal,
+            BackendKind::Cuda,
+            BackendKind::Vulkan,
+        ] {
             assert!(!QuantScheme::W8A8Int8.backend_supported(backend));
         }
         // Everything else lands on the F32 kernel path (weights dequantize to
@@ -232,6 +243,15 @@ mod tests {
                     backend
                 );
             }
+            // Vulkan foundation slice (M3-02): no SPIR-V kernel wired, so no
+            // scheme is supported yet — this becomes an explicit `UnsupportedOp`
+            // upstream (no silent CPU fall back, FR-EX-08).
+            assert!(
+                !scheme.backend_supported(BackendKind::Vulkan),
+                "scheme {:?} unexpectedly reported supported on Vulkan (foundation slice \
+                 has no SPIR-V kernel)",
+                scheme,
+            );
         }
     }
 }

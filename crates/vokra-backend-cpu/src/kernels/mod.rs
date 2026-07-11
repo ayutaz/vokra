@@ -63,6 +63,16 @@ pub(crate) mod avx2;
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod neon;
 
+// M3-13-T04..T09: RISC-V RVV 1.0 base kernels + Zvfh feature-gated fp16 path.
+// Compiled only on `target_arch = "riscv64"` — the runtime dispatch layer
+// gates entry via [`crate::features::CpuFeatures::supports`] (needs
+// `rvv_v = true`), so no other target ever routes through this module. See
+// `docs/adr/M3-13-riscv-rvv-1.0.md` for the scaffold vs. full-kernel split
+// (`add` uses inline RVV asm; remaining ops delegate to `scalar::*` pending
+// M4+ inline-asm rewrites).
+#[cfg(target_arch = "riscv64")]
+pub(crate) mod rvv;
+
 // Fused log-mel inner kernel (M2-04-T06): AVX2 8-lane FMA `_mm256_fmadd_ps`
 // over the filterbank weights row + `vlog10_avx2` polynomial approximation.
 // This is the CPU-side SIMD path for the log-mel front-end fusion. NEON

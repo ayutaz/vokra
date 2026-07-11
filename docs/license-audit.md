@@ -75,12 +75,12 @@
 | **Whisper base/small/medium/large-v3/turbo** | MIT | MIT | ○ | ★ 公式 zoo | OpenAI 公式 |
 | **piper-plus (ayutaz) 全モデル** | MIT | MIT | ○ | ★ 公式 zoo | 依頼者作、8 言語、eSpeak-NG 依存なし |
 | **Kokoro-82M** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | hexgrad、iSTFTNet 系 vocoder |
-| **CosyVoice / CosyVoice2 / CosyVoice3** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Alibaba FunAudioLLM |
+| **CosyVoice / CosyVoice2 / CosyVoice3** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Alibaba FunAudioLLM。**M3-09 で自前実装 scaffold**（`crates/vokra-models/src/cosyvoice2/`、text encoder + Flow Matching stub + Mimi bridge + GGUF converter。実 checkpoint parity は依頼者 HF アクセス前提の follow-up）。 |
 | **Sesame CSM-1B** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Sesame AI Labs |
 | **Moshi (Helium + Mimi)** | Apache 2.0 | **CC-BY 4.0** | ○ (要 credit) | ★ 公式 zoo | Kyutai、attribution 表示義務 → docs/legal-compliance.md 参照 |
-| **Voxtral (Mistral)** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Mistral、2025-07 リリース |
+| **Voxtral (Mistral)** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Mistral、2025-07 リリース。**M3-10 で自前実装 scaffold**（`crates/vokra-models/src/voxtral/`、Whisper 派生 audio encoder + Mistral GQA/RoPE/SwiGLU/RMSNorm text decoder + ASR/S2S heads + config-aware converter `convert_voxtral_file`。実 multilang WER は follow-up）。 |
 | **DAC (Descript)** | MIT | MIT | ○ | ★ 公式 zoo | Descript 公式 |
-| **Mimi codec (Kyutai)** | Apache 2.0 | CC-BY 4.0 | ○ (要 credit) | ★ 公式 zoo | Moshi パッケージの一部 |
+| **Mimi codec (Kyutai)** | Apache 2.0 | CC-BY 4.0 | ○ (要 credit) | ★ 公式 zoo | Moshi パッケージの一部。**M3-06 で `mimi_rvq` op を実装**（`crates/vokra-ops/src/mimi_rvq.rs`、CC-BY 4.0 attribution は `NOTICE` §5 に記載、`registry_lookup("mimi") == AttributionRequired`）。 |
 | **WavTokenizer** | MIT | MIT | ○ | ★ 公式 zoo | 中山大 |
 | **X-Codec 2 (Llasa)** | MIT | MIT | ○ | ★ 公式 zoo | HKUST |
 | **openWakeWord** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | dscripka |
@@ -99,7 +99,7 @@
 | **Matcha-TTS** | MIT | MIT | ○ | ★ v2.0+ | |
 | **RVC v2** | MIT | **不明 / 学習権利疑い** | △ | ✕ **vokra-voiceclone-experimental** に分離 | training data copyright laundering の Reddit/GitHub Issue で複数指摘 |
 | **GPT-SoVITS** | MIT | 不明 | △ | ✕ voiceclone-experimental 分離 | |
-| **EnCodec (Meta)** | MIT | **CC-BY-NC 4.0** | ✕ 非商用 | ✕ research flag | 商用は DAC/Mimi/WavTokenizer 推奨 |
+| **EnCodec (Meta)** | MIT | **CC-BY-NC 4.0** | ✕ 非商用 | ✕ research flag | 商用は DAC/Mimi/WavTokenizer 推奨。**FR-OP-32 恒久制約**により公式 model zoo 非搭載を維持（M2-13 runtime gate + release CI 側の `scripts/compliance/check-encodec-exclusion.sh` 二重防御、M3-06 ADR §D2）。 |
 | **BigVGAN reference (NVIDIA)** | **NVIDIA Source Code License-NC** | 非商用 | ✕ | ✕ | Vokra は **論文からスクラッチ再実装**、reference 未使用 (NOTICE 明記) |
 | **HiFi-GAN reference** | MIT | MIT (公式) | ○ | ○ | Kaggle 系派生は要確認 |
 | **Vocos** | MIT | MIT | ○ | ★ 公式 zoo | Charactr AI |
@@ -123,7 +123,7 @@
 - **公式 zoo 非搭載の維持**: 公式 model zoo は Apache 2.0 / MIT / CC-BY（attribution）weight のみ（§「Vokra 公式配布」列の ★）。CC-BY-NC 系（F5-TTS / Fish-Speech / EnCodec）は `✕ research flag` のまま非搭載を維持する。
 - 解錠経路（研究/評価用途限定）: `CompliancePolicy::with_research_license(true)` / 環境変数 `VOKRA_ALLOW_RESEARCH_LICENSE=1` / `ComplianceLevel::Research`。EnCodec の商用代替は DAC / Mimi / WavTokenizer / X-Codec 2（§3）。警告・免責文言の法務的十分性は FR-MD-13 / X-03（依頼者判断）に従属。
 
-### CC-verified 事実確認（2026-07-07、M2 対応モデル分）
+### CC-verified 事実確認（2026-07-07 M2 対応 / 2026-07-10 M3-09 + M3-10 追記）
 
 **位置付け（重要）**: 本節は Claude Code（CC）が **一次公表資料の写し** として実施した事実確認の記録である。**法務的な配布判断（"配布して良い" の意思決定）は依頼者（`ayutaz`）に帰属**し、本節では実施しない。Owner sign-off は各行末尾の空欄に依頼者が別途記入する。判断の下敷きとなる事実（upstream の license 表記 / 発行元 / 公表 URL）だけをここに固定する。
 
@@ -139,6 +139,15 @@
 | **Kokoro-82M** | **Apache-2.0** | Hugging Face `hexgrad/Kokoro-82M` model card の license: apache-2.0 タグ；同リポジトリ LICENSE | `Permissive` | ✓ | ______________ |
 | **piper-plus (依頼者作) 全モデル** | **MIT** | `ayutaz/piper-plus` GitHub リポジトリ LICENSE (MIT)；ONNX voice model の LICENSE も MIT | `Permissive` | ✓ | ______________ |
 | **CAM++ Speaker Embedding** | **Apache-2.0** | ModelScope `iic/speech_campplus` の license: apache-2.0 タグ；変換元 `ayousanz/campplus-onnx` の LICENSE（Apache-2.0） | `Permissive` | ______________ |
+| **CosyVoice2-0.5B** | **Apache-2.0** | Hugging Face `FunAudioLLM/CosyVoice2-0.5B` model card の license: apache-2.0 タグ；`FunAudioLLM/CosyVoice` GitHub リポジトリ LICENSE ファイル（Apache License Version 2.0） | `Permissive` | ✓ | ______________ |
+| **Voxtral-Mini-3B-2507** | **Apache-2.0** | Hugging Face `mistralai/Voxtral-Mini-3B-2507` model card の license: apache-2.0 タグ | `Permissive` | ✓ | ______________ |
+| **Voxtral-Small-24B-2507** | **Apache-2.0** | Hugging Face `mistralai/Voxtral-Small-24B-2507` model card の license: apache-2.0 タグ | `Permissive` | ✓ | ______________ |
+
+**Attribution 要（CC-BY 4.0、公式 zoo 搭載可、NOTICE 記載必須）**:
+
+| モデル | Weight License | 一次資料（CC 引用） | Registry 分類 | 公式 zoo | 補足 |
+|---|---|---|---|---|---|
+| **Mimi codec (Kyutai)** | **CC-BY 4.0** | Hugging Face `kyutai/mimi` model card の license: cc-by-4.0 タグ；同 model card 提供の BibTeX citation `@techreport{kyutai2024moshi, ..., institution = {Kyutai}, year={2024}, url={http://kyutai.org/Moshi.pdf}}` | `AttributionRequired` | ✓ | 商用 OK ただし attribution 要。`NOTICE` §5 に BibTeX citation 記載済（M3-06 で反映、`crates/vokra-ops/src/mimi_rvq.rs` の `registry_lookup("mimi") == AttributionRequired` gate で機構強制） |
 
 **Non-commercial 系（研究フラグ必須、公式 zoo 非搭載を維持）**:
 
@@ -178,6 +187,10 @@
 | **Fish-Speech v1.4** | CC-BY-NC-SA 4.0 | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
 | **Fish-Speech v1.5** | CC-BY-NC-SA 4.0 | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
 | **EnCodec** | CC-BY-NC 4.0 | 2026-07-07 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | |
+| **CosyVoice2-0.5B** | Apache-2.0 | 2026-07-10 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M3-09 対応 |
+| **Voxtral-Mini-3B-2507** | Apache-2.0 | 2026-07-10 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M3-10 対応 |
+| **Voxtral-Small-24B-2507** | Apache-2.0 | 2026-07-10 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M3-10 対応 |
+| **Mimi codec (Kyutai)** | CC-BY 4.0 | 2026-07-10 | ______________ | ☐ Commercial (attribution 込) / ☐ Research-only / ☐ Rejected | M3-06 で NOTICE §5 反映済、機構 gate 済 |
 
 ---
 

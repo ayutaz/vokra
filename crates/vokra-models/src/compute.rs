@@ -47,6 +47,11 @@
 use vokra_backend_cpu::kernels;
 use vokra_core::backend::BackendKind;
 use vokra_core::{Backend, DecoderLayerView, PrenormLayer, Result, VokraError};
+// M3-06 mimi_rvq codec decode wired into the imperative Compute seam.
+// The CPU arm delegates to `vokra_ops::mimi_rvq_decode`; the Metal / CUDA arms
+// return `VokraError::UnsupportedOp` until the M3-06 T14 / T15 GPU kernels land
+// (no silent CPU fall back, FR-EX-08). See `Compute::mimi_rvq_f32` below.
+use vokra_ops::{CodebookTable, MimiRvqAttrs, mimi_rvq_decode};
 
 /// A backend-dispatched hot op — the operators the imperative models route
 /// through a backend (as opposed to the model-internal scalar glue like
@@ -70,6 +75,23 @@ pub enum HotOp {
     Gelu,
     /// 1-D convolution (`conv1d_f32`) — Whisper encoder stem.
     Conv1d,
+    /// Mimi (Kyutai) residual vector quantization codec decode
+    /// (`mimi_rvq_decode`) — the M3-06 RVQ codec op family. The heterogeneous
+    /// signature (u32 `codes` + `Vec<CodebookTable>` → `Vec<f32>`) drives the
+    /// [`Compute::mimi_rvq_f32`] method shape (heap-returning, not
+    /// `out: &mut [f32]`), which is the reason `mimi_rvq_decode` is a
+    /// runtime function in `vokra-ops` rather than an [`vokra_core::OpKind`]
+    /// variant (module docs in `vokra_ops::mimi_rvq`).
+    ///
+    /// **CPU-only through the imperative seam today.** The Metal / CUDA arms
+    /// of [`Compute::mimi_rvq_f32`] return an explicit
+    /// [`VokraError::UnsupportedOp`]; the M3-06 T14 (Metal) / T15 (CUDA) GPU
+    /// kernels are deferred to the M3-09 mimi_bridge upgrade past stub. This
+    /// variant therefore has `covered_by_metal` / `covered_by_cuda` /
+    /// `covered_by_vulkan` return `false`, so any model that lists `MimiRvq`
+    /// in its required set will fail `for_backend(Metal|Cuda|Vulkan, …)` with
+    /// a coverage `UnsupportedOp` — never a silent CPU fall back (FR-EX-08).
+    MimiRvq,
 }
 
 impl HotOp {
@@ -77,15 +99,22 @@ impl HotOp {
     ///
     /// Kept in sync with the Metal arms of the [`Compute`] methods below; the
     /// `metal_coverage_is_consistent` test pins the two together. As of Phase 4
-    /// (M2-01 T09-T13) every hot op has a `MetalContext` kernel, so the whole
-    /// Whisper set runs on the GPU through this seam. (The *graph* backend
-    /// `MetalBackend::supports` / `eval_op` is a separate path and still covers
-    /// only `MatMul` — the two coverage surfaces are intentionally independent.)
+    /// (M2-01 T09-T13) the whole Whisper hot-op set (GEMM / GEMV / softmax /
+    /// layer_norm / GELU / conv1d) has a `MetalContext` kernel, so the whole
+    /// Whisper forward runs on the GPU through this seam. [`HotOp::MimiRvq`]
+    /// remains uncovered on Metal — the M3-06 T14 MSL kernel is deferred to
+    /// the M3-09 mimi_bridge upgrade past stub, and until it lands the Metal
+    /// arm of [`Compute::mimi_rvq_f32`] returns an explicit
+    /// [`VokraError::UnsupportedOp`] (never a silent CPU fall back, FR-EX-08).
+    /// (The *graph* backend `MetalBackend::supports` / `eval_op` is a separate
+    /// path and still covers only `MatMul` — the two coverage surfaces are
+    /// intentionally independent.)
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     fn covered_by_metal(self) -> bool {
-        // Phase 4 complete: GEMM (M2-01 slice) plus the five T09-T13 kernels
-        // (gemv / softmax / layer_norm / gelu / conv1d) are all real Metal
-        // kernels on `MetalContext`, so every HotOp is covered.
+        // Phase 4 wired the six Whisper hot ops; MimiRvq is deferred to the
+        // M3-06 T14 MSL kernel (M3-09 follow-up). Any model listing MimiRvq
+        // in its required set therefore fails `for_backend(Metal, …)` with a
+        // coverage `UnsupportedOp` (FR-EX-08 — no silent CPU fall back).
         matches!(
             self,
             HotOp::Gemm
@@ -101,16 +130,22 @@ impl HotOp {
     ///
     /// Kept in sync with the `Be::Cuda` arms of the [`Compute`] methods below;
     /// the `cuda_coverage_is_consistent` test pins the two together. As of
-    /// Phase 4 (M2-03 T10-T14) the CUDA backend has a real NVRTC-compiled kernel
-    /// for every hot op (GEMM plus gemv / softmax / layer_norm / gelu / conv1d),
-    /// so the whole Whisper set runs on the GPU through this seam. (The *graph*
-    /// backend `CudaBackend::supports` / `eval_op` is a separate path and still
-    /// covers only `MatMul` — the two coverage surfaces are independent.)
+    /// Phase 4 (M2-03 T10-T14) the whole Whisper hot-op set (GEMM / GEMV /
+    /// softmax / layer_norm / GELU / conv1d) has a real NVRTC-compiled kernel,
+    /// so the whole Whisper forward runs on the GPU through this seam.
+    /// [`HotOp::MimiRvq`] remains uncovered on CUDA — the M3-06 T15 NVRTC
+    /// kernel is deferred to the M3-09 mimi_bridge upgrade past stub, and
+    /// until it lands the CUDA arm of [`Compute::mimi_rvq_f32`] returns an
+    /// explicit [`VokraError::UnsupportedOp`] (never a silent CPU fall back,
+    /// FR-EX-08). (The *graph* backend `CudaBackend::supports` / `eval_op` is
+    /// a separate path and still covers only `MatMul` — the two coverage
+    /// surfaces are independent.)
     #[cfg(all(feature = "cuda", any(unix, windows)))]
     fn covered_by_cuda(self) -> bool {
-        // Phase 4 complete: GEMM (M2-03 slice) plus the five T10-T14 kernels
-        // (gemv / softmax / layer_norm / gelu / conv1d) are all real CUDA kernels
-        // on `CudaContext`, so every HotOp is covered.
+        // Phase 4 wired the six Whisper hot ops; MimiRvq is deferred to the
+        // M3-06 T15 NVRTC kernel (M3-09 follow-up). Any model listing MimiRvq
+        // in its required set therefore fails `for_backend(Cuda, …)` with a
+        // coverage `UnsupportedOp` (FR-EX-08 — no silent CPU fall back).
         matches!(
             self,
             HotOp::Gemm
@@ -120,6 +155,37 @@ impl HotOp {
                 | HotOp::Gelu
                 | HotOp::Conv1d
         )
+    }
+
+    /// Whether the Vulkan backend's imperative [`Compute`] seam covers this op.
+    ///
+    /// **M3-02 foundation slice (2026-07-09):** no SPIR-V kernel is wired yet
+    /// (`crates/vokra-backend-vulkan/kernels/precompiled/` ships no `.spv`
+    /// blob), so **every** hot op is uncovered — including [`HotOp::MimiRvq`]
+    /// — and `covered_by_vulkan(_) = false` for every variant. As T14〜T22
+    /// land, this method flips to `true` op-by-op, in lock-step with the
+    /// `Be::Vulkan` arms of the `Compute` methods below (the
+    /// `vulkan_coverage_is_consistent` test pins the two together). MimiRvq
+    /// on Vulkan is not on the M3-02 track at all — it lands with the M3-06
+    /// GPU kernels' Vulkan sibling (M4+), so the `false` here holds through
+    /// the whole Vulkan T14〜T22 rollout.
+    ///
+    /// The consequence today is that `Compute::for_backend(BackendKind::Vulkan,
+    /// &required)` returns an explicit [`VokraError::UnsupportedOp`] for every
+    /// non-empty `required` — never a silent CPU fall back (FR-EX-08).
+    #[cfg(all(
+        feature = "vulkan",
+        any(target_os = "linux", target_os = "android", target_os = "windows")
+    ))]
+    fn covered_by_vulkan(self) -> bool {
+        // Foundation slice: the Vulkan backend has NO wired kernels. This is
+        // the honest state — as ticket M3-02-T14 ships the GEMM `.spv`, its
+        // arm becomes `HotOp::Gemm => true`; T15 flips GEMV, and so on. Note
+        // that MimiRvq is off the M3-02 T14〜T22 track (it needs the M3-06 GPU
+        // kernels' Vulkan sibling, which is an M4+ item), so this method will
+        // still return `false` for `HotOp::MimiRvq` after T22 lands.
+        let _ = self;
+        false
     }
 }
 
@@ -173,12 +239,16 @@ impl Compute {
     ///   binary (e.g. `Metal` without the `metal` feature, or off an Apple
     ///   target), or if the device probe fails (no Metal device).
     pub fn for_backend(kind: BackendKind, required: &[HotOp]) -> Result<Self> {
-        // `required` is consulted only by the Metal / CUDA coverage gates;
-        // without either GPU arm compiled in, the CPU / unavailable arms do not
-        // read it.
+        // `required` is consulted only by the Metal / CUDA / Vulkan coverage
+        // gates; without any GPU arm compiled in, the CPU / unavailable arms do
+        // not read it.
         #[cfg(not(any(
             all(feature = "metal", any(target_os = "macos", target_os = "ios")),
-            all(feature = "cuda", any(unix, windows))
+            all(feature = "cuda", any(unix, windows)),
+            all(
+                feature = "vulkan",
+                any(target_os = "linux", target_os = "android", target_os = "windows")
+            )
         )))]
         let _ = required;
         match kind {
@@ -211,9 +281,38 @@ impl Compute {
                     be: Be::Cuda(Box::new(vokra_backend_cuda::CudaContext::new()?)),
                 })
             }
+            #[cfg(all(
+                feature = "vulkan",
+                any(target_os = "linux", target_os = "android", target_os = "windows")
+            ))]
+            BackendKind::Vulkan => {
+                if let Some(op) = required.iter().copied().find(|op| !op.covered_by_vulkan()) {
+                    return Err(VokraError::UnsupportedOp(format!(
+                        "vulkan backend has no wired kernel for {op:?} in the M3-02 foundation \
+                         slice; the model requires {required:?}. \
+                         `crates/vokra-backend-vulkan/kernels/precompiled/` ships no .spv blob \
+                         yet — every hot op is uncovered. One model = one backend — Vokra does \
+                         not silently run the uncovered ops on the CPU (FR-EX-08). Select \
+                         BackendKind::Cpu, or wait for the SPIR-V kernels (M3-02-T14〜T22)."
+                    )));
+                }
+                // `required` is empty AND every hot op is uncovered — the
+                // foundation slice cannot construct a useful `Compute::Vulkan`
+                // dispatcher (no callable kernel). Surface an explicit error
+                // rather than pretending a coverage-empty dispatcher is usable.
+                // Once T14+ lands, this branch becomes an
+                // `Ok(Compute { be: Be::Vulkan(...) })` — the same shape as the
+                // Metal / CUDA arms above.
+                Err(VokraError::UnsupportedOp(
+                    "vulkan Compute path has no wired kernels in the M3-02 foundation slice — \
+                     no covered required set exists. Wait for M3-02-T14+ SPIR-V kernels."
+                        .to_owned(),
+                ))
+            }
             other => Err(VokraError::BackendUnavailable(format!(
                 "{other:?} backend is not built into vokra-models (build with the `metal` feature \
-                 on macOS / iOS for Metal; CUDA / Vulkan / … are later roadmap backends)"
+                 on macOS / iOS for Metal, the `cuda` feature on Windows / Linux for CUDA, or the \
+                 `vulkan` feature on Linux / Android / Windows for Vulkan)"
             ))),
         }
     }
@@ -399,6 +498,81 @@ impl Compute {
             Be::Cuda(ctx) => ctx.conv1d_f32(
                 input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
             ),
+        }
+    }
+
+    /// Mimi (Kyutai) residual vector quantization codec decode — the M3-06
+    /// codec op wired into the imperative `Compute` seam.
+    ///
+    /// Given a `[time, n_codebooks]` row-major slice of `u32` `codes` and one
+    /// [`CodebookTable`] per codebook (each `[codebook_size, d_model]`
+    /// row-major), returns a fresh `[time, d_model]` row-major `Vec<f32>` of
+    /// feature vectors reconstructed by summing every codebook's contribution
+    /// in FP32 (see [`vokra_ops::mimi_rvq_decode`] for the algorithm).
+    ///
+    /// # Heterogeneous shape (owned `Vec<f32>`, not `out: &mut [f32]`)
+    ///
+    /// Unlike the other seam methods (which take `out: &mut [f32]` for the
+    /// zero-alloc reserve, FR-EX-05), this method returns a freshly-allocated
+    /// `Vec<f32>`. The reason is baked into [`vokra_ops::mimi_rvq_decode`]:
+    /// the op is a codebook-table fold shaped by `Vec<CodebookTable>`
+    /// (heterogeneous width across callers) rather than a plain M×N GEMM,
+    /// which is also why `mimi_rvq_decode` is a runtime function in
+    /// `vokra-ops` and not an [`vokra_core::OpKind`] variant (see the module
+    /// docs in `vokra_ops::mimi_rvq`). The heap alloc is negligible because
+    /// M3-09 (CosyVoice2) calls this at chunk granularity, not at the
+    /// per-token hot-path granularity the GEMM seam serves.
+    ///
+    /// # CPU-only through this seam today (Metal / CUDA arms return `UnsupportedOp`)
+    ///
+    /// The CPU arm delegates verbatim to [`vokra_ops::mimi_rvq_decode`]
+    /// (M3-06 T04 kernel; bit-for-bit reproduces a direct kernel call, so a
+    /// `Compute::cpu()` run reproduces the pre-seam output exactly). The
+    /// **Metal** and **CUDA** arms return an explicit
+    /// [`VokraError::UnsupportedOp`] because the M3-06 T14 (MSL) / T15 (NVRTC)
+    /// GPU kernels are still deferred to the M3-09 mimi_bridge upgrade past
+    /// stub — this is the honest state today and is *never* a silent CPU
+    /// fall back (FR-EX-08). The coverage gate on
+    /// [`Compute::for_backend`] additionally rejects any model that lists
+    /// [`HotOp::MimiRvq`] against Metal / CUDA / Vulkan, so a well-behaved
+    /// consumer never reaches this method through those arms; the explicit
+    /// error here is the belt-and-braces defence for any consumer that
+    /// bypassed the coverage gate (e.g. built a `Compute::for_backend(Metal,
+    /// &[])` with an empty required set and then reached for
+    /// `mimi_rvq_f32`).
+    ///
+    /// # Errors
+    ///
+    /// - CPU arm: propagates the [`VokraError::InvalidArgument`] variants
+    ///   [`vokra_ops::mimi_rvq_decode`] raises (shape mismatch, out-of-range
+    ///   codebook index; never a silent 0-clamp — FR-EX-08).
+    /// - Metal / CUDA arms: explicit [`VokraError::UnsupportedOp`] until the
+    ///   M3-06 T14 / T15 GPU kernels land.
+    pub fn mimi_rvq_f32(
+        &self,
+        codes: &[u32],
+        time: usize,
+        codebook_tables: &[CodebookTable],
+        attrs: &MimiRvqAttrs,
+    ) -> Result<Vec<f32>> {
+        match &self.be {
+            Be::Cpu => mimi_rvq_decode(codes, time, codebook_tables, attrs),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(_) => Err(VokraError::UnsupportedOp(
+                "mimi_rvq_f32 has no wired Metal MSL kernel; the M3-06 T14 GPU arm is deferred to \
+                 the M3-09 mimi_bridge upgrade past stub. Select BackendKind::Cpu (which \
+                 delegates to vokra_ops::mimi_rvq_decode), or wait for the Metal kernel — \
+                 Vokra does not silently run the op on the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "mimi_rvq_f32 has no wired CUDA NVRTC kernel; the M3-06 T15 GPU arm is deferred \
+                 to the M3-09 mimi_bridge upgrade past stub. Select BackendKind::Cpu (which \
+                 delegates to vokra_ops::mimi_rvq_decode), or wait for the CUDA kernel — \
+                 Vokra does not silently run the op on the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
         }
     }
 
@@ -909,9 +1083,15 @@ pub fn make_backend(kind: BackendKind) -> Result<Box<dyn Backend>> {
         BackendKind::Metal => Ok(Box::new(vokra_backend_metal::MetalBackend::new()?)),
         #[cfg(all(feature = "cuda", any(unix, windows)))]
         BackendKind::Cuda => Ok(Box::new(vokra_backend_cuda::CudaBackend::new()?)),
+        #[cfg(all(
+            feature = "vulkan",
+            any(target_os = "linux", target_os = "android", target_os = "windows")
+        ))]
+        BackendKind::Vulkan => Ok(Box::new(vokra_backend_vulkan::VulkanBackend::new()?)),
         other => Err(VokraError::BackendUnavailable(format!(
             "{other:?} backend is not built into vokra-models (build with the `metal` feature on \
-             macOS / iOS for Metal, or the `cuda` feature on Windows / Linux for CUDA)"
+             macOS / iOS for Metal, the `cuda` feature on Windows / Linux for CUDA, or the \
+             `vulkan` feature on Linux / Android / Windows for Vulkan)"
         ))),
     }
 }
@@ -937,6 +1117,172 @@ mod tests {
         kernels::gemm_f32(2, 2, 3, &a, &b, Some(&bias), &mut direct).unwrap();
 
         assert_eq!(via_compute, direct, "Compute::cpu gemm != direct kernel");
+    }
+
+    #[test]
+    fn cpu_mimi_rvq_f32_matches_direct_kernel_bit_for_bit() {
+        // The M3-06 seam contract: `Compute::cpu().mimi_rvq_f32(...)` must
+        // reproduce `vokra_ops::mimi_rvq_decode(...)` byte-identically, so a
+        // future consumer switching from the free function to the seam pays
+        // zero numeric cost. (Same guarantee `cpu_compute_matches_direct_kernel
+        // _bit_for_bit` gives for `gemm_f32`.)
+        let attrs = MimiRvqAttrs {
+            n_codebooks: 2,
+            codebook_size: 3,
+            d_model: 4,
+        };
+        // Codebook 0: rows [0..4], [4..8], [8..12].
+        let cb0 = CodebookTable::new(3, 4, (0..12).map(|i| i as f32).collect()).unwrap();
+        // Codebook 1: rows [100..104], [104..108], [108..112] — distinct so
+        // the fold across codebooks distinguishes them.
+        let cb1 = CodebookTable::new(3, 4, (100..112).map(|i| i as f32).collect()).unwrap();
+        let tables = vec![cb0, cb1];
+        // time=3, n_cb=2 → codes.len() = 6.
+        let codes = vec![0u32, 1, 2, 0, 1, 2];
+        let time = 3;
+
+        let via_compute = Compute::cpu()
+            .mimi_rvq_f32(&codes, time, &tables, &attrs)
+            .expect("cpu mimi_rvq_f32");
+        let direct =
+            mimi_rvq_decode(&codes, time, &tables, &attrs).expect("direct mimi_rvq_decode");
+        assert_eq!(
+            via_compute, direct,
+            "Compute::cpu().mimi_rvq_f32 must byte-match vokra_ops::mimi_rvq_decode",
+        );
+    }
+
+    #[test]
+    fn cpu_mimi_rvq_f32_propagates_input_error() {
+        // The seam does not wrap the kernel's `InvalidArgument` in anything —
+        // it propagates verbatim so callers can special-case shape / index
+        // mismatches without string-matching on a wrapped message.
+        let attrs = MimiRvqAttrs {
+            n_codebooks: 2,
+            codebook_size: 3,
+            d_model: 4,
+        };
+        let cb0 = CodebookTable::new(3, 4, vec![0.0; 12]).unwrap();
+        let cb1 = CodebookTable::new(3, 4, vec![0.0; 12]).unwrap();
+        let tables = vec![cb0, cb1];
+        // Out-of-range codebook index (silent-clamp is forbidden — FR-EX-08).
+        let codes = vec![0u32, /* out of range */ 42];
+        let err = Compute::cpu()
+            .mimi_rvq_f32(&codes, 1, &tables, &attrs)
+            .expect_err("out-of-range codebook index must be an explicit error");
+        assert!(
+            matches!(err, VokraError::InvalidArgument(_)),
+            "expected InvalidArgument, got {err:?}",
+        );
+    }
+
+    /// On a Metal build the `mimi_rvq_f32` Metal arm is an explicit
+    /// `UnsupportedOp` — no silent CPU fall back for the deferred M3-06 T14
+    /// MSL kernel (FR-EX-08). A consumer that bypasses the `for_backend`
+    /// coverage gate (e.g. by requesting an empty required set) still hits
+    /// this belt-and-braces defence at the method level.
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn metal_mimi_rvq_arm_is_unsupported_no_silent_fallback() {
+        // Build a Metal `Compute` with an empty required set (which the
+        // coverage gate accepts). If the Metal device is absent this skips
+        // — we cannot exercise the arm at all off a device.
+        let compute = match Compute::for_backend(BackendKind::Metal, &[]) {
+            Ok(c) => c,
+            Err(VokraError::BackendUnavailable(_)) => {
+                eprintln!("no Metal device; mimi_rvq_f32 Metal arm test skipped");
+                return;
+            }
+            Err(e) => panic!("unexpected Metal for_backend error: {e}"),
+        };
+        assert_eq!(compute.backend_name(), "metal");
+
+        // Any inputs are fine — the arm returns early with UnsupportedOp
+        // before touching the codes / tables (the M3-06 T14 kernel is
+        // deferred to the M3-09 mimi_bridge upgrade past stub).
+        let attrs = MimiRvqAttrs {
+            n_codebooks: 1,
+            codebook_size: 1,
+            d_model: 1,
+        };
+        let tables = vec![CodebookTable::new(1, 1, vec![0.0]).unwrap()];
+        let err = compute
+            .mimi_rvq_f32(&[0u32], 1, &tables, &attrs)
+            .expect_err("Metal arm of mimi_rvq_f32 must be UnsupportedOp");
+        assert!(
+            matches!(err, VokraError::UnsupportedOp(_)),
+            "expected UnsupportedOp, got {err:?}",
+        );
+    }
+
+    /// Off the Metal build (or off Apple), the coverage gate blocks
+    /// `for_backend(Metal, [MimiRvq])` at the `BackendUnavailable` layer
+    /// (Metal is not compiled in), so the `UnsupportedOp` from the coverage
+    /// gate on Metal builds and the `BackendUnavailable` on non-Metal builds
+    /// are both explicit — never a silent CPU substitute (FR-EX-08).
+    #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
+    #[test]
+    fn metal_mimi_rvq_off_metal_is_backend_unavailable() {
+        let err = match Compute::for_backend(BackendKind::Metal, &[HotOp::MimiRvq]) {
+            Ok(_) => panic!(
+                "Metal must fail explicitly when not compiled in — never a silent CPU substitute",
+            ),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, VokraError::BackendUnavailable(_)),
+            "expected BackendUnavailable, got {err:?}",
+        );
+    }
+
+    /// On a CUDA build the `mimi_rvq_f32` CUDA arm is an explicit
+    /// `UnsupportedOp` — no silent CPU fall back for the deferred M3-06 T15
+    /// NVRTC kernel (FR-EX-08). Exercised on the vast.ai RTX 4090
+    /// (M2-03-T25 style); here it skips if no CUDA loader is present.
+    #[cfg(all(feature = "cuda", any(unix, windows)))]
+    #[test]
+    fn cuda_mimi_rvq_arm_is_unsupported_no_silent_fallback() {
+        let compute = match Compute::for_backend(BackendKind::Cuda, &[]) {
+            Ok(c) => c,
+            Err(VokraError::BackendUnavailable(_)) => {
+                eprintln!("no CUDA loader; mimi_rvq_f32 CUDA arm test skipped");
+                return;
+            }
+            Err(e) => panic!("unexpected CUDA for_backend error: {e}"),
+        };
+        assert_eq!(compute.backend_name(), "cuda");
+
+        let attrs = MimiRvqAttrs {
+            n_codebooks: 1,
+            codebook_size: 1,
+            d_model: 1,
+        };
+        let tables = vec![CodebookTable::new(1, 1, vec![0.0]).unwrap()];
+        let err = compute
+            .mimi_rvq_f32(&[0u32], 1, &tables, &attrs)
+            .expect_err("CUDA arm of mimi_rvq_f32 must be UnsupportedOp");
+        assert!(
+            matches!(err, VokraError::UnsupportedOp(_)),
+            "expected UnsupportedOp, got {err:?}",
+        );
+    }
+
+    /// Off the CUDA build, `for_backend(Cuda, [MimiRvq])` is
+    /// `BackendUnavailable` (CUDA is not compiled in) — never a silent CPU
+    /// substitute (FR-EX-08).
+    #[cfg(not(all(feature = "cuda", any(unix, windows))))]
+    #[test]
+    fn cuda_mimi_rvq_off_cuda_is_backend_unavailable() {
+        let err = match Compute::for_backend(BackendKind::Cuda, &[HotOp::MimiRvq]) {
+            Ok(_) => panic!(
+                "CUDA must fail explicitly when not compiled in — never a silent CPU substitute",
+            ),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, VokraError::BackendUnavailable(_)),
+            "expected BackendUnavailable, got {err:?}",
+        );
     }
 
     #[test]
@@ -985,7 +1331,8 @@ mod tests {
 
     #[test]
     fn cpu_for_backend_covers_every_op() {
-        // The CPU backend covers the full hot-op set unconditionally.
+        // The CPU backend covers the full hot-op set unconditionally —
+        // including MimiRvq (M3-06 T04 kernel via `vokra_ops::mimi_rvq_decode`).
         let all = [
             HotOp::Gemm,
             HotOp::Gemv,
@@ -993,6 +1340,7 @@ mod tests {
             HotOp::LayerNorm,
             HotOp::Gelu,
             HotOp::Conv1d,
+            HotOp::MimiRvq,
         ];
         let c = Compute::for_backend(BackendKind::Cpu, &all).expect("cpu covers all");
         assert_eq!(c.backend_name(), "cpu");
@@ -1022,12 +1370,16 @@ mod tests {
     /// On a Metal build, coverage is enforced. As of Phase 4 the Metal backend
     /// covers the **whole** Whisper hot-op set, so `for_backend` never returns
     /// `UnsupportedOp` for it — it either builds (device present) or reports an
-    /// explicit device unavailability (no silent CPU fall back).
+    /// explicit device unavailability (no silent CPU fall back). `HotOp::MimiRvq`
+    /// is deliberately NOT covered (M3-06 T14 kernel deferred to M3-09
+    /// mimi_bridge upgrade), so a request that lists it fails with a coverage
+    /// `UnsupportedOp` — this is verified below as the FR-EX-08 gate.
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     #[test]
     fn metal_coverage_is_consistent() {
-        // Every hot op is covered (this pins `covered_by_metal` to the wired
-        // Metal method arms — all now dispatch to a `MetalContext` kernel).
+        // Every Whisper hot op is covered (this pins `covered_by_metal` to the
+        // wired Metal method arms — all now dispatch to a `MetalContext`
+        // kernel).
         for op in [
             HotOp::Gemm,
             HotOp::Gemv,
@@ -1041,6 +1393,23 @@ mod tests {
                 "{op:?} unexpectedly NOT Metal-covered"
             );
         }
+
+        // MimiRvq is NOT covered on Metal (M3-06 T14 MSL kernel deferred to
+        // M3-09 mimi_bridge follow-up). This is the honest state — if the
+        // kernel has just landed, flip `HotOp::covered_by_metal` for MimiRvq
+        // and update the negative assertion below.
+        assert!(
+            !HotOp::MimiRvq.covered_by_metal(),
+            "HotOp::MimiRvq unexpectedly Metal-covered — the M3-06 T14 MSL kernel is deferred; if \
+             it has just landed, flip `HotOp::covered_by_metal` for MimiRvq and update this test.",
+        );
+        // A request that lists MimiRvq therefore fails the Metal coverage
+        // gate with an explicit `UnsupportedOp` — never a silent CPU fall
+        // back (FR-EX-08).
+        assert!(matches!(
+            Compute::for_backend(BackendKind::Metal, &[HotOp::MimiRvq]),
+            Err(VokraError::UnsupportedOp(_)),
+        ));
 
         // Whisper's full set is therefore a covered request: it either builds
         // (device present) or fails with an explicit device error — never a
@@ -1066,13 +1435,16 @@ mod tests {
     /// CUDA backend covers the **whole** Whisper hot-op set, so `for_backend`
     /// never returns `UnsupportedOp` for it — it either builds (device present)
     /// or reports an explicit device unavailability (no silent CPU fall back,
-    /// FR-EX-08 / NFR-RL-06). The device branch is exercised on the vast.ai
-    /// RTX 4090 (M2-03-T25); here it skips.
+    /// FR-EX-08 / NFR-RL-06). `HotOp::MimiRvq` is deliberately NOT covered
+    /// (M3-06 T15 NVRTC kernel deferred to M3-09 mimi_bridge upgrade), so a
+    /// request that lists it fails with a coverage `UnsupportedOp` — this is
+    /// verified below as the FR-EX-08 gate. The device branch is exercised on
+    /// the vast.ai RTX 4090 (M2-03-T25); here it skips.
     #[cfg(all(feature = "cuda", any(unix, windows)))]
     #[test]
     fn cuda_coverage_is_consistent() {
-        // Every hot op is covered (this pins `covered_by_cuda` to the wired
-        // CUDA method arms — all now dispatch to a `CudaContext` kernel).
+        // Every Whisper hot op is covered (this pins `covered_by_cuda` to the
+        // wired CUDA method arms — all now dispatch to a `CudaContext` kernel).
         for op in [
             HotOp::Gemm,
             HotOp::Gemv,
@@ -1083,6 +1455,24 @@ mod tests {
         ] {
             assert!(op.covered_by_cuda(), "{op:?} unexpectedly NOT CUDA-covered");
         }
+
+        // MimiRvq is NOT covered on CUDA (M3-06 T15 NVRTC kernel deferred to
+        // M3-09 mimi_bridge follow-up). This is the honest state — if the
+        // kernel has just landed, flip `HotOp::covered_by_cuda` for MimiRvq
+        // and update the negative assertion below.
+        assert!(
+            !HotOp::MimiRvq.covered_by_cuda(),
+            "HotOp::MimiRvq unexpectedly CUDA-covered — the M3-06 T15 NVRTC kernel is deferred; \
+             if it has just landed, flip `HotOp::covered_by_cuda` for MimiRvq and update this \
+             test.",
+        );
+        // A request that lists MimiRvq therefore fails the CUDA coverage
+        // gate with an explicit `UnsupportedOp` — never a silent CPU fall
+        // back (FR-EX-08).
+        assert!(matches!(
+            Compute::for_backend(BackendKind::Cuda, &[HotOp::MimiRvq]),
+            Err(VokraError::UnsupportedOp(_)),
+        ));
 
         // Whisper's full set is therefore a covered request: it either builds
         // (device present) or fails with an explicit device error — never a
@@ -1104,5 +1494,109 @@ mod tests {
             }
             Err(e) => panic!("unexpected error for a fully-covered CUDA request: {e}"),
         }
+    }
+
+    /// M3-02 Vulkan seam contract in the foundation slice: **no hot op is
+    /// covered**, so any non-empty required set surfaces `UnsupportedOp` (never
+    /// silent CPU). This pins the lock-step between `covered_by_vulkan` and
+    /// `for_backend(Vulkan, …)` — as T14〜T22 land, this test tightens.
+    /// `HotOp::MimiRvq` is in the iteration too, but note MimiRvq is *not* on
+    /// the M3-02 T14〜T22 track — it needs the M3-06 GPU kernels' Vulkan
+    /// sibling (M4+), so the negative assertion for MimiRvq holds even after
+    /// T22 lands.
+    #[cfg(all(
+        feature = "vulkan",
+        any(target_os = "linux", target_os = "android", target_os = "windows")
+    ))]
+    #[test]
+    fn vulkan_coverage_is_consistent() {
+        // Foundation slice: `covered_by_vulkan` is `false` for every variant.
+        for op in [
+            HotOp::Gemm,
+            HotOp::Gemv,
+            HotOp::Softmax,
+            HotOp::LayerNorm,
+            HotOp::Gelu,
+            HotOp::Conv1d,
+            HotOp::MimiRvq,
+        ] {
+            assert!(
+                !op.covered_by_vulkan(),
+                "{op:?} unexpectedly covered by the M3-02 foundation-slice Vulkan backend \
+                 (kernels/precompiled/ still ships no .spv). If T14+ has just landed a kernel, \
+                 update `HotOp::covered_by_vulkan` to `true` for the covered variants and shrink \
+                 this test's negative-assertion set accordingly.",
+            );
+        }
+        // Every non-empty required set therefore fails coverage with an
+        // explicit `UnsupportedOp` — no silent CPU fall back (FR-EX-08).
+        for op in [
+            HotOp::Gemm,
+            HotOp::Gemv,
+            HotOp::Softmax,
+            HotOp::LayerNorm,
+            HotOp::Gelu,
+            HotOp::Conv1d,
+            HotOp::MimiRvq,
+        ] {
+            assert!(matches!(
+                Compute::for_backend(BackendKind::Vulkan, &[op]),
+                Err(VokraError::UnsupportedOp(_))
+            ));
+        }
+        // Empty required set is also explicit `UnsupportedOp` (no callable
+        // kernel exists to build a `Be::Vulkan` around today).
+        assert!(matches!(
+            Compute::for_backend(BackendKind::Vulkan, &[]),
+            Err(VokraError::UnsupportedOp(_))
+        ));
+    }
+
+    /// `make_backend(Vulkan)` returns a real `VulkanBackend` on a Vulkan-
+    /// capable Linux/Android/Windows build, or an explicit
+    /// `BackendUnavailable` off Vulkan — never a silent CPU substitute.
+    #[cfg(all(
+        feature = "vulkan",
+        any(target_os = "linux", target_os = "android", target_os = "windows")
+    ))]
+    #[test]
+    fn vulkan_make_backend_is_honest_on_any_host() {
+        match make_backend(BackendKind::Vulkan) {
+            Ok(b) => assert_eq!(b.name(), "vulkan"),
+            Err(VokraError::BackendUnavailable(msg)) => {
+                eprintln!("no Vulkan loader/device; make_backend(Vulkan) errored: {msg}");
+            }
+            Err(other) => panic!(
+                "expected BackendUnavailable off Vulkan, got {other} (never a silent CPU \
+                 substitute, FR-EX-08)"
+            ),
+        }
+    }
+
+    /// Default-feature build (no `--features vulkan`): `BackendKind::Vulkan`
+    /// falls to the target-agnostic error path — the compile-out is honest,
+    /// never a silent CPU substitute.
+    #[cfg(not(all(
+        feature = "vulkan",
+        any(target_os = "linux", target_os = "android", target_os = "windows")
+    )))]
+    #[test]
+    fn vulkan_not_compiled_in_is_explicit_backend_unavailable() {
+        // `for_backend` falls through to the catch-all `_ =>` arm — the
+        // error mentions the `vulkan` feature, so the caller knows exactly
+        // what to enable. `Compute` does not derive `Debug`, so unwrap the
+        // error manually instead of `expect_err`.
+        let err = match Compute::for_backend(BackendKind::Vulkan, &[HotOp::Gemm]) {
+            Ok(_) => panic!("Vulkan must fail explicitly when not compiled in"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, VokraError::BackendUnavailable(_)),
+            "expected BackendUnavailable, got {err:?}"
+        );
+        assert!(matches!(
+            make_backend(BackendKind::Vulkan),
+            Err(VokraError::BackendUnavailable(_))
+        ));
     }
 }

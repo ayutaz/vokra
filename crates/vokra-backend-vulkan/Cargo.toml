@@ -1,0 +1,45 @@
+[package]
+name = "vokra-backend-vulkan"
+description = "Vokra Vulkan backend (Linux / Android / Windows): raw Vulkan API FFI loaded at RUNTIME via dlopen / LoadLibrary — NO binding crate (no ash / vulkano / erupt / gpu-alloc) — with pre-compiled SPIR-V compute shaders (subgroup + cooperative-matrix, with subgroup-only fallback) and a device probe. Foundation slice of M3-02; the runtime bundles no Vulkan library and the workspace stays dependency-free (NFR-DS-02)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Zero external dependencies (NFR-DS-02): the only runtime dependency is the
+# first-party `vokra-core` (for the `Backend` trait / `OpKind` / `VokraError`).
+# The Vulkan loader (`libvulkan.so.1` / `vulkan-1.dll`) is NOT linked at build
+# time and NOT bundled: it is loaded at RUNTIME with dlopen / LoadLibrary
+# (declared inline in `unsafe extern` blocks — same technique the CUDA / mmap
+# crates use). NO `ash` / `vulkano` / `erupt` / `gpu-alloc` binding crate is
+# used, so Cargo.lock keeps only `vokra-*` crates (verified by
+# scripts/check-zero-deps.sh).
+#
+# The `vulkan` feature is provided so downstream crates (e.g. `vokra-models`)
+# can gate their Vulkan-backend routing consistently with the `metal` / `cuda`
+# features they already expose; the FFI code itself compiles when
+# `#[cfg(all(feature = "vulkan", any(target_os = "linux", target_os = "android",
+# target_os = "windows")))]`, so a default (`--features cpu`) build on ANY host
+# stays a stub (BackendUnavailable at runtime — FR-EX-08).
+[features]
+default = []
+# Opt-in for the raw Vulkan FFI. Even with this feature enabled, on non-Vulkan
+# targets (macOS / iOS / WASM) the crate falls back to explicit
+# `BackendUnavailable` stubs (no `libvulkan` on those platforms).
+vulkan = []
+
+[dependencies]
+vokra-core.workspace = true
+
+# Test-only differential oracle: the CPU backend's kernels are the reference the
+# Vulkan shaders are checked against (M3-02-T14 onwards). It is a first-party
+# `vokra-*` crate, so it does not perturb the zero-dependency invariant of the
+# root Cargo.lock. Vulkan parity tests themselves are device-gated (skip when no
+# Vulkan loader / device is present) and meant to run on a Linux + lavapipe CI
+# runner and, later, an Android arm64-v8a device (M3-18 owner run).
+[dev-dependencies]
+vokra-backend-cpu.workspace = true
+
+[lints]
+workspace = true

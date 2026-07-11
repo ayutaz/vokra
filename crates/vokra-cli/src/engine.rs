@@ -33,6 +33,39 @@ pub(crate) enum ModelTask {
     /// decode time into the measurement. Selected by `--task mel-frontend`
     /// when the loaded GGUF has `vokra.model.arch = "whisper"`.
     MelFrontend,
+    /// CosyVoice2 chunk-aware streaming synthetic bench (M3-09-T24 scaffold).
+    ///
+    /// Runs the CosyVoice2 chunk pipeline with **injected deterministic
+    /// closures** (zero velocity + constant-ones code closure) against the
+    /// M3-06 identity Mimi decoder fixture, so the RTF measurement path is
+    /// exercised without a real safetensors checkpoint. This is the
+    /// canned "cosyvoice2-synthetic" model kind the T24 spec pins as the
+    /// scaffold entry point: today it verifies the measurement harness
+    /// works; the real-checkpoint RTF < 1.0 hard-assert lands with the
+    /// T19 CUDA seam + a self-hosted CUDA runner (mirrors the M2-14
+    /// defer to a stable measurement lab).
+    ///
+    /// The bench-side RTF is measured over a 1 s target-frame budget: the
+    /// pipeline generates a chunk-aware audio stream from a fixed
+    /// deterministic seed and reports latency / RTF against a 1 s audio
+    /// window (24 kHz Mimi native rate). Selected by
+    /// `--task cosyvoice2-synthetic` — no `--model` required (analog to
+    /// `mel-frontend`).
+    ///
+    /// # `dead_code` posture (M3-09-T24 landing state)
+    ///
+    /// The variant is intentionally *never constructed* by the current
+    /// engine.rs — the standalone bench in `bench.rs` skips
+    /// [`load_session_with_backend`] entirely (arch dispatch is not yet
+    /// wired for `cosyvoice2`, T07/T08 follow-on). The variant is kept
+    /// because the exhaustive match arms in [`crate::run::main`] and
+    /// [`crate::bench::execute`] rely on it to surface an explicit
+    /// unimplemented signal if a future engine.rs change ever *does*
+    /// return it (defense in depth against a silent fall back — the
+    /// FR-EX-08 posture the whole CLI upholds). The dead-code allow
+    /// documents this state so a reviewer does not delete the arm.
+    #[allow(dead_code)]
+    Cosyvoice2Synthetic,
 }
 
 /// Optional caller-supplied hint that overrides the default task selection.
@@ -46,6 +79,14 @@ pub(crate) enum ModelTask {
 pub(crate) enum TaskHint {
     /// Force the log-mel front-end task on a Whisper GGUF.
     MelFrontend,
+    /// CosyVoice2 chunk-aware streaming synthetic bench (M3-09-T24 scaffold).
+    ///
+    /// Bypasses the GGUF load path — mirrors [`TaskHint::MelFrontend`]. The
+    /// pipeline uses the M3-06 identity Mimi decoder and deterministic
+    /// injected velocity / code closures, so the bench harness does not
+    /// need a real safetensors checkpoint to exercise the measurement API.
+    /// Selected by `--task cosyvoice2-synthetic`.
+    Cosyvoice2Synthetic,
 }
 
 /// GGUF metadata key holding the model architecture (written by `vokra-convert`).

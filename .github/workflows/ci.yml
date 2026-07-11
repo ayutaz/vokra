@@ -136,6 +136,77 @@ jobs:
         run: cargo clippy -p vokra-models -p vokra-cli --features ${{ matrix.feature }} --all-targets -- -D warnings
       - name: Test (--features ${{ matrix.feature }})
         run: cargo test -p vokra-models --features ${{ matrix.feature }}
+      # M3-01-T22: also run vokra-backend-cuda's own probe/coverage/parity tests
+      # on the CUDA arm (the crate has no `cuda` feature of its own — see
+      # `Cargo.toml` — so it compiles unconditionally and its device-gated tests
+      # skip cleanly on the ubuntu-latest runner without a GPU).
+      - name: Test backend crate (${{ matrix.feature }})
+        if: matrix.feature == 'cuda'
+        run: cargo test -p vokra-backend-cuda
+
+  # RISC-V RVV 1.0 cross-build (M3-13-T10, FR-BE-01, NFR-PT-01). The completion
+  # bar for M3-13 (milestones.md §7.2) is "RVV 1.0 target のクロスビルドが CI
+  # で継続検証 + RVV dispatch path の単体テスト通過" — this job satisfies the
+  # cross-build leg; the dispatch-path unit tests are exercised by the regular
+  # `test` matrix (they compile on every host and only the /proc/cpuinfo parser
+  # is riscv64-gated). GitHub-hosted runners have no RVV silicon and no
+  # qemu-user pre-installed, so we do not attempt to *execute* the riscv64
+  # binary here — the ADR (docs/adr/M3-13-riscv-rvv-1.0.md §d) explicitly scopes
+  # this WP to cross-build + host-executable differential tests; real
+  # SpacemiT K1 / Banana Pi BPI-F3 RTF measurement is an owner follow-up.
+  #
+  # `-p vokra-backend-cpu` is deliberately narrow: this is a library-only crate
+  # so `cargo build` produces an rlib and does not invoke the target linker
+  # (no cross-linker needed on the Ubuntu runner). Building the full workspace
+  # would need `riscv64-linux-gnu-gcc` in PATH and pulls in every downstream
+  # crate — orthogonal to the M3-13 completion condition. The zero-dep
+  # invariant (NFR-DS-02, root Cargo.lock unchanged) is enforced by the
+  # existing `license` job; adding a target does not alter dependencies.
+  riscv-cross-build:
+    name: riscv-cross-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv64gc-unknown-linux-gnu
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Cross-build vokra-backend-cpu (riscv64gc-unknown-linux-gnu)
+        # Baseline rv64gc target. RVV 1.0 instructions land only inside the
+        # `.option arch, +v` fences in `kernels::rvv::add` (see
+        # docs/adr/M3-13-riscv-rvv-1.0.md §e); the surrounding binary stays at
+        # rv64gc so the same artifact runs on RVV-less harts (probe returns
+        # `rvv_v = false` → dispatch falls back to scalar within the CPU
+        # backend, which is NOT the FR-EX-08 cross-backend silent-fallback rule).
+        run: cargo build --release --target riscv64gc-unknown-linux-gnu -p vokra-backend-cpu
+      - name: Clippy vokra-backend-cpu (riscv64gc)
+        # Deny warnings on the riscv64 configuration too — catches
+        # target-specific lint regressions in the `cfg(target_arch = "riscv64")`
+        # blocks (`features::detect_riscv_caps`, `kernels::rvv`).
+        run: cargo clippy --release --target riscv64gc-unknown-linux-gnu -p vokra-backend-cpu -- -D warnings
+      - name: Verify RVV instructions land in the emitted binary
+        # Belt-and-suspenders: `cargo build` succeeds even if `.option arch, +v`
+        # is silently ignored by the LLVM integrated assembler in some future
+        # regression, so we re-emit asm and grep for the four RVV mnemonics
+        # our kernel uses. Any drop-out here is a hard error, not a warning.
+        run: |
+          set -euo pipefail
+          cargo rustc --release --target riscv64gc-unknown-linux-gnu -p vokra-backend-cpu -- --emit=asm
+          ASM=$(find target/riscv64gc-unknown-linux-gnu/release/deps -name 'vokra_backend_cpu-*.s' | head -n 1)
+          test -n "$ASM"
+          for mnemonic in vsetvli vle32 vfadd vse32; do
+            if ! grep -q "$mnemonic" "$ASM"; then
+              echo "M3-13 regression: $mnemonic missing from riscv64gc asm ($ASM)" >&2
+              exit 1
+            fi
+          done
+          echo "M3-13 RVV kernel: emitted asm contains vsetvli / vle32 / vfadd / vse32." >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify root Cargo.lock unchanged
+        # NFR-DS-02: cross-building for riscv64 must not add any new crates to
+        # the root Cargo.lock (the target is std-only). Any diff here means a
+        # riscv64-only crate crept into vokra-backend-cpu — reject the PR.
+        run: git diff --exit-code Cargo.lock
 
   # iOS build scaffold (M2-02, NFR-RL-03 static-only, NFR-RL-05 JIT-free,
   # FR-EX-08 no silent fallback). Cross-compiles vokra-capi to the 3 Apple

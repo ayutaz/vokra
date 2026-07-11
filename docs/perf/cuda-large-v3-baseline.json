@@ -1,0 +1,28 @@
+{
+  "$schema": "vokra-perf-baseline-v1",
+  "wp": "M3-01",
+  "adr": "docs/adr/M3-01-cuda-complete.md",
+  "ticket_ids": ["M3-01-T14", "M3-01-T16"],
+  "model": "whisper-large-v3",
+  "audio": "tests/fixtures/audio/jfk-30s.wav",
+  "backend": "cuda",
+  "hardware": "RTX 4090 (SM 8.9, 24GB)",
+  "driver": "555.xx",
+  "cuda": "12.4",
+  "median_rtf": 0.1133,
+  "measured_at": "2026-07-07",
+  "measurement_source": "M2-14 vast.ai variance harness (N=10)",
+  "measurement_source_doc": "docs/m2-cuda-rtf-variance-2026-07-08.md",
+  "regression_threshold": 0.05,
+  "hard_ceiling": 0.10,
+  "gate_expression": "median_rtf > baseline * (1 + regression_threshold) || median_rtf > hard_ceiling",
+  "gate_status": "preparation",
+  "gate_status_note": "self-hosted runner not yet standing; workflow_dispatch + weekly cron only, not a PR-blocking required check (ADR M3-01 §2 (d))",
+  "single_shot_range_2026_07_07": [0.081, 0.115],
+  "notes": [
+    "single-shot vast.ai spot RTX 4090 RTF range 0.081–0.115 across independent probes — GPU individual variance + thermal + PCIe.",
+    "formal always-on gate promotion pending M2-14 self-hosted runner + M3-01 owner (依頼者) sign-off.",
+    "regression_threshold + hard_ceiling map to NFR-PF-13 (5%) + NFR-PF-04 (RTF < 0.1) respectively.",
+    "self-hosted runner primary target = RTX 4090 (SM 8.9). H100 (SM 9.0) is future scope; Ampere (SM 8.6) is a reference measurement only (ticket M3-01-T15)."
+  ]
+}

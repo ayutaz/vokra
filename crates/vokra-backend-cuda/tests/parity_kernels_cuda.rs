@@ -1341,17 +1341,32 @@ fn kv_cache_append_matches_host_project_concat() {
 // ---- M2-03 follow-up (c04): FlashAttention v2 causal parity vs decomposed ----
 
 /// FA v2 (`launch_flash_attn_v2`, T-follow-02/03) must match the decomposed
-/// `launch_attn_chain` (causal=`true`) elementwise within the NFR-QL-01 FP32
-/// bound `atol = 0.01` (with a `rtol = 1e-5` tie-break for large magnitudes).
+/// `launch_attn_chain` (`causal = true` with matching `q_offset`) elementwise
+/// within the NFR-QL-01 FP32 bound `atol = 0.01` (with a `rtol = 1e-5`
+/// tie-break for large magnitudes).
 ///
 /// This is the **primitive parity** step of the M2-03 RTF<0.1 follow-up plan
-/// (T-follow-04). Reference is the current CUDA decomposed path — the same
-/// oracle Metal / CPU parity uses — so it obeys the *internal-oracle* rule
-/// (no fabricated numbers, no PyTorch import at test time).
+/// (T-follow-04). Both arms live on the GPU:
+///   * Candidate: the fused Flash-Attention v2 kernel, dispatched through the
+///     public [`CudaContext::flash_attn_dev`] wrapper (which bypasses the
+///     internal `FA_V2_MIN_TQ = 16` gate — the sweep below stays at
+///     `t_q ≥ 16` anyway, so the FA v2 tile is never wasted).
+///   * Reference: the decomposed `2 + 7·n_head` causal chain, dispatched
+///     through the public [`CudaContext::attn_causal_dev`] wrapper — the
+///     SAME internal oracle Metal / CPU parity uses (no fabricated numbers,
+///     no PyTorch import at test time).
 ///
-/// The `t_kv` sweep covers **both regimes**:
-///   * decoder-max: 1 / 2 / 4 / 8 / 16 / 64 / **448** (Whisper `n_text_ctx`)
-///   * encoder-max: **1500** (Whisper `n_audio_ctx` for a 30 s clip)
+/// The `t_q` sweep — `[16, 24, 32, 64, 448, 1500]` — covers:
+///   * `16` — one full FA v2 query tile (`Br = 16`).
+///   * `24` / `32` — 2 tiles, exercising the ragged-tail branch (`br_eff`).
+///   * `64` — 4 tiles, still small enough that KV fits in a couple of
+///     `Bc = 64` iterations.
+///   * `448` — Whisper `n_text_ctx` (decoder-max full-prefix step).
+///   * `1500` — Whisper `n_audio_ctx` (encoder-max, 30 s audio).
+///
+/// Each shape uses `t_kv = t_q` (prefix-step semantics, `q_offset = 0`; row
+/// `i` attends keys `[0, i]` — the causal mask is meaningful for every row
+/// except the last).
 ///
 /// The RNG is `rand_vec` (xorshift, deterministic, seed 42) — the same
 /// zero-dep PRNG the rest of this file uses. The spec calls for
@@ -1363,14 +1378,6 @@ fn kv_cache_append_matches_host_project_concat() {
 /// Gated by the existing probe-skip macro: on a CUDA-less host (this M1 iMac)
 /// the test prints the skip line and returns green; the real parity is
 /// exercised on the **vast.ai RTX 4090** runner (M2-03-T25, T-follow-09).
-///
-/// NOTE: `launch_flash_attn_v2` and its public wrapper (`flash_attn_dev`) land
-/// in the earlier M2-03-followup chain steps (T-follow-02/03 = c02/c03). Once
-/// those are wired, replace the *candidate* `attn_dev` call marked
-/// `TODO(c04→c05)` with `flash_attn_dev(..., causal=true, q_offset=..)`. Until
-/// then this test acts as (a) the parity **scaffolding** for the future FA v2
-/// candidate and (b) a **structural** sanity check that the decomposed causal
-/// path itself is stable across the sweep of `t_kv` shapes we plan to cover.
 #[test]
 fn flash_attn_v2_causal_vs_decomposed_f32() {
     let ctx = ctx_or_skip!("flash_attn_v2_causal");
@@ -1379,30 +1386,40 @@ fn flash_attn_v2_causal_vs_decomposed_f32() {
     // land at 64). Fix `d_head = 64` and pick `n_head = 4` → `d = 256` so the
     // sweep stays within a single-GPU shared-memory budget while still
     // exercising the multi-head dispatch shape FA v2 will use in production.
+    // `flash_attn_dev` also validates `d/n_head == 64` — this shape is the
+    // only one it accepts (kernel's tile budget is `d_head`-fixed).
     let n_head = 4usize;
     let d_head = 64usize;
     let d = n_head * d_head;
     let scale = (d_head as f32).powf(-0.5);
 
     // The seed-42 contract (spec) — every shape derives its own sub-seed from
-    // this base so the RNG streams don't collide across `t_kv` cases.
+    // this base so the RNG streams don't collide across `t_q` cases.
     const SEED: u64 = 42;
-    // Decoder-max (Whisper `n_text_ctx = 448`) + encoder-max (`n_audio_ctx =
-    // 1500`) + small shapes that exercise the FA v2 tile-tail path.
-    let t_kv_sweep = [1usize, 2, 4, 8, 16, 64, 448, 1500];
+    // FA v2 tile is `Br = 16`; the sweep stays at `t_q ≥ 16` so the kernel
+    // is dispatched with a non-wasted tile (task M2-03-followup-rtf T04).
+    //   * 16 — 1 query tile (br_eff == Br).
+    //   * 24 / 32 — 2 tiles (24 exercises br_eff == 8 ragged tail).
+    //   * 64 — 4 tiles.
+    //   * 448 — Whisper `n_text_ctx` (decoder-max prefix step).
+    //   * 1500 — Whisper `n_audio_ctx` (encoder-max, 30 s audio window).
+    let t_q_sweep = [16usize, 24, 32, 64, 448, 1500];
     let mut worst_abs = 0.0f32;
     let mut worst_rel = 0.0f32;
 
-    for &t_kv in &t_kv_sweep {
-        // Steady-state decoder step: `t_q = 1`, `q_offset = t_kv - 1` — this
-        // is exactly the shape FA v2 will hit on every decoded token.
-        let t_q = 1usize;
-        let q_offset = t_kv - 1;
+    for &t_q in &t_q_sweep {
+        // Prefix step: `t_kv = t_q`, `q_offset = 0` — row `i` attends keys
+        // `[0, i]`. This is Whisper's decoder prefix decode (all `t_q` queries
+        // seeded at once) and the tightest causal shape the FA v2 kernel
+        // needs to get right (every row's mask is meaningful except row
+        // `t_q - 1`).
+        let t_kv = t_q;
+        let q_offset = 0usize;
 
-        // Deterministic sub-seeds: mix `SEED` and `t_kv` so each shape gets
+        // Deterministic sub-seeds: mix `SEED` and `t_q` so each shape gets
         // its own reproducible input tensors (the same recipe existing tests
         // in this file use for their per-shape sub-seeds).
-        let s = SEED ^ ((t_kv as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let s = SEED ^ ((t_q as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
         let xq = rand_vec(s ^ 0x01, t_q * d);
         let qw = rand_vec(s ^ 0x02, d * d);
         let kk = rand_vec(s ^ 0x03, t_kv * d);
@@ -1423,15 +1440,144 @@ fn flash_attn_v2_causal_vs_decomposed_f32() {
 
         // ---- (a) Reference: decomposed `launch_attn_chain` (causal=true) ----
         //
-        // Reached through the public `attn_dev` wrapper. `attn_dev` fixes
-        // `causal = false`, but for `t_q == 1` with `q_offset == t_kv - 1`
-        // the causal mask is a no-op (row 0 attends every key `0..=t_kv-1`),
-        // so the non-causal decomposed chain matches the causal chain
-        // *bit-identically*. This preserves the "reference = current CUDA
-        // decomposed path" internal-oracle contract of T-follow-04.
+        // The public [`CudaContext::attn_causal_dev`] wrapper forces
+        // `use_flash_attn: false`, so this is the byte-for-byte
+        // `2 + 7·n_head` chain (M2-03 parity oracle). Same math the CPU
+        // sees — this preserves the internal-oracle rule (no PyTorch at
+        // test time, no fabricated numbers).
+        let mut ref_dev = ctx.alloc_dev(t_q * d).unwrap();
+        ctx.attn_causal_dev(
+            t_q,
+            t_kv,
+            d,
+            n_head,
+            &xqt,
+            &qwt,
+            Some(&qbt),
+            &kt,
+            &vt,
+            &owt,
+            Some(&obt),
+            scale,
+            q_offset,
+            &mut ref_dev,
+        )
+        .expect("reference decomposed attn_causal_dev");
+        let mut reference = vec![0.0f32; t_q * d];
+        ctx.download(&ref_dev, &mut reference).unwrap();
+
+        // ---- (b) Candidate: FA v2 fused kernel (causal=true) ----------------
         //
-        // Once T-follow-03 lands, this reference call stays *unchanged*: the
-        // FA v2 candidate below replaces its sibling.
+        // The public [`CudaContext::flash_attn_dev`] wrapper unconditionally
+        // dispatches `launch_flash_attn_v2`, bypassing the internal
+        // `FA_V2_MIN_TQ = 16` runtime gate (the sweep stays at `t_q ≥ 16`
+        // anyway so no tile is wasted — the bypass matters only for
+        // testing / diagnostic entrypoints).
+        let mut cand_dev = ctx.alloc_dev(t_q * d).unwrap();
+        ctx.flash_attn_dev(
+            t_q,
+            t_kv,
+            d,
+            n_head,
+            &xqt,
+            &qwt,
+            Some(&qbt),
+            &kt,
+            &vt,
+            &owt,
+            Some(&obt),
+            scale,
+            /* causal = */ true,
+            q_offset,
+            &mut cand_dev,
+        )
+        .expect("candidate FA v2 flash_attn_dev");
+        let mut candidate = vec![0.0f32; t_q * d];
+        ctx.download(&cand_dev, &mut candidate).unwrap();
+
+        // ---- (c) Parity: elementwise |Δ| ≤ max(atol, rtol · |ref|) ----------
+        //
+        // NFR-QL-01 FP32 bound `atol = 0.01`; `rtol = 1e-5` per spec covers
+        // the large-magnitude out-proj output range without inflating the
+        // pass condition on small values.
+        const RTOL: f32 = 1e-5;
+        for (i, (&r, &c)) in reference.iter().zip(&candidate).enumerate() {
+            let abs = (r - c).abs();
+            let tol = ATOL.max(RTOL * r.abs());
+            assert!(
+                abs <= tol,
+                "flash_attn_v2 causal candidate diverges at t_q={t_q}, i={i}: |ref-cand| = {abs:.3e} > tol {tol:.3e} (ref={r:.4}, cand={c:.4})"
+            );
+            worst_abs = worst_abs.max(abs);
+            worst_rel = worst_rel.max(if r.abs() > 0.0 { abs / r.abs() } else { 0.0 });
+        }
+    }
+
+    eprintln!(
+        "CUDA flash_attn_v2 causal vs decomposed: worst |Δ| = {worst_abs:.3e} (atol {ATOL}), worst rel = {worst_rel:.3e} (rtol 1e-5) over t_q ∈ {{16,24,32,64,448,1500}} (t_kv=t_q, q_offset=0)"
+    );
+}
+
+/// Non-causal companion of [`flash_attn_v2_causal_vs_decomposed_f32`]: the FA
+/// v2 kernel's `causal = false` branch must match the decomposed non-causal
+/// chain ([`CudaContext::attn_dev`]) elementwise within the same FP32 bound
+/// (NFR-QL-01 `atol = 0.01`, `rtol = 1e-5`). Same sweep as the causal test,
+/// but `q_offset` is unused and every row attends every key.
+///
+/// This is not redundant with the causal test — it exercises the FA v2
+/// kernel's dominant fast path (cross-attention: the encoder-side attention
+/// [`CudaDecodeSession`] runs on every decoded token) with zero masked
+/// positions, so any divergence between the reference and the candidate is
+/// pure tile-arithmetic drift (no interaction with the `-INFINITY` mask
+/// write inside the S_tile). The causal test above covers the mask
+/// interaction; together they gate the full FA v2 kernel surface.
+///
+/// Device-gated: skips on this M1 iMac, runs on vast.ai RTX 4090.
+#[test]
+fn flash_attn_v2_noncausal_vs_decomposed_f32() {
+    let ctx = ctx_or_skip!("flash_attn_v2_noncausal");
+
+    let n_head = 4usize;
+    let d_head = 64usize;
+    let d = n_head * d_head;
+    let scale = (d_head as f32).powf(-0.5);
+
+    const SEED: u64 = 42;
+    // Same `t_q ≥ 16` sweep as the causal test — cross-attention shapes in
+    // production are also `t_q ≥ 1` (the encoder-max case `t_q = 1500` is
+    // representative of the encoder self-attention Whisper does).
+    let t_q_sweep = [16usize, 24, 32, 64, 448, 1500];
+    let mut worst_abs = 0.0f32;
+    let mut worst_rel = 0.0f32;
+
+    for &t_q in &t_q_sweep {
+        // Non-causal parity: match `t_kv = t_q` so the shapes are identical
+        // to the causal test — same allocations, same launches, only the
+        // `causal` flag toggles between the two tests.
+        let t_kv = t_q;
+
+        // Sub-seed distinct from the causal test's stream so we exercise a
+        // different input distribution (guards against a lucky-input regression).
+        let s = SEED ^ 0xBEEF ^ ((t_q as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let xq = rand_vec(s ^ 0x01, t_q * d);
+        let qw = rand_vec(s ^ 0x02, d * d);
+        let kk = rand_vec(s ^ 0x03, t_kv * d);
+        let vv = rand_vec(s ^ 0x04, t_kv * d);
+        let ow = rand_vec(s ^ 0x05, d * d);
+        let qb = rand_vec(s ^ 0x06, d);
+        let ob = rand_vec(s ^ 0x07, d);
+
+        let xqt = ctx.upload(&xq).unwrap();
+        let qwt = ctx.upload(&qw).unwrap();
+        let kt = ctx.upload(&kk).unwrap();
+        let vt = ctx.upload(&vv).unwrap();
+        let owt = ctx.upload(&ow).unwrap();
+        let qbt = ctx.upload(&qb).unwrap();
+        let obt = ctx.upload(&ob).unwrap();
+
+        // Reference: decomposed non-causal (`attn_dev`). Same math the M2-03
+        // parity oracle uses — the byte-for-byte `2 + 7·n_head` chain with
+        // the plain `vokra_softmax_f32` (no causal mask).
         let mut ref_dev = ctx.alloc_dev(t_q * d).unwrap();
         ctx.attn_dev(
             t_q,
@@ -1451,22 +1597,12 @@ fn flash_attn_v2_causal_vs_decomposed_f32() {
         .expect("reference decomposed attn_dev");
         let mut reference = vec![0.0f32; t_q * d];
         ctx.download(&ref_dev, &mut reference).unwrap();
-        // `q_offset` is captured for the T-follow-03 candidate call — mark it
-        // used until the FA v2 wrapper lands so clippy stays happy.
-        let _ = q_offset;
 
-        // ---- (b) Candidate: FA v2 fused kernel (T-follow-02/03) --------------
-        //
-        // TODO(c04→c05): swap the placeholder `attn_dev` call for
-        // `ctx.flash_attn_dev(t_q, t_kv, d, n_head, &xqt, &qwt, Some(&qbt),
-        //                     &kt, &vt, &owt, Some(&obt), scale,
-        //                     /*causal=*/ true, q_offset, &mut cand_dev)`
-        // once T-follow-03 lands the public wrapper. Until then the candidate
-        // is the same decomposed chain as the reference, so the assertion
-        // below trivially passes and the shape / dtype / RNG / sweep contract
-        // is captured for the future FA v2 differential.
+        // Candidate: FA v2 non-causal. `q_offset = 0` is unused when
+        // `causal = false` (the kernel branches on `causal` before reading
+        // `q_offset`), but pass it as `0` for explicit intent.
         let mut cand_dev = ctx.alloc_dev(t_q * d).unwrap();
-        ctx.attn_dev(
+        ctx.flash_attn_dev(
             t_q,
             t_kv,
             d,
@@ -1479,24 +1615,21 @@ fn flash_attn_v2_causal_vs_decomposed_f32() {
             &owt,
             Some(&obt),
             scale,
+            /* causal = */ false,
+            /* q_offset (ignored) = */ 0,
             &mut cand_dev,
         )
-        .expect("candidate FA v2 (placeholder until T-follow-03 lands)");
+        .expect("candidate FA v2 flash_attn_dev (non-causal)");
         let mut candidate = vec![0.0f32; t_q * d];
         ctx.download(&cand_dev, &mut candidate).unwrap();
 
-        // ---- (c) Parity: elementwise |Δ| ≤ max(atol, rtol · |ref|) ----------
-        //
-        // NFR-QL-01 FP32 bound `atol = 0.01`; `rtol = 1e-5` per spec covers
-        // the large-magnitude out-proj output range without inflating the
-        // pass condition on small values.
         const RTOL: f32 = 1e-5;
         for (i, (&r, &c)) in reference.iter().zip(&candidate).enumerate() {
             let abs = (r - c).abs();
             let tol = ATOL.max(RTOL * r.abs());
             assert!(
                 abs <= tol,
-                "flash_attn_v2 causal candidate diverges at t_kv={t_kv}, i={i}: |ref-cand| = {abs:.3e} > tol {tol:.3e} (ref={r:.4}, cand={c:.4})"
+                "flash_attn_v2 non-causal candidate diverges at t_q={t_q}, i={i}: |ref-cand| = {abs:.3e} > tol {tol:.3e} (ref={r:.4}, cand={c:.4})"
             );
             worst_abs = worst_abs.max(abs);
             worst_rel = worst_rel.max(if r.abs() > 0.0 { abs / r.abs() } else { 0.0 });
@@ -1504,7 +1637,84 @@ fn flash_attn_v2_causal_vs_decomposed_f32() {
     }
 
     eprintln!(
-        "CUDA flash_attn_v2 causal vs decomposed: worst |Δ| = {worst_abs:.3e} (atol {ATOL}), worst rel = {worst_rel:.3e} (rtol 1e-5) over t_kv ∈ {{1,2,4,8,16,64,448,1500}}"
+        "CUDA flash_attn_v2 non-causal vs decomposed: worst |Δ| = {worst_abs:.3e} (atol {ATOL}), worst rel = {worst_rel:.3e} (rtol 1e-5) over t_q ∈ {{16,24,32,64,448,1500}} (t_kv=t_q)"
+    );
+}
+
+/// Validation guards on the public [`CudaContext::flash_attn_dev`] wrapper —
+/// the FA v2 kernel's tile budget is hard-tuned for Whisper's `d_head = 64`,
+/// and the causal contract requires the mask window fits inside `t_kv`. This
+/// test validates both guards fire *before* any device launch, so a caller
+/// on a non-Whisper shape or an off-by-one causal window gets an explicit
+/// [`VokraError::InvalidArgument`] (FR-EX-08) instead of a silent
+/// no-op / crash inside the kernel.
+///
+/// Device-gated (needs a `CudaContext` even to allocate the input tensors),
+/// so this skips on the M1 iMac. Runs on vast.ai RTX 4090.
+#[test]
+fn flash_attn_dev_input_validation() {
+    let ctx = ctx_or_skip!("flash_attn_dev validation");
+
+    let n_head = 4usize;
+    let d_head = 64usize;
+    let d = n_head * d_head;
+    let scale = (d_head as f32).powf(-0.5);
+    let t_q = 16usize;
+    let t_kv = 16usize;
+    let xq = ctx.upload(&rand_vec(1, t_q * d)).unwrap();
+    let qw = ctx.upload(&rand_vec(2, d * d)).unwrap();
+    let k = ctx.upload(&rand_vec(3, t_kv * d)).unwrap();
+    let v = ctx.upload(&rand_vec(4, t_kv * d)).unwrap();
+    let ow = ctx.upload(&rand_vec(5, d * d)).unwrap();
+    let mut out = ctx.alloc_dev(t_q * d).unwrap();
+
+    // ---- Guard 1: d_head != 64 must reject (kernel's tile budget is
+    // d_head-fixed at compile time). Try n_head = 2 → d_head = 128.
+    let n_head_bad = 2usize;
+    let res_dhead = ctx.flash_attn_dev(
+        t_q, t_kv, d, n_head_bad, &xq, &qw, None, &k, &v, &ow, None, scale, false, 0, &mut out,
+    );
+    match res_dhead {
+        Err(vokra_core::VokraError::InvalidArgument(msg)) => {
+            assert!(
+                msg.contains("d/n_head") && msg.contains("64"),
+                "expected d_head guard message, got: {msg}"
+            );
+        }
+        other => panic!("expected InvalidArgument on d_head != 64, got: {other:?}"),
+    }
+
+    // ---- Guard 2: causal q_offset + t_q > t_kv must reject (row t_q-1 would
+    // attend past the K/V window).
+    let res_qoff = ctx.flash_attn_dev(
+        t_q, t_kv, d, n_head, &xq, &qw, None, &k, &v, &ow, None, scale, /* causal = */ true,
+        /* q_offset = */ 1, // 1 + 16 = 17 > t_kv=16
+        &mut out,
+    );
+    match res_qoff {
+        Err(vokra_core::VokraError::InvalidArgument(msg)) => {
+            assert!(
+                msg.contains("q_offset") && msg.contains("t_q"),
+                "expected q_offset guard message, got: {msg}"
+            );
+        }
+        other => panic!("expected InvalidArgument on q_offset + t_q > t_kv, got: {other:?}"),
+    }
+
+    // ---- Guard 3: causal with q_offset = 0 and t_q == t_kv must succeed
+    // (mask window is exactly t_kv, row t_q-1 attends every key).
+    let res_ok = ctx.flash_attn_dev(
+        t_q, t_kv, d, n_head, &xq, &qw, None, &k, &v, &ow, None, scale, /* causal = */ true,
+        /* q_offset = */ 0, // 0 + 16 = 16 == t_kv=16, OK
+        &mut out,
+    );
+    assert!(
+        res_ok.is_ok(),
+        "expected flash_attn_dev to accept q_offset + t_q == t_kv, got: {res_ok:?}"
+    );
+
+    eprintln!(
+        "CUDA flash_attn_dev guards: d_head != 64 rejected, causal q_offset overflow rejected, boundary q_offset + t_q == t_kv accepted"
     );
 }
 
@@ -1831,4 +2041,238 @@ fn session_reuse_bit_identical() {
     eprintln!(
         "CUDA session reset() reuse: (a) fresh-per-run vs (b) reset()-between-runs are bit-identical over 2 steps × 2 replays (max|Δ| = 0.0)"
     );
+}
+
+// ---- M3-01-T11 / T19: long-form decoder session reuse ----------------------
+
+/// M3-01-T11 (long-form decoder session reuse) + T19 (session_reuse_bit_identical
+/// extension) — exercise the KV cache reset contract over the fixture's full
+/// `n_text_ctx` window. The M2-03 test above proves 2 steps × 2 replays; this
+/// test pushes to `n_text_ctx` steps (max the fixture allows without changing
+/// the resident KV cache shape), catching a leak that only shows up after
+/// several rows of the resident self-KV have been written and then re-cleared
+/// by `reset()`.
+///
+/// Positioning vs the M3-01 ticket: the ticket text asks for 60 s / 120 s
+/// long-form audio (~200 / ~400 steps at 25 tok/s). The fixture's
+/// `n_text_ctx = 8` is deliberately small (M2-03 land — keeps the parity
+/// contract tight and CI runs fast). Extending it to 8 fills the whole
+/// resident KV cache without shape churn; **the 60 / 120 s numbers in the
+/// ticket require the vast.ai / self-hosted runner test using a real
+/// whisper-large-v3 GGUF**, which is out of the CI scope. This test is the
+/// structural sibling that lives on the vast.ai path via the same
+/// `ctx_or_skip!` gate.
+#[test]
+fn session_reuse_bit_identical_long_form() {
+    let _probe = ctx_or_skip!("session reuse long-form");
+    drop(_probe);
+
+    let fix = DecoderFixture::build();
+    // Fill the whole n_text_ctx window (8 steps). Each step uses one of the
+    // two step embeddings the fixture publishes, alternating deterministically
+    // so the KV cache holds a mix — the same content on both paths so any
+    // divergence is a reset() leak, not an input asymmetry.
+    let n_steps = fix.n_text_ctx;
+    let step_seq: Vec<&[f32]> = (0..n_steps)
+        .map(|i| {
+            if i % 2 == 0 {
+                fix.step0_embedded.as_slice()
+            } else {
+                fix.step1_embedded.as_slice()
+            }
+        })
+        .collect();
+
+    // (a) Fresh sessions per replay — build → run all n_steps → collect
+    // last-step logits — twice (should be internally bit-identical, the
+    // fixture is deterministic).
+    let run_a = || -> Vec<f32> {
+        let mut s = fix.new_session().expect("(a) build session");
+        for (pos, emb) in step_seq.iter().enumerate() {
+            s.step(emb, 1, pos)
+                .unwrap_or_else(|e| panic!("(a) step pos {pos}: {e}"));
+        }
+        assert_eq!(s.positions(), n_steps, "(a) pos == n_steps");
+        s.all_logits().to_vec()
+    };
+    let a_run1 = run_a();
+    let a_run2 = run_a();
+    assert_eq!(
+        max_abs_diff(&a_run1, &a_run2),
+        0.0,
+        "(a) two independent long-form runs must be bit-identical (fixture is deterministic)"
+    );
+
+    // (b) One session, reset() between the two replays.
+    let mut s = fix.new_session().expect("(b) build session");
+    for (pos, emb) in step_seq.iter().enumerate() {
+        s.step(emb, 1, pos)
+            .unwrap_or_else(|e| panic!("(b) run 1 step pos {pos}: {e}"));
+    }
+    let b_run1 = s.all_logits().to_vec();
+    assert_eq!(s.positions(), n_steps, "(b) pos == n_steps after run 1");
+
+    s.reset();
+    assert_eq!(s.positions(), 0, "(b) reset() clears pos to 0");
+    assert!(s.last_logits().is_empty(), "(b) reset() clears last_t");
+
+    for (pos, emb) in step_seq.iter().enumerate() {
+        s.step(emb, 1, pos)
+            .unwrap_or_else(|e| panic!("(b) run 2 step pos {pos}: {e}"));
+    }
+    let b_run2 = s.all_logits().to_vec();
+    assert_eq!(s.positions(), n_steps, "(b) pos == n_steps after run 2");
+
+    // Long-form contract: reset() must fully clear the resident self-KV
+    // (n_text_ctx rows worth) + the pos clock + last-token logits scratch.
+    // Any residual state would surface as a non-zero Δ on the second replay.
+    let d_a_vs_b_run1 = max_abs_diff(&a_run1, &b_run1);
+    let d_a_vs_b_run2 = max_abs_diff(&a_run2, &b_run2);
+    let d_b_reset = max_abs_diff(&b_run1, &b_run2);
+    assert_eq!(
+        d_a_vs_b_run1, 0.0,
+        "(a run 1) vs (b run 1) long-form must be bit-identical (Δ={d_a_vs_b_run1:.3e})"
+    );
+    assert_eq!(
+        d_a_vs_b_run2, 0.0,
+        "(a run 2) vs (b run 2 after reset) long-form must be bit-identical (Δ={d_a_vs_b_run2:.3e})"
+    );
+    assert_eq!(
+        d_b_reset, 0.0,
+        "(b) reset() long-form replay must reproduce first replay bit-identically (Δ={d_b_reset:.3e})"
+    );
+
+    eprintln!(
+        "CUDA long-form session reuse: {n_steps} steps × 2 replays are bit-identical (fresh-per-run vs reset()-between-runs, max|Δ| = 0.0). Fixture: n_text_ctx = {n_steps}."
+    );
+}
+
+// =====================================================================
+// M3-04 fused KV-cache dequant + GEMV parity
+// =====================================================================
+//
+// The three CUDA kernels (`vokra_dequant_gemv_q{4,5,8}_0_f32`) are the GPU
+// implementation of the [`vokra_core::KvQuantDequantGemvOps`] seam. Their CPU
+// differential oracle is
+// [`vokra_core::kv_quant::dequant_gemm::dequant_gemv_scalar`] — a scalar
+// row-major `y = A · x` GEMV with per-block dequant in the reduction. Because
+// both paths consume the identical on-wire byte layout produced by
+// [`vokra_core::kv_quant::dequant_gemm::pack_matrix_to_bytes`], the parity is
+// exact up to FP32 GEMV rounding; NFR-QL-01 pins the ceiling to `atol = 0.01`
+// but for the small shapes we exercise here the observed drift is well under
+// `atol = 1e-4`.
+
+/// Shape parameters covering the two attention-head widths the current model
+/// zoo actually uses: Whisper `d_head = 64` (2 blocks / row) and Kokoro
+/// `d_head = 128` (4 blocks / row). The `1 × 1` and `1 × 8` shapes stress the
+/// tail-guard branch of the grid launch.
+const M3_04_SHAPES: &[(usize, usize)] = &[
+    (1, 1),
+    (1, 8),
+    (2, 2),
+    (4, 2),
+    (16, 2),
+    (32, 4),
+    (128, 2),
+    (256, 4),
+];
+
+#[test]
+fn dequant_gemv_cuda_matches_cpu_q8_0() {
+    let ctx = ctx_or_skip!("dequant_gemv Q8_0");
+    dequant_gemv_parity(&ctx, vokra_core::KvQuant::Q8_0);
+}
+
+#[test]
+fn dequant_gemv_cuda_matches_cpu_q5_0() {
+    let ctx = ctx_or_skip!("dequant_gemv Q5_0");
+    dequant_gemv_parity(&ctx, vokra_core::KvQuant::Q5_0);
+}
+
+#[test]
+fn dequant_gemv_cuda_matches_cpu_q4_0() {
+    let ctx = ctx_or_skip!("dequant_gemv Q4_0");
+    dequant_gemv_parity(&ctx, vokra_core::KvQuant::Q4_0);
+}
+
+fn dequant_gemv_parity(ctx: &CudaContext, mode: vokra_core::KvQuant) {
+    let mut worst = 0.0f32;
+    for &(n_rows, n_bpr) in M3_04_SHAPES {
+        let per_row_len = n_bpr * 32;
+        // Deterministic FP32 matrix + x vector.
+        let a = rand_vec(0xD3 ^ ((n_rows * 131 + n_bpr) as u64), n_rows * per_row_len);
+        let x = rand_vec(0xE5 ^ (per_row_len as u64), per_row_len);
+
+        // Pack the matrix into on-wire bytes using the CPU packer — the exact
+        // same byte payload feeds the GPU kernel and the CPU differential
+        // oracle. Bit-identical bytes = bit-identical dequant → any difference
+        // is FP32 GEMV rounding only.
+        let bytes =
+            vokra_core::kv_quant::dequant_gemm::pack_matrix_to_bytes(mode, &a, n_rows, n_bpr)
+                .expect("pack");
+
+        // CPU oracle.
+        let cpu_y = vokra_core::kv_quant::dequant_gemm::dequant_gemv_scalar(
+            mode, &bytes, n_rows, n_bpr, &x,
+        )
+        .expect("cpu dequant_gemv_scalar");
+
+        // GPU kernel through the direct method, then the trait entry point;
+        // both must produce byte-identical outputs (same launcher).
+        let gpu_direct = ctx
+            .dequant_gemv_f32(mode, &bytes, n_rows, n_bpr, &x)
+            .expect("cuda dequant_gemv_f32 (direct)");
+        let gpu_trait = {
+            use vokra_core::KvQuantDequantGemvOps;
+            ctx.fused_dequant_gemv(mode, &bytes, n_rows, n_bpr, &x)
+                .expect("cuda fused_dequant_gemv (trait)")
+        };
+        assert_eq!(
+            gpu_direct, gpu_trait,
+            "trait and direct entry points must be identical for {mode:?}"
+        );
+
+        let d = max_abs_diff(&gpu_direct, &cpu_y);
+        eprintln!("dequant_gemv {mode:?} n_rows={n_rows:<4} n_bpr={n_bpr:<3} max|Δ|={d:.3e}");
+        // FP32 GEMV rounding ceiling on this shape; loose vs the tight
+        // ATOL=0.01 for the raw kernels above, but the CPU oracle is bit-for-bit
+        // the same scalar reduction so any drift is only FP32 non-associativity.
+        assert!(
+            d <= 1e-4,
+            "{mode:?} n_rows={n_rows} n_bpr={n_bpr}: {d} > 1e-4 (fused kernel drift too large)"
+        );
+        worst = worst.max(d);
+    }
+    eprintln!("CUDA fused dequant_gemv {mode:?} vs CPU: global max|Δ| = {worst:.3e} (bound 1e-4)");
+}
+
+#[test]
+fn dequant_gemv_cuda_rejects_fp32_mode() {
+    let ctx = ctx_or_skip!("dequant_gemv Fp32 rejection");
+    // A well-formed byte payload for Q8_0 shape, but with mode=Fp32 — must
+    // surface as an explicit error (never a silent GPU fallback, FR-EX-08).
+    let bytes = vec![0u8; 4 * 2 * 34];
+    let x = vec![0.0f32; 64];
+    let err = ctx
+        .dequant_gemv_f32(vokra_core::KvQuant::Fp32, &bytes, 4, 2, &x)
+        .unwrap_err();
+    match err {
+        vokra_core::VokraError::InvalidArgument(msg) => {
+            assert!(msg.contains("Fp32"), "unexpected message: {msg}");
+        }
+        other => panic!("expected InvalidArgument, got {other:?}"),
+    }
+}
+
+#[test]
+fn dequant_gemv_cuda_rejects_shape_mismatch() {
+    let ctx = ctx_or_skip!("dequant_gemv shape mismatch");
+    // Q8_0 with 4 rows × 2 bpr expects 272 bytes; feed 100 to trigger the
+    // shared validate.
+    let bytes = vec![0u8; 100];
+    let x = vec![0.0f32; 64];
+    let err = ctx
+        .dequant_gemv_f32(vokra_core::KvQuant::Q8_0, &bytes, 4, 2, &x)
+        .unwrap_err();
+    assert!(matches!(err, vokra_core::VokraError::InvalidArgument(_)));
 }

@@ -19,11 +19,16 @@
 //! [`metrics::AudioMosMetric`] trait reserves their slot so they drop in later
 //! without changing any caller of [`metrics::Metric`].
 
+pub mod cosyvoice2;
 pub mod degradation;
 pub mod manifest;
 pub mod metrics;
 pub mod wav;
 
+pub use cosyvoice2::{
+    COSYVOICE2_MEL_LOSS_THRESHOLD, COSYVOICE2_SAMPLE_RATE, check_cosyvoice2_degradation,
+    check_cosyvoice2_degradation_with_utmos, cosyvoice2_mel_loss,
+};
 pub use degradation::{DegradationReport, check_degradation, check_degradation_with_utmos};
 pub use manifest::{Manifest, Record};
 pub use metrics::{

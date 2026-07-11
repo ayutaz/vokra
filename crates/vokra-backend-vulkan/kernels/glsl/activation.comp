@@ -1,0 +1,39 @@
+// activation.comp — M3-02-T21. Unary activation (relu / sigmoid / tanh).
+//
+// Specialization constant `KIND`:
+//   0 = relu
+//   1 = sigmoid
+//   2 = tanh
+//
+// Compile with:
+//   glslc --target-env=vulkan1.1 -o precompiled/activation.spv glsl/activation.comp
+
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(constant_id = 0) const uint KIND = 0u;
+
+layout(push_constant) uniform PC {
+    uint n;
+} pc;
+
+layout(std430, set = 0, binding = 0) readonly buffer InBuf  { float in_buf[];  };
+layout(std430, set = 0, binding = 1) writeonly buffer OutBuf { float out_buf[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.n) {
+        return;
+    }
+    float x = in_buf[i];
+    float y;
+    if (KIND == 0u) {
+        y = max(0.0, x);
+    } else if (KIND == 1u) {
+        y = 1.0 / (1.0 + exp(-x));
+    } else {
+        y = tanh(x);
+    }
+    out_buf[i] = y;
+}

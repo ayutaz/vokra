@@ -1,0 +1,59 @@
+// conv1d.comp — M3-02-T19. 1-D convolution for the Whisper front-end (M0-06)
+// conv1 / conv2 layers.
+//
+// Layout: FP32. Input `[batch, in_ch, in_len]`, weight `[out_ch, in_ch,
+// kernel]`, bias `[out_ch]`, output `[batch, out_ch, out_len]`.
+//
+// `out_len = (in_len + 2*pad - kernel) / stride + 1`.
+//
+// Compile with:
+//   glslc --target-env=vulkan1.1 -o precompiled/conv1d.spv glsl/conv1d.comp
+
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform PC {
+    uint batch;
+    uint in_ch;
+    uint out_ch;
+    uint in_len;
+    uint out_len;
+    uint kernel_len;
+    uint stride;
+    uint padding;
+    uint bias_present;
+} pc;
+
+layout(std430, set = 0, binding = 0) readonly buffer InBuf  { float in_buf[];  };
+layout(std430, set = 0, binding = 1) readonly buffer WBuf   { float weight[];   };
+layout(std430, set = 0, binding = 2) readonly buffer BBuf   { float bias[];     };
+layout(std430, set = 0, binding = 3) writeonly buffer OutBuf { float out_buf[]; };
+
+void main() {
+    // Each invocation writes ONE output element `[b, oc, t]`.
+    uint t = gl_GlobalInvocationID.x;
+    uint oc = gl_GlobalInvocationID.y;
+    uint b = gl_GlobalInvocationID.z;
+    if (t >= pc.out_len || oc >= pc.out_ch || b >= pc.batch) {
+        return;
+    }
+    float acc = 0.0;
+    int t_in_base = int(t * pc.stride) - int(pc.padding);
+    for (uint ic = 0u; ic < pc.in_ch; ++ic) {
+        for (uint kk = 0u; kk < pc.kernel_len; ++kk) {
+            int t_in = t_in_base + int(kk);
+            if (t_in < 0 || t_in >= int(pc.in_len)) {
+                continue;
+            }
+            uint in_idx = ((b * pc.in_ch) + ic) * pc.in_len + uint(t_in);
+            uint w_idx = ((oc * pc.in_ch) + ic) * pc.kernel_len + kk;
+            acc += in_buf[in_idx] * weight[w_idx];
+        }
+    }
+    if (pc.bias_present != 0u) {
+        acc += bias[oc];
+    }
+    uint out_idx = ((b * pc.out_ch) + oc) * pc.out_len + t;
+    out_buf[out_idx] = acc;
+}

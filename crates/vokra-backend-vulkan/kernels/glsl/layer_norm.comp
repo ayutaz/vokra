@@ -1,0 +1,56 @@
+// layer_norm.comp — M3-02-T17.
+// `y[i,j] = (x[i,j] - mean_i) / sqrt(var_i + eps) * gamma[j] + beta[j]`.
+//
+// `eps` MUST match the CPU implementation (M0-08-T07): default `1e-5`, but the
+// caller passes the model's config value via push constant so bit-exact
+// reproduction of every model's config is possible (CLAUDE.md, "STFT vs FFT"
+// spirit — spec-driven).
+//
+// Compile with:
+//   glslc --target-env=vulkan1.1 -o precompiled/layer_norm.spv glsl/layer_norm.comp
+
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform PC {
+    uint rows;
+    uint cols;
+    float eps;
+} pc;
+
+layout(std430, set = 0, binding = 0) readonly buffer InBuf   { float in_buf[];   };
+layout(std430, set = 0, binding = 1) readonly buffer GammaBuf { float gamma[];   };
+layout(std430, set = 0, binding = 2) readonly buffer BetaBuf  { float beta[];    };
+layout(std430, set = 0, binding = 3) writeonly buffer OutBuf  { float out_buf[]; };
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint lane = gl_SubgroupInvocationID;
+    uint sg_size = gl_SubgroupSize;
+    if (row >= pc.rows) {
+        return;
+    }
+    // Mean (sum of x / cols).
+    float lane_sum = 0.0;
+    for (uint j = lane; j < pc.cols; j += sg_size) {
+        lane_sum += in_buf[row * pc.cols + j];
+    }
+    float total = subgroupAdd(lane_sum);
+    float mean = total / float(pc.cols);
+    // Variance (mean of (x - mean)^2).
+    float lane_var = 0.0;
+    for (uint j = lane; j < pc.cols; j += sg_size) {
+        float d = in_buf[row * pc.cols + j] - mean;
+        lane_var += d * d;
+    }
+    float var_total = subgroupAdd(lane_var);
+    float var = var_total / float(pc.cols);
+    float inv_std = 1.0 / sqrt(var + pc.eps);
+    // Normalise + scale + shift.
+    for (uint j = lane; j < pc.cols; j += sg_size) {
+        float v = (in_buf[row * pc.cols + j] - mean) * inv_std;
+        out_buf[row * pc.cols + j] = v * gamma[j] + beta[j];
+    }
+}

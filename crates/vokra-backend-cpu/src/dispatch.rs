@@ -159,6 +159,37 @@ fn neon_table() -> KernelTable {
     unreachable!("NEON kernel table requested on a non-aarch64 target")
 }
 
+// M3-13-T03: RISC-V RVV 1.0 dispatch tier. Compiled only on riscv64 (the
+// crate uses `#[cfg(target_arch = "riscv64")]` on the `rvv` kernels module).
+// `features::select_isa` cannot select `Rvv` off riscv64 (probe returns
+// `rvv_v = false`), and `table_for` rejects `Rvv` via `CpuFeatures::supports`
+// on non-riscv64 hosts — so the unreachable! stub below is genuinely
+// unreachable in all production paths.
+#[cfg(target_arch = "riscv64")]
+fn rvv_table() -> KernelTable {
+    use crate::kernels::rvv;
+    KernelTable {
+        gemm: rvv::gemm,
+        gemv: rvv::gemv,
+        add: rvv::add,
+        mul: rvv::mul,
+        relu: rvv::relu,
+        sigmoid: rvv::sigmoid,
+        tanh: rvv::tanh,
+        gelu: rvv::gelu,
+        softmax: rvv::softmax,
+        layer_norm: rvv::layer_norm,
+        fused_logmel: rvv::fused_logmel,
+    }
+}
+
+#[cfg(not(target_arch = "riscv64"))]
+fn rvv_table() -> KernelTable {
+    // Unreachable: `features::select_isa` never yields `Rvv` off riscv64, and
+    // `table_for` rejects it via `CpuFeatures::supports`.
+    unreachable!("RVV kernel table requested on a non-riscv64 target")
+}
+
 /// Maps an [`IsaPath`] to its kernel table — the single source of truth for
 /// the ISA → implementation mapping (used by both production dispatch and the
 /// `*_on` test entry points).
@@ -167,6 +198,7 @@ fn build_table(isa: IsaPath) -> KernelTable {
         IsaPath::Scalar => scalar_table(),
         IsaPath::Avx2 => avx2_table(),
         IsaPath::Neon => neon_table(),
+        IsaPath::Rvv => rvv_table(),
     }
 }
 
@@ -353,10 +385,11 @@ mod tests {
 
     #[test]
     fn table_for_rejects_unavailable_path() {
-        // Exactly one of AVX2 / NEON is unavailable on any given host arch;
-        // whichever it is must be an explicit error.
+        // Exactly one of AVX2 / NEON / RVV can be true on any given host arch
+        // (they are arch-exclusive); every unsupported path must be an
+        // explicit BackendUnavailable, never a silent fallback (FR-EX-08).
         let feats = CpuFeatures::detect();
-        for isa in [IsaPath::Avx2, IsaPath::Neon] {
+        for isa in [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv] {
             if !feats.supports(isa) {
                 assert!(matches!(
                     table_for(isa),
@@ -448,7 +481,7 @@ mod tests {
         let pcm = [1.0f32, 2.0, 3.0];
         let mel_fb = [1.0f32; 3];
         let mut out = [0.0f32; 1];
-        for isa in [IsaPath::Avx2, IsaPath::Neon] {
+        for isa in [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv] {
             if !feats.supports(isa) {
                 assert!(matches!(
                     fused_log_mel_dispatch_on(isa, &pcm, &mel_fb, &mut out),
