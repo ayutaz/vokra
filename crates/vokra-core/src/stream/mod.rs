@@ -149,13 +149,9 @@ fn drain_decoded(consumer: &mut RingConsumer, out: &mut [StreamEvent]) -> usize 
 /// Pops the next decoded event from `consumer`, or `None` when empty.
 fn pop_decoded(consumer: &mut RingConsumer) -> Option<StreamEvent> {
     loop {
-        match consumer.pop() {
-            Some(raw) => {
-                if let Some(ev) = StreamEvent::from_raw(raw) {
-                    return Some(ev);
-                }
-            }
-            None => return None,
+        let raw = consumer.pop()?;
+        if let Some(ev) = StreamEvent::from_raw(raw) {
+            return Some(ev);
         }
     }
 }
