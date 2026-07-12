@@ -208,7 +208,7 @@ M4-12 diffs the v1.0 header + Rust surface against these to build the
   `include/vokra.h` against **both** anchors: the m0 anchor gives the
   "since GA-1 tag" cumulative surface story, and the v0.9-baseline anchor
   gives the "since last prerelease window" incremental one.
-- **`docs/abi/rust-public-api.v0.9.list`** *(from M3-16-T03; forward
+- **`docs/abi/vokra-rust-public-api.v0.9.list`** *(from M3-16-T03; forward
   reference if not yet landed)* — snapshot of the `vokra-core` /
   `vokra-ops` / `vokra-capi` `pub` surface that cbindgen reflects into
   `include/vokra.h`. The C header is the primary IF-01 target, but the
