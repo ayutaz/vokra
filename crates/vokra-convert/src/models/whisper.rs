@@ -752,11 +752,31 @@ mod tests {
     /// hyperparameter derivation, so the data is left zeroed to keep the buffer
     /// small (a full embed_tokens `[51865, 128]` would be ~26 MB).
     fn synthetic_checkpoint(tensors: &[(&str, &[u64])]) -> Vec<u8> {
+        synthetic_checkpoint_dtyped(tensors, "F32", 4, |_| 0)
+    }
+
+    /// F16 sibling of [`synthetic_checkpoint`] with a deterministic non-zero
+    /// byte pattern, so the fp16-passthrough round-trip (M4-14-T02) compares
+    /// real payload bytes instead of an all-zero buffer that would vacuously
+    /// match. Any 2-byte pattern is a valid F16 bit pattern for the `None`
+    /// (byte-exact) conversion path, which never interprets the values.
+    fn synthetic_checkpoint_f16(tensors: &[(&str, &[u64])]) -> Vec<u8> {
+        synthetic_checkpoint_dtyped(tensors, "F16", 2, |i| (i % 251) as u8 + 1)
+    }
+
+    /// Shared core for the synthetic checkpoint builders: contiguous layout,
+    /// `dtype` / `elem_size` driven offsets, `fill(byte_index)` payload.
+    fn synthetic_checkpoint_dtyped(
+        tensors: &[(&str, &[u64])],
+        dtype: &str,
+        elem_size: usize,
+        fill: fn(usize) -> u8,
+    ) -> Vec<u8> {
         let mut cursor = 0usize;
         let mut entries = Vec::new();
         for &(name, shape) in tensors {
             let elems: u64 = shape.iter().product();
-            let span = elems as usize * 4; // F32
+            let span = elems as usize * elem_size;
             let begin = cursor;
             let end = cursor + span;
             cursor = end;
@@ -766,14 +786,14 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(",");
             entries.push(format!(
-                r#""{name}":{{"dtype":"F32","shape":[{dims}],"data_offsets":[{begin},{end}]}}"#
+                r#""{name}":{{"dtype":"{dtype}","shape":[{dims}],"data_offsets":[{begin},{end}]}}"#
             ));
         }
         let header = format!("{{{}}}", entries.join(","));
         let mut out = Vec::new();
         out.extend_from_slice(&(header.len() as u64).to_le_bytes());
         out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(&vec![0u8; cursor]);
+        out.extend((0..cursor).map(fill));
         out
     }
 
@@ -1095,6 +1115,225 @@ mod tests {
             msg.contains("unknown whisper size"),
             "expected unknown-size error, got: {msg}",
         );
+    }
+
+    /// M4-14-T02: full convert → GGUF → loader read-back round-trip for the
+    /// three M2-06 carry-over sizes (small / medium / turbo). The pre-existing
+    /// `all_whisper_sizes_metadata_are_consistent` pins only the label /
+    /// front-end / tokenizer-length surface; this test additionally reads back
+    /// EVERY `vokra.whisper.*` hyperparameter the runtime loader consumes, so
+    /// the previously-unexercised bug surface is pinned end-to-end:
+    ///
+    ///   * small / medium — the mid-range `n_state` 768 / 1024 (between base's
+    ///     512 and large's 1280) with the derived head counts 12 / 16;
+    ///   * turbo — the **asymmetric 32-encoder / 4-decoder layer split** (the
+    ///     only supported size where `n_audio_layer != n_text_layer`);
+    ///   * the n_mels (80 vs 128) and n_vocab (51865 vs 51866, which shifts
+    ///     the two tail specials of `decoder_start_ids` by +1) branches;
+    ///   * fp16 F16 passthrough (`--quantize` absent): every tensor keeps the
+    ///     F16 dtype with byte-identical payload, so real-checkpoint parity
+    ///     fixtures compare against fp16 weights and K-quant dequant error is
+    ///     never conflated with implementation drift (NFR-QL-01).
+    ///
+    /// The read-back also re-asserts the exact validation contract of
+    /// `vokra-models/src/whisper/config.rs::WhisperConfig::from_gguf` (the two
+    /// crates cannot depend on each other — converter -> vokra-core only — so
+    /// the contract is checked here against the same duplicated-verbatim keys,
+    /// while the loader side of the identical contract is pinned by
+    /// vokra-models' `reads_all_whisper_size_hparams`): `n_text_state ==
+    /// n_audio_state`, head count divides `d_model`, every required hparam
+    /// non-zero, non-empty `decoder_start_ids`. A GGUF passing this test is
+    /// therefore accepted by the vokra-models config loader by construction.
+    #[test]
+    fn small_medium_turbo_full_convert_load_roundtrip() {
+        // (label, d_model, n_audio_layer, n_text_layer, n_mels, n_vocab,
+        //  expected decode prefix). Shape quintuples are the published OpenAI
+        // `openai/whisper-{size}/config.json` values (same rows as
+        // `all_whisper_sizes_metadata_are_consistent`); the prefix tail
+        // specials anchor to n_vocab (see `write_hparams`): 51865 →
+        // [.., 50359, 50363], 51866 → [.., 50360, 50364].
+        #[allow(clippy::type_complexity)]
+        let rows: &[(&str, u64, u32, u32, u64, u64, [u64; 4])] = &[
+            (
+                "whisper-small",
+                768,
+                12,
+                12,
+                80,
+                51865,
+                [50258, 50259, 50359, 50363],
+            ),
+            (
+                "whisper-medium",
+                1024,
+                24,
+                24,
+                80,
+                51865,
+                [50258, 50259, 50359, 50363],
+            ),
+            (
+                "whisper-turbo",
+                1280,
+                32,
+                4,
+                128,
+                51866,
+                [50258, 50259, 50360, 50364],
+            ),
+        ];
+
+        for &(label, d_model, n_audio_layer, n_text_layer, n_mels, n_vocab, ref prefix) in rows {
+            // Same tensor-set recipe as `all_whisper_sizes_metadata_are_consistent`
+            // (trailing unread dims shrunk to 1), but F16-typed with non-zero
+            // payload so the passthrough leg is meaningful.
+            let mut tensors: Vec<(String, Vec<u64>)> = vec![
+                (
+                    "model.encoder.conv1.weight".to_string(),
+                    vec![d_model, n_mels, 1],
+                ),
+                (
+                    "model.encoder.embed_positions.weight".to_string(),
+                    vec![1500, 1],
+                ),
+                (
+                    "model.decoder.embed_positions.weight".to_string(),
+                    vec![448, 1],
+                ),
+                (
+                    "model.decoder.embed_tokens.weight".to_string(),
+                    vec![n_vocab, 1],
+                ),
+                (
+                    "model.encoder.layers.0.fc1.weight".to_string(),
+                    vec![d_model * 4, 1],
+                ),
+            ];
+            for i in 0..n_audio_layer {
+                tensors.push((
+                    format!("model.encoder.layers.{i}.mlp.fc2.weight"),
+                    vec![1, 1],
+                ));
+            }
+            for i in 0..n_text_layer {
+                tensors.push((
+                    format!("model.decoder.layers.{i}.self_attn.q_proj.weight"),
+                    vec![1, 1],
+                ));
+            }
+            let refs: Vec<(&str, &[u64])> = tensors
+                .iter()
+                .map(|(n, s)| (n.as_str(), s.as_slice()))
+                .collect();
+            let ckpt = synthetic_checkpoint_f16(&refs);
+
+            // Parse the source once so the passthrough leg can compare bytes.
+            let src = SafetensorsFile::parse(ckpt.clone()).unwrap();
+            let file = GgufFile::parse(convert(ckpt, None).unwrap().to_bytes().unwrap()).unwrap();
+            let u = |k: &str| {
+                file.get(k)
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or_else(|| panic!("{label}: metadata key `{k}` missing / not u64"))
+            };
+
+            // Label + every `vokra.whisper.*` hyperparameter the loader reads.
+            assert_eq!(
+                file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+                Some(label),
+                "{label}: vokra.model.name",
+            );
+            assert_eq!(u(KEY_N_MELS), n_mels, "{label}: n_mels");
+            assert_eq!(u(KEY_N_AUDIO_CTX), 1500, "{label}: n_audio_ctx");
+            assert_eq!(u(KEY_N_AUDIO_STATE), d_model, "{label}: n_audio_state");
+            assert_eq!(u(KEY_N_TEXT_STATE), d_model, "{label}: n_text_state");
+            let n_head = d_model / WHISPER_HEAD_DIM;
+            assert_eq!(u(KEY_N_AUDIO_HEAD), n_head, "{label}: n_audio_head");
+            assert_eq!(u(KEY_N_TEXT_HEAD), n_head, "{label}: n_text_head");
+            assert_eq!(
+                u(KEY_N_AUDIO_LAYER),
+                u64::from(n_audio_layer),
+                "{label}: n_audio_layer",
+            );
+            assert_eq!(
+                u(KEY_N_TEXT_LAYER),
+                u64::from(n_text_layer),
+                "{label}: n_text_layer (turbo's asymmetric 4 must not be \
+                 overwritten by the encoder count)",
+            );
+            assert_eq!(u(KEY_N_TEXT_CTX), 448, "{label}: n_text_ctx");
+            assert_eq!(u(KEY_N_VOCAB), n_vocab, "{label}: n_vocab");
+            assert_eq!(u(KEY_FFN_DIM), d_model * 4, "{label}: ffn_dim");
+            assert_eq!(u(KEY_EOT), u64::from(WHISPER_EOT), "{label}: eot");
+            let ids: Vec<u64> = file
+                .get(KEY_DECODER_START_IDS)
+                .and_then(|v| v.as_array())
+                .unwrap_or_else(|| panic!("{label}: decoder_start_ids missing"))
+                .values
+                .iter()
+                .map(|v| v.as_u64().unwrap())
+                .collect();
+            assert_eq!(ids, prefix.to_vec(), "{label}: decoder_start_ids");
+
+            // Front-end spec + embedded tokenizer track the checkpoint.
+            let spec = FrontendSpec::from_gguf(&file).unwrap();
+            assert_eq!(spec.n_mels, n_mels as u32, "{label}: frontend n_mels");
+            let blob = tokenizer_blob_from_gguf(&file);
+            assert_eq!(
+                &blob[..4],
+                &(n_vocab as u32).to_le_bytes(),
+                "{label}: tokenizer count header",
+            );
+
+            // `WhisperConfig::from_gguf` validation contract (see doc above):
+            // a violation here is exactly what the runtime loader would reject.
+            assert_eq!(
+                u(KEY_N_TEXT_STATE),
+                u(KEY_N_AUDIO_STATE),
+                "{label}: loader contract — shared d_model",
+            );
+            assert!(
+                n_head > 0 && d_model % n_head == 0,
+                "{label}: loader contract — head count must divide d_model",
+            );
+            for key in [
+                KEY_N_MELS,
+                KEY_N_AUDIO_CTX,
+                KEY_N_AUDIO_LAYER,
+                KEY_N_TEXT_CTX,
+                KEY_N_TEXT_LAYER,
+                KEY_N_VOCAB,
+                KEY_FFN_DIM,
+            ] {
+                assert!(
+                    u(key) > 0,
+                    "{label}: loader contract — `{key}` must be non-zero"
+                );
+            }
+            assert!(
+                !ids.is_empty(),
+                "{label}: loader contract — decoder_start_ids non-empty",
+            );
+
+            // fp16 F16 passthrough: every tensor keeps dtype F16 and its
+            // payload bytes verbatim (the `None` conversion path byte-copies).
+            for t in src.tensors() {
+                let info = file
+                    .tensor_info(&gguf_tensor_name(&t.name))
+                    .unwrap_or_else(|| panic!("{label}: tensor {} missing", t.name));
+                assert_eq!(
+                    info.dtype,
+                    GgmlType::F16,
+                    "{label}: {} must pass through as F16",
+                    t.name,
+                );
+                assert_eq!(
+                    file.tensor_data(&t.name).unwrap(),
+                    src.tensor_bytes(t),
+                    "{label}: {} payload must be byte-identical (fp16 passthrough)",
+                    t.name,
+                );
+            }
+        }
     }
 
     // ---------------------------------------------------------------------
