@@ -34,8 +34,11 @@
 //! Two block sizes are supported:
 //!
 //! - [`BlockSize::Two`] — **primary** for Mimi (12.5 Hz → 160 ms per block).
-//! - [`BlockSize::Four`] — variant for 25 / 50 Hz codecs (DAC, X-Codec 2,
-//!   WavTokenizer). M4+ consumers.
+//! - [`BlockSize::Four`] — variant for higher-rate **RVQ** codecs, i.e. DAC
+//!   (50-86 Hz depending on the released variant; `dac_rvq` uses it as its
+//!   primary — M4-04). WavTokenizer / X-Codec 2 are **not** paged-RVQ
+//!   consumers: they are FR-OP-31 FSQ ops (single-stage, no paged variant,
+//!   M4-16) and were mis-attributed here before the M4-04 T17 correction.
 //!
 //! [`mimi_rvq_read_summed`] reads a per-timestep-per-stream contiguous span
 //! across codebooks and returns the residual sum — the mirror of the direct
@@ -130,8 +133,15 @@ use vokra_core::{Result, VokraError};
 /// runtime just consumes them here. Mimi's canonical shape is
 /// `n_codebooks = 8`, `codebook_size = 2048`, `d_model = 512`, but the op
 /// itself is shape-generic — any RVQ codec whose codebooks share
-/// `[codebook_size, d_model]` slots into the same code path (this is why
-/// FR-OP-30 groups Mimi / DAC / X-Codec 2 / WavTokenizer under one op family).
+/// `[codebook_size, d_model]` slots into the same code path. This is why
+/// FR-OP-30 groups its three ops — `encodec_rvq` / `mimi_rvq` / `dac_rvq`
+/// (SRS L124) — under one op family; [`crate::encodec_rvq`] rides this exact
+/// path and [`crate::dac_rvq`] extends it with the factorized per-quantizer
+/// projection stage (M4-04). WavTokenizer / X-Codec 2 belong to **FR-OP-31**
+/// (FSQ family, separate single-stage subgraph, M4-16) — they are *not* part
+/// of this op family, and no adapter that feeds FSQ codes into an RVQ decode
+/// is provided (the M3-06-era rustdoc mis-attributed them to FR-OP-30; fixed
+/// by M4-04 T17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MimiRvqAttrs {
     /// Number of codebooks (base + residuals). Mimi = 8.
