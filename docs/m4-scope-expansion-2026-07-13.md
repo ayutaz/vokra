@@ -1,6 +1,8 @@
-# M4 (v1.0 GA) scope expansion candidate list — 2026-07-13 ultracode workflow 由来
+# M4 (v1.0-rc — 旧 v1.0 GA) scope expansion candidate list — 2026-07-13 ultracode workflow 由来
 
 **Status**: **判定確定（2026-07-14 依頼者判定）**。GO 8 件は `docs/milestones.md` §8 の WP 一覧に **M4-13〜M4-20** として正式昇格済、見送り 2 件（BIG-4 / BIG-8）は M5 残置。確定内容・事実訂正は下記「判定記録（2026-07-14）」および milestones.md §8「スコープ拡張判定の記録」を参照。本文書の候補記述（§候補一覧 以降）は**判定前の分析記録**としてそのまま保存する。
+
+> **2026-07-14 追記（v-label 再割当 #2）**: 本判定確定後の同日、依頼者決定により **M4 = v1.0-rc / M5 = v1.0 GA（旧 v2.0）** へ再割当（旧 v2.0 までの全スコープを v1.0 とする）。C ABI 凍結（IF-01）は M4-12 → **M5-13**（v1.0 GA タグ = M5 close）へ移動し、v1.0-rc は semver prerelease として Pre-1.0 ABI 政策を継続する。本文書中の「v1.0 GA（= M4 の意味）」は「v1.0-rc」、「M4-12 凍結」は「M5-13 凍結」、「v1.0.x patch」は「v1.0 GA（M5 close）後の patch」と読み替える。判定内容（GO 8 / 見送り 2 / hard gate 6 結論）は本再割当で変更されない。詳細: `docs/handoff/m4-12.md` §(f)、`docs/milestones.md` §2.2「v-label 再割当 #2」。
 
 ## 判定記録（2026-07-14 依頼者確定）
 

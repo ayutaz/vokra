@@ -79,7 +79,7 @@ Wave 11 の trampoline layer は **各 method の signature + arity + panic fire
 - **Option B: 依頼者側で Variant unpack を実装** (`trampoline.rs` L236 以降の `TODO(M3-18)` marker を実装)。C ABI 側の `include/vokra.h` は既に stable ゆえ、`p_args[0]` から `PackedFloat32Array` を取り出して `vokra_transcribe` に流すだけの thin wrapper。工数見積 = 2〜4 時間 (5 methods × 30〜60 min each)。
 - **Option C: CC に follow-up 実装を明示的に依頼**する。本 handover の scope 外だが、Investigation を再実行して "CC-implementable" 判定に載せることは可能 (Variant layout は Godot 4.3-stable header + `docs/adr/0011-godot-gdextension.md` §D3 から reference 可能、ハルシネーション回避可)。
 
-**推奨**: **Option A** で v0.9 Exit を通し、real dispatch を M4-XX の "M3-11 follow-up: full runtime dispatch" チケットに切る (M4 スコープ = 全 platform official support + C ABI 凍結、M3-11 の完全動作は M4/v1.0 GA の DoD)。
+**推奨**: **Option A** で v0.9 Exit を通し、real dispatch を M4-XX の "M3-11 follow-up: full runtime dispatch" チケットに切る (M4 スコープ = 全 platform official support、M3-11 の完全動作は M4/v1.0-rc の DoD。C ABI 凍結は 2026-07-14 v-label 再割当 #2 で M5-13/v1.0 GA タグへ移動)。
 
 ### 3.c. Demo scene の smoke (Option B/C を採用した場合のみ)
 
@@ -118,7 +118,7 @@ Verification date: YYYY-MM-DD
 
 ## 6. Escalation
 
-- **Extension load 失敗が続く場合**: `docs/adr/0011-godot-gdextension.md` の resolve chain (dlopen → `vokra_gdextension_init` → `p_get_proc_address` の 8 API resolve) が正しく通っていない可能性。Wave 11 の compile-time layout assert は Godot 4.3-stable header 前提 → **Godot 4.4+ で ABI 変更があれば `GDExtensionClassCreationInfo3` layout mismatch** で init 失敗する。この場合は M4 (v1.0 GA) で `GDExtensionClassCreationInfo4` 対応が必要。
+- **Extension load 失敗が続く場合**: `docs/adr/0011-godot-gdextension.md` の resolve chain (dlopen → `vokra_gdextension_init` → `p_get_proc_address` の 8 API resolve) が正しく通っていない可能性。Wave 11 の compile-time layout assert は Godot 4.3-stable header 前提 → **Godot 4.4+ で ABI 変更があれば `GDExtensionClassCreationInfo3` layout mismatch** で init 失敗する。この場合は M4 (v1.0-rc、2026-07-14 再割当 #2) で `GDExtensionClassCreationInfo4` 対応が必要。
 - **Method dispatch を CC 側 follow-up として依頼**する場合は `docs/tickets/m3/M3-11-godot-gdextension.md` に T21 (or M4-XX) として新規 spec 起票を依頼。
 - **T20 (WP-close PR)**: 上記 §5 の verification report を PR description に貼付、`docs/milestones.md` §7.3 Exit criteria 3 の 判定材料として反映。
 

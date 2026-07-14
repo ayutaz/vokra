@@ -2,8 +2,20 @@
 
 This file tracks **binary-facing** surface changes between v0.1.0 (the M0/M1
 baseline, tagged 2026-07-04) and v1.0 GA (the IF-01 freeze point, owned by
-M4-12). It is **narrower and machine-checkable** vs. the human-readable
-`CHANGELOG.md`: only symbols that cross the ABI boundary belong here.
+**M5-13** — 2026-07-14 v-label reassignment #2, see the note below; M4-12
+before that date). It is **narrower and machine-checkable** vs. the
+human-readable `CHANGELOG.md`: only symbols that cross the ABI boundary
+belong here.
+
+> **2026-07-14 v-label reassignment #2** (owner decision): M4 = **v1.0-rc**
+> (was v1.0 GA), M5 = **v1.0 GA** (was v2.0 GA); the scope through the former
+> v2.0 ships as v1.0. The IF-01 freeze executor moves **M4-12 → M5-13**; the
+> v1.0 GA tag referenced throughout this file is now the **M5 close** tag.
+> v1.0-rc is a semver prerelease (`1.0.0-rc.N`), so the "Pre-1.0 policy"
+> below stays in force through the whole rc series — the freeze point moved,
+> the policy text did not. At the v1.0-rc tag, M4-12 (re-scoped) snapshots an
+> intermediate advisory anchor `docs/abi/vokra.h.v1.0-rc-baseline.symbols`.
+> Details: `docs/handoff/m4-12.md` §(f).
 
 - WP: M3-16 (docs/tickets/m3/M3-16-abi-changelog.md).
 - Requirements: IF-01 (v1.0 semver freeze), FR-API-01 (single header
@@ -44,9 +56,9 @@ STABILITY block at the top of `include/vokra.h`, ADR-0003, and IF-01):
   enforces this: if the current `include/vokra.h` differs from
   `docs/abi/vokra.h.v0.9-baseline.symbols` and this file does not have an
   entry dated today, the script exits non-zero.
-- At v1.0 GA (M4-12) the baseline is re-anchored to that release, the
-  freeze commitment is written into `include/vokra.h`, and post-1.0
-  breaking changes require a major bump.
+- At v1.0 GA (M5-13; M4-12 before the 2026-07-14 reassignment) the baseline
+  is re-anchored to that release, the freeze commitment is written into
+  `include/vokra.h`, and post-1.0 breaking changes require a major bump.
 
 ## Entry schema
 
@@ -183,13 +195,20 @@ Notes:
 
 ## Handoff to M4-12 (v1.0 GA freeze)
 
+> **2026-07-14 note**: after v-label reassignment #2 the freeze executor is
+> **M5-13** (v1.0 GA tag = M5 close); read "M4-12" in this section as the WP
+> that executes at that tag. The section heading is kept verbatim because
+> other documents link to it by name. M4-12 itself (v1.0-rc tag) only
+> snapshots the intermediate rc baseline and stays advisory.
+
 **Scope of this section.** M3-16 (this WP) ships the pre-freeze machinery:
 the anchor files, the advisory changelog gate, and the recording rules
-above. **M3-16 does NOT fire the IF-01 freeze — that action is M4-12's**
-(see `docs/milestones.md` §7.2 / §8; the v-label relabel of 2026-07-08
-moved the freeze from the old M3-16 to M4-12). The four items below are a
-forward checklist for the M4-12 owner; landing any of them under the M3
-branch would prematurely commit the ABI while v0.9 features are still
+above. **M3-16 does NOT fire the IF-01 freeze — that action is M5-13's**
+(see `docs/milestones.md` §7.2 / §8 / §9; the v-label relabel of 2026-07-08
+moved the freeze from the old M3-16 to M4-12, and reassignment #2 of
+2026-07-14 moved it again to M5-13). The four items below are a
+forward checklist for the freeze-executing owner; landing any of them under
+the M3 branch would prematurely commit the ABI while v0.9 features are still
 being wired.
 
 ### Input artefacts M4-12 will consume
