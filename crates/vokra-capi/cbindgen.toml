@@ -39,7 +39,9 @@ header = """
  *
  * STABILITY: this is the v0.9 (M3) window. The ABI is NOT frozen; the semver
  * ABI-stability commitment starts at v1.0 GA (IF-01; docs/milestones.md §4.2
- * note 3, §8 M4-12). During the v0.9 window every symbol delta must be
+ * note 3, §9 M5-13; the 2026-07-14 v-label reassignment #2 moved the freeze
+ * executor from M4-12 to M5-13 — v1.0 GA = M5 close, M4 = v1.0-rc
+ * prerelease). During the v0.9 window every symbol delta must be
  * recorded in docs/abi-changelog.md and covered by an entry dated on the day
  * the PR opens — scripts/check-abi-changelog.sh (M3-16) enforces this.
  */"""

@@ -27,7 +27,7 @@ platforms:
 
 Python 3.9 – 3.12 supported. iOS / Android / WASM are out of scope for the
 Python binding — use the Swift / Kotlin bindings (planned) or the WASM
-target (v1.5+) instead.
+target (v1.0-rc+, formerly v1.5+) instead.
 
 ## 2. Convert a model
 

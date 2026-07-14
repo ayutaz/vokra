@@ -28,7 +28,7 @@ pip install "vokra==0.1.0"
 
 対応 Python: 3.9〜3.12。iOS / Android / WASM は Python バインディングの
 スコープ外です — Swift / Kotlin バインディング（予定）または WASM ター
-ゲット（v1.5+）を使ってください。
+ゲット（v1.0-rc 以降、旧 v1.5+）を使ってください。
 
 ## 2. モデルを変換
 
