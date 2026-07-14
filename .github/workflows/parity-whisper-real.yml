@@ -11,15 +11,25 @@
 # → cargo test parity_whisper with VOKRA_WHISPER_{SIZE}_GGUF pointing at the
 # freshly-built GGUF.
 #
-# Matrix scope (task rubric §CI job 設計要件 #2):
+# Matrix scope (M2-06 design; extended to the full 5-size family by M4-14-T05,
+# the M2-06 carry-over completion — see docs/adr/M4-14-whisper-family.md §D3):
 #   * base       — runs on every whisper-touching PR AND on workflow_dispatch
 #   * large-v3   — runs ONLY on workflow_dispatch (2.9 GB HF DL + 3 GB GGUF
 #                  artifact make it too expensive for per-PR use)
-# The other three sizes in the parity_whisper table (small / medium / turbo)
-# stay under the "owner-driven local regen" path from
-# docs/m2-owner-verification-checklist.md §3; the CC design phase considered
-# a 5-way matrix but the task rubric narrows CI to [base, large-v3] to keep
-# runner minutes bounded and avoid a per-PR ~6.6 GB HF download.
+#   * small / medium / turbo — workflow_dispatch ONLY (~1 / ~3 / ~1.6 GB HF
+#                  DLs), each behind its own include_* input so the owner can
+#                  dispatch any subset (M4-14-T10 runs all three). Weekly cron
+#                  and PR triggers stay base-only: runner minutes bounded, no
+#                  per-PR multi-GB downloads.
+#
+# turbo atol note (M4-14): turbo (distilled 809M, decoder 4 layers — the only
+# asymmetric size) may need a per-size atol calibration. The applied
+# tolerances live in atol_for() in crates/vokra-models/tests/parity_whisper.rs
+# (the SINGLE SOURCE) and are mirrored in this workflow's PER_SIZE_ATOL dict;
+# the verdict step cross-checks the Rust-printed atol against the mirror and
+# fails on drift, and a calibration may land only after the owner's
+# real-checkpoint measurement (M4-14-T10) — never pre-emptively
+# (fabricated-pass ban; Kokoro PROSODY_F0_ATOL precedent).
 #
 # Zero-dep invariant (NFR-DS-02): this workflow does NOT modify root
 # Cargo.lock. The dumper Python venv is /tmp-scoped; vokra-cli convert
@@ -48,6 +58,22 @@ on:
     inputs:
       include_large_v3:
         description: "Also run large-v3 leg (2.9 GB HF DL + 3 GB GGUF artifact)."
+        required: false
+        default: "true"
+      # M4-14-T05: the three M2-06 carry-over sizes. Defaults mirror
+      # include_large_v3 ("true" + a `!= "false"` gate below): dispatching the
+      # workflow is itself the opt-in act, and each leg can be opted OUT for a
+      # cheaper run. Cron / PR triggers never see these (base-only).
+      include_small:
+        description: "Also run small leg (~1 GB HF DL; M4-14 carry-over size)."
+        required: false
+        default: "true"
+      include_medium:
+        description: "Also run medium leg (~3 GB HF DL; M4-14 carry-over size)."
+        required: false
+        default: "true"
+      include_turbo:
+        description: "Also run turbo leg (~1.6 GB HF DL; M4-14 carry-over size — shares the large-v3 51866 tokenizer)."
         required: false
         default: "true"
   # Weekly schedule matches the Kokoro parity workflow's cadence
