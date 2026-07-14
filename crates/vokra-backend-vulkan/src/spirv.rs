@@ -310,6 +310,35 @@ pub fn load_spv_owned(name: &str) -> Option<Vec<u8>> {
     }
 }
 
+/// Host-portable pre-flight for the M4-13-T02 placeholder-then-swap seam:
+/// verifies the SPIR-V blob for `name` is loadable **today**, or returns the
+/// explicit [`VokraError::UnsupportedOp`](vokra_core::VokraError::UnsupportedOp)
+/// every kernel-dispatch site must surface when the owner has not yet
+/// committed the glslc-produced `.spv` (M4-13-T16) — never a silent CPU
+/// fall back (FR-EX-08).
+///
+/// This function is compiled on **every** target (the manifest is
+/// target-independent), so the blob-absence contract is testable on the
+/// Apple-Silicon authoring host with no Vulkan loader present.
+///
+/// # Errors
+///
+/// [`VokraError::UnsupportedOp`](vokra_core::VokraError::UnsupportedOp) when
+/// `name` has no loadable blob (glslc entry not yet committed, or an unknown
+/// shader name).
+pub fn require_blob(name: &str) -> vokra_core::Result<()> {
+    if load_spv_owned(name).is_some() {
+        return Ok(());
+    }
+    Err(vokra_core::VokraError::UnsupportedOp(format!(
+        "vulkan backend has no SPIR-V blob for kernel `{name}` yet (no silent CPU fallback, \
+         FR-EX-08). The glslc-produced `.spv` blobs are committed by the owner via \
+         `scripts/compile-vulkan-shaders.sh` (M4-13-T16 / ADR M3-02-spirv-generation §3); \
+         once `kernels/precompiled/{name}.spv` lands and `load_spv` gains its \
+         `include_bytes!` arm, this op lights up without further code changes."
+    )))
+}
+
 // ---------------------------------------------------------------------------
 // Zero-dependency SHA-256 (FIPS-180-4 §6.2). Used only by tests and later by
 // the hash-pin verifier once real `.spv` blobs land — build.rs stays hash-free
@@ -635,6 +664,43 @@ mod tests {
         }
         // Unknown names remain honest.
         assert!(load_spv_owned("no_such_shader").is_none());
+    }
+
+    #[test]
+    fn require_blob_is_unsupported_for_every_glslc_entry_in_foundation_slice() {
+        // M4-13-T02 placeholder-then-swap seam: until the owner commits the
+        // glslc-produced `.spv` blobs (M4-13-T16), every glslc entry must
+        // surface an explicit `UnsupportedOp` (FR-EX-08) — host-portably,
+        // with no Vulkan device needed. The two hand-crafted entries are
+        // always available.
+        for shader in SHADERS {
+            match shader.variant {
+                ShaderVariant::Handcrafted => {
+                    require_blob(shader.name).unwrap_or_else(|e| {
+                        panic!(
+                            "handcrafted `{}` must always pass require_blob: {e}",
+                            shader.name
+                        )
+                    });
+                }
+                _ => {
+                    let err = require_blob(shader.name).expect_err(
+                        "glslc entry must be UnsupportedOp until its .spv lands (update this \
+                         test when M4-13-T16 commits blobs)",
+                    );
+                    assert!(
+                        matches!(err, vokra_core::VokraError::UnsupportedOp(_)),
+                        "require_blob({}) must be UnsupportedOp, got {err:?}",
+                        shader.name,
+                    );
+                }
+            }
+        }
+        // Unknown names are also an explicit error (not a panic).
+        assert!(matches!(
+            require_blob("no_such_shader"),
+            Err(vokra_core::VokraError::UnsupportedOp(_))
+        ));
     }
 
     #[test]

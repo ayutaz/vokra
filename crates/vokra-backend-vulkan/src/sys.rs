@@ -733,12 +733,25 @@ pub(crate) type FnVkCmdCopyBuffer =
 //
 // The three symbols below are the minimum required to record a compute
 // dispatch: bind a pipeline, bind its descriptor sets, and issue a workgroup
-// count. Push constants and pipeline barriers are deliberately NOT declared
-// here — the handcrafted `copy_f32` smoke does not need them, and T14+ will
-// add whatever additional primitives their kernels require.
+// count. Push constants joined with M4-13-T02 (the glslc kernel skeletons all
+// take their scalar dimensions through a `layout(push_constant)` block);
+// pipeline barriers remain undeclared — the dispatch chain synchronises via
+// fence-waited submissions (see `context::dispatch_kernel`).
 
 pub(crate) type FnVkCmdBindPipeline =
     unsafe extern "system" fn(VkCommandBuffer, u32 /* VkPipelineBindPoint */, VkPipeline);
+
+/// `vkCmdPushConstants` (spec §14.2.10) — uploads the small scalar-parameter
+/// block declared as `layout(push_constant) uniform PC { ... }` in each glslc
+/// kernel skeleton (M4-13-T02).
+pub(crate) type FnVkCmdPushConstants = unsafe extern "system" fn(
+    VkCommandBuffer,
+    VkPipelineLayout,
+    u32, // VkShaderStageFlags
+    u32, // offset
+    u32, // size
+    *const c_void,
+);
 
 pub(crate) type FnVkCmdBindDescriptorSets = unsafe extern "system" fn(
     VkCommandBuffer,
@@ -968,6 +981,16 @@ pub(crate) type FnVkUpdateDescriptorSets =
 
 // -- Pipeline layout / shader module / compute pipeline --------------------
 
+/// `VkPushConstantRange` (spec §14.2.1) — declares the byte window of the
+/// pipeline layout's push-constant block visible to a shader stage. Vokra
+/// uses a single compute-stage range at offset 0 (M4-13-T02).
+#[repr(C)]
+pub(crate) struct VkPushConstantRange {
+    pub stage_flags: u32, // VkShaderStageFlags
+    pub offset: u32,
+    pub size: u32,
+}
+
 /// `VkPipelineLayoutCreateInfo` (spec §14.2.1).
 #[repr(C)]
 pub(crate) struct VkPipelineLayoutCreateInfo {
@@ -977,7 +1000,7 @@ pub(crate) struct VkPipelineLayoutCreateInfo {
     pub set_layout_count: u32,
     pub p_set_layouts: *const VkDescriptorSetLayout,
     pub push_constant_range_count: u32,
-    pub p_push_constant_ranges: *const c_void,
+    pub p_push_constant_ranges: *const VkPushConstantRange,
 }
 
 pub(crate) type FnVkCreatePipelineLayout = unsafe extern "system" fn(
@@ -1008,6 +1031,26 @@ pub(crate) type FnVkCreateShaderModule = unsafe extern "system" fn(
 pub(crate) type FnVkDestroyShaderModule =
     unsafe extern "system" fn(VkDevice, VkShaderModule, *const c_void);
 
+/// `VkSpecializationMapEntry` (spec §9.8) — maps one `layout(constant_id = N)`
+/// GLSL specialization constant to a byte window inside the data blob of a
+/// [`VkSpecializationInfo`]. Used by the `elementwise` (OP add/mul) and
+/// `activation` (KIND relu/sigmoid/tanh) kernels (M4-13-T07).
+#[repr(C)]
+pub(crate) struct VkSpecializationMapEntry {
+    pub constant_id: u32,
+    pub offset: u32,
+    pub size: usize,
+}
+
+/// `VkSpecializationInfo` (spec §9.8).
+#[repr(C)]
+pub(crate) struct VkSpecializationInfo {
+    pub map_entry_count: u32,
+    pub p_map_entries: *const VkSpecializationMapEntry,
+    pub data_size: usize,
+    pub p_data: *const c_void,
+}
+
 /// `VkPipelineShaderStageCreateInfo` (spec §9.1).
 #[repr(C)]
 pub(crate) struct VkPipelineShaderStageCreateInfo {
@@ -1017,7 +1060,7 @@ pub(crate) struct VkPipelineShaderStageCreateInfo {
     pub stage: u32,
     pub module: VkShaderModule,
     pub p_name: *const c_char,
-    pub p_specialization_info: *const c_void,
+    pub p_specialization_info: *const VkSpecializationInfo,
 }
 
 /// `VkComputePipelineCreateInfo` (spec §9.4).
