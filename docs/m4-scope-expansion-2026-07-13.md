@@ -1,6 +1,29 @@
 # M4 (v1.0 GA) scope expansion candidate list — 2026-07-13 ultracode workflow 由来
 
-**Status**: **Draft**（依頼者判定待ち）。本ドキュメントは `docs/milestones.md` §8 の M4 WP 一覧に**未マージ**の候補ゆえ、そのままでは実装対象にならない。依頼者判定を経て個別項目のみ `M4-13`〜連番で正式 WP に昇格する。
+**Status**: **判定確定（2026-07-14 依頼者判定）**。GO 8 件は `docs/milestones.md` §8 の WP 一覧に **M4-13〜M4-20** として正式昇格済、見送り 2 件（BIG-4 / BIG-8）は M5 残置。確定内容・事実訂正は下記「判定記録（2026-07-14）」および milestones.md §8「スコープ拡張判定の記録」を参照。本文書の候補記述（§候補一覧 以降）は**判定前の分析記録**としてそのまま保存する。
+
+## 判定記録（2026-07-14 依頼者確定）
+
+| BIG ID | 判定 | 昇格先 / 残置先 | hard gate の結論 |
+|--------|------|----------------|------------------|
+| BIG-1  | **GO** | **M4-13** | —（gate 対象外、recommend） |
+| BIG-2  | **GO** | **M4-14** | —（gate 対象外、recommend） |
+| BIG-3  | **GO（分離案）** | **M4-15** | (f) build target 化のみ M4、critical-safe market claim は M5-08/M5-11 残置 |
+| BIG-4  | **見送り** | M5-07 残置 | (b) sherpa-onnx 既対応で差別化にならず、owner モデル検収 backlog 保護（Kill switch L 予防） |
+| BIG-5  | **GO（縮小）** | **M4-16** | —（gate 対象外、adjust どおり wfst_decode + SynthID は M5-06 残置） |
+| BIG-6  | **GO** | **M4-17** | (e) standing runner は買わない — cloud VM per-run（M2-14 と同一 owner オペ）で advisory 開始、M2-14 standup 時に AVX-512 対応 instance を選べば 1 台兼務 |
+| BIG-7  | **GO（UTMOS 先行）** | **M4-18** | (d) weight + license が M4 kickoff 週までに揃わなければ v1.0.x patch へ自動 defer、DNSMOS は license fail-closed |
+| BIG-8  | **見送り** | v1.0.x patch or M5-06 | (a) drop reversal はしない — `docs/handoff/m4-12.md` §(e)-4 の patch-release 条項 land 済で ABI freeze regret が解消済、コストは conditional 中最大 |
+| BIG-9  | **GO（scope-guard 付き）** | **M4-19** | (c) scope-guard 3 点で GO: DoD は protocol-level テストまで（M5Stack 実機 optional・HA 採用は exit criteria 外）／community engagement は CC land 後に own pace／faster-whisper 互換は behavioral parity まで（bit-exact 非目標） |
+| BIG-10 | **GO** | **M4-20** | —（gate 対象外、adjust どおり trigger-backed subset のみ） |
+
+**事実訂正（ratification 時の SoT 照合で発見、いずれもコスト減方向で判定に影響なし）**:
+
+1. **BIG-2「small/medium = unplanned」は誤り** — `docs/milestones.md` §6 M2-06 行は当初から Whisper **small/medium/large-v3/turbo** の 4 サイズを WP スコープに含み、large-v3 のみ完了の部分完了状態。M4-14 は新規 WP ではなく **M2-06 carry-over の完了 WP**。
+2. **BIG-9「未 scope」は誤り** — **FR-SV-05 Wyoming Protocol サーバは M2-09 で基本実装済**（event loop + info reply の unit-level 契約テスト 120+16 green、milestones.md §6 M2-15 追記 / commit `0bb73bb`）。M4-19 は新規実装ではなく **completion + barge-in 配線 + protocol e2e** で、wave 見積は 2-3 → **1-2** に減少。
+3. **BIG-8「EU AI Act Article 50 enforcement 既経過」は誤り** — 適用開始は **2026-08-02** で本文書作成時点（2026-07-13）では未到来。M4 成果物はいずれも適用開始日より後に出るため判断への影響なし（§BIG-8 本文も訂正済）。
+
+**確定後の総見積**: GO 8 件 = **12-18.5 waves**（BIG-9 訂正込み）。次のアクション = `docs/tickets/m4/` に M4-13〜M4-20 の 30 分単位 tickets を起票（M4-01〜M4-12 は M4 正式 kickoff 時に rolling wave 起票）。
 
 **Position**: Vokra の M3 (v0.9) CC 実装が terminal 到達（`docs/m3-owner-verification-checklist.md` / PR #4 merged 2026-07-11、main HEAD `1f934da`）した直後の中間 review。実測 CC velocity（M0=2 日 / M1=1 日 / M2=4 日 for 11/15 WP / M3=~5-9 日 for 17 WP）と critical path が完全に owner ボトルネックに移行した事実を踏まえ、M5 の pull-forward 可能項目と unallocated 音声特化 op 完成を M4 スコープに追加するかを整理した。
 
@@ -111,7 +134,7 @@ M1-09b は AudioMosMetric trait のみ landed で weight 待ち BLOCKED。Kill s
 
 ### BIG-8 Watermark 復活（AudioSeal + C2PA、SynthID は評価のみ）（conditional、3-4 waves、owner reversal 必須）
 
-2026-07-04 依頼者 drop（M1-07）で FR-CP-01 / FR-CP-02 config-only 実装 → M4 で runtime 埋め込みを復活。EU AI Act Article 50（2026-08-02 enforcement 既経過）+ California SB 942（2026-01-01 施行済）の marking obligation を engine layer で担う landmark。ただし enforcement 経過済で緊急度は当初主張より低く、`docs/legal-compliance.md` §1.4 deployer-side visible UI disclosure MUST での暫定運用が既成立。
+2026-07-04 依頼者 drop（M1-07）で FR-CP-01 / FR-CP-02 config-only 実装 → M4 で runtime 埋め込みを復活。EU AI Act Article 50（**2026-08-02 適用開始 — 初版の「enforcement 既経過」表記は誤り、本文書作成時点では未到来（2026-07-14 訂正）**）+ California SB 942（2026-01-01 施行済）の marking obligation を engine layer で担う landmark。ただし M4 成果物はいずれも適用開始日（2026-08-02）より後に出るため timing は判断に影響せず、`docs/legal-compliance.md` §1.4 deployer-side visible UI disclosure MUST での暫定運用が既成立。
 
 - **CC タスク**: AudioSeal（Meta MIT reference）Rust port を root workspace（`crates/vokra-ops` + `crates/vokra-models/src/watermark/`）に、C2PA は subset 自前実装 or `integrations/vokra-compliance-c2pa/` 除外 workspace（`c2pa-rs` の openssl/asn1-rs 依存で NFR-DS-02 破綻回避）
 - **依頼者タスク**: **2026-07-04 のドロップ判断 reversal**（最大 blocker、CLAUDE.md「M3 確定判断」欄を「M4 で FR-CP-01/02 revive」に書換）、Google SynthID 契約可否、`docs/legal-compliance.md` §1.4 の deployer-side MUST を engine-side MUST に格上げ判断
