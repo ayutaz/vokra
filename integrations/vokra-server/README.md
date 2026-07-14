@@ -160,7 +160,8 @@ Notes:
 - vLLM `/v1/completions` and `/v1/chat/completions` are **contract-only
   stubs** in v0.5 — schema-conformant JSON is returned but no LLM is
   loaded (plan §D9). Real completion generation lands with the
-  CosyVoice2 / Voxtral (v1.0) and Moshi / Helium (v1.5+) work.
+  CosyVoice2 / Voxtral (v0.9, formerly v1.0) and Moshi / Helium
+  (v1.0-rc+, formerly v1.5+) work.
 - Kokoro entries reflect the M2-07 skeleton whose `TtsEngine::synthesize`
   currently returns `NotImplemented`. The registry accepts the GGUF at
   launch; requests fail with 501 until M2-07 lands the vocoder.

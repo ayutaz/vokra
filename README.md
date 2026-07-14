@@ -124,13 +124,17 @@ indications only** ("目安"), not commitments.
 | v0.1 spike | 1.5-2 months | Rust scaffold, GGUF loader + `vokra.*` metadata, STFT/iSTFT/mel ops, Silero VAD, Whisper base, piper-plus native TTS, CPU backend (AVX2/NEON), C ABI, Unity demo, public repo + CI gates — **done** |
 | v0.1 MVP | 1.5-2.5 months | K-quant loader, engine, streaming, resample, `vokra-cli` / `vokra-eval`, real 8-language G2P wiring, native CAM++ zero-shot cloning, `vokra-mmap` — **done** |
 | **v0.5** (current) | 2.5-4 months | Metal + CUDA backends (graph evaluator + per-model GPU dispatch; Whisper end-to-end on both, validated on M1 / RTX 4090), Whisper large-v3 conversion + tokenizer, whole-encoder and per-decoder-step device residency (large-v3 RTF < 0.15 on RTX 4090, measured 0.081-0.115), `bench --backend`. **In progress**; remaining: Kokoro-82M, server API |
-| v1.0 | 4-5 months | CUDA complete, Vulkan, CosyVoice2, Voxtral, RVV 1.0 baseline |
-| v1.5 | 4-5 months | WebGPU/WASM, Sesame CSM-1B, Moshi (full-duplex + AEC), all-platform official support complete |
-| v2.0 | 8+ months | CoreML (ANE) / QNN delegates, MCU tier re-evaluation |
+| v0.9 | 4-5 months | CUDA complete, Vulkan, CosyVoice2, Voxtral, RVV 1.0 baseline |
+| v1.0-rc | 4-5 months | WebGPU/WASM, Sesame CSM-1B, Moshi (full-duplex + AEC), all-platform official support complete |
+| v1.0 GA | 8+ months | CoreML (ANE) / QNN delegates, MCU tier re-evaluation, commercial GA, C ABI freeze (semver compliance from v1.0) |
 
-Cumulative estimate to v2.0: **20-25 months**. The v0.1 spike was extended
-from 1-1.5 months to 1.5-2 months when the piper-plus native TTS
-implementation was added to its scope (decision of 2026-07-02).
+Cumulative estimate to v1.0 GA: **20-25 months**. Version labels were
+re-assigned on 2026-07-14: the scope formerly planned through v2.0 now
+ships as v1.0 (the former v1.0 / v1.5 phases are now v0.9 / v1.0-rc).
+v1.0-rc is a semver prerelease; the C ABI freezes at the v1.0 GA tag.
+The v0.1 spike was extended from 1-1.5 months to 1.5-2 months when the
+piper-plus native TTS implementation was added to its scope (decision of
+2026-07-02).
 
 ## piper-plus integration (native TTS)
 
@@ -205,16 +209,16 @@ The official model zoo distributes **Apache-2.0 / MIT weights only**. See
 | Whisper base/small/medium/large-v3/turbo | ASR | MIT / MIT | Yes | v0.1 MVP (base), v0.5 (large-v3/turbo) |
 | piper-plus | TTS | MIT / MIT | Yes | v0.1 spike (native implementation) |
 | Kokoro-82M | TTS | Apache-2.0 / Apache-2.0 | Yes | v0.5 |
-| CosyVoice2 | TTS / S2S | Apache-2.0 / Apache-2.0 | Yes | v1.0 |
-| Voxtral (Mistral) | ASR / S2S | Apache-2.0 / Apache-2.0 | Yes | v1.0 |
-| Sesame CSM-1B | S2S | Apache-2.0 / Apache-2.0 | Yes | v1.5 |
-| Moshi (Helium + Mimi) | S2S | Apache-2.0 / CC-BY 4.0 (attribution required) | Yes, with credit | v1.5 |
+| CosyVoice2 | TTS / S2S | Apache-2.0 / Apache-2.0 | Yes | v0.9 |
+| Voxtral (Mistral) | ASR / S2S | Apache-2.0 / Apache-2.0 | Yes | v0.9 |
+| Sesame CSM-1B | S2S | Apache-2.0 / Apache-2.0 | Yes | v1.0-rc |
+| Moshi (Helium + Mimi) | S2S | Apache-2.0 / CC-BY 4.0 (attribution required) | Yes, with credit | v1.0-rc |
 | F5-TTS | TTS | MIT / **CC-BY-NC 4.0** | **No (non-commercial weights)** | Engine support only; weights excluded from the official zoo, behind a research flag |
 | Fish-Speech v1.4/v1.5 | TTS | Apache-2.0 / **CC-BY-NC-SA 4.0** | **No (non-commercial weights)** | Engine support only; weights excluded, research flag |
 | RVC v2 / GPT-SoVITS | VC | MIT / unclear | Restricted (training-data concerns) | Separate repository `vokra-voiceclone-experimental` |
-| Bark (Suno) | TTS | MIT / MIT (voice-cloning retraining prohibited by Suno policy) | Restricted | v2.0+ (under consideration, research flag) |
-| StyleTTS 2 | TTS | MIT / unclear (audit pending) | Restricted | v2.0+ (after audit) |
-| Matcha-TTS | TTS | MIT / MIT | Yes | v2.0+ |
+| Bark (Suno) | TTS | MIT / MIT (voice-cloning retraining prohibited by Suno policy) | Restricted | post-v1.0 GA (under consideration, research flag) |
+| StyleTTS 2 | TTS | MIT / unclear (audit pending) | Restricted | post-v1.0 GA (after audit) |
+| Matcha-TTS | TTS | MIT / MIT | Yes | post-v1.0 GA |
 
 Notes:
 
