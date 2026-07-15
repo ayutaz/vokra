@@ -117,6 +117,8 @@
 //!
 //! [`PagedKvCache<f32>`]: vokra_core::cache::paged::PagedKvCache
 //! [`KvDims`]: vokra_core::cache::paged::KvDims
+//! [`BlockSize::Two`]: vokra_core::cache::paged::BlockSize::Two
+//! [`BlockSize::Four`]: vokra_core::cache::paged::BlockSize::Four
 
 use vokra_core::cache::paged::{KvDims, PagedKvCache};
 use vokra_core::{Result, VokraError};
