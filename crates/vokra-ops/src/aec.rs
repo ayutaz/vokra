@@ -66,7 +66,45 @@
 //! *preprocessor* NLP (residual echo suppression, a separate upstream
 //! module) is deliberately not ported — the linear canceller is the required
 //! core, and the NLP need is judged empirically in the M4-05/06 full-duplex
-//! demo acceptance (ADR M4-03 §D-(f)).
+//! demo acceptance (ADR M4-03 §D-(f)). **Honest capability statement**: what
+//! ships here removes the *linearly-predictable* echo path (the correlation
+//! with the far-end reference); non-linear residues (loudspeaker
+//! distortion, clock drift, room changes) are follow-up territory.
+//!
+//! # Consumer contract (M4-05 Sesame CSM / M4-06 Moshi full-duplex)
+//!
+//! One [`vokra_core::stream::aec_ref_queue`] pair + one [`Aec`] per
+//! (speaker, mic) duplex pair, all on one sample clock:
+//!
+//! 1. every chunk the app sends to the loudspeaker (the model's TTS / S2S
+//!    output) is also pushed to the `AecRefWriter` with the position at
+//!    which it will *play* — from the playback callback thread;
+//! 2. every captured mic frame goes through [`Aec::process`] with its
+//!    capture position — from the inference thread (the two threads meet
+//!    only in the lock-free queue);
+//! 3. on barge-in ([`Stream::interrupt`](vokra_core) — M3-14), call
+//!    [`Aec::reset`]: the playback is being flushed, so the echo tail the
+//!    filter learned no longer matches what the room will hear.
+//!
+//! ```
+//! use vokra_core::stream::aec_ref_queue;
+//! use vokra_ops::{Aec, AecAttrs, AecStatus};
+//!
+//! let attrs = AecAttrs { sample_rate: 16_000, frame_size: 64, filter_length: 256 };
+//! let mut aec = Aec::new(&attrs)?;
+//! let (mut to_speaker, mut reader) = aec_ref_queue(4096, attrs.sample_rate)?;
+//!
+//! // Playback side: the app plays 64 samples starting at position 0.
+//! let tts_chunk = vec![0.05f32; 64];
+//! assert_eq!(to_speaker.push(&tts_chunk, 0)?, 64);
+//!
+//! // Capture side: the mic frame captured over the same sample range.
+//! let mic = vec![0.02f32; 64];
+//! let mut clean = vec![0.0f32; 64];
+//! let status = aec.process(&mic, 0, &mut reader, &mut clean)?;
+//! assert_eq!(status, AecStatus::Cancelled);
+//! # Ok::<(), vokra_core::VokraError>(())
+//! ```
 
 use vokra_core::stream::{AecRefReader, AecRefWindowStatus};
 use vokra_core::{Complex32, Result, VokraError};

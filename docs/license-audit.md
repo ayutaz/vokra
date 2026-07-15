@@ -201,8 +201,8 @@
 | **pocketfft** (C++) | BSD-3-Clause | FFT | 参考（Rust 移植） | FFTW3 (GPL) 排除 |
 | **realfft** (Rust) | MIT/Apache 2.0 | RFFT | ★ 採用 | pocketfft の実質後継 |
 | **speexdsp resampler** (C) | BSD | polyphase sinc interpolation | 参考（Rust 移植） | soxr (LGPL) 排除 |
-| **speexdsp AEC** (C) | BSD | Acoustic Echo Cancellation | ★ v1.5 採用予定 (Rust port) | WebRTC AEC3 と選択 |
-| **WebRTC AEC3** | BSD | AEC | ★ 候補 (Rust port 検討) | speexdsp と選択 |
+| **speexdsp AEC** (C) | BSD | Acoustic Echo Cancellation | ★ **採用**（M4-03 で Rust port 実施 = `vokra-ops::aec`、mdf.c AUMDF float build、upstream pin `7a158783df74`。attribution は NOTICE §7 + `THIRD_PARTY_LICENSES/speexdsp-LICENSE.txt`、ADR M4-03 §D-(a)） | WebRTC AEC3 と比較の上で採用 |
+| **WebRTC AEC3** | BSD | AEC | ✕ **M4-03 で不採用**（ADR M4-03 §D-(a) 参照: 実装規模が数十ファイル級で 30 分チケット列に収まらず、delay estimator が queue 設計と絡む。license 上の問題ではない — 将来の再評価は妨げない） | speexdsp AEC を採用 |
 | **RNNoise** | BSD | Noise Suppression | ★ v0.5 採用予定 | |
 | **DeepFilterNet3** (Rust) | MIT | Noise Suppression | ★ v0.5 採用予定 | Rikorose 公式 |
 | **GTCRN** | Apache 2.0 | Noise Suppression | ★ v1.0 検討 | |
