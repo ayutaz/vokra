@@ -52,7 +52,7 @@
 //! - unknown arch variant / activation / norm / pool string → loud error.
 
 use vokra_backend_cpu::kernels;
-use vokra_core::gguf::{GgufFile, GgufMetadataValue};
+use vokra_core::gguf::GgufFile;
 use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 
@@ -186,26 +186,265 @@ impl UtmosConfig {
     /// Validates the config shape. Every violation is a loud
     /// [`VokraError::InvalidArgument`] naming the offending field.
     pub fn validate(&self) -> Result<()> {
-        Err(VokraError::NotImplemented("UtmosConfig::validate: stub"))
+        let fail = |what: String| Err(VokraError::InvalidArgument(format!("utmos config: {what}")));
+        if self.sample_rate == 0 {
+            return fail("sample_rate must be > 0".into());
+        }
+        if self.conv_channels.is_empty() {
+            return fail("conv stack must have at least one layer (conv.channels empty)".into());
+        }
+        if self.conv_kernels.len() != self.conv_channels.len()
+            || self.conv_strides.len() != self.conv_channels.len()
+        {
+            return fail(format!(
+                "conv.channels/kernels/strides length mismatch ({} / {} / {})",
+                self.conv_channels.len(),
+                self.conv_kernels.len(),
+                self.conv_strides.len()
+            ));
+        }
+        for (i, ((&c, &k), &s)) in self
+            .conv_channels
+            .iter()
+            .zip(&self.conv_kernels)
+            .zip(&self.conv_strides)
+            .enumerate()
+        {
+            if c == 0 {
+                return fail(format!("conv.channels[{i}] must be > 0"));
+            }
+            if k == 0 {
+                return fail(format!("conv.kernels[{i}] must be > 0"));
+            }
+            if s == 0 {
+                return fail(format!("conv.strides[{i}] must be > 0 (zero stride)"));
+            }
+        }
+        if self.n_layer == 0 {
+            return fail("transformer.n_layer must be >= 1".into());
+        }
+        if self.n_head == 0 {
+            return fail("transformer.n_head must be >= 1".into());
+        }
+        if self.hidden_dim == 0 || self.ffn_dim == 0 {
+            return fail(format!(
+                "transformer dims must be > 0 (hidden_dim={}, ffn_dim={})",
+                self.hidden_dim, self.ffn_dim
+            ));
+        }
+        if self.hidden_dim % self.n_head != 0 {
+            return fail(format!(
+                "hidden_dim {} is not divisible by n_head {}",
+                self.hidden_dim, self.n_head
+            ));
+        }
+        if !(self.ln_eps.is_finite() && self.ln_eps > 0.0) {
+            return fail(format!(
+                "transformer.ln_eps must be finite and > 0, got {}",
+                self.ln_eps
+            ));
+        }
+        if self.head_dims.is_empty() {
+            return fail("head.dims must have at least one linear".into());
+        }
+        if let Some((i, _)) = self.head_dims.iter().enumerate().find(|&(_, &d)| d == 0) {
+            return fail(format!("head.dims[{i}] must be > 0"));
+        }
+        if self.head_dims.last() != Some(&1) {
+            return fail(format!(
+                "head.dims must end in 1 (the MOS scalar), got {:?}",
+                self.head_dims
+            ));
+        }
+        if !self.head_scale.is_finite() || !self.head_offset.is_finite() {
+            return fail(format!(
+                "head affine must be finite (scale={}, offset={})",
+                self.head_scale, self.head_offset
+            ));
+        }
+        Ok(())
     }
 
     /// Reads the config from a `vokra.utmos.*` GGUF metadata block,
     /// rejecting an unknown [`KEY_ARCH_VARIANT`] loudly.
-    pub fn from_gguf(_file: &GgufFile) -> Result<Self> {
-        Err(VokraError::NotImplemented("UtmosConfig::from_gguf: stub"))
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        use vokra_core::gguf::chunks::KEY_MODEL_ARCH;
+        let arch = meta_str(file, KEY_MODEL_ARCH)?;
+        if arch != ARCH {
+            return Err(VokraError::ModelLoad(format!(
+                "utmos GGUF: {KEY_MODEL_ARCH} is {arch:?}, expected {ARCH:?}"
+            )));
+        }
+        let variant = meta_str(file, KEY_ARCH_VARIANT)?;
+        if variant != ARCH_VARIANT_V0 {
+            return Err(VokraError::ModelLoad(format!(
+                "utmos GGUF: unknown arch variant {variant:?} — this build implements only \
+                 {ARCH_VARIANT_V0:?} and refuses to mis-score a different stack (FR-EX-08; \
+                 the flip-time upstream pin bumps the variant, see ADR M4-18-utmos-arch)"
+            )));
+        }
+        let sample_rate = meta_u32(file, KEY_SAMPLE_RATE)?;
+        let conv_channels = meta_usize_array(file, KEY_CONV_CHANNELS)?;
+        let conv_kernels = meta_usize_array(file, KEY_CONV_KERNELS)?;
+        let conv_strides = meta_usize_array(file, KEY_CONV_STRIDES)?;
+        let conv_activation = match meta_str(file, KEY_CONV_ACTIVATION)? {
+            "gelu" => ConvActivation::Gelu,
+            other => {
+                return Err(VokraError::ModelLoad(format!(
+                    "utmos GGUF: unknown conv activation {other:?} (v0 implements \"gelu\" only)"
+                )));
+            }
+        };
+        let n_layer = meta_u32(file, KEY_TF_N_LAYER)? as usize;
+        let n_head = meta_u32(file, KEY_TF_N_HEAD)? as usize;
+        let hidden_dim = meta_u32(file, KEY_TF_HIDDEN_DIM)? as usize;
+        let ffn_dim = meta_u32(file, KEY_TF_FFN_DIM)? as usize;
+        let norm = match meta_str(file, KEY_TF_NORM)? {
+            "pre" => TransformerNorm::Pre,
+            "post" => TransformerNorm::Post,
+            other => {
+                return Err(VokraError::ModelLoad(format!(
+                    "utmos GGUF: unknown transformer norm {other:?} (expected \"pre\" or \"post\")"
+                )));
+            }
+        };
+        let ln_eps = meta_f32(file, KEY_TF_LN_EPS)?;
+        let head_dims = meta_usize_array(file, KEY_HEAD_DIMS)?;
+        let head_pool = match meta_str(file, KEY_HEAD_POOL)? {
+            "mean_before" => HeadPool::MeanBefore,
+            "mean_after" => HeadPool::MeanAfter,
+            other => {
+                return Err(VokraError::ModelLoad(format!(
+                    "utmos GGUF: unknown head pool {other:?} (expected \"mean_before\" or \
+                     \"mean_after\")"
+                )));
+            }
+        };
+        let head_scale = meta_f32_or(file, KEY_HEAD_SCALE, 1.0)?;
+        let head_offset = meta_f32_or(file, KEY_HEAD_OFFSET, 0.0)?;
+        let config = Self {
+            sample_rate,
+            conv_channels,
+            conv_kernels,
+            conv_strides,
+            conv_activation,
+            n_layer,
+            n_head,
+            hidden_dim,
+            ffn_dim,
+            norm,
+            ln_eps,
+            head_dims,
+            head_pool,
+            head_scale,
+            head_offset,
+        };
+        config.validate()?;
+        Ok(config)
     }
 
     /// The frame count the conv feature encoder yields for `in_len` input
     /// samples (`out = (in - kernel) / stride + 1` per layer, "valid"
     /// padding). An input shorter than a layer's kernel is a loud error
     /// (FR-EX-08 — never an empty silent output).
-    pub fn feature_len(&self, _in_len: usize) -> Result<usize> {
-        Err(VokraError::NotImplemented("UtmosConfig::feature_len: stub"))
+    pub fn feature_len(&self, in_len: usize) -> Result<usize> {
+        let mut len = in_len;
+        for (i, (&k, &s)) in self.conv_kernels.iter().zip(&self.conv_strides).enumerate() {
+            if len < k {
+                return Err(VokraError::InvalidArgument(format!(
+                    "utmos feature encoder: input too short at conv layer {i} — {len} sample(s) \
+                     reach a kernel of width {k}, so not even one output frame exists (FR-EX-08: \
+                     an empty feature sequence is announced, never silently produced)"
+                )));
+            }
+            len = (len - k) / s + 1;
+        }
+        Ok(len)
     }
+}
+
+// --- GGUF metadata read helpers (loud on missing / mistyped keys) -----------
+
+/// Reads a required STRING metadata value, loudly naming a missing or
+/// mistyped key ([`VokraError::ModelLoad`]).
+fn meta_str<'a>(file: &'a GgufFile, key: &str) -> Result<&'a str> {
+    let v = file.get(key).ok_or_else(|| {
+        VokraError::ModelLoad(format!("utmos GGUF: missing metadata key `{key}`"))
+    })?;
+    v.as_str().ok_or_else(|| {
+        VokraError::ModelLoad(format!("utmos GGUF: metadata key `{key}` is not a STRING"))
+    })
+}
+
+/// Reads a required unsigned-integer metadata value as `u32`.
+fn meta_u32(file: &GgufFile, key: &str) -> Result<u32> {
+    let v = file.get(key).ok_or_else(|| {
+        VokraError::ModelLoad(format!("utmos GGUF: missing metadata key `{key}`"))
+    })?;
+    let wide = v.as_u64().ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "utmos GGUF: metadata key `{key}` is not an unsigned integer"
+        ))
+    })?;
+    u32::try_from(wide).map_err(|_| {
+        VokraError::ModelLoad(format!(
+            "utmos GGUF: metadata key `{key}` = {wide} does not fit in u32"
+        ))
+    })
+}
+
+/// Reads a required FLOAT32 metadata value.
+fn meta_f32(file: &GgufFile, key: &str) -> Result<f32> {
+    let v = file.get(key).ok_or_else(|| {
+        VokraError::ModelLoad(format!("utmos GGUF: missing metadata key `{key}`"))
+    })?;
+    let wide = v.as_f64().ok_or_else(|| {
+        VokraError::ModelLoad(format!("utmos GGUF: metadata key `{key}` is not a float"))
+    })?;
+    Ok(wide as f32)
+}
+
+/// Reads an optional FLOAT32 metadata value: a missing key yields `default`
+/// (the identity affine — the only safe default, see [`KEY_HEAD_SCALE`]), but
+/// a present-and-mistyped key is still a loud error, never a silent default.
+fn meta_f32_or(file: &GgufFile, key: &str, default: f32) -> Result<f32> {
+    match file.get(key) {
+        None => Ok(default),
+        Some(v) => v.as_f64().map(|w| w as f32).ok_or_else(|| {
+            VokraError::ModelLoad(format!("utmos GGUF: metadata key `{key}` is not a float"))
+        }),
+    }
+}
+
+/// Reads a required ARRAY<UINT32> metadata value as `Vec<usize>`.
+fn meta_usize_array(file: &GgufFile, key: &str) -> Result<Vec<usize>> {
+    let v = file.get(key).ok_or_else(|| {
+        VokraError::ModelLoad(format!("utmos GGUF: missing metadata key `{key}`"))
+    })?;
+    let arr = v.as_array().ok_or_else(|| {
+        VokraError::ModelLoad(format!("utmos GGUF: metadata key `{key}` is not an ARRAY"))
+    })?;
+    arr.values
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let wide = e.as_u64().ok_or_else(|| {
+                VokraError::ModelLoad(format!(
+                    "utmos GGUF: metadata key `{key}`[{i}] is not an unsigned integer"
+                ))
+            })?;
+            usize::try_from(wide).map_err(|_| {
+                VokraError::ModelLoad(format!(
+                    "utmos GGUF: metadata key `{key}`[{i}] = {wide} does not fit in usize"
+                ))
+            })
+        })
+        .collect()
 }
 
 /// One conv layer of the feature encoder — weight `[c_out, c_in, k]`
 /// row-major plus optional per-out-channel bias.
+#[derive(Debug)]
 struct ConvLayer {
     weight: Vec<f32>,
     bias: Option<Vec<f32>>,
@@ -218,6 +457,7 @@ struct ConvLayer {
 /// A linear layer stored **transposed** (`w_t` is `[d_in, d_out]` row-major)
 /// so `Y[t, d_out] = X[t, d_in] @ w_t` is a single row-major GEMM with the
 /// optional bias broadcast per output column.
+#[derive(Debug)]
 struct Linear {
     w_t: Vec<f32>,
     bias: Option<Vec<f32>>,
@@ -226,12 +466,14 @@ struct Linear {
 }
 
 /// LayerNorm affine parameters.
+#[derive(Debug)]
 struct LayerNormW {
     gamma: Vec<f32>,
     beta: Vec<f32>,
 }
 
 /// One transformer encoder block (bidirectional MHSA + GELU MLP).
+#[derive(Debug)]
 struct EncBlock {
     ln1: LayerNormW,
     q: Linear,
@@ -246,6 +488,7 @@ struct EncBlock {
 /// UTMOS weight store. Built either synthesized
 /// ([`UtmosWeights::synthesized`]) or from a `vokra.utmos.*` GGUF
 /// ([`UtmosWeights::from_gguf`]).
+#[derive(Debug)]
 pub struct UtmosWeights {
     conv: Vec<ConvLayer>,
     /// Present iff the last conv channel count differs from `hidden_dim`
@@ -264,22 +507,255 @@ pub struct UtmosWeights {
 
 impl UtmosWeights {
     /// Builds a synthesized, seed-deterministic weight store (SplitMix64 →
-    /// Xavier/Glorot uniform; LayerNorm γ=1, β=0 — the M3-09
+    /// Xavier/Glorot uniform; LayerNorm γ=1, β=0, biases 0 — the M3-09
     /// `LlmWeights::synthesized` recipe). **Not** a reproduction of any real
     /// checkpoint: it exists so shape / determinism / finiteness are
     /// verifiable without the deferred weights.
-    pub fn synthesized(_config: &UtmosConfig, _seed: u64) -> Result<Self> {
-        Err(VokraError::NotImplemented(
-            "UtmosWeights::synthesized: stub",
-        ))
+    pub fn synthesized(config: &UtmosConfig, seed: u64) -> Result<Self> {
+        config.validate()?;
+        let mut rng = SplitMix64::new(seed);
+        let mut conv = Vec::with_capacity(config.conv_channels.len());
+        let mut c_in = 1usize;
+        for ((&c_out, &kernel), &stride) in config
+            .conv_channels
+            .iter()
+            .zip(&config.conv_kernels)
+            .zip(&config.conv_strides)
+        {
+            // Conv fan counts follow the PyTorch convention: the receptive
+            // field multiplies both fans (fan_in = c_in * k, fan_out = c_out
+            // * k). A synthesized-recipe choice, not an upstream claim.
+            let weight = xavier_uniform(
+                &mut rng,
+                c_out * c_in * kernel,
+                c_in * kernel,
+                c_out * kernel,
+            );
+            conv.push(ConvLayer {
+                weight,
+                bias: Some(vec![0.0; c_out]),
+                c_in,
+                c_out,
+                kernel,
+                stride,
+            });
+            c_in = c_out;
+        }
+        let c_last = c_in;
+        let d = config.hidden_dim;
+        let feat_proj = if c_last != d {
+            Some(synth_linear(&mut rng, c_last, d))
+        } else {
+            None
+        };
+        let mut blocks = Vec::with_capacity(config.n_layer);
+        for _ in 0..config.n_layer {
+            blocks.push(EncBlock {
+                ln1: identity_ln(d),
+                q: synth_linear(&mut rng, d, d),
+                k: synth_linear(&mut rng, d, d),
+                v: synth_linear(&mut rng, d, d),
+                o: synth_linear(&mut rng, d, d),
+                ln2: identity_ln(d),
+                fc1: synth_linear(&mut rng, d, config.ffn_dim),
+                fc2: synth_linear(&mut rng, config.ffn_dim, d),
+            });
+        }
+        let enc_ln = match config.norm {
+            TransformerNorm::Pre => Some(identity_ln(d)),
+            TransformerNorm::Post => None,
+        };
+        let mut head = Vec::with_capacity(config.head_dims.len());
+        let mut h_in = d;
+        for &h_out in &config.head_dims {
+            head.push(synth_linear(&mut rng, h_in, h_out));
+            h_in = h_out;
+        }
+        Ok(Self {
+            conv,
+            feat_proj,
+            blocks,
+            enc_ln,
+            head,
+            is_synthesized: true,
+        })
     }
 
     /// Binds the weight store from a parsed GGUF, verifying every tensor's
     /// dims against `config` (ADR M4-18-utmos-arch §(d) naming). A missing
     /// or mis-shaped tensor is a loud [`VokraError::ModelLoad`] naming it.
-    pub fn from_gguf(_file: &GgufFile, _config: &UtmosConfig) -> Result<Self> {
-        Err(VokraError::NotImplemented("UtmosWeights::from_gguf: stub"))
+    pub fn from_gguf(file: &GgufFile, config: &UtmosConfig) -> Result<Self> {
+        config.validate()?;
+        let mut conv = Vec::with_capacity(config.conv_channels.len());
+        let mut c_in = 1usize;
+        for (i, ((&c_out, &kernel), &stride)) in config
+            .conv_channels
+            .iter()
+            .zip(&config.conv_kernels)
+            .zip(&config.conv_strides)
+            .enumerate()
+        {
+            let weight = tensor_f32_shaped(
+                file,
+                &format!("utmos.conv.{i}.weight"),
+                &[c_out, c_in, kernel],
+            )?;
+            let bias = opt_tensor_f32_shaped(file, &format!("utmos.conv.{i}.bias"), &[c_out])?;
+            conv.push(ConvLayer {
+                weight,
+                bias,
+                c_in,
+                c_out,
+                kernel,
+                stride,
+            });
+            c_in = c_out;
+        }
+        let c_last = c_in;
+        let d = config.hidden_dim;
+        let feat_proj = if c_last != d {
+            Some(load_linear(file, "utmos.feat_proj", c_last, d)?)
+        } else if file.tensor_info("utmos.feat_proj.weight").is_some() {
+            // c_last == d GGUFs may still ship an explicit square projection.
+            Some(load_linear(file, "utmos.feat_proj", c_last, d)?)
+        } else {
+            None
+        };
+        let mut blocks = Vec::with_capacity(config.n_layer);
+        for i in 0..config.n_layer {
+            blocks.push(EncBlock {
+                ln1: load_ln(file, &format!("utmos.enc.{i}.ln1"), d)?,
+                q: load_linear(file, &format!("utmos.enc.{i}.attn.q"), d, d)?,
+                k: load_linear(file, &format!("utmos.enc.{i}.attn.k"), d, d)?,
+                v: load_linear(file, &format!("utmos.enc.{i}.attn.v"), d, d)?,
+                o: load_linear(file, &format!("utmos.enc.{i}.attn.o"), d, d)?,
+                ln2: load_ln(file, &format!("utmos.enc.{i}.ln2"), d)?,
+                fc1: load_linear(file, &format!("utmos.enc.{i}.mlp.fc1"), d, config.ffn_dim)?,
+                fc2: load_linear(file, &format!("utmos.enc.{i}.mlp.fc2"), config.ffn_dim, d)?,
+            });
+        }
+        let enc_ln = match config.norm {
+            TransformerNorm::Pre => Some(load_ln(file, "utmos.enc_ln", d)?),
+            TransformerNorm::Post => {
+                // Post-norm defines no final LayerNorm; a shipped
+                // `utmos.enc_ln.*` would be a tensor this variant has no
+                // semantics for — reject it rather than inventing one
+                // (FR-EX-08: never silently ignore weights either).
+                if file.tensor_info("utmos.enc_ln.weight").is_some()
+                    || file.tensor_info("utmos.enc_ln.bias").is_some()
+                {
+                    return Err(VokraError::ModelLoad(
+                        "utmos GGUF: post-norm variant must not ship `utmos.enc_ln.*` (the \
+                         variant defines no final LayerNorm; refusing to guess its placement)"
+                            .to_owned(),
+                    ));
+                }
+                None
+            }
+        };
+        let mut head = Vec::with_capacity(config.head_dims.len());
+        let mut h_in = d;
+        for (i, &h_out) in config.head_dims.iter().enumerate() {
+            head.push(load_linear(file, &format!("utmos.head.{i}"), h_in, h_out)?);
+            h_in = h_out;
+        }
+        Ok(Self {
+            conv,
+            feat_proj,
+            blocks,
+            enc_ln,
+            head,
+            is_synthesized: false,
+        })
     }
+}
+
+// --- weight construction helpers --------------------------------------------
+
+/// Xavier / Glorot uniform draw: `n` values in `(-bound, +bound)` with
+/// `bound = sqrt(6 / (fan_in + fan_out))` — verbatim the M3-09
+/// `LlmWeights::synthesized` recipe (`cosyvoice2/llm.rs`).
+fn xavier_uniform(rng: &mut SplitMix64, n: usize, fan_in: usize, fan_out: usize) -> Vec<f32> {
+    let bound = (6.0 / (fan_in + fan_out) as f32).sqrt();
+    (0..n)
+        .map(|_| (rng.next_unit_f32() * 2.0 - 1.0) * bound)
+        .collect()
+}
+
+/// A synthesized linear: Xavier weight (drawn directly in the transposed
+/// `[d_in, d_out]` storage order), zero bias.
+fn synth_linear(rng: &mut SplitMix64, d_in: usize, d_out: usize) -> Linear {
+    Linear {
+        w_t: xavier_uniform(rng, d_in * d_out, d_in, d_out),
+        bias: Some(vec![0.0; d_out]),
+        d_in,
+        d_out,
+    }
+}
+
+/// The identity LayerNorm affine (γ=1, β=0 — the PyTorch default init).
+fn identity_ln(d: usize) -> LayerNormW {
+    LayerNormW {
+        gamma: vec![1.0; d],
+        beta: vec![0.0; d],
+    }
+}
+
+// --- GGUF tensor read helpers (loud on missing / mis-shaped tensors) --------
+
+/// Reads a required F32 tensor with exactly `dims`, loudly naming a missing
+/// or mis-shaped tensor.
+fn tensor_f32_shaped(file: &GgufFile, name: &str, dims: &[usize]) -> Result<Vec<f32>> {
+    let info = file
+        .tensor_info(name)
+        .ok_or_else(|| VokraError::ModelLoad(format!("utmos GGUF: missing tensor `{name}`")))?;
+    let expected: Vec<u64> = dims.iter().map(|&d| d as u64).collect();
+    if info.dimensions != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "utmos GGUF: tensor `{name}` has dims {:?}, expected {expected:?}",
+            info.dimensions
+        )));
+    }
+    file.tensor_f32(name)
+        .map_err(|e| VokraError::ModelLoad(format!("utmos GGUF: reading tensor `{name}`: {e}")))
+}
+
+/// Reads an optional F32 tensor: absent yields `None`, present-but-mis-shaped
+/// is still a loud error (never a silent zero-fill).
+fn opt_tensor_f32_shaped(file: &GgufFile, name: &str, dims: &[usize]) -> Result<Option<Vec<f32>>> {
+    if file.tensor_info(name).is_none() {
+        return Ok(None);
+    }
+    tensor_f32_shaped(file, name, dims).map(Some)
+}
+
+/// Loads `{prefix}.weight` (`[d_out, d_in]`, the `y = W x` semantic of ADR
+/// M4-18-utmos-arch §(c)) transposed into the `[d_in, d_out]` GEMM storage
+/// order, plus the optional `{prefix}.bias`.
+fn load_linear(file: &GgufFile, prefix: &str, d_in: usize, d_out: usize) -> Result<Linear> {
+    let w = tensor_f32_shaped(file, &format!("{prefix}.weight"), &[d_out, d_in])?;
+    let mut w_t = vec![0.0f32; d_in * d_out];
+    for (o, row) in w.chunks_exact(d_in).enumerate() {
+        for (i, &val) in row.iter().enumerate() {
+            w_t[i * d_out + o] = val;
+        }
+    }
+    let bias = opt_tensor_f32_shaped(file, &format!("{prefix}.bias"), &[d_out])?;
+    Ok(Linear {
+        w_t,
+        bias,
+        d_in,
+        d_out,
+    })
+}
+
+/// Loads a LayerNorm affine pair `{prefix}.weight` / `{prefix}.bias` (both
+/// required, length `d`).
+fn load_ln(file: &GgufFile, prefix: &str, d: usize) -> Result<LayerNormW> {
+    Ok(LayerNormW {
+        gamma: tensor_f32_shaped(file, &format!("{prefix}.weight"), &[d])?,
+        beta: tensor_f32_shaped(file, &format!("{prefix}.bias"), &[d])?,
+    })
 }
 
 /// The UTMOS scorer: one waveform in, one MOS scalar out.
@@ -287,6 +763,7 @@ impl UtmosWeights {
 /// v0 skeleton semantics — see the module docs: config-driven forward,
 /// synthesized or GGUF weights, **no upstream numerical claim until the
 /// flip-time pin**.
+#[derive(Debug)]
 pub struct Utmos {
     config: UtmosConfig,
     weights: UtmosWeights,
@@ -296,13 +773,15 @@ impl Utmos {
     /// Builds a scorer over synthesized weights (see
     /// [`UtmosWeights::synthesized`]).
     pub fn synthesized(config: UtmosConfig, seed: u64) -> Result<Self> {
-        let _ = (&config, seed);
-        Err(VokraError::NotImplemented("Utmos::synthesized: stub"))
+        let weights = UtmosWeights::synthesized(&config, seed)?;
+        Ok(Self { config, weights })
     }
 
     /// Binds a scorer from a parsed `vokra.utmos.*` GGUF.
-    pub fn from_gguf(_file: &GgufFile) -> Result<Self> {
-        Err(VokraError::NotImplemented("Utmos::from_gguf: stub"))
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let config = UtmosConfig::from_gguf(file)?;
+        let weights = UtmosWeights::from_gguf(file, &config)?;
+        Ok(Self { config, weights })
     }
 
     /// Opens and binds a UTMOS GGUF from `path`.
@@ -332,9 +811,224 @@ impl Utmos {
     ///   resample);
     /// - empty / non-finite input;
     /// - input shorter than the conv stack's receptive field.
-    pub fn score(&self, _audio: &[f32], _sample_rate: u32) -> Result<f64> {
-        Err(VokraError::NotImplemented("Utmos::score: stub"))
+    pub fn score(&self, audio: &[f32], sample_rate: u32) -> Result<f64> {
+        let c = &self.config;
+        if sample_rate != c.sample_rate {
+            return Err(VokraError::InvalidArgument(format!(
+                "utmos: input sample rate {sample_rate} != model rate {} — the metric never \
+                 silently resamples (FR-EX-08); resample the clip explicitly first",
+                c.sample_rate
+            )));
+        }
+        if audio.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "utmos: empty input clip".to_owned(),
+            ));
+        }
+        if let Some(pos) = audio.iter().position(|x| !x.is_finite()) {
+            return Err(VokraError::InvalidArgument(format!(
+                "utmos: non-finite sample at index {pos} — a NaN/Inf would silently poison the \
+                 score (FR-EX-08)"
+            )));
+        }
+        // Validates the length against the conv receptive field (loud
+        // "too short" error) and pins the frame count the loop must yield.
+        let t_frames = c.feature_len(audio.len())?;
+
+        // ---- feature encoder: conv stack + GELU, channel-major [c, len] ----
+        let mut cur = audio.to_vec();
+        let mut len = audio.len();
+        for layer in &self.weights.conv {
+            let out_len = (len - layer.kernel) / layer.stride + 1;
+            let mut out = vec![0.0f32; layer.c_out * out_len];
+            kernels::conv1d_f32(
+                &cur,
+                layer.c_in,
+                len,
+                &layer.weight,
+                layer.c_out,
+                layer.kernel,
+                layer.bias.as_deref(),
+                layer.stride,
+                0,
+                &mut out,
+            )?;
+            let mut act = vec![0.0f32; out.len()];
+            match self.config.conv_activation {
+                ConvActivation::Gelu => kernels::gelu_f32(&out, &mut act)?,
+            }
+            cur = act;
+            len = out_len;
+        }
+        debug_assert_eq!(len, t_frames, "feature_len oracle vs conv loop");
+        let t = t_frames;
+
+        // ---- [c_last, t] → frame-major [t, c_last] --------------------------
+        let c_last = self.weights.conv.last().map_or(1, |l| l.c_out);
+        let mut x = vec![0.0f32; t * c_last];
+        for (ch, channel) in cur.chunks_exact(t).enumerate() {
+            for (tt, &val) in channel.iter().enumerate() {
+                x[tt * c_last + ch] = val;
+            }
+        }
+
+        // ---- optional feature projection to the transformer width ----------
+        let mut h = match &self.weights.feat_proj {
+            Some(proj) => linear_forward(proj, &x, t)?,
+            None => x,
+        };
+
+        // ---- bidirectional transformer encoder ------------------------------
+        for blk in &self.weights.blocks {
+            h = self.encoder_block(blk, h, t)?;
+        }
+        if let Some(ln) = &self.weights.enc_ln {
+            h = layer_norm(ln, &h, t, c.hidden_dim, c.ln_eps)?;
+        }
+
+        // ---- regression head + pooling --------------------------------------
+        let raw = match c.head_pool {
+            HeadPool::MeanBefore => {
+                let mut cur = mean_over_time(&h, t, c.hidden_dim);
+                for lin in &self.weights.head {
+                    cur = linear_forward(lin, &cur, 1)?;
+                }
+                cur[0]
+            }
+            HeadPool::MeanAfter => {
+                let mut cur = h;
+                for lin in &self.weights.head {
+                    cur = linear_forward(lin, &cur, t)?;
+                }
+                mean_over_time(&cur, t, 1)[0]
+            }
+        };
+
+        // The affine is applied in f64 so `score = raw * scale + offset`
+        // is exact for the identity (`1.0` / `0.0`) case.
+        Ok(f64::from(raw) * f64::from(c.head_scale) + f64::from(c.head_offset))
     }
+
+    /// One encoder block over frame-major `h = [t, d]`, honoring the
+    /// config's norm placement.
+    fn encoder_block(&self, blk: &EncBlock, h: Vec<f32>, t: usize) -> Result<Vec<f32>> {
+        let d = self.config.hidden_dim;
+        let eps = self.config.ln_eps;
+        match self.config.norm {
+            TransformerNorm::Pre => {
+                // x + Attn(LN1(x)); x + MLP(LN2(x)).
+                let n1 = layer_norm(&blk.ln1, &h, t, d, eps)?;
+                let attn = self.mhsa(blk, &n1, t)?;
+                let h1 = add(&h, &attn)?;
+                let n2 = layer_norm(&blk.ln2, &h1, t, d, eps)?;
+                let mlp = mlp_forward(blk, &n2, t)?;
+                add(&h1, &mlp)
+            }
+            TransformerNorm::Post => {
+                // LN1(x + Attn(x)); LN2(x + MLP(x)).
+                let attn = self.mhsa(blk, &h, t)?;
+                let h1 = layer_norm(&blk.ln1, &add(&h, &attn)?, t, d, eps)?;
+                let mlp = mlp_forward(blk, &h1, t)?;
+                layer_norm(&blk.ln2, &add(&h1, &mlp)?, t, d, eps)
+            }
+        }
+    }
+
+    /// Bidirectional (unmasked) multi-head self-attention over `[t, d]`,
+    /// scale `1/sqrt(d_head)`, per-head GEMM + row softmax.
+    fn mhsa(&self, blk: &EncBlock, x: &[f32], t: usize) -> Result<Vec<f32>> {
+        let d = self.config.hidden_dim;
+        let n_head = self.config.n_head;
+        let dh = d / n_head;
+        let scale = 1.0 / (dh as f32).sqrt();
+        let q = linear_forward(&blk.q, x, t)?;
+        let k = linear_forward(&blk.k, x, t)?;
+        let v = linear_forward(&blk.v, x, t)?;
+        let mut ctx = vec![0.0f32; t * d];
+        let mut qh = vec![0.0f32; t * dh];
+        let mut kh_t = vec![0.0f32; dh * t];
+        let mut vh = vec![0.0f32; t * dh];
+        let mut scores = vec![0.0f32; t * t];
+        let mut probs = vec![0.0f32; t * t];
+        let mut out_h = vec![0.0f32; t * dh];
+        for head in 0..n_head {
+            let off = head * dh;
+            for tt in 0..t {
+                for j in 0..dh {
+                    qh[tt * dh + j] = q[tt * d + off + j];
+                    // K is materialized pre-transposed ([dh, t]) so the
+                    // score GEMM is a plain row-major product.
+                    kh_t[j * t + tt] = k[tt * d + off + j];
+                    vh[tt * dh + j] = v[tt * d + off + j];
+                }
+            }
+            kernels::gemm_f32(t, t, dh, &qh, &kh_t, None, &mut scores)?;
+            for s in scores.iter_mut() {
+                *s *= scale;
+            }
+            kernels::softmax_f32(&scores, &mut probs, t, t)?;
+            kernels::gemm_f32(t, dh, t, &probs, &vh, None, &mut out_h)?;
+            for tt in 0..t {
+                ctx[tt * d + off..tt * d + off + dh]
+                    .copy_from_slice(&out_h[tt * dh..(tt + 1) * dh]);
+            }
+        }
+        linear_forward(&blk.o, &ctx, t)
+    }
+}
+
+// --- forward primitives (thin wrappers over vokra-backend-cpu kernels) ------
+
+/// `Y[rows, d_out] = X[rows, d_in] @ w_t (+ bias)` — one row-major GEMM.
+fn linear_forward(lin: &Linear, x: &[f32], rows: usize) -> Result<Vec<f32>> {
+    let mut out = vec![0.0f32; rows * lin.d_out];
+    kernels::gemm_f32(
+        rows,
+        lin.d_out,
+        lin.d_in,
+        x,
+        &lin.w_t,
+        lin.bias.as_deref(),
+        &mut out,
+    )?;
+    Ok(out)
+}
+
+/// Row-wise LayerNorm over `[rows, cols]` with the block's affine.
+fn layer_norm(ln: &LayerNormW, x: &[f32], rows: usize, cols: usize, eps: f32) -> Result<Vec<f32>> {
+    let mut out = vec![0.0f32; x.len()];
+    kernels::layer_norm_f32(x, &mut out, rows, cols, &ln.gamma, &ln.beta, eps)?;
+    Ok(out)
+}
+
+/// The GELU MLP: `fc2(gelu(fc1(x)))`.
+fn mlp_forward(blk: &EncBlock, x: &[f32], t: usize) -> Result<Vec<f32>> {
+    let inner = linear_forward(&blk.fc1, x, t)?;
+    let mut act = vec![0.0f32; inner.len()];
+    kernels::gelu_f32(&inner, &mut act)?;
+    linear_forward(&blk.fc2, &act, t)
+}
+
+/// Element-wise residual add.
+fn add(a: &[f32], b: &[f32]) -> Result<Vec<f32>> {
+    let mut out = vec![0.0f32; a.len()];
+    kernels::add_f32(a, b, &mut out)?;
+    Ok(out)
+}
+
+/// Mean over the time axis of a frame-major `[t, cols]` buffer → `[1, cols]`.
+fn mean_over_time(x: &[f32], t: usize, cols: usize) -> Vec<f32> {
+    let mut pooled = vec![0.0f32; cols];
+    for frame in x.chunks_exact(cols) {
+        for (acc, &val) in pooled.iter_mut().zip(frame) {
+            *acc += val;
+        }
+    }
+    let inv = 1.0 / t as f32;
+    for acc in pooled.iter_mut() {
+        *acc *= inv;
+    }
+    pooled
 }
 
 impl Metric for Utmos {
@@ -361,7 +1055,7 @@ impl AudioMosMetric for Utmos {
 mod tests {
     use super::*;
     use vokra_core::gguf::chunks::KEY_MODEL_ARCH;
-    use vokra_core::gguf::{GgmlType, GgufArray, GgufBuilder, GgufValueType};
+    use vokra_core::gguf::{GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType};
 
     const SEED: u64 = 0x4D34_5F31_385F_5530; // ASCII-ish "M4_18_U0"
 
@@ -717,7 +1411,7 @@ mod tests {
         assert_eq!(w.conv.len(), 2);
         assert_eq!(w.conv[0].c_in, 1);
         assert_eq!(w.conv[0].c_out, 4);
-        assert_eq!(w.conv[0].weight.len(), 4 * 1 * 5);
+        assert_eq!(w.conv[0].weight.len(), 4 * 5); // c_out=4, c_in=1, k=5
         assert_eq!(w.conv[1].c_in, 4);
         assert_eq!(w.conv[1].weight.len(), 6 * 4 * 3);
         // c_last == d → identity projection.
@@ -729,7 +1423,7 @@ mod tests {
         assert!(w.enc_ln.is_none());
         assert_eq!(w.head.len(), 2);
         assert_eq!(w.head[0].w_t.len(), 6 * 4);
-        assert_eq!(w.head[1].w_t.len(), 4 * 1);
+        assert_eq!(w.head[1].w_t.len(), 4); // d_in=4, d_out=1
 
         // Projection + pre-norm variant.
         let config = proj_pre_config();
@@ -875,7 +1569,7 @@ mod tests {
         let mut b = GgufBuilder::new();
         seed_metadata(&mut b, &config);
         // conv.0.weight with the wrong kernel width (4 instead of 5).
-        add_f32_tensor(&mut b, "utmos.conv.0.weight", &[4, 1, 4], &vec![0.0; 16]);
+        add_f32_tensor(&mut b, "utmos.conv.0.weight", &[4, 1, 4], &[0.0; 16]);
         let file = GgufFile::parse(b.to_bytes().unwrap()).expect("parse");
         let err = Utmos::from_gguf(&file).expect_err("mis-shaped tensor");
         let msg = format!("{err}");
@@ -900,8 +1594,8 @@ mod tests {
             b.add_tensor(&info.name, info.dtype, info.dimensions.clone(), data)
                 .unwrap();
         }
-        add_f32_tensor(&mut b, "utmos.enc_ln.weight", &[6], &vec![1.0; 6]);
-        add_f32_tensor(&mut b, "utmos.enc_ln.bias", &[6], &vec![0.0; 6]);
+        add_f32_tensor(&mut b, "utmos.enc_ln.weight", &[6], &[1.0; 6]);
+        add_f32_tensor(&mut b, "utmos.enc_ln.bias", &[6], &[0.0; 6]);
         bytes = b.to_bytes().unwrap();
         let file = GgufFile::parse(bytes).expect("parse");
         let err = Utmos::from_gguf(&file).expect_err("post-norm + enc_ln");

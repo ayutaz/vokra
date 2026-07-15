@@ -14,10 +14,15 @@
 //!   hypothesis/reference pair or a [`manifest`] of them and prints the scores
 //!   in a `key=value` report.
 //!
-//! Neural mean-opinion-score predictors (UTMOS / DNSMOS) are **not** here: they
-//! are networks that need model weights (M1-09b, blocked on those weights). The
-//! [`metrics::AudioMosMetric`] trait reserves their slot so they drop in later
-//! without changing any caller of [`metrics::Metric`].
+//! Neural mean-opinion-score predictors: [`metrics::utmos::Utmos`] (M4-18)
+//! implements the [`metrics::AudioMosMetric`] slot as a **weight-deferred
+//! skeleton** — a config-driven wav2vec2-SSL + regression-head forward that
+//! runs over synthesized (seed-deterministic) weights or a `vokra.utmos.*`
+//! GGUF. The real UTMOS checkpoint + license are still owner-sourced (the
+//! M4-18 kickoff gate auto-deferred them to a v1.0.x patch), so **no upstream
+//! numerical claim is made yet**; scoring with real weights only needs the
+//! flip-time converter, no API change. DNSMOS stays unimplemented (license
+//! fail-closed).
 
 pub mod cosyvoice2;
 pub mod degradation;
