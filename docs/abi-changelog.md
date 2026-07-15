@@ -266,6 +266,50 @@ dated entry per change.
 | `include/vokra.h`               | `vokra_stream_interrupt`                      | Added | `enum vokra_status_t vokra_stream_interrupt(struct vokra_stream_t *stream)` | Barge-in / cancel (FR-ST-03), WP M3-14                                                                                    | no        | (TBD) |
 | `gguf:vokra.voxtral.adapter.*`  | `vokra.voxtral.adapter.{kind,tensor_prefix,in_dim,out_dim,has_bias,has_layernorm,activation,time_stride,weight_name,bias_name,layernorm_gamma_name,layernorm_beta_name,mlp_hidden_dims,mlp_layer_names}` | Added | Kind = `string` \| dims = `u32` \| flags = `bool` \| names = `string` (see `crates/vokra-models/src/voxtral/adapter.rs` for the loader) | Voxtral audio-adapter (encoder → soft-prefix) framework — M3-10 Wave 8 (real ASR conditioning; absent = LM-continuation) | no        | (TBD) |
 
+### 2026-07-15 — 0.9.0-dev (M4-20: audio dialect op subset)
+
+**Additive Rust public API only — `include/vokra.h` is untouched** by this WP
+(word timestamps / speaker_verify / the speech-enhancement ops are Rust-surface
+functions, not C symbols; the T14 anchors are `&'static str` constants that add
+**no** C ABI symbol — the whole point of the trigger-backed subset rule, ADR
+M4-20 §D-6). `scripts/check-abi-changelog.sh` does not gate on these; they are
+recorded for the M4-12 v1.0-rc baseline snapshot (`rust-public-api-list.sh`).
+One **behaviour change**: `beam_search` with `word_timestamps` now returns
+`UnsupportedOp` when the scorer supplies no alignment (was `NotImplemented`
+while unimplemented) — a Rust-surface semantic change, not an ABI break.
+
+| Crate / area                | Symbol                                                                 | Kind    | Signature                                                                                     | Rationale                                                              | Breaking? | PR    |
+| --------------------------- | --------------------------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | --------- | ----- |
+| `vokra-core::decode`        | `WordTiming` / `CrossAttention` / `AlignmentParams`                    | Added   | Rust structs (host-side word-timestamp alignment)                                            | FR-OP-40 word timestamps, M4-20 (a)                                    | no        | (TBD) |
+| `vokra-core::decode`        | `token_alignment` / `words_from_alignment`                            | Added   | `fn(&CrossAttention, &AlignmentParams) -> Result<Vec<f32>>` / grouping fn                     | cross-attention DTW core (openai-whisper timing.py), M4-20 (a)         | no        | (TBD) |
+| `vokra-core::decode`        | `BeamScorer::align_words`                                              | Added   | `fn align_words(&mut self, &[u32]) -> Result<Option<Vec<WordTiming>>>` (default `Ok(None)`)   | model supplies word alignment; default keeps existing scorers valid    | no        | (TBD) |
+| `vokra-core::decode`        | `BeamHypothesis.word_timestamps`                                       | Added   | `Option<Vec<WordTiming>>` field (additive)                                                    | word-timing result on the best hypothesis, M4-20 (a)                   | no        | (TBD) |
+| `vokra-core::decode`        | `beam_search` (`word_timestamps` path)                                 | Changed | `NotImplemented` → `UnsupportedOp` when no alignment supplied (FR-EX-08)                       | word timestamps implemented; explicit error replaces "unimplemented"  | no        | (TBD) |
+| `vokra-models::speaker`     | `cosine_similarity` / `speaker_verify` / `SpeakerVerifyResult`         | Added   | `fn(&[f32], &[f32]) -> Result<f32>` / `fn(&[f32], &[f32], Option<f32>) -> Result<…>`          | FR-OP-81 speaker verification (CAM++ trigger), M4-20 (b)               | no        | (TBD) |
+| `vokra-models::whisper`     | `WhisperConfig.alignment_heads`                                        | Added   | `Vec<(usize, usize)>` field (from optional `vokra.whisper.alignment_heads`)                   | Whisper word-timestamp alignment heads, M4-20 (a)                     | no        | (TBD) |
+| `vokra-ops`                 | `agc` / `AgcAttrs` / `hpf` / `HpfAttrs` / `loudness_norm` / `LoudnessNormAttrs` / `integrated_lufs` | Added | runtime functions (FR-OP-62 / FR-OP-63)                                                       | speech-enhancement subset (agc/hpf/loudness), M4-20 (c)               | no        | (TBD) |
+| `vokra-ops`                 | `denoise` / `DenoiseModel` / `DenoiseWeights` / `DeepFilterNetConfig`  | Added   | DeepFilterNet-topology denoiser (FR-OP-61)                                                    | speech enhancement `denoise`, M4-20 (c)                                | no        | (TBD) |
+| `vokra-convert`             | `convert_denoise_synthetic` / `convert_denoise_from_model`             | Added   | `vokra.denoise.*` GGUF writers                                                                | denoise offline path, M4-20 (c) T12                                    | no        | (TBD) |
+
+#### Reserved additions — M5-residual op anchors (M4-20 T14)
+
+Forward reservations recorded **before** the IF-01 freeze (M5-13; ADR M4-20
+§D-6) so a post-freeze M5 op landing is a backward-compatible additive, never a
+shape break. These are `vokra-core::m5_residual_ops` `&'static str` constants —
+**declared, never registered** (the `KOKORO_ISTFT_HEAD_OP` pattern; guarded by
+`m5_residual_ops::tests::new_anchors_are_reserved_but_unregistered`). They add
+**no** C ABI symbol and are **not** inserted into `MinDtypeRegistry` / `OpKind`.
+
+| Reserved op-kind id          | FR-OP    | M5 blocker (why deferred)                                     |
+| ---------------------------- | -------- | ------------------------------------------------------------ |
+| `bigvgan_generator` (op)     | FR-OP-11 | no trigger model; min-dtype anchor already registered (M2-08), only the generator **op landing** is M5 |
+| `ctc_decode`                 | FR-OP-41 | NeMo-family trigger pending                                  |
+| `rnnt_decode`                | FR-OP-42 | NeMo-family trigger pending                                  |
+| `ecapa_tdnn_speaker_encode`  | FR-OP-80 | CAM++ already covers speaker embedding                       |
+| `wespeaker_speaker_encode`   | FR-OP-80 | CAM++ already covers speaker embedding                       |
+| `titanet_speaker_encode`     | FR-OP-80 | CAM++ covers it; TitaNet NVIDIA NC restriction unconfirmed   |
+| `diarize`                    | FR-OP-82 | trigger + license (pyannote HF-gated) double blocker         |
+
 ## GGUF Metadata additions (non-C-ABI, informational)
 
 The following GGUF metadata chunks were added during the M3 waves. **These
@@ -316,6 +360,8 @@ Recording rules for entries here:
 | M3-10 | `vokra.voxtral.text_decoder.*`  | `vokra.voxtral.text_decoder.{n_layer,hidden_dim,ffn_dim,vocab_size}`                                                                                                                                              | `u32`         | persisted   | Voxtral Mistral-family text decoder attributes.                                                                                                                                          | Wave 5                     |
 | M3-10 | `vokra.voxtral.mode`           | `vokra.voxtral.mode`                                                                                                                                                                                             | `string`      | persisted   | Voxtral mode discriminator: `"asr"` (audio → text) or `"s2s"` (speech-to-speech scaffold). Read by `crates/vokra-convert/src/main.rs::convert_voxtral_file`.                             | Wave 5                     |
 | M3-10 | `vokra.voxtral.adapter.*`      | (see the C-ABI-adjacent entry above under `## Entries` → 2026-07-09 → `gguf:vokra.voxtral.adapter.*`)                                                                                                             | mixed         | persisted   | Audio-adapter framework — the primary changelog entry lives in the `## Entries` section above so both C-ABI and GGUF views find it; the row here cross-references only.                  | Wave 8                     |
+| M4-20 | `vokra.denoise.*`              | `vokra.denoise.{n_fft,hop,sample_rate,n_erb,hidden,df_bins,df_order}` (`u32`) + flat F32 tensors `vokra.denoise.{encoder,erb_decoder,df_decoder}.{weight,bias}` — read by `DenoiseModel::from_gguf` / written by `DenoiseModel::to_gguf_bytes` (`crates/vokra-ops/src/denoise.rs`) | `u32` + `f32` tensors | persisted (synthetic path) | DeepFilterNet `denoise` (FR-OP-61) config + neural-scaffold tensors. The synthetic converter (`convert_denoise_synthetic`) writes/reads this today; the **real** DeepFilterNet checkpoint → tensors mapping is owner (T17). | M4-20 (c)                  |
+| M4-20 | `vokra.whisper.alignment_heads`| `vokra.whisper.alignment_heads` — OPTIONAL flat `[layer0,head0,layer1,head1,…]` `u32` pair array; read by `WhisperConfig::from_gguf` into `alignment_heads`. Absent → word timestamps fail explicitly (FR-EX-08). | `u32-array`   | documented  | Whisper cross-attention DTW alignment heads (FR-OP-40 word timestamps). Model-specific data (not fabricated); converter-side emission is owner (real `model.alignment_heads` blob).      | M4-20 (a)                  |
 
 ### v1.0-rc window (M4) — GGUF metadata additions
 

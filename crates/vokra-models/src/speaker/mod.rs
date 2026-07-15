@@ -16,9 +16,15 @@
 //! (`tests/parity/camplus/`) by the [`parity`] submodule.
 
 pub mod camplus;
+// M4-20 (b): speaker verification (FR-OP-81) — cosine similarity of two
+// speaker embeddings + optional threshold. CAM++ is the trigger model; the
+// cosine core is generic over embedding length so a future ECAPA-TDNN /
+// WeSpeaker embedding reuses it (ADR M4-20 §D-4).
+pub mod verify;
 mod weights;
 
 #[cfg(test)]
 mod parity;
 
 pub use camplus::{EMBED_DIM, SpeakerEncoder};
+pub use verify::{SpeakerVerifyResult, cosine_similarity, speaker_verify};

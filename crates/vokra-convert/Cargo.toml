@@ -13,6 +13,10 @@ publish.workspace = true
 # external crates — so no protobuf/onnx dependency can leak toward the runtime.
 [dependencies]
 vokra-core.workspace = true
+# M4-20 T12: the `denoise` converter writes the `vokra.denoise.*` GGUF whose
+# schema (config keys + tensor names + `DenoiseModel::to_gguf_bytes`) is
+# defined in `vokra-ops`. First-party `vokra-*` edge, zero-dep preserved.
+vokra-ops.workspace = true
 
 [lints]
 workspace = true

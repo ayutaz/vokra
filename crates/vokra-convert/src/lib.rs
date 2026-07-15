@@ -761,6 +761,9 @@ pub fn convert_moshi_file(
 /// shape as the module-private [`models::voxtral::VoxtralConfig`], re-exported
 /// here so external callers can build one without pulling in the private
 /// module.
+// M4-20 T12: DeepFilterNet `denoise` offline GGUF path (real checkpoint parse
+// is owner, T17).
+pub use models::denoise::{convert_denoise_from_model, convert_denoise_synthetic};
 pub use models::voxtral::VoxtralConfig;
 
 /// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through

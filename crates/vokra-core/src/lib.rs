@@ -98,6 +98,9 @@ pub mod gguf;
 pub mod ir;
 pub mod json;
 pub mod kv_quant;
+// M4-20 T14: reserved op-kind anchors for the M5-residual audio ops (declared,
+// never registered — the KOKORO_ISTFT_HEAD_OP pattern; ADR M4-20 §D-6).
+pub mod m5_residual_ops;
 pub mod pipeline;
 pub mod prenorm;
 pub mod quant;
