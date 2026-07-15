@@ -49,6 +49,20 @@ vokra-backend-cuda = { workspace = true, optional = true }
 # routed through this feature therefore surfaces as an explicit `UnsupportedOp`
 # from `Compute::for_backend` — never a silent CPU fall back (FR-EX-08).
 vokra-backend-vulkan = { workspace = true, optional = true }
+# M4-01 (GPU execution), WebGPU arm: symmetric with the Metal / CUDA / Vulkan
+# arms — an OPTIONAL first-party dep behind the `webgpu` feature, so default
+# builds never even name it (NFR-PT-01). `vokra-backend-webgpu` is a
+# first-party `vokra-*` crate with ZERO external deps (raw
+# `#[link(wasm_import_module)]` extern-import shim + hand-written JS glue —
+# NO wgpu / wasm-bindgen / web-sys binding crate; the import-object
+# resolution at instantiate time is the WASM dlopen equivalent), so the
+# zero-dependency gate (NFR-DS-02) still holds. The `Compute::WebGpu` arm is
+# additionally `cfg(target_arch = "wasm32")`-gated inside this crate
+# (WebGPU is reached through browser imports — there is nothing to import
+# outside a JS host). A missing adapter / an uncovered op is an explicit
+# `BackendUnavailable` / `UnsupportedOp` — never a silent CPU fall back
+# (FR-EX-08).
+vokra-backend-webgpu = { workspace = true, optional = true }
 
 [dev-dependencies]
 # M4-04 T10/T11 (test-only edge, runtime direction untouched): the codec GGUF
@@ -72,6 +86,18 @@ cuda = ["dep:vokra-backend-cuda"]
 # `BackendKind::Vulkan` currently returns `UnsupportedOp` — never a silent CPU
 # fall back. Real GPU parity is verified once T14〜T22 SPIR-V kernels land.
 vulkan = ["dep:vokra-backend-vulkan"]
+# Off by default: enable with `--features webgpu --target wasm32-unknown-unknown`
+# to route the model hot path onto the browser WebGPU backend (M4-01). On any
+# non-wasm32 target the feature compiles but the `Compute::WebGpu` arm is
+# cfg'd out, so `Compute::for_backend(BackendKind::WebGpu, …)` is an explicit
+# `BackendUnavailable` (FR-EX-08 — the WASM CPU/SIMD128 path is only ever the
+# caller's explicit `BackendKind::Cpu` choice). Coverage: the six Whisper hot
+# ops (Gemm / Gemv / Softmax / LayerNorm / Gelu / Conv1d); the RVQ codec ops
+# stay explicit `UnsupportedOp` (same posture as Metal / CUDA).
+# (forwards the backend crate's own `webgpu` feature so the extern-import
+# context actually compiles on wasm32 — on native targets the backend's
+# target gate keeps the explicit-BackendUnavailable stubs.)
+webgpu = ["dep:vokra-backend-webgpu", "vokra-backend-webgpu/webgpu"]
 
 # M1-01-D: reference RTF bench for the piper-plus native TTS (hand-rolled
 # std::time measurement, no external bench crate — NFR-DS-02). It is env-gated

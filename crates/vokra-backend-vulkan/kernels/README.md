@@ -72,25 +72,31 @@ matching `load_spv` arm to `include_bytes!` — `verify_pinned_hashes` and
 every blob-gated parity test light up automatically (placeholder-then-swap,
 M4-13-T02).
 
-## Graph-executor op coverage vs the CUDA arm (M4-13-T14)
+## Graph-executor op coverage vs the CUDA / WebGPU arms (M4-13-T14 + M4-01-T17)
 
 Machine-checked by `tests/graph_arm_coverage.rs` (host-portable) and the
 blob-driven lock-step tests; `supports()` additionally requires the backing
 blob to be committed (conservative honesty — an advertised op must actually
-dispatch).
+dispatch). The WebGPU column (M4-01-T17) is machine-checked by
+`vokra-backend-webgpu`'s `graph_arm_mapping_is_the_vulkan_target_set` test;
+WGSL sources are embedded text, so the WebGPU arm has **no blob gate** — all
+five arms are live from the M4-01 commit.
 
-| graph `OpKind` | CUDA arm `supports()` | Vulkan arm (principled) | Vulkan backing shader | status today (no `.spv` committed) |
-|----------------|-----------------------|--------------------------|------------------------|-------------------------------------|
-| `MatMul`       | ✅                    | ✅                       | `gemm_subgroup` / `gemm_coopmat` (probe-selected) | blob-gated → `UnsupportedOp` |
-| `Add`          | ✅                    | ✅                       | `add_f32` (hand-crafted) | **live** |
-| `Mul`          | ✅                    | ✅                       | `elementwise` (OP=mul)  | blob-gated → `UnsupportedOp` |
-| `Softmax`      | ✅                    | ✅                       | `softmax`               | blob-gated → `UnsupportedOp` |
-| `Copy`         | ❌ (Vulkan-only runtime-verification op) | ✅ | `copy_f32` (hand-crafted) | **live** |
-| `Stft` (+ other front-end signal ops) | ❌ | ❌ | — | **honest gap on BOTH arms** — front-end ops run in `vokra-ops`; putting `Stft` on a GPU graph arm is a separate M4-01+ decision |
+| graph `OpKind` | CUDA arm `supports()` | Vulkan arm (principled) | Vulkan backing shader | Vulkan status today (no `.spv` committed) | WebGPU arm (M4-01) | WebGPU backing WGSL |
+|----------------|-----------------------|--------------------------|------------------------|-------------------------------------|--------------------|----------------------|
+| `MatMul`       | ✅                    | ✅                       | `gemm_subgroup` / `gemm_coopmat` (probe-selected) | blob-gated → `UnsupportedOp` | ✅ | `gemm_f32` |
+| `Add`          | ✅                    | ✅                       | `add_f32` (hand-crafted) | **live** | ✅ | `add_f32` |
+| `Mul`          | ✅                    | ✅                       | `elementwise` (OP=mul)  | blob-gated → `UnsupportedOp` | ✅ | `elementwise` (op=mul) |
+| `Softmax`      | ✅                    | ✅                       | `softmax`               | blob-gated → `UnsupportedOp` | ✅ | `softmax` |
+| `Copy`         | ❌ (Vulkan/WebGPU-only runtime-verification op) | ✅ | `copy_f32` (hand-crafted) | **live** | ✅ | `copy_f32` |
+| `Stft` (+ other front-end signal ops) | ❌ | ❌ | — | **honest gap on ALL backend graph arms** — front-end ops run in `vokra-ops`; putting `Stft` on a GPU graph arm is a separate M4+ decision | ❌ | — |
 
-Vulkan minus `Copy` == the CUDA `supports()` set
+Vulkan minus `Copy` == WebGPU minus `Copy` == the CUDA `supports()` set
 (`crates/vokra-backend-cuda/src/backend.rs`, M3-01-T06) — the milestones §8
-M4-13 "graph-executor の op coverage が CUDA arm と同等" condition.
+M4-13 "graph-executor の op coverage が CUDA arm と同等" condition; the
+WebGPU arm (M4-01-T17) targets the identical `{Copy, Add, MatMul, Mul,
+Softmax}` set (`Copy` is the Vulkan/WebGPU extra — the CUDA arm does NOT
+have it).
 
 The remaining kernels — `gemv`, `softmax_causal`, `layer_norm`, `gelu`,
 `conv1d`, `activation`, `transpose`, `gather` — have **no `OpKind`

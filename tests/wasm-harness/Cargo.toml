@@ -1,0 +1,46 @@
+# vokra-wasm-harness — the Web (wasm32) entry crate + Node kernel-parity
+# test entries (M4-01-T06 / T19 / T20).
+#
+# Two roles behind one cdylib:
+#   1. production `vokra_wasm_*` session API (always compiled): the exports
+#      the npm package (`web/pkg`) drives — in-memory GGUF → WhisperAsr →
+#      transcribe, with an explicit BackendKind selector (FR-EX-08: WebGPU
+#      absence is an explicit error, CPU is the caller's explicit choice).
+#   2. `vokra_test_*` kernel-parity entries (feature `test-entries`, ON by
+#      default): the Node harness (tools/wasm/run-kernel-parity.mjs) drives
+#      SIMD128-vs-scalar differentials against these. The production npm
+#      artifact is built with `--no-default-features` so these test exports
+#      are not shipped (scripts/build-wasm.sh pkg).
+#
+# Zero-dep (NFR-DS-02): first-party `vokra-*` dependencies only; the JS side
+# (glue / loader / runner) is hand-written with zero npm dependencies
+# (ADR M4-01-webgpu-wasm §5).
+[package]
+name = "vokra-wasm-harness"
+description = "Vokra Web entry crate: wasm32 cdylib exporting the vokra_wasm_* session API + (feature-gated) kernel-parity test entries"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# cdylib → the .wasm artifact; rlib keeps `cargo test --workspace` able to
+# compile the crate's host-side unit tests on native targets.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vokra-core.workspace = true
+vokra-backend-cpu.workspace = true
+# The `webgpu` feature routes BackendKind::WebGpu through the Compute seam
+# (explicit BackendUnavailable off-wasm32 / without an adapter — FR-EX-08).
+vokra-models = { workspace = true, features = ["webgpu"] }
+
+[features]
+default = ["test-entries"]
+# Kernel-parity test exports for the Node harness. OFF in the shipped npm
+# artifact (scripts/build-wasm.sh pkg uses --no-default-features).
+test-entries = []
+
+[lints]
+workspace = true

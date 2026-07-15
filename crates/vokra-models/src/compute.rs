@@ -212,6 +212,33 @@ impl HotOp {
         let _ = self;
         false
     }
+
+    /// Whether the WebGPU backend's imperative [`Compute`] seam covers this
+    /// op (M4-01-T16).
+    ///
+    /// Kept in sync with the `Be::WebGpu` arms of the [`Compute`] methods
+    /// below (the wasm32-only `webgpu_coverage_is_consistent` test pins the
+    /// two together; the Node harness `tools/wasm/run-kernel-parity.mjs`
+    /// exercises the runtime side). The whole Whisper hot-op set (GEMM /
+    /// GEMV / softmax / layer_norm / GELU / conv1d) has a WGSL kernel from
+    /// the M4-01 slice (T12〜T15), so the whole Whisper forward runs on
+    /// WebGPU through this seam. The RVQ codec ops ([`HotOp::MimiRvq`] /
+    /// [`HotOp::DacRvq`] / [`HotOp::EncodecRvq`]) remain uncovered — the
+    /// same posture as Metal / CUDA / Vulkan — so any model listing them
+    /// fails `for_backend(WebGpu, …)` with a coverage `UnsupportedOp`, never
+    /// a silent CPU fall back (FR-EX-08).
+    #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+    fn covered_by_webgpu(self) -> bool {
+        matches!(
+            self,
+            HotOp::Gemm
+                | HotOp::Gemv
+                | HotOp::Softmax
+                | HotOp::LayerNorm
+                | HotOp::Gelu
+                | HotOp::Conv1d
+        )
+    }
 }
 
 /// A typed, zero-malloc compute dispatcher the imperative model hot path calls
@@ -242,6 +269,12 @@ enum Be {
     /// is built once per model entry, after a far costlier dlopen + NVRTC compile.
     #[cfg(all(feature = "cuda", any(unix, windows)))]
     Cuda(Box<vokra_backend_cuda::CudaContext>),
+    /// WebGPU context (browser WASM, M4-01). Covers the six Whisper hot ops
+    /// through per-op WGSL dispatches (upload → dispatch → readback; whole-
+    /// run device residency is the M4-02+ follow-up). `!Send` like the Metal
+    /// arm — glue handles are realm-affine.
+    #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+    WebGpu(vokra_backend_webgpu::WebGpuContext),
 }
 
 impl Compute {
@@ -273,7 +306,8 @@ impl Compute {
             all(
                 feature = "vulkan",
                 any(target_os = "linux", target_os = "android", target_os = "windows")
-            )
+            ),
+            all(feature = "webgpu", target_arch = "wasm32")
         )))]
         let _ = required;
         match kind {
@@ -334,10 +368,25 @@ impl Compute {
                         .to_owned(),
                 ))
             }
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            BackendKind::WebGpu => {
+                if let Some(op) = required.iter().copied().find(|op| !op.covered_by_webgpu()) {
+                    return Err(VokraError::UnsupportedOp(format!(
+                        "webgpu backend does not cover {op:?}; the model requires {required:?}. \
+                         One model = one backend — Vokra does not silently run the uncovered ops \
+                         on the CPU (FR-EX-08). Select BackendKind::Cpu explicitly for the WASM \
+                         SIMD128/scalar path."
+                    )));
+                }
+                Ok(Compute {
+                    be: Be::WebGpu(vokra_backend_webgpu::WebGpuContext::new()?),
+                })
+            }
             other => Err(VokraError::BackendUnavailable(format!(
                 "{other:?} backend is not built into vokra-models (build with the `metal` feature \
-                 on macOS / iOS for Metal, the `cuda` feature on Windows / Linux for CUDA, or the \
-                 `vulkan` feature on Linux / Android / Windows for Vulkan)"
+                 on macOS / iOS for Metal, the `cuda` feature on Windows / Linux for CUDA, the \
+                 `vulkan` feature on Linux / Android / Windows for Vulkan, or the `webgpu` \
+                 feature on wasm32 for browser WebGPU)"
             ))),
         }
     }
@@ -351,6 +400,8 @@ impl Compute {
             Be::Metal(_) => "metal",
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(_) => "cuda",
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => "webgpu",
         }
     }
 
@@ -373,6 +424,11 @@ impl Compute {
             Be::Metal(_) => true,
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(_) => true,
+            // No fused-attention WGSL chain in the M4-01 slice: the caller
+            // runs the per-op head loop (standard GEMM + softmax — also the
+            // FA v3 red-line posture). Honest `false`, not a stub `true`.
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => false,
         }
     }
 
@@ -396,6 +452,10 @@ impl Compute {
             Be::Metal(_) => true,
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(_) => true,
+            // No device-resident encoder chain in the M4-01 slice (per-op
+            // upload/dispatch/readback; residency is the M4-02+ follow-up).
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => false,
         }
     }
 
@@ -422,6 +482,8 @@ impl Compute {
             Be::Metal(ctx) => ctx.gemm_f32(m, n, k, a, b, bias, out),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(ctx) => ctx.gemm_f32(m, n, k, a, b, bias, out),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(ctx) => ctx.gemm_f32(m, n, k, a, b, bias, out),
         }
     }
 
@@ -442,6 +504,8 @@ impl Compute {
             Be::Metal(ctx) => ctx.gemv_f32(m, k, a, x, bias, out),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(ctx) => ctx.gemv_f32(m, k, a, x, bias, out),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(ctx) => ctx.gemv_f32(m, k, a, x, bias, out),
         }
     }
 
@@ -459,6 +523,8 @@ impl Compute {
             Be::Metal(ctx) => ctx.softmax_f32(input, out, rows, cols),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(ctx) => ctx.softmax_f32(input, out, rows, cols),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(ctx) => ctx.softmax_f32(input, out, rows, cols),
         }
     }
 
@@ -481,6 +547,8 @@ impl Compute {
             Be::Metal(ctx) => ctx.layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(ctx) => ctx.layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(ctx) => ctx.layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
         }
     }
 
@@ -492,6 +560,8 @@ impl Compute {
             Be::Metal(ctx) => ctx.gelu_f32(x, out),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(ctx) => ctx.gelu_f32(x, out),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(ctx) => ctx.gelu_f32(x, out),
         }
     }
 
@@ -521,6 +591,10 @@ impl Compute {
             ),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(ctx) => ctx.conv1d_f32(
+                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
+            ),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(ctx) => ctx.conv1d_f32(
                 input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
             ),
         }
@@ -598,6 +672,13 @@ impl Compute {
                  Vokra does not silently run the op on the CPU (FR-EX-08)."
                     .to_owned(),
             )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "mimi_rvq_f32 has no wired WebGPU WGSL kernel (M4-01 covers the six Whisper hot \
+                 ops only; the RVQ codec GPU arms are deferred like Metal/CUDA). Select \
+                 BackendKind::Cpu — Vokra does not silently run the op on the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
         }
     }
 
@@ -654,6 +735,12 @@ impl Compute {
                  not silently run the op on the CPU (FR-EX-08)."
                     .to_owned(),
             )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "dac_rvq_f32 has no wired WebGPU WGSL kernel (M4-01 covers the six Whisper hot \
+                 ops only). Select BackendKind::Cpu — no silent CPU fall back (FR-EX-08)."
+                    .to_owned(),
+            )),
         }
     }
 
@@ -694,6 +781,12 @@ impl Compute {
                 "encodec_rvq_f32 has no wired CUDA NVRTC kernel; the M4-04 GPU arm is deferred. \
                  Select BackendKind::Cpu (which delegates to vokra_ops::encodec_rvq_decode) — \
                  Vokra does not silently run the op on the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "encodec_rvq_f32 has no wired WebGPU WGSL kernel (M4-01 covers the six Whisper \
+                 hot ops only). Select BackendKind::Cpu — no silent CPU fall back (FR-EX-08)."
                     .to_owned(),
             )),
         }
@@ -743,6 +836,15 @@ impl Compute {
             Be::Metal(ctx) => ctx.mlp_f32(t, d, ffn, x, fc1_w, fc1_bias, fc2_w, fc2_bias, out),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(ctx) => ctx.mlp_f32(t, d, ffn, x, fc1_w, fc1_bias, fc2_w, fc2_bias, out),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(ctx) => {
+                // Same fc1 GEMM → GELU → fc2 GEMM chain as the CPU arm, per-op
+                // through the WGSL kernels into the caller's scratch (no fused
+                // MLP kernel in the M4-01 slice — honest per-op mode).
+                ctx.gemm_f32(t, ffn, d, x, fc1_w, fc1_bias, mlp_h)?;
+                ctx.gelu_f32(mlp_h, mlp_a)?;
+                ctx.gemm_f32(t, d, ffn, mlp_a, fc2_w, fc2_bias, out)
+            }
         }
     }
 
@@ -811,6 +913,14 @@ impl Compute {
             Be::Cuda(ctx) => ctx.attn_f32(
                 t_q, t_kv, d, n_head, xq, q_w, q_bias, k, v, out_w, out_bias, scale, out,
             ),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "webgpu has no fused-attention chain in the M4-01 slice; correct code never \
+                 reaches this arm because `attention_is_fused()` is false for WebGPU — the \
+                 caller runs the per-op head loop (standard GEMM + softmax; FA v3 red line). \
+                 No silent CPU fall back (FR-EX-08)."
+                    .to_owned(),
+            )),
         }
     }
 
@@ -891,6 +1001,14 @@ impl Compute {
                 final_ln_beta,
                 out,
             ),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "webgpu has no device-resident pre-norm encoder chain in the M4-01 slice; \
+                 correct code never reaches this arm because `prenorm_stack_is_fused()` is \
+                 false for WebGPU — the caller runs the per-op encoder_block loop. Whole-run \
+                 residency is the M4-02+ follow-up. No silent CPU fall back (FR-EX-08)."
+                    .to_owned(),
+            )),
         }
     }
 
@@ -913,6 +1031,11 @@ impl Compute {
             Be::Metal(_) => true,
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(_) => true,
+            // No device-resident decoder-step session in the M4-01 slice —
+            // the decoder runs the per-op CPU-shaped loop through the WGSL
+            // kernels (honest per-op mode; session residency is follow-up).
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => false,
         }
     }
 
@@ -1012,6 +1135,13 @@ impl Compute {
                 )?;
                 Ok(DecoderStepSession::Cuda(Box::new(s)))
             }
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "webgpu has no device-resident decoder-step session in the M4-01 slice; correct \
+                 code never reaches this arm because `decoder_step_is_session_backed()` is \
+                 false for WebGPU. No silent CPU fall back (FR-EX-08)."
+                    .to_owned(),
+            )),
         }
     }
 }
@@ -1211,10 +1341,13 @@ pub fn make_backend(kind: BackendKind) -> Result<Box<dyn Backend>> {
             any(target_os = "linux", target_os = "android", target_os = "windows")
         ))]
         BackendKind::Vulkan => Ok(Box::new(vokra_backend_vulkan::VulkanBackend::new()?)),
+        #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+        BackendKind::WebGpu => Ok(Box::new(vokra_backend_webgpu::WebGpuBackend::new()?)),
         other => Err(VokraError::BackendUnavailable(format!(
             "{other:?} backend is not built into vokra-models (build with the `metal` feature on \
-             macOS / iOS for Metal, the `cuda` feature on Windows / Linux for CUDA, or the \
-             `vulkan` feature on Linux / Android / Windows for Vulkan)"
+             macOS / iOS for Metal, the `cuda` feature on Windows / Linux for CUDA, the \
+             `vulkan` feature on Linux / Android / Windows for Vulkan, or the `webgpu` feature \
+             on wasm32 for browser WebGPU)"
         ))),
     }
 }
@@ -1929,5 +2062,68 @@ mod tests {
             make_backend(BackendKind::Vulkan),
             Err(VokraError::BackendUnavailable(_))
         ));
+    }
+
+    /// M4-01-T16 off-target contract: on every non-wasm32 build (including
+    /// native `--features webgpu`), `BackendKind::WebGpu` falls to the
+    /// target-agnostic error path — an explicit `BackendUnavailable` naming
+    /// the `webgpu` feature. Never a silent CPU substitute (FR-EX-08); the
+    /// WASM CPU path is only ever the caller's explicit `BackendKind::Cpu`
+    /// choice.
+    #[cfg(not(all(feature = "webgpu", target_arch = "wasm32")))]
+    #[test]
+    fn webgpu_off_target_is_explicit_backend_unavailable() {
+        let err = match Compute::for_backend(BackendKind::WebGpu, &[HotOp::Gemm]) {
+            Ok(_) => panic!("WebGpu must fail explicitly off wasm32 / without the feature"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, VokraError::BackendUnavailable(_)),
+            "expected BackendUnavailable, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("webgpu"),
+            "the error must name the `webgpu` feature so the caller knows what to enable: {msg}"
+        );
+        assert!(matches!(
+            make_backend(BackendKind::WebGpu),
+            Err(VokraError::BackendUnavailable(_))
+        ));
+    }
+
+    /// M4-01-T16 on-target coverage lock-step (compiled for wasm32 + `webgpu`
+    /// only; executed by the browser/Node harness runs, not native CI): the
+    /// six Whisper hot ops are covered, the RVQ codec ops are not — listing
+    /// one fails the coverage gate with an explicit `UnsupportedOp` (never a
+    /// silent CPU fall back, FR-EX-08). This pins `covered_by_webgpu` to the
+    /// `Be::WebGpu` method arms above.
+    #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+    #[test]
+    fn webgpu_coverage_is_consistent() {
+        for op in [
+            HotOp::Gemm,
+            HotOp::Gemv,
+            HotOp::Softmax,
+            HotOp::LayerNorm,
+            HotOp::Gelu,
+            HotOp::Conv1d,
+        ] {
+            assert!(
+                op.covered_by_webgpu(),
+                "{op:?} unexpectedly NOT WebGPU-covered"
+            );
+        }
+        for op in [HotOp::MimiRvq, HotOp::DacRvq, HotOp::EncodecRvq] {
+            assert!(
+                !op.covered_by_webgpu(),
+                "{op:?} unexpectedly WebGPU-covered — the RVQ GPU kernels are deferred; if one \
+                 has just landed, flip `HotOp::covered_by_webgpu` and update this test.",
+            );
+            assert!(matches!(
+                Compute::for_backend(BackendKind::WebGpu, &[op]),
+                Err(VokraError::UnsupportedOp(_))
+            ));
+        }
     }
 }
