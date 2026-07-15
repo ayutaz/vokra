@@ -190,6 +190,41 @@ fn rvv_table() -> KernelTable {
     unreachable!("RVV kernel table requested on a non-riscv64 target")
 }
 
+// M4-08-T09: RISC-V RVV draft-0.7.1 dispatch tier (T-Head C910/C906 =
+// LicheePi 4A / Milk-V Duo). Compiled only on riscv64, exactly like the
+// RVV 1.0 tier — but the two are encoding-incompatible peers, so this table
+// routes to `kernels::rvv071` (`.insn` raw words), never to `kernels::rvv`.
+// `features::select_isa` cannot select `Rvv071` unless the host probed
+// `rvv_071 = true` (xtheadvector token / cpu-vector 0.7.1 signal with the
+// RVV 1.0 misdetection guard, ADR M4-08 §b), and `table_for` rejects it via
+// `CpuFeatures::supports` everywhere else — so the unreachable! stub below
+// is genuinely unreachable in all production paths.
+#[cfg(target_arch = "riscv64")]
+fn rvv071_table() -> KernelTable {
+    use crate::kernels::rvv071;
+    KernelTable {
+        gemm: rvv071::gemm,
+        gemv: rvv071::gemv,
+        add: rvv071::add,
+        mul: rvv071::mul,
+        relu: rvv071::relu,
+        sigmoid: rvv071::sigmoid,
+        tanh: rvv071::tanh,
+        gelu: rvv071::gelu,
+        softmax: rvv071::softmax,
+        layer_norm: rvv071::layer_norm,
+        fused_logmel: rvv071::fused_logmel,
+    }
+}
+
+#[cfg(not(target_arch = "riscv64"))]
+fn rvv071_table() -> KernelTable {
+    // Unreachable: `features::select_isa` never yields `Rvv071` off riscv64
+    // (the probe is /proc/cpuinfo-based and riscv64-gated), and `table_for`
+    // rejects it via `CpuFeatures::supports`.
+    unreachable!("RVV 0.7.1 kernel table requested on a non-riscv64 target")
+}
+
 // M4-01-T04: WASM SIMD128 dispatch tier. Compiled only when the wasm32
 // artifact is built WITH `-C target-feature=+simd128` (the crate gates the
 // `wasm_simd128` kernels module on the same cfg). This is COMPILE-TIME
@@ -244,6 +279,7 @@ fn build_table(isa: IsaPath) -> KernelTable {
         IsaPath::Avx2 => avx2_table(),
         IsaPath::Neon => neon_table(),
         IsaPath::Rvv => rvv_table(),
+        IsaPath::Rvv071 => rvv071_table(),
         IsaPath::WasmSimd128 => wasm_simd128_table(),
     }
 }
@@ -435,7 +471,7 @@ mod tests {
         // (they are arch-exclusive); every unsupported path must be an
         // explicit BackendUnavailable, never a silent fallback (FR-EX-08).
         let feats = CpuFeatures::detect();
-        for isa in [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv] {
+        for isa in [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv, IsaPath::Rvv071] {
             if !feats.supports(isa) {
                 assert!(matches!(
                     table_for(isa),
@@ -527,7 +563,7 @@ mod tests {
         let pcm = [1.0f32, 2.0, 3.0];
         let mel_fb = [1.0f32; 3];
         let mut out = [0.0f32; 1];
-        for isa in [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv] {
+        for isa in [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv, IsaPath::Rvv071] {
             if !feats.supports(isa) {
                 assert!(matches!(
                     fused_log_mel_dispatch_on(isa, &pcm, &mel_fb, &mut out),

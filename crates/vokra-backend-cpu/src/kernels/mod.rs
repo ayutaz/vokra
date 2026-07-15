@@ -73,6 +73,18 @@ pub(crate) mod neon;
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod rvv;
 
+// M4-08-T07/T08: RISC-V RVV **draft 0.7.1** kernels (T-Head C910/C906 =
+// LicheePi 4A / Milk-V Duo). A peer tier to `rvv` — NOT a subset of it: the
+// 0.7.1 and ratified-1.0 instruction encodings are incompatible, so the two
+// modules share no instruction bytes (ADR M4-08 §d). Compiled only on
+// `target_arch = "riscv64"`; the runtime dispatch layer gates entry via
+// `CpuFeatures::supports` (needs `rvv_071 = true` — the xtheadvector /
+// cpu-vector detection signals with the RVV 1.0 misdetection guard).
+// Scaffold split mirrors `rvv`: `add` emits real 0.7.1 words via `.insn`,
+// the rest delegate to `scalar::*` pending M4+/M5 rewrites.
+#[cfg(target_arch = "riscv64")]
+pub(crate) mod rvv071;
+
 // M4-01-T04/T05: WASM SIMD128 f32x4 kernels (`core::arch::wasm32` intrinsics,
 // std-builtin — no external crate). Compiled ONLY when the wasm32 artifact is
 // built with `-C target-feature=+simd128`: WASM has no runtime CPU feature
