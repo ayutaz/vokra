@@ -263,6 +263,38 @@ pub struct Xcodec2FsqAttrs {
     pub d_model: usize,
 }
 
+/// Validates an FSQ `levels` tuple and returns `Π levels` (the effective
+/// vocab). Shared by [`Xcodec2FsqAttrs::effective_vocab`] and the
+/// [`fsq_index_to_grid_codes`] wrapper so their validation can never diverge
+/// — and so neither path has to allocate a `Vec` just to reach it (the old
+/// `fsq_index_to_grid_codes` built a throwaway `Xcodec2FsqAttrs` via
+/// `levels.to_vec()` on every call). Explicit error on an empty tuple, a
+/// level `< 2`, or a product that overflows `usize` (FR-EX-08 — no silent
+/// wrap).
+fn effective_vocab_of(levels: &[u32]) -> Result<usize> {
+    if levels.is_empty() {
+        return Err(VokraError::InvalidArgument(
+            "xcodec2_fsq: levels tuple must be non-empty".to_owned(),
+        ));
+    }
+    let mut vocab = 1usize;
+    for (d, &level) in levels.iter().enumerate() {
+        if level < 2 {
+            return Err(VokraError::InvalidArgument(format!(
+                "xcodec2_fsq: levels[{d}] = {level} < 2 (half_width would be 0 — a 1-level \
+                 dimension cannot represent any grid value)"
+            )));
+        }
+        vocab = vocab.checked_mul(level as usize).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "xcodec2_fsq: Π levels overflows usize at levels[{d}] = {level} (no silent \
+                 wrap — FR-EX-08)"
+            ))
+        })?;
+    }
+    Ok(vocab)
+}
+
 impl Xcodec2FsqAttrs {
     /// Builds the released X-Codec 2 shape (`levels = [4; 8]`,
     /// `d_model = 2048`) — verified from `vq/codec_decoder_vocos.py` +
@@ -285,29 +317,11 @@ impl Xcodec2FsqAttrs {
 
     /// Effective vocabulary size = `Π levels` (65536 for the released
     /// X-Codec 2). Explicit error on an empty tuple, a level < 2, or a
-    /// product that overflows `usize` (FR-EX-08 — no silent wrap).
+    /// product that overflows `usize` (FR-EX-08 — no silent wrap). Thin
+    /// wrapper over [`effective_vocab_of`] (shared with the
+    /// [`fsq_index_to_grid_codes`] validation path).
     pub fn effective_vocab(&self) -> Result<usize> {
-        if self.levels.is_empty() {
-            return Err(VokraError::InvalidArgument(
-                "xcodec2_fsq: levels tuple must be non-empty".to_owned(),
-            ));
-        }
-        let mut vocab = 1usize;
-        for (d, &level) in self.levels.iter().enumerate() {
-            if level < 2 {
-                return Err(VokraError::InvalidArgument(format!(
-                    "xcodec2_fsq: levels[{d}] = {level} < 2 (half_width would be 0 — a 1-level \
-                     dimension cannot represent any grid value)"
-                )));
-            }
-            vocab = vocab.checked_mul(level as usize).ok_or_else(|| {
-                VokraError::InvalidArgument(format!(
-                    "xcodec2_fsq: Π levels overflows usize at levels[{d}] = {level} (no silent \
-                     wrap — FR-EX-08)"
-                ))
-            })?;
-        }
-        Ok(vocab)
+        effective_vocab_of(&self.levels)
     }
 }
 
@@ -390,13 +404,14 @@ impl FsqOutProj {
 /// `Π levels` overflow, `out.len() != levels.len()`, or
 /// `index >= Π levels` (FR-EX-08).
 pub fn fsq_index_to_grid_codes(index: u32, levels: &[u32], out: &mut [f32]) -> Result<()> {
-    // Validate the tuple (and get Π levels with overflow checking) through
-    // the same path the attrs use, so the two never diverge.
-    let probe = Xcodec2FsqAttrs {
-        levels: levels.to_vec(),
-        d_model: 1,
-    };
-    let vocab = probe.effective_vocab()?;
+    // Public validating entry point for callers that do not already hold a
+    // validated `Π levels`. Validate the borrowed slice directly through
+    // `effective_vocab_of` — the same path the attrs use, so the two never
+    // diverge — with no `levels.to_vec()` (the old body built a throwaway
+    // `Xcodec2FsqAttrs` here on every call). The hot loop in
+    // `xcodec2_fsq_decode` never reaches this wrapper: it computes `vocab`
+    // once and calls `fsq_index_to_grid_codes_into` per frame.
+    let vocab = effective_vocab_of(levels)?;
     if out.len() != levels.len() {
         return Err(VokraError::InvalidArgument(format!(
             "fsq_index_to_grid_codes: out.len() {} != levels.len() {}",
@@ -410,6 +425,39 @@ pub fn fsq_index_to_grid_codes(index: u32, levels: &[u32], out: &mut [f32]) -> R
              FR-EX-08)"
         )));
     }
+    fsq_index_to_grid_codes_into(index, levels, vocab, out);
+    Ok(())
+}
+
+/// Grid-decomposes `index` into `out`, **assuming the tuple is already
+/// validated** — the allocation-free hot path for [`xcodec2_fsq_decode`],
+/// which computes `vocab = Π levels` (validating `levels`) exactly once
+/// before the per-timestep loop rather than re-deriving it for every frame
+/// (the previous code re-ran `levels.to_vec()` + `effective_vocab` per frame).
+///
+/// Contract the caller MUST uphold — enforced by [`fsq_index_to_grid_codes`]
+/// for external callers, and by `xcodec2_fsq_decode`'s once-per-decode
+/// [`effective_vocab_of`] validation plus its per-frame `code < vocab` guard:
+/// - `levels` is non-empty with every entry `>= 2` (so `half_width >= 1`);
+/// - `vocab == Π levels` from a prior [`effective_vocab_of`] on the *same*
+///   `levels` — trusted here, not recomputed (and no `levels.to_vec()`);
+/// - `out.len() == levels.len()`;
+/// - `index < vocab`.
+///
+/// The invariants are `debug_assert!`ed — a contract guard in debug/test
+/// builds, compiled out of release so the runtime bounds check lives *once*
+/// in the caller instead of being doubled here (FR-EX-08 is satisfied by the
+/// caller's single explicit check). Infallible by construction.
+fn fsq_index_to_grid_codes_into(index: u32, levels: &[u32], vocab: usize, out: &mut [f32]) {
+    debug_assert_eq!(
+        out.len(),
+        levels.len(),
+        "fsq_index_to_grid_codes_into: caller must size out to len(levels)"
+    );
+    debug_assert!(
+        (index as usize) < vocab,
+        "fsq_index_to_grid_codes_into: caller must guarantee index < Π levels"
+    );
 
     // Mixed-radix decompose + normalize (vector-quantize-pytorch 1.17.8
     // `indices_to_level_indices` + `_scale_and_shift_inverse`; module docs).
@@ -424,7 +472,6 @@ pub fn fsq_index_to_grid_codes(index: u32, levels: &[u32], out: &mut [f32]) -> R
         let half_width = level / 2; // integer division (>= 1: level >= 2 validated)
         out[d] = (level_index as f32 - half_width as f32) / half_width as f32;
     }
-    Ok(())
 }
 
 /// Decodes `[time]` X-Codec 2 FSQ codes into a `[time, d_model]` row-major
@@ -507,13 +554,18 @@ pub fn xcodec2_fsq_decode(
     let mut out = vec![0.0_f32; time * d_model];
     let mut grid = vec![0.0_f32; n_dims];
     for (t, &code) in codes.iter().enumerate() {
+        // Single per-frame bounds check against the once-computed `vocab`
+        // (FR-EX-08 — no silent clamp; the timestep `t` is named here for the
+        // diagnostic). The decompose then goes through the allocation-free
+        // inner: no per-frame `levels.to_vec()`, no `effective_vocab`
+        // revalidation, and no second (doubled) bounds check.
         if (code as usize) >= vocab {
             return Err(VokraError::InvalidArgument(format!(
                 "xcodec2_fsq: codes[{t}] = {code} >= Π levels {vocab} (no silent clamp — \
                  FR-EX-08)"
             )));
         }
-        fsq_index_to_grid_codes(code, &attrs.levels, &mut grid)?;
+        fsq_index_to_grid_codes_into(code, &attrs.levels, vocab, &mut grid);
         let row = &mut out[t * d_model..(t + 1) * d_model];
         match out_proj {
             Some(proj) => {
@@ -909,5 +961,88 @@ mod tests {
         let proj = FsqOutProj::new(2, 3, vec![0.5; 6], vec![0.0; 2]).unwrap();
         let fs = xcodec2_fsq_decode(&[0, 63, 21], 3, Some(&proj), &fsq_attrs).unwrap();
         assert_eq!(fs.len(), 3 * fsq_attrs.d_model);
+    }
+
+    // ---- alloc-refactor guards: inner fast-path == public validating path -
+
+    #[test]
+    fn fsq_inner_and_public_wrapper_agree_over_full_vocab() {
+        // The refactor split the grid decompose into a private inner
+        // (`fsq_index_to_grid_codes_into`, taking the once-computed `vocab`)
+        // and kept the public `fsq_index_to_grid_codes` as a validating
+        // wrapper. Both must produce identical grids for every valid index —
+        // the inner drops the per-call `levels.to_vec()` + `effective_vocab`
+        // revalidation, never the arithmetic. `effective_vocab_of` is the
+        // shared borrow-slice validator both paths reach.
+        let levels = [3u32, 4, 5]; // Π levels = 60
+        let vocab = effective_vocab_of(&levels).unwrap();
+        assert_eq!(vocab, 60);
+        let mut via_inner = [0.0_f32; 3];
+        let mut via_wrapper = [0.0_f32; 3];
+        for index in 0..vocab as u32 {
+            fsq_index_to_grid_codes_into(index, &levels, vocab, &mut via_inner);
+            fsq_index_to_grid_codes(index, &levels, &mut via_wrapper).unwrap();
+            assert_eq!(
+                via_inner, via_wrapper,
+                "inner fast-path diverged from the public wrapper at index {index}",
+            );
+        }
+    }
+
+    #[test]
+    fn xcodec2_decode_hot_path_output_unchanged_vs_per_frame_wrapper() {
+        // Property test (M4-16 alloc-refactor): the batched decode — whose hot
+        // loop now calls the private inner with a once-computed `vocab` — must
+        // be bit-identical to the *pre-refactor* path, which decoded each frame
+        // through the public `fsq_index_to_grid_codes` wrapper and the same
+        // sequential FP32 GEMV. Reconstruct that old path and assert exact
+        // equality, so removing the per-frame alloc + revalidation changed
+        // nothing observable (no fabricated tolerance — exact `==`).
+        let attrs = Xcodec2FsqAttrs {
+            levels: vec![4, 4, 4, 4],
+            d_model: 5,
+        };
+        let vocab = attrs.effective_vocab().unwrap(); // 256
+        let n_dims = attrs.n_dims();
+        let d_model = attrs.d_model;
+
+        // Deterministic synthetic projection + codes (SplitMix64, zero-dep).
+        let mut state: u64 = 0x1234_5678_9ABC_DEF0;
+        let mut next = || {
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        };
+        let f = |v: u64| (v % 4000) as f32 / 1000.0 - 2.0; // ~[-2, 2)
+        let weight: Vec<f32> = (0..d_model * n_dims).map(|_| f(next())).collect();
+        let bias: Vec<f32> = (0..d_model).map(|_| f(next())).collect();
+        let proj = FsqOutProj::new(d_model, n_dims, weight, bias).unwrap();
+
+        let time = 128;
+        let codes: Vec<u32> = (0..time).map(|_| (next() % vocab as u64) as u32).collect();
+
+        let got = xcodec2_fsq_decode(&codes, time, Some(&proj), &attrs).unwrap();
+
+        // Pre-refactor reconstruction: public wrapper per frame + hand GEMV.
+        let mut want = vec![0.0_f32; time * d_model];
+        let mut grid = vec![0.0_f32; n_dims];
+        for (t, &code) in codes.iter().enumerate() {
+            fsq_index_to_grid_codes(code, &attrs.levels, &mut grid).unwrap();
+            for o in 0..d_model {
+                let w_row = proj.weight_row(o);
+                let mut y = proj.bias[o];
+                for (w, g) in w_row.iter().zip(grid.iter()) {
+                    y += *w * *g;
+                }
+                want[t * d_model + o] = y;
+            }
+        }
+        assert_eq!(
+            got, want,
+            "hot-path (inner, vocab computed once) output must be bit-identical to the \
+             pre-refactor per-frame public-wrapper path",
+        );
     }
 }

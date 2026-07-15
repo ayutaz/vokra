@@ -747,6 +747,196 @@ mod test_entries {
             Err(_) => -1,
         }
     }
+
+    /// Dispatched ReLU. Returns 0 ok / -1 error.
+    ///
+    /// # Safety
+    /// `x` / `out` must be live length-`n` f32 buffers.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn vokra_test_relu(
+        n: u32,
+        x: *const f32,
+        out: *mut f32,
+        forced_scalar: u32,
+    ) -> i32 {
+        let n = n as usize;
+        // SAFETY: harness contract above.
+        let (x, out) = unsafe {
+            (
+                core::slice::from_raw_parts(x, n),
+                core::slice::from_raw_parts_mut(out, n),
+            )
+        };
+        let r = if forced_scalar == 1 {
+            kernels::relu_f32_on(IsaPath::Scalar, x, out)
+        } else {
+            kernels::relu_f32(x, out)
+        };
+        match r {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
+    }
+
+    /// Dispatched logistic sigmoid. Returns 0 ok / -1 error.
+    ///
+    /// # Safety
+    /// `x` / `out` must be live length-`n` f32 buffers.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn vokra_test_sigmoid(
+        n: u32,
+        x: *const f32,
+        out: *mut f32,
+        forced_scalar: u32,
+    ) -> i32 {
+        let n = n as usize;
+        // SAFETY: harness contract above.
+        let (x, out) = unsafe {
+            (
+                core::slice::from_raw_parts(x, n),
+                core::slice::from_raw_parts_mut(out, n),
+            )
+        };
+        let r = if forced_scalar == 1 {
+            kernels::sigmoid_f32_on(IsaPath::Scalar, x, out)
+        } else {
+            kernels::sigmoid_f32(x, out)
+        };
+        match r {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
+    }
+
+    /// Dispatched hyperbolic tangent. Returns 0 ok / -1 error.
+    ///
+    /// # Safety
+    /// `x` / `out` must be live length-`n` f32 buffers.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn vokra_test_tanh(
+        n: u32,
+        x: *const f32,
+        out: *mut f32,
+        forced_scalar: u32,
+    ) -> i32 {
+        let n = n as usize;
+        // SAFETY: harness contract above.
+        let (x, out) = unsafe {
+            (
+                core::slice::from_raw_parts(x, n),
+                core::slice::from_raw_parts_mut(out, n),
+            )
+        };
+        let r = if forced_scalar == 1 {
+            kernels::tanh_f32_on(IsaPath::Scalar, x, out)
+        } else {
+            kernels::tanh_f32(x, out)
+        };
+        match r {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
+    }
+
+    /// Dispatched exact (erf-based) GELU. Returns 0 ok / -1 error.
+    ///
+    /// # Safety
+    /// `x` / `out` must be live length-`n` f32 buffers.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn vokra_test_gelu(
+        n: u32,
+        x: *const f32,
+        out: *mut f32,
+        forced_scalar: u32,
+    ) -> i32 {
+        let n = n as usize;
+        // SAFETY: harness contract above.
+        let (x, out) = unsafe {
+            (
+                core::slice::from_raw_parts(x, n),
+                core::slice::from_raw_parts_mut(out, n),
+            )
+        };
+        let r = if forced_scalar == 1 {
+            kernels::gelu_f32_on(IsaPath::Scalar, x, out)
+        } else {
+            kernels::gelu_f32(x, out)
+        };
+        match r {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
+    }
+
+    /// Dispatched row-wise softmax over a `rows x cols` buffer. Returns 0 ok /
+    /// -1 error.
+    ///
+    /// # Safety
+    /// `x` / `out` must be live `rows*cols` f32 buffers.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn vokra_test_softmax(
+        rows: u32,
+        cols: u32,
+        x: *const f32,
+        out: *mut f32,
+        forced_scalar: u32,
+    ) -> i32 {
+        let (rows, cols) = (rows as usize, cols as usize);
+        // SAFETY: harness contract above.
+        let (x, out) = unsafe {
+            (
+                core::slice::from_raw_parts(x, rows * cols),
+                core::slice::from_raw_parts_mut(out, rows * cols),
+            )
+        };
+        let r = if forced_scalar == 1 {
+            kernels::softmax_f32_on(IsaPath::Scalar, x, out, rows, cols)
+        } else {
+            kernels::softmax_f32(x, out, rows, cols)
+        };
+        match r {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
+    }
+
+    /// Dispatched row-wise layer-norm over a `rows x cols` buffer with
+    /// `cols`-length gamma / beta. Returns 0 ok / -1 error.
+    ///
+    /// # Safety
+    /// `x` / `out` are `rows*cols`; `gamma` / `beta` are `cols` f32 buffers.
+    #[unsafe(no_mangle)]
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe extern "C" fn vokra_test_layer_norm(
+        rows: u32,
+        cols: u32,
+        eps: f32,
+        x: *const f32,
+        gamma: *const f32,
+        beta: *const f32,
+        out: *mut f32,
+        forced_scalar: u32,
+    ) -> i32 {
+        let (rows, cols) = (rows as usize, cols as usize);
+        // SAFETY: harness contract above.
+        let (x, gamma, beta, out) = unsafe {
+            (
+                core::slice::from_raw_parts(x, rows * cols),
+                core::slice::from_raw_parts(gamma, cols),
+                core::slice::from_raw_parts(beta, cols),
+                core::slice::from_raw_parts_mut(out, rows * cols),
+            )
+        };
+        let r = if forced_scalar == 1 {
+            kernels::layer_norm_f32_on(IsaPath::Scalar, x, out, rows, cols, gamma, beta, eps)
+        } else {
+            kernels::layer_norm_f32(x, out, rows, cols, gamma, beta, eps)
+        };
+        match r {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
+    }
 }
 
 #[cfg(test)]

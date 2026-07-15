@@ -6,11 +6,14 @@
 #   1. cargo build -p vokra-capi --release   (libvokra cdylib + header inputs)
 #   2. scripts/gen-c-abi.sh --check          (vokra.h has no drift — WP cond.)
 #   3. exported-symbol check                 (only vokra_* symbols are public)
-#   4. cc-build + run tests/capi/smoke_{vad,asr,tts}.c against <vokra.h>
+#   4. cc-build + run tests/capi/smoke_{vad,vad_bytes,aec,s2s,asr,tts}.c
+#      against <vokra.h>
 #
-# VAD uses the committed 2 MB Silero fixture. ASR/TTS are ENV-GATED: they SKIP
-# cleanly unless VOKRA_WHISPER_GGUF / VOKRA_PIPER_GGUF point at the (uncommitted)
-# Whisper / piper GGUFs.
+# VAD / VAD(bytes) use the committed 2 MB Silero fixture; AEC is model-free
+# (synthetic PCM). S2S runs its error paths + a permissive-model attribution
+# from the committed fixture and ENV-GATES its full duplex leg on
+# VOKRA_MOSHI_GGUF. ASR/TTS are ENV-GATED: they SKIP cleanly unless
+# VOKRA_WHISPER_GGUF / VOKRA_PIPER_GGUF point at the (uncommitted) GGUFs.
 #
 # Exit code: 0 = all pass/skip, non-zero = a build or test failure.
 
@@ -80,6 +83,18 @@ build_one vad
 build_one vad_bytes
 "$TMP/smoke_vad_bytes" "$ROOT/tests/parity/silero_vad/silero-vad-v5.gguf" \
     "$ROOT/tests/capi/fixtures/vad_input_16k.f32" || status=1
+
+# M4-03: acoustic echo cancellation (vokra_aec_*) — model-free, runs on
+# synthetic PCM, so it needs no fixture and no env gate.
+build_one aec
+"$TMP/smoke_aec" || status=1
+
+# M4-06: full-duplex S2S + model attribution (vokra_s2s_duplex_* +
+# vokra_model_attribution). Error paths + a permissive-model attribution run
+# from the committed Silero fixture; the full duplex round trip is ENV-GATED on
+# VOKRA_MOSHI_GGUF (SKIP when unset).
+build_one s2s
+"$TMP/smoke_s2s" "$ROOT/tests/parity/silero_vad/silero-vad-v5.gguf" || status=1
 
 build_one asr
 "$TMP/smoke_asr" "$ROOT/tests/capi/fixtures/asr_input_16k.f32" || status=1

@@ -246,17 +246,22 @@ fn wasm_simd128_table() -> KernelTable {
         gemv: wasm_simd128::gemv,
         add: wasm_simd128::add,
         mul: wasm_simd128::mul,
-        // First slice (M4-01-T05) vectorizes the GEMM/GEMV/add/mul hot path;
-        // the transcendental + reduction kernels delegate to the portable
-        // scalar reference for now (same posture as the M3-13 RVV scaffold —
-        // within-CPU-backend dispatch, not a cross-backend fallback, so
-        // FR-EX-08 is unaffected). SIMD rewrites are a follow-up.
-        relu: scalar::relu,
-        sigmoid: scalar::sigmoid,
-        tanh: scalar::tanh,
-        gelu: scalar::gelu,
-        softmax: scalar::softmax,
-        layer_norm: scalar::layer_norm,
+        // M4-01-T05 vectorized GEMM/GEMV/add/mul; the SIMD128 completion adds
+        // f32x4 relu / sigmoid / tanh / gelu / softmax / layer_norm (the
+        // transcendentals ride the `simd-transcendental` feature exactly like
+        // NEON — SIMD poly `exp` on, scalar `std::exp` off). Within-CPU-backend
+        // dispatch, not a cross-backend fallback, so FR-EX-08 is unaffected.
+        relu: wasm_simd128::relu,
+        sigmoid: wasm_simd128::sigmoid,
+        tanh: wasm_simd128::tanh,
+        gelu: wasm_simd128::gelu,
+        softmax: wasm_simd128::softmax,
+        layer_norm: wasm_simd128::layer_norm,
+        // `fused_logmel` stays on the portable scalar reference: it needs a
+        // vectorized `log10` (the AVX2 / NEON tiers use dedicated
+        // `fused_logmel_{avx2,neon}` modules with a `vlog10` polynomial); a
+        // WASM `vlog10` port is a separate follow-up. Within-CPU-backend
+        // dispatch (FR-EX-08 unaffected).
         fused_logmel: scalar_fused_logmel,
     }
 }

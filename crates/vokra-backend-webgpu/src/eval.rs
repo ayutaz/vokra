@@ -33,7 +33,7 @@
 
 use vokra_core::{OpKind, Result, Tensor, VokraError};
 
-use crate::backend::{WebGpuBackend, graph_op_backing_shader};
+use crate::backend::{WebGpuBackend, graph_op_backing_shader, graph_op_dispatched_shader};
 use crate::plan::ElementwiseOp;
 
 /// Dispatch a single op on the WebGPU backend. Coverage matches
@@ -44,6 +44,15 @@ pub(crate) fn eval_webgpu_op(
     op: &OpKind,
     inputs: &[&Tensor],
 ) -> Result<Vec<Tensor>> {
+    // On-target defense in depth (M4-01 #23): the kernel this dispatch runs
+    // must be the one the `supports()` gate advertises. The native
+    // `dispatch_matches_supports_gate_for_every_covered_op` test pins the same
+    // invariant off-target; this catches a regression on a live wasm build.
+    debug_assert_eq!(
+        graph_op_dispatched_shader(op),
+        graph_op_backing_shader(op),
+        "supports()/eval_op shader drift for {op:?} (M4-01 #23)"
+    );
     match op {
         OpKind::Copy => eval_copy(backend, inputs),
         OpKind::Add => eval_add(backend, inputs),
@@ -73,6 +82,12 @@ fn eval_copy(backend: &WebGpuBackend, inputs: &[&Tensor]) -> Result<Vec<Tensor>>
     Ok(vec![Tensor::host_f32(x.shape.clone(), out)?])
 }
 
+// `OpKind::Add` → element-wise sum through the DEDICATED `add_f32` kernel
+// (NOT the `elementwise` op-switch — that backs `OpKind::Mul`). This is the
+// kernel `crate::backend::graph_op_backing_shader(Add) == "add_f32"` gates on
+// and `graph_op_dispatched_shader(Add) == plan_add` mirrors; keep those two in
+// lock-step with this call (M4-01 #23 was this arm silently borrowing the
+// `elementwise` kernel while the gate advertised `add_f32`).
 fn eval_add(backend: &WebGpuBackend, inputs: &[&Tensor]) -> Result<Vec<Tensor>> {
     let (a, b) = take2(inputs, "Add")?;
     if a.shape != b.shape {
@@ -84,9 +99,7 @@ fn eval_add(backend: &WebGpuBackend, inputs: &[&Tensor]) -> Result<Vec<Tensor>> 
     let av = a.as_f32()?;
     let bv = b.as_f32()?;
     let mut out = vec![0.0f32; av.len()];
-    backend
-        .context()
-        .elementwise_f32(ElementwiseOp::Add, av, bv, &mut out)?;
+    backend.context().add_f32(av, bv, &mut out)?;
     Ok(vec![Tensor::host_f32(a.shape.clone(), out)?])
 }
 

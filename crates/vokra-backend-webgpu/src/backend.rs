@@ -8,6 +8,11 @@
 
 use vokra_core::{AudioGraph, Backend, OpKind, Result, Tensor, VokraError};
 
+// Used only by `graph_op_dispatched_shader` (same cfg gate) — the plan builders
+// are the authoritative source of each arm's dispatched shader name.
+#[cfg(any(test, all(feature = "webgpu", target_arch = "wasm32")))]
+use crate::plan;
+
 /// Maps a graph [`OpKind`] to the WGSL kernel that backs its WebGPU
 /// graph-executor arm — the single source of truth both
 /// [`WebGpuBackend::supports`] and the `eval_webgpu_op` dispatcher derive
@@ -37,6 +42,53 @@ pub fn graph_op_backing_shader(op: &OpKind) -> Option<&'static str> {
         OpKind::Softmax => Some("softmax"),
         _ => None,
     }
+}
+
+/// The WGSL kernel the graph-executor arm for `op` **actually dispatches**,
+/// derived from the very `plan::plan_*` builder the matching `eval_*` body in
+/// [`crate::eval`] calls. That module compiles only on wasm32, so the
+/// correspondence is encoded here (host-portable) for the native lock-step
+/// test and cross-referenced from each `eval_*`:
+///
+/// | `OpKind`  | `eval_*` → context seam         | `plan::*` builder    |
+/// |-----------|---------------------------------|----------------------|
+/// | `Copy`    | `eval_copy`   → `copy_f32`       | `plan_copy`          |
+/// | `Add`     | `eval_add`    → `add_f32`        | `plan_add`           |
+/// | `MatMul`  | `eval_matmul` → `gemm_f32`       | `plan_gemm`          |
+/// | `Mul`     | `eval_mul`    → `elementwise`    | `plan_elementwise`   |
+/// | `Softmax` | `eval_softmax`→ `softmax`        | `plan_softmax`       |
+///
+/// [`graph_op_backing_shader`] is the single source of truth for the *gate*
+/// (`supports()`) side; this is the *dispatch* side. The
+/// [`tests::dispatch_matches_supports_gate_for_every_covered_op`] test asserts
+/// the two agree for every covered op — the M4-01 #23 drift (the `add_f32`
+/// gate token while `eval_add` borrowed the `elementwise` op-switch kernel) is
+/// exactly a disagreement between them. Returns `None` on the same domain as
+/// [`graph_op_backing_shader`] (ops with no graph arm).
+///
+/// The shader name is read from the real `plan::*` builder (not a string
+/// literal), so a builder rename propagates here automatically.
+///
+/// Compiled only where it is used: the native test suite (`cfg(test)`) and the
+/// wasm32 dispatch path (`eval_webgpu_op`'s on-target `debug_assert`); an
+/// off-wasm non-test build has no consumer, so gating it here keeps
+/// `-D dead_code` clean without an `#[allow]`.
+#[cfg(any(test, all(feature = "webgpu", target_arch = "wasm32")))]
+#[must_use]
+pub(crate) fn graph_op_dispatched_shader(op: &OpKind) -> Option<&'static str> {
+    // Representative dims: the shader name is dimension-independent.
+    let plan = match op {
+        OpKind::Copy => plan::plan_copy(1),
+        OpKind::Add => plan::plan_add(1),
+        OpKind::MatMul => plan::plan_gemm(1, 1, 1, false),
+        OpKind::Mul => plan::plan_elementwise(plan::ElementwiseOp::Mul, 1),
+        OpKind::Softmax => plan::plan_softmax(1, 1),
+        _ => return None,
+    };
+    Some(
+        plan.expect("representative dims are valid for the plan builder")
+            .shader,
+    )
 }
 
 /// The WebGPU [`Backend`] handle.
@@ -184,6 +236,42 @@ mod tests {
                 "graph arm names `{name}` but the WGSL manifest has no such kernel"
             );
         }
+    }
+
+    /// M4-01 #23 lock-step pin: for EVERY covered graph `OpKind`, the shader
+    /// the `eval_*` dispatch actually runs
+    /// ([`graph_op_dispatched_shader`]) equals the token `supports()` gates on
+    /// ([`graph_op_backing_shader`]). Before the #23 fix `eval_add` dispatched
+    /// the `elementwise` op-switch kernel while the gate advertised the
+    /// dedicated `add_f32` kernel — a silent drift this asserts can never
+    /// return. Host-portable (the wasm32 dispatch path is exercised by the
+    /// browser harness; this pins the mapping on every target).
+    #[test]
+    fn dispatch_matches_supports_gate_for_every_covered_op() {
+        for op in [
+            OpKind::Copy,
+            OpKind::Add,
+            OpKind::MatMul,
+            OpKind::Mul,
+            OpKind::Softmax,
+        ] {
+            let gate = graph_op_backing_shader(&op);
+            let dispatched = graph_op_dispatched_shader(&op);
+            assert!(
+                gate.is_some(),
+                "{op:?} is a covered op but the gate returns None"
+            );
+            assert_eq!(
+                gate, dispatched,
+                "{op:?}: supports() gates `{gate:?}` but eval_op dispatches `{dispatched:?}` \
+                 (M4-01 #23 shader drift)"
+            );
+        }
+        // Domain agreement: a non-covered op is `None` on BOTH sides, so a
+        // dispatch arm can never outlive (or precede) its gate.
+        let stft = OpKind::Stft(vokra_core::ir::graph::StftAttrs::new(400, 160));
+        assert_eq!(graph_op_backing_shader(&stft), None);
+        assert_eq!(graph_op_dispatched_shader(&stft), None);
     }
 
     /// Off-target contract (native test hosts): construction is an explicit

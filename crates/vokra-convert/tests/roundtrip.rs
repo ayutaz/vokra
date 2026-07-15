@@ -67,6 +67,103 @@ fn whisper_safetensors_roundtrips_through_convert_file() {
     let _ = std::fs::remove_file(&output);
 }
 
+/// Builds a lean `whisper-base`-shaped safetensors buffer: `derive_name` keys
+/// only off `(d_model, n_audio_layer, n_text_layer, n_mels)`, so `conv1`
+/// `[512, 80, 1]` + six encoder / six decoder layer prefixes is enough to derive
+/// the `whisper-base` label. `embed_tokens` is left tiny (`[8, 1]`) — n_vocab is
+/// irrelevant to size detection and a small value skips the tokenizer embedding,
+/// keeping the buffer to ~164 KB (the `conv1` payload).
+fn synthetic_whisper_base_safetensors() -> Vec<u8> {
+    let mut tensors: Vec<(String, Vec<u64>)> = vec![
+        ("model.encoder.conv1.weight".to_string(), vec![512, 80, 1]),
+        (
+            "model.encoder.embed_positions.weight".to_string(),
+            vec![1500, 1],
+        ),
+        (
+            "model.decoder.embed_positions.weight".to_string(),
+            vec![448, 1],
+        ),
+        ("model.decoder.embed_tokens.weight".to_string(), vec![8, 1]),
+        (
+            "model.encoder.layers.0.fc1.weight".to_string(),
+            vec![2048, 1],
+        ),
+    ];
+    for i in 0..6 {
+        tensors.push((
+            format!("model.encoder.layers.{i}.mlp.fc2.weight"),
+            vec![1, 1],
+        ));
+    }
+    for i in 0..6 {
+        tensors.push((
+            format!("model.decoder.layers.{i}.self_attn.q_proj.weight"),
+            vec![1, 1],
+        ));
+    }
+
+    let mut cursor = 0usize;
+    let mut header_entries = Vec::new();
+    for (name, shape) in &tensors {
+        let elems: u64 = shape.iter().product();
+        let span = elems as usize * 4;
+        let begin = cursor;
+        let end = cursor + span;
+        cursor = end;
+        let dims = shape
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        header_entries.push(format!(
+            r#""{name}":{{"dtype":"F32","shape":[{dims}],"data_offsets":[{begin},{end}]}}"#
+        ));
+    }
+    let header = format!("{{{}}}", header_entries.join(","));
+    let mut out = Vec::new();
+    out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(&vec![0u8; cursor]);
+    out
+}
+
+#[test]
+fn whisper_alignment_heads_roundtrip_through_convert_file() {
+    // M4-20: a real-sized checkpoint's word-timestamp alignment-heads table must
+    // survive convert_file -> disk -> GgufFile::open as a flat UINT32 array of
+    // [layer, head] pairs. (Numeric word-timestamp accuracy vs. openai is an
+    // owner verification — real audio + weights — and is not asserted here.)
+    let input = tmp_path("whisper-align-in");
+    let output = tmp_path("whisper-align-out");
+    std::fs::write(&input, synthetic_whisper_base_safetensors()).expect("write input");
+
+    convert_file(ModelKind::Whisper, &input, &output).expect("convert");
+    let file = GgufFile::open(&output).expect("load output gguf");
+
+    let heads: Vec<u32> = file
+        .get("vokra.whisper.alignment_heads")
+        .and_then(|v| v.as_array())
+        .expect("vokra.whisper.alignment_heads present for a whisper-base checkpoint")
+        .values
+        .iter()
+        .map(|v| u32::try_from(v.as_u64().unwrap()).unwrap())
+        .collect();
+
+    assert!(
+        !heads.is_empty() && heads.len() % 2 == 0,
+        "must be [layer, head] pairs, got {heads:?}"
+    );
+    // Every index within the whisper-base grid (n_text_layer 6, n_text_head 8).
+    for pair in heads.chunks_exact(2) {
+        assert!(pair[0] < 6, "layer {} >= n_text_layer 6", pair[0]);
+        assert!(pair[1] < 8, "head {} >= n_text_head 8", pair[1]);
+    }
+
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+}
+
 /// Builds a synthetic Kokoro-like safetensors buffer whose tensor names track
 /// the foundation shape-driver in `models::kokoro::write_hparams` so every
 /// `vokra.kokoro.*` numeric hparam derives a non-zero value from this buffer.

@@ -553,4 +553,601 @@ mod tests {
             "gelu WGSL formula transcription drifted from the CPU kernel: max |Δ| = {max_abs:e}"
         );
     }
+
+    // ===================================================================
+    // M4-01-T13/T14/T15 (#13): WGSL formula-transcription pins for the rest
+    // of the kernel set — softmax / softmax_causal / layer_norm / gemm_f32 /
+    // gemv_f32 / conv1d / elementwise (+ the dedicated add_f32 arm the #23 fix
+    // dispatches). Same design as the gelu pin above: a pure-Rust mirror
+    // re-evaluates the EXACT expression each WGSL kernel encodes, in the
+    // kernel's own evaluation order, and diffs against the dispatched CPU
+    // scalar oracle (`vokra_backend_cpu::kernels::*_on(IsaPath::Scalar, ..)` —
+    // the canonical single-thread numeric reference the SIMD paths are checked
+    // against). No GPU / browser / wasm: the only free variable is the WGSL
+    // transcription, so a sign / coefficient / index / mask typo in a shader
+    // (surfaced by `wgsl::tests::wgsl_sources_match_pinned_hashes`, which forces
+    // the mirror to be re-derived on any source edit) shows up here. The true
+    // GPU-side residual (driver `exp` / `fma` rounding) is the browser harness's
+    // job (T18), bounded by atol = 0.01 (NFR-QL-01).
+    //
+    // Two residual classes, both measured on the authoring host (Apple M1):
+    //   * op-order coincides with the scalar oracle → BIT-EXACT (max |Δ| = 0):
+    //     `elementwise` / `add_f32` (element-wise), `gemm_f32` (bias-seeded
+    //     ascending-k), `conv1d` with no bias (ascending-l, padding is a no-op
+    //     `+ 0.0`). Asserted `== 0.0`.
+    //   * the WGSL reassociates the reduction (tree-reduced `softmax` /
+    //     `softmax_causal` / `layer_norm` / `gemv_f32`) or appends bias instead
+    //     of seeding it (`gemv_f32`, biased `conv1d`) → pure FP32 reassociation,
+    //     measured « atol and asserted at a documented bound with ULP headroom.
+
+    use vokra_backend_cpu::IsaPath;
+    use vokra_backend_cpu::kernels as cpu;
+
+    /// The `-inf` stand-in the softmax kernels use for empty / masked lanes.
+    /// softmax.wgsl / softmax_causal.wgsl spell it `-3.402823466e+38`, which
+    /// rounds to exactly [`f32::MIN`] — used here so the value is bit-identical
+    /// to the shader constant without carrying excess decimal digits.
+    const WGSL_NEG_INF: f32 = f32::MIN;
+
+    /// Deterministic, dependency-free pseudo-random f32 in `[-1, 1)` (an LCG —
+    /// no `rand` crate, NFR-DS-02). Distinct `seed`s give distinct streams.
+    fn seeded(n: usize, seed: u32) -> Vec<f32> {
+        // 2^24: the top 24 bits of the LCG state are exactly representable in
+        // f32, so `(s >> 8) as f32 / 2^24` is an exact map into [0, 1).
+        const SCALE: f32 = 16_777_216.0;
+        let mut s = seed ^ 0x9E37_79B9;
+        (0..n)
+            .map(|_| {
+                s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                ((s >> 8) as f32 / SCALE) * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    /// Max absolute element-wise difference between two equal-length slices.
+    fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
+        assert_eq!(a.len(), b.len(), "diff over unequal lengths");
+        a.iter()
+            .zip(b)
+            .fold(0.0f32, |m, (&x, &y)| m.max((x - y).abs()))
+    }
+
+    /// Workgroup tree reduction by `+`, transcribing the shared
+    /// `stride = WG/2; while stride>0 { scratch[i] += scratch[i+stride] } stride/=2`
+    /// pattern of softmax / layer_norm (WG = 256) and gemv (WG = 64).
+    /// Sequential evaluation is bit-identical to the WGSL parallel form: each
+    /// step writes `scratch[0..stride]` and reads `scratch[0..2*stride]`, and a
+    /// lane's read of `scratch[i+stride]` is outside the `[0, stride)` write
+    /// range, so no lane observes another lane's same-step write. `scratch.len()`
+    /// must be a power of two (256 or 64 here).
+    fn wg_tree_sum(scratch: &mut [f32]) -> f32 {
+        let mut stride = scratch.len() / 2;
+        while stride > 0 {
+            for i in 0..stride {
+                scratch[i] += scratch[i + stride];
+            }
+            stride /= 2;
+        }
+        scratch[0]
+    }
+
+    /// Workgroup tree reduction by `max` (softmax pass 1). `max` returns one
+    /// input unchanged, so association is irrelevant — bit-identical to the
+    /// scalar `fold(NEG_INFINITY, f32::max)` regardless of order.
+    fn wg_tree_max(scratch: &mut [f32]) -> f32 {
+        let mut stride = scratch.len() / 2;
+        while stride > 0 {
+            for i in 0..stride {
+                scratch[i] = scratch[i].max(scratch[i + stride]);
+            }
+            stride /= 2;
+        }
+        scratch[0]
+    }
+
+    // ---- softmax.wgsl mirror (WG = WG_ROW_REDUCE) ----
+    fn softmax_wgsl_mirror(x: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+        const WG: usize = WG_ROW_REDUCE as usize;
+        let mut out = vec![0.0f32; rows * cols];
+        for r in 0..rows {
+            let base = r * cols;
+            // Pass 1: row max (strided partials + tree reduce).
+            let mut scratch = vec![WGSL_NEG_INF; WG];
+            for (l, slot) in scratch.iter_mut().enumerate() {
+                let mut m = WGSL_NEG_INF;
+                let mut c = l;
+                while c < cols {
+                    m = m.max(x[base + c]);
+                    c += WG;
+                }
+                *slot = m;
+            }
+            let row_max = wg_tree_max(&mut scratch);
+            // Pass 2: exp(x - max) into out, accumulating the sum.
+            let mut ssum = vec![0.0f32; WG];
+            for (l, slot) in ssum.iter_mut().enumerate() {
+                let mut s = 0.0f32;
+                let mut c = l;
+                while c < cols {
+                    let e = (x[base + c] - row_max).exp();
+                    out[base + c] = e;
+                    s += e;
+                    c += WG;
+                }
+                *slot = s;
+            }
+            let inv = 1.0 / wg_tree_sum(&mut ssum);
+            // Pass 3: normalize.
+            for c in 0..cols {
+                out[base + c] *= inv;
+            }
+        }
+        out
+    }
+
+    // ---- softmax_causal.wgsl mirror ----
+    fn softmax_causal_wgsl_mirror(x: &[f32], rows: usize, cols: usize, offset: usize) -> Vec<f32> {
+        const WG: usize = WG_ROW_REDUCE as usize;
+        let mut out = vec![0.0f32; rows * cols];
+        for row in 0..rows {
+            let base = row * cols;
+            let budget = row + offset; // row r may attend to columns c <= r + offset
+            // Pass 1: masked row max.
+            let mut scratch = vec![WGSL_NEG_INF; WG];
+            for (l, slot) in scratch.iter_mut().enumerate() {
+                let mut m = WGSL_NEG_INF;
+                let mut c = l;
+                while c < cols {
+                    let v = if c > budget {
+                        WGSL_NEG_INF
+                    } else {
+                        x[base + c]
+                    };
+                    m = m.max(v);
+                    c += WG;
+                }
+                *slot = m;
+            }
+            let row_max = wg_tree_max(&mut scratch);
+            // Pass 2: exp of masked value (masked lanes write exactly 0.0).
+            let mut ssum = vec![0.0f32; WG];
+            for (l, slot) in ssum.iter_mut().enumerate() {
+                let mut s = 0.0f32;
+                let mut c = l;
+                while c < cols {
+                    let e = if c <= budget {
+                        (x[base + c] - row_max).exp()
+                    } else {
+                        0.0
+                    };
+                    out[base + c] = e;
+                    s += e;
+                    c += WG;
+                }
+                *slot = s;
+            }
+            let inv = 1.0 / wg_tree_sum(&mut ssum);
+            // Pass 3: normalize (masked lanes stay exactly 0.0: 0 * inv = 0).
+            for c in 0..cols {
+                out[base + c] *= inv;
+            }
+        }
+        out
+    }
+
+    // ---- layer_norm.wgsl mirror ----
+    fn layer_norm_wgsl_mirror(
+        x: &[f32],
+        rows: usize,
+        cols: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Vec<f32> {
+        const WG: usize = WG_ROW_REDUCE as usize;
+        let inv_cols = 1.0 / cols as f32;
+        let mut out = vec![0.0f32; rows * cols];
+        for row in 0..rows {
+            let base = row * cols;
+            // Pass 1: mean.
+            let mut scratch = vec![0.0f32; WG];
+            for (l, slot) in scratch.iter_mut().enumerate() {
+                let mut s = 0.0f32;
+                let mut c = l;
+                while c < cols {
+                    s += x[base + c];
+                    c += WG;
+                }
+                *slot = s;
+            }
+            let mean = wg_tree_sum(&mut scratch) * inv_cols;
+            // Pass 2: biased variance.
+            let mut scratch2 = vec![0.0f32; WG];
+            for (l, slot) in scratch2.iter_mut().enumerate() {
+                let mut q = 0.0f32;
+                let mut c = l;
+                while c < cols {
+                    let d = x[base + c] - mean;
+                    q += d * d;
+                    c += WG;
+                }
+                *slot = q;
+            }
+            let variance = wg_tree_sum(&mut scratch2) * inv_cols;
+            let inv_std = 1.0 / (variance + eps).sqrt();
+            // Pass 3: normalize + affine.
+            for c in 0..cols {
+                out[base + c] = (x[base + c] - mean) * inv_std * gamma[c] + beta[c];
+            }
+        }
+        out
+    }
+
+    // ---- gemm_f32.wgsl mirror (bias-seeded, ascending-k tiles, zero pad) ----
+    fn gemm_wgsl_mirror(
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[f32],
+        bias: Option<&[f32]>,
+    ) -> Vec<f32> {
+        const TILE: usize = GEMM_TILE as usize;
+        let tiles = k.div_ceil(TILE);
+        let mut out = vec![0.0f32; m * n];
+        for row in 0..m {
+            for col in 0..n {
+                let mut acc = bias.map_or(0.0, |bias| bias[col]);
+                for t in 0..tiles {
+                    for i in 0..TILE {
+                        let kk = t * TILE + i;
+                        // Out-of-range tile lanes are zero-padded on both
+                        // operands: `acc += 0.0 * 0.0` is an exact no-op.
+                        let av = if kk < k { a[row * k + kk] } else { 0.0 };
+                        let bv = if kk < k { b[kk * n + col] } else { 0.0 };
+                        acc += av * bv;
+                    }
+                }
+                out[row * n + col] = acc;
+            }
+        }
+        out
+    }
+
+    // ---- gemv_f32.wgsl mirror (strided partials + WG=64 tree, bias appended) --
+    fn gemv_wgsl_mirror(
+        m: usize,
+        k: usize,
+        a: &[f32],
+        x: &[f32],
+        bias: Option<&[f32]>,
+    ) -> Vec<f32> {
+        const WG: usize = WG_GEMV as usize;
+        let mut out = vec![0.0f32; m];
+        for (row, slot) in out.iter_mut().enumerate() {
+            let mut partial = vec![0.0f32; WG];
+            for (l, p) in partial.iter_mut().enumerate() {
+                let mut s = 0.0f32;
+                let mut i = l;
+                while i < k {
+                    s += a[row * k + i] * x[i];
+                    i += WG;
+                }
+                *p = s;
+            }
+            let sum = wg_tree_sum(&mut partial);
+            // The kernel adds bias AFTER the reduction: `r = bias[row] + r`.
+            *slot = bias.map_or(sum, |bias| bias[row] + sum);
+        }
+        out
+    }
+
+    // ---- conv1d.wgsl mirror (bias-seeded, ic-major kk-minor, padding skipped) --
+    #[allow(clippy::too_many_arguments)]
+    fn conv1d_wgsl_mirror(
+        x: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        w: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+    ) -> Vec<f32> {
+        let out_len = conv1d_out_len(in_len, kernel, stride, padding).unwrap();
+        let mut out = vec![0.0f32; out_ch * out_len];
+        for oc in 0..out_ch {
+            for t in 0..out_len {
+                let mut acc = bias.map_or(0.0, |bias| bias[oc]);
+                // Signed origin: t*stride - padding can be negative at the left
+                // edge (WGSL uses i32; the guard skips out-of-range positions).
+                let origin = (t * stride) as i32 - padding as i32;
+                for ic in 0..in_ch {
+                    let w_base = (oc * in_ch + ic) * kernel;
+                    let x_base = ic * in_len;
+                    for kk in 0..kernel {
+                        let pos = origin + kk as i32;
+                        if pos >= 0 && pos < in_len as i32 {
+                            acc += w[w_base + kk] * x[x_base + pos as usize];
+                        }
+                    }
+                }
+                out[oc * out_len + t] = acc;
+            }
+        }
+        out
+    }
+
+    // ---- elementwise.wgsl mirror (op switch: 0 = add, 1 = mul) ----
+    fn elementwise_wgsl_mirror(op: ElementwiseOp, a: &[f32], b: &[f32]) -> Vec<f32> {
+        a.iter()
+            .zip(b)
+            .map(|(&x, &y)| match op {
+                ElementwiseOp::Mul => x * y, // params.op == 1u
+                ElementwiseOp::Add => x + y, // else
+            })
+            .collect()
+    }
+
+    // ---- add_f32.wgsl mirror (dedicated Add arm: out[i] = a[i] + b[i]) ----
+    fn add_f32_wgsl_mirror(a: &[f32], b: &[f32]) -> Vec<f32> {
+        a.iter().zip(b).map(|(&x, &y)| x + y).collect()
+    }
+
+    #[test]
+    fn softmax_wgsl_formula_transcription_matches_cpu_kernel() {
+        // Two shapes: cols <= WG (one element per lane) and cols > WG (strided
+        // multi-element lanes + tail), each with a wide input range.
+        for (rows, cols) in [(4usize, 48usize), (3, 300)] {
+            let x: Vec<f32> = seeded(rows * cols, 0x5017 ^ cols as u32)
+                .iter()
+                .map(|v| v * 6.0) // widen to exercise the max-shift stabilization
+                .collect();
+            let mirror = softmax_wgsl_mirror(&x, rows, cols);
+            let mut oracle = vec![0.0f32; rows * cols];
+            cpu::softmax_f32_on(IsaPath::Scalar, &x, &mut oracle, rows, cols).unwrap();
+            let d = max_abs_diff(&mirror, &oracle);
+            // exp(x - max) and the max are bit-identical to the oracle; only the
+            // tree-reduced sum reassociates. Measured max |Δ| = 2.98e-8 (48
+            // cols) / 7.45e-9 (300 cols); outputs are in [0, 1]. 1e-6 leaves ULP
+            // headroom and stays 4 orders under atol = 0.01.
+            assert!(
+                d <= 1e-6,
+                "softmax WGSL transcription drifted ({rows}x{cols}): max |Δ| = {d:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn softmax_causal_wgsl_formula_transcription_matches_cpu_kernel() {
+        // Oracle = scalar softmax over a `-inf`-masked copy (exp(-inf) = 0
+        // zeroes the masked columns — the host-mask + softmax equivalence the
+        // Metal/CUDA causal kernels pin). offset = t_k - t_q; 0 = square
+        // self-attention, > 0 = a decoder step over a KV cache.
+        for (rows, cols, offset) in [(6usize, 6usize, 0usize), (5, 40, 3)] {
+            let x: Vec<f32> = seeded(rows * cols, 0x0CA5)
+                .iter()
+                .map(|v| v * 6.0)
+                .collect();
+            let mirror = softmax_causal_wgsl_mirror(&x, rows, cols, offset);
+            let mut masked = x.clone();
+            for row in 0..rows {
+                for c in 0..cols {
+                    if c > row + offset {
+                        masked[row * cols + c] = f32::NEG_INFINITY;
+                    }
+                }
+            }
+            let mut oracle = vec![0.0f32; rows * cols];
+            cpu::softmax_f32_on(IsaPath::Scalar, &masked, &mut oracle, rows, cols).unwrap();
+            let d = max_abs_diff(&mirror, &oracle);
+            // Masked lanes are exactly 0.0 on both sides; only the unmasked
+            // exp-sum reassociates. Measured max |Δ| = 0.0 (6x6, off 0) /
+            // 1.19e-7 (5x40, off 3). 1e-6 leaves ULP headroom.
+            assert!(
+                d <= 1e-6,
+                "softmax_causal WGSL transcription drifted ({rows}x{cols}, off {offset}): \
+                 max |Δ| = {d:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn layer_norm_wgsl_formula_transcription_matches_cpu_kernel() {
+        for (rows, cols) in [(4usize, 64usize), (3, 384)] {
+            let x: Vec<f32> = seeded(rows * cols, 0x1AE7)
+                .iter()
+                .map(|v| v * 3.0)
+                .collect();
+            let gamma: Vec<f32> = seeded(cols, 0x6A33)
+                .iter()
+                .map(|v| 1.0 + 0.25 * v)
+                .collect();
+            let beta = seeded(cols, 0xBE7A);
+            let eps = 1e-5f32; // PyTorch nn.LayerNorm default (never invented — T14).
+            let mirror = layer_norm_wgsl_mirror(&x, rows, cols, &gamma, &beta, eps);
+            let mut oracle = vec![0.0f32; rows * cols];
+            cpu::layer_norm_f32_on(
+                IsaPath::Scalar,
+                &x,
+                &mut oracle,
+                rows,
+                cols,
+                &gamma,
+                &beta,
+                eps,
+            )
+            .unwrap();
+            let d = max_abs_diff(&mirror, &oracle);
+            // Only the tree-reduced mean and variance reassociate; Pass 3 is
+            // identical given them. Measured max |Δ| = 4.77e-7 (both shapes);
+            // 1e-4 leaves ample headroom, 2 orders under atol = 0.01.
+            assert!(
+                d <= 1e-4,
+                "layer_norm WGSL transcription drifted ({rows}x{cols}): max |Δ| = {d:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn gemm_wgsl_formula_transcription_matches_cpu_kernel() {
+        // k = 40 = 2*TILE + 8 exercises multiple tiles + a partial (zero-padded)
+        // last tile. With and without bias.
+        let (m, n, k) = (6usize, 5usize, 40usize);
+        let a = seeded(m * k, 0x9E44);
+        let b = seeded(k * n, 0x0B15);
+        let bias = seeded(n, 0xB1A5);
+        for use_bias in [false, true] {
+            let bias_opt = use_bias.then_some(bias.as_slice());
+            let mirror = gemm_wgsl_mirror(m, n, k, &a, &b, bias_opt);
+            let mut oracle = vec![0.0f32; m * n];
+            cpu::gemm_f32_on(IsaPath::Scalar, m, n, k, &a, &b, bias_opt, &mut oracle).unwrap();
+            let d = max_abs_diff(&mirror, &oracle);
+            // Bias-seeded ascending-k with zero-pad no-ops == the scalar oracle's
+            // op order exactly → BIT-EXACT.
+            assert!(
+                d == 0.0,
+                "gemm WGSL transcription is not bit-exact (bias {use_bias}): max |Δ| = {d:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn gemv_wgsl_formula_transcription_matches_cpu_kernel() {
+        // k = 200 > WG_GEMV exercises strided partials (lane l sums l, l+64,
+        // l+128, ...) then the 64-lane tree.
+        let (m, k) = (5usize, 200usize);
+        let a = seeded(m * k, 0x6E44);
+        let x = seeded(k, 0x0417);
+        let bias = seeded(m, 0xB1A6);
+        for use_bias in [false, true] {
+            let bias_opt = use_bias.then_some(bias.as_slice());
+            let mirror = gemv_wgsl_mirror(m, k, &a, &x, bias_opt);
+            let mut oracle = vec![0.0f32; m];
+            cpu::gemv_f32_on(IsaPath::Scalar, m, k, &a, &x, bias_opt, &mut oracle).unwrap();
+            let d = max_abs_diff(&mirror, &oracle);
+            // Reassociation: strided-partials + tree vs the scalar left-to-right
+            // fold, and bias appended vs seeded. Measured max |Δ| = 2.38e-6 (no
+            // bias) / 1.91e-6 (bias), sums of ~200 unit-scale products; 1e-3
+            // leaves generous headroom, still an order under atol = 0.01.
+            assert!(
+                d <= 1e-3,
+                "gemv WGSL transcription drifted (bias {use_bias}): max |Δ| = {d:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn conv1d_wgsl_formula_transcription_matches_cpu_kernel() {
+        // Whisper stem envelope: kernel 3, padding 1, stride 1 (keeps length)
+        // and stride 2 (halves it).
+        let (in_ch, in_len, out_ch, kernel, padding) = (3usize, 20usize, 4usize, 3usize, 1usize);
+        let x = seeded(in_ch * in_len, 0xC0A1);
+        let w = seeded(out_ch * in_ch * kernel, 0x0FED);
+        let bias = seeded(out_ch, 0xB1A7);
+        for stride in [1usize, 2usize] {
+            // No bias: ascending-l with padding as an exact `+ 0.0` no-op →
+            // BIT-EXACT vs the scalar im2col + GEMM oracle.
+            let mut oracle_nb =
+                vec![0.0f32; out_ch * conv1d_out_len(in_len, kernel, stride, padding).unwrap()];
+            cpu::conv1d_f32_on(
+                IsaPath::Scalar,
+                &x,
+                in_ch,
+                in_len,
+                &w,
+                out_ch,
+                kernel,
+                None,
+                stride,
+                padding,
+                &mut oracle_nb,
+            )
+            .unwrap();
+            let mirror_nb =
+                conv1d_wgsl_mirror(&x, in_ch, in_len, &w, out_ch, kernel, None, stride, padding);
+            let d_nb = max_abs_diff(&mirror_nb, &oracle_nb);
+            assert!(
+                d_nb == 0.0,
+                "conv1d WGSL transcription is not bit-exact (stride {stride}, no bias): \
+                 max |Δ| = {d_nb:e}"
+            );
+            // With bias: the WGSL SEEDS bias before the sum while the CPU appends
+            // it after the GEMM → a single end reassociation. Measured max |Δ| =
+            // 3.58e-7 (stride 1) / 2.38e-7 (stride 2); 1e-5 leaves ULP headroom.
+            let mut oracle_b = vec![0.0f32; oracle_nb.len()];
+            cpu::conv1d_f32_on(
+                IsaPath::Scalar,
+                &x,
+                in_ch,
+                in_len,
+                &w,
+                out_ch,
+                kernel,
+                Some(&bias),
+                stride,
+                padding,
+                &mut oracle_b,
+            )
+            .unwrap();
+            let mirror_b = conv1d_wgsl_mirror(
+                &x,
+                in_ch,
+                in_len,
+                &w,
+                out_ch,
+                kernel,
+                Some(&bias),
+                stride,
+                padding,
+            );
+            let d_b = max_abs_diff(&mirror_b, &oracle_b);
+            assert!(
+                d_b <= 1e-5,
+                "conv1d WGSL transcription drifted (stride {stride}, bias): max |Δ| = {d_b:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn elementwise_wgsl_formula_transcription_matches_cpu_kernel() {
+        // The `elementwise` op-switch backs OpKind::Mul (op = 1) and is the
+        // generic add/mul seam (op = 0/1); pin both flags. Element-wise → the
+        // op order coincides with the scalar oracle → BIT-EXACT.
+        let a = seeded(257, 0xE1E1);
+        let b = seeded(257, 0xE2E2);
+        // op = 0 → add.
+        let mut add_oracle = vec![0.0f32; a.len()];
+        cpu::add_f32_on(IsaPath::Scalar, &a, &b, &mut add_oracle).unwrap();
+        let add_mirror = elementwise_wgsl_mirror(ElementwiseOp::Add, &a, &b);
+        assert!(
+            max_abs_diff(&add_mirror, &add_oracle) == 0.0,
+            "elementwise(add) WGSL transcription is not bit-exact"
+        );
+        // op = 1 → mul.
+        let mut mul_oracle = vec![0.0f32; a.len()];
+        cpu::mul_f32_on(IsaPath::Scalar, &a, &b, &mut mul_oracle).unwrap();
+        let mul_mirror = elementwise_wgsl_mirror(ElementwiseOp::Mul, &a, &b);
+        assert!(
+            max_abs_diff(&mul_mirror, &mul_oracle) == 0.0,
+            "elementwise(mul) WGSL transcription is not bit-exact"
+        );
+    }
+
+    #[test]
+    fn add_f32_wgsl_formula_transcription_matches_cpu_kernel() {
+        // The DEDICATED add_f32 kernel the #23 fix routes OpKind::Add through
+        // (distinct from the elementwise op-switch above). Element-wise `+` is
+        // IEEE-754 exact → BIT-EXACT vs the scalar oracle.
+        let a = seeded(257, 0xADD1);
+        let b = seeded(257, 0xADD2);
+        let mut oracle = vec![0.0f32; a.len()];
+        cpu::add_f32_on(IsaPath::Scalar, &a, &b, &mut oracle).unwrap();
+        let mirror = add_f32_wgsl_mirror(&a, &b);
+        assert!(
+            max_abs_diff(&mirror, &oracle) == 0.0,
+            "add_f32 WGSL transcription is not bit-exact"
+        );
+    }
 }

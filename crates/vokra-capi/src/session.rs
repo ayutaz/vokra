@@ -415,6 +415,22 @@ mod tests {
     }
 
     #[test]
+    fn build_session_from_bytes_rejects_unsupported_arch() {
+        // M4-02: the bytes twin of `build_session_rejects_unsupported_arch`.
+        // A present-but-unknown `vokra.model.arch` is a bad argument
+        // (InvalidArgument from `inject_engine`'s `other =>` arm), a *different*
+        // error class from the missing-arch / junk cases (ModelLoad) covered
+        // above — and reached with no filesystem access on this path.
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "gpt2");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        assert!(matches!(
+            build_session_from_bytes(bytes),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
     fn create_from_bytes_loads_silero_end_to_end() {
         // Full extern "C" round trip: bytes in, live handle out, destroy.
         let bytes = std::fs::read(silero_fixture()).expect("read silero fixture");

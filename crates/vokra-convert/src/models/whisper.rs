@@ -278,6 +278,14 @@ const KEY_FFN_DIM: &str = "vokra.whisper.ffn_dim";
 const KEY_EOT: &str = "vokra.whisper.eot";
 /// `vokra.whisper.decoder_start_ids` — default decode prefix (`UINT32` array).
 const KEY_DECODER_START_IDS: &str = "vokra.whisper.decoder_start_ids";
+/// `vokra.whisper.alignment_heads` — the cross-attention (layer, head) pairs
+/// used for word-level-timestamp DTW, as a flat `UINT32` array
+/// `[layer, head, …]` (M4-20). Absent when the size is unknown and the
+/// checkpoint carries no passthrough — the runtime then falls back to its own
+/// default head set rather than a fabricated table. The key string is
+/// duplicated verbatim in `vokra-models/src/whisper/config.rs` (same
+/// cross-crate duplication rationale as the other `vokra.whisper.*` keys).
+const KEY_ALIGNMENT_HEADS: &str = "vokra.whisper.alignment_heads";
 
 /// `vokra.tokenizer.model` — the embedded Whisper detokenizer blob (M2-06).
 ///
@@ -442,6 +450,10 @@ pub(crate) fn convert_with_policy(
     bytes: Vec<u8>,
     policy: Option<QuantPolicy>,
 ) -> Result<GgufBuilder, ConvertError> {
+    // An optional alignment-heads passthrough carried in the checkpoint's
+    // safetensors `__metadata__`, read from the raw header before `bytes` is
+    // consumed by the parser (best-effort — never aborts the conversion).
+    let passthrough_heads = extract_passthrough_alignment_heads(&bytes);
     let st = SafetensorsFile::parse(bytes)?;
 
     // Derive the model-name label from the checkpoint's shape quintuple. Reads
@@ -473,6 +485,7 @@ pub(crate) fn convert_with_policy(
     // makes the runtime's bit-exact front-end check reject a large-v3 GGUF.
     frontend_spec(checkpoint_n_mels(&st)).write_into(&mut b);
     write_hparams(&mut b, &st);
+    write_alignment_heads(&mut b, name, passthrough_heads.as_deref());
     embed_tokenizer(&mut b, &st);
     if let Some(p) = policy.as_ref() {
         write_quant_chunk(&mut b, p);
@@ -595,6 +608,125 @@ fn write_hparams(b: &mut GgufBuilder, st: &SafetensorsFile) {
                 .iter()
                 .map(|&id| GgufMetadataValue::U32(id))
                 .collect(),
+        }),
+    );
+}
+
+/// Returns the flattened `[layer, head, …]` alignment-head pairs for a supported
+/// Whisper size label (as produced by [`derive_name`]), or `None` for a size
+/// with no published table.
+///
+/// # Source (documented reference — transcribed, not fabricated)
+///
+/// These are the `_ALIGNMENT_HEADS` constants published in openai/whisper
+/// `whisper/__init__.py`, decoded with the exact method in `whisper/model.py`
+/// `Whisper.set_alignment_heads`:
+///
+/// ```text
+/// mask  = np.frombuffer(gzip.decompress(base64.b85decode(DUMP)), dtype=bool)
+///             .reshape(n_text_layer, n_text_head)
+/// pairs = np.argwhere(mask)   # (layer, head), row-major
+/// ```
+///
+/// with the `(n_text_layer, n_text_head)` grid from the openai/whisper
+/// `model.py` size table: base (6, 8) / small (12, 12) / medium (24, 16) /
+/// large-v3 (32, 20) / turbo (4, 20). `whisper-turbo` uses the upstream
+/// `large-v3-turbo` dump. The pairs below were produced by running that decode
+/// over the upstream blobs; the numeric word-timestamp *accuracy* vs. openai
+/// (real audio + weights) is an owner verification and is not claimed here.
+fn builtin_alignment_heads(name: &str) -> Option<&'static [u32]> {
+    match name {
+        "whisper-base" => Some(&[3, 1, 4, 2, 4, 3, 4, 7, 5, 1, 5, 2, 5, 4, 5, 6]),
+        "whisper-small" => Some(&[5, 3, 5, 9, 8, 0, 8, 4, 8, 7, 8, 8, 9, 0, 9, 7, 9, 9, 10, 5]),
+        "whisper-medium" => Some(&[13, 15, 15, 4, 15, 15, 16, 1, 20, 0, 23, 4]),
+        "whisper-large-v3" => Some(&[
+            7, 0, 10, 17, 12, 18, 13, 12, 16, 1, 17, 14, 19, 11, 21, 4, 24, 1, 25, 6,
+        ]),
+        "whisper-turbo" => Some(&[2, 4, 2, 11, 3, 3, 3, 6, 3, 11, 3, 14]),
+        _ => None,
+    }
+}
+
+/// Best-effort passthrough of an `alignment_heads` table carried by the
+/// checkpoint's safetensors `__metadata__` free-form string map.
+///
+/// safetensors stores `__metadata__` as a `{string: string}` object; the runtime
+/// reader in `vokra-core` drops it, so this peeks the raw header directly (the
+/// buffer is borrowed before it is moved into the parser). The value is parsed
+/// leniently as a flat sequence of non-negative integers — `"[[3, 1], [4, 2]]"`,
+/// `"3,1,4,2"` and `"3 1 4 2"` all yield `[3, 1, 4, 2]` — interpreted as
+/// `[layer, head]` pairs.
+///
+/// Returns `None` (so the caller falls back to the built-in table) when the key
+/// is absent, the buffer/header is malformed, or the integer count is zero or
+/// odd. It is intentionally infallible: a passthrough is optional and must never
+/// abort a conversion.
+fn extract_passthrough_alignment_heads(bytes: &[u8]) -> Option<Vec<u32>> {
+    if bytes.len() < 8 {
+        return None;
+    }
+    let header_len = u64::from_le_bytes(bytes[0..8].try_into().ok()?) as usize;
+    let header = bytes.get(8..8usize.checked_add(header_len)?)?;
+    let root = vokra_core::json::parse(header).ok()?;
+    let raw = root
+        .get("__metadata__")
+        .and_then(|m| m.get("alignment_heads"))
+        .and_then(|v| v.as_str())?;
+    let vals = parse_flat_u32_list(raw);
+    if vals.is_empty() || vals.len() % 2 != 0 {
+        return None;
+    }
+    Some(vals)
+}
+
+/// Extracts every run of ASCII digits from `s` as a `u32`, in order; any other
+/// byte (brackets, commas, whitespace, signs) is a separator. A run that would
+/// overflow `u32` is skipped — a real head/layer index never overflows.
+fn parse_flat_u32_list(s: &str) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut cur: Option<u64> = None;
+    for ch in s.bytes() {
+        if ch.is_ascii_digit() {
+            let d = u64::from(ch - b'0');
+            cur = Some(cur.unwrap_or(0).saturating_mul(10).saturating_add(d));
+        } else if let Some(n) = cur.take() {
+            // A separator ends the current run; keep it only if it fits u32.
+            if let Ok(v) = u32::try_from(n) {
+                out.push(v);
+            }
+        }
+    }
+    if let Some(n) = cur {
+        if let Ok(v) = u32::try_from(n) {
+            out.push(v);
+        }
+    }
+    out
+}
+
+/// Writes `vokra.whisper.alignment_heads` — the DTW cross-attention head
+/// selection for word-level timestamps — as a flat `UINT32` array of
+/// `[layer, head, …]` pairs (the same array-write precedent as
+/// [`KEY_DECODER_START_IDS`]).
+///
+/// A `passthrough` from the checkpoint wins; otherwise the built-in per-size
+/// table is used; otherwise (unknown / synthetic size with no passthrough)
+/// nothing is written — the runtime then falls back to its own default head set
+/// (openai's "last half of the decoder layers"), never a fabricated table
+/// (FR-EX-08 — no silent invention).
+fn write_alignment_heads(b: &mut GgufBuilder, name: &str, passthrough: Option<&[u32]>) {
+    let heads: &[u32] = match passthrough {
+        Some(p) => p,
+        None => match builtin_alignment_heads(name) {
+            Some(t) => t,
+            None => return,
+        },
+    };
+    b.add_metadata(
+        KEY_ALIGNMENT_HEADS,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U32,
+            values: heads.iter().map(|&v| GgufMetadataValue::U32(v)).collect(),
         }),
     );
 }
@@ -1334,6 +1466,230 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // M4-20 — alignment-heads emission (word-timestamp DTW head selection)
+    // ---------------------------------------------------------------------
+
+    /// Builds a synthetic all-F32 checkpoint whose *shape quintuple* matches a
+    /// real OpenAI Whisper size (trailing/unread dims shrunk to 1), so
+    /// `derive_name` yields the real `whisper-<size>` label. Mirrors the
+    /// construction in `all_whisper_sizes_metadata_are_consistent`.
+    fn sized_checkpoint(
+        d_model: u64,
+        n_audio_layer: u32,
+        n_text_layer: u32,
+        n_mels: u64,
+        n_vocab: u64,
+    ) -> Vec<u8> {
+        let refs =
+            sized_checkpoint_descriptors(d_model, n_audio_layer, n_text_layer, n_mels, n_vocab);
+        let borrowed: Vec<(&str, &[u64])> = refs
+            .iter()
+            .map(|(n, s)| (n.as_str(), s.as_slice()))
+            .collect();
+        synthetic_checkpoint(&borrowed)
+    }
+
+    /// The `(name, shape)` descriptors a `whisper-<size>` synthetic checkpoint
+    /// needs so both [`sized_checkpoint`] and the metadata-injecting builder in
+    /// the passthrough test agree on the tensor layout.
+    fn sized_checkpoint_descriptors(
+        d_model: u64,
+        n_audio_layer: u32,
+        n_text_layer: u32,
+        n_mels: u64,
+        n_vocab: u64,
+    ) -> Vec<(String, Vec<u64>)> {
+        let mut tensors: Vec<(String, Vec<u64>)> = vec![
+            (
+                "model.encoder.conv1.weight".to_string(),
+                vec![d_model, n_mels, 1],
+            ),
+            (
+                "model.encoder.embed_positions.weight".to_string(),
+                vec![1500, 1],
+            ),
+            (
+                "model.decoder.embed_positions.weight".to_string(),
+                vec![448, 1],
+            ),
+            (
+                "model.decoder.embed_tokens.weight".to_string(),
+                vec![n_vocab, 1],
+            ),
+            (
+                "model.encoder.layers.0.fc1.weight".to_string(),
+                vec![d_model * 4, 1],
+            ),
+        ];
+        for i in 0..n_audio_layer {
+            tensors.push((
+                format!("model.encoder.layers.{i}.mlp.fc2.weight"),
+                vec![1, 1],
+            ));
+        }
+        for i in 0..n_text_layer {
+            tensors.push((
+                format!("model.decoder.layers.{i}.self_attn.q_proj.weight"),
+                vec![1, 1],
+            ));
+        }
+        tensors
+    }
+
+    /// Reads the flat `[layer, head, …]` `vokra.whisper.alignment_heads` array
+    /// back from a parsed GGUF (the reverse of `write_alignment_heads`).
+    fn alignment_heads_from_gguf(file: &GgufFile) -> Option<Vec<u32>> {
+        Some(
+            file.get("vokra.whisper.alignment_heads")?
+                .as_array()?
+                .values
+                .iter()
+                .map(|v| u32::try_from(v.as_u64().unwrap()).unwrap())
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn emits_alignment_heads_for_base_and_roundtrips() {
+        // whisper-base (d_model 512, 6+6 layers, 80 mels).
+        let ckpt = sized_checkpoint(512, 6, 6, 80, 51865);
+        let file = GgufFile::parse(convert(ckpt, None).unwrap().to_bytes().unwrap()).unwrap();
+        let heads = alignment_heads_from_gguf(&file).expect("alignment_heads present for base");
+        // Flat [layer, head] pairs → even length, non-empty.
+        assert!(
+            !heads.is_empty() && heads.len() % 2 == 0,
+            "must be [layer, head] pairs, got {heads:?}"
+        );
+        // Every index within the base grid (n_text_layer 6, n_text_head 8).
+        for pair in heads.chunks_exact(2) {
+            assert!(pair[0] < 6, "layer {} >= n_text_layer 6", pair[0]);
+            assert!(pair[1] < 8, "head {} >= n_text_head 8", pair[1]);
+        }
+        // Transcribed + decoded openai/whisper `_ALIGNMENT_HEADS["base"]`.
+        assert_eq!(heads, vec![3, 1, 4, 2, 4, 3, 4, 7, 5, 1, 5, 2, 5, 4, 5, 6]);
+    }
+
+    #[test]
+    fn emits_alignment_heads_for_all_supported_sizes() {
+        // (d_model, n_audio_layer, n_text_layer, n_mels, n_vocab, n_text_head).
+        // Sources: openai/whisper `model.py` size table + HF config.json.
+        let rows: &[(u64, u32, u32, u64, u64, u32)] = &[
+            (512, 6, 6, 80, 51865, 8),      // base
+            (768, 12, 12, 80, 51865, 12),   // small
+            (1024, 24, 24, 80, 51865, 16),  // medium
+            (1280, 32, 32, 128, 51866, 20), // large-v3
+            (1280, 32, 4, 128, 51866, 20),  // turbo
+        ];
+        for &(d_model, na, nt, n_mels, n_vocab, n_head) in rows {
+            let ckpt = sized_checkpoint(d_model, na, nt, n_mels, n_vocab);
+            let file = GgufFile::parse(convert(ckpt, None).unwrap().to_bytes().unwrap()).unwrap();
+            let heads = alignment_heads_from_gguf(&file)
+                .unwrap_or_else(|| panic!("alignment_heads present for d_model {d_model}"));
+            // Non-empty [layer, head] pairs, every index within the size's grid.
+            assert!(
+                !heads.is_empty() && heads.len() % 2 == 0,
+                "d_model {d_model}: must be pairs, got {heads:?}"
+            );
+            for pair in heads.chunks_exact(2) {
+                assert!(
+                    pair[0] < nt,
+                    "d_model {d_model}: layer {} >= n_text_layer {nt}",
+                    pair[0]
+                );
+                assert!(
+                    pair[1] < n_head,
+                    "d_model {d_model}: head {} >= n_text_head {n_head}",
+                    pair[1]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_alignment_heads_for_unknown_size() {
+        // A synthetic 2×2 stub derives to "whisper-unknown"; no published table
+        // exists and the checkpoint carries no passthrough, so the converter must
+        // NOT fabricate one (FR-EX-08 — the runtime falls back to its own default
+        // head set instead).
+        let file = GgufFile::parse(
+            convert(synthetic_whisper(), None)
+                .unwrap()
+                .to_bytes()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(file.get(KEY_ALIGNMENT_HEADS).is_none());
+        assert!(alignment_heads_from_gguf(&file).is_none());
+    }
+
+    #[test]
+    fn passthrough_alignment_heads_override_builtin_table() {
+        // A checkpoint whose safetensors `__metadata__` already carries an
+        // alignment_heads table must pass it through verbatim, overriding the
+        // built-in base table.
+        let descriptors = sized_checkpoint_descriptors(512, 6, 6, 80, 51865);
+        let ckpt = checkpoint_with_metadata(
+            &descriptors,
+            r#""__metadata__":{"alignment_heads":"[[0, 0], [1, 2], [5, 7]]"}"#,
+        );
+        let file = GgufFile::parse(convert(ckpt, None).unwrap().to_bytes().unwrap()).unwrap();
+        let heads = alignment_heads_from_gguf(&file).expect("passthrough alignment_heads present");
+        assert_eq!(heads, vec![0, 0, 1, 2, 5, 7], "passthrough not honored");
+        // Proves override: this differs from the built-in base table.
+        assert_ne!(heads, vec![3, 1, 4, 2, 4, 3, 4, 7, 5, 1, 5, 2, 5, 4, 5, 6]);
+    }
+
+    #[test]
+    fn passthrough_parses_bare_comma_list_and_ignores_odd_or_empty() {
+        // Lenient parse: bare "l,h,l,h" is accepted; an odd / empty count is
+        // rejected (falls back to the built-in table, not garbage pairs).
+        assert_eq!(parse_flat_u32_list("3,1,4,7"), vec![3, 1, 4, 7]);
+        assert_eq!(parse_flat_u32_list("[[3, 1], [4, 7]]"), vec![3, 1, 4, 7]);
+        assert_eq!(parse_flat_u32_list("  3   1  "), vec![3, 1]);
+        assert!(parse_flat_u32_list("").is_empty());
+
+        // An odd count in `__metadata__` is rejected → built-in table used.
+        let descriptors = sized_checkpoint_descriptors(512, 6, 6, 80, 51865);
+        let ckpt = checkpoint_with_metadata(
+            &descriptors,
+            r#""__metadata__":{"alignment_heads":"1,2,3"}"#,
+        );
+        let file = GgufFile::parse(convert(ckpt, None).unwrap().to_bytes().unwrap()).unwrap();
+        let heads = alignment_heads_from_gguf(&file).expect("falls back to built-in");
+        assert_eq!(heads, vec![3, 1, 4, 2, 4, 3, 4, 7, 5, 1, 5, 2, 5, 4, 5, 6]);
+    }
+
+    /// Builds an all-F32 safetensors buffer from `(name, shape)` descriptors,
+    /// injecting a raw `__metadata__` header entry (the passthrough source).
+    /// Mirrors [`synthetic_checkpoint`], but prepends the caller's metadata
+    /// object so the buffer exercises `extract_passthrough_alignment_heads`.
+    fn checkpoint_with_metadata(tensors: &[(String, Vec<u64>)], metadata_entry: &str) -> Vec<u8> {
+        let mut cursor = 0usize;
+        let mut entries = vec![metadata_entry.to_string()];
+        for (name, shape) in tensors {
+            let elems: u64 = shape.iter().product();
+            let span = elems as usize * 4; // F32
+            let begin = cursor;
+            let end = cursor + span;
+            cursor = end;
+            let dims = shape
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            entries.push(format!(
+                r#""{name}":{{"dtype":"F32","shape":[{dims}],"data_offsets":[{begin},{end}]}}"#
+            ));
+        }
+        let header = format!("{{{}}}", entries.join(","));
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&vec![0u8; cursor]);
+        out
     }
 
     // ---------------------------------------------------------------------

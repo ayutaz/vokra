@@ -127,6 +127,13 @@ function withinTol(x, y, atol, rtol) {
 // Native differential.rs bounds (crates/vokra-backend-cpu/tests/differential.rs).
 const GEMV_ATOL = 1e-4;
 const GEMV_RTOL = 1e-4;
+// Activation (sigmoid / tanh / gelu) and reduction (softmax / layer_norm)
+// SIMD-vs-scalar ceilings — the same ACTIVATION_ATOL / REDUCTION_ATOL the
+// native differential.rs uses (both well under the NFR-QL-01 atol=0.01 bound).
+const ACTIVATION_ATOL = 1e-4;
+const ACTIVATION_RTOL = 1e-4;
+const REDUCTION_ATOL = 1e-4;
+const REDUCTION_RTOL = 1e-4;
 
 // --- run one kernel set on one artifact ---------------------------------------
 
@@ -166,7 +173,52 @@ function runKernels(exp, forcedScalar) {
   }
   const mul = f32sOut(exp, pmo, 1023);
 
-  return { gemm, gemv, add, mul };
+  // Activation kernels (M4-01 SIMD128 completion): a lane-ragged length
+  // (1023 = 4*255 + 3) exercises both the vector body and the scalar tail.
+  const act = randVec(1023, 88);
+  const pact = f32sIn(exp, act);
+  const pre = exp.vokra_wasm_alloc(1023 * 4);
+  if (exp.vokra_test_relu(1023, pact, pre, forcedScalar) !== 0) {
+    throw new Error("vokra_test_relu returned an error");
+  }
+  const relu = f32sOut(exp, pre, 1023);
+  const psi = exp.vokra_wasm_alloc(1023 * 4);
+  if (exp.vokra_test_sigmoid(1023, pact, psi, forcedScalar) !== 0) {
+    throw new Error("vokra_test_sigmoid returned an error");
+  }
+  const sigmoid = f32sOut(exp, psi, 1023);
+  const pth = exp.vokra_wasm_alloc(1023 * 4);
+  if (exp.vokra_test_tanh(1023, pact, pth, forcedScalar) !== 0) {
+    throw new Error("vokra_test_tanh returned an error");
+  }
+  const tanh = f32sOut(exp, pth, 1023);
+  const pge = exp.vokra_wasm_alloc(1023 * 4);
+  if (exp.vokra_test_gelu(1023, pact, pge, forcedScalar) !== 0) {
+    throw new Error("vokra_test_gelu returned an error");
+  }
+  const gelu = f32sOut(exp, pge, 1023);
+
+  // Reduction kernels: cols=130 is lane-ragged (130 = 4*32 + 2).
+  const rows = 7, cols = 130;
+  const smIn = randVec(rows * cols, 99);
+  const psm = f32sIn(exp, smIn);
+  const psmo = exp.vokra_wasm_alloc(rows * cols * 4);
+  if (exp.vokra_test_softmax(rows, cols, psm, psmo, forcedScalar) !== 0) {
+    throw new Error("vokra_test_softmax returned an error");
+  }
+  const softmax = f32sOut(exp, psmo, rows * cols);
+
+  const lnIn = randVec(rows * cols, 111);
+  const gamma = randVec(cols, 122);
+  const beta = randVec(cols, 133);
+  const pln = f32sIn(exp, lnIn), pg = f32sIn(exp, gamma), pbeta = f32sIn(exp, beta);
+  const plno = exp.vokra_wasm_alloc(rows * cols * 4);
+  if (exp.vokra_test_layer_norm(rows, cols, 1e-5, pln, pg, pbeta, plno, forcedScalar) !== 0) {
+    throw new Error("vokra_test_layer_norm returned an error");
+  }
+  const layerNorm = f32sOut(exp, plno, rows * cols);
+
+  return { gemm, gemv, add, mul, relu, sigmoid, tanh, gelu, softmax, layerNorm };
 }
 
 // --- main ----------------------------------------------------------------------
@@ -201,12 +253,54 @@ check(
   `measured max|Δ|=${gemvDiff.toExponential(3)} vs atol=${GEMV_ATOL}/rtol=${GEMV_RTOL}`,
 );
 
+// relu is a lane-wise f32x4_max — bit-identical to scalar for the finite
+// harness inputs (same class as add / mul).
+check("relu bit-exact vs scalar", maxAbsDiff(sd.relu, ss.relu) === 0);
+
+// sigmoid / tanh / gelu run the vectorized poly `exp`, so they must (a) stay
+// within ACTIVATION_ATOL of the scalar `std::exp` reference AND (b) differ by
+// a strictly-positive amount — a zero delta would mean the dispatched path is
+// still the scalar passthrough (this lower bound is exactly what detects an
+// un-vectorized kernel, i.e. the M4-01-T05 scalar-delegation gap).
+for (const name of ["sigmoid", "tanh", "gelu"]) {
+  const d = maxAbsDiff(sd[name], ss[name]);
+  check(
+    `${name} SIMD poly-exp active & within bound`,
+    d > 0 && withinTol(sd[name], ss[name], ACTIVATION_ATOL, ACTIVATION_RTOL),
+    `max|Δ|=${d.toExponential(3)} (0 < Δ ≤ atol=${ACTIVATION_ATOL})`,
+  );
+}
+
+// softmax / layer_norm reorder their row reductions (4-lane partial sums) and
+// softmax also uses the poly `exp`, so they are tolerance-bounded, not exact.
+const softmaxDiff = maxAbsDiff(sd.softmax, ss.softmax);
+check(
+  "softmax within reduction bound (reorder + poly-exp)",
+  withinTol(sd.softmax, ss.softmax, REDUCTION_ATOL, REDUCTION_RTOL),
+  `max|Δ|=${softmaxDiff.toExponential(3)} vs atol=${REDUCTION_ATOL}`,
+);
+const lnDiff = maxAbsDiff(sd.layerNorm, ss.layerNorm);
+check(
+  "layer_norm within reduction bound (mean/var reorder)",
+  withinTol(sd.layerNorm, ss.layerNorm, REDUCTION_ATOL, REDUCTION_RTOL),
+  `max|Δ|=${lnDiff.toExponential(3)} vs atol=${REDUCTION_ATOL}`,
+);
+
 console.log("\ncross-artifact (base dispatched == scalar semantics):");
 const bd = runKernels(base, 0); // base artifact dispatches scalar
 check("gemm base == simd-artifact scalar", maxAbsDiff(bd.gemm, ss.gemm) === 0);
 check("gemv base == simd-artifact scalar", maxAbsDiff(bd.gemv, ss.gemv) === 0);
 check("add base == simd-artifact scalar", maxAbsDiff(bd.add, ss.add) === 0);
 check("mul base == simd-artifact scalar", maxAbsDiff(bd.mul, ss.mul) === 0);
+// The base (no-SIMD) artifact dispatches scalar for every kernel, so it must
+// agree bit-exactly with the simd artifact's forced-scalar output — including
+// the transcendentals (both run the scalar `std::exp` reference here).
+check("relu base == simd-artifact scalar", maxAbsDiff(bd.relu, ss.relu) === 0);
+check("sigmoid base == simd-artifact scalar", maxAbsDiff(bd.sigmoid, ss.sigmoid) === 0);
+check("tanh base == simd-artifact scalar", maxAbsDiff(bd.tanh, ss.tanh) === 0);
+check("gelu base == simd-artifact scalar", maxAbsDiff(bd.gelu, ss.gelu) === 0);
+check("softmax base == simd-artifact scalar", maxAbsDiff(bd.softmax, ss.softmax) === 0);
+check("layer_norm base == simd-artifact scalar", maxAbsDiff(bd.layerNorm, ss.layerNorm) === 0);
 
 if (failures > 0) {
   console.error(`\n${failures} kernel-parity check(s) FAILED`);

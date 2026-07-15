@@ -407,6 +407,25 @@ impl WebGpuContext {
         self.run(&plan, &[a, b], out)
     }
 
+    /// Element-wise sum `out[i] = a[i] + b[i]` through the **dedicated**
+    /// `add_f32` kernel — the `OpKind::Add` graph arm's kernel (mirrors the
+    /// Vulkan hand-crafted `add_f32` arm; distinct from the `elementwise`
+    /// op-switch kernel, which backs `OpKind::Mul`). Keeping Add on its own
+    /// kernel is what makes the dispatch match the `supports()` gate token
+    /// `add_f32` in lock-step (M4-01 #23:
+    /// [`crate::backend::graph_op_dispatched_shader`]).
+    ///
+    /// # Errors
+    /// As [`Self::gemm_f32`].
+    pub fn add_f32(&self, a: &[f32], b: &[f32], out: &mut [f32]) -> Result<()> {
+        plan::expect_lens(&[
+            ("add_f32 b", b.len(), a.len()),
+            ("add_f32 out", out.len(), a.len()),
+        ])?;
+        let plan = plan::plan_add(a.len())?;
+        self.run(&plan, &[a, b], out)
+    }
+
     /// Identity copy through the `copy_f32` kernel — the round-trip smoke op
     /// (M4-01-T10/T11).
     ///
