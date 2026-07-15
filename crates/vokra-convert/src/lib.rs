@@ -91,6 +91,21 @@ pub enum ModelKind {
     /// writes `0` sentinels for those fields (which the runtime loader
     /// rejects at forward time per FR-EX-08).
     Voxtral,
+    /// Standalone Mimi (Kyutai) codec checkpoint (M4-04 T10): the moshi-native
+    /// safetensors (`kyutai/moshiko-pytorch-bf16`
+    /// `tokenizer-e351c8d8-checkpoint125.safetensors`, CC-BY 4.0 weights —
+    /// attribution discharged by NOTICE §5). All tensors pass through; the
+    /// converter additionally derives the effective (pre-projected) RVQ
+    /// codebook tables the runtime decode consumes, and emits
+    /// `vokra.mimi.{n_codebooks,codebook_size,d_model}` from the checkpoint
+    /// shapes (ADR M4-04 §D-f/§D-k).
+    Mimi,
+    /// Standalone DAC (Descript Audio Codec) checkpoint (M4-04 T11): a
+    /// **prepared** safetensors (from `tools/parity/dac_prepare_checkpoint.py`
+    /// — the upstream release is a `.pth`) plus a JSON config side-car.
+    /// Convert with [`convert_dac_file`] — the config is required, so this is
+    /// not a plain single-input [`convert_file`] model. MIT weights.
+    Dac,
 }
 
 impl ModelKind {
@@ -112,6 +127,8 @@ impl ModelKind {
             "kokoro" => Some(Self::Kokoro),
             "cosyvoice2" => Some(Self::CosyVoice2),
             "voxtral" => Some(Self::Voxtral),
+            "mimi" => Some(Self::Mimi),
+            "dac" => Some(Self::Dac),
             _ => None,
         }
     }
@@ -126,6 +143,8 @@ impl ModelKind {
             Self::Kokoro => "kokoro",
             Self::CosyVoice2 => "cosyvoice2",
             Self::Voxtral => "voxtral",
+            Self::Mimi => "mimi",
+            Self::Dac => "dac",
         }
     }
 }
@@ -313,6 +332,27 @@ pub fn convert_file(
                 report.written, report.skipped_non_float, report.name, report.tokenizer_embedded
             )];
             (builder, notes)
+        }
+        ModelKind::Mimi => {
+            let (builder, report) = models::mimi::convert(bytes)?;
+            let notes = vec![format!(
+                "mimi: {} tensors passed through ({} non-float skipped), derived effective \
+                 codebook tables [{} x {} x {}] emitted as `{}`",
+                report.written,
+                report.skipped_non_float,
+                report.n_codebooks,
+                report.codebook_size,
+                report.d_model,
+                models::mimi::DERIVED_TABLES_TENSOR,
+            )];
+            (builder, notes)
+        }
+        ModelKind::Dac => {
+            return Err(ConvertError::Usage(
+                "dac needs a --config side-car (from tools/parity/dac_prepare_checkpoint.py); \
+                 use convert_dac_file"
+                    .to_owned(),
+            ));
         }
     };
 
@@ -531,6 +571,51 @@ pub fn convert_kokoro_file(
 
     Ok(ConvertSummary {
         model: ModelKind::Kokoro,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
+/// Convert a **prepared** DAC safetensors checkpoint together with its JSON
+/// config side-car into a Vokra GGUF (M4-04 T11).
+///
+/// The upstream DAC release is a torch-pickle `.pth`; run
+/// `tools/parity/dac_prepare_checkpoint.py` first to flatten it into a
+/// safetensors + config-JSON pair (no `.pth` parser enters the converter —
+/// zero-dep, NFR-DS-02). The config supplies the shape facts the checkpoint
+/// metadata carried (`n_codebooks` / `codebook_size` / `codebook_dim` /
+/// `d_model` / `sample_rate` / `hop_length`); the converter cross-checks them
+/// against the tensor shapes and fails explicitly on any mismatch (FR-EX-08).
+///
+/// All upstream tensors pass through; per-quantizer decode-ready tensors
+/// (`vokra.dac.quantizer.{i}.{codebook,out_proj_weight,out_proj_bias}`, with
+/// the weight norm folded offline) are emitted next to them — see
+/// `models/dac.rs` module docs / ADR M4-04 §D-f.
+pub fn convert_dac_file(
+    input: &Path,
+    config: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let config_bytes = std::fs::read(config)?;
+    let cfg = models::dac::DacConfig::parse(&config_bytes)?;
+    let (builder, report) = models::dac::convert(bytes, &cfg)?;
+
+    let notes = vec![format!(
+        "dac: {} tensors passed through ({} non-float skipped), {} quantizers folded \
+         (weight-norm) into vokra.dac.quantizer.* decode tensors, sample_rate {}, hop {}",
+        report.written, report.skipped_non_float, cfg.n_codebooks, cfg.sample_rate, cfg.hop_length,
+    )];
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::Dac,
         tensor_count,
         metadata_count,
         output_bytes: out_bytes.len() as u64,

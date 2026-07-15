@@ -50,6 +50,13 @@ vokra-backend-cuda = { workspace = true, optional = true }
 # from `Compute::for_backend` — never a silent CPU fall back (FR-EX-08).
 vokra-backend-vulkan = { workspace = true, optional = true }
 
+[dev-dependencies]
+# M4-04 T10/T11 (test-only edge, runtime direction untouched): the codec GGUF
+# binder roundtrip tests build a synthetic checkpoint, run it through the
+# offline vokra-convert library, and bind the result back — proving the
+# converter-derived tensors and the runtime binder agree bit-for-bit.
+vokra-convert = { path = "../vokra-convert" }
+
 [features]
 # Off by default: enable with `--features metal` on macOS / iOS to route the
 # model GEMM hot path onto the GPU (and to build/run the Metal parity tests).

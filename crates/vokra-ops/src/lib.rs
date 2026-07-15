@@ -54,7 +54,18 @@
 pub mod aec;
 // -------------------------------------------------------------------------
 pub mod attrs;
+// ---- M4-04 dac_rvq codec decode (RVQ family, FR-OP-30) ------------------
+// DAC's factorized (low-dim codebook + per-quantizer out_proj) residual VQ
+// decode. Shapes verified from the upstream descript-audio-codec (MIT)
+// implementation + the 24 kHz checkpoint metadata (ADR M4-04 §T02). Paged
+// variant primary block size = 4 (75-86 Hz released variants).
+pub mod dac_rvq;
+// -------------------------------------------------------------------------
 pub mod dct;
+// ---- M4-04 encodec_rvq (engine op only — FR-OP-32 permanent weight
+// exclusion; parity uses synthetic codebooks, never pretrained weights) ----
+pub mod encodec_rvq;
+// -------------------------------------------------------------------------
 pub mod dispatch;
 pub mod fft;
 // ---- M3-05 flow_sampler / ODE solvers (runtime function, FR-EX-10) -----
@@ -98,7 +109,16 @@ pub mod window;
 // ---- M4-03 aec re-exports ------------------------------------------------
 pub use aec::{Aec, AecAttrs, AecStatus};
 // ---------------------------------------------------------------------------
+// ---- M4-04 dac_rvq re-exports --------------------------------------------
+pub use dac_rvq::{
+    DacOutProj, DacRvqAttrs, dac_paged_dims, dac_rvq_decode, dac_rvq_decode_paged,
+    dac_rvq_read_summed,
+};
+// ---------------------------------------------------------------------------
 pub use dct::dct;
+// ---- M4-04 encodec_rvq re-exports -----------------------------------------
+pub use encodec_rvq::{EncodecRvqAttrs, encodec_rvq_decode};
+// ---------------------------------------------------------------------------
 pub use dispatch::{OpValue, dispatch};
 // ---- M3-05 flow_sampler re-exports --------------------------------------
 pub use flow_sampler::{
@@ -124,7 +144,7 @@ pub use mfcc::mfcc;
 // ---- M3-06 mimi_rvq re-exports ------------------------------------------
 pub use mimi_rvq::{
     CodebookTable, MimiDecoder, MimiRvqAttrs, codebook_lookup, mimi_paged_dims, mimi_rvq_decode,
-    mimi_rvq_decode_paged, mimi_rvq_read_summed,
+    mimi_rvq_decode_paged, mimi_rvq_read_summed, mimi_rvq_read_summed_range,
 };
 // -------------------------------------------------------------------------
 pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};

@@ -79,8 +79,8 @@
 | **Sesame CSM-1B** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Sesame AI Labs |
 | **Moshi (Helium + Mimi)** | Apache 2.0 | **CC-BY 4.0** | ○ (要 credit) | ★ 公式 zoo | Kyutai、attribution 表示義務 → docs/legal-compliance.md 参照 |
 | **Voxtral (Mistral)** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Mistral、2025-07 リリース。**M3-10 で自前実装 scaffold**（`crates/vokra-models/src/voxtral/`、Whisper 派生 audio encoder + Mistral GQA/RoPE/SwiGLU/RMSNorm text decoder + ASR/S2S heads + config-aware converter `convert_voxtral_file`。実 multilang WER は follow-up）。 |
-| **DAC (Descript)** | MIT | MIT | ○ | ★ 公式 zoo | Descript 公式 |
-| **Mimi codec (Kyutai)** | Apache 2.0 | CC-BY 4.0 | ○ (要 credit) | ★ 公式 zoo | Moshi パッケージの一部。**M3-06 で `mimi_rvq` op を実装**（`crates/vokra-ops/src/mimi_rvq.rs`、CC-BY 4.0 attribution は `NOTICE` §5 に記載、`registry_lookup("mimi") == AttributionRequired`）。 |
+| **DAC (Descript)** | MIT | MIT | ○ | ★ 公式 zoo | Descript 公式。**M4-04 で `dac_rvq` op + converter + standalone zoo GGUF を実装**（`crates/vokra-ops/src/dac_rvq.rs` factorized decode、`vokra-cli convert --model dac`（要 `dac_prepare_checkpoint.py` side-car）、zoo primary = 24 kHz / 8 kbps variant（tag 0.0.4、75 Hz）。配布解禁は §3.1 の owner sign-off 待ち = fail-closed）。 |
+| **Mimi codec (Kyutai)** | Apache 2.0 | CC-BY 4.0 | ○ (要 credit) | ★ 公式 zoo | Moshi パッケージの一部。**M3-06 で `mimi_rvq` op を実装**（`crates/vokra-ops/src/mimi_rvq.rs`、CC-BY 4.0 attribution は `NOTICE` §5 に記載、`registry_lookup("mimi") == AttributionRequired`）。**M4-04 で standalone codec GGUF（`vokra.mimi.*` persisted、`vokra-cli convert --model mimi`）+ CSM/Moshi 向け multi-stream streaming 完成**（配布物同梱の NOTICE §5 で attribution 充足、standalone zoo 配布判断は §3.1 Mimi 行の sign-off に含める）。 |
 | **WavTokenizer** | MIT | MIT | ○ | ★ 公式 zoo | 中山大 |
 | **X-Codec 2 (Llasa)** | MIT | MIT | ○ | ★ 公式 zoo | HKUST |
 | **openWakeWord** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | dscripka |
@@ -142,6 +142,7 @@
 | **CosyVoice2-0.5B** | **Apache-2.0** | Hugging Face `FunAudioLLM/CosyVoice2-0.5B` model card の license: apache-2.0 タグ；`FunAudioLLM/CosyVoice` GitHub リポジトリ LICENSE ファイル（Apache License Version 2.0） | `Permissive` | ✓ | ______________ |
 | **Voxtral-Mini-3B-2507** | **Apache-2.0** | Hugging Face `mistralai/Voxtral-Mini-3B-2507` model card の license: apache-2.0 タグ | `Permissive` | ✓ | ______________ |
 | **Voxtral-Small-24B-2507** | **Apache-2.0** | Hugging Face `mistralai/Voxtral-Small-24B-2507` model card の license: apache-2.0 タグ | `Permissive` | ✓ | ______________ |
+| **DAC (Descript)** | **MIT** | `descriptinc/descript-audio-codec` GitHub リポジトリ LICENSE ファイル（MIT、GitHub API license.spdx_id = MIT を 2026-07-15 に CC 確認）；weights は同リポジトリの GitHub releases 配布物（`weights_24khz.pth` 等、`dac/utils/__init__.py` L18-39 の pinned URL 表）で **別段の weight license ファイルは同梱されていない**（リポジトリ LICENSE の下で公表） | `Permissive` | ✓ | ______________ |
 
 **Attribution 要（CC-BY 4.0、公式 zoo 搭載可、NOTICE 記載必須）**:
 
@@ -190,7 +191,8 @@
 | **CosyVoice2-0.5B** | Apache-2.0 | 2026-07-10 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M3-09 対応 |
 | **Voxtral-Mini-3B-2507** | Apache-2.0 | 2026-07-10 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M3-10 対応 |
 | **Voxtral-Small-24B-2507** | Apache-2.0 | 2026-07-10 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M3-10 対応 |
-| **Mimi codec (Kyutai)** | CC-BY 4.0 | 2026-07-10 | ______________ | ☐ Commercial (attribution 込) / ☐ Research-only / ☐ Rejected | M3-06 で NOTICE §5 反映済、機構 gate 済 |
+| **Mimi codec (Kyutai)** | CC-BY 4.0 | 2026-07-10 | ______________ | ☐ Commercial (attribution 込) / ☐ Research-only / ☐ Rejected | M3-06 で NOTICE §5 反映済、機構 gate 済。**M4-04 standalone zoo 対応** — standalone codec GGUF（`--model mimi`、kyutai/moshiko-pytorch-bf16 tokenizer safetensors 由来）の zoo 配布判断も本行の sign-off で一括（M4-04-T20） |
+| **DAC 24khz (Descript)** | MIT | 2026-07-15 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M4-04 対応（`dac_rvq` op + `--model dac` converter、zoo primary = 24 kHz/8 kbps tag 0.0.4）。§3 表は ★ 公式 zoo 指定済だが本行 sign-off まで配布不可（fail-closed、M4-04-T20） |
 
 ---
 

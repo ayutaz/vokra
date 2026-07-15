@@ -1,0 +1,14 @@
+M4-04 T14 DAC factorized RVQ reference fixture (sliced, projection included)
+reference: descript-audio-codec (MIT) public API — ResidualVectorQuantize.from_codes; descript-audio-codec==1.0.0, torch==2.9.1, numpy==2.2.6
+checkpoint pin: descriptinc/descript-audio-codec release tag 0.0.4 weights_24khz.pth (24 kHz / 8 kbps zoo-primary variant — ADR M4-04 §T02)
+checkpoint sha256: 44bad592fc393e03eb0be7a5120b7d487fe9612fa41269dc03fca3d4b87e20ad
+upstream DacRvqAttrs pin (fixture asserts these): n_codebooks=32 codebook_size=1024 codebook_dim=8 d_model=1024 sample_rate=24000 hop=320
+fixture subset: first 12 quantizers (prefix decode = upstream variable-bitrate semantics), rows sliced to 192
+shapes: codebook_tables_sliced [(12, 192, 8)]; out_proj_weight [(12, 1024, 8)]; out_proj_bias [(12, 1024)]; codes [(32, 12)] u32; decoded_features [(32, 1024)]
+seed: 0; codes in [0, 192)
+note: out_proj_weight is the weight-norm EFFECTIVE weight as torch computed it (g*v/||v||, dim=0); the Vokra converter folds the same formula offline
+sha256 codebook_tables_sliced.f32 9e730d52158c2c2b2f63e6a6839686a7d10b0abb016bebc1d74bd38ebc54b9b2
+sha256 out_proj_weight.f32 579b88aca8ab2e64afbfd07ceffed912cebca4c642d0ededc2c4a5721965fc35
+sha256 out_proj_bias.f32 1ffa45e77e45a06107bea2b1b0fb6c4f0b0bca7e5a64cf2f3bf6d3c7e92c3a67
+sha256 codes.u32 dbf82e63608bf06ab945dbbde5bd1a8e8debbe82e0ded5e83ef124af0be30841
+sha256 decoded_features.f32 c246715d3e4b933ffe24e025358f2040cb9df08ad8fe8af32b7ef66dc989b60b

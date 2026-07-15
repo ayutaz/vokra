@@ -16,7 +16,9 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use vokra_convert::{ModelKind, convert_file, convert_file_quantized, convert_piper_plus_file};
+use vokra_convert::{
+    ModelKind, convert_dac_file, convert_file, convert_file_quantized, convert_piper_plus_file,
+};
 use vokra_core::gguf::{FrontendSpec, GgmlType, GgufFile};
 
 const USAGE: &str = "\
@@ -77,6 +79,22 @@ fn main() -> ExitCode {
                 None => {
                     eprintln!(
                         "error: --model piper-plus requires --config <config.json>\n\n{USAGE}"
+                    );
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        ModelKind::Dac => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            match &config {
+                Some(config) => convert_dac_file(&input, config, &output),
+                None => {
+                    eprintln!(
+                        "error: --model dac requires --config <config.json> (from \
+                         tools/parity/dac_prepare_checkpoint.py)\n\n{USAGE}"
                     );
                     return ExitCode::from(2);
                 }
@@ -332,6 +350,51 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                 .unwrap_or("<none>");
             println!(
                 "; arch={arch} audio_layers={ae_n_layer} text_layers={td_n_layer} vocab={vocab} mode={mode}"
+            );
+        }
+        ModelKind::Mimi => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let n_cb = file
+                .get("vokra.mimi.n_codebooks")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cb_size = file
+                .get("vokra.mimi.codebook_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let d_model = file
+                .get("vokra.mimi.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!("; arch={arch} n_codebooks={n_cb} codebook_size={cb_size} d_model={d_model}");
+        }
+        ModelKind::Dac => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let n_cb = file
+                .get("vokra.dac.n_codebooks")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cb_dim = file
+                .get("vokra.dac.codebook_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let d_model = file
+                .get("vokra.dac.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr = file
+                .get("vokra.dac.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} n_codebooks={n_cb} codebook_dim={cb_dim} d_model={d_model} \
+                 sample_rate={sr}"
             );
         }
     }
