@@ -874,6 +874,15 @@ impl Compute {
                  the CPU (FR-EX-08)."
                     .to_owned(),
             )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "wavtokenizer_vq_f32 has no wired WebGPU WGSL kernel (M4-01 covers the six \
+                 Whisper hot ops only; the FSQ codec GPU arms are deferred like Metal/CUDA). \
+                 Select BackendKind::Cpu (which delegates to \
+                 vokra_ops::wavtokenizer_vq_decode) — Vokra does not silently run the op on \
+                 the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
         }
     }
 
@@ -917,6 +926,14 @@ impl Compute {
             Be::Cuda(_) => Err(VokraError::UnsupportedOp(
                 "xcodec2_fsq_f32 has no wired CUDA NVRTC kernel; the M4-16 GPU arm is deferred \
                  (single-stage GEMV — reuses the M2-03 kernels when it lands). Select \
+                 BackendKind::Cpu (which delegates to vokra_ops::xcodec2_fsq_decode) — Vokra \
+                 does not silently run the op on the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "xcodec2_fsq_f32 has no wired WebGPU WGSL kernel (M4-01 covers the six Whisper \
+                 hot ops only; the FSQ codec GPU arms are deferred like Metal/CUDA). Select \
                  BackendKind::Cpu (which delegates to vokra_ops::xcodec2_fsq_decode) — Vokra \
                  does not silently run the op on the CPU (FR-EX-08)."
                     .to_owned(),
