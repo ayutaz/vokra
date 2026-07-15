@@ -46,6 +46,13 @@
 // written in safe Rust; the opt-out is kept for the SIMD kernels of later WPs.
 #![allow(unsafe_code)]
 
+// ---- M4-03 aec (FR-OP-60, runtime function — not an OpKind variant) -----
+// SpeexDSP MDF/AUMDF float-build port; the time-tagged far-end queue lives
+// in vokra-core::stream::aec_ref (crate edge runs ops → core). New module +
+// re-export kept as one localized patch block (M3-05/M3-06 pattern) so
+// parallel M4 waves rebase cleanly.
+pub mod aec;
+// -------------------------------------------------------------------------
 pub mod attrs;
 pub mod dct;
 pub mod dispatch;
@@ -88,6 +95,9 @@ pub mod resample;
 pub mod stft;
 pub mod window;
 
+// ---- M4-03 aec re-exports ------------------------------------------------
+pub use aec::{Aec, AecAttrs, AecStatus};
+// ---------------------------------------------------------------------------
 pub use dct::dct;
 pub use dispatch::{OpValue, dispatch};
 // ---- M3-05 flow_sampler re-exports --------------------------------------

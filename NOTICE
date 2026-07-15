@@ -104,7 +104,31 @@ alternatives supported by Vokra: DAC (MIT), Mimi (CC-BY 4.0), WavTokenizer
 (MIT), X-Codec 2 (MIT).
 
 --------------------------------------------------------------------------
-7. Maintaining this file
+7. SpeexDSP echo canceller (Rust port of mdf.c for the `aec` operator)
+--------------------------------------------------------------------------
+Vokra's acoustic echo cancellation operator (crates/vokra-ops/src/aec.rs,
+M4-03 / FR-OP-60) is a from-scratch Rust port — a derivative work, not a
+clean-room reimplementation — of the SpeexDSP echo canceller
+(libspeexdsp/mdf.c, the MDF/AUMDF adaptive filter with the Valin 2007
+variable learning rate), Copyright (C) 2003-2008 Jean-Marc Valin,
+distributed under the 3-clause BSD license as part of SpeexDSP
+(Copyright 2002-2008 Xiph.org Foundation and contributors).
+
+  Source: https://github.com/xiph/speexdsp
+          (pinned commit 7a158783df74efe7c2d1c6ee8363c1e695c71226)
+  License: 3-clause BSD — full text reproduced in
+          crates/vokra-ops/THIRD_PARTY_LICENSES/speexdsp-LICENSE.txt
+
+No SpeexDSP C source is bundled, compiled, or linked into any Vokra
+artifact (NFR-DS-02 zero-dependency); the port is pure Rust. The upstream
+code is only executed offline by the developer-side parity tool
+(tools/parity/aec_dump.py) to produce the committed reference fixtures
+under tests/parity/aec/. The far-end reference queue
+(crates/vokra-core/src/stream/aec_ref.rs) is an original Vokra design and
+not derived from SpeexDSP.
+
+--------------------------------------------------------------------------
+8. Maintaining this file
 --------------------------------------------------------------------------
 Any pull request that adds support for a new model or introduces a new
 external dependency must run the license audit (docs/license-audit.md) and,
