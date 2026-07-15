@@ -26,6 +26,7 @@ const KEY_MODEL_ARCH: &str = "vokra.model.arch";
 const ARCH_WHISPER: &str = "whisper";
 const ARCH_SILERO_VAD: &str = "silero-vad";
 const ARCH_PIPER_PLUS: &str = "piper-plus-mb-istft-vits2";
+const ARCH_MOSHI: &str = "moshi";
 
 /// Loads the GGUF at `path`, injects the engine matching its `vokra.model.arch`
 /// and returns the ready [`Session`] (ADR-0003 §2).
@@ -64,9 +65,43 @@ fn build_session(path: &str) -> Result<Session, VokraError> {
             let tts = PiperPlusTts::from_path(path)?;
             Ok(session.with_tts_engine(Arc::new(tts)))
         }
+        ARCH_MOSHI => {
+            // Moshi (M4-06, full-duplex S2S — FR-MD-09). The engine wires a
+            // default AEC recipe derived from the model's frame hop so
+            // `vokra_s2s_duplex_open` runs the canceller out of the box;
+            // the batch S2s facade keeps the recorded-input bypass. The
+            // attribution surface resolves onto the session for
+            // `vokra_model_attribution` (T24).
+            let engine = vokra_models::moshi::MoshiEngine::from_path(path)?;
+            let sample_rate = engine.mimi_config().sample_rate;
+            let hop = engine.mimi_config().frame_hop_samples()?;
+            let frame_size = [128usize, 64, 32, 16, 8, 4, 2, 1]
+                .into_iter()
+                .find(|fs| hop % fs == 0)
+                .unwrap_or(1);
+            let engine = engine
+                .with_aec(
+                    &vokra_ops::aec::AecAttrs {
+                        sample_rate,
+                        frame_size,
+                        filter_length: frame_size * 8,
+                    },
+                    sample_rate as usize,
+                )?
+                .with_echo_path(vokra_models::csm::EchoPath::BypassRecordedInput);
+            let attribution = engine.attribution().cloned();
+            let engine = Arc::new(engine);
+            let mut session = session
+                .with_s2s_engine(engine.clone())
+                .with_s2s_duplex_engine(engine);
+            if let Some(info) = attribution {
+                session = session.with_attribution(info);
+            }
+            Ok(session)
+        }
         other => Err(VokraError::InvalidArgument(format!(
-            "unsupported model arch `{other}` (M0 supports `{ARCH_WHISPER}` / \
-             `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}`)"
+            "unsupported model arch `{other}` (supported: `{ARCH_WHISPER}` / \
+             `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_MOSHI}`)"
         ))),
     }
 }

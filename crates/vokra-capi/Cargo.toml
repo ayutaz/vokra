@@ -39,6 +39,13 @@ vokra-models.workspace = true
 # (NFR-DS-02 zero-dep unchanged).
 vokra-ops.workspace = true
 
+[dev-dependencies]
+# M4-06 T20/T24 (test-only edge): the duplex / attribution C ABI tests
+# build a converted synthetic Moshi GGUF through the offline vokra-convert
+# library — first-party, acyclic, root Cargo.lock stays vokra-* only
+# (NFR-DS-02; the vokra-models dev-edge precedent).
+vokra-convert = { path = "../vokra-convert" }
+
 [features]
 # --------------------------------------------------------------------------
 # CPU-only audit-trail (M2-11-T13 / plan §R3, Reviewer 3).
