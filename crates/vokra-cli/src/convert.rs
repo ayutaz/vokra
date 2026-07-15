@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, PolicyPreset, VoxtralConfig, convert_file, convert_file_quantized,
+    ModelKind, PolicyPreset, VoxtralConfig, convert_dac_file, convert_file, convert_file_quantized,
     convert_file_with_policy, convert_kokoro_file, convert_piper_plus_file,
     convert_voxtral_file_with_adapter_config,
 };
@@ -219,6 +219,25 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 // posture, Wave 7 semantic). Same behavior as the pre-Wave-8
                 // path.
                 (_, None) => convert_file(model, &p.input, &p.output),
+            }
+        }
+        ModelKind::Dac => {
+            // M4-04 T11: DAC needs the prepare-script config side-car (the
+            // shape facts live in the upstream .pth metadata the safetensors
+            // flattening cannot carry). Quantization is whisper-only.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            match &p.config {
+                Some(config) => convert_dac_file(&p.input, config, &p.output),
+                None => {
+                    return Err("--model dac requires --config <config.json> (from \
+                                tools/parity/dac_prepare_checkpoint.py)"
+                        .to_owned());
+                }
             }
         }
         _ => {
