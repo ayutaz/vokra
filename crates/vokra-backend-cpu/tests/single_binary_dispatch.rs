@@ -143,7 +143,7 @@ fn forced_isa_paths_via_subprocess() {
     // Includes IsaPath::Rvv (M3-13) and IsaPath::Rvv071 (M4-08) — on x86-64 /
     // aarch64 CI runners both RISC-V vector paths are unavailable and forcing
     // either must be an explicit error.
-    for isa in [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv, IsaPath::Rvv071] {
+    for isa in IsaPath::ALL_SIMD {
         if !feats.supports(isa) {
             let name = isa.to_string();
             assert!(

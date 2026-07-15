@@ -11,7 +11,8 @@ use std::ffi::c_char;
 use std::sync::Arc;
 
 use vokra_core::gguf::{AsBytes, GgufFile};
-use vokra_core::{BackendKind, Session, VokraError};
+use vokra_core::{BackendKind, CompliancePolicy, Session, VokraError};
+use vokra_models::moshi::MoshiEngine;
 use vokra_models::piper_plus::PiperPlusTts;
 use vokra_models::silero_vad::SileroVadV5;
 use vokra_models::whisper::WhisperAsr;
@@ -44,12 +45,15 @@ impl AsBytes for SharedBytes {
 
 /// Injects the engine matching the session GGUF's `vokra.model.arch` and
 /// returns the ready [`Session`] (ADR-0003 §2). `reparse_for_piper` supplies
-/// the by-value `GgufFile` that `PiperPlusTts::from_gguf` consumes — from the
-/// file path (`build_session`) or from the shared byte buffer
+/// the by-value `GgufFile` that `PiperPlusTts::from_gguf` consumes, and
+/// `load_moshi` supplies the [`MoshiEngine`] built from the raw model bytes
+/// (its compliance gate re-reads the whole GGUF image) — each from the file
+/// path (`build_session`) or from the shared byte buffer
 /// (`build_session_from_bytes`, M4-02).
 fn inject_engine(
     session: Session,
     reparse_for_piper: impl FnOnce() -> Result<PiperPlusTts, VokraError>,
+    load_moshi: impl FnOnce() -> Result<MoshiEngine, VokraError>,
 ) -> Result<Session, VokraError> {
     // Own the arch string so the immutable borrow of `session` ends before we
     // move `session` into `with_*_engine` below.
@@ -88,7 +92,7 @@ fn inject_engine(
             // the batch S2s facade keeps the recorded-input bypass. The
             // attribution surface resolves onto the session for
             // `vokra_model_attribution` (T24).
-            let engine = vokra_models::moshi::MoshiEngine::from_path(path)?;
+            let engine = load_moshi()?;
             let sample_rate = engine.mimi_config().sample_rate;
             let hop = engine.mimi_config().frame_hop_samples()?;
             let frame_size = [128usize, 64, 32, 16, 8, 4, 2, 1]
@@ -128,7 +132,11 @@ fn build_session(path: &str) -> Result<Session, VokraError> {
     // CPU backend is the only M0 backend (FR-BE-01); the real kernels are
     // M0-08. A backend selector argument is a future breaking change (note 3).
     let session = Session::from_file(path).with_backend(BackendKind::Cpu)?;
-    inject_engine(session, || PiperPlusTts::from_path(path))
+    inject_engine(
+        session,
+        || PiperPlusTts::from_path(path),
+        || MoshiEngine::from_path(path),
+    )
 }
 
 /// Parses `bytes` as a GGUF, injects the matching engine and returns the ready
@@ -143,10 +151,15 @@ fn build_session_from_bytes(bytes: Vec<u8>) -> Result<Session, VokraError> {
     let shared = SharedBytes(Arc::new(bytes));
     let gguf = GgufFile::from_external(Box::new(shared.clone()))?;
     let session = Session::from_gguf(gguf).with_backend(BackendKind::Cpu)?;
-    inject_engine(session, move || {
-        let reparsed = GgufFile::from_external(Box::new(shared))?;
-        PiperPlusTts::from_gguf(reparsed)
-    })
+    let piper_shared = shared.clone();
+    inject_engine(
+        session,
+        move || {
+            let reparsed = GgufFile::from_external(Box::new(piper_shared))?;
+            PiperPlusTts::from_gguf(reparsed)
+        },
+        move || MoshiEngine::from_gguf_with_policy(shared.bytes(), &CompliancePolicy::strict()),
+    )
 }
 
 /// Loads a model from a GGUF file and creates an inference session on the CPU

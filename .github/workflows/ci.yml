@@ -372,6 +372,72 @@ jobs:
         # riscv64-only crate crept into vokra-backend-cpu — reject the PR.
         run: git diff --exit-code Cargo.lock
 
+  # M4-17 CPU ISA server-tier verification (ADR M4-17 §(f)). Two legs:
+  # ubuntu-latest (x86-64) and macos-latest (Apple Silicon). The scalar-oracle
+  # differentials are runtime-detect gated — a runner without a tier skips
+  # that tier's execution leg (never a fabricated pass): GitHub x86-64 runners
+  # are Ice-Lake/Zen4-class and usually execute the AVX-512 F/VNNI legs (bf16
+  # only on Zen4-class); the macOS arm64 runner executes the NEON fp16 +
+  # dotprod legs for real (i8mm/bf16 are Apple M2+ = owner silicon, T24).
+  # The asm-mnemonic tripwire mirrors the M3-13 RVV job: `cargo build`
+  # succeeding does not prove the `.arch_extension`-fenced asm / the
+  # #[target_feature] intrinsics actually emitted their encodings, so we
+  # re-emit asm and grep for them. Intel SDE is deliberately NOT wired
+  # (optional per the M4-17 spec; owner adds it if desired). perf is
+  # advisory-only and owner-measured (cloud VM per-run, T23) — no numeric
+  # perf assert lives here.
+  cpu-isa-server-tier:
+    name: cpu-isa-server-tier (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Server-tier differential (runtime-detect gated, --nocapture logs skips)
+        run: cargo test --release -p vokra-backend-cpu --test server_tier_parity -- --nocapture
+      - name: Full backend-cpu suite on this runner
+        run: cargo test --release -p vokra-backend-cpu
+      - name: Forced-scalar leg (single-binary dispatch honors the override)
+        run: VOKRA_CPU_ISA=scalar cargo test --release -p vokra-backend-cpu --test single_binary_dispatch
+      - name: Verify server-tier encodings land in the emitted asm
+        # Belt-and-suspenders (RVV-job pattern): grep the re-emitted asm for
+        # the tier mnemonics — x86-64: vpdpbusd (VNNI-512 + VNNI-256),
+        # vdpbf16ps (BF16), a zmm register use (AVX-512 f32); aarch64: sdot
+        # (dotprod), smmla (i8mm), bfmmla (bf16), fmla on .8h (fp16).
+        run: |
+          set -euo pipefail
+          cargo rustc --release -p vokra-backend-cpu -- --emit=asm
+          ASM=$(find target/release/deps -name 'vokra_backend_cpu-*.s' | head -n 1)
+          test -n "$ASM"
+          if [ "$(uname -m)" = "x86_64" ]; then
+            MNEMONICS="vpdpbusd vdpbf16ps zmm"
+          else
+            MNEMONICS="sdot smmla bfmmla"
+          fi
+          for mnemonic in $MNEMONICS; do
+            if ! grep -q "$mnemonic" "$ASM"; then
+              echo "M4-17 regression: $mnemonic missing from emitted asm ($ASM)" >&2
+              exit 1
+            fi
+          done
+          if [ "$(uname -m)" != "x86_64" ]; then
+            # Apple's integrated assembler prints `fmla.8h v0, ...`; the GNU
+            # dialect prints `fmla v0.8h, ...` — accept both.
+            if ! grep -Eq 'fmla(\.8h[[:space:]]|[[:space:]]+v[0-9]+\.8h)' "$ASM"; then
+              echo "M4-17 regression: fp16 'fmla .8h' missing from emitted asm ($ASM)" >&2
+              exit 1
+            fi
+          fi
+          echo "M4-17 server-tier kernels: emitted asm contains the tier encodings ($MNEMONICS)." >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify root Cargo.lock unchanged
+        # NFR-DS-02: the server tiers are std::arch + inline asm only — no
+        # new crate may appear in the root Cargo.lock.
+        run: git diff --exit-code Cargo.lock
+
   # iOS build scaffold (M2-02, NFR-RL-03 static-only, NFR-RL-05 JIT-free,
   # FR-EX-08 no silent fallback). Cross-compiles vokra-capi to the 3 Apple
   # triples (device arm64 + simulator arm64/x86_64), assembles

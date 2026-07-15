@@ -32,6 +32,19 @@ pub const ENV_ISA_OVERRIDE: &str = "VOKRA_CPU_ISA";
 /// This selects between behaviourally identical implementations (the same
 /// results within FP32 rounding); it is *not* the cross-backend op-coverage
 /// concept of FR-EX-08. See [`crate::dispatch`].
+///
+/// # `#[non_exhaustive]` semver contract (M4-17-T04, `docs/handoff/m4-12.md` §(e)-2)
+///
+/// New tiers keep landing after the v1.0 GA C-ABI freeze (M5-13): the
+/// reserved names `Amx*` (M5), `Sme*` (M5) and `RvvZvfh*` are pre-recorded in
+/// `docs/abi-changelog.md` `## Reserved additions`. `#[non_exhaustive]` makes
+/// every such landing a **backward-compatible variant addition**: downstream
+/// crates matching on `IsaPath` must carry a `_` arm (the attribute forces
+/// it at compile time), so a new variant cannot break them. **Within this
+/// crate the attribute has no effect** — `dispatch::build_table` keeps its
+/// exhaustive match on purpose, so adding a variant without a kernel table
+/// arm is a compile error, not a runtime surprise.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IsaPath {
     /// Portable scalar kernels (fallback on x86-64 without AVX2; oracle for
@@ -74,6 +87,73 @@ pub enum IsaPath {
     /// the parity discipline NFR-QL-01) — the kernels use deterministic
     /// mul + add, never fma.
     WasmSimd128,
+    /// x86-64 AVX-512 f32 tier (M4-17-T04/T07..T09): 16-lane zmm kernels
+    /// compiled with `avx512f,avx512dq,avx512bw,avx512vl` — the four ship
+    /// together on every Skylake-X 2017+ / Zen4 server part (FR-BE-01), so
+    /// [`CpuFeatures::supports`] gates on the full bundle plus the AVX2+FMA
+    /// base the transcendental kernels delegate to (ADR M4-17 §(b)-4).
+    Avx512,
+    /// x86-64 AVX-512 VNNI INT8 tier (`vpdpbusd`, Cascade Lake 2019+ — the
+    /// server INT8 main path, FR-BE-01). Its f32 [`crate::dispatch`] table
+    /// delegates to the [`IsaPath::Avx512`] kernels (the gate includes the
+    /// full f32 bundle); the INT8 dot-product itself is a separate dispatch
+    /// surface (`kernels::kquant_gemv_i8*`, ADR M4-17 §(b)-2).
+    Avx512Vnni,
+    /// x86-64 AVX-512 BF16 matmul tier (`vdpbf16ps`, Cooper Lake 2020+).
+    /// **Opt-in**: never picked implicitly for f32-precision ops — reached
+    /// via `kernels::gemm_bf16_on` / [`CpuFeatures::best_bf16_isa`] only
+    /// (bf16's 8-bit mantissa is an accuracy cliff, CLAUDE.md "BF16 mantissa
+    /// 損失"). Its f32 table delegates to [`IsaPath::Avx512`].
+    Avx512Bf16,
+    /// x86-64 AVX-VNNI 256-bit INT8 tier (Alder Lake 2021+, P- and E-core).
+    /// **The client INT8 main path**: Alder Lake+ client parts fuse AVX-512
+    /// off platform-wide, so hybrid CPUs land here (ADR M4-17 §(d) tier
+    /// collapse — the probe reports platform-common features, keeping the
+    /// process-wide `OnceLock` selection safe under P/E-core migration).
+    /// Its f32 table delegates to [`IsaPath::Avx2`].
+    AvxVnni256,
+    /// ARM64 fp16 arithmetic tier (ARMv8.2, Cortex-A75+ 2018+). **Opt-in**
+    /// fp16 GEMM (`kernels::gemm_fp16_on` / [`CpuFeatures::best_fp16_isa`];
+    /// fp16's 10-bit mantissa is avoided for f32-precision ops). Its f32
+    /// table delegates to [`IsaPath::Neon`].
+    NeonFp16,
+    /// ARM64 dotprod SDOT/UDOT INT8 tier (ARMv8.2-DotProd; Cortex-A55/A75
+    /// 2017 initial cores, Apple A13+ — the ARM INT8 main path, FR-BE-01).
+    /// INT8 surface mirrors [`IsaPath::Avx512Vnni`]; f32 table delegates to
+    /// [`IsaPath::Neon`].
+    NeonDotprod,
+    /// ARM64 i8mm SMMLA INT8 matmul tier (ARMv8.6, Apple M2+ — this dev
+    /// machine (M1) cannot execute it, so its differential runs on owner
+    /// silicon, M4-17-T24). 2x2-tile INT8 matmul (`kernels::kquant_gemv2_i8_on`);
+    /// f32 table delegates to [`IsaPath::Neon`].
+    NeonI8mm,
+    /// ARM64 bf16 BFMMLA matmul tier (ARMv8.6). **Opt-in** like
+    /// [`IsaPath::Avx512Bf16`]; f32 table delegates to [`IsaPath::Neon`].
+    NeonBf16,
+}
+
+impl IsaPath {
+    /// Every non-scalar path, for "check all host-supported SIMD tiers"
+    /// loops (`selftest::checked_paths`, the differential harnesses, the
+    /// forced-path negative tests). Scalar is the oracle, not a checked
+    /// path. Kept in the crate so new variants extend one list (the
+    /// exhaustive `dispatch::build_table` match still catches a variant
+    /// added without a kernel table).
+    pub const ALL_SIMD: [IsaPath; 13] = [
+        IsaPath::Avx2,
+        IsaPath::Neon,
+        IsaPath::Rvv,
+        IsaPath::Rvv071,
+        IsaPath::WasmSimd128,
+        IsaPath::Avx512,
+        IsaPath::Avx512Vnni,
+        IsaPath::Avx512Bf16,
+        IsaPath::AvxVnni256,
+        IsaPath::NeonFp16,
+        IsaPath::NeonDotprod,
+        IsaPath::NeonI8mm,
+        IsaPath::NeonBf16,
+    ];
 }
 
 impl fmt::Display for IsaPath {
@@ -85,6 +165,14 @@ impl fmt::Display for IsaPath {
             Self::Rvv => "rvv",
             Self::Rvv071 => "rvv071",
             Self::WasmSimd128 => "wasm-simd128",
+            Self::Avx512 => "avx512",
+            Self::Avx512Vnni => "avx512vnni",
+            Self::Avx512Bf16 => "avx512bf16",
+            Self::AvxVnni256 => "avxvnni256",
+            Self::NeonFp16 => "neon-fp16",
+            Self::NeonDotprod => "neon-dotprod",
+            Self::NeonI8mm => "neon-i8mm",
+            Self::NeonBf16 => "neon-bf16",
         };
         f.write_str(s)
     }
@@ -139,17 +227,91 @@ pub struct CpuFeatures {
     /// targets. WASM has no runtime feature detection — see
     /// [`IsaPath::WasmSimd128`] for the 2-artifact distribution policy.
     pub wasm_simd128: bool,
+
+    // ---- M4-17 server-tier features, x86-64 (ADR M4-17 §(a)/(c)) ----
+    /// x86-64 AVX-512 Foundation (512-bit zmm; Skylake-X 2017+ server main
+    /// path per FR-BE-01). The f32 [`IsaPath::Avx512`] tier additionally
+    /// requires DQ/BW/VL (the kernels are compiled with all four enabled;
+    /// they ship together on every Skylake-X+/Zen4 part — ADR M4-17 §(b)-4).
+    pub avx512f: bool,
+    /// x86-64 AVX-512DQ (doubleword/quadword ops; part of the F/DQ/BW/VL
+    /// bundle the [`IsaPath::Avx512`] f32 kernels are compiled against).
+    pub avx512dq: bool,
+    /// x86-64 AVX-512BW (byte/word ops; same bundle as above, and used by the
+    /// VNNI INT8 kernel's byte manipulation).
+    pub avx512bw: bool,
+    /// x86-64 AVX-512VL (128/256-bit encodings of AVX-512 ops; same bundle).
+    pub avx512vl: bool,
+    /// x86-64 AVX-512 VNNI (`vpdpbusd`; Cascade Lake 2019+ — the server INT8
+    /// main path per FR-BE-01). Gates [`IsaPath::Avx512Vnni`].
+    pub avx512vnni: bool,
+    /// x86-64 AVX-512 BF16 (`vdpbf16ps`; Cooper Lake 2020+). Gates the
+    /// opt-in [`IsaPath::Avx512Bf16`] matmul tier.
+    pub avx512bf16: bool,
+    /// x86-64 AVX-VNNI 256-bit (`vpdpbusd` in VEX encoding; Alder Lake 2021+,
+    /// present on both P- and E-cores). **The client INT8 main path**: Intel
+    /// client parts since Alder Lake fuse AVX-512 off platform-wide (E-cores
+    /// lack it), so this 256-bit tier is what a hybrid CPU actually reports
+    /// (ADR M4-17 §(d) tier collapse). Probed via the std_detect feature
+    /// string `"avxvnni"`; the field keeps the FR-BE-01 name `avxvnni256`.
+    pub avxvnni256: bool,
+
+    // ---- M4-17 server-tier features, ARM64 (ADR M4-17 §(a)/(c)) ----
+    /// ARM64 fp16 arithmetic (ARMv8.2, Cortex-A75+ 2018+ per FR-BE-01).
+    /// Gates the opt-in [`IsaPath::NeonFp16`] fp16 GEMM tier.
+    pub neon_fp16: bool,
+    /// ARM64 dotprod SDOT/UDOT (ARMv8.2-DotProd; Cortex-A55/A75 2017 initial
+    /// cores, Apple A13+ per FR-BE-01). The ARM INT8 main path — gates
+    /// [`IsaPath::NeonDotprod`].
+    pub neon_dotprod: bool,
+    /// ARM64 i8mm SMMLA/UMMLA (ARMv8.6; Apple M2+ per FR-BE-01 — this dev
+    /// machine, an Apple M1, reports `false`). Gates [`IsaPath::NeonI8mm`].
+    pub neon_i8mm: bool,
+    /// ARM64 bf16 BFMMLA (ARMv8.6). Gates the opt-in [`IsaPath::NeonBf16`]
+    /// matmul tier.
+    pub neon_bf16: bool,
 }
 
 impl CpuFeatures {
+    /// The all-features-false value: base for the arch-specific `detect()`
+    /// arms (each fills in only the fields its architecture can probe) and
+    /// for the synthetic feature sets in unit tests (M4-17-T02/T03; keeps
+    /// future field additions from touching every construction site).
+    pub const NONE: CpuFeatures = CpuFeatures {
+        avx2: false,
+        fma: false,
+        neon: false,
+        rvv_v: false,
+        rvv_zvfh: false,
+        rvv_zvfbfmin: false,
+        rvv_zvbb: false,
+        rvv_071: false,
+        rvv_071_auto: false,
+        wasm_simd128: false,
+        avx512f: false,
+        avx512dq: false,
+        avx512bw: false,
+        avx512vl: false,
+        avx512vnni: false,
+        avx512bf16: false,
+        avxvnni256: false,
+        neon_fp16: false,
+        neon_dotprod: false,
+        neon_i8mm: false,
+        neon_bf16: false,
+    };
+
     /// Detects the running host's features.
     ///
-    /// On x86-64 this consults `is_x86_feature_detected!` (CPUID). On AArch64
-    /// NEON is a baseline feature and reported unconditionally. On riscv64
-    /// (Linux) it parses `/proc/cpuinfo` for the `isa` line and looks for the
-    /// `v`, `zvfh`, `zvfbfmin`, `zvbb` extension names (M3-13-T02). On any
-    /// other architecture all features are `false` and only
-    /// [`IsaPath::Scalar`] is available.
+    /// On x86-64 this consults `is_x86_feature_detected!` (CPUID), including
+    /// the M4-17 server tiers (AVX-512F/DQ/BW/VL + VNNI + BF16, AVX-VNNI
+    /// 256-bit). On AArch64 NEON is a baseline feature and reported
+    /// unconditionally; the ARMv8.2+ tiers (fp16 / dotprod / i8mm / bf16) are
+    /// probed via `is_aarch64_feature_detected!`. On riscv64 (Linux) it
+    /// parses `/proc/cpuinfo` for the `isa` line and looks for the `v`,
+    /// `zvfh`, `zvfbfmin`, `zvbb` extension names (M3-13-T02). On any other
+    /// architecture all features are `false` and only [`IsaPath::Scalar`] is
+    /// available.
     ///
     /// Rationale for `/proc/cpuinfo` over `getauxval(AT_HWCAP)`: `getauxval`
     /// is a `libc` symbol and pulling it in would break the crate's
@@ -160,51 +322,56 @@ impl CpuFeatures {
     /// stable Rust has no `is_riscv_feature_detected!` at 1.85 (unstable
     /// `riscv_ext_intrinsics`), so this path parses the ISA string
     /// ourselves.
+    ///
+    /// The same zero-dep rule governs the M4-17 AArch64 probes: the
+    /// milestones.md "AT_HWCAP/HWCAP2" wording describes the mechanism
+    /// `is_aarch64_feature_detected!` consults internally (auxv on Linux,
+    /// sysctl on macOS) — it is **not** an instruction to FFI into
+    /// `libc::getauxval` directly, which would violate NFR-DS-02 (ADR M4-17
+    /// §(c), following the RISC-V probe judgment above).
     pub fn detect() -> Self {
         #[cfg(target_arch = "x86_64")]
         {
             Self {
                 avx2: std::arch::is_x86_feature_detected!("avx2"),
                 fma: std::arch::is_x86_feature_detected!("fma"),
-                neon: false,
-                rvv_v: false,
-                rvv_zvfh: false,
-                rvv_zvfbfmin: false,
-                rvv_zvbb: false,
-                rvv_071: false,
-                rvv_071_auto: false,
-                wasm_simd128: false,
+                // M4-17-T02 server tiers. Feature strings confirmed against
+                // the rustc 1.95 std_detect surface (ADR M4-17 §(c)); note
+                // the AVX-VNNI-256 std_detect name is "avxvnni".
+                avx512f: std::arch::is_x86_feature_detected!("avx512f"),
+                avx512dq: std::arch::is_x86_feature_detected!("avx512dq"),
+                avx512bw: std::arch::is_x86_feature_detected!("avx512bw"),
+                avx512vl: std::arch::is_x86_feature_detected!("avx512vl"),
+                avx512vnni: std::arch::is_x86_feature_detected!("avx512vnni"),
+                avx512bf16: std::arch::is_x86_feature_detected!("avx512bf16"),
+                avxvnni256: std::arch::is_x86_feature_detected!("avxvnni"),
+                ..Self::NONE
             }
         }
         #[cfg(target_arch = "aarch64")]
         {
             Self {
-                avx2: false,
-                fma: false,
                 neon: true,
-                rvv_v: false,
-                rvv_zvfh: false,
-                rvv_zvfbfmin: false,
-                rvv_zvbb: false,
-                rvv_071: false,
-                rvv_071_auto: false,
-                wasm_simd128: false,
+                // M4-17-T03 server tiers (std macro only — no getauxval FFI,
+                // see the docstring above / ADR M4-17 §(c)).
+                neon_fp16: std::arch::is_aarch64_feature_detected!("fp16"),
+                neon_dotprod: std::arch::is_aarch64_feature_detected!("dotprod"),
+                neon_i8mm: std::arch::is_aarch64_feature_detected!("i8mm"),
+                neon_bf16: std::arch::is_aarch64_feature_detected!("bf16"),
+                ..Self::NONE
             }
         }
         #[cfg(target_arch = "riscv64")]
         {
             let caps = detect_riscv_caps();
             Self {
-                avx2: false,
-                fma: false,
-                neon: false,
                 rvv_v: caps.v,
                 rvv_zvfh: caps.zvfh,
                 rvv_zvfbfmin: caps.zvfbfmin,
                 rvv_zvbb: caps.zvbb,
                 rvv_071: caps.v071,
                 rvv_071_auto: caps.v071_auto,
-                wasm_simd128: false,
+                ..Self::NONE
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -215,16 +382,8 @@ impl CpuFeatures {
             // exactly one of {simd128, base} true per shipped .wasm
             // (M4-01-T04, ADR M4-01 §4).
             Self {
-                avx2: false,
-                fma: false,
-                neon: false,
-                rvv_v: false,
-                rvv_zvfh: false,
-                rvv_zvfbfmin: false,
-                rvv_zvbb: false,
-                rvv_071: false,
-                rvv_071_auto: false,
                 wasm_simd128: cfg!(target_feature = "simd128"),
+                ..Self::NONE
             }
         }
         #[cfg(not(any(
@@ -234,26 +393,28 @@ impl CpuFeatures {
             target_arch = "wasm32"
         )))]
         {
-            Self {
-                avx2: false,
-                fma: false,
-                neon: false,
-                rvv_v: false,
-                rvv_zvfh: false,
-                rvv_zvfbfmin: false,
-                rvv_zvbb: false,
-                rvv_071: false,
-                rvv_071_auto: false,
-                wasm_simd128: false,
-            }
+            Self::NONE
         }
     }
 
     /// Whether `isa` can actually run on this host.
     ///
     /// [`IsaPath::Scalar`] is always available; `Avx2` needs AVX2+FMA; `Neon`
-    /// needs NEON; `Rvv` needs the RVV 1.0 base `v` extension.
+    /// needs NEON; `Rvv` needs the RVV 1.0 base `v` extension. The M4-17
+    /// server tiers gate on exactly the feature bundles their kernels are
+    /// compiled against (ADR M4-17 §(b)-4) — this is the SIGILL guard: a
+    /// path `supports` rejects is never dispatched to and can only be forced
+    /// into an explicit [`VokraError::BackendUnavailable`].
     pub fn supports(&self, isa: IsaPath) -> bool {
+        // The AVX-512 f32 kernel bundle (compiled with
+        // `avx512f,avx512dq,avx512bw,avx512vl`) plus the AVX2+FMA base its
+        // transcendental kernels delegate to.
+        let avx512_f32 = self.avx2
+            && self.fma
+            && self.avx512f
+            && self.avx512dq
+            && self.avx512bw
+            && self.avx512vl;
         match isa {
             IsaPath::Scalar => true,
             IsaPath::Avx2 => self.avx2 && self.fma,
@@ -261,16 +422,60 @@ impl CpuFeatures {
             IsaPath::Rvv => self.rvv_v,
             IsaPath::Rvv071 => self.rvv_071,
             IsaPath::WasmSimd128 => self.wasm_simd128,
+            IsaPath::Avx512 => avx512_f32,
+            // VNNI / BF16 tiers include the f32 bundle: their f32 kernel
+            // table delegates to the Avx512 kernels (ADR M4-17 §(b)-1), and
+            // on real silicon VNNI/BF16 never ship without F/DQ/BW/VL
+            // (Cascade Lake+ / Cooper Lake / Zen4).
+            IsaPath::Avx512Vnni => avx512_f32 && self.avx512vnni,
+            IsaPath::Avx512Bf16 => avx512_f32 && self.avx512bf16,
+            IsaPath::AvxVnni256 => self.avx2 && self.fma && self.avxvnni256,
+            IsaPath::NeonFp16 => self.neon && self.neon_fp16,
+            IsaPath::NeonDotprod => self.neon && self.neon_dotprod,
+            IsaPath::NeonI8mm => self.neon && self.neon_i8mm,
+            IsaPath::NeonBf16 => self.neon && self.neon_bf16,
         }
     }
 
-    /// The fastest path this host supports: AVX2 if present, else NEON, else
-    /// RVV, else WASM SIMD128, else scalar (M0-08-T03 + M3-13-T03 + M4-01-T04
-    /// selection rule). Only one of AVX2 / NEON / RVV / WasmSimd128 can be
-    /// true on any given host — they are arch-exclusive.
+    /// The most capable path this host supports (M0-08-T03 + M3-13-T03 +
+    /// M4-01-T04 + M4-17-T04 selection rule). Arch families are exclusive on
+    /// any real host; within a family the ladder is:
+    ///
+    /// - x86-64: `Avx512Bf16 > Avx512Vnni > Avx512 > AvxVnni256 > Avx2`
+    /// - ARM64:  `NeonI8mm > NeonDotprod > NeonBf16 > NeonFp16 > Neon`
+    /// - then `Rvv`, `WasmSimd128`, `Scalar` as before.
+    ///
+    /// Selecting a specialized (INT8/BF16/FP16) tier here never regresses
+    /// f32 throughput: those tiers' f32 kernel tables delegate to the best
+    /// f32 kernels their gate guarantees (ADR M4-17 §(b)-1/3), and the
+    /// specialized kernels are reached through the op-kind selectors
+    /// ([`Self::best_int8_isa`] / [`Self::best_bf16_isa`] /
+    /// [`Self::best_fp16_isa`]) rather than this ladder. Hybrid-CPU note
+    /// (ADR M4-17 §(d)): Alder Lake+ client parts report AVX-512 fused off +
+    /// AVX-VNNI-256 present on both core types, so the ladder lands on
+    /// `AvxVnni256` platform-wide — no per-core logic is needed and the
+    /// process-wide `OnceLock` selection stays sound under P/E migration.
     pub fn best_isa(&self) -> IsaPath {
-        if self.avx2 && self.fma {
+        // x86-64 family.
+        if self.supports(IsaPath::Avx512Bf16) {
+            IsaPath::Avx512Bf16
+        } else if self.supports(IsaPath::Avx512Vnni) {
+            IsaPath::Avx512Vnni
+        } else if self.supports(IsaPath::Avx512) {
+            IsaPath::Avx512
+        } else if self.supports(IsaPath::AvxVnni256) {
+            IsaPath::AvxVnni256
+        } else if self.avx2 && self.fma {
             IsaPath::Avx2
+        // ARM64 family.
+        } else if self.supports(IsaPath::NeonI8mm) {
+            IsaPath::NeonI8mm
+        } else if self.supports(IsaPath::NeonDotprod) {
+            IsaPath::NeonDotprod
+        } else if self.supports(IsaPath::NeonBf16) {
+            IsaPath::NeonBf16
+        } else if self.supports(IsaPath::NeonFp16) {
+            IsaPath::NeonFp16
         } else if self.neon {
             IsaPath::Neon
         } else if self.rvv_v {
@@ -285,6 +490,47 @@ impl CpuFeatures {
             IsaPath::WasmSimd128
         } else {
             IsaPath::Scalar
+        }
+    }
+
+    /// The best K-quant INT8 dot-product tier this host can run, or `None`
+    /// when only the scalar-int8 reference path is available (M4-17, ADR
+    /// §(b)-2 op-kind selector). x86-64: server VNNI-512 over client
+    /// VNNI-256; ARM64: dotprod (i8mm serves the 2-activation matmul shape
+    /// through `kernels::kquant_gemv2_i8_on`, not this selector).
+    pub fn best_int8_isa(&self) -> Option<IsaPath> {
+        if self.supports(IsaPath::Avx512Vnni) {
+            Some(IsaPath::Avx512Vnni)
+        } else if self.supports(IsaPath::AvxVnni256) {
+            Some(IsaPath::AvxVnni256)
+        } else if self.supports(IsaPath::NeonDotprod) {
+            Some(IsaPath::NeonDotprod)
+        } else {
+            None
+        }
+    }
+
+    /// The best **opt-in** BF16 matmul tier, or `None`. Callers must opt in
+    /// per-op: bf16's 8-bit mantissa is architecturally lossy (CLAUDE.md
+    /// "BF16 mantissa 損失"), so f32-precision ops never route here
+    /// implicitly (ADR M4-17 §(b)-2).
+    pub fn best_bf16_isa(&self) -> Option<IsaPath> {
+        if self.supports(IsaPath::Avx512Bf16) {
+            Some(IsaPath::Avx512Bf16)
+        } else if self.supports(IsaPath::NeonBf16) {
+            Some(IsaPath::NeonBf16)
+        } else {
+            None
+        }
+    }
+
+    /// The best **opt-in** fp16 GEMM tier, or `None` (ARM64-only in M4-17;
+    /// x86-64 fp16 compute is AMX-FP16 = v1.5+ anchor, out of scope).
+    pub fn best_fp16_isa(&self) -> Option<IsaPath> {
+        if self.supports(IsaPath::NeonFp16) {
+            Some(IsaPath::NeonFp16)
+        } else {
+            None
         }
     }
 }
@@ -515,8 +761,18 @@ pub fn parse_isa_override(value: &str) -> Result<IsaPath> {
         "rvv" => Ok(IsaPath::Rvv),
         "rvv071" => Ok(IsaPath::Rvv071),
         "wasm-simd128" | "wasm_simd128" => Ok(IsaPath::WasmSimd128),
+        // M4-17 server tiers (hyphen and underscore spellings both accepted,
+        // matching the wasm-simd128 precedent).
+        "avx512" => Ok(IsaPath::Avx512),
+        "avx512vnni" => Ok(IsaPath::Avx512Vnni),
+        "avx512bf16" => Ok(IsaPath::Avx512Bf16),
+        "avxvnni256" => Ok(IsaPath::AvxVnni256),
+        "neon-fp16" | "neon_fp16" => Ok(IsaPath::NeonFp16),
+        "neon-dotprod" | "neon_dotprod" => Ok(IsaPath::NeonDotprod),
+        "neon-i8mm" | "neon_i8mm" => Ok(IsaPath::NeonI8mm),
+        "neon-bf16" | "neon_bf16" => Ok(IsaPath::NeonBf16),
         other => Err(VokraError::InvalidArgument(format!(
-            "{ENV_ISA_OVERRIDE} must be one of scalar|avx2|neon|rvv|rvv071|wasm-simd128, got `{other}`"
+            "{ENV_ISA_OVERRIDE} must be one of scalar|avx2|avx512|avx512vnni|avx512bf16|avxvnni256|neon|neon-fp16|neon-dotprod|neon-i8mm|neon-bf16|rvv|rvv071|wasm-simd128, got `{other}`"
         ))),
     }
 }
@@ -563,78 +819,30 @@ mod tests {
     const X86: CpuFeatures = CpuFeatures {
         avx2: true,
         fma: true,
-        neon: false,
-        rvv_v: false,
-        rvv_zvfh: false,
-        rvv_zvfbfmin: false,
-        rvv_zvbb: false,
-        rvv_071: false,
-        rvv_071_auto: false,
-        wasm_simd128: false,
+        ..CpuFeatures::NONE
     };
-    const X86_NO_AVX2: CpuFeatures = CpuFeatures {
-        avx2: false,
-        fma: false,
-        neon: false,
-        rvv_v: false,
-        rvv_zvfh: false,
-        rvv_zvfbfmin: false,
-        rvv_zvbb: false,
-        rvv_071: false,
-        rvv_071_auto: false,
-        wasm_simd128: false,
-    };
+    const X86_NO_AVX2: CpuFeatures = CpuFeatures::NONE;
     const ARM: CpuFeatures = CpuFeatures {
-        avx2: false,
-        fma: false,
         neon: true,
-        rvv_v: false,
-        rvv_zvfh: false,
-        rvv_zvfbfmin: false,
-        rvv_zvbb: false,
-        rvv_071: false,
-        rvv_071_auto: false,
-        wasm_simd128: false,
+        ..CpuFeatures::NONE
     };
     // AVX2 present but FMA absent: the AVX2 kernels use `_mm256_fmadd_ps`, so
     // this combination must NOT select the Avx2 path (it would SIGILL).
     const AVX2_NO_FMA: CpuFeatures = CpuFeatures {
         avx2: true,
         fma: false,
-        neon: false,
-        rvv_v: false,
-        rvv_zvfh: false,
-        rvv_zvfbfmin: false,
-        rvv_zvbb: false,
-        rvv_071: false,
-        rvv_071_auto: false,
-        wasm_simd128: false,
+        ..CpuFeatures::NONE
     };
     // Synthetic feature set for M3-13-T02 unit tests: RVV 1.0 base present
     // (SpacemiT K1 / BPI-F3 baseline); optional Zvfh added in a second variant.
     const RVV_BASE: CpuFeatures = CpuFeatures {
-        avx2: false,
-        fma: false,
-        neon: false,
         rvv_v: true,
-        rvv_zvfh: false,
-        rvv_zvfbfmin: false,
-        rvv_zvbb: false,
-        rvv_071: false,
-        rvv_071_auto: false,
-        wasm_simd128: false,
+        ..CpuFeatures::NONE
     };
     const RVV_WITH_ZVFH: CpuFeatures = CpuFeatures {
-        avx2: false,
-        fma: false,
-        neon: false,
         rvv_v: true,
         rvv_zvfh: true,
-        rvv_zvfbfmin: false,
-        rvv_zvbb: false,
-        rvv_071: false,
-        rvv_071_auto: false,
-        wasm_simd128: false,
+        ..CpuFeatures::NONE
     };
 
     #[test]
@@ -643,7 +851,23 @@ mod tests {
         // NEON is always true on aarch64 and always false elsewhere.
         if cfg!(target_arch = "aarch64") {
             assert!(f.neon);
-            assert_eq!(f.best_isa(), IsaPath::Neon);
+            // Since M4-17 the ladder may land on an upper NEON-family tier
+            // (this Apple M1 dev machine picks NeonDotprod); whatever it is,
+            // it must be NEON-family and host-supported.
+            let best = f.best_isa();
+            assert!(
+                matches!(
+                    best,
+                    IsaPath::Neon
+                        | IsaPath::NeonFp16
+                        | IsaPath::NeonDotprod
+                        | IsaPath::NeonI8mm
+                        | IsaPath::NeonBf16
+                ),
+                "aarch64 best_isa must be NEON-family, got {best}"
+            );
+            assert!(f.supports(best));
+            assert!(f.supports(IsaPath::Neon));
         }
         if cfg!(not(target_arch = "aarch64")) {
             assert!(!f.neon);
@@ -867,16 +1091,8 @@ mod tests {
     // -------------------------------------------------------------------
 
     const WASM_SIMD: CpuFeatures = CpuFeatures {
-        avx2: false,
-        fma: false,
-        neon: false,
-        rvv_v: false,
-        rvv_zvfh: false,
-        rvv_zvfbfmin: false,
-        rvv_zvbb: false,
-        rvv_071: false,
-        rvv_071_auto: false,
         wasm_simd128: true,
+        ..CpuFeatures::NONE
     };
 
     // -------------------------------------------------------------------
@@ -890,32 +1106,18 @@ mod tests {
     /// vendor extension (ADR M4-08 signal A): probe passes AND the tier is
     /// auto-select eligible.
     const RVV071_AUTO: CpuFeatures = CpuFeatures {
-        avx2: false,
-        fma: false,
-        neon: false,
-        rvv_v: false,
-        rvv_zvfh: false,
-        rvv_zvfbfmin: false,
-        rvv_zvbb: false,
         rvv_071: true,
         rvv_071_auto: true,
-        wasm_simd128: false,
+        ..CpuFeatures::NONE
     };
 
     /// Models the LicheePi 4A vendor 5.10 kernel (`cpu-vector : 0.7.1`,
     /// ADR M4-08 signal B): probe passes (so `VOKRA_CPU_ISA=rvv071` works)
     /// but auto-select stays off — `best_isa` must return `Scalar`.
     const RVV071_OVERRIDE_ONLY: CpuFeatures = CpuFeatures {
-        avx2: false,
-        fma: false,
-        neon: false,
-        rvv_v: false,
-        rvv_zvfh: false,
-        rvv_zvfbfmin: false,
-        rvv_zvbb: false,
         rvv_071: true,
         rvv_071_auto: false,
-        wasm_simd128: false,
+        ..CpuFeatures::NONE
     };
 
     #[test]
@@ -1224,5 +1426,296 @@ uarch\t\t: thead,c910\nmvendorid\t: 0x5b7\nmarchid\t\t: 0x0\nmimpid\t\t: 0x0\n";
             assert!(!f.wasm_simd128);
             assert_ne!(f.best_isa(), IsaPath::WasmSimd128);
         }
+    }
+
+    // -------------------------------------------------------------------
+    // M4-17-T02/T03 server-tier probe unit tests
+    //
+    // The probe itself is the std macro (CPUID on x86-64, auxv/sysctl-backed
+    // std_detect on AArch64 — never a direct getauxval FFI, NFR-DS-02); the
+    // tests here pin (a) that detect() plumbs each new field from the right
+    // macro invocation on the compiled arch, and (b) that no field can leak
+    // onto a foreign arch (the SIGILL-guard precondition: `supports` gates on
+    // these bits before any upper-tier kernel is reachable).
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn detect_x86_server_tier_fields_reflect_host_cpuid() {
+        let f = CpuFeatures::detect();
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert_eq!(f.avx512f, std::arch::is_x86_feature_detected!("avx512f"));
+            assert_eq!(f.avx512dq, std::arch::is_x86_feature_detected!("avx512dq"));
+            assert_eq!(f.avx512bw, std::arch::is_x86_feature_detected!("avx512bw"));
+            assert_eq!(f.avx512vl, std::arch::is_x86_feature_detected!("avx512vl"));
+            assert_eq!(
+                f.avx512vnni,
+                std::arch::is_x86_feature_detected!("avx512vnni")
+            );
+            assert_eq!(
+                f.avx512bf16,
+                std::arch::is_x86_feature_detected!("avx512bf16")
+            );
+            // std_detect names AVX-VNNI-256 "avxvnni" (ADR M4-17 §(c)).
+            assert_eq!(f.avxvnni256, std::arch::is_x86_feature_detected!("avxvnni"));
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            assert!(!f.avx512f);
+            assert!(!f.avx512dq);
+            assert!(!f.avx512bw);
+            assert!(!f.avx512vl);
+            assert!(!f.avx512vnni);
+            assert!(!f.avx512bf16);
+            assert!(!f.avxvnni256);
+        }
+    }
+
+    #[test]
+    fn detect_arm_server_tier_fields_reflect_host_hwcaps() {
+        let f = CpuFeatures::detect();
+        #[cfg(target_arch = "aarch64")]
+        {
+            assert_eq!(f.neon_fp16, std::arch::is_aarch64_feature_detected!("fp16"));
+            assert_eq!(
+                f.neon_dotprod,
+                std::arch::is_aarch64_feature_detected!("dotprod")
+            );
+            assert_eq!(f.neon_i8mm, std::arch::is_aarch64_feature_detected!("i8mm"));
+            assert_eq!(f.neon_bf16, std::arch::is_aarch64_feature_detected!("bf16"));
+            // The upper tiers imply the NEON baseline is present.
+            assert!(f.neon);
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            assert!(!f.neon_fp16);
+            assert!(!f.neon_dotprod);
+            assert!(!f.neon_i8mm);
+            assert!(!f.neon_bf16);
+        }
+    }
+
+    #[test]
+    fn none_constant_is_all_false_and_scalar_only() {
+        let f = CpuFeatures::NONE;
+        assert_eq!(f.best_isa(), IsaPath::Scalar);
+        assert!(f.supports(IsaPath::Scalar));
+        assert!(!f.supports(IsaPath::Avx2));
+        assert!(!f.supports(IsaPath::Neon));
+    }
+
+    // -------------------------------------------------------------------
+    // M4-17-T04 server-tier IsaPath ladder unit tests (synthetic feature
+    // sets modeled on the silicon classes from FR-BE-01 / ADR M4-17 §(d)).
+    // -------------------------------------------------------------------
+
+    /// Skylake-X-class server: AVX-512 F/DQ/BW/VL, no VNNI/BF16.
+    const SKYLAKE_X: CpuFeatures = CpuFeatures {
+        avx2: true,
+        fma: true,
+        avx512f: true,
+        avx512dq: true,
+        avx512bw: true,
+        avx512vl: true,
+        ..CpuFeatures::NONE
+    };
+    /// Cascade Lake / Ice Lake server-class: full AVX-512 f32 set + VNNI.
+    const CASCADE_LAKE: CpuFeatures = CpuFeatures {
+        avx512vnni: true,
+        ..SKYLAKE_X
+    };
+    /// Cooper Lake / Zen4-class: VNNI + BF16 on top of the f32 set.
+    const ZEN4_LIKE: CpuFeatures = CpuFeatures {
+        avx512vnni: true,
+        avx512bf16: true,
+        ..SKYLAKE_X
+    };
+    /// Alder Lake+ client: AVX-512 fused off platform-wide (E-cores lack
+    /// it), AVX-VNNI-256 present on both core types (ADR M4-17 §(d)).
+    const ALDER_LAKE: CpuFeatures = CpuFeatures {
+        avx2: true,
+        fma: true,
+        avxvnni256: true,
+        ..CpuFeatures::NONE
+    };
+    /// Apple-M1-class ARM64: fp16 + dotprod, no i8mm / bf16.
+    const ARM_M1_LIKE: CpuFeatures = CpuFeatures {
+        neon: true,
+        neon_fp16: true,
+        neon_dotprod: true,
+        ..CpuFeatures::NONE
+    };
+    /// Apple-M2+-class / Graviton3-class ARM64: full server tier set.
+    const ARM_M2_LIKE: CpuFeatures = CpuFeatures {
+        neon: true,
+        neon_fp16: true,
+        neon_dotprod: true,
+        neon_i8mm: true,
+        neon_bf16: true,
+        ..CpuFeatures::NONE
+    };
+
+    #[test]
+    fn avx512_tier_requires_the_full_f_dq_bw_vl_bundle() {
+        // The f32 kernels are compiled with all four features enabled
+        // (ADR M4-17 §(b)-4): an avx512f-only host must NOT select Avx512
+        // (running the kernel there could SIGILL on a DQ/BW/VL encoding).
+        assert!(SKYLAKE_X.supports(IsaPath::Avx512));
+        let f_only = CpuFeatures {
+            avx2: true,
+            fma: true,
+            avx512f: true,
+            ..CpuFeatures::NONE
+        };
+        assert!(!f_only.supports(IsaPath::Avx512));
+        assert_eq!(f_only.best_isa(), IsaPath::Avx2);
+        // ... and Avx512 without the AVX2+FMA base is likewise rejected
+        // (the transcendental kernels delegate to the AVX2 implementations).
+        let no_avx2 = CpuFeatures {
+            avx2: false,
+            fma: false,
+            ..SKYLAKE_X
+        };
+        assert!(!no_avx2.supports(IsaPath::Avx512));
+    }
+
+    #[test]
+    fn x86_server_ladder_selects_most_capable_tier() {
+        assert_eq!(SKYLAKE_X.best_isa(), IsaPath::Avx512);
+        assert_eq!(CASCADE_LAKE.best_isa(), IsaPath::Avx512Vnni);
+        assert_eq!(ZEN4_LIKE.best_isa(), IsaPath::Avx512Bf16);
+        // M4-17-T13 completion criterion: a synthetic Alder Lake set
+        // (AVX-512 false / AVX-VNNI-256 true) selects AvxVnni256.
+        assert_eq!(ALDER_LAKE.best_isa(), IsaPath::AvxVnni256);
+        // Plain AVX2 hosts are unchanged by the ladder extension.
+        assert_eq!(X86.best_isa(), IsaPath::Avx2);
+    }
+
+    #[test]
+    fn vnni_and_bf16_tiers_gate_on_the_f32_bundle_too() {
+        // A (hypothetical) VNNI bit without the f32 bundle must not unlock
+        // the tier: its f32 KernelTable delegates to the AVX-512 kernels,
+        // so the gate is inclusive (ADR M4-17 §(b)-4).
+        let vnni_only = CpuFeatures {
+            avx2: true,
+            fma: true,
+            avx512f: true,
+            avx512vnni: true,
+            ..CpuFeatures::NONE
+        };
+        assert!(!vnni_only.supports(IsaPath::Avx512Vnni));
+        assert!(CASCADE_LAKE.supports(IsaPath::Avx512Vnni));
+        assert!(!CASCADE_LAKE.supports(IsaPath::Avx512Bf16));
+        assert!(ZEN4_LIKE.supports(IsaPath::Avx512Bf16));
+        // AVX-VNNI-256 needs only the AVX2+FMA base.
+        assert!(ALDER_LAKE.supports(IsaPath::AvxVnni256));
+        assert!(!X86.supports(IsaPath::AvxVnni256));
+    }
+
+    #[test]
+    fn arm_server_ladder_selects_most_capable_tier() {
+        assert_eq!(ARM.best_isa(), IsaPath::Neon);
+        assert_eq!(ARM_M1_LIKE.best_isa(), IsaPath::NeonDotprod);
+        assert_eq!(ARM_M2_LIKE.best_isa(), IsaPath::NeonI8mm);
+        // fp16-only (A75-class without dotprod) picks NeonFp16.
+        let fp16_only = CpuFeatures {
+            neon: true,
+            neon_fp16: true,
+            ..CpuFeatures::NONE
+        };
+        assert_eq!(fp16_only.best_isa(), IsaPath::NeonFp16);
+    }
+
+    #[test]
+    fn arm_server_tiers_gate_on_their_feature_bits() {
+        assert!(ARM_M1_LIKE.supports(IsaPath::NeonFp16));
+        assert!(ARM_M1_LIKE.supports(IsaPath::NeonDotprod));
+        assert!(!ARM_M1_LIKE.supports(IsaPath::NeonI8mm));
+        assert!(!ARM_M1_LIKE.supports(IsaPath::NeonBf16));
+        assert!(ARM_M2_LIKE.supports(IsaPath::NeonI8mm));
+        assert!(ARM_M2_LIKE.supports(IsaPath::NeonBf16));
+        // The plain NEON baseline never unlocks an upper tier.
+        for isa in [
+            IsaPath::NeonFp16,
+            IsaPath::NeonDotprod,
+            IsaPath::NeonI8mm,
+            IsaPath::NeonBf16,
+        ] {
+            assert!(!ARM.supports(isa), "plain NEON must not support {isa}");
+        }
+    }
+
+    #[test]
+    fn server_tier_overrides_parse_and_display_round_trip() {
+        for (isa, name) in [
+            (IsaPath::Avx512, "avx512"),
+            (IsaPath::Avx512Vnni, "avx512vnni"),
+            (IsaPath::Avx512Bf16, "avx512bf16"),
+            (IsaPath::AvxVnni256, "avxvnni256"),
+            (IsaPath::NeonFp16, "neon-fp16"),
+            (IsaPath::NeonDotprod, "neon-dotprod"),
+            (IsaPath::NeonI8mm, "neon-i8mm"),
+            (IsaPath::NeonBf16, "neon-bf16"),
+        ] {
+            assert_eq!(isa.to_string(), name);
+            assert_eq!(parse_isa_override(name).unwrap(), isa, "{name}");
+            // Case-insensitive and underscore-tolerant (the T21 example
+            // names use `neon_dotprod` spelling).
+            assert_eq!(parse_isa_override(&name.to_ascii_uppercase()).unwrap(), isa);
+            assert_eq!(parse_isa_override(&name.replace('-', "_")).unwrap(), isa);
+        }
+    }
+
+    #[test]
+    fn server_tier_override_rejected_on_unsupporting_host_with_explicit_error() {
+        // FR-EX-08 principle: forcing a tier the host cannot run is an
+        // explicit BackendUnavailable, never a silent switch (SIGILL guard).
+        for isa in [
+            IsaPath::Avx512,
+            IsaPath::Avx512Vnni,
+            IsaPath::Avx512Bf16,
+            IsaPath::AvxVnni256,
+        ] {
+            let err = select_isa(Some(isa), &ARM_M2_LIKE).unwrap_err();
+            assert!(matches!(err, VokraError::BackendUnavailable(_)));
+        }
+        for isa in [
+            IsaPath::NeonFp16,
+            IsaPath::NeonDotprod,
+            IsaPath::NeonI8mm,
+            IsaPath::NeonBf16,
+        ] {
+            let err = select_isa(Some(isa), &ZEN4_LIKE).unwrap_err();
+            assert!(matches!(err, VokraError::BackendUnavailable(_)));
+        }
+        // ... while a supported force is honored.
+        assert_eq!(
+            select_isa(Some(IsaPath::Avx512Vnni), &ZEN4_LIKE).unwrap(),
+            IsaPath::Avx512Vnni
+        );
+        assert_eq!(
+            select_isa(Some(IsaPath::NeonDotprod), &ARM_M1_LIKE).unwrap(),
+            IsaPath::NeonDotprod
+        );
+    }
+
+    #[test]
+    fn op_kind_selectors_pick_the_specialized_tiers() {
+        // INT8 (ADR M4-17 §(b)-2): server VNNI-512 > client VNNI-256 on
+        // x86-64; dotprod on ARM64 (i8mm is the 2-activation matmul shape,
+        // selected by the gemv2 surface, not this selector).
+        assert_eq!(ZEN4_LIKE.best_int8_isa(), Some(IsaPath::Avx512Vnni));
+        assert_eq!(ALDER_LAKE.best_int8_isa(), Some(IsaPath::AvxVnni256));
+        assert_eq!(ARM_M1_LIKE.best_int8_isa(), Some(IsaPath::NeonDotprod));
+        assert_eq!(X86.best_int8_isa(), None);
+        assert_eq!(ARM.best_int8_isa(), None);
+        // BF16 (opt-in tier).
+        assert_eq!(ZEN4_LIKE.best_bf16_isa(), Some(IsaPath::Avx512Bf16));
+        assert_eq!(ARM_M2_LIKE.best_bf16_isa(), Some(IsaPath::NeonBf16));
+        assert_eq!(CASCADE_LAKE.best_bf16_isa(), None);
+        assert_eq!(ARM_M1_LIKE.best_bf16_isa(), None);
+        // FP16 (opt-in tier; ARM64-only in this WP).
+        assert_eq!(ARM_M1_LIKE.best_fp16_isa(), Some(IsaPath::NeonFp16));
+        assert_eq!(ZEN4_LIKE.best_fp16_isa(), None);
     }
 }

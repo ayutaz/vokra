@@ -343,10 +343,10 @@ const ENV_THREADS: &str = "VOKRA_CPU_THREADS";
 /// integer) overrides the host default; otherwise
 /// [`std::thread::available_parallelism`].
 fn desired_threads() -> usize {
-    if let Ok(s) = std::env::var(ENV_THREADS) {
-        if let Ok(n) = s.trim().parse::<usize>() {
-            return n.max(1);
-        }
+    if let Ok(s) = std::env::var(ENV_THREADS)
+        && let Ok(n) = s.trim().parse::<usize>()
+    {
+        return n.max(1);
     }
     thread::available_parallelism()
         .map(NonZero::get)
