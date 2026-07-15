@@ -5,12 +5,14 @@
 //! vokra-eval wer      --hyp "a x c" --ref "a b c"
 //! vokra-eval cer      --hyp-file hyp.txt --ref-file ref.txt
 //! vokra-eval mel-loss --hyp hyp.wav --ref ref.wav [--sample-rate 22050 --n-fft 1024 --hop 256 --n-mels 80]
+//! vokra-eval utmos    --utmos-gguf utmos.gguf --hyp clip.wav   # reference-free MOS (M4-18)
 //! vokra-eval wer      --manifest pairs.txt      # batch: per-item + aggregate mean
 //! ```
 //!
 //! Output is a `key=value` report line per result (and one aggregate line in
-//! manifest mode). Neural MOS metrics (UTMOS/DNSMOS, M1-09b) are not wired up
-//! here — they need model weights.
+//! manifest mode). The `utmos` metric needs `--utmos-gguf` — the weights are
+//! not bundled (owner-gated license, M4-18), and a weight-less run is an
+//! explicit error (FR-EX-08). DNSMOS is not available (license fail-closed).
 
 use std::process::ExitCode;
 
@@ -287,6 +289,40 @@ fn report_aggregate(name: &str, count: usize, sum: f64) {
     let mean = if count == 0 { 0.0 } else { sum / count as f64 };
     println!("metric={name} count={count} mean={mean:.6}");
 }
+fn print_usage() {
+    eprintln!(
+        "vokra-eval — Vokra evaluation metrics (M1-09a)\n\
+\n\
+USAGE:\n\
+    vokra-eval <metric> [--hyp <in> --ref <in> | --hyp-file <f> --ref-file <f> | --manifest <f>]\n\
+\n\
+METRICS:\n\
+    wer        word error rate  (edit distance over whitespace tokens / ref words)\n\
+    cer        char error rate  (edit distance over Unicode chars / ref chars)\n\
+    mel-loss   mean L1 over log10-mel spectrograms of two WAV clips\n\
+    utmos      reference-free neural MOS (M4-18); requires --utmos-gguf\n\
+\n\
+INPUTS:\n\
+    wer / cer : --hyp/--ref take literal text (or --hyp-file/--ref-file for text files)\n\
+    mel-loss  : --hyp/--ref take mono WAV paths (float32 or int16)\n\
+    utmos     : --hyp takes one mono WAV path (reference-free; no --ref)\n\
+    --manifest <f> : batch mode; each blank-line-separated record has\n\
+                     `hyp`/`ref` (text), `hyp_wav`/`ref_wav` (audio), or\n\
+                     `hyp_wav` alone (utmos) keys\n\
+\n\
+MEL-LOSS FRONT-END (must match the model's FrontendSpec; defaults are TTS-style):\n\
+    --sample-rate <hz>  [22050]   --n-fft <n> [1024]   --hop <n> [256]   --n-mels <n> [80]\n\
+\n\
+UTMOS:\n\
+    --utmos-gguf <f>  converted `vokra.utmos.*` GGUF. The weights are NOT\n\
+                      bundled (owner-gated license, M4-18) — omitting the flag\n\
+                      is an explicit error, never a silent fallback (FR-EX-08).\n\
+                      The clip's rate must match the model's rate (no resample).\n\
+\n\
+Prints `metric=<name> score=<v>` per result and an aggregate mean in manifest mode.\n\
+DNSMOS is not available: its license verification is fail-closed (M4-18 T03, owner)."
+    );
+}
 
 #[cfg(test)]
 mod tests {
@@ -361,39 +397,4 @@ mod tests {
             parse_cli(&args(&["dnsmos", "--hyp", "clip.wav"])).expect_err("dnsmos is fail-closed");
         assert!(err.contains("unknown metric"), "got: {err}");
     }
-}
-
-fn print_usage() {
-    eprintln!(
-        "vokra-eval — Vokra evaluation metrics (M1-09a)\n\
-\n\
-USAGE:\n\
-    vokra-eval <metric> [--hyp <in> --ref <in> | --hyp-file <f> --ref-file <f> | --manifest <f>]\n\
-\n\
-METRICS:\n\
-    wer        word error rate  (edit distance over whitespace tokens / ref words)\n\
-    cer        char error rate  (edit distance over Unicode chars / ref chars)\n\
-    mel-loss   mean L1 over log10-mel spectrograms of two WAV clips\n\
-    utmos      reference-free neural MOS (M4-18); requires --utmos-gguf\n\
-\n\
-INPUTS:\n\
-    wer / cer : --hyp/--ref take literal text (or --hyp-file/--ref-file for text files)\n\
-    mel-loss  : --hyp/--ref take mono WAV paths (float32 or int16)\n\
-    utmos     : --hyp takes one mono WAV path (reference-free; no --ref)\n\
-    --manifest <f> : batch mode; each blank-line-separated record has\n\
-                     `hyp`/`ref` (text), `hyp_wav`/`ref_wav` (audio), or\n\
-                     `hyp_wav` alone (utmos) keys\n\
-\n\
-MEL-LOSS FRONT-END (must match the model's FrontendSpec; defaults are TTS-style):\n\
-    --sample-rate <hz>  [22050]   --n-fft <n> [1024]   --hop <n> [256]   --n-mels <n> [80]\n\
-\n\
-UTMOS:\n\
-    --utmos-gguf <f>  converted `vokra.utmos.*` GGUF. The weights are NOT\n\
-                      bundled (owner-gated license, M4-18) — omitting the flag\n\
-                      is an explicit error, never a silent fallback (FR-EX-08).\n\
-                      The clip's rate must match the model's rate (no resample).\n\
-\n\
-Prints `metric=<name> score=<v>` per result and an aggregate mean in manifest mode.\n\
-DNSMOS is not available: its license verification is fail-closed (M4-18 T03, owner)."
-    );
 }
