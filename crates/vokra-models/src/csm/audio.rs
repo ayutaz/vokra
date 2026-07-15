@@ -28,7 +28,7 @@
 
 use vokra_core::cache::paged::{BlockSize, PagedKvCache};
 use vokra_core::{Result, VokraError};
-use vokra_ops::mimi_rvq::{CodebookTable, MimiRvqAttrs, mimi_paged_dims, mimi_rvq_decode_paged};
+use vokra_ops::mimi_rvq::{CodebookTable, MimiRvqAttrs, mimi_paged_dims};
 
 use crate::mimi::{MimiDecoderState, MimiNeuralDecoder};
 
@@ -56,6 +56,9 @@ pub struct CsmAudioDecodeState {
     paged: PagedKvCache<f32>,
     neural: MimiDecoderState,
     features: Vec<f32>,
+    /// Zero V-row reused by the alloc-free paged write (the K side carries
+    /// the feature; V is unused — the M3-06 layout contract).
+    v_zeros: Vec<f32>,
     next_t: usize,
     max_time: usize,
 }
@@ -140,6 +143,7 @@ impl CsmAudioDecodeChain {
             paged: PagedKvCache::pre_allocate(dims, BlockSize::Two)?,
             neural: self.neural.state(1)?,
             features: vec![0.0; self.attrs.d_model],
+            v_zeros: vec![0.0; self.attrs.d_model],
             next_t: 0,
             max_time,
         })
@@ -186,16 +190,19 @@ impl CsmAudioDecodeChain {
                 state.next_t, state.max_time
             )));
         }
-        // Paged per-codebook write (streaming variant — FR-OP-30) …
-        mimi_rvq_decode_paged(
-            codes,
-            1,
-            &self.tables,
-            &self.attrs,
-            0,
-            &mut state.paged,
-            state.next_t,
-        )?;
+        // Paged per-codebook write (streaming variant — FR-OP-30). This is
+        // the **allocation-free mirror** of `mimi_rvq_decode_paged` (the op
+        // allocates its zero V-row per call — fine for batch, not for the
+        // frame loop); the equivalence is pinned by the
+        // `alloc_free_paged_write_matches_the_op` test below. Same
+        // `[time, stream, codebook]` addressing, same K=feature / V=zero
+        // layout contract.
+        for (cb, &code) in codes.iter().enumerate() {
+            let row = vokra_ops::mimi_rvq::codebook_lookup(&self.tables, cb, code, &self.attrs)?;
+            state
+                .paged
+                .append_step(0, state.next_t, 0, cb, row, &state.v_zeros)?;
+        }
         // … then the residual-summed read-back into the pre-allocated
         // feature row. This is the **allocation-free mirror** of
         // `mimi_rvq_read_summed` (which heap-returns its sum — fine for
@@ -258,7 +265,7 @@ mod tests {
     use crate::compute::{Compute, HotOp};
     use crate::mimi::{MimiEncoder, MimiNeuralConfig};
     use vokra_core::BackendKind;
-    use vokra_ops::mimi_rvq::mimi_rvq_read_summed;
+    use vokra_ops::mimi_rvq::{mimi_rvq_decode_paged, mimi_rvq_read_summed};
 
     /// Chain assembled from the synthesized encoder's shared tables (the
     /// raw-table path) + a synthesized neural decoder.
@@ -344,6 +351,31 @@ mod tests {
             CsmAudioDecodeChain::new(enc.tables().to_vec(), attrs, neural),
             Err(VokraError::InvalidArgument(_))
         ));
+    }
+
+    #[test]
+    fn alloc_free_paged_write_matches_the_op() {
+        // The hot-loop per-codebook write must equal mimi_rvq_decode_paged
+        // slot for slot.
+        let ch = chain();
+        let n_cb = ch.attrs().n_codebooks;
+        let bins = ch.attrs().codebook_size;
+        let codes = frame_codes(7, n_cb, bins);
+        // Op-written cache.
+        let mut op_state = ch.state(2).unwrap();
+        mimi_rvq_decode_paged(&codes, 1, &ch.tables, ch.attrs(), 0, &mut op_state.paged, 0)
+            .unwrap();
+        // Chain-written cache (decode_frame_into's write stage).
+        let mut chain_state = ch.state(2).unwrap();
+        let hop = ch.frame_hop().unwrap();
+        let mut pcm = vec![0.0f32; hop];
+        ch.decode_frame_into(&mut chain_state, &codes, &mut pcm)
+            .unwrap();
+        for cb in 0..n_cb {
+            let (a, _) = op_state.paged.read_step(0, 0, 0, cb).unwrap();
+            let (b, _) = chain_state.paged.read_step(0, 0, 0, cb).unwrap();
+            assert_eq!(a, b, "codebook {cb} slot");
+        }
     }
 
     #[test]

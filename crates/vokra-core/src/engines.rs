@@ -15,13 +15,27 @@
 //! for TTS; the ASR / VAD injection points are the M0-06 / M0-05 counterparts).
 
 use crate::error::Result;
-use crate::tasks::{SynthesizedAudio, Transcription};
+use crate::tasks::{DialogTurn, SynthesizedAudio, Transcription};
 
 /// A speech-to-text engine (implemented natively in `vokra-models`, e.g.
 /// Whisper base = M0-06).
 pub trait AsrEngine: Send + Sync {
     /// Transcribes mono `f32` PCM (typically 16 kHz) to text.
     fn transcribe(&self, pcm: &[f32]) -> Result<Transcription>;
+}
+
+/// A speech-to-speech dialog engine (implemented natively in
+/// `vokra-models` — Sesame CSM-1B = M4-05; Moshi = M4-06).
+///
+/// The trait mirrors [`TtsEngine`]'s minimal shape: one blocking
+/// `dialog` over an explicit [`DialogRequest`]. Streaming handles are
+/// engine-specific surfaces (the CSM streaming session lives in
+/// `vokra-models::csm` and rides the M1 SPSC ring + M3-14
+/// [`crate::stream::Stream`] interrupt); the trait deliberately does not
+/// force a streaming shape onto engines that batch.
+pub trait S2sEngine: Send + Sync {
+    /// Runs one dialog turn.
+    fn dialog(&self, request: &DialogRequest) -> Result<DialogTurn>;
 }
 
 /// A text-to-speech engine (implemented natively in `vokra-models`, e.g.
@@ -88,6 +102,136 @@ pub struct SynthesisRequest {
     /// match the phoneme count the engine's tokenizer / phonemizer produces, or
     /// synthesis fails with a clear error.
     pub prosody_features: Option<Vec<[i64; 3]>>,
+}
+
+/// One prior turn of dialog context an [`S2sEngine`] conditions on.
+///
+/// CSM-1B conditions on interleaved text + audio segments per speaker
+/// (ADR M4-05 §D2 `Segment`); either side may be absent for a turn the
+/// caller only has one modality for.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct DialogContextTurn {
+    /// Speaker id (model-defined numbering; CSM uses small integers).
+    pub speaker: u32,
+    /// The turn's text, when known.
+    pub text: Option<String>,
+    /// The turn's audio (mono PCM at the engine's sample rate), when known.
+    pub audio: Option<Vec<f32>>,
+}
+
+impl DialogContextTurn {
+    /// A text-only context turn.
+    pub fn text(speaker: u32, text: impl Into<String>) -> Self {
+        Self {
+            speaker,
+            text: Some(text.into()),
+            audio: None,
+        }
+    }
+
+    /// An audio-only context turn.
+    pub fn audio(speaker: u32, audio: Vec<f32>) -> Self {
+        Self {
+            speaker,
+            text: None,
+            audio: Some(audio),
+        }
+    }
+}
+
+/// Inputs to [`S2sEngine::dialog`].
+///
+/// # The `reply_text` contract (ADR M4-05 §D1-(b))
+///
+/// CSM-1B is a **speech generation** model conditioned on dialog context —
+/// it does not run ASR and does not generate reply text. `reply_text` is
+/// therefore **caller-supplied** (an upstream text LLM or a human); the
+/// engine speaks it in context and echoes it back in
+/// [`DialogTurn::text`](crate::tasks::DialogTurn). An engine that cannot
+/// proceed without it rejects an empty `reply_text` with a loud
+/// [`crate::VokraError::InvalidArgument`] — never a silent empty reply
+/// (FR-EX-08).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct DialogRequest {
+    /// Prior turns, oldest first.
+    pub context: Vec<DialogContextTurn>,
+    /// The text the engine speaks this turn (caller-supplied — see the
+    /// struct docs).
+    pub reply_text: String,
+    /// Speaker id the reply is voiced as.
+    pub reply_speaker: u32,
+    /// The current incoming utterance (mono PCM at the engine's sample
+    /// rate) — for CSM this is the mic audio *after* the AEC front (or an
+    /// explicitly bypassed recorded file — `vokra-models::csm::EchoPath`).
+    pub input_audio: Option<Vec<f32>>,
+    /// When `true`, the engine samples with temperature 0 (or its
+    /// documented deterministic mode) so the turn is reproducible for
+    /// parity / quality gates.
+    pub deterministic: bool,
+    /// Sampling seed for the stochastic mode (ignored when
+    /// `deterministic`).
+    pub seed: u64,
+    /// Cap on generated audio frames (`None` = the engine default).
+    pub max_frames: Option<usize>,
+}
+
+impl DialogRequest {
+    /// A request speaking `reply_text` as speaker 0 with no context.
+    pub fn new(reply_text: impl Into<String>) -> Self {
+        Self {
+            context: Vec::new(),
+            reply_text: reply_text.into(),
+            reply_speaker: 0,
+            input_audio: None,
+            deterministic: false,
+            seed: 0,
+            max_frames: None,
+        }
+    }
+
+    /// Appends a context turn.
+    #[must_use]
+    pub fn with_context_turn(mut self, turn: DialogContextTurn) -> Self {
+        self.context.push(turn);
+        self
+    }
+
+    /// Sets the reply speaker id.
+    #[must_use]
+    pub fn with_reply_speaker(mut self, speaker: u32) -> Self {
+        self.reply_speaker = speaker;
+        self
+    }
+
+    /// Attaches the current incoming utterance.
+    #[must_use]
+    pub fn with_input_audio(mut self, pcm: Vec<f32>) -> Self {
+        self.input_audio = Some(pcm);
+        self
+    }
+
+    /// Forces the deterministic sampling mode.
+    #[must_use]
+    pub fn deterministic(mut self) -> Self {
+        self.deterministic = true;
+        self
+    }
+
+    /// Sets the stochastic sampling seed.
+    #[must_use]
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
+    }
+
+    /// Caps the generated frame count.
+    #[must_use]
+    pub fn with_max_frames(mut self, max_frames: usize) -> Self {
+        self.max_frames = Some(max_frames);
+        self
+    }
 }
 
 impl SynthesisRequest {

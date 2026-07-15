@@ -137,9 +137,11 @@ impl CsmModel {
         Ok(())
     }
 
-    /// Generates one frame into `codes_out` (`[n_codebooks]`), sampling
-    /// through `sampler`, with **zero heap allocation** (FR-EX-05 — the
-    /// hot loop of T18).
+    /// Generates one frame into `codes_out` (`[n_codebooks]`), drawing every
+    /// codebook id through `sample` (the M1 [`Sampler`] rides in via a
+    /// closure; the greedy hot loop passes a plain
+    /// [`vokra_core::decode::argmax`] closure so the whole call is
+    /// **zero-heap-allocation** — FR-EX-05, T18).
     ///
     /// On [`CsmFrameKind::Audio`] the frame has been fed back into the
     /// backbone context and the staged hidden state advanced; on
@@ -154,7 +156,7 @@ impl CsmModel {
     pub fn generate_frame_into(
         &self,
         state: &mut CsmGenerationState,
-        sampler: &mut Sampler,
+        sample: &mut dyn FnMut(&mut [f32]) -> u32,
         codes_out: &mut [u32],
     ) -> Result<CsmFrameKind> {
         let cfg = self.config();
@@ -175,7 +177,7 @@ impl CsmModel {
         // c0 from the staged hidden state.
         self.backbone
             .c0_logits_into(&state.last_hidden, &mut state.c0_logits)?;
-        let c0 = sampler.sample(&mut state.c0_logits);
+        let c0 = sample(&mut state.c0_logits);
         if c0 as usize >= cfg.audio_vocab_size {
             return Err(VokraError::InvalidArgument(format!(
                 "csm generate_frame: sampled c0 {c0} >= audio_vocab {} (sampler \
@@ -190,7 +192,7 @@ impl CsmModel {
             &state.last_hidden,
             &mut state.depth,
             codes_out,
-            |logits| sampler.sample(logits),
+            |logits| sample(logits),
         )?;
         // EOS: all-zero frame stops generation and is not appended.
         if codes_out.iter().all(|&c| c == 0) {
@@ -231,7 +233,7 @@ impl CsmModel {
         sampler: &mut Sampler,
     ) -> Result<Option<Vec<u32>>> {
         let mut codes = vec![0u32; self.config().n_codebooks];
-        match self.generate_frame_into(state, sampler, &mut codes)? {
+        match self.generate_frame_into(state, &mut |l| sampler.sample(l), &mut codes)? {
             CsmFrameKind::Audio => Ok(Some(codes)),
             CsmFrameKind::Eos => Ok(None),
         }

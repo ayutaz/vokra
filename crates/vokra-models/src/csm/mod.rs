@@ -46,8 +46,10 @@ pub mod audio;
 pub mod backbone;
 pub mod config;
 pub mod depth;
+pub mod engine;
 pub mod frame;
 pub mod rope;
+pub mod streaming;
 pub mod tokenizer;
 
 pub use aec_front::{AecFront, EchoPath};
@@ -57,7 +59,9 @@ pub use backbone::{
 };
 pub use config::{CsmConfig, CsmRopeScaling, CsmTransformerConfig};
 pub use depth::{CsmDepthState, CsmDepthTransformer, CsmDepthWeights};
+pub use engine::{CsmEngine, pad_to_whole_frames};
 pub use frame::{CsmFrameKind, CsmGenerationState, CsmModel};
+pub use streaming::{CsmInterruptHandle, CsmStream, CsmStreamConfig, CsmStreamStop};
 pub use tokenizer::{CsmTextTokenizer, FixtureByteTokenizer, GgufCsmTokenizer};
 
 /// `vokra.model.arch` a CSM GGUF must carry. Written by
