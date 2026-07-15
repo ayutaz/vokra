@@ -236,5 +236,131 @@ class DumperCaseMapping(unittest.TestCase):
         self.assertIn("unknown SIZE", proc.stdout + proc.stderr)
 
 
+# ---------------------------------------------------------------------------
+# T06 — per-size atol verdict + fabricated-pass guard
+# ---------------------------------------------------------------------------
+
+VERDICT_STEP = "Per-size atol verdict + fabricated-pass guard"
+
+# One `[parity]` line as assert_close() (parity_whisper.rs) prints it. The
+# format is a stable machine contract — see the assert_close rustdoc.
+def parity_line(ctx: str, val: str, atol: str = "0.01") -> str:
+    return f"[parity] {ctx}: max |Δ| = {val} over 1000 elems (atol {atol})"
+
+
+def run_verdict(
+    log: str | None, parity_exit: str | None = "0", size: str = "base"
+) -> tuple[subprocess.CompletedProcess, str]:
+    """Execute the verdict step's bash body; return (proc, summary text)."""
+    body = _extract_step_run(VERDICT_STEP)
+    with tempfile.TemporaryDirectory() as td:
+        summary = Path(td) / "gh_summary"
+        summary.touch()
+        log_path = Path(td) / "parity.log"
+        if log is not None:
+            log_path.write_text(log, encoding="utf-8")
+        env = dict(
+            os.environ,
+            GITHUB_STEP_SUMMARY=str(summary),
+            SIZE=size,
+            # The workflow's parity step tees to /tmp/parity.log; the verdict
+            # step honours VOKRA_PARITY_LOG so tests can inject a private log.
+            VOKRA_PARITY_LOG=str(log_path),
+        )
+        if parity_exit is not None:
+            env["PARITY_EXIT"] = parity_exit
+        else:
+            env.pop("PARITY_EXIT", None)
+        proc = subprocess.run(
+            ["bash", "-c", body], env=env, capture_output=True, text=True, cwd=REPO
+        )
+        return proc, summary.read_text(encoding="utf-8")
+
+
+class VerdictStep(unittest.TestCase):
+    """T06 — verdict table + drift / fabricated-pass guards (ADR M4-14 §D2).
+
+    The workflow's PER_SIZE_ATOL dict is a MIRROR of the Rust single source
+    `atol_for()` (crates/vokra-models/tests/parity_whisper.rs): every size is
+    0.01 until the owner's T10 real-checkpoint measurement justifies a
+    calibration, which must then land in rustdoc + ADR + this mirror together.
+    """
+
+    def test_all_sizes_pass_at_default_atol_and_exit_zero(self):
+        # One size-prefixed line per family size, all below 0.01 with the
+        # printed atol matching the mirror -> PASS rows, exit 0. This pins the
+        # mirror at 0.01 for every size BEHAVIOURALLY: were any mirror entry
+        # loosened without the Rust side (printed atol) moving in lockstep,
+        # the drift guard would flip this test red.
+        log = "\n".join(
+            parity_line(f"{s}: encoder hidden states", "3.2e-3") for s in ALL_SIZES
+        )
+        proc, summary = run_verdict(log, parity_exit="0")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        for s in ALL_SIZES:
+            self.assertIn(f"`{s}`", summary)
+        self.assertEqual(summary.count("PASS"), len(ALL_SIZES), summary)
+        self.assertNotIn("FAIL", summary.replace("PASS", ""), summary)
+
+    def test_base_pinned_contexts_map_to_base_atol(self):
+        # Non-size-prefixed contexts (fixture-only "log-mel", the GPU e2e
+        # legs) are printed with atol_for("base") by the harness and must be
+        # judged against the base mirror entry.
+        log = "\n".join(
+            [
+                parity_line("log-mel", "1.1e-4"),
+                parity_line("whisper encoder (Metal vs CPU)", "2.0e-4"),
+            ]
+        )
+        proc, summary = run_verdict(log, parity_exit="0")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("log-mel", summary)
+        self.assertEqual(summary.count("PASS"), 2, summary)
+
+    def test_atol_drift_between_rust_and_mirror_fails(self):
+        # Fabricated-pass guard #1: the Rust-printed atol and the workflow
+        # mirror must agree exactly. A loosened Rust value that was not
+        # landed in the mirror (or vice versa) is a hard error even when the
+        # measured delta is tiny.
+        log = parity_line("turbo: encoder hidden states", "1.0e-4", atol="0.05")
+        proc, _ = run_verdict(log, parity_exit="0")
+        self.assertNotEqual(proc.returncode, 0, "atol drift must fail the step")
+        combined = proc.stdout + proc.stderr
+        self.assertIn("drift", combined.lower())
+
+    def test_exceedance_with_green_cargo_exit_fails(self):
+        # Fabricated-pass guard #2: a delta above the mirror atol while cargo
+        # test claims success is an inconsistency (the harness should have
+        # asserted) — hard error, never a silent pass.
+        log = parity_line("turbo: decoder logits (full forward)", "5.0e-1")
+        proc, _ = run_verdict(log, parity_exit="0")
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_exceedance_with_failing_cargo_reports_fail_and_defers(self):
+        # Honest-failure path: cargo test already failed (assert_close fired
+        # with the same atol), so the job fails via the existing PARITY_EXIT
+        # tail gate. The verdict step reports FAIL in the table but exits 0 —
+        # it must not mask WHICH step is the canonical failure signal.
+        log = parity_line("turbo: decoder logits (full forward)", "5.0e-1")
+        proc, summary = run_verdict(log, parity_exit="101")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("FAIL", summary)
+
+    def test_missing_log_warns_and_exits_zero(self):
+        # An earlier step crashing before the log exists already failed the
+        # job; the verdict step only annotates.
+        proc, _ = run_verdict(None, parity_exit=None)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("warning", (proc.stdout + proc.stderr).lower())
+
+    def test_summary_records_applied_atol_per_row(self):
+        # Redundant-record requirement: the table itself must surface the
+        # applied atol so the step summary is a self-contained record.
+        log = parity_line("small: encoder hidden states", "3.2e-3")
+        proc, summary = run_verdict(log, parity_exit="0")
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("0.01", summary)
+
+
 if __name__ == "__main__":
     unittest.main()
