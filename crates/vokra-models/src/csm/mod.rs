@@ -41,6 +41,8 @@
 //! synthesized fixtures (`SplitMix64` + Xavier) drive shape / stability /
 //! property tests — never a silent zero-fill.
 
+pub mod aec_front;
+pub mod audio;
 pub mod backbone;
 pub mod config;
 pub mod depth;
@@ -48,6 +50,8 @@ pub mod frame;
 pub mod rope;
 pub mod tokenizer;
 
+pub use aec_front::{AecFront, EchoPath};
+pub use audio::{CsmAudioDecodeChain, CsmAudioDecodeState};
 pub use backbone::{
     CSM_FROM_GGUF_DEFAULT_SEED, CsmBackbone, CsmBackboneState, CsmBackboneWeights, CsmFrame,
 };
