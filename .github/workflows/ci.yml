@@ -144,6 +144,105 @@ jobs:
         if: matrix.feature == 'cuda'
         run: cargo test -p vokra-backend-cuda
 
+  # M4-15: CPU + Vulkan-only build target (FR-BE-09 partial — build target
+  # only; ADR M4-15). Builds the shipped cdylib + CLI with
+  # `--no-default-features --features vulkan`, proves the metal / cuda
+  # backends stay OUT of the dependency graph (cargo tree audit + the
+  # scripts/compliance/check-cpu-vulkan-only-no-nvidia.sh symbol scanner),
+  # runs the vokra-models suite under the vulkan feature (GitHub runners have
+  # no Vulkan device, so device-gated tests skip cleanly — same shape as the
+  # gpu-backends cuda arm; the REAL dispatch legs live in
+  # gpu-vulkan-parity.yml / M4-13), assembles the artifact dir (cdylib +
+  # LICENSE + build-time NOTICE variant), generates the deterministic
+  # SPDX 2.3 SBOM (NFR-MT-03 / X-07; release.yml attachment is a follow-up —
+  # docs/handoff/m4-15.md §(d)), and runs the M4-15 neutral-wording gate.
+  # Advisory job: required-check promotion is an owner decision after the
+  # M4-13 Vulkan parity runs are stably green (docs/handoff/m4-15.md §(c)).
+  # Zero-dep (NFR-DS-02): nothing here may touch the root Cargo.lock — the
+  # last step is the same mutation tripwire riscv-cross-build uses.
+  build-target-vulkan-only:
+    name: build-target-vulkan-only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build vokra-capi (CPU + Vulkan-only, audit trail)
+        # The printf line makes the feature selection discoverable in the CI
+        # log for auditors — same audit-trail pattern as the CPU-only UPM
+        # build in the `build` job (M2-11-T13 / Reviewer 3).
+        run: |
+          printf 'Build-target features: --no-default-features --features vulkan\n'
+          cargo build --release -p vokra-capi --no-default-features --features vulkan
+      - name: Build vokra-cli (CPU + Vulkan-only)
+        run: cargo build --release -p vokra-cli --no-default-features --features vulkan
+      - name: Clippy (CPU + Vulkan-only, deny warnings)
+        run: cargo clippy -p vokra-capi -p vokra-cli --no-default-features --features vulkan --all-targets -- -D warnings
+      - name: Test vokra-models (--features vulkan)
+        # No Vulkan device on GitHub-hosted runners: the device-gated tests
+        # skip cleanly (announced skip, never a fabricated pass). The real
+        # dispatch / parity legs are owned by gpu-vulkan-parity.yml (M4-13).
+        run: cargo test -p vokra-models --features vulkan
+      - name: Dependency-graph exclusion audit (FR-BE-09)
+        # The SBOM documents the exclusion; this step ENFORCES it: the
+        # CPU + Vulkan-only closure must contain vokra-backend-vulkan and
+        # must not contain vokra-backend-metal / vokra-backend-cuda.
+        run: |
+          set -euo pipefail
+          tree="$(cargo tree -p vokra-capi --no-default-features --features vulkan -e normal --prefix none)"
+          printf '%s\n' "$tree"
+          printf '%s\n' "$tree" | grep -q 'vokra-backend-vulkan' \
+            || { echo '::error::vokra-backend-vulkan missing from the CPU + Vulkan-only graph'; exit 1; }
+          if printf '%s\n' "$tree" | grep -qE 'vokra-backend-(metal|cuda)'; then
+            echo '::error::excluded backend crate present in the CPU + Vulkan-only graph'
+            exit 1
+          fi
+      - name: M4-15 tooling scratch-tree tests
+        # NOTICE-variant generator + non-link scanner + neutral-wording gate,
+        # exercised against scratch trees with real compiled negative
+        # fixtures (undefined cudaMalloc / cuInit / objc_msgSend refs).
+        run: bash scripts/compliance/test-m4-15-build-target.sh
+      - name: Assemble artifact dir (cdylib + LICENSE + NOTICE variant)
+        run: |
+          set -euo pipefail
+          mkdir -p dist/cpu-vulkan-only
+          cp target/release/libvokra.so dist/cpu-vulkan-only/
+          cp LICENSE dist/cpu-vulkan-only/LICENSE
+          bash scripts/gen-notice-cpu-vulkan-only.sh --out dist/cpu-vulkan-only/NOTICE
+      - name: Generate SPDX 2.3 SBOM (deterministic)
+        run: |
+          python3 scripts/sbom/generate_spdx.py \
+            --package vokra-capi \
+            --no-default-features \
+            --features vulkan \
+            --doc-name vokra-capi-cpu-vulkan-only \
+            --output dist/cpu-vulkan-only/vokra-capi.spdx.json
+      - name: SBOM self-test (structure / exclusion / determinism)
+        run: bash scripts/sbom/test-generate-spdx.sh
+      - name: NVIDIA / Metal non-link scanner
+        run: bash scripts/compliance/check-cpu-vulkan-only-no-nvidia.sh dist/cpu-vulkan-only
+      - name: Neutral-wording gate (M4-15-T08)
+        run: |
+          bash scripts/compliance/check-no-market-claims.sh \
+            dist/cpu-vulkan-only \
+            CHANGELOG.md \
+            scripts/gen-notice-cpu-vulkan-only.sh \
+            scripts/sbom \
+            scripts/compliance/check-cpu-vulkan-only-no-nvidia.sh \
+            docs/handoff/m4-15.md
+      - name: Upload CPU + Vulkan-only artifact (cdylib + legal files + SBOM)
+        uses: actions/upload-artifact@v4
+        with:
+          name: vokra-cpu-vulkan-only-linux
+          path: dist/cpu-vulkan-only/
+          retention-days: 7
+      - name: Verify root Cargo.lock unchanged
+        # NFR-DS-02: neither the feature-selected build nor the SBOM
+        # tooling may add anything to the root lockfile.
+        run: git diff --exit-code Cargo.lock
+
   # RISC-V RVV 1.0 cross-build (M3-13-T10, FR-BE-01, NFR-PT-01). The completion
   # bar for M3-13 (milestones.md §7.2) is "RVV 1.0 target のクロスビルドが CI
   # で継続検証 + RVV dispatch path の単体テスト通過" — this job satisfies the
