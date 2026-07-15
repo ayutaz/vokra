@@ -2,6 +2,9 @@
 
 pub(crate) mod campplus;
 pub(crate) mod cosyvoice2;
+// M4-20 T12: DeepFilterNet `denoise` → `vokra.denoise.*` GGUF writer (real
+// checkpoint parse is owner, T17).
+pub mod denoise;
 pub(crate) mod kokoro;
 pub(crate) mod piper_plus;
 pub(crate) mod silero;

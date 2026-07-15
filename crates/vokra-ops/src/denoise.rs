@@ -377,6 +377,138 @@ pub fn denoise(noisy: &[f32], model: &DenoiseModel) -> Result<Vec<f32>> {
     model.forward(noisy)
 }
 
+// ---- GGUF binding (M4-20 T12): `vokra.denoise.*` --------------------------
+//
+// Config keys are u32; every neural tensor is a flat F32 blob keyed under the
+// `vokra.denoise.*` namespace (reshape is config-driven, so no dim ambiguity).
+// The converter (`vokra-cli convert --model denoise`, T12) writes this layout
+// from a prepared DeepFilterNet checkpoint (real .ckpt parsing is owner). The
+// round-trip test writes it from synthesized weights and reads it back.
+
+const KEY_N_FFT: &str = "vokra.denoise.n_fft";
+const KEY_HOP: &str = "vokra.denoise.hop";
+const KEY_SAMPLE_RATE: &str = "vokra.denoise.sample_rate";
+const KEY_N_ERB: &str = "vokra.denoise.n_erb";
+const KEY_HIDDEN: &str = "vokra.denoise.hidden";
+const KEY_DF_BINS: &str = "vokra.denoise.df_bins";
+const KEY_DF_ORDER: &str = "vokra.denoise.df_order";
+
+const T_ENC_W: &str = "vokra.denoise.encoder.weight";
+const T_ENC_B: &str = "vokra.denoise.encoder.bias";
+const T_ERB_W: &str = "vokra.denoise.erb_decoder.weight";
+const T_ERB_B: &str = "vokra.denoise.erb_decoder.bias";
+const T_DF_W: &str = "vokra.denoise.df_decoder.weight";
+const T_DF_B: &str = "vokra.denoise.df_decoder.bias";
+
+impl DeepFilterNetConfig {
+    /// Reads the `vokra.denoise.*` config keys from a parsed GGUF.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`] for a missing / non-u32 key.
+    pub fn from_gguf(gguf: &vokra_core::gguf::GgufFile) -> Result<Self> {
+        let u = |key: &str| -> Result<usize> {
+            gguf.get(key)
+                .and_then(|v| v.as_u64())
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| VokraError::ModelLoad(format!("denoise gguf: missing/bad `{key}`")))
+        };
+        let cfg = Self {
+            n_fft: u(KEY_N_FFT)?,
+            hop: u(KEY_HOP)?,
+            sample_rate: u(KEY_SAMPLE_RATE)? as u32,
+            n_erb: u(KEY_N_ERB)?,
+            hidden: u(KEY_HIDDEN)?,
+            df_bins: u(KEY_DF_BINS)?,
+            df_order: u(KEY_DF_ORDER)?,
+        };
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    fn write_metadata(&self, b: &mut vokra_core::gguf::GgufBuilder) {
+        b.add_u32(KEY_N_FFT, self.n_fft as u32);
+        b.add_u32(KEY_HOP, self.hop as u32);
+        b.add_u32(KEY_SAMPLE_RATE, self.sample_rate);
+        b.add_u32(KEY_N_ERB, self.n_erb as u32);
+        b.add_u32(KEY_HIDDEN, self.hidden as u32);
+        b.add_u32(KEY_DF_BINS, self.df_bins as u32);
+        b.add_u32(KEY_DF_ORDER, self.df_order as u32);
+    }
+}
+
+impl DenoiseWeights {
+    /// Reads the `vokra.denoise.*` neural tensors from a parsed GGUF and
+    /// validates them against `cfg`.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`] for a missing tensor; [`VokraError::InvalidArgument`]
+    /// for a shape mismatch against `cfg`.
+    pub fn from_gguf(gguf: &vokra_core::gguf::GgufFile, cfg: &DeepFilterNetConfig) -> Result<Self> {
+        let t = |name: &str| -> Result<Vec<f32>> { Ok(gguf.tensor_f32(name)?) };
+        let dense = |w: Vec<f32>, bias: Vec<f32>, in_dim: usize, out_dim: usize| DenseLayer {
+            weight: w,
+            bias,
+            in_dim,
+            out_dim,
+        };
+        let df_out = cfg.df_bins * cfg.df_order * 2;
+        let w = Self {
+            encoder: dense(t(T_ENC_W)?, t(T_ENC_B)?, cfg.n_erb, cfg.hidden),
+            erb_decoder: dense(t(T_ERB_W)?, t(T_ERB_B)?, cfg.hidden, cfg.n_erb),
+            df_decoder: dense(t(T_DF_W)?, t(T_DF_B)?, cfg.hidden, df_out),
+        };
+        w.validate(cfg)?;
+        Ok(w)
+    }
+
+    fn write_tensors(&self, b: &mut vokra_core::gguf::GgufBuilder) -> Result<()> {
+        use vokra_core::gguf::GgmlType;
+        let mut add = |name: &str, data: &[f32]| -> Result<()> {
+            let bytes: Vec<u8> = data.iter().flat_map(|v| v.to_le_bytes()).collect();
+            b.add_tensor(name, GgmlType::F32, vec![data.len() as u64], bytes)?;
+            Ok(())
+        };
+        add(T_ENC_W, &self.encoder.weight)?;
+        add(T_ENC_B, &self.encoder.bias)?;
+        add(T_ERB_W, &self.erb_decoder.weight)?;
+        add(T_ERB_B, &self.erb_decoder.bias)?;
+        add(T_DF_W, &self.df_decoder.weight)?;
+        add(T_DF_B, &self.df_decoder.bias)?;
+        Ok(())
+    }
+}
+
+impl DenoiseModel {
+    /// Binds a denoiser from a parsed GGUF (`vokra.denoise.*` config +
+    /// tensors).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`DeepFilterNetConfig::from_gguf`] / [`DenoiseWeights::from_gguf`].
+    pub fn from_gguf(gguf: &vokra_core::gguf::GgufFile) -> Result<Self> {
+        let cfg = DeepFilterNetConfig::from_gguf(gguf)?;
+        let weights = DenoiseWeights::from_gguf(gguf, &cfg)?;
+        Self::new(cfg, weights)
+    }
+
+    /// Serializes this model to a `vokra.denoise.*` GGUF byte buffer (the
+    /// converter's core; the CLI parses a real DeepFilterNet checkpoint into a
+    /// [`DenoiseModel`] first — owner-side — then calls this).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError`] wrapping any GGUF write error.
+    pub fn to_gguf_bytes(&self) -> Result<Vec<u8>> {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "denoise");
+        self.cfg.write_metadata(&mut b);
+        self.weights.write_tensors(&mut b)?;
+        Ok(b.to_bytes()?)
+    }
+}
+
 /// Maps each of the `n_bins` FFT bins to an ERB band (linear spacing on the
 /// ERB scale between 0 and the Nyquist), returning `(band_of_bin, band_count)`.
 fn erb_band_map(cfg: &DeepFilterNetConfig) -> (Vec<usize>, Vec<usize>) {
@@ -481,6 +613,39 @@ mod tests {
         let model = DenoiseModel::new(cfg, DenoiseWeights::synthesized(&cfg, 1)).unwrap();
         assert!(model.forward(&[]).is_err());
         assert!(model.forward(&[0.1, f32::NAN, 0.2]).is_err());
+    }
+
+    #[test]
+    fn gguf_round_trip_binds_and_reproduces_forward() {
+        // T12: synthesized weights → GGUF bytes → parse → from_gguf → forward
+        // must reproduce the original model's output bit-for-bit (same weights,
+        // same config). Proves the `vokra.denoise.*` write/read binding.
+        let cfg = small_cfg();
+        let model = DenoiseModel::new(cfg, DenoiseWeights::synthesized(&cfg, 42)).unwrap();
+        let bytes = model.to_gguf_bytes().unwrap();
+
+        let gguf = vokra_core::gguf::GgufFile::parse(bytes).unwrap();
+        let bound = DenoiseModel::from_gguf(&gguf).unwrap();
+        assert_eq!(bound.config(), &cfg, "config must round-trip");
+        assert_eq!(bound.weights, model.weights, "weights must round-trip");
+
+        let noisy: Vec<f32> = (0..2048).map(|i| 0.2 * (i as f32 * 0.05).sin()).collect();
+        let a = model.forward(&noisy).unwrap();
+        let b = bound.forward(&noisy).unwrap();
+        assert_eq!(
+            a, b,
+            "round-tripped model must reproduce the forward exactly"
+        );
+    }
+
+    #[test]
+    fn from_gguf_rejects_missing_keys() {
+        // A GGUF with the arch marker but no denoise config keys is a load error
+        // (never a silent default).
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "denoise");
+        let gguf = vokra_core::gguf::GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        assert!(DenoiseModel::from_gguf(&gguf).is_err());
     }
 
     #[test]
