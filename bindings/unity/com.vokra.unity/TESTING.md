@@ -115,6 +115,57 @@ grep "Vokra Unity demo" /tmp/vokra-player.log
 
 Record the result in the "Owner sign-off log" section below.
 
+## 2b. Nightly WebGL (best-effort, license-gated — M4-02)
+
+Workflow: `.github/workflows/nightly-webgl.yml`, cron + `workflow_dispatch`.
+Two independent legs:
+
+1. **wasm harness leg (no Unity license needed)** — builds the
+   wasm32-unknown-emscripten staticlib and runs
+   `scripts/build-unity-webgl-lib.sh --verify`: links
+   `tests/capi/smoke_vad_bytes.c` + `libvokra.a` with the pinned emsdk
+   (`VOKRA_WEBGL_EMSDK_VERSION`, Unity-matching) and executes the real
+   Silero VAD chain under node. This leg runs even while
+   `secrets.UNITY_LICENSE` is not provisioned — the ABI/link surface is
+   covered without fabricating a Unity result.
+2. **Unity build + headless browser smoke (license-gated)** — game-ci
+   unity-builder produces a WebGL player from a throwaway consumer project,
+   the build is served by a Python stdlib HTTP server, and headless Chrome
+   (`--headless=new --enable-logging=stderr`) loads the page; the job greps
+   the captured browser console for the demo markers
+   (`[vokra-demo] WEBGL PASS` required; `WEBGL FAIL` fails the job). Skipped
+   with a `::warning::` while `secrets.UNITY_LICENSE` is absent (same
+   pattern as the IL2CPP nightly — no fabricated pass).
+
+### Local WebGL fallback (when the nightly is skipped)
+
+```bash
+# 1. Build + audit + gate + sync the staticlib (emsdk NOT needed for this):
+scripts/build-unity-webgl-lib.sh
+
+# 2. Optional: run the node verify harness against the Unity-matching emcc
+#    (install emsdk 3.1.38 for Unity 6, or 3.1.8 for Unity 2022.3):
+VOKRA_WEBGL_EMSDK_VERSION=3.1.38 scripts/build-unity-webgl-lib.sh --verify
+
+# 3. Open a consumer project in a WebGL-module-equipped Unity Editor,
+#    import the sample, switch platform to WebGL and Build. Serve the build
+#    directory (never file://):
+python3 -m http.server 8080 --directory <BuildDir>
+# 4. Open http://localhost:8080 and check the browser console for
+#    "[vokra-demo] WEBGL PASS". Model stages log "skipped" unless the GGUFs
+#    are staged under Assets/StreamingAssets/models (fetch-demo-models.sh).
+```
+
+Notes:
+
+- The package `.a` is simd128-OFF (works regardless of the Unity
+  "WebAssembly SIMD" player setting). `scripts/build-unity-webgl-lib.sh
+  --simd` builds an opt-in simd128 variant for projects that enable that
+  setting; swap it into `Plugins/WebGL/` manually.
+- On WebGL, load models with `VokraAndroidAssets.ReadBytesAsync` +
+  `VokraSession.CreateFromBytes` (see README "WebGL specifics").
+- Delivery headers / compression / COOP-COEP guidance: `docs/handoff/m4-02.md`.
+
 ## 3. Owner device tests (pre-merge, T16 / T17)
 
 The M2-11-T18 merge PR is BLOCKED until both entries below have a
