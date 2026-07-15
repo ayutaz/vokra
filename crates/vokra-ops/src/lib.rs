@@ -46,6 +46,19 @@
 // written in safe Rust; the opt-out is kept for the SIMD kernels of later WPs.
 #![allow(unsafe_code)]
 
+// ---- M4-20 (c) speech-enhancement subset (FR-OP-61/62/63) ---------------
+// agc / hpf / loudness_norm are RUNTIME FUNCTIONS (per-frame state or
+// whole-signal transforms), NOT `OpKind` variants (ADR M4-20 §D-5, the
+// runtime-function posture of `flow_sampler` / FR-EX-10): first-class in the
+// public API, absent from `dispatch.rs` (a graph-side call falls into the
+// existing `UnsupportedOp` default, FR-EX-08). `denoise` (FR-OP-61,
+// DeepFilterNet MIT) is a network — its forward + GGUF binding live in the
+// `denoise` module. Localized patch block for clean parallel-wave rebases.
+pub mod agc;
+pub mod denoise;
+pub mod hpf;
+pub mod loudness_norm;
+// -------------------------------------------------------------------------
 pub mod attrs;
 pub mod dct;
 pub mod dispatch;
@@ -88,6 +101,12 @@ pub mod resample;
 pub mod stft;
 pub mod window;
 
+// ---- M4-20 (c) speech-enhancement re-exports ----------------------------
+pub use agc::{AgcAttrs, agc};
+pub use denoise::{DeepFilterNetConfig, DenoiseModel, DenoiseWeights, denoise};
+pub use hpf::{HpfAttrs, hpf};
+pub use loudness_norm::{LoudnessNormAttrs, integrated_lufs, loudness_norm};
+// -------------------------------------------------------------------------
 pub use dct::dct;
 pub use dispatch::{OpValue, dispatch};
 // ---- M3-05 flow_sampler re-exports --------------------------------------
