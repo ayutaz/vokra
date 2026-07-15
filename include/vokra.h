@@ -59,6 +59,23 @@ typedef enum vokra_status_t {
     VOKRA_ERROR_OTHER = 9,
 } vokra_status_t;
 
+// Per-frame outcome reported by [`vokra_aec_process`] (mirrors
+// `vokra_ops::AecStatus`; FR-EX-08 — degraded modes are visible, never
+// silent).
+typedef enum vokra_aec_status_t {
+    // Far-end window fully covered; the canceller ran normally.
+    VOKRA_AEC_CANCELLED = 0,
+    // Nothing is playing and the far-end history is silent: the mic frame
+    // was copied through bit-exactly (state frozen).
+    VOKRA_AEC_PASS_THROUGH = 1,
+    // Part (or all) of the far-end window had no data and was zero-filled;
+    // the live echo tail keeps being cancelled. The missing sample count is
+    // reported through `out_missing`.
+    VOKRA_AEC_PARTIAL_REFERENCE = 2,
+    // The divergence guard fired and the canceller reset itself this frame.
+    VOKRA_AEC_RESET = 3,
+} vokra_aec_status_t;
+
 // Kind tag of a [`vokra_event_t`] (M1-08). The numeric values are part of the
 // (M0-unstable) ABI.
 typedef enum vokra_event_kind_t {
@@ -69,6 +86,14 @@ typedef enum vokra_event_kind_t {
     // An ASR token event: `a` = token id, `b` = reserved (`0`).
     VOKRA_EVENT_TOKEN = 2,
 } vokra_event_kind_t;
+
+// Opaque far-end writer handle: the producer half of the far-end queue.
+// Owned by the playback-callback thread. Opaque to C.
+typedef struct vokra_aec_ref_writer_t vokra_aec_ref_writer_t;
+
+// Opaque AEC handle: the canceller state plus the reader half of the
+// far-end queue. Owned by the inference thread. Opaque to C.
+typedef struct vokra_aec_t vokra_aec_t;
 
 // Opaque session handle: one loaded model bound to one backend, with the
 // matching native engine injected (ASR / TTS / VAD — see
@@ -90,6 +115,24 @@ typedef struct vokra_session_t vokra_session_t;
 // stepper (FR-LD-06 / FR-ST-05).
 typedef struct vokra_stream_t vokra_stream_t;
 
+// Construction parameters for [`vokra_aec_create`].
+//
+// `sample_rate` / `frame_size` / `filter_length` follow the SpeexDSP
+// guidance (speex_echo.h: a frame of 10-20 ms; a tail of 100-500 ms).
+// `frame_size` must be even. `ref_queue_capacity_samples` sizes the far-end
+// queue; `0` selects the documented default of `8 * filter_length` samples
+// (rounded up to a power of two).
+typedef struct vokra_aec_config_t {
+    // Sample rate of mic and far-end PCM (must match on both sides).
+    uint32_t sample_rate;
+    // Samples per `vokra_aec_process` call (even, > 0).
+    size_t frame_size;
+    // Echo tail length in samples (>= frame_size).
+    size_t filter_length;
+    // Far-end queue capacity in samples; 0 = default (8 * filter_length).
+    size_t ref_queue_capacity_samples;
+} vokra_aec_config_t;
+
 // A generalized streaming event drained by `vokra_stream_poll_events` (M1-08).
 //
 // A fixed 12-byte POD (`kind` + `a` + `b`); the meaning of `a` / `b` depends on
@@ -107,6 +150,103 @@ typedef struct vokra_event_t {
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
+
+// Creates an echo canceller and its far-end reference writer.
+//
+// On success writes one handle through each out-pointer; on failure both
+// out-pointers are left untouched. The two handles have independent
+// lifetimes (destroy each with its own `*_destroy`, in either order).
+//
+// # Safety
+//
+// `config` must be `NULL` or point to a valid [`vokra_aec_config_t`];
+// `out_aec` / `out_writer` must be valid non-`NULL` out-pointers. `NULL`
+// `config` is rejected as `VOKRA_ERROR_INVALID_ARGUMENT` (never
+// dereferenced).
+enum vokra_status_t vokra_aec_create(const struct vokra_aec_config_t *config,
+                                     struct vokra_aec_t **out_aec,
+                                     struct vokra_aec_ref_writer_t **out_writer);
+
+// Pushes a far-end (playback) chunk whose first sample plays at absolute
+// sample position `playback_pos`, writing the number of samples accepted to
+// `out_accepted`.
+//
+// Reject-on-full backpressure: when the queue cannot take the whole chunk,
+// only the fitting prefix is accepted (`*out_accepted < num_samples`,
+// possibly 0); retry the remainder at `playback_pos + accepted` after the
+// inference thread has consumed a frame. `out_accepted` is mandatory so a
+// partial accept is never silent (FR-EX-08).
+//
+// Backward / overlapping `playback_pos` tags are an explicit
+// `VOKRA_ERROR_INVALID_ARGUMENT` (time tags are monotonic; a forward gap is
+// legal and reads back as silence).
+//
+// # Safety
+//
+// `writer` must be a live handle from [`vokra_aec_create`], used by one
+// thread at a time (the playback callback thread). `pcm` must be `NULL`
+// only when `num_samples == 0`, otherwise valid for `num_samples` reads.
+// `out_accepted` must be a valid non-`NULL` out-pointer. May run
+// concurrently with `vokra_aec_process` on the paired `vokra_aec_t`
+// (SPSC queue), but not with itself on the same handle.
+enum vokra_status_t vokra_aec_ref_push(struct vokra_aec_ref_writer_t *writer,
+                                       const float *pcm,
+                                       size_t num_samples,
+                                       uint64_t playback_pos,
+                                       size_t *out_accepted);
+
+// Cancels the echo of one mic frame (`num_samples == frame_size`) whose
+// first sample was captured at absolute sample position `mic_pos` on the
+// same clock the far-end pushes use. Writes `frame_size` cancelled samples
+// to `out` and the per-frame outcome ([`vokra_aec_status_t`]) to
+// `out_status`; when the outcome is `VOKRA_AEC_PARTIAL_REFERENCE`, the
+// number of zero-filled far-end samples is written to `out_missing`
+// (optional pointer — pass `NULL` if not needed; it is set to 0 for the
+// other outcomes).
+//
+// # Safety
+//
+// `aec` must be a live handle from [`vokra_aec_create`], used by one
+// thread at a time (the inference thread). `mic` must be valid for
+// `num_samples` reads and `out` for `num_samples` writes; `out_status`
+// must be a valid non-`NULL` out-pointer; `out_missing` may be `NULL`.
+// May run concurrently with `vokra_aec_ref_push` on the paired writer.
+enum vokra_status_t vokra_aec_process(struct vokra_aec_t *aec,
+                                      const float *mic,
+                                      uint64_t mic_pos,
+                                      float *out,
+                                      size_t num_samples,
+                                      enum vokra_aec_status_t *out_status,
+                                      size_t *out_missing);
+
+// Resets the canceller to its as-new state (bit-exact with a fresh
+// [`vokra_aec_create`] of the same config). Pair it with barge-in
+// (`vokra_stream_interrupt`) in full-duplex loops.
+//
+// # Safety
+//
+// `aec` must be a live handle, used by one thread at a time.
+enum vokra_status_t vokra_aec_reset(struct vokra_aec_t *aec);
+
+// Destroys an AEC handle. `NULL` is a no-op. The paired writer handle stays
+// valid (its pushes simply pile up unread) and must be destroyed with
+// [`vokra_aec_ref_writer_destroy`].
+//
+// # Safety
+//
+// `aec` must be `NULL` or a live handle from [`vokra_aec_create`] not used
+// after this call (and not concurrently with it).
+void vokra_aec_destroy(struct vokra_aec_t *aec);
+
+// Destroys a far-end writer handle. `NULL` is a no-op. The paired AEC
+// handle stays valid (its windows read as silence once the queue drains —
+// the pass-through semantics take over).
+//
+// # Safety
+//
+// `writer` must be `NULL` or a live handle from [`vokra_aec_create`] not
+// used after this call (and not concurrently with it).
+void vokra_aec_ref_writer_destroy(struct vokra_aec_ref_writer_t *writer);
 
 // Transcribes mono `f32` PCM to text using the session's ASR engine (FR-API-01).
 //

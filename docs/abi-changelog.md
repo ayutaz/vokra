@@ -118,6 +118,31 @@ This snapshot is what `scripts/check-abi-changelog.sh` diffs the working-tree
 
 ## Entries
 
+### 2026-07-15 — 1.0.0-rc.1-dev
+
+Additive `vokra_aec_*` surface (WP **M4-03**, FR-OP-60): the SpeexDSP-MDF
+echo canceller + the sample-clock far-end reference queue, the hard-gate
+(G1) prerequisite of M4-05 (CSM) / M4-06 (Moshi full-duplex). Split-handle
+design: the far-end writer is a separate opaque handle so the playback
+callback thread and the inference thread run concurrently over the internal
+SPSC queue (the M3-14 cross-thread lesson, ADR M4-03 §D-(j)). **rc-window
+prerelease ABI policy applies** (IF-01 freeze fires at M5-13, not here):
+these symbols may still be renamed/removed before the v1.0 GA tag, with a
+dated entry per change.
+
+| Crate / area      | Symbol                        | Kind  | Signature                                                                                                                                                          | Rationale                                                        | Breaking? | PR    |
+| ----------------- | ----------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- | --------- | ----- |
+| `include/vokra.h` | `vokra_aec_create`            | Added | `enum vokra_status_t vokra_aec_create(const struct vokra_aec_config_t *config, struct vokra_aec_t **out_aec, struct vokra_aec_ref_writer_t **out_writer)`           | AEC construction (canceller + far-end writer pair), WP M4-03     | no        | (TBD) |
+| `include/vokra.h` | `vokra_aec_ref_push`          | Added | `enum vokra_status_t vokra_aec_ref_push(struct vokra_aec_ref_writer_t *writer, const float *pcm, size_t num_samples, uint64_t playback_pos, size_t *out_accepted)` | Far-end push, sample-clock tag + visible backpressure (FR-EX-08) | no        | (TBD) |
+| `include/vokra.h` | `vokra_aec_process`           | Added | `enum vokra_status_t vokra_aec_process(struct vokra_aec_t *aec, const float *mic, uint64_t mic_pos, float *out, size_t num_samples, enum vokra_aec_status_t *out_status, size_t *out_missing)` | Per-frame cancellation + status visibility, WP M4-03             | no        | (TBD) |
+| `include/vokra.h` | `vokra_aec_reset`             | Added | `enum vokra_status_t vokra_aec_reset(struct vokra_aec_t *aec)`                                                                                                      | As-new reset (pairs with `vokra_stream_interrupt` barge-in)      | no        | (TBD) |
+| `include/vokra.h` | `vokra_aec_destroy`           | Added | `void vokra_aec_destroy(struct vokra_aec_t *aec)`                                                                                                                   | Handle release (NULL no-op, ADR-0003 §3-a)                       | no        | (TBD) |
+| `include/vokra.h` | `vokra_aec_ref_writer_destroy`| Added | `void vokra_aec_ref_writer_destroy(struct vokra_aec_ref_writer_t *writer)`                                                                                          | Writer release (independent lifetime)                            | no        | (TBD) |
+| `include/vokra.h` | `vokra_aec_config_t`          | Added | `typedef struct vokra_aec_config_t { uint32_t sample_rate; size_t frame_size; size_t filter_length; size_t ref_queue_capacity_samples; } vokra_aec_config_t`        | Public-layout config (0 capacity = 8×filter_length default)      | no        | (TBD) |
+| `include/vokra.h` | `vokra_aec_status_t`          | Added | `typedef enum vokra_aec_status_t { VOKRA_AEC_CANCELLED = 0, VOKRA_AEC_PASS_THROUGH = 1, VOKRA_AEC_PARTIAL_REFERENCE = 2, VOKRA_AEC_RESET = 3, } vokra_aec_status_t` | Per-frame outcome (degraded modes visible, FR-EX-08)             | no        | (TBD) |
+| `include/vokra.h` | `vokra_aec_t`                 | Added | `typedef struct vokra_aec_t vokra_aec_t` (opaque)                                                                                                                   | Canceller + queue-reader handle (inference thread)               | no        | (TBD) |
+| `include/vokra.h` | `vokra_aec_ref_writer_t`      | Added | `typedef struct vokra_aec_ref_writer_t vokra_aec_ref_writer_t` (opaque)                                                                                             | Far-end writer handle (playback thread)                          | no        | (TBD) |
+
 ### 2026-07-09 — 0.9.0-dev
 
 | Crate / area                    | Symbol                                        | Kind  | Signature                                                                   | Rationale                                                                                                                 | Breaking? | PR    |

@@ -50,6 +50,9 @@
 // crate-level "Unsafe policy" docs above (M0-02-T03).
 #![allow(unsafe_code)]
 
+// M4-03: vokra_aec_* — echo cancellation + far-end reference writer
+// (FR-OP-60; split-handle thread contract, ADR M4-03 §D-(j)).
+mod aec;
 mod asr;
 mod error;
 mod ffi_guard;

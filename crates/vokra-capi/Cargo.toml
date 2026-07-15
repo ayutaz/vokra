@@ -34,6 +34,10 @@ vokra-core.workspace = true
 # (M0-09-T06). Runtime dep, unlike cbindgen which is a build-only CLI tool
 # (MPL-2.0, not a workspace dependency — see ADR-0003 / license-audit.md).
 vokra-models.workspace = true
+# M4-03: the `vokra_aec_*` surface wraps vokra_ops::Aec (SpeexDSP MDF port)
+# plus the vokra-core far-end reference queue. Workspace-internal dependency
+# (NFR-DS-02 zero-dep unchanged).
+vokra-ops.workspace = true
 
 [features]
 # --------------------------------------------------------------------------
