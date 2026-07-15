@@ -53,6 +53,8 @@
 pub mod backbone;
 pub mod config;
 pub mod depth;
+pub mod duplex;
+pub mod engine;
 pub mod frame;
 pub mod tokenizer;
 
@@ -61,6 +63,8 @@ pub use backbone::{
     MoshiBackboneWeights,
 };
 pub use depth::{MoshiDepthLayer, MoshiDepthState, MoshiDepthTransformer, MoshiDepthWeights};
+pub use duplex::MoshiDuplexSession;
+pub use engine::MoshiEngine;
 pub use frame::{
     MOSHI_UNGENERATED, MoshiChannelSampler, MoshiFrameOut, MoshiGenerationState, MoshiModel,
     MoshiSamplerPair,
@@ -72,6 +76,20 @@ pub use tokenizer::{
 pub use config::{
     DEFAULT_MOSHI_RMS_NORM_EPS, DEFAULT_MOSHI_ROPE_MAX_PERIOD, MoshiConfig, MoshiTransformerConfig,
 };
+
+/// Probes whether `backend` can host the Moshi hot-op set through the
+/// Compute seam (GEMM / GEMV / Softmax — the CSM set). A disabled
+/// feature / absent device / coverage gap is an explicit error
+/// (FR-EX-08 — the M3-10 off-GPU negative-test band pattern; full device
+/// residency / kernel fusion stays a M4 follow-up, ADR M4-06 §D1-(e)).
+///
+/// # Errors
+///
+/// [`vokra_core::VokraError::BackendUnavailable`] /
+/// [`vokra_core::VokraError::UnsupportedOp`] verbatim from the seam.
+pub fn gpu_backend_probe(backend: vokra_core::BackendKind) -> vokra_core::Result<()> {
+    crate::compute::Compute::for_backend(backend, backbone::MOSHI_HOT_OPS).map(|_| ())
+}
 
 /// `vokra.model.arch` a Moshi GGUF must carry. Written by
 /// `vokra-convert::models::moshi::ARCH`; the compliance registry

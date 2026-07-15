@@ -104,10 +104,10 @@ pub trait S2sDuplexHandle {
 }
 
 /// Per-push observability for [`S2sDuplexHandle::push_mic_frame`]
-/// (FR-EX-08: degraded modes are visible, never silent). Fields grow
-/// under `#[non_exhaustive]`.
+/// (FR-EX-08: degraded modes are visible, never silent). Constructed by
+/// engines (`vokra-models`), so the struct is exhaustive by design — new
+/// fields are a semver-visible engine-contract change.
 #[derive(Debug, Clone, Copy)]
-#[non_exhaustive]
 pub struct DuplexPushReport {
     /// `true` once the model emitted a frame for this push (post-warmup).
     pub step_emitted: bool,
@@ -151,7 +151,7 @@ impl DuplexInterruptHandle {
 /// Options for [`S2sDuplexEngine::open_duplex`]. Engine-specific knobs
 /// (AEC filter shape, queue capacity, ...) belong to engine
 /// construction; this carries only the session-generic contract.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct DuplexSessionConfig {
     /// `true` → both decode channels sample greedily (reproducible —
@@ -168,17 +168,6 @@ pub struct DuplexSessionConfig {
     /// when frames are pulled (owner-tunable on real hardware —
     /// M4-06-T17).
     pub playback_offset_samples: u64,
-}
-
-impl Default for DuplexSessionConfig {
-    fn default() -> Self {
-        Self {
-            deterministic: false,
-            seed: 0,
-            aec_disabled_explicitly: false,
-            playback_offset_samples: 0,
-        }
-    }
 }
 
 impl DuplexSessionConfig {
