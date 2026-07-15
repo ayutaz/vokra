@@ -124,7 +124,10 @@ fn raw_dft(
         inverse,
     };
     let mut out = vec![Complex32::ZERO; m];
-    fft_rec(&ctx, 0, 1, &mut out, factors_m);
+    // The Bluestein path is allocating anyway (padded convolution buffers),
+    // so a per-call combine scratch here keeps the seam simple.
+    let mut scratch = vec![Complex32::ZERO; m];
+    fft_rec(&ctx, 0, 1, &mut out, factors_m, &mut scratch);
     out
 }
 

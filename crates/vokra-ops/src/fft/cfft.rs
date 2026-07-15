@@ -27,10 +27,12 @@
 //! correct result for those factors and is validated against Bluestein for
 //! prime lengths in the test suite.
 //!
-//! Hot-path allocation: the combine step allocates one scratch buffer per
-//! recursion node. Removing per-call allocation is FR-EX-05 (M1); the plan /
-//! recursion structure is arranged so that optimization does not require an
-//! API change.
+//! Hot-path allocation: the recursion is allocation-free — every combine
+//! level borrows the head of one caller-provided scratch buffer (length ≥
+//! the top transform length; levels never overlap in time, so a single
+//! buffer serves the whole tree). The allocating [`super::FftPlan`] API
+//! provides a fresh scratch per call; the `_into` variants added by
+//! M4-03-T11 (FR-EX-05) let a hot loop pre-allocate it once.
 
 use vokra_core::Complex32;
 
@@ -93,6 +95,7 @@ pub(crate) fn fft_rec(
     stride: usize,
     output: &mut [Complex32],
     factors: &[usize],
+    scratch: &mut [Complex32],
 ) {
     let n = output.len();
     if n == 1 {
@@ -104,13 +107,16 @@ pub(crate) fn fft_rec(
     let m = n / p;
     let rest = &factors[1..];
 
-    // p sub-transforms of length m, decimating the input by p.
+    // p sub-transforms of length m, decimating the input by p. Each child
+    // level reuses the same scratch buffer: a child's combine finishes
+    // before this level's combine starts, so the borrows never overlap in
+    // time (single scratch of the top length serves the whole tree).
     for j in 0..p {
         let sub = &mut output[j * m..(j + 1) * m];
-        fft_rec(ctx, offset + j * stride, stride * p, sub, rest);
+        fft_rec(ctx, offset + j * stride, stride * p, sub, rest, scratch);
     }
 
-    combine(ctx, output, n, p, m);
+    combine(ctx, output, n, p, m, scratch);
 }
 
 /// Radix-`p` butterfly combine: turns the `p` length-`m` sub-DFTs stored
@@ -120,9 +126,19 @@ pub(crate) fn fft_rec(
 /// mixed-radix recombination (the `p = 2` case is the classic butterfly). The
 /// twiddle `e^{∓2πi·jk/n}` is read from the top-level table with the level
 /// stride `big_n / n`; the inverse conjugates it.
-fn combine(ctx: &FftCtx<'_>, output: &mut [Complex32], n: usize, p: usize, m: usize) {
+fn combine(
+    ctx: &FftCtx<'_>,
+    output: &mut [Complex32],
+    n: usize,
+    p: usize,
+    m: usize,
+    scratch_all: &mut [Complex32],
+) {
     let level_stride = ctx.big_n / n;
-    let mut scratch = vec![Complex32::ZERO; n];
+    // Borrow this level's slice of the shared scratch. Every element is
+    // written before any read (the k-loop assigns `*out_k` from `output`
+    // only), so stale contents from other levels are harmless.
+    let scratch = &mut scratch_all[..n];
     for (k, out_k) in scratch.iter_mut().enumerate() {
         let r = k % m;
         let mut acc = Complex32::ZERO;
@@ -138,7 +154,7 @@ fn combine(ctx: &FftCtx<'_>, output: &mut [Complex32], n: usize, p: usize, m: us
         }
         *out_k = acc;
     }
-    output.copy_from_slice(&scratch);
+    output.copy_from_slice(scratch);
 }
 
 #[cfg(test)]
