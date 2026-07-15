@@ -34,7 +34,9 @@ pub use cosyvoice2::{
     COSYVOICE2_MEL_LOSS_THRESHOLD, COSYVOICE2_SAMPLE_RATE, check_cosyvoice2_degradation,
     check_cosyvoice2_degradation_with_utmos, cosyvoice2_mel_loss,
 };
-pub use degradation::{DegradationReport, check_degradation, check_degradation_with_utmos};
+pub use degradation::{
+    DegradationReport, MosAssessment, MosDomain, check_degradation, check_degradation_with_utmos,
+};
 pub use manifest::{Manifest, Record};
 pub use metrics::{
     AudioMosMetric, AudioRefMetric, Cer, Direction, MelLoss, Metric, TextMetric, Wer, edit_distance,
