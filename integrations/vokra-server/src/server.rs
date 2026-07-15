@@ -3,13 +3,30 @@
 //! T03 wires the two listeners and the `/health` endpoint. Later tickets
 //! attach the OpenAI / vLLM / piper-plus routers (T06/T09/T11) and the
 //! Wyoming event loop (T15/T16) here.
+//!
+//! M4-19 (T02/T04): the Wyoming accept loop is now service-aware. When an
+//! engine registry ([`WyomingBackend`]) is wired it serves the full ASR + TTS
+//! connection handler ([`run_wyoming_connection`]) through the M3-15
+//! [`Scheduler`] (one permit + stream slot per connection); otherwise it falls
+//! back to the discovery-only handler so Home Assistant's `describe` probe
+//! still succeeds. The production startup path
+//! ([`crate::server::run_with_config`]) has no CLI model wiring yet
+//! (M2-09-T04 carry-over), so it passes `None` and stays discovery-only —
+//! regression-free.
 
+use crate::api::wyoming::{
+    BargeIn, WyomingBackend, run_describe_only_connection, run_wyoming_connection,
+    write_wyoming_error,
+};
 use crate::config::Config;
+use crate::error::spawn_isolated_wyoming_task;
+use crate::scheduler::Scheduler;
 use crate::shutdown::{ShutdownSignal, ShutdownTrigger, install_shutdown_signal};
 use axum::Router;
 use axum::http::StatusCode;
 use axum::routing::get;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 
 /// Bound listener addresses returned by `spawn_server`. `run_with_config` uses
@@ -57,7 +74,32 @@ pub fn run_with_config(cfg: Config) -> std::io::Result<()> {
 ///
 /// Both listeners share the passed [`ShutdownSignal`] so ctrl_c / SIGTERM
 /// terminates them together (graceful).
+///
+/// This is the discovery-only startup path (no engine registry wired) — it
+/// delegates to [`spawn_server_with_service`] with `None`. Callers that build
+/// an [`WyomingBackend`] registry use [`spawn_server_with_service`] directly.
 pub async fn spawn_server(cfg: Config, signal: ShutdownSignal) -> std::io::Result<ServerHandles> {
+    spawn_server_with_service(cfg, signal, None, None).await
+}
+
+/// Bind both listeners and spawn their event loops, optionally wiring a
+/// Wyoming engine registry + multi-session scheduler (M4-19 T02/T04).
+///
+/// * `service = Some(_)` → the Wyoming accept loop serves the full ASR + TTS
+///   connection handler ([`run_wyoming_connection`]); if `scheduler = Some(_)`
+///   each connection first takes a permit + stream slot (overload → explicit
+///   `error` event, FR-EX-08).
+/// * `service = None` → discovery-only fallback (`describe` → empty `info`), so
+///   Home Assistant discovery still succeeds before any model is wired.
+///
+/// The two share the passed [`ShutdownSignal`] so shutdown drains them
+/// together.
+pub async fn spawn_server_with_service(
+    cfg: Config,
+    signal: ShutdownSignal,
+    service: Option<Arc<dyn WyomingBackend>>,
+    scheduler: Option<Arc<Scheduler>>,
+) -> std::io::Result<ServerHandles> {
     // ---- HTTP ----
     let http_listener = TcpListener::bind(cfg.http_bind).await?;
     let http_actual = http_listener.local_addr()?;
@@ -77,9 +119,26 @@ pub async fn spawn_server(cfg: Config, signal: ShutdownSignal) -> std::io::Resul
     // ---- Wyoming (TCP JSONL) ----
     let wy_listener = TcpListener::bind(cfg.wyoming_bind).await?;
     let wyoming_actual = wy_listener.local_addr()?;
+    // FR-EX-08: be explicit about which mode the server booted in so an
+    // operator never wonders why ASR "silently" does nothing.
+    if service.is_some() {
+        eprintln!(
+            "vokra-server: wyoming serving full ASR+TTS (multi-session {})",
+            if scheduler.is_some() {
+                "scheduler wired"
+            } else {
+                "no scheduler"
+            }
+        );
+    } else {
+        eprintln!(
+            "vokra-server: wyoming in discovery-only mode (no engine registry wired); \
+             only `describe` is answered"
+        );
+    }
     let wy_signal = signal.clone();
     tokio::spawn(async move {
-        wyoming_accept_loop(wy_listener, wy_signal).await;
+        wyoming_accept_loop(wy_listener, wy_signal, service, scheduler).await;
     });
 
     Ok(ServerHandles {
@@ -88,43 +147,36 @@ pub async fn spawn_server(cfg: Config, signal: ShutdownSignal) -> std::io::Resul
     })
 }
 
-/// Wyoming Protocol accept loop. When no [`InferenceService`] is wired
-/// (the T03 default startup path), we fall back to a describe-only handler
-/// so Home Assistant's Wyoming discovery probe (`describe` → `info`)
-/// still completes cleanly — without this, the accept-and-drop stub made
-/// even wire-level discovery fail (see the smoke report at
-/// `integrations/vokra-server/tests/wyoming-ha-smoke.md`). Once T04 wires
-/// model paths through the CLI and a service is built at startup, this
-/// same loop can be switched to [`run_asr_connection`] with an `Arc<InferenceService>`.
+/// Wyoming Protocol accept loop (M4-19 T02/T04).
 ///
-/// Each connection is served on its own tokio task so a slow client
-/// cannot stall discovery for another one (NFR-RL-07 spirit — panic in a
-/// single task is isolated).
-async fn wyoming_accept_loop(listener: TcpListener, signal: ShutdownSignal) {
+/// When an engine registry is wired (`service = Some`) each connection is
+/// served by the full ASR + TTS handler [`run_wyoming_connection`], optionally
+/// through the multi-session [`Scheduler`]. When it is not
+/// (`service = None`, the current production startup path — no CLI model
+/// wiring yet, M2-09-T04 carry-over) we fall back to the discovery-only
+/// handler so Home Assistant's `describe` probe still completes cleanly
+/// (without this, the historical accept-and-drop stub made even wire-level
+/// discovery fail — see `integrations/vokra-server/tests/wyoming-ha-smoke.md`).
+///
+/// Each connection runs on its own [`spawn_isolated_wyoming_task`] so a
+/// panicked JSONL parser closes ONE connection, never the listener
+/// (NFR-RL-07).
+async fn wyoming_accept_loop(
+    listener: TcpListener,
+    signal: ShutdownSignal,
+    service: Option<Arc<dyn WyomingBackend>>,
+    scheduler: Option<Arc<Scheduler>>,
+) {
     loop {
-        let signal = signal.clone();
         tokio::select! {
             _ = signal.clone().wait() => break,
             accept = listener.accept() => {
                 match accept {
                     Ok((stream, peer)) => {
-                        tokio::spawn(async move {
-                            let (reader, mut writer) = stream.into_split();
-                            if let Err(err) = crate::api::wyoming::run_describe_only_connection(
-                                reader,
-                                &mut writer,
-                            )
-                            .await
-                            {
-                                // Client dropped mid-message, malformed
-                                // header past the cap, or the socket closed
-                                // — all expected under adversarial input.
-                                // Log so operators can see it, but never
-                                // panic (the accept loop must survive).
-                                eprintln!(
-                                    "vokra-server: wyoming session with {peer} ended: {err}"
-                                );
-                            }
+                        let service = service.clone();
+                        let scheduler = scheduler.clone();
+                        spawn_isolated_wyoming_task(peer, async move {
+                            serve_wyoming_connection(stream, peer, service, scheduler).await;
                         });
                     }
                     Err(err) => {
@@ -133,6 +185,49 @@ async fn wyoming_accept_loop(listener: TcpListener, signal: ShutdownSignal) {
                 }
             }
         }
+    }
+}
+
+/// Serve one accepted Wyoming connection (M4-19 T02/T04).
+///
+/// With a wired `service` we optionally take a multi-session slot from
+/// `scheduler` (permit + `StreamSlot`, released by RAII when this function
+/// returns), then run the full ASR + TTS handler. Overload is surfaced as an
+/// explicit `error` event mapped through
+/// [`SchedulerError::to_server_error`](crate::scheduler::SchedulerError::to_server_error)
+/// — never a silent connection drop (FR-EX-08). Without a service we run the
+/// discovery-only fallback.
+async fn serve_wyoming_connection(
+    stream: tokio::net::TcpStream,
+    peer: SocketAddr,
+    service: Option<Arc<dyn WyomingBackend>>,
+    scheduler: Option<Arc<Scheduler>>,
+) {
+    let (reader, mut writer) = stream.into_split();
+    let Some(service) = service else {
+        // Discovery-only fallback.
+        if let Err(err) = run_describe_only_connection(reader, &mut writer).await {
+            eprintln!("vokra-server: wyoming session with {peer} ended: {err}");
+        }
+        return;
+    };
+
+    // T04: hold a scheduler session (permit + stream slot) for the lifetime of
+    // this connection. `_session` releases both via RAII on drop.
+    let _session = match scheduler {
+        Some(sched) => match sched.acquire_or_503().await {
+            Ok(sess) => Some(sess),
+            Err(e) => {
+                let msg = format!("wyoming session refused: {}", e.to_server_error().message());
+                let _ = write_wyoming_error(&mut writer, &msg).await;
+                return;
+            }
+        },
+        None => None,
+    };
+
+    if let Err(err) = run_wyoming_connection(reader, &mut writer, service, BargeIn::new()).await {
+        eprintln!("vokra-server: wyoming session with {peer} ended: {err}");
     }
 }
 
@@ -145,11 +240,25 @@ async fn health_handler() -> (StatusCode, &'static str) {
 
 /// Compose a shutdown-driven variant that returns handles immediately, so
 /// tests can trigger shutdown after probing `/health`. Not used by `main`.
+/// Discovery-only (no engine registry) — the M2-09 default.
 pub async fn spawn_server_for_test(
     cfg: Config,
 ) -> std::io::Result<(ServerHandles, ShutdownTrigger)> {
     let (signal, trigger) = install_shutdown_signal();
     let handles = spawn_server(cfg, signal).await?;
+    Ok((handles, trigger))
+}
+
+/// Like [`spawn_server_for_test`] but wires a Wyoming engine registry +
+/// optional scheduler (M4-19 T04). Integration tests use this to drive the
+/// full ASR + TTS + barge-in protocol path over TCP loopback.
+pub async fn spawn_server_for_test_with_service(
+    cfg: Config,
+    service: Option<Arc<dyn WyomingBackend>>,
+    scheduler: Option<Arc<Scheduler>>,
+) -> std::io::Result<(ServerHandles, ShutdownTrigger)> {
+    let (signal, trigger) = install_shutdown_signal();
+    let handles = spawn_server_with_service(cfg, signal, service, scheduler).await?;
     Ok((handles, trigger))
 }
 
