@@ -139,6 +139,31 @@ same posture as the vokra-server HTTP APIs ("Out-of-scope" above).
 | ------------------------- | ---------------------- | ----- | ------------------------------------ | ---------------------------------------------------------------- | --------- | ----- |
 | `vokra-core::backend`     | `BackendKind::WebGpu`  | Added | `enum BackendKind { …, WebGpu }` (`#[non_exhaustive]`, additive) | WebGPU backend selector (FR-BE-05), WP M4-01; raw extern-import shim, no wgpu crate (ADR M4-01) | no        | (TBD) |
 
+### 2026-07-15 — 1.0.0-rc.1-dev (M4-17: CPU ISA server tier)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+untouched: ISA-tier selection is an internal `vokra-backend-cpu` dispatch
+surface, no ISA enum is exported through cbindgen, and the only header delta
+is the comment-block "RESERVED — CPU ISA tiers" note in the STABILITY banner
+(no symbol change, so `scripts/check-abi-changelog.sh`'s symbol gate is not
+tripped; this entry is informational for the M4-12 rc baseline snapshot).
+`IsaPath` gained `#[non_exhaustive]` in the same change — see
+`## Reserved additions` below for the forward-compat contract this pins.
+
+| Crate / area                 | Symbol                                    | Kind  | Signature                                                                                     | Rationale                                                                                                                | Breaking? | PR    |
+| ---------------------------- | ----------------------------------------- | ----- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | --------- | ----- |
+| `vokra-backend-cpu::features`| `IsaPath` (attribute)                     | Changed | `#[non_exhaustive] pub enum IsaPath` | Freeze preparation (`docs/handoff/m4-12.md` §(e)-2): future tiers become backward-compat variant additions, WP M4-17-T04. Technically source-breaking for out-of-tree `match` users (none exist in-tree); pre-1.0 policy applies | no*       | (TBD) |
+| `vokra-backend-cpu::features`| `IsaPath::{Avx512, Avx512Vnni, Avx512Bf16, AvxVnni256}` | Added | x86-64 server tiers (AVX-512 F/DQ/BW/VL f32, VNNI INT8, BF16 matmul, AVX-VNNI-256 client INT8) | FR-BE-01 ISA ladder expansion, WP M4-17 (ADR M4-17 §(b))                                                                  | no        | (TBD) |
+| `vokra-backend-cpu::features`| `IsaPath::{NeonFp16, NeonDotprod, NeonI8mm, NeonBf16}` | Added | ARM64 server tiers (fp16 GEMM, dotprod INT8, i8mm SMMLA, BFMMLA)                               | FR-BE-01 ISA ladder expansion, WP M4-17 (ADR M4-17 §(b))                                                                  | no        | (TBD) |
+| `vokra-backend-cpu::features`| `CpuFeatures::{avx512f, avx512dq, avx512bw, avx512vl, avx512vnni, avx512bf16, avxvnni256, neon_fp16, neon_dotprod, neon_i8mm, neon_bf16}` | Added | `pub bool` probe fields (std `is_x86_feature_detected!` / `is_aarch64_feature_detected!` only — no getauxval FFI, NFR-DS-02) | Server-tier runtime probe, WP M4-17-T02/T03. Struct-literal construction outside the crate breaks (use `CpuFeatures::NONE` + update syntax); pre-1.0 | no*       | (TBD) |
+| `vokra-backend-cpu::features`| `CpuFeatures::{NONE, best_int8_isa, best_bf16_isa, best_fp16_isa}` + `IsaPath::ALL_SIMD` | Added | op-kind tier selectors + all-SIMD iteration list                                               | Specialized (INT8/BF16/FP16) tiers are opt-in per op kind, not part of the f32 table ladder (ADR M4-17 §(b)-2)             | no        | (TBD) |
+| `vokra-backend-cpu::kernels` | `KQuantDtype`, `kquant_dequant_on`, `kquant_gemv_i8{,_on}`, `kquant_gemv2_i8_on`, `gemm_bf16_on`, `gemm_fp16_on`, converters (`f32_to_f16_rne` 等) | Added | specialized kernel surface (bit-identical dequant fusion / INT8 / reduced-precision matmul)    | K-quants dequant fusion + INT8/BF16/FP16 kernels, WP M4-17-T10..T17                                                        | no        | (TBD) |
+| `Cargo.toml` (vokra-backend-cpu) | `rust-version = "1.89"` (crate override) | Changed | workspace stays `1.85`; backend-cpu floor rises | AVX-512 intrinsics stabilized in Rust 1.89; cargo enforces per-crate. Effective workspace build floor is 1.89 (backend-cpu is in every build) — owner may want to lift the workspace declaration at M4-11/M4-12 | no*       | (TBD) |
+
+`no*` = additive at the C ABI, source-affecting at the Rust API edge; the
+pre-1.0 prerelease policy (rename/remove allowed with a dated entry) covers
+it.
+
 ### 2026-07-15 — 1.0.0-rc.1-dev
 
 Additive `vokra_aec_*` surface (WP **M4-03**, FR-OP-60): the SpeexDSP-MDF
@@ -269,6 +294,37 @@ Note: `vokra.dnsmos.*` is **reserved but deliberately not designed** — DNSMOS 
 | `gguf:vokra.paged_kv` | `vokra.paged_kv.block_size`| Added   | `u32`                                                                           | Paged KV cache, M3-03                    | no        | #NN  |
 
 -->
+
+## Reserved additions
+
+Forward reservations recorded **before** the IF-01 freeze so that
+post-freeze landings are backward-compatible additions, never shape breaks
+(`docs/handoff/m4-12.md` §(e)-2; recorded by WP M4-17-T06 on 2026-07-15).
+
+- **`vokra_backend_cpu::IsaPath` is `#[non_exhaustive]`** (since M4-17-T04).
+  Downstream `match` expressions must carry a `_` arm, so adding a variant is
+  a **non-breaking variant addition** under semver. Within the defining crate
+  the attribute is inert — `dispatch::build_table` deliberately stays an
+  exhaustive match so a variant added without a kernel table is a compile
+  error.
+- **Reserved variant name families** (do NOT reuse for anything else):
+  - `Amx*` — Intel AMX-TILE/INT8/BF16 tiles (**M5**; excluded from M4-17
+    because stable-Rust intrinsic supply is unconfirmed and Sapphire-Rapids
+    soak time is unavailable — `docs/m4-scope-expansion-2026-07-13.md`
+    §BIG-6). AMX-FP16 / AVX10.x remain v1.5+ anchors on top of that.
+  - `Sme*` — ARM SME tiles (**M5**; Apple M4+ is the only shipping
+    implementation).
+  - `RvvZvfh*` — RISC-V Zvfh-gated fp16 vector tiers (future; the `rvv_zvfh`
+    probe bit exists since M3-13, the tier name is reserved here).
+- **The C ABI carries no ISA enum** (see the `include/vokra.h` STABILITY
+  block, "RESERVED — CPU ISA tiers"): the IF-01 freeze surface excludes
+  ISA-tier naming entirely. A C-level backend/delegate selector, if ever
+  exported, is an M5 decision after the NPU real-hardware bakeoff
+  (`docs/handoff/m4-12.md` §(e)-3 / §(f)-4) and lands as a new symbol.
+- **v1.0-rc window additions covered by this reservation policy**: the eight
+  M4-17 variants (`Avx512`, `Avx512Vnni`, `Avx512Bf16`, `AvxVnni256`,
+  `NeonFp16`, `NeonDotprod`, `NeonI8mm`, `NeonBf16`) — prerelease-semver
+  additive, recorded in the dated entry above.
 
 ## Handoff to M4-12 (v1.0 GA freeze)
 
