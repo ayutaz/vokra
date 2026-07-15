@@ -1434,7 +1434,6 @@ impl CudaContext {
     /// disable reason. Reached only from `launch_flash_attn_v3` — a caller
     /// that sets `use_flash_attn_v3 = true` without the probe promise gets
     /// this explicit error, never a silent fallback (FR-EX-08).
-    #[allow(dead_code)] // consumed by the T05-T08 launcher commit of this WP
     fn fa_v3_function(&self) -> Result<sys::CUfunction> {
         match self.fa_v3_slot() {
             crate::fa_v3::FaV3Slot::Ready(m) => Ok(m.kernel),
@@ -2915,6 +2914,213 @@ impl CudaContext {
             gemm_block,
             &mut p_out,
             "cuLaunchKernel(vokra_gemm_f32 attn out-proj [FA v2])",
+        )
+    }
+
+    /// M4-07-T08 FlashAttention **v3** fused-attention path (Hopper WGMMA;
+    /// `docs/adr/M4-07-fa-v3-hopper.md`). Chain shape is byte-for-byte the
+    /// FA v2 launcher's — q-proj GEMM → per-head {qh/vh/kh gather → **fused
+    /// kernel** → scatter} → out-proj GEMM — with the middle launch swapped
+    /// for `vokra_flash_attn_v3_causal_f32` (one warpgroup / 128 threads per
+    /// block, `BR3 = 64` query rows per block, 82 944 B dynamic shared
+    /// memory opted in at lazy-module init). Head parallelism stays the
+    /// host-side per-head loop + head-relative scratch reuse — deliberately
+    /// identical to [`Self::launch_flash_attn_v2`], never grid-folded on top
+    /// of it (ADR M4-07 §(b): one mechanism, no double cover).
+    ///
+    /// The `qh` gather pre-multiplies Q by `dims.scale` and the kernel
+    /// receives `scale = 1.0` — the same folding convention as FA v2, so the
+    /// score semantics stay single-sourced. `kh_t` scratch is reused as
+    /// NON-transposed `kh` (`[t_kv, hd]`), exactly like the FA v2 path.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::BackendUnavailable`] when the FA v3 lazy slot is not
+    /// `Ready` (a caller that sets `use_flash_attn_v3` without the probe
+    /// promise gets this **explicit** error — never a silent fallback,
+    /// FR-EX-08) or on a driver launch failure.
+    #[allow(dead_code)] // consumed by the T09 3-way dispatch commit of this WP
+    fn launch_flash_attn_v3(&self, dims: &AttnChainDims, ptrs: &AttnChainPtrs) -> Result<()> {
+        // Resolve the lazily-compiled kernel FIRST: on a non-Hopper device
+        // this is the explicit-refusal point (contract-violation callers
+        // included), before any launch is issued.
+        let fa_v3_kernel = self.fa_v3_function()?;
+
+        let (t_q, t_kv, d, n_head) = (dims.t_q, dims.t_kv, dims.d, dims.n_head);
+        let hd = d / n_head;
+
+        // Warpgroup tile constants — MUST match the kernel-side `FA3_BR` /
+        // `FA3_D` defines in `fa_v3::KERNELS_CUDA_FA_V3`.
+        const BR3_HOST: usize = 64;
+        let shared_bytes = crate::fa_v3::FLASH_ATTN_V3_MIN_SHARED_BYTES as c_uint;
+
+        let tq_hd_n = t_q * hd;
+        let tkv_hd_n = t_kv * hd;
+        let t_q_u = t_q as c_uint;
+        let t_kv_u = t_kv as c_uint;
+        let d_u = d as c_uint;
+        let hd_u = hd as c_uint;
+        let has_bias_q: c_uint = u32::from(dims.has_q_bias);
+        let has_bias_out: c_uint = u32::from(dims.has_out_bias);
+        let scale_v = dims.scale;
+        let one_v = 1.0f32;
+
+        // FA v3 kernel scalar args (`scale = 1.0`: Q pre-scaled in the qh
+        // gather, matching FA v2's numerics convention).
+        let t_q_i = t_q as c_int;
+        let t_kv_i = t_kv as c_int;
+        let hd_i = hd as c_int;
+        let q_offset_i = dims.q_offset as c_int;
+        let causal_b = dims.causal;
+        let fa_scale = 1.0f32;
+
+        let gemm_block = (BLOCK, BLOCK, 1);
+        let gemm_grid = |n: usize, m: usize| {
+            (
+                n.div_ceil(BLOCK as usize) as c_uint,
+                m.div_ceil(BLOCK as usize) as c_uint,
+                1,
+            )
+        };
+        let lin_block = (BLOCK_1D, 1, 1);
+        let lin_grid = |elems: usize| (elems.div_ceil(BLOCK_1D as usize) as c_uint, 1, 1);
+
+        // 1. q = xq · q_w (+q_bias) — identical to the decomposed / FA v2 paths.
+        let mut p_q: [*mut c_void; 8] = [
+            ptr_arg(&ptrs.xq),
+            ptr_arg(&ptrs.q_w),
+            ptr_arg(&ptrs.q_bias),
+            ptr_arg(&ptrs.q),
+            uint_arg(&t_q_u),
+            uint_arg(&d_u),
+            uint_arg(&d_u),
+            uint_arg(&has_bias_q),
+        ];
+        self.launch_async(
+            self.gemm,
+            gemm_grid(d, t_q),
+            gemm_block,
+            &mut p_q,
+            "cuLaunchKernel(vokra_gemm_f32 attn q-proj [FA v3])",
+        )?;
+
+        // 2. Per-head: gather → FA v3 → scatter (stream-ordered scratch reuse,
+        // the same pattern as the decomposed / FA v2 chains).
+        for h in 0..n_head {
+            let c0_u = (h * hd) as c_uint;
+
+            // qh[i,c] = q[i, c0+c] * scale — pre-scale so the kernel gets 1.0.
+            let mut p_qh: [*mut c_void; 7] = [
+                ptr_arg(&ptrs.q),
+                ptr_arg(&ptrs.qh),
+                uint_arg(&t_q_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+                f32_arg(&scale_v),
+            ];
+            self.launch_async(
+                self.col_gather,
+                lin_grid(tq_hd_n),
+                lin_block,
+                &mut p_qh,
+                "cuLaunchKernel(vokra_col_gather_f32 attn qh [FA v3])",
+            )?;
+            // vh[j,c] = v[j, c0+c].
+            let mut p_vh: [*mut c_void; 7] = [
+                ptr_arg(&ptrs.v),
+                ptr_arg(&ptrs.vh),
+                uint_arg(&t_kv_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+                f32_arg(&one_v),
+            ];
+            self.launch_async(
+                self.col_gather,
+                lin_grid(tkv_hd_n),
+                lin_block,
+                &mut p_vh,
+                "cuLaunchKernel(vokra_col_gather_f32 attn vh [FA v3])",
+            )?;
+            // kh[j,c] = k[j, c0+c] — NON-transposed gather into the `kh_t`
+            // scratch (the FA v3 kernel, like FA v2, consumes `[t_kv, hd]`).
+            let mut p_kh: [*mut c_void; 7] = [
+                ptr_arg(&ptrs.k),
+                ptr_arg(&ptrs.kh_t),
+                uint_arg(&t_kv_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+                f32_arg(&one_v),
+            ];
+            self.launch_async(
+                self.col_gather,
+                lin_grid(tkv_hd_n),
+                lin_block,
+                &mut p_kh,
+                "cuLaunchKernel(vokra_col_gather_f32 attn kh [FA v3])",
+            )?;
+            // FA v3 fused per-head launch: one warpgroup (128 threads) per
+            // BR3 = 64 query rows; head parallelism is the per-head loop
+            // (kernel is single-head via head-relative pointers).
+            let mut p_fa: [*mut c_void; 10] = [
+                ptr_arg(&ptrs.qh),
+                ptr_arg(&ptrs.kh_t), // reused: non-transposed kh, [t_kv, hd].
+                ptr_arg(&ptrs.vh),
+                ptr_arg(&ptrs.ctx_h),
+                int_arg(&t_q_i),
+                int_arg(&t_kv_i),
+                int_arg(&hd_i),
+                int_arg(&q_offset_i),
+                bool_arg(&causal_b),
+                f32_arg(&fa_scale),
+            ];
+            let fa_grid = (t_q.div_ceil(BR3_HOST) as c_uint, 1, 1);
+            let fa_block: (c_uint, c_uint, c_uint) = (128, 1, 1);
+            self.launch_async_shared(
+                fa_v3_kernel,
+                fa_grid,
+                fa_block,
+                shared_bytes,
+                &mut p_fa,
+                "cuLaunchKernel(vokra_flash_attn_v3_causal_f32 attn)",
+            )?;
+            // context[i, c0+c] = ctx_h[i,c].
+            let mut p_scatter: [*mut c_void; 6] = [
+                ptr_arg(&ptrs.ctx_h),
+                ptr_arg(&ptrs.context),
+                uint_arg(&t_q_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+            ];
+            self.launch_async(
+                self.col_scatter,
+                lin_grid(tq_hd_n),
+                lin_block,
+                &mut p_scatter,
+                "cuLaunchKernel(vokra_col_scatter_f32 attn [FA v3])",
+            )?;
+        }
+
+        // 3. out = context · out_w (+out_bias) — identical to the other paths.
+        let mut p_out: [*mut c_void; 8] = [
+            ptr_arg(&ptrs.context),
+            ptr_arg(&ptrs.out_w),
+            ptr_arg(&ptrs.out_bias),
+            ptr_arg(&ptrs.out),
+            uint_arg(&t_q_u),
+            uint_arg(&d_u),
+            uint_arg(&d_u),
+            uint_arg(&has_bias_out),
+        ];
+        self.launch_async(
+            self.gemm,
+            gemm_grid(d, t_q),
+            gemm_block,
+            &mut p_out,
+            "cuLaunchKernel(vokra_gemm_f32 attn out-proj [FA v3])",
         )
     }
 

@@ -128,6 +128,10 @@ pub use context::nvrtc_compile_for_arch;
 #[cfg(any(unix, windows))]
 #[doc(hidden)]
 pub use fa_v3::{FA_V3_FEASIBILITY_SNIPPET, KERNELS_CUDA_FA_V3};
+// M4-07-T08: the FA v3 scalar-geometry validator, public so the negative
+// (input-validation) tests stay green on CUDA-less hosts.
+#[cfg(any(unix, windows))]
+pub use fa_v3::flash_attn_v3_validate_args;
 // `CudaDecodeSession` is the M2 Phase-3b device-resident decoder-step driver
 // (the CUDA sibling of `vokra-backend-metal`'s `MetalDecodeSession`); re-exported
 // here so `vokra-models`' `Compute::new_decoder_step_session` (its Cuda arm)
