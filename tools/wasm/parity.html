@@ -3,8 +3,10 @@
      separate from the demo. Serve from the repo root with the COOP/COEP
      server:  node web/demo/serve.mjs   →  http://localhost:8788/tools/wasm/parity.html
 
-     Requires `scripts/build-wasm.sh harness` first (the simd128 artifact
-     WITH test entries). Gated skip (fabricated-pass prohibition): without a
+     Requires `scripts/build-wasm.sh all` first (web/dist = the simd128
+     artifact WITH test entries + web/pkg = the assembled glue this page
+     imports through web/pkg/index.js). Gated skip (fabricated-pass
+     prohibition): without a
      WebGPU adapter or cross-origin isolation the page reports SKIPPED with
      the reason; per-kernel legs compare WGSL outputs against the CPU oracle
      at atol = 0.01 (NFR-QL-01). The optional Whisper leg needs a

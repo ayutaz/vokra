@@ -88,47 +88,50 @@ do_check() {
     echo "== wasm32 check OK (root Cargo.lock unchanged)"
 }
 
-# --- harness: 2-artifact build of the Web entry crate --------------------------
+# --- harness / pkg: 2-artifact builds of the Web entry crate -------------------
 
-# $1 = extra cargo args (e.g. --no-default-features for the production pkg
-#      slice without the vokra_test_* kernel-parity exports).
+# $1 = destination dir; $2 = extra cargo args (e.g. --no-default-features for
+#      the production pkg slice without the vokra_test_* kernel-parity
+#      exports). The two feature slices land in DIFFERENT directories —
+#      web/dist keeps the test-entry artifacts the Node/browser harnesses
+#      drive, web/pkg gets the production exports-only artifacts — so a
+#      `pkg` run never clobbers the harness artifacts (`all` runs both).
 build_two_artifacts() {
-    local extra_args="${1:-}"
-    mkdir -p web/dist
+    local dest="$1"
+    local extra_args="${2:-}"
+    mkdir -p "$dest"
 
-    echo "== build base artifact (no SIMD) $extra_args"
+    echo "== build base artifact (no SIMD) -> $dest $extra_args"
     # shellcheck disable=SC2086  # word-splitting of extra cargo args is intended
     cargo build --release --target "$TRIPLE" -p vokra-wasm-harness $extra_args
-    cp "target/$TRIPLE/release/vokra_wasm_harness.wasm" web/dist/vokra_wasm_base.wasm
+    cp "target/$TRIPLE/release/vokra_wasm_harness.wasm" "$dest/vokra_wasm_base.wasm"
 
-    echo "== build simd128 artifact (RUSTFLAGS=-C target-feature=+simd128) $extra_args"
+    echo "== build simd128 artifact (RUSTFLAGS=-C target-feature=+simd128) -> $dest $extra_args"
     # A separate --target-dir keeps the two flag sets from thrashing each
     # other's incremental cache and keeps both artifacts addressable.
     # shellcheck disable=SC2086
     RUSTFLAGS="-C target-feature=+simd128" \
         cargo build --release --target "$TRIPLE" --target-dir target/wasm-simd128 \
         -p vokra-wasm-harness $extra_args
-    cp "target/wasm-simd128/$TRIPLE/release/vokra_wasm_harness.wasm" web/dist/vokra_wasm_simd128.wasm
+    cp "target/wasm-simd128/$TRIPLE/release/vokra_wasm_harness.wasm" "$dest/vokra_wasm_simd128.wasm"
 
     check_lock
-    ls -la web/dist/*.wasm
+    ls -la "$dest"/*.wasm
 }
 
 do_harness() {
-    build_two_artifacts ""
+    build_two_artifacts web/dist ""
 }
 
 # --- pkg: assemble the npm package layout (M4-01-T20) --------------------------
 
 do_pkg() {
     # Production slice: --no-default-features drops the `test-entries` feature
-    # so the shipped .wasm exports only the vokra_wasm_* session API.
-    build_two_artifacts "--no-default-features"
+    # so the shipped .wasm exports only the vokra_wasm_* session API. Built
+    # straight into web/pkg — web/dist (test-entry artifacts) stays intact.
+    build_two_artifacts web/pkg "--no-default-features"
 
     echo "== assemble web/pkg (npm layout)"
-    mkdir -p web/pkg
-    cp web/dist/vokra_wasm_base.wasm web/pkg/
-    cp web/dist/vokra_wasm_simd128.wasm web/pkg/
     cp crates/vokra-backend-webgpu/glue/vokra_webgpu.js web/pkg/
     cp crates/vokra-backend-webgpu/glue/vokra_worker.js web/pkg/
     cp LICENSE web/pkg/LICENSE
