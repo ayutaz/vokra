@@ -72,15 +72,20 @@ if [ "$total" -ne "$routed" ]; then
   fail=1
 fi
 
-# 4) NativeMethods.cs must define Lib with both the iOS and non-iOS branches.
-#    Guards against a rewrite that collapses the platform switch.
-if ! grep -qE '#if[[:space:]]+UNITY_IOS[[:space:]]*&&[[:space:]]*!UNITY_EDITOR' \
+# 4) NativeMethods.cs must define Lib with all three states of the platform
+#    switch (M4-02-T05): the static-link targets (iOS AND WebGL -> "__Internal",
+#    NFR-RL-03 + its WebGL 準用) and the shared-library default ("vokra").
+#    Guards against a rewrite that collapses the platform switch or drops one
+#    static-link platform — an iOS-branch drop would fail at App Store
+#    submission, a WebGL-branch drop at the Unity WebGL link; both fail HERE
+#    instead.
+if ! grep -qE '#if[[:space:]]+\(UNITY_IOS[[:space:]]*\|\|[[:space:]]*UNITY_WEBGL\)[[:space:]]*&&[[:space:]]*!UNITY_EDITOR' \
      "$NATIVE_METHODS_FILE"; then
-  echo "FAIL: NativeMethods.cs is missing the '#if UNITY_IOS && !UNITY_EDITOR' guard" >&2
+  echo "FAIL: NativeMethods.cs is missing the '#if (UNITY_IOS || UNITY_WEBGL) && !UNITY_EDITOR' guard" >&2
   fail=1
 fi
 if ! grep -qE 'internal const string Lib = "__Internal"' "$NATIVE_METHODS_FILE"; then
-  echo "FAIL: NativeMethods.cs is missing the iOS Lib = \"__Internal\" branch" >&2
+  echo "FAIL: NativeMethods.cs is missing the iOS/WebGL Lib = \"__Internal\" branch" >&2
   fail=1
 fi
 if ! grep -qE 'internal const string Lib = "vokra"' "$NATIVE_METHODS_FILE"; then
@@ -93,4 +98,4 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-echo "check-native-methods: OK (all DllImport route through NativeMethods.Lib; iOS/non-iOS branches present)"
+echo "check-native-methods: OK (all DllImport route through NativeMethods.Lib; iOS+WebGL __Internal / default vokra branches present)"

@@ -76,3 +76,7 @@ integrations/vokra-godot/pkg/
 /models/
 # npm pack output from local dry-runs.
 /web/pkg/*.tgz
+# Unity WebGL staticlib staged by scripts/build-unity-webgl-lib.sh (M4-02) —
+# native binaries are assembled by CD, never committed (CHANGELOG "Not
+# included"; only .gitkeep + the hand-authored .meta are tracked).
+/bindings/unity/com.vokra.unity/Plugins/WebGL/libvokra.a
