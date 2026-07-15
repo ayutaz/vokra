@@ -139,12 +139,12 @@ impl DenseLayer {
 
     /// `y = x @ weight + bias` for one frame (`x` length `in_dim`).
     fn forward_frame(&self, x: &[f32], out: &mut [f32]) {
-        for o in 0..self.out_dim {
+        for (o, out_o) in out.iter_mut().enumerate().take(self.out_dim) {
             let mut acc = self.bias[o];
-            for i in 0..self.in_dim {
-                acc += x[i] * self.weight[i * self.out_dim + o];
+            for (i, &xi) in x.iter().enumerate().take(self.in_dim) {
+                acc += xi * self.weight[i * self.out_dim + o];
             }
-            out[o] = acc;
+            *out_o = acc;
         }
     }
 }

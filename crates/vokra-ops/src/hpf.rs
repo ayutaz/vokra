@@ -68,7 +68,7 @@ pub fn hpf(input: &[f32], attrs: &HpfAttrs) -> Result<Vec<f32>> {
             attrs.cutoff_hz
         )));
     }
-    if !(attrs.q > 0.0) {
+    if attrs.q <= 0.0 || attrs.q.is_nan() {
         return Err(VokraError::InvalidArgument(format!(
             "hpf: Q {} must be > 0",
             attrs.q

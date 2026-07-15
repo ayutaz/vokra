@@ -311,9 +311,7 @@ fn dtw(cost: &[f32], n: usize, m: usize) -> (Vec<usize>, Vec<usize>) {
     // Backtrace from (n, m). Boundary rules (timing.py): `trace[0, :] = 2`
     // (at text=0 always advance time), `trace[:, 0] = 1` (at time=0 always
     // advance text).
-    for j in 0..stride {
-        trace[j] = 2;
-    }
+    trace[..stride].fill(2);
     for i in 0..=n {
         trace[i * stride] = 1;
     }
@@ -354,14 +352,14 @@ fn median_filter_row(row: &[f32], width: usize, out: &mut [f32]) {
     }
     let pad = width / 2;
     let mut window: Vec<f32> = Vec::with_capacity(width);
-    for center in 0..n {
+    for (center, o) in out.iter_mut().enumerate() {
         window.clear();
         for k in 0..width {
             let idx = center as isize + k as isize - pad as isize;
             window.push(row[reflect_index(idx, n)]);
         }
         window.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        out[center] = window[width / 2];
+        *o = window[width / 2];
     }
 }
 
@@ -582,7 +580,7 @@ mod tests {
     #[test]
     fn token_alignment_rejects_even_median_width() {
         let attn = CrossAttention {
-            weights: vec![0.0; 1 * 2 * 2],
+            weights: vec![0.0; 4], // n_head 1 * n_text 2 * n_audio 2
             n_head: 1,
             n_text: 2,
             n_audio: 2,

@@ -79,6 +79,9 @@ fn hpf_steady_state_matches_transfer_function() {
 }
 
 #[test]
+// pyloudnorm / BS.1770 analog-prototype constants transcribed verbatim (the
+// independent reference); keep the published precision.
+#[allow(clippy::excessive_precision, clippy::inconsistent_digit_grouping)]
 fn loudness_matches_bs1770_closed_form() {
     // A stationary sine's integrated LUFS has the exact closed form
     // −0.691 + 10·log10((A²/2)·|H_k(f)|²), where H_k is the K-weighting (shelf ×

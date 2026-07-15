@@ -71,6 +71,9 @@ fn biquad(x: &[f64], b: [f64; 3], a: [f64; 2]) -> Vec<f64> {
 }
 
 /// Applies the BS.1770 K-weighting (shelf → RLB high-pass) to `signal`.
+// The analog-prototype constants are transcribed verbatim from pyloudnorm /
+// ITU-R BS.1770 (documented reference values); keep the published precision.
+#[allow(clippy::excessive_precision, clippy::inconsistent_digit_grouping)]
 fn k_weight(signal: &[f32], fs: u32) -> Vec<f64> {
     let rate = fs as f64;
     // Stage 1 — high-shelf pre-filter (pyloudnorm/BS.1770 analog prototype).

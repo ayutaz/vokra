@@ -72,7 +72,7 @@ pub fn agc(input: &[f32], attrs: &AgcAttrs) -> Result<Vec<f32>> {
             "agc: target_level and limiter_ceiling must be in (0, 1]".into(),
         ));
     }
-    if !(attrs.max_gain >= 1.0) {
+    if attrs.max_gain < 1.0 || attrs.max_gain.is_nan() {
         return Err(VokraError::InvalidArgument(
             "agc: max_gain must be >= 1".into(),
         ));
