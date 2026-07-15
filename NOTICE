@@ -89,6 +89,18 @@ M4-06). This attribution covers the Kyutai Mimi weights consumed by those
 components as well: encoder, quantizer codebooks, and neural decoder
 weights all originate from the same CC-BY 4.0 Kyutai release named above.
 
+M4-06 additionally implements the Moshi language model natively — the
+Helium temporal transformer, the per-step-weight depformer, the
+inner-monologue text stream, and the full-duplex session runtime in
+crates/vokra-models/src/moshi/ (whisper.cpp-style re-implementation from
+the published kyutai-labs/moshi sources; no upstream code is copied).
+The Moshi LM weights (kyutai/moshiko-pytorch-bf16 `model.safetensors`)
+are likewise Kyutai CC-BY 4.0 — this attribution covers them, and the
+runtime additionally surfaces a deployer-facing attribution string
+(GGUF `vokra.provenance.attribution` -> `Session::attribution` /
+`vokra_model_attribution` / the vokra-cli banner) so downstream
+applications can meet the display obligation (FR-MD-09).
+
 This attribution is separate from the EU AI Act §50 AI-generated-audio
 disclosure obligation. The disclosure obligation is enforced at output
 time by the runtime's `WatermarkConfig` API and is orthogonal to this

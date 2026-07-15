@@ -1,0 +1,193 @@
+# Moshi real-checkpoint parity CI (M4-06-T25).
+#
+# Runs the staged Moshi parity harness
+# (`crates/vokra-models/tests/parity_moshi.rs` — backbone hidden / text
+# logits at FP32 atol=0.01 + bit-exact undelayed token streams) against
+# the real `kyutai/moshiko-pytorch-bf16` checkpoint: dump the upstream
+# staged reference with `tools/parity/moshi_dump.py real` (pinned moshi
+# package), convert the checkpoint with `vokra-convert --model moshi`
+# (BF16 → F32 exact), and point `VOKRA_MOSHI_PARITY_DIR` at the result.
+#
+# Design (M2 Phase 3 / parity-kokoro-real.yml discipline):
+#
+#   * Trigger: workflow_dispatch (owner-driven) + weekly cron + a narrow
+#     pull_request paths filter (moshi source / tests / converter /
+#     dumper / this workflow). Not a required check — HF flakiness must
+#     not block PRs; promotion is an owner call after consecutive greens.
+#
+#   * The checkpoint is ~15 GB (BF16 7B). The cron leg therefore
+#     **clean-skips** unless the repository variable
+#     `MOSHI_PARITY_ENABLE` is set to `1` (the T29/T30 owner flips it
+#     after weight sourcing) — an annotation says so explicitly; a
+#     workflow_dispatch run proceeds regardless (the dispatcher opted
+#     in). Fabricated pass 禁止: a skip is always visibly a skip.
+#
+#   * Pins: HF revision (env.MOSHIKO_REVISION — `main` until the T29
+#     sourcing pins a snapshot SHA) and the moshi package at the commit
+#     the ADR M4-06 §D2 primary sources were transcribed from
+#     (env.MOSHI_GIT_SHA, kyutai-labs/moshi main @ 2026-07-15 fetch).
+#
+#   * Python deps live in a venv; the final `git diff --exit-code
+#     Cargo.lock` step proves the zero-dep invariant (NFR-DS-02) held.
+#
+#   * Honest reporting: the harness prints hidden/logits max |Δ| and the
+#     bit-exact frame verdicts; a failure names the stage. The quality
+#     gate (moshi_quality_gate.rs) is deliberately NOT run here — its
+#     env-gated leg refuses (by design) until the shared Mimi module
+#     binds real weights (see that file's rustdoc).
+#
+# Initial workflow_dispatch = owner (M4-06-T30).
+
+name: parity-moshi-real
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays 06:00 UTC (after the kokoro/whisper parity crons).
+    - cron: "0 6 * * 1"
+  pull_request:
+    paths:
+      - "crates/vokra-models/src/moshi/**"
+      - "crates/vokra-models/tests/parity_moshi.rs"
+      - "crates/vokra-convert/src/models/moshi.rs"
+      - "tools/parity/moshi_dump.py"
+      - "tools/parity/moshi_inspect.py"
+      - ".github/workflows/parity-moshi-real.yml"
+
+env:
+  # `main` until the T29 owner sourcing pins a snapshot revision.
+  MOSHIKO_REPO: kyutai/moshiko-pytorch-bf16
+  MOSHIKO_REVISION: main
+  # kyutai-labs/moshi main at the ADR M4-06 §D2 transcription date
+  # (2026-07-15 fetch — loaders.py/_lm_kwargs etc.).
+  MOSHI_GIT_SHA: e6a55d2722a65870ef52a6c9f6ecfc0e90f38362
+  PARITY_STEPS: "12"
+
+jobs:
+  setup:
+    name: gate (checkpoint sourcing opt-in)
+    runs-on: ubuntu-latest
+    outputs:
+      run_parity: ${{ steps.decide.outputs.run_parity }}
+    steps:
+      - id: decide
+        env:
+          ENABLE_VAR: ${{ vars.MOSHI_PARITY_ENABLE }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run_parity=true" >> "$GITHUB_OUTPUT"
+            echo "dispatch run: proceeding (the dispatcher opted in to the ~15 GB fetch)"
+          elif [ "${ENABLE_VAR}" = "1" ]; then
+            echo "run_parity=true" >> "$GITHUB_OUTPUT"
+            echo "MOSHI_PARITY_ENABLE=1: proceeding"
+          else
+            echo "run_parity=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=parity-moshi-real clean skip::checkpoint sourcing is the M4-06 T29 owner step — set the repository variable MOSHI_PARITY_ENABLE=1 (or workflow_dispatch) to run the ~15 GB real-checkpoint parity. This is a clean gated skip, not a pass (fabricated pass 禁止)."
+          fi
+
+  parity:
+    name: staged parity vs kyutai/moshiko (real checkpoint)
+    needs: setup
+    if: needs.setup.outputs.run_parity == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Cache HF hub
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-moshiko-${{ env.MOSHIKO_REVISION }}
+
+      - name: Parity venv (torch + pinned moshi package)
+        run: |
+          python3 -m venv .venv-moshi
+          . .venv-moshi/bin/activate
+          python -m pip install --upgrade pip
+          # CPU torch keeps the runner lean; the dump is argmax/deterministic.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install "huggingface_hub" "safetensors" "sentencepiece" "sphn" "einops"
+          pip install "git+https://github.com/kyutai-labs/moshi.git@${MOSHI_GIT_SHA}#subdirectory=moshi"
+
+      - name: Fetch checkpoint + tokenizer (pinned revision)
+        run: |
+          . .venv-moshi/bin/activate
+          python - <<'PY'
+          import os
+          from huggingface_hub import hf_hub_download
+          repo = os.environ["MOSHIKO_REPO"]
+          rev = os.environ["MOSHIKO_REVISION"]
+          for f in ["model.safetensors", "tokenizer_spm_32k_3.model",
+                    "tokenizer-e351c8d8-checkpoint125.safetensors"]:
+              p = hf_hub_download(repo, f, revision=rev)
+              print(f, "->", p)
+          PY
+
+      - name: Verify tensor manifest against the committed T02 fixture
+        run: |
+          . .venv-moshi/bin/activate
+          python - <<'PY'
+          import json, os, struct
+          from huggingface_hub import hf_hub_download
+          path = hf_hub_download(os.environ["MOSHIKO_REPO"], "model.safetensors",
+                                 revision=os.environ["MOSHIKO_REVISION"])
+          with open(path, "rb") as f:
+              (n,) = struct.unpack("<Q", f.read(8))
+              header = json.loads(f.read(n))
+          live = {k: {"dtype": v["dtype"], "shape": v["shape"]}
+                  for k, v in header.items() if k != "__metadata__"}
+          committed = json.load(open("tests/parity/moshi/moshiko_tensor_manifest.json"))
+          committed.pop("__metadata__", None)
+          if live != committed:
+              raise SystemExit(
+                  "tensor manifest drifted from tests/parity/moshi/"
+                  "moshiko_tensor_manifest.json — upstream re-upload? Re-run "
+                  "tools/parity/moshi_inspect.py and review before trusting parity.")
+          print(f"manifest OK ({len(live)} tensors)")
+          PY
+
+      - name: Dump the staged upstream reference (argmax, deterministic)
+        run: |
+          . .venv-moshi/bin/activate
+          mkdir -p parity-out
+          python tools/parity/moshi_dump.py real --out parity-out --steps "${PARITY_STEPS}" \
+            --hf-repo "${MOSHIKO_REPO}"
+
+      - name: Convert the checkpoint (BF16 → F32 exact) + embed the tokenizer
+        run: |
+          . .venv-moshi/bin/activate
+          CKPT=$(python - <<'PY'
+          import os
+          from huggingface_hub import hf_hub_download
+          print(hf_hub_download(os.environ["MOSHIKO_REPO"], "model.safetensors",
+                                revision=os.environ["MOSHIKO_REVISION"]))
+          PY
+          )
+          TOK=$(python - <<'PY'
+          import os
+          from huggingface_hub import hf_hub_download
+          print(hf_hub_download(os.environ["MOSHIKO_REPO"], "tokenizer_spm_32k_3.model",
+                                revision=os.environ["MOSHIKO_REVISION"]))
+          PY
+          )
+          cargo run --release -p vokra-convert -- --model moshi \
+            --input "$CKPT" --config "$TOK" --output parity-out/model.gguf
+
+      - name: Run the staged parity harness
+        run: |
+          VOKRA_MOSHI_PARITY_DIR="$PWD/parity-out" \
+            cargo test --release -p vokra-models --test parity_moshi -- --nocapture \
+            | tee parity-summary.txt
+          {
+            echo "## Moshi staged parity (real checkpoint)"
+            echo '```'
+            grep -E "moshi staged parity|test .* \.\.\." parity-summary.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Zero-dep invariant held (NFR-DS-02)
+        run: git diff --exit-code Cargo.lock
