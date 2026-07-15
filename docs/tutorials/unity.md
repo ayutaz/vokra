@@ -11,7 +11,9 @@ AOT compilation and iOS static linking constraints.
 - **Unity 2022.3 LTS** or newer (Unity 6 verified via nightly IL2CPP
   smoke test in `.github/workflows/nightly-il2cpp.yml`).
 - Target platforms: macOS, Windows, Linux, iOS, Android (Editor +
-  Standalone / Player). WebGL is out of scope for `0.1.x`.
+  Standalone / Player). WebGL: a staticlib link path landed in v1.0-rc (M4-02, via
+  `vokra_session_create_from_bytes`); Unity WebGL CI verification is
+  pending `secrets.UNITY_LICENSE`.
 - For iOS builds: Xcode 14+; for Android builds: Android SDK / NDK
   matching your Unity install.
 

@@ -12,12 +12,20 @@ therefore not frozen — see the `[1.0.0-rc.1]` ABI-policy notes below.
 
 ## [Unreleased]
 
-Milestone: v0.5 (M2). CC-side implementation is complete for the WPs
-listed below; owner-side verification (real-device RTF measurement,
-license sign-off, PyPI / Unity secret provisioning) is tracked in
-`docs/m2-owner-verification-checklist.md`.
+This section accumulates **all** untagged feature deltas — **v0.5 (M2) +
+v0.9 (M3) + v1.0-rc (M4)** — that roll into `[1.0.0-rc.1]`. CC-side
+implementation is complete for the WPs listed below; owner-side
+verification (real-device RTF / GPU / NPU measurement, real-weight
+parity flip-the-switch, license sign-off, PyPI / Unity / npm / CDN
+provisioning) is tracked in the per-milestone owner checklists
+(`docs/m2-owner-verification-checklist.md`,
+`docs/m3-owner-verification-checklist.md`,
+`docs/m4-owner-verification-checklist.md`). Added entries are grouped by
+milestone below.
 
 ### Added
+
+#### v0.5 (M2)
 
 - **Metal backend** (M2-01): hand-written `objc_msgSend` FFI + MSL
   compute kernels, no `metal-rs` or `MPS`/`MPSGraph`/`MLX` dependency
@@ -35,7 +43,7 @@ license sign-off, PyPI / Unity secret provisioning) is tracked in
 - **CUDA Flash-Attention v2** (`vokra_flash_attn_v2_causal_f32`): fused
   causal-attention kernel with online-softmax rescale, `Br=16`, `Bc=64`,
   `grid.z = n_head` for inter-head parallelism. FA v3 (Hopper WGMMA /
-  TMA) is deferred to v1.5+.
+  TMA) shipped in v1.0-rc (M4-07), confined to `vokra-backend-cuda`.
 - **iOS build scaffold** (M2-02): 2-slice XCFramework (device arm64 +
   Simulator arm64/x86_64) built by `scripts/build-ios.sh`; Swift Package
   (`Package.swift`) exposes the Clang module. `#[cfg(target_os = "ios")]
@@ -94,6 +102,156 @@ license sign-off, PyPI / Unity secret provisioning) is tracked in
   `.ja.md`) — from ONNX Runtime / whisper.cpp / sherpa-onnx / faster-whisper
   / piper; `docs/tutorials/{unity,ios,python}.{md,ja.md}` —
   per-platform tutorials.
+
+#### v0.9 (M3)
+
+- **CUDA backend complete** (M3-01): graph-executor extended with the
+  decoder primitives (Gemv / Softmax / SoftmaxCausal / LayerNorm / Gelu /
+  Conv1D), FA v2 `compute_89` pin, an op-coverage test, a long-form
+  decoder sanity dumper, and the `gpu-cuda-rtf.yml` scaffold. The formal
+  always-on RTF < 0.10 gate is deferred to a self-hosted runner (M2-14 +
+  M3-01 5% regression gate); the vast.ai N=10 reference (2026-07-10)
+  recorded the decomposed leg at mean 0.766 / CV 0.024 and the gated FA v2
+  leg at mean 0.782 / CV 0.024 (honest negative: the `FA_V2_MIN_TQ=16`
+  gate does not fire at decoder-step `t_q=1`).
+- **Vulkan backend** (M3-02): new `vokra-backend-vulkan` crate, opt-in
+  `vulkan` feature, raw `dlopen` FFI (no binding crate), a runtime object
+  stack (device / command pool / descriptor set / pipeline / memory /
+  buffer), a SHA-256-pinned SPIR-V manifest, and end-to-end
+  `OpKind::Copy` / `Add` dispatch. Honest partial: the only real `.spv`
+  blobs are the hand-crafted `copy_f32` / `add_f32`; further kernels await
+  owner-side `glslc` compilation (completed in M4-13).
+  `gpu-vulkan-parity.yml` scaffolded (workflow_dispatch + weekly cron, not
+  a required check yet).
+- **paged KV cache** (M3-03): 3D `[time, stream, codebook]` logical
+  addressing, `block_size` 4 or 2 (audio-rate aligned), time-dimension
+  paging with contiguous codebooks, a `KvElement` trait +
+  `GpuPagedKvCacheOps` seam, no hot-path malloc / free.
+- **KV-cache quantization Q4_0 / Q5_0 / Q8_0** (M3-04): plus a
+  `KvQuantVerifyReport` hook and a `KvQuantDequantGemvOps` trait with CUDA
+  NVRTC PTX + Metal MSL fused dequant-GEMV kernels (Apple M1
+  max |Δ| = 5.245e-6 vs host over 8 shapes × 3 formats).
+- **`flow_sampler` + ODE solvers** (M3-05): a runtime function (not a
+  graph node) with 5 solvers (DDIM / DPM++ / Euler / Heun / Flow ODE), 3
+  cfg modes (none / split_batch / dual_forward), and 3 schedules (linear /
+  sway / epss); step-count / CFG changes need no model re-conversion
+  (FR-EX-10).
+- **`mimi_rvq` codec** (M3-06): RVQ decode subgraph (Mimi, for CosyVoice2)
+  with a Mimi NOTICE (CC-BY 4.0 attribution) and an EnCodec model-zoo
+  exclusion gate (`scripts/compliance/check-encodec-exclusion.sh`). A
+  Metal / CUDA GPU seam was added later (silent CPU fallback still
+  forbidden, FR-EX-08).
+- **`hifigan_generator` op** (M3-07): FP32 / FP16 parity; the INT8 path is
+  opt-in and cannot be enabled without per-channel calibration + a
+  spectral check.
+- **`length_conditioning` op** (M3-08): F5-TTS / CosyVoice2-style
+  target-duration conditioning, kept distinct from `duration_expander` in
+  the IR.
+- **CosyVoice2** (M3-09): native reimplementation module tree — text
+  encoder, Flow Matching + chunk-aware CFM, Mimi bridge, and a
+  Mistral-style LLM backbone (RoPE / GQA / SwiGLU / RMSNorm) with
+  `forward` / `step` / `greedy_decode`, a GGUF converter, and a
+  `parity::assert_vs_hf_reference` flip-the-switch harness. Real HF
+  checkpoint parity + streaming-latency / MEL-loss / UTMOS validation are
+  owner-gated.
+- **Voxtral** (M3-10): native Mistral-flavored ASR / S2S — audio encoder,
+  a text decoder with KV cache, a SentencePiece BPE tokenizer, a 30-s
+  streaming driver, a pluggable audio adapter (`AdapterKind`
+  None / Linear / Mlp / DownsampleLinear) via a `--adapter-config` JSON
+  side-car, beam search + n-best (GNMT length penalty, no-repeat-ngram),
+  and Metal / CUDA decode sessions. The Whisper-compatible server endpoint
+  returns 200. The real adapter side-car + WER measurement are owner-gated.
+- **Godot GDExtension** (M3-11): a `vokra-godot` excluded workspace, raw
+  `gdextension_interface.h` FFI (no `godot-cpp`), Godot 4.3 ClassDB
+  registration for `VokraSession` / `VokraStream` with `catch_unwind`
+  panic → Godot Error trampolines, Variant unpack + real dispatch, a
+  5-target cross-build script + `godot-crossbuild.yml` + a release
+  packaging job + a `check-godot-package-no-nvidia.sh` compliance scanner,
+  and asr_demo / tts_demo scaffolds. Real in-editor verification (T19) +
+  the WP-close PR (T20) are owner-gated.
+- **piper-plus GPU backends** (M3-12): the M0 native MB-iSTFT-VITS2
+  implementation now runs on the Metal / CUDA Compute seam
+  (`synthesize_with_intermediates` with explicit deterministic backend
+  selection); no silent CPU fallback (FR-EX-08).
+- **RISC-V RVV 1.0** (M3-13): a runtime dispatch path + `vec_add_f32`
+  intrinsics (SpacemiT K1 / Banana Pi BPI-F3 class) + a CI cross-build
+  assembly check. RVV 0.7.1 fallback is M4-08.
+- **barge-in** (M3-14): `Stream::interrupt()` + the
+  `vokra_stream_interrupt` C ABI symbol; in-flight audio output is flushed
+  immediately.
+- **`vokra-server` multi-session** (M3-15): a concurrent-stream scheduler
+  over the paged KV cache, Voxtral / Whisper beam + n-best surfaced over
+  HTTP (`no_repeat_ngram` honored core-side), and TTS-latency bench hooks.
+  The in-process FakeSynth floor is measured (http 87 µs / TTFA 34 µs);
+  the real-network 75 ms budget is owner-measured.
+- **ABI changelog infrastructure** (M3-16): `docs/abi-changelog.md` + the
+  `scripts/check-abi-changelog.sh` gate, an m0 anchor
+  (`docs/abi/vokra.h.m0-anchor.symbols`), a Rust public-api snapshot
+  (`docs/abi/vokra-rust-public-api.v0.9.list`), and diff tools. The C ABI
+  freeze does **not** fire here (it fires at v1.0 GA / M5-13).
+- **`prosody_control` unified API** (M3-17): a pitch / speed / pause /
+  emotion surface + trait; the v0.9 scope is CosyVoice2 instruction
+  control.
+
+#### v1.0-rc (M4)
+
+All 20 M4 work-packages reached CC-side terminal on 2026-07-15
+(`docs/tickets/m4/README.md`); real-weight parity, real-hardware runs,
+license sign-off, and owner ADR decisions are pending
+(`docs/m4-owner-verification-checklist.md`).
+
+- **WebGPU + WASM backend** (M4-01): browser Whisper base over a raw
+  WebGPU extern-import shim (`wgpu` deliberately **not** adopted, to
+  preserve the zero-external-dependency invariant), a 2-artifact WASM
+  SIMD128 CPU path, and an `@vokra/web` npm package with CD.
+- **Unity WebGL link** (M4-02): a staticlib link path + the
+  `vokra_session_create_from_bytes` C ABI symbol (load a model from a
+  memory buffer, for WebGL). `secrets.UNITY_LICENSE` provisioning is
+  owner-side.
+- **`aec` op** (M4-03): a SpeexDSP `mdf.c` (MDF / AUMDF) Rust port with a
+  time-tagged far-end reference queue, NOTICE section 7, and the
+  `vokra_aec_*` C ABI. Completed first, since CSM / Moshi depend on it.
+- **RVQ codec completion** (M4-04): `dac_rvq` (greenfield), the
+  `encodec_rvq` code path (weights excluded, research flag), and Mimi
+  multi-stream.
+- **Sesame CSM-1B** (M4-05): a Llama-3.2-flavored backbone + depth
+  transformer + the Mimi neural chain (encoder + neural decoder in
+  `crates/vokra-models/src/mimi/`, shared with Moshi). Apache-2.0;
+  real-weight parity is an owner flip-the-switch harness.
+- **Moshi full-duplex** (M4-06): a Helium temporal transformer + per-step
+  depformer + inner-monologue text stream + a full-duplex session runtime,
+  plus the `vokra_s2s_duplex_*` and `vokra_model_attribution` C ABI (Moshi
+  / Mimi weights are Kyutai CC-BY 4.0, attribution required; NOTICE
+  section 5, `vokra.provenance.attribution` GGUF chunk). Apache-2.0 code /
+  CC-BY 4.0 weights; real-weight parity is an owner flip-the-switch
+  harness.
+- **FlashAttention v3** (M4-07): a Hopper WGMMA / TMA path, confined to
+  `vokra-backend-cuda` (enforced by
+  `scripts/check-fa-v3-confinement.sh`). The real Hopper H100 bakeoff is
+  owner-side.
+- **RISC-V RVV 0.7.1 fallback dispatch** (M4-08): LicheePi 4A (C910) /
+  Milk-V Duo (C906) class; real-hardware runs are owner-side.
+- **G2P policy ADR** (M4-09): the decision framework is drafted; the owner
+  decision section is intentionally left open.
+- **MLIR / StableHLO re-evaluation ADR** (M4-10): the evaluation is
+  drafted; the owner judgment section is intentionally left open.
+- **All-platform support matrix** (M4-11):
+  `docs/platform-support/v1.0-rc-support-matrix.md` (50 anchors, the
+  `scripts/check-platform-support.sh` gate) confirming Windows / macOS /
+  Linux / Android / iOS / Web official support.
+- **v1.0-rc ABI baseline snapshot** (M4-12): a recorded, diffable baseline
+  of the C ABI (33 exported functions + 11 typedefs,
+  `docs/abi/vokra.h.v1.0-rc-baseline.symbols` + the paired Rust surface)
+  with updated diff-tool anchors. **Advisory, not a freeze** — the IF-01
+  freeze fires at v1.0 GA (M5-13); see the `[1.0.0-rc.1]` ABI-policy notes
+  below.
+- **Vulkan complete** (M4-13, M3-02 carry-over): runtime + dispatch
+  completion. Honest partial — the only real `.spv` blobs are still the
+  hand-crafted `copy_f32` / `add_f32`; MatMul / Mul / Softmax etc. await
+  owner-side `glslc` compilation.
+- **Whisper family small / medium / turbo** (M4-14, M2-06 carry-over): a
+  shape-driven converter, a per-size atol lookup, and a 3-size parity CI
+  matrix. Real checkpoints + weight sign-off are owner-side.
 - **CPU + Vulkan-only build target** (M4-15): `--no-default-features
   --features vulkan` builds of `vokra-capi` (the shipped cdylib) and
   `vokra-cli`; the `metal` / `cuda` backends stay out of the dependency
@@ -105,7 +263,27 @@ license sign-off, PyPI / Unity secret provisioning) is tracked in
   section (`scripts/gen-notice-cpu-vulkan-only.sh`), and a deterministic
   SPDX 2.3 SBOM is generated per build (`scripts/sbom/generate_spdx.py`).
   No new C ABI symbol: the build flavor is identified by build-time
-  metadata only (SBOM / NOTICE / artifact name).
+  metadata only (SBOM / NOTICE / artifact name). The critical-safe
+  (medical / automotive / defense) market claim stays in M5.
+- **FSQ codec** (M4-16): `wavtokenizer_vq` + `xcodec2_fsq` ops
+  (synthetic-weight parity), with metadata marked EXPERIMENTAL.
+  `wfst_decode` + SynthID stay in M5.
+- **CPU ISA server tier** (M4-17): AVX-512 / VNNI / BF16 + AVX-VNNI
+  256-bit + ARM64 dotprod / i8mm / bf16 kernels, `IsaPath`
+  `#[non_exhaustive]`. AMX is split to M5; perf is cloud-VM advisory (no
+  standing runner).
+- **UTMOS eval harness** (M4-18): a skeleton + an `AudioMosMetric` trait +
+  a `parity_utmos` harness. The UTMOS weight + license are an owner
+  kickoff gate (currently **NO-GO-defer**, so the WP may defer to a
+  v1.0.x patch); DNSMOS is license-fail-closed.
+- **Wyoming server completion** (M4-19, M2-09 completion): accept-loop /
+  synthesize-dispatch / multi-session / barge-in wiring + a protocol e2e.
+  The public endpoint is a protocol-tracking / experimental tier (outside
+  the v1.0 semver / IF-01 surface).
+- **audio op subset** (M4-20): `beam_search` word-level timestamps (DTW),
+  `speaker_verify`, and `denoise` (DeepFilterNet topology, NOTICE section
+  8) + `agc` / `hpf` / `loudness_norm`. BigVGAN / CTC / RNN-T / diarize
+  stay in M5 (mechanism anchors recorded).
 
 ### Changed
 

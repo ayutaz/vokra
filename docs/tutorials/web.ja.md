@@ -63,6 +63,8 @@ await session.close();
 | `{ backend: "cpu" }`（既定） | WASM CPU パス。特別なヘッダ不要でどこでも動作。 |
 | `{ backend: "webgpu" }` | cross-origin isolation **と** WebGPU adapter の両方が必要。欠けている場合は**理由を明記したエラーで reject** — 裏で CPU に落ちることはありません。CPU で動かすのは呼び出し側の明示的な `"cpu"` 選択です。 |
 
+エラーメッセージには対処法（下記 §5 の COOP/COEP 配備、または WebGPU 対応ブラウザ）が明記されます。
+
 ## 5. COOP/COEP 配備（`webgpu` に必須）
 
 WebGPU の readback（`mapAsync`）は async のみ、Vokra の推論ループは同期です。

@@ -44,7 +44,7 @@ the M2-09 ticket spec (`docs/tickets/m2/M2-09-vokra-server`).
   either 501 Not Implemented with an explicit error body or a
   clearly-marked placeholder string; final choice is made in T09.
 - **No multi-session serving (FR-SV-06).** v0.5 is per-request single
-  model selection. FR-SV-06 is a v1.0 concern.
+  model selection. FR-SV-06 is a v0.9 concern (M3-15; formerly labelled v1.0).
 - **No watermark / C2PA embedding.** Dropped by the client on
   2026-07-04; this crate holds forward-compat hooks only, wired into
   the registry (T21) for future re-enablement in M2-13.

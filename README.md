@@ -8,8 +8,10 @@ in Rust as an alternative to ONNX / ONNX Runtime for speech workloads.
 
 - **Pronunciation**: "vo-krah" (English) / 「ヴォクラ」 (Japanese)
 - **License**: [Apache-2.0](LICENSE)
-- **Status**: **v0.1 spike, under active development** — pre-release; APIs,
-  file formats, and model coverage are unstable and incomplete.
+- **Status**: **pre-release, under active development** — v0.5 (M2) and v0.9
+  (M3) are merged to `main`; v1.0-rc (M4) feature work is complete on the
+  development branch (owner verification pending). The only tagged release is
+  `v0.1.0`; APIs, file formats, and model coverage are unstable and incomplete.
 
 ## What Vokra is
 
@@ -48,10 +50,11 @@ Key design points:
 
 ## Status and design documents
 
-The v0.1 spike (Rust scaffold, GGUF loader, STFT/iSTFT/mel ops, Silero VAD,
-Whisper base, piper-plus native TTS, CPU backend, C ABI, Unity demo) is
-complete, and v0.5 (GPU) work is well underway. Nothing is ready for
-production use yet, but the following are implemented and validated:
+The v0.1 spike and v0.1 MVP are complete; **v0.5** (Metal / CUDA GPU backends)
+and **v0.9** (CUDA-complete, Vulkan, CosyVoice2, Voxtral, RVV 1.0) are merged to
+`main`, and **v1.0-rc** (M4: WebGPU/WASM, Sesame CSM-1B, Moshi, all-platform
+support) feature work is complete on the development branch. Nothing is ready
+for production use yet, but the following are implemented and validated:
 
 - **CPU speech stack**: Silero VAD, Whisper (base…large-v3, with an embedded
   detokenizer for correct transcription), and piper-plus native TTS with the
@@ -123,9 +126,9 @@ indications only** ("目安"), not commitments.
 |---|---|---|
 | v0.1 spike | 1.5-2 months | Rust scaffold, GGUF loader + `vokra.*` metadata, STFT/iSTFT/mel ops, Silero VAD, Whisper base, piper-plus native TTS, CPU backend (AVX2/NEON), C ABI, Unity demo, public repo + CI gates — **done** |
 | v0.1 MVP | 1.5-2.5 months | K-quant loader, engine, streaming, resample, `vokra-cli` / `vokra-eval`, real 8-language G2P wiring, native CAM++ zero-shot cloning, `vokra-mmap` — **done** |
-| **v0.5** (current) | 2.5-4 months | Metal + CUDA backends (graph evaluator + per-model GPU dispatch; Whisper end-to-end on both, validated on M1 / RTX 4090), Whisper large-v3 conversion + tokenizer, whole-encoder and per-decoder-step device residency (large-v3 RTF < 0.15 on RTX 4090, measured 0.081-0.115), `bench --backend`. **In progress**; remaining: Kokoro-82M, server API |
-| v0.9 | 4-5 months | CUDA complete, Vulkan, CosyVoice2, Voxtral, RVV 1.0 baseline |
-| v1.0-rc | 4-5 months | WebGPU/WASM (**landed**: browser Whisper base over a raw WebGPU import shim + WASM SIMD128 2-artifact CPU path, npm package CD — see [docs/tutorials/web.md](docs/tutorials/web.md)), Sesame CSM-1B, Moshi (full-duplex + AEC), all-platform official support complete |
+| v0.5 | 2.5-4 months | Metal + CUDA backends (graph evaluator + per-model GPU dispatch; Whisper end-to-end on both, validated on M1 / RTX 4090), Whisper large-v3 conversion + tokenizer, whole-encoder and per-decoder-step device residency (large-v3 RTF < 0.15 on RTX 4090, measured 0.081-0.115), Kokoro-82M, `vokra-server` (4 HTTP compatibility APIs), `bench --backend` — **done** (merged to `main`) |
+| v0.9 | 4-5 months | CUDA complete, Vulkan, CosyVoice2, Voxtral, RVV 1.0 baseline — **done** (merged to `main`) |
+| **v1.0-rc** (current) | 4-5 months | WebGPU/WASM (**landed**: browser Whisper base over a raw WebGPU import shim + WASM SIMD128 2-artifact CPU path, npm package CD — see [docs/tutorials/web.md](docs/tutorials/web.md)), Sesame CSM-1B, Moshi (full-duplex + AEC), all-platform official support — **feature-complete on the development branch** (owner verification pending) |
 | v1.0 GA | 8+ months | CoreML (ANE) / QNN delegates, MCU tier re-evaluation, commercial GA, C ABI freeze (semver compliance from v1.0) |
 
 Cumulative estimate to v1.0 GA: **20-25 months**. Version labels were
@@ -206,7 +209,7 @@ The official model zoo distributes **Apache-2.0 / MIT weights only**. See
 | Model | Task | License (code / weights) | Commercial use | Planned |
 |---|---|---|---|---|
 | Silero VAD v5 | VAD | MIT / MIT | Yes | v0.1 MVP |
-| Whisper base/small/medium/large-v3/turbo | ASR | MIT / MIT | Yes | v0.1 MVP (base), v0.5 (large-v3/turbo) |
+| Whisper base/small/medium/large-v3/turbo | ASR | MIT / MIT | Yes | v0.1 MVP (base), v0.5 (large-v3), v1.0-rc (small/medium/turbo) |
 | piper-plus | TTS | MIT / MIT | Yes | v0.1 spike (native implementation) |
 | Kokoro-82M | TTS | Apache-2.0 / Apache-2.0 | Yes | v0.5 |
 | CosyVoice2 | TTS / S2S | Apache-2.0 / Apache-2.0 | Yes | v0.9 |

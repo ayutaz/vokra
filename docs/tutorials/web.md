@@ -48,7 +48,7 @@ const model = await (await fetch("/models/whisper-base.gguf")).arrayBuffer();
 const session = await createSession(model, { backend: "cpu" }); // or "webgpu"
 
 const wav = await (await fetch("/audio/jfk-30s.wav")).arrayBuffer(); // 16 kHz mono PCM16
-const { text, rtf, wallMs } = await session.transcribe(wav);
+const { text, rtf } = await session.transcribe(wav);
 console.log(text, `RTF ${rtf.toFixed(3)}`);
 
 await session.close();

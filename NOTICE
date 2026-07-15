@@ -147,6 +147,7 @@ under tests/parity/aec/. The far-end reference queue
 (crates/vokra-core/src/stream/aec_ref.rs) is an original Vokra design and
 not derived from SpeexDSP.
 
+--------------------------------------------------------------------------
 8. DeepFilterNet (Rikorose) — MIT attribution (M4-20 denoise op)
 --------------------------------------------------------------------------
 The M4-20 `denoise` operator (crates/vokra-ops/src/denoise.rs, FR-OP-61)

@@ -1,6 +1,6 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
-**最終更新**: 2026-07-04（M2-13: research flag enforcement 機構の実装を §3 末尾に追記 / M1-02: GGUF K-quant + safetensors runtime direct-load のフォーマット参照を追記 / M0-08: §3 CAM++ 行を Vokra が実際に変換対応した具体ソース `ayousanz/campplus-onnx`（上流 `iic/speech_campplus`）に更新 / 2026-07-06: §2・§6 の backend binding crate（cudarc/metal-rs）を「実装は不採用＝手書き生 FFI」に、§2/§5 G2P を実装済 `integrations/vokra-piper-g2p` に、§6 CUDA を no-silent-fallback（explicit `BackendUnavailable`）に現物実装と整合）
+**最終更新**: 2026-07-04（M2-13: research flag enforcement 機構の実装を §3 末尾に追記 / M1-02: GGUF K-quant + safetensors runtime direct-load のフォーマット参照を追記 / M0-08: §3 CAM++ 行を Vokra が実際に変換対応した具体ソース `ayousanz/campplus-onnx`（上流 `iic/speech_campplus`）に更新 / 2026-07-06: §2・§6 の backend binding crate（cudarc/metal-rs）を「実装は不採用＝手書き生 FFI」に、§2/§5 G2P を実装済 `integrations/vokra-piper-g2p` に、§6 CUDA を no-silent-fallback（explicit `BackendUnavailable`）に現物実装と整合 / 2026-07-15: §4 音声処理ライブラリ表の Vokra 採用時期ラベルを §3 + M4 実装状況と整合（denoise=v1.0-rc/M4-20、wfst=v1.0 GA/M5、C2PA embedding は deferred）、§3 Bark 行を post-v1.0 GA に更新、§3 Matcha-TTS 行の配布ラベルを「★ post-v1.0 GA」に更新（Bark と同 tier の齟齬解消、FACT SHEET MODELS 整合）、§2 wgpu 行を「実装は不採用」（M4-01 raw WebGPU extern-import shim、NFR-DS-02 zero-dep）に更新し stale label `v0.1-v1.5` を除去）
 **目的**: Vokra が依存するすべての Rust crate、モデル weight、音声 codec、vocoder、辞書、G2P、audio 前処理ライブラリのライセンスを列挙し、Apache 2.0 core との互換性、Unity/Godot Asset Store 配布可否、商用ゲーム組込可否を明示する。
 
 **運用**:
@@ -30,7 +30,7 @@
 |-------|----------|-----|------------|-----|
 | **std** | Apache 2.0 / MIT | Rust 標準 | ○ | |
 | **rayon** | Apache 2.0 / MIT | work-stealing thread pool | ○ | libomp/OpenMP は使わない |
-| **wgpu** | Apache 2.0 / MIT | WebGPU/Vulkan/Metal/DX12 backend | ○ | v0.1-v1.5 |
+| **wgpu** | Apache 2.0 / MIT | WebGPU/Vulkan/Metal/DX12 backend | ○ | **実装は不採用** — WebGPU backend は wgpu を使わず、raw WebGPU extern-import shim を手書き実装（M4-01、NFR-DS-02 zero-dep、cudarc/metal-rs と同じ生 FFI 方針） |
 | **cudarc** | Apache 2.0 / MIT | CUDA driver API bindings | ○ | **実装は不採用** — CUDA backend は binding crate（cudarc/cust/rustacuda）を使わず、Driver API + NVRTC を手書き生 FFI で `dlopen`（`libcuda`/`libnvrtc`）実装（NFR-DS-02 zero-dep、`third_party/NVIDIA-EULA.md` Binding-crate note）。cudart/cudnn/cublas は bundle せず system install 検出のみ |
 | **metal-rs** | MIT | Metal API bindings | ○ | **実装は不採用** — Metal backend は binding crate（metal-rs/objc2/objc/core-foundation）を使わず、Obj-C/Metal を手書き生 FFI（`#[link(kind="framework")]`）実装（NFR-DS-02 zero-dep） |
 | **ash** | Apache 2.0 / MIT | Vulkan bindings | ○ | Android/Linux backend |
@@ -95,9 +95,9 @@
 | **F5-TTS (SWivid)** | MIT | **CC-BY-NC 4.0** | ✕ 非商用 | ✕ research flag | エンジンは対応、weight 別途取得 |
 | **E2-TTS** | MIT | 要確認 | △ | ✕ audit 後判断 | 論文実装のみ |
 | **Fish-Speech v1.4/v1.5** | Apache 2.0 | **CC-BY-NC-SA 4.0** | ✕ 非商用+ShareAlike | ✕ research flag | |
-| **Bark (Suno)** | MIT | MIT (元 CC-BY-NC → 変更) | △ | ✕ (Suno voice cloning 方針で禁止) | v2.0+ 検討、research flag |
+| **Bark (Suno)** | MIT | MIT (元 CC-BY-NC → 変更) | △ | ✕ (Suno voice cloning 方針で禁止) | post-v1.0 GA 検討、research flag |
 | **StyleTTS 2** | MIT | 要確認 | △ | ✕ audit 後判断 | |
-| **Matcha-TTS** | MIT | MIT | ○ | ★ v2.0+ | |
+| **Matcha-TTS** | MIT | MIT | ○ | ★ post-v1.0 GA | |
 | **RVC v2** | MIT | **不明 / 学習権利疑い** | △ | ✕ **vokra-voiceclone-experimental** に分離 | training data copyright laundering の Reddit/GitHub Issue で複数指摘 |
 | **GPT-SoVITS** | MIT | 不明 | △ | ✕ voiceclone-experimental 分離 | |
 | **EnCodec (Meta)** | MIT | **CC-BY-NC 4.0** | ✕ 非商用 | ✕ research flag | 商用は DAC/Mimi/WavTokenizer 推奨。**FR-OP-32 恒久制約**により公式 model zoo 非搭載を維持（M2-13 runtime gate + release CI 側の `scripts/compliance/check-encodec-exclusion.sh` 二重防御、M3-06 ADR §D2）。 |
@@ -205,6 +205,9 @@
 | **DAC 24khz (Descript)** | MIT | 2026-07-15 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M4-04 対応（`dac_rvq` op + `--model dac` converter、zoo primary = 24 kHz/8 kbps tag 0.0.4）。§3 表は ★ 公式 zoo 指定済だが本行 sign-off まで配布不可（fail-closed、M4-04-T20） |
 | **WavTokenizer** | MIT | 2026-07-15 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M4-16 対応（`wavtokenizer_vq` op、fixture は合成のみ）。released 構成 vocab 4096 / d_model 512（ADR M4-16 §D-c） |
 | **X-Codec 2 (Llasa)** | **齟齬 — code MIT / HF weight タグ CC-BY-NC 4.0** | 2026-07-15 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M4-16 対応（`xcodec2_fsq` op、fixture は合成のみ）。**T14 判定 3 点**: weight license 実体（HF `HKUSTAudio/xcodec2` タグ cc-by-nc-4.0 vs 本表旧値 MIT vs milestones/deliverables「MIT+Apache dual」）／per-file か combined か／NC 確定時の `license_class.rs` 分類変更差し戻し（§CC-verified の M4-16 flag 節参照） |
+| **Sesame CSM-1B** | Apache-2.0 | 2026-07-15 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M4-05 対応（§3 表は ★ 公式 zoo 指定）。実 checkpoint / tokenizer は **HF gated repo**（`sesame/csm-1b` + `meta-llama/Llama-3.2-1B`）= T29 依頼者入手。共有 Mimi neural chain の weight（Kyutai **CC-BY 4.0**）attribution は NOTICE §5 が cover。本行 sign-off まで配布不可（fail-closed） |
+| **Moshi (Helium + Mimi)** | CC-BY 4.0 | 2026-07-15 | ______________ | ☐ Commercial (attribution 込) / ☐ Research-only / ☐ Rejected | M4-06 対応（§3 表は ★ 公式 zoo 指定、attribution 表示義務）。実 checkpoint `kyutai/moshiko-pytorch-bf16`（~15GB BF16）= T29 依頼者入手。FR-MD-09 attribution 表示（`vokra_model_attribution` 他 3 面）実装済、NOTICE §5 が LM weight 消費分まで cover。本行 sign-off まで配布不可（fail-closed）。CLI banner `--quiet` 抑止可否も本 sign-off 判定事項（M4-06-T24） |
+| **DeepFilterNet3** | MIT | 2026-07-15 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M4-20 (c) 対応（`denoise` op、§3 表は ★ 公式 zoo（要 owner sign-off T18））。実 DeepFilterNet checkpoint parity + MIT 最終 sign-off は owner T17/T18。attribution は NOTICE §8（DeepFilterNet MIT）記載。本行 sign-off まで配布不可（fail-closed） |
 
 ---
 
@@ -217,17 +220,17 @@
 | **speexdsp resampler** (C) | BSD | polyphase sinc interpolation | 参考（Rust 移植） | soxr (LGPL) 排除 |
 | **speexdsp AEC** (C) | BSD | Acoustic Echo Cancellation | ★ **採用**（M4-03 で Rust port 実施 = `vokra-ops::aec`、mdf.c AUMDF float build、upstream pin `7a158783df74`。attribution は NOTICE §7 + `THIRD_PARTY_LICENSES/speexdsp-LICENSE.txt`、ADR M4-03 §D-(a)） | WebRTC AEC3 と比較の上で採用 |
 | **WebRTC AEC3** | BSD | AEC | ✕ **M4-03 で不採用**（ADR M4-03 §D-(a) 参照: 実装規模が数十ファイル級で 30 分チケット列に収まらず、delay estimator が queue 設計と絡む。license 上の問題ではない — 将来の再評価は妨げない） | speexdsp AEC を採用 |
-| **RNNoise** | BSD | Noise Suppression | ★ v0.5 採用予定 | |
-| **DeepFilterNet3** (Rust) | MIT | Noise Suppression | ★ v0.5 採用予定 | Rikorose 公式 |
-| **GTCRN** | Apache 2.0 | Noise Suppression | ★ v1.0 検討 | |
+| **RNNoise** | BSD | Noise Suppression | ★ v1.0-rc（M4-20 (c) 代替候補） | |
+| **DeepFilterNet3** (Rust) | MIT | Noise Suppression | ★ v1.0-rc（M4-20 (c) 第一候補、owner sign-off T18） | Rikorose 公式 |
+| **GTCRN** | Apache 2.0 | Noise Suppression | ★ v1.0-rc 検討（M4-20 (c) 代替候補） | |
 | **AudioSeal** (Meta) | MIT | Watermark | ★ 推奨デフォルト | |
 | **SynthID audio** (Google DeepMind) | Google 個別契約要 | Watermark | 検討中 | 代替: SilentCipher / WaveGuard (OSS) |
-| **C2PA (c2pa-rs)** | Apache 2.0 | Content provenance manifest | ★ v0.5 採用 | Adobe |
+| **C2PA (c2pa-rs)** | Apache 2.0 | Content provenance manifest | △ config 面のみ（embedding deferred、§3 Article 50 checklist 参照） | Adobe |
 | **libsamplerate** | BSD | resample | 検討中 | speexdsp と比較 |
 | **libsoxr** | LGPL | resample | ✕ 排除 | speexdsp で代替 |
 | **rubberband** | GPL | pitch shift / time stretch | ✕ 排除 | 自前実装 or 除外 |
 | **libespeak-ng** | GPL-3.0-or-later | G2P | ✕ 排除 | piper-plus 独自 G2P、または misaki / IPA 辞書 |
-| **OpenFST** | Apache 2.0 | WFST decoder | ★ v1.0 検討 (Rust port) | |
+| **OpenFST** | Apache 2.0 | WFST decoder | ★ v1.0 GA / M5 検討 (Rust port) | |
 | **kenlm** | LGPL | n-gram LM | ✕ 検討中止 | 独自 Rust 実装 or `lm-rs` |
 | **librosa** (Python 参考) | ISC | Mel filter bank 参考 | 参考のみ | Slaney/HTK 両対応の Rust 実装を独自 |
 | **torchaudio** (Python 参考) | BSD | 参考 | 参考のみ | |

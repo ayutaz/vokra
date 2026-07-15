@@ -1,4 +1,4 @@
-# Vokra ABI Changelog (v0.9 window)
+# Vokra ABI Changelog (pre-1.0 prerelease window: v0.9 + v1.0-rc)
 
 This file tracks **binary-facing** surface changes between v0.1.0 (the M0/M1
 baseline, tagged 2026-07-04) and v1.0 GA (the IF-01 freeze point, owned by
@@ -53,9 +53,11 @@ STABILITY block at the top of `include/vokra.h`, ADR-0003, and IF-01):
   symbol.
 - The single hard rule is that **every such change lands with an entry in
   this file, dated on the day the PR is opened**. `scripts/check-abi-changelog.sh`
-  enforces this: if the current `include/vokra.h` differs from
-  `docs/abi/vokra.h.v0.9-baseline.symbols` and this file does not have an
-  entry dated today, the script exits non-zero.
+  enforces this: if the current `include/vokra.h` differs from the active
+  gate anchor (`docs/abi/vokra.h.v0.9-baseline.symbols` during the v0.9
+  window, rotated to `docs/abi/vokra.h.v1.0-rc-baseline.symbols` at M4-12)
+  and this file does not have an entry dated today, the script exits
+  non-zero.
 - At v1.0 GA (M5-13; M4-12 before the 2026-07-14 reassignment) the baseline
   is re-anchored to that release, the freeze commitment is written into
   `include/vokra.h`, and post-1.0 breaking changes require a major bump.
@@ -146,7 +148,12 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
   (`vokra_aec_*`) and M4-06 (`vokra_s2s_*` + `vokra_model_attribution`)
   additive surfaces, each recorded in a dated `## Entries` section below
   (reconciled by `scripts/abi-diff.sh --anchor v0.9`: every delta maps to an
-  entry, 0 unrecorded).
+  entry, 0 unrecorded). This +18 is measured against the **15**-symbol anchor
+  file (`docs/abi/vokra.h.v0.9-baseline.symbols`), not the 14-function prose
+  list under the "Baseline snapshot: v0.9.0-dev" section above: that list is
+  the 2026-07-08 PR #3 capture instant, whereas `vokra_stream_interrupt`
+  (M3-14, the 2026-07-09 entry below) is the +1 that grew the anchor to 15 the
+  next day — so 15 + 18 = **33** (the count below), not 14 + 18 = 32.
 - Exported C function count: **33**
 - Public typedefs (enums, opaque structs, value structs): **11**
 - Exported functions (sorted):
@@ -346,7 +353,7 @@ dated entry per change.
 | `include/vokra.h`               | `vokra_stream_interrupt`                      | Added | `enum vokra_status_t vokra_stream_interrupt(struct vokra_stream_t *stream)` | Barge-in / cancel (FR-ST-03), WP M3-14                                                                                    | no        | (TBD) |
 | `gguf:vokra.voxtral.adapter.*`  | `vokra.voxtral.adapter.{kind,tensor_prefix,in_dim,out_dim,has_bias,has_layernorm,activation,time_stride,weight_name,bias_name,layernorm_gamma_name,layernorm_beta_name,mlp_hidden_dims,mlp_layer_names}` | Added | Kind = `string` \| dims = `u32` \| flags = `bool` \| names = `string` (see `crates/vokra-models/src/voxtral/adapter.rs` for the loader) | Voxtral audio-adapter (encoder → soft-prefix) framework — M3-10 Wave 8 (real ASR conditioning; absent = LM-continuation) | no        | (TBD) |
 
-### 2026-07-15 — 0.9.0-dev (M4-20: audio dialect op subset)
+### 2026-07-15 — 1.0.0-rc.1-dev (M4-20: audio dialect op subset)
 
 **Additive Rust public API only — `include/vokra.h` is untouched** by this WP
 (word timestamps / speaker_verify / the speech-enhancement ops are Rust-surface
@@ -396,7 +403,7 @@ The following GGUF metadata chunks were added during the M3 waves. **These
 are model-file (`.gguf`) additions only, NOT part of the C ABI surface** —
 `include/vokra.h` does not expose any GGUF key by name, so
 `scripts/check-abi-changelog.sh` does not gate on them. This section is
-informational and prepares the M3-16 changelog for the M4-12 v1.0 GA
+informational and prepares the M3-16 changelog for the M5-13 v1.0 GA
 freeze, at which point the GGUF schema is co-frozen with the C ABI
 (baseline anchor `docs/abi/vokra.h.v0.9-baseline.symbols` covers C symbols
 only; a paired GGUF metadata anchor is out of scope for M3-16).
@@ -484,7 +491,7 @@ Note: `vokra.dnsmos.*` is **reserved but deliberately not designed** — DNSMOS 
 
 <!-- Template — copy into an `### YYYY-MM-DD — vX.Y.Z-dev` section per PR-day:
 
-### 2026-07-XX — 0.9.0-dev
+### 2026-07-XX — 1.0.0-rc.1-dev
 
 | Crate / area          | Symbol                     | Kind    | Signature                                                                       | Rationale                                | Breaking? | PR   |
 | --------------------- | -------------------------- | ------- | ------------------------------------------------------------------------------- | ---------------------------------------- | --------- | ---- |
@@ -651,5 +658,6 @@ Positively stated, the post-1.0 rule is:
   `docs/milestones.md` §8 M4-12).
 
 This section is the honest report contract: the pre-1.0 free-change
-policy is time-boxed to the v0.9 window, and M4-12 formally revokes it
-at freeze time. Nothing in M3-16 fires the freeze.
+policy is time-boxed to the pre-1.0 prerelease window (v0.9 through
+v1.0-rc), and M4-12 formally revokes it at freeze time. Nothing in
+M3-16 fires the freeze.
