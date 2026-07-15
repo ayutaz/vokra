@@ -35,6 +35,10 @@ vokra-backend-cpu.workspace = true
 # The `webgpu` feature routes BackendKind::WebGpu through the Compute seam
 # (explicit BackendUnavailable off-wasm32 / without an adapter — FR-EX-08).
 vokra-models = { workspace = true, features = ["webgpu"] }
+# Direct dep for the browser per-kernel parity entries
+# (vokra_test_webgpu_*): the T18 harness drives each WGSL kernel through
+# WebGpuContext and diffs against the CPU oracle in the same instance.
+vokra-backend-webgpu = { workspace = true, features = ["webgpu"] }
 
 [features]
 default = ["test-entries"]

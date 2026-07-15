@@ -132,6 +132,7 @@ name = "vokra-wasm-harness"
 version = "0.1.0-alpha.0"
 dependencies = [
  "vokra-backend-cpu",
+ "vokra-backend-webgpu",
  "vokra-core",
  "vokra-models",
 ]

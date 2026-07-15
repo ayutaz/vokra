@@ -1,0 +1,37 @@
+{
+  "name": "@vokra/web",
+  "version": "0.0.0-dev",
+  "description": "Vokra speech runtime for the browser: WASM (+SIMD128) CPU path and a WebGPU backend over a raw import shim. Whisper base ASR in the browser with an explicit backend choice (no silent fallback).",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/ayutaz/vokra",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ayutaz/vokra.git"
+  },
+  "keywords": [
+    "speech",
+    "asr",
+    "whisper",
+    "webgpu",
+    "wasm",
+    "tts",
+    "vokra"
+  ],
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "vokra_webgpu.js",
+    "vokra_worker.js",
+    "vokra_wasm_simd128.wasm",
+    "vokra_wasm_base.wasm",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

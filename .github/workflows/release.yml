@@ -766,3 +766,107 @@ jobs:
           echo "Zip     : ${{ steps.pack.outputs.zip }}"
           echo "SHA256  : ${{ steps.pack.outputs.sha256 }}"
           echo "Skipping: gh release upload, Godot AssetLib API update."
+
+  # ---------------------------------------------------------------------------
+  # M4-01-T23: npm Web package publish (NFR-MT-08 = npm CD auto-release;
+  # deliverables §3.2 "Web | WASM (+SIMD/Threads) + WebGPU、npm パッケージ").
+  #
+  # Assembles the T20 layout (scripts/build-wasm.sh pkg = simd128/base .wasm
+  # + hand-written glue/worker/loader/.d.ts + LICENSE/NOTICE), stamps the tag
+  # semver into package.json, packs deterministically (SOURCE_DATE_EPOCH =
+  # HEAD commit timestamp — the godot-package-release idiom), uploads the
+  # tarball + SHA-256 as Release assets, and publishes to registry.npmjs.org
+  # **gated on secrets.NPM_TOKEN** (absent = honest skip annotation — the
+  # OPENUPM_TOKEN pattern; the owner registers the @vokra scope + token in
+  # M4-01-T27). Dry-run path (workflow_dispatch or no tag) runs
+  # `npm publish --dry-run` so the CD wiring is verifiable token-free.
+  # Prerelease semver (1.0.0-rc.N) requires an explicit dist-tag: `rc` for
+  # -rc.* tags, `dev` otherwise (npm refuses prerelease publishes to
+  # `latest`).
+  # ---------------------------------------------------------------------------
+  npm-web-release:
+    name: npm-web-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Compute release version (semver from tag, v-prefix stripped)
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="0.0.0-dev.$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          case "$V" in
+            *-rc.*) echo "disttag=rc" >> "$GITHUB_OUTPUT" ;;
+            *-*)    echo "disttag=dev" >> "$GITHUB_OUTPUT" ;;
+            *)      echo "disttag=latest" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Assemble web/pkg (2-artifact build + layout)
+        run: ./scripts/build-wasm.sh pkg
+
+      - name: Root Cargo.lock unchanged (zero-dep tripwire)
+        run: git diff --exit-code Cargo.lock
+
+      - name: Stamp version into package.json
+        working-directory: web/pkg
+        run: npm version --no-git-tag-version "${{ steps.version.outputs.version }}"
+
+      - name: Deterministic pack + SHA-256
+        id: pack
+        working-directory: web/pkg
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          TARBALL="$(npm pack --pack-destination . | tail -1)"
+          SHA="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
+          printf '%s' "$SHA" > "$TARBALL.sha256"
+          echo "tarball=web/pkg/$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Release assets (tag builds)
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release upload "$TAG" \
+            "${{ steps.pack.outputs.tarball }}" \
+            "${{ steps.pack.outputs.tarball }}.sha256" \
+            --clobber
+
+      - name: npm publish (gated on secrets.NPM_TOKEN)
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        working-directory: web/pkg
+        run: |
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo "::notice::npm-web-release: NPM_TOKEN not set — skipping npm publish (the GitHub Release tarball is the baseline channel; registry publish is owner opt-in, M4-01-T27)."
+            exit 0
+          fi
+          umask 077
+          cat > "$HOME/.npmrc" <<EOF
+          //registry.npmjs.org/:_authToken=${NPM_TOKEN}
+          EOF
+          npm publish --access public --tag "${{ steps.version.outputs.disttag }}"
+
+      - name: npm publish --dry-run (dispatch / non-tag builds)
+        if: inputs.dry_run == true || !startsWith(github.ref, 'refs/tags/v')
+        working-directory: web/pkg
+        run: |
+          echo "== DRY RUN (npm-web-release) =="
+          echo "Version : ${{ steps.version.outputs.version }} (dist-tag ${{ steps.version.outputs.disttag }})"
+          echo "Tarball : ${{ steps.pack.outputs.tarball }}"
+          echo "SHA256  : ${{ steps.pack.outputs.sha256 }}"
+          npm publish --dry-run --access public --tag "${{ steps.version.outputs.disttag }}"
+          echo "Skipping: gh release upload, npm publish."

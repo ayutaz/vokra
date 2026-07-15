@@ -288,6 +288,290 @@ pub extern "C" fn vokra_wasm_transcribe(handle: u32, pcm_ptr: *const u8, n_sampl
 // shipped in the npm artifact.
 // ---------------------------------------------------------------------------
 
+/// `vokra_test_webgpu_*` entries for the browser per-kernel parity harness
+/// (M4-01-T18, `tools/wasm/parity.html`): each drives one WGSL kernel
+/// through a cached [`vokra_backend_webgpu::WebGpuContext`]; the JS side
+/// diffs the output against the CPU oracle (`vokra_test_*` in the same
+/// instance) at atol = 0.01 (NFR-QL-01). wasm32-only: on a host without an
+/// adapter every entry returns -1 with the explicit BackendUnavailable text
+/// in `vokra_wasm_last_error_read` (FR-EX-08 — the harness shows a SKIPPED
+/// verdict with the reason, never a fabricated pass).
+#[cfg(all(feature = "test-entries", target_arch = "wasm32"))]
+mod webgpu_test_entries {
+    use std::cell::RefCell;
+
+    use vokra_backend_webgpu::WebGpuContext;
+    use vokra_backend_webgpu::plan::{ActivationKind, ElementwiseOp};
+
+    use super::set_error;
+
+    thread_local! {
+        static CTX: RefCell<Option<WebGpuContext>> = const { RefCell::new(None) };
+    }
+
+    /// Runs `f` with the cached context (created on first use). Returns -1
+    /// with the error text stashed when the adapter is unavailable or the
+    /// dispatch fails.
+    fn with_ctx(f: impl FnOnce(&WebGpuContext) -> vokra_core::Result<()>) -> i32 {
+        CTX.with(|c| {
+            let mut slot = c.borrow_mut();
+            if slot.is_none() {
+                match WebGpuContext::new() {
+                    Ok(ctx) => *slot = Some(ctx),
+                    Err(e) => {
+                        set_error(format!("webgpu context unavailable: {e}"));
+                        return -1;
+                    }
+                }
+            }
+            match f(slot.as_ref().expect("context cached above")) {
+                Ok(()) => 0,
+                Err(e) => {
+                    set_error(format!("webgpu kernel failed: {e}"));
+                    -1
+                }
+            }
+        })
+    }
+
+    /// # Safety
+    /// (ptr, element-count) harness contract (crate docs).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn vokra_test_webgpu_copy(n: u32, x: *const f32, out: *mut f32) -> i32 {
+        let n = n as usize;
+        // SAFETY: harness contract — live length-n buffers.
+        let (x, out) = unsafe {
+            (
+                core::slice::from_raw_parts(x, n),
+                core::slice::from_raw_parts_mut(out, n),
+            )
+        };
+        with_ctx(|ctx| ctx.copy_f32(x, out))
+    }
+
+    /// op: 0 = add, 1 = mul. # Safety: harness contract.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn vokra_test_webgpu_elementwise(
+        op: u32,
+        n: u32,
+        a: *const f32,
+        b: *const f32,
+        out: *mut f32,
+    ) -> i32 {
+        let n = n as usize;
+        // SAFETY: harness contract — live length-n buffers.
+        let (a, b, out) = unsafe {
+            (
+                core::slice::from_raw_parts(a, n),
+                core::slice::from_raw_parts(b, n),
+                core::slice::from_raw_parts_mut(out, n),
+            )
+        };
+        let op = if op == 1 {
+            ElementwiseOp::Mul
+        } else {
+            ElementwiseOp::Add
+        };
+        with_ctx(|ctx| ctx.elementwise_f32(op, a, b, out))
+    }
+
+    /// # Safety
+    /// Buffers of m*k / k*n / n (nullable) / m*n elements.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn vokra_test_webgpu_gemm(
+        m: u32,
+        n: u32,
+        k: u32,
+        a: *const f32,
+        b: *const f32,
+        bias: *const f32,
+        out: *mut f32,
+    ) -> i32 {
+        let (m, n, k) = (m as usize, n as usize, k as usize);
+        // SAFETY: harness contract.
+        let (a, b, bias, out) = unsafe {
+            (
+                core::slice::from_raw_parts(a, m * k),
+                core::slice::from_raw_parts(b, k * n),
+                if bias.is_null() {
+                    None
+                } else {
+                    Some(core::slice::from_raw_parts(bias, n))
+                },
+                core::slice::from_raw_parts_mut(out, m * n),
+            )
+        };
+        with_ctx(|ctx| ctx.gemm_f32(m, n, k, a, b, bias, out))
+    }
+
+    /// # Safety
+    /// Buffers of m*k / k / m (nullable) / m elements.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn vokra_test_webgpu_gemv(
+        m: u32,
+        k: u32,
+        a: *const f32,
+        x: *const f32,
+        bias: *const f32,
+        out: *mut f32,
+    ) -> i32 {
+        let (m, k) = (m as usize, k as usize);
+        // SAFETY: harness contract.
+        let (a, x, bias, out) = unsafe {
+            (
+                core::slice::from_raw_parts(a, m * k),
+                core::slice::from_raw_parts(x, k),
+                if bias.is_null() {
+                    None
+                } else {
+                    Some(core::slice::from_raw_parts(bias, m))
+                },
+                core::slice::from_raw_parts_mut(out, m),
+            )
+        };
+        with_ctx(|ctx| ctx.gemv_f32(m, k, a, x, bias, out))
+    }
+
+    /// causal: 0 = plain softmax, 1 = causal with `offset`. # Safety:
+    /// rows*cols buffers.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn vokra_test_webgpu_softmax(
+        rows: u32,
+        cols: u32,
+        causal: u32,
+        offset: u32,
+        x: *const f32,
+        out: *mut f32,
+    ) -> i32 {
+        let (rows, cols) = (rows as usize, cols as usize);
+        // SAFETY: harness contract.
+        let (x, out) = unsafe {
+            (
+                core::slice::from_raw_parts(x, rows * cols),
+                core::slice::from_raw_parts_mut(out, rows * cols),
+            )
+        };
+        with_ctx(|ctx| {
+            if causal == 1 {
+                ctx.softmax_causal_f32(x, out, rows, cols, offset as usize)
+            } else {
+                ctx.softmax_f32(x, out, rows, cols)
+            }
+        })
+    }
+
+    /// # Safety
+    /// rows*cols x/out; cols gamma/beta.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn vokra_test_webgpu_layer_norm(
+        rows: u32,
+        cols: u32,
+        eps: f32,
+        x: *const f32,
+        gamma: *const f32,
+        beta: *const f32,
+        out: *mut f32,
+    ) -> i32 {
+        let (rows, cols) = (rows as usize, cols as usize);
+        // SAFETY: harness contract.
+        let (x, gamma, beta, out) = unsafe {
+            (
+                core::slice::from_raw_parts(x, rows * cols),
+                core::slice::from_raw_parts(gamma, cols),
+                core::slice::from_raw_parts(beta, cols),
+                core::slice::from_raw_parts_mut(out, rows * cols),
+            )
+        };
+        with_ctx(|ctx| ctx.layer_norm_f32(x, out, rows, cols, gamma, beta, eps))
+    }
+
+    /// # Safety
+    /// Length-n x/out buffers.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn vokra_test_webgpu_gelu(n: u32, x: *const f32, out: *mut f32) -> i32 {
+        let n = n as usize;
+        // SAFETY: harness contract.
+        let (x, out) = unsafe {
+            (
+                core::slice::from_raw_parts(x, n),
+                core::slice::from_raw_parts_mut(out, n),
+            )
+        };
+        with_ctx(|ctx| ctx.gelu_f32(x, out))
+    }
+
+    /// kind: 0 relu / 1 sigmoid / 2 tanh. # Safety: length-n buffers.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn vokra_test_webgpu_activation(
+        kind: u32,
+        n: u32,
+        x: *const f32,
+        out: *mut f32,
+    ) -> i32 {
+        let n = n as usize;
+        // SAFETY: harness contract.
+        let (x, out) = unsafe {
+            (
+                core::slice::from_raw_parts(x, n),
+                core::slice::from_raw_parts_mut(out, n),
+            )
+        };
+        let kind = match kind {
+            0 => ActivationKind::Relu,
+            1 => ActivationKind::Sigmoid,
+            _ => ActivationKind::Tanh,
+        };
+        with_ctx(|ctx| ctx.activation_f32(kind, x, out))
+    }
+
+    /// # Safety
+    /// in_ch*in_len x; out_ch*in_ch*kernel w; out_ch bias (nullable);
+    /// out_ch*out_len out.
+    #[unsafe(no_mangle)]
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe extern "C" fn vokra_test_webgpu_conv1d(
+        in_ch: u32,
+        in_len: u32,
+        out_ch: u32,
+        kernel: u32,
+        stride: u32,
+        padding: u32,
+        x: *const f32,
+        w: *const f32,
+        bias: *const f32,
+        out: *mut f32,
+        out_len: u32,
+    ) -> i32 {
+        let (in_ch, in_len, out_ch, kernel, stride, padding, out_len) = (
+            in_ch as usize,
+            in_len as usize,
+            out_ch as usize,
+            kernel as usize,
+            stride as usize,
+            padding as usize,
+            out_len as usize,
+        );
+        // SAFETY: harness contract.
+        let (x, w, bias, out) = unsafe {
+            (
+                core::slice::from_raw_parts(x, in_ch * in_len),
+                core::slice::from_raw_parts(w, out_ch * in_ch * kernel),
+                if bias.is_null() {
+                    None
+                } else {
+                    Some(core::slice::from_raw_parts(bias, out_ch))
+                },
+                core::slice::from_raw_parts_mut(out, out_ch * out_len),
+            )
+        };
+        with_ctx(|ctx| {
+            ctx.conv1d_f32(
+                x, in_ch, in_len, w, out_ch, kernel, bias, stride, padding, out,
+            )
+        })
+    }
+}
+
 /// `vokra_test_*` entries for the Node differential harness. Buffers are
 /// raw (ptr, element-count) pairs over `vokra_wasm_alloc` allocations; the
 /// harness guarantees lengths (test-only surface — the production session
