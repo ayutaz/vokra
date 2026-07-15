@@ -1,0 +1,13 @@
+M4-16 T11 X-Codec 2 FSQ reference fixture (SYNTHETIC projection)
+reference: vector_quantize_pytorch.ResidualFSQ.get_output_from_indices — the exact module + public API modeling_xcodec2.py::decode_code calls, at the xcodec2==0.1.5 pin vector-quantize-pytorch==1.17.8 (MIT reference CODE; project_out weights are seeded synthetic)
+versions: numpy==2.0.2 torch==2.5.0 vector-quantize-pytorch==1.17.8
+levels tuple: [4, 4, 4, 4, 4, 4, 4, 4] (the released X-Codec 2 value — vq/codec_decoder_vocos.py; effective vocab = 65536)
+canonical released d_model: 2048 (vq_dim default) — fixture slices d_model to 64; the levels axis is NOT sliced
+weights: NONE downloaded / used — project_out is seeded standard_normal (real-checkpoint parity = flip-the-switch, model-integration WP)
+fixture shapes: out_proj_weight [(64, 8)] (nn.Linear [out, in] row-major); out_proj_bias [(64,)]; codes [(32,)] u32 in [0, 65536) with boundary codes pinned; decoded_features [(32, 64)]
+seed: 0
+sha256 levels.u32 7f2c0ac94b32b62200aa9ccabc1409647a2a0e775b503212ba3a7a85a6274122
+sha256 out_proj_weight.f32 addefa64821b1c8cefd4d1efb3071d80f7843f86d0d4ad1d366609a51e6d770f
+sha256 out_proj_bias.f32 4c5386398de4ee5c5baaf356d4fa4f783e755748341e84661e5d94b5e20ee5c1
+sha256 codes.u32 3e1f235d01a392e6d56ba23925525639b19e41613cfc5b5f1b4743ec4614cf16
+sha256 decoded_features.f32 1716485694e049525bc033af98e8aeeedcd4312beb0bdb3dd89ac3e0105bfeeb

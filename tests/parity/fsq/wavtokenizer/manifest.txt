@@ -1,0 +1,10 @@
+M4-16 T10 WavTokenizer VQ reference fixture (SYNTHETIC weights)
+reference: torch.nn.functional.embedding — the verbatim call in WavTokenizer encoder/quantization/core_vq.py EuclideanCodebook.dequantize (n_q=1, project_out=Identity; upstream repo is not pip-packaged so the exact torch API is driven directly)
+versions: numpy==2.0.2 torch==2.5.0 vector-quantize-pytorch==1.17.8
+canonical released shape: vocab_size=4096 (vq_bins), d_model=512 (dimension) — fixture is sliced (gather semantics complete for codes < rows); num_quantizers=1 per released configs (ADR M4-16 §D-c)
+weights: NONE downloaded / used — table is seeded standard_normal (real-checkpoint parity = flip-the-switch, model-integration WP)
+fixture shapes: codebook_table_sliced [(256, 64)]; codes [(32,)] u32; decoded_features [(32, 64)]
+seed: 0; codes in [0, 256) with boundary rows pinned
+sha256 codebook_table_sliced.f32 11d4fc4393a420eafeca0c076b10b4a3f82f5aa849438986cde4aabd88f4f664
+sha256 codes.u32 841d8c4b75dd79ad8506437d0170741c09b7663b3031f75cfbb2662dddcc2b23
+sha256 decoded_features.f32 1534420032dd88a0164f8cab45a6ed4f7ab051b4c735d3fa7e58a37ac9b265a9

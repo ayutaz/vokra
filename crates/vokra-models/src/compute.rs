@@ -47,14 +47,17 @@
 use vokra_backend_cpu::kernels;
 use vokra_core::backend::BackendKind;
 use vokra_core::{Backend, DecoderLayerView, PrenormLayer, Result, VokraError};
-// M3-06 mimi_rvq (+ M4-04 dac_rvq / encodec_rvq) codec decode wired into the
-// imperative Compute seam. The CPU arms delegate to the vokra-ops runtime
-// functions; the Metal / CUDA arms return `VokraError::UnsupportedOp` until
-// the GPU kernels land (no silent CPU fall back, FR-EX-08). See
-// `Compute::mimi_rvq_f32` / `dac_rvq_f32` / `encodec_rvq_f32` below.
+// M3-06 mimi_rvq (+ M4-04 dac_rvq / encodec_rvq, + M4-16 FSQ family
+// wavtokenizer_vq / xcodec2_fsq) codec decode wired into the imperative
+// Compute seam. The CPU arms delegate to the vokra-ops runtime functions;
+// the Metal / CUDA arms return `VokraError::UnsupportedOp` until the GPU
+// kernels land (no silent CPU fall back, FR-EX-08). See
+// `Compute::mimi_rvq_f32` / `dac_rvq_f32` / `encodec_rvq_f32` /
+// `wavtokenizer_vq_f32` / `xcodec2_fsq_f32` below.
 use vokra_ops::{
-    CodebookTable, DacOutProj, DacRvqAttrs, EncodecRvqAttrs, MimiRvqAttrs, dac_rvq_decode,
-    encodec_rvq_decode, mimi_rvq_decode,
+    CodebookTable, DacOutProj, DacRvqAttrs, EncodecRvqAttrs, FsqOutProj, MimiRvqAttrs,
+    WavTokenizerVqAttrs, Xcodec2FsqAttrs, dac_rvq_decode, encodec_rvq_decode, mimi_rvq_decode,
+    wavtokenizer_vq_decode, xcodec2_fsq_decode,
 };
 
 /// A backend-dispatched hot op — the operators the imperative models route
@@ -117,6 +120,28 @@ pub enum HotOp {
     /// per-op coverage (ADR M4-04 §D-e); CPU-only today like
     /// [`HotOp::DacRvq`].
     EncodecRvq,
+    /// WavTokenizer single-codebook VQ decode (`wavtokenizer_vq_decode`) —
+    /// M4-16, FR-OP-31 **FSQ family** (single-stage, *separate subgraph from
+    /// the RVQ family* — no cross-codebook residual sum, no paged variant;
+    /// module docs in `vokra_ops::fsq_codec`). Heterogeneous-signature /
+    /// heap-returning shape like the RVQ seam methods, but the table operand
+    /// is a *singular* [`CodebookTable`].
+    ///
+    /// **CPU-only through the imperative seam today** — the Metal / CUDA
+    /// arms of [`Compute::wavtokenizer_vq_f32`] return an explicit
+    /// [`VokraError::UnsupportedOp`] (the M4-16 GPU kernels are deferred;
+    /// being single-stage GEMV/gather bound they will reuse the existing
+    /// M2-01 / M2-03 kernels). `covered_by_*` return `false` so the coverage
+    /// gate rejects GPU listings (FR-EX-08).
+    WavTokenizerVq,
+    /// X-Codec 2 FSQ dequant (`xcodec2_fsq_decode`) — M4-16, FR-OP-31 FSQ
+    /// family sibling of [`HotOp::WavTokenizerVq`]. Implicit per-dimension
+    /// grid (no codebook tensor) + one out-projection GEMV per timestep.
+    /// Separate variant for honest per-op coverage; CPU-only today —
+    /// `covered_by_*` return `false` and the Metal / CUDA arms of
+    /// [`Compute::xcodec2_fsq_f32`] are explicit
+    /// [`VokraError::UnsupportedOp`] (FR-EX-08).
+    Xcodec2Fsq,
 }
 
 impl HotOp {
@@ -787,6 +812,113 @@ impl Compute {
             Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
                 "encodec_rvq_f32 has no wired WebGPU WGSL kernel (M4-01 covers the six Whisper \
                  hot ops only). Select BackendKind::Cpu — no silent CPU fall back (FR-EX-08)."
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// WavTokenizer single-codebook VQ decode — the M4-16 **FSQ-family** op
+    /// wired into the imperative `Compute` seam (FR-OP-31: single-stage,
+    /// deliberately a *separate subgraph* from the RVQ family — module docs
+    /// in `vokra_ops::fsq_codec`).
+    ///
+    /// Given `[time]` codes and **one** [`CodebookTable`] (singular — the
+    /// signature-level distinction from the RVQ methods' `&[CodebookTable]`),
+    /// returns a fresh `[time, d_model]` `Vec<f32>` of gathered embedding
+    /// rows (bit-exact single gather per timestep; see
+    /// [`vokra_ops::wavtokenizer_vq_decode`]). Heap-returning for the same
+    /// heterogeneous-signature reason as [`Compute::mimi_rvq_f32`] (chunk
+    /// granularity, not the per-token GEMM hot path).
+    ///
+    /// # CPU-only through this seam today
+    ///
+    /// The CPU arm delegates verbatim to
+    /// [`vokra_ops::wavtokenizer_vq_decode`] (bit-for-bit vs a direct call);
+    /// the **Metal** / **CUDA** arms return an explicit
+    /// [`VokraError::UnsupportedOp`] — the M4-16 GPU kernels are deferred
+    /// (single-stage gather/GEMV bound: they will reuse the existing M2-01 /
+    /// M2-03 kernels), and Vokra never silently substitutes the CPU
+    /// (FR-EX-08). The [`Compute::for_backend`] coverage gate additionally
+    /// rejects any model listing [`HotOp::WavTokenizerVq`] against Metal /
+    /// CUDA / Vulkan.
+    ///
+    /// # Errors
+    ///
+    /// - CPU arm: propagates [`vokra_ops::wavtokenizer_vq_decode`]'s
+    ///   [`VokraError::InvalidArgument`] (shape mismatch, out-of-range code).
+    /// - Metal / CUDA arms: explicit [`VokraError::UnsupportedOp`].
+    pub fn wavtokenizer_vq_f32(
+        &self,
+        codes: &[u32],
+        time: usize,
+        codebook_table: &CodebookTable,
+        attrs: &WavTokenizerVqAttrs,
+    ) -> Result<Vec<f32>> {
+        match &self.be {
+            Be::Cpu => wavtokenizer_vq_decode(codes, time, codebook_table, attrs),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(_) => Err(VokraError::UnsupportedOp(
+                "wavtokenizer_vq_f32 has no wired Metal MSL kernel; the M4-16 GPU arm is \
+                 deferred (single-stage gather — reuses the M2-01 kernels when it lands). \
+                 Select BackendKind::Cpu (which delegates to \
+                 vokra_ops::wavtokenizer_vq_decode) — Vokra does not silently run the op on \
+                 the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "wavtokenizer_vq_f32 has no wired CUDA NVRTC kernel; the M4-16 GPU arm is \
+                 deferred (single-stage gather — reuses the M2-03 kernels when it lands). \
+                 Select BackendKind::Cpu (which delegates to \
+                 vokra_ops::wavtokenizer_vq_decode) — Vokra does not silently run the op on \
+                 the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// X-Codec 2 FSQ dequant — the M4-16 FSQ-family sibling of
+    /// [`Compute::wavtokenizer_vq_f32`] (FR-OP-31 single-stage GEMV bound;
+    /// implicit per-dimension grid, **no codebook tensor**, one
+    /// out-projection GEMV per timestep — see
+    /// [`vokra_ops::xcodec2_fsq_decode`]).
+    ///
+    /// # CPU-only through this seam today
+    ///
+    /// The CPU arm delegates verbatim to [`vokra_ops::xcodec2_fsq_decode`];
+    /// the **Metal** / **CUDA** arms are explicit
+    /// [`VokraError::UnsupportedOp`] (FR-EX-08 — no silent CPU fall back),
+    /// and the coverage gate rejects [`HotOp::Xcodec2Fsq`] against every GPU
+    /// backend.
+    ///
+    /// # Errors
+    ///
+    /// - CPU arm: propagates [`vokra_ops::xcodec2_fsq_decode`]'s
+    ///   [`VokraError::InvalidArgument`].
+    /// - Metal / CUDA arms: explicit [`VokraError::UnsupportedOp`].
+    pub fn xcodec2_fsq_f32(
+        &self,
+        codes: &[u32],
+        time: usize,
+        out_proj: Option<&FsqOutProj>,
+        attrs: &Xcodec2FsqAttrs,
+    ) -> Result<Vec<f32>> {
+        match &self.be {
+            Be::Cpu => xcodec2_fsq_decode(codes, time, out_proj, attrs),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(_) => Err(VokraError::UnsupportedOp(
+                "xcodec2_fsq_f32 has no wired Metal MSL kernel; the M4-16 GPU arm is deferred \
+                 (single-stage GEMV — reuses the M2-01 kernels when it lands). Select \
+                 BackendKind::Cpu (which delegates to vokra_ops::xcodec2_fsq_decode) — Vokra \
+                 does not silently run the op on the CPU (FR-EX-08)."
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "xcodec2_fsq_f32 has no wired CUDA NVRTC kernel; the M4-16 GPU arm is deferred \
+                 (single-stage GEMV — reuses the M2-03 kernels when it lands). Select \
+                 BackendKind::Cpu (which delegates to vokra_ops::xcodec2_fsq_decode) — Vokra \
+                 does not silently run the op on the CPU (FR-EX-08)."
                     .to_owned(),
             )),
         }
@@ -1530,6 +1662,176 @@ mod tests {
         assert!(matches!(err, VokraError::InvalidArgument(_)));
     }
 
+    #[test]
+    fn cpu_wavtokenizer_vq_f32_matches_direct_kernel_bit_for_bit() {
+        // M4-16 T09 seam contract: `Compute::cpu().wavtokenizer_vq_f32(...)`
+        // must reproduce `vokra_ops::wavtokenizer_vq_decode(...)`
+        // byte-identically (same guarantee the RVQ-family seam methods give).
+        let attrs = WavTokenizerVqAttrs {
+            vocab_size: 5,
+            d_model: 3,
+        };
+        // Single codebook (FSQ family: singular table, not a slice).
+        let table = CodebookTable::new(5, 3, (0..15).map(|i| i as f32).collect()).unwrap();
+        let codes = vec![4u32, 0, 2];
+        let time = 3;
+
+        let via_compute = Compute::cpu()
+            .wavtokenizer_vq_f32(&codes, time, &table, &attrs)
+            .expect("cpu wavtokenizer_vq_f32");
+        let direct = wavtokenizer_vq_decode(&codes, time, &table, &attrs)
+            .expect("direct wavtokenizer_vq_decode");
+        assert_eq!(
+            via_compute, direct,
+            "Compute::cpu().wavtokenizer_vq_f32 must byte-match \
+             vokra_ops::wavtokenizer_vq_decode",
+        );
+    }
+
+    #[test]
+    fn cpu_xcodec2_fsq_f32_matches_direct_kernel_bit_for_bit() {
+        // M4-16 T09 seam contract for the FSQ dequant + out-projection GEMV.
+        let attrs = Xcodec2FsqAttrs {
+            levels: vec![4, 4],
+            d_model: 3,
+        };
+        let proj = FsqOutProj::new(
+            3,
+            2,
+            (0..6).map(|i| i as f32 * 0.5 - 1.0).collect(),
+            vec![0.25, -0.25, 0.5],
+        )
+        .unwrap();
+        let codes = vec![7u32, 0, 15];
+        let time = 3;
+
+        let via_compute = Compute::cpu()
+            .xcodec2_fsq_f32(&codes, time, Some(&proj), &attrs)
+            .expect("cpu xcodec2_fsq_f32");
+        let direct = xcodec2_fsq_decode(&codes, time, Some(&proj), &attrs)
+            .expect("direct xcodec2_fsq_decode");
+        assert_eq!(
+            via_compute, direct,
+            "Compute::cpu().xcodec2_fsq_f32 must byte-match vokra_ops::xcodec2_fsq_decode",
+        );
+    }
+
+    #[test]
+    fn cpu_fsq_family_f32_propagates_input_errors() {
+        // Verbatim-propagation contract (FR-EX-08 — out-of-range codes are
+        // explicit `InvalidArgument`, never a clamp), mirror of the RVQ
+        // propagate tests above.
+        let wt_attrs = WavTokenizerVqAttrs {
+            vocab_size: 2,
+            d_model: 2,
+        };
+        let table = CodebookTable::new(2, 2, vec![0.0; 4]).unwrap();
+        let err = Compute::cpu()
+            .wavtokenizer_vq_f32(&[9u32], 1, &table, &wt_attrs)
+            .expect_err("out-of-range WavTokenizer code must be an explicit error");
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+
+        let fsq_attrs = Xcodec2FsqAttrs {
+            levels: vec![4, 4],
+            d_model: 2,
+        };
+        let err = Compute::cpu()
+            .xcodec2_fsq_f32(&[16u32], 1, None, &fsq_attrs)
+            .expect_err("out-of-range FSQ code must be an explicit error");
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
+
+    /// On a Metal build the `wavtokenizer_vq_f32` / `xcodec2_fsq_f32` Metal
+    /// arms are explicit `UnsupportedOp` — the M4-16 GPU kernels are deferred
+    /// (single-stage GEMV bound: the future kernels reuse the M2-01 gemv /
+    /// gather kernels), and a consumer that bypasses the coverage gate still
+    /// hits the method-level defence (FR-EX-08, mirror of the RVQ tests).
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn metal_fsq_family_arms_are_unsupported_no_silent_fallback() {
+        let compute = match Compute::for_backend(BackendKind::Metal, &[]) {
+            Ok(c) => c,
+            Err(VokraError::BackendUnavailable(_)) => {
+                eprintln!("no Metal device; fsq family Metal arm test skipped");
+                return;
+            }
+            Err(e) => panic!("unexpected Metal for_backend error: {e}"),
+        };
+        let wt_attrs = WavTokenizerVqAttrs {
+            vocab_size: 1,
+            d_model: 1,
+        };
+        let table = CodebookTable::new(1, 1, vec![0.0]).unwrap();
+        assert!(matches!(
+            compute.wavtokenizer_vq_f32(&[0u32], 1, &table, &wt_attrs),
+            Err(VokraError::UnsupportedOp(_))
+        ));
+
+        let fsq_attrs = Xcodec2FsqAttrs {
+            levels: vec![2],
+            d_model: 1,
+        };
+        assert!(matches!(
+            compute.xcodec2_fsq_f32(&[0u32], 1, None, &fsq_attrs),
+            Err(VokraError::UnsupportedOp(_))
+        ));
+    }
+
+    /// On a CUDA build the `wavtokenizer_vq_f32` / `xcodec2_fsq_f32` CUDA
+    /// arms are explicit `UnsupportedOp` (FR-EX-08); skips when no CUDA
+    /// loader exists.
+    #[cfg(all(feature = "cuda", any(unix, windows)))]
+    #[test]
+    fn cuda_fsq_family_arms_are_unsupported_no_silent_fallback() {
+        let compute = match Compute::for_backend(BackendKind::Cuda, &[]) {
+            Ok(c) => c,
+            Err(VokraError::BackendUnavailable(_)) => {
+                eprintln!("no CUDA loader; fsq family CUDA arm test skipped");
+                return;
+            }
+            Err(e) => panic!("unexpected CUDA for_backend error: {e}"),
+        };
+        let wt_attrs = WavTokenizerVqAttrs {
+            vocab_size: 1,
+            d_model: 1,
+        };
+        let table = CodebookTable::new(1, 1, vec![0.0]).unwrap();
+        assert!(matches!(
+            compute.wavtokenizer_vq_f32(&[0u32], 1, &table, &wt_attrs),
+            Err(VokraError::UnsupportedOp(_))
+        ));
+
+        let fsq_attrs = Xcodec2FsqAttrs {
+            levels: vec![2],
+            d_model: 1,
+        };
+        assert!(matches!(
+            compute.xcodec2_fsq_f32(&[0u32], 1, None, &fsq_attrs),
+            Err(VokraError::UnsupportedOp(_))
+        ));
+    }
+
+    /// Off the Metal build, `for_backend(Metal, [WavTokenizerVq|Xcodec2Fsq])`
+    /// is an explicit `BackendUnavailable` — never a silent CPU substitute
+    /// (FR-EX-08; mirror of `metal_mimi_rvq_off_metal_is_backend_unavailable`).
+    #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
+    #[test]
+    fn metal_fsq_family_off_metal_is_backend_unavailable() {
+        for op in [HotOp::WavTokenizerVq, HotOp::Xcodec2Fsq] {
+            let err = match Compute::for_backend(BackendKind::Metal, &[op]) {
+                Ok(_) => panic!(
+                    "Metal must fail explicitly when not compiled in — never a silent CPU \
+                     substitute",
+                ),
+                Err(e) => e,
+            };
+            assert!(
+                matches!(err, VokraError::BackendUnavailable(_)),
+                "expected BackendUnavailable for {op:?}, got {err:?}",
+            );
+        }
+    }
+
     /// On a Metal build the `dac_rvq_f32` / `encodec_rvq_f32` Metal arms are
     /// explicit `UnsupportedOp` — the M4-04 GPU kernels are deferred, and a
     /// consumer that bypasses the coverage gate still hits the method-level
@@ -1837,13 +2139,19 @@ mod tests {
             "HotOp::MimiRvq unexpectedly Metal-covered — the M3-06 T14 MSL kernel is deferred; if \
              it has just landed, flip `HotOp::covered_by_metal` for MimiRvq and update this test.",
         );
-        // Same deferred posture for the M4-04 RVQ siblings (lock-step with
-        // the Metal arms of `dac_rvq_f32` / `encodec_rvq_f32`).
-        for op in [HotOp::DacRvq, HotOp::EncodecRvq] {
+        // Same deferred posture for the M4-04 RVQ siblings and the M4-16 FSQ
+        // family (lock-step with the Metal arms of `dac_rvq_f32` /
+        // `encodec_rvq_f32` / `wavtokenizer_vq_f32` / `xcodec2_fsq_f32`).
+        for op in [
+            HotOp::DacRvq,
+            HotOp::EncodecRvq,
+            HotOp::WavTokenizerVq,
+            HotOp::Xcodec2Fsq,
+        ] {
             assert!(
                 !op.covered_by_metal(),
-                "{op:?} unexpectedly Metal-covered — the M4-04 GPU kernels are deferred; if one \
-                 has just landed, flip `HotOp::covered_by_metal` and update this test.",
+                "{op:?} unexpectedly Metal-covered — the M4-04/M4-16 GPU kernels are deferred; \
+                 if one has just landed, flip `HotOp::covered_by_metal` and update this test.",
             );
             assert!(matches!(
                 Compute::for_backend(BackendKind::Metal, &[op]),
@@ -1913,13 +2221,19 @@ mod tests {
              if it has just landed, flip `HotOp::covered_by_cuda` for MimiRvq and update this \
              test.",
         );
-        // Same deferred posture for the M4-04 RVQ siblings (lock-step with
-        // the CUDA arms of `dac_rvq_f32` / `encodec_rvq_f32`).
-        for op in [HotOp::DacRvq, HotOp::EncodecRvq] {
+        // Same deferred posture for the M4-04 RVQ siblings and the M4-16 FSQ
+        // family (lock-step with the CUDA arms of `dac_rvq_f32` /
+        // `encodec_rvq_f32` / `wavtokenizer_vq_f32` / `xcodec2_fsq_f32`).
+        for op in [
+            HotOp::DacRvq,
+            HotOp::EncodecRvq,
+            HotOp::WavTokenizerVq,
+            HotOp::Xcodec2Fsq,
+        ] {
             assert!(
                 !op.covered_by_cuda(),
-                "{op:?} unexpectedly CUDA-covered — the M4-04 GPU kernels are deferred; if one \
-                 has just landed, flip `HotOp::covered_by_cuda` and update this test.",
+                "{op:?} unexpectedly CUDA-covered — the M4-04/M4-16 GPU kernels are deferred; \
+                 if one has just landed, flip `HotOp::covered_by_cuda` and update this test.",
             );
             assert!(matches!(
                 Compute::for_backend(BackendKind::Cuda, &[op]),
@@ -1981,6 +2295,8 @@ mod tests {
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
+            HotOp::WavTokenizerVq,
+            HotOp::Xcodec2Fsq,
         ] {
             assert!(
                 !op.covered_by_vulkan(),
@@ -2002,6 +2318,8 @@ mod tests {
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
+            HotOp::WavTokenizerVq,
+            HotOp::Xcodec2Fsq,
         ] {
             assert!(matches!(
                 Compute::for_backend(BackendKind::Vulkan, &[op]),

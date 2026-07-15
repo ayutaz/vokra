@@ -68,6 +68,13 @@ pub mod encodec_rvq;
 // -------------------------------------------------------------------------
 pub mod dispatch;
 pub mod fft;
+// ---- M4-16 FSQ codec family (FR-OP-31, runtime functions — not OpKind
+// variants). Single-stage subgraph, deliberately separate from the RVQ
+// family (FR-OP-30: mimi_rvq / dac_rvq / encodec_rvq): no cross-codebook
+// residual sum, no paged variant, no cross-family adapter. Localized patch
+// block (M3-05/M3-06 pattern) for clean parallel-wave rebases.
+pub mod fsq_codec;
+// -------------------------------------------------------------------------
 // ---- M3-05 flow_sampler / ODE solvers (runtime function, FR-EX-10) -----
 // New module + re-export block, kept as a single localized patch so Wave 3
 // (M3-06 / M3-07) has a clean rebase target. The op-only re-export follows
@@ -126,6 +133,12 @@ pub use flow_sampler::{
     Schedule, flow_sample,
 };
 // -------------------------------------------------------------------------
+// ---- M4-16 fsq_codec re-exports ------------------------------------------
+pub use fsq_codec::{
+    FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes,
+    wavtokenizer_vq_decode, xcodec2_fsq_decode,
+};
+// ---------------------------------------------------------------------------
 pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};
 pub use fused_logmel::fused_log_mel_scalar;
 // ---- M3-07 hifigan_generator re-exports ---------------------------------
