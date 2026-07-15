@@ -272,18 +272,26 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Cross-build vokra-backend-cpu (riscv64gc-unknown-linux-gnu)
-        # Baseline rv64gc target. RVV 1.0 instructions land only inside the
+        # Baseline rv64gc target — shared by BOTH RISC-V vector tiers, no new
+        # target needed: RVV 1.0 instructions land only inside the
         # `.option arch, +v` fences in `kernels::rvv::add` (see
-        # docs/adr/M3-13-riscv-rvv-1.0.md §e); the surrounding binary stays at
-        # rv64gc so the same artifact runs on RVV-less harts (probe returns
-        # `rvv_v = false` → dispatch falls back to scalar within the CPU
-        # backend, which is NOT the FR-EX-08 cross-backend silent-fallback rule).
+        # docs/adr/M3-13-riscv-rvv-1.0.md §e), and the M4-08 RVV 0.7.1 tier
+        # (`kernels::rvv071::add`) is sealed even tighter — raw `.insn` words
+        # with no `.option arch` at all (LLVM has no xtheadvector assembler
+        # support, ADR M4-08 §T01). The surrounding binary stays at rv64gc so
+        # the same artifact runs on RVV-less harts (probe returns
+        # `rvv_v = false` / `rvv_071 = false` → dispatch falls back to scalar
+        # within the CPU backend, which is NOT the FR-EX-08 cross-backend
+        # silent-fallback rule). This build also evaluates the compile-time
+        # `const _: () = assert!(…)` pins on the five 0.7.1 instruction words
+        # in kernels/rvv071.rs (an encode regression fails the build itself).
         run: cargo build --release --target riscv64gc-unknown-linux-gnu -p vokra-backend-cpu
       - name: Clippy vokra-backend-cpu (riscv64gc)
         # Deny warnings on the riscv64 configuration too — catches
         # target-specific lint regressions in the `cfg(target_arch = "riscv64")`
-        # blocks (`features::detect_riscv_caps`, `kernels::rvv`).
-        run: cargo clippy --release --target riscv64gc-unknown-linux-gnu -p vokra-backend-cpu -- -D warnings
+        # blocks (`features::detect_riscv_caps`, `kernels::rvv`,
+        # `kernels::rvv071`).
+        run: cargo clippy --release --target riscv64gc-unknown-linux-gnu -p vokra-backend-cpu --all-targets -- -D warnings
       - name: Verify RVV instructions land in the emitted binary
         # Belt-and-suspenders: `cargo build` succeeds even if `.option arch, +v`
         # is silently ignored by the LLVM integrated assembler in some future
@@ -301,6 +309,63 @@ jobs:
             fi
           done
           echo "M3-13 RVV kernel: emitted asm contains vsetvli / vle32 / vfadd / vse32." >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify RVV 0.7.1 raw words land in the emitted binary (M4-08)
+        # M4-08-T11 belt-and-suspenders, twin of the 1.0 mnemonic grep above:
+        # the 0.7.1 demonstrator kernel has no mnemonics to grep (LLVM lacks
+        # xtheadvector), so we grep for the five `.insn` raw words emitted by
+        # kernels/rvv071.rs::add. LLVM renders the asm! const operands in
+        # decimal (`.insn 0x4, <decimal>`); the values below are the
+        # compile-time-pinned words, decimal <-> hex <-> 0.7.1 mnemonic:
+        #   10842839 = 0x00A572D7  vsetvli t0, a0, e32, m4 (0.7.1 vtypei 0x0A)
+        #   33943559 = 0x0205F007  vle.v   v0, (a1)        (width=111 = SEW)
+        #   33976839 = 0x02067207  vle.v   v4, (a2)
+        #   33690711 = 0x02021457  vfadd.vv v8, v0, v4
+        #   34010151 = 0x0206F427  vse.v   v8, (a3)
+        # If a future rustc/LLVM stops emitting the words (or re-renders the
+        # directive in an unexpected shape) this step fails hard — never a
+        # silent drop of the 0.7.1 tier. Execution of these words is only
+        # possible on real T-Head silicon: upstream qemu has no xtheadvector /
+        # 0.7.1 emulation (ADR M4-08 §T01), so this job intentionally stops at
+        # cross-build + encoding presence; on-device runs are the owner track
+        # (M4-08-T15 LicheePi 4A / M4-08-T16 Milk-V Duo).
+        run: |
+          set -euo pipefail
+          ASM=$(find target/riscv64gc-unknown-linux-gnu/release/deps -name 'vokra_backend_cpu-*.s' | head -n 1)
+          test -n "$ASM"
+          for word in 10842839 33943559 33976839 33690711 34010151; do
+            if ! grep -Eq "\.insn.*[^0-9]${word}([^0-9]|$)" "$ASM"; then
+              echo "M4-08 regression: .insn word ${word} missing from riscv64gc asm ($ASM)" >&2
+              exit 1
+            fi
+          done
+          echo "M4-08 RVV 0.7.1 kernel: emitted asm contains all five .insn raw words." >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify rv64gc baseline is not polluted by a global vector enable (M4-08)
+        # Both RISC-V vector tiers rely on the SINGLE-BASELINE-BINARY contract
+        # (kernels/rvv.rs + kernels/rvv071.rs module docs): stable rustc has no
+        # vreg clobber class, which is only sound while the surrounding
+        # compilation stays at rv64gc — no global `-C target-feature=+v` (or
+        # any vector-enabling variant) may ever be configured. Scan the
+        # repo-level cargo configs and this workflow for such a flag; fail
+        # hard if one appears.
+        run: |
+          set -euo pipefail
+          violations=0
+          for f in .cargo/config .cargo/config.toml .github/workflows/ci.yml; do
+            [ -f "$f" ] || continue
+            # Comment lines (leading '#' after the grep -n "NN:" prefix) are
+            # documentation — including this very step's own rationale — and
+            # cannot enable a target feature; only live config/run lines can.
+            if grep -En "target-feature[^#]*[+](v|zve|xtheadvector)" "$f" | grep -Ev "^[0-9]+:[[:space:]]*#"; then
+              echo "M4-08 violation: global RISC-V vector enable found in $f (breaks the rv64gc baseline / V-clobber soundness premise)" >&2
+              violations=1
+            fi
+          done
+          if [ -n "${RUSTFLAGS:-}" ] && echo "$RUSTFLAGS" | grep -Eq "target-feature[^ ]*[+](v|zve|xtheadvector)"; then
+            echo "M4-08 violation: RUSTFLAGS carries a global RISC-V vector enable: $RUSTFLAGS" >&2
+            violations=1
+          fi
+          [ "$violations" -eq 0 ]
+          echo "M4-08 baseline check: no global RISC-V vector enable in cargo configs / workflow / RUSTFLAGS." >> "$GITHUB_STEP_SUMMARY"
       - name: Verify root Cargo.lock unchanged
         # NFR-DS-02: cross-building for riscv64 must not add any new crates to
         # the root Cargo.lock (the target is std-only). Any diff here means a

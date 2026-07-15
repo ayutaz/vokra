@@ -582,7 +582,9 @@ mod test_entries {
     use vokra_backend_cpu::kernels;
 
     /// Dispatched-ISA code: 0 scalar / 1 avx2 / 2 neon / 3 rvv / 4
-    /// wasm-simd128 (mirrors `IsaPath` for JS-side assertions).
+    /// wasm-simd128 / 5 rvv071 (mirrors `IsaPath` for JS-side assertions;
+    /// 5 = the M4-08 RVV draft-0.7.1 tier, unreachable on wasm32 but the
+    /// match must stay exhaustive).
     #[unsafe(no_mangle)]
     pub extern "C" fn vokra_test_active_isa_code() -> u32 {
         match vokra_backend_cpu::active_isa() {
@@ -591,6 +593,7 @@ mod test_entries {
             IsaPath::Neon => 2,
             IsaPath::Rvv => 3,
             IsaPath::WasmSimd128 => 4,
+            IsaPath::Rvv071 => 5,
         }
     }
 

@@ -190,6 +190,25 @@ same posture as the vokra-server HTTP APIs ("Out-of-scope" above).
 | ------------------------- | ---------------------- | ----- | ------------------------------------ | ---------------------------------------------------------------- | --------- | ----- |
 | `vokra-core::backend`     | `BackendKind::WebGpu`  | Added | `enum BackendKind { …, WebGpu }` (`#[non_exhaustive]`, additive) | WebGPU backend selector (FR-BE-05), WP M4-01; raw extern-import shim, no wgpu crate (ADR M4-01) | no        | (TBD) |
 
+### 2026-07-15 — 1.0.0-rc.1-dev (M4-08: RVV 0.7.1 fallback tier)
+
+Additive **Rust dispatch surface** change only (WP **M4-08**, FR-BE-01) —
+the C ABI (`include/vokra.h`) is untouched: `IsaPath` is a within-CPU-backend
+dispatch enum that has never been exposed through the C boundary (grep of
+`docs/abi/vokra-rust-public-api.v0.9.list` at ticket time and again at land
+time: 0 hits — no snapshot update needed), so `scripts/check-abi-changelog.sh`
+does not gate on this entry; it is recorded under the rc-window prerelease
+policy ("every change lands with an entry"). The env-var token space of
+`VOKRA_CPU_ISA` grows by `rvv071` — env tokens are configuration, not ABI,
+but recorded here for the same M4-12 baseline-snapshot completeness.
+
+| Crate / area                  | Symbol                       | Kind  | Signature                                             | Rationale                                                                                                                                              | Breaking? | PR    |
+| ----------------------------- | ---------------------------- | ----- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | --------- | ----- |
+| `vokra-backend-cpu::features` | `IsaPath::Rvv071`            | Added | `enum IsaPath { …, Rvv071, … }`                        | RVV draft-0.7.1 tier for T-Head C910/C906 (LicheePi 4A / Milk-V Duo), encoding-incompatible peer of `Rvv` (ADR M4-08)                                    | no        | (TBD) |
+| `vokra-backend-cpu::features` | `CpuFeatures::rvv_071`       | Added | `pub rvv_071: bool`                                    | 0.7.1 probe (xtheadvector isa token / vendor `cpu-vector : 0.7.1` line) with the RVV 1.0 misdetection guard — `rvv_v` and `rvv_071` never both true      | no        | (TBD) |
+| `vokra-backend-cpu::features` | `CpuFeatures::rvv_071_auto`  | Added | `pub rvv_071_auto: bool`                               | Auto-select eligibility (mainline xtheadvector signal only; vendor-kernel hosts are override-only — fabricated auto-detect forbidden, ADR M4-08 §c)      | no        | (TBD) |
+| env (`VOKRA_CPU_ISA`)         | `rvv071` token               | Added | `VOKRA_CPU_ISA=rvv071`                                 | First-class enablement path on vendor-kernel boards; unsupported hosts get an explicit `BackendUnavailable` (FR-EX-08), never a silent switch            | no        | (TBD) |
+
 ### 2026-07-15 — 1.0.0-rc.1-dev
 
 Additive `vokra_aec_*` surface (WP **M4-03**, FR-OP-60): the SpeexDSP-MDF

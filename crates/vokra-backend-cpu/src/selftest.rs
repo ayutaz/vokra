@@ -65,13 +65,19 @@ impl core::fmt::Display for SelftestReport {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
-            "cpu selftest OK: active={} features(avx2={} fma={} neon={} rvv_v={} zvfh={}) checked={:?} max_abs_diff={:.3e} (atol {:.0e})",
+            "cpu selftest OK: active={} features(avx2={} fma={} neon={} rvv_v={} zvfh={} rvv071={}{}) checked={:?} max_abs_diff={:.3e} (atol {:.0e})",
             self.active_isa,
             self.features.avx2,
             self.features.fma,
             self.features.neon,
             self.features.rvv_v,
             self.features.rvv_zvfh,
+            self.features.rvv_071,
+            if self.features.rvv_071 && !self.features.rvv_071_auto {
+                " (override-only)"
+            } else {
+                ""
+            },
             self.checked_paths,
             self.max_abs_diff,
             self.tolerance,
@@ -153,9 +159,16 @@ pub fn selftest() -> Result<SelftestReport> {
     let active_isa = active_isa();
 
     // The SIMD paths this host can actually run (Scalar is the oracle, not a
-    // "checked" path). At most one of Avx2 / Neon / Rvv is supported on any
-    // given host (they are arch-exclusive). RVV is added in M3-13.
-    let checked_paths: Vec<IsaPath> = [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv]
+    // "checked" path). At most one of Avx2 / Neon / Rvv / Rvv071 is supported
+    // on any given host: the first three are arch-exclusive, and Rvv / Rvv071
+    // are generation-exclusive on riscv64 (the M4-08 probe never reports both
+    // — the RVV 1.0 misdetection guard). The `supports` filter therefore
+    // guarantees the selftest never touches 1.0 encodings on a 0.7.1 hart
+    // (and vice versa) — this is the on-device safety net behind the M4-08
+    // completion condition ("LicheePi 4A で動作確認"): any oracle deviation
+    // surfaces as an explicit `BackendUnavailable` from `compare`, never a
+    // silent pass. RVV is added in M3-13; Rvv071 in M4-08.
+    let checked_paths: Vec<IsaPath> = [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv, IsaPath::Rvv071]
         .into_iter()
         .filter(|&isa| features.supports(isa))
         .collect();
