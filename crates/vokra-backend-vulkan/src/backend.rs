@@ -330,25 +330,82 @@ pub fn select_gemm_pipeline_variant(
     }
 }
 
+/// Maps a graph [`OpKind`] to the SPIR-V shader that backs its Vulkan
+/// graph-executor arm (M4-13-T09) — the single source of truth both
+/// [`VulkanBackend::supports`] and the `eval_vulkan_op` dispatcher derive
+/// from, so the M3-02-T35 lock-step invariant holds **by construction**.
+///
+/// `None` means the op has no Vulkan graph arm — either it is a front-end
+/// signal op executed by `vokra-ops` (`Stft` / `MelFilterbank` / … — the
+/// CUDA arm covers none of these either; `Stft` is the honest gap the
+/// M4-13-T14 coverage table records), or its kernel exists only as a
+/// model-level primitive with no `OpKind` variant (`gemv` / `layer_norm` /
+/// `gelu` / `conv1d` / `softmax_causal` / `transpose` / `gather` —
+/// surface 2 of the M4-13-T01 two-surface distinction).
+///
+/// `gemm_variant` threads the probe's GEMM pipeline selection through:
+/// `MatMul`'s backing shader is variant-dependent (`gemm_subgroup` /
+/// `gemm_coopmat`), every other covered op has a fixed shader.
+#[must_use]
+pub fn graph_op_backing_shader(
+    op: &OpKind,
+    gemm_variant: GemmPipelineVariant,
+) -> Option<&'static str> {
+    match op {
+        // Hand-crafted smoke kernels (always available).
+        OpKind::Copy => Some("copy_f32"),
+        OpKind::Add => Some("add_f32"),
+        // glslc kernels (available once the owner commits their .spv —
+        // M4-13-T16; `spirv::has_blob` gates the actual coverage claim).
+        OpKind::MatMul => Some(gemm_variant.shader_name()),
+        OpKind::Mul => Some("elementwise"),
+        OpKind::Softmax => Some("softmax"),
+        _ => None,
+    }
+}
+
 impl Backend for VulkanBackend {
     fn name(&self) -> &str {
         "vulkan"
     }
 
     fn supports(&self, op: &OpKind) -> bool {
-        // M3-02-T24 lock-step gate: `supports()` must mirror the op set
-        // covered by `crate::eval::eval_vulkan_op` exactly. Adding an arm
-        // here without a matching `eval_op` arm (or vice versa) breaks the
-        // FR-EX-08 contract; the `supports_and_eval_op_are_lock_step` test
-        // below asserts the invariant.
+        // M3-02-T35 lock-step gate, blob-driven since M4-13-T09 (ADR
+        // M3-02-spirv-generation §7 addendum (b)): `supports()` returns
+        // `true` only when (1) the op has a Vulkan graph arm
+        // (`graph_op_backing_shader`) AND (2) the arm's SPIR-V blob is
+        // actually loadable today (`spirv::has_blob`). While the owner has
+        // not committed the glslc blobs (M4-13-T16), MatMul / Mul / Softmax
+        // therefore stay `false` — conservative honesty: advertising an op
+        // that dispatch would immediately fail with `UnsupportedOp` would
+        // make `run_graph`'s coverage precheck lie. Once a blob lands, the
+        // op lights up here automatically (no code change).
         //
-        // Today: `Copy` (hand-crafted `copy_f32` SPIR-V, 2 SSBOs) and
-        // `Add` (hand-crafted `add_f32` SPIR-V, 3 SSBOs) — both dispatched
-        // through the M3-02-T13 / T24 smoke path. Every other op stays
-        // `false`; `execute` (below) translates that into an explicit
-        // `UnsupportedOp` — never a silent CPU fallback (FR-EX-08). T14〜T22
-        // widen this set as the `glslc`-produced SPIR-V blobs land.
-        matches!(op, OpKind::Copy | OpKind::Add)
+        // The eval dispatcher derives from the same decision function, so
+        // supports() == true ⟺ eval_op reaches a dispatchable kernel — the
+        // `supports_and_eval_op_are_lock_step` test pins the pair, and the
+        // catch-all arm in `eval_vulkan_op` keeps the FR-EX-08 contract
+        // honest for direct callers.
+        #[cfg(all(
+            feature = "vulkan",
+            any(target_os = "linux", target_os = "android", target_os = "windows")
+        ))]
+        {
+            let variant =
+                select_gemm_pipeline_variant(&self.caps, GemmPipelinePreference::default())
+                    .expect("the default preference (PreferCoopMatrix) never errors");
+            graph_op_backing_shader(op, variant).is_some_and(crate::spirv::has_blob)
+        }
+        #[cfg(not(all(
+            feature = "vulkan",
+            any(target_os = "linux", target_os = "android", target_os = "windows")
+        )))]
+        {
+            // Off-target the backend cannot even be constructed
+            // (`new()` fails), so it honestly supports nothing.
+            let _ = op;
+            false
+        }
     }
 
     fn execute(&self, graph: &AudioGraph) -> Result<()> {
@@ -360,10 +417,9 @@ impl Backend for VulkanBackend {
                 )));
             }
         }
-        // No kernels ship yet, so no covered graph exists to run through
-        // `run_graph`. This branch is unreachable in the foundation slice; it
-        // stays as an explicit "later WP" marker (T24 wires this up once the
-        // SPIR-V pipelines exist).
+        // Coverage is satisfied. `execute` stays a coverage-only check; the
+        // data-carrying path is `vokra_core::run_graph`, which drives
+        // `eval_op` (symmetric with CpuBackend / MetalBackend / CudaBackend).
         Err(VokraError::NotImplemented(
             "vulkan graph-level execution is vokra_core::run_graph (drives eval_op); execute is \
              coverage-only",
@@ -380,7 +436,7 @@ impl Backend for VulkanBackend {
             any(target_os = "linux", target_os = "android", target_os = "windows")
         ))]
         {
-            crate::eval::eval_vulkan_op(op, inputs)
+            crate::eval::eval_vulkan_op(self, op, inputs)
         }
         #[cfg(not(all(
             feature = "vulkan",
@@ -518,7 +574,17 @@ mod tests {
         {
             if let Ok(backend) = VulkanBackend::new() {
                 assert_eq!(backend.name(), "vulkan");
-                assert!(!backend.supports(&OpKind::MatMul));
+                // Blob-driven coverage (M4-13-T09): MatMul is supported
+                // exactly when the probe-selected GEMM variant's blob is
+                // loadable — false in the foundation slice, true after the
+                // owner's T16 commit, with no test edit either way.
+                let variant = backend
+                    .select_gemm_pipeline_variant(GemmPipelinePreference::default())
+                    .expect("default preference never errors");
+                assert_eq!(
+                    backend.supports(&OpKind::MatMul),
+                    crate::spirv::has_blob(variant.shader_name()),
+                );
             }
         }
         #[cfg(not(all(
@@ -552,12 +618,16 @@ mod tests {
                 return;
             };
             use vokra_core::{DType, GraphBuilder, TensorDesc};
-            // The simplest possible uncovered graph: a MatMul.
+            // A PERMANENTLY uncovered graph op (front-end signal op with no
+            // Vulkan graph arm — `graph_op_backing_shader` returns None):
+            // stays an explicit UnsupportedOp even after the owner's blob
+            // commit widens the covered set (M4-13-T09 blob-driven
+            // coverage made MatMul time-dependent, so it no longer serves
+            // as the permanent negative here).
             let mut mb = GraphBuilder::new();
-            let x = mb.add_tensor(TensorDesc::new("x", DType::F32, [2, 4]));
-            let w = mb.add_tensor(TensorDesc::new("w", DType::F32, [4, 8]));
-            let y = mb.add_tensor(TensorDesc::new("y", DType::F32, [2, 8]));
-            mb.add_node(OpKind::MatMul, &[x, w], &[y]);
+            let x = mb.add_tensor(TensorDesc::new("x", DType::F32, [64]));
+            let y = mb.add_tensor(TensorDesc::new("y", DType::F32, [64]));
+            mb.add_node(OpKind::DcOffsetRemove, &[x], &[y]);
             mb.mark_input(x);
             mb.mark_output(y);
             let g = mb.finish().expect("valid graph");

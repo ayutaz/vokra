@@ -155,7 +155,8 @@ mod probe;
 pub mod spirv;
 
 pub use backend::{
-    GemmPipelinePreference, GemmPipelineVariant, VulkanBackend, select_gemm_pipeline_variant,
+    GemmPipelinePreference, GemmPipelineVariant, VulkanBackend, graph_op_backing_shader,
+    select_gemm_pipeline_variant,
 };
 pub use probe::{VendorFamily, VulkanCapabilities, vokra_vulkan_probe};
 
