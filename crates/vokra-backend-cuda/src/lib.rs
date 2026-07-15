@@ -96,6 +96,12 @@ compile_error!(
 mod context;
 #[cfg(any(unix, windows))]
 mod eval;
+// M4-07: FlashAttention v3 (Hopper WGMMA, sm_90a). The ONLY module tree where
+// FA v3 code is legal (design constraint §5-(7) unlock point; containment is
+// machine-checked by scripts/check-fa-v3-confinement.sh). Kept as a separate
+// NVRTC program from `context::KERNELS_CUDA` — see fa_v3.rs module docs.
+#[cfg(any(unix, windows))]
+mod fa_v3;
 #[cfg(any(unix, windows))]
 pub mod session_pool;
 #[cfg(any(unix, windows))]
@@ -112,6 +118,16 @@ pub use probe::{CudaCapabilities, vokra_cuda_probe};
 
 #[cfg(any(unix, windows))]
 pub use context::{CudaContext, CudaKvCache};
+// M4-07 diagnostic / test surface (doc(hidden) — not a supported public API):
+// the arch-explicit NVRTC compile entry the `compute_90a` feasibility test
+// drives, and the FA v3 kernel sources it compiles. NVRTC needs no GPU, only
+// the toolkit library, so the test can run on any CUDA-toolkit host.
+#[cfg(any(unix, windows))]
+#[doc(hidden)]
+pub use context::nvrtc_compile_for_arch;
+#[cfg(any(unix, windows))]
+#[doc(hidden)]
+pub use fa_v3::{FA_V3_FEASIBILITY_SNIPPET, KERNELS_CUDA_FA_V3};
 // `CudaDecodeSession` is the M2 Phase-3b device-resident decoder-step driver
 // (the CUDA sibling of `vokra-backend-metal`'s `MetalDecodeSession`); re-exported
 // here so `vokra-models`' `Compute::new_decoder_step_session` (its Cuda arm)

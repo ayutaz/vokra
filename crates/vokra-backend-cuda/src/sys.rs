@@ -195,6 +195,35 @@ impl DynLib {
         // as the typed function pointer (the standard dlsym idiom).
         Ok(unsafe { core::mem::transmute_copy::<*mut c_void, F>(&ptr) })
     }
+
+    /// [`Self::get`] variant for **optional** symbols (M4-07-T04): returns
+    /// `None` instead of an error when the symbol is absent. Used for the
+    /// Hopper-era Driver API entry points (`cuFuncSetAttribute`,
+    /// `cuTensorMapEncodeTiled`) that the FA v3 path needs but the FA v2 /
+    /// decomposed paths do not — a missing optional symbol must **never** fail
+    /// the whole backend load; it only degrades FA v3 (explicit stderr log at
+    /// the degrade site, FR-EX-08 — the log lives with the capability
+    /// decision, not here).
+    ///
+    /// # Safety
+    /// Same contract as [`Self::get`]: `F` must be a function-pointer type
+    /// whose signature matches the C symbol `name` exactly.
+    pub(crate) unsafe fn get_opt<F: Copy>(&self, name: &[u8]) -> Option<F> {
+        debug_assert_eq!(name.last(), Some(&0), "symbol name must be NUL-terminated");
+        debug_assert_eq!(
+            core::mem::size_of::<F>(),
+            core::mem::size_of::<*mut c_void>(),
+            "F must be a pointer-sized function pointer"
+        );
+        // SAFETY: `handle` is live; `name` is a valid NUL-terminated C string.
+        let ptr = unsafe { dl::sym(self.handle, name.as_ptr() as *const c_char) };
+        if ptr.is_null() {
+            return None;
+        }
+        // SAFETY: as in [`Self::get`] — non-null pointer-sized symbol address
+        // reinterpreted as the typed function pointer the caller vouched for.
+        Some(unsafe { core::mem::transmute_copy::<*mut c_void, F>(&ptr) })
+    }
 }
 
 impl Drop for DynLib {
@@ -299,6 +328,36 @@ pub(crate) type FnCuLaunchKernel = unsafe extern "C" fn(
     *mut *mut c_void,
     *mut *mut c_void,
 ) -> CUresult;
+/// `cuFuncSetAttribute(CUfunction, CUfunction_attribute, int)` — exact cuda.h
+/// prototype. Optional (M4-07): the FA v3 kernel's 82 944-byte dynamic
+/// shared-memory tile exceeds the 48 KiB default per-block cap, so the lazy
+/// FA v3 module init must opt in via
+/// `CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES`. FA v2 (40 KiB, under the
+/// default cap) and the decomposed chain never need it.
+pub(crate) type FnCuFuncSetAttribute = unsafe extern "C" fn(CUfunction, c_int, c_int) -> CUresult;
+/// `cuTensorMapEncodeTiled` — exact cuda.h (12.x) prototype, with the opaque
+/// out-param `CUtensorMap*` (a 128-byte, 64-byte-aligned struct) and the enum
+/// parameters (`CUtensorMapDataType` / `Interleave` / `Swizzle` /
+/// `L2promotion` / `FloatOOBfill`) passed as `c_uint` (C enums are int-sized
+/// here). Optional (M4-07-T04): resolved as the **Hopper-era-driver canary +
+/// TMA descriptor plumbing** for the FA v3 path — see
+/// `docs/adr/M4-07-fa-v3-hopper.md` §(e). The initial FA v3 kernel streams
+/// K/V with `cp.async` and does not consume a tensor map yet; the resolve +
+/// degrade wiring keeps the TMA follow-up purely kernel-side.
+pub(crate) type FnCuTensorMapEncodeTiled = unsafe extern "C" fn(
+    *mut c_void, // CUtensorMap* tensorMap (out, 128 B / 64-B-aligned)
+    c_uint,      // CUtensorMapDataType tensorDataType
+    c_uint,      // cuuint32_t tensorRank
+    *mut c_void, // void* globalAddress
+    *const u64,  // const cuuint64_t* globalDim   [tensorRank]
+    *const u64,  // const cuuint64_t* globalStrides [tensorRank - 1], bytes
+    *const u32,  // const cuuint32_t* boxDim      [tensorRank]
+    *const u32,  // const cuuint32_t* elementStrides [tensorRank]
+    c_uint,      // CUtensorMapInterleave interleave
+    c_uint,      // CUtensorMapSwizzle swizzle
+    c_uint,      // CUtensorMapL2promotion l2Promotion
+    c_uint,      // CUtensorMapFloatOOBfill oobFill
+) -> CUresult;
 
 /// The resolved CUDA Driver API entry points, plus the `libcuda` handle that
 /// keeps them valid. Loaded once by [`CudaDriver::load`].
@@ -328,6 +387,15 @@ pub(crate) struct CudaDriver {
     pub(crate) cu_module_get_function: FnCuModuleGetFunction,
     pub(crate) cu_module_unload: FnCuModuleUnload,
     pub(crate) cu_launch_kernel: FnCuLaunchKernel,
+    /// Optional (M4-07): `cuFuncSetAttribute` — required only by the FA v3
+    /// shared-memory opt-in. `None` (a pre-CUDA-9-era driver) degrades FA v3
+    /// explicitly and leaves FA v2 / decomposed untouched.
+    pub(crate) cu_func_set_attribute: Option<FnCuFuncSetAttribute>,
+    /// Optional (M4-07-T04): `cuTensorMapEncodeTiled` — the TMA descriptor
+    /// encoder, exported by CUDA 12-era drivers. Doubles as the
+    /// Hopper-generation-driver canary for the FA v3 gate (ADR M4-07 §(e)):
+    /// a driver too old to export it cannot JIT `compute_90a` PTX either.
+    pub(crate) cu_tensor_map_encode_tiled: Option<FnCuTensorMapEncodeTiled>,
 }
 
 impl CudaDriver {
@@ -373,6 +441,11 @@ impl CudaDriver {
                 cu_module_get_function: lib.get(b"cuModuleGetFunction\0")?,
                 cu_module_unload: lib.get(b"cuModuleUnload\0")?,
                 cu_launch_kernel: lib.get(b"cuLaunchKernel\0")?,
+                // Optional Hopper-era symbols (M4-07): absence is NOT an
+                // error — it only degrades the FA v3 path (explicit stderr
+                // log at the capability-decision site, FR-EX-08).
+                cu_func_set_attribute: lib.get_opt(b"cuFuncSetAttribute\0"),
+                cu_tensor_map_encode_tiled: lib.get_opt(b"cuTensorMapEncodeTiled\0"),
                 _lib: lib,
             })
         }

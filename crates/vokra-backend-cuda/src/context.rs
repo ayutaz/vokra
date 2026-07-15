@@ -1127,6 +1127,20 @@ pub struct CudaContext {
     /// path's `6·N + 1`). `Cell` because every op takes `&self` and the context is
     /// already thread-affine (`!Send`/`!Sync`).
     submissions: Cell<u64>,
+    /// M4-07-T03: lazy FA v3 (Hopper WGMMA) module slot. Empty until the
+    /// first capability query ([`Self::fa_v3_slot`]); on a device probing
+    /// SM ≥ 9.0 it holds the `compute_90a`-compiled module + kernel handle
+    /// (`FaV3Slot::Ready`), on everything else `FaV3Slot::Disabled(reason)`
+    /// — and on non-Hopper devices the NVRTC compile is never even attempted
+    /// (zero startup cost, no incompatible PTX near `cuModuleLoadData`).
+    /// `OnceCell` (std) because the context is already `!Send`/`!Sync`.
+    fa_v3: std::cell::OnceCell<crate::fa_v3::FaV3Slot>,
+    /// M4-07-T10: encoder opt-in flag for FA v3 (default **off** — the
+    /// encoder / `attn_dev` / cross-attention chains stay byte-for-byte
+    /// decomposed unless this is raised). Set from the
+    /// `VOKRA_CUDA_FA_V3_ENCODER` env var at construction or via
+    /// [`Self::set_fa_v3_encoder_opt_in`].
+    fa_v3_encoder: Cell<bool>,
 }
 
 impl CudaContext {
@@ -1196,6 +1210,10 @@ impl CudaContext {
                 dequant_gemv_q5_0: m.dequant_gemv_q5_0,
                 dequant_gemv_q8_0: m.dequant_gemv_q8_0,
                 submissions: Cell::new(0),
+                fa_v3: std::cell::OnceCell::new(),
+                fa_v3_encoder: Cell::new(crate::fa_v3::fa_v3_env_encoder_opt_in(
+                    std::env::var_os("VOKRA_CUDA_FA_V3_ENCODER").as_deref(),
+                )),
             }),
             Err(e) => {
                 // SAFETY: `context` is the just-created owned context; destroy it
@@ -1243,6 +1261,198 @@ impl CudaContext {
             "cuDeviceGetAttribute(MAX_SHARED_MEMORY_PER_BLOCK_OPTIN)",
         )?;
         Ok(val)
+    }
+
+    /// Compute-capability major of the owned device (`cuDeviceGetAttribute`,
+    /// ordinal 75 — the same value [`crate::vokra_cuda_probe`] reports). Used
+    /// by the FA v3 lazy slot to decide whether the `compute_90a` compile is
+    /// attempted at all (M4-07-T03).
+    fn compute_capability_major(&self) -> Result<c_int> {
+        let mut val: c_int = 0;
+        // SAFETY: resolved `cuDeviceGetAttribute` entry point; `&mut val` is a
+        // valid writable c_int; the attribute ordinal is the documented enum
+        // value; `self.device` is the ordinal-0 handle from `Self::new`.
+        let r = unsafe {
+            (self.driver.cu_device_get_attribute)(
+                &mut val,
+                sys::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+                self.device,
+            )
+        };
+        sys::check(
+            &self.driver,
+            r,
+            "cuDeviceGetAttribute(compute_capability_major)",
+        )?;
+        Ok(val)
+    }
+
+    // ---- M4-07: FlashAttention v3 lazy slot (Hopper-only compile) -----------
+
+    /// The FA v3 slot, initialised on first use (M4-07-T03). The init chain —
+    /// every stage failing DISABLES FA v3 with an explicit stderr note and
+    /// leaves FA v2 / decomposed untouched (GPU-internal path selection, not
+    /// a silent CPU fallback; FR-EX-08):
+    ///
+    /// 1. device probe `compute_capability_major >= 9` (below → **no compile
+    ///    attempt at all**: a `compute_90a` PTX must never reach a non-Hopper
+    ///    `cuModuleLoadData`, and non-Hopper startup cost stays zero);
+    /// 2. optional driver symbols (`cuFuncSetAttribute` — required for the
+    ///    82 944-byte dynamic-smem opt-in; `cuTensorMapEncodeTiled` — the
+    ///    Hopper-era-driver canary + TMA plumbing, ADR M4-07 §(e));
+    /// 3. opt-in shared-memory budget ≥ [`crate::fa_v3::FLASH_ATTN_V3_MIN_SHARED_BYTES`];
+    /// 4. NVRTC compile of [`crate::fa_v3::KERNELS_CUDA_FA_V3`] pinned to
+    ///    `compute_90a` (the `VOKRA_NVRTC_GPU_ARCH` escape hatch is
+    ///    deliberately NOT honored — `compute_90` would not enable WGMMA);
+    /// 5. `cuModuleLoadData` + `cuModuleGetFunction` +
+    ///    `cuFuncSetAttribute(MAX_DYNAMIC_SHARED_SIZE_BYTES)`.
+    fn fa_v3_slot(&self) -> &crate::fa_v3::FaV3Slot {
+        self.fa_v3.get_or_init(|| {
+            let slot = self.fa_v3_init();
+            if let crate::fa_v3::FaV3Slot::Disabled(reason) = &slot {
+                // Explicit, not silent (FR-EX-08). This workspace is zero-dep
+                // (no `log` crate), so stderr is the logging channel.
+                eprintln!("vokra-backend-cuda: FA v3 disabled: {reason}");
+            }
+            slot
+        })
+    }
+
+    /// [`Self::fa_v3_slot`] init body; returns `Ready` or `Disabled(reason)`.
+    fn fa_v3_init(&self) -> crate::fa_v3::FaV3Slot {
+        use crate::fa_v3::{self, FaV3Slot};
+
+        let major = match self.compute_capability_major() {
+            Ok(m) => m,
+            Err(e) => return FaV3Slot::Disabled(format!("compute-capability probe failed: {e}")),
+        };
+        if !fa_v3::fa_v3_should_attempt_compile(major) {
+            return FaV3Slot::Disabled(format!(
+                "device reports SM {major}.x; FA v3 (WGMMA) requires SM >= 9.0 (Hopper) — \
+                 compute_90a compile not attempted"
+            ));
+        }
+        let Some(set_attr) = self.driver.cu_func_set_attribute else {
+            return FaV3Slot::Disabled(
+                "driver does not export cuFuncSetAttribute (required for the FA v3 \
+                 dynamic shared-memory opt-in)"
+                    .to_owned(),
+            );
+        };
+        if self.driver.cu_tensor_map_encode_tiled.is_none() {
+            // Hopper-era-driver canary (ADR M4-07 §(e)): a driver too old to
+            // export the TMA descriptor encoder cannot JIT compute_90a PTX
+            // either — degrade before handing it an incompatible module.
+            return FaV3Slot::Disabled(
+                "driver does not export cuTensorMapEncodeTiled (pre-CUDA-12 driver \
+                 cannot JIT compute_90a PTX)"
+                    .to_owned(),
+            );
+        }
+        let budget = self.max_shared_memory_per_block_optin().unwrap_or(0);
+        if budget < fa_v3::FLASH_ATTN_V3_MIN_SHARED_BYTES {
+            return FaV3Slot::Disabled(format!(
+                "opt-in shared memory {budget} B < required {} B",
+                fa_v3::FLASH_ATTN_V3_MIN_SHARED_BYTES
+            ));
+        }
+
+        let nvrtc = match Nvrtc::load() {
+            Ok(n) => n,
+            Err(e) => return FaV3Slot::Disabled(format!("NVRTC unavailable: {e}")),
+        };
+        let arch = c"--gpu-architecture=compute_90a";
+        debug_assert_eq!(
+            arch.to_str().expect("ascii"),
+            fa_v3::FA_V3_GENCODE_FLAG,
+            "the CStr literal and the documented constant must agree"
+        );
+        let ptx = match compile_ptx_for_arch(
+            &nvrtc,
+            fa_v3::KERNELS_CUDA_FA_V3,
+            c"vokra_kernels_fa_v3.cu",
+            "FA v3 kernels (compute_90a)",
+            arch,
+        ) {
+            Ok(p) => p,
+            Err(e) => return FaV3Slot::Disabled(format!("NVRTC compute_90a compile failed: {e}")),
+        };
+        let module = match load_module(&self.driver, &ptx) {
+            Ok(m) => m,
+            Err(e) => return FaV3Slot::Disabled(format!("FA v3 module load failed: {e}")),
+        };
+        let kernel = match get_function(&self.driver, module, fa_v3::FA_V3_KERNEL_SYMBOL) {
+            Ok(k) => k,
+            Err(e) => {
+                // SAFETY: `module` is the just-loaded owned module; unload it
+                // exactly once before reporting the disable reason (no leak).
+                unsafe { (self.driver.cu_module_unload)(module) };
+                return FaV3Slot::Disabled(format!("FA v3 kernel symbol missing: {e}"));
+            }
+        };
+        // Opt the kernel into its dynamic shared-memory budget (> 48 KiB
+        // default cap). Failure disables FA v3 — launching would fail anyway.
+        // SAFETY: `set_attr` is the resolved `cuFuncSetAttribute`; `kernel`
+        // is a valid function handle from the module above; the attribute
+        // ordinal + byte value are the documented cuda.h forms.
+        let r = unsafe {
+            set_attr(
+                kernel,
+                fa_v3::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                fa_v3::FLASH_ATTN_V3_MIN_SHARED_BYTES,
+            )
+        };
+        if r != sys::CUDA_SUCCESS {
+            // SAFETY: unload the owned module exactly once on this exit path.
+            unsafe { (self.driver.cu_module_unload)(module) };
+            return FaV3Slot::Disabled(format!(
+                "cuFuncSetAttribute(MAX_DYNAMIC_SHARED_SIZE_BYTES) failed (CUresult {r})"
+            ));
+        }
+        FaV3Slot::Ready(crate::fa_v3::FaV3Module { module, kernel })
+    }
+
+    /// Whether the FA v3 fused path is available on this context (Hopper +
+    /// compiled + shared-memory opt-in applied). Triggers the lazy init on
+    /// first call; `false` is never silent (the init printed the reason).
+    pub fn fa_v3_available(&self) -> bool {
+        matches!(self.fa_v3_slot(), crate::fa_v3::FaV3Slot::Ready(_))
+    }
+
+    /// The FA v3 disable reason, if the slot resolved to `Disabled` (for
+    /// error surfaces that must carry the probe verdict — e.g. the
+    /// `VOKRA_CUDA_FORCE_FA_V3` explicit error, T09).
+    #[allow(dead_code)] // consumed by the T09 dispatch commit of this WP
+    fn fa_v3_disable_reason(&self) -> Option<&str> {
+        match self.fa_v3_slot() {
+            crate::fa_v3::FaV3Slot::Ready(_) => None,
+            crate::fa_v3::FaV3Slot::Disabled(reason) => Some(reason.as_str()),
+        }
+    }
+
+    /// The loaded FA v3 kernel handle, or an explicit error naming the
+    /// disable reason. Reached only from `launch_flash_attn_v3` — a caller
+    /// that sets `use_flash_attn_v3 = true` without the probe promise gets
+    /// this explicit error, never a silent fallback (FR-EX-08).
+    #[allow(dead_code)] // consumed by the T05-T08 launcher commit of this WP
+    fn fa_v3_function(&self) -> Result<sys::CUfunction> {
+        match self.fa_v3_slot() {
+            crate::fa_v3::FaV3Slot::Ready(m) => Ok(m.kernel),
+            crate::fa_v3::FaV3Slot::Disabled(reason) => Err(VokraError::BackendUnavailable(
+                format!("FA v3 kernel unavailable: {reason}"),
+            )),
+        }
+    }
+
+    /// M4-07-T10: encoder FA v3 opt-in (default **off**). When raised — via
+    /// this builder method or the `VOKRA_CUDA_FA_V3_ENCODER` env var at
+    /// construction — [`Self::encode_prenorm_stack`] routes its self-attention
+    /// chains through FA v3 **iff** the capability probe holds; on a
+    /// non-Hopper device the opt-in stays a no-op (decomposed continues, with
+    /// an explicit stderr note from the lazy init — not an error: opt-in is a
+    /// preference, unlike the `VOKRA_CUDA_FORCE_FA_V3` force which errors).
+    pub fn set_fa_v3_encoder_opt_in(&self, on: bool) {
+        self.fa_v3_encoder.set(on);
     }
 
     /// Row-major FP32 GEMM on the GPU with optional per-column bias:
@@ -4146,6 +4356,13 @@ impl Drop for CudaContext {
                 (self.driver.cu_stream_synchronize)(self.stream);
                 (self.driver.cu_stream_destroy)(self.stream);
             }
+            // M4-07: the lazily-compiled FA v3 module (present only when a
+            // Hopper device initialised the slot to `Ready`).
+            if let Some(crate::fa_v3::FaV3Slot::Ready(m)) = self.fa_v3.get() {
+                if !m.module.is_null() {
+                    (self.driver.cu_module_unload)(m.module);
+                }
+            }
             if !self.kernels_module.is_null() {
                 (self.driver.cu_module_unload)(self.kernels_module);
             }
@@ -5262,6 +5479,26 @@ fn bool_arg(p: &bool) -> *mut c_void {
 /// forbidden in this WP (ADR M3-01 (b), setting a Hopper gencode alone is safe
 /// because the FA v2 kernel makes no WGMMA-only assumptions).
 fn compile_ptx(nvrtc: &Nvrtc, source: &str, unit: &core::ffi::CStr, what: &str) -> Result<Vec<u8>> {
+    // M4-07-T03: thin wrapper — the shared KERNELS_CUDA behaviour (compute_89
+    // default + VOKRA_NVRTC_GPU_ARCH escape hatch, both inside gencode_flag())
+    // is unchanged to the bit; only the FA v3 program calls the arch-explicit
+    // variant below with its fixed `compute_90a`.
+    compile_ptx_for_arch(nvrtc, source, unit, what, &gencode_flag())
+}
+
+/// [`compile_ptx`] generalised over the `--gpu-architecture` flag
+/// (M4-07-T03). `arch_flag` is the complete NVRTC option string (e.g.
+/// `--gpu-architecture=compute_90a` for the FA v3 program — which is a fixed
+/// constant, deliberately NOT routed through [`gencode_flag`]'s
+/// `VOKRA_NVRTC_GPU_ARCH` escape hatch: plain `compute_90` would not enable
+/// WGMMA, so honoring the env var for that program could only mis-compile).
+fn compile_ptx_for_arch(
+    nvrtc: &Nvrtc,
+    source: &str,
+    unit: &core::ffi::CStr,
+    what: &str,
+    arch_flag: &core::ffi::CStr,
+) -> Result<Vec<u8>> {
     let src = std::ffi::CString::new(source).map_err(|_| {
         VokraError::InvalidArgument(format!("{what} CUDA source contains an interior NUL"))
     })?;
@@ -5283,10 +5520,39 @@ fn compile_ptx(nvrtc: &Nvrtc, source: &str, unit: &core::ffi::CStr, what: &str) 
     sys::check_nvrtc(nvrtc, r, "nvrtcCreateProgram")?;
 
     // `prog` now exists; ensure it is destroyed on every exit path.
-    let result = compile_and_extract_ptx(nvrtc, prog, what);
+    let result = compile_and_extract_ptx(nvrtc, prog, what, arch_flag);
     // SAFETY: `prog` is a valid program handle; destroyed exactly once here.
     unsafe { (nvrtc.destroy_program)(&mut prog) };
     result
+}
+
+/// M4-07 diagnostic / test surface (re-exported `#[doc(hidden)]` from the
+/// crate root): NVRTC-compile `source` for an explicit `--gpu-architecture=
+/// {arch}` and return the PTX bytes. Loads NVRTC itself — **no GPU or driver
+/// is required** (NVRTC stops at PTX generation), so the `compute_90a`
+/// feasibility test (`tests/fa_v3_nvrtc_feasibility.rs`, M4-07-T02) runs on
+/// any CUDA-toolkit host and clean-skips where the library is absent.
+///
+/// # Errors
+///
+/// [`VokraError::BackendUnavailable`] when NVRTC is not installed or the
+/// compile fails (the NVRTC log is embedded); [`VokraError::InvalidArgument`]
+/// for interior-NUL inputs.
+#[doc(hidden)]
+pub fn nvrtc_compile_for_arch(source: &str, arch: &str) -> Result<Vec<u8>> {
+    // Validate the argument boundary before touching the library so the
+    // negative is deterministic on NVRTC-less hosts too.
+    let flag = std::ffi::CString::new(format!("--gpu-architecture={arch}")).map_err(|_| {
+        VokraError::InvalidArgument("arch flag contains an interior NUL".to_owned())
+    })?;
+    let nvrtc = Nvrtc::load()?;
+    compile_ptx_for_arch(
+        &nvrtc,
+        source,
+        c"vokra_nvrtc_diagnostic.cu",
+        &format!("diagnostic compile ({arch})"),
+        &flag,
+    )
 }
 
 /// Resolves the NVRTC `--gpu-architecture=compute_XX` flag to pass this
@@ -5326,13 +5592,20 @@ fn gencode_flag() -> std::ffi::CString {
         .unwrap_or_else(|_| std::ffi::CString::new("--gpu-architecture=compute_89").unwrap())
 }
 
-/// Compiles `prog` with the M3-01-T07 gencode pin (`--gpu-architecture=compute_89`
-/// by default, `VOKRA_NVRTC_GPU_ARCH` overrides) and extracts its PTX. On a
-/// compile failure the NVRTC log is surfaced in the error (labelled `what`).
-fn compile_and_extract_ptx(nvrtc: &Nvrtc, prog: sys::NvrtcProgram, what: &str) -> Result<Vec<u8>> {
-    let arch = gencode_flag();
+/// Compiles `prog` with the caller's `--gpu-architecture` flag (the shared
+/// KERNELS_CUDA path passes [`gencode_flag`]'s compute_89-default /
+/// env-overridable value; the FA v3 path passes its fixed `compute_90a`) and
+/// extracts its PTX. On a compile failure the NVRTC log is surfaced in the
+/// error (labelled `what`).
+fn compile_and_extract_ptx(
+    nvrtc: &Nvrtc,
+    prog: sys::NvrtcProgram,
+    what: &str,
+    arch: &core::ffi::CStr,
+) -> Result<Vec<u8>> {
     // `options` holds raw `*const c_char` pointers into `arch`'s owned buffer;
-    // `arch` must live until nvrtcCompileProgram returns.
+    // `arch` must live until nvrtcCompileProgram returns (it is a borrowed
+    // CStr owned by the caller for the whole call).
     let options: [*const c_char; 1] = [arch.as_ptr()];
     // SAFETY: `prog` is a valid program; `options` is a 1-slot array of
     // NUL-terminated C strings owned by `arch` (alive for the call).
