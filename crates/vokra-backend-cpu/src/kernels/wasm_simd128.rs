@@ -28,9 +28,12 @@
 //! - [`dot`] / [`gemv`]: mirror the NEON `gemv` idiom (4-lane partial sums,
 //!   horizontally reduced after the loop). The association differs from the
 //!   scalar left-to-right chain, so the result is NOT bit-identical — the
-//!   harness measures the actual delta and asserts the same relative bound
-//!   the native NEON/AVX2 differential tests use (honest recorded diff, not
-//!   a fabricated exact match).
+//!   harness measures the actual delta and asserts the native differential
+//!   bounds (`GEMV_ATOL = 1e-4` / `RTOL = 1e-4`,
+//!   `crates/vokra-backend-cpu/tests/differential.rs`). **Measured**
+//!   (2026-07-15, Node 24.16, m=17 k=129 uniform ±1 inputs): max |Δ| =
+//!   2.384e-6 — ~40x inside the bound (honest recorded diff, not a
+//!   fabricated exact match).
 //!
 //! # Unsafe boundary (NFR-RL-07)
 //!

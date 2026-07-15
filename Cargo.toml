@@ -9,7 +9,7 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/*", "tests/parity"]
+members = ["crates/*", "tests/parity", "tests/wasm-harness"]
 # `integrations/` holds opt-in bridges that link NON-`vokra-*` crates (e.g. the
 # 8-language `piper-plus-g2p` for real G2P). They are their OWN isolated
 # workspaces (each with its own Cargo.lock) so the zero-dependency invariant of

@@ -126,3 +126,12 @@ version = "0.1.0-alpha.0"
 dependencies = [
  "vokra-core",
 ]
+
+[[package]]
+name = "vokra-wasm-harness"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "vokra-backend-cpu",
+ "vokra-core",
+ "vokra-models",
+]
