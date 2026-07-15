@@ -19,6 +19,7 @@
 //! across the owner's blob commit without edits (no fabricated pass: which
 //! branch ran is visible in the test log).
 
+use vokra_backend_vulkan::plan::{ActivationKind, Conv1dDims, ElementwiseOp};
 use vokra_backend_vulkan::{GemmPipelinePreference, VulkanBackend, spirv};
 use vokra_core::VokraError;
 
@@ -339,5 +340,221 @@ fn gelu_dispatch_matches_cpu_erf_form() {
         let err = result.expect_err("no .spv committed; gelu must be UnsupportedOp");
         assert!(matches!(err, VokraError::UnsupportedOp(_)));
         eprintln!("gelu blob absent → explicit UnsupportedOp (placeholder slice)");
+    }
+}
+
+/// `conv1d_f32` (M4-13-T07): Whisper front-end stride/padding envelope,
+/// batch=1 vs the CPU `conv1d_f32` oracle, and batch=2 vs two independent
+/// CPU calls (the CPU kernel is single-batch).
+#[test]
+fn conv1d_dispatch_is_blob_gated_and_cpu_close() {
+    let Ok(backend) = VulkanBackend::new() else {
+        eprintln!("no Vulkan on this host; skipping conv1d dispatch test");
+        return;
+    };
+    // Whisper-shaped (downscaled channels): k=3, conv1 s=1 p=1, conv2 s=2 p=1.
+    let (in_ch, out_ch, in_len) = (8usize, 12usize, 20usize);
+    for (stride, padding) in [(1usize, 1usize), (2, 1)] {
+        let dims = Conv1dDims {
+            batch: 2,
+            in_ch,
+            out_ch,
+            in_len,
+            kernel_len: 3,
+            stride,
+            padding,
+        };
+        let out_len = dims.out_len().expect("valid dims");
+        let input = splitmix_f32s(20 + stride as u64, dims.batch * in_ch * in_len);
+        let weight = splitmix_f32s(22, out_ch * in_ch * 3);
+        let bias = splitmix_f32s(23, out_ch);
+
+        let result = backend.conv1d_f32(&dims, &input, &weight, Some(&bias));
+        if spirv::has_blob("conv1d") {
+            let got = result.expect("blob committed; conv1d must dispatch");
+            // CPU oracle is single-batch: run it once per batch item.
+            let mut want = Vec::with_capacity(dims.batch * out_ch * out_len);
+            for b in 0..dims.batch {
+                let slice = &input[b * in_ch * in_len..(b + 1) * in_ch * in_len];
+                let mut out_b = vec![0.0f32; out_ch * out_len];
+                vokra_backend_cpu::kernels::conv1d_f32(
+                    slice,
+                    in_ch,
+                    in_len,
+                    &weight,
+                    out_ch,
+                    3,
+                    Some(&bias),
+                    stride,
+                    padding,
+                    &mut out_b,
+                )
+                .expect("CPU reference");
+                want.extend_from_slice(&out_b);
+            }
+            assert_close(&got, &want, "conv1d vs CPU (per-batch)");
+        } else {
+            let err = result.expect_err("no .spv committed; conv1d must be UnsupportedOp");
+            assert!(matches!(err, VokraError::UnsupportedOp(_)));
+            eprintln!(
+                "conv1d blob absent → explicit UnsupportedOp (placeholder slice, s={stride})"
+            );
+        }
+    }
+}
+
+/// `elementwise_f32` (M4-13-T07): the OP specialization constant selects
+/// add vs mul; both checked against the CPU kernels.
+#[test]
+fn elementwise_dispatch_selects_add_and_mul_via_spec_constant() {
+    let Ok(backend) = VulkanBackend::new() else {
+        eprintln!("no Vulkan on this host; skipping elementwise dispatch test");
+        return;
+    };
+    let n = 300usize; // 2 workgroups of 256 + ragged tail
+    let a = splitmix_f32s(24, n);
+    let b = splitmix_f32s(25, n);
+
+    for (op, name) in [(ElementwiseOp::Add, "add"), (ElementwiseOp::Mul, "mul")] {
+        let result = backend.elementwise_f32(op, &a, &b);
+        if spirv::has_blob("elementwise") {
+            let got = result.expect("blob committed; elementwise must dispatch");
+            let mut want = vec![0.0f32; n];
+            match op {
+                ElementwiseOp::Add => {
+                    vokra_backend_cpu::kernels::add_f32(&a, &b, &mut want).expect("CPU add")
+                }
+                ElementwiseOp::Mul => {
+                    vokra_backend_cpu::kernels::mul_f32(&a, &b, &mut want).expect("CPU mul")
+                }
+            }
+            assert_close(&got, &want, name);
+        } else {
+            let err = result.expect_err("no .spv committed; elementwise must be UnsupportedOp");
+            assert!(matches!(err, VokraError::UnsupportedOp(_)));
+            eprintln!("elementwise({name}) blob absent → explicit UnsupportedOp");
+        }
+    }
+}
+
+/// `activation_f32` (M4-13-T07): the KIND specialization constant selects
+/// relu / sigmoid / tanh; each checked against its CPU kernel.
+#[test]
+fn activation_dispatch_selects_kind_via_spec_constant() {
+    let Ok(backend) = VulkanBackend::new() else {
+        eprintln!("no Vulkan on this host; skipping activation dispatch test");
+        return;
+    };
+    let x: Vec<f32> = splitmix_f32s(26, 300).iter().map(|v| v * 3.0).collect();
+
+    type CpuFn = fn(&[f32], &mut [f32]) -> vokra_core::Result<()>;
+    let cases: [(ActivationKind, &str, CpuFn); 3] = [
+        (
+            ActivationKind::Relu,
+            "relu",
+            vokra_backend_cpu::kernels::relu_f32,
+        ),
+        (
+            ActivationKind::Sigmoid,
+            "sigmoid",
+            vokra_backend_cpu::kernels::sigmoid_f32,
+        ),
+        (
+            ActivationKind::Tanh,
+            "tanh",
+            vokra_backend_cpu::kernels::tanh_f32,
+        ),
+    ];
+    for (kind, name, cpu) in cases {
+        let result = backend.activation_f32(kind, &x);
+        if spirv::has_blob("activation") {
+            let got = result.expect("blob committed; activation must dispatch");
+            let mut want = vec![0.0f32; x.len()];
+            cpu(&x, &mut want).expect("CPU reference");
+            assert_close(&got, &want, name);
+        } else {
+            let err = result.expect_err("no .spv committed; activation must be UnsupportedOp");
+            assert!(matches!(err, VokraError::UnsupportedOp(_)));
+            eprintln!("activation({name}) blob absent → explicit UnsupportedOp");
+        }
+    }
+}
+
+/// `transpose_f32` (M4-13-T08): checked against a host reference; a double
+/// transpose round-trips bit-for-bit (pure data movement).
+#[test]
+fn transpose_dispatch_round_trips() {
+    let Ok(backend) = VulkanBackend::new() else {
+        eprintln!("no Vulkan on this host; skipping transpose dispatch test");
+        return;
+    };
+    let (m, n) = (17usize, 33usize); // ragged vs the 16x16 tiles
+    let x = splitmix_f32s(27, m * n);
+
+    let result = backend.transpose_f32(m, n, &x);
+    if spirv::has_blob("transpose") {
+        let got = result.expect("blob committed; transpose must dispatch");
+        // Host reference.
+        let mut want = vec![0.0f32; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                want[j * m + i] = x[i * n + j];
+            }
+        }
+        assert_close(&got, &want, "transpose vs host");
+        // Double transpose is the identity, bit-for-bit (no arithmetic).
+        let back = backend.transpose_f32(n, m, &got).expect("second transpose");
+        for (i, (orig, rt)) in x.iter().zip(&back).enumerate() {
+            assert_eq!(orig.to_bits(), rt.to_bits(), "round-trip diverged at {i}");
+        }
+    } else {
+        let err = result.expect_err("no .spv committed; transpose must be UnsupportedOp");
+        assert!(matches!(err, VokraError::UnsupportedOp(_)));
+        eprintln!("transpose blob absent → explicit UnsupportedOp (placeholder slice)");
+    }
+}
+
+/// `gather_f32` (M4-13-T08): embedding rows come back verbatim, and an
+/// out-of-range index is rejected host-side (InvalidArgument) BEFORE any
+/// dispatch — even in the foundation slice (validation precedes the blob
+/// check).
+#[test]
+fn gather_dispatch_looks_up_rows_and_rejects_oob_indices() {
+    let Ok(backend) = VulkanBackend::new() else {
+        eprintln!("no Vulkan on this host; skipping gather dispatch test");
+        return;
+    };
+    let (vocab, dim) = (50usize, 70usize); // dim > 64 → 2 x-groups
+    let table = splitmix_f32s(28, vocab * dim);
+    let indices: Vec<u32> = vec![0, 49, 7, 7, 21];
+
+    // OOB index fires host-side regardless of blob availability.
+    let err = backend
+        .gather_f32(vocab, dim, &table, &[0, 50])
+        .expect_err("index 50 is OOB for vocab 50");
+    assert!(
+        matches!(err, VokraError::InvalidArgument(_)),
+        "OOB index must be InvalidArgument before dispatch, got {err:?}"
+    );
+
+    let result = backend.gather_f32(vocab, dim, &table, &indices);
+    if spirv::has_blob("gather") {
+        let got = result.expect("blob committed; gather must dispatch");
+        assert_eq!(got.len(), indices.len() * dim);
+        for (row, &idx) in indices.iter().enumerate() {
+            let got_row = &got[row * dim..(row + 1) * dim];
+            let want_row = &table[idx as usize * dim..(idx as usize + 1) * dim];
+            for (c, (g, w)) in got_row.iter().zip(want_row).enumerate() {
+                assert_eq!(
+                    g.to_bits(),
+                    w.to_bits(),
+                    "gather row {row} col {c} must be a verbatim copy"
+                );
+            }
+        }
+    } else {
+        let err = result.expect_err("no .spv committed; gather must be UnsupportedOp");
+        assert!(matches!(err, VokraError::UnsupportedOp(_)));
+        eprintln!("gather blob absent → explicit UnsupportedOp (placeholder slice)");
     }
 }

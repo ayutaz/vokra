@@ -248,6 +248,113 @@ impl VulkanBackend {
         let plan = plan::plan_gelu(x.len())?;
         self.run_plan_f32(&plan, &[&imp::f32s_to_le_bytes(x)])
     }
+
+    /// Batched 1-D convolution (M4-13-T07) — the Whisper front-end conv1 /
+    /// conv2 stride/padding envelope. Direct (non-im2col) kernel: one
+    /// invocation per output element. **Not a graph op** (`OpKind::Conv1D`
+    /// does not exist): Whisper conv-stem primitive for the M4-13-T12/T13
+    /// parity harness.
+    ///
+    /// `input` is `[batch, in_ch, in_len]` row-major, `weight` is
+    /// `[out_ch, in_ch, kernel_len]`, optional `bias` has length `out_ch`;
+    /// the output is `[batch, out_ch, out_len]` with
+    /// `out_len = (in_len + 2*padding - kernel_len) / stride + 1`.
+    ///
+    /// # Errors
+    ///
+    /// See [`VulkanBackend::gemm_f32`] — same contract, `conv1d.spv` blob.
+    pub fn conv1d_f32(
+        &self,
+        dims: &plan::Conv1dDims,
+        input: &[f32],
+        weight: &[f32],
+        bias: Option<&[f32]>,
+    ) -> Result<Vec<f32>> {
+        let plan = plan::plan_conv1d(dims, input.len(), weight.len(), bias.map(<[f32]>::len))?;
+        let in_bytes = imp::f32s_to_le_bytes(input);
+        let w_bytes = imp::f32s_to_le_bytes(weight);
+        let b_bytes = match bias {
+            Some(b) => imp::f32s_to_le_bytes(b),
+            None => imp::DUMMY_SSBO.to_vec(),
+        };
+        self.run_plan_f32(&plan, &[&in_bytes, &w_bytes, &b_bytes])
+    }
+
+    /// Element-wise binary op (M4-13-T07): `Add` / `Mul` selected by the
+    /// `OP` pipeline specialization constant — one shader, two pipelines.
+    /// `Mul` backs the graph executor's `OpKind::Mul` arm (M4-13-T09);
+    /// `Add` duplicates the hand-crafted `add_f32` smoke kernel with a
+    /// bounds-checked body (arbitrary length, no multiple-of-64 padding
+    /// requirement).
+    ///
+    /// # Errors
+    ///
+    /// See [`VulkanBackend::gemm_f32`] — same contract, `elementwise.spv`
+    /// blob.
+    pub fn elementwise_f32(
+        &self,
+        op: plan::ElementwiseOp,
+        a: &[f32],
+        b: &[f32],
+    ) -> Result<Vec<f32>> {
+        let plan = plan::plan_elementwise(op, a.len(), b.len())?;
+        self.run_plan_f32(
+            &plan,
+            &[&imp::f32s_to_le_bytes(a), &imp::f32s_to_le_bytes(b)],
+        )
+    }
+
+    /// Element-wise unary activation (M4-13-T07): relu / sigmoid / tanh
+    /// selected by the `KIND` specialization constant. Silero VAD /
+    /// MB-iSTFT-VITS2 activations are the customers. **Not a graph op**:
+    /// model-level primitive.
+    ///
+    /// # Errors
+    ///
+    /// See [`VulkanBackend::gemm_f32`] — same contract, `activation.spv`
+    /// blob.
+    pub fn activation_f32(&self, kind: plan::ActivationKind, x: &[f32]) -> Result<Vec<f32>> {
+        let plan = plan::plan_activation(kind, x.len())?;
+        self.run_plan_f32(&plan, &[&imp::f32s_to_le_bytes(x)])
+    }
+
+    /// 2-D transpose `[m, n] → [n, m]` (M4-13-T08). Reshape needs no shader
+    /// at all (host-side buffer reinterpretation, M3-02-T22 note) — only the
+    /// axis swap moves memory. **Not a graph op**: attention `K^T`
+    /// primitive for the M4-13-T12/T13 parity harness.
+    ///
+    /// # Errors
+    ///
+    /// See [`VulkanBackend::gemm_f32`] — same contract, `transpose.spv`
+    /// blob.
+    pub fn transpose_f32(&self, m: usize, n: usize, x: &[f32]) -> Result<Vec<f32>> {
+        let plan = plan::plan_transpose(m, n, x.len())?;
+        self.run_plan_f32(&plan, &[&imp::f32s_to_le_bytes(x)])
+    }
+
+    /// Embedding-lookup gather `out[i, :] = table[indices[i], :]`
+    /// (M4-13-T08). Every index is bounds-checked host-side **before**
+    /// dispatch — an out-of-range index is an explicit
+    /// [`VokraError::InvalidArgument`](vokra_core::VokraError::InvalidArgument)
+    /// (NFR-RL-07), never an undefined GPU read (the shader additionally
+    /// zero-fills OOB rows defensively). **Not a graph op**: token / position
+    /// embedding primitive for the M4-13-T12/T13 parity harness.
+    ///
+    /// # Errors
+    ///
+    /// See [`VulkanBackend::gemm_f32`] — same contract, `gather.spv` blob.
+    pub fn gather_f32(
+        &self,
+        vocab: usize,
+        dim: usize,
+        table: &[f32],
+        indices: &[u32],
+    ) -> Result<Vec<f32>> {
+        let plan = plan::plan_gather(vocab, dim, table.len(), indices)?;
+        let t_bytes = imp::f32s_to_le_bytes(table);
+        let i_bytes = imp::u32s_to_le_bytes(indices);
+        self.run_plan_f32(&plan, &[&t_bytes, &i_bytes])
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +449,77 @@ impl VulkanBackend {
     /// [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable).
     pub fn gelu_f32(&self, _x: &[f32]) -> Result<Vec<f32>> {
         Err(stub_unavailable("gelu"))
+    }
+
+    /// Off-target stub — see [`VulkanBackend::gemm_f32`].
+    ///
+    /// # Errors
+    ///
+    /// Always
+    /// [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable).
+    pub fn conv1d_f32(
+        &self,
+        _dims: &crate::plan::Conv1dDims,
+        _input: &[f32],
+        _weight: &[f32],
+        _bias: Option<&[f32]>,
+    ) -> Result<Vec<f32>> {
+        Err(stub_unavailable("conv1d"))
+    }
+
+    /// Off-target stub — see [`VulkanBackend::gemm_f32`].
+    ///
+    /// # Errors
+    ///
+    /// Always
+    /// [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable).
+    pub fn elementwise_f32(
+        &self,
+        _op: crate::plan::ElementwiseOp,
+        _a: &[f32],
+        _b: &[f32],
+    ) -> Result<Vec<f32>> {
+        Err(stub_unavailable("elementwise"))
+    }
+
+    /// Off-target stub — see [`VulkanBackend::gemm_f32`].
+    ///
+    /// # Errors
+    ///
+    /// Always
+    /// [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable).
+    pub fn activation_f32(
+        &self,
+        _kind: crate::plan::ActivationKind,
+        _x: &[f32],
+    ) -> Result<Vec<f32>> {
+        Err(stub_unavailable("activation"))
+    }
+
+    /// Off-target stub — see [`VulkanBackend::gemm_f32`].
+    ///
+    /// # Errors
+    ///
+    /// Always
+    /// [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable).
+    pub fn transpose_f32(&self, _m: usize, _n: usize, _x: &[f32]) -> Result<Vec<f32>> {
+        Err(stub_unavailable("transpose"))
+    }
+
+    /// Off-target stub — see [`VulkanBackend::gemm_f32`].
+    ///
+    /// # Errors
+    ///
+    /// Always
+    /// [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable).
+    pub fn gather_f32(
+        &self,
+        _vocab: usize,
+        _dim: usize,
+        _table: &[f32],
+        _indices: &[u32],
+    ) -> Result<Vec<f32>> {
+        Err(stub_unavailable("gather"))
     }
 }
 
