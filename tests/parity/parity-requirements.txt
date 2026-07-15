@@ -27,3 +27,12 @@ numpy>=1.26,<3
 # torch==2.9.1
 # torchaudio==2.9.1
 # safetensors>=0.4             # dac_prepare_checkpoint.py safetensors writer
+#
+# M4-16 FSQ codec reference dumps (tools/parity/fsq_dump.py wavtokenizer|
+# xcodec2). The committed tests/parity/fsq/ fixtures were generated with the
+# pins below (2026-07-15; recorded per-fixture in each manifest.txt) — the
+# EXACT xcodec2==0.1.5 requires_dist pin, deliberately older than the M4-04
+# torch pin above (a separate venv per pin set; the two must not be mixed).
+# Reference CODE only (MIT) — no pretrained weight is ever fetched.
+# vector-quantize-pytorch==1.17.8  # X-Codec 2 FSQ reference (the xcodec2 pin)
+# torch==2.5.0                     # xcodec2==0.1.5 requires_dist pin
