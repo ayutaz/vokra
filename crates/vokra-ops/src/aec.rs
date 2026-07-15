@@ -514,6 +514,12 @@ impl Aec {
     /// [`VokraError::InvalidArgument`] on `mic.len() != frame_size`,
     /// `out.len() != frame_size`, or a queue/attrs sample-rate mismatch
     /// (FR-EX-08 — no silent resampling or reframing).
+    // ZERO-ALLOC-BEGIN (M4-03-T11, FR-EX-05 / NFR-RL-08: the whole
+    // process()/process_with_far() call tree below runs from the audio /
+    // inference thread and must not allocate — scratch is pre-allocated in
+    // `new`; guarded by scripts/check-hot-path-allocs.sh plus the counting-
+    // allocator proof in tests/aec_hot_path_alloc.rs. Error paths may build
+    // a `format!` message: errors are rare and off the hot path.)
     pub fn process(
         &mut self,
         mic: &[f32],
@@ -1072,6 +1078,7 @@ impl Aec {
             *dv = c.re;
         }
     }
+    // ZERO-ALLOC-END
 }
 
 /// Named internal time buffers (borrow-splitting helper for the FFT calls).
@@ -1101,6 +1108,8 @@ fn notch_radius_for(rate: u32) -> f32 {
     }
 }
 
+// ZERO-ALLOC-BEGIN (M4-03-T11: the free-function DSP kernels below are all
+// called per frame from the marked region above; slice-only, no allocation.)
 /// mdf.c `mdf_inner_prod` (L212-225, float): a pairwise dot product — two
 /// products summed into `part`, `part` folded into `sum` — preserving the
 /// upstream f32 accumulation grouping. Length must be even (guaranteed by
@@ -1224,6 +1233,7 @@ fn unpack_to_complex(packed: &[f32], out: &mut [Complex32]) {
         out[k] = out[n - k].conj();
     }
 }
+// ZERO-ALLOC-END
 
 #[cfg(test)]
 mod tests {

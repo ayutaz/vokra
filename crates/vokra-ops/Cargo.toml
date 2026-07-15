@@ -42,5 +42,12 @@ harness = false
 name = "fused_logmel_bench"
 harness = false
 
+# M4-03-T11: AEC per-frame timing + real-time budget ratio (RTF hook).
+# `harness = false` for the same zero-dependency reason; no absolute perf
+# gate (relative-regression thinking, M3-01).
+[[bench]]
+name = "aec_bench"
+harness = false
+
 [lints]
 workspace = true
