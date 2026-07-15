@@ -43,5 +43,10 @@
 //! decoder weights consumed here (M4-05-T27).
 
 pub mod config;
+pub mod decoder;
+pub mod encoder;
+pub(crate) mod nn;
 
 pub use config::{MimiNeuralConfig, MimiQuantizerConfig, MimiSeanetConfig, MimiTransformerConfig};
+pub use decoder::{MimiDecoderState, MimiNeuralDecoder};
+pub use encoder::{MimiEncoder, MimiEncoderState};
