@@ -1,6 +1,11 @@
 // PipelineRunner.cs — VAD → ASR → TTS driver on a single worker thread (M0-10-T07;
 // migrated into the com.vokra.unity UPM sample by M2-11-T11).
 //
+// WebGL (M4-02-T10): browsers have no managed threads, so RunWebGlAsync() is a
+// main-thread async variant — bytes-based sessions (CreateFromBytes, HTTP-fetched
+// models) + the streaming-poll VAD spread one chunk per frame. Every other
+// platform keeps the worker-thread path below unchanged.
+//
 // The whole C ABI call sequence (session/stream create → use → destroy) runs on
 // ONE background thread. This is deliberate: FR-API-03 (Session Send+Sync, atomic
 // ref count) is v0.1 MVP scope, so the M0 demo does not rely on runtime thread
@@ -21,6 +26,7 @@ using System;
 using System.Collections.Concurrent;
 using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
 using Vokra;
 
 namespace Vokra.Demo
@@ -117,6 +123,196 @@ namespace Vokra.Demo
 
         /// <summary>Runs the pipeline synchronously on the calling thread (headless mode).</summary>
         public void RunBlocking() => Run();
+
+        /// <summary>
+        /// Runs the pipeline on the Unity main thread without ever spawning a
+        /// managed thread or blocking on IO — the WebGL path (M4-02-T10).
+        ///
+        /// Differences from <see cref="Run"/> (which stays the path for every
+        /// other platform):
+        ///   * Model/input acquisition is async byte fetch
+        ///     (<see cref="VokraAndroidAssets.ReadBytesAsync"/> — StreamingAssets
+        ///     are HTTP-served on WebGL) and sessions are created with
+        ///     <see cref="VokraSession.CreateFromBytes"/>: the native
+        ///     file-path loader is unusable under Unity-bundled Emscripten
+        ///     (ADR M4-02 §2).
+        ///   * The VAD stage is the streaming-poll primary path: one chunk is
+        ///     pushed per frame (`await Task.Yield()`) so the browser tab
+        ///     stays responsive.
+        ///   * ASR transcribe / TTS synthesize are one-shot BLOCKING calls —
+        ///     they freeze the tab for their duration (documented limitation;
+        ///     M4-02-T08). The demo logs a notice before each.
+        ///
+        /// Compiled on every platform (testable in the Editor / IL2CPP
+        /// nightly); DemoUi selects it only on WebGL players.
+        /// </summary>
+        public async Task RunWebGlAsync()
+        {
+            try
+            {
+                Emit(PipelineStage.Info, $"Vokra runtime {VokraSession.RuntimeVersion} (WebGL bytes path)");
+
+                byte[] wavBytes;
+                try
+                {
+                    wavBytes = await ReadInputBytesAsync();
+                }
+                catch (Exception ex)
+                {
+                    Emit(PipelineStage.Error, $"input: {ex.Message}");
+                    return;
+                }
+
+                (float[] parsed, int rate) = WavIo.ParseMono(wavBytes);
+                if (rate != _config.VadSampleRate)
+                {
+                    Emit(PipelineStage.Error,
+                        $"input: expected {_config.VadSampleRate} Hz, got {rate} Hz");
+                    return;
+                }
+                float[] pcm = parsed;
+                Emit(PipelineStage.Info,
+                    $"input: {Path.GetFileName(_config.InputWavPath)} ({pcm.Length} samples @ {rate} Hz)");
+
+                string asrText = await RunVadThenAsrWebGlAsync(pcm);
+                await RunTtsWebGlAsync(asrText);
+            }
+            finally
+            {
+                _finished = true;
+                Emit(PipelineStage.Done, "pipeline finished");
+            }
+        }
+
+        // Fetches the input WAV bytes. When the input is the StreamingAssets
+        // default, use the async byte fetch (WebGL HTTP / Android jar); an
+        // explicit -vokraInput absolute path falls back to managed file IO.
+        private async Task<byte[]> ReadInputBytesAsync()
+        {
+            string streamingRoot = UnityEngine.Application.streamingAssetsPath;
+            string input = _config.InputWavPath;
+            if (input.StartsWith(streamingRoot, StringComparison.Ordinal))
+            {
+                string relative = input.Substring(streamingRoot.Length)
+                    .TrimStart('/', '\\');
+                return await VokraAndroidAssets.ReadBytesAsync(relative);
+            }
+
+            return File.ReadAllBytes(input);
+        }
+
+        // Fetches a model's bytes via the StreamingAssets sub-path, or null
+        // ("skip this stage") when the model is not staged — mirrors the
+        // File.Exists skip of the synchronous Run() path.
+        private async Task<byte[]> TryFetchModelAsync(string modelFile, PipelineStage stage)
+        {
+            string relative = Path.Combine(
+                _config.StreamingAssetsModelsSubdir ?? "models", modelFile);
+            try
+            {
+                return await VokraAndroidAssets.ReadBytesAsync(relative);
+            }
+            catch (Exception ex)
+            {
+                Emit(stage, $"{stage} skipped: fetch '{relative}' failed ({ex.Message}) — run fetch-demo-models.sh and stage StreamingAssets");
+                return null;
+            }
+        }
+
+        private async Task<string> RunVadThenAsrWebGlAsync(float[] pcm)
+        {
+            // --- VAD: streaming poll, one chunk per frame (primary path) ---
+            byte[] sileroBytes = await TryFetchModelAsync(_config.SileroFile, PipelineStage.Vad);
+            if (sileroBytes != null)
+            {
+                try
+                {
+                    using VokraSession vad = VokraSession.CreateFromBytes(sileroBytes);
+                    using VokraStream stream = vad.OpenVadStream(_config.VadSampleRate);
+
+                    int speech = 0, total = 0;
+                    const int chunk = 2048;
+                    for (int off = 0; off < pcm.Length; off += chunk)
+                    {
+                        int len = Math.Min(chunk, pcm.Length - off);
+                        var slice = new float[len];
+                        Array.Copy(pcm, off, slice, 0, len);
+                        stream.PushPcm(slice);
+                        foreach (float p in stream.PollAll())
+                        {
+                            total++;
+                            if (p >= _config.VadThreshold)
+                            {
+                                speech++;
+                            }
+                        }
+
+                        // Keep the browser main loop alive between chunks.
+                        await Task.Yield();
+                    }
+
+                    float frameMs = 1000f * _config.VadFrameSamples / _config.VadSampleRate;
+                    Emit(PipelineStage.Vad,
+                        $"VAD: {speech}/{total} frames above {_config.VadThreshold:0.00} " +
+                        $"(~{speech * frameMs / 1000f:0.00}s speech of {total * frameMs / 1000f:0.00}s)");
+                }
+                catch (Exception ex)
+                {
+                    Emit(PipelineStage.Error, $"VAD: {ex.Message}");
+                }
+            }
+
+            // --- ASR: one-shot blocking call (tab freezes for its duration) ---
+            byte[] whisperBytes = await TryFetchModelAsync(_config.WhisperFile, PipelineStage.Asr);
+            if (whisperBytes == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                Emit(PipelineStage.Info, "ASR: transcribe is a blocking call — the tab freezes until it returns (M4-02-T08)");
+                using VokraSession asr = VokraSession.CreateFromBytes(whisperBytes);
+                string text = asr.Transcribe(pcm, _config.AsrSampleRate);
+                Emit(PipelineStage.Asr, $"ASR: {text}");
+                return text;
+            }
+            catch (Exception ex)
+            {
+                Emit(PipelineStage.Error, $"ASR: {ex.Message}");
+                return null;
+            }
+        }
+
+        private async Task RunTtsWebGlAsync(string asrText)
+        {
+            byte[] piperBytes = await TryFetchModelAsync(_config.PiperFile, PipelineStage.Tts);
+            if (piperBytes == null)
+            {
+                return;
+            }
+
+            string text = LooksLikeText(asrText) ? asrText : _config.TtsFallbackText;
+
+            try
+            {
+                Emit(PipelineStage.Info, "TTS: synthesize is a blocking call — the tab freezes until it returns (M4-02-T08)");
+                using VokraSession tts = VokraSession.CreateFromBytes(piperBytes);
+                (float[] outPcm, int rate) = tts.Synthesize(text);
+
+                var evt = new PipelineEvent(PipelineStage.Tts,
+                    $"TTS: {outPcm.Length} samples @ {rate} Hz for \"{text}\"")
+                {
+                    Pcm = outPcm,
+                    SampleRate = rate,
+                };
+                _events.Enqueue(evt);
+            }
+            catch (Exception ex)
+            {
+                Emit(PipelineStage.Error, $"TTS: {ex.Message}");
+            }
+        }
 
         private void Emit(PipelineStage stage, string message) => _events.Enqueue(new PipelineEvent(stage, message));
 

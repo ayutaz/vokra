@@ -52,10 +52,21 @@ namespace Vokra.Demo
             Append($"Vokra Unity demo — models: {_config.ModelsDir}");
             Append($"input: {_config.InputWavPath}");
 
+#if UNITY_WEBGL && !UNITY_EDITOR
+            // WebGL (M4-02-T10): auto-run the async pipeline once on load so
+            // the headless browser smoke (nightly-webgl.yml) can assert the
+            // console markers without UI interaction. `Debug.Log` reaches the
+            // browser console on WebGL. Never RunHeadless() here: its blocking
+            // pipeline + Application.Quit are the non-WebGL headless contract.
+            Debug.Log("[vokra-demo] Vokra Unity demo (WebGL) — starting pipeline");
+            _webglAutoRun = true;
+            StartPipelineWebGl();
+#else
             if (Application.isBatchMode)
             {
                 RunHeadless();
             }
+#endif
         }
 
         // ---- configuration from command line / StreamingAssets defaults ----
@@ -113,10 +124,53 @@ namespace Vokra.Demo
                 return;
             }
 
+#if UNITY_WEBGL && !UNITY_EDITOR
+            // WebGL has no managed threads: route the Run button to the
+            // main-thread async pipeline instead of PipelineRunner.Start()'s
+            // worker thread (which would throw at runtime).
+            StartPipelineWebGl();
+#else
             _ttsPcm = null;
             _running = true;
             _runner = new PipelineRunner(_config);
             _runner.Start();
+#endif
+        }
+
+        // ---- WebGL path (M4-02-T10) ----
+
+        // True when Start() auto-ran the WebGL pipeline: emit the
+        // machine-checkable PASS/FAIL console marker when Done arrives
+        // (asserted by nightly-webgl.yml's headless browser smoke).
+        private bool _webglAutoRun;
+
+        private void StartPipelineWebGl()
+        {
+            if (_running)
+            {
+                return;
+            }
+
+            _ttsPcm = null;
+            _running = true;
+            _runner = new PipelineRunner(_config);
+            RunPipelineWebGl();
+        }
+
+        // Fire-and-forget async wrapper: exceptions must never vanish —
+        // they surface as the FAIL marker + a logged error (FR-EX-08).
+        private async void RunPipelineWebGl()
+        {
+            try
+            {
+                await _runner.RunWebGlAsync();
+            }
+            catch (Exception ex)
+            {
+                _hadError = true;
+                Debug.LogError($"[vokra-demo] {ex}");
+                Debug.LogError("[vokra-demo] WEBGL FAIL — pipeline threw");
+            }
         }
 
         private void Update()
@@ -148,6 +202,24 @@ namespace Vokra.Demo
             if (evt.Stage == PipelineStage.Done)
             {
                 _running = false;
+
+                if (_webglAutoRun)
+                {
+                    // Machine-checkable outcome markers for the headless
+                    // browser smoke (nightly-webgl.yml). A stage error means
+                    // FAIL; "model skipped" messages are not errors (same
+                    // posture as the IL2CPP nightly).
+                    if (_hadError)
+                    {
+                        Debug.LogError("[vokra-demo] WEBGL FAIL — a pipeline stage errored");
+                    }
+                    else
+                    {
+                        Debug.Log("[vokra-demo] WEBGL PASS — pipeline finished without stage errors");
+                    }
+
+                    _webglAutoRun = false;
+                }
             }
 
             Append($"[{evt.Stage}] {evt.Message}");

@@ -52,6 +52,34 @@ namespace Vokra
         }
 
         /// <summary>
+        /// Loads a GGUF model from an in-memory buffer and creates a
+        /// CPU-backed session (M4-02). The buffer is copied by the native
+        /// side before this call returns.
+        ///
+        /// This is the model path on WebGL, where StreamingAssets are
+        /// HTTP-served and the native file loader is unusable under
+        /// Unity-bundled Emscripten (ADR M4-02 §2): pair with
+        /// <c>VokraAndroidAssets.ReadBytesAsync</c>. Valid on every platform.
+        /// </summary>
+        public static VokraSession CreateFromBytes(byte[] ggufBytes)
+        {
+            if (ggufBytes == null || ggufBytes.Length == 0)
+            {
+                throw new ArgumentException("model buffer is null or empty", nameof(ggufBytes));
+            }
+
+            VokraStatus status = NativeMethods.SessionCreateFromBytes(
+                ggufBytes, (UIntPtr)ggufBytes.Length, out IntPtr raw);
+            VokraException.ThrowIfError(status, $"load model from {ggufBytes.Length} bytes");
+            if (raw == IntPtr.Zero)
+            {
+                throw new VokraException(VokraStatus.Other, "session handle was NULL on success");
+            }
+
+            return new VokraSession(VokraSessionHandle.FromRaw(raw));
+        }
+
+        /// <summary>
         /// Retains this session, producing an independent <see cref="VokraSession"/>
         /// that shares the same loaded model via an atomic ref count (FR-API-03).
         /// The model is freed only when the last handle is disposed. The returned

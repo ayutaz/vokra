@@ -10,6 +10,7 @@
 //   vokra.h (C)                                                NativeMethods (C#)
 //   --------------------------------------------------------   ----------------------
 //   vokra_session_create_from_file(char*, session_t**)     ->  SessionCreateFromFile
+//   vokra_session_create_from_bytes(uint8_t*,size_t,session_t**) -> SessionCreateFromBytes (M4-02)
 //   vokra_session_retain(const session_t*, session_t**)    ->  SessionRetain          (M2-11-T09)
 //   vokra_session_destroy(session_t*)                      ->  SessionDestroy
 //   vokra_asr_transcribe(session*,float*,size_t,i32,char**) -> AsrTranscribe
@@ -135,6 +136,14 @@ namespace Vokra
         [DllImport(Lib, CallingConvention = Cc, EntryPoint = "vokra_session_create_from_file")]
         internal static extern VokraStatus SessionCreateFromFile(
             [In] byte[] pathUtf8, out IntPtr outSession);
+
+        // M4-02: bytes-based session create — the WebGL model path (and a
+        // general-purpose alternative everywhere). The buffer is copied by
+        // the native side before the call returns; the marshaller pins the
+        // byte[] for the duration of the call only.
+        [DllImport(Lib, CallingConvention = Cc, EntryPoint = "vokra_session_create_from_bytes")]
+        internal static extern VokraStatus SessionCreateFromBytes(
+            [In] byte[] data, UIntPtr len, out IntPtr outSession);
 
         // FR-API-03: atomic ref count. Cheap clone of the inner Session (Arc bump);
         // the model is freed only when the last handle is destroyed. The new
