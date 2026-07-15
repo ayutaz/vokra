@@ -71,9 +71,19 @@ impl From<GemmPipelineVariant> for ShaderVariant {
 }
 
 /// Caller preference for [`VulkanBackend::select_gemm_pipeline_variant`].
-/// The final decision is `min(preference, hardware_capability)` — a caller
-/// that prefers cooperative-matrix STILL falls back to subgroup on hardware
-/// that lacks the preconditions (capability-driven, not silent).
+/// For the two M3-02 preferences the final decision is
+/// `min(preference, hardware_capability)` — a caller that *prefers*
+/// cooperative-matrix still falls back to subgroup on hardware that lacks
+/// the preconditions (capability-driven graceful degradation: the GEMM
+/// still runs on the GPU, just with the shader the hardware supports;
+/// NOT the FR-EX-08 silent *CPU* fallback).
+///
+/// [`GemmPipelinePreference::RequireCoopMatrix`] (M4-13-T10) is the
+/// explicit-error escape hatch: a caller that *demands* the
+/// cooperative-matrix pipeline gets
+/// [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable)
+/// on hardware without the preconditions — never a quiet downgrade
+/// (milestones §8 M4-13 "coop-matrix 非対応 device は明示エラー").
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GemmPipelinePreference {
     /// Prefer the cooperative-matrix pipeline; fall back to subgroup on
@@ -83,6 +93,11 @@ pub enum GemmPipelinePreference {
     /// Force the subgroup pipeline (useful for CI parity gating against the
     /// broad Android baseline; T33 parity harness uses this).
     ForceSubgroup,
+    /// Demand the cooperative-matrix pipeline: selection FAILS with an
+    /// explicit `BackendUnavailable` when the device lacks the
+    /// preconditions, instead of degrading to subgroup (M4-13-T10 red
+    /// line — the caller opted out of graceful degradation).
+    RequireCoopMatrix,
 }
 
 /// Vulkan backend handle.
@@ -197,19 +212,24 @@ impl VulkanBackend {
     }
 
     /// Selects the GEMM pipeline variant this device should bind
-    /// (M3-02-T14 dispatcher entry).
+    /// (M3-02-T14 dispatcher entry, M4-13-T10 explicit-error path).
     ///
-    /// `preference` is the caller's *ideal* pipeline; the final decision is
-    /// clamped to what the hardware supports. On devices that do not meet the
-    /// cooperative-matrix preconditions (`caps.coop_matrix_precondition_met =
-    /// false`), the result is always [`GemmPipelineVariant::Subgroup`] — this
-    /// is capability-driven pipeline selection, not silent op fallback (the
-    /// GEMM op still runs, it just picks the shader the hardware can execute).
-    #[must_use]
+    /// For `PreferCoopMatrix` / `ForceSubgroup` the decision is clamped to
+    /// what the hardware supports and never errors — capability-driven
+    /// pipeline selection, not silent op fallback (the GEMM op still runs,
+    /// it just picks the shader the hardware can execute). For
+    /// `RequireCoopMatrix` a device without the preconditions is an explicit
+    /// [`VokraError::BackendUnavailable`] instead of a downgrade.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::BackendUnavailable`] only for
+    /// [`GemmPipelinePreference::RequireCoopMatrix`] on a device whose probe
+    /// reports `coop_matrix_precondition_met == false`.
     pub fn select_gemm_pipeline_variant(
         &self,
         preference: GemmPipelinePreference,
-    ) -> GemmPipelineVariant {
+    ) -> Result<GemmPipelineVariant> {
         select_gemm_pipeline_variant(&self.caps, preference)
     }
 }
@@ -237,13 +257,27 @@ impl VulkanBackend {
     /// Off-target stub of the Vulkan-target method of the same name, so
     /// host-portable integration tests compile everywhere. Unreachable in
     /// practice ([`VulkanBackend::new`] always fails off-target); returns
-    /// the conservative Android-baseline variant.
-    #[must_use]
+    /// the conservative Android-baseline variant (and honours the
+    /// M4-13-T10 `RequireCoopMatrix` explicit-error contract).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::BackendUnavailable`] for
+    /// [`GemmPipelinePreference::RequireCoopMatrix`] (no Vulkan here at
+    /// all, so the preconditions are trivially unmet).
     pub fn select_gemm_pipeline_variant(
         &self,
-        _preference: GemmPipelinePreference,
-    ) -> GemmPipelineVariant {
-        GemmPipelineVariant::Subgroup
+        preference: GemmPipelinePreference,
+    ) -> Result<GemmPipelineVariant> {
+        match preference {
+            GemmPipelinePreference::RequireCoopMatrix => Err(VokraError::BackendUnavailable(
+                "GEMM cooperative-matrix pipeline was explicitly required (RequireCoopMatrix) \
+                 but the Vulkan backend is not compiled for this target / feature set \
+                 (M4-13-T10, FR-EX-08)."
+                    .to_owned(),
+            )),
+            _ => Ok(GemmPipelineVariant::Subgroup),
+        }
     }
 }
 
@@ -255,18 +289,42 @@ impl VulkanBackend {
 ///
 /// Callers on a Vulkan host normally go through
 /// [`VulkanBackend::select_gemm_pipeline_variant`], which forwards here.
-#[must_use]
+///
+/// # Errors
+///
+/// [`VokraError::BackendUnavailable`] only for
+/// [`GemmPipelinePreference::RequireCoopMatrix`] on a device whose probe
+/// reports `coop_matrix_precondition_met == false` (M4-13-T10 — the caller
+/// demanded the coop-matrix path, so refusing loudly is the only honest
+/// answer; `PreferCoopMatrix` / `ForceSubgroup` never error).
 pub fn select_gemm_pipeline_variant(
     caps: &crate::probe::VulkanCapabilities,
     preference: GemmPipelinePreference,
-) -> GemmPipelineVariant {
+) -> Result<GemmPipelineVariant> {
     match preference {
-        GemmPipelinePreference::ForceSubgroup => GemmPipelineVariant::Subgroup,
+        GemmPipelinePreference::ForceSubgroup => Ok(GemmPipelineVariant::Subgroup),
         GemmPipelinePreference::PreferCoopMatrix => {
             if caps.coop_matrix_precondition_met {
-                GemmPipelineVariant::CoopMatrix
+                Ok(GemmPipelineVariant::CoopMatrix)
             } else {
-                GemmPipelineVariant::Subgroup
+                // Capability-driven graceful degradation: the GEMM still
+                // runs on the GPU via the subgroup shader — NOT the
+                // FR-EX-08 silent *CPU* fallback.
+                Ok(GemmPipelineVariant::Subgroup)
+            }
+        }
+        GemmPipelinePreference::RequireCoopMatrix => {
+            if caps.coop_matrix_precondition_met {
+                Ok(GemmPipelineVariant::CoopMatrix)
+            } else {
+                Err(VokraError::BackendUnavailable(format!(
+                    "GEMM cooperative-matrix pipeline was explicitly required \
+                     (RequireCoopMatrix) but this device does not meet the preconditions \
+                     (Vulkan 1.3+ AND VK_KHR_cooperative_matrix): {}. Refusing to degrade to \
+                     the subgroup pipeline — drop the requirement (PreferCoopMatrix) to opt \
+                     back into capability-driven selection (M4-13-T10, FR-EX-08).",
+                    caps.summary()
+                )))
             }
         }
     }
@@ -364,7 +422,8 @@ mod tests {
 
     /// M3-02-T14 selection surface: cooperative-matrix preferred and available
     /// → coop-matrix; cooperative-matrix preferred but unavailable → subgroup
-    /// fallback; forced subgroup → subgroup regardless.
+    /// fallback; forced subgroup → subgroup regardless. M4-13-T10:
+    /// required-but-unavailable → explicit `BackendUnavailable`.
     #[test]
     fn select_gemm_pipeline_variant_is_capability_driven() {
         // Prefer coop-matrix on a device that supports it — pick coop-matrix.
@@ -372,7 +431,8 @@ mod tests {
             select_gemm_pipeline_variant(
                 &caps_with(true, true),
                 GemmPipelinePreference::PreferCoopMatrix,
-            ),
+            )
+            .unwrap(),
             GemmPipelineVariant::CoopMatrix,
         );
 
@@ -382,7 +442,8 @@ mod tests {
             select_gemm_pipeline_variant(
                 &caps_with(false, true),
                 GemmPipelinePreference::PreferCoopMatrix,
-            ),
+            )
+            .unwrap(),
             GemmPipelineVariant::Subgroup,
         );
 
@@ -392,8 +453,28 @@ mod tests {
             select_gemm_pipeline_variant(
                 &caps_with(true, true),
                 GemmPipelinePreference::ForceSubgroup,
-            ),
+            )
+            .unwrap(),
             GemmPipelineVariant::Subgroup,
+        );
+
+        // Require coop-matrix on a device that cannot — explicit error,
+        // never a quiet downgrade (M4-13-T10).
+        assert!(matches!(
+            select_gemm_pipeline_variant(
+                &caps_with(false, true),
+                GemmPipelinePreference::RequireCoopMatrix,
+            ),
+            Err(VokraError::BackendUnavailable(_)),
+        ));
+        // …and on capable hardware it selects the fast path.
+        assert_eq!(
+            select_gemm_pipeline_variant(
+                &caps_with(true, true),
+                GemmPipelinePreference::RequireCoopMatrix,
+            )
+            .unwrap(),
+            GemmPipelineVariant::CoopMatrix,
         );
 
         // Preference::default() is PreferCoopMatrix.

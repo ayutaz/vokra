@@ -139,7 +139,9 @@ impl VulkanBackend {
         a: &[f32],
         b: &[f32],
     ) -> Result<Vec<f32>> {
-        let variant = self.select_gemm_pipeline_variant(pref);
+        // M4-13-T10: `RequireCoopMatrix` on a non-coop-matrix device errors
+        // HERE (explicit BackendUnavailable), before any plan or dispatch.
+        let variant = self.select_gemm_pipeline_variant(pref)?;
         let plan = plan::plan_gemm(variant, m, n, k, a.len(), b.len())?;
         self.run_plan_f32(
             &plan,

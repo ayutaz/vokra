@@ -98,7 +98,9 @@ fn gemm_default_preference_follows_probe_selection() {
         eprintln!("no Vulkan on this host; skipping gemm variant-routing test");
         return;
     };
-    let variant = backend.select_gemm_pipeline_variant(GemmPipelinePreference::default());
+    let variant = backend
+        .select_gemm_pipeline_variant(GemmPipelinePreference::default())
+        .expect("the default preference (PreferCoopMatrix) never errors");
     let shader = variant.shader_name();
     let (m, n, k) = (4usize, 4usize, 4usize);
     let a = splitmix_f32s(3, m * k);
