@@ -49,6 +49,8 @@ pub mod depth;
 pub mod engine;
 pub mod frame;
 pub mod rope;
+pub mod session_cuda;
+pub mod session_metal;
 pub mod streaming;
 pub mod tokenizer;
 
@@ -61,8 +63,26 @@ pub use config::{CsmConfig, CsmRopeScaling, CsmTransformerConfig};
 pub use depth::{CsmDepthState, CsmDepthTransformer, CsmDepthWeights};
 pub use engine::{CsmEngine, pad_to_whole_frames};
 pub use frame::{CsmFrameKind, CsmGenerationState, CsmModel};
+#[cfg(all(feature = "cuda", any(unix, windows)))]
+pub use session_cuda::CsmCudaDecodeSession;
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+pub use session_metal::CsmMetalDecodeSession;
 pub use streaming::{CsmInterruptHandle, CsmStream, CsmStreamConfig, CsmStreamStop};
 pub use tokenizer::{CsmTextTokenizer, FixtureByteTokenizer, GgufCsmTokenizer};
+
+/// Probes whether `backend` can host the CSM hot-op set through the
+/// Compute seam — the runtime-checkable face of the T21/T22 GPU sessions
+/// for builds where the session types do not exist (feature off). A
+/// disabled feature / absent device / coverage gap is an explicit error
+/// (FR-EX-08 — the M3-10 off-GPU negative-test band pattern).
+///
+/// # Errors
+///
+/// [`vokra_core::VokraError::BackendUnavailable`] /
+/// [`vokra_core::VokraError::UnsupportedOp`] verbatim from the seam.
+pub fn gpu_backend_probe(backend: vokra_core::BackendKind) -> vokra_core::Result<()> {
+    crate::compute::Compute::for_backend(backend, backbone::CSM_HOT_OPS).map(|_| ())
+}
 
 /// `vokra.model.arch` a CSM GGUF must carry. Written by
 /// `vokra-convert::models::csm::ARCH`; the compliance registry
