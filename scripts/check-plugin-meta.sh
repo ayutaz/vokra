@@ -22,10 +22,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PKG_DIR="$REPO_ROOT/bindings/unity/com.vokra.unity"
 
 # folder-relative .meta path : expected Unity platform token
+# WebGL (M4-02): the Emscripten staticlib slot — same hand-authored
+# PluginImporter discipline as the desktop cdylibs. The token `WebGL` follows
+# the `<BuildTargetGroup>: <BuildTarget>` serialization pattern of the sibling
+# metas (ADR M4-02 §1). The iOS libvokra.a is NOT in CASES because its .meta
+# is Editor-generated via the XCFramework path (M2-02), not hand-authored.
 CASES=(
   "Plugins/macOS/libvokra.dylib.meta:OSXUniversal"
   "Plugins/Windows/x86_64/vokra.dll.meta:Win64"
   "Plugins/Linux/x86_64/libvokra.so.meta:Linux64"
+  "Plugins/WebGL/libvokra.a.meta:WebGL"
 )
 
 fail() { echo "FAIL: $*" >&2; exit 1; }

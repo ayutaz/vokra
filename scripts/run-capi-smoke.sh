@@ -74,6 +74,13 @@ build_one vad
 "$TMP/smoke_vad" "$ROOT/tests/parity/silero_vad/silero-vad-v5.gguf" \
     "$ROOT/tests/capi/fixtures/vad_input_16k.f32" || status=1
 
+# M4-02: bytes-based session create (vokra_session_create_from_bytes) — the
+# same smoke body doubles as the wasm32-unknown-emscripten verify harness
+# (scripts/build-unity-webgl-lib.sh --verify); here it runs natively.
+build_one vad_bytes
+"$TMP/smoke_vad_bytes" "$ROOT/tests/parity/silero_vad/silero-vad-v5.gguf" \
+    "$ROOT/tests/capi/fixtures/vad_input_16k.f32" || status=1
+
 build_one asr
 "$TMP/smoke_asr" "$ROOT/tests/capi/fixtures/asr_input_16k.f32" || status=1
 

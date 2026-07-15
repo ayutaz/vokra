@@ -918,8 +918,32 @@ jobs:
           cp artifacts/macos/libvokra.dylib "$PKG/Plugins/macOS/libvokra.dylib"
           cp artifacts/windows/vokra.dll   "$PKG/Plugins/Windows/x86_64/vokra.dll"
           cp artifacts/linux/libvokra.so   "$PKG/Plugins/Linux/x86_64/libvokra.so"
+      - name: WebGL staticlib (wasm32-unknown-emscripten — M4-02)
+        # rustc-only: Unity's own Emscripten performs the final link into the
+        # player wasm, so NO emsdk is needed to produce the .a (ADR M4-02 §2;
+        # forced -C panic=abort inside the script — Unity-era emcc cannot
+        # link rust wasm-EH objects). `llvm-tools` provides llvm-nm for the
+        # script's GPU-symbol non-mixin audit (Metal/CUDA/Vulkan/WebGPU
+        # tokens); the production thread-free source gate
+        # (check-capi-thread-free.sh) runs inside the script as well. The
+        # root Cargo.lock tripwire is also internal to the script (NFR-DS-02).
+        run: |
+          rustup target add wasm32-unknown-emscripten
+          rustup component add llvm-tools
+          bash scripts/build-unity-webgl-lib.sh
       - name: Assemble UPM package (.tgz via build-unity-plugin.sh --pack)
         run: bash scripts/build-unity-plugin.sh --pack
+      - name: Assert tarball ships the WebGL slice (M4-02)
+        # `--pack` tars the whole package directory, so Plugins/WebGL/ rides
+        # along automatically — this assert keeps that property load-bearing
+        # (milestones §8 M4-02 completion: "CI 自動ビルドの Unity Package に
+        # WebGL ターゲットが含まれる").
+        run: |
+          set -euo pipefail
+          TARBALL="$(ls bindings/unity/com.vokra.unity-*.tgz)"
+          tar -tzf "$TARBALL" | grep -q 'com.vokra.unity/Plugins/WebGL/libvokra.a$'
+          tar -tzf "$TARBALL" | grep -q 'com.vokra.unity/Plugins/WebGL/libvokra.a.meta$'
+          echo "OK: $TARBALL ships Plugins/WebGL/libvokra.a (+ .meta)"
       - name: Structure lint (package.json / asmdefs / Plugins shape)
         # Fails loudly on any missing native slice, malformed JSON in the two
         # asmdefs, or missing package.json — catches drift before the Unity
@@ -935,6 +959,12 @@ jobs:
           test -f "$PKG/Plugins/Linux/x86_64/libvokra.so"
           test -f "$PKG/Plugins/iOS/libvokra.a"
           test -f "$PKG/Plugins/Android/libs/arm64-v8a/libvokra.so"
+          test -f "$PKG/Plugins/WebGL/libvokra.a"
+          # Hand-authored PluginImporter .meta lint (macOS/Win/Linux/WebGL —
+          # M4-02 added the WebGL case). PyYAML ships on the runner image;
+          # install it if the image ever drops it (required-check safety).
+          python3 -c 'import yaml' 2>/dev/null || pip3 install --quiet pyyaml
+          bash scripts/check-plugin-meta.sh
           find "$PKG/Plugins" -type f
       - name: NVIDIA runtime non-bundle check (CLAUDE.md EULA, plan §R3)
         run: bash scripts/check-unity-package-no-nvidia.sh bindings/unity/com.vokra.unity

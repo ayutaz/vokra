@@ -116,6 +116,11 @@ impl fmt::Debug for Session {
     }
 }
 
+/// Path reported by [`Session::model_path`] for sessions built from an
+/// in-memory GGUF via [`Session::from_gguf`] (M4-02): no file backs the model,
+/// so a documented sentinel replaces the path.
+pub const IN_MEMORY_MODEL_PATH: &str = "<in-memory>";
+
 impl Session {
     /// Starts building a session from a model file (FR-API-02:
     /// `Session::from_file(path).with_backend(...)`).
@@ -124,7 +129,29 @@ impl Session {
     /// finishes; GGUF parsing (FR-LD-01/02) is wired in M0-03.
     pub fn from_file(path: impl AsRef<Path>) -> SessionBuilder {
         SessionBuilder {
-            path: path.as_ref().to_path_buf(),
+            source: SessionSource::Path(path.as_ref().to_path_buf()),
+            backend: None,
+            kv_quant: KvQuant::default(),
+        }
+    }
+
+    /// Starts building a session from an already-parsed GGUF container
+    /// (M4-02): the bytes-based twin of [`Session::from_file`] that never
+    /// touches the filesystem.
+    ///
+    /// Motivation: on Unity WebGL the Rust standard library's fs syscalls are
+    /// ABI-skewed under Unity-era Emscripten (ADR M4-02 §2), and WebGL
+    /// StreamingAssets are HTTP-served (no `fopen`) — the embedder reads the
+    /// model bytes itself and hands them over (C ABI:
+    /// `vokra_session_create_from_bytes`). Useful on every platform: parse
+    /// with [`GgufFile::parse`] (owned buffer) or
+    /// [`GgufFile::from_external`] (shared / mapped bytes) and build.
+    ///
+    /// [`Session::model_path`] reports [`IN_MEMORY_MODEL_PATH`] for sessions
+    /// built through this entry.
+    pub fn from_gguf(gguf: GgufFile) -> SessionBuilder {
+        SessionBuilder {
+            source: SessionSource::Gguf(gguf),
             backend: None,
             kv_quant: KvQuant::default(),
         }
@@ -271,9 +298,18 @@ impl Session {
 /// ```
 #[derive(Debug)]
 pub struct SessionBuilder {
-    path: PathBuf,
+    source: SessionSource,
     backend: Option<BackendKind>,
     kv_quant: KvQuant,
+}
+
+/// Where the model container comes from: a file on disk (`from_file`) or an
+/// already-parsed in-memory GGUF (`from_gguf`, M4-02). Private — the two
+/// public constructors are the only entry points.
+#[derive(Debug)]
+enum SessionSource {
+    Path(PathBuf),
+    Gguf(GgufFile),
 }
 
 impl SessionBuilder {
@@ -299,26 +335,33 @@ impl SessionBuilder {
     pub fn build(self) -> Result<Session> {
         let backend = self.backend.unwrap_or(BackendKind::Cpu);
 
-        // Reject non-files early with a clear argument error; a missing path
-        // surfaces as `VokraError::Io` from the metadata call.
-        let metadata = std::fs::metadata(&self.path)?;
-        if !metadata.is_file() {
-            return Err(VokraError::InvalidArgument(format!(
-                "model path `{}` is not a regular file",
-                self.path.display()
-            )));
-        }
+        let (path, gguf) = match self.source {
+            SessionSource::Path(path) => {
+                // Reject non-files early with a clear argument error; a
+                // missing path surfaces as `VokraError::Io` from the
+                // metadata call.
+                let metadata = std::fs::metadata(&path)?;
+                if !metadata.is_file() {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "model path `{}` is not a regular file",
+                        path.display()
+                    )));
+                }
 
-        // M0-03: parse the GGUF container (ONNX loader = never, FR-LD-05).
-        // `GgufError` converts into `VokraError::ModelLoad` / `::Io`.
-        let gguf = GgufFile::open(&self.path)?;
+                // M0-03: parse the GGUF container (ONNX loader = never,
+                // FR-LD-05). `GgufError` converts into
+                // `VokraError::ModelLoad` / `::Io`.
+                let gguf = GgufFile::open(&path)?;
+                (path, gguf)
+            }
+            // M4-02: pre-parsed in-memory GGUF — no filesystem access at
+            // all (`model_path()` reports the documented sentinel).
+            SessionSource::Gguf(gguf) => (PathBuf::from(IN_MEMORY_MODEL_PATH), gguf),
+        };
 
         Ok(Session {
             inner: Arc::new(SessionInner {
-                model: ModelHandle {
-                    path: self.path,
-                    gguf,
-                },
+                model: ModelHandle { path, gguf },
                 backend,
                 kv_quant: self.kv_quant,
                 next_stream_id: AtomicU64::new(0),
@@ -443,6 +486,55 @@ pub(crate) mod tests {
             Some("test")
         );
         assert_eq!(session.gguf().tensor_data("probe"), Some(&[0u8; 4][..]));
+    }
+
+    #[test]
+    fn from_gguf_builds_without_touching_the_filesystem() {
+        // M4-02: bytes-based session entry (Unity WebGL). Rust std fs is
+        // ABI-skewed under Unity-era Emscripten (ADR M4-02 §2/§3), so the
+        // builder must accept a pre-parsed GgufFile and never stat/open a
+        // path. `model_path()` reports the documented in-memory sentinel.
+        let mut b = crate::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "test");
+        b.add_tensor("probe", crate::gguf::GgmlType::F32, vec![1], vec![0u8; 4])
+            .expect("valid probe tensor");
+        let bytes = b.to_bytes().expect("serialize test gguf");
+        let gguf = GgufFile::parse(bytes).expect("parse in-memory gguf");
+
+        let session = Session::from_gguf(gguf)
+            .with_backend(BackendKind::Cpu)
+            .expect("session builds from parsed GGUF");
+        assert_eq!(session.backend_kind(), BackendKind::Cpu);
+        assert_eq!(session.model_path(), Path::new(IN_MEMORY_MODEL_PATH));
+        assert_eq!(
+            session
+                .gguf()
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str()),
+            Some("test")
+        );
+        assert_eq!(session.gguf().tensor_data("probe"), Some(&[0u8; 4][..]));
+    }
+
+    #[test]
+    fn from_gguf_chains_kv_quant_and_defaults_like_from_file() {
+        // The bytes entry point must honour the same builder chain (M3-04
+        // kv_quant, backend default) as `from_file` — one builder, two sources.
+        let mut b = crate::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "test");
+        let bytes = b.to_bytes().expect("serialize test gguf");
+
+        let defaulted = Session::from_gguf(GgufFile::parse(bytes.clone()).unwrap())
+            .build()
+            .expect("session builds");
+        assert_eq!(defaulted.backend_kind(), BackendKind::Cpu);
+        assert_eq!(defaulted.kv_quant(), KvQuant::Fp32);
+
+        let quantized = Session::from_gguf(GgufFile::parse(bytes).unwrap())
+            .with_kv_quant(KvQuant::Q8_0)
+            .with_backend(BackendKind::Cpu)
+            .expect("session builds");
+        assert_eq!(quantized.kv_quant(), KvQuant::Q8_0);
     }
 
     #[test]

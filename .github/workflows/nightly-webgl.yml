@@ -1,0 +1,265 @@
+# Vokra nightly WebGL smoke — M4-02-T13.
+#
+# Two independent legs (ADR M4-02 §8, docs/handoff/m4-02.md §3):
+#
+#   1. wasm-harness — NO Unity license needed. Builds the
+#      wasm32-unknown-emscripten staticlib and runs
+#      `scripts/build-unity-webgl-lib.sh --verify`: links
+#      tests/capi/smoke_vad_bytes.c + libvokra.a with the PINNED emsdk
+#      (Unity-matching Emscripten line) and executes the real Silero VAD
+#      chain under node. This is real coverage of the exact objects Unity
+#      links, so the workflow is useful even while secrets.UNITY_LICENSE is
+#      not provisioned.
+#
+#   2. unity-webgl-build + browser smoke — license-gated (game-ci
+#      unity-builder), same skip pattern as nightly-il2cpp.yml: when the
+#      secret is absent the leg is SKIPPED with a ::warning:: annotation —
+#      never a fabricated pass. When it runs: a throwaway consumer project
+#      (file: package reference + the VadAsrTts sample scripts + the
+#      committed 2 MB Silero fixture staged into StreamingAssets) is built
+#      for WebGL, served by a Python stdlib HTTP server WITHOUT COOP/COEP
+#      headers (threads-off baseline — a green run doubles as the empirical
+#      "no COOP/COEP required" confirmation), and headless Chrome's console
+#      (--enable-logging=stderr) must show the demo PASS marker and a real
+#      VAD stage line; the FAIL marker fails the job.
+#
+# NFR-MT-02: WebGL is a nightly tier — NOT a required PR check (Unity
+# license / game-ci / browser flakiness must not block PRs; promotion after
+# sustained green is an owner decision, same posture as gpu-vulkan-parity).
+#
+# Zero-dep: no Cargo.lock churn (the build script has an internal tripwire);
+# emsdk / node / Chrome are CI-side tools, not runtime dependencies.
+
+name: nightly-webgl
+
+on:
+  schedule:
+    # 04:47 UTC daily — offset from nightly-il2cpp (04:17) and the top of
+    # the hour.
+    - cron: "47 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Skip the Unity build leg, only run preflight + the wasm harness."
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-webgl
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  VOKRA_PKG_DIR: bindings/unity/com.vokra.unity
+  VOKRA_SAMPLE_NAME: VadAsrTts
+  # emcc pin for the harness leg: the Unity 6 line (3.1.38-unity). The Unity
+  # 2022.3 line (3.1.8) is also a measured-good pin — ADR M4-02 §2 matrix.
+  VOKRA_WEBGL_EMSDK_VERSION: "3.1.38"
+
+jobs:
+  preflight:
+    name: preflight (license check)
+    runs-on: ubuntu-latest
+    outputs:
+      has_license: ${{ steps.check.outputs.has_license }}
+    steps:
+      - name: Check Unity license secret presence
+        id: check
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+        run: |
+          if [ -n "${UNITY_LICENSE:-}" ]; then
+            echo "has_license=true" >> "$GITHUB_OUTPUT"
+            echo "Unity license present — the Unity WebGL build leg will run."
+          else
+            echo "has_license=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=WebGL Unity leg skipped::secrets.UNITY_LICENSE is not configured. The wasm-harness leg still runs; see bindings/unity/com.vokra.unity/TESTING.md §2b for the local fallback."
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Leg 1 — no Unity license required.
+  # ---------------------------------------------------------------------------
+  wasm-harness:
+    name: wasm harness (pinned emsdk link + node VAD chain)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache emsdk
+        id: emsdk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/emsdk
+          key: emsdk-${{ env.VOKRA_WEBGL_EMSDK_VERSION }}-${{ runner.os }}
+
+      - name: Install emsdk (pinned)
+        if: steps.emsdk-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git ~/emsdk
+          ~/emsdk/emsdk install "${VOKRA_WEBGL_EMSDK_VERSION}"
+
+      - name: Build staticlib + audits + pinned-emcc verify harness
+        run: |
+          ~/emsdk/emsdk activate "${VOKRA_WEBGL_EMSDK_VERSION}"
+          source ~/emsdk/emsdk_env.sh
+          rustup target add wasm32-unknown-emscripten
+          bash scripts/build-unity-webgl-lib.sh --verify
+
+  # ---------------------------------------------------------------------------
+  # Leg 2 — license-gated Unity WebGL build + headless browser smoke.
+  # ---------------------------------------------------------------------------
+  unity-webgl-build:
+    name: Unity WebGL build + headless browser smoke
+    needs: preflight
+    if: needs.preflight.outputs.has_license == 'true' && github.event.inputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the WebGL staticlib into Plugins/WebGL
+        # rustc-only (no emsdk — Unity's bundled Emscripten links it).
+        run: |
+          rustup target add wasm32-unknown-emscripten
+          rustup component add llvm-tools
+          bash scripts/build-unity-webgl-lib.sh
+
+      - name: Stage throwaway Unity consumer project
+        run: |
+          set -euo pipefail
+          PROJ=nightly-webgl-consumer
+          mkdir -p "$PROJ/Assets/VokraDemo" "$PROJ/Assets/StreamingAssets/models" "$PROJ/Packages" "$PROJ/ProjectSettings"
+          cat > "$PROJ/Packages/manifest.json" <<EOF
+          {
+            "dependencies": {
+              "com.vokra.unity": "file:../../${VOKRA_PKG_DIR}"
+            }
+          }
+          EOF
+          echo "m_EditorVersion: 2022.3.40f1" > "$PROJ/ProjectSettings/ProjectVersion.txt"
+          # Sample scripts compile in Assets/ (Assembly-CSharp references the
+          # auto-referenced Vokra.Runtime asmdef from the package).
+          cp "${VOKRA_PKG_DIR}/Samples~/${VOKRA_SAMPLE_NAME}/Scripts/"*.cs "$PROJ/Assets/VokraDemo/"
+          # Demo input + the committed 2 MB Silero fixture: the browser smoke
+          # exercises REAL VAD inference in wasm, not just plumbing.
+          cp "${VOKRA_PKG_DIR}/Samples~/${VOKRA_SAMPLE_NAME}/StreamingAssets/test_16k.wav" \
+             "$PROJ/Assets/StreamingAssets/test_16k.wav"
+          cp tests/parity/silero_vad/silero-vad-v5.gguf \
+             "$PROJ/Assets/StreamingAssets/models/silero-vad-v5.gguf"
+          # Bootstrap: instantiate DemoUi without scene authoring — DemoUi
+          # auto-runs the WebGL pipeline from Start() and prints the console
+          # markers (Samples~ ships no scene; nightly-il2cpp has the same
+          # batch-mode entry problem solved by -vokraInput args, which do not
+          # exist in a browser).
+          cat > "$PROJ/Assets/VokraDemo/VokraWebGlBootstrap.cs" <<'EOF'
+          // SPDX-License-Identifier: Apache-2.0
+          // nightly-webgl bootstrap: spawn the demo driver on startup.
+          using UnityEngine;
+
+          namespace Vokra.Demo
+          {
+              public static class VokraWebGlBootstrap
+              {
+                  [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+                  private static void Boot()
+                  {
+                      var go = new GameObject("VokraDemo");
+                      Object.DontDestroyOnLoad(go);
+                      go.AddComponent<DemoUi>();
+                  }
+              }
+          }
+          EOF
+
+      - name: Cache Unity Library folder
+        uses: actions/cache@v4
+        with:
+          path: nightly-webgl-consumer/Library
+          key: unity-library-webgl-${{ hashFiles('nightly-webgl-consumer/Packages/manifest.json') }}
+          restore-keys: |
+            unity-library-webgl-
+
+      - name: Build WebGL player
+        uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+        with:
+          projectPath: nightly-webgl-consumer
+          unityVersion: 2022.3.40f1
+          targetPlatform: WebGL
+          allowDirtyBuild: true
+
+      - name: Headless browser smoke (serve + console-marker assert)
+        run: |
+          set -euo pipefail
+          # game-ci layout: build/<target>/<name>/ — locate index.html.
+          BUILD_ROOT="nightly-webgl-consumer/build/WebGL"
+          INDEX="$(find "$BUILD_ROOT" -maxdepth 3 -name index.html | head -n1)"
+          if [ -z "$INDEX" ]; then
+            echo "::error::WebGL build produced no index.html" >&2
+            find "$BUILD_ROOT" -maxdepth 4 -type f | head -50 >&2 || true
+            exit 1
+          fi
+          SERVE_DIR="$(dirname "$INDEX")"
+          echo "Serving $SERVE_DIR (no COOP/COEP headers — threads-off baseline)"
+          python3 -m http.server 8080 --directory "$SERVE_DIR" &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+
+          CHROME="${CHROME_BIN:-google-chrome}"
+          LOG="$RUNNER_TEMP/chrome-console.log"
+          # --enable-logging=stderr surfaces console.log/error as
+          # CONSOLE(...) lines; Unity Debug.Log lands there on WebGL.
+          "$CHROME" --headless=new --no-sandbox --disable-gpu \
+            --enable-logging=stderr --v=0 \
+            http://127.0.0.1:8080/index.html > /dev/null 2> "$LOG" &
+          CHROME_PID=$!
+
+          PASS_MARKER='WEBGL PASS'
+          FAIL_MARKER='WEBGL FAIL'
+          RESULT=timeout
+          for _ in $(seq 1 60); do
+            sleep 5
+            if grep -q "$FAIL_MARKER" "$LOG"; then RESULT=fail; break; fi
+            if grep -q "$PASS_MARKER" "$LOG"; then RESULT=pass; break; fi
+            if ! kill -0 "$CHROME_PID" 2>/dev/null; then RESULT=exited; break; fi
+          done
+          kill "$CHROME_PID" 2>/dev/null || true
+
+          echo "----- captured browser console (tail) -----"
+          tail -n 100 "$LOG" || true
+          echo "--------------------------------------------"
+
+          if [ "$RESULT" != "pass" ]; then
+            echo "::error::WebGL smoke did not reach the PASS marker (result: $RESULT)" >&2
+            exit 1
+          fi
+          # Real-inference assert: the staged Silero fixture must have
+          # produced an actual VAD stage line (not a skip).
+          if ! grep -q '\[vokra-demo\]\[Vad\] VAD:' "$LOG"; then
+            echo "::error::PASS marker present but no real VAD stage output — fixture staging regressed" >&2
+            exit 1
+          fi
+          echo "WebGL smoke OK: PASS marker + real VAD stage output."
+
+      - name: Upload browser console log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-webgl-console-log
+          path: ${{ runner.temp }}/chrome-console.log
+          retention-days: 7
