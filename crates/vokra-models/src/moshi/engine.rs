@@ -46,6 +46,13 @@ use crate::csm::audio::CsmAudioDecodeChain;
 use crate::csm::{EchoPath, pad_to_whole_frames};
 use crate::mimi::{MimiEncoder, MimiNeuralConfig, MimiNeuralDecoder};
 
+/// One session's assembled input front: the optional canceller pair
+/// plus the construction-time warnings (T21 posture check output).
+type DuplexFront = (
+    Option<(AecFront, vokra_core::stream::AecRefWriter)>,
+    Vec<String>,
+);
+
 /// The stored AEC construction recipe: each duplex session builds a
 /// **fresh** canceller + reference queue from it (per-session echo path;
 /// contrast the turn-based CSM engine's single shared front).
@@ -243,7 +250,7 @@ impl MoshiEngine {
     }
 
     /// Wires the AEC recipe: each duplex session builds a fresh canceller
-    /// + time-tagged far-end queue from it (M4-03 consumer contract).
+    /// plus a time-tagged far-end queue from it (M4-03 consumer contract).
     /// The attrs' sample rate must match the Mimi PCM rate.
     ///
     /// # Errors
@@ -353,13 +360,7 @@ impl MoshiEngine {
     ///   naming both fixes;
     /// - explicit opt-out: no canceller, but a warning is recorded on the
     ///   session (and echoed to stderr) — never silent (FR-EX-08).
-    fn duplex_front_for(
-        &self,
-        config: &DuplexSessionConfig,
-    ) -> Result<(
-        Option<(AecFront, vokra_core::stream::AecRefWriter)>,
-        Vec<String>,
-    )> {
+    fn duplex_front_for(&self, config: &DuplexSessionConfig) -> Result<DuplexFront> {
         let mut warnings = Vec::new();
         let aec = if config.aec_disabled_explicitly {
             let w = "moshi duplex: echo cancellation EXPLICITLY DISABLED — AEC 無しの \
