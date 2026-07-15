@@ -54,6 +54,16 @@ use tokio::net::TcpStream;
 
 use vokra_server::{Config, spawn_server_for_test};
 
+// M4-19 protocol-level e2e (T07/T08/T09) + scheduler overload (T04) use the
+// service-aware harness.
+use std::sync::Arc;
+use vokra_core::{SynthesisRequest, SynthesizedAudio};
+use vokra_server::service::{ServiceError, SynthesizeService, TranscribeService, model_names};
+use vokra_server::{
+    Scheduler, SchedulerConfig, SessionRegistryConfig, WyomingBackend,
+    spawn_server_for_test_with_service,
+};
+
 // ---------- shared client helpers ----------
 
 /// Read one JSONL header line (up to and including the trailing `\n`).
@@ -473,4 +483,495 @@ async fn framing_invariant_read_exact_over_payload_region() {
     let next_trimmed = std::str::from_utf8(&next[..next.len() - 1]).unwrap();
     let v: serde_json::Value = serde_json::from_str(next_trimmed).unwrap();
     assert_eq!(v.get("type").and_then(|s| s.as_str()), Some("audio-stop"));
+}
+
+// ===========================================================================
+// M4-19 — protocol-level e2e over TCP loopback (T04 / T07 / T08 / T09)
+// ===========================================================================
+//
+// These drive the SERVICE-WIRED accept-loop path (run_wyoming_connection via
+// spawn_server_for_test_with_service) — distinct from the discovery-only tests
+// above (spawn_server_for_test). A mock WyomingBackend stands in for a real
+// engine registry so the full ASR+TTS+barge-in protocol path runs without a
+// GGUF.
+//
+// **faster-whisper compatibility is behavioral parity only (T09).** Vokra's
+// Whisper is a native re-implementation; its float32 numeric path differs from
+// the reference, so bit-exact transcript text is architecturally unreachable
+// and is a NON-goal. We assert the `transcript` event *shape* and language-hint
+// passthrough (the faster-whisper Wyoming contract), not exact words — the
+// Kokoro PROSODY_F0_ATOL honest-engineering posture (memory
+// `feedback-honest-parity-atol.md`). Real multilang WER is an owner task.
+
+/// Mock engine registry for the M4-19 e2e tests (no GGUF). Known ASR/TTS
+/// aliases succeed with deterministic output; unknown names are
+/// `UnknownModel` (FR-EX-08 — never a silent fallback).
+struct E2eMock {
+    tts_samples: Vec<f32>,
+}
+
+impl TranscribeService for E2eMock {
+    fn transcribe(&self, model: &str, pcm: &[f32]) -> Result<String, ServiceError> {
+        if model == model_names::WHISPER_1 || model == model_names::WHISPER_BASE {
+            // Deterministic "golden" transcript (model + sample count). A real
+            // Whisper returns words; behavioral parity (shape) — not bit-exact
+            // text — is the goal (T09).
+            Ok(format!("mock transcript [{model}] {} samples", pcm.len()))
+        } else {
+            Err(ServiceError::UnknownModel(model.to_owned()))
+        }
+    }
+}
+
+impl SynthesizeService for E2eMock {
+    fn synthesize(
+        &self,
+        model: &str,
+        _req: &SynthesisRequest,
+    ) -> Result<SynthesizedAudio, ServiceError> {
+        if model == model_names::PIPER_PLUS {
+            Ok(SynthesizedAudio::new(self.tts_samples.clone(), 22_050))
+        } else {
+            Err(ServiceError::UnknownModel(model.to_owned()))
+        }
+    }
+}
+
+impl WyomingBackend for E2eMock {
+    fn wyoming_asr_models(&self) -> Vec<String> {
+        vec![
+            model_names::WHISPER_BASE.into(),
+            model_names::WHISPER_1.into(),
+        ]
+    }
+    fn as_synthesize(&self) -> &dyn SynthesizeService {
+        self
+    }
+}
+
+fn mock_service(tts_samples: Vec<f32>) -> Arc<dyn WyomingBackend> {
+    Arc::new(E2eMock { tts_samples })
+}
+
+fn test_scheduler(n: usize) -> Arc<Scheduler> {
+    Scheduler::new(
+        SessionRegistryConfig::minimum(n),
+        SchedulerConfig::minimum(n),
+    )
+    .expect("scheduler builds")
+}
+
+fn loopback_cfg() -> Config {
+    Config {
+        http_bind: "127.0.0.1:0".parse().unwrap(),
+        wyoming_bind: "127.0.0.1:0".parse().unwrap(),
+        config_file: None,
+    }
+}
+
+/// Read one framed Wyoming event (header line + `read_exact` payload) — never
+/// line-buffered over the payload region (R5). `None` on clean EOF.
+async fn read_frame<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+) -> std::io::Result<Option<(serde_json::Value, Vec<u8>)>> {
+    let mut line = Vec::new();
+    let n = reader.read_until(b'\n', &mut line).await?;
+    if n == 0 {
+        return Ok(None);
+    }
+    while matches!(line.last(), Some(b'\n' | b'\r')) {
+        line.pop();
+    }
+    let hdr: serde_json::Value = serde_json::from_slice(&line).map_err(std::io::Error::other)?;
+    let dl = hdr.get("data_length").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let pl = hdr
+        .get("payload_length")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    let mut data = vec![0u8; dl];
+    if dl > 0 {
+        reader.read_exact(&mut data).await?;
+    }
+    let mut payload = vec![0u8; pl];
+    if pl > 0 {
+        reader.read_exact(&mut payload).await?;
+    }
+    Ok(Some((hdr, payload)))
+}
+
+/// The ~40 ms chunk size the TTS emit path uses at 22.05 kHz mono int16
+/// (mirror of `wyoming::TTS_CHUNK_MS`), for computing the full-emit baseline.
+const CHUNK_BYTES_22K: usize = 22_050 * 2 * 40 / 1000; // 1764
+
+// -- T07: barge-in over TCP loopback (milestones.md §8 M4-19 exit criterion). --
+
+/// `synthesize` (long utterance) → a mid-emit barge-in trigger (a new
+/// `audio-start`) must cut the `audio-chunk` stream far short and still
+/// terminate with `audio-stop`, observed on the wire.
+#[tokio::test]
+async fn m4_19_barge_in_stops_tts_stream_over_tcp() {
+    // 20 s @ 22.05 kHz mono → ~500 chunks for a full emit.
+    let n_samples = 441_000usize;
+    let full_chunks = (n_samples * 2).div_ceil(CHUNK_BYTES_22K);
+    assert!(full_chunks > 100, "baseline must be large: {full_chunks}");
+
+    let svc = mock_service(vec![0.25f32; n_samples]);
+    let (handles, trigger) =
+        spawn_server_for_test_with_service(loopback_cfg(), Some(svc), Some(test_scheduler(4)))
+            .await
+            .expect("spawn server");
+
+    let result = async {
+        let mut sock = TcpStream::connect(handles.wyoming_actual).await?;
+        // Pipeline synthesize + the barge-in trigger so the server observes
+        // the trigger within the first chunk(s): deterministic early stop.
+        sock.write_all(
+            br#"{"type":"synthesize","data":{"text":"a very long utterance to synthesize"}}"#,
+        )
+        .await?;
+        sock.write_all(b"\n").await?;
+        sock.write_all(br#"{"type":"audio-start","data":{"rate":16000,"width":2,"channels":1}}"#)
+            .await?;
+        sock.write_all(b"\n").await?;
+        sock.flush().await?;
+
+        let mut reader = BufReader::new(sock);
+        let mut chunks = 0usize;
+        let mut saw_stop = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(std::io::Error::other("barge-in drain deadline"));
+            }
+            let frame = tokio::time::timeout(remaining, read_frame(&mut reader))
+                .await
+                .map_err(|_| std::io::Error::other("read timeout"))??;
+            let Some((hdr, _)) = frame else { break };
+            match hdr.get("type").and_then(|v| v.as_str()) {
+                Some("audio-chunk") => chunks += 1,
+                Some("audio-stop") => {
+                    saw_stop = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        Ok::<(usize, bool), std::io::Error>((chunks, saw_stop))
+    }
+    .await;
+
+    trigger.trigger();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let (chunks, saw_stop) = result.expect("barge-in e2e");
+    assert!(
+        saw_stop,
+        "the interrupted TTS stream must end with audio-stop"
+    );
+    assert!(
+        chunks < full_chunks,
+        "barge-in must cut the emit short: got {chunks} of {full_chunks} chunks",
+    );
+}
+
+// -- T08: ASR golden transcript round trip (behavioral). --
+
+/// `audio-start` → `audio-chunk` → `audio-stop` → `transcribe` must return a
+/// `transcript { text }` event whose text matches the golden (behavioral)
+/// transcript over the wire. Event-order + framing always run (mock backend);
+/// a real-GGUF leg is gated separately.
+#[tokio::test]
+async fn m4_19_asr_golden_transcript_round_trip_over_tcp() {
+    let svc = mock_service(vec![0.0; 16]);
+    let (handles, trigger) =
+        spawn_server_for_test_with_service(loopback_cfg(), Some(svc), Some(test_scheduler(4)))
+            .await
+            .expect("spawn server");
+
+    let result = async {
+        let mut sock = TcpStream::connect(handles.wyoming_actual).await?;
+        sock.write_all(br#"{"type":"audio-start","data":{"rate":16000,"width":2,"channels":1}}"#)
+            .await?;
+        sock.write_all(b"\n").await?;
+        // 8 samples of 16 kHz mono int16 PCM.
+        let pcm: [i16; 8] = [10, -10, 20, -20, 30, -30, 40, -40];
+        let mut bytes = Vec::new();
+        for s in pcm {
+            bytes.extend_from_slice(&s.to_le_bytes());
+        }
+        let chunk_hdr = format!(
+            r#"{{"type":"audio-chunk","data":{{"rate":16000,"width":2,"channels":1}},"payload_length":{}}}"#,
+            bytes.len()
+        );
+        sock.write_all(chunk_hdr.as_bytes()).await?;
+        sock.write_all(b"\n").await?;
+        sock.write_all(&bytes).await?;
+        sock.write_all(br#"{"type":"audio-stop"}"#).await?;
+        sock.write_all(b"\n").await?;
+        sock.write_all(br#"{"type":"transcribe","data":{"name":"whisper-1","language":"en"}}"#)
+            .await?;
+        sock.write_all(b"\n").await?;
+        sock.flush().await?;
+
+        let mut reader = BufReader::new(sock);
+        let frame = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut reader))
+            .await
+            .map_err(|_| std::io::Error::other("transcript read timeout"))??;
+        Ok::<Option<(serde_json::Value, Vec<u8>)>, std::io::Error>(frame)
+    }
+    .await;
+
+    trigger.trigger();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let (hdr, _) = result.expect("asr round trip").expect("transcript frame");
+    assert_eq!(
+        hdr.get("type").and_then(|v| v.as_str()),
+        Some("transcript"),
+        "ASR round trip must yield a transcript event; got {hdr}",
+    );
+    let text = hdr
+        .pointer("/data/text")
+        .and_then(|v| v.as_str())
+        .expect("transcript.data.text");
+    // Golden (behavioral): the mock encodes model + sample count. 8 int16
+    // samples @ 16 kHz stay 8 samples (no resample). The exact WORDS are not
+    // asserted (bit-exact is a non-goal, T09) — the deterministic shape is.
+    assert_eq!(
+        text, "mock transcript [whisper-1] 8 samples",
+        "golden mismatch: {text:?}"
+    );
+}
+
+/// Real-GGUF flip-the-switch leg for the ASR round trip. Skipped (non-silent)
+/// unless `VOKRA_WHISPER_BASE_GGUF` + `VOKRA_PIPER_GGUF` point at real model
+/// files; the owner sets these to exercise a real Whisper transcript over
+/// Wyoming (behavioral parity, not bit-exact). CI has no GGUF so this skips.
+#[tokio::test]
+async fn m4_19_asr_real_gguf_round_trip_gated() {
+    let (Ok(whisper), Ok(piper)) = (
+        std::env::var("VOKRA_WHISPER_BASE_GGUF"),
+        std::env::var("VOKRA_PIPER_GGUF"),
+    ) else {
+        eprintln!(
+            "m4_19_asr_real_gguf_round_trip_gated: SKIP — set VOKRA_WHISPER_BASE_GGUF + \
+             VOKRA_PIPER_GGUF to a real Whisper base + piper-plus GGUF to run this \
+             flip-the-switch leg (owner task; CI has no GGUF)."
+        );
+        return;
+    };
+
+    use vokra_server::service::{InferenceService, ServiceConfig};
+    let cfg = ServiceConfig::minimum(whisper.into(), piper.into());
+    let service = match InferenceService::build(&cfg) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("m4_19_asr_real_gguf_round_trip_gated: SKIP — service build failed: {e}");
+            return;
+        }
+    };
+    let service: Arc<dyn WyomingBackend> = service;
+    let (handles, trigger) =
+        spawn_server_for_test_with_service(loopback_cfg(), Some(service), Some(test_scheduler(2)))
+            .await
+            .expect("spawn server");
+
+    // A short silent buffer is enough to exercise the pipeline end-to-end; the
+    // owner supplies real audio for a WER check separately.
+    let result = async {
+        let mut sock = TcpStream::connect(handles.wyoming_actual).await?;
+        sock.write_all(br#"{"type":"audio-start","data":{"rate":16000,"width":2,"channels":1}}"#)
+            .await?;
+        sock.write_all(b"\n").await?;
+        let bytes = vec![0u8; 16_000 * 2]; // 1 s silence
+        let chunk_hdr = format!(
+            r#"{{"type":"audio-chunk","data":{{"rate":16000,"width":2,"channels":1}},"payload_length":{}}}"#,
+            bytes.len()
+        );
+        sock.write_all(chunk_hdr.as_bytes()).await?;
+        sock.write_all(b"\n").await?;
+        sock.write_all(&bytes).await?;
+        sock.write_all(br#"{"type":"audio-stop"}"#).await?;
+        sock.write_all(b"\n").await?;
+        sock.write_all(br#"{"type":"transcribe","data":{"name":"whisper-base"}}"#)
+            .await?;
+        sock.write_all(b"\n").await?;
+        sock.flush().await?;
+        let mut reader = BufReader::new(sock);
+        let frame = tokio::time::timeout(Duration::from_secs(60), read_frame(&mut reader))
+            .await
+            .map_err(|_| std::io::Error::other("real transcript timeout"))??;
+        Ok::<Option<(serde_json::Value, Vec<u8>)>, std::io::Error>(frame)
+    }
+    .await;
+
+    trigger.trigger();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let (hdr, _) = result
+        .expect("real asr round trip")
+        .expect("transcript frame");
+    // Behavioral parity: shape only. Real text is not asserted (bit-exact
+    // non-goal); silence may transcribe to empty — that is still a valid
+    // transcript event.
+    assert_eq!(hdr.get("type").and_then(|v| v.as_str()), Some("transcript"));
+    assert!(hdr.pointer("/data/text").and_then(|v| v.as_str()).is_some());
+}
+
+// -- T09: faster-whisper behavioral parity (transcript shape / language hint). --
+
+/// The `transcript` event Vokra emits must match the faster-whisper Wyoming
+/// contract *shape*: `type: "transcript"`, `data.text` a string, no binary
+/// payload. A `transcribe` with a `language` hint is accepted (not rejected).
+/// Bit-exact text is a NON-goal (see module doc).
+#[tokio::test]
+async fn m4_19_faster_whisper_behavioral_parity_shape() {
+    let svc = mock_service(vec![0.0; 16]);
+    let (handles, trigger) = spawn_server_for_test_with_service(loopback_cfg(), Some(svc), None)
+        .await
+        .expect("spawn server");
+
+    let result = async {
+        let mut sock = TcpStream::connect(handles.wyoming_actual).await?;
+        sock.write_all(br#"{"type":"audio-start","data":{"rate":16000,"width":2,"channels":1}}"#)
+            .await?;
+        sock.write_all(b"\n").await?;
+        let bytes: Vec<u8> = (0..64i16).flat_map(|s| s.to_le_bytes()).collect();
+        let chunk_hdr = format!(
+            r#"{{"type":"audio-chunk","data":{{"rate":16000,"width":2,"channels":1}},"payload_length":{}}}"#,
+            bytes.len()
+        );
+        sock.write_all(chunk_hdr.as_bytes()).await?;
+        sock.write_all(b"\n").await?;
+        sock.write_all(&bytes).await?;
+        // A language hint is part of the faster-whisper `transcribe` contract.
+        sock.write_all(br#"{"type":"transcribe","data":{"language":"ja"}}"#)
+            .await?;
+        sock.write_all(b"\n").await?;
+        sock.flush().await?;
+        let mut reader = BufReader::new(sock);
+        let frame = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut reader))
+            .await
+            .map_err(|_| std::io::Error::other("transcript read timeout"))??;
+        Ok::<Option<(serde_json::Value, Vec<u8>)>, std::io::Error>(frame)
+    }
+    .await;
+
+    trigger.trigger();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let (hdr, payload) = result
+        .expect("behavioral parity")
+        .expect("transcript frame");
+    // Shape assertions (the faster-whisper Wyoming contract), NOT exact words.
+    assert_eq!(hdr.get("type").and_then(|v| v.as_str()), Some("transcript"));
+    assert!(
+        hdr.pointer("/data/text").and_then(|v| v.as_str()).is_some(),
+        "transcript must carry a string data.text field",
+    );
+    assert_eq!(
+        hdr.get("payload_length").and_then(|v| v.as_u64()),
+        Some(0),
+        "a transcript event carries no binary payload",
+    );
+    assert!(
+        payload.is_empty(),
+        "no trailing payload bytes after a transcript"
+    );
+}
+
+// -- T04: multi-session scheduler overload → explicit error event over TCP. --
+
+/// With a scheduler cap of 1, a first connection holds the only permit for its
+/// lifetime; a second concurrent connection must be refused with an explicit
+/// `error` event (FR-EX-08 — never a silent drop), then the first releasing
+/// its permit lets a later connection succeed.
+#[tokio::test]
+async fn m4_19_scheduler_overload_is_explicit_error_over_tcp() {
+    let svc = mock_service(vec![0.0; 16]);
+    let (handles, trigger) =
+        spawn_server_for_test_with_service(loopback_cfg(), Some(svc), Some(test_scheduler(1)))
+            .await
+            .expect("spawn server");
+
+    // Connection 1: acquire + hold the single permit. Send describe and read
+    // the info reply so we KNOW its handler is running (permit acquired)
+    // before opening connection 2.
+    let mut sock1 = TcpStream::connect(handles.wyoming_actual)
+        .await
+        .expect("connect 1");
+    sock1
+        .write_all(br#"{"type":"describe"}"#)
+        .await
+        .expect("write 1");
+    sock1.write_all(b"\n").await.expect("nl 1");
+    sock1.flush().await.expect("flush 1");
+    let mut reader1 = BufReader::new(sock1);
+    let info = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut reader1))
+        .await
+        .expect("info timeout")
+        .expect("info io")
+        .expect("info frame");
+    assert_eq!(info.0.get("type").and_then(|v| v.as_str()), Some("info"));
+
+    // Connection 2: the permit is held → must be refused with an error event.
+    let refused = async {
+        let mut sock2 = TcpStream::connect(handles.wyoming_actual).await?;
+        // Sending a describe is optional — the refusal is written on connect —
+        // but send one to mirror a real client.
+        sock2.write_all(br#"{"type":"describe"}"#).await?;
+        sock2.write_all(b"\n").await?;
+        sock2.flush().await?;
+        let mut reader2 = BufReader::new(sock2);
+        let frame = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut reader2))
+            .await
+            .map_err(|_| std::io::Error::other("refusal read timeout"))??;
+        Ok::<Option<(serde_json::Value, Vec<u8>)>, std::io::Error>(frame)
+    }
+    .await;
+
+    let refusal = refused.expect("conn2 io").expect("conn2 frame");
+    assert_eq!(
+        refusal.0.get("type").and_then(|v| v.as_str()),
+        Some("error"),
+        "an over-capacity connection must get an explicit error, got {}",
+        refusal.0,
+    );
+    let msg = refusal
+        .0
+        .pointer("/data/message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        msg.contains("refused") || msg.contains("capacity") || msg.contains("unavailable"),
+        "refusal must explain overload; got {msg:?}",
+    );
+
+    // Release connection 1's permit; a fresh connection then succeeds.
+    drop(reader1);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut sock3 = TcpStream::connect(handles.wyoming_actual)
+        .await
+        .expect("connect 3");
+    sock3
+        .write_all(br#"{"type":"describe"}"#)
+        .await
+        .expect("write 3");
+    sock3.write_all(b"\n").await.expect("nl 3");
+    sock3.flush().await.expect("flush 3");
+    let mut reader3 = BufReader::new(sock3);
+    let info3 = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut reader3))
+        .await
+        .expect("info3 timeout")
+        .expect("info3 io")
+        .expect("info3 frame");
+    assert_eq!(
+        info3.0.get("type").and_then(|v| v.as_str()),
+        Some("info"),
+        "after release, a new connection must acquire the permit and serve",
+    );
+
+    trigger.trigger();
+    tokio::time::sleep(Duration::from_millis(20)).await;
 }

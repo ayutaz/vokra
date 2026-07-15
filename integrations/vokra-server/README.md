@@ -171,6 +171,32 @@ Notes:
 - Backend selection (CPU / Metal / CUDA) is fixed at server startup
   and applies uniformly across all rows above.
 
+## Stability & versioning tier (experimental)
+
+**The `vokra-server` network APIs — the OpenAI-/vLLM-/piper-plus-compatible
+HTTP endpoints AND the Wyoming Protocol JSONL/TCP listener — are a
+protocol-tracking / experimental governance tier and are NOT covered by
+Vokra's v1.0 semver stability guarantee.**
+
+- These surfaces are **not part of the Vokra C ABI freeze** (the frozen,
+  semver-stable interface is `include/vokra.h` at v1.0 GA). See
+  `docs/handoff/m4-12.md` §(e)-1 ("HTTP/gRPC/WebSocket API is NOT part of the
+  C ABI freeze"; "the future Wyoming Protocol Server lives at a separate
+  governance tier").
+- The **Wyoming endpoint tracks upstream `rhasspy/wyoming` semantics** and
+  follows *that project's* versioning — a breaking change in the
+  HA-community-driven Wyoming Protocol is **not** a Vokra semver violation.
+  Treat the Wyoming surface as experimental and pin your integration to a
+  tested Vokra build rather than assuming cross-version wire stability.
+- The HTTP endpoints aim for drop-in compatibility with the upstream shapes
+  they mirror (OpenAI audio, vLLM, piper-plus, faster-whisper) and likewise
+  track those upstreams, not Vokra semver.
+
+(The formal `## Non-C-ABI surface areas` section of `include/vokra.h`'s
+STABILITY block is added at **M5-13** — the C ABI freeze — per
+`docs/handoff/m4-12.md` §(e)-1; this README documents the exclusion ahead of
+that.)
+
 ## Connection examples
 
 ### faster-whisper drop-in client (Python)
