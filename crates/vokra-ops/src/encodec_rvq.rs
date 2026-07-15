@@ -204,6 +204,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::needless_range_loop)] // index-form hand fold mirrors the op's math 1:1
     fn decode_matches_hand_fold() {
         let attrs = tiny_attrs();
         let tables = make_ramp_tables(attrs);

@@ -510,6 +510,7 @@ mod tests {
     // ---- T04: decode vs hand-fold oracle ----------------------------------
 
     #[test]
+    #[allow(clippy::needless_range_loop)] // index-form hand fold mirrors the op's math 1:1
     fn decode_is_bit_identical_to_hand_fold() {
         let attrs = tiny_attrs();
         let tables = make_low_tables(attrs);

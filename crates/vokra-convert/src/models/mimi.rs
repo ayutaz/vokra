@@ -355,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::identity_op)] // keep the (cb * rows + i) * d_model formula shape visible
+    #[allow(clippy::identity_op, clippy::erasing_op)] // keep the (cb * rows + i) * d_model formula shape visible
     fn convert_derives_tables_and_metadata_from_checkpoint_shapes() {
         let (b, report) = convert(synthetic_mimi()).expect("convert");
         assert_eq!(report.n_codebooks, 3);
