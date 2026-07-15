@@ -92,6 +92,18 @@ license sign-off, PyPI / Unity secret provisioning) is tracked in
   `.ja.md`) — from ONNX Runtime / whisper.cpp / sherpa-onnx / faster-whisper
   / piper; `docs/tutorials/{unity,ios,python}.{md,ja.md}` —
   per-platform tutorials.
+- **CPU + Vulkan-only build target** (M4-15): `--no-default-features
+  --features vulkan` builds of `vokra-capi` (the shipped cdylib) and
+  `vokra-cli`; the `metal` / `cuda` backends stay out of the dependency
+  graph (enforced by a `cargo tree` audit and the
+  `scripts/compliance/check-cpu-vulkan-only-no-nvidia.sh` scanner), the
+  `vokra-models/vulkan` feature now forwards to the backend's raw-FFI
+  feature, a `build-target-vulkan-only` CI job builds/tests the
+  combination, a build-time NOTICE variant omits the NVIDIA runtime
+  section (`scripts/gen-notice-cpu-vulkan-only.sh`), and a deterministic
+  SPDX 2.3 SBOM is generated per build (`scripts/sbom/generate_spdx.py`).
+  No new C ABI symbol: the build flavor is identified by build-time
+  metadata only (SBOM / NOTICE / artifact name).
 
 ### Changed
 

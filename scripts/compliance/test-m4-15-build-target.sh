@@ -282,6 +282,111 @@ else
 fi
 
 # ===========================================================================
+# [T08] market-claim forbidden-words gate
+# ===========================================================================
+echo ""
+echo "[T08] check-no-market-claims.sh"
+
+GATE="$ROOT/scripts/compliance/check-no-market-claims.sh"
+
+# NOTE: the forbidden fixtures below are ASSEMBLED at runtime (string
+# concatenation) so this harness file itself never contains a forbidden
+# term verbatim — the gate can therefore scan scripts/compliance/
+# wholesale without tripping on its own test suite (m6 pins that).
+if [ ! -f "$GATE" ]; then
+    bad "gate script missing: $GATE"
+else
+    mkdir -p "$SCRATCH/claims"
+
+    # m1 — clean file passes.
+    printf 'CPU + Vulkan-only build target release notes.\nNeutral wording only.\n' \
+        >"$SCRATCH/claims/clean.md"
+    if bash "$GATE" "$SCRATCH/claims/clean.md" >/dev/null 2>&1; then
+        ok "m1 clean file passes"
+    else
+        bad "m1 gate rejected a clean file"
+    fi
+
+    # m2 — hyphenated English claim term is rejected.
+    printf 'suitable for critical%s deployments\n' "-safe" >"$SCRATCH/claims/en.md"
+    if bash "$GATE" "$SCRATCH/claims/en.md" >/dev/null 2>&1; then
+        bad "m2 gate accepted an English claim term"
+    else
+        ok "m2 English claim term rejected (exit 1)"
+    fi
+
+    # m3 — standards-number claim is rejected.
+    printf 'ISO %s compliance planned\n' "26262" >"$SCRATCH/claims/iso.md"
+    if bash "$GATE" "$SCRATCH/claims/iso.md" >/dev/null 2>&1; then
+        bad "m3 gate accepted a standards-number claim"
+    else
+        ok "m3 standards-number claim rejected (exit 1)"
+    fi
+
+    # m4 — Japanese claim term is rejected (assembled from two args so the
+    # contiguous term never appears in this file).
+    printf '%s%s向け SKU\n' "軍" "事" >"$SCRATCH/claims/ja.md"
+    if bash "$GATE" "$SCRATCH/claims/ja.md" >/dev/null 2>&1; then
+        bad "m4 gate accepted a Japanese claim term"
+    else
+        ok "m4 Japanese claim term rejected (exit 1)"
+    fi
+
+    # m5 — uppercase service-agreement acronym is rejected, but words that
+    # merely contain the letters (translate / island) are not. The acronym
+    # is assembled from two args to keep this file clean (see m6).
+    printf 'guaranteed %s%s uptime\n' "SL" "A" >"$SCRATCH/claims/sla.md"
+    printf 'translate to the island dialect\n' >"$SCRATCH/claims/sla-negative.md"
+    if bash "$GATE" "$SCRATCH/claims/sla.md" >/dev/null 2>&1; then
+        bad "m5a gate accepted the service-agreement acronym"
+    else
+        ok "m5a service-agreement acronym rejected (exit 1)"
+    fi
+    if bash "$GATE" "$SCRATCH/claims/sla-negative.md" >/dev/null 2>&1; then
+        ok "m5b word-boundary negative (translate / island) passes"
+    else
+        bad "m5b gate false-positived on translate / island"
+    fi
+
+    # m6 — self-exclusion + clean harness source: scanning the compliance
+    # scripts dir (which contains the gate itself, with its embedded ban
+    # list, and this harness) passes.
+    if bash "$GATE" "$ROOT/scripts/compliance" >/dev/null 2>&1; then
+        ok "m6 scanning scripts/compliance/ passes (self-exclusion works)"
+    else
+        bad "m6 gate tripped on its own directory (self-exclusion broken?)"
+    fi
+
+    # m7 — binary files are ignored (the artifact dir contains the cdylib).
+    # NUL byte makes grep classify the file as binary; the acronym is again
+    # assembled, never verbatim in this file.
+    {
+        printf '%s%s' "SL" "A"
+        head -c 1 /dev/zero
+        printf 'binary blob\n'
+    } >"$SCRATCH/claims/blob.bin"
+    if bash "$GATE" "$SCRATCH/claims/blob.bin" >/dev/null 2>&1; then
+        ok "m7 binary file ignored"
+    else
+        bad "m7 gate flagged a binary file"
+    fi
+
+    # m8 — the real WP-owned documents pass (the actual CI invocation
+    # surface): CHANGELOG + the WP scripts + a freshly assembled artifact
+    # dir with the NOTICE variant.
+    make_artifact_dir "$SCRATCH/claims-art"
+    if bash "$GATE" \
+        "$ROOT/CHANGELOG.md" \
+        "$ROOT/scripts/gen-notice-cpu-vulkan-only.sh" \
+        "$ROOT/scripts/sbom" \
+        "$SCRATCH/claims-art" >/dev/null 2>&1; then
+        ok "m8 WP-owned documents and artifact dir pass"
+    else
+        bad "m8 gate rejected the WP-owned documents (neutral-wording violation?)"
+    fi
+fi
+
+# ===========================================================================
 echo ""
 echo "m4-15 scratch-tree tests: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ] || exit 1
