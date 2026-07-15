@@ -23,6 +23,38 @@ use vokra_models::whisper::tokenizer::WhisperTokenizer;
 
 const ATOL: f32 = 0.01;
 
+/// Per-size parity tolerance lookup (M4-14-T04).
+///
+/// Every size currently resolves to the global FP32 bound [`ATOL`]` = 0.01`
+/// (NFR-QL-01) — **including turbo**. turbo (distilled 809M, decoder 4 layers
+/// vs the symmetric 32/32 of large-v3 — the only asymmetric size in
+/// [`WHISPER_SIZES`]) may exhibit different numerical behaviour and need a
+/// per-size calibration, but per the fabricated-pass ban a looser value may
+/// land here **only after** the owner's real-checkpoint run (M4-14-T10)
+/// measures an actual max |Δ| above 0.01. If that happens, calibrate honestly
+/// at the measured architectural floor × 1.5–2 (the Kokoro
+/// `PROSODY_F0_ATOL = 0.05` precedent) and record the SAME value redundantly
+/// in all three places (this fn is the single source, the others mirror it):
+///
+///   1. this lookup's match arm (+ this rustdoc),
+///   2. `docs/adr/M4-14-whisper-family.md` §D2 (measured value + derivation),
+///   3. `.github/workflows/parity-whisper-real.yml` `PER_SIZE_ATOL` dict
+///      (whose fabricated-pass guard cross-checks the Rust-printed atol and
+///      fails the run on any drift between the two).
+///
+/// Unknown sizes panic — an explicit error, never a silent default
+/// (FR-EX-08-shaped: a table row added without a tolerance decision must not
+/// inherit one).
+fn atol_for(size: &str) -> f32 {
+    match size {
+        // turbo: default 0.01 retained until the T10 real-checkpoint
+        // measurement lands; loosening it pre-measurement is forbidden
+        // (fabricated pass — see the doc above).
+        "base" | "small" | "medium" | "large-v3" | "turbo" => ATOL,
+        other => panic!("unknown whisper size {other:?} has no calibrated atol"),
+    }
+}
+
 /// All whisper sizes tabled for T09/T11 (base is the historical default; the
 /// rest each need their own `VOKRA_WHISPER_{SIZE}_GGUF` env var + fixture dir).
 /// Rows skip cleanly when either the env var or the fixture dir is absent, so
@@ -127,7 +159,14 @@ fn load_samples() -> Vec<(Vec<u32>, String)> {
 }
 
 /// Element-wise closeness with a diagnostic on the worst offender.
-fn assert_close(got: &[f32], expected: &[f32], ctx: &str) {
+///
+/// `atol` is the per-size tolerance from [`atol_for`] (M4-14-T04) — callers in
+/// the size-table loops pass `atol_for(size)`; the base-pinned fixture-only /
+/// GPU-e2e tests pass `atol_for("base")`. The `[parity]` diagnostic line's
+/// `(atol …)` suffix is machine-parsed by parity-whisper-real.yml's
+/// fabricated-pass guard, which cross-checks it against the workflow's own
+/// `PER_SIZE_ATOL` mirror — keep the format stable.
+fn assert_close(got: &[f32], expected: &[f32], ctx: &str, atol: f32) {
     assert_eq!(
         got.len(),
         expected.len(),
@@ -147,15 +186,34 @@ fn assert_close(got: &[f32], expected: &[f32], ctx: &str) {
     // Always report the observed margin (visible with `--nocapture`) so parity
     // headroom is measurable, not just pass/fail.
     eprintln!(
-        "[parity] {ctx}: max |Δ| = {worst:.3e} over {} elems (atol {ATOL})",
+        "[parity] {ctx}: max |Δ| = {worst:.3e} over {} elems (atol {atol})",
         got.len()
     );
     assert!(
-        worst <= ATOL,
-        "{ctx}: max |Δ| = {worst} at index {worst_i} (got {} vs {}) exceeds atol {ATOL}",
+        worst <= atol,
+        "{ctx}: max |Δ| = {worst} at index {worst_i} (got {} vs {}) exceeds atol {atol}",
         got[worst_i],
         expected[worst_i]
     );
+}
+
+/// M4-14-T04: the lookup must stay at the FP32 default for every tabled size
+/// until a real measurement justifies a per-size calibration (see
+/// [`atol_for`]'s doc — loosening turbo before the T10 owner run is a
+/// fabricated pass). This test is the tripwire: a calibration landing in
+/// `atol_for` must consciously update the expectation here AND the ADR AND
+/// the workflow's `PER_SIZE_ATOL` mirror.
+#[test]
+fn atol_lookup_defaults_to_fp32_bound_for_all_sizes() {
+    for &size in WHISPER_SIZES {
+        assert_eq!(
+            atol_for(size),
+            ATOL,
+            "{size}: per-size atol must stay at the 0.01 default until a T10 \
+             real-checkpoint measurement lands (fabricated-pass ban)"
+        );
+    }
+    assert_eq!(ATOL, 0.01, "NFR-QL-01 FP32 parity bound");
 }
 
 /// Resolves the GGUF path for a whisper size. `VOKRA_WHISPER_GGUF` is preserved
@@ -235,7 +293,8 @@ fn log_mel_parity() {
             got.push(feats[row * N_FRAMES + t]);
         }
     }
-    assert_close(&got, &reference, "log-mel");
+    // Base fixture-only front-end (pure DSP): pinned to the base tolerance.
+    assert_close(&got, &reference, "log-mel", atol_for("base"));
 }
 
 #[test]
@@ -305,7 +364,12 @@ fn encoder_parity() {
         );
         assert_eq!(enc.d_model, d, "{size}: d_model");
         let got = &enc.hidden[..enc_pos * d];
-        assert_close(got, &reference, &format!("{size}: encoder hidden states"));
+        assert_close(
+            got,
+            &reference,
+            &format!("{size}: encoder hidden states"),
+            atol_for(size),
+        );
     }
 }
 
@@ -338,6 +402,7 @@ fn decoder_logits_parity_full_and_cached() {
             full_last,
             &reference,
             &format!("{size}: decoder logits (full forward)"),
+            atol_for(size),
         );
 
         // Cached (token-by-token) forward must reproduce the same last-position
@@ -351,11 +416,13 @@ fn decoder_logits_parity_full_and_cached() {
             &cached_last,
             &reference,
             &format!("{size}: decoder logits (cached)"),
+            atol_for(size),
         );
         assert_close(
             &cached_last,
             full_last,
             &format!("{size}: cached vs full last-position logits"),
+            atol_for(size),
         );
 
         // Every prefix position's argmax should match the reference too.
@@ -532,6 +599,7 @@ fn whisper_metal_e2e_matches_cpu() {
         &metal_enc.hidden,
         &cpu_enc.hidden,
         "whisper encoder (Metal vs CPU)",
+        atol_for("base"), // Metal e2e stays base-only (M2-01 target)
     );
 
     // 2) Decoder logits parity — full forward over the forced prefix.
@@ -546,6 +614,7 @@ fn whisper_metal_e2e_matches_cpu() {
         &metal_logits,
         &cpu_logits,
         "whisper decoder logits (Metal vs CPU)",
+        atol_for("base"),
     );
 
     // 3) Greedy token sequence — must match the CPU decode exactly (the strongest
@@ -625,6 +694,7 @@ fn whisper_cuda_e2e_matches_cpu() {
         &cuda_enc.hidden,
         &cpu_enc.hidden,
         "whisper encoder (CUDA vs CPU)",
+        atol_for("base"), // CUDA e2e stays base-only (M2-03-T25 target)
     );
 
     // 2) Decoder logits parity — full forward over the forced prefix.
@@ -639,6 +709,7 @@ fn whisper_cuda_e2e_matches_cpu() {
         &cuda_logits,
         &cpu_logits,
         "whisper decoder logits (CUDA vs CPU)",
+        atol_for("base"),
     );
 
     // 3) Greedy token sequence — must match the CPU decode exactly (the strongest

@@ -144,6 +144,8 @@
 | **Voxtral-Small-24B-2507** | **Apache-2.0** | Hugging Face `mistralai/Voxtral-Small-24B-2507` model card の license: apache-2.0 タグ | `Permissive` | ✓ | ______________ |
 | **DAC (Descript)** | **MIT** | `descriptinc/descript-audio-codec` GitHub リポジトリ LICENSE ファイル（MIT、GitHub API license.spdx_id = MIT を 2026-07-15 に CC 確認）；weights は同リポジトリの GitHub releases 配布物（`weights_24khz.pth` 等、`dac/utils/__init__.py` L18-39 の pinned URL 表）で **別段の weight license ファイルは同梱されていない**（リポジトリ LICENSE の下で公表） | `Permissive` | ✓ | ______________ |
 
+**M4-14 activation note（Whisper family 完成 = M2-06 carry-over、2026-07-15）**: Whisper **small / medium / turbo** は M4-14 で `parity-whisper-real.yml` の parity CI matrix に昇格（workflow_dispatch opt-in leg。base / large-v3 と同一の HF DL → `vokra-cli convert` → dumper → `cargo test parity_whisper` 経路）。5 サイズ共通 MIT/MIT ゆえ**本表への新規行追加は無し**（上記 Whisper 行と §3 model zoo 行が M2-06 時点から 5 サイズをカバー済、FR-MD-13 の追記は本 note）。**provenance 注意（owner sign-off 時の混同防止）**: turbo の HF checkpoint は `openai/whisper-large-v3-turbo` — large-v3（`openai/whisper-large-v3`）とは**別 checkpoint**（distilled、decoder 4 層）だが、tokenizer は large-v3 と同一の 51866-token vocabulary を共有する（in-repo anchor: `vokra-convert` whisper converter の n_vocab 行、dumper の `vocab_resource_for` は両サイズを同一 bundled resource に標準化 = M4-14-T03）。実 sign-off（下記 template の Whisper small/medium/turbo 行の空欄記入）は M4-14-T11（依頼者）。
+
 **Attribution 要（CC-BY 4.0、公式 zoo 搭載可、NOTICE 記載必須）**:
 
 | モデル | Weight License | 一次資料（CC 引用） | Registry 分類 | 公式 zoo | 補足 |
