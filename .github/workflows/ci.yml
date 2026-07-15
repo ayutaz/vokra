@@ -583,6 +583,19 @@ jobs:
         run: bash scripts/check-zero-deps.sh
       - name: Forbidden symbols / dependencies check
         run: bash scripts/check-forbidden-symbols.sh
+      - name: Platform-support matrix drift check (advisory, M4-11-T08)
+        # Verifies that every evidence anchor cited by
+        # docs/platform-support/v1.0-rc-support-matrix.md (workflow jobs, build
+        # scripts, benchmark docs) still exists — so the platform-support
+        # confirmation record cannot silently drift into a fabricated pass.
+        # ADVISORY (continue-on-error): a drift annotates the run but does NOT
+        # block the PR. Promotion to a required branch-protection check is an
+        # owner decision (NFR-MT-07), mirroring gpu-vulkan-parity.yml's
+        # cool-off posture. The self-test guards the parser against regression.
+        continue-on-error: true
+        run: |
+          bash scripts/check-platform-support.sh --self-test
+          bash scripts/check-platform-support.sh
 
   # Performance regression gate (NFR-PF-13, M2-04). Runs the fused log-mel
   # `mel-frontend` bench through `vokra-cli bench --baseline` against a
