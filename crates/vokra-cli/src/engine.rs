@@ -31,6 +31,11 @@ pub(crate) enum ModelTask {
     /// caller-supplied (`--text`), optional `--input` WAV = recorded
     /// context audio (explicit AEC bypass — T16).
     S2s,
+    /// Full-duplex speech-to-speech (Moshi = M4-06). No `--text` — the
+    /// model GENERATES its reply (inner monologue); `--input` WAV drives
+    /// the mic side, `--duplex` selects the continuous push/pull demo
+    /// with an optional `--echo-sim` synthetic echo path (T26).
+    S2sDuplex,
     /// Whisper log-mel front-end only (M2-04-T11). Runs
     /// [`vokra_models::whisper::mel::log_mel`] against the input WAV without
     /// touching the encoder / decoder, so bench-side RTF isolates the fused
@@ -108,6 +113,7 @@ const ARCH_WHISPER: &str = "whisper";
 const ARCH_SILERO_VAD: &str = "silero-vad";
 const ARCH_PIPER_PLUS: &str = "piper-plus-mb-istft-vits2";
 const ARCH_CSM: &str = "csm";
+const ARCH_MOSHI: &str = "moshi";
 
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
@@ -177,6 +183,51 @@ pub(crate) fn load_session_with_backend(
             let tts = PiperPlusTts::from_path(path).map_err(|e| e.to_string())?;
             Ok((session.with_tts_engine(Arc::new(tts)), ModelTask::Tts))
         }
+        ARCH_MOSHI => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_MOSHI}`"
+                ));
+            }
+            // Moshi (M4-06, full-duplex S2S). `from_path` = strict policy +
+            // real LM binding + Mimi synthesized bridge. The FR-MD-09
+            // attribution banner prints below (AttributionRequired weight);
+            // the AEC recipe is wired so the `--duplex --echo-sim` demo
+            // runs the canceller (T26 — AEC 有効); the batch `dialog` path
+            // keeps the recorded-file bypass (CSM-mirroring T20 posture).
+            let engine =
+                vokra_models::moshi::MoshiEngine::from_path(path).map_err(|e| e.to_string())?;
+            let sample_rate = engine.mimi_config().sample_rate;
+            let hop = engine
+                .mimi_config()
+                .frame_hop_samples()
+                .map_err(|e| e.to_string())?;
+            let frame_size = [128usize, 64, 32, 16, 8, 4, 2, 1]
+                .into_iter()
+                .find(|fs| hop % fs == 0)
+                .unwrap_or(1);
+            let engine = engine
+                .with_aec(
+                    &vokra_ops::aec::AecAttrs {
+                        sample_rate,
+                        frame_size,
+                        filter_length: frame_size * 8,
+                    },
+                    sample_rate as usize, // 1 s of far-end reference
+                )
+                .map_err(|e| e.to_string())?
+                .with_echo_path(vokra_models::csm::EchoPath::BypassRecordedInput);
+            let attribution = engine.attribution().cloned();
+            let engine = Arc::new(engine);
+            let mut session = session
+                .with_s2s_engine(engine.clone())
+                .with_s2s_duplex_engine(engine);
+            if let Some(info) = attribution {
+                print_attribution_banner(&info);
+                session = session.with_attribution(info);
+            }
+            Ok((session, ModelTask::S2sDuplex))
+        }
         ARCH_CSM => {
             // Sesame CSM-1B (M4-05, S2S). `from_path` = strict compliance
             // policy + synthesized weight bridge until T29. `vokra-cli run`
@@ -206,9 +257,19 @@ pub(crate) fn load_session_with_backend(
         }
         other => Err(format!(
             "unsupported model arch `{other}` (expected `{ARCH_WHISPER}` / \
-             `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}`)"
+             `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
+             `{ARCH_MOSHI}`)"
         )),
     }
+}
+
+/// The FR-MD-09 attribution banner (M4-06-T24): printed to stderr on every
+/// load of an `AttributionRequired` weight so deployers see the display
+/// obligation even in piped runs. There is deliberately no way to fully
+/// silence it from the CLI — whether a future `--quiet` may reduce it to
+/// one line is flagged to the T29 owner sign-off (license line stays).
+fn print_attribution_banner(info: &vokra_core::AttributionInfo) {
+    eprintln!("vokra: ATTRIBUTION ({}) {}", info.license, info.text);
 }
 
 #[cfg(test)]
