@@ -135,3 +135,39 @@ Rules:
   round-trip of PCM chunks (input == output within tolerance) — this is the
   regression guard for risk R5.
 - HA on-device verification is deferred to M2-15 (owner: requester).
+
+## 7. Barge-in (M4-19, FR-ST-03)
+
+The accept loop's full ASR+TTS handler (`run_wyoming_connection`) supports
+barge-in on the TTS emit path. Semantics and provenance:
+
+- **Trigger (契機)**: a new `audio-start` event received on the same
+  connection *while a TTS `synthesize` is emitting* is treated as the barge-in
+  trigger (the satellite's wake word / next utterance beginning). `audio-start`
+  is a documented upstream `rhasspy/wyoming` event (§2.1); we do **not** invent
+  a bespoke control event (CLAUDE.md 発明禁止). **Owner-confirmable follow-up**:
+  if upstream defines a *dedicated* barge-in / interrupt control event, adopt
+  it here and keep the `audio-start` heuristic as a fallback — recorded so the
+  choice is a deliberate future edit, not silent drift.
+- **Effect**: the `audio-chunk` emit loop polls a connection-scoped barge-in
+  flag (`wyoming::BargeIn`, an `Arc<AtomicBool>` mirroring the M3-14
+  `vokra_core::stream::InterruptHandle` Release/Acquire semantics) at each
+  chunk boundary. When raised it stops emitting the remaining chunks and sends
+  `audio-stop` immediately — from an HA satellite's view the audio output cuts
+  (the barge-in体感). The still-buffered event (the trigger `audio-start`) is
+  then processed as the start of a fresh ASR utterance.
+- **Batch vs streaming**: v0.5 TTS is *batch synth* (`SynthesizeService`
+  returns the whole `SynthesizedAudio` up front), so "barge-in" here means
+  "stop sending the remaining `audio-chunk`s"; the un-emitted PCM tail is
+  discarded. There is no SPSC ring to `EventPoller::drain_all` on this path —
+  that becomes load-bearing only for a future *streaming* synth form, at which
+  point true mid-synthesis stop (halting the synth kernel) lands (follow-up).
+  For a streaming ASR path (`Session::open_step_stream`, §4) the real
+  `Stream::interrupt()` / `InterruptHandle` apply directly.
+- **Concurrency / framing**: a per-connection reader-pump task frames every
+  inbound event (header + `read_exact` payload, §3 R5) onto a bounded channel;
+  the emit loop watches that channel for the trigger. Because the pump owns the
+  reader exclusively, watching for a mid-emit trigger never cancels a partial
+  read (no cancel-safety hazard).
+- **FR-EX-08**: an *unknown* control event mid-emit is surfaced as an `error`
+  event, never silently dropped.

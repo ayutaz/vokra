@@ -3062,6 +3062,55 @@ mod m4_19_connection {
         );
     }
 
+    // -- T11: hardening — DoS cap + unknown event surface as errors. --
+
+    /// A header announcing a `payload_length` beyond `MAX_PAYLOAD_BYTES` must
+    /// be rejected with an explicit `error` event (the reader pump's DoS cap),
+    /// never a giant allocation or a silent drop (FR-EX-08, wyoming-design §5).
+    #[tokio::test]
+    async fn oversized_payload_length_yields_error_event() {
+        let svc: Arc<dyn WyomingBackend> = Arc::new(MockBackend::new(vec![0.0; 16]));
+        let (mut c, handler) = spawn_conn(svc, BargeIn::new());
+
+        let too_big = MAX_PAYLOAD_BYTES + 1;
+        send(
+            &mut c,
+            &format!(r#"{{"type":"audio-chunk","payload_length":{too_big}}}"#),
+        )
+        .await;
+        let (hdr, _) = read_event(&mut c).await.expect("error reply");
+        assert_eq!(hdr.get("type").and_then(|v| v.as_str()), Some("error"));
+        let msg = hdr
+            .pointer("/data/message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(msg.contains("exceeds cap"), "got {msg:?}");
+
+        close(&mut c).await;
+        handler.await.unwrap().unwrap();
+    }
+
+    /// An unknown event on a wired connection must produce an explicit `error`
+    /// (FR-EX-08 — no silent drop) and the loop must survive for the next
+    /// event.
+    #[tokio::test]
+    async fn unknown_event_yields_error_then_loop_survives() {
+        let svc: Arc<dyn WyomingBackend> = Arc::new(MockBackend::new(vec![0.0; 16]));
+        let (mut c, handler) = spawn_conn(svc, BargeIn::new());
+
+        send(&mut c, r#"{"type":"totally-unknown-event"}"#).await;
+        let (err, _) = read_event(&mut c).await.expect("error reply");
+        assert_eq!(err.get("type").and_then(|v| v.as_str()), Some("error"));
+
+        // Loop must survive: a following describe still gets an info reply.
+        send(&mut c, r#"{"type":"describe"}"#).await;
+        let (info, _) = read_event(&mut c).await.expect("info after error");
+        assert_eq!(info.get("type").and_then(|v| v.as_str()), Some("info"));
+
+        close(&mut c).await;
+        handler.await.unwrap().unwrap();
+    }
+
     // Small whole-buffer decoders (independent of the writer's serializer).
     fn count_events(bytes: &[u8], ty: &str) -> usize {
         decode_all(bytes).into_iter().filter(|t| t == ty).count()
