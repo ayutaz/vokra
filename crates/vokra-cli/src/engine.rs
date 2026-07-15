@@ -111,6 +111,7 @@ const ARCH_CSM: &str = "csm";
 
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
+#[cfg(test)]
 pub(crate) fn load_session(path: &str) -> Result<(Session, ModelTask), String> {
     load_session_with_backend(path, BackendKind::Cpu, None)
 }
