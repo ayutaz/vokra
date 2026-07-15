@@ -71,3 +71,8 @@ integrations/vokra-godot/pkg/
 /web/pkg/vokra_worker.js
 /web/pkg/LICENSE
 /web/pkg/NOTICE
+# Locally staged/converted model files (scripts/fetch-demo-models.sh,
+# tools/wasm/run-whisper-wasm.mjs recipe) — GGUFs are never committed.
+/models/
+# npm pack output from local dry-runs.
+/web/pkg/*.tgz

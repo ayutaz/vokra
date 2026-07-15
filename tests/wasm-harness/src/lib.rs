@@ -797,8 +797,7 @@ mod tests {
         vokra_wasm_free(out, 256);
 
         // A non-registry PCM pointer is an explicit error.
-        let s = vokra_wasm_session_destroy(0);
-        let _ = s;
+        vokra_wasm_session_destroy(0);
         let bogus = [0u8; 8];
         assert_eq!(vokra_wasm_transcribe(1, bogus.as_ptr(), 2), -1);
     }
