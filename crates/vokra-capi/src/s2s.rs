@@ -679,6 +679,8 @@ mod tests {
                 vokra_status_t::VOKRA_OK
             );
         }
+        // SAFETY: the second vokra_model_attribution call NUL-terminated
+        // `buf` within its `needed` bytes.
         let text = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }
             .to_string_lossy()
             .into_owned();

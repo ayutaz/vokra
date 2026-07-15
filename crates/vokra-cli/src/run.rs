@@ -388,6 +388,34 @@ fn run_s2s_duplex(session: &Session, a: &RunArgs) -> Result<(), String> {
     )?;
     let clip = wav::read_wav(input_path)?;
 
+    if !a.duplex {
+        // Batch turn through the facade (the run_s2s analog): push the
+        // whole utterance, collect the reply + monologue transcript.
+        let mut request = vokra_core::DialogRequest::new("").with_input_audio(clip.samples);
+        if a.deterministic {
+            request = request.deterministic();
+        }
+        let turn = session
+            .s2s()
+            .dialog_request(&request)
+            .map_err(|e| e.to_string())?;
+        let audio = turn
+            .audio
+            .ok_or("run (Moshi): the engine returned no audio")?;
+        println!(
+            "s2s (moshi): {} samples @ {} Hz, monologue: \"{}\" (use --duplex for \
+             the continuous push/pull demo)",
+            audio.samples.len(),
+            audio.sample_rate,
+            turn.text
+        );
+        if let Some(out) = a.output.as_deref() {
+            wav::write_wav(out, &audio.samples, audio.sample_rate)?;
+            println!("s2s (moshi): wrote -> {out}");
+        }
+        return Ok(());
+    }
+
     let mut cfg = DuplexSessionConfig::new();
     if a.deterministic {
         cfg = cfg.deterministic();
@@ -822,7 +850,7 @@ mod tests {
         with_text.extend(["--text".into(), "scripted".into()]);
         let err = main(&with_text).unwrap_err();
         assert!(err.contains("GENERATES"), "contract: {err}");
-        let err = main(&base.to_vec()).unwrap_err();
+        let err = main(&base).unwrap_err();
         assert!(
             err.contains("--input") || err.contains("--duplex") || err.contains("required"),
             "actionable: {err}"
