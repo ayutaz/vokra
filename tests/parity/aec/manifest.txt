@@ -1,0 +1,23 @@
+M4-03 aec parity fixtures (SpeexDSP float-build reference)
+speexdsp_commit = 7a158783df74efe7c2d1c6ee8363c1e695c71226
+sample_rate = 16000
+frame_size = 256
+filter_length = 2048
+st_frames = 250
+dt_frames = 150
+dt_speech_start_frame = 100
+far_amp = 8000
+seed_far_st = 0x5eedaec00001
+seed_far_dt = 0x5eedaec00002
+echo_taps = (2, 0.5), (11, -0.3), (25, 0.15), (300, 0.08), (700, -0.04), (1500, 0.02)
+cflags = -O2 -ffp-contract=off -DFLOATING_POINT -DUSE_SMALLFT
+generator_platform = macOS-26.3-arm64-arm-64bit / arm64
+format = raw little-endian int16, mono
+
+sha256 dt_far.i16le = d9c4b7e1c5aa558091d2cc327b1988673db5da942c769a222865504c7fccbd97
+sha256 dt_near.i16le = ed60bd3ecc49533ccad69ae025e71a72dc5dedc898c4c5c43f3423a7bc0a8e8c
+sha256 dt_out_speexdsp.i16le = b2101f0c8b222deea7cfb2fcbfce40452226f5e155c95055b0d47da48837cf15
+sha256 dt_speech.i16le = e007bb52dfe380e653829d26cdcb3037df4abb3a0ed52d05ec056698fd558c9e
+sha256 st_far.i16le = 3f49c30b2248ca0f1257b3b789430e4aac582a85669d4cb30dcaaf471fde6010
+sha256 st_near.i16le = 3568f4e2ed9e2e0605156e6697a2f45bb056cf4560188a03dc99ed1ddbaae212
+sha256 st_out_speexdsp.i16le = 90cea6ece99f549d209fafbc0168a6a69e2d8f421c04dd36b3027a1b102124bd

@@ -23,3 +23,7 @@ tests/fixtures/audio/*.wav -filter -diff -merge
 # C ABI raw-PCM fixtures (mirror of the whisper input_pcm.f32; see
 # tests/capi/fixtures/gen_fixtures.py). Same LFS-free contract.
 tests/capi/fixtures/*.f32 -filter -diff -merge
+
+# M4-03 aec parity fixtures (raw int16 LE PCM; see tools/parity/aec_dump.py
+# and crates/vokra-ops/tests/parity_aec.rs). Same LFS-free contract.
+tests/parity/aec/*.i16le -filter -diff -merge
