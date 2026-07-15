@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use vokra_core::{BackendKind, Session};
+use vokra_models::csm::{CsmEngine, EchoPath, FixtureByteTokenizer};
 use vokra_models::piper_plus::PiperPlusTts;
 use vokra_models::silero_vad::SileroVadV5;
 use vokra_models::whisper::WhisperAsr;
@@ -26,6 +27,10 @@ pub(crate) enum ModelTask {
     Asr,
     /// Text-to-speech (piper-plus native TTS).
     Tts,
+    /// Speech-to-speech dialog (Sesame CSM-1B = M4-05). The reply text is
+    /// caller-supplied (`--text`), optional `--input` WAV = recorded
+    /// context audio (explicit AEC bypass — T16).
+    S2s,
     /// Whisper log-mel front-end only (M2-04-T11). Runs
     /// [`vokra_models::whisper::mel::log_mel`] against the input WAV without
     /// touching the encoder / decoder, so bench-side RTF isolates the fused
@@ -87,6 +92,12 @@ pub(crate) enum TaskHint {
     /// need a real safetensors checkpoint to exercise the measurement API.
     /// Selected by `--task cosyvoice2-synthetic`.
     Cosyvoice2Synthetic,
+    /// Swap the CSM GGUF's embedded (T29-gated, `encode = NotImplemented`)
+    /// tokenizer for the **explicit fixture byte tokenizer** — the M4-05
+    /// host-only smoke path (synthesized weights + fixture tokenizer;
+    /// linguistically meaningless, numerically end-to-end). Selected by
+    /// `vokra-cli run --fixture-tokenizer`; never inferred (FR-EX-08).
+    CsmFixtureTokenizer,
 }
 
 /// GGUF metadata key holding the model architecture (written by `vokra-convert`).
@@ -96,9 +107,11 @@ const KEY_MODEL_ARCH: &str = "vokra.model.arch";
 const ARCH_WHISPER: &str = "whisper";
 const ARCH_SILERO_VAD: &str = "silero-vad";
 const ARCH_PIPER_PLUS: &str = "piper-plus-mb-istft-vits2";
+const ARCH_CSM: &str = "csm";
 
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
+#[cfg(test)]
 pub(crate) fn load_session(path: &str) -> Result<(Session, ModelTask), String> {
     load_session_with_backend(path, BackendKind::Cpu, None)
 }
@@ -164,9 +177,36 @@ pub(crate) fn load_session_with_backend(
             let tts = PiperPlusTts::from_path(path).map_err(|e| e.to_string())?;
             Ok((session.with_tts_engine(Arc::new(tts)), ModelTask::Tts))
         }
+        ARCH_CSM => {
+            // Sesame CSM-1B (M4-05, S2S). `from_path` = strict compliance
+            // policy + synthesized weight bridge until T29. `vokra-cli run`
+            // is the recorded-file demo path (T20/T30), so the explicit
+            // EchoPath::BypassRecordedInput opt-in applies — interactive
+            // mic dialog wires an AEC front through the Rust API instead
+            // (csm::aec_front rustdoc; FR-OP-60).
+            let engine = CsmEngine::from_path(path).map_err(|e| e.to_string())?;
+            let engine = match hint {
+                Some(TaskHint::CsmFixtureTokenizer) => {
+                    let vocab = engine.config().text_vocab_size;
+                    engine
+                        .with_tokenizer(Arc::new(
+                            FixtureByteTokenizer::new(vocab).map_err(|e| e.to_string())?,
+                        ))
+                        .map_err(|e| e.to_string())?
+                }
+                None => engine,
+                Some(other) => {
+                    return Err(format!(
+                        "task hint {other:?} is not supported on arch `{ARCH_CSM}`"
+                    ));
+                }
+            };
+            let engine = engine.with_echo_path(EchoPath::BypassRecordedInput);
+            Ok((session.with_s2s_engine(Arc::new(engine)), ModelTask::S2s))
+        }
         other => Err(format!(
             "unsupported model arch `{other}` (expected `{ARCH_WHISPER}` / \
-             `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}`)"
+             `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}`)"
         )),
     }
 }

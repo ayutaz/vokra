@@ -81,6 +81,14 @@ lookup + FP32 residual sum) from published documentation; upstream Mimi
 weights are loaded through the standard GGUF path and are subject to the
 M2-13 compliance gate (`AttributionRequired` license class).
 
+M4-05 additionally implements the Mimi *neural chain* natively — the
+encoder (audio -> RVQ codes: SEANet conv stack + bottleneck transformer +
+RVQ quantize) and the neural decoder (RVQ features -> 24 kHz PCM) in
+crates/vokra-models/src/mimi/ (shared by Sesame CSM, M4-05, and Moshi,
+M4-06). This attribution covers the Kyutai Mimi weights consumed by those
+components as well: encoder, quantizer codebooks, and neural decoder
+weights all originate from the same CC-BY 4.0 Kyutai release named above.
+
 This attribution is separate from the EU AI Act §50 AI-generated-audio
 disclosure obligation. The disclosure obligation is enforced at output
 time by the runtime's `WatermarkConfig` API and is orthogonal to this

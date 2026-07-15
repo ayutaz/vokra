@@ -1,0 +1,10 @@
+{
+  "kind": "self-test (synthetic \u2014 plumbing only, no reference semantics)",
+  "n_frames": 3,
+  "backbone_dim": 8,
+  "audio_vocab": 11,
+  "n_codebooks": 4,
+  "frame_hop": 8,
+  "temperature": 0.0,
+  "seed": "0xC5A0 (SplitMix64)"
+}

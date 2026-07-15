@@ -9,10 +9,10 @@
 //! - VAD: **M0-05** (Silero VAD subgraph)
 //! - ASR: **M0-06** (Whisper base — encoder / decoder / beam search)
 //! - TTS: **M0-07** (piper-plus native TTS, MB-iSTFT-VITS2)
-//! - S2S: supported models are **v1.0+** (SRS §2.9 / CLAUDE.md model table),
-//!   so [`S2s`] is a *long-term* stub.
+//! - S2S: **M4-05** (Sesame CSM-1B, v1.0-rc window) — the facade delegates
+//!   to the injected [`S2sEngine`](crate::engines::S2sEngine).
 
-use crate::engines::SynthesisRequest;
+use crate::engines::{DialogRequest, SynthesisRequest};
 use crate::error::{Result, VokraError};
 use crate::session::Session;
 
@@ -91,24 +91,41 @@ impl Tts<'_> {
 
 /// S2S facade borrowed from a [`Session`] (FR-API-02).
 ///
-/// S2S-capable models (CosyVoice2 / Sesame CSM / Moshi) are v1.0+ scope
-/// (SRS §2.9 / CLAUDE.md model table), so this facade stays a stub well
-/// beyond M0.
+/// Wired in **M4-05** (v1.0-rc window — the pre-M4 "v1.0+" label was the
+/// old v-label scheme): delegates to the
+/// [`S2sEngine`](crate::engines::S2sEngine) injected via
+/// [`Session::with_s2s_engine`](crate::Session::with_s2s_engine)
+/// (Sesame CSM-1B = M4-05; Moshi = M4-06). Without an injected engine it
+/// returns [`VokraError::NotImplemented`].
 #[derive(Debug)]
 pub struct S2s<'a> {
-    #[allow(dead_code)] // read once S2S models land (v1.0+); unused in the M0 skeleton
     session: &'a Session,
 }
 
 impl S2s<'_> {
-    /// Runs one speech-to-speech dialog turn over mono `f32` PCM input.
+    /// Runs one speech-to-speech dialog turn over mono `f32` PCM input —
+    /// the FR-API-02 verbatim shape.
     ///
-    /// Long-term stub: always returns
-    /// [`VokraError::NotImplemented`] until S2S models arrive (v1.0+).
-    pub fn dialog(&self, _samples: &[f32]) -> Result<DialogTurn> {
-        Err(VokraError::NotImplemented(
-            "S2S models are v1.0+ scope (long-term stub)",
-        ))
+    /// The samples become [`DialogRequest::input_audio`] with every other
+    /// field at its default — in particular `reply_text` is **empty**, and
+    /// an engine that requires caller-supplied reply text (CSM — ADR
+    /// M4-05 §D1-(b): the model does not generate text) rejects that with
+    /// a loud [`VokraError::InvalidArgument`] telling the caller to use
+    /// [`dialog_request`](Self::dialog_request). Engines that derive their
+    /// own reply (Moshi inner monologue = M4-06) can accept it.
+    pub fn dialog(&self, samples: &[f32]) -> Result<DialogTurn> {
+        self.dialog_request(&DialogRequest::new("").with_input_audio(samples.to_vec()))
+    }
+
+    /// Runs one dialog turn for an explicit [`DialogRequest`] (context
+    /// turns, reply text, speaker, determinism — the M4-05 surface).
+    pub fn dialog_request(&self, request: &DialogRequest) -> Result<DialogTurn> {
+        match self.session.s2s_engine() {
+            Some(engine) => engine.dialog(request),
+            None => Err(VokraError::NotImplemented(
+                "no S2S engine injected (Sesame CSM-1B = M4-05, v1.0-rc window)",
+            )),
+        }
     }
 }
 
@@ -152,14 +169,29 @@ impl SynthesizedAudio {
     }
 }
 
-/// Placeholder result of [`S2s::dialog`] (v1.0+ scope).
+/// Result of [`S2s::dialog`] / [`S2s::dialog_request`] (M4-05).
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct DialogTurn {
-    /// Text form of the reply (inner monologue / transcript).
+    /// Text form of the reply. For CSM this echoes the caller-supplied
+    /// [`DialogRequest::reply_text`] verbatim (the model does not generate
+    /// text — ADR M4-05 §D1-(b); Moshi's inner monologue is the M4-06
+    /// producer of engine-derived text).
     pub text: String,
     /// Synthesized reply audio, when produced.
     pub audio: Option<SynthesizedAudio>,
+}
+
+impl DialogTurn {
+    /// Constructs a turn (engine crates build this `#[non_exhaustive]`
+    /// type across the crate boundary — the [`Transcription::new`]
+    /// pattern).
+    pub fn new(text: impl Into<String>, audio: Option<SynthesizedAudio>) -> Self {
+        Self {
+            text: text.into(),
+            audio,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -188,10 +220,45 @@ mod tests {
     }
 
     #[test]
-    fn s2s_facade_has_fr_api_02_shape_and_is_stubbed() {
+    fn s2s_facade_has_fr_api_02_shape_and_errors_without_an_engine() {
         let (_file, session) = session("s2s");
         let result = session.s2s().dialog(&[0.0f32; 160]);
         assert!(matches!(result, Err(VokraError::NotImplemented(_))));
+        let result = session
+            .s2s()
+            .dialog_request(&crate::engines::DialogRequest::new("hi"));
+        assert!(matches!(result, Err(VokraError::NotImplemented(_))));
+    }
+
+    #[test]
+    fn s2s_facade_delegates_to_an_injected_engine() {
+        use crate::engines::S2sEngine;
+        use std::sync::Arc;
+
+        struct EchoS2s;
+        impl S2sEngine for EchoS2s {
+            fn dialog(&self, request: &DialogRequest) -> Result<DialogTurn> {
+                Ok(DialogTurn::new(
+                    request.reply_text.clone(),
+                    Some(SynthesizedAudio::new(
+                        vec![0.0; request.input_audio.as_ref().map_or(1, Vec::len)],
+                        24_000,
+                    )),
+                ))
+            }
+        }
+
+        let (_file, session) = session("s2s-delegate");
+        let session = session.with_s2s_engine(Arc::new(EchoS2s));
+        let turn = session
+            .s2s()
+            .dialog_request(&DialogRequest::new("hello").with_reply_speaker(1))
+            .unwrap();
+        assert_eq!(turn.text, "hello");
+        assert_eq!(turn.audio.unwrap().sample_rate, 24_000);
+        // The plain-PCM shape maps samples into input_audio.
+        let turn = session.s2s().dialog(&[0.0f32; 160]).unwrap();
+        assert_eq!(turn.audio.unwrap().samples.len(), 160);
     }
 
     #[test]

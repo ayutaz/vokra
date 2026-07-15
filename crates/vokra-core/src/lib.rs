@@ -128,7 +128,10 @@ pub use decode::{
     CfgMode, DecodeStepper, LogitsSource, Sampler, SamplerConfig, TOKEN_FLAG_EOT, apply_cfg,
     apply_cfg_inplace, argmax, sample_sequence,
 };
-pub use engines::{AsrEngine, SynthesisRequest, TtsEngine, VadEngine, VadStreamHandle};
+pub use engines::{
+    AsrEngine, DialogContextTurn, DialogRequest, S2sEngine, SynthesisRequest, TtsEngine, VadEngine,
+    VadStreamHandle,
+};
 pub use error::{Result, VokraError};
 pub use gguf::{
     FieldMismatch, FrontendPolicy, FrontendSpec, GgmlType, GgufBuilder, GgufError, GgufFile,

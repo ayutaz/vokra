@@ -31,7 +31,9 @@
 pub mod codec;
 pub mod compute;
 pub mod cosyvoice2;
+pub mod csm;
 pub mod kokoro;
+pub mod mimi;
 pub mod piper_plus;
 pub mod silero_vad;
 pub mod speaker;

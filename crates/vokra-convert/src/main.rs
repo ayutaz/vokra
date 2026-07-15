@@ -17,7 +17,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, convert_dac_file, convert_file, convert_file_quantized, convert_piper_plus_file,
+    ModelKind, convert_csm_file, convert_dac_file, convert_file, convert_file_quantized,
+    convert_piper_plus_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType, GgufFile};
 
@@ -99,6 +100,16 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             }
+        }
+        ModelKind::Csm => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            // --config carries the raw Llama-3.2 tokenizer file (optional —
+            // the repo is gated, T29; without it the runtime text path
+            // fails loudly, M4-05-T05).
+            convert_csm_file(&input, config.as_deref(), &output)
         }
         _ => match quant {
             Some(q) => convert_file_quantized(model, &input, &output, q),
@@ -370,6 +381,32 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
             println!("; arch={arch} n_codebooks={n_cb} codebook_size={cb_size} d_model={d_model}");
+        }
+        ModelKind::Csm => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let bb_layers = file
+                .get("vokra.csm.arch.backbone.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dt_layers = file
+                .get("vokra.csm.arch.depth.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_cb = file
+                .get("vokra.csm.audio.n_codebooks")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let audio_vocab = file
+                .get("vokra.csm.audio.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} backbone_layers={bb_layers} depth_layers={dt_layers} \
+                 n_codebooks={n_cb} audio_vocab={audio_vocab}"
+            );
         }
         ModelKind::Dac => {
             let arch = file

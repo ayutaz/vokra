@@ -106,6 +106,16 @@ pub enum ModelKind {
     /// Convert with [`convert_dac_file`] — the config is required, so this is
     /// not a plain single-input [`convert_file`] model. MIT weights.
     Dac,
+    /// `sesame/csm-1b` safetensors checkpoint (M4-05): Sesame CSM-1B, the
+    /// S2S speech-generation model (Llama-3.2-1B-flavor backbone +
+    /// llama-100M-flavor depth transformer over Mimi RVQ frames; Apache 2.0
+    /// code + weight, docs/license-audit.md — the HF repo is gated, T29
+    /// owner hand-off). Weights are bound verbatim; flavor dims / RoPE
+    /// scaling / rates are transcribed primary-source constants and the two
+    /// vocab axes are `0`-placeholders the runtime rejects at load
+    /// (FR-EX-08). The Llama-3.2 tokenizer blob is embedded through
+    /// [`convert_csm_file`].
+    Csm,
 }
 
 impl ModelKind {
@@ -129,6 +139,7 @@ impl ModelKind {
             "voxtral" => Some(Self::Voxtral),
             "mimi" => Some(Self::Mimi),
             "dac" => Some(Self::Dac),
+            "csm" => Some(Self::Csm),
             _ => None,
         }
     }
@@ -145,6 +156,7 @@ impl ModelKind {
             Self::Voxtral => "voxtral",
             Self::Mimi => "mimi",
             Self::Dac => "dac",
+            Self::Csm => "csm",
         }
     }
 }
@@ -353,6 +365,21 @@ pub fn convert_file(
                  use convert_dac_file"
                     .to_owned(),
             ));
+        }
+        ModelKind::Csm => {
+            // Tokenizer-less path (M4-05-T03/T04): every float tensor
+            // verbatim + the vokra.csm.* / vokra.mimi.* chunk groups. The
+            // Llama-3.2 tokenizer blob (gated repo — T29) travels through
+            // `convert_csm_file`.
+            let (builder, report) = models::csm::convert(bytes, None)?;
+            let mut notes = vec![format!(
+                "csm: {} float weights written, {} non-float skipped, tokenizer \
+                 embedded: {} (vocab axes are `0`-placeholders pending the T29 \
+                 checkpoint; the runtime rejects the load until then)",
+                report.written, report.skipped_non_float, report.tokenizer_embedded
+            )];
+            notes.extend(report.notes.iter().map(|n| format!("csm warning: {n}")));
+            (builder, notes)
         }
     };
 
@@ -616,6 +643,46 @@ pub fn convert_dac_file(
 
     Ok(ConvertSummary {
         model: ModelKind::Dac,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
+/// Convert a Sesame CSM-1B safetensors checkpoint into a Vokra GGUF,
+/// optionally embedding the raw `meta-llama/Llama-3.2-1B` tokenizer file
+/// as `vokra.tokenizer.model` (M4-05-T03/T04/T05).
+///
+/// The tokenizer repo is gated (T29 owner hand-off); passing
+/// `tokenizer = None` converts without the blob and the runtime text path
+/// fails loudly until a tokenizer-carrying GGUF exists (FR-EX-08 — never a
+/// silent byte-level fallback).
+pub fn convert_csm_file(
+    input: &Path,
+    tokenizer: Option<&Path>,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let tokenizer_bytes = match tokenizer {
+        Some(p) => Some(std::fs::read(p)?),
+        None => None,
+    };
+    let (builder, report) = models::csm::convert(bytes, tokenizer_bytes)?;
+
+    let mut notes = vec![format!(
+        "csm: {} float weights written, {} non-float skipped, tokenizer embedded: {}",
+        report.written, report.skipped_non_float, report.tokenizer_embedded
+    )];
+    notes.extend(report.notes.iter().map(|n| format!("csm warning: {n}")));
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::Csm,
         tensor_count,
         metadata_count,
         output_bytes: out_bytes.len() as u64,

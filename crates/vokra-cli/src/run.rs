@@ -23,12 +23,17 @@ vokra-cli run — load a GGUF and run VAD / ASR / TTS
 USAGE:
     vokra-cli run --model <model.gguf> [--input <in.wav>] [--text <string>] [--output <out.wav>]
                   [--beam-size <N>] [--length-penalty <α>] [--no-repeat-ngram <N>]
+                  [--fixture-tokenizer] [--interrupt-after <N>] [--deterministic]
 
 OPTIONS:
-    --model <path>              GGUF model file (arch selects VAD / ASR / TTS)
-    --input <path>              mono WAV input (required for VAD and ASR)
-    --text <string>             text to synthesize (required for TTS)
-    --output <path>             WAV file for the TTS output (optional)
+    --model <path>              GGUF model file (arch selects VAD / ASR / TTS / S2S)
+    --input <path>              mono WAV input (required for VAD and ASR;
+                                optional recorded context audio for S2S —
+                                the explicit AEC bypass path, FR-OP-60)
+    --text <string>             text to synthesize (TTS) / the reply text CSM
+                                speaks (S2S — caller-supplied, the model does
+                                not generate text)
+    --output <path>             WAV file for the TTS / S2S output (optional)
     --beam-size <N>             ASR beam-search width (default 1 = greedy).
                                 Currently only honored for `voxtral` arch —
                                 other archs error out on --beam-size > 1
@@ -38,6 +43,15 @@ OPTIONS:
                                 (default 0.6). See `voxtral::BeamConfig`.
     --no-repeat-ngram <N>       Block repeated n-grams of length N during
                                 beam search (default 0 = disabled).
+    --fixture-tokenizer         S2S only: swap the (T29-gated) embedded
+                                tokenizer for the explicit fixture byte
+                                tokenizer — host-only smoke, linguistically
+                                meaningless output (never inferred, FR-EX-08)
+    --interrupt-after <N>       S2S only: stream frames and barge-in
+                                (M3-14 semantics) after N frames — the T19
+                                interrupt demo path
+    --deterministic             S2S only: temperature-0 sampling
+                                (reproducible smoke / parity anchor)
     -h, --help                  print this help
 ";
 
@@ -56,6 +70,12 @@ struct RunArgs {
     /// Block repeated n-grams of this length during beam search
     /// (default 0 = disabled).
     no_repeat_ngram: usize,
+    /// S2S: explicit fixture-tokenizer opt-in (host-only smoke).
+    fixture_tokenizer: bool,
+    /// S2S: barge-in after N streamed frames (T19 demo).
+    interrupt_after: Option<usize>,
+    /// S2S: deterministic (temperature-0) sampling.
+    deterministic: bool,
 }
 
 fn parse_args(args: &[String]) -> Result<RunArgs, String> {
@@ -70,6 +90,9 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut beam_size: usize = 1;
     let mut length_penalty: f32 = 0.6;
     let mut no_repeat_ngram: usize = 0;
+    let mut fixture_tokenizer = false;
+    let mut interrupt_after: Option<usize> = None;
+    let mut deterministic = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -121,6 +144,24 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                     .map_err(|e| format!("--no-repeat-ngram must be an unsigned integer: {e}"))?;
                 i += 2;
             }
+            "--fixture-tokenizer" => {
+                fixture_tokenizer = true;
+                i += 1;
+            }
+            "--interrupt-after" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or("--interrupt-after requires a value")?;
+                interrupt_after =
+                    Some(v.parse().map_err(|e| {
+                        format!("--interrupt-after must be an unsigned integer: {e}")
+                    })?);
+                i += 2;
+            }
+            "--deterministic" => {
+                deterministic = true;
+                i += 1;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -133,6 +174,9 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         beam_size,
         length_penalty,
         no_repeat_ngram,
+        fixture_tokenizer,
+        interrupt_after,
+        deterministic,
     })
 }
 
@@ -143,7 +187,11 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     let a = parse_args(args)?;
-    let (session, task) = engine::load_session(&a.model)?;
+    let hint = a
+        .fixture_tokenizer
+        .then_some(engine::TaskHint::CsmFixtureTokenizer);
+    let (session, task) =
+        engine::load_session_with_backend(&a.model, vokra_core::BackendKind::Cpu, hint)?;
 
     match task {
         ModelTask::Vad => {
@@ -232,6 +280,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 }
             }
         }
+        ModelTask::S2s => {
+            run_s2s(&session, &a)?;
+        }
         // `mel-frontend` is a bench-only task (M2-04-T11) — it isolates the
         // Whisper log-mel path so the fused / unfused RTF isn't polluted by
         // encoder / decoder time. `vokra-cli run` has no analogous end-user
@@ -274,6 +325,105 @@ fn run_asr(session: &Session, pcm: &[f32]) -> Result<String, String> {
         .text)
 }
 
+/// The S2S (Sesame CSM) demo path — T20: recorded-file dialog turn through
+/// the injected `S2sEngine` (batch) or, with `--interrupt-after`, the
+/// streaming loop + M3-14-contract barge-in demo (T19).
+fn run_s2s(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_core::DialogRequest;
+
+    let text = a.text.as_deref().ok_or(
+        "run (S2S): --text <reply text> is required — CSM speaks caller-supplied \
+                text (it does not generate a reply; ADR M4-05 §D1-(b))",
+    )?;
+    let mut request = DialogRequest::new(text);
+    if a.deterministic {
+        request = request.deterministic();
+    }
+    if let Some(path) = a.input.as_deref() {
+        let clip = wav::read_wav(path)?;
+        request = request.with_input_audio(clip.samples);
+    }
+
+    if let Some(after) = a.interrupt_after {
+        // Streaming + barge-in demo. The engine handle is only reachable
+        // through the facade for batch dialog; the streaming surface is a
+        // Rust API on the concrete engine, so this arm rebuilds it from
+        // the model path (same GGUF, same synthesized bridge).
+        use vokra_models::csm::{CsmEngine, CsmStreamConfig, EchoPath, FixtureByteTokenizer};
+        let engine = CsmEngine::from_path(&a.model).map_err(|e| e.to_string())?;
+        let engine = if a.fixture_tokenizer {
+            let vocab = engine.config().text_vocab_size;
+            engine
+                .with_tokenizer(std::sync::Arc::new(
+                    FixtureByteTokenizer::new(vocab).map_err(|e| e.to_string())?,
+                ))
+                .map_err(|e| e.to_string())?
+        } else {
+            engine
+        };
+        let engine = engine.with_echo_path(EchoPath::BypassRecordedInput);
+        let mut stream = engine
+            .open_stream(
+                &request,
+                Some(CsmStreamConfig {
+                    max_frames: after * 4 + 8,
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+        let handle = stream.interrupt_handle();
+        let mut sink: Vec<vokra_core::StreamEvent> = Vec::new();
+        let mut pcm = Vec::new();
+        let mut frames = 0usize;
+        while let Some(chunk) = stream.next_frame(&mut sink).map_err(|e| e.to_string())? {
+            pcm.extend_from_slice(chunk);
+            frames += 1;
+            if frames == after {
+                handle.interrupt();
+            }
+        }
+        println!(
+            "s2s: streamed {frames} frames ({} samples), stopped = {:?} (barge-in after {after})",
+            pcm.len(),
+            stream.stopped()
+        );
+        if let Some(out) = a.output.as_deref() {
+            let sr = engine.config().sample_rate;
+            wav::write_wav(out, &pcm, sr)?;
+            println!("s2s: wrote {} samples @ {sr} Hz -> {out}", pcm.len());
+        }
+        return Ok(());
+    }
+
+    let turn = session
+        .s2s()
+        .dialog_request(&request)
+        .map_err(|e| e.to_string())?;
+    let audio = turn
+        .audio
+        .ok_or("run (S2S): the engine returned no audio")?;
+    match a.output.as_deref() {
+        Some(out) => {
+            wav::write_wav(out, &audio.samples, audio.sample_rate)?;
+            println!(
+                "s2s: \"{}\" -> {} samples @ {} Hz -> {out}",
+                turn.text,
+                audio.samples.len(),
+                audio.sample_rate
+            );
+        }
+        None => {
+            let secs = audio.samples.len() as f64 / f64::from(audio.sample_rate);
+            println!(
+                "s2s: \"{}\" -> {} samples, {secs:.3}s @ {} Hz (no --output; audio discarded)",
+                turn.text,
+                audio.samples.len(),
+                audio.sample_rate
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +437,46 @@ mod tests {
             .join("../../tests/parity/silero_vad/silero-vad-v5.gguf")
             .to_string_lossy()
             .into_owned()
+    }
+
+    /// Writes a synthesized-fixture CSM GGUF (tiny shape config + mimi
+    /// chunk + provenance + a placeholder tokenizer blob) into a temp file
+    /// and returns its path — the M4-05-T20 host-only smoke input.
+    fn csm_fixture_gguf(tag: &str) -> std::path::PathBuf {
+        use vokra_core::gguf::{GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType};
+        use vokra_models::csm::CsmConfig;
+        use vokra_models::mimi::MimiNeuralConfig;
+        let cfg = CsmConfig::tiny_for_tests();
+        let mut mimi_cfg = MimiNeuralConfig::tiny_for_tests();
+        mimi_cfg.quantizer.n_q = cfg.n_codebooks;
+        mimi_cfg.quantizer.bins = cfg.audio_vocab_size;
+        let mut fixed = cfg.clone();
+        fixed.sample_rate = mimi_cfg.sample_rate;
+        fixed.frame_rate_mhz = mimi_cfg.frame_rate_mhz;
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "csm");
+        vokra_core::stamp_provenance(
+            &mut b,
+            vokra_core::LicenseClass::Permissive,
+            "Apache-2.0",
+            Some("sesame/csm-1b"),
+            None,
+        );
+        fixed.write_gguf_metadata(&mut b);
+        mimi_cfg.write_gguf_metadata(&mut b);
+        b.add_metadata(
+            "vokra.tokenizer.model",
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::U8,
+                values: vec![GgufMetadataValue::U8(1)],
+            }),
+        );
+        let path = std::env::temp_dir().join(format!(
+            "vokra-cli-csm-smoke-{tag}-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, b.to_bytes().expect("serialize")).expect("write fixture");
+        path
     }
 
     #[test]
@@ -403,5 +593,82 @@ mod tests {
         let probs = run_vad(&session, &pcm, 16_000).expect("vad runs");
         assert!(!probs.is_empty(), "1 s of audio should complete >= 1 frame");
         assert!(probs.iter().all(|&p| (0.0..=1.0).contains(&p)));
+    }
+
+    #[test]
+    fn s2s_host_only_smoke_batch_dialog_writes_a_wav() {
+        // T20: explicit CPU backend, synthesized-fixture GGUF, explicit
+        // fixture tokenizer (opt-in flag) → e2e run + WAV out.
+        let model = csm_fixture_gguf("batch");
+        let out = std::env::temp_dir().join(format!(
+            "vokra-cli-csm-smoke-out-{}.wav",
+            std::process::id()
+        ));
+        let code = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--text",
+            "host only smoke",
+            "--fixture-tokenizer",
+            "--deterministic",
+            "--output",
+            out.to_str().unwrap(),
+        ]))
+        .expect("s2s smoke runs");
+        assert_eq!(code, ExitCode::SUCCESS);
+        let clip = wav::read_wav(out.to_str().unwrap()).expect("output WAV parses");
+        assert!(!clip.samples.is_empty());
+        let _ = std::fs::remove_file(&model);
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn s2s_streaming_barge_in_demo_stops_after_n_frames() {
+        let model = csm_fixture_gguf("interrupt");
+        let code = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--text",
+            "interrupt me",
+            "--fixture-tokenizer",
+            "--deterministic",
+            "--interrupt-after",
+            "2",
+        ]))
+        .expect("s2s barge-in demo runs");
+        assert_eq!(code, ExitCode::SUCCESS);
+        let _ = std::fs::remove_file(&model);
+    }
+
+    #[test]
+    fn s2s_without_text_is_a_contract_error() {
+        let model = csm_fixture_gguf("no-text");
+        let err = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--fixture-tokenizer",
+        ]))
+        .unwrap_err();
+        assert!(err.contains("--text"), "actionable: {err}");
+        let _ = std::fs::remove_file(&model);
+    }
+
+    #[test]
+    fn s2s_gguf_tokenizer_without_fixture_flag_fails_loudly() {
+        // Without --fixture-tokenizer the embedded (T29-gated) tokenizer is
+        // honest: encode = NotImplemented — never a silent byte fallback.
+        let model = csm_fixture_gguf("honest");
+        let err = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--text",
+            "should fail loudly",
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains("not implemented") || err.contains("T29"),
+            "{err}"
+        );
+        let _ = std::fs::remove_file(&model);
     }
 }

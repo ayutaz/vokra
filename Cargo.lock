@@ -91,6 +91,7 @@ dependencies = [
  "vokra-backend-vulkan",
  "vokra-convert",
  "vokra-core",
+ "vokra-eval",
  "vokra-ops",
  "vokra-piper-plus",
 ]

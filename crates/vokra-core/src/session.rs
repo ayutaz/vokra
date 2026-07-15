@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use crate::backend::BackendKind;
-use crate::engines::{AsrEngine, TtsEngine, VadEngine, VadStreamHandle};
+use crate::engines::{AsrEngine, S2sEngine, TtsEngine, VadEngine, VadStreamHandle};
 use crate::error::{Result, VokraError};
 use crate::gguf::GgufFile;
 use crate::kv_quant::KvQuant;
@@ -73,6 +73,7 @@ pub struct Session {
     asr: Option<Arc<dyn AsrEngine>>,
     tts: Option<Arc<dyn TtsEngine>>,
     vad: Option<Arc<dyn VadEngine>>,
+    s2s: Option<Arc<dyn S2sEngine>>,
 }
 
 /// `Session` is [`Clone`] via cheap atomic `Arc` bumps (FR-API-03): the clone
@@ -87,6 +88,7 @@ impl Clone for Session {
             asr: self.asr.clone(),
             tts: self.tts.clone(),
             vad: self.vad.clone(),
+            s2s: self.s2s.clone(),
         }
     }
 }
@@ -100,6 +102,7 @@ impl fmt::Debug for Session {
             .field("asr_engine", &self.asr.is_some())
             .field("tts_engine", &self.tts.is_some())
             .field("vad_engine", &self.vad.is_some())
+            .field("s2s_engine", &self.s2s.is_some())
             .finish()
     }
 }
@@ -166,6 +169,14 @@ impl Session {
         self
     }
 
+    /// Attaches an S2S dialog engine (Sesame CSM-1B = M4-05; Moshi =
+    /// M4-06); the [`S2s`](crate::S2s) facade delegates to it.
+    #[must_use]
+    pub fn with_s2s_engine(mut self, engine: Arc<dyn S2sEngine>) -> Self {
+        self.s2s = Some(engine);
+        self
+    }
+
     /// The injected ASR engine, if any (used by the [`Asr`](crate::Asr) facade).
     pub(crate) fn asr_engine(&self) -> Option<&Arc<dyn AsrEngine>> {
         self.asr.as_ref()
@@ -174,6 +185,12 @@ impl Session {
     /// The injected TTS engine, if any (used by the [`Tts`](crate::Tts) facade).
     pub(crate) fn tts_engine(&self) -> Option<&Arc<dyn TtsEngine>> {
         self.tts.as_ref()
+    }
+
+    /// The injected S2S engine, if any (used by the [`S2s`](crate::S2s)
+    /// facade).
+    pub(crate) fn s2s_engine(&self) -> Option<&Arc<dyn S2sEngine>> {
+        self.s2s.as_ref()
     }
 
     /// Opens a streaming VAD handle from the injected VAD engine (M0-05).
@@ -267,6 +284,7 @@ impl SessionBuilder {
             asr: None,
             tts: None,
             vad: None,
+            s2s: None,
         })
     }
 }

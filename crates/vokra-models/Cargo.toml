@@ -56,6 +56,11 @@ vokra-backend-vulkan = { workspace = true, optional = true }
 # offline vokra-convert library, and bind the result back — proving the
 # converter-derived tensors and the runtime binder agree bit-for-bit.
 vokra-convert = { path = "../vokra-convert" }
+# M4-05 T25 (test-only edge): the CSM quality gate consumes the M4-18
+# degradation gate (MelLoss + AudioMosMetric G2 branch) from vokra-eval —
+# first-party, acyclic (vokra-eval depends only on core/ops/backend-cpu),
+# root Cargo.lock stays vokra-* only (NFR-DS-02).
+vokra-eval = { path = "../vokra-eval" }
 
 [features]
 # Off by default: enable with `--features metal` on macOS / iOS to route the
