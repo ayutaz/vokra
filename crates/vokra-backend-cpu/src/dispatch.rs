@@ -235,9 +235,113 @@ fn wasm_simd128_table() -> KernelTable {
     unreachable!("WASM SIMD128 kernel table requested off a simd128-enabled wasm32 build")
 }
 
+// M4-17-T05: x86-64 AVX-512 f32 dispatch tier. The `avx512` kernels module
+// is compiled only on x86-64; `features::select_isa` cannot yield `Avx512`
+// elsewhere (the probe fields stay false) and `table_for` rejects it via
+// `CpuFeatures::supports`, so the stub is genuinely unreachable.
+//
+// Transcendental activations (sigmoid / tanh / gelu) delegate to the AVX2
+// kernels: `supports(Avx512)` includes AVX2+FMA (ADR M4-17 §(b)-4), any
+// AVX-512 host can run them, and the delegation keeps the
+// `simd-transcendental` feature posture automatically in sync with the AVX2
+// tier (avx2 kernels are scalar-backed by default, vexp under the feature).
+#[cfg(target_arch = "x86_64")]
+fn avx512_table() -> KernelTable {
+    use crate::kernels::avx2;
+    use crate::kernels::avx512;
+    KernelTable {
+        gemm: avx512::gemm,
+        gemv: avx512::gemv,
+        add: avx512::add,
+        mul: avx512::mul,
+        relu: avx512::relu,
+        sigmoid: avx2::sigmoid,
+        tanh: avx2::tanh,
+        gelu: avx2::gelu,
+        softmax: avx512::softmax,
+        layer_norm: avx512::layer_norm,
+        fused_logmel: avx512::fused_logmel,
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn avx512_table() -> KernelTable {
+    // Unreachable: `features::select_isa` never yields `Avx512` off x86-64,
+    // and `table_for` rejects it via `CpuFeatures::supports`.
+    unreachable!("AVX-512 kernel table requested on a non-x86-64 target")
+}
+
+// M4-17-T05: specialized-tier f32 tables. The INT8 / BF16 / FP16 kernels are
+// a separate dispatch surface (`kernels::kquant_gemv_i8*` /
+// `kernels::gemm_bf16_on` / `kernels::gemm_fp16_on` — ADR M4-17 §(b)-2), so
+// selecting one of these tiers as the process-wide path installs the best
+// f32 kernels its `supports` gate guarantees (thin delegation, no second
+// kernel implementation):
+//
+// - `Avx512Vnni` / `Avx512Bf16` → the AVX-512 f32 kernels (their gate
+//   includes the full F/DQ/BW/VL bundle);
+// - `AvxVnni256` → the AVX2 kernels (AVX-VNNI parts are AVX2+FMA parts);
+// - `NeonFp16` / `NeonDotprod` / `NeonI8mm` / `NeonBf16` → the NEON baseline
+//   kernels (NEON is unconditional on AArch64).
+//
+// Within-CPU-backend dispatch, not a cross-backend fallback: every table
+// computes the same f32 ops within FP32 rounding (FR-EX-08 unaffected).
+#[cfg(target_arch = "x86_64")]
+fn avx512vnni_table() -> KernelTable {
+    avx512_table()
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn avx512vnni_table() -> KernelTable {
+    // Unreachable: probe fields are x86-64-only (see avx512_table stub).
+    unreachable!("AVX-512 VNNI kernel table requested on a non-x86-64 target")
+}
+
+#[cfg(target_arch = "x86_64")]
+fn avx512bf16_table() -> KernelTable {
+    avx512_table()
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn avx512bf16_table() -> KernelTable {
+    // Unreachable: probe fields are x86-64-only (see avx512_table stub).
+    unreachable!("AVX-512 BF16 kernel table requested on a non-x86-64 target")
+}
+
+#[cfg(target_arch = "x86_64")]
+fn avxvnni256_table() -> KernelTable {
+    avx2_table()
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn avxvnni256_table() -> KernelTable {
+    // Unreachable: probe fields are x86-64-only (see avx512_table stub).
+    unreachable!("AVX-VNNI-256 kernel table requested on a non-x86-64 target")
+}
+
+#[cfg(target_arch = "aarch64")]
+fn neon_ext_table() -> KernelTable {
+    // Shared by NeonFp16 / NeonDotprod / NeonI8mm / NeonBf16 — all four
+    // delegate their f32 table to the NEON baseline kernels (the specialized
+    // kernels live on the separate dispatch surface, see above).
+    neon_table()
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn neon_ext_table() -> KernelTable {
+    // Unreachable: `features::select_isa` never yields a Neon* tier off
+    // aarch64, and `table_for` rejects them via `CpuFeatures::supports`.
+    unreachable!("NEON server-tier kernel table requested on a non-aarch64 target")
+}
+
 /// Maps an [`IsaPath`] to its kernel table — the single source of truth for
 /// the ISA → implementation mapping (used by both production dispatch and the
 /// `*_on` test entry points).
+///
+/// Deliberately an **exhaustive** match even though `IsaPath` is
+/// `#[non_exhaustive]` (the attribute has no effect within the defining
+/// crate): a future variant added without a table arm must be a compile
+/// error here, never a runtime surprise (M4-17-T05).
 fn build_table(isa: IsaPath) -> KernelTable {
     match isa {
         IsaPath::Scalar => scalar_table(),
@@ -245,6 +349,13 @@ fn build_table(isa: IsaPath) -> KernelTable {
         IsaPath::Neon => neon_table(),
         IsaPath::Rvv => rvv_table(),
         IsaPath::WasmSimd128 => wasm_simd128_table(),
+        IsaPath::Avx512 => avx512_table(),
+        IsaPath::Avx512Vnni => avx512vnni_table(),
+        IsaPath::Avx512Bf16 => avx512bf16_table(),
+        IsaPath::AvxVnni256 => avxvnni256_table(),
+        IsaPath::NeonFp16 | IsaPath::NeonDotprod | IsaPath::NeonI8mm | IsaPath::NeonBf16 => {
+            neon_ext_table()
+        }
     }
 }
 
@@ -353,7 +464,7 @@ pub fn fused_log_mel_dispatch(
     //   out    : per-frame log-mel output of length n_mels
     // Shape validation:
     let n_bins = pcm.len();
-    if mel_fb.len() % n_bins != 0 {
+    if !mel_fb.len().is_multiple_of(n_bins) {
         return Err(VokraError::InvalidArgument(format!(
             "fused_log_mel_dispatch: mel_fb.len() {} is not a multiple of n_bins {}",
             mel_fb.len(),
@@ -391,7 +502,7 @@ pub(crate) fn fused_log_mel_dispatch_on(
 ) -> Result<()> {
     const FLOOR: f32 = 1e-10;
     let n_bins = pcm.len();
-    if n_bins == 0 || mel_fb.len() % n_bins != 0 {
+    if n_bins == 0 || !mel_fb.len().is_multiple_of(n_bins) {
         return Err(VokraError::InvalidArgument(
             "fused_log_mel_dispatch_on: bad pcm / mel_fb shape".into(),
         ));
@@ -435,7 +546,7 @@ mod tests {
         // (they are arch-exclusive); every unsupported path must be an
         // explicit BackendUnavailable, never a silent fallback (FR-EX-08).
         let feats = CpuFeatures::detect();
-        for isa in [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv] {
+        for isa in IsaPath::ALL_SIMD {
             if !feats.supports(isa) {
                 assert!(matches!(
                     table_for(isa),
@@ -527,7 +638,7 @@ mod tests {
         let pcm = [1.0f32, 2.0, 3.0];
         let mel_fb = [1.0f32; 3];
         let mut out = [0.0f32; 1];
-        for isa in [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv] {
+        for isa in IsaPath::ALL_SIMD {
             if !feats.supports(isa) {
                 assert!(matches!(
                     fused_log_mel_dispatch_on(isa, &pcm, &mel_fb, &mut out),

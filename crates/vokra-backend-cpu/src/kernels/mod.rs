@@ -60,8 +60,48 @@ pub(crate) mod vexp;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod avx2;
 
+// M4-17-T07..T11: AVX-512 f32 kernel tier (F/DQ/BW/VL bundle) + the VNNI
+// INT8 / BF16 matmul cores. Compiled only on x86-64; runtime entry is gated
+// by `CpuFeatures::supports(IsaPath::Avx512*)` (the SIGILL guard), and the
+// binary itself stays at the SSE2 baseline — the AVX-512 encodings exist
+// only inside the per-function `#[target_feature]` cores (ADR M4-17 §(g)).
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod avx512;
+
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod neon;
+
+// M4-17-T13: AVX-VNNI 256-bit INT8 group-sum core (Alder Lake+ client INT8
+// main path; AVX-512 is fused off on those parts, ADR M4-17 §(d)).
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod avxvnni256;
+
+// M4-17-T14..T17: ARM64 server-tier cores. dotprod / i8mm / fp16 / bf16
+// vector intrinsics are unstable on the pinned rustc, so these use
+// `core::arch::asm!` with `.arch_extension` fences (M3-13 RVV precedent,
+// ADR M4-17 §(g)); each encoding is reached only after the corresponding
+// `CpuFeatures::supports` gate (SIGILL guard).
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod neon_bf16;
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod neon_dotprod;
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod neon_fp16;
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod neon_i8mm;
+
+// M4-17-T10..T17: K-quants SIMD dequant fusion (bit-identical to the
+// vokra-core scalar reference) + the specialized INT8 / BF16 / FP16
+// dispatch surface. Target-independent orchestration (the per-arch cores
+// live in the modules above / in `avx512`).
+pub(crate) mod kquant;
+
+pub use kquant::{
+    BF16_REL, FP16_REL, KQUANT_GROUP, KQuantDtype, bf16_to_f32, dot_precision_bound,
+    f16_to_f32 as f16_bits_to_f32, f32_to_bf16_rne, f32_to_f16_rne, f64_to_f16_rne, fp16_fma_emu,
+    gemm_bf16_on, gemm_fp16_on, int8_error_bound, kquant_dequant_on, kquant_gemv_i8,
+    kquant_gemv_i8_on, kquant_gemv2_i8_on,
+};
 
 // M3-13-T04..T09: RISC-V RVV 1.0 base kernels + Zvfh feature-gated fp16 path.
 // Compiled only on `target_arch = "riscv64"` — the runtime dispatch layer
