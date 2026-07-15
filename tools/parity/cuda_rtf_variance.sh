@@ -46,6 +46,7 @@
 #       --audio  jfk-30s.wav          \
 #       --iters  10                   \
 #       [--warmup 1]                  \
+#       [--fa-mode decomposed|v2|v3]  \
 #       [--fa-v2 on|off]              \
 #       [--backend cuda]              \
 #       [--vokra-cli ./target/release/vokra-cli] \
@@ -55,6 +56,17 @@
 # Emits one JSON object per iteration on stdout (and, if ``--output`` is
 # given, to that file — one JSON line per iteration, ``jsonlines/ndjson``
 # format). ``--output`` overwrites any existing file.
+#
+# **FA mode (M4-07-T13)** — three attention-path legs on the same binary:
+#   decomposed  VOKRA_CUDA_DISABLE_FA_V2=1 + VOKRA_CUDA_DISABLE_FA_V3=1
+#   v2          VOKRA_CUDA_DISABLE_FA_V3=1        (gated FA v2, t_q >= 16)
+#   v3          VOKRA_CUDA_FA_V3_ENCODER=1        (FA v3 priority when the
+#               Hopper probe holds, incl. the encoder opt-in so the v3 gain
+#               surface — t_q = 1500 self-attention — is exposed e2e)
+# ``--fa-v2 on|off`` is kept as a backward-compatible alias (on = v2,
+# off = decomposed); passing both --fa-mode and --fa-v2 is an error rather
+# than a silent precedence rule. On pre-M4-07 binaries the extra V3 env vars
+# are simply unread, so old measurement recipes reproduce identically.
 
 set -euo pipefail
 
@@ -64,7 +76,8 @@ set -euo pipefail
 
 ITERS=10
 WARMUP=1
-FA_V2=on
+FA_MODE=""
+FA_V2=""
 BACKEND=cuda
 GGUF=""
 AUDIO=""
@@ -88,6 +101,7 @@ while [ $# -gt 0 ]; do
         --audio)     AUDIO="$2";     shift 2 ;;
         --iters)     ITERS="$2";     shift 2 ;;
         --warmup)    WARMUP="$2";    shift 2 ;;
+        --fa-mode)   FA_MODE="$2";   shift 2 ;;
         --fa-v2)     FA_V2="$2";     shift 2 ;;
         --backend)   BACKEND="$2";   shift 2 ;;
         --label)     LABEL="$2";     shift 2 ;;
@@ -108,9 +122,32 @@ if [ -z "$AUDIO" ]; then echo "error: --audio is required" >&2; exit 2; fi
 if [ ! -f "$GGUF"  ]; then echo "error: gguf not found: $GGUF"   >&2; exit 2; fi
 if [ ! -f "$AUDIO" ]; then echo "error: audio not found: $AUDIO" >&2; exit 2; fi
 
-case "$FA_V2" in
-    on|off) ;;
-    *) echo "error: --fa-v2 must be 'on' or 'off' (got '$FA_V2')" >&2; exit 2 ;;
+# FA mode resolution (M4-07-T13). --fa-v2 stays as a compat alias; a
+# simultaneous explicit --fa-mode + --fa-v2 is rejected (no silent precedence).
+if [ -n "$FA_MODE" ] && [ -n "$FA_V2" ]; then
+    echo "error: pass either --fa-mode or the legacy --fa-v2 alias, not both" >&2
+    exit 2
+fi
+if [ -n "$FA_V2" ]; then
+    case "$FA_V2" in
+        on)  FA_MODE=v2 ;;
+        off) FA_MODE=decomposed ;;
+        *) echo "error: --fa-v2 must be 'on' or 'off' (got '$FA_V2')" >&2; exit 2 ;;
+    esac
+fi
+if [ -z "$FA_MODE" ]; then
+    FA_MODE=v2   # historical default: --fa-v2 on (the gated FA v2 wrapper)
+fi
+case "$FA_MODE" in
+    decomposed|v2|v3) ;;
+    *) echo "error: --fa-mode must be 'decomposed' | 'v2' | 'v3' (got '$FA_MODE')" >&2; exit 2 ;;
+esac
+# Legacy JSONL field value (kept alongside the new fa_mode field so the
+# pre-M4-07 analyzer / recorded baselines stay comparable): v3 keeps FA v2
+# enabled below its own gate, so it maps to "on".
+case "$FA_MODE" in
+    decomposed) FA_V2_COMPAT=off ;;
+    *)          FA_V2_COMPAT=on ;;
 esac
 
 case "$BACKEND" in
@@ -186,17 +223,20 @@ AUDIO_JSON="$(json_escape "$AUDIO")"
 LABEL_JSON="$(json_escape "$LABEL")"
 
 # ---------------------------------------------------------------------------
-# FA v2 mode → env var toggle
-# ``VOKRA_CUDA_DISABLE_FA_V2=1`` forces the decomposed (2 + 7·n_head)
-# self-attention path per ``context.rs`` (commit d469429). Absent env
-# → default FA v2 gated wrapper (t_q ≥ 16) per commit 3317683.
+# FA mode → env var toggles (all presence-based; see fa_v3.rs / context.rs)
+#   VOKRA_CUDA_DISABLE_FA_V2=1  forces the decomposed (2 + 7·n_head) chain
+#   VOKRA_CUDA_DISABLE_FA_V3=1  deselects the FA v3 arm (v2 stays gated)
+#   VOKRA_CUDA_FA_V3_ENCODER=1  opts the encoder chains into FA v3 when the
+#                               Hopper probe holds (decomposed continue + a
+#                               stderr note elsewhere — never an error)
+# Every mode sets at least one variable, so the ``env`` prefix is uniform.
 # ---------------------------------------------------------------------------
 
-if [ "$FA_V2" = "off" ]; then
-    FA_V2_ENV_LINE='VOKRA_CUDA_DISABLE_FA_V2=1'
-else
-    FA_V2_ENV_LINE=''
-fi
+case "$FA_MODE" in
+    decomposed) FA_ENV=(VOKRA_CUDA_DISABLE_FA_V2=1 VOKRA_CUDA_DISABLE_FA_V3=1) ;;
+    v2)         FA_ENV=(VOKRA_CUDA_DISABLE_FA_V3=1) ;;
+    v3)         FA_ENV=(VOKRA_CUDA_FA_V3_ENCODER=1) ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Output file setup — truncate on start, then tee each iteration line into
@@ -236,25 +276,15 @@ FAIL_COUNT=0
 for i in $(seq 1 "$ITERS"); do
     ITER_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-    # Assemble the bench invocation. ``env`` prefix ensures the FA v2 toggle
-    # only applies to this call and does not leak to the enclosing shell.
-    if [ -n "$FA_V2_ENV_LINE" ]; then
-        BENCH_OUT="$(env "$FA_V2_ENV_LINE" "$VOKRA_CLI" bench \
-            --model "$GGUF" \
-            --input "$AUDIO" \
-            --backend "$BACKEND" \
-            --iters 1 \
-            --warmup "$WARMUP" \
-            --format json 2>&1)" || RC=$?
-    else
-        BENCH_OUT="$("$VOKRA_CLI" bench \
-            --model "$GGUF" \
-            --input "$AUDIO" \
-            --backend "$BACKEND" \
-            --iters 1 \
-            --warmup "$WARMUP" \
-            --format json 2>&1)" || RC=$?
-    fi
+    # Assemble the bench invocation. ``env`` prefix ensures the FA toggles
+    # only apply to this call and do not leak to the enclosing shell.
+    BENCH_OUT="$(env "${FA_ENV[@]}" "$VOKRA_CLI" bench \
+        --model "$GGUF" \
+        --input "$AUDIO" \
+        --backend "$BACKEND" \
+        --iters 1 \
+        --warmup "$WARMUP" \
+        --format json 2>&1)" || RC=$?
     RC="${RC:-0}"
 
     if [ "$RC" -ne 0 ]; then
@@ -262,7 +292,7 @@ for i in $(seq 1 "$ITERS"); do
         # Emit a failure record so the analyzer can count / display it,
         # then continue to the next iteration.
         FAIL_MSG_JSON="$(json_escape "$BENCH_OUT")"
-        emit_line "{\"iter\":$i,\"timestamp\":\"$ITER_TS\",\"status\":\"error\",\"exit_code\":$RC,\"error\":$FAIL_MSG_JSON,\"fa_v2_mode\":\"$FA_V2\",\"backend\":\"$BACKEND\",\"label\":$LABEL_JSON}"
+        emit_line "{\"iter\":$i,\"timestamp\":\"$ITER_TS\",\"status\":\"error\",\"exit_code\":$RC,\"error\":$FAIL_MSG_JSON,\"fa_mode\":\"$FA_MODE\",\"fa_v2_mode\":\"$FA_V2_COMPAT\",\"backend\":\"$BACKEND\",\"label\":$LABEL_JSON}"
         unset RC
         continue
     fi
@@ -275,7 +305,7 @@ for i in $(seq 1 "$ITERS"); do
     if [ -z "$BENCH_JSON" ]; then
         FAIL_COUNT=$((FAIL_COUNT + 1))
         FAIL_MSG_JSON="$(json_escape "no JSON line in bench output: $BENCH_OUT")"
-        emit_line "{\"iter\":$i,\"timestamp\":\"$ITER_TS\",\"status\":\"error\",\"error\":$FAIL_MSG_JSON,\"fa_v2_mode\":\"$FA_V2\",\"backend\":\"$BACKEND\",\"label\":$LABEL_JSON}"
+        emit_line "{\"iter\":$i,\"timestamp\":\"$ITER_TS\",\"status\":\"error\",\"error\":$FAIL_MSG_JSON,\"fa_mode\":\"$FA_MODE\",\"fa_v2_mode\":\"$FA_V2_COMPAT\",\"backend\":\"$BACKEND\",\"label\":$LABEL_JSON}"
         continue
     fi
 
@@ -304,13 +334,13 @@ print(f"{r} {m}")
     if [ "$RTF" = "null" ]; then
         FAIL_COUNT=$((FAIL_COUNT + 1))
         FAIL_MSG_JSON="$(json_escape "malformed bench JSON: $BENCH_JSON")"
-        emit_line "{\"iter\":$i,\"timestamp\":\"$ITER_TS\",\"status\":\"error\",\"error\":$FAIL_MSG_JSON,\"fa_v2_mode\":\"$FA_V2\",\"backend\":\"$BACKEND\",\"label\":$LABEL_JSON}"
+        emit_line "{\"iter\":$i,\"timestamp\":\"$ITER_TS\",\"status\":\"error\",\"error\":$FAIL_MSG_JSON,\"fa_mode\":\"$FA_MODE\",\"fa_v2_mode\":\"$FA_V2_COMPAT\",\"backend\":\"$BACKEND\",\"label\":$LABEL_JSON}"
         continue
     fi
 
     # Compose the per-iter envelope. ``bench`` field is the raw report JSON
     # (round-trippable) so nothing is lost.
-    emit_line "{\"iter\":$i,\"timestamp\":\"$ITER_TS\",\"status\":\"ok\",\"rtf\":$RTF,\"latency_ms\":$WALL_MS,\"fa_v2_mode\":\"$FA_V2\",\"backend\":\"$BACKEND\",\"gguf\":$GGUF_JSON,\"audio\":$AUDIO_JSON,\"host\":$HOSTNAME_JSON,\"gpu\":$GPU_NAME_JSON,\"driver\":$GPU_DRIVER_JSON,\"label\":$LABEL_JSON,\"bench\":$BENCH_JSON}"
+    emit_line "{\"iter\":$i,\"timestamp\":\"$ITER_TS\",\"status\":\"ok\",\"rtf\":$RTF,\"latency_ms\":$WALL_MS,\"fa_mode\":\"$FA_MODE\",\"fa_v2_mode\":\"$FA_V2_COMPAT\",\"backend\":\"$BACKEND\",\"gguf\":$GGUF_JSON,\"audio\":$AUDIO_JSON,\"host\":$HOSTNAME_JSON,\"gpu\":$GPU_NAME_JSON,\"driver\":$GPU_DRIVER_JSON,\"label\":$LABEL_JSON,\"bench\":$BENCH_JSON}"
 done
 
 END_TS_RUN="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -322,7 +352,7 @@ END_TS_RUN="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # use or ignore it (a line with ``"type":"summary"``).
 # ---------------------------------------------------------------------------
 
-emit_line "{\"type\":\"summary\",\"iters_requested\":$ITERS,\"iters_failed\":$FAIL_COUNT,\"started_at\":\"$START_TS_RUN\",\"ended_at\":\"$END_TS_RUN\",\"fa_v2_mode\":\"$FA_V2\",\"backend\":\"$BACKEND\",\"label\":$LABEL_JSON,\"host\":$HOSTNAME_JSON,\"gpu\":$GPU_NAME_JSON,\"driver\":$GPU_DRIVER_JSON,\"gguf\":$GGUF_JSON,\"audio\":$AUDIO_JSON}"
+emit_line "{\"type\":\"summary\",\"iters_requested\":$ITERS,\"iters_failed\":$FAIL_COUNT,\"started_at\":\"$START_TS_RUN\",\"ended_at\":\"$END_TS_RUN\",\"fa_mode\":\"$FA_MODE\",\"fa_v2_mode\":\"$FA_V2_COMPAT\",\"backend\":\"$BACKEND\",\"label\":$LABEL_JSON,\"host\":$HOSTNAME_JSON,\"gpu\":$GPU_NAME_JSON,\"driver\":$GPU_DRIVER_JSON,\"gguf\":$GGUF_JSON,\"audio\":$AUDIO_JSON}"
 
 if [ "$FAIL_COUNT" -eq "$ITERS" ]; then
     echo "error: all $ITERS iterations failed — see JSONL output above" >&2

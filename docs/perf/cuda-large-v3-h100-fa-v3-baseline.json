@@ -1,0 +1,56 @@
+{
+  "$schema": "vokra-perf-baseline-v1",
+  "wp": "M4-07",
+  "adr": "docs/adr/M4-07-fa-v3-hopper.md",
+  "ticket_ids": ["M4-07-T14", "M4-07-T18"],
+  "model": "whisper-large-v3",
+  "audio": "tests/fixtures/audio/jfk-30s.wav",
+  "backend": "cuda",
+  "hardware": "H100 (SM 9.0) — TBD exact SKU (owner T18: PCIe / SXM / NVL and VRAM)",
+  "driver": "TBD (owner T18)",
+  "cuda": "TBD (owner T18)",
+  "median_rtf": "TBD (owner T18)",
+  "measured_at": "TBD (owner T18)",
+  "measurement_source": "TBD (owner T18: tools/parity/cuda_rtf_variance.sh --fa-mode {decomposed|v2|v3}, N=10 each, ONE host)",
+  "measurement_source_doc": "docs/m4-07-hopper-bench-handover.md",
+  "gate_status": "reference",
+  "gate_status_note": "H100 is a REFERENCE measurement surface only — the formal RTF gate (median > baseline * 1.05 || median > 0.10) stays on the RTX 4090 baseline (docs/perf/cuda-large-v3-baseline.json, M2-14 self-hosted runner + M3-01 5% regression). H100 numbers must NEVER be merged into that file: mixing hardware generations breaks the regression judgment (M4-07 spec T14).",
+  "e2e_rtf_by_fa_mode": {
+    "decomposed": {
+      "median_rtf": "TBD (owner T18)",
+      "mean_rtf": "TBD (owner T18)",
+      "cv": "TBD (owner T18)",
+      "jsonl": "TBD (owner T18: docs/bench-baselines/vast-<date>-h100/rtf-h100-decomposed.jsonl)"
+    },
+    "v2": {
+      "median_rtf": "TBD (owner T18)",
+      "mean_rtf": "TBD (owner T18)",
+      "cv": "TBD (owner T18)",
+      "jsonl": "TBD (owner T18: docs/bench-baselines/vast-<date>-h100/rtf-h100-fa-v2.jsonl)"
+    },
+    "v3": {
+      "median_rtf": "TBD (owner T18)",
+      "mean_rtf": "TBD (owner T18)",
+      "cv": "TBD (owner T18)",
+      "jsonl": "TBD (owner T18: docs/bench-baselines/vast-<date>-h100/rtf-h100-fa-v3.jsonl)",
+      "note": "--fa-mode v3 sets VOKRA_CUDA_FA_V3_ENCODER=1 so the encoder self-attention (t_q = 1500, the FA v3 battleground) is exposed e2e; the decoder steady state (t_q = 1) stays below FA_V3_MIN_TQ = 64 by design (FA v2 honest-negative inheritance)."
+    }
+  },
+  "kernel_level_comparison": {
+    "workload": "flash_attn_v3_dev vs flash_attn_dev vs decomposed attn chain, d_head=64, n_head=4, causal + non-causal, t_q = t_kv in {64, 448, 1500}",
+    "fa_v3_vs_decomposed_speedup": "TBD (owner T18)",
+    "fa_v3_vs_fa_v2_speedup": "TBD (owner T18)",
+    "reference_expectation_note": "The research §10 '2-3x on Hopper' figure applies to THIS kernel-level face only — it is a reference figure, NOT an acceptance criterion (milestones §8 M4-07 row), and it must not be compared against the e2e RTF face above. An honest below-2x (or negative) result still closes the WP by being recorded."
+  },
+  "parity_recorded_max_abs_delta": {
+    "causal": "TBD (owner T17: eprintln output of flash_attn_v3_causal_vs_decomposed_f32)",
+    "non_causal": "TBD (owner T17)",
+    "atol_preregistered": 0.02,
+    "atol_note": "FA_V3_PARITY_ATOL = 0.02 is the tf32 architectural-bound pre-registration (fa_v3.rs rustdoc + ADR M4-07 (d)). Measured > 0.02 => hand back to CC (no quiet atol bump); measured comfortably <= 0.01 => tighten to the FA v2 value in a follow-up."
+  },
+  "notes": [
+    "Scaffolded by M4-07-T14 with explicit TBD placeholders — fabricated values are forbidden; the owner fills every TBD from the T17/T18 H100 run.",
+    "Dashboard registration (X-06 nightly results surface) of the FA v2 comparison row is the WP-close trigger (milestones §8 M4-07 completion condition, second half).",
+    "FA_V3_MIN_TQ = 64 calibration and the per-path parity atol confirmation are follow-ups fed by this file's measurements."
+  ]
+}
