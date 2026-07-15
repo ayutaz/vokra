@@ -763,6 +763,38 @@ mod tests {
         // first. The variant is exercised by the vokra-core paged tests.
     }
 
+    // ---- T19: host-only fallback smoke -------------------------------------
+
+    #[test]
+    fn host_only_smoke_decode_end_to_end() {
+        // The full DAC path — factorized decode + paged decode + summed read
+        // — runs on the CPU with zero external dependencies and no GPU
+        // anywhere (mirror of mimi_rvq's host_only_smoke; any GPU-only path
+        // must stay an explicit opt-in, FR-EX-08).
+        let attrs = DacRvqAttrs {
+            n_codebooks: 2,
+            codebook_size: 3,
+            codebook_dim: 2,
+            d_model: 4,
+        };
+        let tables = make_low_tables(attrs);
+        let projs = make_projs(attrs);
+        let time = 2;
+        let codes = vec![0u32, 1, 2, 0];
+
+        let flat = dac_rvq_decode(&codes, time, &tables, &projs, &attrs).unwrap();
+        assert_eq!(flat.len(), time * attrs.d_model);
+
+        let dims = dac_paged_dims(&attrs, 1, time);
+        let mut cache = PagedKvCache::<f32>::pre_allocate(dims, BlockSize::Four).unwrap();
+        dac_rvq_decode_paged(&codes, time, &tables, &projs, &attrs, 0, &mut cache, 0).unwrap();
+        for t in 0..time {
+            let want = &flat[t * attrs.d_model..(t + 1) * attrs.d_model];
+            let got = dac_rvq_read_summed(&cache, &attrs, 0, t).unwrap();
+            assert_eq!(got, want);
+        }
+    }
+
     // ---- read_summed negative axes -----------------------------------------
 
     #[test]

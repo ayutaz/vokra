@@ -255,6 +255,27 @@ mod tests {
         ));
     }
 
+    // ---- T19: host-only fallback smoke -------------------------------------
+
+    #[test]
+    fn host_only_smoke_decode_end_to_end() {
+        // The engine-op path runs on the CPU with zero external dependencies
+        // (research-checkpoint decode is host-only today; GPU arms stay
+        // explicit UnsupportedOp — FR-EX-08).
+        let attrs = EncodecRvqAttrs {
+            n_codebooks: 2,
+            codebook_size: 3,
+            d_model: 4,
+        };
+        let tables = make_ramp_tables(EncodecRvqAttrs {
+            n_codebooks: 2,
+            codebook_size: 3,
+            d_model: 4,
+        });
+        let out = encodec_rvq_decode(&[0, 2, 1, 1], 2, &tables, &attrs).unwrap();
+        assert_eq!(out.len(), 2 * attrs.d_model);
+    }
+
     // ---- weight-exclusion posture (FR-OP-32) -------------------------------
 
     #[test]
