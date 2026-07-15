@@ -126,6 +126,40 @@ pub(crate) fn fa_v3_gate_selects(use_flash_attn_v3: bool, t_q: usize) -> bool {
     use_flash_attn_v3 && t_q >= FA_V3_MIN_TQ
 }
 
+/// M4-07-T12: per-path parity tolerance of the FA v3 kernel against the
+/// decomposed FP32 reference chain — **2× the FA v2 / NFR-QL-01 FP32 bound
+/// (`ATOL = 0.01`)**, because the FA v3 matmul inputs are tf32.
+///
+/// # Architectural-bound derivation (pre-registered estimate; ADR M4-07 §(d))
+///
+/// tf32 keeps a 10-bit mantissa → unit roundoff `u = 2⁻¹¹ ≈ 4.9e-4`,
+/// ~8 000× coarser than fp32's `2⁻²⁴`. The four explicit rounding points
+/// (Q, K, P, V — `cvt.rna.tf32.f32`; accumulation stays fp32) propagate as:
+/// per-score error ≈ √64·|q||k|·2u ≈ 1e-3 on zero-centred O(1)-scored
+/// inputs → softmax perturbation (common-mode input rounding largely
+/// cancels; residual) ≈ 2e-3 relative → context error with partial
+/// cross-key cancellation ≈ 1e-3 → out-proj GEMM amplification √256 →
+/// **estimated max |Δ| ≈ 5e-3, pessimistic tail toward ~2e-2 for the
+/// t_kv = 1500 sweep maximum**. `0.02` = the central estimate × 2–4
+/// headroom (the Kokoro `PROSODY_F0_ATOL` discipline: theory-derived, never
+/// green-chasing).
+///
+/// # Two-way recalibration commitment (fabricated pass forbidden)
+///
+/// This constant was written **before** any Hopper hardware could run the
+/// kernel (CC authoring machine is CUDA-less). The owner's first H100 run
+/// (T17) records the measured max |Δ|:
+/// * measured **> 0.02** → the run is a failure to hand back (bound
+///   re-derivation or kernel fix), never a quiet atol bump;
+/// * measured comfortably **≤ 0.01** → tighten to the FA v2 value in a
+///   follow-up (leaving a needlessly loose tolerance is also dishonest).
+pub const FA_V3_PARITY_ATOL: f32 = 0.02;
+
+/// Relative component of the FA v3 parity bound — unchanged from the FA v2
+/// suite (`rtol = 1e-5`): the tf32 degradation is absolute-dominated at the
+/// activation scales the sweep produces.
+pub const FA_V3_PARITY_RTOL: f32 = 1e-5;
+
 /// Outcome of an FA v3 capability decision (session construction or encoder
 /// opt-in): route through FA v3, keep the decomposed/FA v2 chain, or — under
 /// `VOKRA_CUDA_FORCE_FA_V3` — refuse loudly (FR-EX-08 explicit error, the

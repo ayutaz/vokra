@@ -4009,6 +4009,140 @@ impl CudaContext {
         self.sync_stream("cuStreamSynchronize")
     }
 
+    /// M4-07-T12: device-in/out fused attention that **unconditionally**
+    /// dispatches the FA v3 fused kernel ([`Self::launch_flash_attn_v3`]) —
+    /// the testing / diagnostic wrapper the FA v3 primitive-parity tests use,
+    /// exactly symmetric with [`Self::flash_attn_dev`] (FA v2). Bypasses the
+    /// runtime `FA_V3_MIN_TQ = 64` gate so any `t_q >= 1` shape can be
+    /// exercised; **never** the runtime path — sessions and `attn_dev`
+    /// funnel through the gated [`Self::launch_attn_chain`].
+    ///
+    /// On a non-Hopper device (or any config where the lazy slot resolved to
+    /// `Disabled`) this returns the slot's **explicit**
+    /// [`VokraError::BackendUnavailable`] naming the reason — the parity
+    /// tests use that as their clean-skip signal (FR-EX-08: refusal is loud,
+    /// never a silent CPU or v2 substitution).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] per
+    ///   [`crate::fa_v3::flash_attn_v3_validate_args`] (zero dims,
+    ///   `d % n_head != 0`, `d/n_head != 64`, causal window past the K/V
+    ///   range) or on a tensor-length mismatch.
+    /// - [`VokraError::BackendUnavailable`] when FA v3 is unavailable on
+    ///   this device/driver, or on an allocation / launch failure.
+    #[allow(clippy::too_many_arguments)] // fused-attention operand set (mirrors flash_attn_dev)
+    pub fn flash_attn_v3_dev(
+        &self,
+        t_q: usize,
+        t_kv: usize,
+        d: usize,
+        n_head: usize,
+        xq: &CudaDeviceTensor<'_>,
+        q_w: &CudaDeviceTensor<'_>,
+        q_bias: Option<&CudaDeviceTensor<'_>>,
+        k: &CudaDeviceTensor<'_>,
+        v: &CudaDeviceTensor<'_>,
+        out_w: &CudaDeviceTensor<'_>,
+        out_bias: Option<&CudaDeviceTensor<'_>>,
+        scale: f32,
+        causal: bool,
+        q_offset: usize,
+        out: &mut CudaDeviceTensor<'_>,
+    ) -> Result<()> {
+        crate::fa_v3::flash_attn_v3_validate_args(t_q, t_kv, d, n_head, causal, q_offset)?;
+        let hd = d / n_head;
+        let dd = checked_mul(d, d, "flash_attn_v3_dev d*d")?;
+        let tkvd = checked_mul(t_kv, d, "flash_attn_v3_dev t_kv*d")?;
+        expect_len(
+            "flash_attn_v3_dev xq",
+            xq.len,
+            checked_mul(t_q, d, "flash_attn_v3_dev t_q*d")?,
+        )?;
+        expect_len("flash_attn_v3_dev q_w", q_w.len, dd)?;
+        expect_len("flash_attn_v3_dev k", k.len, tkvd)?;
+        expect_len("flash_attn_v3_dev v", v.len, tkvd)?;
+        expect_len("flash_attn_v3_dev out_w", out_w.len, dd)?;
+        expect_len(
+            "flash_attn_v3_dev out",
+            out.len,
+            checked_mul(t_q, d, "flash_attn_v3_dev out")?,
+        )?;
+        if let Some(b) = q_bias {
+            expect_len("flash_attn_v3_dev q_bias", b.len, d)?;
+        }
+        if let Some(b) = out_bias {
+            expect_len("flash_attn_v3_dev out_bias", b.len, d)?;
+        }
+        let f = size_of::<f32>();
+        let tqd = checked_mul(
+            checked_mul(t_q, d, "flash_attn_v3_dev t_q*d")?,
+            f,
+            "flash_attn_v3_dev t_q*d bytes",
+        )?;
+        let tq_hd_b = checked_mul(
+            checked_mul(t_q, hd, "flash_attn_v3_dev t_q*hd")?,
+            f,
+            "flash_attn_v3_dev qh bytes",
+        )?;
+        let tkv_hd_b = checked_mul(
+            checked_mul(t_kv, hd, "flash_attn_v3_dev t_kv*hd")?,
+            f,
+            "flash_attn_v3_dev vh bytes",
+        )?;
+        // FA v3, like FA v2, never touches `scores` / `probs` (the fused
+        // softmax lives in registers + shared memory inside the kernel);
+        // bind the shared dummy for the typed-but-inert pointer slots.
+        let dummy = self.alloc(f)?;
+        let q_buf = self.alloc(tqd)?;
+        let context_buf = self.alloc(tqd)?;
+        let qh_buf = self.alloc(tq_hd_b)?;
+        let vh_buf = self.alloc(tkv_hd_b)?;
+        let kh_buf = self.alloc(tkv_hd_b)?;
+        let ctx_h_buf = self.alloc(tq_hd_b)?;
+        // Direct dispatch — deliberately NOT via `launch_attn_chain` (whose
+        // FA_V3_MIN_TQ gate would silently fall through for small t_q; the
+        // whole point of this wrapper is unconditional v3 exercise).
+        self.launch_flash_attn_v3(
+            &AttnChainDims {
+                t_q,
+                t_kv,
+                d,
+                n_head,
+                scale,
+                has_q_bias: q_bias.is_some(),
+                has_out_bias: out_bias.is_some(),
+                causal,
+                q_offset,
+                use_flash_attn: false,
+                // Marker only — `launch_flash_attn_v3` is called directly,
+                // not through the gate; kept `true` for the field contract
+                // ("FA v3 is on the current chain").
+                use_flash_attn_v3: true,
+            },
+            &AttnChainPtrs {
+                xq: xq.buf.ptr,
+                q_w: q_w.buf.ptr,
+                q_bias: bias_ptr(q_bias, dummy.ptr),
+                k: k.buf.ptr,
+                v: v.buf.ptr,
+                out_w: out_w.buf.ptr,
+                out_bias: bias_ptr(out_bias, dummy.ptr),
+                q: q_buf.ptr,
+                context: context_buf.ptr,
+                qh: qh_buf.ptr,
+                vh: vh_buf.ptr,
+                // Reused as non-transposed kh `[t_kv, hd]`, like FA v2.
+                kh_t: kh_buf.ptr,
+                scores: dummy.ptr,
+                probs: dummy.ptr,
+                ctx_h: ctx_h_buf.ptr,
+                out: out.buf.ptr,
+            },
+        )?;
+        self.sync_stream("cuStreamSynchronize")
+    }
+
     // ---- Phase-5 follow-on: device-resident whole-encoder stack --------------
 
     /// Runs the whole Whisper pre-norm **encoder** device-resident in ONE

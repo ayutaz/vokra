@@ -137,6 +137,11 @@ pub use fa_v3::flash_attn_v3_validate_args;
 // its rustdoc). Public so the dispatch pin test asserts the REAL constant.
 #[cfg(any(unix, windows))]
 pub use fa_v3::FA_V3_MIN_TQ;
+// M4-07-T12: the per-path FA v3 parity bound (tf32-derived architectural
+// bound, redundantly recorded in rustdoc + ADR + the parity test that
+// consumes it — the Kokoro PROSODY_F0_ATOL precedent).
+#[cfg(any(unix, windows))]
+pub use fa_v3::{FA_V3_PARITY_ATOL, FA_V3_PARITY_RTOL};
 // `CudaDecodeSession` is the M2 Phase-3b device-resident decoder-step driver
 // (the CUDA sibling of `vokra-backend-metal`'s `MetalDecodeSession`); re-exported
 // here so `vokra-models`' `Compute::new_decoder_step_session` (its Cuda arm)
