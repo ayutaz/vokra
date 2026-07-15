@@ -188,6 +188,14 @@ namespace Vokra.Demo
 
         private void HandleEvent(PipelineEvent evt)
         {
+            if (_webglAutoRun)
+            {
+                // Mirror every stage event into the browser console so the
+                // nightly headless smoke can assert real stage output (e.g.
+                // the VAD probabilities line), not just the final marker.
+                Debug.Log($"[vokra-demo][{evt.Stage}] {evt.Message}");
+            }
+
             if (evt.Stage == PipelineStage.Tts && evt.Pcm != null && evt.Pcm.Length > 0)
             {
                 _ttsPcm = evt.Pcm;

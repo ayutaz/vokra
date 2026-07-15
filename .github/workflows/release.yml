@@ -273,6 +273,23 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
         run: bash scripts/build-android.sh
 
+      - name: Build WebGL staticlib via scripts/build-unity-webgl-lib.sh (M4-02)
+        # FAIL-LOUD policy (deliberate asymmetry, recorded per M4-02-T14):
+        # the desktop macOS/Windows cdylibs below are REUSED from ci.yml
+        # artifacts on a best-effort basis (continue-on-error) because they
+        # cannot be cross-built on this Linux runner; WebGL — like Linux and
+        # Android above — is built IN this job, so a build failure fails the
+        # release outright. Whether to unify the desktop reuse steps onto
+        # fail-loud is a release-train-wide policy change, out of scope here
+        # (owner note in docs/handoff/m4-02.md).
+        # rustc-only: no emsdk (Unity's bundled Emscripten performs the final
+        # link — ADR M4-02 §2); llvm-tools supplies llvm-nm for the script's
+        # GPU-symbol audit.
+        run: |
+          rustup target add wasm32-unknown-emscripten
+          rustup component add llvm-tools
+          bash scripts/build-unity-webgl-lib.sh
+
       - name: Reuse macOS + Windows cdylibs from ci.yml artifacts (best-effort)
         # T13 unity-package CI job produces per-OS cdylibs. Attempt to fetch
         # them via `gh run download` scoped to the tag SHA so the release
@@ -313,6 +330,29 @@ jobs:
 
       - name: Enforce NVIDIA runtime non-bundled (D7 / T12 / NFR-LC-01)
         run: bash scripts/check-unity-package-no-nvidia.sh
+
+      - name: Assert all 6 platform slices before packing (deliverables §3.2)
+        # macOS/Win/Linux/iOS/Android/WebGL — milestones §8 M4-02 completion
+        # ("CI 自動ビルドの Unity Package に WebGL ターゲットが含まれる") is
+        # machine-verified at tag time here. macOS/Windows come from the
+        # best-effort reuse step above: absence fails HERE, loudly, instead
+        # of shipping a 4-platform tarball labelled as 6.
+        run: |
+          set -euo pipefail
+          PKG=bindings/unity/com.vokra.unity
+          for f in \
+            "Plugins/macOS/libvokra.dylib" \
+            "Plugins/Windows/x86_64/vokra.dll" \
+            "Plugins/Linux/x86_64/libvokra.so" \
+            "Plugins/iOS/libvokra.a" \
+            "Plugins/Android/libs/arm64-v8a/libvokra.so" \
+            "Plugins/WebGL/libvokra.a"; do
+            if [ ! -f "$PKG/$f" ]; then
+              echo "unity-package-release: FAIL missing platform slice: $f" >&2
+              exit 1
+            fi
+          done
+          echo "OK: all 6 platform slices present"
 
       - name: Pack UPM tarball (R5 reproducibility, SOURCE_DATE_EPOCH pinned)
         run: |
