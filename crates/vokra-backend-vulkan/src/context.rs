@@ -458,6 +458,7 @@ pub(crate) struct DeviceFns {
     pub(crate) cmd_bind_pipeline: sys::FnVkCmdBindPipeline,
     pub(crate) cmd_bind_descriptor_sets: sys::FnVkCmdBindDescriptorSets,
     pub(crate) cmd_dispatch: sys::FnVkCmdDispatch,
+    pub(crate) cmd_push_constants: sys::FnVkCmdPushConstants,
     // Buffer + memory.
     pub(crate) create_buffer: sys::FnVkCreateBuffer,
     pub(crate) destroy_buffer: sys::FnVkDestroyBuffer,
@@ -1013,6 +1014,7 @@ fn resolve_device_fns(instance: &VulkanInstance) -> Result<DeviceFns> {
             "vkCmdBindDescriptorSets"
         ),
         cmd_dispatch: resolve!(sys::FnVkCmdDispatch, "vkCmdDispatch"),
+        cmd_push_constants: resolve!(sys::FnVkCmdPushConstants, "vkCmdPushConstants"),
         create_buffer: resolve!(sys::FnVkCreateBuffer, "vkCreateBuffer"),
         destroy_buffer: resolve!(sys::FnVkDestroyBuffer, "vkDestroyBuffer"),
         get_buffer_memory_requirements: resolve!(
@@ -1594,17 +1596,52 @@ impl<'d> VulkanPipelineLayout<'d> {
         device: &'d VulkanDevice,
         set_layout: &VulkanDescriptorSetLayout<'_>,
     ) -> Result<VulkanPipelineLayout<'d>> {
+        Self::new_with_push_constants(device, set_layout, 0)
+    }
+
+    /// Create a pipeline layout wrapping a single descriptor set layout plus
+    /// a compute-stage push-constant range of `push_constant_size` bytes at
+    /// offset 0 (M4-13-T02). `push_constant_size == 0` declares no range —
+    /// the M3-02 hand-crafted smoke kernels take no push constants.
+    ///
+    /// `push_constant_size` must be a multiple of 4 and at most 128 bytes —
+    /// the Vulkan spec's *guaranteed minimum* for
+    /// `VkPhysicalDeviceLimits::maxPushConstantsSize` (spec §42.1 "Required
+    /// Limits"), so a block that fits 128 bytes is portable to every
+    /// conformant device without querying the limit.
+    pub(crate) fn new_with_push_constants(
+        device: &'d VulkanDevice,
+        set_layout: &VulkanDescriptorSetLayout<'_>,
+        push_constant_size: u32,
+    ) -> Result<VulkanPipelineLayout<'d>> {
+        if push_constant_size % 4 != 0 || push_constant_size > 128 {
+            return Err(VokraError::InvalidArgument(format!(
+                "vulkan pipeline layout: push-constant size {push_constant_size} must be a \
+                 multiple of 4 and <= 128 bytes (spec §42.1 guaranteed minimum for \
+                 maxPushConstantsSize)"
+            )));
+        }
+        let push_range = sys::VkPushConstantRange {
+            stage_flags: sys::VK_SHADER_STAGE_COMPUTE_BIT,
+            offset: 0,
+            size: push_constant_size,
+        };
         let ci = sys::VkPipelineLayoutCreateInfo {
             s_type: sys::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             p_next: ptr::null(),
             flags: 0,
             set_layout_count: 1,
             p_set_layouts: &set_layout.handle,
-            push_constant_range_count: 0,
-            p_push_constant_ranges: ptr::null(),
+            push_constant_range_count: u32::from(push_constant_size > 0),
+            p_push_constant_ranges: if push_constant_size > 0 {
+                &push_range
+            } else {
+                ptr::null()
+            },
         };
         let mut handle: sys::VkPipelineLayout = 0;
-        // SAFETY: resolved entry; live device; valid create-info; writable
+        // SAFETY: resolved entry; live device; valid create-info (the
+        // push-constant range on the stack outlives the call); writable
         // out-parameter.
         let r = unsafe {
             (device.fns.create_pipeline_layout)(device.device, &ci, ptr::null(), &mut handle)
@@ -1718,6 +1755,41 @@ impl<'d> VulkanComputePipeline<'d> {
         shader: &VulkanShaderModule<'_>,
         entry_name: &core::ffi::CStr,
     ) -> Result<VulkanComputePipeline<'d>> {
+        Self::new_specialized(device, layout, shader, entry_name, &[])
+    }
+
+    /// [`VulkanComputePipeline::new`] with `layout(constant_id = N)` GLSL
+    /// specialization constants applied at pipeline-creation time
+    /// (M4-13-T02/T07 — `elementwise` OP and `activation` KIND selection).
+    /// An empty `spec_constants` slice creates an unspecialised pipeline
+    /// (every `constant_id` keeps its GLSL default).
+    pub(crate) fn new_specialized(
+        device: &'d VulkanDevice,
+        layout: &VulkanPipelineLayout<'_>,
+        shader: &VulkanShaderModule<'_>,
+        entry_name: &core::ffi::CStr,
+        spec_constants: &[SpecConstantU32],
+    ) -> Result<VulkanComputePipeline<'d>> {
+        // Pack the u32 specialization values into a contiguous LE data blob
+        // with one map entry per constant (spec §9.8). Both vectors must
+        // outlive the vkCreateComputePipelines call below.
+        let mut spec_data: Vec<u8> = Vec::with_capacity(spec_constants.len() * 4);
+        let mut spec_entries: Vec<sys::VkSpecializationMapEntry> =
+            Vec::with_capacity(spec_constants.len());
+        for (i, sc) in spec_constants.iter().enumerate() {
+            spec_entries.push(sys::VkSpecializationMapEntry {
+                constant_id: sc.constant_id,
+                offset: (i * 4) as u32,
+                size: 4,
+            });
+            spec_data.extend_from_slice(&sc.value.to_le_bytes());
+        }
+        let spec_info = sys::VkSpecializationInfo {
+            map_entry_count: spec_entries.len() as u32,
+            p_map_entries: spec_entries.as_ptr(),
+            data_size: spec_data.len(),
+            p_data: spec_data.as_ptr() as *const c_void,
+        };
         let stage_ci = sys::VkPipelineShaderStageCreateInfo {
             s_type: sys::VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
             p_next: ptr::null(),
@@ -1725,7 +1797,11 @@ impl<'d> VulkanComputePipeline<'d> {
             stage: sys::VK_SHADER_STAGE_COMPUTE_BIT,
             module: shader.handle,
             p_name: entry_name.as_ptr(),
-            p_specialization_info: ptr::null(),
+            p_specialization_info: if spec_constants.is_empty() {
+                ptr::null()
+            } else {
+                &spec_info
+            },
         };
         let pipe_ci = sys::VkComputePipelineCreateInfo {
             s_type: sys::VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
@@ -2259,6 +2335,287 @@ pub(crate) fn smoke_dispatch_add_f32_impl(a: &[f32], b: &[f32]) -> Result<Vec<f3
         out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// dispatch_kernel — the M4-13-T02 generic SPIR-V kernel dispatch helper.
+//
+// Generalises the hand-crafted `smoke_dispatch_{copy,add}_f32_impl` pattern
+// (device / buffers / descriptor set / pipeline / command buffer / fence)
+// to ANY manifest kernel: N read-only input SSBOs + 1 writable output SSBO
+// (always the LAST binding — the convention every `kernels/glsl/*.comp`
+// skeleton follows), an optional push-constant block, optional u32
+// specialization constants, and an explicit [x, y, z] workgroup count.
+//
+// Placeholder-then-swap seam (FR-EX-08): the blob is fetched through
+// `spirv::load_spv_owned`; a `None` (glslc `.spv` not yet committed —
+// M4-13-T16 owner task) surfaces as the explicit `UnsupportedOp` that
+// `spirv::require_blob` formats. Never a silent CPU fall back.
+//
+// Hot-path allocation note (FR-EX-05): this helper allocates its staging /
+// device buffers, descriptor pool and command pool per dispatch — the same
+// posture as the M3-02-T25 smoke path. A session-owned pre-allocated pool
+// (upload once, reuse across steps — the Metal/CUDA decode-session pattern)
+// is the M4 kernel-fusion follow-up; per-dispatch allocation is acceptable
+// for the parity-first M4-13 scope and is NOT on a model hot path yet.
+//
+// Synchronisation: upload / dispatch / download are separate fence-waited
+// submissions to the same queue — the exact structure the hand-crafted smoke
+// kernels prove out on lavapipe (each submission fully completes before the
+// next is recorded, so no intra-command-buffer barriers are needed).
+// ---------------------------------------------------------------------------
+
+// The specialization-constant descriptor lives in the host-portable `plan`
+// module (M4-13-T02) so plans built off-target carry the same type this
+// gated dispatch side consumes.
+pub(crate) use crate::plan::SpecConstantU32;
+
+/// A fully-described generic kernel dispatch (M4-13-T02): which manifest
+/// kernel to run, its SSBO inputs, output size, push constants,
+/// specialization constants and workgroup counts.
+pub(crate) struct KernelInvocation<'a> {
+    /// Manifest kernel name (`spirv::SHADERS` entry).
+    pub(crate) name: &'a str,
+    /// Read-only input SSBOs, bound at `binding = 0..inputs.len()` in order.
+    pub(crate) inputs: &'a [&'a [u8]],
+    /// Byte length of the writable output SSBO, bound at
+    /// `binding = inputs.len()` (the last binding).
+    pub(crate) output_byte_len: usize,
+    /// Raw push-constant block (LE-packed scalars; may be empty). Must be a
+    /// multiple of 4 bytes and at most 128 bytes (spec §42.1 minimum).
+    pub(crate) push_constants: &'a [u8],
+    /// Pipeline specialization constants (may be empty).
+    pub(crate) spec_constants: &'a [SpecConstantU32],
+    /// `vkCmdDispatch` group counts `[x, y, z]` — all three must be in
+    /// `1..=65535` (spec §42.1 guaranteed minimum for
+    /// `maxComputeWorkGroupCount`).
+    pub(crate) workgroups: [u32; 3],
+}
+
+/// Dispatch one generic compute kernel and read its output SSBO back to host
+/// memory as raw little-endian bytes (M4-13-T02).
+///
+/// # Errors
+///
+/// - [`VokraError::UnsupportedOp`] — the kernel's `.spv` blob has not landed
+///   yet (`spirv::require_blob` seam; owner M4-13-T16 lights it up), or the
+///   driver rejected the SPIR-V module.
+/// - [`VokraError::InvalidArgument`] — empty input / output, malformed
+///   push-constant block, or out-of-range workgroup counts. All validated
+///   BEFORE any GPU work.
+/// - [`VokraError::BackendUnavailable`] — driver-side failures (bubbled from
+///   the object-stack constructors).
+pub(crate) fn dispatch_kernel(
+    device: &VulkanDevice,
+    inv: &KernelInvocation<'_>,
+) -> Result<Vec<u8>> {
+    // ---- host-side validation, before any GPU object is created ----
+    if inv.output_byte_len == 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "dispatch_kernel({}): output_byte_len must be > 0",
+            inv.name
+        )));
+    }
+    for (i, input) in inv.inputs.iter().enumerate() {
+        if input.is_empty() {
+            return Err(VokraError::InvalidArgument(format!(
+                "dispatch_kernel({}): input SSBO #{i} is empty (bind a 4-byte dummy for \
+                 optional buffers instead — Vulkan requires every declared binding bound)",
+                inv.name
+            )));
+        }
+    }
+    if inv.push_constants.len() % 4 != 0 || inv.push_constants.len() > 128 {
+        return Err(VokraError::InvalidArgument(format!(
+            "dispatch_kernel({}): push-constant block of {} bytes must be a multiple of 4 and \
+             <= 128 (spec §42.1 guaranteed minimum)",
+            inv.name,
+            inv.push_constants.len()
+        )));
+    }
+    for (axis, &g) in ["x", "y", "z"].iter().zip(&inv.workgroups) {
+        if g == 0 || g > 65_535 {
+            return Err(VokraError::InvalidArgument(format!(
+                "dispatch_kernel({}): workgroup count {axis}={g} out of the portable range \
+                 1..=65535 (spec §42.1 guaranteed minimum for maxComputeWorkGroupCount)",
+                inv.name
+            )));
+        }
+    }
+
+    // ---- placeholder-then-swap seam: blob or explicit UnsupportedOp ----
+    crate::spirv::require_blob(inv.name)?;
+    let spv = crate::spirv::load_spv_owned(inv.name)
+        .expect("require_blob passed; load_spv_owned must return the same blob");
+
+    // ---- input upload + output allocation ----
+    let mut in_bufs: Vec<VulkanBuffer<'_>> = Vec::with_capacity(inv.inputs.len());
+    for input in inv.inputs {
+        in_bufs.push(device.upload_bytes(input)?);
+    }
+    let out_buf = VulkanBuffer::new(
+        device,
+        inv.output_byte_len,
+        sys::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | sys::VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        sys::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+    )?;
+
+    // ---- descriptor set: inputs at binding 0.., output at the last binding ----
+    let binding_count = (inv.inputs.len() + 1) as u32;
+    let dsl = VulkanDescriptorSetLayout::new_storage_buffers(device, binding_count)?;
+    let dpool = VulkanDescriptorPool::new_storage_buffers(device, 1, binding_count)?;
+    let set = dpool.allocate_set(&dsl)?;
+
+    // Collect ALL buffer infos first so their addresses stay stable while the
+    // write array below points at them.
+    let mut buffer_infos: Vec<sys::VkDescriptorBufferInfo> =
+        Vec::with_capacity(binding_count as usize);
+    for buf in &in_bufs {
+        buffer_infos.push(sys::VkDescriptorBufferInfo {
+            buffer: buf.handle(),
+            offset: 0,
+            range: sys::VkDeviceSize::MAX, // VK_WHOLE_SIZE
+        });
+    }
+    buffer_infos.push(sys::VkDescriptorBufferInfo {
+        buffer: out_buf.handle(),
+        offset: 0,
+        range: sys::VkDeviceSize::MAX,
+    });
+    let writes: Vec<sys::VkWriteDescriptorSet> = buffer_infos
+        .iter()
+        .enumerate()
+        .map(|(i, info)| sys::VkWriteDescriptorSet {
+            s_type: sys::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            p_next: ptr::null(),
+            dst_set: set,
+            dst_binding: i as u32,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: sys::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            p_image_info: ptr::null(),
+            p_buffer_info: info,
+            p_texel_buffer_view: ptr::null(),
+        })
+        .collect();
+    // SAFETY: resolved entry; live device; `writes` is a valid array of
+    // initialised VkWriteDescriptorSet whose buffer-info pointers reference
+    // `buffer_infos`, which outlives the call.
+    unsafe {
+        (device.fns.update_descriptor_sets)(
+            device.device,
+            writes.len() as u32,
+            writes.as_ptr(),
+            0,
+            ptr::null(),
+        );
+    }
+
+    // ---- pipeline: layout (+ push range) + module + (specialised) pipeline ----
+    let pl = VulkanPipelineLayout::new_with_push_constants(
+        device,
+        &dsl,
+        inv.push_constants.len() as u32,
+    )?;
+    let shader = VulkanShaderModule::new(device, &spv)?;
+    // Every Vokra kernel's OpEntryPoint is named "main" (glslc default; the
+    // hand-crafted modules mirror it).
+    let entry_name = c"main";
+    let pipeline = VulkanComputePipeline::new_specialized(
+        device,
+        &pl,
+        &shader,
+        entry_name,
+        inv.spec_constants,
+    )?;
+
+    // ---- record + submit + fence-wait ----
+    let cmd_pool = VulkanCommandPool::new(device)?;
+    let cmd = cmd_pool.command_buffer;
+    let begin_info = sys::VkCommandBufferBeginInfo {
+        s_type: sys::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        p_next: ptr::null(),
+        flags: sys::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        p_inheritance_info: ptr::null(),
+    };
+    // SAFETY: resolved entry; live command buffer; valid begin-info.
+    let r = unsafe { (device.fns.begin_command_buffer)(cmd, &begin_info) };
+    sys::check(r, "vkBeginCommandBuffer (dispatch_kernel)")?;
+    // SAFETY: resolved entry; live command buffer + pipeline; compute bind point.
+    unsafe {
+        (device.fns.cmd_bind_pipeline)(cmd, sys::VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.handle());
+    }
+    let set_arr = [set];
+    // SAFETY: resolved entry; live command buffer / layout / set; single-set
+    // array on the stack; no dynamic offsets.
+    unsafe {
+        (device.fns.cmd_bind_descriptor_sets)(
+            cmd,
+            sys::VK_PIPELINE_BIND_POINT_COMPUTE,
+            pl.handle(),
+            0,
+            1,
+            set_arr.as_ptr(),
+            0,
+            ptr::null(),
+        );
+    }
+    if !inv.push_constants.is_empty() {
+        // SAFETY: resolved entry; live command buffer + layout; the byte size
+        // matches the range declared on the pipeline layout above; the data
+        // slice outlives the call.
+        unsafe {
+            (device.fns.cmd_push_constants)(
+                cmd,
+                pl.handle(),
+                sys::VK_SHADER_STAGE_COMPUTE_BIT,
+                0,
+                inv.push_constants.len() as u32,
+                inv.push_constants.as_ptr() as *const c_void,
+            );
+        }
+    }
+    // SAFETY: resolved entry; live command buffer; group counts validated
+    // into 1..=65535 above.
+    unsafe {
+        (device.fns.cmd_dispatch)(cmd, inv.workgroups[0], inv.workgroups[1], inv.workgroups[2]);
+    }
+    // SAFETY: resolved entry; live command buffer.
+    let r = unsafe { (device.fns.end_command_buffer)(cmd) };
+    sys::check(r, "vkEndCommandBuffer (dispatch_kernel)")?;
+
+    let fence = VulkanFence::new(device)?;
+    let submit = sys::VkSubmitInfo {
+        s_type: sys::VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        p_next: ptr::null(),
+        wait_semaphore_count: 0,
+        p_wait_semaphores: ptr::null(),
+        p_wait_dst_stage_mask: ptr::null(),
+        command_buffer_count: 1,
+        p_command_buffers: &cmd,
+        signal_semaphore_count: 0,
+        p_signal_semaphores: ptr::null(),
+    };
+    // SAFETY: resolved entry; live queue; single submit-info on the stack;
+    // live fence handle.
+    let r = unsafe { (device.fns.queue_submit)(device.queue, 1, &submit, fence.handle) };
+    sys::check(r, "vkQueueSubmit (dispatch_kernel)")?;
+    fence.wait()?;
+
+    // Release transients in dependency order before the read-back submission
+    // (same rationale as the smoke impls).
+    drop(pipeline);
+    drop(shader);
+    drop(pl);
+    let _ = set;
+    drop(dpool);
+    drop(dsl);
+    drop(in_bufs);
+
+    // ---- read back the output SSBO ----
+    let mut out_bytes = vec![0u8; inv.output_byte_len];
+    device.download_bytes(&out_buf, &mut out_bytes)?;
+    Ok(out_bytes)
 }
 
 #[cfg(test)]

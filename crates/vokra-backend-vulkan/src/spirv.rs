@@ -310,6 +310,48 @@ pub fn load_spv_owned(name: &str) -> Option<Vec<u8>> {
     }
 }
 
+/// Allocation-free availability probe: `true` iff [`load_spv_owned`] would
+/// return `Some` for `name` **today** (hand-crafted entries are always
+/// available; glslc entries become available as the owner commits their
+/// `.spv`, M4-13-T16). This is the single predicate behind blob-driven
+/// coverage decisions (`VulkanBackend::supports`, M4-13-T09) and the
+/// blob-gated parity skips (M4-13-T12/T13) — kept in lock-step with
+/// [`load_spv_owned`] by the `has_blob_is_lock_step_with_load_spv_owned`
+/// test.
+#[must_use]
+pub fn has_blob(name: &str) -> bool {
+    matches!(name, "copy_f32" | "add_f32") || load_spv(name).is_some()
+}
+
+/// Host-portable pre-flight for the M4-13-T02 placeholder-then-swap seam:
+/// verifies the SPIR-V blob for `name` is loadable **today**, or returns the
+/// explicit [`VokraError::UnsupportedOp`](vokra_core::VokraError::UnsupportedOp)
+/// every kernel-dispatch site must surface when the owner has not yet
+/// committed the glslc-produced `.spv` (M4-13-T16) — never a silent CPU
+/// fall back (FR-EX-08).
+///
+/// This function is compiled on **every** target (the manifest is
+/// target-independent), so the blob-absence contract is testable on the
+/// Apple-Silicon authoring host with no Vulkan loader present.
+///
+/// # Errors
+///
+/// [`VokraError::UnsupportedOp`](vokra_core::VokraError::UnsupportedOp) when
+/// `name` has no loadable blob (glslc entry not yet committed, or an unknown
+/// shader name).
+pub fn require_blob(name: &str) -> vokra_core::Result<()> {
+    if load_spv_owned(name).is_some() {
+        return Ok(());
+    }
+    Err(vokra_core::VokraError::UnsupportedOp(format!(
+        "vulkan backend has no SPIR-V blob for kernel `{name}` yet (no silent CPU fallback, \
+         FR-EX-08). The glslc-produced `.spv` blobs are committed by the owner via \
+         `scripts/compile-vulkan-shaders.sh` (M4-13-T16 / ADR M3-02-spirv-generation §3); \
+         once `kernels/precompiled/{name}.spv` lands and `load_spv` gains its \
+         `include_bytes!` arm, this op lights up without further code changes."
+    )))
+}
+
 // ---------------------------------------------------------------------------
 // Zero-dependency SHA-256 (FIPS-180-4 §6.2). Used only by tests and later by
 // the hash-pin verifier once real `.spv` blobs land — build.rs stays hash-free
@@ -500,19 +542,37 @@ const fn nibble_hex(v: u8) -> u8 {
 
 /// Verifies every manifest entry with a pinned SHA-256 matches the blob
 /// [`load_spv_owned`] returns. Entries with `expected_sha256_hex = None` are
-/// treated as "not yet pinned" (foundation slice — no assertion).
+/// treated as "not yet pinned" (foundation slice — no assertion, honest:
+/// no fabricated pass). As the owner commits glslc blobs and pastes their
+/// hashes (M4-13-T16), each newly-pinned entry automatically joins this
+/// verification — placeholder-then-swap needs no code change here.
 ///
 /// Used from the crate test suite; not called at runtime (fast build).
 ///
 /// # Errors
 ///
-/// Returns the failing shader `name` on the first mismatch (empty tuple ok).
+/// Returns the failing shader `name` on the first mismatch, INCLUDING the
+/// "pin without a blob" bug state (a pinned hash whose blob does not load
+/// means either the `include_bytes!` arm was removed or the pin was pasted
+/// before the `.spv` was committed — fabricated-pass prevention,
+/// M4-13-T11).
 pub fn verify_pinned_hashes() -> Result<(), &'static str> {
-    for shader in SHADERS {
+    verify_pinned_hashes_of(SHADERS, load_spv_owned)
+}
+
+/// Table-parameterised body of [`verify_pinned_hashes`], with the blob
+/// loader injected so the failure paths (hash mismatch / pin-without-blob)
+/// are unit-testable against synthetic manifests without touching the real
+/// one (M4-13-T11).
+pub fn verify_pinned_hashes_of(
+    shaders: &[SpirvShader],
+    load: impl Fn(&str) -> Option<Vec<u8>>,
+) -> Result<(), &'static str> {
+    for shader in shaders {
         let Some(expected) = shader.expected_sha256_hex else {
             continue;
         };
-        let Some(blob) = load_spv_owned(shader.name) else {
+        let Some(blob) = load(shader.name) else {
             // A pinned hash without a blob is a bug — either the include_bytes!
             // was removed or the pin was added prematurely.
             return Err(shader.name);
@@ -638,6 +698,59 @@ mod tests {
     }
 
     #[test]
+    fn has_blob_is_lock_step_with_load_spv_owned() {
+        // `has_blob` avoids the Vec copy but must agree with the loader for
+        // every manifest entry and for unknown names — a divergence would
+        // make `supports()` (blob-driven, M4-13-T09) lie about coverage.
+        for shader in SHADERS {
+            assert_eq!(
+                has_blob(shader.name),
+                load_spv_owned(shader.name).is_some(),
+                "has_blob({}) diverges from load_spv_owned",
+                shader.name,
+            );
+        }
+        assert!(!has_blob("no_such_shader"));
+    }
+
+    #[test]
+    fn require_blob_is_unsupported_for_every_glslc_entry_in_foundation_slice() {
+        // M4-13-T02 placeholder-then-swap seam: until the owner commits the
+        // glslc-produced `.spv` blobs (M4-13-T16), every glslc entry must
+        // surface an explicit `UnsupportedOp` (FR-EX-08) — host-portably,
+        // with no Vulkan device needed. The two hand-crafted entries are
+        // always available.
+        for shader in SHADERS {
+            match shader.variant {
+                ShaderVariant::Handcrafted => {
+                    require_blob(shader.name).unwrap_or_else(|e| {
+                        panic!(
+                            "handcrafted `{}` must always pass require_blob: {e}",
+                            shader.name
+                        )
+                    });
+                }
+                _ => {
+                    let err = require_blob(shader.name).expect_err(
+                        "glslc entry must be UnsupportedOp until its .spv lands (update this \
+                         test when M4-13-T16 commits blobs)",
+                    );
+                    assert!(
+                        matches!(err, vokra_core::VokraError::UnsupportedOp(_)),
+                        "require_blob({}) must be UnsupportedOp, got {err:?}",
+                        shader.name,
+                    );
+                }
+            }
+        }
+        // Unknown names are also an explicit error (not a panic).
+        assert!(matches!(
+            require_blob("no_such_shader"),
+            Err(vokra_core::VokraError::UnsupportedOp(_))
+        ));
+    }
+
+    #[test]
     fn verify_pinned_hashes_is_ok_for_foundation_slice() {
         // The pinned entries are the two hand-crafted blobs — `copy_f32` and
         // `add_f32`. `verify_pinned_hashes` must confirm the runtime bytes
@@ -660,6 +773,63 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// M4-13-T11 fabricated-pass prevention: a pinned hash whose blob does
+    /// not load is an explicit `Err(name)` (pin pasted before the `.spv`
+    /// landed, or the `include_bytes!` arm was removed), and a blob whose
+    /// bytes do not hash to the pin is equally an `Err(name)`. Exercised on
+    /// synthetic manifests so the real one stays untouched.
+    #[test]
+    fn verify_pinned_hashes_rejects_pin_without_blob_and_hash_mismatch() {
+        const PIN_NO_BLOB: &[SpirvShader] = &[SpirvShader {
+            name: "phantom",
+            variant: ShaderVariant::Standard,
+            ticket: "M4-13-T11",
+            // 64 hex chars, syntactically valid.
+            expected_sha256_hex: Some(
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+        }];
+        // Loader that has NO blob for the pinned entry.
+        assert_eq!(
+            verify_pinned_hashes_of(PIN_NO_BLOB, |_| None),
+            Err("phantom"),
+            "pin without a blob must be an explicit error"
+        );
+
+        // Loader that returns bytes which do NOT hash to the pin.
+        assert_eq!(
+            verify_pinned_hashes_of(PIN_NO_BLOB, |_| Some(vec![1, 2, 3, 4])),
+            Err("phantom"),
+            "hash mismatch must be an explicit error"
+        );
+
+        // Correct pin verifies: pin the actual SHA-256 of b"abc"
+        // (FIPS-180-4 §B.1).
+        const PIN_ABC: &[SpirvShader] = &[SpirvShader {
+            name: "abc_blob",
+            variant: ShaderVariant::Standard,
+            ticket: "M4-13-T11",
+            expected_sha256_hex: Some(
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ),
+        }];
+        assert_eq!(
+            verify_pinned_hashes_of(PIN_ABC, |_| Some(b"abc".to_vec())),
+            Ok(())
+        );
+
+        // Unpinned entries are skipped without assertion (honest
+        // foundation-slice behaviour — never a fabricated pass, never a
+        // spurious failure).
+        const UNPINNED: &[SpirvShader] = &[SpirvShader {
+            name: "not_yet",
+            variant: ShaderVariant::Standard,
+            ticket: "M4-13-T11",
+            expected_sha256_hex: None,
+        }];
+        assert_eq!(verify_pinned_hashes_of(UNPINNED, |_| None), Ok(()));
     }
 
     // FIPS-180-4 §Appendix B.1 / B.2 test vectors + one additional NIST vector

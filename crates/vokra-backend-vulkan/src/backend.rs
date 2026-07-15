@@ -71,9 +71,19 @@ impl From<GemmPipelineVariant> for ShaderVariant {
 }
 
 /// Caller preference for [`VulkanBackend::select_gemm_pipeline_variant`].
-/// The final decision is `min(preference, hardware_capability)` — a caller
-/// that prefers cooperative-matrix STILL falls back to subgroup on hardware
-/// that lacks the preconditions (capability-driven, not silent).
+/// For the two M3-02 preferences the final decision is
+/// `min(preference, hardware_capability)` — a caller that *prefers*
+/// cooperative-matrix still falls back to subgroup on hardware that lacks
+/// the preconditions (capability-driven graceful degradation: the GEMM
+/// still runs on the GPU, just with the shader the hardware supports;
+/// NOT the FR-EX-08 silent *CPU* fallback).
+///
+/// [`GemmPipelinePreference::RequireCoopMatrix`] (M4-13-T10) is the
+/// explicit-error escape hatch: a caller that *demands* the
+/// cooperative-matrix pipeline gets
+/// [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable)
+/// on hardware without the preconditions — never a quiet downgrade
+/// (milestones §8 M4-13 "coop-matrix 非対応 device は明示エラー").
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GemmPipelinePreference {
     /// Prefer the cooperative-matrix pipeline; fall back to subgroup on
@@ -83,6 +93,11 @@ pub enum GemmPipelinePreference {
     /// Force the subgroup pipeline (useful for CI parity gating against the
     /// broad Android baseline; T33 parity harness uses this).
     ForceSubgroup,
+    /// Demand the cooperative-matrix pipeline: selection FAILS with an
+    /// explicit `BackendUnavailable` when the device lacks the
+    /// preconditions, instead of degrading to subgroup (M4-13-T10 red
+    /// line — the caller opted out of graceful degradation).
+    RequireCoopMatrix,
 }
 
 /// Vulkan backend handle.
@@ -197,19 +212,24 @@ impl VulkanBackend {
     }
 
     /// Selects the GEMM pipeline variant this device should bind
-    /// (M3-02-T14 dispatcher entry).
+    /// (M3-02-T14 dispatcher entry, M4-13-T10 explicit-error path).
     ///
-    /// `preference` is the caller's *ideal* pipeline; the final decision is
-    /// clamped to what the hardware supports. On devices that do not meet the
-    /// cooperative-matrix preconditions (`caps.coop_matrix_precondition_met =
-    /// false`), the result is always [`GemmPipelineVariant::Subgroup`] — this
-    /// is capability-driven pipeline selection, not silent op fallback (the
-    /// GEMM op still runs, it just picks the shader the hardware can execute).
-    #[must_use]
+    /// For `PreferCoopMatrix` / `ForceSubgroup` the decision is clamped to
+    /// what the hardware supports and never errors — capability-driven
+    /// pipeline selection, not silent op fallback (the GEMM op still runs,
+    /// it just picks the shader the hardware can execute). For
+    /// `RequireCoopMatrix` a device without the preconditions is an explicit
+    /// [`VokraError::BackendUnavailable`] instead of a downgrade.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::BackendUnavailable`] only for
+    /// [`GemmPipelinePreference::RequireCoopMatrix`] on a device whose probe
+    /// reports `coop_matrix_precondition_met == false`.
     pub fn select_gemm_pipeline_variant(
         &self,
         preference: GemmPipelinePreference,
-    ) -> GemmPipelineVariant {
+    ) -> Result<GemmPipelineVariant> {
         select_gemm_pipeline_variant(&self.caps, preference)
     }
 }
@@ -233,6 +253,32 @@ impl VulkanBackend {
                 .to_owned(),
         ))
     }
+
+    /// Off-target stub of the Vulkan-target method of the same name, so
+    /// host-portable integration tests compile everywhere. Unreachable in
+    /// practice ([`VulkanBackend::new`] always fails off-target); returns
+    /// the conservative Android-baseline variant (and honours the
+    /// M4-13-T10 `RequireCoopMatrix` explicit-error contract).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::BackendUnavailable`] for
+    /// [`GemmPipelinePreference::RequireCoopMatrix`] (no Vulkan here at
+    /// all, so the preconditions are trivially unmet).
+    pub fn select_gemm_pipeline_variant(
+        &self,
+        preference: GemmPipelinePreference,
+    ) -> Result<GemmPipelineVariant> {
+        match preference {
+            GemmPipelinePreference::RequireCoopMatrix => Err(VokraError::BackendUnavailable(
+                "GEMM cooperative-matrix pipeline was explicitly required (RequireCoopMatrix) \
+                 but the Vulkan backend is not compiled for this target / feature set \
+                 (M4-13-T10, FR-EX-08)."
+                    .to_owned(),
+            )),
+            _ => Ok(GemmPipelineVariant::Subgroup),
+        }
+    }
 }
 
 /// Pure-function form of [`VulkanBackend::select_gemm_pipeline_variant`] —
@@ -243,20 +289,78 @@ impl VulkanBackend {
 ///
 /// Callers on a Vulkan host normally go through
 /// [`VulkanBackend::select_gemm_pipeline_variant`], which forwards here.
-#[must_use]
+///
+/// # Errors
+///
+/// [`VokraError::BackendUnavailable`] only for
+/// [`GemmPipelinePreference::RequireCoopMatrix`] on a device whose probe
+/// reports `coop_matrix_precondition_met == false` (M4-13-T10 — the caller
+/// demanded the coop-matrix path, so refusing loudly is the only honest
+/// answer; `PreferCoopMatrix` / `ForceSubgroup` never error).
 pub fn select_gemm_pipeline_variant(
     caps: &crate::probe::VulkanCapabilities,
     preference: GemmPipelinePreference,
-) -> GemmPipelineVariant {
+) -> Result<GemmPipelineVariant> {
     match preference {
-        GemmPipelinePreference::ForceSubgroup => GemmPipelineVariant::Subgroup,
+        GemmPipelinePreference::ForceSubgroup => Ok(GemmPipelineVariant::Subgroup),
         GemmPipelinePreference::PreferCoopMatrix => {
             if caps.coop_matrix_precondition_met {
-                GemmPipelineVariant::CoopMatrix
+                Ok(GemmPipelineVariant::CoopMatrix)
             } else {
-                GemmPipelineVariant::Subgroup
+                // Capability-driven graceful degradation: the GEMM still
+                // runs on the GPU via the subgroup shader — NOT the
+                // FR-EX-08 silent *CPU* fallback.
+                Ok(GemmPipelineVariant::Subgroup)
             }
         }
+        GemmPipelinePreference::RequireCoopMatrix => {
+            if caps.coop_matrix_precondition_met {
+                Ok(GemmPipelineVariant::CoopMatrix)
+            } else {
+                Err(VokraError::BackendUnavailable(format!(
+                    "GEMM cooperative-matrix pipeline was explicitly required \
+                     (RequireCoopMatrix) but this device does not meet the preconditions \
+                     (Vulkan 1.3+ AND VK_KHR_cooperative_matrix): {}. Refusing to degrade to \
+                     the subgroup pipeline — drop the requirement (PreferCoopMatrix) to opt \
+                     back into capability-driven selection (M4-13-T10, FR-EX-08).",
+                    caps.summary()
+                )))
+            }
+        }
+    }
+}
+
+/// Maps a graph [`OpKind`] to the SPIR-V shader that backs its Vulkan
+/// graph-executor arm (M4-13-T09) — the single source of truth both
+/// [`VulkanBackend::supports`] and the `eval_vulkan_op` dispatcher derive
+/// from, so the M3-02-T35 lock-step invariant holds **by construction**.
+///
+/// `None` means the op has no Vulkan graph arm — either it is a front-end
+/// signal op executed by `vokra-ops` (`Stft` / `MelFilterbank` / … — the
+/// CUDA arm covers none of these either; `Stft` is the honest gap the
+/// M4-13-T14 coverage table records), or its kernel exists only as a
+/// model-level primitive with no `OpKind` variant (`gemv` / `layer_norm` /
+/// `gelu` / `conv1d` / `softmax_causal` / `transpose` / `gather` —
+/// surface 2 of the M4-13-T01 two-surface distinction).
+///
+/// `gemm_variant` threads the probe's GEMM pipeline selection through:
+/// `MatMul`'s backing shader is variant-dependent (`gemm_subgroup` /
+/// `gemm_coopmat`), every other covered op has a fixed shader.
+#[must_use]
+pub fn graph_op_backing_shader(
+    op: &OpKind,
+    gemm_variant: GemmPipelineVariant,
+) -> Option<&'static str> {
+    match op {
+        // Hand-crafted smoke kernels (always available).
+        OpKind::Copy => Some("copy_f32"),
+        OpKind::Add => Some("add_f32"),
+        // glslc kernels (available once the owner commits their .spv —
+        // M4-13-T16; `spirv::has_blob` gates the actual coverage claim).
+        OpKind::MatMul => Some(gemm_variant.shader_name()),
+        OpKind::Mul => Some("elementwise"),
+        OpKind::Softmax => Some("softmax"),
+        _ => None,
     }
 }
 
@@ -266,19 +370,42 @@ impl Backend for VulkanBackend {
     }
 
     fn supports(&self, op: &OpKind) -> bool {
-        // M3-02-T24 lock-step gate: `supports()` must mirror the op set
-        // covered by `crate::eval::eval_vulkan_op` exactly. Adding an arm
-        // here without a matching `eval_op` arm (or vice versa) breaks the
-        // FR-EX-08 contract; the `supports_and_eval_op_are_lock_step` test
-        // below asserts the invariant.
+        // M3-02-T35 lock-step gate, blob-driven since M4-13-T09 (ADR
+        // M3-02-spirv-generation §7 addendum (b)): `supports()` returns
+        // `true` only when (1) the op has a Vulkan graph arm
+        // (`graph_op_backing_shader`) AND (2) the arm's SPIR-V blob is
+        // actually loadable today (`spirv::has_blob`). While the owner has
+        // not committed the glslc blobs (M4-13-T16), MatMul / Mul / Softmax
+        // therefore stay `false` — conservative honesty: advertising an op
+        // that dispatch would immediately fail with `UnsupportedOp` would
+        // make `run_graph`'s coverage precheck lie. Once a blob lands, the
+        // op lights up here automatically (no code change).
         //
-        // Today: `Copy` (hand-crafted `copy_f32` SPIR-V, 2 SSBOs) and
-        // `Add` (hand-crafted `add_f32` SPIR-V, 3 SSBOs) — both dispatched
-        // through the M3-02-T13 / T24 smoke path. Every other op stays
-        // `false`; `execute` (below) translates that into an explicit
-        // `UnsupportedOp` — never a silent CPU fallback (FR-EX-08). T14〜T22
-        // widen this set as the `glslc`-produced SPIR-V blobs land.
-        matches!(op, OpKind::Copy | OpKind::Add)
+        // The eval dispatcher derives from the same decision function, so
+        // supports() == true ⟺ eval_op reaches a dispatchable kernel — the
+        // `supports_and_eval_op_are_lock_step` test pins the pair, and the
+        // catch-all arm in `eval_vulkan_op` keeps the FR-EX-08 contract
+        // honest for direct callers.
+        #[cfg(all(
+            feature = "vulkan",
+            any(target_os = "linux", target_os = "android", target_os = "windows")
+        ))]
+        {
+            let variant =
+                select_gemm_pipeline_variant(&self.caps, GemmPipelinePreference::default())
+                    .expect("the default preference (PreferCoopMatrix) never errors");
+            graph_op_backing_shader(op, variant).is_some_and(crate::spirv::has_blob)
+        }
+        #[cfg(not(all(
+            feature = "vulkan",
+            any(target_os = "linux", target_os = "android", target_os = "windows")
+        )))]
+        {
+            // Off-target the backend cannot even be constructed
+            // (`new()` fails), so it honestly supports nothing.
+            let _ = op;
+            false
+        }
     }
 
     fn execute(&self, graph: &AudioGraph) -> Result<()> {
@@ -290,10 +417,9 @@ impl Backend for VulkanBackend {
                 )));
             }
         }
-        // No kernels ship yet, so no covered graph exists to run through
-        // `run_graph`. This branch is unreachable in the foundation slice; it
-        // stays as an explicit "later WP" marker (T24 wires this up once the
-        // SPIR-V pipelines exist).
+        // Coverage is satisfied. `execute` stays a coverage-only check; the
+        // data-carrying path is `vokra_core::run_graph`, which drives
+        // `eval_op` (symmetric with CpuBackend / MetalBackend / CudaBackend).
         Err(VokraError::NotImplemented(
             "vulkan graph-level execution is vokra_core::run_graph (drives eval_op); execute is \
              coverage-only",
@@ -310,7 +436,7 @@ impl Backend for VulkanBackend {
             any(target_os = "linux", target_os = "android", target_os = "windows")
         ))]
         {
-            crate::eval::eval_vulkan_op(op, inputs)
+            crate::eval::eval_vulkan_op(self, op, inputs)
         }
         #[cfg(not(all(
             feature = "vulkan",
@@ -352,7 +478,8 @@ mod tests {
 
     /// M3-02-T14 selection surface: cooperative-matrix preferred and available
     /// → coop-matrix; cooperative-matrix preferred but unavailable → subgroup
-    /// fallback; forced subgroup → subgroup regardless.
+    /// fallback; forced subgroup → subgroup regardless. M4-13-T10:
+    /// required-but-unavailable → explicit `BackendUnavailable`.
     #[test]
     fn select_gemm_pipeline_variant_is_capability_driven() {
         // Prefer coop-matrix on a device that supports it — pick coop-matrix.
@@ -360,7 +487,8 @@ mod tests {
             select_gemm_pipeline_variant(
                 &caps_with(true, true),
                 GemmPipelinePreference::PreferCoopMatrix,
-            ),
+            )
+            .unwrap(),
             GemmPipelineVariant::CoopMatrix,
         );
 
@@ -370,7 +498,8 @@ mod tests {
             select_gemm_pipeline_variant(
                 &caps_with(false, true),
                 GemmPipelinePreference::PreferCoopMatrix,
-            ),
+            )
+            .unwrap(),
             GemmPipelineVariant::Subgroup,
         );
 
@@ -380,8 +509,28 @@ mod tests {
             select_gemm_pipeline_variant(
                 &caps_with(true, true),
                 GemmPipelinePreference::ForceSubgroup,
-            ),
+            )
+            .unwrap(),
             GemmPipelineVariant::Subgroup,
+        );
+
+        // Require coop-matrix on a device that cannot — explicit error,
+        // never a quiet downgrade (M4-13-T10).
+        assert!(matches!(
+            select_gemm_pipeline_variant(
+                &caps_with(false, true),
+                GemmPipelinePreference::RequireCoopMatrix,
+            ),
+            Err(VokraError::BackendUnavailable(_)),
+        ));
+        // …and on capable hardware it selects the fast path.
+        assert_eq!(
+            select_gemm_pipeline_variant(
+                &caps_with(true, true),
+                GemmPipelinePreference::RequireCoopMatrix,
+            )
+            .unwrap(),
+            GemmPipelineVariant::CoopMatrix,
         );
 
         // Preference::default() is PreferCoopMatrix.
@@ -425,7 +574,17 @@ mod tests {
         {
             if let Ok(backend) = VulkanBackend::new() {
                 assert_eq!(backend.name(), "vulkan");
-                assert!(!backend.supports(&OpKind::MatMul));
+                // Blob-driven coverage (M4-13-T09): MatMul is supported
+                // exactly when the probe-selected GEMM variant's blob is
+                // loadable — false in the foundation slice, true after the
+                // owner's T16 commit, with no test edit either way.
+                let variant = backend
+                    .select_gemm_pipeline_variant(GemmPipelinePreference::default())
+                    .expect("default preference never errors");
+                assert_eq!(
+                    backend.supports(&OpKind::MatMul),
+                    crate::spirv::has_blob(variant.shader_name()),
+                );
             }
         }
         #[cfg(not(all(
@@ -459,12 +618,16 @@ mod tests {
                 return;
             };
             use vokra_core::{DType, GraphBuilder, TensorDesc};
-            // The simplest possible uncovered graph: a MatMul.
+            // A PERMANENTLY uncovered graph op (front-end signal op with no
+            // Vulkan graph arm — `graph_op_backing_shader` returns None):
+            // stays an explicit UnsupportedOp even after the owner's blob
+            // commit widens the covered set (M4-13-T09 blob-driven
+            // coverage made MatMul time-dependent, so it no longer serves
+            // as the permanent negative here).
             let mut mb = GraphBuilder::new();
-            let x = mb.add_tensor(TensorDesc::new("x", DType::F32, [2, 4]));
-            let w = mb.add_tensor(TensorDesc::new("w", DType::F32, [4, 8]));
-            let y = mb.add_tensor(TensorDesc::new("y", DType::F32, [2, 8]));
-            mb.add_node(OpKind::MatMul, &[x, w], &[y]);
+            let x = mb.add_tensor(TensorDesc::new("x", DType::F32, [64]));
+            let y = mb.add_tensor(TensorDesc::new("y", DType::F32, [64]));
+            mb.add_node(OpKind::DcOffsetRemove, &[x], &[y]);
             mb.mark_input(x);
             mb.mark_output(y);
             let g = mb.finish().expect("valid graph");
