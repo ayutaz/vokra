@@ -1,14 +1,23 @@
-// gelu.comp — M3-02-T18. tanh-approximation GELU (matches the CPU backend's
-// M0-08-T06 formula — do NOT switch to erf() without a coordinated CPU-side
-// swap, or the parity gate FAILS).
+// gelu.comp — M3-02-T18 / M4-13-T06. Exact (erf-based) GELU:
+// `gelu(x) = 0.5 * x * (1 + erf(x / sqrt(2)))`.
 //
-// `gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))`
+// Formula parity (M4-13-T06, ADR M3-02-spirv-generation §7 2026-07-14
+// addendum (e)): the M3-02 skeleton implemented the tanh approximation while
+// claiming CPU parity — but the CPU backend's `gelu_f32`
+// (crates/vokra-backend-cpu/src/kernels/scalar.rs, M0-08-T06) is the
+// **exact/erf form**, matching OpenAI Whisper's `nn.GELU()` default
+// (`approximate='none'`). Corrected here to the same Abramowitz & Stegun
+// 7.1.26 erf approximation with the IDENTICAL coefficients the CPU kernel
+// uses (max abs error 1.5e-7 — far inside the NFR-QL-01 FP32 gate,
+// atol = 0.01). Do NOT change either side's formula without a coordinated
+// swap of the other, or the parity gate fails.
 //
 // Compile with:
 //   glslc --target-env=vulkan1.1 -o precompiled/gelu.spv glsl/gelu.comp
 
 #version 450
 
+// Must stay in sync with `shader_local_size("gelu")` in src/plan.rs.
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 layout(push_constant) uniform PC {
@@ -18,9 +27,26 @@ layout(push_constant) uniform PC {
 layout(std430, set = 0, binding = 0) readonly buffer InBuf  { float in_buf[];  };
 layout(std430, set = 0, binding = 1) writeonly buffer OutBuf { float out_buf[]; };
 
-// sqrt(2/pi) as a compile-time constant matching the CPU value exactly.
-const float SQRT_2_OVER_PI = 0.7978845608028654;
-const float COEF = 0.044715;
+// Abramowitz & Stegun 7.1.26 erf coefficients — decimal literals identical
+// to vokra-backend-cpu's ERF_P / ERF_A1..A5 (kernels/scalar.rs), so both
+// sides round to the same f32 values.
+const float ERF_P  = 0.3275911;
+const float ERF_A1 = 0.254829592;
+const float ERF_A2 = -0.284496736;
+const float ERF_A3 = 1.421413741;
+const float ERF_A4 = -1.453152027;
+const float ERF_A5 = 1.061405429;
+
+// 1/sqrt(2), the f32 rounding of Rust's std::f32::consts::FRAC_1_SQRT_2.
+const float FRAC_1_SQRT_2 = 0.70710678;
+
+float erf_approx(float x) {
+    float sign_x = x < 0.0 ? -1.0 : 1.0;
+    float ax = abs(x);
+    float t = 1.0 / (1.0 + ERF_P * ax);
+    float poly = ((((ERF_A5 * t + ERF_A4) * t + ERF_A3) * t + ERF_A2) * t + ERF_A1) * t;
+    return sign_x * (1.0 - poly * exp(-ax * ax));
+}
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
@@ -28,6 +54,5 @@ void main() {
         return;
     }
     float x = in_buf[i];
-    float t = SQRT_2_OVER_PI * (x + COEF * x * x * x);
-    out_buf[i] = 0.5 * x * (1.0 + tanh(t));
+    out_buf[i] = 0.5 * x * (1.0 + erf_approx(x * FRAC_1_SQRT_2));
 }

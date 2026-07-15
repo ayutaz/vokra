@@ -174,6 +174,80 @@ impl VulkanBackend {
         };
         self.run_plan_f32(&plan, &[&a_bytes, &x_bytes, &b_bytes])
     }
+
+    /// Numerically-stable row softmax over a `rows x cols` row-major buffer
+    /// (M4-13-T05). Backs the graph executor's `OpKind::Softmax` arm
+    /// (M4-13-T09) in lock-step with `supports()`.
+    ///
+    /// # Errors
+    ///
+    /// See [`VulkanBackend::gemm_f32`] — same contract, `softmax.spv` blob.
+    pub fn softmax_f32(&self, rows: usize, cols: usize, x: &[f32]) -> Result<Vec<f32>> {
+        let plan = plan::plan_softmax(rows, cols, x.len())?;
+        self.run_plan_f32(&plan, &[&imp::f32s_to_le_bytes(x)])
+    }
+
+    /// Causal-masked row softmax (M4-13-T05): row `i` normalises over
+    /// columns `0..=i`; masked columns are written as exactly `0.0`
+    /// (`exp(-inf) = 0` semantics — the Metal / CUDA `softmax_causal`
+    /// host-mask equivalence). **Not a graph op** (`OpKind::SoftmaxCausal`
+    /// does not exist): Whisper decoder self-attention primitive for the
+    /// M4-13-T12/T13 parity harness.
+    ///
+    /// # Errors
+    ///
+    /// See [`VulkanBackend::gemm_f32`] — same contract, `softmax_causal.spv`
+    /// blob.
+    pub fn softmax_causal_f32(&self, rows: usize, cols: usize, x: &[f32]) -> Result<Vec<f32>> {
+        let plan = plan::plan_softmax_causal(rows, cols, x.len())?;
+        self.run_plan_f32(&plan, &[&imp::f32s_to_le_bytes(x)])
+    }
+
+    /// Row-wise layer normalisation with affine parameters (M4-13-T06).
+    /// `eps` is the model's configured value passed through verbatim — the
+    /// same contract as the CPU backend's `layer_norm_f32` (M0-08-T07);
+    /// this method never invents an epsilon. **Not a graph op**
+    /// (`OpKind::LayerNorm` does not exist): Whisper encoder/decoder
+    /// primitive for the M4-13-T12/T13 parity harness.
+    ///
+    /// # Errors
+    ///
+    /// See [`VulkanBackend::gemm_f32`] — same contract, `layer_norm.spv`
+    /// blob.
+    pub fn layer_norm_f32(
+        &self,
+        rows: usize,
+        cols: usize,
+        eps: f32,
+        x: &[f32],
+        gamma: &[f32],
+        beta: &[f32],
+    ) -> Result<Vec<f32>> {
+        let plan = plan::plan_layer_norm(rows, cols, eps, x.len(), gamma.len(), beta.len())?;
+        self.run_plan_f32(
+            &plan,
+            &[
+                &imp::f32s_to_le_bytes(x),
+                &imp::f32s_to_le_bytes(gamma),
+                &imp::f32s_to_le_bytes(beta),
+            ],
+        )
+    }
+
+    /// Element-wise exact (erf-based) GELU (M4-13-T06), the A&S 7.1.26
+    /// coefficients identical to the CPU backend's `gelu_f32` (matching
+    /// OpenAI Whisper's `nn.GELU()` default — formula parity is a hard
+    /// requirement; see `kernels/glsl/gelu.comp`). **Not a graph op**
+    /// (`OpKind::Gelu` does not exist): Whisper MLP / conv-stem primitive
+    /// for the M4-13-T12/T13 parity harness.
+    ///
+    /// # Errors
+    ///
+    /// See [`VulkanBackend::gemm_f32`] — same contract, `gelu.spv` blob.
+    pub fn gelu_f32(&self, x: &[f32]) -> Result<Vec<f32>> {
+        let plan = plan::plan_gelu(x.len())?;
+        self.run_plan_f32(&plan, &[&imp::f32s_to_le_bytes(x)])
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +294,54 @@ impl VulkanBackend {
         _bias: Option<&[f32]>,
     ) -> Result<Vec<f32>> {
         Err(stub_unavailable("gemv"))
+    }
+
+    /// Off-target stub — see [`VulkanBackend::gemm_f32`].
+    ///
+    /// # Errors
+    ///
+    /// Always
+    /// [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable).
+    pub fn softmax_f32(&self, _rows: usize, _cols: usize, _x: &[f32]) -> Result<Vec<f32>> {
+        Err(stub_unavailable("softmax"))
+    }
+
+    /// Off-target stub — see [`VulkanBackend::gemm_f32`].
+    ///
+    /// # Errors
+    ///
+    /// Always
+    /// [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable).
+    pub fn softmax_causal_f32(&self, _rows: usize, _cols: usize, _x: &[f32]) -> Result<Vec<f32>> {
+        Err(stub_unavailable("softmax_causal"))
+    }
+
+    /// Off-target stub — see [`VulkanBackend::gemm_f32`].
+    ///
+    /// # Errors
+    ///
+    /// Always
+    /// [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable).
+    pub fn layer_norm_f32(
+        &self,
+        _rows: usize,
+        _cols: usize,
+        _eps: f32,
+        _x: &[f32],
+        _gamma: &[f32],
+        _beta: &[f32],
+    ) -> Result<Vec<f32>> {
+        Err(stub_unavailable("layer_norm"))
+    }
+
+    /// Off-target stub — see [`VulkanBackend::gemm_f32`].
+    ///
+    /// # Errors
+    ///
+    /// Always
+    /// [`VokraError::BackendUnavailable`](vokra_core::VokraError::BackendUnavailable).
+    pub fn gelu_f32(&self, _x: &[f32]) -> Result<Vec<f32>> {
+        Err(stub_unavailable("gelu"))
     }
 }
 

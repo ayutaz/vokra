@@ -183,3 +183,161 @@ fn gemv_shape_mismatch_is_invalid_argument_before_blob_check() {
         .expect_err("x length mismatch must error");
     assert!(matches!(err, VokraError::InvalidArgument(_)));
 }
+
+/// `softmax_f32` (M4-13-T05): blob-gated compute checked against the CPU
+/// kernel AND the mathematical invariants (each row sums to 1; constant
+/// shift leaves the output unchanged within FP32).
+#[test]
+fn softmax_dispatch_is_blob_gated_and_cpu_close() {
+    let Ok(backend) = VulkanBackend::new() else {
+        eprintln!("no Vulkan on this host; skipping softmax dispatch test");
+        return;
+    };
+    let (rows, cols) = (5usize, 100usize); // cols > 32 lanes → strided loop + tail
+    let x = splitmix_f32s(8, rows * cols);
+
+    let result = backend.softmax_f32(rows, cols, &x);
+    if spirv::has_blob("softmax") {
+        let got = result.expect("blob committed; softmax must dispatch");
+        let mut want = vec![0.0f32; rows * cols];
+        vokra_backend_cpu::kernels::softmax_f32(&x, &mut want, rows, cols).expect("CPU reference");
+        assert_close(&got, &want, "softmax vs CPU");
+        // Invariant: each row sums to 1 within FP32 rounding.
+        for r in 0..rows {
+            let s: f32 = got[r * cols..(r + 1) * cols].iter().sum();
+            assert!((s - 1.0).abs() <= 1e-4, "row {r} sums to {s}, want 1.0");
+        }
+        // Invariant: softmax(x + c) == softmax(x).
+        let shifted: Vec<f32> = x.iter().map(|v| v + 3.5).collect();
+        let got_shifted = backend
+            .softmax_f32(rows, cols, &shifted)
+            .expect("shifted softmax");
+        assert_close(&got_shifted, &got, "softmax shift invariance");
+    } else {
+        let err = result.expect_err("no .spv committed; softmax must be UnsupportedOp");
+        assert!(matches!(err, VokraError::UnsupportedOp(_)));
+        eprintln!("softmax blob absent → explicit UnsupportedOp (placeholder slice)");
+    }
+}
+
+/// `softmax_causal_f32` (M4-13-T05): masked columns are exactly 0.0 and the
+/// unmasked region matches a host-masked CPU softmax (`exp(-inf) = 0`
+/// equivalence — the Metal / CUDA causal contract).
+#[test]
+fn softmax_causal_dispatch_matches_host_masked_cpu_softmax() {
+    let Ok(backend) = VulkanBackend::new() else {
+        eprintln!("no Vulkan on this host; skipping softmax_causal dispatch test");
+        return;
+    };
+    let (rows, cols) = (6usize, 6usize);
+    let x = splitmix_f32s(9, rows * cols);
+
+    let result = backend.softmax_causal_f32(rows, cols, &x);
+    if spirv::has_blob("softmax_causal") {
+        let got = result.expect("blob committed; softmax_causal must dispatch");
+        // Host reference: mask j > i with -inf, then CPU softmax.
+        let mut masked = x.clone();
+        for i in 0..rows {
+            for j in 0..cols {
+                if j > i {
+                    masked[i * cols + j] = f32::NEG_INFINITY;
+                }
+            }
+        }
+        let mut want = vec![0.0f32; rows * cols];
+        vokra_backend_cpu::kernels::softmax_f32(&masked, &mut want, rows, cols)
+            .expect("CPU reference");
+        assert_close(&got, &want, "softmax_causal vs host-masked CPU softmax");
+        // Masked cols are written as EXACTLY 0.0 (not merely small).
+        for i in 0..rows {
+            for j in (i + 1)..cols {
+                assert_eq!(
+                    got[i * cols + j].to_bits(),
+                    0.0f32.to_bits(),
+                    "masked ({i},{j}) must be exactly 0.0"
+                );
+            }
+        }
+    } else {
+        let err = result.expect_err("no .spv committed; softmax_causal must be UnsupportedOp");
+        assert!(matches!(err, VokraError::UnsupportedOp(_)));
+        eprintln!("softmax_causal blob absent → explicit UnsupportedOp (placeholder slice)");
+    }
+}
+
+/// `layer_norm_f32` (M4-13-T06): blob-gated compute vs the CPU kernel with
+/// the SAME eps (passed through verbatim, never invented), plus the γ=1 /
+/// β=0 zero-mean-unit-variance invariant.
+#[test]
+fn layer_norm_dispatch_is_blob_gated_and_cpu_close() {
+    let Ok(backend) = VulkanBackend::new() else {
+        eprintln!("no Vulkan on this host; skipping layer_norm dispatch test");
+        return;
+    };
+    let (rows, cols) = (4usize, 100usize);
+    let eps = 1e-5f32; // the CPU-default documented value; models pass their config's
+    let x = splitmix_f32s(10, rows * cols);
+    let gamma = splitmix_f32s(11, cols);
+    let beta = splitmix_f32s(12, cols);
+
+    let result = backend.layer_norm_f32(rows, cols, eps, &x, &gamma, &beta);
+    if spirv::has_blob("layer_norm") {
+        let got = result.expect("blob committed; layer_norm must dispatch");
+        let mut want = vec![0.0f32; rows * cols];
+        vokra_backend_cpu::kernels::layer_norm_f32(&x, &mut want, rows, cols, &gamma, &beta, eps)
+            .expect("CPU reference");
+        assert_close(&got, &want, "layer_norm vs CPU");
+
+        // γ=1, β=0 → each output row has mean ~0 and variance ~1.
+        let ones = vec![1.0f32; cols];
+        let zeros = vec![0.0f32; cols];
+        let unit = backend
+            .layer_norm_f32(rows, cols, eps, &x, &ones, &zeros)
+            .expect("unit-affine layer_norm");
+        for r in 0..rows {
+            let row = &unit[r * cols..(r + 1) * cols];
+            let mean: f32 = row.iter().sum::<f32>() / cols as f32;
+            let var: f32 = row.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / cols as f32;
+            assert!(mean.abs() <= 1e-3, "row {r} mean {mean} not ~0");
+            assert!((var - 1.0).abs() <= 1e-2, "row {r} var {var} not ~1");
+        }
+    } else {
+        let err = result.expect_err("no .spv committed; layer_norm must be UnsupportedOp");
+        assert!(matches!(err, VokraError::UnsupportedOp(_)));
+        eprintln!("layer_norm blob absent → explicit UnsupportedOp (placeholder slice)");
+    }
+}
+
+/// `gelu_f32` (M4-13-T06): blob-gated compute vs the CPU's exact (erf-based)
+/// GELU — the A&S 7.1.26 coefficients are shared between the GLSL and the
+/// CPU kernel, so agreement is far tighter than the 0.01 gate.
+#[test]
+fn gelu_dispatch_matches_cpu_erf_form() {
+    let Ok(backend) = VulkanBackend::new() else {
+        eprintln!("no Vulkan on this host; skipping gelu dispatch test");
+        return;
+    };
+    // 300 elements → 2 workgroups of 256 with a ragged tail; range stretched
+    // to ±4 to cover both erf saturation regions.
+    let x: Vec<f32> = splitmix_f32s(13, 300).iter().map(|v| v * 4.0).collect();
+
+    let result = backend.gelu_f32(&x);
+    if spirv::has_blob("gelu") {
+        let got = result.expect("blob committed; gelu must dispatch");
+        let mut want = vec![0.0f32; x.len()];
+        vokra_backend_cpu::kernels::gelu_f32(&x, &mut want).expect("CPU reference");
+        assert_close(&got, &want, "gelu vs CPU (erf form)");
+        // Hand-computed anchors: gelu(0) = 0; gelu(x) → x for large x;
+        // gelu(-x) → 0 for large x.
+        let anchors = backend
+            .gelu_f32(&[0.0, 6.0, -6.0])
+            .expect("anchor dispatch");
+        assert!(anchors[0].abs() <= 1e-6, "gelu(0) = 0");
+        assert!((anchors[1] - 6.0).abs() <= 1e-3, "gelu(6) ≈ 6");
+        assert!(anchors[2].abs() <= 1e-3, "gelu(-6) ≈ 0");
+    } else {
+        let err = result.expect_err("no .spv committed; gelu must be UnsupportedOp");
+        assert!(matches!(err, VokraError::UnsupportedOp(_)));
+        eprintln!("gelu blob absent → explicit UnsupportedOp (placeholder slice)");
+    }
+}
