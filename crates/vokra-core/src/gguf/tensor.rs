@@ -51,6 +51,13 @@ pub enum GgmlType {
     Q5K = 13,
     /// 6-bit K-quant, ggml type tag `14`. 256-element super-block, 210 bytes.
     Q6K = 14,
+    /// bfloat16, ggml type tag `30` (`GGML_TYPE_BF16` — ggml.h, verified
+    /// 2026-07-15). 2 bytes per element; dequantizes exactly to `f32`
+    /// (the payload is the top 16 bits of the IEEE-754 f32 pattern).
+    /// Added for the M4-06 Moshi checkpoint (`kyutai/moshiko-pytorch-bf16`
+    /// is all-BF16); the offline converter reads BF16 and writes F32
+    /// (exact — ADR M4-06 §D2 gap analysis).
+    BF16 = 30,
 }
 
 impl GgmlType {
@@ -66,6 +73,7 @@ impl GgmlType {
             12 => Ok(Self::Q4K),
             13 => Ok(Self::Q5K),
             14 => Ok(Self::Q6K),
+            30 => Ok(Self::BF16),
             other => Err(GgufError::UnsupportedDtype(other)),
         }
     }
@@ -82,7 +90,7 @@ impl GgmlType {
     /// super-blocks.
     pub fn block_size(self) -> usize {
         match self {
-            Self::F32 | Self::F16 => 1,
+            Self::F32 | Self::F16 | Self::BF16 => 1,
             Self::Q4K | Self::Q5K | Self::Q6K => QK_K,
         }
     }
@@ -96,7 +104,7 @@ impl GgmlType {
     pub fn type_size(self) -> usize {
         match self {
             Self::F32 => 4,
-            Self::F16 => 2,
+            Self::F16 | Self::BF16 => 2,
             Self::Q4K => 144,
             Self::Q5K => 176,
             Self::Q6K => 210,

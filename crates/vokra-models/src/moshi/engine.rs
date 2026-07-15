@@ -121,6 +121,16 @@ impl MoshiEngine {
                 cfg.n_user_streams()
             )));
         }
+        if encoder.config().quantizer.bins != cfg.audio_card {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi engine: mimi codebook bins {} != audio card {} — upstream \
+                 ties them (`_lm_kwargs[\"card\"] = _quantizer_kwargs[\"bins\"]`, \
+                 loaders.py); a mismatch would emit codes the LM rejects (FR-EX-08 \
+                 at construction, not mid-stream)",
+                encoder.config().quantizer.bins,
+                cfg.audio_card
+            )));
+        }
         if chain.attrs().n_codebooks != cfg.dep_q {
             return Err(VokraError::InvalidArgument(format!(
                 "moshi engine: decode chain has {} codebooks but the depformer \

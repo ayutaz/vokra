@@ -47,10 +47,22 @@ pub fn dequantize(dtype: GgmlType, bytes: &[u8], n_elements: usize) -> Result<Ve
     Ok(match dtype {
         GgmlType::F32 => decode_f32(bytes),
         GgmlType::F16 => decode_f16(bytes),
+        GgmlType::BF16 => decode_bf16(bytes),
         GgmlType::Q4K => q4_k::dequantize(bytes, n_elements),
         GgmlType::Q5K => q5_k::dequantize(bytes, n_elements),
         GgmlType::Q6K => q6_k::dequantize(bytes, n_elements),
     })
+}
+
+/// Decodes a little-endian `BF16` payload (length already validated):
+/// each element is the top 16 bits of the f32 bit pattern, so shifting
+/// left 16 reproduces the value **exactly** (no rounding — the reason the
+/// M4-06 converter can write F32 losslessly from a BF16 checkpoint).
+fn decode_bf16(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(2)
+        .map(|c| f32::from_bits(u32::from(u16::from_le_bytes([c[0], c[1]])) << 16))
+        .collect()
 }
 
 /// Decodes a little-endian `F32` payload (length already validated).

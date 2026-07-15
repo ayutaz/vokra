@@ -279,11 +279,14 @@ impl SafetensorsFile {
     }
 }
 
-/// Maps a safetensors dtype string into the GGUF dtype space (`F32` / `F16`).
+/// Maps a safetensors dtype string into the GGUF dtype space
+/// (`F32` / `F16` / `BF16` — the latter added for the all-BF16
+/// `kyutai/moshiko-pytorch-bf16` checkpoint, M4-06).
 fn map_dtype(dtype: &str) -> Result<GgmlType, SafetensorsError> {
     match dtype {
         "F32" => Ok(GgmlType::F32),
         "F16" => Ok(GgmlType::F16),
+        "BF16" => Ok(GgmlType::BF16),
         other => Err(SafetensorsError::UnsupportedDtype(other.to_owned())),
     }
 }

@@ -6,6 +6,7 @@ pub(crate) mod csm;
 pub(crate) mod dac;
 pub(crate) mod kokoro;
 pub(crate) mod mimi;
+pub(crate) mod moshi;
 pub(crate) mod piper_plus;
 pub(crate) mod silero;
 pub(crate) mod voxtral;
