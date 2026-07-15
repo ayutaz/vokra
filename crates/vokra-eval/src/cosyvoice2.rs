@@ -15,17 +15,20 @@
 //! The threshold policy is fixed at [`COSYVOICE2_MEL_LOSS_THRESHOLD`] and
 //! documented so the CI gate cannot silently drift.
 //!
-//! # Zero-dep, weight-free (NFR-DS-02 / partial gate policy)
+//! # Zero-dep / partial gate policy (NFR-DS-02, M4-18 T08)
 //!
-//! The library gate uses **mel_loss only** — UTMOS / DNSMOS are neural MOS
-//! predictors that need model weights (M1-09b, blocked). The same
+//! The weight-free gate uses **mel_loss only**: the same
 //! `mel_loss_only = true` posture the M2-08 [`check_degradation`] helper
-//! carries applies here: [`check_cosyvoice2_degradation`] sets the flag,
-//! so a caller (CI job / audit script) can surface the partial-gate
-//! caveat. The API surface leaves a symmetric UTMOS entry point
-//! ([`check_cosyvoice2_degradation_with_utmos`]) that returns
-//! [`VokraError::NotImplemented`] today — the follow-on session drops the
-//! weights in without an API break.
+//! carries applies to [`check_cosyvoice2_degradation`], so a caller (CI
+//! job / audit script) can surface the partial-gate caveat. The
+//! UTMOS-augmented entry point
+//! ([`check_cosyvoice2_degradation_with_utmos`]) takes an **injected**
+//! [`AudioMosMetric`] scorer (M4-18 T08 — the real UTMOS weights are
+//! owner-deferred, so no weight path is hard-coded here) plus an explicit
+//! [`MosDomain`]; because CosyVoice2 synthesizes through the Mimi codec,
+//! the codec/streaming domain is advisory-only until the owner-side
+//! calibration study clears it (see `degradation` module docs). DNSMOS
+//! remains fail-closed (M4-18 T03).
 //!
 //! # Frontend spec (bit-exact MEL, CLAUDE.md STFT ≠ FFT)
 //!
@@ -44,7 +47,8 @@
 //! - Non-finite / non-positive threshold → loud `InvalidArgument`.
 //! - Too-short inputs → propagates `MelLoss` error verbatim.
 
-use crate::degradation::DegradationReport;
+use crate::degradation::{DegradationReport, MosDomain};
+use crate::metrics::AudioMosMetric;
 use crate::{MelLoss, check_degradation};
 use vokra_core::{Result, VokraError};
 
@@ -99,22 +103,51 @@ pub fn check_cosyvoice2_degradation(
     )
 }
 
-/// UTMOS + DNSMOS-augmented CosyVoice2 gate (M1-09b; blocked on weights).
+/// UTMOS-augmented CosyVoice2 gate (M4-18 T08).
 ///
-/// Placeholder entry point mirroring [`check_cosyvoice2_degradation`]:
-/// returns [`VokraError::NotImplemented`] today so the CI wiring can be
-/// laid out now without a follow-up API break. Once UTMOS weights land
-/// this body drops in a `check_degradation_with_utmos` call and returns
-/// a full report with `mel_loss_only = false`.
+/// Mirrors [`check_cosyvoice2_degradation`] (fixed 24 kHz rate + the
+/// [`COSYVOICE2_MEL_LOSS_THRESHOLD`] policy) but additionally runs the
+/// injected `mos` scorer through
+/// [`check_degradation_with_utmos`](crate::check_degradation_with_utmos),
+/// returning a report with `mel_loss_only = false`.
+///
+/// The scorer is **injected** (`&dyn AudioMosMetric`): the M4-18 kickoff
+/// gate deferred the real UTMOS weights, so this crate never hard-codes a
+/// weight path — a weight-less caller uses
+/// [`check_cosyvoice2_degradation`] and inherits its honest partial-gate
+/// flag. `domain` must be stated explicitly; note CosyVoice2 synthesizes
+/// **through the Mimi codec**, so until the owner-side calibration study
+/// validates the codec domain, [`MosDomain::CodecStreaming`] (advisory-only)
+/// is the honest choice — [`MosDomain::TtsSynthesis`] turns the MOS half
+/// into a hard gate.
+///
+/// # Errors
+///
+/// [`VokraError::InvalidArgument`] on non-24 kHz PCM (before any scoring),
+/// plus everything `check_degradation_with_utmos` rejects (scorer errors,
+/// non-positive reference score, MEL front-end errors).
 pub fn check_cosyvoice2_degradation_with_utmos(
-    _reference: &[f32],
-    _hypothesis: &[f32],
-    _sample_rate: u32,
+    reference: &[f32],
+    hypothesis: &[f32],
+    sample_rate: u32,
+    mos: &dyn AudioMosMetric,
+    domain: MosDomain,
 ) -> Result<DegradationReport> {
-    Err(VokraError::NotImplemented(
-        "check_cosyvoice2_degradation_with_utmos: UTMOS weights not delivered (M1-09b); \
-         mel-loss-only gate available via check_cosyvoice2_degradation",
-    ))
+    if sample_rate != COSYVOICE2_SAMPLE_RATE {
+        return Err(VokraError::InvalidArgument(format!(
+            "check_cosyvoice2_degradation_with_utmos: sample_rate {sample_rate} != \
+             {COSYVOICE2_SAMPLE_RATE} (CosyVoice2 output is fixed at {COSYVOICE2_SAMPLE_RATE} Hz \
+             — Mimi codec native rate; the gate does not silently resample, FR-EX-08)"
+        )));
+    }
+    crate::check_degradation_with_utmos(
+        reference,
+        hypothesis,
+        sample_rate,
+        COSYVOICE2_MEL_LOSS_THRESHOLD,
+        mos,
+        domain,
+    )
 }
 
 /// Convenience: builds a shared [`MelLoss`] pre-configured for CosyVoice2's
@@ -134,6 +167,7 @@ pub fn cosyvoice2_mel_loss() -> MelLoss {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::utmos::{ConvActivation, HeadPool, TransformerNorm, Utmos, UtmosConfig};
 
     const N: usize = 24_000; // 1 s of PCM at 24 kHz
 
@@ -212,13 +246,67 @@ mod tests {
         assert_eq!(COSYVOICE2_SAMPLE_RATE, 24_000);
     }
 
+    /// A tiny real UTMOS skeleton at the CosyVoice2 rate (24 kHz) whose
+    /// affine shifts scores into a MOS-like positive band.
+    fn tiny_utmos_24k() -> Utmos {
+        let config = UtmosConfig {
+            sample_rate: COSYVOICE2_SAMPLE_RATE,
+            conv_channels: vec![4, 6],
+            conv_kernels: vec![5, 3],
+            conv_strides: vec![3, 2],
+            conv_activation: ConvActivation::Gelu,
+            n_layer: 1,
+            n_head: 2,
+            hidden_dim: 6,
+            ffn_dim: 12,
+            norm: TransformerNorm::Post,
+            ln_eps: 1e-5,
+            head_dims: vec![4, 1],
+            head_pool: HeadPool::MeanAfter,
+            head_scale: 1.0,
+            head_offset: 3.0,
+        };
+        Utmos::synthesized(config, 0x4D34_5F31_385F_5531).expect("tiny utmos 24k")
+    }
+
     #[test]
-    fn utmos_gate_returns_not_implemented() {
+    fn utmos_gate_runs_with_injected_scorer_and_clears_partial_flag() {
         let ref_pcm = tone(220.0, N);
-        let err =
-            check_cosyvoice2_degradation_with_utmos(&ref_pcm, &ref_pcm, COSYVOICE2_SAMPLE_RATE)
-                .expect_err("UTMOS weights not delivered");
-        assert!(matches!(err, VokraError::NotImplemented(_)));
+        let m = tiny_utmos_24k();
+        // Identical audio through a deterministic scorer: exact zero MOS
+        // decrease, and the mel half is 0 — the full gate passes with the
+        // partial flag cleared. CodecStreaming is the honest domain for
+        // Mimi-codec output (advisory-only until the owner study).
+        let report = check_cosyvoice2_degradation_with_utmos(
+            &ref_pcm,
+            &ref_pcm,
+            COSYVOICE2_SAMPLE_RATE,
+            &m,
+            MosDomain::CodecStreaming,
+        )
+        .expect("UTMOS-augmented gate runs");
+        assert!(!report.mel_loss_only);
+        let a = report.utmos.expect("assessment present");
+        assert_eq!(a.rel_decrease, 0.0);
+        assert!(a.advisory_only, "codec domain is advisory-only");
+        assert!(report.passes_5pct_gate);
+    }
+
+    #[test]
+    fn utmos_gate_rejects_wrong_sample_rate_before_scoring() {
+        // FR-EX-08: the 24 kHz policy check fires before any scoring —
+        // even with a 16 kHz-config scorer the error is the rate policy.
+        let ref_pcm = tone(220.0, N);
+        let m = tiny_utmos_24k();
+        let err = check_cosyvoice2_degradation_with_utmos(
+            &ref_pcm,
+            &ref_pcm,
+            16_000,
+            &m,
+            MosDomain::CodecStreaming,
+        )
+        .expect_err("wrong sample rate must fail");
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
     }
 
     #[test]

@@ -10,10 +10,15 @@ publish.workspace = true
 # Zero external dependencies (NFR-DS-02): the metrics are original std code — no
 # jiwer / torchmetrics / librosa — reusing the first-party STFT/mel op path from
 # vokra-ops (the FFT/mel are NOT reimplemented here) and the IR attribute + error
-# types from vokra-core.
+# types from vokra-core. The UTMOS skeleton (M4-18) additionally reuses the
+# first-party CPU kernel wrappers (GEMM / conv1d / layer_norm / softmax / GELU)
+# from vokra-backend-cpu — a downward, acyclic, first-party edge (ADR
+# M4-18-utmos-arch §(a)); the neural-net bodies are NOT reimplemented here and
+# the root Cargo.lock stays vokra-* only.
 [dependencies]
 vokra-core.workspace = true
 vokra-ops.workspace = true
+vokra-backend-cpu.workspace = true
 
 [lints]
 workspace = true
