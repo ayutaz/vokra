@@ -138,6 +138,10 @@ mod sys;
 // BackendUnavailable errors where the loader / feature is absent), so
 // downstream code can always name them.
 mod backend;
+// Host-portable dispatch *planning* (M4-13-T02): shape validation,
+// push-constant packing and workgroup math for every SPIR-V kernel, with no
+// Vulkan object involved — unit-testable on the Apple-Silicon authoring host.
+pub mod plan;
 mod probe;
 // The SPIR-V manifest / dispatcher lives at the crate root (no Vulkan target
 // gating): it is the structural surface T14〜T22 landings extend, and the

@@ -2365,12 +2365,10 @@ pub(crate) fn smoke_dispatch_add_f32_impl(a: &[f32], b: &[f32]) -> Result<Vec<f3
 // next is recorded, so no intra-command-buffer barriers are needed).
 // ---------------------------------------------------------------------------
 
-/// One `layout(constant_id = N)` u32 specialization constant (M4-13-T02).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct SpecConstantU32 {
-    pub(crate) constant_id: u32,
-    pub(crate) value: u32,
-}
+// The specialization-constant descriptor lives in the host-portable `plan`
+// module (M4-13-T02) so plans built off-target carry the same type this
+// gated dispatch side consumes.
+pub(crate) use crate::plan::SpecConstantU32;
 
 /// A fully-described generic kernel dispatch (M4-13-T02): which manifest
 /// kernel to run, its SSBO inputs, output size, push constants,
