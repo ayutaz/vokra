@@ -457,6 +457,11 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
         return match args.task_hint {
             Some(TaskHint::MelFrontend) => execute_mel_frontend_standalone(args),
             Some(TaskHint::Cosyvoice2Synthetic) => execute_cosyvoice2_synthetic_standalone(args),
+            Some(TaskHint::CsmFixtureTokenizer) => Err(
+                "bench: --task does not select the CSM fixture tokenizer (it is a \
+                 `vokra-cli run --fixture-tokenizer` flag; bench has no CSM task yet)"
+                    .to_owned(),
+            ),
             None => Err("unreachable: parse_args guarantees a task hint".to_owned()),
         };
     }
@@ -472,6 +477,17 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
     verify_hifigan_int8(task, None, None)?;
 
     let (task_name, audio_seconds, samples) = match task {
+        // S2S (CSM, M4-05) has no bench harness yet — RTF/TTFA reference
+        // numbers ride the streaming test + owner track (T19/T30). Reject
+        // rather than fabricate a measurement (FR-EX-08).
+        ModelTask::S2s => {
+            return Err(
+                "bench: arch `csm` (S2S) has no bench task yet — TTFA/RTF reference \
+                 numbers come from the M4-05 streaming reference measurement; real-model \
+                 numbers are the owner track"
+                    .to_owned(),
+            );
+        }
         ModelTask::Vad => {
             let path = args
                 .input
