@@ -43,6 +43,21 @@ pub enum IsaPath {
     /// `rvv_v = true`. RVV 0.7.1 fallback (LicheePi 4A C910 / Milk-V Duo
     /// C906) is deferred to v1.5 = M4-08 (前倒し禁止, CLAUDE.md).
     Rvv,
+    /// WASM SIMD128 f32x4 kernels (M4-01). **Compile-time, not runtime,
+    /// dispatch**: WASM has no runtime CPU feature detection — SIMD
+    /// acceptance is decided when the engine *validates* the module, so the
+    /// AVX2/NEON CPUID-style probe cannot exist. A wasm32 build either has
+    /// `target_feature = "simd128"` baked in (`RUSTFLAGS="-C
+    /// target-feature=+simd128"`) and always selects this path, or does not
+    /// and always selects [`IsaPath::Scalar`]. Distribution ships BOTH
+    /// artifacts (`scripts/build-wasm.sh`) and the JS loader picks one with
+    /// a `WebAssembly.validate` feature probe (ADR M4-01-webgpu-wasm §4).
+    ///
+    /// **Relaxed SIMD is NOT adopted** (Safari-partial only per the CLAUDE.md
+    /// quarterly ISA watch; relaxed-fma result nondeterminism conflicts with
+    /// the parity discipline NFR-QL-01) — the kernels use deterministic
+    /// mul + add, never fma.
+    WasmSimd128,
 }
 
 impl fmt::Display for IsaPath {
@@ -52,6 +67,7 @@ impl fmt::Display for IsaPath {
             Self::Avx2 => "avx2",
             Self::Neon => "neon",
             Self::Rvv => "rvv",
+            Self::WasmSimd128 => "wasm-simd128",
         };
         f.write_str(s)
     }
@@ -84,6 +100,11 @@ pub struct CpuFeatures {
     /// RISC-V Zvbb (vector bit-manipulation), an RVV 1.0 optional extension.
     /// Probed but no kernel wired in M3 — reserved for M4+.
     pub rvv_zvbb: bool,
+    /// WASM SIMD128 (M4-01). **Compile-time constant on wasm32**
+    /// (`cfg!(target_feature = "simd128")`), always `false` on native
+    /// targets. WASM has no runtime feature detection — see
+    /// [`IsaPath::WasmSimd128`] for the 2-artifact distribution policy.
+    pub wasm_simd128: bool,
 }
 
 impl CpuFeatures {
@@ -116,6 +137,7 @@ impl CpuFeatures {
                 rvv_zvfh: false,
                 rvv_zvfbfmin: false,
                 rvv_zvbb: false,
+                wasm_simd128: false,
             }
         }
         #[cfg(target_arch = "aarch64")]
@@ -128,6 +150,7 @@ impl CpuFeatures {
                 rvv_zvfh: false,
                 rvv_zvfbfmin: false,
                 rvv_zvbb: false,
+                wasm_simd128: false,
             }
         }
         #[cfg(target_arch = "riscv64")]
@@ -141,12 +164,32 @@ impl CpuFeatures {
                 rvv_zvfh: caps.zvfh,
                 rvv_zvfbfmin: caps.zvfbfmin,
                 rvv_zvbb: caps.zvbb,
+                wasm_simd128: false,
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            // COMPILE-TIME: WASM has no runtime feature detection (module
+            // validation decides SIMD acceptance), so this is `cfg!`, not a
+            // probe. The 2-artifact build (`scripts/build-wasm.sh`) makes
+            // exactly one of {simd128, base} true per shipped .wasm
+            // (M4-01-T04, ADR M4-01 §4).
+            Self {
+                avx2: false,
+                fma: false,
+                neon: false,
+                rvv_v: false,
+                rvv_zvfh: false,
+                rvv_zvfbfmin: false,
+                rvv_zvbb: false,
+                wasm_simd128: cfg!(target_feature = "simd128"),
             }
         }
         #[cfg(not(any(
             target_arch = "x86_64",
             target_arch = "aarch64",
-            target_arch = "riscv64"
+            target_arch = "riscv64",
+            target_arch = "wasm32"
         )))]
         {
             Self {
@@ -157,6 +200,7 @@ impl CpuFeatures {
                 rvv_zvfh: false,
                 rvv_zvfbfmin: false,
                 rvv_zvbb: false,
+                wasm_simd128: false,
             }
         }
     }
@@ -171,13 +215,14 @@ impl CpuFeatures {
             IsaPath::Avx2 => self.avx2 && self.fma,
             IsaPath::Neon => self.neon,
             IsaPath::Rvv => self.rvv_v,
+            IsaPath::WasmSimd128 => self.wasm_simd128,
         }
     }
 
     /// The fastest path this host supports: AVX2 if present, else NEON, else
-    /// RVV, else scalar (M0-08-T03 + M3-13-T03 selection rule). Only one of
-    /// AVX2 / NEON / RVV can be true on any given host — they are
-    /// arch-exclusive.
+    /// RVV, else WASM SIMD128, else scalar (M0-08-T03 + M3-13-T03 + M4-01-T04
+    /// selection rule). Only one of AVX2 / NEON / RVV / WasmSimd128 can be
+    /// true on any given host — they are arch-exclusive.
     pub fn best_isa(&self) -> IsaPath {
         if self.avx2 && self.fma {
             IsaPath::Avx2
@@ -185,6 +230,8 @@ impl CpuFeatures {
             IsaPath::Neon
         } else if self.rvv_v {
             IsaPath::Rvv
+        } else if self.wasm_simd128 {
+            IsaPath::WasmSimd128
         } else {
             IsaPath::Scalar
         }
@@ -300,8 +347,9 @@ pub fn parse_isa_override(value: &str) -> Result<IsaPath> {
         "avx2" => Ok(IsaPath::Avx2),
         "neon" => Ok(IsaPath::Neon),
         "rvv" => Ok(IsaPath::Rvv),
+        "wasm-simd128" | "wasm_simd128" => Ok(IsaPath::WasmSimd128),
         other => Err(VokraError::InvalidArgument(format!(
-            "{ENV_ISA_OVERRIDE} must be one of scalar|avx2|neon|rvv, got `{other}`"
+            "{ENV_ISA_OVERRIDE} must be one of scalar|avx2|neon|rvv|wasm-simd128, got `{other}`"
         ))),
     }
 }
@@ -353,6 +401,7 @@ mod tests {
         rvv_zvfh: false,
         rvv_zvfbfmin: false,
         rvv_zvbb: false,
+        wasm_simd128: false,
     };
     const X86_NO_AVX2: CpuFeatures = CpuFeatures {
         avx2: false,
@@ -362,6 +411,7 @@ mod tests {
         rvv_zvfh: false,
         rvv_zvfbfmin: false,
         rvv_zvbb: false,
+        wasm_simd128: false,
     };
     const ARM: CpuFeatures = CpuFeatures {
         avx2: false,
@@ -371,6 +421,7 @@ mod tests {
         rvv_zvfh: false,
         rvv_zvfbfmin: false,
         rvv_zvbb: false,
+        wasm_simd128: false,
     };
     // AVX2 present but FMA absent: the AVX2 kernels use `_mm256_fmadd_ps`, so
     // this combination must NOT select the Avx2 path (it would SIGILL).
@@ -382,6 +433,7 @@ mod tests {
         rvv_zvfh: false,
         rvv_zvfbfmin: false,
         rvv_zvbb: false,
+        wasm_simd128: false,
     };
     // Synthetic feature set for M3-13-T02 unit tests: RVV 1.0 base present
     // (SpacemiT K1 / BPI-F3 baseline); optional Zvfh added in a second variant.
@@ -393,6 +445,7 @@ mod tests {
         rvv_zvfh: false,
         rvv_zvfbfmin: false,
         rvv_zvbb: false,
+        wasm_simd128: false,
     };
     const RVV_WITH_ZVFH: CpuFeatures = CpuFeatures {
         avx2: false,
@@ -402,6 +455,7 @@ mod tests {
         rvv_zvfh: true,
         rvv_zvfbfmin: false,
         rvv_zvbb: false,
+        wasm_simd128: false,
     };
 
     #[test]
@@ -619,5 +673,90 @@ mod tests {
         let cpuinfo = "isa: rv64imafdc_virt_vhole_zicsr\n";
         let caps = super::parse_riscv_isa_string(cpuinfo);
         assert!(!caps.v);
+    }
+
+    // -------------------------------------------------------------------
+    // M4-01-T04 WASM SIMD128 detection + selection unit tests
+    //
+    // Pure-function tests over synthetic feature sets so they execute on
+    // every host in CI. The wasm32 bit is COMPILE-TIME (`cfg!(target_feature
+    // = "simd128")`) — WASM has no runtime CPU feature detection, SIMD
+    // acceptance is decided at module validation time (ADR M4-01 §4) — so
+    // unlike AVX2/NEON there is no probe to exercise, only the selection
+    // rules.
+    // -------------------------------------------------------------------
+
+    const WASM_SIMD: CpuFeatures = CpuFeatures {
+        avx2: false,
+        fma: false,
+        neon: false,
+        rvv_v: false,
+        rvv_zvfh: false,
+        rvv_zvfbfmin: false,
+        rvv_zvbb: false,
+        wasm_simd128: true,
+    };
+
+    #[test]
+    fn wasm_simd128_selection_rules() {
+        // A wasm32+simd128 build selects the WasmSimd128 path; the scalar
+        // fallback is always available.
+        assert_eq!(WASM_SIMD.best_isa(), IsaPath::WasmSimd128);
+        assert!(WASM_SIMD.supports(IsaPath::WasmSimd128));
+        assert!(WASM_SIMD.supports(IsaPath::Scalar));
+        assert!(!WASM_SIMD.supports(IsaPath::Avx2));
+        assert!(!WASM_SIMD.supports(IsaPath::Neon));
+        assert!(!WASM_SIMD.supports(IsaPath::Rvv));
+        // A base (no-SIMD) wasm build reduces to scalar.
+        assert_eq!(X86_NO_AVX2.best_isa(), IsaPath::Scalar);
+        assert!(!X86_NO_AVX2.supports(IsaPath::WasmSimd128));
+    }
+
+    #[test]
+    fn wasm_simd128_override_rejected_on_non_wasm_host_with_explicit_error() {
+        // Forcing WasmSimd128 where the module was not built with simd128 is
+        // an explicit error (never a silent switch — FR-EX-08 principle).
+        let err = select_isa(Some(IsaPath::WasmSimd128), &X86).unwrap_err();
+        assert!(matches!(err, VokraError::BackendUnavailable(_)));
+        let err = select_isa(Some(IsaPath::WasmSimd128), &ARM).unwrap_err();
+        assert!(matches!(err, VokraError::BackendUnavailable(_)));
+    }
+
+    #[test]
+    fn wasm_simd128_override_accepted_on_simd_wasm_build() {
+        assert_eq!(
+            select_isa(Some(IsaPath::WasmSimd128), &WASM_SIMD).unwrap(),
+            IsaPath::WasmSimd128
+        );
+    }
+
+    #[test]
+    fn parse_override_accepts_wasm_simd128() {
+        assert_eq!(
+            parse_isa_override("wasm-simd128").unwrap(),
+            IsaPath::WasmSimd128
+        );
+        assert_eq!(
+            parse_isa_override("WASM-SIMD128").unwrap(),
+            IsaPath::WasmSimd128
+        );
+    }
+
+    #[test]
+    fn isa_path_display_includes_wasm_simd128() {
+        assert_eq!(IsaPath::WasmSimd128.to_string(), "wasm-simd128");
+    }
+
+    #[test]
+    fn detect_off_wasm32_reports_no_wasm_simd128() {
+        // The wasm_simd128 bit is `cfg!(all(target_arch = "wasm32",
+        // target_feature = "simd128"))` — it can never leak onto native
+        // targets (this test suite runs on native CI hosts only; the wasm32
+        // artifact is exercised by tools/wasm/run-kernel-parity.mjs, T06).
+        let f = CpuFeatures::detect();
+        if cfg!(not(target_arch = "wasm32")) {
+            assert!(!f.wasm_simd128);
+            assert_ne!(f.best_isa(), IsaPath::WasmSimd128);
+        }
     }
 }

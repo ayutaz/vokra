@@ -117,6 +117,26 @@ pub enum BackendKind {
     /// **NNAPI is permanently unsupported** — Vokra's Android GPU path is
     /// Vulkan-only from day one (FR-BE-07 / CLAUDE.md design constraint 8).
     Vulkan,
+    /// WebGPU backend (browser WASM, FR-BE-05). Implemented in
+    /// `vokra-backend-webgpu` (M4-01) with a raw
+    /// `#[link(wasm_import_module = "vokra_webgpu")]` extern-import shim plus
+    /// hand-written JS glue that drives the browser `navigator.gpu` API — no
+    /// `wgpu` / `wasm-bindgen` binding crate (ADR M4-01-webgpu-wasm; the
+    /// import-object resolution at instantiate time is the WASM equivalent of
+    /// the dlopen runtime-linking model the Metal / CUDA / Vulkan backends
+    /// use). Reached through the `vokra-models` `Compute` dispatcher behind
+    /// its `webgpu` feature, compiled only on
+    /// `cfg(target_arch = "wasm32")`.
+    ///
+    /// A missing WebGPU adapter (`navigator.gpu` absent / `requestAdapter`
+    /// null — non-WebGPU browsers or environments) is an explicit
+    /// [`VokraError::BackendUnavailable`](crate::VokraError::BackendUnavailable);
+    /// an op the WebGPU backend does not cover is an explicit
+    /// [`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp) —
+    /// never a silent CPU fall back (FR-EX-08 / NFR-RL-06). Running on the
+    /// WASM CPU (SIMD128) path instead is the caller's *explicit*
+    /// [`BackendKind::Cpu`] choice.
+    WebGpu,
 }
 
 #[cfg(test)]

@@ -1,0 +1,123 @@
+<!doctype html>
+<!-- Vokra Web demo (M4-01-T21): static, self-contained — NO external CDN
+     references; everything loads from this origin. Serve with
+     `node web/demo/serve.mjs` (sets the COOP/COEP headers the WebGPU
+     backend needs; the CPU backend works without them). -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vokra Web — Whisper base in the browser</title>
+  <style>
+    body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 46rem; padding: 0 1rem; }
+    h1 { font-size: 1.4rem; }
+    fieldset { border: 1px solid #8884; border-radius: 8px; margin: 1rem 0; }
+    label { display: block; margin: 0.5rem 0; }
+    button { padding: 0.5rem 1.2rem; font-size: 1rem; }
+    #status { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 0.85rem; background: #8881; padding: 0.8rem; border-radius: 8px; min-height: 3rem; }
+    #transcript { font-size: 1.1rem; padding: 0.8rem; border-left: 4px solid #46f; background: #46f1; min-height: 1.5rem; }
+    .err { color: #c33; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; }
+    dt { font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Vokra Web — Whisper base (WASM / WebGPU)</h1>
+  <p>
+    Pick a Vokra <code>whisper-base.gguf</code> (convert one offline with
+    <code>vokra-cli convert --model whisper …</code>) and a
+    <strong>16&nbsp;kHz mono PCM16 WAV</strong> (e.g. the repo fixture
+    <code>tests/fixtures/audio/jfk-30s.wav</code>).
+  </p>
+  <fieldset>
+    <legend>Inputs</legend>
+    <label>Model (.gguf): <input type="file" id="model" accept=".gguf" /></label>
+    <label>Audio (.wav, 16 kHz mono PCM16): <input type="file" id="audio" accept=".wav" /></label>
+    <label>
+      Backend:
+      <select id="backend">
+        <option value="cpu" selected>cpu (WASM — explicit choice)</option>
+        <option value="webgpu">webgpu (needs COOP/COEP + adapter)</option>
+      </select>
+    </label>
+    <button id="run" disabled>Transcribe</button>
+  </fieldset>
+
+  <h2>Transcript</h2>
+  <div id="transcript"></div>
+
+  <h2>Run info</h2>
+  <dl>
+    <dt>Artifact</dt><dd id="artifact">–</dd>
+    <dt>Backend</dt><dd id="beUsed">–</dd>
+    <dt>RTF</dt><dd id="rtf">–</dd>
+    <dt>Cross-origin isolated</dt><dd id="coi">–</dd>
+  </dl>
+
+  <h2>Status</h2>
+  <div id="status"></div>
+
+  <script type="module">
+    import { createSession, selectArtifact } from "./pkg/index.js";
+
+    const $ = (id) => document.getElementById(id);
+    const log = (msg, isErr = false) => {
+      const line = document.createElement("div");
+      line.textContent = msg;
+      if (isErr) line.className = "err";
+      $("status").appendChild(line);
+    };
+
+    $("artifact").textContent = `${selectArtifact()} (WebAssembly.validate probe)`;
+    $("coi").textContent = String(globalThis.crossOriginIsolated === true);
+    if (!globalThis.crossOriginIsolated) {
+      log(
+        "note: this page is NOT cross-origin isolated — the webgpu backend will refuse with an " +
+          "explicit error (Vokra never falls back silently). Serve via web/demo/serve.mjs for " +
+          "COOP/COEP. The cpu backend works here.",
+      );
+    }
+
+    let session = null;
+    let sessionBackend = null;
+
+    const inputsReady = () => $("model").files.length > 0 && $("audio").files.length > 0;
+    for (const id of ["model", "audio", "backend"]) {
+      $(id).addEventListener("change", () => {
+        $("run").disabled = !inputsReady();
+      });
+    }
+
+    $("run").addEventListener("click", async () => {
+      $("run").disabled = true;
+      $("transcript").textContent = "";
+      try {
+        const backend = $("backend").value;
+        if (!session || sessionBackend !== backend) {
+          if (session) await session.close();
+          log(`loading model (backend=${backend})…`);
+          const model = await $("model").files[0].arrayBuffer();
+          session = await createSession(model, { backend });
+          sessionBackend = backend;
+          log(`session ready: artifact=${session.meta.artifact} simd128=${session.meta.simd128}`);
+        }
+        const wav = new Uint8Array(await $("audio").files[0].arrayBuffer());
+        log("transcribing…");
+        const r = await session.transcribe(wav);
+        $("transcript").textContent = r.text;
+        $("beUsed").textContent = sessionBackend;
+        $("rtf").textContent =
+          `${r.rtf.toFixed(3)}  (wall ${(r.wallMs / 1000).toFixed(2)} s / audio ${(r.audioMs / 1000).toFixed(2)} s)`;
+        log("done");
+      } catch (e) {
+        // FR-EX-08 carried to the UI: backend failures are explicit,
+        // readable errors — the demo never switches backend behind your back.
+        log(`${e}`, true);
+        $("beUsed").textContent = "error (no silent fallback — see status)";
+      } finally {
+        $("run").disabled = !inputsReady();
+      }
+    });
+  </script>
+</body>
+</html>

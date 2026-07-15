@@ -190,6 +190,51 @@ fn rvv_table() -> KernelTable {
     unreachable!("RVV kernel table requested on a non-riscv64 target")
 }
 
+// M4-01-T04: WASM SIMD128 dispatch tier. Compiled only when the wasm32
+// artifact is built WITH `-C target-feature=+simd128` (the crate gates the
+// `wasm_simd128` kernels module on the same cfg). This is COMPILE-TIME
+// dispatch: WASM has no runtime CPU feature detection (SIMD acceptance is a
+// module-validation decision), so unlike AVX2/NEON there is no CPUID-style
+// probe — `CpuFeatures::detect().wasm_simd128` is `cfg!(target_feature =
+// "simd128")` and the base (no-SIMD) artifact selects `Scalar`. Distribution
+// is a 2-artifact build + JS loader `WebAssembly.validate` select
+// (scripts/build-wasm.sh, ADR M4-01-webgpu-wasm §4).
+//
+// Relaxed SIMD is NOT adopted (Safari-partial per the CLAUDE.md quarterly
+// watch + relaxed-fma nondeterminism vs NFR-QL-01); the kernels use
+// deterministic mul + add only.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+fn wasm_simd128_table() -> KernelTable {
+    use crate::kernels::wasm_simd128;
+    KernelTable {
+        gemm: wasm_simd128::gemm,
+        gemv: wasm_simd128::gemv,
+        add: wasm_simd128::add,
+        mul: wasm_simd128::mul,
+        // First slice (M4-01-T05) vectorizes the GEMM/GEMV/add/mul hot path;
+        // the transcendental + reduction kernels delegate to the portable
+        // scalar reference for now (same posture as the M3-13 RVV scaffold —
+        // within-CPU-backend dispatch, not a cross-backend fallback, so
+        // FR-EX-08 is unaffected). SIMD rewrites are a follow-up.
+        relu: scalar::relu,
+        sigmoid: scalar::sigmoid,
+        tanh: scalar::tanh,
+        gelu: scalar::gelu,
+        softmax: scalar::softmax,
+        layer_norm: scalar::layer_norm,
+        fused_logmel: scalar_fused_logmel,
+    }
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+fn wasm_simd128_table() -> KernelTable {
+    // Unreachable: `features::select_isa` never yields `WasmSimd128` off a
+    // simd128-enabled wasm32 build (`CpuFeatures::detect().wasm_simd128` is a
+    // compile-time `cfg!` constant), and `table_for` rejects it via
+    // `CpuFeatures::supports`.
+    unreachable!("WASM SIMD128 kernel table requested off a simd128-enabled wasm32 build")
+}
+
 /// Maps an [`IsaPath`] to its kernel table — the single source of truth for
 /// the ISA → implementation mapping (used by both production dispatch and the
 /// `*_on` test entry points).
@@ -199,6 +244,7 @@ fn build_table(isa: IsaPath) -> KernelTable {
         IsaPath::Avx2 => avx2_table(),
         IsaPath::Neon => neon_table(),
         IsaPath::Rvv => rvv_table(),
+        IsaPath::WasmSimd128 => wasm_simd128_table(),
     }
 }
 

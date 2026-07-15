@@ -73,6 +73,17 @@ pub(crate) mod neon;
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod rvv;
 
+// M4-01-T04/T05: WASM SIMD128 f32x4 kernels (`core::arch::wasm32` intrinsics,
+// std-builtin — no external crate). Compiled ONLY when the wasm32 artifact is
+// built with `-C target-feature=+simd128`: WASM has no runtime CPU feature
+// detection (SIMD acceptance is decided at module validation), so the
+// simd/base split is a 2-artifact distribution + JS loader select
+// (scripts/build-wasm.sh + web/pkg/index.js `WebAssembly.validate` probe —
+// ADR M4-01-webgpu-wasm §4), NOT an AVX2/NEON-style runtime dispatch.
+// Relaxed SIMD is not adopted (deterministic mul + add only, NFR-QL-01).
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+pub(crate) mod wasm_simd128;
+
 // Fused log-mel inner kernel (M2-04-T06): AVX2 8-lane FMA `_mm256_fmadd_ps`
 // over the filterbank weights row + `vlog10_avx2` polynomial approximation.
 // This is the CPU-side SIMD path for the log-mel front-end fusion. NEON

@@ -62,3 +62,17 @@ integrations/vokra-godot/pkg/
 /docs/adr/
 /docs/onnx-alternative-research.md
 /docs/piper-plus-integration.md
+
+# M4-01: wasm build artifacts (produced by scripts/build-wasm.sh; the npm
+# package assembles them at release time — never committed)
+/web/dist/
+/web/pkg/*.wasm
+/web/pkg/vokra_webgpu.js
+/web/pkg/vokra_worker.js
+/web/pkg/LICENSE
+/web/pkg/NOTICE
+# Locally staged/converted model files (scripts/fetch-demo-models.sh,
+# tools/wasm/run-whisper-wasm.mjs recipe) — GGUFs are never committed.
+/models/
+# npm pack output from local dry-runs.
+/web/pkg/*.tgz

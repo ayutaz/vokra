@@ -125,7 +125,7 @@ indications only** ("目安"), not commitments.
 | v0.1 MVP | 1.5-2.5 months | K-quant loader, engine, streaming, resample, `vokra-cli` / `vokra-eval`, real 8-language G2P wiring, native CAM++ zero-shot cloning, `vokra-mmap` — **done** |
 | **v0.5** (current) | 2.5-4 months | Metal + CUDA backends (graph evaluator + per-model GPU dispatch; Whisper end-to-end on both, validated on M1 / RTX 4090), Whisper large-v3 conversion + tokenizer, whole-encoder and per-decoder-step device residency (large-v3 RTF < 0.15 on RTX 4090, measured 0.081-0.115), `bench --backend`. **In progress**; remaining: Kokoro-82M, server API |
 | v0.9 | 4-5 months | CUDA complete, Vulkan, CosyVoice2, Voxtral, RVV 1.0 baseline |
-| v1.0-rc | 4-5 months | WebGPU/WASM, Sesame CSM-1B, Moshi (full-duplex + AEC), all-platform official support complete |
+| v1.0-rc | 4-5 months | WebGPU/WASM (**landed**: browser Whisper base over a raw WebGPU import shim + WASM SIMD128 2-artifact CPU path, npm package CD — see [docs/tutorials/web.md](docs/tutorials/web.md)), Sesame CSM-1B, Moshi (full-duplex + AEC), all-platform official support complete |
 | v1.0 GA | 8+ months | CoreML (ANE) / QNN delegates, MCU tier re-evaluation, commercial GA, C ABI freeze (semver compliance from v1.0) |
 
 Cumulative estimate to v1.0 GA: **20-25 months**. Version labels were

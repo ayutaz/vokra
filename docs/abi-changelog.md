@@ -118,6 +118,27 @@ This snapshot is what `scripts/check-abi-changelog.sh` diffs the working-tree
 
 ## Entries
 
+### 2026-07-15 — 1.0.0-rc.1-dev (M4-01: WebGPU / WASM)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+untouched by this WP: the header exposes no backend-selection surface today
+(sessions are CPU-fixed at the C boundary), so `scripts/check-abi-changelog.sh`
+does not gate on this entry; it is recorded for the M4-12 v1.0-rc baseline
+snapshot (`scripts/rust-public-api-list.sh` picks the variant up). Whether a
+WebGPU backend selector should be exposed through the C ABI is deferred to
+M4-02 (Unity WebGL) — see the M4-01 spec T26 hand-over note (f).
+
+The npm Web distribution (`web/pkg`, `@vokra/web` placeholder scope until the
+owner registers the org — M4-01-T27) and its JS/TS API
+(`createSession` / `session.transcribe` / `session.close`) are **outside the
+C ABI**; they are versioned with the npm package itself (tag semver,
+prerelease `1.0.0-rc.N` included) and recorded in `CHANGELOG.md`, not here —
+same posture as the vokra-server HTTP APIs ("Out-of-scope" above).
+
+| Crate / area              | Symbol                 | Kind  | Signature                            | Rationale                                                        | Breaking? | PR    |
+| ------------------------- | ---------------------- | ----- | ------------------------------------ | ---------------------------------------------------------------- | --------- | ----- |
+| `vokra-core::backend`     | `BackendKind::WebGpu`  | Added | `enum BackendKind { …, WebGpu }` (`#[non_exhaustive]`, additive) | WebGPU backend selector (FR-BE-05), WP M4-01; raw extern-import shim, no wgpu crate (ADR M4-01) | no        | (TBD) |
+
 ### 2026-07-15 — 1.0.0-rc.1-dev
 
 Additive `vokra_aec_*` surface (WP **M4-03**, FR-OP-60): the SpeexDSP-MDF

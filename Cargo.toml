@@ -9,7 +9,7 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/*", "tests/parity"]
+members = ["crates/*", "tests/parity", "tests/wasm-harness"]
 # `integrations/` holds opt-in bridges that link NON-`vokra-*` crates (e.g. the
 # 8-language `piper-plus-g2p` for real G2P). They are their OWN isolated
 # workspaces (each with its own Cargo.lock) so the zero-dependency invariant of
@@ -38,6 +38,7 @@ vokra-backend-cpu = { path = "crates/vokra-backend-cpu" }
 vokra-backend-metal = { path = "crates/vokra-backend-metal" }
 vokra-backend-cuda = { path = "crates/vokra-backend-cuda" }
 vokra-backend-vulkan = { path = "crates/vokra-backend-vulkan" }
+vokra-backend-webgpu = { path = "crates/vokra-backend-webgpu" }
 vokra-models = { path = "crates/vokra-models" }
 vokra-piper-plus = { path = "crates/vokra-piper-plus" }
 vokra-capi = { path = "crates/vokra-capi" }
@@ -47,7 +48,8 @@ vokra-mmap = { path = "crates/vokra-mmap" }
 # the workspace is safe-by-default (`unsafe_code = "deny"`). `unsafe` +
 # SIMD intrinsics / C ABI code are permitted ONLY in vokra-ops,
 # vokra-backend-cpu, vokra-backend-metal, vokra-backend-cuda,
-# vokra-backend-vulkan, vokra-capi and vokra-mmap. The
+# vokra-backend-vulkan, vokra-backend-webgpu, vokra-capi, vokra-mmap and
+# vokra-wasm-harness. The
 # vokra-mmap opt-out backs the self-declared POSIX `mmap` / Win32 file-mapping
 # FFI for true zero-copy GGUF loading; vokra-backend-metal backs the
 # self-declared Objective-C runtime + Metal / Foundation framework FFI (NO
@@ -58,7 +60,12 @@ vokra-mmap = { path = "crates/vokra-mmap" }
 # vokra-backend-vulkan backs the self-declared Vulkan API FFI loaded at RUNTIME
 # via dlopen / LoadLibrary (NO `ash` / `vulkano` / `erupt` binding crate — see
 # its crate docs) with pre-compiled SPIR-V shaders and a subgroup /
-# cooperative-matrix + subgroup-only fallback shader pair (M3-02).
+# cooperative-matrix + subgroup-only fallback shader pair (M3-02);
+# vokra-backend-webgpu backs the self-declared wasm extern-import shim over the
+# browser WebGPU API (NO `wgpu` / `wasm-bindgen` binding crate — import-object
+# resolution at instantiate time is the WASM dlopen equivalent, M4-01);
+# vokra-wasm-harness backs the (ptr, len) wasm ABI boundary of the Web entry
+# crate (M4-01 — test entries + session API over hand-written JS glue).
 # All add no external crate. These crates opt out locally with
 # `#![allow(unsafe_code)]` at their
 # crate root. Public API boundaries must
