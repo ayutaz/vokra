@@ -83,9 +83,12 @@ by symbol inside each kind.
 
 ## Baseline snapshot: v0.9.0-dev (2026-07-09)
 
-This snapshot is what `scripts/check-abi-changelog.sh` diffs the working-tree
-`include/vokra.h` against. It was captured on the merge day of PR #3
-(2026-07-08, M2 rollup) and is the anchor for the entire v0.9 window.
+This snapshot was the `scripts/check-abi-changelog.sh` diff anchor for the
+entire v0.9 window, captured on the merge day of PR #3 (2026-07-08, M2
+rollup). At the v1.0-rc tag (M4-12, 2026-07-15) the active gate anchor
+rotated to the v1.0-rc baseline below; this file stays on disk as the
+v0.9-window historical anchor (`scripts/abi-diff.sh --anchor v0.9`), so the
+0.9 → 1.0 delta can still be rendered at the M5-13 freeze.
 
 - Anchor file: `docs/abi/vokra.h.v0.9-baseline.symbols`
 - Anchor version: `0.9.0-dev` (workspace `Cargo.toml` still reads
@@ -115,6 +118,83 @@ This snapshot is what `scripts/check-abi-changelog.sh` diffs the working-tree
   - `struct vokra_event_t`     (`{ vokra_event_kind_t kind; uint32_t a; float b; }`)
   - `struct vokra_session_t`   (opaque)
   - `struct vokra_stream_t`    (opaque)
+
+## Baseline snapshot: v1.0-rc (2026-07-15)
+
+The v1.0-rc-tag snapshot of the narrow C ABI, captured by **M4-12** (re-scoped
+by the 2026-07-14 v-label reassignment #2 — this WP records the rc baseline
+and keeps the gate **advisory**; the IF-01 freeze itself fires at v1.0 GA =
+**M5-13**). This is now the anchor `scripts/check-abi-changelog.sh` diffs the
+working-tree `include/vokra.h` against for the rc window.
+
+**This is a recorded, diffable advisory baseline — NOT a frozen one.** The
+"Pre-1.0 policy (prerelease semver)" section above stays in force through the
+whole `1.0.0-rc.N` series: any add / rename / remove of an exported symbol is
+still legal, and still requires a dated entry in `## Entries` below. The freeze
+(and the advisory → required CI flip) is M5-13's action at the v1.0 GA tag
+(`docs/handoff/m4-12.md` §(b)(d)(f)).
+
+- Anchor file: `docs/abi/vokra.h.v1.0-rc-baseline.symbols`
+- Anchor version: `1.0.0-rc.1-dev` (the workspace `Cargo.toml` version bump to
+  `1.0.0-rc.*` is scheduled for the M4 tag-preparation step, not this WP)
+- Header commit: HEAD of `feat/m4-plan-and-wave1` at rc-snapshot time
+  (`41a5ad1`). M4-12 changes only the `include/vokra.h` STABILITY comment,
+  never a FUNC/TYPEDEF symbol, so the extracted symbol set is stable across
+  this WP's own header regeneration.
+- Delta vs. the v0.9 baseline: **+18 functions, +6 typedefs, 0 removed,
+  0 changed** — the M4-02 (`vokra_session_create_from_bytes`), M4-03
+  (`vokra_aec_*`) and M4-06 (`vokra_s2s_*` + `vokra_model_attribution`)
+  additive surfaces, each recorded in a dated `## Entries` section below
+  (reconciled by `scripts/abi-diff.sh --anchor v0.9`: every delta maps to an
+  entry, 0 unrecorded).
+- Exported C function count: **33**
+- Public typedefs (enums, opaque structs, value structs): **11**
+- Exported functions (sorted):
+  - `vokra_aec_create`
+  - `vokra_aec_destroy`
+  - `vokra_aec_process`
+  - `vokra_aec_ref_push`
+  - `vokra_aec_ref_writer_destroy`
+  - `vokra_aec_reset`
+  - `vokra_asr_transcribe`
+  - `vokra_audio_free`
+  - `vokra_last_error`
+  - `vokra_model_attribution`
+  - `vokra_s2s_duplex_destroy`
+  - `vokra_s2s_duplex_open`
+  - `vokra_s2s_frame_hop`
+  - `vokra_s2s_interrupt`
+  - `vokra_s2s_interrupt_destroy`
+  - `vokra_s2s_interrupt_handle`
+  - `vokra_s2s_pull_audio`
+  - `vokra_s2s_push_mic`
+  - `vokra_s2s_sample_rate`
+  - `vokra_s2s_text`
+  - `vokra_session_create_from_bytes`
+  - `vokra_session_create_from_file`
+  - `vokra_session_destroy`
+  - `vokra_session_retain`
+  - `vokra_stream_destroy`
+  - `vokra_stream_interrupt`
+  - `vokra_stream_open`
+  - `vokra_stream_poll`
+  - `vokra_stream_poll_events`
+  - `vokra_stream_push_pcm`
+  - `vokra_string_free`
+  - `vokra_tts_synthesize`
+  - `vokra_version`
+- Public typedefs (sorted):
+  - `enum vokra_aec_status_t`  (variants: `VOKRA_AEC_CANCELLED=0`, `VOKRA_AEC_PASS_THROUGH=1`, `VOKRA_AEC_PARTIAL_REFERENCE=2`, `VOKRA_AEC_RESET=3`)
+  - `enum vokra_event_kind_t`  (variants: `VOKRA_EVENT_UNKNOWN=0`, `VOKRA_EVENT_SPEECH_PROB=1`, `VOKRA_EVENT_TOKEN=2`)
+  - `enum vokra_status_t`      (10 variants, `VOKRA_OK=0` .. `VOKRA_ERROR_OTHER=9`)
+  - `struct vokra_aec_config_t`     (`{ uint32_t sample_rate; size_t frame_size; size_t filter_length; size_t ref_queue_capacity_samples; }`)
+  - `struct vokra_aec_ref_writer_t` (opaque)
+  - `struct vokra_aec_t`            (opaque)
+  - `struct vokra_event_t`          (`{ vokra_event_kind_t kind; uint32_t a; float b; }`)
+  - `struct vokra_s2s_duplex_t`     (opaque)
+  - `struct vokra_s2s_interrupt_t`  (opaque)
+  - `struct vokra_session_t`        (opaque)
+  - `struct vokra_stream_t`         (opaque)
 
 ## Entries
 
@@ -464,13 +544,17 @@ being wired.
 
 ### Input artefacts M4-12 will consume
 
-These are the pre-freeze anchor artefacts M3-16 produces / references.
-M4-12 diffs the v1.0 header + Rust surface against these to build the
-"0.9 → 1.0 delta" summary:
+These are the pre-freeze anchor artefacts. **M4-12 executed at the v1.0-rc
+tag on 2026-07-15** (`docs/handoff/m4-12.md` §(g)) and added the two v1.0-rc
+anchors below; **M5-13** (the freeze WP) now diffs the v1.0 GA header + Rust
+surface against all of these to build the "0.1 → 1.0" (cumulative) and
+"0.9 → 1.0" / "rc → GA" (incremental) delta summaries:
 
 - **`docs/abi/vokra.h.v0.9-baseline.symbols`** — the v0.9-window anchor
   used by `scripts/check-abi-changelog.sh` during the M3 window. Captured
   at PR #3 merge (2026-07-08) per the "Baseline snapshot" section above.
+  Retired as the active gate anchor at the v1.0-rc rotation (M4-12); kept on
+  disk as the v0.9 historical anchor (`scripts/abi-diff.sh --anchor v0.9`).
 - **`docs/abi/vokra.h.m0-anchor.symbols`** *(from M3-16-T02)* — the
   historical M0 (v0.1.0, 2026-07-04) anchor, preserved so the M4-12 rollup
   can render the **full v0.1 → v1.0 delta** — not just the v0.9-window
@@ -487,6 +571,19 @@ M4-12 diffs the v1.0 header + Rust surface against these to build the
   can still leak into the C header on a later cbindgen run. Format is
   one line per public item, sorted, generated by `cargo public-api` or
   the equivalent hand-curated dump per T03's spec.
+- **`docs/abi/vokra.h.v1.0-rc-baseline.symbols`** *(from M4-12-T02)* — the
+  v1.0-rc-window C anchor (33 exported functions + 11 typedefs, header commit
+  `41a5ad1`), now the active `scripts/check-abi-changelog.sh` diff target.
+  `scripts/abi-diff.sh --anchor v1.0-rc` renders the rc → GA increment M5-13
+  needs on top of the m0 (cumulative) and v0.9 (prerelease-window) views.
+- **`docs/abi/vokra-rust-public-api.v1.0-rc.list`** *(from M4-12-T05)* — the
+  paired v1.0-rc Rust `pub` surface snapshot (now the active
+  `scripts/rust-public-api-list.sh` diff target; its `#[non_exhaustive]` audit
+  additionally covers `IsaPath`). **GA-naming flag for M5-13**: the on-disk
+  convention is `vokra-rust-public-api.*`, but the "M4-12 action checklist"
+  first bullet below names the GA Rust list `docs/abi/rust-public-api.v1.0.list`
+  (no `vokra-` prefix) — M5-13 reconciles the GA name to the on-disk convention
+  when it snapshots the GA Rust surface.
 
 ### M4-12 action checklist (do NOT execute under M3-16)
 

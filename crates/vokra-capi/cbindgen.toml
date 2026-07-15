@@ -37,13 +37,14 @@ header = """
  * Regenerate with `scripts/gen-c-abi.sh`; CI fails on drift
  * (`scripts/gen-c-abi.sh --check`).
  *
- * STABILITY: this is the v0.9 (M3) window. The ABI is NOT frozen; the semver
- * ABI-stability commitment starts at v1.0 GA (IF-01; docs/milestones.md §4.2
- * note 3, §9 M5-13; the 2026-07-14 v-label reassignment #2 moved the freeze
- * executor from M4-12 to M5-13 — v1.0 GA = M5 close, M4 = v1.0-rc
- * prerelease). During the v0.9 window every symbol delta must be
- * recorded in docs/abi-changelog.md and covered by an entry dated on the day
- * the PR opens — scripts/check-abi-changelog.sh (M3-16) enforces this.
+ * STABILITY: this is the v1.0-rc (M4) prerelease window (semver
+ * 1.0.0-rc.N). The ABI is NOT frozen; the semver ABI-stability commitment
+ * starts at v1.0 GA (IF-01; docs/milestones.md §4.2 note 3, §9 M5-13; the
+ * 2026-07-14 v-label reassignment #2 moved the freeze executor from M4-12 to
+ * M5-13 — v1.0 GA = M5 close, M4 = v1.0-rc prerelease). During the v1.0-rc
+ * window every symbol delta must be recorded in docs/abi-changelog.md and
+ * covered by an entry dated on the day the PR opens —
+ * scripts/check-abi-changelog.sh (M3-16) enforces this.
  *
  * RESERVED — CPU ISA tiers (M4-17): runtime CPU ISA selection
  * (`vokra_backend_cpu::IsaPath`, a `#[non_exhaustive]` Rust enum) is an

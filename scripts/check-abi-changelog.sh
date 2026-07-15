@@ -2,8 +2,8 @@
 # check-abi-changelog.sh — M3-16 v0.9 ABI changelog scaffold.
 #
 # WHAT IT GATES
-#   For the v0.9 (M3) release window the C ABI is a moving target (the
-#   IF-01 semver freeze fires at M4-12 / v1.0 GA, not here — see
+#   For the v1.0-rc (M4) prerelease window the C ABI is a moving target
+#   (the IF-01 semver freeze fires at M5-13 / v1.0 GA, not here — see
 #   docs/abi-changelog.md and the STABILITY block at the top of
 #   include/vokra.h). During this window we still want every symbol delta
 #   to be *observable* on-disk: this script diffs the working-tree
@@ -12,7 +12,7 @@
 #
 # ARTEFACTS
 #   include/vokra.h                                 -- current C header (cbindgen)
-#   docs/abi/vokra.h.v0.9-baseline.symbols          -- anchor snapshot
+#   docs/abi/vokra.h.v1.0-rc-baseline.symbols       -- anchor snapshot
 #   docs/abi-changelog.md                           -- narrative + entries
 #
 # MODES
@@ -27,7 +27,7 @@
 #
 # NOT WIRED INTO CI YET
 #   The wiring into .github/workflows/ci.yml is deliberately left to a
-#   later WP (M4-12) so this scaffold can land without blocking still-in-
+#   later WP (M5-13) so this scaffold can land without blocking still-in-
 #   flight M3 WPs whose ABI additions are only half-typed. Today, run it
 #   from the pre-commit hook or manually before opening a PR.
 #
@@ -46,7 +46,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HEADER="$ROOT/include/vokra.h"
-ANCHOR="$ROOT/docs/abi/vokra.h.v0.9-baseline.symbols"
+ANCHOR="$ROOT/docs/abi/vokra.h.v1.0-rc-baseline.symbols"
 CHANGELOG="$ROOT/docs/abi-changelog.md"
 
 usage() {
@@ -296,7 +296,7 @@ case "$mode" in
         func_count=$(printf '%s\n' "$anchor" | grep -c '^FUNC ' || true)
         type_count=$(printf '%s\n' "$anchor" | grep -c '^TYPEDEF ' || true)
 
-        echo "Vokra ABI changelog gate (M3-16; IF-01 fires at M4-12, not here)"
+        echo "Vokra ABI changelog gate (M3-16; IF-01 fires at M5-13, not here)"
         echo "  header  : $HEADER"
         echo "  anchor  : $ANCHOR"
         echo "  anchor  : $func_count exported functions, $type_count typedefs"
@@ -308,7 +308,7 @@ case "$mode" in
         fi
 
         echo ""
-        echo "ABI delta detected between include/vokra.h and the v0.9 anchor:"
+        echo "ABI delta detected between include/vokra.h and the v1.0-rc anchor:"
         printf '%s\n' "$diff_out" | sed 's/^/  /'
         echo ""
 
@@ -329,14 +329,14 @@ no entry dated $(date -u +%F).
 
 Fix:
   1. If the change is intentional, add a section
-       ### $(date -u +%F) — 0.9.0-dev
+       ### $(date -u +%F) — 1.0.0-rc.1-dev
      to docs/abi-changelog.md following the schema at the top of that file
      (one row per symbol, with rationale + WP/PR id).
   2. If the change is accidental (e.g. cbindgen drift on an unrelated
      refactor), revert the include/vokra.h diff or fix the vokra-capi Rust
      source that produced it.
 
-The v0.9 anchor at $ANCHOR is only rotated by
+The v1.0-rc anchor at $ANCHOR is only rotated by
 'scripts/check-abi-changelog.sh --update-snapshot' — do not edit it by
 hand.
 EOF
@@ -353,15 +353,25 @@ EOF
         # We deliberately do NOT auto-commit; the caller must review.
         mkdir -p "$(dirname "$ANCHOR")"
         {
-            echo "# Vokra C ABI anchor snapshot — v0.9 window."
+            echo "# Vokra C ABI anchor snapshot — v1.0-rc (M4) window."
+            echo "#"
+            echo "# Origin: the v1.0-rc-window ABI anchor for the M4 prerelease"
+            echo "# series (semver 1.0.0-rc.N). Rotated here from the v0.9 anchor"
+            echo "# by M4-12 (2026-07-14 v-label reassignment #2 re-scope). The"
+            echo "# capture commit + exported-symbol counts are recorded in"
+            echo '# docs/abi-changelog.md "Baseline snapshot: v1.0-rc".'
             echo "#"
             echo "# Regenerate with: scripts/check-abi-changelog.sh --update-snapshot"
             echo "# Diff against with: scripts/check-abi-changelog.sh"
+            echo "# Historical diff:  scripts/abi-diff.sh --anchor v1.0-rc"
             echo "#"
             echo "# One line per exported symbol, format:"
             echo "#   FUNC <name>|<normalized prototype>"
             echo "#   TYPEDEF <name>|<normalized declaration>"
             echo "#"
+            echo "# NOT frozen: the IF-01 freeze fires at v1.0 GA (M5-13), not"
+            echo "# here. The pre-1.0 prerelease policy (free rename/remove with a"
+            echo "# dated changelog entry) stays in force through the rc series."
             echo "# See docs/abi-changelog.md for the schema and freeze policy."
             extract_symbols "$HEADER"
         } >"$ANCHOR"

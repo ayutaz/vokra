@@ -6,7 +6,9 @@ follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 **Pre-1.0**: the C ABI is **not frozen** before v1.0 (see ADR-0003,
 requirement IF-01). Every pre-1.0 release may change the C ABI without
-deprecation windows.
+deprecation windows. Here "v1.0" means the **v1.0 GA** tag (M5 close, WP
+M5-13); the **v1.0-rc** prerelease (`1.0.0-rc.N`, M4) is still pre-1.0 and
+therefore not frozen — see the `[1.0.0-rc.1]` ABI-policy notes below.
 
 ## [Unreleased]
 
@@ -142,6 +144,48 @@ license sign-off, PyPI / Unity secret provisioning) is tracked in
   (`vokra.tokenizer.model`) and the decoder reads it directly, so
   large-v3 / turbo produce correct transcripts.
 
+## [1.0.0-rc.1]
+
+First v1.0 release candidate (semver prerelease `1.0.0-rc.1`). The feature
+deltas for v0.5 (M2) / v0.9 (M3) / v1.0-rc (M4) accrue in `[Unreleased]`
+above and are rolled into this section by the M4 tag-preparation step (the
+v1.0-rc tag is an owner milestone decision, not WP M4-12). This section was
+added by **M4-12** to record the **ABI policy for the rc window**.
+
+### ABI policy (v1.0-rc)
+
+- **Not frozen.** The C ABI (`include/vokra.h`) and the `vokra.*` GGUF
+  metadata schema are a semver **prerelease** surface at `1.0.0-rc.N`; they
+  are **not frozen** at the rc tag.
+- **The pre-1.0 policy stays in force through the whole rc series.** Any add /
+  rename / remove of an exported C symbol, cbindgen-reflected Rust `pub` item,
+  or `vokra.*` GGUF chunk remains legal and still requires a dated entry in
+  `docs/abi-changelog.md`. Only the freeze point moved — the policy text is
+  unchanged (`docs/abi-changelog.md` "Pre-1.0 policy (prerelease semver)").
+- **The freeze fires at v1.0 GA (M5-13), not at the rc tag.** The IF-01 freeze,
+  the start of semver ABI-stability compliance, and the promotion of the ABI
+  gate (`scripts/check-abi-changelog.sh` / `scripts/abi-diff.sh`) from advisory
+  to a required CI check all happen at the v1.0 GA tag (= M5 close, WP M5-13 —
+  2026-07-14 v-label reassignment #2). See `docs/handoff/m4-12.md` §(b)(d)(f).
+- **A recorded, diffable baseline — advisory, not frozen.** The rc baseline
+  (`docs/abi/vokra.h.v1.0-rc-baseline.symbols`, paired Rust surface
+  `docs/abi/vokra-rust-public-api.v1.0-rc.list`) gives Unity / Godot / Swift /
+  Kotlin / Python / JS integrators (the IF-01 consumers) a recorded, diffable
+  baseline to track — it is **advisory, not a frozen one**. The stable-ABI
+  commitment to integrators arrives at v1.0 GA (2027-07〜2028-01 estimate)
+  rather than at the rc tag; the owner accepted this trade-off
+  (`docs/handoff/m4-12.md` §(f)-6).
+- **Non-C-ABI surfaces track their own semver.** `vokra-server`'s HTTP
+  compatibility APIs (OpenAI-Whisper / vLLM / piper-plus) and the Wyoming
+  Protocol endpoint are a separate **protocol-tracking / experimental** tier:
+  they follow their upstream protocol's semver, not Vokra's C ABI semver, and
+  are outside the IF-01 freeze surface. The npm `@vokra/web` JS/TS API is
+  versioned with its own package tag, and the CPU + Vulkan-only build flavor
+  (M4-15) is identified by build metadata only — it adds no C ABI symbol and
+  carries no market claim. The `## Non-C-ABI surface areas` STABILITY-block
+  section that names these tiers in the header is added at the M5-13 freeze
+  (`docs/handoff/m4-12.md` §(e)-1).
+
 ## [0.1.0] — 2026-07-04
 
 Initial public release. **v0.1 spike + v0.1 MVP** implementations
@@ -183,4 +227,5 @@ enforced (`.github/workflows/ci.yml`).
   audit, iOS build, Python wheel build, license audit, GPU backends.
 
 [Unreleased]: https://github.com/ayutaz/vokra/compare/v0.1.0...HEAD
+[1.0.0-rc.1]: https://github.com/ayutaz/vokra/releases/tag/v1.0.0-rc.1
 [0.1.0]: https://github.com/ayutaz/vokra/releases/tag/v0.1.0
