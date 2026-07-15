@@ -106,6 +106,22 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
 
+  # M4-07-T15: FA v3 containment red-line (design constraint §5-(7)) —
+  # FA v3 symbols (flash_attn_v3 / WGMMA / wgmma / TMA_ / compute_90a) are
+  # legal ONLY under crates/vokra-backend-cuda; this machine gate supersedes
+  # the M3-01 "no FA v3 anywhere" PR-checklist grep. ADVISORY start: not a
+  # branch-protection required check — promotion is the owner's call after
+  # sustained green (standard workflow-promotion discipline). Fixture
+  # red/green coverage lives in
+  # crates/vokra-backend-cuda/tests/fa_v3_confinement.rs.
+  fa-v3-confinement:
+    name: fa-v3-confinement (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: FA v3 symbols confined to vokra-backend-cuda
+        run: ./scripts/check-fa-v3-confinement.sh
+
   # GPU backend feature gates (M2-01 Metal / M2-03 CUDA). The default build/test
   # jobs cover only the CPU path; this keeps the optional `metal` / `cuda`
   # features compiling and lint-clean. Metal builds/tests on the Apple-silicon

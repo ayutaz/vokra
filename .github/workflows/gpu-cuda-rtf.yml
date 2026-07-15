@@ -27,10 +27,14 @@
 #     computed thresholds.
 #
 # Skip conditions (M3-01-T15):
-#   * GPU model: primary target = RTX 4090 (SM 8.9). H100 (SM 9.0) is future
-#     scope; Ampere (SM 8.6) is reference measurement only. The runner
-#     reports its device via nvidia-smi; on a non-matching GPU we still run
-#     the measurement but flag it as reference in the step summary.
+#   * GPU model: primary target = RTX 4090 (SM 8.9). H100 (SM 9.0) leg =
+#     M4-07 reference measurement (`--fa-mode decomposed|v2|v3`, N=10 per
+#     mode, owner-run per docs/m4-07-hopper-bench-handover.md; results land
+#     in docs/perf/cuda-large-v3-h100-fa-v3-baseline.json — a SEPARATE
+#     baseline file, never merged into the RTX 4090 gate baseline, and never
+#     a required check). Ampere (SM 8.6) is reference measurement only. The
+#     runner reports its device via nvidia-smi; on a non-matching GPU we
+#     still run the measurement but flag it as reference in the step summary.
 #   * Driver: CUDA 12.0+ / driver 525.60.13 (Linux) / 528.02 (Windows) is the
 #     lower bound. Below that the workflow emits a "skipped: driver too old"
 #     annotation and exits green — the runner environment is a host-side
