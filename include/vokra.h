@@ -315,6 +315,41 @@ const char *vokra_last_error(void);
 enum vokra_status_t vokra_session_create_from_file(const char *path_utf8,
                                                    struct vokra_session_t **out_session);
 
+// Loads a model from an in-memory GGUF buffer and creates an inference
+// session on the CPU backend — the bytes-based twin of
+// `vokra_session_create_from_file` (M4-02, prerelease ABI addition).
+//
+// The caller reads / downloads the `.gguf` bytes itself and hands them over;
+// Vokra copies them once and never touches the filesystem. Primary model
+// path on Unity WebGL, where StreamingAssets are HTTP-served (no `fopen`)
+// and Rust-side fs syscalls are ABI-skewed under Unity-era Emscripten
+// (ADR M4-02 §2/§3); valid — and useful — on every other platform too
+// (e.g. Android APK assets without the `persistentDataPath` expansion).
+//
+// # Parameters
+//
+// - `data`: pointer to the first byte of the GGUF buffer. The buffer is
+//   copied before this call returns; the caller may free it immediately
+//   afterwards.
+// - `len`: buffer length in bytes. Must be non-zero (an empty buffer is
+//   never a valid GGUF and is rejected loudly).
+// - `out_session`: on `VOKRA_OK`, receives a new session handle to be freed
+//   with `vokra_session_destroy`. Untouched on error.
+//
+// # Returns
+//
+// `VOKRA_OK`, or a non-zero status with the detail available from
+// `vokra_last_error()` (NULL/empty buffer, unparsable GGUF, unknown arch, ...).
+//
+// # Safety
+//
+// `data` must point at `len` valid, initialised bytes for the duration of
+// the call, and `out_session` must be a valid, writable `vokra_session_t*`
+// location.
+enum vokra_status_t vokra_session_create_from_bytes(const uint8_t *data,
+                                                    size_t len,
+                                                    struct vokra_session_t **out_session);
+
 // Retains the session, producing an independent handle that shares the same
 // loaded model via an atomic ref count (FR-API-03).
 //

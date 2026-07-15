@@ -118,6 +118,26 @@ This snapshot is what `scripts/check-abi-changelog.sh` diffs the working-tree
 
 ## Entries
 
+### 2026-07-15 — 1.0.0-rc.1-dev (M4-02: Unity WebGL — bytes-based session create)
+
+Additive C ABI symbol (WP **M4-02**, FR-API-04 / FR-BE-05 / NFR-RL-04): the
+bytes-based twin of `vokra_session_create_from_file`. Motivation is empirical
+(ADR M4-02 §2/§3): Unity WebGL statically links `libvokra.a` built for
+`wasm32-unknown-emscripten`, where (a) StreamingAssets are HTTP-served — no
+`fopen` — and (b) prebuilt rust-std's fs syscalls are ABI-skewed against
+Unity-bundled Emscripten (3.1.8 / 3.1.38 — measured: `metadata().is_file()`
+misreads `st_mode` and fails loudly). The embedder (C# / IL2CPP, which is
+ABI-consistent with Unity's own Emscripten) reads the model bytes and hands
+them over; Rust never touches the filesystem on this path. General-purpose on
+all platforms. `Session::from_gguf` is the matching Rust-core entry.
+**rc-window prerelease ABI policy applies** (IF-01 freeze fires at M5-13).
+
+| Crate / area      | Symbol                            | Kind  | Signature                                                                                              | Rationale                                                                     | Breaking? | PR    |
+| ----------------- | --------------------------------- | ----- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ | --------- | ----- |
+| `include/vokra.h` | `vokra_session_create_from_bytes` | Added | `enum vokra_status_t vokra_session_create_from_bytes(const uint8_t *data, size_t len, struct vokra_session_t **out_session)` | In-memory GGUF session create (Unity WebGL primary model path), WP M4-02       | no        | (TBD) |
+| `vokra-core`      | `Session::from_gguf`              | Added | `pub fn from_gguf(gguf: GgufFile) -> SessionBuilder`                                                    | Filesystem-free builder entry backing the C symbol (ADR M4-02 §3)              | no        | (TBD) |
+| `vokra-core`      | `IN_MEMORY_MODEL_PATH`            | Added | `pub const IN_MEMORY_MODEL_PATH: &str = "<in-memory>"`                                                  | Documented `model_path()` sentinel for bytes-built sessions                    | no        | (TBD) |
+
 ### 2026-07-15 — 1.0.0-rc.1-dev (M4-01: WebGPU / WASM)
 
 Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
