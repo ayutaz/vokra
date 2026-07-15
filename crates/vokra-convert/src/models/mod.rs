@@ -2,6 +2,7 @@
 
 pub(crate) mod campplus;
 pub(crate) mod cosyvoice2;
+pub(crate) mod csm;
 pub(crate) mod dac;
 pub(crate) mod kokoro;
 pub(crate) mod mimi;

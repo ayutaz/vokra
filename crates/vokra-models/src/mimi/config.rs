@@ -298,6 +298,57 @@ impl MimiNeuralConfig {
         Ok(frame_hop / seanet_hop)
     }
 
+    /// Writes this config back as the `vokra.mimi.*` chunk group — the
+    /// fixture-building mirror of [`Self::from_gguf`] (tests / CLI smoke;
+    /// the offline converter duplicates the key strings per the
+    /// cross-crate pattern).
+    pub fn write_gguf_metadata(&self, b: &mut vokra_core::gguf::GgufBuilder) {
+        b.add_u32(KEY_SAMPLE_RATE, self.sample_rate);
+        b.add_u32(KEY_FRAME_RATE_MHZ, self.frame_rate_mhz);
+        b.add_u32(KEY_SEANET_DIMENSION, self.seanet.dimension as u32);
+        b.add_u32(KEY_SEANET_N_FILTERS, self.seanet.n_filters as u32);
+        b.add_u32(
+            KEY_SEANET_N_RESIDUAL_LAYERS,
+            self.seanet.n_residual_layers as u32,
+        );
+        b.add_u32(KEY_SEANET_KERNEL_SIZE, self.seanet.kernel_size as u32);
+        b.add_u32(
+            KEY_SEANET_RESIDUAL_KERNEL_SIZE,
+            self.seanet.residual_kernel_size as u32,
+        );
+        b.add_u32(
+            KEY_SEANET_LAST_KERNEL_SIZE,
+            self.seanet.last_kernel_size as u32,
+        );
+        b.add_u32(KEY_SEANET_COMPRESS, self.seanet.compress as u32);
+        b.add_u32(KEY_SEANET_DILATION_BASE, self.seanet.dilation_base as u32);
+        b.add_u32(KEY_SEANET_N_RATIOS, self.seanet.ratios.len() as u32);
+        for (i, r) in self.seanet.ratios.iter().enumerate() {
+            b.add_u32(&format!("{PREFIX_SEANET_RATIO}{i}"), *r as u32);
+        }
+        b.add_u32(KEY_TRANSFORMER_D_MODEL, self.transformer.d_model as u32);
+        b.add_u32(KEY_TRANSFORMER_N_HEAD, self.transformer.n_head as u32);
+        b.add_u32(KEY_TRANSFORMER_N_LAYER, self.transformer.n_layer as u32);
+        b.add_u32(KEY_TRANSFORMER_FF_DIM, self.transformer.ff_dim as u32);
+        b.add_u32(KEY_TRANSFORMER_CONTEXT, self.transformer.context as u32);
+        b.add_u32(
+            KEY_TRANSFORMER_MAX_PERIOD,
+            self.transformer.max_period as u32,
+        );
+        b.add_f32(KEY_TRANSFORMER_LAYER_SCALE, self.transformer.layer_scale);
+        b.add_u32(KEY_QUANTIZER_DIMENSION, self.quantizer.dimension as u32);
+        b.add_u32(KEY_QUANTIZER_N_Q, self.quantizer.n_q as u32);
+        b.add_u32(KEY_QUANTIZER_BINS, self.quantizer.bins as u32);
+        b.add_u32(
+            KEY_QUANTIZER_INPUT_DIMENSION,
+            self.quantizer.input_dimension as u32,
+        );
+        b.add_u32(
+            KEY_QUANTIZER_OUTPUT_DIMENSION,
+            self.quantizer.output_dimension as u32,
+        );
+    }
+
     /// A miniature config for synthesized-weight tests: same shape
     /// relationships as the real Mimi (exact hops, transformer at the
     /// latent width) at toy dims. hop = 2·2 = 4; frame hop 8 → stride 2.

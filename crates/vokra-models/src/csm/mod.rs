@@ -46,6 +46,7 @@ pub mod config;
 pub mod depth;
 pub mod frame;
 pub mod rope;
+pub mod tokenizer;
 
 pub use backbone::{
     CSM_FROM_GGUF_DEFAULT_SEED, CsmBackbone, CsmBackboneState, CsmBackboneWeights, CsmFrame,
@@ -53,6 +54,7 @@ pub use backbone::{
 pub use config::{CsmConfig, CsmRopeScaling, CsmTransformerConfig};
 pub use depth::{CsmDepthState, CsmDepthTransformer, CsmDepthWeights};
 pub use frame::{CsmFrameKind, CsmGenerationState, CsmModel};
+pub use tokenizer::{CsmTextTokenizer, FixtureByteTokenizer, GgufCsmTokenizer};
 
 /// `vokra.model.arch` a CSM GGUF must carry. Written by
 /// `vokra-convert::models::csm::ARCH`; the compliance registry

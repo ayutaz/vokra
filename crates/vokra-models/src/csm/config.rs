@@ -283,6 +283,38 @@ impl CsmConfig {
         Ok((num / den) as usize)
     }
 
+    /// Writes this config back as the `vokra.csm.*` chunk group — the
+    /// fixture-building mirror of [`Self::from_gguf`] (tests / host-only
+    /// CLI smoke build tiny GGUFs through it; the offline converter
+    /// duplicates the key strings per the cross-crate pattern and a
+    /// converter-side round-trip test pins the two).
+    pub fn write_gguf_metadata(&self, b: &mut vokra_core::gguf::GgufBuilder) {
+        b.add_u32(KEY_SAMPLE_RATE, self.sample_rate);
+        b.add_u32(KEY_FRAME_RATE_MHZ, self.frame_rate_mhz);
+        b.add_u32(KEY_BB_N_LAYER, self.backbone.n_layer as u32);
+        b.add_u32(KEY_BB_D_MODEL, self.backbone.d_model as u32);
+        b.add_u32(KEY_BB_N_HEAD_Q, self.backbone.n_head_q as u32);
+        b.add_u32(KEY_BB_N_HEAD_KV, self.backbone.n_head_kv as u32);
+        b.add_u32(KEY_BB_FFN_DIM, self.backbone.ffn_dim as u32);
+        b.add_u32(KEY_DT_N_LAYER, self.depth.n_layer as u32);
+        b.add_u32(KEY_DT_D_MODEL, self.depth.d_model as u32);
+        b.add_u32(KEY_DT_N_HEAD_Q, self.depth.n_head_q as u32);
+        b.add_u32(KEY_DT_N_HEAD_KV, self.depth.n_head_kv as u32);
+        b.add_u32(KEY_DT_FFN_DIM, self.depth.ffn_dim as u32);
+        b.add_f32(KEY_RMS_NORM_EPS, self.rms_norm_eps);
+        b.add_f32(KEY_ROPE_BASE, self.rope_base);
+        b.add_u32(KEY_N_CTX, self.n_ctx as u32);
+        if let Some(s) = &self.rope_scaling {
+            b.add_f32(KEY_ROPE_SCALE_FACTOR, s.scale_factor);
+            b.add_f32(KEY_ROPE_LOW_FREQ_FACTOR, s.low_freq_factor);
+            b.add_f32(KEY_ROPE_HIGH_FREQ_FACTOR, s.high_freq_factor);
+            b.add_u32(KEY_ROPE_OLD_CONTEXT_LEN, s.old_context_len as u32);
+        }
+        b.add_u32(KEY_AUDIO_N_CODEBOOKS, self.n_codebooks as u32);
+        b.add_u32(KEY_AUDIO_VOCAB_SIZE, self.audio_vocab_size as u32);
+        b.add_u32(KEY_TEXT_VOCAB_SIZE, self.text_vocab_size as u32);
+    }
+
     /// A miniature, GQA-well-formed config for synthesized-weight tests and
     /// the host-only CLI smoke fixture. Dims are deliberately tiny so the
     /// whole frame loop runs in milliseconds; the *shape relationships*
