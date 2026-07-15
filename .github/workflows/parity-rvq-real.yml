@@ -1,0 +1,247 @@
+# RVQ codec real-checkpoint parity CI (M4-04 T16).
+#
+# Converter-e2e + FULL-table verification for the standalone codec GGUFs:
+#
+#   Mimi:  kyutai/moshiko-pytorch-bf16 (pinned rev) tokenizer safetensors
+#          → `vokra-cli convert --model mimi` → GGUF → binder → decode
+#          vs a fresh `moshi` (Apache-2.0 code) reference dump.
+#   DAC:   descriptinc/descript-audio-codec release tag 0.0.4
+#          weights_24khz.pth (pinned URL + sha256)
+#          → dac_prepare_checkpoint.py → `--model dac` → GGUF → binder →
+#          decode vs a fresh `descript-audio-codec` (MIT) reference dump.
+#
+# HONEST SCOPE NOTE: the M4-04 exit criteria ("mimi_rvq / dac_rvq pass
+# numerical parity CI", NFR-QL-01) is already satisfied in the per-PR
+# required `parity` check by the COMMITTED sliced fixtures
+# (crates/vokra-ops/tests/parity_{mimi,dac,encodec}_reference.rs — real
+# sliced weights, no network). This workflow is the ADDITIONAL
+# converter-e2e + full-table verification (per-tensor max |Δ| + verdict
+# table in the step summary; one tensor over atol=0.01 fails the job —
+# fabricated pass forbidden).
+#
+# EnCodec is deliberately ABSENT from this workflow: FR-OP-32 permanently
+# excludes EnCodec pretrained weights, even from parity fetches. A grep
+# guard step below asserts no download step for them ever creeps in.
+#
+# Operational posture (mirrors parity-kokoro-real.yml / parity-whisper-real.yml):
+#   * workflow_dispatch (owner-driven — first dispatch is M4-04-T21) +
+#     weekly cron + narrow PR paths filter.
+#   * NOT a required check; per the M4-04 spec this workflow is NOT promoted
+#     to required even after consecutive green weeks (HF flakiness posture;
+#     any future promotion is an explicit owner decision outside this WP).
+#   * Root Cargo.lock is untouched (zero-dep NFR-DS-02) — tripwire below.
+
+name: parity-rvq-real
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly Tuesday 06:00 UTC — offset from the Kokoro (Mon 04:00), Whisper
+    # (Mon 05:00) and Godot (Mon 06:00) crons so one hub outage morning does
+    # not blank every scheduled gate at once.
+    - cron: '0 6 * * 2'
+  pull_request:
+    paths:
+      - '.github/workflows/parity-rvq-real.yml'
+      - 'tools/parity/mimi_dump.py'
+      - 'tools/parity/dac_prepare_checkpoint.py'
+      - 'crates/vokra-ops/src/mimi_rvq.rs'
+      - 'crates/vokra-ops/src/dac_rvq.rs'
+      - 'crates/vokra-convert/src/models/mimi.rs'
+      - 'crates/vokra-convert/src/models/dac.rs'
+      - 'crates/vokra-models/src/codec.rs'
+      - 'crates/vokra-models/tests/real_codec_parity.rs'
+
+concurrency:
+  group: parity-rvq-real-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Mimi checkpoint pin (ADR M4-04 §D-k): moshi-native tensor naming — the
+  # format the M4-05 (Sesame CSM) / M4-06 (Moshi) consumers feed. Weights are
+  # CC-BY 4.0 (attribution discharged by NOTICE §5).
+  MIMI_REPO: kyutai/moshiko-pytorch-bf16
+  MIMI_REVISION: 2bfc9ae6e89079a5cc7ed2a68436010d91a3d289
+  MIMI_FILE: tokenizer-e351c8d8-checkpoint125.safetensors
+  MIMI_SHA256: 09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50
+  # DAC 24 kHz / 8 kbps zoo-primary variant pin (ADR M4-04 §T02): GitHub
+  # release URL table in upstream dac/utils/__init__.py L18-39. MIT.
+  DAC_URL: https://github.com/descriptinc/descript-audio-codec/releases/download/0.0.4/weights_24khz.pth
+  DAC_SHA256: 44bad592fc393e03eb0be7a5120b7d487fe9612fa41269dc03fca3d4b87e20ad
+  PARITY_VENV: /tmp/vokra-rvq-parity
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rvq-parity-real:
+    name: rvq-parity-real
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      # FR-OP-32 grep guard: this workflow must never grow an EnCodec weight
+      # download step. The word is assembled at runtime so the guard cannot
+      # match its own source line.
+      - name: FR-OP-32 guard — no EnCodec weight fetch in this workflow
+        run: |
+          set -euo pipefail
+          WF=".github/workflows/parity-rvq-real.yml"
+          BANNED="enco"
+          BANNED="${BANNED}dec"
+          # Any co-occurrence of the banned model name with a fetch verb /
+          # hub host on one line is a violation (comments included — the
+          # posture is that the name never appears next to a fetcher at all).
+          if grep -inE "(curl|wget|hf_hub_download|huggingface\.co|resolve/main).*${BANNED}|${BANNED}.*(curl|wget|hf_hub_download|huggingface\.co|resolve/main)" "$WF"; then
+            echo "::error::FR-OP-32 violation — ${BANNED} weight fetch found in $WF"
+            exit 1
+          fi
+          echo "guard OK: no ${BANNED} fetch step present"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache checkpoints
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.HF_HOME }}
+            ${{ github.workspace }}/.dac-cache
+          key: rvq-real-${{ env.MIMI_REVISION }}-dac004-v1
+
+      # Reference-code venv. Pins mirror tests/parity/parity-requirements.txt
+      # (the versions the committed sliced fixtures were generated with).
+      # torch/torchaudio must be a matched pair.
+      - name: Provision parity venv (moshi + descript-audio-codec)
+        run: |
+          set -euo pipefail
+          python -m venv "${PARITY_VENV}"
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python -m pip install --upgrade pip
+          python -m pip install \
+            'torch==2.9.1' \
+            'torchaudio==2.9.1' \
+            'numpy>=2,<3' \
+            'safetensors>=0.4' \
+            'moshi==0.2.13' \
+            'descript-audio-codec==1.0.0'
+          python - <<'PY'
+          import torch, moshi, dac
+          print(f"rvq parity venv OK: torch={torch.__version__}")
+          PY
+
+      - name: Download Mimi checkpoint @ pinned revision
+        run: |
+          set -euo pipefail
+          mkdir -p "${HF_HOME}"
+          DEST="${HF_HOME}/${MIMI_FILE}"
+          if [ ! -f "${DEST}" ]; then
+            curl -fsSL --retry 3 \
+              "https://huggingface.co/${MIMI_REPO}/resolve/${MIMI_REVISION}/${MIMI_FILE}" \
+              -o "${DEST}"
+          fi
+          echo "${MIMI_SHA256}  ${DEST}" | sha256sum -c -
+          echo "mimi checkpoint: $(du -h "${DEST}" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download DAC checkpoint @ pinned release URL
+        run: |
+          set -euo pipefail
+          mkdir -p .dac-cache
+          DEST=".dac-cache/weights_24khz.pth"
+          if [ ! -f "${DEST}" ]; then
+            curl -fsSL --retry 3 "${DAC_URL}" -o "${DEST}"
+          fi
+          echo "${DAC_SHA256}  ${DEST}" | sha256sum -c -
+          echo "dac checkpoint: $(du -h "${DEST}" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prepare DAC checkpoint (.pth → safetensors + config side-car)
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python tools/parity/dac_prepare_checkpoint.py \
+            --pth .dac-cache/weights_24khz.pth \
+            --output "${RUNNER_TEMP}/dac-24khz.safetensors" \
+            --config-out "${RUNNER_TEMP}/dac-24khz-config.json" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Build vokra-cli (release)
+        run: cargo build --release -p vokra-cli
+
+      - name: Convert Mimi → GGUF (converter e2e)
+        run: |
+          set -euo pipefail
+          ./target/release/vokra-cli convert --model mimi \
+            --input "${HF_HOME}/${MIMI_FILE}" \
+            --output "${RUNNER_TEMP}/mimi.gguf" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Convert DAC → GGUF (converter e2e)
+        run: |
+          set -euo pipefail
+          ./target/release/vokra-cli convert --model dac \
+            --input "${RUNNER_TEMP}/dac-24khz.safetensors" \
+            --config "${RUNNER_TEMP}/dac-24khz-config.json" \
+            --output "${RUNNER_TEMP}/dac.gguf" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # FULL-table reference dumps: rows = the full codebook_size, so every
+      # table row is compared (the committed PR fixtures are 48/192-row
+      # slices; this is the full-fat pass).
+      - name: Dump full-table references (moshi / descript-audio-codec)
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python tools/parity/mimi_dump.py mimi \
+            --checkpoint "${HF_HOME}/${MIMI_FILE}" \
+            --out "${RUNNER_TEMP}/mimi-ref" --seed 7 --time 64 --rows 2048 --books 8
+          python tools/parity/mimi_dump.py dac \
+            --checkpoint .dac-cache/weights_24khz.pth \
+            --out "${RUNNER_TEMP}/dac-ref" --seed 7 --time 64 --rows 1024 --books 32
+
+      - name: Full-table parity (per-tensor max |Δ| + verdict)
+        run: |
+          set -euo pipefail
+          set +e
+          VOKRA_MIMI_GGUF="${RUNNER_TEMP}/mimi.gguf" \
+          VOKRA_MIMI_REF_DIR="${RUNNER_TEMP}/mimi-ref" \
+          VOKRA_DAC_GGUF="${RUNNER_TEMP}/dac.gguf" \
+          VOKRA_DAC_REF_DIR="${RUNNER_TEMP}/dac-ref" \
+            cargo test -p vokra-models --release --test real_codec_parity -- --nocapture \
+            2>&1 | tee "${RUNNER_TEMP}/parity-log.txt"
+          PARITY_EXIT=${PIPESTATUS[0]}
+          set -e
+          {
+            echo ""
+            echo "## RVQ real-checkpoint parity (atol = 0.01, NFR-QL-01)"
+            echo ""
+            echo '| tensor | max abs diff | verdict |'
+            echo '| ------ | ------------ | ------- |'
+            grep '^PARITY ' "${RUNNER_TEMP}/parity-log.txt" \
+              | awk '{gsub("max\\|Δ\\|=", "", $3); gsub("atol=", "", $4); print "| " $2 " | " $3 " | " $5 " |"}'
+            echo ""
+            if [ "${PARITY_EXIT}" -ne 0 ]; then
+              echo '**VERDICT: FAIL — at least one tensor exceeded atol (or the harness errored).**'
+            else
+              echo '**VERDICT: PASS — every tensor within atol.**'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "${PARITY_EXIT}"
+
+      # Zero-dep tripwire (NFR-DS-02): nothing in this job may have touched
+      # the root Cargo.lock (Python lives in the venv, never in the workspace).
+      - name: Zero-dep tripwire — root Cargo.lock unchanged
+        run: git diff --exit-code Cargo.lock
