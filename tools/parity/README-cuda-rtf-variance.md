@@ -83,7 +83,7 @@ cargo build --release -p vokra-cli
     --audio  /root/jfk-30s.wav \
     --iters  10 \
     --warmup 1 \
-    --fa-v2  off \
+    --fa-mode decomposed \
     --label  decomposed \
     --output /root/rtf-decomposed.jsonl
 ```
@@ -96,7 +96,8 @@ Options (see `--help`):
 | `--audio PATH` | required | 30 s mono 16 kHz WAV |
 | `--iters N` | 10 | Timed steady-state iterations (≥ 1) |
 | `--warmup M` | 1 | Untimed warmup iterations per invocation |
-| `--fa-v2 on\|off` | `on` | `off` sets `VOKRA_CUDA_DISABLE_FA_V2=1` (decomposed path); `on` uses the default FA v2 gated wrapper (t_q ≥ 16) |
+| `--fa-mode decomposed\|v2\|v3` | `v2` | M4-07: `decomposed` = both FA arms disabled (`VOKRA_CUDA_DISABLE_FA_V2=1` + `VOKRA_CUDA_DISABLE_FA_V3=1`); `v2` = FA v3 arm disabled (`VOKRA_CUDA_DISABLE_FA_V3=1`, the gated FA v2 wrapper t_q ≥ 16); `v3` = FA v3 priority + encoder opt-in (`VOKRA_CUDA_FA_V3_ENCODER=1`, only fires where the SM ≥ 9.0 Hopper probe holds — on Ada/Ampere it measures the same path as `v2` and the lazy slot prints why) |
+| `--fa-v2 on\|off` | — | Legacy alias (`on` = `--fa-mode v2`, `off` = `--fa-mode decomposed`); passing both flags is an error |
 | `--backend NAME` | `cuda` | `cuda` / `metal` / `cpu` — anything but `cuda` is for smoke-testing only |
 | `--label STR` | `""` | Free-form label written into every JSONL line (e.g. `decomposed` / `gated_fa_v2`) |
 | `--output PATH` | (none) | If set, JSONL is written here **in addition** to stdout |
@@ -144,6 +145,14 @@ reproduce the same A/B on a fresh instance, invoke the harness twice:
 
 ./tools/parity/cuda_rtf_analyze.py rtf-decomposed.jsonl --output rtf-decomposed.md
 ./tools/parity/cuda_rtf_analyze.py rtf-fa-v2.jsonl      --output rtf-fa-v2.md
+
+# M4-07 (owner T18, H100): the three-mode comparison on ONE host.
+./tools/parity/cuda_rtf_variance.sh --gguf lv3.gguf --audio jfk-30s.wav --iters 10 \
+    --fa-mode decomposed --label decomposed --output rtf-h100-decomposed.jsonl
+./tools/parity/cuda_rtf_variance.sh --gguf lv3.gguf --audio jfk-30s.wav --iters 10 \
+    --fa-mode v2         --label gated_fa_v2 --output rtf-h100-fa-v2.jsonl
+./tools/parity/cuda_rtf_variance.sh --gguf lv3.gguf --audio jfk-30s.wav --iters 10 \
+    --fa-mode v3         --label fa_v3 --output rtf-h100-fa-v3.jsonl
 ```
 
 The owner then folds both reports into

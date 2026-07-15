@@ -54,6 +54,7 @@ class Sample:
     iter: int
     rtf: float
     latency_ms: Optional[float]
+    fa_mode: str
     fa_v2_mode: str
     backend: str
     timestamp: str
@@ -76,6 +77,7 @@ class Summary:
     iters_failed: int
     started_at: str
     ended_at: str
+    fa_mode: str
     fa_v2_mode: str
     backend: str
     label: str
@@ -84,6 +86,20 @@ class Summary:
     driver: str
     gguf: str
     audio: str
+
+
+def _fa_mode_of(obj: dict) -> str:
+    """The M4-07 ``fa_mode`` field, with the pre-M4-07 legacy mapping.
+
+    Old JSONL (e.g. ``docs/bench-baselines/vast-2026-07-10/``) carries only
+    ``fa_v2_mode``: ``on`` was the gated FA v2 leg and ``off`` the decomposed
+    leg, and FA v3 did not exist — so the two map losslessly onto the new
+    3-value label space.
+    """
+    mode = str(obj.get("fa_mode", ""))
+    if mode:
+        return mode
+    return {"on": "v2", "off": "decomposed"}.get(str(obj.get("fa_v2_mode", "")), "")
 
 
 def parse_jsonl(lines: Iterable[str]) -> tuple[list[Sample], list[Failure], Optional[Summary]]:
@@ -121,6 +137,7 @@ def parse_jsonl(lines: Iterable[str]) -> tuple[list[Sample], list[Failure], Opti
                 iters_failed=int(obj.get("iters_failed", 0)),
                 started_at=str(obj.get("started_at", "")),
                 ended_at=str(obj.get("ended_at", "")),
+                fa_mode=_fa_mode_of(obj),
                 fa_v2_mode=str(obj.get("fa_v2_mode", "")),
                 backend=str(obj.get("backend", "")),
                 label=str(obj.get("label", "")),
@@ -153,6 +170,7 @@ def parse_jsonl(lines: Iterable[str]) -> tuple[list[Sample], list[Failure], Opti
                         if isinstance(obj.get("latency_ms"), (int, float))
                         else None
                     ),
+                    fa_mode=_fa_mode_of(obj),
                     fa_v2_mode=str(obj.get("fa_v2_mode", "")),
                     backend=str(obj.get("backend", "")),
                     timestamp=str(obj.get("timestamp", "")),
@@ -332,7 +350,8 @@ def format_markdown(
         parts.append(f"| started_at (UTC) | `{summary.started_at}` |")
         parts.append(f"| ended_at   (UTC) | `{summary.ended_at}` |")
         parts.append(f"| backend | `{summary.backend}` |")
-        parts.append(f"| fa_v2_mode | `{summary.fa_v2_mode}` |")
+        parts.append(f"| fa_mode | `{summary.fa_mode}` |")
+        parts.append(f"| fa_v2_mode (legacy) | `{summary.fa_v2_mode}` |")
         parts.append(f"| label | `{summary.label}` |")
         parts.append(f"| host | `{summary.host}` |")
         parts.append(f"| gpu | `{summary.gpu}` |")
@@ -392,12 +411,12 @@ def format_markdown(
     # ---- per-iter samples ----
     parts.append("## Per-iteration RTF samples\n")
     if samples:
-        parts.append("| iter | timestamp (UTC) | fa_v2 | backend | rtf | latency_ms |")
+        parts.append("| iter | timestamp (UTC) | fa_mode | backend | rtf | latency_ms |")
         parts.append("|---|---|---|---|---|---|")
         for s in sorted(samples, key=lambda x: x.iter):
             lat = f"{s.latency_ms:.4f}" if s.latency_ms is not None else "n/a"
             parts.append(
-                f"| {s.iter} | `{s.timestamp}` | `{s.fa_v2_mode}` "
+                f"| {s.iter} | `{s.timestamp}` | `{s.fa_mode}` "
                 f"| `{s.backend}` | `{s.rtf:.6f}` | `{lat}` |"
             )
     else:
@@ -502,6 +521,7 @@ def main(argv: list[str]) -> int:
                     "iters_failed": summary.iters_failed,
                     "started_at": summary.started_at,
                     "ended_at": summary.ended_at,
+                    "fa_mode": summary.fa_mode,
                     "fa_v2_mode": summary.fa_v2_mode,
                     "backend": summary.backend,
                     "label": summary.label,
@@ -535,6 +555,7 @@ def main(argv: list[str]) -> int:
                     "iter": s.iter,
                     "rtf": s.rtf,
                     "latency_ms": s.latency_ms,
+                    "fa_mode": s.fa_mode,
                     "fa_v2_mode": s.fa_v2_mode,
                     "backend": s.backend,
                     "timestamp": s.timestamp,
