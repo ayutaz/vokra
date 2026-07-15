@@ -52,11 +52,23 @@
 
 pub mod backbone;
 pub mod config;
+pub mod depth;
+pub mod frame;
+pub mod tokenizer;
 
 pub use backbone::{
     MOSHI_FROM_GGUF_DEFAULT_SEED, MOSHI_ZERO_TOKEN, MoshiBackbone, MoshiBackboneState,
     MoshiBackboneWeights,
 };
+pub use depth::{MoshiDepthLayer, MoshiDepthState, MoshiDepthTransformer, MoshiDepthWeights};
+pub use frame::{
+    MOSHI_UNGENERATED, MoshiChannelSampler, MoshiFrameOut, MoshiGenerationState, MoshiModel,
+    MoshiSamplerPair,
+};
+pub use tokenizer::{
+    FixtureMoshiTokenizer, GgufMoshiTokenizer, MoshiTextTokenizer, decode_monologue,
+};
+
 pub use config::{
     DEFAULT_MOSHI_RMS_NORM_EPS, DEFAULT_MOSHI_ROPE_MAX_PERIOD, MoshiConfig, MoshiTransformerConfig,
 };
