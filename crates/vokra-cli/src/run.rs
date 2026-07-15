@@ -52,6 +52,14 @@ OPTIONS:
                                 interrupt demo path
     --deterministic             S2S only: temperature-0 sampling
                                 (reproducible smoke / parity anchor)
+    --duplex                    Moshi only: continuous full-duplex demo —
+                                push mic frames from --input, pull model
+                                frames, print the inner monologue (M4-06)
+    --echo-sim <gain>           Moshi duplex only: mix the previous model
+                                frame into the next mic frame at <gain>
+                                (0..1) — the synthetic echo path the AEC
+                                cancels (T26; without it the session runs
+                                the explicit recorded-input AEC opt-out)
     -h, --help                  print this help
 ";
 
@@ -76,6 +84,12 @@ struct RunArgs {
     interrupt_after: Option<usize>,
     /// S2S: deterministic (temperature-0) sampling.
     deterministic: bool,
+    /// Moshi (M4-06): continuous full-duplex push/pull demo (T26).
+    duplex: bool,
+    /// Moshi duplex: synthetic echo attenuation — the previous model
+    /// frame is mixed into the next mic frame at this gain, exercising
+    /// the AEC path end to end (T26 合成 echo 経路).
+    echo_sim: Option<f32>,
 }
 
 fn parse_args(args: &[String]) -> Result<RunArgs, String> {
@@ -93,6 +107,8 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut fixture_tokenizer = false;
     let mut interrupt_after: Option<usize> = None;
     let mut deterministic = false;
+    let mut duplex = false;
+    let mut echo_sim: Option<f32> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -162,6 +178,21 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 deterministic = true;
                 i += 1;
             }
+            "--duplex" => {
+                duplex = true;
+                i += 1;
+            }
+            "--echo-sim" => {
+                let v = args.get(i + 1).ok_or("--echo-sim requires a value")?;
+                let g: f32 = v
+                    .parse()
+                    .map_err(|e| format!("--echo-sim must be a float gain: {e}"))?;
+                if !g.is_finite() || !(0.0..=1.0).contains(&g) {
+                    return Err(format!("--echo-sim gain must be in [0, 1] (got {g})"));
+                }
+                echo_sim = Some(g);
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -177,6 +208,8 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         fixture_tokenizer,
         interrupt_after,
         deterministic,
+        duplex,
+        echo_sim,
     })
 }
 
@@ -280,6 +313,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 }
             }
         }
+        ModelTask::S2sDuplex => {
+            run_s2s_duplex(&session, &a)?;
+        }
         ModelTask::S2s => {
             run_s2s(&session, &a)?;
         }
@@ -323,6 +359,153 @@ fn run_asr(session: &Session, pcm: &[f32]) -> Result<String, String> {
         .transcribe(pcm)
         .map_err(|e| e.to_string())?
         .text)
+}
+
+/// The Moshi full-duplex demo path (M4-06-T26): file-driven mic frames
+/// pushed through the facade duplex handle, model frames pulled per push,
+/// with an optional synthetic echo path (`--echo-sim <gain>` — the
+/// previous model frame mixes into the next mic frame; the session runs
+/// its AEC against the pull-stamped reference queue) and the barge-in
+/// demo (`--interrupt-after <frames>` flushes via the cross-thread
+/// handle). The machine-checkable asserts (T26 (a)〜(d)) run inline:
+/// full-length processing without underrun/panic, monotone reference
+/// tags (a violating push would error loudly), flush-on-interrupt, and
+/// deterministic reproduction under `--deterministic`. 知覚品質 / 実機音響
+/// は T30 owner 検収 (合成 echo は近似 — spec 明記の切り離し).
+fn run_s2s_duplex(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_core::DuplexSessionConfig;
+
+    if a.text.is_some() {
+        return Err(
+            "run (Moshi duplex): --text is not accepted — Moshi GENERATES its own \
+             reply (inner monologue); the transcript prints at the end"
+                .to_owned(),
+        );
+    }
+    let input_path = a.input.as_deref().ok_or(
+        "run (Moshi duplex): --input <user.wav> is required (mic-side audio, mono, \
+         at the model sample rate)",
+    )?;
+    let clip = wav::read_wav(input_path)?;
+
+    if !a.duplex {
+        // Batch turn through the facade (the run_s2s analog): push the
+        // whole utterance, collect the reply + monologue transcript.
+        let mut request = vokra_core::DialogRequest::new("").with_input_audio(clip.samples);
+        if a.deterministic {
+            request = request.deterministic();
+        }
+        let turn = session
+            .s2s()
+            .dialog_request(&request)
+            .map_err(|e| e.to_string())?;
+        let audio = turn
+            .audio
+            .ok_or("run (Moshi): the engine returned no audio")?;
+        println!(
+            "s2s (moshi): {} samples @ {} Hz, monologue: \"{}\" (use --duplex for \
+             the continuous push/pull demo)",
+            audio.samples.len(),
+            audio.sample_rate,
+            turn.text
+        );
+        if let Some(out) = a.output.as_deref() {
+            wav::write_wav(out, &audio.samples, audio.sample_rate)?;
+            println!("s2s (moshi): wrote -> {out}");
+        }
+        return Ok(());
+    }
+
+    let mut cfg = DuplexSessionConfig::new();
+    if a.deterministic {
+        cfg = cfg.deterministic();
+    }
+    if a.echo_sim.is_none() {
+        // Recorded-file input with no echo path: the explicit opt-out
+        // (never silent — the session records the citable warning).
+        cfg = cfg.with_aec_disabled_explicitly();
+    }
+    let mut handle = session.s2s().duplex_with(&cfg).map_err(|e| e.to_string())?;
+    let hop = handle.frame_hop();
+    let sr = handle.sample_rate();
+    // The synthetic echo arrives one pull→push cycle late; compensate the
+    // reference clock accordingly (the T17 playback-offset knob).
+    if a.echo_sim.is_some() {
+        let mut cfg2 = cfg.clone().with_playback_offset_samples(hop as u64);
+        if a.deterministic {
+            cfg2 = cfg2.deterministic();
+        }
+        handle = session
+            .s2s()
+            .duplex_with(&cfg2)
+            .map_err(|e| e.to_string())?;
+    }
+
+    let n_frames = clip.samples.len() / hop;
+    if n_frames == 0 {
+        return Err(format!(
+            "run (Moshi duplex): input shorter than one frame ({} samples < hop {hop})",
+            clip.samples.len()
+        ));
+    }
+    let interrupt_handle = handle.interrupt_handle();
+    let mut mic = vec![0.0f32; hop];
+    let mut echo: Vec<f32> = vec![0.0; hop];
+    let mut pcm: Vec<f32> = Vec::with_capacity(n_frames * hop);
+    let mut emitted = 0usize;
+    let mut interrupted_at: Option<usize> = None;
+    for f in 0..n_frames {
+        mic.copy_from_slice(&clip.samples[f * hop..(f + 1) * hop]);
+        if let Some(gain) = a.echo_sim {
+            for (m, e) in mic.iter_mut().zip(echo.iter()) {
+                *m += gain * *e;
+            }
+        }
+        // (a) the pipeline processes the whole input without underrun.
+        handle.push_mic_frame(&mic).map_err(|e| e.to_string())?;
+        // (b) pulls stamp monotone reference tags — a violation errors.
+        while let Some(frame) = handle.pull_model_frame().map_err(|e| e.to_string())? {
+            if a.echo_sim.is_some() {
+                echo.copy_from_slice(&frame);
+            }
+            pcm.extend_from_slice(&frame);
+            emitted += 1;
+        }
+        if let Some(after) = a.interrupt_after {
+            if f + 1 == after && interrupted_at.is_none() {
+                // (c) cross-thread barge-in: pending output flushes.
+                interrupt_handle.interrupt();
+                let flushed = handle.pull_model_frame().map_err(|e| e.to_string())?;
+                if flushed.is_some() {
+                    return Err("duplex barge-in: pending output survived the \
+                         interrupt (flush contract violated)"
+                        .to_owned());
+                }
+                interrupted_at = Some(f + 1);
+                echo.iter_mut().for_each(|v| *v = 0.0);
+            }
+        }
+    }
+    let text = handle.monologue_text().map_err(|e| e.to_string())?;
+    for w in handle.warnings() {
+        eprintln!("duplex warning: {w}");
+    }
+    println!(
+        "s2s-duplex: {n_frames} mic frames -> {emitted} model frames ({} samples) @ {sr} Hz{}{}",
+        pcm.len(),
+        interrupted_at
+            .map(|f| format!(", barge-in after {f}"))
+            .unwrap_or_default(),
+        a.echo_sim
+            .map(|g| format!(", echo-sim gain {g} (AEC active)"))
+            .unwrap_or_default(),
+    );
+    println!("s2s-duplex monologue: \"{text}\"");
+    if let Some(out) = a.output.as_deref() {
+        wav::write_wav(out, &pcm, sr)?;
+        println!("s2s-duplex: wrote {} samples @ {sr} Hz -> {out}", pcm.len());
+    }
+    Ok(())
 }
 
 /// The S2S (Sesame CSM) demo path — T20: recorded-file dialog turn through
@@ -582,6 +765,212 @@ mod tests {
                 .unwrap()
                 .contains("unexpected argument")
         );
+    }
+
+    /// M4-06-T26: the full duplex demo path over a converted synthetic
+    /// checkpoint — echo-sim (AEC active), barge-in flush, deterministic
+    /// reproduction, and the attribution banner side of the load (the
+    /// engine dispatch prints it; here we assert the session carries the
+    /// resolved info).
+    #[test]
+    fn moshi_duplex_demo_smoke_with_echo_sim_and_barge_in() {
+        let dir = std::env::temp_dir().join(format!("vokra-cli-moshi-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ckpt = dir.join("model.safetensors");
+        let tok = dir.join("tok.model");
+        let gguf = dir.join("moshi.gguf");
+        let in_wav = dir.join("user.wav");
+        let out_wav = dir.join("model.wav");
+        std::fs::write(&ckpt, moshi_fixture::synthetic_checkpoint()).unwrap();
+        std::fs::write(&tok, moshi_fixture::spm_blob(13)).unwrap();
+        vokra_convert::convert_moshi_file(&ckpt, Some(tok.as_path()), &gguf).expect("convert");
+
+        // 4 frames of pseudo-speech at the converted (real-constant) rates.
+        let (session, task) =
+            engine::load_session(gguf.to_str().unwrap()).expect("moshi session loads");
+        assert_eq!(task, ModelTask::S2sDuplex);
+        assert!(
+            session.attribution().is_some(),
+            "FR-MD-09: the loader resolves the attribution surface"
+        );
+        let hop = 1920usize; // 24 kHz / 12.5 Hz (converter constants)
+        let samples: Vec<f32> = (0..hop * 4)
+            .map(|i| ((i as f32) * 0.01).sin() * 0.2)
+            .collect();
+        wav::write_wav(in_wav.to_str().unwrap(), &samples, 24_000).unwrap();
+
+        let run_once = || {
+            let args: Vec<String> = [
+                "--model",
+                gguf.to_str().unwrap(),
+                "--input",
+                in_wav.to_str().unwrap(),
+                "--output",
+                out_wav.to_str().unwrap(),
+                "--duplex",
+                "--echo-sim",
+                "0.5",
+                "--interrupt-after",
+                "2",
+                "--deterministic",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            main(&args).expect("duplex demo runs");
+            wav::read_wav(out_wav.to_str().unwrap()).expect("output wav")
+        };
+        let a = run_once();
+        let b = run_once();
+        assert!(!a.samples.is_empty(), "model frames were pulled");
+        assert_eq!(a.samples, b.samples, "T26 (d): deterministic reproduction");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Moshi duplex argument contract: --text is rejected (the model
+    /// generates its reply), --input is required.
+    #[test]
+    fn moshi_duplex_rejects_text_and_requires_input() {
+        let dir = std::env::temp_dir().join(format!("vokra-cli-moshi-neg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ckpt = dir.join("model.safetensors");
+        let tok = dir.join("tok.model");
+        let gguf = dir.join("moshi.gguf");
+        std::fs::write(&ckpt, moshi_fixture::synthetic_checkpoint()).unwrap();
+        std::fs::write(&tok, moshi_fixture::spm_blob(13)).unwrap();
+        vokra_convert::convert_moshi_file(&ckpt, Some(tok.as_path()), &gguf).expect("convert");
+        // A tokenizer-less conversion fails loudly at LOAD (monologue
+        // decode is load-bearing) — pin that posture too.
+        let bare = dir.join("bare.gguf");
+        vokra_convert::convert_moshi_file(&ckpt, None, &bare).expect("convert bare");
+        let err = engine::load_session(bare.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("vokra.tokenizer.model"), "loud: {err}");
+        let base = ["--model".to_string(), gguf.to_str().unwrap().to_string()];
+        let mut with_text: Vec<String> = base.to_vec();
+        with_text.extend(["--text".into(), "scripted".into()]);
+        let err = main(&with_text).unwrap_err();
+        assert!(err.contains("GENERATES"), "contract: {err}");
+        let err = main(&base).unwrap_err();
+        assert!(
+            err.contains("--input") || err.contains("--duplex") || err.contains("required"),
+            "actionable: {err}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Shared synthetic Moshi checkpoint fixtures (the converter/e2e
+    /// wire shapes — MoshiConfig::tiny_for_tests).
+    mod moshi_fixture {
+        pub(super) fn spm_blob(n: usize) -> Vec<u8> {
+            fn varint(mut v: u64, out: &mut Vec<u8>) {
+                loop {
+                    let mut b = (v & 0x7f) as u8;
+                    v >>= 7;
+                    if v != 0 {
+                        b |= 0x80;
+                    }
+                    out.push(b);
+                    if v == 0 {
+                        break;
+                    }
+                }
+            }
+            let mut blob = Vec::new();
+            for i in 0..n {
+                let piece = format!("\u{2581}p{i}");
+                let mut msg = Vec::new();
+                msg.push(0x0a);
+                varint(piece.len() as u64, &mut msg);
+                msg.extend_from_slice(piece.as_bytes());
+                msg.push(0x18);
+                msg.push(0x01);
+                blob.push(0x0a);
+                varint(msg.len() as u64, &mut blob);
+                blob.extend_from_slice(&msg);
+            }
+            blob
+        }
+
+        pub(super) fn synthetic_checkpoint() -> Vec<u8> {
+            let mut entries: Vec<(String, Vec<u64>)> = Vec::new();
+            let (d, text, card) = (16u64, 13u64, 9u64);
+            let (h_tm, d_dt, h_dt) = (8u64, 8u64, 6u64);
+            entries.push(("text_emb.weight".into(), vec![text + 1, d]));
+            entries.push(("text_linear.weight".into(), vec![text, d]));
+            entries.push(("out_norm.alpha".into(), vec![1, 1, d]));
+            for k in 0..4 {
+                entries.push((format!("emb.{k}.weight"), vec![card + 1, d]));
+            }
+            for i in 0..2 {
+                let p = format!("transformer.layers.{i}");
+                entries.push((format!("{p}.norm1.alpha"), vec![1, 1, d]));
+                entries.push((format!("{p}.norm2.alpha"), vec![1, 1, d]));
+                entries.push((format!("{p}.self_attn.in_proj_weight"), vec![3 * d, d]));
+                entries.push((format!("{p}.self_attn.out_proj.weight"), vec![d, d]));
+                entries.push((format!("{p}.gating.linear_in.weight"), vec![2 * h_tm, d]));
+                entries.push((format!("{p}.gating.linear_out.weight"), vec![d, h_tm]));
+            }
+            for cb in 0..2 {
+                entries.push((format!("depformer_in.{cb}.weight"), vec![d_dt, d]));
+                entries.push((format!("linears.{cb}.weight"), vec![card, d_dt]));
+            }
+            entries.push(("depformer_text_emb.weight".into(), vec![text + 1, d_dt]));
+            entries.push(("depformer_emb.0.weight".into(), vec![card + 1, d_dt]));
+            for i in 0..2 {
+                let p = format!("depformer.layers.{i}");
+                entries.push((format!("{p}.norm1.alpha"), vec![1, 1, d_dt]));
+                entries.push((format!("{p}.norm2.alpha"), vec![1, 1, d_dt]));
+                entries.push((
+                    format!("{p}.self_attn.in_proj_weight"),
+                    vec![2 * 3 * d_dt, d_dt],
+                ));
+                entries.push((
+                    format!("{p}.self_attn.out_proj.weight"),
+                    vec![2 * d_dt, d_dt],
+                ));
+                for s in 0..2 {
+                    entries.push((
+                        format!("{p}.gating.{s}.linear_in.weight"),
+                        vec![2 * h_dt, d_dt],
+                    ));
+                    entries.push((
+                        format!("{p}.gating.{s}.linear_out.weight"),
+                        vec![d_dt, h_dt],
+                    ));
+                }
+            }
+            let mut header = String::from("{");
+            let mut data: Vec<u8> = Vec::new();
+            let mut lcg = 0x9876_5432u32;
+            for (i, (name, shape)) in entries.iter().enumerate() {
+                let n: u64 = shape.iter().product();
+                let start = data.len();
+                for _ in 0..n {
+                    lcg = lcg.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let frac = (lcg >> 16) as u16 & 0x007F;
+                    let sign = ((lcg >> 8) as u16) & 0x8000;
+                    data.extend_from_slice(&(sign | 0x3E00 | frac).to_le_bytes());
+                }
+                let end = data.len();
+                if i > 0 {
+                    header.push(',');
+                }
+                header.push_str(&format!(
+                    "\"{name}\":{{\"dtype\":\"BF16\",\"shape\":[{}],\"data_offsets\":[{start},{end}]}}",
+                    shape
+                        .iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
+            }
+            header.push('}');
+            let mut blob = Vec::new();
+            blob.extend_from_slice(&(header.len() as u64).to_le_bytes());
+            blob.extend_from_slice(header.as_bytes());
+            blob.extend_from_slice(&data);
+            blob
+        }
     }
 
     #[test]

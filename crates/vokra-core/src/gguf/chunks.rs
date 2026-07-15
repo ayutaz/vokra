@@ -134,6 +134,15 @@ pub const KEY_PROVENANCE_MODEL_ID: &str = "vokra.provenance.model_id";
 /// not used for classification (`STRING`, FR-CP-05).
 pub const KEY_PROVENANCE_SOURCE: &str = "vokra.provenance.source";
 
+/// `vokra.provenance.attribution` — the human-readable attribution text an
+/// `AttributionRequired` weight (e.g. Moshi / Mimi CC-BY 4.0) obliges the
+/// deployer to display (`STRING`, FR-MD-09 — M4-06). Written by
+/// [`crate::compliance::stamp_attribution`]; read back through
+/// [`crate::compliance::resolve_attribution`], which also supplies a
+/// registry fallback so an attribution-required weight is never left
+/// without a displayable string.
+pub const KEY_PROVENANCE_ATTRIBUTION: &str = "vokra.provenance.attribution";
+
 // `vokra.quant.*` — quantization policy metadata (M2-08, FR-QT-02).
 //
 // The runtime reads its quantization policy **only** from GGUF metadata (no

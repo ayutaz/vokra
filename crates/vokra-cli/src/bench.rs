@@ -488,6 +488,16 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        // Same posture for the Moshi duplex (M4-06): per-frame latency
+        // reference numbers ride the duplex demo + owner track (T26/T30).
+        ModelTask::S2sDuplex => {
+            return Err(
+                "bench: arch `moshi` (full-duplex S2S) has no bench task yet — \
+                 real-model per-frame latency is the owner track (M4-06 T30); \
+                 refusing to fabricate a measurement (FR-EX-08)"
+                    .to_owned(),
+            );
+        }
         ModelTask::Vad => {
             let path = args
                 .input

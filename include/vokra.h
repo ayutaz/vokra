@@ -95,6 +95,15 @@ typedef struct vokra_aec_ref_writer_t vokra_aec_ref_writer_t;
 // far-end queue. Owned by the inference thread. Opaque to C.
 typedef struct vokra_aec_t vokra_aec_t;
 
+// Opaque duplex-session handle (module docs). Created by
+// `vokra_s2s_duplex_open`, released by `vokra_s2s_duplex_destroy`.
+typedef struct vokra_s2s_duplex_t vokra_s2s_duplex_t;
+
+// Opaque cross-thread barge-in handle (module docs). Created by
+// `vokra_s2s_interrupt_handle`, released by
+// `vokra_s2s_interrupt_destroy`; firing it is `vokra_s2s_interrupt`.
+typedef struct vokra_s2s_interrupt_t vokra_s2s_interrupt_t;
+
 // Opaque session handle: one loaded model bound to one backend, with the
 // matching native engine injected (ASR / TTS / VAD — see
 // `crate::session::vokra_session_create_from_file`).
@@ -289,6 +298,167 @@ void vokra_string_free(char *s);
 // threads. `vokra_last_error` itself never fails and never allocates
 // (ADR-0003 §3-b).
 const char *vokra_last_error(void);
+
+// Opens a full-duplex S2S session (Moshi = M4-06) on a session whose
+// model injected a duplex engine.
+//
+// # Parameters
+//
+// - `session`: a live session handle (`vokra_session_create_from_file`
+//   with a `moshi` GGUF).
+// - `deterministic`: non-zero → greedy (temperature-0) sampling on both
+//   decode channels (reproducible demos / parity).
+// - `seed`: stochastic sampling seed (ignored when `deterministic`).
+// - `aec_disabled_explicitly`: non-zero **explicitly** skips the echo
+//   canceller (recorded-file input only — a loud warning is recorded on
+//   the session; there is no silent variant). Zero requires the engine's
+//   AEC wiring and fails loudly without it (FR-OP-60).
+// - `playback_offset_samples`: echo-reference clock compensation for the
+//   real playback latency (owner-tunable; 0 for file-driven use).
+// - `out_duplex`: on `VOKRA_OK`, receives the new handle.
+//
+// # Returns
+//
+// `VOKRA_OK`, or a non-zero status (no duplex engine on this session,
+// AEC posture violation, ...) with detail from `vokra_last_error()`.
+//
+// # Safety
+//
+// `session` must be a live session handle; `out_duplex` must be a valid,
+// writable pointer.
+enum vokra_status_t vokra_s2s_duplex_open(const struct vokra_session_t *session,
+                                          int32_t deterministic,
+                                          uint64_t seed,
+                                          int32_t aec_disabled_explicitly,
+                                          uint64_t playback_offset_samples,
+                                          struct vokra_s2s_duplex_t **out_duplex);
+
+// Mono samples per push/pull frame of `duplex` (size your PCM buffers
+// with this — 1920 for the real 24 kHz / 12.5 Hz model).
+//
+// # Safety
+//
+// `duplex` must be a live duplex handle; `out_hop` valid and writable.
+enum vokra_status_t vokra_s2s_frame_hop(const struct vokra_s2s_duplex_t *duplex,
+                                        size_t *out_hop);
+
+// PCM sample rate (Hz) of both duplex directions.
+//
+// # Safety
+//
+// `duplex` must be a live duplex handle; `out_rate` valid and writable.
+enum vokra_status_t vokra_s2s_sample_rate(const struct vokra_s2s_duplex_t *duplex,
+                                          uint32_t *out_rate);
+
+// Feeds one mic frame (exactly `vokra_s2s_frame_hop` samples) through
+// the input front (AEC unless explicitly disabled) and one model step.
+//
+// `out_emitted` (optional — may be `NULL`) receives non-zero once the
+// model produced a frame for this push (after its delay warmup); pull it
+// with `vokra_s2s_pull_audio`.
+//
+// # Safety
+//
+// `duplex` must be a live duplex handle owned by the calling thread;
+// `pcm` must point to `len` readable floats; `out_emitted` must be
+// `NULL` or writable.
+enum vokra_status_t vokra_s2s_push_mic(struct vokra_s2s_duplex_t *duplex,
+                                       const float *pcm,
+                                       size_t len,
+                                       int32_t *out_emitted);
+
+// Pops the next model frame for playback into `out_pcm`
+// (`capacity >= vokra_s2s_frame_hop` floats). `*out_len` is the sample
+// count written — `0` means nothing is pending (delay warmup / caught
+// up / flushed by a barge-in). Pulling is the playback hand-off: the
+// frame is stamped into the echo-reference queue at this moment.
+//
+// # Safety
+//
+// `duplex` must be a live duplex handle owned by the calling thread;
+// `out_pcm` must point to `capacity` writable floats; `out_len` must be
+// valid and writable.
+enum vokra_status_t vokra_s2s_pull_audio(struct vokra_s2s_duplex_t *duplex,
+                                         float *out_pcm,
+                                         size_t capacity,
+                                         size_t *out_len);
+
+// Copies the inner monologue accumulated so far (Moshi's self-generated
+// transcript, display-rule filtered) into `buf` as NUL-terminated UTF-8.
+//
+// `*out_needed` always receives the byte length **including** the NUL;
+// when `buf` is `NULL` or `buf_len` is too small, nothing is written and
+// the call still returns `VOKRA_OK` — size with a first call, then
+// fetch (the standard two-call string discipline).
+//
+// # Safety
+//
+// `duplex` must be a live duplex handle owned by the calling thread;
+// `buf` must be `NULL` or `buf_len` writable bytes; `out_needed` valid
+// and writable.
+enum vokra_status_t vokra_s2s_text(const struct vokra_s2s_duplex_t *duplex,
+                                   char *buf,
+                                   size_t buf_len,
+                                   size_t *out_needed);
+
+// Creates a cross-thread barge-in handle for `duplex` (module docs —
+// safe to fire from another thread while this one pushes/pulls).
+//
+// # Safety
+//
+// `duplex` must be a live duplex handle; `out_interrupt` valid and
+// writable.
+enum vokra_status_t vokra_s2s_interrupt_handle(const struct vokra_s2s_duplex_t *duplex,
+                                               struct vokra_s2s_interrupt_t **out_interrupt);
+
+// Requests barge-in (M3-14 semantics): the session flushes pending model
+// output and resets its generation state at the next push/pull boundary;
+// mic intake continues. Callable from any thread (the handle owns its
+// own atomic flag — module docs).
+//
+// # Safety
+//
+// `interrupt` must be a live interrupt handle (not yet destroyed).
+enum vokra_status_t vokra_s2s_interrupt(const struct vokra_s2s_interrupt_t *interrupt);
+
+// Frees a barge-in handle. `NULL` is a no-op; double-free is undefined
+// behaviour.
+//
+// # Safety
+//
+// `interrupt` must be `NULL` or a handle from
+// `vokra_s2s_interrupt_handle` not already freed.
+void vokra_s2s_interrupt_destroy(struct vokra_s2s_interrupt_t *interrupt);
+
+// Frees a duplex session. `NULL` is a no-op; double-free is undefined
+// behaviour. Outstanding interrupt handles stay valid (they only own an
+// atomic flag) but firing them after destroy has no observer.
+//
+// # Safety
+//
+// `duplex` must be `NULL` or a handle from `vokra_s2s_duplex_open` not
+// already freed.
+void vokra_s2s_duplex_destroy(struct vokra_s2s_duplex_t *duplex);
+
+// Copies the model's attribution text (FR-MD-09 — weights whose license
+// requires display, e.g. Moshi / Mimi CC-BY 4.0) into `buf` as
+// NUL-terminated UTF-8, with the two-call sizing discipline of
+// `vokra_s2s_text`.
+//
+// `*out_needed == 0` (and nothing written) means the loaded model's
+// weights carry **no** display obligation (permissive licenses) — an
+// attribution-required weight always yields a non-empty text (the
+// runtime falls back to a registry-derived string when the GGUF chunk is
+// absent; M4-06-T23).
+//
+// # Safety
+//
+// `session` must be a live session handle; `buf` must be `NULL` or
+// `buf_len` writable bytes; `out_needed` valid and writable.
+enum vokra_status_t vokra_model_attribution(const struct vokra_session_t *session,
+                                            char *buf,
+                                            size_t buf_len,
+                                            size_t *out_needed);
 
 // Loads a model from a GGUF file and creates an inference session on the CPU
 // backend (FR-API-01).

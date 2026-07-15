@@ -116,6 +116,12 @@ pub enum ModelKind {
     /// (FR-EX-08). The Llama-3.2 tokenizer blob is embedded through
     /// [`convert_csm_file`].
     Csm,
+    /// `kyutai/moshiko-pytorch-bf16` safetensors checkpoint (M4-06):
+    /// Moshi (Helium temporal transformer + depformer), full-duplex S2S
+    /// with inner monologue. Weights are CC-BY 4.0 (`AttributionRequired`
+    /// — the converter stamps the FR-MD-09 attribution text). The raw
+    /// SentencePiece tokenizer embeds through [`convert_moshi_file`].
+    Moshi,
 }
 
 impl ModelKind {
@@ -140,6 +146,7 @@ impl ModelKind {
             "mimi" => Some(Self::Mimi),
             "dac" => Some(Self::Dac),
             "csm" => Some(Self::Csm),
+            "moshi" => Some(Self::Moshi),
             _ => None,
         }
     }
@@ -157,6 +164,7 @@ impl ModelKind {
             Self::Mimi => "mimi",
             Self::Dac => "dac",
             Self::Csm => "csm",
+            Self::Moshi => "moshi",
         }
     }
 }
@@ -365,6 +373,22 @@ pub fn convert_file(
                  use convert_dac_file"
                     .to_owned(),
             ));
+        }
+        ModelKind::Moshi => {
+            // Tokenizer-less conversion (the blob rides `--config` through
+            // `convert_moshi_file`; without it the runtime monologue
+            // decode fails loudly — FR-EX-08).
+            let (builder, report) = models::moshi::convert(bytes, None)?;
+            let mut notes = vec![format!(
+                "moshi: {} float weights written ({} BF16→F32 exact), {} non-float \
+                 skipped, tokenizer embedded: {}",
+                report.written,
+                report.bf16_decoded,
+                report.skipped_non_float,
+                report.tokenizer_embedded
+            )];
+            notes.extend(report.notes.iter().map(|n| format!("moshi warning: {n}")));
+            (builder, notes)
         }
         ModelKind::Csm => {
             // Tokenizer-less path (M4-05-T03/T04): every float tensor
@@ -683,6 +707,49 @@ pub fn convert_csm_file(
 
     Ok(ConvertSummary {
         model: ModelKind::Csm,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
+/// Convert a Moshi (`kyutai/moshiko-pytorch-bf16`) safetensors checkpoint
+/// into a Vokra GGUF, optionally embedding the raw
+/// `tokenizer_spm_32k_3.model` SentencePiece file as
+/// `vokra.tokenizer.model` (M4-06-T22).
+///
+/// The BF16 checkpoint decodes to F32 **exactly** (BF16 is the top half
+/// of the f32 pattern); the `vokra.provenance.*` chunks stamp the
+/// CC-BY 4.0 `AttributionRequired` class plus the FR-MD-09 attribution
+/// text the runtime surfaces (`Session::attribution` / C ABI / CLI
+/// banner).
+pub fn convert_moshi_file(
+    input: &Path,
+    tokenizer: Option<&Path>,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let tokenizer_bytes = match tokenizer {
+        Some(p) => Some(std::fs::read(p)?),
+        None => None,
+    };
+    let (builder, report) = models::moshi::convert(bytes, tokenizer_bytes)?;
+
+    let mut notes = vec![format!(
+        "moshi: {} float weights written ({} BF16→F32 exact), {} non-float skipped, \
+         tokenizer embedded: {}",
+        report.written, report.bf16_decoded, report.skipped_non_float, report.tokenizer_embedded
+    )];
+    notes.extend(report.notes.iter().map(|n| format!("moshi warning: {n}")));
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::Moshi,
         tensor_count,
         metadata_count,
         output_bytes: out_bytes.len() as u64,

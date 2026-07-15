@@ -279,11 +279,14 @@ impl SafetensorsFile {
     }
 }
 
-/// Maps a safetensors dtype string into the GGUF dtype space (`F32` / `F16`).
+/// Maps a safetensors dtype string into the GGUF dtype space
+/// (`F32` / `F16` / `BF16` — the latter added for the all-BF16
+/// `kyutai/moshiko-pytorch-bf16` checkpoint, M4-06).
 fn map_dtype(dtype: &str) -> Result<GgmlType, SafetensorsError> {
     match dtype {
         "F32" => Ok(GgmlType::F32),
         "F16" => Ok(GgmlType::F16),
+        "BF16" => Ok(GgmlType::BF16),
         other => Err(SafetensorsError::UnsupportedDtype(other.to_owned())),
     }
 }
@@ -355,15 +358,37 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_dtype() {
-        let header = r#"{"x":{"dtype":"BF16","shape":[1],"data_offsets":[0,2]}}"#;
+        // BF16 graduated to a supported dtype in M4-06 (the moshiko
+        // checkpoint is all-BF16), so the negative example is now F64 —
+        // still deliberately unsupported (no dense-f64 weights exist in
+        // any Vokra model family).
+        let header = r#"{"x":{"dtype":"F64","shape":[1],"data_offsets":[0,8]}}"#;
         let mut out = Vec::new();
         out.extend_from_slice(&(header.len() as u64).to_le_bytes());
         out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(&[0u8, 0u8]);
+        out.extend_from_slice(&[0u8; 8]);
         assert!(matches!(
             SafetensorsFile::parse(out),
             Err(SafetensorsError::UnsupportedDtype(_))
         ));
+    }
+
+    #[test]
+    fn bf16_decodes_exactly_through_the_shared_dequant() {
+        // BF16 = the top 16 bits of the f32 pattern — decode is exact
+        // (M4-06; the converter relies on this to write F32 losslessly).
+        let values: [f32; 3] = [1.0, -2.5, 0.15625];
+        let bf16: Vec<u8> = values
+            .iter()
+            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
+            .collect();
+        let header = r#"{"x":{"dtype":"BF16","shape":[3],"data_offsets":[0,6]}}"#;
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&bf16);
+        let st = SafetensorsFile::parse(out).unwrap();
+        assert_eq!(st.tensor_f32("x").unwrap(), values);
     }
 
     #[test]

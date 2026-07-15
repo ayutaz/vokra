@@ -18,7 +18,7 @@ use std::process::ExitCode;
 
 use vokra_convert::{
     ModelKind, convert_csm_file, convert_dac_file, convert_file, convert_file_quantized,
-    convert_piper_plus_file,
+    convert_moshi_file, convert_piper_plus_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType, GgufFile};
 
@@ -110,6 +110,16 @@ fn main() -> ExitCode {
             // the repo is gated, T29; without it the runtime text path
             // fails loudly, M4-05-T05).
             convert_csm_file(&input, config.as_deref(), &output)
+        }
+        ModelKind::Moshi => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            // --config carries the raw SentencePiece tokenizer file
+            // (tokenizer_spm_32k_3.model — public in the kyutai repo;
+            // without it the monologue decode fails loudly, M4-06-T22).
+            convert_moshi_file(&input, config.as_deref(), &output)
         }
         _ => match quant {
             Some(q) => convert_file_quantized(model, &input, &output, q),
@@ -406,6 +416,37 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
             println!(
                 "; arch={arch} backbone_layers={bb_layers} depth_layers={dt_layers} \
                  n_codebooks={n_cb} audio_vocab={audio_vocab}"
+            );
+        }
+        ModelKind::Moshi => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let tm_layers = file
+                .get("vokra.moshi.arch.temporal.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dt_layers = file
+                .get("vokra.moshi.arch.depth.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_q_in = file
+                .get("vokra.moshi.audio.n_q_in")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dep_q = file
+                .get("vokra.moshi.audio.dep_q")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let attribution = file
+                .get("vokra.provenance.attribution")
+                .and_then(|v| v.as_str())
+                .map(|_| "present")
+                .unwrap_or("ABSENT");
+            println!(
+                "; arch={arch} temporal_layers={tm_layers} depth_layers={dt_layers} \
+                 n_q_in={n_q_in} dep_q={dep_q} attribution={attribution}"
             );
         }
         ModelKind::Dac => {

@@ -19,7 +19,10 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use crate::backend::BackendKind;
-use crate::engines::{AsrEngine, S2sEngine, TtsEngine, VadEngine, VadStreamHandle};
+use crate::compliance::AttributionInfo;
+use crate::engines::{
+    AsrEngine, S2sDuplexEngine, S2sEngine, TtsEngine, VadEngine, VadStreamHandle,
+};
 use crate::error::{Result, VokraError};
 use crate::gguf::GgufFile;
 use crate::kv_quant::KvQuant;
@@ -74,6 +77,8 @@ pub struct Session {
     tts: Option<Arc<dyn TtsEngine>>,
     vad: Option<Arc<dyn VadEngine>>,
     s2s: Option<Arc<dyn S2sEngine>>,
+    s2s_duplex: Option<Arc<dyn S2sDuplexEngine>>,
+    attribution: Option<AttributionInfo>,
 }
 
 /// `Session` is [`Clone`] via cheap atomic `Arc` bumps (FR-API-03): the clone
@@ -89,6 +94,8 @@ impl Clone for Session {
             tts: self.tts.clone(),
             vad: self.vad.clone(),
             s2s: self.s2s.clone(),
+            s2s_duplex: self.s2s_duplex.clone(),
+            attribution: self.attribution.clone(),
         }
     }
 }
@@ -103,6 +110,8 @@ impl fmt::Debug for Session {
             .field("tts_engine", &self.tts.is_some())
             .field("vad_engine", &self.vad.is_some())
             .field("s2s_engine", &self.s2s.is_some())
+            .field("s2s_duplex_engine", &self.s2s_duplex.is_some())
+            .field("attribution", &self.attribution.is_some())
             .finish()
     }
 }
@@ -177,6 +186,34 @@ impl Session {
         self
     }
 
+    /// Attaches a **full-duplex** S2S engine (Moshi = M4-06); the
+    /// [`S2s::duplex`](crate::tasks::S2s::duplex) facade entry delegates
+    /// to it.
+    #[must_use]
+    pub fn with_s2s_duplex_engine(mut self, engine: Arc<dyn S2sDuplexEngine>) -> Self {
+        self.s2s_duplex = Some(engine);
+        self
+    }
+
+    /// Attaches the model's attribution info (FR-MD-09 — the loader
+    /// resolves it from the GGUF via
+    /// [`resolve_attribution`](crate::resolve_attribution); deployers
+    /// read it back with [`Self::attribution`] / the C ABI
+    /// `vokra_model_attribution`).
+    #[must_use]
+    pub fn with_attribution(mut self, attribution: AttributionInfo) -> Self {
+        self.attribution = Some(attribution);
+        self
+    }
+
+    /// The model's attribution info, when its weight license requires
+    /// display (`AttributionRequired` — e.g. Moshi / Mimi CC-BY 4.0).
+    /// `None` for permissive weights.
+    #[must_use]
+    pub fn attribution(&self) -> Option<&AttributionInfo> {
+        self.attribution.as_ref()
+    }
+
     /// The injected ASR engine, if any (used by the [`Asr`](crate::Asr) facade).
     pub(crate) fn asr_engine(&self) -> Option<&Arc<dyn AsrEngine>> {
         self.asr.as_ref()
@@ -191,6 +228,12 @@ impl Session {
     /// facade).
     pub(crate) fn s2s_engine(&self) -> Option<&Arc<dyn S2sEngine>> {
         self.s2s.as_ref()
+    }
+
+    /// The injected duplex S2S engine, if any (used by the
+    /// [`S2s`](crate::S2s) facade's `duplex` entry).
+    pub(crate) fn s2s_duplex_engine(&self) -> Option<&Arc<dyn S2sDuplexEngine>> {
+        self.s2s_duplex.as_ref()
     }
 
     /// Opens a streaming VAD handle from the injected VAD engine (M0-05).
@@ -285,6 +328,8 @@ impl SessionBuilder {
             tts: None,
             vad: None,
             s2s: None,
+            s2s_duplex: None,
+            attribution: None,
         })
     }
 }

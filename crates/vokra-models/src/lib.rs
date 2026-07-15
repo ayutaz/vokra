@@ -34,6 +34,7 @@ pub mod cosyvoice2;
 pub mod csm;
 pub mod kokoro;
 pub mod mimi;
+pub mod moshi;
 pub mod piper_plus;
 pub mod silero_vad;
 pub mod speaker;

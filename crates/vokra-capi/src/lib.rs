@@ -57,6 +57,7 @@ mod asr;
 mod error;
 mod ffi_guard;
 mod handle;
+mod s2s;
 mod session;
 mod stream;
 mod tts;
