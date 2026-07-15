@@ -119,18 +119,19 @@ pub use cache::paged_quant::{
 };
 pub use complex::Complex32;
 pub use compliance::{
-    ComplianceConfig, ComplianceLevel, CompliancePolicy, DisclosureConfig, LicenseClass,
-    LicenseResolution, ResolutionSource, SpeakerEmbeddingPolicy, VoiceCloningPolicy,
+    AttributionInfo, ComplianceConfig, ComplianceLevel, CompliancePolicy, DisclosureConfig,
+    LicenseClass, LicenseResolution, ResolutionSource, SpeakerEmbeddingPolicy, VoiceCloningPolicy,
     WatermarkBackendStatus, WatermarkConfig, check_weight_license, registry_lookup,
-    resolve_license_class, stamp_provenance,
+    resolve_attribution, resolve_license_class, stamp_attribution, stamp_provenance,
 };
 pub use decode::{
     CfgMode, DecodeStepper, LogitsSource, Sampler, SamplerConfig, TOKEN_FLAG_EOT, apply_cfg,
     apply_cfg_inplace, argmax, sample_sequence,
 };
 pub use engines::{
-    AsrEngine, DialogContextTurn, DialogRequest, S2sEngine, SynthesisRequest, TtsEngine, VadEngine,
-    VadStreamHandle,
+    AsrEngine, DialogContextTurn, DialogRequest, DuplexInterruptHandle, DuplexPushReport,
+    DuplexSessionConfig, S2sDuplexEngine, S2sDuplexHandle, S2sEngine, SynthesisRequest, TtsEngine,
+    VadEngine, VadStreamHandle,
 };
 pub use error::{Result, VokraError};
 pub use gguf::{

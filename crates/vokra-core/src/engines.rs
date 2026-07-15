@@ -14,6 +14,9 @@
 //! [`Session::with_vad_engine`](crate::Session::with_vad_engine) (M0-07-T10
 //! for TTS; the ASR / VAD injection points are the M0-06 / M0-05 counterparts).
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::error::Result;
 use crate::tasks::{DialogTurn, SynthesizedAudio, Transcription};
 
@@ -36,6 +39,185 @@ pub trait AsrEngine: Send + Sync {
 pub trait S2sEngine: Send + Sync {
     /// Runs one dialog turn.
     fn dialog(&self, request: &DialogRequest) -> Result<DialogTurn>;
+}
+
+/// A **full-duplex** speech-to-speech engine (Moshi = M4-06, FR-MD-09):
+/// continuous, simultaneous audio in both directions over one session —
+/// unlike the turn-based [`S2sEngine::dialog`].
+///
+/// The `Arc<Self>` receiver keeps the trait object-safe while letting the
+/// returned handle own everything it needs (`'static` — the C ABI holds
+/// handles across calls). Injected with
+/// [`Session::with_s2s_duplex_engine`](crate::Session::with_s2s_duplex_engine);
+/// the facade entry is [`S2s::duplex`](crate::tasks::S2s::duplex).
+pub trait S2sDuplexEngine: Send + Sync {
+    /// Opens a full-duplex session (mic → model → speaker pipeline).
+    ///
+    /// Engines must honor the [`DuplexSessionConfig`] echo contract:
+    /// without [`DuplexSessionConfig::aec_disabled_explicitly`] a session
+    /// whose acoustic-echo canceller is not wired is a **loud error**
+    /// (FR-OP-60 / FR-EX-08 — AEC 無しの Moshi/CSM は自己エコーで即崩壊,
+    /// CLAUDE.md レビュアー C 指摘 #3), and the explicit opt-in must leave
+    /// an observable warning on the handle — never a silent skip.
+    fn open_duplex(
+        self: Arc<Self>,
+        config: &DuplexSessionConfig,
+    ) -> Result<Box<dyn S2sDuplexHandle + Send>>;
+}
+
+/// A live full-duplex session: push mic frames and pull model frames
+/// continuously (wall-clock-free — file-driven tests and real-time
+/// callers use the same API; M4-06-T16).
+pub trait S2sDuplexHandle {
+    /// Feeds one mic frame (`frame_hop()` mono samples at
+    /// [`Self::sample_rate`]). Runs the input front (AEC unless
+    /// explicitly disabled) and one model step; the returned report makes
+    /// every degraded mode visible (FR-EX-08).
+    fn push_mic_frame(&mut self, pcm: &[f32]) -> Result<DuplexPushReport>;
+
+    /// Pops the next model frame for playback (`None` = nothing pending
+    /// — e.g. during the model's delay warmup or after an interrupt
+    /// flush). Pulling *is* the playback hand-off: the engine stamps the
+    /// frame into its echo-reference queue at this moment.
+    fn pull_model_frame(&mut self) -> Result<Option<Vec<f32>>>;
+
+    /// The inner monologue accumulated so far (Moshi's self-generated
+    /// transcript; display-rule filtered — M4-06-T14). Engines without a
+    /// text stream return an empty string.
+    fn monologue_text(&self) -> Result<String>;
+
+    /// A cross-thread barge-in handle (M3-14 semantics: set the flag from
+    /// any thread; the session flushes pending model output and resets
+    /// its generation state at the next push/pull boundary, then clears
+    /// the flag — mic intake continues).
+    fn interrupt_handle(&self) -> DuplexInterruptHandle;
+
+    /// Construction-time warnings (e.g. the explicit AEC opt-out). Empty
+    /// on a default (AEC-enabled) session.
+    fn warnings(&self) -> &[String];
+
+    /// Mono samples per push/pull frame.
+    fn frame_hop(&self) -> usize;
+
+    /// PCM sample rate (Hz) of both directions.
+    fn sample_rate(&self) -> u32;
+}
+
+/// Per-push observability for [`S2sDuplexHandle::push_mic_frame`]
+/// (FR-EX-08: degraded modes are visible, never silent). Fields grow
+/// under `#[non_exhaustive]`.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct DuplexPushReport {
+    /// `true` once the model emitted a frame for this push (post-warmup).
+    pub step_emitted: bool,
+    /// `true` when the AEC actually ran on this frame.
+    pub aec_applied: bool,
+    /// RMS of the raw mic frame (echo-cancellation observability).
+    pub raw_rms: f32,
+    /// RMS of the frame after the input front (== `raw_rms` on the
+    /// explicit bypass).
+    pub cleaned_rms: f32,
+}
+
+/// Cross-thread duplex barge-in flag (`Arc<AtomicBool>` — the M3-14
+/// [`crate::stream::InterruptHandle`] contract mirrored for duplex
+/// sessions; M4-06-T18).
+#[derive(Debug, Clone)]
+pub struct DuplexInterruptHandle {
+    flag: Arc<AtomicBool>,
+}
+
+impl DuplexInterruptHandle {
+    /// Wraps a shared flag (engine-side constructor).
+    #[must_use]
+    pub fn new(flag: Arc<AtomicBool>) -> Self {
+        Self { flag }
+    }
+
+    /// Requests barge-in: the session flushes and resets at its next
+    /// push/pull boundary (set-then-handle; Release ordering).
+    pub fn interrupt(&self) {
+        self.flag.store(true, Ordering::Release);
+    }
+
+    /// Whether an interrupt is pending (not yet acknowledged).
+    #[must_use]
+    pub fn is_pending(&self) -> bool {
+        self.flag.load(Ordering::Acquire)
+    }
+}
+
+/// Options for [`S2sDuplexEngine::open_duplex`]. Engine-specific knobs
+/// (AEC filter shape, queue capacity, ...) belong to engine
+/// construction; this carries only the session-generic contract.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct DuplexSessionConfig {
+    /// `true` → both decode channels sample greedily (reproducible —
+    /// parity / demo anchor).
+    pub deterministic: bool,
+    /// Stochastic sampling seed (ignored when `deterministic`).
+    pub seed: u64,
+    /// **Explicit** opt-out of echo cancellation (recorded-input /
+    /// loopback-free rigs only). Defaults to `false`; setting it makes
+    /// the engine record a loud warning on the handle instead of
+    /// silently skipping the canceller (FR-EX-08).
+    pub aec_disabled_explicitly: bool,
+    /// Playback-latency compensation added to the echo-reference clock
+    /// when frames are pulled (owner-tunable on real hardware —
+    /// M4-06-T17).
+    pub playback_offset_samples: u64,
+}
+
+impl Default for DuplexSessionConfig {
+    fn default() -> Self {
+        Self {
+            deterministic: false,
+            seed: 0,
+            aec_disabled_explicitly: false,
+            playback_offset_samples: 0,
+        }
+    }
+}
+
+impl DuplexSessionConfig {
+    /// The default (AEC-required, stochastic) config.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Forces deterministic (greedy) sampling.
+    #[must_use]
+    pub fn deterministic(mut self) -> Self {
+        self.deterministic = true;
+        self
+    }
+
+    /// Sets the stochastic seed.
+    #[must_use]
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
+    }
+
+    /// **Explicitly** disables the echo canceller — only for inputs with
+    /// no acoustic echo path (recorded files). The engine keeps a loud
+    /// warning on the handle; there is no silent variant of this switch
+    /// (FR-EX-08 / FR-OP-60).
+    #[must_use]
+    pub fn with_aec_disabled_explicitly(mut self) -> Self {
+        self.aec_disabled_explicitly = true;
+        self
+    }
+
+    /// Sets the playback-latency compensation (samples).
+    #[must_use]
+    pub fn with_playback_offset_samples(mut self, samples: u64) -> Self {
+        self.playback_offset_samples = samples;
+        self
+    }
 }
 
 /// A text-to-speech engine (implemented natively in `vokra-models`, e.g.

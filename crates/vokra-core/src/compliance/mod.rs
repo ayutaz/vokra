@@ -311,6 +311,77 @@ fn emit_research_warning(res: &LicenseResolution) {
     );
 }
 
+/// The displayable attribution bundle for an `AttributionRequired` weight
+/// (FR-MD-09 — M4-06). Deployers surface [`Self::text`] in their UI /
+/// about screen to satisfy the CC-BY 4.0 display obligation (plus the
+/// NFR-LG-03 store checklists); `license` and `source_url` are the
+/// machine-readable companions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttributionInfo {
+    /// Human-readable attribution text (converter-stamped
+    /// `vokra.provenance.attribution`, or the registry fallback).
+    pub text: String,
+    /// The weight license label (e.g. `"CC-BY-4.0"`).
+    pub license: String,
+    /// Advisory upstream source (URL / repo) when known.
+    pub source_url: Option<String>,
+}
+
+/// Resolves the attribution surface for a GGUF (FR-MD-09 — M4-06-T23).
+///
+/// - Weight class **not** [`LicenseClass::requires_attribution`] →
+///   `None` (permissive weights carry no display obligation here; the
+///   NOTICE file covers code-level attribution).
+/// - Attribution-required with the converter-stamped
+///   `vokra.provenance.attribution` chunk → that text verbatim.
+/// - Attribution-required **without** the chunk (older conversion) → a
+///   registry-derived fallback naming the model id, license and source —
+///   the "attribution required but no attribution available" combination
+///   is structurally unrepresentable (never `None` for a gated class).
+pub fn resolve_attribution(gguf: &GgufFile) -> Option<AttributionInfo> {
+    let res = resolve_license_class(gguf);
+    if !res.class.requires_attribution() {
+        return None;
+    }
+    let source_url = gguf
+        .get(chunks::KEY_PROVENANCE_SOURCE)
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let text = match gguf
+        .get(chunks::KEY_PROVENANCE_ATTRIBUTION)
+        .and_then(|v| v.as_str())
+    {
+        Some(t) if !t.trim().is_empty() => t.to_owned(),
+        // Fallback: never leave an AttributionRequired weight without a
+        // displayable string (module docs). The wording mirrors NOTICE §5
+        // (Kyutai / CC-BY 4.0) generically by model id.
+        _ => format!(
+            "This application uses the `{}` model weights (license: {}), \
+             which require attribution to their authors{}.",
+            res.model_id,
+            res.license,
+            source_url
+                .as_deref()
+                .map(|s| format!(" — source: {s}"))
+                .unwrap_or_default()
+        ),
+    };
+    Some(AttributionInfo {
+        text,
+        license: res.license,
+        source_url,
+    })
+}
+
+/// Writes the `vokra.provenance.attribution` chunk (FR-MD-09 — the
+/// converter-side companion of [`stamp_provenance`]; M4-06-T22). Empty
+/// text is ignored (the runtime fallback then applies).
+pub fn stamp_attribution(builder: &mut GgufBuilder, text: &str) {
+    if !text.trim().is_empty() {
+        builder.add_string(chunks::KEY_PROVENANCE_ATTRIBUTION, text);
+    }
+}
+
 /// Writes the `vokra.provenance.*` weight-license chunk into a [`GgufBuilder`]
 /// — the minimal converter conduit (M2-13, "converter can write a license
 /// class"). The offline `vokra-convert` tool calls this so a produced GGUF
@@ -505,6 +576,67 @@ mod tests {
             check_weight_license(&file, &CompliancePolicy::strict()),
             Err(VokraError::ResearchLicenseRequired { .. })
         ));
+    }
+
+    #[test]
+    fn attribution_is_none_for_permissive_and_present_for_attribution_required() {
+        // Permissive → no display obligation surfaces here.
+        let mut b = GgufBuilder::new();
+        stamp_provenance(
+            &mut b,
+            LicenseClass::Permissive,
+            "MIT",
+            Some("whisper-base"),
+            None,
+        );
+        assert!(resolve_attribution(&parse(&b)).is_none());
+
+        // AttributionRequired + converter-stamped text → verbatim.
+        let mut b = GgufBuilder::new();
+        stamp_provenance(
+            &mut b,
+            LicenseClass::AttributionRequired,
+            "CC-BY-4.0",
+            Some("moshi"),
+            Some("https://github.com/kyutai-labs/moshi"),
+        );
+        stamp_attribution(&mut b, "Moshi weights (c) Kyutai, CC-BY 4.0.");
+        let info = resolve_attribution(&parse(&b)).expect("attribution surfaces");
+        assert_eq!(info.text, "Moshi weights (c) Kyutai, CC-BY 4.0.");
+        assert_eq!(info.license, "attribution-required");
+        assert_eq!(
+            info.source_url.as_deref(),
+            Some("https://github.com/kyutai-labs/moshi")
+        );
+    }
+
+    #[test]
+    fn attribution_required_without_chunk_falls_back_to_registry_text() {
+        // The "attribution required but nothing to display" combination is
+        // structurally unrepresentable (M4-06-T23): an older conversion
+        // without the chunk still yields a non-empty registry-derived text.
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_PROVENANCE_MODEL_ID, "moshi");
+        let info = resolve_attribution(&parse(&b)).expect("registry fallback fires");
+        assert!(
+            info.text.contains("moshi"),
+            "names the model: {}",
+            info.text
+        );
+        assert!(!info.text.trim().is_empty());
+
+        // Empty stamped text is treated as absent (fallback, not blank UI).
+        let mut b = GgufBuilder::new();
+        stamp_provenance(
+            &mut b,
+            LicenseClass::AttributionRequired,
+            "CC-BY-4.0",
+            Some("mimi"),
+            None,
+        );
+        stamp_attribution(&mut b, "   ");
+        let info = resolve_attribution(&parse(&b)).expect("attribution surfaces");
+        assert!(!info.text.trim().is_empty(), "fallback replaces blank text");
     }
 
     #[test]

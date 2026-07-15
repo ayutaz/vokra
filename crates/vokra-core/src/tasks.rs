@@ -127,6 +127,35 @@ impl S2s<'_> {
             )),
         }
     }
+
+    /// Opens a **full-duplex** session (Moshi = M4-06) with the default
+    /// config: AEC required, stochastic sampling. Push mic frames / pull
+    /// model frames continuously on the returned handle
+    /// ([`S2sDuplexHandle`](crate::engines::S2sDuplexHandle)).
+    ///
+    /// Delegates to the engine injected via
+    /// [`Session::with_s2s_duplex_engine`](crate::Session::with_s2s_duplex_engine);
+    /// without one it returns [`VokraError::NotImplemented`] (turn-based
+    /// engines like CSM do not implement the duplex face — FR-EX-08,
+    /// never a fake duplex over turns).
+    pub fn duplex(&self) -> Result<Box<dyn crate::engines::S2sDuplexHandle + Send>> {
+        self.duplex_with(&crate::engines::DuplexSessionConfig::default())
+    }
+
+    /// Opens a full-duplex session with an explicit
+    /// [`DuplexSessionConfig`](crate::engines::DuplexSessionConfig)
+    /// (determinism / seed / the explicit AEC opt-out).
+    pub fn duplex_with(
+        &self,
+        config: &crate::engines::DuplexSessionConfig,
+    ) -> Result<Box<dyn crate::engines::S2sDuplexHandle + Send>> {
+        match self.session.s2s_duplex_engine() {
+            Some(engine) => std::sync::Arc::clone(engine).open_duplex(config),
+            None => Err(VokraError::NotImplemented(
+                "no full-duplex S2S engine injected (Moshi = M4-06, v1.0-rc window)",
+            )),
+        }
+    }
 }
 
 /// Result of [`Asr::transcribe`] (fields grow with M0-06: timestamps,
@@ -227,6 +256,24 @@ mod tests {
         let result = session
             .s2s()
             .dialog_request(&crate::engines::DialogRequest::new("hi"));
+        assert!(matches!(result, Err(VokraError::NotImplemented(_))));
+    }
+
+    #[test]
+    fn s2s_duplex_facade_errors_without_a_duplex_engine() {
+        // A turn-based engine (CSM) must not masquerade as duplex — the
+        // duplex entry gates on its own injection point (M4-06-T19).
+        let (_file, session) = session("s2s-duplex");
+        let result = session.s2s().duplex();
+        assert!(matches!(result, Err(VokraError::NotImplemented(_))));
+        let cfg = crate::engines::DuplexSessionConfig::new()
+            .deterministic()
+            .with_seed(7)
+            .with_aec_disabled_explicitly()
+            .with_playback_offset_samples(480);
+        assert!(cfg.deterministic && cfg.aec_disabled_explicitly);
+        assert_eq!(cfg.playback_offset_samples, 480);
+        let result = session.s2s().duplex_with(&cfg);
         assert!(matches!(result, Err(VokraError::NotImplemented(_))));
     }
 

@@ -1,0 +1,11 @@
+{
+ "d_model": 16,
+ "dep_q": 2,
+ "kind": "self-test (synthetic format pin \u2014 no reference semantics)",
+ "max_delay": 1,
+ "n_channels": 5,
+ "n_emitted": 2,
+ "n_steps": 3,
+ "n_user": 2,
+ "text_card": 13
+}
