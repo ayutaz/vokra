@@ -93,4 +93,21 @@ deny = [
     { crate = "shaderc", reason = "M3-02 T13 red line / NFR-DS-02: SPIR-V is committed pre-compiled; no shader-toolchain crate" },
     { crate = "glslang-sys", reason = "M3-02 T13 red line / NFR-DS-02: SPIR-V is committed pre-compiled; no shader-toolchain crate" },
     { crate = "naga", reason = "M3-02 T13 red line / NFR-DS-02: SPIR-V is committed pre-compiled; no shader-toolchain crate" },
+    # WebGPU binding crates — M4-01 red line (ADR M4-01-webgpu-wasm §6, wired
+    # from the ADR M3-02-spirv-generation §4-(d) ban wording that named `wgpu`
+    # but had no deny.toml entry yet): the WebGPU backend talks to the browser
+    # `navigator.gpu` API through a raw `#[link(wasm_import_module)]` extern
+    # shim + hand-written JS glue. The `wgpu` crate family would add a large
+    # non-`vokra-*` dependency tree to Cargo.lock (NFR-DS-02).
+    { crate = "wgpu", reason = "M4-01 red line / NFR-DS-02: WebGPU is a raw extern-import shim + hand-written JS glue; no binding crate (ADR M4-01 §2/§6)" },
+    { crate = "wgpu-core", reason = "M4-01 red line / NFR-DS-02: WebGPU is a raw extern-import shim + hand-written JS glue; no binding crate (ADR M4-01 §2/§6)" },
+    { crate = "wgpu-hal", reason = "M4-01 red line / NFR-DS-02: WebGPU is a raw extern-import shim + hand-written JS glue; no binding crate (ADR M4-01 §2/§6)" },
+    { crate = "wgpu-types", reason = "M4-01 red line / NFR-DS-02: WebGPU is a raw extern-import shim + hand-written JS glue; no binding crate (ADR M4-01 §2/§6)" },
+    # WASM JS-glue toolchain crates — M4-01 red line (ADR M4-01-webgpu-wasm §5):
+    # the JS glue and the .d.ts are hand-written; wasm-bindgen would inject a
+    # macro + runtime dependency pair into Cargo.lock (NFR-DS-02).
+    { crate = "wasm-bindgen", reason = "M4-01 red line / NFR-DS-02: JS glue is hand-written; no wasm-bindgen toolchain (ADR M4-01 §5/§6)" },
+    { crate = "wasm-bindgen-futures", reason = "M4-01 red line / NFR-DS-02: JS glue is hand-written; no wasm-bindgen toolchain (ADR M4-01 §5/§6)" },
+    { crate = "js-sys", reason = "M4-01 red line / NFR-DS-02: JS glue is hand-written; no wasm-bindgen toolchain (ADR M4-01 §5/§6)" },
+    { crate = "web-sys", reason = "M4-01 red line / NFR-DS-02: JS glue is hand-written; no wasm-bindgen toolchain (ADR M4-01 §5/§6)" },
 ]
