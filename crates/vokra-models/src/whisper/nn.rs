@@ -290,6 +290,85 @@ pub(crate) fn attention_from_kv_into(
 
 // ---- allocating wrappers (unit tests + one-shot cross-K/V precompute) -------
 
+/// Non-causal cross-attention that ALSO returns the per-head softmax
+/// probabilities `[n_head, t_q, t_kv]` (M4-20 word-timestamp capture,
+/// ADR M4-20 §D-3). Off the hot path (allocating) — word alignment is a
+/// decode-independent second forward, not the autoregressive loop.
+///
+/// The attention output `[t_q, d]` is returned for the residual so the
+/// capturing forward stays a faithful forward (the h that later layers see is
+/// correct). The math mirrors [`attention_from_kv_into`]'s per-op,
+/// non-causal path exactly (same `(hd)^-0.5` scale, same head gather order,
+/// same GEMM/softmax kernels), so the captured probabilities are the model's
+/// real cross-attention weights, not an approximation.
+#[allow(clippy::too_many_arguments)] // attention operands + the backend dispatcher
+pub(crate) fn cross_attention_capture(
+    compute: &Compute,
+    xq: &[f32],
+    t_q: usize,
+    k: &[f32],
+    v: &[f32],
+    t_kv: usize,
+    q_lin: &Linear,
+    out_lin: &Linear,
+    n_head: usize,
+) -> Result<(Vec<f32>, Vec<f32>)> {
+    let d = q_lin.out_features;
+    if n_head == 0 || d % n_head != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "cross_attention_capture: n_head {n_head} must divide d {d}"
+        )));
+    }
+    let hd = d / n_head;
+    let scale = (hd as f32).powf(-0.5);
+
+    // Scaled query projection.
+    let mut q = vec![0.0f32; t_q * d];
+    compute.gemm_f32(
+        t_q,
+        d,
+        q_lin.in_features,
+        xq,
+        &q_lin.w_t,
+        q_lin.bias.as_deref(),
+        &mut q,
+    )?;
+    for val in &mut q {
+        *val *= scale;
+    }
+
+    let mut probs_all = vec![0.0f32; n_head * t_q * t_kv];
+    let mut context = vec![0.0f32; t_q * d];
+    let mut qh = vec![0.0f32; t_q * hd];
+    let mut kh_t = vec![0.0f32; hd * t_kv];
+    let mut vh = vec![0.0f32; t_kv * hd];
+    let mut scores = vec![0.0f32; t_q * t_kv];
+    let mut probs = vec![0.0f32; t_q * t_kv];
+    let mut ctx_h = vec![0.0f32; t_q * hd];
+    for h in 0..n_head {
+        let c0 = h * hd;
+        for i in 0..t_q {
+            qh[i * hd..i * hd + hd].copy_from_slice(&q[i * d + c0..i * d + c0 + hd]);
+        }
+        for j in 0..t_kv {
+            vh[j * hd..j * hd + hd].copy_from_slice(&v[j * d + c0..j * d + c0 + hd]);
+            for c in 0..hd {
+                kh_t[c * t_kv + j] = k[j * d + c0 + c];
+            }
+        }
+        compute.gemm_f32(t_q, t_kv, hd, &qh, &kh_t, None, &mut scores)?;
+        compute.softmax_f32(&scores, &mut probs, t_q, t_kv)?;
+        probs_all[h * t_q * t_kv..(h + 1) * t_q * t_kv].copy_from_slice(&probs);
+        compute.gemm_f32(t_q, hd, t_kv, &probs, &vh, None, &mut ctx_h)?;
+        for i in 0..t_q {
+            context[i * d + c0..i * d + c0 + hd].copy_from_slice(&ctx_h[i * hd..i * hd + hd]);
+        }
+    }
+    let mut out = Vec::new();
+    linear_into(compute, &mut out, &context, t_q, out_lin)?;
+    Ok((out, probs_all))
+}
+
 /// Allocating [`project_kv_into`]: returns `(k, v)` each `[t_kv, d]`. Used by
 /// the decoder's one-shot cross-attention K/V precomputation and the tests.
 pub(crate) fn project_kv(

@@ -373,6 +373,7 @@ mod tests {
             ffn_dim: 64,
             eot: 15,
             decoder_start_ids: vec![0, 1, 2, 3],
+            alignment_heads: Vec::new(),
         }
     }
 
