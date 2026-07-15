@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M3-02-T13 / ADR M3-02-spirv-generation §4 (a).
+# M3-02-T13 + M4-13-T11 / ADR M3-02-spirv-generation §4 (a) + (b).
 #
 # Compile every `crates/vokra-backend-vulkan/kernels/glsl/*.comp` shader with
 # `glslc` (Vulkan SDK, developer-side) into a matching
@@ -10,21 +10,54 @@
 #
 # This script is a **developer tool** and NOT a runtime dependency. `cargo
 # build -p vokra-backend-vulkan` never invokes it (NFR-DS-02 zero-dep + NFR-RL-05
-# no CPU-side JIT). CI recompiles by re-running this script and diffing the
-# `.spv` output against the committed blobs (T36 follow-up).
+# no CPU-side JIT). CI drift-gates by re-running this script in `--check` mode
+# and diffing the recompiled output against the committed blobs
+# (gpu-vulkan-parity.yml, M4-13-T14; ADR §4 (b)).
 #
 # Dependencies: bash (>= 4.x), coreutils (`sha256sum` or macOS `shasum -a 256`),
-# and `glslc` from the Vulkan SDK. See `scripts/install-vulkan-toolchain.md` for
-# install instructions per OS. No Python, no crate, no cargo.
+# and `glslc` from the Vulkan SDK (fallback: `glslangValidator` from
+# glslang-tools — see the tool-resolution note below). See
+# `scripts/install-vulkan-toolchain.md` for install instructions per OS. No
+# Python, no crate, no cargo.
+#
+# Modes (ADR §4 (b)):
+#     --update   compile .comp → precompiled/*.spv IN PLACE and refresh
+#                SHA256SUMS (the owner M4-13-T16 workflow). DEFAULT when no
+#                mode flag is given (backwards compatible with the M3-02
+#                invocation).
+#     --check    recompile every .comp into a temp dir and DIFF the SHA-256
+#                of each result against the committed precompiled/*.spv.
+#                Non-zero exit on any drift (silent-divergence gate for CI).
+#                When NO .spv is committed yet (the placeholder slice before
+#                the owner's M4-13-T16 commit), reports that honestly and
+#                exits 0 WITHOUT requiring a compiler — a clean skip, not a
+#                fabricated pass.
+#
+# Per-shader target environment (M4-13-T11): each `.comp` header carries its
+# own `Compile with: glslc --target-env=vulkanX.Y …` line (gemm_coopmat needs
+# vulkan1.3 for VK_KHR_cooperative_matrix; everything else is vulkan1.1).
+# The script parses that line per file and falls back to vulkan1.1 when the
+# header names none — the committed source is the single source of truth,
+# not a script-side constant.
+#
+# Tool resolution: `glslc` (shaderc; ships in the LunarG SDK and Homebrew
+# `shaderc`) is preferred. When absent, `glslangValidator -V` (Khronos
+# glslang; Ubuntu `glslang-tools`, Homebrew `glslang`) is used as a
+# fallback. NOTE: the two compilers do NOT emit byte-identical SPIR-V — a
+# `--check` run must use the same tool family that produced the committed
+# blobs, or drift will be reported (which is honest: the report names the
+# tool used).
 #
 # Usage:
-#     scripts/compile-vulkan-shaders.sh                # recompile everything
-#     scripts/compile-vulkan-shaders.sh gemm_subgroup  # recompile one kernel
-#     GLSLC=/opt/vulkan/bin/glslc scripts/compile-vulkan-shaders.sh  # override tool
+#     scripts/compile-vulkan-shaders.sh                       # --update, all kernels
+#     scripts/compile-vulkan-shaders.sh --update gemm_subgroup # one kernel
+#     scripts/compile-vulkan-shaders.sh --check                # CI drift gate
+#     GLSLC=/opt/vulkan/bin/glslc scripts/compile-vulkan-shaders.sh  # tool override
 #
 # Exit status:
-#     0 — all blobs produced and hashed, SHA256SUMS refreshed
-#     1 — glslc missing or reported errors
+#     0 — success (--update: blobs + SHA256SUMS refreshed; --check: no drift,
+#         or honest clean skip when nothing is committed yet)
+#     1 — compiler missing (when required) or compile errors or drift found
 #     2 — sha256 tool missing
 #     3 — GLSL source or precompiled/ directory layout unexpected
 
@@ -51,18 +84,69 @@ if [ ! -d "$SPV_DIR" ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 2. Resolve glslc + sha256 tool.
+# 2. Parse mode + optional kernel filter.
 # ------------------------------------------------------------------------------
 
-GLSLC_BIN="${GLSLC:-glslc}"
-if ! command -v "$GLSLC_BIN" >/dev/null 2>&1; then
-    cat >&2 <<EOF
-error: glslc not found (tried: $GLSLC_BIN)
+MODE="update"
+FILTER=""
+for arg in "$@"; do
+    case "$arg" in
+        --update) MODE="update" ;;
+        --check)  MODE="check" ;;
+        --*)
+            echo "error: unknown flag '$arg' (expected --update or --check)" >&2
+            exit 3
+            ;;
+        *)
+            if [ -n "$FILTER" ]; then
+                echo "error: at most one kernel filter may be given (got '$FILTER' and '$arg')" >&2
+                exit 3
+            fi
+            FILTER="$arg"
+            ;;
+    esac
+done
 
-The Vulkan SDK provides glslc. To install:
-    macOS:   brew install glslang         # then glslc is on PATH as glslangValidator's sibling
+# ------------------------------------------------------------------------------
+# 3. --check clean-skip path: nothing committed yet → honest report, exit 0.
+#    Runs BEFORE tool resolution so the placeholder slice needs no compiler
+#    (the owner M4-13-T16 commit flips this path off automatically).
+# ------------------------------------------------------------------------------
+
+shopt -s nullglob
+COMMITTED_SPV=("$SPV_DIR"/*.spv)
+if [ "$MODE" = "check" ] && [ "${#COMMITTED_SPV[@]}" -eq 0 ]; then
+    echo "[check] no committed .spv under $SPV_DIR"
+    echo "[check] placeholder slice (owner glslc commit pending, M4-13-T16) — drift check"
+    echo "[check] has nothing to compare against; skipping cleanly (NOT a fabricated pass:"
+    echo "[check] the runtime treats these kernels as UnsupportedOp until blobs land)."
+    exit 0
+fi
+
+# ------------------------------------------------------------------------------
+# 4. Resolve compiler + sha256 tool.
+# ------------------------------------------------------------------------------
+
+# Preferred: glslc (or $GLSLC override). Fallback: glslangValidator -V.
+GLSLC_BIN="${GLSLC:-glslc}"
+COMPILER_KIND=""
+if command -v "$GLSLC_BIN" >/dev/null 2>&1; then
+    COMPILER_KIND="glslc"
+elif command -v glslangValidator >/dev/null 2>&1; then
+    COMPILER_KIND="glslangValidator"
+    echo "note: glslc not found; falling back to glslangValidator (glslang-tools)." >&2
+    echo "      SPIR-V output differs between the two compilers — in --check mode," >&2
+    echo "      compare only against blobs produced by the same tool family." >&2
+else
+    cat >&2 <<EOF
+error: no SPIR-V compiler found (tried: $GLSLC_BIN, glslangValidator)
+
+To install:
+    macOS:   brew install shaderc          # provides glslc
+             or: brew install glslang      # provides glslangValidator
              or download the LunarG Vulkan SDK: https://vulkan.lunarg.com/sdk/home#mac
-    Ubuntu:  sudo apt install glslang-tools
+    Ubuntu:  sudo apt install glslang-tools   # provides glslangValidator
+             (glslc ships in the LunarG SDK tarball for Linux)
     Windows: download the LunarG Vulkan SDK: https://vulkan.lunarg.com/sdk/home#windows
              and add %VULKAN_SDK%\Bin to PATH.
 
@@ -83,21 +167,100 @@ else
     exit 2
 fi
 
+hash_of() {
+    # Prints just the hex digest of "$1".
+    $SHA256_TOOL "$1" | awk '{print $1}'
+}
+
 # ------------------------------------------------------------------------------
-# 3. Determine kernel filter (optional argument is a basename to recompile only).
+# 5. Helpers: per-shader target-env (parsed from the .comp header) + compile.
 # ------------------------------------------------------------------------------
 
-FILTER="${1:-}"
+target_env_of() {
+    # Reads the "Compile with: glslc --target-env=vulkanX.Y ..." header line
+    # of "$1"; defaults to vulkan1.1 (M3-02 ADR §T01(c) baseline) when the
+    # header names none.
+    local env
+    env="$(grep -o -- '--target-env=vulkan[0-9]\.[0-9]' "$1" | head -n 1 | cut -d= -f2 || true)"
+    echo "${env:-vulkan1.1}"
+}
+
+compile_one() {
+    # compile_one <src.comp> <dst.spv> — honours the per-file target env.
+    local src="$1" dst="$2" tenv
+    tenv="$(target_env_of "$src")"
+    case "$COMPILER_KIND" in
+        glslc)
+            # -O / --optimize intentionally omitted: the committed bytecode
+            # stays a faithful, debuggable reflection of the source.
+            "$GLSLC_BIN" --target-env="$tenv" -o "$dst" "$src"
+            ;;
+        glslangValidator)
+            glslangValidator -V --target-env "$tenv" -o "$dst" "$src" >/dev/null
+            ;;
+    esac
+}
 
 # ------------------------------------------------------------------------------
-# 4. Recompile each *.comp -> *.spv.
+# 6. Main loop.
 # ------------------------------------------------------------------------------
 
-# Bash: enable nullglob so an empty directory becomes an empty loop (no literal
-# `*.comp` iteration).
-shopt -s nullglob
+if [ "$MODE" = "check" ]; then
+    TMP_DIR="$(mktemp -d)"
+    trap 'rm -rf "$TMP_DIR"' EXIT
+    CHECKED=0
+    DRIFTED=0
+    MISSING=0
+    for src in "$GLSL_DIR"/*.comp; do
+        base="$(basename "$src" .comp)"
+        if [ -n "$FILTER" ] && [ "$base" != "$FILTER" ]; then
+            continue
+        fi
+        committed="$SPV_DIR/${base}.spv"
+        if [ ! -f "$committed" ]; then
+            # Partial commits are normal mid-T16 (owner lands blobs
+            # shader-by-shader); report but do not fail — the runtime keeps
+            # treating the op as UnsupportedOp, which is already honest.
+            echo "[check] $base: no committed .spv yet (placeholder) — skipped"
+            MISSING=$((MISSING + 1))
+            continue
+        fi
+        rebuilt="$TMP_DIR/${base}.spv"
+        if ! compile_one "$src" "$rebuilt"; then
+            echo "[check] $base: recompile FAILED (compiler=$COMPILER_KIND)" >&2
+            DRIFTED=$((DRIFTED + 1))
+            continue
+        fi
+        want="$(hash_of "$committed")"
+        got="$(hash_of "$rebuilt")"
+        if [ "$want" = "$got" ]; then
+            echo "[check] $base: OK ($got)"
+        else
+            echo "[check] $base: DRIFT — committed $want vs recompiled $got (compiler=$COMPILER_KIND)" >&2
+            DRIFTED=$((DRIFTED + 1))
+        fi
+        CHECKED=$((CHECKED + 1))
+    done
+    # Committed .spv with no matching source is also drift (stale blob).
+    for spv in "${COMMITTED_SPV[@]}"; do
+        base="$(basename "$spv" .spv)"
+        if [ -n "$FILTER" ] && [ "$base" != "$FILTER" ]; then
+            continue
+        fi
+        if [ ! -f "$GLSL_DIR/${base}.comp" ]; then
+            echo "[check] $base: committed .spv has NO GLSL source (stale blob)" >&2
+            DRIFTED=$((DRIFTED + 1))
+        fi
+    done
+    echo "[check] done: $CHECKED compared, $MISSING not yet committed, $DRIFTED drifted"
+    if [ "$DRIFTED" -gt 0 ]; then
+        echo "error: SPIR-V drift detected — rerun with --update and commit, or fix the source" >&2
+        exit 1
+    fi
+    exit 0
+fi
 
-TARGET_ENV="vulkan1.1"  # Vokra targets Vulkan 1.1+ per M3-02 ADR §T01(c)
+# ---- update mode -------------------------------------------------------------
 
 COMPILED_COUNT=0
 FAILED_COUNT=0
@@ -108,14 +271,11 @@ for src in "$GLSL_DIR"/*.comp; do
         continue
     fi
     dst="$SPV_DIR/${base}.spv"
-    # -O2 (or --optimize) is intentionally omitted so the compiled bytecode is
-    # a faithful reflection of the source. T14+ can revisit if size/speed
-    # matters, but for parity CI the un-optimised form is more debuggable.
-    if "$GLSLC_BIN" --target-env="$TARGET_ENV" -o "$dst" "$src"; then
-        printf '[ok]  %s -> %s\n' "$src" "$dst"
+    if compile_one "$src" "$dst"; then
+        printf '[ok]  %s -> %s (%s)\n' "$src" "$dst" "$(target_env_of "$src")"
         COMPILED_COUNT=$((COMPILED_COUNT + 1))
     else
-        printf '[err] %s (glslc failed)\n' "$src" >&2
+        printf '[err] %s (compile failed, compiler=%s)\n' "$src" "$COMPILER_KIND" >&2
         FAILED_COUNT=$((FAILED_COUNT + 1))
     fi
 done
@@ -134,7 +294,7 @@ if [ "$COMPILED_COUNT" -eq 0 ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 5. Emit SHA256SUMS (over ALL .spv, not just the ones we recompiled — so that
+# 7. Emit SHA256SUMS (over ALL .spv, not just the ones we recompiled — so that
 #    a single-kernel rebuild still updates the manifest coherently).
 # ------------------------------------------------------------------------------
 
@@ -158,7 +318,7 @@ rm -f "$SUMS_FILE.new"
 popd >/dev/null
 
 # ------------------------------------------------------------------------------
-# 6. Emit human-readable summary for the developer to paste into spirv.rs's
+# 8. Emit human-readable summary for the developer to paste into spirv.rs's
 #    `expected_sha256_hex` field.
 # ------------------------------------------------------------------------------
 
@@ -167,6 +327,7 @@ echo "Generated $COMPILED_COUNT .spv blob(s). SHA-256 manifest at:"
 echo "    $SPV_DIR/SHA256SUMS"
 echo
 echo "Paste each hash into crates/vokra-backend-vulkan/src/spirv.rs's SHADERS"
-echo "manifest (SpirvShader::expected_sha256_hex) and rerun \`cargo test -p"
-echo "vokra-backend-vulkan verify_pinned_hashes_is_ok\` to confirm the runtime"
-echo "load path picks up the same bytes."
+echo "manifest (SpirvShader::expected_sha256_hex), switch the matching"
+echo "load_spv arm to include_bytes!, and rerun \`cargo test -p"
+echo "vokra-backend-vulkan\` (verify_pinned_hashes + the blob-gated parity"
+echo "tests light up automatically — M4-13-T16)."

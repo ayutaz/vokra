@@ -542,19 +542,37 @@ const fn nibble_hex(v: u8) -> u8 {
 
 /// Verifies every manifest entry with a pinned SHA-256 matches the blob
 /// [`load_spv_owned`] returns. Entries with `expected_sha256_hex = None` are
-/// treated as "not yet pinned" (foundation slice — no assertion).
+/// treated as "not yet pinned" (foundation slice — no assertion, honest:
+/// no fabricated pass). As the owner commits glslc blobs and pastes their
+/// hashes (M4-13-T16), each newly-pinned entry automatically joins this
+/// verification — placeholder-then-swap needs no code change here.
 ///
 /// Used from the crate test suite; not called at runtime (fast build).
 ///
 /// # Errors
 ///
-/// Returns the failing shader `name` on the first mismatch (empty tuple ok).
+/// Returns the failing shader `name` on the first mismatch, INCLUDING the
+/// "pin without a blob" bug state (a pinned hash whose blob does not load
+/// means either the `include_bytes!` arm was removed or the pin was pasted
+/// before the `.spv` was committed — fabricated-pass prevention,
+/// M4-13-T11).
 pub fn verify_pinned_hashes() -> Result<(), &'static str> {
-    for shader in SHADERS {
+    verify_pinned_hashes_of(SHADERS, load_spv_owned)
+}
+
+/// Table-parameterised body of [`verify_pinned_hashes`], with the blob
+/// loader injected so the failure paths (hash mismatch / pin-without-blob)
+/// are unit-testable against synthetic manifests without touching the real
+/// one (M4-13-T11).
+pub fn verify_pinned_hashes_of(
+    shaders: &[SpirvShader],
+    load: impl Fn(&str) -> Option<Vec<u8>>,
+) -> Result<(), &'static str> {
+    for shader in shaders {
         let Some(expected) = shader.expected_sha256_hex else {
             continue;
         };
-        let Some(blob) = load_spv_owned(shader.name) else {
+        let Some(blob) = load(shader.name) else {
             // A pinned hash without a blob is a bug — either the include_bytes!
             // was removed or the pin was added prematurely.
             return Err(shader.name);
@@ -755,6 +773,63 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// M4-13-T11 fabricated-pass prevention: a pinned hash whose blob does
+    /// not load is an explicit `Err(name)` (pin pasted before the `.spv`
+    /// landed, or the `include_bytes!` arm was removed), and a blob whose
+    /// bytes do not hash to the pin is equally an `Err(name)`. Exercised on
+    /// synthetic manifests so the real one stays untouched.
+    #[test]
+    fn verify_pinned_hashes_rejects_pin_without_blob_and_hash_mismatch() {
+        const PIN_NO_BLOB: &[SpirvShader] = &[SpirvShader {
+            name: "phantom",
+            variant: ShaderVariant::Standard,
+            ticket: "M4-13-T11",
+            // 64 hex chars, syntactically valid.
+            expected_sha256_hex: Some(
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+        }];
+        // Loader that has NO blob for the pinned entry.
+        assert_eq!(
+            verify_pinned_hashes_of(PIN_NO_BLOB, |_| None),
+            Err("phantom"),
+            "pin without a blob must be an explicit error"
+        );
+
+        // Loader that returns bytes which do NOT hash to the pin.
+        assert_eq!(
+            verify_pinned_hashes_of(PIN_NO_BLOB, |_| Some(vec![1, 2, 3, 4])),
+            Err("phantom"),
+            "hash mismatch must be an explicit error"
+        );
+
+        // Correct pin verifies: pin the actual SHA-256 of b"abc"
+        // (FIPS-180-4 §B.1).
+        const PIN_ABC: &[SpirvShader] = &[SpirvShader {
+            name: "abc_blob",
+            variant: ShaderVariant::Standard,
+            ticket: "M4-13-T11",
+            expected_sha256_hex: Some(
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ),
+        }];
+        assert_eq!(
+            verify_pinned_hashes_of(PIN_ABC, |_| Some(b"abc".to_vec())),
+            Ok(())
+        );
+
+        // Unpinned entries are skipped without assertion (honest
+        // foundation-slice behaviour — never a fabricated pass, never a
+        // spurious failure).
+        const UNPINNED: &[SpirvShader] = &[SpirvShader {
+            name: "not_yet",
+            variant: ShaderVariant::Standard,
+            ticket: "M4-13-T11",
+            expected_sha256_hex: None,
+        }];
+        assert_eq!(verify_pinned_hashes_of(UNPINNED, |_| None), Ok(()));
     }
 
     // FIPS-180-4 §Appendix B.1 / B.2 test vectors + one additional NIST vector
