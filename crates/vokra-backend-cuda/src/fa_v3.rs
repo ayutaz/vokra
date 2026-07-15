@@ -97,6 +97,94 @@ pub(crate) fn fa_v3_should_attempt_compile(compute_capability_major: c_int) -> b
     compute_capability_major >= FA_V3_MIN_CC_MAJOR
 }
 
+/// M4-07-T11: runtime t_q gate of the FA v3 arm in `launch_attn_chain` —
+/// symmetric with `FA_V2_MIN_TQ = 16`. **Structural value**: the FA v3
+/// warpgroup query tile is `BR3 = 64` rows, so a dispatch below 64 wastes
+/// most of every WGMMA tile and pays the fusion overhead (gather + tf32
+/// conversion passes) for nothing. Below the gate the chain falls through to
+/// the FA v2 arm / decomposed chain — **GPU-internal path selection, never a
+/// CPU fallback** (FR-EX-08).
+///
+/// # Honest negative, inherited from FA v2 (do not expect decoder RTF gain)
+///
+/// vast.ai N=10 on one RTX 4090 host measured gated FA v2 at mean RTF
+/// **0.782** vs decomposed **0.766** (CV 0.024 both;
+/// `docs/bench-baselines/vast-2026-07-10/rtf-fa-v2.jsonl` /
+/// `rtf-decomposed.jsonl`): the Whisper decoder's steady state is `t_q = 1`,
+/// which no fused-attention tile can help — the FA v2 gate never fires
+/// there, and **FA v3 makes no decoder-step RTF promise either**. The FA v3
+/// battleground is the **encoder self-attention (t_q = t_kv = 1500)** and
+/// prefix decode — reachable through the T10 encoder opt-in. The definitive
+/// calibration of this constant belongs to the owner's H100 measurement
+/// (M4-07-T18); it is deliberately NOT inflated ahead of that data.
+pub const FA_V3_MIN_TQ: usize = 64;
+
+/// The `launch_attn_chain` FA v3 arm predicate (single-sourced so the
+/// boundary is unit-testable CUDA-less): the chain's `use_flash_attn_v3`
+/// promise must hold AND the query tile must clear [`FA_V3_MIN_TQ`].
+pub(crate) fn fa_v3_gate_selects(use_flash_attn_v3: bool, t_q: usize) -> bool {
+    use_flash_attn_v3 && t_q >= FA_V3_MIN_TQ
+}
+
+/// Outcome of an FA v3 capability decision (session construction or encoder
+/// opt-in): route through FA v3, keep the decomposed/FA v2 chain, or — under
+/// `VOKRA_CUDA_FORCE_FA_V3` — refuse loudly (FR-EX-08 explicit error, the
+/// M2-03-followup §D9 force precedent).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum FaV3Decision {
+    /// Route the chain through FA v3 (`use_flash_attn_v3 = true` promise).
+    Select,
+    /// Keep the decomposed / FA v2 path (never an error by itself).
+    Decomposed,
+    /// Force was requested but FA v3 cannot be selected — the caller must
+    /// return an explicit error naming the reason.
+    ForceViolation,
+}
+
+/// Session-construction decision (M4-07-T09): FA v3 is selected only when
+/// `d_head == 64` (kernel tile is d_head-fixed), the device slot is `Ready`
+/// and `VOKRA_CUDA_DISABLE_FA_V3` is unset. `force` (from
+/// `VOKRA_CUDA_FORCE_FA_V3`) turns every non-selection into
+/// [`FaV3Decision::ForceViolation`] — including a contradictory
+/// force+disable combination, which must fail loudly rather than guess.
+pub(crate) fn fa_v3_session_decision(
+    hd: usize,
+    force: bool,
+    disabled_env: bool,
+    available: bool,
+) -> FaV3Decision {
+    if hd == 64 && available && !disabled_env {
+        FaV3Decision::Select
+    } else if force {
+        FaV3Decision::ForceViolation
+    } else {
+        FaV3Decision::Decomposed
+    }
+}
+
+/// Encoder opt-in decision (M4-07-T10): the encoder routes through FA v3
+/// only when *requested* (opt-in flag, or `force` — forcing implies the
+/// opt-in) AND selectable (`Ready` slot, no disable env). An unforced
+/// opt-in on a non-Hopper host stays [`FaV3Decision::Decomposed`] (a
+/// preference, not an error — the lazy-slot init already printed why).
+pub(crate) fn fa_v3_encoder_decision(
+    opt_in: bool,
+    force: bool,
+    disabled_env: bool,
+    available: bool,
+) -> FaV3Decision {
+    if !(opt_in || force) {
+        return FaV3Decision::Decomposed;
+    }
+    if available && !disabled_env {
+        FaV3Decision::Select
+    } else if force {
+        FaV3Decision::ForceViolation
+    } else {
+        FaV3Decision::Decomposed
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Env toggles (M4-07-T09/T10/T11). All three follow the presence-based
 // convention `VOKRA_CUDA_DISABLE_FA_V2` established (context.rs: `var_os(..)
@@ -109,7 +197,6 @@ pub(crate) fn fa_v3_should_attempt_compile(compute_capability_major: c_int) -> b
 /// `VOKRA_CUDA_DISABLE_FA_V3` (T11): set → the FA v3 path is not selected
 /// (session probe + encoder opt-in both honor it). The harness `--fa-mode v2`
 /// leg injects this to measure FA v2 with v3 compiled-but-unselected.
-#[allow(dead_code)] // consumed by the T09/T11 dispatch commit of this WP
 pub(crate) fn fa_v3_env_disabled(v: Option<&std::ffi::OsStr>) -> bool {
     v.is_some()
 }
@@ -119,7 +206,6 @@ pub(crate) fn fa_v3_env_disabled(v: Option<&std::ffi::OsStr>) -> bool {
 /// symmetric with the M2-03-followup §D9 force-flash-attn precedent). It
 /// does NOT override the `FA_V3_MIN_TQ` runtime gate — "force" means "fail
 /// loudly instead of degrading", not "dispatch on wasted tiles".
-#[allow(dead_code)] // consumed by the T09/T11 dispatch commit of this WP
 pub(crate) fn fa_v3_env_force(v: Option<&std::ffi::OsStr>) -> bool {
     v.is_some()
 }
@@ -787,6 +873,80 @@ mod tests {
         assert!(fa_v3_should_attempt_compile(10)); // future majors included
         assert!(!fa_v3_should_attempt_compile(0));
         assert!(!fa_v3_should_attempt_compile(-1)); // corrupt probe value
+    }
+
+    /// T11 gate boundary: exactly `t_q >= 64` with the chain promise set;
+    /// the promise alone or the tile height alone never selects.
+    #[test]
+    fn fa_v3_tq_gate_boundary() {
+        assert_eq!(
+            FA_V3_MIN_TQ, 64,
+            "structural value = BR3 warpgroup tile height"
+        );
+        assert!(!fa_v3_gate_selects(true, 63));
+        assert!(fa_v3_gate_selects(true, 64));
+        assert!(fa_v3_gate_selects(true, 65));
+        assert!(fa_v3_gate_selects(true, 1500)); // encoder shape
+        assert!(!fa_v3_gate_selects(true, 1)); // decoder steady state
+        assert!(!fa_v3_gate_selects(false, 1500)); // no promise, no dispatch
+    }
+
+    /// T09 session decision table: Select needs d_head 64 + Ready + no
+    /// disable; force turns every non-selection (wrong d_head, disabled env,
+    /// unavailable, contradictory force+disable) into ForceViolation.
+    #[test]
+    fn fa_v3_session_decision_table() {
+        use FaV3Decision::*;
+        assert_eq!(fa_v3_session_decision(64, false, false, true), Select);
+        assert_eq!(fa_v3_session_decision(64, true, false, true), Select);
+        assert_eq!(fa_v3_session_decision(64, false, false, false), Decomposed);
+        assert_eq!(fa_v3_session_decision(64, false, true, true), Decomposed);
+        assert_eq!(fa_v3_session_decision(80, false, false, true), Decomposed);
+        assert_eq!(
+            fa_v3_session_decision(80, true, false, true),
+            ForceViolation
+        );
+        assert_eq!(
+            fa_v3_session_decision(64, true, false, false),
+            ForceViolation
+        );
+        assert_eq!(
+            fa_v3_session_decision(64, true, true, true),
+            ForceViolation,
+            "force + disable is a contradiction and must fail loudly"
+        );
+    }
+
+    /// T10 encoder decision table: default off is Decomposed regardless of
+    /// availability (bit-identical default paths); opt-in without Hopper is
+    /// a no-op preference; force implies the opt-in and errors when v3
+    /// cannot be built.
+    #[test]
+    fn fa_v3_encoder_decision_table() {
+        use FaV3Decision::*;
+        assert_eq!(
+            fa_v3_encoder_decision(false, false, false, true),
+            Decomposed
+        );
+        assert_eq!(
+            fa_v3_encoder_decision(false, false, false, false),
+            Decomposed
+        );
+        assert_eq!(fa_v3_encoder_decision(true, false, false, true), Select);
+        assert_eq!(
+            fa_v3_encoder_decision(true, false, false, false),
+            Decomposed
+        );
+        assert_eq!(fa_v3_encoder_decision(true, false, true, true), Decomposed);
+        assert_eq!(fa_v3_encoder_decision(false, true, false, true), Select);
+        assert_eq!(
+            fa_v3_encoder_decision(false, true, false, false),
+            ForceViolation
+        );
+        assert_eq!(
+            fa_v3_encoder_decision(true, true, true, true),
+            ForceViolation
+        );
     }
 
     /// All three env toggles are presence-based, mirroring the

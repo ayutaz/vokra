@@ -132,6 +132,11 @@ pub use fa_v3::{FA_V3_FEASIBILITY_SNIPPET, KERNELS_CUDA_FA_V3};
 // (input-validation) tests stay green on CUDA-less hosts.
 #[cfg(any(unix, windows))]
 pub use fa_v3::flash_attn_v3_validate_args;
+// M4-07-T11: the FA v3 runtime t_q gate (structural value = the BR3 = 64
+// warpgroup tile height; carries the FA v2 honest-negative inheritance in
+// its rustdoc). Public so the dispatch pin test asserts the REAL constant.
+#[cfg(any(unix, windows))]
+pub use fa_v3::FA_V3_MIN_TQ;
 // `CudaDecodeSession` is the M2 Phase-3b device-resident decoder-step driver
 // (the CUDA sibling of `vokra-backend-metal`'s `MetalDecodeSession`); re-exported
 // here so `vokra-models`' `Compute::new_decoder_step_session` (its Cuda arm)

@@ -1010,6 +1010,17 @@ struct AttnChainDims {
     /// (FR-EX-08); with `use_flash_attn = true` the wrapper either launches or
     /// returns an explicit error.
     use_flash_attn: bool,
+    /// M4-07-T09: whether [`CudaContext::launch_attn_chain`] may route the
+    /// chain through the FlashAttention **v3** launcher
+    /// ([`CudaContext::launch_flash_attn_v3`], Hopper WGMMA). Same contract
+    /// shape as [`Self::use_flash_attn`]: `true` is a **promise** that the
+    /// capability probe held (SM >= 9.0 + lazy `compute_90a` compile Ready +
+    /// smem opt-in + `d_head == 64` + no `VOKRA_CUDA_DISABLE_FA_V3`), set
+    /// only by the decoder-step session probe, the encoder opt-in
+    /// (`fa_v3_encoder_decision`) and the `flash_attn_v3_dev` diagnostic.
+    /// Dispatch priority is **v3 > v2 > decomposed**, and all three are GPU
+    /// paths — never a silent CPU fallback (FR-EX-08).
+    use_flash_attn_v3: bool,
 }
 
 /// Device pointers for one fused-attention launch chain: inputs (`xq`, `q_w`,
@@ -1422,7 +1433,6 @@ impl CudaContext {
     /// The FA v3 disable reason, if the slot resolved to `Disabled` (for
     /// error surfaces that must carry the probe verdict — e.g. the
     /// `VOKRA_CUDA_FORCE_FA_V3` explicit error, T09).
-    #[allow(dead_code)] // consumed by the T09 dispatch commit of this WP
     fn fa_v3_disable_reason(&self) -> Option<&str> {
         match self.fa_v3_slot() {
             crate::fa_v3::FaV3Slot::Ready(_) => None,
@@ -2400,6 +2410,7 @@ impl CudaContext {
                 // `CudaDecodeSession::new`'s d_head/shared-memory probe flips
                 // this true for the decoder-step self-attention.
                 use_flash_attn: false,
+                use_flash_attn_v3: false,
             },
             &AttnChainPtrs {
                 xq: xq_buf.ptr,
@@ -2469,6 +2480,14 @@ impl CudaContext {
         // `t_q ≫ BR` will amortise the fusion, but skips it whenever the
         // tile would be wasted. Not a CPU fallback — falls through to the
         // decomposed GPU path below (FR-EX-08 preserved).
+        // M4-07-T09/T11: FA v3 arm — highest priority, gated on the
+        // `FA_V3_MIN_TQ = 64` warpgroup tile height (the fa_v3 module's
+        // single-sourced predicate; below it the fusion cost dominates just
+        // like FA v2's t_q gate). Falls through to the FA v2 arm / the
+        // decomposed chain — GPU-internal selection, never a CPU fallback.
+        if crate::fa_v3::fa_v3_gate_selects(dims.use_flash_attn_v3, dims.t_q) {
+            return self.launch_flash_attn_v3(dims, ptrs);
+        }
         const FA_V2_MIN_TQ: usize = 16; // BR tile size — below this ≥50% of the tile is wasted
         if dims.use_flash_attn && dims.t_q >= FA_V2_MIN_TQ {
             return self.launch_flash_attn_v2(dims, ptrs);
@@ -2939,7 +2958,6 @@ impl CudaContext {
     /// `Ready` (a caller that sets `use_flash_attn_v3` without the probe
     /// promise gets this **explicit** error — never a silent fallback,
     /// FR-EX-08) or on a driver launch failure.
-    #[allow(dead_code)] // consumed by the T09 3-way dispatch commit of this WP
     fn launch_flash_attn_v3(&self, dims: &AttnChainDims, ptrs: &AttnChainPtrs) -> Result<()> {
         // Resolve the lazily-compiled kernel FIRST: on a non-Hopper device
         // this is the explicit-refusal point (contract-violation callers
@@ -3632,6 +3650,7 @@ impl CudaContext {
                 // chain as `attn_f32`; the FA v2 seam is gated on the session
                 // constructor's probe, not on the entrypoint.
                 use_flash_attn: false,
+                use_flash_attn_v3: false,
             },
             &AttnChainPtrs {
                 xq: xq.buf.ptr,
@@ -3776,6 +3795,7 @@ impl CudaContext {
                 // `2 + 7·n_head` chain, never FA v2. The FA v2 seam is on
                 // [`Self::flash_attn_dev`] / `CudaDecodeSession`.
                 use_flash_attn: false,
+                use_flash_attn_v3: false,
             },
             &AttnChainPtrs {
                 xq: xq.buf.ptr,
@@ -3958,6 +3978,8 @@ impl CudaContext {
                 // consistency with the field's contract ("FA v2 is on the
                 // current chain").
                 use_flash_attn: true,
+                // v2 diagnostic wrapper: never the v3 kernel.
+                use_flash_attn_v3: false,
             },
             &AttnChainPtrs {
                 xq: xq.buf.ptr,
@@ -4068,6 +4090,60 @@ impl CudaContext {
         let hd = d / n_head;
         let scale = (hd as f32).powf(-0.5);
 
+        // M4-07-T10: encoder FA v3 opt-in decision, evaluated once per stack
+        // call. Default off = `Decomposed` without ever touching the lazy
+        // FA v3 slot (no compile, no stderr — default paths bit-identical).
+        // The availability probe (which fires the lazy compute_90a compile)
+        // is consulted only when the opt-in / force was actually requested.
+        let enc_opt_in = self.fa_v3_encoder.get() && hd == 64;
+        let enc_force =
+            crate::fa_v3::fa_v3_env_force(std::env::var_os("VOKRA_CUDA_FORCE_FA_V3").as_deref());
+        let enc_disabled = crate::fa_v3::fa_v3_env_disabled(
+            std::env::var_os("VOKRA_CUDA_DISABLE_FA_V3").as_deref(),
+        );
+        let enc_avail = (enc_opt_in || enc_force) && hd == 64 && self.fa_v3_available();
+        let enc_v3 = match crate::fa_v3::fa_v3_encoder_decision(
+            enc_opt_in,
+            enc_force,
+            enc_disabled,
+            enc_avail,
+        ) {
+            crate::fa_v3::FaV3Decision::Select => true,
+            crate::fa_v3::FaV3Decision::Decomposed => {
+                if enc_opt_in {
+                    // The opt-in was requested but cannot be honored on this
+                    // device/config — say so (never silent, FR-EX-08), then
+                    // continue on the decomposed GPU chain (a preference is
+                    // not a force).
+                    eprintln!(
+                        "vokra-backend-cuda: FA v3 encoder opt-in requested but not \
+                         selectable ({}); continuing on the decomposed GPU chain",
+                        if enc_disabled {
+                            "VOKRA_CUDA_DISABLE_FA_V3 is set"
+                        } else {
+                            "FA v3 unavailable on this device — see the reason above"
+                        }
+                    );
+                }
+                false
+            }
+            crate::fa_v3::FaV3Decision::ForceViolation => {
+                return Err(VokraError::BackendUnavailable(format!(
+                    "VOKRA_CUDA_FORCE_FA_V3 is set but FA v3 cannot run the encoder \
+                     chain: {}",
+                    if enc_disabled {
+                        "VOKRA_CUDA_DISABLE_FA_V3 is also set (contradictory forcing)".to_owned()
+                    } else if hd != 64 {
+                        format!("d_head ({hd}) must be 64")
+                    } else {
+                        self.fa_v3_disable_reason()
+                            .unwrap_or("FA v3 slot unexpectedly unavailable")
+                            .to_owned()
+                    }
+                )));
+            }
+        };
+
         // H2D `h` + every weight up front (before any launch).
         let h = self.upload(hidden)?;
         let dummy = self.upload(&[0.0f32])?;
@@ -4165,6 +4241,11 @@ impl CudaContext {
                     // as `attn_dev`; the FA v2 opt-in belongs to the
                     // decoder-step session, which is a distinct entrypoint.
                     use_flash_attn: false,
+                    // M4-07-T10: FA v3 encoder opt-in (default off — `enc_v3`
+                    // is false unless the opt-in flag / env was raised AND
+                    // the Hopper probe held, so default paths stay
+                    // bit-identical).
+                    use_flash_attn_v3: enc_v3,
                 },
                 &AttnChainPtrs {
                     xq: ln.buf.ptr,
@@ -4760,6 +4841,14 @@ pub struct CudaDecodeSession {
     /// M2-03 default-path numerics are 1-bit-identical to the release before
     /// this follow-up.
     use_flash_attn: bool,
+    /// M4-07-T09: session-scoped FA v3 opt-in, probed once at construction
+    /// (SM >= 9.0 lazy `compute_90a` compile Ready + smem opt-in + `d_head
+    /// == 64`, minus `VOKRA_CUDA_DISABLE_FA_V3`). Routes the same two
+    /// attention chains as [`Self::use_flash_attn`] — but note the
+    /// `FA_V3_MIN_TQ = 64` runtime gate: the decoder's steady state
+    /// (`t_q = 1`) never reaches the v3 kernel (honest-negative inheritance,
+    /// see [`crate::fa_v3::FA_V3_MIN_TQ`]); prefix steps (`t_q >= 64`) do.
+    use_flash_attn_v3: bool,
     /// Owned last so it drops **after** every device buffer above.
     ctx: CudaContext,
 }
@@ -4904,6 +4993,44 @@ impl CudaDecodeSession {
             use_flash_attn = false;
         }
 
+        // M4-07-T09: FA v3 session probe — the Hopper-only lazy compile
+        // fires here (once per context; non-Hopper devices skip the compile
+        // and record the reason). `VOKRA_CUDA_DISABLE_FA_V3` deselects like
+        // the FA v2 hatch above; `VOKRA_CUDA_FORCE_FA_V3` turns any
+        // non-selection into an explicit constructor error (FR-EX-08 — a
+        // force must never quietly measure the wrong path).
+        let fa_v3_force =
+            crate::fa_v3::fa_v3_env_force(std::env::var_os("VOKRA_CUDA_FORCE_FA_V3").as_deref());
+        let fa_v3_disabled = crate::fa_v3::fa_v3_env_disabled(
+            std::env::var_os("VOKRA_CUDA_DISABLE_FA_V3").as_deref(),
+        );
+        // The availability probe (lazy compile trigger) is consulted only
+        // when it can matter — d_head must fit the kernel tile either way.
+        let fa_v3_avail = hd == 64 && ctx.fa_v3_available();
+        let use_flash_attn_v3 = match crate::fa_v3::fa_v3_session_decision(
+            hd,
+            fa_v3_force,
+            fa_v3_disabled,
+            fa_v3_avail,
+        ) {
+            crate::fa_v3::FaV3Decision::Select => true,
+            crate::fa_v3::FaV3Decision::Decomposed => false,
+            crate::fa_v3::FaV3Decision::ForceViolation => {
+                return Err(VokraError::BackendUnavailable(format!(
+                    "VOKRA_CUDA_FORCE_FA_V3 is set but FA v3 is unavailable for this                      session: {}",
+                    if fa_v3_disabled {
+                        "VOKRA_CUDA_DISABLE_FA_V3 is also set (contradictory forcing)".to_owned()
+                    } else if hd != 64 {
+                        format!("d_head ({hd}) must be 64")
+                    } else {
+                        ctx.fa_v3_disable_reason()
+                            .unwrap_or("FA v3 slot unexpectedly unavailable")
+                            .to_owned()
+                    }
+                )));
+            }
+        };
+
         Ok(CudaDecodeSession {
             layers: buffers.layers,
             token_emb: buffers.token_emb.take().expect("token_emb built"),
@@ -4938,6 +5065,7 @@ impl CudaDecodeSession {
             pos: 0,
             last_t: 0,
             use_flash_attn,
+            use_flash_attn_v3,
             ctx,
         })
     }
@@ -5178,6 +5306,7 @@ impl CudaDecodeSession {
                     causal: true,
                     q_offset: start,
                     use_flash_attn: self.use_flash_attn,
+                    use_flash_attn_v3: self.use_flash_attn_v3,
                 },
                 &AttnChainPtrs {
                     xq: self.ln.ptr,
@@ -5223,6 +5352,7 @@ impl CudaDecodeSession {
                     causal: false,
                     q_offset: 0,
                     use_flash_attn: self.use_flash_attn,
+                    use_flash_attn_v3: self.use_flash_attn_v3,
                 },
                 &AttnChainPtrs {
                     xq: self.ln.ptr,
