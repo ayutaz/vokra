@@ -310,6 +310,19 @@ pub fn load_spv_owned(name: &str) -> Option<Vec<u8>> {
     }
 }
 
+/// Allocation-free availability probe: `true` iff [`load_spv_owned`] would
+/// return `Some` for `name` **today** (hand-crafted entries are always
+/// available; glslc entries become available as the owner commits their
+/// `.spv`, M4-13-T16). This is the single predicate behind blob-driven
+/// coverage decisions (`VulkanBackend::supports`, M4-13-T09) and the
+/// blob-gated parity skips (M4-13-T12/T13) — kept in lock-step with
+/// [`load_spv_owned`] by the `has_blob_is_lock_step_with_load_spv_owned`
+/// test.
+#[must_use]
+pub fn has_blob(name: &str) -> bool {
+    matches!(name, "copy_f32" | "add_f32") || load_spv(name).is_some()
+}
+
 /// Host-portable pre-flight for the M4-13-T02 placeholder-then-swap seam:
 /// verifies the SPIR-V blob for `name` is loadable **today**, or returns the
 /// explicit [`VokraError::UnsupportedOp`](vokra_core::VokraError::UnsupportedOp)
@@ -664,6 +677,22 @@ mod tests {
         }
         // Unknown names remain honest.
         assert!(load_spv_owned("no_such_shader").is_none());
+    }
+
+    #[test]
+    fn has_blob_is_lock_step_with_load_spv_owned() {
+        // `has_blob` avoids the Vec copy but must agree with the loader for
+        // every manifest entry and for unknown names — a divergence would
+        // make `supports()` (blob-driven, M4-13-T09) lie about coverage.
+        for shader in SHADERS {
+            assert_eq!(
+                has_blob(shader.name),
+                load_spv_owned(shader.name).is_some(),
+                "has_blob({}) diverges from load_spv_owned",
+                shader.name,
+            );
+        }
+        assert!(!has_blob("no_such_shader"));
     }
 
     #[test]

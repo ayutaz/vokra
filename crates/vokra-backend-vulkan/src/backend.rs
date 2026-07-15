@@ -233,6 +233,18 @@ impl VulkanBackend {
                 .to_owned(),
         ))
     }
+
+    /// Off-target stub of the Vulkan-target method of the same name, so
+    /// host-portable integration tests compile everywhere. Unreachable in
+    /// practice ([`VulkanBackend::new`] always fails off-target); returns
+    /// the conservative Android-baseline variant.
+    #[must_use]
+    pub fn select_gemm_pipeline_variant(
+        &self,
+        _preference: GemmPipelinePreference,
+    ) -> GemmPipelineVariant {
+        GemmPipelineVariant::Subgroup
+    }
 }
 
 /// Pure-function form of [`VulkanBackend::select_gemm_pipeline_variant`] —
