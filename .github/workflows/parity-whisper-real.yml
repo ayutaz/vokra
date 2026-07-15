@@ -106,12 +106,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Preflight: (1) compute the size matrix (base only on PR, base + large-v3
-  # on workflow_dispatch when the input opt-in is not "false"), (2) detect
-  # whether tests/fixtures/audio/jfk-30s.wav has been committed yet. The
-  # parity leg is gated on the WAV being present so this workflow can be
-  # landed BEFORE the owner commits the audio without breaking whisper PR
-  # CI; once the WAV is committed, the gate flips green automatically.
+  # Preflight: (1) compute the size matrix (base only on PR/cron; on
+  # workflow_dispatch every size whose include_* opt-in is not "false" —
+  # base unconditional + small/medium/large-v3/turbo, M4-14-T05 / ADR
+  # M4-14 §D3), (2) detect whether tests/fixtures/audio/jfk-30s.wav has
+  # been committed yet. The parity leg is gated on the WAV being present
+  # so this workflow can be landed BEFORE the owner commits the audio
+  # without breaking whisper PR CI; once the WAV is committed, the gate
+  # flips green automatically.
   setup:
     name: setup
     runs-on: ubuntu-latest
@@ -126,8 +128,24 @@ jobs:
         run: |
           set -euo pipefail
           include='{"size":"base","hf_id":"openai/whisper-base","env_var":"VOKRA_WHISPER_BASE_GGUF","fixture_dir":"tests/parity/whisper_base","gguf":"whisper-base.gguf"}'
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.include_large_v3 }}" != "false" ]; then
-            include="${include},"'{"size":"large-v3","hf_id":"openai/whisper-large-v3","env_var":"VOKRA_WHISPER_LARGE_V3_GGUF","fixture_dir":"tests/parity/whisper_large_v3","gguf":"whisper-large-v3.gguf"}'
+          # Non-base sizes are workflow_dispatch-only (runner-minutes
+          # red-line: cron / PR triggers must never pull multi-GB HF
+          # checkpoints). Field contracts: env_var mirrors the Rust
+          # harness's size_env_var(), fixture_dir its fixtures_dir_for(),
+          # hf_id the dumper's SUPPORTED_MODELS (M4-14-T05).
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ github.event.inputs.include_small }}" != "false" ]; then
+              include="${include},"'{"size":"small","hf_id":"openai/whisper-small","env_var":"VOKRA_WHISPER_SMALL_GGUF","fixture_dir":"tests/parity/whisper_small","gguf":"whisper-small.gguf"}'
+            fi
+            if [ "${{ github.event.inputs.include_medium }}" != "false" ]; then
+              include="${include},"'{"size":"medium","hf_id":"openai/whisper-medium","env_var":"VOKRA_WHISPER_MEDIUM_GGUF","fixture_dir":"tests/parity/whisper_medium","gguf":"whisper-medium.gguf"}'
+            fi
+            if [ "${{ github.event.inputs.include_large_v3 }}" != "false" ]; then
+              include="${include},"'{"size":"large-v3","hf_id":"openai/whisper-large-v3","env_var":"VOKRA_WHISPER_LARGE_V3_GGUF","fixture_dir":"tests/parity/whisper_large_v3","gguf":"whisper-large-v3.gguf"}'
+            fi
+            if [ "${{ github.event.inputs.include_turbo }}" != "false" ]; then
+              include="${include},"'{"size":"turbo","hf_id":"openai/whisper-large-v3-turbo","env_var":"VOKRA_WHISPER_TURBO_GGUF","fixture_dir":"tests/parity/whisper_turbo","gguf":"whisper-turbo.gguf"}'
+            fi
           fi
           echo "matrix={\"include\":[${include}]}" >> "$GITHUB_OUTPUT"
           {
@@ -194,6 +212,8 @@ jobs:
     runs-on: ubuntu-latest
     # HF DL + convert + dump + parity averages ~15 min for base, ~45 min
     # for large-v3 (2.9 GB checkpoint DL + 3 GB GGUF write dominates).
+    # The M4-14 carry-over legs sit inside that envelope (small ~1 GB /
+    # turbo ~1.6 GB / medium ~3 GB ≈ large-v3's DL weight class).
     # 60 min cap matches parity-kokoro-real.yml so a truly stuck run is
     # bounded consistently across the two model families.
     timeout-minutes: 60
@@ -351,12 +371,17 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC1091
           . /tmp/vokra-py-whisper/bin/activate
-          # Map matrix size to dumper --model arg:
-          #   base       -> whisper-base
-          #   large-v3   -> whisper-large-v3
+          # Map matrix size to dumper --model arg (whisper-{size}; the
+          # dumper's SUPPORTED_MODELS maps whisper-turbo to the
+          # openai/whisper-large-v3-turbo HF id). All 5 family sizes are
+          # mapped (M4-14-T05); an unknown SIZE hard-fails — explicit
+          # error, no silent fallback (FR-EX-08).
           case "$SIZE" in
             base) DUMPER_MODEL=whisper-base ;;
+            small) DUMPER_MODEL=whisper-small ;;
+            medium) DUMPER_MODEL=whisper-medium ;;
             large-v3) DUMPER_MODEL=whisper-large-v3 ;;
+            turbo) DUMPER_MODEL=whisper-turbo ;;
             *) echo "::error::unknown SIZE=$SIZE"; exit 2 ;;
           esac
           python3 tools/parity/dump_whisper_reference.py \
