@@ -15,7 +15,7 @@
 use std::process::ExitCode;
 
 use vokra_eval::manifest::Manifest;
-use vokra_eval::metrics::{AudioRefMetric, Cer, MelLoss, Metric, TextMetric, Wer};
+use vokra_eval::metrics::{AudioRefMetric, Cer, MelLoss, Metric, TextMetric, Utmos, Wer};
 use vokra_eval::wav;
 
 fn main() -> ExitCode {
@@ -28,13 +28,18 @@ fn main() -> ExitCode {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum MetricKind {
     Wer,
     Cer,
     MelLoss,
+    /// Reference-free neural MOS (M4-18). Needs `--utmos-gguf` — the weights
+    /// are not bundled (owner-gated license), so a weight-less invocation is
+    /// an explicit error, never a fallback (FR-EX-08).
+    Utmos,
 }
 
+#[derive(Debug)]
 struct Cli {
     metric: MetricKind,
     hyp: Option<String>,
@@ -46,6 +51,8 @@ struct Cli {
     n_fft: usize,
     hop: usize,
     n_mels: usize,
+    /// Path to a converted `vokra.utmos.*` GGUF (utmos metric only).
+    utmos_gguf: Option<String>,
 }
 
 fn run() -> Result<(), String> {
@@ -66,6 +73,7 @@ fn run() -> Result<(), String> {
         MetricKind::Wer => run_text(&cli, Wer),
         MetricKind::Cer => run_text(&cli, Cer),
         MetricKind::MelLoss => run_audio(&cli),
+        MetricKind::Utmos => run_mos(&cli),
     }
 }
 
@@ -82,9 +90,10 @@ fn parse_cli(args: &[String]) -> Result<Cli, String> {
         "wer" => MetricKind::Wer,
         "cer" => MetricKind::Cer,
         "mel-loss" | "mel_loss" => MetricKind::MelLoss,
+        "utmos" => MetricKind::Utmos,
         other => {
             return Err(format!(
-                "unknown metric `{other}` (expected wer|cer|mel-loss)"
+                "unknown metric `{other}` (expected wer|cer|mel-loss|utmos)"
             ));
         }
     };
@@ -100,6 +109,7 @@ fn parse_cli(args: &[String]) -> Result<Cli, String> {
         n_fft: 1_024,
         hop: 256,
         n_mels: 80,
+        utmos_gguf: None,
     };
     let mut i = 1usize;
     while i < args.len() {
@@ -130,9 +140,15 @@ fn parse_cli(args: &[String]) -> Result<Cli, String> {
                     .parse()
                     .map_err(|_| "invalid --n-mels".to_owned())?;
             }
+            "--utmos-gguf" => cli.utmos_gguf = Some(take(args, &mut i, key)?.to_owned()),
             other => return Err(format!("unknown flag `{other}`")),
         }
         i += 1;
+    }
+    if cli.utmos_gguf.is_some() && cli.metric != MetricKind::Utmos {
+        // A silently-ignored weight flag would be a quiet no-op (FR-EX-08
+        // posture applied to the CLI surface).
+        return Err("flag `--utmos-gguf` is only valid for the `utmos` metric".to_owned());
     }
     Ok(cli)
 }
@@ -206,6 +222,53 @@ fn run_audio(cli: &Cli) -> Result<(), String> {
     Ok(())
 }
 
+/// Runs the reference-free UTMOS metric (M4-18 T12).
+///
+/// Requires `--utmos-gguf`: the weights are not bundled with Vokra (the
+/// checkpoint license is owner-gated, `docs/license-audit.md`), so a
+/// weight-less invocation is an **explicit error** naming the flag —
+/// never a silent fallback to another metric (FR-EX-08). Scores `--hyp`
+/// (one mono WAV) or each `hyp_wav` record in `--manifest` mode; the
+/// clip's header rate must match the GGUF's `vokra.utmos.sample_rate`
+/// (the scorer rejects mismatches, no silent resample).
+fn run_mos(cli: &Cli) -> Result<(), String> {
+    let gguf = cli.utmos_gguf.as_deref().ok_or_else(|| {
+        "utmos: `--utmos-gguf <model.gguf>` is required — the UTMOS weights are not bundled \
+         (M4-18: checkpoint license is owner-gated; without a converted GGUF there is nothing \
+         to score, and silently falling back to another metric is banned — FR-EX-08)"
+            .to_owned()
+    })?;
+    let metric = Utmos::from_path(gguf).map_err(|e| format!("loading UTMOS GGUF `{gguf}`: {e}"))?;
+    if let Some(path) = &cli.manifest {
+        let man = Manifest::load(path).map_err(|e| format!("reading manifest {path}: {e}"))?;
+        let mut sum = 0.0f64;
+        for (idx, rec) in man.records.iter().enumerate() {
+            let hp = rec
+                .get("hyp_wav")
+                .ok_or_else(|| format!("manifest record at line {} has no `hyp_wav`", rec.line))?;
+            let score = eval_wav_mos(&metric, hp)?;
+            println!("item={idx} metric={} score={score:.6}", metric.name());
+            sum += score;
+        }
+        report_aggregate(metric.name(), man.records.len(), sum);
+    } else {
+        let hp = cli
+            .hyp
+            .as_deref()
+            .ok_or("missing --hyp <clip.wav> (or --manifest)")?;
+        let score = eval_wav_mos(&metric, hp)?;
+        println!("metric={} score={score:.6}", metric.name());
+    }
+    Ok(())
+}
+
+fn eval_wav_mos(metric: &Utmos, path: &str) -> Result<f64, String> {
+    let w = wav::read_wav(path).map_err(|e| format!("reading {path}: {e}"))?;
+    metric
+        .score(&w.samples, w.sample_rate)
+        .map_err(|e| e.to_string())
+}
+
 fn eval_wav_pair(metric: &MelLoss, hyp_path: &str, ref_path: &str) -> Result<f64, String> {
     let h = wav::read_wav(hyp_path).map_err(|e| format!("reading {hyp_path}: {e}"))?;
     let r = wav::read_wav(ref_path).map_err(|e| format!("reading {ref_path}: {e}"))?;
@@ -225,6 +288,81 @@ fn report_aggregate(name: &str, count: usize, sum: f64) {
     println!("metric={name} count={count} mean={mean:.6}");
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn parse_cli_accepts_utmos_with_gguf_flag() {
+        let cli = parse_cli(&args(&[
+            "utmos",
+            "--utmos-gguf",
+            "model.gguf",
+            "--hyp",
+            "clip.wav",
+        ]))
+        .expect("utmos CLI parses");
+        assert!(matches!(cli.metric, MetricKind::Utmos));
+        assert_eq!(cli.utmos_gguf.as_deref(), Some("model.gguf"));
+        assert_eq!(cli.hyp.as_deref(), Some("clip.wav"));
+    }
+
+    #[test]
+    fn parse_cli_rejects_utmos_gguf_flag_on_other_metrics() {
+        // A silently-ignored weight flag would be a quiet no-op (FR-EX-08
+        // posture): reject it loudly at parse time.
+        let err = parse_cli(&args(&[
+            "mel-loss",
+            "--utmos-gguf",
+            "model.gguf",
+            "--hyp",
+            "a.wav",
+            "--ref",
+            "b.wav",
+        ]))
+        .expect_err("weight flag on a non-utmos metric");
+        assert!(err.contains("--utmos-gguf"), "got: {err}");
+    }
+
+    #[test]
+    fn utmos_without_gguf_is_an_explicit_error() {
+        // The UTMOS weights are not bundled (M4-18: owner-gated license);
+        // running without --utmos-gguf must be an explicit error naming the
+        // flag — never a silent fallback to some other metric.
+        let cli = parse_cli(&args(&["utmos", "--hyp", "clip.wav"])).expect("parses");
+        let err = run_mos(&cli).expect_err("weight-less run must fail loudly");
+        assert!(err.contains("--utmos-gguf"), "got: {err}");
+    }
+
+    #[test]
+    fn utmos_with_missing_gguf_file_reports_the_path() {
+        let cli = parse_cli(&args(&[
+            "utmos",
+            "--utmos-gguf",
+            "/nonexistent/utmos.gguf",
+            "--hyp",
+            "clip.wav",
+        ]))
+        .expect("parses");
+        let err = run_mos(&cli).expect_err("missing GGUF file");
+        assert!(err.contains("/nonexistent/utmos.gguf"), "got: {err}");
+    }
+
+    #[test]
+    fn dnsmos_is_not_a_known_metric() {
+        // DNSMOS is license fail-closed (M4-18 T03, owner verification
+        // pending) — it must not parse as a metric, and the unknown-metric
+        // error stays the generic loud one.
+        let err =
+            parse_cli(&args(&["dnsmos", "--hyp", "clip.wav"])).expect_err("dnsmos is fail-closed");
+        assert!(err.contains("unknown metric"), "got: {err}");
+    }
+}
+
 fn print_usage() {
     eprintln!(
         "vokra-eval — Vokra evaluation metrics (M1-09a)\n\
@@ -236,17 +374,26 @@ METRICS:\n\
     wer        word error rate  (edit distance over whitespace tokens / ref words)\n\
     cer        char error rate  (edit distance over Unicode chars / ref chars)\n\
     mel-loss   mean L1 over log10-mel spectrograms of two WAV clips\n\
+    utmos      reference-free neural MOS (M4-18); requires --utmos-gguf\n\
 \n\
 INPUTS:\n\
     wer / cer : --hyp/--ref take literal text (or --hyp-file/--ref-file for text files)\n\
     mel-loss  : --hyp/--ref take mono WAV paths (float32 or int16)\n\
+    utmos     : --hyp takes one mono WAV path (reference-free; no --ref)\n\
     --manifest <f> : batch mode; each blank-line-separated record has\n\
-                     `hyp`/`ref` (text) or `hyp_wav`/`ref_wav` (audio) keys\n\
+                     `hyp`/`ref` (text), `hyp_wav`/`ref_wav` (audio), or\n\
+                     `hyp_wav` alone (utmos) keys\n\
 \n\
 MEL-LOSS FRONT-END (must match the model's FrontendSpec; defaults are TTS-style):\n\
     --sample-rate <hz>  [22050]   --n-fft <n> [1024]   --hop <n> [256]   --n-mels <n> [80]\n\
 \n\
+UTMOS:\n\
+    --utmos-gguf <f>  converted `vokra.utmos.*` GGUF. The weights are NOT\n\
+                      bundled (owner-gated license, M4-18) — omitting the flag\n\
+                      is an explicit error, never a silent fallback (FR-EX-08).\n\
+                      The clip's rate must match the model's rate (no resample).\n\
+\n\
 Prints `metric=<name> score=<v>` per result and an aggregate mean in manifest mode.\n\
-Neural MOS metrics (UTMOS/DNSMOS) are M1-09b (blocked on weights) and not available here."
+DNSMOS is not available: its license verification is fail-closed (M4-18 T03, owner)."
     );
 }
