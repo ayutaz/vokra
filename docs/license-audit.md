@@ -87,9 +87,9 @@
 | **CAM++ Speaker Embedding** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Alibaba 3D-Speaker `iic/speech_campplus`。`vokra-convert`（`ModelKind::CamPlus`）で GGUF 変換対応済、変換元 ONNX は `ayousanz/campplus-onnx`（約 27MB、Apache-2.0）。6.91M params、fbank80→192-d embedding（native forward） |
 | **ECAPA-TDNN (SpeechBrain)** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | SpeechBrain |
 | **WeSpeaker** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Duke Kunshan |
-| **DeepFilterNet3** | MIT | MIT | ○ | ★ 公式 zoo | Rikorose、Speech Enhancement |
-| **RNNoise** | BSD | BSD | ○ | ★ 公式 zoo | Xiph |
-| **GTCRN** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | 2023 |
+| **DeepFilterNet3** | MIT | MIT | ○ | ★ 公式 zoo（要 owner sign-off T18） | Rikorose、Speech Enhancement。**M4-20 (c) で `denoise` op を native 自前実装**（`crates/vokra-ops/src/denoise.rs` = STFT → ERB gain → deep-filter → iSTFT topology、`vokra.denoise.*` GGUF、`vokra-convert` offline path。合成 weight で shape 健全性 + GGUF round-trip 検証済、**実 DeepFilterNet checkpoint parity + MIT 最終 sign-off は owner T17/T18**）。attribution は NOTICE §（DeepFilterNet MIT）記載。 |
+| **RNNoise** | BSD | BSD | ○ | ★ 公式 zoo | Xiph。denoise 代替候補（M4-20 (c)、DeepFilterNet が第一候補）。 |
+| **GTCRN** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo（要 owner license 事前確認 T18） | 2023。denoise 代替候補。license 事前確認は owner T18（`docs/m4-scope-expansion-2026-07-13.md` §BIG-10 依頼者タスク）。 |
 | **AudioSeal (Meta)** | MIT | MIT | ○ | ★ 公式 zoo | 推奨デフォルト watermark |
 | **F5-TTS (SWivid)** | MIT | **CC-BY-NC 4.0** | ✕ 非商用 | ✕ research flag | エンジンは対応、weight 別途取得 |
 | **E2-TTS** | MIT | 要確認 | △ | ✕ audit 後判断 | 論文実装のみ |

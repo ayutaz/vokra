@@ -104,7 +104,28 @@ alternatives supported by Vokra: DAC (MIT), Mimi (CC-BY 4.0), WavTokenizer
 (MIT), X-Codec 2 (MIT).
 
 --------------------------------------------------------------------------
-7. Maintaining this file
+7. DeepFilterNet (Rikorose) — MIT attribution (M4-20 denoise op)
+--------------------------------------------------------------------------
+The M4-20 `denoise` operator (crates/vokra-ops/src/denoise.rs, FR-OP-61)
+reimplements the DeepFilterNet speech-enhancement topology (ERB gain + deep
+filtering) from scratch in Rust based on the published architecture:
+
+  DeepFilterNet
+  Copyright (c) Hendrik Schröter (Rikorose) and contributors
+  Licensed under the MIT License.
+  https://github.com/Rikorose/DeepFilterNet
+
+MIT permits commercial use; attribution (this notice) is retained. Vokra
+loads only converted weights (offline, to the `vokra.denoise.*` GGUF); no
+ONNX / PyTorch runtime dependency is introduced. The MIT license text is to
+be reproduced in crates/vokra-ops/THIRD_PARTY_LICENSES/deepfilternet-LICENSE.txt
+when the real DeepFilterNet checkpoint is added to the model zoo (owner
+sign-off, docs/license-audit.md §3 — M4-20 T18). RNNoise (BSD, Xiph) and
+GTCRN (Apache 2.0) are alternate denoise candidates; their attribution is
+added here if/when they are integrated.
+
+--------------------------------------------------------------------------
+8. Maintaining this file
 --------------------------------------------------------------------------
 Any pull request that adds support for a new model or introduces a new
 external dependency must run the license audit (docs/license-audit.md) and,
