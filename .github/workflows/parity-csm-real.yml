@@ -1,0 +1,70 @@
+# M4-05 T24 — Sesame CSM-1B staged parity (fixtures-gated).
+#
+# Structure = the parity-whisper-real.yml precedent: the workflow always
+# runs the committed synthetic-fixture leg (format/manifest pin) and the
+# env-gated real leg **skips cleanly with a printed reason** until the T29
+# owner dump exists. Both upstream repos (sesame/csm-1b checkpoint +
+# meta-llama/Llama-3.2-1B tokenizer) are *gated* downloads, so — unlike the
+# Kokoro workflow — CI cannot fetch them anonymously: the real leg fires
+# only after the owner (a) runs `tools/parity/csm_dump.py dump` per
+# tools/parity/README-csm.md, (b) publishes the fixture directory to the
+# runner (artifact / self-hosted path), and (c) the T29 tensor-manifest
+# weight binding lands (until then the env-gated leg fails loudly by
+# design — fabricated pass 禁止, see crates/vokra-models/tests/parity_csm.rs).
+#
+# NOT a required check (HF flakiness must not block PRs — the M2 Phase 3
+# rule); owner may promote after weeks of green.
+
+name: parity-csm-real
+
+on:
+  workflow_dispatch:
+    inputs:
+      parity_dir:
+        description: >-
+          Optional path (on the runner) to a real T29 reference dump. Leave
+          empty for the synthetic-leg-only run.
+        required: false
+        default: ""
+  schedule:
+    # Weekly cron: keeps the synthetic format pin + reader green and prints
+    # the honest "real reference absent" skip until T29.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  parity-csm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Synthetic fixture leg (always) + gated real leg
+        env:
+          VOKRA_CSM_PARITY_DIR: ${{ inputs.parity_dir }}
+        run: |
+          if [ -z "${VOKRA_CSM_PARITY_DIR}" ]; then
+            unset VOKRA_CSM_PARITY_DIR
+            echo "::notice::real CSM reference absent (gated repos — T29 owner dump); running the committed synthetic format-pin leg only. This is a clean skip, not a pass."
+          fi
+          cargo test -p vokra-models --test parity_csm -- --nocapture
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## parity-csm-real"
+            echo ""
+            if [ -z "${{ inputs.parity_dir }}" ]; then
+              echo "- synthetic format-pin leg: ran"
+              echo "- real staged reference leg: **skipped (T29 owner dump absent — gated repos)**"
+            else
+              echo "- real staged reference leg attempted against \`${{ inputs.parity_dir }}\`"
+              echo "- note: until the T29 weight binding lands the leg fails loudly by design"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
