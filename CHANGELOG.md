@@ -285,6 +285,48 @@ license sign-off, and owner ADR decisions are pending
   8) + `agc` / `hpf` / `loudness_norm`. BigVGAN / CTC / RNN-T / diarize
   stay in M5 (mechanism anchors recorded).
 
+#### v1.0-rc (M4) — post-terminal CC-gap completions (2026-07-16)
+
+A post-terminal pass (on the same branch, no new C ABI symbol, no new
+external dependency) completed several within-WP gaps and fixed one build
+regression; the default test suite went 2340 → 2418, all-features
+2364 → 2443.
+
+- **Build fix**: the M4-16 FSQ compute methods (`wavtokenizer_vq_f32`,
+  `xcodec2_fsq_f32`) had landed without the `Be::WebGpu` match arm their
+  RVQ siblings carry, breaking the `wasm32-unknown-unknown --features
+  webgpu` build (the M4-01 WASM deliverable). Both arms added (explicit
+  `UnsupportedOp`, FR-EX-08).
+- **Whisper word timestamps now reach the model + server** (M4-20 / M4-14):
+  the converter emits `vokra.whisper.alignment_heads` (built-in openai
+  table for base/small/medium/large-v3/turbo, decode-verified against the
+  published constants, plus safetensors passthrough); the tokenizer merges
+  subword timings into word-level via the (previously unwired)
+  `words_from_alignment`; `vokra-server` surfaces a `word_timestamps`
+  request field → response DTO. A model without alignment heads reports word
+  timestamps unavailable via an explicit error (never a fabricated table).
+- **`vokra-server` production startup** (M4-19 / M2-09): model-path
+  Config (CLI / env / TOML), `InferenceService` build, OpenAI + vLLM router
+  attach, Wyoming + scheduler wiring; a missing / broken GGUF is a hard
+  startup error (no silent skip).
+- **Sesame CSM / Mimi `from_gguf`** (M4-05 / M4-06): real named-tensor
+  binding (synthesized-weight round-trip tested; real-checkpoint numeric
+  parity stays owner).
+- **Metal decode routing + real-GPU parity**: `MoshiEngine::with_backend`
+  now also routes the decode chain (`CsmAudioDecodeChain::with_backend`
+  added); new Metal MSL kernels (gamma-only RMSNorm, adjacent-pair RoPE,
+  SiLU, fused SwiGLU) and CPU-vs-Metal parity tests for the Mimi decode /
+  Moshi / CosyVoice2 forward paths ran on real Apple-M1 hardware
+  (max |Δ| ~5–7e-7). The fused device-resident decode-step driver remains a
+  follow-up.
+- **Streaming enhancement + memory bounds**: `agc` / `hpf` gained a
+  stateful streaming API (chunked == whole-buffer); Moshi gained a bounded
+  `RingKVCache` for long full-duplex sessions.
+- **Test coverage + a bug fix**: WGSL formula-transcription tests for 8
+  WebGPU kernels + a fixed `Add` coverage-gate shader-name drift; 12
+  Vulkan GLSL arithmetic mirror tests (host-side, M1-native); C-ABI smoke
+  tests for the AEC and S2S surfaces; SIMD128 f32x4 activation kernels.
+
 ### Changed
 
 - **Metal / CUDA are first-party optional features, default OFF** —
