@@ -32,10 +32,11 @@
 //! pre-allocated scratch ([`CsmDepthState`]) carries it with zero
 //! allocation in the frame loop (FR-EX-05).
 
+use vokra_core::gguf::GgufFile;
 use vokra_core::rng::SplitMix64;
 use vokra_core::{BackendKind, Result, VokraError};
 
-use super::backbone::{CsmBackbone, xavier_uniform};
+use super::backbone::{CsmBackbone, bind_llm_block, tensor_f32, transpose, xavier_uniform};
 use super::config::CsmConfig;
 use super::rope::{llama3_inv_freqs, rope_apply_adjacent};
 use crate::compute::{Compute, HotOp};
@@ -114,18 +115,59 @@ impl CsmDepthWeights {
         })
     }
 
-    /// Real-weight binding — **honest stub** until the T29 tensor manifest
-    /// (never a silent zero-fill, FR-EX-08).
+    /// Binds real depth-transformer weights from a CSM GGUF carrying the
+    /// upstream torchtune names verbatim (`Model.decoder` is the
+    /// `llama3_2_100M` `TransformerDecoder`; `Model.projection` /
+    /// `Model.audio_head` are its own submodules — `SesameAILabs/csm`
+    /// `models.py`). Same honest boundary as
+    /// [`super::backbone::CsmBackboneWeights::from_gguf`]: names are
+    /// transcribed from the *public* source but **not header-confirmed**
+    /// (gated repo); real-checkpoint parity stays owner.
+    ///
+    /// Layouts:
+    /// - `projection.weight` — torch `Linear(backbone→depth)` `[d, d_b]` →
+    ///   transposed to the stored `[d_b, d]` GEMM `w_t`;
+    /// - `decoder.layers.{i}.*` / `decoder.norm.scale` — the shared block
+    ///   binder (transposed projections);
+    /// - `audio_head` — the `[n_codebooks-1, d, audio_vocab]` parameter;
+    ///   each `[d, audio_vocab]` slice is transposed once to the GEMV
+    ///   layout `[audio_vocab, d]` the head consumes.
     ///
     /// # Errors
     ///
-    /// [`VokraError::NotImplemented`].
-    pub fn from_gguf(_file: &vokra_core::gguf::GgufFile, _config: &CsmConfig) -> Result<Self> {
-        Err(VokraError::NotImplemented(
-            "CSM depth-transformer real-weight binding is deferred to the T29 \
-             checkpoint hand-off (ADR M4-05 §D2). Use CsmDepthWeights::synthesized \
-             for the deterministic fixture path.",
-        ))
+    /// [`VokraError::ModelLoad`] naming any missing / mis-shaped tensor
+    /// (FR-EX-08); [`VokraError::InvalidArgument`] on an ill-formed config.
+    pub fn from_gguf(file: &GgufFile, config: &CsmConfig) -> Result<Self> {
+        config.validate_for_forward()?;
+        let d_b = config.backbone.d_model;
+        let d = config.depth.d_model;
+        let kv_hidden = config.depth.kv_hidden_dim();
+        let ffn = config.depth.ffn_dim;
+        let n_heads = config.n_codebooks - 1;
+        let vocab = config.audio_vocab_size;
+
+        // projection.weight torch [d_depth, d_backbone] → w_t [d_b, d].
+        let proj = tensor_f32(file, "projection.weight", d * d_b)?;
+        let projection_w_t = transpose(&proj, d, d_b);
+        let mut blocks = Vec::with_capacity(config.depth.n_layer);
+        for i in 0..config.depth.n_layer {
+            blocks.push(bind_llm_block(file, "decoder", i, d, kv_hidden, ffn)?);
+        }
+        let final_norm_gamma = tensor_f32(file, "decoder.norm.scale", d)?;
+        // audio_head [n_heads, d, vocab]; per-head [d, vocab] → GEMV [vocab, d].
+        let head_param = tensor_f32(file, "audio_head", n_heads * d * vocab)?;
+        let mut audio_head = Vec::with_capacity(n_heads * vocab * d);
+        for h in 0..n_heads {
+            let slice = &head_param[h * d * vocab..(h + 1) * d * vocab];
+            audio_head.extend(transpose(slice, d, vocab));
+        }
+        Ok(Self {
+            projection_w_t,
+            blocks,
+            final_norm_gamma,
+            audio_head,
+            is_synthesized: false,
+        })
     }
 }
 
@@ -618,7 +660,7 @@ fn validate_depth_shapes(config: &CsmConfig, weights: &CsmDepthWeights) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::super::backbone::{CsmBackboneState, CsmFrame};
+    use super::super::backbone::{CsmBackboneState, CsmFrame, assert_block_eq, write_torch_block};
     use super::*;
 
     fn pair() -> (CsmBackbone, CsmDepthTransformer) {
@@ -737,14 +779,90 @@ mod tests {
     }
 
     #[test]
-    fn from_gguf_weights_are_an_honest_not_implemented_stub() {
+    fn from_gguf_binds_torchtune_named_tensors_round_trip() {
+        // Pack a synthesized depth store into torch layout under the
+        // documented torchtune names (`decoder.*` + `projection` +
+        // `audio_head`) and verify `from_gguf` binds them back exactly
+        // (pack ↔ unpack self-consistency; real parity stays owner —
+        // gated repo, module docs).
+        use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile};
+        let cfg = CsmConfig::tiny_for_tests();
+        let src = CsmDepthWeights::synthesized(&cfg, 33).unwrap();
+        let d_b = cfg.backbone.d_model;
+        let d = cfg.depth.d_model;
+        let kv_hidden = cfg.depth.kv_hidden_dim();
+        let ffn = cfg.depth.ffn_dim;
+        let n_heads = cfg.n_codebooks - 1;
+        let vocab = cfg.audio_vocab_size;
+        let f32_bytes = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
+
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "csm");
+        // projection.weight torch [d_depth, d_backbone] = wᵀ of the stored
+        // [d_backbone, d_depth].
+        b.add_tensor(
+            "projection.weight",
+            GgmlType::F32,
+            vec![d as u64, d_b as u64],
+            f32_bytes(&transpose(&src.projection_w_t, d_b, d)),
+        )
+        .unwrap();
+        for (i, blk) in src.blocks.iter().enumerate() {
+            write_torch_block(
+                &mut b,
+                &format!("decoder.layers.{i}"),
+                blk,
+                d,
+                kv_hidden,
+                ffn,
+            );
+        }
+        b.add_tensor(
+            "decoder.norm.scale",
+            GgmlType::F32,
+            vec![d as u64],
+            f32_bytes(&src.final_norm_gamma),
+        )
+        .unwrap();
+        // audio_head [n_heads, d_depth, vocab]; each torch slice [d, vocab]
+        // is the transpose of the stored GEMV slice [vocab, d].
+        let mut head_param = Vec::with_capacity(n_heads * d * vocab);
+        for h in 0..n_heads {
+            let slice = &src.audio_head[h * vocab * d..(h + 1) * vocab * d];
+            head_param.extend(transpose(slice, vocab, d));
+        }
+        b.add_tensor(
+            "audio_head",
+            GgmlType::F32,
+            vec![n_heads as u64, d as u64, vocab as u64],
+            f32_bytes(&head_param),
+        )
+        .unwrap();
+
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let loaded = CsmDepthWeights::from_gguf(&file, &cfg).expect("bind");
+        assert!(!loaded.is_synthesized);
+        assert_eq!(loaded.projection_w_t, src.projection_w_t);
+        assert_eq!(loaded.final_norm_gamma, src.final_norm_gamma);
+        assert_eq!(loaded.audio_head, src.audio_head);
+        assert_eq!(loaded.blocks.len(), src.blocks.len());
+        for (a, e) in loaded.blocks.iter().zip(&src.blocks) {
+            assert_block_eq(a, e);
+        }
+    }
+
+    #[test]
+    fn from_gguf_missing_tensor_is_a_loud_model_load_error() {
+        // FR-EX-08: never a silent zero-fill.
         let cfg = CsmConfig::tiny_for_tests();
         let mut b = vokra_core::gguf::GgufBuilder::new();
         b.add_string("vokra.model.arch", "csm");
         let file = vokra_core::gguf::GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-        assert!(matches!(
-            CsmDepthWeights::from_gguf(&file, &cfg),
-            Err(VokraError::NotImplemented(_))
-        ));
+        let err = CsmDepthWeights::from_gguf(&file, &cfg).unwrap_err();
+        assert!(matches!(err, VokraError::ModelLoad(_)));
+        assert!(
+            err.to_string().contains("projection.weight"),
+            "names the missing tensor: {err}"
+        );
     }
 }

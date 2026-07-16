@@ -20,9 +20,11 @@
 //! `AttributionRequired`, commercially allowed, **no** research flag) →
 //! config read → weight binding. The **LM weights bind for real** (the
 //! T02 manifest pinned the upstream tensor names — `MoshiBackboneWeights
-//! ::from_gguf`); the **Mimi ends stay on the synthesized bridge** until
-//! the shared module's T29 binding lands (`MimiEncoder::from_gguf` is an
-//! honest `NotImplemented` — M4-05 posture, documented there). The
+//! ::from_gguf`); the **Mimi ends stay on synthesized codec weights** until
+//! the real kyutai weights bind (`MimiEncoder::from_gguf` now binds the
+//! Vokra structural `mimi.*` naming, but the real `encoder.model.{i}` /
+//! `weight_norm` mapping is the owner converter step — M4-05 posture,
+//! documented there). The
 //! attribution surface resolves at load
 //! ([`vokra_core::resolve_attribution`]) so every deployer face (Rust /
 //! C ABI / CLI banner) reads one source.

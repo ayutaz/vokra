@@ -10,9 +10,12 @@
 //!   reference semantics.
 //! - The **real reference legs** are env-gated on `VOKRA_CSM_PARITY_DIR`
 //!   (owner sets it after the T29 dump): absent → clean skip with a
-//!   printed reason. Present, but the runtime cannot yet bind real weights
-//!   (`CsmBackboneWeights::from_gguf` = `NotImplemented` until the T29
-//!   tensor manifest) → a **loud skip naming T29** — never a pass.
+//!   printed reason. Present → the loader now *binds* real weights
+//!   (`CsmBackboneWeights::from_gguf` reads the documented torchtune names),
+//!   but those names are **not header-confirmed** (gated repo), so a real
+//!   comparison must not auto-run: the leg **panics loudly** naming the two
+//!   owner steps (confirm names vs. the real header; wire the staged
+//!   comparison) — never a fabricated pass.
 //!
 //! # Judgement (ADR M4-05 §D7 / tools/parity/README-csm.md)
 //!
@@ -197,18 +200,19 @@ fn staged_reference_parity_is_env_gated() {
     };
     let dir = PathBuf::from(dir);
     verify_manifest(&dir);
-    // Fixtures exist and verify — but the runtime cannot bind real weights
-    // until the T29 tensor manifest lands (`CsmBackboneWeights::from_gguf`
-    // is an honest NotImplemented). Comparing synthesized weights against
-    // the upstream reference would be meaningless, so this leg *fails
-    // loudly* rather than pretending: the flip-the-switch is the T29
-    // binding + this panic's removal.
+    // Fixtures exist and verify. `CsmBackboneWeights::from_gguf` now binds
+    // the documented torchtune names, but they are NOT header-confirmed
+    // (sesame/csm-1b is gated), so auto-running a comparison would risk
+    // reporting a pass off unverified naming. This leg *fails loudly* until
+    // the owner (1) confirms the tensor names against the real checkpoint
+    // header and (2) wires the staged comparison in place of this panic.
     panic!(
-        "VOKRA_CSM_PARITY_DIR is set and the fixture manifest verifies, but the \
-         real-weight GGUF binding is still the T29 stub \
-         (CsmBackboneWeights::from_gguf = NotImplemented). Land the T29 tensor \
-         manifest binding, then replace this panic with the staged comparison \
-         (frame codes bit-exact; float stages atol = {ATOL}). Refusing to report \
-         a pass that did not run (fabricated pass 禁止)."
+        "VOKRA_CSM_PARITY_DIR is set and the fixture manifest verifies. The \
+         runtime now binds real weights (CsmBackboneWeights::from_gguf reads \
+         the documented torchtune names), but those names are not \
+         header-confirmed (gated repo). Owner: confirm the names against the \
+         real checkpoint header, then replace this panic with the staged \
+         comparison (frame codes bit-exact; float stages atol = {ATOL}). \
+         Refusing to report a pass that did not run (fabricated pass 禁止)."
     );
 }

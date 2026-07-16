@@ -55,6 +55,7 @@ async fn wyoming_info_reply_is_returned_for_describe() {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         wyoming_bind: "127.0.0.1:0".parse().unwrap(),
         config_file: None,
+        ..Config::default()
     };
     let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn server");
 
@@ -205,6 +206,7 @@ async fn wyoming_accept_loop_serves_multiple_connections() {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         wyoming_bind: "127.0.0.1:0".parse().unwrap(),
         config_file: None,
+        ..Config::default()
     };
     let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn server");
 
@@ -268,6 +270,7 @@ async fn wyoming_unknown_event_after_describe_returns_error_not_silence() {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         wyoming_bind: "127.0.0.1:0".parse().unwrap(),
         config_file: None,
+        ..Config::default()
     };
     let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn server");
 

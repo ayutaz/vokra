@@ -104,6 +104,7 @@ async fn wyoming_describe_round_trip() {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         wyoming_bind: "127.0.0.1:0".parse().unwrap(),
         config_file: None,
+        ..Config::default()
     };
     let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn server");
 
@@ -191,6 +192,7 @@ async fn wyoming_long_audio_byte_level_round_trip() {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         wyoming_bind: "127.0.0.1:0".parse().unwrap(),
         config_file: None,
+        ..Config::default()
     };
     let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn server");
 
@@ -566,6 +568,7 @@ fn loopback_cfg() -> Config {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         wyoming_bind: "127.0.0.1:0".parse().unwrap(),
         config_file: None,
+        ..Config::default()
     }
 }
 

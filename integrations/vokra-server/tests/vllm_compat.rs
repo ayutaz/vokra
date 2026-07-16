@@ -317,6 +317,7 @@ async fn completions_valid_request_matches_schema() {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         wyoming_bind: "127.0.0.1:0".parse().unwrap(),
         config_file: None,
+        ..Config::default()
     };
     let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn server");
     let result = http_post_json(
@@ -371,6 +372,7 @@ async fn chat_completions_valid_request_matches_schema() {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         wyoming_bind: "127.0.0.1:0".parse().unwrap(),
         config_file: None,
+        ..Config::default()
     };
     let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn server");
     let result = http_post_json(
@@ -500,6 +502,7 @@ async fn server_boots_and_health_probes_green() {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         wyoming_bind: "127.0.0.1:0".parse().unwrap(),
         config_file: None,
+        ..Config::default()
     };
     let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn");
     let mut sock = tokio::net::TcpStream::connect(handles.http_actual)

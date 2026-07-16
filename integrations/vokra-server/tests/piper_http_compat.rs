@@ -306,6 +306,7 @@ async fn tts_returns_valid_wav_with_finite_samples() {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         wyoming_bind: "127.0.0.1:0".parse().unwrap(),
         config_file: None,
+        ..Config::default()
     };
     let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn server");
 
@@ -369,6 +370,7 @@ async fn server_boots_and_health_probes_green() {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         wyoming_bind: "127.0.0.1:0".parse().unwrap(),
         config_file: None,
+        ..Config::default()
     };
     let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn");
     let mut sock = tokio::net::TcpStream::connect(handles.http_actual)

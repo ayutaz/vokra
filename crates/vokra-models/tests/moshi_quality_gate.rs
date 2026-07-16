@@ -13,11 +13,14 @@
 //!   mel_loss alone is half of the Kill-switch-I red line — every report
 //!   says so.
 //! - The upstream-reference judgement additionally needs the **shared
-//!   Mimi module's real weight binding** (`MimiEncoder::from_gguf` is the
-//!   M4-05 T29-gated stub): Moshi's LM weights bind for real today, but
-//!   its PCM ends ride the synthesized bridge, so a PCM-level quality
-//!   comparison against upstream audio would be meaningless — the
-//!   env-gated leg says exactly that instead of pretending.
+//!   Mimi module's real kyutai weights** (`MimiEncoder::from_gguf` /
+//!   `MimiNeuralDecoder::from_gguf` now bind the Vokra *structural*
+//!   `mimi.*` naming, but the real `encoder.model.{i}` / `weight_norm`
+//!   mapping is the owner converter step): Moshi's LM weights bind for real
+//!   today, yet its PCM ends still ride synthesized codec weights, so a
+//!   PCM-level quality comparison against upstream audio would be
+//!   meaningless — the env-gated leg says exactly that instead of
+//!   pretending.
 
 use vokra_core::{DialogRequest, S2sEngine};
 use vokra_eval::degradation::{MosDomain, check_degradation, check_degradation_with_utmos};
@@ -127,15 +130,16 @@ fn upstream_reference_quality_gate_is_env_gated_until_mimi_binding() {
     };
     // Token-level parity CAN run with the fixtures (tests/parity_moshi.rs
     // — the Moshi LM binds for real); the PCM-level quality judgement
-    // cannot until the shared Mimi ends bind real weights.
+    // cannot until the shared Mimi ends bind the *real* kyutai weights.
     panic!(
         "VOKRA_MOSHI_PARITY_DIR = {dir:?} is set. Token-level staged parity runs \
          in tests/parity_moshi.rs (real LM binding landed with the T02 manifest), \
          but the PCM-level NFR-QL-02 comparison additionally needs the shared \
-         Mimi module's real weight binding (`MimiEncoder::from_gguf` /\
-         `MimiNeuralDecoder::from_gguf` are the M4-05 T29-gated stubs). Land that \
-         binding, then replace this panic with: decode the reference PCM, run the \
-         Vokra turn with the same input/seed, and assert \
+         Mimi module's real kyutai weights (`MimiEncoder::from_gguf` / \
+         `MimiNeuralDecoder::from_gguf` bind the Vokra structural `mimi.*` naming; \
+         the real `encoder.model.{{i}}` / `weight_norm` mapping is the owner \
+         converter step). Land that mapping, then replace this panic with: decode \
+         the reference PCM, run the Vokra turn with the same input/seed, and assert \
          check_degradation(vokra, reference) relative_delta < {THRESHOLD} (+ UTMOS \
          per the M4-18 gate state). Refusing to report a pass that did not run."
     );

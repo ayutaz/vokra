@@ -51,6 +51,7 @@
 //! `n_ctx` → [`VokraError::InvalidArgument`].
 
 use vokra_core::cache::paged::{BlockSize, KvDims, PagedKvCache};
+use vokra_core::gguf::GgufFile;
 use vokra_core::rng::SplitMix64;
 use vokra_core::{BackendKind, Result, VokraError};
 
@@ -188,22 +189,217 @@ impl CsmBackboneWeights {
         })
     }
 
-    /// Binds real weights from a CSM GGUF tensor store.
+    /// Binds real weights from a CSM GGUF that carries the upstream
+    /// **torchtune-convention** tensor names verbatim (the converter writes
+    /// safetensors names unchanged — `vokra-convert::models::csm`).
     ///
-    /// **Honest stub** — the tensor-name manifest is T29 (owner checkpoint
-    /// hand-off); the runtime never invents tensor names (CLAUDE.md
-    /// hallucination ban, FR-EX-08 — never a silent zero-fill).
+    /// # Naming source (honest boundary)
+    ///
+    /// The names below are transcribed from the *public* `SesameAILabs/csm`
+    /// `models.py` (`self.backbone` / `self.decoder` are torchtune
+    /// `TransformerDecoder`s built by `llama3_2_1B` / `llama3_2_100M`;
+    /// `text_embeddings` / `audio_embeddings` / `codebook0_head` /
+    /// `projection` / `audio_head` are `Model`'s own submodules) plus the
+    /// torchtune module tree (`TransformerSelfAttentionLayer` →
+    /// `sa_norm` / `attn.{q,k,v,output}_proj` / `mlp_norm` / `mlp.{w1,w2,w3}`,
+    /// `RMSNorm.scale`, final `norm.scale`). **They are NOT
+    /// header-confirmed** — `sesame/csm-1b` is an HF-gated repo, so the real
+    /// tensor headers are only observable at the T29 owner hand-off;
+    /// real-checkpoint parity therefore stays an owner task. The round-trip
+    /// test pins pack ↔ unpack self-consistency (moshi precedent, whose
+    /// public checkpoint *is* header-confirmed).
+    ///
+    /// Layout: torch `Linear.weight` is `[out, in]`; the Compute-seam GEMM
+    /// wants `w_t = [in, out]`, so every projection is transposed once here
+    /// (GQA-aware: K/V project to `kv_hidden`). `codebook0_head.weight` is
+    /// kept verbatim — its `[audio_vocab, d]` torch layout already is the
+    /// GEMV layout the head consumes.
     ///
     /// # Errors
     ///
-    /// [`VokraError::NotImplemented`] until the T29 manifest lands.
-    pub fn from_gguf(_file: &vokra_core::gguf::GgufFile, _config: &CsmConfig) -> Result<Self> {
-        Err(VokraError::NotImplemented(
-            "CSM backbone real-weight binding is deferred to the T29 checkpoint \
-             hand-off (ADR M4-05 §D2 tensor manifest). Use \
-             CsmBackboneWeights::synthesized for the deterministic fixture path.",
-        ))
+    /// [`VokraError::ModelLoad`] naming any missing / mis-shaped tensor
+    /// (never a silent zero-fill — FR-EX-08); [`VokraError::InvalidArgument`]
+    /// on an ill-formed / `0`-placeholder config.
+    pub fn from_gguf(file: &GgufFile, config: &CsmConfig) -> Result<Self> {
+        config.validate_for_forward()?;
+        let d = config.backbone.d_model;
+        let kv_hidden = config.backbone.kv_hidden_dim();
+        let ffn = config.backbone.ffn_dim;
+
+        let text_emb = tensor_f32(file, "text_embeddings.weight", config.text_vocab_size * d)?;
+        let audio_emb = tensor_f32(
+            file,
+            "audio_embeddings.weight",
+            config.audio_vocab_size * config.n_codebooks * d,
+        )?;
+        let mut blocks = Vec::with_capacity(config.backbone.n_layer);
+        for i in 0..config.backbone.n_layer {
+            blocks.push(bind_llm_block(file, "backbone", i, d, kv_hidden, ffn)?);
+        }
+        Ok(Self {
+            text_emb,
+            audio_emb,
+            blocks,
+            final_norm_gamma: tensor_f32(file, "backbone.norm.scale", d)?,
+            // GEMV layout == torch `[audio_vocab, d]` verbatim (no transpose).
+            codebook0_head: tensor_f32(file, "codebook0_head.weight", config.audio_vocab_size * d)?,
+            is_synthesized: false,
+        })
     }
+}
+
+/// Reads a named tensor as f32, enforcing the element count (loud
+/// [`VokraError::ModelLoad`] on absence / size mismatch — FR-EX-08). Kept
+/// CSM-local (mirrors the moshi helper) so errors name the CSM model and
+/// the `csm → moshi` import direction stays one-way.
+pub(crate) fn tensor_f32(file: &GgufFile, name: &str, want: usize) -> Result<Vec<f32>> {
+    let v = file
+        .tensor_f32(name)
+        .map_err(|e| VokraError::ModelLoad(format!("csm: tensor `{name}`: {e}")))?;
+    if v.len() != want {
+        return Err(VokraError::ModelLoad(format!(
+            "csm: tensor `{name}` has {} elements, expected {want}",
+            v.len()
+        )));
+    }
+    Ok(v)
+}
+
+/// Transposes a `[rows, cols]` row-major matrix into `[cols, rows]` (torch
+/// `Linear.weight` `[out, in]` → the Compute-seam GEMM `w_t` `[in, out]`
+/// layout). Pure reordering — bit-exact and its own inverse.
+pub(crate) fn transpose(m: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    debug_assert_eq!(m.len(), rows * cols);
+    let mut out = vec![0.0f32; rows * cols];
+    for r in 0..rows {
+        for c in 0..cols {
+            out[c * rows + r] = m[r * cols + c];
+        }
+    }
+    out
+}
+
+/// Binds one Llama-3.2 transformer block from the `{prefix}.layers.{i}.*`
+/// torchtune tensors (shared by the backbone `prefix = "backbone"` and the
+/// depth transformer `prefix = "decoder"`). All linears are bias-less
+/// (torchtune Llama); GQA-aware K/V project to `kv_hidden`.
+pub(crate) fn bind_llm_block(
+    file: &GgufFile,
+    prefix: &str,
+    i: usize,
+    d: usize,
+    kv_hidden: usize,
+    ffn: usize,
+) -> Result<LlmBlockWeights> {
+    let p = format!("{prefix}.layers.{i}");
+    let q = tensor_f32(file, &format!("{p}.attn.q_proj.weight"), d * d)?;
+    let k = tensor_f32(file, &format!("{p}.attn.k_proj.weight"), kv_hidden * d)?;
+    let v = tensor_f32(file, &format!("{p}.attn.v_proj.weight"), kv_hidden * d)?;
+    let o = tensor_f32(file, &format!("{p}.attn.output_proj.weight"), d * d)?;
+    // torchtune FeedForward: w1 = gate, w3 = up, w2 = down (SwiGLU).
+    let gate = tensor_f32(file, &format!("{p}.mlp.w1.weight"), ffn * d)?;
+    let up = tensor_f32(file, &format!("{p}.mlp.w3.weight"), ffn * d)?;
+    let down = tensor_f32(file, &format!("{p}.mlp.w2.weight"), d * ffn)?;
+    Ok(LlmBlockWeights {
+        attn_norm_gamma: tensor_f32(file, &format!("{p}.sa_norm.scale"), d)?,
+        q_w_t: transpose(&q, d, d),
+        k_w_t: transpose(&k, kv_hidden, d),
+        v_w_t: transpose(&v, kv_hidden, d),
+        o_w_t: transpose(&o, d, d),
+        ffn_norm_gamma: tensor_f32(file, &format!("{p}.mlp_norm.scale"), d)?,
+        ffn_gate_w_t: transpose(&gate, ffn, d),
+        ffn_up_w_t: transpose(&up, ffn, d),
+        ffn_down_w_t: transpose(&down, d, ffn),
+    })
+}
+
+/// Packs one runtime block back into the torch `[out, in]` layout under the
+/// torchtune names (the exact inverse of [`bind_llm_block`]). Shared by the
+/// backbone and depth round-trip tests (`prefix = "backbone.layers.{i}"` /
+/// `"decoder.layers.{i}"`).
+#[cfg(test)]
+pub(crate) fn write_torch_block(
+    b: &mut vokra_core::gguf::GgufBuilder,
+    prefix: &str,
+    blk: &LlmBlockWeights,
+    d: usize,
+    kv_hidden: usize,
+    ffn: usize,
+) {
+    use vokra_core::gguf::GgmlType;
+    let f32_bytes = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
+    let add = |b: &mut vokra_core::gguf::GgufBuilder, name: String, dims: Vec<u64>, v: &[f32]| {
+        b.add_tensor(&name, GgmlType::F32, dims, f32_bytes(v))
+            .unwrap();
+    };
+    add(
+        b,
+        format!("{prefix}.sa_norm.scale"),
+        vec![d as u64],
+        &blk.attn_norm_gamma,
+    );
+    add(
+        b,
+        format!("{prefix}.attn.q_proj.weight"),
+        vec![d as u64, d as u64],
+        &transpose(&blk.q_w_t, d, d),
+    );
+    add(
+        b,
+        format!("{prefix}.attn.k_proj.weight"),
+        vec![kv_hidden as u64, d as u64],
+        &transpose(&blk.k_w_t, d, kv_hidden),
+    );
+    add(
+        b,
+        format!("{prefix}.attn.v_proj.weight"),
+        vec![kv_hidden as u64, d as u64],
+        &transpose(&blk.v_w_t, d, kv_hidden),
+    );
+    add(
+        b,
+        format!("{prefix}.attn.output_proj.weight"),
+        vec![d as u64, d as u64],
+        &transpose(&blk.o_w_t, d, d),
+    );
+    add(
+        b,
+        format!("{prefix}.mlp_norm.scale"),
+        vec![d as u64],
+        &blk.ffn_norm_gamma,
+    );
+    add(
+        b,
+        format!("{prefix}.mlp.w1.weight"),
+        vec![ffn as u64, d as u64],
+        &transpose(&blk.ffn_gate_w_t, d, ffn),
+    );
+    add(
+        b,
+        format!("{prefix}.mlp.w3.weight"),
+        vec![ffn as u64, d as u64],
+        &transpose(&blk.ffn_up_w_t, d, ffn),
+    );
+    add(
+        b,
+        format!("{prefix}.mlp.w2.weight"),
+        vec![d as u64, ffn as u64],
+        &transpose(&blk.ffn_down_w_t, ffn, d),
+    );
+}
+
+/// Field-by-field weight equality for one bound block (round-trip oracle).
+#[cfg(test)]
+pub(crate) fn assert_block_eq(a: &LlmBlockWeights, e: &LlmBlockWeights) {
+    assert_eq!(a.attn_norm_gamma, e.attn_norm_gamma);
+    assert_eq!(a.q_w_t, e.q_w_t);
+    assert_eq!(a.k_w_t, e.k_w_t);
+    assert_eq!(a.v_w_t, e.v_w_t);
+    assert_eq!(a.o_w_t, e.o_w_t);
+    assert_eq!(a.ffn_norm_gamma, e.ffn_norm_gamma);
+    assert_eq!(a.ffn_gate_w_t, e.ffn_gate_w_t);
+    assert_eq!(a.ffn_up_w_t, e.ffn_up_w_t);
+    assert_eq!(a.ffn_down_w_t, e.ffn_down_w_t);
 }
 
 fn synthesized_block(
@@ -1052,16 +1248,87 @@ mod tests {
     }
 
     #[test]
-    fn from_gguf_weights_are_an_honest_not_implemented_stub() {
-        // T29 flip-the-switch: never a silent zero-fill (FR-EX-08).
+    fn from_gguf_binds_torchtune_named_tensors_round_trip() {
+        // Pack a synthesized store into the *torch* `[out, in]` layout under
+        // the documented torchtune names, then verify `from_gguf` binds them
+        // back to the exact source weights (pack ↔ unpack self-consistency;
+        // real-checkpoint parity stays owner — gated repo, module docs).
+        use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile};
+        let cfg = CsmConfig::tiny_for_tests();
+        let src = CsmBackboneWeights::synthesized(&cfg, 21).unwrap();
+        let d = cfg.backbone.d_model;
+        let kv_hidden = cfg.backbone.kv_hidden_dim();
+        let ffn = cfg.backbone.ffn_dim;
+        let f32_bytes = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
+
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "csm");
+        b.add_tensor(
+            "text_embeddings.weight",
+            GgmlType::F32,
+            vec![cfg.text_vocab_size as u64, d as u64],
+            f32_bytes(&src.text_emb),
+        )
+        .unwrap();
+        b.add_tensor(
+            "audio_embeddings.weight",
+            GgmlType::F32,
+            vec![(cfg.audio_vocab_size * cfg.n_codebooks) as u64, d as u64],
+            f32_bytes(&src.audio_emb),
+        )
+        .unwrap();
+        for (i, blk) in src.blocks.iter().enumerate() {
+            write_torch_block(
+                &mut b,
+                &format!("backbone.layers.{i}"),
+                blk,
+                d,
+                kv_hidden,
+                ffn,
+            );
+        }
+        b.add_tensor(
+            "backbone.norm.scale",
+            GgmlType::F32,
+            vec![d as u64],
+            f32_bytes(&src.final_norm_gamma),
+        )
+        .unwrap();
+        b.add_tensor(
+            "codebook0_head.weight",
+            GgmlType::F32,
+            vec![cfg.audio_vocab_size as u64, d as u64],
+            f32_bytes(&src.codebook0_head),
+        )
+        .unwrap();
+
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let loaded = CsmBackboneWeights::from_gguf(&file, &cfg).expect("bind");
+        assert!(!loaded.is_synthesized);
+        assert_eq!(loaded.text_emb, src.text_emb);
+        assert_eq!(loaded.audio_emb, src.audio_emb);
+        assert_eq!(loaded.final_norm_gamma, src.final_norm_gamma);
+        assert_eq!(loaded.codebook0_head, src.codebook0_head);
+        assert_eq!(loaded.blocks.len(), src.blocks.len());
+        for (a, e) in loaded.blocks.iter().zip(&src.blocks) {
+            assert_block_eq(a, e);
+        }
+    }
+
+    #[test]
+    fn from_gguf_missing_tensor_is_a_loud_model_load_error() {
+        // FR-EX-08: never a silent zero-fill — the first missing tensor is a
+        // loud ModelLoad naming it.
         let cfg = CsmConfig::tiny_for_tests();
         let mut b = vokra_core::gguf::GgufBuilder::new();
         b.add_string("vokra.model.arch", "csm");
         let file = vokra_core::gguf::GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-        assert!(matches!(
-            CsmBackboneWeights::from_gguf(&file, &cfg),
-            Err(VokraError::NotImplemented(_))
-        ));
+        let err = CsmBackboneWeights::from_gguf(&file, &cfg).unwrap_err();
+        assert!(matches!(err, VokraError::ModelLoad(_)));
+        assert!(
+            err.to_string().contains("text_embeddings.weight"),
+            "names the missing tensor: {err}"
+        );
     }
 
     #[test]

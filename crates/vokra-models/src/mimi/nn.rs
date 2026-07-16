@@ -170,6 +170,27 @@ impl CausalConv1d {
         t / self.stride
     }
 
+    /// Reconstructs the `[out_ch, in_ch, k]` row-major weight the
+    /// constructor consumed (inverse of the internal `[in*k, out]`
+    /// transpose). Used by the neural-chain GGUF round-trip.
+    #[cfg(test)]
+    pub(crate) fn weight_oik(&self) -> Vec<f32> {
+        let cols = self.in_ch * self.k;
+        let mut w = vec![0.0f32; self.out_ch * cols];
+        for o in 0..self.out_ch {
+            for c in 0..cols {
+                w[o * cols + c] = self.w_t[c * self.out_ch + o];
+            }
+        }
+        w
+    }
+
+    /// Optional bias `[out_ch]`.
+    #[cfg(test)]
+    pub(crate) fn bias(&self) -> Option<&[f32]> {
+        self.bias.as_deref()
+    }
+
     /// Processes `x = [in_ch, t]` channel-major into
     /// `out = [out_ch, t/stride]`, carrying the causal left context in
     /// `state`. Zero heap allocation (scratch pre-sized by
@@ -341,6 +362,19 @@ impl CausalConvTranspose1d {
             w,
             bias,
         })
+    }
+
+    /// The `[in_ch, out_ch, k]` row-major weight (stored verbatim). Used by
+    /// the neural-chain GGUF round-trip.
+    #[cfg(test)]
+    pub(crate) fn weight_iok(&self) -> &[f32] {
+        &self.w
+    }
+
+    /// Optional bias `[out_ch]`.
+    #[cfg(test)]
+    pub(crate) fn bias(&self) -> Option<&[f32]> {
+        self.bias.as_deref()
     }
 
     /// Fresh zero state with scratch capacity for `t_cap` input columns.

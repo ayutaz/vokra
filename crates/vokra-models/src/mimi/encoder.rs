@@ -222,18 +222,133 @@ impl MimiEncoder {
         })
     }
 
-    /// Real-weight binding — **honest stub** until the T29 kyutai
-    /// checkpoint manifest (FR-EX-08, never a zero-fill).
+    /// Binds neural-chain weights from a GGUF under the Vokra **structural**
+    /// naming (`mimi.enc.*`), reproducing exactly the geometry
+    /// [`Self::synthesized`] builds.
+    ///
+    /// # Honest boundary (naming — read before wiring the real checkpoint)
+    ///
+    /// The real kyutai Mimi checkpoint stores the SEANet chain as a
+    /// weight-normed `nn.Sequential` (`encoder.model.{i}.conv.conv.*` with
+    /// `weight_norm` `(g, v)` parametrizations + streaming wrappers,
+    /// `moshi/modules/seanet.py`). Those exact `model.{i}` integer indices
+    /// and the `weight_norm` fusion are **checkpoint-exact and not
+    /// observable without the gated tokenizer safetensors** — guessing them
+    /// would violate the hallucination ban. So this binder uses an explicit
+    /// Vokra structural naming (one fused weight per conv, no `weight_norm`)
+    /// that the round-trip test pins for pack ↔ unpack self-consistency.
+    /// The T29 owner step is a thin adapter: map `mimi.enc.*` ⇄ the real
+    /// `encoder.model.{i}` names and fuse `weight_norm` in the converter
+    /// (`vokra-convert::models::mimi` currently passes the SEANet tensors
+    /// through verbatim). Real PCM parity stays an owner task.
     ///
     /// # Errors
     ///
-    /// [`VokraError::NotImplemented`].
-    pub fn from_gguf(_file: &GgufFile, _config: &MimiNeuralConfig) -> Result<Self> {
-        Err(VokraError::NotImplemented(
-            "Mimi encoder real-weight binding is deferred to the T29 checkpoint \
-             hand-off (kyutai tensor names — ADR M4-05 §D2). Use \
-             MimiEncoder::synthesized for the deterministic fixture path.",
-        ))
+    /// [`VokraError::ModelLoad`] naming any missing / mis-shaped tensor
+    /// (FR-EX-08); propagates config validation.
+    pub fn from_gguf(file: &GgufFile, config: &MimiNeuralConfig) -> Result<Self> {
+        config.validate()?;
+        let s = &config.seanet;
+        let nf = s.n_filters;
+        let dim = s.dimension;
+        let k = s.kernel_size;
+
+        let init = read_conv(file, "mimi.enc.init", 1, nf, k, 1, 1, true)?;
+        let mut ch = nf;
+        let mut stages = Vec::with_capacity(s.ratios.len());
+        // Same order as `synthesized`: ratios reversed (seanet.py).
+        for (i, &r) in s.ratios.iter().rev().enumerate() {
+            let hidden = (ch / s.compress).max(1);
+            let mut blocks = Vec::with_capacity(s.n_residual_layers);
+            for j in 0..s.n_residual_layers {
+                let dil = s.dilation_base.pow(j as u32);
+                blocks.push(ResBlock {
+                    conv1: read_conv(
+                        file,
+                        &format!("mimi.enc.s{i}.b{j}.c1"),
+                        ch,
+                        hidden,
+                        s.residual_kernel_size,
+                        1,
+                        dil,
+                        true,
+                    )?,
+                    conv2: read_conv(
+                        file,
+                        &format!("mimi.enc.s{i}.b{j}.c2"),
+                        hidden,
+                        ch,
+                        1,
+                        1,
+                        1,
+                        true,
+                    )?,
+                });
+            }
+            let down = read_conv(
+                file,
+                &format!("mimi.enc.s{i}.down"),
+                ch,
+                ch * 2,
+                2 * r,
+                r,
+                1,
+                true,
+            )?;
+            stages.push(EncStage { blocks, down });
+            ch *= 2;
+        }
+        let final_conv = read_conv(
+            file,
+            "mimi.enc.final",
+            ch,
+            dim,
+            s.last_kernel_size,
+            1,
+            1,
+            true,
+        )?;
+        let ds = config.frame_downsample_stride()?;
+        let frame_down = read_conv(file, "mimi.enc.frame_down", dim, dim, 2 * ds, ds, 1, false)?;
+
+        let t = &config.transformer;
+        let mut layers = Vec::with_capacity(t.n_layer);
+        for l in 0..t.n_layer {
+            layers.push(read_tf_layer(
+                file,
+                &format!("mimi.enc.tf{l}"),
+                t.d_model,
+                t.ff_dim,
+            )?);
+        }
+        let transformer = MimiTransformer::new(
+            t.d_model,
+            t.n_head,
+            t.ff_dim,
+            t.context,
+            t.max_period,
+            layers,
+        )?;
+
+        let q = &config.quantizer;
+        let input_proj = tensor_f32(file, "mimi.enc.input_proj", q.dimension * dim)?;
+        let mut tables = Vec::with_capacity(q.n_q);
+        for cb in 0..q.n_q {
+            let data = tensor_f32(file, &format!("mimi.enc.cb{cb}"), q.bins * q.dimension)?;
+            tables.push(CodebookTable::new(q.bins, q.dimension, data)?);
+        }
+        Ok(Self {
+            config: config.clone(),
+            init,
+            stages,
+            final_conv,
+            frame_down,
+            transformer,
+            input_proj,
+            tables,
+            backend: BackendKind::Cpu,
+            is_synthesized: false,
+        })
     }
 
     /// Selects the Compute-seam backend.
@@ -586,6 +701,126 @@ pub(crate) fn rvq_quantize_chain(
     Ok(())
 }
 
+/// Reads a named tensor as f32, enforcing the element count (loud
+/// [`VokraError::ModelLoad`] on absence / size mismatch — FR-EX-08). Shared
+/// by the encoder + decoder neural-chain binders (`mimi:`-prefixed errors).
+pub(crate) fn tensor_f32(file: &GgufFile, name: &str, want: usize) -> Result<Vec<f32>> {
+    let v = file
+        .tensor_f32(name)
+        .map_err(|e| VokraError::ModelLoad(format!("mimi: tensor `{name}`: {e}")))?;
+    if v.len() != want {
+        return Err(VokraError::ModelLoad(format!(
+            "mimi: tensor `{name}` has {} elements, expected {want}",
+            v.len()
+        )));
+    }
+    Ok(v)
+}
+
+/// Reads a `[out, in, k]` causal conv (+ optional `{name}.bias`) from the
+/// GGUF and builds it (Vokra structural naming — see
+/// [`MimiEncoder::from_gguf`] for the honest naming boundary).
+#[allow(clippy::too_many_arguments)] // conv geometry mirrors CausalConv1d::new
+pub(crate) fn read_conv(
+    file: &GgufFile,
+    name: &str,
+    in_ch: usize,
+    out_ch: usize,
+    k: usize,
+    stride: usize,
+    dil: usize,
+    bias: bool,
+) -> Result<CausalConv1d> {
+    let w = tensor_f32(file, &format!("{name}.weight"), out_ch * in_ch * k)?;
+    let b = if bias {
+        Some(tensor_f32(file, &format!("{name}.bias"), out_ch)?)
+    } else {
+        None
+    };
+    CausalConv1d::new(in_ch, out_ch, k, stride, dil, &w, b)
+}
+
+/// Reads one bottleneck-transformer layer (verbatim runtime `w_t` layout).
+pub(crate) fn read_tf_layer(
+    file: &GgufFile,
+    prefix: &str,
+    d: usize,
+    ff: usize,
+) -> Result<MimiTransformerLayer> {
+    Ok(MimiTransformerLayer {
+        ln1_gamma: tensor_f32(file, &format!("{prefix}.ln1_gamma"), d)?,
+        ln1_beta: tensor_f32(file, &format!("{prefix}.ln1_beta"), d)?,
+        q_w_t: tensor_f32(file, &format!("{prefix}.q"), d * d)?,
+        k_w_t: tensor_f32(file, &format!("{prefix}.k"), d * d)?,
+        v_w_t: tensor_f32(file, &format!("{prefix}.v"), d * d)?,
+        o_w_t: tensor_f32(file, &format!("{prefix}.o"), d * d)?,
+        layer_scale_1: tensor_f32(file, &format!("{prefix}.ls1"), d)?,
+        ln2_gamma: tensor_f32(file, &format!("{prefix}.ln2_gamma"), d)?,
+        ln2_beta: tensor_f32(file, &format!("{prefix}.ln2_beta"), d)?,
+        fc1_w_t: tensor_f32(file, &format!("{prefix}.fc1"), d * ff)?,
+        fc2_w_t: tensor_f32(file, &format!("{prefix}.fc2"), ff * d)?,
+        layer_scale_2: tensor_f32(file, &format!("{prefix}.ls2"), d)?,
+    })
+}
+
+/// Writes one bottleneck-transformer layer under `{prefix}.*` (round-trip
+/// mirror of [`read_tf_layer`]).
+#[cfg(test)]
+pub(crate) fn write_tf_layer(
+    b: &mut vokra_core::gguf::GgufBuilder,
+    prefix: &str,
+    l: &MimiTransformerLayer,
+) {
+    use vokra_core::gguf::GgmlType;
+    let bytes = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
+    let add = |b: &mut vokra_core::gguf::GgufBuilder, suffix: &str, v: &[f32]| {
+        b.add_tensor(
+            &format!("{prefix}.{suffix}"),
+            GgmlType::F32,
+            vec![v.len() as u64],
+            bytes(v),
+        )
+        .unwrap();
+    };
+    add(b, "ln1_gamma", &l.ln1_gamma);
+    add(b, "ln1_beta", &l.ln1_beta);
+    add(b, "q", &l.q_w_t);
+    add(b, "k", &l.k_w_t);
+    add(b, "v", &l.v_w_t);
+    add(b, "o", &l.o_w_t);
+    add(b, "ls1", &l.layer_scale_1);
+    add(b, "ln2_gamma", &l.ln2_gamma);
+    add(b, "ln2_beta", &l.ln2_beta);
+    add(b, "fc1", &l.fc1_w_t);
+    add(b, "fc2", &l.fc2_w_t);
+    add(b, "ls2", &l.layer_scale_2);
+}
+
+/// Writes a causal conv's `[out, in, k]` weight (+ bias) under `{name}.*`
+/// (round-trip mirror of [`read_conv`]).
+#[cfg(test)]
+pub(crate) fn write_conv(b: &mut vokra_core::gguf::GgufBuilder, name: &str, c: &CausalConv1d) {
+    use vokra_core::gguf::GgmlType;
+    let bytes = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
+    let w = c.weight_oik();
+    b.add_tensor(
+        &format!("{name}.weight"),
+        GgmlType::F32,
+        vec![w.len() as u64],
+        bytes(&w),
+    )
+    .unwrap();
+    if let Some(bias) = c.bias() {
+        b.add_tensor(
+            &format!("{name}.bias"),
+            GgmlType::F32,
+            vec![bias.len() as u64],
+            bytes(bias),
+        )
+        .unwrap();
+    }
+}
+
 pub(crate) fn synthesized_transformer_layer(
     rng: &mut SplitMix64,
     d: usize,
@@ -744,14 +979,69 @@ mod tests {
         }
     }
 
+    /// Appends a plain 1-D f32 tensor (input_proj / codebook data).
+    fn write_vec(b: &mut vokra_core::gguf::GgufBuilder, name: &str, v: &[f32]) {
+        use vokra_core::gguf::GgmlType;
+        let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+        b.add_tensor(name, GgmlType::F32, vec![v.len() as u64], bytes)
+            .unwrap();
+    }
+
     #[test]
-    fn from_gguf_is_an_honest_stub() {
-        let mut b = vokra_core::gguf::GgufBuilder::new();
-        b.add_string("vokra.model.arch", "csm");
+    fn from_gguf_binds_structural_named_tensors_round_trip() {
+        // Pack every neural-chain weight under the Vokra structural naming
+        // (`mimi.enc.*`), then verify `from_gguf` binds it back to an encoder
+        // that reproduces the exact encode. Pack ↔ unpack self-consistency;
+        // real kyutai-name / weight_norm mapping stays owner (module docs).
+        use vokra_core::gguf::GgufBuilder;
+        let cfg = MimiNeuralConfig::tiny_for_tests();
+        let src = MimiEncoder::synthesized(&cfg, 5).unwrap();
+
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "mimi");
+        write_conv(&mut b, "mimi.enc.init", &src.init);
+        for (i, stage) in src.stages.iter().enumerate() {
+            for (j, blk) in stage.blocks.iter().enumerate() {
+                write_conv(&mut b, &format!("mimi.enc.s{i}.b{j}.c1"), &blk.conv1);
+                write_conv(&mut b, &format!("mimi.enc.s{i}.b{j}.c2"), &blk.conv2);
+            }
+            write_conv(&mut b, &format!("mimi.enc.s{i}.down"), &stage.down);
+        }
+        write_conv(&mut b, "mimi.enc.final", &src.final_conv);
+        write_conv(&mut b, "mimi.enc.frame_down", &src.frame_down);
+        for (l, layer) in src.transformer.layers.iter().enumerate() {
+            write_tf_layer(&mut b, &format!("mimi.enc.tf{l}"), layer);
+        }
+        write_vec(&mut b, "mimi.enc.input_proj", &src.input_proj);
+        for (cb, table) in src.tables.iter().enumerate() {
+            write_vec(&mut b, &format!("mimi.enc.cb{cb}"), &table.data);
+        }
+
         let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-        assert!(matches!(
-            MimiEncoder::from_gguf(&file, &MimiNeuralConfig::tiny_for_tests()),
-            Err(VokraError::NotImplemented(_))
-        ));
+        let loaded = MimiEncoder::from_gguf(&file, &cfg).expect("bind");
+        assert!(!loaded.is_synthesized());
+
+        // Forward equality: identical PCM → identical RVQ codes.
+        let hop = src.frame_hop().unwrap();
+        let pcm: Vec<f32> = (0..hop * 3)
+            .map(|i| ((i as f32) * 0.017).sin() * 0.3)
+            .collect();
+        let a = src.encode_all(&pcm).unwrap();
+        let e = loaded.encode_all(&pcm).unwrap();
+        assert_eq!(a, e, "structural pack → GGUF → bind reproduces the encode");
+    }
+
+    #[test]
+    fn from_gguf_missing_tensor_is_a_loud_model_load_error() {
+        // FR-EX-08: never a silent zero-fill — the first missing conv is loud.
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "mimi");
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let err = MimiEncoder::from_gguf(&file, &MimiNeuralConfig::tiny_for_tests()).unwrap_err();
+        assert!(matches!(err, VokraError::ModelLoad(_)));
+        assert!(
+            err.to_string().contains("mimi.enc.init"),
+            "names the missing tensor: {err}"
+        );
     }
 }
