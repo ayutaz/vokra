@@ -711,9 +711,13 @@ fn parse_flat_u32_list(s: &str) -> Vec<u32> {
 ///
 /// A `passthrough` from the checkpoint wins; otherwise the built-in per-size
 /// table is used; otherwise (unknown / synthetic size with no passthrough)
-/// nothing is written — the runtime then falls back to its own default head set
-/// (openai's "last half of the decoder layers"), never a fabricated table
-/// (FR-EX-08 — no silent invention).
+/// nothing is written — and the runtime reports word timestamps as
+/// **unavailable** for that model via an explicit `VokraError::UnsupportedOp`
+/// at request time (no default table is ever invented). This matches the
+/// loader (`whisper::config` — absent key → empty) and consumer
+/// (`whisper::beam_glue` → `Ok(None)` → `beam_search` raises the explicit
+/// error), pinned by `no_alignment_heads_makes_word_timestamps_explicit_error`.
+/// The converter never fabricates a table (FR-EX-08 — no silent invention).
 fn write_alignment_heads(b: &mut GgufBuilder, name: &str, passthrough: Option<&[u32]>) {
     let heads: &[u32] = match passthrough {
         Some(p) => p,
