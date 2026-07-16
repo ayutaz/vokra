@@ -27,7 +27,7 @@
 //! pinned by a test below.
 
 use vokra_core::cache::paged::{BlockSize, PagedKvCache};
-use vokra_core::{Result, VokraError};
+use vokra_core::{BackendKind, Result, VokraError};
 use vokra_ops::mimi_rvq::{CodebookTable, MimiRvqAttrs, mimi_paged_dims};
 
 use crate::mimi::{MimiDecoderState, MimiNeuralDecoder};
@@ -114,6 +114,27 @@ impl CsmAudioDecodeChain {
             attrs,
             neural,
         })
+    }
+
+    /// Routes the **neural decoder** (features → PCM) through `backend`
+    /// (#12). The RVQ codebook lookup stays CPU-side: it is cheap array
+    /// indexing, and `HotOp::MimiRvq` has no GPU kernel through the Compute
+    /// seam today (the coverage gate pinned by
+    /// `mimi_rvq_hot_op_coverage_gate_is_consistent_with_this_chain`). Only
+    /// the neural seam ops (GEMM / GEMV / Softmax / LayerNorm / GELU) move.
+    /// An unsupported neural hot op on `backend` is a loud error at decode
+    /// time (FR-EX-08 — no silent CPU fall back).
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.neural = self.neural.with_backend(backend);
+        self
+    }
+
+    /// The Compute-seam backend the neural decoder dispatches through
+    /// (the RVQ lookup is always CPU — [`Self::with_backend`]).
+    #[must_use]
+    pub fn backend(&self) -> BackendKind {
+        self.neural.backend()
     }
 
     /// The RVQ shape.
@@ -318,6 +339,38 @@ mod tests {
             streamed.extend_from_slice(&pcm);
         }
         assert_eq!(batch, streamed, "paged streaming path == batch path");
+    }
+
+    #[test]
+    fn with_backend_routes_the_neural_decoder_only() {
+        // #12: with_backend must route the neural decoder seam; the cheap
+        // RVQ codebook lookup stays CPU-side (array-indexing, and
+        // HotOp::MimiRvq is CPU-only through the seam — the coverage gate
+        // pinned below).
+        let ch = chain();
+        assert_eq!(ch.backend(), BackendKind::Cpu, "assembled chain is CPU");
+        let routed = ch.with_backend(BackendKind::Cuda);
+        assert_eq!(
+            routed.backend(),
+            BackendKind::Cuda,
+            "with_backend routes the neural decoder"
+        );
+        // The RVQ bound check runs on the CPU before any (routed) neural
+        // dispatch — an out-of-range code is rejected loudly here, proving
+        // the codebook gather never reached the GPU seam.
+        let mut state = routed.state(1).unwrap();
+        let hop = routed.frame_hop().unwrap();
+        let mut pcm = vec![0.0f32; hop];
+        let mut codes = frame_codes(0, routed.attrs().n_codebooks, routed.attrs().codebook_size);
+        codes[0] = routed.attrs().codebook_size as u32; // special id
+        let err = routed
+            .decode_frame_into(&mut state, &codes, &mut pcm)
+            .unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+        assert!(
+            err.to_string().contains("special id"),
+            "the CPU RVQ bound check fires before the routed neural stage: {err}"
+        );
     }
 
     #[test]

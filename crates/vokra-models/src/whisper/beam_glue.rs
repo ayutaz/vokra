@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use vokra_core::decode::word_timing::{
-    AlignmentParams, CrossAttention, WordTiming, token_alignment,
+    AlignmentParams, CrossAttention, WordTiming, token_alignment, words_from_alignment,
 };
 use vokra_core::decode::{BeamScorer, LogitsSource};
 use vokra_core::{Result, VokraError};
@@ -26,6 +26,7 @@ use vokra_core::{Result, VokraError};
 use super::WhisperModel;
 use super::decoder::DecoderState;
 use super::encoder::EncoderOutput;
+use super::tokenizer::WhisperTokenizer;
 
 /// Whisper audio-chunk duration in seconds (`N_SAMPLES = 480000` at
 /// `SAMPLE_RATE = 16000` → 30 s; openai-whisper `audio.py`). Each audio token
@@ -64,20 +65,45 @@ impl LogitsSource for WhisperLogitsSource {
 
 /// [`BeamScorer`] over a Whisper decoder: a thin `log_softmax` adapter on top of
 /// [`WhisperLogitsSource`].
-pub struct WhisperBeamScorer {
+///
+/// An optional borrowed [`WhisperTokenizer`] drives the subword→word merge in
+/// [`align_words`](BeamScorer::align_words): with a tokenizer the alignment
+/// returns one [`WordTiming`] per **word**; without one it returns Whisper's
+/// per-token internal timing (unchanged M4-20 (a) behaviour). The borrow lives
+/// no longer than the transcribe call that builds the scorer.
+pub struct WhisperBeamScorer<'t> {
     source: WhisperLogitsSource,
+    tokenizer: Option<&'t WhisperTokenizer>,
 }
 
-impl WhisperBeamScorer {
-    /// Builds a scorer for `encoder`'s audio (precomputes cross-attention K/V).
+impl WhisperBeamScorer<'static> {
+    /// Builds a scorer for `encoder`'s audio (precomputes cross-attention K/V)
+    /// with **no** tokenizer — `align_words` yields per-token timings.
     pub(crate) fn new(model: Arc<WhisperModel>, encoder: &EncoderOutput) -> Result<Self> {
         Ok(Self {
             source: WhisperLogitsSource::new(model, encoder)?,
+            tokenizer: None,
         })
     }
 }
 
-impl BeamScorer for WhisperBeamScorer {
+impl<'t> WhisperBeamScorer<'t> {
+    /// Builds a scorer that merges subword timings into word timings using
+    /// `tokenizer` (M4-20, FR-OP-40). `align_words` then returns one
+    /// [`WordTiming`] per word.
+    pub(crate) fn with_tokenizer(
+        model: Arc<WhisperModel>,
+        encoder: &EncoderOutput,
+        tokenizer: &'t WhisperTokenizer,
+    ) -> Result<Self> {
+        Ok(Self {
+            source: WhisperLogitsSource::new(model, encoder)?,
+            tokenizer: Some(tokenizer),
+        })
+    }
+}
+
+impl BeamScorer for WhisperBeamScorer<'_> {
     fn logprobs(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
         Ok(log_softmax(&self.source.logits(tokens)?))
     }
@@ -90,25 +116,38 @@ impl BeamScorer for WhisperBeamScorer {
     /// FR-OP-40). Returns `Ok(None)` when the model carries no alignment-head
     /// blob (`vokra.whisper.alignment_heads`) — [`beam_search`] then raises the
     /// explicit FR-EX-08 error (never a silent no-op, ADR M4-20 §D-3).
+    ///
+    /// When a tokenizer was attached
+    /// ([`with_tokenizer`](WhisperBeamScorer::with_tokenizer)), the per-token
+    /// alignment is merged into per-**word** timings
+    /// ([`WhisperTokenizer::word_token_lens`] +
+    /// [`words_from_alignment`]); without one it stays per-token.
     fn align_words(&mut self, tokens: &[u32]) -> Result<Option<Vec<WordTiming>>> {
-        whisper_word_timings(&mut self.source.state, tokens)
+        whisper_word_timings(&mut self.source.state, tokens, self.tokenizer)
     }
 }
 
-/// Computes per-token Whisper word timings for `tokens` (the full best
-/// hypothesis, including the forced prefix and the trailing token), or
-/// `Ok(None)` when the model supplies no alignment heads.
+/// Computes Whisper word timings for `tokens` (the full best hypothesis,
+/// including the forced prefix and the trailing token), or `Ok(None)` when the
+/// model supplies no alignment heads.
 ///
 /// The alignment logic (DTW / median filter / normalize / jumps) lives in
 /// [`vokra_core::decode::word_timing`]; this function is the minimal Whisper
 /// *consuming* wiring (ADR M4-20 §D-3): capture the selected alignment heads'
 /// cross-attention, strip the forced prefix and trailing token (openai-whisper
-/// `matrix[len(sot):-1]`), and hand the weight stack to the core. Per-token
-/// granularity — subword→word merging is a tokenizer follow-up; per-token
-/// timings are exactly Whisper's internal timing before that merge.
+/// `matrix[len(sot):-1]`), and hand the weight stack to the core to get one
+/// start time per content token.
+///
+/// When `tokenizer` is `Some`, those per-token times are merged into per-**word**
+/// timings ([`WhisperTokenizer::word_token_lens`] +
+/// [`words_from_alignment`]) — the subword→word grouping openai-whisper does in
+/// `split_to_word_tokens`. When `None`, the result is per-token (exactly
+/// Whisper's internal timing before that merge). Either way the returned
+/// `token_start` / `token_end` are absolute indices into `tokens`.
 fn whisper_word_timings(
     state: &mut DecoderState,
     tokens: &[u32],
+    tokenizer: Option<&WhisperTokenizer>,
 ) -> Result<Option<Vec<WordTiming>>> {
     // Clone the config so the immutable borrow does not conflict with the
     // `&mut state` capture call below.
@@ -174,22 +213,43 @@ fn whisper_word_timings(
     let times = token_alignment(&attn, &params)?; // per-content-token start times
     let final_time = n_ctx as f32 * dt;
 
-    let mut out = Vec::with_capacity(n_text);
-    for i in 0..n_text {
-        let start = times[i];
-        let end = if i + 1 < n_text {
-            times[i + 1]
-        } else {
-            final_time
+    let out = match tokenizer {
+        // Subword→word merge (openai split_to_word_tokens). The content tokens
+        // are `tokens[text_lo .. text_lo + n_text]`; `word_token_lens` sums to
+        // `n_text` (== `times.len()`), so `words_from_alignment` accepts it.
+        Some(tok) => {
+            let content = &tokens[text_lo..text_lo + n_text];
+            let word_lens = tok.word_token_lens(content)?;
+            let mut words = words_from_alignment(&times, &word_lens, final_time)?;
+            // `words_from_alignment` indexes into the content slice (0-based);
+            // shift back to absolute indices into `tokens` for the caller.
+            for w in &mut words {
+                w.token_start += text_lo;
+                w.token_end += text_lo;
+            }
+            words
         }
-        .max(start);
-        out.push(WordTiming {
-            token_start: text_lo + i,
-            token_end: text_lo + i + 1,
-            start,
-            end,
-        });
-    }
+        // No tokenizer → per-token timing (Whisper's internal granularity).
+        None => {
+            let mut out = Vec::with_capacity(n_text);
+            for i in 0..n_text {
+                let start = times[i];
+                let end = if i + 1 < n_text {
+                    times[i + 1]
+                } else {
+                    final_time
+                }
+                .max(start);
+                out.push(WordTiming {
+                    token_start: text_lo + i,
+                    token_end: text_lo + i + 1,
+                    start,
+                    end,
+                });
+            }
+            out
+        }
+    };
     Ok(Some(out))
 }
 
@@ -324,5 +384,97 @@ mod tests {
         // prefix len 1 + trailing eot only → zero content tokens.
         let timings = scorer.align_words(&[1u32, 0]).unwrap();
         assert_eq!(timings, Some(Vec::new()));
+    }
+
+    /// Builds a synthetic tokenizer over the tiny model's 3-token vocab
+    /// (ids 0/1/2) with a chosen token→string map so the subword→word merge
+    /// is exercised without a real checkpoint.
+    #[cfg(test)]
+    fn tiny_tokenizer(entries: &[(u8, &[u8])]) -> WhisperTokenizer {
+        let mut v = Vec::new();
+        v.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        for (sp, bytes) in entries {
+            v.push(*sp);
+            v.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            v.extend_from_slice(bytes);
+        }
+        // eot = 0 (matches `tiny_cfg`).
+        WhisperTokenizer::from_bytes(&v, 0).unwrap()
+    }
+
+    /// With a tokenizer attached, `align_words` merges subword timings into
+    /// per-**word** timings (M4-20 (a) — the tokenizer follow-up). The three
+    /// content tokens `[2, 1, 2]` decode (id 2 = `" hel"`, id 1 = `"lo"`,
+    /// id 0 = special/eot) to `" hel" | "lo" | " hel"`, which
+    /// `word_token_lens` groups as `[2, 1]` (`" hello"` then `" hel"`). So the
+    /// alignment must return **2** timings — one per word, not one per token —
+    /// with contiguous absolute token spans in order.
+    #[test]
+    fn tokenizer_merges_subword_timings_into_words() {
+        let model = tiny_model_aligned(2);
+        let enc = tiny_encoder(model.config().d_model, 4);
+        let tok = tiny_tokenizer(&[
+            (1, b""),     // id 0: special (eot)
+            (0, b"lo"),   // id 1: continuation, no leading space
+            (0, b" hel"), // id 2: leading space → word start
+        ]);
+        let mut scorer = WhisperBeamScorer::with_tokenizer(Arc::clone(&model), &enc, &tok).unwrap();
+
+        // prefix (len 1) + content [2, 1, 2] + trailing eot.
+        let tokens = [1u32, 2, 1, 2, 0];
+        let n_prefix = model.config().decoder_start_ids.len();
+        let n_ctx = 4usize;
+        let dt = WHISPER_CHUNK_SECONDS / model.config().n_audio_ctx as f32;
+        let window = n_ctx as f32 * dt;
+
+        let timings = scorer
+            .align_words(&tokens)
+            .unwrap()
+            .expect("aligned model returns Some");
+
+        // Two WORDS (`[2, 1]`), not three tokens — this is the merge.
+        assert_eq!(timings.len(), 2, "one timing per word: {timings:?}");
+        // Absolute, contiguous, ordered spans covering the content tokens.
+        assert_eq!(timings[0].token_start, n_prefix); // 1
+        assert_eq!(timings[0].token_end, n_prefix + 2); // 3  (tokens 1..3)
+        assert_eq!(timings[1].token_start, n_prefix + 2); // 3
+        assert_eq!(timings[1].token_end, n_prefix + 3); // 4  (token 3)
+        for (k, w) in timings.iter().enumerate() {
+            assert!(w.start <= w.end, "start <= end: {w:?}");
+            assert!(
+                (0.0..=window + 1e-3).contains(&w.start) && (0.0..=window + 1e-3).contains(&w.end),
+                "times within [0, window={window}]: {w:?}"
+            );
+            if k > 0 {
+                assert!(
+                    w.start >= timings[k - 1].start - 1e-6,
+                    "word starts must be non-decreasing: {timings:?}"
+                );
+            }
+        }
+    }
+
+    /// Regression: a tokenizer whose vocab makes every content token its own
+    /// word (each id has a leading space) yields one timing per token — the
+    /// merge collapses to the per-token result, matching the no-tokenizer path.
+    #[test]
+    fn tokenizer_one_word_per_token_matches_per_token_path() {
+        let model = tiny_model_aligned(2);
+        let enc = tiny_encoder(model.config().d_model, 4);
+        // Every non-special id starts with a space → every subword is its own
+        // word.
+        let tok = tiny_tokenizer(&[(1, b""), (0, b" a"), (0, b" b")]);
+        let tokens = [1u32, 2, 1, 2, 0];
+
+        let mut with_tok =
+            WhisperBeamScorer::with_tokenizer(Arc::clone(&model), &enc, &tok).unwrap();
+        let mut without = WhisperBeamScorer::new(Arc::clone(&model), &enc).unwrap();
+
+        let merged = with_tok.align_words(&tokens).unwrap().unwrap();
+        let per_token = without.align_words(&tokens).unwrap().unwrap();
+        assert_eq!(
+            merged, per_token,
+            "one-word-per-token vocab must equal the per-token alignment",
+        );
     }
 }

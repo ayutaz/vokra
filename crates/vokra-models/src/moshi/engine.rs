@@ -297,13 +297,16 @@ impl MoshiEngine {
         self
     }
 
-    /// Routes the LM + codec hot ops through `backend` (explicit; an
-    /// unsupported op on the selected backend is a loud error — FR-EX-08,
-    /// no silent CPU fallback).
+    /// Routes the LM + **both** Mimi codec ends (encode via `self.encoder`
+    /// AND decode via `self.chain`'s neural decoder) through `backend`
+    /// (explicit; an unsupported op on the selected backend is a loud error
+    /// — FR-EX-08, no silent CPU fallback). The chain's RVQ codebook lookup
+    /// stays CPU (cheap array indexing — [`CsmAudioDecodeChain::with_backend`]).
     #[must_use]
     pub fn with_backend(mut self, backend: BackendKind) -> Self {
         self.model = self.model.with_backend(backend);
         self.encoder = self.encoder.with_backend(backend);
+        self.chain = self.chain.with_backend(backend);
         self
     }
 
@@ -493,5 +496,32 @@ impl S2sEngine for MoshiEngine {
             text,
             Some(SynthesizedAudio::new(pcm, self.mimi_config.sample_rate)),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_backend_routes_the_decode_chain_not_only_lm_and_encoder() {
+        // #12 regression: the rustdoc promises the codec (encode AND decode)
+        // follows with_backend, but before the fix `self.chain` (the Mimi
+        // neural decoder) stayed on CPU while `model` + `encoder` moved. All
+        // three must route now — otherwise a Metal/CUDA deployment would
+        // silently decode PCM on the CPU (defeating the GPU selection, and
+        // hiding a coverage gap that FR-EX-08 requires be loud).
+        let engine = MoshiEngine::synthesized_fixture(3).expect("fixture engine");
+        assert_eq!(
+            engine.chain().backend(),
+            BackendKind::Cpu,
+            "assembled engine's decode chain is CPU"
+        );
+        let engine = engine.with_backend(BackendKind::Cuda);
+        assert_eq!(
+            engine.chain().backend(),
+            BackendKind::Cuda,
+            "with_backend must route self.chain (the decode half of the codec)"
+        );
     }
 }

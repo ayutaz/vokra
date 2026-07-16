@@ -166,9 +166,23 @@ impl WhisperAsr {
         // scorer's per-step decoder runs on the CPU backend as before.
         let compute = Compute::for_backend(self.backend_kind, WHISPER_HOT_OPS)?;
         let encoder = self.model.encode_pcm_with(&compute, pcm)?;
-        let mut scorer = WhisperBeamScorer::new(Arc::clone(&self.model), &encoder)?;
         let cfg = self.model.config();
-        beam_search(&mut scorer, &cfg.decoder_start_ids, cfg.eot, config)
+        // Attach the detokenizer when present so `word_timestamps` alignment
+        // merges subword timings into per-word timings (M4-20); without a
+        // tokenizer the alignment stays per-token. The two scorer types differ
+        // only in the borrowed-tokenizer lifetime, so drive `beam_search` in
+        // each arm rather than unifying to a trait object.
+        match &self.tokenizer {
+            Some(tok) => {
+                let mut scorer =
+                    WhisperBeamScorer::with_tokenizer(Arc::clone(&self.model), &encoder, tok)?;
+                beam_search(&mut scorer, &cfg.decoder_start_ids, cfg.eot, config)
+            }
+            None => {
+                let mut scorer = WhisperBeamScorer::new(Arc::clone(&self.model), &encoder)?;
+                beam_search(&mut scorer, &cfg.decoder_start_ids, cfg.eot, config)
+            }
+        }
     }
 
     /// Transcribes `pcm` with stochastic sampling (temperature / top-k / top-p /

@@ -41,7 +41,7 @@ use std::sync::Arc;
 // `WatermarkBackendStatus` is referenced only in doc-links below (rustdoc
 // intra-doc link); dropping it from the `use` list avoids the unused-import
 // warning while keeping the doc reference valid via its full path.
-use vokra_core::decode::BeamSearchConfig;
+use vokra_core::decode::{BeamHypothesis, BeamSearchConfig};
 use vokra_core::{
     AsrEngine, BackendKind, CompliancePolicy, GgufFile, SynthesisRequest, SynthesizedAudio,
     VokraError, WatermarkConfig,
@@ -296,6 +296,7 @@ pub trait TranscribeService: Send + Sync {
                 Ok(TranscribeBeamResponse {
                     text,
                     alternatives: Vec::new(),
+                    words: Vec::new(),
                 })
             }
             Some(_) => Err(ServiceError::Inference(VokraError::UnsupportedOp(format!(
@@ -336,6 +337,14 @@ pub struct TranscribeBeamRequest {
     /// Upper bound on generated tokens. `None` picks the engine default
     /// (`DEFAULT_MAX_NEW_TOKENS`).
     pub max_new_tokens: Option<usize>,
+    /// Emit word-level timestamps (M4-20, FR-OP-40). `None`/`Some(false)`
+    /// leaves [`TranscribeBeamResponse::words`] empty (backward compat). When
+    /// `Some(true)`, the Whisper backend runs the cross-attention alignment
+    /// (via [`vokra_core::decode::BeamSearchConfig::word_timestamps`]) even at
+    /// `beam_size <= 1` — greedy `transcribe` produces no alignment — and
+    /// surfaces one entry per word. A model without alignment heads makes this
+    /// an explicit error, never a silent empty list (FR-EX-08).
+    pub word_timestamps: Option<bool>,
 }
 
 /// One n-best alternative in the beam-search response.
@@ -358,6 +367,20 @@ pub struct TranscribeAlternative {
     pub length_normalized_score: f64,
 }
 
+/// One word-level timestamp entry (M4-20, FR-OP-40). The `word` text is the
+/// detokenization of the aligned token span; `start` / `end` are seconds into
+/// the audio.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WordTimestamp {
+    /// Detokenized word text (the aligned token span, spaces included as the
+    /// tokenizer produced them).
+    pub word: String,
+    /// Word start time in seconds.
+    pub start: f64,
+    /// Word end time in seconds.
+    pub end: f64,
+}
+
 /// n-best transcribe response (M3-15 Wave 10 A). `text` always carries
 /// the top-1 (matches the legacy [`TranscribeService::transcribe`]
 /// response shape exactly). `alternatives` is empty on the greedy path,
@@ -372,6 +395,11 @@ pub struct TranscribeBeamResponse {
     /// the request was greedy — that preserves the legacy top-1 shape
     /// verbatim so a caller who never sets `beam_size` sees no change.
     pub alternatives: Vec<TranscribeAlternative>,
+    /// Word-level timestamps for the top-1 hypothesis (M4-20). Empty unless
+    /// [`TranscribeBeamRequest::word_timestamps`] was `Some(true)` and the
+    /// backend produced an alignment. Additive field — callers that never
+    /// request word timestamps see an empty list.
+    pub words: Vec<WordTimestamp>,
 }
 
 /// Text-to-speech dispatch trait, keyed by the request's `model` name.
@@ -746,96 +774,95 @@ impl TranscribeService for InferenceService {
         pcm: &[f32],
         req: &TranscribeBeamRequest,
     ) -> Result<TranscribeBeamResponse, ServiceError> {
-        // ---- Whisper: greedy + beam wired end-to-end (M3-15 Wave 11). ---
+        // ---- Whisper: greedy + beam wired end-to-end (M3-15 Wave 11;
+        // M4-20 word timestamps). ----------------------------------------
         if let Some(engine) = self.resolve_asr(model) {
+            let want_words = req.word_timestamps.unwrap_or(false);
             let beam_size_effective = req.beam_size.unwrap_or(0);
-            match beam_size_effective {
-                0 | 1 => {
-                    let text = engine
-                        .transcribe(pcm)
-                        .map(|t| t.text)
+
+            // Greedy fast-path only when word timestamps are NOT requested:
+            // greedy `transcribe` produces no cross-attention alignment, so a
+            // caller who wants word timestamps must go through the beam/align
+            // path even at width 1. Backward compat is otherwise preserved —
+            // a request that sets neither `beam_size > 1` nor `word_timestamps`
+            // is byte-for-byte the legacy greedy shape.
+            if matches!(beam_size_effective, 0 | 1) && !want_words {
+                let text = engine
+                    .transcribe(pcm)
+                    .map(|t| t.text)
+                    .map_err(ServiceError::Inference)?;
+                return Ok(TranscribeBeamResponse {
+                    text,
+                    alternatives: Vec::new(),
+                    words: Vec::new(),
+                });
+            }
+
+            // Beam / alignment path. `n == 1` is greedy-equivalent, used when
+            // only word timestamps were requested (`beam_size <= 1`).
+            let n = beam_size_effective.max(1);
+            let cfg = whisper_beam_config(n, req, model)?;
+            let hyps = engine
+                .transcribe_tokens_beam_nbest(pcm, &cfg)
+                .map_err(ServiceError::Inference)?;
+            // FR-EX-08: an empty n-best list is a bug in the beam driver, not
+            // a "return greedy" fallback.
+            if hyps.is_empty() {
+                return Err(ServiceError::Inference(VokraError::ModelLoad(
+                    "transcribe_beam: whisper beam search produced no hypothesis".into(),
+                )));
+            }
+            let best = &hyps[0];
+            // Top-1 mirrored into `text` (backward-compat top-1 shape).
+            let text = engine
+                .render_ids(&best.tokens)
+                .map_err(ServiceError::Inference)?;
+            // `alternatives` stays empty for greedy-equivalent widths
+            // (`beam_size <= 1`) so the legacy top-1 shape is preserved; it is
+            // populated + ranked only for a genuine beam request (`> 1`).
+            let alternatives = if beam_size_effective > 1 {
+                let mut v: Vec<TranscribeAlternative> = Vec::with_capacity(hyps.len());
+                for h in &hyps {
+                    let t = engine
+                        .render_ids(&h.tokens)
                         .map_err(ServiceError::Inference)?;
-                    return Ok(TranscribeBeamResponse {
-                        text,
-                        alternatives: Vec::new(),
+                    v.push(TranscribeAlternative {
+                        text: t,
+                        log_prob: h.score as f64,
+                        length_normalized_score: h.normalized_score as f64,
                     });
                 }
-                n => {
-                    // Wave 12, M3-15 follow-up: `BeamSearchConfig` now carries
-                    // a `no_repeat_ngram_size` field (ported from Voxtral's
-                    // beam search); the Wave 11 explicit `UnsupportedOp` has
-                    // been lifted. `req.no_repeat_ngram.unwrap_or(0)` maps
-                    // straight into the config field — `0` is the schema
-                    // default and disables blocking.
-                    let ngram = req.no_repeat_ngram.unwrap_or(0);
-
-                    // length_penalty defaults to 1.0 to match
-                    // `BeamSearchConfig::new` (HF length_penalty), NOT the
-                    // Voxtral default of 0.6 — the two engines use different
-                    // ranking primitives. A negative or non-finite value is
-                    // rejected up-front (FR-EX-08 — the ranking would be
-                    // undefined).
-                    let length_penalty = req.length_penalty.unwrap_or(1.0);
-                    if !length_penalty.is_finite() || length_penalty < 0.0 {
-                        return Err(ServiceError::Inference(VokraError::InvalidArgument(
-                            format!(
-                                "transcribe_beam: model `{model}` (whisper backend) requires \
-                                 length_penalty to be a non-negative finite float (maps to \
-                                 BeamSearchConfig::length_normalization), got {length_penalty}",
-                            ),
-                        )));
-                    }
-                    let max_new = req
-                        .max_new_tokens
-                        .filter(|&v| v > 0)
-                        .unwrap_or(WHISPER_DEFAULT_MAX_NEW_TOKENS);
-
-                    // `BeamSearchConfig::new(n, max_new)` seeds
-                    // `length_normalization = 1.0`, `n_best = 1`,
-                    // `early_stopping = true`, `word_timestamps = false`,
-                    // `no_repeat_ngram_size = 0`. Overlay the caller fields
-                    // (length_penalty, n_best, no_repeat_ngram_size).
-                    let mut cfg = BeamSearchConfig::new(n, max_new);
-                    cfg.length_normalization = length_penalty;
-                    cfg.n_best = n;
-                    cfg.no_repeat_ngram_size = ngram;
-
-                    let hyps = engine
-                        .transcribe_tokens_beam_nbest(pcm, &cfg)
-                        .map_err(ServiceError::Inference)?;
-                    // FR-EX-08: an empty n-best list is a bug in the beam
-                    // driver, not a "return greedy" fallback.
-                    if hyps.is_empty() {
-                        return Err(ServiceError::Inference(VokraError::ModelLoad(
-                            "transcribe_beam: whisper beam search produced no hypothesis".into(),
-                        )));
-                    }
-                    let mut alternatives: Vec<TranscribeAlternative> =
-                        Vec::with_capacity(hyps.len());
-                    for h in &hyps {
-                        let text = engine
-                            .render_ids(&h.tokens)
-                            .map_err(ServiceError::Inference)?;
-                        alternatives.push(TranscribeAlternative {
-                            text,
-                            log_prob: h.score as f64,
-                            length_normalized_score: h.normalized_score as f64,
-                        });
-                    }
-                    // Top-1 mirrored into `text` (backward-compat with the
-                    // legacy top-1 shape — the `alternatives[0].text` is the
-                    // same string).
-                    let text = alternatives
-                        .first()
-                        .map(|a| a.text.clone())
-                        .unwrap_or_default();
-                    return Ok(TranscribeBeamResponse { text, alternatives });
-                }
-            }
+                v
+            } else {
+                Vec::new()
+            };
+            // Word timestamps come from the best (first) hypothesis only —
+            // `beam_search` aligns only the best. Detokenize each word span
+            // with the engine's tokenizer.
+            let words = if want_words {
+                whisper_word_timestamps(best, |ids| engine.render_ids(ids))?
+            } else {
+                Vec::new()
+            };
+            return Ok(TranscribeBeamResponse {
+                text,
+                alternatives,
+                words,
+            });
         }
 
         // ---- Voxtral: greedy + beam wired end-to-end. ------------------
         if let Some(engine) = self.resolve_voxtral(model) {
+            // Word timestamps are a Whisper-only surface (cross-attention DTW,
+            // M4-20). Voxtral has no such alignment here, so accepting the flag
+            // and returning an empty list would be a silent fabrication —
+            // reject it explicitly (FR-EX-08).
+            if req.word_timestamps == Some(true) {
+                return Err(ServiceError::Inference(VokraError::UnsupportedOp(format!(
+                    "transcribe_beam: model `{model}` (voxtral backend) does not support \
+                     word_timestamps (Whisper-only cross-attention alignment, M4-20)",
+                ))));
+            }
             let beam_size_effective = req.beam_size.unwrap_or(0);
             match beam_size_effective {
                 0 | 1 => {
@@ -846,6 +873,7 @@ impl TranscribeService for InferenceService {
                     return Ok(TranscribeBeamResponse {
                         text,
                         alternatives: Vec::new(),
+                        words: Vec::new(),
                     });
                 }
                 _ => {
@@ -878,13 +906,108 @@ impl TranscribeService for InferenceService {
                         .first()
                         .map(|a| a.text.clone())
                         .unwrap_or_default();
-                    return Ok(TranscribeBeamResponse { text, alternatives });
+                    return Ok(TranscribeBeamResponse {
+                        text,
+                        alternatives,
+                        words: Vec::new(),
+                    });
                 }
             }
         }
 
         Err(ServiceError::UnknownModel(model.to_owned()))
     }
+}
+
+/// Builds the Whisper [`BeamSearchConfig`] from a beam request (M3-15 length
+/// penalty / n-best / n-gram + M4-20 `word_timestamps`). Extracted from
+/// [`InferenceService::transcribe_beam`] so the request→config passthrough —
+/// including the M4-20 `word_timestamps` bit — is unit-testable without a real
+/// engine.
+///
+/// # Errors
+///
+/// [`ServiceError::Inference`]([`VokraError::InvalidArgument`]) if
+/// `length_penalty` is negative or non-finite (the GNMT ranking would be
+/// undefined, FR-EX-08).
+fn whisper_beam_config(
+    n: usize,
+    req: &TranscribeBeamRequest,
+    model: &str,
+) -> Result<BeamSearchConfig, ServiceError> {
+    // length_penalty defaults to 1.0 to match `BeamSearchConfig::new` (HF
+    // length_penalty), NOT the Voxtral default of 0.6 — the two engines use
+    // different ranking primitives.
+    let length_penalty = req.length_penalty.unwrap_or(1.0);
+    if !length_penalty.is_finite() || length_penalty < 0.0 {
+        return Err(ServiceError::Inference(VokraError::InvalidArgument(
+            format!(
+                "transcribe_beam: model `{model}` (whisper backend) requires length_penalty to be a \
+             non-negative finite float (maps to BeamSearchConfig::length_normalization), got \
+             {length_penalty}",
+            ),
+        )));
+    }
+    let max_new = req
+        .max_new_tokens
+        .filter(|&v| v > 0)
+        .unwrap_or(WHISPER_DEFAULT_MAX_NEW_TOKENS);
+    // `BeamSearchConfig::new(n, max_new)` seeds `length_normalization = 1.0`,
+    // `n_best = 1`, `early_stopping = true`, `word_timestamps = false`,
+    // `no_repeat_ngram_size = 0`. Overlay the caller fields.
+    let mut cfg = BeamSearchConfig::new(n, max_new);
+    cfg.length_normalization = length_penalty;
+    cfg.n_best = n;
+    cfg.no_repeat_ngram_size = req.no_repeat_ngram.unwrap_or(0);
+    cfg.word_timestamps = req.word_timestamps.unwrap_or(false);
+    Ok(cfg)
+}
+
+/// Maps a best hypothesis's word timings (M4-20) into the response DTO,
+/// detokenizing each aligned token span with `detokenize`. The
+/// [`vokra_core::decode::word_timing::WordTiming::token_start`] /
+/// `token_end` are absolute indices into `hyp.tokens` (the Whisper consumer
+/// emits them so, see `whisper::beam_glue`).
+///
+/// `detokenize` is passed as a closure (the caller supplies
+/// [`WhisperAsr::render_ids`]) so the span→DTO mapping is unit-testable
+/// without a real engine.
+///
+/// Returns an empty list when the hypothesis carries no alignment: when word
+/// timestamps were requested, [`vokra_core::decode::beam_search`] already
+/// raised the explicit FR-EX-08 error for a model without alignment heads
+/// before we reach here, so this branch is only hit off the word-timestamp
+/// path.
+///
+/// # Errors
+///
+/// [`ServiceError::Inference`] if a timing's token span is out of range
+/// (an alignment/decoder bug, surfaced not swallowed) or detokenization fails.
+fn whisper_word_timestamps(
+    hyp: &BeamHypothesis,
+    detokenize: impl Fn(&[u32]) -> vokra_core::Result<String>,
+) -> Result<Vec<WordTimestamp>, ServiceError> {
+    let Some(timings) = &hyp.word_timestamps else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(timings.len());
+    for w in timings {
+        let span = hyp.tokens.get(w.token_start..w.token_end).ok_or_else(|| {
+            ServiceError::Inference(VokraError::InvalidArgument(format!(
+                "transcribe_beam: word-timing token span {}..{} out of range for {} tokens",
+                w.token_start,
+                w.token_end,
+                hyp.tokens.len(),
+            )))
+        })?;
+        let word = detokenize(span).map_err(ServiceError::Inference)?;
+        out.push(WordTimestamp {
+            word,
+            start: w.start as f64,
+            end: w.end as f64,
+        });
+    }
+    Ok(out)
 }
 
 impl SynthesizeService for InferenceService {
@@ -1335,6 +1458,7 @@ mod registry {
                     return Ok(TranscribeBeamResponse {
                         text: self.transcribe(model, pcm)?,
                         alternatives: Vec::new(),
+                        words: Vec::new(),
                     });
                 }
                 let ngram = req.no_repeat_ngram.unwrap_or(0);
@@ -1361,7 +1485,11 @@ mod registry {
                     })
                     .collect();
                 let text = alternatives[0].text.clone();
-                return Ok(TranscribeBeamResponse { text, alternatives });
+                return Ok(TranscribeBeamResponse {
+                    text,
+                    alternatives,
+                    words: Vec::new(),
+                });
             }
             // Voxtral: beam supported (Wave 10).
             if matches!(
@@ -1375,6 +1503,7 @@ mod registry {
                     return Ok(TranscribeBeamResponse {
                         text: self.transcribe(model, pcm)?,
                         alternatives: Vec::new(),
+                        words: Vec::new(),
                     });
                 }
                 // Emit `bs` synthetic ranked alternatives so the response
@@ -1388,7 +1517,11 @@ mod registry {
                     })
                     .collect();
                 let text = alternatives[0].text.clone();
-                return Ok(TranscribeBeamResponse { text, alternatives });
+                return Ok(TranscribeBeamResponse {
+                    text,
+                    alternatives,
+                    words: Vec::new(),
+                });
             }
             Err(ServiceError::UnknownModel(model.to_owned()))
         }
@@ -1476,6 +1609,7 @@ mod registry {
                 length_penalty: Some(0.6),
                 no_repeat_ngram: Some(2),
                 max_new_tokens: Some(16),
+                word_timestamps: None,
             };
             let resp = svc
                 .transcribe_beam(alias, &pcm, &req)
@@ -1558,6 +1692,7 @@ mod registry {
             length_penalty: Some(1.0),
             no_repeat_ngram: None,
             max_new_tokens: None,
+            word_timestamps: None,
         };
         let resp = svc
             .transcribe_beam(model_names::WHISPER_BASE, &pcm, &req)
@@ -1722,6 +1857,217 @@ mod registry {
         }
     }
 
+    // -----------------------------------------------------------------
+    // M4-20 — word-timestamp request → BeamSearchConfig → response DTO
+    // -----------------------------------------------------------------
+
+    /// The M4-20 wiring the real `InferenceService` whisper branch relies on:
+    /// `req.word_timestamps` must reach `BeamSearchConfig::word_timestamps`.
+    /// `whisper_beam_config` is the exact helper the branch calls, so this
+    /// exercises the real passthrough (incl. the M3-15 length-penalty /
+    /// n-gram / n-best fields) without needing a real Whisper GGUF.
+    #[test]
+    fn whisper_beam_config_passes_word_timestamps_and_beam_fields() {
+        // word_timestamps = Some(true) flows into the config flag.
+        let req = TranscribeBeamRequest {
+            word_timestamps: Some(true),
+            ..Default::default()
+        };
+        let cfg = whisper_beam_config(3, &req, model_names::WHISPER_BASE).unwrap();
+        assert!(cfg.word_timestamps, "word_timestamps must reach the config");
+        assert_eq!(cfg.beam_width, 3);
+
+        // Defaults off, and the other beam knobs still pass through.
+        let req2 = TranscribeBeamRequest {
+            beam_size: Some(4),
+            length_penalty: Some(0.7),
+            no_repeat_ngram: Some(2),
+            ..Default::default()
+        };
+        let cfg2 = whisper_beam_config(4, &req2, model_names::WHISPER_BASE).unwrap();
+        assert!(!cfg2.word_timestamps, "word_timestamps defaults off");
+        assert_eq!(cfg2.n_best, 4);
+        assert_eq!(cfg2.no_repeat_ngram_size, 2);
+        assert!((cfg2.length_normalization - 0.7).abs() < 1e-6);
+
+        // A negative length_penalty is still rejected (FR-EX-08).
+        let bad = TranscribeBeamRequest {
+            length_penalty: Some(-0.5),
+            ..Default::default()
+        };
+        assert!(matches!(
+            whisper_beam_config(2, &bad, model_names::WHISPER_BASE),
+            Err(ServiceError::Inference(VokraError::InvalidArgument(_))),
+        ));
+    }
+
+    /// The span→DTO mapping (`whisper_word_timestamps`) turns the best
+    /// hypothesis's per-word `WordTiming`s into `WordTimestamp`s, detokenizing
+    /// each absolute token span. Driven with a synthetic hypothesis + a fake
+    /// detokenizer, so it proves the wiring independent of any real model.
+    #[test]
+    fn whisper_word_timestamps_maps_spans_to_dto() {
+        use vokra_core::decode::word_timing::WordTiming;
+        // prefix (1) + 3 content tokens + eot; two words spanning [1,3) and [3,4).
+        let hyp = BeamHypothesis {
+            tokens: vec![50258, 100, 101, 102, 50257],
+            score: -1.0,
+            normalized_score: -0.5,
+            word_timestamps: Some(vec![
+                WordTiming {
+                    token_start: 1,
+                    token_end: 3,
+                    start: 0.0,
+                    end: 0.5,
+                },
+                WordTiming {
+                    token_start: 3,
+                    token_end: 4,
+                    start: 0.5,
+                    end: 1.0,
+                },
+            ]),
+        };
+        // Fake detokenizer: joins the span ids so we can see which span each
+        // word covers (a real engine would return words).
+        let words = whisper_word_timestamps(&hyp, |ids| {
+            Ok(ids.iter().map(u32::to_string).collect::<Vec<_>>().join("_"))
+        })
+        .unwrap();
+        assert_eq!(
+            words,
+            vec![
+                WordTimestamp {
+                    word: "100_101".into(),
+                    start: 0.0,
+                    end: 0.5,
+                },
+                WordTimestamp {
+                    word: "102".into(),
+                    start: 0.5,
+                    end: 1.0,
+                },
+            ],
+        );
+    }
+
+    /// No alignment on the hypothesis → an empty list (not an error): the
+    /// explicit FR-EX-08 error for a model without alignment heads is raised
+    /// upstream in `beam_search`, before this mapping runs.
+    #[test]
+    fn whisper_word_timestamps_none_alignment_is_empty() {
+        let hyp = BeamHypothesis {
+            tokens: vec![1, 2, 3],
+            score: 0.0,
+            normalized_score: 0.0,
+            word_timestamps: None,
+        };
+        let words = whisper_word_timestamps(&hyp, |_| Ok(String::new())).unwrap();
+        assert!(words.is_empty());
+    }
+
+    /// An out-of-range token span surfaces an explicit error — never a
+    /// silently-truncated or fabricated word (FR-EX-08).
+    #[test]
+    fn whisper_word_timestamps_out_of_range_span_errors() {
+        use vokra_core::decode::word_timing::WordTiming;
+        let hyp = BeamHypothesis {
+            tokens: vec![1, 2],
+            score: 0.0,
+            normalized_score: 0.0,
+            word_timestamps: Some(vec![WordTiming {
+                token_start: 1,
+                token_end: 5, // past the end of `tokens`
+                start: 0.0,
+                end: 1.0,
+            }]),
+        };
+        let err = whisper_word_timestamps(&hyp, |_| Ok(String::new())).unwrap_err();
+        assert!(matches!(
+            err,
+            ServiceError::Inference(VokraError::InvalidArgument(_)),
+        ));
+    }
+
+    /// Test double honouring `word_timestamps` the way the real whisper branch
+    /// does — surfacing per-word entries only when the flag is set. Proves the
+    /// request field flows all the way to `TranscribeBeamResponse::words`
+    /// independent of a real model (the "synthetic scorer returns Some(timings)"
+    /// wiring check).
+    struct WhisperWordTsCapable;
+    impl TranscribeService for WhisperWordTsCapable {
+        fn transcribe(&self, model: &str, _pcm: &[f32]) -> Result<String, ServiceError> {
+            match model {
+                model_names::WHISPER_1 | model_names::WHISPER_BASE => Ok("hello world".into()),
+                other => Err(ServiceError::UnknownModel(other.to_owned())),
+            }
+        }
+
+        fn transcribe_beam(
+            &self,
+            model: &str,
+            _pcm: &[f32],
+            req: &TranscribeBeamRequest,
+        ) -> Result<TranscribeBeamResponse, ServiceError> {
+            if !matches!(model, model_names::WHISPER_1 | model_names::WHISPER_BASE) {
+                return Err(ServiceError::UnknownModel(model.to_owned()));
+            }
+            let words = if req.word_timestamps.unwrap_or(false) {
+                vec![
+                    WordTimestamp {
+                        word: "hello".into(),
+                        start: 0.0,
+                        end: 0.5,
+                    },
+                    WordTimestamp {
+                        word: "world".into(),
+                        start: 0.5,
+                        end: 1.0,
+                    },
+                ]
+            } else {
+                Vec::new()
+            };
+            Ok(TranscribeBeamResponse {
+                text: "hello world".into(),
+                alternatives: Vec::new(),
+                words,
+            })
+        }
+    }
+
+    #[test]
+    fn word_timestamps_request_flows_to_response_words() {
+        let svc: Box<dyn TranscribeService> = Box::new(WhisperWordTsCapable);
+        let pcm = vec![0.0f32; 16];
+
+        // Default request (word_timestamps None) → empty words (backward compat).
+        let r0 = svc
+            .transcribe_beam(
+                model_names::WHISPER_BASE,
+                &pcm,
+                &TranscribeBeamRequest::default(),
+            )
+            .unwrap();
+        assert!(
+            r0.words.is_empty(),
+            "a request that never sets word_timestamps must surface no words",
+        );
+
+        // word_timestamps = Some(true) → the response carries per-word entries.
+        let req = TranscribeBeamRequest {
+            word_timestamps: Some(true),
+            ..Default::default()
+        };
+        let r1 = svc
+            .transcribe_beam(model_names::WHISPER_BASE, &pcm, &req)
+            .unwrap();
+        assert_eq!(r1.words.len(), 2, "word_timestamps must surface words");
+        assert_eq!(r1.words[0].word, "hello");
+        assert_eq!(r1.words[1].word, "world");
+        assert!(r1.words[0].start <= r1.words[0].end);
+    }
+
     #[test]
     fn beam_response_types_are_send_sync() {
         // The beam response propagates across HTTP handlers, so keeping
@@ -1730,6 +2076,7 @@ mod registry {
         assert_send_sync::<TranscribeBeamRequest>();
         assert_send_sync::<TranscribeBeamResponse>();
         assert_send_sync::<TranscribeAlternative>();
+        assert_send_sync::<WordTimestamp>();
     }
 
     #[test]

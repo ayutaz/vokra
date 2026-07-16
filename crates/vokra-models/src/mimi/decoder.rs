@@ -358,6 +358,13 @@ impl MimiNeuralDecoder {
         self
     }
 
+    /// The Compute-seam backend the neural decode dispatches through
+    /// (default [`BackendKind::Cpu`]).
+    #[must_use]
+    pub fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
     /// `true` when built by [`Self::synthesized`].
     #[must_use]
     pub fn is_synthesized(&self) -> bool {
