@@ -1,28 +1,36 @@
 //! Graph-level per-op evaluation for the Metal backend (Phase 2).
 //!
 //! This is the [`Backend::eval_op`](vokra_core::Backend::eval_op) surface the
-//! graph evaluator ([`vokra_core::run_graph`]) drives on the GPU. `MatMul`
-//! routes into the wrapped [`MetalContext::gemm_f32`] — the very same GPU kernel
-//! the parity harness exercises (M2-01-T18) and the exact shape/semantics
-//! contract of the CPU backend's `kernels::gemm_f32`. So a Metal graph run and a
-//! CPU graph run of the same MatMul graph agree within the FP32 bound
-//! (NFR-QL-01, `atol = 0.01`); there is **no second kernel** — `eval_op` and the
-//! imperative `MetalContext::gemm_f32` share one GPU path.
+//! graph evaluator ([`vokra_core::run_graph`]) drives on the GPU. Every covered
+//! op routes into an *existing* Metal compute kernel — there is **no second
+//! kernel** — so a Metal graph run and a CPU graph run of the same graph agree
+//! within the FP32 bound (NFR-QL-01, `atol = 0.01`):
 //!
-//! Only `MatMul` is covered in this slice (matching
-//! [`MetalBackend::supports`](crate::MetalBackend)); every other op is an
-//! explicit [`VokraError::UnsupportedOp`] — never a silent CPU fallback
-//! (FR-EX-08). The engine's coverage precheck already rejects uncovered ops
-//! before they reach here, but the catch-all keeps the contract honest even when
-//! `eval_op` is called directly (keeps `supports()` and `eval_op()` in sync).
+//! - `MatMul` → [`MetalContext::gemm_f32`] (the `vokra_gemm_f32` kernel), the
+//!   exact shape/semantics contract of the CPU `kernels::gemm_f32`.
+//! - `Add` → [`MetalContext::residual_add_dev`] (the `vokra_add_assign_f32`
+//!   kernel: a single FP32 `dst[i] + src[i]` per element, bit-identical to the
+//!   CPU `kernels::add_f32`). The two operands are uploaded, summed on device,
+//!   and read back — the same GPU add the imperative decode path uses.
+//! - `Softmax` → [`MetalContext::softmax_f32`] (the `vokra_softmax_f32` kernel),
+//!   row-wise over the innermost axis exactly like the CPU `kernels::softmax_f32`.
+//!
+//! `Mul` and `Copy` have **no** Metal kernel (there is no `vokra_mul_f32` nor a
+//! compute copy kernel — only Vulkan carries a hand-crafted `copy_f32`), so they
+//! stay an explicit [`VokraError::UnsupportedOp`] here — never a silent CPU
+//! fallback (FR-EX-08). `Mul` is thus a genuine, honestly-surfaced CPU/Metal
+//! asymmetry (the CPU backend covers it) rather than an invented kernel. The
+//! engine's coverage precheck already rejects uncovered ops before they reach
+//! here, but the catch-all keeps the contract honest even when `eval_op` is
+//! called directly (keeps `supports()` and `eval_op()` in sync).
 
 use vokra_core::{OpKind, Result, Tensor, VokraError};
 
 use crate::context::MetalContext;
 
 /// Evaluates one op on resolved host-resident inputs by dispatching to the GPU
-/// (see module docs). Mirrors the CPU backend's `eval_cpu_op` op-for-op so the
-/// two graph paths are differentially comparable.
+/// (see module docs). Mirrors the CPU backend's `eval_cpu_op` op-for-op for the
+/// covered ops so the two graph paths are differentially comparable.
 pub(crate) fn eval_metal_op(
     ctx: &MetalContext,
     op: &OpKind,
@@ -30,6 +38,8 @@ pub(crate) fn eval_metal_op(
 ) -> Result<Vec<Tensor>> {
     match op {
         OpKind::MatMul => eval_matmul(ctx, inputs),
+        OpKind::Add => eval_add(ctx, inputs),
+        OpKind::Softmax => eval_softmax(ctx, inputs),
         other => Err(VokraError::UnsupportedOp(format!(
             "metal backend has no graph kernel for {other:?} (no silent CPU fallback, FR-EX-08)"
         ))),
@@ -57,7 +67,58 @@ fn eval_matmul(ctx: &MetalContext, inputs: &[&Tensor]) -> Result<Vec<Tensor>> {
     Ok(vec![Tensor::host_f32(vec![m, n], out)?])
 }
 
+/// Element-wise `out = a + b` on the GPU, preserving shape; both operands must
+/// be identically shaped (no broadcast in the MVP, mirroring the CPU arm).
+///
+/// The sum is computed on device through [`MetalContext::residual_add_dev`] —
+/// the `vokra_add_assign_f32` kernel — by uploading a fresh device copy of `a`
+/// (the accumulator, so the host inputs are untouched), uploading `b`, adding
+/// in place, and reading back. The kernel is a single FP32 add per element, so
+/// the result matches the CPU backend's `kernels::add_f32` (bit-identical; see
+/// the `residual_add_dev == host add` oracle in `parity_kernels_metal.rs`).
+fn eval_add(ctx: &MetalContext, inputs: &[&Tensor]) -> Result<Vec<Tensor>> {
+    let (a, b) = take2(inputs, "Add")?;
+    if a.shape != b.shape {
+        return Err(VokraError::InvalidArgument(format!(
+            "Add: operand shapes {:?} and {:?} differ (element-wise op, no broadcast)",
+            a.shape, b.shape
+        )));
+    }
+    let av = a.as_f32()?;
+    // `dst` is an independent device copy of `a`; `residual_add_dev` accumulates
+    // `b` into it (`dst[i] += src[i]`), leaving the host `a`/`b` slices intact.
+    let mut dst = ctx.upload(av)?;
+    let src = ctx.upload(b.as_f32()?)?;
+    ctx.residual_add_dev(&mut dst, &src)?;
+    let mut out = vec![0.0f32; av.len()];
+    ctx.download(&dst, &mut out)?;
+    Ok(vec![Tensor::host_f32(a.shape.clone(), out)?])
+}
+
+/// Row-wise softmax over the innermost axis on the GPU via
+/// [`MetalContext::softmax_f32`] (the `vokra_softmax_f32` kernel); the output
+/// keeps the input shape. Same `(rows, cols)` split as the CPU arm: `cols` is
+/// the innermost axis and `rows` the product of the outer axes.
+fn eval_softmax(ctx: &MetalContext, inputs: &[&Tensor]) -> Result<Vec<Tensor>> {
+    let x = take1(inputs, "Softmax")?;
+    let (rows, cols) = rows_cols(&x.shape)?;
+    let xv = x.as_f32()?;
+    let mut out = vec![0.0f32; xv.len()];
+    ctx.softmax_f32(xv, &mut out, rows, cols)?;
+    Ok(vec![Tensor::host_f32(x.shape.clone(), out)?])
+}
+
 // ---- input-arity / shape helpers (mirror the CPU backend's `eval.rs`) ----
+
+fn take1<'a>(inputs: &[&'a Tensor], op: &str) -> Result<&'a Tensor> {
+    if inputs.len() != 1 {
+        return Err(VokraError::InvalidArgument(format!(
+            "{op} expects 1 input, got {}",
+            inputs.len()
+        )));
+    }
+    Ok(inputs[0])
+}
 
 fn take2<'a>(inputs: &[&'a Tensor], op: &str) -> Result<(&'a Tensor, &'a Tensor)> {
     if inputs.len() != 2 {
@@ -78,6 +139,18 @@ fn as_2d(t: &Tensor, what: &str) -> Result<(usize, usize)> {
     }
 }
 
+/// Splits a shape into `(rows, cols)` for a row-wise op: `cols` is the innermost
+/// axis, `rows` the product of the rest. A scalar (empty shape) is rejected
+/// (mirrors the CPU backend's `rows_cols`).
+fn rows_cols(shape: &[usize]) -> Result<(usize, usize)> {
+    match shape.split_last() {
+        Some((&cols, rest)) => Ok((rest.iter().product(), cols)),
+        None => Err(VokraError::InvalidArgument(
+            "Softmax requires a tensor with at least one axis (got a scalar)".to_owned(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,11 +165,94 @@ mod tests {
             eprintln!("no Metal device; skipping eval dispatcher coverage test");
             return;
         };
-        // `Add` is a real op the CPU backend covers, but this slice ships only
-        // the Metal GEMM — it must surface as UnsupportedOp, not run on the CPU.
+        // `Mul` is a real op the CPU backend covers, but there is no Metal
+        // element-wise-multiply kernel — it must surface as UnsupportedOp, not
+        // run on the CPU (genuine, honestly-surfaced asymmetry).
         let a = Tensor::zeros_f32(vec![2, 2]);
-        let err = eval_metal_op(&ctx, &OpKind::Add, &[&a, &a]).unwrap_err();
+        let err = eval_metal_op(&ctx, &OpKind::Mul, &[&a, &a]).unwrap_err();
         assert!(matches!(err, VokraError::UnsupportedOp(_)));
+        // `Copy` likewise has no Metal compute kernel here.
+        let err = eval_metal_op(&ctx, &OpKind::Copy, &[&a]).unwrap_err();
+        assert!(matches!(err, VokraError::UnsupportedOp(_)));
+    }
+
+    /// `Add` is genuinely wired: a small case computes `a + b` on the GPU and
+    /// returns the input shape (differential correctness vs the CPU backend is
+    /// `tests/graph_metal.rs`).
+    #[test]
+    fn add_is_wired_and_shapes_output() {
+        let Ok(ctx) = MetalContext::new() else {
+            eprintln!("no Metal device; skipping eval Add wiring test");
+            return;
+        };
+        let a = Tensor::host_f32(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let b = Tensor::host_f32(vec![2, 2], vec![10.0, 20.0, 30.0, 40.0]).unwrap();
+        let out = eval_metal_op(&ctx, &OpKind::Add, &[&a, &b]).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].shape, vec![2, 2]);
+        // Single FP32 add per element → bit-identical to the host sum.
+        assert_eq!(out[0].as_f32().unwrap(), &[11.0, 22.0, 33.0, 44.0]);
+    }
+
+    /// `Add` shape / arity errors are explicit `InvalidArgument`, not a GPU
+    /// fault (mirrors the CPU arm's validation).
+    #[test]
+    fn add_rejects_bad_shapes_and_arity() {
+        let Ok(ctx) = MetalContext::new() else {
+            eprintln!("no Metal device; skipping eval Add validation test");
+            return;
+        };
+        let a = Tensor::host_f32(vec![2, 2], vec![0.0; 4]).unwrap();
+        let mismatched = Tensor::host_f32(vec![4], vec![0.0; 4]).unwrap(); // same numel, diff shape
+        assert!(matches!(
+            eval_metal_op(&ctx, &OpKind::Add, &[&a, &mismatched]).unwrap_err(),
+            VokraError::InvalidArgument(_)
+        ));
+        // wrong number of inputs.
+        assert!(matches!(
+            eval_metal_op(&ctx, &OpKind::Add, &[&a]).unwrap_err(),
+            VokraError::InvalidArgument(_)
+        ));
+    }
+
+    /// `Softmax` is genuinely wired: it keeps the input shape and normalises
+    /// row-wise (each row sums to ~1). Numerical parity vs CPU is in
+    /// `tests/graph_metal.rs`.
+    #[test]
+    fn softmax_is_wired_and_keeps_shape() {
+        let Ok(ctx) = MetalContext::new() else {
+            eprintln!("no Metal device; skipping eval Softmax wiring test");
+            return;
+        };
+        let x = Tensor::host_f32(vec![2, 3], vec![1.0, 2.0, 3.0, 0.0, 0.0, 0.0]).unwrap();
+        let out = eval_metal_op(&ctx, &OpKind::Softmax, &[&x]).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].shape, vec![2, 3]);
+        let got = out[0].as_f32().unwrap();
+        for r in 0..2 {
+            let s: f32 = got[r * 3..r * 3 + 3].iter().sum();
+            assert!((s - 1.0).abs() <= 1e-4, "row {r} softmax sums to {s}");
+        }
+    }
+
+    /// `Softmax` rejects a scalar (no axis) and bad arity as explicit
+    /// `InvalidArgument` (mirrors the CPU arm).
+    #[test]
+    fn softmax_rejects_scalar_and_bad_arity() {
+        let Ok(ctx) = MetalContext::new() else {
+            eprintln!("no Metal device; skipping eval Softmax validation test");
+            return;
+        };
+        let scalar = Tensor::host_f32(vec![], vec![1.0]).unwrap();
+        assert!(matches!(
+            eval_metal_op(&ctx, &OpKind::Softmax, &[&scalar]).unwrap_err(),
+            VokraError::InvalidArgument(_)
+        ));
+        let x = Tensor::host_f32(vec![3], vec![1.0, 2.0, 3.0]).unwrap();
+        assert!(matches!(
+            eval_metal_op(&ctx, &OpKind::Softmax, &[&x, &x]).unwrap_err(),
+            VokraError::InvalidArgument(_)
+        ));
     }
 
     /// MatMul is genuinely wired: a small case computes and returns the declared

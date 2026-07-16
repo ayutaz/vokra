@@ -57,15 +57,8 @@ impl AgcAttrs {
     }
 }
 
-/// Applies automatic gain control to `input`, returning the leveled signal
-/// (same length). Zero initial envelope; unity initial gain.
-///
-/// # Errors
-///
-/// [`VokraError::InvalidArgument`] for out-of-range attributes (a coefficient
-/// outside `(0, 1]`, `target_level` / `limiter_ceiling` outside `(0, 1]`,
-/// `max_gain < 1`) or a non-finite input sample (FR-EX-08).
-pub fn agc(input: &[f32], attrs: &AgcAttrs) -> Result<Vec<f32>> {
+/// Validates the [`AgcAttrs`] ranges (shared by [`agc`] and [`AgcState::new`]).
+fn validate_agc_attrs(attrs: &AgcAttrs) -> Result<()> {
     let unit = |v: f32| v > 0.0 && v <= 1.0;
     if !unit(attrs.target_level) || !unit(attrs.limiter_ceiling) {
         return Err(VokraError::InvalidArgument(
@@ -82,31 +75,106 @@ pub fn agc(input: &[f32], attrs: &AgcAttrs) -> Result<Vec<f32>> {
             "agc: attack / release / gain_smooth must be in (0, 1]".into(),
         ));
     }
-    if input.iter().any(|s| !s.is_finite()) {
-        return Err(VokraError::InvalidArgument(
-            "agc: input has a non-finite sample".into(),
-        ));
+    Ok(())
+}
+
+/// Applies automatic gain control to `input`, returning the leveled signal
+/// (same length). Zero initial envelope; unity initial gain.
+///
+/// This is the whole-buffer convenience wrapper over [`AgcState`]: it is
+/// exactly `AgcState::new(attrs)?.process_chunk(input)`, so one call is
+/// bit-identical to feeding the same samples through the streaming state in
+/// pieces (the `streaming_chunks_match_whole_buffer` test pins this).
+///
+/// # Errors
+///
+/// [`VokraError::InvalidArgument`] for out-of-range attributes (a coefficient
+/// outside `(0, 1]`, `target_level` / `limiter_ceiling` outside `(0, 1]`,
+/// `max_gain < 1`) or a non-finite input sample (FR-EX-08).
+pub fn agc(input: &[f32], attrs: &AgcAttrs) -> Result<Vec<f32>> {
+    AgcState::new(attrs)?.process_chunk(input)
+}
+
+/// Streaming AGC state: carries the peak envelope and the smoothed gain across
+/// [`process_chunk`](AgcState::process_chunk) calls, so a call-center / Discord
+/// streaming caller can feed successive chunks and get output bit-identical to
+/// running [`agc`] over the concatenated buffer.
+///
+/// Like [`Aec`](crate::Aec) and [`HpfState`](crate::HpfState), this is a
+/// first-class API type rather than an `OpKind` variant (ADR M4-20 §D-5): it
+/// owns live per-frame state, so a graph-side call has no home and falls into
+/// the `dispatch.rs` `UnsupportedOp` default (FR-EX-08).
+#[derive(Debug, Clone)]
+pub struct AgcState {
+    attrs: AgcAttrs,
+    /// Peak envelope of `|x|` (fast-attack / slow-release follower).
+    env: f32,
+    /// Smoothed applied gain.
+    gain: f32,
+}
+
+impl AgcState {
+    /// Builds a fresh AGC state (zero envelope, unity gain).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] for out-of-range attributes (same
+    /// ranges as [`agc`]).
+    pub fn new(attrs: &AgcAttrs) -> Result<Self> {
+        validate_agc_attrs(attrs)?;
+        Ok(Self {
+            attrs: *attrs,
+            env: 0.0,
+            gain: 1.0,
+        })
     }
 
-    const EPS: f32 = 1e-6;
-    let mut out = Vec::with_capacity(input.len());
-    let mut env = 0.0f32; // peak envelope of |x|
-    let mut gain = 1.0f32; // smoothed applied gain
-    for &s in input {
-        let mag = s.abs();
-        // Peak envelope: fast attack up, slow release down.
-        if mag > env {
-            env += attrs.attack * (mag - env);
-        } else {
-            env += attrs.release * (mag - env);
-        }
-        // Desired gain to reach the target, capped at max_gain.
-        let desired = (attrs.target_level / env.max(EPS)).clamp(0.0, attrs.max_gain);
-        gain += attrs.gain_smooth * (desired - gain);
-        let y = (s * gain).clamp(-attrs.limiter_ceiling, attrs.limiter_ceiling);
-        out.push(y);
+    /// The attributes this state was built with.
+    #[inline]
+    #[must_use]
+    pub fn attrs(&self) -> &AgcAttrs {
+        &self.attrs
     }
-    Ok(out)
+
+    /// Rewinds to the as-new state (zero envelope, unity gain) — the barge-in
+    /// reset companion, mirroring [`Aec::reset`](crate::Aec::reset).
+    pub fn reset(&mut self) {
+        self.env = 0.0;
+        self.gain = 1.0;
+    }
+
+    /// Processes one `chunk`, advancing the carried envelope / gain, and
+    /// returns the leveled samples (same length as `chunk`).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a non-finite input sample (FR-EX-08
+    /// — never a silent clamp).
+    pub fn process_chunk(&mut self, chunk: &[f32]) -> Result<Vec<f32>> {
+        if chunk.iter().any(|s| !s.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "agc: input has a non-finite sample".into(),
+            ));
+        }
+        const EPS: f32 = 1e-6;
+        let mut out = Vec::with_capacity(chunk.len());
+        for &s in chunk {
+            let mag = s.abs();
+            // Peak envelope: fast attack up, slow release down.
+            if mag > self.env {
+                self.env += self.attrs.attack * (mag - self.env);
+            } else {
+                self.env += self.attrs.release * (mag - self.env);
+            }
+            // Desired gain to reach the target, capped at max_gain.
+            let desired =
+                (self.attrs.target_level / self.env.max(EPS)).clamp(0.0, self.attrs.max_gain);
+            self.gain += self.attrs.gain_smooth * (desired - self.gain);
+            let y = (s * self.gain).clamp(-self.attrs.limiter_ceiling, self.attrs.limiter_ceiling);
+            out.push(y);
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -210,5 +278,72 @@ mod tests {
             .is_err()
         );
         assert!(agc(&[f32::INFINITY], &base).is_err());
+    }
+
+    // ---- Streaming state (AgcState) --------------------------------------
+
+    #[test]
+    fn streaming_chunks_match_whole_buffer() {
+        // Chunked processing through `AgcState` must be bit-identical to the
+        // one-shot stateless `agc()` over the same signal — the state carries
+        // the peak envelope + smoothed gain across `process_chunk` calls. A
+        // level-stepped signal keeps the envelope/gain mid-evolution at every
+        // chunk boundary (a static tone would mask a state-carry bug).
+        let attrs = AgcAttrs::speech_default();
+        let mut x = tone(300.0, 16000.0, 0.05, 4000);
+        x.extend(tone(300.0, 16000.0, 0.6, 4000));
+        x.extend(tone(300.0, 16000.0, 0.2, 4000));
+
+        let whole = agc(&x, &attrs).unwrap();
+
+        let mut state = AgcState::new(&attrs).unwrap();
+        let mut streamed = Vec::new();
+        // Uneven chunk length, unaligned to the tone period or the level
+        // steps, so the carry is exercised at arbitrary phases.
+        for chunk in x.chunks(777) {
+            streamed.extend(state.process_chunk(chunk).unwrap());
+        }
+        assert_eq!(
+            streamed, whole,
+            "chunked AGC must be bit-identical to whole-buffer"
+        );
+    }
+
+    #[test]
+    fn reset_restores_fresh_state() {
+        // A second pass without reset differs (carried gain/env); after
+        // `reset` the state is as-new and reproduces the first pass exactly.
+        let attrs = AgcAttrs::speech_default();
+        let x = tone(300.0, 16000.0, 0.4, 2000);
+
+        let mut state = AgcState::new(&attrs).unwrap();
+        let first = state.process_chunk(&x).unwrap();
+        let second = state.process_chunk(&x).unwrap();
+        assert_ne!(first, second, "carried state must affect the 2nd pass");
+        state.reset();
+        let third = state.process_chunk(&x).unwrap();
+        assert_eq!(first, third, "reset must reproduce a fresh AgcState");
+    }
+
+    #[test]
+    fn state_new_rejects_bad_attrs_and_process_rejects_nonfinite() {
+        let base = AgcAttrs::speech_default();
+        assert!(
+            AgcState::new(&AgcAttrs {
+                target_level: 0.0,
+                ..base
+            })
+            .is_err()
+        );
+        assert!(
+            AgcState::new(&AgcAttrs {
+                max_gain: 0.5,
+                ..base
+            })
+            .is_err()
+        );
+        let mut state = AgcState::new(&base).unwrap();
+        assert!(state.process_chunk(&[f32::INFINITY]).is_err());
+        assert_eq!(state.attrs().target_level, base.target_level);
     }
 }

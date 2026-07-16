@@ -38,6 +38,7 @@
 //! out-of-range tokens / positions → [`VokraError::InvalidArgument`].
 
 use vokra_core::cache::paged::{BlockSize, KvDims, PagedKvCache};
+use vokra_core::cache::ring::RingKvCache;
 use vokra_core::gguf::GgufFile;
 use vokra_core::rng::SplitMix64;
 use vokra_core::{BackendKind, Result, VokraError};
@@ -298,12 +299,81 @@ impl Scratch {
     }
 }
 
-/// Autoregressive backbone state: position clock + paged KV (single
-/// stream — module docs) + step scratch. The paged arena is fully
-/// pre-allocated; the decode loop only pops pages off the free list.
+/// KV store backing a Moshi session (M4-06 #16).
+///
+/// - [`MoshiBackboneState::new`] uses the M3-03 [`PagedKvCache`] — it keeps the
+///   full `max_ctx` history, which the shared bulk `forward` needs because a
+///   bulk step reads an arbitrarily wide window (up to `context + t - 1`
+///   positions once the clock is past the first window).
+/// - [`MoshiBackboneState::new_bounded`] uses the M4-06 sliding-window
+///   [`RingKvCache`] with `capacity = context`, so a **streaming** (one new
+///   position per step) full-duplex session uses `O(context)` memory instead of
+///   `O(max_ctx)`. A bulk step whose read span exceeds `capacity` surfaces a
+///   loud error rather than silently reading evicted keys (FR-EX-08).
+///
+/// Both expose the same append / read / advance / reset surface, so
+/// `forward_impl` is store-agnostic.
+enum MoshiKvStore {
+    Paged(PagedKvCache<f32>),
+    Ring(RingKvCache<f32>),
+}
+
+impl MoshiKvStore {
+    #[inline]
+    fn append_step(
+        &mut self,
+        layer: usize,
+        t: usize,
+        s: usize,
+        c: usize,
+        k_row: &[f32],
+        v_row: &[f32],
+    ) -> Result<()> {
+        match self {
+            Self::Paged(p) => p.append_step(layer, t, s, c, k_row, v_row),
+            Self::Ring(r) => r.append_step(layer, t, s, c, k_row, v_row),
+        }
+    }
+
+    #[inline]
+    fn read_step(&self, layer: usize, t: usize, s: usize, c: usize) -> Option<(&[f32], &[f32])> {
+        match self {
+            Self::Paged(p) => p.read_step(layer, t, s, c),
+            Self::Ring(r) => r.read_step(layer, t, s, c),
+        }
+    }
+
+    #[inline]
+    fn advance(&mut self, n: usize) {
+        match self {
+            Self::Paged(p) => p.advance(n),
+            Self::Ring(r) => r.advance(n),
+        }
+    }
+
+    #[inline]
+    fn reset(&mut self) {
+        match self {
+            Self::Paged(p) => p.reset(),
+            Self::Ring(r) => r.reset(),
+        }
+    }
+
+    #[inline]
+    fn pages_in_use(&self) -> usize {
+        match self {
+            Self::Paged(p) => p.pages_in_use(),
+            Self::Ring(r) => r.live_len(),
+        }
+    }
+}
+
+/// Autoregressive backbone state: position clock + KV store (single
+/// stream — module docs) + step scratch. The KV arena is fully
+/// pre-allocated; the decode loop only pops pages / ring slots.
 pub struct MoshiBackboneState {
     seq_len: usize,
-    kv: PagedKvCache<f32>,
+    kv: MoshiKvStore,
     scratch: Scratch,
 }
 
@@ -317,25 +387,57 @@ impl std::fmt::Debug for MoshiBackboneState {
 }
 
 impl MoshiBackboneState {
-    /// Pre-allocates the paged arena (`max_ctx` positions) and scratch.
-    ///
-    /// # Errors
-    ///
-    /// Propagates config validation and arena allocation errors.
-    pub fn new(config: &MoshiConfig) -> Result<Self> {
-        config.validate_for_forward()?;
-        let dims = KvDims {
+    /// KV shape for this config (single stream / codebook, `max_ctx` bound).
+    fn kv_dims(config: &MoshiConfig) -> KvDims {
+        KvDims {
             n_layer: config.temporal.n_layer,
             n_head: config.temporal.n_head,
             d_head: config.temporal.head_dim(),
             n_stream: 1,
             n_codebook: 1,
             max_time: config.max_ctx,
-        };
-        let kv = PagedKvCache::pre_allocate(dims, BlockSize::Two)?;
+        }
+    }
+
+    /// Pre-allocates the paged arena (`max_ctx` positions) and scratch. This is
+    /// the general-purpose state: it serves both bulk `forward` (wide-window
+    /// priming) and incremental `step_into`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates config validation and arena allocation errors.
+    pub fn new(config: &MoshiConfig) -> Result<Self> {
+        config.validate_for_forward()?;
+        let kv = PagedKvCache::pre_allocate(Self::kv_dims(config), BlockSize::Two)?;
         Ok(Self {
             seq_len: 0,
-            kv,
+            kv: MoshiKvStore::Paged(kv),
+            scratch: Scratch::new(config, 1),
+        })
+    }
+
+    /// Pre-allocates a **bounded** sliding-window ring KV (`capacity = context`)
+    /// and scratch — `O(context)` memory instead of `O(max_ctx)`, for a
+    /// long-running full-duplex **streaming** session (one new position per
+    /// `step_into`). Reads over the streaming window are byte-identical to the
+    /// paged history (the out-of-window keys the paged cache still holds
+    /// contribute exactly zero to the sliding-window softmax — proven in
+    /// [`RingKvCache`]'s tests and this module's `bounded_stream_matches_paged`).
+    ///
+    /// A bulk `forward` whose read span exceeds `context` (only reachable once
+    /// the clock is past the first window with `t > 1`) is rejected loudly by
+    /// `forward_impl` rather than reading evicted keys (FR-EX-08); use
+    /// [`Self::new`] for wide-window bulk priming.
+    ///
+    /// # Errors
+    ///
+    /// Propagates config validation and ring allocation errors.
+    pub fn new_bounded(config: &MoshiConfig) -> Result<Self> {
+        config.validate_for_forward()?;
+        let kv = RingKvCache::pre_allocate(Self::kv_dims(config), config.context)?;
+        Ok(Self {
+            seq_len: 0,
+            kv: MoshiKvStore::Ring(kv),
             scratch: Scratch::new(config, 1),
         })
     }
@@ -615,6 +717,15 @@ impl MoshiBackbone {
         }
 
         let t_kv = position_offset + t;
+        // Oldest key any query row in this step attends: the first (oldest)
+        // row sits at `position_offset` and its window starts at
+        // `(position_offset + 1) - context`. Keys below this are masked to
+        // `-inf` for *every* row, so the snapshot skips them — which is what
+        // lets a bounded ring cache (M4-06) back a streaming session: it holds
+        // exactly `[t_kv - context, t_kv)`, and this lower bound never dips
+        // below `t_kv - context` for a single-position step. (For the paged
+        // cache this is a pure work-saving no-op; the skipped rows were masked.)
+        let win_lo_global = (position_offset + 1).saturating_sub(context);
         for (layer_idx, block) in self.weights.blocks.iter().enumerate() {
             // ---------- Pre-norm MHA attention ----------
             rms_norm(
@@ -700,11 +811,13 @@ impl MoshiBackbone {
                     &scratch.v_proj[i * d..(i + 1) * d],
                 )?;
             }
-            for j in 0..t_kv {
+            for j in win_lo_global..t_kv {
                 let (k_row, v_row) = state.kv.read_step(layer_idx, j, 0, 0).ok_or_else(|| {
                     VokraError::InvalidArgument(format!(
-                        "moshi backbone: KV history hole at layer {layer_idx} t {j} — \
-                         state was reset mid-decode?"
+                        "moshi backbone: KV history hole at layer {layer_idx} t {j} (window \
+                         [{win_lo_global}, {t_kv})) — a bounded ring session cannot serve a \
+                         bulk step wider than context={context}; use MoshiBackboneState::new \
+                         for wide-window priming (FR-EX-08 — no silent eviction)"
                     ))
                 })?;
                 scratch.k_hist[j * d..(j + 1) * d].copy_from_slice(k_row);
@@ -1246,6 +1359,74 @@ mod tests {
         assert!(
             err.to_string().contains("text_emb.weight"),
             "names the missing tensor: {err}"
+        );
+    }
+
+    #[test]
+    fn bounded_ring_streaming_matches_paged_and_is_memory_bounded() {
+        // context < max_ctx so the ring actually evicts (the tiny default has
+        // context = max_ctx = 32, which never wraps).
+        let mut cfg = MoshiConfig::tiny_for_tests();
+        cfg.context = 4; // max_ctx stays 32
+        let b = MoshiBackbone::synthesized(cfg.clone(), 77).unwrap();
+        let d = cfg.temporal.d_model;
+
+        let mut paged = MoshiBackboneState::new(&cfg).unwrap();
+        let mut ring = MoshiBackboneState::new_bounded(&cfg).unwrap();
+
+        // Stream well past the window (20 ≫ context 4).
+        for i in 0..20u32 {
+            let tokens = step_tokens(&cfg, i * 5 + 1);
+            let mut h_paged = vec![0.0f32; d];
+            let mut h_ring = vec![0.0f32; d];
+            b.step_into(&mut paged, &tokens, &mut h_paged).unwrap();
+            b.step_into(&mut ring, &tokens, &mut h_ring).unwrap();
+            // Sliding-window equivalence: the ring holds exactly the attendable
+            // window, so the streamed hidden is byte-identical to the full
+            // paged history (the out-of-window keys the paged cache still holds
+            // contribute exactly 0 to the sliding-window softmax).
+            assert_eq!(h_ring, h_paged, "ring vs paged diverged at step {i}");
+            // Bounded memory: the ring's live set never exceeds context.
+            assert!(
+                ring.pages_in_use() <= cfg.context,
+                "ring live set {} exceeded context {} at step {i}",
+                ring.pages_in_use(),
+                cfg.context
+            );
+        }
+        // The ring saturates at its capacity; the paged cache has spilled into
+        // many more pages (the unbounded-in-practice growth the ring avoids).
+        assert_eq!(ring.pages_in_use(), cfg.context, "ring pinned at capacity");
+        assert!(
+            paged.pages_in_use() > cfg.context,
+            "paged history grew past the window ({} pages)",
+            paged.pages_in_use()
+        );
+        assert_eq!(ring.seq_len(), 20);
+    }
+
+    #[test]
+    fn bounded_ring_rejects_wide_bulk_forward() {
+        // A bulk step wider than the window needs keys the ring has already
+        // evicted; that must be a loud FR-EX-08 error, never a silent wrong
+        // answer from a stale slot.
+        let mut cfg = MoshiConfig::tiny_for_tests();
+        cfg.context = 2;
+        let b = MoshiBackbone::synthesized(cfg.clone(), 5).unwrap();
+        // Bulk forward of 3 positions at offset 0: row 0 needs key 0, but a
+        // capacity-2 ring evicts key 0 the moment key 2 is appended.
+        let steps: Vec<Vec<u32>> = (0..3).map(|i| step_tokens(&cfg, i + 1)).collect();
+        let mut ring = MoshiBackboneState::new_bounded(&cfg).unwrap();
+        let err = b.forward(&steps, &mut ring).unwrap_err();
+        assert!(
+            err.to_string().contains("context") || err.to_string().contains("ring"),
+            "names the bounded-ring limitation: {err}"
+        );
+        // The identical bulk forward on the paged state is fine (full history).
+        let mut paged = MoshiBackboneState::new(&cfg).unwrap();
+        assert!(
+            b.forward(&steps, &mut paged).is_ok(),
+            "paged serves wide bulk"
         );
     }
 }

@@ -132,13 +132,13 @@ pub use aec::{Aec, AecAttrs, AecStatus};
 // ---- M4-04 dac_rvq re-exports --------------------------------------------
 pub use dac_rvq::{
     DacOutProj, DacRvqAttrs, dac_paged_dims, dac_rvq_decode, dac_rvq_decode_paged,
-    dac_rvq_read_summed,
+    dac_rvq_read_summed, dac_rvq_read_summed_range,
 };
 // ---------------------------------------------------------------------------
 // ---- M4-20 (c) speech-enhancement re-exports ----------------------------
-pub use agc::{AgcAttrs, agc};
+pub use agc::{AgcAttrs, AgcState, agc};
 pub use denoise::{DeepFilterNetConfig, DenoiseModel, DenoiseWeights, denoise};
-pub use hpf::{HpfAttrs, hpf};
+pub use hpf::{HpfAttrs, HpfState, hpf};
 pub use loudness_norm::{LoudnessNormAttrs, integrated_lufs, loudness_norm};
 // -------------------------------------------------------------------------
 pub use dct::dct;

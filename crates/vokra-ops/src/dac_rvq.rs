@@ -336,6 +336,46 @@ pub fn dac_rvq_read_summed(
     )
 }
 
+/// Reads and sums a **chunk window** `[time_range.start, time_range.end) ×
+/// stream`, returning `[time_range.len(), d_model]` row-major projected
+/// features — the chunk-granular mirror of calling [`dac_rvq_read_summed`]
+/// per `t` (bit-identical output), and the RVQ-family symmetric partner of
+/// [`crate::mimi_rvq::mimi_rvq_read_summed_range`].
+///
+/// This is the read mouth CSM / Moshi (M4-05/06) use to hand a features chunk
+/// to their decoder chains. The window is walked **page-aware** (one
+/// page-table probe per time-block; an unbound block is skipped wholesale and
+/// its rows stay zero) — the same shape-generic core as `mimi_rvq` (only the
+/// factorized DAC attrs differ), so the gap / page-crossing semantics are
+/// identical.
+///
+/// # Gap semantics
+///
+/// Unwritten slots contribute **zero** on the read side (same asymmetry as
+/// [`dac_rvq_read_summed`] — FR-EX-08 governs writes; reads treat the paged
+/// store as an arena).
+///
+/// # Errors
+///
+/// [`VokraError::InvalidArgument`] on axis / dim violations,
+/// `time_range.end > max_time`, or `time_range.start > time_range.end`.
+/// An empty window (`start == end`) returns an empty `Vec` (not an error).
+pub fn dac_rvq_read_summed_range(
+    cache: &PagedKvCache<f32>,
+    attrs: &DacRvqAttrs,
+    stream: usize,
+    time_range: std::ops::Range<usize>,
+) -> Result<Vec<f32>> {
+    crate::mimi_rvq::read_summed_range_core(
+        cache,
+        attrs.n_codebooks,
+        attrs.d_model,
+        stream,
+        time_range,
+        "dac_rvq_read_summed_range",
+    )
+}
+
 /// Builds a [`KvDims`] with the shape [`dac_rvq_decode_paged`] expects
 /// (mirror of [`crate::mimi_rvq::mimi_paged_dims`]).
 #[must_use]

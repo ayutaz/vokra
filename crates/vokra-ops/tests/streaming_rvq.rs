@@ -26,8 +26,8 @@ use vokra_core::VokraError;
 use vokra_core::cache::paged::{BlockSize, PagedKvCache};
 use vokra_ops::{
     CodebookTable, DacOutProj, DacRvqAttrs, MimiRvqAttrs, dac_paged_dims, dac_rvq_decode,
-    dac_rvq_decode_paged, dac_rvq_read_summed, mimi_paged_dims, mimi_rvq_decode,
-    mimi_rvq_decode_paged, mimi_rvq_read_summed, mimi_rvq_read_summed_range,
+    dac_rvq_decode_paged, dac_rvq_read_summed, dac_rvq_read_summed_range, mimi_paged_dims,
+    mimi_rvq_decode, mimi_rvq_decode_paged, mimi_rvq_read_summed, mimi_rvq_read_summed_range,
 };
 
 // ---------------------------------------------------------------------------
@@ -480,6 +480,153 @@ fn read_summed_range_rejects_bad_windows() {
     // Out-of-range stream.
     assert!(matches!(
         mimi_rvq_read_summed_range(&cache, &attrs, 9, 0..1),
+        Err(VokraError::InvalidArgument(_))
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// (5-DAC) T08 — chunk-window summed read, DAC-symmetric mirror
+//
+// `dac_rvq_read_summed_range` is the RVQ-family symmetric partner of
+// `mimi_rvq_read_summed_range` — same shape-generic core (`read_summed_range_core`,
+// mimi_rvq.rs), just the factorized DAC attrs. These mirror the mimi (5)
+// section so the CSM / Moshi (M4-05/06) chunk read mouth is verified on the
+// factorized codec too.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dac_read_summed_range_is_bit_identical_to_per_t_loop() {
+    let attrs = dac_attrs();
+    let tables = dac_tables(attrs);
+    let projs = dac_projs(attrs);
+    let total_time = 10;
+    let codes = ramp_codes(total_time, attrs.n_codebooks, attrs.codebook_size, 29);
+
+    for &bs in &[BlockSize::Two, BlockSize::Four] {
+        let dims = dac_paged_dims(&attrs, 1, total_time);
+        let mut cache = PagedKvCache::<f32>::pre_allocate(dims, bs).unwrap();
+        dac_rvq_decode_paged(
+            &codes, total_time, &tables, &projs, &attrs, 0, &mut cache, 0,
+        )
+        .unwrap();
+
+        for (t0, t1) in [(0usize, 10usize), (1, 5), (3, 4), (0, 1), (9, 10), (2, 9)] {
+            let chunk = dac_rvq_read_summed_range(&cache, &attrs, 0, t0..t1).unwrap();
+            assert_eq!(chunk.len(), (t1 - t0) * attrs.d_model);
+            for t in t0..t1 {
+                let per_t = dac_rvq_read_summed(&cache, &attrs, 0, t).unwrap();
+                assert_eq!(
+                    &chunk[(t - t0) * attrs.d_model..(t - t0 + 1) * attrs.d_model],
+                    per_t.as_slice(),
+                    "dac range [{t0},{t1}) vs per-t at t={t} (block={bs:?})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn dac_read_summed_range_matches_full_decode_over_window() {
+    // The direct oracle: a chunk read over [t0,t1) equals the corresponding
+    // rows of a one-shot `dac_rvq_decode` (windowed read == full decode over
+    // that window — the T08 contract, factorized edition).
+    let attrs = dac_attrs();
+    let tables = dac_tables(attrs);
+    let projs = dac_projs(attrs);
+    let total_time = 8;
+    let codes = ramp_codes(total_time, attrs.n_codebooks, attrs.codebook_size, 31);
+
+    let dims = dac_paged_dims(&attrs, 1, total_time);
+    let mut cache = PagedKvCache::<f32>::pre_allocate(dims, BlockSize::Four).unwrap();
+    dac_rvq_decode_paged(
+        &codes, total_time, &tables, &projs, &attrs, 0, &mut cache, 0,
+    )
+    .unwrap();
+
+    let direct = dac_rvq_decode(&codes, total_time, &tables, &projs, &attrs).unwrap();
+    // A window that starts and ends mid-page (block=4 → pages [0..4], [4..8]).
+    let chunk = dac_rvq_read_summed_range(&cache, &attrs, 0, 1..6).unwrap();
+    assert_eq!(chunk, direct[attrs.d_model..6 * attrs.d_model].to_vec());
+}
+
+#[test]
+fn dac_read_summed_range_gap_semantics_zero_rows() {
+    // Write t=0..2 and t=6..8 only; the window [0,8) returns zeros for the
+    // unbound middle blocks (never-written gap).
+    let attrs = dac_attrs();
+    let tables = dac_tables(attrs);
+    let projs = dac_projs(attrs);
+    let dims = dac_paged_dims(&attrs, 1, 8);
+    let mut cache = PagedKvCache::<f32>::pre_allocate(dims, BlockSize::Two).unwrap();
+
+    let head = ramp_codes(2, attrs.n_codebooks, attrs.codebook_size, 37);
+    let tail = ramp_codes(2, attrs.n_codebooks, attrs.codebook_size, 41);
+    dac_rvq_decode_paged(&head, 2, &tables, &projs, &attrs, 0, &mut cache, 0).unwrap();
+    dac_rvq_decode_paged(&tail, 2, &tables, &projs, &attrs, 0, &mut cache, 6).unwrap();
+
+    let chunk = dac_rvq_read_summed_range(&cache, &attrs, 0, 0..8).unwrap();
+    let head_direct = dac_rvq_decode(&head, 2, &tables, &projs, &attrs).unwrap();
+    let tail_direct = dac_rvq_decode(&tail, 2, &tables, &projs, &attrs).unwrap();
+
+    assert_eq!(&chunk[..2 * attrs.d_model], head_direct.as_slice());
+    assert_eq!(
+        &chunk[2 * attrs.d_model..6 * attrs.d_model],
+        vec![0.0; 4 * attrs.d_model].as_slice(),
+        "gap rows must be zero"
+    );
+    assert_eq!(&chunk[6 * attrs.d_model..], tail_direct.as_slice());
+}
+
+#[test]
+fn dac_read_summed_range_multi_stream_and_empty_window() {
+    let attrs = dac_attrs();
+    let tables = dac_tables(attrs);
+    let projs = dac_projs(attrs);
+    let dims = dac_paged_dims(&attrs, 2, 4);
+    let mut cache = PagedKvCache::<f32>::pre_allocate(dims, BlockSize::Four).unwrap();
+
+    // Distinct constant codes per stream (0 vs 3, both < codebook_size=4) so
+    // the two streams genuinely differ — a ramp_codes salt pair could collide
+    // mod codebook_size.
+    let c0 = vec![0u32; attrs.n_codebooks * 2];
+    let c1 = vec![3u32; attrs.n_codebooks * 2];
+    dac_rvq_decode_paged(&c0, 2, &tables, &projs, &attrs, 0, &mut cache, 0).unwrap();
+    dac_rvq_decode_paged(&c1, 2, &tables, &projs, &attrs, 1, &mut cache, 0).unwrap();
+
+    let r0 = dac_rvq_read_summed_range(&cache, &attrs, 0, 0..2).unwrap();
+    let r1 = dac_rvq_read_summed_range(&cache, &attrs, 1, 0..2).unwrap();
+    assert_ne!(r0, r1, "streams must not alias in the range read");
+    assert_eq!(r0, dac_rvq_decode(&c0, 2, &tables, &projs, &attrs).unwrap());
+    assert_eq!(r1, dac_rvq_decode(&c1, 2, &tables, &projs, &attrs).unwrap());
+
+    // Empty window is Ok(vec![]), not an error.
+    assert_eq!(
+        dac_rvq_read_summed_range(&cache, &attrs, 0, 1..1).unwrap(),
+        Vec::<f32>::new()
+    );
+}
+
+#[test]
+fn dac_read_summed_range_rejects_bad_windows() {
+    let attrs = dac_attrs();
+    let dims = dac_paged_dims(&attrs, 1, 4);
+    let cache = PagedKvCache::<f32>::pre_allocate(dims, BlockSize::Four).unwrap();
+
+    // t1 > max_time.
+    assert!(matches!(
+        dac_rvq_read_summed_range(&cache, &attrs, 0, 0..5),
+        Err(VokraError::InvalidArgument(_))
+    ));
+    // t0 > t1.
+    #[allow(clippy::reversed_empty_ranges)]
+    let reversed = 3..1;
+    assert!(matches!(
+        dac_rvq_read_summed_range(&cache, &attrs, 0, reversed),
+        Err(VokraError::InvalidArgument(_))
+    ));
+    // Out-of-range stream.
+    assert!(matches!(
+        dac_rvq_read_summed_range(&cache, &attrs, 9, 0..1),
         Err(VokraError::InvalidArgument(_))
     ));
 }

@@ -1694,3 +1694,273 @@ fn dequant_gemv_metal_rejects_shape_mismatch() {
         .unwrap_err();
     assert!(matches!(err, vokra_core::VokraError::InvalidArgument(_)));
 }
+
+// ---- M4-05/06 Llama-family decode primitives: rms_norm / rope / silu / swiglu
+//
+// The CPU oracles below are verbatim transcriptions of the CSM / Moshi ops the
+// Metal kernels mirror:
+//   * gamma-only RMSNorm — crates/vokra-models/src/voxtral/text_decoder.rs::rms_norm
+//   * adjacent-pair RoPE — crates/vokra-models/src/csm/rope.rs::rope_apply_adjacent
+//   * SiLU               — crates/vokra-models/src/voxtral/text_decoder.rs::silu_inplace
+//   * SwiGLU             — the fused silu_inplace(gate) + hadamard_inplace(gate, up)
+// vokra-backend-metal cannot depend on vokra-models (that would be a cycle), so
+// the reference formula is reproduced here; the arithmetic order matches the
+// production code exactly, so the only CPU⇔GPU delta is the vendor
+// sqrt/sin/cos/exp (a few ULP) — far inside `ATOL`.
+
+/// Gamma-only RMSNorm reference (voxtral text_decoder `rms_norm`).
+fn cpu_rms_norm(x: &[f32], gamma: &[f32], eps: f32, rows: usize, cols: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; rows * cols];
+    for i in 0..rows {
+        let row = &x[i * cols..(i + 1) * cols];
+        let sum_sq: f32 = row.iter().map(|&v| v * v).sum();
+        let inv = 1.0 / (sum_sq / cols as f32 + eps).sqrt();
+        for c in 0..cols {
+            out[i * cols + c] = row[c] * inv * gamma[c];
+        }
+    }
+    out
+}
+
+#[test]
+fn rms_norm_metal_matches_cpu() {
+    let ctx = ctx_or_skip!("rms_norm");
+    let eps = 1e-5f32;
+    // cols up to a d_model = 512 head width; rows up to a 1500 window.
+    let shapes = [
+        (1usize, 2usize),
+        (2, 8),
+        (37, 41),
+        (1, 512),
+        (4, 512),
+        (1500, 512),
+    ];
+    let mut worst = 0.0f32;
+    for &(rows, cols) in &shapes {
+        let input = rand_vec(0x8D11 ^ ((rows * 83 + cols) as u64), rows * cols);
+        let gamma = rand_vec(0xEA11 ^ (cols as u64), cols);
+        let mut gpu = vec![f32::NAN; rows * cols];
+        ctx.rms_norm_f32(&input, &mut gpu, rows, cols, &gamma, eps)
+            .expect("metal rms_norm");
+        let cpu_out = cpu_rms_norm(&input, &gamma, eps, rows, cols);
+        let d = max_abs_diff(&gpu, &cpu_out);
+        eprintln!("rms_norm  rows={rows:<5} cols={cols:<4} max|Δ|={d:.3e}");
+        assert!(d <= ATOL, "rms_norm rows={rows} cols={cols}: {d} > {ATOL}");
+        // Negative control: the kernel is a real normalization, not a
+        // pass-through — the output must actually move off the input.
+        if rows * cols >= 8 {
+            let vs_input = max_abs_diff(&gpu, &input);
+            assert!(
+                vs_input > 1e-3,
+                "rms_norm looks like a pass-through (Δ vs input {vs_input:.3e})"
+            );
+        }
+        worst = worst.max(d);
+    }
+    eprintln!("rms_norm Metal vs CPU: global max|Δ| = {worst:.3e} (atol {ATOL})");
+}
+
+/// Standard RoPE frequencies `freq_j = base^(-2j/head_dim)` for `j = 0..half`
+/// (the unscaled `llama3_inv_freqs`; the kernel is scale-agnostic, so plain
+/// frequencies exercise it just as well).
+fn rope_inv_freqs(head_dim: usize, base: f32) -> Vec<f32> {
+    (0..head_dim / 2)
+        .map(|j| base.powf(-2.0 * (j as f32) / (head_dim as f32)))
+        .collect()
+}
+
+/// Adjacent-pair RoPE reference, in place (csm::rope `rope_apply_adjacent`).
+fn cpu_rope_adjacent(
+    x: &mut [f32],
+    seq_len: usize,
+    head_dim: usize,
+    inv_freqs: &[f32],
+    pos: usize,
+) {
+    for i in 0..seq_len {
+        let m = (pos + i) as f32;
+        let row = &mut x[i * head_dim..(i + 1) * head_dim];
+        for (j, &f) in inv_freqs.iter().enumerate() {
+            let angle = m * f;
+            let (s, c) = angle.sin_cos();
+            let a = row[2 * j];
+            let b = row[2 * j + 1];
+            row[2 * j] = a * c - b * s;
+            row[2 * j + 1] = a * s + b * c;
+        }
+    }
+}
+
+#[test]
+fn rope_adjacent_metal_matches_cpu() {
+    let ctx = ctx_or_skip!("rope_adjacent");
+    // (seq_len, head_dim) — head_dim even; pos_offset 0 and incremental.
+    let shapes = [(1usize, 4usize), (2, 8), (4, 64), (3, 128), (7, 64)];
+    let base = 500_000.0f32; // CSM/Moshi-class rope base
+    let mut worst = 0.0f32;
+    for &(seq_len, head_dim) in &shapes {
+        let inv_freqs = rope_inv_freqs(head_dim, base);
+        for &pos in &[0usize, 5, 137] {
+            let input = rand_vec(
+                0x40FE ^ ((seq_len * 71 + head_dim + pos) as u64),
+                seq_len * head_dim,
+            );
+            let mut gpu = vec![f32::NAN; seq_len * head_dim];
+            ctx.rope_adjacent_f32(&input, &mut gpu, seq_len, head_dim, &inv_freqs, pos)
+                .expect("metal rope");
+            let mut cpu_out = input.clone();
+            cpu_rope_adjacent(&mut cpu_out, seq_len, head_dim, &inv_freqs, pos);
+            let d = max_abs_diff(&gpu, &cpu_out);
+            eprintln!("rope  seq={seq_len:<3} hd={head_dim:<4} pos={pos:<4} max|Δ|={d:.3e}");
+            assert!(
+                d <= ATOL,
+                "rope seq={seq_len} hd={head_dim} pos={pos}: {d} > {ATOL}"
+            );
+            worst = worst.max(d);
+
+            // Rotation is orthogonal: every pair's magnitude is preserved.
+            for i in 0..seq_len {
+                for j in 0..head_dim / 2 {
+                    let ia = i * head_dim + 2 * j;
+                    let n_in = (input[ia] * input[ia] + input[ia + 1] * input[ia + 1]).sqrt();
+                    let n_out = (gpu[ia] * gpu[ia] + gpu[ia + 1] * gpu[ia + 1]).sqrt();
+                    assert!(
+                        (n_in - n_out).abs() <= 1e-4 + 1e-4 * n_in,
+                        "pair magnitude not preserved i={i} j={j}: {n_in} vs {n_out}"
+                    );
+                }
+            }
+            // Negative control: the rotation angle of row `i` is
+            // (pos + i)·freq, so the transform is the identity only when EVERY
+            // row sits at absolute position 0 — i.e. pos == 0 AND seq_len == 1.
+            // Otherwise at least one row has a non-zero absolute position and
+            // must actually rotate off the input.
+            let vs_input = max_abs_diff(&gpu, &input);
+            if pos == 0 && seq_len == 1 {
+                assert!(
+                    vs_input <= 1e-5,
+                    "all-zero position must be identity (Δ {vs_input:.3e})"
+                );
+            } else {
+                assert!(
+                    vs_input > 1e-4,
+                    "pos {pos} seq {seq_len} must rotate (Δ {vs_input:.3e})"
+                );
+            }
+        }
+    }
+    eprintln!("rope_adjacent Metal vs CPU: global max|Δ| = {worst:.3e} (atol {ATOL})");
+}
+
+/// SiLU reference (voxtral text_decoder `silu_inplace`): `x · sigmoid(x)`.
+fn cpu_silu(x: &[f32]) -> Vec<f32> {
+    x.iter().map(|&v| v * (1.0 / (1.0 + (-v).exp()))).collect()
+}
+
+#[test]
+fn silu_metal_matches_cpu() {
+    let ctx = ctx_or_skip!("silu");
+    let lens = [1usize, 7, 63, 1000, 4 * 2048];
+    let mut worst = 0.0f32;
+    for &n in &lens {
+        // Scale into ~[-6, 6) so both saturating tails are exercised.
+        let x: Vec<f32> = rand_vec(0x5170 ^ (n as u64), n)
+            .into_iter()
+            .map(|v| v * 6.0)
+            .collect();
+        let mut gpu = vec![f32::NAN; n];
+        ctx.silu_f32(&x, &mut gpu).expect("metal silu");
+        let cpu_out = cpu_silu(&x);
+        let d = max_abs_diff(&gpu, &cpu_out);
+        eprintln!("silu  n={n:<6} max|Δ|={d:.3e}");
+        assert!(d <= ATOL, "silu n={n}: {d} > {ATOL}");
+        // Negative control: SiLU is not the identity (differs on the negatives).
+        if n >= 63 {
+            assert!(
+                max_abs_diff(&gpu, &x) > 1e-2,
+                "silu looks like the identity"
+            );
+        }
+        worst = worst.max(d);
+    }
+    eprintln!("silu Metal vs CPU: global max|Δ| = {worst:.3e} (atol {ATOL})");
+}
+
+/// SwiGLU reference: fused `silu(gate) · up` (silu_inplace + hadamard_inplace).
+fn cpu_swiglu(gate: &[f32], up: &[f32]) -> Vec<f32> {
+    gate.iter()
+        .zip(up)
+        .map(|(&g, &u)| (g * (1.0 / (1.0 + (-g).exp()))) * u)
+        .collect()
+}
+
+#[test]
+fn swiglu_metal_matches_cpu() {
+    let ctx = ctx_or_skip!("swiglu");
+    // FFN hidden widths (t·ffn flattened): a couple of ragged sizes + a
+    // Kokoro/CSM-class 2048-wide row.
+    let lens = [1usize, 5, 64, 2048, 3 * 2048];
+    let mut worst = 0.0f32;
+    for &n in &lens {
+        let gate: Vec<f32> = rand_vec(0x91A6 ^ (n as u64), n)
+            .into_iter()
+            .map(|v| v * 4.0)
+            .collect();
+        let up = rand_vec(0xF00D ^ (n as u64), n);
+        let mut gpu = vec![f32::NAN; n];
+        ctx.swiglu_f32(&gate, &up, &mut gpu).expect("metal swiglu");
+        let cpu_out = cpu_swiglu(&gate, &up);
+        let d = max_abs_diff(&gpu, &cpu_out);
+        eprintln!("swiglu  n={n:<6} max|Δ|={d:.3e}");
+        assert!(d <= ATOL, "swiglu n={n}: {d} > {ATOL}");
+        // Negative control: the SiLU gating must actually be applied — the
+        // result differs from a plain gate·up Hadamard product.
+        if n >= 64 {
+            let plain: Vec<f32> = gate.iter().zip(&up).map(|(g, u)| g * u).collect();
+            assert!(
+                max_abs_diff(&gpu, &plain) > 1e-2,
+                "swiglu looks like a plain hadamard (silu not applied)"
+            );
+        }
+        worst = worst.max(d);
+    }
+    eprintln!("swiglu Metal vs CPU: global max|Δ| = {worst:.3e} (atol {ATOL})");
+}
+
+#[test]
+fn llama_primitives_reject_bad_shapes_explicitly() {
+    let ctx = ctx_or_skip!("llama primitive shape-validation");
+    // rms_norm: gamma length must equal cols.
+    let mut out = vec![0.0f32; 6];
+    assert!(
+        ctx.rms_norm_f32(&[1.0; 6], &mut out, 2, 3, &[1.0; 2], 1e-5)
+            .is_err(),
+        "rms_norm short gamma must be rejected"
+    );
+    // rope: odd head_dim is a loud error.
+    let mut ro = vec![0.0f32; 6];
+    assert!(
+        ctx.rope_adjacent_f32(&[0.0; 6], &mut ro, 2, 3, &[1.0; 1], 0)
+            .is_err(),
+        "rope odd head_dim must be rejected"
+    );
+    // rope: inv_freqs length must equal head_dim/2.
+    let mut ro2 = vec![0.0f32; 8];
+    assert!(
+        ctx.rope_adjacent_f32(&[0.0; 8], &mut ro2, 2, 4, &[1.0; 3], 0)
+            .is_err(),
+        "rope wrong inv_freqs length must be rejected"
+    );
+    // silu: length mismatch.
+    let mut so = vec![0.0f32; 3];
+    assert!(
+        ctx.silu_f32(&[0.0; 4], &mut so).is_err(),
+        "silu length mismatch"
+    );
+    // swiglu: gate/up/out length mismatch.
+    let mut wo = vec![0.0f32; 4];
+    assert!(
+        ctx.swiglu_f32(&[0.0; 4], &[0.0; 3], &mut wo).is_err(),
+        "swiglu up length mismatch must be rejected"
+    );
+}

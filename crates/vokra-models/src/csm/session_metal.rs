@@ -13,7 +13,13 @@
 //!   the two stacks emit routes through the `Compute::Metal` arm. Weight
 //!   residency / per-step command-buffer fusion is the follow-up slot
 //!   (M3-10 ResidencyMode precedent) — **not** taken here, and **no
-//!   FlashAttention v3** (M4-07 red-line).
+//!   FlashAttention v3** (M4-07 red-line). The device MSL primitives the
+//!   fused driver will need — gamma-only `rms_norm_f32`, adjacent-pair
+//!   `rope_adjacent_f32`, `silu_f32`, fused `swiglu_f32` — now ship on
+//!   `vokra_backend_metal::MetalContext` (M4-05/06), each with an M1
+//!   real-GPU CPU-parity test; wiring them into a single device-resident
+//!   per-step command buffer (the Whisper `MetalDecodeSession` posture) is
+//!   the remaining fused-driver work.
 //! - **CPU parity within FP32 rounding**: the device-gated test band pins
 //!   `atol ≤ 5e-4` on the hidden state plus greedy code-sequence
 //!   identity against the CPU path on the same synthesized weights

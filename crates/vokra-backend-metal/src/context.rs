@@ -592,6 +592,133 @@ kernel void vokra_dequant_gemv_q8_0_f32(
     }
     y[row] = acc;
 }
+
+// ---- M4-05/06 Llama-family decode primitives (rms_norm / rope / silu / swiglu)
+//
+// The device MSL mirrors — and, within the FP32 bound, the numerics of — the
+// CPU oracles the CSM / Moshi backbones already run on the Compute seam:
+//   * gamma-only RMSNorm  — `vokra_models::voxtral::text_decoder::rms_norm`;
+//   * adjacent-pair RoPE  — `vokra_models::csm::rope::rope_apply_adjacent`
+//     (torchtune `reshape(..., -1, 2)` convention; Moshi's `interleave=True`
+//     is the same pairing);
+//   * SiLU                — `vokra_models::voxtral::text_decoder::silu_inplace`;
+//   * SwiGLU              — the fused `silu_inplace(gate); hadamard_inplace(gate, up)`.
+// The reduction / arithmetic order equals the CPU code, so the only CPU⇔GPU
+// difference is the vendor `sqrt` / `sin` / `cos` / `exp` (a few ULP) — far
+// inside the NFR-QL-01 FP32 `atol = 0.01`. One thread per row (rms_norm) or
+// per element (silu / swiglu), or per `(pair, row)` (rope); the launch guards
+// the ragged tail against the grid bound, like every kernel above.
+
+// ---- rms_norm: gamma-only RMSNorm, out[i,c] = x[i,c] * gamma[c] / sqrt(mean(x^2)+eps)
+struct RmsNormDims {
+    uint  rows;
+    uint  cols;
+    float eps;
+};
+
+kernel void vokra_rms_norm_f32(
+    device const float*   inp   [[buffer(0)]],
+    device const float*   gamma [[buffer(1)]],
+    device float*         out   [[buffer(2)]],
+    constant RmsNormDims& d     [[buffer(3)]],
+    uint                  gid   [[thread_position_in_grid]])
+{
+    const uint r = gid;
+    if (r >= d.rows) {
+        return;
+    }
+    const uint base = r * d.cols;
+    // sum of squares, then 1/sqrt(mean + eps) — the CPU `rms_norm` order.
+    float ss = 0.0f;
+    for (uint c = 0; c < d.cols; ++c) {
+        const float v = inp[base + c];
+        ss += v * v;
+    }
+    const float inv = 1.0f / sqrt(ss / (float)d.cols + d.eps);
+    for (uint c = 0; c < d.cols; ++c) {
+        out[base + c] = inp[base + c] * inv * gamma[c];
+    }
+}
+
+// ---- rope: adjacent-pair rotation over [seq_len, head_dim] row-major ----------
+// Row `i` rotates pair `j` = (x[2j], x[2j+1]) by angle (pos_offset + i)·inv_freqs[j].
+// One thread per (pair, row); `inv_freqs` has head_dim/2 entries (precomputed by
+// `llama3_inv_freqs`, so the wavelength-band rescale is already folded in — the
+// kernel is scale-agnostic). Out-of-place (out = rotated(inp)); the caller can
+// alias out == inp only via distinct buffers (this path uses distinct buffers).
+struct RopeDims {
+    uint seq_len;
+    uint head_dim;
+    uint pos_offset;
+};
+
+kernel void vokra_rope_adjacent_f32(
+    device const float* inp       [[buffer(0)]],
+    device const float* inv_freqs [[buffer(1)]],
+    device float*       out       [[buffer(2)]],
+    constant RopeDims&  d         [[buffer(3)]],
+    uint2               gid       [[thread_position_in_grid]])
+{
+    const uint j = gid.x; // pair index
+    const uint i = gid.y; // sequence row
+    // `half` is an MSL reserved type name, so the pair count is `n_pairs`.
+    const uint n_pairs = d.head_dim / 2u;
+    if (i >= d.seq_len || j >= n_pairs) {
+        return;
+    }
+    const uint base = i * d.head_dim;
+    const float m = (float)(d.pos_offset + i);
+    const float angle = m * inv_freqs[j];
+    const float s = sin(angle);
+    const float c = cos(angle);
+    const float a = inp[base + 2u * j];
+    const float b = inp[base + 2u * j + 1u];
+    out[base + 2u * j]      = a * c - b * s;
+    out[base + 2u * j + 1u] = a * s + b * c;
+}
+
+// ---- silu: elementwise x * sigmoid(x) ---------------------------------------
+struct SiluDims {
+    uint n;
+};
+
+kernel void vokra_silu_f32(
+    device const float* x   [[buffer(0)]],
+    device float*       out [[buffer(1)]],
+    constant SiluDims&  d   [[buffer(2)]],
+    uint                gid [[thread_position_in_grid]])
+{
+    const uint i = gid;
+    if (i >= d.n) {
+        return;
+    }
+    const float v = x[i];
+    const float sig = 1.0f / (1.0f + exp(-v));
+    out[i] = v * sig;
+}
+
+// ---- swiglu: fused SiLU(gate) * up (the SwiGLU FFN activation) ---------------
+// out[i] = (gate[i] * sigmoid(gate[i])) * up[i] — the CPU does silu then the
+// Hadamard, so the same (silu-first) product order is reproduced here.
+struct SwigluDims {
+    uint n;
+};
+
+kernel void vokra_swiglu_f32(
+    device const float*  gate [[buffer(0)]],
+    device const float*  up   [[buffer(1)]],
+    device float*        out  [[buffer(2)]],
+    constant SwigluDims& d    [[buffer(3)]],
+    uint                 gid  [[thread_position_in_grid]])
+{
+    const uint i = gid;
+    if (i >= d.n) {
+        return;
+    }
+    const float g = gate[i];
+    const float sig = 1.0f / (1.0f + exp(-g));
+    out[i] = (g * sig) * up[i];
+}
 "#;
 
 /// GEMM dimension block handed to the kernel via `setBytes:` (buffer index 4).
@@ -717,6 +844,41 @@ struct ColScatterDims {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct AddAssignDims {
+    n: u32,
+}
+
+/// Gamma-only RMSNorm dims (`setBytes:` index 3). The trailing `f32 eps` matches
+/// the MSL `struct RmsNormDims` (all fields 4-byte, so `#[repr(C)]` needs no
+/// padding).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RmsNormDims {
+    rows: u32,
+    cols: u32,
+    eps: f32,
+}
+
+/// Adjacent-pair RoPE dims (`setBytes:` index 3). Mirrors the MSL `struct
+/// RopeDims`; `pos_offset` is the absolute position of sequence row 0.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RopeDims {
+    seq_len: u32,
+    head_dim: u32,
+    pos_offset: u32,
+}
+
+/// SiLU dims (`setBytes:` index 2). Mirrors the MSL `struct SiluDims`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SiluDims {
+    n: u32,
+}
+
+/// SwiGLU dims (`setBytes:` index 3). Mirrors the MSL `struct SwigluDims`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SwigluDims {
     n: u32,
 }
 
@@ -980,6 +1142,14 @@ pub struct MetalContext {
     dequant_gemv_q4_0_pipeline: Id,
     dequant_gemv_q5_0_pipeline: Id,
     dequant_gemv_q8_0_pipeline: Id,
+    /// M4-05/06 Llama-family decode primitives: gamma-only RMSNorm,
+    /// adjacent-pair RoPE, elementwise SiLU, and the fused SwiGLU FFN
+    /// activation. Each is the GPU implementation of the matching CSM / Moshi
+    /// CPU op (module docs on `KERNELS_MSL`); share the Phase-4/5 library.
+    rms_norm_pipeline: Id,
+    rope_adjacent_pipeline: Id,
+    silu_pipeline: Id,
+    swiglu_pipeline: Id,
     /// Count of command-buffer submissions (`commit` + `waitUntilCompleted`)
     /// issued through this context — the env-independent readback/sync metric the
     /// Phase-5-follow-on encoder-residency slice proves against (the whole encoder
@@ -1095,6 +1265,16 @@ impl MetalContext {
         // SAFETY: as above.
         let dequant_gemv_q8_0_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_dequant_gemv_q8_0_f32") }?;
+        // M4-05/06 Llama-family decode primitives; share the same library.
+        // SAFETY: as above.
+        let rms_norm_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_rms_norm_f32") }?;
+        // SAFETY: as above.
+        let rope_adjacent_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_rope_adjacent_f32") }?;
+        // SAFETY: as above.
+        let silu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_silu_f32") }?;
+        // SAFETY: as above.
+        let swiglu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_swiglu_f32") }?;
         drop(klib);
 
         Ok(MetalContext {
@@ -1114,6 +1294,10 @@ impl MetalContext {
             dequant_gemv_q4_0_pipeline: dequant_gemv_q4_0_pipeline.into_raw(),
             dequant_gemv_q5_0_pipeline: dequant_gemv_q5_0_pipeline.into_raw(),
             dequant_gemv_q8_0_pipeline: dequant_gemv_q8_0_pipeline.into_raw(),
+            rms_norm_pipeline: rms_norm_pipeline.into_raw(),
+            rope_adjacent_pipeline: rope_adjacent_pipeline.into_raw(),
+            silu_pipeline: silu_pipeline.into_raw(),
+            swiglu_pipeline: swiglu_pipeline.into_raw(),
             submissions: Cell::new(0),
         })
     }
@@ -1731,6 +1915,217 @@ impl MetalContext {
             grid,
             tg,
             "gelu",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    // ---- M4-05/06 Llama-family decode primitives (rms_norm / rope / silu /
+    // swiglu). Each mirrors the CSM / Moshi CPU op contract and numerics (FP32,
+    // `atol = 0.01`), brackets the GPU work in an autorelease pool, and reads
+    // back copy-free from shared storage — exactly like the Phase-4 kernels.
+
+    /// Gamma-only RMSNorm applied row-wise:
+    /// `out[i, c] = x[i, c] · gamma[c] / sqrt(mean_c(x[i, c]²) + eps)`. Distinct
+    /// from the affine, mean-subtracting [`Self::layer_norm_f32`]: this is the
+    /// CSM / Moshi `rms_norm` (gamma only, no bias, no mean subtraction).
+    ///
+    /// `input` / `out` are `rows × cols`; `gamma` has length `cols`.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a shape mismatch;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    pub fn rms_norm_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gamma: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        validate_rms_norm(input, out, rows, cols, gamma)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_rms_norm(input, out, rows, cols, gamma, eps);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    fn run_rms_norm(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gamma: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        let in_buf = self.new_buffer_from_slice(input)?;
+        let gamma_buf = self.new_buffer_from_slice(gamma)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = RmsNormDims {
+            rows: rows as u32,
+            cols: cols as u32,
+            eps,
+        };
+        let (grid, tg) = grid_1d(rows);
+        self.dispatch_compute(
+            self.rms_norm_pipeline,
+            &[&in_buf, &gamma_buf, &out_buf],
+            (&dims as *const RmsNormDims).cast::<c_void>(),
+            size_of::<RmsNormDims>(),
+            grid,
+            tg,
+            "rms_norm",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Adjacent-pair RoPE over `input = [seq_len, head_dim]` row-major, writing
+    /// the rotated tensor to `out` (same shape). Row `i` rotates each pair
+    /// `(x[2j], x[2j+1])` by angle `(pos_offset + i) · inv_freqs[j]`; `inv_freqs`
+    /// has `head_dim / 2` entries (precomputed by `llama3_inv_freqs`, so the
+    /// Llama-3 wavelength-band rescale is already folded in). The exact contract
+    /// of `vokra_models::csm::rope::rope_apply_adjacent` (out-of-place form).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on an odd `head_dim` or a shape mismatch;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    pub fn rope_adjacent_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        seq_len: usize,
+        head_dim: usize,
+        inv_freqs: &[f32],
+        pos_offset: usize,
+    ) -> Result<()> {
+        validate_rope(input, out, seq_len, head_dim, inv_freqs)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_rope_adjacent(input, out, seq_len, head_dim, inv_freqs, pos_offset);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // intrinsic RoPE parameter set (matches CPU rope_apply_adjacent)
+    fn run_rope_adjacent(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        seq_len: usize,
+        head_dim: usize,
+        inv_freqs: &[f32],
+        pos_offset: usize,
+    ) -> Result<()> {
+        let in_buf = self.new_buffer_from_slice(input)?;
+        let freq_buf = self.new_buffer_from_slice(inv_freqs)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = RopeDims {
+            seq_len: seq_len as u32,
+            head_dim: head_dim as u32,
+            pos_offset: pos_offset as u32,
+        };
+        // One thread per (pair, row): grid.x = head_dim/2 pairs, grid.y = rows.
+        let (grid, tg) = grid_2d(head_dim / 2, seq_len);
+        self.dispatch_compute(
+            self.rope_adjacent_pipeline,
+            &[&in_buf, &freq_buf, &out_buf],
+            (&dims as *const RopeDims).cast::<c_void>(),
+            size_of::<RopeDims>(),
+            grid,
+            tg,
+            "rope_adjacent",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Element-wise SiLU (`x` and `out` equal length): `out = x · sigmoid(x)` —
+    /// the contract of `vokra_models::voxtral::text_decoder::silu_inplace`.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a length mismatch;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    pub fn silu_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        validate_unary(x, out)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_silu(x, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    fn run_silu(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        let x_buf = self.new_buffer_from_slice(x)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = SiluDims {
+            n: out.len() as u32,
+        };
+        let (grid, tg) = grid_1d(out.len());
+        self.dispatch_compute(
+            self.silu_pipeline,
+            &[&x_buf, &out_buf],
+            (&dims as *const SiluDims).cast::<c_void>(),
+            size_of::<SiluDims>(),
+            grid,
+            tg,
+            "silu",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Fused SwiGLU FFN activation: `out[i] = (gate[i] · sigmoid(gate[i])) ·
+    /// up[i]` — the fused `silu_inplace(gate); hadamard_inplace(gate, up)` the
+    /// CSM / Moshi FFN runs. `gate`, `up`, `out` share one length.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a length mismatch;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    pub fn swiglu_f32(&self, gate: &[f32], up: &[f32], out: &mut [f32]) -> Result<()> {
+        validate_swiglu(gate, up, out)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_swiglu(gate, up, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    fn run_swiglu(&self, gate: &[f32], up: &[f32], out: &mut [f32]) -> Result<()> {
+        let gate_buf = self.new_buffer_from_slice(gate)?;
+        let up_buf = self.new_buffer_from_slice(up)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = SwigluDims {
+            n: out.len() as u32,
+        };
+        let (grid, tg) = grid_1d(out.len());
+        self.dispatch_compute(
+            self.swiglu_pipeline,
+            &[&gate_buf, &up_buf, &out_buf],
+            (&dims as *const SwigluDims).cast::<c_void>(),
+            size_of::<SwigluDims>(),
+            grid,
+            tg,
+            "swiglu",
         )?;
         read_back(&out_buf, out)
     }
@@ -3601,6 +3996,10 @@ impl Drop for MetalContext {
         // SAFETY: every handle is a valid `+1`-owned object created in
         // `new` / `build`; release each exactly once.
         unsafe {
+            release(self.swiglu_pipeline);
+            release(self.silu_pipeline);
+            release(self.rope_adjacent_pipeline);
+            release(self.rms_norm_pipeline);
             release(self.dequant_gemv_q8_0_pipeline);
             release(self.dequant_gemv_q5_0_pipeline);
             release(self.dequant_gemv_q4_0_pipeline);
@@ -4626,6 +5025,45 @@ fn validate_layer_norm(
 
 fn validate_unary(x: &[f32], out: &[f32]) -> Result<()> {
     expect_len("unary out", out.len(), x.len())
+}
+
+fn validate_rms_norm(
+    input: &[f32],
+    out: &[f32],
+    rows: usize,
+    cols: usize,
+    gamma: &[f32],
+) -> Result<()> {
+    validate_rows_cols(input, out, rows, cols)?;
+    expect_len("rms_norm gamma", gamma.len(), cols)
+}
+
+/// Validates the adjacent-pair RoPE shapes: `input`/`out` are `seq_len ×
+/// head_dim`, `head_dim` is even, and `inv_freqs` has `head_dim / 2` entries
+/// (mirroring the CPU `rope_apply_adjacent` guard).
+fn validate_rope(
+    input: &[f32],
+    out: &[f32],
+    seq_len: usize,
+    head_dim: usize,
+    inv_freqs: &[f32],
+) -> Result<()> {
+    if head_dim % 2 != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "rope head_dim ({head_dim}) must be even"
+        )));
+    }
+    let total = checked_mul(seq_len, head_dim, "rope seq_len*head_dim")?;
+    expect_len("rope input", input.len(), total)?;
+    expect_len("rope out", out.len(), total)?;
+    expect_len("rope inv_freqs", inv_freqs.len(), head_dim / 2)
+}
+
+/// Validates the SwiGLU shapes: `gate`, `up` and `out` are the same length
+/// (mirroring the CPU `silu_inplace` + `hadamard_inplace` guard).
+fn validate_swiglu(gate: &[f32], up: &[f32], out: &[f32]) -> Result<()> {
+    expect_len("swiglu up", up.len(), gate.len())?;
+    expect_len("swiglu out", out.len(), gate.len())
 }
 
 /// Validates the conv1d shapes (mirroring the CPU `conv1d` guard) and returns the
