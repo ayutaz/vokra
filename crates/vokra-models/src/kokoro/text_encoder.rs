@@ -6,22 +6,28 @@
 //! ```text
 //! Embedding(178, 512)
 //! → 3× [ WeightNormedConv1d(512 → 512, k=5, pad=2)
-//!        + per-channel affine (γ, β)
-//!        + LeakyReLU(0.1) ]
+//!        + LayerNorm across channels (learned per-channel γ, β; eps 1e-5)
+//!        + LeakyReLU(0.2) ]
 //! → BiLSTM(input=512, hidden=256, bidirectional → out=512)
 //! ```
 //!
-//! The layout above is the T13-alpha rewrite bound to the upstream tensor
-//! manifest at `crates/vokra-models/src/kokoro/data/upstream_tensors_v1_0.tsv`
-//! (dumped from `hexgrad/Kokoro-82M kokoro-v1_0.pth` on 2026-07-07 — see
-//! `docs/adr/0007-kokoro-native.md` §"T02 upstream inspection findings").
+//! The layout above is bound to the upstream tensor manifest at
+//! `crates/vokra-models/src/kokoro/data/upstream_tensors_v1_0.tsv`
+//! (dumped from `hexgrad/Kokoro-82M kokoro-v1_0.pth` on 2026-07-07) and —
+//! since the 2026-07-16 P1 fidelity fix — to the upstream `kokoro==0.9.4`
+//! package source (`modules.py:35-48` `TextEncoder`).
 //!
 //! # Design notes
 //!
-//! * The **per-block "LN"** (`cnn.i.1.gamma` / `cnn.i.1.beta`) is a plain
-//!   channel-wise affine (γ · x + β), NOT a full LayerNorm — the two tensors
-//!   are `[512]` (per-channel) and there is no normalisation kernel between
-//!   them. Verified against the manifest shapes.
+//! * The **per-block LN** (`cnn.i.1.gamma` / `cnn.i.1.beta`) is upstream's
+//!   custom `LayerNorm` class (`modules.py:21-32`): a FULL
+//!   `F.layer_norm(x, (channels,), gamma, beta, eps=1e-5)` across the
+//!   channel axis per timestep. The two `[512]` tensors are its learned
+//!   affine; the normalisation itself is weight-less, which is why the
+//!   manifest shapes alone could not distinguish it from an affine-only
+//!   scale — the shape-driven "plain affine" reading here was one of the
+//!   P1 upstream-divergence root causes found by the 2026-07-16
+//!   real-weight eval (fixed by reading the upstream package source).
 //! * The **WeightNormed conv** is reconstructed at load time via
 //!   [`super::nn::weight_norm_reconstruct_1d`] from `weight_g[512, 1, 1]`
 //!   and `weight_v[512, 512, 5]`; the runtime does not see the two-tensor
@@ -41,7 +47,9 @@
 use vokra_core::{Result, VokraError};
 
 use super::config::KokoroConfig;
-use super::nn::{BiLstm1d, LRELU_SLOPE, conv1d, leaky_relu, weight_norm_reconstruct_1d};
+use super::nn::{
+    BiLstm1d, EPS as LAYER_NORM_EPS, LRELU_SLOPE, conv1d, leaky_relu, weight_norm_reconstruct_1d,
+};
 use super::weights::TensorStore;
 use crate::compute::Compute;
 
@@ -227,7 +235,9 @@ impl TextEncoder {
     /// 2. Transpose → `[hidden, t]` channel-major (the layout
     ///    [`super::nn::conv1d`] expects).
     /// 3. For each of the 3 CNN blocks: Conv1d(k=5, pad=2) → add bias →
-    ///    per-channel affine (`γ · x + β`) → LeakyReLU(0.1).
+    ///    LayerNorm across channels per timestep with the learned per-channel
+    ///    `(γ, β)` affine (upstream `modules.py:21-32`) → LeakyReLU(0.2)
+    ///    (upstream `modules.py:36` `actv=nn.LeakyReLU(0.2)`).
     /// 4. Transpose back → `[t, hidden]` row-major (BiLSTM input layout).
     /// 5. BiLSTM forward → `[t, hidden]` (2·lstm_hidden = hidden).
     ///
@@ -287,14 +297,33 @@ impl TextEncoder {
                 /*dilation*/ 1,
                 /*groups*/ 1,
             );
-            // Per-channel affine (γ · x + β) applied to the [hidden, out_len]
-            // channel-major buffer.
-            for c in 0..hidden {
-                let g = self.norm_gs[i][c];
-                let b = self.norm_bs[i][c];
-                let row = &mut conv_out[c * out_len..c * out_len + out_len];
-                for v in row.iter_mut() {
-                    *v = *v * g + b;
+            // LayerNorm across the channel axis per timestep, then the
+            // per-channel affine (γ · x_norm + β). Upstream `kokoro==0.9.4`
+            // `modules.py:21-32` (`LayerNorm` class): the `[B, C, T]` buffer
+            // is transposed to `[B, T, C]` and passed through
+            // `F.layer_norm(x, (channels,), gamma, beta, eps=1e-5)` — a full
+            // normalisation (mean / biased variance over the C axis), not an
+            // affine-only scale. The pre-fix affine-only form was part of
+            // the P1 `text_encoder` divergence (Δ 1.62) found by the
+            // 2026-07-16 real-weight eval.
+            for ti in 0..out_len {
+                let mut mean = 0.0f32;
+                for c in 0..hidden {
+                    mean += conv_out[c * out_len + ti];
+                }
+                mean /= hidden as f32;
+                let mut var = 0.0f32;
+                for c in 0..hidden {
+                    let d = conv_out[c * out_len + ti] - mean;
+                    var += d * d;
+                }
+                var /= hidden as f32;
+                let inv = 1.0 / (var + LAYER_NORM_EPS).sqrt();
+                for c in 0..hidden {
+                    let g = self.norm_gs[i][c];
+                    let b = self.norm_bs[i][c];
+                    let v = &mut conv_out[c * out_len + ti];
+                    *v = (*v - mean) * inv * g + b;
                 }
             }
             leaky_relu(&mut conv_out, LRELU_SLOPE);

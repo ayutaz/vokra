@@ -100,19 +100,21 @@ const DECODE_LRELU_SLOPE: f32 = 0.2;
 
 /// Phase-head activation dispatched from [`KEY_PHASE_ACTIVATION`].
 ///
-/// [`PhaseActivation::apply`] is the scalar activation applied per bin before
-/// the `· π` scale; the choice comes from the GGUF metadata written at
-/// convert time — never a runtime default (FR-EX-08).
+/// [`PhaseActivation::apply`] maps the `conv_post` phase logit to the phase
+/// ANGLE in radians — upstream Kokoro treats the activation output as the
+/// angle directly (`phase = torch.sin(x)` then `mag · exp(i·phase)`,
+/// `istftnet.py:324` + `:98`); there is NO `· π` scale (piper's
+/// `subband_istft` differs — that model applies its own convention in its
+/// own module). The choice comes from the GGUF metadata written at convert
+/// time — never a runtime default (FR-EX-08).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)] // `Identity` consumed by the T18 load/forward wiring
 pub(crate) enum PhaseActivation {
-    /// `tanh(x) · π` — the bounded variant used by several StyleTTS 2 派生
-    /// iSTFTNet references.
+    /// `tanh(x)` — a bounded variant used by some StyleTTS 2 派生 forks.
     Tanh,
-    /// `sin(x) · π` — the piper `stft_onnx.py` variant (mirrored in
-    /// `piper_plus/decoder.rs::subband_istft`).
+    /// `sin(x)` — upstream Kokoro-82M (`istftnet.py:324`).
     Sin,
-    /// `x · π` — unbounded raw output (used by a subset of upstream forks).
+    /// `x` — unbounded raw output (used by a subset of upstream forks).
     Identity,
 }
 
@@ -260,6 +262,10 @@ pub(super) struct WeightNormedConvTranspose1d {
     pub(super) kernel: usize,
     pub(super) stride: usize,
     pub(super) pad: usize,
+    /// PyTorch `ConvTranspose1d(..., output_padding=P)`. `1` for the
+    /// `decode.3.pool` (upstream `istftnet.py:352`); `0` for the generator
+    /// `ups.i` stages.
+    pub(super) output_padding: usize,
     pub(super) groups: usize,
 }
 
@@ -281,6 +287,7 @@ impl WeightNormedConvTranspose1d {
         kernel: usize,
         stride: usize,
         pad: usize,
+        output_padding: usize,
         groups: usize,
         has_bias: bool,
     ) -> Result<Self> {
@@ -315,13 +322,15 @@ impl WeightNormedConvTranspose1d {
             kernel,
             stride,
             pad,
+            output_padding,
             groups,
         })
     }
 
-    /// Forward pass through [`super::nn::conv_transpose1d`].
+    /// Forward pass through [`super::nn::conv_transpose1d_ext`]
+    /// (`out_len = (in_len − 1)·stride + kernel − 2·pad + output_padding`).
     pub(super) fn forward(&self, x: &[f32], in_len: usize) -> (Vec<f32>, usize) {
-        nn::conv_transpose1d(
+        nn::conv_transpose1d_ext(
             x,
             self.in_ch,
             in_len,
@@ -331,6 +340,7 @@ impl WeightNormedConvTranspose1d {
             self.bias.as_deref(),
             self.stride,
             self.pad,
+            self.output_padding,
             self.groups,
         )
     }
@@ -379,8 +389,14 @@ impl AdaIN1d {
 
     /// In-place AdaIN on a channel-major `[channels · time]` buffer under
     /// `style` `[style_dim]`. Composition — no new op is introduced.
+    ///
+    /// Routes through [`nn::adain_conditioned_residual`]: the upstream
+    /// `AdaIN1d` applies `(1 + γ)·InstanceNorm(x) + β` (`istftnet.py:31`)
+    /// and the checkpoint's `fc` weights are trained against that `+1`
+    /// shift. The pre-fix γ-only form was part of the P1 upstream
+    /// divergence found by the 2026-07-16 real-weight eval.
     pub(super) fn apply(&self, x: &mut [f32], time: usize, style: &[f32]) {
-        nn::adain_conditioned(
+        nn::adain_conditioned_residual(
             x,
             self.channels,
             time,
@@ -395,18 +411,20 @@ impl AdaIN1d {
 /// StyleTTS 2 `AdainResBlk1` — the block used by the Kokoro decoder body
 /// (`decoder.module.encode` and `decoder.module.decode.{0..3}`).
 ///
-/// Forward (matching StyleTTS 2's reference implementation):
+/// Forward (upstream `kokoro==0.9.4` `istftnet.py:340-381` `AdainResBlk1d`):
 ///
 /// ```text
 /// residual: norm1(x, s) → LeakyReLU(0.2) → pool(x)? → conv1(residual)
 ///           → norm2(residual, s) → LeakyReLU(0.2) → conv2(residual)
-/// shortcut: pool(x)? → conv1x1(x) if dim_in != dim_out
+/// shortcut: nearest-×2 upsample(x)? → conv1x1(x) if dim_in != dim_out
 /// out = (residual + shortcut) / sqrt(2)
 /// ```
 ///
-/// The `pool` is present only for the upsampling decode.3 block (depthwise
-/// ConvTranspose1d, stride=2, per-channel 3-tap kernel — the upstream tensor
-/// `decoder.module.decode.3.pool.weight_v[1090, 1, 3]` confirms this shape).
+/// The `pool` (residual path only) is present only for the upsampling
+/// decode.3 block (depthwise ConvTranspose1d, stride=2, output_padding=1,
+/// per-channel 3-tap kernel — the upstream tensor
+/// `decoder.module.decode.3.pool.weight_v[1090, 1, 3]` confirms this shape);
+/// the shortcut path upsamples with the weight-less nearest-×2 `UpSample1d`.
 /// The `conv1x1` is always present here because `dim_in != dim_out` for
 /// every block that appears in the manifest (`encode: 514→1024`,
 /// `decode.0/1/2: 1090→1024`, `decode.3: 1090→512`).
@@ -491,8 +509,13 @@ impl AdainResBlock1 {
         // AdaIN1d over the block's input dim (norm1) and output dim (norm2).
         let norm1 = AdaIN1d::load(store, &format!("{prefix}.norm1"), dim_in, style_dim)?;
         let norm2 = AdaIN1d::load(store, &format!("{prefix}.norm2"), dim_out, style_dim)?;
-        // pool: depthwise ConvTranspose1d (groups=dim_in, kernel=3, stride=2, pad=1)
-        // — present ONLY on decode.3 (the upsampling block).
+        // pool: depthwise ConvTranspose1d (groups=dim_in, kernel=3, stride=2,
+        // pad=1, output_padding=1 → out_len = 2·t exactly; upstream
+        // `istftnet.py:352`) — present ONLY on decode.3 (the upsampling
+        // block). The pre-fix output_padding=0 form produced `2·t − 1` and
+        // was part of the P1 decoder divergence (2026-07-16 real-weight
+        // eval): every downstream time axis (generator, F0_curve alignment,
+        // iSTFT frame count) was one frame short of upstream.
         let pool = if has_pool {
             Some(WeightNormedConvTranspose1d::load(
                 store,
@@ -502,6 +525,7 @@ impl AdainResBlock1 {
                 /* kernel */ 3,
                 /* stride */ 2,
                 /* pad */ 1,
+                /* output_padding */ 1,
                 /* groups */ dim_in,
                 /* has_bias */ true,
             )?)
@@ -524,11 +548,9 @@ impl AdainResBlock1 {
     /// `([dim_out · t_out], t_out)`.
     ///
     /// `t_out` equals `t_in` for the encode + decode.0/1/2 blocks (no pool);
-    /// for decode.3, `t_out = 2·t_in - 1` (kernel=3, stride=2, pad=1, no
-    /// output_padding — one shy of exact 2× to match PyTorch's default
-    /// ConvTranspose1d output length; if the upstream sets output_padding=1
-    /// the length would be exactly 2·t_in — this is captured by
-    /// `nn::conv_transpose1d`'s stride/padding formula).
+    /// for decode.3, `t_out = 2·t_in` exactly (kernel=3, stride=2, pad=1,
+    /// output_padding=1 — upstream `istftnet.py:352`), so the residual pool
+    /// output and the nearest-×2 shortcut agree on the time axis.
     pub(super) fn forward(
         &self,
         compute: &Compute,
@@ -556,13 +578,19 @@ impl AdainResBlock1 {
         let (r, t_out) = self.conv2.forward(compute, &r, t_after_conv1);
 
         // ---- Shortcut path -----------------------------------------------
-        // pool(x)? → conv1x1(x) — kernel=1 means pool determines t_out.
-        let (sc_pooled, t_sc_pooled) = if let Some(p) = &self.pool {
-            p.forward(x, t_in)
+        // upsample(x)? → conv1x1(x). Upstream `AdainResBlk1d._shortcut`
+        // (`istftnet.py:362-366`) uses `UpSample1d` — a weight-less
+        // `F.interpolate(scale_factor=2, mode='nearest')`
+        // (`istftnet.py:328-337`) — NOT the learned `pool` ConvTranspose1d
+        // (which lives only on the residual path, `istftnet.py:371`).
+        // Routing the shortcut through `pool` was part of the P1 decoder
+        // divergence (2026-07-16 real-weight eval).
+        let (sc_up, t_sc_up) = if self.pool.is_some() {
+            (upsample_nearest(x, t_in, 2 * t_in), 2 * t_in)
         } else {
             (x.to_vec(), t_in)
         };
-        let (sc, t_sc) = self.conv1x1.forward(compute, &sc_pooled, t_sc_pooled);
+        let (sc, t_sc) = self.conv1x1.forward(compute, &sc_up, t_sc_up);
 
         // ---- Fuse: (residual + shortcut) / sqrt(2) -----------------------
         debug_assert_eq!(
@@ -651,7 +679,8 @@ impl Decoder {
     }
 
     /// True if the real decoder weights are loaded (as opposed to stub mode).
-    #[cfg(test)]
+    /// Consumed by `mod.rs::synthesize_phonemes` to choose between the real
+    /// contour-driven `forward_full` and the stub shape-smoke `forward`.
     pub(super) fn is_real(&self) -> bool {
         self.real.is_some()
     }
@@ -687,15 +716,19 @@ impl Decoder {
             )));
         }
         if let Some(real) = &self.real {
-            // Real path — feed zero F0/N contours (phase-3 wiring supplies real).
-            let f0 = vec![0.0f32; t_frames];
-            let n = vec![0.0f32; t_frames];
+            // Real path — feed zero F0/N contours at the decoder's native
+            // 2·t_frames contour rate (the mainline `synthesize_phonemes`
+            // supplies the real prosody contours via `forward_full`; this
+            // legacy zero-contour entry point remains for shape-only smokes).
+            let f0 = vec![0.0f32; 2 * t_frames];
+            let n = vec![0.0f32; 2 * t_frames];
             real.forward(
                 z,
                 &f0,
                 &n,
                 style,
                 t_frames,
+                self.sample_rate,
                 self.istft_n_fft,
                 self.istft_hop,
                 self.istft_win_length,
@@ -712,12 +745,16 @@ impl Decoder {
     /// `text_encoder → prosody → length_regulate` produces the three per-frame
     /// streams.
     ///
-    /// * `asr` — length-regulated encoder features `[asr_dim · t_frames]`
-    ///   channel-major (real `asr_dim = 512`).
-    /// * `f0` — F0 contour `[t_frames]` (per-frame, matching the ASR feature
-    ///   time axis).
-    /// * `n` — energy contour `[t_frames]`.
-    /// * `style` — voice style vector `[style_dim]` (real `style_dim = 128`).
+    /// * `asr` — length-regulated **text-encoder** features
+    ///   `[asr_dim · t_frames]` channel-major (real `asr_dim = 512`;
+    ///   upstream `asr = t_en @ pred_aln_trg`, `model.py:116-117`).
+    /// * `f0` — prosody `F0Ntrain` F0 contour `[2·t_frames]` (the branch's
+    ///   native 2× frame rate; `F0_conv` downsamples internally —
+    ///   `istftnet.py:408`).
+    /// * `n` — prosody `F0Ntrain` energy contour `[2·t_frames]`.
+    /// * `style` — DECODER style half `[style_dim]` (`ref_s[:, :128]` —
+    ///   `model.py:118`; the prosody half `ref_s[:, 128:]` conditions the
+    ///   predictor, not this decoder).
     /// * `phase_activation` — dispatched from the `vokra.kokoro.phase_activation`
     ///   metadata (never runtime-defaulted, FR-EX-08).
     ///
@@ -745,6 +782,7 @@ impl Decoder {
             n,
             style,
             t_frames,
+            self.sample_rate,
             self.istft_n_fft,
             self.istft_hop,
             self.istft_win_length,
@@ -761,8 +799,9 @@ impl Decoder {
     /// generator's `conv_post` split produces before iSTFT lowering — the same
     /// values the reference dumper writes as `decoder_pre_istft_mag.f32` /
     /// `decoder_pre_istft_phase.f32`. `t_gen` equals the last decode block's
-    /// output length times the product of the generator's upsample strides
-    /// (real Kokoro: `t_gen = (2·t_frames − 1) · 10 · 6`).
+    /// output length times the product of the generator's upsample strides,
+    /// plus one reflection-pad frame (real Kokoro:
+    /// `t_gen = 2·t_frames · 10 · 6 + 1`).
     #[allow(dead_code)] // consumed by the T15 parity harness
     #[allow(clippy::type_complexity)]
     pub(crate) fn forward_full_intermediate(
@@ -785,6 +824,7 @@ impl Decoder {
             n,
             style,
             t_frames,
+            self.sample_rate,
             self.istft_n_fft,
             self.istft_hop,
             self.istft_win_length,
@@ -820,20 +860,21 @@ impl Decoder {
 
     /// iSTFTNet head: magnitude / phase logits → PCM via [`vokra_ops::istft`].
     ///
-    /// Structure (§Op gap analysis (a)):
+    /// Structure (upstream `istftnet.py:322-325` + `TorchSTFT.inverse`):
     ///
     /// ```text
     /// mag       = exp(x_mag)
-    /// phase     = activation(x_phase) · π
+    /// phase     = activation(x_phase)          # the phase ANGLE in radians
     /// re[f, k]  = mag[k, f] · cos(phase[k, f])
     /// im[f, k]  = mag[k, f] · sin(phase[k, f])
     /// ```
     ///
     /// where `n_half = n_fft/2 + 1` is the RFFT half-spectrum width. Feeding
     /// the resulting spectrogram to `vokra_ops::istft` with the Kokoro-natural
-    /// settings (Hann/periodic, `Backward` normalization, `center = false`,
-    /// `real_input = true`, `length = Some(t_frames · hop)`) reproduces the
-    /// iSTFTNet inverse the upstream Kokoro decoder emits.
+    /// settings (Hann/periodic, `Backward` normalization, `center = true` —
+    /// `torch.istft`'s default — `real_input = true`, `length = None` →
+    /// `hop · (t_frames − 1)` samples) reproduces the iSTFTNet inverse the
+    /// upstream Kokoro decoder emits.
     ///
     /// # Errors
     ///
@@ -889,12 +930,25 @@ pub(super) fn run_istft_head(
         )));
     }
 
+    // Upstream head (`istftnet.py:322-325` + `TorchSTFT.inverse` at
+    // `istftnet.py:96-100`):
+    //
+    //   spec  = exp(x[:, :n_half, :])
+    //   phase = sin(x[:, n_half:, :])            # the phase ANGLE, radians
+    //   audio = torch.istft(spec · exp(i·phase), n_fft, hop, win, hann)
+    //
+    // i.e. the activation output IS the phase angle — there is NO `· π`
+    // scale. The pre-fix `activation(x) · π` form distorted every bin's
+    // phase by a factor π and was part of the P1 decoder divergence
+    // (2026-07-16 real-weight eval). `torch.istft` defaults `center=True`,
+    // so the output length is `hop · (frames − 1)` (both n_fft/2 edges
+    // trimmed); `length: None` lets `vokra_ops::istft` produce exactly that.
     let mut re = vec![0.0f32; t_frames * n_half];
     let mut im = vec![0.0f32; t_frames * n_half];
     for frame in 0..t_frames {
         for fc in 0..n_half {
             let mag = x_mag[fc * t_frames + frame].exp();
-            let phase = activation.apply(x_phase[fc * t_frames + frame]) * std::f32::consts::PI;
+            let phase = activation.apply(x_phase[fc * t_frames + frame]);
             re[frame * n_half + fc] = mag * phase.cos();
             im[frame * n_half + fc] = mag * phase.sin();
         }
@@ -912,10 +966,10 @@ pub(super) fn run_istft_head(
         win_length,
         window: Window::Hann,
         window_symmetry: WindowSymmetry::Periodic,
-        center: false,
+        center: true,
         normalization: Normalization::Backward,
         real_input: true,
-        length: Some(t_frames * hop),
+        length: None,
     };
     istft(&spec, &attrs)
 }
@@ -1116,12 +1170,23 @@ impl DecoderReal {
         n: &[f32],
         style: &[f32],
         t_frames: usize,
+        sample_rate: u32,
         istft_n_fft: usize,
         istft_hop: usize,
         istft_win_length: usize,
         phase_activation: PhaseActivation,
     ) -> Result<Vec<f32>> {
-        let (x_mag, x_phase, t_gen) = self.forward_to_mag_phase(asr, f0, n, style, t_frames)?;
+        let (x_mag, x_phase, t_gen) = self.forward_to_mag_phase(
+            asr,
+            f0,
+            n,
+            style,
+            t_frames,
+            sample_rate,
+            istft_n_fft,
+            istft_hop,
+            istft_win_length,
+        )?;
         run_istft_head(
             &x_mag,
             &x_phase,
@@ -1149,12 +1214,23 @@ impl DecoderReal {
         n: &[f32],
         style: &[f32],
         t_frames: usize,
+        sample_rate: u32,
         istft_n_fft: usize,
         istft_hop: usize,
         istft_win_length: usize,
         phase_activation: PhaseActivation,
     ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>)> {
-        let (x_mag, x_phase, t_gen) = self.forward_to_mag_phase(asr, f0, n, style, t_frames)?;
+        let (x_mag, x_phase, t_gen) = self.forward_to_mag_phase(
+            asr,
+            f0,
+            n,
+            style,
+            t_frames,
+            sample_rate,
+            istft_n_fft,
+            istft_hop,
+            istft_win_length,
+        )?;
         let pcm = run_istft_head(
             &x_mag,
             &x_phase,
@@ -1171,6 +1247,7 @@ impl DecoderReal {
     /// pre-iSTFT `(x_mag, x_phase, t_gen)` triple. Reused by both
     /// [`Self::forward`] and [`Self::forward_intermediate`] so the two share
     /// bit-identical math up to the iSTFT lowering.
+    #[allow(clippy::too_many_arguments)]
     fn forward_to_mag_phase(
         &self,
         asr: &[f32],
@@ -1178,6 +1255,10 @@ impl DecoderReal {
         n: &[f32],
         style: &[f32],
         t_frames: usize,
+        sample_rate: u32,
+        istft_n_fft: usize,
+        istft_hop: usize,
+        istft_win_length: usize,
     ) -> Result<(Vec<f32>, Vec<f32>, usize)> {
         // ---- Shape checks (FR-EX-08 — never a silent truncation) ---------
         if asr.len() != self.asr_dim * t_frames {
@@ -1188,18 +1269,28 @@ impl DecoderReal {
                 t_frames,
             )));
         }
-        if f0.len() != t_frames {
+        // F0 / N arrive at 2·t_frames: the prosody `F0Ntrain` branch
+        // upsamples the frame-rate hidden by 2 (`modules.py:124-134`), and
+        // the upstream decoder consumes that rate directly
+        // (`istftnet.py:407-410`: `F0 = self.F0_conv(F0_curve.unsqueeze(1))`
+        // with stride 2 brings it BACK to t_frames for the concat). The
+        // pre-fix `len == t_frames` contract silently halved the F0 rate and
+        // was part of the P1 decoder-wiring divergence (2026-07-16
+        // real-weight eval).
+        if f0.len() != 2 * t_frames {
             return Err(VokraError::InvalidArgument(format!(
-                "kokoro decoder: f0 len {} != t_frames ({})",
+                "kokoro decoder: f0 len {} != 2·t_frames ({}) — the decoder consumes \
+                 the prosody F0Ntrain contour at its native 2× frame rate",
                 f0.len(),
-                t_frames,
+                2 * t_frames,
             )));
         }
-        if n.len() != t_frames {
+        if n.len() != 2 * t_frames {
             return Err(VokraError::InvalidArgument(format!(
-                "kokoro decoder: n len {} != t_frames ({})",
+                "kokoro decoder: n len {} != 2·t_frames ({}) — the decoder consumes \
+                 the prosody F0Ntrain contour at its native 2× frame rate",
                 n.len(),
-                t_frames,
+                2 * t_frames,
             )));
         }
         if style.len() != self.style_dim {
@@ -1213,32 +1304,27 @@ impl DecoderReal {
         let compute = Compute::cpu();
 
         // ---- Downsample F0 and energy contours via F0_conv/N_conv -------
-        // Each is (1 → 1, k=3, stride=2, pad=1) → t_ds = ceil(t_frames / 2).
-        let (f0_ds, t_ds) = self.f0_conv.forward(&compute, f0, t_frames);
-        let (n_ds, t_ds_n) = self.n_conv.forward(&compute, n, t_frames);
-        debug_assert_eq!(
-            t_ds, t_ds_n,
-            "kokoro decoder: F0/N downsample time-axis mismatch"
-        );
+        // Each is (1 → 1, k=3, stride=2, pad=1): 2·t_frames → t_frames
+        // exactly (`(2t + 2 − 3)/2 + 1 = t`), matching the asr time axis
+        // without any resampling hack (upstream istftnet.py:408-409).
+        let (f0_ds, t_ds) = self.f0_conv.forward(&compute, f0, 2 * t_frames);
+        let (n_ds, t_ds_n) = self.n_conv.forward(&compute, n, 2 * t_frames);
+        if t_ds != t_frames || t_ds_n != t_frames {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro decoder: F0/N stride-2 downsample produced {t_ds}/{t_ds_n} \
+                 frames, expected t_frames ({t_frames})"
+            )));
+        }
 
-        // ---- Build the encode input by concatenating [asr | F0_ds | N_ds]
-        // But asr is at t_frames, F0_ds at t_ds. Interpolate F0_ds/N_ds up to
-        // t_frames (nearest neighbor) so the channel-major concat has a
-        // consistent time axis. This is the pragmatic choice for M2-07-T15
-        // when the exact upstream F0-conv stride behaviour is not confirmed;
-        // parity work (T17) can pin this to whatever the reference expects.
-        let f0_up = upsample_nearest(&f0_ds, t_ds, t_frames);
-        let n_up = upsample_nearest(&n_ds, t_ds, t_frames);
-
-        // Concat [asr (asr_dim, t_frames) | F0_up (1, t_frames) | N_up (1, t_frames)]
-        // → channel-major [asr_dim + 2, t_frames].
+        // Concat [asr (asr_dim, t) | F0_ds (1, t) | N_ds (1, t)]
+        // → channel-major [asr_dim + 2, t] (istftnet.py:410).
         let encode_in_ch = self.asr_dim + 2;
         let mut enc_input = vec![0.0f32; encode_in_ch * t_frames];
         enc_input[..self.asr_dim * t_frames].copy_from_slice(asr);
         let f0_off = self.asr_dim * t_frames;
-        enc_input[f0_off..f0_off + t_frames].copy_from_slice(&f0_up);
+        enc_input[f0_off..f0_off + t_frames].copy_from_slice(&f0_ds);
         let n_off = f0_off + t_frames;
-        enc_input[n_off..n_off + t_frames].copy_from_slice(&n_up);
+        enc_input[n_off..n_off + t_frames].copy_from_slice(&n_ds);
 
         // ---- encode: AdainResBlock1(514 → 1024) --------------------------
         let (mut x, mut t_x) = self.encode.forward(&compute, &enc_input, t_frames, style);
@@ -1250,41 +1336,63 @@ impl DecoderReal {
         maybe_dump_stage("dec_asr_res", &asr_res_out);
 
         // ---- decode.0/1/2/3 ----------------------------------------------
-        // Each block: concat [x, asr_res, F0_ds, N_ds] → block(concat).
-        // The concat operates on the channel axis; time axis must be aligned
-        // (t_x = t_frames for the first three blocks; decode.3 upsamples via
-        // its pool, so its output has t_x_next ≠ t_frames).
+        // Each block: concat [x, asr_res, F0_ds, N_ds] → block(concat)
+        // (istftnet.py:413-419: the concat fires while `res` is true, i.e.
+        // for ALL four blocks — `res` flips to false only AFTER the
+        // upsampling decode.3 consumed its concat). All four concats run at
+        // t_frames; only decode.3's OUTPUT is 2·t_frames.
         for (i, block) in self.decode.iter().enumerate() {
-            // Interpolate asr_res + F0_up + N_up to match t_x (identity when
-            // t_x == t_frames for decode.0/1/2; nearest-neighbor for the
-            // decode.3 output if wiring changes).
-            let (asr_res_i, _) = interp_to(&asr_res_out, self.asr_res_out, t_frames, t_x);
-            let (f0_i, _) = interp_to(&f0_up, 1, t_frames, t_x);
-            let (n_i, _) = interp_to(&n_up, 1, t_frames, t_x);
+            if t_x != t_frames {
+                return Err(VokraError::InvalidArgument(format!(
+                    "kokoro decoder: decode.{i} input frames ({t_x}) != t_frames \
+                     ({t_frames}); upstream concats all four decode blocks at the \
+                     asr rate"
+                )));
+            }
             let concat_ch = block.dim_in; // decode_hidden + asr_res_out + 2 = 1090 for real
             let mut concat = vec![0.0f32; concat_ch * t_x];
             // [x (decode_hidden, t_x)] block
             concat[..self.decode_hidden * t_x].copy_from_slice(&x[..self.decode_hidden * t_x]);
             let asr_off = self.decode_hidden * t_x;
             concat[asr_off..asr_off + self.asr_res_out * t_x]
-                .copy_from_slice(&asr_res_i[..self.asr_res_out * t_x]);
+                .copy_from_slice(&asr_res_out[..self.asr_res_out * t_x]);
             let f0_off = asr_off + self.asr_res_out * t_x;
-            concat[f0_off..f0_off + t_x].copy_from_slice(&f0_i[..t_x]);
+            concat[f0_off..f0_off + t_x].copy_from_slice(&f0_ds[..t_x]);
             let n_off = f0_off + t_x;
-            concat[n_off..n_off + t_x].copy_from_slice(&n_i[..t_x]);
+            concat[n_off..n_off + t_x].copy_from_slice(&n_ds[..t_x]);
             let (out, t_out) = block.forward(&compute, &concat, t_x, style);
             x = out;
             t_x = t_out;
             maybe_dump_stage(&format!("dec_decode_{i}"), &x);
         }
-        // After decode.3, x is [decode_final_out (=512), t_x].
+        // After decode.3 (pool output_padding=1), x is
+        // [decode_final_out (=512), 2·t_frames] — the same axis as the raw
+        // F0 contour the generator consumes.
         maybe_dump_stage("dec_pre_generator", &x);
+        if t_x != f0.len() {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro decoder: decode.3 output frames ({t_x}) != F0 contour len \
+                 ({}) — generator input axes must agree (istftnet.py:420)",
+                f0.len(),
+            )));
+        }
 
         // ---- generator: 512-ch → (x_mag, x_phase) -----------------------
-        // The generator returns (x_mag, x_phase) each [n_half, t_gen] where
-        // n_half = istft_n_fft/2 + 1 = 11 and t_gen = t_x · ∏ generator ups
-        // strides (real: 10·6 = 60).
-        let (x_mag, x_phase, t_gen) = self.generator.forward(&compute, &x, t_x, style, f0)?;
+        // The generator receives the RAW `F0_curve` (2·t_frames — upstream
+        // `self.generator(x, s, F0_curve)`, istftnet.py:420) and returns
+        // (x_mag, x_phase) each [n_half, t_gen] with
+        // t_gen = t_x · ∏ups_strides + 1 (last-stage reflection pad).
+        let (x_mag, x_phase, t_gen) = self.generator.forward(
+            &compute,
+            &x,
+            t_x,
+            style,
+            f0,
+            sample_rate,
+            istft_n_fft,
+            istft_hop,
+            istft_win_length,
+        )?;
         Ok((x_mag, x_phase, t_gen))
     }
 }
@@ -1331,14 +1439,6 @@ fn upsample_nearest(x: &[f32], t_in: usize, t_out: usize) -> Vec<f32> {
         }
     }
     out
-}
-
-/// Nearest-neighbor interpolate `[channels, t_in]` → `[channels, t_out]`.
-/// Kept as a thin wrapper so future replacements (linear, sinc) touch one
-/// call-site.
-fn interp_to(x: &[f32], channels: usize, t_in: usize, t_out: usize) -> (Vec<f32>, usize) {
-    debug_assert_eq!(x.len(), channels * t_in);
-    (upsample_nearest(x, t_in, t_out), t_out)
 }
 
 #[cfg(test)]
@@ -1767,8 +1867,10 @@ mod tests {
         let asr: Vec<f32> = (0..arch.asr_dim * t_frames)
             .map(|i| ((i % 7) as f32) * 0.03 - 0.1)
             .collect();
-        let f0: Vec<f32> = (0..t_frames).map(|i| 100.0 + i as f32 * 5.0).collect();
-        let n: Vec<f32> = (0..t_frames).map(|i| 0.2 + i as f32 * 0.05).collect();
+        // F0 / N contours arrive at the prosody branch's native 2× frame rate
+        // (F0_conv stride-2 downsamples internally — istftnet.py:408).
+        let f0: Vec<f32> = (0..2 * t_frames).map(|i| 100.0 + i as f32 * 5.0).collect();
+        let n: Vec<f32> = (0..2 * t_frames).map(|i| 0.2 + i as f32 * 0.05).collect();
         let style: Vec<f32> = (0..arch.style_dim).map(|i| i as f32 * 0.1).collect();
 
         let a = dec
@@ -2280,7 +2382,9 @@ mod tests {
             let pcm = dec
                 .istft_head(&x_mag, &x_phase, t_frames, act)
                 .expect("istft head runs");
-            assert_eq!(pcm.len(), t_frames * config.istft_hop);
+            // torch.istft center=True semantics: hop · (frames − 1) samples
+            // (both n_fft/2 edges trimmed).
+            assert_eq!(pcm.len(), (t_frames - 1) * config.istft_hop);
             for (i, &v) in pcm.iter().enumerate() {
                 assert!(v.is_finite(), "istft pcm[{i}] = {v} under {act:?}");
             }

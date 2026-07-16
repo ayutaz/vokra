@@ -2,9 +2,11 @@
 //!
 //! # Overview
 //!
-//! Kokoro-82M's checkpoint carries a **PL-BERT / ALBERT-4 shared-weight
-//! transformer** (`bert.module.*`, 24 weights) plus a `bert_encoder.module.*`
-//! Linear that projects the 768-d output to 512-d. In the StyleTTS 2 派生
+//! Kokoro-82M's checkpoint carries a **PL-BERT / ALBERT shared-weight
+//! transformer** (`bert.module.*`, 24 weights; ONE shared block applied
+//! `num_hidden_layers = 12` times per the upstream `config.json` `plbert`
+//! section) plus a `bert_encoder.module.*` Linear that projects the 768-d
+//! output to 512-d. In the StyleTTS 2 派生
 //! runtime graph, the PL-BERT branch runs BEFORE the phoneme text encoder and
 //! produces auxiliary per-token features the prosody predictor consumes
 //! alongside the [`super::text_encoder::TextEncoder`] output. The M2-07 T13-alpha
@@ -23,7 +25,7 @@
 //!
 //! Encoder body:
 //!   embedding_hidden_mapping_in.{weight,bias}   # 128 → 768
-//!   ALBERT-shared block (× 4):
+//!   ALBERT-shared block (× 12, config.json plbert.num_hidden_layers):
 //!     attention.{query,key,value,dense}.{weight,bias}  # 768 → 768 each
 //!     attention.LayerNorm.{weight,bias}                # [768]
 //!     ffn.{weight,bias}                                # 768 → 2048
@@ -46,24 +48,25 @@
 //!   [`VokraError::InvalidArgument`] (FR-EX-08 — no silent architecture drift).
 //! * **Constants** (`N_VOCAB = 178`, `EMBED_SIZE = 128`, `HIDDEN = 768`,
 //!   `FFN_HIDDEN = 2048`, `MAX_POS = 512`, `N_TOKEN_TYPES = 2`,
-//!   `N_LAYERS = 4`, `OUT_DIM = 512`) are pinned by the manifest shapes; each
-//!   is cross-checked against the loaded tensor's shape at load time via
-//!   `tensor_shaped`. `N_HEADS = 12` (= `HIDDEN / 64`) is the **ALBERT-base
-//!   convention** the head-dim = 64 shape check pins; a real ALBERT config
-//!   parity check lands at T17.
+//!   `OUT_DIM = 512`) are pinned by the manifest shapes; each is
+//!   cross-checked against the loaded tensor's shape at load time via
+//!   `tensor_shaped`. `N_LAYERS = 12` and `N_HEADS = 12` are pinned by the
+//!   upstream `config.json` `plbert` section (`num_hidden_layers` /
+//!   `num_attention_heads`) — the ALBERT weight-sharing pattern makes both
+//!   invisible to the tensor manifest.
 //! * **Weight pre-transpose**: every `nn.Linear` weight is stored as
 //!   `[out, in]` row-major in the checkpoint; the [`Compute::gemm_f32`] seam
 //!   expects the right operand as `[k, n]` = `[in, out]`. Each weight is
 //!   therefore transposed **once** at load time and stored as `w_t` in a
 //!   private [`BertLinear`], matching the whisper `Linear` convention.
-//! * **Pooler application**: the manifest carries `bert.module.pooler.{weight,
-//!   bias}` as a plain `Linear(768, 768)` (no `.dense` or `.activation`
-//!   suffix), suggesting the Kokoro variant applies it **per-token** rather
-//!   than to a single CLS position — the output shape the downstream
-//!   `bert_encoder` projection consumes is `[t, 768]`, not `[1, 768]`. This
-//!   file applies the pooler as `Linear + tanh` per-token, matching the BERT
-//!   `BertPooler` implementation applied elementwise; the T17 parity landing
-//!   confirms whether Kokoro's inference path folds the tanh or skips it.
+//! * **Pooler application**: the pooler tensors are loaded strictly (manifest
+//!   completeness) but **not applied**. Upstream `CustomAlbert.forward`
+//!   (`kokoro==0.9.4` `modules.py:180-183`) returns
+//!   `outputs.last_hidden_state`, discarding the pooler `AlbertModel`
+//!   computes; `KModel.forward_with_tokens` (`model.py:102-103`) projects
+//!   that last-hidden-state through `bert_encoder`. The pre-fix per-token
+//!   `Linear + tanh` pooler insertion was part of the P1 `bert` divergence
+//!   found by the 2026-07-16 real-weight eval.
 //! * **LayerNorm eps** = `1e-12` (BERT / ALBERT convention, differs from
 //!   Whisper's `1e-5`). Passed explicitly to
 //!   [`Compute::layer_norm_f32`] on every call.
@@ -75,14 +78,15 @@
 //! * NOT a new first-class `vokra-ops` op — the ADR D2/D6/D7 red lines forbid
 //!   composing a new op just for BERT. Every kernel call is either the shared
 //!   [`Compute`] seam or [`super::nn`]'s existing helpers.
-//! * NOT numerically parity-checked against PyTorch yet. The T17 landing adds
-//!   byte-level parity against a NumPy re-forward; this file's tests cover
-//!   shape / determinism / load-time errors only.
+//! * NOT self-verifying numerically — this file's tests cover shape /
+//!   determinism / load-time errors only. The byte-level parity vs the TRUE
+//!   upstream `kokoro` package (`tools/parity/dump_kokoro_reference.py` →
+//!   `crates/vokra-models/tests/parity_kokoro.rs`) is the numerical gate.
 
 use vokra_core::{Result, VokraError};
 
 use super::config::KokoroConfig;
-use super::nn::gelu;
+use super::nn::gelu_new;
 use super::weights::TensorStore;
 use crate::compute::Compute;
 
@@ -117,7 +121,14 @@ const MAX_POS: usize = 512;
 const N_TOKEN_TYPES: usize = 2;
 
 /// Number of ALBERT layers — the shared block is applied this many times.
-const N_LAYERS: usize = 4;
+///
+/// Pinned by the upstream `hexgrad/Kokoro-82M` `config.json`
+/// (`plbert.num_hidden_layers = 12`; the ALBERT weight-sharing pattern keeps
+/// the checkpoint at ONE shared block regardless of the layer count, so this
+/// value is invisible to the tensor manifest). The pre-fix value `4` was
+/// inferred from shapes alone and was the dominant term of the P1 `bert`
+/// divergence (Δ 5.84) found by the 2026-07-16 real-weight eval.
+const N_LAYERS: usize = 12;
 
 /// Downstream feature dim — `bert_encoder.module.weight` axis 0.
 const OUT_DIM: usize = 512;
@@ -224,7 +235,7 @@ impl BertLayerNorm {
     }
 }
 
-/// The one shared ALBERT block Kokoro's PL-BERT reuses `N_LAYERS = 4` times.
+/// The one shared ALBERT block Kokoro's PL-BERT reuses `N_LAYERS = 12` times.
 ///
 /// PyTorch names this `albert_layer_groups.0.albert_layers.0`; the surrounding
 /// `groups`/`layers` iteration in the upstream reference is a for-loop over a
@@ -261,7 +272,10 @@ pub(crate) struct Bert {
     mapping_in: BertLinear, // 128 → 768
     shared_layer: BertSharedLayer,
 
-    // ---- Pooler (applied per-token in this Kokoro variant) ----
+    // ---- Pooler (loaded strictly for manifest completeness; NOT applied:
+    // upstream `CustomAlbert` returns `last_hidden_state` and discards the
+    // pooler — `modules.py:180-183`) ----
+    #[allow(dead_code)]
     pooler: BertLinear, // 768 → 768
 
     // ---- Downstream projection (top-level bert_encoder.module) ----
@@ -400,11 +414,11 @@ impl Bert {
     /// 1. Embedding sum: `word[id] + position[i] + token_type[0]` → `[t, 128]`.
     /// 2. LayerNorm over the innermost axis → `[t, 128]`.
     /// 3. `mapping_in` Linear → `[t, 768]`.
-    /// 4. For each of `N_LAYERS = 4`, apply the shared ALBERT block:
+    /// 4. For each of `N_LAYERS = 12`, apply the shared ALBERT block:
     ///    MHA (12 heads, head_dim = 64) → residual + LN → FFN (768 → 2048 →
-    ///    GELU → 768) → residual + LN.
-    /// 5. Pooler `Linear + tanh` per-token → `[t, 768]`.
-    /// 6. `bert_encoder` projection → `[t, 512]`.
+    ///    gelu_new → 768) → residual + LN.
+    /// 5. `bert_encoder` projection on the last hidden state → `[t, 512]`
+    ///    (upstream `CustomAlbert` discards the pooler — `modules.py:180-183`).
     ///
     /// # Errors
     ///
@@ -459,26 +473,24 @@ impl Bert {
         self.mapping_in
             .linear_into(&compute, &emb_ln_out, t, &mut hidden)?;
 
-        // 4. Shared ALBERT block × N_LAYERS.
+        // 4. Shared ALBERT block × N_LAYERS (= 12, ALBERT weight sharing).
         for _layer_idx in 0..N_LAYERS {
             hidden = self.shared_layer_forward(&compute, &hidden, t)?;
         }
 
-        // 5. Pooler: per-token Linear + tanh → [t, HIDDEN].
-        //    The Kokoro pooler carries no `.dense` or `.activation` subname;
-        //    applying it per-token preserves the [t, HIDDEN] shape the
-        //    downstream projection consumes (a single-CLS pool would collapse
-        //    to [1, HIDDEN], not what bert_encoder is sized for at 768→512).
-        let mut pooled = vec![0.0f32; t * HIDDEN];
-        self.pooler.linear_into(&compute, &hidden, t, &mut pooled)?;
-        for v in pooled.iter_mut() {
-            *v = v.tanh();
-        }
-
-        // 6. bert_encoder projection (768 → 512) → [t, OUT_DIM].
+        // 5. bert_encoder projection (768 → 512) → [t, OUT_DIM], applied to
+        //    the LAST HIDDEN STATE directly. Upstream `CustomAlbert.forward`
+        //    (`modules.py:180-183`) returns `outputs.last_hidden_state` — the
+        //    ALBERT pooler is computed by `AlbertModel` but DISCARDED, and
+        //    `KModel.forward_with_tokens` (`model.py:102-103`) feeds that
+        //    last-hidden-state to `self.bert_encoder`. The pre-fix per-token
+        //    `pooler + tanh` insertion here was part of the P1 `bert`
+        //    divergence (2026-07-16 real-weight eval). The pooler tensors are
+        //    still loaded strictly (manifest completeness, FR-EX-08) but not
+        //    applied — see the `pooler` field note.
         let mut out = vec![0.0f32; t * OUT_DIM];
         self.projection
-            .linear_into(&compute, &pooled, t, &mut out)?;
+            .linear_into(&compute, &hidden, t, &mut out)?;
 
         Ok(out)
     }
@@ -572,13 +584,17 @@ impl Bert {
             .attn_ln
             .forward_into(compute, &attn_out, t, &mut attn_normed)?;
 
-        // FFN: attn_normed → ffn_h (GEMM + bias) → GELU → HIDDEN (GEMM + bias).
+        // FFN: attn_normed → ffn_h (GEMM + bias) → gelu_new → HIDDEN
+        // (GEMM + bias). `gelu_new` (tanh approximation) is the AlbertConfig
+        // default `hidden_act` and Kokoro's `config.json` does not override
+        // it — the erf-exact `gelu` used pre-fix was part of the P1 `bert`
+        // divergence (2026-07-16 real-weight eval).
         let mut ffn_h = vec![0.0f32; t * FFN_HIDDEN];
         layer
             .ffn
             .linear_into(compute, &attn_normed, t, &mut ffn_h)?;
         for val in ffn_h.iter_mut() {
-            *val = gelu(*val);
+            *val = gelu_new(*val);
         }
         let mut ffn_out = vec![0.0f32; t * d];
         layer

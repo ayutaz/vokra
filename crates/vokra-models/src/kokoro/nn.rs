@@ -35,11 +35,22 @@ use vokra_core::{Result, VokraError};
 
 use crate::compute::Compute;
 
-/// LeakyReLU slope used throughout the Kokoro decoder — same value as the
-/// piper-plus decoder's `mb_istft.py` `LRELU_SLOPE`. Held here so the Kokoro
-/// module does not need to reach into [`crate::piper_plus`] internals.
+/// LeakyReLU slope used by Kokoro's text encoder and prosody AdainResBlk —
+/// the StyleTTS 2 `nn.LeakyReLU(0.2)` default (upstream `kokoro==0.9.4`
+/// `modules.py:36` `TextEncoder(..., actv=nn.LeakyReLU(0.2))` and
+/// `istftnet.py:341` `AdainResBlk1d(..., actv=nn.LeakyReLU(0.2))`).
+///
+/// **Deliberately different from piper-plus's `LRELU_SLOPE = 0.1`**
+/// (`crates/vokra-models/src/piper_plus/config.rs`): the two models use
+/// different slopes, and this module is an independent copy precisely so the
+/// values can diverge. The pre-fix value `0.1` here was the P1 fidelity bug
+/// identified by the 2026-07-16 real-weight eval (upstream divergence,
+/// round-trip WER 1.0). The generator's *upsample loop* keeps its own `0.1`
+/// (`istftnet.py:307`) and its head keeps `0.01`
+/// (`istftnet.py:321` `F.leaky_relu(x)` default) — see
+/// [`super::decoder`]'s generator module.
 #[allow(dead_code)] // consumed by the T16 decoder wiring
-pub(crate) const LRELU_SLOPE: f32 = 0.1;
+pub(crate) const LRELU_SLOPE: f32 = 0.2;
 
 /// `nn.InstanceNorm1d` / AdaIN epsilon (PyTorch default).
 pub(crate) const EPS: f32 = 1e-5;
@@ -185,6 +196,26 @@ pub(crate) fn leaky_relu(x: &mut [f32], slope: f32) {
 #[allow(dead_code)] // consumed by the T12 text encoder wiring
 pub(crate) fn gelu(x: f32) -> f32 {
     0.5 * x * (1.0 + erf(x * std::f32::consts::FRAC_1_SQRT_2))
+}
+
+/// `gelu_new` — the tanh-approximation GELU used by Kokoro's PL-BERT branch.
+///
+/// HuggingFace `transformers` `NewGELUActivation` (`activations.py`):
+///
+/// ```text
+/// 0.5 · x · (1 + tanh( sqrt(2/π) · (x + 0.044715 · x³) ))
+/// ```
+///
+/// `AlbertConfig` defaults `hidden_act = "gelu_new"`, and Kokoro's
+/// `config.json` `plbert` section does not override it — so the upstream
+/// ALBERT FFN runs THIS activation, not the erf-exact [`gelu`]. Using the
+/// erf form here was part of the P1 `bert` divergence (Δ 5.84) found by the
+/// 2026-07-16 real-weight eval.
+pub(crate) fn gelu_new(x: f32) -> f32 {
+    // sqrt(2/π) rounded to f32 (bit pattern 0x3F4C_422A) — the same value
+    // torch's `math.sqrt(2.0 / math.pi)` Python-float constant narrows to.
+    const SQRT_2_OVER_PI: f32 = 0.797_884_6_f32;
+    0.5 * x * (1.0 + (SQRT_2_OVER_PI * (x + 0.044_715 * x * x * x)).tanh())
 }
 
 /// Error function (Abramowitz & Stegun 7.1.26; ~1e-7 max error).
@@ -571,137 +602,33 @@ pub(crate) fn snake_activation(x: &mut [f32], alpha: &[f32], channels: usize, ti
     }
 }
 
-/// StyleTTS 2 派生 AdaIN on a `[channels, time]` channel-major buffer with
-/// a style-conditioned `(γ, β)` projection (M2-07-T15).
+/// StyleTTS 2 AdaIN1d on a `[channels, time]` channel-major buffer with a
+/// style-conditioned `(γ, β)` projection and the upstream **`(1 + γ)`**
+/// affine convention (upstream `kokoro==0.9.4` `istftnet.py:31`:
+/// `return (1 + gamma) * self.norm(x) + beta`). Used by BOTH the decoder
+/// body / generator AdaIN1d instances and prosody's `AdainResBlk` `norm1` /
+/// `norm2` — every `AdaIN1d` in the upstream model shares this one formula.
 ///
-/// Composition of two existing ops (FR-EX-08 permits composition; the ADR
-/// records why no new first-class op is added):
-///
-/// 1. Project the style vector `[style_dim]` through a Linear
-///    `fc_w[2·channels, style_dim]` + `fc_b[2·channels]` to get `(γ, β)`,
-///    split at index `channels`.
-/// 2. Apply [`adain`] (per-channel InstanceNorm + affine) on the channel-major
-///    buffer.
-///
-/// This differs from [`adaln_1d`] only in the input layout:
-/// [`adain_conditioned`] operates on channel-major `[channels, time]` (the
-/// decoder body convention), while [`adaln_1d`] operates on row-major
-/// `[t, channels]`. The math is identical. Both are compositions per D7; no
-/// new first-class op is introduced.
-#[allow(dead_code, clippy::too_many_arguments)] // consumed by the T15 decoder rewrite
-pub(crate) fn adain_conditioned(
-    x: &mut [f32],
-    channels: usize,
-    time: usize,
-    fc_w: &[f32],
-    fc_b: &[f32],
-    style: &[f32],
-    style_dim: usize,
-) {
-    debug_assert_eq!(x.len(), channels * time, "adain_conditioned: x len");
-    debug_assert_eq!(style.len(), style_dim, "adain_conditioned: style len");
-    debug_assert_eq!(
-        fc_w.len(),
-        2 * channels * style_dim,
-        "adain_conditioned: fc_w len"
-    );
-    debug_assert_eq!(fc_b.len(), 2 * channels, "adain_conditioned: fc_b len");
-    if channels == 0 || time == 0 {
-        return;
-    }
-
-    // Root cause of T17-fixup #1 (Kokoro decoder mag/phase/pcm parity):
-    //
-    // The Kokoro decoder's AmpResBlock inside `noise_res` is fed a zero
-    // ``source_spec`` (M2-07-T15 simplification), so ``noise_convs`` emits a
-    // constant per-channel bias signal. The subsequent InstanceNorm at the
-    // ``adain2`` step then divides by ``sqrt(var + eps)`` where var is tiny
-    // (≪ 1e-3) — a regime where any per-row drift in the Linear projection
-    // for ``(γ, β)`` gets amplified ~300x. A **sequential Rust f32 sum** over
-    // style_dim = 128 terms catastrophically cancels when the products span
-    // both signs and the final γ / β are near zero, producing a per-row
-    // drift on the order of 1e-3 which then propagates through ``convs1``
-    // and blows the atol=0.01 decoder gate.
-    //
-    // PyTorch's ``F.linear`` uses a blocked SGEMV whose lane-parallel
-    // reduction gives ~1e-6 precision at k=128; f64 accumulator on the
-    // Linear brings Rust to ULP-of-true precision, so the residual delta vs
-    // PyTorch is bounded by PyTorch's own imprecision. The InstanceNorm
-    // mean / variance reductions here use the same f64 promotion for the
-    // same reason on the long time axis (~18 000 samples per channel in the
-    // generator body).
-    //
-    // Kept as an *inlined* f64 path in this decoder-only helper rather than
-    // pushed down into ``adain`` because prosody's F0 / N branches also call
-    // ``adain`` (via ``AdainResBlk::forward`` in
-    // ``crates/vokra-models/src/kokoro/prosody.rs``) and their existing
-    // parity delta is calibrated against Rust's f32 sum-order — a global
-    // promotion there would touch the prosody predictor's numeric envelope
-    // (which is a separate follow-up).
-
-    // 1. Project style → (γ, β) via a row-major Linear.
-    let two_c = 2 * channels;
-    let mut gamma_beta = vec![0.0f32; two_c];
-    for i in 0..two_c {
-        let mut acc64: f64 = fc_b[i] as f64;
-        let row = &fc_w[i * style_dim..(i + 1) * style_dim];
-        for j in 0..style_dim {
-            acc64 += row[j] as f64 * style[j] as f64;
-        }
-        gamma_beta[i] = acc64 as f32;
-    }
-    let (gamma, beta) = gamma_beta.split_at(channels);
-
-    // 2. In-place per-channel InstanceNorm + affine on channel-major x
-    // (inlined here with f64 mean / variance accumulators; keeps prosody's
-    // ``adain`` path unchanged).
-    let inv_t = 1.0 / time as f64;
-    for c in 0..channels {
-        let row = &mut x[c * time..c * time + time];
-        let mut mean64: f64 = 0.0;
-        for &v in row.iter() {
-            mean64 += v as f64;
-        }
-        mean64 *= inv_t;
-        let mean = mean64 as f32;
-        let mut var64: f64 = 0.0;
-        for &v in row.iter() {
-            let d = v as f64 - mean64;
-            var64 += d * d;
-        }
-        var64 *= inv_t;
-        let var = var64 as f32;
-        let inv = 1.0 / (var + EPS).sqrt();
-        let g = gamma[c];
-        let b = beta[c];
-        for v in row.iter_mut() {
-            *v = (*v - mean) * inv * g + b;
-        }
-    }
-}
-
-/// Same as [`adain_conditioned`] but applies the StyleTTS 2 **residual**
-/// `(1 + γ)` convention on the affine step. Used by prosody's `AdainResBlk`
-/// (F0 / N branch stages) where `norm1` / `norm2` are AdaIN1d with
-/// `y = (1 + γ)·x + β` per StyleTTS 2.
+/// A γ-only sibling (`adain_conditioned`, no `+1`) used to serve the decoder
+/// path; the 2026-07-16 real-weight eval traced part of the Kokoro P1
+/// divergence to that convention mismatch (the upstream checkpoint's `fc`
+/// weights are trained against `(1 + γ)`), so the sibling was removed and
+/// the decoder now routes here.
 ///
 /// # Rationale (T17-fixup #4, 2026-07-08 — `docs/adr/0007-kokoro-native.md`)
 ///
-/// [`adain_conditioned`] fixed the decoder's mag / phase / pcm parity by
-/// promoting the Linear GEMV (style → γ, β) and the InstanceNorm mean / variance
-/// reductions to f64 in the decoder-only path. The prosody predictor's F0 / N
-/// branches ran the same shape of computation via the separate
-/// [`AdaLnParams::project`] + [`adain`] sequence (both f32 accumulators), and
-/// the resulting `~3e-3` upstream drift is amplified `~9×` by the
-/// `F0_proj` / `N_proj` `Conv1d(d_model/2 → 1, k=1)` tail — producing the
-/// prosody f0 honest negative `max |Δ| = 2.628e-2 vs atol = 0.01` recorded in
-/// ADR-0007 T17-fixup #2.
-///
-/// This helper closes that gap by applying the identical f64-accumulator pattern
-/// to prosody's residual AdaIN1d, without perturbing the shared [`adain`] path
-/// (which is unused by prosody once the caller migrates to
-/// `adain_conditioned_residual`) and without adding a first-class op (D6 / D7
-/// composition rule in ADR-0007).
+/// The f64 promotion of the Linear GEMV (style → γ, β) and the InstanceNorm
+/// mean / variance reductions originated in the decoder path (T17-fixup #1):
+/// a sequential Rust f32 sum over `style_dim = 128` terms catastrophically
+/// cancels when the products span both signs and the final γ / β are near
+/// zero, and the InstanceNorm divide by `sqrt(var + eps)` amplifies that
+/// drift in low-variance regimes. PyTorch's `F.linear` blocked SGEMV keeps
+/// ~1e-6 at k=128; the f64 accumulators bring Rust to ULP-of-true precision
+/// so the residual delta vs PyTorch is bounded by PyTorch's own imprecision.
+/// T17-fixup #4 applied the same pattern to prosody's residual AdaIN1d
+/// (whose `F0_proj` / `N_proj` `Conv1d(d_model/2 → 1, k=1)` tail amplifies
+/// upstream drift ~9×), without adding a first-class op (D6 / D7 composition
+/// rule in ADR-0007).
 ///
 /// # Convention
 ///
@@ -714,7 +641,7 @@ pub(crate) fn adain_conditioned(
 /// * The affine step applies `y = (1 + γ_raw)·x_norm + β` (StyleTTS 2
 ///   residual form; the shift is inside the helper so callers do NOT need to
 ///   pre-add `1.0` on the γ vector).
-#[allow(dead_code, clippy::too_many_arguments)] // consumed by prosody::AdainResBlk::forward (T17-fixup #4)
+#[allow(dead_code, clippy::too_many_arguments)] // consumed by prosody::AdainResBlk + decoder::AdaIN1d
 pub(crate) fn adain_conditioned_residual(
     x: &mut [f32],
     channels: usize,
@@ -1550,44 +1477,9 @@ mod tests {
         }
     }
 
-    /// `adain_conditioned` projects style → (γ, β) via Linear then applies
-    /// channel-major AdaIN. Scalar oracle runs both steps explicitly.
-    #[test]
-    fn adain_conditioned_matches_scalar_oracle() {
-        let channels = 2;
-        let time = 3;
-        let style_dim = 1;
-        let mut x = vec![
-            1.0, 2.0, 3.0, // ch0
-            10.0, 20.0, 30.0, // ch1
-        ];
-        // fc([1]) = [2, 0.5, 10, -1] → γ = [2, 0.5], β = [10, -1].
-        let fc_w = vec![2.0, 0.5, 10.0, -1.0];
-        let fc_b = vec![0.0f32; 4];
-        let style = vec![1.0f32];
-
-        let gammas = [2.0f32, 0.5];
-        let betas = [10.0f32, -1.0];
-        let mut want = x.clone();
-        for c in 0..channels {
-            let row = &mut want[c * time..c * time + time];
-            let mean = row.iter().sum::<f32>() / time as f32;
-            let var = row.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / time as f32;
-            let inv = 1.0 / (var + EPS).sqrt();
-            for v in row.iter_mut() {
-                *v = (*v - mean) * inv * gammas[c] + betas[c];
-            }
-        }
-
-        adain_conditioned(&mut x, channels, time, &fc_w, &fc_b, &style, style_dim);
-        for (i, (&g, &w)) in x.iter().zip(&want).enumerate() {
-            assert!((g - w).abs() < 1e-5, "idx {i}: {g} vs {w}");
-        }
-    }
-
-    /// `adain_conditioned_residual` mirrors `adain_conditioned` but with the
-    /// StyleTTS 2 residual `(1 + γ)` convention on the affine step. The scalar
-    /// oracle runs Linear → InstanceNorm → `(1 + γ)·x + β` explicitly.
+    /// `adain_conditioned_residual` applies Linear → InstanceNorm →
+    /// `(1 + γ)·x + β` — the upstream `AdaIN1d` convention
+    /// (`istftnet.py:31`). The scalar oracle runs all three steps explicitly.
     ///
     /// T17-fixup #4 (2026-07-08).
     #[test]

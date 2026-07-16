@@ -27,15 +27,16 @@
 //!   res0 = noise_res.0(src0, s)                [gen_mid,   t · stride_0]
 //!   x0 = x0 + res0
 //!   x0 = MRF(resblocks[0..3], x0, s)           # avg of 3 branches
-//!   ---- stage 1 ----
+//!   ---- stage 1 (last) ----
 //!   x0 = LeakyReLU(x0)
 //!   x0 = ups.1(x0)                             [gen_final, t · stride_0 · stride_1]
-//!   src1 = noise_convs.1(source_spec)          [gen_final, t · stride_0 · stride_1]
-//!   res1 = noise_res.1(src1, s)                [gen_final, t · stride_0 · stride_1]
+//!   x0 = ReflectionPad1d((1, 0))(x0)           [gen_final, t · ∏strides + 1]
+//!   src1 = noise_convs.1(source_spec)          [gen_final, t · ∏strides + 1]
+//!   res1 = noise_res.1(src1, s)                [gen_final, t · ∏strides + 1]
 //!   x0 = x0 + res1
 //!   x0 = MRF(resblocks[3..6], x0, s)
 //!   ---- head ----
-//!   x0 = LeakyReLU(x0)
+//!   x0 = LeakyReLU(x0)  # slope 0.01 (PyTorch default — istftnet.py:321)
 //!   xh = conv_post(x0)                         [2·n_half, T_gen]
 //!   x_mag   = xh[0..n_half]
 //!   x_phase = xh[n_half..2·n_half]
@@ -46,18 +47,13 @@
 //! activation): 3 dilated Conv1d pairs with dilations [1, 3, 5], each with a
 //! preceding AdaIN(x, s) + Snake(alpha) block.
 //!
-//! # M2-07-T15 pragmatic simplifications
-//!
-//! * F0-driven harmonic source: for the M2-07-T15 landing the source path is
-//!   simplified to a **zero-fill** of the `[2·n_half, T_stft]` spec buffer.
-//!   The `noise_convs` weights are still loaded strictly (FR-EX-08) so the
-//!   loader catches an upstream rename; forward feeds zeros through them,
-//!   producing a well-defined but silent noise/source contribution. T17
-//!   parity work wires the SineGen + STFT properly.
-//! * Time axes match the ups strides exactly (no output_padding trickery):
-//!   `t_after_ups = (t_in - 1) · stride + kernel - 2 · pad`. This mirrors
-//!   the piper-plus decoder's ConvTranspose1d contract; padding values are
-//!   derived from `(kernel - stride) / 2` at load.
+//! The full source path (SineGen + `l_linear` + tanh + STFT) is implemented
+//! here since the 2026-07-16 P1 fidelity fix, replacing the M2-07-T15
+//! zero-fill placeholder that left the vocoder without pitch excitation
+//! (a root cause of the round-trip WER 1.0 finding). The SineGen's two RNG
+//! draws are deterministically substituted (phase offsets → 0, dither →
+//! shared reproducible generator) — see [`Generator::forward`]
+//! §Determinism.
 
 use vokra_core::{Result, VokraError};
 
@@ -70,8 +66,63 @@ use super::super::weights::TensorStore;
 use super::{AdaIN1d, WeightNormedConv1d, WeightNormedConvTranspose1d};
 use crate::compute::Compute;
 
-/// LeakyReLU slope used throughout the generator — HiFi-GAN default (0.1).
+/// LeakyReLU slope used in the generator's upsample loop — upstream
+/// `istftnet.py:307` `F.leaky_relu(x, negative_slope=0.1)`.
 const GEN_LRELU_SLOPE: f32 = 0.1;
+
+/// LeakyReLU slope of the generator HEAD (pre-`conv_post`) — upstream
+/// `istftnet.py:321` `F.leaky_relu(x)` uses PyTorch's DEFAULT
+/// `negative_slope = 0.01`, not the loop's 0.1. The pre-fix reuse of 0.1
+/// here was part of the P1 decoder divergence (2026-07-16 real-weight eval).
+const GEN_HEAD_LRELU_SLOPE: f32 = 0.01;
+
+/// SineGen sine amplitude — upstream `istftnet.py:262-265`
+/// `SourceModuleHnNSF(..., sine_amp=0.1)` default.
+const SINE_AMP: f32 = 0.1;
+
+/// SineGen voiced/unvoiced threshold in Hz — upstream `istftnet.py:265`
+/// `voiced_threshod=10`.
+const VOICED_THRESHOLD: f32 = 10.0;
+
+/// SineGen additive-noise std in VOICED regions — upstream
+/// `SineGen(..., noise_std=0.003)` default (`istftnet.py:123-128`); the
+/// UNVOICED amplitude is `sine_amp / 3` (`istftnet.py:204`).
+const NOISE_STD: f32 = 0.003;
+
+/// SplitMix64 — the deterministic counter-based generator behind
+/// [`deterministic_gauss`]. Public-domain constants (Steele et al.).
+fn splitmix64(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Deterministic standard-normal draw for SineGen's additive dither.
+///
+/// Upstream `SineGen.forward` injects `noise_amp · torch.randn_like(...)`
+/// (`istftnet.py:204-208`) — the dither is *designed excitation* (in
+/// unvoiced regions it is the ONLY source energy, amplitude `sine_amp/3`),
+/// not an optional artifact, so zeroing it would mute fricatives. But
+/// torch's RNG is irreproducible from Rust, so this runtime replaces the
+/// draw with a **counter-based SplitMix64 + Box–Muller** normal that the
+/// parity reference dumper mirrors exactly
+/// (`tools/parity/dump_kokoro_reference.py` patches `torch.randn_like` to
+/// the same generator). Same N(0, 1) statistics, reproducible bits on both
+/// sides. `m` is the flat row-major index into the `[t_full, n_harm]`
+/// dither tensor.
+///
+/// f64 math throughout, narrowed once — `ln` / `cos` are within 1 ULP
+/// across libms, far below the noise amplitude itself.
+fn deterministic_gauss(m: u64) -> f32 {
+    let x = splitmix64(2 * m);
+    let y = splitmix64(2 * m + 1);
+    // u1 ∈ (0, 1] (never 0 → ln is finite); u2 ∈ [0, 1).
+    let u1 = ((x >> 11) as f64 + 1.0) / 9_007_199_254_740_992.0; // 2^53
+    let u2 = (y >> 11) as f64 / 9_007_199_254_740_992.0;
+    let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+    z as f32
+}
 
 /// Snake activation `x + (1/(α+eps)) · sin²(αx)` used inside every generator
 /// resblock (BigVGAN AMP style; confirmed by the per-block
@@ -308,16 +359,15 @@ pub(super) struct Generator {
     /// Number of upsampling stages (=2 for real Kokoro).
     n_stages: usize,
     /// Input channel count (== `decode_final_out` = 512 for real).
-    #[allow(dead_code)] // exposed for future generator-only tests / T17 parity
     in_ch: usize,
     /// Generator resblock channel widths per stage (real: [256, 128]).
     stage_channels: Vec<usize>,
     /// Number of MRF branches per stage (=3, the three kernels [3, 7, 11]).
-    #[allow(dead_code)] // exposed for future generator-only tests / T17 parity
     n_kernels: usize,
-    /// The n_fft used by the iSTFT head — read from config, echoed here so
-    /// the noise convs know the source-spec channel count.
-    #[allow(dead_code)] // reserved for T17 SineGen wiring
+    /// The n_fft/2+1 bin count of the source-spec STFT / iSTFT head —
+    /// derived from `conv_post.weight_v` axis 0 and cross-checked against
+    /// the GGUF-carried `istft.n_fft` at forward time.
+    #[allow(dead_code)] // cross-check duplicate of source_ch / 2
     n_half: usize,
     /// `2·n_half` — the mag+phase channel count of the source spec / conv_post
     /// output.
@@ -335,12 +385,10 @@ pub(super) struct Generator {
     resblocks: Vec<AmpResBlock>,
     /// Final projection to `(mag, phase)`: WeightNormedConv1d(gen_final → 2·n_half, k=7).
     conv_post: WeightNormedConv1d,
-    /// `SourceModuleHnNSF` harmonic mixer: `Linear(harm+1 → 1)`. Loaded strictly
-    /// (FR-EX-08) but the forward path does not yet feed real F0 into it (see
-    /// module doc).
-    #[allow(dead_code)] // consumed by the T17 SineGen wiring
+    /// `SourceModuleHnNSF` harmonic mixer: `Linear(harm+1 → 1)` — consumed by
+    /// [`Generator::harmonic_source_spec`] (`istftnet.py:238,251`). The
+    /// weight length pins the harmonic count (9 for Kokoro-82M).
     m_source_weight: Vec<f32>,
-    #[allow(dead_code)] // consumed by the T17 SineGen wiring
     m_source_bias: Vec<f32>,
 }
 
@@ -440,6 +488,7 @@ impl Generator {
                 kernel,
                 stride,
                 pad,
+                /* output_padding */ 0,
                 /* groups */ 1,
                 /* has_bias */ true,
             )?;
@@ -581,74 +630,144 @@ impl Generator {
     }
 
     /// Forward pass. `x` is `[in_ch, t]` channel-major (the last decode
-    /// block's output); `style` is `[style_dim]`; `f0_curve` is `[t]`
-    /// (per-frame F0 — currently used only to derive the source-spec time
-    /// axis; see module-doc for the M2-07-T15 simplification).
+    /// block's output); `style` is `[style_dim]`; `f0_curve` is `[t]` — the
+    /// prosody `F0Ntrain` contour at the SAME time axis as `x` (upstream
+    /// `Decoder.forward` passes `F0_curve` verbatim: `istftnet.py:420`).
+    ///
+    /// `sample_rate` / `istft_n_fft` / `istft_hop` / `istft_win_length`
+    /// parametrize the NSF harmonic-source path: the upstream `Generator`
+    /// hardcodes `sampling_rate=24000` (`istftnet.py:262-264`) and shares one
+    /// `TorchSTFT(gen_istft_n_fft, gen_istft_hop_size)` between the source
+    /// analysis (`self.stft.transform`) and the head inverse
+    /// (`istftnet.py:293-297`); here both come from the GGUF-carried config.
     ///
     /// Returns `(x_mag, x_phase, t_gen)` where each spectrum tensor is
-    /// `[n_half, t_gen]` channel-major.
+    /// `[n_half, t_gen]` channel-major and `t_gen = t · ∏strides + 1` (the
+    /// `+1` is the last-stage `ReflectionPad1d((1, 0))` — `istftnet.py:292` +
+    /// `311-312`).
+    ///
+    /// # Determinism (SineGen RNG)
+    ///
+    /// Upstream `SineGen` draws two RNG tensors per forward, irreproducible
+    /// run-to-run even upstream-to-upstream (the 2026-07-16 eval measured
+    /// oracle-vs-its-own-ONNX waveform `max |Δ| = 0.44` from exactly this):
+    ///
+    /// * `torch.rand` initial phase offsets for harmonics ≥ 2
+    ///   (`istftnet.py:150-152`) — **pinned to zero** here (a per-utterance
+    ///   random rotation of the upper harmonics; zero is a valid draw);
+    /// * `noise_amp · torch.randn_like` additive dither
+    ///   (`istftnet.py:204-208`) — **replaced by a shared deterministic
+    ///   normal generator** ([`deterministic_gauss`]). The dither is
+    ///   designed excitation (sole source energy in unvoiced regions), so
+    ///   it is kept at the upstream amplitude, just with reproducible bits.
+    ///
+    /// The parity reference dumper applies the SAME two substitutions
+    /// (see `tools/parity/dump_kokoro_reference.py`), so fixtures compare
+    /// deterministic-to-deterministic. Documented, bounded substitution —
+    /// not a silent fallback.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn forward(
         &self,
         compute: &Compute,
         x: &[f32],
         t_in: usize,
         style: &[f32],
-        _f0_curve: &[f32],
+        f0_curve: &[f32],
+        sample_rate: u32,
+        istft_n_fft: usize,
+        istft_hop: usize,
+        istft_win_length: usize,
     ) -> Result<(Vec<f32>, Vec<f32>, usize)> {
+        if f0_curve.len() != t_in {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro generator: f0_curve len {} != generator input frames ({t_in}) — \
+                 upstream feeds F0_curve at the decode.3-output rate (istftnet.py:420)",
+                f0_curve.len(),
+            )));
+        }
+        let n_half = self.source_ch / 2;
+        if istft_n_fft / 2 + 1 != n_half {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro generator: istft n_fft ({istft_n_fft}) / 2 + 1 != conv_post n_half ({n_half})"
+            )));
+        }
+
+        // ---- NSF harmonic source (upstream istftnet.py:299-305) ------------
+        // f0_upsamp (nearest, scale = ∏ups_strides · hop) → SineGen →
+        // l_linear + tanh → STFT → har = [mag ; angle] [2·n_half, t_stft].
+        let upsample_scale: usize =
+            self.ups.iter().map(|u| u.stride).product::<usize>() * istft_hop;
+        let har = self.harmonic_source_spec(
+            f0_curve,
+            t_in,
+            upsample_scale,
+            sample_rate,
+            istft_n_fft,
+            istft_hop,
+            istft_win_length,
+        )?;
+        let t_stft = har.len() / self.source_ch;
+        super::maybe_dump_stage("gen_har_spec", &har);
+
         // Track current x / t / current channel count across stages.
         let mut cur = x.to_vec();
         let mut cur_len = t_in;
         let mut cur_ch = self.in_ch;
 
         for stage in 0..self.n_stages {
-            // 1. LeakyReLU → ups
+            // 1. LeakyReLU(0.1) → source conv → source resblock → ups.
             nn::leaky_relu(&mut cur, GEN_LRELU_SLOPE);
             super::maybe_dump_stage(&format!("gen_stage_{stage}_pre_ups"), &cur);
-            let (up, t_up) = self.ups[stage].forward(&cur, cur_len);
-            let stage_ch = self.stage_channels[stage];
-            debug_assert_eq!(up.len(), stage_ch * t_up);
-            super::maybe_dump_stage(&format!("gen_stage_{stage}_ups"), &up);
 
-            // 2. Noise / source contribution.
-            //    Source spec = zeros (simplification; see module-doc). Shape
-            //    is `[source_ch, t_up]` so the noise_convs kernel + stride
-            //    line up regardless of the upstream STFT frame count.
-            let source_spec = vec![0.0f32; self.source_ch * t_up];
-            let (noise_x, t_noise) = self.noise_convs[stage].forward(compute, &source_spec, t_up);
-            // The plain Conv1d + zero-fill produces a bias-only signal; that's
-            // fine for a well-defined forward. Nearest-neighbor pad/crop to
-            // t_up so the residual add operates on matching time axes.
-            let noise_aligned = if t_noise == t_up {
-                noise_x
-            } else {
-                nearest_align(&noise_x, stage_ch, t_noise, t_up)
-            };
-            super::maybe_dump_stage(&format!("gen_stage_{stage}_noise_pre_res"), &noise_aligned);
-            // Noise resblock (in-place additive residual over 3 sub-blocks).
-            let mut noise_aligned_mut = noise_aligned;
-            // Dump per-sub-block intermediates for the noise_res AmpResBlock
-            // when VOKRA_KOKORO_PARITY_DUMP is set (T17-fixup #1 bisection).
+            // 2. Source contribution from the shared harmonic spec
+            //    (x_source = noise_res[i](noise_convs[i](har), s) —
+            //    istftnet.py:308-309).
+            let stage_ch = self.stage_channels[stage];
+            let (mut src, t_src) = self.noise_convs[stage].forward(compute, &har, t_stft);
+            super::maybe_dump_stage(&format!("gen_stage_{stage}_noise_pre_res"), &src);
             let dump_prefix = format!("gen_stage_{stage}_noise_res");
             self.noise_res[stage].forward_with_dump(
                 compute,
-                &mut noise_aligned_mut,
-                t_up,
+                &mut src,
+                t_src,
                 style,
                 Some(&dump_prefix),
             );
-            super::maybe_dump_stage(
-                &format!("gen_stage_{stage}_noise_post_res"),
-                &noise_aligned_mut,
-            );
+            super::maybe_dump_stage(&format!("gen_stage_{stage}_noise_post_res"), &src);
 
-            // 3. Main + noise fusion.
+            // 3. Main-path upsample; the LAST stage reflection-pads one frame
+            //    on the left (ReflectionPad1d((1, 0)) — istftnet.py:292 +
+            //    311-312) so its length lands on `∏strides · t + 1`, exactly
+            //    the source STFT frame count.
+            let (up, t_up) = self.ups[stage].forward(&cur, cur_len);
+            debug_assert_eq!(up.len(), stage_ch * t_up);
+            let (up, t_up) = if stage == self.n_stages - 1 {
+                (reflection_pad_left1(&up, stage_ch, t_up), t_up + 1)
+            } else {
+                (up, t_up)
+            };
+            super::maybe_dump_stage(&format!("gen_stage_{stage}_ups"), &up);
+
+            // Time axes must agree EXACTLY — the upstream shapes do
+            // (stage i: (t·∏strides/hop-rate) vs the strided source conv),
+            // and a mismatch here means the checkpoint deviates from the
+            // Kokoro-82M architecture. No silent re-alignment (FR-EX-08).
+            if t_src != t_up {
+                return Err(VokraError::InvalidArgument(format!(
+                    "kokoro generator: stage {stage} source frames ({t_src}) != \
+                     main-path frames ({t_up}); the noise_convs stride/kernel do not \
+                     match the ups stride product for this checkpoint"
+                )));
+            }
+
+            // 4. Main + source fusion (x = x + x_source — istftnet.py:313).
             let mut fused = up;
-            for (a, b) in fused.iter_mut().zip(&noise_aligned_mut) {
+            for (a, b) in fused.iter_mut().zip(&src) {
                 *a += b;
             }
             super::maybe_dump_stage(&format!("gen_stage_{stage}_fused"), &fused);
 
-            // 4. MRF: average over `n_kernels` main resblocks for this stage.
+            // 5. MRF: average over `n_kernels` main resblocks for this stage.
             let mut mrf = vec![0.0f32; stage_ch * t_up];
             for k in 0..self.n_kernels {
                 let rb_idx = stage * self.n_kernels + k;
@@ -671,34 +790,177 @@ impl Generator {
         }
         debug_assert_eq!(cur_ch, self.stage_channels[self.n_stages - 1]);
 
-        // 5. Head: LeakyReLU → conv_post → split (mag, phase)
-        nn::leaky_relu(&mut cur, GEN_LRELU_SLOPE);
+        // 6. Head: LeakyReLU(0.01 — PyTorch default, istftnet.py:321) →
+        //    conv_post → split (mag, phase).
+        nn::leaky_relu(&mut cur, GEN_HEAD_LRELU_SLOPE);
         super::maybe_dump_stage("gen_pre_conv_post", &cur);
         let (post, t_gen) = self.conv_post.forward(compute, &cur, cur_len);
         debug_assert_eq!(post.len(), self.source_ch * t_gen);
         super::maybe_dump_stage("gen_conv_post", &post);
-        let n_half = self.source_ch / 2;
         let x_mag = post[..n_half * t_gen].to_vec();
         let x_phase = post[n_half * t_gen..].to_vec();
         Ok((x_mag, x_phase, t_gen))
     }
+
+    /// Builds the `[2·n_half, t_stft]` channel-major harmonic-source spectrum
+    /// `har = cat([|STFT(har_source)|, angle(STFT(har_source))])`
+    /// (upstream `istftnet.py:299-305`).
+    ///
+    /// Pipeline (all deterministic — see [`Generator::forward`] §Determinism):
+    ///
+    /// 1. `f0_full = nn.Upsample(scale_factor=upsample_scale)(f0)` — nearest.
+    /// 2. `SineGen._f02sine` (istftnet.py:142-158): per harmonic `k ∈ 1..=H`,
+    ///    `rad = (f0_full·k / sample_rate) % 1` → linear-downsample by
+    ///    `1/upsample_scale` → `phase = cumsum·2π` → `·upsample_scale` →
+    ///    linear-upsample by `upsample_scale` → `sin`.
+    /// 3. `sine_waves = sines · sine_amp · uv + noise_amp · gauss` with
+    ///    `uv = (f0_full > 10)` and
+    ///    `noise_amp = uv·noise_std + (1−uv)·sine_amp/3`
+    ///    (istftnet.py:196-208; gauss = shared deterministic generator).
+    /// 4. `har_source = tanh(l_linear(sine_waves))` (istftnet.py:251).
+    /// 5. `TorchSTFT.transform` = `torch.stft(center=True, reflect)` →
+    ///    magnitude + angle (istftnet.py:89-94).
+    #[allow(clippy::too_many_arguments)]
+    fn harmonic_source_spec(
+        &self,
+        f0_curve: &[f32],
+        t_in: usize,
+        upsample_scale: usize,
+        sample_rate: u32,
+        istft_n_fft: usize,
+        istft_hop: usize,
+        istft_win_length: usize,
+    ) -> Result<Vec<f32>> {
+        use vokra_core::ir::graph::{Normalization, PadMode, StftAttrs, Window, WindowSymmetry};
+
+        let t_full = t_in * upsample_scale;
+        let inv_sr = 1.0f32 / sample_rate as f32;
+
+        // 1. Nearest upsample f0 → [t_full] (nn.Upsample default mode).
+        let mut f0_full = vec![0.0f32; t_full];
+        for (j, dst) in f0_full.iter_mut().enumerate() {
+            *dst = f0_curve[j / upsample_scale];
+        }
+
+        // 2-3. Per-harmonic sine synthesis, mixed through l_linear + tanh on
+        // the fly (avoids a [t_full × n_harm] transpose buffer): first build
+        // each harmonic's sine row, gate by uv · sine_amp, and accumulate
+        // `w[k] · sine` into the mix (k-ascending, matching torch's GEMV
+        // reduction order at k=9); bias is added AFTER the sum — torch's
+        // `F.linear` computes `x @ Wᵀ + b`, so the bias joins last.
+        let mut mix = vec![0.0f32; t_full];
+        let mut rad_ds = vec![0.0f32; t_in];
+        let mut phase = vec![0.0f32; t_in];
+        for (k, &w_k) in self.m_source_weight.iter().enumerate() {
+            let harmonic = (k + 1) as f32;
+            // rad[j] = (f0_full[j] · harmonic / sr) % 1 — torch `%` keeps the
+            // result non-negative for a positive divisor (rem_euclid).
+            // Linear-downsample by 1/upsample_scale (F.interpolate linear,
+            // align_corners=False): src x = (j+0.5)·scale − 0.5, clamped ≥ 0,
+            // lerped in torch's `λ0·v[x0] + λ1·v[x1]` form (the CPU
+            // `compute_source_index_and_lambda` kernel). The algebraically
+            // equal `v0 + w·(v1−v0)` rounds differently in f32, and the phase
+            // argument below is large enough (10³–10⁴ rad) that a 1-ULP input
+            // drift becomes ~1e-3 after `sin` — measured on the fixture
+            // input: λ-form ≈ torch, delta-form drifts `har_source` to 8e-4.
+            for (j, dst) in rad_ds.iter_mut().enumerate() {
+                let x = (j as f32 + 0.5) * upsample_scale as f32 - 0.5;
+                let x = if x < 0.0 { 0.0 } else { x };
+                let x0 = x as usize;
+                let x1 = (x0 + 1).min(t_full - 1);
+                let lambda1 = x - x0 as f32;
+                let lambda0 = 1.0 - lambda1;
+                let r0 = (f0_full[x0] * harmonic * inv_sr).rem_euclid(1.0);
+                let r1 = (f0_full[x1] * harmonic * inv_sr).rem_euclid(1.0);
+                *dst = lambda0 * r0 + lambda1 * r1;
+            }
+            // phase = cumsum(rad_ds) · 2π (sequential f32, mirroring torch
+            // CPU cumsum), then ·upsample_scale before the linear upsample —
+            // three separate f32 rounding steps, matching upstream's
+            // `cumsum(rad) * 2 * π` then `phase · upsample_scale` tensor ops.
+            let mut acc = 0.0f32;
+            for (p, &r) in phase.iter_mut().zip(rad_ds.iter()) {
+                acc += r;
+                *p = acc * 2.0 * std::f32::consts::PI * upsample_scale as f32;
+            }
+            // Linear-upsample by upsample_scale (λ-form, as above) → sin →
+            // gate + dither → mix. Element-wise chain mirrors upstream
+            // `istftnet.py:196-208`: `sine_waves = _f02sine(fn) · sine_amp`
+            // then `· uv + noise` with
+            // `noise = (uv·noise_std + (1−uv)·sine_amp/3) · randn` — the
+            // randn replaced by the shared deterministic generator
+            // ([`deterministic_gauss`], flat index `i·n_harm + k` over the
+            // `[t_full, n_harm]` dither tensor).
+            let inv_scale = 1.0f32 / upsample_scale as f32;
+            let n_harm = self.m_source_weight.len() as u64;
+            for (i, m) in mix.iter_mut().enumerate() {
+                let x = (i as f32 + 0.5) * inv_scale - 0.5;
+                let x = if x < 0.0 { 0.0 } else { x };
+                let x0 = x as usize;
+                let x1 = (x0 + 1).min(t_in - 1);
+                let lambda1 = x - x0 as f32;
+                let lambda0 = 1.0 - lambda1;
+                let p = lambda0 * phase[x0] + lambda1 * phase[x1];
+                let uv = if f0_full[i] > VOICED_THRESHOLD {
+                    1.0
+                } else {
+                    0.0
+                };
+                let noise_amp = uv * NOISE_STD + (1.0 - uv) * (SINE_AMP / 3.0);
+                let g = deterministic_gauss(i as u64 * n_harm + k as u64);
+                *m += w_k * (p.sin() * SINE_AMP * uv + noise_amp * g);
+            }
+        }
+        let bias0 = self.m_source_bias[0];
+        let mut har_source = mix;
+        for v in har_source.iter_mut() {
+            *v = (*v + bias0).tanh();
+        }
+        super::maybe_dump_stage("gen_har_source", &har_source);
+
+        // 5. STFT (torch.stft defaults: center=True, reflect padding, no
+        // normalization, onesided) → [mag ; angle] channel-major.
+        let attrs = StftAttrs {
+            n_fft: istft_n_fft,
+            hop_length: istft_hop,
+            win_length: istft_win_length,
+            window: Window::Hann,
+            window_symmetry: WindowSymmetry::Periodic,
+            center: true,
+            pad_mode: PadMode::Reflect,
+            normalization: Normalization::Backward,
+            causal: false,
+            real_input: true,
+        };
+        let spec = vokra_ops::stft(&har_source, &attrs)?;
+        let n_half = self.source_ch / 2;
+        debug_assert_eq!(spec.bins, n_half);
+        let t_stft = spec.frames;
+        let mut har = vec![0.0f32; self.source_ch * t_stft];
+        for f in 0..t_stft {
+            for b in 0..n_half {
+                let re = spec.re[f * n_half + b];
+                let im = spec.im[f * n_half + b];
+                har[b * t_stft + f] = re.hypot(im);
+                har[(n_half + b) * t_stft + f] = im.atan2(re);
+            }
+        }
+        Ok(har)
+    }
 }
 
-/// Nearest-neighbor align a `[channels, t_in]` buffer to `[channels, t_out]`.
-fn nearest_align(x: &[f32], channels: usize, t_in: usize, t_out: usize) -> Vec<f32> {
-    if t_in == t_out {
-        return x.to_vec();
-    }
-    if t_in == 0 {
-        return vec![0.0f32; channels * t_out];
-    }
+/// `nn.ReflectionPad1d((1, 0))` on a `[channels, t]` channel-major buffer:
+/// one reflected frame on the left (`out[0] = x[1]`, `out[i] = x[i-1]`) —
+/// upstream `istftnet.py:292`.
+fn reflection_pad_left1(x: &[f32], channels: usize, t: usize) -> Vec<f32> {
+    debug_assert!(t >= 2, "reflection pad needs at least 2 frames");
+    let t_out = t + 1;
     let mut out = vec![0.0f32; channels * t_out];
     for c in 0..channels {
-        for t in 0..t_out {
-            let src = ((t as u64 * t_in as u64) / t_out as u64) as usize;
-            let src = src.min(t_in - 1);
-            out[c * t_out + t] = x[c * t_in + src];
-        }
+        let src = &x[c * t..(c + 1) * t];
+        let dst = &mut out[c * t_out..(c + 1) * t_out];
+        dst[0] = src[1];
+        dst[1..].copy_from_slice(src);
     }
     out
 }

@@ -346,11 +346,11 @@ fn write_hparams(
 
     // Config overrides (when passed): `voice_names.len()` becomes authoritative
     // for `num_voices` — Kokoro's canonical release ships voice styles as
-    // separate ``voices/*.pt`` files (per the reference dumper's
-    // ``open_checkpoint`` doc at ``tools/parity/dump_kokoro_reference.py``), so
-    // the in-checkpoint ``voicepack`` tensor is often absent and the config is
-    // the true source of truth. When both are present and disagree, we emit a
-    // note rather than silently masking the mismatch.
+    // separate ``voices/*.pt`` files (see
+    // ``tools/parity/kokoro_prepare_checkpoint.py``), so the in-checkpoint
+    // ``voicepack`` tensor is often absent and the config is the true source
+    // of truth. When both are present and disagree, we emit a note rather
+    // than silently masking the mismatch.
     let mut notes: Vec<String> = Vec::new();
     let (num_voices_written, voice_names_out) = if let Some(cfg) = config {
         let cfg_n = cfg.voice_names.len();
