@@ -75,6 +75,10 @@ vokra-convert = { path = "../vokra-convert" }
 # first-party, acyclic (vokra-eval depends only on core/ops/backend-cpu),
 # root Cargo.lock stays vokra-* only (NFR-DS-02).
 vokra-eval = { path = "../vokra-eval" }
+# Voxtral real-GGUF gated test (tests/voxtral_real_gguf.rs): the 9+ GB real
+# checkpoint is opened through the mmap loader instead of a full heap copy —
+# first-party, zero external deps (NFR-DS-02 preserved).
+vokra-mmap = { path = "../vokra-mmap" }
 
 [features]
 # Off by default: enable with `--features metal` on macOS / iOS to route the

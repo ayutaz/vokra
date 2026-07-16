@@ -13,7 +13,8 @@ use std::process::ExitCode;
 use vokra_convert::{
     ModelKind, PolicyPreset, VoxtralConfig, convert_cosyvoice2_file, convert_dac_file,
     convert_file, convert_file_quantized, convert_file_with_policy, convert_kokoro_file,
-    convert_piper_plus_file, convert_voxtral_file_with_adapter_config,
+    convert_piper_plus_file, convert_voxtral_file, convert_voxtral_file_with_adapter_config,
+    parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -24,17 +25,24 @@ USAGE:
     vokra-cli convert --model <whisper-base|silero-vad|campplus> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
-    vokra-cli convert --model voxtral --input <ckpt.safetensors> [--adapter-config <adapter.json>] --output <out.gguf>
+    vokra-cli convert --model voxtral --input <ckpt.safetensors | model.safetensors.index.json> \
+                      [--config <config.json>] [--adapter-config <adapter.json>] --output <out.gguf>
 
 OPTIONS:
     --model <kind>            whisper-base | silero-vad | piper-plus | campplus | kokoro | voxtral
-    --input <path>            upstream checkpoint file
+    --input <path>            upstream checkpoint file. For voxtral, a
+                              `*.index.json` path reads every shard listed in
+                              its weight_map (the raw sharded BF16 release)
     --config <path>           piper-plus config.json (piper-plus only) OR Kokoro
                               config.json (misaki phoneme symbols + voice names;
                               omit to emit the p0..p_{n-1} placeholder table) OR
                               the upstream HF config.json for cosyvoice2 (Qwen2
                               schema: attention head split + rope_theta/
-                              rms_norm_eps/n_ctx — not shape-derivable)
+                              rms_norm_eps/n_ctx — not shape-derivable) OR the
+                              upstream Voxtral/Mistral config.json (RoPE base,
+                              RMSNorm eps, GQA head split incl. head_dim,
+                              vocab, max positions — cross-validated against
+                              the checkpoint shapes)
     --adapter-config <path>   Voxtral audio-adapter side-car JSON (M3-10 Wave 8):
                               writes `vokra.voxtral.adapter.*` metadata so the
                               runtime binds the checkpoint's adapter tensors
@@ -205,23 +213,33 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             if p.policy.is_some() {
                 return Err("--policy-preset is only supported for whisper".to_owned());
             }
+            // The base config is the upstream HF config.json (RoPE base,
+            // RMSNorm eps, GQA head split incl. the decoupled head_dim,
+            // vocab size, max positions). Omitting it leaves the shape-only
+            // sentinels the runtime rejects at forward (FR-EX-08) — the raw
+            // sharded release always ships one, so real conversions pass it.
+            let base_cfg = match &p.config {
+                Some(cfg_path) => {
+                    let bytes = std::fs::read(cfg_path)
+                        .map_err(|e| format!("--config {}: {e}", cfg_path.display()))?;
+                    parse_voxtral_hf_config(&bytes).map_err(|e| e.to_string())?
+                }
+                None => VoxtralConfig::default(),
+            };
             match (&p.config, &p.adapter_config) {
-                // M3-10 Wave 8: adapter-conditioned convert. The base config
-                // JSON path is currently unused for Voxtral (VoxtralConfig is
-                // populated by the future --side-car path in T04 follow-up);
-                // for now, the audio-adapter path uses an empty base config
-                // plus the adapter JSON side-car. When --side-car lands, the
-                // Voxtral path will merge both.
+                // M3-10 Wave 8: adapter-conditioned convert (with or without
+                // the base config side-car).
                 (_, Some(adapter_json)) => convert_voxtral_file_with_adapter_config(
                     &p.input,
-                    &VoxtralConfig::default(),
+                    &base_cfg,
                     adapter_json,
                     &p.output,
                 ),
-                // No adapter → shape-only conversion (honest LM-continuation
-                // posture, Wave 7 semantic). Same behavior as the pre-Wave-8
-                // path.
-                (_, None) => convert_file(model, &p.input, &p.output),
+                // Config without adapter → full hparam chunk, honest
+                // LM-continuation posture (no adapter metadata).
+                (Some(_), None) => convert_voxtral_file(&p.input, &base_cfg, &p.output),
+                // Neither → shape-only conversion (pre-Wave-8 behaviour).
+                (None, None) => convert_file(model, &p.input, &p.output),
             }
         }
         ModelKind::CosyVoice2 => {
@@ -445,6 +463,30 @@ mod tests {
         assert_eq!(p.input, PathBuf::from("voxtral.safetensors"));
         assert_eq!(p.adapter_config, Some(PathBuf::from("adapter.json")));
         assert_eq!(p.output, PathBuf::from("voxtral.gguf"));
+    }
+
+    #[test]
+    fn parses_voxtral_with_config_and_adapter_config() {
+        // P1 fix (2026-07-16): `--config` carries the upstream HF config.json
+        // (head_dim / GQA split / RoPE / eps / vocab) alongside the adapter
+        // side-car; `--input` may be the sharded `*.index.json`.
+        let p = parse_args(&args(&[
+            "--model",
+            "voxtral",
+            "--input",
+            "model.safetensors.index.json",
+            "--config",
+            "config.json",
+            "--adapter-config",
+            "adapter.json",
+            "--output",
+            "voxtral.gguf",
+        ]))
+        .expect("valid");
+        assert_eq!(p.model, ModelKind::Voxtral);
+        assert_eq!(p.input, PathBuf::from("model.safetensors.index.json"));
+        assert_eq!(p.config, Some(PathBuf::from("config.json")));
+        assert_eq!(p.adapter_config, Some(PathBuf::from("adapter.json")));
     }
 
     #[test]

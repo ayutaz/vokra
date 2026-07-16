@@ -112,7 +112,19 @@ impl<'m> TextDecoderSession<'m> {
                 "voxtral::TextDecoderSession: n_head_q ({n_head_q}) must be divisible by n_head_kv ({n_head_kv}) — GQA"
             )));
         }
-        let head_dim = d / n_head_q;
+        // Explicit-or-derived per-head width (see
+        // `TextDecoderConfig::head_dim`) — NOT `d / n_head_q`: the real mini
+        // decouples the two (q_hidden 4096 vs d 3072).
+        let head_dim = config.text.head_dim();
+        if head_dim == 0 {
+            return Err(VokraError::ModelLoad(
+                "voxtral::TextDecoderSession: head_dim resolves to 0 — re-convert with a \
+                 converter that writes vokra.voxtral.text_decoder.head_dim (FR-EX-08 — no \
+                 silent default)."
+                    .into(),
+            ));
+        }
+        let q_hidden = n_head_q * head_dim;
         let kv_hidden = n_head_kv * head_dim;
         if decoder.blocks.len() != n_layer {
             return Err(VokraError::ModelLoad(format!(
@@ -137,6 +149,7 @@ impl<'m> TextDecoderSession<'m> {
         let scratch = StepScratch::with_reserve(
             reserve_t_q,
             d,
+            q_hidden,
             kv_hidden,
             head_dim,
             ffn_dim,
@@ -570,6 +583,7 @@ mod tests {
                 n_layer: 1,
                 n_head_q: 2,
                 n_head_kv: 1,
+                head_dim: 0,
                 hidden_dim: 4,
                 ffn_dim: 8,
                 vocab_size: 4,
@@ -638,6 +652,7 @@ mod tests {
 
         TextDecoder {
             token_emb,
+            lm_head: None,
             blocks,
             final_norm_gamma,
             prefix: "",
@@ -650,6 +665,7 @@ mod tests {
         cfg.text.n_layer = 0;
         let td = TextDecoder {
             token_emb: Vec::new(),
+            lm_head: None,
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",

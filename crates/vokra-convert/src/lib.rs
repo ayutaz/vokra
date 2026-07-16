@@ -838,6 +838,65 @@ pub use models::voxtral::VoxtralConfig;
 /// [`VoxtralConfig::adapter`] field.
 pub use models::voxtral::AdapterSpec;
 
+/// Parses an upstream HuggingFace-style Voxtral `config.json` into a
+/// [`VoxtralConfig`] (the `vokra-cli convert --model voxtral --config` path).
+/// See [`models::voxtral::parse_hf_config`] for the accepted schema; a JSON
+/// with no recognized Voxtral hparams is a hard error (FR-EX-08).
+pub fn parse_voxtral_hf_config(bytes: &[u8]) -> Result<VoxtralConfig, ConvertError> {
+    models::voxtral::parse_hf_config(bytes)
+}
+
+/// Reads a (possibly sharded) Voxtral safetensors checkpoint into one buffer
+/// per shard.
+///
+/// A path whose file name ends in `.index.json` (the HF
+/// `model.safetensors.index.json` convention the sharded Voxtral release
+/// ships) is parsed for its `weight_map`; every referenced shard file is read
+/// from the index's directory, in sorted order (deterministic). Any other
+/// path is read verbatim as a single-file checkpoint.
+fn read_voxtral_checkpoint(input: &Path) -> Result<Vec<Vec<u8>>, ConvertError> {
+    use vokra_core::json::JsonValue;
+
+    let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    if !file_name.ends_with(".index.json") {
+        return Ok(vec![std::fs::read(input)?]);
+    }
+    let index_bytes = std::fs::read(input)?;
+    let root = vokra_core::json::parse(&index_bytes)
+        .map_err(|e| ConvertError::Parse(format!("voxtral index {}: {e}", input.display())))?;
+    let weight_map = root
+        .get("weight_map")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| {
+            ConvertError::Parse(format!(
+                "voxtral index {}: missing `weight_map` object",
+                input.display()
+            ))
+        })?;
+    // De-duplicate + sort the shard names (many tensors map to each shard).
+    let mut shard_names = std::collections::BTreeSet::new();
+    for (tensor, file) in weight_map {
+        let f = file.as_str().ok_or_else(|| {
+            ConvertError::Parse(format!(
+                "voxtral index {}: weight_map[{tensor}] is not a file-name string",
+                input.display()
+            ))
+        })?;
+        shard_names.insert(f.to_owned());
+    }
+    if shard_names.is_empty() {
+        return Err(ConvertError::Parse(format!(
+            "voxtral index {}: empty weight_map — no shards to read",
+            input.display()
+        )));
+    }
+    let dir = input.parent().unwrap_or_else(|| Path::new("."));
+    shard_names
+        .into_iter()
+        .map(|f| Ok(std::fs::read(dir.join(f))?))
+        .collect()
+}
+
 /// Convert a Voxtral safetensors checkpoint together with a Mistral-format
 /// side-car config into a Vokra GGUF (M3-10).
 ///
@@ -856,12 +915,17 @@ pub fn convert_voxtral_file(
     config: &VoxtralConfig,
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
-    let bytes = std::fs::read(input)?;
-    let (builder, report) = models::voxtral::convert(bytes, Some(config))?;
+    let shards = read_voxtral_checkpoint(input)?;
+    let (builder, report) = models::voxtral::convert_shards(shards, Some(config))?;
 
     let notes = vec![format!(
-        "voxtral: {} float weights written, {} non-float skipped, name {}, tokenizer embedded: {}",
-        report.written, report.skipped_non_float, report.name, report.tokenizer_embedded
+        "voxtral: {} float weights written ({} BF16 passthrough — exact), {} non-float skipped, \
+         name {}, tokenizer embedded: {}",
+        report.written,
+        report.bf16_passthrough,
+        report.skipped_non_float,
+        report.name,
+        report.tokenizer_embedded
     )];
 
     let tensor_count = builder.tensor_count();
@@ -911,8 +975,8 @@ pub fn convert_voxtral_file_with_adapter_config(
     let spec = models::voxtral::parse_adapter_config(&adapter_bytes)?;
     let mut cfg = config.clone();
     cfg.adapter = Some(spec);
-    let bytes = std::fs::read(input)?;
-    let (builder, report) = models::voxtral::convert(bytes, Some(&cfg))?;
+    let shards = read_voxtral_checkpoint(input)?;
+    let (builder, report) = models::voxtral::convert_shards(shards, Some(&cfg))?;
 
     let adapter_kind = cfg
         .adapter
@@ -920,8 +984,10 @@ pub fn convert_voxtral_file_with_adapter_config(
         .map(|a| a.kind.as_str())
         .unwrap_or("none");
     let notes = vec![format!(
-        "voxtral: {} float weights written, {} non-float skipped, name {}, tokenizer embedded: {}, adapter kind: {}",
+        "voxtral: {} float weights written ({} BF16 passthrough — exact), {} non-float skipped, \
+         name {}, tokenizer embedded: {}, adapter kind: {}",
         report.written,
+        report.bf16_passthrough,
         report.skipped_non_float,
         report.name,
         report.tokenizer_embedded,

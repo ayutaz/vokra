@@ -21,8 +21,10 @@
 //! this reads the whole file into an owned buffer and lends slices into it. The
 //! access API is genuinely copy-free, but true *lazy* `mmap` (FR-LD-01 /
 //! NFR-PF-11) needs an `unsafe`-allowed home and stays a documented follow-up.
-//! Only the dense float dtypes `F32` / `F16` are accepted (safetensors stores
-//! dense tensors; `BF16` → `f32` is a trivial future extension).
+//! Only the dense float dtypes `F32` / `F16` / `BF16` are accepted
+//! (safetensors stores dense tensors; `BF16` graduated from "future
+//! extension" to supported in M4-06 — the moshiko and raw Voxtral releases
+//! are all-BF16).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -42,7 +44,8 @@ pub enum SafetensorsError {
     Json(json::JsonError),
     /// A tensor entry was missing a required field or had a bad shape.
     BadEntry(String),
-    /// A dtype outside the accepted range (`F32` / `F16`) was encountered.
+    /// A dtype outside the accepted range (`F32` / `F16` / `BF16`) was
+    /// encountered.
     UnsupportedDtype(String),
     /// A tensor's declared byte range fell outside the data region.
     OutOfBounds(String),
@@ -59,7 +62,7 @@ impl fmt::Display for SafetensorsError {
             Self::UnsupportedDtype(d) => {
                 write!(
                     f,
-                    "unsupported safetensors dtype `{d}` (accepted: F32, F16)"
+                    "unsupported safetensors dtype `{d}` (accepted: F32, F16, BF16)"
                 )
             }
             Self::OutOfBounds(name) => write!(f, "tensor `{name}` data out of bounds"),

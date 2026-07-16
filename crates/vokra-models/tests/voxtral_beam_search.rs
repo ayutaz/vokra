@@ -284,3 +284,53 @@ fn top_k_per_beam_widening_preserves_top_one_result() {
         b[0].log_prob
     );
 }
+
+/// GQA with a decoupled `head_dim` (the real Voxtral-mini shape class:
+/// `q_hidden != hidden_dim`) must flow through the full beam pipeline —
+/// KV snapshot / restore included — and `beam_size = 1` must reproduce
+/// greedy token-for-token, exactly like the head_dim-tied tiny model
+/// (2026-07-16 P1 regression cover: the pre-fix session derived
+/// `head_dim = hidden_dim / n_head_q` and mis-strided every buffer on
+/// this shape class).
+#[test]
+fn beam_size_one_matches_greedy_on_decoupled_gqa_shapes() {
+    let cfg = vokra_models::voxtral::test_support::gqa_config();
+    assert_ne!(
+        cfg.text.q_hidden(),
+        cfg.text.hidden_dim,
+        "fixture must exercise the decoupled shape class"
+    );
+    let ae = tiny_encoder(&cfg);
+    let td = tiny_decoder(&cfg);
+    let n_frames = 8;
+    let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
+    let eos = cfg.text.vocab_size as u32 + 100;
+
+    let head = AsrHead::new(&cfg, &ae, &td);
+    let greedy = head
+        .transcribe(BackendKind::Cpu, &log_mel, n_frames, 1, eos, 3)
+        .unwrap();
+    let bc = BeamConfig::greedy(eos, 3);
+    let beams = head
+        .transcribe_beam(BackendKind::Cpu, &log_mel, n_frames, 1, &bc)
+        .unwrap();
+    assert_eq!(beams.len(), 1);
+    assert_eq!(
+        beams[0].tokens, greedy,
+        "beam_size=1 must match greedy on GQA-decoupled shapes"
+    );
+
+    // A wider beam must also run (exercises the KV snapshot / restore
+    // branch primitive with the q_hidden != d strides) and return sorted,
+    // finite-scored hypotheses.
+    let bc4 = BeamConfig::with_beam_size(4, eos, 4);
+    let beams = head
+        .transcribe_beam(BackendKind::Cpu, &log_mel, n_frames, 1, &bc4)
+        .unwrap();
+    assert!(!beams.is_empty());
+    assert!(beams.iter().all(|b| b.log_prob.is_finite()));
+    assert!(
+        beams.windows(2).all(|w| w[0].log_prob >= w[1].log_prob),
+        "hypotheses must be sorted by log_prob"
+    );
+}

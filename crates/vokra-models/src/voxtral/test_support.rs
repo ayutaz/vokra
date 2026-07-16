@@ -42,6 +42,7 @@ pub fn tiny_config() -> VoxtralConfig {
             n_layer: 1,
             n_head_q: 2,
             n_head_kv: 1,
+            head_dim: 0,
             hidden_dim: 4,
             ffn_dim: 8,
             vocab_size: 8,
@@ -76,16 +77,22 @@ pub fn tiny_encoder(cfg: &VoxtralConfig) -> AudioEncoder {
     ae
 }
 
-/// A text decoder shaped to [`tiny_config`] with the deterministic weight
+/// A text decoder shaped to the given config with the deterministic weight
 /// initialization pattern shared by the unit tests in `text_decoder_session.rs`.
+///
+/// Projection shapes come off the config's [`TextDecoderConfig::q_hidden`] /
+/// [`kv_hidden`](TextDecoderConfig::kv_hidden) helpers, so the same factory
+/// serves both the head_dim-tied [`tiny_config`] (`q_hidden == hidden_dim`)
+/// and the decoupled [`gqa_config`] (`q_hidden != hidden_dim` — the real
+/// Voxtral-mini shape class).
 #[doc(hidden)]
 #[must_use]
 pub fn tiny_decoder(cfg: &VoxtralConfig) -> TextDecoder {
     let d = cfg.text.hidden_dim;
     let ffn = cfg.text.ffn_dim;
     let vocab = cfg.text.vocab_size;
-    let head_dim = d / cfg.text.n_head_q;
-    let kv_hidden = cfg.text.n_head_kv * head_dim;
+    let q_hidden = cfg.text.q_hidden();
+    let kv_hidden = cfg.text.kv_hidden();
 
     let mut token_emb = vec![0.0f32; vocab * d];
     for (i, v) in token_emb.iter_mut().enumerate() {
@@ -106,10 +113,10 @@ pub fn tiny_decoder(cfg: &VoxtralConfig) -> TextDecoder {
         .map(|_| DecoderBlock {
             attn_norm_gamma: vec![1.0f32; d],
             attn: GqaAttention {
-                q: linear(d, d, 0.10),
+                q: linear(d, q_hidden, 0.10),
                 k: linear(d, kv_hidden, -0.07),
                 v: linear(d, kv_hidden, 0.05),
-                o: linear(d, d, -0.04),
+                o: linear(q_hidden, d, -0.04),
             },
             ffn_norm_gamma: vec![1.0f32; d],
             ffn: SwiGluFfn {
@@ -121,10 +128,32 @@ pub fn tiny_decoder(cfg: &VoxtralConfig) -> TextDecoder {
         .collect();
     TextDecoder {
         token_emb,
+        lm_head: None,
         blocks,
         final_norm_gamma: vec![1.0f32; d],
         prefix: "",
     }
+}
+
+/// A [`VoxtralConfig`] whose text decoder has an explicit `head_dim`
+/// **decoupled** from `hidden_dim / n_head_q` — the real Voxtral-mini shape
+/// class (`hidden_dim = 3072`, 32 × 128 = 4096-wide Q), scaled down:
+/// `hidden_dim = 6`, `n_head_q = 2`, `n_head_kv = 1`, `head_dim = 4` →
+/// `q_hidden = 8 ≠ 6`, `kv_hidden = 4`. Pair with [`tiny_decoder`] (which
+/// reads the projection shapes off the config).
+#[doc(hidden)]
+#[must_use]
+pub fn gqa_config() -> VoxtralConfig {
+    let mut cfg = tiny_config();
+    cfg.text.hidden_dim = 6;
+    cfg.text.n_head_q = 2;
+    cfg.text.n_head_kv = 1;
+    cfg.text.head_dim = 4;
+    // Keep the audio/cross-attn widths in lock-step with the text residual
+    // width so the adapter-less ASR wiring stays shape-consistent.
+    cfg.audio.hidden_dim = 6;
+    cfg.cross_attn_hidden_dim = 6;
+    cfg
 }
 
 /// A full [`VoxtralModel`] wired from [`tiny_config`] + [`tiny_encoder`] +

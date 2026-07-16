@@ -103,6 +103,7 @@ dependencies = [
  "vokra-convert",
  "vokra-core",
  "vokra-eval",
+ "vokra-mmap",
  "vokra-ops",
  "vokra-piper-plus",
 ]
