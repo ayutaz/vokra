@@ -17,14 +17,20 @@
 //! §3.1, cross-checked against the upstream `silero_vad.onnx`)
 //!
 //! ```text
-//! frame [512 @16k / 256 @8k]
+//! input [ctx + frame = 576 @16k / 288 @8k]  (official; raw graph interface = bare 512 / 256)
 //!  -> reflect-pad right by n_fft/4
 //!  -> Conv1d(1, 2*bins, k=n_fft, stride=n_fft/2)      (learned pseudo-STFT)
-//!  -> magnitude = sqrt(real^2 + imag^2)   [bins, 3]   (bins = 129 @16k / 65 @8k)
+//!  -> magnitude = sqrt(real^2 + imag^2)   [bins, 4]   (bins = 129 @16k / 65 @8k; 3 on raw input)
 //!  -> encoder: Conv1d(+ReLU) x4, strides 1,2,2,1      [128, 1]
 //!  -> LSTM(128,128)  (h/c carried across frames)      [128]
 //!  -> ReLU -> Conv1d(128,1,k=1) -> Sigmoid            -> probability
 //! ```
+//!
+//! The graph's time axis is dynamic; **official usage** (the upstream python
+//! wrapper, and this module's default stream) prepends a rolling
+//! [`SampleRate::context_len`] audio context — the previous frame's tail,
+//! zeros at start — to every fixed frame. Feeding bare frames is numerically
+//! valid but collapses on real speech (2026-07-16 real-weight eval P1).
 //!
 //! Silero v5 is really **two** independently-trained networks with this same
 //! topology, one per sample rate, chosen in the ONNX by `If(sr == 16000)`. The
@@ -103,6 +109,20 @@ impl SampleRate {
         }
     }
 
+    /// Rolling audio-context length of the **official** interface (64 @ 16 kHz,
+    /// 32 @ 8 kHz = `frame_len / 8`): the trailing samples of the previous
+    /// frame that the upstream python wrapper (`utils_vad.py OnnxWrapper`)
+    /// prepends to every frame, so the graph sees `[1, 576]` / `[1, 288]`.
+    /// Zeros before the first frame; reset together with the LSTM state.
+    /// Without this context the probabilities collapse on real speech (the
+    /// 2026-07-16 real-weight eval P1) — see [`stream`].
+    pub fn context_len(self) -> usize {
+        match self {
+            Self::Hz8000 => 32,
+            Self::Hz16000 => 64,
+        }
+    }
+
     /// Right-side reflection pad width (`n_fft / 4`).
     fn pad(self) -> usize {
         self.n_fft() / 4
@@ -135,9 +155,15 @@ impl SampleRate {
     }
 }
 
-/// Runs one fixed-size frame through the whole subgraph, advancing `state`, and
-/// returns the frame's speech probability. Private to the subgraph; reached by
+/// Runs one graph input through the whole subgraph, advancing `state`, and
+/// returns its speech probability. Private to the subgraph; reached by
 /// [`SileroVadV5::forward_chunk`] and the [`stream`] handle.
+///
+/// `frame` is either a bare fixed frame ([`SampleRate::frame_len`], the raw
+/// 1:1 ONNX interface) or a context-prefixed one (`context_len + frame_len`,
+/// the official interface). The pipeline is length-driven exactly like the
+/// ONNX graph (dynamic time axis): the pseudo-STFT yields 3 or 4 frames and
+/// the encoder collapses either to a single time step.
 fn run_frame(rate: SampleRate, w: &RateWeights, frame: &[f32], state: &mut LstmState) -> f32 {
     let mag = pseudo_stft(rate, w, frame);
     let enc = encoder::encode(w, &mag);
@@ -183,6 +209,11 @@ impl SileroVadV5 {
     /// Runs a single fixed-size frame from a **fresh zero state** and returns its
     /// speech probability (the T07 single-chunk entry point).
     ///
+    /// Follows the official interface: a zero rolling context of
+    /// [`SampleRate::context_len`] samples is prepended (exactly the first
+    /// frame of a fresh [`VadEngine::open_stream`] stream, and of the upstream
+    /// python wrapper after `reset_states`).
+    ///
     /// `frame` must be exactly [`SampleRate::frame_len`] samples. Errors if the
     /// model lacks weights for `rate` or the frame length is wrong.
     pub fn forward_chunk(&self, rate: SampleRate, frame: &[f32]) -> Result<f32> {
@@ -197,8 +228,22 @@ impl SileroVadV5 {
                 frame.len()
             )));
         }
+        let mut buf = vec![0.0f32; rate.context_len() + frame.len()];
+        buf[rate.context_len()..].copy_from_slice(frame);
         let mut state = LstmState::zeros();
-        Ok(run_frame(rate, w, frame, &mut state))
+        Ok(run_frame(rate, w, &buf, &mut state))
+    }
+
+    /// Opens a stream over the **raw** 1:1 ONNX frame interface: bare
+    /// [`SampleRate::frame_len`] frames, no rolling audio context (only the
+    /// LSTM `h`/`c` crosses frames). This is the interface the bare-frame
+    /// parity fixtures (`probs_16k.txt` / `probs_8k.txt`) are generated on;
+    /// it is **not** how the model is used upstream and it cannot detect real
+    /// speech (2026-07-16 eval P1) — test-gated, for parity only, so no
+    /// production path can reach the collapsed semantics.
+    #[cfg(test)]
+    pub(crate) fn open_raw_stream(&self) -> Box<dyn VadStreamHandle + Send> {
+        Box::new(stream::VadStream::new_raw(Arc::clone(&self.weights)))
     }
 }
 
@@ -254,6 +299,25 @@ mod tests {
         assert_eq!(SampleRate::Hz8000.bins(), 65);
         assert_eq!(SampleRate::Hz16000.pad(), 64);
         assert_eq!(SampleRate::Hz8000.pad(), 32);
+        // Official-wrapper rolling context (upstream utils_vad.py OnnxWrapper).
+        assert_eq!(SampleRate::Hz16000.context_len(), 64);
+        assert_eq!(SampleRate::Hz8000.context_len(), 32);
         assert!(SampleRate::from_hz(44100).is_err());
+    }
+
+    /// The single-chunk entry point follows the official semantics: it must be
+    /// bit-identical to the first frame of a fresh official stream.
+    #[test]
+    fn forward_chunk_matches_official_stream_first_frame() {
+        use vokra_core::engines::VadEngine;
+
+        let model = SileroVadV5::open(test_gguf_path()).unwrap();
+        let wav = wav::read_wav_f32(parity_dir().join("test_16k.wav")).unwrap();
+        let frame = &wav.samples[..SampleRate::Hz16000.frame_len()];
+
+        let single = model.forward_chunk(SampleRate::Hz16000, frame).unwrap();
+        let mut stream = model.open_stream();
+        let first = stream.push_pcm(frame, 16_000).unwrap();
+        assert_eq!(first, vec![single]);
     }
 }

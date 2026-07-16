@@ -45,8 +45,10 @@ pub(super) fn stft_conv(rate: SampleRate, w: &RateWeights, frame: &[f32]) -> (Ve
     (conv, frames)
 }
 
-/// Runs the pseudo-STFT on a single fixed-size `frame`
-/// (512 @ 16 kHz / 256 @ 8 kHz) and returns the magnitude spectrogram.
+/// Runs the pseudo-STFT on one graph input — a bare fixed frame (512 @ 16 kHz
+/// / 256 @ 8 kHz → 3 STFT frames) or a context-prefixed one (576 / 288 → 4;
+/// the official interface) — and returns the magnitude spectrogram. Length is
+/// dynamic exactly as in the ONNX graph.
 pub(super) fn pseudo_stft(rate: SampleRate, w: &RateWeights, frame: &[f32]) -> Magnitude {
     let bins = rate.bins();
     let (conv, frames) = stft_conv(rate, w, frame);

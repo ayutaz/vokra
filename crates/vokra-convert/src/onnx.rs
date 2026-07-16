@@ -85,6 +85,13 @@ pub(crate) struct OnnxInitializer {
     /// Payload bytes in little-endian order (from `raw_data`, or `float_data`
     /// serialized to little-endian floats).
     pub(crate) raw_le_bytes: Vec<u8>,
+    /// For `Constant`-node weights: the node's first output name. Unlike the
+    /// embedded tensor `name`, the output name is always scope-qualified
+    /// (e.g. `If_0_then_branch__Inline_0__stft.forward_basis_buffer`), so
+    /// converters can recover the subgraph context that inlined models erase
+    /// from the embedded name (silero v5 repeats the *same* embedded names in
+    /// both `If` branches). `None` for plain `graph.initializer`s.
+    pub(crate) output_name: Option<String>,
 }
 
 /// Decodes a `ModelProto` and returns every weight tensor it can find,
@@ -161,10 +168,11 @@ fn collect_node(buf: &[u8], out: &mut Vec<OnnxInitializer>, depth: usize) -> Res
         if let Some(bytes) = value_tensor {
             let mut init = read_tensor(&bytes)?;
             if init.name.is_empty() {
-                if let Some(name) = first_output {
-                    init.name = name;
+                if let Some(name) = &first_output {
+                    init.name = name.clone();
                 }
             }
+            init.output_name = first_output;
             out.push(init);
         }
     }
@@ -241,6 +249,7 @@ fn read_tensor(buf: &[u8]) -> Result<OnnxInitializer, OnnxError> {
         dims,
         data_type,
         raw_le_bytes,
+        output_name: None,
     })
 }
 

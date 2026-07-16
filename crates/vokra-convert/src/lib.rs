@@ -284,8 +284,8 @@ pub fn convert_file(
         ModelKind::SileroVad => {
             let (builder, report) = models::silero::convert(bytes)?;
             let notes = vec![format!(
-                "silero: {} float weights written, {} non-float constants skipped, {} duplicate names de-duped",
-                report.written, report.skipped_non_float, report.deduped
+                "silero: {} float weights written (both rates, sr8k.*/sr16k.*), {} non-float constants skipped, {} op-scope float strays skipped",
+                report.written, report.skipped_non_float, report.skipped_stray
             )];
             (builder, notes)
         }

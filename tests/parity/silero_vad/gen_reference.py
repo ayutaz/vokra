@@ -12,7 +12,20 @@ This script writes, into this directory:
   ``vad_demo`` example.
 * ``probs_16k.txt`` / ``probs_8k.txt`` — the ORT speech probability of every
   fixed frame (512 samples @ 16 kHz, 256 @ 8 kHz), LSTM state carried across
-  frames — the e2e streaming reference (the WP's mandatory deliverable).
+  frames — the e2e streaming reference (the WP's mandatory deliverable). This
+  is the **raw** frame interface: bare ``[1, 512]`` / ``[1, 256]`` inputs.
+* ``probs_16k_ctx.txt`` / ``probs_8k_ctx.txt`` — same clips through the
+  **official** silero-vad python wrapper semantics (``utils_vad.py
+  OnnxWrapper``): a rolling audio context of the previous frame's last 64
+  samples (@ 16 kHz; 32 @ 8 kHz, zeros before the first frame) is prepended,
+  so the model sees ``[1, 576]`` / ``[1, 288]`` per step. This is how the
+  model is actually used upstream; without the context the probabilities
+  collapse on real speech (the 2026-07-16 real-weight eval P1).
+* ``probs_jfk30s_ctx.txt`` — official-context (ctx576) reference over the
+  repo's real-speech fixture ``tests/fixtures/audio/jfk-30s.wav`` (PCM16 mono
+  16 kHz, sha256 58adb4ea…; 343 complete frames, trailing partial dropped).
+  Backs the real-audio detection regression test. Skipped with a note if the
+  WAV is absent.
 * ``step_stftconv_<rate>.txt`` / ``step_mag_<rate>.txt`` /
   ``step_encoder_<rate>.txt`` — per-stage ground truth for the *first* frame
   (zero state), obtained by lifting the matching ``If`` branch into a standalone
@@ -47,6 +60,11 @@ HERE = Path(__file__).resolve().parent
 # samples per frame (research 03 §3.1). Right-side reflection pad width per rate.
 FRAME = {8000: 256, 16000: 512}
 PAD = {8000: 32, 16000: 64}
+# Official-wrapper rolling audio context (utils_vad.py OnnxWrapper: 64 samples
+# @ 16 kHz, 32 @ 8 kHz), zero-initialised and reset together with the LSTM state.
+CTX = {8000: 32, 16000: 64}
+# Real-speech clip shared with the Whisper real-audio parity CI.
+JFK_WAV = HERE.parent.parent / "fixtures" / "audio" / "jfk-30s.wav"
 PREFIX = {"then": "If_0_then_branch__Inline_0__",
           "else": "If_0_else_branch__Inline_0__"}
 RATE_OF_BRANCH = {"then": 16000, "else": 8000}
@@ -101,6 +119,51 @@ def write_floats(path: Path, arr: np.ndarray) -> None:
     """One float per line, full float32 precision (round-trippable via str::parse)."""
     flat = np.ascontiguousarray(arr, dtype=np.float32).reshape(-1)
     path.write_text("".join(f"{v:.9g}\n" for v in flat))
+
+
+def read_wav_pcm16_mono(path: Path) -> tuple[np.ndarray, int]:
+    """Minimal RIFF walk for mono PCM16 -> f32 (x / 32768, as the Rust reader)."""
+    b = path.read_bytes()
+    assert b[0:4] == b"RIFF" and b[8:12] == b"WAVE", f"{path}: not RIFF/WAVE"
+    pos, fmt, data = 12, None, None
+    while pos + 8 <= len(b):
+        cid = b[pos:pos + 4]
+        size = struct.unpack_from("<I", b, pos + 4)[0]
+        body = pos + 8
+        if cid == b"fmt ":
+            fmt = struct.unpack_from("<HHI", b, body)  # (format, channels, rate)
+        elif cid == b"data":
+            data = b[body:body + size]
+        pos = body + size + (size & 1)
+    assert fmt is not None and data is not None, f"{path}: missing fmt/data"
+    assert fmt[0] == 1 and fmt[1] == 1, f"{path}: want mono PCM16, got {fmt}"
+    pcm = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
+    return pcm, fmt[2]
+
+
+def stream_probs(session, pcm: np.ndarray, rate: int, official_ctx: bool) -> list[float]:
+    """Full-model streaming probs, LSTM state carried; fresh state per call.
+
+    ``official_ctx=True`` reproduces the official python wrapper
+    (``utils_vad.py OnnxWrapper``): prepend the rolling ``CTX[rate]``-sample
+    context (zeros before the first frame), feed ``[1, FRAME+CTX]``, then keep
+    the concatenated input's tail as the next context. ``False`` is the raw
+    bare-frame interface. Trailing partial frames are dropped (as the Rust
+    stream buffers them).
+    """
+    fw = FRAME[rate]
+    state = np.zeros((2, 1, 128), dtype=np.float32)
+    context = np.zeros((1, CTX[rate]), dtype=np.float32)
+    probs = []
+    for i in range(len(pcm) // fw):
+        frame = pcm[i * fw:(i + 1) * fw][None, :]
+        x = np.concatenate([context, frame], axis=1) if official_ctx else frame
+        out, state = session.run(None, {"input": x, "state": state,
+                                        "sr": np.array(rate, np.int64)})
+        if official_ctx:
+            context = x[..., -CTX[rate]:]
+        probs.append(float(out.reshape(-1)[0]))
+    return probs
 
 
 # ---------------------------------------------------------------------------
@@ -247,24 +310,31 @@ def main() -> None:
     write_gguf(HERE / "silero-vad-v5.gguf", weights)
     print(f"wrote silero-vad-v5.gguf ({len(weights)} tensors)")
 
-    # 2) full-model streaming reference + WAV, per rate
+    # 2) full-model streaming references + WAV, per rate: raw frame interface
+    #    (probs_<tag>.txt) and official-wrapper rolling context (probs_<tag>_ctx.txt).
     so = ort.SessionOptions()
     so.log_severity_level = 3
     full = ort.InferenceSession(str(onnx_path), so, providers=["CPUExecutionProvider"])
     for rate in (16000, 8000):
         pcm = synth(rate)
         write_wav_f32(HERE / f"test_{rate // 1000}k.wav", rate, pcm)
-        fw = FRAME[rate]
-        state = np.zeros((2, 1, 128), dtype=np.float32)
-        probs = []
-        for i in range(len(pcm) // fw):
-            frame = pcm[i * fw:(i + 1) * fw][None, :]
-            out, state = full.run(None, {"input": frame, "state": state,
-                                         "sr": np.array(rate, np.int64)})
-            probs.append(float(out.reshape(-1)[0]))
-        write_floats(HERE / f"probs_{rate // 1000}k.txt", np.array(probs, np.float32))
-        print(f"rate={rate}: {len(probs)} frames, prob range "
+        tag = f"{rate // 1000}k"
+        for mode, suffix in ((False, ""), (True, "_ctx")):
+            probs = stream_probs(full, pcm, rate, official_ctx=mode)
+            write_floats(HERE / f"probs_{tag}{suffix}.txt", np.array(probs, np.float32))
+            print(f"rate={rate}{suffix or ' (raw)'}: {len(probs)} frames, prob range "
+                  f"[{min(probs):.4f}, {max(probs):.4f}]")
+
+    # 2b) official-context reference over the real-speech jfk fixture (16 kHz).
+    if JFK_WAV.exists():
+        pcm, rate = read_wav_pcm16_mono(JFK_WAV)
+        assert rate == 16000, f"{JFK_WAV}: rate {rate}"
+        probs = stream_probs(full, pcm, rate, official_ctx=True)
+        write_floats(HERE / "probs_jfk30s_ctx.txt", np.array(probs, np.float32))
+        print(f"jfk30s ctx: {len(probs)} frames, prob range "
               f"[{min(probs):.4f}, {max(probs):.4f}]")
+    else:
+        print(f"note: {JFK_WAV} absent, skipping probs_jfk30s_ctx.txt")
 
     # 3) per-stage ground truth for the first frame (zero state)
     want = {
