@@ -118,8 +118,13 @@ impl MoshiBackboneWeights {
             blocks.push(LlmBlockWeights {
                 attn_norm_gamma: vec![1.0f32; d],
                 q_w_t: xavier_uniform(&mut rng, d * d, d, d),
+                // Helium attention is bias-less (fused in_proj has no bias
+                // tensor); the shared bias fields serve the Qwen2 family.
+                q_b: None,
                 k_w_t: xavier_uniform(&mut rng, d * d, d, d),
+                k_b: None,
                 v_w_t: xavier_uniform(&mut rng, d * d, d, d),
+                v_b: None,
                 o_w_t: xavier_uniform(&mut rng, d * d, d, d),
                 ffn_norm_gamma: vec![1.0f32; d],
                 ffn_gate_w_t: xavier_uniform(&mut rng, d * h, d, h),
@@ -180,8 +185,13 @@ impl MoshiBackboneWeights {
             blocks.push(LlmBlockWeights {
                 attn_norm_gamma: tensor_f32(file, &format!("{p}.norm1.alpha"), d)?,
                 q_w_t,
+                // The Moshi checkpoint ships a fused `in_proj_weight` with
+                // no bias tensor (Helium attention is bias-less).
+                q_b: None,
                 k_w_t,
+                k_b: None,
                 v_w_t,
+                v_b: None,
                 o_w_t: transpose(&out_proj, d, d),
                 ffn_norm_gamma: tensor_f32(file, &format!("{p}.norm2.alpha"), d)?,
                 ffn_gate_w_t,
@@ -735,13 +745,16 @@ impl MoshiBackbone {
                 t,
                 &mut scratch.norm[..t * d],
             )?;
+            // Q/K/V biases are `None` on every Moshi store (Helium is
+            // bias-less), but honor the shared-struct contract so a bias,
+            // if ever bound, is never silently dropped (FR-EX-08).
             compute.gemm_f32(
                 t,
                 d,
                 d,
                 &scratch.norm[..t * d],
                 &block.q_w_t,
-                None,
+                block.q_b.as_deref(),
                 &mut scratch.q_proj[..t * d],
             )?;
             compute.gemm_f32(
@@ -750,7 +763,7 @@ impl MoshiBackbone {
                 d,
                 &scratch.norm[..t * d],
                 &block.k_w_t,
-                None,
+                block.k_b.as_deref(),
                 &mut scratch.k_proj[..t * d],
             )?;
             compute.gemm_f32(
@@ -759,7 +772,7 @@ impl MoshiBackbone {
                 d,
                 &scratch.norm[..t * d],
                 &block.v_w_t,
-                None,
+                block.v_b.as_deref(),
                 &mut scratch.v_proj[..t * d],
             )?;
 

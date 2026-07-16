@@ -95,8 +95,12 @@ impl CsmDepthWeights {
             blocks.push(LlmBlockWeights {
                 attn_norm_gamma: vec![1.0f32; d],
                 q_w_t: xavier_uniform(&mut rng, d * d, d, d),
+                // Bias-less (Llama-3.2 convention, same as the backbone).
+                q_b: None,
                 k_w_t: xavier_uniform(&mut rng, d * kv_hidden, d, kv_hidden),
+                k_b: None,
                 v_w_t: xavier_uniform(&mut rng, d * kv_hidden, d, kv_hidden),
+                v_b: None,
                 o_w_t: xavier_uniform(&mut rng, d * d, d, d),
                 ffn_norm_gamma: vec![1.0f32; d],
                 ffn_gate_w_t: xavier_uniform(&mut rng, d * ffn, d, ffn),
@@ -459,14 +463,25 @@ impl CsmDepthTransformer {
                 1,
                 &mut state.norm[..d],
             )?;
-            compute.gemm_f32(1, d, d, &state.norm[..d], &block.q_w_t, None, &mut state.q)?;
+            // Q/K/V biases are `None` on every CSM store (Llama-3.2 is
+            // bias-less), but honor the shared-struct contract so a bias,
+            // if ever bound, is never silently dropped (FR-EX-08).
+            compute.gemm_f32(
+                1,
+                d,
+                d,
+                &state.norm[..d],
+                &block.q_w_t,
+                block.q_b.as_deref(),
+                &mut state.q,
+            )?;
             compute.gemm_f32(
                 1,
                 kv_hidden,
                 d,
                 &state.norm[..d],
                 &block.k_w_t,
-                None,
+                block.k_b.as_deref(),
                 &mut state.k,
             )?;
             compute.gemm_f32(
@@ -475,7 +490,7 @@ impl CsmDepthTransformer {
                 d,
                 &state.norm[..d],
                 &block.v_w_t,
-                None,
+                block.v_b.as_deref(),
                 &mut state.v,
             )?;
             for h_q in 0..n_head_q {

@@ -325,21 +325,11 @@ pub fn convert_file(
             (builder, notes)
         }
         ModelKind::CosyVoice2 => {
+            // Shape-derived hparams only; the attention head split needs
+            // the upstream config.json — use `convert_cosyvoice2_file`
+            // with a `--config` for the full hparam chunk.
             let (builder, report) = models::cosyvoice2::convert(bytes)?;
-            let mut notes = vec![format!(
-                "cosyvoice2: {} float weights written, {} non-float skipped \
-                 (scaffold — numeric hparams are `0`-placeholders pending T02 \
-                 upstream inspection; the runtime rejects the load until T04 \
-                 fills them)",
-                report.written, report.skipped_non_float,
-            )];
-            notes.extend(
-                report
-                    .notes
-                    .iter()
-                    .map(|n| format!("cosyvoice2 warning: {n}")),
-            );
-            (builder, notes)
+            (builder, cosyvoice2_notes(&report))
         }
         ModelKind::Voxtral => {
             // Foundation path (M3-10): shape-only conversion writes `0`
@@ -707,6 +697,82 @@ pub fn convert_csm_file(
 
     Ok(ConvertSummary {
         model: ModelKind::Csm,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
+/// Formats the operator-facing notes for a CosyVoice2 conversion (shared
+/// by [`convert_file`] and [`convert_cosyvoice2_file`]).
+fn cosyvoice2_notes(report: &models::cosyvoice2::CosyVoice2Report) -> Vec<String> {
+    let mut notes = vec![match report.derived {
+        Some(d) => format!(
+            "cosyvoice2: {} float weights written, {} non-float skipped; derived \
+             hparams: vocab={} hidden={} n_layer={} ffn={} n_head={} n_head_kv={} \
+             n_ctx={} attn_bias={}",
+            report.written,
+            report.skipped_non_float,
+            d.vocab_size,
+            d.hidden_dim,
+            d.n_layer,
+            d.ffn_dim,
+            d.n_head,
+            d.n_head_kv,
+            d.n_ctx,
+            d.has_attn_bias,
+        ),
+        None => format!(
+            "cosyvoice2: {} float weights written, {} non-float skipped (no LLM \
+             backbone tensors — numeric hparams are 0-placeholders and the runtime \
+             rejects the LLM bind at load)",
+            report.written, report.skipped_non_float,
+        ),
+    }];
+    notes.extend(
+        report
+            .notes
+            .iter()
+            .map(|n| format!("cosyvoice2 warning: {n}")),
+    );
+    notes
+}
+
+/// Converts a CosyVoice2 LLM safetensors checkpoint (the upstream
+/// `FunAudioLLM/CosyVoice2-0.5B` `llm.pt` exported with verbatim names)
+/// into a Vokra GGUF, optionally consuming the upstream HF `config.json`
+/// (Qwen2 schema) via `config`.
+///
+/// The config supplies the attention head split
+/// (`num_attention_heads` / `num_key_value_heads`) plus `rope_theta` /
+/// `rms_norm_eps` / `max_position_embeddings` — none of which are
+/// derivable from tensor shapes (`q_out == hidden` leaves `head_dim`
+/// free). Without it the GGUF carries the shape-derived hparams only and
+/// the runtime refuses the LLM bind (loud, FR-EX-08). Config values are
+/// cross-checked against the tensor shapes and any disagreement fails the
+/// conversion.
+pub fn convert_cosyvoice2_file(
+    input: &Path,
+    config: Option<&Path>,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let config_bytes = match config {
+        Some(p) => Some(std::fs::read(p)?),
+        None => None,
+    };
+    let (builder, report) =
+        models::cosyvoice2::convert_with_config(bytes, config_bytes.as_deref())?;
+    let notes = cosyvoice2_notes(&report);
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::CosyVoice2,
         tensor_count,
         metadata_count,
         output_bytes: out_bytes.len() as u64,

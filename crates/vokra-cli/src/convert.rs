@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, PolicyPreset, VoxtralConfig, convert_dac_file, convert_file, convert_file_quantized,
-    convert_file_with_policy, convert_kokoro_file, convert_piper_plus_file,
-    convert_voxtral_file_with_adapter_config,
+    ModelKind, PolicyPreset, VoxtralConfig, convert_cosyvoice2_file, convert_dac_file,
+    convert_file, convert_file_quantized, convert_file_with_policy, convert_kokoro_file,
+    convert_piper_plus_file, convert_voxtral_file_with_adapter_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -31,7 +31,10 @@ OPTIONS:
     --input <path>            upstream checkpoint file
     --config <path>           piper-plus config.json (piper-plus only) OR Kokoro
                               config.json (misaki phoneme symbols + voice names;
-                              omit to emit the p0..p_{n-1} placeholder table)
+                              omit to emit the p0..p_{n-1} placeholder table) OR
+                              the upstream HF config.json for cosyvoice2 (Qwen2
+                              schema: attention head split + rope_theta/
+                              rms_norm_eps/n_ctx — not shape-derivable)
     --adapter-config <path>   Voxtral audio-adapter side-car JSON (M3-10 Wave 8):
                               writes `vokra.voxtral.adapter.*` metadata so the
                               runtime binds the checkpoint's adapter tensors
@@ -221,6 +224,20 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 (_, None) => convert_file(model, &p.input, &p.output),
             }
         }
+        ModelKind::CosyVoice2 => {
+            // Quantization surface is whisper-only; reject rather than
+            // silently ignoring.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            // --config = upstream HF config.json (Qwen2 schema). Optional:
+            // without it only the shape-derived hparams are written and the
+            // runtime refuses the LLM bind (loud converter note).
+            convert_cosyvoice2_file(&p.input, p.config.as_deref(), &p.output)
+        }
         ModelKind::Dac => {
             // M4-04 T11: DAC needs the prepare-script config side-car (the
             // shape facts live in the upstream .pth metadata the safetensors
@@ -352,6 +369,28 @@ mod tests {
         assert_eq!(p.output, PathBuf::from("o.gguf"));
         assert!(p.quant.is_none());
         assert!(p.policy.is_none());
+    }
+
+    #[test]
+    fn parses_cosyvoice2_with_config() {
+        // Config-driven CosyVoice2 path (P1 #4 / P2 #7 fix): `--config`
+        // carries the upstream HF config.json (Qwen2 schema) so the
+        // attention head split + rope/eps/n_ctx get written; the plain
+        // `--input`-only path still converts with shape-derived hparams
+        // only (and the runtime refuses the LLM bind).
+        let p = parse_args(&args(&[
+            "--model",
+            "cosyvoice2",
+            "--input",
+            "llm.safetensors",
+            "--config",
+            "config.json",
+            "--output",
+            "o.gguf",
+        ]))
+        .expect("valid");
+        assert_eq!(p.model, ModelKind::CosyVoice2);
+        assert_eq!(p.config, Some(PathBuf::from("config.json")));
     }
 
     #[test]

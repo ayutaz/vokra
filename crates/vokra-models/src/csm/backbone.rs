@@ -303,8 +303,13 @@ pub(crate) fn bind_llm_block(
     Ok(LlmBlockWeights {
         attn_norm_gamma: tensor_f32(file, &format!("{p}.sa_norm.scale"), d)?,
         q_w_t: transpose(&q, d, d),
+        // Llama-3.2 attention projections are bias-less (the shared
+        // LlmBlockWeights bias fields exist for the Qwen2 family).
+        q_b: None,
         k_w_t: transpose(&k, kv_hidden, d),
+        k_b: None,
         v_w_t: transpose(&v, kv_hidden, d),
+        v_b: None,
         o_w_t: transpose(&o, d, d),
         ffn_norm_gamma: tensor_f32(file, &format!("{p}.mlp_norm.scale"), d)?,
         ffn_gate_w_t: transpose(&gate, ffn, d),
@@ -411,8 +416,12 @@ fn synthesized_block(
     LlmBlockWeights {
         attn_norm_gamma: vec![1.0f32; d],
         q_w_t: xavier_uniform(rng, d * d, d, d),
+        // Bias-less (Llama-3.2 convention) — mirrors the real binder.
+        q_b: None,
         k_w_t: xavier_uniform(rng, d * kv_hidden, d, kv_hidden),
+        k_b: None,
         v_w_t: xavier_uniform(rng, d * kv_hidden, d, kv_hidden),
+        v_b: None,
         o_w_t: xavier_uniform(rng, d * d, d, d),
         ffn_norm_gamma: vec![1.0f32; d],
         ffn_gate_w_t: xavier_uniform(rng, d * ffn, d, ffn),
@@ -948,13 +957,16 @@ impl CsmBackbone {
                 t,
                 &mut scratch.norm[..t * d],
             )?;
+            // Q/K/V biases are `None` on every CSM store (Llama-3.2 is
+            // bias-less), but honor the shared-struct contract so a bias,
+            // if ever bound, is never silently dropped (FR-EX-08).
             compute.gemm_f32(
                 t,
                 d,
                 d,
                 &scratch.norm[..t * d],
                 &block.q_w_t,
-                None,
+                block.q_b.as_deref(),
                 &mut scratch.q_proj[..t * d],
             )?;
             compute.gemm_f32(
@@ -963,7 +975,7 @@ impl CsmBackbone {
                 d,
                 &scratch.norm[..t * d],
                 &block.k_w_t,
-                None,
+                block.k_b.as_deref(),
                 &mut scratch.k_proj[..t * kv_hidden],
             )?;
             compute.gemm_f32(
@@ -972,7 +984,7 @@ impl CsmBackbone {
                 d,
                 &scratch.norm[..t * d],
                 &block.v_w_t,
-                None,
+                block.v_b.as_deref(),
                 &mut scratch.v_proj[..t * kv_hidden],
             )?;
 

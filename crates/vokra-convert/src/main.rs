@@ -17,8 +17,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, convert_csm_file, convert_dac_file, convert_file, convert_file_quantized,
-    convert_moshi_file, convert_piper_plus_file,
+    ModelKind, convert_cosyvoice2_file, convert_csm_file, convert_dac_file, convert_file,
+    convert_file_quantized, convert_moshi_file, convert_piper_plus_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType, GgufFile};
 
@@ -40,7 +40,11 @@ OPTIONS:
                        as a backward-compatible alias for `whisper` (size is
                        still derived from the checkpoint, not the flag).
     --input <path>     upstream checkpoint file
-    --config <path>    piper-plus config.json (piper-plus only)
+    --config <path>    piper-plus config.json (piper-plus only) OR the
+                       upstream HF config.json for cosyvoice2 (Qwen2
+                       schema; supplies the attention head split +
+                       rope_theta/rms_norm_eps/n_ctx that tensor shapes
+                       cannot determine)
     --output <path>    GGUF file to write
     --quantize <kind>  K-quantize large weight matrices: q4_k | q5_k | q6_k
                        (whisper only; biases/norms stay F32)
@@ -120,6 +124,16 @@ fn main() -> ExitCode {
             // (tokenizer_spm_32k_3.model — public in the kyutai repo;
             // without it the monologue decode fails loudly, M4-06-T22).
             convert_moshi_file(&input, config.as_deref(), &output)
+        }
+        ModelKind::CosyVoice2 => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            // --config carries the upstream HF config.json (Qwen2 schema).
+            // Optional: without it only the shape-derived hparams are
+            // written and the runtime refuses the LLM bind (loud note).
+            convert_cosyvoice2_file(&input, config.as_deref(), &output)
         }
         _ => match quant {
             Some(q) => convert_file_quantized(model, &input, &output, q),

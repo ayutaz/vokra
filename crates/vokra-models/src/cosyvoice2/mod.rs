@@ -218,17 +218,19 @@ impl CosyVoice2Tts {
         check_weight_license(&file, policy)?;
         let config = CosyVoice2Config::from_gguf(&file)?;
         // Try to bind the LLM backbone off the same GGUF. `from_gguf`
-        // reads the LLM-side `vokra.cosyvoice2.arch.*` keys and refuses
-        // the 0-placeholder shape config with `InvalidArgument`. That
-        // rejection is honest at the LLM level (a synthesized fixture
-        // needs real dims), but at the engine level a scaffold-only
-        // converter GGUF must still load — we surface the LLM handle as
-        // `None` in that case so downstream callers get a loud
+        // binds **real weights** when the GGUF carries the backbone
+        // tensors, else a synthesized fixture against the metadata shape;
+        // it refuses a 0-placeholder shape config (pre-hparam-fix
+        // conversions included) with `InvalidArgument`. That rejection is
+        // honest at the LLM level, but at the engine level such a GGUF
+        // must still load — we surface the LLM handle as `None` in that
+        // case so downstream callers get a loud
         // [`VokraError::NotImplemented`] from
         // [`CosyVoice2Tts::synthesize`] rather than an
-        // [`VokraError::InvalidArgument`] on load. Wrong-type keys still
-        // bubble up as `InvalidArgument` (they are structural GGUF
-        // errors, not shape-config zeros).
+        // [`VokraError::InvalidArgument`] on load. Real-weight binding
+        // problems (missing/mis-shaped tensors, untied lm_head) are
+        // `ModelLoad` and bubble up loudly — never a silent fixture
+        // fallback (FR-EX-08).
         let llm = match llm::LlmBackbone::from_gguf(&file, &config) {
             Ok(b) => Some(b),
             Err(VokraError::InvalidArgument(_)) => None,
@@ -285,11 +287,11 @@ impl CosyVoice2Tts {
 
     /// Access to the LLM backbone (M3-09-T07/T08 body).
     ///
-    /// `None` when the GGUF was the shape-only converter path (0-
-    /// placeholder dims — the synthesized fixture path requires real
-    /// dims). Real dims → `Some(LlmBackbone)` whose `forward` /
-    /// `step` / `greedy_decode` run against a synthesized fixture until
-    /// the T02 tensor manifest lands.
+    /// `None` when the GGUF carries 0-placeholder dims (the pre-hparam-fix
+    /// converter path — re-convert with `--config` to populate them).
+    /// Real dims → `Some(LlmBackbone)`: **real weights** when the GGUF
+    /// carries the backbone tensors (`LlmWeights::from_gguf`), else the
+    /// seed-deterministic synthesized fixture (metadata-only test GGUFs).
     #[must_use]
     pub fn llm(&self) -> Option<&llm::LlmBackbone> {
         self.llm.as_ref()
