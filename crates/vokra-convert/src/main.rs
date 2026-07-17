@@ -1,7 +1,7 @@
 //! `vokra-convert` command-line entry point (M0-03, FR-TL-01).
 //!
 //! ```text
-//! vokra-convert --model <whisper|silero-vad|piper-plus|campplus|kokoro|cosyvoice2|voxtral|mimi|dac|csm|moshi>
+//! vokra-convert --model <whisper|silero-vad|piper-plus|campplus|kokoro|cosyvoice2|voxtral|mimi|dac|csm|moshi|denoise>
 //!               --input <ckpt> [--config <side-car>] --output <out.gguf>
 //! ```
 //!
@@ -27,7 +27,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model <cosyvoice2|csm|moshi> --input <ckpt.safetensors> [--config <side-car>] --output <out.gguf>
@@ -215,7 +215,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                     format!(
                         "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | \
                          piper-plus | campplus | kokoro | cosyvoice2 | voxtral | mimi | \
-                         dac | csm | moshi)"
+                         dac | csm | moshi | denoise)"
                     )
                 })?);
                 i += 2;
@@ -479,6 +479,31 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
             println!(
                 "; arch={arch} temporal_layers={tm_layers} depth_layers={dt_layers} \
                  n_q_in={n_q_in} dep_q={dep_q} attribution={attribution}"
+            );
+        }
+        ModelKind::Denoise => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let n_fft = file
+                .get("vokra.denoise.n_fft")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_erb = file
+                .get("vokra.denoise.n_erb")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let df_bins = file
+                .get("vokra.denoise.df_bins")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let df_order = file
+                .get("vokra.denoise.df_order")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} n_fft={n_fft} n_erb={n_erb} df_bins={df_bins} df_order={df_order}"
             );
         }
         ModelKind::Dac => {

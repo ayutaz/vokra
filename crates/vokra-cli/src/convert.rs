@@ -22,7 +22,7 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
@@ -33,7 +33,9 @@ USAGE:
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
                               campplus | kokoro | cosyvoice2 | voxtral | mimi | dac |
-                              csm | moshi
+                              csm | moshi | denoise
+                              (denoise: DeepFilterNet3 — a prepared safetensors
+                              from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
                               conversion; to embed the tokenizer side-car use the
                               standalone `vokra-convert` binary's --config)
@@ -110,7 +112,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                         "unknown model `{v}` \
                          (whisper [alias: whisper-base] | silero-vad | piper-plus | \
                          campplus | kokoro | cosyvoice2 | voxtral | mimi | dac | \
-                         csm | moshi)"
+                         csm | moshi | denoise)"
                     )
                 })?);
                 i += 2;

@@ -6,8 +6,9 @@
 //! independently here, and the implementations must match it within
 //! `atol = 0.01` (NFR-QL-01).
 //!
-//! `denoise`'s real parity needs the DeepFilterNet checkpoint and is the owner
-//! leg (T17) — deliberately absent here (no synthetic-weight pass is faked).
+//! `denoise`'s real parity lives in `parity_denoise_dfn3.rs` (env-gated on
+//! the real DeepFilterNet3 checkpoint + reference taps) and in the committed
+//! primitive fixtures under `tests/parity/dfn3/` — deliberately absent here.
 
 use vokra_ops::{AgcAttrs, HpfAttrs, LoudnessNormAttrs, agc, hpf, integrated_lufs, loudness_norm};
 

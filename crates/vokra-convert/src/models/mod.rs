@@ -4,8 +4,8 @@ pub(crate) mod campplus;
 pub(crate) mod cosyvoice2;
 pub(crate) mod csm;
 pub(crate) mod dac;
-// M4-20 T12: DeepFilterNet `denoise` → `vokra.denoise.*` GGUF writer (real
-// checkpoint parse is owner, T17).
+// M4-20 T12/T17: DeepFilterNet3 `denoise` → `vokra.denoise.*` GGUF (real
+// checkpoint parse from the prepared safetensors, verbatim upstream names).
 pub mod denoise;
 pub(crate) mod kokoro;
 pub(crate) mod mimi;

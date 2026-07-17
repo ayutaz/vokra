@@ -122,6 +122,14 @@ pub enum ModelKind {
     /// — the converter stamps the FR-MD-09 attribution text). The raw
     /// SentencePiece tokenizer embeds through [`convert_moshi_file`].
     Moshi,
+    /// Rikorose/DeepFilterNet **DeepFilterNet3** denoiser checkpoint (M4-20
+    /// T17): a **prepared** safetensors (from
+    /// `tools/parity/dfn3_prepare_checkpoint.py` — the upstream release is a
+    /// torch-pickle `.ckpt.best` inside `models/DeepFilterNet3.zip`). Every
+    /// inference tensor binds verbatim under its upstream name; the
+    /// published DFN3 hyper-parameters ride the `vokra.denoise.*` chunk.
+    /// Dual MIT / Apache-2.0 code + weights (docs/license-audit.md).
+    Denoise,
 }
 
 impl ModelKind {
@@ -147,6 +155,7 @@ impl ModelKind {
             "dac" => Some(Self::Dac),
             "csm" => Some(Self::Csm),
             "moshi" => Some(Self::Moshi),
+            "denoise" => Some(Self::Denoise),
             _ => None,
         }
     }
@@ -165,6 +174,7 @@ impl ModelKind {
             Self::Dac => "dac",
             Self::Csm => "csm",
             Self::Moshi => "moshi",
+            Self::Denoise => "denoise",
         }
     }
 }
@@ -401,6 +411,20 @@ pub fn convert_file(
                 report.written, report.skipped_non_float, report.tokenizer_embedded
             )];
             notes.extend(report.notes.iter().map(|n| format!("csm warning: {n}")));
+            (builder, notes)
+        }
+        ModelKind::Denoise => {
+            // M4-20 T17: prepared DFN3 safetensors → verbatim upstream-named
+            // tensors + the `vokra.denoise.*` chunk. The routine hard-errors
+            // on any missing / mis-shaped / unknown tensor and re-binds its
+            // own output through the runtime loader before returning.
+            let (builder, written) = models::denoise::convert_builder(bytes)
+                .map_err(|e| ConvertError::Parse(e.to_string()))?;
+            let notes = vec![format!(
+                "denoise: {written} DeepFilterNet3 tensors written verbatim (dead \
+                 checkpoint tensors skipped by policy: erb_fb, df_dec.df_fc_a.*), \
+                 loadability re-checked via DenoiseModel::from_gguf"
+            )];
             (builder, notes)
         }
     };
@@ -835,9 +859,9 @@ pub fn convert_moshi_file(
 /// shape as the module-private [`models::voxtral::VoxtralConfig`], re-exported
 /// here so external callers can build one without pulling in the private
 /// module.
-// M4-20 T12: DeepFilterNet `denoise` offline GGUF path (real checkpoint parse
-// is owner, T17).
-pub use models::denoise::{convert_denoise_from_model, convert_denoise_synthetic};
+// M4-20 T12/T17: DeepFilterNet3 `denoise` offline GGUF path (real checkpoint
+// parse from the prepared safetensors + synthetic round-trip writer).
+pub use models::denoise::{convert_denoise_bytes, convert_denoise_file, convert_denoise_synthetic};
 pub use models::voxtral::VoxtralConfig;
 
 /// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through
