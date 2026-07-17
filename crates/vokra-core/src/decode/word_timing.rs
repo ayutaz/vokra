@@ -228,8 +228,13 @@ pub fn token_alignment(attn: &CrossAttention, params: &AlignmentParams) -> Resul
 /// Groups per-token start times into [`WordTiming`]s given each word's token
 /// count (`word_token_lens`, tokenizer-specific — supplied by the caller). The
 /// word `w` covers `tokens[b_w .. b_{w+1})`; its start is that token's start
-/// time and its end is the next word's start (the last word ends at
-/// `final_time`, the total audio duration in seconds). ADR M4-20 §D-3.
+/// time and its end is the next word's start. The last word ends at
+/// `final_time` — the **terminal-emission arrival**: openai-whisper aligns the
+/// `n + 1` emission rows `[c_0 .. c_{n-1}, eot]` and bounds the last word by
+/// the eot row's arrival (`end_times = jump_times[word_boundaries[1:]]`,
+/// timing.py:226/231), so the caller passes that arrival here — never the
+/// padded-window end (the campaign-2 "last word ends at 30.000 s" pad leak).
+/// ADR M4-20 §D-3.
 ///
 /// # Errors
 ///
@@ -272,6 +277,138 @@ pub fn words_from_alignment(
         cursor = token_end;
     }
     Ok(out)
+}
+
+/// Punctuation folded into the **following** word (openai-whisper
+/// `add_word_timestamps` default `prepend_punctuations`, timing.py:286).
+pub const PREPEND_PUNCTUATIONS: &str = "\"'“¿([{-";
+
+/// Punctuation folded into the **previous** word (openai-whisper
+/// `add_word_timestamps` default `append_punctuations`, timing.py:287).
+pub const APPEND_PUNCTUATIONS: &str = "\"'.。,，!！?？:：”)]}、";
+
+/// Folds punctuation-only words into their neighbours (openai-whisper
+/// `timing.py::merge_punctuations`, transcribed — CLAUDE.md ハルシネーション厳禁).
+///
+/// `texts` is the rendered word string per timing (tokenizer-specific —
+/// supplied by the caller, leading spaces preserved), kept parallel to
+/// `timings`. Two passes, exactly upstream (timing.py:245-276):
+///
+/// 1. **prepend** (back-to-front): a word that starts with a space and whose
+///    trimmed text is contained in `prepended` is folded into the *following*
+///    word (`following.word = previous.word + following.word`, tokens
+///    concatenated). The following word keeps its **own** start/end — the
+///    punctuation's arrival time is dropped.
+/// 2. **append** (front-to-back): when the previous word does not end with a
+///    space and the following word's text is contained in `appended`, the
+///    following word is folded into the *previous* one, which keeps its
+///    **own** start/end.
+///
+/// Both containment tests mirror Python's substring `in` (upstream checks
+/// `previous.word.strip() in prepended` / `following.word in appended`),
+/// including the empty-string edge: an already-emptied entry is re-absorbed as
+/// a no-op, exactly as upstream. Merged-away entries are removed at the end
+/// (upstream keeps them with `word == ""` and filters on output).
+///
+/// Token spans: upstream concatenates token *lists*; here the merged span is
+/// the union of the two contiguous spans (an emptied entry contributes
+/// nothing). Words come from a contiguous grouping ([`words_from_alignment`]),
+/// so non-adjacent non-empty spans cannot arise from these merges; a gap is an
+/// explicit [`VokraError::InvalidArgument`] (FR-EX-08), never silently bridged.
+///
+/// # Errors
+///
+/// [`VokraError::InvalidArgument`] when `texts.len() != timings.len()` or on a
+/// non-contiguous span union (defensive; unreachable for
+/// [`words_from_alignment`] output).
+pub fn merge_punctuations(
+    timings: &mut Vec<WordTiming>,
+    texts: &mut Vec<String>,
+    prepended: &str,
+    appended: &str,
+) -> Result<()> {
+    if timings.len() != texts.len() {
+        return Err(VokraError::InvalidArgument(format!(
+            "word_timing: merge_punctuations texts len {} != timings len {}",
+            texts.len(),
+            timings.len()
+        )));
+    }
+    let n = timings.len();
+    if n < 2 {
+        return Ok(());
+    }
+
+    // Span concatenation: `previous.tokens + following.tokens` (upstream).
+    // An emptied span contributes nothing; both non-empty must be adjacent.
+    fn concat_span(a: (usize, usize), b: (usize, usize)) -> Result<(usize, usize)> {
+        if a.0 == a.1 {
+            return Ok(b);
+        }
+        if b.0 == b.1 {
+            return Ok(a);
+        }
+        if a.1 != b.0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "word_timing: merge_punctuations spans not adjacent: {a:?} + {b:?}"
+            )));
+        }
+        Ok((a.0, b.1))
+    }
+    // Canonical emptied entry (upstream `word = ""; tokens = []`).
+    fn clear(timings: &mut [WordTiming], texts: &mut [String], k: usize) {
+        texts[k].clear();
+        timings[k].token_end = timings[k].token_start;
+    }
+
+    // Pass 1: merge prepended punctuations (timing.py:246-261).
+    let mut i = n - 2;
+    let mut j = n - 1;
+    loop {
+        if texts[i].starts_with(' ') && prepended.contains(texts[i].trim()) {
+            // Prepend it to the following word (which keeps its own times).
+            let merged = format!("{}{}", texts[i], texts[j]);
+            texts[j] = merged;
+            let span = concat_span(
+                (timings[i].token_start, timings[i].token_end),
+                (timings[j].token_start, timings[j].token_end),
+            )?;
+            (timings[j].token_start, timings[j].token_end) = span;
+            clear(timings, texts, i);
+        } else {
+            j = i;
+        }
+        if i == 0 {
+            break;
+        }
+        i -= 1;
+    }
+
+    // Pass 2: merge appended punctuations (timing.py:263-276).
+    let mut i = 0;
+    let mut j = 1;
+    while j < n {
+        if !texts[i].ends_with(' ') && appended.contains(texts[j].as_str()) {
+            // Append it to the previous word (which keeps its own times).
+            let merged = format!("{}{}", texts[i], texts[j]);
+            texts[i] = merged;
+            let span = concat_span(
+                (timings[i].token_start, timings[i].token_end),
+                (timings[j].token_start, timings[j].token_end),
+            )?;
+            (timings[i].token_start, timings[i].token_end) = span;
+            clear(timings, texts, j);
+        } else {
+            i = j;
+        }
+        j += 1;
+    }
+
+    // Drop merged-away entries (upstream filters `if timing.word` on output).
+    let mut keep = texts.iter().map(|t| !t.is_empty());
+    timings.retain(|_| keep.next().expect("texts parallel to timings"));
+    texts.retain(|t| !t.is_empty());
+    Ok(())
 }
 
 /// Dynamic time warping (openai-whisper `timing.py::dtw`, ADR M4-20 §D-2).
@@ -528,6 +665,125 @@ mod tests {
                 end: 0.20
             }
         );
+    }
+
+    // ---- merge_punctuations (openai timing.py:245-276, transcribed) --------
+
+    fn wt(token_start: usize, token_end: usize, start: f32, end: f32) -> WordTiming {
+        WordTiming {
+            token_start,
+            token_end,
+            start,
+            end,
+        }
+    }
+
+    /// Append case: a bare "." (no leading space) folds into the previous
+    /// word, which keeps its OWN start/end (the punctuation's times drop) and
+    /// extends its token span.
+    #[test]
+    fn merge_appended_punctuation_folds_into_previous() {
+        let mut timings = vec![wt(0, 2, 0.0, 0.5), wt(2, 3, 0.5, 0.9)];
+        let mut texts = vec![" Hello".to_string(), ".".to_string()];
+        merge_punctuations(
+            &mut timings,
+            &mut texts,
+            PREPEND_PUNCTUATIONS,
+            APPEND_PUNCTUATIONS,
+        )
+        .unwrap();
+        assert_eq!(texts, vec![" Hello.".to_string()]);
+        assert_eq!(timings, vec![wt(0, 3, 0.0, 0.5)]);
+    }
+
+    /// Prepend case: a " ¿" (leading space, prepend set) folds into the
+    /// following word, which keeps its OWN start/end.
+    #[test]
+    fn merge_prepended_punctuation_folds_into_following() {
+        let mut timings = vec![wt(0, 1, 0.0, 0.3), wt(1, 2, 0.3, 0.8)];
+        let mut texts = vec![" ¿".to_string(), " Qué".to_string()];
+        merge_punctuations(
+            &mut timings,
+            &mut texts,
+            PREPEND_PUNCTUATIONS,
+            APPEND_PUNCTUATIONS,
+        )
+        .unwrap();
+        assert_eq!(texts, vec![" ¿ Qué".to_string()]);
+        assert_eq!(timings, vec![wt(0, 2, 0.3, 0.8)]);
+    }
+
+    /// Chained appends: "Hi" + "." + ")" — both fold into "Hi" (upstream keeps
+    /// `i` anchored on the absorbing word while `j` walks forward).
+    #[test]
+    fn merge_appended_punctuation_chains() {
+        let mut timings = vec![wt(0, 1, 0.0, 0.2), wt(1, 2, 0.2, 0.4), wt(2, 3, 0.4, 0.6)];
+        let mut texts = vec![" Hi".to_string(), ".".to_string(), ")".to_string()];
+        merge_punctuations(
+            &mut timings,
+            &mut texts,
+            PREPEND_PUNCTUATIONS,
+            APPEND_PUNCTUATIONS,
+        )
+        .unwrap();
+        assert_eq!(texts, vec![" Hi.)".to_string()]);
+        assert_eq!(timings, vec![wt(0, 3, 0.0, 0.2)]);
+    }
+
+    /// A punctuation word WITH a leading space does not append-merge (Python
+    /// substring test: `" ."` is not contained in the append set).
+    #[test]
+    fn merge_skips_appended_punctuation_with_leading_space() {
+        let mut timings = vec![wt(0, 1, 0.0, 0.2), wt(1, 2, 0.2, 0.4)];
+        let mut texts = vec![" Hello".to_string(), " .".to_string()];
+        merge_punctuations(
+            &mut timings,
+            &mut texts,
+            PREPEND_PUNCTUATIONS,
+            APPEND_PUNCTUATIONS,
+        )
+        .unwrap();
+        assert_eq!(
+            texts.len(),
+            2,
+            "leading-space '.' must not merge: {texts:?}"
+        );
+        assert_eq!(timings[1], wt(1, 2, 0.2, 0.4));
+    }
+
+    /// No punctuation → identity (both vectors unchanged).
+    #[test]
+    fn merge_without_punctuation_is_identity() {
+        let mut timings = vec![wt(0, 1, 0.0, 0.2), wt(1, 3, 0.2, 0.4)];
+        let mut texts = vec![" a".to_string(), " b".to_string()];
+        let before_t = timings.clone();
+        let before_x = texts.clone();
+        merge_punctuations(
+            &mut timings,
+            &mut texts,
+            PREPEND_PUNCTUATIONS,
+            APPEND_PUNCTUATIONS,
+        )
+        .unwrap();
+        assert_eq!(timings, before_t);
+        assert_eq!(texts, before_x);
+    }
+
+    /// Length mismatch between texts and timings is an explicit error
+    /// (FR-EX-08), never a partial merge.
+    #[test]
+    fn merge_rejects_length_mismatch() {
+        let mut timings = vec![wt(0, 1, 0.0, 0.2)];
+        let mut texts = vec![" a".to_string(), ".".to_string()];
+        assert!(matches!(
+            merge_punctuations(
+                &mut timings,
+                &mut texts,
+                PREPEND_PUNCTUATIONS,
+                APPEND_PUNCTUATIONS
+            ),
+            Err(VokraError::InvalidArgument(_))
+        ));
     }
 
     #[test]

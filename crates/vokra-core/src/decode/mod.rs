@@ -46,7 +46,8 @@ pub use cfg::{CfgMode, apply_cfg, apply_cfg_inplace};
 pub use sampler::{Sampler, SamplerConfig, argmax, sample_sequence};
 pub use stepper::{DecodeStepper, TOKEN_FLAG_EOT};
 pub use word_timing::{
-    AlignmentParams, CrossAttention, WordTiming, token_alignment, words_from_alignment,
+    APPEND_PUNCTUATIONS, AlignmentParams, CrossAttention, PREPEND_PUNCTUATIONS, WordTiming,
+    merge_punctuations, token_alignment, words_from_alignment,
 };
 
 /// Raw next-token logits for a model, the low-level model ↔ decoder primitive.
