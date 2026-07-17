@@ -353,17 +353,47 @@ async fn drain_audio_stream(sock: TcpStream) -> std::io::Result<Option<AudioStre
             .unwrap_or_default()
             .to_string();
 
-        // Payload length announced by the header. We accept either
-        // `payload_length` or `data_length` (the exact key is spec-
-        // fixed at T14; supporting both keeps the test resilient to
-        // the confirm outcome).
+        // `data_length` and `payload_length` are DISTINCT regions per the
+        // Wyoming spec (T14 confirmed): `data_length` bytes of structured
+        // JSON, then `payload_length` bytes of binary PCM. The pre-T14
+        // version of this client treated them as one either/or key — a
+        // framing bug that desyncs on any event carrying both (every
+        // audio-chunk under upstream >= 1.2.0 framing, per
+        // `wyoming/event.py::async_write_event`).
+        let data_len = value
+            .get("data_length")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
         let payload_len = value
             .get("payload_length")
-            .or_else(|| value.get("data_length"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as usize;
 
-        // Frame size (int16 mono == 2). Announced on audio-start.
+        // Read + merge the data continuation (upstream async_read_event
+        // semantics: continuation keys update header-inline data).
+        let mut value = value;
+        if data_len > 0 {
+            let mut buf = vec![0u8; data_len];
+            reader.read_exact(&mut buf).await?;
+            let cont: serde_json::Value =
+                serde_json::from_slice(&buf).map_err(std::io::Error::other)?;
+            let base = value
+                .as_object_mut()
+                .expect("header is a JSON object")
+                .entry("data")
+                .or_insert_with(|| serde_json::json!({}));
+            if let (Some(base), Some(extra)) = (base.as_object_mut(), cont.as_object()) {
+                for (k, v) in extra {
+                    base.insert(k.clone(), v.clone());
+                }
+            } else {
+                *base = cont;
+            }
+        }
+
+        // Frame size (int16 mono == 2). Announced on audio-start — under
+        // upstream framing these fields arrive via the data continuation
+        // merged above.
         if ty == "audio-start" {
             let width = value
                 .get("data")
@@ -572,8 +602,15 @@ fn loopback_cfg() -> Config {
     }
 }
 
-/// Read one framed Wyoming event (header line + `read_exact` payload) — never
-/// line-buffered over the payload region (R5). `None` on clean EOF.
+/// Read one framed Wyoming event (header line + `read_exact` data + payload)
+/// — never line-buffered over the binary regions (R5). `None` on clean EOF.
+///
+/// The `data_length` continuation is MERGED into the returned header's `data`
+/// field, mirroring the genuine `wyoming` package's reader
+/// (`wyoming/event.py::async_read_event`: `data_dict = event_dict.get("data",
+/// {}); data_dict.update(json.loads(data_bytes))` — continuation keys win).
+/// The server writes upstream (>= 1.2.0) framing where event fields live ONLY
+/// in the continuation, so a merge-less reader would see no `data` at all.
 async fn read_frame<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut BufReader<R>,
 ) -> std::io::Result<Option<(serde_json::Value, Vec<u8>)>> {
@@ -585,15 +622,30 @@ async fn read_frame<R: tokio::io::AsyncRead + Unpin>(
     while matches!(line.last(), Some(b'\n' | b'\r')) {
         line.pop();
     }
-    let hdr: serde_json::Value = serde_json::from_slice(&line).map_err(std::io::Error::other)?;
+    let mut hdr: serde_json::Value =
+        serde_json::from_slice(&line).map_err(std::io::Error::other)?;
     let dl = hdr.get("data_length").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let pl = hdr
         .get("payload_length")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as usize;
-    let mut data = vec![0u8; dl];
     if dl > 0 {
+        let mut data = vec![0u8; dl];
         reader.read_exact(&mut data).await?;
+        let cont: serde_json::Value =
+            serde_json::from_slice(&data).map_err(std::io::Error::other)?;
+        let base = hdr
+            .as_object_mut()
+            .expect("wyoming header is a JSON object")
+            .entry("data")
+            .or_insert_with(|| serde_json::json!({}));
+        if let (Some(base), Some(extra)) = (base.as_object_mut(), cont.as_object()) {
+            for (k, v) in extra {
+                base.insert(k.clone(), v.clone()); // dict.update semantics
+            }
+        } else {
+            *base = cont;
+        }
     }
     let mut payload = vec![0u8; pl];
     if pl > 0 {
@@ -873,9 +925,14 @@ async fn m4_19_faster_whisper_behavioral_parity_shape() {
         hdr.pointer("/data/text").and_then(|v| v.as_str()).is_some(),
         "transcript must carry a string data.text field",
     );
+    // Upstream writers OMIT `payload_length` entirely when there is no
+    // payload (`event.py async_write_event`: `if event.payload: ...`) —
+    // absent-or-zero both mean "no binary payload follows".
     assert_eq!(
-        hdr.get("payload_length").and_then(|v| v.as_u64()),
-        Some(0),
+        hdr.get("payload_length")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        0,
         "a transcript event carries no binary payload",
     );
     assert!(

@@ -37,10 +37,36 @@
 
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 use vokra_server::{Config, spawn_server_for_test};
+
+/// Read the `data_length` continuation announced by `header_line` and parse
+/// it as the event's `data`, per the upstream framing every `wyoming` >=
+/// 1.2.0 peer uses (`wyoming/event.py::async_write_event` pops `data` out of
+/// the header into a `data_length`-framed continuation; `async_read_event`
+/// merges it back). Returns `{}` for a data-less (header-only) event.
+async fn read_data_continuation<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+    header_line: &str,
+) -> Result<serde_json::Value, String> {
+    let header: serde_json::Value = serde_json::from_str(header_line.trim_end_matches('\n'))
+        .map_err(|e| format!("header not JSON ({e}): {header_line:?}"))?;
+    let dl = header
+        .get("data_length")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    if dl == 0 {
+        return Ok(serde_json::json!({}));
+    }
+    let mut buf = vec![0u8; dl];
+    tokio::time::timeout(Duration::from_secs(5), reader.read_exact(&mut buf))
+        .await
+        .map_err(|_| "data continuation read timed out".to_string())?
+        .map_err(|e| format!("data continuation read failed: {e}"))?;
+    serde_json::from_slice(&buf).map_err(|e| format!("data continuation not JSON: {e}"))
+}
 
 /// The `describe` -> `info` round trip MUST return a well-formed
 /// `type: "info"` JSONL reply within a bounded time. A broken accept loop
@@ -62,7 +88,7 @@ async fn wyoming_info_reply_is_returned_for_describe() {
     // Wrap the client work in an async block so we can always trigger the
     // shutdown afterwards — even on assertion panic, tokio drops the
     // TcpStream and the shutdown trigger drains the listener.
-    let result: Result<String, String> = async {
+    let result: Result<(String, serde_json::Value), String> = async {
         let mut sock = TcpStream::connect(handles.wyoming_actual)
             .await
             .map_err(|e| format!("connect to wyoming port failed: {e}"))?;
@@ -82,7 +108,8 @@ async fn wyoming_info_reply_is_returned_for_describe() {
         // Prior to the accept-loop fix this returned Ok(0) (EOF); prior
         // to the runtime-lifetime fix this timed out because the runtime
         // had already been dropped. After both fixes this returns a
-        // populated `info` line.
+        // populated `info` line, followed by its `data_length` continuation
+        // (the info body — upstream >= 1.2.0 framing).
         let mut reader = BufReader::new(sock);
         let mut line = String::new();
         let n = tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line))
@@ -97,7 +124,8 @@ async fn wyoming_info_reply_is_returned_for_describe() {
                 "server closed with zero bytes — accept loop regressed to accept-and-close?".into(),
             );
         }
-        Ok(line)
+        let data = read_data_continuation(&mut reader, &line).await?;
+        Ok((line, data))
     }
     .await;
 
@@ -109,7 +137,7 @@ async fn wyoming_info_reply_is_returned_for_describe() {
 
     // Now assert. The message deliberately points at the two regressed
     // paths so a future maintainer sees the fix boundary in the failure.
-    let line = result.unwrap_or_else(|e| panic!("wyoming info reply not returned: {e}"));
+    let (line, data) = result.unwrap_or_else(|e| panic!("wyoming info reply not returned: {e}"));
 
     // 1. Wire framing invariants — exactly one JSONL terminator, no
     //    embedded newlines. A framing bug in `write_response` would trip
@@ -141,22 +169,48 @@ async fn wyoming_info_reply_is_returned_for_describe() {
         "expected `type` == \"info\" for a `describe` probe (got {ty:?}); full reply: {trimmed:?}"
     );
 
-    // 3. Structural assertion — the info body advertises an `asr` list.
+    // 3. Upstream (>= 1.2.0) framing — the info body travels in the
+    //    `data_length` continuation, NOT inline in the header. The original
+    //    golden here pinned the legacy 1.0.0 inline framing ("data_length ==
+    //    0, data in the header") — a test bug: real `wyoming` servers write
+    //    the continuation (`event.py async_write_event` pops `data` out of
+    //    the header) and every HA-generation client reads it back with the
+    //    merge in `async_read_event`.
+    assert!(
+        obj.get("data").is_none(),
+        "info reply must not inline `data` in the header (upstream framing): {trimmed:?}",
+    );
+    let data_length = obj
+        .get("data_length")
+        .and_then(|v| v.as_u64())
+        .unwrap_or_else(|| panic!("info reply announces no `data_length`: {trimmed:?}"));
+    assert!(
+        data_length > 0,
+        "info reply must announce its data continuation: {trimmed:?}",
+    );
+    // `payload_length` is OMITTED when there is no binary payload
+    // (`if event.payload:` upstream) — absent-or-zero both mean none.
+    assert_eq!(
+        obj.get("payload_length")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        0,
+        "info reply must not announce a binary payload (describe is data-only)",
+    );
+
+    // 4. Structural assertion — the info body advertises an `asr` list.
     //    In the discovery-only startup path this list is EMPTY (no
     //    `InferenceService` wired yet), but the field itself MUST be
     //    present and an array. This is the shape HA parses against.
-    let data = obj
-        .get("data")
-        .unwrap_or_else(|| panic!("info reply has no `data` field: {trimmed:?}"));
     let data_obj = data
         .as_object()
-        .unwrap_or_else(|| panic!("info reply `data` is not a JSON object: {trimmed:?}"));
+        .unwrap_or_else(|| panic!("info body is not a JSON object: {data:?}"));
     let asr = data_obj
         .get("asr")
-        .unwrap_or_else(|| panic!("info reply `data.asr` is missing: {trimmed:?}"));
+        .unwrap_or_else(|| panic!("info body `asr` is missing: {data:?}"));
     let asr_arr = asr
         .as_array()
-        .unwrap_or_else(|| panic!("info reply `data.asr` is not an array: {trimmed:?}"));
+        .unwrap_or_else(|| panic!("info body `asr` is not an array: {data:?}"));
     // Discovery-only path: asr is empty. If the accept loop ever changes
     // to the full `run_asr_connection` path, this assertion will need to
     // become an inclusion check for the wired model names — kept as a
@@ -164,30 +218,9 @@ async fn wyoming_info_reply_is_returned_for_describe() {
     // rather than a silent drift.
     assert!(
         asr_arr.is_empty(),
-        "info reply `data.asr` should be empty in the discovery-only startup path (no \
+        "info body `asr` should be empty in the discovery-only startup path (no \
          `InferenceService` wired yet); got {asr_arr:?}. If T04 has wired the ASR \
          registry, update this assertion to check the expected model names.",
-    );
-
-    // 4. Data-length / payload-length are 0 in the JSONL header — a
-    //    non-zero value here would indicate a mis-serialised header
-    //    frame (client would try to read binary payload bytes that
-    //    weren't emitted).
-    let data_length = obj
-        .get("data_length")
-        .and_then(|v| v.as_u64())
-        .unwrap_or_else(|| panic!("info reply has no `data_length`: {trimmed:?}"));
-    let payload_length = obj
-        .get("payload_length")
-        .and_then(|v| v.as_u64())
-        .unwrap_or_else(|| panic!("info reply has no `payload_length`: {trimmed:?}"));
-    assert_eq!(
-        data_length, 0,
-        "info reply should not announce a separate data blob for a describe probe",
-    );
-    assert_eq!(
-        payload_length, 0,
-        "info reply must not announce a binary payload (describe is header-only)",
     );
 }
 
@@ -274,7 +307,7 @@ async fn wyoming_unknown_event_after_describe_returns_error_not_silence() {
     };
     let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn server");
 
-    let result: Result<(String, String), String> = async {
+    let result: Result<(String, String, serde_json::Value), String> = async {
         let mut sock = TcpStream::connect(handles.wyoming_actual)
             .await
             .map_err(|e| format!("connect failed: {e}"))?;
@@ -296,6 +329,10 @@ async fn wyoming_unknown_event_after_describe_returns_error_not_silence() {
         if n == 0 {
             return Err("EOF on info read".into());
         }
+        // Consume the info body's data continuation before the next header
+        // (upstream >= 1.2.0 framing) — leaving it unread would make the
+        // next read_line return continuation bytes glued to the error header.
+        let _info_data = read_data_continuation(&mut reader, &info_line).await?;
 
         // Second: unknown event on the same connection -> error.
         write_half
@@ -316,14 +353,16 @@ async fn wyoming_unknown_event_after_describe_returns_error_not_silence() {
         if m == 0 {
             return Err("EOF on error read — loop did not survive unknown event".into());
         }
-        Ok((info_line, err_line))
+        let err_data = read_data_continuation(&mut reader, &err_line).await?;
+        Ok((info_line, err_line, err_data))
     }
     .await;
 
     trigger.trigger();
     tokio::time::sleep(Duration::from_millis(20)).await;
 
-    let (info_line, err_line) = result.unwrap_or_else(|e| panic!("multi-event flow failed: {e}"));
+    let (info_line, err_line, err_data) =
+        result.unwrap_or_else(|e| panic!("multi-event flow failed: {e}"));
 
     let info_val: serde_json::Value = serde_json::from_str(info_line.trim_end_matches('\n'))
         .expect("info line must parse as JSON");
@@ -342,8 +381,9 @@ async fn wyoming_unknown_event_after_describe_returns_error_not_silence() {
     );
     // The error message should mention discovery-only mode so operators
     // can diagnose the "why doesn't ASR work?" question at the wire level.
-    let msg = err_val
-        .pointer("/data/message")
+    // Under upstream framing the message rides the data continuation.
+    let msg = err_data
+        .get("message")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     assert!(

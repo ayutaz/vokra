@@ -31,8 +31,8 @@ Header JSON shape (subset used by Vokra):
 | Field            | Type           | Notes                                                              |
 |------------------|----------------|--------------------------------------------------------------------|
 | `type`           | string         | Event kind, e.g. `audio-chunk`, `transcribe`, `synthesize`, `info` |
-| `data`           | object \| null | Small structured payload (rate, width, channels, text, ...)         |
-| `data_length`    | integer \| 0   | Byte count of the optional structured `data` blob (rarely used)     |
+| `data`           | object \| null | Header-inline structured payload — LEGACY (`wyoming` 1.0.0) location |
+| `data_length`    | integer \| 0   | Byte count of the structured `data` continuation — the STANDARD location for event fields since `wyoming` 1.2.0 |
 | `payload_length` | integer \| 0   | Byte count of the raw binary payload (PCM samples for audio-chunk)  |
 | `version`        | string \| null | Optional protocol version tag                                       |
 
@@ -41,6 +41,25 @@ immediately at the next byte (no attachment). This document records
 `payload_length` as the load-bearing field for audio framing; a client that
 ignores it and line-buffers the socket will corrupt any payload containing
 `0x0A`.
+
+### 2.0 Data continuation merge (load-bearing since `wyoming` 1.2.0)
+
+`wyoming` 1.0.0 wrote the event's `data` dict inline in the header.
+**`wyoming` 1.2.0+ (through 1.10.0, the entire Home Assistant generation)
+pops `data` OUT of the header into the `data_length` continuation**
+(`wyoming/event.py::async_write_event`), and the reader MERGES it back over
+any header-inline `data`, continuation keys winning
+(`async_read_event`: `data_dict = event_dict.get("data", {});
+data_dict.update(json.loads(data_bytes))`). Concretely: the `audio-start`
+rate/width/channels, every `audio-chunk`'s format dict, the `synthesize`
+text, and `transcribe` params all arrive in the continuation from any modern
+client. A server that reads-and-discards the continuation therefore fails
+every data-bearing event (the campaign-2 P1). Vokra's parser implements the
+merge (`merge_data_continuation` in `src/api/wyoming.rs`); Vokra's writer
+mirrors the modern upstream writer (`write_event_frame`) — data in the
+continuation, `data_length`/`payload_length` omitted when absent, no inline
+`data` key. The legacy inline style remains accepted on the read side via
+the same merged view.
 
 ### 2.1 Event catalogue used by Vokra (v0.5)
 
@@ -93,13 +112,20 @@ Rules:
 
 1. Header line: `read_until(b'\n', ...)`. Enforce a max header length
    (e.g. 64 KiB) to bound memory before `serde_json::from_str`.
-2. `data` bytes: `read_exact(&mut buf[..data_length])`.
+2. `data` bytes: `read_exact(&mut buf[..data_length])`, then **MERGE** the
+   parsed JSON object over any header-inline `data` (continuation keys win —
+   §2.0). Reading-and-discarding here loses every event field a modern
+   client sends. Cap `data_length` (1 MiB) before allocating — the upstream
+   python lib allocates blindly; Vokra rejects with an explicit error.
 3. `payload` bytes: `read_exact(&mut buf[..payload_length])`. The payload is
    opaque binary — treating it as text WILL corrupt PCM whenever a sample
    byte equals `0x0A`.
-4. Writer side is the mirror: serialize header JSON, write `\n`, then write
-   the exact `data_length` and `payload_length` bytes with `write_all`. Never
-   interleave writes from multiple tasks on the same socket without a mutex.
+4. Writer side mirrors the MODERN upstream writer (`async_write_event`,
+   `wyoming` >= 1.2.0): pop `data` out of the header into the continuation,
+   set `data_length` (omit when data is empty), set `payload_length` only
+   when a payload follows, then write header JSON + `\n` + data bytes +
+   payload bytes with `write_all`. Never interleave writes from multiple
+   tasks on the same socket without a mutex.
 
 ## 4. Streaming bridge to Vokra runtime
 

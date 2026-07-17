@@ -33,6 +33,17 @@
 //! would corrupt PCM. Enforced by the parser here and by the
 //! `parses_jsonl_header_then_reads_exact_payload_bytes` test below.
 //!
+//! **Data continuation merge (upstream `wyoming` >= 1.2.0):** since
+//! `wyoming` 1.2.0 the python client/server put every event field
+//! (audio-start rate/width/channels, the synthesize text, transcribe params)
+//! into the `data_length` continuation, NOT inline in the header. The reader
+//! pump merges the continuation over any header-inline `data` exactly like
+//! `wyoming/event.py::async_read_event` (continuation keys win —
+//! [`merge_data_continuation`]), and the write path mirrors
+//! `async_write_event` (data popped into the continuation —
+//! [`write_event_frame`]). Header-inline data (the 1.0.0 style) remains
+//! accepted on the read side via the same merged view.
+//!
 //! **FR-EX-08:** unknown model / backend op holes surface as an `error`
 //! event (`type: "error"`, structured `data.message`), never a silent
 //! fallback. **NFR-RL-07:** any panic in this task is contained by
@@ -63,6 +74,15 @@ pub const MAX_HEADER_BYTES: usize = 64 * 1024;
 /// chunk at ~87 s of 48 kHz mono int16, far beyond any realistic satellite
 /// framing (~40 ms per chunk).
 pub const MAX_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+
+/// Maximum single `data_length` (docs §5 posture, same DoS rationale as
+/// [`MAX_PAYLOAD_BYTES`]): the structured `data` continuation is small JSON
+/// (rate/width/channels, a synthesize text, a transcribe language) — 1 MiB is
+/// far beyond any documented Wyoming event body while still bounding the
+/// allocation a hostile header can force. The upstream python lib has no cap
+/// (`readexactly(data_length)` allocates blindly); Vokra rejects instead
+/// (FR-EX-08 — explicit error, never an unbounded network-controlled alloc).
+pub const MAX_DATA_BYTES: usize = 1024 * 1024;
 
 /// Maximum total PCM samples we accumulate for one `transcribe` request
 /// (~5 minutes at 16 kHz mono f32 = 4.8M samples ≈ 19 MB). Bounds a stuck
@@ -582,12 +602,61 @@ fn linear_resample_to_16k(samples: &[f32], src_rate: u32) -> Vec<f32> {
 /// One inbound Wyoming event framed by the reader pump (M4-19 T02).
 #[derive(Debug)]
 enum PumpItem {
-    /// A fully-framed event: header + its `read_exact` payload.
+    /// A fully-framed event: header (with the `data_length` continuation
+    /// already MERGED into `data`, [`merge_data_continuation`]) + its
+    /// `read_exact` payload.
     Event(WyomingHeader, Vec<u8>),
     /// A recoverable protocol error the main loop must surface as an `error`
     /// event (FR-EX-08 — never a silent drop). The pump owns only the read
     /// half, so it hands the message to the main loop to write.
     ProtocolError(String),
+}
+
+/// Merge a `data_length` continuation into the header's inline `data`,
+/// mirroring the upstream `wyoming` python package's read semantics
+/// (`wyoming/event.py::async_read_event`, identical in 1.2.0 through 1.10.0):
+///
+/// ```python
+/// data_bytes = await reader.readexactly(data_length)
+/// data_dict = event_dict.get(_DATA, {})
+/// data_dict.update(json.loads(data_bytes))
+/// event_dict[_DATA] = data_dict
+/// ```
+///
+/// i.e. the continuation is parsed as a JSON object and `dict.update`d over
+/// any header-inline `data` — **continuation keys win**, inline-only keys
+/// survive. This is load-bearing for every real client since `wyoming` 1.2.0:
+/// `async_write_event` pops the event fields (audio-start rate/width/channels,
+/// the synthesize text, transcribe params) OUT of the header into this
+/// continuation, so a server that discards it loses every data-bearing event
+/// (the campaign-2 P1 this function fixes).
+///
+/// Divergences from python, both explicit (FR-EX-08):
+/// * a continuation that is not valid JSON, or not a JSON **object**, is an
+///   `Err` (python raises and silently kills the connection; we surface a
+///   protocol `error` event instead — the stream is still framed because
+///   exactly `data_length` bytes were consumed);
+/// * a header-inline `data` that is not an object is replaced by the
+///   continuation object (python would crash with `AttributeError` on this
+///   input, so no real client depends on any particular outcome).
+fn merge_data_continuation(
+    header_data: &mut Option<serde_json::Value>,
+    continuation: &[u8],
+) -> Result<(), String> {
+    let cont: serde_json::Value = serde_json::from_slice(continuation)
+        .map_err(|e| format!("event data continuation is not valid JSON: {e}"))?;
+    let serde_json::Value::Object(extra) = cont else {
+        return Err("event data continuation is not a JSON object".to_owned());
+    };
+    match header_data {
+        Some(serde_json::Value::Object(base)) => {
+            for (k, v) in extra {
+                base.insert(k, v); // dict.update: continuation wins per key
+            }
+        }
+        _ => *header_data = Some(serde_json::Value::Object(extra)),
+    }
+    Ok(())
 }
 
 /// Reader pump: frames every inbound Wyoming event (header line +
@@ -619,7 +688,7 @@ where
         if n == 0 {
             break; // clean EOF
         }
-        let header: WyomingHeader = match serde_json::from_slice(&header_line) {
+        let mut header: WyomingHeader = match serde_json::from_slice(&header_line) {
             Ok(h) => h,
             Err(e) => {
                 if tx
@@ -632,6 +701,8 @@ where
                 continue;
             }
         };
+        // DoS caps BEFORE any length-driven allocation (docs §5): both
+        // `data_length` and `payload_length` are network-controlled.
         if header.payload_length > MAX_PAYLOAD_BYTES {
             let _ = tx
                 .send(PumpItem::ProtocolError(format!(
@@ -641,14 +712,40 @@ where
                 .await;
             break;
         }
-        // data / payload bytes with read_exact — NEVER line-buffered (R5).
-        let mut data = vec![0u8; header.data_length];
-        if header.data_length > 0 && buf_reader.read_exact(&mut data).await.is_err() {
+        if header.data_length > MAX_DATA_BYTES {
+            let _ = tx
+                .send(PumpItem::ProtocolError(format!(
+                    "data_length {} exceeds cap {MAX_DATA_BYTES}",
+                    header.data_length
+                )))
+                .await;
             break;
+        }
+        // data / payload bytes with read_exact — NEVER line-buffered (R5).
+        //
+        // The data continuation is MERGED into `header.data` (upstream
+        // `async_read_event` semantics — see `merge_data_continuation`), NOT
+        // discarded: since `wyoming` 1.2.0 clients put every event field
+        // there, dropping it broke all data-bearing events (campaign-2 P1).
+        // A malformed continuation is surfaced after the payload region is
+        // consumed so the stream stays framed either way.
+        let mut merge_err: Option<String> = None;
+        if header.data_length > 0 {
+            let mut data = vec![0u8; header.data_length];
+            if buf_reader.read_exact(&mut data).await.is_err() {
+                break;
+            }
+            merge_err = merge_data_continuation(&mut header.data, &data).err();
         }
         let mut payload = vec![0u8; header.payload_length];
         if header.payload_length > 0 && buf_reader.read_exact(&mut payload).await.is_err() {
             break;
+        }
+        if let Some(msg) = merge_err {
+            if tx.send(PumpItem::ProtocolError(msg)).await.is_err() {
+                break;
+            }
+            continue; // framing intact (exact byte counts consumed) — survive
         }
         if tx.send(PumpItem::Event(header, payload)).await.is_err() {
             break; // receiver dropped (handler returned)
@@ -936,15 +1033,28 @@ where
                 continue;
             }
         };
-        // Consume any data/payload the client attached — we never look at it
-        // in describe-only mode, but the wire framing still requires us to
-        // read the announced bytes before the next header.
+        // Consume any data/payload the client attached — describe-only mode
+        // never inspects event data (a `describe` has none; every other type
+        // is rejected below), but the wire framing still requires us to read
+        // the announced bytes before the next header. Both length fields are
+        // capped BEFORE allocation (network-controlled, docs §5).
         if header.payload_length > MAX_PAYLOAD_BYTES {
             write_error_event(
                 writer,
                 &format!(
                     "payload_length {} exceeds cap {MAX_PAYLOAD_BYTES}",
                     header.payload_length
+                ),
+            )
+            .await?;
+            break;
+        }
+        if header.data_length > MAX_DATA_BYTES {
+            write_error_event(
+                writer,
+                &format!(
+                    "data_length {} exceeds cap {MAX_DATA_BYTES}",
+                    header.data_length
                 ),
             )
             .await?;
@@ -1015,23 +1125,13 @@ where
 {
     match resp {
         AsrResponse::Transcript { text } => {
-            let header = serde_json::json!({
-                "type": "transcript",
-                "data": { "text": text },
-                "data_length": 0,
-                "payload_length": 0,
-            });
-            write_header(writer, &header).await
+            let data = serde_json::json!({ "text": text });
+            write_event_frame(writer, "transcript", Some(&data), &[]).await
         }
         AsrResponse::Error(message) => write_error_event(writer, &message).await,
         AsrResponse::Info(info) => {
-            let header = serde_json::json!({
-                "type": "info",
-                "data": info,
-                "data_length": 0,
-                "payload_length": 0,
-            });
-            write_header(writer, &header).await
+            let data = serde_json::to_value(&info).map_err(io::Error::other)?;
+            write_event_frame(writer, "info", Some(&data), &[]).await
         }
     }
 }
@@ -1040,13 +1140,8 @@ async fn write_error_event<W>(writer: &mut W, message: &str) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    let header = serde_json::json!({
-        "type": "error",
-        "data": { "message": message },
-        "data_length": 0,
-        "payload_length": 0,
-    });
-    write_header(writer, &header).await
+    let data = serde_json::json!({ "message": message });
+    write_event_frame(writer, "error", Some(&data), &[]).await
 }
 
 /// Public wrapper over [`write_error_event`] so the accept loop
@@ -1060,13 +1155,85 @@ where
     write_error_event(writer, message).await
 }
 
-async fn write_header<W>(writer: &mut W, header: &serde_json::Value) -> io::Result<()>
+/// Serialize one Wyoming event onto `writer` using the framing every
+/// `wyoming` >= 1.2.0 SERVER emits, mirrored byte-for-byte from
+/// `wyoming/event.py::async_write_event` (identical 1.2.0 → 1.10.0):
+///
+/// ```python
+/// data_dict = event_dict.pop(_DATA, None)      # data NEVER stays inline
+/// if data_dict:                                # empty dict ⇒ no continuation
+///     data_bytes = json.dumps(data_dict, ...).encode("utf-8")
+///     event_dict[_DATA_LENGTH] = len(data_bytes)
+/// if event.payload:
+///     event_dict[_PAYLOAD_LENGTH] = len(event.payload)
+/// ```
+///
+/// so the wire is `<header-json>\n<data bytes><payload bytes>` with
+/// `data_length` / `payload_length` OMITTED (not 0) when absent, and the
+/// header carrying no `data` key at all. This is what the whole
+/// Home-Assistant-generation tooling reads; upstream readers of every
+/// version >= 1.2.0 apply the merge in [`merge_data_continuation`], so a
+/// header-only event round-trips identically.
+///
+/// Compatibility note (recorded, deliberate): `wyoming` **1.0.0** readers
+/// pre-date `data_length` and cannot parse continuation framing — but they
+/// already cannot talk to ANY standard Wyoming server (upstream switched its
+/// own writer in 1.2.0), so mirroring the modern writer loses nothing real.
+/// Vokra's READ side still accepts the 1.0.0 inline style (merged view), so
+/// legacy clients writing TO Vokra keep working.
+///
+/// `data` must be `None` or a JSON object (all callers construct objects);
+/// an empty object is treated as "no data" exactly like python's falsy
+/// `if data_dict:`. One `flush` per event mirrors `await writer.drain()`.
+async fn write_event_frame<W>(
+    writer: &mut W,
+    event_type: &str,
+    data: Option<&serde_json::Value>,
+    payload: &[u8],
+) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    let mut bytes = serde_json::to_vec(header).map_err(io::Error::other)?;
-    bytes.push(b'\n');
-    writer.write_all(&bytes).await?;
+    debug_assert!(
+        matches!(
+            data,
+            None | Some(serde_json::Value::Object(_)) | Some(serde_json::Value::Null)
+        ),
+        "wyoming event data must be a JSON object (upstream `data` is a dict)"
+    );
+    let data_bytes: Option<Vec<u8>> = match data {
+        Some(v @ serde_json::Value::Object(m)) if !m.is_empty() => {
+            Some(serde_json::to_vec(v).map_err(io::Error::other)?)
+        }
+        _ => None,
+    };
+    let mut header = serde_json::Map::new();
+    header.insert(
+        "type".to_owned(),
+        serde_json::Value::String(event_type.to_owned()),
+    );
+    if let Some(bytes) = &data_bytes {
+        header.insert(
+            "data_length".to_owned(),
+            serde_json::Value::from(bytes.len()),
+        );
+    }
+    if !payload.is_empty() {
+        header.insert(
+            "payload_length".to_owned(),
+            serde_json::Value::from(payload.len()),
+        );
+    }
+    let mut line =
+        serde_json::to_vec(&serde_json::Value::Object(header)).map_err(io::Error::other)?;
+    line.push(b'\n');
+    writer.write_all(&line).await?;
+    if let Some(bytes) = &data_bytes {
+        writer.write_all(bytes).await?;
+    }
+    if !payload.is_empty() {
+        writer.write_all(payload).await?;
+    }
     writer.flush().await
 }
 
@@ -1605,6 +1772,40 @@ mod asr_events {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
+    /// Parse one server-written frame: header line + `data_length`
+    /// continuation. The original golden here pinned the pre-1.2 INLINE
+    /// framing (`data` inside the header line) — that encoded the wrong
+    /// (legacy) writer shape as golden. Since `wyoming` 1.2.0 the python
+    /// lib's `async_write_event` pops `data` out of the header into the
+    /// continuation (`event.py`: `data_dict = event_dict.pop(_DATA, None)`);
+    /// Vokra mirrors that, so this parser asserts the modern framing.
+    fn parse_written_frame(buf: &[u8]) -> (serde_json::Value, serde_json::Value) {
+        let nl = buf
+            .iter()
+            .position(|&b| b == b'\n')
+            .expect("header line missing '\\n'");
+        let header: serde_json::Value = serde_json::from_slice(&buf[..nl]).expect("header JSON");
+        assert!(
+            header.get("data").is_none(),
+            "modern writers carry no inline data (event.py async_write_event): {header}"
+        );
+        let dl = header
+            .get("data_length")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        assert_eq!(
+            buf.len(),
+            nl + 1 + dl,
+            "frame must be header + exactly data_length continuation bytes"
+        );
+        let data: serde_json::Value = if dl > 0 {
+            serde_json::from_slice(&buf[nl + 1..nl + 1 + dl]).expect("data continuation JSON")
+        } else {
+            serde_json::json!({})
+        };
+        (header, data)
+    }
+
     #[test]
     fn asr_response_serializes_to_wyoming_shape() {
         // Guard the on-wire shape of a `transcript` event so future
@@ -1620,13 +1821,9 @@ mod asr_events {
             .await
             .unwrap();
         });
-        let s = std::str::from_utf8(&buf).unwrap();
-        // One JSONL line.
-        assert!(s.ends_with('\n'));
-        let value: serde_json::Value =
-            serde_json::from_str(s.trim_end_matches('\n')).expect("valid JSONL");
-        assert_eq!(value["type"], "transcript");
-        assert_eq!(value["data"]["text"], "hello");
+        let (header, data) = parse_written_frame(&buf);
+        assert_eq!(header["type"], "transcript");
+        assert_eq!(data["text"], "hello");
     }
 
     #[test]
@@ -1637,9 +1834,9 @@ mod asr_events {
                 .await
                 .unwrap();
         });
-        let value: serde_json::Value = serde_json::from_slice(buf.trim_ascii_end()).unwrap();
-        assert_eq!(value["type"], "error");
-        assert_eq!(value["data"]["message"], "unknown model x");
+        let (header, data) = parse_written_frame(&buf);
+        assert_eq!(header["type"], "error");
+        assert_eq!(data["message"], "unknown model x");
     }
 
     #[test]
@@ -1672,30 +1869,6 @@ const TTS_BITS_PER_SAMPLE: u16 = 16;
 /// Wyoming `audio-*` `channels` field. Vokra emits mono at v0.5; no
 /// stereo TTS voice is on the M2 completion path.
 const TTS_CHANNELS: u16 = 1;
-
-/// Byte serialization of a JSONL header line. Emitted as `<json>\n` per
-/// `docs/wyoming-design.md` §2, followed by exactly `payload_length`
-/// bytes of opaque binary payload for `audio-chunk`. Zero-copy — the
-/// caller writes `header_json_line` + `\n` + `payload` in that order.
-///
-/// Fields marked `data_length` and `payload_length` are `u32` on the
-/// wire; kept as `u64` here so callers can arithmetic without casts and
-/// we bounds-check at emit time.
-#[derive(Debug, Clone, Serialize)]
-struct TtsHeader<D: Serialize> {
-    /// Event kind (`"info"`, `"audio-start"`, `"audio-chunk"`, `"audio-stop"`).
-    #[serde(rename = "type")]
-    ty: &'static str,
-    /// Structured payload (rate/width/channels/text/voices/...). `None`
-    /// serializes as JSON `null` to match `rhasspy/wyoming`.
-    data: Option<D>,
-    /// Byte count of the (rarely used) structured `data` blob. Always 0 in
-    /// our emit path — everything structured goes inline in `data`.
-    data_length: u64,
-    /// Byte count of the raw binary payload that follows. Only non-zero
-    /// for `audio-chunk`.
-    payload_length: u64,
-}
 
 /// `data` body of the `info` event advertising Vokra's TTS capabilities
 /// (voice list + native rate / width / channels). Emitted once per
@@ -1821,39 +1994,26 @@ fn pcm_f32_to_i16_le_bytes(samples: &[f32]) -> Vec<u8> {
     out
 }
 
-/// Serialize one Wyoming TTS event onto `w` using the canonical
-/// `<json-header>\n<payload-bytes>` framing.
+/// Serialize one Wyoming TTS event onto `w` — a typed thin wrapper over
+/// [`write_event_frame`] (the upstream `async_write_event` mirror), so the
+/// TTS emit path and the ASR response path share one framing implementation:
+/// `data` goes into the `data_length` continuation (never inline in the
+/// header), `payload_bytes` follow it, and zero-valued length fields are
+/// omitted exactly as the python lib omits them.
 ///
-/// Every call performs three ordered async writes:
-///
-/// 1. `serde_json::to_vec(header)` bytes (the JSON header).
-/// 2. `b"\n"` (the line terminator).
-/// 3. `payload_bytes` (exactly `header.payload_length` bytes; may be empty).
-///
-/// The function never splits or coalesces frames — the caller owns
-/// exclusive access to `w`. Debug-asserts that `payload_length` matches
-/// `payload_bytes.len()`; a mismatch is a programming bug that would
-/// desynchronize the receiver, so we fail loudly rather than emit a
-/// malformed frame.
+/// The caller owns exclusive access to `w`; frames are never split or
+/// coalesced across callers.
 async fn write_tts_event<W: AsyncWrite + Unpin, D: Serialize>(
     w: &mut W,
-    header: &TtsHeader<D>,
+    event_type: &'static str,
+    data: Option<&D>,
     payload_bytes: &[u8],
 ) -> io::Result<()> {
-    debug_assert_eq!(header.data_length, 0, "T16 never uses the data blob");
-    debug_assert_eq!(
-        header.payload_length as usize,
-        payload_bytes.len(),
-        "payload_length header field must match slice length exactly"
-    );
-
-    let json = serde_json::to_vec(header).map_err(io::Error::other)?;
-    w.write_all(&json).await?;
-    w.write_all(b"\n").await?;
-    if !payload_bytes.is_empty() {
-        w.write_all(payload_bytes).await?;
-    }
-    Ok(())
+    let data_value = match data {
+        Some(d) => Some(serde_json::to_value(d).map_err(io::Error::other)?),
+        None => None,
+    };
+    write_event_frame(w, event_type, data_value.as_ref(), payload_bytes).await
 }
 
 /// Handle one Wyoming `synthesize` event end-to-end: call
@@ -1948,39 +2108,29 @@ async fn handle_synthesize_interruptible<W: AsyncWrite + Unpin>(
     };
 
     // 4) Emit `info` (voice catalogue).
-    let info = TtsHeader::<TtsInfoData<'_>> {
-        ty: "info",
-        data: Some(TtsInfoData {
-            tts: TtsInfoBody {
-                name: "vokra",
-                version: env!("CARGO_PKG_VERSION"),
-                voices: vec![TtsVoiceInfo {
-                    name: model,
-                    sample_rate: audio.sample_rate,
-                    channels: TTS_CHANNELS,
-                    bits: TTS_BITS_PER_SAMPLE,
-                }],
-            },
-        }),
-        data_length: 0,
-        payload_length: 0,
+    let info = TtsInfoData {
+        tts: TtsInfoBody {
+            name: "vokra",
+            version: env!("CARGO_PKG_VERSION"),
+            voices: vec![TtsVoiceInfo {
+                name: model,
+                sample_rate: audio.sample_rate,
+                channels: TTS_CHANNELS,
+                bits: TTS_BITS_PER_SAMPLE,
+            }],
+        },
     };
-    if let Err(e) = write_tts_event(w, &info, &[]).await {
+    if let Err(e) = write_tts_event(w, "info", Some(&info), &[]).await {
         return SynthesizeOutcome::Io(e);
     }
 
     // 5) Emit `audio-start` (rate / width bytes / channels).
-    let start = TtsHeader::<TtsAudioStartData> {
-        ty: "audio-start",
-        data: Some(TtsAudioStartData {
-            rate: audio.sample_rate,
-            width: TTS_BITS_PER_SAMPLE / 8,
-            channels: TTS_CHANNELS,
-        }),
-        data_length: 0,
-        payload_length: 0,
+    let start = TtsAudioStartData {
+        rate: audio.sample_rate,
+        width: TTS_BITS_PER_SAMPLE / 8,
+        channels: TTS_CHANNELS,
     };
-    if let Err(e) = write_tts_event(w, &start, &[]).await {
+    if let Err(e) = write_tts_event(w, "audio-start", Some(&start), &[]).await {
         return SynthesizeOutcome::Io(e);
     }
 
@@ -2014,26 +2164,20 @@ async fn handle_synthesize_interruptible<W: AsyncWrite + Unpin>(
             if barge_in.is_pending() {
                 break;
             }
-            let payload_len = slice.len() as u64;
             // Belt-and-suspenders: enforce the same 16 MiB cap the
             // receiver uses (docs §5 / `MAX_PAYLOAD_BYTES`). At 40 ms
             // per chunk this cannot trip in normal operation; a trip
             // here means chunk_bytes was mis-computed.
             debug_assert!(
-                (payload_len as usize) <= MAX_PAYLOAD_BYTES,
+                slice.len() <= MAX_PAYLOAD_BYTES,
                 "audio-chunk exceeds MAX_PAYLOAD_BYTES"
             );
-            let chunk = TtsHeader::<TtsAudioChunkData> {
-                ty: "audio-chunk",
-                data: Some(TtsAudioChunkData {
-                    rate: audio.sample_rate,
-                    width: TTS_BITS_PER_SAMPLE / 8,
-                    channels: TTS_CHANNELS,
-                }),
-                data_length: 0,
-                payload_length: payload_len,
+            let chunk = TtsAudioChunkData {
+                rate: audio.sample_rate,
+                width: TTS_BITS_PER_SAMPLE / 8,
+                channels: TTS_CHANNELS,
             };
-            if let Err(e) = write_tts_event(w, &chunk, slice).await {
+            if let Err(e) = write_tts_event(w, "audio-chunk", Some(&chunk), slice).await {
                 return SynthesizeOutcome::Io(e);
             }
             n_chunks += 1;
@@ -2045,14 +2189,10 @@ async fn handle_synthesize_interruptible<W: AsyncWrite + Unpin>(
         }
     }
 
-    // 7) Emit terminating `audio-stop`.
-    let stop = TtsHeader::<TtsAudioStopData> {
-        ty: "audio-stop",
-        data: Some(TtsAudioStopData {}),
-        data_length: 0,
-        payload_length: 0,
-    };
-    if let Err(e) = write_tts_event(w, &stop, &[]).await {
+    // 7) Emit terminating `audio-stop`. Its `data` serializes to `{}` which
+    //    is falsy under upstream's `if data_dict:` — the frame is header-only
+    //    (no data_length), byte-matching what a python Wyoming server emits.
+    if let Err(e) = write_tts_event(w, "audio-stop", Some(&TtsAudioStopData {}), &[]).await {
         return SynthesizeOutcome::Io(e);
     }
 
@@ -2187,12 +2327,34 @@ mod tts_events {
                 .unwrap_or(0) as usize;
 
             // 2) Exactly `data_length` bytes with `read_exact`-style
-            //    slicing (never line-buffered — R5). Vokra's TTS never
-            //    emits a `data` blob, so this is always 0.
+            //    slicing (never line-buffered — R5). Since the writer
+            //    mirrors `wyoming` >= 1.2.0 (`event.py async_write_event`
+            //    pops `data` into this continuation), the event fields live
+            //    HERE — merge them into the header view exactly like
+            //    upstream `async_read_event` (`data_dict.update(...)`,
+            //    continuation wins) so `/data/...` assertions read the
+            //    merged event.
             assert!(
                 i + data_length <= bytes.len(),
                 "truncated data blob at offset {i}"
             );
+            let mut header_json = header_json;
+            if data_length > 0 {
+                let cont: serde_json::Value = serde_json::from_slice(&bytes[i..i + data_length])
+                    .expect("data continuation is not valid JSON");
+                let base = header_json
+                    .as_object_mut()
+                    .expect("header is an object")
+                    .entry("data")
+                    .or_insert_with(|| serde_json::json!({}));
+                if let (Some(base), Some(extra)) = (base.as_object_mut(), cont.as_object()) {
+                    for (k, v) in extra {
+                        base.insert(k.clone(), v.clone());
+                    }
+                } else {
+                    *base = cont;
+                }
+            }
             i += data_length;
 
             // 3) Exactly `payload_length` bytes of opaque binary payload
@@ -2277,7 +2439,11 @@ mod tts_events {
         let events = decode_stream(&sink);
         let info = &events[0];
         assert_eq!(info.ty, "info");
-        assert_eq!(info.data_length, 0);
+        // Upstream (>= 1.2.0) framing: the voice catalogue travels in the
+        // data continuation, so a data-bearing event announces data_length.
+        // (The old `data_length == 0` golden pinned the legacy 1.0.0 inline
+        // framing — a test bug per event.py async_write_event.)
+        assert!(info.data_length > 0, "info data rides the continuation");
         assert_eq!(info.payload_length, 0);
 
         let voices = info
@@ -2319,7 +2485,8 @@ mod tts_events {
         let events = decode_stream(&sink);
         let start = &events[1];
         assert_eq!(start.ty, "audio-start");
-        assert_eq!(start.data_length, 0);
+        // rate/width/channels ride the data continuation (upstream framing).
+        assert!(start.data_length > 0, "audio-start data in continuation");
         assert_eq!(start.payload_length, 0);
 
         // rate = engine sample rate; width = 2 (int16); channels = 1.
@@ -2372,7 +2539,9 @@ mod tts_events {
         // byte count and length is even (never split an int16 sample).
         for chunk in events.iter().filter(|e| e.ty == "audio-chunk") {
             assert_eq!(chunk.payload_length, chunk.payload.len());
-            assert_eq!(chunk.data_length, 0);
+            // Each chunk re-advertises rate/width/channels in its data
+            // continuation (upstream framing; was inline pre-fix).
+            assert!(chunk.data_length > 0, "chunk format data in continuation");
             assert!(
                 chunk.payload_length.is_multiple_of(2),
                 "audio-chunk payload_length {} splits a sample",
@@ -2778,8 +2947,12 @@ mod m4_19_connection {
         c.shutdown().await.unwrap();
     }
 
-    /// Read one framed Wyoming event (header line + `read_exact` payload).
-    /// `None` on clean EOF.
+    /// Read one framed Wyoming event (header line + `read_exact` data +
+    /// payload). `None` on clean EOF. The `data_length` continuation is
+    /// merged into the returned header's `data` (continuation wins) exactly
+    /// like `wyoming/event.py::async_read_event` — the server now writes
+    /// upstream (>= 1.2.0) framing, where event fields live ONLY in the
+    /// continuation, so a merge-less reader would see no `data` at all.
     async fn read_event(c: &mut Client) -> Option<(serde_json::Value, Vec<u8>)> {
         let mut line = Vec::new();
         let n = c.read_until(b'\n', &mut line).await.unwrap();
@@ -2789,15 +2962,28 @@ mod m4_19_connection {
         while matches!(line.last(), Some(b'\n' | b'\r')) {
             line.pop();
         }
-        let hdr: serde_json::Value = serde_json::from_slice(&line).unwrap();
+        let mut hdr: serde_json::Value = serde_json::from_slice(&line).unwrap();
         let dl = hdr.get("data_length").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
         let pl = hdr
             .get("payload_length")
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as usize;
-        let mut data = vec![0u8; dl];
         if dl > 0 {
+            let mut data = vec![0u8; dl];
             c.read_exact(&mut data).await.unwrap();
+            let cont: serde_json::Value = serde_json::from_slice(&data).unwrap();
+            let base = hdr
+                .as_object_mut()
+                .unwrap()
+                .entry("data")
+                .or_insert_with(|| serde_json::json!({}));
+            if let (Some(base), Some(extra)) = (base.as_object_mut(), cont.as_object()) {
+                for (k, v) in extra {
+                    base.insert(k.clone(), v.clone()); // dict.update semantics
+                }
+            } else {
+                *base = cont;
+            }
         }
         let mut payload = vec![0u8; pl];
         if pl > 0 {
@@ -3142,5 +3328,510 @@ mod m4_19_connection {
             );
         }
         out
+    }
+}
+
+// ===========================================================================
+// Upstream (`wyoming` >= 1.2.0) data-continuation framing compat
+// ===========================================================================
+
+#[cfg(test)]
+mod upstream_framing {
+    //! Wire-level compat with the GENUINE `wyoming` PyPI package (the client
+    //! every Home Assistant satellite embeds).
+    //!
+    //! Provenance (campaign-2 bisect, sources pip-downloaded and diffed):
+    //!
+    //! * `wyoming` **1.0.0** `event.py::async_write_event` wrote the event's
+    //!   `data` dict INLINE in the JSON header (the framing Vokra's own unit
+    //!   tests historically used).
+    //! * `wyoming` **1.2.0+** (through 1.10.0, current) pops `data` OUT of the
+    //!   header into a `data_length`-framed continuation:
+    //!   ```python
+    //!   data_dict = event_dict.pop(_DATA, None)
+    //!   if data_dict:
+    //!       data_bytes = json.dumps(data_dict, ...).encode("utf-8")
+    //!       event_dict[_DATA_LENGTH] = len(data_bytes)
+    //!   ```
+    //!   and `async_read_event` MERGES the continuation over any header-inline
+    //!   `data` (continuation keys win):
+    //!   ```python
+    //!   data_dict = event_dict.get(_DATA, {})
+    //!   data_dict.update(json.loads(data_bytes))
+    //!   ```
+    //!
+    //! These tests drive [`run_wyoming_connection`] with a byte-faithful Rust
+    //! mirror of `async_write_event` (1.10.0) so the server is exercised with
+    //! exactly the frames a real HA-generation client emits: event fields ONLY
+    //! in the data continuation, never inline. Before the fix the reader pump
+    //! read-and-discarded the continuation, so every data-bearing event failed
+    //! ("audio-start/chunk missing data", synthesize text lost) — the
+    //! campaign-2 P1 live-reproduced with wyoming 1.10.0.
+
+    use super::*;
+    use serde_json::json;
+    use std::sync::Mutex;
+    use tokio::io::BufReader;
+    use vokra_core::SynthesizedAudio;
+
+    /// Mock backend that RECORDS the synthesize text it receives, so the
+    /// tests can assert the data-borne `text` actually reached the dispatch
+    /// layer (not merely that some audio came back — the mock ignores text
+    /// for synthesis, so a dropped continuation would otherwise pass).
+    struct UpstreamMock {
+        tts_samples: Vec<f32>,
+        captured_tts_text: Mutex<Option<String>>,
+    }
+
+    impl UpstreamMock {
+        fn new(tts_samples: Vec<f32>) -> Self {
+            Self {
+                tts_samples,
+                captured_tts_text: Mutex::new(None),
+            }
+        }
+    }
+
+    impl TranscribeService for UpstreamMock {
+        fn transcribe(&self, model: &str, pcm: &[f32]) -> Result<String, ServiceError> {
+            if model == model_names::WHISPER_1 || model == model_names::WHISPER_BASE {
+                Ok(format!("UP[{model}]:{}", pcm.len()))
+            } else {
+                Err(ServiceError::UnknownModel(model.to_owned()))
+            }
+        }
+    }
+
+    impl SynthesizeService for UpstreamMock {
+        fn synthesize(
+            &self,
+            model: &str,
+            request: &SynthesisRequest,
+        ) -> Result<SynthesizedAudio, ServiceError> {
+            if model == model_names::PIPER_PLUS {
+                *self.captured_tts_text.lock().unwrap() = Some(request.text.clone());
+                Ok(SynthesizedAudio::new(self.tts_samples.clone(), 22_050))
+            } else {
+                Err(ServiceError::UnknownModel(model.to_owned()))
+            }
+        }
+    }
+
+    impl WyomingBackend for UpstreamMock {
+        fn wyoming_asr_models(&self) -> Vec<String> {
+            vec![model_names::WHISPER_1.into()]
+        }
+        fn as_synthesize(&self) -> &dyn SynthesizeService {
+            self
+        }
+    }
+
+    type Client = BufReader<tokio::io::DuplexStream>;
+    type Handler = tokio::task::JoinHandle<io::Result<()>>;
+
+    fn spawn_conn(service: Arc<dyn WyomingBackend>) -> (Client, Handler) {
+        let (client, server) = tokio::io::duplex(1 << 20);
+        let (srv_r, srv_w) = tokio::io::split(server);
+        let handler = tokio::spawn(async move {
+            let mut w = srv_w;
+            run_wyoming_connection(srv_r, &mut w, service, BargeIn::new()).await
+        });
+        (BufReader::new(client), handler)
+    }
+
+    /// Byte-faithful mirror of `wyoming` 1.10.0 `event.py::async_write_event`:
+    /// header carries `type` + `version` (+ `data_length` iff data is a
+    /// non-empty object, + `payload_length` iff payload is non-empty), the
+    /// `data` JSON goes ONLY in the continuation, then the payload bytes.
+    async fn send_upstream_event(
+        c: &mut Client,
+        ty: &str,
+        data: Option<serde_json::Value>,
+        payload: &[u8],
+    ) {
+        let mut header = serde_json::Map::new();
+        header.insert("type".into(), json!(ty));
+        // The python lib stamps its own package version into every header.
+        header.insert("version".into(), json!("1.10.0"));
+        let data_bytes = match data {
+            Some(serde_json::Value::Object(m)) if !m.is_empty() => {
+                let bytes = serde_json::to_vec(&serde_json::Value::Object(m)).unwrap();
+                header.insert("data_length".into(), json!(bytes.len()));
+                Some(bytes)
+            }
+            _ => None, // `if data_dict:` — empty/absent dicts are falsy upstream
+        };
+        if !payload.is_empty() {
+            header.insert("payload_length".into(), json!(payload.len()));
+        }
+        let mut line = serde_json::to_vec(&serde_json::Value::Object(header)).unwrap();
+        line.push(b'\n');
+        c.write_all(&line).await.unwrap();
+        if let Some(bytes) = &data_bytes {
+            c.write_all(bytes).await.unwrap();
+        }
+        if !payload.is_empty() {
+            c.write_all(payload).await.unwrap();
+        }
+        c.flush().await.unwrap();
+    }
+
+    /// Mirror of `wyoming` 1.10.0 `event.py::async_read_event`: reads the
+    /// header line, merges the `data_length` continuation over header-inline
+    /// `data` (continuation wins), then reads `payload_length` bytes.
+    async fn read_upstream_event(c: &mut Client) -> Option<(String, serde_json::Value, Vec<u8>)> {
+        let mut line = Vec::new();
+        let n = c.read_until(b'\n', &mut line).await.unwrap();
+        if n == 0 {
+            return None;
+        }
+        while matches!(line.last(), Some(b'\n' | b'\r')) {
+            line.pop();
+        }
+        let hdr: serde_json::Value = serde_json::from_slice(&line).unwrap();
+        let ty = hdr
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let mut data = hdr.get("data").cloned().unwrap_or(json!({}));
+        let dl = hdr.get("data_length").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        if dl > 0 {
+            let mut buf = vec![0u8; dl];
+            c.read_exact(&mut buf).await.unwrap();
+            let cont: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+            if let (Some(base), Some(extra)) = (data.as_object_mut(), cont.as_object()) {
+                for (k, v) in extra {
+                    base.insert(k.clone(), v.clone()); // dict.update: continuation wins
+                }
+            } else {
+                data = cont;
+            }
+        }
+        let pl = hdr
+            .get("payload_length")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        let mut payload = vec![0u8; pl];
+        if pl > 0 {
+            c.read_exact(&mut payload).await.unwrap();
+        }
+        Some((ty, data, payload))
+    }
+
+    async fn close(c: &mut Client) {
+        c.shutdown().await.unwrap();
+    }
+
+    fn pcm_bytes(samples: &[i16]) -> Vec<u8> {
+        samples.iter().flat_map(|s| s.to_le_bytes()).collect()
+    }
+
+    /// The campaign-2 P1 repro: a full ASR cycle where `audio-start` /
+    /// `audio-chunk` carry rate/width/channels ONLY in the data continuation
+    /// (as every wyoming >= 1.2.0 client sends them) must yield a transcript,
+    /// not "audio-start/chunk missing data".
+    #[tokio::test]
+    async fn full_asr_cycle_with_data_continuations_yields_transcript() {
+        let svc: Arc<dyn WyomingBackend> = Arc::new(UpstreamMock::new(vec![0.0; 16]));
+        let (mut c, handler) = spawn_conn(svc);
+
+        let fmt = json!({"rate": 16000, "width": 2, "channels": 1});
+        send_upstream_event(&mut c, "audio-start", Some(fmt.clone()), &[]).await;
+        let payload = pcm_bytes(&[100, -100, 200, -200, 300, -300, 400, -400]);
+        send_upstream_event(&mut c, "audio-chunk", Some(fmt), &payload).await;
+        send_upstream_event(&mut c, "audio-stop", None, &[]).await;
+        // Upstream `Transcribe()` with no fields serializes an empty data
+        // dict — falsy — so the header is data-less, exactly like `describe`.
+        send_upstream_event(&mut c, "transcribe", None, &[]).await;
+
+        let (ty, data, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_upstream_event(&mut c),
+        )
+        .await
+        .expect("no reply within 5 s — data continuation dropped?")
+        .expect("transcript frame");
+        assert_eq!(
+            ty, "transcript",
+            "expected transcript, got {ty} with data {data}"
+        );
+        assert_eq!(
+            data.get("text").and_then(|v| v.as_str()),
+            Some("UP[whisper-1]:8"),
+            "8 samples @ 16 kHz must reach the engine untouched; got {data}"
+        );
+
+        close(&mut c).await;
+        handler.await.unwrap().unwrap();
+    }
+
+    /// `synthesize` with its `text` ONLY in the data continuation must carry
+    /// the text through to the dispatch layer (the mock records it). Before
+    /// the fix the continuation was discarded and the engine saw "".
+    #[tokio::test]
+    async fn synthesize_text_in_data_continuation_reaches_dispatch() {
+        let mock = Arc::new(UpstreamMock::new(vec![0.25f32; 4_000]));
+        let svc: Arc<dyn WyomingBackend> = mock.clone();
+        let (mut c, handler) = spawn_conn(svc);
+
+        send_upstream_event(
+            &mut c,
+            "synthesize",
+            Some(json!({"text": "hello world"})),
+            &[],
+        )
+        .await;
+
+        // Drain info/audio-start/chunk+/audio-stop; fail on error events.
+        loop {
+            let (ty, data, _) = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                read_upstream_event(&mut c),
+            )
+            .await
+            .expect("tts event timeout")
+            .expect("tts event");
+            assert_ne!(ty, "error", "synthesize must not error; data {data}");
+            if ty == "audio-stop" {
+                break;
+            }
+        }
+        assert_eq!(
+            mock.captured_tts_text.lock().unwrap().as_deref(),
+            Some("hello world"),
+            "the data-borne text must reach SynthesizeService::synthesize"
+        );
+
+        close(&mut c).await;
+        handler.await.unwrap().unwrap();
+    }
+
+    /// Merge precedence must mirror `async_read_event`'s `dict.update`: when
+    /// a header carries BOTH inline `data` and a `data_length` continuation,
+    /// continuation keys override inline keys (and inline-only keys survive).
+    /// Observable end-to-end: inline rate=8000 overridden by continuation
+    /// rate=16000 means 8 samples stay 8 (no upsample to 16).
+    #[tokio::test]
+    async fn data_continuation_overrides_header_inline_fields() {
+        let svc: Arc<dyn WyomingBackend> = Arc::new(UpstreamMock::new(vec![0.0; 16]));
+        let (mut c, handler) = spawn_conn(svc);
+
+        // Hand-crafted mixed-framing header (no upstream writer emits this,
+        // but upstream READERS define the merge — we honour the same rule).
+        let cont = br#"{"rate":16000}"#;
+        let hdr = format!(
+            r#"{{"type":"audio-start","data":{{"rate":8000,"width":2,"channels":1}},"data_length":{}}}"#,
+            cont.len()
+        );
+        c.write_all(hdr.as_bytes()).await.unwrap();
+        c.write_all(b"\n").await.unwrap();
+        c.write_all(cont).await.unwrap();
+        c.flush().await.unwrap();
+
+        let payload = pcm_bytes(&[1, -1, 2, -2, 3, -3, 4, -4]);
+        send_upstream_event(
+            &mut c,
+            "audio-chunk",
+            None, // format already pinned by audio-start
+            &payload,
+        )
+        .await;
+        send_upstream_event(&mut c, "transcribe", None, &[]).await;
+
+        let (ty, data, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_upstream_event(&mut c),
+        )
+        .await
+        .expect("transcript timeout")
+        .expect("transcript frame");
+        assert_eq!(ty, "transcript", "got {ty} with data {data}");
+        // rate=16000 (continuation) ⇒ 8 samples stay 8. If the inline
+        // rate=8000 had won, linear_resample_to_16k would emit 16.
+        assert_eq!(
+            data.get("text").and_then(|v| v.as_str()),
+            Some("UP[whisper-1]:8"),
+            "continuation rate must override inline rate; got {data}"
+        );
+
+        close(&mut c).await;
+        handler.await.unwrap().unwrap();
+    }
+
+    /// Framing robustness: the same upstream-framed ASR cycle delivered in
+    /// tiny write bursts (splitting header lines, the data continuation and
+    /// the payload across arbitrary buffer boundaries) must still frame
+    /// correctly — `read_until`/`read_exact` are boundary-agnostic.
+    #[tokio::test]
+    async fn split_writes_across_frame_boundaries_still_frame_correctly() {
+        let svc: Arc<dyn WyomingBackend> = Arc::new(UpstreamMock::new(vec![0.0; 16]));
+        let (mut c, handler) = spawn_conn(svc);
+
+        // Pre-serialize the whole cycle with the upstream writer shape...
+        let fmt = br#"{"rate":16000,"width":2,"channels":1}"#;
+        let payload = pcm_bytes(&[10, -10, 20, -20]);
+        let mut wire = Vec::new();
+        wire.extend_from_slice(
+            format!(r#"{{"type":"audio-start","data_length":{}}}"#, fmt.len()).as_bytes(),
+        );
+        wire.push(b'\n');
+        wire.extend_from_slice(fmt);
+        wire.extend_from_slice(
+            format!(
+                r#"{{"type":"audio-chunk","data_length":{},"payload_length":{}}}"#,
+                fmt.len(),
+                payload.len()
+            )
+            .as_bytes(),
+        );
+        wire.push(b'\n');
+        wire.extend_from_slice(fmt);
+        wire.extend_from_slice(&payload);
+        wire.extend_from_slice(br#"{"type":"transcribe"}"#);
+        wire.push(b'\n');
+
+        // ...then deliver it in 3-byte bursts with a flush after each, so
+        // every header/data/payload boundary is split mid-field.
+        for piece in wire.chunks(3) {
+            c.write_all(piece).await.unwrap();
+            c.flush().await.unwrap();
+        }
+
+        let (ty, data, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_upstream_event(&mut c),
+        )
+        .await
+        .expect("transcript timeout")
+        .expect("transcript frame");
+        assert_eq!(ty, "transcript", "got {ty} with data {data}");
+        assert_eq!(
+            data.get("text").and_then(|v| v.as_str()),
+            Some("UP[whisper-1]:4"),
+            "split-delivered frames must reassemble losslessly; got {data}"
+        );
+
+        close(&mut c).await;
+        handler.await.unwrap().unwrap();
+    }
+
+    /// DoS guard: a `data_length` beyond the cap must be rejected with an
+    /// explicit `error` event before any allocation of that size (FR-EX-08 —
+    /// never an unbounded allocation from a network-controlled field, same
+    /// posture as the `payload_length` cap in wyoming-design.md §5).
+    #[tokio::test]
+    async fn oversized_data_length_yields_error_event() {
+        let svc: Arc<dyn WyomingBackend> = Arc::new(UpstreamMock::new(vec![0.0; 16]));
+        let (mut c, handler) = spawn_conn(svc);
+
+        let too_big = MAX_DATA_BYTES + 1;
+        let hdr = format!(r#"{{"type":"transcribe","data_length":{too_big}}}"#);
+        c.write_all(hdr.as_bytes()).await.unwrap();
+        c.write_all(b"\n").await.unwrap();
+        c.flush().await.unwrap();
+
+        let (ty, data, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_upstream_event(&mut c),
+        )
+        .await
+        .expect("error reply timeout — oversized data_length not capped?")
+        .expect("error frame");
+        assert_eq!(ty, "error", "got {ty} with data {data}");
+        let msg = data
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            msg.contains("data_length") && msg.contains("exceeds"),
+            "error must name the cap; got {msg:?}"
+        );
+
+        close(&mut c).await;
+        handler.await.unwrap().unwrap();
+    }
+
+    /// A data continuation that is valid JSON but NOT an object cannot be
+    /// merged (python would raise and kill the connection); we surface an
+    /// explicit protocol error instead (FR-EX-08) and — because exactly
+    /// `data_length` bytes were consumed — the stream stays framed, so the
+    /// connection survives for the next event.
+    #[tokio::test]
+    async fn non_object_data_continuation_is_explicit_error_and_survivable() {
+        let svc: Arc<dyn WyomingBackend> = Arc::new(UpstreamMock::new(vec![0.0; 16]));
+        let (mut c, handler) = spawn_conn(svc);
+
+        let cont = br#"[1,2,3]"#;
+        let hdr = format!(r#"{{"type":"transcribe","data_length":{}}}"#, cont.len());
+        c.write_all(hdr.as_bytes()).await.unwrap();
+        c.write_all(b"\n").await.unwrap();
+        c.write_all(cont).await.unwrap();
+        c.flush().await.unwrap();
+
+        let (ty, data, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_upstream_event(&mut c),
+        )
+        .await
+        .expect("error reply timeout")
+        .expect("error frame");
+        assert_eq!(ty, "error", "got {ty} with data {data}");
+
+        // The connection must survive: describe still answers.
+        send_upstream_event(&mut c, "describe", None, &[]).await;
+        let (ty2, _, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            read_upstream_event(&mut c),
+        )
+        .await
+        .expect("info reply timeout")
+        .expect("info frame");
+        assert_eq!(ty2, "info");
+
+        close(&mut c).await;
+        handler.await.unwrap().unwrap();
+    }
+
+    /// Write-side mirror: every data-bearing event the SERVER emits must use
+    /// the upstream `data_length` continuation framing (the header carries NO
+    /// inline `data`), because that is what `wyoming` >= 1.2.0 servers write
+    /// (`async_write_event` pops `data` into the continuation) and what the
+    /// entire HA-generation tooling is built against. Verified through the
+    /// upstream-semantics reader on a live transcript reply.
+    #[tokio::test]
+    async fn server_replies_use_data_continuation_framing() {
+        let svc: Arc<dyn WyomingBackend> = Arc::new(UpstreamMock::new(vec![0.0; 16]));
+        let (mut c, handler) = spawn_conn(svc);
+
+        send_upstream_event(&mut c, "describe", None, &[]).await;
+
+        // Raw-read the reply so the framing itself (not just the merged
+        // view) is asserted: header line must NOT contain inline data, and
+        // must announce a data_length continuation.
+        let mut line = Vec::new();
+        c.read_until(b'\n', &mut line).await.unwrap();
+        while matches!(line.last(), Some(b'\n' | b'\r')) {
+            line.pop();
+        }
+        let hdr: serde_json::Value = serde_json::from_slice(&line).unwrap();
+        assert_eq!(hdr.get("type").and_then(|v| v.as_str()), Some("info"));
+        assert!(
+            hdr.get("data").is_none(),
+            "upstream writers pop `data` out of the header (event.py \
+             async_write_event); got inline data: {hdr}"
+        );
+        let dl = hdr.get("data_length").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        assert!(dl > 0, "info carries a voice/model catalogue: {hdr}");
+        let mut buf = vec![0u8; dl];
+        c.read_exact(&mut buf).await.unwrap();
+        let data: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert!(
+            data.get("asr").and_then(|v| v.as_array()).is_some(),
+            "continuation must carry the info body; got {data}"
+        );
+
+        close(&mut c).await;
+        handler.await.unwrap().unwrap();
     }
 }
