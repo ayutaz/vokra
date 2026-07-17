@@ -22,14 +22,21 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper-base|silero-vad|campplus> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
+    vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
+    vokra-cli convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model voxtral --input <ckpt.safetensors | model.safetensors.index.json> \
                       [--config <config.json>] [--adapter-config <adapter.json>] --output <out.gguf>
 
 OPTIONS:
-    --model <kind>            whisper-base | silero-vad | piper-plus | campplus | kokoro | voxtral
+    --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
+                              campplus | kokoro | cosyvoice2 | voxtral | mimi | dac |
+                              csm | moshi
+                              (csm / moshi: this delegate runs the plain checkpoint
+                              conversion; to embed the tokenizer side-car use the
+                              standalone `vokra-convert` binary's --config)
     --input <path>            upstream checkpoint file. For voxtral, a
                               `*.index.json` path reads every shard listed in
                               its weight_map (the raw sharded BF16 release)
@@ -42,7 +49,9 @@ OPTIONS:
                               upstream Voxtral/Mistral config.json (RoPE base,
                               RMSNorm eps, GQA head split incl. head_dim,
                               vocab, max positions — cross-validated against
-                              the checkpoint shapes)
+                              the checkpoint shapes) OR the DAC prepare-script
+                              config.json (required for dac — from
+                              tools/parity/dac_prepare_checkpoint.py)
     --adapter-config <path>   Voxtral audio-adapter side-car JSON (M3-10 Wave 8):
                               writes `vokra.voxtral.adapter.*` metadata so the
                               runtime binds the checkpoint's adapter tensors
@@ -99,7 +108,9 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 model = Some(ModelKind::from_arg(v).ok_or_else(|| {
                     format!(
                         "unknown model `{v}` \
-                         (whisper-base | silero-vad | piper-plus | campplus | kokoro | voxtral)"
+                         (whisper [alias: whisper-base] | silero-vad | piper-plus | \
+                         campplus | kokoro | cosyvoice2 | voxtral | mimi | dac | \
+                         csm | moshi)"
                     )
                 })?);
                 i += 2;
@@ -409,6 +420,42 @@ mod tests {
         .expect("valid");
         assert_eq!(p.model, ModelKind::CosyVoice2);
         assert_eq!(p.config, Some(PathBuf::from("config.json")));
+    }
+
+    /// Campaign-1 P3 #11 (campaign-2 cli-enablers Fix B): every kind
+    /// `ModelKind::from_arg` accepts parses through the CLI front-end, and
+    /// the help text lists each one. No new kinds are added — this pins the
+    /// existing loader surface only.
+    #[test]
+    fn parses_every_model_kind_and_help_lists_them() {
+        let kinds: &[(&str, ModelKind)] = &[
+            ("whisper", ModelKind::Whisper),
+            ("whisper-base", ModelKind::Whisper),
+            ("silero-vad", ModelKind::SileroVad),
+            ("piper-plus", ModelKind::PiperPlus),
+            ("campplus", ModelKind::CamPlus),
+            ("kokoro", ModelKind::Kokoro),
+            ("cosyvoice2", ModelKind::CosyVoice2),
+            ("voxtral", ModelKind::Voxtral),
+            ("mimi", ModelKind::Mimi),
+            ("dac", ModelKind::Dac),
+            ("csm", ModelKind::Csm),
+            ("moshi", ModelKind::Moshi),
+        ];
+        for (name, kind) in kinds {
+            let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
+                .unwrap_or_else(|e| panic!("--model {name} should parse: {e}"));
+            assert_eq!(p.model, *kind, "--model {name}");
+            // `whisper-base` is the documented alias; every canonical
+            // spelling appears verbatim in the help text.
+            if *name != "whisper-base" {
+                assert!(USAGE.contains(name), "USAGE lists `{name}`");
+            }
+        }
+        assert!(
+            USAGE.contains("whisper-base"),
+            "USAGE documents the whisper-base alias"
+        );
     }
 
     #[test]

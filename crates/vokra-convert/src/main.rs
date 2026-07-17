@@ -1,7 +1,8 @@
 //! `vokra-convert` command-line entry point (M0-03, FR-TL-01).
 //!
 //! ```text
-//! vokra-convert --model <whisper|silero-vad> --input <ckpt> --output <out.gguf>
+//! vokra-convert --model <whisper|silero-vad|piper-plus|campplus|kokoro|cosyvoice2|voxtral|mimi|dac|csm|moshi>
+//!               --input <ckpt> [--config <side-car>] --output <out.gguf>
 //! ```
 //!
 //! `whisper` auto-detects the size (base / small / medium / large-v3 / turbo)
@@ -26,8 +27,10 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
+    vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
+    vokra-convert --model <cosyvoice2|csm|moshi> --input <ckpt.safetensors> [--config <side-car>] --output <out.gguf>
 
 OPTIONS:
     --model <kind>     whisper (safetensors; size auto-detected from
@@ -35,16 +38,29 @@ OPTIONS:
                        turbo — unknown shapes error out, no silent fallback
                        per FR-EX-08), silero-vad (ONNX), campplus (CAM++
                        speaker-encoder ONNX), kokoro (Kokoro-82M StyleTTS 2
-                       派生 iSTFTNet safetensors) or piper-plus (MB-iSTFT-VITS2
-                       voice: ONNX + config.json). `whisper-base` is accepted
-                       as a backward-compatible alias for `whisper` (size is
-                       still derived from the checkpoint, not the flag).
+                       派生 iSTFTNet safetensors), piper-plus (MB-iSTFT-VITS2
+                       voice: ONNX + config.json), cosyvoice2 (CosyVoice2-0.5B
+                       LLM safetensors), voxtral (Mistral Voxtral safetensors;
+                       shape-only here — the config-aware / adapter path is
+                       `vokra-cli convert`), mimi (Kyutai Mimi codec
+                       safetensors), dac (prepared DAC safetensors +
+                       config.json), csm (Sesame CSM-1B safetensors) or
+                       moshi (Kyutai Moshi safetensors). `whisper-base` is
+                       accepted as a backward-compatible alias for `whisper`
+                       (size is still derived from the checkpoint, not the
+                       flag).
     --input <path>     upstream checkpoint file
-    --config <path>    piper-plus config.json (piper-plus only) OR the
+    --config <path>    piper-plus config.json (piper-plus, required) OR the
+                       DAC prepare-script config.json (dac, required — from
+                       tools/parity/dac_prepare_checkpoint.py) OR the
                        upstream HF config.json for cosyvoice2 (Qwen2
                        schema; supplies the attention head split +
                        rope_theta/rms_norm_eps/n_ctx that tensor shapes
-                       cannot determine)
+                       cannot determine) OR the raw Llama-3.2 tokenizer
+                       file (csm; optional — without it the runtime text
+                       path fails loudly) OR the raw SentencePiece
+                       tokenizer file (moshi; optional — without it the
+                       monologue decode fails loudly)
     --output <path>    GGUF file to write
     --quantize <kind>  K-quantize large weight matrices: q4_k | q5_k | q6_k
                        (whisper only; biases/norms stay F32)
@@ -197,7 +213,9 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 let v = args.get(i + 1).ok_or("--model requires a value")?;
                 model = Some(ModelKind::from_arg(v).ok_or_else(|| {
                     format!(
-                        "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | piper-plus | campplus | kokoro)"
+                        "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | \
+                         piper-plus | campplus | kokoro | cosyvoice2 | voxtral | mimi | \
+                         dac | csm | moshi)"
                     )
                 })?);
                 i += 2;
@@ -593,6 +611,33 @@ mod tests {
         .expect("valid piper args");
         assert_eq!(parsed.model, ModelKind::PiperPlus);
         assert_eq!(parsed.config, Some(PathBuf::from("c.json")));
+    }
+
+    /// Campaign-1 P3 #11 (campaign-2 cli-enablers Fix B): every kind
+    /// `ModelKind::from_arg` accepts parses through the standalone binary,
+    /// and the help text lists each one. No new kinds are added.
+    #[test]
+    fn parses_every_model_kind_and_help_lists_them() {
+        let kinds: &[(&str, ModelKind)] = &[
+            ("whisper", ModelKind::Whisper),
+            ("whisper-base", ModelKind::Whisper),
+            ("silero-vad", ModelKind::SileroVad),
+            ("piper-plus", ModelKind::PiperPlus),
+            ("campplus", ModelKind::CamPlus),
+            ("kokoro", ModelKind::Kokoro),
+            ("cosyvoice2", ModelKind::CosyVoice2),
+            ("voxtral", ModelKind::Voxtral),
+            ("mimi", ModelKind::Mimi),
+            ("dac", ModelKind::Dac),
+            ("csm", ModelKind::Csm),
+            ("moshi", ModelKind::Moshi),
+        ];
+        for (name, kind) in kinds {
+            let parsed = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
+                .unwrap_or_else(|e| panic!("--model {name} should parse: {e}"));
+            assert_eq!(parsed.model, *kind, "--model {name}");
+            assert!(USAGE.contains(name), "USAGE lists `{name}`");
+        }
     }
 
     #[test]

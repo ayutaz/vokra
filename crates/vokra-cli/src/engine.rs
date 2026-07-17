@@ -36,6 +36,13 @@ pub(crate) enum ModelTask {
     /// the mic side, `--duplex` selects the continuous push/pull demo
     /// with an optional `--echo-sim` synthetic echo path (T26).
     S2sDuplex,
+    /// Speaker embedding (CAM++ / M0-08, FR-OP-81). `--input` WAV →
+    /// 192-d embedding L2-norm; with `--compare <b.wav>` also the cosine
+    /// similarity of the two embeddings (`speaker::verify`). The encoder
+    /// is built in the `run` arm from the session's GGUF (the [`Session`]
+    /// facade has no speaker engine slot — deliberate: the embedding is a
+    /// conditioning input, not a session task).
+    Speaker,
     /// Whisper log-mel front-end only (M2-04-T11). Runs
     /// [`vokra_models::whisper::mel::log_mel`] against the input WAV without
     /// touching the encoder / decoder, so bench-side RTF isolates the fused
@@ -114,6 +121,7 @@ const ARCH_SILERO_VAD: &str = "silero-vad";
 const ARCH_PIPER_PLUS: &str = "piper-plus-mb-istft-vits2";
 const ARCH_CSM: &str = "csm";
 const ARCH_MOSHI: &str = "moshi";
+const ARCH_CAMPPLUS: &str = "campplus";
 
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
@@ -182,6 +190,20 @@ pub(crate) fn load_session_with_backend(
             // vokra-capi; a shared-GGUF constructor is the same follow-up).
             let tts = PiperPlusTts::from_path(path).map_err(|e| e.to_string())?;
             Ok((session.with_tts_engine(Arc::new(tts)), ModelTask::Tts))
+        }
+        ARCH_CAMPPLUS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_CAMPPLUS}`"
+                ));
+            }
+            // CAM++ speaker encoder (M0-08). The encoder binds lazily in the
+            // `run` Speaker arm from `session.gguf()` (the Session facade has
+            // no speaker engine slot); a GGUF whose tensors do not bind fails
+            // loudly there (FR-EX-08). The selected backend is honored: CAM++
+            // dispatches GEMM only, so Metal runs the whole forward on GPU
+            // and an unavailable backend errors at embed time.
+            Ok((session, ModelTask::Speaker))
         }
         ARCH_MOSHI => {
             if hint.is_some() {
@@ -258,7 +280,7 @@ pub(crate) fn load_session_with_backend(
         other => Err(format!(
             "unsupported model arch `{other}` (expected `{ARCH_WHISPER}` / \
              `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
-             `{ARCH_MOSHI}`)"
+             `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}`)"
         )),
     }
 }
@@ -295,6 +317,52 @@ mod tests {
     #[test]
     fn load_session_rejects_missing_file() {
         assert!(load_session("/no/such/vokra-cli-model.gguf").is_err());
+    }
+
+    /// A `campplus` arch GGUF dispatches to [`ModelTask::Speaker`] — the
+    /// encoder itself binds later in the `run` Speaker arm, so a
+    /// metadata-only fixture is enough here (mirrors the unknown-arch test).
+    #[test]
+    fn load_session_detects_campplus_as_speaker_task() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "campplus");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-campplus-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("campplus session builds (bare)");
+        assert_eq!(task, ModelTask::Speaker);
+    }
+
+    /// Task hints are rejected on the campplus arch (FR-EX-08 — no silent
+    /// hint drop).
+    #[test]
+    fn load_session_rejects_hint_on_campplus() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "campplus");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-campplus-hint-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session_with_backend(
+            path.to_str().unwrap(),
+            BackendKind::Cpu,
+            Some(TaskHint::MelFrontend),
+        );
+        let _ = std::fs::remove_file(&path);
+        let err = result.expect_err("hint on campplus is rejected");
+        assert!(
+            err.contains("not supported on arch `campplus`"),
+            "got: {err}"
+        );
     }
 
     #[test]

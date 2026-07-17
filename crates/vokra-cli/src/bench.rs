@@ -107,7 +107,7 @@ struct BenchArgs {
 /// Parses a `--backend` value. The variants always exist (core enum); whether
 /// they are *usable* depends on the CLI's compiled features — an unavailable
 /// backend fails loudly at inference, never silently on CPU.
-fn parse_backend(v: &str) -> Result<BackendKind, String> {
+pub(crate) fn parse_backend(v: &str) -> Result<BackendKind, String> {
     match v {
         "cpu" => Ok(BackendKind::Cpu),
         "metal" => Ok(BackendKind::Metal),
@@ -495,6 +495,18 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 "bench: arch `moshi` (full-duplex S2S) has no bench task yet — \
                  real-model per-frame latency is the owner track (M4-06 T30); \
                  refusing to fabricate a measurement (FR-EX-08)"
+                    .to_owned(),
+            );
+        }
+        // Speaker embedding (CAM++): no bench task is defined — the run-side
+        // Speaker arm prints the embedding L2-norm / cosine, but a timing
+        // harness needs a settled fbank+embed window definition first.
+        // Reject rather than fabricate a measurement (FR-EX-08).
+        ModelTask::Speaker => {
+            return Err(
+                "bench: arch `campplus` (speaker embedding) has no bench task yet — \
+                 use `vokra-cli run --model <campplus.gguf> --input <a.wav>` for the \
+                 embedding itself (FR-EX-08: refusing to fabricate a measurement)"
                     .to_owned(),
             );
         }

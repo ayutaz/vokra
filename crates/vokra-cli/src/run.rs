@@ -18,18 +18,32 @@ use crate::engine::{self, ModelTask};
 use crate::wav;
 
 pub(crate) const USAGE: &str = "\
-vokra-cli run — load a GGUF and run VAD / ASR / TTS
+vokra-cli run — load a GGUF and run VAD / ASR / TTS / speaker embedding
 
 USAGE:
     vokra-cli run --model <model.gguf> [--input <in.wav>] [--text <string>] [--output <out.wav>]
-                  [--beam-size <N>] [--length-penalty <α>] [--no-repeat-ngram <N>]
-                  [--fixture-tokenizer] [--interrupt-after <N>] [--deterministic]
+                  [--backend cpu|metal|cuda] [--beam-size <N>] [--length-penalty <α>]
+                  [--no-repeat-ngram <N>] [--fixture-tokenizer] [--interrupt-after <N>]
+                  [--deterministic]
+    vokra-cli run --model <campplus.gguf> --input <a.wav> [--compare <b.wav>]
 
 OPTIONS:
-    --model <path>              GGUF model file (arch selects VAD / ASR / TTS / S2S)
-    --input <path>              mono WAV input (required for VAD and ASR;
+    --model <path>              GGUF model file (arch selects VAD / ASR / TTS / S2S /
+                                speaker embedding)
+    --input <path>              mono WAV input (required for VAD, ASR and speaker;
                                 optional recorded context audio for S2S —
                                 the explicit AEC bypass path, FR-OP-60)
+    --backend <name>            cpu | metal | cuda — backend for the model's hot
+                                ops [default cpu]. Mirrors `bench --backend`:
+                                honored by the ASR (Whisper) and speaker (CAM++)
+                                paths; VAD / TTS / S2S engines run on the CPU
+                                regardless (same as bench). metal/cuda need the
+                                CLI built with that feature — an unavailable
+                                backend fails loudly at inference, never
+                                silently on CPU (FR-EX-08).
+    --compare <path>            speaker (campplus) only: second WAV; prints the
+                                cosine similarity of the two 192-d embeddings
+                                (speaker_verify, FR-OP-81)
     --text <string>             text to synthesize (TTS) / the reply text CSM
                                 speaks (S2S — caller-supplied, the model does
                                 not generate text)
@@ -69,6 +83,15 @@ struct RunArgs {
     input: Option<String>,
     text: Option<String>,
     output: Option<String>,
+    /// Backend the model's hot ops run on (mirrors `bench --backend`).
+    /// Honored by the ASR (Whisper) and speaker (CAM++) paths; VAD / TTS /
+    /// S2S engines run on the CPU regardless (the engine dispatch is not
+    /// backend-parameterised for them — same as bench). An unavailable
+    /// backend fails loudly at inference (FR-EX-08), never silently on CPU.
+    backend: vokra_core::BackendKind,
+    /// Speaker (campplus) only: second WAV for the cosine-similarity
+    /// comparison. Any other task rejects the flag loudly (FR-EX-08).
+    compare: Option<String>,
     /// Beam-search width (default 1 = greedy). Only honored for `voxtral`
     /// arch — other archs error out on `> 1` rather than silently ignoring
     /// (FR-EX-08).
@@ -97,6 +120,8 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut input: Option<String> = None;
     let mut text: Option<String> = None;
     let mut output: Option<String> = None;
+    let mut backend = vokra_core::BackendKind::Cpu;
+    let mut compare: Option<String> = None;
     // Beam-search defaults: greedy (beam_size = 1). Length-penalty 0.6 is
     // only meaningful when beam_size > 1; the default is arbitrary but
     // matches `voxtral::BeamConfig::with_beam_size` so the same value flows
@@ -127,6 +152,15 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
             }
             "--output" => {
                 output = Some(args.get(i + 1).ok_or("--output requires a value")?.clone());
+                i += 2;
+            }
+            "--backend" => {
+                let v = args.get(i + 1).ok_or("--backend requires a value")?;
+                backend = crate::bench::parse_backend(v)?;
+                i += 2;
+            }
+            "--compare" => {
+                compare = Some(args.get(i + 1).ok_or("--compare requires a value")?.clone());
                 i += 2;
             }
             "--beam-size" => {
@@ -202,6 +236,8 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         input,
         text,
         output,
+        backend,
+        compare,
         beam_size,
         length_penalty,
         no_repeat_ngram,
@@ -223,8 +259,17 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     let hint = a
         .fixture_tokenizer
         .then_some(engine::TaskHint::CsmFixtureTokenizer);
-    let (session, task) =
-        engine::load_session_with_backend(&a.model, vokra_core::BackendKind::Cpu, hint)?;
+    let (session, task) = engine::load_session_with_backend(&a.model, a.backend, hint)?;
+
+    // `--compare` belongs to the speaker (campplus) task only. Reject it on
+    // every other arch rather than silently ignoring the flag (FR-EX-08).
+    if a.compare.is_some() && task != ModelTask::Speaker {
+        return Err(
+            "run: --compare is only supported for the speaker (campplus) arch — \
+             it compares two speaker embeddings (FR-OP-81)"
+                .to_owned(),
+        );
+    }
 
     match task {
         ModelTask::Vad => {
@@ -319,6 +364,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         ModelTask::S2s => {
             run_s2s(&session, &a)?;
         }
+        ModelTask::Speaker => {
+            run_speaker(&session, &a)?;
+        }
         // `mel-frontend` is a bench-only task (M2-04-T11) — it isolates the
         // Whisper log-mel path so the fused / unfused RTF isn't polluted by
         // encoder / decoder time. `vokra-cli run` has no analogous end-user
@@ -343,6 +391,62 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The speaker-embedding demo path (CAM++ / M0-08, FR-OP-81): Kaldi fbank
+/// (CAM++ config incl. CMN) → 192-d embedding; prints the L2-norm, and with
+/// `--compare <b.wav>` the cosine similarity of the two embeddings via
+/// [`vokra_models::speaker::speaker_verify`] (threshold-free: the operating
+/// point is the caller's, ADR M4-20 §D-4).
+///
+/// The encoder binds here from the session's GGUF (the [`Session`] facade has
+/// no speaker engine slot) and honors `--backend`: CAM++ dispatches GEMM only,
+/// so a GEMM-covering backend (Metal) runs the whole forward on the GPU; an
+/// unavailable backend errors at embed time (FR-EX-08).
+fn run_speaker(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_models::speaker::{EMBED_DIM, SpeakerEncoder, speaker_verify};
+    use vokra_ops::kaldi_fbank::{KaldiFbankOpts, kaldi_fbank};
+
+    let input = a
+        .input
+        .as_deref()
+        .ok_or("run (speaker): --input <a.wav> is required")?;
+    let encoder = SpeakerEncoder::from_gguf(session.gguf())
+        .map_err(|e| e.to_string())?
+        .with_backend(a.backend);
+    let opts = KaldiFbankOpts::camplus();
+
+    // wav → fbank → embedding for one clip. The CAM++ fbank recipe is fixed
+    // at 16 kHz (`KaldiFbankOpts::camplus`); a mismatched WAV is an explicit
+    // error — silently feeding a 44.1/48 kHz clip through a 16 kHz filterbank
+    // would produce a garbage embedding with no diagnostic (FR-EX-08).
+    let embed_clip = |path: &str| -> Result<[f32; EMBED_DIM], String> {
+        let clip = wav::read_wav(path)?;
+        if clip.sample_rate != opts.sample_rate {
+            return Err(format!(
+                "run (speaker): {path}: expected a {} Hz mono WAV (the CAM++ Kaldi-fbank \
+                 recipe), got {} Hz — resample offline first",
+                opts.sample_rate, clip.sample_rate
+            ));
+        }
+        let (fbank, frames) = kaldi_fbank(&clip.samples, &opts).map_err(|e| e.to_string())?;
+        let emb = encoder.embed(&fbank, frames).map_err(|e| e.to_string())?;
+        let l2 = emb
+            .iter()
+            .map(|v| f64::from(*v) * f64::from(*v))
+            .sum::<f64>()
+            .sqrt();
+        println!("speaker: {path}: frames={frames} dim={EMBED_DIM} l2_norm={l2:.6}");
+        Ok(emb)
+    };
+
+    let emb_a = embed_clip(input)?;
+    if let Some(compare) = a.compare.as_deref() {
+        let emb_b = embed_clip(compare)?;
+        let result = speaker_verify(&emb_a, &emb_b, None).map_err(|e| e.to_string())?;
+        println!("speaker: cosine_similarity={:.6}", result.similarity);
+    }
+    Ok(())
 }
 
 /// Pushes the whole clip through a fresh VAD stream and returns the per-frame
@@ -747,6 +851,191 @@ mod tests {
                 .unwrap(),
             "--no-repeat-ngram requires a value"
         );
+    }
+
+    // ---- --backend (bench-surface mirror) + --compare (speaker) ----------
+
+    /// `--backend` parses exactly like `bench --backend` (shared
+    /// `parse_backend`): default cpu, metal/cuda/vulkan accepted at parse
+    /// time (availability is an inference-time explicit error, FR-EX-08).
+    #[test]
+    fn parses_backend_flag_with_cpu_default() {
+        use vokra_core::BackendKind;
+        let a = parse_args(&args(&["--model", "m.gguf"])).expect("valid");
+        assert_eq!(a.backend, BackendKind::Cpu);
+        for (name, kind) in [
+            ("cpu", BackendKind::Cpu),
+            ("metal", BackendKind::Metal),
+            ("cuda", BackendKind::Cuda),
+            ("vulkan", BackendKind::Vulkan),
+        ] {
+            let a = parse_args(&args(&["--model", "m.gguf", "--backend", name]))
+                .unwrap_or_else(|e| panic!("--backend {name} should parse: {e}"));
+            assert_eq!(a.backend, kind, "--backend {name}");
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_backend_and_dangling_backend() {
+        let err = parse_args(&args(&["--model", "m.gguf", "--backend", "npu"]))
+            .err()
+            .unwrap();
+        assert!(err.contains("unknown --backend"), "got: {err}");
+        assert_eq!(
+            parse_args(&args(&["--model", "m.gguf", "--backend"]))
+                .err()
+                .unwrap(),
+            "--backend requires a value"
+        );
+    }
+
+    #[test]
+    fn parses_compare_flag_and_rejects_dangling_compare() {
+        let a = parse_args(&args(&[
+            "--model",
+            "spk.gguf",
+            "--input",
+            "a.wav",
+            "--compare",
+            "b.wav",
+        ]))
+        .expect("valid");
+        assert_eq!(a.compare.as_deref(), Some("b.wav"));
+        // Default: no compare.
+        let a = parse_args(&args(&["--model", "spk.gguf"])).expect("valid");
+        assert_eq!(a.compare, None);
+        assert_eq!(
+            parse_args(&args(&["--model", "spk.gguf", "--compare"]))
+                .err()
+                .unwrap(),
+            "--compare requires a value"
+        );
+    }
+
+    /// The help text documents the new surface (Fix A + Fix C of the
+    /// campaign-2 cli-enablers leg).
+    #[test]
+    fn help_text_documents_backend_compare_and_speaker() {
+        assert!(USAGE.contains("--backend"), "USAGE lists --backend");
+        assert!(
+            USAGE.contains("cpu | metal | cuda"),
+            "USAGE lists the backend names"
+        );
+        assert!(USAGE.contains("--compare"), "USAGE lists --compare");
+        assert!(USAGE.contains("speaker"), "USAGE mentions the speaker task");
+        assert!(USAGE.contains("campplus"), "USAGE names the campplus arch");
+    }
+
+    /// `--compare` on a non-speaker arch is an explicit contract error
+    /// (FR-EX-08: never silently ignore a user flag).
+    #[test]
+    fn compare_on_non_speaker_arch_is_rejected() {
+        let err = main(&args(&[
+            "--model",
+            &silero_fixture(),
+            "--input",
+            "unused.wav",
+            "--compare",
+            "b.wav",
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains("--compare is only supported for the speaker"),
+            "got: {err}"
+        );
+    }
+
+    /// A campplus-arch GGUF whose tensors do not bind fails loudly at the
+    /// encoder bind inside the Speaker arm (the engine dispatch itself
+    /// returns a bare session — see `engine::tests`).
+    #[test]
+    fn speaker_metadata_only_gguf_fails_loudly_at_encoder_bind() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "campplus");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let dir = std::env::temp_dir();
+        let model = dir.join(format!("vokra-cli-spk-meta-{}.gguf", std::process::id()));
+        std::fs::write(&model, &bytes).unwrap();
+        let in_wav = dir.join(format!("vokra-cli-spk-meta-{}.wav", std::process::id()));
+        let samples: Vec<f32> = (0..16_000).map(|i| (i as f32 * 0.05).sin() * 0.3).collect();
+        wav::write_wav(in_wav.to_str().unwrap(), &samples, 16_000).unwrap();
+        let err = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--input",
+            in_wav.to_str().unwrap(),
+        ]))
+        .unwrap_err();
+        let _ = std::fs::remove_file(&model);
+        let _ = std::fs::remove_file(&in_wav);
+        // The bind error names the missing tensor / weight, not a panic.
+        assert!(!err.is_empty(), "loud bind error expected");
+    }
+
+    /// Speaker task without `--input` is a contract error.
+    #[test]
+    fn speaker_without_input_is_a_contract_error() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "campplus");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let model =
+            std::env::temp_dir().join(format!("vokra-cli-spk-noinput-{}.gguf", std::process::id()));
+        std::fs::write(&model, &bytes).unwrap();
+        let err = main(&args(&["--model", model.to_str().unwrap()])).unwrap_err();
+        let _ = std::fs::remove_file(&model);
+        assert!(err.contains("--input"), "actionable: {err}");
+    }
+
+    /// Real-GGUF gated e2e (mirrors the `speaker::parity` gating): set
+    /// `VOKRA_CAMPLUS_GGUF` to a converted CAM++ GGUF to run; skips clean
+    /// when unset (CI stays green, no fabricated pass).
+    #[test]
+    fn speaker_real_gguf_e2e_identical_inputs_gated() {
+        let Ok(model) = std::env::var("VOKRA_CAMPLUS_GGUF") else {
+            eprintln!("skipping speaker CLI e2e: set VOKRA_CAMPLUS_GGUF to run");
+            return;
+        };
+        let dir = std::env::temp_dir();
+        let in_wav = dir.join(format!("vokra-cli-spk-e2e-{}.wav", std::process::id()));
+        // 1 s of deterministic pseudo-speech at 16 kHz (multi-tone, enough
+        // frames for the CAM++ receptive field).
+        let samples: Vec<f32> = (0..16_000)
+            .map(|i| {
+                let t = i as f32 / 16_000.0;
+                0.3 * (t * std::f32::consts::TAU * 220.0).sin()
+                    + 0.2 * (t * std::f32::consts::TAU * 660.0).sin()
+            })
+            .collect();
+        wav::write_wav(in_wav.to_str().unwrap(), &samples, 16_000).unwrap();
+        // Identical inputs → the run succeeds (cosine 1.0 prints to stdout;
+        // the numeric assertion rides the campaign harness, which captures
+        // stdout of the release binary).
+        let code = main(&args(&[
+            "--model",
+            &model,
+            "--input",
+            in_wav.to_str().unwrap(),
+            "--compare",
+            in_wav.to_str().unwrap(),
+        ]))
+        .expect("speaker e2e runs");
+        assert_eq!(code, ExitCode::SUCCESS);
+        // A non-16 kHz clip is an explicit error (no silent resample).
+        let wav8k = dir.join(format!("vokra-cli-spk-e2e8k-{}.wav", std::process::id()));
+        wav::write_wav(wav8k.to_str().unwrap(), &samples[..8000], 8_000).unwrap();
+        let err = main(&args(&[
+            "--model",
+            &model,
+            "--input",
+            wav8k.to_str().unwrap(),
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains("16000 Hz") || err.contains("16 kHz"),
+            "got: {err}"
+        );
+        let _ = std::fs::remove_file(&in_wav);
+        let _ = std::fs::remove_file(&wav8k);
     }
 
     #[test]
