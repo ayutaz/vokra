@@ -107,12 +107,25 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 #
 # By path (these stay zero-dependency themselves). `vokra-piper-plus` supplies
 # the `Phonemizer` trait boundary + `PassthroughPhonemizer` default; the real
-# 8-language G2P lives out-of-workspace in `integrations/vokra-piper-g2p` and
-# is injected via `InferenceService::with_phonemizer` so this crate never
-# depends on jpreprocess / lindera / icu.
+# 8-language G2P is injected via `InferenceService::with_phonemizer` (see the
+# `vokra-piper-g2p` entry below).
 vokra-core = { path = "../../crates/vokra-core" }
 vokra-models = { path = "../../crates/vokra-models" }
 vokra-piper-plus = { path = "../../crates/vokra-piper-plus" }
+
+# --- Real 8-language G2P bridge (campaign-2 P1 fix, 2026-07-17). ---
+#
+# Sibling EXCLUDED workspace (`integrations/vokra-piper-g2p`) that links the
+# client's own MIT `piper-plus-g2p` (jpreprocess / naist-jdic / regex / serde —
+# all third-party, all confined to these isolated lockfiles; the ROOT
+# `Cargo.lock` stays `vokra-*`-only, NFR-DS-02). Linking it here lets the
+# production binary honour `--piper-g2p` and turn plain text into real
+# phoneme ids at `/api/tts` + Wyoming `synthesize`. The G2P still crosses into
+# the runtime ONLY via the `vokra_piper_plus::Phonemizer` trait boundary
+# (`InferenceService::with_phonemizer`); without `--piper-g2p` the default
+# `PassthroughPhonemizer` behaviour is byte-for-byte unchanged (raw phoneme
+# ids / `[[symbol]]` literals only, plain text = explicit error, FR-EX-08).
+vokra-piper-g2p = { path = "../vokra-piper-g2p" }
 
 [dev-dependencies]
 # Test-only HTTP client for /health probe. Small, MIT/Apache-2.0.

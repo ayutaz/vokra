@@ -20,6 +20,7 @@
 // satisfy the lint would obscure the failure kind for no real gain.
 #![allow(clippy::result_large_err)]
 
+use crate::api::piper_http::TtsHttpState;
 use crate::api::wyoming::{
     BargeIn, WyomingBackend, run_describe_only_connection, run_wyoming_connection,
     write_wyoming_error,
@@ -127,30 +128,34 @@ pub async fn spawn_server_with_service(
     service: Option<Arc<dyn WyomingBackend>>,
     scheduler: Option<Arc<Scheduler>>,
 ) -> std::io::Result<ServerHandles> {
-    spawn_server_full(cfg, signal, None, service, scheduler).await
+    spawn_server_full(cfg, signal, None, None, service, scheduler).await
 }
 
 /// Bind both listeners and spawn their event loops, wiring BOTH the HTTP API
-/// routers (when `http_transcribe = Some`) and the Wyoming engine registry
-/// (when `service = Some`) — the full production startup path (M4-19 T04 /
-/// M2-09 T06/T09).
+/// routers (when `http_transcribe` / `http_tts` are `Some`) and the Wyoming
+/// engine registry (when `service = Some`) — the full production startup path
+/// (M4-19 T04 / M2-09 T06/T09/T12).
 ///
 /// * `http_transcribe = Some(_)` → the HTTP app attaches the OpenAI
 ///   `/v1/audio/transcriptions` route and the vLLM `/v1/completions` +
-///   `/v1/chat/completions` contract routes (see [`build_http_app`]); `None` →
-///   health-only.
+///   `/v1/chat/completions` contract routes (see [`build_http_app`]).
+/// * `http_tts = Some(_)` → the HTTP app attaches the piper-plus
+///   `POST /api/tts` route (campaign-2 P1 #3: this router existed since T11
+///   but was never merged, so the production binary 404'd FR-SV-04).
+/// * Both `None` → health-only.
 /// * `service` / `scheduler` behave exactly as in
 ///   [`spawn_server_with_service`].
 ///
-/// The concrete [`InferenceService`] implements BOTH
-/// [`TranscribeService`] (HTTP) and [`WyomingBackend`] (Wyoming), so the
-/// production caller passes two trait-object views of the same `Arc`. Kept as
-/// separate optionals rather than a bundle so the Wyoming-only test path can
-/// leave `http_transcribe = None` without a mock HTTP service.
+/// The concrete [`InferenceService`] implements [`TranscribeService`] +
+/// [`crate::service::SynthesizeService`] + `VoiceDefaults` (HTTP) and
+/// [`WyomingBackend`] (Wyoming), so the production caller passes trait-object
+/// views of the same `Arc`. Kept as separate optionals rather than a bundle so
+/// the Wyoming-only test path can leave the HTTP views `None` without mocks.
 pub async fn spawn_server_full(
     cfg: Config,
     signal: ShutdownSignal,
     http_transcribe: Option<Arc<dyn TranscribeService>>,
+    http_tts: Option<TtsHttpState>,
     service: Option<Arc<dyn WyomingBackend>>,
     scheduler: Option<Arc<Scheduler>>,
 ) -> std::io::Result<ServerHandles> {
@@ -158,19 +163,25 @@ pub async fn spawn_server_full(
     let http_listener = TcpListener::bind(cfg.http_bind).await?;
     let http_actual = http_listener.local_addr()?;
     // FR-EX-08: announce which HTTP surface booted so an operator never
-    // wonders why `/v1/audio/*` 404s.
-    if http_transcribe.is_some() {
-        eprintln!(
+    // wonders why `/v1/audio/*` or `/api/tts` 404s.
+    match (http_transcribe.is_some(), http_tts.is_some()) {
+        (true, true) => eprintln!(
             "vokra-server: HTTP serving OpenAI /v1/audio/transcriptions + vLLM \
-             /v1/completions (contract-only 501) + /health"
-        );
-    } else {
-        eprintln!(
+             /v1/completions (contract-only 501) + piper /api/tts + /health"
+        ),
+        (true, false) => eprintln!(
+            "vokra-server: HTTP serving OpenAI /v1/audio/transcriptions + vLLM \
+             /v1/completions (contract-only 501) + /health (piper /api/tts NOT wired)"
+        ),
+        (false, true) => {
+            eprintln!("vokra-server: HTTP serving piper /api/tts + /health (ASR routes NOT wired)")
+        }
+        (false, false) => eprintln!(
             "vokra-server: HTTP in health-only mode (no inference registry wired); \
              only /health is answered"
-        );
+        ),
     }
-    let app = build_http_app(http_transcribe);
+    let app = build_http_app(http_transcribe, http_tts);
     let http_signal = signal.clone();
     tokio::spawn(async move {
         let shutdown = async move { http_signal.wait().await };
@@ -217,26 +228,35 @@ pub async fn spawn_server_full(
 /// Always serves `/health`. When an [`InferenceService`] transcribe view is
 /// supplied it additionally attaches the OpenAI `/v1/audio/transcriptions`
 /// route ([`crate::api::openai::attach_routes`]) bound to that service and the
-/// vLLM contract router ([`crate::api::vllm::router`]). When it is `None` those
-/// routes are OMITTED (they would 404), which is the honest signal that no
-/// inference registry was wired — never a route that silently no-ops
-/// (FR-EX-08).
+/// vLLM contract router ([`crate::api::vllm::router`]); when a TTS state is
+/// supplied it attaches the piper-plus `POST /api/tts` route
+/// ([`crate::api::piper_http::router`]). When a view is `None` its routes are
+/// OMITTED (they would 404), which is the honest signal that no inference
+/// registry was wired — never a route that silently no-ops (FR-EX-08).
 ///
 /// The whole app resolves to `Router<()>`: the OpenAI sub-router is bound to
 /// its state with `.with_state(transcribe)` before being merged, exactly like
-/// the `attach_routes` unit tests do, and the vLLM router is stateless.
-fn build_http_app(http_transcribe: Option<Arc<dyn TranscribeService>>) -> Router {
-    let app = Router::new().route("/health", get(health_handler));
-    match http_transcribe {
-        None => app,
-        Some(transcribe) => {
-            // `attach_routes::<Arc<dyn TranscribeService>>` picks up the state
-            // via axum's blanket `FromRef<S> for S`; `.with_state` then binds
-            // it, yielding a `Router<()>` we can merge into the app.
-            let openai = crate::api::openai::attach_routes(Router::new()).with_state(transcribe);
-            app.merge(openai).merge(crate::api::vllm::router())
-        }
+/// the `attach_routes` unit tests do; the vLLM router is stateless; the TTS
+/// router arrives state-applied from [`crate::api::piper_http::router`].
+fn build_http_app(
+    http_transcribe: Option<Arc<dyn TranscribeService>>,
+    http_tts: Option<TtsHttpState>,
+) -> Router {
+    let mut app = Router::new().route("/health", get(health_handler));
+    if let Some(transcribe) = http_transcribe {
+        // `attach_routes::<Arc<dyn TranscribeService>>` picks up the state
+        // via axum's blanket `FromRef<S> for S`; `.with_state` then binds
+        // it, yielding a `Router<()>` we can merge into the app.
+        let openai = crate::api::openai::attach_routes(Router::new()).with_state(transcribe);
+        app = app.merge(openai).merge(crate::api::vllm::router());
     }
+    if let Some(tts) = http_tts {
+        // Campaign-2 P1 #3 fix: `/api/tts` (schema + dispatch landed at T11,
+        // unit-tested, but never merged here → live 404 on the production
+        // binary, verified 2026-07-17).
+        app = app.merge(crate::api::piper_http::router(tts));
+    }
+    app
 }
 
 /// Wire an already-built [`InferenceService`] (or its absence) into the full
@@ -253,12 +273,14 @@ async fn spawn_server_wired(
     service: Option<Arc<InferenceService>>,
 ) -> std::io::Result<ServerHandles> {
     let Some(svc) = service else {
-        return spawn_server_full(cfg, signal, None, None, None).await;
+        return spawn_server_full(cfg, signal, None, None, None, None).await;
     };
-    // Two trait-object views of the SAME registry `Arc` — the HTTP router
-    // needs `TranscribeService`, the Wyoming loop needs `WyomingBackend`, and
-    // `InferenceService` implements both.
+    // Trait-object views of the SAME registry `Arc` — the HTTP routers need
+    // `TranscribeService` + (`SynthesizeService`, `VoiceDefaults`), the
+    // Wyoming loop needs `WyomingBackend`, and `InferenceService` implements
+    // them all.
     let http: Arc<dyn TranscribeService> = svc.clone();
+    let http_tts = TtsHttpState::from_service(svc.clone());
     let wyoming: Arc<dyn WyomingBackend> = svc;
     // `n_stream` must equal `max_concurrent_sessions` (see `Scheduler::new`);
     // both use the same constant here, so the only error path is unreachable
@@ -268,7 +290,15 @@ async fn spawn_server_wired(
         SchedulerConfig::minimum(DEFAULT_MAX_CONCURRENT_SESSIONS),
     )
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
-    spawn_server_full(cfg, signal, Some(http), Some(wyoming), Some(scheduler)).await
+    spawn_server_full(
+        cfg,
+        signal,
+        Some(http),
+        Some(http_tts),
+        Some(wyoming),
+        Some(scheduler),
+    )
+    .await
 }
 
 /// Build the inference registry from the startup [`Config`] model paths, or
@@ -277,11 +307,40 @@ async fn spawn_server_wired(
 /// Loading is eager: every configured GGUF must open and pass the compliance
 /// gate here, so a caller that reaches the listener bind is guaranteed a
 /// working registry (FR-EX-08 — no silent partial boot).
+///
+/// When [`Config::piper_g2p_enabled`] the real 8-language G2P
+/// ([`vokra_piper_g2p::PiperPlusG2p`]) is derived from the loaded piper voice
+/// and swapped in via [`InferenceService::with_phonemizer`] — this is the
+/// campaign-2 P1 #3 fix: the seam existed since T04 but the production
+/// startup path never injected anything, leaving every TTS surface
+/// phoneme-ids-only. A G2P build failure is a hard startup error, never a
+/// silent fall-back to the passthrough (FR-EX-08). Without the flag the
+/// default [`vokra_piper_plus::PassthroughPhonemizer`] behaviour is
+/// unchanged.
 fn build_service(cfg: &Config) -> Result<Option<Arc<InferenceService>>, ServiceError> {
-    match service_config_from_config(cfg)? {
-        None => Ok(None),
-        Some(service_cfg) => Ok(Some(InferenceService::build(&service_cfg)?)),
+    let Some(service_cfg) = service_config_from_config(cfg)? else {
+        return Ok(None);
+    };
+    let service = InferenceService::build(&service_cfg)?;
+    if !cfg.piper_g2p_enabled() {
+        return Ok(Some(service));
     }
+    // FR-EX-08: announce the text front-end mode so an operator never
+    // wonders which flavor of TTS input this boot accepts.
+    let g2p =
+        vokra_piper_g2p::PiperPlusG2p::from_voice(service.piper_voice()).map_err(|source| {
+            ServiceError::ModelLoadFailed {
+                slot: "piper-plus-g2p",
+                path: service_cfg.piper_plus_gguf.clone(),
+                source,
+            }
+        })?;
+    eprintln!(
+        "vokra-server: TTS text front-end = real 8-language piper-plus G2P \
+         (--piper-g2p; plain text accepted, raw phoneme-id payloads are now \
+         treated as text)"
+    );
+    Ok(Some(service.with_phonemizer(Arc::new(g2p))))
 }
 
 /// Map the startup [`Config`] model paths onto a [`ServiceConfig`].
@@ -297,6 +356,20 @@ fn build_service(cfg: &Config) -> Result<Option<Arc<InferenceService>>, ServiceE
 ///   (large-v3 tokenizer without a large-v3 GGUF) is enforced by
 ///   [`InferenceService::build`].
 fn service_config_from_config(cfg: &Config) -> Result<Option<ServiceConfig>, ServiceError> {
+    // `--piper-g2p` without a piper voice is meaningless — refuse to boot
+    // rather than silently ignore the flag (FR-EX-08). Checked before the
+    // any-model gate so `vokra-server --piper-g2p` alone is an error, not a
+    // health-only boot that quietly dropped the operator's request.
+    if cfg.piper_g2p_enabled() && cfg.piper_plus_gguf.is_none() {
+        return Err(ServiceError::InvalidConfig(
+            "--piper-g2p was requested but no --piper-plus voice GGUF is configured; \
+             the real G2P is derived from the loaded voice's phoneme table, so it \
+             cannot be enabled without one (refusing to silently ignore the flag, \
+             FR-EX-08)"
+                .to_string(),
+        ));
+    }
+
     let any_model = cfg.whisper_base_gguf.is_some()
         || cfg.whisper_base_tokenizer.is_some()
         || cfg.whisper_large_v3_gguf.is_some()
@@ -449,6 +522,23 @@ pub async fn spawn_server_for_test_with_service(
 ) -> std::io::Result<(ServerHandles, ShutdownTrigger)> {
     let (signal, trigger) = install_shutdown_signal();
     let handles = spawn_server_with_service(cfg, signal, service, scheduler).await?;
+    Ok((handles, trigger))
+}
+
+/// Like [`spawn_server_for_test`] but runs the FULL production startup path
+/// from a [`Config`]: eager [`InferenceService`] build from the model paths
+/// (hard error on any missing GGUF), optional `--piper-g2p` real-G2P
+/// injection, and the complete HTTP (OpenAI + vLLM + piper `/api/tts`) +
+/// Wyoming + scheduler wiring — byte-for-byte what `run_with_config` boots,
+/// minus the signal handler. Env-gated integration tests
+/// (`tests/piper_http_compat.rs`, `tests/tts_g2p_injection.rs`) use this so
+/// the tested surface IS the production surface, not a mock re-assembly.
+pub async fn spawn_server_for_test_wired(
+    cfg: Config,
+) -> std::io::Result<(ServerHandles, ShutdownTrigger)> {
+    let service = build_service(&cfg).map_err(startup_io_error)?;
+    let (signal, trigger) = install_shutdown_signal();
+    let handles = spawn_server_wired(cfg, signal, service).await?;
     Ok((handles, trigger))
 }
 
@@ -666,7 +756,10 @@ mod tests {
         use axum::http::Request;
         use tower::ServiceExt;
 
-        let app = build_http_app(Some(Arc::new(FakeTranscribe) as Arc<dyn TranscribeService>));
+        let app = build_http_app(
+            Some(Arc::new(FakeTranscribe) as Arc<dyn TranscribeService>),
+            None,
+        );
         let boundary = "vokra-server-wiring-boundary";
         let body = multipart_wav_body(boundary, &tiny_wav(3200));
         let req = Request::builder()
@@ -700,7 +793,10 @@ mod tests {
         use axum::http::Request;
         use tower::ServiceExt;
 
-        let app = build_http_app(Some(Arc::new(FakeTranscribe) as Arc<dyn TranscribeService>));
+        let app = build_http_app(
+            Some(Arc::new(FakeTranscribe) as Arc<dyn TranscribeService>),
+            None,
+        );
         // A well-formed completions request → 501 NotImplemented (v0.5
         // contract-only), proving the vLLM router is mounted (never a 404).
         let req = Request::builder()
@@ -723,7 +819,7 @@ mod tests {
         use axum::http::Request;
         use tower::ServiceExt;
 
-        let app = build_http_app(None);
+        let app = build_http_app(None, None);
         // /health is always present.
         let health = app
             .clone()
@@ -753,6 +849,7 @@ mod tests {
         assert_eq!(asr.status(), StatusCode::NOT_FOUND);
 
         let vllm = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -763,5 +860,125 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(vllm.status(), StatusCode::NOT_FOUND);
+
+        let tts = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(tts.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ---------------------------------------------------------------------
+    // T12 wiring: build_http_app mounts /api/tts when a TTS state is
+    // supplied (campaign-2 P1 #3 — this exact route 404'd on the production
+    // binary because it was never merged here).
+    // ---------------------------------------------------------------------
+
+    struct FakeSynthTts;
+    impl crate::service::SynthesizeService for FakeSynthTts {
+        fn synthesize(
+            &self,
+            model: &str,
+            _request: &vokra_core::SynthesisRequest,
+        ) -> Result<vokra_core::SynthesizedAudio, ServiceError> {
+            match model {
+                crate::service::model_names::PIPER_PLUS => Ok(vokra_core::SynthesizedAudio::new(
+                    vec![0.0, 0.25, -0.25],
+                    22_050,
+                )),
+                other => Err(ServiceError::UnknownModel(other.to_owned())),
+            }
+        }
+    }
+
+    struct FakeVoicesTts;
+    impl crate::api::piper_http::VoiceDefaults for FakeVoicesTts {
+        fn defaults_for(&self, voice: &str) -> Option<(f32, f32)> {
+            (voice == crate::api::piper_http::DEFAULT_VOICE).then_some((1.1, 0.667))
+        }
+    }
+
+    #[tokio::test]
+    async fn http_app_mounts_tts_route_when_state_wired() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let app = build_http_app(
+            None,
+            Some(TtsHttpState {
+                synth: Arc::new(FakeSynthTts),
+                voices: Arc::new(FakeVoicesTts),
+            }),
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/tts")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"text":"1 2 3","voice":"default"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "/api/tts must be mounted and reach the injected synthesize service"
+        );
+        let ct = resp
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        assert_eq!(ct, crate::service::AUDIO_WAV_CONTENT_TYPE);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF", "body must be the WAV payload");
+    }
+
+    // ---------------------------------------------------------------------
+    // Campaign-2 P1 #3 config guard: --piper-g2p without a piper voice is a
+    // hard startup error, never a silently ignored flag (FR-EX-08).
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn wiring_piper_g2p_without_piper_voice_is_hard_error() {
+        // Flag alone (no models at all) → refuse to boot health-only while
+        // silently dropping the operator's G2P request.
+        let cfg = Config {
+            piper_g2p: Some(true),
+            ..Config::default()
+        };
+        let err = service_config_from_config(&cfg).expect_err("flag without voice must error");
+        assert!(matches!(err, ServiceError::InvalidConfig(_)), "got {err}");
+        assert!(
+            err.to_string().contains("--piper-g2p"),
+            "error must name the offending flag, got {err}"
+        );
+
+        // Flag + whisper but no piper voice → same refusal (the g2p check
+        // fires before the required-minimum check and is just as hard).
+        let cfg = Config {
+            piper_g2p: Some(true),
+            whisper_base_gguf: Some("/m/base.gguf".into()),
+            ..Config::default()
+        };
+        assert!(matches!(
+            service_config_from_config(&cfg).expect_err("must error"),
+            ServiceError::InvalidConfig(_)
+        ));
+
+        // Explicit `false` behaves exactly like unset: no models ⇒ health-only.
+        let cfg = Config {
+            piper_g2p: Some(false),
+            ..Config::default()
+        };
+        assert!(service_config_from_config(&cfg).expect("ok").is_none());
     }
 }

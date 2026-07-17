@@ -53,6 +53,38 @@ pub struct Config {
     pub voxtral_gguf: Option<PathBuf>,
     /// Silero VAD v5 GGUF — optional Wyoming chunk-boundary helper.
     pub silero_vad_gguf: Option<PathBuf>,
+
+    /// Enable the real 8-language piper-plus G2P text front-end
+    /// (campaign-2 P1 fix). `None` = not configured = **off** (the
+    /// startup default): the TTS surfaces accept only raw phoneme ids /
+    /// `[[symbol]]` literals through the `PassthroughPhonemizer`, and
+    /// plain text stays an explicit error (FR-EX-08) exactly as before.
+    ///
+    /// `Some(true)` makes the startup path build a
+    /// `vokra_piper_g2p::PiperPlusG2p` from the loaded piper voice (the
+    /// GGUF's own `vokra.piper.phoneme_symbols` / `language_codes`; the
+    /// JA dictionary is compile-time bundled — no data dir needed) and
+    /// inject it via `InferenceService::with_phonemizer`, so plain-text
+    /// TTS works on `/api/tts` and Wyoming `synthesize`.
+    ///
+    /// NOTE the deliberate behaviour change when enabled: request text
+    /// is then interpreted as natural language by the real G2P, so
+    /// raw-phoneme-id payloads (`"1 30 2"`) are no longer parsed as ids.
+    /// Deployments that feed raw ids must keep this off — which is why
+    /// this is opt-in and never auto-enabled.
+    ///
+    /// Kept as `Option<bool>` (not `bool`) so the CLI > env > TOML
+    /// precedence merge can distinguish "explicitly set to false" from
+    /// "unset" — same pattern as the model paths above.
+    pub piper_g2p: Option<bool>,
+}
+
+impl Config {
+    /// Whether the real piper-plus G2P front-end was requested
+    /// ([`Config::piper_g2p`]; unset = off).
+    pub fn piper_g2p_enabled(&self) -> bool {
+        self.piper_g2p.unwrap_or(false)
+    }
 }
 
 impl Default for Config {
@@ -69,6 +101,7 @@ impl Default for Config {
             kokoro_gguf: None,
             voxtral_gguf: None,
             silero_vad_gguf: None,
+            piper_g2p: None,
         }
     }
 }
@@ -151,6 +184,15 @@ config is a hard startup error, never a silent partial boot):
     --kokoro <PATH>                  Kokoro-82M voice GGUF.
     --voxtral <PATH>                 Voxtral (Mistral) GGUF.
     --silero-vad <PATH>              Silero VAD v5 GGUF.
+    --piper-g2p                      Enable the real 8-language piper-plus G2P
+                                     text front-end for TTS (requires
+                                     --piper-plus; dictionaries are built into
+                                     the binary — no data dir). Default: OFF —
+                                     TTS text is then raw phoneme ids /
+                                     [[symbol]] literals only, and plain text
+                                     is an explicit error. NOTE: with G2P on,
+                                     request text is natural language; raw
+                                     phoneme-id payloads are no longer parsed.
 
 ENVIRONMENT:
     VOKRA_HTTP_BIND                  Same as --http-bind.
@@ -164,10 +206,11 @@ ENVIRONMENT:
     VOKRA_KOKORO                     Same as --kokoro.
     VOKRA_VOXTRAL                    Same as --voxtral.
     VOKRA_SILERO_VAD                 Same as --silero-vad.
+    VOKRA_PIPER_G2P                  Same as --piper-g2p (1/true/0/false).
 
 Precedence (highest first): CLI flag > env var > TOML file > built-in default.
 TOML keys mirror the flag names with underscores (e.g. `whisper_base`,
-`piper_plus`, `silero_vad`).
+`piper_plus`, `silero_vad`, `piper_g2p = true`).
 
 Bind defaults are LOOPBACK. Expose to the network only via a reverse proxy
 (nginx / Caddy) or by explicitly passing --http-bind 0.0.0.0:<port>.
@@ -224,6 +267,9 @@ where
     }
     if let Ok(v) = std::env::var("VOKRA_SILERO_VAD") {
         cfg.silero_vad_gguf = Some(PathBuf::from(v));
+    }
+    if let Ok(v) = std::env::var("VOKRA_PIPER_G2P") {
+        cfg.piper_g2p = Some(parse_bool("VOKRA_PIPER_G2P", &v)?);
     }
 
     // Layer 3: CLI flags.
@@ -287,6 +333,14 @@ where
                 cfg.silero_vad_gguf =
                     Some(PathBuf::from(take_flag_value(&mut it, "--silero-vad")?));
             }
+            // Boolean switch (takes no value): enable the real 8-language
+            // piper-plus G2P text front-end. There is deliberately no
+            // `--no-piper-g2p` — off is the default, and an env/TOML `true`
+            // can only be overridden by removing it (keeping the CLI surface
+            // one honest switch).
+            "--piper-g2p" => {
+                cfg.piper_g2p = Some(true);
+            }
             // T03 accepts unknown flags nowhere: silent-ignore would violate
             // FR-EX-08 (no silent fallback) and mask typos.
             other => return Err(ConfigError::UnknownFlag(other.to_string())),
@@ -324,6 +378,9 @@ where
         cfg.kokoro_gguf = cfg.kokoro_gguf.or(overlay.kokoro_gguf);
         cfg.voxtral_gguf = cfg.voxtral_gguf.or(overlay.voxtral_gguf);
         cfg.silero_vad_gguf = cfg.silero_vad_gguf.or(overlay.silero_vad_gguf);
+        // `Option<bool>` keeps the same CLI > env > TOML precedence as the
+        // paths: an explicit env `VOKRA_PIPER_G2P=0` beats a TOML `true`.
+        cfg.piper_g2p = cfg.piper_g2p.or(overlay.piper_g2p);
     }
 
     Ok(cfg)
@@ -350,6 +407,22 @@ fn parse_bind(flag: &str, value: &str) -> Result<SocketAddr, ConfigError> {
         })
 }
 
+/// Parse a boolean env/TOML value. Accepts `1`/`true` and `0`/`false`
+/// (ASCII case-insensitive). Anything else is a hard
+/// [`ConfigError::InvalidValue`] — a typo like `VOKRA_PIPER_G2P=yes`
+/// must never be silently read as "off" (FR-EX-08).
+fn parse_bool(flag: &str, value: &str) -> Result<bool, ConfigError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" => Ok(true),
+        "0" | "false" => Ok(false),
+        _ => Err(ConfigError::InvalidValue {
+            flag: flag.to_string(),
+            value: value.to_string(),
+            reason: "expected one of: 1, true, 0, false".to_string(),
+        }),
+    }
+}
+
 /// Fields the TOML overlay may contain.
 #[derive(Default)]
 struct TomlOverlay {
@@ -363,6 +436,7 @@ struct TomlOverlay {
     kokoro_gguf: Option<PathBuf>,
     voxtral_gguf: Option<PathBuf>,
     silero_vad_gguf: Option<PathBuf>,
+    piper_g2p: Option<bool>,
 }
 
 /// Minimal hand-rolled TOML subset: `key = "value"` lines, `#` comments,
@@ -419,6 +493,14 @@ fn load_toml_overlay(path: &PathBuf) -> Result<TomlOverlay, ConfigError> {
             "kokoro" => out.kokoro_gguf = Some(PathBuf::from(value)),
             "voxtral" => out.voxtral_gguf = Some(PathBuf::from(value)),
             "silero_vad" => out.silero_vad_gguf = Some(PathBuf::from(value)),
+            "piper_g2p" => {
+                out.piper_g2p = Some(parse_bool("piper_g2p", value).map_err(|e| {
+                    ConfigError::ConfigFileParse {
+                        path: path.clone(),
+                        error: e.to_string(),
+                    }
+                })?);
+            }
             other => {
                 // Unknown keys are an error, not silently ignored — same
                 // reasoning as unknown CLI flags (FR-EX-08).
@@ -457,6 +539,7 @@ mod tests {
             std::env::remove_var("VOKRA_KOKORO");
             std::env::remove_var("VOKRA_VOXTRAL");
             std::env::remove_var("VOKRA_SILERO_VAD");
+            std::env::remove_var("VOKRA_PIPER_G2P");
         }
     }
 
@@ -643,6 +726,99 @@ mod tests {
         with_temp_toml("badkey", "whisper_xl = \"/x.gguf\"\n", |p| {
             let err = parse_args(["vokra-server", "--config", p.to_str().unwrap()]).unwrap_err();
             assert!(matches!(err, ConfigError::ConfigFileParse { .. }));
+        });
+    }
+
+    // ---- --piper-g2p (campaign-2 P1: real G2P opt-in) ----
+
+    #[test]
+    fn startup_piper_g2p_defaults_off() {
+        clear_env();
+        let cfg = parse_args(["vokra-server"]).unwrap();
+        assert_eq!(cfg.piper_g2p, None, "unset must stay None");
+        assert!(!cfg.piper_g2p_enabled(), "unset must mean OFF");
+    }
+
+    #[test]
+    fn startup_piper_g2p_cli_switch_enables() {
+        clear_env();
+        let cfg = parse_args(["vokra-server", "--piper-g2p"]).unwrap();
+        assert_eq!(cfg.piper_g2p, Some(true));
+        assert!(cfg.piper_g2p_enabled());
+    }
+
+    /// The env layer (`VOKRA_PIPER_G2P`) routes through `parse_bool` — this
+    /// pins the accepted/rejected value set directly. NOTE: deliberately NOT
+    /// exercised by *setting* the env var in-process: the suite runs
+    /// multi-threaded and every other config test calls `clear_env()`, so a
+    /// set-var here races (observed flaky before this rewrite). The repo
+    /// precedent is that tests only ever REMOVE `VOKRA_*` keys; process-level
+    /// env wiring is covered by the release-binary e2e instead.
+    #[test]
+    fn startup_piper_g2p_bool_values_parse_and_reject() {
+        for (raw, want) in [
+            ("1", true),
+            ("true", true),
+            ("TRUE", true),
+            ("0", false),
+            ("false", false),
+            (" true ", true), // trimmed
+        ] {
+            assert_eq!(
+                parse_bool("VOKRA_PIPER_G2P", raw).unwrap(),
+                want,
+                "value {raw:?}"
+            );
+        }
+        // A typo'd bool must be a hard error, never silently read as "off"
+        // (FR-EX-08).
+        for raw in ["yes", "no", "on", "off", "2", ""] {
+            let err = parse_bool("VOKRA_PIPER_G2P", raw).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::InvalidValue { ref flag, .. } if flag == "VOKRA_PIPER_G2P"),
+                "value {raw:?} must be InvalidValue, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn startup_piper_g2p_toml_sets_and_cli_overrides() {
+        clear_env();
+        with_temp_toml("g2p", "piper_g2p = false\n", |p| {
+            // TOML alone → explicit false (distinct from unset None).
+            let cfg = parse_args(["vokra-server", "--config", p.to_str().unwrap()]).unwrap();
+            assert_eq!(cfg.piper_g2p, Some(false), "TOML false must be explicit");
+            assert!(!cfg.piper_g2p_enabled());
+
+            // CLI switch must beat TOML (precedence CLI > env > TOML).
+            let cfg = parse_args([
+                "vokra-server",
+                "--config",
+                p.to_str().unwrap(),
+                "--piper-g2p",
+            ])
+            .unwrap();
+            assert_eq!(
+                cfg.piper_g2p,
+                Some(true),
+                "CLI --piper-g2p must override TOML false"
+            );
+        });
+        with_temp_toml("g2p-on", "piper_g2p = true\n", |p| {
+            let cfg = parse_args(["vokra-server", "--config", p.to_str().unwrap()]).unwrap();
+            assert_eq!(cfg.piper_g2p, Some(true), "TOML true must enable");
+        });
+    }
+
+    #[test]
+    fn startup_piper_g2p_toml_garbage_is_parse_error() {
+        clear_env();
+        with_temp_toml("g2p-bad", "piper_g2p = maybe\n", |p| {
+            let err = parse_args(["vokra-server", "--config", p.to_str().unwrap()]).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::ConfigFileParse { .. }),
+                "got {err}"
+            );
         });
     }
 }

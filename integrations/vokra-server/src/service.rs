@@ -622,6 +622,20 @@ impl InferenceService {
         }
     }
 
+    /// Returns the loaded piper-plus voice (always present — it is part of
+    /// the required startup minimum).
+    ///
+    /// The production startup path uses this to derive the real 8-language
+    /// G2P from the voice's own GGUF metadata
+    /// (`vokra_piper_g2p::PiperPlusG2p::from_voice` reads
+    /// `vokra.piper.phoneme_symbols` / `language_codes`) before swapping it
+    /// in via [`Self::with_phonemizer`] — the out-of-workspace G2P crate is
+    /// deliberately NOT imported here (T04 stays HTTP/G2P-free), only the
+    /// engine handle is exposed.
+    pub fn piper_voice(&self) -> &Arc<PiperPlusTts> {
+        &self.tts_piper
+    }
+
     /// Returns the Whisper ASR engine keyed by `model` (or `None` if the
     /// alias does not name a Whisper variant or the corresponding engine is
     /// not configured). Voxtral aliases return `None` here — use
