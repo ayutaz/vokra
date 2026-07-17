@@ -48,6 +48,22 @@ pub(crate) fn elu_inplace(x: &mut [f32]) {
     }
 }
 
+/// Causal left-pad fill mode (upstream `StreamingConv1d.pad_mode`,
+/// `moshi/modules/conv.py` — only these two values are asserted upstream).
+///
+/// - [`PadMode::Constant`]: zero left context (the SEANet convs —
+///   `_seanet_kwargs["pad_mode"] = "constant"`).
+/// - [`PadMode::Replicate`]: the **first** processed chunk fills the left
+///   context with its own first input column (`init = x[..., :1]`;
+///   `state.first` then flips) — the frame-resample
+///   `ConvDownsample1d(pad_mode="replicate")` (`resample.py`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum PadMode {
+    #[default]
+    Constant,
+    Replicate,
+}
+
 // ---------------------------------------------------------------------------
 // Causal streaming Conv1d
 // ---------------------------------------------------------------------------
@@ -65,6 +81,9 @@ pub(crate) struct CausalConv1d {
     pub(crate) k: usize,
     pub(crate) stride: usize,
     pub(crate) dilation: usize,
+    /// Left-context fill (module docs; `Constant` unless the block
+    /// transcribes an upstream `pad_mode="replicate"` conv).
+    pad_mode: PadMode,
     /// `[in_ch * k, out_ch]` — transposed for `gemm_f32`.
     w_t: Vec<f32>,
     bias: Option<Vec<f32>>,
@@ -75,6 +94,10 @@ pub(crate) struct CausalConv1d {
 pub(crate) struct ConvState {
     /// Left context `[in_ch, pad]` (zero-initialised = constant pad).
     hist: Vec<f32>,
+    /// `true` until the first chunk is processed (drives the
+    /// [`PadMode::Replicate`] first-call fill — upstream
+    /// `_StreamingConv1dState.first`).
+    first: bool,
     /// Assembled `[in_ch, pad + t_cap]` context.
     ctx: Vec<f32>,
     /// im2col gather `[n_out_cap, in_ch * k]`.
@@ -142,9 +165,18 @@ impl CausalConv1d {
             k,
             stride,
             dilation,
+            pad_mode: PadMode::Constant,
             w_t,
             bias,
         })
+    }
+
+    /// Selects the left-context fill mode (builder — default
+    /// [`PadMode::Constant`]).
+    #[must_use]
+    pub(crate) fn with_pad_mode(mut self, pad_mode: PadMode) -> Self {
+        self.pad_mode = pad_mode;
+        self
     }
 
     /// Causal left pad (`k_eff - stride`) — the state width.
@@ -158,6 +190,7 @@ impl CausalConv1d {
         let n_out_cap = t_cap / self.stride;
         ConvState {
             hist: vec![0.0; self.in_ch * pad],
+            first: true,
             ctx: vec![0.0; self.in_ch * (pad + t_cap)],
             gather: vec![0.0; n_out_cap * self.in_ch * self.k],
             gemm_out: vec![0.0; n_out_cap * self.out_ch],
@@ -236,6 +269,25 @@ impl CausalConv1d {
             )));
         }
         let pad = self.pad();
+        if pad > 0 && self.pad_mode == PadMode::Replicate {
+            // Upstream conv.py replicate mode: needs at least `pad`
+            // fresh columns ("Not enough content to pad streaming.").
+            if t < pad {
+                return Err(VokraError::InvalidArgument(format!(
+                    "mimi conv1d: replicate pad needs t ({t}) >= pad ({pad}) \
+                     (upstream StreamingConv1d assertion)"
+                )));
+            }
+            if state.first {
+                // First chunk: left context replicates this chunk's first
+                // column (`init = x[..., :1]` — conv.py).
+                for ci in 0..self.in_ch {
+                    let v = x[ci * t];
+                    state.hist[ci * pad..(ci + 1) * pad].fill(v);
+                }
+            }
+        }
+        state.first = false;
         let ctx_len = pad + t;
         // ctx[ci, :pad] = hist, ctx[ci, pad:] = x.
         for ci in 0..self.in_ch {
@@ -882,6 +934,98 @@ mod tests {
         tr.process_into(&compute, &mut st, &[1.0, 1.0], 2, &mut out)
             .unwrap();
         assert_eq!(out, vec![1.0, 2.0, 4.0, 2.0]);
+    }
+
+    #[test]
+    fn conv_replicate_pad_first_call_matches_hand_reference() {
+        // in=1, out=1, k=3, stride=1, w=[1,1,1], x=[a,b,c] (pad = 2):
+        //   constant : ctx [0,0,a,b,c] → [a, a+b, a+b+c]
+        //   replicate: ctx [a,a,a,b,c] → [3a, 2a+b, a+b+c]
+        // (upstream conv.py: first chunk's left context = its first column).
+        let w = [1.0f32, 1.0, 1.0];
+        let compute = compute();
+        let (a, b, c) = (2.0f32, 3.0, 5.0);
+
+        let conv_c = CausalConv1d::new(1, 1, 3, 1, 1, &w, None).unwrap();
+        let mut st = conv_c.state(3);
+        let mut out = vec![0.0f32; 3];
+        conv_c
+            .process_into(&compute, &mut st, &[a, b, c], 3, &mut out)
+            .unwrap();
+        assert_eq!(out, vec![a, a + b, a + b + c]);
+
+        let conv_r = CausalConv1d::new(1, 1, 3, 1, 1, &w, None)
+            .unwrap()
+            .with_pad_mode(PadMode::Replicate);
+        let mut st = conv_r.state(3);
+        conv_r
+            .process_into(&compute, &mut st, &[a, b, c], 3, &mut out)
+            .unwrap();
+        assert_eq!(out, vec![3.0 * a, 2.0 * a + b, a + b + c]);
+    }
+
+    #[test]
+    fn conv_replicate_full_buffer_equals_chunked_streaming() {
+        // The replicate fill happens exactly once (first chunk) — carried
+        // state must reproduce the full-buffer result bit-for-bit.
+        let mut rng = SplitMix64::new(7);
+        let (in_ch, out_ch, k, stride) = (2, 3, 4, 2);
+        let w = rnd(&mut rng, out_ch * in_ch * k);
+        let conv = CausalConv1d::new(in_ch, out_ch, k, stride, 1, &w, None)
+            .unwrap()
+            .with_pad_mode(PadMode::Replicate);
+        let compute = compute();
+        let t = 8;
+        let x = rnd(&mut rng, in_ch * t);
+
+        let mut full_state = conv.state(t);
+        let mut full = vec![0.0f32; out_ch * conv.out_len(t)];
+        conv.process_into(&compute, &mut full_state, &x, t, &mut full)
+            .unwrap();
+
+        let mut st = conv.state(2);
+        let mut got = vec![Vec::new(); out_ch];
+        for c in 0..4 {
+            let mut chunk = vec![0.0f32; in_ch * 2];
+            for ci in 0..in_ch {
+                chunk[ci * 2..(ci + 1) * 2]
+                    .copy_from_slice(&x[ci * t + c * 2..ci * t + (c + 1) * 2]);
+            }
+            let n = conv.out_len(2);
+            let mut out = vec![0.0f32; out_ch * n];
+            conv.process_into(&compute, &mut st, &chunk, 2, &mut out)
+                .unwrap();
+            for o in 0..out_ch {
+                got[o].extend_from_slice(&out[o * n..(o + 1) * n]);
+            }
+        }
+        let n_full = conv.out_len(t);
+        for o in 0..out_ch {
+            for (i, v) in got[o].iter().enumerate() {
+                assert_eq!(
+                    *v,
+                    full[o * n_full + i],
+                    "ch {o} col {i}: replicate streaming must be bit-exact"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn conv_replicate_undersized_first_chunk_is_loud() {
+        // k=4, stride=1 → pad=3; a 2-column chunk cannot replicate-fill
+        // (upstream asserts T >= TP) — loud error, not a silent zero-pad.
+        let w = vec![0.25f32; 4];
+        let conv = CausalConv1d::new(1, 1, 4, 1, 1, &w, None)
+            .unwrap()
+            .with_pad_mode(PadMode::Replicate);
+        let compute = compute();
+        let mut st = conv.state(4);
+        let mut out = vec![0.0f32; 2];
+        assert!(
+            conv.process_into(&compute, &mut st, &[1.0, 2.0], 2, &mut out)
+                .is_err()
+        );
     }
 
     #[test]

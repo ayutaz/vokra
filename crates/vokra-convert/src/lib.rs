@@ -347,13 +347,21 @@ pub fn convert_file(
             let (builder, report) = models::mimi::convert(bytes)?;
             let notes = vec![format!(
                 "mimi: {} tensors passed through ({} non-float skipped), derived effective \
-                 codebook tables [{} x {} x {}] emitted as `{}`",
+                 codebook tables [{} x {} x {}] emitted as `{}`, neural-chain adapter wrote \
+                 {} structural mimi.enc.*/mimi.dec.* tensors + the vokra.mimi.* config chunk \
+                 group ({})",
                 report.written,
                 report.skipped_non_float,
                 report.n_codebooks,
                 report.codebook_size,
                 report.d_model,
                 models::mimi::DERIVED_TABLES_TENSOR,
+                report.structural_written,
+                if report.structural_written > 0 {
+                    "PCM encode/decode bindable"
+                } else {
+                    "checkpoint carries no SEANet chain — quantizer-only"
+                },
             )];
             (builder, notes)
         }

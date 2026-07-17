@@ -45,7 +45,7 @@ use vokra_ops::mimi_rvq::CodebookTable;
 
 use super::config::MimiNeuralConfig;
 use super::nn::{
-    CausalConv1d, ConvState, MimiTransformer, MimiTransformerLayer, MimiTransformerState,
+    CausalConv1d, ConvState, MimiTransformer, MimiTransformerLayer, MimiTransformerState, PadMode,
     elu_inplace,
 };
 use crate::compute::{Compute, HotOp};
@@ -84,8 +84,19 @@ pub struct MimiEncoder {
     final_conv: CausalConv1d,
     frame_down: CausalConv1d,
     transformer: MimiTransformer,
-    /// `[q_dim, dim]` row-major (GEMV layout) — quantizer input projection.
+    /// `[q_dim, dim]` row-major (GEMV layout) — quantizer input projection
+    /// (the **semantic** split's `rvq_first.input_proj` when
+    /// `input_proj_rest` is present, else the single-chain projection).
     input_proj: Vec<f32>,
+    /// `[q_dim, dim]` acoustic-split projection
+    /// (`quantizer.rvq_rest.input_proj`, upstream
+    /// `SplitResidualVectorQuantizer`). `None` → plain single-chain RVQ
+    /// (synthesized fixtures / pre-split GGUFs); `Some` → split encode:
+    /// codebook 0 quantizes `input_proj(x)` (1-deep chain), codebooks 1..
+    /// chain over `input_proj_rest(x)` — **both project the same latent**;
+    /// the acoustic chain does *not* consume the semantic residual
+    /// (`vq.py` `SplitResidualVectorQuantizer.encode`, transcribed).
+    input_proj_rest: Option<Vec<f32>>,
     tables: Vec<CodebookTable>,
     backend: BackendKind,
     is_synthesized: bool,
@@ -178,9 +189,11 @@ impl MimiEncoder {
         }
         let final_conv = conv(&mut rng, ch, dim, s.last_kernel_size, 1, 1, true)?;
         let ds = config.frame_downsample_stride()?;
-        // Frame resample: causal conv, k = 2·stride, bias-less
-        // (resample.py ConvDownsample1d — ADR §D2).
-        let frame_down = conv(&mut rng, dim, dim, 2 * ds, ds, 1, false)?;
+        // Frame resample: causal conv, k = 2·stride, bias-less, replicate
+        // left pad (resample.py `ConvDownsample1d(pad_mode="replicate")`
+        // — ADR §D2; the SEANet convs stay constant-pad).
+        let frame_down =
+            conv(&mut rng, dim, dim, 2 * ds, ds, 1, false)?.with_pad_mode(PadMode::Replicate);
 
         let t = &config.transformer;
         let mut layers = Vec::with_capacity(t.n_layer);
@@ -216,6 +229,7 @@ impl MimiEncoder {
             frame_down,
             transformer,
             input_proj,
+            input_proj_rest: None,
             tables,
             backend: BackendKind::Cpu,
             is_synthesized: true,
@@ -226,21 +240,24 @@ impl MimiEncoder {
     /// naming (`mimi.enc.*`), reproducing exactly the geometry
     /// [`Self::synthesized`] builds.
     ///
-    /// # Honest boundary (naming — read before wiring the real checkpoint)
+    /// # Naming (T29 — closed by the converter adapter)
     ///
-    /// The real kyutai Mimi checkpoint stores the SEANet chain as a
-    /// weight-normed `nn.Sequential` (`encoder.model.{i}.conv.conv.*` with
-    /// `weight_norm` `(g, v)` parametrizations + streaming wrappers,
-    /// `moshi/modules/seanet.py`). Those exact `model.{i}` integer indices
-    /// and the `weight_norm` fusion are **checkpoint-exact and not
-    /// observable without the gated tokenizer safetensors** — guessing them
-    /// would violate the hallucination ban. So this binder uses an explicit
-    /// Vokra structural naming (one fused weight per conv, no `weight_norm`)
-    /// that the round-trip test pins for pack ↔ unpack self-consistency.
-    /// The T29 owner step is a thin adapter: map `mimi.enc.*` ⇄ the real
-    /// `encoder.model.{i}` names and fuse `weight_norm` in the converter
-    /// (`vokra-convert::models::mimi` currently passes the SEANet tensors
-    /// through verbatim). Real PCM parity stays an owner task.
+    /// The real kyutai checkpoint
+    /// (`tokenizer-e351c8d8-checkpoint125.safetensors`) stores the chain
+    /// under `encoder.model.{i}.conv.conv.*` / `encoder_transformer.*` /
+    /// `quantizer.*` names with **plain fused conv weights** (loaders.py:
+    /// weights are "pre-processed for inference", `norm: "none"` — no
+    /// `weight_norm` `(g, v)` split survives in the file) and bias-less
+    /// transformer linears. `vokra-convert::models::mimi` maps those names
+    /// onto this structural naming offline (index walk + linear transposes
+    /// + raw-codebook derivation); this binder stays checkpoint-agnostic.
+    ///
+    /// The optional `mimi.enc.input_proj_rest` tensor (presence-driven, no
+    /// hidden flag) selects the upstream `SplitResidualVectorQuantizer`
+    /// encode: codebook 0 = 1-deep semantic chain over `input_proj(x)`,
+    /// codebooks 1.. = acoustic chain over `input_proj_rest(x)` (both from
+    /// the same latent — `vq.py`, transcribed). Absent → plain single-chain
+    /// RVQ (synthesized fixtures / pre-split GGUFs).
     ///
     /// # Errors
     ///
@@ -309,7 +326,10 @@ impl MimiEncoder {
             true,
         )?;
         let ds = config.frame_downsample_stride()?;
-        let frame_down = read_conv(file, "mimi.enc.frame_down", dim, dim, 2 * ds, ds, 1, false)?;
+        // Replicate left pad — resample.py `ConvDownsample1d`
+        // (`pad_mode="replicate"`); mirrors `synthesized`.
+        let frame_down = read_conv(file, "mimi.enc.frame_down", dim, dim, 2 * ds, ds, 1, false)?
+            .with_pad_mode(PadMode::Replicate);
 
         let t = &config.transformer;
         let mut layers = Vec::with_capacity(t.n_layer);
@@ -332,6 +352,15 @@ impl MimiEncoder {
 
         let q = &config.quantizer;
         let input_proj = tensor_f32(file, "mimi.enc.input_proj", q.dimension * dim)?;
+        let input_proj_rest = if file.tensor_info("mimi.enc.input_proj_rest").is_some() {
+            Some(tensor_f32(
+                file,
+                "mimi.enc.input_proj_rest",
+                q.dimension * dim,
+            )?)
+        } else {
+            None
+        };
         let mut tables = Vec::with_capacity(q.n_q);
         for cb in 0..q.n_q {
             let data = tensor_f32(file, &format!("mimi.enc.cb{cb}"), q.bins * q.dimension)?;
@@ -345,6 +374,7 @@ impl MimiEncoder {
             frame_down,
             transformer,
             input_proj,
+            input_proj_rest,
             tables,
             backend: BackendKind::Cpu,
             is_synthesized: false,
@@ -362,6 +392,13 @@ impl MimiEncoder {
     #[must_use]
     pub fn is_synthesized(&self) -> bool {
         self.is_synthesized
+    }
+
+    /// `true` when the upstream `SplitResidualVectorQuantizer` encode is
+    /// active (`mimi.enc.input_proj_rest` present — [`Self::from_gguf`]).
+    #[must_use]
+    pub fn has_split_projection(&self) -> bool {
+        self.input_proj_rest.is_some()
     }
 
     /// The resolved config.
@@ -611,7 +648,7 @@ impl MimiEncoder {
         }
         edge += 1;
 
-        // Per frame: input_proj GEMV + RVQ residual chain.
+        // Per frame: input_proj GEMV + RVQ residual chain (split or plain).
         let q_dim = self.config.quantizer.dimension;
         for f in 0..n_frames {
             // Column f of [dim, frames] gathered into tf_rows[..dim].
@@ -626,9 +663,32 @@ impl MimiEncoder {
                 None,
                 &mut state.proj,
             )?;
-            state.residual.copy_from_slice(&state.proj);
             let codes = &mut codes_out[f * self.tables.len()..(f + 1) * self.tables.len()];
-            rvq_quantize_chain(&self.tables, &mut state.residual, codes)?;
+            match &self.input_proj_rest {
+                None => {
+                    state.residual.copy_from_slice(&state.proj);
+                    rvq_quantize_chain(&self.tables, &mut state.residual, codes)?;
+                }
+                Some(w_rest) => {
+                    // Upstream split encode (vq.py `SplitResidualVector-
+                    // Quantizer.encode`): the semantic split (rvq_first,
+                    // 1 codebook) and the acoustic split (rvq_rest, the
+                    // rest) each project the SAME latent through their own
+                    // input_proj — the acoustic chain starts from
+                    // `input_proj_rest(x)`, not the semantic residual.
+                    state.residual.copy_from_slice(&state.proj);
+                    rvq_quantize_chain(&self.tables[..1], &mut state.residual, &mut codes[..1])?;
+                    compute.gemv_f32(
+                        q_dim,
+                        dim,
+                        w_rest,
+                        &state.tf_rows[..dim],
+                        None,
+                        &mut state.residual,
+                    )?;
+                    rvq_quantize_chain(&self.tables[1..], &mut state.residual, &mut codes[1..])?;
+                }
+            }
         }
         Ok(())
     }
@@ -1043,5 +1103,95 @@ mod tests {
             err.to_string().contains("mimi.enc.init"),
             "names the missing tensor: {err}"
         );
+    }
+
+    /// Packs `src` under the structural naming, optionally overriding the
+    /// first codebook and appending `mimi.enc.input_proj_rest`.
+    fn pack_gguf(src: &MimiEncoder, zero_cb0: bool, input_proj_rest: Option<&[f32]>) -> GgufFile {
+        use vokra_core::gguf::GgufBuilder;
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "mimi");
+        write_conv(&mut b, "mimi.enc.init", &src.init);
+        for (i, stage) in src.stages.iter().enumerate() {
+            for (j, blk) in stage.blocks.iter().enumerate() {
+                write_conv(&mut b, &format!("mimi.enc.s{i}.b{j}.c1"), &blk.conv1);
+                write_conv(&mut b, &format!("mimi.enc.s{i}.b{j}.c2"), &blk.conv2);
+            }
+            write_conv(&mut b, &format!("mimi.enc.s{i}.down"), &stage.down);
+        }
+        write_conv(&mut b, "mimi.enc.final", &src.final_conv);
+        write_conv(&mut b, "mimi.enc.frame_down", &src.frame_down);
+        for (l, layer) in src.transformer.layers.iter().enumerate() {
+            write_tf_layer(&mut b, &format!("mimi.enc.tf{l}"), layer);
+        }
+        write_vec(&mut b, "mimi.enc.input_proj", &src.input_proj);
+        if let Some(rest) = input_proj_rest {
+            write_vec(&mut b, "mimi.enc.input_proj_rest", rest);
+        }
+        for (cb, table) in src.tables.iter().enumerate() {
+            if cb == 0 && zero_cb0 {
+                write_vec(&mut b, "mimi.enc.cb0", &vec![0.0f32; table.data.len()]);
+            } else {
+                write_vec(&mut b, &format!("mimi.enc.cb{cb}"), &table.data);
+            }
+        }
+        GgufFile::parse(b.to_bytes().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn split_projection_encode_matches_upstream_split_semantics() {
+        // Upstream `SplitResidualVectorQuantizer.encode` (vq.py): semantic
+        // (1 codebook on `P(x)`) and acoustic (rest, on `R(x)`) chains both
+        // project the SAME latent; the acoustic chain does NOT consume the
+        // semantic residual. Oracle: with codebook 0 zeroed, the semantic
+        // stage picks index 0 (all-equal distances tie → lowest) and
+        // subtracts nothing, so a plain single chain over `P(x)` and the
+        // split encode with `R == P` must emit IDENTICAL codes — while a
+        // split encode with `R == -P` must diverge on the acoustic stages.
+        let cfg = MimiNeuralConfig::tiny_for_tests();
+        let src = MimiEncoder::synthesized(&cfg, 5).unwrap();
+        let neg: Vec<f32> = src.input_proj.iter().map(|v| -v).collect();
+
+        let plain = MimiEncoder::from_gguf(&pack_gguf(&src, true, None), &cfg).unwrap();
+        let split_same =
+            MimiEncoder::from_gguf(&pack_gguf(&src, true, Some(&src.input_proj)), &cfg).unwrap();
+        let split_neg = MimiEncoder::from_gguf(&pack_gguf(&src, true, Some(&neg)), &cfg).unwrap();
+        assert!(!plain.has_split_projection());
+        assert!(split_same.has_split_projection());
+
+        let hop = src.frame_hop().unwrap();
+        let pcm: Vec<f32> = (0..hop * 4)
+            .map(|i| ((i as f32) * 0.023).sin() * 0.4)
+            .collect();
+        let a = plain.encode_all(&pcm).unwrap();
+        let b = split_same.encode_all(&pcm).unwrap();
+        let c = split_neg.encode_all(&pcm).unwrap();
+        assert_eq!(
+            a, b,
+            "with cb0 = 0 and R == P the split encode must reduce to the plain chain"
+        );
+        let n_q = cfg.quantizer.n_q;
+        for f in 0..4 {
+            assert_eq!(c[f * n_q], b[f * n_q], "semantic stage ignores R");
+        }
+        assert_ne!(c, b, "acoustic stages must consume input_proj_rest");
+    }
+
+    #[test]
+    fn split_projection_round_trips_through_gguf() {
+        // Presence-driven binding: same GGUF minus the rest tensor loads
+        // as a plain encoder; with it, the split path — and the split
+        // encode is deterministic across two loads.
+        let cfg = MimiNeuralConfig::tiny_for_tests();
+        let src = MimiEncoder::synthesized(&cfg, 11).unwrap();
+        let rest: Vec<f32> = src.input_proj.iter().map(|v| v * 0.5 + 0.01).collect();
+        let file = pack_gguf(&src, false, Some(&rest));
+        let e1 = MimiEncoder::from_gguf(&file, &cfg).unwrap();
+        let e2 = MimiEncoder::from_gguf(&file, &cfg).unwrap();
+        let hop = src.frame_hop().unwrap();
+        let pcm: Vec<f32> = (0..hop * 3)
+            .map(|i| ((i as f32) * 0.017).cos() * 0.3)
+            .collect();
+        assert_eq!(e1.encode_all(&pcm).unwrap(), e2.encode_all(&pcm).unwrap());
     }
 }
