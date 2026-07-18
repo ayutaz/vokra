@@ -1,0 +1,11 @@
+loadavg_start={ 1.77 4.81 7.06 }
+vokra_cpu_threads_env=unset
+model_load_seconds=0.171087
+audio_seconds=10.960
+iter0_wall_s=1.065993
+iter1_wall_s=1.062102
+iter2_wall_s=1.062080
+MEDIAN wall_s=1.062102 rtf=0.0969
+PROFDUMP-BEGIN mimi.decode
+PROFDUMP-END mimi.decode
+loadavg_end={ 1.65 4.69 6.99 }

@@ -1,0 +1,10 @@
+loadavg_start={ 1.86 3.14 5.08 }
+vokra_cpu_threads_env=unset
+model_load_seconds=6.482350
+iter0_wall_s=10.090730
+iter1_wall_s=10.099672
+iter2_wall_s=10.381359
+greedy_tokens=[400, 370, 11, 452, 7177, 6280, 11, 1029, 406, 437, 428, 1941, 393, 360, 337, 291, 11, 1029, 437, 291, 393, 360, 337, 428, 1941, 13, 50257]
+greedy_text=" And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your country."
+MEDIAN wall_s=10.099672 rtf=0.9182 audio_s=11.000 n_tokens=27
+loadavg_end={ 4.22 3.58 5.13 }

@@ -1,0 +1,5 @@
+loadavg_start={ 1.56 4.88 7.11 }
+vokra_cpu_threads_env=unset
+active_isa=neon-dotprod
+available_parallelism=8
+loadavg_end={ 1.56 4.88 7.11 }
