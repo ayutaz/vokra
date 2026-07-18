@@ -13,7 +13,7 @@
 //! ch[bins..2*bins]`.
 
 use super::SampleRate;
-use super::math::{conv1d, reflect_pad_right};
+use super::math::{conv1d_wt, reflect_pad_right};
 use super::weights::RateWeights;
 
 /// Output of the pseudo-STFT: magnitude spectrogram, `bins` rows × `frames`
@@ -30,11 +30,13 @@ pub(super) struct Magnitude {
 pub(super) fn stft_conv(rate: SampleRate, w: &RateWeights, frame: &[f32]) -> (Vec<f32>, usize) {
     let padded = reflect_pad_right(frame, rate.pad());
     // Conv1d(1, 2*bins, k=n_fft, stride=n_fft/2): a single input channel.
-    let conv = conv1d(
+    // M5-14 Wave-2 (T21): transposed-weight formulation, bit-identical per
+    // element to the original scalar conv (see `math::conv1d_wt`).
+    let conv = conv1d_wt(
         &padded,
         1,
         padded.len(),
-        &w.stft.weight,
+        &w.stft.weight_t,
         None,
         w.stft.c_out, // 2*bins
         w.stft.k,

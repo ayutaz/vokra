@@ -38,6 +38,7 @@ pub mod moshi;
 pub mod piper_plus;
 pub mod silero_vad;
 pub mod speaker;
+pub(crate) mod tls_scratch;
 pub mod voxtral;
 pub mod whisper;
 

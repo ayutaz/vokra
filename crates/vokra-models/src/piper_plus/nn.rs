@@ -25,6 +25,7 @@
 //! measurement (M1-01-F), not up front.
 
 use crate::compute::Compute;
+use crate::tls_scratch::{with_col_scratch, with_col_scratch2};
 
 /// 1-D convolution with stride / padding / dilation / groups, lowered to
 /// im2col + GEMM (M1-01-D), dispatched through the [`Compute`] seam so the model
@@ -34,6 +35,27 @@ use crate::compute::Compute;
 /// (PyTorch/ONNX layout), `bias` (when `Some`) is `[out_ch]`. Returns
 /// `[out_ch, out_len]` with `out_len = (in_len + 2·pad − dilation·(kernel−1) −
 /// 1) / stride + 1`.
+///
+/// # M5-14 Wave-2 glue rework (T16/T17)
+///
+/// Wave-0 measured 82% of the piper wall OUTSIDE the dispatched kernels,
+/// dominated by this function's per-call `vec![0.0; k·out_len]` im2col
+/// buffer + element-wise gather + separate scatter. The rework keeps the
+/// **identical GEMM operands and the identical output arithmetic** (so the
+/// results are bit-for-bit unchanged and the scalar-oracle differential
+/// below still pins it), but:
+///
+/// - the `col` / per-group GEMM buffers come from the grow-only thread-local
+///   scratch ([`crate::tls_scratch`]) instead of fresh zeroed allocations;
+/// - each im2col row is filled by RANGE: explicit zero-fill of the two pad
+///   ranges + a contiguous `copy_from_slice` of the interior for the
+///   `stride == 1` shapes this model actually uses (strided scalar loop
+///   otherwise) — every element is written, so buffer reuse can never leak
+///   stale values;
+/// - a pointwise conv (`kernel == 1`, `stride == 1`, `pad == 0`,
+///   `groups == 1`) skips im2col entirely — its `col` matrix IS `x`;
+/// - for `groups == 1` the GEMM writes straight into `out` and the bias is
+///   added in place (one add per element, exactly the old `s + b`).
 ///
 /// The GEMM shapes are derived here and always consistent, so a GEMM shape
 /// error would be an internal bug — it panics rather than being threaded as a
@@ -60,48 +82,136 @@ pub(crate) fn conv1d(
     let out_g = out_ch / groups;
     let k = in_g * kernel; // GEMM reduction dim (im2col rows)
     let mut out = vec![0.0f32; out_ch * out_len];
-    // Reused across groups (groups == 1 for every conv this model routes here).
-    let mut col = vec![0.0f32; k * out_len];
-    let mut og = vec![0.0f32; out_g * out_len];
-    for g in 0..groups {
-        // im2col: col[(ic·kernel + kk), ot] = x[g·in_g+ic, ot·stride + kk·dil − pad].
-        col.fill(0.0);
-        for ic in 0..in_g {
-            let xrow = (g * in_g + ic) * in_len;
-            for kk in 0..kernel {
-                let crow = (ic * kernel + kk) * out_len;
-                for ot in 0..out_len {
-                    let it = ot * stride + kk * dilation;
-                    if it >= pad && it - pad < in_len {
-                        col[crow + ot] = x[xrow + (it - pad)];
-                    }
+
+    // Pointwise fast path: the im2col matrix is exactly `x` — no gather.
+    if kernel == 1 && stride == 1 && pad == 0 && groups == 1 {
+        compute
+            .gemm_f32(out_ch, out_len, in_ch, weight, x, None, &mut out)
+            .expect("piper conv1d gemm: internally-consistent shapes");
+        add_channel_bias(&mut out, out_len, bias);
+        return (out, out_len);
+    }
+
+    if groups == 1 {
+        with_col_scratch(k * out_len, |col| {
+            fill_im2col(
+                col, x, 0, in_g, in_len, kernel, out_len, stride, pad, dilation,
+            );
+            compute
+                .gemm_f32(out_ch, out_len, k, weight, col, None, &mut out)
+                .expect("piper conv1d gemm: internally-consistent shapes");
+        });
+        add_channel_bias(&mut out, out_len, bias);
+        return (out, out_len);
+    }
+
+    // groups > 1 (defensive; no shipping piper conv routes here).
+    with_col_scratch2(k * out_len, out_g * out_len, |col, og| {
+        for g in 0..groups {
+            fill_im2col(
+                col,
+                x,
+                g * in_g,
+                in_g,
+                in_len,
+                kernel,
+                out_len,
+                stride,
+                pad,
+                dilation,
+            );
+            let wbase = g * out_g * k;
+            compute
+                .gemm_f32(
+                    out_g,
+                    out_len,
+                    k,
+                    &weight[wbase..wbase + out_g * k],
+                    col,
+                    None,
+                    og,
+                )
+                .expect("piper conv1d gemm: internally-consistent shapes");
+            // Scatter into `out`, adding the per-output-channel bias.
+            for oc in 0..out_g {
+                let out_channel = g * out_g + oc;
+                let b = bias.map_or(0.0, |b| b[out_channel]);
+                let dst = &mut out[out_channel * out_len..out_channel * out_len + out_len];
+                for (d, &s) in dst.iter_mut().zip(&og[oc * out_len..(oc + 1) * out_len]) {
+                    *d = s + b;
                 }
             }
         }
-        // og[out_g, out_len] = weight_g[out_g, k] · col[k, out_len].
-        let wbase = g * out_g * k;
-        compute
-            .gemm_f32(
-                out_g,
-                out_len,
-                k,
-                &weight[wbase..wbase + out_g * k],
-                &col,
-                None,
-                &mut og,
-            )
-            .expect("piper conv1d gemm: internally-consistent shapes");
-        // Scatter into `out`, adding the per-output-channel bias (broadcast).
-        for oc in 0..out_g {
-            let out_channel = g * out_g + oc;
-            let b = bias.map_or(0.0, |b| b[out_channel]);
-            let dst = &mut out[out_channel * out_len..out_channel * out_len + out_len];
-            for (d, &s) in dst.iter_mut().zip(&og[oc * out_len..(oc + 1) * out_len]) {
-                *d = s + b;
+    });
+    (out, out_len)
+}
+
+/// Adds the per-output-channel bias in place (one add per element — the same
+/// single `+ b` the pre-rework scatter applied).
+fn add_channel_bias(out: &mut [f32], out_len: usize, bias: Option<&[f32]>) {
+    if let Some(bias) = bias {
+        for (row, &b) in out.chunks_exact_mut(out_len).zip(bias) {
+            for v in row {
+                *v += b;
             }
         }
     }
-    (out, out_len)
+}
+
+/// Fills the im2col matrix `col[(ic·kernel + kk), ot] = x[ic0+ic, ot·stride +
+/// kk·dil − pad]` (zero where the tap falls in the padding), writing **every**
+/// element of `col[..in_g·kernel·out_len]` so a reused buffer never leaks
+/// stale values. Bit-identical contents to the pre-rework `fill(0.0)` +
+/// partial-overwrite loop; the interior of each row is one contiguous
+/// `copy_from_slice` when `stride == 1` (all shipping piper convs).
+#[allow(clippy::too_many_arguments)]
+fn fill_im2col(
+    col: &mut [f32],
+    x: &[f32],
+    ic0: usize,
+    in_g: usize,
+    in_len: usize,
+    kernel: usize,
+    out_len: usize,
+    stride: usize,
+    pad: usize,
+    dilation: usize,
+) {
+    for ic in 0..in_g {
+        let xrow = (ic0 + ic) * in_len;
+        for kk in 0..kernel {
+            let crow = (ic * kernel + kk) * out_len;
+            let row = &mut col[crow..crow + out_len];
+            let kd = kk * dilation;
+            // Valid ot range: pad <= ot·stride + kd < pad + in_len.
+            let ot_lo = if kd >= pad {
+                0
+            } else {
+                (pad - kd).div_ceil(stride)
+            };
+            let last_it = pad + in_len - 1;
+            let ot_hi = if kd > last_it {
+                0
+            } else {
+                (((last_it - kd) / stride) + 1).min(out_len)
+            };
+            if ot_lo >= ot_hi {
+                row.fill(0.0);
+                continue;
+            }
+            row[..ot_lo].fill(0.0);
+            row[ot_hi..].fill(0.0);
+            if stride == 1 {
+                let src0 = ot_lo + kd - pad;
+                row[ot_lo..ot_hi].copy_from_slice(&x[xrow + src0..xrow + src0 + (ot_hi - ot_lo)]);
+            } else {
+                for (ot, v) in row[ot_lo..ot_hi].iter_mut().enumerate() {
+                    let it = (ot_lo + ot) * stride + kd;
+                    *v = x[xrow + (it - pad)];
+                }
+            }
+        }
+    }
 }
 
 /// Reference scalar 1-D convolution — the differential oracle `conv1d` (the
@@ -183,18 +293,28 @@ pub(crate) fn conv_transpose1d(
             if xv == 0.0 {
                 continue;
             }
+            // Valid kk range for this input tap: 0 <= it·stride + kk − pad
+            // < out_len (M5-14 Wave-2: hoisting the two per-tap guards out of
+            // the inner loop turns it into a contiguous, auto-vectorizable
+            // axpy over `out` — the iteration order over the surviving
+            // (in_channel, it, oc, kk) tuples is UNCHANGED, so every output
+            // element's accumulation chain is bit-identical to the guarded
+            // loop).
+            let base = it * stride;
+            let kk_lo = pad.saturating_sub(base);
+            let kk_hi = kernel.min((out_len + pad).saturating_sub(base));
+            if kk_lo >= kk_hi {
+                continue;
+            }
+            let ot0 = base + kk_lo - pad;
             for oc in 0..out_g {
                 let out_channel = g * out_g + oc;
                 let wrow = (in_channel * out_g + oc) * kernel;
-                for kk in 0..kernel {
-                    // ot = it·stride + kk − pad
-                    let pos = it * stride + kk;
-                    if pos >= pad {
-                        let ot = pos - pad;
-                        if ot < out_len {
-                            out[out_channel * out_len + ot] += xv * weight[wrow + kk];
-                        }
-                    }
+                let w_seg = &weight[wrow + kk_lo..wrow + kk_hi];
+                let dst = &mut out
+                    [out_channel * out_len + ot0..out_channel * out_len + ot0 + (kk_hi - kk_lo)];
+                for (d, &wv) in dst.iter_mut().zip(w_seg) {
+                    *d += xv * wv;
                 }
             }
         }
@@ -388,6 +508,88 @@ mod tests {
                     .map(|(a, b)| (a - b).abs())
                     .fold(0.0f32, f32::max);
                 assert!(d < 1e-3, "case {i} (bias={}): max|Δ|={d}", b.is_some());
+            }
+        }
+    }
+
+    /// M5-14 Wave-2 bit-identity pin: the reworked conv1d (TLS scratch +
+    /// range fills + pointwise / direct-out fast paths) must reproduce the
+    /// pre-rework im2col + GEMM + `s + b` scatter **bit-for-bit** — the GEMM
+    /// operands are byte-identical and the bias add is the same single `+ b`,
+    /// so `==` (not a tolerance) is the correct assertion.
+    #[test]
+    fn conv1d_bitwise_matches_reference_im2col_path() {
+        let cases = [
+            (8, 16, 12, 7, 1, 3, 1, 1),
+            (16, 16, 12, 3, 1, 2, 2, 1),
+            (16, 16, 20, 7, 1, 18, 6, 1),
+            (16, 32, 10, 1, 1, 0, 1, 1), // pointwise fast path
+            (8, 8, 12, 3, 2, 1, 1, 1),   // stride 2 (strided fill loop)
+            (8, 8, 12, 3, 1, 1, 1, 2),   // groups=2 (scatter path)
+            (4, 4, 11, 5, 3, 1, 2, 1),   // ragged stride/dilation corner
+        ];
+        let compute = Compute::cpu();
+        for (i, &(in_ch, out_ch, in_len, k, stride, pad, dil, groups)) in cases.iter().enumerate() {
+            let x = rand_vec(11 + i as u64, in_ch * in_len);
+            let w = rand_vec(111 + i as u64, out_ch * (in_ch / groups) * k);
+            let bias = rand_vec(211 + i as u64, out_ch);
+            for b in [None, Some(bias.as_slice())] {
+                let (got, got_len) = conv1d(
+                    &compute, &x, in_ch, in_len, &w, out_ch, k, b, stride, pad, dil, groups,
+                );
+
+                // Pre-rework reference: fresh zeroed col + guarded writes +
+                // GEMM into a per-group buffer + `s + b` scatter.
+                let eff = dil * (k - 1) + 1;
+                let out_len = (in_len + 2 * pad - eff) / stride + 1;
+                let in_g = in_ch / groups;
+                let out_g = out_ch / groups;
+                let kk_dim = in_g * k;
+                let mut want = vec![0.0f32; out_ch * out_len];
+                let mut col = vec![0.0f32; kk_dim * out_len];
+                let mut og = vec![0.0f32; out_g * out_len];
+                for g in 0..groups {
+                    col.fill(0.0);
+                    for ic in 0..in_g {
+                        let xrow = (g * in_g + ic) * in_len;
+                        for kk in 0..k {
+                            let crow = (ic * k + kk) * out_len;
+                            for ot in 0..out_len {
+                                let it = ot * stride + kk * dil;
+                                if it >= pad && it - pad < in_len {
+                                    col[crow + ot] = x[xrow + (it - pad)];
+                                }
+                            }
+                        }
+                    }
+                    let wbase = g * out_g * kk_dim;
+                    compute
+                        .gemm_f32(
+                            out_g,
+                            out_len,
+                            kk_dim,
+                            &w[wbase..wbase + out_g * kk_dim],
+                            &col,
+                            None,
+                            &mut og,
+                        )
+                        .unwrap();
+                    for oc in 0..out_g {
+                        let out_channel = g * out_g + oc;
+                        let bv = b.map_or(0.0, |b| b[out_channel]);
+                        let dst = &mut want[out_channel * out_len..out_channel * out_len + out_len];
+                        for (d, &s) in dst.iter_mut().zip(&og[oc * out_len..(oc + 1) * out_len]) {
+                            *d = s + bv;
+                        }
+                    }
+                }
+                assert_eq!(got_len, out_len, "case {i}");
+                assert_eq!(
+                    got,
+                    want,
+                    "case {i} (bias={}): not bit-identical",
+                    b.is_some()
+                );
             }
         }
     }

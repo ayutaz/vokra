@@ -180,7 +180,14 @@ impl SpeakerEncoder {
 
         // --- D-TDNN dense blocks + transitions ----------------------------
         let mut channels = w.tdnn.c_out;
+        // Reused BN→ReLU scratch across every dense layer (M5-14 Wave-2 T20:
+        // the old per-layer `x.to_vec()` cloned up to `1024 × t` floats 52
+        // times per embedding).
+        let mut bn_scratch: Vec<f32> = Vec::new();
         for (bi, block) in w.blocks.iter().enumerate() {
+            // One reservation for the whole block's dense-concat growth.
+            let final_ch = channels + block.layers.len() * 32;
+            x.reserve(final_ch * t_net - x.len());
             for layer in &block.layers {
                 let cam_out = dtdnn_layer(
                     compute,
@@ -190,6 +197,7 @@ impl SpeakerEncoder {
                     layer,
                     block.dilation,
                     w.cfg.cam_seg_len,
+                    &mut bn_scratch,
                 )?;
                 // Dense-concat: append the 32-channel CAM output as new rows.
                 x.extend_from_slice(&cam_out);
@@ -257,6 +265,10 @@ const _: fn() = || {
 };
 
 /// One D-TDNN dense layer → its 32-channel CAM output `[32, t]`.
+///
+/// `bn_scratch` is the caller's reused BN→ReLU buffer (grow-only; its
+/// contents are fully overwritten here every call).
+#[allow(clippy::too_many_arguments)] // the layer's intrinsic parameter set + scratch
 fn dtdnn_layer(
     compute: &Compute,
     x_in: &[f32],
@@ -265,13 +277,25 @@ fn dtdnn_layer(
     layer: &super::weights::DtdnnLayerW,
     dilation: usize,
     seg_len: usize,
+    bn_scratch: &mut Vec<f32>,
 ) -> Result<Vec<f32>> {
-    // nonlinear1: BN → ReLU.
-    let mut h = x_in.to_vec();
-    bn_apply(&mut h, c_in, t, &layer.bn1);
-    relu(&mut h);
+    // nonlinear1: BN → ReLU, written in one pass into the reused scratch.
+    // Identical arithmetic to the old copy → `bn_apply` → `relu` sequence:
+    // `z = x·s + sh`, then the same `< 0` clamp (NaN passthrough preserved).
+    bn_scratch.resize(c_in * t, 0.0);
+    let h: &mut [f32] = &mut bn_scratch[..c_in * t];
+    for ci in 0..c_in {
+        let (s, sh) = (layer.bn1.scale[ci], layer.bn1.shift[ci]);
+        for (dst, &src) in h[ci * t..(ci + 1) * t]
+            .iter_mut()
+            .zip(&x_in[ci * t..(ci + 1) * t])
+        {
+            let z = src * s + sh;
+            *dst = if z < 0.0 { 0.0 } else { z };
+        }
+    }
     // linear1 (→128, with folded nonlinear2 bias) → ReLU  ⇒ CAM input `xc`.
-    let mut xc = conv1d(compute, &h, c_in, t, &layer.linear1, 1, 0, 1)?;
+    let mut xc = conv1d(compute, h, c_in, t, &layer.linear1, 1, 0, 1)?;
     relu(&mut xc);
     let bn_ch = layer.linear1.c_out; // 128
 
@@ -354,6 +378,15 @@ fn res_block(
 ///
 /// `weight` is `[c_out, c_in, k]`; the optional per-channel bias is added after
 /// the GEMM. `t_out = (t + 2·pad − dil·(k−1) − 1)/stride + 1`.
+///
+/// M5-14 Wave-2 (T20): the im2col patch matrix lives in the grow-only
+/// thread-local scratch ([`crate::tls_scratch`]) instead of a fresh zeroed
+/// allocation per call, rows are filled by range (explicit pad zero-fill +
+/// contiguous interior copies at `stride == 1`), and a pointwise conv
+/// (`k == 1`, `stride == 1`, `pad == 0` — the D-TDNN `linear1` / CAM gate /
+/// transition / dense convs, the bulk of the calls) skips im2col entirely
+/// (`col` IS the input). The GEMM operands are byte-identical to the
+/// pre-rework path, so the results are bit-for-bit unchanged.
 #[allow(clippy::too_many_arguments)] // conv parameter set + the backend dispatcher
 fn conv1d(
     compute: &Compute,
@@ -376,36 +409,77 @@ fn conv1d(
         )));
     }
     let t_out = (t + 2 * pad - eff) / stride + 1;
+    let mut out = vec![0.0f32; c_out * t_out];
 
-    // im2col patch matrix `col[c_in·k, t_out]`.
-    let mut col = vec![0.0f32; c_in * k * t_out];
-    for ci in 0..c_in {
-        for kk in 0..k {
-            let row = (ci * k + kk) * t_out;
+    // Pointwise fast path: the im2col matrix is exactly `input`.
+    if k == 1 && stride == 1 && pad == 0 {
+        compute.gemm_f32(c_out, t_out, c_in, &w.weight, input, None, &mut out)?;
+        conv_bias(&mut out, t_out, w.bias.as_deref());
+        return Ok(out);
+    }
+
+    crate::tls_scratch::with_col_scratch(c_in * k * t_out, |col| {
+        // im2col patch matrix `col[c_in·k, t_out]`, every element written
+        // (pad ranges zero-filled) so the reused buffer never leaks state.
+        for ci in 0..c_in {
             let src = ci * t;
-            for to in 0..t_out {
-                let pos = (to * stride + kk * dil) as isize - pad as isize;
-                if pos >= 0 && (pos as usize) < t {
-                    col[row + to] = input[src + pos as usize];
+            for kk in 0..k {
+                let row = &mut col[(ci * k + kk) * t_out..(ci * k + kk + 1) * t_out];
+                let kd = kk * dil;
+                let to_lo = if kd >= pad {
+                    0
+                } else {
+                    (pad - kd).div_ceil(stride)
+                };
+                let last = pad + t - 1;
+                let to_hi = if kd > last {
+                    0
+                } else {
+                    (((last - kd) / stride) + 1).min(t_out)
+                };
+                if to_lo >= to_hi {
+                    row.fill(0.0);
+                    continue;
+                }
+                row[..to_lo].fill(0.0);
+                row[to_hi..].fill(0.0);
+                if stride == 1 {
+                    let s0 = src + to_lo + kd - pad;
+                    row[to_lo..to_hi].copy_from_slice(&input[s0..s0 + (to_hi - to_lo)]);
+                } else {
+                    for (i, v) in row[to_lo..to_hi].iter_mut().enumerate() {
+                        *v = input[src + (to_lo + i) * stride + kd - pad];
+                    }
                 }
             }
         }
-    }
+        compute.gemm_f32(c_out, t_out, c_in * k, &w.weight, col, None, &mut out)
+    })?;
+    conv_bias(&mut out, t_out, w.bias.as_deref());
+    Ok(out)
+}
 
-    let mut out = vec![0.0f32; c_out * t_out];
-    compute.gemm_f32(c_out, t_out, c_in * k, &w.weight, &col, None, &mut out)?;
-    if let Some(bias) = &w.bias {
-        for (&b, row) in bias.iter().zip(out.chunks_exact_mut(t_out)) {
+/// Per-output-channel bias broadcast (`+ b` per element — unchanged op).
+fn conv_bias(out: &mut [f32], row_len: usize, bias: Option<&[f32]>) {
+    if let Some(bias) = bias {
+        for (&b, row) in bias.iter().zip(out.chunks_exact_mut(row_len)) {
             for v in row {
                 *v += b;
             }
         }
     }
-    Ok(out)
 }
 
 /// 2-D convolution `[c_in, h, w] → [c_out, h_out, w_out]` via im2col +
 /// [`Compute::gemm_f32`]; `weight` is `[c_out, c_in, kh, kw]` with a mandatory bias.
+///
+/// M5-14 Wave-2 (T20): the FCM front-end's im2col matrices reach ~50 MB per
+/// call (Wave-0: `(32, 43920, 288)` — the single biggest CAM++ glue cost as a
+/// fresh zeroed allocation). The patch matrix now lives in the thread-local
+/// scratch and is filled by range: whole-row zero-fill when the `ih` tap is
+/// out of bounds, contiguous interior `copy_from_slice` on the (never-strided,
+/// `sw == 1`) time axis otherwise. Byte-identical GEMM operands → bit-for-bit
+/// unchanged embeddings.
 #[allow(clippy::too_many_arguments)] // conv parameter set + the backend dispatcher
 fn conv2d(
     compute: &Compute,
@@ -431,33 +505,50 @@ fn conv2d(
     let spatial = h_out * w_out;
     let patch = c_in * kh * kw;
 
-    // im2col `col[c_in·kh·kw, h_out·w_out]`.
-    let mut col = vec![0.0f32; patch * spatial];
-    for ci in 0..c_in {
-        for ky in 0..kh {
-            for kx in 0..kw {
-                let row = ((ci * kh + ky) * kw + kx) * spatial;
-                let plane = ci * h * w_dim;
-                for ho in 0..h_out {
-                    let ih = (ho * sh + ky) as isize - ph as isize;
-                    if ih < 0 || ih as usize >= h {
-                        continue;
-                    }
-                    let irow = plane + ih as usize * w_dim;
-                    let orow = row + ho * w_out;
-                    for wo in 0..w_out {
-                        let iw = (wo * sw + kx) as isize - pw as isize;
-                        if iw >= 0 && (iw as usize) < w_dim {
-                            col[orow + wo] = input[irow + iw as usize];
+    let mut out = vec![0.0f32; c_out * spatial];
+    crate::tls_scratch::with_col_scratch(patch * spatial, |col| {
+        // im2col `col[c_in·kh·kw, h_out·w_out]`, every element written.
+        for ci in 0..c_in {
+            let plane = ci * h * w_dim;
+            for ky in 0..kh {
+                for kx in 0..kw {
+                    let row = ((ci * kh + ky) * kw + kx) * spatial;
+                    for ho in 0..h_out {
+                        let orow = &mut col[row + ho * w_out..row + (ho + 1) * w_out];
+                        let ih = (ho * sh + ky) as isize - ph as isize;
+                        if ih < 0 || ih as usize >= h {
+                            orow.fill(0.0);
+                            continue;
+                        }
+                        let irow = plane + ih as usize * w_dim;
+                        // Valid wo range: 0 <= wo·sw + kx − pw < w_dim.
+                        let wo_lo = if kx >= pw { 0 } else { (pw - kx).div_ceil(sw) };
+                        let last = pw + w_dim - 1;
+                        let wo_hi = if kx > last {
+                            0
+                        } else {
+                            (((last - kx) / sw) + 1).min(w_out)
+                        };
+                        if wo_lo >= wo_hi {
+                            orow.fill(0.0);
+                            continue;
+                        }
+                        orow[..wo_lo].fill(0.0);
+                        orow[wo_hi..].fill(0.0);
+                        if sw == 1 {
+                            let s0 = irow + wo_lo + kx - pw;
+                            orow[wo_lo..wo_hi].copy_from_slice(&input[s0..s0 + (wo_hi - wo_lo)]);
+                        } else {
+                            for (i, v) in orow[wo_lo..wo_hi].iter_mut().enumerate() {
+                                *v = input[irow + (wo_lo + i) * sw + kx - pw];
+                            }
                         }
                     }
                 }
             }
         }
-    }
-
-    let mut out = vec![0.0f32; c_out * spatial];
-    compute.gemm_f32(c_out, spatial, patch, &cw.weight, &col, None, &mut out)?;
+        compute.gemm_f32(c_out, spatial, patch, &cw.weight, col, None, &mut out)
+    })?;
     for (&b, row) in cw.bias.iter().zip(out.chunks_exact_mut(spatial)) {
         for v in row {
             *v += b;

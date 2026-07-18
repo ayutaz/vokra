@@ -98,6 +98,12 @@ pub struct MimiEncoder {
     /// (`vq.py` `SplitResidualVectorQuantizer.encode`, transcribed).
     input_proj_rest: Option<Vec<f32>>,
     tables: Vec<CodebookTable>,
+    /// Per-codebook transposed data `[d_model, codebook_size]` (dimension-
+    /// major, entry fastest), built once at construction (M5-14 Wave-2 T19):
+    /// the RVQ nearest-row search sweeps entry-contiguous rows so the
+    /// per-entry distance chains auto-vectorize — bit-identical to the
+    /// row-major scan (see [`rvq_quantize_chain_t`]).
+    tables_t: Vec<Vec<f32>>,
     backend: BackendKind,
     is_synthesized: bool,
 }
@@ -131,6 +137,10 @@ pub struct MimiEncoderState {
     tf_rows: Vec<f32>,
     proj: Vec<f32>,
     residual: Vec<f32>,
+    /// `[frames_cap, q_dim]` batch residual buffers for the codebook-outer
+    /// RVQ sweep (M5-14 Wave-2 T19).
+    proj_all: Vec<f32>,
+    rest_all: Vec<f32>,
 }
 
 impl std::fmt::Debug for MimiEncoderState {
@@ -221,6 +231,7 @@ impl MimiEncoder {
             let data = xavier_uniform(&mut rng, q.bins * q.dimension, q.dimension, q.dimension);
             tables.push(CodebookTable::new(q.bins, q.dimension, data)?);
         }
+        let tables_t = transpose_tables(&tables);
         Ok(Self {
             config: config.clone(),
             init,
@@ -231,6 +242,7 @@ impl MimiEncoder {
             input_proj,
             input_proj_rest: None,
             tables,
+            tables_t,
             backend: BackendKind::Cpu,
             is_synthesized: true,
         })
@@ -366,6 +378,7 @@ impl MimiEncoder {
             let data = tensor_f32(file, &format!("mimi.enc.cb{cb}"), q.bins * q.dimension)?;
             tables.push(CodebookTable::new(q.bins, q.dimension, data)?);
         }
+        let tables_t = transpose_tables(&tables);
         Ok(Self {
             config: config.clone(),
             init,
@@ -376,6 +389,7 @@ impl MimiEncoder {
             input_proj,
             input_proj_rest,
             tables,
+            tables_t,
             backend: BackendKind::Cpu,
             is_synthesized: false,
         })
@@ -486,6 +500,8 @@ impl MimiEncoder {
             tf_rows,
             proj: vec![0.0; self.config.quantizer.dimension],
             residual: vec![0.0; self.config.quantizer.dimension],
+            proj_all: vec![0.0; frames_cap * self.config.quantizer.dimension],
+            rest_all: vec![0.0; frames_cap * self.config.quantizer.dimension],
         })
     }
 
@@ -648,8 +664,15 @@ impl MimiEncoder {
         }
         edge += 1;
 
-        // Per frame: input_proj GEMV + RVQ residual chain (split or plain).
+        // Input projections per frame (GEMV — unchanged math), then the RVQ
+        // residual chains swept CODEBOOK-outer / frame-inner (M5-14 Wave-2
+        // T19): frames are independent, so the loop order does not change any
+        // per-(frame, codebook) value — but one ~2 MB codebook now stays
+        // cache-resident across all frames instead of all 32 codebooks
+        // (~64 MB) being re-streamed from DRAM for every frame (the Wave-0
+        // ~1.0 s scalar argmin was bandwidth-bound as much as compute-bound).
         let q_dim = self.config.quantizer.dimension;
+        let n_qs = self.tables.len();
         for f in 0..n_frames {
             // Column f of [dim, frames] gathered into tf_rows[..dim].
             for c in 0..dim {
@@ -663,30 +686,49 @@ impl MimiEncoder {
                 None,
                 &mut state.proj,
             )?;
-            let codes = &mut codes_out[f * self.tables.len()..(f + 1) * self.tables.len()];
-            match &self.input_proj_rest {
-                None => {
-                    state.residual.copy_from_slice(&state.proj);
-                    rvq_quantize_chain(&self.tables, &mut state.residual, codes)?;
+            state.proj_all[f * q_dim..(f + 1) * q_dim].copy_from_slice(&state.proj);
+            if let Some(w_rest) = &self.input_proj_rest {
+                // Upstream split encode (vq.py `SplitResidualVector-
+                // Quantizer.encode`): the semantic split (rvq_first,
+                // 1 codebook) and the acoustic split (rvq_rest, the
+                // rest) each project the SAME latent through their own
+                // input_proj — the acoustic chain starts from
+                // `input_proj_rest(x)`, not the semantic residual.
+                compute.gemv_f32(
+                    q_dim,
+                    dim,
+                    w_rest,
+                    &state.tf_rows[..dim],
+                    None,
+                    &mut state.residual,
+                )?;
+                state.rest_all[f * q_dim..(f + 1) * q_dim].copy_from_slice(&state.residual);
+            }
+        }
+        match &self.input_proj_rest {
+            None => {
+                // Plain chain over every codebook, frame-inner.
+                for (cb, (table, table_t)) in self.tables.iter().zip(&self.tables_t).enumerate() {
+                    for f in 0..n_frames {
+                        let r = &mut state.proj_all[f * q_dim..(f + 1) * q_dim];
+                        codes_out[f * n_qs + cb] = rvq_quantize_one_t(table, table_t, r)?;
+                    }
                 }
-                Some(w_rest) => {
-                    // Upstream split encode (vq.py `SplitResidualVector-
-                    // Quantizer.encode`): the semantic split (rvq_first,
-                    // 1 codebook) and the acoustic split (rvq_rest, the
-                    // rest) each project the SAME latent through their own
-                    // input_proj — the acoustic chain starts from
-                    // `input_proj_rest(x)`, not the semantic residual.
-                    state.residual.copy_from_slice(&state.proj);
-                    rvq_quantize_chain(&self.tables[..1], &mut state.residual, &mut codes[..1])?;
-                    compute.gemv_f32(
-                        q_dim,
-                        dim,
-                        w_rest,
-                        &state.tf_rows[..dim],
-                        None,
-                        &mut state.residual,
-                    )?;
-                    rvq_quantize_chain(&self.tables[1..], &mut state.residual, &mut codes[1..])?;
+            }
+            Some(_) => {
+                // Semantic split: codebook 0 over `input_proj(x)`.
+                for f in 0..n_frames {
+                    let r = &mut state.proj_all[f * q_dim..(f + 1) * q_dim];
+                    codes_out[f * n_qs] =
+                        rvq_quantize_one_t(&self.tables[0], &self.tables_t[0], r)?;
+                }
+                // Acoustic split: codebooks 1.. chain over `input_proj_rest(x)`.
+                for cb in 1..n_qs {
+                    let (table, table_t) = (&self.tables[cb], &self.tables_t[cb]);
+                    for f in 0..n_frames {
+                        let r = &mut state.rest_all[f * q_dim..(f + 1) * q_dim];
+                        codes_out[f * n_qs + cb] = rvq_quantize_one_t(table, table_t, r)?;
+                    }
                 }
             }
         }
@@ -718,6 +760,10 @@ impl MimiEncoder {
 /// Plain RVQ residual quantize chain over shared tables (T13): nearest
 /// row by L2 (FP32), subtract, next codebook. Ties break to the lowest
 /// index (upstream tie-break pinned at T14 parity).
+///
+/// Since M5-14 Wave-2 this row-major scan is the **test-side reference
+/// oracle** for the transposed production path ([`rvq_quantize_one_t`]).
+#[cfg(test)]
 pub(crate) fn rvq_quantize_chain(
     tables: &[CodebookTable],
     residual: &mut [f32],
@@ -759,6 +805,128 @@ pub(crate) fn rvq_quantize_chain(
         }
     }
     Ok(())
+}
+
+/// Per-codebook `[codebook_size, d_model]` → `[d_model, codebook_size]`
+/// transposes (load-time only; see `MimiEncoder::tables_t`).
+fn transpose_tables(tables: &[CodebookTable]) -> Vec<Vec<f32>> {
+    tables
+        .iter()
+        .map(|t| {
+            let mut tt = vec![0.0f32; t.data.len()];
+            for e in 0..t.codebook_size {
+                for j in 0..t.d_model {
+                    tt[j * t.codebook_size + e] = t.data[e * t.d_model + j];
+                }
+            }
+            tt
+        })
+        .collect()
+}
+
+/// [`rvq_quantize_chain`] over pre-transposed codebooks — the M5-14 Wave-2
+/// (T19) hot path. Wave-0 measured ~1.0 s of the Mimi encode wall in the
+/// row-major scalar argmin scan.
+///
+/// **Bit-identical to [`rvq_quantize_chain`]** by construction: each entry's
+/// squared distance is still one accumulator advanced over the feature
+/// dimensions `j` in ascending order with the same unfused
+/// `(r − v)·(r − v)` chain, and the winner scan still walks entries in
+/// ascending order with the same strict `<` (lowest-index tie-break, the
+/// T14-pinned upstream rule). Only the loop nesting changes — dimensions
+/// outer, a 16-entry block of distance lanes inner over the
+/// entry-contiguous `tables_t` rows — which auto-vectorizes. The
+/// differential test below pins `==` on codes AND residual, which is what
+/// keeps the real-weight roundtrip (codes 100% match) untouched.
+#[cfg(test)]
+pub(crate) fn rvq_quantize_chain_t(
+    tables: &[CodebookTable],
+    tables_t: &[Vec<f32>],
+    residual: &mut [f32],
+    codes_out: &mut [u32],
+) -> Result<()> {
+    if codes_out.len() != tables.len() || tables_t.len() != tables.len() {
+        return Err(VokraError::InvalidArgument(format!(
+            "rvq quantize: codes_out len {} / tables_t len {} != n_q {}",
+            codes_out.len(),
+            tables_t.len(),
+            tables.len()
+        )));
+    }
+    for (cb, (table, table_t)) in tables.iter().zip(tables_t).enumerate() {
+        codes_out[cb] = rvq_quantize_one_t(table, table_t, residual)?;
+    }
+    Ok(())
+}
+
+/// One codebook of the transposed-scan RVQ: nearest row of `table` to
+/// `residual` (same distance chains and `<` lowest-index tie-break as the
+/// row-major scan — see [`rvq_quantize_chain_t`]), then subtracts the
+/// winner row from `residual` in place. Returns the winner index.
+pub(crate) fn rvq_quantize_one_t(
+    table: &CodebookTable,
+    table_t: &[f32],
+    residual: &mut [f32],
+) -> Result<u32> {
+    if table.d_model != residual.len() || table_t.len() != table.data.len() {
+        return Err(VokraError::InvalidArgument(format!(
+            "rvq quantize: table d_model {} != residual len {} (or stale transpose)",
+            table.d_model,
+            residual.len()
+        )));
+    }
+    /// Distance lanes per block. Full blocks run a constant-trip inner loop
+    /// (vectorizes cleanly); the ragged tail (only when `codebook_size` is
+    /// not a multiple) reuses the same chain at variable width.
+    const BLOCK: usize = 32;
+    let size = table.codebook_size;
+    let mut best = 0usize;
+    let mut best_d = f32::INFINITY;
+    let mut dist = [0.0f32; BLOCK];
+    let full = size - size % BLOCK;
+    let mut e0 = 0usize;
+    while e0 < full {
+        dist.fill(0.0);
+        for (j, &r) in residual.iter().enumerate() {
+            let row = &table_t[j * size + e0..j * size + e0 + BLOCK];
+            for (d, &v) in dist.iter_mut().zip(row) {
+                let diff = r - v;
+                *d += diff * diff;
+            }
+        }
+        // Winner scan in ascending entry order (same `<` tie-break as the
+        // row-major reference).
+        for (lane, &d) in dist.iter().enumerate() {
+            if d < best_d {
+                best_d = d;
+                best = e0 + lane;
+            }
+        }
+        e0 += BLOCK;
+    }
+    if e0 < size {
+        let lanes = size - e0;
+        let block = &mut dist[..lanes];
+        block.fill(0.0);
+        for (j, &r) in residual.iter().enumerate() {
+            let row = &table_t[j * size + e0..j * size + e0 + lanes];
+            for (d, &v) in block.iter_mut().zip(row) {
+                let diff = r - v;
+                *d += diff * diff;
+            }
+        }
+        for (lane, &d) in block.iter().enumerate() {
+            if d < best_d {
+                best_d = d;
+                best = e0 + lane;
+            }
+        }
+    }
+    let row = &table.data[best * table.d_model..(best + 1) * table.d_model];
+    for (r, v) in residual.iter_mut().zip(row.iter()) {
+        *r -= *v;
+    }
+    Ok(best as u32)
 }
 
 /// Reads a named tensor as f32, enforcing the element count (loud
@@ -964,6 +1132,40 @@ mod tests {
             enc.encode_into(&mut st, &sine_pcm(hop * 2), &mut codes)
                 .is_err()
         );
+    }
+
+    /// M5-14 Wave-2 bit-identity pin: the transposed-scan quantizer must
+    /// reproduce the row-major reference **exactly** — same distances
+    /// (same per-entry chains), same `<` lowest-index tie-break, same
+    /// residual subtraction — codes AND residual compared with `==`.
+    /// Ragged codebook sizes exercise the tail block.
+    #[test]
+    fn transposed_quantize_bitwise_matches_reference_chain() {
+        let mut rng = SplitMix64::new(97);
+        for &(bins, d_model, n_q) in &[(64usize, 8usize, 3usize), (37, 5, 2), (33, 4, 1)] {
+            let mut tables = Vec::new();
+            for _ in 0..n_q {
+                let data: Vec<f32> = (0..bins * d_model)
+                    .map(|_| rng.next_unit_f32() * 2.0 - 1.0)
+                    .collect();
+                tables.push(CodebookTable::new(bins, d_model, data).unwrap());
+            }
+            let tables_t = transpose_tables(&tables);
+            let start: Vec<f32> = (0..d_model)
+                .map(|_| rng.next_unit_f32() * 2.0 - 1.0)
+                .collect();
+
+            let mut want_res = start.clone();
+            let mut want_codes = vec![0u32; n_q];
+            rvq_quantize_chain(&tables, &mut want_res, &mut want_codes).unwrap();
+
+            let mut got_res = start.clone();
+            let mut got_codes = vec![0u32; n_q];
+            rvq_quantize_chain_t(&tables, &tables_t, &mut got_res, &mut got_codes).unwrap();
+
+            assert_eq!(got_codes, want_codes, "codes ({bins}x{d_model}x{n_q})");
+            assert_eq!(got_res, want_res, "residual ({bins}x{d_model}x{n_q})");
+        }
     }
 
     #[test]

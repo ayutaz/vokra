@@ -296,14 +296,29 @@ impl CausalConv1d {
             state.ctx[ci * ctx_len + pad..ci * ctx_len + ctx_len]
                 .copy_from_slice(&x[ci * t..(ci + 1) * t]);
         }
-        // im2col gather (dilation-aware).
+        // im2col gather (dilation-aware). M5-14 Wave-2 (T19): the
+        // `dilation == 1` taps of one channel are a contiguous `k`-span of
+        // the context row — one `copy_from_slice` per (i, ci) instead of a
+        // scalar tap loop (identical gather contents either way).
         let cols = self.in_ch * self.k;
-        for i in 0..n_out {
-            let row = &mut state.gather[i * cols..(i + 1) * cols];
-            for ci in 0..self.in_ch {
-                for j in 0..self.k {
-                    row[ci * self.k + j] =
-                        state.ctx[ci * ctx_len + i * self.stride + j * self.dilation];
+        if self.dilation == 1 {
+            for i in 0..n_out {
+                let row = &mut state.gather[i * cols..(i + 1) * cols];
+                let base = i * self.stride;
+                for ci in 0..self.in_ch {
+                    let src = ci * ctx_len + base;
+                    row[ci * self.k..(ci + 1) * self.k]
+                        .copy_from_slice(&state.ctx[src..src + self.k]);
+                }
+            }
+        } else {
+            for i in 0..n_out {
+                let row = &mut state.gather[i * cols..(i + 1) * cols];
+                for ci in 0..self.in_ch {
+                    for j in 0..self.k {
+                        row[ci * self.k + j] =
+                            state.ctx[ci * ctx_len + i * self.stride + j * self.dilation];
+                    }
                 }
             }
         }
@@ -317,12 +332,28 @@ impl CausalConv1d {
             None,
             &mut state.gemm_out[..n_out * self.out_ch],
         )?;
-        // Transpose to channel-major + bias.
-        for o in 0..self.out_ch {
-            let b = self.bias.as_ref().map_or(0.0, |b| b[o]);
-            for i in 0..n_out {
-                out[o * n_out + i] = state.gemm_out[i * self.out_ch + o] + b;
+        // Transpose to channel-major + bias, 16×16-tiled (M5-14 Wave-2:
+        // the naive o-outer walk read `gemm_out` at a `out_ch`-float stride
+        // — one cache line PER element on the wide SEANet stages; tiling
+        // touches each line once per tile. Per-element value unchanged:
+        // the same single `+ b`).
+        const TILE: usize = 16;
+        let oc = self.out_ch;
+        let mut i0 = 0;
+        while i0 < n_out {
+            let i1 = (i0 + TILE).min(n_out);
+            let mut o0 = 0;
+            while o0 < oc {
+                let o1 = (o0 + TILE).min(oc);
+                for o in o0..o1 {
+                    let b = self.bias.as_ref().map_or(0.0, |b| b[o]);
+                    for i in i0..i1 {
+                        out[o * n_out + i] = state.gemm_out[i * oc + o] + b;
+                    }
+                }
+                o0 = o1;
             }
+            i0 = i1;
         }
         // New hist = last `pad` context columns.
         for ci in 0..self.in_ch {
@@ -576,6 +607,17 @@ pub(crate) struct MimiTransformerState {
     ff1: Vec<f32>,
     ff1_act: Vec<f32>,
     ff2: Vec<f32>,
+    /// Grow-only `[t, ·]` batch scratch for the layer-outer multi-position
+    /// path (M5-14 Wave-2; empty until the first `t > 1` call).
+    b_norm: Vec<f32>,
+    b_q: Vec<f32>,
+    b_k: Vec<f32>,
+    b_v: Vec<f32>,
+    b_attn_out: Vec<f32>,
+    b_attn_o: Vec<f32>,
+    b_ff1: Vec<f32>,
+    b_ff1_act: Vec<f32>,
+    b_ff2: Vec<f32>,
 }
 
 impl MimiTransformer {
@@ -659,12 +701,33 @@ impl MimiTransformer {
             ff1: vec![0.0; self.ff],
             ff1_act: vec![0.0; self.ff],
             ff2: vec![0.0; d],
+            b_norm: Vec::new(),
+            b_q: Vec::new(),
+            b_k: Vec::new(),
+            b_v: Vec::new(),
+            b_attn_out: Vec::new(),
+            b_attn_o: Vec::new(),
+            b_ff1: Vec::new(),
+            b_ff1_act: Vec::new(),
+            b_ff2: Vec::new(),
         }
     }
 
-    /// Processes `t` positions in place over `x = [t, d]` row-major
-    /// (sequentially — the bottleneck runs at ≤ 25 Hz, so per-position
-    /// stepping is the streaming-native shape). Zero heap allocation.
+    /// Processes `t` positions in place over `x = [t, d]` row-major. Zero
+    /// heap allocation at steady state.
+    ///
+    /// `t == 1` (the streaming-native shape) steps the per-position path;
+    /// `t > 1` (whole-buffer encode / decode) runs the layer-outer batched
+    /// path (M5-14 Wave-2): LN / Q / K / V / O / MLP as `[t, ·]` batched
+    /// seam calls — whose per-row results are bit-identical to the
+    /// per-position `[1, ·]` calls (every GEMM route preserves the same
+    /// per-element accumulation chain, the Wave-1 invariant; LN / GELU are
+    /// row-/element-independent) — while RoPE, the KV-ring append and the
+    /// attention scores/softmax/AV keep the exact per-position sequential
+    /// loops (position `i` appends THEN attends, so the rolling-window
+    /// semantics — including `t > context` overwrites — are unchanged).
+    /// The two paths are therefore bit-identical, which the bulk-vs-chunked
+    /// and encoder full-vs-streaming oracles pin.
     ///
     /// # Errors
     ///
@@ -685,12 +748,200 @@ impl MimiTransformer {
                 t * d
             )));
         }
+        if t > 1 {
+            return self.process_batch(compute, state, x, t);
+        }
         for i in 0..t {
             // Work on one position; write back at the end.
             state.h.copy_from_slice(&x[i * d..(i + 1) * d]);
             self.step(compute, state)?;
             x[i * d..(i + 1) * d].copy_from_slice(&state.h);
         }
+        Ok(())
+    }
+
+    /// The layer-outer batched path (see [`Self::process_inplace`]). `x` is
+    /// the `[t, d]` residual stream, mutated in place.
+    fn process_batch(
+        &self,
+        compute: &Compute,
+        state: &mut MimiTransformerState,
+        x: &mut [f32],
+        t: usize,
+    ) -> Result<()> {
+        let d = self.d;
+        let n_head = self.n_head;
+        let head_dim = d / n_head;
+        let scale = 1.0f32 / (head_dim as f32).sqrt();
+        let ctx = self.context;
+        let pos0 = state.pos;
+
+        // Grow-only batch scratch.
+        let grow = |v: &mut Vec<f32>, n: usize| {
+            if v.len() < n {
+                v.resize(n, 0.0);
+            }
+        };
+        grow(&mut state.b_norm, t * d);
+        grow(&mut state.b_q, t * d);
+        grow(&mut state.b_k, t * d);
+        grow(&mut state.b_v, t * d);
+        grow(&mut state.b_attn_out, t * d);
+        grow(&mut state.b_attn_o, t * d);
+        grow(&mut state.b_ff1, t * self.ff);
+        grow(&mut state.b_ff1_act, t * self.ff);
+        grow(&mut state.b_ff2, t * d);
+
+        for (li, layer) in self.layers.iter().enumerate() {
+            // ---- Attention sublayer ----
+            compute.layer_norm_f32(
+                &x[..t * d],
+                &mut state.b_norm[..t * d],
+                t,
+                d,
+                &layer.ln1_gamma,
+                &layer.ln1_beta,
+                1e-5,
+            )?;
+            compute.gemm_f32(
+                t,
+                d,
+                d,
+                &state.b_norm[..t * d],
+                &layer.q_w_t,
+                None,
+                &mut state.b_q[..t * d],
+            )?;
+            compute.gemm_f32(
+                t,
+                d,
+                d,
+                &state.b_norm[..t * d],
+                &layer.k_w_t,
+                None,
+                &mut state.b_k[..t * d],
+            )?;
+            compute.gemm_f32(
+                t,
+                d,
+                d,
+                &state.b_norm[..t * d],
+                &layer.v_w_t,
+                None,
+                &mut state.b_v[..t * d],
+            )?;
+            // RoPE per position/head (same per-row application as `step`).
+            for i in 0..t {
+                let pos = pos0 + i;
+                for h in 0..n_head {
+                    let off = i * d + h * head_dim;
+                    state
+                        .rope_buf
+                        .copy_from_slice(&state.b_q[off..off + head_dim]);
+                    rope_apply_adjacent(&mut state.rope_buf, 1, head_dim, &self.inv_freqs, pos)?;
+                    state.b_q[off..off + head_dim].copy_from_slice(&state.rope_buf);
+                    state
+                        .rope_buf
+                        .copy_from_slice(&state.b_k[off..off + head_dim]);
+                    rope_apply_adjacent(&mut state.rope_buf, 1, head_dim, &self.inv_freqs, pos)?;
+                    state.b_k[off..off + head_dim].copy_from_slice(&state.rope_buf);
+                }
+            }
+            // Sequential ring append + attend, position by position — the
+            // exact `step` semantics (append THEN attend, rolling window).
+            let ring_base = li * ctx * d;
+            for i in 0..t {
+                let pos = pos0 + i;
+                let slot = pos % ctx;
+                let window = (pos + 1).min(ctx);
+                state.k_ring[ring_base + slot * d..ring_base + (slot + 1) * d]
+                    .copy_from_slice(&state.b_k[i * d..(i + 1) * d]);
+                state.v_ring[ring_base + slot * d..ring_base + (slot + 1) * d]
+                    .copy_from_slice(&state.b_v[i * d..(i + 1) * d]);
+                for h in 0..n_head {
+                    let q_row = &state.b_q[i * d + h * head_dim..i * d + (h + 1) * head_dim];
+                    for (w, j) in window_positions(pos, window).enumerate() {
+                        let js = j % ctx;
+                        let k_row = &state.k_ring[ring_base + js * d + h * head_dim
+                            ..ring_base + js * d + (h + 1) * head_dim];
+                        let mut s = 0.0f32;
+                        for c in 0..head_dim {
+                            s += q_row[c] * k_row[c];
+                        }
+                        state.scores[w] = s * scale;
+                    }
+                    compute.softmax_f32(
+                        &state.scores[..window],
+                        &mut state.probs[..window],
+                        1,
+                        window,
+                    )?;
+                    let out_dst =
+                        &mut state.b_attn_out[i * d + h * head_dim..i * d + (h + 1) * head_dim];
+                    for (c, out) in out_dst.iter_mut().enumerate() {
+                        let mut sum = 0.0f32;
+                        for (w, j) in window_positions(pos, window).enumerate() {
+                            let js = j % ctx;
+                            sum += state.probs[w]
+                                * state.v_ring[ring_base + js * d + h * head_dim + c];
+                        }
+                        *out = sum;
+                    }
+                }
+            }
+            compute.gemm_f32(
+                t,
+                d,
+                d,
+                &state.b_attn_out[..t * d],
+                &layer.o_w_t,
+                None,
+                &mut state.b_attn_o[..t * d],
+            )?;
+            for i in 0..t {
+                for c in 0..d {
+                    x[i * d + c] += layer.layer_scale_1[c] * state.b_attn_o[i * d + c];
+                }
+            }
+            // ---- MLP sublayer (gating = none → GELU MLP) ----
+            compute.layer_norm_f32(
+                &x[..t * d],
+                &mut state.b_norm[..t * d],
+                t,
+                d,
+                &layer.ln2_gamma,
+                &layer.ln2_beta,
+                1e-5,
+            )?;
+            compute.gemm_f32(
+                t,
+                self.ff,
+                d,
+                &state.b_norm[..t * d],
+                &layer.fc1_w_t,
+                None,
+                &mut state.b_ff1[..t * self.ff],
+            )?;
+            compute.gelu_f32(
+                &state.b_ff1[..t * self.ff],
+                &mut state.b_ff1_act[..t * self.ff],
+            )?;
+            compute.gemm_f32(
+                t,
+                d,
+                self.ff,
+                &state.b_ff1_act[..t * self.ff],
+                &layer.fc2_w_t,
+                None,
+                &mut state.b_ff2[..t * d],
+            )?;
+            for i in 0..t {
+                for c in 0..d {
+                    x[i * d + c] += layer.layer_scale_2[c] * state.b_ff2[i * d + c];
+                }
+            }
+        }
+        state.pos += t;
         Ok(())
     }
 
@@ -1093,6 +1344,34 @@ mod tests {
         }
         assert!(bulk.iter().all(|v| v.is_finite()));
         assert_ne!(bulk, x0, "the stack must transform the input");
+    }
+
+    /// M5-14 Wave-2 bit-identity pin: the layer-outer batched path must
+    /// reproduce the per-position step path **exactly** (`==`, not a
+    /// tolerance) — batched LN/projections are per-row bit-identical and
+    /// the ring/attention loops are the very same code. `t = 9 > context`
+    /// exercises the rolling-window overwrite in batch form.
+    #[test]
+    fn transformer_batch_bitwise_matches_per_position_steps() {
+        let mut rng = SplitMix64::new(11);
+        let tf = tiny_transformer(&mut rng, 8, 2, 16);
+        let compute = compute();
+        let t = 9;
+        let x0 = rnd(&mut rng, t * 8);
+
+        // Batched (t > 1 → process_batch).
+        let mut bulk = x0.clone();
+        let mut s1 = tf.state();
+        tf.process_inplace(&compute, &mut s1, &mut bulk, t).unwrap();
+
+        // Per-position (t == 1 → step) with carried state.
+        let mut stepped = x0.clone();
+        let mut s2 = tf.state();
+        for i in 0..t {
+            let seg = &mut stepped[i * 8..(i + 1) * 8];
+            tf.process_inplace(&compute, &mut s2, seg, 1).unwrap();
+        }
+        assert_eq!(bulk, stepped, "batch path must be bit-identical to steps");
     }
 
     #[test]

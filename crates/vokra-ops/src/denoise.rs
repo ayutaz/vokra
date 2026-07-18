@@ -408,34 +408,60 @@ impl Conv2d {
         let in_g = self.in_ch / self.groups;
         let out_g = self.out_ch / self.groups;
         let w_per_out = in_g * self.kt * self.kf;
+        let fstride = self.fstride;
+        // M5-14 Wave-2 (T22): taps-outer / output-frequency-inner axpy. Each
+        // output element still accumulates its taps in the SAME ascending
+        // `(igl, dt, df)` order with the same unfused `w · x` multiply-add
+        // (out-of-bounds taps skipped by the hoisted range computation
+        // exactly where the old per-tap guards skipped them), so the result
+        // is bit-identical to the old per-element scalar reduction — only
+        // the loop nesting changes, making the inner loop a contiguous
+        // (at `fstride == 1`) auto-vectorizable axpy.
         for o in 0..self.out_ch {
             let g = o / out_g;
             let w_base = o * w_per_out;
             for t in 0..x.t {
-                for fo in 0..f_out {
-                    let mut acc = 0.0f32;
-                    for igl in 0..in_g {
-                        let ic = g * in_g + igl;
-                        for dt in 0..self.kt {
-                            // Causal pad: kt−1 zero frames before t=0.
-                            let Some(ts) = (t + dt).checked_sub(self.kt - 1) else {
-                                continue;
+                let y0 = (o * x.t + t) * f_out;
+                for igl in 0..in_g {
+                    let ic = g * in_g + igl;
+                    for dt in 0..self.kt {
+                        // Causal pad: kt−1 zero frames before t=0.
+                        let Some(ts) = (t + dt).checked_sub(self.kt - 1) else {
+                            continue;
+                        };
+                        let x0 = (ic * x.t + ts) * x.f;
+                        let x_row = &x.data[x0..x0 + x.f];
+                        for df in 0..self.kf {
+                            let wv = self.w[w_base + (igl * self.kt + dt) * self.kf + df];
+                            // Valid fo range: 0 <= fo·fstride + df − fpad < x.f.
+                            let fo_lo = if df >= self.fpad {
+                                0
+                            } else {
+                                (self.fpad - df).div_ceil(fstride)
                             };
-                            for df in 0..self.kf {
-                                let fs = fo * self.fstride + df;
-                                let Some(fs) = fs.checked_sub(self.fpad) else {
-                                    continue;
-                                };
-                                if fs >= x.f {
-                                    continue;
+                            let last = self.fpad + x.f - 1;
+                            let fo_hi = if df > last {
+                                0
+                            } else {
+                                (((last - df) / fstride) + 1).min(f_out)
+                            };
+                            if fo_lo >= fo_hi {
+                                continue;
+                            }
+                            let src0 = fo_lo * fstride + df - self.fpad;
+                            let y_row = &mut y.data[y0 + fo_lo..y0 + fo_hi];
+                            if fstride == 1 {
+                                let xs = &x_row[src0..src0 + (fo_hi - fo_lo)];
+                                for (a, &xv) in y_row.iter_mut().zip(xs) {
+                                    *a += wv * xv;
                                 }
-                                let wi = w_base + (igl * self.kt + dt) * self.kf + df;
-                                acc += self.w[wi] * x.at(ic, ts, fs);
+                            } else {
+                                for (i, a) in y_row.iter_mut().enumerate() {
+                                    *a += wv * x_row[src0 + i * fstride];
+                                }
                             }
                         }
                     }
-                    let yi = y.idx(o, t, fo);
-                    y.data[yi] = acc;
                 }
             }
         }
@@ -472,24 +498,33 @@ impl ConvT2dF {
         let mut y = Act3::zeros(self.out_ch, x.t, f_out);
         let in_g = self.in_ch / self.groups;
         let out_g = self.out_ch / self.groups;
+        // M5-14 Wave-2 (T22): the two per-tap bound guards are hoisted into a
+        // per-input-column `k` range, turning the inner loop into a contiguous
+        // axpy over `y` (consecutive `k` ⇒ consecutive `fo`). The iteration
+        // order over the surviving `(ic, og, t, fi, k)` tuples — and with it
+        // every output element's accumulation chain — is unchanged, so the
+        // result is bit-identical to the guarded loop.
         for ic in 0..self.in_ch {
             let g = ic / in_g;
             for og in 0..out_g {
                 let o = g * out_g + og;
                 let w_base = (ic * out_g + og) * self.kf;
+                let w_row = &self.w[w_base..w_base + self.kf];
                 for t in 0..x.t {
+                    let y0 = (o * x.t + t) * f_out;
                     for fi in 0..x.f {
                         let xv = x.at(ic, t, fi);
-                        for k in 0..self.kf {
-                            let fo = fi * self.fstride + k;
-                            let Some(fo) = fo.checked_sub(self.fpad) else {
-                                continue;
-                            };
-                            if fo >= f_out {
-                                continue;
-                            }
-                            let yi = y.idx(o, t, fo);
-                            y.data[yi] += self.w[w_base + k] * xv;
+                        // Valid k range: 0 <= fi·fstride + k − fpad < f_out.
+                        let base = fi * self.fstride;
+                        let k_lo = self.fpad.saturating_sub(base);
+                        let k_hi = self.kf.min((f_out + self.fpad).saturating_sub(base));
+                        if k_lo >= k_hi {
+                            continue;
+                        }
+                        let fo0 = base + k_lo - self.fpad;
+                        let dst = &mut y.data[y0 + fo0..y0 + fo0 + (k_hi - k_lo)];
+                        for (d, &wv) in dst.iter_mut().zip(&w_row[k_lo..k_hi]) {
+                            *d += wv * xv;
                         }
                     }
                 }
@@ -604,21 +639,126 @@ impl GroupedLinear {
 /// `[r, z, n]`; `h ← (1−z)∘n + z∘h`), zero initial state.
 ///
 /// Weight layouts: `weight_ih_l{k}` `[3H, I]`, `weight_hh_l{k}` `[3H, H]`,
-/// biases `[3H]`. Scalar loops — correctness over speed (the BiLstm1d
-/// precedent from Kokoro).
+/// biases `[3H]`.
+///
+/// # M5-14 Wave-2 (T22/T23): transposed-weight gate matvecs
+///
+/// Wave-0 attributed 82% of the DFN3 wall to the GRU-bearing stages, whose
+/// per-frame gate matvecs ran as latency-bound scalar reductions. The gate
+/// pre-activations are now computed input-index-outer over pre-transposed
+/// weights (`w_*_t = [I|H, 3H]`, built once at construction): each gate
+/// element is STILL one accumulator seeded from its bias and advanced over
+/// the input indices `j` in the same ascending order with the same unfused
+/// `w · x` multiply-add — only the loop nesting changes, which turns the
+/// inner loop into a contiguous auto-vectorizable axpy over a `w_t` row.
+/// **Bit-identical** to the scalar reduction (pinned by
+/// `gru_transposed_forward_bitwise_matches_reference` below), so the
+/// 21-stage real-weight tap bounds are untouched — no headroom spent.
 #[derive(Debug, Clone)]
 struct GruLayer {
+    /// Original `[3H, I]` / `[3H, H]` gate weights — kept only for the
+    /// test-side bit-identity reference oracle (production forwards read
+    /// the transposes exclusively).
+    #[cfg(test)]
     w_ih: Vec<f32>,
+    #[cfg(test)]
     w_hh: Vec<f32>,
+    /// `w_ih` transposed to `[input, 3H]` (input-index-major).
+    w_ih_t: Vec<f32>,
+    /// `w_hh` transposed to `[hidden, 3H]`.
+    w_hh_t: Vec<f32>,
     b_ih: Vec<f32>,
     b_hh: Vec<f32>,
     input: usize,
     hidden: usize,
 }
 
+/// `[rows, cols]` → `[cols, rows]` row-major transpose (load-time only).
+fn transpose_rows(w: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    debug_assert_eq!(w.len(), rows * cols);
+    let mut t = vec![0.0f32; w.len()];
+    for r in 0..rows {
+        for c in 0..cols {
+            t[c * rows + r] = w[r * cols + c];
+        }
+    }
+    t
+}
+
 impl GruLayer {
+    /// Builds the layer, deriving the transposed gate weights.
+    fn new(
+        w_ih: Vec<f32>,
+        w_hh: Vec<f32>,
+        b_ih: Vec<f32>,
+        b_hh: Vec<f32>,
+        input: usize,
+        hidden: usize,
+    ) -> Self {
+        let w_ih_t = transpose_rows(&w_ih, 3 * hidden, input);
+        let w_hh_t = transpose_rows(&w_hh, 3 * hidden, hidden);
+        // Outside tests the originals are dropped here (the forwards read
+        // only the transposes); the reference oracle keeps them under test.
+        #[cfg(not(test))]
+        let _ = (w_ih, w_hh);
+        Self {
+            #[cfg(test)]
+            w_ih,
+            #[cfg(test)]
+            w_hh,
+            w_ih_t,
+            w_hh_t,
+            b_ih,
+            b_hh,
+            input,
+            hidden,
+        }
+    }
+
     /// `[T, input] → [T, hidden]`.
     fn forward_seq(&self, x: &[f32], t_len: usize) -> Vec<f32> {
+        let h_dim = self.hidden;
+        let g3 = 3 * h_dim;
+        let mut h = vec![0.0f32; h_dim];
+        let mut out = vec![0.0f32; t_len * h_dim];
+        let mut xg = vec![0.0f32; g3];
+        let mut hg = vec![0.0f32; g3];
+        for t in 0..t_len {
+            let xt = &x[t * self.input..(t + 1) * self.input];
+            // Gate pre-activations: bias-seeded, then one contiguous axpy per
+            // input index (j ascending — the per-element chain of the scalar
+            // reduction, bit-for-bit; see the struct docs).
+            xg.copy_from_slice(&self.b_ih);
+            for (j, &xv) in xt.iter().enumerate() {
+                let w_row = &self.w_ih_t[j * g3..(j + 1) * g3];
+                for (a, &wv) in xg.iter_mut().zip(w_row) {
+                    *a += wv * xv;
+                }
+            }
+            hg.copy_from_slice(&self.b_hh);
+            for (j, &hv) in h.iter().enumerate() {
+                let w_row = &self.w_hh_t[j * g3..(j + 1) * g3];
+                for (a, &wv) in hg.iter_mut().zip(w_row) {
+                    *a += wv * hv;
+                }
+            }
+            let ht = &mut out[t * h_dim..(t + 1) * h_dim];
+            for j in 0..h_dim {
+                let r = sigmoid(xg[j] + hg[j]);
+                let z = sigmoid(xg[h_dim + j] + hg[h_dim + j]);
+                let n = (xg[2 * h_dim + j] + r * hg[2 * h_dim + j]).tanh();
+                let hv = (1.0 - z) * n + z * h[j];
+                ht[j] = hv;
+            }
+            h.copy_from_slice(ht);
+        }
+        out
+    }
+
+    /// The pre-rework scalar-reduction forward — kept as the bit-identity
+    /// reference oracle for the transposed formulation (test-only).
+    #[cfg(test)]
+    fn forward_seq_scalar_reference(&self, x: &[f32], t_len: usize) -> Vec<f32> {
         let h_dim = self.hidden;
         let mut h = vec![0.0f32; h_dim];
         let mut out = vec![0.0f32; t_len * h_dim];
@@ -1128,14 +1268,14 @@ impl TensorLoader<'_> {
     fn gru_stack(&mut self, prefix: &str, layers: usize, hidden: usize) -> Result<Vec<GruLayer>> {
         (0..layers)
             .map(|l| {
-                Ok(GruLayer {
-                    w_ih: self.take(&format!("{prefix}.weight_ih_l{l}"))?,
-                    w_hh: self.take(&format!("{prefix}.weight_hh_l{l}"))?,
-                    b_ih: self.take(&format!("{prefix}.bias_ih_l{l}"))?,
-                    b_hh: self.take(&format!("{prefix}.bias_hh_l{l}"))?,
-                    input: hidden,
+                Ok(GruLayer::new(
+                    self.take(&format!("{prefix}.weight_ih_l{l}"))?,
+                    self.take(&format!("{prefix}.weight_hh_l{l}"))?,
+                    self.take(&format!("{prefix}.bias_ih_l{l}"))?,
+                    self.take(&format!("{prefix}.bias_hh_l{l}"))?,
                     hidden,
-                })
+                    hidden,
+                ))
             })
             .collect()
     }
@@ -2314,18 +2454,58 @@ mod tests {
         }
     }
 
+    /// M5-14 Wave-2 bit-identity pin: the transposed-weight gate matvecs
+    /// must equal the pre-rework scalar reduction **exactly** (same
+    /// per-element chain, only the loop nesting differs) — this is what
+    /// keeps the 21-stage real-weight tap bounds untouched (no headroom
+    /// spent on an accumulation-order change).
+    #[test]
+    fn gru_transposed_forward_bitwise_matches_reference() {
+        // Deterministic xorshift values (no external RNG).
+        fn rand_vec(seed: u64, n: usize) -> Vec<f32> {
+            let mut x = seed | 1;
+            (0..n)
+                .map(|_| {
+                    x ^= x >> 12;
+                    x ^= x << 25;
+                    x ^= x >> 27;
+                    let bits = (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40) as u32;
+                    bits as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
+                })
+                .collect()
+        }
+        for (i, &(input, hidden, t_len)) in
+            [(8usize, 8usize, 6usize), (16, 8, 4), (5, 3, 7), (1, 1, 3)]
+                .iter()
+                .enumerate()
+        {
+            let g = GruLayer::new(
+                rand_vec(41 + i as u64, 3 * hidden * input),
+                rand_vec(141 + i as u64, 3 * hidden * hidden),
+                rand_vec(241 + i as u64, 3 * hidden),
+                rand_vec(341 + i as u64, 3 * hidden),
+                input,
+                hidden,
+            );
+            let x = rand_vec(441 + i as u64, t_len * input);
+            let got = g.forward_seq(&x, t_len);
+            let want = g.forward_seq_scalar_reference(&x, t_len);
+            assert_eq!(got, want, "case {i}: not bit-identical");
+        }
+    }
+
     #[test]
     fn gru_layer_matches_hand_computed_cell() {
         // 1-dim GRU, 1 step, hand-computed with the PyTorch gate order
         // [r, z, n]: h = (1−z)·n (h0 = 0).
-        let g = GruLayer {
-            w_ih: vec![0.5, -0.3, 0.8],
-            w_hh: vec![0.2, 0.4, -0.6],
-            b_ih: vec![0.1, 0.0, -0.2],
-            b_hh: vec![0.0, 0.1, 0.3],
-            input: 1,
-            hidden: 1,
-        };
+        let g = GruLayer::new(
+            vec![0.5, -0.3, 0.8],
+            vec![0.2, 0.4, -0.6],
+            vec![0.1, 0.0, -0.2],
+            vec![0.0, 0.1, 0.3],
+            1,
+            1,
+        );
         let x = [1.0f32];
         let out = g.forward_seq(&x, 1);
         let r = sigmoid(0.5 * 1.0 + 0.1 + 0.0);
@@ -2615,13 +2795,15 @@ mod primitive_parity {
     fn squeezed_gru_matches_upstream_module() {
         // erb_dec.emb_gru shape: grouped in → 2-layer GRU → grouped out,
         // ReLU after both linears.
-        let g = |name: &str, input: usize| GruLayer {
-            w_ih: rd(&format!("sgru.gru.weight_ih_l{name}")),
-            w_hh: rd(&format!("sgru.gru.weight_hh_l{name}")),
-            b_ih: rd(&format!("sgru.gru.bias_ih_l{name}")),
-            b_hh: rd(&format!("sgru.gru.bias_hh_l{name}")),
-            input,
-            hidden: 8,
+        let g = |name: &str, input: usize| {
+            GruLayer::new(
+                rd(&format!("sgru.gru.weight_ih_l{name}")),
+                rd(&format!("sgru.gru.weight_hh_l{name}")),
+                rd(&format!("sgru.gru.bias_ih_l{name}")),
+                rd(&format!("sgru.gru.bias_hh_l{name}")),
+                input,
+                8,
+            )
         };
         let sgru = SqueezedGru {
             linear_in: GroupedLinear {

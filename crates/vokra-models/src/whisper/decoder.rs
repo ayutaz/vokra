@@ -246,6 +246,35 @@ impl DecoderState {
         self.self_kv.positions()
     }
 
+    /// Whether host-side self-KV branching (snapshot / restore) is valid for
+    /// this state: `false` when a device session owns the KV rows (Metal —
+    /// the host cache is a position mirror only), in which case callers must
+    /// fall back to reset + replay (M5-14-T13).
+    pub(crate) fn kv_branching_supported(&self) -> bool {
+        self.device_session.is_none()
+    }
+
+    /// Deep-copies the current self-attention cache (`positions()` committed
+    /// rows per layer) — the per-beam branch primitive (M5-14-T13, the
+    /// Voxtral `TextDecoderKvSnapshot` pattern). Cross-attention K/V are
+    /// bound to the encoder output and shared by every branch, so they are
+    /// NOT part of the snapshot. Only valid when
+    /// [`kv_branching_supported`](Self::kv_branching_supported).
+    pub(crate) fn selfkv_snapshot(&self) -> vokra_core::KvCache {
+        debug_assert!(self.device_session.is_none());
+        self.self_kv.clone()
+    }
+
+    /// Restores a snapshot taken by [`selfkv_snapshot`](Self::selfkv_snapshot)
+    /// on this same state (same model, same encoder binding): the next
+    /// [`step_into`](Self::step_into) continues bit-identically from the
+    /// snapshot's position, exactly as if the snapshot's tokens had just been
+    /// decoded on a fresh reset state.
+    pub(crate) fn selfkv_restore(&mut self, snap: &vokra_core::KvCache) {
+        debug_assert!(self.device_session.is_none());
+        self.self_kv = snap.clone();
+    }
+
     /// The decoder's model config (M4-20 word alignment reads the alignment
     /// heads, prefix length, head count and audio-token rate from it).
     pub(crate) fn config(&self) -> &WhisperConfig {

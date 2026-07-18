@@ -39,6 +39,10 @@ pub(super) fn reflect_pad_right(x: &[f32], n: usize) -> Vec<f32> {
 ///
 /// A low-level primitive: the many dimension arguments are the shape of the
 /// convolution, kept explicit rather than bundled into a struct.
+///
+/// Since M5-14 Wave-2 this per-channel scalar reduction is the **test-side
+/// reference oracle** for the transposed production path ([`conv1d_wt`]).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn conv1d(
     x: &[f32],
@@ -76,6 +80,67 @@ pub(super) fn conv1d(
                 }
             }
             out[co * l_out + t] = acc;
+        }
+    }
+    out
+}
+
+/// [`conv1d`] with a pre-transposed weight (`weight_t = [c_in·k, c_out]`,
+/// tap-major, output channel fastest) — the M5-14 Wave-2 (T21) hot path.
+///
+/// **Bit-identical to [`conv1d`]** by construction: each output element
+/// `out[co, t]` is still one accumulator seeded from `bias[co]`, advanced
+/// over the taps `(ci, kk)` in the same ascending order with the same
+/// unfused `w · x` multiply-add, skipping the same zero-pad taps. Only the
+/// loop NESTING changes — taps outer, output channels inner — which turns
+/// the inner loop into a contiguous axpy over a `weight_t` row that the
+/// compiler auto-vectorizes (`acc[co] += w[co] · xv`, no reduction), instead
+/// of the latency-bound scalar reduction. The differential test below pins
+/// `==` (not a tolerance) against [`conv1d`], which is what keeps the
+/// committed parity fixtures (7.9e-8 anchor + ctx576) byte-stable
+/// (NFR-QL-05: 1:1 subgraph semantics untouched).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn conv1d_wt(
+    x: &[f32],
+    c_in: usize,
+    l: usize,
+    weight_t: &[f32],
+    bias: Option<&[f32]>,
+    c_out: usize,
+    k: usize,
+    stride: usize,
+    pad: usize,
+) -> Vec<f32> {
+    debug_assert_eq!(x.len(), c_in * l);
+    debug_assert_eq!(weight_t.len(), c_in * k * c_out);
+    let lp = l + 2 * pad;
+    let l_out = (lp - k) / stride + 1;
+    let mut out = vec![0.0f32; c_out * l_out];
+    let mut acc = vec![0.0f32; c_out];
+    for t in 0..l_out {
+        match bias {
+            Some(b) => acc.copy_from_slice(b),
+            None => acc.fill(0.0),
+        }
+        let base = t * stride;
+        for ci in 0..c_in {
+            let x_ci = &x[ci * l..(ci + 1) * l];
+            for kk in 0..k {
+                let p = base + kk;
+                // Skip taps that fall in the zero pad region (same guard,
+                // same surviving-tap order as `conv1d`).
+                if p < pad || p >= pad + l {
+                    continue;
+                }
+                let xv = x_ci[p - pad];
+                let wrow = &weight_t[(ci * k + kk) * c_out..(ci * k + kk + 1) * c_out];
+                for (a, &wv) in acc.iter_mut().zip(wrow) {
+                    *a += wv * xv;
+                }
+            }
+        }
+        for (co, &a) in acc.iter().enumerate() {
+            out[co * l_out + t] = a;
         }
     }
     out
@@ -164,6 +229,55 @@ mod tests {
         let w = [10.0, 1.0, 1.0, 0.0];
         let y = conv1d(&x, 2, 2, &w, None, 2, 1, 1, 0);
         assert_eq!(y, vec![13.0, 24.0, 1.0, 2.0]);
+    }
+
+    /// M5-14 Wave-2 bit-identity pin: `conv1d_wt` (taps-outer axpy over the
+    /// pre-transposed weight) must equal `conv1d` **exactly** — same
+    /// per-element accumulation chain, only the loop nesting differs.
+    #[test]
+    fn conv1d_wt_bitwise_matches_conv1d() {
+        // Deterministic pseudo-random values (xorshift, no external RNG).
+        fn rand_vec(seed: u64, n: usize) -> Vec<f32> {
+            let mut x = seed | 1;
+            (0..n)
+                .map(|_| {
+                    x ^= x >> 12;
+                    x ^= x << 25;
+                    x ^= x >> 27;
+                    let bits = (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40) as u32;
+                    bits as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
+                })
+                .collect()
+        }
+        // (c_in, l, c_out, k, stride, pad) — the real subgraph shapes at
+        // reduced sizes (pseudo-STFT k=8 s=4 p=0; encoder k=3 p=1 s∈{1,2})
+        // plus ragged corners.
+        let cases = [
+            (1, 40, 10, 8, 4, 0),
+            (5, 4, 8, 3, 1, 1),
+            (8, 4, 6, 3, 2, 1),
+            (6, 2, 4, 3, 2, 1),
+            (6, 1, 4, 3, 1, 1),
+            (3, 7, 5, 1, 1, 0),
+        ];
+        for (i, &(c_in, l, c_out, k, stride, pad)) in cases.iter().enumerate() {
+            let x = rand_vec(31 + i as u64, c_in * l);
+            let w = rand_vec(131 + i as u64, c_out * c_in * k);
+            let bias = rand_vec(231 + i as u64, c_out);
+            // Transpose [c_out, c_in*k] -> [c_in*k, c_out].
+            let taps = c_in * k;
+            let mut w_t = vec![0.0f32; taps * c_out];
+            for co in 0..c_out {
+                for tap in 0..taps {
+                    w_t[tap * c_out + co] = w[co * taps + tap];
+                }
+            }
+            for b in [None, Some(bias.as_slice())] {
+                let want = conv1d(&x, c_in, l, &w, b, c_out, k, stride, pad);
+                let got = conv1d_wt(&x, c_in, l, &w_t, b, c_out, k, stride, pad);
+                assert_eq!(got, want, "case {i} bias={}", b.is_some());
+            }
+        }
     }
 
     #[test]
