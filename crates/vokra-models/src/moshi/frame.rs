@@ -237,6 +237,27 @@ impl MoshiModel {
         Ok(Self { backbone, depth })
     }
 
+    /// Assembles a model from already-constructed stacks (the
+    /// bounded-memory `from_path` load builds the backbone through
+    /// [`MoshiBackbone::new_mapped`] and hands it in here). Both stacks
+    /// must share one config (loud otherwise — a silently mixed pair
+    /// would emit garbage frames, FR-EX-08).
+    ///
+    /// # Errors
+    ///
+    /// [`vokra_core::VokraError::InvalidArgument`] on a config mismatch.
+    pub fn from_parts(backbone: MoshiBackbone, depth: MoshiDepthTransformer) -> Result<Self> {
+        if backbone.config() != depth.config() {
+            return Err(vokra_core::VokraError::InvalidArgument(
+                "moshi MoshiModel::from_parts: backbone and depformer were built \
+                 from different configs (FR-EX-08 — assemble both from one \
+                 MoshiConfig)"
+                    .into(),
+            ));
+        }
+        Ok(Self { backbone, depth })
+    }
+
     /// Synthesized-fixture model (deterministic; decorrelated sub-seeds).
     ///
     /// # Errors

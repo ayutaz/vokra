@@ -378,6 +378,13 @@ impl MoshiDepthTransformer {
         &self.weights
     }
 
+    /// The resolved config (cross-stack coherence checks —
+    /// `MoshiModel::from_parts`).
+    #[must_use]
+    pub fn config(&self) -> &MoshiConfig {
+        &self.config
+    }
+
     fn compute(&self) -> Result<Compute> {
         Compute::for_backend(self.backend, MOSHI_HOT_OPS)
     }

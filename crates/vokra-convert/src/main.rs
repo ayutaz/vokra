@@ -21,7 +21,7 @@ use vokra_convert::{
     ModelKind, convert_cosyvoice2_file, convert_csm_file, convert_dac_file, convert_file,
     convert_file_quantized, convert_moshi_file, convert_piper_plus_file,
 };
-use vokra_core::gguf::{FrontendSpec, GgmlType, GgufFile};
+use vokra_core::gguf::{FrontendSpec, GgmlType};
 
 const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
@@ -261,8 +261,14 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
 
 /// Re-opens the produced GGUF through the runtime loader and prints a
 /// verification line. Returns `Err(code)` if the output does not load.
+///
+/// Opens through the true-mmap loader (`vokra_mmap::open_gguf`) so the
+/// verify pass touches only the header/metadata pages — verifying a
+/// multi-GiB output (the 14 GiB Moshi full-7B GGUF) stays within the
+/// streaming converter's bounded-memory contract instead of re-reading
+/// the whole file into an owned buffer (M4 cc-06).
 fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
-    let file = match GgufFile::open(output) {
+    let file = match vokra_mmap::open_gguf(output) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("error: output GGUF failed to load back: {e}");

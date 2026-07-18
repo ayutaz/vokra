@@ -48,6 +48,7 @@ version = "0.1.0-alpha.0"
 dependencies = [
  "vokra-convert",
  "vokra-core",
+ "vokra-mmap",
  "vokra-models",
  "vokra-ops",
 ]
@@ -59,6 +60,7 @@ dependencies = [
  "vokra-convert",
  "vokra-core",
  "vokra-eval",
+ "vokra-mmap",
  "vokra-models",
  "vokra-ops",
 ]
@@ -68,6 +70,7 @@ name = "vokra-convert"
 version = "0.1.0-alpha.0"
 dependencies = [
  "vokra-core",
+ "vokra-mmap",
  "vokra-ops",
 ]
 

@@ -64,6 +64,18 @@ struct AecRecipe {
     queue_capacity_samples: usize,
 }
 
+/// How the temporal-backbone blocks bind at load (M4 cc-06).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WeightResidency {
+    /// Every weight widened to resident f32 up front (~30 GiB at the
+    /// full-7B shape) — the in-memory bytes path.
+    Resident,
+    /// Temporal blocks stay in the GGUF mapping and widen one layer at a
+    /// time per forward (bit-identical values; bounded footprint) — the
+    /// `from_path` mmap path.
+    MappedLazy,
+}
+
 /// The Moshi engine (module docs).
 pub struct MoshiEngine {
     model: MoshiModel,
@@ -200,6 +212,11 @@ impl MoshiEngine {
     /// CC-BY 4.0 `AttributionRequired` class passes commercially and the
     /// attribution surface resolves here — module docs).
     ///
+    /// Every weight binds fully **resident** (temporal blocks widened to
+    /// f32 up front — ~30 GiB at the full-7B shape). For bounded-memory
+    /// loading of large checkpoints from disk use [`Self::from_path`]
+    /// (mmap + per-layer materialization).
+    ///
     /// # Errors
     ///
     /// [`VokraError::ModelLoad`] on a wrong arch / missing tensor /
@@ -208,6 +225,60 @@ impl MoshiEngine {
     pub fn from_gguf_with_policy(bytes: &[u8], policy: &CompliancePolicy) -> Result<Self> {
         let file = GgufFile::parse(bytes.to_vec())
             .map_err(|e| VokraError::ModelLoad(format!("moshi GGUF: {e}")))?;
+        Self::from_gguf_file(file, policy, WeightResidency::Resident)
+    }
+
+    /// Loads from a file path with the fail-closed strict policy, through
+    /// a true **mmap** ([`vokra_mmap::open_gguf`]) with **mapped-lazy
+    /// temporal blocks** — the bounded-memory path that fits the full-7B
+    /// `kyutai/moshiko-pytorch-bf16` GGUF on a 16 GB machine:
+    ///
+    /// - the file is mapped read-only, never copied (the old
+    ///   `fs::read` + `parse(to_vec)` double copy is gone);
+    /// - the head + depformer weights widen to resident f32 (read every
+    ///   step); the 32 temporal blocks — ~86% of the model — stay in the
+    ///   mapping and widen **one layer at a time** during each forward
+    ///   ([`super::backbone::MappedTemporalBlocks`]), with bit-identical
+    ///   f32 values to the resident binding. The trade is per-step decode
+    ///   bandwidth for a bounded resident footprint.
+    ///
+    /// On targets without a real mmap (Emscripten / non-unix-non-windows)
+    /// this fails with the mapper's explicit `Unsupported` error — load
+    /// through [`Self::from_gguf_with_policy`] there instead (no silent
+    /// buffered fallback: the memory contract would silently differ,
+    /// FR-EX-08).
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::from_gguf_with_policy`]; plus mapping errors verbatim.
+    pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::from_path_with_policy(path, &CompliancePolicy::strict())
+    }
+
+    /// [`Self::from_path`] under an explicit compliance policy.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::from_path`].
+    pub fn from_path_with_policy(
+        path: impl AsRef<std::path::Path>,
+        policy: &CompliancePolicy,
+    ) -> Result<Self> {
+        // `GgufError::Io` (missing / unreadable path) converts to
+        // `VokraError::Io` through the shared From impl — the same error
+        // class the old `fs::read` path surfaced (no error-type regression
+        // for missing-file callers); parse errors become `ModelLoad`.
+        let file = vokra_mmap::open_gguf(path.as_ref()).map_err(VokraError::from)?;
+        Self::from_gguf_file(file, policy, WeightResidency::MappedLazy)
+    }
+
+    /// The shared load body: gate order (arch → M2-13 license →
+    /// attribution → config) then weight binding per `residency`.
+    fn from_gguf_file(
+        file: GgufFile,
+        policy: &CompliancePolicy,
+        residency: WeightResidency,
+    ) -> Result<Self> {
         let arch = file
             .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
             .and_then(|v| v.as_str());
@@ -225,10 +296,25 @@ impl MoshiEngine {
         mimi_cfg.validate()?;
         // LM weights bind for real (T02 manifest names); the Mimi ends are
         // the documented synthesized bridge until the shared module's T29
-        // binding (module docs).
-        let backbone = super::backbone::MoshiBackboneWeights::from_gguf(&file, &cfg)?;
+        // binding (module docs). The Arc keeps the byte source (owned
+        // buffer or mapping) alive; only the MappedLazy block store
+        // retains a clone past this function.
+        let file = Arc::new(file);
         let depth = super::depth::MoshiDepthWeights::from_gguf(&file, &cfg)?;
-        let model = MoshiModel::new(cfg.clone(), backbone, depth)?;
+        let model = match residency {
+            WeightResidency::Resident => {
+                let backbone = super::backbone::MoshiBackboneWeights::from_gguf(&file, &cfg)?;
+                MoshiModel::new(cfg.clone(), backbone, depth)?
+            }
+            WeightResidency::MappedLazy => {
+                let head = super::backbone::MoshiBackboneWeights::head_from_gguf(&file, &cfg)?;
+                let mapped = super::backbone::MappedTemporalBlocks::bind(Arc::clone(&file), &cfg)?;
+                let backbone =
+                    super::backbone::MoshiBackbone::new_mapped(cfg.clone(), head, mapped)?;
+                let depth_t = super::depth::MoshiDepthTransformer::new(cfg.clone(), depth)?;
+                MoshiModel::from_parts(backbone, depth_t)?
+            }
+        };
         let encoder = MimiEncoder::synthesized(
             &mimi_cfg,
             super::backbone::MOSHI_FROM_GGUF_DEFAULT_SEED ^ 0x5EED,
@@ -249,16 +335,6 @@ impl MoshiEngine {
         let mut engine = Self::new(model, encoder, chain, tokenizer, mimi_cfg)?;
         engine.attribution = attribution;
         Ok(engine)
-    }
-
-    /// Loads from a file path with the fail-closed strict policy.
-    ///
-    /// # Errors
-    ///
-    /// See [`Self::from_gguf_with_policy`].
-    pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        let bytes = std::fs::read(path.as_ref()).map_err(VokraError::Io)?;
-        Self::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
     }
 
     /// Wires the AEC recipe: each duplex session builds a fresh canceller

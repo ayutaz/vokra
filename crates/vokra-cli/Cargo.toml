@@ -20,6 +20,11 @@ vokra-core.workspace = true
 vokra-models.workspace = true
 vokra-ops.workspace = true
 vokra-convert = { path = "../vokra-convert" }
+# M4 cc-06: session GGUFs open through the true-mmap loader (header pages
+# faulted lazily) instead of a whole-file owned read — on the Moshi full-7B
+# GGUF the old `Session::from_file` buffered ~14.3 GiB alongside the engine's
+# own mmap. First-party, zero external deps (NFR-DS-02 preserved).
+vokra-mmap = { path = "../vokra-mmap" }
 
 # Optional GPU backends for `bench --backend metal|cuda` (RTF on a real GPU).
 # Both are first-party `vokra-*` crates pulled through `vokra-models`, so the

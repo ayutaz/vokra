@@ -141,7 +141,18 @@ pub(crate) fn load_session_with_backend(
     backend: BackendKind,
     hint: Option<TaskHint>,
 ) -> Result<(Session, ModelTask), String> {
-    let session = Session::from_file(path)
+    // M4 cc-06: open through the true-mmap loader — the session's GGUF pages
+    // fault in lazily instead of a whole-file owned read (`Session::from_file`
+    // buffered the entire model; on the Moshi full-7B GGUF that is ~14.3 GiB
+    // held for the whole run NEXT TO the engine's own weights). Same parser,
+    // byte-identical decode (vokra-mmap contract). The explicit is-a-file
+    // guard mirrors the `SessionBuilder::build` path check it replaces.
+    let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if !metadata.is_file() {
+        return Err(format!("model path `{path}` is not a regular file"));
+    }
+    let gguf = vokra_mmap::open_gguf(path).map_err(|e| e.to_string())?;
+    let session = Session::from_gguf(gguf)
         .with_backend(backend)
         .map_err(|e| e.to_string())?;
 

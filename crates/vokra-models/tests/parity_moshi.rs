@@ -335,9 +335,56 @@ fn staged_reference_parity_is_env_gated_and_fires_when_supplied() {
         got_codes, ref_codes,
         "undelayed frame codes must be bit-exact"
     );
+
+    // ---- Stage C (M4 cc-06): the mmap + mapped-lazy load reproduces the
+    // resident token streams BIT-exactly against the same reference. The
+    // model is rebuilt through the from_path assembly (real mmap of the
+    // same model.gguf, head eager + per-layer block materialization) and
+    // driven through the identical greedy loop.
+    let mapped_model = {
+        use std::sync::Arc;
+        let file = Arc::new(vokra_mmap::open_gguf(&gguf_path).expect("mmap model.gguf"));
+        let head = vokra_models::moshi::MoshiBackboneWeights::head_from_gguf(&file, &cfg)
+            .expect("mapped head bind");
+        let mapped = vokra_models::moshi::MappedTemporalBlocks::bind(Arc::clone(&file), &cfg)
+            .expect("mapped block bind");
+        let backbone = vokra_models::moshi::MoshiBackbone::new_mapped(cfg.clone(), head, mapped)
+            .expect("mapped backbone");
+        let depth_w = vokra_models::moshi::MoshiDepthWeights::from_gguf(&file, &cfg)
+            .expect("depth bind (mapped leg)");
+        let depth = vokra_models::moshi::MoshiDepthTransformer::new(cfg.clone(), depth_w)
+            .expect("depformer");
+        MoshiModel::from_parts(backbone, depth).expect("mapped model")
+    };
+    let mut state = MoshiGenerationState::new(&cfg).unwrap();
+    let mut samplers = MoshiSamplerPair::greedy();
+    let mut out = MoshiFrameOut::new(&cfg);
+    let mut mapped_text = Vec::new();
+    let mut mapped_codes = Vec::new();
+    for s in 0..n_steps {
+        let row = &user[s * n_user..(s + 1) * n_user];
+        if mapped_model
+            .step_into(&mut state, row, &mut samplers, &mut out)
+            .expect("mapped full step")
+        {
+            mapped_text.push(out.text);
+            mapped_codes.extend_from_slice(&out.audio);
+        }
+    }
+    assert_eq!(
+        mapped_text, ref_ttoks,
+        "mapped-lazy text stream must be bit-exact vs the reference"
+    );
+    assert_eq!(
+        mapped_codes, ref_codes,
+        "mapped-lazy frame codes must be bit-exact vs the reference"
+    );
+
     println!(
         "moshi staged parity: hidden max |Δ| = {worst_hidden:.3e}, text logits \
-         max |Δ| = {worst_logits:.3e}, {} frames bit-exact",
-        got_text.len()
+         max |Δ| = {worst_logits:.3e}, {} frames bit-exact (resident) + {} \
+         frames bit-exact (mmap mapped-lazy)",
+        got_text.len(),
+        mapped_text.len()
     );
 }

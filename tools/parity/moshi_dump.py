@@ -62,6 +62,8 @@ deliberately import-guarded so running it without the venv fails with an
 actionable message instead of a half-written fixture.
 """
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
@@ -129,8 +131,29 @@ def self_test(out_dir: Path) -> None:
     print(f"self-test fixture written to {out_dir}", file=sys.stderr)
 
 
-def real(out_dir: Path, steps: int, hf_repo: str) -> None:
-    """Owner-side staged dump against the pinned upstream (module docs)."""
+def real(
+    out_dir: Path,
+    steps: int,
+    hf_repo: str,
+    checkpoint: Path | None = None,
+    mimi_weight: Path | None = None,
+    mimi_codebooks: int = 8,
+    lm_layers: int | None = None,
+    depformer_layers: int | None = None,
+) -> None:
+    """Owner-side staged dump against the pinned upstream (module docs).
+
+    With ``--checkpoint`` (plus ``--mimi-weight``) the dump runs over
+    LOCAL safetensors instead of the HF hub — the truncated-checkpoint
+    leg the parity-moshi-real workflow can afford: the FULL-7B fp32 cast
+    needs ~43 GiB (14.32 GiB BF16 dict + fp32 copies), so a 16 GB
+    machine / ubuntu-latest dumps the ``moshi_truncate.py`` artifact with
+    ``--lm-layers/--depformer-layers`` overriding the layer counts to
+    match (all other ``_lm_kwargs`` stay the upstream 7B constants;
+    dtype=float32 is the same exact BF16→f32 widening the converter's
+    runtime performs). Campaign-2 (2026-07-17) validated this recipe:
+    tm=2/dt=2 → 11/11 emitted frames bit-exact vs the Vokra runtime.
+    """
     try:
         import torch  # noqa: F401
         from moshi.models import loaders  # type: ignore
@@ -144,9 +167,31 @@ def real(out_dir: Path, steps: int, hf_repo: str) -> None:
     import torch
     from moshi.models import LMGen
 
-    info = loaders.CheckpointInfo.from_hf_repo(hf_repo)
-    mimi = info.get_mimi(device="cpu")
-    lm = info.get_moshi(device="cpu", dtype=torch.float32)
+    if checkpoint is not None:
+        if mimi_weight is None:
+            raise SystemExit(
+                "moshi_dump.py real: --checkpoint needs --mimi-weight (the "
+                "tokenizer-e351c8d8-checkpoint125.safetensors Mimi codec file) "
+                "— refusing to silently fall back to the hub"
+            )
+        overrides = {}
+        if lm_layers is not None:
+            overrides["num_layers"] = lm_layers
+        if depformer_layers is not None:
+            overrides["depformer_num_layers"] = depformer_layers
+        mimi = loaders.get_mimi(
+            str(mimi_weight), device="cpu", num_codebooks=mimi_codebooks
+        )
+        lm = loaders.get_moshi_lm(
+            str(checkpoint),
+            device="cpu",
+            dtype=torch.float32,
+            lm_kwargs_overrides=overrides or None,
+        )
+    else:
+        info = loaders.CheckpointInfo.from_hf_repo(hf_repo)
+        mimi = info.get_mimi(device="cpu")
+        lm = info.get_moshi(device="cpu", dtype=torch.float32)
     lm_gen = LMGen(lm, use_sampling=False)  # argmax both channels
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -197,8 +242,20 @@ def real(out_dir: Path, steps: int, hf_repo: str) -> None:
     _write(out_dir / "text_logits.f32", _pack_f32(tlogit_rows), manifest)
     _write(out_dir / "text_tokens.u32", _pack_u32(ttoks), manifest)
     _write(out_dir / "frame_codes.u32", _pack_u32(frame_rows), manifest)
+    if checkpoint is not None:
+        kind = (
+            f"real (local {Path(checkpoint).name}"
+            + (
+                f", layer overrides tm={lm_layers}/dt={depformer_layers}"
+                if (lm_layers is not None or depformer_layers is not None)
+                else ""
+            )
+            + ")"
+        )
+    else:
+        kind = f"real ({hf_repo})"
     context = {
-        "kind": f"real ({hf_repo})",
+        "kind": kind,
         "n_steps": steps,
         "n_user": n_user,
         "n_channels": n_channels,
@@ -225,11 +282,42 @@ def main() -> None:
     re.add_argument("--out", type=Path, required=True)
     re.add_argument("--steps", type=int, default=12)
     re.add_argument("--hf-repo", default="kyutai/moshiko-pytorch-bf16")
+    re.add_argument(
+        "--checkpoint", type=Path, default=None,
+        help="LOCAL LM safetensors (e.g. the moshi_truncate.py output) "
+             "instead of the hub download; requires --mimi-weight",
+    )
+    re.add_argument(
+        "--mimi-weight", type=Path, default=None,
+        help="LOCAL Mimi codec safetensors "
+             "(tokenizer-e351c8d8-checkpoint125.safetensors)",
+    )
+    re.add_argument(
+        "--mimi-codebooks", type=int, default=8,
+        help="Mimi codebooks for the local path (n_user; moshiko = 8)",
+    )
+    re.add_argument(
+        "--lm-layers", type=int, default=None,
+        help="lm_kwargs num_layers override (truncated checkpoints)",
+    )
+    re.add_argument(
+        "--depformer-layers", type=int, default=None,
+        help="lm_kwargs depformer_num_layers override (truncated checkpoints)",
+    )
     args = p.parse_args()
     if args.mode == "self-test":
         self_test(args.out)
     else:
-        real(args.out, args.steps, args.hf_repo)
+        real(
+            args.out,
+            args.steps,
+            args.hf_repo,
+            checkpoint=args.checkpoint,
+            mimi_weight=args.mimi_weight,
+            mimi_codebooks=args.mimi_codebooks,
+            lm_layers=args.lm_layers,
+            depformer_layers=args.depformer_layers,
+        )
 
 
 if __name__ == "__main__":

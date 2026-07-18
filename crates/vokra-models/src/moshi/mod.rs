@@ -59,8 +59,8 @@ pub mod frame;
 pub mod tokenizer;
 
 pub use backbone::{
-    MOSHI_FROM_GGUF_DEFAULT_SEED, MOSHI_ZERO_TOKEN, MoshiBackbone, MoshiBackboneState,
-    MoshiBackboneWeights,
+    MOSHI_FROM_GGUF_DEFAULT_SEED, MOSHI_ZERO_TOKEN, MappedTemporalBlocks, MoshiBackbone,
+    MoshiBackboneState, MoshiBackboneWeights,
 };
 pub use depth::{MoshiDepthLayer, MoshiDepthState, MoshiDepthTransformer, MoshiDepthWeights};
 pub use duplex::MoshiDuplexSession;

@@ -38,6 +38,12 @@ vokra-models.workspace = true
 # plus the vokra-core far-end reference queue. Workspace-internal dependency
 # (NFR-DS-02 zero-dep unchanged).
 vokra-ops.workspace = true
+# M4 cc-06: `vokra_session_create_from_file` opens the GGUF through the
+# true-mmap loader (lazy page faulting) instead of a whole-file owned read —
+# the Moshi full-7B GGUF must never be buffered (~14.3 GiB) next to the
+# engine's weights. First-party, zero external deps; the bytes-based create
+# (`vokra_session_create_from_bytes`) is untouched.
+vokra-mmap = { path = "../vokra-mmap" }
 
 [dev-dependencies]
 # M4-06 T20/T24 (test-only edge): the duplex / attribution C ABI tests

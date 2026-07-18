@@ -37,9 +37,11 @@
 //! Missing GGUF tensors → [`VokraError::ModelLoad`] naming the tensor;
 //! out-of-range tokens / positions → [`VokraError::InvalidArgument`].
 
+use std::sync::{Arc, Mutex};
+
 use vokra_core::cache::paged::{BlockSize, KvDims, PagedKvCache};
 use vokra_core::cache::ring::RingKvCache;
-use vokra_core::gguf::GgufFile;
+use vokra_core::gguf::{GgmlType, GgufFile, GgufTensorInfo};
 use vokra_core::rng::SplitMix64;
 use vokra_core::{BackendKind, Result, VokraError};
 
@@ -149,25 +151,19 @@ impl MoshiBackboneWeights {
     /// `in_proj_weight` / `gating.linear_in.weight` tensors are split per
     /// the upstream `_load_hook` / gating conventions, ADR M4-06 §D2).
     ///
+    /// This is the fully **resident** binding (every block widened to f32
+    /// up front — ~30 GiB for the full-7B model). For bounded-memory
+    /// loading of large checkpoints see [`Self::head_from_gguf`] +
+    /// [`MappedTemporalBlocks`] (the `MoshiEngine::from_path` mmap path).
+    ///
     /// # Errors
     ///
     /// [`VokraError::ModelLoad`] naming any missing / mis-shaped tensor
     /// (never a silent zero-fill — FR-EX-08).
     pub fn from_gguf(file: &GgufFile, config: &MoshiConfig) -> Result<Self> {
-        config.validate_for_forward()?;
+        let mut this = Self::head_from_gguf(file, config)?;
         let d = config.temporal.d_model;
         let h = config.temporal.ffn_hidden;
-
-        let text_emb = tensor_f32(file, "text_emb.weight", (config.text_card + 1) * d)?;
-        let mut audio_emb = Vec::with_capacity(config.n_q_in * (config.audio_card + 1) * d);
-        for k in 0..config.n_q_in {
-            let t = tensor_f32(
-                file,
-                &format!("emb.{k}.weight"),
-                (config.audio_card + 1) * d,
-            )?;
-            audio_emb.extend_from_slice(&t);
-        }
         let mut blocks = Vec::with_capacity(config.temporal.n_layer);
         for i in 0..config.temporal.n_layer {
             let p = format!("transformer.layers.{i}");
@@ -199,10 +195,38 @@ impl MoshiBackboneWeights {
                 ffn_down_w_t: transpose(&lin_out, d, h),
             });
         }
+        this.blocks = blocks;
+        Ok(this)
+    }
+
+    /// Binds only the **head** weights (channel embeddings, `out_norm`,
+    /// text head) from a Moshi GGUF, leaving `blocks` empty — the eager
+    /// half of the bounded-memory load: the head is read on every step
+    /// (embedding lookups + the text GEMV), so it stays resident f32,
+    /// while the temporal blocks (the ~86% bulk of the 7B model) stay
+    /// mapped and materialize per layer through [`MappedTemporalBlocks`].
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`] naming any missing / mis-shaped tensor.
+    pub fn head_from_gguf(file: &GgufFile, config: &MoshiConfig) -> Result<Self> {
+        config.validate_for_forward()?;
+        let d = config.temporal.d_model;
+
+        let text_emb = tensor_f32(file, "text_emb.weight", (config.text_card + 1) * d)?;
+        let mut audio_emb = Vec::with_capacity(config.n_q_in * (config.audio_card + 1) * d);
+        for k in 0..config.n_q_in {
+            let t = tensor_f32(
+                file,
+                &format!("emb.{k}.weight"),
+                (config.audio_card + 1) * d,
+            )?;
+            audio_emb.extend_from_slice(&t);
+        }
         Ok(Self {
             text_emb,
             audio_emb,
-            blocks,
+            blocks: Vec::new(),
             out_norm_gamma: tensor_f32(file, "out_norm.alpha", d)?,
             text_linear: tensor_f32(file, "text_linear.weight", config.text_card * d)?,
             is_synthesized: false,
@@ -237,6 +261,339 @@ pub(crate) fn transpose(m: &[f32], rows: usize, cols: usize) -> Vec<f32> {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Mapped-lazy temporal blocks (the bounded-memory full-7B load path)
+// ---------------------------------------------------------------------------
+
+/// One temporal layer's resolved GGUF tensor descriptors (validated at
+/// bind — name, shape, dtype; payload bytes stay in the mapping).
+#[derive(Debug)]
+struct MappedLayerLocs {
+    /// `{p}.self_attn.in_proj_weight` `[3d, d]` packed Q/K/V rows.
+    in_proj: GgufTensorInfo,
+    /// `{p}.self_attn.out_proj.weight` `[d, d]`.
+    out_proj: GgufTensorInfo,
+    /// `{p}.norm1.alpha` `[d]`.
+    norm1: GgufTensorInfo,
+    /// `{p}.norm2.alpha` `[d]`.
+    norm2: GgufTensorInfo,
+    /// `{p}.gating.linear_in.weight` `[2h, d]` packed gate/up rows.
+    lin_in: GgufTensorInfo,
+    /// `{p}.gating.linear_out.weight` `[d, h]`.
+    lin_out: GgufTensorInfo,
+}
+
+/// The reused per-engine materialization target: exactly one temporal
+/// layer's f32 block lives here at a time (~0.8 GiB at the 7B shape —
+/// versus ~26 GiB for all 32 layers resident).
+#[derive(Debug)]
+struct MappedBlockScratch {
+    block: LlmBlockWeights,
+}
+
+/// Temporal transformer blocks left **in the GGUF mapping** and widened
+/// to f32 one layer at a time during the forward pass (M4 cc-06: the
+/// full-7B `MoshiEngine::from_path` on a 16 GB machine).
+///
+/// - **Bind time** ([`Self::bind`]): every layer's six tensors are
+///   resolved and shape/dtype-validated up front, so a malformed GGUF
+///   fails at load, not mid-stream (FR-EX-08).
+/// - **Step time** ([`Self::materialize_into`]): the requested layer is
+///   widened + transposed straight out of the mapped bytes into the
+///   reused scratch block, with **bit-identical** f32 values to the
+///   resident [`MoshiBackboneWeights::from_gguf`] binding (same BF16
+///   widen formula as `gguf::quant::dequantize`, same transpose index
+///   math — pinned by `mapped_blocks_match_resident_bitwise`). The
+///   trade is recurring per-step decode bandwidth for bounded memory.
+/// - Supported payload dtypes: `F32` and `BF16` (the two the Moshi
+///   converter emits). Anything else is a loud bind-time error naming
+///   the resident loader as the alternative.
+///
+/// Holds the mapping alive via `Arc<GgufFile>`; the scratch sits behind a
+/// `Mutex` so the owning engine stays `Send + Sync` (concurrent sessions
+/// on one engine serialize their backbone forwards on this lock — the
+/// bounded-memory choice; per-session scratch would multiply the ~0.8 GiB
+/// buffer per session).
+pub struct MappedTemporalBlocks {
+    file: Arc<GgufFile>,
+    locs: Vec<MappedLayerLocs>,
+    scratch: Mutex<MappedBlockScratch>,
+    d: usize,
+    h: usize,
+}
+
+impl std::fmt::Debug for MappedTemporalBlocks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MappedTemporalBlocks")
+            .field("n_layer", &self.locs.len())
+            .field("d", &self.d)
+            .field("h", &self.h)
+            .finish()
+    }
+}
+
+impl MappedTemporalBlocks {
+    /// Resolves and validates every temporal layer's tensors against
+    /// `config` (upstream-verbatim names — the same manifest the
+    /// resident loader binds).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`] naming any missing tensor, any element
+    /// count that disagrees with the config shapes, or any payload dtype
+    /// outside `{F32, BF16}`.
+    pub fn bind(file: Arc<GgufFile>, config: &MoshiConfig) -> Result<Self> {
+        config.validate_for_forward()?;
+        let d = config.temporal.d_model;
+        let h = config.temporal.ffn_hidden;
+        let mut locs = Vec::with_capacity(config.temporal.n_layer);
+        for i in 0..config.temporal.n_layer {
+            let p = format!("transformer.layers.{i}");
+            locs.push(MappedLayerLocs {
+                in_proj: mapped_info(&file, &format!("{p}.self_attn.in_proj_weight"), 3 * d * d)?,
+                out_proj: mapped_info(&file, &format!("{p}.self_attn.out_proj.weight"), d * d)?,
+                norm1: mapped_info(&file, &format!("{p}.norm1.alpha"), d)?,
+                norm2: mapped_info(&file, &format!("{p}.norm2.alpha"), d)?,
+                lin_in: mapped_info(&file, &format!("{p}.gating.linear_in.weight"), 2 * h * d)?,
+                lin_out: mapped_info(&file, &format!("{p}.gating.linear_out.weight"), d * h)?,
+            });
+        }
+        let scratch = Mutex::new(MappedBlockScratch {
+            block: LlmBlockWeights {
+                attn_norm_gamma: Vec::new(),
+                q_w_t: Vec::new(),
+                q_b: None,
+                k_w_t: Vec::new(),
+                k_b: None,
+                v_w_t: Vec::new(),
+                v_b: None,
+                o_w_t: Vec::new(),
+                ffn_norm_gamma: Vec::new(),
+                ffn_gate_w_t: Vec::new(),
+                ffn_up_w_t: Vec::new(),
+                ffn_down_w_t: Vec::new(),
+            },
+        });
+        Ok(Self {
+            file,
+            locs,
+            scratch,
+            d,
+            h,
+        })
+    }
+
+    /// Number of bound layers.
+    #[must_use]
+    pub fn n_layer(&self) -> usize {
+        self.locs.len()
+    }
+
+    /// Locks the shared materialization scratch (whole-forward hold).
+    fn lock_scratch(&self) -> Result<std::sync::MutexGuard<'_, MappedBlockScratch>> {
+        self.scratch.lock().map_err(|_| {
+            VokraError::InvalidArgument(
+                "moshi mapped blocks: materialization scratch mutex poisoned (a \
+                 prior panic mid-forward); reload the engine"
+                    .into(),
+            )
+        })
+    }
+
+    /// Widens + transposes layer `layer` out of the mapping into
+    /// `scratch`, returning the materialized block (values bit-identical
+    /// to the resident binding — type docs).
+    fn materialize_into<'a>(
+        &self,
+        scratch: &'a mut MappedBlockScratch,
+        layer: usize,
+    ) -> Result<&'a LlmBlockWeights> {
+        let locs = &self.locs[layer];
+        let (d, h) = (self.d, self.h);
+        let b = &mut scratch.block;
+
+        // Packed [3d, d] Q/K/V thirds (resident: transpose of widened
+        // sub-ranges; here the same sub-ranges are addressed in bytes).
+        let bytes = self.file.tensor_bytes(&locs.in_proj);
+        let esz = locs.in_proj.dtype.type_size();
+        transpose_widen(
+            &bytes[..d * d * esz],
+            locs.in_proj.dtype,
+            d,
+            d,
+            &mut b.q_w_t,
+        )?;
+        transpose_widen(
+            &bytes[d * d * esz..2 * d * d * esz],
+            locs.in_proj.dtype,
+            d,
+            d,
+            &mut b.k_w_t,
+        )?;
+        transpose_widen(
+            &bytes[2 * d * d * esz..3 * d * d * esz],
+            locs.in_proj.dtype,
+            d,
+            d,
+            &mut b.v_w_t,
+        )?;
+        transpose_widen(
+            self.file.tensor_bytes(&locs.out_proj),
+            locs.out_proj.dtype,
+            d,
+            d,
+            &mut b.o_w_t,
+        )?;
+        widen_into(
+            self.file.tensor_bytes(&locs.norm1),
+            locs.norm1.dtype,
+            &mut b.attn_norm_gamma,
+        )?;
+        widen_into(
+            self.file.tensor_bytes(&locs.norm2),
+            locs.norm2.dtype,
+            &mut b.ffn_norm_gamma,
+        )?;
+        // Packed [2h, d] gate/up halves.
+        let bytes = self.file.tensor_bytes(&locs.lin_in);
+        let esz = locs.lin_in.dtype.type_size();
+        transpose_widen(
+            &bytes[..h * d * esz],
+            locs.lin_in.dtype,
+            h,
+            d,
+            &mut b.ffn_gate_w_t,
+        )?;
+        transpose_widen(
+            &bytes[h * d * esz..2 * h * d * esz],
+            locs.lin_in.dtype,
+            h,
+            d,
+            &mut b.ffn_up_w_t,
+        )?;
+        transpose_widen(
+            self.file.tensor_bytes(&locs.lin_out),
+            locs.lin_out.dtype,
+            d,
+            h,
+            &mut b.ffn_down_w_t,
+        )?;
+        // Helium attention is bias-less (fused in_proj has no bias
+        // tensor); pinned here so a stale scratch can never leak one.
+        b.q_b = None;
+        b.k_b = None;
+        b.v_b = None;
+        Ok(&scratch.block)
+    }
+}
+
+/// Resolves a tensor descriptor for the mapped store: present, exact
+/// element count, dtype in `{F32, BF16}` (loud otherwise — FR-EX-08).
+fn mapped_info(file: &GgufFile, name: &str, want_elems: usize) -> Result<GgufTensorInfo> {
+    let info = file
+        .tensor_info(name)
+        .ok_or_else(|| VokraError::ModelLoad(format!("moshi: tensor `{name}`: missing")))?;
+    let elems = info
+        .element_count()
+        .map_err(|e| VokraError::ModelLoad(format!("moshi: tensor `{name}`: {e}")))?;
+    if elems != want_elems as u64 {
+        return Err(VokraError::ModelLoad(format!(
+            "moshi: tensor `{name}` has {elems} elements, expected {want_elems}"
+        )));
+    }
+    match info.dtype {
+        GgmlType::F32 | GgmlType::BF16 => Ok(info.clone()),
+        other => Err(VokraError::ModelLoad(format!(
+            "moshi mapped blocks: tensor `{name}` has dtype {other:?}; the \
+             bounded-memory mapped path supports F32 and BF16 payloads only — \
+             load through MoshiEngine::from_gguf_with_policy (resident) for \
+             other dtypes (FR-EX-08: explicit, not silent)"
+        ))),
+    }
+}
+
+/// Widens + transposes a `[rows, cols]` row-major `F32`/`BF16` payload
+/// into `dst` as `[cols, rows]` — the fused equivalent of
+/// `quant::dequantize` + [`transpose`], byte-formula-identical to both
+/// (BF16: top half of the f32 pattern shifted up — exact; F32:
+/// `from_le_bytes`).
+fn transpose_widen(
+    src: &[u8],
+    dtype: GgmlType,
+    rows: usize,
+    cols: usize,
+    dst: &mut Vec<f32>,
+) -> Result<()> {
+    let n = rows * cols;
+    if src.len() != n * dtype.type_size() {
+        return Err(VokraError::ModelLoad(format!(
+            "moshi mapped blocks: payload is {} bytes, expected {} ({n} x {:?})",
+            src.len(),
+            n * dtype.type_size(),
+            dtype
+        )));
+    }
+    dst.clear();
+    dst.resize(n, 0.0);
+    match dtype {
+        GgmlType::F32 => {
+            for r in 0..rows {
+                for c in 0..cols {
+                    let i = (r * cols + c) * 4;
+                    dst[c * rows + r] =
+                        f32::from_le_bytes([src[i], src[i + 1], src[i + 2], src[i + 3]]);
+                }
+            }
+        }
+        GgmlType::BF16 => {
+            for r in 0..rows {
+                for c in 0..cols {
+                    let i = (r * cols + c) * 2;
+                    dst[c * rows + r] =
+                        f32::from_bits(u32::from(u16::from_le_bytes([src[i], src[i + 1]])) << 16);
+                }
+            }
+        }
+        other => {
+            return Err(VokraError::ModelLoad(format!(
+                "moshi mapped blocks: unsupported dtype {other:?} (bind-time \
+                 validation should have rejected this)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Widens a dense `F32`/`BF16` payload into `dst` in storage order (the
+/// γ vectors — no transpose).
+fn widen_into(src: &[u8], dtype: GgmlType, dst: &mut Vec<f32>) -> Result<()> {
+    let esz = dtype.type_size();
+    match dtype {
+        GgmlType::F32 => {
+            dst.clear();
+            dst.reserve(src.len() / esz);
+            for c in src.chunks_exact(4) {
+                dst.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+            }
+            Ok(())
+        }
+        GgmlType::BF16 => {
+            dst.clear();
+            dst.reserve(src.len() / esz);
+            for c in src.chunks_exact(2) {
+                dst.push(f32::from_bits(
+                    u32::from(u16::from_le_bytes([c[0], c[1]])) << 16,
+                ));
+            }
+            Ok(())
+        }
+        other => Err(VokraError::ModelLoad(format!(
+            "moshi mapped blocks: unsupported dtype {other:?} (bind-time \
+             validation should have rejected this)"
+        ))),
+    }
 }
 
 /// Pre-allocated per-state scratch, sized once for `t_cap` positions
@@ -475,7 +832,13 @@ impl MoshiBackboneState {
 /// The Helium temporal backbone (config + weights + backend selection).
 pub struct MoshiBackbone {
     config: MoshiConfig,
+    /// Head weights always resident; in mapped mode `weights.blocks` is
+    /// **empty** and the temporal blocks come from `mapped` instead.
     weights: MoshiBackboneWeights,
+    /// `Some` on the bounded-memory path ([`Self::new_mapped`]): the
+    /// temporal blocks stay in the GGUF mapping and materialize one layer
+    /// at a time during the forward (bit-identical values — type docs).
+    mapped: Option<MappedTemporalBlocks>,
     backend: BackendKind,
     /// Plain (unscaled) interleaved-pair RoPE frequencies `[head_dim/2]`
     /// at the config max_period (ADR M4-06 §D2 gap analysis: the
@@ -489,8 +852,30 @@ impl std::fmt::Debug for MoshiBackbone {
         f.debug_struct("MoshiBackbone")
             .field("config", &self.config)
             .field("weights.is_synthesized", &self.weights.is_synthesized)
+            .field("mapped", &self.mapped.is_some())
             .field("backend", &self.backend)
             .finish()
+    }
+}
+
+/// Per-forward block dispatch: resident slice or mapped materialization
+/// (the guard is held for the whole forward so consecutive layers reuse
+/// one scratch allocation).
+enum BlockSource<'a> {
+    Resident(&'a [LlmBlockWeights]),
+    Mapped(
+        &'a MappedTemporalBlocks,
+        std::sync::MutexGuard<'a, MappedBlockScratch>,
+    ),
+}
+
+impl BlockSource<'_> {
+    /// The block for `layer` (materializing it on the mapped path).
+    fn block(&mut self, layer: usize) -> Result<&LlmBlockWeights> {
+        match self {
+            Self::Resident(blocks) => Ok(&blocks[layer]),
+            Self::Mapped(m, guard) => m.materialize_into(guard, layer),
+        }
     }
 }
 
@@ -502,14 +887,69 @@ impl MoshiBackbone {
     /// [`VokraError::InvalidArgument`] on config / weight-shape mismatch.
     pub fn new(config: MoshiConfig, weights: MoshiBackboneWeights) -> Result<Self> {
         config.validate_for_forward()?;
-        validate_shapes(&config, &weights)?;
+        validate_head_shapes(&config, &weights)?;
+        validate_block_shapes(&config, &weights)?;
         let inv_freqs = llama3_inv_freqs(config.temporal.head_dim(), config.rope_max_period, None)?;
         Ok(Self {
             config,
             weights,
+            mapped: None,
             backend: BackendKind::Cpu,
             inv_freqs,
         })
+    }
+
+    /// Builds a **bounded-memory** backbone: `head` carries the resident
+    /// head weights ([`MoshiBackboneWeights::head_from_gguf`] — `blocks`
+    /// must be empty), while the temporal blocks stay in the GGUF mapping
+    /// (`mapped`, validated at bind) and materialize per layer during the
+    /// forward. Numerically **bit-identical** to the resident path
+    /// ([`MappedTemporalBlocks`] docs); the trade is per-step decode
+    /// bandwidth for ~1/8 the resident footprint at the 7B shape.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on head-shape mismatch, a
+    /// non-empty `head.blocks` (ambiguous double weight source — loud,
+    /// FR-EX-08), or a layer-count mismatch.
+    pub fn new_mapped(
+        config: MoshiConfig,
+        head: MoshiBackboneWeights,
+        mapped: MappedTemporalBlocks,
+    ) -> Result<Self> {
+        config.validate_for_forward()?;
+        validate_head_shapes(&config, &head)?;
+        if !head.blocks.is_empty() {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi MoshiBackbone::new_mapped: head store carries {} resident \
+                 block(s) while a mapped block store is also supplied — ambiguous \
+                 double source; bind the head with head_from_gguf (FR-EX-08)",
+                head.blocks.len()
+            )));
+        }
+        if mapped.n_layer() != config.temporal.n_layer {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi MoshiBackbone::new_mapped: mapped store has {} layers, \
+                 config expects {}",
+                mapped.n_layer(),
+                config.temporal.n_layer
+            )));
+        }
+        let inv_freqs = llama3_inv_freqs(config.temporal.head_dim(), config.rope_max_period, None)?;
+        Ok(Self {
+            config,
+            weights: head,
+            mapped: Some(mapped),
+            backend: BackendKind::Cpu,
+            inv_freqs,
+        })
+    }
+
+    /// Whether the temporal blocks are mapped-lazy (`from_path` load)
+    /// rather than resident f32.
+    #[must_use]
+    pub fn is_mapped(&self) -> bool {
+        self.mapped.is_some()
     }
 
     /// Synthesized-fixture constructor.
@@ -536,7 +976,9 @@ impl MoshiBackbone {
         &self.config
     }
 
-    /// The weight store (parity / shape assertions).
+    /// The weight store (parity / shape assertions). On the mapped path
+    /// ([`Self::new_mapped`]) this carries the resident **head** only —
+    /// `blocks` is empty; the temporal blocks live in the mapping.
     #[must_use]
     pub fn weights(&self) -> &MoshiBackboneWeights {
         &self.weights
@@ -736,7 +1178,16 @@ impl MoshiBackbone {
         // below `t_kv - context` for a single-position step. (For the paged
         // cache this is a pure work-saving no-op; the skipped rows were masked.)
         let win_lo_global = (position_offset + 1).saturating_sub(context);
-        for (layer_idx, block) in self.weights.blocks.iter().enumerate() {
+        // Resident blocks iterate the owned store; mapped blocks widen one
+        // layer at a time into the engine's shared scratch (guard held for
+        // the whole forward — BlockSource docs). Values are bit-identical
+        // between the two sources (MappedTemporalBlocks docs).
+        let mut blocks = match &self.mapped {
+            Some(m) => BlockSource::Mapped(m, m.lock_scratch()?),
+            None => BlockSource::Resident(&self.weights.blocks),
+        };
+        for layer_idx in 0..self.config.temporal.n_layer {
+            let block = blocks.block(layer_idx)?;
             // ---------- Pre-norm MHA attention ----------
             rms_norm(
                 &scratch.h[..t * d],
@@ -952,9 +1403,10 @@ impl MoshiBackbone {
     }
 }
 
-fn validate_shapes(config: &MoshiConfig, weights: &MoshiBackboneWeights) -> Result<()> {
+/// Head-weight shape checks (embeddings / out_norm / text head) — shared
+/// by the resident and mapped constructors.
+fn validate_head_shapes(config: &MoshiConfig, weights: &MoshiBackboneWeights) -> Result<()> {
     let d = config.temporal.d_model;
-    let h = config.temporal.ffn_hidden;
     let checks = [
         (
             "text_emb",
@@ -980,6 +1432,14 @@ fn validate_shapes(config: &MoshiConfig, weights: &MoshiBackboneWeights) -> Resu
             )));
         }
     }
+    Ok(())
+}
+
+/// Resident-block shape checks (the mapped path validates blocks at bind
+/// through [`MappedTemporalBlocks::bind`] instead).
+fn validate_block_shapes(config: &MoshiConfig, weights: &MoshiBackboneWeights) -> Result<()> {
+    let d = config.temporal.d_model;
+    let h = config.temporal.ffn_hidden;
     if weights.blocks.len() != config.temporal.n_layer {
         return Err(VokraError::InvalidArgument(format!(
             "moshi MoshiBackbone::new: blocks {} != n_layer {}",
@@ -1246,36 +1706,47 @@ mod tests {
         assert_eq!(h1, h2, "post-reset step reproduces a fresh state");
     }
 
-    #[test]
-    fn from_gguf_binds_upstream_named_tensors_round_trip() {
-        // Build a GGUF carrying upstream-verbatim tensor names in the
-        // *packed* layouts (in_proj_weight [3d, d], gating.linear_in
-        // [2h, d]) from a synthesized store, then verify the loader
-        // reproduces the exact forward of the source weights.
-        use vokra_core::gguf::{GgmlType, GgufBuilder};
-        let cfg = MoshiConfig::tiny_for_tests();
-        let src = MoshiBackbone::synthesized(cfg.clone(), 21).unwrap();
-        let w = src.weights();
+    /// Serializes a synthesized backbone into a GGUF carrying
+    /// upstream-verbatim tensor names in the *packed* layouts
+    /// (in_proj_weight `[3d, d]`, gating.linear_in `[2h, d]`), with every
+    /// float payload encoded as `dtype` (`F32` verbatim; `BF16` by bit
+    /// truncation — the resident and mapped loaders then decode the SAME
+    /// stored bits, which is what the bitwise-equality tests compare).
+    fn packed_backbone_gguf(
+        cfg: &MoshiConfig,
+        w: &MoshiBackboneWeights,
+        dtype: GgmlType,
+    ) -> Vec<u8> {
+        use vokra_core::gguf::GgufBuilder;
         let d = cfg.temporal.d_model;
         let h = cfg.temporal.ffn_hidden;
+        let enc = |v: &[f32]| -> Vec<u8> {
+            match dtype {
+                GgmlType::F32 => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+                GgmlType::BF16 => v
+                    .iter()
+                    .flat_map(|x| ((x.to_bits() >> 16) as u16).to_le_bytes())
+                    .collect(),
+                other => panic!("test encoder supports F32/BF16 only, got {other:?}"),
+            }
+        };
 
         let mut b = GgufBuilder::new();
         b.add_string("vokra.model.arch", "moshi");
-        let f32_bytes = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
         b.add_tensor(
             "text_emb.weight",
-            GgmlType::F32,
+            dtype,
             vec![(cfg.text_card + 1) as u64, d as u64],
-            f32_bytes(&w.text_emb),
+            enc(&w.text_emb),
         )
         .unwrap();
         for k in 0..cfg.n_q_in {
             let rows = cfg.audio_card + 1;
             b.add_tensor(
                 &format!("emb.{k}.weight"),
-                GgmlType::F32,
+                dtype,
                 vec![rows as u64, d as u64],
-                f32_bytes(&w.audio_emb[k * rows * d..(k + 1) * rows * d]),
+                enc(&w.audio_emb[k * rows * d..(k + 1) * rows * d]),
             )
             .unwrap();
         }
@@ -1288,30 +1759,30 @@ mod tests {
             in_proj.extend(transpose(&blk.v_w_t, d, d));
             b.add_tensor(
                 &format!("{p}.self_attn.in_proj_weight"),
-                GgmlType::F32,
+                dtype,
                 vec![3 * d as u64, d as u64],
-                f32_bytes(&in_proj),
+                enc(&in_proj),
             )
             .unwrap();
             b.add_tensor(
                 &format!("{p}.self_attn.out_proj.weight"),
-                GgmlType::F32,
+                dtype,
                 vec![d as u64, d as u64],
-                f32_bytes(&transpose(&blk.o_w_t, d, d)),
+                enc(&transpose(&blk.o_w_t, d, d)),
             )
             .unwrap();
             b.add_tensor(
                 &format!("{p}.norm1.alpha"),
-                GgmlType::F32,
+                dtype,
                 vec![1, 1, d as u64],
-                f32_bytes(&blk.attn_norm_gamma),
+                enc(&blk.attn_norm_gamma),
             )
             .unwrap();
             b.add_tensor(
                 &format!("{p}.norm2.alpha"),
-                GgmlType::F32,
+                dtype,
                 vec![1, 1, d as u64],
-                f32_bytes(&blk.ffn_norm_gamma),
+                enc(&blk.ffn_norm_gamma),
             )
             .unwrap();
             let mut lin_in = Vec::with_capacity(2 * h * d);
@@ -1319,35 +1790,53 @@ mod tests {
             lin_in.extend(transpose(&blk.ffn_up_w_t, d, h));
             b.add_tensor(
                 &format!("{p}.gating.linear_in.weight"),
-                GgmlType::F32,
+                dtype,
                 vec![2 * h as u64, d as u64],
-                f32_bytes(&lin_in),
+                enc(&lin_in),
             )
             .unwrap();
             b.add_tensor(
                 &format!("{p}.gating.linear_out.weight"),
-                GgmlType::F32,
+                dtype,
                 vec![d as u64, h as u64],
-                f32_bytes(&transpose(&blk.ffn_down_w_t, h, d)),
+                enc(&transpose(&blk.ffn_down_w_t, h, d)),
             )
             .unwrap();
         }
         b.add_tensor(
             "out_norm.alpha",
-            GgmlType::F32,
+            dtype,
             vec![1, 1, d as u64],
-            f32_bytes(&w.out_norm_gamma),
+            enc(&w.out_norm_gamma),
         )
         .unwrap();
         b.add_tensor(
             "text_linear.weight",
-            GgmlType::F32,
+            dtype,
             vec![cfg.text_card as u64, d as u64],
-            f32_bytes(&w.text_linear),
+            enc(&w.text_linear),
         )
         .unwrap();
+        b.to_bytes().unwrap()
+    }
 
-        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+    /// Builds a mapped-lazy backbone over `file` (head eager + blocks in
+    /// the mapping) — the from_path assembly, at unit-test scale.
+    fn mapped_backbone(file: Arc<GgufFile>, cfg: &MoshiConfig) -> MoshiBackbone {
+        let head = MoshiBackboneWeights::head_from_gguf(&file, cfg).expect("head bind");
+        let mapped = MappedTemporalBlocks::bind(file, cfg).expect("mapped bind");
+        MoshiBackbone::new_mapped(cfg.clone(), head, mapped).expect("mapped backbone")
+    }
+
+    #[test]
+    fn from_gguf_binds_upstream_named_tensors_round_trip() {
+        // Pack a synthesized store into GGUF, bind it back through the
+        // resident loader, and verify the exact forward reproduces.
+        let cfg = MoshiConfig::tiny_for_tests();
+        let src = MoshiBackbone::synthesized(cfg.clone(), 21).unwrap();
+
+        let file =
+            GgufFile::parse(packed_backbone_gguf(&cfg, src.weights(), GgmlType::F32)).unwrap();
         let loaded = MoshiBackboneWeights::from_gguf(&file, &cfg).expect("bind");
         assert!(!loaded.is_synthesized);
         let reloaded = MoshiBackbone::new(cfg.clone(), loaded).unwrap();
@@ -1358,6 +1847,156 @@ mod tests {
         let h_src = src.forward(&steps, &mut s1).unwrap();
         let h_re = reloaded.forward(&steps, &mut s2).unwrap();
         assert_eq!(h_src, h_re, "pack → GGUF → unpack is exact");
+    }
+
+    #[test]
+    fn mapped_blocks_match_resident_bitwise_over_a_real_mmap() {
+        // The bounded-memory contract's numerical half: per-layer
+        // materialization out of a REAL read-only mapping must reproduce
+        // the resident f32 forward BIT-identically, step by step (same
+        // widen formula, same transpose index math).
+        let cfg = MoshiConfig::tiny_for_tests();
+        let src = MoshiBackbone::synthesized(cfg.clone(), 33).unwrap();
+        let bytes = packed_backbone_gguf(&cfg, src.weights(), GgmlType::F32);
+
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-moshi-mapped-f32-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+
+        let resident = {
+            let file = GgufFile::parse(bytes).unwrap();
+            let w = MoshiBackboneWeights::from_gguf(&file, &cfg).unwrap();
+            MoshiBackbone::new(cfg.clone(), w).unwrap()
+        };
+        let mmapped = Arc::new(vokra_mmap::open_gguf(&path).expect("real mmap"));
+        let mapped = mapped_backbone(mmapped, &cfg);
+        assert!(mapped.is_mapped());
+        assert!(
+            mapped.weights().blocks.is_empty(),
+            "mapped mode keeps no resident blocks"
+        );
+
+        let d = cfg.temporal.d_model;
+        let mut s_res = MoshiBackboneState::new(&cfg).unwrap();
+        let mut s_map = MoshiBackboneState::new(&cfg).unwrap();
+        let mut h_res = vec![0.0f32; d];
+        let mut h_map = vec![0.0f32; d];
+        for i in 0..6u32 {
+            let tokens = step_tokens(&cfg, i * 3 + 1);
+            resident.step_into(&mut s_res, &tokens, &mut h_res).unwrap();
+            mapped.step_into(&mut s_map, &tokens, &mut h_map).unwrap();
+            assert_eq!(h_res, h_map, "step {i}: mapped must be bit-identical");
+        }
+        // The text head reads the shared resident head — also identical.
+        let mut l_res = vec![0.0f32; cfg.text_card];
+        let mut l_map = vec![0.0f32; cfg.text_card];
+        resident.text_logits_into(&h_res, &mut l_res).unwrap();
+        mapped.text_logits_into(&h_map, &mut l_map).unwrap();
+        assert_eq!(l_res, l_map);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn mapped_blocks_bf16_match_resident_bitwise() {
+        // Same property over a BF16 GGUF (the streaming converter's real
+        // output dtype): both loaders widen the same stored bf16 bits.
+        let cfg = MoshiConfig::tiny_for_tests();
+        let src = MoshiBackbone::synthesized(cfg.clone(), 55).unwrap();
+        let bytes = packed_backbone_gguf(&cfg, src.weights(), GgmlType::BF16);
+        let file = Arc::new(GgufFile::parse(bytes).unwrap());
+
+        let resident = {
+            let w = MoshiBackboneWeights::from_gguf(&file, &cfg).unwrap();
+            MoshiBackbone::new(cfg.clone(), w).unwrap()
+        };
+        let mapped = mapped_backbone(Arc::clone(&file), &cfg);
+
+        let d = cfg.temporal.d_model;
+        let mut s_res = MoshiBackboneState::new(&cfg).unwrap();
+        let mut s_map = MoshiBackboneState::new(&cfg).unwrap();
+        let mut h_res = vec![0.0f32; d];
+        let mut h_map = vec![0.0f32; d];
+        for i in 0..4u32 {
+            let tokens = step_tokens(&cfg, i * 7 + 2);
+            resident.step_into(&mut s_res, &tokens, &mut h_res).unwrap();
+            mapped.step_into(&mut s_map, &tokens, &mut h_map).unwrap();
+            assert_eq!(h_res, h_map, "step {i}: bf16 mapped must be bit-identical");
+        }
+    }
+
+    #[test]
+    fn mapped_bind_rejects_unsupported_dtype_and_missing_tensors() {
+        use vokra_core::gguf::GgufBuilder;
+        let cfg = MoshiConfig::tiny_for_tests();
+        let src = MoshiBackbone::synthesized(cfg.clone(), 9).unwrap();
+
+        // An F16 layer tensor: bind must refuse loudly, naming the dtype
+        // and the resident alternative (FR-EX-08 — never a silent widen).
+        let bytes = packed_backbone_gguf(&cfg, src.weights(), GgmlType::F32);
+        let base = GgufFile::parse(bytes).unwrap();
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "moshi");
+        for t in base.tensors() {
+            let name = t.name.clone();
+            if name == "transformer.layers.0.self_attn.in_proj_weight" {
+                // Re-encode this one tensor as F16 (payload content is
+                // irrelevant — bind rejects on dtype before reading it).
+                let n = t.element_count().unwrap();
+                b.add_tensor(
+                    &name,
+                    GgmlType::F16,
+                    t.dimensions.clone(),
+                    vec![0u8; (n * 2) as usize],
+                )
+                .unwrap();
+            } else {
+                b.add_tensor(
+                    &name,
+                    t.dtype,
+                    t.dimensions.clone(),
+                    base.tensor_bytes(t).to_vec(),
+                )
+                .unwrap();
+            }
+        }
+        let file = Arc::new(GgufFile::parse(b.to_bytes().unwrap()).unwrap());
+        let err = MappedTemporalBlocks::bind(Arc::clone(&file), &cfg).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("F16"), "names the dtype: {msg}");
+        assert!(
+            msg.contains("from_gguf_with_policy"),
+            "points at the resident loader: {msg}"
+        );
+
+        // A missing layer tensor is a loud ModelLoad naming it.
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.model.arch", "moshi");
+        let file = Arc::new(GgufFile::parse(b.to_bytes().unwrap()).unwrap());
+        let err = MappedTemporalBlocks::bind(file, &cfg).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("transformer.layers.0.self_attn.in_proj_weight"),
+            "names the missing tensor: {err}"
+        );
+    }
+
+    #[test]
+    fn new_mapped_rejects_a_double_block_source() {
+        // A head store still carrying resident blocks alongside a mapped
+        // store is ambiguous — loud, never silently preferring one.
+        let cfg = MoshiConfig::tiny_for_tests();
+        let src = MoshiBackbone::synthesized(cfg.clone(), 13).unwrap();
+        let file = Arc::new(
+            GgufFile::parse(packed_backbone_gguf(&cfg, src.weights(), GgmlType::F32)).unwrap(),
+        );
+        let full = MoshiBackboneWeights::from_gguf(&file, &cfg).unwrap();
+        let mapped = MappedTemporalBlocks::bind(Arc::clone(&file), &cfg).unwrap();
+        let err = MoshiBackbone::new_mapped(cfg.clone(), full, mapped).unwrap_err();
+        assert!(err.to_string().contains("ambiguous"), "{err}");
     }
 
     #[test]

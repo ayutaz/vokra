@@ -183,5 +183,29 @@ fn converted_gguf_loads_under_strict_policy_with_attribution_and_real_lm_weights
         .expect("dialog over converted weights");
     assert!(turn.audio.is_some());
 
+    // ---- M4 cc-06: the mmap + mapped-lazy `from_path` load must be
+    // observationally identical to the resident bytes load — same
+    // attribution surface, same config, and a BIT-IDENTICAL deterministic
+    // dialog turn (the mapped per-layer widening reproduces the resident
+    // f32 values exactly; MappedTemporalBlocks docs).
+    let mapped = MoshiEngine::from_path(&out)
+        .expect("converted GGUF loads through the mmap + mapped-lazy path");
+    let m_attr = mapped.attribution().expect("attribution via mmap load");
+    assert!(m_attr.text.contains("Kyutai"), "{}", m_attr.text);
+    assert_eq!(mapped.config().delays, vec![0, 0, 1, 0, 1]);
+    let mapped = mapped.with_echo_path(EchoPath::BypassRecordedInput);
+    let mapped_turn = mapped
+        .dialog(&request)
+        .expect("dialog over mapped-lazy weights");
+    assert_eq!(
+        mapped_turn.text, turn.text,
+        "mapped vs resident monologue must be bit-identical"
+    );
+    assert_eq!(
+        mapped_turn.audio.as_ref().map(|a| &a.samples),
+        turn.audio.as_ref().map(|a| &a.samples),
+        "mapped vs resident PCM must be bit-identical"
+    );
+
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -45,13 +45,16 @@
 //! while its weight binding stays the documented synthesized bridge until
 //! the shared module's T29 binding (`vokra-models::mimi` docs).
 
+use std::path::Path;
+
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{
-    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufStreamWriter, GgufTensorDecl,
+    GgufValueType, chunks,
 };
 
 use crate::ConvertError;
-use crate::safetensors::SafetensorsFile;
+use crate::safetensors::{SafeTensorInfo, SafetensorsFile, SafetensorsFileReader};
 
 /// `vokra.model.arch` for Moshi GGUFs — kept in sync with the runtime
 /// constant `vokra-models::moshi::EXPECTED_ARCH`.
@@ -169,10 +172,14 @@ pub(crate) const MOSHI_ATTRIBUTION_TEXT: &str = "This application uses the Moshi
 /// Outcome of a Moshi conversion.
 #[derive(Debug, Default)]
 pub(crate) struct MoshiReport {
-    /// Float tensors written (BF16 inputs are decoded to F32 — exact).
+    /// Float tensors written (F32/F16/BF16 payloads pass through
+    /// **verbatim** — the voxtral 12e574e posture; the runtime's single
+    /// `tensor_f32` path widens BF16 → f32 exactly at load).
     pub(crate) written: usize,
-    /// BF16 tensors among them (observability for the size delta).
-    pub(crate) bf16_decoded: usize,
+    /// BF16 tensors among them (passed through byte-exact as GGUF `BF16`,
+    /// ggml type 30 — observability for the on-disk size, which is half
+    /// the old convert-time-widened F32 layout).
+    pub(crate) bf16_passthrough: usize,
     /// Non-float tensors skipped (defensive counter).
     pub(crate) skipped_non_float: usize,
     /// Whether a tokenizer blob was embedded.
@@ -180,6 +187,16 @@ pub(crate) struct MoshiReport {
     /// Operator-facing diagnostics (never fail the conversion — the
     /// runtime is the authoritative gate, FR-EX-08).
     pub(crate) notes: Vec<String>,
+}
+
+/// Outcome of the streaming (bounded-memory) conversion path — the
+/// [`crate::ConvertSummary`] ingredients the file-level entry needs.
+#[derive(Debug)]
+pub(crate) struct MoshiStreamOutcome {
+    pub(crate) report: MoshiReport,
+    pub(crate) tensor_count: usize,
+    pub(crate) metadata_count: usize,
+    pub(crate) output_bytes: u64,
 }
 
 /// Shape-derived hparams (module docs).
@@ -196,26 +213,43 @@ struct Derived {
     card: usize,
 }
 
-fn shape_of<'a>(st: &'a SafetensorsFile, name: &str) -> Result<&'a [u64], ConvertError> {
-    st.tensor_info(name)
-        .map(|t| t.shape.as_slice())
-        .ok_or_else(|| {
-            ConvertError::Parse(format!(
-                "moshi checkpoint: required tensor `{name}` is absent (the T02 \
-                 manifest lists it — wrong file?)"
-            ))
-        })
+/// Descriptor lookup shared by the in-memory ([`SafetensorsFile`]) and
+/// windowed ([`SafetensorsFileReader`]) checkpoint readers, so shape
+/// derivation is written once and cannot diverge between the two paths.
+trait MoshiCheckpointIndex {
+    fn info(&self, name: &str) -> Option<&SafeTensorInfo>;
 }
 
-fn count_indexed(st: &SafetensorsFile, fmt: impl Fn(usize) -> String) -> usize {
+impl MoshiCheckpointIndex for SafetensorsFile {
+    fn info(&self, name: &str) -> Option<&SafeTensorInfo> {
+        self.tensor_info(name)
+    }
+}
+
+impl MoshiCheckpointIndex for SafetensorsFileReader {
+    fn info(&self, name: &str) -> Option<&SafeTensorInfo> {
+        self.tensor_info(name)
+    }
+}
+
+fn shape_of<'a>(st: &'a dyn MoshiCheckpointIndex, name: &str) -> Result<&'a [u64], ConvertError> {
+    st.info(name).map(|t| t.shape.as_slice()).ok_or_else(|| {
+        ConvertError::Parse(format!(
+            "moshi checkpoint: required tensor `{name}` is absent (the T02 \
+             manifest lists it — wrong file?)"
+        ))
+    })
+}
+
+fn count_indexed(st: &dyn MoshiCheckpointIndex, fmt: impl Fn(usize) -> String) -> usize {
     let mut n = 0;
-    while st.tensor_info(&fmt(n)).is_some() {
+    while st.info(&fmt(n)).is_some() {
         n += 1;
     }
     n
 }
 
-fn derive(st: &SafetensorsFile) -> Result<Derived, ConvertError> {
+fn derive(st: &dyn MoshiCheckpointIndex) -> Result<Derived, ConvertError> {
     let text_linear = shape_of(st, "text_linear.weight")?;
     if text_linear.len() != 2 {
         return Err(ConvertError::Parse(format!(
@@ -298,18 +332,122 @@ fn structural_delays(dep_q: usize, n_user: usize) -> Vec<u32> {
     delays
 }
 
-/// Converts a Moshi safetensors buffer into a populated GGUF builder.
+/// Converts a Moshi safetensors buffer into a populated GGUF builder —
+/// the **in-memory reference** implementation the byte-identity test
+/// compares [`convert_streaming`] against. All production entries
+/// (`convert_file` / `convert_moshi_file`) route through the streaming
+/// path, so this stays test-gated (dead in release builds by design).
 ///
 /// `tokenizer_bytes` — the raw `tokenizer_spm_32k_3.model` file (public
 /// in the kyutai repo; `None` skips the embed with a loud note and the
 /// runtime monologue decode fails loudly until supplied).
+#[cfg(test)]
 pub(crate) fn convert(
     bytes: Vec<u8>,
     tokenizer_bytes: Option<Vec<u8>>,
 ) -> Result<(GgufBuilder, MoshiReport), ConvertError> {
     let st = SafetensorsFile::parse(bytes)?;
     let d = derive(&st)?;
+    let (mut b, mut report) = metadata_builder(&d, tokenizer_bytes);
 
+    // --- tensors: upstream names verbatim; F32/F16/BF16 byte-exact
+    // passthrough (BF16 stays GGUF `BF16`, type 30 — the voxtral 12e574e
+    // posture; the runtime widens BF16 → f32 exactly at load) ---
+    for t in st.tensors() {
+        match t.dtype {
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
+                b.add_tensor(
+                    &t.name,
+                    t.dtype,
+                    t.shape.clone(),
+                    st.tensor_bytes(t).to_vec(),
+                )?;
+                report.written += 1;
+                if t.dtype == GgmlType::BF16 {
+                    report.bf16_passthrough += 1;
+                }
+            }
+            _ => {
+                report.skipped_non_float += 1;
+            }
+        }
+    }
+
+    Ok((b, report))
+}
+
+/// Streaming (bounded-memory) Moshi conversion: header-only checkpoint
+/// open, metadata + tensor **declarations** first, then every payload
+/// copied tensor-by-tensor through one reused buffer — never more than a
+/// single tensor payload in RAM. This unblocks the full-7B
+/// `kyutai/moshiko-pytorch-bf16` conversion on a 16 GB machine (the old
+/// materialize-everything path peaked ≈ 97 GiB: whole input + widened F32
+/// builder copies + a whole-output `to_bytes` buffer).
+///
+/// Output bytes are **identical** to the in-memory [`convert`] path over
+/// the same checkpoint (same metadata builder, same declaration order,
+/// [`GgufStreamWriter`]'s byte-identity contract) — pinned by test.
+pub(crate) fn convert_streaming(
+    input: &Path,
+    output: &Path,
+    tokenizer_bytes: Option<Vec<u8>>,
+) -> Result<MoshiStreamOutcome, ConvertError> {
+    let mut st = SafetensorsFileReader::open(input)?;
+    let d = derive(&st)?;
+    let (b, mut report) = metadata_builder(&d, tokenizer_bytes);
+
+    // Declare every float tensor in checkpoint order (BF16 verbatim).
+    let mut decls = Vec::new();
+    let mut float_names = Vec::new();
+    for t in st.tensors() {
+        match t.dtype {
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
+                decls.push(GgufTensorDecl {
+                    name: t.name.clone(),
+                    dtype: t.dtype,
+                    dimensions: t.shape.clone(),
+                });
+                float_names.push(t.name.clone());
+                report.written += 1;
+                if t.dtype == GgmlType::BF16 {
+                    report.bf16_passthrough += 1;
+                }
+            }
+            _ => {
+                report.skipped_non_float += 1;
+            }
+        }
+    }
+
+    let out_file = std::fs::File::create(output)?;
+    let mut w = GgufStreamWriter::begin(std::io::BufWriter::new(out_file), &b, &decls)?;
+    let mut buf = Vec::new();
+    for name in &float_names {
+        st.read_tensor_into(name, &mut buf)
+            .map_err(|e| ConvertError::Parse(format!("moshi: reading `{name}`: {e}")))?;
+        w.write_tensor(name, &buf)?;
+    }
+    drop(buf);
+    let out = w.finish()?;
+    let out_file = out
+        .into_inner()
+        .map_err(|e| ConvertError::Io(e.into_error()))?;
+    out_file.sync_all().map_err(ConvertError::Io)?;
+    let output_bytes = out_file.metadata().map_err(ConvertError::Io)?.len();
+
+    Ok(MoshiStreamOutcome {
+        tensor_count: decls.len(),
+        metadata_count: b.metadata_count(),
+        output_bytes,
+        report,
+    })
+}
+
+/// Builds the complete metadata-only GGUF builder (hparams + provenance +
+/// attribution + optional tokenizer blob) for a derived checkpoint.
+/// Shared **verbatim** by [`convert`] and [`convert_streaming`] — one
+/// metadata source is what makes the two outputs byte-identical.
+fn metadata_builder(d: &Derived, tokenizer_bytes: Option<Vec<u8>>) -> (GgufBuilder, MoshiReport) {
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
@@ -456,34 +594,7 @@ pub(crate) fn convert(
         );
     }
 
-    // --- tensors: upstream names verbatim; BF16 → F32 exactly ---
-    for t in st.tensors() {
-        match t.dtype {
-            GgmlType::F32 | GgmlType::F16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )?;
-                report.written += 1;
-            }
-            GgmlType::BF16 => {
-                let f32s = st.tensor_f32(&t.name).map_err(|e| {
-                    ConvertError::Parse(format!("moshi: BF16 decode of `{}`: {e}", t.name))
-                })?;
-                let bytes: Vec<u8> = f32s.iter().flat_map(|v| v.to_le_bytes()).collect();
-                b.add_tensor(&t.name, GgmlType::F32, t.shape.clone(), bytes)?;
-                report.written += 1;
-                report.bf16_decoded += 1;
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
-        }
-    }
-
-    Ok((b, report))
+    (b, report)
 }
 
 #[cfg(test)]
@@ -584,11 +695,14 @@ mod tests {
     }
 
     #[test]
-    fn convert_derives_shapes_stamps_attribution_and_decodes_bf16() {
+    fn convert_derives_shapes_stamps_attribution_and_passes_bf16_through() {
         let (b, report) =
             convert(synthetic_checkpoint(), Some(b"spm-blob".to_vec())).expect("convert");
         assert_eq!(report.skipped_non_float, 0);
-        assert!(report.bf16_decoded > 0, "the synthetic checkpoint is BF16");
+        assert!(
+            report.bf16_passthrough > 0,
+            "the synthetic checkpoint is BF16"
+        );
         assert!(report.tokenizer_embedded);
         let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
 
@@ -611,7 +725,18 @@ mod tests {
         assert_eq!(get_u32("vokra.moshi.delay.2"), 1);
         assert_eq!(get_u32(KEY_MIMI_QUANTIZER_N_Q), 2, "max(dep_q, user)");
 
-        // BF16 → F32 is exact: every element was 1.0.
+        // BF16 passes through VERBATIM (ggml type 30, voxtral 12e574e
+        // posture) and the runtime widening is exact: every element was
+        // bf16(1.0) = 0x3F80.
+        let info = file.tensor_info("text_linear.weight").expect("info");
+        assert_eq!(info.dtype, GgmlType::BF16, "no convert-time widening");
+        let raw = file.tensor_data("text_linear.weight").expect("bytes");
+        assert_eq!(raw.len(), 13 * 16 * 2, "2 bytes/element on disk");
+        assert!(
+            raw.chunks_exact(2)
+                .all(|c| u16::from_le_bytes([c[0], c[1]]) == 0x3F80),
+            "source BF16 bytes verbatim"
+        );
         let t = file.tensor_f32("text_linear.weight").expect("tensor");
         assert_eq!(t.len(), 13 * 16);
         assert!(t.iter().all(|&v| v == 1.0), "bf16(1.0) → f32 1.0 exactly");
@@ -648,5 +773,64 @@ mod tests {
     #[test]
     fn arch_constant_matches_the_runtime() {
         assert_eq!(ARCH, "moshi");
+    }
+
+    #[test]
+    fn streaming_and_in_memory_paths_are_byte_identical() {
+        // The whole point of the streaming path is bounded memory with NO
+        // observable difference: same checkpoint → identical GGUF bytes.
+        let blob = synthetic_checkpoint();
+        let tok = Some(b"spm-blob".to_vec());
+
+        let (b, mem_report) = convert(blob.clone(), tok.clone()).expect("in-memory convert");
+        let via_memory = b.to_bytes().unwrap();
+
+        let mut input = std::env::temp_dir();
+        input.push(format!(
+            "vokra-moshi-stream-in-{}.safetensors",
+            std::process::id()
+        ));
+        let mut output = std::env::temp_dir();
+        output.push(format!(
+            "vokra-moshi-stream-out-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&input, &blob).unwrap();
+
+        let outcome = convert_streaming(&input, &output, tok).expect("streaming convert");
+        let via_stream = std::fs::read(&output).unwrap();
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+
+        assert_eq!(via_memory, via_stream, "byte-identical GGUF outputs");
+        assert_eq!(outcome.output_bytes as usize, via_stream.len());
+        assert_eq!(outcome.report.written, mem_report.written);
+        assert_eq!(outcome.report.bf16_passthrough, mem_report.bf16_passthrough);
+        assert_eq!(outcome.tensor_count, mem_report.written);
+        assert_eq!(
+            outcome.report.skipped_non_float,
+            mem_report.skipped_non_float
+        );
+        assert_eq!(outcome.report.notes, mem_report.notes);
+    }
+
+    #[test]
+    fn streaming_convert_missing_input_is_a_loud_error() {
+        let mut output = std::env::temp_dir();
+        output.push(format!(
+            "vokra-moshi-stream-neverwritten-{}.gguf",
+            std::process::id()
+        ));
+        let err = convert_streaming(
+            std::path::Path::new("/no/such/vokra/moshiko.safetensors"),
+            &output,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("I/O") || err.to_string().contains("error"),
+            "{err}"
+        );
+        assert!(!output.exists(), "no half-written output file");
     }
 }

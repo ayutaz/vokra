@@ -19,6 +19,13 @@ vokra-backend-cpu.workspace = true
 # 8-language G2P is reused OUT of the workspace, so this stays a first-party
 # `vokra-*` dependency and the zero-dependency gate is preserved (NFR-DS-02).
 vokra-piper-plus.workspace = true
+# M4 cc-06 (Moshi full-7B on 16 GB machines): `MoshiEngine::from_path` loads
+# through the true-mmap GGUF path (`vokra_mmap::open_gguf`) with mapped-lazy
+# temporal blocks, instead of the old fs::read + parse(to_vec) double copy.
+# First-party crate, ZERO external deps (raw mmap/MapViewOfFile FFI — no libc /
+# memmap2), so the zero-dependency gate (NFR-DS-02) still holds. Promoted from
+# dev-dependencies (where the Voxtral real-GGUF gated test already used it).
+vokra-mmap = { path = "../vokra-mmap" }
 # Phase 3 (GPU execution): the imperative `Compute` dispatcher routes the model
 # hot path (GEMM first) onto the Metal backend. `vokra-backend-metal` is a
 # first-party `vokra-*` crate with ZERO external deps (raw Objective-C / Metal
@@ -75,10 +82,9 @@ vokra-convert = { path = "../vokra-convert" }
 # first-party, acyclic (vokra-eval depends only on core/ops/backend-cpu),
 # root Cargo.lock stays vokra-* only (NFR-DS-02).
 vokra-eval = { path = "../vokra-eval" }
-# Voxtral real-GGUF gated test (tests/voxtral_real_gguf.rs): the 9+ GB real
-# checkpoint is opened through the mmap loader instead of a full heap copy —
-# first-party, zero external deps (NFR-DS-02 preserved).
-vokra-mmap = { path = "../vokra-mmap" }
+# vokra-mmap moved to [dependencies] (M4 cc-06 — MoshiEngine::from_path mmap
+# wiring); the Voxtral real-GGUF gated test (tests/voxtral_real_gguf.rs) keeps
+# using it from there.
 
 [features]
 # Off by default: enable with `--features metal` on macOS / iOS to route the

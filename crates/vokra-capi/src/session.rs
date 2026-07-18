@@ -131,7 +131,22 @@ fn inject_engine(
 fn build_session(path: &str) -> Result<Session, VokraError> {
     // CPU backend is the only M0 backend (FR-BE-01); the real kernels are
     // M0-08. A backend selector argument is a future breaking change (note 3).
-    let session = Session::from_file(path).with_backend(BackendKind::Cpu)?;
+    //
+    // M4 cc-06: the session GGUF opens through the true-mmap loader (lazy
+    // page faulting; `GgufError::Io` for a missing path converts to
+    // `VokraError::Io` — the same status class the old buffered read gave)
+    // instead of a whole-file owned read: the Moshi full-7B GGUF is
+    // ~14.3 GiB, which `Session::from_file` used to buffer for the whole
+    // session lifetime NEXT TO the engine's own weights. The explicit
+    // is-a-file guard mirrors the `SessionBuilder::build` path check.
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(VokraError::InvalidArgument(format!(
+            "model path `{path}` is not a regular file"
+        )));
+    }
+    let gguf = vokra_mmap::open_gguf(path)?;
+    let session = Session::from_gguf(gguf).with_backend(BackendKind::Cpu)?;
     inject_engine(
         session,
         || PiperPlusTts::from_path(path),

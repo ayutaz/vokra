@@ -287,6 +287,12 @@ pub fn convert_file(
     input: &Path,
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
+    // Moshi streams tensor-by-tensor (the 14 GiB full-7B checkpoint must
+    // never be materialized whole — bounded-memory contract); it routes
+    // through `convert_moshi_file` BEFORE the whole-file read below.
+    if matches!(model, ModelKind::Moshi) {
+        return convert_moshi_file(input, None, output);
+    }
     let bytes = std::fs::read(input)?;
 
     let (builder, notes) = match model {
@@ -383,20 +389,9 @@ pub fn convert_file(
             ));
         }
         ModelKind::Moshi => {
-            // Tokenizer-less conversion (the blob rides `--config` through
-            // `convert_moshi_file`; without it the runtime monologue
-            // decode fails loudly — FR-EX-08).
-            let (builder, report) = models::moshi::convert(bytes, None)?;
-            let mut notes = vec![format!(
-                "moshi: {} float weights written ({} BF16→F32 exact), {} non-float \
-                 skipped, tokenizer embedded: {}",
-                report.written,
-                report.bf16_decoded,
-                report.skipped_non_float,
-                report.tokenizer_embedded
-            )];
-            notes.extend(report.notes.iter().map(|n| format!("moshi warning: {n}")));
-            (builder, notes)
+            // Handled by the streaming early-return above (bounded memory);
+            // reaching this arm would mean the whole checkpoint was read.
+            unreachable!("ModelKind::Moshi routes through convert_moshi_file")
         }
         ModelKind::Csm => {
             // Tokenizer-less path (M4-05-T03/T04): every float tensor
@@ -817,40 +812,47 @@ pub fn convert_cosyvoice2_file(
 /// `tokenizer_spm_32k_3.model` SentencePiece file as
 /// `vokra.tokenizer.model` (M4-06-T22).
 ///
-/// The BF16 checkpoint decodes to F32 **exactly** (BF16 is the top half
-/// of the f32 pattern); the `vokra.provenance.*` chunks stamp the
-/// CC-BY 4.0 `AttributionRequired` class plus the FR-MD-09 attribution
-/// text the runtime surfaces (`Session::attribution` / C ABI / CLI
-/// banner).
+/// **Streaming / bounded memory**: the checkpoint is opened header-only
+/// and every tensor payload is copied one at a time through a reused
+/// buffer ([`vokra_core::gguf::GgufStreamWriter`]), so converting the
+/// 14 GiB full-7B file peaks at roughly one tensor (~0.26 GiB) — the old
+/// materialize-everything path peaked ≈ 97 GiB and could not run on a
+/// 16 GB machine.
+///
+/// **BF16 passes through verbatim** (GGUF `BF16`, ggml type 30 — the
+/// Voxtral converter posture): no convert-time widening; the runtime's
+/// single `tensor_f32` decode path widens BF16 → f32 **exactly** at load
+/// (BF16 is the top half of the f32 pattern). The `vokra.provenance.*`
+/// chunks stamp the CC-BY 4.0 `AttributionRequired` class plus the
+/// FR-MD-09 attribution text the runtime surfaces
+/// (`Session::attribution` / C ABI / CLI banner).
 pub fn convert_moshi_file(
     input: &Path,
     tokenizer: Option<&Path>,
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
-    let bytes = std::fs::read(input)?;
     let tokenizer_bytes = match tokenizer {
         Some(p) => Some(std::fs::read(p)?),
         None => None,
     };
-    let (builder, report) = models::moshi::convert(bytes, tokenizer_bytes)?;
+    let outcome = models::moshi::convert_streaming(input, output, tokenizer_bytes)?;
+    let report = &outcome.report;
 
     let mut notes = vec![format!(
-        "moshi: {} float weights written ({} BF16→F32 exact), {} non-float skipped, \
-         tokenizer embedded: {}",
-        report.written, report.bf16_decoded, report.skipped_non_float, report.tokenizer_embedded
+        "moshi: {} float weights written ({} BF16 passthrough — runtime widens to \
+         f32 exactly at load), {} non-float skipped, tokenizer embedded: {}",
+        report.written,
+        report.bf16_passthrough,
+        report.skipped_non_float,
+        report.tokenizer_embedded
     )];
     notes.extend(report.notes.iter().map(|n| format!("moshi warning: {n}")));
 
-    let tensor_count = builder.tensor_count();
-    let metadata_count = builder.metadata_count();
-    let out_bytes = builder.to_bytes()?;
-    std::fs::write(output, &out_bytes)?;
-
     Ok(ConvertSummary {
         model: ModelKind::Moshi,
-        tensor_count,
-        metadata_count,
-        output_bytes: out_bytes.len() as u64,
+        tensor_count: outcome.tensor_count,
+        metadata_count: outcome.metadata_count,
+        output_bytes: outcome.output_bytes,
         notes,
     })
 }

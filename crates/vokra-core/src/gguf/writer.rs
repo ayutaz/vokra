@@ -243,6 +243,221 @@ impl GgufBuilder {
     }
 }
 
+/// A tensor declaration for [`GgufStreamWriter`]: descriptor now, payload
+/// later (streamed in declaration order).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GgufTensorDecl {
+    /// Tensor name (must be unique across the declaration set).
+    pub name: String,
+    /// Element type.
+    pub dtype: GgmlType,
+    /// Dimensions (at most [`super::tensor::MAX_TENSOR_DIMS`]).
+    pub dimensions: Vec<u64>,
+}
+
+/// Streaming GGUF writer: the whole header / metadata / tensor-info block
+/// is written up front from *declarations*, then each tensor payload
+/// streams through [`Self::write_tensor`] in declaration order — so a
+/// multi-GB model converts while at most **one** tensor payload is held
+/// in memory (the Moshi full-7B converter previously materialized the
+/// entire model ~3× ≈ 97 GiB; this is the fix's core primitive).
+///
+/// GGUF needs every tensor's data offset in the header, but offsets are
+/// fully determined by the declarations (payload sizes derive from
+/// `dtype` × `dimensions`; per-tensor alignment padding is deterministic),
+/// so no backpatching pass is needed: a single forward write suffices.
+///
+/// The produced bytes are **identical** to
+/// [`GgufBuilder::to_bytes`] over the same metadata + tensors (pinned by
+/// `stream_writer_matches_builder_bytes`), so readers cannot tell the two
+/// paths apart.
+///
+/// # Contract (loud — FR-EX-08)
+///
+/// - `metadata` supplies metadata (and alignment) only; a builder with
+///   queued tensors is rejected ([`GgufError::InvalidStreamUse`]) rather
+///   than silently merged.
+/// - Payloads must arrive exactly once each, in declaration order, sized
+///   exactly `dtype.payload_size(product(dimensions))`.
+/// - [`Self::finish`] fails unless every declared payload was written (a
+///   truncated tensor-data region must never look like success).
+pub struct GgufStreamWriter<W: std::io::Write> {
+    out: W,
+    alignment: u64,
+    /// Per declaration: (name, expected payload bytes, data-region offset).
+    plan: Vec<(String, u64, u64)>,
+    /// Next `plan` index [`Self::write_tensor`] expects.
+    next: usize,
+}
+
+impl<W: std::io::Write> std::fmt::Debug for GgufStreamWriter<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `W` need not be `Debug`; the progress fields are what matters.
+        f.debug_struct("GgufStreamWriter")
+            .field("alignment", &self.alignment)
+            .field("declared", &self.plan.len())
+            .field("next", &self.next)
+            .finish()
+    }
+}
+
+impl<W: std::io::Write> GgufStreamWriter<W> {
+    /// Writes the complete prelude (header + metadata + tensor infos +
+    /// alignment padding) into `out` and returns the writer positioned at
+    /// the tensor-data region.
+    ///
+    /// `metadata` contributes metadata entries and the alignment (its
+    /// `set_alignment` is honored, including the auto-injected
+    /// `general.alignment` key); `decls` declares every tensor in payload
+    /// order.
+    ///
+    /// # Errors
+    ///
+    /// [`GgufError::InvalidStreamUse`] if `metadata` has queued tensors;
+    /// [`GgufError::DuplicateTensor`] / [`GgufError::TooManyDimensions`] /
+    /// [`GgufError::Overflow`] / block-size errors for invalid
+    /// declarations; [`GgufError::Io`] on write failure.
+    pub fn begin(
+        mut out: W,
+        metadata: &GgufBuilder,
+        decls: &[GgufTensorDecl],
+    ) -> Result<Self, GgufError> {
+        if metadata.tensor_count() != 0 {
+            return Err(GgufError::InvalidStreamUse(format!(
+                "the metadata builder carries {} queued tensor(s); declare \
+                 streamed tensors through `decls` only (no silent merge)",
+                metadata.tensor_count()
+            )));
+        }
+        let alignment = metadata.alignment;
+        // Validate declarations and compute payload sizes + offsets with
+        // exactly the `to_bytes` arithmetic (byte-identity contract).
+        let mut seen = HashSet::new();
+        let mut plan = Vec::with_capacity(decls.len());
+        let mut cursor: u64 = 0;
+        for d in decls {
+            if d.dimensions.len() > super::tensor::MAX_TENSOR_DIMS {
+                return Err(GgufError::TooManyDimensions(d.dimensions.len()));
+            }
+            if !seen.insert(d.name.as_str()) {
+                return Err(GgufError::DuplicateTensor(d.name.clone()));
+            }
+            let mut elems: u64 = 1;
+            for &dim in &d.dimensions {
+                elems = elems.checked_mul(dim).ok_or(GgufError::Overflow)?;
+            }
+            let size = d.dtype.payload_size(elems)?;
+            plan.push((d.name.clone(), size, cursor));
+            cursor = align_up(
+                cursor.checked_add(size).ok_or(GgufError::Overflow)?,
+                alignment,
+            )?;
+        }
+
+        // Serialize the prelude into one buffer (metadata is small even
+        // with an embedded tokenizer blob; only tensor payloads are big).
+        let effective = metadata.effective_metadata();
+        let mut head = Vec::new();
+        head.extend_from_slice(&GGUF_MAGIC);
+        head.extend_from_slice(&metadata.version.to_le_bytes());
+        head.extend_from_slice(&(decls.len() as u64).to_le_bytes());
+        head.extend_from_slice(&(effective.len() as u64).to_le_bytes());
+        for (key, value) in &effective {
+            write_gguf_string(&mut head, key);
+            write_value(&mut head, value);
+        }
+        for (d, (_, _, offset)) in decls.iter().zip(&plan) {
+            write_gguf_string(&mut head, &d.name);
+            head.extend_from_slice(&(d.dimensions.len() as u32).to_le_bytes());
+            for &dim in &d.dimensions {
+                head.extend_from_slice(&dim.to_le_bytes());
+            }
+            head.extend_from_slice(&d.dtype.tag().to_le_bytes());
+            head.extend_from_slice(&offset.to_le_bytes());
+        }
+        pad_to(&mut head, alignment)?;
+        out.write_all(&head).map_err(GgufError::Io)?;
+
+        Ok(Self {
+            out,
+            alignment,
+            plan,
+            next: 0,
+        })
+    }
+
+    /// Streams the next declared tensor's complete payload (plus its
+    /// trailing alignment padding).
+    ///
+    /// # Errors
+    ///
+    /// [`GgufError::InvalidStreamUse`] out of declaration order or past
+    /// the last declaration; [`GgufError::TensorSizeMismatch`] on a wrong
+    /// payload length; [`GgufError::Io`] on write failure.
+    pub fn write_tensor(&mut self, name: &str, data: &[u8]) -> Result<(), GgufError> {
+        let Some((want_name, want_size, offset)) = self.plan.get(self.next) else {
+            return Err(GgufError::InvalidStreamUse(format!(
+                "all {} declared tensor payloads were already written; \
+                 unexpected extra payload `{name}`",
+                self.plan.len()
+            )));
+        };
+        if want_name != name {
+            return Err(GgufError::InvalidStreamUse(format!(
+                "payloads must arrive in declaration order: expected \
+                 `{want_name}` (index {}), got `{name}`",
+                self.next
+            )));
+        }
+        if data.len() as u64 != *want_size {
+            return Err(GgufError::TensorSizeMismatch {
+                name: name.to_owned(),
+                expected: *want_size,
+                actual: data.len() as u64,
+            });
+        }
+        self.out.write_all(data).map_err(GgufError::Io)?;
+        // Trailing padding up to the next aligned offset (the last tensor
+        // also pads to the alignment boundary — `to_bytes` parity).
+        let end = offset + *want_size;
+        let padded_end = align_up(end, self.alignment)?;
+        let mut pad = (padded_end - end) as usize;
+        let zeros = [0u8; 64];
+        while pad > 0 {
+            let n = pad.min(zeros.len());
+            self.out.write_all(&zeros[..n]).map_err(GgufError::Io)?;
+            pad -= n;
+        }
+        self.next += 1;
+        Ok(())
+    }
+
+    /// Declared payloads not yet written (observability / progress).
+    pub fn remaining(&self) -> usize {
+        self.plan.len() - self.next
+    }
+
+    /// Flushes and returns the inner writer.
+    ///
+    /// # Errors
+    ///
+    /// [`GgufError::InvalidStreamUse`] if any declared payload was never
+    /// written (a truncated data region must never pass as success);
+    /// [`GgufError::Io`] on flush failure.
+    pub fn finish(mut self) -> Result<W, GgufError> {
+        if self.next != self.plan.len() {
+            return Err(GgufError::InvalidStreamUse(format!(
+                "only {} of {} declared tensor payloads were written; \
+                 refusing to finish a truncated tensor-data region",
+                self.next,
+                self.plan.len()
+            )));
+        }
+        self.out.flush().map_err(GgufError::Io)?;
+        Ok(self.out)
+    }
+}
+
 /// Writes a GGUF string: a `u64` little-endian byte length followed by the
 /// UTF-8 bytes.
 fn write_gguf_string(out: &mut Vec<u8>, s: &str) {
@@ -505,5 +720,172 @@ mod tests {
             .add_tensor("t", GgmlType::F32, vec![1, 1, 1, 1, 1], vec![0u8; 4])
             .unwrap_err();
         assert!(matches!(err, GgufError::TooManyDimensions(5)));
+    }
+
+    // --- GgufStreamWriter -------------------------------------------------
+
+    /// The tensors both stream-writer parity tests exercise: mixed dtypes,
+    /// deliberately unaligned payload lengths (12 / 10 / 176 bytes) so the
+    /// per-tensor padding arithmetic is actually covered.
+    fn stream_parity_tensors() -> Vec<(String, GgmlType, Vec<u64>, Vec<u8>)> {
+        vec![
+            ("a.f32".into(), GgmlType::F32, vec![3], (0..12u8).collect()),
+            ("b.f16".into(), GgmlType::F16, vec![5], (50..60u8).collect()),
+            (
+                "c.q5k".into(),
+                GgmlType::Q5K,
+                vec![256],
+                (0..176u32).map(|i| (i % 251) as u8).collect(),
+            ),
+            (
+                "d.bf16".into(),
+                GgmlType::BF16,
+                vec![2, 2],
+                vec![0x80, 0x3F, 0x00, 0x40, 0x40, 0x40, 0x80, 0x40],
+            ),
+        ]
+    }
+
+    fn stream_metadata() -> GgufBuilder {
+        let mut m = GgufBuilder::new();
+        m.add_string("vokra.model.arch", "moshi");
+        m.add_u32("vokra.test.answer", 42);
+        m
+    }
+
+    fn decls_of(tensors: &[(String, GgmlType, Vec<u64>, Vec<u8>)]) -> Vec<GgufTensorDecl> {
+        tensors
+            .iter()
+            .map(|(name, dtype, dims, _)| GgufTensorDecl {
+                name: name.clone(),
+                dtype: *dtype,
+                dimensions: dims.clone(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn stream_writer_matches_builder_bytes() {
+        // The byte-identity contract: same metadata + tensors through
+        // GgufBuilder::to_bytes and GgufStreamWriter must be identical, so
+        // no reader can tell the paths apart.
+        let tensors = stream_parity_tensors();
+
+        let mut builder = stream_metadata();
+        for (name, dtype, dims, data) in &tensors {
+            builder
+                .add_tensor(name, *dtype, dims.clone(), data.clone())
+                .unwrap();
+        }
+        let via_builder = builder.to_bytes().unwrap();
+
+        let mut w =
+            GgufStreamWriter::begin(Vec::new(), &stream_metadata(), &decls_of(&tensors)).unwrap();
+        for (name, _, _, data) in &tensors {
+            w.write_tensor(name, data).unwrap();
+        }
+        let via_stream = w.finish().unwrap();
+
+        assert_eq!(via_builder, via_stream, "byte-identical outputs");
+        // And the result parses with the identical content.
+        let file = GgufFile::parse(via_stream).unwrap();
+        assert_eq!(file.tensors().len(), tensors.len());
+        for (name, _, _, data) in &tensors {
+            assert_eq!(file.tensor_data(name).unwrap(), data.as_slice());
+        }
+    }
+
+    #[test]
+    fn stream_writer_matches_builder_bytes_with_custom_alignment() {
+        let tensors = stream_parity_tensors();
+        let custom = || {
+            let mut m = stream_metadata();
+            m.set_alignment(64).unwrap();
+            m
+        };
+
+        let mut builder = custom();
+        for (name, dtype, dims, data) in &tensors {
+            builder
+                .add_tensor(name, *dtype, dims.clone(), data.clone())
+                .unwrap();
+        }
+        let via_builder = builder.to_bytes().unwrap();
+
+        let mut w = GgufStreamWriter::begin(Vec::new(), &custom(), &decls_of(&tensors)).unwrap();
+        for (name, _, _, data) in &tensors {
+            w.write_tensor(name, data).unwrap();
+        }
+        let via_stream = w.finish().unwrap();
+        assert_eq!(via_builder, via_stream);
+        assert_eq!(GgufFile::parse(via_stream).unwrap().alignment(), 64);
+    }
+
+    #[test]
+    fn stream_writer_rejects_metadata_builder_with_queued_tensors() {
+        let mut m = stream_metadata();
+        m.add_tensor("stray", GgmlType::F32, vec![1], vec![0u8; 4])
+            .unwrap();
+        let err = GgufStreamWriter::begin(Vec::new(), &m, &[]).unwrap_err();
+        assert!(matches!(err, GgufError::InvalidStreamUse(_)), "{err}");
+    }
+
+    #[test]
+    fn stream_writer_rejects_out_of_order_wrong_size_and_extras() {
+        let tensors = stream_parity_tensors();
+        let decls = decls_of(&tensors);
+
+        // Out of order.
+        let mut w = GgufStreamWriter::begin(Vec::new(), &stream_metadata(), &decls).unwrap();
+        let err = w.write_tensor("b.f16", &tensors[1].3).unwrap_err();
+        assert!(matches!(err, GgufError::InvalidStreamUse(_)), "{err}");
+
+        // Wrong size.
+        let mut w = GgufStreamWriter::begin(Vec::new(), &stream_metadata(), &decls).unwrap();
+        let err = w.write_tensor("a.f32", &[0u8; 8]).unwrap_err();
+        assert!(matches!(err, GgufError::TensorSizeMismatch { .. }), "{err}");
+
+        // Extra payload past the declaration set.
+        let mut w = GgufStreamWriter::begin(Vec::new(), &stream_metadata(), &decls[..1]).unwrap();
+        w.write_tensor("a.f32", &tensors[0].3).unwrap();
+        let err = w.write_tensor("a.f32", &tensors[0].3).unwrap_err();
+        assert!(matches!(err, GgufError::InvalidStreamUse(_)), "{err}");
+    }
+
+    #[test]
+    fn stream_writer_finish_requires_every_payload() {
+        let tensors = stream_parity_tensors();
+        let mut w =
+            GgufStreamWriter::begin(Vec::new(), &stream_metadata(), &decls_of(&tensors)).unwrap();
+        w.write_tensor("a.f32", &tensors[0].3).unwrap();
+        assert_eq!(w.remaining(), tensors.len() - 1);
+        let err = w.finish().unwrap_err();
+        assert!(matches!(err, GgufError::InvalidStreamUse(_)), "{err}");
+    }
+
+    #[test]
+    fn stream_writer_rejects_duplicate_and_overlong_declarations() {
+        let dup = vec![
+            GgufTensorDecl {
+                name: "t".into(),
+                dtype: GgmlType::F32,
+                dimensions: vec![1],
+            },
+            GgufTensorDecl {
+                name: "t".into(),
+                dtype: GgmlType::F32,
+                dimensions: vec![1],
+            },
+        ];
+        let err = GgufStreamWriter::begin(Vec::new(), &stream_metadata(), &dup).unwrap_err();
+        assert!(matches!(err, GgufError::DuplicateTensor(_)), "{err}");
+
+        let overlong = vec![GgufTensorDecl {
+            name: "t".into(),
+            dtype: GgmlType::F32,
+            dimensions: vec![1, 1, 1, 1, 1],
+        }];
+        let err = GgufStreamWriter::begin(Vec::new(), &stream_metadata(), &overlong).unwrap_err();
+        assert!(matches!(err, GgufError::TooManyDimensions(5)), "{err}");
     }
 }
