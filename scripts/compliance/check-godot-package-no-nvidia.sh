@@ -142,7 +142,12 @@ if [ -d "$BIN_DIR" ]; then
             esac
         done
     fi
-    lib_count="${#libs[@]:-0}"
+    # NOTE: `${#libs[@]:-0}` is a bad substitution on bash >= 4.4 (the CI
+    # runners) while macOS system bash 3.2 parses it leniently — which is why
+    # the local self-test never caught it (godot-crossbuild run 29239384239
+    # failed here). `libs` is always initialized above, so the plain length
+    # expansion is safe under `set -u` on both bash 3.2 and 5.x.
+    lib_count="${#libs[@]}"
 else
     echo "note: no bin/ under $ADDON_DIR (--no-build or empty stage) — skipping binary scan"
     lib_count=0

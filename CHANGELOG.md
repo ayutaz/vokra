@@ -327,6 +327,94 @@ regression; the default test suite went 2340 → 2418, all-features
   Vulkan GLSL arithmetic mirror tests (host-side, M1-native); C-ABI smoke
   tests for the AEC and S2S surfaces; SIMD128 f32x4 activation kernels.
 
+#### v1.0-rc (M4) — real-weight validation campaigns + fixes (2026-07-16/17)
+
+Two evaluation campaigns converted and ran REAL upstream checkpoints
+end-to-end on Apple M1 against onnxruntime 1.19.2 CPU
+(`docs/bench-baselines/m1-real-weight-eval-2026-07-16/`): Whisper
+base/small/medium/turbo transcripts are byte-identical to ORT (same WER),
+Mimi/DAC/WavTokenizer real-weight parity all pass, piper is
+near-bit-exact. The campaigns surfaced nine defect families only
+reachable with real weights + real audio; all were fixed on-branch and
+re-verified against the same real checkpoints:
+
+- **Silero VAD**: the official v5 64-sample rolling context
+  (`[1,576]`/`[1,288]` input) was missing, so real speech was never
+  detected (max prob 0.0037 → 0 segments). `ContextMode::Official` is now
+  the default across Session / CLI / C ABI; jfk segments match ORT
+  span-for-span; the raw 1:1 parity anchor (7.9e-8) is unchanged. The
+  converter now emits both-rate (8 k/16 k) GGUFs byte-identical to the
+  committed fixture.
+- **Kokoro-82M upstream fidelity**: the native implementation and its
+  same-author reference dumper were mutually consistent but diverged from
+  the real `kokoro` package (round-trip WER 1.0 = unintelligible). Eleven
+  source-verified fixes (LeakyReLU slopes, ALBERT 12-layer + `gelu_new`,
+  decoder input wiring, real F0/N contours + full NSF source path,
+  duration formula, AdaIN conventions, iSTFT semantics, …) bring
+  round-trip WER to 0.0 and mel-L1 vs ORT to the pipeline noise floor
+  (0.53 → 0.0835). The reference dumper now imports the REAL upstream
+  package (loud abort otherwise) so a self-consistent mirror cannot recur;
+  the `PROSODY_F0_ATOL=0.05` special case was removed as an artifact of
+  the flawed reference.
+- **CosyVoice2**: the real Qwen2 checkpoint's q/k/v attention biases were
+  unrepresentable (argmax 0/10 vs upstream) — optional biases now flow
+  through weights/forward/converter/`from_gguf` (argmax 10/10,
+  max |Δ| 3.4e-5); converter hparams are shape-derived (+`--config` for
+  the head split); the flip-the-switch parity harness is de-stubbed.
+- **Voxtral**: `TextDecoder` now loads real GQA shapes (decoupled
+  `head_dim`, untied `lm_head`); the converter accepts raw BF16 shards as
+  verbatim BF16 passthrough (spot-check Δ 0.0) and **refuses to emit a
+  weightless GGUF** (was: exit 0 with 1,696 bytes — a success-shaped
+  silent failure); multi-shard `*.index.json` input; 762/762 tensors
+  convert byte-identically.
+- **Mimi PCM roundtrip** first-ever pass: converter neural-chain adapter
+  (`vokra.mimi.*` config chunk + 284 structural tensors as exact
+  re-layouts) + runtime replicate-pad/SplitRVQ fixes → encode code ids
+  4384/4384 = 100 % agreement with upstream, decode PCM max |Δ| 3.67e-6.
+- **DeepFilterNet3 real topology**: the denoise op was a synthetic-weight
+  scaffold with zero name overlap with the real 133-tensor checkpoint;
+  it is now a full libDF transcription (STFT/ERB frontend, conv+GRU
+  encoder/decoders, lookahead deep filtering) with sample-level parity —
+  enhanced waveform max |Δ| 4.17e-7, SI-SNR 14.768399 dB vs upstream
+  14.768398 dB. License cleared (dual MIT/Apache-2.0); a converter
+  (`--model denoise`) and an env-gated 21-tap parity suite landed.
+- **Whisper word timestamps**: an emission-row off-by-one (the slice
+  included `<|notimestamps|>`, unlike openai `timing.py`) shifted every
+  word ~one emission late (mean 212–443 ms) and leaked the final word to
+  the 30 s padded-window end; fixed together with valid-frame restriction
+  and a faithful `merge_punctuations` port — per-word deltas now
+  5–50 ms mean vs openai-whisper, sanity 6/6, word counts match.
+- **`vokra-server` TTS**: real 8-language G2P is injectable
+  (`--piper-g2p`, derived entirely from the voice GGUF metadata) and the
+  `/api/tts` router is actually mounted (was 404) — plain-text Japanese
+  synthesis returns deterministic audio at ~89 ms median; without the
+  flag the explicit-error passthrough contract is unchanged.
+- **CLI**: `run --backend cpu|metal` (whisper small/turbo verified Metal
+  == CPU byte-identical on real weights), a `speaker` task for CAM++
+  GGUFs (embedding + `--compare` cosine), and `convert` help now lists
+  all 11 model kinds.
+
+#### CPU performance (M5-14 early wave, 2026-07-18)
+
+An M5 pre-wave rebuilt the CPU hot path with **bit-identical**
+guarantees (every output element keeps its exact legacy accumulation
+chain; no parity tolerance changed anywhere; Kokoro stays 8/8):
+
+- Packed/blocked GEMM driver (pack kills a 16 KiB power-of-2-stride L1
+  aliasing pathology: 19 → 88 GF/s single-thread on the whisper-medium
+  fc1 shape), chunked work-queue threading (8T now 4.4× over 1T; the
+  old 8T-slower-than-4T inversion is gone), automatic m=1 → GEMV
+  routing, TLS conv scratch, vectorized Silero/DFN3 (previously private
+  scalar), Mimi batched transformer + codebook-outer RVQ, and a
+  per-beam incremental KV cache for whisper beam search
+  (beam-1 remains bit-identical to greedy).
+- Final quiet-window results vs onnxruntime CPU on the same M1
+  (`docs/bench-baselines/m5-14-final-2026-07-18/`): whisper base
+  **0.41×** and turbo **0.37×** (i.e. ~2.5–2.7× FASTER than ORT),
+  Silero **0.43×**, medium 7.8× slower → **1.17×**, small → 1.24×,
+  piper → 2.17×, DFN3 → 1.77×; 9 of 11 explicit targets met (two
+  documented near-misses: CAM++ +9 %, beam-5 2.71× vs the 1.6× goal).
+
 ### Changed
 
 - **Metal / CUDA are first-party optional features, default OFF** —
@@ -363,6 +451,21 @@ regression; the default test suite went 2340 → 2418, all-features
   embeds the multilingual byte-level BPE vocab in the GGUF
   (`vokra.tokenizer.model`) and the decoder reads it directly, so
   large-v3 / turbo produce correct transcripts.
+
+### Security
+
+- **`vokra-server` Wyoming: unbounded network-controlled allocation**
+  (fixed 2026-07-17 together with the data-continuation framing): the
+  event reader allocated `vec![0u8; header.data_length]` directly from a
+  network-supplied length with no cap — a remote peer could trigger an
+  arbitrary-size allocation (latent DoS; the payload path had a cap, the
+  data path did not). Both paths are now capped (1 MiB data) and checked
+  BEFORE allocation, with explicit protocol errors. The same change makes
+  the server speak the wyoming >= 1.2.0 data-continuation framing, which
+  every modern (Home Assistant-generation) client requires — previously
+  all inference operations failed against real clients; a genuine
+  `wyoming` 1.10.0 client now round-trips the canonical JFK transcript
+  byte-identically to the HTTP route.
 
 ## [1.0.0-rc.1]
 
