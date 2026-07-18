@@ -24,9 +24,10 @@ kernels/
 ├── handcrafted/         # 2 smoke-test kernels as Rust `const [u32]` (ADR §5 cap — no more)
 │   ├── copy_f32.spv.rs
 │   └── add_f32.spv.rs
-└── precompiled/         # SPIR-V binaries (`glslc`-produced, git-committed; owner M4-13-T16)
-    ├── <name>.spv       # none committed yet — see "Placeholder status" below
-    └── SHA256SUMS       # written by scripts/compile-vulkan-shaders.sh --update
+└── precompiled/         # SPIR-V binaries (git-committed; M4-13-T16 done 2026-07-19)
+    ├── <name>.spv       # all 12 committed — see "Blob status" below
+    ├── SHA256SUMS       # written by scripts/compile-vulkan-shaders.sh --update
+    └── PROVENANCE       # compiler family+version pin + per-source SHA-256 (drift gate)
 ```
 
 ## Why precompile? (M3-02-T01(g) / T13, ADR M3-02-spirv-generation)
@@ -54,17 +55,27 @@ scripts/compile-vulkan-shaders.sh --update
 # One kernel only:
 scripts/compile-vulkan-shaders.sh --update gemm_subgroup
 
-# CI drift gate (gpu-vulkan-parity.yml): recompile to a temp dir and
-# SHA-256-diff against the committed blobs; exits 1 on drift, exits 0 with
-# an honest "nothing committed yet" note in the placeholder slice:
+# CI drift gate (gpu-vulkan-parity.yml): two stages —
+#   (1) source-hash gate: every committed .spv's .comp source is
+#       SHA-256-compared against precompiled/PROVENANCE (compiler-
+#       independent — catches "edited source without recompiling" on any
+#       host, including CI runners with a different glslang version);
+#   (2) recompile byte-diff, run ONLY when the local compiler family AND
+#       version match the PROVENANCE pin (cross-tool SPIR-V is not
+#       byte-stable — a mismatch is an honest skip, not a fabricated
+#       pass; blob-byte integrity is separately enforced by the SHA-256
+#       pins in src/spirv.rs via cargo test on every host).
+# Exits 1 on drift; exits 0 with an honest note when nothing is committed:
 scripts/compile-vulkan-shaders.sh --check
 ```
 
 Each `.comp` header names its own `--target-env` (gemm_coopmat = vulkan1.3,
 everything else vulkan1.1); the script parses it per file. `glslc` is
-preferred; `glslangValidator` (Ubuntu `glslang-tools`) is the fallback —
-the two emit different bytes, so `--check` must use the tool family that
-produced the committed blobs.
+preferred; `glslangValidator` (Ubuntu `glslang-tools`, Homebrew `glslang`)
+is the fallback — the two emit different bytes, so the committed blobs'
+producing tool is pinned in `precompiled/PROVENANCE` and `--update` refuses
+single-kernel rebuilds with a non-matching tool (no mixed-toolchain blob
+sets).
 
 After `--update`, paste each hash from `precompiled/SHA256SUMS` into
 `src/spirv.rs`'s `SHADERS` manifest (`expected_sha256_hex`) and switch the
@@ -82,12 +93,12 @@ dispatch). The WebGPU column (M4-01-T17) is machine-checked by
 WGSL sources are embedded text, so the WebGPU arm has **no blob gate** — all
 five arms are live from the M4-01 commit.
 
-| graph `OpKind` | CUDA arm `supports()` | Vulkan arm (principled) | Vulkan backing shader | Vulkan status today (no `.spv` committed) | WebGPU arm (M4-01) | WebGPU backing WGSL |
+| graph `OpKind` | CUDA arm `supports()` | Vulkan arm (principled) | Vulkan backing shader | Vulkan status today (all 12 `.spv` committed, M4-13-T16) | WebGPU arm (M4-01) | WebGPU backing WGSL |
 |----------------|-----------------------|--------------------------|------------------------|-------------------------------------|--------------------|----------------------|
-| `MatMul`       | ✅                    | ✅                       | `gemm_subgroup` / `gemm_coopmat` (probe-selected) | blob-gated → `UnsupportedOp` | ✅ | `gemm_f32` |
+| `MatMul`       | ✅                    | ✅                       | `gemm_subgroup` / `gemm_coopmat` (probe-selected) | **live** | ✅ | `gemm_f32` |
 | `Add`          | ✅                    | ✅                       | `add_f32` (hand-crafted) | **live** | ✅ | `add_f32` |
-| `Mul`          | ✅                    | ✅                       | `elementwise` (OP=mul)  | blob-gated → `UnsupportedOp` | ✅ | `elementwise` (op=mul) |
-| `Softmax`      | ✅                    | ✅                       | `softmax`               | blob-gated → `UnsupportedOp` | ✅ | `softmax` |
+| `Mul`          | ✅                    | ✅                       | `elementwise` (OP=mul)  | **live** | ✅ | `elementwise` (op=mul) |
+| `Softmax`      | ✅                    | ✅                       | `softmax`               | **live** | ✅ | `softmax` |
 | `Copy`         | ❌ (Vulkan/WebGPU-only runtime-verification op) | ✅ | `copy_f32` (hand-crafted) | **live** | ✅ | `copy_f32` |
 | `Stft` (+ other front-end signal ops) | ❌ | ❌ | — | **honest gap on ALL backend graph arms** — front-end ops run in `vokra-ops`; putting `Stft` on a GPU graph arm is a separate M4+ decision | ❌ | — |
 
@@ -116,7 +127,7 @@ workgroup math — mirrors the `.comp` contracts field-for-field) with the
 generic dispatch chain (`src/context.rs::dispatch_kernel`). A missing blob
 is an explicit `UnsupportedOp` (FR-EX-08), never a silent CPU fall back.
 
-## Placeholder status (M4-13, 2026-07-15)
+## Blob status (M4-13-T16 done, 2026-07-19)
 
 Full kernel bodies are committed for all 12 GLSL sources — including the
 M4-13 corrections: the reduction kernels (`gemv` / `softmax` /
@@ -124,10 +135,19 @@ M4-13 corrections: the reduction kernels (`gemv` / `softmax` /
 (wrong when a workgroup spans several subgroups: lavapipe sg=8, Mali
 sg=16, RDNA sg=64) to barrier-based shared-memory tree reductions, and
 `gelu` was corrected from the tanh approximation to the CPU kernel's
-exact/erf form (identical A&S 7.1.26 coefficients). **No `.spv` is
-committed yet** — the owner compiles + commits + SHA-256-pins them
-(M4-13-T16), which lights up the blob-gated dispatch arms, `supports()`
-coverage, and the T12/T13 parity suites with zero further code changes.
-lavapipe CI proves the dispatch chain; it CANNOT catch driver-level
+exact/erf form (identical A&S 7.1.26 coefficients).
+
+**All 12 `.spv` blobs are committed** (glslangValidator 16.4.0 — "Glslang
+Version: 11:16.4.0", the ADR §4 (a) `brew install glslang` path; all 12
+`.comp` compiled clean with zero source changes, so the `glsl_mirror.rs`
+transcription tests remain true transcriptions), SHA-256-pinned in
+`src/spirv.rs` and embedded via `include_bytes!` — the blob-gated dispatch
+arms, `supports()` coverage, and the T12/T13 parity suites are lit up with
+zero further code changes (the placeholder-then-swap seam worked as
+designed). The T12/T13 parity suites still need a live Vulkan ICD to
+*execute* — lavapipe CI (`gpu-vulkan-parity.yml` workflow_dispatch,
+M4-13-T18) proves the dispatch chain; it CANNOT catch driver-level
 GLSL→SPIR-V bugs, so the Android real-device soak (M4-13-T17) is the WP's
-exit hard gate.
+exit hard gate. The Apple-Silicon authoring host compiles the manifest and
+verifies every SHA-256 pin, but has no Vulkan target arm (macOS uses
+Metal), so dispatch tests skip there with a logged reason.

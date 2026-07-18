@@ -49,3 +49,10 @@ tests/capi/fixtures/*.f32 -filter -diff -merge
 # M4-03 aec parity fixtures (raw int16 LE PCM; see tools/parity/aec_dump.py
 # and crates/vokra-ops/tests/parity_aec.rs). Same LFS-free contract.
 tests/parity/aec/*.i16le -filter -diff -merge
+
+# Vulkan precompiled SPIR-V blobs (M4-13-T16) — same LFS-free contract.
+# Embedded via include_bytes! in crates/vokra-backend-vulkan/src/spirv.rs
+# (SHA-256-pinned there and in SHA256SUMS); regenerated ONLY by
+# scripts/compile-vulkan-shaders.sh --update with the toolchain pinned in
+# kernels/precompiled/PROVENANCE.
+crates/vokra-backend-vulkan/kernels/precompiled/*.spv -filter -diff -merge

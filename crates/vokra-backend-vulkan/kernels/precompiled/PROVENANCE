@@ -1,0 +1,24 @@
+# SPIR-V blob provenance — written by scripts/compile-vulkan-shaders.sh --update.
+# Do not edit by hand.
+#
+# compiler_family/compiler_version pin the toolchain that produced every
+# committed kernels/precompiled/*.spv. SPIR-V output is NOT byte-stable
+# across compiler families (glslc vs glslangValidator) or versions, so
+# scripts/compile-vulkan-shaders.sh --check only recompile-byte-diffs when
+# the local tool matches this pin; otherwise it relies on the source_sha256
+# rows below (compiler-independent source-drift gate) and on the blob
+# SHA-256 pins in crates/vokra-backend-vulkan/src/spirv.rs (cargo test).
+compiler_family=glslangValidator
+compiler_version=Glslang Version: 11:16.4.0
+source_sha256 activation.comp 70ce2d64b2ca85f38e03539e0d7de3053195b3e628aee94d543fb5f96eba6331
+source_sha256 conv1d.comp 4bbb19046f8cdacc7a5e294c13dc620b12ff623b45080938a045f701921f300e
+source_sha256 elementwise.comp 44d8f7a1be894e25216d6a1975b3cc39d1f12636b5a6851475c047c21c922668
+source_sha256 gather.comp 5f719b14c16426ebd0704299a817d785beed3b4ccb45accd02652de8fd644f16
+source_sha256 gelu.comp 876d23963dc941794377e8679527e546eaf3b0809a50864b926ee5a4423e3ece
+source_sha256 gemm_coopmat.comp 31a9854315a89e5ba440a3f68ba104c4ca915e120c30e9694eb611e6e54cdb34
+source_sha256 gemm_subgroup.comp 663352830a34ea8a5bd643d61f83b698cd986ff268eb7a74dc708c7584d6e6ff
+source_sha256 gemv.comp ddb58ffd477239ce45bfaa64f22a335deeab4e6a65485824f89dc8897f64a5bc
+source_sha256 layer_norm.comp 33faa3ce5d180372cc82b416392ea7a7888f4d6de2160063d83e0321cf92a061
+source_sha256 softmax_causal.comp e5786d3d1a229790477c0d68aadf9d1c8480132f78affbb133adda7554d26d53
+source_sha256 softmax.comp 0906ad9f788c8d3927cff773cb58ce902654533d936db6280655e81c562ac46c
+source_sha256 transpose.comp 8bf1126b11a341300a3809c21015e7dbf335910d4e4c7f25b30d514e9a3bf49c
