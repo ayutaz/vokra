@@ -1,0 +1,772 @@
+[
+ {
+  "leg": "wt-whisper",
+  "ran": true,
+  "converted": false,
+  "patchPath": "",
+  "summary": "First real-weight e2e of Whisper word timestamps (M4-20a) ran on base+turbo x jfk+2 LibriSpeech via a scratch harness (surface is library-only: transcribe_tokens_beam_nbest + BeamSearchConfig.word_timestamps; no CLI flag, no HTTP exposure); cached GGUFs carry vokra.whisper.alignment_heads whose per-model sets EXACTLY match openai-whisper (base 8 heads, turbo 6). The pipeline works end to end — words deterministic, monotone, correct sequence in 5/6 combos — but raw per-word deltas vs openai-whisper 20250625 are mean 212-443 ms / p95 440-1280 ms, and the cause is a P1 off-by-one: beam_glue.rs whisper_word_timings slices at text_lo = n_prefix (4, decoder_start_ids INCLUDES no_timestamps) while openai timing.py:215 slices at len(sot_sequence) (3, EXCLUDES it), dropping the first-token emission row so every vokra word start lands at openai's word END; the diagnostic |v.start(k)-r.end(k)| collapses to mean 30-69 ms / p95 40-220 ms across all 6 combos, proving the DTW core itself matches within tens of ms. Second consequence: every clip's final word ends at 30.000 s (final_time = padded-window n_ctx*dt instead of openai's eot-emission arrival), failing the [0, audio_len] sanity on all 6 combos; also the caller feeds the full padded 1500-frame window instead of the num_frames//2 valid-frame restriction the CrossAttention docstring requires. Speed: the alignment pass itself is cheap (+2.1-3.2% on base; turbo interleaved paired median +5.8% — session-1's +79.8% was contention artifact at load avg 28, superseded), but reaching word timestamps requires the beam surface whose per-step full-prefix recompute costs +9.7%/+50.6%/+93.1% vs incremental greedy on base. jfk first-word sanity passes against the true onset 0.322 s — the assignment's \"~5.15 s\" is sample index 5152, an errata. All raw outputs, per-word TSVs, and scripts under /Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/.",
+  "accuracy": {
+   "reference": "openai-whisper 20250625 (semantics SoT), word_timestamps=True, greedy temp=0, language=en, fp16=False, condition_on_previous_text=False; models base + large-v3-turbo (MIT); matching via difflib on normalized words (lowercase, alnum+apostrophe; vokra standalone punctuation folded into neighbor = labeled merge_punctuations emulation)",
+   "alignment_heads_metadata": "GGUF vs openai model buffers EXACT match: base [(3,1),(4,2),(4,3),(4,7),(5,1),(5,2),(5,4),(5,6)] (8), turbo [(2,4),(2,11),(3,3),(3,6),(3,11),(3,14)] (6); small/medium GGUFs carry the key (values not dumped)",
+   "word_sequence_identity_normalized": "5/6 combos identical; base/l0002 ratio 0.985 (vokra has one extra 'is' — decode-context difference: vokra decodes with notimestamps, openai with timestamp tokens)",
+   "raw_word_deltas_ms_mean_p95_max": {
+    "base/jfk": [
+     443,
+     1280,
+     1640
+    ],
+    "base/l0000": [
+     212,
+     440,
+     460
+    ],
+    "base/l0002": [
+     307,
+     480,
+     540
+    ],
+    "turbo/jfk": [
+     357,
+     740,
+     1200
+    ],
+    "turbo/l0000": [
+     252,
+     460,
+     460
+    ],
+    "turbo/l0002": [
+     331,
+     480,
+     1060
+    ],
+    "note": "start deltas, punct-merged, excl final-word end; final-word end delta reaches 19640 ms (30 s pad leak)"
+   },
+   "off_by_one_diagnostic_abs_vstart_minus_rend_ms_mean_p95_max": {
+    "base/jfk": [
+     32,
+     80,
+     520
+    ],
+    "base/l0000": [
+     67,
+     220,
+     740
+    ],
+    "base/l0002": [
+     30,
+     40,
+     660
+    ],
+    "turbo/jfk": [
+     35,
+     100,
+     520
+    ],
+    "turbo/l0000": [
+     69,
+     220,
+     780
+    ],
+    "turbo/l0002": [
+     41,
+     200,
+     660
+    ],
+    "interpretation": "collapse from hundreds of ms to tens of ms confirms one-emission-row shift; DTW core matches openai within tens of ms"
+   },
+   "sanity": "monotone starts 6/6 PASS; start<=end 6/6 PASS; within [0,audio_len] 0/6 FAIL (final '.' end=30.000 s on every clip + interior 65 ms overshoot base/l0000 'gospel' 5.920>5.855); jfk first word 0.0 s vs VAD onset anchor 0.322 s (=sample 5152) PASS; outputs bit-deterministic across 4 independent turbo runs"
+  },
+  "speed": {
+   "window": "per-iteration = transcribe call only (log-mel + encoder + full decode; beam-words adds one full-prefix decoder forward with cross-attention capture + DTW + word merge); excludes GGUF load, WAV read, detokenization; 1 warmup + 3 measured, median; RTF = median wall / TRUE clip secs (audio internally zero-padded to 30 s window)",
+   "machine_caveat": "M1 shared with sibling agents; 1-min load avg 13-28 during turbo session-1; base runs CV ~1% (reliable)",
+   "base_medians_s": {
+    "jfk11.0s": {
+     "greedy": 2.35,
+     "beam_plain": 2.578,
+     "beam_words": 2.66,
+     "rtf_words": 0.242
+    },
+    "l0000_5.855s": {
+     "greedy": 1.582,
+     "beam_plain": 2.383,
+     "beam_words": 2.434
+    },
+    "l0002_12.485s": {
+     "greedy": 1.795,
+     "beam_plain": 3.465,
+     "beam_words": 3.537
+    }
+   },
+   "overhead_alignment_words_vs_beamplain": "base +3.2%/+2.1%/+2.1% (jfk/l0000/l0002); turbo interleaved paired deltas +1.36/+2.56/+2.87 s, median +2.56 s = +5.8% of median plain 43.86 s",
+   "overhead_beam_surface_vs_incremental_greedy": "base +9.7%/+50.6%/+93.1% — per-step full-prefix recompute (O(T^2)); word timestamps are ONLY reachable via this beam surface",
+   "turbo_session1_noise": "beam-words medians 86.4 s vs beam-plain 48.1 s (+79.8%) was contention artifact — superseded by interleaved re-run; turbo greedy median 44.16 s (RTF 4.02)",
+   "openai_context_not_like_for_like": "base jfk words 0.83 s vs plain 0.56 s median (+48%), different load window"
+  },
+  "findings": [
+   "P1: off-by-one in Whisper word-timestamp row slice — crates/vokra-models/src/whisper/beam_glue.rs whisper_word_timings uses text_lo = n_prefix (len(decoder_start_ids)=4, INCLUDING <|notimestamps|>) but openai timing.py:215 slices matrix[len(sot_sequence):-1] (3 tokens, EXCLUDING no_timestamps), so the emission row of the FIRST text token is dropped and every word start/end is reported one emission row late (~one word, mean 212-443 ms); shifted diagnostic collapses to 30-69 ms mean. Fix: text_lo = n_prefix-1, treat the n+1 rows as emitting [c_0..c_{n-1}, eot], use eot-row arrival as final word end",
+   "P2: final-word end = padded-window end — words_from_alignment final_time = n_ctx*dt = 30.0 s, so the last word ends at 30.000 s on every clip < 30 s (violates [0, audio_len] 6/6; openai bounds by eot-emission arrival; fixed by the same change as the P1)",
+   "P2: Whisper caller ignores the valid-frames contract — CrossAttention docstring requires weights restricted to num_frames//2 (openai weights[:,:,:num_frames//2]) but beam_glue feeds the full padded 1500-frame window; interior effect measured small on these clips but it stretches tails past true audio (base/l0000 'gospel' end 5.920 > 5.855 s)",
+   "P2 (perf): word timestamps are only reachable through transcribe_tokens_beam_nbest whose per-step full-prefix recompute (M0 recompute posture, beam_glue.rs WhisperLogitsSource) costs +9.7% to +93.1% vs incremental greedy on base — the alignment pass itself is only +2-6%; a greedy-path word-timestamp surface or per-beam KV cache would remove most of the cost",
+   "P3: no merge_punctuations equivalent — vokra emits standalone punctuation words ('.', ',') where openai folds them into neighbors (prepend/append_punctuations); consumers see 25 vokra words vs 22 openai words on jfk",
+   "P3: surface gaps — no vokra-cli flag for word timestamps and the HTTP layer (/v1/audio/transcriptions) has no timestamp_granularities; the field exists only on the internal TranscribeBeamRequest dispatch (HTTP beam endpoint not landed per service.rs doc)",
+   "P3 (campaign errata): assignment's 'jfk speech onset ~5.15 s' is campaign-1 VAD sample index 5152 = 0.322 s at 16 kHz (file is 11.0 s); RMS confirms onset ~0.30 s",
+   "note: base/l0002 vokra transcript has one extra 'is' vs openai-whisper (decode-context difference — vokra decodes with <|notimestamps|>, openai transcribe() decodes with timestamp tokens; campaign-1 vokra-vs-ORT was byte-identical)"
+  ],
+  "issues": [
+   "turbo timing session-1 contention-noised (shared M1, load avg 13-28): beam-words iters [59.8, 86.4, 87.0] s produced a bogus +79.8% overhead — superseded by 3 interleaved plain/words pairs (median paired delta +2.56 s = +5.8%); raw values of both sessions preserved in vokra-matrix.log / vokra-turbo-interleave.log",
+   "openai-whisper reference wall times are context-only (different load window than vokra runs), cross-engine speed is campaign-1 scope",
+   "turbo LibriSpeech words runs are 1-iteration (words extraction only, deterministic — verified bit-identical 4x on jfk; no timing claim)"
+  ],
+  "commands": [
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/harness/target/release/wt-harness dump /Users/inamotoyuuta/.cache/vokra-eval/gguf/whisper-{base,turbo}.gguf",
+   "wt-harness run <gguf> <wav> {greedy|beam-plain|beam-words} 1 3 <out.json>  # full matrix, see vokra-matrix.log",
+   "wt-harness run whisper-turbo.gguf jfk-30s.wav {beam-plain,beam-words} 0 1 ...  # 3 interleaved pairs",
+   "/Users/inamotoyuuta/.cache/vokra-eval/venv/bin/python ref_openai.py  # openai-whisper base+turbo word_timestamps reference + alignment-head dump",
+   "/Users/inamotoyuuta/.cache/vokra-eval/venv/bin/python compare.py  # raw+merged deltas, sanity assertions",
+   "/Users/inamotoyuuta/.cache/vokra-eval/venv/bin/python shifted.py  # off-by-one diagnostic + per-word TSVs",
+   "/Users/inamotoyuuta/.cache/vokra-eval/venv/bin/python speed.py  # medians, RTF, overhead decomposition"
+  ],
+  "artifacts": [
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/README.md",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/compare-report.json",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/shifted-report.json",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/speed-summary.json",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/words-base-jfk.tsv",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/words-base-l0000.tsv",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/words-base-l0002.tsv",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/words-turbo-jfk.tsv",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/words-turbo-l0000.tsv",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/words-turbo-l0002.tsv",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/vokra-matrix.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/vokra-turbo-interleave.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/ref-alignment-heads.json",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/dump-base.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/dump-turbo.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/wt-whisper/harness/src/main.rs"
+  ]
+ },
+ {
+  "leg": "server-real",
+  "ran": true,
+  "converted": false,
+  "patchPath": "",
+  "summary": "First real-weight vokra-server integration run (whisper-base.gguf + piper-plus-css10-ja-6lang-neutralspk.gguf, campaign-1 conversions, repo READ-ONLY @92dbc92): production startup wiring works — eager load to /health-ready median 0.638s, hard-error UX on missing GGUF and half-wired config (exit 1), graceful SIGTERM drain, zero panics across all probes. OpenAI POST /v1/audio/transcriptions returns the canonical JFK transcript byte-identically (11.0s audio, median 1.596s quiet-window loopback = RTF 0.145) and correct LibriSpeech text; all shape probes correct (text/plain 200, unknown model 404, verbose_json 501, typo multipart field 400, bad WAV 400); vLLM routes honor the contract-only 501/400 design; 4 parallel transcriptions all 200 with byte-identical bodies (no interleaving corruption). Wyoming works end-to-end ONLY with the repo's inline-data framing (canonical transcript; matched-load A/B shows HTTP and Wyoming routes equivalent; 5th concurrent connection gets explicit refusal at the 4-session cap, permits release cleanly). P1: with the genuine `wyoming` PyPI client framing (every version >=1.2.0, i.e. all Home-Assistant-era clients — pinned by pip-source bisect 1.0.0/1.2.0/1.4.0/1.5.2/1.10.0), describe/info discovery succeeds but ALL inference fails: pump_events (integrations/vokra-server/src/api/wyoming.rs:645-653) reads the data_length continuation then discards it, so audio-start/audio-chunk error \"missing data\" and synthesize loses its text — contradicting the repo's own wyoming-design.md §3 which passes data_buf to dispatch. P1: the production binary never injects the real G2P (InferenceService::build installs PassthroughPhonemizer; with_phonemizer unused by main path), so plain-text TTS fails with an explicit error on every surface, while raw phoneme-id input synthesizes correctly (1.196s non-silent 22050 Hz audio, deterministic 4/4, TTFA median 663ms ~= total because synth is batch). P2: the FR-SV-04 /api/tts router exists in code (piper_http.rs dispatch_tts) but is never mounted in build_http_app -> production HTTP TTS is 404.",
+  "findings": [
+   "P1 (wyoming protocol compat): inbound event `data` continuation is read then DISCARDED by pump_events (integrations/vokra-server/src/api/wyoming.rs:645-653 — `data` buffer never merged into header.data before PumpItem::Event(header, payload)). Upstream wyoming >=1.2.0 (through current 1.10.0; HA-era clients) pops `data` out of the header and sends it ONLY in that continuation, so a real Home Assistant satellite gets: audio-start -> error 'audio-start/chunk missing data', audio-chunk -> same, transcribe -> 'no audio received before transcribe', synthesize -> text lost -> 'PassthroughPhonemizer: empty input'. Live-reproduced with the genuine wyoming 1.10.0 package (logs/wyoming-upstream-framing.json); only describe/info (empty data) interoperates, and only the client->server direction is broken (upstream readers do accept the server's inline-data replies). Contradicts the repo's own docs/wyoming-design.md §3 whose canonical loop passes data_buf to dispatch. Fix = merge data continuation into header.data (upstream read semantics), plus repo tests currently encode the wrong (inline-only, <=1.1.x) client framing.",
+   "P1 (production TTS unusable with text): the production startup path (server.rs build_service -> InferenceService::build) installs PassthroughPhonemizer (raw phoneme ids / [[symbol]] literals only) and never calls with_phonemizer to inject the real 8-language G2P (integrations/vokra-piper-g2p) — so every plain-text synthesize fails: 'PassthroughPhonemizer: `Hello` is not a phoneme id (use [[symbol]] for symbols)'. Wyoming TTS (and any future /api/tts) can only synthesize from pre-phonemized input; campaign-1's CLI --text placeholder-tokenizer gap applies server-side in stricter (hard-error) form. Raw phoneme-id input works e2e (info/audio-start/30 chunks/audio-stop, 26368 samples @22050 Hz = 1.196 s, peak |i16| 7419, deterministic).",
+   "P2 (FR-SV-04 route unmounted): api/piper_http.rs implements the /api/tts schema + dispatch_tts but no router mount exists; build_http_app (server.rs:228-240) merges only openai + vllm routers -> POST /api/tts = 404 on the production binary (logs/api-tts-probe.txt). The crate's own piper_http_compat.rs tolerates 404 as 'T11/T12 router not yet wired', so no test forces the mount.",
+   "P3 (vLLM/OpenAI discovery): GET /v1/models is not routed (404). OpenAI/vLLM SDK clients typically probe it before calling audio/completions endpoints.",
+   "P3 (async hygiene): the OpenAI transcriptions_handler runs the multi-second Whisper transcribe synchronously inside the async handler (openai.rs transcriptions_handler -> transcribe_to_response, no spawn_blocking), blocking a tokio worker per in-flight request; the Wyoming path correctly uses spawn_blocking. Survived the 4-way smoke (8 workers) but is an availability hazard at higher fan-in.",
+   "P3 (beam surface unreachable over HTTP): TranscribeBeamRequest/transcribe_beam (M3-15 Wave 10/11) is exposed only at trait level; no HTTP route accepts beam_size/n-best, so the feature is untestable end-to-end from a client."
+  ],
+  "issues": [
+   "Shared-machine confound: sibling agents drove load avg from quiet to 18-26 mid-session; every timing row in results.tsv records its load context. Early HTTP medians (spread <1%) are from the quiet window; Wyoming absolute latencies were load-inflated, and an interleaved matched-load A/B (HTTP 3.770/3.970/3.859 s vs Wyoming 3.869/3.773/4.126 s) proves route parity — the initially-observed 2.15x Wyoming gap was a load artifact, not a route difference (logs/ab-http-vs-wyoming.txt).",
+   "corpus jfk-30s.wav actually contains 11.0 s of audio (176000 frames @16 kHz; name is historical) — RTFs computed on 11.0 s.",
+   "OpenAI `language`/`temperature`/`prompt` multipart fields are accepted and deliberately ignored at T06 (documented in-code as T07-followup) — not counted as a new finding.",
+   "TTS language-id not addressable through the server surface (SynthesisRequest::new(text) only), so the 6-lang voice ran with its default language embedding for the raw-id probe.",
+   "GGUFs reused from campaign 1 predate the 4 P1 fixes, but those fixes touch silero/cosyvoice2/voxtral/kokoro converters, not whisper-base/piper — reconversion not required for this leg.",
+   "Not exercised (scope): whisper-large-v3/kokoro/voxtral/silero server slots, TOML + env config layers, mid-TTS barge-in race, musl static build (FR-SV-01)."
+  ],
+  "accuracy": {
+   "jfk_transcript_http_and_wyoming": "\" And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.\" — byte-identical across 3 HTTP runs (single sha256) and 4 Wyoming inline cycles; equals the campaign-1 baseline and corpus manifest golden (modulo Whisper's leading space/punctuation)",
+   "librispeech_1272-128104-0000": "\" Mr. Quilter is the apostle of the middle classes, and we are glad to welcome his gospel.\" — matches golden modulo case/punctuation (LibriSpeech ref is uppercase unpunctuated)",
+   "concurrency_integrity": "4/4 parallel responses HTTP 200 and byte-identical (1 distinct sha256 across conc-1..4.json) — no cross-request interleaving corruption",
+   "wyoming_upstream_framing": "describe->info OK; audio-start/audio-chunk/synthesize FAIL with verbatim errors saved (wyoming-upstream-framing.json) — reproduced FAIL, tolerances untouched",
+   "tts_raw_ids_audio": "26368 samples @22050 Hz = 1.196 s, peak |i16| = 7419 (non-silent, every sample inspected), identical sample count + peak across 4 runs (deterministic); WAV saved",
+   "methodology": "golden-transcript comparison + byte-level sha256 on response bodies; Wyoming probes with both repo-inline framing and the genuine wyoming 1.10.0 package writer; framing provenance pinned by diffing pip-downloaded wyoming 1.0.0/1.2.0/1.4.0/1.5.2/1.10.0 sources"
+  },
+  "speed": {
+   "time_to_ready_s": {
+    "median": 0.638,
+    "runs": [
+     0.893,
+     0.584,
+     0.638
+    ],
+    "window": "process spawn -> first /health 200 (20 ms poll), real models eager-loaded (whisper-base 290 MB + piper 78 MB), load avg ~20"
+   },
+   "http_openai_jfk_11s": {
+    "median_s": 1.596,
+    "runs_s": [
+     1.602,
+     1.587,
+     1.596
+    ],
+    "warmup_s": 1.612,
+    "rtf": 0.145,
+    "window": "curl time_total on loopback = multipart upload + WAV decode + whisper-base greedy transcribe + JSON envelope; quiet-machine window (spread <1%)"
+   },
+   "http_openai_libri_5.855s": {
+    "median_s": 2.178,
+    "runs_s": [
+     2.243,
+     2.178,
+     2.142
+    ],
+    "warmup_s": 2.248,
+    "rtf": 0.372,
+    "window": "same as jfk"
+   },
+   "wyoming_asr_jfk_11s": {
+    "median_transcribe_to_transcript_s": 3.435,
+    "runs_s": [
+     3.387,
+     3.638,
+     3.435
+    ],
+    "warmup_s": 3.513,
+    "caveat": "sibling load ramped during these runs; interleaved matched-load A/B (load ~26): HTTP 3.770/3.970/3.859 vs Wyoming 3.869/3.773/4.126 s -> routes equivalent",
+    "window": "client wall from sending transcribe event (audio already sent) to transcript event received"
+   },
+   "wyoming_tts_raw_ids": {
+    "median_ttfa_ms": 663,
+    "median_total_ms": 689,
+    "runs_ttfa_ms": [
+     445,
+     938,
+     663
+    ],
+    "audio_out_s": 1.196,
+    "window": "synthesize sent -> first audio-chunk (TTFA) / -> audio-stop (total); batch synth so TTFA ~= total; load-confounded spread",
+    "note": "NFR-PF-05 75 ms budget NOT met on this path under any observed window, but this is loaded-M1 CPU + batch synthesis — owner real-network measurement remains the M3-15 task"
+   },
+   "concurrency_4x_parallel_libri": {
+    "aggregate_wall_s": 11.17,
+    "per_request_s": [
+     11.105,
+     10.704,
+     11.092,
+     10.941
+    ],
+    "single_request_baseline_s": 2.178,
+    "window": "4 background curls started together, wait for all; load avg 23.5 from siblings + 4-way self-contention -> correctness claim only, scaling numbers confounded"
+   },
+   "wyoming_overload": {
+    "5th_connection_refusal_ms_waited": 110,
+    "behavior": "explicit error event at cap 4 (queue_wait_max 100 ms), held connections unaffected, permits release on close"
+   }
+  },
+  "commands": [
+   "cargo build --release --manifest-path integrations/vokra-server/Cargo.toml  # CARGO_BUILD_JOBS=2",
+   "integrations/vokra-server/target/release/vokra-server --http-bind 127.0.0.1:18080 --wyoming-bind 127.0.0.1:20300 --whisper-base ~/.cache/vokra-eval/gguf/whisper-base.gguf --piper-plus ~/.cache/vokra-eval/gguf/piper-plus-css10-ja-6lang-neutralspk.gguf",
+   "curl -X POST http://127.0.0.1:18080/v1/audio/transcriptions -F file=@corpus/jfk-30s.wav -F model=whisper-1 -F response_format=json  # 1 warmup + 3 measured, also LibriSpeech 1272-128104-0000.wav",
+   "curl -X POST http://127.0.0.1:18080/v1/completions -d '{\"model\":\"x\",\"prompt\":\"y\"}'  # + /v1/chat/completions, malformed, empty-messages, GET /v1/models",
+   "curl -X POST http://127.0.0.1:18080/api/tts -d '{\"text\":\"Hello world\"}'  # -> 404 (router unmounted)",
+   "venv/bin/python out/server-real/scratch/wyoming_client_inline.py 127.0.0.1 20300 corpus/jfk-30s.wav --runs 3  # repo inline framing, describe/info + full ASR cycle",
+   "venv/bin/python out/server-real/scratch/wyoming_client_upstream.py  # genuine wyoming 1.10.0 package framing -> P1 repro",
+   "venv/bin/python out/server-real/scratch/wyoming_tts.py out/server-real/audio/wyoming-tts-rawids.wav  # plain-text error + raw-id synthesis, TTFA",
+   "pip download wyoming==1.0.0/1.2.0/1.4.0/1.5.2/1.10.0 --no-deps  # framing provenance bisect of async_write_event",
+   "4x parallel curl transcriptions (background + wait) with sha256 comparison; 5-connection Wyoming overload probe; kill -TERM + /health re-probe"
+  ],
+  "artifacts": [
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/results.tsv",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/METHODOLOGY.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/logs/server.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/logs/openai-jfk-timing.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/logs/openai-libri-timing.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/logs/wyoming-inline-jfk.jsonl",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/logs/wyoming-upstream-framing.json",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/logs/wyoming-tts.jsonl",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/logs/wyoming-overload.json",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/logs/ab-http-vs-wyoming.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/logs/api-tts-probe.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/logs/vllm-completions.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/logs/startup-time.json",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/logs/ux-missing-gguf.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/logs/ux-half-wired.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/logs/conc-1.json",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/audio/wyoming-tts-rawids.wav",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/scratch/wyoming_client_inline.py",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/scratch/wyoming_client_upstream.py",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/server-real/scratch/wyoming_tts.py"
+  ]
+ },
+ {
+  "leg": "mimi-roundtrip",
+  "ran": true,
+  "converted": true,
+  "summary": "Closed the T29 blocker and made the real-weight Mimi PCM roundtrip run end-to-end: the converter now emits the vokra.mimi.* config chunk group (shape-derived + loaders.py constants) and 284 structural mimi.enc.*/mimi.dec.* tensors (transformer linears transposed to w_t, fused in_proj split, channel-wise upsample zero-expanded to dense — the checkpoint has plain fused weights, so no weight_norm fusion was ever needed), while the runtime gained two upstream-fidelity fixes discovered by reading moshi 0.2.13 source: replicate left-pad on the frame-resample downsample and the SplitResidualVectorQuantizer parallel-projection encode (semantic 1-deep + acoustic 31-deep chains, presence-driven via mimi.enc.input_proj_rest). Acceptance vs upstream moshi on jfk (10.96 s, 137 frames): code agreement 4384/4384 = 100.0% (independent engines, cross-decodes differ on 98% of samples at fp-noise), same-codes decode PCM max|Δ| 3.67e-6 / mel-L1 2.99e-5, roundtrip mel-L1 to input 0.3166817 both engines (equal to 7 s.f.). Speed (1+3 median, single-thread CPU, whole-buffer window, bind excluded): vokra encode RTF 0.503 / decode 0.378 vs upstream torch(1-thread) 0.043 / 0.040 — vokra 11.7x/9.5x slower, honest negative. DAC quantizer-stage parity re-verified on current HEAD with the new GGUF (106 PARITY rows PASS, 0 failed); DAC waveform SEANet remains an unimplemented known gap per assignment. Verify all green: vokra-models 700 lib + suites, vokra-convert 130 (12 new tests incl. env-gated VOKRA_MIMI_GGUF roundtrip), fmt clean, clippy -D warnings clean; patch emitted, nothing committed.",
+  "patchPath": "/private/tmp/claude-501/-Users-inamotoyuuta-Desktop-Otonx/ece5b950-4cd6-4575-8e70-efe13669cb0a/scratchpad/patches/mimi-roundtrip.patch",
+  "accuracy": {
+   "input": "jfk-30s.wav resampled 16k->24k (torchaudio.functional.resample), trimmed to 137 whole frames = 263040 samples = 10.96 s; identical f32 buffer fed to both engines",
+   "code_agreement_vokra_vs_upstream": {
+    "overall": 1,
+    "semantic_cb0": 1,
+    "acoustic_mean_cb1_31": 1,
+    "codes_compared": 4384,
+    "provenance_check": "files written by independent engines (rust harness / python moshi); identical sha256 IS the result — cross-engine PCM decodes differ on 257791/263040 samples at fp-noise, proving distinct implementations"
+   },
+   "decode_same_codes_vokra_vs_upstream": {
+    "pcm_max_abs_delta": 3.666e-06,
+    "pcm_rms_delta": 1.712e-07,
+    "mel_l1": 2.986e-05,
+    "mel_def": "log10(clamp(MelSpectrogram(24k,n_fft=1024,hop=256,n_mels=80,power=1),1e-5)), mean abs"
+   },
+   "roundtrip_mel_l1_to_input": {
+    "vokra": 0.3166817,
+    "upstream": 0.3166817,
+    "vokra_vs_upstream": 2.986e-05,
+    "note": "codec reconstruction loss dominates; engine delta is 4 orders below it"
+   },
+   "gated_test": "VOKRA_MIMI_GGUF roundtrip: 138 frames -> 4416 codes -> 264960 samples, rms 0.3087, PASS",
+   "dac_reverify": "campaign-1 real_codec_parity command on current HEAD + new mimi GGUF: 2 passed / 0 failed, 106 PARITY rows PASS (mimi decoded_features 1.526e-5, dac codebooks bit-exact); DAC waveform SEANet still unimplemented (known deferred WP)"
+  },
+  "speed": {
+   "protocol": "1 warmup + 3 measured, median wall / 10.96 s audio; window = whole-buffer encode()/decode() with model pre-loaded/pre-bound (GGUF open+bind excluded, reported separately); fresh streaming state per call; single-thread CPU both sides (torch.set_num_threads(1))",
+   "vokra_encode_rtf": 0.5026,
+   "vokra_encode_median_s": 5.508,
+   "vokra_decode_rtf": 0.3779,
+   "vokra_decode_median_s": 4.142,
+   "vokra_gguf_open_bind_s": 0.36,
+   "upstream_encode_rtf": 0.0431,
+   "upstream_decode_rtf": 0.0397,
+   "ratio": "vokra 11.7x (encode) / 9.5x (decode) slower than 1-thread torch — honest negative, consistent with campaign-1 CPU-speed findings",
+   "conversion_wall_s": 12.67
+  },
+  "findings": [
+   "P1 (FIXED in patch): Mimi PCM roundtrip was unwired — converter emitted no vokra.mimi.* neural-chain config and no structural tensors; campaign-1 error reproduced verbatim, closed converter-side per the module-doc T29 design",
+   "P1 (FIXED in patch): runtime encoder RVQ semantics diverged from upstream — single input_proj + 32-deep chain vs upstream SplitResidualVectorQuantizer's TWO parallel projections (rvq_first 1-deep semantic + rvq_rest 31-deep acoustic, both over the same latent); would have produced wrong acoustic codes even with names bound; fixed presence-driven (mimi.enc.input_proj_rest), old single-chain behavior preserved when absent",
+   "P2 (FIXED in patch): frame-resample downsample uses pad_mode=replicate upstream (first-chunk left-context = its first column) but the runtime zero-padded everything — first-frame codes would differ; PadMode::Replicate transcribed from conv.py with streaming bit-exactness pinned",
+   "P2 (FIXED exactly, perf follow-up open): upsample conv-transpose is channel-wise [512,1,4] (upstream 'upsample_channel_wise_bug=True'); converter zero-expands to dense [512,512,4] — mathematically exact but 512x FLOPs on that stage; a runtime grouped-convtr would be the performant fix",
+   "P2 (OPEN): vokra Mimi CPU speed is 11.7x (encode) / 9.5x (decode) slower than single-thread torch on M1 — per-position transformer stepping, scalar im2col gathers, dense-expanded upsample are the visible contributors",
+   "P3 (OPEN): standalone Mimi GGUF grew 519MB -> 906MB because structural tensors are derived duplicates next to the ADR M4-04 §D-f raw pass-through; consider gating the pass-through of mapped tensors in a follow-up",
+   "P3 (corrected in docs): the module-doc/campaign-1 hypothesis that weight_norm (g,v) fusion is needed was wrong — the real checkpoint stores plain fused conv weights (loaders.py: weights 'pre-processed for inference', norm='none'); rustdoc honest-boundary sections updated"
+  ],
+  "issues": [
+   "torchaudio 2.9.1 in venv-rvq cannot torchaudio.load() without torchcodec — worked around with stdlib wave for WAV I/O (functional.resample unaffected); raw error tail in out/mimi-roundtrip if needed",
+   "worktree base was 328e61b, not 92dbc92 — detached to 92dbc92 per HARD RULE 3 before any work"
+  ],
+  "commands": [
+   "git -C <worktree> checkout --detach 92dbc92",
+   "CARGO_BUILD_JOBS=2 cargo build --release -p vokra-cli",
+   "<worktree>/target/release/vokra-cli convert --model mimi --input /Users/inamotoyuuta/.cache/vokra-eval/weights/mimi/tokenizer-e351c8d8-checkpoint125.safetensors --output /Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/mimi-neural.gguf",
+   "venv-rvq/bin/python out/mimi-roundtrip/prep_input.py",
+   "rt2-harness encode mimi-neural.gguf jfk-24k.f32 vokra-codes.u32",
+   "rt2-harness decode mimi-neural.gguf vokra-codes.u32 vokra-decoded-from-vokra-codes.f32",
+   "rt2-harness decode mimi-neural.gguf upstream-codes.u32 vokra-decoded-from-upstream-codes.f32",
+   "venv-rvq/bin/python out/mimi-roundtrip/upstream_reference.py",
+   "venv-rvq/bin/python out/mimi-roundtrip/compare.py",
+   "VOKRA_MIMI_GGUF=out/mimi-roundtrip/mimi-neural.gguf cargo test --release -p vokra-models --test real_mimi_roundtrip -- --nocapture",
+   "VOKRA_MIMI_GGUF=... VOKRA_MIMI_REF_DIR=out/codec-mimi-dac/mimi-ref VOKRA_DAC_GGUF=gguf/dac.gguf VOKRA_DAC_REF_DIR=out/codec-mimi-dac/dac-ref cargo test -p vokra-models --release --test real_codec_parity -- --nocapture",
+   "CARGO_BUILD_JOBS=2 cargo test --release -p vokra-models -p vokra-convert",
+   "cargo fmt --check",
+   "CARGO_BUILD_JOBS=2 cargo clippy --release -p vokra-models -p vokra-convert --all-targets -- -D warnings",
+   "git add -A && git diff --cached --binary > <scratchpad>/patches/mimi-roundtrip.patch"
+  ],
+  "artifacts": [
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/summary.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/metrics.json",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/upstream-timing.json",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/vokra-encode.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/vokra-decode.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/vokra-decode-upstream-codes.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/convert-mimi-neural.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/dac-mimi-parity-rerun.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/checkpoint-tensor-names.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/jfk-24k-meta.json",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/mimi-neural.gguf",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/vokra-codes.u32",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/upstream-codes.u32",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/wavs/jfk-24k-input.wav",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/wavs/vokra-roundtrip.wav",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/wavs/upstream-roundtrip.wav",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/wavs/upstream-decode-of-vokra-codes.wav",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/wavs/vokra-decode-of-upstream-codes.wav",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/rt2-harness/src/main.rs",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/prep_input.py",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/upstream_reference.py",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/mimi-roundtrip/compare.py"
+  ]
+ },
+ {
+  "leg": "cli-enablers",
+  "ran": true,
+  "converted": true,
+  "summary": "Implemented all 3 bounded CLI fixes on worktree base 92dbc92 (detached from stale 328e61b): run --backend cpu|metal|cuda|vulkan (shared bench parse_backend, honored by ASR+speaker, explicit backend-unavailable error when feature not compiled — verified rc=1 for cuda/vulkan on the metal-only build), convert help now lists all 11 ModelKind spellings in both vokra-cli and standalone vokra-convert, and a new run speaker task (campplus arch -> ModelTask::Speaker, kaldi_fbank+SpeakerEncoder+speaker_verify, 16 kHz gate, --compare cosine). Verify green: vokra-cli 74+4 and vokra-convert 10+4 release tests pass (incl. 13 new), fmt clean, clippy -D warnings clean on default AND --features metal; patch (6 files, +485/-23) at the required path. V2 is a bullseye through the NEW CLI path: intra-speaker cosine 0.872242 (exact match to campaign 1), inter 0.282770/0.343237 (deltas 0/-3e-6 vs 5dp references), L2 norms match campaign-1 to 6dp, --backend metal reproduces 0.872242 identically. V1 transcripts: whisper-small run --backend metal output is byte-identical to CPU and to the campaign-1 reference, and turbo CPU matches campaign-1 (comma variant included); small bench RTF = CPU 1.346 vs Metal 0.8056 (iters 3/warmup 1, session-preloaded window) but the M1 was contended by 4 sibling agents (campaign-1 uncontended refs: 0.691 CPU / 0.728 Metal), so no cross-campaign speed claims. V3 proved the delegate path: vokra-cli convert --model mimi produced a GGUF byte-identical (cmp) to campaign-1's mimi.gguf; the only open item at forced report time is the still-running V1 turbo bench/Metal leg (driver continues writing v1-*-whisper-turbo-metal.* and V1 DONE into out/cli-enablers/v1-driver.log).",
+  "patchPath": "/private/tmp/claude-501/-Users-inamotoyuuta-Desktop-Otonx/ece5b950-4cd6-4575-8e70-efe13669cb0a/scratchpad/patches/cli-enablers.patch",
+  "accuracy": {
+   "v1_transcript_parity": {
+    "whisper-small": "metal == cpu == campaign-1 reference, byte-identical (' And so my fellow Americans, ...')",
+    "whisper-turbo-cpu": "== campaign-1 reference byte-identical (' And so, my fellow Americans, ...')",
+    "whisper-turbo-metal": "PENDING at forced report time — driver still running, output lands in out/cli-enablers/v1-transcript-whisper-turbo-metal.txt",
+    "methodology": "vokra-cli run --backend {cpu,metal} whole-process stdout, greedy decode, jfk-30s.wav; diff vs campaign-1 saved transcripts"
+   },
+   "v2_speaker_vs_campaign1": {
+    "cosine_intra_1272-0000_vs_0003": {
+     "new_cli": 0.872242,
+     "campaign1": 0.872242,
+     "delta": 0
+    },
+    "cosine_inter_jfk_vs_0000": {
+     "new_cli": 0.28277,
+     "campaign1": 0.28277,
+     "delta": 0
+    },
+    "cosine_inter_jfk_vs_0003": {
+     "new_cli": 0.343237,
+     "campaign1_5dp": 0.34324,
+     "delta": -3e-06
+    },
+    "cosine_self_jfk": 1,
+    "cosine_intra_backend_metal": 0.872242,
+    "l2_norms_6dp_match": "13.634165/13.365462/14.343757 vs campaign-1 13.634164984/13.365461656/14.343756886",
+    "fbank_frames_match": "1098/584/988 identical",
+    "methodology": "new `run --model campplus.gguf --input a --compare b` path, release binary, campplus.gguf from campaign 1 (predates P1 fixes; campplus untouched by them)"
+   },
+   "v3_convert": {
+    "help_lists_all_kinds": "11/11 spellings asserted by new unit tests + captured v3-convert-help.txt",
+    "mimi_delegate_smoke": "319 tensors, 518852896 bytes, byte-identical (cmp) to campaign-1 gguf/mimi.gguf, sha256 45f3b69f..."
+   },
+   "fr_ex_08_posture": {
+    "run --backend cuda (not compiled)": "explicit 'backend unavailable: Cuda backend is not built into vokra-models' rc=1",
+    "run --backend vulkan": "same explicit error rc=1",
+    "bench on campplus": "explicit 'no bench task yet' reject rc=1",
+    "--compare on non-speaker arch": "explicit reject (unit-tested)"
+   }
+  },
+  "speed": {
+   "caveat": "ALL wall clocks contended — M1 shared with 4 sibling fix agents during runs; cross-campaign RTF comparisons invalid, reported for completeness only",
+   "window_bench": "vokra-cli bench --iters 3 --warmup 1: session pre-loaded, WAV pre-decoded, each iter = transcribe(pcm) = log-mel+encoder+greedy decode+detokenize; rtf = mean iter wall / 11.0 s audio",
+   "window_run": "/usr/bin/time -p of whole `run` process (load + decode + print)",
+   "whisper_small_cpu": {
+    "bench_rtf": 1.346171,
+    "p50_ms": 15398.8,
+    "jitter_ms": 3319.6,
+    "run_wall_s": 18.68,
+    "campaign1_uncontended_rtf": 0.6913
+   },
+   "whisper_small_metal": {
+    "bench_rtf": 0.805606,
+    "p50_ms": 8637.4,
+    "jitter_ms": 370.7,
+    "run_wall_s": 11.25,
+    "campaign1_uncontended_rtf": 0.7283,
+    "note": "Metal faster than CPU under contention (GPU unaffected by CPU load); uncontended campaign-1 had Metal slightly slower — consistent with memory-bound expectation"
+   },
+   "whisper_turbo_cpu": {
+    "run_wall_s": 102.94,
+    "campaign1_uncontended_run_wall_s": 53.71,
+    "bench_rtf": "pending (in flight at report time)"
+   },
+   "whisper_turbo_metal": "pending (in flight at report time)",
+   "v3_mimi_convert_wall_s": 16.5
+  },
+  "findings": [
+   "P3: `vokra-cli convert` delegate silently drops --config for csm/moshi (they fall through the `_` arm to plain convert_file; the standalone vokra-convert binary DOES route --config as the tokenizer side-car) — new help text documents the asymmetry honestly, routing fix left out per scope-guard",
+   "P3: standalone `vokra-convert` binary silently drops --config for voxtral (config-aware + adapter-aware voxtral conversion exists only in `vokra-cli convert`); its new help text advertises voxtral as shape-only there",
+   "P3: `--backend metal|cuda` on VAD/TTS/S2S models is a silent CPU run in both bench (pre-existing) and the new run mirror — engine dispatch only backend-parameterises ASR (Whisper) and now speaker (CAM++); documented in help text but arguably wants an explicit FR-EX-08 gate",
+   "Observation (corroborates sibling fix, not a bug): silero ctx576 P1 fix on HEAD 92dbc92 works — run VAD on jfk-30s detects 233/343 speech frames (campaign 1 measured 0 before the fix)",
+   "Observation: whisper-small CPU bench RTF 1.346 vs campaign-1 0.691 is load contention (jitter 3.3 s, 4 sibling agents), not a regression claim"
+  ],
+  "issues": [
+   "Worktree base was stale (328e61b, not 92dbc92) — detached to 92dbc92 per HARD RULE 3 before any work",
+   "V1 turbo leg incomplete at forced report time: turbo CPU bench kv + turbo Metal run/bench still executing in background (driver: out/cli-enablers/run-v1-asr.sh, log: v1-driver.log will end with 'V1 DONE'); turbo CPU+small transcript identity and small RTF pair are already captured",
+   "First cargo test invocation piped through `| tail -30` masked the vokra-cli section and the exit code — re-ran with full log capture (cargo-test-vokra-cli.log, rc=0, 74 passed); no impact on final verification",
+   "Whisper small/turbo + campplus GGUFs reused from campaign 1: they predate the 4 P1 fixes, but none of those fixes touch the whisper or campplus converters (silero/cosyvoice2/voxtral/kokoro only), so reuse is sound; mimi smoke convert was regenerated fresh from the checkpoint via the new HEAD's converter and is byte-identical to the campaign-1 artifact"
+  ],
+  "commands": [
+   "git -C <worktree> checkout --detach 92dbc92",
+   "CARGO_BUILD_JOBS=2 cargo test --release -p vokra-cli -p vokra-convert (full log: out/cli-enablers/cargo-test-vokra-cli.log)",
+   "VOKRA_CAMPLUS_GGUF=~/.cache/vokra-eval/gguf/campplus.gguf CARGO_BUILD_JOBS=2 cargo test --release -p vokra-cli speaker_real_gguf",
+   "CARGO_BUILD_JOBS=2 cargo clippy -p vokra-cli -p vokra-convert --all-targets [-–features vokra-cli/metal] -- -D warnings; cargo fmt --check -p vokra-cli -p vokra-convert",
+   "CARGO_BUILD_JOBS=2 cargo build --release -p vokra-cli --features metal",
+   "<worktree>/target/release/vokra-cli run --model gguf/whisper-{small,turbo}.gguf --input corpus/jfk-30s.wav --backend {cpu,metal} (+ bench --iters 3 --warmup 1) — driver out/cli-enablers/run-v1-asr.sh",
+   "<worktree>/target/release/vokra-cli run --model gguf/campplus.gguf --input <a.wav> --compare <b.wav> [--backend metal] — driver out/cli-enablers/run-v2-speaker.sh",
+   "<worktree>/target/release/vokra-cli convert --model mimi --input weights/mimi/tokenizer-e351c8d8-checkpoint125.safetensors --output out/cli-enablers/v3-mimi-smoke.gguf; cmp vs gguf/mimi.gguf",
+   "git add -A && git diff --cached --binary > scratchpad/patches/cli-enablers.patch"
+  ],
+  "artifacts": [
+   "/private/tmp/claude-501/-Users-inamotoyuuta-Desktop-Otonx/ece5b950-4cd6-4575-8e70-efe13669cb0a/scratchpad/patches/cli-enablers.patch",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/README.md",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/provenance.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/cargo-test-vokra-cli.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/v1-driver.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/v1-transcript-whisper-small-cpu.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/v1-transcript-whisper-small-metal.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/v1-transcript-whisper-turbo-cpu.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/v1-bench-whisper-small-cpu.kv",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/v1-bench-whisper-small-metal.kv",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/v1-cuda-posture.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/v2-speaker-summary.tsv",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/v2-speaker-driver.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/v3-convert-help.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/v3-run-help.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/v3-mimi-convert.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/v3-mimi-smoke.sha256",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/cli-enablers/posture-checks.log"
+  ]
+ },
+ {
+  "leg": "dfn3-real",
+  "ran": true,
+  "converted": false,
+  "patchPath": "",
+  "summary": "License gate PASS: the DFN3 checkpoint ships inside the dual MIT/Apache-2.0 Rikorose/DeepFilterNet repo itself (models/DeepFilterNet3.zip, sha256 49c52edc..., README L323-330 + models-dir listing saved as evidence), so the weight half proceeded. Central result: the real checkpoint cannot be converted or hosted — 133 conv+BatchNorm+GroupedLinear+GRU tensors (2.17M params incl. trained erb_fb/erb_inv_fb filterbanks) vs vokra's 6-tensor 263k-param dense scaffold with 0 name overlap, and vokra-convert has no checkpoint parser at all — so numeric parity is architecturally impossible without the op-level implementation explicitly deferred to owner T17 (no re-architecture attempted per scope; no converter-level fix can close it, hence no patch). Verified green on the vokra side: T12 GGUF write/load/forward exercised for the first time at real DFN3 dims (1,054,272 B, seed-42 synthetic), STFT-to-iSTFT chain-shell identity 3.576e-7, deep_filter_net3() constants match the shipped config.ini, and vokra's erb-scale formula is the same Glasberg-Moore family as libDF within 0.3%. Quality on the deterministic 5.000 dB-SNR noisy jfk (48 kHz, seeded): upstream real DFN3 lifts SI-SNR 5.00 to 14.77 dB, while the shipped op with synthetic weights outputs -29.17 dB (34 dB below the noisy input) — an honest negative proving v1.0-rc's denoise is a topology shell, not a functional denoiser. Stage bisect (the deliverable): divergence starts at stage 1 STFT — libDF uses a Vorbis window sin(pi/2*sin^2) plus wnorm=2*hop/fft^2=1/960 applied in analysis only, vs vokra Hann/no-scale (measured global scale 0.001197, 9.9% shape residual after scaling) — then ERB band partition 93.14% bin-identical (missing min_nb_erb_freqs=2), missing stateful erb_norm/unit_norm stages (affine fit r=0.65/0.42), no complex-spectrum DF encoder branch, and no df_lookahead=2, each pinned to fetched libDF source lines. Speed: upstream enhance() RTF 0.0233 vs vokra forward 0.0262 (CPU, median of 3 after warmup) — comparable wall time despite 8x fewer params, so a faithful conv+GRU port will be slower still without optimization.",
+  "accuracy": {
+   "si_snr_db_vs_clean": {
+    "noisy_baseline": 5.002,
+    "upstream_dfn3_real_ckpt": 14.768,
+    "vokra_synthetic_scaffold": -29.169
+   },
+   "si_snr_methodology": "zero-mean scale-invariant SI-SNR over the full 11.0 s signal at 48 kHz; input = corpus jfk-30s.wav (actually 11.0 s) sinc-resampled 16k->48k + np.random.default_rng(20260717) white noise scaled to 5 dB SNR over the full signal (measured 5.000 dB, peak 0.961)",
+   "cross_engine_delta_upstream_vs_vokra": {
+    "max_abs_sample": 0.9712,
+    "rms": 0.1415,
+    "logmel_l1": 7.191,
+    "logmel_l1_upstream_vs_noisy": 8.532,
+    "note": "meaningless-by-construction (vokra weights are synthetic; no trained network exists that fits the op) — measured and labeled per assignment step 5a; mel = torchaudio MelSpectrogram 48k/n_fft1024/hop256/80mels, log(mel+1e-5)"
+   },
+   "stage_bisect": {
+    "stft": {
+     "best_lag": 0,
+     "ls_scale_vokra_to_upstream": 0.001197,
+     "rel_residual_after_scale": 0.0986,
+     "root_cause": "libDF Vorbis window sin(pi/2*sin^2(pi*(n+0.5)/N)) + wnorm=2*hop/fft^2=1/960 'in analysis only' (libdf-lib.rs L127-133, L389-393) vs vokra Hann periodic + Normalization::Backward; 0.001197 = (1/960) x 1.149 window-shape factor"
+    },
+    "erb_band_partition": {
+     "bins_same_band": "448/481 (93.14%)",
+     "max_band_index_shift": 3,
+     "detail": "vokra bands 0-4 get 1 bin each vs upstream min_nb_erb_freqs=2 (erb_fb cumulative-round algorithm, libdf-lib.rs L68-100); erb scale formulas match within 0.3% (9.294 vs 9.265 ln-coefficient)"
+    },
+    "erb_feature_global_affine_fit_vokra_to_upstream": {
+     "pre_norm": {
+      "pearson_r": 0.653,
+      "resid_over_std": 0.757
+     },
+     "post_erb_norm_model_input": {
+      "pearson_r": 0.417,
+      "resid_over_std": 0.909
+     },
+     "detail": "upstream = 10*log10(width-normalized band power of wnorm'd spectrum + 1e-10) then erb_norm exp-decay mean normalization alpha 0.99; vokra = ln(mean band power + 1e-10) with NO normalization stage"
+    },
+    "weights": {
+     "real_ckpt_tensors": 133,
+     "real_params": "2,135,484 trainable (2.168M incl. buffers)",
+     "scaffold_tensors": 6,
+     "scaffold_params": 263392,
+     "tensor_name_overlap": 0
+    }
+   },
+   "vokra_green": {
+    "t12_gguf_at_real_dfn3_dims": "PASS (1,054,272 B write -> parse -> from_gguf -> forward)",
+    "stft_istft_roundtrip_max_abs_delta": 3.576e-07,
+    "config_ini_vs_deep_filter_net3_constants": "match (48000/960/480/32/96/5/256; n_bins 481)"
+   }
+  },
+  "speed": {
+   "audio_seconds": 11,
+   "protocol": "1 warmup + 3 measured runs, median, Apple M1 CPU",
+   "upstream_dfn3": {
+    "runs_s": [
+     0.254989,
+     0.257105,
+     0.256293
+    ],
+    "median_rtf": 0.0233,
+    "window": "df.enhance.enhance() call = libdf STFT analysis + erb/erb_norm/unit_norm features + torch model forward (8 threads) + libdf synthesis + delay trim; model load and file I/O excluded"
+   },
+   "vokra_denoise_op": {
+    "runs_s": [
+     0.287426,
+     0.289094,
+     0.288521
+    ],
+    "median_rtf": 0.0262,
+    "window": "DenoiseModel::forward() = STFT + ERB pooling + scaffold net + DF FIR + iSTFT, single-threaded; GGUF load and file I/O excluded"
+   },
+   "caveat": "NOT like-for-like network cost (263k-param synthetic dense vs 2.14M-param conv+GRU): comparable wall despite 8x fewer params means vokra's hot path is the 256x960 per-frame dense df_decoder; a faithful port will be slower without optimization"
+  },
+  "findings": [
+   "P1 dfn3-arch-gap: the M4-20(c) denoise op cannot load or host the real DeepFilterNet3 checkpoint — 0/133 tensor mapping onto the 6-tensor dense scaffold, vokra-convert has no checkpoint parser (upstream ships PyTorch .ckpt in .zip; converter consumes only a pre-built DenoiseModel), and with the only loadable weights (synthetic) the op DEGRADES audio by 34 dB SI-SNR below the noisy input. v1.0-rc ships an untrained topology shell behind the 'DeepFilterNet (MIT) 統合' claim; T17 requires op-level conv+GRU+filterbank implementation, not a converter fix. Ground-truth tensor inventory now available (ckpt-tensors.tsv).",
+   "P2 dfn3-frontend-drift: six pinned frontend divergences that will break parity even after a future weight port — (a) Vorbis window + wnorm=1/960 analysis normalization vs Hann/backward (measured scale 0.0012, 9.9% shape residual); (b) ERB partition algorithm (93.14% bins same band; missing min_nb_erb_freqs=2); (c) 10*log10 vs ln band features; (d) missing stateful erb_norm (alpha 0.99) and unit_norm stages; (e) no complex-spectrum DF encoder branch (upstream feeds unit_norm(spec[..,:96]) to dedicated enc.df_conv*); (f) causal-only DF FIR vs df_lookahead=2 + trained mask.erb_inv_fb gain expansion. Each pinned to fetched libDF source lines (saved under license/).",
+   "P3 dfn3-cli-doc-drift: crates/vokra-ops/src/denoise.rs docstring references a 'vokra-cli convert --model denoise' entry (T12) that does not exist — grep of crates/vokra-cli/src has zero denoise hits; only library fns convert_denoise_synthetic/convert_denoise_from_model are exported."
+  ],
+  "issues": [
+   "Worktree base was stale (328e61b) at start — re-detached to 92dbc92 before any work per rule 3.",
+   "Real-weight GGUF conversion/parity is blocked by design (runtime architecture cannot represent the checkpoint; owner T17) — leg delivered license gate + tensor inventory + reference quality/speed baselines + stage bisect instead; no tolerance was loosened and no synthetic pass was presented as parity.",
+   "HF token never needed: checkpoint fetched from the in-repo GitHub models/ path (same channel df.enhance uses)."
+  ],
+  "artifacts": [
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/summary.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/metrics.json",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/ckpt-tensors.tsv",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/license/README.md",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/license/models-dir.json",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/license/libdf-lib.rs",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/run-upstream.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/vokra-denoise.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/analyze.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/band-overlap.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/enhanced_upstream.wav",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/enhanced_vokra.wav",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/noisy_48k.wav",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/dfn3-synthetic.gguf",
+   "/Users/inamotoyuuta/.cache/vokra-eval/weights/dfn3/DeepFilterNet3/checkpoints/model_120.ckpt.best",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/harness/src/main.rs"
+  ],
+  "commands": [
+   "git -C <worktree> checkout --detach 92dbc92",
+   "curl -sL https://raw.githubusercontent.com/Rikorose/DeepFilterNet/main/models/DeepFilterNet3.zip -o DeepFilterNet3.zip && shasum -a 256 DeepFilterNet3.zip && unzip DeepFilterNet3.zip",
+   "/opt/homebrew/bin/python3.11 -m venv /Users/inamotoyuuta/.cache/vokra-eval/venv-dfn3 && venv-dfn3/bin/pip install 'numpy<2' torch==2.1.2 torchaudio==2.1.2 soundfile deepfilternet",
+   "venv-dfn3/bin/python /Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/prep_noisy.py",
+   "venv-dfn3/bin/python /Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/run_upstream.py",
+   "cd /Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/harness && CARGO_BUILD_JOBS=2 cargo build --release",
+   "harness/target/release/dfn3-harness synth-gguf dfn3-synthetic.gguf 42",
+   "harness/target/release/dfn3-harness denoise dfn3-synthetic.gguf noisy_48k.f32 enhanced_vokra.f32 3",
+   "harness/target/release/dfn3-harness stft-dump|erb-feat|istft-roundtrip noisy_48k.f32 ...",
+   "venv-dfn3/bin/python /Users/inamotoyuuta/.cache/vokra-eval/out/dfn3-real/analyze.py"
+  ]
+ },
+ {
+  "leg": "utmos-probe",
+  "ran": true,
+  "converted": false,
+  "patchPath": "",
+  "summary": "Un-defer decision material complete: the canonical UTMOS22-strong ckpt (epoch=3-step=7459.ckpt, 1,238,128,841 B, sha256 44c57e3e…) and its wav2vec2-base SSL (wav2vec_small.pt, 950,500,491 B, byte-count-identical to fairseq's canonical dl.fbaipublicfiles.com URL) are anonymously obtainable from the MIT-licensed HF space sarulab-speech/UTMOS-demo (rev 47212055). The license chain is fully permissive — space MIT + UTMOS22 GitHub MIT + fairseq MIT (HF wav2vec2-base apache-2.0) — and the BVCC fine-tune data (Zenodo 10691660, \"other-open\") carries only a Blizzard-sample redistribution ban with NO academic-only clause found anywhere, so the fail-closed trigger is not tripped (T02 sign-off remains owner-fired, with a training-data-provenance caveat to record). State-dict recon (225 tensors / 103,156,993 params) shows the real stack = a v0-expressible wav2vec2-base trunk (7-conv 512ch k[10,3,3,3,3,2,2] s[5,2,2,2,2,2,2], feat_proj 512→768, 12×768/12h/3072 post-norm blocks, mean-after pooling, score=mean·2+3) PLUS 8 v0-inexpressible parts (GroupNorm on conv0, feature LN[512], weight-norm-parameterized pos_conv k=128 g=16, encoder input LN[768], DomainEmbedding[3,128] const id 0, judge Embedding[3000,128] const id 288, BLSTM 1024→512×2, head ReLU) — the ADR-anticipated wav2vec2_regression.v1 bump is confirmed required and no phoneme/G2P path is needed (released ckpt has no PhonemeEncoder keys). A kernel gap was found: no LSTM or GroupNorm kernel exists in vokra-backend-cpu/vokra-ops and Kokoro's BiLstm1d sits behind the banned vokra-eval→vokra-models edge. DNSMOS live evidence contradicts the research-only fear (repo Legal Notices: content CC-BY-4.0 + code MIT, P.835 ONNX models committed in-repo, no research-only clause) so T03 is likely resolvable as GO-with-attribution; estimated flip scope ≈ 9-12 CC tickets (~4.5-6 h), full memo at decision-memo.md.",
+  "commands": [
+   "curl -sL -A 'utmos-probe-eval/1.0' 'https://huggingface.co/api/spaces/sarulab-speech/UTMOS-demo' -o evidence/hf-space-utmos-demo.json (+ tree?recursive=true, GitHub repo/license/README endpoints for sarulab-speech/UTMOS22, facebookresearch/fairseq, microsoft/DNS-Challenge, HF facebook/wav2vec2-base, Zenodo /api/records/10691660 — all saved under evidence/)",
+   "curl -sIL -A 'utmos-probe-eval/1.0' 'https://dl.fbaipublicfiles.com/fairseq/wav2vec/wav2vec_small.pt' -o evidence/fairseq-wav2vec-small-headers.txt (Content-Length 950500491)",
+   "/opt/homebrew/bin/huggingface-cli download sarulab-speech/UTMOS-demo 'epoch=3-step=7459.ckpt' 'wav2vec_small.pt' --repo-type space --local-dir /Users/inamotoyuuta/.cache/vokra-eval/out/utmos-probe/ckpt",
+   "shasum -a 256 ckpt/epoch=3-step=7459.ckpt ckpt/wav2vec_small.pt | tee evidence/checkpoint-sha256.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/venv/bin/python scratch/dump_ckpt_metadata.py (torch 2.8 CPU, tolerant unpickler stubbing omegaconf/fairseq classes; dumps state_dict keys+shapes+dtypes to TSV, args/cfg, module-family census)",
+   "grep/py key-set diff wav2vec-small-state-dict.tsv vs utmos22-strong-state-dict.tsv (SSL portion): 218 vs 211 tensors, delta = quantizer.{vars,weight_proj.*} + project_q.* + final_proj.* (7 pretraining-only)"
+  ],
+  "artifacts": [
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/utmos-probe/decision-memo.md",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/utmos-probe/skeleton-vs-real-delta.tsv",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/utmos-probe/utmos22-strong-state-dict.tsv",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/utmos-probe/wav2vec-small-state-dict.tsv",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/utmos-probe/wav2vec-small-args.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/utmos-probe/utmos22-strong-ckpt-meta.json",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/utmos-probe/dump-metadata.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/utmos-probe/evidence/ (26 raw evidence files: HF/GitHub/Zenodo API JSON, LICENSE texts, space code, sha256, HTTP headers)",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/utmos-probe/ckpt/epoch=3-step=7459.ckpt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/utmos-probe/ckpt/wav2vec_small.pt"
+  ],
+  "findings": [
+   "P2: real UTMOS22-strong is NOT expressible in ARCH_VARIANT_V0 — flip requires the ADR-anticipated wav2vec2_regression.v1 with 8 concrete additions: GroupNorm affine[512] on conv layer 0 only, feature-extractor LayerNorm[512], weight-norm-parameterized positional conv (weight_g[1,1,128]+weight_v[768,48,128], k=128 groups=16, converter must fuse), encoder input-side LayerNorm[768], DomainEmbedding[3,128] (inference const domains=0), judge Embedding[3000,128] (inference const judge_id=288), bidirectional LSTM 1024→512×2 (8 tensors), and a ReLU between the two head linears (1024→2048→1); the ratified characterization 'wav2vec2 SSL + regression head' omits the listener/domain conditioning and BLSTM",
+   "P2: kernel gap — vokra-backend-cpu/vokra-ops have NO lstm and NO group_norm kernel, and Kokoro BiLstm1d lives in vokra-models (banned vokra-eval→vokra-models edge per ADR M4-18-utmos-arch (B')), so the flip must add an LSTM impl reachable from vokra-eval (extract into vokra-backend-cpu kernels or scalar-loop in eval; Kokoro parity precedent favors scalar loop)",
+   "P2 (license, positive): entire weight chain is permissive with live evidence — HF space MIT (cardData+LICENSE), UTMOS22 GitHub MIT, fairseq MIT / HF wav2vec2-base apache-2.0; BVCC (Zenodo 10691660, license 'other-open', open access) bans only redistribution of Blizzard SAMPLES; no academic-only clause found anywhere = M4-18 fail-closed trigger NOT tripped by evidence (owner T02 sign-off still required; record Blizzard/VCC-derived-weights caveat in license-audit Notes)",
+   "P3: DNSMOS 'research-only' fear not confirmed by primary sources — microsoft/DNS-Challenge Legal Notices grant CC-BY-4.0 for content (LICENSE) + MIT for code (LICENSE-CODE), P.835 ONNX models are committed in-repo (DNSMOS/DNSMOS/*.onnx + pDNSMOS/sig_bak_ovr.onnx); T03 likely resolvable as GO-with-attribution (Mimi CC-BY-4.0 NOTICE precedent)",
+   "P3: released ckpt contains NO PhonemeEncoder tensors (demo = 'UTMOS-strong w/o phoneme encoder') — no G2P path needed for the flip, a scope reduction vs the repo's full strong-learner training code",
+   "P3: parity-fixture env wrinkle — the pinned reference env (torch 1.11.0 + fairseq d03f4e77 + PL 1.5.10 per space requirements.txt) has no macOS-arm64 torch wheel, so the T09 honest-atol reproduction band on this M1 must be measured across an explicit env delta or on an x86/Linux runner; also the demo's own two inference paths disagree on resampling (score.py sinc vs app.py linear interp) → fixtures must use native 16 kHz clips",
+   "P3: conv1d_f32 kernel lacks grouped-conv support (pos_conv needs groups=16) — composable as 16 sliced conv1d calls without kernel change; padding=64 + even-kernel trailing-frame trim also expressible",
+   "P3: converter detail — strong ckpt already excludes the 7 pretraining tensors (quantizer/project_q/final_proj) vs wav2vec_small.pt, but retains unused mask_emb[768] which the converter should drop; total mapping surface = 224 tensors / 103.16M params"
+  ],
+  "issues": [
+   "Both checkpoints fail torch.load(weights_only=True) (Lightning 1.5 hyper_parameters carry omegaconf DictConfig; fairseq ckpt carries argparse/fairseq objects) — metadata recon used a tolerant unpickler stubbing unimportable classes; the flip-time converter must plan the same (or install omegaconf) and this is recorded in dump-metadata.log",
+   "hyper_parameters cfg (hydra model config) was only partially readable through stubs — fully readable at flip time with omegaconf installed; state_dict evidence is complete regardless",
+   "fairseq args lack an explicit layer_norm_first key in this 2020-07 checkpoint — post-norm placement is instead proven by tensor evidence (per-block self_attn_layer_norm/final_layer_norm + input-side encoder.layer_norm) and must be double-pinned against fairseq@d03f4e77 source at flip time (noted in memo)",
+   "No score/parity number was produced by design (investigation-only leg; producing one would override the ratified NO-GO-defer gate)"
+  ],
+  "accuracy": {
+   "methodology": "No inference and no parity comparison were run (ratified defer gate respected). Measured facts: state_dict census via torch 2.8 CPU load — UTMOS22-strong = 225 tensors / 103,156,993 params (SSL 211 / 94,371,712 + head 14 / 8,785,281); wav2vec_small.pt = 218 tensors / 95,044,608 params; SSL key-set diff = exactly 7 pretraining-only tensors absent from the fine-tuned ckpt; conv spec [(512,10,5)]+[(512,3,2)]*4+[(512,2,2)]*2, encoder 12L/768d/12h/3072ffn read from fairseq args; inference constants domains=0/judge_id=288 and score formula mean(t)*2+3 read verbatim from space score.py/app.py; file sizes cross-checked HF tree API vs downloaded bytes vs fbaipublicfiles Content-Length (exact match), sha256 recorded",
+   "skeleton_vs_real": "8 of 15 compared components inexpressible in ARCH_VARIANT_V0 (see skeleton-vs-real-delta.tsv); trunk dims, post-norm placement, pooling and affine (scale=2, offset=3) match v0 config surface"
+  },
+  "speed": {
+   "note": "Not applicable — investigation-only leg; no model inference executed, so no RTF/latency was measured. Only wall-clock observation: 2.19 GB checkpoint download from HF completed in ~37 s."
+  }
+ },
+ {
+  "leg": "moshi-real",
+  "ran": true,
+  "converted": true,
+  "summary": "First real-weight Moshi verification: downloaded kyutai/moshiko-pytorch-bf16 (14.32 GiB, sha256 5b835c66... = HF blob hash, live license check cc-by-4.0), and its 355-tensor header matches the committed T02 manifest fixture exactly. Full-7B conversion/dump/load are all honestly BLOCKED on 16 GB RAM (converter materializes ~3.4x output size = ~97 GiB measured-scaling; torch fp32 dump ~43 GiB; MoshiEngine::from_path ~60 GiB, no mmap wiring), so I built a truncated-but-real-weights checkpoint (temporal 32→2, depformer 6→2 layers, 95 tensors incl. all embeddings/heads/glue, bytes verbatim) and ran the REAL vokra-convert on it: 95/95 BF16→F32 exact (byte-verified on 257M elements), tokenizer embedded, hparams shape-derived correctly, median 19.56 s. The repo's env-gated parity harness (parity_moshi.rs) genuinely fired against a matching truncated torch fp32 reference (moshi 0.2.13, argmax LMGen, 12 steps): backbone hidden max |Δ| = 8.249e-5, text logits max |Δ| = 2.360e-5 (atol 0.01), and all 11 emitted frames bit-exact through the full greedy loop (temporal + depformer + delay ring) — PASS. Bounded duplex execution via vokra-cli (--duplex --echo-sim 0.3 --deterministic) processed 5/25/100 mic frames → equal model frames with finite audio and real-SentencePiece monologue decode; load ≈ 24.1 s, per-frame ≈ 0.699 s (RTF ≈ 8.7 vs the 80 ms frame budget, truncated model, M1 CPU), and both attribution surfaces (CLI banner + C ABI vokra_model_attribution two-call, 333 bytes) returned the exact CC-BY 4.0 Kyutai text from the real GGUF. CSM probe: metadata HTTP 200 (gated: auto, license apache-2.0) but file resolve HTTP 401 \"Access to model sesame/csm-1b is restricted...\" with the stale token — owner needs gate acceptance + fresh token.",
+  "accuracy": {
+   "parity_reference": "PyTorch moshi 0.2.13 fp32 (no ONNX/ORT reference exists for Moshi; PyTorch is the parity metric per assignment)",
+   "model_under_test": "kyutai/moshiko-pytorch-bf16 REAL weights, truncated to 2/32 temporal + 2/6 depformer layers (all embeddings, heads, depformer glue, norms = full-size real tensors; kept bytes verbatim, verified)",
+   "harness": "repo's own env-gated crates/vokra-models/tests/parity_moshi.rs via VOKRA_MOSHI_PARITY_DIR (flip-the-switch leg, real from_gguf binding, is_synthesized=false asserted by the test)",
+   "backbone_hidden_max_abs_delta": 8.249e-05,
+   "text_logits_max_abs_delta": 2.36e-05,
+   "atol": 0.01,
+   "token_streams": "11/11 emitted frames bit-exact (text + 8 audio codebooks, undelayed) over 12 argmax steps — Stage B full greedy loop incl. delay ring",
+   "bf16_to_f32_widening": "byte-exact on 5/5 spot-checked tensors (257M elements: text_linear.weight 131M, emb.0, transformer L1 gating.linear_in 92M, depformer L1 in_proj 25M, out_norm.alpha) — GGUF bytes == (u16<<16).view(f32) of upstream",
+   "manifest_gate": "355/355 tensors match committed tests/parity/moshi/moshiko_tensor_manifest.json (dtype+shape exact)",
+   "quality_gate_pcm": "NOT run — moshi_quality_gate.rs refuses by design until real Mimi weight mapping lands (owner step); verbatim refusal captured",
+   "coverage_honesty": "temporal layers 2..31 and depformer layers 2..5 numerics NOT covered; layer-chaining covered for 2 layers of each stack; Mimi codec ends synthesized (documented bridge); CPU only"
+  },
+  "speed": {
+   "convert_wall_s": {
+    "median": 19.56,
+    "runs": [
+     18.06,
+     22.21,
+     19.56
+    ],
+    "warmup": 19.45,
+    "window": "vokra-convert --model moshi end-to-end on truncated 2.07 GiB BF16 safetensors -> 4.14 GiB F32 GGUF incl. the binary's built-in verify-load; peak RSS 4.68 GB, peak footprint 15.1 GiB"
+   },
+   "runtime_load_wall_s": {
+    "value": 24.1,
+    "window": "MoshiEngine::from_path via vokra-cli (4.44 GB GGUF fs::read + parse(to_vec) + real LM binding + synthesized Mimi + AEC init); derived by two-point regression: T25f_median - 25*per_step == T100f_median - 100*per_step (both 24.1)"
+   },
+   "duplex_per_frame_wall_s": {
+    "value": 0.699,
+    "window": "(T100f_median 94.03 - T25f_median 41.61)/75; each frame = 80 ms audio: LM step (2+2 layers) + synthesized-Mimi encode/decode + AEC + echo-sim mix; medians of 3 measured runs after 1 warmup; TRUNCATED model on M1 CPU",
+    "rtf_vs_frame_budget": 8.7,
+    "advisory_full_model_extrapolation": "~4.8 s/frame linear-in-params (7.688B/1.111B) — NOT measured, labeled advisory"
+   },
+   "torch_reference": {
+    "lm_load_s": 4,
+    "per_step_s": 0.12,
+    "window": "LM step only (user codes precomputed), steps 2-12; step 1 was 7.36 s lazy-init; single run — NOT like-for-like with the vokra duplex window (no Mimi/AEC)"
+   },
+   "download_wall": "14.32 GiB in ~3 min (background)",
+   "truncation_wall_s": 2.5,
+   "torch_dump_wall_s": 15.12,
+   "parity_harness_wall_s": 20.59,
+   "onnx": "none exists for Moshi — PyTorch reference is the parity metric"
+  },
+  "findings": [
+   "P2: the full-7B Moshi real-weight chain cannot execute on 16 GB-class RAM at ANY stage — (a) convert_moshi_file materializes input Vec (14.32 GiB) + F32 builder copies (28.64 GiB) + to_bytes output Vec (28.64 GiB); measured footprint scaling 3.4x output size (15.1 GiB at 4.14 GiB output) extrapolates to ~97 GiB; (b) moshi_dump.py real uses get_moshi_lm dtype=fp32 => ~43 GiB (14.32 bf16 state dict + 28.64 fp32 casts); (c) MoshiEngine::from_path = fs::read + GgufFile::parse(bytes.to_vec()) = 2x GGUF (~60 GiB full) with vokra-mmap NOT wired for moshi. Consequence: .github/workflows/parity-moshi-real.yml pins runs-on: ubuntu-latest (GitHub-hosted standard runners are 16 GB-RAM-class per GitHub docs) — the T25 real-checkpoint workflow as written cannot complete there; needs a large-RAM self-hosted runner or a streaming converter + mmap load path",
+   "P3: duplex demo output audio peaks at 1.412 > 1.0 full-scale (float32 WAV; synthesized Mimi decoder bridge) — PCM16 consumers would clip; no limiter/normalization in the demo output path",
+   "P3: CLI attribution banner prints the license slot as the class slug 'attribution-required' (vokra: ATTRIBUTION (attribution-required) ...) instead of the SPDX id 'CC-BY-4.0' the converter stamped into provenance; the text body does contain 'CC-BY 4.0' so the display obligation is met — cosmetic",
+   "P3 (coverage gap): Moshi real-weight GPU verification is unreachable from the CLI — vokra-cli run (duplex) has no backend selector and moshi_metal_parity.rs is synthesized-only, so this leg's real-weight coverage is CPU-only",
+   "P3 (test-suite footgun, by design but worth flagging): with VOKRA_MOSHI_PARITY_DIR set, running the full vokra-models suite fails loudly in moshi_quality_gate.rs (deliberate refusal pending real Mimi binding) — the workflow avoids it by running --test parity_moshi only; owners running 'cargo test -p vokra-models' with the env var set will hit it"
+  ],
+  "issues": [
+   "Full-model conversion to the assignment target gguf/moshi-7b-bf16.gguf BLOCKED by RAM (see P2 finding; honest partial = truncated tm2/dt2 real-weight GGUF archived as moshi-7b-bf16-trunc-tm2-dt2.gguf instead — swap-death avoided per assignment rule)",
+   "PCM-level NFR-QL-02 quality gate cannot run until the owner lands the real Mimi weight mapping (encoder.model.{i}/weight_norm -> structural mimi.* naming) — documented by-design refusal captured verbatim in quality-gate-refusal.log",
+   "CSM weights remain owner-gated: HF gate 'auto' + stale token => file resolve 401 (exact error saved; no retry per assignment)",
+   "Torch reference used installed moshi 0.2.13 (venv-rvq), not the workflow-pinned kyutai-labs/moshi git SHA e6a55d27; verified 0.2.13 _lm_kwargs match the ADR M4-06 constants exactly (heads 32/16, context 3000, rms_norm_f32 eps, 17-delay list), so the constants basis is identical"
+  ],
+  "commands": [
+   "curl -s https://huggingface.co/api/models/kyutai/moshiko-pytorch-bf16  # live license check: cc-by-4.0",
+   "/opt/homebrew/bin/huggingface-cli download kyutai/moshiko-pytorch-bf16 model.safetensors tokenizer_spm_32k_3.model --local-dir /Users/inamotoyuuta/.cache/vokra-eval/weights/moshiko-bf16",
+   "shasum -a 256 /Users/inamotoyuuta/.cache/vokra-eval/weights/moshiko-bf16/model.safetensors",
+   "python3 /Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/truncate_moshiko.py  # tm2/dt2, bytes verbatim",
+   "/Users/inamotoyuuta/Desktop/Otonx/target/release/vokra-convert --model moshi --input moshiko-trunc-tm2-dt2.safetensors --config .../tokenizer_spm_32k_3.model --output parity-out/model.gguf",
+   "/Users/inamotoyuuta/.cache/vokra-eval/venv-rvq/bin/python moshi_dump_trunc.py parity-out 12  # torch fp32 staged dump, lm_kwargs_overrides num_layers=2 depformer_num_layers=2",
+   "VOKRA_MOSHI_PARITY_DIR=.../parity-out CARGO_BUILD_JOBS=2 cargo test --release -p vokra-models --test parity_moshi -- --nocapture",
+   "/Users/inamotoyuuta/Desktop/Otonx/target/release/vokra-cli run --model parity-out/model.gguf --duplex --echo-sim 0.3 --deterministic --input mic-24k-{5f,2s,100f}.wav  # 1 warmup + 3 measured each",
+   "clang -I include attribution_check.c -L target/release -lvokra -o attribution_check && ./attribution_check parity-out/model.gguf",
+   "curl -s -w '%{http_code}' -H 'Authorization: Bearer <stale>' https://huggingface.co/api/models/sesame/csm-1b ; curl ... /sesame/csm-1b/resolve/main/config.json  # 200 metadata / 401 file"
+  ],
+  "artifacts": [
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/results.tsv",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/parity-harness.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/convert-warmup.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/convert-measured.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/dump-trunc.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/duplex-warmup-5f.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/duplex-timed-5f.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/duplex-timed-25f.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/duplex-timed-100f.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/bf16-exactness-check.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/manifest-verify.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/model-sha256.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/license-check-moshiko.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/quality-gate-refusal.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/c-abi-attribution.log",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/csm-probe.txt",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/truncate_moshiko.py",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/moshi_dump_trunc.py",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/attribution_check.c",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/parity-out/context.json",
+   "/Users/inamotoyuuta/.cache/vokra-eval/out/moshi-real/duplex-5f-out.wav",
+   "/Users/inamotoyuuta/.cache/vokra-eval/gguf/moshi-7b-bf16-trunc-tm2-dt2.gguf"
+  ],
+  "patchPath": ""
+ }
+]
