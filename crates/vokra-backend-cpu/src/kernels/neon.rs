@@ -470,6 +470,275 @@ unsafe fn layer_norm_impl(
     }
 }
 
+// ---- M5-14-T05/T08: packed-panel micro-kernel ------------------------------
+
+/// # Safety
+/// Requires `neon` (baseline on AArch64); the caller upholds the
+/// [`crate::dispatch::GemmMicroKernel`] contract — `ap` carries `kc * 8`
+/// packed A elements (`[l][MR = 8]` layout), `bp` carries `kc * w` packed B
+/// elements where `w = ncols ∈ {8, 4}`, `c` addresses a tile of `rows`
+/// (1..=8) valid rows at stride `ldc` × `ncols` valid columns owned
+/// exclusively by this call, and `bias` (when `Some`) has ≥ `ncols` elements.
+///
+/// One `8 × ncols` output tile over a packed strip pair. Per element this is
+/// the SAME bias-seeded fused-FMA chain over ascending `l` as the legacy
+/// [`gemm_impl`] vector region — `vfmaq_laneq_f32(acc, b, a, LANE)` computes
+/// `acc + b·a[LANE]` with single rounding exactly like the legacy
+/// `vfmaq_f32(acc, vdupq_n_f32(a), b)` — so results are bit-identical; only
+/// the operand addresses (packed, unit-stride) differ, which is what removes
+/// the power-of-two `n`-stride L1 aliasing (Wave-0 finding D2-1). A-rows past
+/// `rows` are zero-padded by the pack and computed but never stored; with
+/// `accumulate` the tile continues the k-chain from the partials in `c`
+/// (exact f32 round-trip).
+#[target_feature(enable = "neon")]
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)] // micro-kernel signature; explicit tile index math
+unsafe fn gemm_micro_packed_impl(
+    kc: usize,
+    ap: &[f32],
+    bp: &[f32],
+    c: *mut f32,
+    ldc: usize,
+    rows: usize,
+    ncols: usize,
+    bias: Option<&[f32]>,
+    accumulate: bool,
+) {
+    debug_assert!((1..=8).contains(&rows));
+    debug_assert!(ncols == 8 || ncols == 4);
+    // SAFETY: NEON is baseline on AArch64. Slice reads (`ap` / `bp` / `bias`)
+    // are ordinary indexed accesses within the caller-guaranteed lengths; the
+    // raw `c` loads/stores touch exactly `rows` rows × `ncols` columns from
+    // the tile origin, which the caller owns exclusively.
+    unsafe {
+        if ncols == 8 {
+            let zero = vdupq_n_f32(0.0);
+            let (mut c0, mut c1) = ([zero; 8], [zero; 8]);
+            if accumulate {
+                for r in 0..rows {
+                    c0[r] = vld1q_f32(c.add(r * ldc));
+                    c1[r] = vld1q_f32(c.add(r * ldc + 4));
+                }
+            } else if let Some(bs) = bias {
+                let b0 = vld1q_f32(bs.as_ptr());
+                let b1 = vld1q_f32(bs[4..].as_ptr());
+                c0 = [b0; 8];
+                c1 = [b1; 8];
+            }
+            for l in 0..kc {
+                let bl0 = vld1q_f32(bp[l * 8..].as_ptr());
+                let bl1 = vld1q_f32(bp[l * 8 + 4..].as_ptr());
+                let a03 = vld1q_f32(ap[l * 8..].as_ptr());
+                let a47 = vld1q_f32(ap[l * 8 + 4..].as_ptr());
+                c0[0] = vfmaq_laneq_f32::<0>(c0[0], bl0, a03);
+                c1[0] = vfmaq_laneq_f32::<0>(c1[0], bl1, a03);
+                c0[1] = vfmaq_laneq_f32::<1>(c0[1], bl0, a03);
+                c1[1] = vfmaq_laneq_f32::<1>(c1[1], bl1, a03);
+                c0[2] = vfmaq_laneq_f32::<2>(c0[2], bl0, a03);
+                c1[2] = vfmaq_laneq_f32::<2>(c1[2], bl1, a03);
+                c0[3] = vfmaq_laneq_f32::<3>(c0[3], bl0, a03);
+                c1[3] = vfmaq_laneq_f32::<3>(c1[3], bl1, a03);
+                c0[4] = vfmaq_laneq_f32::<0>(c0[4], bl0, a47);
+                c1[4] = vfmaq_laneq_f32::<0>(c1[4], bl1, a47);
+                c0[5] = vfmaq_laneq_f32::<1>(c0[5], bl0, a47);
+                c1[5] = vfmaq_laneq_f32::<1>(c1[5], bl1, a47);
+                c0[6] = vfmaq_laneq_f32::<2>(c0[6], bl0, a47);
+                c1[6] = vfmaq_laneq_f32::<2>(c1[6], bl1, a47);
+                c0[7] = vfmaq_laneq_f32::<3>(c0[7], bl0, a47);
+                c1[7] = vfmaq_laneq_f32::<3>(c1[7], bl1, a47);
+            }
+            for r in 0..rows {
+                vst1q_f32(c.add(r * ldc), c0[r]);
+                vst1q_f32(c.add(r * ldc + 4), c1[r]);
+            }
+        } else {
+            // ncols == 4: the packed counterpart of the legacy 4-wide column
+            // remainder (covers [n8, n4); `bp` is packed at width 4).
+            let zero = vdupq_n_f32(0.0);
+            let mut c0 = [zero; 8];
+            if accumulate {
+                for r in 0..rows {
+                    c0[r] = vld1q_f32(c.add(r * ldc));
+                }
+            } else if let Some(bs) = bias {
+                c0 = [vld1q_f32(bs.as_ptr()); 8];
+            }
+            for l in 0..kc {
+                let bl = vld1q_f32(bp[l * 4..].as_ptr());
+                let a03 = vld1q_f32(ap[l * 8..].as_ptr());
+                let a47 = vld1q_f32(ap[l * 8 + 4..].as_ptr());
+                c0[0] = vfmaq_laneq_f32::<0>(c0[0], bl, a03);
+                c0[1] = vfmaq_laneq_f32::<1>(c0[1], bl, a03);
+                c0[2] = vfmaq_laneq_f32::<2>(c0[2], bl, a03);
+                c0[3] = vfmaq_laneq_f32::<3>(c0[3], bl, a03);
+                c0[4] = vfmaq_laneq_f32::<0>(c0[4], bl, a47);
+                c0[5] = vfmaq_laneq_f32::<1>(c0[5], bl, a47);
+                c0[6] = vfmaq_laneq_f32::<2>(c0[6], bl, a47);
+                c0[7] = vfmaq_laneq_f32::<3>(c0[7], bl, a47);
+            }
+            for r in 0..rows {
+                vst1q_f32(c.add(r * ldc), c0[r]);
+            }
+        }
+    }
+}
+
+/// Packed-panel micro-kernel table entry (plain `unsafe fn`, coercible to
+/// [`crate::dispatch::GemmMicroKernel`]).
+///
+/// # Safety
+/// See [`crate::dispatch::GemmMicroKernel`]; NEON availability is the module
+/// compile gate (AArch64 baseline).
+#[allow(clippy::too_many_arguments)] // the micro-kernel's intrinsic parameter set
+pub(crate) unsafe fn gemm_micro_packed(
+    kc: usize,
+    ap: &[f32],
+    bp: &[f32],
+    c: *mut f32,
+    ldc: usize,
+    rows: usize,
+    ncols: usize,
+    bias: Option<&[f32]>,
+    accumulate: bool,
+) {
+    // SAFETY: NEON is baseline on AArch64 (this module only compiles there);
+    // the caller upholds the GemmMicroKernel contract.
+    unsafe { gemm_micro_packed_impl(kc, ap, bp, c, ldc, rows, ncols, bias, accumulate) }
+}
+
+// ---- M5-14-T10: m == 1 row kernel ------------------------------------------
+
+/// k-block depth for the m == 1 row kernel: bounds the live `b` row window
+/// per pass (`LB` pages when the row stride spans a page, e.g. n = 4096 =
+/// one 16 KiB page per row) so the strided walk stays inside the L1 dTLB and
+/// the prefetcher's stream budget, at the cost of re-reading the output row
+/// once per block (`2·4·cols·k/LB` bytes ≪ `b` itself). Blocking the k loop
+/// does NOT change per-element accumulation order (ascending `l` with an
+/// exact f32 store/reload between blocks).
+const M1_KB: usize = 64;
+
+/// # Safety
+/// Requires `neon` (baseline); contract as on
+/// [`crate::dispatch::GemmM1Kernel`] — `b` carries at least
+/// `(k-1)*stride + cols` elements, `bias` ≥ `cols`, `out` == `cols`.
+///
+/// Register-blocked row kernel: 32-column output blocks held in 8
+/// accumulators across a [`M1_KB`]-deep k block, `b` walked row-by-row inside
+/// the block. Per element this is the legacy row-tail chain exactly:
+/// bias-seeded `vfmaq_f32` over ascending `l` for the 4-aligned column
+/// region, plain mul+add for the `cols % 4` scalar tail — bit-identical to
+/// [`gemm_impl`]'s `m == 1` row (k-blocking only round-trips the f32 partial
+/// through `out`, which is exact).
+#[target_feature(enable = "neon")]
+#[allow(clippy::needless_range_loop)] // explicit k-index math mirrors the legacy kernel
+unsafe fn gemm_m1_impl(
+    cols: usize,
+    k: usize,
+    stride: usize,
+    a: &[f32],
+    b: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) {
+    // SAFETY: NEON is baseline on AArch64. Every 4-wide access is guarded by
+    // `j + 4·V <= n4 <= cols`; `b[l*stride + j ..]` stays inside the
+    // caller-validated `b` slice ((k-1)*stride + cols elements), `bias` /
+    // `out` accesses stay under `cols`.
+    unsafe {
+        let n4 = cols & !3usize;
+        let mut l0 = 0;
+        loop {
+            let lend = (l0 + M1_KB).min(k);
+            let first = l0 == 0;
+            let mut j = 0;
+            // 32-column register blocks: 8 live accumulators.
+            while j + 32 <= n4 {
+                let mut acc = [vdupq_n_f32(0.0); 8];
+                if first {
+                    if let Some(bs) = bias {
+                        for (v, av) in acc.iter_mut().enumerate() {
+                            *av = vld1q_f32(bs[j + 4 * v..].as_ptr());
+                        }
+                    }
+                } else {
+                    for (v, av) in acc.iter_mut().enumerate() {
+                        *av = vld1q_f32(out[j + 4 * v..].as_ptr());
+                    }
+                }
+                for l in l0..lend {
+                    let av = vdupq_n_f32(a[l]);
+                    let base = l * stride + j;
+                    acc[0] = vfmaq_f32(acc[0], av, vld1q_f32(b[base..].as_ptr()));
+                    acc[1] = vfmaq_f32(acc[1], av, vld1q_f32(b[base + 4..].as_ptr()));
+                    acc[2] = vfmaq_f32(acc[2], av, vld1q_f32(b[base + 8..].as_ptr()));
+                    acc[3] = vfmaq_f32(acc[3], av, vld1q_f32(b[base + 12..].as_ptr()));
+                    acc[4] = vfmaq_f32(acc[4], av, vld1q_f32(b[base + 16..].as_ptr()));
+                    acc[5] = vfmaq_f32(acc[5], av, vld1q_f32(b[base + 20..].as_ptr()));
+                    acc[6] = vfmaq_f32(acc[6], av, vld1q_f32(b[base + 24..].as_ptr()));
+                    acc[7] = vfmaq_f32(acc[7], av, vld1q_f32(b[base + 28..].as_ptr()));
+                }
+                for (v, av) in acc.iter().enumerate() {
+                    vst1q_f32(out[j + 4 * v..].as_mut_ptr(), *av);
+                }
+                j += 32;
+            }
+            // 4-column remainder blocks.
+            while j + 4 <= n4 {
+                let mut acc = if first {
+                    match bias {
+                        Some(bs) => vld1q_f32(bs[j..].as_ptr()),
+                        None => vdupq_n_f32(0.0),
+                    }
+                } else {
+                    vld1q_f32(out[j..].as_ptr())
+                };
+                for l in l0..lend {
+                    acc = vfmaq_f32(
+                        acc,
+                        vdupq_n_f32(a[l]),
+                        vld1q_f32(b[l * stride + j..].as_ptr()),
+                    );
+                }
+                vst1q_f32(out[j..].as_mut_ptr(), acc);
+                j += 4;
+            }
+            // Scalar `cols % 4` tail — the legacy plain mul+add chain.
+            while j < cols {
+                let mut s = if first {
+                    bias.map_or(0.0, |bs| bs[j])
+                } else {
+                    out[j]
+                };
+                for l in l0..lend {
+                    s += a[l] * b[l * stride + j];
+                }
+                out[j] = s;
+                j += 1;
+            }
+            if lend == k {
+                break;
+            }
+            l0 = lend;
+        }
+    }
+}
+
+/// NEON m == 1 GEMM row kernel (dispatch-table entry, M5-14-T10). See
+/// [`crate::dispatch::GemmM1Kernel`] for the contract.
+pub(crate) fn gemm_m1(
+    cols: usize,
+    k: usize,
+    stride: usize,
+    a: &[f32],
+    b: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) {
+    // SAFETY: NEON is baseline on AArch64 (this module only compiles there);
+    // slice bounds are upheld by the driver per the GemmM1Kernel contract and
+    // re-checked by slice indexing inside the impl.
+    unsafe { gemm_m1_impl(cols, k, stride, a, b, bias, out) }
+}
+
 // ---- Safe wrappers installed into the dispatch table (see module docs) ----
 
 /// NEON GEMM. See [`scalar::gemm`] for shapes.

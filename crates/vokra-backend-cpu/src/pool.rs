@@ -374,6 +374,31 @@ fn rows_per_task(m: usize, participants: usize) -> usize {
     m.div_ceil(target).max(MIN_ROWS_PER_TASK)
 }
 
+/// Total participating threads of the global pool (1 when the pool is absent
+/// — single-core host or `VOKRA_CPU_THREADS=1`). Used by the M5-14 packed
+/// GEMM driver to size its task chunking; the value only affects scheduling
+/// granularity, never results (disjoint-output determinism).
+pub(crate) fn participants() -> usize {
+    global().map_or(1, Pool::participants)
+}
+
+/// Run `f(i)` for every `i` in `0..ntasks` on the global pool (M5-14-T09:
+/// the packed GEMM driver's generic parallel-for). Returns `false` — having
+/// run nothing — when the pool is absent, so the caller can fall back to an
+/// inline loop. Tasks are claimed on demand from the shared counter (the
+/// same dynamic chunk queue `parallel_gemm` uses), which is what load-
+/// balances heterogeneous P/E cores; correctness never depends on which
+/// thread claims which task (callers write disjoint output ranges only).
+pub(crate) fn run<F: Fn(usize) + Sync>(ntasks: usize, f: &F) -> bool {
+    match global() {
+        Some(pool) => {
+            pool.dispatch(ntasks, f);
+            true
+        }
+        None => false,
+    }
+}
+
 /// Row-parallel GEMM: split `out`'s `m` rows across the pool, running `kernel`
 /// (the dispatched single-thread GEMM) over each disjoint row range. Falls back
 /// to a single inline `kernel` call when the pool is absent (single core) or the

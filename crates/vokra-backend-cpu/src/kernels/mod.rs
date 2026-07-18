@@ -50,6 +50,11 @@
 
 pub(crate) mod scalar;
 
+// M5-14 Wave-1 (T05/T09/T10): packed cache-blocked GEMM driver — routing,
+// pack routines and thread-local scratch. Per-ISA micro-kernels live in the
+// arch modules below; ISAs without them keep the legacy kernels bit-for-bit.
+pub(crate) mod gemm_driver;
+
 // Native vectorized `exp` shared by the AVX2 / NEON transcendental kernels
 // (M1-05-EXP). Compiled only under the `simd-transcendental` feature; without
 // it, `sigmoid` / `tanh` / `gelu` / softmax-exp stay scalar-backed and this
@@ -159,15 +164,17 @@ use crate::features::IsaPath;
 
 // ---- production GEMM / GEMV execution (row-parallel when `parallel` is on) ----
 //
-// The `*_f32` public wrappers below route through these. When the `parallel`
-// feature is on (native, multi-core host) the large GEMM/GEMV are split over
-// disjoint output rows by `crate::pool` — bit-identical to the inline call (same
-// per-element FMA chain), so parity is preserved. The `*_f32_on` differential
-// entry points deliberately do NOT use the pool: they stay single-thread so a
-// forced-ISA run is the single-thread numeric reference the pool is compared
-// against. Off `parallel` (or on WASM / single core) both paths run inline.
+// The `*_f32` public wrappers below route through these. GEMM goes through
+// the M5-14 packed driver (`kernels::gemm_driver`): m == 1 takes the ISA row
+// kernel, large shapes the packed cache-blocked path (pool-parallel over
+// disjoint output tiles), everything else the legacy pool row-split — all
+// three routes are **bit-identical** per element to the legacy kernel, so
+// parity is preserved (asserted by `tests/gemm_packed_parity.rs`). The
+// `*_f32_on` differential entry points deliberately do NOT use the driver or
+// the pool: they stay on the forced-ISA single-thread legacy kernel, which is
+// the numeric reference the production path is compared against. Off
+// `parallel` (or on WASM / single core) the driver runs its loops inline.
 
-#[cfg(all(feature = "parallel", not(target_family = "wasm")))]
 #[allow(clippy::too_many_arguments)]
 fn run_gemm(
     m: usize,
@@ -178,21 +185,7 @@ fn run_gemm(
     bias: Option<&[f32]>,
     out: &mut [f32],
 ) {
-    crate::pool::parallel_gemm(dispatch::table().gemm, m, n, k, a, b, bias, out);
-}
-
-#[cfg(not(all(feature = "parallel", not(target_family = "wasm"))))]
-#[allow(clippy::too_many_arguments)]
-fn run_gemm(
-    m: usize,
-    n: usize,
-    k: usize,
-    a: &[f32],
-    b: &[f32],
-    bias: Option<&[f32]>,
-    out: &mut [f32],
-) {
-    (dispatch::table().gemm)(m, n, k, a, b, bias, out);
+    gemm_driver::run(m, n, k, a, b, bias, out);
 }
 
 #[cfg(all(feature = "parallel", not(target_family = "wasm")))]

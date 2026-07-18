@@ -497,6 +497,257 @@ unsafe fn fused_logmel_impl(
     }
 }
 
+// ---- M5-14-T07: packed-panel micro-kernel ----------------------------------
+
+/// # Safety
+/// Requires the AVX-512 f32 bundle (upheld by the dispatch invariant of the
+/// safe caller chain); the caller upholds the
+/// [`crate::dispatch::GemmMicroKernel`] contract — `ap` carries `kc * 8`
+/// packed A elements (`[l][MR = 8]`), `bp` carries `kc * 16` packed B
+/// elements (zero-padded past `ncols`), `c` addresses a tile of `rows`
+/// (1..=8) valid rows at stride `ldc` × `ncols` (1..=16) valid columns owned
+/// exclusively by this call, and `bias` (when `Some`) has ≥ `ncols` elements.
+///
+/// One `8 × ncols` output tile over packed strips. Per element this is the
+/// SAME bias-seeded `_mm512_fmadd_ps` chain over ascending `l` as the legacy
+/// [`gemm_impl`] (which is FMA for EVERY column, masked at the tail), so
+/// results are bit-identical. `ncols < 16` follows the legacy masked-tail
+/// convention: full-width FMA over the zero-padded strip, masked seed and
+/// store on the valid lanes only.
+#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)] // micro-kernel signature; explicit tile index math
+unsafe fn gemm_micro_packed_impl(
+    kc: usize,
+    ap: &[f32],
+    bp: &[f32],
+    c: *mut f32,
+    ldc: usize,
+    rows: usize,
+    ncols: usize,
+    bias: Option<&[f32]>,
+    accumulate: bool,
+) {
+    debug_assert!((1..=8).contains(&rows));
+    debug_assert!((1..=16).contains(&ncols));
+    // SAFETY: the AVX-512 bundle is guaranteed by the caller chain. Slice
+    // reads are ordinary indexed accesses within the caller-guaranteed
+    // lengths (masked loads touch only the low `ncols` lanes, which stay
+    // inside `bias` / the tile rows); the raw `c` accesses touch exactly
+    // `rows` rows × `ncols` columns from the tile origin, which the caller
+    // owns exclusively.
+    unsafe {
+        if ncols == 16 {
+            let mut acc = [_mm512_setzero_ps(); 8];
+            if accumulate {
+                for (r, av) in acc.iter_mut().enumerate().take(rows) {
+                    *av = _mm512_loadu_ps(c.add(r * ldc));
+                }
+            } else if let Some(bs) = bias {
+                acc = [_mm512_loadu_ps(bs.as_ptr()); 8];
+            }
+            for l in 0..kc {
+                let bl = _mm512_loadu_ps(bp[l * 16..].as_ptr());
+                let ab = &ap[l * 8..l * 8 + 8];
+                acc[0] = _mm512_fmadd_ps(_mm512_set1_ps(ab[0]), bl, acc[0]);
+                acc[1] = _mm512_fmadd_ps(_mm512_set1_ps(ab[1]), bl, acc[1]);
+                acc[2] = _mm512_fmadd_ps(_mm512_set1_ps(ab[2]), bl, acc[2]);
+                acc[3] = _mm512_fmadd_ps(_mm512_set1_ps(ab[3]), bl, acc[3]);
+                acc[4] = _mm512_fmadd_ps(_mm512_set1_ps(ab[4]), bl, acc[4]);
+                acc[5] = _mm512_fmadd_ps(_mm512_set1_ps(ab[5]), bl, acc[5]);
+                acc[6] = _mm512_fmadd_ps(_mm512_set1_ps(ab[6]), bl, acc[6]);
+                acc[7] = _mm512_fmadd_ps(_mm512_set1_ps(ab[7]), bl, acc[7]);
+            }
+            for (r, av) in acc.iter().enumerate().take(rows) {
+                _mm512_storeu_ps(c.add(r * ldc), *av);
+            }
+        } else {
+            // Masked tail strip (legacy convention: FMA chains on the valid
+            // lanes; the zero-padded B lanes accumulate garbage that the
+            // masked store discards).
+            let mask = tail_mask(ncols);
+            let mut acc = [_mm512_setzero_ps(); 8];
+            if accumulate {
+                for (r, av) in acc.iter_mut().enumerate().take(rows) {
+                    *av = _mm512_maskz_loadu_ps(mask, c.add(r * ldc));
+                }
+            } else if let Some(bs) = bias {
+                acc = [_mm512_maskz_loadu_ps(mask, bs.as_ptr()); 8];
+            }
+            for l in 0..kc {
+                let bl = _mm512_loadu_ps(bp[l * 16..].as_ptr());
+                let ab = &ap[l * 8..l * 8 + 8];
+                acc[0] = _mm512_fmadd_ps(_mm512_set1_ps(ab[0]), bl, acc[0]);
+                acc[1] = _mm512_fmadd_ps(_mm512_set1_ps(ab[1]), bl, acc[1]);
+                acc[2] = _mm512_fmadd_ps(_mm512_set1_ps(ab[2]), bl, acc[2]);
+                acc[3] = _mm512_fmadd_ps(_mm512_set1_ps(ab[3]), bl, acc[3]);
+                acc[4] = _mm512_fmadd_ps(_mm512_set1_ps(ab[4]), bl, acc[4]);
+                acc[5] = _mm512_fmadd_ps(_mm512_set1_ps(ab[5]), bl, acc[5]);
+                acc[6] = _mm512_fmadd_ps(_mm512_set1_ps(ab[6]), bl, acc[6]);
+                acc[7] = _mm512_fmadd_ps(_mm512_set1_ps(ab[7]), bl, acc[7]);
+            }
+            for (r, av) in acc.iter().enumerate().take(rows) {
+                _mm512_mask_storeu_ps(c.add(r * ldc), mask, *av);
+            }
+        }
+    }
+}
+
+/// Packed-panel micro-kernel table entry (plain `unsafe fn`, coercible to
+/// [`crate::dispatch::GemmMicroKernel`]).
+///
+/// # Safety
+/// See [`crate::dispatch::GemmMicroKernel`]; additionally the AVX-512
+/// dispatch invariant (this entry is only installed after
+/// `CpuFeatures::detect` confirmed the F/DQ/BW/VL bundle).
+#[allow(clippy::too_many_arguments)] // the micro-kernel's intrinsic parameter set
+pub(crate) unsafe fn gemm_micro_packed(
+    kc: usize,
+    ap: &[f32],
+    bp: &[f32],
+    c: *mut f32,
+    ldc: usize,
+    rows: usize,
+    ncols: usize,
+    bias: Option<&[f32]>,
+    accumulate: bool,
+) {
+    // SAFETY: the AVX-512 bundle is confirmed by the dispatch invariant; the
+    // caller upholds the GemmMicroKernel contract.
+    unsafe { gemm_micro_packed_impl(kc, ap, bp, c, ldc, rows, ncols, bias, accumulate) }
+}
+
+// ---- M5-14-T10: m == 1 row kernel ------------------------------------------
+
+/// # Safety
+/// Requires the AVX-512 f32 bundle; contract as on
+/// [`crate::dispatch::GemmM1Kernel`] — `b` carries at least
+/// `(k-1)*stride + cols` elements, `bias` ≥ `cols`, `out` == `cols`.
+///
+/// Register-blocked row kernel over [`M1_KB`]-deep k blocks (bounds the live
+/// `b` row window per pass; exact f32 round-trip of the output row per
+/// block). Per element this is the legacy row-tail chain exactly: bias-seeded
+/// `_mm512_fmadd_ps` over ascending `l` for the 16-aligned region and —
+/// matching the legacy masked tail — for the final `cols % 16` columns as
+/// well (no scalar remainder on AVX-512).
+/// k-block depth for the m == 1 row kernel (see the NEON twin's rationale).
+const M1_KB: usize = 64;
+
+#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+#[allow(clippy::needless_range_loop)] // explicit k-index math mirrors the legacy kernel
+unsafe fn gemm_m1_impl(
+    cols: usize,
+    k: usize,
+    stride: usize,
+    a: &[f32],
+    b: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) {
+    // SAFETY: the AVX-512 bundle is guaranteed by the caller chain. Every
+    // 16-wide access is guarded by `j + 16·V <= n16 <= cols`; the masked tail
+    // touches only the low `cols - n16` lanes; `b[l*stride + j ..]` stays
+    // inside the caller-validated slice, `bias` / `out` accesses stay under
+    // `cols`.
+    unsafe {
+        let n16 = cols & !15usize;
+        let mut l0 = 0;
+        loop {
+            let lend = (l0 + M1_KB).min(k);
+            let first = l0 == 0;
+            let mut j = 0;
+            // 64-column register blocks: 4 live accumulators.
+            while j + 64 <= n16 {
+                let mut acc = [_mm512_setzero_ps(); 4];
+                if first {
+                    if let Some(bs) = bias {
+                        for (v, av) in acc.iter_mut().enumerate() {
+                            *av = _mm512_loadu_ps(bs[j + 16 * v..].as_ptr());
+                        }
+                    }
+                } else {
+                    for (v, av) in acc.iter_mut().enumerate() {
+                        *av = _mm512_loadu_ps(out[j + 16 * v..].as_ptr());
+                    }
+                }
+                for l in l0..lend {
+                    let av = _mm512_set1_ps(a[l]);
+                    let base = l * stride + j;
+                    acc[0] = _mm512_fmadd_ps(av, _mm512_loadu_ps(b[base..].as_ptr()), acc[0]);
+                    acc[1] = _mm512_fmadd_ps(av, _mm512_loadu_ps(b[base + 16..].as_ptr()), acc[1]);
+                    acc[2] = _mm512_fmadd_ps(av, _mm512_loadu_ps(b[base + 32..].as_ptr()), acc[2]);
+                    acc[3] = _mm512_fmadd_ps(av, _mm512_loadu_ps(b[base + 48..].as_ptr()), acc[3]);
+                }
+                for (v, av) in acc.iter().enumerate() {
+                    _mm512_storeu_ps(out[j + 16 * v..].as_mut_ptr(), *av);
+                }
+                j += 64;
+            }
+            // 16-column remainder blocks.
+            while j + 16 <= n16 {
+                let mut acc = if first {
+                    match bias {
+                        Some(bs) => _mm512_loadu_ps(bs[j..].as_ptr()),
+                        None => _mm512_setzero_ps(),
+                    }
+                } else {
+                    _mm512_loadu_ps(out[j..].as_ptr())
+                };
+                for l in l0..lend {
+                    acc = _mm512_fmadd_ps(
+                        _mm512_set1_ps(a[l]),
+                        _mm512_loadu_ps(b[l * stride + j..].as_ptr()),
+                        acc,
+                    );
+                }
+                _mm512_storeu_ps(out[j..].as_mut_ptr(), acc);
+                j += 16;
+            }
+            // Masked `cols % 16` tail — the legacy FMA chain on the low lanes.
+            if j < cols {
+                let mask = tail_mask(cols - j);
+                let mut acc = if first {
+                    match bias {
+                        Some(bs) => _mm512_maskz_loadu_ps(mask, bs[j..].as_ptr()),
+                        None => _mm512_setzero_ps(),
+                    }
+                } else {
+                    _mm512_maskz_loadu_ps(mask, out[j..].as_ptr())
+                };
+                for l in l0..lend {
+                    acc = _mm512_fmadd_ps(
+                        _mm512_set1_ps(a[l]),
+                        _mm512_maskz_loadu_ps(mask, b[l * stride + j..].as_ptr()),
+                        acc,
+                    );
+                }
+                _mm512_mask_storeu_ps(out[j..].as_mut_ptr(), mask, acc);
+            }
+            if lend == k {
+                break;
+            }
+            l0 = lend;
+        }
+    }
+}
+
+/// AVX-512 m == 1 GEMM row kernel (dispatch-table entry, M5-14-T10). See
+/// [`crate::dispatch::GemmM1Kernel`] for the contract.
+pub(crate) fn gemm_m1(
+    cols: usize,
+    k: usize,
+    stride: usize,
+    a: &[f32],
+    b: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) {
+    // SAFETY: the AVX-512 bundle is confirmed by the dispatch invariant (this
+    // entry is only installed after `CpuFeatures::detect`); slice bounds are
+    // upheld by the driver per the GemmM1Kernel contract and re-checked by
+    // slice indexing inside the impl.
+    unsafe { gemm_m1_impl(cols, k, stride, a, b, bias, out) }
+}
+
 // ---- Safe wrappers installed into the dispatch table (see module docs) ----
 
 /// AVX-512 GEMM. See [`scalar::gemm`] for shapes.

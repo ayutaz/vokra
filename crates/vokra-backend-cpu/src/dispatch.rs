@@ -39,6 +39,73 @@ pub(crate) type LayerNormKernel = fn(&[f32], &mut [f32], usize, usize, &[f32], &
 /// `log10(max(·, floor))` values. `(weights[n_mels*n_bins], power[n_bins],
 /// n_mels, n_bins, floor, out_log[n_mels])`.
 pub(crate) type FusedLogmelKernel = fn(&[f32], &[f32], usize, usize, f32, &mut [f32]);
+/// `m == 1` GEMM row kernel (M5-14-T10): `out[j] = bias[j] + Σ_l a[l]·b[l, j]`
+/// over `cols` columns of a row-major `b` whose row stride is `stride`
+/// (`b[0]` is the first column of the range). Bit-identical per element to
+/// the general GEMM's `m == 1` row (same FMA chain in the vector column
+/// region, same plain mul+add scalar tail), but streams `b` row-contiguously
+/// instead of walking it per column strip.
+/// `(cols, k, stride, a[k], b[(k-1)*stride + cols], bias?[cols], out[cols])`.
+pub(crate) type GemmM1Kernel = fn(usize, usize, usize, &[f32], &[f32], Option<&[f32]>, &mut [f32]);
+/// Packed-panel GEMM micro-kernel (M5-14-T05/T08): one `PACK_MR`-row ×
+/// `ncols`-column output tile over a packed A strip (`ap`, layout `[l][MR]`,
+/// `kc*MR` elements) and a packed B strip (`bp`, layout `[l][strip_width]`,
+/// zero-padded past the valid columns). Seeds from `bias` / zero when
+/// `accumulate` is false, else continues from the values already in `c`;
+/// loads/stores only the `rows` valid rows at `c + r*ldc` and the `ncols`
+/// valid columns.
+///
+/// # Safety
+/// `ap`/`bp` must carry the documented packed element counts, `c` must point
+/// at a tile origin such that `rows` rows × `ncols` columns at row stride
+/// `ldc` stay inside the output buffer, no other thread may access those
+/// elements concurrently, and `bias` (when `Some`) must carry at least
+/// `ncols` elements. Callers also uphold the ISA gate of the containing
+/// module (dispatch invariant).
+pub(crate) type GemmMicroKernel = unsafe fn(
+    kc: usize,
+    ap: &[f32],
+    bp: &[f32],
+    c: *mut f32,
+    ldc: usize,
+    rows: usize,
+    ncols: usize,
+    bias: Option<&[f32]>,
+    accumulate: bool,
+);
+
+/// How an ISA's packed GEMM covers the columns past the last full `nr`-wide
+/// strip — chosen to reproduce that ISA's LEGACY per-element operation for
+/// every column (the M5-14 bit-identity invariant).
+#[derive(Clone, Copy)]
+// Each variant is constructed only by its arch's table (`Vec4` on aarch64,
+// `Scalar`/`Masked` on x86-64) but matched by the target-independent driver,
+// so single-arch lib builds see "unconstructed" variants — by design.
+#[allow(dead_code)]
+pub(crate) enum PackedTail {
+    /// Plain mul+add scalar chains from the strip boundary (legacy AVX2).
+    Scalar,
+    /// One 4-wide FMA strip to the 4-column boundary, then scalar mul+add
+    /// chains (legacy NEON).
+    Vec4,
+    /// One zero-padded strip with masked load/store — FMA chains for every
+    /// column (legacy AVX-512).
+    Masked,
+}
+
+/// An ISA's packed-panel GEMM kernel set (M5-14-T05..T08). `None` in the
+/// table ⇒ that ISA keeps the legacy kernel for every shape.
+#[derive(Clone, Copy)]
+pub(crate) struct PackedGemm {
+    /// Full column-strip width (8 for NEON/AVX2, 16 for AVX-512). The
+    /// blocking constant `NC` is a multiple of every `nr`.
+    pub(crate) nr: usize,
+    /// The strip micro-kernel (handles `ncols == nr` and the ISA's partial
+    /// widths per [`PackedTail`]).
+    pub(crate) micro: GemmMicroKernel,
+    /// Column-tail convention (see [`PackedTail`]).
+    pub(crate) tail: PackedTail,
+}
 
 /// A bundle of function pointers, one per kernel kind, all resolved to the
 /// same [`IsaPath`]. Populated by [`build_table`] and cached in [`selected`].
@@ -60,6 +127,14 @@ pub(crate) struct KernelTable {
     /// the same op within FP32 rounding (within-CPU-backend dispatch, not a
     /// cross-backend fallback — FR-EX-08 unaffected).
     pub(crate) fused_logmel: FusedLogmelKernel,
+    /// M5-14-T10 `m == 1` GEMM row fast path; `None` ⇒ `gemm` handles m == 1
+    /// (scalar / RVV / WASM tiers — unchanged behaviour). Bit-identical per
+    /// element to `gemm`'s m == 1 row, so routing cannot shift parity.
+    pub(crate) gemm_m1: Option<GemmM1Kernel>,
+    /// M5-14-T05/T08 packed cache-blocked GEMM micro-kernels; `None` ⇒ every
+    /// shape stays on the legacy `gemm` kernel. Bit-identical per element to
+    /// `gemm` (see `kernels::gemm_driver`), so routing cannot shift parity.
+    pub(crate) gemm_packed: Option<PackedGemm>,
 }
 
 fn scalar_table() -> KernelTable {
@@ -75,6 +150,10 @@ fn scalar_table() -> KernelTable {
         softmax: scalar::softmax,
         layer_norm: scalar::layer_norm,
         fused_logmel: scalar_fused_logmel,
+        // The scalar gemm is already an l-outer streaming (axpy) formulation
+        // with no strided-B pathology; packing would only add copies.
+        gemm_m1: None,
+        gemm_packed: None,
     }
 }
 
@@ -123,6 +202,14 @@ fn avx2_table() -> KernelTable {
         softmax: avx2::softmax,
         layer_norm: avx2::layer_norm,
         fused_logmel: fused_logmel_avx2::fused_logmel_apply_frame_avx2,
+        gemm_m1: Some(avx2::gemm_m1),
+        gemm_packed: Some(PackedGemm {
+            nr: 8,
+            micro: avx2::gemm_micro_packed,
+            // Legacy AVX2 goes scalar mul+add straight after the 8-wide
+            // column region (no 4-wide loop) — mirror that exactly.
+            tail: PackedTail::Scalar,
+        }),
     }
 }
 
@@ -149,6 +236,14 @@ fn neon_table() -> KernelTable {
         softmax: neon::softmax,
         layer_norm: neon::layer_norm,
         fused_logmel: fused_logmel_neon::fused_logmel_apply_frame_neon,
+        gemm_m1: Some(neon::gemm_m1),
+        gemm_packed: Some(PackedGemm {
+            nr: 8,
+            micro: neon::gemm_micro_packed,
+            // Legacy NEON covers [n8, n4) with a 4-wide FMA loop before the
+            // scalar mul+add remainder — mirror that exactly.
+            tail: PackedTail::Vec4,
+        }),
     }
 }
 
@@ -180,6 +275,10 @@ fn rvv_table() -> KernelTable {
         softmax: rvv::softmax,
         layer_norm: rvv::layer_norm,
         fused_logmel: rvv::fused_logmel,
+        // RVV keeps the legacy gemm for every shape (scaffold tier; packed
+        // micro-kernels are an M5+ follow-up on real RVV silicon).
+        gemm_m1: None,
+        gemm_packed: None,
     }
 }
 
@@ -214,6 +313,9 @@ fn rvv071_table() -> KernelTable {
         softmax: rvv071::softmax,
         layer_norm: rvv071::layer_norm,
         fused_logmel: rvv071::fused_logmel,
+        // Same posture as the RVV 1.0 tier: legacy gemm for every shape.
+        gemm_m1: None,
+        gemm_packed: None,
     }
 }
 
@@ -263,6 +365,10 @@ fn wasm_simd128_table() -> KernelTable {
         // WASM `vlog10` port is a separate follow-up. Within-CPU-backend
         // dispatch (FR-EX-08 unaffected).
         fused_logmel: scalar_fused_logmel,
+        // SIMD128 packed micro-kernels are a Wave-2+ follow-up; the wasm32
+        // tier keeps the legacy gemm for every shape (unchanged behaviour).
+        gemm_m1: None,
+        gemm_packed: None,
     }
 }
 
@@ -301,6 +407,14 @@ fn avx512_table() -> KernelTable {
         softmax: avx512::softmax,
         layer_norm: avx512::layer_norm,
         fused_logmel: avx512::fused_logmel,
+        gemm_m1: Some(avx512::gemm_m1),
+        gemm_packed: Some(PackedGemm {
+            nr: 16,
+            micro: avx512::gemm_micro_packed,
+            // Legacy AVX-512 is FMA everywhere (masked tail, no scalar
+            // remainder) — mirror that exactly.
+            tail: PackedTail::Masked,
+        }),
     }
 }
 
