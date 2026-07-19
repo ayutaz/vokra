@@ -62,6 +62,15 @@ integrations/vokra-godot/pkg/
 /docs/adr/
 /docs/onnx-alternative-research.md
 /docs/piper-plus-integration.md
+# Third batch (2026-07-19): the M4-residual audit report. Same class as the
+# tickets/ADRs above — an internal PM artefact (42-row CC backlog with effort
+# estimates, the owner-only queue, cost lines) that was swept into an
+# unrelated fixtures commit rather than added deliberately, and that nothing
+# in the repo references. It also records an unremediated licence-gate
+# fail-open and cites ~20 paths that do not exist publicly, so publishing it
+# would both disclose that and 404 for every reader. Untracked BEFORE it ever
+# reached origin/main, so no history rewrite was needed.
+/docs/m4-residual-audit-2026-07-19.md
 
 # M4-01: wasm build artifacts (produced by scripts/build-wasm.sh; the npm
 # package assembles them at release time — never committed)
