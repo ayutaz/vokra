@@ -118,10 +118,12 @@ name: gpu-vulkan-parity
 on:
   workflow_dispatch:
   schedule:
-    # Weekly Monday 05:00 UTC. 1h after parity-kokoro-real (04:00 UTC), 1h
-    # before gpu-cuda-rtf (06:00 UTC). Off-peak US/EU business hours so a
+    # Weekly Monday 05:30 UTC. Slotted between parity-whisper-real
+    # (05:00 UTC) and gpu-cuda-rtf (06:00 UTC) — see the shared schedule
+    # table in parity-kokoro-real.yml; every weekly job gets its own slot
+    # so a shared-runner queue never serialises two of them. Off-peak US/EU business hours so a
     # Mesa hub / apt outage surfaces without blocking active development.
-    - cron: '0 5 * * 1'
+    - cron: '30 5 * * 1'
 
 permissions:
   contents: read

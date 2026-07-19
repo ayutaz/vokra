@@ -29,7 +29,7 @@ on:
   schedule:
     # Weekly cron: keeps the synthetic format pin + reader green and prints
     # the honest "real reference absent" skip until T29.
-    - cron: "0 6 * * 1"
+    - cron: "30 6 * * 1"
 
 permissions:
   contents: read

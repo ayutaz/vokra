@@ -77,6 +77,21 @@ pub struct Config {
     /// precedence merge can distinguish "explicitly set to false" from
     /// "unset" — same pattern as the model paths above.
     pub piper_g2p: Option<bool>,
+
+    /// Multi-session concurrency cap (`--max-concurrent-sessions`,
+    /// `VOKRA_MAX_CONCURRENT_SESSIONS`, TOML `max_concurrent_sessions`).
+    ///
+    /// The value feeds BOTH the session registry and the scheduler permit
+    /// pool — `Scheduler::new` requires `n_stream == max_concurrent_sessions`,
+    /// so a single knob drives both (splitting them would let the registry
+    /// admit a session the scheduler can never run).
+    ///
+    /// Unset = [`DEFAULT_MAX_CONCURRENT_SESSIONS`] (4). `0` is rejected as
+    /// an invalid value rather than silently meaning "unlimited" — an
+    /// accidental `=0` must not disable the DoS ceiling (FR-EX-08).
+    ///
+    /// [`DEFAULT_MAX_CONCURRENT_SESSIONS`]: crate::server::DEFAULT_MAX_CONCURRENT_SESSIONS
+    pub max_concurrent_sessions: Option<usize>,
 }
 
 impl Config {
@@ -84,6 +99,13 @@ impl Config {
     /// ([`Config::piper_g2p`]; unset = off).
     pub fn piper_g2p_enabled(&self) -> bool {
         self.piper_g2p.unwrap_or(false)
+    }
+
+    /// The effective multi-session cap: the configured value, or the
+    /// built-in default when unset.
+    pub fn max_concurrent_sessions_or_default(&self) -> usize {
+        self.max_concurrent_sessions
+            .unwrap_or(crate::server::DEFAULT_MAX_CONCURRENT_SESSIONS)
     }
 }
 
@@ -102,6 +124,7 @@ impl Default for Config {
             voxtral_gguf: None,
             silero_vad_gguf: None,
             piper_g2p: None,
+            max_concurrent_sessions: None,
         }
     }
 }
@@ -171,6 +194,11 @@ OPTIONS:
                              overridden by env and CLI flags).
     -h, --help               Print this help and exit.
     -V, --version            Print version and exit.
+    --max-concurrent-sessions <N>
+                             Multi-session cap shared by the session
+                             registry and the scheduler permit pool.
+                             Default: 4. Must be >= 1 (0 is rejected —
+                             it would remove the concurrency ceiling).
 
 MODELS (all optional; unset ⇒ health-only + Wyoming discovery-only. When ANY
 is set, --whisper-base AND --piper-plus are the required minimum — a partial
@@ -207,6 +235,7 @@ ENVIRONMENT:
     VOKRA_VOXTRAL                    Same as --voxtral.
     VOKRA_SILERO_VAD                 Same as --silero-vad.
     VOKRA_PIPER_G2P                  Same as --piper-g2p (1/true/0/false).
+    VOKRA_MAX_CONCURRENT_SESSIONS    Same as --max-concurrent-sessions.
 
 Precedence (highest first): CLI flag > env var > TOML file > built-in default.
 TOML keys mirror the flag names with underscores (e.g. `whisper_base`,
@@ -267,6 +296,9 @@ where
     }
     if let Ok(v) = std::env::var("VOKRA_SILERO_VAD") {
         cfg.silero_vad_gguf = Some(PathBuf::from(v));
+    }
+    if let Ok(v) = std::env::var("VOKRA_MAX_CONCURRENT_SESSIONS") {
+        cfg.max_concurrent_sessions = Some(parse_session_cap("VOKRA_MAX_CONCURRENT_SESSIONS", &v)?);
     }
     if let Ok(v) = std::env::var("VOKRA_PIPER_G2P") {
         cfg.piper_g2p = Some(parse_bool("VOKRA_PIPER_G2P", &v)?);
@@ -341,6 +373,11 @@ where
             "--piper-g2p" => {
                 cfg.piper_g2p = Some(true);
             }
+            "--max-concurrent-sessions" => {
+                let v = take_flag_value(&mut it, "--max-concurrent-sessions")?;
+                cfg.max_concurrent_sessions =
+                    Some(parse_session_cap("--max-concurrent-sessions", &v)?);
+            }
             // T03 accepts unknown flags nowhere: silent-ignore would violate
             // FR-EX-08 (no silent fallback) and mask typos.
             other => return Err(ConfigError::UnknownFlag(other.to_string())),
@@ -381,6 +418,9 @@ where
         // `Option<bool>` keeps the same CLI > env > TOML precedence as the
         // paths: an explicit env `VOKRA_PIPER_G2P=0` beats a TOML `true`.
         cfg.piper_g2p = cfg.piper_g2p.or(overlay.piper_g2p);
+        cfg.max_concurrent_sessions = cfg
+            .max_concurrent_sessions
+            .or(overlay.max_concurrent_sessions);
     }
 
     Ok(cfg)
@@ -423,6 +463,28 @@ fn parse_bool(flag: &str, value: &str) -> Result<bool, ConfigError> {
     }
 }
 
+/// Parse the multi-session cap. Must be a positive integer: `0` would
+/// disable the DoS ceiling that the registry and scheduler share, so it is
+/// an explicit error rather than a silent "unlimited" (FR-EX-08).
+fn parse_session_cap(flag: &str, value: &str) -> Result<usize, ConfigError> {
+    let n = value
+        .trim()
+        .parse::<usize>()
+        .map_err(|e| ConfigError::InvalidValue {
+            flag: flag.to_string(),
+            value: value.to_string(),
+            reason: e.to_string(),
+        })?;
+    if n == 0 {
+        return Err(ConfigError::InvalidValue {
+            flag: flag.to_string(),
+            value: value.to_string(),
+            reason: "must be >= 1 (0 would remove the concurrency ceiling)".to_string(),
+        });
+    }
+    Ok(n)
+}
+
 /// Fields the TOML overlay may contain.
 #[derive(Default)]
 struct TomlOverlay {
@@ -437,6 +499,7 @@ struct TomlOverlay {
     voxtral_gguf: Option<PathBuf>,
     silero_vad_gguf: Option<PathBuf>,
     piper_g2p: Option<bool>,
+    max_concurrent_sessions: Option<usize>,
 }
 
 /// Minimal hand-rolled TOML subset: `key = "value"` lines, `#` comments,
@@ -500,6 +563,16 @@ fn load_toml_overlay(path: &PathBuf) -> Result<TomlOverlay, ConfigError> {
                         error: e.to_string(),
                     }
                 })?);
+            }
+            "max_concurrent_sessions" => {
+                out.max_concurrent_sessions = Some(
+                    parse_session_cap("max_concurrent_sessions", value).map_err(|e| {
+                        ConfigError::ConfigFileParse {
+                            path: path.clone(),
+                            error: e.to_string(),
+                        }
+                    })?,
+                );
             }
             other => {
                 // Unknown keys are an error, not silently ignored — same
@@ -730,6 +803,77 @@ mod tests {
     }
 
     // ---- --piper-g2p (campaign-2 P1: real G2P opt-in) ----
+
+    /// Unset keeps the built-in default; the accessor is what the startup
+    /// path reads, so it is pinned alongside the raw field (P2 cc-29).
+    #[test]
+    fn startup_max_concurrent_sessions_defaults_to_the_builtin() {
+        clear_env();
+        let cfg = parse_args(["vokra-server"]).unwrap();
+        assert_eq!(cfg.max_concurrent_sessions, None, "unset must stay None");
+        assert_eq!(
+            cfg.max_concurrent_sessions_or_default(),
+            crate::server::DEFAULT_MAX_CONCURRENT_SESSIONS,
+        );
+    }
+
+    #[test]
+    fn startup_max_concurrent_sessions_cli_flag_overrides() {
+        clear_env();
+        let cfg = parse_args(["vokra-server", "--max-concurrent-sessions", "16"]).unwrap();
+        assert_eq!(cfg.max_concurrent_sessions, Some(16));
+        assert_eq!(cfg.max_concurrent_sessions_or_default(), 16);
+    }
+
+    /// `0` must be a hard error, not a silent "unlimited": the value caps
+    /// BOTH the session registry and the scheduler permit pool, so zeroing
+    /// it would remove the DoS ceiling (FR-EX-08). Same rationale as the
+    /// bool-typo rejection above; the env layer routes through the same
+    /// helper (not set in-process — see the note on the bool test).
+    #[test]
+    fn startup_max_concurrent_sessions_rejects_zero_and_garbage() {
+        assert_eq!(
+            parse_session_cap("--max-concurrent-sessions", "1").unwrap(),
+            1
+        );
+        assert_eq!(
+            parse_session_cap("VOKRA_MAX_CONCURRENT_SESSIONS", " 32 ").unwrap(),
+            32,
+            "surrounding whitespace is trimmed"
+        );
+        for raw in ["0", "-1", "", "many", "4.5"] {
+            let err = parse_session_cap("--max-concurrent-sessions", raw)
+                .expect_err("value {raw:?} must be rejected");
+            assert!(
+                matches!(err, ConfigError::InvalidValue { .. }),
+                "value {raw:?} must be InvalidValue, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn startup_max_concurrent_sessions_cli_beats_toml() {
+        clear_env();
+        with_temp_toml(
+            "max-sessions",
+            "whisper_base = \"/t/base.gguf\"\nmax_concurrent_sessions = 9\n",
+            |path| {
+                let from_toml =
+                    parse_args(["vokra-server", "--config", path.to_str().unwrap()]).unwrap();
+                assert_eq!(from_toml.max_concurrent_sessions, Some(9), "TOML applies");
+
+                let cli_wins = parse_args([
+                    "vokra-server",
+                    "--config",
+                    path.to_str().unwrap(),
+                    "--max-concurrent-sessions",
+                    "2",
+                ])
+                .unwrap();
+                assert_eq!(cli_wins.max_concurrent_sessions, Some(2), "CLI > TOML");
+            },
+        );
+    }
 
     #[test]
     fn startup_piper_g2p_defaults_off() {

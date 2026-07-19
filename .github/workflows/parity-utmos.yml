@@ -38,9 +38,11 @@ name: parity-utmos
 on:
   workflow_dispatch:
   # Weekly cadence alongside the other real-parity workflows; offset to
-  # Monday 06:00 UTC (Kokoro 04:00, Whisper 05:00) to avoid cron collisions.
+  # Monday 08:00 UTC — its own slot in the weekly stagger (Kokoro 04:00,
+  # Whisper 05:00, Vulkan 05:30, CUDA-RTF 06:00, CSM 06:30, web-wasm 07:00,
+  # Moshi 07:30, UTMOS 08:00, Godot 08:30).
   schedule:
-    - cron: "0 6 * * 1"
+    - cron: "0 8 * * 1"
   pull_request:
     paths:
       - "crates/vokra-eval/src/metrics/utmos.rs"

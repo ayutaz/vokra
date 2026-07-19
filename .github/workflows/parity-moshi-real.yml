@@ -72,8 +72,10 @@ name: parity-moshi-real
 on:
   workflow_dispatch:
   schedule:
-    # Mondays 06:00 UTC (after the kokoro/whisper parity crons).
-    - cron: "0 6 * * 1"
+    # Mondays 07:30 UTC — its own slot in the weekly stagger (kokoro 04:00,
+    # whisper 05:00, vulkan 05:30, cuda-rtf 06:00, csm 06:30, web-wasm
+    # 07:00, moshi 07:30, utmos 08:00, godot 08:30).
+    - cron: "30 7 * * 1"
   pull_request:
     paths:
       - "crates/vokra-models/src/moshi/**"

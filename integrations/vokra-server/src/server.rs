@@ -41,10 +41,12 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 /// Default multi-session concurrency cap for the production startup path
-/// (M4-19-T04). A conservative v0.5 default; a `--max-concurrent-sessions`
-/// CLI knob is a follow-up. Must be the shared value for both the session
-/// registry and the scheduler permit pool (see [`Scheduler::new`]).
-const DEFAULT_MAX_CONCURRENT_SESSIONS: usize = 4;
+/// (M4-19-T04) — used when `--max-concurrent-sessions` /
+/// `VOKRA_MAX_CONCURRENT_SESSIONS` / TOML `max_concurrent_sessions` is
+/// unset (P2 cc-29 made it configurable). Must be the shared value for
+/// both the session registry and the scheduler permit pool (see
+/// [`Scheduler::new`]).
+pub const DEFAULT_MAX_CONCURRENT_SESSIONS: usize = 4;
 
 /// Bound listener addresses returned by `spawn_server`. `run_with_config` uses
 /// them for tests (so callers can hit `http_actual`) and for logging.
@@ -299,11 +301,14 @@ async fn spawn_server_wired(
     let http_models: Arc<dyn ModelCatalog> = svc.clone();
     let wyoming: Arc<dyn WyomingBackend> = svc;
     // `n_stream` must equal `max_concurrent_sessions` (see `Scheduler::new`);
-    // both use the same constant here, so the only error path is unreachable
-    // in practice — surfaced as a hard startup error regardless (FR-EX-08).
+    // both sides take the SAME configured value (P2 cc-29 — one knob, so the
+    // registry can never admit a session the scheduler has no permit for), so
+    // the only error path is unreachable in practice — surfaced as a hard
+    // startup error regardless (FR-EX-08).
+    let max_sessions = cfg.max_concurrent_sessions_or_default();
     let scheduler = Scheduler::new(
-        SessionRegistryConfig::minimum(DEFAULT_MAX_CONCURRENT_SESSIONS),
-        SchedulerConfig::minimum(DEFAULT_MAX_CONCURRENT_SESSIONS),
+        SessionRegistryConfig::minimum(max_sessions),
+        SchedulerConfig::minimum(max_sessions),
     )
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
     spawn_server_full(
