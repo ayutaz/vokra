@@ -379,6 +379,36 @@ pub struct PagedKvCache<T: KvElement> {
     /// Committed positions across the cache (mirrors
     /// [`KvCache::positions`](super::KvCache::positions)).
     pos: usize,
+    /// Write stamp per `(page, row-in-page, stream, codebook)` — the generation
+    /// of the stream that last wrote that row (cc-37).
+    ///
+    /// [`Self::release_stream`] retires a stream slot in O(1) by bumping its
+    /// entry in `stream_gen`; every row this stream previously stamped then
+    /// carries a stale generation and reads as unbound.
+    ///
+    /// The granularity is the full addressable row, not the page, and both of
+    /// the extra axes are load-bearing — a coarser stamp is re-validated by the
+    /// next occupant's first write and leaks everything else it covers:
+    ///
+    /// - per *page* would leak the rest of the time block, since a page holds
+    ///   `block_size` consecutive time steps;
+    /// - per `(page, row, stream)` would leak the other codebooks at the same
+    ///   time step, which is exactly what an RVQ decode varies (M3-03's
+    ///   `[time, stream, codebook]`; Mimi / DAC / Moshi all decode
+    ///   multi-codebook).
+    ///
+    /// Sized once in [`Self::pre_allocate`] and never resized (FR-EX-05). The
+    /// overhead is one `u64` per `(layer, time, stream, codebook)` against the
+    /// `n_head · d_head · 2` FP32 KV values for that same tuple — ~0.08% at
+    /// Whisper large-v3's `n_head · d_head = 1280`.
+    row_stamp: Vec<u64>,
+    /// Current generation of each stream slot, indexed by stream. Starts at 0,
+    /// matching the initial `row_stamp` values, so a cache that never calls
+    /// [`Self::release_stream`] behaves exactly as it did before cc-37.
+    stream_gen: Vec<u64>,
+    /// Cached `block_size · n_stream · n_codebook` — the per-page stride into
+    /// `row_stamp`.
+    stamp_page_stride: usize,
 }
 
 impl<T: KvElement> PagedKvCache<T> {
@@ -412,6 +442,11 @@ impl<T: KvElement> PagedKvCache<T> {
         let row_width = dims.row_width();
         let allocator = PageAllocator::new(total_pages, row_width, block_size.divisor());
         let page_table = vec![None; total_pages];
+        // One stamp per (page, row-in-page, stream, codebook). Allocated once
+        // here and never resized, like every other arena in this type
+        // (FR-EX-05).
+        let stamp_page_stride = block_size.divisor() * dims.n_stream * dims.n_codebook;
+        let row_stamp = vec![0u64; total_pages * stamp_page_stride];
         Ok(Self {
             allocator,
             block_size,
@@ -419,7 +454,42 @@ impl<T: KvElement> PagedKvCache<T> {
             page_table,
             pages_per_layer,
             pos: 0,
+            row_stamp,
+            stream_gen: vec![0u64; dims.n_stream],
+            stamp_page_stride,
         })
+    }
+
+    /// Index into [`Self::row_stamp`] for one `(page, row-in-page, stream)`.
+    #[inline]
+    const fn stamp_index(
+        &self,
+        page: PageId,
+        offset_in_page: usize,
+        stream: usize,
+        codebook: usize,
+    ) -> usize {
+        page.0 * self.stamp_page_stride
+            + (offset_in_page * self.dims.n_stream + stream) * self.dims.n_codebook
+            + codebook
+    }
+
+    /// Whether the row at `(page, offset_in_page, stream, codebook)` was
+    /// written by the stream slot's *current* occupant.
+    ///
+    /// `false` means the row belongs to a generation retired by
+    /// [`Self::release_stream`] and must read as unbound — that is the whole
+    /// isolation guarantee of the O(1) release.
+    #[inline]
+    fn row_is_live(
+        &self,
+        page: PageId,
+        offset_in_page: usize,
+        stream: usize,
+        codebook: usize,
+    ) -> bool {
+        self.row_stamp[self.stamp_index(page, offset_in_page, stream, codebook)]
+            == self.stream_gen[stream]
     }
 
     /// Bounds-checked logical → physical resolution (T03).
@@ -430,15 +500,24 @@ impl<T: KvElement> PagedKvCache<T> {
     /// [`Self::read_step`] returning [`None`]) from "out of range". Explicitly
     /// avoids `panic!` because the paged cache runs behind a public FFI façade
     /// (NFR-RL-07).
+    ///
+    /// A row written before a [`Self::release_stream`] on `s` also resolves to
+    /// `Ok(None)`: it is physically present but logically retired, and handing
+    /// its address out would let a caller read the previous occupant's state
+    /// (cc-37).
     pub fn logical_at(&self, layer: usize, t: usize, s: usize, c: usize) -> Result<Option<KvSlot>> {
         self.check_bounds(layer, t, s, c)?;
         let block = self.block_size.page_of(t);
         let table_idx = layer * self.pages_per_layer + block;
-        Ok(self.page_table[table_idx].map(|page_id| KvSlot {
-            page_id,
-            offset_in_page: self.block_size.offset_in_page(t),
-            stream: s,
-            codebook: c,
+        let offset_in_page = self.block_size.offset_in_page(t);
+        Ok(self.page_table[table_idx].and_then(|page_id| {
+            self.row_is_live(page_id, offset_in_page, s, c)
+                .then_some(KvSlot {
+                    page_id,
+                    offset_in_page,
+                    stream: s,
+                    codebook: c,
+                })
         }))
     }
 
@@ -555,6 +634,10 @@ impl<T: KvElement> PagedKvCache<T> {
             }
         };
         let offset = self.block_size.offset_in_page(t);
+        // Claim this row for the stream slot's current occupant (cc-37). One
+        // store on the append hot path; it is what makes `release_stream` O(1).
+        let stamp_idx = self.stamp_index(page_id, offset, s, c);
+        self.row_stamp[stamp_idx] = self.stream_gen[s];
         let page = &mut self.allocator.arena[page_id.0];
         let sc_offset = (s * self.dims.n_codebook + c) * per_slot;
         page.k_row_mut(offset)[sc_offset..sc_offset + per_slot].copy_from_slice(k_row);
@@ -563,7 +646,8 @@ impl<T: KvElement> PagedKvCache<T> {
     }
 
     /// Reads the K/V row previously written by [`Self::append_step`], or
-    /// [`None`] if that block has never been written on this `layer`.
+    /// [`None`] if that block has never been written on this `layer` — or if
+    /// the row was retired by a [`Self::release_stream`] on `s` (cc-37).
     ///
     /// The returned slices are borrows into the arena and are stable across
     /// subsequent reads until the next [`Self::append_step`] or
@@ -584,6 +668,12 @@ impl<T: KvElement> PagedKvCache<T> {
         let table_idx = layer * self.pages_per_layer + block;
         let page_id = self.page_table[table_idx]?;
         let offset = self.block_size.offset_in_page(t);
+        // Retired-generation rows read as unbound (cc-37) — the physical bytes
+        // survive until the page is reused, so the stamp is what enforces
+        // isolation between successive occupants of a stream slot.
+        if !self.row_is_live(page_id, offset, s, c) {
+            return None;
+        }
         let page = &self.allocator.arena[page_id.0];
         let per_slot = self.dims.n_head * self.dims.d_head;
         let sc_offset = (s * self.dims.n_codebook + c) * per_slot;
@@ -608,6 +698,13 @@ impl<T: KvElement> PagedKvCache<T> {
 
     /// Rewinds the cache to empty while preserving the arena and the free-list
     /// order. A fresh decode of the same shape reuses every buffer.
+    ///
+    /// The cc-37 stream generations and row stamps are deliberately left as
+    /// they are. They cannot leak anything across a reset: the page table is
+    /// cleared (so every read short-circuits to [`None`] until a page is
+    /// re-bound) and `allocator.reset()` zeroes every page (so a stamp that
+    /// happens to still match can only expose zeros). Rewriting them would be
+    /// `O(pages · block_size · n_stream)` of pointless work.
     pub fn reset(&mut self) {
         for slot in &mut self.page_table {
             *slot = None;
@@ -643,6 +740,59 @@ impl<T: KvElement> PagedKvCache<T> {
                 self.allocator.release(pid);
             }
         }
+        Ok(())
+    }
+
+    /// Retires every row belonging to `stream`, in **O(1)**, so the next
+    /// session to take that stream slot cannot observe the previous
+    /// occupant's KV state (cc-37, M3-15 T04 follow-up).
+    ///
+    /// # Why this is not a zero-fill
+    ///
+    /// A page holds one `(layer, time-block)` for **every** stream, so there is
+    /// no page subset that belongs to one stream — the stream axis lives
+    /// *inside* each page. Erasing a stream by overwriting its rows therefore
+    /// costs `O(n_layer · committed_time · n_head · d_head)`, which is what the
+    /// M3-15 server registry did (looping `append_step` with zero rows) and
+    /// what this method replaces.
+    ///
+    /// Instead each stream slot carries a generation counter. Retiring the slot
+    /// bumps it, which invalidates every row the previous occupant stamped:
+    /// [`Self::read_step`] and [`Self::logical_at`] both return [`None`] for a
+    /// stale row, so the bytes — though still physically present until the page
+    /// is reused — are unreachable through the public API. Reuse of the
+    /// *physical* page still zeroes it ([`Self::release_layer`],
+    /// [`Self::reset`]), so the two mechanisms are independent defences.
+    ///
+    /// # What it does not do
+    ///
+    /// It does **not** return pages to the free list: pages are shared across
+    /// streams by construction, so a page stays live while any stream still
+    /// needs it. Page reclamation remains [`Self::release_layer`] /
+    /// [`Self::reset`]. It also leaves the position clock untouched — the clock
+    /// is cache-global, and the caller (a session registry) owns per-stream
+    /// bookkeeping.
+    ///
+    /// # Generation exhaustion
+    ///
+    /// The counter is `u64` and increments once per release, so wrap-around
+    /// needs 2^64 releases of the same slot — unreachable in practice (at one
+    /// release per nanosecond it is ~584 years). A narrower counter would make
+    /// wrap-around a silent isolation failure, which is why this is not `u32`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VokraError::InvalidArgument`] if `stream >= n_stream`.
+    pub fn release_stream(&mut self, stream: usize) -> Result<()> {
+        if stream >= self.dims.n_stream {
+            return Err(VokraError::InvalidArgument(format!(
+                "release_stream: stream {stream} >= n_stream {}",
+                self.dims.n_stream
+            )));
+        }
+        // The entire release: one increment, independent of n_layer, max_time
+        // and the number of committed positions.
+        self.stream_gen[stream] += 1;
         Ok(())
     }
 
@@ -1300,6 +1450,333 @@ mod tests {
             cache.release_layer(1),
             Err(VokraError::InvalidArgument(_))
         ));
+    }
+
+    // ---- cc-37: O(1) `release_stream` -------------------------------------
+
+    /// A released stream's rows are unreadable through every public read path.
+    /// This is the property a naive O(1) release — one that merely returned the
+    /// slot to a free list without invalidating anything — would violate: the
+    /// bytes are still physically in the page, so `read_step` would happily
+    /// hand back the previous occupant's K/V.
+    #[test]
+    fn release_stream_hides_the_previous_occupants_rows() {
+        let d = KvDims {
+            n_layer: 2,
+            n_head: 1,
+            d_head: 2,
+            n_stream: 2,
+            n_codebook: 1,
+            max_time: 8,
+        };
+        let mut cache = PagedKvCache::<f32>::pre_allocate(d, BlockSize::Four).unwrap();
+
+        // Occupant A writes a recognisable signature on stream 0.
+        for t in 0..8 {
+            for layer in 0..d.n_layer {
+                cache
+                    .append_step(layer, t, 0, 0, &[7.0, 8.0], &[9.0, 10.0])
+                    .unwrap();
+            }
+        }
+        cache.advance(8);
+        assert_eq!(
+            cache.read_step(0, 0, 0, 0),
+            Some((&[7.0, 8.0][..], &[9.0, 10.0][..]))
+        );
+
+        cache.release_stream(0).unwrap();
+
+        // Every (layer, t) on stream 0 must now be unreachable — not merely
+        // zeroed, but absent. A stale `Some(..)` here is a state leak.
+        for t in 0..8 {
+            for layer in 0..d.n_layer {
+                assert_eq!(
+                    cache.read_step(layer, t, 0, 0),
+                    None,
+                    "layer {layer} t {t}: released stream row is still readable"
+                );
+                assert_eq!(
+                    cache.logical_at(layer, t, 0, 0).unwrap(),
+                    None,
+                    "layer {layer} t {t}: released stream row still resolves to a slot"
+                );
+            }
+        }
+        // `iter_time_range` rides on `logical_at`, so it must skip them too.
+        assert_eq!(cache.iter_time_range(0, 0, 0, 0..8).unwrap().count(), 0);
+    }
+
+    /// The subtle case a *per-page* generation stamp would miss, and the reason
+    /// the stamp is per row.
+    ///
+    /// A page spans `block_size` consecutive time steps. If the new occupant of
+    /// a stream slot writes a single step, a per-page stamp would re-validate
+    /// the whole page and expose the previous occupant's rows at the other
+    /// offsets in that same page. Per-row stamping keeps them retired.
+    #[test]
+    fn release_stream_isolation_survives_a_partial_page_rewrite() {
+        let d = KvDims {
+            n_layer: 1,
+            n_head: 1,
+            d_head: 2,
+            n_stream: 1,
+            n_codebook: 1,
+            max_time: 4,
+        };
+        // block_size = 4, so t = 0..4 all live in ONE page.
+        let mut cache = PagedKvCache::<f32>::pre_allocate(d, BlockSize::Four).unwrap();
+        for t in 0..4 {
+            let x = 100.0 + t as f32;
+            cache.append_step(0, t, 0, 0, &[x, x], &[x, x]).unwrap();
+        }
+        cache.advance(4);
+
+        cache.release_stream(0).unwrap();
+
+        // New occupant writes ONLY t = 0, into the very page the old occupant
+        // filled.
+        cache
+            .append_step(0, 0, 0, 0, &[1.0, 1.0], &[2.0, 2.0])
+            .unwrap();
+
+        assert_eq!(
+            cache.read_step(0, 0, 0, 0),
+            Some((&[1.0, 1.0][..], &[2.0, 2.0][..])),
+            "the new occupant's own row must be readable"
+        );
+        for t in 1..4 {
+            assert_eq!(
+                cache.read_step(0, t, 0, 0),
+                None,
+                "t {t}: previous occupant's row leaked through a partial page rewrite"
+            );
+        }
+    }
+
+    /// The same partial-rewrite hazard on the **codebook** axis, which is the
+    /// axis an RVQ decode actually varies (`[time, stream, codebook]`, M3-03).
+    ///
+    /// A stamp keyed only by `(page, row, stream)` would be re-validated for
+    /// *every* codebook the moment the new occupant wrote any one of them, so
+    /// writing codebook 0 at `t` would expose the previous occupant's codebook
+    /// 1 at the same `t`. Mimi / DAC / Moshi all decode multi-codebook, so this
+    /// is a reachable leak rather than a theoretical one.
+    #[test]
+    fn release_stream_isolation_is_per_codebook() {
+        let d = KvDims {
+            n_layer: 1,
+            n_head: 1,
+            d_head: 2,
+            n_stream: 1,
+            n_codebook: 2,
+            max_time: 4,
+        };
+        let mut cache = PagedKvCache::<f32>::pre_allocate(d, BlockSize::Four).unwrap();
+
+        // Occupant A fills both codebooks at t = 0.
+        cache
+            .append_step(0, 0, 0, 0, &[11.0, 11.0], &[12.0, 12.0])
+            .unwrap();
+        cache
+            .append_step(0, 0, 0, 1, &[21.0, 21.0], &[22.0, 22.0])
+            .unwrap();
+        cache.advance(1);
+
+        cache.release_stream(0).unwrap();
+
+        // Occupant B writes ONLY codebook 0, at the same (layer, t, stream).
+        cache
+            .append_step(0, 0, 0, 0, &[1.0, 1.0], &[2.0, 2.0])
+            .unwrap();
+
+        assert_eq!(
+            cache.read_step(0, 0, 0, 0),
+            Some((&[1.0, 1.0][..], &[2.0, 2.0][..])),
+            "the new occupant's own codebook must be readable"
+        );
+        assert_eq!(
+            cache.read_step(0, 0, 0, 1),
+            None,
+            "codebook 1 still holds occupant A's row — writing codebook 0 must not \
+             re-validate the whole (page, row, stream) tuple"
+        );
+    }
+
+    /// Releasing one stream leaves every other stream's committed state
+    /// bit-intact — the release is scoped to its slot, not to the pages it
+    /// happens to share.
+    #[test]
+    fn release_stream_does_not_disturb_other_streams() {
+        let d = KvDims {
+            n_layer: 1,
+            n_head: 1,
+            d_head: 2,
+            n_stream: 3,
+            n_codebook: 1,
+            max_time: 4,
+        };
+        let mut cache = PagedKvCache::<f32>::pre_allocate(d, BlockSize::Two).unwrap();
+        for t in 0..4 {
+            for s in 0..3 {
+                let x = (s * 100 + t) as f32;
+                cache.append_step(0, t, s, 0, &[x, x], &[x, x]).unwrap();
+            }
+        }
+        cache.advance(4);
+
+        cache.release_stream(1).unwrap();
+
+        for t in 0..4 {
+            for s in [0usize, 2] {
+                let x = (s * 100 + t) as f32;
+                assert_eq!(
+                    cache.read_step(0, t, s, 0),
+                    Some((&[x, x][..], &[x, x][..])),
+                    "stream {s} t {t} was disturbed by releasing stream 1"
+                );
+            }
+            assert_eq!(
+                cache.read_step(0, t, 1, 0),
+                None,
+                "stream 1 t {t} not retired"
+            );
+        }
+    }
+
+    /// A released slot is fully reusable: the next occupant writes and reads its
+    /// own state normally, and a second release retires *that* state in turn.
+    #[test]
+    fn released_stream_slot_is_reusable_across_generations() {
+        let d = dims(1, 1, 2, 4);
+        let mut cache = PagedKvCache::<f32>::pre_allocate(d, BlockSize::Two).unwrap();
+
+        for generation in 1..=4u32 {
+            let x = generation as f32;
+            for t in 0..4 {
+                cache.append_step(0, t, 0, 0, &[x, x], &[x, x]).unwrap();
+            }
+            for t in 0..4 {
+                assert_eq!(
+                    cache.read_step(0, t, 0, 0),
+                    Some((&[x, x][..], &[x, x][..])),
+                    "generation {generation} t {t}: own state not readable"
+                );
+            }
+            cache.release_stream(0).unwrap();
+            for t in 0..4 {
+                assert_eq!(cache.read_step(0, t, 0, 0), None);
+            }
+        }
+    }
+
+    #[test]
+    fn release_stream_rejects_out_of_range() {
+        let d = dims(1, 1, 1, 4);
+        let mut cache = PagedKvCache::<f32>::pre_allocate(d, BlockSize::Four).unwrap();
+        assert!(matches!(
+            cache.release_stream(1),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    /// `release_stream` reclaims no pages (they are shared across streams) and
+    /// does not move the position clock. Pinning this keeps the contract from
+    /// silently acquiring page-reclamation semantics later.
+    #[test]
+    fn release_stream_leaves_pages_and_clock_alone() {
+        let d = dims(2, 1, 1, 8);
+        let mut cache = PagedKvCache::<f32>::pre_allocate(d, BlockSize::Four).unwrap();
+        for t in 0..8 {
+            for layer in 0..2 {
+                cache.append_step(layer, t, 0, 0, &[1.0], &[2.0]).unwrap();
+            }
+        }
+        cache.advance(8);
+        let pages_before = cache.pages_in_use();
+        let pos_before = cache.positions();
+        assert!(pages_before > 0, "the fixture must actually bind pages");
+
+        cache.release_stream(0).unwrap();
+
+        assert_eq!(cache.pages_in_use(), pages_before);
+        assert_eq!(cache.positions(), pos_before);
+    }
+
+    /// The complexity claim, proved deterministically rather than timed:
+    /// `release_stream` touches **zero** bytes of page storage and zero stamp
+    /// entries, whatever the amount of state it retires.
+    ///
+    /// This is a stronger and far more stable statement than a wall-clock
+    /// ratio. A timing comparison here is worse than useless — the O(1) body is
+    /// a single increment, so the baseline loop optimises away entirely and the
+    /// "ratio" ends up measuring codegen, not asymptotics. Instead the test
+    /// snapshots the whole arena plus the stamp table around the call: if any
+    /// future implementation reintroduces per-page (or per-row) work, the
+    /// snapshot differs and this fails.
+    ///
+    /// The cost that was removed is reported concretely: the M3-15 registry
+    /// zero-filled a released stream by looping `append_step` with zero rows
+    /// over every `(layer, committed t)`, which is `n_layer · committed · 2 ·
+    /// n_head · d_head` element writes.
+    #[test]
+    fn release_stream_does_zero_work_proportional_to_state() {
+        let d = KvDims {
+            n_layer: 8,
+            n_head: 2,
+            d_head: 32,
+            n_stream: 2,
+            n_codebook: 1,
+            max_time: 512,
+        };
+        let mut cache = PagedKvCache::<f32>::pre_allocate(d, BlockSize::Four).unwrap();
+        let per_slot = d.n_head * d.d_head;
+        let k = vec![1.5f32; per_slot];
+        let v = vec![2.5f32; per_slot];
+        for t in 0..d.max_time {
+            for layer in 0..d.n_layer {
+                for s in 0..d.n_stream {
+                    cache.append_step(layer, t, s, 0, &k, &v).unwrap();
+                }
+            }
+        }
+        cache.advance(d.max_time);
+
+        // Snapshot every physical page and the whole stamp table.
+        let pages_before: Vec<Vec<f32>> = cache
+            .allocator
+            .arena
+            .iter()
+            .map(|p| p.data.clone())
+            .collect();
+        let stamps_before = cache.row_stamp.clone();
+        let gen_before = cache.stream_gen[0];
+
+        cache.release_stream(0).unwrap();
+
+        for (idx, before) in pages_before.iter().enumerate() {
+            assert_eq!(
+                &cache.allocator.arena[idx].data, before,
+                "release_stream wrote to page {idx}: the release is not O(1)"
+            );
+        }
+        assert_eq!(
+            cache.row_stamp, stamps_before,
+            "release_stream wrote to the stamp table: the release is not O(1)"
+        );
+        // The one and only mutation.
+        assert_eq!(cache.stream_gen[0], gen_before + 1);
+        assert_eq!(cache.stream_gen[1], 0, "the other slot must be untouched");
+
+        // ...and the retirement really happened.
+        assert_eq!(cache.read_step(0, 0, 0, 0), None);
+
+        let displaced_writes = d.n_layer * d.max_time * 2 * per_slot;
+        eprintln!(
+            "release_stream: {displaced_writes} element writes (old zero-fill) → 0 \
+             (one u64 increment), for n_layer={} committed={} per_slot={per_slot}",
+            d.n_layer, d.max_time
+        );
     }
 
     #[test]

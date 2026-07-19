@@ -14,12 +14,20 @@
 //!   and read back — the same GPU add the imperative decode path uses.
 //! - `Softmax` → [`MetalContext::softmax_f32`] (the `vokra_softmax_f32` kernel),
 //!   row-wise over the innermost axis exactly like the CPU `kernels::softmax_f32`.
+//! - `Mul` → [`MetalContext::mul_dev`] (the cc-27 `vokra_mul_f32` kernel: a
+//!   single FP32 `dst[i] * src[i]` per element, measured bit-identical to the
+//!   CPU `kernels::mul_f32` over normal-range operands).
+//! - `Copy` → [`MetalContext::copy_dev`] (the cc-27 `vokra_copy_f32` kernel:
+//!   `dst[i] = src[i]` as a real compute dispatch, not a host memcpy).
 //!
-//! `Mul` and `Copy` have **no** Metal kernel (there is no `vokra_mul_f32` nor a
-//! compute copy kernel — only Vulkan carries a hand-crafted `copy_f32`), so they
-//! stay an explicit [`VokraError::UnsupportedOp`] here — never a silent CPU
-//! fallback (FR-EX-08). `Mul` is thus a genuine, honestly-surfaced CPU/Metal
-//! asymmetry (the CPU backend covers it) rather than an invented kernel. The
+//! `Mul` / `Copy` were previously an explicit `UnsupportedOp` here because no
+//! `vokra_mul_f32` / compute-copy kernel existed — that was an honesty stance
+//! about a missing kernel, not a design decision, and cc-27 closes it by
+//! writing the two kernels. The Metal graph arm now covers the same op set as
+//! the CUDA / Vulkan / WebGPU arms.
+//!
+//! Every op without a kernel still surfaces as an explicit
+//! [`VokraError::UnsupportedOp`] — never a silent CPU fallback (FR-EX-08). The
 //! engine's coverage precheck already rejects uncovered ops before they reach
 //! here, but the catch-all keeps the contract honest even when `eval_op` is
 //! called directly (keeps `supports()` and `eval_op()` in sync).
@@ -39,6 +47,8 @@ pub(crate) fn eval_metal_op(
     match op {
         OpKind::MatMul => eval_matmul(ctx, inputs),
         OpKind::Add => eval_add(ctx, inputs),
+        OpKind::Mul => eval_mul(ctx, inputs),
+        OpKind::Copy => eval_copy(ctx, inputs),
         OpKind::Softmax => eval_softmax(ctx, inputs),
         other => Err(VokraError::UnsupportedOp(format!(
             "metal backend has no graph kernel for {other:?} (no silent CPU fallback, FR-EX-08)"
@@ -93,6 +103,52 @@ fn eval_add(ctx: &MetalContext, inputs: &[&Tensor]) -> Result<Vec<Tensor>> {
     let mut out = vec![0.0f32; av.len()];
     ctx.download(&dst, &mut out)?;
     Ok(vec![Tensor::host_f32(a.shape.clone(), out)?])
+}
+
+/// Element-wise `out = a * b` on the GPU, preserving shape; both operands must
+/// be identically shaped (no broadcast in the MVP, mirroring the CPU arm).
+///
+/// Structurally identical to [`eval_add`], only the device call differs: an
+/// independent device copy of `a` is multiplied in place by `b` through
+/// [`MetalContext::mul_dev`] (the cc-27 `vokra_mul_f32` kernel), leaving the
+/// host slices intact. One FP32 multiply per element with no reduction order,
+/// so the result matches the CPU backend's `kernels::mul_f32` (measured
+/// bit-identical over normal-range operands — see
+/// `tests/graph_metal.rs::mul_matches_cpu_backend`).
+fn eval_mul(ctx: &MetalContext, inputs: &[&Tensor]) -> Result<Vec<Tensor>> {
+    let (a, b) = take2(inputs, "Mul")?;
+    if a.shape != b.shape {
+        return Err(VokraError::InvalidArgument(format!(
+            "Mul: operand shapes {:?} and {:?} differ (element-wise op, no broadcast)",
+            a.shape, b.shape
+        )));
+    }
+    let av = a.as_f32()?;
+    let mut dst = ctx.upload(av)?;
+    let src = ctx.upload(b.as_f32()?)?;
+    ctx.mul_dev(&mut dst, &src)?;
+    let mut out = vec![0.0f32; av.len()];
+    ctx.download(&dst, &mut out)?;
+    Ok(vec![Tensor::host_f32(a.shape.clone(), out)?])
+}
+
+/// Identity element-wise copy `out = x` on the GPU via
+/// [`MetalContext::copy_dev`] (the cc-27 `vokra_copy_f32` kernel), preserving
+/// shape. Mirrors the Vulkan / WebGPU `Copy` arms.
+///
+/// The copy runs as a real compute dispatch into a separate device buffer, so
+/// the value is moved by the GPU rather than by the host round-trip alone; the
+/// output is therefore bit-identical to the input by construction (an FP32 move
+/// performs no arithmetic).
+fn eval_copy(ctx: &MetalContext, inputs: &[&Tensor]) -> Result<Vec<Tensor>> {
+    let x = take1(inputs, "Copy")?;
+    let xv = x.as_f32()?;
+    let src = ctx.upload(xv)?;
+    let mut dst = ctx.alloc_dev(xv.len())?;
+    ctx.copy_dev(&mut dst, &src)?;
+    let mut out = vec![0.0f32; xv.len()];
+    ctx.download(&dst, &mut out)?;
+    Ok(vec![Tensor::host_f32(x.shape.clone(), out)?])
 }
 
 /// Row-wise softmax over the innermost axis on the GPU via
@@ -165,15 +221,84 @@ mod tests {
             eprintln!("no Metal device; skipping eval dispatcher coverage test");
             return;
         };
-        // `Mul` is a real op the CPU backend covers, but there is no Metal
-        // element-wise-multiply kernel — it must surface as UnsupportedOp, not
-        // run on the CPU (genuine, honestly-surfaced asymmetry).
+        // `Stft` is a real audio-dialect op with no Metal graph kernel — it
+        // must surface as UnsupportedOp, not run on the CPU.
         let a = Tensor::zeros_f32(vec![2, 2]);
-        let err = eval_metal_op(&ctx, &OpKind::Mul, &[&a, &a]).unwrap_err();
+        let err = eval_metal_op(
+            &ctx,
+            &OpKind::Stft(vokra_core::ir::graph::StftAttrs::new(400, 160)),
+            &[&a],
+        )
+        .unwrap_err();
         assert!(matches!(err, VokraError::UnsupportedOp(_)));
-        // `Copy` likewise has no Metal compute kernel here.
-        let err = eval_metal_op(&ctx, &OpKind::Copy, &[&a]).unwrap_err();
-        assert!(matches!(err, VokraError::UnsupportedOp(_)));
+    }
+
+    /// `Mul` is genuinely wired (cc-27): a small case computes `a * b` on the
+    /// GPU and returns the input shape. The single FP32 multiply per element
+    /// carries one rounding, so the exact host product is reproduced.
+    /// Differential correctness vs the CPU backend is `tests/graph_metal.rs`.
+    #[test]
+    fn mul_is_wired_and_shapes_output() {
+        let Ok(ctx) = MetalContext::new() else {
+            eprintln!("no Metal device; skipping eval Mul wiring test");
+            return;
+        };
+        let a = Tensor::host_f32(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let b = Tensor::host_f32(vec![2, 2], vec![10.0, 20.0, 30.0, 40.0]).unwrap();
+        let out = eval_metal_op(&ctx, &OpKind::Mul, &[&a, &b]).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].shape, vec![2, 2]);
+        assert_eq!(out[0].as_f32().unwrap(), &[10.0, 40.0, 90.0, 160.0]);
+    }
+
+    /// `Mul` shape / arity errors are explicit `InvalidArgument` (mirrors the
+    /// `Add` arm's validation).
+    #[test]
+    fn mul_rejects_bad_shapes_and_arity() {
+        let Ok(ctx) = MetalContext::new() else {
+            eprintln!("no Metal device; skipping eval Mul validation test");
+            return;
+        };
+        let a = Tensor::host_f32(vec![2, 2], vec![0.0; 4]).unwrap();
+        let mismatched = Tensor::host_f32(vec![4], vec![0.0; 4]).unwrap(); // same numel, diff shape
+        assert!(matches!(
+            eval_metal_op(&ctx, &OpKind::Mul, &[&a, &mismatched]).unwrap_err(),
+            VokraError::InvalidArgument(_)
+        ));
+        assert!(matches!(
+            eval_metal_op(&ctx, &OpKind::Mul, &[&a]).unwrap_err(),
+            VokraError::InvalidArgument(_)
+        ));
+    }
+
+    /// `Copy` is genuinely wired (cc-27): the output is the input, element for
+    /// element, with the shape preserved. An FP32 move performs no arithmetic,
+    /// so equality here is exact by construction.
+    #[test]
+    fn copy_is_wired_and_is_the_identity() {
+        let Ok(ctx) = MetalContext::new() else {
+            eprintln!("no Metal device; skipping eval Copy wiring test");
+            return;
+        };
+        let x = Tensor::host_f32(vec![2, 3], vec![1.5, -2.25, 3.0, 0.0, 1e-7, 4096.5]).unwrap();
+        let out = eval_metal_op(&ctx, &OpKind::Copy, &[&x]).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].shape, vec![2, 3]);
+        assert_eq!(out[0].as_f32().unwrap(), x.as_f32().unwrap());
+    }
+
+    /// `Copy` arity errors are explicit `InvalidArgument`.
+    #[test]
+    fn copy_rejects_bad_arity() {
+        let Ok(ctx) = MetalContext::new() else {
+            eprintln!("no Metal device; skipping eval Copy validation test");
+            return;
+        };
+        let a = Tensor::host_f32(vec![2, 2], vec![0.0; 4]).unwrap();
+        assert!(matches!(
+            eval_metal_op(&ctx, &OpKind::Copy, &[&a, &a]).unwrap_err(),
+            VokraError::InvalidArgument(_)
+        ));
     }
 
     /// `Add` is genuinely wired: a small case computes `a + b` on the GPU and

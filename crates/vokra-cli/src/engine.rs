@@ -40,6 +40,22 @@ pub(crate) enum ModelTask {
     AsrVoxtral,
     /// Text-to-speech (piper-plus native TTS).
     Tts,
+    /// Text-to-speech through Kokoro-82M from a **phoneme string** (cc-24).
+    ///
+    /// Separate from [`ModelTask::Tts`] because the two archs take different
+    /// input: piper-plus implements `TtsEngine::synthesize`, which accepts
+    /// graphemes-or-phonemes and tokenizes internally, whereas Kokoro's
+    /// `TtsEngine::synthesize` is a hard [`vokra_core::VokraError::NotImplemented`]
+    /// pending a misaki G2P bridge. The reachable Kokoro surface is the
+    /// concrete [`vokra_models::kokoro::KokoroTts::synthesize_phonemes`], which
+    /// takes phoneme ids and an explicit style vector.
+    ///
+    /// Like [`ModelTask::Speaker`] / [`ModelTask::AsrVoxtral`], the dispatch
+    /// returns a **bare session** and the `run` arm binds the concrete
+    /// `KokoroTts` from the model path: the trait object the session facade
+    /// stores cannot reach `synthesize_phonemes`, and injecting it as well
+    /// would mean loading the ~330 MB of f32 weights twice.
+    TtsKokoro,
     /// Speech-to-speech dialog (Sesame CSM-1B = M4-05). The reply text is
     /// caller-supplied (`--text`), optional `--input` WAV = recorded
     /// context audio (explicit AEC bypass — T16).
@@ -137,6 +153,9 @@ const ARCH_MOSHI: &str = "moshi";
 const ARCH_CAMPPLUS: &str = "campplus";
 /// Voxtral (M3-10) — matches `vokra-convert::models::voxtral::ARCH`.
 const ARCH_VOXTRAL: &str = "voxtral";
+/// Kokoro-82M (M2-07) — matches `vokra_models::kokoro`'s `EXPECTED_ARCH` and
+/// what `vokra-convert --model kokoro` writes.
+const ARCH_KOKORO: &str = "kokoro-82m-istftnet";
 
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
@@ -240,6 +259,18 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // vokra-capi; a shared-GGUF constructor is the same follow-up).
             let tts = PiperPlusTts::from_path(path).map_err(|e| e.to_string())?;
             Ok((session.with_tts_engine(Arc::new(tts)), ModelTask::Tts))
+        }
+        ARCH_KOKORO => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_KOKORO}`"
+                ));
+            }
+            // Bare session — the `run` arm binds `KokoroTts` from the model
+            // path exactly once (see `ModelTask::TtsKokoro` for why the engine
+            // is not injected here). A GGUF whose tensors / metadata do not
+            // bind fails loudly there (FR-EX-08).
+            Ok((session, ModelTask::TtsKokoro))
         }
         ARCH_VOXTRAL => {
             if hint.is_some() {
@@ -357,7 +388,8 @@ pub(crate) fn load_session_with_backend_and_mimi(
         other => Err(format!(
             "unsupported model arch `{other}` (expected `{ARCH_WHISPER}` / \
              `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
-             `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}`)"
+             `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
+             `{ARCH_KOKORO}`)"
         )),
     }
 }

@@ -8,10 +8,12 @@
 //!    [`Tensor`](vokra_core::Tensor) inputs by dispatching to the GPU, and
 //!    [`vokra_core::run_graph`] drives it node-by-node (Phase 2). `MatMul`
 //!    routes into `MetalContext::gemm_f32`, `Add` into the
-//!    `vokra_add_assign_f32` kernel (`MetalContext::residual_add_dev`), and
-//!    `Softmax` into `MetalContext::softmax_f32`; every uncovered op (including
-//!    `Mul` and `Copy`, which have no Metal kernel) is an explicit
-//!    [`VokraError::UnsupportedOp`], never a silent CPU fallback (FR-EX-08).
+//!    `vokra_add_assign_f32` kernel (`MetalContext::residual_add_dev`),
+//!    `Softmax` into `MetalContext::softmax_f32`, and — since cc-27 — `Mul`
+//!    into `vokra_mul_f32` (`MetalContext::mul_dev`) and `Copy` into
+//!    `vokra_copy_f32` (`MetalContext::copy_dev`); every uncovered op is an
+//!    explicit [`VokraError::UnsupportedOp`], never a silent CPU fallback
+//!    (FR-EX-08).
 //!    [`Backend::execute`] stays a coverage-only check (symmetric with
 //!    `CpuBackend::execute`).
 
@@ -104,14 +106,18 @@ impl Backend for MetalBackend {
     fn supports(&self, op: &OpKind) -> bool {
         // Ops with a wired Metal graph kernel: the FP32 GEMM (`MatMul`), the
         // element-wise `Add` (`vokra_add_assign_f32` via `residual_add_dev`),
-        // and the row-wise `Softmax` (`vokra_softmax_f32`). `Mul` and `Copy`
-        // have no Metal kernel (no `vokra_mul_f32`, no compute copy kernel), so
-        // they — and every other op — stay uncovered and must surface as an
-        // explicit error at execution (FR-EX-08), never a silent CPU fall back.
-        // Kept in lock-step with `eval::eval_metal_op`.
+        // the row-wise `Softmax` (`vokra_softmax_f32`), and — since cc-27 —
+        // the element-wise `Mul` (`vokra_mul_f32`) and `Copy`
+        // (`vokra_copy_f32`), which bring this arm level with the CUDA /
+        // Vulkan / WebGPU graph arms. Every other op stays uncovered and must
+        // surface as an explicit error at execution (FR-EX-08), never a silent
+        // CPU fall back. Kept in lock-step with `eval::eval_metal_op`.
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         {
-            matches!(op, OpKind::MatMul | OpKind::Add | OpKind::Softmax)
+            matches!(
+                op,
+                OpKind::MatMul | OpKind::Add | OpKind::Mul | OpKind::Copy | OpKind::Softmax
+            )
         }
         #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         {
@@ -173,9 +179,15 @@ mod tests {
                 assert!(backend.supports(&OpKind::MatMul));
                 assert!(backend.supports(&OpKind::Add));
                 assert!(backend.supports(&OpKind::Softmax));
-                // No Metal kernel for these → still uncovered (FR-EX-08).
-                assert!(!backend.supports(&OpKind::Mul));
-                assert!(!backend.supports(&OpKind::Copy));
+                // cc-27 wired both of these to real MSL kernels.
+                assert!(backend.supports(&OpKind::Mul));
+                assert!(backend.supports(&OpKind::Copy));
+                // An op with no Metal kernel is still uncovered (FR-EX-08).
+                assert!(
+                    !backend.supports(&OpKind::Stft(vokra_core::ir::graph::StftAttrs::new(
+                        400, 160
+                    )))
+                );
             }
         }
         #[cfg(not(any(target_os = "macos", target_os = "ios")))]

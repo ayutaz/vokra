@@ -440,6 +440,50 @@ kernel void vokra_add_assign_f32(
     dst[gid] = dst[gid] + src[gid];
 }
 
+// ---- cc-27: element-wise multiply + copy (graph-executor `Mul` / `Copy`) -----
+// The two kernels that bring the Metal graph arm level with the CUDA / Vulkan /
+// WebGPU arms. Both reuse `AddAssignDims` (a single `uint n`) — the operand
+// layout is identical to `vokra_add_assign_f32`, only the combining operation
+// differs — so no new dims struct is needed on either side of the FFI.
+//
+// `vokra_mul_f32` is in-place (`dst` read-write at index 0) exactly like the
+// residual add, so `eval_mul` mirrors `eval_add` operand-for-operand. One FP32
+// multiply per element — the same single rounding the CPU `kernels::mul_f32`
+// performs, with no reduction order to disagree about. Measured bit-identical
+// against the CPU backend over normal-range operands on M1
+// (`graph_metal.rs::mul_matches_cpu_backend`, max |Δ| = 0). MSL is compiled
+// with fast-math defaults, which permit denormal flush-to-zero, so the
+// bit-identity claim is scoped to normal-range operands; the parity test pins
+// that scope explicitly rather than asserting it universally.
+kernel void vokra_mul_f32(
+    device float*           dst [[buffer(0)]],
+    device const float*     src [[buffer(1)]],
+    constant AddAssignDims& d   [[buffer(2)]],
+    uint                    gid [[thread_position_in_grid]])
+{
+    if (gid >= d.n) {
+        return;
+    }
+    dst[gid] = dst[gid] * src[gid];
+}
+
+// `vokra_copy_f32` is the identity element-wise move `dst[i] = src[i]` into a
+// SEPARATE destination buffer (mirrors the Vulkan hand-crafted `copy_f32`).
+// Distinct from `MetalContext::download`: this is a real compute dispatch, so
+// `OpKind::Copy` genuinely executes on the GPU rather than being emulated by a
+// host memcpy through the upload / read-back pair.
+kernel void vokra_copy_f32(
+    device float*           dst [[buffer(0)]],
+    device const float*     src [[buffer(1)]],
+    constant AddAssignDims& d   [[buffer(2)]],
+    uint                    gid [[thread_position_in_grid]])
+{
+    if (gid >= d.n) {
+        return;
+    }
+    dst[gid] = src[gid];
+}
+
 // ---- M3-04 fused KV-cache dequant + GEMV kernels ----------------------------
 //
 // One thread per output row. Each block of 32 quantised values is dequantised
@@ -840,7 +884,8 @@ struct ColScatterDims {
 }
 
 /// `add_assign` dims (`setBytes:` index 2). Mirrors the MSL `struct
-/// AddAssignDims`.
+/// AddAssignDims`. Shared verbatim by the cc-27 `vokra_mul_f32` /
+/// `vokra_copy_f32` kernels, whose operand layout is identical.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct AddAssignDims {
@@ -1133,6 +1178,10 @@ pub struct MetalContext {
     col_gather_t_pipeline: Id,
     col_scatter_pipeline: Id,
     add_assign_pipeline: Id,
+    /// cc-27 graph-executor element-wise multiply (`dst[i] *= src[i]`).
+    mul_pipeline: Id,
+    /// cc-27 graph-executor element-wise copy (`dst[i] = src[i]`).
+    copy_pipeline: Id,
     /// M3-04 fused KV-cache dequant + GEMV pipelines, one per Q_0 format
     /// (`vokra_dequant_gemv_q4_0_f32` / `_q5_0_f32` / `_q8_0_f32`). Symmetric
     /// with the CUDA `dequant_gemv_q*_0` kernels; each is the GPU
@@ -1254,6 +1303,11 @@ impl MetalContext {
         // SAFETY: as above.
         let add_assign_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_add_assign_f32") }?;
+        // cc-27 graph-executor element-wise multiply / copy; same library.
+        // SAFETY: as above.
+        let mul_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_mul_f32") }?;
+        // SAFETY: as above.
+        let copy_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_copy_f32") }?;
         // M3-04 fused KV-cache dequant + GEMV pipelines, one per Q_0 format;
         // share the same library as every other Phase-4/5 kernel.
         // SAFETY: as above.
@@ -1291,6 +1345,8 @@ impl MetalContext {
             col_gather_t_pipeline: col_gather_t_pipeline.into_raw(),
             col_scatter_pipeline: col_scatter_pipeline.into_raw(),
             add_assign_pipeline: add_assign_pipeline.into_raw(),
+            mul_pipeline: mul_pipeline.into_raw(),
+            copy_pipeline: copy_pipeline.into_raw(),
             dequant_gemv_q4_0_pipeline: dequant_gemv_q4_0_pipeline.into_raw(),
             dequant_gemv_q5_0_pipeline: dequant_gemv_q5_0_pipeline.into_raw(),
             dequant_gemv_q8_0_pipeline: dequant_gemv_q8_0_pipeline.into_raw(),
@@ -2943,6 +2999,65 @@ impl MetalContext {
         })
     }
 
+    /// Device-in/out in-place element-wise multiply (one self-contained
+    /// submission): `dst[i] *= src[i]` (cc-27). The GPU half of the
+    /// graph-executor's [`OpKind::Mul`](vokra_core::OpKind::Mul), shaped
+    /// exactly like [`Self::residual_add_dev`] so the two `eval_op` arms are
+    /// operand-for-operand mirrors.
+    ///
+    /// One FP32 multiply per element, so the result carries the same single
+    /// rounding as the CPU `kernels::mul_f32` (measured bit-identical over
+    /// normal-range operands — see the kernel comment for the denormal caveat).
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] if the lengths differ;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    pub fn mul_dev(
+        &self,
+        dst: &mut MetalDeviceTensor<'_>,
+        src: &MetalDeviceTensor<'_>,
+    ) -> Result<()> {
+        expect_len("mul_dev src", src.len, dst.len)?;
+        if dst.len == 0 {
+            return Ok(());
+        }
+        let n = dst.len;
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("mul_dev")?;
+            self.encode_elementwise(cmd, self.mul_pipeline, &dst.buf, &src.buf, n, "mul_dev")?;
+            self.commit_and_wait(cmd, "mul_dev")
+        })
+    }
+
+    /// Device-in/out element-wise copy (one self-contained submission):
+    /// `dst[i] = src[i]` (cc-27). The GPU half of the graph-executor's
+    /// [`OpKind::Copy`](vokra_core::OpKind::Copy).
+    ///
+    /// A real compute dispatch, not a host memcpy: `Copy` on the Metal graph
+    /// arm executes on the device exactly as it does on Vulkan / WebGPU.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] if the lengths differ;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    pub fn copy_dev(
+        &self,
+        dst: &mut MetalDeviceTensor<'_>,
+        src: &MetalDeviceTensor<'_>,
+    ) -> Result<()> {
+        expect_len("copy_dev src", src.len, dst.len)?;
+        if dst.len == 0 {
+            return Ok(());
+        }
+        let n = dst.len;
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("copy_dev")?;
+            self.encode_elementwise(cmd, self.copy_pipeline, &dst.buf, &src.buf, n, "copy_dev")?;
+            self.commit_and_wait(cmd, "copy_dev")
+        })
+    }
+
     /// Device-in/out fused MLP `fc2(gelu(fc1(x)))` (one self-contained submission,
     /// the two `[t, ffn]` intermediates allocated internally and never read back).
     /// Bit-identical to the host-in/out [`Self::mlp_f32`] (same passes).
@@ -3831,6 +3946,33 @@ impl MetalContext {
         )
     }
 
+    /// Encodes one two-operand element-wise pass (`dst`, `src`, `{n}`) for the
+    /// cc-27 `Mul` / `Copy` kernels. Both share `AddAssignDims` and the
+    /// `residual_add` binding layout, so the only per-op difference is which
+    /// pipeline is bound — hence one encoder parameterised by `pipeline`.
+    fn encode_elementwise(
+        &self,
+        cmd: Id,
+        pipeline: Id,
+        dst: &OwnedBuf,
+        src: &OwnedBuf,
+        n: usize,
+        label: &str,
+    ) -> Result<()> {
+        let dims = AddAssignDims { n: n as u32 };
+        let (grid, tg) = grid_1d(n);
+        self.encode_pass(
+            cmd,
+            pipeline,
+            &[dst, src],
+            (&dims as *const AddAssignDims).cast::<c_void>(),
+            size_of::<AddAssignDims>(),
+            grid,
+            tg,
+            label,
+        )
+    }
+
     /// Encodes ONE compute pass into `cmd` **without** committing or waiting: a
     /// fresh compute encoder binds `buffers` at indices `0..buffers.len()`, sets
     /// `dims` (a `constant` struct) at `buffers.len()` via `setBytes:`,
@@ -4003,6 +4145,8 @@ impl Drop for MetalContext {
             release(self.dequant_gemv_q8_0_pipeline);
             release(self.dequant_gemv_q5_0_pipeline);
             release(self.dequant_gemv_q4_0_pipeline);
+            release(self.copy_pipeline);
+            release(self.mul_pipeline);
             release(self.add_assign_pipeline);
             release(self.col_scatter_pipeline);
             release(self.col_gather_t_pipeline);

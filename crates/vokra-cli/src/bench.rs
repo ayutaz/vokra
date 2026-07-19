@@ -596,6 +596,21 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("mel-frontend", audio_seconds, samples)
         }
+        // Kokoro (M2-07 / cc-24) is routed through `vokra-cli run` but has no
+        // bench task. A Kokoro forward needs a style vector (`run --style`),
+        // and the bench harness has no flag to supply one — benching with a
+        // fabricated (e.g. zero) style would measure a synthesis the model was
+        // never asked to perform. Reject rather than invent an input
+        // (FR-EX-08); adding `bench --style` is the follow-up.
+        ModelTask::TtsKokoro => {
+            return Err(
+                "bench: arch `kokoro-82m-istftnet` has no bench task yet — a Kokoro forward \
+                 needs an explicit style vector and `bench` has no --style flag; use \
+                 `vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32>` \
+                 for a real synthesis"
+                    .to_owned(),
+            );
+        }
         ModelTask::Cosyvoice2Synthetic => {
             // The engine's load_session does NOT route the cosyvoice2 arch
             // today (T07/T08 real forward path deferred), so this arm is

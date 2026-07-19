@@ -28,6 +28,7 @@ USAGE:
     vokra-cli run --model <whisper.gguf> --input <in.wav> --word-timestamps
     vokra-cli run --model <voxtral.gguf> --input <in.wav> [--language <code>] [--bare-prompt]
     vokra-cli run --model <campplus.gguf> --input <a.wav> [--compare <b.wav>]
+    vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32> [--output <out.wav>]
 
 OPTIONS:
     --model <path>              GGUF model file (arch selects VAD / ASR / TTS / S2S /
@@ -48,7 +49,27 @@ OPTIONS:
                                 (speaker_verify, FR-OP-81)
     --text <string>             text to synthesize (TTS) / the reply text CSM
                                 speaks (S2S — caller-supplied, the model does
-                                not generate text)
+                                not generate text). For `kokoro` this is
+                                PHONEME content, not graphemes: either a misaki
+                                IPA string (each char looked up in the GGUF's
+                                vokra.kokoro.phoneme_symbols table) or the
+                                piper raw-id form (1 2 3 / 1,2,3 — content
+                                ids only, sentinels are added). Kokoro has no
+                                G2P bridge in-tree, so unmappable input is an
+                                error rather than a silent drop.
+    --voice <name>              kokoro only: voice name from the GGUF's
+                                vokra.kokoro.voice_names. The name resolves,
+                                but mapping it to a style row is NOT
+                                implemented yet (M2-07-T02), so this cannot
+                                synthesize on any GGUF — use --style.
+    --style <path>              kokoro only: raw little-endian f32 style
+                                vector, style_dim or 2*style_dim floats. The
+                                2*style_dim form is upstream's full ref_s row
+                                ([:style_dim] conditions the decoder,
+                                [style_dim:] the prosody predictor). Takes
+                                precedence over --voice.
+    --length-scale <s>          kokoro only: duration multiplier (reciprocal
+                                of upstream `speed`) [default 1.0]
     --output <path>             WAV file for the TTS / S2S output (optional)
     --beam-size <N>             ASR beam-search width (default 1 = greedy).
                                 Honored for `voxtral` (n-best beam) and, with
@@ -150,6 +171,16 @@ struct RunArgs {
     /// codec ends instead of the synthesized bridge (hard error on any
     /// bind failure; rejected loudly on every other arch — FR-EX-08).
     mimi: Option<String>,
+    /// Kokoro only (cc-24): voice name from `vokra.kokoro.voice_names`.
+    /// Rejected loudly on every other arch (FR-EX-08).
+    voice: Option<String>,
+    /// Kokoro only (cc-24): path to a raw little-endian f32 style vector
+    /// (`style_dim` or `2·style_dim` floats). Takes precedence over
+    /// `--voice`, matching `KokoroTts::synthesize_phonemes`.
+    style: Option<String>,
+    /// Kokoro only (cc-24): duration multiplier, the reciprocal of
+    /// upstream's `speed`. Defaults to 1.0 = upstream default.
+    length_scale: f32,
 }
 
 fn parse_args(args: &[String]) -> Result<RunArgs, String> {
@@ -175,6 +206,9 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut duplex = false;
     let mut echo_sim: Option<f32> = None;
     let mut mimi: Option<String> = None;
+    let mut voice: Option<String> = None;
+    let mut style: Option<String> = None;
+    let mut length_scale: f32 = 1.0;
 
     let mut i = 0;
     while i < args.len() {
@@ -291,6 +325,31 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 mimi = Some(v.clone());
                 i += 2;
             }
+            "--voice" => {
+                let v = args.get(i + 1).ok_or("--voice requires a name")?;
+                if v.is_empty() {
+                    return Err("--voice must not be empty".to_owned());
+                }
+                voice = Some(v.clone());
+                i += 2;
+            }
+            "--style" => {
+                let v = args.get(i + 1).ok_or("--style requires a path")?;
+                style = Some(v.clone());
+                i += 2;
+            }
+            "--length-scale" => {
+                let v = args.get(i + 1).ok_or("--length-scale requires a value")?;
+                length_scale = v
+                    .parse()
+                    .map_err(|e| format!("--length-scale must be a float: {e}"))?;
+                if !length_scale.is_finite() || length_scale <= 0.0 {
+                    return Err(format!(
+                        "--length-scale must be a positive finite float (got {length_scale})"
+                    ));
+                }
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -314,6 +373,9 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         duplex,
         echo_sim,
         mimi,
+        voice,
+        style,
+        length_scale,
     })
 }
 
@@ -353,6 +415,23 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         return Err(
             "run: --language / --bare-prompt are only supported for the voxtral arch — they \
              select the trained transcription prompt's `lang:` segment and layout"
+                .to_owned(),
+        );
+    }
+    // `--voice` / `--style` / `--length-scale` are Kokoro style-conditioning
+    // knobs (cc-24). Rejected off that arch rather than silently ignored
+    // (FR-EX-08) — a dropped style would change the speaker without saying so.
+    if (a.voice.is_some() || a.style.is_some()) && task != ModelTask::TtsKokoro {
+        return Err(
+            "run: --voice / --style are only supported for the kokoro arch — they select the \
+             style vector that conditions its decoder and prosody predictor"
+                .to_owned(),
+        );
+    }
+    if a.length_scale != 1.0 && task != ModelTask::TtsKokoro {
+        return Err(
+            "run: --length-scale is only supported for the kokoro arch (piper-plus exposes its \
+             own scales through the engine API, not the CLI)"
                 .to_owned(),
         );
     }
@@ -425,24 +504,15 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .as_deref()
                 .ok_or("run (TTS): --text <string> is required")?;
             let audio = session.tts().synthesize(text).map_err(|e| e.to_string())?;
-            match a.output.as_deref() {
-                Some(out) => {
-                    wav::write_wav(out, &audio.samples, audio.sample_rate)?;
-                    println!(
-                        "tts: wrote {} samples @ {} Hz -> {out}",
-                        audio.samples.len(),
-                        audio.sample_rate
-                    );
-                }
-                None => {
-                    let secs = audio.samples.len() as f64 / f64::from(audio.sample_rate);
-                    println!(
-                        "tts: {} samples, {secs:.3}s @ {} Hz (no --output; audio discarded)",
-                        audio.samples.len(),
-                        audio.sample_rate
-                    );
-                }
-            }
+            emit_audio(
+                "tts",
+                &audio.samples,
+                audio.sample_rate,
+                a.output.as_deref(),
+            )?;
+        }
+        ModelTask::TtsKokoro => {
+            run_kokoro(&a)?;
         }
         ModelTask::S2sDuplex => {
             run_s2s_duplex(&session, &a)?;
@@ -477,6 +547,293 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Writes synthesized PCM to `--output`, or reports its duration when the flag
+/// is absent. Shared by the piper-plus and Kokoro TTS arms so both report the
+/// same way. `label` prefixes the line (`tts` / `kokoro`).
+fn emit_audio(
+    label: &str,
+    samples: &[f32],
+    sample_rate: u32,
+    output: Option<&str>,
+) -> Result<(), String> {
+    match output {
+        Some(out) => {
+            wav::write_wav(out, samples, sample_rate)?;
+            println!(
+                "{label}: wrote {} samples @ {sample_rate} Hz -> {out}",
+                samples.len()
+            );
+        }
+        None => {
+            let secs = samples.len() as f64 / f64::from(sample_rate);
+            println!(
+                "{label}: {} samples, {secs:.3}s @ {sample_rate} Hz (no --output; audio discarded)",
+                samples.len()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Maps `--text` to Kokoro phoneme ids, wrapped in the id-0 sentinels
+/// upstream's tokenizer adds (`input_ids = [0, *content, 0]`, `kokoro==0.9.4`
+/// `pipeline.py`).
+///
+/// Two input forms, mirroring `PassthroughPhonemizer`'s content/framing split
+/// on the piper-plus side (`vokra-piper-plus::phonemizer`):
+///
+/// - **symbol form** (`"həlˈO wˈɜːld"`) — each `char` is looked up in the
+///   GGUF's `vokra.kokoro.phoneme_symbols` table (index = id). Every symbol in
+///   the shipped 178-entry table is a single `char`, so a per-`char` lookup is
+///   exact.
+/// - **raw-id form** (`"1 2 3"` or `"1,2,3"`) — the piper raw-id syntax,
+///   whitespace- or comma-separated. Reproduces an exact upstream tokenization
+///   (e.g. replaying a parity dump) without routing IPA through a shell. Ids
+///   are **content only**; the sentinels are added here, as in piper's
+///   `parse_content` / `phonemize` split.
+///
+/// # Disambiguation is verified, not assumed
+///
+/// The raw-id form is selected when every token is ASCII digits. That is only
+/// unambiguous while no phoneme symbol is itself a digit — true of the shipped
+/// misaki table, but checked against the actual table at run time rather than
+/// trusted, so a future table that adds a digit symbol is a loud error instead
+/// of a silent misreading of the caller's input.
+///
+/// # Unmappable input is an error
+///
+/// Both upstream Kokoro and this crate's `PiperPlusTts::tokenize` silently drop
+/// symbols they cannot map. This route does not: dropping a phoneme changes the
+/// utterance with no signal to the caller, which is the silent-fallback shape
+/// FR-EX-08 forbids. The message names every offending character so a caller
+/// can see whether they passed graphemes by mistake — the most likely error,
+/// since there is no G2P bridge in-tree to convert them.
+fn kokoro_phoneme_ids(text: &str, symbols: &[String]) -> Result<Vec<i64>, String> {
+    let content = if is_id_sequence(text) {
+        kokoro_content_from_ids(text, symbols)?
+    } else {
+        kokoro_content_from_symbols(text, symbols)?
+    };
+    if content.is_empty() {
+        return Err("run (kokoro): --text produced no phonemes".to_owned());
+    }
+    // Upstream wraps the content in id 0. Index 0 of the table is the
+    // empty/pad entry, so the sentinels are pushed positionally rather than
+    // looked up.
+    let mut ids = Vec::with_capacity(content.len() + 2);
+    ids.push(0);
+    ids.extend_from_slice(&content);
+    ids.push(0);
+    Ok(ids)
+}
+
+/// Whether `text` is the piper raw-id form: at least one token, every token
+/// non-empty ASCII digits, split on whitespace or `,`.
+fn is_id_sequence(text: &str) -> bool {
+    let mut any = false;
+    for tok in text.split(|c: char| c.is_whitespace() || c == ',') {
+        if tok.is_empty() {
+            continue;
+        }
+        any = true;
+        if !tok.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+    }
+    any
+}
+
+/// Parses the raw-id form into **content** ids (no sentinels).
+fn kokoro_content_from_ids(text: &str, symbols: &[String]) -> Result<Vec<i64>, String> {
+    // The digit heuristic is only sound while no symbol is a bare digit; verify
+    // against this GGUF's actual table instead of assuming (FR-EX-08).
+    let digit_symbols: Vec<&String> = symbols
+        .iter()
+        .filter(|s| s.len() == 1 && s.as_bytes()[0].is_ascii_digit())
+        .collect();
+    if !digit_symbols.is_empty() {
+        return Err(format!(
+            "run (kokoro): --text looks like a raw id sequence, but this voice's \
+             phoneme_symbols table contains digit symbol(s) {digit_symbols:?}, so the \
+             raw-id and symbol forms are ambiguous for this model — the input cannot be \
+             interpreted without guessing (FR-EX-08)"
+        ));
+    }
+    let mut ids = Vec::new();
+    for tok in text.split(|c: char| c.is_whitespace() || c == ',') {
+        if tok.is_empty() {
+            continue;
+        }
+        let id: i64 = tok
+            .parse()
+            .map_err(|_| format!("run (kokoro): `{tok}` is not a phoneme id"))?;
+        // Bound against the real table so an out-of-range id fails here rather
+        // than indexing past the embedding rows downstream.
+        if id <= 0 || id as usize >= symbols.len() {
+            return Err(format!(
+                "run (kokoro): phoneme id {id} out of range — --text takes CONTENT ids in \
+                 1..{} (id 0 is the pad sentinel and is added automatically, as in the \
+                 piper raw-id path)",
+                symbols.len()
+            ));
+        }
+        ids.push(id);
+    }
+    Ok(ids)
+}
+
+/// Parses the symbol form into **content** ids (no sentinels).
+fn kokoro_content_from_symbols(text: &str, symbols: &[String]) -> Result<Vec<i64>, String> {
+    let mut ids = Vec::with_capacity(text.chars().count());
+    let mut unknown: Vec<char> = Vec::new();
+    let mut buf = [0u8; 4];
+    for ch in text.chars() {
+        let needle = ch.encode_utf8(&mut buf);
+        match symbols.iter().position(|s| s == needle) {
+            // Index 0 is the pad sentinel; a table whose entry 0 is empty can
+            // never match here, but guard anyway so a fixture that puts a real
+            // symbol at 0 cannot inject an extra sentinel mid-sequence.
+            Some(0) | None => unknown.push(ch),
+            Some(id) => ids.push(id as i64),
+        }
+    }
+    if !unknown.is_empty() {
+        unknown.sort_unstable();
+        unknown.dedup();
+        return Err(format!(
+            "run (kokoro): --text contains {} character(s) absent from this voice's \
+             vokra.kokoro.phoneme_symbols table: {unknown:?}. --text takes misaki IPA \
+             PHONEMES, not graphemes (there is no G2P bridge in-tree); dropping them \
+             silently would change the utterance (FR-EX-08)",
+            unknown.len()
+        ));
+    }
+    Ok(ids)
+}
+
+/// Reads a raw little-endian f32 style vector from `path`.
+///
+/// The file must be a whole number of f32s and match either `style_dim` or
+/// `2·style_dim` — the two lengths `KokoroTts::synthesize_phonemes` accepts.
+/// Both checks happen here so a truncated dump is named as such rather than
+/// surfacing as a shape error from inside the prosody predictor.
+fn read_style_vector(path: &str, style_dim: usize) -> Result<Vec<f32>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("--style {path}: {e}"))?;
+    // `%` rather than `usize::is_multiple_of`: this crate inherits the
+    // workspace MSRV (1.85) and that method is stable only since 1.87.
+    if bytes.len() % 4 != 0 {
+        return Err(format!(
+            "--style {path}: {} bytes is not a whole number of f32s",
+            bytes.len()
+        ));
+    }
+    let n = bytes.len() / 4;
+    if n != style_dim && n != 2 * style_dim {
+        return Err(format!(
+            "--style {path}: {n} floats — expected style_dim ({style_dim}) or 2*style_dim \
+             ({}) for a full upstream ref_s row",
+            2 * style_dim
+        ));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect())
+}
+
+/// The Kokoro-82M synthesis path (cc-24).
+///
+/// `--text` is a misaki phoneme string (see [`kokoro_phoneme_ids`]); the style
+/// comes from `--style` (a raw f32 dump of an upstream voicepack row) or
+/// `--voice` (a name from the GGUF's table).
+///
+/// # Why the engine is rebuilt here
+///
+/// The reachable synthesis surface is the concrete
+/// [`vokra_models::kokoro::KokoroTts::synthesize_phonemes`], not the
+/// [`vokra_core::TtsEngine`] trait — Kokoro's `synthesize` is a hard
+/// `NotImplemented` pending a misaki G2P bridge. The arch dispatch therefore
+/// hands back a bare session and the concrete engine binds once, here, from the
+/// model path (the `ModelTask::Speaker` / `ModelTask::AsrVoxtral` pattern).
+fn run_kokoro(a: &RunArgs) -> Result<(), String> {
+    use vokra_models::kokoro::KokoroTts;
+
+    let text = a
+        .text
+        .as_deref()
+        .ok_or("run (kokoro): --text <phonemes> is required")?;
+    let tts = KokoroTts::from_path(&a.model)
+        .map_err(|e| e.to_string())?
+        .with_backend(a.backend);
+    let config = tts.config();
+    let ids = kokoro_phoneme_ids(text, &config.phoneme_symbols)?;
+
+    // Style resolution mirrors `synthesize_phonemes`: an explicit override wins
+    // over a name. Neither present is an error — there is no neutral default
+    // style, and silently substituting zeros would synthesize in a voice the
+    // caller never asked for (FR-EX-08).
+    let style = match a.style.as_deref() {
+        Some(path) => Some(read_style_vector(path, config.style_dim)?),
+        None => None,
+    };
+    if style.is_none() && a.voice.is_none() {
+        return Err(format!(
+            "run (kokoro): a style is required — pass --style <f32 dump> (style_dim {} or \
+             2*style_dim {}), or --voice <name> from {:?}",
+            config.style_dim,
+            2 * config.style_dim,
+            config.voice_names,
+        ));
+    }
+
+    let audio = tts
+        .synthesize_phonemes(
+            &ids,
+            a.voice.as_deref(),
+            style.as_deref(),
+            0.0,
+            a.length_scale,
+        )
+        .map_err(|e| {
+            // `--voice` hits a hard `NotImplemented` in the model layer
+            // (`synthesize_phonemes` — the voice → style-row lookup is
+            // M2-07-T02). Append the actionable workaround rather than just
+            // propagating the bare "not implemented".
+            if a.voice.is_some() && style.is_none() {
+                format!(
+                    "{e}\nnote: the voice name resolves against \
+                     `vokra.kokoro.voice_names`, but mapping it to a style row is not \
+                     implemented yet, so `--voice` cannot synthesize on ANY Kokoro GGUF \
+                     — including one whose voicepack rows were stacked in at conversion \
+                     time (`tools/parity/kokoro_prepare_checkpoint.py --stack-voicepack`, \
+                     off by default; upstream ships the rows as separate `voices/*.pt`). \
+                     Until then use --style: export the row upstream would have picked, \
+                     `voicepack[len(phonemes) - 1]` ({} f32, little-endian), and pass \
+                     the file.",
+                    2 * config.style_dim
+                )
+            } else {
+                e.to_string()
+            }
+        })?;
+
+    println!(
+        "kokoro: {} phoneme ids (incl. 2 sentinels), style {}",
+        ids.len(),
+        match (&style, a.voice.as_deref()) {
+            (Some(s), _) => format!("override ({} f32)", s.len()),
+            (None, Some(v)) => format!("voice `{v}`"),
+            (None, None) => unreachable!("checked above"),
+        }
+    );
+    emit_audio(
+        "kokoro",
+        &audio.samples,
+        audio.sample_rate,
+        a.output.as_deref(),
+    )
 }
 
 /// The speaker-embedding demo path (CAM++ / M0-08, FR-OP-81): Kaldi fbank
@@ -1783,5 +2140,183 @@ mod tests {
             "{err}"
         );
         let _ = std::fs::remove_file(&model);
+    }
+
+    // ---- cc-24: kokoro phoneme-id route -----------------------------------
+
+    /// The misaki table shipped in a real Kokoro GGUF: index = id, entry 0 is
+    /// the (unaddressable) pad sentinel. Trimmed to the symbols these tests
+    /// need; the real voice carries 178.
+    fn kokoro_symbols() -> Vec<String> {
+        ["", "ð", "ə", " ", "k", "w", "ɪ"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn kokoro_tokenizer_wraps_ids_in_upstream_sentinels() {
+        // Upstream builds `input_ids = [0, *ids, 0]` (kokoro==0.9.4).
+        let ids = kokoro_phoneme_ids("ðə", &kokoro_symbols()).expect("all symbols known");
+        assert_eq!(ids, vec![0, 1, 2, 0]);
+    }
+
+    #[test]
+    fn kokoro_tokenizer_maps_every_char_by_table_position() {
+        let ids = kokoro_phoneme_ids("ðə kwɪ", &kokoro_symbols()).expect("all symbols known");
+        // ð=1 ə=2 space=3 k=4 w=5 ɪ=6, wrapped in the sentinels.
+        assert_eq!(ids, vec![0, 1, 2, 3, 4, 5, 6, 0]);
+    }
+
+    #[test]
+    fn kokoro_tokenizer_rejects_unknown_characters_instead_of_dropping_them() {
+        // FR-EX-08: silently dropping an unmappable phoneme would change the
+        // utterance with no signal. The message must name the offenders and
+        // point at the missing G2P bridge.
+        let err = kokoro_phoneme_ids("ðəZ🎵", &kokoro_symbols()).unwrap_err();
+        assert!(err.contains('Z') && err.contains('🎵'), "names them: {err}");
+        assert!(
+            err.contains("PHONEMES"),
+            "explains the input contract: {err}"
+        );
+    }
+
+    #[test]
+    fn kokoro_tokenizer_rejects_empty_phoneme_text() {
+        let err = kokoro_phoneme_ids("", &kokoro_symbols()).unwrap_err();
+        assert!(err.contains("no phonemes"), "{err}");
+    }
+
+    #[test]
+    fn kokoro_tokenizer_accepts_the_piper_raw_id_form() {
+        // Content ids only; the sentinels are added here, as in piper's
+        // `parse_content` / `phonemize` split. Whitespace and comma separated
+        // forms are equivalent.
+        let want = vec![0, 1, 2, 3, 0];
+        assert_eq!(
+            kokoro_phoneme_ids("1 2 3", &kokoro_symbols()).unwrap(),
+            want
+        );
+        assert_eq!(
+            kokoro_phoneme_ids("1,2,3", &kokoro_symbols()).unwrap(),
+            want
+        );
+        assert_eq!(
+            kokoro_phoneme_ids(" 1,  2 ,3 ", &kokoro_symbols()).unwrap(),
+            want
+        );
+    }
+
+    #[test]
+    fn kokoro_raw_id_form_agrees_with_the_symbol_form() {
+        // The two spellings of the same utterance must tokenize identically —
+        // otherwise one of them is silently synthesizing something else.
+        let syms = kokoro_symbols();
+        assert_eq!(
+            kokoro_phoneme_ids("ðə kwɪ", &syms).unwrap(),
+            kokoro_phoneme_ids("1 2 3 4 5 6", &syms).unwrap()
+        );
+    }
+
+    #[test]
+    fn kokoro_raw_id_form_rejects_out_of_range_and_the_pad_sentinel() {
+        let syms = kokoro_symbols(); // 7 entries → content ids are 1..7
+        for bad in ["0", "7", "99"] {
+            let err = kokoro_phoneme_ids(bad, &syms).unwrap_err();
+            assert!(err.contains("out of range"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn kokoro_raw_id_form_is_refused_when_a_digit_is_itself_a_symbol() {
+        // The digit heuristic is only sound while no symbol is a bare digit.
+        // A table that breaks that must produce a loud ambiguity error rather
+        // than silently picking one reading (FR-EX-08).
+        let mut syms = kokoro_symbols();
+        syms.push("2".to_owned());
+        let err = kokoro_phoneme_ids("1 2 3", &syms).unwrap_err();
+        assert!(err.contains("ambiguous"), "{err}");
+    }
+
+    #[test]
+    fn kokoro_style_vector_accepts_both_upstream_widths() {
+        let dir = std::env::temp_dir();
+        for n in [4usize, 8] {
+            let p = dir.join(format!("vokra-cli-style-{n}-{}.f32", std::process::id()));
+            let bytes: Vec<u8> = (0..n).flat_map(|i| (i as f32).to_le_bytes()).collect();
+            std::fs::write(&p, &bytes).unwrap();
+            // style_dim = 4 → accepts 4 (single) and 8 (full ref_s row).
+            let v = read_style_vector(p.to_str().unwrap(), 4).expect("width accepted");
+            assert_eq!(v.len(), n);
+            assert_eq!(v[0], 0.0);
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+
+    #[test]
+    fn kokoro_style_vector_rejects_wrong_width_and_ragged_files() {
+        let dir = std::env::temp_dir();
+        let p = dir.join(format!("vokra-cli-style-bad-{}.f32", std::process::id()));
+
+        // Wrong float count (5 is neither style_dim nor 2*style_dim).
+        std::fs::write(
+            &p,
+            (0..5)
+                .flat_map(|i| (i as f32).to_le_bytes())
+                .collect::<Vec<u8>>(),
+        )
+        .unwrap();
+        let err = read_style_vector(p.to_str().unwrap(), 4).unwrap_err();
+        assert!(err.contains("5 floats"), "{err}");
+
+        // Not a whole number of f32s.
+        std::fs::write(&p, [0u8; 6]).unwrap();
+        let err = read_style_vector(p.to_str().unwrap(), 4).unwrap_err();
+        assert!(err.contains("whole number of f32s"), "{err}");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn kokoro_style_flags_are_rejected_off_the_kokoro_arch() {
+        // FR-EX-08: a style knob silently ignored on another arch would change
+        // nothing about the output while implying it had.
+        let model = silero_fixture();
+        // `--input` is any readable path here: the arch guard fires before the
+        // task itself runs, so the fixture doubles as the input.
+        for flag in [["--voice", "af_heart"], ["--style", "/nonexistent.f32"]] {
+            let err = main(&args(&[
+                "--model", &model, "--input", &model, flag[0], flag[1],
+            ]))
+            .unwrap_err();
+            assert!(
+                err.contains("only supported for the kokoro arch"),
+                "{flag:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn kokoro_length_scale_is_rejected_off_the_kokoro_arch() {
+        let model = silero_fixture();
+        let err = main(&args(&[
+            "--model",
+            &model,
+            "--input",
+            &model,
+            "--length-scale",
+            "1.5",
+        ]))
+        .unwrap_err();
+        assert!(err.contains("only supported for the kokoro arch"), "{err}");
+    }
+
+    #[test]
+    fn kokoro_length_scale_rejects_non_positive_values() {
+        for bad in ["0", "-1.0", "nan"] {
+            let err = parse_args(&args(&["--model", "m.gguf", "--length-scale", bad]))
+                .map(|_| ())
+                .unwrap_err();
+            assert!(err.contains("positive finite"), "{bad}: {err}");
+        }
     }
 }
