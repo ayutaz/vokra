@@ -153,15 +153,55 @@ const ATOL: f32 = 0.01;
 //     reached — against the legacy kernel (bit-identical) and the scalar
 //     oracle.
 //
-// STILL OPEN: whether x86's 4.34e-2 is a legitimate re-draw of the same
-// amplitude-tracking field or a real micro-kernel fault. Note precisely what
-// needs explaining: x86 has a LOWER mean (4.31e-4) yet more mass above 1e-2
-// (85 vs 48) — better in bulk, heavier in the tail. [`explain_worst_pcm`]
-// below now prints, on the FAILURE PATH ONLY, everything needed to settle
-// this from a single Linux log. Two further uncontrolled variables to check
-// on that run: the CI GGUF is converted on the runner rather than committed,
-// and the reference fixtures were dumped once, on M1. This suite is not a
-// required check, so it blocks nothing while that is pending.
+// (D) RUN-TO-RUN VARIANCE, measured. The note above asked whether x86's
+//     4.34e-2 was a legitimate re-draw or a real fault, and flagged two
+//     uncontrolled variables. Checking them settled the question, and one of
+//     them was worse than described: the CI job does not consume the
+//     committed fixtures at all. Its "Regenerate reference fixtures
+//     (true-upstream hooks)" step re-dumps them from upstream torch ON THE
+//     RUNNER, so BOTH sides of every comparison are computed there, and both
+//     dispatch on CPU features — Vokra through its own ISA selection, torch
+//     through MKL/oneDNN. The hosted pool is heterogeneous (Intel Xeon with
+//     AVX-512 vs AMD EPYC without), so two runs can sample two different
+//     error fields.
+//
+//     They demonstrably do. b6a9af0 and 34fe40c differ by no kokoro-relevant
+//     line — 34fe40c only adds skills/hooks — yet every reported tensor moved:
+//
+//         tensor        b6a9af0     34fe40c     Δ
+//         text_encoder  2.354e-6    1.907e-6     23%
+//         bert          1.526e-5    1.836e-5     20%
+//         prosody_f0    2.144e-3    3.571e-3     67%
+//         decoder_mag   2.744e-1    2.087e-1     31%
+//         decoder_phase 1.809e-1    1.526e-1     19%
+//         decoder_pcm   4.341e-2    1.576e-2    175%  (FAIL, then PASS)
+//
+//     `text_encoder` is the load-bearing row. It is 4096 elements, it is
+//     early, and it shares no code with the decoder — a decoder micro-kernel
+//     fault cannot move it, yet it moved 23%. So whatever varies is
+//     environmental and pipeline-wide, not a fault localized in (B). That
+//     also supplies the "materially different error field" the note could not
+//     account for: a lower mean with a heavier tail is what a different draw
+//     looks like, not what a perturbation of one draw looks like.
+//
+//     What this does NOT establish: the CPU is still not pinned, because
+//     neither run recorded what it ran on. The mechanism is identified and
+//     the single-fault reading is strongly disfavored; attributing a given
+//     number to a given CPU needs one more observation.
+//     `.github/workflows/parity-kokoro-real.yml` now records CPU model, ISA
+//     flags, nproc and `torch.backends.cpu.get_cpu_capability()` into the
+//     step summary before the parity run, so the next runs are attributable
+//     and the empirical range accumulates instead of being re-litigated.
+//
+// The bound stays 0.04. It is NOT re-derived from the max of two draws: a
+// max over ~200 k samples of a heavy-tailed, amplitude-tracking field is
+// exactly the statistic that moves most between draws, so fitting it to
+// observations would ratchet the gate open one unlucky run at a time and
+// buy no real coverage. Note also which failure this model actually had —
+// parity 9/9 green while the audio was unintelligible (fixed in 92dbc92) —
+// which is precisely what a max gate catches and a mean gate does not. This
+// suite is not a required check, so a re-draw above the line costs a red
+// annotation, not a blocked merge; that is the cheaper error.
 
 /// Decoder magnitude-logit max-|Δ| bound (measured 2.51e-1 — see above).
 const DECODER_MAG_ATOL: f32 = 0.5;

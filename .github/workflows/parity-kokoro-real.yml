@@ -185,6 +185,62 @@ jobs:
                 f"huggingface_hub={huggingface_hub.__version__}")
           PY
 
+      # Record the execution environment BEFORE any numbers are produced.
+      #
+      # Why this exists: this job regenerates the reference fixtures from
+      # upstream torch on the runner (see "Regenerate reference fixtures"
+      # below), so BOTH sides of every comparison are computed here. Both
+      # dispatch on CPU features — Vokra through its own ISA selection, torch
+      # through MKL/oneDNN — and the hosted runner pool is heterogeneous
+      # (Intel Xeon with AVX-512 vs AMD EPYC without). Two runs of identical
+      # code therefore sample two different error fields, which is not a
+      # theory: b6a9af0 and 34fe40c differ by no kokoro-relevant line, and
+      # every reported tensor moved —
+      #
+      #     text_encoder 2.354e-6 -> 1.907e-6   (23%)
+      #     bert         1.526e-5 -> 1.836e-5   (20%)
+      #     prosody_f0   2.144e-3 -> 3.571e-3   (67%)
+      #     decoder_mag  2.744e-1 -> 2.087e-1   (31%)
+      #     decoder_pcm  4.341e-2 -> 1.576e-2  (175%, FAIL then PASS)
+      #
+      # Neither run recorded what it ran on, so the variance was untrackable
+      # and a single failing observation looked like a fault. It is not
+      # attributable without this step. Keep it BEFORE the parity run so the
+      # environment is on record even when a later step dies.
+      #
+      # Never fails the job: this is instrumentation, not a gate. A runner
+      # whose /proc/cpuinfo or torch build we cannot read still produces a
+      # valid parity verdict — it just produces a less diagnosable one.
+      - name: Record execution environment (CPU / ISA / torch dispatch)
+        if: always()
+        run: |
+          set +e
+          model="$(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//')"
+          flags="$(grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2-)"
+          isa=""
+          for f in avx512f avx512vnni avx512bw avx2 fma f16c; do
+            case " $flags " in *" $f "*) isa="${isa:+$isa }$f" ;; esac
+          done
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate" 2>/dev/null
+          torch_caps="$(python -c 'import torch; print(torch.backends.cpu.get_cpu_capability())' 2>/dev/null)"
+          {
+            echo "### Execution environment"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| CPU | \`${model:-unknown}\` |"
+            echo "| ISA (Vokra-relevant) | \`${isa:-none detected}\` |"
+            echo "| nproc | \`$(nproc 2>/dev/null || echo '?')\` |"
+            echo "| torch CPU capability | \`${torch_caps:-unknown}\` |"
+            echo ""
+            echo "Both the Vokra output and the regenerated reference are"
+            echo "computed on this CPU, and both dispatch on its features."
+            echo "Compare this block across runs before reading any single"
+            echo "max-|Δ| as evidence of a code fault."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "cpu=${model:-unknown} isa=${isa:-none} torch=${torch_caps:-unknown}"
+
       - name: Download Kokoro-82M @ pinned SHA (HF hub)
         env:
           KOKORO_VENV: ${{ env.PARITY_VENV }}
