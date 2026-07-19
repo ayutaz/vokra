@@ -184,24 +184,57 @@ const ATOL: f32 = 0.01;
 //     account for: a lower mean with a heavier tail is what a different draw
 //     looks like, not what a perturbation of one draw looks like.
 //
-//     What this does NOT establish: the CPU is still not pinned, because
-//     neither run recorded what it ran on. The mechanism is identified and
-//     the single-fault reading is strongly disfavored; attributing a given
-//     number to a given CPU needs one more observation.
-//     `.github/workflows/parity-kokoro-real.yml` now records CPU model, ISA
-//     flags, nproc and `torch.backends.cpu.get_cpu_capability()` into the
-//     step summary before the parity run, so the next runs are attributable
-//     and the empirical range accumulates instead of being re-litigated.
+// (E) CORRECTION to (D): it is NOT a random draw. It is DETERMINISTIC PER
+//     CPU CLASS. (D) called this "variance" and reasoned about "draws" from a
+//     heavy-tailed field. The environment recorder it added disproved that
+//     framing on its first run. 9bd6f73 reported:
 //
-// The bound stays 0.04. It is NOT re-derived from the max of two draws: a
-// max over ~200 k samples of a heavy-tailed, amplitude-tracking field is
-// exactly the statistic that moves most between draws, so fitting it to
-// observations would ratchet the gate open one unlucky run at a time and
-// buy no real coverage. Note also which failure this model actually had —
-// parity 9/9 green while the audio was unintelligible (fixed in 92dbc92) —
-// which is precisely what a max gate catches and a mean gate does not. This
-// suite is not a required check, so a re-draw above the line costs a red
-// annotation, not a blocked merge; that is the cheaper error.
+//         cpu=AMD EPYC 7763 64-Core Processor  isa=avx2 fma f16c  torch=AVX2
+//
+//     and reproduced b6a9af0 to EVERY PRINTED DIGIT on all six tensors —
+//     2.354e-6, 1.526e-5, 2.144e-3, 2.744e-1, 1.809e-1, 4.341e-2. Two runs,
+//     three commits apart, bit-identical. So within a CPU class this pipeline
+//     is fully deterministic, and 34fe40c's different column means it landed
+//     on a different CPU class (an AVX-512 part, on the torch=AVX512 vs AVX2
+//     dispatch split).
+//
+//     The practical consequence is the opposite of flakiness: an AVX2 runner
+//     fails this gate 100% of the time and an AVX-512 runner passes it 100%
+//     of the time. Do not "just re-run it" — that only re-rolls which machine
+//     you get. (D)'s mechanism (both sides computed on a heterogeneous
+//     runner) stands; only its statistical language was wrong, and wrong in
+//     the direction that makes a real defect easier to dismiss.
+//
+//     The question is therefore now sharp, and it is NOT settled: on AVX2,
+//     is 4.341e-2 (a) a fault in Vokra's AVX2 micro-kernel, or (b) an
+//     ordinary implementation difference against torch that AVX2 exposes
+//     more than AVX-512 does? Both are consistent with everything above.
+//     Note the amplification is decoder-specific — text_encoder moves 1.23×
+//     between the two CPU classes while decoder_pcm moves 2.75× — which (a)
+//     explains directly and (b) explains only via this field's amplitude
+//     tracking, so (a) cannot be waved away.
+//
+//     `.github/workflows/parity-kokoro-real.yml` now settles it on the
+//     failure path: it re-runs with `VOKRA_CPU_ISA=scalar` on the machine
+//     that just failed and tables SIMD vs scalar per tensor. Scalar ≈ SIMD
+//     exonerates the kernel and points at (b); scalar materially lower
+//     convicts it, and then the kernel gets fixed and the bound still does
+//     not move. This measurement cannot be made on the maintaining machine:
+//     Apple Silicon cannot execute the x86 tiles, and `VOKRA_CPU_ISA=scalar`
+//     on M1 moves pcm by at most 1.53e-6, which bounds NEON and says nothing
+//     about AVX2.
+//
+// The bound stays 0.04, and (E) makes that firmer rather than softer. It is
+// NOT re-derived from observations: fitting a max over ~200 k samples of a
+// heavy-tailed, amplitude-tracking field to whatever the last runner
+// produced would ratchet the gate open one CPU class at a time and buy no
+// coverage — and while (a) is live, widening would be erasing the only
+// signal that an AVX2 kernel fault would ever emit. Note also which failure
+// this model actually had — parity 9/9 green while the audio was
+// unintelligible (fixed in 92dbc92) — which is precisely what a max gate
+// catches and a mean gate does not. This suite is not a required check, so
+// the standing red on AVX2 costs an annotation, not a blocked merge; that is
+// the cheaper error while (a) is open.
 
 /// Decoder magnitude-logit max-|Δ| bound (measured 2.51e-1 — see above).
 const DECODER_MAG_ATOL: f32 = 0.5;

@@ -356,6 +356,69 @@ jobs:
           echo "PARITY_EXIT=${exit_code}" >> "$GITHUB_ENV"
           echo "parity cargo test exited with ${exit_code}"
 
+      # Failure path only: re-run with the Vokra SIMD path disabled.
+      #
+      # This is the decisive split, and it runs on the exact machine that just
+      # failed. Both sides of the comparison are computed on this runner and
+      # both dispatch on its CPU features, so a failure has two candidate
+      # causes that no aggregate statistic can tell apart:
+      #
+      #   (i)  a fault in Vokra's micro-kernel for THIS ISA, or
+      #   (ii) an ordinary implementation difference against torch that this
+      #        ISA merely happens to expose more than another.
+      #
+      # `VOKRA_CPU_ISA=scalar` removes Vokra's SIMD from the picture while
+      # leaving the reference untouched. So:
+      #
+      #   scalar ~= the SIMD number  -> Vokra's SIMD kernel is exonerated;
+      #                                 the gap is (ii), and lives in the
+      #                                 algorithm or the reference.
+      #   scalar << the SIMD number  -> the SIMD kernel IS the fault (i).
+      #                                 Fix the kernel; do NOT touch the bound.
+      #
+      # Needed because the maintaining machine is Apple Silicon and cannot
+      # execute the x86 tiles: `VOKRA_CPU_ISA=scalar` on M1 moves pcm by at
+      # most 1.53e-6, which bounds NEON but says nothing about AVX2/AVX-512.
+      # This step is the only place that measurement can be made.
+      #
+      # Non-fatal by construction (`|| true`): the verdict has already been
+      # decided by the step above. This only adds evidence, and a crash here
+      # must not overwrite a legitimate parity failure with a different error.
+      - name: Diagnose failure — re-run with VOKRA_CPU_ISA=scalar
+        if: always() && env.PARITY_EXIT != '0'
+        env:
+          VOKRA_KOKORO_GGUF: ${{ runner.temp }}/kokoro-82m.gguf
+          VOKRA_CPU_ISA: scalar
+        run: |
+          set +e
+          cargo test --release -p vokra-models --test parity_kokoro -- --nocapture \
+            > "${RUNNER_TEMP}/parity-scalar.txt" 2>&1
+          scalar_exit=$?
+          {
+            echo "### Scalar-ISA re-run (failure path)"
+            echo ""
+            echo "Same runner, same GGUF, same reference — Vokra's SIMD path"
+            echo "disabled via \`VOKRA_CPU_ISA=scalar\`."
+            echo ""
+            echo "| tensor | SIMD | scalar |"
+            echo "| --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for t in text_encoder bert prosody_f0 decoder_mag decoder_phase decoder_pcm; do
+            simd="$(grep -oE "kokoro ${t}[^=]*= [0-9.e+-]+" "${RUNNER_TEMP}/parity-log.txt" 2>/dev/null | grep -oE '[0-9.e+-]+$' | head -1)"
+            scal="$(grep -oE "kokoro ${t}[^=]*= [0-9.e+-]+" "${RUNNER_TEMP}/parity-scalar.txt" 2>/dev/null | grep -oE '[0-9.e+-]+$' | head -1)"
+            echo "| \`${t}\` | \`${simd:-?}\` | \`${scal:-?}\` |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          {
+            echo ""
+            echo "Scalar run exit: \`${scalar_exit}\`."
+            echo ""
+            echo "**Reading**: values close together exonerate the SIMD kernel"
+            echo "and point at the algorithm or the reference. A scalar column"
+            echo "materially lower means the SIMD micro-kernel for this ISA is"
+            echo "the fault — fix the kernel, do not widen the bound."
+          } >> "$GITHUB_STEP_SUMMARY"
+          true
+
       # Parse the parity log and emit a per-tensor markdown table. Uses only
       # the standard library + regex so a torch/numpy import here would be
       # pure overhead. All 9 tracked tensors are enumerated whether the log
