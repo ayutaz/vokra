@@ -45,6 +45,28 @@ name = "tts_latency"
 path = "benches/tts_latency.rs"
 harness = false
 
+# --- GPU backend passthrough (cc-30, 2026-07-19 M4-residual audit). ---
+#
+# `--backend metal|cuda|vulkan` can only SELECT a backend that was COMPILED
+# into this binary, so the runtime knob needs a matching build-time knob. Each
+# feature here forwards 1:1 to the `vokra-models` feature of the same name,
+# which in turn activates the corresponding `vokra-backend-*` crate.
+#
+# These add NO third-party dependencies: every backend crate is `vokra-*` and
+# reaches its GPU API through raw FFI (Metal via objc msgSend, CUDA via dlopen
+# of libcuda + NVRTC, Vulkan via dlopen of libvulkan) — no `metal-rs`, no
+# `cudarc`, no `ash`. The ROOT `Cargo.lock` is untouched either way (this crate
+# is its own workspace), so NFR-DS-02 is unaffected.
+#
+# Default is CPU-only. Requesting an uncompiled backend at runtime is a hard
+# startup error naming the feature to rebuild with — never a silent CPU fall
+# back under a GPU label (FR-EX-08); see `service::ensure_backend_available`.
+[features]
+default = []
+metal = ["vokra-models/metal"]
+cuda = ["vokra-models/cuda"]
+vulkan = ["vokra-models/vulkan"]
+
 [dependencies]
 # --- HTTP / async stack (T02 c04; ADR: axum + hyper 1.x + tokio + tower, all
 # MIT). ---

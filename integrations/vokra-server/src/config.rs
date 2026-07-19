@@ -12,6 +12,10 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use vokra_core::BackendKind;
+
+use crate::service::{BackendOverrides, ModelSlot};
+
 /// All startup knobs T03 needs.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -45,6 +49,23 @@ pub struct Config {
     /// its vocab). Set without `whisper_large_v3_gguf` is a config error
     /// surfaced by [`crate::service::InferenceService::build`].
     pub whisper_large_v3_tokenizer: Option<PathBuf>,
+    /// Whisper small GGUF (cc-39, 2026-07-19 M4-residual audit). Absent ⇒
+    /// `whisper-small` requests are rejected, never silently routed to
+    /// another size.
+    pub whisper_small_gguf: Option<PathBuf>,
+    /// Whisper small tokenizer sidecar. Rarely needed — every converter-B
+    /// GGUF embeds `vokra.tokenizer.model` (verified on the real
+    /// `whisper-small.gguf`, 2026-07-19); kept for the converter-A path,
+    /// exactly like the large-v3 sidecar above.
+    pub whisper_small_tokenizer: Option<PathBuf>,
+    /// Whisper medium GGUF (cc-39). Same no-substitution rule as small.
+    pub whisper_medium_gguf: Option<PathBuf>,
+    /// Whisper medium tokenizer sidecar (see [`Self::whisper_small_tokenizer`]).
+    pub whisper_medium_tokenizer: Option<PathBuf>,
+    /// Whisper large-v3-turbo GGUF (cc-39). Same no-substitution rule.
+    pub whisper_turbo_gguf: Option<PathBuf>,
+    /// Whisper turbo tokenizer sidecar (see [`Self::whisper_small_tokenizer`]).
+    pub whisper_turbo_tokenizer: Option<PathBuf>,
     /// piper-plus voice GGUF. Required once any model path is configured.
     pub piper_plus_gguf: Option<PathBuf>,
     /// Kokoro-82M voice GGUF (M2-07). Advertised when present.
@@ -92,6 +113,28 @@ pub struct Config {
     ///
     /// [`DEFAULT_MAX_CONCURRENT_SESSIONS`]: crate::server::DEFAULT_MAX_CONCURRENT_SESSIONS
     pub max_concurrent_sessions: Option<usize>,
+
+    /// Default backend every pre-warmed engine runs on (`--backend`,
+    /// `VOKRA_BACKEND`, TOML `backend`). Unset = [`BackendKind::Cpu`].
+    ///
+    /// cc-30 (2026-07-19 M4-residual audit): before this, the server had no
+    /// backend knob at all — [`crate::service::ServiceConfig::minimum`]
+    /// hard-coded `BackendKind::Cpu`, so a GPU-capable build could not be
+    /// selected at runtime.
+    ///
+    /// **A backend that is not compiled into this binary is a hard startup
+    /// error**, never a silent CPU fall back (FR-EX-08). See
+    /// [`crate::service::ensure_backend_available`] and the Cargo-feature
+    /// passthrough note in [`HELP_TEXT`].
+    pub backend: Option<BackendKind>,
+
+    /// Per-model backend overrides (`--model-backend <SLOT>=<BACKEND>`,
+    /// repeatable; `VOKRA_MODEL_BACKENDS`; TOML `model_backends`).
+    ///
+    /// cc-30: this is the "per-model backend override is a T03 follow-up"
+    /// note that sat on `ServiceConfig::backend` since M2-09-T04. A slot
+    /// without an override runs on [`Self::backend`].
+    pub model_backends: BackendOverrides,
 }
 
 impl Config {
@@ -107,6 +150,13 @@ impl Config {
         self.max_concurrent_sessions
             .unwrap_or(crate::server::DEFAULT_MAX_CONCURRENT_SESSIONS)
     }
+
+    /// The effective default backend (cc-30): the configured value, or
+    /// [`BackendKind::Cpu`] when unset. Per-slot overrides in
+    /// [`Self::model_backends`] take precedence over this.
+    pub fn backend_or_default(&self) -> BackendKind {
+        self.backend.unwrap_or(BackendKind::Cpu)
+    }
 }
 
 impl Default for Config {
@@ -119,12 +169,20 @@ impl Default for Config {
             whisper_base_tokenizer: None,
             whisper_large_v3_gguf: None,
             whisper_large_v3_tokenizer: None,
+            whisper_small_gguf: None,
+            whisper_small_tokenizer: None,
+            whisper_medium_gguf: None,
+            whisper_medium_tokenizer: None,
+            whisper_turbo_gguf: None,
+            whisper_turbo_tokenizer: None,
             piper_plus_gguf: None,
             kokoro_gguf: None,
             voxtral_gguf: None,
             silero_vad_gguf: None,
             piper_g2p: None,
             max_concurrent_sessions: None,
+            backend: None,
+            model_backends: BackendOverrides::default(),
         }
     }
 }
@@ -205,6 +263,13 @@ is set, --whisper-base AND --piper-plus are the required minimum — a partial
 config is a hard startup error, never a silent partial boot):
     --whisper-base <PATH>            Whisper base GGUF.
     --whisper-base-tokenizer <PATH>  Whisper base tokenizer sidecar.
+    --whisper-small <PATH>           Whisper small GGUF.
+    --whisper-small-tokenizer <PATH> Whisper small tokenizer sidecar.
+    --whisper-medium <PATH>          Whisper medium GGUF.
+    --whisper-medium-tokenizer <PATH>
+                                     Whisper medium tokenizer sidecar.
+    --whisper-turbo <PATH>           Whisper large-v3-turbo GGUF.
+    --whisper-turbo-tokenizer <PATH> Whisper turbo tokenizer sidecar.
     --whisper-large-v3 <PATH>        Whisper large-v3 GGUF.
     --whisper-large-v3-tokenizer <PATH>
                                      Whisper large-v3 tokenizer sidecar.
@@ -222,12 +287,41 @@ config is a hard startup error, never a silent partial boot):
                                      request text is natural language; raw
                                      phoneme-id payloads are no longer parsed.
 
+BACKEND (cc-30):
+    --backend <NAME>                 Default backend for every pre-warmed
+                                     engine: cpu | metal | cuda | vulkan.
+                                     Default: cpu.
+    --model-backend <SLOT>=<NAME>    Per-model override, repeatable. SLOT is
+                                     one of: whisper-base, whisper-small,
+                                     whisper-medium, whisper-turbo,
+                                     whisper-large-v3, piper-plus, kokoro,
+                                     voxtral, silero-vad. Repeating the same
+                                     SLOT is an error (ambiguous config).
+
+    A backend is only SELECTABLE if it was COMPILED INTO this binary. The
+    server's GPU backends are Cargo features that forward to vokra-models:
+
+        cargo build --release --features metal    # macOS / iOS
+        cargo build --release --features cuda     # Windows / Linux + NVIDIA
+        cargo build --release --features vulkan   # Linux / Android / Windows
+
+    Requesting a backend that was not compiled in (or whose device cannot be
+    opened) is a HARD STARTUP ERROR, never a silent CPU fall back (FR-EX-08).
+    The default build is CPU-only, so `--backend metal` on it fails fast with
+    the rebuild instruction rather than serving CPU results under a GPU label.
+
 ENVIRONMENT:
     VOKRA_HTTP_BIND                  Same as --http-bind.
     VOKRA_WYOMING_BIND               Same as --wyoming-bind.
     VOKRA_CONFIG                     Same as --config.
     VOKRA_WHISPER_BASE               Same as --whisper-base.
     VOKRA_WHISPER_BASE_TOKENIZER     Same as --whisper-base-tokenizer.
+    VOKRA_WHISPER_SMALL              Same as --whisper-small.
+    VOKRA_WHISPER_SMALL_TOKENIZER    Same as --whisper-small-tokenizer.
+    VOKRA_WHISPER_MEDIUM             Same as --whisper-medium.
+    VOKRA_WHISPER_MEDIUM_TOKENIZER   Same as --whisper-medium-tokenizer.
+    VOKRA_WHISPER_TURBO              Same as --whisper-turbo.
+    VOKRA_WHISPER_TURBO_TOKENIZER    Same as --whisper-turbo-tokenizer.
     VOKRA_WHISPER_LARGE_V3           Same as --whisper-large-v3.
     VOKRA_WHISPER_LARGE_V3_TOKENIZER Same as --whisper-large-v3-tokenizer.
     VOKRA_PIPER_PLUS                 Same as --piper-plus.
@@ -236,10 +330,14 @@ ENVIRONMENT:
     VOKRA_SILERO_VAD                 Same as --silero-vad.
     VOKRA_PIPER_G2P                  Same as --piper-g2p (1/true/0/false).
     VOKRA_MAX_CONCURRENT_SESSIONS    Same as --max-concurrent-sessions.
+    VOKRA_BACKEND                    Same as --backend.
+    VOKRA_MODEL_BACKENDS             Comma-separated --model-backend list,
+                                     e.g. `whisper-base=metal,kokoro=cpu`.
 
 Precedence (highest first): CLI flag > env var > TOML file > built-in default.
 TOML keys mirror the flag names with underscores (e.g. `whisper_base`,
-`piper_plus`, `silero_vad`, `piper_g2p = true`).
+`piper_plus`, `silero_vad`, `piper_g2p = true`, `backend = \"metal\"`,
+`model_backends = \"whisper-base=metal,kokoro=cpu\"`).
 
 Bind defaults are LOOPBACK. Expose to the network only via a reverse proxy
 (nginx / Caddy) or by explicitly passing --http-bind 0.0.0.0:<port>.
@@ -285,6 +383,24 @@ where
     if let Ok(v) = std::env::var("VOKRA_WHISPER_LARGE_V3_TOKENIZER") {
         cfg.whisper_large_v3_tokenizer = Some(PathBuf::from(v));
     }
+    if let Ok(v) = std::env::var("VOKRA_WHISPER_SMALL") {
+        cfg.whisper_small_gguf = Some(PathBuf::from(v));
+    }
+    if let Ok(v) = std::env::var("VOKRA_WHISPER_SMALL_TOKENIZER") {
+        cfg.whisper_small_tokenizer = Some(PathBuf::from(v));
+    }
+    if let Ok(v) = std::env::var("VOKRA_WHISPER_MEDIUM") {
+        cfg.whisper_medium_gguf = Some(PathBuf::from(v));
+    }
+    if let Ok(v) = std::env::var("VOKRA_WHISPER_MEDIUM_TOKENIZER") {
+        cfg.whisper_medium_tokenizer = Some(PathBuf::from(v));
+    }
+    if let Ok(v) = std::env::var("VOKRA_WHISPER_TURBO") {
+        cfg.whisper_turbo_gguf = Some(PathBuf::from(v));
+    }
+    if let Ok(v) = std::env::var("VOKRA_WHISPER_TURBO_TOKENIZER") {
+        cfg.whisper_turbo_tokenizer = Some(PathBuf::from(v));
+    }
     if let Ok(v) = std::env::var("VOKRA_PIPER_PLUS") {
         cfg.piper_plus_gguf = Some(PathBuf::from(v));
     }
@@ -303,6 +419,20 @@ where
     if let Ok(v) = std::env::var("VOKRA_PIPER_G2P") {
         cfg.piper_g2p = Some(parse_bool("VOKRA_PIPER_G2P", &v)?);
     }
+    if let Ok(v) = std::env::var("VOKRA_BACKEND") {
+        cfg.backend = Some(parse_backend_name("VOKRA_BACKEND", &v)?);
+    }
+    // Per-slot overrides are accumulated per LAYER, then merged slot-by-slot
+    // (CLI > env > TOML) at the end — the same precedence the model paths
+    // get. Merging eagerly here would make a CLI `--model-backend x=cpu`
+    // collide with an env `x=metal` and be reported as a duplicate, when the
+    // operator's intent is plainly "CLI wins".
+    let mut env_backends = BackendOverrides::default();
+    if let Ok(v) = std::env::var("VOKRA_MODEL_BACKENDS") {
+        apply_model_backend_list("VOKRA_MODEL_BACKENDS", &v, &mut env_backends)?;
+    }
+    let mut cli_backends = BackendOverrides::default();
+    let mut toml_backends = BackendOverrides::default();
 
     // Layer 3: CLI flags.
     while let Some(arg) = it.next() {
@@ -351,6 +481,40 @@ where
                     "--whisper-large-v3-tokenizer",
                 )?));
             }
+            // cc-39: the three M4-14 Whisper sizes. Exact mirror of the
+            // large-v3 pattern above — including the (rarely needed)
+            // tokenizer sidecar, since a converter-A GGUF without an
+            // embedded `vokra.tokenizer.model` still needs one.
+            "--whisper-small" => {
+                cfg.whisper_small_gguf =
+                    Some(PathBuf::from(take_flag_value(&mut it, "--whisper-small")?));
+            }
+            "--whisper-small-tokenizer" => {
+                cfg.whisper_small_tokenizer = Some(PathBuf::from(take_flag_value(
+                    &mut it,
+                    "--whisper-small-tokenizer",
+                )?));
+            }
+            "--whisper-medium" => {
+                cfg.whisper_medium_gguf =
+                    Some(PathBuf::from(take_flag_value(&mut it, "--whisper-medium")?));
+            }
+            "--whisper-medium-tokenizer" => {
+                cfg.whisper_medium_tokenizer = Some(PathBuf::from(take_flag_value(
+                    &mut it,
+                    "--whisper-medium-tokenizer",
+                )?));
+            }
+            "--whisper-turbo" => {
+                cfg.whisper_turbo_gguf =
+                    Some(PathBuf::from(take_flag_value(&mut it, "--whisper-turbo")?));
+            }
+            "--whisper-turbo-tokenizer" => {
+                cfg.whisper_turbo_tokenizer = Some(PathBuf::from(take_flag_value(
+                    &mut it,
+                    "--whisper-turbo-tokenizer",
+                )?));
+            }
             "--piper-plus" => {
                 cfg.piper_plus_gguf =
                     Some(PathBuf::from(take_flag_value(&mut it, "--piper-plus")?));
@@ -377,6 +541,19 @@ where
                 let v = take_flag_value(&mut it, "--max-concurrent-sessions")?;
                 cfg.max_concurrent_sessions =
                     Some(parse_session_cap("--max-concurrent-sessions", &v)?);
+            }
+            // cc-30: default backend + repeatable per-model override.
+            "--backend" => {
+                let v = take_flag_value(&mut it, "--backend")?;
+                cfg.backend = Some(parse_backend_name("--backend", &v)?);
+            }
+            "--model-backend" => {
+                let v = take_flag_value(&mut it, "--model-backend")?;
+                // One `SLOT=BACKEND` pair per occurrence (the comma-list form
+                // is the env/TOML spelling); repeating a SLOT on the CLI is a
+                // duplicate error, not last-wins (FR-EX-08 — an ambiguous
+                // config must not silently pick one).
+                apply_model_backend_pair("--model-backend", &v, &mut cli_backends)?;
             }
             // T03 accepts unknown flags nowhere: silent-ignore would violate
             // FR-EX-08 (no silent fallback) and mask typos.
@@ -411,6 +588,18 @@ where
         cfg.whisper_large_v3_tokenizer = cfg
             .whisper_large_v3_tokenizer
             .or(overlay.whisper_large_v3_tokenizer);
+        cfg.whisper_small_gguf = cfg.whisper_small_gguf.or(overlay.whisper_small_gguf);
+        cfg.whisper_small_tokenizer = cfg
+            .whisper_small_tokenizer
+            .or(overlay.whisper_small_tokenizer);
+        cfg.whisper_medium_gguf = cfg.whisper_medium_gguf.or(overlay.whisper_medium_gguf);
+        cfg.whisper_medium_tokenizer = cfg
+            .whisper_medium_tokenizer
+            .or(overlay.whisper_medium_tokenizer);
+        cfg.whisper_turbo_gguf = cfg.whisper_turbo_gguf.or(overlay.whisper_turbo_gguf);
+        cfg.whisper_turbo_tokenizer = cfg
+            .whisper_turbo_tokenizer
+            .or(overlay.whisper_turbo_tokenizer);
         cfg.piper_plus_gguf = cfg.piper_plus_gguf.or(overlay.piper_plus_gguf);
         cfg.kokoro_gguf = cfg.kokoro_gguf.or(overlay.kokoro_gguf);
         cfg.voxtral_gguf = cfg.voxtral_gguf.or(overlay.voxtral_gguf);
@@ -421,7 +610,14 @@ where
         cfg.max_concurrent_sessions = cfg
             .max_concurrent_sessions
             .or(overlay.max_concurrent_sessions);
+        cfg.backend = cfg.backend.or(overlay.backend);
+        toml_backends = overlay.model_backends;
     }
+
+    // Per-slot backend overrides: merge the three layers slot-by-slot so
+    // precedence matches every other knob (CLI > env > TOML). Duplicates
+    // WITHIN a layer were already rejected at parse time.
+    cfg.model_backends = cli_backends.or(&env_backends).or(&toml_backends);
 
     Ok(cfg)
 }
@@ -463,6 +659,90 @@ fn parse_bool(flag: &str, value: &str) -> Result<bool, ConfigError> {
     }
 }
 
+/// Parse a backend name (cc-30). Mirrors `vokra_cli::bench::parse_backend`
+/// verbatim so the CLI and the server accept exactly the same vocabulary.
+///
+/// Every [`BackendKind`] variant parses here regardless of which Cargo
+/// features this binary was built with — *selectability* is a separate,
+/// later check ([`crate::service::ensure_backend_available`]) so the error
+/// message can distinguish "no such backend" (typo) from "that backend was
+/// not compiled into this build" (rebuild instruction). Collapsing the two
+/// into one error would tell an operator to fix the wrong thing.
+fn parse_backend_name(flag: &str, value: &str) -> Result<BackendKind, ConfigError> {
+    match value.trim() {
+        "cpu" => Ok(BackendKind::Cpu),
+        "metal" => Ok(BackendKind::Metal),
+        "cuda" => Ok(BackendKind::Cuda),
+        "vulkan" => Ok(BackendKind::Vulkan),
+        other => Err(ConfigError::InvalidValue {
+            flag: flag.to_string(),
+            value: other.to_string(),
+            reason: "expected one of: cpu, metal, cuda, vulkan".to_string(),
+        }),
+    }
+}
+
+/// Apply one `SLOT=BACKEND` pair to `out`, rejecting an unknown slot, an
+/// unknown backend, a malformed pair, and a repeated slot (FR-EX-08 — an
+/// ambiguous override must not silently resolve to one of the two values).
+fn apply_model_backend_pair(
+    flag: &str,
+    pair: &str,
+    out: &mut BackendOverrides,
+) -> Result<(), ConfigError> {
+    let (slot_raw, backend_raw) =
+        pair.split_once('=')
+            .ok_or_else(|| ConfigError::InvalidValue {
+                flag: flag.to_string(),
+                value: pair.to_string(),
+                reason: format!(
+                    "expected `SLOT=BACKEND` (slots: {})",
+                    ModelSlot::ALL_NAMES.join(", ")
+                ),
+            })?;
+    let slot = ModelSlot::parse(slot_raw.trim()).ok_or_else(|| ConfigError::InvalidValue {
+        flag: flag.to_string(),
+        value: slot_raw.trim().to_string(),
+        reason: format!(
+            "unknown model slot (expected one of: {})",
+            ModelSlot::ALL_NAMES.join(", ")
+        ),
+    })?;
+    let backend = parse_backend_name(flag, backend_raw)?;
+    if out.get(slot).is_some() {
+        return Err(ConfigError::InvalidValue {
+            flag: flag.to_string(),
+            value: pair.to_string(),
+            reason: format!(
+                "model slot `{}` already has a backend override in this layer; \
+                 specify it once (refusing to silently pick one of two values)",
+                slot.as_str()
+            ),
+        });
+    }
+    out.set(slot, backend);
+    Ok(())
+}
+
+/// Apply a comma-separated `SLOT=BACKEND` list (the env / TOML spelling of
+/// the repeatable `--model-backend` flag). Empty entries are skipped so a
+/// trailing comma is tolerated; everything else routes through
+/// [`apply_model_backend_pair`].
+fn apply_model_backend_list(
+    flag: &str,
+    list: &str,
+    out: &mut BackendOverrides,
+) -> Result<(), ConfigError> {
+    for entry in list.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        apply_model_backend_pair(flag, entry, out)?;
+    }
+    Ok(())
+}
+
 /// Parse the multi-session cap. Must be a positive integer: `0` would
 /// disable the DoS ceiling that the registry and scheduler share, so it is
 /// an explicit error rather than a silent "unlimited" (FR-EX-08).
@@ -494,12 +774,20 @@ struct TomlOverlay {
     whisper_base_tokenizer: Option<PathBuf>,
     whisper_large_v3_gguf: Option<PathBuf>,
     whisper_large_v3_tokenizer: Option<PathBuf>,
+    whisper_small_gguf: Option<PathBuf>,
+    whisper_small_tokenizer: Option<PathBuf>,
+    whisper_medium_gguf: Option<PathBuf>,
+    whisper_medium_tokenizer: Option<PathBuf>,
+    whisper_turbo_gguf: Option<PathBuf>,
+    whisper_turbo_tokenizer: Option<PathBuf>,
     piper_plus_gguf: Option<PathBuf>,
     kokoro_gguf: Option<PathBuf>,
     voxtral_gguf: Option<PathBuf>,
     silero_vad_gguf: Option<PathBuf>,
     piper_g2p: Option<bool>,
     max_concurrent_sessions: Option<usize>,
+    backend: Option<BackendKind>,
+    model_backends: BackendOverrides,
 }
 
 /// Minimal hand-rolled TOML subset: `key = "value"` lines, `#` comments,
@@ -552,6 +840,12 @@ fn load_toml_overlay(path: &PathBuf) -> Result<TomlOverlay, ConfigError> {
             "whisper_large_v3_tokenizer" => {
                 out.whisper_large_v3_tokenizer = Some(PathBuf::from(value))
             }
+            "whisper_small" => out.whisper_small_gguf = Some(PathBuf::from(value)),
+            "whisper_small_tokenizer" => out.whisper_small_tokenizer = Some(PathBuf::from(value)),
+            "whisper_medium" => out.whisper_medium_gguf = Some(PathBuf::from(value)),
+            "whisper_medium_tokenizer" => out.whisper_medium_tokenizer = Some(PathBuf::from(value)),
+            "whisper_turbo" => out.whisper_turbo_gguf = Some(PathBuf::from(value)),
+            "whisper_turbo_tokenizer" => out.whisper_turbo_tokenizer = Some(PathBuf::from(value)),
             "piper_plus" => out.piper_plus_gguf = Some(PathBuf::from(value)),
             "kokoro" => out.kokoro_gguf = Some(PathBuf::from(value)),
             "voxtral" => out.voxtral_gguf = Some(PathBuf::from(value)),
@@ -573,6 +867,21 @@ fn load_toml_overlay(path: &PathBuf) -> Result<TomlOverlay, ConfigError> {
                         }
                     })?,
                 );
+            }
+            "backend" => {
+                out.backend = Some(parse_backend_name("backend", value).map_err(|e| {
+                    ConfigError::ConfigFileParse {
+                        path: path.clone(),
+                        error: e.to_string(),
+                    }
+                })?);
+            }
+            "model_backends" => {
+                apply_model_backend_list("model_backends", value, &mut out.model_backends)
+                    .map_err(|e| ConfigError::ConfigFileParse {
+                        path: path.clone(),
+                        error: e.to_string(),
+                    })?;
             }
             other => {
                 // Unknown keys are an error, not silently ignored — same
@@ -613,6 +922,15 @@ mod tests {
             std::env::remove_var("VOKRA_VOXTRAL");
             std::env::remove_var("VOKRA_SILERO_VAD");
             std::env::remove_var("VOKRA_PIPER_G2P");
+            // cc-39 sizes + cc-30 backend knobs: same hygiene reason as above.
+            std::env::remove_var("VOKRA_WHISPER_SMALL");
+            std::env::remove_var("VOKRA_WHISPER_SMALL_TOKENIZER");
+            std::env::remove_var("VOKRA_WHISPER_MEDIUM");
+            std::env::remove_var("VOKRA_WHISPER_MEDIUM_TOKENIZER");
+            std::env::remove_var("VOKRA_WHISPER_TURBO");
+            std::env::remove_var("VOKRA_WHISPER_TURBO_TOKENIZER");
+            std::env::remove_var("VOKRA_BACKEND");
+            std::env::remove_var("VOKRA_MODEL_BACKENDS");
         }
     }
 
@@ -964,5 +1282,332 @@ mod tests {
                 "got {err}"
             );
         });
+    }
+
+    // ---- cc-39: whisper small / medium / turbo slots (2026-07-19 audit) ----
+
+    /// Every new size flag parses independently, and the sidecar variants
+    /// mirror the large-v3 pattern exactly.
+    #[test]
+    fn startup_cli_sets_whisper_size_paths() {
+        use std::path::Path;
+        clear_env();
+        let cfg = parse_args([
+            "vokra-server",
+            "--whisper-small",
+            "/m/small.gguf",
+            "--whisper-small-tokenizer",
+            "/m/small.tok",
+            "--whisper-medium",
+            "/m/medium.gguf",
+            "--whisper-medium-tokenizer",
+            "/m/medium.tok",
+            "--whisper-turbo",
+            "/m/turbo.gguf",
+            "--whisper-turbo-tokenizer",
+            "/m/turbo.tok",
+        ])
+        .unwrap();
+        assert_eq!(
+            cfg.whisper_small_gguf.as_deref(),
+            Some(Path::new("/m/small.gguf"))
+        );
+        assert_eq!(
+            cfg.whisper_small_tokenizer.as_deref(),
+            Some(Path::new("/m/small.tok"))
+        );
+        assert_eq!(
+            cfg.whisper_medium_gguf.as_deref(),
+            Some(Path::new("/m/medium.gguf"))
+        );
+        assert_eq!(
+            cfg.whisper_medium_tokenizer.as_deref(),
+            Some(Path::new("/m/medium.tok"))
+        );
+        assert_eq!(
+            cfg.whisper_turbo_gguf.as_deref(),
+            Some(Path::new("/m/turbo.gguf"))
+        );
+        assert_eq!(
+            cfg.whisper_turbo_tokenizer.as_deref(),
+            Some(Path::new("/m/turbo.tok"))
+        );
+        // Unset sizes stay unset — no cross-contamination between slots.
+        assert!(cfg.whisper_large_v3_gguf.is_none());
+    }
+
+    /// A dangling size flag is a hard error, exactly like `--piper-plus`.
+    #[test]
+    fn startup_whisper_size_flag_missing_value_is_error() {
+        clear_env();
+        for flag in ["--whisper-small", "--whisper-medium", "--whisper-turbo"] {
+            let err = parse_args(["vokra-server", flag]).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::MissingValue(ref s) if s == flag),
+                "{flag} without a value must be MissingValue, got {err:?}"
+            );
+        }
+    }
+
+    /// TOML keys mirror the flag names with underscores, and CLI still wins.
+    #[test]
+    fn startup_toml_sets_whisper_sizes_and_cli_overrides() {
+        use std::path::Path;
+        clear_env();
+        with_temp_toml(
+            "sizes",
+            "whisper_small = \"/t/small.gguf\"\nwhisper_medium = \"/t/medium.gguf\"\n\
+             whisper_turbo = \"/t/turbo.gguf\"\n",
+            |p| {
+                let cfg = parse_args(["vokra-server", "--config", p.to_str().unwrap()]).unwrap();
+                assert_eq!(
+                    cfg.whisper_small_gguf.as_deref(),
+                    Some(Path::new("/t/small.gguf"))
+                );
+                assert_eq!(
+                    cfg.whisper_medium_gguf.as_deref(),
+                    Some(Path::new("/t/medium.gguf"))
+                );
+                assert_eq!(
+                    cfg.whisper_turbo_gguf.as_deref(),
+                    Some(Path::new("/t/turbo.gguf"))
+                );
+
+                let cli_wins = parse_args([
+                    "vokra-server",
+                    "--config",
+                    p.to_str().unwrap(),
+                    "--whisper-turbo",
+                    "/cli/turbo.gguf",
+                ])
+                .unwrap();
+                assert_eq!(
+                    cli_wins.whisper_turbo_gguf.as_deref(),
+                    Some(Path::new("/cli/turbo.gguf")),
+                    "CLI > TOML for the turbo slot"
+                );
+            },
+        );
+    }
+
+    /// The help text is the operator's contract: every new flag and env key
+    /// must be discoverable there (a flag that works but is undocumented is
+    /// how the base+large-v3-only gap survived this long).
+    #[test]
+    fn startup_help_text_documents_every_new_flag() {
+        for token in [
+            "--whisper-small",
+            "--whisper-small-tokenizer",
+            "--whisper-medium",
+            "--whisper-medium-tokenizer",
+            "--whisper-turbo",
+            "--whisper-turbo-tokenizer",
+            "VOKRA_WHISPER_SMALL",
+            "VOKRA_WHISPER_MEDIUM",
+            "VOKRA_WHISPER_TURBO",
+            "--backend",
+            "--model-backend",
+            "VOKRA_BACKEND",
+            "VOKRA_MODEL_BACKENDS",
+            "--features metal",
+        ] {
+            assert!(
+                HELP_TEXT.contains(token),
+                "HELP_TEXT must document {token:?}"
+            );
+        }
+    }
+
+    // ---- cc-30: backend selection (2026-07-19 audit) ----
+
+    #[test]
+    fn startup_backend_defaults_to_cpu() {
+        clear_env();
+        let cfg = parse_args(["vokra-server"]).unwrap();
+        assert_eq!(cfg.backend, None, "unset must stay None");
+        assert_eq!(cfg.backend_or_default(), BackendKind::Cpu);
+        assert!(cfg.model_backends.is_empty());
+    }
+
+    /// Every backend name the CLI accepts parses here too — including ones
+    /// this build may not have compiled in. Selectability is checked later,
+    /// with a different (rebuild-instruction) error.
+    #[test]
+    fn startup_backend_names_parse_and_reject_unknown() {
+        clear_env();
+        for (name, want) in [
+            ("cpu", BackendKind::Cpu),
+            ("metal", BackendKind::Metal),
+            ("cuda", BackendKind::Cuda),
+            ("vulkan", BackendKind::Vulkan),
+        ] {
+            let cfg = parse_args(["vokra-server", "--backend", name]).unwrap();
+            assert_eq!(cfg.backend, Some(want), "--backend {name}");
+            assert_eq!(cfg.backend_or_default(), want);
+        }
+        for bad in ["npu", "", "Metal", "gpu"] {
+            let err = parse_args(["vokra-server", "--backend", bad]).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::InvalidValue { ref flag, .. } if flag == "--backend"),
+                "--backend {bad:?} must be InvalidValue, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn startup_model_backend_pairs_parse_per_slot() {
+        clear_env();
+        let cfg = parse_args([
+            "vokra-server",
+            "--model-backend",
+            "whisper-base=metal",
+            "--model-backend",
+            "piper-plus=cpu",
+            "--model-backend",
+            "whisper-turbo=cuda",
+        ])
+        .unwrap();
+        assert_eq!(
+            cfg.model_backends.get(ModelSlot::WhisperBase),
+            Some(BackendKind::Metal)
+        );
+        assert_eq!(
+            cfg.model_backends.get(ModelSlot::PiperPlus),
+            Some(BackendKind::Cpu)
+        );
+        assert_eq!(
+            cfg.model_backends.get(ModelSlot::WhisperTurbo),
+            Some(BackendKind::Cuda)
+        );
+        // Untouched slots stay unset (they inherit the global default).
+        assert_eq!(cfg.model_backends.get(ModelSlot::Kokoro), None);
+    }
+
+    /// Malformed pairs, unknown slots, unknown backends, and a repeated slot
+    /// are each an explicit error — never a dropped or arbitrarily-resolved
+    /// override (FR-EX-08).
+    #[test]
+    fn startup_model_backend_rejects_malformed_unknown_and_duplicate() {
+        clear_env();
+        for bad in [
+            "whisper-base",         // no `=`
+            "whisper-xl=metal",     // unknown slot
+            "whisper-base=quantum", // unknown backend
+            "=metal",               // empty slot
+        ] {
+            let err = parse_args(["vokra-server", "--model-backend", bad]).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::InvalidValue { .. }),
+                "--model-backend {bad:?} must be InvalidValue, got {err:?}"
+            );
+        }
+        let err = parse_args([
+            "vokra-server",
+            "--model-backend",
+            "whisper-base=metal",
+            "--model-backend",
+            "whisper-base=cpu",
+        ])
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            matches!(err, ConfigError::InvalidValue { .. })
+                && msg.contains("already has a backend"),
+            "a repeated slot must be rejected, got {msg}"
+        );
+    }
+
+    /// TOML carries the comma-list spelling; a CLI flag for the SAME slot
+    /// must override it rather than trip the duplicate check (the layers are
+    /// merged, not concatenated).
+    #[test]
+    fn startup_model_backends_toml_list_and_cli_precedence() {
+        clear_env();
+        with_temp_toml(
+            "backends",
+            "backend = \"cpu\"\nmodel_backends = \"whisper-base=metal,kokoro=cuda\"\n",
+            |p| {
+                let cfg = parse_args(["vokra-server", "--config", p.to_str().unwrap()]).unwrap();
+                assert_eq!(cfg.backend, Some(BackendKind::Cpu));
+                assert_eq!(
+                    cfg.model_backends.get(ModelSlot::WhisperBase),
+                    Some(BackendKind::Metal)
+                );
+                assert_eq!(
+                    cfg.model_backends.get(ModelSlot::Kokoro),
+                    Some(BackendKind::Cuda)
+                );
+
+                // Same slot on the CLI: overrides, does NOT error as duplicate.
+                let cli_wins = parse_args([
+                    "vokra-server",
+                    "--config",
+                    p.to_str().unwrap(),
+                    "--model-backend",
+                    "whisper-base=cpu",
+                    "--backend",
+                    "vulkan",
+                ])
+                .unwrap();
+                assert_eq!(
+                    cli_wins.model_backends.get(ModelSlot::WhisperBase),
+                    Some(BackendKind::Cpu),
+                    "CLI override must beat the TOML list for the same slot"
+                );
+                assert_eq!(
+                    cli_wins.model_backends.get(ModelSlot::Kokoro),
+                    Some(BackendKind::Cuda),
+                    "slots the CLI did not mention keep their TOML value"
+                );
+                assert_eq!(cli_wins.backend, Some(BackendKind::Vulkan), "CLI > TOML");
+            },
+        );
+    }
+
+    /// A duplicate WITHIN the comma-list is still ambiguous, so it is still
+    /// an error (the cross-layer merge is the only place replacement is OK).
+    #[test]
+    fn startup_model_backends_list_rejects_intra_layer_duplicate() {
+        clear_env();
+        with_temp_toml(
+            "backends-dup",
+            "model_backends = \"whisper-base=metal,whisper-base=cpu\"\n",
+            |p| {
+                let err =
+                    parse_args(["vokra-server", "--config", p.to_str().unwrap()]).unwrap_err();
+                assert!(
+                    matches!(err, ConfigError::ConfigFileParse { .. }),
+                    "got {err}"
+                );
+            },
+        );
+        // A trailing comma is tolerated (it is not ambiguous).
+        with_temp_toml(
+            "backends-trailing",
+            "model_backends = \"whisper-base=metal,\"\n",
+            |p| {
+                let cfg = parse_args(["vokra-server", "--config", p.to_str().unwrap()]).unwrap();
+                assert_eq!(
+                    cfg.model_backends.get(ModelSlot::WhisperBase),
+                    Some(BackendKind::Metal)
+                );
+            },
+        );
+    }
+
+    /// Every `ModelSlot` must be reachable by its documented name — a slot
+    /// that exists in the enum but parses to `None` would be an override the
+    /// operator can never express.
+    #[test]
+    fn startup_every_model_slot_name_round_trips() {
+        for (slot, name) in ModelSlot::ALL.iter().zip(ModelSlot::ALL_NAMES.iter()) {
+            assert_eq!(slot.as_str(), *name, "ALL and ALL_NAMES must stay aligned");
+            assert_eq!(
+                ModelSlot::parse(name),
+                Some(*slot),
+                "slot name {name:?} must parse back"
+            );
+        }
+        assert_eq!(ModelSlot::parse("whisper-xl"), None);
     }
 }

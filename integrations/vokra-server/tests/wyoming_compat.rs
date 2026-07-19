@@ -819,13 +819,21 @@ async fn m4_19_asr_real_gguf_round_trip_gated() {
 
     use vokra_server::service::{InferenceService, ServiceConfig};
     let cfg = ServiceConfig::minimum(whisper.into(), piper.into());
-    let service = match InferenceService::build(&cfg) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("m4_19_asr_real_gguf_round_trip_gated: SKIP — service build failed: {e}");
-            return;
-        }
-    };
+    // Supplying both env vars *is* the request to run this leg, so a build
+    // failure from here on is a failure, not a skip. Absorbing it reported
+    // green for a round trip that never happened: audit cc-34 (2026-07-19)
+    // found that pointing the leg at the multi-speaker voice turned a correct,
+    // loud loader error into a passing test. The genuinely-unconfigured case
+    // is still skipped, above (FR-EX-08).
+    let service = InferenceService::build(&cfg).unwrap_or_else(|e| {
+        panic!(
+            "m4_19_asr_real_gguf_round_trip_gated: service build failed for the \
+             supplied VOKRA_WHISPER_BASE_GGUF / VOKRA_PIPER_GGUF: {e}\nnote: the \
+             piper-plus voice must be a single-speaker export — the multi-speaker \
+             6lang voice fails with `missing tensor spk_proj.0.weight`; use the \
+             `-neutralspk` GGUF."
+        )
+    });
     let service: Arc<dyn WyomingBackend> = service;
     let (handles, trigger) =
         spawn_server_for_test_with_service(loopback_cfg(), Some(service), Some(test_scheduler(2)))

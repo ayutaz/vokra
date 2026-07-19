@@ -150,21 +150,41 @@ placeholder response with explicit non-implementation notice
 launch, otherwise the model is `unavailable` and requests receive an
 explicit error, never a silent substitution.
 
-| API | Endpoint | whisper-base | whisper-large-v3 | whisper-turbo | piper-plus | Kokoro-82M |
+| API | Endpoint | whisper-base | whisper-small/medium/turbo | whisper-large-v3 | piper-plus | Kokoro-82M |
 |---|---|---|---|---|---|---|
-| OpenAI | `POST /v1/audio/transcriptions` | OK | gated (M2-06) | out of scope (v1.0+) | n/a | n/a |
-| OpenAI | `POST /v1/audio/speech` | n/a | n/a | n/a | out of scope (v1.0+) | out of scope (v1.0+) |
+| OpenAI | `POST /v1/audio/transcriptions` | OK | gated (cc-39) | gated (M2-06) | n/a | n/a |
+| OpenAI | `POST /v1/audio/speech` | n/a | n/a | n/a | OK (cc-38) | gated + M2-07 skeleton → 501 |
+| OpenAI | `GET /v1/models` | OK | OK (advertised when gated-in) | OK | OK | OK |
 | vLLM | `POST /v1/completions` | stub (501) | stub (501) | stub (501) | n/a | n/a |
 | vLLM | `POST /v1/chat/completions` | stub (501) | stub (501) | stub (501) | n/a | n/a |
 | piper-plus HTTP | `POST /api/tts` | n/a | n/a | n/a | OK | gated + M2-07 skeleton → 501 |
-| Wyoming | `transcribe` / audio events | OK | gated (M2-06) | out of scope | n/a | n/a |
+| Wyoming | `transcribe` / audio events | OK | gated (cc-39) | gated (M2-06) | n/a | n/a |
 | Wyoming | `synthesize` / audio events | n/a | n/a | n/a | OK | gated + M2-07 skeleton → 501 |
 
 Notes:
 
-- `whisper-turbo` (FR-MD-04 follow-on) is out of scope for v0.5 in
-  every API row; requests naming it receive 501 + `type:
-  "not_implemented"`, never a base-model substitution.
+- `whisper-small` / `whisper-medium` / `whisper-turbo` are served when
+  their GGUF is supplied at launch (`--whisper-small` etc., cc-39;
+  `whisper-turbo` also answers to its upstream id
+  `whisper-large-v3-turbo`). **An unconfigured size is a 404, never a
+  substitution by another size** — verified against real weights in
+  `tests/real_gguf_slots.rs`. This supersedes the earlier "out of scope
+  (v1.0+)" row: model-side support landed with M4-14 and all four sizes
+  transcribe byte-identically to onnxruntime
+  (`docs/bench-baselines/m1-real-weight-eval-2026-07-16/report.md`).
+- `POST /v1/audio/speech` (cc-38) returns `audio/wav`. Three deliberate
+  deviations from OpenAI, each an explicit status rather than a
+  plausible-looking response: compressed `response_format`
+  (mp3/opus/aac/flac) and OpenAI's headerless 24 kHz `pcm` are **501**
+  (Vokra links no audio encoder or resampler, and adding one would mean a
+  third-party codec dependency); `speed` other than `1.0` is **501** (the
+  native runtime does not wire per-request `length_scale`); and OpenAI's
+  stock voice names (`alloy`, `nova`, …) are **404** rather than being
+  folded onto the one loaded voice. Omitting `response_format` yields
+  `wav`, not OpenAI's `mp3` default. `model: "tts-1"` is accepted as the
+  stock alias for the default TTS engine (the same convention as
+  `whisper-1` → base); `tts-1-hd` is **not** aliased — it names a quality
+  tier this server does not have.
 - vLLM `/v1/completions` and `/v1/chat/completions` are **contract-only
   stubs** in v0.5 — schema-conformant JSON is returned but no LLM is
   loaded (plan §D9). Real completion generation lands with the
@@ -176,8 +196,18 @@ Notes:
 - CC-BY-NC weights (F5-TTS / Fish-Speech / EnCodec) are refused at
   registry load without a research flag (plan §D11 / M2-13); they
   never appear in this matrix.
-- Backend selection (CPU / Metal / CUDA) is fixed at server startup
-  and applies uniformly across all rows above.
+- Backend selection is fixed at server startup: `--backend <cpu|metal|
+  cuda|vulkan>` sets the default and `--model-backend <SLOT>=<BACKEND>`
+  overrides individual engines (cc-30). A backend can only be *selected*
+  if it was *compiled in* — the GPU backends are opt-in Cargo features
+  that forward to `vokra-models` (`cargo build --release --features
+  metal`). Requesting an uncompiled backend is a **hard startup error**
+  naming the feature to rebuild with, never a silent CPU fall back
+  (FR-EX-08). Two engines are exceptions worth knowing: Silero VAD has no
+  backend selector at all (CPU-only by construction — an explicit
+  `--model-backend silero-vad=…` is rejected, and a non-CPU global default
+  is announced as not applying to it), and Voxtral only began honouring
+  the setting with cc-30 (it previously stayed on CPU regardless).
 
 ## Stability & versioning tier (experimental)
 

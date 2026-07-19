@@ -147,6 +147,25 @@ pub async fn http_post_multipart(
     Ok((resp.status, resp.body))
 }
 
+/// [`http_post_multipart`] with a caller-chosen per-attempt read deadline.
+///
+/// Same rationale as [`http_post_json_with_head_timeout`], on the ASR side:
+/// a real-weight transcription (env-gated suites — cc-40) legitimately takes
+/// longer than the default 5 s, especially for the larger Whisper sizes under
+/// parallel load. Raising the shared default instead would slow every genuine
+/// hang in the hermetic suites down to the same deadline.
+pub async fn http_post_multipart_timeout(
+    addr: SocketAddr,
+    path: &str,
+    boundary: &str,
+    body: &[u8],
+    read_timeout: Duration,
+) -> std::io::Result<(u16, Vec<u8>)> {
+    let ct = format!("multipart/form-data; boundary={boundary}");
+    let resp = http_request_with_timeout(addr, "POST", path, Some(&ct), body, read_timeout).await?;
+    Ok((resp.status, resp.body))
+}
+
 /// GET `path` and return `(status, body_bytes)`.
 pub async fn http_get(addr: SocketAddr, path: &str) -> std::io::Result<(u16, Vec<u8>)> {
     let resp = http_request(addr, "GET", path, None, &[]).await?;

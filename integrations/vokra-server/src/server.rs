@@ -29,7 +29,7 @@ use crate::config::Config;
 use crate::error::spawn_isolated_wyoming_task;
 use crate::scheduler::{Scheduler, SchedulerConfig};
 use crate::service::{
-    InferenceService, ModelCatalog, ServiceConfig, ServiceError, TranscribeService,
+    InferenceService, ModelCatalog, ModelSlot, ServiceConfig, ServiceError, TranscribeService,
 };
 use crate::session::SessionRegistryConfig;
 use crate::shutdown::{ShutdownSignal, ShutdownTrigger, install_shutdown_signal};
@@ -39,6 +39,7 @@ use axum::routing::get;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use vokra_core::BackendKind;
 
 /// Default multi-session concurrency cap for the production startup path
 /// (M4-19-T04) — used when `--max-concurrent-sessions` /
@@ -265,7 +266,12 @@ fn build_http_app(
         // Campaign-2 P1 #3 fix: `/api/tts` (schema + dispatch landed at T11,
         // unit-tested, but never merged here → live 404 on the production
         // binary, verified 2026-07-17).
-        app = app.merge(crate::api::piper_http::router(tts));
+        app = app.merge(crate::api::piper_http::router(tts.clone()));
+        // cc-38 (2026-07-19 M4-residual audit): the OpenAI TTS surface the
+        // README has advertised since M2-09. Mounted from the SAME state as
+        // `/api/tts` — one registry, two request shapes — and only when a TTS
+        // registry exists, so a health-only boot 404s it honestly.
+        app = app.merge(crate::api::openai_speech::speech_router(tts));
     }
     if let Some(catalog) = http_models {
         // cc-18 (2026-07-19 M4-residual audit): `GET /v1/models` — mounted
@@ -343,6 +349,7 @@ fn build_service(cfg: &Config) -> Result<Option<Arc<InferenceService>>, ServiceE
     let Some(service_cfg) = service_config_from_config(cfg)? else {
         return Ok(None);
     };
+    announce_backend_selection(&service_cfg);
     let service = InferenceService::build(&service_cfg)?;
     if !cfg.piper_g2p_enabled() {
         return Ok(Some(service));
@@ -363,6 +370,44 @@ fn build_service(cfg: &Config) -> Result<Option<Arc<InferenceService>>, ServiceE
          treated as text)"
     );
     Ok(Some(service.with_phonemizer(Arc::new(g2p))))
+}
+
+/// Print which backend each engine will actually run on (cc-30).
+///
+/// FR-EX-08 visibility, in the same spirit as the HTTP / Wyoming mode banners:
+/// an operator must never have to guess whether `--backend metal` took effect.
+/// The Silero VAD line exists because that engine has no backend selector at
+/// all — a non-CPU global default cannot reach it, and the honest move is to
+/// say so out loud rather than let the operator assume otherwise. (An
+/// *explicit* `--model-backend silero-vad=…` is a hard error instead; see
+/// `ServiceConfig::validate_backend_overrides`.)
+fn announce_backend_selection(service_cfg: &ServiceConfig) {
+    eprintln!(
+        "vokra-server: default backend = {:?}{}",
+        service_cfg.backend,
+        if service_cfg.backend_overrides.is_empty() {
+            String::new()
+        } else {
+            let per_slot: Vec<String> = ModelSlot::ALL
+                .iter()
+                .filter_map(|slot| {
+                    service_cfg
+                        .backend_overrides
+                        .get(*slot)
+                        .map(|b| format!("{}={b:?}", slot.as_str()))
+                })
+                .collect();
+            format!(" (per-model overrides: {})", per_slot.join(", "))
+        }
+    );
+    if service_cfg.silero_vad_gguf.is_some() && service_cfg.backend != BackendKind::Cpu {
+        eprintln!(
+            "vokra-server: NOTE silero-vad runs on Cpu regardless of --backend {:?} — the \
+             Silero VAD v5 engine exposes no backend selector (CPU-only LSTM subgraph). \
+             Every other configured engine uses the backend shown above.",
+            service_cfg.backend,
+        );
+    }
 }
 
 /// Map the startup [`Config`] model paths onto a [`ServiceConfig`].
@@ -396,11 +441,30 @@ fn service_config_from_config(cfg: &Config) -> Result<Option<ServiceConfig>, Ser
         || cfg.whisper_base_tokenizer.is_some()
         || cfg.whisper_large_v3_gguf.is_some()
         || cfg.whisper_large_v3_tokenizer.is_some()
+        // cc-39: the three M4-14 sizes count towards "some model was
+        // configured" exactly like large-v3 — otherwise `--whisper-small`
+        // alone would boot health-only and silently drop the operator's flag.
+        || cfg.whisper_small_gguf.is_some()
+        || cfg.whisper_small_tokenizer.is_some()
+        || cfg.whisper_medium_gguf.is_some()
+        || cfg.whisper_medium_tokenizer.is_some()
+        || cfg.whisper_turbo_gguf.is_some()
+        || cfg.whisper_turbo_tokenizer.is_some()
         || cfg.piper_plus_gguf.is_some()
         || cfg.kokoro_gguf.is_some()
         || cfg.voxtral_gguf.is_some()
         || cfg.silero_vad_gguf.is_some();
     if !any_model {
+        // cc-30: a backend knob with no model to apply it to is a typo, not a
+        // health-only boot — same reasoning as the `--piper-g2p` guard above.
+        if cfg.backend.is_some() || !cfg.model_backends.is_empty() {
+            return Err(ServiceError::InvalidConfig(
+                "a backend was selected (--backend / --model-backend) but no model GGUF is \
+                 configured, so nothing would run on it; refusing to silently ignore the \
+                 flag (FR-EX-08)"
+                    .to_string(),
+            ));
+        }
         return Ok(None);
     }
 
@@ -419,9 +483,20 @@ fn service_config_from_config(cfg: &Config) -> Result<Option<ServiceConfig>, Ser
     service_cfg.whisper_base_tokenizer = cfg.whisper_base_tokenizer.clone();
     service_cfg.whisper_large_v3_gguf = cfg.whisper_large_v3_gguf.clone();
     service_cfg.whisper_large_v3_tokenizer = cfg.whisper_large_v3_tokenizer.clone();
+    service_cfg.whisper_small_gguf = cfg.whisper_small_gguf.clone();
+    service_cfg.whisper_small_tokenizer = cfg.whisper_small_tokenizer.clone();
+    service_cfg.whisper_medium_gguf = cfg.whisper_medium_gguf.clone();
+    service_cfg.whisper_medium_tokenizer = cfg.whisper_medium_tokenizer.clone();
+    service_cfg.whisper_turbo_gguf = cfg.whisper_turbo_gguf.clone();
+    service_cfg.whisper_turbo_tokenizer = cfg.whisper_turbo_tokenizer.clone();
     service_cfg.kokoro_gguf = cfg.kokoro_gguf.clone();
     service_cfg.voxtral_gguf = cfg.voxtral_gguf.clone();
     service_cfg.silero_vad_gguf = cfg.silero_vad_gguf.clone();
+    // cc-30: backend selection. `InferenceService::build` probes every
+    // distinct backend before loading a weight, so an uncompiled backend is a
+    // startup error rather than a per-request 500.
+    service_cfg.backend = cfg.backend_or_default();
+    service_cfg.backend_overrides = cfg.model_backends;
     Ok(Some(service_cfg))
 }
 
@@ -982,6 +1057,9 @@ mod tests {
     impl crate::api::piper_http::VoiceDefaults for FakeVoicesTts {
         fn defaults_for(&self, voice: &str) -> Option<(f32, f32)> {
             (voice == crate::api::piper_http::DEFAULT_VOICE).then_some((1.1, 0.667))
+        }
+        fn available_voices(&self) -> Vec<String> {
+            vec![crate::api::piper_http::DEFAULT_VOICE.to_owned()]
         }
     }
 

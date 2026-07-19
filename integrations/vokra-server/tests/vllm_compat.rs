@@ -466,6 +466,63 @@ async fn no_extra_v1_routes_are_registered() {
         404,
         "bare contract router must not serve /v1/models (it has no registry state)",
     );
+
+    // `/v1/audio/speech` (cc-38) is the second route to join this list, and
+    // it joins it for exactly the reason `/v1/models` did (the P2 precedent
+    // directly above): it lives on a STATE-BOUND router
+    // (`api::openai_speech::speech_router`, built from `TtsHttpState`), so
+    // the stateless contract router must keep 404ing it. A stateless mount
+    // answering it would mean a server with no TTS registry accepting
+    // synthesis requests it cannot possibly serve.
+    //
+    // This assertion is an INTENTIONAL update to the "no extra /v1 routes"
+    // contract, not a leak: the route is expected to exist on the composed
+    // app when a TTS registry is wired (see `build_http_app`), and to be
+    // absent otherwise (`speech_route_absent_on_health_only_server` below).
+    let app = vllm_router();
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/audio/speech")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            r#"{"model":"tts-1","input":"hi","voice":"default"}"#,
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        404,
+        "bare contract router must not serve /v1/audio/speech (it has no TTS state)",
+    );
+}
+
+/// cc-38 e2e closure, mirroring `models_route_absent_on_health_only_server`:
+/// with no registry wired, `POST /v1/audio/speech` must 404 — an honest
+/// absence rather than an endpoint that accepts synthesis it cannot perform
+/// (FR-EX-08). The wired-server 200 path is covered by the env-gated
+/// real-GGUF suite (cc-40) plus the `openai_speech` route unit tests.
+#[tokio::test]
+async fn speech_route_absent_on_health_only_server() {
+    let cfg = Config {
+        http_bind: "127.0.0.1:0".parse().unwrap(),
+        wyoming_bind: "127.0.0.1:0".parse().unwrap(),
+        config_file: None,
+        ..Config::default()
+    };
+    let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn server");
+    let (status, _body) = support::http_post_json(
+        handles.http_actual,
+        "/v1/audio/speech",
+        br#"{"model":"tts-1","input":"hi","voice":"default"}"#,
+    )
+    .await
+    .expect("POST /v1/audio/speech");
+    assert_eq!(
+        status, 404,
+        "health-only boot must not accept speech synthesis"
+    );
+    trigger.trigger();
+    tokio::time::sleep(Duration::from_millis(20)).await;
 }
 
 /// cc-18 e2e closure: on a health-only boot (no registry) the composed

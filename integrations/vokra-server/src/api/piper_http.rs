@@ -237,6 +237,21 @@ pub trait VoiceDefaults: Send + Sync {
     /// the named voice is loaded. `None` = voice not available (schema
     /// layer maps to [`PiperTtsError::VoiceNotAvailable`]).
     fn defaults_for(&self, voice: &str) -> Option<(f32, f32)>;
+
+    /// Every voice tag [`Self::defaults_for`] resolves, for error messages.
+    ///
+    /// cc-38 (2026-07-19 M4-residual audit): the OpenAI `/v1/audio/speech`
+    /// surface is the first one callers reach with a voice vocabulary that is
+    /// NOT Vokra's (`alloy`, `nova`, … are OpenAI's stock names, and this
+    /// server has none of them). Those requests are a 404 — mapping six
+    /// distinct OpenAI voices onto the one loaded voice would be exactly the
+    /// silent substitution FR-EX-08 forbids — so the 404 has to be
+    /// actionable: it names what this server DOES accept.
+    ///
+    /// Deliberately not a defaulted method: an implementation that resolves
+    /// voices must say which ones, and a stub returning `vec![]` would make
+    /// the error text lie about an empty registry.
+    fn available_voices(&self) -> Vec<String>;
 }
 
 /// Dispatch the request through [`SynthesizeService`] and shape the
@@ -465,6 +480,14 @@ impl VoiceDefaults for InferenceService {
             None
         }
     }
+
+    fn available_voices(&self) -> Vec<String> {
+        // Exactly the tags `defaults_for` accepts, in the order an operator
+        // would try them. Kept adjacent to that method so the two cannot
+        // drift (a 404 listing a tag the resolver rejects would be worse
+        // than no list at all).
+        vec![DEFAULT_VOICE.to_owned(), model_names::PIPER_PLUS.to_owned()]
+    }
 }
 
 /// Build the `/api/tts` router bound to `state`. Returns a plain
@@ -574,7 +597,11 @@ fn server_error_from_tts(err: PiperTtsError) -> ServerError {
 
 /// [`ServiceError`] → [`ServerError`] leg of [`server_error_from_tts`].
 /// Split out so the status table is testable per service variant.
-fn server_error_from_service(err: ServiceError) -> ServerError {
+/// `pub(crate)` so the OpenAI `/v1/audio/speech` surface (cc-38,
+/// `api::openai_speech`) maps identical service failures to identical status
+/// codes. Two TTS routes disagreeing about what a `SynthesizeUnavailable`
+/// means would be a contract bug, so they share one table.
+pub(crate) fn server_error_from_service(err: ServiceError) -> ServerError {
     match err {
         ServiceError::UnknownModel(m) => ServerError::ModelNotFound { model: m },
         e @ ServiceError::SynthesizeUnavailable { .. } => ServerError::NotImplemented {
@@ -675,6 +702,9 @@ mod route_tts {
             } else {
                 None
             }
+        }
+        fn available_voices(&self) -> Vec<String> {
+            vec![self.voice.to_owned()]
         }
     }
 
@@ -1253,6 +1283,9 @@ mod route_tts_http {
     impl VoiceDefaults for MockVoices {
         fn defaults_for(&self, voice: &str) -> Option<(f32, f32)> {
             (voice == DEFAULT_VOICE || voice == model_names::PIPER_PLUS).then_some((1.1, 0.667))
+        }
+        fn available_voices(&self) -> Vec<String> {
+            vec![DEFAULT_VOICE.to_owned(), model_names::PIPER_PLUS.to_owned()]
         }
     }
 

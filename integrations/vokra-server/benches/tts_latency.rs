@@ -180,6 +180,9 @@ impl VoiceDefaults for FakeVoices {
             None
         }
     }
+    fn available_voices(&self) -> Vec<String> {
+        vec!["en_US-lessac-medium".to_owned()]
+    }
 }
 
 /// Builds the canonical short-utterance [`TtsRequest`] the harness
