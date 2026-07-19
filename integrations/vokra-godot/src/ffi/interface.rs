@@ -27,7 +27,7 @@
 use core::ffi::c_char;
 
 use crate::ffi::gdextension::{
-    DictionaryDefaultCtor, DictionaryDestructor,
+    DictionaryDefaultCtor, DictionaryDestructor, GDExtensionInterfaceClassdbConstructObject,
     GDExtensionInterfaceClassdbRegisterExtensionClass3,
     GDExtensionInterfaceClassdbRegisterExtensionClassMethod,
     GDExtensionInterfaceClassdbRegisterExtensionClassSignal,
@@ -35,7 +35,8 @@ use crate::ffi::gdextension::{
     GDExtensionInterfaceDictionaryOperatorIndex, GDExtensionInterfaceGetProcAddress,
     GDExtensionInterfaceGetVariantFromTypeConstructor,
     GDExtensionInterfaceGetVariantToTypeConstructor, GDExtensionInterfaceMemAlloc,
-    GDExtensionInterfaceMemFree, GDExtensionInterfacePackedFloat32ArrayOperatorIndex,
+    GDExtensionInterfaceMemFree, GDExtensionInterfaceObjectSetInstance,
+    GDExtensionInterfacePackedFloat32ArrayOperatorIndex,
     GDExtensionInterfacePackedFloat32ArrayOperatorIndexConst,
     GDExtensionInterfaceStringNameNewWithLatin1Chars,
     GDExtensionInterfaceStringNameNewWithUtf8Chars,
@@ -64,6 +65,13 @@ pub struct InterfaceTable {
     pub classdb_register_extension_class_signal:
         GDExtensionInterfaceClassdbRegisterExtensionClassSignal,
     pub classdb_unregister_extension_class: GDExtensionInterfaceClassdbUnregisterExtensionClass,
+    /// Object construction pair, required by `create_instance_func`. Godot
+    /// `dynamic_cast`s whatever that callback returns as an `Object *`, so
+    /// the extension MUST hand back a real Godot Object (built by
+    /// `classdb_construct_object` from the *parent* class name) with its
+    /// own instance pointer attached via `object_set_instance`.
+    pub classdb_construct_object: GDExtensionInterfaceClassdbConstructObject,
+    pub object_set_instance: GDExtensionInterfaceObjectSetInstance,
     pub string_name_new_with_utf8_chars: GDExtensionInterfaceStringNameNewWithUtf8Chars,
     pub string_name_new_with_latin1_chars: GDExtensionInterfaceStringNameNewWithLatin1Chars,
     pub mem_alloc: GDExtensionInterfaceMemAlloc,
@@ -232,6 +240,10 @@ mod names {
     pub const CLASSDB_REGISTER_EXTENSION_CLASS_SIGNAL: &[u8] =
         b"classdb_register_extension_class_signal\0";
     pub const CLASSDB_UNREGISTER_EXTENSION_CLASS: &[u8] = b"classdb_unregister_extension_class\0";
+    /// `classdb_construct_object` — header line 2692 (@since 4.1).
+    pub const CLASSDB_CONSTRUCT_OBJECT: &[u8] = b"classdb_construct_object\0";
+    /// `object_set_instance` — header line 2440 (@since 4.1).
+    pub const OBJECT_SET_INSTANCE: &[u8] = b"object_set_instance\0";
     pub const STRING_NAME_NEW_WITH_UTF8_CHARS: &[u8] = b"string_name_new_with_utf8_chars\0";
     pub const STRING_NAME_NEW_WITH_LATIN1_CHARS: &[u8] = b"string_name_new_with_latin1_chars\0";
     pub const MEM_ALLOC: &[u8] = b"mem_alloc\0";
@@ -331,6 +343,15 @@ impl InterfaceTable {
             let raw_unreg = get_proc_address(
                 names::CLASSDB_UNREGISTER_EXTENSION_CLASS.as_ptr() as *const c_char
             )?;
+            // Object construction pair — see the field docs on
+            // `InterfaceTable::classdb_construct_object`. A miss on either
+            // means `create_instance_func` could never return a valid
+            // Object, so bail rather than register a class that would
+            // crash the host on `.new()`.
+            let raw_construct_object =
+                get_proc_address(names::CLASSDB_CONSTRUCT_OBJECT.as_ptr() as *const c_char)?;
+            let raw_object_set_instance =
+                get_proc_address(names::OBJECT_SET_INSTANCE.as_ptr() as *const c_char)?;
             let raw_sn_utf8 =
                 get_proc_address(names::STRING_NAME_NEW_WITH_UTF8_CHARS.as_ptr() as *const c_char)?;
             let raw_sn_latin1 = get_proc_address(
@@ -627,6 +648,14 @@ impl InterfaceTable {
                     unsafe extern "C" fn(),
                     GDExtensionInterfaceClassdbUnregisterExtensionClass,
                 >(raw_unreg),
+                classdb_construct_object: core::mem::transmute::<
+                    unsafe extern "C" fn(),
+                    GDExtensionInterfaceClassdbConstructObject,
+                >(raw_construct_object),
+                object_set_instance: core::mem::transmute::<
+                    unsafe extern "C" fn(),
+                    GDExtensionInterfaceObjectSetInstance,
+                >(raw_object_set_instance),
                 string_name_new_with_utf8_chars: core::mem::transmute::<
                     unsafe extern "C" fn(),
                     GDExtensionInterfaceStringNameNewWithUtf8Chars,

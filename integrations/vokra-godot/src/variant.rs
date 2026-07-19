@@ -1906,6 +1906,15 @@ mod tests {
     #[test]
     fn variant_to_string_owned_empty_string_shortcircuits() {
         use core::sync::atomic::Ordering;
+        // The `UTF8_*` payload/phase atomics driving
+        // `mock_string_to_utf8_chars_configurable` are process-global.
+        // All three `variant_to_string_owned_*` tests arm them with
+        // different values, so they MUST NOT interleave — without this
+        // lock one test observes another's payload (seen in the wild as
+        // `left: Ok("hello"), right: Ok("")`).
+        let _lock = crate::registry::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut iface = crate::ffi::interface::tests::make_sig_aware_interface();
         iface.variant_get_type = mock_gt_str_ok;
         iface.variant_to_string_ctor = mock_str_ctor_zeroes;
@@ -1933,6 +1942,10 @@ mod tests {
     #[test]
     fn variant_to_string_owned_roundtrips_utf8_payload() {
         use core::sync::atomic::Ordering;
+        // See `..._empty_string_shortcircuits`: shared `UTF8_*` globals.
+        let _lock = crate::registry::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut iface = crate::ffi::interface::tests::make_sig_aware_interface();
         iface.variant_get_type = mock_gt_str_ok;
         iface.variant_to_string_ctor = mock_str_ctor_zeroes;
@@ -1964,6 +1977,10 @@ mod tests {
     #[test]
     fn variant_to_string_owned_defensive_clamps_over_report() {
         use core::sync::atomic::Ordering;
+        // See `..._empty_string_shortcircuits`: shared `UTF8_*` globals.
+        let _lock = crate::registry::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut iface = crate::ffi::interface::tests::make_sig_aware_interface();
         iface.variant_get_type = mock_gt_str_ok;
         iface.variant_to_string_ctor = mock_str_ctor_zeroes;
@@ -2084,6 +2101,13 @@ mod tests {
     #[test]
     fn pack_tts_output_into_dict_variant_empty_pcm_visits_every_stage() {
         use core::sync::atomic::Ordering;
+        // The `DICT_*` / `VARIANT_*` call counters are process-global, so
+        // this test and its `nonempty_pcm` sibling MUST NOT run
+        // concurrently — interleaved runs double every count. Same
+        // serialization point the sibling `PACK_*` tests already use.
+        let _lock = crate::registry::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let iface = make_dict_recording_interface();
         reset_dict_counters();
 
@@ -2125,6 +2149,10 @@ mod tests {
     #[test]
     fn pack_tts_output_into_dict_variant_nonempty_pcm_visits_every_stage() {
         use core::sync::atomic::Ordering;
+        // See the `empty_pcm` sibling: shared process-global counters.
+        let _lock = crate::registry::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let iface = make_dict_recording_interface();
         reset_dict_counters();
 

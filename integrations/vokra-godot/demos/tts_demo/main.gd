@@ -14,12 +14,16 @@
 #   it at res://models/piper-en-amy.gguf. Voice ID "en_us_amy_medium"
 #   matches the metadata inside the checkpoint.
 #
-# Backend selection:
-#   VokraSession defaults to CPU. Passing "metal" / "cuda" to
-#   `load_model` selects a GPU backend if the current build shipped
-#   with `--features metal` / `--features cuda`. FR-EX-08: if the
-#   requested backend is unavailable the load returns
-#   VOKRA_ERROR_BACKEND_UNAVAILABLE — no silent CPU fallback.
+# Backend:
+#   CPU only. `load_model` takes exactly one argument (the GGUF path)
+#   and routes to vokra_session_create_from_file, which has no backend
+#   parameter — so there is nothing to pass and no GPU path to select
+#   from GDScript today. An earlier draft of this comment described a
+#   two-argument `load_model(path, "metal")`; that form was never
+#   registered, and calling it raises a Godot CallError (wrong arity).
+#   Exposing backend choice needs a new C ABI entry point, which is a
+#   deliberate decision to take against the M5-13 ABI freeze rather
+#   than a demo-local change.
 #
 # Runtime verification (open in Editor → Play → hear voice output):
 # M3-11-T19 owner work.
