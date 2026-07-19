@@ -62,6 +62,29 @@ STABILITY block at the top of `include/vokra.h`, ADR-0003, and IF-01):
   is re-anchored to that release, the freeze commitment is written into
   `include/vokra.h`, and post-1.0 breaking changes require a major bump.
 
+### CI posture of the three ABI gates (X-08, 2026-07-20) — ADVISORY until M5-13
+
+`scripts/abi-diff.sh`, `scripts/check-abi-changelog.sh` and
+`scripts/rust-public-api-list.sh` were unwired from CI until X-08. They now run
+in the `abi-surface (advisory)` job of `.github/workflows/ci.yml`, which sets
+`continue-on-error: true`.
+
+**That job must stay advisory until M5-13.** Promoting these three from
+advisory to a branch-protection required check *is* the content of M5-13
+(`docs/milestones.md` §9), which executes together with the IF-01 freeze at the
+v1.0 GA tag. X-08 deliberately wired them advisory-only so the progression is
+one step at a time: unwired → advisory (X-08) → required (M5-13). Had X-08
+promoted them, M5-13 would have had nothing left to execute. The cool-off
+posture mirrors `gpu-vulkan-parity.yml` and the platform-support drift step in
+the `license` job.
+
+Known state at wiring time: `rust-public-api-list.sh` is **already red** on
+`13a2a6e` (53 added / 13 removed lines vs.
+`docs/abi/vokra-rust-public-api.v1.0-rc.list`), from surface added in `ff12104`
+without a snapshot rotation. X-08 did not rotate it — that is M5-13/IF-01's
+call — and the advisory posture keeps the red from blocking PRs. See
+`docs/adr/X-08-ci-gate-completion.md` §2 and §7-(4).
+
 ## Entry schema
 
 One `###` heading per **PR-day + version**. Under it, a table of the
@@ -514,7 +537,13 @@ Notes:
 
 | WP    | Chunk prefix    | Keys                                                                                                                                                                                                                                                                                                                                     | Kind                              | Status     | Rationale                                                                                                                                                                                                                                                                                                                                                                                                             | Introducing wave / commit |
 | ----- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| M4-18 | `vokra.utmos.*` | `vokra.utmos.arch.variant` (`"wav2vec2_regression.v0"` guard), `vokra.utmos.sample_rate`, `vokra.utmos.conv.{channels[],kernels[],strides[],activation}`, `vokra.utmos.transformer.{n_layer,n_head,hidden_dim,ffn_dim,norm,ln_eps}`, `vokra.utmos.head.{dims[],pool,scale,offset}` (`scale`/`offset` optional, identity defaults) | `string` + `u32` + `u32-array` + `f32` | documented | UTMOS scorer config (M4-18, weight-deferred skeleton) — read by `UtmosConfig::from_gguf` in `crates/vokra-eval/src/metrics/utmos.rs`; required keys have no silent defaults, an unknown `arch.variant` is rejected loudly (FR-EX-08). Converter-side emission (`vokra-convert --model utmos`, T05) lands with the owner weight flip (v1.0.x patch); until then only the in-crate round-trip test writes the schema. | M4 Wave 1                  |
+| M4-18 | `vokra.utmos.*` | `vokra.utmos.arch.variant` (`"wav2vec2_regression.v0"` guard), `vokra.utmos.sample_rate`, `vokra.utmos.conv.{channels[],kernels[],strides[],activation}`, `vokra.utmos.transformer.{n_layer,n_head,hidden_dim,ffn_dim,norm,ln_eps}`, `vokra.utmos.head.{dims[],pool,scale,offset}` (`scale`/`offset` optional, identity defaults) | `string` + `u32` + `u32-array` + `f32` | persisted | UTMOS scorer config — read by `UtmosConfig::from_gguf` in `crates/vokra-eval/src/metrics/utmos.rs`; required keys have no silent defaults, an unknown `arch.variant` is rejected loudly (FR-EX-08). **Status moved `documented` → `persisted` on 2026-07-20**: the M5-15 T14 converter (`vokra-convert --model utmos`, `crates/vokra-convert/src/models/utmos.rs`) writes every key in this row, so the row's original "converter-side emission lands with the owner weight flip (v1.0.x patch)" note is superseded — the 2026-07-18 un-defer removed that gate. Precision, so the promotion is not read as more than it is: the converter always emits `arch.variant = "wav2vec2_regression.v1"` (the real UTMOS22-strong checkpoint is v1), so the **`…v0` variant string itself** is still only produced by the in-crate round-trip test — that test, plus `v0_forward_is_untouched_by_the_v1_addition`, is what keeps the v0 read path exercised. | M4 Wave 1 (status updated M5-15 wave 1) |
+
+### v1.0 GA window (M5) — GGUF metadata additions
+
+| WP    | Chunk prefix    | Keys                                                                                                                                                                                                                                                                                                          | Kind                              | Status        | Rationale                                                                                                                                                                                                                                                                                       | Introducing wave / commit |
+| ----- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| M5-15 | `vokra.utmos.*` | **v1 additions** (required iff `arch.variant == "wav2vec2_regression.v1"`, forbidden for `…v0`): `vokra.utmos.conv.{group_norm_layers[],group_norm_groups[],group_norm_eps}`, `vokra.utmos.pos_conv.{kernel,groups}`, `vokra.utmos.cond.{domain_dim,domain_id,judge_dim,judge_id}`, `vokra.utmos.blstm.hidden`, `vokra.utmos.head.activation` (`"relu"` / `"none"`) | `u32` + `u32-array` + `f32` + `string` | **persisted** | The M4-18 UTMOS un-defer (依頼者承認 2026-07-18). The real UTMOS22-strong stack needs eight structures the v0 skeleton could not express, so `ARCH_VARIANT_V1 = "wav2vec2_regression.v1"` was added — **additively**, exactly as ADR `M4-18-utmos-arch.md`:41 pre-authorized: a v0 GGUF still loads and still produces the same score. `v0_forward_is_untouched_by_the_v1_addition` pins that on two axes: the GGUF and in-memory paths agree **bit-for-bit**, and the value itself is held to a golden literal (`V0_GOLDEN_SCORE`, ±1e-6 — a tolerance because the f32 forward moves by one ULP between this host's own scalar and NEON kernel paths, so bit-exactness across ISAs is measurably false; derivation in the constant's rustdoc). The M4-18 row above was moved `documented` → **persisted** to match, since `vokra-convert --model utmos` (M5-15 T14) now emits those keys as well — with the `…v0` variant *string* still test-only, as that row records. A v0-labelled GGUF carrying any v1 key is a loud `ModelLoad` error rather than a half-honoured stack (FR-EX-08). | M5-15 wave 1               |
 
 Note: `vokra.dnsmos.*` is **reserved but deliberately not designed** — DNSMOS is license fail-closed until the owner's M4-18 T03 verification (no keys are invented ahead of it).
 

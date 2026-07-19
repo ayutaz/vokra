@@ -84,17 +84,17 @@ with Session.open("en_US-lessac-medium.gguf") as session:
 ```python
 from vokra import (
     Session,
-    VokraError,            # 基底 — すべて捕捉
-    VokraInvalidArgument,  # 例: sample rate 不一致
-    VokraModelError,       # GGUF が壊れている / 見つからない
-    VokraUnsupportedBackend,  # backend を指定したがリンクされていない
+    VokraError,                 # 基底 — すべて捕捉
+    VokraInvalidArgumentError,  # 例: sample rate 不一致
+    VokraModelLoadError,        # GGUF が壊れている / 見つからない
+    VokraBackendUnavailableError,  # backend を指定したがリンクされていない
     # ... 全リストは bindings/python/src/vokra/errors.py 参照
 )
 
 try:
     with Session.open("some-model.gguf") as s:
         s.transcribe(pcm, 16000)
-except VokraUnsupportedBackend as e:
+except VokraBackendUnavailableError as e:
     # モデルが要求する GPU バックエンドがこのビルドに含まれていない。
     # FR-EX-08 により silent fallback は禁止されており、これは明示的なシグナル。
     print(f"backend not available: {e}")
