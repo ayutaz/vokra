@@ -49,7 +49,7 @@ use vokra_models::voxtral::VoxtralMetalDecodeSession;
 ))]
 use vokra_models::voxtral::test_support::tiny_voxtral_model_with_linear_adapter;
 use vokra_models::voxtral::test_support::{tiny_config, tiny_tokenizer, tiny_voxtral_model};
-use vokra_models::voxtral::{BeamConfig, VoxtralAsr, VoxtralModel};
+use vokra_models::voxtral::{AsrPromptLayout, BeamConfig, VoxtralAsr, VoxtralModel};
 
 /// Builds a GGUF with the minimum Voxtral metadata a shape-only load
 /// succeeds on — used by the tests that need a `VoxtralAsr` instance to
@@ -239,6 +239,15 @@ fn full_asr_for_beam_with_linear_adapter(vocab: usize) -> VoxtralAsr {
         .with_max_new_tokens(3)
         .with_bos_eos(1, vocab as u32 + 10)
         .with_tokenizer(tiny_tokenizer(vocab, vocab as u32 + 10))
+        // These GPU-session tests lock *backend routing determinism*, not
+        // prompt construction. `tiny_tokenizer` is a synthetic id → "t{id} "
+        // vocab with no tekken special tokens, so the P2 default
+        // (`AsrPromptLayout::Transcription`) cannot build its wrapper and
+        // fails at `<s>` lookup before any GPU work happens. Pin the layout
+        // these tests were written against so they keep exercising the
+        // device path; real-weight prompt construction is covered by
+        // `voxtral_transcription_prompt.rs`.
+        .with_prompt_layout(AsrPromptLayout::BareSoftPrefix)
         .with_allow_device_session(true)
 }
 
