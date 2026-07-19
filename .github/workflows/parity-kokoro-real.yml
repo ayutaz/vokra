@@ -411,9 +411,30 @@ jobs:
             echo "| tensor | SIMD | scalar |"
             echo "| --- | --- | --- |"
           } > "$report"
-          for t in text_encoder bert prosody_f0 decoder_mag decoder_phase decoder_pcm; do
-            simd="$(grep -oE "kokoro ${t}[^=]*= [0-9.e+-]+" "${RUNNER_TEMP}/parity-log.txt" 2>/dev/null | grep -oE '[0-9.e+-]+$' | head -1)"
-            scal="$(grep -oE "kokoro ${t}[^=]*= [0-9.e+-]+" "${RUNNER_TEMP}/parity-scalar.txt" 2>/dev/null | grep -oE '[0-9.e+-]+$' | head -1)"
+          # Per-tensor patterns, mirroring the summary step's regex table.
+          # A single `kokoro ${t}...` pattern does NOT work: only
+          # text_encoder / bert are logged with that shape. The decoder and
+          # prosody tensors print as indented `mag max = ` / `pcm max = `
+          # lines with no `kokoro` prefix and no underscore in the name, so
+          # the uniform pattern silently yielded "?" for exactly the rows
+          # this diagnostic exists to produce (observed on run 29687390040:
+          # text_encoder and bert resolved, all three decoder rows did not).
+          extract() {  # extract <file> <grep-pattern>
+            grep -oE "$2[0-9.e+-]+" "$1" 2>/dev/null | grep -oE '[0-9.e+-]+$' | head -1
+          }
+          for t in text_encoder bert prosody_f0 prosody_n prosody_hidden \
+                   decoder_mag decoder_phase decoder_pcm; do
+            case "$t" in
+              text_encoder|bert) pat="kokoro ${t} head: max \|Δ\| = " ;;
+              prosody_f0)        pat="^ *f0 +max = " ;;
+              prosody_n)         pat="^ *n +max = " ;;
+              prosody_hidden)    pat="^ *hidden +max = " ;;
+              decoder_mag)       pat="^ *mag +max = " ;;
+              decoder_phase)     pat="^ *phase +max = " ;;
+              decoder_pcm)       pat="^ *pcm +max = " ;;
+            esac
+            simd="$(extract "${RUNNER_TEMP}/parity-log.txt" "$pat")"
+            scal="$(extract "${RUNNER_TEMP}/parity-scalar.txt" "$pat")"
             echo "| \`${t}\` | \`${simd:-?}\` | \`${scal:-?}\` |" >> "$report"
           done
           {
