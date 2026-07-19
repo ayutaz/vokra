@@ -331,12 +331,12 @@ jobs:
           # drift of the harmonic source signal (sin of 10^3-10^4-rad f32
           # phases across two libm/FFT stacks) flips a handful of bins by
           # 2π, which the trained convs propagate into bounded logit deltas
-          # (measured on M1: mag 2.51e-1 / phase 1.49e-1 / pcm 1.92e-2; the
-          # first Linux run of this suite measured pcm 4.34e-2 with a LOWER
-          # mean and more mass in the smallest bucket, i.e. the max is
-          # outlier-driven and platform-dependent — the pcm max bound is
-          # therefore derived over both platforms, see the two-platform note
-          # in parity_kokoro.rs). The Rust
+          # (measured on M1: mag 2.51e-1 / phase 1.49e-1 / pcm 1.92e-2).
+          # OPEN (2026-07-19): the first Linux run measured pcm 4.34e-2 and
+          # FAILED this gate. The bound was deliberately NOT widened on one
+          # x86 observation — see the OPEN note in parity_kokoro.rs for the
+          # full measurement and what to check. This suite is advisory (not a
+          # required check), so a red run here blocks nothing. The Rust
           # test ALSO gates mean-|Δ| per decoder tensor (systematic-drift
           # catch); this summary reports the max side.
           # NOTE: the pre-2026-07-16 `PROSODY_F0_ATOL = 0.05` override is
@@ -345,7 +345,7 @@ jobs:
           # was an artifact of the flawed same-author reference).
           DECODER_MAG_ATOL = 0.5
           DECODER_PHASE_ATOL = 0.3
-          DECODER_PCM_ATOL = 0.065
+          DECODER_PCM_ATOL = 0.04
 
           def find(pattern, flags=0):
               m = re.search(pattern, log, flags)
