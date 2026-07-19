@@ -38,8 +38,15 @@ Run (from the repo root)::
         --model whisper-base --audio tests/fixtures/audio/jfk-30s.wav
 
 The checkpoint is fetched with ``WhisperForConditionalGeneration.from_pretrained``
-(cached by the Hugging Face hub). Only ``torch`` / ``transformers`` / ``numpy``
-are required at runtime; WAV parsing uses the stdlib ``struct`` module.
+(cached by the Hugging Face hub). ``--checkpoint-dir`` substitutes a LOCAL
+snapshot directory (config.json + model.safetensors + tokenizer files, e.g. a
+prior ``snapshot_download`` of the same hub id) for fully offline regeneration
+— ``--model`` still selects the size identity / output dir / vocab-resource
+gate, and the manifest ``model`` key stays the hub id the local snapshot
+mirrors (the caller asserts that correspondence by choosing the dir; drift
+shows up immediately as parity failure, never silently). Only ``torch`` /
+``transformers`` / ``numpy`` are required at runtime; WAV parsing uses the
+stdlib ``struct`` module.
 """
 
 from __future__ import annotations
@@ -345,6 +352,19 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--checkpoint-dir",
+        default=None,
+        help=(
+            "Optional LOCAL checkpoint directory (an HF snapshot of the --model "
+            "hub id: config.json + model.safetensors + tokenizer files) for "
+            "offline regeneration. When set, from_pretrained loads from this "
+            "directory instead of the hub; --model still selects the size "
+            "identity, output dir and vocab-resource gate. FR-EX-08: a missing "
+            "or config-less directory is a hard error, never a silent hub "
+            "fallback."
+        ),
+    )
+    parser.add_argument(
         "out_dir",
         nargs="?",
         default=None,
@@ -357,6 +377,18 @@ def main() -> None:
 
     size = args.model
     model_id = SUPPORTED_MODELS[size]
+    # Where the weights actually load from: the hub id, or a local snapshot
+    # of that same hub id (offline path). Validated eagerly — FR-EX-08.
+    load_source = model_id
+    if args.checkpoint_dir is not None:
+        ckpt_dir = Path(args.checkpoint_dir)
+        if not ckpt_dir.is_dir() or not (ckpt_dir / "config.json").is_file():
+            sys.exit(
+                f"--checkpoint-dir {ckpt_dir} is not a checkpoint snapshot "
+                "(missing directory or config.json) — refusing a silent hub "
+                "fallback (FR-EX-08)"
+            )
+        load_source = str(ckpt_dir)
     out_dir = Path(args.out_dir) if args.out_dir is not None else Path(f"tests/parity/{size.replace('-', '_')}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -379,9 +411,9 @@ def main() -> None:
     vocab_resource = vocab_resource_for(size)
 
     torch.manual_seed(TORCH_SEED)
-    processor = WhisperProcessor.from_pretrained(model_id)
-    tok = WhisperTokenizer.from_pretrained(model_id)  # slow tokenizer (has byte_decoder)
-    model = WhisperForConditionalGeneration.from_pretrained(model_id)
+    processor = WhisperProcessor.from_pretrained(load_source)
+    tok = WhisperTokenizer.from_pretrained(load_source)  # slow tokenizer (has byte_decoder)
+    model = WhisperForConditionalGeneration.from_pretrained(load_source)
     model.eval()
 
     prefix, eot = resolve_special_tokens(tok)

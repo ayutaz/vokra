@@ -1,6 +1,6 @@
 # Detokenizer parity: one case per line, `ids | text`.
 # ids are space-separated; text is the raw HF decode.
-522 1363 29923 8 50257 |  (whistles)
+400 370 452 7177 6280 11 1029 406 437 428 1941 393 360 337 291 11 1029 437 291 393 360 337 428 1941 13 50257 |  And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.
 15947 1002 | Hello world
 53 453 424 220 18034 32045 1500 | Vokra 音声 test
 496 69 526 12027 9732 | café déjà vu

@@ -1578,16 +1578,69 @@ mod tests {
 
     #[test]
     fn emits_alignment_heads_for_all_supported_sizes() {
-        // (d_model, n_audio_layer, n_text_layer, n_mels, n_vocab, n_text_head).
-        // Sources: openai/whisper `model.py` size table + HF config.json.
-        let rows: &[(u64, u32, u32, u64, u64, u32)] = &[
-            (512, 6, 6, 80, 51865, 8),      // base
-            (768, 12, 12, 80, 51865, 12),   // small
-            (1024, 24, 24, 80, 51865, 16),  // medium
-            (1280, 32, 32, 128, 51866, 20), // large-v3
-            (1280, 32, 4, 128, 51866, 20),  // turbo
+        // (d_model, n_audio_layer, n_text_layer, n_mels, n_vocab, n_text_head,
+        //  expected flat [layer, head, …] pairs).
+        // Sources: openai/whisper `model.py` size table + HF config.json for
+        // the grids; the expected pair lists are the upstream
+        // `whisper._ALIGNMENT_HEADS` base85+gzip masks decoded with the
+        // documented method (see `builtin_alignment_heads`'s rustdoc).
+        // Independently re-verified 2026-07-19 against openai-whisper
+        // 20250625 for ALL five sizes — including the real
+        // `model.alignment_heads` checkpoint buffers for base and turbo —
+        // by `tools/parity/verify_whisper_alignment_heads.py` (which parses
+        // THIS crate's table out of the source and diffs it against the
+        // upstream decode; run it with `--buffers` to re-check).
+        #[allow(clippy::type_complexity)]
+        let rows: &[(u64, u32, u32, u64, u64, u32, &[u32])] = &[
+            (
+                512,
+                6,
+                6,
+                80,
+                51865,
+                8,
+                &[3, 1, 4, 2, 4, 3, 4, 7, 5, 1, 5, 2, 5, 4, 5, 6], // base
+            ),
+            (
+                768,
+                12,
+                12,
+                80,
+                51865,
+                12,
+                &[5, 3, 5, 9, 8, 0, 8, 4, 8, 7, 8, 8, 9, 0, 9, 7, 9, 9, 10, 5], // small
+            ),
+            (
+                1024,
+                24,
+                24,
+                80,
+                51865,
+                16,
+                &[13, 15, 15, 4, 15, 15, 16, 1, 20, 0, 23, 4], // medium
+            ),
+            (
+                1280,
+                32,
+                32,
+                128,
+                51866,
+                20,
+                &[
+                    7, 0, 10, 17, 12, 18, 13, 12, 16, 1, 17, 14, 19, 11, 21, 4, 24, 1, 25, 6,
+                ], // large-v3
+            ),
+            (
+                1280,
+                32,
+                4,
+                128,
+                51866,
+                20,
+                &[2, 4, 2, 11, 3, 3, 3, 6, 3, 11, 3, 14], // turbo
+            ),
         ];
-        for &(d_model, na, nt, n_mels, n_vocab, n_head) in rows {
+        for &(d_model, na, nt, n_mels, n_vocab, n_head, expected) in rows {
             let ckpt = sized_checkpoint(d_model, na, nt, n_mels, n_vocab);
             let file = GgufFile::parse(convert(ckpt, None).unwrap().to_bytes().unwrap()).unwrap();
             let heads = alignment_heads_from_gguf(&file)
@@ -1609,6 +1662,13 @@ mod tests {
                     pair[1]
                 );
             }
+            // Exact upstream pin (cc-08): a table edit that still fits the
+            // grid must not slip through the range checks above.
+            assert_eq!(
+                heads, expected,
+                "d_model {d_model} (n_text_layer {nt}): builtin table drifted from \
+                 the verified upstream _ALIGNMENT_HEADS decode"
+            );
         }
     }
 

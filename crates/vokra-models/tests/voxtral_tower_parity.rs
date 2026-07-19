@@ -9,11 +9,14 @@
 //! - `VOKRA_VOXTRAL_GGUF` — a converted real Voxtral GGUF (frame_stack_mlp
 //!   adapter chunk, real hparams incl. `text_decoder.head_dim`);
 //! - `VOKRA_VOXTRAL_REF_DIR` — a directory of upstream reference dumps
-//!   produced by the offline venv script
-//!   (`~/.cache/vokra-eval/out/p1-voxtral-asr/dump_voxtral_tower_reference.py`),
-//!   which runs the REAL `transformers.models.voxtral` `VoxtralEncoder` +
-//!   `VoxtralMultiModalProjector` (fp32, eager attention) on the jfk-30s mel
-//!   and dumps little-endian f32 taps:
+//!   produced by the committed offline dumper
+//!   (`tools/parity/dump_voxtral_reference.py --full-taps <dir>`; verified
+//!   bitwise-identical to the original cc-05/cc-07 harness dumps on
+//!   2026-07-19), which runs the REAL `transformers.models.voxtral`
+//!   `VoxtralEncoder` + `VoxtralMultiModalProjector` (fp32, eager attention)
+//!   on the jfk-30s mel and dumps little-endian f32 taps (~52 MB — never
+//!   committed; the bounded committed-slice flavor lives in
+//!   `parity_voxtral.rs`):
 //!
 //!   | file | shape |
 //!   |---|---|
