@@ -32,6 +32,12 @@ bash scripts/build-android.sh
 - `target/aarch64-linux-android/release/libvokra.so` (CPU-only、SIMD = NEON、zero-dep NFR-DS-02 preserved)
 - `bindings/unity/com.vokra.unity/Plugins/Android/libs/arm64-v8a/libvokra.so` (Unity Package staging)
 
+> **訂正 2026-07-19**: 下記 (a)(b) のうち **(a) は実装済み** —
+> `crates/vokra-capi/Cargo.toml:88` に `vulkan = ["vokra-models/vulkan"]` が
+> 存在する。同様に「Copy/Add op のみ dispatch 可能」も解消済みで、12 kernel が
+> `.spv` としてコミット済み（`81e1f3c`）。**残る owner タスクは Android 実機
+> soak そのもの**（M4-13-T17 = WP の exit hard gate）。原文は下に保持。
+
 **Vulkan 有効化は現時点 vokra-capi 側で feature 未 wire**: `crates/vokra-capi/Cargo.toml` は `cpu` feature のみ持ち、`metal` / `cuda` / `vulkan` は下流の `vokra-models` 側でのみ feature 定義されている。Android Vulkan 経路を走らせるには (a) `vokra-capi` に `vulkan = ["vokra-models/vulkan"]` を追加、(b) `scripts/build-android.sh` の `--no-default-features` 制約を Vulkan feature 用に緩和する、の 2 手が必要 (現時点は未着手 = M4 follow-up)。**実機測定 v0.9 gate は CPU baseline で NFR-PF-06 を通す方針で構わない** (Vulkan RTF は M4 で再測、CPU pass が v0.9 Exit 前提)。M3-02 が partial (~28% 残 = Copy/Add op のみ dispatch 可能、他 op は explicit `UnsupportedOp` = FR-EX-08 silent CPU fallback 禁止) の状態も併せて考慮。
 
 ## 3. Minimal measurement app (Android Studio)
