@@ -66,6 +66,33 @@
 - **GGUF / ggml K-quant ブロックレイアウト** (`Q4_K`/`Q5_K`/`Q6_K` の `block_q*_K` 構造・`get_scale_min_k4` パッキング): ggml / llama.cpp (**MIT**) の `k_quants.h` / `dequantize_row_q*_K` から **フォーマット仕様のみ** を参照し、Vokra 独自の scalar・`unsafe`-free 実装を新規記述 (M1-02、`crates/vokra-core/src/gguf/quant/`)。バイトレイアウトはフォーマットそのものであり著作物のコピーではない (whisper.cpp 型 native 再実装、CLAUDE.md 方針)。正当性は外部ファイルに依存しない in-repo の analytic oracle (closed-form super-block + quantize→dequant roundtrip) で pin。外部 crate 依存はゼロ (NFR-DS-02)。
 - **safetensors ヘッダ (JSON) フォーマット**: Hugging Face の on-disk 仕様 (**Apache-2.0**) を参照し、reader / JSON パーサとも Vokra 独自記述 (std-only、外部 crate なし)。ONNX/protobuf は runtime に入らない。
 
+### vokra-server の crate-scoped 例外（2026-07-19、依頼者承認）
+
+**対象は `integrations/vokra-server` の除外 workspace のみ**。root `Cargo.lock` は `vokra-*` のみで不変（NFR-DS-02 は無関係）。すべて **opt-in の `--piper-g2p`**（既定 OFF）が引き込む単一の依存鎖から来る:
+
+```
+vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev 41f3696)
+  -> jpreprocess / lindera-dictionary / encoding / quick-xml
+```
+
+| 種別 | 対象 | 判断 |
+|---|---|---|
+| **CC0-1.0** | `encoding-index-{japanese,korean,simpchinese,singlebyte,tradchinese}` + `encoding_index_tests` | **許可**（依頼者承認 2026-07-19、理由「ライブラリに制約が出ない」）。実体は Unicode↔レガシー CJK の**符号位置対応表 = データ**。`allow` への一括追加ではなく crate 限定にしたのは、CC0 が著作権は放棄しても**特許権を waive しない**ため（Vokra が Apache-2.0 を選んだ理由は特許 grant）。将来の CC0 **コード**依存は改めて審査を要する |
+| **CDLA-Permissive-2.0** | `webpki-roots`（0.26.11 / 1.0.8） | **許可**（同承認）。Mozilla の CA 証明書バンドル = 同じく許諾型データライセンスで下流に義務を課さない。0.26.11 は `ureq` ← `jpreprocess-naist-jdic` の **build-dependency**、1.0.8 は `reqwest` の **dev-dependency** — **いずれも製品バイナリには入らない** |
+
+**RUSTSEC ignore 4 件**（`integrations/vokra-server/deny.toml` に根拠を全文記載）:
+
+| ID | 内容 | 到達性 |
+|---|---|---|
+| RUSTSEC-2026-0194 | quick-xml 0.37.5 — 重複属性名チェックの二次時間（remote DoS） | **到達不能**。quick-xml の唯一の利用箇所は piper-plus-g2p の SSML パーサだが、`vokra-piper-g2p` / `vokra-server` はどちらも `ssml` / `SsmlParser` を一切参照しない（TTS は plain text に対し `phonemize` を呼ぶのみ）|
+| RUSTSEC-2026-0195 | quick-xml 0.37.5 — namespace 宣言の無制限確保（memory DoS） | **二重に到達不能**。`NsReader` 固有だが、piper-plus-g2p は plain `Reader` のみ使用 |
+| RUSTSEC-2025-0141 | bincode unmaintained（← jpreprocess-core） | 脆弱性ではなく保守状態。同梱 NAIST JDIC 辞書の読込に使用（バイト列は crate 同梱でリクエスト由来ではない）|
+| RUSTSEC-2021-0153 | `encoding` unmaintained（← lindera-dictionary） | 同上。上記 CC0 例外と同じ crate 群 |
+
+**恒久的な修正は upstream 側**: quick-xml >= 0.41 への更新は `piper-plus-g2p` の `^0.37` に対し semver 非互換のため、本リポジトリからは到達できない（`cargo update` 不可）。`ayutaz/piper-plus` の rev を進める際に 4 件とも再評価すること。
+
+**再評価トリガー（重要）**: SSML を受け付ける実装（`/api/tts` や `/v1/audio/speech` での `<speak>` パススルー等）を入れた瞬間に RUSTSEC-2026-0194/0195 は**実際に live になる**（リクエスト本文が攻撃者制御になるため）。その場合は先に piper-plus を更新し、ignore を外すこと。
+
 ---
 
 ## 3. モデル Weight ライセンス表
