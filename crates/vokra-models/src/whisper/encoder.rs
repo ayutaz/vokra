@@ -166,12 +166,17 @@ pub(crate) fn encode(
 
 /// One encoder block: `h += self_attn(ln(h))`, then `h += mlp(ln(h))`, using the
 /// reused `scratch` for every intermediate (no per-block allocation).
+///
+/// `pub(crate)`: the Voxtral audio tower (`crate::voxtral::audio_encoder`) is
+/// the same pre-norm block (HF `modeling_voxtral.py` `VoxtralEncoderLayer`
+/// forward == HF `WhisperEncoderLayer` forward), so it drives this function
+/// verbatim — one audited block implementation for both models.
 // ZERO-ALLOC-BEGIN — per-block forward into reused scratch; guarded by
 // scripts/check-hot-path-allocs.sh (no vec![], Vec::with_capacity, .to_vec(),
 // .collect()). The conv stem in `encode` above allocates once per utterance and
 // is intentionally outside this region.
 #[allow(clippy::too_many_arguments)] // block shape (d, ff, n_head) + scratch + h
-fn encoder_block(
+pub(crate) fn encoder_block(
     compute: &Compute,
     scratch: &mut BlockScratch,
     h: &mut [f32],
@@ -229,8 +234,9 @@ fn encoder_block(
 /// [`PrenormLayer`] slice view for the fused device-resident encoder
 /// ([`Compute::encode_prenorm_encoder`]). Whisper's `k_proj` has no bias
 /// (`k_bias: None`); every other projection carries one. Called once per block in
-/// `encode()`, off the ZERO-ALLOC hot region.
-fn prenorm_view(l: &EncoderLayer) -> PrenormLayer<'_> {
+/// `encode()`, off the ZERO-ALLOC hot region. `pub(crate)` so the Voxtral
+/// audio tower's fused-stack path reuses the identical view.
+pub(crate) fn prenorm_view(l: &EncoderLayer) -> PrenormLayer<'_> {
     PrenormLayer {
         attn_ln_gamma: &l.attn_ln.gamma,
         attn_ln_beta: &l.attn_ln.beta,

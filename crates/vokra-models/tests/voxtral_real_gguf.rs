@@ -21,9 +21,11 @@
 //!   incremental step through the KV cache does too (the top-5 token ids
 //!   are printed for the eval report).
 //!
-//! It does NOT claim transcription: the 32-layer audio-encoder transformer
-//! is still the explicit `UnsupportedOp` stub (T19+ deliberate deferral),
-//! so no audio conditioning happens here.
+//! It does NOT claim transcription — this file is decoder-only. The
+//! 32-layer audio tower + ×4 frame-stack projector are real since the
+//! M4-residual cc-05/cc-07 land; their parity lives in
+//! `voxtral_tower_parity.rs` (env-gated on the upstream reference dumps),
+//! and audio-conditioned e2e goes through `VoxtralAsr::transcribe`.
 
 use std::path::PathBuf;
 

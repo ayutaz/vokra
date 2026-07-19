@@ -118,13 +118,16 @@ impl<'m> AsrHead<'m> {
     /// Steps:
     /// 1. validates `config.mode` is `"asr"` or `"s2s"` (S2S also produces
     ///    text as its inner stream);
-    /// 2. runs the audio encoder end-to-end (shape / dispatch coverage);
+    /// 2. runs the full audio tower (conv stem + `n_layer` pre-norm blocks
+    ///    + final LayerNorm — real since M4-residual cc-07);
     /// 3. constructs a [`TextDecoderSession`] on `backend` and greedy-decodes
     ///    from `bos_id` until `eos_id` or `max_new_tokens`.
     ///
-    /// See the module doc's "Audio conditioning" note — until the audio
-    /// adapter follow-up ticket lands, the returned tokens are the LM
-    /// prior's continuation of `bos_id`, not audio-conditioned ASR.
+    /// See the module doc's "Audio conditioning" note — with an active
+    /// adapter (e.g. the real checkpoint's `frame_stack_mlp` projector,
+    /// cc-05) the decode is audio-conditioned through the soft prefix;
+    /// without one, the returned tokens are the LM prior's continuation of
+    /// `bos_id` (honest posture, never a fabricated audio-shaped output).
     ///
     /// # Errors
     ///
@@ -336,13 +339,16 @@ mod tests {
     use crate::voxtral::config::{AudioEncoderConfig, TextDecoderConfig};
     use crate::voxtral::text_decoder::{DecoderBlock, GqaAttention, Linear, SwiGluFfn};
 
+    /// `audio.n_ctx = 4`: these tests drive `AsrHead` directly with an
+    /// 8-frame log-mel window, and the full-stack encoder enforces the
+    /// upstream strict contract `post-conv length (n_frames / 2) == n_ctx`.
     fn tiny_config() -> VoxtralConfig {
         VoxtralConfig {
             audio: AudioEncoderConfig {
                 n_layer: 1,
                 n_head: 2,
                 hidden_dim: 4,
-                n_ctx: 8,
+                n_ctx: 4,
                 n_mels: 2,
                 ffn_dim: 8,
             },
@@ -372,6 +378,8 @@ mod tests {
             conv2_b: vec![0.0; cfg.audio.hidden_dim],
             pos_emb: vec![0.0; cfg.audio.n_ctx * cfg.audio.hidden_dim],
             has_learned_pos_emb: true,
+            layers: crate::voxtral::test_support::passthrough_layers(cfg),
+            ln_post: crate::voxtral::test_support::identity_ln(cfg.audio.hidden_dim),
         }
     }
 
@@ -492,6 +500,8 @@ mod tests {
             conv2_b: Vec::new(),
             pos_emb: Vec::new(),
             has_learned_pos_emb: false,
+            layers: Vec::new(),
+            ln_post: crate::voxtral::test_support::identity_ln(0),
         };
         let td = TextDecoder {
             token_emb: Vec::new(),
@@ -816,6 +826,8 @@ mod tests {
             conv2_b: Vec::new(),
             pos_emb: Vec::new(),
             has_learned_pos_emb: false,
+            layers: Vec::new(),
+            ln_post: crate::voxtral::test_support::identity_ln(0),
         };
         let td = TextDecoder {
             token_emb: Vec::new(),

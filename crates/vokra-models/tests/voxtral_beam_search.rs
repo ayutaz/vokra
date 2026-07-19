@@ -63,7 +63,9 @@ fn beam_size_four_returns_deterministic_ranked_hypotheses() {
     let ae = tiny_encoder(&cfg);
     let td = tiny_decoder(&cfg);
     let head = AsrHead::new(&cfg, &ae, &td);
-    let n_frames = 8;
+    // Full-window mel: the full-stack encoder enforces the upstream strict
+    // length contract (post-conv length == audio.n_ctx).
+    let n_frames = 2 * cfg.audio.n_ctx;
     let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
 
     let bc = BeamConfig::with_beam_size(4, cfg.text.vocab_size as u32 + 100, 6);
@@ -109,7 +111,9 @@ fn e2e_beam_decode_adapter_none_returns_valid_hypotheses() {
     let td = tiny_decoder(&cfg);
     let none = AudioAdapter::none();
     let head = AsrHead::new(&cfg, &ae, &td).with_adapter(&none);
-    let n_frames = 8;
+    // Full-window mel: the full-stack encoder enforces the upstream strict
+    // length contract (post-conv length == audio.n_ctx).
+    let n_frames = 2 * cfg.audio.n_ctx;
     let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
 
     let bc = BeamConfig::with_beam_size(2, cfg.text.vocab_size as u32 + 100, 4);
@@ -145,7 +149,9 @@ fn e2e_beam_decode_adapter_linear_returns_valid_hypotheses() {
     assert!(adapter.is_active(), "identity adapter must be active");
 
     let head = AsrHead::new(&cfg, &ae, &td).with_adapter(&adapter);
-    let n_frames = 8;
+    // Full-window mel: the full-stack encoder enforces the upstream strict
+    // length contract (post-conv length == audio.n_ctx).
+    let n_frames = 2 * cfg.audio.n_ctx;
     let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
 
     let bc = BeamConfig::with_beam_size(2, cfg.text.vocab_size as u32 + 100, 4);
@@ -167,7 +173,9 @@ fn beam_size_one_matches_greedy_for_both_adapter_routings() {
     let cfg = tiny_config();
     let ae = tiny_encoder(&cfg);
     let td = tiny_decoder(&cfg);
-    let n_frames = 8;
+    // Full-window mel: the full-stack encoder enforces the upstream strict
+    // length contract (post-conv length == audio.n_ctx).
+    let n_frames = 2 * cfg.audio.n_ctx;
     let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
     let eos = cfg.text.vocab_size as u32 + 100;
 
@@ -214,7 +222,9 @@ fn adapter_routing_diverges_from_no_adapter_path() {
     let cfg = tiny_config();
     let ae = tiny_encoder(&cfg);
     let td = tiny_decoder(&cfg);
-    let n_frames = 8;
+    // Full-window mel: the full-stack encoder enforces the upstream strict
+    // length contract (post-conv length == audio.n_ctx).
+    let n_frames = 2 * cfg.audio.n_ctx;
     let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
     let eos = cfg.text.vocab_size as u32 + 100;
     let bc = BeamConfig::with_beam_size(2, eos, 4);
@@ -255,7 +265,9 @@ fn top_k_per_beam_widening_preserves_top_one_result() {
     let ae = tiny_encoder(&cfg);
     let td = tiny_decoder(&cfg);
     let head = AsrHead::new(&cfg, &ae, &td);
-    let n_frames = 8;
+    // Full-window mel: the full-stack encoder enforces the upstream strict
+    // length contract (post-conv length == audio.n_ctx).
+    let n_frames = 2 * cfg.audio.n_ctx;
     let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
     let eos = cfg.text.vocab_size as u32 + 100;
 
@@ -302,7 +314,9 @@ fn beam_size_one_matches_greedy_on_decoupled_gqa_shapes() {
     );
     let ae = tiny_encoder(&cfg);
     let td = tiny_decoder(&cfg);
-    let n_frames = 8;
+    // Full-window mel: the full-stack encoder enforces the upstream strict
+    // length contract (post-conv length == audio.n_ctx).
+    let n_frames = 2 * cfg.audio.n_ctx;
     let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
     let eos = cfg.text.vocab_size as u32 + 100;
 

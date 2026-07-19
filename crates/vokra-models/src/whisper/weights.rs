@@ -229,7 +229,13 @@ fn err(name: &str, msg: impl std::fmt::Display) -> VokraError {
 /// Decoding (dense `F32` / `F16` or K-quant dequant) goes through the shared
 /// [`GgufFile::tensor_f32`] path, so a K-quantized Whisper GGUF loads with no
 /// changes to this module.
-fn tensor(file: &GgufFile, name: &str, want: &[usize]) -> Result<Vec<f32>> {
+///
+/// `pub(crate)`: the Voxtral audio encoder (`crate::voxtral::audio_encoder`)
+/// is a Whisper-derived stack whose per-layer tensors use the identical HF
+/// sub-names under a different prefix (`audio_tower.` instead of
+/// `model.encoder.`) — it reuses these loaders verbatim so the two models
+/// share ONE audited weight-binding path (no second implementation).
+pub(crate) fn tensor(file: &GgufFile, name: &str, want: &[usize]) -> Result<Vec<f32>> {
     let info = file
         .tensor_info(name)
         .ok_or_else(|| err(name, "missing from GGUF"))?;
@@ -241,7 +247,7 @@ fn tensor(file: &GgufFile, name: &str, want: &[usize]) -> Result<Vec<f32>> {
 }
 
 /// Loads an `nn.Linear`, transposing the `[out, in]` weight to `[in, out]`.
-fn linear(
+pub(crate) fn linear(
     file: &GgufFile,
     prefix: &str,
     in_features: usize,
@@ -275,15 +281,18 @@ fn linear(
 }
 
 /// Loads a LayerNorm (`weight` = γ, `bias` = β, width `d`).
-fn layer_norm(file: &GgufFile, prefix: &str, d: usize) -> Result<LayerNorm> {
+pub(crate) fn layer_norm(file: &GgufFile, prefix: &str, d: usize) -> Result<LayerNorm> {
     Ok(LayerNorm {
         gamma: tensor(file, &format!("{prefix}.weight"), &[d])?,
         beta: tensor(file, &format!("{prefix}.bias"), &[d])?,
     })
 }
 
-/// Loads a `q/k/v/out` attention block; `k_proj` has no bias in Whisper.
-fn attention(file: &GgufFile, prefix: &str, d: usize) -> Result<Attention> {
+/// Loads a `q/k/v/out` attention block; `k_proj` has no bias in Whisper
+/// (nor in the Whisper-derived Voxtral audio tower — HF
+/// `modeling_voxtral.py` `VoxtralAttention.__init__`:
+/// `k_proj = nn.Linear(embed_dim, embed_dim, bias=False)`).
+pub(crate) fn attention(file: &GgufFile, prefix: &str, d: usize) -> Result<Attention> {
     Ok(Attention {
         q: linear(file, &format!("{prefix}.q_proj"), d, d, true)?,
         k: linear(file, &format!("{prefix}.k_proj"), d, d, false)?,

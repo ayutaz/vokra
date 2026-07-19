@@ -180,6 +180,11 @@ const KEY_ADAPTER_HAS_LN: &str = "vokra.voxtral.adapter.has_layernorm";
 const KEY_ADAPTER_ACTIVATION: &str = "vokra.voxtral.adapter.activation";
 /// `vokra.voxtral.adapter.time_stride` (`UINT32`, downsample_linear only).
 const KEY_ADAPTER_TIME_STRIDE: &str = "vokra.voxtral.adapter.time_stride";
+/// `vokra.voxtral.adapter.frame_stack` (`UINT32` ≥ 1, frame_stack_mlp only):
+/// how many consecutive encoder frames are concatenated into one projector
+/// row (4 on the shipping Voxtral mini — `params.json
+/// multimodal.downsample_args.downsample_factor`).
+const KEY_ADAPTER_FRAME_STACK: &str = "vokra.voxtral.adapter.frame_stack";
 /// `vokra.voxtral.adapter.mlp_hidden_dims` (`STRING`, comma-sep u32 list).
 const KEY_ADAPTER_MLP_HIDDEN_DIMS: &str = "vokra.voxtral.adapter.mlp_hidden_dims";
 /// `vokra.voxtral.adapter.mlp_layer_names` (`STRING`, comma-sep list).
@@ -267,7 +272,10 @@ pub struct VoxtralConfig {
 #[derive(Debug, Clone)]
 pub struct AdapterSpec {
     /// One of `"none"` (no adapter, honest posture), `"linear"`,
-    /// `"mlp"`, `"downsample_linear"`.
+    /// `"mlp"`, `"downsample_linear"`, `"frame_stack_mlp"` (×N consecutive
+    /// frame concatenation then the MLP stack — the real Voxtral projector
+    /// shape; upstream `get_audio_features` does `reshape(-1,
+    /// intermediate_size)` before `VoxtralMultiModalProjector`).
     pub kind: String,
     /// Common prefix for the adapter tensor names, e.g.
     /// `"audio_adapter."` or `"mm_projector."`. May be empty.
@@ -298,6 +306,10 @@ pub struct AdapterSpec {
     pub activation: Option<String>,
     /// Time downsample stride for `kind = "downsample_linear"`. `>= 1`.
     pub time_stride: Option<u32>,
+    /// Consecutive-frame concatenation factor for `kind =
+    /// "frame_stack_mlp"`. `>= 1`; the runtime requires `in_dim` to be
+    /// `frame_stack × encoder hidden width`.
+    pub frame_stack: Option<u32>,
     /// MLP hidden dims between input and output (empty ⇒ single linear).
     /// Only meaningful for `kind = "mlp"`.
     pub mlp_hidden_dims: Vec<u32>,
@@ -324,6 +336,7 @@ impl AdapterSpec {
             has_layernorm: false,
             activation: None,
             time_stride: None,
+            frame_stack: None,
             mlp_hidden_dims: Vec::new(),
             mlp_layer_names: Vec::new(),
         }
@@ -942,6 +955,9 @@ fn write_adapter_spec(b: &mut GgufBuilder, spec: &AdapterSpec) {
     if let Some(stride) = spec.time_stride {
         b.add_u32(KEY_ADAPTER_TIME_STRIDE, stride);
     }
+    if let Some(stack) = spec.frame_stack {
+        b.add_u32(KEY_ADAPTER_FRAME_STACK, stack);
+    }
     if let Some(w) = spec.weight_name.as_deref() {
         b.add_string(KEY_ADAPTER_WEIGHT_NAME, w);
     }
@@ -990,20 +1006,23 @@ pub(crate) fn gguf_tensor_name(hf_name: &str) -> String {
 ///
 /// ```json
 /// {
-///   "kind": "linear" | "mlp" | "downsample_linear" | "none",
+///   "kind": "linear" | "mlp" | "downsample_linear" | "frame_stack_mlp" | "none",
 ///   "tensor_prefix": "audio_adapter.",
 ///   "in_dim": 1280,
 ///   "out_dim": 3072,
 ///   "has_bias": true,
 ///   "has_layernorm": false,
-///   "activation": "gelu",           // MLP only
+///   "activation": "gelu",           // MLP / frame_stack_mlp only
 ///   "time_stride": 2,               // downsample_linear only
+///   "frame_stack": 4,               // frame_stack_mlp only (× consecutive
+///                                   // frames per projector row; in_dim must
+///                                   // be frame_stack × encoder hidden)
 ///   "weight_name": "linear.weight", // optional overrides
 ///   "bias_name": "linear.bias",
 ///   "layernorm_gamma_name": "ln.weight",
 ///   "layernorm_beta_name": "ln.bias",
-///   "mlp_hidden_dims": [4096],      // MLP only
-///   "mlp_layer_names": ["layers.0", "layers.1"] // MLP only
+///   "mlp_hidden_dims": [4096],      // MLP / frame_stack_mlp only
+///   "mlp_layer_names": ["layers.0", "layers.1"] // MLP / frame_stack_mlp only
 /// }
 /// ```
 ///
@@ -1026,9 +1045,13 @@ pub(crate) fn parse_adapter_config(bytes: &[u8]) -> Result<AdapterSpec, ConvertE
     if kind == "none" {
         return Ok(AdapterSpec::none());
     }
-    if !matches!(kind.as_str(), "linear" | "mlp" | "downsample_linear") {
+    if !matches!(
+        kind.as_str(),
+        "linear" | "mlp" | "downsample_linear" | "frame_stack_mlp"
+    ) {
         return Err(ConvertError::Parse(format!(
-            "adapter config: unknown kind `{kind}` (expected none|linear|mlp|downsample_linear)"
+            "adapter config: unknown kind `{kind}` (expected \
+             none|linear|mlp|downsample_linear|frame_stack_mlp)"
         )));
     }
     let in_dim = root
@@ -1065,6 +1088,33 @@ pub(crate) fn parse_adapter_config(bytes: &[u8]) -> Result<AdapterSpec, ConvertE
         return Err(ConvertError::Parse(
             "adapter config: `downsample_linear` requires `time_stride`".to_owned(),
         ));
+    }
+    let frame_stack = root
+        .get("frame_stack")
+        .and_then(JsonValue::as_u64)
+        .map(|n| n as u32);
+    if kind == "frame_stack_mlp" {
+        match frame_stack {
+            None => {
+                return Err(ConvertError::Parse(
+                    "adapter config: `frame_stack_mlp` requires `frame_stack` (u32 >= 1 — the \
+                     upstream downsample_factor, 4 on the shipping Voxtral mini)"
+                        .to_owned(),
+                ));
+            }
+            Some(0) => {
+                return Err(ConvertError::Parse(
+                    "adapter config: `frame_stack` must be >= 1".to_owned(),
+                ));
+            }
+            Some(n) if in_dim % n != 0 => {
+                return Err(ConvertError::Parse(format!(
+                    "adapter config: in_dim {in_dim} must be a multiple of frame_stack {n} \
+                     (in_dim = frame_stack × encoder hidden width)"
+                )));
+            }
+            Some(_) => {}
+        }
     }
     let weight_name = root
         .get("weight_name")
@@ -1113,6 +1163,7 @@ pub(crate) fn parse_adapter_config(bytes: &[u8]) -> Result<AdapterSpec, ConvertE
         has_layernorm,
         activation,
         time_stride,
+        frame_stack,
         mlp_hidden_dims,
         mlp_layer_names,
     })
@@ -1422,6 +1473,7 @@ mod tests {
             has_layernorm: false,
             activation: None,
             time_stride: None,
+            frame_stack: None,
             mlp_hidden_dims: Vec::new(),
             mlp_layer_names: Vec::new(),
         };
@@ -1473,6 +1525,7 @@ mod tests {
             has_layernorm: false,
             activation: Some("gelu".to_owned()),
             time_stride: None,
+            frame_stack: None,
             mlp_hidden_dims: vec![4096, 4096],
             mlp_layer_names: vec![
                 "layers.0".to_owned(),
@@ -1517,6 +1570,7 @@ mod tests {
             has_layernorm: false,
             activation: None,
             time_stride: Some(5),
+            frame_stack: None,
             mlp_hidden_dims: Vec::new(),
             mlp_layer_names: Vec::new(),
         };
@@ -1608,6 +1662,100 @@ mod tests {
             parse_adapter_config(json),
             Err(ConvertError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn parse_adapter_config_reads_frame_stack_mlp_real_mini_shape() {
+        // The shipping Voxtral-Mini-3B-2507 projector: ×4 frame stack
+        // (params.json multimodal.downsample_args.downsample_factor = 4)
+        // then linear_1 [3072, 5120] → gelu → linear_2 [3072, 3072]
+        // (modeling_voxtral.py VoxtralMultiModalProjector).
+        let json = br#"{
+            "kind": "frame_stack_mlp",
+            "tensor_prefix": "multi_modal_projector.",
+            "frame_stack": 4,
+            "in_dim": 5120,
+            "out_dim": 3072,
+            "has_bias": false,
+            "has_layernorm": false,
+            "activation": "gelu",
+            "mlp_hidden_dims": [3072],
+            "mlp_layer_names": ["linear_1", "linear_2"]
+        }"#;
+        let spec = parse_adapter_config(json).unwrap();
+        assert_eq!(spec.kind, "frame_stack_mlp");
+        assert_eq!(spec.frame_stack, Some(4));
+        assert_eq!(spec.in_dim, 5120);
+        assert_eq!(spec.out_dim, 3072);
+        assert_eq!(spec.mlp_hidden_dims, vec![3072]);
+        assert_eq!(spec.mlp_layer_names, vec!["linear_1", "linear_2"]);
+    }
+
+    #[test]
+    fn parse_adapter_config_rejects_frame_stack_mlp_without_factor() {
+        let json = br#"{
+            "kind": "frame_stack_mlp",
+            "in_dim": 5120,
+            "out_dim": 3072
+        }"#;
+        assert!(matches!(
+            parse_adapter_config(json),
+            Err(ConvertError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn parse_adapter_config_rejects_frame_stack_not_dividing_in_dim() {
+        let json = br#"{
+            "kind": "frame_stack_mlp",
+            "frame_stack": 3,
+            "in_dim": 5120,
+            "out_dim": 3072
+        }"#;
+        assert!(matches!(
+            parse_adapter_config(json),
+            Err(ConvertError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn adapter_spec_frame_stack_mlp_writes_frame_stack_key() {
+        let spec = AdapterSpec {
+            kind: "frame_stack_mlp".to_owned(),
+            tensor_prefix: "multi_modal_projector.".to_owned(),
+            weight_name: None,
+            bias_name: None,
+            layernorm_gamma_name: None,
+            layernorm_beta_name: None,
+            in_dim: 5120,
+            out_dim: 3072,
+            has_bias: false,
+            has_layernorm: false,
+            activation: Some("gelu".to_owned()),
+            time_stride: None,
+            frame_stack: Some(4),
+            mlp_hidden_dims: vec![3072],
+            mlp_layer_names: vec!["linear_1".to_owned(), "linear_2".to_owned()],
+        };
+        let cfg = VoxtralConfig {
+            adapter: Some(spec),
+            ..Default::default()
+        };
+        let (builder, _r) = convert(synthetic_voxtral(), Some(&cfg)).unwrap();
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            file.get(KEY_ADAPTER_KIND).and_then(|v| v.as_str()),
+            Some("frame_stack_mlp")
+        );
+        assert_eq!(
+            file.get(KEY_ADAPTER_FRAME_STACK).and_then(|v| v.as_u64()),
+            Some(4)
+        );
+        assert_eq!(
+            file.get(KEY_ADAPTER_MLP_LAYER_NAMES)
+                .and_then(|v| v.as_str()),
+            Some("linear_1,linear_2")
+        );
     }
 
     // ----- BF16 / sharded / hard-gate fixes (2026-07-16 P1) ------------------

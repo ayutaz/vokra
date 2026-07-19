@@ -634,13 +634,19 @@ mod tests {
 
     /// Config large enough to run the full autoregressive decode: text
     /// hidden = 4, GQA 2/1, n_ctx = 16 so `bos + max_new = 8` tokens fit.
+    ///
+    /// `audio.n_ctx = 1500`: the `VoxtralAsr::transcribe` front-end always
+    /// produces the 30 s / 3000-frame Whisper mel window, and the full-stack
+    /// encoder enforces the upstream strict length contract (post-conv
+    /// length == n_ctx — see `audio_encoder::forward`), so any fixture that
+    /// reaches the PCM path must carry the real 1500-position geometry.
     fn tiny_config() -> VoxtralConfig {
         VoxtralConfig {
             audio: AudioEncoderConfig {
                 n_layer: 1,
                 n_head: 2,
                 hidden_dim: 4,
-                n_ctx: 8,
+                n_ctx: 1500,
                 n_mels: 2,
                 ffn_dim: 8,
             },
@@ -720,6 +726,8 @@ mod tests {
             conv2_b: vec![0.0; cfg.audio.hidden_dim],
             pos_emb: vec![0.0; cfg.audio.n_ctx * cfg.audio.hidden_dim],
             has_learned_pos_emb: true,
+            layers: crate::voxtral::test_support::passthrough_layers(&cfg),
+            ln_post: crate::voxtral::test_support::identity_ln(cfg.audio.hidden_dim),
         };
         let text = tiny_decoder(&cfg);
         VoxtralModel {
@@ -741,6 +749,8 @@ mod tests {
             conv2_b: vec![0.0; cfg.audio.hidden_dim],
             pos_emb: vec![0.0; cfg.audio.n_ctx * cfg.audio.hidden_dim],
             has_learned_pos_emb: true,
+            layers: crate::voxtral::test_support::passthrough_layers(&cfg),
+            ln_post: crate::voxtral::test_support::identity_ln(cfg.audio.hidden_dim),
         };
         let text = TextDecoder {
             token_emb: Vec::new(),

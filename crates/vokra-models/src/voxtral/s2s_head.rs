@@ -171,6 +171,8 @@ mod tests {
             conv2_b: Vec::new(),
             pos_emb: Vec::new(),
             has_learned_pos_emb: false,
+            layers: Vec::new(),
+            ln_post: crate::voxtral::test_support::identity_ln(0),
         }
     }
 

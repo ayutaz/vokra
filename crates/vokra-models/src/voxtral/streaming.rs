@@ -506,13 +506,18 @@ mod tests {
     use super::*;
     use crate::voxtral::config::{AudioEncoderConfig, TextDecoderConfig};
 
+    /// `audio.n_ctx = 1500`: the PCM streaming paths (`push_chunk_pcm` /
+    /// `finalize_transcript`) run the mel front-end which always emits the
+    /// 30 s / 3000-frame window, and the full-stack encoder enforces the
+    /// upstream `post-conv length == n_ctx` contract. Direct `push_chunk`
+    /// tests therefore feed `2 * n_ctx` frames.
     fn tiny_config() -> VoxtralConfig {
         VoxtralConfig {
             audio: AudioEncoderConfig {
                 n_layer: 1,
                 n_head: 2,
                 hidden_dim: 4,
-                n_ctx: 8,
+                n_ctx: 1500,
                 n_mels: 2,
                 ffn_dim: 8,
             },
@@ -542,6 +547,8 @@ mod tests {
             conv2_b: vec![0.0; cfg.audio.hidden_dim],
             pos_emb: vec![0.0; cfg.audio.n_ctx * cfg.audio.hidden_dim],
             has_learned_pos_emb: true,
+            layers: crate::voxtral::test_support::passthrough_layers(cfg),
+            ln_post: crate::voxtral::test_support::identity_ln(cfg.audio.hidden_dim),
         }
     }
 
@@ -698,7 +705,9 @@ mod tests {
         sc.chunk_ms = 500; // shorter for a smaller test
         let mut asr = StreamingAsr::new(&cfg, &ae, &td, sc).unwrap();
 
-        let n_frames = 8;
+        // Full-window mel: the full-stack encoder enforces the upstream
+        // strict length contract (post-conv length == n_ctx).
+        let n_frames = 2 * cfg.audio.n_ctx;
         let log_mel = vec![0.0f32; cfg.audio.n_mels * n_frames];
         let chunk = asr.push_chunk(&log_mel, n_frames).unwrap();
         assert!(chunk.tokens.is_empty(), "foundation: no fabricated tokens");
@@ -733,7 +742,7 @@ mod tests {
         let ae = tiny_encoder(&cfg);
         let td = empty_decoder();
         let mut asr = StreamingAsr::new(&cfg, &ae, &td, StreamingConfig::default_cpu()).unwrap();
-        let n_frames = 8;
+        let n_frames = 2 * cfg.audio.n_ctx;
         let log_mel = vec![0.0f32; cfg.audio.n_mels * n_frames];
         asr.push_chunk(&log_mel, n_frames).unwrap();
         let tail = asr.finalize().unwrap();

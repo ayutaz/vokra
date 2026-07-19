@@ -216,15 +216,16 @@ fn audio_encoder_parity_smoke() {
         return;
     }
 
-    // The real forward + assertion will drop in here once T19+ lands. The
-    // scaffolding above intentionally validates fixture consistency
-    // without inventing a Rust-vs-reference comparison — we surface an
-    // explicit "not implemented yet" marker so a CI ticket cannot mistake
-    // an unforeseen green for real parity.
+    // The REAL tower parity harness lives in `voxtral_tower_parity.rs`
+    // (M4-residual cc-07: full 32-layer forward + upstream tap dumps,
+    // env-gated on VOKRA_VOXTRAL_REF_DIR). This fixture-file flavor stays a
+    // placeholder for a future *committed* fixture set — we surface an
+    // explicit marker so a CI ticket cannot mistake an unforeseen green
+    // here for real parity.
     eprintln!(
-        "[parity_voxtral] TODO audio_encoder_parity_smoke: GGUF {} + fixtures present, but \
-         the parity harness lands with M3-10-T19+ (audio encoder full forward + reference \
-         dumper). Skipping without failing.",
+        "[parity_voxtral] audio_encoder_parity_smoke: GGUF {} + fixtures present — the live \
+         tower parity harness is tests/voxtral_tower_parity.rs (set VOKRA_VOXTRAL_REF_DIR); \
+         this committed-fixture flavor is still a placeholder. Skipping without failing.",
         gguf.display()
     );
 }
