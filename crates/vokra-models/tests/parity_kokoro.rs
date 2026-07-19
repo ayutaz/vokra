@@ -224,6 +224,42 @@ const ATOL: f32 = 0.01;
 //     on M1 moves pcm by at most 1.53e-6, which bounds NEON and says nothing
 //     about AVX2.
 //
+// (F) BOTH CLUSTERS NOW RECORDED, and (b) is where the evidence points.
+//     Four runs, two clusters, split exactly on the ISA and matching to
+//     every printed digit — including the two that predate the recorder:
+//
+//         run       CPU                        torch    text_enc   pcm
+//         9bd6f73   AMD EPYC 7763              AVX2     2.354e-6   4.341e-2
+//         b6a9af0   (not recorded)             —        2.354e-6   4.341e-2
+//         f15733b   Intel Xeon Platinum 8573C  AVX512   1.907e-6   1.576e-2
+//         34fe40c   (not recorded)             —        1.907e-6   1.576e-2
+//
+//     Note what the `torch` column means: the REFERENCE dispatches too, so
+//     each row is a same-ISA comparison (Vokra-AVX2 vs torch-AVX2, or
+//     Vokra-AVX512 vs torch-AVX512). Both sides move together; the AVX2 pair
+//     simply agrees less well than the AVX-512 pair.
+//
+//     Against (a): `cpu-isa-server-tier` now pins the AVX2 tiles rather than
+//     leaving them to the runner draw, and on the EPYC host the packed
+//     driver at THESE decoder shapes is bit-identical to the legacy AVX2
+//     kernel and matches the scalar oracle. So by our own oracles the AVX2
+//     GEMM is correct where it matters here. `text_encoder` splits by the
+//     same clusters while sharing no decoder code, which is what pipeline-
+//     wide ISA rounding looks like and not what a decoder kernel fault looks
+//     like.
+//
+//     Also worth stating plainly: 0.04 is an M1-derived bound (measured
+//     1.92e-2, ~2× margin) applied to every platform. It was never
+//     calibrated on AVX2, so an AVX2 excursion is evidence the bound never
+//     covered that ISA — NOT evidence of a regression. That argument cuts
+//     toward per-ISA calibration from repeated measurement, not toward
+//     widening the shared bound on one platform's number.
+//
+//     Still not closed by direct measurement: the scalar re-run has not yet
+//     fired, because it only runs on the failure path and the runs since it
+//     landed drew AVX-512. It fires on the next EPYC failure. Until then (b)
+//     is well-supported but (a) is not formally excluded.
+//
 // The bound stays 0.04, and (E) makes that firmer rather than softer. It is
 // NOT re-derived from observations: fitting a max over ~200 k samples of a
 // heavy-tailed, amplitude-tracking field to whatever the last runner
