@@ -419,6 +419,49 @@ jobs:
         run: cargo test --release -p vokra-backend-cpu
       - name: Forced-scalar leg (single-binary dispatch honors the override)
         run: VOKRA_CPU_ISA=scalar cargo test --release -p vokra-backend-cpu --test single_binary_dispatch
+      # Record what this runner actually is, then pin the ISA under test.
+      #
+      # The step above runs on `active_isa()` — the HOST default — and the
+      # hosted pool is heterogeneous (AMD EPYC without AVX-512, Intel Xeon
+      # with it). So which micro-kernel tiles get exercised is decided by
+      # which machine the job lands on, and nothing recorded which. An
+      # AVX2-only fault could sit green for as long as the scheduler kept
+      # handing out Xeons.
+      #
+      # Not hypothetical: kokoro-parity-real returns bit-identical numbers
+      # within a CPU class and different numbers across classes, failing
+      # 100% on EPYC and passing 100% on Xeon (see the (E) note in
+      # crates/vokra-models/tests/parity_kokoro.rs).
+      #
+      # Forcing avx2 is safe on every x86-64 runner — AVX-512 parts implement
+      # AVX2 — so this leg deterministically covers the AVX2 tiles no matter
+      # what we land on, while the unforced leg above still covers whatever
+      # is native. Skipped on non-x86 hosts, where `avx2` is not a valid
+      # override (macos-latest is aarch64; its native leg covers NEON).
+      - name: Record runner ISA
+        run: |
+          set +e
+          case "$(uname -s)" in
+            Linux)  grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- ;;
+            Darwin) sysctl -n machdep.cpu.brand_string ;;
+          esac
+          echo "arch=$(uname -m)"
+      # Scoped to gemm_packed_parity, and within it everything EXCEPT
+      # `routing_thresholds_route_the_hot_shapes`. That one asserts the
+      # host's routing decisions and is override-incompatible by design (the
+      # same reason the scalar leg above targets a single test rather than
+      # the suite: `dispatch::active_isa_is_stable_and_host_supported`
+      # documents "no override" as its precondition). Verified locally on M1
+      # that the remaining 6 pass identically with and without an override,
+      # so a failure here is a real AVX2 result, not override fallout.
+      #
+      # `--skip` rather than naming the three tests: a numerical test added
+      # to this file later should be covered on AVX2 automatically.
+      - name: Forced-AVX2 leg (x86-64 only — pins the tiles under test)
+        if: runner.arch == 'X64'
+        run: |
+          VOKRA_CPU_ISA=avx2 cargo test --release -p vokra-backend-cpu \
+            --test gemm_packed_parity -- --skip routing_thresholds
       - name: Verify server-tier encodings land in the emitted asm
         # Belt-and-suspenders (RVV-job pattern): grep the re-emitted asm for
         # the tier mnemonics — x86-64: vpdpbusd (VNNI-512 + VNNI-256),
