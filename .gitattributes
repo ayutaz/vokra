@@ -113,3 +113,33 @@ tests/capi/fixtures/**/*.txt text eol=lf
 # per-source hashes, so both want stable bytes for the same reason.
 crates/vokra-backend-vulkan/kernels/precompiled/SHA256SUMS text eol=lf
 crates/vokra-backend-vulkan/kernels/precompiled/PROVENANCE text eol=lf
+
+# --- gaps found by scripts/check-fixture-eol-pins.sh --------------------------
+# The rules above are keyed on extension, which is why each Windows CI failure
+# so far uncovered exactly one more unpinned extension. These four close the
+# remaining holes across every byte-hashed file the gate can find.
+#
+# *.sha256 — the sidecars are themselves parsed byte-wise by `sha256sum -c`
+# (e.g. .github/workflows/parity-whisper-real.yml). They are pure ASCII with no
+# NUL bytes, so git's binary heuristic does NOT protect them: a CRLF checkout
+# turns the recorded name into `jfk-30s.wav\r` and coreutils reports
+# "No such file or directory" / FAILED. Note the asymmetry this fixes —
+# moshiko_tensor_manifest.json was pinned by the *.json rule while its own
+# .sha256 sidecar was not.
+*.sha256 text eol=lf
+
+# *.spv — SHA-256 pinned twice over (crates/vokra-backend-vulkan/src/spirv.rs
+# `expected_sha256_hex` + the SHA256SUMS ledger) but previously carried only
+# `-filter -diff -merge`, which does not stop eol conversion. Their .comp
+# sources, SHA256SUMS and PROVENANCE all got explicit pins; the blobs were
+# missed and were relying on the NUL-byte heuristic alone.
+crates/vokra-backend-vulkan/kernels/precompiled/*.spv -text
+
+# tests/fixtures/ is a sibling of tests/parity/, so the `tests/parity/**/*.wav`
+# rule never reached jfk-30s.wav — whose digest is pinned in five manifests
+# plus the sidecar above.
+tests/fixtures/**/*.wav -text
+
+# No *.gguf rule existed anywhere; tests/parity/silero_vad/silero-vad-v5.gguf
+# is loaded byte-wise by the VAD parity fixtures.
+tests/parity/**/*.gguf -text

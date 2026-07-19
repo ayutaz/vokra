@@ -132,11 +132,18 @@ if [ "$os_name" = "Linux" ] && command -v readelf >/dev/null 2>&1; then
         [ -z "$f" ] && continue
         case "$f" in
             *.so | *.so.*)
-                if readelf -d "$f" 2>/dev/null | grep -E 'NEEDED' \
-                    | grep -qE 'libcuda|libcudart|libcudnn|libcublas|libnvrtc|libmetal'; then
+                # Captured, not `| grep -q`: under `set -o pipefail` a `grep -q`
+                # that matches early can SIGPIPE the producer, whose 141 becomes
+                # the pipeline status and flips the `if` to false — i.e. the gate
+                # would report "clean" for a library that *does* link NVIDIA.
+                # scan_symbols() above already uses the capture idiom; this is
+                # the same rule applied to the DT_NEEDED leg.
+                needed="$(readelf -d "$f" 2>/dev/null | grep -E 'NEEDED' || true)"
+                dt_hits="$(printf '%s\n' "$needed" \
+                    | grep -E 'libcuda|libcudart|libcudnn|libcublas|libnvrtc|libmetal' || true)"
+                if [ -n "$dt_hits" ]; then
                     echo "FAIL: $f has a DT_NEEDED entry for an excluded backend:" >&2
-                    readelf -d "$f" 2>/dev/null | grep -E 'NEEDED' \
-                        | grep -E 'libcuda|libcudart|libcudnn|libcublas|libnvrtc|libmetal' >&2
+                    printf '%s\n' "$dt_hits" >&2
                     fail=1
                 fi
                 ;;

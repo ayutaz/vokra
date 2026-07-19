@@ -156,6 +156,23 @@ else
     bad "b8 root Cargo.lock was modified by SBOM generation"
 fi
 
+# b9 — ANSI-proofing. CI exports CARGO_TERM_COLOR=always, which makes `cargo
+# tree` wrap the dedup marker in escapes ("(/path) \x1b[33m\x1b[2m(*)"); the
+# generator's TREE_LINE then rejected the line as format drift and the SBOM job
+# died. resolve_graph() pins `--color never`, but nothing re-exercised the
+# hostile setting, and the bug had already stayed latent until vokra-mmap became
+# a shared dependency (a package must appear TWICE for a dedup marker to exist).
+# Regenerate under CARGO_TERM_COLOR=always and demand byte-identical output.
+if CARGO_TERM_COLOR=always python3 "$GEN" --package vokra-capi \
+    --no-default-features --features vulkan \
+    --doc-name vokra-capi-cpu-vulkan-only \
+    --output "$SCRATCH/color.spdx.json" >/dev/null 2>&1 \
+    && cmp -s "$SBOM" "$SCRATCH/color.spdx.json"; then
+    ok "b9 CARGO_TERM_COLOR=always yields a byte-identical SBOM"
+else
+    bad "b9 CARGO_TERM_COLOR=always changed or broke generation (ANSI leaked into \`cargo tree\` parsing)"
+fi
+
 echo ""
 echo "sbom self-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

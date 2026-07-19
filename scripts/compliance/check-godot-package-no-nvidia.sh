@@ -97,6 +97,43 @@ if [ -d "$BIN_DIR" ]; then
         \( -name '*.dll' -o -name '*.so' -o -name '*.so.*' -o -name '*.dylib' \) \
         -print0 2>/dev/null)
 
+    # nvidia_symbol_hits <lib> — prints offending undefined symbols, one per line.
+    #
+    # The undefined-symbol dump is captured *once* into a variable and then
+    # filtered with a plain `grep -E` (no `-q`). Do NOT "simplify" this back to:
+    #
+    #     if nm -u "$f" 2>/dev/null | grep -qE '_(cudart|...)'; then
+    #
+    # Under `set -o pipefail` that idiom FAILS OPEN. `grep -q` exits at the
+    # first match; `nm` is still writing, so it dies of SIGPIPE (141); pipefail
+    # promotes 141 to the pipeline status; and the `if` therefore takes the
+    # *false* branch — the scanner reports "no NVIDIA runtime bundled" for a
+    # library that *does* reference cudart. It only triggers once nm's output
+    # exceeds the ~64 KiB pipe buffer, so small libraries are scanned correctly
+    # and large ones silently pass. `grep -E` without -q reads to EOF, so the
+    # producer never sees SIGPIPE.
+    #
+    # Regression test: scripts/compliance/test-nvidia-scanner-sigpipe.sh
+    nvidia_symbol_hits() {
+        local f="$1" dump="" re=""
+        case "$os_name" in
+            Darwin)
+                # macOS nm; -u lists undefined symbols. Mangled C symbols on
+                # Mach-O carry a leading underscore.
+                dump="$(nm -u "$f" 2>/dev/null || true)"
+                re='_(cudart|cudnn|cublasLt|cublas)'
+                ;;
+            Linux | *)
+                # GNU nm; --undefined-only prints only undefined symbols.
+                command -v nm >/dev/null 2>&1 || return 0
+                dump="$(nm --undefined-only "$f" 2>/dev/null || true)"
+                re='(cudart|cudnn|cublasLt|cublas)'
+                ;;
+        esac
+        [ -n "$dump" ] || return 0
+        printf '%s\n' "$dump" | grep -E "$re" || true
+    }
+
     for f in "${libs[@]:-}"; do
         [ -z "$f" ] && continue
         # No `strings` prefilter: Mach-O symbol tables (LC_SYMTAB) are not
@@ -104,27 +141,14 @@ if [ -d "$BIN_DIR" ]; then
         # would silently miss real cudart symbol references. Run nm on every
         # native library unconditionally — AssetLib packages carry only a
         # handful of libs, so cost is negligible.
-        case "$os_name" in
-            Darwin)
-                # macOS nm; -u lists undefined symbols. Mangled C symbols on
-                # Mach-O carry a leading underscore.
-                if nm -u "$f" 2>/dev/null | grep -qE '_(cudart|cudnn|cublasLt|cublas)'; then
-                    echo "FAIL: $f references NVIDIA runtime symbols (nm -u)" >&2
-                    nm -u "$f" 2>/dev/null | grep -E '_(cudart|cudnn|cublasLt|cublas)' | head -5 >&2
-                    fail=1
-                fi
-                ;;
-            Linux|*)
-                # GNU nm; --undefined-only prints only undefined symbols.
-                if command -v nm >/dev/null 2>&1; then
-                    if nm --undefined-only "$f" 2>/dev/null | grep -qE '(cudart|cudnn|cublasLt|cublas)'; then
-                        echo "FAIL: $f references NVIDIA runtime symbols (nm --undefined-only)" >&2
-                        nm --undefined-only "$f" 2>/dev/null | grep -E '(cudart|cudnn|cublasLt|cublas)' | head -5 >&2
-                        fail=1
-                    fi
-                fi
-                ;;
-        esac
+        hits="$(nvidia_symbol_hits "$f")"
+        if [ -n "$hits" ]; then
+            echo "FAIL: $f references NVIDIA runtime symbols (undefined-symbol scan)" >&2
+            # `sed -n '1,5p'` not `head -5`: head exits early, which would
+            # SIGPIPE the printf and abort this script under `set -e` + pipefail.
+            printf '%s\n' "$hits" | sed -n '1,5p' >&2
+            fail=1
+        fi
     done
 
     # --- (3) readelf DT_NEEDED (Linux only) ---------------------------------
@@ -133,9 +157,13 @@ if [ -d "$BIN_DIR" ]; then
             [ -z "$f" ] && continue
             case "$f" in
                 *.so|*.so.*)
-                    if readelf -d "$f" 2>/dev/null | grep -E 'NEEDED' | grep -qE 'cudart|cudnn|cublas'; then
+                    # Captured, not `| grep -q` — see nvidia_symbol_hits() above
+                    # for why a pipefail'd `grep -q` fails open.
+                    needed="$(readelf -d "$f" 2>/dev/null | grep -E 'NEEDED' || true)"
+                    dt_hits="$(printf '%s\n' "$needed" | grep -E 'cudart|cudnn|cublas' || true)"
+                    if [ -n "$dt_hits" ]; then
                         echo "FAIL: $f has DT_NEEDED entry for NVIDIA runtime" >&2
-                        readelf -d "$f" 2>/dev/null | grep -E 'NEEDED' | grep -E 'cudart|cudnn|cublas' >&2
+                        printf '%s\n' "$dt_hits" >&2
                         fail=1
                     fi
                     ;;
