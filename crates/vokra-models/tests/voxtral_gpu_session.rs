@@ -49,7 +49,15 @@ use vokra_models::voxtral::VoxtralMetalDecodeSession;
 ))]
 use vokra_models::voxtral::test_support::tiny_voxtral_model_with_linear_adapter;
 use vokra_models::voxtral::test_support::{tiny_config, tiny_tokenizer, tiny_voxtral_model};
-use vokra_models::voxtral::{AsrPromptLayout, BeamConfig, VoxtralAsr, VoxtralModel};
+// `AsrPromptLayout` is consumed only by `full_asr_for_beam_with_linear_adapter`,
+// which carries the same gate — without this the default (no-GPU-feature) build
+// of this target trips `-D unused-imports`.
+#[cfg(any(
+    all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+    all(feature = "cuda", any(unix, windows)),
+))]
+use vokra_models::voxtral::AsrPromptLayout;
+use vokra_models::voxtral::{BeamConfig, VoxtralAsr, VoxtralModel};
 
 /// Builds a GGUF with the minimum Voxtral metadata a shape-only load
 /// succeeds on — used by the tests that need a `VoxtralAsr` instance to

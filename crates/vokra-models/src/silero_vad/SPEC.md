@@ -59,6 +59,16 @@ through the official interface). The raw interface is therefore kept only as
 against the bare-frame fixtures); every public entry point uses the official
 context.
 
+**2026-07-19 (8 kHz quadrant)**: the same comparison at 8 kHz shows the raw
+interface fails *differently* but no less completely. On the decimated clip
+`jfk-30s-8k.wav` bare `[1, 256]` frames peak at **0.646** — they do cross the
+0.5 threshold, unlike the 16 kHz collapse to 0.0037 — yet never sustain speech
+for the default `min_speech` (250 ms), so the segment count is still **zero**
+against the official interface's four. Any consumer that lowered `min_speech`
+or thresholded per frame would therefore get spurious detections at 8 kHz
+where 16 kHz merely gets silence; this is a second, independent reason the raw
+interface is not a supported entry point.
+
 ## GGUF weight map (per rate)
 
 Tensor names are the upstream PyTorch parameter names. Every one of the 15
@@ -116,7 +126,7 @@ Measured max abs error vs ORT (this implementation, FP32):
 | encoder output (T06) | 4.9e-4 | 1.0e-5 |
 | **e2e streaming prob, raw interface (T09)** | **7.9e-8** | **3.2e-6** |
 | e2e streaming prob, official context | 2.1e-6 | 3.3e-7 |
-| e2e real speech `jfk-30s.wav`, official context | 6.1e-6 (max prob 1.0000; segments at 0.5 = 4, spans identical to upstream `get_speech_timestamps` on the ORT reference) | — (clip is 16 kHz) |
+| e2e real speech `jfk-30s.wav`, official context | 6.1e-6 (max prob 1.0000; segments at 0.5 = 4, spans identical to upstream `get_speech_timestamps` on the ORT reference) | 1.2e-6 on `jfk-30s-8k.wav` (max prob 1.0000; 4 segments, spans identical to the ORT reference and within one 8 kHz frame of the rate-normalised 16 kHz spans) |
 
 Layer intermediates (conv/magnitude/encoder) are true ORT ground truth (lifted
 branch graphs). The final probability is true ORT ground truth (full model,

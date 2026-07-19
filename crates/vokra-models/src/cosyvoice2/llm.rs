@@ -254,6 +254,24 @@ impl LlmBackboneConfig {
             && self.n_head_q % self.n_head_kv == 0
             && self.hidden_dim % self.n_head_q == 0
     }
+
+    /// True when every LLM dimension is the converter's 0 sentinel, i.e. the
+    /// GGUF was produced before the hparams were derived (`--config` absent).
+    ///
+    /// This is deliberately narrower than "cannot host a backbone": a config
+    /// with *some* non-zero dims that still fails [`Self::is_gqa_well_formed`]
+    /// is **malformed**, not merely old, and callers must not treat the two
+    /// alike. [`super::CosyVoice2Tts::from_gguf_with_policy`] tolerates only
+    /// the sentinel (FR-EX-08).
+    #[must_use]
+    pub fn is_placeholder_shape(&self) -> bool {
+        self.n_head_q == 0
+            && self.n_head_kv == 0
+            && self.hidden_dim == 0
+            && self.vocab_size == 0
+            && self.n_layer == 0
+            && self.ffn_dim == 0
+    }
 }
 
 /// Per-block Mistral/Qwen2-style weight bundle.

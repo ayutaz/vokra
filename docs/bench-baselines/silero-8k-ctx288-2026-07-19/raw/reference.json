@@ -1,0 +1,156 @@
+{
+  "jfk": {
+    "source": "/Users/inamotoyuuta/.cache/vokra-eval/corpus/jfk-30s.wav",
+    "src_samples": 176000,
+    "wav8k": "/private/tmp/claude-501/-Users-inamotoyuuta-Desktop-Otonx/ece5b950-4cd6-4575-8e70-efe13669cb0a/scratchpad/cc25/out/jfk-8k.wav",
+    "samples_8k": 88000,
+    "duration_s": 11.0,
+    "resampling": {
+      "src_share_above_4k_pct": 0.005811981004889588,
+      "vs_scipy_resample_poly_max_abs": 3.3306690738754696e-16,
+      "vs_naive_decimation_max_abs": 0.05529049207568455,
+      "alias_band_3k6_4k_reject_db": 2.313686269230891,
+      "passband_50_3500_median_db": 0.004866183191086617,
+      "passband_50_3500_p05_db": -0.012525307517798508,
+      "passband_50_3500_p95_db": 0.014550396437555112
+    },
+    "ort": {
+      "master": {
+        "frames": 343,
+        "max_prob": 0.9999871850013733,
+        "min_prob": 0.002782195806503296,
+        "segments": [
+          [
+            2320,
+            18416
+          ],
+          [
+            26128,
+            35568
+          ],
+          [
+            43024,
+            61424
+          ],
+          [
+            65296,
+            85232
+          ]
+        ],
+        "speech_s": 7.984
+      },
+      "v5.0": {
+        "frames": 343,
+        "max_prob": 0.9953501224517822,
+        "min_prob": 0.00018605589866638184,
+        "segments": [
+          [
+            2320,
+            17904
+          ],
+          [
+            32016,
+            35056
+          ],
+          [
+            43280,
+            61168
+          ],
+          [
+            65552,
+            84208
+          ]
+        ],
+        "speech_s": 6.896
+      }
+    },
+    "ort16_master": {
+      "frames": 343,
+      "max_prob": 0.9999627470970154,
+      "segments": [
+        [
+          5152,
+          36320
+        ],
+        [
+          52256,
+          71136
+        ],
+        [
+          86048,
+          122848
+        ],
+        [
+          130592,
+          169952
+        ]
+      ],
+      "speech_s": 7.888
+    }
+  },
+  "libri0002": {
+    "source": "/Users/inamotoyuuta/.cache/vokra-eval/corpus/1272-128104-0002.wav",
+    "src_samples": 199760,
+    "wav8k": "/private/tmp/claude-501/-Users-inamotoyuuta-Desktop-Otonx/ece5b950-4cd6-4575-8e70-efe13669cb0a/scratchpad/cc25/out/libri0002-8k.wav",
+    "samples_8k": 99880,
+    "duration_s": 12.485,
+    "resampling": {
+      "src_share_above_4k_pct": 18.795964672095696,
+      "vs_scipy_resample_poly_max_abs": 2.220446049250313e-16,
+      "vs_naive_decimation_max_abs": 0.41232267025669156,
+      "alias_band_3k6_4k_reject_db": 6.990344193240188,
+      "passband_50_3500_median_db": 0.004339401504328049,
+      "passband_50_3500_p05_db": -0.02375591299389564,
+      "passband_50_3500_p95_db": 0.027907253849384594
+    },
+    "ort": {
+      "master": {
+        "frames": 390,
+        "max_prob": 0.9999997615814209,
+        "min_prob": 0.01487058401107788,
+        "segments": [
+          [
+            4368,
+            56560
+          ],
+          [
+            60944,
+            96752
+          ]
+        ],
+        "speech_s": 11.0
+      },
+      "v5.0": {
+        "frames": 390,
+        "max_prob": 0.9999710917472839,
+        "min_prob": 0.00028774142265319824,
+        "segments": [
+          [
+            4624,
+            56304
+          ],
+          [
+            58640,
+            96496
+          ]
+        ],
+        "speech_s": 11.192
+      }
+    },
+    "ort16_master": {
+      "frames": 390,
+      "max_prob": 0.9999996423721313,
+      "segments": [
+        [
+          9248,
+          113120
+        ],
+        [
+          121888,
+          192992
+        ]
+      ],
+      "speech_s": 10.936
+    }
+  }
+}

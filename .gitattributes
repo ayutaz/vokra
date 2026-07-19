@@ -48,6 +48,12 @@ tests/parity/voxtral/*.bin -filter -diff -merge
 # Real-audio input consumed by tools/parity/dump_whisper_reference.py.
 tests/fixtures/audio/*.wav -filter -diff -merge
 
+# Silero VAD parity inputs (synthetic test_{8,16}k.wav + the decimated
+# real-speech jfk-30s-8k.wav) and the fixture GGUF. Same LFS-free contract:
+# crates/vokra-models/src/silero_vad/parity.rs reads these bytes directly.
+tests/parity/silero_vad/*.wav -filter -diff -merge
+tests/parity/silero_vad/*.gguf -filter -diff -merge
+
 # C ABI raw-PCM fixtures (mirror of the whisper input_pcm.f32; see
 # tests/capi/fixtures/gen_fixtures.py). Same LFS-free contract.
 tests/capi/fixtures/*.f32 -filter -diff -merge

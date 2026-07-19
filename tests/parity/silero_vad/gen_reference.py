@@ -26,6 +26,11 @@ This script writes, into this directory:
   16 kHz, sha256 58adb4ea…; 343 complete frames, trailing partial dropped).
   Backs the real-audio detection regression test. Skipped with a note if the
   WAV is absent.
+* ``jfk-30s-8k.wav`` / ``probs_jfk8k_ctx.txt`` — the same real speech decimated
+  to 8 kHz by ``halfband_decimate`` (anti-aliased, see that docstring) plus its
+  official-context (**ctx288**) ORT reference. These back the 8 kHz real-speech
+  regression test: the ctx fix was originally verified on real speech at 16 kHz
+  only, leaving 8 kHz x real as the last unverified quadrant.
 * ``step_stftconv_<rate>.txt`` / ``step_mag_<rate>.txt`` /
   ``step_encoder_<rate>.txt`` — per-stage ground truth for the *first* frame
   (zero state), obtained by lifting the matching ``If`` branch into a standalone
@@ -113,6 +118,41 @@ def write_wav_f32(path: Path, rate: int, samples: np.ndarray) -> None:
     ])
     riff = b"WAVE" + chunks
     path.write_bytes(b"RIFF" + struct.pack("<I", len(riff)) + riff)
+
+
+def write_wav_pcm16(path: Path, rate: int, samples: np.ndarray) -> None:
+    """Minimal mono PCM16 WAV — the same container as the jfk source fixture."""
+    pcm = np.clip(np.round(np.asarray(samples, np.float64) * 32768.0),
+                  -32768, 32767).astype("<i2")
+    data = pcm.tobytes()
+    fmt = struct.pack("<HHIIHH", 1, 1, rate, rate * 2, 2, 16)
+    chunks = b"".join([
+        b"fmt ", struct.pack("<I", len(fmt)), fmt,
+        b"data", struct.pack("<I", len(data)), data,
+    ])
+    riff = b"WAVE" + chunks
+    path.write_bytes(b"RIFF" + struct.pack("<I", len(riff)) + riff)
+
+
+def halfband_decimate(x: np.ndarray) -> np.ndarray:
+    """16 kHz -> 8 kHz through a linear-phase Kaiser-windowed-sinc lowpass.
+
+    Halving the rate halves Nyquist (8 kHz -> 4 kHz), so every component above
+    4 kHz must be removed *before* decimation; plain ``x[::2]`` instead folds it
+    back into the 0-4 kHz band and yields an 8 kHz file that is not an 8 kHz
+    signal. The filter is 41 taps, cutoff 0.5 x Nyquist, Kaiser beta 5.0,
+    DC-normalised — the design ``scipy.signal.resample_poly`` uses by default for
+    ``down=2`` (verified equal to 3.3e-16 on the jfk clip), reimplemented here so
+    the fixture path needs only numpy (tests/parity/parity-requirements.txt).
+    Symmetric zero-padding cancels the group delay, so the output stays time
+    aligned with the input.
+    """
+    half = 20
+    taps = np.arange(2 * half + 1) - half
+    h = np.sinc(0.5 * taps) * np.kaiser(2 * half + 1, 5.0)
+    h /= h.sum()
+    padded = np.concatenate([np.zeros(half), np.asarray(x, np.float64), np.zeros(half)])
+    return np.convolve(padded, h, mode="valid")[::2]
 
 
 def write_floats(path: Path, arr: np.ndarray) -> None:
@@ -333,6 +373,19 @@ def main() -> None:
         write_floats(HERE / "probs_jfk30s_ctx.txt", np.array(probs, np.float32))
         print(f"jfk30s ctx: {len(probs)} frames, prob range "
               f"[{min(probs):.4f}, {max(probs):.4f}]")
+
+        # 2c) the same real speech at 8 kHz — the ctx288 branch. The WAV is
+        #     committed (rather than resampled in the Rust test) so both engines
+        #     score byte-identical samples: read it back after writing so the
+        #     reference is computed on the PCM16-quantised signal the Rust
+        #     reader will see, not on the pre-quantisation floats.
+        write_wav_pcm16(HERE / "jfk-30s-8k.wav", 8000, halfband_decimate(pcm))
+        pcm8, rate8 = read_wav_pcm16_mono(HERE / "jfk-30s-8k.wav")
+        assert rate8 == 8000, f"jfk-30s-8k.wav: rate {rate8}"
+        probs8 = stream_probs(full, pcm8, rate8, official_ctx=True)
+        write_floats(HERE / "probs_jfk8k_ctx.txt", np.array(probs8, np.float32))
+        print(f"jfk8k ctx: {len(probs8)} frames, prob range "
+              f"[{min(probs8):.4f}, {max(probs8):.4f}]")
     else:
         print(f"note: {JFK_WAV} absent, skipping probs_jfk30s_ctx.txt")
 
