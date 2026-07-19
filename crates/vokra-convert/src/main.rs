@@ -19,7 +19,7 @@ use std::process::ExitCode;
 
 use vokra_convert::{
     ModelKind, convert_cosyvoice2_file, convert_csm_file, convert_dac_file, convert_file,
-    convert_file_quantized, convert_moshi_file, convert_piper_plus_file,
+    convert_file_quantized, convert_moshi_file, convert_piper_plus_file, convert_utmos_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType};
 
@@ -30,6 +30,7 @@ USAGE:
     vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
+    vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model <cosyvoice2|csm|moshi> --input <ckpt.safetensors> [--config <side-car>] --output <out.gguf>
 
 OPTIONS:
@@ -116,6 +117,22 @@ fn main() -> ExitCode {
                     eprintln!(
                         "error: --model dac requires --config <config.json> (from \
                          tools/parity/dac_prepare_checkpoint.py)\n\n{USAGE}"
+                    );
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        ModelKind::Utmos => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            match &config {
+                Some(config) => convert_utmos_file(&input, config, &output),
+                None => {
+                    eprintln!(
+                        "error: --model utmos requires --config <config.json> (from \
+                         tools/parity/utmos_prepare_checkpoint.py)\n\n{USAGE}"
                     );
                     return ExitCode::from(2);
                 }
@@ -300,6 +317,21 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("<none>");
             println!("; arch={arch}");
+        }
+        ModelKind::Utmos => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let variant = file
+                .get("vokra.utmos.arch.variant")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let sr = file
+                .get("vokra.utmos.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!("; arch={arch} variant={variant} sample_rate={sr}");
         }
         ModelKind::PiperPlus => {
             let arch = file

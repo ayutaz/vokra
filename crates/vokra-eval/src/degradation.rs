@@ -344,6 +344,8 @@ mod tests {
     /// a MOS-like positive band (offset 3.0) — the integration-path scorer.
     fn tiny_utmos() -> Utmos {
         let config = UtmosConfig {
+            variant: crate::metrics::utmos::ArchVariant::V0,
+            v1: None,
             sample_rate: SR,
             conv_channels: vec![4, 6],
             conv_kernels: vec![5, 3],

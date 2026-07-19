@@ -467,3 +467,53 @@ fn kokoro_safetensors_with_config_roundtrips_through_convert_kokoro_file() {
     let _ = std::fs::remove_file(&config);
     let _ = std::fs::remove_file(&output);
 }
+
+/// M5-15-T36/T37: the `--quantize` surface widened to **voxtral only**. Every
+/// other non-whisper model keeps its explicit `ConvertError::Usage` refusal
+/// (FR-EX-08 — a flag that is silently ignored is worse than one that errors),
+/// and voxtral's own refusal through this config-less entry point points at
+/// the config-aware one instead of pretending the model is unsupported.
+#[test]
+fn quantization_is_still_refused_for_non_whisper_models() {
+    use vokra_convert::convert_file_quantized;
+    use vokra_core::gguf::GgmlType;
+
+    // `convert_file_quantized` reads the checkpoint before matching, so the
+    // input must exist for the refusal to be the thing under test.
+    let input = tmp_path("quant-refusal-in");
+    let output = tmp_path("quant-refusal-out");
+    std::fs::write(&input, synthetic_safetensors()).unwrap();
+
+    for kind in [
+        ModelKind::Kokoro,
+        ModelKind::CosyVoice2,
+        ModelKind::Mimi,
+        ModelKind::Csm,
+        ModelKind::Moshi,
+        ModelKind::CamPlus,
+    ] {
+        let e = convert_file_quantized(kind, &input, &output, GgmlType::Q4K)
+            .expect_err("non-whisper quantization must be refused");
+        let msg = e.to_string();
+        assert!(
+            msg.contains("only supported for whisper and voxtral"),
+            "{kind:?}: unexpected message: {msg}"
+        );
+    }
+
+    // Voxtral IS supported now, but not through this signature — it cannot
+    // carry the side-car config, and quantizing without it emits a GGUF whose
+    // `0` hparam sentinels the runtime refuses. The message must route the
+    // caller, not claim the model is unsupported.
+    let e = convert_file_quantized(ModelKind::Voxtral, &input, &output, GgmlType::Q6K)
+        .expect_err("config-less voxtral quantization must be refused");
+    let msg = e.to_string();
+    assert!(msg.contains("--config"), "voxtral message: {msg}");
+    assert!(
+        msg.contains("convert_voxtral_file_quantized"),
+        "voxtral message must name the supported entry point: {msg}"
+    );
+
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+}

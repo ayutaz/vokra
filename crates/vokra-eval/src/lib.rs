@@ -26,8 +26,10 @@
 
 pub mod cosyvoice2;
 pub mod degradation;
+pub mod gate;
 pub mod manifest;
 pub mod metrics;
+pub mod nn;
 pub mod wav;
 
 pub use cosyvoice2::{

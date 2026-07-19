@@ -1,36 +1,53 @@
 //! UTMOS parity vs the upstream reference — **flip-the-switch harness**
 //! (M4-18 T09; NFR-QL-01/NFR-QL-04).
 //!
-//! # Status: weight-deferred (kickoff gate = NO-GO-defer)
+//! # Status: flipped (the M4-18 defer was lifted 2026-07-18)
 //!
-//! The M4-18 kickoff gate deferred the real UTMOS weights + license to a
-//! v1.0.x patch (ADR `docs/adr/M4-18-utmos-gate.md`, gitignore-local), so
-//! **no reference fixture is committed** — committing one would require
-//! fabricating an expected score, which is exactly what NFR-QL-04 bans.
-//! What lands now is the harness: fixture format, honest-atol plumbing,
-//! the synthesized-weight refusal gate, and a cleanly-skipping gated test.
+//! This file used to say "no reference fixture is committed, deliberately",
+//! because the M4-18 kickoff gate had deferred the UTMOS weights + license
+//! and writing an `expected_score` without running upstream would have
+//! fabricated the very number the gate exists to check (NFR-QL-04). **That is
+//! no longer the state.** The owner un-defer (2026-07-18) and M5-15 landed:
 //!
-//! # Flip recipe (owner, once T02 delivers the weights)
+//! - `tests/parity/utmos/score.json` + `ref-clip.wav` **are committed**, and
+//!   the score was produced by *importing* the real upstream implementation
+//!   (`tools/parity/utmos_dump_reference.py`, pinned + sha256-verified
+//!   sources) — never a local mirror, which would agree by construction
+//!   (the Kokoro lesson, `92dbc92`);
+//! - the converter **has landed** (`vokra-convert --model utmos`, M5-15 T14),
+//!   so it is no longer "deferred with the weights";
+//! - `atol` in the fixture is derived from measurement, with the derivation
+//!   recorded in the fixture's own `provenance` string and in
+//!   `tests/parity/utmos/README.md` (memory `feedback-honest-parity-atol`).
 //!
-//! 1. Generate the reference score offline against the pinned upstream
-//!    SaruLab UTMOS22 implementation and commit
-//!    `tests/parity/utmos/score.json` + the input clip (see
-//!    `tests/parity/utmos/README.md` for the exact format and the
-//!    honest-atol rule: reference reproduction error band × 1.5–2, never a
-//!    CI-green-hunting constant — memory `feedback-honest-parity-atol`).
-//! 2. Convert the checkpoint to a `vokra.utmos.*` GGUF (T05 converter,
-//!    deferred with the weights).
-//! 3. `VOKRA_UTMOS_GGUF=path/to/utmos.gguf cargo test -p vokra-eval --test
-//!    parity_utmos` — the gated test stops skipping automatically.
+//! # What is still missing, and why the gated test can still skip
+//!
+//! The **checkpoint** is not committed and never will be — Vokra ships no
+//! weights. So this test needs a locally converted GGUF handed to it via
+//! `VOKRA_UTMOS_GGUF`; without it there is nothing to score and it skips.
+//! That is a permanent by-design property, not a defer.
+//!
+//! Owner-side, one item still gates the *CI* leg: `tests/parity/utmos/
+//! source.env` (weight URL + sha256) is not committed, pending the
+//! `docs/license-audit.md` §3.1 UTMOS sign-off. Until it lands,
+//! `parity-utmos.yml` skips with an explicit annotation.
+//!
+//! Locally the whole path runs today — see `tests/parity/utmos/README.md`
+//! for the four-command recipe.
+//!
+//! # See also
+//!
+//! `parity_utmos_stages.rs` compares **every stage** against the upstream
+//! hook points and is the load-bearing harness: a single scalar (this file)
+//! cannot localize a fault, it only says "the number is wrong".
 //!
 //! # Skip semantics (fabricated pass ban)
 //!
 //! - `VOKRA_UTMOS_GGUF` unset → the gated test **skips** with an explicit
-//!   eprintln (the CI posture while the weights are deferred; the
-//!   `parity-utmos.yml` workflow annotates the skip, it never synthesizes a
-//!   pass).
+//!   eprintln (the `parity-utmos.yml` workflow annotates the skip, it never
+//!   synthesizes a pass).
 //! - env set but fixture / clip missing or malformed → **loud panic** (the
-//!   owner explicitly opted in; a broken opt-in must not look like a skip).
+//!   caller explicitly opted in; a broken opt-in must not look like a skip).
 //! - synthesized weights → **refused** ([`native_score_for_parity`]): an
 //!   in-memory synthesized scorer can never be compared against a real
 //!   reference. (A GGUF *written from* synthesized values still loads as
@@ -42,7 +59,9 @@ use std::path::PathBuf;
 
 use vokra_core::json::{self, JsonValue};
 use vokra_core::{Result, VokraError};
-use vokra_eval::metrics::utmos::{ConvActivation, HeadPool, TransformerNorm, Utmos, UtmosConfig};
+use vokra_eval::metrics::utmos::{
+    ArchVariant, ConvActivation, HeadPool, TransformerNorm, Utmos, UtmosConfig,
+};
 
 /// Env var pointing at the converted `vokra.utmos.*` GGUF (flip-the-switch).
 const ENV_GGUF: &str = "VOKRA_UTMOS_GGUF";
@@ -250,6 +269,8 @@ fn parity_verdict_accepts_within_atol_and_reports_mismatch() {
 #[test]
 fn synthesized_weights_are_refused_for_parity() {
     let config = UtmosConfig {
+        variant: ArchVariant::V0,
+        v1: None,
         sample_rate: 16_000,
         conv_channels: vec![4, 6],
         conv_kernels: vec![5, 3],
@@ -289,10 +310,10 @@ fn synthesized_weights_are_refused_for_parity() {
 fn parity_utmos_vs_reference() {
     let Some(gguf_path) = std::env::var_os(ENV_GGUF) else {
         eprintln!(
-            "skipping parity_utmos_vs_reference: {ENV_GGUF} unset — the M4-18 kickoff gate \
-             deferred the UTMOS weights (v1.0.x patch); once the owner lands T02 + the T05 \
-             converter, set {ENV_GGUF} to the converted GGUF and commit \
-             tests/parity/utmos/score.json (see that dir's README.md)"
+            "skipping parity_utmos_vs_reference: {ENV_GGUF} unset. The reference fixture is \
+             committed (tests/parity/utmos/score.json) and the converter has landed, but the \
+             checkpoint is not in-tree and never will be — Vokra ships no weights. Convert one \
+             locally and point {ENV_GGUF} at it; the recipe is in tests/parity/utmos/README.md"
         );
         return;
     };

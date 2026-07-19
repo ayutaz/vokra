@@ -25,7 +25,9 @@ use std::path::{Path, PathBuf};
 
 use vokra_core::{DialogRequest, S2sEngine};
 use vokra_eval::degradation::{MosDomain, check_degradation, check_degradation_with_utmos};
-use vokra_eval::metrics::utmos::{ConvActivation, HeadPool, TransformerNorm, Utmos, UtmosConfig};
+use vokra_eval::metrics::utmos::{
+    ArchVariant, ConvActivation, HeadPool, TransformerNorm, Utmos, UtmosConfig,
+};
 use vokra_models::csm::EchoPath;
 use vokra_models::moshi::MoshiEngine;
 
@@ -79,6 +81,10 @@ fn gate_go_branch_code_path_runs_with_a_synthesized_scorer_as_advisory() {
     // correlation study — the M4-18 taxonomy).
     let (pcm, sr) = fixture_output();
     let config = UtmosConfig {
+        // The M4-18 weight-independent skeleton: `V0` carries no upstream
+        // UTMOS22 stack, so the `v1` spec is absent by construction.
+        variant: ArchVariant::V0,
+        v1: None,
         sample_rate: sr,
         conv_channels: vec![4, 6],
         conv_kernels: vec![5, 3],
