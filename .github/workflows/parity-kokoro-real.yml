@@ -394,6 +394,14 @@ jobs:
           cargo test --release -p vokra-models --test parity_kokoro -- --nocapture \
             > "${RUNNER_TEMP}/parity-scalar.txt" 2>&1
           scalar_exit=$?
+          # Build the report ONCE, then send it to the step summary, the job
+          # log, and an artifact. The first firing of this step (afbbee6, on
+          # an EPYC host) wrote only to $GITHUB_STEP_SUMMARY, which is
+          # readable in the web UI but not through the REST API and not in
+          # `gh run view --log` — so the diagnostic fired and its finding was
+          # unrecoverable afterwards. A diagnostic that cannot be read back
+          # is not a diagnostic.
+          report="${RUNNER_TEMP}/scalar-verdict.md"
           {
             echo "### Scalar-ISA re-run (failure path)"
             echo ""
@@ -402,11 +410,11 @@ jobs:
             echo ""
             echo "| tensor | SIMD | scalar |"
             echo "| --- | --- | --- |"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } > "$report"
           for t in text_encoder bert prosody_f0 decoder_mag decoder_phase decoder_pcm; do
             simd="$(grep -oE "kokoro ${t}[^=]*= [0-9.e+-]+" "${RUNNER_TEMP}/parity-log.txt" 2>/dev/null | grep -oE '[0-9.e+-]+$' | head -1)"
             scal="$(grep -oE "kokoro ${t}[^=]*= [0-9.e+-]+" "${RUNNER_TEMP}/parity-scalar.txt" 2>/dev/null | grep -oE '[0-9.e+-]+$' | head -1)"
-            echo "| \`${t}\` | \`${simd:-?}\` | \`${scal:-?}\` |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| \`${t}\` | \`${simd:-?}\` | \`${scal:-?}\` |" >> "$report"
           done
           {
             echo ""
@@ -416,7 +424,9 @@ jobs:
             echo "and point at the algorithm or the reference. A scalar column"
             echo "materially lower means the SIMD micro-kernel for this ISA is"
             echo "the fault — fix the kernel, do not widen the bound."
-          } >> "$GITHUB_STEP_SUMMARY"
+          } >> "$report"
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          cat "$report"
           true
 
       # Parse the parity log and emit a per-tensor markdown table. Uses only
@@ -596,6 +606,8 @@ jobs:
           name: kokoro-parity-artifacts
           path: |
             ${{ runner.temp }}/parity-log.txt
+            ${{ runner.temp }}/parity-scalar.txt
+            ${{ runner.temp }}/scalar-verdict.md
             ${{ runner.temp }}/fixture-drift.txt
             ${{ runner.temp }}/voicepack-report.md
             ${{ runner.temp }}/bisect.txt
