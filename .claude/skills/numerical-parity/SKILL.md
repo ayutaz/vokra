@@ -41,6 +41,24 @@ reference 実装との数値一致は Vokra の品質背骨（NFR-QL-01）。**C
 - 緩めるより **OPEN として記録して赤のまま残す**方が誠実なことが多い（advisory な suite ならブロッカーですらない）。
 - 動かす場合は **理論下限 × 1.5〜2**、rustdoc + ADR + CI YAML に **冗長に**根拠を記録（既存例: Kokoro decoder の branch-cut bound）。
 
+## 大原則 4: 「1 回の CI 実行」は測定ではない — 先に再現性を確かめる
+
+大原則 3 の Kokoro pcm は、翌ステップで**決着した**（`c977e14`）。判明したのは「x86 特有の誤差」ですらなく、**同一コードでの run 間分散**だった:
+
+> kokoro に無関係な commit（skills/hooks のみ）を挟んだだけで、**報告される全テンソルが動いた** — text_encoder 23% / bert 20% / prosody_f0 67% / decoder_pcm **175%（FAIL → PASS）**。原因は、この CI job が committed fixture を使わず、**参照を毎回 runner 上の upstream torch から再生成**していたこと。比較の両辺が同じ runner で計算され、両方とも CPU feature で dispatch する（Vokra は自前 ISA 選択、torch は MKL/oneDNN）。hosted runner pool は異機種（AVX-512 ありの Xeon / なしの EPYC）なので、**2 回の run が 2 つの異なる誤差場を引く**。
+
+決め手になった読み方:
+
+- **どのテンソルが動いたかを見る**。`text_encoder` は 4096 要素・パイプライン前段・**decoder と一切コードを共有しない**。decoder kernel のバグでは動かせない。それが 23% 動いた時点で、原因は「局所的な故障」ではなく「環境全体」に確定する。**変動範囲ではなく変動の「広がり方」が診断情報**。
+- 「mean が下がって max が上がる」は**摂動ではなく別の draw の signature**。同じ誤差場が揺れたなら bulk と tail は同方向に動く。
+
+手順として:
+
+1. **bound 超過を見たら、まず同じコードで再実行**する。1 点で bound を動かさない（大原則 3）。
+2. **参照がどこで生成されているか確認する**。CI が参照を再生成しているなら、それは「実装 vs 固定 oracle」ではなく「実装 vs 環境依存 oracle」であり、**run 間分散が原理的に入る**。
+3. **実行環境を記録する**（CPU model / ISA flags / nproc / `torch.backends.cpu.get_cpu_capability()`）。記録が無ければ分散は追跡不能で、不運な 1 run が「故障」に見える。**数値を出す前**のステップに置き、`if: always()` にする。
+4. heavy-tailed な統計（~10^5 サンプルの max）を**観測に合わせて fit しない**。不運な run のたびに gate が 1 段ずつ開き、検出力だけが失われる。
+
 ## 手順
 
 1. **reference をオフライン生成**。crate は `tests/parity`（test-only、`publish = false`、`vokra-parity`）。
