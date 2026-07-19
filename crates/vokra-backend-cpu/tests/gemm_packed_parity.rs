@@ -184,6 +184,125 @@ fn packed_driver_matches_scalar_oracle() {
     }
 }
 
+/// The **production GEMM shapes of the Kokoro-82M decoder**, differentially
+/// pinned on whatever ISA the host provides.
+///
+/// # Why this grid exists (2026-07-19)
+///
+/// `crates/vokra-models/tests/parity_kokoro.rs` fails its `pcm max` gate on
+/// x86 Linux CI while passing on Apple M1 (see the OPEN block at the top of
+/// that file). One of the two candidate explanations was a localized error in
+/// the AVX2 / AVX-512 packed micro-kernels M5-14 added — kernels no ARM host
+/// can execute, because `gemm_driver::run` only ever reaches the **active**
+/// ISA's micro-kernel, so each host exercises exactly one of them.
+///
+/// The decoder was traced (every `Compute::gemm_f32` issued by
+/// `decoder_forward_with_reference_contours`): **every GEMM it issues takes
+/// the packed route**, and its shapes sit well outside [`shape_grid`]. Most
+/// importantly `n = 6841` crosses **seven** `NC = 1024` column slabs and
+/// leaves a ragged final slab (`697 = 43·16 + 9`), where the widest shape in
+/// [`shape_grid`] reaches `n = 2049` and at most two slabs. AVX-512 therefore
+/// runs its `PackedTail::Masked` tail at widths this suite never drove
+/// through a real packed compute — `col_plan_matches_legacy_regions` covers
+/// the column *plan* only, via a `dummy_micro` that never computes.
+///
+/// So this grid is the missing coverage: on an x86 runner it drives the
+/// AVX2 / AVX-512 micro-kernels at the exact shapes the failing decoder uses,
+/// against both oracles. It compiles and runs on every host — on ARM it pins
+/// NEON at those shapes, which is not the x86 question but is not vacuous
+/// either.
+///
+/// Shapes tagged `REAL` are traced verbatim. The others keep the structure
+/// that matters (row-strip raggedness, `NC` slab count, `NR` tail width, `KC`
+/// block count) at reduced `k` or `m`, because the verbatim arithmetic (e.g.
+/// `128×6841×1408` ≈ 1.2 G MAC) would dominate the debug-profile suite. Each
+/// reduction preserves which tail and blocking branch is taken — only the
+/// amount of arithmetic inside them shrinks.
+fn kokoro_decoder_shape_grid() -> Vec<(usize, usize, usize, &'static str)> {
+    vec![
+        // REAL — generator conv_post feed. n = 6841 ⇒ 7 NC slabs; AVX-512
+        // tail 9, AVX2 / NEON tail 1. Single KC block.
+        (128, 6841, 22, "REAL gen conv_post (128,6841,22)"),
+        // Structure of REAL (22,6841,896): m = 22 is two full MR strips plus a
+        // 6-row zero-padded remainder, over the same 7-slab n.
+        (22, 6841, 64, "ragged-m of REAL (22,6841,896)"),
+        // REAL — source-module head; n = 57 = 3·16 + 9 = 7·8 + 1.
+        (64, 57, 512, "REAL source head (64,57,512)"),
+        // Structure of REAL (1024,57,3270): 4 KC blocks over the n = 57 tail.
+        (72, 57, 3270, "k-blocks of REAL (1024,57,3270)"),
+        // Structure of REAL (256,1140,1792): 2 NC slabs, final 116 = 7·16 + 4.
+        (256, 1140, 64, "slabs of REAL (256,1140,1792)"),
+        // Structure of REAL (512,24,2560): 3 KC blocks; n = 24 = 1·16 + 8.
+        (72, 24, 2560, "k-blocks of REAL (512,24,2560)"),
+        // Structure of REAL (512,114,1090): 2 KC blocks; n = 114 = 7·16 + 2.
+        (72, 114, 1090, "tail of REAL (512,114,1090)"),
+    ]
+}
+
+/// Both oracles at the kokoro-decoder shapes ([`kokoro_decoder_shape_grid`]).
+///
+/// Asserts (1) bit-identity against the same ISA's legacy kernel — the M5-14
+/// red-line, and the sharpest available detector of a micro-kernel fault —
+/// and (2) the scalar-oracle tolerance, which still fires in the case where
+/// one ISA's legacy *and* packed kernels share a fault, where (1) is blind.
+#[test]
+fn packed_matches_both_oracles_at_kokoro_decoder_shapes() {
+    const GEMM_ATOL: f32 = 1e-3;
+    const GEMM_RTOL: f32 = 1e-4;
+    let isa = active_isa();
+    let mut rng = Rng::new(0x5A14_0007);
+    for (m, n, k, what) in kokoro_decoder_shape_grid() {
+        // Guard against a future threshold change silently turning this grid
+        // into a legacy-vs-legacy no-op (the failure mode this test exists to
+        // avoid): every shape here must satisfy the packed routing predicate.
+        assert!(
+            probe::would_use_packed(m, n, k),
+            "{what}: {m}x{n}x{k} no longer satisfies the packed routing \
+             predicate — this grid would test nothing"
+        );
+        let a = rng.vec(m * k);
+        let b = rng.vec(k * n);
+        let bias = rng.vec(n);
+        for bias_opt in [None, Some(bias.as_slice())] {
+            let mut driver = vec![f32::NAN; m * n];
+            kernels::gemm_f32(m, n, k, &a, &b, bias_opt, &mut driver).unwrap();
+
+            let mut legacy = vec![f32::NAN; m * n];
+            kernels::gemm_f32_on(isa, m, n, k, &a, &b, bias_opt, &mut legacy).unwrap();
+            assert_bits_eq(
+                &driver,
+                &legacy,
+                &format!(
+                    "{what}: gemm {m}x{n}x{k} bias={} on {isa:?}",
+                    bias_opt.is_some()
+                ),
+            );
+
+            let mut oracle = vec![f32::NAN; m * n];
+            kernels::gemm_f32_on(
+                vokra_backend_cpu::IsaPath::Scalar,
+                m,
+                n,
+                k,
+                &a,
+                &b,
+                bias_opt,
+                &mut oracle,
+            )
+            .unwrap();
+            for (i, (&d, &o)) in driver.iter().zip(&oracle).enumerate() {
+                let tol = GEMM_ATOL + GEMM_RTOL * o.abs();
+                assert!(
+                    (d - o).abs() <= tol,
+                    "{what}: gemm {m}x{n}x{k} bias={} flat {i}: \
+                     driver {d} vs scalar {o}",
+                    bias_opt.is_some()
+                );
+            }
+        }
+    }
+}
+
 /// k == 0 writes exactly the bias (or zeros) through every route — the packed
 /// driver must not leave the output unwritten when the k-block loop is empty.
 #[test]

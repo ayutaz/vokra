@@ -103,9 +103,64 @@ const ATOL: f32 = 0.01;
 // model whose whole failure mode was a parity suite that passed while the
 // audio was unintelligible.
 //
-// To resolve: dump the worst-bin neighbourhood on both platforms and check
-// whether the x86 spike sits at a near-zero-magnitude bin (branch cut, benign)
-// or inside a GEMM output tile (kernel bug, not benign). This suite is not a
+// 2026-07-19 INVESTIGATION (M1 only — no x86 hardware; Rosetta 2 reports no
+// AVX2, so it cannot exercise those kernels). (A) is REFUTED for `pcm`, a
+// third mechanism is identified, and (B) is bounded but not closed:
+//
+// (A) is NOT the pcm mechanism. Mapping both worst bins back through the
+//     iSTFT (`center=true` ⇒ sample i ← frames ⌈(i−9)/5⌉..=⌊(i+10)/5⌋) and
+//     reading the LINEAR magnitude `exp(x_mag)` there:
+//       * M1 worst 18663 → frames 3731..3734, ref |z| ∈ [2.06e-1, 1.82e0],
+//         0/44 cells below 1e-3;
+//       * x86 worst 14645 → frames 2928..2931, ref |z| ∈ [5.63e-1, 3.53e0],
+//         0/44 below 1e-3 — a LOUD region; on M1 |Δ| there is 4.86e-3
+//         (rank 359 / 34 200).
+//     Globally there is no co-location: min NSF |z| over the contributing
+//     frames has median 6.25e-4 for the top-200 pcm deltas vs 7.07e-4 for 200
+//     random samples (population 7.30e-4), and samples that DO contain a
+//     |z| < 1e-4 NSF bin carry a LOWER max |Δpcm| (1.43e-2) than those that do
+//     not (1.92e-2). Branch cuts DO explain the `mag` / `phase` maxima — idx
+//     47695 sits at x_mag = −23.8, i.e. |z| ≈ 4.5e-11 — but such cells are
+//     inaudible and contribute nothing to pcm. The block above conflated the
+//     two tensors; only its mag/phase half survives.
+//
+// (C) NEW, and the dominant shape: the pcm error tracks SIGNAL AMPLITUDE.
+//     Rank corr(|Δ|, local envelope) = 0.82; mean |Δ| climbs monotonically
+//     across amplitude deciles from 6.4e-11 to 1.9e-3 (seven orders) while the
+//     mean RELATIVE error stays flat at ~1.0–1.3e-2; 87.5 % of the 48 samples
+//     above 1e-2 sit in the top amplitude decile. The max is therefore not a
+//     spike but the top of a dense plateau (6 samples within 0.9×, 55 within
+//     0.5×, 367 within 0.25×), so the argmax INDEX moving between platforms
+//     carries little information on its own.
+//
+// (B) bounded, not closed. `VOKRA_CPU_ISA=scalar` on M1 — which disables the
+//     packed GEMM and the NEON transcendental kernels — moves pcm by at most
+//     1.53e-6 and does not move the max cell (1.919603e-2 vs 1.919626e-2,
+//     both at 18663); `gen_har_source` / `gen_har_spec` stay bit-identical.
+//     Every GEMM this decoder issues takes the packed route (traced), so that
+//     path IS numerically live here, and the WHOLE SIMD-vs-scalar effect is
+//     ~1.5e-6. For (B) to explain x86, its micro-kernel would have to inject
+//     ≈2.4e-2 at one cell — ~16 000× the entire NEON SIMD effect, which no
+//     correct summation ORDER can produce. "Different rounding in a correct
+//     kernel" is therefore untenable, leaving only an actual fault, which
+//     stays possible because `gemm_driver::run` reaches only the ACTIVE ISA's
+//     micro-kernel — no ARM host can execute the AVX2 / AVX-512 tiles.
+//     `vokra-backend-cpu/tests/gemm_packed_parity.rs::
+//     packed_matches_both_oracles_at_kokoro_decoder_shapes` closes that on any
+//     x86 runner: it drives this decoder's exact traced shapes — including
+//     n = 6841, which crosses seven NC=1024 slabs and leaves a ragged
+//     697 = 43·16+9 final slab the old grid (max n = 2049, ≤ 2 slabs) never
+//     reached — against the legacy kernel (bit-identical) and the scalar
+//     oracle.
+//
+// STILL OPEN: whether x86's 4.34e-2 is a legitimate re-draw of the same
+// amplitude-tracking field or a real micro-kernel fault. Note precisely what
+// needs explaining: x86 has a LOWER mean (4.31e-4) yet more mass above 1e-2
+// (85 vs 48) — better in bulk, heavier in the tail. [`explain_worst_pcm`]
+// below now prints, on the FAILURE PATH ONLY, everything needed to settle
+// this from a single Linux log. Two further uncontrolled variables to check
+// on that run: the CI GGUF is converted on the runner rather than committed,
+// and the reference fixtures were dumped once, on M1. This suite is not a
 // required check, so it blocks nothing while that is pending.
 
 /// Decoder magnitude-logit max-|Δ| bound (measured 2.51e-1 — see above).
@@ -120,6 +175,20 @@ const DECODER_PHASE_MEAN_ATOL: f32 = 0.012;
 const DECODER_PCM_ATOL: f32 = 0.04;
 /// Decoder PCM mean-|Δ| bound (measured 5.51e-4).
 const DECODER_PCM_MEAN_ATOL: f32 = 0.0012;
+
+/// Linear-magnitude threshold below which a final-spectrum bin is "near zero",
+/// so its phase is numerically meaningless and an atan2 branch-cut flip there
+/// cannot move the audio.
+///
+/// `x_mag` is a **log** magnitude — the iSTFT head forms `|z| = exp(x_mag)` —
+/// which is why a large `|Δ x_mag|` can be irrelevant: the fixture's worst
+/// magnitude cell sits at `x_mag = -23.8`, i.e. `|z| ≈ 4.5e-11`. Measured over
+/// the committed reference (2026-07-19, M1), the linear distribution is
+/// bimodal and its knee is here — p25 = 1.3e-3, median = 2.1e-1, p95 = 1.4.
+/// So 1e-3 separates the ~25 % genuinely-silent bins from those carrying the
+/// waveform, which makes the near-zero test in [`explain_worst_pcm`]
+/// discriminating rather than vacuous.
+const NEAR_ZERO_LINEAR_MAG: f32 = 1e-3;
 
 // NOTE — `prosody_f0` history: the pre-2026-07-16 fixture set carried a
 // `PROSODY_F0_ATOL = 0.05` override justified by an "F0_proj ~9×
@@ -927,6 +996,27 @@ fn decoder_forward_bit_parity() {
     if pcm_mean > DECODER_PCM_MEAN_ATOL {
         failed.push(("pcm mean", pcm_mean));
     }
+    // FAILURE PATH ONLY: never runs while every gate passes, and cannot
+    // change pass/fail — it only widens what a red run reports, so the next
+    // platform failure is diagnosable from its own log (see the OPEN block).
+    if !failed.is_empty() {
+        eprintln!(
+            "{}",
+            explain_worst_pcm(
+                &native_pcm,
+                &ref_pcm,
+                &native_mag,
+                &ref_mag,
+                &native_phase,
+                &ref_phase,
+                decoder_n_half,
+                decoder_t_gen,
+                istft_n_fft,
+                istft_hop,
+                pcm_i,
+            )
+        );
+    }
     assert!(
         failed.is_empty(),
         "decoder tensors exceed their per-tensor bounds \
@@ -981,6 +1071,187 @@ fn delta_histogram(got: &[f32], expected: &[f32]) -> [usize; 6] {
         buckets[bucket] += 1;
     }
     buckets
+}
+
+/// **Failure-path-only** explanation of the worst PCM sample.
+///
+/// A `pcm max` gate that fails without saying *why* costs a full CI round
+/// trip — the 2026-07-19 Linux failure (see the OPEN block at the top of this
+/// file) produced exactly one number and no way to tell a benign platform
+/// outlier from a localized kernel fault. This prints, for the worst bin, the
+/// facts that separate the competing explanations:
+///
+/// 1. **Where it came from.** The PCM index mapped back to the iSTFT frames
+///    that produced it. `center = true`, so sample `i` is untrimmed position
+///    `p = i + n_fft/2`, and frame `f` writes `[f·hop, f·hop + n_fft)` — four
+///    overlapping frames at Kokoro's `n_fft = 20 / hop = 5`, each contributing
+///    all `n_half` bins.
+/// 2. **Reference and native magnitude AND phase there**, in *linear*
+///    magnitude (`exp(x_mag)`, see [`NEAR_ZERO_LINEAR_MAG`]) — plus an
+///    explicit near-zero verdict, which is what the documented atan2
+///    branch-cut mechanism predicts.
+/// 3. **Amplitude context.** The error field tracks signal amplitude (M1:
+///    rank-corr 0.82 against the local envelope, mean relative error flat at
+///    ~1.1e-2 across amplitude deciles), so an absolute max at a loud sample
+///    can be ordinary relative error rather than a spike.
+/// 4. **Plateau shape.** Whether the max is a lone outlier or the top of a
+///    dense plateau. On M1 it is a plateau: 6 samples within 0.9×, 55 within
+///    0.5×, 367 within 0.25× — so which sample wins the argmax is close to a
+///    coin flip, and the argmax moving between platforms means little on its
+///    own. A *lone* spike with relative error far above p99 is the signature
+///    that would instead implicate a kernel.
+///
+/// Costs a few linear passes plus one sort of the PCM-length delta vector,
+/// only when a gate has already failed. Allocates one `String`; reads only
+/// slices the caller already holds; changes no pass/fail semantics.
+#[allow(dead_code, clippy::too_many_arguments)]
+fn explain_worst_pcm(
+    native_pcm: &[f32],
+    ref_pcm: &[f32],
+    native_mag: &[f32],
+    ref_mag: &[f32],
+    native_phase: &[f32],
+    ref_phase: &[f32],
+    n_half: usize,
+    t_gen: usize,
+    n_fft: usize,
+    hop: usize,
+    worst_i: usize,
+) -> String {
+    use std::fmt::Write as _;
+
+    /// Half-width of the local-amplitude envelope, in samples.
+    const ENV_HALF: usize = 10;
+
+    let mut s = String::with_capacity(4096);
+    let delta = (native_pcm[worst_i] - ref_pcm[worst_i]).abs();
+    let _ = writeln!(
+        s,
+        "\n[parity] ==== worst-pcm explanation (FAILURE PATH ONLY) ====\n  \
+         pcm[{worst_i}] native {:+.6} vs ref {:+.6} — |Δ| = {delta:.4e}",
+        native_pcm[worst_i], ref_pcm[worst_i],
+    );
+
+    // ---- 1. index -> iSTFT frames -------------------------------------
+    let p = worst_i + n_fft / 2;
+    let lo = p.saturating_sub(n_fft - 1).div_ceil(hop);
+    let hi = (p / hop).min(t_gen - 1);
+    let _ = writeln!(
+        s,
+        "  iSTFT geometry: n_fft={n_fft} hop={hop} center=true → untrimmed p = i + {} = {p}\n  \
+         contributing frames {lo}..={hi} ({} frames × {n_half} bins = {} cells)",
+        n_fft / 2,
+        hi + 1 - lo,
+        (hi + 1 - lo) * n_half,
+    );
+
+    // ---- 2. per-frame spectral state + the single worst cell ----------
+    let at = |t: &[f32], bin: usize, f: usize| t[bin * t_gen + f];
+    let mut min_lin = f32::INFINITY;
+    let mut worst_cell = (lo, 0usize, 0.0f32); // (frame, bin, |Δz| linear)
+    for f in lo..=hi {
+        let (mut lin_lo, mut lin_hi) = (f32::INFINITY, 0.0f32);
+        let (mut dmag, mut dph) = (0.0f32, 0.0f32);
+        for b in 0..n_half {
+            let (rl, nl) = (at(ref_mag, b, f).exp(), at(native_mag, b, f).exp());
+            lin_lo = lin_lo.min(rl);
+            lin_hi = lin_hi.max(rl);
+            min_lin = min_lin.min(rl);
+            dmag = dmag.max((at(native_mag, b, f) - at(ref_mag, b, f)).abs());
+            dph = dph.max((at(native_phase, b, f) - at(ref_phase, b, f)).abs());
+            if (nl - rl).abs() > worst_cell.2 {
+                worst_cell = (f, b, (nl - rl).abs());
+            }
+        }
+        let _ = writeln!(
+            s,
+            "    frame {f}: ref |z| [{lin_lo:.3e}, {lin_hi:.3e}]  \
+             max|Δ log-mag| {dmag:.3e}  max|Δ phase| {dph:.3e}"
+        );
+    }
+    let (wf, wb, wd) = worst_cell;
+    let _ = writeln!(
+        s,
+        "  largest single-bin linear |Δz| over those frames: frame {wf} bin {wb} → {wd:.3e}\n    \
+         |z|   ref {:.6e}  native {:.6e}\n    \
+         phase ref {:+.6}      native {:+.6}   (stored logit; head applies sin())",
+        at(ref_mag, wb, wf).exp(),
+        at(native_mag, wb, wf).exp(),
+        at(ref_phase, wb, wf),
+        at(native_phase, wb, wf),
+    );
+
+    // ---- 3. near-zero verdict ------------------------------------------
+    let below = (lo..=hi)
+        .flat_map(|f| (0..n_half).map(move |b| (f, b)))
+        .filter(|&(f, b)| at(ref_mag, b, f).exp() < NEAR_ZERO_LINEAR_MAG)
+        .count();
+    let _ = writeln!(
+        s,
+        "  NEAR-ZERO CHECK (linear |z| < {NEAR_ZERO_LINEAR_MAG:.1e}; ~25 % of ALL bins are):\n    \
+         min ref |z| over contributing cells = {min_lin:.3e}; below threshold: {below}/{}\n    \
+         → {}",
+        (hi + 1 - lo) * n_half,
+        if below == 0 {
+            "NOT a near-zero site — the atan2 branch-cut mechanism does NOT explain this bin"
+        } else {
+            "near-zero bins present — branch-cut flip is a live explanation here"
+        },
+    );
+
+    // ---- 4. amplitude context + plateau shape --------------------------
+    let env_at = |i: usize| {
+        let a = i.saturating_sub(ENV_HALF);
+        let b = (i + ENV_HALF).min(ref_pcm.len());
+        ref_pcm[a..b].iter().fold(0.0f32, |m, v| m.max(v.abs()))
+    };
+    let env = env_at(worst_i);
+    let mut rels: Vec<f32> = (0..ref_pcm.len())
+        .map(|i| (native_pcm[i] - ref_pcm[i]).abs() / env_at(i).max(1e-9))
+        .collect();
+    rels.sort_by(f32::total_cmp);
+    let pick = |q: f64| rels[((rels.len() - 1) as f64 * q) as usize];
+    let _ = writeln!(
+        s,
+        "  AMPLITUDE CONTEXT:\n    \
+         |ref pcm| here {:.4e}; local envelope (±{ENV_HALF}) {env:.4e}\n    \
+         relative error here = |Δ|/envelope = {:.3e}\n    \
+         population relative error: median {:.3e}  p99 {:.3e}  max {:.3e}",
+        ref_pcm[worst_i].abs(),
+        delta / env.max(1e-9),
+        pick(0.50),
+        pick(0.99),
+        rels[rels.len() - 1],
+    );
+
+    let cnt = |frac: f32| {
+        native_pcm
+            .iter()
+            .zip(ref_pcm)
+            .filter(|(n, r)| (*n - *r).abs() >= frac * delta)
+            .count()
+    };
+    let _ = writeln!(
+        s,
+        "  PLATEAU SHAPE (lone spike, or top of a broad plateau?):\n    \
+         samples ≥0.90×max {}  ≥0.75× {}  ≥0.50× {}  ≥0.25× {}   (M1 ref: 6 / 12 / 55 / 367)",
+        cnt(0.90),
+        cnt(0.75),
+        cnt(0.50),
+        cnt(0.25),
+    );
+
+    let _ = writeln!(
+        s,
+        "  HOW TO READ THIS:\n    \
+         near-zero site + few plateau peers      → atan2 branch cut, benign, platform-dependent\n    \
+         high |z| + dense plateau + rel ≈ p99    → ordinary amplitude-tracking relative error\n    \
+         high |z| + LONE spike + rel ≫ p99       → localized kernel fault: investigate the GEMM\n    \
+         (`VOKRA_KOKORO_PARITY_DUMP=<dir>` also writes every generator stage tap,\n     \
+         including `native_gen_har_spec.f32` = [2·n_half, t_gen] NSF |z| ; angle.)\n  \
+         ========================================================"
+    );
+    s
 }
 
 /// Diagnostic helper: dump a f32 slice to path.
