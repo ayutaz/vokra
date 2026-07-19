@@ -1049,6 +1049,41 @@ pub(crate) fn write_conv(b: &mut vokra_core::gguf::GgufBuilder, name: &str, c: &
     }
 }
 
+/// Packs **every** encoder tensor under the structural `mimi.enc.*` naming
+/// (the exact round-trip mirror of [`MimiEncoder::from_gguf`]) — test
+/// support for the engine-level side-car bind tests (`moshi::engine`),
+/// which build tiny standalone-Mimi GGUFs without reaching into the
+/// encoder's private fields from another module.
+#[cfg(test)]
+pub(crate) fn pack_encoder_structural(b: &mut vokra_core::gguf::GgufBuilder, src: &MimiEncoder) {
+    use vokra_core::gguf::GgmlType;
+    let write_vec = |b: &mut vokra_core::gguf::GgufBuilder, name: &str, v: &[f32]| {
+        let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+        b.add_tensor(name, GgmlType::F32, vec![v.len() as u64], bytes)
+            .unwrap();
+    };
+    write_conv(b, "mimi.enc.init", &src.init);
+    for (i, stage) in src.stages.iter().enumerate() {
+        for (j, blk) in stage.blocks.iter().enumerate() {
+            write_conv(b, &format!("mimi.enc.s{i}.b{j}.c1"), &blk.conv1);
+            write_conv(b, &format!("mimi.enc.s{i}.b{j}.c2"), &blk.conv2);
+        }
+        write_conv(b, &format!("mimi.enc.s{i}.down"), &stage.down);
+    }
+    write_conv(b, "mimi.enc.final", &src.final_conv);
+    write_conv(b, "mimi.enc.frame_down", &src.frame_down);
+    for (l, layer) in src.transformer.layers.iter().enumerate() {
+        write_tf_layer(b, &format!("mimi.enc.tf{l}"), layer);
+    }
+    write_vec(b, "mimi.enc.input_proj", &src.input_proj);
+    if let Some(rest) = &src.input_proj_rest {
+        write_vec(b, "mimi.enc.input_proj_rest", rest);
+    }
+    for (cb, table) in src.tables.iter().enumerate() {
+        write_vec(b, &format!("mimi.enc.cb{cb}"), &table.data);
+    }
+}
+
 pub(crate) fn synthesized_transformer_layer(
     rng: &mut SplitMix64,
     d: usize,

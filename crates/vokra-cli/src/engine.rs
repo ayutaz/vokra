@@ -141,6 +141,21 @@ pub(crate) fn load_session_with_backend(
     backend: BackendKind,
     hint: Option<TaskHint>,
 ) -> Result<(Session, ModelTask), String> {
+    load_session_with_backend_and_mimi(path, backend, hint, None)
+}
+
+/// As [`load_session_with_backend`], plus an optional **standalone Mimi
+/// codec side-car** (`--mimi <gguf>`, produced by `vokra-cli convert
+/// --model mimi`): honored only by the Moshi arch, where it replaces the
+/// synthesized codec bridge with the real kyutai weights
+/// ([`vokra_models::moshi::MoshiEngine::with_mimi_gguf`]). Any other arch
+/// rejects the flag loudly — never a silent drop (FR-EX-08).
+pub(crate) fn load_session_with_backend_and_mimi(
+    path: &str,
+    backend: BackendKind,
+    hint: Option<TaskHint>,
+    mimi: Option<&str>,
+) -> Result<(Session, ModelTask), String> {
     // M4 cc-06: open through the true-mmap loader — the session's GGUF pages
     // fault in lazily instead of a whole-file owned read (`Session::from_file`
     // buffered the entire model; on the Moshi full-7B GGUF that is ~14.3 GiB
@@ -164,6 +179,15 @@ pub(crate) fn load_session_with_backend(
         .and_then(|v| v.as_str())
         .ok_or_else(|| format!("GGUF is missing the `{KEY_MODEL_ARCH}` metadata key"))?
         .to_owned();
+
+    if mimi.is_some() && arch != ARCH_MOSHI {
+        return Err(format!(
+            "--mimi is only supported on arch `{ARCH_MOSHI}` (got `{arch}`); the \
+             flag attaches the standalone Mimi codec side-car to the Moshi duplex \
+             engine — dropping it silently would misrepresent the codec quality \
+             (FR-EX-08)"
+        ));
+    }
 
     match arch.as_str() {
         ARCH_WHISPER => {
@@ -228,8 +252,23 @@ pub(crate) fn load_session_with_backend(
             // the AEC recipe is wired so the `--duplex --echo-sim` demo
             // runs the canceller (T26 — AEC 有効); the batch `dialog` path
             // keeps the recorded-file bypass (CSM-mirroring T20 posture).
-            let engine =
+            let mut engine =
                 vokra_models::moshi::MoshiEngine::from_path(path).map_err(|e| e.to_string())?;
+            // Optional real-Mimi side-car (`--mimi`): the caller asked for
+            // the real codec, so a bind failure is a hard error — the
+            // engine never silently keeps the synthesized bridge.
+            if let Some(mimi_path) = mimi {
+                engine = engine
+                    .with_mimi_gguf(mimi_path)
+                    .map_err(|e| format!("--mimi {mimi_path}: {e}"))?;
+                eprintln!("vokra: real Mimi codec bound from {mimi_path}");
+            } else if engine.mimi_is_synthesized() {
+                eprintln!(
+                    "vokra: NOTE Mimi codec ends are the synthesized bridge (PCM has \
+                     no real audio semantics) — pass --mimi <mimi.gguf> from \
+                     `vokra-cli convert --model mimi` to bind the real codec"
+                );
+            }
             let sample_rate = engine.mimi_config().sample_rate;
             let hop = engine
                 .mimi_config()
@@ -372,6 +411,24 @@ mod tests {
         let err = result.expect_err("hint on campplus is rejected");
         assert!(
             err.contains("not supported on arch `campplus`"),
+            "got: {err}"
+        );
+    }
+
+    /// `--mimi` is a Moshi-only flag: every other arch rejects it loudly
+    /// (FR-EX-08 — silently dropping the side-car would misrepresent the
+    /// codec quality of the run).
+    #[test]
+    fn load_session_rejects_mimi_sidecar_on_non_moshi_arch() {
+        let err = load_session_with_backend_and_mimi(
+            &silero_fixture(),
+            BackendKind::Cpu,
+            None,
+            Some("/no/such/mimi.gguf"),
+        )
+        .expect_err("--mimi on silero-vad is rejected");
+        assert!(
+            err.contains("--mimi is only supported on arch `moshi`"),
             "got: {err}"
         );
     }

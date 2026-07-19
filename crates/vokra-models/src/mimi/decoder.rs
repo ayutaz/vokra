@@ -697,6 +697,42 @@ fn write_convtr(b: &mut vokra_core::gguf::GgufBuilder, name: &str, c: &CausalCon
     }
 }
 
+/// Packs **every** decoder tensor under the structural `mimi.dec.*` naming
+/// (the exact round-trip mirror of [`MimiNeuralDecoder::from_gguf`]) — test
+/// support for the engine-level side-car bind tests (`moshi::engine`); the
+/// encoder-side companion is `encoder::pack_encoder_structural`.
+#[cfg(test)]
+pub(crate) fn pack_decoder_structural(
+    b: &mut vokra_core::gguf::GgufBuilder,
+    src: &MimiNeuralDecoder,
+) {
+    use super::encoder::{write_conv, write_tf_layer};
+    use vokra_core::gguf::GgmlType;
+    if let Some(fp) = &src.feature_proj {
+        let bytes: Vec<u8> = fp.iter().flat_map(|x| x.to_le_bytes()).collect();
+        b.add_tensor(
+            "mimi.dec.feature_proj",
+            GgmlType::F32,
+            vec![fp.len() as u64],
+            bytes,
+        )
+        .unwrap();
+    }
+    write_convtr(b, "mimi.dec.frame_up", &src.frame_up);
+    for (l, layer) in src.transformer.layers.iter().enumerate() {
+        write_tf_layer(b, &format!("mimi.dec.tf{l}"), layer);
+    }
+    write_conv(b, "mimi.dec.init", &src.init_conv);
+    for (i, stage) in src.stages.iter().enumerate() {
+        write_convtr(b, &format!("mimi.dec.s{i}.up"), &stage.up);
+        for (j, blk) in stage.blocks.iter().enumerate() {
+            write_conv(b, &format!("mimi.dec.s{i}.b{j}.c1"), &blk.conv1);
+            write_conv(b, &format!("mimi.dec.s{i}.b{j}.c2"), &blk.conv2);
+        }
+    }
+    write_conv(b, "mimi.dec.final", &src.final_conv);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

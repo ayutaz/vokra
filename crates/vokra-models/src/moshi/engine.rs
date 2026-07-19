@@ -20,12 +20,30 @@
 //! `AttributionRequired`, commercially allowed, **no** research flag) →
 //! config read → weight binding. The **LM weights bind for real** (the
 //! T02 manifest pinned the upstream tensor names — `MoshiBackboneWeights
-//! ::from_gguf`); the **Mimi ends stay on synthesized codec weights** until
-//! the real kyutai weights bind (`MimiEncoder::from_gguf` now binds the
-//! Vokra structural `mimi.*` naming, but the real `encoder.model.{i}` /
-//! `weight_norm` mapping is the owner converter step — M4-05 posture,
-//! documented there). The
-//! attribution surface resolves at load
+//! ::from_gguf`).
+//!
+//! ## Mimi codec ends — three postures, no silent downgrade
+//!
+//! 1. **The model GGUF itself carries the neural chain** (`mimi.enc.*`
+//!    tensors present): both codec ends bind those weights for real; any
+//!    missing / mis-shaped tensor is a loud load error — never a fall
+//!    back to the synthesized bridge.
+//! 2. **A standalone Mimi side-car is attached**
+//!    ([`MoshiEngine::with_mimi_gguf`], the `vokra-cli run --mimi` flag):
+//!    the real kyutai codec from `vokra-cli convert --model mimi` binds,
+//!    clipped to `dep_q` codebooks (upstream `get_mimi`
+//!    `set_num_codebooks`). The caller asked for the real codec, so
+//!    **every** failure (wrong arch, license refusal, hparam mismatch
+//!    against the model's `vokra.mimi.*` contract, missing tensor) is a
+//!    hard error — the engine never silently keeps the synthesized
+//!    bridge.
+//! 3. **Neither** → the documented **synthesized bridge** (deterministic
+//!    seed-derived codec weights): the pipeline is numerically end-to-end
+//!    but its PCM carries no real audio semantics.
+//!    [`MoshiEngine::mimi_is_synthesized`] surfaces which posture is
+//!    live.
+//!
+//! The attribution surface resolves at load
 //! ([`vokra_core::resolve_attribution`]) so every deployer face (Rust /
 //! C ABI / CLI banner) reads one source.
 
@@ -43,6 +61,7 @@ use super::config::MoshiConfig;
 use super::duplex::MoshiDuplexSession;
 use super::frame::MoshiModel;
 use super::tokenizer::{FixtureMoshiTokenizer, GgufMoshiTokenizer, MoshiTextTokenizer};
+use crate::codec::MimiCodecGguf;
 use crate::csm::aec_front::AecFront;
 use crate::csm::audio::CsmAudioDecodeChain;
 use crate::csm::{EchoPath, pad_to_whole_frames};
@@ -315,26 +334,222 @@ impl MoshiEngine {
                 MoshiModel::from_parts(backbone, depth_t)?
             }
         };
-        let encoder = MimiEncoder::synthesized(
-            &mimi_cfg,
-            super::backbone::MOSHI_FROM_GGUF_DEFAULT_SEED ^ 0x5EED,
-        )?;
-        let neural = MimiNeuralDecoder::synthesized(
-            &mimi_cfg,
-            super::backbone::MOSHI_FROM_GGUF_DEFAULT_SEED ^ 0xDEC0,
-            true,
-        )?;
-        let attrs = MimiRvqAttrs {
-            n_codebooks: mimi_cfg.quantizer.n_q,
-            codebook_size: mimi_cfg.quantizer.bins,
-            d_model: mimi_cfg.quantizer.dimension,
+        let (encoder, chain) = if file.tensor_info("mimi.enc.init").is_some() {
+            // Posture 1 (module docs): the model GGUF itself carries the
+            // Mimi neural chain — bind it for real. Any inconsistency is
+            // loud; there is NO fall back to the synthesized bridge
+            // (FR-EX-08 — a half-present codec would decode plausibly
+            // wrong PCM).
+            let (enc, chain, bound_cfg) =
+                Self::bind_real_mimi(&file, &cfg, &mimi_cfg, BackendKind::Cpu)?;
+            debug_assert_eq!(bound_cfg, mimi_cfg, "same file ⇒ same mimi config");
+            (enc, chain)
+        } else {
+            // Posture 3: the documented synthesized bridge (module docs).
+            let encoder = MimiEncoder::synthesized(
+                &mimi_cfg,
+                super::backbone::MOSHI_FROM_GGUF_DEFAULT_SEED ^ 0x5EED,
+            )?;
+            let neural = MimiNeuralDecoder::synthesized(
+                &mimi_cfg,
+                super::backbone::MOSHI_FROM_GGUF_DEFAULT_SEED ^ 0xDEC0,
+                true,
+            )?;
+            let attrs = MimiRvqAttrs {
+                n_codebooks: mimi_cfg.quantizer.n_q,
+                codebook_size: mimi_cfg.quantizer.bins,
+                d_model: mimi_cfg.quantizer.dimension,
+            };
+            let chain = CsmAudioDecodeChain::new(encoder.tables().to_vec(), attrs, neural)?;
+            (encoder, chain)
         };
-        let chain = CsmAudioDecodeChain::new(encoder.tables().to_vec(), attrs, neural)?;
         let tokenizer: Arc<dyn MoshiTextTokenizer> =
             Arc::new(GgufMoshiTokenizer::from_gguf(&file, cfg.text_card)?);
         let mut engine = Self::new(model, encoder, chain, tokenizer, mimi_cfg)?;
         engine.attribution = attribution;
         Ok(engine)
+    }
+
+    /// Binds the real Mimi codec ends (encoder + decode chain) from
+    /// `file`, clipped to the model's `dep_q` streams — the shared body of
+    /// posture 1 (chain embedded in the model GGUF) and posture 2 (the
+    /// [`Self::with_mimi_gguf`] side-car). See the module docs.
+    ///
+    /// # Clipping (upstream `loaders.py` `get_mimi`)
+    ///
+    /// The standalone codec carries the full RVQ depth (32 codebooks);
+    /// Moshi consumes `dep_q` (8 on the 7B) per direction —
+    /// `set_num_codebooks` truncates the residual chain **from the
+    /// front** (semantic codebook 0 + the first `dep_q − 1` acoustic
+    /// codebooks), which is exactly what binding under a config with
+    /// `quantizer.n_q = dep_q` reads (`mimi.enc.cb{0..dep_q}` + the first
+    /// `dep_q` effective tables).
+    ///
+    /// # Decode-path selection (presence-driven — no hidden flag)
+    ///
+    /// `mimi.dec.feature_proj` present → the raw-table path (the chain
+    /// shares the encoder's own codebooks at the quantizer width); absent
+    /// → the effective-table path (the converter-derived pre-projected
+    /// `vokra.mimi.codebook_tables`, required then). Mirrors
+    /// [`MimiNeuralDecoder::from_gguf`]'s own branch.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a codec too shallow for `dep_q`
+    /// or on clipped hparams that disagree with the model's
+    /// `vokra.mimi.*` contract (`expected_mimi`); [`VokraError::ModelLoad`]
+    /// on any missing / mis-shaped tensor (FR-EX-08 — all loud, never a
+    /// synthesized fall back).
+    fn bind_real_mimi(
+        file: &GgufFile,
+        cfg: &MoshiConfig,
+        expected_mimi: &MimiNeuralConfig,
+        backend: BackendKind,
+    ) -> Result<(MimiEncoder, CsmAudioDecodeChain, MimiNeuralConfig)> {
+        let side = MimiNeuralConfig::from_gguf(file)?;
+        side.validate()?;
+        let dep_q = cfg.dep_q;
+        if side.quantizer.n_q < dep_q {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi real-Mimi bind: the codec carries {} codebooks but the model \
+                 consumes {dep_q} streams per direction — a shallower RVQ cannot \
+                 serve this LM (upstream get_mimi clips the 32-deep chain to dep_q; \
+                 FR-EX-08, refusing)",
+                side.quantizer.n_q
+            )));
+        }
+        let mut clipped = side;
+        clipped.quantizer.n_q = dep_q;
+        clipped.validate()?;
+        if &clipped != expected_mimi {
+            return Err(VokraError::InvalidArgument(format!(
+                "moshi real-Mimi bind: codec hparams (clipped to n_q = {dep_q}) do \
+                 not match the model GGUF's vokra.mimi.* contract — the LM was \
+                 trained against exactly those rates/shapes, so a mismatched codec \
+                 would emit plausible-but-wrong codes (FR-EX-08, refusing).\n  \
+                 codec = {clipped:?}\n  model = {expected_mimi:?}"
+            )));
+        }
+        let encoder = MimiEncoder::from_gguf(file, &clipped)?.with_backend(backend);
+        let neural = MimiNeuralDecoder::from_gguf(file, &clipped)?;
+        let feature_dim = neural.expected_feature_dim();
+        let attrs = MimiRvqAttrs {
+            n_codebooks: dep_q,
+            codebook_size: clipped.quantizer.bins,
+            d_model: feature_dim,
+        };
+        let tables = if file.tensor_info("mimi.dec.feature_proj").is_some() {
+            // Raw-table path: the chain shares the encoder's codebooks
+            // (already exactly `dep_q` of them — the clipped binding).
+            encoder.tables().to_vec()
+        } else {
+            // Effective-table path: the converter-derived pre-projected
+            // tables are REQUIRED (their absence next to a projection-less
+            // decoder would leave codes → features unbridgeable).
+            let codec = MimiCodecGguf::from_gguf(file).map_err(|e| {
+                VokraError::ModelLoad(format!(
+                    "moshi real-Mimi bind: the decoder has no feature projection \
+                     (effective-table path), but the derived codebook tables did \
+                     not bind: {e}"
+                ))
+            })?;
+            if codec.attrs.codebook_size != attrs.codebook_size
+                || codec.attrs.d_model != feature_dim
+                || codec.tables.len() < dep_q
+            {
+                return Err(VokraError::ModelLoad(format!(
+                    "moshi real-Mimi bind: derived codebook tables are \
+                     [{} × {} × {}] but the model needs at least {dep_q} tables of \
+                     [{} × {feature_dim}] (FR-EX-08)",
+                    codec.tables.len(),
+                    codec.attrs.codebook_size,
+                    codec.attrs.d_model,
+                    attrs.codebook_size,
+                )));
+            }
+            codec.tables[..dep_q].to_vec()
+        };
+        let chain = CsmAudioDecodeChain::new(tables, attrs, neural)?.with_backend(backend);
+        Ok((encoder, chain, clipped))
+    }
+
+    /// Attaches a **real Mimi codec side-car** (posture 2, module docs): a
+    /// standalone Mimi GGUF produced by `vokra-cli convert --model mimi`
+    /// from the kyutai tokenizer checkpoint replaces the synthesized codec
+    /// bridge on **both** ends (mic encode + model-frame decode), clipped
+    /// to `dep_q` codebooks ([`Self::bind_real_mimi`]).
+    ///
+    /// Runs under the fail-closed strict compliance policy; use
+    /// [`Self::with_mimi_gguf_with_policy`] to supply another. The side-car
+    /// is CC-BY 4.0 (`AttributionRequired`) — its attribution attaches to
+    /// the engine when the engine has none yet (a synthesized-fixture
+    /// engine); a model-GGUF attribution already covering Mimi is never
+    /// overwritten.
+    ///
+    /// # Errors
+    ///
+    /// The caller asked for the real codec, so every failure is a hard
+    /// error (wrong `vokra.model.arch`, license refusal, hparam mismatch,
+    /// missing tensor) — the engine never silently keeps the synthesized
+    /// bridge (FR-EX-08; module docs).
+    pub fn with_mimi_gguf(self, path: impl AsRef<std::path::Path>) -> Result<Self> {
+        self.with_mimi_gguf_with_policy(path, &CompliancePolicy::strict())
+    }
+
+    /// [`Self::with_mimi_gguf`] under an explicit compliance policy.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::with_mimi_gguf`].
+    pub fn with_mimi_gguf_with_policy(
+        self,
+        path: impl AsRef<std::path::Path>,
+        policy: &CompliancePolicy,
+    ) -> Result<Self> {
+        let file = vokra_mmap::open_gguf(path.as_ref()).map_err(VokraError::from)?;
+        let arch = file
+            .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
+            .and_then(|v| v.as_str());
+        if arch != Some("mimi") {
+            return Err(VokraError::ModelLoad(format!(
+                "moshi Mimi side-car: not a standalone Mimi codec GGUF — \
+                 vokra.model.arch = {arch:?}, expected `mimi` (produce one with \
+                 `vokra-cli convert --model mimi --input <tokenizer safetensors> \
+                 --output mimi.gguf`)"
+            )));
+        }
+        check_weight_license(&file, policy)?;
+        let sidecar_attribution = resolve_attribution(&file);
+        let backend = self.chain.backend();
+        let (encoder, chain, mimi_cfg) =
+            Self::bind_real_mimi(&file, self.model.config(), &self.mimi_config, backend)?;
+        let Self {
+            model,
+            tokenizer,
+            aec,
+            echo_path,
+            watermark,
+            attribution,
+            ..
+        } = self;
+        // Rebuild through `new` so every codec seam re-validates; the
+        // session knobs (AEC recipe / echo posture / watermark /
+        // attribution) carry over — the swap must not reset them.
+        let mut engine = Self::new(model, encoder, chain, tokenizer, mimi_cfg)?;
+        engine.aec = aec;
+        engine.echo_path = echo_path;
+        engine.watermark = watermark;
+        engine.attribution = attribution.or(sidecar_attribution);
+        Ok(engine)
+    }
+
+    /// `true` while the Mimi codec ends ride the **synthesized bridge**
+    /// (posture 3, module docs): the duplex pipeline is numerically end to
+    /// end but its PCM carries no real audio semantics. `false` once the
+    /// real codec is bound (embedded chain or [`Self::with_mimi_gguf`]).
+    #[must_use]
+    pub fn mimi_is_synthesized(&self) -> bool {
+        self.encoder.is_synthesized()
     }
 
     /// Wires the AEC recipe: each duplex session builds a fresh canceller
@@ -578,6 +793,283 @@ impl S2sEngine for MoshiEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------
+    // Real-Mimi side-car bind (cc-16) — tiny structural side-car GGUFs
+    // built through the same pack helpers the mimi round-trip tests pin.
+    // -----------------------------------------------------------------
+
+    /// Tiny side-car recipe (defaults = a well-formed raw-table side-car
+    /// one codebook DEEPER than `dep_q`, so the clip path always runs).
+    struct SidecarSpec {
+        /// `quantizer.n_q` of the side-car (`None` → `dep_q + 1`).
+        n_q: Option<usize>,
+        /// `true` → decoder carries `mimi.dec.feature_proj` (raw-table
+        /// path); `false` → effective-table path (+ derived tables).
+        with_feature_proj: bool,
+        seed: u64,
+        /// The provenance stamp (class + raw license string). The default
+        /// is the real side-car's CC-BY 4.0; a research-only class proves
+        /// the gate wiring. (An **unstamped** `mimi`-arch GGUF resolves
+        /// through the registry to the same CC-BY 4.0 — the arch tag is a
+        /// known model id — so absence alone cannot exercise fail-closed.)
+        license: (vokra_core::LicenseClass, &'static str),
+        arch: &'static str,
+        /// Override the PCM rate (hparam-mismatch fixture).
+        sample_rate: Option<u32>,
+        /// Drop every `mimi.dec.*` tensor (missing-tensor fixture).
+        skip_decoder: bool,
+    }
+
+    impl Default for SidecarSpec {
+        fn default() -> Self {
+            Self {
+                n_q: None,
+                with_feature_proj: true,
+                seed: 0xC0DE,
+                license: (vokra_core::LicenseClass::AttributionRequired, "CC-BY-4.0"),
+                arch: "mimi",
+                sample_rate: None,
+                skip_decoder: false,
+            }
+        }
+    }
+
+    /// Writes the side-car GGUF to a unique temp file; the caller removes
+    /// it. Returns the path plus the (un-clipped) side-car config.
+    fn build_sidecar(name: &str, spec: &SidecarSpec) -> (std::path::PathBuf, MimiNeuralConfig) {
+        use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+        let moshi_cfg = MoshiConfig::tiny_for_tests();
+        let mut mimi_cfg = MimiNeuralConfig::tiny_for_tests();
+        mimi_cfg.quantizer.n_q = spec.n_q.unwrap_or(moshi_cfg.dep_q + 1);
+        mimi_cfg.quantizer.bins = moshi_cfg.audio_card;
+        if let Some(sr) = spec.sample_rate {
+            mimi_cfg.sample_rate = sr;
+        }
+        mimi_cfg.validate().expect("side-car config validates");
+        let enc = MimiEncoder::synthesized(&mimi_cfg, spec.seed).expect("side-car encoder");
+        let dec =
+            MimiNeuralDecoder::synthesized(&mimi_cfg, spec.seed ^ 0x77, spec.with_feature_proj)
+                .expect("side-car decoder");
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, spec.arch);
+        mimi_cfg.write_gguf_metadata(&mut b);
+        let (class, license) = spec.license;
+        vokra_core::stamp_provenance(
+            &mut b,
+            class,
+            license,
+            Some("mimi"),
+            Some("engine-sidecar-test-fixture"),
+        );
+        crate::mimi::encoder::pack_encoder_structural(&mut b, &enc);
+        if !spec.skip_decoder {
+            crate::mimi::decoder::pack_decoder_structural(&mut b, &dec);
+            if !spec.with_feature_proj {
+                // Effective-table trio + derived tables (the standalone
+                // converter's shape: [n_q, bins, seanet.dimension]).
+                let (n_q, bins, dim) = (
+                    mimi_cfg.quantizer.n_q,
+                    mimi_cfg.quantizer.bins,
+                    mimi_cfg.seanet.dimension,
+                );
+                b.add_u32("vokra.mimi.n_codebooks", n_q as u32);
+                b.add_u32("vokra.mimi.codebook_size", bins as u32);
+                b.add_u32("vokra.mimi.d_model", dim as u32);
+                let mut rng = vokra_core::rng::SplitMix64::new(spec.seed ^ 0xEFF);
+                let bytes: Vec<u8> = (0..n_q * bins * dim)
+                    .map(|_| rng.next_unit_f32() * 0.5 - 0.25)
+                    .flat_map(f32::to_le_bytes)
+                    .collect();
+                b.add_tensor(
+                    "vokra.mimi.codebook_tables",
+                    GgmlType::F32,
+                    vec![n_q as u64, bins as u64, dim as u64],
+                    bytes,
+                )
+                .expect("tables tensor");
+            }
+        }
+        let path = std::env::temp_dir().join(format!(
+            "vokra-moshi-sidecar-{}-{name}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, b.to_bytes().expect("serialize")).expect("write side-car");
+        (path, mimi_cfg)
+    }
+
+    /// One deterministic dialog turn over `n` whole frames.
+    fn turn(engine: &MoshiEngine, n_frames: usize) -> DialogTurn {
+        let hop = engine.mimi_config().frame_hop_samples().expect("hop");
+        let input: Vec<f32> = (0..hop * n_frames)
+            .map(|i| ((i as f32) * 0.05).sin() * 0.3)
+            .collect();
+        engine
+            .dialog(
+                &DialogRequest::new("")
+                    .with_input_audio(input)
+                    .deterministic(),
+            )
+            .expect("dialog")
+    }
+
+    #[test]
+    fn with_mimi_gguf_swaps_both_codec_ends_and_clips_to_dep_q() {
+        let (path, side_cfg) = build_sidecar("raw-bind", &SidecarSpec::default());
+        let engine = MoshiEngine::synthesized_fixture(55)
+            .expect("fixture engine")
+            .with_echo_path(EchoPath::BypassRecordedInput);
+        assert!(engine.mimi_is_synthesized(), "fixture starts synthesized");
+        let dep_q = engine.config().dep_q;
+        assert_eq!(side_cfg.quantizer.n_q, dep_q + 1, "side-car is deeper");
+        let before = turn(&engine, 4);
+
+        let engine = engine.with_mimi_gguf(&path).expect("side-car binds");
+        let _ = std::fs::remove_file(&path);
+        assert!(!engine.mimi_is_synthesized(), "real codec is live");
+        assert_eq!(
+            engine.mimi_config().quantizer.n_q,
+            dep_q,
+            "codec clipped to dep_q (upstream set_num_codebooks)"
+        );
+        // Echo posture carried over: the recorded-input bypass still lets
+        // `dialog` run without an AEC recipe.
+        let after = turn(&engine, 4);
+        let (a, b) = (before.audio.expect("pcm"), after.audio.expect("pcm"));
+        assert_eq!(a.samples.len(), b.samples.len());
+        assert!(b.samples.iter().all(|v| v.is_finite()));
+        assert_ne!(
+            a.samples, b.samples,
+            "swapping the codec bridge must change the decoded PCM"
+        );
+        // The side-car attribution attached (the fixture engine had none).
+        let attribution = engine
+            .attribution()
+            .expect("CC-BY 4.0 side-car attribution");
+        assert!(
+            attribution.text.contains("mimi"),
+            "attribution names the codec: {}",
+            attribution.text
+        );
+    }
+
+    #[test]
+    fn with_mimi_gguf_binds_the_effective_table_path() {
+        let (path, _) = build_sidecar(
+            "effective-bind",
+            &SidecarSpec {
+                with_feature_proj: false,
+                ..SidecarSpec::default()
+            },
+        );
+        let engine = MoshiEngine::synthesized_fixture(7)
+            .expect("fixture engine")
+            .with_echo_path(EchoPath::BypassRecordedInput)
+            .with_mimi_gguf(&path)
+            .expect("effective-table side-car binds");
+        let _ = std::fs::remove_file(&path);
+        assert!(!engine.mimi_is_synthesized());
+        let audio = turn(&engine, 3).audio.expect("pcm");
+        assert!(audio.samples.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn with_mimi_gguf_refuses_a_codec_shallower_than_dep_q() {
+        let dep_q = MoshiConfig::tiny_for_tests().dep_q;
+        let (path, _) = build_sidecar(
+            "shallow",
+            &SidecarSpec {
+                n_q: Some(dep_q - 1),
+                ..SidecarSpec::default()
+            },
+        );
+        let err = MoshiEngine::synthesized_fixture(1)
+            .expect("fixture engine")
+            .with_mimi_gguf(&path)
+            .expect_err("shallow codec must refuse");
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(err, VokraError::InvalidArgument(_)), "{err}");
+        assert!(err.to_string().contains("codebooks"), "{err}");
+    }
+
+    #[test]
+    fn with_mimi_gguf_refuses_mismatched_codec_hparams() {
+        // Same structural geometry, different PCM rate: the LM's
+        // vokra.mimi.* contract (16 kHz tiny fixture) must win — a
+        // mismatched codec is refused, not resampled silently.
+        let (path, _) = build_sidecar(
+            "hparam-mismatch",
+            &SidecarSpec {
+                sample_rate: Some(32_000),
+                ..SidecarSpec::default()
+            },
+        );
+        let err = MoshiEngine::synthesized_fixture(2)
+            .expect("fixture engine")
+            .with_mimi_gguf(&path)
+            .expect_err("hparam mismatch must refuse");
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(err, VokraError::InvalidArgument(_)), "{err}");
+        assert!(err.to_string().contains("vokra.mimi.* contract"), "{err}");
+    }
+
+    #[test]
+    fn with_mimi_gguf_missing_decoder_tensor_is_loud() {
+        let (path, _) = build_sidecar(
+            "missing-dec",
+            &SidecarSpec {
+                skip_decoder: true,
+                ..SidecarSpec::default()
+            },
+        );
+        let err = MoshiEngine::synthesized_fixture(3)
+            .expect("fixture engine")
+            .with_mimi_gguf(&path)
+            .expect_err("half a codec must refuse");
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(err, VokraError::ModelLoad(_)), "{err}");
+        assert!(err.to_string().contains("mimi.dec."), "{err}");
+    }
+
+    #[test]
+    fn with_mimi_gguf_rejects_a_non_mimi_arch() {
+        let (path, _) = build_sidecar(
+            "wrong-arch",
+            &SidecarSpec {
+                arch: "dac",
+                ..SidecarSpec::default()
+            },
+        );
+        let err = MoshiEngine::synthesized_fixture(4)
+            .expect("fixture engine")
+            .with_mimi_gguf(&path)
+            .expect_err("non-mimi side-car must refuse");
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(err, VokraError::ModelLoad(_)), "{err}");
+        assert!(err.to_string().contains("expected `mimi`"), "{err}");
+    }
+
+    #[test]
+    fn with_mimi_gguf_research_only_weight_fails_closed_under_strict() {
+        // Proves the M2-13 gate actually runs on the side-car: a
+        // non-commercial-stamped codec refuses under the strict policy.
+        let (path, _) = build_sidecar(
+            "nc-license",
+            &SidecarSpec {
+                license: (vokra_core::LicenseClass::NonCommercial, "CC-BY-NC-4.0"),
+                ..SidecarSpec::default()
+            },
+        );
+        let err = MoshiEngine::synthesized_fixture(5)
+            .expect("fixture engine")
+            .with_mimi_gguf(&path)
+            .expect_err("research-only weight must fail closed");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            matches!(err, VokraError::ResearchLicenseRequired { .. }),
+            "{err}"
+        );
+    }
 
     #[test]
     fn with_backend_routes_the_decode_chain_not_only_lm_and_encoder() {

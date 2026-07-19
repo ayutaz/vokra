@@ -74,6 +74,11 @@ OPTIONS:
                                 (0..1) — the synthetic echo path the AEC
                                 cancels (T26; without it the session runs
                                 the explicit recorded-input AEC opt-out)
+    --mimi <path>               Moshi only: standalone Mimi codec GGUF
+                                (from `vokra-cli convert --model mimi`) —
+                                binds the REAL codec on both duplex ends
+                                instead of the synthesized bridge; a bind
+                                failure is a hard error (FR-EX-08)
     -h, --help                  print this help
 ";
 
@@ -113,6 +118,10 @@ struct RunArgs {
     /// frame is mixed into the next mic frame at this gain, exercising
     /// the AEC path end to end (T26 合成 echo 経路).
     echo_sim: Option<f32>,
+    /// Moshi only: standalone Mimi codec side-car GGUF — binds the real
+    /// codec ends instead of the synthesized bridge (hard error on any
+    /// bind failure; rejected loudly on every other arch — FR-EX-08).
+    mimi: Option<String>,
 }
 
 fn parse_args(args: &[String]) -> Result<RunArgs, String> {
@@ -134,6 +143,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut deterministic = false;
     let mut duplex = false;
     let mut echo_sim: Option<f32> = None;
+    let mut mimi: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -227,6 +237,11 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 echo_sim = Some(g);
                 i += 2;
             }
+            "--mimi" => {
+                let v = args.get(i + 1).ok_or("--mimi requires a GGUF path")?;
+                mimi = Some(v.clone());
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -246,6 +261,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         deterministic,
         duplex,
         echo_sim,
+        mimi,
     })
 }
 
@@ -259,7 +275,8 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     let hint = a
         .fixture_tokenizer
         .then_some(engine::TaskHint::CsmFixtureTokenizer);
-    let (session, task) = engine::load_session_with_backend(&a.model, a.backend, hint)?;
+    let (session, task) =
+        engine::load_session_with_backend_and_mimi(&a.model, a.backend, hint, a.mimi.as_deref())?;
 
     // `--compare` belongs to the speaker (campplus) task only. Reject it on
     // every other arch rather than silently ignoring the flag (FR-EX-08).
@@ -724,6 +741,29 @@ mod tests {
             .join("../../tests/parity/silero_vad/silero-vad-v5.gguf")
             .to_string_lossy()
             .into_owned()
+    }
+
+    /// `--mimi <path>` parses into `RunArgs::mimi` (Moshi real-codec
+    /// side-car); a bare `--mimi` is a loud parse error.
+    #[test]
+    fn parse_accepts_mimi_sidecar_path() {
+        let a = parse_args(&args(&[
+            "--model",
+            "m.gguf",
+            "--input",
+            "mic.wav",
+            "--duplex",
+            "--mimi",
+            "codec.gguf",
+        ]))
+        .expect("parses");
+        assert_eq!(a.mimi.as_deref(), Some("codec.gguf"));
+        assert!(a.duplex);
+        let err = match parse_args(&args(&["--model", "m.gguf", "--mimi"])) {
+            Err(e) => e,
+            Ok(_) => panic!("bare --mimi must be rejected"),
+        };
+        assert!(err.contains("--mimi requires a GGUF path"), "got: {err}");
     }
 
     /// Writes a synthesized-fixture CSM GGUF (tiny shape config + mimi
