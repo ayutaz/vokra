@@ -80,3 +80,36 @@ crates/vokra-backend-vulkan/kernels/precompiled/*.spv -filter -diff -merge
 # diffable and mergeable as the source files they are.
 *.wgsl text eol=lf
 *.comp text eol=lf
+
+# Same reason, one level up: every TEXT file under tests/parity/ is either
+# hashed into a manifest or IS the manifest, so a CRLF checkout breaks the
+# fixture-drift gates. Fixing these one extension at a time is whack-a-mole
+# (the first Windows CI run caught *.wgsl, the second caught
+# csm/context.json), so pin them by extension across the fixture trees.
+#
+# Deliberately NOT `tests/parity/** text eol=lf`: that would set `text` on
+# the *binary* fixtures too (*.f32, *.u32, *.bin, *.i16le, *.i64, *.wav) and
+# git would then rewrite byte pairs that happen to look like line endings —
+# silently corrupting float data on a Windows checkout. The `-filter -diff
+# -merge` rules above do NOT prevent eol conversion, so the binaries are
+# listed explicitly as `-text` below instead of relying on the NUL-byte
+# heuristic.
+tests/parity/**/*.txt text eol=lf
+tests/parity/**/*.json text eol=lf
+tests/parity/**/*.py text eol=lf
+tests/parity/**/*.rs text eol=lf
+tests/parity/**/*.md text eol=lf
+tests/parity/**/*.toml text eol=lf
+tests/parity/**/*.f32 -text
+tests/parity/**/*.u32 -text
+tests/parity/**/*.i64 -text
+tests/parity/**/*.bin -text
+tests/parity/**/*.i16le -text
+tests/parity/**/*.wav -text
+tests/capi/fixtures/**/*.f32 -text
+tests/capi/fixtures/**/*.txt text eol=lf
+# The Vulkan hash ledgers themselves: SHA256SUMS is compared line-by-line by
+# scripts/compile-vulkan-shaders.sh --check and PROVENANCE carries the
+# per-source hashes, so both want stable bytes for the same reason.
+crates/vokra-backend-vulkan/kernels/precompiled/SHA256SUMS text eol=lf
+crates/vokra-backend-vulkan/kernels/precompiled/PROVENANCE text eol=lf

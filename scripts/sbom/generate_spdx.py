@@ -105,7 +105,23 @@ def created_timestamp(root: str) -> str:
 def resolve_graph(
     root: str, package: str, features: list[str], no_default_features: bool
 ) -> list[tuple[str, str]]:
-    cmd = ["cargo", "tree", "-p", package, "-e", "normal", "--prefix", "none"]
+    # `--color never`: CI exports CARGO_TERM_COLOR=always, which makes cargo
+    # wrap the dedup marker in ANSI escapes ("... (/path) \x1b[33m\x1b[2m(*)")
+    # and TREE_LINE then rejects the line as format drift. It only shows up
+    # once a package appears twice in the graph, so it stayed latent until
+    # vokra-mmap became a shared dependency.
+    cmd = [
+        "cargo",
+        "tree",
+        "-p",
+        package,
+        "-e",
+        "normal",
+        "--prefix",
+        "none",
+        "--color",
+        "never",
+    ]
     if no_default_features:
         cmd.append("--no-default-features")
     if features:
