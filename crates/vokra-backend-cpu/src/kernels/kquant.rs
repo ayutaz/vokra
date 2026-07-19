@@ -72,6 +72,19 @@ impl KQuantDtype {
         }
     }
 
+    /// The K-quant [`GgmlType`](vokra_core::gguf::GgmlType) mapped into this
+    /// kernel-side enum, or `None` for any non-K-quant dtype (`F32` / `F16` /
+    /// `BF16`). Lets a model loader decide whether an on-disk tensor can feed
+    /// the fused INT8 kernels without duplicating the mapping (M5-15-T26).
+    pub const fn from_ggml(t: vokra_core::gguf::GgmlType) -> Option<Self> {
+        match t {
+            vokra_core::gguf::GgmlType::Q4K => Some(KQuantDtype::Q4K),
+            vokra_core::gguf::GgmlType::Q5K => Some(KQuantDtype::Q5K),
+            vokra_core::gguf::GgmlType::Q6K => Some(KQuantDtype::Q6K),
+            _ => None,
+        }
+    }
+
     fn ggml(self) -> vokra_core::gguf::GgmlType {
         match self {
             KQuantDtype::Q4K => vokra_core::gguf::GgmlType::Q4K,
@@ -684,6 +697,251 @@ pub fn kquant_gemv2_i8_on(
             "no K-quant INT8 GEMV2 kernel on the {other} path (tiers: neon-i8mm | neon-dotprod | avx512vnni | avxvnni256 | scalar)"
         ))),
     }
+}
+
+/// Whether `isa` has the 2-activation SMMLA tile (the only path where
+/// batching activations changes the instruction mix rather than just the
+/// loop structure).
+fn has_i8mm_tile(isa: IsaPath) -> bool {
+    isa == IsaPath::NeonI8mm
+}
+
+/// Activation vectors consumed per SMMLA tile pass.
+const I8MM_TILE_ACTS: usize = 2;
+
+/// The single-vector tier an i8mm batch runs its **odd tail** on.
+///
+/// SMMLA consumes two activation vectors per pass, so the unpaired tail of an
+/// odd batch has no 2x2 tile to fill and must run through the single-vector
+/// kernel — which has no i8mm form at all: [`int8_group_sums_for`] has no
+/// `NeonI8mm` arm, and [`CpuFeatures::best_int8_isa`] deliberately never
+/// reports it ("i8mm serves the 2-activation matmul shape ... not this
+/// selector"). Routing the tail on the requested `isa` therefore made every
+/// odd `n_act` a hard `UnsupportedOp` on i8mm hosts.
+///
+/// Every accepted INT8 tier is bit-identical here (shared combine + exact
+/// integer sums), so which dot-product tier the tail lands on cannot move a
+/// result bit: this is a within-CPU-backend tier choice, not the FR-EX-08
+/// cross-backend fallback. Kept separate from [`int8_tail_isa`] so the
+/// invariant it encodes — an i8mm tail always maps to a tier the
+/// single-vector kernel accepts — stays checkable on hosts without i8mm.
+fn int8_tail_tier(isa: IsaPath) -> IsaPath {
+    if isa == IsaPath::NeonI8mm {
+        CpuFeatures::detect()
+            .best_int8_isa()
+            .unwrap_or(IsaPath::Scalar)
+    } else {
+        isa
+    }
+}
+
+/// [`int8_tail_tier`] with the host gate on the **requested** path kept
+/// intact.
+///
+/// A single-activation i8mm request (`n_act == 1`, or any batch after its
+/// last pair) never reaches [`kquant_gemv2_i8_on`]'s own `supports` check, so
+/// without this gate an i8mm request on a host that has no i8mm would be
+/// quietly answered by another tier instead of erroring — a silent
+/// capability substitution FR-EX-08 forbids.
+fn int8_tail_isa(isa: IsaPath) -> Result<IsaPath> {
+    if isa == IsaPath::NeonI8mm && !CpuFeatures::detect().supports(IsaPath::NeonI8mm) {
+        return Err(VokraError::BackendUnavailable(format!(
+            "the {isa} kernel path is not available on this host CPU"
+        )));
+    }
+    Ok(int8_tail_tier(isa))
+}
+
+/// `n_act`-activation K-quant INT8 GEMV on a forced path (M5-15-T32) — the
+/// generalization of [`kquant_gemv2_i8_on`] past its 2-activation ceiling.
+///
+/// `xn` holds `n_act` activation vectors of length `k` back to back
+/// (`xn[c * k .. (c + 1) * k]`); `out[n_act * i + c] = row_i · x_c`, i.e. the
+/// same `[m][n_act]` interleaved layout the 2-activation kernel already used.
+///
+/// **Activations are quantized per vector**: each `x_c` derives its own Q8
+/// group scales, so no scale is ever shared across activation vectors and the
+/// result is bit-for-bit `n_act` separate [`kquant_gemv_i8_on`] calls (ADR
+/// `M5-15-quant.md` §D2 — the alternative, one scale set for the whole batch,
+/// would change the numbers with the batch size). The SMMLA tier consumes two
+/// vectors per pass and the odd tail through the single-vector kernel on
+/// [`int8_tail_tier`] (SMMLA has no 1-activation form); since every accepted
+/// path is bit-identical, tiling is a speed choice only.
+///
+/// # Errors
+/// [`VokraError::InvalidArgument`] on `n_act == 0` or a shape mismatch;
+/// [`VokraError::BackendUnavailable`] when `isa` is a path this host lacks;
+/// whatever the underlying single/two-activation kernel returns for an
+/// unsupported `isa`.
+#[allow(clippy::too_many_arguments)] // GEMV operands + the forced isa + the batch width
+pub fn kquant_gemvn_i8_on(
+    isa: IsaPath,
+    dtype: KQuantDtype,
+    m: usize,
+    k: usize,
+    n_act: usize,
+    w: &[u8],
+    xn: &[f32],
+    out: &mut [f32],
+) -> Result<()> {
+    validate_batch(dtype, m, k, n_act, w, xn.len(), out.len())?;
+    let tail_isa = int8_tail_isa(isa)?;
+    let mut pair: Vec<f32> = Vec::new();
+    let mut col: Vec<f32> = Vec::new();
+    let mut c = 0usize;
+    while c < n_act {
+        if has_i8mm_tile(isa) && n_act - c >= I8MM_TILE_ACTS {
+            pair.resize(I8MM_TILE_ACTS * m, 0.0);
+            kquant_gemv2_i8_on(
+                isa,
+                dtype,
+                m,
+                k,
+                w,
+                &xn[c * k..(c + I8MM_TILE_ACTS) * k],
+                &mut pair,
+            )?;
+            for i in 0..m {
+                out[n_act * i + c] = pair[I8MM_TILE_ACTS * i];
+                out[n_act * i + c + 1] = pair[I8MM_TILE_ACTS * i + 1];
+            }
+            c += I8MM_TILE_ACTS;
+        } else {
+            col.resize(m, 0.0);
+            kquant_gemv_i8_on(tail_isa, dtype, m, k, w, &xn[c * k..(c + 1) * k], &mut col)?;
+            for i in 0..m {
+                out[n_act * i + c] = col[i];
+            }
+            c += 1;
+        }
+    }
+    Ok(())
+}
+
+/// Row-major K-quant INT8 **GEMM** on a forced path (M5-15-T31): the
+/// `nn.Linear` shape, `out[t, i] = Σ_l dequant(w[i, l]) · x[t, l]`.
+///
+/// - `w` is the **untransposed** `[m, k]` weight exactly as GGUF stores it
+///   (`m` = output features, `k` = input features, `k % 256 == 0`), so the
+///   model layer keeps the quantized super-blocks verbatim and never pays the
+///   `[out, in] → [in, out]` transpose the f32 path needs;
+/// - `x` is `[n_act, k]` row-major (activations / tokens);
+/// - `out` is `[n_act, m]` row-major — the layout `Compute::gemm_f32`
+///   produces, so this is a drop-in for a quantized `nn.Linear`.
+///
+/// Equal, element for element, to `n_act` separate [`kquant_gemv_i8_on`]
+/// calls (see [`kquant_gemvn_i8_on`] on the per-vector activation scales);
+/// bounded against the f32 dequant GEMM by [`int8_error_bound`], **not**
+/// bit-identical to it (`UnpackedBlock`'s doc: "the INT8 surface is bounded by
+/// the activation-quantization band, not bit identity").
+///
+/// # Errors
+/// [`VokraError::InvalidArgument`] on `n_act == 0` or a shape mismatch;
+/// [`VokraError::BackendUnavailable`] when `isa` is a path this host lacks;
+/// whatever the underlying kernel returns for an unrunnable `isa`. An odd
+/// activation count is **not** an error on the SMMLA tier: the unpaired tail
+/// runs on [`int8_tail_tier`], bit-identically.
+#[allow(clippy::too_many_arguments)] // GEMM operands + the forced isa + the batch width
+pub fn kquant_gemm_i8_on(
+    isa: IsaPath,
+    dtype: KQuantDtype,
+    m: usize,
+    k: usize,
+    n_act: usize,
+    w: &[u8],
+    x: &[f32],
+    out: &mut [f32],
+) -> Result<()> {
+    validate_batch(dtype, m, k, n_act, w, x.len(), out.len())?;
+    let tail_isa = int8_tail_isa(isa)?;
+    let mut pair: Vec<f32> = Vec::new();
+    let mut c = 0usize;
+    while c < n_act {
+        if has_i8mm_tile(isa) && n_act - c >= I8MM_TILE_ACTS {
+            // The tile kernel writes `[m][2]`; scatter it into the two
+            // (contiguous, disjoint) output rows.
+            pair.resize(I8MM_TILE_ACTS * m, 0.0);
+            kquant_gemv2_i8_on(
+                isa,
+                dtype,
+                m,
+                k,
+                w,
+                &x[c * k..(c + I8MM_TILE_ACTS) * k],
+                &mut pair,
+            )?;
+            let (row0, row1) = out[c * m..(c + I8MM_TILE_ACTS) * m].split_at_mut(m);
+            for i in 0..m {
+                row0[i] = pair[I8MM_TILE_ACTS * i];
+                row1[i] = pair[I8MM_TILE_ACTS * i + 1];
+            }
+            c += I8MM_TILE_ACTS;
+        } else {
+            // One activation writes a contiguous output row — no scratch and
+            // no scatter at all on this path.
+            kquant_gemv_i8_on(
+                tail_isa,
+                dtype,
+                m,
+                k,
+                w,
+                &x[c * k..(c + 1) * k],
+                &mut out[c * m..(c + 1) * m],
+            )?;
+            c += 1;
+        }
+    }
+    Ok(())
+}
+
+/// [`kquant_gemm_i8_on`] on the host's best INT8 tier.
+///
+/// Prefers the SMMLA tile when the host has i8mm **and** there are at least
+/// two activation vectors to fill a 2x2 tile; otherwise the dot-product tier
+/// [`CpuFeatures::best_int8_isa`] picks (which never reports `NeonI8mm`,
+/// because the 1-activation GEMV cannot use a 2-row tile). Every accepted
+/// tier is bit-identical, so this is a within-CPU-backend speed choice, not
+/// the FR-EX-08 cross-backend fallback.
+#[allow(clippy::too_many_arguments)] // GEMM operands + the batch width
+pub fn kquant_gemm_i8(
+    dtype: KQuantDtype,
+    m: usize,
+    k: usize,
+    n_act: usize,
+    w: &[u8],
+    x: &[f32],
+    out: &mut [f32],
+) -> Result<()> {
+    let feats = CpuFeatures::detect();
+    let isa = if n_act >= I8MM_TILE_ACTS && feats.supports(IsaPath::NeonI8mm) {
+        IsaPath::NeonI8mm
+    } else {
+        feats.best_int8_isa().unwrap_or(IsaPath::Scalar)
+    };
+    kquant_gemm_i8_on(isa, dtype, m, k, n_act, w, x, out)
+}
+
+/// Shared shape validation for the batched entries. `n_act == 0` is rejected
+/// explicitly: [`validate_gemv_i8`] would otherwise accept it (`0 * k == 0`
+/// lengths line up) and the caller would get a silent no-op instead of an
+/// error (FR-EX-08).
+fn validate_batch(
+    dtype: KQuantDtype,
+    m: usize,
+    k: usize,
+    n_act: usize,
+    w: &[u8],
+    x_len: usize,
+    out_len: usize,
+) -> Result<()> {
+    if n_act == 0 {
+        return Err(VokraError::InvalidArgument(
+            "batched K-quant INT8 GEMV/GEMM needs at least one activation vector, got n_act = 0"
+                .to_owned(),
+        ));
+    }
+    validate_gemv_i8(dtype, m, k, w, x_len, out_len, n_act)?;
+    Ok(())
 }
 
 /// SMMLA 2x2-tile implementation of the two-activation GEMV.
@@ -1603,6 +1861,70 @@ mod tests {
                     Err(VokraError::BackendUnavailable(_))
                 ));
             }
+        }
+    }
+
+    /// M5-15 regression: the **odd-activation tail** of an i8mm batch must
+    /// land on a tier the single-vector kernel actually implements.
+    ///
+    /// `int8_group_sums_for` has no `NeonI8mm` arm (SMMLA has no 1-activation
+    /// form), so passing the caller's `isa` straight through made every odd
+    /// `n_act` on an i8mm host a hard `UnsupportedOp`. This invariant is
+    /// host-independent — it fails on *any* CPU if the mapping is identity —
+    /// which is what lets a machine without i8mm pin the fix.
+    #[test]
+    fn i8mm_tail_tier_is_runnable_by_the_single_vector_kernel() {
+        let tail = int8_tail_tier(IsaPath::NeonI8mm);
+        assert_ne!(
+            tail,
+            IsaPath::NeonI8mm,
+            "SMMLA has no single-vector form; the tail must move to a dot tier"
+        );
+        assert!(
+            int8_group_sums_for(tail).is_ok(),
+            "an i8mm tail maps to {tail}, which the single-vector kernel rejects"
+        );
+        // Every other tier passes through untouched (no reroute at all).
+        for isa in [
+            IsaPath::Scalar,
+            IsaPath::Avx512Vnni,
+            IsaPath::AvxVnni256,
+            IsaPath::NeonDotprod,
+        ] {
+            assert_eq!(int8_tail_tier(isa), isa, "{isa} must not be rerouted");
+        }
+    }
+
+    /// FR-EX-08: the tail reroute must not paper over a host that has no i8mm
+    /// at all. `n_act == 1` never reaches the tile kernel's own `supports`
+    /// check, so the batched entries gate the requested path themselves —
+    /// otherwise an i8mm request would be silently served by another tier.
+    #[test]
+    fn i8mm_batch_on_a_host_without_i8mm_is_backend_unavailable() {
+        if CpuFeatures::detect().supports(IsaPath::NeonI8mm) {
+            return; // i8mm host: the odd-tail e2e lives in kquant_gemm_parity.rs
+        }
+        let dtype = KQuantDtype::Q4K;
+        let w = vec![0u8; dtype.block_bytes()];
+        // n_act = 1 has no tile pass at all; 2 and 3 also exercise the gate
+        // before any work is done.
+        for n_act in [1usize, 2, 3] {
+            let x = vec![0.0f32; n_act * QK_K];
+            let mut out = vec![0.0f32; n_act];
+            assert!(
+                matches!(
+                    kquant_gemvn_i8_on(IsaPath::NeonI8mm, dtype, 1, QK_K, n_act, &w, &x, &mut out),
+                    Err(VokraError::BackendUnavailable(_))
+                ),
+                "gemvn(n_act={n_act}) on an i8mm-less host must be BackendUnavailable"
+            );
+            assert!(
+                matches!(
+                    kquant_gemm_i8_on(IsaPath::NeonI8mm, dtype, 1, QK_K, n_act, &w, &x, &mut out),
+                    Err(VokraError::BackendUnavailable(_))
+                ),
+                "gemm(n_act={n_act}) on an i8mm-less host must be BackendUnavailable"
+            );
         }
     }
 

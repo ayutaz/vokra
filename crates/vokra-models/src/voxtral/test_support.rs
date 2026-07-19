@@ -21,6 +21,7 @@ use super::{
 };
 use crate::whisper::weights::{
     Attention as WwAttention, EncoderLayer, LayerNorm as WwLayerNorm, Linear as WwLinear,
+    LinearWeight as WwLinearWeight,
 };
 use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile};
 
@@ -89,7 +90,7 @@ pub(crate) fn passthrough_layers(cfg: &VoxtralConfig) -> Vec<EncoderLayer> {
     let d = cfg.audio.hidden_dim;
     let ff = cfg.audio.ffn_dim;
     let zero_linear = |rows: usize, cols: usize, bias: bool| WwLinear {
-        w_t: vec![0.0; rows * cols],
+        w: WwLinearWeight::Dense(vec![0.0; rows * cols]),
         in_features: rows,
         out_features: cols,
         bias: bias.then(|| vec![0.0; cols]),

@@ -66,6 +66,7 @@
 use std::cell::RefCell;
 
 use crate::dispatch::{self, GemmM1Kernel, KernelTable, PackedGemm, PackedTail};
+use crate::kernels::kquant::KQuantDtype;
 
 // ---- blocking constants (empirical on Apple M1; see the Wave-1 report) ----
 //
@@ -225,6 +226,67 @@ pub(crate) fn run(
         return;
     }
     legacy_path(t, m, n, k, a, b, bias, out);
+}
+
+/// Production **quantized-B** GEMM entry (M5-15-T33), routing
+/// `kernels::gemm_q_f32`: `out[t, j] = bias[j] + Σ_l a[t, l] · dequant(wq[j, l])`.
+///
+/// # Why this is a sibling entry, not a branch inside [`run`]
+///
+/// [`run`]'s `b: &[f32]` contract, its m1 / packed / legacy routing and its
+/// per-element accumulation chain are all **unchanged** by this WP — that is
+/// the M5-14 bit-identity red-line, and `tests/gemm_packed_parity.rs` keeps
+/// pinning it. A quantized `b` cannot join that routing anyway:
+///
+/// - **it cannot be packed.** The pack step copies `b` into `[l][NR]` column
+///   strips, which means addressing individual `f32` elements. A K-quant `b`
+///   has no addressable elements — it is 256-element super-blocks with shared
+///   6-bit sub-scales, and slicing a strip out of one destroys the block the
+///   scales belong to. Dequantizing to pack is exactly the load-time dequant
+///   this WP exists to avoid.
+/// - **it is transposed relative to `b`.** `run` takes `b` as `[k, n]`; the
+///   GGUF weight is `[n, k]` (`[out, in]` row-major), which is precisely the
+///   layout the fused INT8 GEMV kernels want. The f32 path pays a transpose at
+///   load; the quant path keeps the bytes verbatim.
+///
+/// So the quant route branches **before** any packing, straight into the
+/// `kquant` kernels, and shares nothing mutable with [`run`].
+///
+/// # Bias
+///
+/// The f32 kernels **seed** the accumulator with `bias[j]`; this path adds it
+/// after the INT8 reduction. That is a different f32 association, so the two
+/// are not bit-identical — but the quant route is not bit-identical to the
+/// f32 route in the first place (the activation-quantization band dominates by
+/// orders of magnitude). Documented rather than hidden.
+///
+/// # Threading
+///
+/// Single-threaded. The M5-14 MT panel split is deliberately **not** extended
+/// here (M5-15-T33: "MT panel 分割を quant 経路にも適用するかは本 WP では必須
+/// としない") — the deterministic-split re-verification it would need is not
+/// paid for by this WP's goal, which is the fused-vs-dequant comparison.
+#[allow(clippy::too_many_arguments)] // GEMM's intrinsic parameter set + the weight dtype
+pub(crate) fn run_q(
+    dtype: KQuantDtype,
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    wq: &[u8],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) -> vokra_core::Result<()> {
+    // `n` rows of quantized weight, `m` activation vectors of width `k`.
+    super::kquant::kquant_gemm_i8(dtype, n, k, m, wq, a, out)?;
+    if let Some(bias) = bias {
+        for row in out.chunks_exact_mut(n) {
+            for (o, &b) in row.iter_mut().zip(bias) {
+                *o += b;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The pre-Wave-1 production behaviour: pool row-split over the legacy

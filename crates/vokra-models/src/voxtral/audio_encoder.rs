@@ -264,7 +264,11 @@ pub fn forward(
     // to the per-op loop below by that seam's contract. The CPU always takes
     // the per-op loop (no silent fall back, FR-EX-08).
     if compute.prenorm_stack_is_fused() {
-        let layers: Vec<PrenormLayer<'_>> = weights.layers.iter().map(prenorm_view).collect();
+        let layers: Vec<PrenormLayer<'_>> = weights
+            .layers
+            .iter()
+            .map(prenorm_view)
+            .collect::<Result<_>>()?;
         let mut normed = vec![0.0f32; t * d];
         compute.encode_prenorm_encoder(
             t,
@@ -849,11 +853,13 @@ mod tests {
         let file = tiny_encoder_gguf(&cfg, false);
         let ae = AudioEncoder::load(&file, &cfg).unwrap();
 
-        let clone_linear = |l: &Linear| Linear {
-            w_t: l.w_t.clone(),
-            in_features: l.in_features,
-            out_features: l.out_features,
-            bias: l.bias.clone(),
+        let clone_linear = |l: &Linear| {
+            Linear::dense(
+                l.dense_w_t().unwrap().to_vec(),
+                l.in_features,
+                l.out_features,
+                l.bias.clone(),
+            )
         };
         let wcfg = WhisperConfig {
             n_mels: cfg.audio.n_mels,
