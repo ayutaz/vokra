@@ -488,6 +488,20 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        // Voxtral (M3-10 / P2 cc-10) is routed through `vokra-cli run` but
+        // has no bench task: a real-checkpoint RTF number needs the
+        // multi-GB weights + a stable measurement lab (the M2-14 defer),
+        // and the synthetic path would measure nothing meaningful. Reject
+        // rather than fabricate (FR-EX-08).
+        ModelTask::AsrVoxtral => {
+            return Err(
+                "bench: arch `voxtral` has no bench task yet — real-checkpoint RTF is the \
+                 owner track (needs the multi-GB weights on a stable measurement host); \
+                 use `vokra-cli run --model <voxtral.gguf> --input <in.wav>` for a \
+                 functional run"
+                    .to_owned(),
+            );
+        }
         // Same posture for the Moshi duplex (M4-06): per-frame latency
         // reference numbers ride the duplex demo + owner track (T26/T30).
         ModelTask::S2sDuplex => {

@@ -25,6 +25,8 @@ USAGE:
                   [--backend cpu|metal|cuda] [--beam-size <N>] [--length-penalty <α>]
                   [--no-repeat-ngram <N>] [--fixture-tokenizer] [--interrupt-after <N>]
                   [--deterministic]
+    vokra-cli run --model <whisper.gguf> --input <in.wav> --word-timestamps
+    vokra-cli run --model <voxtral.gguf> --input <in.wav> [--language <code>] [--bare-prompt]
     vokra-cli run --model <campplus.gguf> --input <a.wav> [--compare <b.wav>]
 
 OPTIONS:
@@ -49,14 +51,31 @@ OPTIONS:
                                 not generate text)
     --output <path>             WAV file for the TTS / S2S output (optional)
     --beam-size <N>             ASR beam-search width (default 1 = greedy).
-                                Currently only honored for `voxtral` arch —
-                                other archs error out on --beam-size > 1
-                                rather than silently ignoring the flag
-                                (FR-EX-08).
+                                Honored for `voxtral` (n-best beam) and, with
+                                --word-timestamps, for `whisper`. An arch whose
+                                dispatch does not honor it errors out rather
+                                than silently ignoring the flag (FR-EX-08).
     --length-penalty <α>        GNMT length-penalty exponent for beam search
                                 (default 0.6). See `voxtral::BeamConfig`.
     --no-repeat-ngram <N>       Block repeated n-grams of length N during
                                 beam search (default 0 = disabled).
+    --word-timestamps           whisper only: emit per-word start/end times
+                                (cross-attention DTW alignment, M4-20) after
+                                the transcript, as `word<TAB>start<TAB>end`
+                                lines. Requires the GGUF to carry
+                                `vokra.whisper.alignment_heads`; a model
+                                without them is an explicit error, never a
+                                silent empty list.
+    --language <code>           voxtral only: transcription language for the
+                                trained prompt's `lang:<code>` segment
+                                (lowercase ISO 639, default `en`). Pass
+                                `auto` to omit the segment and let the model
+                                infer the language.
+    --bare-prompt               voxtral only: decode from the bare
+                                soft-prefix + BOS layout instead of the
+                                trained transcription prompt. Honest LM
+                                continuation conditioned on the audio — NOT
+                                a transcript (see AsrPromptLayout).
     --fixture-tokenizer         S2S only: swap the (T29-gated) embedded
                                 tokenizer for the explicit fixture byte
                                 tokenizer — host-only smoke, linguistically
@@ -106,6 +125,15 @@ struct RunArgs {
     /// Block repeated n-grams of this length during beam search
     /// (default 0 = disabled).
     no_repeat_ngram: usize,
+    /// Whisper only (cc-19): emit per-word timestamps after the transcript.
+    /// Any other arch rejects the flag loudly (FR-EX-08).
+    word_timestamps: bool,
+    /// Voxtral only: the raw `--language` value. `None` = flag absent (keep
+    /// the engine default, `en`); `Some("auto")` = omit the `lang:` segment
+    /// entirely; `Some(code)` = that code.
+    language: Option<String>,
+    /// Voxtral only: opt into the bare soft-prefix + BOS layout.
+    bare_prompt: bool,
     /// S2S: explicit fixture-tokenizer opt-in (host-only smoke).
     fixture_tokenizer: bool,
     /// S2S: barge-in after N streamed frames (T19 demo).
@@ -138,6 +166,9 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut beam_size: usize = 1;
     let mut length_penalty: f32 = 0.6;
     let mut no_repeat_ngram: usize = 0;
+    let mut word_timestamps = false;
+    let mut language: Option<String> = None;
+    let mut bare_prompt = false;
     let mut fixture_tokenizer = false;
     let mut interrupt_after: Option<usize> = None;
     let mut deterministic = false;
@@ -204,6 +235,24 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                     .map_err(|e| format!("--no-repeat-ngram must be an unsigned integer: {e}"))?;
                 i += 2;
             }
+            "--word-timestamps" => {
+                word_timestamps = true;
+                i += 1;
+            }
+            "--language" => {
+                let v = args.get(i + 1).ok_or("--language requires a value")?;
+                if v.is_empty() {
+                    return Err("--language must not be empty (use `auto` to omit the \
+                                prompt's lang: segment)"
+                        .to_owned());
+                }
+                language = Some(v.clone());
+                i += 2;
+            }
+            "--bare-prompt" => {
+                bare_prompt = true;
+                i += 1;
+            }
             "--fixture-tokenizer" => {
                 fixture_tokenizer = true;
                 i += 1;
@@ -256,6 +305,9 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         beam_size,
         length_penalty,
         no_repeat_ngram,
+        word_timestamps,
+        language,
+        bare_prompt,
         fixture_tokenizer,
         interrupt_after,
         deterministic,
@@ -287,6 +339,23 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned(),
         );
     }
+    // `--word-timestamps` is a Whisper-only surface (cross-attention DTW,
+    // M4-20); `--language` / `--bare-prompt` are Voxtral prompt knobs. Each
+    // is rejected off its own arch rather than silently ignored (FR-EX-08).
+    if a.word_timestamps && task != ModelTask::Asr {
+        return Err(
+            "run: --word-timestamps is only supported for the whisper arch — it needs the \
+             cross-attention alignment heads (M4-20). Voxtral has no such alignment."
+                .to_owned(),
+        );
+    }
+    if (a.language.is_some() || a.bare_prompt) && task != ModelTask::AsrVoxtral {
+        return Err(
+            "run: --language / --bare-prompt are only supported for the voxtral arch — they \
+             select the trained transcription prompt's `lang:` segment and layout"
+                .to_owned(),
+        );
+    }
 
     match task {
         ModelTask::Vad => {
@@ -311,25 +380,22 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .as_deref()
                 .ok_or("run (ASR): --input <in.wav> is required")?;
             let clip = wav::read_wav(path)?;
-            // Beam-search wiring for ASR (M3-10 Voxtral). The current
-            // `engine.rs` arch dispatch only wires Whisper on the ASR
-            // path — Voxtral's arch string is not yet routed here (that
-            // lands with a follow-up ticket alongside `ARCH_VOXTRAL`).
-            // Whisper's beam-search entry point lives on a separate
-            // `WhisperBeamScorer` and is not exposed through the shared
-            // `AsrEngine` trait, so passing `--beam-size > 1` today would
-            // be silently ignored on the Whisper path.
-            //
-            // FR-EX-08 posture: rather than silently dropping the flag,
-            // hard-error when a beam-only flag is set on an arch whose
-            // dispatch does not honor it.
+            // Whisper's beam-search entry point lives on the concrete
+            // `WhisperAsr` (n-best + alignment), not on the shared
+            // `AsrEngine` trait the session injects. `--word-timestamps`
+            // therefore routes through the beam surface (cc-19); without
+            // it, a beam-only flag on the Whisper path would be silently
+            // dropped, so it is a hard error instead (FR-EX-08).
+            if a.word_timestamps {
+                run_whisper_word_timestamps(&a.model, a.backend, &clip.samples, &a)?;
+                return Ok(ExitCode::SUCCESS);
+            }
             if a.beam_size > 1 || a.no_repeat_ngram > 0 {
                 return Err(
-                    "run (ASR): --beam-size > 1 / --no-repeat-ngram are only supported for the \
-                     Voxtral arch. The current build's arch dispatch does not route Voxtral \
-                     through `vokra-cli run` yet (M3-10 follow-up). Run the Voxtral beam decode \
-                     via the `voxtral::VoxtralAsr::transcribe_beam` API directly or wait for the \
-                     arch wiring."
+                    "run (ASR): --beam-size > 1 / --no-repeat-ngram are only honored on the \
+                     whisper path together with --word-timestamps (which routes through the \
+                     beam/alignment surface), or on the `voxtral` arch. Add \
+                     --word-timestamps, or run a voxtral GGUF."
                         .to_owned(),
                 );
             }
@@ -349,6 +415,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             }
             let text = run_asr(&session, &clip.samples)?;
             println!("asr: {text}");
+        }
+        ModelTask::AsrVoxtral => {
+            run_voxtral(&session, &a)?;
         }
         ModelTask::Tts => {
             let text = a
@@ -480,6 +549,149 @@ fn run_asr(session: &Session, pcm: &[f32]) -> Result<String, String> {
         .transcribe(pcm)
         .map_err(|e| e.to_string())?
         .text)
+}
+
+/// The Voxtral ASR path (P2 cc-10). Binds the concrete
+/// [`vokra_models::voxtral::VoxtralAsr`] from the session's (mmap-backed)
+/// GGUF exactly once — see [`ModelTask::AsrVoxtral`] for why the engine is
+/// not injected by the dispatch — then greedy- or beam-decodes.
+///
+/// Prompt layout: the trained transcription wrapper by default (built at
+/// runtime from the GGUF's embedded tekken vocab), with `--language` picking
+/// the `lang:<code>` segment (`auto` omits it) and `--bare-prompt` opting
+/// into the honest LM-continuation layout.
+fn run_voxtral(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_core::AsrEngine;
+    use vokra_models::voxtral::{AsrPromptLayout, VoxtralAsr};
+
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (voxtral ASR): --input <in.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+
+    let mut asr = VoxtralAsr::from_gguf(session.gguf())
+        .map_err(|e| e.to_string())?
+        .with_backend(a.backend);
+    if a.bare_prompt {
+        asr = asr.with_prompt_layout(AsrPromptLayout::BareSoftPrefix);
+    }
+    // `--language auto` = omit the prompt's `lang:` segment (upstream
+    // `TranscriptionRequest.language = None`); an absent flag keeps the
+    // engine default (`en`).
+    match a.language.as_deref() {
+        None => {}
+        Some("auto") => asr = asr.with_language(None),
+        Some(code) => asr = asr.with_language(Some(code.to_owned())),
+    }
+
+    if a.beam_size > 1 {
+        let beams = asr
+            .transcribe_beam_with_config_overrides(
+                &clip.samples,
+                a.beam_size,
+                a.length_penalty,
+                a.no_repeat_ngram,
+                /*max_new_tokens*/ 0,
+            )
+            .map_err(|e| e.to_string())?;
+        let best = beams
+            .first()
+            .ok_or("run (voxtral ASR): beam search produced no hypothesis")?;
+        println!("asr: {}", best.text);
+        for (i, b) in beams.iter().enumerate() {
+            println!(
+                "asr-alt[{i}]: score={:.4} logp={:.4} {}",
+                b.result.length_normalized_score, b.result.log_prob, b.text
+            );
+        }
+        return Ok(());
+    }
+    // `--no-repeat-ngram` only bites inside beam search; saying so beats
+    // silently dropping it (FR-EX-08 spirit — the flag parses, so the user
+    // gets a diagnostic rather than a wrong assumption).
+    if a.no_repeat_ngram > 0 {
+        eprintln!(
+            "run (voxtral ASR): note — --no-repeat-ngram applies to beam search only \
+             (greedy ignores it); pass --beam-size > 1 to use it."
+        );
+    }
+    let text = asr
+        .transcribe(&clip.samples)
+        .map_err(|e| e.to_string())?
+        .text;
+    println!("asr: {text}");
+    Ok(())
+}
+
+/// Whisper `--word-timestamps` (cc-19 CLI half): routes through the concrete
+/// [`vokra_models::whisper::WhisperAsr`] beam/alignment surface (word
+/// timestamps come from cross-attention DTW over the best hypothesis, M4-20
+/// — the greedy `AsrEngine::transcribe` produces no alignment), prints the
+/// transcript then one `word<TAB>start<TAB>end` line per word.
+///
+/// A GGUF without `vokra.whisper.alignment_heads` is an explicit error
+/// raised inside `beam_search` — never an empty word list (FR-EX-08).
+fn run_whisper_word_timestamps(
+    model_path: &str,
+    backend: vokra_core::BackendKind,
+    pcm: &[f32],
+    a: &RunArgs,
+) -> Result<(), String> {
+    use vokra_core::decode::BeamSearchConfig;
+    use vokra_models::whisper::WhisperAsr;
+
+    // Re-open the GGUF for the concrete engine: `Session` lends its file by
+    // reference and `WhisperAsr::from_gguf` takes one, so this binds against
+    // the same mmap-backed parse the dispatch already validated.
+    let gguf = vokra_mmap::open_gguf(model_path).map_err(|e| e.to_string())?;
+    let asr = WhisperAsr::from_gguf(&gguf)
+        .map_err(|e| e.to_string())?
+        .with_backend(backend);
+    if !asr.has_tokenizer() {
+        return Err(
+            "run (whisper --word-timestamps): the GGUF embeds no tokenizer \
+             (`vokra.tokenizer.model`), so word spans cannot be rendered to text. \
+             Re-convert with the tokenizer chunk."
+                .to_owned(),
+        );
+    }
+
+    let mut cfg = BeamSearchConfig::greedy(vokra_models::whisper::greedy::DEFAULT_MAX_NEW_TOKENS);
+    cfg.word_timestamps = true;
+    // `--beam-size` (and its companions) ride the same surface: width 1 is
+    // the greedy-equivalent alignment run.
+    cfg.beam_width = a.beam_size.max(1);
+    if a.beam_size > 1 {
+        cfg.length_normalization = a.length_penalty;
+        cfg.no_repeat_ngram_size = a.no_repeat_ngram;
+    }
+    let hyps = asr
+        .transcribe_tokens_beam_nbest(pcm, &cfg)
+        .map_err(|e| e.to_string())?;
+    let best = hyps
+        .first()
+        .ok_or("run (whisper --word-timestamps): beam search produced no hypothesis")?;
+    let text = asr.render_ids(&best.tokens).map_err(|e| e.to_string())?;
+    println!("asr: {text}");
+
+    // `beam_search` raises an explicit error when word timestamps were
+    // requested on a model without alignment heads, so reaching here with
+    // `None` would mean the driver silently skipped the alignment — surface
+    // that rather than printing zero words as if the clip had none.
+    let timings = best.word_timestamps.as_ref().ok_or(
+        "run (whisper --word-timestamps): the decoder returned no alignment for the best \
+         hypothesis (expected cross-attention word timings)",
+    )?;
+    for w in timings {
+        let span = best.tokens.get(w.token_start..w.token_end).ok_or(
+            "run (whisper --word-timestamps): word span out of range for the \
+                    hypothesis tokens",
+        )?;
+        let word = asr.render_ids(span).map_err(|e| e.to_string())?;
+        println!("word\t{word}\t{:.3}\t{:.3}", w.start, w.end);
+    }
+    Ok(())
 }
 
 /// The Moshi full-duplex demo path (M4-06-T26): file-driven mic frames
@@ -952,6 +1164,181 @@ mod tests {
         );
     }
 
+    // ---- P2 cc-10 / cc-19: voxtral route + whisper word timestamps -------
+
+    #[test]
+    fn parses_word_timestamps_language_and_bare_prompt_flags() {
+        let a = parse_args(&args(&["--model", "m.gguf", "--input", "in.wav"])).expect("valid");
+        assert!(!a.word_timestamps);
+        assert_eq!(a.language, None);
+        assert!(!a.bare_prompt);
+
+        let a = parse_args(&args(&[
+            "--model",
+            "m.gguf",
+            "--input",
+            "in.wav",
+            "--word-timestamps",
+        ]))
+        .expect("valid");
+        assert!(a.word_timestamps);
+
+        let a = parse_args(&args(&[
+            "--model",
+            "v.gguf",
+            "--input",
+            "in.wav",
+            "--language",
+            "fr",
+            "--bare-prompt",
+        ]))
+        .expect("valid");
+        assert_eq!(a.language.as_deref(), Some("fr"));
+        assert!(a.bare_prompt);
+
+        // `auto` is carried verbatim; the run arm maps it to "omit the
+        // lang: segment".
+        let a = parse_args(&args(&["--model", "v.gguf", "--language", "auto"])).expect("valid");
+        assert_eq!(a.language.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn rejects_dangling_and_empty_language() {
+        assert_eq!(
+            parse_args(&args(&["--model", "v.gguf", "--language"]))
+                .err()
+                .unwrap(),
+            "--language requires a value"
+        );
+        assert!(
+            parse_args(&args(&["--model", "v.gguf", "--language", ""]))
+                .err()
+                .unwrap()
+                .contains("must not be empty")
+        );
+    }
+
+    /// `--word-timestamps` off the whisper arch is an explicit contract
+    /// error (FR-EX-08 — Voxtral has no cross-attention alignment).
+    #[test]
+    fn word_timestamps_on_non_whisper_arch_is_rejected() {
+        let err = main(&args(&[
+            "--model",
+            &silero_fixture(),
+            "--input",
+            "unused.wav",
+            "--word-timestamps",
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains("--word-timestamps is only supported for the whisper"),
+            "got: {err}"
+        );
+    }
+
+    /// `--language` / `--bare-prompt` off the voxtral arch likewise.
+    #[test]
+    fn voxtral_prompt_flags_on_other_arch_are_rejected() {
+        for flag in [
+            vec!["--language".to_owned(), "fr".to_owned()],
+            vec!["--bare-prompt".to_owned()],
+        ] {
+            let mut argv = args(&["--model", &silero_fixture(), "--input", "unused.wav"]);
+            argv.extend(flag);
+            let err = main(&argv).unwrap_err();
+            assert!(
+                err.contains("--language / --bare-prompt are only supported for the voxtral"),
+                "got: {err}"
+            );
+        }
+    }
+
+    /// A metadata-only `voxtral` GGUF reaches the run arm (dispatch is
+    /// bare by design) and then fails loudly when the concrete engine binds
+    /// — never a silent success (FR-EX-08).
+    #[test]
+    fn voxtral_metadata_only_gguf_fails_loudly_at_engine_bind() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "voxtral");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let dir = std::env::temp_dir();
+        let model = dir.join(format!("vokra-cli-vox-meta-{}.gguf", std::process::id()));
+        std::fs::write(&model, &bytes).unwrap();
+        let in_wav = dir.join(format!("vokra-cli-vox-meta-{}.wav", std::process::id()));
+        let samples: Vec<f32> = (0..16_000).map(|i| (i as f32 * 0.05).sin() * 0.3).collect();
+        wav::write_wav(in_wav.to_str().unwrap(), &samples, 16_000).unwrap();
+        let err = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--input",
+            in_wav.to_str().unwrap(),
+        ]))
+        .unwrap_err();
+        let _ = std::fs::remove_file(&model);
+        let _ = std::fs::remove_file(&in_wav);
+        assert!(!err.is_empty(), "loud bind error expected");
+    }
+
+    /// Voxtral without `--input` is a contract error naming the flag.
+    #[test]
+    fn voxtral_without_input_is_a_contract_error() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "voxtral");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let model =
+            std::env::temp_dir().join(format!("vokra-cli-vox-noinput-{}.gguf", std::process::id()));
+        std::fs::write(&model, &bytes).unwrap();
+        let err = main(&args(&["--model", model.to_str().unwrap()])).unwrap_err();
+        let _ = std::fs::remove_file(&model);
+        assert!(err.contains("--input"), "actionable: {err}");
+    }
+
+    /// Real-GGUF gated e2e for the voxtral CLI route (P2 cc-10): set
+    /// `VOKRA_VOXTRAL_GGUF` (+ optional `VOKRA_VOXTRAL_WAV`) to run; skips
+    /// clean when unset. Prints the transcript to stdout via the run arm —
+    /// the numeric/text assertion rides the models-crate e2e test
+    /// (`voxtral_transcription_prompt.rs`), this one proves the CLI wiring.
+    #[test]
+    fn voxtral_real_gguf_cli_route_gated() {
+        let Ok(model) = std::env::var("VOKRA_VOXTRAL_GGUF") else {
+            eprintln!("skipping voxtral CLI e2e: set VOKRA_VOXTRAL_GGUF to run");
+            return;
+        };
+        let wav = std::env::var("VOKRA_VOXTRAL_WAV").unwrap_or_else(|_| {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/audio/jfk-30s.wav")
+                .to_string_lossy()
+                .into_owned()
+        });
+        let code = main(&args(&["--model", &model, "--input", &wav])).expect("voxtral CLI runs");
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    /// Real-GGUF gated check for `--word-timestamps` (cc-19): set
+    /// `VOKRA_WHISPER_GGUF` (+ optional `VOKRA_WHISPER_WAV`).
+    #[test]
+    fn whisper_word_timestamps_cli_route_gated() {
+        let Ok(model) = std::env::var("VOKRA_WHISPER_GGUF") else {
+            eprintln!("skipping whisper word-timestamps CLI e2e: set VOKRA_WHISPER_GGUF to run");
+            return;
+        };
+        let wav = std::env::var("VOKRA_WHISPER_WAV").unwrap_or_else(|_| {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/audio/jfk-30s.wav")
+                .to_string_lossy()
+                .into_owned()
+        });
+        let code = main(&args(&[
+            "--model",
+            &model,
+            "--input",
+            &wav,
+            "--word-timestamps",
+        ]))
+        .expect("whisper --word-timestamps runs");
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
     /// The help text documents the new surface (Fix A + Fix C of the
     /// campaign-2 cli-enablers leg).
     #[test]
@@ -964,6 +1351,14 @@ mod tests {
         assert!(USAGE.contains("--compare"), "USAGE lists --compare");
         assert!(USAGE.contains("speaker"), "USAGE mentions the speaker task");
         assert!(USAGE.contains("campplus"), "USAGE names the campplus arch");
+        // P2 cc-10 / cc-19 surface.
+        assert!(
+            USAGE.contains("--word-timestamps"),
+            "USAGE lists --word-timestamps"
+        );
+        assert!(USAGE.contains("--language"), "USAGE lists --language");
+        assert!(USAGE.contains("--bare-prompt"), "USAGE lists --bare-prompt");
+        assert!(USAGE.contains("voxtral"), "USAGE names the voxtral arch");
     }
 
     /// `--compare` on a non-speaker arch is an explicit contract error

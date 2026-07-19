@@ -345,15 +345,30 @@ impl<'m> StreamingAsr<'m> {
         })
     }
 
-    /// Finalize the stream, run greedy decode over the accumulated PCM and
-    /// return the full generated token list on the returned
-    /// [`StreamingChunk::tokens`]. Idempotent — subsequent calls return an
-    /// empty chunk (no double-emit).
+    /// Finalize the stream and return the generated token list on the
+    /// returned [`StreamingChunk::tokens`]. Idempotent — subsequent calls
+    /// return an empty chunk (no double-emit).
     ///
-    /// The returned tokens are the same the offline
-    /// [`crate::voxtral::VoxtralAsr::transcribe`] would emit on the
-    /// concatenated PCM under the same config — the streaming façade must
-    /// not silently diverge from the offline API (FR-EX-08).
+    /// # Honest scope: this is NOT audio-conditioned (2026-07-19)
+    ///
+    /// The decode below runs the **text decoder only**, greedily from
+    /// `[MISTRAL_BOS_ID]`: it never forwards the audio encoder and never
+    /// applies the audio adapter, so the accumulated PCM does not
+    /// influence the result at all. The tokens are a pure LM continuation
+    /// of BOS.
+    ///
+    /// This docstring previously claimed the output equalled
+    /// [`crate::voxtral::VoxtralAsr::transcribe`]'s. That was already
+    /// untrue for any GGUF carrying an audio adapter (the offline path
+    /// runs the encoder + soft prefix), and the P2 cc-05/07 follow-up
+    /// widened the gap by moving the offline default onto the trained
+    /// transcription-prompt layout. Corrected here rather than left as a
+    /// fabricated equivalence claim (FR-EX-08).
+    ///
+    /// Wiring the encoder + adapter + prompt layout into the streaming
+    /// façade is the follow-up; until then, callers who need real
+    /// transcription must use [`crate::voxtral::VoxtralAsr::transcribe`]
+    /// on the concatenated PCM.
     pub fn finalize_transcript(&mut self) -> Result<StreamingChunk> {
         if self.finalized {
             return Ok(StreamingChunk {

@@ -563,6 +563,84 @@ pub fn greedy_decode_with_prefix(
     Ok(generated)
 }
 
+/// Segmented greedy decode for the **trained transcription-prompt layout**
+/// (P2 cc-05/07 follow-up): seed the session with
+///
+/// ```text
+/// step_into(pre_tokens) → step_into_with_embed_prefix(audio rows) → step_into(post_tokens)
+/// ```
+///
+/// then greedy-loop from the post-segment's last logits row until `eos` or
+/// `max_new` tokens. This is the runtime replay of upstream
+/// `VoxtralForConditionalGeneration.forward`'s `masked_scatter` semantics:
+/// the audio soft-prefix rows occupy the `[AUDIO]` placeholder positions
+/// between `pre_tokens` (`[<s>, [INST], [BEGIN_AUDIO]]`) and `post_tokens`
+/// (`[[/INST], "lang:xx"…, [TRANSCRIBE]]`).
+///
+/// Returns only the generated tokens (no prompt segment is included); a
+/// decode that stopped on `eos` has it as the last element. The session is
+/// [`TextDecoderSession::reset`] at the top so a repeat call reproduces the
+/// first.
+///
+/// # Errors
+///
+/// - [`VokraError::InvalidArgument`] if `t_prefix == 0` (the trained layout
+///   is only defined over an audio run — use [`greedy_decode`] /
+///   [`greedy_decode_with_prefix`] otherwise) or `post_tokens` is empty
+///   (the first generated token is sampled from the logits AFTER the
+///   post-audio segment; an empty segment has no defined sampling point in
+///   this layout);
+/// - any error the underlying [`TextDecoderSession::step_into`] /
+///   [`TextDecoderSession::step_into_with_embed_prefix`] surfaces
+///   (out-of-vocab id, shape mismatch, exceeded `n_ctx`, backend error).
+pub fn greedy_decode_with_segments(
+    session: &mut TextDecoderSession<'_>,
+    pre_tokens: &[u32],
+    prefix_embed: &[f32],
+    t_prefix: usize,
+    post_tokens: &[u32],
+    eos: u32,
+    max_new: usize,
+) -> Result<Vec<u32>> {
+    if t_prefix == 0 {
+        return Err(VokraError::InvalidArgument(
+            "voxtral::greedy_decode_with_segments: t_prefix must be > 0 — the transcription \
+             layout is only defined over an audio soft-prefix run (use greedy_decode / \
+             greedy_decode_with_prefix instead)"
+                .into(),
+        ));
+    }
+    if post_tokens.is_empty() {
+        return Err(VokraError::InvalidArgument(
+            "voxtral::greedy_decode_with_segments: post_tokens must not be empty — the first \
+             generated token is sampled from the logits after the post-audio segment \
+             ([/INST]…[TRANSCRIBE])"
+                .into(),
+        ));
+    }
+    session.reset();
+    session.step_into(pre_tokens)?; // empty pre is a documented no-op
+    session.step_into_with_embed_prefix(prefix_embed, t_prefix)?;
+    session.step_into(post_tokens)?;
+    let mut generated = Vec::with_capacity(max_new.min(64));
+    let cap = max_new.max(1);
+    let consumed = pre_tokens
+        .len()
+        .saturating_add(t_prefix)
+        .saturating_add(post_tokens.len());
+    let n_ctx_cap = session.config.text.n_ctx.saturating_sub(consumed);
+    let cap = cap.min(n_ctx_cap);
+    for _ in 0..cap {
+        let next = argmax(session.last_logits_row());
+        generated.push(next);
+        if next == eos {
+            break;
+        }
+        session.step_into(&[next])?;
+    }
+    Ok(generated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -929,5 +1007,120 @@ mod tests {
         ref_sess.step_into(&[1u32]).unwrap();
         sess.step_into(&[1u32]).unwrap();
         assert_eq!(sess.last_logits_row(), ref_sess.last_logits_row());
+    }
+
+    // -----------------------------------------------------------------
+    // greedy_decode_with_segments (trained transcription-prompt layout)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn segments_decode_matches_hand_driven_replay_bit_identically() {
+        // The driver must be exactly reset → step(pre) → embed → step(post)
+        // → argmax loop. Replay the same steps by hand and compare tokens.
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let d = cfg.text.hidden_dim;
+        let pre = [1u32, 3, 2];
+        let post = [0u32, 2];
+        let t_prefix = 2usize;
+        let embed: Vec<f32> = (0..t_prefix * d).map(|i| 0.05 * (i as f32 - 3.0)).collect();
+        let eos = 999u32; // unreachable
+        let max_new = 4usize;
+
+        let mut sess = TextDecoderSession::cpu(&cfg, &td).unwrap();
+        let got =
+            greedy_decode_with_segments(&mut sess, &pre, &embed, t_prefix, &post, eos, max_new)
+                .unwrap();
+
+        let mut manual = TextDecoderSession::cpu(&cfg, &td).unwrap();
+        manual.step_into(&pre).unwrap();
+        manual
+            .step_into_with_embed_prefix(&embed, t_prefix)
+            .unwrap();
+        manual.step_into(&post).unwrap();
+        let mut want = Vec::new();
+        for _ in 0..max_new {
+            let next = argmax(manual.last_logits_row());
+            want.push(next);
+            manual.step_into(&[next]).unwrap();
+        }
+        assert_eq!(got, want, "driver must replay the manual step sequence");
+        assert_eq!(got.len(), max_new);
+
+        // Deterministic across calls (session reset at the top).
+        let again =
+            greedy_decode_with_segments(&mut sess, &pre, &embed, t_prefix, &post, eos, max_new)
+                .unwrap();
+        assert_eq!(got, again);
+    }
+
+    #[test]
+    fn segments_decode_differs_from_bare_prefix_layout_inputs() {
+        // Not an oracle on the values — a structural check that the post
+        // segment participates: decoding with post = [0] vs post = [3]
+        // starts the greedy loop from different logits, so the drivers see
+        // different KV content. Both must complete and respect max_new.
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let d = cfg.text.hidden_dim;
+        let t_prefix = 2usize;
+        let embed: Vec<f32> = (0..t_prefix * d).map(|i| 0.1 * (i as f32)).collect();
+        let mut sess = TextDecoderSession::cpu(&cfg, &td).unwrap();
+        let a =
+            greedy_decode_with_segments(&mut sess, &[1], &embed, t_prefix, &[0], 999, 3).unwrap();
+        let b =
+            greedy_decode_with_segments(&mut sess, &[1], &embed, t_prefix, &[3], 999, 3).unwrap();
+        assert_eq!(a.len(), 3);
+        assert_eq!(b.len(), 3);
+    }
+
+    #[test]
+    fn segments_decode_stops_on_eos_and_includes_it() {
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let d = cfg.text.hidden_dim;
+        let embed: Vec<f32> = vec![0.05; d];
+        let mut sess = TextDecoderSession::cpu(&cfg, &td).unwrap();
+        // Find what the first greedy token would be, then use it as EOS —
+        // the decode must stop immediately with exactly [eos].
+        let probe = greedy_decode_with_segments(&mut sess, &[1], &embed, 1, &[0], 9999, 1).unwrap();
+        let eos = probe[0];
+        let got = greedy_decode_with_segments(&mut sess, &[1], &embed, 1, &[0], eos, 8).unwrap();
+        assert_eq!(got, vec![eos]);
+    }
+
+    #[test]
+    fn segments_decode_empty_pre_is_allowed_empty_post_is_not() {
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let d = cfg.text.hidden_dim;
+        let embed: Vec<f32> = vec![0.05; d];
+        let mut sess = TextDecoderSession::cpu(&cfg, &td).unwrap();
+        // Empty pre: documented no-op segment — decode proceeds.
+        assert!(greedy_decode_with_segments(&mut sess, &[], &embed, 1, &[0], 999, 2).is_ok());
+        // Empty post: explicit error (no defined sampling point).
+        assert!(matches!(
+            greedy_decode_with_segments(&mut sess, &[1], &embed, 1, &[], 999, 2),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // t_prefix == 0: explicit error (layout needs an audio run).
+        assert!(matches!(
+            greedy_decode_with_segments(&mut sess, &[1], &[], 0, &[0], 999, 2),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn segments_decode_respects_n_ctx_budget() {
+        // tiny_cfg has n_ctx = 16. pre(2) + prefix(4) + post(2) = 8 consumed
+        // → at most 8 generated even when max_new asks for more.
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let d = cfg.text.hidden_dim;
+        let embed: Vec<f32> = vec![0.02; 4 * d];
+        let mut sess = TextDecoderSession::cpu(&cfg, &td).unwrap();
+        let got =
+            greedy_decode_with_segments(&mut sess, &[1, 2], &embed, 4, &[0, 3], 999, 100).unwrap();
+        assert!(got.len() <= 8, "n_ctx budget violated: {}", got.len());
     }
 }

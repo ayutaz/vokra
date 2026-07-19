@@ -28,7 +28,8 @@ USAGE:
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model voxtral --input <ckpt.safetensors | model.safetensors.index.json> \
-                      [--config <config.json>] [--adapter-config <adapter.json>] --output <out.gguf>
+                      [--config <config.json>] [--adapter-config <adapter.json>] \
+                      [--tokenizer <tekken-vocab.bin>] --output <out.gguf>
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
@@ -58,8 +59,15 @@ OPTIONS:
                               writes `vokra.voxtral.adapter.*` metadata so the
                               runtime binds the checkpoint's adapter tensors
                               and routes ASR through the audio-conditioned
-                              soft-prefix path (see docs/tickets/m3/M3-10*.md).
-                              Omit for the honest LM-continuation path.
+                              path (see docs/tickets/m3/M3-10*.md). Omit for
+                              the honest LM-continuation path.
+    --tokenizer <path>        Voxtral only: raw tokenizer bytes embedded
+                              verbatim into `vokra.tokenizer.model` (the
+                              tekken compact-vocab blob). REQUIRED for a
+                              usable ASR GGUF — without it the runtime can
+                              neither detokenize nor build the trained
+                              transcription prompt (both are explicit
+                              errors, never silent).
     --output <path>           GGUF file to write
     --quantize <kind>         K-quantize weight matrices: q4_k | q5_k | q6_k (whisper only)
                               Alias for --policy-preset whisper_q4_k (when kind=q4_k).
@@ -78,6 +86,12 @@ struct Parsed {
     /// metadata chunk into the GGUF so the runtime binds real adapter tensors
     /// and does audio-conditioned ASR.
     adapter_config: Option<PathBuf>,
+    /// P2 cc-10 — Voxtral only. Raw tokenizer bytes to embed verbatim into
+    /// `vokra.tokenizer.model`. Without it the emitted GGUF carries no
+    /// tokenizer, and the runtime can neither detokenize nor build the
+    /// trained transcription prompt (both surface explicit errors) — so a
+    /// CLI-only conversion was previously unusable through `vokra-cli run`.
+    tokenizer: Option<PathBuf>,
     output: PathBuf,
     quant: Option<GgmlType>,
     policy: Option<PolicyPreset>,
@@ -98,6 +112,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut input: Option<PathBuf> = None;
     let mut config: Option<PathBuf> = None;
     let mut adapter_config: Option<PathBuf> = None;
+    let mut tokenizer: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut quant: Option<GgmlType> = None;
     let mut policy: Option<PolicyPreset> = None;
@@ -135,6 +150,12 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 ));
                 i += 2;
             }
+            "--tokenizer" => {
+                tokenizer = Some(PathBuf::from(
+                    args.get(i + 1).ok_or("--tokenizer requires a value")?,
+                ));
+                i += 2;
+            }
             "--output" => {
                 output = Some(PathBuf::from(
                     args.get(i + 1).ok_or("--output requires a value")?,
@@ -169,6 +190,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         input: input.ok_or("--input is required")?,
         config,
         adapter_config,
+        tokenizer,
         output: output.ok_or("--output is required")?,
         quant,
         policy,
@@ -183,6 +205,27 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     }
     let p = parse_args(args)?;
     let model = p.model; // ModelKind is Copy; reused after the move into convert_*.
+
+    // `--adapter-config` / `--tokenizer` are Voxtral-only side-cars. Passing
+    // one on another model would previously be dropped without a word;
+    // reject instead (FR-EX-08 — never silently ignore a user flag).
+    if !matches!(model, ModelKind::Voxtral) {
+        if p.adapter_config.is_some() {
+            return Err(
+                "--adapter-config is only supported for --model voxtral (it writes the \
+                 `vokra.voxtral.adapter.*` metadata chunk)"
+                    .to_owned(),
+            );
+        }
+        if p.tokenizer.is_some() {
+            return Err(
+                "--tokenizer is only supported for --model voxtral. Other archs embed their \
+                 tokenizer through their own path (whisper: the converter bakes the vocab; \
+                 csm / moshi: the standalone `vokra-convert` binary's --config side-car)"
+                    .to_owned(),
+            );
+        }
+    }
 
     let result = match model {
         ModelKind::PiperPlus => {
@@ -231,7 +274,7 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             // vocab size, max positions). Omitting it leaves the shape-only
             // sentinels the runtime rejects at forward (FR-EX-08) — the raw
             // sharded release always ships one, so real conversions pass it.
-            let base_cfg = match &p.config {
+            let mut base_cfg = match &p.config {
                 Some(cfg_path) => {
                     let bytes = std::fs::read(cfg_path)
                         .map_err(|e| format!("--config {}: {e}", cfg_path.display()))?;
@@ -239,20 +282,40 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 }
                 None => VoxtralConfig::default(),
             };
-            match (&p.config, &p.adapter_config) {
+            // P2 cc-10: embed the tokenizer verbatim when supplied. Without
+            // it the GGUF carries no `vokra.tokenizer.model`, and the
+            // runtime can neither detokenize nor build the trained
+            // transcription prompt.
+            if let Some(tok_path) = &p.tokenizer {
+                let bytes = std::fs::read(tok_path)
+                    .map_err(|e| format!("--tokenizer {}: {e}", tok_path.display()))?;
+                if bytes.is_empty() {
+                    return Err(format!(
+                        "--tokenizer {}: file is empty — refusing to embed a zero-length \
+                         tokenizer chunk",
+                        tok_path.display()
+                    ));
+                }
+                base_cfg.tokenizer_bytes = Some(bytes);
+            }
+            match (&p.config, &p.adapter_config, &p.tokenizer) {
                 // M3-10 Wave 8: adapter-conditioned convert (with or without
-                // the base config side-car).
-                (_, Some(adapter_json)) => convert_voxtral_file_with_adapter_config(
+                // the base config / tokenizer side-cars).
+                (_, Some(adapter_json), _) => convert_voxtral_file_with_adapter_config(
                     &p.input,
                     &base_cfg,
                     adapter_json,
                     &p.output,
                 ),
-                // Config without adapter → full hparam chunk, honest
-                // LM-continuation posture (no adapter metadata).
-                (Some(_), None) => convert_voxtral_file(&p.input, &base_cfg, &p.output),
-                // Neither → shape-only conversion (pre-Wave-8 behaviour).
-                (None, None) => convert_file(model, &p.input, &p.output),
+                // Config and/or tokenizer without adapter → full hparam
+                // chunk, honest LM-continuation posture (no adapter
+                // metadata). The tokenizer-only case still needs the
+                // cfg-carrying entry point to reach `tokenizer_bytes`.
+                (Some(_), None, _) | (None, None, Some(_)) => {
+                    convert_voxtral_file(&p.input, &base_cfg, &p.output)
+                }
+                // Nothing → shape-only conversion (pre-Wave-8 behaviour).
+                (None, None, None) => convert_file(model, &p.input, &p.output),
             }
         }
         ModelKind::CosyVoice2 => {
@@ -536,6 +599,128 @@ mod tests {
         assert_eq!(p.input, PathBuf::from("model.safetensors.index.json"));
         assert_eq!(p.config, Some(PathBuf::from("config.json")));
         assert_eq!(p.adapter_config, Some(PathBuf::from("adapter.json")));
+    }
+
+    // ---- P2 cc-10: --tokenizer side-car + Voxtral-only flag scoping ------
+
+    #[test]
+    fn parses_voxtral_tokenizer_side_car() {
+        let p = parse_args(&args(&[
+            "--model",
+            "voxtral",
+            "--input",
+            "model.safetensors.index.json",
+            "--config",
+            "config.json",
+            "--adapter-config",
+            "adapter.json",
+            "--tokenizer",
+            "tekken-compact-vocab.bin",
+            "--output",
+            "voxtral.gguf",
+        ]))
+        .expect("valid");
+        assert_eq!(p.tokenizer, Some(PathBuf::from("tekken-compact-vocab.bin")));
+        // Absent by default.
+        let p = parse_args(&args(&[
+            "--model",
+            "voxtral",
+            "--input",
+            "v.safetensors",
+            "--output",
+            "v.gguf",
+        ]))
+        .expect("valid");
+        assert_eq!(p.tokenizer, None);
+    }
+
+    #[test]
+    fn tokenizer_requires_value() {
+        assert_eq!(
+            parse_args(&args(&[
+                "--model",
+                "voxtral",
+                "--input",
+                "v.safetensors",
+                "--output",
+                "v.gguf",
+                "--tokenizer",
+            ]))
+            .err()
+            .unwrap(),
+            "--tokenizer requires a value"
+        );
+    }
+
+    /// The Voxtral-only side-cars are rejected on other models rather than
+    /// silently dropped (FR-EX-08).
+    #[test]
+    fn voxtral_only_side_cars_are_rejected_on_other_models() {
+        let err = main(&args(&[
+            "--model",
+            "whisper",
+            "--input",
+            "w.safetensors",
+            "--output",
+            "w.gguf",
+            "--adapter-config",
+            "adapter.json",
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains("--adapter-config is only supported for --model voxtral"),
+            "got: {err}"
+        );
+        let err = main(&args(&[
+            "--model",
+            "whisper",
+            "--input",
+            "w.safetensors",
+            "--output",
+            "w.gguf",
+            "--tokenizer",
+            "tok.bin",
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains("--tokenizer is only supported for --model voxtral"),
+            "got: {err}"
+        );
+    }
+
+    /// An empty `--tokenizer` file is refused before any conversion work —
+    /// embedding a zero-length chunk would produce a GGUF whose tokenizer
+    /// "exists" but decodes nothing.
+    #[test]
+    fn empty_tokenizer_file_is_rejected() {
+        let dir = std::env::temp_dir();
+        let tok = dir.join(format!("vokra-cli-empty-tok-{}.bin", std::process::id()));
+        std::fs::write(&tok, b"").unwrap();
+        let missing_input = dir.join("definitely-not-here.safetensors");
+        let err = main(&args(&[
+            "--model",
+            "voxtral",
+            "--input",
+            missing_input.to_str().unwrap(),
+            "--output",
+            "out.gguf",
+            "--tokenizer",
+            tok.to_str().unwrap(),
+        ]))
+        .unwrap_err();
+        let _ = std::fs::remove_file(&tok);
+        assert!(err.contains("file is empty"), "got: {err}");
+    }
+
+    /// The help documents the tokenizer side-car (a Voxtral GGUF without it
+    /// cannot detokenize — the CLI must say so).
+    #[test]
+    fn usage_documents_tokenizer_side_car() {
+        assert!(USAGE.contains("--tokenizer"), "USAGE lists --tokenizer");
+        assert!(
+            USAGE.contains("vokra.tokenizer.model"),
+            "USAGE names the chunk the flag writes"
+        );
     }
 
     #[test]

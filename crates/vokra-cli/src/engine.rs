@@ -25,6 +25,19 @@ pub(crate) enum ModelTask {
     Vad,
     /// Speech-to-text (Whisper base).
     Asr,
+    /// Speech-to-text through Voxtral (M3-10 / P2 cc-10).
+    ///
+    /// Like [`ModelTask::Speaker`], the dispatch returns a **bare session**
+    /// and the `run` arm binds the concrete
+    /// [`vokra_models::voxtral::VoxtralAsr`] from `session.gguf()`. This is
+    /// deliberate, not an omission: Voxtral's beam surface
+    /// (`transcribe_beam_with_config_overrides`, n-best + length-penalty +
+    /// no-repeat-ngram) is a concrete-type API, not part of the
+    /// [`vokra_core::AsrEngine`] trait, so injecting only the trait object
+    /// would force a SECOND multi-GB load to reach it — the shipping mini
+    /// decodes to ~12 GB of f32 weights, so two live copies do not fit on a
+    /// 16 GB machine. One load, both surfaces.
+    AsrVoxtral,
     /// Text-to-speech (piper-plus native TTS).
     Tts,
     /// Speech-to-speech dialog (Sesame CSM-1B = M4-05). The reply text is
@@ -122,6 +135,8 @@ const ARCH_PIPER_PLUS: &str = "piper-plus-mb-istft-vits2";
 const ARCH_CSM: &str = "csm";
 const ARCH_MOSHI: &str = "moshi";
 const ARCH_CAMPPLUS: &str = "campplus";
+/// Voxtral (M3-10) — matches `vokra-convert::models::voxtral::ARCH`.
+const ARCH_VOXTRAL: &str = "voxtral";
 
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
@@ -225,6 +240,18 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // vokra-capi; a shared-GGUF constructor is the same follow-up).
             let tts = PiperPlusTts::from_path(path).map_err(|e| e.to_string())?;
             Ok((session.with_tts_engine(Arc::new(tts)), ModelTask::Tts))
+        }
+        ARCH_VOXTRAL => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_VOXTRAL}`"
+                ));
+            }
+            // Bare session — the `run` arm binds `VoxtralAsr` from
+            // `session.gguf()` exactly once (see `ModelTask::AsrVoxtral`
+            // for why the engine is not injected here). A GGUF whose
+            // tensors / hparams do not bind fails loudly there (FR-EX-08).
+            Ok((session, ModelTask::AsrVoxtral))
         }
         ARCH_CAMPPLUS => {
             if hint.is_some() {
@@ -330,7 +357,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
         other => Err(format!(
             "unsupported model arch `{other}` (expected `{ARCH_WHISPER}` / \
              `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
-             `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}`)"
+             `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}`)"
         )),
     }
 }
@@ -429,6 +456,52 @@ mod tests {
         .expect_err("--mimi on silero-vad is rejected");
         assert!(
             err.contains("--mimi is only supported on arch `moshi`"),
+            "got: {err}"
+        );
+    }
+
+    /// A `voxtral` arch GGUF dispatches to [`ModelTask::AsrVoxtral`] with a
+    /// bare session — the concrete engine binds in the `run` arm (P2 cc-10),
+    /// so a metadata-only fixture is enough here (campplus precedent).
+    #[test]
+    fn load_session_detects_voxtral_as_asr_voxtral_task() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "voxtral");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-voxtral-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("voxtral session builds (bare)");
+        assert_eq!(task, ModelTask::AsrVoxtral);
+    }
+
+    /// Task hints are rejected on the voxtral arch (FR-EX-08 — no silent
+    /// hint drop).
+    #[test]
+    fn load_session_rejects_hint_on_voxtral() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "voxtral");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-voxtral-hint-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session_with_backend(
+            path.to_str().unwrap(),
+            BackendKind::Cpu,
+            Some(TaskHint::MelFrontend),
+        );
+        let _ = std::fs::remove_file(&path);
+        let err = result.expect_err("hint on voxtral is rejected");
+        assert!(
+            err.contains("not supported on arch `voxtral`"),
             "got: {err}"
         );
     }
