@@ -263,8 +263,9 @@ license sign-off, and owner ADR decisions are pending
   section (`scripts/gen-notice-cpu-vulkan-only.sh`), and a deterministic
   SPDX 2.3 SBOM is generated per build (`scripts/sbom/generate_spdx.py`).
   No new C ABI symbol: the build flavor is identified by build-time
-  metadata only (SBOM / NOTICE / artifact name). The critical-safe
-  (medical / automotive / defense) market claim stays in M5.
+  metadata only (SBOM / NOTICE / artifact name). M4-15 ships the build
+  target only — the market positioning that this flavor is intended to
+  support is deferred to M5-08 / M5-11.
 - **FSQ codec** (M4-16): `wavtokenizer_vq` + `xcodec2_fsq` ops
   (synthetic-weight parity), with metadata marked EXPERIMENTAL.
   `wfst_decode` + SynthID stay in M5.

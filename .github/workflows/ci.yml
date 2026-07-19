@@ -1101,8 +1101,17 @@ jobs:
         run: |
           set -euo pipefail
           TARBALL="$(ls bindings/unity/com.vokra.unity-*.tgz)"
-          tar -tzf "$TARBALL" | grep -q 'com.vokra.unity/Plugins/WebGL/libvokra.a$'
-          tar -tzf "$TARBALL" | grep -q 'com.vokra.unity/Plugins/WebGL/libvokra.a.meta$'
+          # List ONCE into a file rather than piping `tar` into `grep -q`:
+          # under `set -o pipefail`, `grep -q` exits at the first match and
+          # `tar` then dies of SIGPIPE, failing the whole pipeline with
+          # "tar: stdout: write error". It only trips when tar is still
+          # writing when grep leaves, so it stayed latent until the package
+          # grew (first observed on the M4 branch).
+          LISTING="$(mktemp)"
+          tar -tzf "$TARBALL" > "$LISTING"
+          grep -q 'com.vokra.unity/Plugins/WebGL/libvokra.a$' "$LISTING"
+          grep -q 'com.vokra.unity/Plugins/WebGL/libvokra.a.meta$' "$LISTING"
+          rm -f "$LISTING"
           echo "OK: $TARBALL ships Plugins/WebGL/libvokra.a (+ .meta)"
       - name: Structure lint (package.json / asmdefs / Plugins shape)
         # Fails loudly on any missing native slice, malformed JSON in the two

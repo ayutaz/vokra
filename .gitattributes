@@ -68,3 +68,15 @@ tests/parity/aec/*.i16le -filter -diff -merge
 # scripts/compile-vulkan-shaders.sh --update with the toolchain pinned in
 # kernels/precompiled/PROVENANCE.
 crates/vokra-backend-vulkan/kernels/precompiled/*.spv -filter -diff -merge
+
+# Shader sources whose BYTES are SHA-256-pinned must check out identically on
+# every platform. Both are hashed as text-through-bytes:
+#   *.wgsl  -> include_str! + expected_sha256_hex in vokra-backend-webgpu/src/wgsl.rs
+#   *.comp  -> per-source hashes in vokra-backend-vulkan/kernels/precompiled/PROVENANCE
+# Without an eol pin, a Windows checkout (core.autocrlf=true by default, as on
+# the GitHub windows-latest runners) rewrites LF to CRLF and the drift gate
+# fires on a file nobody edited — observed as `WGSL source drift for copy_f32`
+# in the first Windows CI run of this branch. `eol=lf` (not `-text`) keeps them
+# diffable and mergeable as the source files they are.
+*.wgsl text eol=lf
+*.comp text eol=lf

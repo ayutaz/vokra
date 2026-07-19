@@ -158,8 +158,18 @@ jobs:
           # (2026-07-16 P1 fidelity fix — the dumper aborts loudly without
           # it, never falling back to a re-implementation). It pulls
           # transformers / misaki / loguru; torch stays pinned explicitly.
+          # `click` is pinned explicitly even though nothing here depends on
+          # it directly: `kokoro` -> `misaki` -> `spacy`, and spacy's
+          # `cli/_util.py` does `from click import NoSuchOption` at IMPORT
+          # time (not only when its CLI runs). A fresh CI resolve landed
+          # spacy without click and the dumper died on
+          # `ModuleNotFoundError: No module named 'click'` before reaching
+          # any tensor. The local reference venv that produced the committed
+          # fixtures has click 8.4.2, so the pin makes CI reproduce that venv
+          # instead of depending on transitive resolution.
           python -m pip install \
             'kokoro==0.9.4' \
+            'click==8.4.2' \
             'torch==2.12.1' \
             'numpy==2.4.6' \
             'safetensors==0.8.0' \
