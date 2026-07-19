@@ -45,6 +45,7 @@
 //! the `!Send` context lives only for the call.
 
 use vokra_backend_cpu::kernels;
+use vokra_backend_cpu::kernels::KQuantDtype;
 use vokra_core::backend::BackendKind;
 use vokra_core::{Backend, DecoderLayerView, PrenormLayer, Result, VokraError};
 // M3-06 mimi_rvq (+ M4-04 dac_rvq / encodec_rvq, + M4-16 FSQ family
@@ -278,6 +279,24 @@ pub struct Compute {
     be: Be,
 }
 
+/// The explicit refusal every GPU arm of [`Compute::gemm_q_f32`] returns
+/// (M5-15-T27). Compiled only when at least one GPU arm exists on this target,
+/// so it never becomes dead code.
+#[cfg(any(
+    all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+    all(feature = "cuda", any(unix, windows)),
+    all(feature = "webgpu", target_arch = "wasm32"),
+))]
+fn unsupported_quant_gemm(backend: &str) -> VokraError {
+    VokraError::UnsupportedOp(format!(
+        "fused K-quant GEMM has no {backend} kernel (M5-15 is CPU-only; GPU fused K-quant is a \
+         separate WP). Vokra does not dequantize behind your back, nor silently run this op on \
+         the CPU (FR-EX-08) — load the model without \
+         `WhisperLoadOptions::fused_quant_weights` to get dequantized weights this backend can \
+         use, or select BackendKind::Cpu."
+    ))
+}
+
 /// The live backend behind a [`Compute`]. The `Metal` arm owns a `!Send`
 /// `MetalContext`, which is why a `Compute` is built at a call entry and never
 /// stored on a `Send + Sync` engine.
@@ -509,6 +528,49 @@ impl Compute {
             Be::Cuda(ctx) => ctx.gemm_f32(m, n, k, a, b, bias, out),
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(ctx) => ctx.gemm_f32(m, n, k, a, b, bias, out),
+        }
+    }
+
+    /// Row-major GEMM against a **K-quantized** weight
+    /// (`out[t,j] = bias[j] + Σ_l a[t,l]·dequant(wq[j,l])`), the fused
+    /// dequant-dot counterpart of [`Self::gemm_f32`] (M5-15-T27/T33).
+    ///
+    /// `a` is `[m, k]` and `out` is `[m, n]` exactly as for `gemm_f32`, but
+    /// `wq` is the **untransposed** `[n, k]` GGUF payload — the layout the
+    /// INT8 kernels want — so the quant route skips the `[out, in] → [in, out]`
+    /// transpose the f32 loader pays. `m == 1` (the decoder step) routes into
+    /// the single-activation GEMV kernel inside the driver, so this one entry
+    /// serves both the GEMV and GEMM shapes that `whisper::nn::linear_apply`
+    /// produces.
+    ///
+    /// # Backends
+    ///
+    /// **CPU only.** Every GPU arm is an explicit [`VokraError::UnsupportedOp`]:
+    /// there is no fused K-quant kernel in Metal / CUDA / WebGPU in this WP,
+    /// and silently dequantizing (or silently running on the CPU) is exactly
+    /// the fallback FR-EX-08 forbids. Callers avoid this arm by loading
+    /// without `WhisperLoadOptions::fused_quant_weights` on a GPU backend; the
+    /// arm exists so a mistake is *noticed*.
+    #[allow(clippy::too_many_arguments)] // mirrors gemm_f32 plus the weight dtype
+    pub fn gemm_q_f32(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        wq: &[u8],
+        dtype: KQuantDtype,
+        bias: Option<&[f32]>,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::gemm_q_f32(m, n, k, a, wq, dtype, bias, out),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(_) => Err(unsupported_quant_gemm("metal")),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(unsupported_quant_gemm("cuda")),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(unsupported_quant_gemm("webgpu")),
         }
     }
 

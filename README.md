@@ -252,6 +252,10 @@ Notes:
 
 ## Community
 
+- **First step**: [docs/good-first-tasks.md](docs/good-first-tasks.md) —
+  self-contained starting points, each with a file:line anchor or a
+  reproduction command, acceptance criteria you can check yourself, and a
+  rough size.
 - **Questions & discussion**: open a
   [GitHub issue](https://github.com/ayutaz/vokra/issues).
 - **Issues / pull requests**: see [CONTRIBUTING.md](CONTRIBUTING.md). All

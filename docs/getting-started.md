@@ -8,7 +8,11 @@ on CPU. For GPU backends (Metal / CUDA) and distribution artefacts
 
 ## Prerequisites
 
-- **Rust toolchain**: 1.75 or newer (`rustup default stable`)
+- **Rust toolchain**: 1.89 or newer (`rustup default stable`). 1.89 is the
+  *effective* MSRV: the workspace declares `rust-version = "1.85"` (the floor
+  for edition 2024), but `vokra-backend-cpu` raises its own floor to 1.89 for
+  the AVX-512 intrinsics stabilized there, and that crate is in every build.
+  CI verifies this in the `msrv` job.
 - **git**: for cloning the repository
 - **Python 3.10+**: only needed to prepare the PyTorch checkpoints the
   conversion step consumes. The Vokra runtime itself has no Python

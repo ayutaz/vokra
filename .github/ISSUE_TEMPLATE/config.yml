@@ -1,0 +1,40 @@
+# Issue template chooser configuration.
+#
+# TWO FORMS ONLY — bug_report.yml and question.yml.
+#
+# Do not add a task, feature-tracking, or work-package form. Work items are
+# tracked in `docs/tickets/`, not in GitHub Issues (maintainer decision,
+# 2026-07-19). This note exists so the constraint survives the next person who
+# reasonably wonders why there is no task template.
+#
+# Issues themselves stay enabled: the README points readers here for
+# questions, and the project's engagement metrics are counted from Issues
+# participation, so disabling them would break the quarterly review's inputs.
+#
+# GitHub Discussions is currently disabled on this repository, so it is
+# deliberately NOT offered as a contact link below — pointing at a disabled
+# feature would be a dead end.
+
+# Keep the plain "open a blank issue" escape hatch. With a young project the
+# cost of a slightly messier issue is much lower than the cost of someone
+# bouncing off a form that does not fit what they wanted to say.
+blank_issues_enabled: true
+
+contact_links:
+  - name: Getting started
+    url: https://github.com/ayutaz/vokra/blob/main/docs/getting-started.md
+    about: Build and run VAD, ASR and TTS on CPU in about five minutes.
+
+  - name: Architecture and design red lines
+    url: https://github.com/ayutaz/vokra/blob/main/docs/architecture.md
+    about: >-
+      Crate map, execution model, and the decisions that are settled — worth a
+      look before proposing a structural change.
+
+  - name: Requirement ID glossary
+    url: https://github.com/ayutaz/vokra/blob/main/docs/requirement-ids.md
+    about: What FR-EX-08, NFR-DS-02 and the other cited IDs mean.
+
+  - name: Good first tasks
+    url: https://github.com/ayutaz/vokra/blob/main/docs/good-first-tasks.md
+    about: Self-contained starting points with acceptance criteria.

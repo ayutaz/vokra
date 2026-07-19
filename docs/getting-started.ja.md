@@ -8,7 +8,11 @@ ASR → TTS の 3 デモを CPU で動かします。GPU（Metal / CUDA）や配
 
 ## 前提条件
 
-- **Rust ツールチェイン**: 1.75 以上（`rustup default stable`）
+- **Rust ツールチェイン**: 1.89 以上（`rustup default stable`）。1.89 は *実効*
+  MSRV です。workspace の宣言は `rust-version = "1.85"`（edition 2024 の下限）
+  ですが、`vokra-backend-cpu` が AVX-512 intrinsics（Rust 1.89 で安定化）の
+  ため自身の下限を 1.89 に引き上げており、この crate は全ビルドに入ります。
+  CI の `msrv` job で検証しています。
 - **git**: リポジトリの取得に使用
 - **Python 3.10+**: モデル変換の PyTorch 依存を用意するだけで、Vokra ラン
   タイム自体は Python に依存しません（`FR-LD-05`）

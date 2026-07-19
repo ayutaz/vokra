@@ -131,6 +131,7 @@ cc app.c -Iinclude -Ltarget/release -lvokra -Wl,-rpath,target/release -o app
 
 ## コミュニティ
 
+- **最初の一歩**: [docs/good-first-tasks.ja.md](docs/good-first-tasks.ja.md) — 独立して完結する着手候補の一覧です。各項目に file:line アンカーまたは再現コマンド、自分で確認できる受け入れ条件、おおよその規模が付いています。
 - **質問・議論**: [GitHub issue](https://github.com/ayutaz/vokra/issues) をご利用ください。
 - **Issue / Pull Request**: [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。すべての変更は CI 品質ゲート付きの PR を経由します。
 
