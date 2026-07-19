@@ -255,10 +255,55 @@ const ATOL: f32 = 0.01;
 //     toward per-ISA calibration from repeated measurement, not toward
 //     widening the shared bound on one platform's number.
 //
-//     Still not closed by direct measurement: the scalar re-run has not yet
-//     fired, because it only runs on the failure path and the runs since it
-//     landed drew AVX-512. It fires on the next EPYC failure. Until then (b)
-//     is well-supported but (a) is not formally excluded.
+// (G) (a) IS REFUTED — the scalar re-run fired and Vokra's SIMD is not in
+//     the loop. Run 29689244520, AMD EPYC 7763, isa=avx2 fma f16c,
+//     torch=AVX2, same runner / same GGUF / same reference, SIMD vs
+//     `VOKRA_CPU_ISA=scalar`:
+//
+//         tensor           SIMD       scalar
+//         text_encoder     2.354e-6   2.354e-6   unchanged
+//         bert             1.526e-5   2.146e-5   MOVED
+//         prosody_f0       2.144e-3   2.922e-3   MOVED
+//         prosody_n        4.530e-5   4.315e-5   moved
+//         prosody_hidden   1.004e-4   9.090e-5   moved
+//         decoder_mag      2.744e-1   2.744e-1   unchanged
+//         decoder_phase    1.809e-1   1.809e-1   unchanged
+//         decoder_pcm      4.341e-2   4.341e-2   unchanged
+//
+//     Read the MOVED rows first — they are the control. If the override had
+//     silently failed to take effect, every row would be unchanged and the
+//     test would prove nothing. bert and prosody_f0 shift by 40% and 36%, so
+//     the scalar path is demonstrably live in this process. And in that same
+//     process the three decoder tensors do not move at all.
+//
+//     Quantitatively: the gap to explain is 4.341e-2 vs 1.576e-2, a factor
+//     of 2.75. Vokra's entire AVX2 SIMD contribution to decoder_pcm is below
+//     the 4 significant figures printed, i.e. under 0.1%. A micro-kernel
+//     fault cannot be under 0.1% of the quantity it is supposed to be
+//     causing. (a) is refuted, and note it is refuted by a measurement that
+//     could have gone the other way rather than by an argument.
+//
+//     (Caveat kept honest: "unchanged" here means equal to the 4 printed
+//     significant figures, not proven bit-identical. That is amply enough to
+//     exclude a 2.75× effect and is not enough to claim exact equality.)
+//
+//     What remains is (b), located on the reference side or in whatever
+//     ISA-dependent behaviour survives outside Vokra's own SIMD dispatch:
+//     torch dispatches AVX2 vs AVX-512 too, and each row of the (F) table is
+//     a same-ISA comparison against a reference that itself changed. Since
+//     Vokra-scalar is ISA-independent by construction, an AVX2 host and an
+//     AVX-512 host running Vokra-scalar would produce the same Vokra output
+//     — so a residual difference between the two hosts has to come from the
+//     other side of the comparison.
+//
+//     Consequence for the bound: 0.04 stays, and the reason is now cleaner
+//     than "a fault might be hiding". There is no Vokra-side defect to
+//     detect here, so widening would not be covering up a bug — but the
+//     bound is still M1-derived and still uncalibrated on AVX2, and a gate
+//     fitted to whichever reference build the runner happened to have is
+//     not a gate. Per-ISA calibration from repeated measurement is the
+//     honest fix; this suite is advisory, so the standing AVX2 red is
+//     affordable until that exists.
 //
 // The bound stays 0.04, and (E) makes that firmer rather than softer. It is
 // NOT re-derived from observations: fitting a max over ~200 k samples of a
