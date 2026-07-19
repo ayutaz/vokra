@@ -41,23 +41,35 @@ reference 実装との数値一致は Vokra の品質背骨（NFR-QL-01）。**C
 - 緩めるより **OPEN として記録して赤のまま残す**方が誠実なことが多い（advisory な suite ならブロッカーですらない）。
 - 動かす場合は **理論下限 × 1.5〜2**、rustdoc + ADR + CI YAML に **冗長に**根拠を記録（既存例: Kokoro decoder の branch-cut bound）。
 
-## 大原則 4: 「1 回の CI 実行」は測定ではない — 先に再現性を確かめる
+## 大原則 4: 環境を記録してから読む — 「flaky だから再実行」は最も危険な誤読
 
-大原則 3 の Kokoro pcm は、翌ステップで**決着した**（`c977e14`）。判明したのは「x86 特有の誤差」ですらなく、**同一コードでの run 間分散**だった:
+大原則 3 の Kokoro pcm を追った実例。**2 段階で、1 段目の結論は自分で誤っていた**ので、その訂正込みで記録する。
 
-> kokoro に無関係な commit（skills/hooks のみ）を挟んだだけで、**報告される全テンソルが動いた** — text_encoder 23% / bert 20% / prosody_f0 67% / decoder_pcm **175%（FAIL → PASS）**。原因は、この CI job が committed fixture を使わず、**参照を毎回 runner 上の upstream torch から再生成**していたこと。比較の両辺が同じ runner で計算され、両方とも CPU feature で dispatch する（Vokra は自前 ISA 選択、torch は MKL/oneDNN）。hosted runner pool は異機種（AVX-512 ありの Xeon / なしの EPYC）なので、**2 回の run が 2 つの異なる誤差場を引く**。
+**1 段目（`c977e14`、部分的に誤り）**: kokoro に無関係な commit（skills/hooks のみ）を挟んだだけで報告される全テンソルが動いた — text_encoder 23% / decoder_pcm **175%（FAIL → PASS）**。原因は、この CI job が committed fixture を使わず**参照を毎回 runner 上の upstream torch から再生成**していたこと。比較の両辺が同じ runner で計算され、両方とも CPU feature で dispatch する（自前 ISA 選択 / MKL·oneDNN）。ここまでは正しい。しかし私はこれを「**run 間分散**」「別の draw」と表現した。
+
+**2 段目（`d3c5093`、訂正）**: 1 段目で追加した環境記録が、初回の run で 1 段目の枠組みを反証した。`cpu=AMD EPYC 7763 / isa=avx2 / torch=AVX2` の run が、3 commit 前の run を**全テンソル・全桁で bit-identical に再現**した。つまり **CPU クラス内では完全に決定的**で、分散でも draw でもない。実際の帰結は flakiness の逆:
+
+> **AVX2 runner なら 100% 落ち、AVX-512 runner なら 100% 通る。**「とりあえず再実行」は当たるマシンを引き直しているだけ。
+
+この誤りの方向性が重要: 「分散」「flaky」という語彙は**実在する欠陥を却下しやすくする方向**に効く。parity で最も避けたい失敗そのもの。
 
 決め手になった読み方:
 
-- **どのテンソルが動いたかを見る**。`text_encoder` は 4096 要素・パイプライン前段・**decoder と一切コードを共有しない**。decoder kernel のバグでは動かせない。それが 23% 動いた時点で、原因は「局所的な故障」ではなく「環境全体」に確定する。**変動範囲ではなく変動の「広がり方」が診断情報**。
-- 「mean が下がって max が上がる」は**摂動ではなく別の draw の signature**。同じ誤差場が揺れたなら bulk と tail は同方向に動く。
+- **どのテンソルが動いたかを見る**。`text_encoder` は 4096 要素・前段・**decoder とコードを共有しない**。decoder kernel のバグでは動かせない。それが動いた時点で原因は環境側に確定する。**変動幅ではなく変動の「広がり方」が診断情報**。
+- **同一環境で bit-identical に再現するか**を見る。再現するなら決定的であり、**説明すべき対象が実在する**。再現しないなら初めて非決定性（スレッド数・並列 reduction 等）を疑う。
+- ただし**環境が同じことを確定するまで、決定的か否かは判定できない**。だから記録が先。
 
 手順として:
 
-1. **bound 超過を見たら、まず同じコードで再実行**する。1 点で bound を動かさない（大原則 3）。
-2. **参照がどこで生成されているか確認する**。CI が参照を再生成しているなら、それは「実装 vs 固定 oracle」ではなく「実装 vs 環境依存 oracle」であり、**run 間分散が原理的に入る**。
-3. **実行環境を記録する**（CPU model / ISA flags / nproc / `torch.backends.cpu.get_cpu_capability()`）。記録が無ければ分散は追跡不能で、不運な 1 run が「故障」に見える。**数値を出す前**のステップに置き、`if: always()` にする。
-4. heavy-tailed な統計（~10^5 サンプルの max）を**観測に合わせて fit しない**。不運な run のたびに gate が 1 段ずつ開き、検出力だけが失われる。
+1. **実行環境を記録する**（CPU model / ISA flags / nproc / `torch.backends.cpu.get_cpu_capability()`）。**数値を出す前**のステップに置き、`if: always()`、gate にはしない。記録が無ければ何も判定できない。
+2. **参照がどこで生成されているか確認する**。CI が参照を再生成しているなら「実装 vs 固定 oracle」ではなく「実装 vs **環境依存** oracle」。
+3. **1 点で bound を動かさない**（大原則 3）。ただし理由は「分散だから」ではなく「**環境が特定できていないから**」。
+4. **失敗したその実機上で切り分ける**。自前 SIMD だけを無効化して（Vokra なら `VOKRA_CPU_ISA=scalar`）参照はそのままに再測定する:
+   - **scalar ≈ SIMD** → 自前 kernel は無罪、差はアルゴリズム or 参照側
+   - **scalar << SIMD** → その ISA の micro-kernel が真犯人。**kernel を直す。bound は動かさない**
+
+   これは開発機が別 ISA のとき（M1 で x86 tile は実行不能）**CI でしか取れない測定**。失敗パス限定 + 非致命にして、既に確定した verdict を上書きしないこと。
+5. heavy-tailed な統計（~10^5 サンプルの max）を**観測に合わせて fit しない**。CPU クラスごとに 1 段ずつ gate が開き、検出力だけが失われる。**真犯人が kernel の可能性が残っている間に広げることは、その kernel バグが出す唯一の信号を消すこと**。
 
 ## 手順
 
