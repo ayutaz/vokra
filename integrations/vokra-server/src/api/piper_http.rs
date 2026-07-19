@@ -120,6 +120,16 @@ pub struct TtsRequest {
     /// as `length_scale`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub noise_scale: Option<f32>,
+    /// Optional language tag (`"ja"`, `"en"`, ... — the voice GGUF's
+    /// `vokra.piper.language_codes` inventory). cc-18 (2026-07-19
+    /// M4-residual audit): `SynthesisRequest.language` existed in the piper
+    /// synthesis layer since M0 but no server surface could set it. `None`
+    /// keeps the engine's language detection (the G2P's detected dominant
+    /// language / voice default). A language the loaded voice does NOT
+    /// support is an explicit 400 from the service layer (FR-EX-08 — the
+    /// engine would otherwise silently fall back to the detected language).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// High-level outcome of a `/api/tts` request as far as this schema
@@ -264,6 +274,16 @@ pub fn dispatch_tts(
             "`voice` must not be empty".into(),
         ));
     }
+    // An explicitly-empty language is a malformed request, not "use the
+    // default" — omit the field for default behaviour (FR-EX-08: no silent
+    // reinterpretation of a present-but-empty value).
+    if req.language.as_deref() == Some("") {
+        return Err(PiperTtsError::InvalidRequest(
+            "`language` must not be empty when present (omit the field to use \
+             the voice's language detection)"
+                .into(),
+        ));
+    }
 
     // 2) Voice must resolve — piper's primary selector. If the caller
     //    also asked for per-request knob overrides we STILL need the
@@ -303,8 +323,13 @@ pub fn dispatch_tts(
     // 5) Build the vokra-core `SynthesisRequest`. `length_scale` /
     //    `noise_scale` are consumed at voice defaults (step 3 above)
     //    so we do NOT plumb them through — the runtime uses the voice's
-    //    baked values.
-    let syn_req = SynthesisRequest::new(&req.text);
+    //    baked values. `language` (cc-18) IS plumbed: the service layer
+    //    validates it against the voice's `vokra.piper.language_codes`
+    //    and rejects unsupported codes with an explicit 400 (FR-EX-08).
+    let mut syn_req = SynthesisRequest::new(&req.text);
+    if let Some(lang) = &req.language {
+        syn_req = syn_req.with_language(lang);
+    }
 
     let audio = service
         .synthesize(model, &syn_req)
@@ -460,10 +485,12 @@ pub fn router(state: TtsHttpState) -> Router {
 ///   (status table pinned in the `route_tts_http` tests below).
 /// * Success → `200 OK` with `Content-Type: audio/wav` raw bytes.
 ///
-/// Synthesis runs synchronously on the handler task, matching the
-/// transcription handler's v0.5 posture (the engines are CPU-bound and the
-/// runtime is multi-threaded; a `spawn_blocking` migration is a follow-up
-/// for both surfaces together, not a divergence here).
+/// Synthesis runs on `tokio::task::spawn_blocking` (cc-18, 2026-07-19
+/// M4-residual audit — the follow-up this doc used to carry). The engines
+/// are CPU-bound; running them on the async worker previously stalled every
+/// other task on that worker for the whole synthesis. This mirrors the
+/// wyoming.rs `transcribe` migration (the copy pattern): a `JoinError`
+/// (panicked/cancelled blocking task) is an explicit 500, never a hang.
 async fn tts_handler(
     State(state): State<TtsHttpState>,
     body: Result<axum::Json<TtsRequest>, JsonRejection>,
@@ -475,9 +502,20 @@ async fn tts_handler(
                 .model
                 .clone()
                 .unwrap_or_else(|| model_names::PIPER_PLUS.to_owned());
-            let outcome = dispatch_tts(state.synth.as_ref(), state.voices.as_ref(), &req)
-                .map(wav_response)
-                .map_err(server_error_from_tts);
+            // Move the owned request + Arc views onto the blocking pool;
+            // both trait objects are Send + Sync so the closure is Send.
+            let synth = Arc::clone(&state.synth);
+            let voices = Arc::clone(&state.voices);
+            let join = tokio::task::spawn_blocking(move || {
+                dispatch_tts(synth.as_ref(), voices.as_ref(), &req)
+            })
+            .await;
+            let outcome = match join {
+                Ok(res) => res.map(wav_response).map_err(server_error_from_tts),
+                Err(join_err) => Err(ServerError::InferenceFailed {
+                    detail: format!("tts task failed: {join_err}"),
+                }),
+            };
             (Some(model_tag), outcome)
         }
         Err(err) => (
@@ -684,6 +722,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(json, r#"{"text":"hello","voice":"en_US-lessac-medium"}"#);
@@ -711,6 +750,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let err = dispatch_tts(&PanicOnCall, &voices, &req).expect_err("must reject empty text");
@@ -728,6 +768,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let err = dispatch_tts(
@@ -754,6 +795,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let err = dispatch_tts(
@@ -780,6 +822,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let outcome = dispatch_tts(
@@ -809,6 +852,7 @@ mod route_tts {
             model: None,
             length_scale: Some(1.1),
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         dispatch_tts(
@@ -829,6 +873,7 @@ mod route_tts {
             model: None,
             length_scale: Some(0.8),
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let err = dispatch_tts(
@@ -863,6 +908,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: Some(1.0),
+            language: None,
         };
         let voices = default_voices();
         let err = dispatch_tts(
@@ -892,6 +938,7 @@ mod route_tts {
             model: None,
             length_scale: Some(f32::NAN),
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let err = dispatch_tts(
@@ -908,6 +955,84 @@ mod route_tts {
         ));
     }
 
+    // -------- Language plumbing (cc-18) --------
+
+    /// `language` must reach `SynthesisRequest.language` verbatim — the
+    /// field existed in the synthesis layer since M0 with no server surface
+    /// able to set it (cc-18, 2026-07-19 M4-residual audit).
+    #[test]
+    fn language_is_plumbed_into_synthesis_request() {
+        use std::sync::Mutex;
+        struct CaptureSynth {
+            seen: Mutex<Vec<Option<String>>>,
+        }
+        impl SynthesizeService for CaptureSynth {
+            fn synthesize(
+                &self,
+                _model: &str,
+                request: &SynthesisRequest,
+            ) -> Result<SynthesizedAudio, ServiceError> {
+                self.seen.lock().unwrap().push(request.language.clone());
+                Ok(SynthesizedAudio::new(vec![0.0], 22_050))
+            }
+        }
+        let capture = CaptureSynth {
+            seen: Mutex::new(Vec::new()),
+        };
+        let voices = default_voices();
+
+        // With a language → forwarded verbatim.
+        let req = TtsRequest {
+            text: "hello".into(),
+            voice: "en_US-lessac-medium".into(),
+            model: None,
+            length_scale: None,
+            noise_scale: None,
+            language: Some("ja".into()),
+        };
+        dispatch_tts(&capture, &voices, &req).expect("must dispatch");
+        // Without → None (voice default / detection preserved).
+        let req = TtsRequest {
+            language: None,
+            ..req
+        };
+        dispatch_tts(&capture, &voices, &req).expect("must dispatch");
+
+        let seen = capture.seen.lock().unwrap().clone();
+        assert_eq!(seen, vec![Some("ja".to_owned()), None]);
+    }
+
+    /// Present-but-empty `language` is 400 before any engine call — never a
+    /// silent "treat as default" (FR-EX-08).
+    #[test]
+    fn empty_language_is_400_before_engine_call() {
+        struct PanicOnCall;
+        impl SynthesizeService for PanicOnCall {
+            fn synthesize(
+                &self,
+                _model: &str,
+                _request: &SynthesisRequest,
+            ) -> Result<SynthesizedAudio, ServiceError> {
+                panic!("must not be called for empty language");
+            }
+        }
+        let req = TtsRequest {
+            text: "hello".into(),
+            voice: "en_US-lessac-medium".into(),
+            model: None,
+            length_scale: None,
+            noise_scale: None,
+            language: Some(String::new()),
+        };
+        let voices = default_voices();
+        let err =
+            dispatch_tts(&PanicOnCall, &voices, &req).expect_err("must reject empty language");
+        match err {
+            PiperTtsError::InvalidRequest(msg) => assert!(msg.contains("language")),
+            other => panic!("expected InvalidRequest, got {other}"),
+        }
+    }
+
     // -------- Model routing --------
 
     #[test]
@@ -918,6 +1043,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         // FakeSynth only recognises `piper-plus`; a wrong default would
@@ -940,6 +1066,7 @@ mod route_tts {
             model: Some("elevenlabs".into()),
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let err = dispatch_tts(
@@ -968,6 +1095,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let err =
@@ -994,6 +1122,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let outcome = dispatch_tts(
@@ -1218,6 +1347,50 @@ mod route_tts_http {
                 .contains("PassthroughPhonemizer"),
             "the explicit error must name the phonemizer so the operator \
              knows to pass --piper-g2p; got {v}"
+        );
+    }
+
+    /// cc-18: a `language` the loaded voice does not support surfaces as an
+    /// explicit 400 naming the supported set (the `InferenceService` piper
+    /// arm raises `VokraError::InvalidArgument` BEFORE the engine's silent
+    /// detected-language fallback can fire; this pins the HTTP mapping).
+    #[tokio::test]
+    async fn tts_route_unsupported_language_is_explicit_400() {
+        struct RejectLangSynth;
+        impl SynthesizeService for RejectLangSynth {
+            fn synthesize(
+                &self,
+                _model: &str,
+                request: &SynthesisRequest,
+            ) -> Result<SynthesizedAudio, ServiceError> {
+                // Mirrors the InferenceService::synthesize language gate
+                // (service.rs) byte-for-byte in spirit: unsupported code →
+                // InvalidArgument listing the supported inventory.
+                match request.language.as_deref() {
+                    Some(lang) if lang != "ja" && lang != "en" => Err(ServiceError::Inference(
+                        VokraError::InvalidArgument(format!(
+                            "synthesize: language `{lang}` is not supported by the loaded \
+                                 piper-plus voice (supported: [ja, en])"
+                        )),
+                    )),
+                    _ => Ok(SynthesizedAudio::new(vec![0.0], 22_050)),
+                }
+            }
+        }
+        let (status, _ct, body) = post_tts(
+            app(Arc::new(RejectLangSynth)),
+            r#"{"text":"1 2","voice":"default","language":"fr"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["type"], "invalid_input");
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("language `fr` is not supported"),
+            "message must name the rejected language, got {v}"
         );
     }
 

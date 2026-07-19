@@ -25,13 +25,24 @@
 //!   parse.
 //! * `"text"` → same string in a plain-text body (documented for T06 —
 //!   this file returns the string; T06 sets `text/plain` content-type).
-//! * `"verbose_json"`, `"srt"`, `"vtt"` → **501 Not Implemented** with
-//!   a stable, documented note. Word-level timestamps are deferred to
-//!   v1.0+ (see the top-of-crate scope doc in `main.rs`: audio-dialect
-//!   `beam_search` already carries a word-level-timestamps attribute
-//!   spec, but the server surface is intentionally not wired until
-//!   v1.0). Returning 501 (not silent stubs, not 500) is the FR-EX-08
-//!   "no silent fallback" rule applied to a schema hole.
+//! * `"verbose_json"` + `timestamp_granularities[]=word` → **200** with
+//!   the OpenAI verbose envelope carrying a `words[]` array (cc-19,
+//!   2026-07-19 M4-residual audit: the historical 501's deferral premise
+//!   — "core support absent" — was satisfied by `da13bfd` word-timing
+//!   accuracy + `eb41648` exact alignment-heads emission, so the server
+//!   surface is now wired through
+//!   [`TranscribeService::transcribe_beam`]). Only fields the runtime
+//!   actually computed are emitted (`task` / `duration` / `text` /
+//!   `words`) — no fabricated `language` / `segments` keys.
+//! * `"verbose_json"` without the word granularity (OpenAI defaults to
+//!   segment), `timestamp_granularities[]=segment`, `"srt"`, `"vtt"` →
+//!   **501 Not Implemented** with a stable, documented note:
+//!   segment-level timestamps remain unimplemented. Returning 501 (not
+//!   silent stubs, not 500) is the FR-EX-08 "no silent fallback" rule
+//!   applied to a schema hole.
+//! * `beam_size` (Vokra extension, bounded at [`MAX_BEAM_SIZE`]) routes
+//!   the decode through beam search; unset/0/1 keeps the legacy greedy
+//!   path byte-for-byte.
 //!
 //! # Wiring
 //!
@@ -62,7 +73,15 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::service::{ServiceError, TranscribeService};
+use crate::service::{ServiceError, TranscribeBeamRequest, TranscribeService};
+use vokra_core::VokraError;
+
+/// Upper bound on the `beam_size` multipart field (cc-19). Beam search cost
+/// scales linearly in width per step (plus n-best detokenization); 8 covers
+/// every documented Whisper/faster-whisper preset (`beam_size=5` is the
+/// upstream default) while keeping a hostile client from requesting an
+/// arbitrarily wide decode. Larger values are an explicit 400.
+pub const MAX_BEAM_SIZE: usize = 8;
 
 /// `response_format` field parsed from the OpenAI multipart body.
 ///
@@ -78,16 +97,17 @@ pub enum ResponseFormat {
     /// Plain-text body containing just the transcription. Content-type
     /// `text/plain; charset=utf-8` (T06 sets the header).
     Text,
-    /// Verbose JSON with segment / word-level timestamps. **Not
-    /// implemented in v0.5**; word-level timestamps are deferred to
-    /// v1.0+ (audio-dialect `beam_search` word-timestamps attribute
-    /// exists but the server surface is intentionally not wired).
+    /// Verbose JSON. **Word-level** timestamps are implemented (cc-19):
+    /// `timestamp_granularities[]=word` returns the OpenAI verbose
+    /// envelope with a `words[]` array. **Segment-level** timestamps
+    /// (the OpenAI default when no granularity is sent, and the
+    /// explicit `segment` granularity) remain a 501.
     VerboseJson,
-    /// SRT subtitle body. **Not implemented in v0.5** — depends on
-    /// per-segment timestamps, same deferral as `VerboseJson`.
+    /// SRT subtitle body. **Not implemented** — depends on per-segment
+    /// timestamps, which remain deferred.
     Srt,
-    /// WebVTT subtitle body. **Not implemented in v0.5** — same
-    /// deferral as `Srt`.
+    /// WebVTT subtitle body. **Not implemented** — same deferral as
+    /// `Srt`.
     Vtt,
 }
 
@@ -154,6 +174,47 @@ impl TranscriptionResponse {
     }
 }
 
+/// One word-level timestamp entry of the verbose_json `words[]` array —
+/// the OpenAI-documented shape `{"word", "start", "end"}` (seconds as
+/// floats). Mapped 1:1 from
+/// [`crate::service::WordTimestamp`] (M4-20 cross-attention alignment).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WordEntry {
+    /// Detokenized word text (spaces as the tokenizer produced them).
+    pub word: String,
+    /// Word start time in seconds.
+    pub start: f64,
+    /// Word end time in seconds.
+    pub end: f64,
+}
+
+/// `response_format=verbose_json` + `timestamp_granularities[]=word`
+/// response body (cc-19). Deliberately carries ONLY fields the runtime
+/// actually computed:
+///
+/// * `task` — constant `"transcribe"` (this route never translates);
+/// * `duration` — real decoded-audio length in seconds
+///   (`pcm.len() / 16 kHz`), not a fabricated estimate;
+/// * `text` — the top-1 transcription;
+/// * `words` — the aligned word spans.
+///
+/// The OpenAI reference response also carries `language` (detected) and
+/// `segments[]`; emitting a guessed language or an empty-but-present
+/// `segments` array would fabricate data the runtime did not produce
+/// (NFR-RL-06), so those keys are ABSENT — clients that need them get an
+/// explicit 501 through the granularity gate instead of silent nulls.
+#[derive(Debug, Clone, Serialize)]
+pub struct VerboseTranscriptionResponse {
+    /// Always `"transcribe"`.
+    pub task: &'static str,
+    /// Decoded audio duration in seconds (real, from the PCM length).
+    pub duration: f64,
+    /// Top-1 transcription (identical to the `json` format's `text`).
+    pub text: String,
+    /// Word-level timestamps for the top-1 hypothesis.
+    pub words: Vec<WordEntry>,
+}
+
 /// The high-level outcome of a `/v1/audio/transcriptions` request as
 /// far as this schema layer is concerned. The T06 handler wraps this
 /// into an axum `Response` (JSON body, plain-text body, or the T05
@@ -166,6 +227,9 @@ pub enum TranscriptionOutcome {
     /// Plain-text body: the transcription itself. Content-type
     /// `text/plain; charset=utf-8`.
     Text(String),
+    /// Verbose JSON body with word-level timestamps (cc-19).
+    /// Content-type `application/json`.
+    VerboseJson(VerboseTranscriptionResponse),
 }
 
 /// Errors this schema layer surfaces to the T05 HTTP error mapper.
@@ -180,18 +244,40 @@ pub enum OpenAiTranscribeError {
     /// The client sent a `response_format` we do not recognise.
     /// HTTP mapper renders 400.
     UnsupportedResponseFormat(String),
-    /// The client asked for `response_format="verbose_json"`. Not
-    /// implemented in v0.5 — word-level timestamps are deferred to
-    /// v1.0+ (see the top-of-file docs). HTTP mapper renders 501 with
-    /// [`Self::V0_5_TIMESTAMP_DEFERRAL_NOTE`].
+    /// The client asked for `response_format="verbose_json"` WITHOUT the
+    /// `word` timestamp granularity. OpenAI's default granularity is
+    /// `segment`, and segment-level timestamps are not implemented —
+    /// silently returning a words-only body for a segments request would
+    /// fabricate the shape (NFR-RL-06). HTTP mapper renders 501 with
+    /// [`Self::SEGMENT_TIMESTAMP_DEFERRAL_NOTE`], which names the working
+    /// word-level path (cc-19).
     VerboseJsonNotImplemented,
-    /// The client asked for `response_format="srt"`. Same deferral
-    /// as [`Self::VerboseJsonNotImplemented`]; distinct variant so
-    /// the mapper can log the exact client ask.
+    /// The client asked for `response_format="srt"`. Segment-timestamp
+    /// deferral, same note; distinct variant so the mapper can log the
+    /// exact client ask.
     SrtNotImplemented,
     /// The client asked for `response_format="vtt"`. Same deferral as
-    /// [`Self::VerboseJsonNotImplemented`].
+    /// [`Self::SrtNotImplemented`].
     VttNotImplemented,
+    /// The client sent `timestamp_granularities[]=segment` explicitly
+    /// (alone or alongside `word`). Segment timestamps are not
+    /// implemented; answering with a words-only body would silently drop
+    /// the request (FR-EX-08). HTTP mapper renders 501.
+    SegmentTimestampsNotImplemented,
+    /// The client sent a `timestamp_granularities[]` value that is
+    /// neither `word` nor `segment`. HTTP mapper renders 400.
+    UnsupportedTimestampGranularity(String),
+    /// `timestamp_granularities[]` was sent with a `response_format`
+    /// other than `verbose_json`. OpenAI documents the field as
+    /// verbose_json-only; accepting-and-ignoring it would be a silent
+    /// no-op (FR-EX-08). HTTP mapper renders 400. Carries the format the
+    /// client actually asked for.
+    GranularityRequiresVerboseJson(String),
+    /// `beam_size` exceeded [`MAX_BEAM_SIZE`]. HTTP mapper renders 400.
+    BeamSizeTooLarge {
+        /// The width the client asked for.
+        requested: usize,
+    },
     /// The T04 service layer refused the request (unknown model,
     /// Kokoro-style unavailability, inference failure). Preserved
     /// verbatim so the T05 mapper can pick 4xx vs 5xx off the inner
@@ -200,13 +286,18 @@ pub enum OpenAiTranscribeError {
 }
 
 impl OpenAiTranscribeError {
-    /// Stable, doc-referenced note the T05 HTTP mapper embeds in the
-    /// 501 response body for the three deferred formats. Kept as a
-    /// `const &'static str` so tests can assert on it exactly and the
-    /// T23 docs can reference it byte-for-byte.
-    pub const V0_5_TIMESTAMP_DEFERRAL_NOTE: &'static str = "response_format requires per-segment or word-level timestamps; \
-         deferred to v1.0+ (see docs/deliverables.md for the timestamp \
-         surface plan). Use response_format=\"json\" or \"text\" in v0.5.";
+    /// Stable, doc-referenced note the T05 HTTP mapper embeds in the 501
+    /// response body for the segment-timestamp deferrals. Kept as a
+    /// `const &'static str` so tests can assert on it exactly.
+    ///
+    /// History: this replaced `V0_5_TIMESTAMP_DEFERRAL_NOTE` when cc-19
+    /// (2026-07-19 M4-residual audit) landed the word-level path — the old
+    /// note's "word-level timestamps are deferred" claim became false.
+    pub const SEGMENT_TIMESTAMP_DEFERRAL_NOTE: &'static str = "segment-level timestamps (verbose_json segments[] / srt / vtt) are \
+         not implemented. Word-level timestamps ARE available: send \
+         response_format=\"verbose_json\" with timestamp_granularities[]=word \
+         (cc-19 unlock, 2026-07-19). Use response_format=\"json\" or \"text\" \
+         for plain transcription.";
 }
 
 impl std::fmt::Display for OpenAiTranscribeError {
@@ -218,22 +309,54 @@ impl std::fmt::Display for OpenAiTranscribeError {
             Self::VerboseJsonNotImplemented => {
                 write!(
                     f,
-                    "response_format=verbose_json not implemented: {}",
-                    Self::V0_5_TIMESTAMP_DEFERRAL_NOTE
+                    "response_format=verbose_json without \
+                     timestamp_granularities[]=word defaults to segment \
+                     timestamps, which are not implemented: {}",
+                    Self::SEGMENT_TIMESTAMP_DEFERRAL_NOTE
                 )
             }
             Self::SrtNotImplemented => {
                 write!(
                     f,
                     "response_format=srt not implemented: {}",
-                    Self::V0_5_TIMESTAMP_DEFERRAL_NOTE
+                    Self::SEGMENT_TIMESTAMP_DEFERRAL_NOTE
                 )
             }
             Self::VttNotImplemented => {
                 write!(
                     f,
                     "response_format=vtt not implemented: {}",
-                    Self::V0_5_TIMESTAMP_DEFERRAL_NOTE
+                    Self::SEGMENT_TIMESTAMP_DEFERRAL_NOTE
+                )
+            }
+            Self::SegmentTimestampsNotImplemented => {
+                write!(
+                    f,
+                    "timestamp_granularities[]=segment not implemented: {}",
+                    Self::SEGMENT_TIMESTAMP_DEFERRAL_NOTE
+                )
+            }
+            Self::UnsupportedTimestampGranularity(s) => {
+                write!(
+                    f,
+                    "unsupported timestamp_granularities value: `{s}` \
+                     (accepted: word, segment)"
+                )
+            }
+            Self::GranularityRequiresVerboseJson(fmt) => {
+                write!(
+                    f,
+                    "timestamp_granularities[] requires \
+                     response_format=\"verbose_json\" (got `{fmt}`); refusing \
+                     to silently ignore the field (FR-EX-08)"
+                )
+            }
+            Self::BeamSizeTooLarge { requested } => {
+                write!(
+                    f,
+                    "beam_size {requested} exceeds the maximum {MAX_BEAM_SIZE} \
+                     (bounded decode budget; use 0/1 for greedy or 2..={MAX_BEAM_SIZE} \
+                     for beam search)"
                 )
             }
             Self::Service(e) => write!(f, "{e}"),
@@ -278,28 +401,142 @@ pub fn transcribe_to_response(
     response_format_raw: Option<&str>,
     pcm: &[f32],
 ) -> Result<TranscriptionOutcome, OpenAiTranscribeError> {
+    // Legacy entry point (no granularities, no beam) — kept so the T07/T08
+    // callers and tests stay valid; delegates to the cc-19 full dispatch.
+    transcribe_request_to_response(service, model, response_format_raw, &[], None, pcm)
+}
+
+/// Full request dispatch (cc-19, 2026-07-19 M4-residual audit): adds the
+/// `timestamp_granularities[]` and `beam_size` surfaces on top of the T07
+/// flow. Pure so the schema tests can drive every branch without a runtime.
+///
+/// * `granularities_raw` — raw `timestamp_granularities[]` values from the
+///   multipart body (repeatable field). `word` / `segment` accepted
+///   (case-insensitive); anything else is a 400. Only meaningful under
+///   `verbose_json` — with any other format the field is an explicit 400
+///   rather than a silent no-op (FR-EX-08).
+/// * `beam_size` — decode width. `None`/`0`/`1` keeps the legacy greedy
+///   path byte-for-byte; `2..=`[`MAX_BEAM_SIZE`] routes through
+///   [`TranscribeService::transcribe_beam`]; larger is a 400.
+///
+/// # Errors
+///
+/// See [`OpenAiTranscribeError`] variants.
+pub fn transcribe_request_to_response(
+    service: &dyn TranscribeService,
+    model: &str,
+    response_format_raw: Option<&str>,
+    granularities_raw: &[String],
+    beam_size: Option<usize>,
+    pcm: &[f32],
+) -> Result<TranscriptionOutcome, OpenAiTranscribeError> {
     let fmt = ResponseFormat::parse(response_format_raw)
         .map_err(OpenAiTranscribeError::UnsupportedResponseFormat)?;
 
-    // Reject deferred formats up-front — do NOT run inference we then
-    // can't shape (wastes engine time; FR-EX-08 no silent fallback).
-    match fmt {
-        ResponseFormat::VerboseJson => {
-            return Err(OpenAiTranscribeError::VerboseJsonNotImplemented);
+    // Parse granularities strictly (unknown value → 400) BEFORE any
+    // inference — same fail-early posture as the format parse.
+    let mut want_word = false;
+    let mut want_segment = false;
+    for g in granularities_raw {
+        match g.trim().to_ascii_lowercase().as_str() {
+            "word" => want_word = true,
+            "segment" => want_segment = true,
+            _ => {
+                return Err(OpenAiTranscribeError::UnsupportedTimestampGranularity(
+                    g.clone(),
+                ));
+            }
         }
+    }
+
+    // OpenAI documents `timestamp_granularities[]` as verbose_json-only.
+    // Accepting it under json/text and ignoring it would be a silent no-op
+    // (FR-EX-08) → explicit 400 naming the mismatch.
+    if (want_word || want_segment) && fmt != ResponseFormat::VerboseJson {
+        let got = response_format_raw.unwrap_or("json").to_owned();
+        return Err(OpenAiTranscribeError::GranularityRequiresVerboseJson(got));
+    }
+
+    // Bounded beam width (cc-19): reject before inference.
+    if let Some(b) = beam_size
+        && b > MAX_BEAM_SIZE
+    {
+        return Err(OpenAiTranscribeError::BeamSizeTooLarge { requested: b });
+    }
+
+    match fmt {
+        // Subtitle formats need per-segment timestamps — still deferred.
         ResponseFormat::Srt => return Err(OpenAiTranscribeError::SrtNotImplemented),
         ResponseFormat::Vtt => return Err(OpenAiTranscribeError::VttNotImplemented),
+        ResponseFormat::VerboseJson => {
+            // Explicit `segment` granularity (alone or with `word`) —
+            // answering words-only for a segments ask would silently drop
+            // half the request (FR-EX-08).
+            if want_segment {
+                return Err(OpenAiTranscribeError::SegmentTimestampsNotImplemented);
+            }
+            // No granularity: OpenAI's verbose_json default is `segment`.
+            if !want_word {
+                return Err(OpenAiTranscribeError::VerboseJsonNotImplemented);
+            }
+            // Word path (cc-19 unlock): route through transcribe_beam with
+            // the M4-20 word_timestamps flag. A model without alignment
+            // heads raises an explicit engine error (mapped to 501 by the
+            // HTTP layer) — timings are never fabricated.
+            let req = TranscribeBeamRequest {
+                beam_size,
+                word_timestamps: Some(true),
+                ..TranscribeBeamRequest::default()
+            };
+            let resp = service
+                .transcribe_beam(model, pcm, &req)
+                .map_err(OpenAiTranscribeError::Service)?;
+            let words = resp
+                .words
+                .into_iter()
+                .map(|w| WordEntry {
+                    word: w.word,
+                    start: w.start,
+                    end: w.end,
+                })
+                .collect();
+            return Ok(TranscriptionOutcome::VerboseJson(
+                VerboseTranscriptionResponse {
+                    task: "transcribe",
+                    // Real decoded length — the handler decoded this exact
+                    // buffer at TARGET_SAMPLE_RATE_HZ.
+                    duration: pcm.len() as f64 / f64::from(TARGET_SAMPLE_RATE_HZ),
+                    text: resp.text,
+                    words,
+                },
+            ));
+        }
         ResponseFormat::Json | ResponseFormat::Text => {}
     }
 
-    let text = service
-        .transcribe(model, pcm)
-        .map_err(OpenAiTranscribeError::Service)?;
+    // json / text. Greedy stays on the legacy `transcribe` call so the
+    // default request is byte-for-byte unchanged; a real beam ask routes
+    // through `transcribe_beam` (its `text` is the ranked top-1).
+    let text = match beam_size {
+        Some(b) if b > 1 => {
+            let req = TranscribeBeamRequest {
+                beam_size: Some(b),
+                ..TranscribeBeamRequest::default()
+            };
+            service
+                .transcribe_beam(model, pcm, &req)
+                .map_err(OpenAiTranscribeError::Service)?
+                .text
+        }
+        _ => service
+            .transcribe(model, pcm)
+            .map_err(OpenAiTranscribeError::Service)?,
+    };
 
     Ok(match fmt {
         ResponseFormat::Json => TranscriptionOutcome::Json(TranscriptionResponse::new(text)),
         ResponseFormat::Text => TranscriptionOutcome::Text(text),
-        // The three deferred variants are handled above.
+        // Handled above.
         ResponseFormat::VerboseJson | ResponseFormat::Srt | ResponseFormat::Vtt => unreachable!(),
     })
 }
@@ -387,20 +624,46 @@ pub async fn transcriptions_handler(
         audio_bytes,
         model,
         response_format,
+        timestamp_granularities,
+        beam_size,
         // T06 accepts and preserves these fields on the request DTO.
         // Forwarding them into the Whisper decoder options is a
         // T07-followup responsibility; ignoring them here is intentional
-        // (documented) rather than a mistake — the T07 dispatch
-        // signature only accepts `(model, response_format, pcm)` at v0.5.
+        // (documented) rather than a mistake.
         language: _,
         temperature: _,
         prompt: _,
     } = req;
 
     let pcm = decode_pcm_wav(&audio_bytes)?;
-    let outcome =
-        transcribe_to_response(service.as_ref(), &model, response_format.as_deref(), &pcm)
-            .map_err(HttpTranscriptionError::from_schema)?;
+
+    // cc-18 (2026-07-19 M4-residual audit): model inference is CPU-bound
+    // and previously ran ON the async worker, stalling every other task on
+    // that worker for the whole decode. Move it to the blocking pool —
+    // same migration wyoming.rs's `transcribe` arm already did (the copy
+    // pattern). The service Arc is Send + Sync; the owned request pieces
+    // move into the closure. A JoinError (panicked blocking task) is an
+    // explicit 500, never a hang.
+    let svc = Arc::clone(&service);
+    let join = tokio::task::spawn_blocking(move || {
+        transcribe_request_to_response(
+            svc.as_ref(),
+            &model,
+            response_format.as_deref(),
+            &timestamp_granularities,
+            beam_size,
+            &pcm,
+        )
+    })
+    .await;
+    let outcome = match join {
+        Ok(res) => res.map_err(HttpTranscriptionError::from_schema)?,
+        Err(join_err) => {
+            return Err(HttpTranscriptionError::inference_failed(format!(
+                "transcribe task failed: {join_err}"
+            )));
+        }
+    };
 
     Ok(match outcome {
         TranscriptionOutcome::Json(body) => axum::Json(body).into_response(),
@@ -410,6 +673,7 @@ pub async fn transcriptions_handler(
             text,
         )
             .into_response(),
+        TranscriptionOutcome::VerboseJson(body) => axum::Json(body).into_response(),
     })
 }
 
@@ -439,6 +703,14 @@ pub struct TranscriptionRequest {
     /// Optional decoding prompt. Size-bounded by the outer 25 MiB body
     /// cap ([`MAX_BODY_BYTES`]).
     pub prompt: Option<String>,
+    /// `timestamp_granularities[]` values, in arrival order (cc-19). The
+    /// OpenAI SDK sends the bracketed field name once per value; the bare
+    /// name is accepted too. Validated (`word` / `segment`) at dispatch.
+    pub timestamp_granularities: Vec<String>,
+    /// Optional beam width (Vokra extension, cc-19). `None`/`0`/`1` =
+    /// greedy (legacy path, byte-compatible); `2..=`[`MAX_BEAM_SIZE`] =
+    /// beam search; larger → 400 at dispatch.
+    pub beam_size: Option<usize>,
 }
 
 impl TranscriptionRequest {
@@ -458,6 +730,8 @@ impl TranscriptionRequest {
         let mut response_format: Option<String> = None;
         let mut temperature: Option<f32> = None;
         let mut prompt: Option<String> = None;
+        let mut timestamp_granularities: Vec<String> = Vec::new();
+        let mut beam_size: Option<usize> = None;
 
         while let Some(field) = multipart
             .next_field()
@@ -512,6 +786,23 @@ impl TranscriptionRequest {
                     temperature = Some(value);
                 }
                 "prompt" => prompt = Some(read_text_field(field, "prompt").await?),
+                // cc-19: the OpenAI SDK sends the bracketed array field name
+                // once per value; some clients send the bare name. Both
+                // accepted; values validated (`word` / `segment`) at dispatch.
+                "timestamp_granularities[]" | "timestamp_granularities" => {
+                    timestamp_granularities
+                        .push(read_text_field(field, "timestamp_granularities").await?);
+                }
+                // cc-19: bounded beam width (Vokra extension).
+                "beam_size" => {
+                    let s = read_text_field(field, "beam_size").await?;
+                    let value = s.trim().parse::<usize>().map_err(|_| {
+                        HttpTranscriptionError::bad_multipart(format!(
+                            "`beam_size` is not a non-negative integer: {s:?}"
+                        ))
+                    })?;
+                    beam_size = Some(value);
+                }
                 other => {
                     return Err(HttpTranscriptionError::bad_multipart(format!(
                         "unknown multipart field `{other}`"
@@ -538,6 +829,8 @@ impl TranscriptionRequest {
             response_format,
             temperature,
             prompt,
+            timestamp_granularities,
+            beam_size,
         })
     }
 }
@@ -777,6 +1070,19 @@ impl HttpTranscriptionError {
         }
     }
 
+    /// cc-19: engine-declared capability hole (FR-EX-08 explicit error) —
+    /// 501 with the distinct `unsupported_op` code so clients can branch on
+    /// "this build/model cannot do that" vs the schema-level
+    /// `not_implemented` deferrals.
+    fn unsupported_op(message: String) -> Self {
+        Self {
+            status: StatusCode::NOT_IMPLEMENTED,
+            error_type: "invalid_request_error",
+            message,
+            code: Some("unsupported_op"),
+        }
+    }
+
     /// Maps a T07 [`OpenAiTranscribeError`] to its HTTP form.
     ///
     /// Preserves the failure kind so a Metal / CUDA `UnsupportedOp`
@@ -791,7 +1097,16 @@ impl HttpTranscriptionError {
             )),
             OpenAiTranscribeError::VerboseJsonNotImplemented
             | OpenAiTranscribeError::SrtNotImplemented
-            | OpenAiTranscribeError::VttNotImplemented => Self::not_implemented(err.to_string()),
+            | OpenAiTranscribeError::VttNotImplemented
+            | OpenAiTranscribeError::SegmentTimestampsNotImplemented => {
+                Self::not_implemented(err.to_string())
+            }
+            // cc-19 request-shape rejections — client-fixable, 400.
+            OpenAiTranscribeError::UnsupportedTimestampGranularity(_)
+            | OpenAiTranscribeError::GranularityRequiresVerboseJson(_)
+            | OpenAiTranscribeError::BeamSizeTooLarge { .. } => {
+                Self::bad_multipart(err.to_string())
+            }
             OpenAiTranscribeError::Service(inner) => Self::from_service(inner),
         }
     }
@@ -811,6 +1126,15 @@ impl HttpTranscriptionError {
                 format!("model `{slot}` at {path:?} failed to load: {source}"),
             ),
             ServiceError::InvalidConfig(msg) => Self::invalid_config(msg),
+            // cc-19: an engine-declared capability hole (e.g. word
+            // timestamps on a model whose GGUF carries no alignment heads,
+            // or beam search on an engine that only implements greedy) is a
+            // 501 carrying the engine's precise message — never a generic
+            // 500 and never fabricated output. Matches piper_http's
+            // `server_error_from_service` table for the same variant.
+            ServiceError::Inference(VokraError::UnsupportedOp(detail)) => {
+                Self::unsupported_op(detail)
+            }
             ServiceError::Inference(inner) => Self::inference_failed(inner.to_string()),
         }
     }
@@ -1039,8 +1363,12 @@ mod response_schema {
         }
     }
 
+    /// INTENTIONALLY UPDATED for cc-19 (2026-07-19 M4-residual audit):
+    /// bare `verbose_json` (no word granularity = OpenAI's segment
+    /// default) is still 501, but the note now names the WORKING
+    /// word-level path instead of claiming a blanket v1.0+ deferral.
     #[test]
-    fn verbose_json_returns_501_with_documented_note() {
+    fn verbose_json_without_word_granularity_returns_501_with_documented_note() {
         let pcm = vec![0.0f32; 4];
         let err = transcribe_to_response(
             &EchoTranscribe,
@@ -1054,15 +1382,15 @@ mod response_schema {
                 // The stable note text must be present in Display.
                 let msg = err.to_string();
                 assert!(msg.contains("verbose_json"));
-                assert!(msg.contains("deferred to v1.0+"));
-                // And exposes the exact byte-stable constant for T23
-                // docs to reference and T22 CI to lock.
+                assert!(msg.contains("segment"));
+                // And exposes the exact byte-stable constant, which must
+                // point clients at the working word-level path.
                 assert!(
-                    OpenAiTranscribeError::V0_5_TIMESTAMP_DEFERRAL_NOTE
-                        .contains("deferred to v1.0+")
+                    OpenAiTranscribeError::SEGMENT_TIMESTAMP_DEFERRAL_NOTE
+                        .contains("timestamp_granularities[]=word")
                 );
                 assert!(
-                    OpenAiTranscribeError::V0_5_TIMESTAMP_DEFERRAL_NOTE
+                    OpenAiTranscribeError::SEGMENT_TIMESTAMP_DEFERRAL_NOTE
                         .contains("response_format=\"json\" or \"text\"")
                 );
             }
@@ -1070,6 +1398,8 @@ mod response_schema {
         }
     }
 
+    /// INTENTIONALLY UPDATED for cc-19: srt/vtt stay 501 (they need
+    /// per-segment timestamps), note text refreshed.
     #[test]
     fn srt_and_vtt_return_501_with_documented_note() {
         let pcm = vec![0.0f32; 4];
@@ -1083,7 +1413,7 @@ mod response_schema {
             .expect_err("must reject");
             let msg = err.to_string();
             assert!(msg.contains(fmt_str), "want {fmt_str} in {msg}, tag={want}");
-            assert!(msg.contains("deferred to v1.0+"));
+            assert!(msg.contains("segment-level timestamps"));
         }
     }
 
@@ -1175,6 +1505,344 @@ mod response_schema {
         let bytes = serde_json::to_vec(&body).unwrap();
         let expected = br#"{"text":"[whisper-1] 8000 samples"}"#;
         assert_eq!(bytes, expected);
+    }
+
+    // ===================================================================
+    // cc-19 (2026-07-19 M4-residual audit): word timestamps + beam_size.
+    // ===================================================================
+
+    use crate::service::{TranscribeBeamResponse, WordTimestamp};
+    use std::sync::Mutex;
+
+    /// Beam-capable mock: records every [`TranscribeBeamRequest`] it sees
+    /// and returns two canned word timings. `transcribe` (greedy) is
+    /// recorded separately so tests can prove WHICH path dispatched.
+    #[derive(Default)]
+    struct BeamRecorder {
+        beam_calls: Mutex<Vec<TranscribeBeamRequest>>,
+        greedy_calls: Mutex<usize>,
+    }
+
+    impl TranscribeService for BeamRecorder {
+        fn transcribe(&self, _model: &str, _pcm: &[f32]) -> Result<String, ServiceError> {
+            *self.greedy_calls.lock().unwrap() += 1;
+            Ok("greedy text".to_owned())
+        }
+
+        fn transcribe_beam(
+            &self,
+            _model: &str,
+            _pcm: &[f32],
+            req: &TranscribeBeamRequest,
+        ) -> Result<TranscribeBeamResponse, ServiceError> {
+            self.beam_calls.lock().unwrap().push(req.clone());
+            let words = if req.word_timestamps == Some(true) {
+                vec![
+                    WordTimestamp {
+                        word: " and".to_owned(),
+                        start: 0.0,
+                        end: 0.42,
+                    },
+                    WordTimestamp {
+                        word: " so".to_owned(),
+                        start: 0.42,
+                        end: 0.9,
+                    },
+                ]
+            } else {
+                Vec::new()
+            };
+            Ok(TranscribeBeamResponse {
+                text: "beam text".to_owned(),
+                alternatives: Vec::new(),
+                words,
+            })
+        }
+    }
+
+    #[test]
+    fn verbose_json_word_granularity_returns_words() {
+        let svc = BeamRecorder::default();
+        let pcm = vec![0.0f32; 32_000]; // 2 s @ 16 kHz.
+        let outcome = transcribe_request_to_response(
+            &svc,
+            model_names::WHISPER_1,
+            Some("verbose_json"),
+            &["word".to_owned()],
+            None,
+            &pcm,
+        )
+        .expect("word granularity must succeed");
+        let TranscriptionOutcome::VerboseJson(body) = outcome else {
+            panic!("expected VerboseJson outcome");
+        };
+        assert_eq!(body.task, "transcribe");
+        assert_eq!(body.text, "beam text");
+        // Real duration from the decoded PCM length — 32 000 / 16 000 Hz.
+        assert!((body.duration - 2.0).abs() < 1e-9);
+        assert_eq!(body.words.len(), 2);
+        assert_eq!(body.words[0].word, " and");
+        assert!((body.words[0].start - 0.0).abs() < 1e-9);
+        assert!((body.words[1].end - 0.9).abs() < 1e-9);
+        // The word ask reached the service as the M4-20 flag.
+        let calls = svc.beam_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].word_timestamps, Some(true));
+        assert_eq!(calls[0].beam_size, None);
+        assert_eq!(*svc.greedy_calls.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn verbose_json_word_with_beam_size_forwards_width() {
+        let svc = BeamRecorder::default();
+        let pcm = vec![0.0f32; 1_600];
+        let outcome = transcribe_request_to_response(
+            &svc,
+            model_names::WHISPER_1,
+            Some("verbose_json"),
+            &["word".to_owned()],
+            Some(5),
+            &pcm,
+        )
+        .expect("must succeed");
+        assert!(matches!(outcome, TranscriptionOutcome::VerboseJson(_)));
+        let calls = svc.beam_calls.lock().unwrap();
+        assert_eq!(calls[0].beam_size, Some(5));
+        assert_eq!(calls[0].word_timestamps, Some(true));
+    }
+
+    #[test]
+    fn granularity_values_are_case_insensitive_and_repeatable() {
+        let svc = BeamRecorder::default();
+        let pcm = vec![0.0f32; 4];
+        let outcome = transcribe_request_to_response(
+            &svc,
+            model_names::WHISPER_1,
+            Some("verbose_json"),
+            &["Word".to_owned(), "WORD".to_owned()],
+            None,
+            &pcm,
+        )
+        .expect("case-insensitive word must succeed");
+        assert!(matches!(outcome, TranscriptionOutcome::VerboseJson(_)));
+    }
+
+    #[test]
+    fn unknown_granularity_is_400_before_engine_call() {
+        struct PanicOnCall;
+        impl TranscribeService for PanicOnCall {
+            fn transcribe(&self, _m: &str, _p: &[f32]) -> Result<String, ServiceError> {
+                panic!("must not dispatch");
+            }
+        }
+        let pcm = vec![0.0f32; 4];
+        let err = transcribe_request_to_response(
+            &PanicOnCall,
+            model_names::WHISPER_1,
+            Some("verbose_json"),
+            &["paragraph".to_owned()],
+            None,
+            &pcm,
+        )
+        .expect_err("must reject");
+        match err {
+            OpenAiTranscribeError::UnsupportedTimestampGranularity(s) => {
+                assert_eq!(s, "paragraph");
+            }
+            other => panic!("expected UnsupportedTimestampGranularity, got {other}"),
+        }
+    }
+
+    #[test]
+    fn segment_granularity_is_501_even_alongside_word() {
+        let svc = BeamRecorder::default();
+        let pcm = vec![0.0f32; 4];
+        // Alone.
+        let err = transcribe_request_to_response(
+            &svc,
+            model_names::WHISPER_1,
+            Some("verbose_json"),
+            &["segment".to_owned()],
+            None,
+            &pcm,
+        )
+        .expect_err("segment must reject");
+        assert!(matches!(
+            err,
+            OpenAiTranscribeError::SegmentTimestampsNotImplemented
+        ));
+        // Alongside word: answering words-only would silently drop the
+        // segments half of the ask (FR-EX-08).
+        let err = transcribe_request_to_response(
+            &svc,
+            model_names::WHISPER_1,
+            Some("verbose_json"),
+            &["word".to_owned(), "segment".to_owned()],
+            None,
+            &pcm,
+        )
+        .expect_err("word+segment must reject");
+        assert!(matches!(
+            err,
+            OpenAiTranscribeError::SegmentTimestampsNotImplemented
+        ));
+        assert!(svc.beam_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn granularity_under_json_format_is_400_not_silent_ignore() {
+        let svc = BeamRecorder::default();
+        let pcm = vec![0.0f32; 4];
+        for fmt in [None, Some("json"), Some("text")] {
+            let err = transcribe_request_to_response(
+                &svc,
+                model_names::WHISPER_1,
+                fmt,
+                &["word".to_owned()],
+                None,
+                &pcm,
+            )
+            .expect_err("granularity without verbose_json must reject");
+            assert!(matches!(
+                err,
+                OpenAiTranscribeError::GranularityRequiresVerboseJson(_)
+            ));
+        }
+        assert!(svc.beam_calls.lock().unwrap().is_empty());
+        assert_eq!(*svc.greedy_calls.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn beam_size_above_max_is_400_before_engine_call() {
+        struct PanicOnCall;
+        impl TranscribeService for PanicOnCall {
+            fn transcribe(&self, _m: &str, _p: &[f32]) -> Result<String, ServiceError> {
+                panic!("must not dispatch");
+            }
+        }
+        let pcm = vec![0.0f32; 4];
+        let err = transcribe_request_to_response(
+            &PanicOnCall,
+            model_names::WHISPER_1,
+            None,
+            &[],
+            Some(MAX_BEAM_SIZE + 1),
+            &pcm,
+        )
+        .expect_err("oversized beam must reject");
+        match err {
+            OpenAiTranscribeError::BeamSizeTooLarge { requested } => {
+                assert_eq!(requested, MAX_BEAM_SIZE + 1);
+            }
+            other => panic!("expected BeamSizeTooLarge, got {other}"),
+        }
+    }
+
+    #[test]
+    fn beam_size_routes_json_through_beam_path() {
+        let svc = BeamRecorder::default();
+        let pcm = vec![0.0f32; 4];
+        let outcome =
+            transcribe_request_to_response(&svc, model_names::WHISPER_1, None, &[], Some(4), &pcm)
+                .expect("beam json must succeed");
+        let TranscriptionOutcome::Json(body) = outcome else {
+            panic!("expected Json outcome");
+        };
+        assert_eq!(body.text, "beam text");
+        let calls = svc.beam_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].beam_size, Some(4));
+        // No word ask on the plain-json beam path.
+        assert_eq!(calls[0].word_timestamps, None);
+        assert_eq!(*svc.greedy_calls.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn greedy_default_stays_on_legacy_transcribe_path() {
+        // beam_size unset / 0 / 1 must stay byte-for-byte on the legacy
+        // greedy call — a service whose transcribe_beam panics proves the
+        // beam path is never touched.
+        struct GreedyOnly;
+        impl TranscribeService for GreedyOnly {
+            fn transcribe(&self, _m: &str, _p: &[f32]) -> Result<String, ServiceError> {
+                Ok("greedy".to_owned())
+            }
+            fn transcribe_beam(
+                &self,
+                _m: &str,
+                _p: &[f32],
+                _req: &TranscribeBeamRequest,
+            ) -> Result<TranscribeBeamResponse, ServiceError> {
+                panic!("greedy request must not route through transcribe_beam");
+            }
+        }
+        let pcm = vec![0.0f32; 4];
+        for beam in [None, Some(0), Some(1)] {
+            let outcome = transcribe_request_to_response(
+                &GreedyOnly,
+                model_names::WHISPER_1,
+                None,
+                &[],
+                beam,
+                &pcm,
+            )
+            .expect("greedy must succeed");
+            let TranscriptionOutcome::Json(body) = outcome else {
+                panic!("expected Json outcome");
+            };
+            assert_eq!(body.text, "greedy");
+        }
+    }
+
+    /// The stock (non-overridden) `transcribe_beam` default must fail
+    /// CLOSED on a word ask — never fold to greedy with a fabricated empty
+    /// `words` list (the trait-default hardening that cc-19 added).
+    #[test]
+    fn default_impl_word_ask_is_explicit_unsupported_not_empty_words() {
+        // EchoTranscribe does NOT override transcribe_beam.
+        let pcm = vec![0.0f32; 4];
+        let err = transcribe_request_to_response(
+            &EchoTranscribe,
+            model_names::WHISPER_1,
+            Some("verbose_json"),
+            &["word".to_owned()],
+            None,
+            &pcm,
+        )
+        .expect_err("word ask on default impl must reject");
+        match err {
+            OpenAiTranscribeError::Service(ServiceError::Inference(VokraError::UnsupportedOp(
+                msg,
+            ))) => {
+                assert!(msg.contains("word_timestamps"), "{msg}");
+            }
+            other => panic!("expected Service(Inference(UnsupportedOp)), got {other}"),
+        }
+    }
+
+    #[test]
+    fn verbose_json_serialises_openai_word_shape() {
+        // Byte-shape pin: keys and casing of the verbose envelope.
+        let body = VerboseTranscriptionResponse {
+            task: "transcribe",
+            duration: 1.5,
+            text: "hi there".to_owned(),
+            words: vec![WordEntry {
+                word: " hi".to_owned(),
+                start: 0.1,
+                end: 0.4,
+            }],
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["task"], "transcribe");
+        assert_eq!(json["duration"], 1.5);
+        assert_eq!(json["text"], "hi there");
+        assert_eq!(json["words"][0]["word"], " hi");
+        assert_eq!(json["words"][0]["start"], 0.1);
+        assert_eq!(json["words"][0]["end"], 0.4);
+        // NFR-RL-06: no fabricated language / segments keys.
+        assert!(json.get("language").is_none());
+        assert!(json.get("segments").is_none());
     }
 }
 
@@ -1653,12 +2321,13 @@ mod route_transcriptions {
         let bytes = read_body(response).await;
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["error"]["code"], "not_implemented");
-        // The T07 stable deferral note is preserved end-to-end.
+        // INTENTIONALLY UPDATED for cc-19: the stable deferral note now
+        // names the working word-level path instead of "deferred to v1.0+".
         assert!(
             json["error"]["message"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("deferred to v1.0+"),
+                .contains("timestamp_granularities[]=word"),
             "message: {}",
             json["error"]["message"]
         );
@@ -1740,5 +2409,224 @@ mod route_transcriptions {
         for v in pcm {
             assert!(v.abs() < 1e-6, "stereo average should be ~0, got {v}");
         }
+    }
+
+    // -----------------------------------------------------------------
+    // cc-19 (2026-07-19 M4-residual audit): word timestamps + beam_size
+    // over the real multipart route.
+    // -----------------------------------------------------------------
+
+    use crate::service::{TranscribeBeamRequest, TranscribeBeamResponse, WordTimestamp};
+    use vokra_core::VokraError;
+
+    /// Beam-capable fake with recorded requests; returns canned word
+    /// timings when asked.
+    #[derive(Default)]
+    struct FakeBeam {
+        beam_calls: Mutex<Vec<TranscribeBeamRequest>>,
+    }
+
+    impl TranscribeService for FakeBeam {
+        fn transcribe(&self, _model: &str, _pcm: &[f32]) -> Result<String, ServiceError> {
+            Ok("greedy".to_owned())
+        }
+        fn transcribe_beam(
+            &self,
+            _model: &str,
+            _pcm: &[f32],
+            req: &TranscribeBeamRequest,
+        ) -> Result<TranscribeBeamResponse, ServiceError> {
+            self.beam_calls.lock().unwrap().push(req.clone());
+            Ok(TranscribeBeamResponse {
+                text: "and so my fellow".to_owned(),
+                alternatives: Vec::new(),
+                words: vec![
+                    WordTimestamp {
+                        word: " and".to_owned(),
+                        start: 0.0,
+                        end: 0.32,
+                    },
+                    WordTimestamp {
+                        word: " so".to_owned(),
+                        start: 0.32,
+                        end: 0.58,
+                    },
+                ],
+            })
+        }
+    }
+
+    /// Fake mirroring a model whose GGUF carries no alignment heads: the
+    /// engine raises the explicit FR-EX-08 `UnsupportedOp` from
+    /// `vokra-core::decode::beam_search` instead of fabricating timings.
+    struct HeadlessBeam;
+    impl TranscribeService for HeadlessBeam {
+        fn transcribe(&self, _model: &str, _pcm: &[f32]) -> Result<String, ServiceError> {
+            Ok("greedy".to_owned())
+        }
+        fn transcribe_beam(
+            &self,
+            _model: &str,
+            _pcm: &[f32],
+            _req: &TranscribeBeamRequest,
+        ) -> Result<TranscribeBeamResponse, ServiceError> {
+            Err(ServiceError::Inference(VokraError::UnsupportedOp(
+                "word_timestamps requested but the model supplies no alignment \
+                 (cross-attention) — FR-EX-08"
+                    .to_owned(),
+            )))
+        }
+    }
+
+    /// `verbose_json` + `timestamp_granularities[]=word` over multipart →
+    /// 200 with the OpenAI words[] shape (the cc-19 501 unlock).
+    #[tokio::test]
+    async fn route_verbose_json_word_returns_words_array() {
+        let fake = Arc::new(FakeBeam::default());
+        let app = build_app(fake.clone() as Arc<dyn TranscribeService>);
+
+        let wav = make_wav(16_000); // 1 s @ 16 kHz.
+        let boundary = "----vokra-test-boundary";
+        let body = build_multipart(
+            vec![
+                ("file", &wav, Some("jfk.wav")),
+                ("model", b"whisper-1", None),
+                ("response_format", b"verbose_json", None),
+                ("timestamp_granularities[]", b"word", None),
+                ("beam_size", b"5", None),
+            ],
+            boundary,
+        );
+
+        let response = app.oneshot(post_request(boundary, body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = read_body(response).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["task"], "transcribe");
+        assert_eq!(json["text"], "and so my fellow");
+        // duration = 16 000 samples / 16 000 Hz.
+        assert!((json["duration"].as_f64().unwrap() - 1.0).abs() < 1e-9);
+        let words = json["words"].as_array().expect("words[] present");
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0]["word"], " and");
+        assert!(words[0]["start"].as_f64().is_some());
+        assert!(words[0]["end"].as_f64().is_some());
+        // NFR-RL-06: nothing fabricated.
+        assert!(json.get("language").is_none());
+        assert!(json.get("segments").is_none());
+        // The ask reached the service: word flag + bounded beam width.
+        let calls = fake.beam_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].word_timestamps, Some(true));
+        assert_eq!(calls[0].beam_size, Some(5));
+    }
+
+    /// A model without alignment heads → explicit 501 `unsupported_op`
+    /// carrying the engine's precise message — never fabricated timings,
+    /// never a generic 500 (cc-19).
+    #[tokio::test]
+    async fn route_word_ask_on_headless_model_is_501_unsupported_op() {
+        let app = build_app(Arc::new(HeadlessBeam) as Arc<dyn TranscribeService>);
+
+        let wav = make_wav(800);
+        let boundary = "----vokra-test-boundary";
+        let body = build_multipart(
+            vec![
+                ("file", &wav, Some("x.wav")),
+                ("response_format", b"verbose_json", None),
+                ("timestamp_granularities[]", b"word", None),
+            ],
+            boundary,
+        );
+
+        let response = app.oneshot(post_request(boundary, body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let bytes = read_body(response).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "unsupported_op");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("no alignment"),
+            "must carry the engine's precise message, got {json}"
+        );
+    }
+
+    /// `beam_size` above the bound is 400 before dispatch.
+    #[tokio::test]
+    async fn route_beam_size_above_max_is_400() {
+        let fake = Arc::new(FakeBeam::default());
+        let app = build_app(fake.clone() as Arc<dyn TranscribeService>);
+
+        let wav = make_wav(800);
+        let boundary = "----vokra-test-boundary";
+        let body = build_multipart(
+            vec![("file", &wav, Some("x.wav")), ("beam_size", b"9", None)],
+            boundary,
+        );
+
+        let response = app.oneshot(post_request(boundary, body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = read_body(response).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "invalid_multipart");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("beam_size 9 exceeds the maximum 8"),
+            "got {json}"
+        );
+        assert!(fake.beam_calls.lock().unwrap().is_empty());
+    }
+
+    /// Non-integer `beam_size` is a 400 at multipart parse.
+    #[tokio::test]
+    async fn route_beam_size_non_integer_is_400() {
+        let fake = Arc::new(FakeBeam::default());
+        let app = build_app(fake as Arc<dyn TranscribeService>);
+
+        let wav = make_wav(800);
+        let boundary = "----vokra-test-boundary";
+        let body = build_multipart(
+            vec![("file", &wav, Some("x.wav")), ("beam_size", b"wide", None)],
+            boundary,
+        );
+
+        let response = app.oneshot(post_request(boundary, body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// `timestamp_granularities[]` with a non-verbose format is an explicit
+    /// 400 (never a silent ignore) over the wire too.
+    #[tokio::test]
+    async fn route_granularity_without_verbose_json_is_400() {
+        let fake = Arc::new(FakeBeam::default());
+        let app = build_app(fake.clone() as Arc<dyn TranscribeService>);
+
+        let wav = make_wav(800);
+        let boundary = "----vokra-test-boundary";
+        let body = build_multipart(
+            vec![
+                ("file", &wav, Some("x.wav")),
+                ("response_format", b"json", None),
+                ("timestamp_granularities[]", b"word", None),
+            ],
+            boundary,
+        );
+
+        let response = app.oneshot(post_request(boundary, body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = read_body(response).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("verbose_json"),
+            "got {json}"
+        );
+        assert!(fake.beam_calls.lock().unwrap().is_empty());
     }
 }

@@ -28,7 +28,9 @@ use crate::api::wyoming::{
 use crate::config::Config;
 use crate::error::spawn_isolated_wyoming_task;
 use crate::scheduler::{Scheduler, SchedulerConfig};
-use crate::service::{InferenceService, ServiceConfig, ServiceError, TranscribeService};
+use crate::service::{
+    InferenceService, ModelCatalog, ServiceConfig, ServiceError, TranscribeService,
+};
 use crate::session::SessionRegistryConfig;
 use crate::shutdown::{ShutdownSignal, ShutdownTrigger, install_shutdown_signal};
 use axum::Router;
@@ -128,7 +130,7 @@ pub async fn spawn_server_with_service(
     service: Option<Arc<dyn WyomingBackend>>,
     scheduler: Option<Arc<Scheduler>>,
 ) -> std::io::Result<ServerHandles> {
-    spawn_server_full(cfg, signal, None, None, service, scheduler).await
+    spawn_server_full(cfg, signal, None, None, None, service, scheduler).await
 }
 
 /// Bind both listeners and spawn their event loops, wiring BOTH the HTTP API
@@ -142,20 +144,25 @@ pub async fn spawn_server_with_service(
 /// * `http_tts = Some(_)` → the HTTP app attaches the piper-plus
 ///   `POST /api/tts` route (campaign-2 P1 #3: this router existed since T11
 ///   but was never merged, so the production binary 404'd FR-SV-04).
-/// * Both `None` → health-only.
+/// * `http_models = Some(_)` → the HTTP app attaches `GET /v1/models`
+///   (cc-18, 2026-07-19 M4-residual audit) enumerating the registry's
+///   accepted model ids in the OpenAI list shape.
+/// * All `None` → health-only.
 /// * `service` / `scheduler` behave exactly as in
 ///   [`spawn_server_with_service`].
 ///
 /// The concrete [`InferenceService`] implements [`TranscribeService`] +
-/// [`crate::service::SynthesizeService`] + `VoiceDefaults` (HTTP) and
-/// [`WyomingBackend`] (Wyoming), so the production caller passes trait-object
-/// views of the same `Arc`. Kept as separate optionals rather than a bundle so
-/// the Wyoming-only test path can leave the HTTP views `None` without mocks.
+/// [`crate::service::SynthesizeService`] + `VoiceDefaults` +
+/// [`ModelCatalog`] (HTTP) and [`WyomingBackend`] (Wyoming), so the
+/// production caller passes trait-object views of the same `Arc`. Kept as
+/// separate optionals rather than a bundle so the Wyoming-only test path can
+/// leave the HTTP views `None` without mocks.
 pub async fn spawn_server_full(
     cfg: Config,
     signal: ShutdownSignal,
     http_transcribe: Option<Arc<dyn TranscribeService>>,
     http_tts: Option<TtsHttpState>,
+    http_models: Option<Arc<dyn ModelCatalog>>,
     service: Option<Arc<dyn WyomingBackend>>,
     scheduler: Option<Arc<Scheduler>>,
 ) -> std::io::Result<ServerHandles> {
@@ -181,7 +188,7 @@ pub async fn spawn_server_full(
              only /health is answered"
         ),
     }
-    let app = build_http_app(http_transcribe, http_tts);
+    let app = build_http_app(http_transcribe, http_tts, http_models);
     let http_signal = signal.clone();
     tokio::spawn(async move {
         let shutdown = async move { http_signal.wait().await };
@@ -237,10 +244,12 @@ pub async fn spawn_server_full(
 /// The whole app resolves to `Router<()>`: the OpenAI sub-router is bound to
 /// its state with `.with_state(transcribe)` before being merged, exactly like
 /// the `attach_routes` unit tests do; the vLLM router is stateless; the TTS
-/// router arrives state-applied from [`crate::api::piper_http::router`].
+/// and models routers arrive state-applied from
+/// [`crate::api::piper_http::router`] / [`crate::api::vllm::models_router`].
 fn build_http_app(
     http_transcribe: Option<Arc<dyn TranscribeService>>,
     http_tts: Option<TtsHttpState>,
+    http_models: Option<Arc<dyn ModelCatalog>>,
 ) -> Router {
     let mut app = Router::new().route("/health", get(health_handler));
     if let Some(transcribe) = http_transcribe {
@@ -255,6 +264,12 @@ fn build_http_app(
         // unit-tested, but never merged here → live 404 on the production
         // binary, verified 2026-07-17).
         app = app.merge(crate::api::piper_http::router(tts));
+    }
+    if let Some(catalog) = http_models {
+        // cc-18 (2026-07-19 M4-residual audit): `GET /v1/models` — mounted
+        // only when a registry exists so the catalogue is never fabricated
+        // on a health-only boot (FR-EX-08).
+        app = app.merge(crate::api::vllm::models_router(catalog));
     }
     app
 }
@@ -273,14 +288,15 @@ async fn spawn_server_wired(
     service: Option<Arc<InferenceService>>,
 ) -> std::io::Result<ServerHandles> {
     let Some(svc) = service else {
-        return spawn_server_full(cfg, signal, None, None, None, None).await;
+        return spawn_server_full(cfg, signal, None, None, None, None, None).await;
     };
     // Trait-object views of the SAME registry `Arc` — the HTTP routers need
-    // `TranscribeService` + (`SynthesizeService`, `VoiceDefaults`), the
-    // Wyoming loop needs `WyomingBackend`, and `InferenceService` implements
-    // them all.
+    // `TranscribeService` + (`SynthesizeService`, `VoiceDefaults`) +
+    // `ModelCatalog`, the Wyoming loop needs `WyomingBackend`, and
+    // `InferenceService` implements them all.
     let http: Arc<dyn TranscribeService> = svc.clone();
     let http_tts = TtsHttpState::from_service(svc.clone());
+    let http_models: Arc<dyn ModelCatalog> = svc.clone();
     let wyoming: Arc<dyn WyomingBackend> = svc;
     // `n_stream` must equal `max_concurrent_sessions` (see `Scheduler::new`);
     // both use the same constant here, so the only error path is unreachable
@@ -295,6 +311,7 @@ async fn spawn_server_wired(
         signal,
         Some(http),
         Some(http_tts),
+        Some(http_models),
         Some(wyoming),
         Some(scheduler),
     )
@@ -759,6 +776,7 @@ mod tests {
         let app = build_http_app(
             Some(Arc::new(FakeTranscribe) as Arc<dyn TranscribeService>),
             None,
+            None,
         );
         let boundary = "vokra-server-wiring-boundary";
         let body = multipart_wav_body(boundary, &tiny_wav(3200));
@@ -796,6 +814,7 @@ mod tests {
         let app = build_http_app(
             Some(Arc::new(FakeTranscribe) as Arc<dyn TranscribeService>),
             None,
+            None,
         );
         // A well-formed completions request → 501 NotImplemented (v0.5
         // contract-only), proving the vLLM router is mounted (never a 404).
@@ -819,7 +838,7 @@ mod tests {
         use axum::http::Request;
         use tower::ServiceExt;
 
-        let app = build_http_app(None, None);
+        let app = build_http_app(None, None, None);
         // /health is always present.
         let health = app
             .clone()
@@ -862,6 +881,7 @@ mod tests {
         assert_eq!(vllm.status(), StatusCode::NOT_FOUND);
 
         let tts = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -872,6 +892,62 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(tts.status(), StatusCode::NOT_FOUND);
+
+        // cc-18: without a registry the model catalogue is OMITTED too —
+        // never an empty fabricated list.
+        let models = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(models.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// cc-18 (2026-07-19 M4-residual audit): `GET /v1/models` is mounted on
+    /// the composed app when a catalogue view is wired, and lists the
+    /// registry ids in the OpenAI list shape.
+    #[tokio::test]
+    async fn http_app_mounts_models_route_when_catalog_wired() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        struct FakeCatalog;
+        impl ModelCatalog for FakeCatalog {
+            fn model_ids(&self) -> Vec<String> {
+                vec!["whisper-base".to_owned(), "piper-plus".to_owned()]
+            }
+        }
+
+        let app = build_http_app(None, None, Some(Arc::new(FakeCatalog)));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["object"], "list");
+        let ids: Vec<&str> = v["data"]
+            .as_array()
+            .expect("data array")
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["whisper-base", "piper-plus"]);
     }
 
     // ---------------------------------------------------------------------
@@ -916,6 +992,7 @@ mod tests {
                 synth: Arc::new(FakeSynthTts),
                 voices: Arc::new(FakeVoicesTts),
             }),
+            None,
         );
         let req = Request::builder()
             .method("POST")

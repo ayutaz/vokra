@@ -40,12 +40,15 @@
 //! `LlmService` trait added to `crate::service`.
 
 use crate::error::{ServerError, finish_request};
+use crate::service::ModelCatalog;
 use axum::Json;
 use axum::Router;
+use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::response::Response;
-use axum::routing::post;
+use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 // -----------------------------------------------------------------------------
 // Request DTOs (OpenAI + vLLM shape)
@@ -242,6 +245,78 @@ async fn handle_chat_completions(
         model.as_deref(),
         start,
         result,
+    )
+}
+
+// -----------------------------------------------------------------------------
+// GET /v1/models — the OpenAI / vLLM model-catalogue route (cc-18,
+// 2026-07-19 M4-residual audit: previously a doc comment on
+// `InferenceService::asr_model_names` only, no route existed).
+// -----------------------------------------------------------------------------
+
+/// One entry of the `GET /v1/models` response. OpenAI-documented shape:
+/// `{"id", "object": "model", "created", "owned_by"}` — the exact keys the
+/// openai-python SDK's `client.models.list()` and vLLM's own `/v1/models`
+/// emit.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelObject {
+    /// Model id exactly as the transcription / TTS routes accept it.
+    pub id: String,
+    /// Always `"model"` (OpenAI constant).
+    pub object: &'static str,
+    /// OpenAI carries a creation unix-timestamp here. Vokra's registry has no
+    /// meaningful per-model timestamp, and fabricating one (e.g. server boot
+    /// time) would be dishonest metadata — the field is pinned to `0`
+    /// (documented, byte-stable) purely for schema compatibility.
+    pub created: u64,
+    /// Always `"vokra"` — the serving runtime, matching how vLLM reports
+    /// `owned_by` for locally-served models.
+    pub owned_by: &'static str,
+}
+
+/// `GET /v1/models` response envelope: `{"object": "list", "data": [...]}`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelListResponse {
+    pub object: &'static str,
+    pub data: Vec<ModelObject>,
+}
+
+/// Build the `GET /v1/models` router bound to a live registry catalogue.
+///
+/// Kept separate from [`router`] (which stays stateless contract-only) so the
+/// health-only boot never mounts a catalogue route it cannot honestly answer:
+/// no registry ⇒ no route ⇒ 404 (FR-EX-08), exactly like the transcription
+/// routes. `build_http_app` merges this only when an [`InferenceService`]
+/// (or a test mock) is wired.
+pub fn models_router(catalog: Arc<dyn ModelCatalog>) -> Router {
+    Router::new()
+        .route("/v1/models", get(handle_models))
+        .with_state(catalog)
+}
+
+/// `GET /v1/models` handler: enumerate every model id the routes accept.
+async fn handle_models(State(catalog): State<Arc<dyn ModelCatalog>>) -> Response {
+    let start = std::time::Instant::now();
+    let data = catalog
+        .model_ids()
+        .into_iter()
+        .map(|id| ModelObject {
+            id,
+            object: "model",
+            created: 0,
+            owned_by: "vokra",
+        })
+        .collect();
+    let body = ModelListResponse {
+        object: "list",
+        data,
+    };
+    finish_request(
+        "GET",
+        "/v1/models",
+        None,
+        start,
+        Ok::<_, ServerError>(Json(body)),
     )
 }
 
@@ -482,8 +557,11 @@ mod contract_stub {
         assert_eq!(body["error"]["type"], "invalid_input");
     }
 
-    /// Only the two documented routes exist; a sibling path is 404 by axum
-    /// default. Guards against accidental "greedy" route glob later.
+    /// Only the two documented routes exist on the stateless contract
+    /// router; a sibling path is 404 by axum default. Guards against
+    /// accidental "greedy" route glob later. (`/v1/models` lives on the
+    /// separate state-bound [`models_router`] — cc-18 — and is asserted
+    /// below, so the bare contract router legitimately 404s it.)
     #[tokio::test]
     async fn no_extra_routes_are_registered() {
         let app = router();
@@ -495,5 +573,64 @@ mod contract_stub {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -------------------------------------------------------------------
+    // GET /v1/models (cc-18, 2026-07-19 M4-residual audit).
+    // -------------------------------------------------------------------
+
+    /// Catalogue mock standing in for the `InferenceService` impl.
+    struct FakeCatalog;
+    impl crate::service::ModelCatalog for FakeCatalog {
+        fn model_ids(&self) -> Vec<String> {
+            vec![
+                "whisper-base".to_owned(),
+                "whisper-1".to_owned(),
+                "piper-plus".to_owned(),
+            ]
+        }
+    }
+
+    /// `GET /v1/models` returns the OpenAI list envelope with one `model`
+    /// object per accepted id, in registry order.
+    #[tokio::test]
+    async fn models_route_lists_registry_ids_in_openai_shape() {
+        let app = models_router(std::sync::Arc::new(FakeCatalog));
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/v1/models")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 16 * 1024).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["object"], "list");
+        let data = v["data"].as_array().expect("data must be an array");
+        assert_eq!(data.len(), 3);
+        assert_eq!(data[0]["id"], "whisper-base");
+        assert_eq!(data[1]["id"], "whisper-1");
+        assert_eq!(data[2]["id"], "piper-plus");
+        for m in data {
+            assert_eq!(m["object"], "model");
+            assert_eq!(m["owned_by"], "vokra");
+            // Pinned honest constant — no fabricated timestamp.
+            assert_eq!(m["created"], 0);
+        }
+    }
+
+    /// POST on `/v1/models` is 405 (the route exists, GET-only) — the
+    /// method closure counterpart of the path closure above.
+    #[tokio::test]
+    async fn models_route_rejects_post_with_405() {
+        let app = models_router(std::sync::Arc::new(FakeCatalog));
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/models")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 }

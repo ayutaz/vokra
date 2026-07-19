@@ -27,9 +27,13 @@
 //!   envelope carrying `error.type == "invalid_input"`. This is the
 //!   parity guarantee vLLM's own server offers to its clients and is
 //!   what closes the "silently ignored field" bug class.
-//! * **Router surface** is closed: only the two documented paths are
-//!   registered on `/v1`; sibling paths like `/v1/embeddings` return
-//!   `404`. Guards against accidental greedy globs in later refactors.
+//! * **Router surface** is closed: the stateless contract router carries
+//!   exactly the two documented POST paths; sibling paths like
+//!   `/v1/embeddings` return `404`. Guards against accidental greedy
+//!   globs in later refactors. (`GET /v1/models` joined the composed app
+//!   as a separate state-bound router — cc-18, 2026-07-19 M4-residual
+//!   audit — and is asserted both present-when-wired and
+//!   absent-when-health-only below.)
 //!
 //! # Route-wiring gate
 //!
@@ -55,74 +59,21 @@
 //! in this file, so parallel `cargo test` runs and sandboxed CI both
 //! work.
 
-use std::net::SocketAddr;
 use std::time::Duration;
 
 use vokra_server::api::vllm::router as vllm_router;
 use vokra_server::{Config, spawn_server_for_test};
 
-// ---------- raw HTTP JSON client (no reqwest dep needed) ----------
-
-/// POST a JSON body via a raw TCP write/read and return
-/// `(status, body_bytes)`. Bounded 5 s read + `Connection: close`
-/// framing mirrors `openai_compat.rs` so failure modes are identical
-/// across the two files (parallel maintenance is cheaper).
-async fn http_post_json(
-    addr: SocketAddr,
-    path: &str,
-    body: &[u8],
-) -> std::io::Result<(u16, Vec<u8>)> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut sock = tokio::net::TcpStream::connect(addr).await?;
-    let head = format!(
-        "POST {path} HTTP/1.1\r\n\
-         Host: 127.0.0.1\r\n\
-         Content-Type: application/json\r\n\
-         Content-Length: {len}\r\n\
-         Connection: close\r\n\r\n",
-        len = body.len(),
-    );
-    sock.write_all(head.as_bytes()).await?;
-    sock.write_all(body).await?;
-    sock.flush().await?;
-
-    let mut buf = Vec::new();
-    tokio::time::timeout(Duration::from_secs(5), sock.read_to_end(&mut buf))
-        .await
-        .map_err(|_| std::io::Error::other("http read timeout"))??;
-
-    let sep = buf
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| std::io::Error::other("no header terminator"))?;
-    let head_str = std::str::from_utf8(&buf[..sep])
-        .map_err(|e| std::io::Error::other(format!("utf8: {e}")))?;
-    let first_line = head_str.lines().next().unwrap_or("");
-    let status: u16 = first_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| std::io::Error::other(format!("bad status line: {first_line:?}")))?;
-
-    // Body may be chunked or plain. `Connection: close` above requests
-    // plain framing, and hyper honours that. If a chunked encoding
-    // slipped in, best-effort strip the first chunk-size line — the
-    // vLLM handler returns a small JSON that fits in one chunk.
-    let body_bytes = if head_str
-        .lines()
-        .any(|l| l.eq_ignore_ascii_case("Transfer-Encoding: chunked"))
-    {
-        let raw = &buf[sep + 4..];
-        raw.windows(2)
-            .position(|w| w == b"\r\n")
-            .map(|i| raw[i + 2..].to_vec())
-            .unwrap_or_else(|| raw.to_vec())
-    } else {
-        buf[sep + 4..].to_vec()
-    };
-
-    Ok((status, body_bytes))
-}
+// ---------- raw HTTP JSON client ----------
+//
+// cc-09 (2026-07-19 M4-residual audit): the per-file copy of the raw-TCP
+// helper is replaced by the shared `tests/support/mod.rs` client, which
+// root-causes and fixes the parallel-full-suite `ConnectionReset` flake
+// this file exhibited at :329/:384 (see the module docs there — the old
+// single-`read_to_end` helper discarded a fully-buffered response when the
+// server's early-close RST poisoned the socket).
+mod support;
+use support::http_post_json;
 
 // ---------- schema helpers ----------
 
@@ -464,15 +415,25 @@ async fn malformed_requests_are_invalid_input() {
     assert_invalid_input(status, &body, "chat/wrong_content_type");
 }
 
-/// The vLLM router registers exactly two routes on `/v1`; sibling
-/// paths (`/v1/embeddings`, `/v1/models`, ...) MUST 404. Closes the
-/// bug class where a future refactor accidentally adds a greedy glob.
+/// The stateless vLLM contract router registers exactly two routes on
+/// `/v1`; sibling paths MUST 404. Closes the bug class where a future
+/// refactor accidentally adds a greedy glob.
+///
+/// INTENTIONALLY UPDATED (cc-18, 2026-07-19 M4-residual audit): the
+/// must-404 list previously included `/v1/models` — that route now EXISTS
+/// (`GET`, OpenAI model-catalogue shape) on the separate state-bound
+/// `models_router`, mounted by `build_http_app` whenever a registry is
+/// wired. The bare contract router still 404s it (no state = no
+/// catalogue), which the dedicated assertion below pins; the composed-app
+/// behaviour is covered by `server::tests::
+/// http_app_mounts_models_route_when_catalog_wired` and the in-crate
+/// `api::vllm` models tests.
 #[tokio::test]
 async fn no_extra_v1_routes_are_registered() {
     use axum::body::to_bytes;
     use axum::http::{Method, Request};
     use tower::ServiceExt as _;
-    for path in ["/v1/embeddings", "/v1/models", "/v1/completions/foo"] {
+    for path in ["/v1/embeddings", "/v1/completions/foo"] {
         let app = vllm_router();
         let req = Request::builder()
             .method(Method::POST)
@@ -489,6 +450,43 @@ async fn no_extra_v1_routes_are_registered() {
             String::from_utf8_lossy(&to_bytes(resp.into_body(), 4096).await.unwrap_or_default(),),
         );
     }
+
+    // `/v1/models` lives on the state-bound models_router (cc-18), NOT on
+    // the stateless contract router — the bare router must keep 404ing it
+    // so a stateless mount can never advertise a catalogue it doesn't have.
+    let app = vllm_router();
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/models")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        404,
+        "bare contract router must not serve /v1/models (it has no registry state)",
+    );
+}
+
+/// cc-18 e2e closure: on a health-only boot (no registry) the composed
+/// server must 404 `GET /v1/models` — an honest absence, never an empty
+/// fabricated catalogue (FR-EX-08). The wired-server 200 path is covered
+/// by the env-gated suites + `server.rs` unit tests.
+#[tokio::test]
+async fn models_route_absent_on_health_only_server() {
+    let cfg = Config {
+        http_bind: "127.0.0.1:0".parse().unwrap(),
+        wyoming_bind: "127.0.0.1:0".parse().unwrap(),
+        config_file: None,
+        ..Config::default()
+    };
+    let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn server");
+    let (status, _body) = support::http_get(handles.http_actual, "/v1/models")
+        .await
+        .expect("GET /v1/models");
+    assert_eq!(status, 404, "health-only boot must not serve a catalogue");
+    trigger.trigger();
+    tokio::time::sleep(Duration::from_millis(20)).await;
 }
 
 /// Sanity guard: bringing the server up on random ports must succeed

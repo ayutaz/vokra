@@ -290,6 +290,17 @@ pub trait TranscribeService: Send + Sync {
         // Default behaviour: fall through to greedy for beam_size 0..=1,
         // hard-error for beam_size > 1. Concrete implementations override
         // this to route their supported engines through a real beam path.
+        //
+        // cc-19 (2026-07-19 M4-residual audit): a word-timestamps ask on an
+        // implementation that has not overridden this method MUST NOT fold
+        // into greedy-with-empty-words — that would be a silently fabricated
+        // "no words" alignment (FR-EX-08 / NFR-RL-06). Explicit error instead.
+        if req.word_timestamps == Some(true) {
+            return Err(ServiceError::Inference(VokraError::UnsupportedOp(format!(
+                "transcribe_beam: model `{model}` does not support word_timestamps on this \
+                 TranscribeService implementation (FR-EX-08 — word timings are never fabricated)",
+            ))));
+        }
         match req.beam_size {
             None | Some(0..=1) => {
                 let text = self.transcribe(model, pcm)?;
@@ -400,6 +411,34 @@ pub struct TranscribeBeamResponse {
     /// backend produced an alignment. Additive field — callers that never
     /// request word timestamps see an empty list.
     pub words: Vec<WordTimestamp>,
+}
+
+/// Model-catalogue view for `GET /v1/models` (cc-18, 2026-07-19 M4-residual
+/// audit — the enumeration helpers below existed since T04 but no HTTP route
+/// ever exposed them).
+///
+/// Kept as its own narrow trait (rather than widening [`TranscribeService`])
+/// so the route can be driven by a mock in tests and so non-registry servers
+/// (health-only boot) simply do not mount the route — an honest 404, never an
+/// empty fabricated catalogue (FR-EX-08).
+pub trait ModelCatalog: Send + Sync {
+    /// Every model id the HTTP routes accept, in a stable order. Aliases that
+    /// route to the same engine (e.g. `whisper-base` / `whisper-1`) are each
+    /// listed — the catalogue's contract is "these ids are accepted", not
+    /// "these engines are distinct".
+    fn model_ids(&self) -> Vec<String>;
+}
+
+impl ModelCatalog for InferenceService {
+    fn model_ids(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .asr_model_names()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        v.extend(self.tts_model_names().into_iter().map(str::to_owned));
+        v
+    }
 }
 
 /// Text-to-speech dispatch trait, keyed by the request's `model` name.
@@ -1031,10 +1070,33 @@ impl SynthesizeService for InferenceService {
         request: &SynthesisRequest,
     ) -> Result<SynthesizedAudio, ServiceError> {
         match model {
-            model_names::PIPER_PLUS => self
-                .tts_piper
-                .synthesize_full(request, self.phonemizer.as_ref())
-                .map_err(ServiceError::Inference),
+            model_names::PIPER_PLUS => {
+                // cc-18 (2026-07-19 M4-residual audit): a `language` the voice
+                // does not support must be an explicit error at the service
+                // boundary. The engine's `synthesize_full` maps an unknown
+                // code to `None` and silently falls back to the phonemizer's
+                // detected language (crates/vokra-models/src/piper_plus/mod.rs
+                // `language_id(..).unwrap_or(utt.lid)`) — honest surfaces
+                // must reject BEFORE that fallback (FR-EX-08). The supported
+                // set comes from the voice GGUF's own
+                // `vokra.piper.language_codes` metadata.
+                if let Some(lang) = request.language.as_deref() {
+                    let cfg = self.tts_piper.config();
+                    if cfg.language_id(lang).is_none() {
+                        return Err(ServiceError::Inference(VokraError::InvalidArgument(
+                            format!(
+                                "synthesize: language `{lang}` is not supported by the loaded \
+                                 piper-plus voice (supported: [{}]) — refusing to silently fall \
+                                 back to the voice default (FR-EX-08)",
+                                cfg.language_codes.join(", "),
+                            ),
+                        )));
+                    }
+                }
+                self.tts_piper
+                    .synthesize_full(request, self.phonemizer.as_ref())
+                    .map_err(ServiceError::Inference)
+            }
             model_names::KOKORO => {
                 if self.tts_kokoro.is_none() {
                     return Err(ServiceError::UnknownModel(model.to_owned()));

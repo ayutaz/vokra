@@ -2257,11 +2257,19 @@ name = "vokra-core"
 version = "0.1.0-alpha.0"
 
 [[package]]
+name = "vokra-mmap"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "vokra-core",
+]
+
+[[package]]
 name = "vokra-models"
 version = "0.1.0-alpha.0"
 dependencies = [
  "vokra-backend-cpu",
  "vokra-core",
+ "vokra-mmap",
  "vokra-ops",
  "vokra-piper-plus",
 ]

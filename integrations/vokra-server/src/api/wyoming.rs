@@ -812,7 +812,7 @@ where
             };
             match header.type_.as_str() {
                 "synthesize" => {
-                    let (voice, text) = parse_synthesize(&header);
+                    let (voice, language, text) = parse_synthesize(&header);
                     // Fresh flag per utterance so a stale barge-in from a
                     // previous synthesize cannot suppress this one.
                     barge_in.clear();
@@ -820,6 +820,7 @@ where
                         writer,
                         service.as_synthesize(),
                         voice.as_deref(),
+                        language.as_deref(),
                         &text,
                         &barge_in,
                         &mut rx,
@@ -899,6 +900,7 @@ async fn emit_with_barge_in_watch<W>(
     writer: &mut W,
     service: &dyn SynthesizeService,
     voice: Option<&str>,
+    language: Option<&str>,
     text: &str,
     barge_in: &BargeIn,
     rx: &mut tokio::sync::mpsc::Receiver<PumpItem>,
@@ -907,7 +909,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut emit = std::pin::pin!(handle_synthesize_interruptible(
-        writer, service, voice, text, barge_in
+        writer, service, voice, language, text, barge_in
     ));
     let mut stashed: Option<PumpItem> = None;
     let mut watch = true;
@@ -942,15 +944,19 @@ where
     (outcome, stashed)
 }
 
-/// Parse a `synthesize` event's `data` into `(voice, text)`.
+/// Parse a `synthesize` event's `data` into `(voice, language, text)`.
 ///
-/// Upstream shape: `data: { text, voice: { name, speaker } }`. `voice` may also
-/// appear as a bare string on some satellites; both are accepted. Missing
-/// `text` → empty string (a silent utterance is legal; the emit path still
-/// sends `info` / `audio-start` / `audio-stop`, NFR-RL-06).
-fn parse_synthesize(header: &WyomingHeader) -> (Option<String>, String) {
+/// Upstream shape: `data: { text, voice: { name, language, speaker } }`
+/// (wyoming `SynthesizeVoice` carries an optional `language` alongside
+/// `name` — cc-18, 2026-07-19 M4-residual audit: previously dropped on the
+/// floor here, leaving `SynthesisRequest.language` unreachable from every
+/// server surface). `voice` may also appear as a bare string on some
+/// satellites; both are accepted (a bare string carries no language).
+/// Missing `text` → empty string (a silent utterance is legal; the emit path
+/// still sends `info` / `audio-start` / `audio-stop`, NFR-RL-06).
+fn parse_synthesize(header: &WyomingHeader) -> (Option<String>, Option<String>, String) {
     let Some(data) = header.data.as_ref() else {
-        return (None, String::new());
+        return (None, None, String::new());
     };
     let text = data
         .get("text")
@@ -962,7 +968,13 @@ fn parse_synthesize(header: &WyomingHeader) -> (Option<String>, String) {
             .map(str::to_owned)
             .or_else(|| v.get("name").and_then(|n| n.as_str()).map(str::to_owned))
     });
-    (voice, text)
+    let language = data
+        .get("voice")
+        .and_then(|v| v.get("language"))
+        .and_then(|l| l.as_str())
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned);
+    (voice, language, text)
 }
 
 /// FR-EX-08 error-event message for a failed `synthesize` dispatch — an
@@ -972,6 +984,147 @@ fn synthesize_error_message(err: &ServiceError) -> String {
     match err {
         ServiceError::UnknownModel(m) => format!("voice_not_found: {m}"),
         other => format!("synthesize_failed: {other}"),
+    }
+}
+
+#[cfg(test)]
+mod synthesize_language {
+    //! cc-18 (2026-07-19 M4-residual audit): the `synthesize` event's
+    //! `voice.language` must be extracted and reach
+    //! `SynthesisRequest.language` — previously it was dropped at
+    //! `parse_synthesize`, leaving the field unreachable from Wyoming.
+
+    use super::*;
+    use crate::service::SynthesizeService;
+    use std::sync::Mutex;
+    use vokra_core::{SynthesisRequest, SynthesizedAudio, VokraError};
+
+    fn header(data: serde_json::Value) -> WyomingHeader {
+        WyomingHeader {
+            type_: "synthesize".into(),
+            data: Some(data),
+            data_length: 0,
+            payload_length: 0,
+            version: None,
+        }
+    }
+
+    #[test]
+    fn parse_synthesize_extracts_voice_language_and_text() {
+        // Upstream object voice: {name, language, speaker}.
+        let (voice, language, text) = parse_synthesize(&header(serde_json::json!({
+            "text": "こんにちは",
+            "voice": {"name": "piper-plus", "language": "ja", "speaker": null},
+        })));
+        assert_eq!(voice.as_deref(), Some("piper-plus"));
+        assert_eq!(language.as_deref(), Some("ja"));
+        assert_eq!(text, "こんにちは");
+
+        // Bare-string voice (satellite shorthand) carries no language.
+        let (voice, language, _) = parse_synthesize(&header(serde_json::json!({
+            "text": "hi",
+            "voice": "piper-plus",
+        })));
+        assert_eq!(voice.as_deref(), Some("piper-plus"));
+        assert!(language.is_none());
+
+        // Empty-string language is treated as absent (a satellite emitting
+        // `language: ""` means "unset", not "the empty language").
+        let (_, language, _) = parse_synthesize(&header(serde_json::json!({
+            "text": "hi",
+            "voice": {"name": "piper-plus", "language": ""},
+        })));
+        assert!(language.is_none());
+
+        // No voice at all.
+        let (voice, language, text) = parse_synthesize(&header(serde_json::json!({"text": "hi"})));
+        assert!(voice.is_none());
+        assert!(language.is_none());
+        assert_eq!(text, "hi");
+    }
+
+    /// The language must flow through the emit core into the
+    /// `SynthesisRequest` (and stay `None` when the event has none).
+    #[tokio::test]
+    async fn synthesize_language_reaches_synthesis_request() {
+        struct CaptureSynth {
+            seen: Mutex<Vec<Option<String>>>,
+        }
+        impl SynthesizeService for CaptureSynth {
+            fn synthesize(
+                &self,
+                _model: &str,
+                request: &SynthesisRequest,
+            ) -> Result<SynthesizedAudio, ServiceError> {
+                self.seen.lock().unwrap().push(request.language.clone());
+                Ok(SynthesizedAudio::new(vec![0.0; 8], 22_050))
+            }
+        }
+        let svc = CaptureSynth {
+            seen: Mutex::new(Vec::new()),
+        };
+        let mut sink: Vec<u8> = Vec::new();
+        let outcome = handle_synthesize_interruptible(
+            &mut sink,
+            &svc,
+            None,
+            Some("ja"),
+            "hi",
+            &BargeIn::new(),
+        )
+        .await;
+        assert!(matches!(outcome, SynthesizeOutcome::Ok { .. }));
+        let outcome =
+            handle_synthesize_interruptible(&mut sink, &svc, None, None, "hi", &BargeIn::new())
+                .await;
+        assert!(matches!(outcome, SynthesizeOutcome::Ok { .. }));
+        assert_eq!(
+            svc.seen.lock().unwrap().clone(),
+            vec![Some("ja".to_owned()), None]
+        );
+    }
+
+    /// FR-EX-08 end-to-end shape: a service-side unsupported-language
+    /// rejection surfaces as a `Service` outcome (the connection loop maps
+    /// it to an explicit `error` event) — never fabricated audio.
+    #[tokio::test]
+    async fn synthesize_unsupported_language_surfaces_as_service_error() {
+        struct RejectLang;
+        impl SynthesizeService for RejectLang {
+            fn synthesize(
+                &self,
+                _model: &str,
+                request: &SynthesisRequest,
+            ) -> Result<SynthesizedAudio, ServiceError> {
+                Err(ServiceError::Inference(VokraError::InvalidArgument(
+                    format!(
+                        "synthesize: language `{}` is not supported by the loaded piper-plus \
+                         voice (supported: [ja, en])",
+                        request.language.as_deref().unwrap_or("<none>"),
+                    ),
+                )))
+            }
+        }
+        let mut sink: Vec<u8> = Vec::new();
+        let outcome = handle_synthesize_interruptible(
+            &mut sink,
+            &RejectLang,
+            None,
+            Some("fr"),
+            "hi",
+            &BargeIn::new(),
+        )
+        .await;
+        match outcome {
+            SynthesizeOutcome::Service(e) => {
+                let msg = synthesize_error_message(&e);
+                assert!(msg.contains("language `fr` is not supported"), "{msg}");
+            }
+            other => panic!("expected Service outcome, got {other:?}"),
+        }
+        // Nothing was emitted before the rejection — no fabricated
+        // info/audio-start for audio that never existed (NFR-RL-06).
+        assert!(sink.is_empty(), "no events before the service rejection");
     }
 }
 
@@ -2058,7 +2211,9 @@ pub async fn handle_synthesize<W: AsyncWrite + Unpin>(
     // M4-19: delegate to the barge-in-aware core with a never-raised flag.
     // Behaviour is identical to the M2-09 emit path (all chunks emitted) for
     // callers that do not need barge-in (the `tts_events` unit suite).
-    handle_synthesize_interruptible(w, service, voice_model, text, &BargeIn::new()).await
+    // `language = None` — the connection loop passes the event's
+    // `voice.language` through the interruptible core directly (cc-18).
+    handle_synthesize_interruptible(w, service, voice_model, None, text, &BargeIn::new()).await
 }
 
 /// Barge-in-aware core of [`handle_synthesize`] (M4-19 T05). Identical to the
@@ -2082,6 +2237,7 @@ async fn handle_synthesize_interruptible<W: AsyncWrite + Unpin>(
     w: &mut W,
     service: &dyn SynthesizeService,
     voice_model: Option<&str>,
+    language: Option<&str>,
     text: &str,
     barge_in: &BargeIn,
 ) -> SynthesizeOutcome {
@@ -2097,8 +2253,15 @@ async fn handle_synthesize_interruptible<W: AsyncWrite + Unpin>(
     // 2) Build the vokra-core `SynthesisRequest`. `length_scale` /
     //    `noise_scale` / prosody controls are not part of Wyoming's
     //    `synthesize` event, so we take voice defaults exclusively
-    //    (matches the piper-plus HTTP shape at T11).
-    let request = SynthesisRequest::new(text);
+    //    (matches the piper-plus HTTP shape at T11). The event's
+    //    `voice.language` (cc-18) IS forwarded: the service layer rejects a
+    //    code the loaded voice does not support with an explicit error
+    //    event (FR-EX-08) instead of the engine's silent detected-language
+    //    fallback.
+    let mut request = SynthesisRequest::new(text);
+    if let Some(lang) = language {
+        request = request.with_language(lang);
+    }
 
     // 3) Dispatch to the service. Errors propagate verbatim — no silent
     //    fallback, no fabricated audio (NFR-RL-06).
@@ -2737,7 +2900,8 @@ mod tts_events {
         barge.interrupt(); // raise before emit begins
 
         let mut sink: Vec<u8> = Vec::new();
-        let outcome = handle_synthesize_interruptible(&mut sink, &svc, None, "hi", &barge).await;
+        let outcome =
+            handle_synthesize_interruptible(&mut sink, &svc, None, None, "hi", &barge).await;
         let n = match outcome {
             SynthesizeOutcome::Ok { n_chunks } => n_chunks,
             other => panic!("expected Ok, got {other:?}"),
@@ -2791,7 +2955,7 @@ mod tts_events {
             barge2.interrupt();
         };
         let (outcome, ()) = tokio::join!(
-            handle_synthesize_interruptible(&mut sink, &svc, None, "x", &barge),
+            handle_synthesize_interruptible(&mut sink, &svc, None, None, "x", &barge),
             raiser,
         );
         let n = match outcome {
@@ -2830,7 +2994,9 @@ mod tts_events {
         assert!(!barge.is_pending());
 
         let mut sink: Vec<u8> = Vec::new();
-        let n = match handle_synthesize_interruptible(&mut sink, &svc, None, "hi", &barge).await {
+        let n = match handle_synthesize_interruptible(&mut sink, &svc, None, None, "hi", &barge)
+            .await
+        {
             SynthesizeOutcome::Ok { n_chunks } => n_chunks,
             other => panic!("expected Ok, got {other:?}"),
         };
@@ -3220,9 +3386,16 @@ mod m4_19_connection {
         tx.send(PumpItem::Event(trigger, Vec::new())).await.unwrap();
 
         let mut sink: Vec<u8> = Vec::new();
-        let (outcome, stashed) =
-            emit_with_barge_in_watch(&mut sink, svc.as_synthesize(), None, "x", &barge, &mut rx)
-                .await;
+        let (outcome, stashed) = emit_with_barge_in_watch(
+            &mut sink,
+            svc.as_synthesize(),
+            None,
+            None,
+            "x",
+            &barge,
+            &mut rx,
+        )
+        .await;
 
         assert!(matches!(outcome, SynthesizeOutcome::Ok { .. }));
         // The flag was raised by the trigger.

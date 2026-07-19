@@ -173,47 +173,20 @@ fn g2p_real_ja_and_en_text_to_ids() {
 }
 
 // ---------------------------------------------------------------------------
-// Raw HTTP JSON client (mirrors tests/piper_http_compat.rs — raw bytes so the
-// binary WAV body is validated without charset re-decoding).
+// Raw HTTP JSON client — shared `tests/support/mod.rs` (cc-09, 2026-07-19
+// M4-residual audit; see its module docs for the reset-flake root cause).
+// The 30 s read deadline is preserved: real-weight synthesis of a long JA
+// sentence can exceed the 5 s default under parallel load.
 // ---------------------------------------------------------------------------
+
+mod support;
 
 async fn http_post_json(
     addr: SocketAddr,
     path: &str,
     body: &[u8],
 ) -> std::io::Result<(u16, String, Vec<u8>)> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut sock = tokio::net::TcpStream::connect(addr).await?;
-    let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
-         Content-Length: {len}\r\nConnection: close\r\n\r\n",
-        len = body.len(),
-    );
-    sock.write_all(head.as_bytes()).await?;
-    sock.write_all(body).await?;
-    sock.flush().await?;
-
-    let mut buf = Vec::new();
-    tokio::time::timeout(Duration::from_secs(30), sock.read_to_end(&mut buf))
-        .await
-        .map_err(|_| std::io::Error::other("http read timeout"))??;
-
-    let sep = buf
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| std::io::Error::other("no header terminator"))?;
-    let head_str = std::str::from_utf8(&buf[..sep])
-        .map_err(|e| std::io::Error::other(format!("utf8: {e}")))?
-        .to_string();
-    let status: u16 = head_str
-        .lines()
-        .next()
-        .unwrap_or("")
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| std::io::Error::other("bad status line"))?;
-    Ok((status, head_str, buf[sep + 4..].to_vec()))
+    support::http_post_json_with_head_timeout(addr, path, body, Duration::from_secs(30)).await
 }
 
 /// Decode the canonical 44-byte-header PCM16 mono WAV our handler emits.
