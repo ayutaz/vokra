@@ -24,8 +24,12 @@ cargo build --release
 
 # Launch with a Whisper base GGUF and a piper-plus voice GGUF
 ./target/release/vokra-server \
-    --asr-base /path/to/whisper-base.gguf \
-    --tts-piper /path/to/piper-voice.gguf
+    --whisper-base /path/to/whisper-base.gguf \
+    --piper-plus /path/to/piper-voice.gguf
+
+# Add --piper-g2p to synthesize from plain text (real 8-language G2P,
+# derived from the voice GGUF metadata). Without it, plain-text TTS
+# requests return an explicit 400 and only raw phoneme-id payloads work.
 ```
 
 By default the HTTP listener binds `127.0.0.1:8080` and the Wyoming
@@ -45,17 +49,21 @@ built-in default.
 
 | Flag | Env var | Config key | Default | Notes |
 |---|---|---|---|---|
-| `--http-bind` | `VOKRA_HTTP_BIND` | `http.bind` | `127.0.0.1:8080` | Public exposure requires reverse proxy |
-| `--wyoming-bind` | `VOKRA_WYOMING_BIND` | `wyoming.bind` | `127.0.0.1:10300` | HA Wyoming reference port |
-| `--asr-base` | `VOKRA_ASR_BASE` | `models.asr_base` | (required) | Whisper base GGUF |
-| `--asr-large-v3` | `VOKRA_ASR_LARGE_V3` | `models.asr_large_v3` | (unset → unavailable) | Whisper large-v3 GGUF (M2-06) |
-| `--tts-piper` | `VOKRA_TTS_PIPER` | `models.tts_piper` | (required for TTS) | piper-plus native voice GGUF |
-| `--tts-kokoro` | `VOKRA_TTS_KOKORO` | `models.tts_kokoro` | (unset → unavailable) | Kokoro-82M GGUF (M2-07 skeleton) |
-| `--backend` | `VOKRA_BACKEND` | `runtime.backend` | `cpu` | `cpu` \| `metal` \| `cuda` |
-| `--config` | `VOKRA_CONFIG` | — | (none) | Path to TOML config file |
-| `--max-body-bytes` | `VOKRA_MAX_BODY` | `http.max_body_bytes` | `26214400` (25 MiB) | OpenAI parity |
-| `--request-timeout-secs` | `VOKRA_REQ_TIMEOUT` | `http.request_timeout_secs` | `60` | Per-request deadline |
-| `--max-connections` | `VOKRA_MAX_CONN` | `http.max_connections` | `100` | DoS ceiling |
+| `--http-bind` | `VOKRA_HTTP_BIND` | (CLI/env only) | `127.0.0.1:8080` | Public exposure requires reverse proxy |
+| `--wyoming-bind` | `VOKRA_WYOMING_BIND` | (CLI/env only) | `127.0.0.1:10300` | HA Wyoming reference port |
+| `--whisper-base` | `VOKRA_WHISPER_BASE` | `whisper_base` | (unset → ASR unavailable) | Whisper base GGUF |
+| `--whisper-base-tokenizer` | `VOKRA_WHISPER_BASE_TOKENIZER` | `whisper_base_tokenizer` | (unset) | Optional external tokenizer side-car |
+| `--whisper-large-v3` | `VOKRA_WHISPER_LARGE_V3` | `whisper_large_v3` | (unset → unavailable) | Whisper large-v3 GGUF (M2-06) |
+| `--whisper-large-v3-tokenizer` | `VOKRA_WHISPER_LARGE_V3_TOKENIZER` | `whisper_large_v3_tokenizer` | (unset) | Optional external tokenizer side-car |
+| `--piper-plus` | `VOKRA_PIPER_PLUS` | `piper_plus` | (unset → TTS unavailable) | piper-plus native voice GGUF |
+| `--piper-g2p` | `VOKRA_PIPER_G2P` | `piper_g2p = true` | off | Inject the real 8-language G2P (plain-text TTS); off = explicit-error passthrough (raw phoneme ids only) |
+| `--kokoro` | `VOKRA_KOKORO` | `kokoro` | (unset → unavailable) | Kokoro-82M GGUF |
+| `--voxtral` | `VOKRA_VOXTRAL` | `voxtral` | (unset → unavailable) | Voxtral GGUF |
+| `--silero-vad` | `VOKRA_SILERO_VAD` | `silero_vad` | (unset → unavailable) | Silero VAD GGUF |
+| `--config` | `VOKRA_CONFIG` | — | (none) | Path to TOML config file (flat keys mirror the flag names with underscores) |
+
+Request-body size is capped at 25 MiB (OpenAI parity) as a compiled-in
+limit (`api/openai.rs::MAX_BODY_BYTES`); there is no CLI flag for it.
 
 Unknown model names, missing GGUFs, and unimplemented backend/op
 combinations return an explicit error — **no silent CPU fallback**
@@ -250,8 +258,8 @@ Steps to register the server with Home Assistant OS / Container:
 
    ```
    vokra-server --wyoming-bind 0.0.0.0:10300 \
-                --asr-base   /path/to/whisper-base.gguf \
-                --tts-piper  /path/to/piper-voice.gguf
+                --whisper-base /path/to/whisper-base.gguf \
+                --piper-plus   /path/to/piper-voice.gguf --piper-g2p
    ```
 
 2. **In Home Assistant, open Settings → Devices & Services → Add

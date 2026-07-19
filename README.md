@@ -60,7 +60,22 @@ for production use yet, but the following are implemented and validated:
   detokenizer for correct transcription), and piper-plus native TTS with the
   real 8-language G2P and a native CAM++ speaker encoder for zero-shot voice
   cloning. All are numerically parity-checked against reference runtimes
-  (onnxruntime / PyTorch) to FP32 `atol = 0.01`.
+  (onnxruntime / PyTorch) to FP32 `atol = 0.01`. **Real-checkpoint
+  validation** (Apple M1, vs onnxruntime 1.19.2 CPU, same downloaded
+  weights): Whisper base/small/medium/turbo transcripts are
+  **byte-identical to ONNX Runtime** (identical WER); piper output is
+  near-bit-exact (mel-L1 ≈ 0.003); Mimi/DAC/WavTokenizer codec parity all
+  pass; DeepFilterNet3 denoising matches upstream to an SI-SNR gap of
+  2.0e-7 dB (see
+  [`docs/bench-baselines/m1-real-weight-eval-2026-07-16/`](docs/bench-baselines/m1-real-weight-eval-2026-07-16/)).
+- **CPU speed** (rig-scoped: Apple M1, 8 threads, vs onnxruntime 1.19.2
+  CPU on the same machine and weights; methodology + raw logs in
+  [`docs/bench-baselines/m5-14-final-2026-07-18/`](docs/bench-baselines/m5-14-final-2026-07-18/)):
+  after the packed-GEMM/vectorization wave, **Whisper base runs ~2.5×
+  faster than ONNX Runtime, whisper-turbo ~2.7× faster, and Silero VAD
+  ~2.3× faster**; whisper-medium/small land within 1.17–1.24× of ORT and
+  piper within ~2.2×. Every optimization is bit-identical by construction
+  (no parity tolerance was changed).
 - **GPU backends** (`vokra-backend-metal`, `vokra-backend-cuda`): a
   data-carrying graph evaluator plus a per-model dispatch seam. **Whisper
   runs end-to-end on both Metal (validated on Apple M1) and CUDA (validated
