@@ -44,10 +44,14 @@
 use vokra_core::{BackendKind, Result, VokraError};
 
 use super::AudioAdapter;
-use super::beam_search::{BeamConfig, BeamResult, beam_search_decode};
+use super::beam_search::{
+    BeamConfig, BeamResult, beam_search_decode, beam_search_decode_with_segments,
+};
 use super::text_decoder_session::{
     DEFAULT_MAX_NEW_TOKENS, TextDecoderSession, greedy_decode, greedy_decode_with_prefix,
+    greedy_decode_with_segments,
 };
+use super::tokenizer::TranscriptionPrompt;
 use super::{AudioEncoder, AudioEncoderOutput, TextDecoder, VoxtralConfig};
 
 /// The Mistral BOS token id (shipped `<s>` = 1 across every Mistral tokenizer
@@ -118,13 +122,16 @@ impl<'m> AsrHead<'m> {
     /// Steps:
     /// 1. validates `config.mode` is `"asr"` or `"s2s"` (S2S also produces
     ///    text as its inner stream);
-    /// 2. runs the audio encoder end-to-end (shape / dispatch coverage);
+    /// 2. runs the full audio tower (conv stem + `n_layer` pre-norm blocks
+    ///    + final LayerNorm — real since M4-residual cc-07);
     /// 3. constructs a [`TextDecoderSession`] on `backend` and greedy-decodes
     ///    from `bos_id` until `eos_id` or `max_new_tokens`.
     ///
-    /// See the module doc's "Audio conditioning" note — until the audio
-    /// adapter follow-up ticket lands, the returned tokens are the LM
-    /// prior's continuation of `bos_id`, not audio-conditioned ASR.
+    /// See the module doc's "Audio conditioning" note — with an active
+    /// adapter (e.g. the real checkpoint's `frame_stack_mlp` projector,
+    /// cc-05) the decode is audio-conditioned through the soft prefix;
+    /// without one, the returned tokens are the LM prior's continuation of
+    /// `bos_id` (honest posture, never a fabricated audio-shaped output).
     ///
     /// # Errors
     ///
@@ -178,33 +185,8 @@ impl<'m> AsrHead<'m> {
         // path — honest limitation, never a fabricated audio-shaped output.
         match self.adapter {
             Some(adapter) if adapter.is_active() => {
-                let d = self.config.text.hidden_dim;
-                // Sanity gate: the adapter must project *into* the decoder's
-                // hidden width. A misconfigured adapter (out_dim != d) is a
-                // configuration error — reject rather than push a
-                // mis-sized prefix into the KV cache (FR-EX-08).
-                let adapter_out = super::adapter::out_dim(adapter.kind());
-                if adapter_out != d {
-                    return Err(VokraError::ModelLoad(format!(
-                        "voxtral asr_head.transcribe: adapter out_dim ({adapter_out}) must equal \
-                         text_decoder.hidden_dim ({d}) — check the adapter config."
-                    )));
-                }
-                let prefix_embed = adapter.apply(
-                    &compute,
-                    &encoder_out.hidden,
-                    encoder_out.n_ctx,
-                    encoder_out.hidden_dim,
-                )?;
-                if d == 0 || prefix_embed.len() % d != 0 {
-                    return Err(VokraError::ModelLoad(format!(
-                        "voxtral asr_head.transcribe: adapter output len {} not a multiple of \
-                         text_decoder.hidden_dim {}",
-                        prefix_embed.len(),
-                        d,
-                    )));
-                }
-                let t_prefix = prefix_embed.len() / d;
+                let (prefix_embed, t_prefix) =
+                    self.project_soft_prefix("transcribe", &compute, &encoder_out)?;
                 greedy_decode_with_prefix(
                     &mut session,
                     &prefix_embed,
@@ -223,6 +205,166 @@ impl<'m> AsrHead<'m> {
     #[must_use]
     pub fn n_decoder_layer(&self) -> usize {
         self.text.n_layer()
+    }
+
+    /// Shared adapter gate + projection for the audio-conditioned entry
+    /// points: validates the adapter's `out_dim` against the decoder hidden
+    /// width, applies it to the encoder output and returns
+    /// `(soft_prefix_rows, t_prefix)`.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`] on a missing/inactive adapter (`entry` names
+    /// the caller for the diagnostic) or a projection-width mismatch.
+    fn project_soft_prefix(
+        &self,
+        entry: &str,
+        compute: &crate::compute::Compute,
+        encoder_out: &AudioEncoderOutput,
+    ) -> Result<(Vec<f32>, usize)> {
+        let adapter = match self.adapter {
+            Some(a) if a.is_active() => a,
+            _ => {
+                return Err(VokraError::ModelLoad(format!(
+                    "voxtral asr_head.{entry}: the trained transcription-prompt layout needs an \
+                     ACTIVE audio adapter (the GGUF's `vokra.voxtral.adapter.*` chunk) — the \
+                     audio soft-prefix rows occupy the [AUDIO] placeholder positions. A GGUF \
+                     without an adapter has no audio conditioning; use the bare layout \
+                     (`transcribe`) for the honest LM-continuation posture instead (FR-EX-08)."
+                )));
+            }
+        };
+        let d = self.config.text.hidden_dim;
+        let adapter_out = super::adapter::out_dim(adapter.kind());
+        if adapter_out != d {
+            return Err(VokraError::ModelLoad(format!(
+                "voxtral asr_head.{entry}: adapter out_dim ({adapter_out}) must equal \
+                 text_decoder.hidden_dim ({d}) — check the adapter config."
+            )));
+        }
+        let prefix_embed = adapter.apply(
+            compute,
+            &encoder_out.hidden,
+            encoder_out.n_ctx,
+            encoder_out.hidden_dim,
+        )?;
+        if d == 0 || prefix_embed.len() % d != 0 {
+            return Err(VokraError::ModelLoad(format!(
+                "voxtral asr_head.{entry}: adapter output len {} not a multiple of \
+                 text_decoder.hidden_dim {}",
+                prefix_embed.len(),
+                d,
+            )));
+        }
+        let t_prefix = prefix_embed.len() / d;
+        Ok((prefix_embed, t_prefix))
+    }
+
+    /// Greedy transcribe through the **trained transcription-prompt layout**
+    /// (P2 cc-05/07 follow-up — the runtime replay of upstream
+    /// `VoxtralProcessor.apply_transcription_request`):
+    ///
+    /// ```text
+    /// [<s>][INST][BEGIN_AUDIO] {audio soft-prefix} [/INST]("lang:xx")?[TRANSCRIBE] → greedy
+    /// ```
+    ///
+    /// `prompt` comes from
+    /// [`VoxtralTokenizer::transcription_prompt`](super::VoxtralTokenizer::transcription_prompt)
+    /// — runtime-constructed from the embedded compact vocab, never an
+    /// offline dump. This layout is what the checkpoint was trained on for
+    /// transcription requests; the bare soft-prefix + BOS layout
+    /// ([`Self::transcribe`]) remains available as the honest
+    /// LM-continuation posture (it produces fluent but non-transcript
+    /// output on the real checkpoint — 2026-07-19 finding).
+    ///
+    /// Unlike [`Self::transcribe`], this entry point REQUIRES an active
+    /// audio adapter: the layout is only defined over an audio run
+    /// (FR-EX-08 — no adapter means no `[AUDIO]` positions to fill, so the
+    /// call errors rather than fabricating a prompt around nothing).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::ModelLoad`] on a mismatched `config.mode`, a missing /
+    ///   inactive adapter, or an adapter-width mismatch;
+    /// - [`VokraError::InvalidArgument`] on a prompt token id `>= vocab_size`
+    ///   (surfaced from the session) or empty `post_audio`;
+    /// - backend errors as in [`Self::transcribe`].
+    pub fn transcribe_with_prompt(
+        &self,
+        backend: BackendKind,
+        log_mel: &[f32],
+        n_frames: usize,
+        prompt: &TranscriptionPrompt,
+        eos_id: u32,
+        max_new_tokens: usize,
+    ) -> Result<Vec<u32>> {
+        if self.config.mode != "asr" && self.config.mode != "s2s" {
+            return Err(VokraError::ModelLoad(format!(
+                "voxtral asr_head.transcribe_with_prompt: config.mode is `{}` — expected `asr` \
+                 or `s2s`",
+                self.config.mode
+            )));
+        }
+        let compute = crate::compute::Compute::for_backend(backend, super::VOXTRAL_HOT_OPS)?;
+        let encoder_out = self.encode(&compute, log_mel, n_frames)?;
+        let (prefix_embed, t_prefix) =
+            self.project_soft_prefix("transcribe_with_prompt", &compute, &encoder_out)?;
+        let mut session = TextDecoderSession::new(self.config, self.text, backend)?;
+        let cap = if max_new_tokens == 0 {
+            DEFAULT_MAX_NEW_TOKENS
+        } else {
+            max_new_tokens
+        };
+        greedy_decode_with_segments(
+            &mut session,
+            &prompt.pre_audio,
+            &prefix_embed,
+            t_prefix,
+            &prompt.post_audio,
+            eos_id,
+            cap,
+        )
+    }
+
+    /// Beam-search transcribe through the trained transcription-prompt
+    /// layout — the n-best sibling of [`Self::transcribe_with_prompt`]
+    /// (same encoder forward, same adapter gate, same segment seeding;
+    /// only the decode driver differs). `config.beam_size == 1` reproduces
+    /// the greedy sequence (see
+    /// [`beam_search_decode_with_segments`]'s greedy-equivalence test).
+    ///
+    /// # Errors
+    ///
+    /// Same taxonomy as [`Self::transcribe_with_prompt`], plus every error
+    /// surfaced by [`beam_search_decode_with_segments`].
+    pub fn transcribe_beam_with_prompt(
+        &self,
+        backend: BackendKind,
+        log_mel: &[f32],
+        n_frames: usize,
+        prompt: &TranscriptionPrompt,
+        config: &BeamConfig,
+    ) -> Result<Vec<BeamResult>> {
+        if self.config.mode != "asr" && self.config.mode != "s2s" {
+            return Err(VokraError::ModelLoad(format!(
+                "voxtral asr_head.transcribe_beam_with_prompt: config.mode is `{}` — expected \
+                 `asr` or `s2s`",
+                self.config.mode
+            )));
+        }
+        let compute = crate::compute::Compute::for_backend(backend, super::VOXTRAL_HOT_OPS)?;
+        let encoder_out = self.encode(&compute, log_mel, n_frames)?;
+        let (prefix_embed, t_prefix) =
+            self.project_soft_prefix("transcribe_beam_with_prompt", &compute, &encoder_out)?;
+        let mut session = TextDecoderSession::new(self.config, self.text, backend)?;
+        beam_search_decode_with_segments(
+            &mut session,
+            &prompt.pre_audio,
+            &prefix_embed,
+            t_prefix,
+            &prompt.post_audio,
+            config,
+        )
     }
 
     /// Beam-search transcribe: audio → up to `config.beam_size` token
@@ -294,29 +436,8 @@ impl<'m> AsrHead<'m> {
         // `beam_search_decode_with_prefix` below.
         match self.adapter {
             Some(adapter) if adapter.is_active() => {
-                let d = self.config.text.hidden_dim;
-                let adapter_out = super::adapter::out_dim(adapter.kind());
-                if adapter_out != d {
-                    return Err(VokraError::ModelLoad(format!(
-                        "voxtral asr_head.transcribe_beam: adapter out_dim ({adapter_out}) must \
-                         equal text_decoder.hidden_dim ({d}) — check the adapter config."
-                    )));
-                }
-                let prefix_embed = adapter.apply(
-                    &compute,
-                    &encoder_out.hidden,
-                    encoder_out.n_ctx,
-                    encoder_out.hidden_dim,
-                )?;
-                if d == 0 || prefix_embed.len() % d != 0 {
-                    return Err(VokraError::ModelLoad(format!(
-                        "voxtral asr_head.transcribe_beam: adapter output len {} not a multiple \
-                         of text_decoder.hidden_dim {}",
-                        prefix_embed.len(),
-                        d,
-                    )));
-                }
-                let t_prefix = prefix_embed.len() / d;
+                let (prefix_embed, t_prefix) =
+                    self.project_soft_prefix("transcribe_beam", &compute, &encoder_out)?;
                 super::beam_search::beam_search_decode_with_prefix(
                     &mut session,
                     &prefix_embed,
@@ -336,13 +457,16 @@ mod tests {
     use crate::voxtral::config::{AudioEncoderConfig, TextDecoderConfig};
     use crate::voxtral::text_decoder::{DecoderBlock, GqaAttention, Linear, SwiGluFfn};
 
+    /// `audio.n_ctx = 4`: these tests drive `AsrHead` directly with an
+    /// 8-frame log-mel window, and the full-stack encoder enforces the
+    /// upstream strict contract `post-conv length (n_frames / 2) == n_ctx`.
     fn tiny_config() -> VoxtralConfig {
         VoxtralConfig {
             audio: AudioEncoderConfig {
                 n_layer: 1,
                 n_head: 2,
                 hidden_dim: 4,
-                n_ctx: 8,
+                n_ctx: 4,
                 n_mels: 2,
                 ffn_dim: 8,
             },
@@ -350,6 +474,7 @@ mod tests {
                 n_layer: 1,
                 n_head_q: 2,
                 n_head_kv: 1,
+                head_dim: 0,
                 hidden_dim: 4,
                 ffn_dim: 8,
                 vocab_size: 8,
@@ -371,6 +496,8 @@ mod tests {
             conv2_b: vec![0.0; cfg.audio.hidden_dim],
             pos_emb: vec![0.0; cfg.audio.n_ctx * cfg.audio.hidden_dim],
             has_learned_pos_emb: true,
+            layers: crate::voxtral::test_support::passthrough_layers(cfg),
+            ln_post: crate::voxtral::test_support::identity_ln(cfg.audio.hidden_dim),
         }
     }
 
@@ -418,6 +545,7 @@ mod tests {
             .collect();
         TextDecoder {
             token_emb,
+            lm_head: None,
             blocks,
             final_norm_gamma: vec![1.0f32; d],
             prefix: "",
@@ -490,9 +618,12 @@ mod tests {
             conv2_b: Vec::new(),
             pos_emb: Vec::new(),
             has_learned_pos_emb: false,
+            layers: Vec::new(),
+            ln_post: crate::voxtral::test_support::identity_ln(0),
         };
         let td = TextDecoder {
             token_emb: Vec::new(),
+            lm_head: None,
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",
@@ -813,9 +944,12 @@ mod tests {
             conv2_b: Vec::new(),
             pos_emb: Vec::new(),
             has_learned_pos_emb: false,
+            layers: Vec::new(),
+            ln_post: crate::voxtral::test_support::identity_ln(0),
         };
         let td = TextDecoder {
             token_emb: Vec::new(),
+            lm_head: None,
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",
@@ -875,5 +1009,129 @@ mod tests {
             .transcribe_beam(BackendKind::Cpu, &log_mel, n_frames, 1, &bc)
             .unwrap();
         assert_eq!(a, b);
+    }
+
+    // --------------------------------------------------------------------
+    // Trained transcription-prompt layout (transcribe_with_prompt /
+    // transcribe_beam_with_prompt)
+    // --------------------------------------------------------------------
+
+    /// A tiny prompt whose ids fit the tiny_config vocab (8): the values are
+    /// NOT the shipping tekken ids — the tiny decoder has no such vocab —
+    /// they only exercise the segment plumbing.
+    fn tiny_prompt() -> super::TranscriptionPrompt {
+        super::TranscriptionPrompt {
+            pre_audio: vec![1, 3, 2],
+            post_audio: vec![4, 0],
+        }
+    }
+
+    #[test]
+    fn transcribe_with_prompt_requires_active_adapter() {
+        // No adapter (and AdapterKind::None) → explicit ModelLoad, never a
+        // silently-bare decode wearing the trained-layout name (FR-EX-08).
+        let cfg = tiny_config();
+        let ae = tiny_encoder(&cfg);
+        let td = tiny_decoder(&cfg);
+        let n_frames = 8;
+        let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
+        let prompt = tiny_prompt();
+
+        let head = AsrHead::new(&cfg, &ae, &td);
+        let err = head
+            .transcribe_with_prompt(BackendKind::Cpu, &log_mel, n_frames, &prompt, 999, 3)
+            .unwrap_err();
+        assert!(matches!(err, VokraError::ModelLoad(_)), "{err:?}");
+
+        let none = super::super::AudioAdapter::none();
+        let head = AsrHead::new(&cfg, &ae, &td).with_adapter(&none);
+        let err = head
+            .transcribe_with_prompt(BackendKind::Cpu, &log_mel, n_frames, &prompt, 999, 3)
+            .unwrap_err();
+        assert!(matches!(err, VokraError::ModelLoad(_)), "{err:?}");
+    }
+
+    #[test]
+    fn transcribe_with_prompt_runs_and_is_deterministic_with_active_adapter() {
+        use vokra_core::gguf::GgufFile;
+        let cfg = tiny_config();
+        let mut ae = tiny_encoder(&cfg);
+        for (i, v) in ae.pos_emb.iter_mut().enumerate() {
+            *v = ((i as i32 % 3) - 1) as f32 * 0.1;
+        }
+        let td = tiny_decoder(&cfg);
+        let adapter_bytes = synth_linear_adapter_gguf(cfg.text.hidden_dim);
+        let file = GgufFile::parse(adapter_bytes).unwrap();
+        let adapter = super::super::AudioAdapter::from_gguf(&file).unwrap();
+        let head = AsrHead::new(&cfg, &ae, &td).with_adapter(&adapter);
+        let n_frames = 8;
+        let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
+        let prompt = tiny_prompt();
+        let eos = cfg.text.vocab_size as u32 + 100;
+        let a = head
+            .transcribe_with_prompt(BackendKind::Cpu, &log_mel, n_frames, &prompt, eos, 3)
+            .unwrap();
+        assert_eq!(a.len(), 3);
+        assert!(a.iter().all(|&t| (t as usize) < cfg.text.vocab_size));
+        let b = head
+            .transcribe_with_prompt(BackendKind::Cpu, &log_mel, n_frames, &prompt, eos, 3)
+            .unwrap();
+        assert_eq!(a, b, "trained-layout greedy must be deterministic");
+    }
+
+    #[test]
+    fn transcribe_beam_with_prompt_size_one_matches_greedy_prompt_path() {
+        use vokra_core::gguf::GgufFile;
+        let cfg = tiny_config();
+        let mut ae = tiny_encoder(&cfg);
+        for (i, v) in ae.pos_emb.iter_mut().enumerate() {
+            *v = ((i as i32 % 3) - 1) as f32 * 0.1;
+        }
+        let td = tiny_decoder(&cfg);
+        let adapter_bytes = synth_linear_adapter_gguf(cfg.text.hidden_dim);
+        let file = GgufFile::parse(adapter_bytes).unwrap();
+        let adapter = super::super::AudioAdapter::from_gguf(&file).unwrap();
+        let head = AsrHead::new(&cfg, &ae, &td).with_adapter(&adapter);
+        let n_frames = 8;
+        let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
+        let prompt = tiny_prompt();
+        let eos = cfg.text.vocab_size as u32 + 100;
+        let greedy = head
+            .transcribe_with_prompt(BackendKind::Cpu, &log_mel, n_frames, &prompt, eos, 3)
+            .unwrap();
+        let bc = BeamConfig::greedy(eos, 3);
+        let beams = head
+            .transcribe_beam_with_prompt(BackendKind::Cpu, &log_mel, n_frames, &prompt, &bc)
+            .unwrap();
+        assert_eq!(beams.len(), 1);
+        assert_eq!(beams[0].tokens, greedy);
+    }
+
+    #[test]
+    fn transcribe_beam_with_prompt_requires_active_adapter() {
+        let cfg = tiny_config();
+        let ae = tiny_encoder(&cfg);
+        let td = tiny_decoder(&cfg);
+        let head = AsrHead::new(&cfg, &ae, &td);
+        let n_frames = 8;
+        let log_mel = vec![0.5f32; cfg.audio.n_mels * n_frames];
+        let bc = BeamConfig::greedy(999, 3);
+        let err = head
+            .transcribe_beam_with_prompt(BackendKind::Cpu, &log_mel, n_frames, &tiny_prompt(), &bc)
+            .unwrap_err();
+        assert!(matches!(err, VokraError::ModelLoad(_)), "{err:?}");
+    }
+
+    #[test]
+    fn transcribe_with_prompt_rejects_unknown_mode() {
+        let mut cfg = tiny_config();
+        cfg.mode = "wat".to_owned();
+        let ae = tiny_encoder(&cfg);
+        let td = tiny_decoder(&cfg);
+        let head = AsrHead::new(&cfg, &ae, &td);
+        assert!(matches!(
+            head.transcribe_with_prompt(BackendKind::Cpu, &[], 0, &tiny_prompt(), 2, 4),
+            Err(VokraError::ModelLoad(_))
+        ));
     }
 }

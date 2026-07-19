@@ -13,6 +13,15 @@ publish.workspace = true
 # external crates — so no protobuf/onnx dependency can leak toward the runtime.
 [dependencies]
 vokra-core.workspace = true
+# M4-20 T12: the `denoise` converter writes the `vokra.denoise.*` GGUF whose
+# schema (config keys + tensor names + `DenoiseModel::to_gguf_bytes`) is
+# defined in `vokra-ops`. First-party `vokra-*` edge, zero-dep preserved.
+vokra-ops.workspace = true
+# M4 cc-06: the post-convert verify-load re-opens the produced GGUF through
+# the true-mmap loader instead of a whole-file heap read, so verifying a
+# 14 GiB output touches only the header pages (bounded-memory contract of
+# the streaming Moshi conversion). First-party, zero external deps.
+vokra-mmap = { path = "../vokra-mmap" }
 
 [lints]
 workspace = true

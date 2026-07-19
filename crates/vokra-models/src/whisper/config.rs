@@ -42,6 +42,12 @@ pub(crate) const KEY_FFN_DIM: &str = "vokra.whisper.ffn_dim";
 pub(crate) const KEY_EOT: &str = "vokra.whisper.eot";
 /// `vokra.whisper.decoder_start_ids` — default decode prefix (`UINT32` array).
 pub(crate) const KEY_DECODER_START_IDS: &str = "vokra.whisper.decoder_start_ids";
+/// Optional (M4-20): flat `[layer0, head0, layer1, head1, ...]` u32 pairs of the
+/// **alignment heads** used for cross-attention DTW word timestamps
+/// (openai-whisper `model.alignment_heads`, ADR M4-20 §D-3). Model-specific
+/// data (must not be fabricated); absent → no word-timestamp support (an
+/// explicit FR-EX-08 error at request time, never a silent no-op).
+pub(crate) const KEY_ALIGNMENT_HEADS: &str = "vokra.whisper.alignment_heads";
 
 /// Whisper architectural hyperparameters (all read from GGUF metadata).
 ///
@@ -75,6 +81,12 @@ pub struct WhisperConfig {
     /// Default decode prefix (`<|startoftranscript|> <|en|> <|transcribe|>
     /// <|notimestamps|>` for English transcription).
     pub decoder_start_ids: Vec<u32>,
+    /// Cross-attention **alignment heads** `(layer, head)` for word-level
+    /// timestamps (M4-20, optional metadata `vokra.whisper.alignment_heads`).
+    /// Empty when the model carries no alignment-head blob — in which case
+    /// word-timestamp requests fail explicitly (FR-EX-08), never silently
+    /// (ADR M4-20 §D-3).
+    pub alignment_heads: Vec<(usize, usize)>,
 }
 
 impl WhisperConfig {
@@ -105,6 +117,12 @@ impl WhisperConfig {
         let ffn_dim = req_u32(file, KEY_FFN_DIM)?;
         let eot = req_u32(file, KEY_EOT)?;
         let decoder_start_ids = req_u32_array(file, KEY_DECODER_START_IDS)?;
+        // Optional: alignment heads for word timestamps (M4-20). A flat u32
+        // array of (layer, head) pairs; absent → empty (word timestamps then
+        // fail explicitly at request time, FR-EX-08). Each layer index must be
+        // in range; an odd-length or out-of-range blob is a load error (not a
+        // silent truncation).
+        let alignment_heads = opt_pair_array(file, KEY_ALIGNMENT_HEADS, n_text_layer as usize)?;
 
         if n_text_state != d_model {
             return Err(bad(format!(
@@ -149,6 +167,7 @@ impl WhisperConfig {
             ffn_dim: ffn_dim as usize,
             eot,
             decoder_start_ids,
+            alignment_heads,
         })
     }
 }
@@ -181,6 +200,44 @@ fn req_u32_array(file: &GgufFile, key: &str) -> Result<Vec<u32>> {
                 .ok_or_else(|| bad(format!("`{key}` element is not a u32-range integer")))
         })
         .collect()
+}
+
+/// Reads an OPTIONAL flat u32 array as `(layer, head)` pairs (M4-20 alignment
+/// heads). Absent key → empty vec. An odd length or an out-of-range layer index
+/// (`>= n_layer`) is a load error — a malformed alignment-head blob is rejected
+/// loudly rather than silently truncated (FR-EX-08).
+fn opt_pair_array(file: &GgufFile, key: &str, n_layer: usize) -> Result<Vec<(usize, usize)>> {
+    let arr = match file.get(key) {
+        Some(GgufMetadataValue::Array(a)) => a,
+        Some(_) => return Err(bad(format!("metadata key `{key}` is not an array"))),
+        None => return Ok(Vec::new()),
+    };
+    if arr.values.len() % 2 != 0 {
+        return Err(bad(format!(
+            "`{key}` must be an even-length (layer, head) pair array, got {}",
+            arr.values.len()
+        )));
+    }
+    let flat: Vec<usize> = arr
+        .values
+        .iter()
+        .map(|v| {
+            v.as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| bad(format!("`{key}` element is not a usize-range integer")))
+        })
+        .collect::<Result<_>>()?;
+    let mut pairs = Vec::with_capacity(flat.len() / 2);
+    for chunk in flat.chunks_exact(2) {
+        let (layer, head) = (chunk[0], chunk[1]);
+        if layer >= n_layer {
+            return Err(bad(format!(
+                "`{key}` layer index {layer} >= n_text_layer {n_layer}"
+            )));
+        }
+        pairs.push((layer, head));
+    }
+    Ok(pairs)
 }
 
 #[cfg(test)]
@@ -218,6 +275,51 @@ mod tests {
 
     fn parse(b: GgufBuilder) -> GgufFile {
         GgufFile::parse(b.to_bytes().unwrap()).unwrap()
+    }
+
+    fn with_alignment_heads(mut b: GgufBuilder, flat: &[u32]) -> GgufBuilder {
+        b.add_metadata(
+            KEY_ALIGNMENT_HEADS,
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::U32,
+                values: flat.iter().map(|&v| GgufMetadataValue::U32(v)).collect(),
+            }),
+        );
+        b
+    }
+
+    #[test]
+    fn alignment_heads_absent_is_empty() {
+        // M4-20: the alignment-head blob is optional; absent → empty (word
+        // timestamps then fail explicitly at request time, not here).
+        let cfg = WhisperConfig::from_gguf(&parse(valid_builder())).unwrap();
+        assert!(cfg.alignment_heads.is_empty());
+    }
+
+    #[test]
+    fn alignment_heads_parse_as_layer_head_pairs() {
+        // Flat [3,1, 4,2] → [(3,1), (4,2)]. n_text_layer = 6, both in range.
+        let cfg =
+            WhisperConfig::from_gguf(&parse(with_alignment_heads(valid_builder(), &[3, 1, 4, 2])))
+                .unwrap();
+        assert_eq!(cfg.alignment_heads, vec![(3, 1), (4, 2)]);
+    }
+
+    #[test]
+    fn alignment_heads_odd_length_is_rejected() {
+        assert!(matches!(
+            WhisperConfig::from_gguf(&parse(with_alignment_heads(valid_builder(), &[3, 1, 4]))),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
+    #[test]
+    fn alignment_heads_out_of_range_layer_is_rejected() {
+        // n_text_layer = 6 → layer 6 is out of range (valid 0..=5).
+        assert!(matches!(
+            WhisperConfig::from_gguf(&parse(with_alignment_heads(valid_builder(), &[6, 0]))),
+            Err(VokraError::ModelLoad(_))
+        ));
     }
 
     #[test]
@@ -374,6 +476,7 @@ mod tests {
                 ffn_dim: ffn_dim as usize,
                 eot: 50257,
                 decoder_start_ids: vec![50258, 50259, 50359, 50363],
+                alignment_heads: Vec::new(),
             };
             assert_eq!(cfg, expected, "{name}: WhisperConfig mismatch");
             assert_eq!(cfg.head_dim(), 64, "{name}: head_dim must equal 64");

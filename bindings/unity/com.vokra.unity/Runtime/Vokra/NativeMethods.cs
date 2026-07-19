@@ -10,6 +10,7 @@
 //   vokra.h (C)                                                NativeMethods (C#)
 //   --------------------------------------------------------   ----------------------
 //   vokra_session_create_from_file(char*, session_t**)     ->  SessionCreateFromFile
+//   vokra_session_create_from_bytes(uint8_t*,size_t,session_t**) -> SessionCreateFromBytes (M4-02)
 //   vokra_session_retain(const session_t*, session_t**)    ->  SessionRetain          (M2-11-T09)
 //   vokra_session_destroy(session_t*)                      ->  SessionDestroy
 //   vokra_asr_transcribe(session*,float*,size_t,i32,char**) -> AsrTranscribe
@@ -40,17 +41,21 @@
 //     mapped to VokraEvent below (Sequential, Pack=4) — layout is verified by
 //     the numeric-layout test in vokra-capi.
 //
-// Platform-conditional library name (D4, ADR-0007, NFR-RL-03):
+// Platform-conditional library name (D4, ADR-0007, NFR-RL-03 + M4-02):
 //   - iOS device / TestFlight / App Store builds link the C ABI as a static
 //     library (`libvokra.a`) and must resolve symbols via the special
 //     "__Internal" name — dlopen of a custom dylib is forbidden.
-//   - Every other target (macOS/Linux/Windows/Android + iOS in the Editor)
+//   - WebGL builds are the same shape (ADR M4-02 §1): the Emscripten-target
+//     `Plugins/WebGL/libvokra.a` is statically linked into the single wasm
+//     module by Unity's Emscripten, so symbols also resolve via "__Internal"
+//     (dynamic library loading does not exist on the Web).
+//   - Every other target (macOS/Linux/Windows/Android + Editor on any host)
 //     resolves the shared library `vokra` (Unity strips the platform
 //     prefix/suffix: libvokra.dylib / libvokra.so / vokra.dll / arm64-v8a
 //     libvokra.so).
 //   - Every [DllImport] below MUST use NativeMethods.Lib; no hardcoded
 //     "vokra"/"__Internal" literal is allowed. Enforced by
-//     scripts/check-native-methods.sh.
+//     scripts/check-native-methods.sh (3-state assert: iOS+WebGL / default).
 
 using System;
 using System.Runtime.InteropServices;
@@ -104,11 +109,15 @@ namespace Vokra
 
     internal static class NativeMethods
     {
-        // Platform-conditional native library name (D4, ADR-0007, NFR-RL-03).
+        // Platform-conditional native library name (D4, ADR-0007, NFR-RL-03,
+        // M4-02).
         //
         // - iOS device builds statically link libvokra.a and resolve symbols via
         //   "__Internal" (dlopen of a custom dylib is forbidden by the App Store
         //   review guidelines).
+        // - WebGL builds statically link the Emscripten-target libvokra.a into
+        //   the single wasm module (there is no dynamic loading on the Web), so
+        //   they use the same "__Internal" resolution (ADR M4-02 §1).
         // - Every other build (Editor on any host, desktop players, Android)
         //   resolves the shared library "vokra": Unity's PluginImporter strips
         //   the platform prefix/suffix (lib*.dylib / lib*.so / *.dll).
@@ -117,7 +126,7 @@ namespace Vokra
         // switch point per platform; scripts/check-native-methods.sh greps for
         // any hardcoded "vokra" / "__Internal" literal in a DllImport and fails
         // the build if one appears.
-#if UNITY_IOS && !UNITY_EDITOR
+#if (UNITY_IOS || UNITY_WEBGL) && !UNITY_EDITOR
         internal const string Lib = "__Internal";
 #else
         internal const string Lib = "vokra";
@@ -127,6 +136,14 @@ namespace Vokra
         [DllImport(Lib, CallingConvention = Cc, EntryPoint = "vokra_session_create_from_file")]
         internal static extern VokraStatus SessionCreateFromFile(
             [In] byte[] pathUtf8, out IntPtr outSession);
+
+        // M4-02: bytes-based session create — the WebGL model path (and a
+        // general-purpose alternative everywhere). The buffer is copied by
+        // the native side before the call returns; the marshaller pins the
+        // byte[] for the duration of the call only.
+        [DllImport(Lib, CallingConvention = Cc, EntryPoint = "vokra_session_create_from_bytes")]
+        internal static extern VokraStatus SessionCreateFromBytes(
+            [In] byte[] data, UIntPtr len, out IntPtr outSession);
 
         // FR-API-03: atomic ref count. Cheap clone of the inner Session (Arc bump);
         // the model is freed only when the last handle is destroyed. The new

@@ -290,6 +290,68 @@ pub fn beam_search_decode_with_prefix(
     beam_search_inner(session, config, consumed)
 }
 
+/// Beam-search + n-best decode for the **trained transcription-prompt
+/// layout** (P2 cc-05/07 follow-up) — the beam sibling of
+/// [`greedy_decode_with_segments`](super::text_decoder_session::greedy_decode_with_segments).
+///
+/// Seeds the session with `step_into(pre_tokens)` →
+/// `step_into_with_embed_prefix(audio rows)` → `step_into(post_tokens)`
+/// (the upstream `masked_scatter` replay: audio soft-prefix rows occupy the
+/// `[AUDIO]` placeholder positions), then runs the shared beam inner loop.
+/// The seed beam's first expansion reads the post-segment's last logits row
+/// — the same distribution the greedy sibling argmaxes — so `beam_size == 1`
+/// reproduces the greedy sequence.
+///
+/// Returned [`BeamResult::tokens`] contain only the generated tokens (no
+/// prompt segment). The session is [`TextDecoderSession::reset`] at the top.
+///
+/// # Errors
+///
+/// - [`VokraError::InvalidArgument`] on the same config conditions as
+///   [`beam_search_decode`], plus `t_prefix == 0` (the trained layout is
+///   only defined over an audio run) or an empty `post_tokens` (the seed
+///   distribution is the post-segment's last logits row — an empty segment
+///   has no defined sampling point);
+/// - any error the underlying session steps surface.
+pub fn beam_search_decode_with_segments(
+    session: &mut TextDecoderSession<'_>,
+    pre_tokens: &[u32],
+    prefix_embed: &[f32],
+    t_prefix: usize,
+    post_tokens: &[u32],
+    config: &BeamConfig,
+) -> Result<Vec<BeamResult>> {
+    validate_config(config)?;
+    if t_prefix == 0 {
+        return Err(VokraError::InvalidArgument(
+            "voxtral::beam_search_decode_with_segments: t_prefix must be > 0 — the \
+             transcription layout is only defined over an audio soft-prefix run (use \
+             beam_search_decode / beam_search_decode_with_prefix instead)"
+                .into(),
+        ));
+    }
+    if post_tokens.is_empty() {
+        return Err(VokraError::InvalidArgument(
+            "voxtral::beam_search_decode_with_segments: post_tokens must not be empty — the \
+             seed distribution is the logits after the post-audio segment \
+             ([/INST]…[TRANSCRIBE])"
+                .into(),
+        ));
+    }
+
+    // ---------- seed the session with the three prompt segments -------
+    session.reset();
+    session.step_into(pre_tokens)?; // empty pre is a documented no-op
+    session.step_into_with_embed_prefix(prefix_embed, t_prefix)?;
+    session.step_into(post_tokens)?;
+
+    let consumed = pre_tokens
+        .len()
+        .saturating_add(t_prefix)
+        .saturating_add(post_tokens.len());
+    beam_search_inner(session, config, consumed)
+}
+
 /// Validates the load-bearing parts of a [`BeamConfig`] common to both
 /// entry points.
 fn validate_config(config: &BeamConfig) -> Result<()> {
@@ -679,6 +741,7 @@ mod tests {
                 n_layer: 1,
                 n_head_q: 2,
                 n_head_kv: 1,
+                head_dim: 0,
                 hidden_dim: 4,
                 ffn_dim: 8,
                 vocab_size: 4,
@@ -732,6 +795,7 @@ mod tests {
             .collect();
         TextDecoder {
             token_emb,
+            lm_head: None,
             blocks,
             final_norm_gamma: vec![1.0f32; d],
             prefix: "",
@@ -1045,5 +1109,82 @@ mod tests {
         let td = tiny_decoder(&cfg);
         let sess = TextDecoderSession::new(&cfg, &td, BackendKind::Cpu).unwrap();
         assert_eq!(sess.backend_name(), "cpu");
+    }
+
+    // -----------------------------------------------------------------
+    // beam_search_decode_with_segments (trained transcription layout)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn segments_beam_size_one_matches_segments_greedy() {
+        // The greedy-equivalence contract every beam entry point upholds:
+        // beam_size = 1 through the segments driver must reproduce
+        // greedy_decode_with_segments token-for-token.
+        use crate::voxtral::text_decoder_session::greedy_decode_with_segments;
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let d = cfg.text.hidden_dim;
+        let pre = [1u32, 3];
+        let post = [0u32, 2];
+        let t_prefix = 2usize;
+        let embed: Vec<f32> = (0..t_prefix * d).map(|i| 0.04 * (i as f32 - 2.0)).collect();
+        let eos = 9999u32;
+        let max_new = 3usize;
+
+        let mut sess = TextDecoderSession::cpu(&cfg, &td).unwrap();
+        let greedy =
+            greedy_decode_with_segments(&mut sess, &pre, &embed, t_prefix, &post, eos, max_new)
+                .unwrap();
+
+        let bc = BeamConfig::greedy(eos, max_new);
+        let beams = beam_search_decode_with_segments(&mut sess, &pre, &embed, t_prefix, &post, &bc)
+            .unwrap();
+        assert_eq!(beams.len(), 1);
+        assert_eq!(beams[0].tokens, greedy);
+    }
+
+    #[test]
+    fn segments_beam_returns_ranked_beams_and_is_deterministic() {
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let d = cfg.text.hidden_dim;
+        let embed: Vec<f32> = (0..2 * d).map(|i| 0.03 * (i as f32)).collect();
+        let bc = BeamConfig::with_beam_size(3, 9999, 3);
+        let mut sess = TextDecoderSession::cpu(&cfg, &td).unwrap();
+        let a = beam_search_decode_with_segments(&mut sess, &[1], &embed, 2, &[0], &bc).unwrap();
+        assert!(!a.is_empty());
+        assert!(a.len() <= 3);
+        for pair in a.windows(2) {
+            assert!(pair[0].length_normalized_score >= pair[1].length_normalized_score);
+        }
+        let b = beam_search_decode_with_segments(&mut sess, &[1], &embed, 2, &[0], &bc).unwrap();
+        assert_eq!(a, b, "segments beam must be deterministic (reset at top)");
+    }
+
+    #[test]
+    fn segments_beam_rejects_zero_prefix_and_empty_post() {
+        let cfg = tiny_cfg();
+        let td = tiny_decoder(&cfg);
+        let d = cfg.text.hidden_dim;
+        let embed: Vec<f32> = vec![0.05; d];
+        let bc = BeamConfig::greedy(9999, 3);
+        let mut sess = TextDecoderSession::cpu(&cfg, &td).unwrap();
+        assert!(matches!(
+            beam_search_decode_with_segments(&mut sess, &[1], &[], 0, &[0], &bc),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            beam_search_decode_with_segments(&mut sess, &[1], &embed, 1, &[], &bc),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        // Config validation still applies (beam_size = 0).
+        let bad = BeamConfig {
+            beam_size: 0,
+            ..BeamConfig::greedy(9999, 3)
+        };
+        assert!(matches!(
+            beam_search_decode_with_segments(&mut sess, &[1], &embed, 1, &[0], &bad),
+            Err(VokraError::InvalidArgument(_))
+        ));
     }
 }

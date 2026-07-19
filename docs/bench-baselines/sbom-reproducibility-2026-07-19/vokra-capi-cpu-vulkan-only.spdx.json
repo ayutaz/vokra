@@ -1,0 +1,146 @@
+{
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "creationInfo": {
+    "comment": "Dependency graph of vokra-capi resolved by `cargo tree -e normal` with feature selection: --no-default-features --features vulkan. Runtime dependencies only (no dev/build deps). Generated at commit 53d216c3089f2ca9c6cdfd64e44cb8bedcc8fbe0.",
+    "created": "2026-07-19T03:49:29Z",
+    "creators": [
+      "Tool: vokra-generate-spdx"
+    ]
+  },
+  "dataLicense": "CC0-1.0",
+  "documentNamespace": "https://github.com/ayutaz/vokra/spdx/vokra-capi-cpu-vulkan-only/53d216c3089f2ca9c6cdfd64e44cb8bedcc8fbe0",
+  "name": "vokra-capi-cpu-vulkan-only",
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package-vokra-backend-cpu",
+      "copyrightText": "Copyright 2026 ayutaz",
+      "downloadLocation": "git+https://github.com/ayutaz/vokra@53d216c3089f2ca9c6cdfd64e44cb8bedcc8fbe0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "vokra-backend-cpu",
+      "supplier": "Person: ayutaz",
+      "versionInfo": "0.1.0-alpha.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vokra-backend-vulkan",
+      "copyrightText": "Copyright 2026 ayutaz",
+      "downloadLocation": "git+https://github.com/ayutaz/vokra@53d216c3089f2ca9c6cdfd64e44cb8bedcc8fbe0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "vokra-backend-vulkan",
+      "supplier": "Person: ayutaz",
+      "versionInfo": "0.1.0-alpha.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vokra-capi",
+      "copyrightText": "Copyright 2026 ayutaz",
+      "downloadLocation": "git+https://github.com/ayutaz/vokra@53d216c3089f2ca9c6cdfd64e44cb8bedcc8fbe0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "vokra-capi",
+      "supplier": "Person: ayutaz",
+      "versionInfo": "0.1.0-alpha.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vokra-core",
+      "copyrightText": "Copyright 2026 ayutaz",
+      "downloadLocation": "git+https://github.com/ayutaz/vokra@53d216c3089f2ca9c6cdfd64e44cb8bedcc8fbe0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "vokra-core",
+      "supplier": "Person: ayutaz",
+      "versionInfo": "0.1.0-alpha.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vokra-mmap",
+      "copyrightText": "Copyright 2026 ayutaz",
+      "downloadLocation": "git+https://github.com/ayutaz/vokra@53d216c3089f2ca9c6cdfd64e44cb8bedcc8fbe0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "vokra-mmap",
+      "supplier": "Person: ayutaz",
+      "versionInfo": "0.1.0-alpha.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vokra-models",
+      "copyrightText": "Copyright 2026 ayutaz",
+      "downloadLocation": "git+https://github.com/ayutaz/vokra@53d216c3089f2ca9c6cdfd64e44cb8bedcc8fbe0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "vokra-models",
+      "supplier": "Person: ayutaz",
+      "versionInfo": "0.1.0-alpha.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vokra-ops",
+      "copyrightText": "Copyright 2026 ayutaz",
+      "downloadLocation": "git+https://github.com/ayutaz/vokra@53d216c3089f2ca9c6cdfd64e44cb8bedcc8fbe0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "vokra-ops",
+      "supplier": "Person: ayutaz",
+      "versionInfo": "0.1.0-alpha.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vokra-piper-plus",
+      "copyrightText": "Copyright 2026 ayutaz",
+      "downloadLocation": "git+https://github.com/ayutaz/vokra@53d216c3089f2ca9c6cdfd64e44cb8bedcc8fbe0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "vokra-piper-plus",
+      "supplier": "Person: ayutaz",
+      "versionInfo": "0.1.0-alpha.0"
+    }
+  ],
+  "relationships": [
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vokra-capi",
+      "relationshipType": "DESCRIBES",
+      "spdxElementId": "SPDXRef-DOCUMENT"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vokra-backend-cpu",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-vokra-capi"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vokra-backend-vulkan",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-vokra-capi"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vokra-core",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-vokra-capi"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vokra-mmap",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-vokra-capi"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vokra-models",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-vokra-capi"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vokra-ops",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-vokra-capi"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vokra-piper-plus",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-vokra-capi"
+    }
+  ],
+  "spdxVersion": "SPDX-2.3"
+}

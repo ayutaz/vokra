@@ -1,20 +1,43 @@
-// gemv.comp — M3-02-T15 (matrix-vector multiply).
+// gemv.comp — M3-02-T15 / M4-13-T04 (matrix-vector multiply).
 // `y[i] = Σ_j A[i,j] * x[j]  (+ b[i])`.
 //
 // GEMV is the decoder-step hot path (Whisper decoder / MB-iSTFT-VITS2 flow /
-// CosyVoice2 CFM). The subgroup reduce turns the inner sum into a fast
-// shuffle+add.
+// CosyVoice2 CFM). One workgroup per output row; the inner sum is reduced
+// across the workgroup through shared memory.
 //
-// Layout: FP32, row-major A. Bias is optional — pass an empty buffer + zero
-// length via push-constant `bias_present` to skip.
+// Portability note (M4-13-T04, ADR M3-02-spirv-generation §7 2026-07-14
+// addendum (d)): the M3-02 skeleton reduced with `subgroupAdd` +
+// `subgroupElect`, which silently assumes the whole 32-lane workgroup is ONE
+// subgroup. Real subgroup sizes vary (lavapipe = 8, Mali = 16, RDNA = 64), so
+// on such devices each subgroup would reduce only its own slice and several
+// electees would race the row write — wrong results. Rewritten to a
+// barrier-based shared-memory tree reduction, which needs no subgroup
+// extension at all and is exact for every subgroup width. A subgroup-tuned
+// variant is a perf follow-up AFTER the Android real-device soak
+// (M4-13-T17); parity comes first.
+//
+// Reduction order note: the tree reduction's FP32 rounding differs from the
+// CPU backend's sequential row sum — parity holds within the NFR-QL-01
+// FP32 gate (atol = 0.01), not bit-for-bit.
+//
+// Uniform control flow: `barrier()` must be reached by every invocation in
+// the workgroup. The dispatch contract (`plan_gemv` in src/plan.rs) launches
+// EXACTLY `m` workgroups, so `gl_WorkGroupID.x < pc.m` always holds and no
+// early return is needed (the skeleton's guard would have broken the
+// barriers had one been taken).
+//
+// Layout: FP32, row-major A. Bias is optional — the dispatcher binds a
+// 4-byte dummy buffer and sets `bias_present = 0` to skip it (every declared
+// binding must be bound in Vulkan).
 //
 // Compile with:
 //   glslc --target-env=vulkan1.1 -o precompiled/gemv.spv glsl/gemv.comp
 
 #version 450
-#extension GL_KHR_shader_subgroup_arithmetic : enable
 
-// One workgroup per output element `i`; subgroups reduce the inner sum.
+// One workgroup per output element `i`; WG_SIZE lanes stride the inner sum.
+// Must stay in sync with `shader_local_size("gemv")` in src/plan.rs (the
+// `local_size_table_matches_glsl_sources` test pins the pair).
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
 layout(push_constant) uniform PC {
@@ -28,23 +51,35 @@ layout(std430, set = 0, binding = 1) readonly buffer XVec { float x[]; };
 layout(std430, set = 0, binding = 2) readonly buffer BVec { float b[]; };
 layout(std430, set = 0, binding = 3) writeonly buffer YVec { float y[]; };
 
+const uint WG_SIZE = 32u;
+shared float scratch[WG_SIZE];
+
 void main() {
-    uint i = gl_WorkGroupID.x;
-    uint lane = gl_SubgroupInvocationID;
-    uint sg_size = gl_SubgroupSize;
-    if (i >= pc.m) {
-        return;
-    }
+    uint i = gl_WorkGroupID.x;          // output row; dispatch guarantees i < pc.m
+    uint lid = gl_LocalInvocationID.x;
+
+    // Each lane sums a strided slice of the inner dimension.
     float acc = 0.0;
-    // Each lane sums a strided slice of column j; subgroupAdd reduces.
-    for (uint j = lane; j < pc.n; j += sg_size) {
+    for (uint j = lid; j < pc.n; j += WG_SIZE) {
         acc += A[i * pc.n + j] * x[j];
     }
-    acc = subgroupAdd(acc);
-    if (subgroupElect()) {
-        if (pc.bias_present != 0u) {
-            acc += b[i];
+
+    // Barrier-based tree reduction over shared memory (all lanes reach every
+    // barrier — uniform control flow).
+    scratch[lid] = acc;
+    barrier();
+    for (uint s = WG_SIZE / 2u; s > 0u; s >>= 1u) {
+        if (lid < s) {
+            scratch[lid] += scratch[lid + s];
         }
-        y[i] = acc;
+        barrier();
+    }
+
+    if (lid == 0u) {
+        float r = scratch[0];
+        if (pc.bias_present != 0u) {
+            r += b[i];
+        }
+        y[i] = r;
     }
 }

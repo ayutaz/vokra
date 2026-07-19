@@ -2276,3 +2276,347 @@ fn dequant_gemv_cuda_rejects_shape_mismatch() {
         .unwrap_err();
     assert!(matches!(err, vokra_core::VokraError::InvalidArgument(_)));
 }
+
+// ===========================================================================
+// M4-07-T12: FlashAttention v3 (Hopper WGMMA, tf32 + fp32 accumulate) parity
+// — 1:1 symmetric with the FA v2 suite above, with TWO gates instead of one:
+// the usual CUDA-device gate, plus an FA v3 availability gate (SM >= 9.0 +
+// lazy compute_90a compile + smem opt-in). On this M1 iMac both skip; on the
+// vast.ai RTX 4090 route the second skips (SM 8.9 — the lazy slot prints the
+// reason); the REAL green is the owner's H100 run (M4-07-T17), which records
+// the measured max |Δ| against the pre-registered FA_V3_PARITY_ATOL = 0.02
+// (tf32 architectural bound; see fa_v3.rs rustdoc + ADR M4-07 §(d) — a
+// measured exceedance is handed back, never atol-bumped quietly).
+// ===========================================================================
+
+/// FA v3 availability gate on top of `ctx_or_skip!` — clean skip with the
+/// reason when the lazy slot resolved `Disabled` (non-Hopper device, missing
+/// optional driver symbols, smem budget, NVRTC failure — the slot init
+/// already printed the specific reason to stderr).
+macro_rules! fa_v3_or_skip {
+    ($ctx:expr, $what:literal) => {
+        if !$ctx.fa_v3_available() {
+            eprintln!(concat!(
+                "FA v3 unavailable (",
+                $what,
+                "); skipping (requires SM >= 9.0 Hopper — owner runs this on vast.ai H100, M4-07-T17)"
+            ));
+            return;
+        }
+    };
+}
+
+/// FA v3 causal parity vs the decomposed chain ([`CudaContext::attn_causal_dev`]).
+///
+/// Sweep rationale (the v3 warpgroup tile is `BR3 = 64`, four times FA v2's):
+///   * `1` — decoder-step shape; the diagnostic wrapper bypasses the
+///     `FA_V3_MIN_TQ` gate precisely so this is exercisable (T08: the kernel
+///     must be correct for any `t_q >= 1`, gate policy lives elsewhere).
+///   * `17` / `63` — sub-tile ragged rows (`br_eff = 17 / 63`).
+///   * `64` — exactly one full warpgroup tile.
+///   * `65` / `96` — two tiles with `br_eff = 1 / 32` ragged tails.
+///   * `448` — Whisper `n_text_ctx` (decoder-max full-prefix step).
+///   * `1500` — Whisper `n_audio_ctx` (the FA v3 battleground shape; also
+///     drives the ragged KV tail `bc_eff = 28` on the last of 24 KV tiles).
+///
+/// `rand_vec` inputs are zero-centred (±1), keeping post-q-proj scores O(1)
+/// — representative of layer-normed activations AND a stronger test than a
+/// saturated (one-hot softmax) regime, where the P·V stage would degenerate
+/// to copying V rows and hide tile-arithmetic bugs (ADR M4-07 §(d)).
+#[test]
+fn flash_attn_v3_causal_vs_decomposed_f32() {
+    use vokra_backend_cuda::{FA_V3_PARITY_ATOL, FA_V3_PARITY_RTOL};
+    let ctx = ctx_or_skip!("flash_attn_v3_causal");
+    fa_v3_or_skip!(ctx, "flash_attn_v3_causal");
+
+    let n_head = 4usize;
+    let d_head = 64usize;
+    let d = n_head * d_head;
+    let scale = (d_head as f32).powf(-0.5);
+
+    const SEED: u64 = 42;
+    let t_q_sweep = [1usize, 17, 63, 64, 65, 96, 448, 1500];
+    let mut worst_abs = 0.0f32;
+    let mut worst_rel = 0.0f32;
+
+    for &t_q in &t_q_sweep {
+        let t_kv = t_q;
+        let q_offset = 0usize;
+
+        let s = SEED ^ ((t_q as u64).wrapping_mul(0xD1B5_4A32_D192_ED03));
+        let xq = rand_vec(s ^ 0x11, t_q * d);
+        let qw = rand_vec(s ^ 0x12, d * d);
+        let kk = rand_vec(s ^ 0x13, t_kv * d);
+        let vv = rand_vec(s ^ 0x14, t_kv * d);
+        let ow = rand_vec(s ^ 0x15, d * d);
+        let qb = rand_vec(s ^ 0x16, d);
+        let ob = rand_vec(s ^ 0x17, d);
+
+        let xqt = ctx.upload(&xq).unwrap();
+        let qwt = ctx.upload(&qw).unwrap();
+        let kt = ctx.upload(&kk).unwrap();
+        let vt = ctx.upload(&vv).unwrap();
+        let owt = ctx.upload(&ow).unwrap();
+        let qbt = ctx.upload(&qb).unwrap();
+        let obt = ctx.upload(&ob).unwrap();
+
+        // (a) Reference: decomposed causal chain (the internal oracle — the
+        // same fp32 math the CPU backend differentials pin).
+        let mut ref_dev = ctx.alloc_dev(t_q * d).unwrap();
+        ctx.attn_causal_dev(
+            t_q,
+            t_kv,
+            d,
+            n_head,
+            &xqt,
+            &qwt,
+            Some(&qbt),
+            &kt,
+            &vt,
+            &owt,
+            Some(&obt),
+            scale,
+            q_offset,
+            &mut ref_dev,
+        )
+        .expect("reference decomposed attn_causal_dev");
+        let mut reference = vec![0.0f32; t_q * d];
+        ctx.download(&ref_dev, &mut reference).unwrap();
+
+        // (b) Candidate: FA v3 fused kernel via the gate-bypassing wrapper.
+        let mut cand_dev = ctx.alloc_dev(t_q * d).unwrap();
+        ctx.flash_attn_v3_dev(
+            t_q,
+            t_kv,
+            d,
+            n_head,
+            &xqt,
+            &qwt,
+            Some(&qbt),
+            &kt,
+            &vt,
+            &owt,
+            Some(&obt),
+            scale,
+            /* causal = */ true,
+            q_offset,
+            &mut cand_dev,
+        )
+        .expect("candidate FA v3 flash_attn_v3_dev");
+        let mut candidate = vec![0.0f32; t_q * d];
+        ctx.download(&cand_dev, &mut candidate).unwrap();
+
+        // (c) Parity: elementwise |Δ| <= max(FA_V3_PARITY_ATOL, rtol · |ref|).
+        for (i, (&r, &c)) in reference.iter().zip(&candidate).enumerate() {
+            let abs = (r - c).abs();
+            let tol = FA_V3_PARITY_ATOL.max(FA_V3_PARITY_RTOL * r.abs());
+            assert!(
+                abs <= tol,
+                "flash_attn_v3 causal candidate diverges at t_q={t_q}, i={i}: |ref-cand| = {abs:.3e} > tol {tol:.3e} (ref={r:.4}, cand={c:.4}) — record this max |Δ| and hand back (fabricated pass forbidden)"
+            );
+            worst_abs = worst_abs.max(abs);
+            worst_rel = worst_rel.max(if r.abs() > 0.0 { abs / r.abs() } else { 0.0 });
+        }
+    }
+
+    eprintln!(
+        "CUDA flash_attn_v3 causal vs decomposed: worst |Δ| = {worst_abs:.3e} (atol {FA_V3_PARITY_ATOL}), worst rel = {worst_rel:.3e} (rtol {FA_V3_PARITY_RTOL:.0e}) over t_q ∈ {{1,17,63,64,65,96,448,1500}} (t_kv=t_q, q_offset=0) — REPORT these numbers in the T17 hand-back"
+    );
+}
+
+/// Non-causal companion (encoder / cross-attention contract — the T10
+/// encoder opt-in requires `causal = false` correctness). Distinct sub-seed
+/// stream from the causal test; `q_offset` is ignored by contract when
+/// non-causal.
+#[test]
+fn flash_attn_v3_noncausal_vs_decomposed_f32() {
+    use vokra_backend_cuda::{FA_V3_PARITY_ATOL, FA_V3_PARITY_RTOL};
+    let ctx = ctx_or_skip!("flash_attn_v3_noncausal");
+    fa_v3_or_skip!(ctx, "flash_attn_v3_noncausal");
+
+    let n_head = 4usize;
+    let d_head = 64usize;
+    let d = n_head * d_head;
+    let scale = (d_head as f32).powf(-0.5);
+
+    const SEED: u64 = 43;
+    let t_q_sweep = [1usize, 17, 63, 64, 65, 96, 448, 1500];
+    let mut worst_abs = 0.0f32;
+    let mut worst_rel = 0.0f32;
+
+    for &t_q in &t_q_sweep {
+        let t_kv = t_q;
+
+        let s = SEED ^ ((t_q as u64).wrapping_mul(0xA24B_AED4_963E_E407));
+        let xq = rand_vec(s ^ 0x21, t_q * d);
+        let qw = rand_vec(s ^ 0x22, d * d);
+        let kk = rand_vec(s ^ 0x23, t_kv * d);
+        let vv = rand_vec(s ^ 0x24, t_kv * d);
+        let ow = rand_vec(s ^ 0x25, d * d);
+        let qb = rand_vec(s ^ 0x26, d);
+        let ob = rand_vec(s ^ 0x27, d);
+
+        let xqt = ctx.upload(&xq).unwrap();
+        let qwt = ctx.upload(&qw).unwrap();
+        let kt = ctx.upload(&kk).unwrap();
+        let vt = ctx.upload(&vv).unwrap();
+        let owt = ctx.upload(&ow).unwrap();
+        let qbt = ctx.upload(&qb).unwrap();
+        let obt = ctx.upload(&ob).unwrap();
+
+        let mut ref_dev = ctx.alloc_dev(t_q * d).unwrap();
+        ctx.attn_dev(
+            t_q,
+            t_kv,
+            d,
+            n_head,
+            &xqt,
+            &qwt,
+            Some(&qbt),
+            &kt,
+            &vt,
+            &owt,
+            Some(&obt),
+            scale,
+            &mut ref_dev,
+        )
+        .expect("reference decomposed attn_dev");
+        let mut reference = vec![0.0f32; t_q * d];
+        ctx.download(&ref_dev, &mut reference).unwrap();
+
+        let mut cand_dev = ctx.alloc_dev(t_q * d).unwrap();
+        ctx.flash_attn_v3_dev(
+            t_q,
+            t_kv,
+            d,
+            n_head,
+            &xqt,
+            &qwt,
+            Some(&qbt),
+            &kt,
+            &vt,
+            &owt,
+            Some(&obt),
+            scale,
+            /* causal = */ false,
+            /* q_offset (ignored) = */ 0,
+            &mut cand_dev,
+        )
+        .expect("candidate FA v3 flash_attn_v3_dev (non-causal)");
+        let mut candidate = vec![0.0f32; t_q * d];
+        ctx.download(&cand_dev, &mut candidate).unwrap();
+
+        for (i, (&r, &c)) in reference.iter().zip(&candidate).enumerate() {
+            let abs = (r - c).abs();
+            let tol = FA_V3_PARITY_ATOL.max(FA_V3_PARITY_RTOL * r.abs());
+            assert!(
+                abs <= tol,
+                "flash_attn_v3 non-causal candidate diverges at t_q={t_q}, i={i}: |ref-cand| = {abs:.3e} > tol {tol:.3e} (ref={r:.4}, cand={c:.4}) — record this max |Δ| and hand back (fabricated pass forbidden)"
+            );
+            worst_abs = worst_abs.max(abs);
+            worst_rel = worst_rel.max(if r.abs() > 0.0 { abs / r.abs() } else { 0.0 });
+        }
+    }
+
+    eprintln!(
+        "CUDA flash_attn_v3 non-causal vs decomposed: worst |Δ| = {worst_abs:.3e} (atol {FA_V3_PARITY_ATOL}), worst rel = {worst_rel:.3e} (rtol {FA_V3_PARITY_RTOL:.0e}) over t_q ∈ {{1,17,63,64,65,96,448,1500}} (t_kv=t_q) — REPORT these numbers in the T17 hand-back"
+    );
+}
+
+/// Scalar-geometry negatives of the FA v3 dispatch — **CUDA-less green**
+/// (M4-07-T12 completion condition): the free-function validator rejects
+/// every malformed shape before any driver/device involvement could matter.
+/// The tensor-length negatives on the `flash_attn_v3_dev` wrapper itself are
+/// device-gated below (allocating a `CudaDeviceTensor` needs a context).
+#[test]
+fn flash_attn_v3_validate_args_is_cuda_less_green() {
+    use vokra_backend_cuda::flash_attn_v3_validate_args;
+    use vokra_core::VokraError;
+    // A representative negative per guard (the exhaustive table lives in the
+    // fa_v3 unit tests; this pins the CUDA-less-ness at the T12 artifact).
+    for (t_q, t_kv, d, n_head, causal, q_offset) in [
+        (0usize, 64usize, 256usize, 4usize, false, 0usize),
+        (64, 64, 250, 4, false, 0),
+        (64, 64, 128, 4, false, 0), // d_head = 32 != 64
+        (64, 63, 256, 4, true, 0),  // causal window past t_kv
+    ] {
+        match flash_attn_v3_validate_args(t_q, t_kv, d, n_head, causal, q_offset) {
+            Err(VokraError::InvalidArgument(_)) => {}
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+    flash_attn_v3_validate_args(1500, 1500, 256, 4, false, 0).expect("encoder shape accepted");
+}
+
+/// Validation guards on the [`CudaContext::flash_attn_v3_dev`] wrapper —
+/// symmetric with [`flash_attn_dev_input_validation`]: scalar-geometry and
+/// tensor-length mismatches fire *before* any launch, and on a non-Hopper
+/// device a well-formed call is an explicit `BackendUnavailable` naming the
+/// FA v3 disable reason (FR-EX-08 — refusal is loud, never a v2/CPU
+/// substitution). Device-gated (tensors need a context).
+#[test]
+fn flash_attn_v3_dev_input_validation() {
+    use vokra_core::VokraError;
+    let ctx = ctx_or_skip!("flash_attn_v3_dev validation");
+
+    let n_head = 4usize;
+    let d_head = 64usize;
+    let d = n_head * d_head;
+    let t_q = 64usize;
+    let t_kv = 64usize;
+    let scale = (d_head as f32).powf(-0.5);
+
+    let xq = ctx.upload(&rand_vec(0x31, t_q * d)).unwrap();
+    let qw = ctx.upload(&rand_vec(0x32, d * d)).unwrap();
+    let kk = ctx.upload(&rand_vec(0x33, t_kv * d)).unwrap();
+    let vv = ctx.upload(&rand_vec(0x34, t_kv * d)).unwrap();
+    let ow = ctx.upload(&rand_vec(0x35, d * d)).unwrap();
+    let short = ctx.upload(&rand_vec(0x36, 8)).unwrap();
+    let mut out = ctx.alloc_dev(t_q * d).unwrap();
+
+    // (1) d_head != 64 — rejected by the scalar validator (n_head = 2 makes
+    // d_head = 128).
+    match ctx.flash_attn_v3_dev(
+        t_q, t_kv, d, 2, &xq, &qw, None, &kk, &vv, &ow, None, scale, false, 0, &mut out,
+    ) {
+        Err(VokraError::InvalidArgument(msg)) => {
+            assert!(msg.contains("64"), "must name the d_head constraint: {msg}")
+        }
+        other => panic!("d_head != 64 must be InvalidArgument, got {other:?}"),
+    }
+    // (2) causal window overflow.
+    match ctx.flash_attn_v3_dev(
+        t_q, t_kv, d, n_head, &xq, &qw, None, &kk, &vv, &ow, None, scale, true, 1, &mut out,
+    ) {
+        Err(VokraError::InvalidArgument(_)) => {}
+        other => panic!("causal overflow must be InvalidArgument, got {other:?}"),
+    }
+    // (3) tensor-length mismatch (short K).
+    match ctx.flash_attn_v3_dev(
+        t_q, t_kv, d, n_head, &xq, &qw, None, &short, &vv, &ow, None, scale, false, 0, &mut out,
+    ) {
+        Err(VokraError::InvalidArgument(msg)) => {
+            assert!(
+                msg.contains("flash_attn_v3_dev k"),
+                "must name the tensor: {msg}"
+            )
+        }
+        other => panic!("short K must be InvalidArgument, got {other:?}"),
+    }
+    // (4) Well-formed call: on a Hopper device this launches; anywhere else
+    // it must be the explicit FA v3 BackendUnavailable (the parity tests'
+    // skip signal), never a silent substitution.
+    match ctx.flash_attn_v3_dev(
+        t_q, t_kv, d, n_head, &xq, &qw, None, &kk, &vv, &ow, None, scale, false, 0, &mut out,
+    ) {
+        Ok(()) => eprintln!("flash_attn_v3_dev launched (Hopper device present)"),
+        Err(VokraError::BackendUnavailable(msg)) => {
+            assert!(
+                msg.contains("FA v3"),
+                "refusal must name the FA v3 path: {msg}"
+            );
+            eprintln!("flash_attn_v3_dev explicit refusal (expected off Hopper): {msg}");
+        }
+        Err(other) => panic!("well-formed call must launch or refuse explicitly, got {other}"),
+    }
+}

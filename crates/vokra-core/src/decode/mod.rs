@@ -34,6 +34,10 @@ pub mod beam_search;
 pub mod cfg;
 pub mod sampler;
 pub mod stepper;
+// M4-20 (a): host-side Whisper cross-attention DTW word-timestamp alignment
+// (FR-OP-40 `word_timestamps`). Model-independent — the Whisper decoder only
+// supplies the cross-attention weights (ADR M4-20 §D-2/§D-3).
+pub mod word_timing;
 
 use crate::error::Result;
 
@@ -41,6 +45,10 @@ pub use beam_search::{BeamHypothesis, BeamScorer, BeamSearchConfig, beam_search}
 pub use cfg::{CfgMode, apply_cfg, apply_cfg_inplace};
 pub use sampler::{Sampler, SamplerConfig, argmax, sample_sequence};
 pub use stepper::{DecodeStepper, TOKEN_FLAG_EOT};
+pub use word_timing::{
+    APPEND_PUNCTUATIONS, AlignmentParams, CrossAttention, PREPEND_PUNCTUATIONS, WordTiming,
+    merge_punctuations, token_alignment, words_from_alignment,
+};
 
 /// Raw next-token logits for a model, the low-level model ↔ decoder primitive.
 ///

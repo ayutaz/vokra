@@ -96,6 +96,12 @@ compile_error!(
 mod context;
 #[cfg(any(unix, windows))]
 mod eval;
+// M4-07: FlashAttention v3 (Hopper WGMMA, sm_90a). The ONLY module tree where
+// FA v3 code is legal (design constraint §5-(7) unlock point; containment is
+// machine-checked by scripts/check-fa-v3-confinement.sh). Kept as a separate
+// NVRTC program from `context::KERNELS_CUDA` — see fa_v3.rs module docs.
+#[cfg(any(unix, windows))]
+mod fa_v3;
 #[cfg(any(unix, windows))]
 pub mod session_pool;
 #[cfg(any(unix, windows))]
@@ -112,6 +118,30 @@ pub use probe::{CudaCapabilities, vokra_cuda_probe};
 
 #[cfg(any(unix, windows))]
 pub use context::{CudaContext, CudaKvCache};
+// M4-07 diagnostic / test surface (doc(hidden) — not a supported public API):
+// the arch-explicit NVRTC compile entry the `compute_90a` feasibility test
+// drives, and the FA v3 kernel sources it compiles. NVRTC needs no GPU, only
+// the toolkit library, so the test can run on any CUDA-toolkit host.
+#[cfg(any(unix, windows))]
+#[doc(hidden)]
+pub use context::nvrtc_compile_for_arch;
+#[cfg(any(unix, windows))]
+#[doc(hidden)]
+pub use fa_v3::{FA_V3_FEASIBILITY_SNIPPET, KERNELS_CUDA_FA_V3};
+// M4-07-T08: the FA v3 scalar-geometry validator, public so the negative
+// (input-validation) tests stay green on CUDA-less hosts.
+#[cfg(any(unix, windows))]
+pub use fa_v3::flash_attn_v3_validate_args;
+// M4-07-T11: the FA v3 runtime t_q gate (structural value = the BR3 = 64
+// warpgroup tile height; carries the FA v2 honest-negative inheritance in
+// its rustdoc). Public so the dispatch pin test asserts the REAL constant.
+#[cfg(any(unix, windows))]
+pub use fa_v3::FA_V3_MIN_TQ;
+// M4-07-T12: the per-path FA v3 parity bound (tf32-derived architectural
+// bound, redundantly recorded in rustdoc + ADR + the parity test that
+// consumes it — the Kokoro PROSODY_F0_ATOL precedent).
+#[cfg(any(unix, windows))]
+pub use fa_v3::{FA_V3_PARITY_ATOL, FA_V3_PARITY_RTOL};
 // `CudaDecodeSession` is the M2 Phase-3b device-resident decoder-step driver
 // (the CUDA sibling of `vokra-backend-metal`'s `MetalDecodeSession`); re-exported
 // here so `vokra-models`' `Compute::new_decoder_step_session` (its Cuda arm)

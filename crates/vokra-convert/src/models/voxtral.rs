@@ -21,11 +21,32 @@
 //!   raw model file is embedded verbatim into `vokra.tokenizer.model` as a
 //!   `U8` array so a runtime tokenizer can be constructed without an external
 //!   tokenizer crate (NFR-DS-02).
-//! - **ASR head**: tied logits — the token embedding acts as the output
-//!   projection (no separate `lm_head` tensor). This is the same tie Whisper
-//!   uses.
+//! - **ASR head**: the shipping `Voxtral-Mini-3B-2507` release carries an
+//!   **untied** `language_model.lm_head.weight` (byte-compared ≠ the token
+//!   embedding in the 2026-07-16 real-weight eval). The converter copies it
+//!   verbatim like every other float tensor; the runtime loader binds it when
+//!   present and falls back to the tied token embedding only when the tensor
+//!   is genuinely absent (matching upstream `tie_word_embeddings` semantics).
 //! - **S2S head**: codec-token generation. The codec type is recorded under
 //!   `vokra.voxtral.s2s.codec_type` (default `"none"` = ASR-only build).
+//!
+//! # Sharded checkpoints + BF16 (2026-07-16 P1 fixes)
+//!
+//! The upstream release ships **raw BF16 shards**
+//! (`model-0000X-of-0000Y.safetensors` + `model.safetensors.index.json`).
+//! Both are handled natively:
+//!
+//! - [`convert_shards`] accepts every shard of a checkpoint at once (a
+//!   single-file checkpoint is the 1-shard special case). Duplicate tensor
+//!   names across shards are a hard error.
+//! - `BF16` tensors are written **verbatim as GGUF `BF16`** (ggml type 30) —
+//!   an exact passthrough, mirroring the Whisper M2-06 F16 passthrough
+//!   posture. The runtime's single `tensor_f32` decode path widens BF16 to
+//!   f32 exactly at load (BF16 is the top 16 bits of the f32 bit pattern).
+//! - A conversion that writes **no weight tensors at all** (or skips more
+//!   tensors than it writes) is a hard error — a converter must never
+//!   succeed while emitting a weightless GGUF (FR-EX-08; this exact failure
+//!   shipped a 1,696-byte "success" before the fix).
 //!
 //! # Foundation-only scope in M3-10
 //!
@@ -85,6 +106,14 @@ const KEY_TD_N_LAYER: &str = "vokra.voxtral.text_decoder.n_layer";
 const KEY_TD_N_HEAD_Q: &str = "vokra.voxtral.text_decoder.n_head_q";
 /// `vokra.voxtral.text_decoder.n_head_kv` — GQA key/value heads (`UINT32`).
 const KEY_TD_N_HEAD_KV: &str = "vokra.voxtral.text_decoder.n_head_kv";
+/// `vokra.voxtral.text_decoder.head_dim` — explicit per-head width (`UINT32`).
+///
+/// Mistral decouples `head_dim` from `hidden_dim / n_head_q`: the shipping
+/// `Voxtral-Mini-3B-2507` release has `hidden_size = 3072` but `32` query
+/// heads × `head_dim = 128` = a 4096-wide Q projection. `0` means "derive as
+/// `hidden_dim / n_head_q`" — the pre-M4 GGUF behaviour, kept for backward
+/// compatibility with already-converted files.
+const KEY_TD_HEAD_DIM: &str = "vokra.voxtral.text_decoder.head_dim";
 /// `vokra.voxtral.text_decoder.hidden_dim` (`UINT32`).
 const KEY_TD_HIDDEN_DIM: &str = "vokra.voxtral.text_decoder.hidden_dim";
 /// `vokra.voxtral.text_decoder.ffn_dim` — SwiGLU inner width (`UINT32`).
@@ -151,6 +180,11 @@ const KEY_ADAPTER_HAS_LN: &str = "vokra.voxtral.adapter.has_layernorm";
 const KEY_ADAPTER_ACTIVATION: &str = "vokra.voxtral.adapter.activation";
 /// `vokra.voxtral.adapter.time_stride` (`UINT32`, downsample_linear only).
 const KEY_ADAPTER_TIME_STRIDE: &str = "vokra.voxtral.adapter.time_stride";
+/// `vokra.voxtral.adapter.frame_stack` (`UINT32` ≥ 1, frame_stack_mlp only):
+/// how many consecutive encoder frames are concatenated into one projector
+/// row (4 on the shipping Voxtral mini — `params.json
+/// multimodal.downsample_args.downsample_factor`).
+const KEY_ADAPTER_FRAME_STACK: &str = "vokra.voxtral.adapter.frame_stack";
 /// `vokra.voxtral.adapter.mlp_hidden_dims` (`STRING`, comma-sep u32 list).
 const KEY_ADAPTER_MLP_HIDDEN_DIMS: &str = "vokra.voxtral.adapter.mlp_hidden_dims";
 /// `vokra.voxtral.adapter.mlp_layer_names` (`STRING`, comma-sep list).
@@ -201,6 +235,11 @@ pub struct VoxtralConfig {
     pub s2s_watermark_default_on: Option<bool>,
     /// Primary head this GGUF exposes — one of `"asr"` (default) or `"s2s"`.
     pub mode: Option<String>,
+    /// Explicit model-name override written into `vokra.model.name` verbatim.
+    /// The escape hatch for a release whose text-decoder shape is not in the
+    /// known-size table (which otherwise hard-errors — FR-EX-08, never a
+    /// silent `voxtral-unknown` label on a real checkpoint).
+    pub name_override: Option<String>,
     /// Optional raw Mistral tokenizer file bytes. Embedded verbatim into
     /// `vokra.tokenizer.model`.
     pub tokenizer_bytes: Option<Vec<u8>>,
@@ -233,7 +272,10 @@ pub struct VoxtralConfig {
 #[derive(Debug, Clone)]
 pub struct AdapterSpec {
     /// One of `"none"` (no adapter, honest posture), `"linear"`,
-    /// `"mlp"`, `"downsample_linear"`.
+    /// `"mlp"`, `"downsample_linear"`, `"frame_stack_mlp"` (×N consecutive
+    /// frame concatenation then the MLP stack — the real Voxtral projector
+    /// shape; upstream `get_audio_features` does `reshape(-1,
+    /// intermediate_size)` before `VoxtralMultiModalProjector`).
     pub kind: String,
     /// Common prefix for the adapter tensor names, e.g.
     /// `"audio_adapter."` or `"mm_projector."`. May be empty.
@@ -264,6 +306,10 @@ pub struct AdapterSpec {
     pub activation: Option<String>,
     /// Time downsample stride for `kind = "downsample_linear"`. `>= 1`.
     pub time_stride: Option<u32>,
+    /// Consecutive-frame concatenation factor for `kind =
+    /// "frame_stack_mlp"`. `>= 1`; the runtime requires `in_dim` to be
+    /// `frame_stack × encoder hidden width`.
+    pub frame_stack: Option<u32>,
     /// MLP hidden dims between input and output (empty ⇒ single linear).
     /// Only meaningful for `kind = "mlp"`.
     pub mlp_hidden_dims: Vec<u32>,
@@ -290,6 +336,7 @@ impl AdapterSpec {
             has_layernorm: false,
             activation: None,
             time_stride: None,
+            frame_stack: None,
             mlp_hidden_dims: Vec::new(),
             mlp_layer_names: Vec::new(),
         }
@@ -301,55 +348,152 @@ impl AdapterSpec {
 pub struct ConvertReport {
     /// Number of float tensors written to the GGUF.
     pub written: usize,
+    /// Of `written`, how many were BF16 payloads passed through verbatim
+    /// (exact — the runtime widens BF16 → f32 losslessly at load).
+    pub bf16_passthrough: usize,
     /// Non-float tensors that were skipped (e.g. integer position ids).
     pub skipped_non_float: usize,
     /// Whether a tokenizer blob was embedded.
     pub tokenizer_embedded: bool,
-    /// Derived label (`voxtral-mini-3b` etc., or `voxtral-unknown`).
-    pub name: &'static str,
+    /// Derived label (`voxtral-mini-3b` etc.; `voxtral-unknown` only on the
+    /// decoder-less foundation path — a real checkpoint with an unrecognized
+    /// shape hard-errors instead).
+    pub name: String,
 }
 
-/// Converts a Voxtral safetensors buffer plus an optional [`VoxtralConfig`]
-/// into a GGUF builder.
+/// A multi-shard safetensors view (the upstream Voxtral release ships
+/// `model-0000X-of-0000Y.safetensors` shards; a single-file checkpoint is the
+/// 1-shard special case). All shape lookups and the tensor-copy loop walk
+/// every shard; duplicate tensor names across shards are rejected at parse
+/// (a corrupt / mis-assembled checkpoint must not let one shard silently
+/// shadow another — FR-EX-08).
+pub(crate) struct Shards {
+    files: Vec<SafetensorsFile>,
+}
+
+impl Shards {
+    fn parse(buffers: Vec<Vec<u8>>) -> Result<Self, ConvertError> {
+        if buffers.is_empty() {
+            return Err(ConvertError::Parse(
+                "voxtral: no safetensors shards supplied".to_owned(),
+            ));
+        }
+        let mut files = Vec::with_capacity(buffers.len());
+        for (i, bytes) in buffers.into_iter().enumerate() {
+            files.push(
+                SafetensorsFile::parse(bytes)
+                    .map_err(|e| ConvertError::Parse(format!("voxtral shard {i}: {e}")))?,
+            );
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (file_idx, f) in files.iter().enumerate() {
+            for t in f.tensors() {
+                if !seen.insert(t.name.clone()) {
+                    return Err(ConvertError::Parse(format!(
+                        "voxtral: tensor `{}` appears in more than one shard (second copy in \
+                         shard {file_idx}) — refusing the ambiguous checkpoint",
+                        t.name
+                    )));
+                }
+            }
+        }
+        Ok(Self { files })
+    }
+
+    /// Iterates `(owning shard, tensor info)` pairs across every shard.
+    fn iter(&self) -> impl Iterator<Item = (&SafetensorsFile, &SafeTensorInfo)> {
+        self.files
+            .iter()
+            .flat_map(|f| f.tensors().iter().map(move |t| (f, t)))
+    }
+
+    /// Shape axis lookup by exact tensor name; `0` when absent (the runtime
+    /// rejects `0`-dims at load — never silently substituted).
+    fn tensor_dim(&self, name: &str, axis: usize) -> u64 {
+        self.iter()
+            .find(|(_, t)| t.name == name)
+            .and_then(|(_, t)| t.shape.get(axis).copied())
+            .unwrap_or(0)
+    }
+
+    /// Counts consecutive `{prefix}{i}.`-numbered layers starting at 0.
+    fn count_layers(&self, prefix: &str) -> u32 {
+        let mut n = 0u32;
+        loop {
+            let probe = format!("{prefix}{n}.");
+            if self.iter().any(|(_, t)| t.name.starts_with(&probe)) {
+                n += 1;
+            } else {
+                return n;
+            }
+        }
+    }
+}
+
+/// Converts a single-file Voxtral safetensors buffer. Thin wrapper over
+/// [`convert_shards`] — see there for the semantics.
+pub(crate) fn convert(
+    bytes: Vec<u8>,
+    config: Option<&VoxtralConfig>,
+) -> Result<(GgufBuilder, ConvertReport), ConvertError> {
+    convert_shards(vec![bytes], config)
+}
+
+/// Converts a Voxtral safetensors checkpoint (one buffer per shard) plus an
+/// optional [`VoxtralConfig`] into a GGUF builder.
 ///
 /// The shape-only path (config `None`) matches Whisper's foundation path:
 /// shape-driven hparams are written, missing side-car hparams get `0`
 /// sentinels, and the runtime loader is expected to flag the missing values
 /// at forward-time (never silently substitute). Real-world conversion always
 /// passes a config.
-pub(crate) fn convert(
-    bytes: Vec<u8>,
+///
+/// # Errors
+///
+/// Beyond parse / GGUF assembly failures:
+/// - a checkpoint with decoder layers whose `(hidden_dim, n_layer)` shape is
+///   not a known Voxtral release (and no `name_override`) — see
+///   [`derive_name`];
+/// - a config whose GQA head split contradicts the checkpoint's projection
+///   shapes — see [`write_hparams`];
+/// - a conversion that would write **zero** weight tensors, or skip more
+///   tensors than it writes (FR-EX-08 — never a success-shaped weightless
+///   GGUF).
+pub(crate) fn convert_shards(
+    buffers: Vec<Vec<u8>>,
     config: Option<&VoxtralConfig>,
 ) -> Result<(GgufBuilder, ConvertReport), ConvertError> {
-    let st = SafetensorsFile::parse(bytes)?;
+    let st = Shards::parse(buffers)?;
 
     // Derive shape-driven encoder/decoder hparams. The tensor names below
     // mirror what the upstream Voxtral checkpoint exposes (`audio_tower.*` for
     // the encoder, `language_model.*` for the Mistral decoder, or the plain
     // Mistral prefix `model.layers.*`). Missing tensors yield `0`, which the
     // runtime rejects at load — never silently substituted.
-    let d_audio = tensor_dim(&st, "audio_tower.conv1.weight", 0);
-    let n_mels_ck = tensor_dim(&st, "audio_tower.conv1.weight", 1);
-    let n_audio_layer = count_layers(&st, "audio_tower.layers.");
-    // Encoder positional embedding; some releases inline sinusoidal, others
-    // learn. The learned form exposes the tensor; the sinusoidal form yields
-    // 0 here (harmless — runtime rebuilds it if the tensor is absent).
-    let n_audio_ctx_shape = tensor_dim(&st, "audio_tower.embed_positions.weight", 0);
-    let n_audio_ffn = tensor_dim(&st, "audio_tower.layers.0.fc1.weight", 0);
+    let d_audio = st.tensor_dim("audio_tower.conv1.weight", 0);
+    let n_mels_ck = st.tensor_dim("audio_tower.conv1.weight", 1);
+    let n_audio_layer = st.count_layers("audio_tower.layers.");
+    let n_audio_ffn = st.tensor_dim("audio_tower.layers.0.fc1.weight", 0);
 
-    let (d_text, n_text_layer, ffn_text, vocab_shape) =
-        derive_decoder_shape(&st).unwrap_or((0, 0, 0, 0));
-
-    let name = derive_name(d_text, n_text_layer, config).unwrap_or("voxtral-unknown");
+    let shape = derive_decoder_shape(&st)?;
+    let name = derive_name(&shape, config)?;
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, name);
+    b.add_string(chunks::KEY_MODEL_NAME, &name);
     // Encoder is Whisper-derived; the frontend spec is Whisper's for the same
     // n_mels (128 on Voxtral). Runtime front-end check gates a mismatched GGUF
     // at load (bit-exact, FR-LD-03).
     write_frontend_spec(&mut b, n_mels_ck as u32);
-    write_hparams(&mut b, &st, config, d_audio, n_audio_layer, n_audio_ffn);
+    write_hparams(
+        &mut b,
+        &st,
+        config,
+        &shape,
+        d_audio,
+        n_audio_layer,
+        n_audio_ffn,
+    )?;
 
     let tokenizer_embedded = if let Some(cfg) = config {
         if let Some(bytes) = cfg.tokenizer_bytes.as_ref() {
@@ -362,27 +506,57 @@ pub(crate) fn convert(
         false
     };
 
-    // Copy tensors verbatim. Skip non-float tensors (e.g. integer id caches).
+    // Copy tensors verbatim across every shard. `F32` / `F16` / `BF16` pass
+    // through byte-exact (`BF16` is a first-class GGUF dtype — ggml type 30 —
+    // and the runtime's single `tensor_f32` decode path widens it to f32
+    // exactly at load). Anything else is counted as skipped and gated below.
     let mut written = 0usize;
+    let mut bf16_passthrough = 0usize;
     let mut skipped_non_float = 0usize;
-    for t in st.tensors() {
+    let mut total = 0usize;
+    for (file, t) in st.iter() {
+        total += 1;
         if !is_float_dtype(t.dtype) {
             skipped_non_float += 1;
             continue;
         }
+        if t.dtype == GgmlType::BF16 {
+            bf16_passthrough += 1;
+        }
         let name = gguf_tensor_name(&t.name);
-        b.add_tensor(&name, t.dtype, t.shape.clone(), st.tensor_bytes(t).to_vec())?;
+        b.add_tensor(
+            &name,
+            t.dtype,
+            t.shape.clone(),
+            file.tensor_bytes(t).to_vec(),
+        )?;
         written += 1;
     }
 
-    // Belt-and-braces: reference the decoder-shape tuple even on the failure
-    // branch so an over-eager reviewer does not silently drop it later.
-    let _ = (d_text, ffn_text, vocab_shape, n_audio_ctx_shape);
+    // FR-EX-08 hard gate: a converter must never succeed while writing no
+    // (or almost no) weights. The pre-fix failure mode — raw BF16 shards →
+    // "0 float weights written, 152 non-float skipped", exit 0, 1,696-byte
+    // GGUF — is exactly this class of success-shaped failure.
+    if written == 0 {
+        return Err(ConvertError::Parse(format!(
+            "voxtral: no weight tensors were written ({total} input tensors, \
+             {skipped_non_float} skipped as non-float) — refusing to emit a weightless GGUF \
+             (FR-EX-08)"
+        )));
+    }
+    if skipped_non_float > written {
+        return Err(ConvertError::Parse(format!(
+            "voxtral: {skipped_non_float} of {total} tensors were skipped as non-float (only \
+             {written} written) — a majority-skipped conversion is a wrong-dtype / corrupt \
+             checkpoint, not a success (FR-EX-08)"
+        )));
+    }
 
     Ok((
         b,
         ConvertReport {
             written,
+            bf16_passthrough,
             skipped_non_float,
             tokenizer_embedded,
             name,
@@ -391,64 +565,116 @@ pub(crate) fn convert(
 }
 
 /// Derives the Voxtral checkpoint size label from the text-decoder shape
-/// (`hidden_dim`, `n_layer`) plus an optional config hint. The two shipping
-/// releases are `voxtral-mini-3b` and `voxtral-small-24b`; a checkpoint that
-/// matches neither triggers an explicit error rather than a silent fallback
-/// (FR-EX-08).
+/// (`hidden_dim`, `n_layer`) plus an optional config hint. A checkpoint with
+/// decoder layers that matches no known release (and carries no override) is
+/// an explicit error — never a silent `voxtral-unknown` label (FR-EX-08; the
+/// pre-fix call site swallowed the error with `unwrap_or`). The label falls
+/// back to `voxtral-unknown` **only** on the decoder-less foundation path
+/// (synthetic / shape-only fixtures with no `layers.*` tensors at all), where
+/// the runtime refuses a forward anyway.
 fn derive_name(
-    d_text: u64,
-    n_text_layer: u32,
+    shape: &DecoderShape,
     config: Option<&VoxtralConfig>,
-) -> Result<&'static str, ConvertError> {
-    // Explicit override from a caller who has the release card handy wins.
+) -> Result<String, ConvertError> {
     if let Some(cfg) = config {
+        // A verbatim override wins unconditionally.
+        if let Some(name) = cfg.name_override.as_deref() {
+            if name.is_empty() {
+                return Err(ConvertError::Parse(
+                    "voxtral: name_override must not be empty".to_owned(),
+                ));
+            }
+            return Ok(name.to_owned());
+        }
+        // Legacy hint: a caller with the release card handy could pass
+        // `mode = "mini" | "small"` (predates `name_override`; kept working).
         if let Some(mode) = cfg.mode.as_deref() {
             if mode == "small" {
-                return Ok(NAME_SMALL);
+                return Ok(NAME_SMALL.to_owned());
             }
             if mode == "mini" {
-                return Ok(NAME_MINI);
+                return Ok(NAME_MINI.to_owned());
             }
         }
     }
-    // Voxtral 2025-07 shape quintuples (Mistral-Small language backbone
-    // `hidden_size=5120 / n_layer=40` for `small-24b`; `hidden_size=3072 /
-    // n_layer=28` for `mini-3b`). These come from the upstream config cards
-    // and are the same numbers Mistral used for Ministral / Mistral-Small.
-    match (d_text, n_text_layer) {
-        (3072, 28) => Ok(NAME_MINI),
-        (5120, 40) => Ok(NAME_SMALL),
-        _ => Err(ConvertError::Parse(format!(
-            "unknown voxtral size: (d_text={d_text}, n_text_layer={n_text_layer}); \
-             expected voxtral-mini-3b (3072, 28) or voxtral-small-24b (5120, 40)"
+    // Foundation-only path: no decoder present at all.
+    if shape.n_layer == 0 && shape.d_model == 0 {
+        return Ok("voxtral-unknown".to_owned());
+    }
+    // Known release shapes. `mini-3b` is `hidden_size=3072 / n_layer=30` —
+    // measured from the shipping `Voxtral-Mini-3B-2507` `config.json`
+    // (`num_hidden_layers: 30`; the earlier `28` row was wrong and made the
+    // real checkpoint fall through). The `small-24b` row (5120, 40) is
+    // carried over from the M3-10 table.
+    match (shape.d_model, shape.n_layer) {
+        (3072, 30) => Ok(NAME_MINI.to_owned()),
+        (5120, 40) => Ok(NAME_SMALL.to_owned()),
+        (d, n) => Err(ConvertError::Parse(format!(
+            "unknown voxtral size: (d_text={d}, n_text_layer={n}); expected voxtral-mini-3b \
+             (3072, 30) or voxtral-small-24b (5120, 40) — pass VoxtralConfig::name_override to \
+             label a new release explicitly"
         ))),
     }
+}
+
+/// Shape facts read off the text-decoder side of the checkpoint. Any missing
+/// dim is `0`, which the runtime rejects at load (FR-EX-08) — never silently
+/// substituted.
+#[derive(Debug, Default, Clone, Copy)]
+struct DecoderShape {
+    /// Residual width `d_model` (`q_proj.weight` axis 1).
+    d_model: u64,
+    /// Decoder block count.
+    n_layer: u32,
+    /// SwiGLU inner width (`gate_proj.weight` axis 0).
+    ffn: u64,
+    /// Vocabulary (token embedding axis 0).
+    vocab: u64,
+    /// Q projection output rows = `n_head_q * head_dim` (`q_proj.weight`
+    /// axis 0). Mistral decouples this from `d_model` — the shipping mini
+    /// release has `d_model = 3072` but `q_rows = 4096` (32 × 128).
+    q_rows: u64,
+    /// K/V projection output rows = `n_head_kv * head_dim` (`k_proj.weight`
+    /// axis 0; validated equal to `v_proj.weight` axis 0).
+    kv_rows: u64,
 }
 
 /// Reads the shape of the text-decoder side of the checkpoint. Tries the
 /// modern `language_model.model.*` prefix first (Voxtral packages the Mistral
 /// backbone under a submodule) and falls back to the plain `model.*` prefix
-/// used by standalone Mistral releases. Returns `(d_model, n_layer, ffn_dim,
-/// vocab_size)` — any missing dim is `0`, which the runtime rejects at load
-/// (FR-EX-08). Returns `None` when neither prefix has any tensors.
-fn derive_decoder_shape(st: &SafetensorsFile) -> Option<(u64, u32, u64, u64)> {
+/// used by standalone Mistral releases. A checkpoint with no decoder tensors
+/// under any prefix yields the all-`0` [`DecoderShape`] (foundation path).
+///
+/// # Errors
+///
+/// `k_proj` / `v_proj` output rows disagreeing is a corrupt checkpoint —
+/// surfaced instead of silently picking one (FR-EX-08).
+fn derive_decoder_shape(st: &Shards) -> Result<DecoderShape, ConvertError> {
     for prefix in ["language_model.model.", "language_model.", "model."] {
-        let n = count_layers(st, &format!("{prefix}layers."));
+        let n = st.count_layers(&format!("{prefix}layers."));
         if n == 0 {
             continue;
         }
-        // Query proj is [d_model, d_model] (or [n_head_q*head_dim, d_model]
-        // for GQA); the last axis is d_model. Some releases spell it
-        // `self_attn.q_proj.weight`, others `self_attn.wq.weight`.
-        let q_names = [
-            format!("{prefix}layers.0.self_attn.q_proj.weight"),
-            format!("{prefix}layers.0.self_attn.wq.weight"),
-        ];
-        let d_model = q_names
-            .iter()
-            .map(|n| tensor_dim(st, n, 1))
-            .find(|&d| d != 0)
-            .unwrap_or(0);
+        // Projection shapes off block 0. Some releases spell the projections
+        // `self_attn.{q,k,v}_proj.weight`, others `self_attn.w{q,k,v}.weight`.
+        let dim_of = |subnames: &[&str], axis: usize| -> u64 {
+            subnames
+                .iter()
+                .map(|s| st.tensor_dim(&format!("{prefix}layers.0.self_attn.{s}.weight"), axis))
+                .find(|&d| d != 0)
+                .unwrap_or(0)
+        };
+        let d_model = dim_of(&["q_proj", "wq"], 1);
+        let q_rows = dim_of(&["q_proj", "wq"], 0);
+        let k_rows = dim_of(&["k_proj", "wk"], 0);
+        let v_rows = dim_of(&["v_proj", "wv"], 0);
+        if k_rows != 0 && v_rows != 0 && k_rows != v_rows {
+            return Err(ConvertError::Parse(format!(
+                "voxtral: k_proj rows ({k_rows}) != v_proj rows ({v_rows}) on layer 0 — corrupt \
+                 checkpoint"
+            )));
+        }
+        let kv_rows = if k_rows != 0 { k_rows } else { v_rows };
         // SwiGLU up-projection: `gate_proj` (or `w1`) is `[ffn_dim, d_model]`.
         let ffn_names = [
             format!("{prefix}layers.0.mlp.gate_proj.weight"),
@@ -456,7 +682,7 @@ fn derive_decoder_shape(st: &SafetensorsFile) -> Option<(u64, u32, u64, u64)> {
         ];
         let ffn = ffn_names
             .iter()
-            .map(|n| tensor_dim(st, n, 0))
+            .map(|n| st.tensor_dim(n, 0))
             .find(|&d| d != 0)
             .unwrap_or(0);
         // Vocabulary from the token embedding.
@@ -466,12 +692,19 @@ fn derive_decoder_shape(st: &SafetensorsFile) -> Option<(u64, u32, u64, u64)> {
         ];
         let vocab = vocab_names
             .iter()
-            .map(|n| tensor_dim(st, n, 0))
+            .map(|n| st.tensor_dim(n, 0))
             .find(|&d| d != 0)
             .unwrap_or(0);
-        return Some((d_model, n, ffn, vocab));
+        return Ok(DecoderShape {
+            d_model,
+            n_layer: n,
+            ffn,
+            vocab,
+            q_rows,
+            kv_rows,
+        });
     }
-    None
+    Ok(DecoderShape::default())
 }
 
 /// Whisper-derived audio encoder front-end spec.
@@ -496,14 +729,112 @@ fn write_frontend_spec(b: &mut GgufBuilder, n_mels: u32) {
     spec.write_into(b);
 }
 
+/// Resolves the GQA head split — `(n_head_q, n_head_kv, head_dim)` — from
+/// the caller config plus the checkpoint's projection shapes, and
+/// cross-validates the two sources against each other.
+///
+/// Resolution order per value: explicit config wins; else derived from the
+/// projection rows (`q_rows = n_head_q * head_dim`, `kv_rows = n_head_kv *
+/// head_dim`) when the counterpart value is known; else `0` (the runtime
+/// rejects a forward on a `0` sentinel — FR-EX-08).
+///
+/// # Errors
+///
+/// A config that contradicts the checkpoint shapes (`n_head_q * head_dim !=
+/// q_rows`, `n_head_kv * head_dim != kv_rows`, or a non-divisible derived
+/// split) is a hard error — the pre-fix code derived `n_head_q = d_model /
+/// head_dim` (wrong for Mistral's decoupled `head_dim`) and wrote whatever
+/// came out.
+fn resolve_head_split(
+    config: Option<&VoxtralConfig>,
+    shape: &DecoderShape,
+) -> Result<(u32, u32, u32), ConvertError> {
+    let q_rows = shape.q_rows as u32;
+    let kv_rows = shape.kv_rows as u32;
+
+    let cfg_head_dim = config.and_then(|c| c.head_dim).unwrap_or(0);
+    let cfg_n_head_q = config.and_then(|c| c.n_head_q).unwrap_or(0);
+    let cfg_n_head_kv = config.and_then(|c| c.n_head_kv).unwrap_or(0);
+
+    // head_dim: config → else q_rows / n_head_q (when both known).
+    let head_dim = if cfg_head_dim != 0 {
+        cfg_head_dim
+    } else if cfg_n_head_q != 0 && q_rows != 0 {
+        if q_rows % cfg_n_head_q != 0 {
+            return Err(ConvertError::Parse(format!(
+                "voxtral: n_head_q ({cfg_n_head_q}) does not divide the checkpoint's q_proj \
+                 rows ({q_rows})"
+            )));
+        }
+        q_rows / cfg_n_head_q
+    } else {
+        0
+    };
+
+    // n_head_q: config → else q_rows / head_dim. NOTE: derived from the Q
+    // projection rows, NOT from d_model — Mistral decouples head_dim from
+    // d_model / n_head_q (mini-3b: d_model 3072, q_rows 4096 = 32 × 128).
+    let n_head_q = if cfg_n_head_q != 0 {
+        cfg_n_head_q
+    } else if head_dim != 0 && q_rows != 0 {
+        if q_rows % head_dim != 0 {
+            return Err(ConvertError::Parse(format!(
+                "voxtral: head_dim ({head_dim}) does not divide the checkpoint's q_proj rows \
+                 ({q_rows})"
+            )));
+        }
+        q_rows / head_dim
+    } else {
+        0
+    };
+
+    // n_head_kv: config → else kv_rows / head_dim.
+    let n_head_kv = if cfg_n_head_kv != 0 {
+        cfg_n_head_kv
+    } else if head_dim != 0 && kv_rows != 0 {
+        if kv_rows % head_dim != 0 {
+            return Err(ConvertError::Parse(format!(
+                "voxtral: head_dim ({head_dim}) does not divide the checkpoint's k/v_proj rows \
+                 ({kv_rows})"
+            )));
+        }
+        kv_rows / head_dim
+    } else {
+        0
+    };
+
+    // Cross-validate the resolved split against the checkpoint shapes.
+    if n_head_q != 0 && head_dim != 0 && q_rows != 0 && n_head_q * head_dim != q_rows {
+        return Err(ConvertError::Parse(format!(
+            "voxtral: n_head_q ({n_head_q}) x head_dim ({head_dim}) = {} != checkpoint q_proj \
+             rows ({q_rows})",
+            n_head_q * head_dim
+        )));
+    }
+    if n_head_kv != 0 && head_dim != 0 && kv_rows != 0 && n_head_kv * head_dim != kv_rows {
+        return Err(ConvertError::Parse(format!(
+            "voxtral: n_head_kv ({n_head_kv}) x head_dim ({head_dim}) = {} != checkpoint \
+             k/v_proj rows ({kv_rows})",
+            n_head_kv * head_dim
+        )));
+    }
+    if n_head_q != 0 && n_head_kv != 0 && n_head_q % n_head_kv != 0 {
+        return Err(ConvertError::Parse(format!(
+            "voxtral: n_head_kv ({n_head_kv}) must divide n_head_q ({n_head_q}) for GQA"
+        )));
+    }
+    Ok((n_head_q, n_head_kv, head_dim))
+}
+
 fn write_hparams(
     b: &mut GgufBuilder,
-    st: &SafetensorsFile,
+    st: &Shards,
     config: Option<&VoxtralConfig>,
+    shape: &DecoderShape,
     d_audio: u64,
     n_audio_layer: u32,
     n_audio_ffn: u64,
-) {
+) -> Result<(), ConvertError> {
     // Encoder side (Whisper-derived).
     b.add_u32(KEY_AE_N_LAYER, n_audio_layer);
     b.add_u32(KEY_AE_HIDDEN_DIM, d_audio as u32);
@@ -519,52 +850,37 @@ fn write_hparams(
     b.add_u32(KEY_AE_FFN_DIM, n_audio_ffn as u32);
     b.add_u32(
         KEY_AE_N_MELS,
-        tensor_dim(st, "audio_tower.conv1.weight", 1) as u32,
+        st.tensor_dim("audio_tower.conv1.weight", 1) as u32,
     );
     b.add_u32(
         KEY_AE_N_CTX,
-        config.and_then(|c| c.n_audio_ctx).unwrap_or(tensor_dim(
-            st,
-            "audio_tower.embed_positions.weight",
-            0,
-        ) as u32),
+        config
+            .and_then(|c| c.n_audio_ctx)
+            .unwrap_or(st.tensor_dim("audio_tower.embed_positions.weight", 0) as u32),
     );
 
     // Decoder side (Mistral text decoder). The shape-derived values are the
     // authoritative source; the config supplies the values shapes cannot
-    // recover (RoPE base, RMSNorm eps, GQA head split, vocab size).
-    let (d_text, n_text_layer, ffn_text, vocab_shape) =
-        derive_decoder_shape(st).unwrap_or((0, 0, 0, 0));
-    b.add_u32(KEY_TD_N_LAYER, n_text_layer);
-    b.add_u32(KEY_TD_HIDDEN_DIM, d_text as u32);
-    b.add_u32(KEY_TD_FFN_DIM, ffn_text as u32);
+    // recover (RoPE base, RMSNorm eps, one anchor of the GQA head split,
+    // vocab size) and is cross-validated against the shapes.
+    b.add_u32(KEY_TD_N_LAYER, shape.n_layer);
+    b.add_u32(KEY_TD_HIDDEN_DIM, shape.d_model as u32);
+    b.add_u32(KEY_TD_FFN_DIM, shape.ffn as u32);
     b.add_u32(
         KEY_TD_VOCAB_SIZE,
         config
             .and_then(|c| c.vocab_size)
-            .unwrap_or(vocab_shape as u32),
+            .unwrap_or(shape.vocab as u32),
     );
     b.add_u32(
         KEY_TD_N_CTX,
         config.and_then(|c| c.max_position_embeddings).unwrap_or(0),
     );
-    // GQA head split.
-    let head_dim = config.and_then(|c| c.head_dim).unwrap_or(0);
-    let n_head_q = config
-        .and_then(|c| c.n_head_q)
-        .or_else(|| {
-            if head_dim > 0 && d_text > 0 {
-                Some(d_text as u32 / head_dim)
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
+    // GQA head split (config + shapes, cross-validated).
+    let (n_head_q, n_head_kv, head_dim) = resolve_head_split(config, shape)?;
     b.add_u32(KEY_TD_N_HEAD_Q, n_head_q);
-    b.add_u32(
-        KEY_TD_N_HEAD_KV,
-        config.and_then(|c| c.n_head_kv).unwrap_or(0),
-    );
+    b.add_u32(KEY_TD_N_HEAD_KV, n_head_kv);
+    b.add_u32(KEY_TD_HEAD_DIM, head_dim);
     b.add_f32(
         KEY_TD_ROPE_BASE,
         config.and_then(|c| c.rope_base).unwrap_or(0.0),
@@ -610,6 +926,7 @@ fn write_hparams(
     if let Some(spec) = config.and_then(|c| c.adapter.as_ref()) {
         write_adapter_spec(b, spec);
     }
+    Ok(())
 }
 
 /// Writes the `vokra.voxtral.adapter.*` metadata chunk from a caller-supplied
@@ -637,6 +954,9 @@ fn write_adapter_spec(b: &mut GgufBuilder, spec: &AdapterSpec) {
     }
     if let Some(stride) = spec.time_stride {
         b.add_u32(KEY_ADAPTER_TIME_STRIDE, stride);
+    }
+    if let Some(stack) = spec.frame_stack {
+        b.add_u32(KEY_ADAPTER_FRAME_STACK, stack);
     }
     if let Some(w) = spec.weight_name.as_deref() {
         b.add_string(KEY_ADAPTER_WEIGHT_NAME, w);
@@ -686,20 +1006,23 @@ pub(crate) fn gguf_tensor_name(hf_name: &str) -> String {
 ///
 /// ```json
 /// {
-///   "kind": "linear" | "mlp" | "downsample_linear" | "none",
+///   "kind": "linear" | "mlp" | "downsample_linear" | "frame_stack_mlp" | "none",
 ///   "tensor_prefix": "audio_adapter.",
 ///   "in_dim": 1280,
 ///   "out_dim": 3072,
 ///   "has_bias": true,
 ///   "has_layernorm": false,
-///   "activation": "gelu",           // MLP only
+///   "activation": "gelu",           // MLP / frame_stack_mlp only
 ///   "time_stride": 2,               // downsample_linear only
+///   "frame_stack": 4,               // frame_stack_mlp only (× consecutive
+///                                   // frames per projector row; in_dim must
+///                                   // be frame_stack × encoder hidden)
 ///   "weight_name": "linear.weight", // optional overrides
 ///   "bias_name": "linear.bias",
 ///   "layernorm_gamma_name": "ln.weight",
 ///   "layernorm_beta_name": "ln.bias",
-///   "mlp_hidden_dims": [4096],      // MLP only
-///   "mlp_layer_names": ["layers.0", "layers.1"] // MLP only
+///   "mlp_hidden_dims": [4096],      // MLP / frame_stack_mlp only
+///   "mlp_layer_names": ["layers.0", "layers.1"] // MLP / frame_stack_mlp only
 /// }
 /// ```
 ///
@@ -722,9 +1045,13 @@ pub(crate) fn parse_adapter_config(bytes: &[u8]) -> Result<AdapterSpec, ConvertE
     if kind == "none" {
         return Ok(AdapterSpec::none());
     }
-    if !matches!(kind.as_str(), "linear" | "mlp" | "downsample_linear") {
+    if !matches!(
+        kind.as_str(),
+        "linear" | "mlp" | "downsample_linear" | "frame_stack_mlp"
+    ) {
         return Err(ConvertError::Parse(format!(
-            "adapter config: unknown kind `{kind}` (expected none|linear|mlp|downsample_linear)"
+            "adapter config: unknown kind `{kind}` (expected \
+             none|linear|mlp|downsample_linear|frame_stack_mlp)"
         )));
     }
     let in_dim = root
@@ -761,6 +1088,33 @@ pub(crate) fn parse_adapter_config(bytes: &[u8]) -> Result<AdapterSpec, ConvertE
         return Err(ConvertError::Parse(
             "adapter config: `downsample_linear` requires `time_stride`".to_owned(),
         ));
+    }
+    let frame_stack = root
+        .get("frame_stack")
+        .and_then(JsonValue::as_u64)
+        .map(|n| n as u32);
+    if kind == "frame_stack_mlp" {
+        match frame_stack {
+            None => {
+                return Err(ConvertError::Parse(
+                    "adapter config: `frame_stack_mlp` requires `frame_stack` (u32 >= 1 — the \
+                     upstream downsample_factor, 4 on the shipping Voxtral mini)"
+                        .to_owned(),
+                ));
+            }
+            Some(0) => {
+                return Err(ConvertError::Parse(
+                    "adapter config: `frame_stack` must be >= 1".to_owned(),
+                ));
+            }
+            Some(n) if in_dim % n != 0 => {
+                return Err(ConvertError::Parse(format!(
+                    "adapter config: in_dim {in_dim} must be a multiple of frame_stack {n} \
+                     (in_dim = frame_stack × encoder hidden width)"
+                )));
+            }
+            Some(_) => {}
+        }
     }
     let weight_name = root
         .get("weight_name")
@@ -809,35 +1163,113 @@ pub(crate) fn parse_adapter_config(bytes: &[u8]) -> Result<AdapterSpec, ConvertE
         has_layernorm,
         activation,
         time_stride,
+        frame_stack,
         mlp_hidden_dims,
         mlp_layer_names,
     })
 }
 
-fn tensor_dim(st: &SafetensorsFile, name: &str, axis: usize) -> u64 {
-    st.tensors()
-        .iter()
-        .find(|t: &&SafeTensorInfo| t.name == name)
-        .and_then(|t| t.shape.get(axis).copied())
-        .unwrap_or(0)
-}
+/// Parses an upstream HuggingFace-style Voxtral `config.json` into a
+/// [`VoxtralConfig`] — the side-car values the tensor shapes cannot recover
+/// (RoPE base, RMSNorm ε, the GQA head split, vocab size, max sequence
+/// length, encoder positional length).
+///
+/// # Accepted schema
+///
+/// The shipping Voxtral `config.json` nests the Mistral backbone under
+/// `text_config` and the Whisper-derived encoder under `audio_config`; a
+/// plain Mistral `config.json` keeps the decoder fields at the root. Both
+/// spellings are accepted (the nested key wins). Recognized fields:
+///
+/// - `text_config.head_dim` / `head_dim`
+/// - `text_config.num_attention_heads` / `num_attention_heads` → `n_head_q`
+/// - `text_config.num_key_value_heads` / `num_key_value_heads` → `n_head_kv`
+/// - `text_config.rms_norm_eps` / `rms_norm_eps`
+/// - `text_config.rope_theta` / `rope_theta` → `rope_base`
+/// - `text_config.max_position_embeddings` / `max_position_embeddings`
+/// - `text_config.vocab_size` / `vocab_size`
+/// - `audio_config.max_source_positions` → `n_audio_ctx`
+///
+/// Individually missing fields stay `None` (the converter falls back to
+/// shape derivation / documented `0` sentinels), but a JSON carrying **none**
+/// of the recognized fields is a hard error — almost certainly the wrong
+/// file, and writing all-sentinel hparams from it would be a success-shaped
+/// failure (FR-EX-08).
+///
+/// # Errors
+///
+/// [`ConvertError::Parse`] on malformed JSON or a document with no
+/// recognized Voxtral hparams.
+pub(crate) fn parse_hf_config(bytes: &[u8]) -> Result<VoxtralConfig, ConvertError> {
+    use crate::json::{JsonValue, parse as json_parse};
 
-fn count_layers(st: &SafetensorsFile, prefix: &str) -> u32 {
-    let mut n = 0u32;
-    loop {
-        let probe = format!("{prefix}{n}.");
-        if st.tensors().iter().any(|t| t.name.starts_with(&probe)) {
-            n += 1;
-        } else {
-            return n;
+    fn json_u32(v: &JsonValue) -> Option<u32> {
+        v.as_u64().and_then(|n| u32::try_from(n).ok())
+    }
+    fn json_f32(v: &JsonValue) -> Option<f32> {
+        match v {
+            JsonValue::Int(i) => Some(*i as f32),
+            JsonValue::Float(f) => Some(*f as f32),
+            _ => None,
         }
     }
+
+    let root = json_parse(bytes).map_err(|e| ConvertError::Parse(e.to_string()))?;
+    // Nested sub-config wins; root-level (plain Mistral config.json) is the
+    // fallback spelling.
+    let text = |key: &str| -> Option<&JsonValue> {
+        root.get("text_config")
+            .and_then(|t| t.get(key))
+            .or_else(|| root.get(key))
+    };
+
+    let cfg = VoxtralConfig {
+        rope_base: text("rope_theta").and_then(json_f32),
+        rms_norm_eps: text("rms_norm_eps").and_then(json_f32),
+        n_head_kv: text("num_key_value_heads").and_then(json_u32),
+        n_head_q: text("num_attention_heads").and_then(json_u32),
+        head_dim: text("head_dim").and_then(json_u32),
+        vocab_size: text("vocab_size").and_then(json_u32),
+        max_position_embeddings: text("max_position_embeddings").and_then(json_u32),
+        n_audio_ctx: root
+            .get("audio_config")
+            .and_then(|a| a.get("max_source_positions"))
+            .and_then(json_u32),
+        ..Default::default()
+    };
+
+    if cfg.rope_base.is_none()
+        && cfg.rms_norm_eps.is_none()
+        && cfg.n_head_kv.is_none()
+        && cfg.n_head_q.is_none()
+        && cfg.head_dim.is_none()
+        && cfg.vocab_size.is_none()
+        && cfg.max_position_embeddings.is_none()
+        && cfg.n_audio_ctx.is_none()
+    {
+        return Err(ConvertError::Parse(
+            "voxtral config.json: no recognized hparams found (expected text_config.head_dim / \
+             num_attention_heads / num_key_value_heads / rope_theta / rms_norm_eps / vocab_size \
+             / max_position_embeddings or their root-level spellings) — wrong file? (FR-EX-08: \
+             refusing to write all-sentinel hparams from an unrecognized config)"
+                .to_owned(),
+        ));
+    }
+    Ok(cfg)
 }
 
 fn is_float_dtype(t: GgmlType) -> bool {
     matches!(
         t,
-        GgmlType::F32 | GgmlType::F16 | GgmlType::Q4K | GgmlType::Q5K | GgmlType::Q6K
+        GgmlType::F32
+            | GgmlType::F16
+            // BF16 shards (the raw upstream release format) pass through
+            // verbatim — the pre-fix omission made the converter skip every
+            // tensor and "succeed" with a weightless GGUF (2026-07-16 P1).
+            | GgmlType::BF16
+            | GgmlType::Q4K
+            | GgmlType::Q5K
+            | GgmlType::Q6K
     )
 }
 
@@ -911,6 +1343,7 @@ mod tests {
             s2s_codec_config: Some("{}".to_owned()),
             s2s_watermark_default_on: Some(true),
             mode: Some("s2s".to_owned()),
+            name_override: None,
             tokenizer_bytes: Some(b"fake-tokenizer".to_vec()),
             adapter: None,
         };
@@ -936,6 +1369,11 @@ mod tests {
             "n_head_q"
         );
         assert_eq!(
+            file.get(KEY_TD_HEAD_DIM).and_then(|v| v.as_u64()),
+            Some(128),
+            "head_dim (explicit — decoupled from hidden_dim / n_head_q)"
+        );
+        assert_eq!(
             file.get(KEY_MODE).and_then(|v| v.as_str()),
             Some("s2s"),
             "mode"
@@ -952,17 +1390,54 @@ mod tests {
     fn is_float_dtype_covers_expected_types() {
         assert!(is_float_dtype(GgmlType::F32));
         assert!(is_float_dtype(GgmlType::F16));
+        // The raw upstream Voxtral release is all-BF16 — omitting it here is
+        // exactly the 2026-07-16 P1 (weightless GGUF with exit 0).
+        assert!(is_float_dtype(GgmlType::BF16));
         assert!(is_float_dtype(GgmlType::Q4K));
         assert!(is_float_dtype(GgmlType::Q5K));
         assert!(is_float_dtype(GgmlType::Q6K));
     }
 
+    fn shape(d_model: u64, n_layer: u32) -> DecoderShape {
+        DecoderShape {
+            d_model,
+            n_layer,
+            ..DecoderShape::default()
+        }
+    }
+
     #[test]
     fn derive_name_maps_mini_and_small_shapes() {
-        assert_eq!(derive_name(3072, 28, None).unwrap(), NAME_MINI);
-        assert_eq!(derive_name(5120, 40, None).unwrap(), NAME_SMALL);
+        // Mini is 30 layers — measured from the shipping Voxtral-Mini-3B-2507
+        // config.json (the pre-fix `28` made the real checkpoint fall through
+        // to a silent `voxtral-unknown`).
+        assert_eq!(derive_name(&shape(3072, 30), None).unwrap(), NAME_MINI);
+        assert_eq!(derive_name(&shape(5120, 40), None).unwrap(), NAME_SMALL);
         // Unknown shape → explicit error (never a silent fall back, FR-EX-08).
-        assert!(derive_name(1234, 5, None).is_err());
+        assert!(derive_name(&shape(1234, 5), None).is_err());
+        // The old (wrong) 28-layer mini row must no longer match.
+        assert!(derive_name(&shape(3072, 28), None).is_err());
+    }
+
+    #[test]
+    fn derive_name_foundation_path_and_override() {
+        // Decoder-less foundation fixtures keep the documented label.
+        assert_eq!(derive_name(&shape(0, 0), None).unwrap(), "voxtral-unknown");
+        // An explicit override labels an unknown-release checkpoint.
+        let cfg = VoxtralConfig {
+            name_override: Some("voxtral-next-7b".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(
+            derive_name(&shape(9999, 99), Some(&cfg)).unwrap(),
+            "voxtral-next-7b"
+        );
+        // An empty override is a usage error, not a silent pass-through.
+        let empty = VoxtralConfig {
+            name_override: Some(String::new()),
+            ..Default::default()
+        };
+        assert!(derive_name(&shape(3072, 30), Some(&empty)).is_err());
     }
 
     // ----- Adapter (M3-10 Wave 8) --------------------------------------------
@@ -998,6 +1473,7 @@ mod tests {
             has_layernorm: false,
             activation: None,
             time_stride: None,
+            frame_stack: None,
             mlp_hidden_dims: Vec::new(),
             mlp_layer_names: Vec::new(),
         };
@@ -1049,6 +1525,7 @@ mod tests {
             has_layernorm: false,
             activation: Some("gelu".to_owned()),
             time_stride: None,
+            frame_stack: None,
             mlp_hidden_dims: vec![4096, 4096],
             mlp_layer_names: vec![
                 "layers.0".to_owned(),
@@ -1093,6 +1570,7 @@ mod tests {
             has_layernorm: false,
             activation: None,
             time_stride: Some(5),
+            frame_stack: None,
             mlp_hidden_dims: Vec::new(),
             mlp_layer_names: Vec::new(),
         };
@@ -1182,6 +1660,404 @@ mod tests {
         }"#;
         assert!(matches!(
             parse_adapter_config(json),
+            Err(ConvertError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn parse_adapter_config_reads_frame_stack_mlp_real_mini_shape() {
+        // The shipping Voxtral-Mini-3B-2507 projector: ×4 frame stack
+        // (params.json multimodal.downsample_args.downsample_factor = 4)
+        // then linear_1 [3072, 5120] → gelu → linear_2 [3072, 3072]
+        // (modeling_voxtral.py VoxtralMultiModalProjector).
+        let json = br#"{
+            "kind": "frame_stack_mlp",
+            "tensor_prefix": "multi_modal_projector.",
+            "frame_stack": 4,
+            "in_dim": 5120,
+            "out_dim": 3072,
+            "has_bias": false,
+            "has_layernorm": false,
+            "activation": "gelu",
+            "mlp_hidden_dims": [3072],
+            "mlp_layer_names": ["linear_1", "linear_2"]
+        }"#;
+        let spec = parse_adapter_config(json).unwrap();
+        assert_eq!(spec.kind, "frame_stack_mlp");
+        assert_eq!(spec.frame_stack, Some(4));
+        assert_eq!(spec.in_dim, 5120);
+        assert_eq!(spec.out_dim, 3072);
+        assert_eq!(spec.mlp_hidden_dims, vec![3072]);
+        assert_eq!(spec.mlp_layer_names, vec!["linear_1", "linear_2"]);
+    }
+
+    #[test]
+    fn parse_adapter_config_rejects_frame_stack_mlp_without_factor() {
+        let json = br#"{
+            "kind": "frame_stack_mlp",
+            "in_dim": 5120,
+            "out_dim": 3072
+        }"#;
+        assert!(matches!(
+            parse_adapter_config(json),
+            Err(ConvertError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn parse_adapter_config_rejects_frame_stack_not_dividing_in_dim() {
+        let json = br#"{
+            "kind": "frame_stack_mlp",
+            "frame_stack": 3,
+            "in_dim": 5120,
+            "out_dim": 3072
+        }"#;
+        assert!(matches!(
+            parse_adapter_config(json),
+            Err(ConvertError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn adapter_spec_frame_stack_mlp_writes_frame_stack_key() {
+        let spec = AdapterSpec {
+            kind: "frame_stack_mlp".to_owned(),
+            tensor_prefix: "multi_modal_projector.".to_owned(),
+            weight_name: None,
+            bias_name: None,
+            layernorm_gamma_name: None,
+            layernorm_beta_name: None,
+            in_dim: 5120,
+            out_dim: 3072,
+            has_bias: false,
+            has_layernorm: false,
+            activation: Some("gelu".to_owned()),
+            time_stride: None,
+            frame_stack: Some(4),
+            mlp_hidden_dims: vec![3072],
+            mlp_layer_names: vec!["linear_1".to_owned(), "linear_2".to_owned()],
+        };
+        let cfg = VoxtralConfig {
+            adapter: Some(spec),
+            ..Default::default()
+        };
+        let (builder, _r) = convert(synthetic_voxtral(), Some(&cfg)).unwrap();
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            file.get(KEY_ADAPTER_KIND).and_then(|v| v.as_str()),
+            Some("frame_stack_mlp")
+        );
+        assert_eq!(
+            file.get(KEY_ADAPTER_FRAME_STACK).and_then(|v| v.as_u64()),
+            Some(4)
+        );
+        assert_eq!(
+            file.get(KEY_ADAPTER_MLP_LAYER_NAMES)
+                .and_then(|v| v.as_str()),
+            Some("linear_1,linear_2")
+        );
+    }
+
+    // ----- BF16 / sharded / hard-gate fixes (2026-07-16 P1) ------------------
+
+    /// Builds a synthetic safetensors buffer from `(name, dtype, shape)`
+    /// entries with a deterministic non-zero byte pattern (so passthrough
+    /// legs can compare payload bytes, not just counts).
+    fn build_safetensors(entries: &[(&str, &str, &[u64])]) -> Vec<u8> {
+        fn elem_size(dtype: &str) -> usize {
+            match dtype {
+                "F32" => 4,
+                "F16" | "BF16" => 2,
+                "I64" => 8,
+                other => panic!("test fixture: unsupported dtype {other}"),
+            }
+        }
+        let mut header = String::from("{");
+        let mut payload: Vec<u8> = Vec::new();
+        for (i, (name, dtype, dims)) in entries.iter().enumerate() {
+            let n: u64 = dims.iter().product();
+            let len = n as usize * elem_size(dtype);
+            let start = payload.len();
+            payload.extend((0..len).map(|j| ((j + i * 31) % 251) as u8 + 1));
+            let end = payload.len();
+            if i > 0 {
+                header.push(',');
+            }
+            header.push_str(&format!(
+                r#""{name}":{{"dtype":"{dtype}","shape":{dims:?},"data_offsets":[{start},{end}]}}"#
+            ));
+        }
+        header.push('}');
+        let mut out = (header.len() as u64).to_le_bytes().to_vec();
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&payload);
+        out
+    }
+
+    /// A GQA-shaped 1-layer decoder checkpoint: `d_model = 6`, `head_dim = 4`
+    /// (explicit — NOT `d_model / n_head_q`), `n_head_q = 2` (q rows 8),
+    /// `n_head_kv = 1` (kv rows 4), untied `lm_head`. All BF16 like the real
+    /// release.
+    fn gqa_bf16_entries() -> Vec<(&'static str, &'static str, &'static [u64])> {
+        const P: &str = "BF16";
+        vec![
+            ("language_model.model.embed_tokens.weight", P, &[10, 6]),
+            (
+                "language_model.model.layers.0.self_attn.q_proj.weight",
+                P,
+                &[8, 6],
+            ),
+            (
+                "language_model.model.layers.0.self_attn.k_proj.weight",
+                P,
+                &[4, 6],
+            ),
+            (
+                "language_model.model.layers.0.self_attn.v_proj.weight",
+                P,
+                &[4, 6],
+            ),
+            (
+                "language_model.model.layers.0.self_attn.o_proj.weight",
+                P,
+                &[6, 8],
+            ),
+            (
+                "language_model.model.layers.0.input_layernorm.weight",
+                P,
+                &[6],
+            ),
+            (
+                "language_model.model.layers.0.post_attention_layernorm.weight",
+                P,
+                &[6],
+            ),
+            (
+                "language_model.model.layers.0.mlp.gate_proj.weight",
+                P,
+                &[16, 6],
+            ),
+            (
+                "language_model.model.layers.0.mlp.up_proj.weight",
+                P,
+                &[16, 6],
+            ),
+            (
+                "language_model.model.layers.0.mlp.down_proj.weight",
+                P,
+                &[6, 16],
+            ),
+            ("language_model.model.norm.weight", P, &[6]),
+            ("language_model.lm_head.weight", P, &[10, 6]),
+        ]
+    }
+
+    /// The config that names / anchors the GQA fixture above.
+    fn gqa_cfg() -> VoxtralConfig {
+        VoxtralConfig {
+            head_dim: Some(4),
+            rope_base: Some(10_000.0),
+            rms_norm_eps: Some(1e-5),
+            max_position_embeddings: Some(64),
+            name_override: Some("voxtral-test-gqa".to_owned()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn bf16_tensors_pass_through_verbatim() {
+        // Pre-fix behaviour: every BF16 tensor was "non-float skipped" and the
+        // converter emitted a weightless GGUF with exit 0 (2026-07-16 P1).
+        let entries = gqa_bf16_entries();
+        let bytes = build_safetensors(&entries);
+        let (builder, report) = convert(bytes.clone(), Some(&gqa_cfg())).unwrap();
+        assert_eq!(report.written, entries.len());
+        assert_eq!(report.bf16_passthrough, entries.len());
+        assert_eq!(report.skipped_non_float, 0);
+
+        // The GGUF payload must be byte-identical to the safetensors payload
+        // (exact BF16 passthrough — no cast, no loss).
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        let src = SafetensorsFile::parse(bytes).unwrap();
+        let t = src
+            .tensors()
+            .iter()
+            .find(|t| t.name == "language_model.lm_head.weight")
+            .unwrap();
+        let info = file.tensor_info("language_model.lm_head.weight").unwrap();
+        assert_eq!(info.dtype, GgmlType::BF16);
+        assert_eq!(file.tensor_bytes(info), src.tensor_bytes(t));
+    }
+
+    #[test]
+    fn hparams_are_derived_from_gqa_shapes_plus_head_dim_anchor() {
+        // With only `head_dim` supplied, the head counts must come from the
+        // projection rows: n_head_q = q_rows / head_dim = 8 / 4 = 2 and
+        // n_head_kv = kv_rows / head_dim = 4 / 4 = 1 — NOT from d_model.
+        let bytes = build_safetensors(&gqa_bf16_entries());
+        let (builder, _r) = convert(bytes, Some(&gqa_cfg())).unwrap();
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        let get = |k: &str| file.get(k).and_then(|v| v.as_u64());
+        assert_eq!(get(KEY_TD_N_LAYER), Some(1));
+        assert_eq!(get(KEY_TD_HIDDEN_DIM), Some(6));
+        assert_eq!(get(KEY_TD_FFN_DIM), Some(16));
+        assert_eq!(get(KEY_TD_VOCAB_SIZE), Some(10), "vocab from embed rows");
+        assert_eq!(get(KEY_TD_HEAD_DIM), Some(4));
+        assert_eq!(get(KEY_TD_N_HEAD_Q), Some(2), "q_rows / head_dim");
+        assert_eq!(get(KEY_TD_N_HEAD_KV), Some(1), "kv_rows / head_dim");
+    }
+
+    #[test]
+    fn contradicting_head_split_config_is_hard_error() {
+        // n_head_q = 3 with head_dim = 4 says q_rows should be 12; the
+        // checkpoint has 8 — the converter must refuse, not write hparams
+        // that the loader will bind to garbage.
+        let bytes = build_safetensors(&gqa_bf16_entries());
+        let cfg = VoxtralConfig {
+            n_head_q: Some(3),
+            ..gqa_cfg()
+        };
+        assert!(matches!(
+            convert(bytes, Some(&cfg)),
+            Err(ConvertError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn zero_written_weights_is_hard_error_not_weightless_gguf() {
+        // An empty checkpoint (no tensors at all) must never convert into a
+        // "successful" weightless GGUF (FR-EX-08).
+        let bytes = build_safetensors(&[]);
+        let err = match convert(bytes, None) {
+            Ok(_) => panic!("weightless conversion must hard-error"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("weightless") || msg.contains("no weight tensors"),
+            "error should say why: {msg}"
+        );
+    }
+
+    #[test]
+    fn unsupported_dtype_input_is_hard_error() {
+        // Simulates a from-the-future dtype the reader does not support —
+        // the parse must fail loudly (the safetensors reader accepts only
+        // F32 / F16 / BF16), never quietly skip into a weightless GGUF.
+        let bytes =
+            build_safetensors(&[("language_model.model.embed_tokens.weight", "I64", &[2, 2])]);
+        assert!(matches!(convert(bytes, None), Err(ConvertError::Parse(_))));
+    }
+
+    #[test]
+    fn sharded_checkpoint_converts_across_files() {
+        // Split the GQA fixture across two shards like the real release
+        // (`model-00001-of-00002` / `model-00002-of-00002`).
+        let entries = gqa_bf16_entries();
+        let (first, second) = entries.split_at(entries.len() / 2);
+        let shard_a = build_safetensors(first);
+        let shard_b = build_safetensors(second);
+        let (builder, report) = convert_shards(vec![shard_a, shard_b], Some(&gqa_cfg())).unwrap();
+        assert_eq!(report.written, entries.len());
+        assert_eq!(report.name, "voxtral-test-gqa");
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        // Hparams must see across the shard split (layer count, head split).
+        assert_eq!(file.get(KEY_TD_N_HEAD_Q).and_then(|v| v.as_u64()), Some(2));
+        // Every tensor from both shards must be present.
+        for (name, _, _) in &entries {
+            assert!(
+                file.tensor_info(name).is_some(),
+                "missing tensor {name} after sharded convert"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_tensor_across_shards_is_hard_error() {
+        let entries = gqa_bf16_entries();
+        let shard_a = build_safetensors(&entries);
+        let dup = build_safetensors(&entries[..1]); // embed_tokens again
+        assert!(matches!(
+            convert_shards(vec![shard_a, dup], Some(&gqa_cfg())),
+            Err(ConvertError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn real_shape_with_unknown_size_and_no_override_is_hard_error() {
+        // A checkpoint WITH decoder layers whose (d_model, n_layer) is not a
+        // known release must hard-error when no override is supplied — the
+        // exact silent `voxtral-unknown` mislabel the eval hit on the real
+        // 30-layer mini before the table fix.
+        let bytes = build_safetensors(&gqa_bf16_entries());
+        let cfg = VoxtralConfig {
+            name_override: None,
+            ..gqa_cfg()
+        };
+        let err = match convert(bytes, Some(&cfg)) {
+            Ok(_) => panic!("unknown release shape must hard-error"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("unknown voxtral size"), "{err}");
+    }
+
+    // ----- HF config.json side-car ------------------------------------------
+
+    #[test]
+    fn parse_hf_config_reads_nested_text_and_audio_configs() {
+        // Field values mirror the shipping Voxtral-Mini-3B-2507 config.json.
+        let json = br#"{
+            "audio_config": { "max_source_positions": 1500, "num_mel_bins": 128 },
+            "hidden_size": 3072,
+            "text_config": {
+                "head_dim": 128,
+                "hidden_size": 3072,
+                "max_position_embeddings": 131072,
+                "num_attention_heads": 32,
+                "num_hidden_layers": 30,
+                "num_key_value_heads": 8,
+                "rms_norm_eps": 1e-05,
+                "rope_theta": 100000000.0,
+                "vocab_size": 131072
+            }
+        }"#;
+        let cfg = parse_hf_config(json).unwrap();
+        assert_eq!(cfg.head_dim, Some(128));
+        assert_eq!(cfg.n_head_q, Some(32));
+        assert_eq!(cfg.n_head_kv, Some(8));
+        assert_eq!(cfg.vocab_size, Some(131_072));
+        assert_eq!(cfg.max_position_embeddings, Some(131_072));
+        assert_eq!(cfg.n_audio_ctx, Some(1500));
+        assert!((cfg.rope_base.unwrap() - 1e8).abs() < 1.0);
+        assert!((cfg.rms_norm_eps.unwrap() - 1e-5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parse_hf_config_accepts_root_level_mistral_spelling() {
+        let json = br#"{
+            "head_dim": 128,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 8,
+            "rope_theta": 1000000.0
+        }"#;
+        let cfg = parse_hf_config(json).unwrap();
+        assert_eq!(cfg.head_dim, Some(128));
+        assert_eq!(cfg.n_head_kv, Some(8));
+        assert!((cfg.rope_base.unwrap() - 1_000_000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn parse_hf_config_with_no_recognized_fields_is_hard_error() {
+        assert!(matches!(
+            parse_hf_config(br#"{"model_type": "bert"}"#),
+            Err(ConvertError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn parse_hf_config_rejects_malformed_json() {
+        assert!(matches!(
+            parse_hf_config(b"{not json"),
             Err(ConvertError::Parse(_))
         ));
     }

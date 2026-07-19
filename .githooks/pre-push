@@ -16,10 +16,20 @@ fi
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-echo "pre-push [1/2]: cargo clippy --all-targets -- -D warnings"
+# ~5 s, and first so a broken compliance gate is reported before the multi-minute
+# clippy/test legs. Proves the NVIDIA non-bundle scanners still REJECT a package
+# whose nm dump exceeds the pipe buffer — the SIGPIPE fail-open they shipped with.
+echo "pre-push [1/3]: compliance scanner fail-open regression test"
+bash scripts/compliance/test-nvidia-scanner-sigpipe.sh
+
+echo "pre-push [2/3]: cargo clippy --all-targets -- -D warnings"
 cargo clippy --all-targets -- -D warnings
 
-echo "pre-push [2/2]: cargo test --workspace"
+echo "pre-push [3/3]: cargo test --workspace"
 cargo test --workspace
 
-echo "pre-push: OK"
+# NOTE: this hook does NOT compile the metal/cuda/vulkan-gated targets. Feature
+# unification during `cargo test --workspace` reaches some of them but is not a
+# guarantee. Before claiming a change is verified, run:
+#     bash scripts/verify.sh
+echo "pre-push: OK (feature-gated targets NOT covered — see scripts/verify.sh)"

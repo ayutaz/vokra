@@ -1,18 +1,30 @@
-// softmax_causal.comp — M3-02-T16 (causal-masked softmax).
+// softmax_causal.comp — M3-02-T16 / M4-13-T05 (causal-masked softmax).
 // For decoder self-attention: `y[i,j] = softmax(x[i,j])` over j = 0..=i;
 // masked cols j > i receive `exp(-inf) = 0`.
 //
 // Bit-identical vs "host-mask + softmax": the mask column contributes `-inf`
 // to the max reduction (harmless — no other value is -inf in practice) and
-// `exp(-inf) = 0` to both the sum and the output. This matches the CPU / Metal
-// / CUDA implementations' IEEE-754 behaviour (CLAUDE.md).
+// `exp(-inf) = 0` to both the sum and the output. This matches the CPU /
+// Metal / CUDA implementations' IEEE-754 masking behaviour (CLAUDE.md);
+// the reduction *order* is the workgroup tree below, so cross-backend
+// agreement is the NFR-QL-01 FP32 gate (atol = 0.01), not bit-for-bit.
+//
+// Portability note (M4-13-T05, ADR M3-02-spirv-generation §7 2026-07-14
+// addendum (d)): rewritten from the subgroup-reduce skeleton (wrong when the
+// workgroup spans several subgroups — lavapipe sg=8 / Mali sg=16 / RDNA
+// sg=64) to barrier-based shared-memory tree reductions; no subgroup
+// extension needed. Subgroup-tuned variant is a post-soak perf follow-up.
+//
+// Uniform control flow: `barrier()` must be reached by every invocation.
+// The dispatch contract (`plan_softmax_causal` in src/plan.rs) launches
+// EXACTLY `rows` workgroups, so no early return exists.
 //
 // Compile with:
 //   glslc --target-env=vulkan1.1 -o precompiled/softmax_causal.spv glsl/softmax_causal.comp
 
 #version 450
-#extension GL_KHR_shader_subgroup_arithmetic : enable
 
+// Must stay in sync with `shader_local_size("softmax_causal")` in src/plan.rs.
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
 layout(push_constant) uniform PC {
@@ -23,35 +35,56 @@ layout(push_constant) uniform PC {
 layout(std430, set = 0, binding = 0) readonly buffer InBuf  { float in_buf[];  };
 layout(std430, set = 0, binding = 1) writeonly buffer OutBuf { float out_buf[]; };
 
+const uint WG_SIZE = 32u;
+shared float scratch[WG_SIZE];
+
 void main() {
-    uint row = gl_WorkGroupID.x;
-    uint lane = gl_SubgroupInvocationID;
-    uint sg_size = gl_SubgroupSize;
-    if (row >= pc.rows) {
-        return;
-    }
+    uint row = gl_WorkGroupID.x;        // dispatch guarantees row < pc.rows
+    uint lid = gl_LocalInvocationID.x;
+
     // Row `i` has legal columns j = 0..=i (inclusive); j > i is masked.
     uint valid_cols = row + 1u;
     if (valid_cols > pc.cols) {
         valid_cols = pc.cols;
     }
-    // Pass 1: row-wise max over valid cols. For masked cols the contribution
-    // is `-inf` (via exp(-inf)=0 below), so we only reduce over valid cols
-    // here — equivalent to including `-inf` in the reduction (no-op).
-    float lane_max = -3.402823e38;
-    for (uint j = lane; j < valid_cols; j += sg_size) {
+
+    // Pass 1: row-wise max over valid cols only. Masked cols would
+    // contribute `-inf` — a no-op in a max reduction — so skipping them is
+    // exactly equivalent. Lanes with no valid element keep -FLT_MAX, which
+    // the tree max ignores (valid_cols >= 1 guarantees a real max).
+    float lane_max = -3.402823e38; // -FLT_MAX
+    for (uint j = lid; j < valid_cols; j += WG_SIZE) {
         lane_max = max(lane_max, in_buf[row * pc.cols + j]);
     }
-    float row_max = subgroupMax(lane_max);
-    // Pass 2: row-wise sum of exp(x - max) over valid cols only.
+    scratch[lid] = lane_max;
+    barrier();
+    for (uint s = WG_SIZE / 2u; s > 0u; s >>= 1u) {
+        if (lid < s) {
+            scratch[lid] = max(scratch[lid], scratch[lid + s]);
+        }
+        barrier();
+    }
+    float row_max = scratch[0];
+    barrier(); // all lanes read scratch[0] before it is reused below
+
+    // Pass 2: row-wise sum of exp(x - max) over valid cols only
+    // (masked cols contribute exp(-inf) = 0 — skipping them is equivalent).
     float lane_sum = 0.0;
-    for (uint j = lane; j < valid_cols; j += sg_size) {
+    for (uint j = lid; j < valid_cols; j += WG_SIZE) {
         lane_sum += exp(in_buf[row * pc.cols + j] - row_max);
     }
-    float row_sum = subgroupAdd(lane_sum);
-    float inv_sum = 1.0 / row_sum;
-    // Pass 3: write y — valid cols get the softmax value, masked cols get 0.
-    for (uint j = lane; j < pc.cols; j += sg_size) {
+    scratch[lid] = lane_sum;
+    barrier();
+    for (uint s = WG_SIZE / 2u; s > 0u; s >>= 1u) {
+        if (lid < s) {
+            scratch[lid] += scratch[lid + s];
+        }
+        barrier();
+    }
+    float inv_sum = 1.0 / scratch[0];
+
+    // Pass 3: valid cols get the softmax value, masked cols get exactly 0.
+    for (uint j = lid; j < pc.cols; j += WG_SIZE) {
         if (j < valid_cols) {
             out_buf[row * pc.cols + j] =
                 exp(in_buf[row * pc.cols + j] - row_max) * inv_sum;

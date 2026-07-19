@@ -62,3 +62,30 @@ integrations/vokra-godot/pkg/
 /docs/adr/
 /docs/onnx-alternative-research.md
 /docs/piper-plus-integration.md
+# Third batch (2026-07-19): the M4-residual audit report. Same class as the
+# tickets/ADRs above — an internal PM artefact (42-row CC backlog with effort
+# estimates, the owner-only queue, cost lines) that was swept into an
+# unrelated fixtures commit rather than added deliberately, and that nothing
+# in the repo references. It also records an unremediated licence-gate
+# fail-open and cites ~20 paths that do not exist publicly, so publishing it
+# would both disclose that and 404 for every reader. Untracked BEFORE it ever
+# reached origin/main, so no history rewrite was needed.
+/docs/m4-residual-audit-2026-07-19.md
+
+# M4-01: wasm build artifacts (produced by scripts/build-wasm.sh; the npm
+# package assembles them at release time — never committed)
+/web/dist/
+/web/pkg/*.wasm
+/web/pkg/vokra_webgpu.js
+/web/pkg/vokra_worker.js
+/web/pkg/LICENSE
+/web/pkg/NOTICE
+# Locally staged/converted model files (scripts/fetch-demo-models.sh,
+# tools/wasm/run-whisper-wasm.mjs recipe) — GGUFs are never committed.
+/models/
+# npm pack output from local dry-runs.
+/web/pkg/*.tgz
+# Unity WebGL staticlib staged by scripts/build-unity-webgl-lib.sh (M4-02) —
+# native binaries are assembled by CD, never committed (CHANGELOG "Not
+# included"; only .gitkeep + the hand-authored .meta are tracked).
+/bindings/unity/com.vokra.unity/Plugins/WebGL/libvokra.a

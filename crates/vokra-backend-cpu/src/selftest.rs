@@ -65,13 +65,30 @@ impl core::fmt::Display for SelftestReport {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
-            "cpu selftest OK: active={} features(avx2={} fma={} neon={} rvv_v={} zvfh={}) checked={:?} max_abs_diff={:.3e} (atol {:.0e})",
+            "cpu selftest OK: active={} features(avx2={} fma={} avx512={}/{}/{}/{} vnni={} bf16={} avxvnni={} neon={} fp16={} dotprod={} i8mm={} nbf16={} rvv_v={} zvfh={} rvv071={}{}) checked={:?} max_abs_diff={:.3e} (atol {:.0e})",
             self.active_isa,
             self.features.avx2,
             self.features.fma,
+            self.features.avx512f,
+            self.features.avx512dq,
+            self.features.avx512bw,
+            self.features.avx512vl,
+            self.features.avx512vnni,
+            self.features.avx512bf16,
+            self.features.avxvnni256,
             self.features.neon,
+            self.features.neon_fp16,
+            self.features.neon_dotprod,
+            self.features.neon_i8mm,
+            self.features.neon_bf16,
             self.features.rvv_v,
             self.features.rvv_zvfh,
+            self.features.rvv_071,
+            if self.features.rvv_071 && !self.features.rvv_071_auto {
+                " (override-only)"
+            } else {
+                ""
+            },
             self.checked_paths,
             self.max_abs_diff,
             self.tolerance,
@@ -153,9 +170,21 @@ pub fn selftest() -> Result<SelftestReport> {
     let active_isa = active_isa();
 
     // The SIMD paths this host can actually run (Scalar is the oracle, not a
-    // "checked" path). At most one of Avx2 / Neon / Rvv is supported on any
-    // given host (they are arch-exclusive). RVV is added in M3-13.
-    let checked_paths: Vec<IsaPath> = [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv]
+    // "checked" path). Arch families are exclusive, but within a family a
+    // host may support several tiers (this Apple M1 dev machine reports
+    // Neon + NeonFp16 + NeonDotprod; a Zen4 server reports Avx2 + the four
+    // x86 server tiers) — every supported tier's f32 table is cross-checked
+    // below, which is the M4-17 "runtime detect で非対応 CPU は SIGILL せず"
+    // completion surface: a misdetected path fails here with an explicit
+    // BackendUnavailable before any real work runs. On riscv64, Rvv / Rvv071
+    // (M3-13 / M4-08) are generation-exclusive — the M4-08 probe never
+    // reports both (the RVV 1.0 misdetection guard) — so the `supports`
+    // filter guarantees the selftest never touches 1.0 encodings on a 0.7.1
+    // hart (and vice versa): the on-device safety net behind the M4-08
+    // completion condition ("LicheePi 4A で動作確認"); any oracle deviation
+    // surfaces as an explicit `BackendUnavailable` from `compare`, never a
+    // silent pass.
+    let checked_paths: Vec<IsaPath> = IsaPath::ALL_SIMD
         .into_iter()
         .filter(|&isa| features.supports(isa))
         .collect();
@@ -269,6 +298,14 @@ pub fn selftest() -> Result<SelftestReport> {
     // CPU misdetection in the log-mel front-end at run time.
     fused_logmel_selftest(&features, &checked_paths, &mut max_abs_diff)?;
 
+    // M4-17-T18: cross-check the specialized server-tier kernels (K-quants
+    // dequant fusion, INT8 dot, fp16/bf16 matmul) that live outside the f32
+    // KernelTable. Their bounds are their own (bit-identity for dequant /
+    // INT8, architectural mantissa bands for fp16/bf16), so they do not feed
+    // `max_abs_diff` (which is the f32-table SELFTEST_ATOL budget) — but any
+    // violation is the same explicit BackendUnavailable failure surface.
+    server_tier_selftest(&features)?;
+
     Ok(SelftestReport {
         active_isa,
         features,
@@ -276,6 +313,156 @@ pub fn selftest() -> Result<SelftestReport> {
         max_abs_diff,
         tolerance: SELFTEST_ATOL,
     })
+}
+
+/// M4-17-T18: differential self-check of the specialized server-tier
+/// kernels on fixed seeded inputs. Every host-supported specialized path is
+/// compared against its in-crate oracle:
+///
+/// - K-quants dequant fusion: **bit-identical** to the `vokra-core` scalar
+///   reference (T12 contract);
+/// - INT8 GEMV (VNNI-512 / VNNI-256 / dotprod) and the i8mm GEMV2:
+///   **bit-identical** to the scalar-int8 reference (exact integer sums +
+///   shared combine, ADR M4-17 §(e));
+/// - fp16 GEMM (NeonFp16): within ±2 fp16 ulp of the structurally identical
+///   scalar emulation;
+/// - bf16 matmul (Avx512Bf16 / NeonBf16): within the architectural bf16
+///   band of the scalar bf16 emulation (ADR M4-17 §(f)).
+///
+/// Paths the host does not support are skipped (runtime-detect skip — on
+/// this Apple M1 dev machine that is i8mm / bf16 / all AVX-512 tiers; owner
+/// silicon covers them, M4-17-T23/T24).
+fn server_tier_selftest(features: &CpuFeatures) -> Result<()> {
+    use crate::kernels::KQuantDtype;
+
+    let mut rng = Rng::new(0x5EA7_1E55);
+    // One Q4_K row of two super-blocks; random bytes are valid payloads, but
+    // pin the f16 scales to small positive normals (finite magnitudes).
+    let (m, k) = (2usize, 512usize);
+    let dtype = KQuantDtype::Q4K;
+    let nb = k / 256;
+    let mut w = vec![0u8; m * nb * dtype.block_bytes()];
+    for byte in w.iter_mut() {
+        *byte = (rng.next_f32().to_bits() >> 9) as u8;
+    }
+    for blk in 0..m * nb {
+        let base = blk * dtype.block_bytes();
+        w[base + 1] = 0x2C; // d exponent bits: small positive normal f16
+        w[base + 3] = 0x24; // dmin
+    }
+    let x = rng.vec(k);
+
+    // Scalar-int8 reference (always runnable).
+    let mut int8_ref = vec![0.0f32; m];
+    kernels::kquant_gemv_i8_on(IsaPath::Scalar, dtype, m, k, &w, &x, &mut int8_ref)?;
+
+    for isa in [
+        IsaPath::Avx512Vnni,
+        IsaPath::AvxVnni256,
+        IsaPath::NeonDotprod,
+    ] {
+        if !features.supports(isa) {
+            continue;
+        }
+        let mut got = vec![0.0f32; m];
+        kernels::kquant_gemv_i8_on(isa, dtype, m, k, &w, &x, &mut got)?;
+        if got != int8_ref {
+            return Err(VokraError::BackendUnavailable(format!(
+                "cpu selftest failed: {isa} K-quant INT8 GEMV deviates from the scalar-int8 \
+                 reference (exact integer sums must be bit-identical); the SIMD path is \
+                 miscompiled or the host CPU is misdetected"
+            )));
+        }
+    }
+    if features.supports(IsaPath::NeonI8mm) {
+        let x2: Vec<f32> = x.iter().chain(x.iter().rev()).copied().collect();
+        let mut ref2 = vec![0.0f32; 2 * m];
+        kernels::kquant_gemv2_i8_on(IsaPath::Scalar, dtype, m, k, &w, &x2, &mut ref2)?;
+        let mut got2 = vec![0.0f32; 2 * m];
+        kernels::kquant_gemv2_i8_on(IsaPath::NeonI8mm, dtype, m, k, &w, &x2, &mut got2)?;
+        if got2 != ref2 {
+            return Err(VokraError::BackendUnavailable(
+                "cpu selftest failed: neon-i8mm K-quant INT8 GEMV2 deviates from the \
+                 scalar-int8 reference"
+                    .into(),
+            ));
+        }
+    }
+
+    // Dequant fusion bit-identity on the host's SIMD family (T12). The
+    // RISC-V (Rvv / Rvv071) and WASM tiers have no SIMD dequant kernel in
+    // this WP (kquant_dequant_on would return an explicit UnsupportedOp),
+    // so only the x86/ARM families are cross-checked here.
+    let host_best = features.best_isa();
+    if !matches!(
+        host_best,
+        IsaPath::Scalar | IsaPath::Rvv | IsaPath::Rvv071 | IsaPath::WasmSimd128
+    ) {
+        let simd =
+            kernels::kquant_dequant_on(host_best, dtype, &w[..nb * dtype.block_bytes()], 512)?;
+        let oracle = kernels::kquant_dequant_on(
+            IsaPath::Scalar,
+            dtype,
+            &w[..nb * dtype.block_bytes()],
+            512,
+        )?;
+        if simd != oracle {
+            return Err(VokraError::BackendUnavailable(format!(
+                "cpu selftest failed: {host_best} K-quants dequant fusion is not bit-identical \
+                 to the vokra-core scalar reference (T12 contract)"
+            )));
+        }
+    }
+
+    // fp16 GEMM vs its structurally identical emulation (±2 fp16 ulp band).
+    if features.supports(IsaPath::NeonFp16) {
+        let (gm, gn, gk) = (3usize, 9usize, 24usize);
+        let a = rng.vec(gm * gk);
+        let b = rng.vec(gk * gn);
+        let mut emu = vec![0.0f32; gm * gn];
+        kernels::gemm_fp16_on(IsaPath::Scalar, gm, gn, gk, &a, &b, &mut emu)?;
+        let mut got = vec![0.0f32; gm * gn];
+        kernels::gemm_fp16_on(IsaPath::NeonFp16, gm, gn, gk, &a, &b, &mut got)?;
+        for (i, (&g, &e)) in got.iter().zip(&emu).enumerate() {
+            let band = e.abs() * 2.0 * 2.0 * kernels::FP16_REL + 2.0 * 2f32.powi(-24);
+            if (g - e).abs() > band || g.is_nan() {
+                return Err(VokraError::BackendUnavailable(format!(
+                    "cpu selftest failed: neon-fp16 GEMM deviates from the fp16 emulation \
+                     oracle at index {i} (emu={e}, fp16={g}, band={band})"
+                )));
+            }
+        }
+    }
+
+    // bf16 matmul vs the scalar bf16 emulation (architectural band; runs on
+    // Zen4/Cooper-Lake-class x86 or M2+/Graviton3-class ARM hosts only).
+    for isa in [IsaPath::Avx512Bf16, IsaPath::NeonBf16] {
+        if !features.supports(isa) {
+            continue;
+        }
+        let (gm, gn, gk) = (3usize, 5usize, 32usize);
+        let a = rng.vec(gm * gk);
+        let b = rng.vec(gk * gn);
+        let mut emu = vec![0.0f32; gm * gn];
+        kernels::gemm_bf16_on(IsaPath::Scalar, gm, gn, gk, &a, &b, &mut emu)?;
+        let mut got = vec![0.0f32; gm * gn];
+        kernels::gemm_bf16_on(isa, gm, gn, gk, &a, &b, &mut got)?;
+        for i in 0..gm {
+            for j in 0..gn {
+                let a_row: Vec<f32> = (0..gk).map(|l| a[i * gk + l]).collect();
+                let b_col: Vec<f32> = (0..gk).map(|l| b[l * gn + j]).collect();
+                let band = 2.0 * kernels::dot_precision_bound(&a_row, &b_col, kernels::BF16_REL);
+                let (g, e) = (got[i * gn + j], emu[i * gn + j]);
+                if (g - e).abs() > band || g.is_nan() {
+                    return Err(VokraError::BackendUnavailable(format!(
+                        "cpu selftest failed: {isa} bf16 matmul deviates from the bf16 \
+                         emulation oracle at ({i},{j}) (emu={e}, bf16={g}, band={band})"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// M2-04-T06: cross-check the fused log-mel per-frame kernel across every

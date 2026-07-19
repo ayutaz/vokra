@@ -345,15 +345,30 @@ impl<'m> StreamingAsr<'m> {
         })
     }
 
-    /// Finalize the stream, run greedy decode over the accumulated PCM and
-    /// return the full generated token list on the returned
-    /// [`StreamingChunk::tokens`]. Idempotent — subsequent calls return an
-    /// empty chunk (no double-emit).
+    /// Finalize the stream and return the generated token list on the
+    /// returned [`StreamingChunk::tokens`]. Idempotent — subsequent calls
+    /// return an empty chunk (no double-emit).
     ///
-    /// The returned tokens are the same the offline
-    /// [`crate::voxtral::VoxtralAsr::transcribe`] would emit on the
-    /// concatenated PCM under the same config — the streaming façade must
-    /// not silently diverge from the offline API (FR-EX-08).
+    /// # Honest scope: this is NOT audio-conditioned (2026-07-19)
+    ///
+    /// The decode below runs the **text decoder only**, greedily from
+    /// `[MISTRAL_BOS_ID]`: it never forwards the audio encoder and never
+    /// applies the audio adapter, so the accumulated PCM does not
+    /// influence the result at all. The tokens are a pure LM continuation
+    /// of BOS.
+    ///
+    /// This docstring previously claimed the output equalled
+    /// [`crate::voxtral::VoxtralAsr::transcribe`]'s. That was already
+    /// untrue for any GGUF carrying an audio adapter (the offline path
+    /// runs the encoder + soft prefix), and the P2 cc-05/07 follow-up
+    /// widened the gap by moving the offline default onto the trained
+    /// transcription-prompt layout. Corrected here rather than left as a
+    /// fabricated equivalence claim (FR-EX-08).
+    ///
+    /// Wiring the encoder + adapter + prompt layout into the streaming
+    /// façade is the follow-up; until then, callers who need real
+    /// transcription must use [`crate::voxtral::VoxtralAsr::transcribe`]
+    /// on the concatenated PCM.
     pub fn finalize_transcript(&mut self) -> Result<StreamingChunk> {
         if self.finalized {
             return Ok(StreamingChunk {
@@ -506,13 +521,18 @@ mod tests {
     use super::*;
     use crate::voxtral::config::{AudioEncoderConfig, TextDecoderConfig};
 
+    /// `audio.n_ctx = 1500`: the PCM streaming paths (`push_chunk_pcm` /
+    /// `finalize_transcript`) run the mel front-end which always emits the
+    /// 30 s / 3000-frame window, and the full-stack encoder enforces the
+    /// upstream `post-conv length == n_ctx` contract. Direct `push_chunk`
+    /// tests therefore feed `2 * n_ctx` frames.
     fn tiny_config() -> VoxtralConfig {
         VoxtralConfig {
             audio: AudioEncoderConfig {
                 n_layer: 1,
                 n_head: 2,
                 hidden_dim: 4,
-                n_ctx: 8,
+                n_ctx: 1500,
                 n_mels: 2,
                 ffn_dim: 8,
             },
@@ -520,6 +540,7 @@ mod tests {
                 n_layer: 1,
                 n_head_q: 2,
                 n_head_kv: 1,
+                head_dim: 0,
                 hidden_dim: 4,
                 ffn_dim: 8,
                 vocab_size: 8,
@@ -541,12 +562,15 @@ mod tests {
             conv2_b: vec![0.0; cfg.audio.hidden_dim],
             pos_emb: vec![0.0; cfg.audio.n_ctx * cfg.audio.hidden_dim],
             has_learned_pos_emb: true,
+            layers: crate::voxtral::test_support::passthrough_layers(cfg),
+            ln_post: crate::voxtral::test_support::identity_ln(cfg.audio.hidden_dim),
         }
     }
 
     fn empty_decoder() -> TextDecoder {
         TextDecoder {
             token_emb: Vec::new(),
+            lm_head: None,
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",
@@ -597,6 +621,7 @@ mod tests {
             .collect();
         TextDecoder {
             token_emb,
+            lm_head: None,
             blocks,
             final_norm_gamma: vec![1.0f32; d],
             prefix: "",
@@ -695,7 +720,9 @@ mod tests {
         sc.chunk_ms = 500; // shorter for a smaller test
         let mut asr = StreamingAsr::new(&cfg, &ae, &td, sc).unwrap();
 
-        let n_frames = 8;
+        // Full-window mel: the full-stack encoder enforces the upstream
+        // strict length contract (post-conv length == n_ctx).
+        let n_frames = 2 * cfg.audio.n_ctx;
         let log_mel = vec![0.0f32; cfg.audio.n_mels * n_frames];
         let chunk = asr.push_chunk(&log_mel, n_frames).unwrap();
         assert!(chunk.tokens.is_empty(), "foundation: no fabricated tokens");
@@ -730,7 +757,7 @@ mod tests {
         let ae = tiny_encoder(&cfg);
         let td = empty_decoder();
         let mut asr = StreamingAsr::new(&cfg, &ae, &td, StreamingConfig::default_cpu()).unwrap();
-        let n_frames = 8;
+        let n_frames = 2 * cfg.audio.n_ctx;
         let log_mel = vec![0.0f32; cfg.audio.n_mels * n_frames];
         asr.push_chunk(&log_mel, n_frames).unwrap();
         let tail = asr.finalize().unwrap();

@@ -73,6 +73,15 @@ gh workflow run godot-crossbuild.yml
 
 ### 3.b. Method dispatch 検証 (T19 honest scope note)
 
+> **決着済み 2026-07-19 — 下の 3 option を選ぶ必要はありません**: Option C
+> （CC follow-up 実装）が実施済みです。`ba33bd0` が 5 trampoline の real
+> dispatch を land し、`71ea5ef` が `load` trampoline と inner-session
+> binding（registry が常に None を返していた欠陥）を実装、あわせて headless
+> 検証 leg も追加しました。`trampoline.rs` L236-408 の `TODO(M3-18)` marker は
+> **残存 0 件**（grep 実測）。**残る owner タスクは T19 の実 Godot editor 動作
+> 確認と T20 の WP-close PR のみ**で、実装判断は不要です。原文は判断経緯の記録
+> として下に保持。
+
 Wave 11 の trampoline layer は **各 method の signature + arity + panic firewall + `catch_unwind` は正しく wire 済**だが、Variant unpack → real Rust dispatch は `TODO(M3-18)` として `InvalidMethod` を返す状態。以下の 3 option から本 T19 の scope を選択:
 
 - **Option A: 現状で "CC 側完成" 判定を確定**する (最小 verify、`ClassDB.class_exists` + method 呼び出しが `InvalidMethod` で正しく返ることの確認のみ)。real dispatch は M3-11 の post-M3 follow-up として M4 に押し出し。

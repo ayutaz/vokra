@@ -367,6 +367,7 @@ mod tests {
                 n_layer: 1,
                 n_head_q: 2,
                 n_head_kv: 1,
+                head_dim: 0,
                 hidden_dim: 4,
                 ffn_dim: 8,
                 vocab_size: 4,
@@ -426,6 +427,7 @@ mod tests {
             .collect();
         TextDecoder {
             token_emb,
+            lm_head: None,
             blocks,
             final_norm_gamma: vec![1.0f32; d],
             prefix: "",
@@ -509,6 +511,7 @@ mod tests {
         cfg.text.n_layer = 0;
         let td = TextDecoder {
             token_emb: Vec::new(),
+            lm_head: None,
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",
@@ -685,6 +688,7 @@ mod tests {
         cfg.text.n_layer = 0;
         let td = TextDecoder {
             token_emb: Vec::new(),
+            lm_head: None,
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",

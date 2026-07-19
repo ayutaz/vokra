@@ -65,11 +65,12 @@ applications"* disclaimer. Vokra's response to both is below.
    here (self-referential point 5), and `NOTICE` / `docs/license-audit.md` point
    to it. Its presence is checked by CI (M2-03-T23).
 
-## Critical-application disclaimer (critical-safe SKU, FR-BE-09, v2.0)
+## Critical-application disclaimer (critical-safe SKU, FR-BE-09, M5 / v1.0 GA)
 
 The NVIDIA EULA disclaims suitability for critical applications. Vokra's
 medical / automotive / military SKU is therefore **CPU + Vulkan-only** and is
-**out of scope for M2-03 (it is v2.0)**. Because the entire CUDA path is confined
+**out of scope for M2-03 (it belongs to M5 / v1.0 GA, formerly labelled v2.0)**.
+Because the entire CUDA path is confined
 to the `vokra-backend-cuda` crate + an optional `cuda` feature in `vokra-models`,
 a feature-off build already excludes CUDA, leaving room for that future SKU.
 

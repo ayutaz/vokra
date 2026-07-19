@@ -24,8 +24,10 @@
 mod kv;
 pub mod paged;
 pub mod paged_quant;
+pub mod ring;
 
 pub use kv::KvCache;
 pub use paged_quant::{
     AllocatorSnapshot as QuantAllocatorSnapshot, AnyBlock, QuantizedPagedKvCache,
 };
+pub use ring::RingKvCache;

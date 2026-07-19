@@ -33,7 +33,8 @@ use super::WhisperModel;
 use super::config::WhisperConfig;
 use super::encoder::EncoderOutput;
 use super::nn::{
-    add_assign, attention_from_kv_into, layer_norm_into, mlp_into, project_kv, project_kv_into,
+    add_assign, attention_from_kv_into, cross_attention_capture, layer_norm_into, mlp_into,
+    project_kv, project_kv_into,
 };
 use super::scratch::{BlockScratch, LogitsScratch, resize_zeroed};
 use super::weights::{DecoderLayer, DecoderWeights};
@@ -245,6 +246,41 @@ impl DecoderState {
         self.self_kv.positions()
     }
 
+    /// Whether host-side self-KV branching (snapshot / restore) is valid for
+    /// this state: `false` when a device session owns the KV rows (Metal —
+    /// the host cache is a position mirror only), in which case callers must
+    /// fall back to reset + replay (M5-14-T13).
+    pub(crate) fn kv_branching_supported(&self) -> bool {
+        self.device_session.is_none()
+    }
+
+    /// Deep-copies the current self-attention cache (`positions()` committed
+    /// rows per layer) — the per-beam branch primitive (M5-14-T13, the
+    /// Voxtral `TextDecoderKvSnapshot` pattern). Cross-attention K/V are
+    /// bound to the encoder output and shared by every branch, so they are
+    /// NOT part of the snapshot. Only valid when
+    /// [`kv_branching_supported`](Self::kv_branching_supported).
+    pub(crate) fn selfkv_snapshot(&self) -> vokra_core::KvCache {
+        debug_assert!(self.device_session.is_none());
+        self.self_kv.clone()
+    }
+
+    /// Restores a snapshot taken by [`selfkv_snapshot`](Self::selfkv_snapshot)
+    /// on this same state (same model, same encoder binding): the next
+    /// [`step_into`](Self::step_into) continues bit-identically from the
+    /// snapshot's position, exactly as if the snapshot's tokens had just been
+    /// decoded on a fresh reset state.
+    pub(crate) fn selfkv_restore(&mut self, snap: &vokra_core::KvCache) {
+        debug_assert!(self.device_session.is_none());
+        self.self_kv = snap.clone();
+    }
+
+    /// The decoder's model config (M4-20 word alignment reads the alignment
+    /// heads, prefix length, head count and audio-token rate from it).
+    pub(crate) fn config(&self) -> &WhisperConfig {
+        self.model.config()
+    }
+
     /// Advances the decoder by `tokens`, appending their K/V to the cache, and
     /// returns the logits for **every** new token, row-major `[tokens, n_vocab]`.
     ///
@@ -437,6 +473,130 @@ impl DecoderState {
         let out = &self.logits.out;
         &out[out.len() - v..]
     }
+
+    /// Captures the decoder's **cross-attention** probabilities over the audio
+    /// for every layer and head, returning `[n_layer, n_head, t_q, n_ctx]`
+    /// row-major (M4-20 word-timestamp alignment, ADR M4-20 §D-3).
+    ///
+    /// This is a **decode-independent second forward** over the full `tokens`
+    /// sequence (openai-whisper `find_alignment` posture): it runs the same
+    /// per-op forward as [`step_into`](Self::step_into) but, at each layer's
+    /// cross-attention, also copies out the softmax weights via
+    /// [`cross_attention_capture`]. It is NOT the hot path (it allocates
+    /// freely) and forces the CPU per-op path — never the device session
+    /// (alignment is not GPU-accelerated, ADR §D-5).
+    ///
+    /// The self-attention cache is reset on entry and again on exit, so a call
+    /// leaves the state as it found it (a fresh alignment pass, independent of
+    /// any prior decode).
+    pub(crate) fn cross_attention_weights(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
+        let (cfg, w) = self.model.decoder_state();
+        let d = cfg.d_model;
+        let ff = cfg.ffn_dim;
+        let n_head = cfg.n_text_head;
+        let t = tokens.len();
+        if t == 0 {
+            return Err(VokraError::InvalidArgument(
+                "whisper cross_attention_weights: empty token sequence".into(),
+            ));
+        }
+        if t > cfg.n_text_ctx {
+            return Err(VokraError::InvalidArgument(format!(
+                "whisper cross_attention_weights: {t} tokens exceed n_text_ctx {}",
+                cfg.n_text_ctx
+            )));
+        }
+        // Alignment is a clean second forward from position 0.
+        self.self_kv.reset();
+        let compute = Compute::for_backend(BackendKind::Cpu, super::WHISPER_HOT_OPS)?;
+        let n_layer = w.layers.len();
+        let n_ctx = self.n_ctx;
+
+        // Token + positional embedding (start = 0).
+        resize_zeroed(&mut self.h, t * d);
+        for (i, &tok) in tokens.iter().enumerate() {
+            let tok = tok as usize;
+            if tok >= cfg.n_vocab {
+                return Err(VokraError::InvalidArgument(format!(
+                    "whisper cross_attention_weights: token id {tok} >= n_vocab {}",
+                    cfg.n_vocab
+                )));
+            }
+            let emb = &w.token_emb[tok * d..tok * d + d];
+            let pe = &w.pos_emb[i * d..i * d + d];
+            for c in 0..d {
+                self.h[i * d + c] = emb[c] + pe[c];
+            }
+        }
+
+        let mut captured = vec![0.0f32; n_layer * n_head * t * n_ctx];
+        for (li, layer) in w.layers.iter().enumerate() {
+            self.block.ensure_residual(t, d, ff);
+
+            // Causal self-attention over the fresh cache (start = 0).
+            layer_norm_into(&compute, &mut self.block.ln, &self.h, t, &layer.self_ln)?;
+            project_kv_into(
+                &compute,
+                &mut self.block.k,
+                &mut self.block.v,
+                &self.block.ln,
+                t,
+                &layer.self_attn,
+            )?;
+            self.self_kv.append(li, &self.block.k, &self.block.v);
+            attention_from_kv_into(
+                &compute,
+                &mut self.block.attn,
+                &self.block.ln,
+                t,
+                self.self_kv.k(li),
+                self.self_kv.v(li),
+                t,
+                &layer.self_attn.q,
+                &layer.self_attn.out,
+                n_head,
+                true,
+                0,
+                &mut self.block.block_out,
+            )?;
+            add_assign(&mut self.h, &self.block.block_out)?;
+
+            // Cross-attention over the fixed encoder output — capturing.
+            layer_norm_into(&compute, &mut self.block.ln, &self.h, t, &layer.cross_ln)?;
+            let (ck, cv) = &self.cross_kv[li];
+            let (cross_out, probs) = cross_attention_capture(
+                &compute,
+                &self.block.ln,
+                t,
+                ck,
+                cv,
+                n_ctx,
+                &layer.cross_attn.q,
+                &layer.cross_attn.out,
+                n_head,
+            )?;
+            debug_assert_eq!(probs.len(), n_head * t * n_ctx);
+            captured[li * n_head * t * n_ctx..(li + 1) * n_head * t * n_ctx]
+                .copy_from_slice(&probs);
+            add_assign(&mut self.h, &cross_out)?;
+
+            // MLP.
+            layer_norm_into(&compute, &mut self.block.ln, &self.h, t, &layer.mlp_ln)?;
+            mlp_into(
+                &compute,
+                &mut self.block.mlp_h,
+                &mut self.block.mlp_a,
+                &mut self.block.block_out,
+                &self.block.ln,
+                t,
+                &layer.fc1,
+                &layer.fc2,
+            )?;
+            add_assign(&mut self.h, &self.block.block_out)?;
+        }
+        self.self_kv.reset();
+        Ok(captured)
+    }
 }
 
 /// Borrows one Whisper [`DecoderLayer`]'s weights (+ its pre-projected cross
@@ -566,6 +726,7 @@ pub(crate) mod test_support {
             ffn_dim: 2,
             eot: 0,
             decoder_start_ids: vec![1],
+            alignment_heads: Vec::new(),
         }
     }
 
@@ -621,6 +782,20 @@ pub(crate) mod test_support {
     /// tests use now that [`super::DecoderState`] owns its model.
     pub(crate) fn tiny_model(n_layer: usize) -> Arc<WhisperModel> {
         let config = tiny_cfg(n_layer);
+        let weights = WhisperWeights {
+            encoder: tiny_encoder_weights(&config),
+            decoder: tiny_weights(&config),
+        };
+        Arc::new(WhisperModel::new_for_test(config, weights))
+    }
+
+    /// Like [`tiny_model`] but carrying alignment heads (M4-20 word-timestamp
+    /// wiring test). Every `(layer, head)` pair is registered (tiny model has
+    /// one head), so `align_words` runs the full capture → DTW → WordTiming
+    /// stack on the synthetic weights.
+    pub(crate) fn tiny_model_aligned(n_layer: usize) -> Arc<WhisperModel> {
+        let mut config = tiny_cfg(n_layer);
+        config.alignment_heads = (0..n_layer).map(|l| (l, 0usize)).collect();
         let weights = WhisperWeights {
             encoder: tiny_encoder_weights(&config),
             decoder: tiny_weights(&config),

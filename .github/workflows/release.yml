@@ -273,6 +273,23 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
         run: bash scripts/build-android.sh
 
+      - name: Build WebGL staticlib via scripts/build-unity-webgl-lib.sh (M4-02)
+        # FAIL-LOUD policy (deliberate asymmetry, recorded per M4-02-T14):
+        # the desktop macOS/Windows cdylibs below are REUSED from ci.yml
+        # artifacts on a best-effort basis (continue-on-error) because they
+        # cannot be cross-built on this Linux runner; WebGL — like Linux and
+        # Android above — is built IN this job, so a build failure fails the
+        # release outright. Whether to unify the desktop reuse steps onto
+        # fail-loud is a release-train-wide policy change, out of scope here
+        # (owner note in docs/handoff/m4-02.md).
+        # rustc-only: no emsdk (Unity's bundled Emscripten performs the final
+        # link — ADR M4-02 §2); llvm-tools supplies llvm-nm for the script's
+        # GPU-symbol audit.
+        run: |
+          rustup target add wasm32-unknown-emscripten
+          rustup component add llvm-tools
+          bash scripts/build-unity-webgl-lib.sh
+
       - name: Reuse macOS + Windows cdylibs from ci.yml artifacts (best-effort)
         # T13 unity-package CI job produces per-OS cdylibs. Attempt to fetch
         # them via `gh run download` scoped to the tag SHA so the release
@@ -313,6 +330,29 @@ jobs:
 
       - name: Enforce NVIDIA runtime non-bundled (D7 / T12 / NFR-LC-01)
         run: bash scripts/check-unity-package-no-nvidia.sh
+
+      - name: Assert all 6 platform slices before packing (deliverables §3.2)
+        # macOS/Win/Linux/iOS/Android/WebGL — milestones §8 M4-02 completion
+        # ("CI 自動ビルドの Unity Package に WebGL ターゲットが含まれる") is
+        # machine-verified at tag time here. macOS/Windows come from the
+        # best-effort reuse step above: absence fails HERE, loudly, instead
+        # of shipping a 4-platform tarball labelled as 6.
+        run: |
+          set -euo pipefail
+          PKG=bindings/unity/com.vokra.unity
+          for f in \
+            "Plugins/macOS/libvokra.dylib" \
+            "Plugins/Windows/x86_64/vokra.dll" \
+            "Plugins/Linux/x86_64/libvokra.so" \
+            "Plugins/iOS/libvokra.a" \
+            "Plugins/Android/libs/arm64-v8a/libvokra.so" \
+            "Plugins/WebGL/libvokra.a"; do
+            if [ ! -f "$PKG/$f" ]; then
+              echo "unity-package-release: FAIL missing platform slice: $f" >&2
+              exit 1
+            fi
+          done
+          echo "OK: all 6 platform slices present"
 
       - name: Pack UPM tarball (R5 reproducibility, SOURCE_DATE_EPOCH pinned)
         run: |
@@ -766,3 +806,107 @@ jobs:
           echo "Zip     : ${{ steps.pack.outputs.zip }}"
           echo "SHA256  : ${{ steps.pack.outputs.sha256 }}"
           echo "Skipping: gh release upload, Godot AssetLib API update."
+
+  # ---------------------------------------------------------------------------
+  # M4-01-T23: npm Web package publish (NFR-MT-08 = npm CD auto-release;
+  # deliverables §3.2 "Web | WASM (+SIMD/Threads) + WebGPU、npm パッケージ").
+  #
+  # Assembles the T20 layout (scripts/build-wasm.sh pkg = simd128/base .wasm
+  # + hand-written glue/worker/loader/.d.ts + LICENSE/NOTICE), stamps the tag
+  # semver into package.json, packs deterministically (SOURCE_DATE_EPOCH =
+  # HEAD commit timestamp — the godot-package-release idiom), uploads the
+  # tarball + SHA-256 as Release assets, and publishes to registry.npmjs.org
+  # **gated on secrets.NPM_TOKEN** (absent = honest skip annotation — the
+  # OPENUPM_TOKEN pattern; the owner registers the @vokra scope + token in
+  # M4-01-T27). Dry-run path (workflow_dispatch or no tag) runs
+  # `npm publish --dry-run` so the CD wiring is verifiable token-free.
+  # Prerelease semver (1.0.0-rc.N) requires an explicit dist-tag: `rc` for
+  # -rc.* tags, `dev` otherwise (npm refuses prerelease publishes to
+  # `latest`).
+  # ---------------------------------------------------------------------------
+  npm-web-release:
+    name: npm-web-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Compute release version (semver from tag, v-prefix stripped)
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="0.0.0-dev.$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          case "$V" in
+            *-rc.*) echo "disttag=rc" >> "$GITHUB_OUTPUT" ;;
+            *-*)    echo "disttag=dev" >> "$GITHUB_OUTPUT" ;;
+            *)      echo "disttag=latest" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Assemble web/pkg (2-artifact build + layout)
+        run: ./scripts/build-wasm.sh pkg
+
+      - name: Root Cargo.lock unchanged (zero-dep tripwire)
+        run: git diff --exit-code Cargo.lock
+
+      - name: Stamp version into package.json
+        working-directory: web/pkg
+        run: npm version --no-git-tag-version "${{ steps.version.outputs.version }}"
+
+      - name: Deterministic pack + SHA-256
+        id: pack
+        working-directory: web/pkg
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          TARBALL="$(npm pack --pack-destination . | tail -1)"
+          SHA="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
+          printf '%s' "$SHA" > "$TARBALL.sha256"
+          echo "tarball=web/pkg/$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Release assets (tag builds)
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release upload "$TAG" \
+            "${{ steps.pack.outputs.tarball }}" \
+            "${{ steps.pack.outputs.tarball }}.sha256" \
+            --clobber
+
+      - name: npm publish (gated on secrets.NPM_TOKEN)
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        working-directory: web/pkg
+        run: |
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo "::notice::npm-web-release: NPM_TOKEN not set — skipping npm publish (the GitHub Release tarball is the baseline channel; registry publish is owner opt-in, M4-01-T27)."
+            exit 0
+          fi
+          umask 077
+          cat > "$HOME/.npmrc" <<EOF
+          //registry.npmjs.org/:_authToken=${NPM_TOKEN}
+          EOF
+          npm publish --access public --tag "${{ steps.version.outputs.disttag }}"
+
+      - name: npm publish --dry-run (dispatch / non-tag builds)
+        if: inputs.dry_run == true || !startsWith(github.ref, 'refs/tags/v')
+        working-directory: web/pkg
+        run: |
+          echo "== DRY RUN (npm-web-release) =="
+          echo "Version : ${{ steps.version.outputs.version }} (dist-tag ${{ steps.version.outputs.disttag }})"
+          echo "Tarball : ${{ steps.pack.outputs.tarball }}"
+          echo "SHA256  : ${{ steps.pack.outputs.sha256 }}"
+          npm publish --dry-run --access public --tag "${{ steps.version.outputs.disttag }}"
+          echo "Skipping: gh release upload, npm publish."

@@ -163,6 +163,18 @@ impl KvQuantVerifyReport {
         self
     }
 
+    /// Marks UTMOS as available again — the M4-18 T08 flip: a pipeline that
+    /// defaults to the honest "unavailable" posture (the UTMOS weights are
+    /// owner-deferred) flips this once a real scorer instance produced the
+    /// deltas fed via [`KvQuantMetric::with_utmos`]. Never call this without
+    /// such a scorer: an unavailable-but-claimed-available report is exactly
+    /// the fabricated pass NFR-QL-04 bans.
+    #[must_use]
+    pub const fn utmos_available(mut self) -> Self {
+        self.utmos_unavailable = false;
+        self
+    }
+
     /// Marks DNSMOS as unavailable in this environment (T13).
     #[must_use]
     pub const fn dnsmos_unavailable(mut self) -> Self {
@@ -258,6 +270,20 @@ mod tests {
         // Unavailability does not by itself flip the gate — the CI summary
         // renders it as an M4 push-out annotation.
         assert!(r.all_pass_gate());
+    }
+
+    /// The M4-18 T08 flip: a pipeline that defaults to the honest
+    /// "unavailable" posture flips UTMOS back once a real scorer exists.
+    /// DNSMOS stays untouched (its availability is a separate, owner-gated
+    /// decision — license fail-closed).
+    #[test]
+    fn utmos_available_flips_the_flag_back() {
+        let r = KvQuantVerifyReport::new("m4-18")
+            .utmos_unavailable()
+            .dnsmos_unavailable()
+            .utmos_available();
+        assert!(!r.utmos_unavailable);
+        assert!(r.dnsmos_unavailable, "the UTMOS flip must not touch DNSMOS");
     }
 
     /// The NFR-QL-02 5% threshold is not something a caller can talk itself

@@ -81,6 +81,26 @@ lookup + FP32 residual sum) from published documentation; upstream Mimi
 weights are loaded through the standard GGUF path and are subject to the
 M2-13 compliance gate (`AttributionRequired` license class).
 
+M4-05 additionally implements the Mimi *neural chain* natively — the
+encoder (audio -> RVQ codes: SEANet conv stack + bottleneck transformer +
+RVQ quantize) and the neural decoder (RVQ features -> 24 kHz PCM) in
+crates/vokra-models/src/mimi/ (shared by Sesame CSM, M4-05, and Moshi,
+M4-06). This attribution covers the Kyutai Mimi weights consumed by those
+components as well: encoder, quantizer codebooks, and neural decoder
+weights all originate from the same CC-BY 4.0 Kyutai release named above.
+
+M4-06 additionally implements the Moshi language model natively — the
+Helium temporal transformer, the per-step-weight depformer, the
+inner-monologue text stream, and the full-duplex session runtime in
+crates/vokra-models/src/moshi/ (whisper.cpp-style re-implementation from
+the published kyutai-labs/moshi sources; no upstream code is copied).
+The Moshi LM weights (kyutai/moshiko-pytorch-bf16 `model.safetensors`)
+are likewise Kyutai CC-BY 4.0 — this attribution covers them, and the
+runtime additionally surfaces a deployer-facing attribution string
+(GGUF `vokra.provenance.attribution` -> `Session::attribution` /
+`vokra_model_attribution` / the vokra-cli banner) so downstream
+applications can meet the display obligation (FR-MD-09).
+
 This attribution is separate from the EU AI Act §50 AI-generated-audio
 disclosure obligation. The disclosure obligation is enforced at output
 time by the runtime's `WatermarkConfig` API and is orthogonal to this
@@ -104,7 +124,52 @@ alternatives supported by Vokra: DAC (MIT), Mimi (CC-BY 4.0), WavTokenizer
 (MIT), X-Codec 2 (MIT).
 
 --------------------------------------------------------------------------
-7. Maintaining this file
+7. SpeexDSP echo canceller (Rust port of mdf.c for the `aec` operator)
+--------------------------------------------------------------------------
+Vokra's acoustic echo cancellation operator (crates/vokra-ops/src/aec.rs,
+M4-03 / FR-OP-60) is a from-scratch Rust port — a derivative work, not a
+clean-room reimplementation — of the SpeexDSP echo canceller
+(libspeexdsp/mdf.c, the MDF/AUMDF adaptive filter with the Valin 2007
+variable learning rate), Copyright (C) 2003-2008 Jean-Marc Valin,
+distributed under the 3-clause BSD license as part of SpeexDSP
+(Copyright 2002-2008 Xiph.org Foundation and contributors).
+
+  Source: https://github.com/xiph/speexdsp
+          (pinned commit 7a158783df74efe7c2d1c6ee8363c1e695c71226)
+  License: 3-clause BSD — full text reproduced in
+          crates/vokra-ops/THIRD_PARTY_LICENSES/speexdsp-LICENSE.txt
+
+No SpeexDSP C source is bundled, compiled, or linked into any Vokra
+artifact (NFR-DS-02 zero-dependency); the port is pure Rust. The upstream
+code is only executed offline by the developer-side parity tool
+(tools/parity/aec_dump.py) to produce the committed reference fixtures
+under tests/parity/aec/. The far-end reference queue
+(crates/vokra-core/src/stream/aec_ref.rs) is an original Vokra design and
+not derived from SpeexDSP.
+
+--------------------------------------------------------------------------
+8. DeepFilterNet (Rikorose) — MIT attribution (M4-20 denoise op)
+--------------------------------------------------------------------------
+The M4-20 `denoise` operator (crates/vokra-ops/src/denoise.rs, FR-OP-61)
+reimplements the DeepFilterNet speech-enhancement topology (ERB gain + deep
+filtering) from scratch in Rust based on the published architecture:
+
+  DeepFilterNet
+  Copyright (c) Hendrik Schröter (Rikorose) and contributors
+  Licensed under the MIT License.
+  https://github.com/Rikorose/DeepFilterNet
+
+MIT permits commercial use; attribution (this notice) is retained. Vokra
+loads only converted weights (offline, to the `vokra.denoise.*` GGUF); no
+ONNX / PyTorch runtime dependency is introduced. The MIT license text is to
+be reproduced in crates/vokra-ops/THIRD_PARTY_LICENSES/deepfilternet-LICENSE.txt
+when the real DeepFilterNet checkpoint is added to the model zoo (owner
+sign-off, docs/license-audit.md §3 — M4-20 T18). RNNoise (BSD, Xiph) and
+GTCRN (Apache 2.0) are alternate denoise candidates; their attribution is
+added here if/when they are integrated.
+
+--------------------------------------------------------------------------
+9. Maintaining this file
 --------------------------------------------------------------------------
 Any pull request that adds support for a new model or introduces a new
 external dependency must run the license audit (docs/license-audit.md) and,

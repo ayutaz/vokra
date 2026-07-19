@@ -7,12 +7,17 @@ from C". They double as the single-header check (IF-01).
 | File | Task | Model source |
 |------|------|--------------|
 | `smoke_vad.c` | Silero VAD stream: create → open → push → poll | committed `tests/parity/silero_vad/silero-vad-v5.gguf` (2 MB) |
+| `smoke_vad_bytes.c` | Bytes-based create (M4-02): read GGUF → `create_from_bytes` → VAD stream | committed Silero fixture (also the WebGL emcc verify body) |
+| `smoke_aec.c` | AEC (M4-03): create → ref_push → process → reset → destroy | **none** — model-free, synthetic PCM |
+| `smoke_s2s.c` | Full-duplex S2S + attribution (M4-06): duplex open/push/pull/text/interrupt + `vokra_model_attribution` | committed Silero (error paths + permissive attribution) + **env** `VOKRA_MOSHI_GGUF` for the duplex leg |
 | `smoke_asr.c` | Whisper: create → transcribe → free string | **env** `VOKRA_WHISPER_GGUF` (uncommitted ~290 MB) |
 | `smoke_tts.c` | piper-plus native TTS: create → synthesize → free PCM | **env** `VOKRA_PIPER_GGUF` (uncommitted ~77 MB) |
 
 ASR/TTS **SKIP cleanly (exit 0)** when their env var is unset, matching the
-M0-05/06/07 parity gating (the large GGUFs are not committed). VAD always runs
-from the committed fixture.
+M0-05/06/07 parity gating (the large GGUFs are not committed). `smoke_s2s`'s
+full duplex leg SKIPs the same way on `VOKRA_MOSHI_GGUF` — its error-path and
+permissive-attribution legs always run. VAD / VAD(bytes) / AEC always run from
+the committed fixture (AEC needs no model at all).
 
 Audio input is raw little-endian **float32 PCM** read with `fread` — the C side
 has no WAV parser and no `strtod` / locale-dependent parsing (NFR-RL-01,
@@ -25,9 +30,9 @@ enforced by `scripts/check-forbidden-symbols.sh`). The fixtures under
 # All three, with the symbol check and header drift check:
 scripts/run-capi-smoke.sh
 
-# ASR + TTS live as well:
+# ASR + TTS + the S2S duplex leg live as well:
 VOKRA_WHISPER_GGUF=whisper-base.gguf VOKRA_PIPER_GGUF=voice.gguf \
-    scripts/run-capi-smoke.sh
+    VOKRA_MOSHI_GGUF=moshi.gguf scripts/run-capi-smoke.sh
 ```
 
 Or build one by hand (from the repo root, after

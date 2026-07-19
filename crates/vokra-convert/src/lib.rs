@@ -91,6 +91,45 @@ pub enum ModelKind {
     /// writes `0` sentinels for those fields (which the runtime loader
     /// rejects at forward time per FR-EX-08).
     Voxtral,
+    /// Standalone Mimi (Kyutai) codec checkpoint (M4-04 T10): the moshi-native
+    /// safetensors (`kyutai/moshiko-pytorch-bf16`
+    /// `tokenizer-e351c8d8-checkpoint125.safetensors`, CC-BY 4.0 weights —
+    /// attribution discharged by NOTICE §5). All tensors pass through; the
+    /// converter additionally derives the effective (pre-projected) RVQ
+    /// codebook tables the runtime decode consumes, and emits
+    /// `vokra.mimi.{n_codebooks,codebook_size,d_model}` from the checkpoint
+    /// shapes (ADR M4-04 §D-f/§D-k).
+    Mimi,
+    /// Standalone DAC (Descript Audio Codec) checkpoint (M4-04 T11): a
+    /// **prepared** safetensors (from `tools/parity/dac_prepare_checkpoint.py`
+    /// — the upstream release is a `.pth`) plus a JSON config side-car.
+    /// Convert with [`convert_dac_file`] — the config is required, so this is
+    /// not a plain single-input [`convert_file`] model. MIT weights.
+    Dac,
+    /// `sesame/csm-1b` safetensors checkpoint (M4-05): Sesame CSM-1B, the
+    /// S2S speech-generation model (Llama-3.2-1B-flavor backbone +
+    /// llama-100M-flavor depth transformer over Mimi RVQ frames; Apache 2.0
+    /// code + weight, docs/license-audit.md — the HF repo is gated, T29
+    /// owner hand-off). Weights are bound verbatim; flavor dims / RoPE
+    /// scaling / rates are transcribed primary-source constants and the two
+    /// vocab axes are `0`-placeholders the runtime rejects at load
+    /// (FR-EX-08). The Llama-3.2 tokenizer blob is embedded through
+    /// [`convert_csm_file`].
+    Csm,
+    /// `kyutai/moshiko-pytorch-bf16` safetensors checkpoint (M4-06):
+    /// Moshi (Helium temporal transformer + depformer), full-duplex S2S
+    /// with inner monologue. Weights are CC-BY 4.0 (`AttributionRequired`
+    /// — the converter stamps the FR-MD-09 attribution text). The raw
+    /// SentencePiece tokenizer embeds through [`convert_moshi_file`].
+    Moshi,
+    /// Rikorose/DeepFilterNet **DeepFilterNet3** denoiser checkpoint (M4-20
+    /// T17): a **prepared** safetensors (from
+    /// `tools/parity/dfn3_prepare_checkpoint.py` — the upstream release is a
+    /// torch-pickle `.ckpt.best` inside `models/DeepFilterNet3.zip`). Every
+    /// inference tensor binds verbatim under its upstream name; the
+    /// published DFN3 hyper-parameters ride the `vokra.denoise.*` chunk.
+    /// Dual MIT / Apache-2.0 code + weights (docs/license-audit.md).
+    Denoise,
 }
 
 impl ModelKind {
@@ -112,6 +151,11 @@ impl ModelKind {
             "kokoro" => Some(Self::Kokoro),
             "cosyvoice2" => Some(Self::CosyVoice2),
             "voxtral" => Some(Self::Voxtral),
+            "mimi" => Some(Self::Mimi),
+            "dac" => Some(Self::Dac),
+            "csm" => Some(Self::Csm),
+            "moshi" => Some(Self::Moshi),
+            "denoise" => Some(Self::Denoise),
             _ => None,
         }
     }
@@ -126,6 +170,11 @@ impl ModelKind {
             Self::Kokoro => "kokoro",
             Self::CosyVoice2 => "cosyvoice2",
             Self::Voxtral => "voxtral",
+            Self::Mimi => "mimi",
+            Self::Dac => "dac",
+            Self::Csm => "csm",
+            Self::Moshi => "moshi",
+            Self::Denoise => "denoise",
         }
     }
 }
@@ -238,6 +287,12 @@ pub fn convert_file(
     input: &Path,
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
+    // Moshi streams tensor-by-tensor (the 14 GiB full-7B checkpoint must
+    // never be materialized whole — bounded-memory contract); it routes
+    // through `convert_moshi_file` BEFORE the whole-file read below.
+    if matches!(model, ModelKind::Moshi) {
+        return convert_moshi_file(input, None, output);
+    }
     let bytes = std::fs::read(input)?;
 
     let (builder, notes) = match model {
@@ -245,8 +300,8 @@ pub fn convert_file(
         ModelKind::SileroVad => {
             let (builder, report) = models::silero::convert(bytes)?;
             let notes = vec![format!(
-                "silero: {} float weights written, {} non-float constants skipped, {} duplicate names de-duped",
-                report.written, report.skipped_non_float, report.deduped
+                "silero: {} float weights written (both rates, sr8k.*/sr16k.*), {} non-float constants skipped, {} op-scope float strays skipped",
+                report.written, report.skipped_non_float, report.skipped_stray
             )];
             (builder, notes)
         }
@@ -286,21 +341,11 @@ pub fn convert_file(
             (builder, notes)
         }
         ModelKind::CosyVoice2 => {
+            // Shape-derived hparams only; the attention head split needs
+            // the upstream config.json — use `convert_cosyvoice2_file`
+            // with a `--config` for the full hparam chunk.
             let (builder, report) = models::cosyvoice2::convert(bytes)?;
-            let mut notes = vec![format!(
-                "cosyvoice2: {} float weights written, {} non-float skipped \
-                 (scaffold — numeric hparams are `0`-placeholders pending T02 \
-                 upstream inspection; the runtime rejects the load until T04 \
-                 fills them)",
-                report.written, report.skipped_non_float,
-            )];
-            notes.extend(
-                report
-                    .notes
-                    .iter()
-                    .map(|n| format!("cosyvoice2 warning: {n}")),
-            );
-            (builder, notes)
+            (builder, cosyvoice2_notes(&report))
         }
         ModelKind::Voxtral => {
             // Foundation path (M3-10): shape-only conversion writes `0`
@@ -311,6 +356,69 @@ pub fn convert_file(
             let notes = vec![format!(
                 "voxtral: {} float weights written, {} non-float skipped, name {}, tokenizer embedded: {} (shape-only path — pass a --config for the full hparam chunk)",
                 report.written, report.skipped_non_float, report.name, report.tokenizer_embedded
+            )];
+            (builder, notes)
+        }
+        ModelKind::Mimi => {
+            let (builder, report) = models::mimi::convert(bytes)?;
+            let notes = vec![format!(
+                "mimi: {} tensors passed through ({} non-float skipped), derived effective \
+                 codebook tables [{} x {} x {}] emitted as `{}`, neural-chain adapter wrote \
+                 {} structural mimi.enc.*/mimi.dec.* tensors + the vokra.mimi.* config chunk \
+                 group ({})",
+                report.written,
+                report.skipped_non_float,
+                report.n_codebooks,
+                report.codebook_size,
+                report.d_model,
+                models::mimi::DERIVED_TABLES_TENSOR,
+                report.structural_written,
+                if report.structural_written > 0 {
+                    "PCM encode/decode bindable"
+                } else {
+                    "checkpoint carries no SEANet chain — quantizer-only"
+                },
+            )];
+            (builder, notes)
+        }
+        ModelKind::Dac => {
+            return Err(ConvertError::Usage(
+                "dac needs a --config side-car (from tools/parity/dac_prepare_checkpoint.py); \
+                 use convert_dac_file"
+                    .to_owned(),
+            ));
+        }
+        ModelKind::Moshi => {
+            // Handled by the streaming early-return above (bounded memory);
+            // reaching this arm would mean the whole checkpoint was read.
+            unreachable!("ModelKind::Moshi routes through convert_moshi_file")
+        }
+        ModelKind::Csm => {
+            // Tokenizer-less path (M4-05-T03/T04): every float tensor
+            // verbatim + the vokra.csm.* / vokra.mimi.* chunk groups. The
+            // Llama-3.2 tokenizer blob (gated repo — T29) travels through
+            // `convert_csm_file`.
+            let (builder, report) = models::csm::convert(bytes, None)?;
+            let mut notes = vec![format!(
+                "csm: {} float weights written, {} non-float skipped, tokenizer \
+                 embedded: {} (vocab axes are `0`-placeholders pending the T29 \
+                 checkpoint; the runtime rejects the load until then)",
+                report.written, report.skipped_non_float, report.tokenizer_embedded
+            )];
+            notes.extend(report.notes.iter().map(|n| format!("csm warning: {n}")));
+            (builder, notes)
+        }
+        ModelKind::Denoise => {
+            // M4-20 T17: prepared DFN3 safetensors → verbatim upstream-named
+            // tensors + the `vokra.denoise.*` chunk. The routine hard-errors
+            // on any missing / mis-shaped / unknown tensor and re-binds its
+            // own output through the runtime loader before returning.
+            let (builder, written) = models::denoise::convert_builder(bytes)
+                .map_err(|e| ConvertError::Parse(e.to_string()))?;
+            let notes = vec![format!(
+                "denoise: {written} DeepFilterNet3 tensors written verbatim (dead \
+                 checkpoint tensors skipped by policy: erb_fb, df_dec.df_fc_a.*), \
+                 loadability re-checked via DenoiseModel::from_gguf"
             )];
             (builder, notes)
         }
@@ -538,10 +646,224 @@ pub fn convert_kokoro_file(
     })
 }
 
+/// Convert a **prepared** DAC safetensors checkpoint together with its JSON
+/// config side-car into a Vokra GGUF (M4-04 T11).
+///
+/// The upstream DAC release is a torch-pickle `.pth`; run
+/// `tools/parity/dac_prepare_checkpoint.py` first to flatten it into a
+/// safetensors + config-JSON pair (no `.pth` parser enters the converter —
+/// zero-dep, NFR-DS-02). The config supplies the shape facts the checkpoint
+/// metadata carried (`n_codebooks` / `codebook_size` / `codebook_dim` /
+/// `d_model` / `sample_rate` / `hop_length`); the converter cross-checks them
+/// against the tensor shapes and fails explicitly on any mismatch (FR-EX-08).
+///
+/// All upstream tensors pass through; per-quantizer decode-ready tensors
+/// (`vokra.dac.quantizer.{i}.{codebook,out_proj_weight,out_proj_bias}`, with
+/// the weight norm folded offline) are emitted next to them — see
+/// `models/dac.rs` module docs / ADR M4-04 §D-f.
+pub fn convert_dac_file(
+    input: &Path,
+    config: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let config_bytes = std::fs::read(config)?;
+    let cfg = models::dac::DacConfig::parse(&config_bytes)?;
+    let (builder, report) = models::dac::convert(bytes, &cfg)?;
+
+    let notes = vec![format!(
+        "dac: {} tensors passed through ({} non-float skipped), {} quantizers folded \
+         (weight-norm) into vokra.dac.quantizer.* decode tensors, sample_rate {}, hop {}",
+        report.written, report.skipped_non_float, cfg.n_codebooks, cfg.sample_rate, cfg.hop_length,
+    )];
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::Dac,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
+/// Convert a Sesame CSM-1B safetensors checkpoint into a Vokra GGUF,
+/// optionally embedding the raw `meta-llama/Llama-3.2-1B` tokenizer file
+/// as `vokra.tokenizer.model` (M4-05-T03/T04/T05).
+///
+/// The tokenizer repo is gated (T29 owner hand-off); passing
+/// `tokenizer = None` converts without the blob and the runtime text path
+/// fails loudly until a tokenizer-carrying GGUF exists (FR-EX-08 — never a
+/// silent byte-level fallback).
+pub fn convert_csm_file(
+    input: &Path,
+    tokenizer: Option<&Path>,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let tokenizer_bytes = match tokenizer {
+        Some(p) => Some(std::fs::read(p)?),
+        None => None,
+    };
+    let (builder, report) = models::csm::convert(bytes, tokenizer_bytes)?;
+
+    let mut notes = vec![format!(
+        "csm: {} float weights written, {} non-float skipped, tokenizer embedded: {}",
+        report.written, report.skipped_non_float, report.tokenizer_embedded
+    )];
+    notes.extend(report.notes.iter().map(|n| format!("csm warning: {n}")));
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::Csm,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
+/// Formats the operator-facing notes for a CosyVoice2 conversion (shared
+/// by [`convert_file`] and [`convert_cosyvoice2_file`]).
+fn cosyvoice2_notes(report: &models::cosyvoice2::CosyVoice2Report) -> Vec<String> {
+    let mut notes = vec![match report.derived {
+        Some(d) => format!(
+            "cosyvoice2: {} float weights written, {} non-float skipped; derived \
+             hparams: vocab={} hidden={} n_layer={} ffn={} n_head={} n_head_kv={} \
+             n_ctx={} attn_bias={}",
+            report.written,
+            report.skipped_non_float,
+            d.vocab_size,
+            d.hidden_dim,
+            d.n_layer,
+            d.ffn_dim,
+            d.n_head,
+            d.n_head_kv,
+            d.n_ctx,
+            d.has_attn_bias,
+        ),
+        None => format!(
+            "cosyvoice2: {} float weights written, {} non-float skipped (no LLM \
+             backbone tensors — numeric hparams are 0-placeholders and the runtime \
+             rejects the LLM bind at load)",
+            report.written, report.skipped_non_float,
+        ),
+    }];
+    notes.extend(
+        report
+            .notes
+            .iter()
+            .map(|n| format!("cosyvoice2 warning: {n}")),
+    );
+    notes
+}
+
+/// Converts a CosyVoice2 LLM safetensors checkpoint (the upstream
+/// `FunAudioLLM/CosyVoice2-0.5B` `llm.pt` exported with verbatim names)
+/// into a Vokra GGUF, optionally consuming the upstream HF `config.json`
+/// (Qwen2 schema) via `config`.
+///
+/// The config supplies the attention head split
+/// (`num_attention_heads` / `num_key_value_heads`) plus `rope_theta` /
+/// `rms_norm_eps` / `max_position_embeddings` — none of which are
+/// derivable from tensor shapes (`q_out == hidden` leaves `head_dim`
+/// free). Without it the GGUF carries the shape-derived hparams only and
+/// the runtime refuses the LLM bind (loud, FR-EX-08). Config values are
+/// cross-checked against the tensor shapes and any disagreement fails the
+/// conversion.
+pub fn convert_cosyvoice2_file(
+    input: &Path,
+    config: Option<&Path>,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let config_bytes = match config {
+        Some(p) => Some(std::fs::read(p)?),
+        None => None,
+    };
+    let (builder, report) =
+        models::cosyvoice2::convert_with_config(bytes, config_bytes.as_deref())?;
+    let notes = cosyvoice2_notes(&report);
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::CosyVoice2,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
+/// Convert a Moshi (`kyutai/moshiko-pytorch-bf16`) safetensors checkpoint
+/// into a Vokra GGUF, optionally embedding the raw
+/// `tokenizer_spm_32k_3.model` SentencePiece file as
+/// `vokra.tokenizer.model` (M4-06-T22).
+///
+/// **Streaming / bounded memory**: the checkpoint is opened header-only
+/// and every tensor payload is copied one at a time through a reused
+/// buffer ([`vokra_core::gguf::GgufStreamWriter`]), so converting the
+/// 14 GiB full-7B file peaks at roughly one tensor (~0.26 GiB) — the old
+/// materialize-everything path peaked ≈ 97 GiB and could not run on a
+/// 16 GB machine.
+///
+/// **BF16 passes through verbatim** (GGUF `BF16`, ggml type 30 — the
+/// Voxtral converter posture): no convert-time widening; the runtime's
+/// single `tensor_f32` decode path widens BF16 → f32 **exactly** at load
+/// (BF16 is the top half of the f32 pattern). The `vokra.provenance.*`
+/// chunks stamp the CC-BY 4.0 `AttributionRequired` class plus the
+/// FR-MD-09 attribution text the runtime surfaces
+/// (`Session::attribution` / C ABI / CLI banner).
+pub fn convert_moshi_file(
+    input: &Path,
+    tokenizer: Option<&Path>,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let tokenizer_bytes = match tokenizer {
+        Some(p) => Some(std::fs::read(p)?),
+        None => None,
+    };
+    let outcome = models::moshi::convert_streaming(input, output, tokenizer_bytes)?;
+    let report = &outcome.report;
+
+    let mut notes = vec![format!(
+        "moshi: {} float weights written ({} BF16 passthrough — runtime widens to \
+         f32 exactly at load), {} non-float skipped, tokenizer embedded: {}",
+        report.written,
+        report.bf16_passthrough,
+        report.skipped_non_float,
+        report.tokenizer_embedded
+    )];
+    notes.extend(report.notes.iter().map(|n| format!("moshi warning: {n}")));
+
+    Ok(ConvertSummary {
+        model: ModelKind::Moshi,
+        tensor_count: outcome.tensor_count,
+        metadata_count: outcome.metadata_count,
+        output_bytes: outcome.output_bytes,
+        notes,
+    })
+}
+
 /// Voxtral (Mistral) side-car hparams supplied by the caller (M3-10-T04). Same
 /// shape as the module-private [`models::voxtral::VoxtralConfig`], re-exported
 /// here so external callers can build one without pulling in the private
 /// module.
+// M4-20 T12/T17: DeepFilterNet3 `denoise` offline GGUF path (real checkpoint
+// parse from the prepared safetensors + synthetic round-trip writer).
+pub use models::denoise::{convert_denoise_bytes, convert_denoise_file, convert_denoise_synthetic};
 pub use models::voxtral::VoxtralConfig;
 
 /// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through
@@ -549,6 +871,65 @@ pub use models::voxtral::VoxtralConfig;
 /// constructing an [`AdapterSpec`] directly and attaching it to a
 /// [`VoxtralConfig::adapter`] field.
 pub use models::voxtral::AdapterSpec;
+
+/// Parses an upstream HuggingFace-style Voxtral `config.json` into a
+/// [`VoxtralConfig`] (the `vokra-cli convert --model voxtral --config` path).
+/// See [`models::voxtral::parse_hf_config`] for the accepted schema; a JSON
+/// with no recognized Voxtral hparams is a hard error (FR-EX-08).
+pub fn parse_voxtral_hf_config(bytes: &[u8]) -> Result<VoxtralConfig, ConvertError> {
+    models::voxtral::parse_hf_config(bytes)
+}
+
+/// Reads a (possibly sharded) Voxtral safetensors checkpoint into one buffer
+/// per shard.
+///
+/// A path whose file name ends in `.index.json` (the HF
+/// `model.safetensors.index.json` convention the sharded Voxtral release
+/// ships) is parsed for its `weight_map`; every referenced shard file is read
+/// from the index's directory, in sorted order (deterministic). Any other
+/// path is read verbatim as a single-file checkpoint.
+fn read_voxtral_checkpoint(input: &Path) -> Result<Vec<Vec<u8>>, ConvertError> {
+    use vokra_core::json::JsonValue;
+
+    let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    if !file_name.ends_with(".index.json") {
+        return Ok(vec![std::fs::read(input)?]);
+    }
+    let index_bytes = std::fs::read(input)?;
+    let root = vokra_core::json::parse(&index_bytes)
+        .map_err(|e| ConvertError::Parse(format!("voxtral index {}: {e}", input.display())))?;
+    let weight_map = root
+        .get("weight_map")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| {
+            ConvertError::Parse(format!(
+                "voxtral index {}: missing `weight_map` object",
+                input.display()
+            ))
+        })?;
+    // De-duplicate + sort the shard names (many tensors map to each shard).
+    let mut shard_names = std::collections::BTreeSet::new();
+    for (tensor, file) in weight_map {
+        let f = file.as_str().ok_or_else(|| {
+            ConvertError::Parse(format!(
+                "voxtral index {}: weight_map[{tensor}] is not a file-name string",
+                input.display()
+            ))
+        })?;
+        shard_names.insert(f.to_owned());
+    }
+    if shard_names.is_empty() {
+        return Err(ConvertError::Parse(format!(
+            "voxtral index {}: empty weight_map — no shards to read",
+            input.display()
+        )));
+    }
+    let dir = input.parent().unwrap_or_else(|| Path::new("."));
+    shard_names
+        .into_iter()
+        .map(|f| Ok(std::fs::read(dir.join(f))?))
+        .collect()
+}
 
 /// Convert a Voxtral safetensors checkpoint together with a Mistral-format
 /// side-car config into a Vokra GGUF (M3-10).
@@ -568,12 +949,17 @@ pub fn convert_voxtral_file(
     config: &VoxtralConfig,
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
-    let bytes = std::fs::read(input)?;
-    let (builder, report) = models::voxtral::convert(bytes, Some(config))?;
+    let shards = read_voxtral_checkpoint(input)?;
+    let (builder, report) = models::voxtral::convert_shards(shards, Some(config))?;
 
     let notes = vec![format!(
-        "voxtral: {} float weights written, {} non-float skipped, name {}, tokenizer embedded: {}",
-        report.written, report.skipped_non_float, report.name, report.tokenizer_embedded
+        "voxtral: {} float weights written ({} BF16 passthrough — exact), {} non-float skipped, \
+         name {}, tokenizer embedded: {}",
+        report.written,
+        report.bf16_passthrough,
+        report.skipped_non_float,
+        report.name,
+        report.tokenizer_embedded
     )];
 
     let tensor_count = builder.tensor_count();
@@ -623,8 +1009,8 @@ pub fn convert_voxtral_file_with_adapter_config(
     let spec = models::voxtral::parse_adapter_config(&adapter_bytes)?;
     let mut cfg = config.clone();
     cfg.adapter = Some(spec);
-    let bytes = std::fs::read(input)?;
-    let (builder, report) = models::voxtral::convert(bytes, Some(&cfg))?;
+    let shards = read_voxtral_checkpoint(input)?;
+    let (builder, report) = models::voxtral::convert_shards(shards, Some(&cfg))?;
 
     let adapter_kind = cfg
         .adapter
@@ -632,8 +1018,10 @@ pub fn convert_voxtral_file_with_adapter_config(
         .map(|a| a.kind.as_str())
         .unwrap_or("none");
     let notes = vec![format!(
-        "voxtral: {} float weights written, {} non-float skipped, name {}, tokenizer embedded: {}, adapter kind: {}",
+        "voxtral: {} float weights written ({} BF16 passthrough — exact), {} non-float skipped, \
+         name {}, tokenizer embedded: {}, adapter kind: {}",
         report.written,
+        report.bf16_passthrough,
         report.skipped_non_float,
         report.name,
         report.tokenizer_embedded,

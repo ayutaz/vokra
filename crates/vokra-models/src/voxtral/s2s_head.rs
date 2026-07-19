@@ -149,6 +149,7 @@ mod tests {
                 n_layer: 1,
                 n_head_q: 2,
                 n_head_kv: 1,
+                head_dim: 0,
                 hidden_dim: 4,
                 ffn_dim: 8,
                 vocab_size: 4,
@@ -170,12 +171,15 @@ mod tests {
             conv2_b: Vec::new(),
             pos_emb: Vec::new(),
             has_learned_pos_emb: false,
+            layers: Vec::new(),
+            ln_post: crate::voxtral::test_support::identity_ln(0),
         }
     }
 
     fn empty_decoder() -> TextDecoder {
         TextDecoder {
             token_emb: Vec::new(),
+            lm_head: None,
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",

@@ -71,7 +71,10 @@ pub mod mel;
 pub mod nn;
 /// Reusable per-forward scratch buffers (FR-EX-05, hot-path malloc elimination);
 /// internal to the whisper module.
-mod scratch;
+// `pub(crate)`: the Voxtral audio tower (`crate::voxtral::audio_encoder`)
+// reuses `EncoderScratch` + `encoder_block` for its (Whisper-identical)
+// pre-norm stack — same audited scratch discipline, one implementation.
+pub(crate) mod scratch;
 pub mod session;
 pub mod tokenizer;
 pub mod weights;

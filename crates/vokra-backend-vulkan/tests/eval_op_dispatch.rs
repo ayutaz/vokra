@@ -1,5 +1,5 @@
-//! M3-02-T24 — `VulkanBackend::eval_op` end-to-end for `OpKind::Copy` and
-//! `OpKind::Add` on a live Vulkan host (Linux + lavapipe, or a real GPU).
+//! M3-02-T24 + M4-13-T09 — `VulkanBackend::eval_op` end-to-end on a live
+//! Vulkan host (Linux + lavapipe, or a real GPU).
 //!
 //! On the Apple Mac authoring host the tests skip cleanly via the deliberate
 //! [`VokraError::BackendUnavailable`] stub (no `libvulkan` here) — never a
@@ -7,49 +7,85 @@
 //!
 //! # Contract this test enforces
 //!
-//! 1. `VulkanBackend::supports(Copy) == true`, `supports(Add) == true`.
-//! 2. `VulkanBackend::supports(<any other op>) == false`.
-//! 3. `eval_op(Copy)` returns the input bit-for-bit (the shader body is
-//!    `dst[i] = src[i]`).
-//! 4. `eval_op(Add)` returns `a + b` under IEEE-754 f32 semantics.
-//! 5. `eval_op(<uncovered op>)` is an explicit `UnsupportedOp` — never
-//!    a silent CPU fallback.
+//! 1. `supports(Copy) == true`, `supports(Add) == true` (hand-crafted blobs
+//!    are always available).
+//! 2. For the blob-gated arms (`MatMul` / `Mul` / `Softmax`, M4-13-T09):
+//!    `supports(op)` equals blob availability of the op's backing shader,
+//!    and `eval_op` agrees — Ok when the blob is loadable, explicit
+//!    `UnsupportedOp` when not (lock-step BY MEASUREMENT, not by a
+//!    hard-coded op list, so the owner's T16 blob commit flips both sides
+//!    together with no test edit).
+//! 3. Ops with no graph arm at all (`DcOffsetRemove`, `Stft`, …) are
+//!    permanently `false` / `UnsupportedOp`.
+//! 4. `eval_op(Copy)` returns the input bit-for-bit; `eval_op(Add)` returns
+//!    the IEEE-754 f32 sum — including NON-multiples of the hand-crafted
+//!    kernels' 64-lane workgroup (the M4-13-T09 padding fix; the M3-02 arms
+//!    panicked on a `[2, 2]` tensor).
 
-use vokra_backend_vulkan::{VulkanBackend, spirv};
+use vokra_backend_vulkan::{GemmPipelinePreference, VulkanBackend, graph_op_backing_shader, spirv};
 use vokra_core::{Backend, OpKind, Tensor, VokraError};
 
 /// `supports()` and `eval_op()` MUST advertise the exact same op set —
-/// M3-02-T35 lock-step gate. This test is host-independent (probes just the
-/// coverage decision + the arity-check paths of `eval_op`, both of which run
-/// before any GPU dispatch).
+/// M3-02-T35 lock-step gate, blob-driven since M4-13-T09.
 #[test]
 fn supports_and_eval_op_are_lock_step() {
     let Ok(backend) = VulkanBackend::new() else {
         eprintln!("no Vulkan; skipping lock-step test");
         return;
     };
-    // The covered ops.
+    // Hand-crafted-backed ops are always available.
     assert!(backend.supports(&OpKind::Copy), "Copy must be supported");
     assert!(backend.supports(&OpKind::Add), "Add must be supported");
-    // Uncovered ops.
+
+    // Blob-gated arms: supports() must equal the backing shader's blob
+    // availability, and eval_op must agree.
+    let variant = backend
+        .select_gemm_pipeline_variant(GemmPipelinePreference::default())
+        .expect("default preference never errors");
     for op in [OpKind::MatMul, OpKind::Mul, OpKind::Softmax] {
-        assert!(
-            !backend.supports(&op),
-            "{op:?} must NOT be supported in the foundation slice"
+        let shader = graph_op_backing_shader(&op, variant)
+            .expect("covered graph op must have a backing shader");
+        let expected = spirv::has_blob(shader);
+        assert_eq!(
+            backend.supports(&op),
+            expected,
+            "supports({op:?}) must track blob availability of `{shader}`"
         );
-        // `eval_op` on an uncovered op is an explicit UnsupportedOp — never
-        // a silent CPU fall back (FR-EX-08).
-        let a = Tensor::zeros_f32(vec![2, 2]);
+        // Valid small inputs for each arm.
+        let a = Tensor::host_f32(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]).unwrap();
         let inputs: Vec<&Tensor> = match op {
             OpKind::Softmax => vec![&a],
             _ => vec![&a, &a],
         };
-        let err = backend.eval_op(&op, &inputs).unwrap_err();
-        assert!(
-            matches!(err, VokraError::UnsupportedOp(_)),
-            "eval_op({op:?}) must be UnsupportedOp, got {err:?}"
-        );
+        match backend.eval_op(&op, &inputs) {
+            Ok(outs) => {
+                assert!(
+                    expected,
+                    "eval_op({op:?}) succeeded but supports() reported false — lock-step broken"
+                );
+                assert_eq!(outs.len(), 1);
+                assert_eq!(outs[0].shape, vec![2, 2]);
+            }
+            Err(VokraError::UnsupportedOp(_)) => {
+                assert!(
+                    !expected,
+                    "eval_op({op:?}) is UnsupportedOp but supports() reported true — lock-step \
+                     broken"
+                );
+                eprintln!("{op:?}: blob `{shader}` absent → explicit UnsupportedOp (lock-step)");
+            }
+            Err(other) => panic!("unexpected error class for eval_op({op:?}): {other:?}"),
+        }
     }
+
+    // Ops with no graph arm at all: permanently unsupported.
+    let a = Tensor::zeros_f32(vec![64]);
+    assert!(!backend.supports(&OpKind::DcOffsetRemove));
+    let err = backend.eval_op(&OpKind::DcOffsetRemove, &[&a]).unwrap_err();
+    assert!(
+        matches!(err, VokraError::UnsupportedOp(_)),
+        "eval_op(DcOffsetRemove) must be UnsupportedOp, got {err:?}"
+    );
 }
 
 /// `eval_op(Copy)` end-to-end: upload → dispatch → download → verify
@@ -189,5 +225,49 @@ fn backend_construction_is_unavailable_off_target() {
         Err(VokraError::BackendUnavailable(_)) => {}
         Ok(_) => panic!("VulkanBackend::new() must fail off-target / feature off"),
         Err(other) => panic!("expected BackendUnavailable, got {other}"),
+    }
+}
+
+/// M4-13-T09 bug fix: the M3-02 arms passed graph tensors straight into the
+/// hand-crafted smoke kernels, whose impls ASSERT a multiple-of-64 length —
+/// so `eval_op(Add)` on a `[2, 2]` tensor panicked on a live Vulkan host
+/// (public API contract violation: Result, never a panic). The arms now
+/// zero-pad + truncate; live regions stay bit-identical.
+#[test]
+fn eval_op_copy_and_add_handle_non_multiple_of_workgroup_lengths() {
+    let Ok(backend) = VulkanBackend::new() else {
+        eprintln!("no Vulkan; skipping non-multiple-length eval_op test");
+        return;
+    };
+    // 2x2 (4 elements) and 5 elements — both << 64 and not multiples.
+    let a = Tensor::host_f32(vec![2, 2], vec![1.5, -2.0, 0.25, 8.0]).unwrap();
+    let outs = backend
+        .eval_op(&OpKind::Copy, &[&a])
+        .expect("Copy of a [2,2] tensor must not panic or error");
+    assert_eq!(outs[0].shape, vec![2, 2]);
+    for (want, got) in a.as_f32().unwrap().iter().zip(outs[0].as_f32().unwrap()) {
+        assert_eq!(
+            want.to_bits(),
+            got.to_bits(),
+            "padded Copy must stay bit-identical"
+        );
+    }
+
+    let x = Tensor::host_f32(vec![5], vec![1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
+    let y = Tensor::host_f32(vec![5], vec![10.0, 20.0, 30.0, 40.0, 50.0]).unwrap();
+    let outs = backend
+        .eval_op(&OpKind::Add, &[&x, &y])
+        .expect("Add of length-5 tensors must not panic or error");
+    let got = outs[0].as_f32().unwrap();
+    assert_eq!(got.len(), 5, "readback truncated to the live region");
+    for (i, ((a_i, b_i), g)) in x
+        .as_f32()
+        .unwrap()
+        .iter()
+        .zip(y.as_f32().unwrap())
+        .zip(got)
+        .enumerate()
+    {
+        assert_eq!((a_i + b_i).to_bits(), g.to_bits(), "Add diverged at {i}");
     }
 }

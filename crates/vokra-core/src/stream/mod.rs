@@ -27,10 +27,12 @@
 //! stepper inside the stream handle, so callers never manage tensor names
 //! (FR-ST-05): a stream takes `&[f32]` in and yields [`StreamEvent`]s out.
 
+mod aec_ref;
 mod event;
 mod ring;
 mod step;
 
+pub use aec_ref::{AecRefReader, AecRefWindowStatus, AecRefWriter, aec_ref_queue};
 pub use event::{EventSink, StreamEvent};
 pub use ring::{RawEvent, RingConsumer, RingFull, RingProducer, channel};
 pub use step::StreamStep;

@@ -8,13 +8,25 @@
  * Regenerate with `scripts/gen-c-abi.sh`; CI fails on drift
  * (`scripts/gen-c-abi.sh --check`).
  *
- * STABILITY: this is the v0.9 (M3) window. The ABI is NOT frozen; the semver
- * ABI-stability commitment starts at v1.0 GA (IF-01; docs/milestones.md §4.2
- * note 3, §9 M5-13; the 2026-07-14 v-label reassignment #2 moved the freeze
- * executor from M4-12 to M5-13 — v1.0 GA = M5 close, M4 = v1.0-rc
- * prerelease). During the v0.9 window every symbol delta must be
- * recorded in docs/abi-changelog.md and covered by an entry dated on the day
- * the PR opens — scripts/check-abi-changelog.sh (M3-16) enforces this.
+ * STABILITY: this is the v1.0-rc (M4) prerelease window (semver
+ * 1.0.0-rc.N). The ABI is NOT frozen; the semver ABI-stability commitment
+ * starts at v1.0 GA (IF-01; docs/milestones.md §4.2 note 3, §9 M5-13; the
+ * 2026-07-14 v-label reassignment #2 moved the freeze executor from M4-12 to
+ * M5-13 — v1.0 GA = M5 close, M4 = v1.0-rc prerelease). During the v1.0-rc
+ * window every symbol delta must be recorded in docs/abi-changelog.md and
+ * covered by an entry dated on the day the PR opens —
+ * scripts/check-abi-changelog.sh (M3-16) enforces this.
+ *
+ * RESERVED — CPU ISA tiers (M4-17): runtime CPU ISA selection
+ * (`vokra_backend_cpu::IsaPath`, a `#[non_exhaustive]` Rust enum) is an
+ * internal dispatch surface and is deliberately NOT exported here; the IF-01
+ * freeze therefore never covers ISA-tier names. Future tiers (reserved:
+ * AMX* / SME* / RvvZvfh* — see docs/abi-changelog.md "Reserved additions")
+ * land as backward-compatible Rust variant additions without touching this
+ * header. If a C-level backend/delegate selector is ever exported, it is an
+ * M5 decision after the real-hardware NPU bakeoff (docs/handoff/m4-12.md
+ * §(e)-3 / §(f)) and would be a NEW symbol, not a widening of an existing
+ * one.
  */
 
 #ifndef VOKRA_H
@@ -59,6 +71,23 @@ typedef enum vokra_status_t {
     VOKRA_ERROR_OTHER = 9,
 } vokra_status_t;
 
+// Per-frame outcome reported by [`vokra_aec_process`] (mirrors
+// `vokra_ops::AecStatus`; FR-EX-08 — degraded modes are visible, never
+// silent).
+typedef enum vokra_aec_status_t {
+    // Far-end window fully covered; the canceller ran normally.
+    VOKRA_AEC_CANCELLED = 0,
+    // Nothing is playing and the far-end history is silent: the mic frame
+    // was copied through bit-exactly (state frozen).
+    VOKRA_AEC_PASS_THROUGH = 1,
+    // Part (or all) of the far-end window had no data and was zero-filled;
+    // the live echo tail keeps being cancelled. The missing sample count is
+    // reported through `out_missing`.
+    VOKRA_AEC_PARTIAL_REFERENCE = 2,
+    // The divergence guard fired and the canceller reset itself this frame.
+    VOKRA_AEC_RESET = 3,
+} vokra_aec_status_t;
+
 // Kind tag of a [`vokra_event_t`] (M1-08). The numeric values are part of the
 // (M0-unstable) ABI.
 typedef enum vokra_event_kind_t {
@@ -69,6 +98,23 @@ typedef enum vokra_event_kind_t {
     // An ASR token event: `a` = token id, `b` = reserved (`0`).
     VOKRA_EVENT_TOKEN = 2,
 } vokra_event_kind_t;
+
+// Opaque far-end writer handle: the producer half of the far-end queue.
+// Owned by the playback-callback thread. Opaque to C.
+typedef struct vokra_aec_ref_writer_t vokra_aec_ref_writer_t;
+
+// Opaque AEC handle: the canceller state plus the reader half of the
+// far-end queue. Owned by the inference thread. Opaque to C.
+typedef struct vokra_aec_t vokra_aec_t;
+
+// Opaque duplex-session handle (module docs). Created by
+// `vokra_s2s_duplex_open`, released by `vokra_s2s_duplex_destroy`.
+typedef struct vokra_s2s_duplex_t vokra_s2s_duplex_t;
+
+// Opaque cross-thread barge-in handle (module docs). Created by
+// `vokra_s2s_interrupt_handle`, released by
+// `vokra_s2s_interrupt_destroy`; firing it is `vokra_s2s_interrupt`.
+typedef struct vokra_s2s_interrupt_t vokra_s2s_interrupt_t;
 
 // Opaque session handle: one loaded model bound to one backend, with the
 // matching native engine injected (ASR / TTS / VAD — see
@@ -90,6 +136,24 @@ typedef struct vokra_session_t vokra_session_t;
 // stepper (FR-LD-06 / FR-ST-05).
 typedef struct vokra_stream_t vokra_stream_t;
 
+// Construction parameters for [`vokra_aec_create`].
+//
+// `sample_rate` / `frame_size` / `filter_length` follow the SpeexDSP
+// guidance (speex_echo.h: a frame of 10-20 ms; a tail of 100-500 ms).
+// `frame_size` must be even. `ref_queue_capacity_samples` sizes the far-end
+// queue; `0` selects the documented default of `8 * filter_length` samples
+// (rounded up to a power of two).
+typedef struct vokra_aec_config_t {
+    // Sample rate of mic and far-end PCM (must match on both sides).
+    uint32_t sample_rate;
+    // Samples per `vokra_aec_process` call (even, > 0).
+    size_t frame_size;
+    // Echo tail length in samples (>= frame_size).
+    size_t filter_length;
+    // Far-end queue capacity in samples; 0 = default (8 * filter_length).
+    size_t ref_queue_capacity_samples;
+} vokra_aec_config_t;
+
 // A generalized streaming event drained by `vokra_stream_poll_events` (M1-08).
 //
 // A fixed 12-byte POD (`kind` + `a` + `b`); the meaning of `a` / `b` depends on
@@ -107,6 +171,103 @@ typedef struct vokra_event_t {
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
+
+// Creates an echo canceller and its far-end reference writer.
+//
+// On success writes one handle through each out-pointer; on failure both
+// out-pointers are left untouched. The two handles have independent
+// lifetimes (destroy each with its own `*_destroy`, in either order).
+//
+// # Safety
+//
+// `config` must be `NULL` or point to a valid [`vokra_aec_config_t`];
+// `out_aec` / `out_writer` must be valid non-`NULL` out-pointers. `NULL`
+// `config` is rejected as `VOKRA_ERROR_INVALID_ARGUMENT` (never
+// dereferenced).
+enum vokra_status_t vokra_aec_create(const struct vokra_aec_config_t *config,
+                                     struct vokra_aec_t **out_aec,
+                                     struct vokra_aec_ref_writer_t **out_writer);
+
+// Pushes a far-end (playback) chunk whose first sample plays at absolute
+// sample position `playback_pos`, writing the number of samples accepted to
+// `out_accepted`.
+//
+// Reject-on-full backpressure: when the queue cannot take the whole chunk,
+// only the fitting prefix is accepted (`*out_accepted < num_samples`,
+// possibly 0); retry the remainder at `playback_pos + accepted` after the
+// inference thread has consumed a frame. `out_accepted` is mandatory so a
+// partial accept is never silent (FR-EX-08).
+//
+// Backward / overlapping `playback_pos` tags are an explicit
+// `VOKRA_ERROR_INVALID_ARGUMENT` (time tags are monotonic; a forward gap is
+// legal and reads back as silence).
+//
+// # Safety
+//
+// `writer` must be a live handle from [`vokra_aec_create`], used by one
+// thread at a time (the playback callback thread). `pcm` must be `NULL`
+// only when `num_samples == 0`, otherwise valid for `num_samples` reads.
+// `out_accepted` must be a valid non-`NULL` out-pointer. May run
+// concurrently with `vokra_aec_process` on the paired `vokra_aec_t`
+// (SPSC queue), but not with itself on the same handle.
+enum vokra_status_t vokra_aec_ref_push(struct vokra_aec_ref_writer_t *writer,
+                                       const float *pcm,
+                                       size_t num_samples,
+                                       uint64_t playback_pos,
+                                       size_t *out_accepted);
+
+// Cancels the echo of one mic frame (`num_samples == frame_size`) whose
+// first sample was captured at absolute sample position `mic_pos` on the
+// same clock the far-end pushes use. Writes `frame_size` cancelled samples
+// to `out` and the per-frame outcome ([`vokra_aec_status_t`]) to
+// `out_status`; when the outcome is `VOKRA_AEC_PARTIAL_REFERENCE`, the
+// number of zero-filled far-end samples is written to `out_missing`
+// (optional pointer — pass `NULL` if not needed; it is set to 0 for the
+// other outcomes).
+//
+// # Safety
+//
+// `aec` must be a live handle from [`vokra_aec_create`], used by one
+// thread at a time (the inference thread). `mic` must be valid for
+// `num_samples` reads and `out` for `num_samples` writes; `out_status`
+// must be a valid non-`NULL` out-pointer; `out_missing` may be `NULL`.
+// May run concurrently with `vokra_aec_ref_push` on the paired writer.
+enum vokra_status_t vokra_aec_process(struct vokra_aec_t *aec,
+                                      const float *mic,
+                                      uint64_t mic_pos,
+                                      float *out,
+                                      size_t num_samples,
+                                      enum vokra_aec_status_t *out_status,
+                                      size_t *out_missing);
+
+// Resets the canceller to its as-new state (bit-exact with a fresh
+// [`vokra_aec_create`] of the same config). Pair it with barge-in
+// (`vokra_stream_interrupt`) in full-duplex loops.
+//
+// # Safety
+//
+// `aec` must be a live handle, used by one thread at a time.
+enum vokra_status_t vokra_aec_reset(struct vokra_aec_t *aec);
+
+// Destroys an AEC handle. `NULL` is a no-op. The paired writer handle stays
+// valid (its pushes simply pile up unread) and must be destroyed with
+// [`vokra_aec_ref_writer_destroy`].
+//
+// # Safety
+//
+// `aec` must be `NULL` or a live handle from [`vokra_aec_create`] not used
+// after this call (and not concurrently with it).
+void vokra_aec_destroy(struct vokra_aec_t *aec);
+
+// Destroys a far-end writer handle. `NULL` is a no-op. The paired AEC
+// handle stays valid (its windows read as silence once the queue drains —
+// the pass-through semantics take over).
+//
+// # Safety
+//
+// `writer` must be `NULL` or a live handle from [`vokra_aec_create`] not
+// used after this call (and not concurrently with it).
+void vokra_aec_ref_writer_destroy(struct vokra_aec_ref_writer_t *writer);
 
 // Transcribes mono `f32` PCM to text using the session's ASR engine (FR-API-01).
 //
@@ -150,6 +311,167 @@ void vokra_string_free(char *s);
 // (ADR-0003 §3-b).
 const char *vokra_last_error(void);
 
+// Opens a full-duplex S2S session (Moshi = M4-06) on a session whose
+// model injected a duplex engine.
+//
+// # Parameters
+//
+// - `session`: a live session handle (`vokra_session_create_from_file`
+//   with a `moshi` GGUF).
+// - `deterministic`: non-zero → greedy (temperature-0) sampling on both
+//   decode channels (reproducible demos / parity).
+// - `seed`: stochastic sampling seed (ignored when `deterministic`).
+// - `aec_disabled_explicitly`: non-zero **explicitly** skips the echo
+//   canceller (recorded-file input only — a loud warning is recorded on
+//   the session; there is no silent variant). Zero requires the engine's
+//   AEC wiring and fails loudly without it (FR-OP-60).
+// - `playback_offset_samples`: echo-reference clock compensation for the
+//   real playback latency (owner-tunable; 0 for file-driven use).
+// - `out_duplex`: on `VOKRA_OK`, receives the new handle.
+//
+// # Returns
+//
+// `VOKRA_OK`, or a non-zero status (no duplex engine on this session,
+// AEC posture violation, ...) with detail from `vokra_last_error()`.
+//
+// # Safety
+//
+// `session` must be a live session handle; `out_duplex` must be a valid,
+// writable pointer.
+enum vokra_status_t vokra_s2s_duplex_open(const struct vokra_session_t *session,
+                                          int32_t deterministic,
+                                          uint64_t seed,
+                                          int32_t aec_disabled_explicitly,
+                                          uint64_t playback_offset_samples,
+                                          struct vokra_s2s_duplex_t **out_duplex);
+
+// Mono samples per push/pull frame of `duplex` (size your PCM buffers
+// with this — 1920 for the real 24 kHz / 12.5 Hz model).
+//
+// # Safety
+//
+// `duplex` must be a live duplex handle; `out_hop` valid and writable.
+enum vokra_status_t vokra_s2s_frame_hop(const struct vokra_s2s_duplex_t *duplex,
+                                        size_t *out_hop);
+
+// PCM sample rate (Hz) of both duplex directions.
+//
+// # Safety
+//
+// `duplex` must be a live duplex handle; `out_rate` valid and writable.
+enum vokra_status_t vokra_s2s_sample_rate(const struct vokra_s2s_duplex_t *duplex,
+                                          uint32_t *out_rate);
+
+// Feeds one mic frame (exactly `vokra_s2s_frame_hop` samples) through
+// the input front (AEC unless explicitly disabled) and one model step.
+//
+// `out_emitted` (optional — may be `NULL`) receives non-zero once the
+// model produced a frame for this push (after its delay warmup); pull it
+// with `vokra_s2s_pull_audio`.
+//
+// # Safety
+//
+// `duplex` must be a live duplex handle owned by the calling thread;
+// `pcm` must point to `len` readable floats; `out_emitted` must be
+// `NULL` or writable.
+enum vokra_status_t vokra_s2s_push_mic(struct vokra_s2s_duplex_t *duplex,
+                                       const float *pcm,
+                                       size_t len,
+                                       int32_t *out_emitted);
+
+// Pops the next model frame for playback into `out_pcm`
+// (`capacity >= vokra_s2s_frame_hop` floats). `*out_len` is the sample
+// count written — `0` means nothing is pending (delay warmup / caught
+// up / flushed by a barge-in). Pulling is the playback hand-off: the
+// frame is stamped into the echo-reference queue at this moment.
+//
+// # Safety
+//
+// `duplex` must be a live duplex handle owned by the calling thread;
+// `out_pcm` must point to `capacity` writable floats; `out_len` must be
+// valid and writable.
+enum vokra_status_t vokra_s2s_pull_audio(struct vokra_s2s_duplex_t *duplex,
+                                         float *out_pcm,
+                                         size_t capacity,
+                                         size_t *out_len);
+
+// Copies the inner monologue accumulated so far (Moshi's self-generated
+// transcript, display-rule filtered) into `buf` as NUL-terminated UTF-8.
+//
+// `*out_needed` always receives the byte length **including** the NUL;
+// when `buf` is `NULL` or `buf_len` is too small, nothing is written and
+// the call still returns `VOKRA_OK` — size with a first call, then
+// fetch (the standard two-call string discipline).
+//
+// # Safety
+//
+// `duplex` must be a live duplex handle owned by the calling thread;
+// `buf` must be `NULL` or `buf_len` writable bytes; `out_needed` valid
+// and writable.
+enum vokra_status_t vokra_s2s_text(const struct vokra_s2s_duplex_t *duplex,
+                                   char *buf,
+                                   size_t buf_len,
+                                   size_t *out_needed);
+
+// Creates a cross-thread barge-in handle for `duplex` (module docs —
+// safe to fire from another thread while this one pushes/pulls).
+//
+// # Safety
+//
+// `duplex` must be a live duplex handle; `out_interrupt` valid and
+// writable.
+enum vokra_status_t vokra_s2s_interrupt_handle(const struct vokra_s2s_duplex_t *duplex,
+                                               struct vokra_s2s_interrupt_t **out_interrupt);
+
+// Requests barge-in (M3-14 semantics): the session flushes pending model
+// output and resets its generation state at the next push/pull boundary;
+// mic intake continues. Callable from any thread (the handle owns its
+// own atomic flag — module docs).
+//
+// # Safety
+//
+// `interrupt` must be a live interrupt handle (not yet destroyed).
+enum vokra_status_t vokra_s2s_interrupt(const struct vokra_s2s_interrupt_t *interrupt);
+
+// Frees a barge-in handle. `NULL` is a no-op; double-free is undefined
+// behaviour.
+//
+// # Safety
+//
+// `interrupt` must be `NULL` or a handle from
+// `vokra_s2s_interrupt_handle` not already freed.
+void vokra_s2s_interrupt_destroy(struct vokra_s2s_interrupt_t *interrupt);
+
+// Frees a duplex session. `NULL` is a no-op; double-free is undefined
+// behaviour. Outstanding interrupt handles stay valid (they only own an
+// atomic flag) but firing them after destroy has no observer.
+//
+// # Safety
+//
+// `duplex` must be `NULL` or a handle from `vokra_s2s_duplex_open` not
+// already freed.
+void vokra_s2s_duplex_destroy(struct vokra_s2s_duplex_t *duplex);
+
+// Copies the model's attribution text (FR-MD-09 — weights whose license
+// requires display, e.g. Moshi / Mimi CC-BY 4.0) into `buf` as
+// NUL-terminated UTF-8, with the two-call sizing discipline of
+// `vokra_s2s_text`.
+//
+// `*out_needed == 0` (and nothing written) means the loaded model's
+// weights carry **no** display obligation (permissive licenses) — an
+// attribution-required weight always yields a non-empty text (the
+// runtime falls back to a registry-derived string when the GGUF chunk is
+// absent; M4-06-T23).
+//
+// # Safety
+//
+// `session` must be a live session handle; `buf` must be `NULL` or
+// `buf_len` writable bytes; `out_needed` valid and writable.
+enum vokra_status_t vokra_model_attribution(const struct vokra_session_t *session,
+                                            char *buf,
+                                            size_t buf_len,
+                                            size_t *out_needed);
+
 // Loads a model from a GGUF file and creates an inference session on the CPU
 // backend (FR-API-01).
 //
@@ -174,6 +496,41 @@ const char *vokra_last_error(void);
 // valid, writable `vokra_session_t*` location.
 enum vokra_status_t vokra_session_create_from_file(const char *path_utf8,
                                                    struct vokra_session_t **out_session);
+
+// Loads a model from an in-memory GGUF buffer and creates an inference
+// session on the CPU backend — the bytes-based twin of
+// `vokra_session_create_from_file` (M4-02, prerelease ABI addition).
+//
+// The caller reads / downloads the `.gguf` bytes itself and hands them over;
+// Vokra copies them once and never touches the filesystem. Primary model
+// path on Unity WebGL, where StreamingAssets are HTTP-served (no `fopen`)
+// and Rust-side fs syscalls are ABI-skewed under Unity-era Emscripten
+// (ADR M4-02 §2/§3); valid — and useful — on every other platform too
+// (e.g. Android APK assets without the `persistentDataPath` expansion).
+//
+// # Parameters
+//
+// - `data`: pointer to the first byte of the GGUF buffer. The buffer is
+//   copied before this call returns; the caller may free it immediately
+//   afterwards.
+// - `len`: buffer length in bytes. Must be non-zero (an empty buffer is
+//   never a valid GGUF and is rejected loudly).
+// - `out_session`: on `VOKRA_OK`, receives a new session handle to be freed
+//   with `vokra_session_destroy`. Untouched on error.
+//
+// # Returns
+//
+// `VOKRA_OK`, or a non-zero status with the detail available from
+// `vokra_last_error()` (NULL/empty buffer, unparsable GGUF, unknown arch, ...).
+//
+// # Safety
+//
+// `data` must point at `len` valid, initialised bytes for the duration of
+// the call, and `out_session` must be a valid, writable `vokra_session_t*`
+// location.
+enum vokra_status_t vokra_session_create_from_bytes(const uint8_t *data,
+                                                    size_t len,
+                                                    struct vokra_session_t **out_session);
 
 // Retains the session, producing an independent handle that shares the same
 // loaded model via an atomic ref count (FR-API-03).

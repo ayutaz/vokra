@@ -81,8 +81,72 @@ impl FftPlan {
         self.run(x, true)
     }
 
-    fn run(&self, x: &[Complex32], inverse: bool) -> Vec<Complex32> {
+    /// Whether this plan runs the Direct mixed-radix path. Only Direct plans
+    /// support the allocation-free [`forward_raw_into`](Self::forward_raw_into)
+    /// / [`inverse_raw_into`](Self::inverse_raw_into) variants — the Bluestein
+    /// strategy (a largest prime factor above the threshold) needs internal
+    /// buffers. Hot-loop callers (FR-EX-05, M4-03) gate on this at setup time
+    /// and reject the length explicitly rather than falling back to an
+    /// allocating path (FR-EX-08 spirit).
+    pub fn is_direct(&self) -> bool {
+        matches!(self.kind, Kind::Direct { .. })
+    }
+
+    /// Length of the caller-provided scratch buffer the `_into` variants
+    /// require (= the transform length).
+    pub fn scratch_len(&self) -> usize {
+        self.n
+    }
+
+    /// Allocation-free [`forward_raw`](Self::forward_raw): writes the
+    /// unnormalized forward DFT of `x` into `out`, using `scratch` for the
+    /// combine levels. Bit-identical to `forward_raw` (same code path);
+    /// `scratch` may hold arbitrary values (every element is written before
+    /// any read).
+    ///
+    /// # Panics
+    ///
+    /// Panics on a Bluestein plan (gate with [`is_direct`](Self::is_direct)),
+    /// or if `x.len() != self.len()`, `out.len() != self.len()`, or
+    /// `scratch.len() < self.scratch_len()`.
+    pub fn forward_raw_into(
+        &self,
+        x: &[Complex32],
+        out: &mut [Complex32],
+        scratch: &mut [Complex32],
+    ) {
+        self.run_into(x, false, out, scratch);
+    }
+
+    /// Allocation-free [`inverse_raw`](Self::inverse_raw) (unnormalized; no
+    /// `1/n`). Same contract as [`forward_raw_into`](Self::forward_raw_into).
+    ///
+    /// # Panics
+    ///
+    /// Panics on a Bluestein plan, or on any length mismatch (see
+    /// [`forward_raw_into`](Self::forward_raw_into)).
+    pub fn inverse_raw_into(
+        &self,
+        x: &[Complex32],
+        out: &mut [Complex32],
+        scratch: &mut [Complex32],
+    ) {
+        self.run_into(x, true, out, scratch);
+    }
+
+    fn run_into(
+        &self,
+        x: &[Complex32],
+        inverse: bool,
+        out: &mut [Complex32],
+        scratch: &mut [Complex32],
+    ) {
         assert_eq!(x.len(), self.n, "FFT input length mismatch");
+        assert_eq!(out.len(), self.n, "FFT output length mismatch");
+        assert!(
+            scratch.len() >= self.n,
+            "FFT scratch shorter than scratch_len()"
+        );
         match &self.kind {
             Kind::Direct { factors, tw } => {
                 let ctx = FftCtx {
@@ -91,8 +155,24 @@ impl FftPlan {
                     big_n: self.n,
                     inverse,
                 };
+                fft_rec(&ctx, 0, 1, out, factors, scratch);
+            }
+            Kind::Bluestein(_) => panic!(
+                "FftPlan::{}_raw_into is alloc-free and unsupported on Bluestein plans \
+                 (length {} has a large prime factor); gate with is_direct()",
+                if inverse { "inverse" } else { "forward" },
+                self.n
+            ),
+        }
+    }
+
+    fn run(&self, x: &[Complex32], inverse: bool) -> Vec<Complex32> {
+        assert_eq!(x.len(), self.n, "FFT input length mismatch");
+        match &self.kind {
+            Kind::Direct { .. } => {
                 let mut out = vec![Complex32::ZERO; self.n];
-                fft_rec(&ctx, 0, 1, &mut out, factors);
+                let mut scratch = vec![Complex32::ZERO; self.n];
+                self.run_into(x, inverse, &mut out, &mut scratch);
                 out
             }
             Kind::Bluestein(plan) => {
@@ -166,6 +246,54 @@ mod tests {
         assert!(matches!(plan.kind, Kind::Bluestein(_)));
         let plan = FftPlan::new(1024);
         assert!(matches!(plan.kind, Kind::Direct { .. }));
+    }
+
+    #[test]
+    fn is_direct_mirrors_the_strategy() {
+        assert!(FftPlan::new(512).is_direct());
+        assert!(FftPlan::new(60).is_direct());
+        assert!(!FftPlan::new(101).is_direct(), "large prime → Bluestein");
+    }
+
+    /// The alloc-free `_into` variants are bit-identical to the allocating
+    /// API (same code path, same combine order), and the caller scratch may
+    /// hold arbitrary garbage — combine writes every scratch element before
+    /// any read (M4-03-T11 pre-allocation seam).
+    #[test]
+    fn into_variants_match_allocating_api_bit_exactly() {
+        for &n in &[2usize, 8, 64, 512, 12, 60, 400] {
+            let x = sample(n);
+            let plan = FftPlan::new(n);
+            let mut out = vec![Complex32::ZERO; n];
+            // Deliberate garbage so a read-before-write in the scratch shows.
+            let mut scratch = vec![Complex32::new(f32::NAN, -7.5); plan.scratch_len()];
+
+            plan.forward_raw_into(&x, &mut out, &mut scratch);
+            let want = plan.forward_raw(&x);
+            for (a, b) in out.iter().zip(&want) {
+                assert_eq!(a.re.to_bits(), b.re.to_bits(), "forward n={n}");
+                assert_eq!(a.im.to_bits(), b.im.to_bits(), "forward n={n}");
+            }
+
+            plan.inverse_raw_into(&x, &mut out, &mut scratch);
+            let want = plan.inverse_raw(&x);
+            for (a, b) in out.iter().zip(&want) {
+                assert_eq!(a.re.to_bits(), b.re.to_bits(), "inverse n={n}");
+                assert_eq!(a.im.to_bits(), b.im.to_bits(), "inverse n={n}");
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Bluestein")]
+    fn into_variant_panics_on_bluestein_plans() {
+        // The `_into` contract is alloc-free; the Bluestein strategy needs
+        // internal buffers, so callers must gate on `is_direct()`.
+        let plan = FftPlan::new(101);
+        let x = sample(101);
+        let mut out = vec![Complex32::ZERO; 101];
+        let mut scratch = vec![Complex32::ZERO; plan.scratch_len()];
+        plan.forward_raw_into(&x, &mut out, &mut scratch);
     }
 
     #[test]

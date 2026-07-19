@@ -1,0 +1,263 @@
+# Moshi real-checkpoint parity CI (M4-06-T25, reworked by M4 cc-06).
+#
+# Runs the staged Moshi parity harness
+# (`crates/vokra-models/tests/parity_moshi.rs` — backbone hidden / text
+# logits at FP32 atol=0.01 + bit-exact undelayed token streams, on BOTH
+# the resident and the mmap mapped-lazy load paths) against REAL
+# `kyutai/moshiko-pytorch-bf16` weights.
+#
+# # Truncated leg (what this workflow runs)
+#
+# The torch-side reference dump is the RAM wall: `moshi_dump.py real`
+# casts the 14.32 GiB BF16 dict to fp32 — ~43 GiB peak — which a 16 GB
+# ubuntu-latest runner cannot hold. The Vokra side has NO such wall any
+# more (M4 cc-06: streaming converter peaks ~0.3 GiB; mmap + mapped-lazy
+# engine load fits 16 GB even at full-7B — measured 2026-07-19 on an M1
+# 16 GB), so the runnable CI recipe truncates the REFERENCE model only:
+#
+#   1. download the full checkpoint (manifest-pinned),
+#   2. `tools/parity/moshi_truncate.py` → tm=2/dt=2 real-weight subset
+#      (byte-verbatim payloads; every derived hparam stays the real 7B
+#      value — the campaign-2 recipe, 11/11 frames bit-exact 2026-07-17),
+#   3. dump the torch reference from the TRUNCATED checkpoint
+#      (`--checkpoint … --lm-layers 2 --depformer-layers 2`, ~9 GiB),
+#   4. convert the truncated checkpoint with the STREAMING converter
+#      (BF16 passthrough; ~0.3 GiB peak),
+#   5. run the harness (resident + mmap legs must both be bit-exact).
+#
+# Disk: full download 14.4 GiB + truncated 4.2 GiB + GGUF 2.1 GiB + the
+# torch venv ≈ 28 GiB — the standard hosted-runner cleanup step below
+# reclaims enough (dotnet/android/ghc ≈ 25-30 GiB).
+#
+# # Full-7B leg (owner / self-hosted only — documented, not scheduled)
+#
+# Conversion and engine load of the FULL model now fit a 16 GB machine
+# (streaming convert: 27 s / 0.27 GiB RSS; mmap load + bounded duplex:
+# see docs), but the torch fp32 reference dump still needs ~43 GiB RAM.
+# The full-7B parity dump therefore stays an owner step on a big-RAM
+# host (M2-14 self-hosted runner candidate): same recipe minus the
+# truncate step, `moshi_dump.py real --hf-repo …` as before.
+#
+# Design (M2 Phase 3 / parity-kokoro-real.yml discipline):
+#
+#   * Trigger: workflow_dispatch (owner-driven) + weekly cron + a narrow
+#     pull_request paths filter. Not a required check — HF flakiness must
+#     not block PRs; promotion is an owner call after consecutive greens.
+#
+#   * The checkpoint download is ~15 GB. The cron leg **clean-skips**
+#     unless the repository variable `MOSHI_PARITY_ENABLE` is `1` (the
+#     T29/T30 owner flips it after weight sourcing) — an annotation says
+#     so explicitly; a workflow_dispatch run proceeds regardless (the
+#     dispatcher opted in). Fabricated pass 禁止: a skip is always
+#     visibly a skip.
+#
+#   * Pins: HF revision (env.MOSHIKO_REVISION — `main` until the T29
+#     sourcing pins a snapshot SHA) and the moshi package at the commit
+#     the ADR M4-06 §D2 primary sources were transcribed from
+#     (env.MOSHI_GIT_SHA, kyutai-labs/moshi main @ 2026-07-15 fetch).
+#
+#   * Python deps live in a venv; the final `git diff --exit-code
+#     Cargo.lock` step proves the zero-dep invariant (NFR-DS-02) held.
+#
+#   * Honest reporting: the harness prints hidden/logits max |Δ| and the
+#     bit-exact frame verdicts for BOTH load paths; a failure names the
+#     stage. The quality gate (moshi_quality_gate.rs) is deliberately NOT
+#     run here — its env-gated leg refuses (by design) until the shared
+#     Mimi module binds real weights (see that file's rustdoc).
+#
+# Initial workflow_dispatch = owner (M4-06-T30).
+
+name: parity-moshi-real
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays 07:30 UTC — its own slot in the weekly stagger (kokoro 04:00,
+    # whisper 05:00, vulkan 05:30, cuda-rtf 06:00, csm 06:30, web-wasm
+    # 07:00, moshi 07:30, utmos 08:00, godot 08:30).
+    - cron: "30 7 * * 1"
+  pull_request:
+    paths:
+      - "crates/vokra-models/src/moshi/**"
+      - "crates/vokra-models/tests/parity_moshi.rs"
+      - "crates/vokra-convert/src/models/moshi.rs"
+      - "tools/parity/moshi_dump.py"
+      - "tools/parity/moshi_inspect.py"
+      - "tools/parity/moshi_truncate.py"
+      - ".github/workflows/parity-moshi-real.yml"
+
+env:
+  # `main` until the T29 owner sourcing pins a snapshot revision.
+  MOSHIKO_REPO: kyutai/moshiko-pytorch-bf16
+  MOSHIKO_REVISION: main
+  # kyutai-labs/moshi main at the ADR M4-06 §D2 transcription date
+  # (2026-07-15 fetch — loaders.py/_lm_kwargs etc.).
+  MOSHI_GIT_SHA: e6a55d2722a65870ef52a6c9f6ecfc0e90f38362
+  PARITY_STEPS: "12"
+  # The campaign-2 truncation shape (temporal 32→2, depformer 6→2):
+  # keeps every derived hparam at the real 7B value while the torch fp32
+  # reference dump fits ~9 GiB (the full model needs ~43 GiB — see the
+  # header; full-7B parity dumps are owner / self-hosted).
+  TRUNC_TM: "2"
+  TRUNC_DT: "2"
+
+jobs:
+  setup:
+    name: gate (checkpoint sourcing opt-in)
+    runs-on: ubuntu-latest
+    outputs:
+      run_parity: ${{ steps.decide.outputs.run_parity }}
+    steps:
+      - id: decide
+        env:
+          ENABLE_VAR: ${{ vars.MOSHI_PARITY_ENABLE }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run_parity=true" >> "$GITHUB_OUTPUT"
+            echo "dispatch run: proceeding (the dispatcher opted in to the ~15 GB fetch)"
+          elif [ "${ENABLE_VAR}" = "1" ]; then
+            echo "run_parity=true" >> "$GITHUB_OUTPUT"
+            echo "MOSHI_PARITY_ENABLE=1: proceeding"
+          else
+            echo "run_parity=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=parity-moshi-real clean skip::checkpoint sourcing is the M4-06 T29 owner step — set the repository variable MOSHI_PARITY_ENABLE=1 (or workflow_dispatch) to run the ~15 GB real-checkpoint truncated parity. This is a clean gated skip, not a pass (fabricated pass 禁止)."
+          fi
+
+  parity:
+    name: staged parity vs kyutai/moshiko (truncated real weights)
+    needs: setup
+    if: needs.setup.outputs.run_parity == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Free hosted-runner disk (the 15 GB download + artifacts need ~28 GiB)
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Cache HF hub
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-moshiko-${{ env.MOSHIKO_REVISION }}
+
+      - name: Parity venv (torch + pinned moshi package)
+        run: |
+          python3 -m venv .venv-moshi
+          . .venv-moshi/bin/activate
+          python -m pip install --upgrade pip
+          # CPU torch keeps the runner lean; the dump is argmax/deterministic.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install "huggingface_hub" "safetensors" "sentencepiece" "sphn" "einops"
+          pip install "git+https://github.com/kyutai-labs/moshi.git@${MOSHI_GIT_SHA}#subdirectory=moshi"
+
+      - name: Fetch checkpoint + tokenizer + Mimi weights (pinned revision)
+        run: |
+          . .venv-moshi/bin/activate
+          python - <<'PY'
+          import os
+          from huggingface_hub import hf_hub_download
+          repo = os.environ["MOSHIKO_REPO"]
+          rev = os.environ["MOSHIKO_REVISION"]
+          for f in ["model.safetensors", "tokenizer_spm_32k_3.model",
+                    "tokenizer-e351c8d8-checkpoint125.safetensors"]:
+              p = hf_hub_download(repo, f, revision=rev)
+              print(f, "->", p)
+          PY
+
+      - name: Verify tensor manifest against the committed T02 fixture
+        run: |
+          . .venv-moshi/bin/activate
+          python - <<'PY'
+          import json, os, struct
+          from huggingface_hub import hf_hub_download
+          path = hf_hub_download(os.environ["MOSHIKO_REPO"], "model.safetensors",
+                                 revision=os.environ["MOSHIKO_REVISION"])
+          with open(path, "rb") as f:
+              (n,) = struct.unpack("<Q", f.read(8))
+              header = json.loads(f.read(n))
+          live = {k: {"dtype": v["dtype"], "shape": v["shape"]}
+                  for k, v in header.items() if k != "__metadata__"}
+          committed = json.load(open("tests/parity/moshi/moshiko_tensor_manifest.json"))
+          committed.pop("__metadata__", None)
+          if live != committed:
+              raise SystemExit(
+                  "tensor manifest drifted from tests/parity/moshi/"
+                  "moshiko_tensor_manifest.json — upstream re-upload? Re-run "
+                  "tools/parity/moshi_inspect.py and review before trusting parity.")
+          print(f"manifest OK ({len(live)} tensors)")
+          PY
+
+      - name: Truncate the checkpoint (real weight bytes, tm/dt layer subset)
+        run: |
+          . .venv-moshi/bin/activate
+          CKPT=$(python - <<'PY'
+          import os
+          from huggingface_hub import hf_hub_download
+          print(hf_hub_download(os.environ["MOSHIKO_REPO"], "model.safetensors",
+                                revision=os.environ["MOSHIKO_REVISION"]))
+          PY
+          )
+          python tools/parity/moshi_truncate.py --src "$CKPT" \
+            --dst moshiko-trunc.safetensors \
+            --keep-tm "${TRUNC_TM}" --keep-dt "${TRUNC_DT}"
+          ls -la moshiko-trunc.safetensors
+          df -h /
+
+      - name: Dump the staged upstream reference (truncated, argmax, deterministic)
+        run: |
+          . .venv-moshi/bin/activate
+          MIMI=$(python - <<'PY'
+          import os
+          from huggingface_hub import hf_hub_download
+          print(hf_hub_download(os.environ["MOSHIKO_REPO"],
+                                "tokenizer-e351c8d8-checkpoint125.safetensors",
+                                revision=os.environ["MOSHIKO_REVISION"]))
+          PY
+          )
+          mkdir -p parity-out
+          python tools/parity/moshi_dump.py real --out parity-out \
+            --steps "${PARITY_STEPS}" \
+            --checkpoint moshiko-trunc.safetensors \
+            --mimi-weight "$MIMI" \
+            --lm-layers "${TRUNC_TM}" --depformer-layers "${TRUNC_DT}"
+
+      - name: Convert the truncated checkpoint (streaming, BF16 passthrough)
+        run: |
+          . .venv-moshi/bin/activate
+          TOK=$(python - <<'PY'
+          import os
+          from huggingface_hub import hf_hub_download
+          print(hf_hub_download(os.environ["MOSHIKO_REPO"], "tokenizer_spm_32k_3.model",
+                                revision=os.environ["MOSHIKO_REVISION"]))
+          PY
+          )
+          # Bounded memory by construction (M4 cc-06): header-only checkpoint
+          # open + GgufStreamWriter, one tensor payload in RAM at a time.
+          cargo run --release -p vokra-convert -- --model moshi \
+            --input moshiko-trunc.safetensors --config "$TOK" \
+            --output parity-out/model.gguf
+          df -h /
+
+      - name: Run the staged parity harness (resident + mmap mapped-lazy legs)
+        run: |
+          VOKRA_MOSHI_PARITY_DIR="$PWD/parity-out" \
+            cargo test --release -p vokra-models --test parity_moshi -- --nocapture \
+            | tee parity-summary.txt
+          {
+            echo "## Moshi staged parity (truncated real checkpoint, tm=${TRUNC_TM}/dt=${TRUNC_DT})"
+            echo '```'
+            grep -E "moshi staged parity|test .* \.\.\." parity-summary.txt || true
+            echo '```'
+            echo "_Full-7B: converter + mmap engine load fit 16 GB (M4 cc-06); the torch fp32 reference dump (~43 GiB) keeps full-7B parity an owner / self-hosted step._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Zero-dep invariant held (NFR-DS-02)
+        run: git diff --exit-code Cargo.lock

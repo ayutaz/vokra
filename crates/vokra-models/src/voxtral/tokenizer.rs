@@ -41,9 +41,23 @@
 //!   can either (a) use [`Self::from_bytes`] with a compact-vocab dump the
 //!   converter produces (T19+ parity fixture pipeline), or (b) consume
 //!   [`Self::raw_bytes`] and drive an external parser.
-//! - It does not implement **encoding** (text → token ids). Voxtral ASR uses
-//!   token id → text (decode direction); encoding is only needed for prompt
-//!   conditioning and lands with the full autoregressive decode loop (T13+).
+//! - It does not implement **general text encoding** (arbitrary text → token
+//!   ids): that would require the full tekken regex pre-tokenizer (Unicode
+//!   property classes) on top of the BPE merge. What it DOES implement (P2
+//!   cc-05/07 follow-up) is the narrow encode surface the runtime
+//!   transcription prompt needs:
+//!   - [`Self::token_id_of_special`] — exact-name lookup of a special token
+//!     (the compact vocab stores special-token names verbatim, e.g.
+//!     `[INST]`, `[BEGIN_AUDIO]`, `[TRANSCRIBE]`);
+//!   - [`Self::encode_piece`] — tiktoken-style byte-pair encoding of ONE
+//!     pre-split regex piece (whole-piece shortcut, then lowest-rank-first
+//!     adjacent merges; the compact vocab's id order IS the tekken rank
+//!     order, so ids double as merge ranks);
+//!   - [`Self::transcription_prompt`] — the trained Voxtral
+//!     transcription-request wrapper built from the two primitives above.
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use vokra_core::gguf::{GgufFile, GgufMetadataValue};
 use vokra_core::{Result, VokraError};
@@ -80,6 +94,38 @@ pub struct VoxtralTokenizer {
     /// ships `2` as `</s>`; callers pass it explicitly since it comes from
     /// the config side-car).
     eos: u32,
+    /// Lazily-built bytes → id map over the **non-special** entries, used by
+    /// [`Self::encode_piece`]. On duplicate byte sequences the LOWEST id
+    /// wins: compact-vocab id order is the tekken rank order, and BPE merge
+    /// priority is by rank, so the lowest id is the token the reference
+    /// encoder would produce. Built on first encode use (decode-only callers
+    /// never pay for it).
+    encode_map: OnceLock<HashMap<Vec<u8>, u32>>,
+}
+
+/// The runtime-constructed Voxtral transcription-request prompt (the trained
+/// layout `VoxtralProcessor.apply_transcription_request` drives upstream):
+///
+/// ```text
+/// [<s>] [INST] [BEGIN_AUDIO]  {audio soft-prefix rows}  [/INST] ("lang:xx")? [TRANSCRIBE]
+/// └────────── pre_audio ────┘                          └────────── post_audio ─────────┘
+/// ```
+///
+/// The audio run between the two segments is fed as **embedding rows** (the
+/// adapter's soft prefix) via
+/// [`TextDecoderSession::step_into_with_embed_prefix`](super::TextDecoderSession::step_into_with_embed_prefix)
+/// — the `masked_scatter` semantics of upstream
+/// `VoxtralForConditionalGeneration.forward` (audio embeds replace the
+/// `[AUDIO]` placeholder positions in order), so the placeholder ids
+/// themselves never enter the runtime session.
+///
+/// Built by [`VoxtralTokenizer::transcription_prompt`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptionPrompt {
+    /// Token ids before the audio run: `[<s>, [INST], [BEGIN_AUDIO]]`.
+    pub pre_audio: Vec<u32>,
+    /// Token ids after the audio run: `[[/INST], ("lang:xx" pieces)?, [TRANSCRIBE]]`.
+    pub post_audio: Vec<u32>,
 }
 
 impl VoxtralTokenizer {
@@ -150,7 +196,12 @@ impl VoxtralTokenizer {
     /// heuristic are retained silently — the raw bytes remain available.
     pub fn from_bytes(raw: Vec<u8>, eos: u32) -> Result<Self> {
         let entries = Self::parse_compact_vocab(&raw)?;
-        Ok(Self { raw, entries, eos })
+        Ok(Self {
+            raw,
+            entries,
+            eos,
+            encode_map: OnceLock::new(),
+        })
     }
 
     /// Attempts to parse `data` as the compact-vocab little-endian binary
@@ -299,6 +350,216 @@ impl VoxtralTokenizer {
             }
         }
         Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    // -----------------------------------------------------------------
+    // Narrow encode surface (P2 cc-05/07 follow-up: runtime transcription
+    // prompt). NOT a general text encoder — see the module doc.
+    // -----------------------------------------------------------------
+
+    /// Looks up a **special** token id by its literal name (e.g. `"[INST]"`,
+    /// `"[BEGIN_AUDIO]"`, `"[TRANSCRIBE]"`, `"<s>"`). The tekken compact
+    /// vocab stores special-token names verbatim with the special flag set,
+    /// so no id is ever guessed — a vocab that does not carry the name is an
+    /// explicit error (FR-EX-08), never a hard-coded fallback constant.
+    ///
+    /// Only entries flagged special are matched: a *text* token that happens
+    /// to render as `"[INST]"` (user-typed bracket text) is NOT a control
+    /// token and must not be returned here.
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::NotImplemented`] if the tokenizer holds a raw
+    ///   SentencePiece / tekken proto instead of a compact vocab;
+    /// - [`VokraError::ModelLoad`] if the compact vocab has no special entry
+    ///   named `name`.
+    pub fn token_id_of_special(&self, name: &str) -> Result<u32> {
+        if self.entries.is_empty() {
+            return Err(VokraError::NotImplemented(
+                "voxtral tokenizer: no compact-vocab table — special-token lookup needs the \
+                 compact vocab embedded in the GGUF (see decode())",
+            ));
+        }
+        let needle = name.as_bytes();
+        self.entries
+            .iter()
+            .position(|e| e.special && e.bytes == needle)
+            .map(|i| i as u32)
+            .ok_or_else(|| {
+                VokraError::ModelLoad(format!(
+                    "voxtral tokenizer: special token `{name}` is not present in the embedded \
+                     compact vocab ({} entries) — the GGUF's `{KEY_TOKENIZER_MODEL}` chunk does \
+                     not carry the tekken special-token table this prompt layout needs. \
+                     Re-embed the full compact vocab (special names included) at convert time.",
+                    self.entries.len()
+                ))
+            })
+    }
+
+    /// The bytes → id encode map (non-special entries only), built once on
+    /// first use. Lowest id wins on duplicates — see the field docstring.
+    fn encode_map(&self) -> &HashMap<Vec<u8>, u32> {
+        self.encode_map.get_or_init(|| {
+            let mut m: HashMap<Vec<u8>, u32> = HashMap::with_capacity(self.entries.len());
+            for (i, e) in self.entries.iter().enumerate() {
+                if !e.special {
+                    m.entry(e.bytes.clone()).or_insert(i as u32);
+                }
+            }
+            m
+        })
+    }
+
+    /// Encodes ONE pre-split regex piece to token ids with tiktoken-style
+    /// byte-pair encoding:
+    ///
+    /// 1. whole-piece shortcut: if `piece` is a vocab entry, return its id;
+    /// 2. otherwise start from the individual bytes and repeatedly merge the
+    ///    adjacent pair whose concatenation has the LOWEST id (= lowest
+    ///    tekken rank; leftmost wins ties) until no adjacent pair merges.
+    ///
+    /// This is exact for a single piece because a tiktoken-family vocab is
+    /// its own merge table (a merge `(A, B) → AB` is legal iff `AB` is in
+    /// the vocab, with priority = rank of `AB`) and the compact vocab
+    /// preserves id order = rank order. What this function does NOT do is
+    /// the tekken regex pre-tokenization — the caller must supply a piece
+    /// the upstream regex would emit as one unit (see
+    /// [`Self::transcription_prompt`] for the one place the runtime does
+    /// that, with the split reasoning documented).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::NotImplemented`] without a compact vocab;
+    /// - [`VokraError::InvalidArgument`] on an empty piece or a byte with no
+    ///   single-byte vocab entry (the piece cannot be encoded — surfaced,
+    ///   never skipped, FR-EX-08).
+    pub fn encode_piece(&self, piece: &[u8]) -> Result<Vec<u32>> {
+        if self.entries.is_empty() {
+            return Err(VokraError::NotImplemented(
+                "voxtral tokenizer: no compact-vocab table — encode_piece needs the compact \
+                 vocab embedded in the GGUF (see decode())",
+            ));
+        }
+        if piece.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "voxtral tokenizer: encode_piece called with an empty piece".into(),
+            ));
+        }
+        let map = self.encode_map();
+        // Whole-piece shortcut (tiktoken `_encode_ordinary` fast path).
+        if let Some(&id) = map.get(piece) {
+            return Ok(vec![id]);
+        }
+        // Byte-pair merge over `(start, end)` ranges into `piece`.
+        let mut parts: Vec<(usize, usize)> = (0..piece.len()).map(|i| (i, i + 1)).collect();
+        for &(s, e) in &parts {
+            if !map.contains_key(&piece[s..e]) {
+                return Err(VokraError::InvalidArgument(format!(
+                    "voxtral tokenizer: byte 0x{:02X} has no single-byte vocab entry — the \
+                     piece {:?} cannot be byte-pair encoded against this vocab",
+                    piece[s],
+                    String::from_utf8_lossy(piece),
+                )));
+            }
+        }
+        loop {
+            // Find the adjacent pair whose merged bytes have the lowest id
+            // (strict `<` keeps the leftmost on ties — tiktoken semantics).
+            let mut best: Option<(usize, u32)> = None;
+            for i in 0..parts.len().saturating_sub(1) {
+                let cand = &piece[parts[i].0..parts[i + 1].1];
+                if let Some(&id) = map.get(cand) {
+                    if best.is_none_or(|(_, b)| id < b) {
+                        best = Some((i, id));
+                    }
+                }
+            }
+            let Some((i, _)) = best else { break };
+            parts[i].1 = parts[i + 1].1;
+            parts.remove(i + 1);
+        }
+        // Invariant: every part's bytes are in `map` — the initial
+        // single-byte parts were checked above, and a merge only happens
+        // when the merged candidate itself was found in `map`. So this
+        // index cannot panic.
+        Ok(parts.iter().map(|&(s, e)| map[&piece[s..e]]).collect())
+    }
+
+    /// Builds the trained Voxtral **transcription-request prompt** at
+    /// runtime from the embedded compact vocab — no offline
+    /// `mistral_common` dump involved.
+    ///
+    /// Layout (mistral_common `InstructTokenizerV7.encode_transcription`,
+    /// `tokens/tokenizers/instruct.py`):
+    ///
+    /// ```text
+    /// [<s>] [INST] [BEGIN_AUDIO] {audio} [/INST] ("lang:{code}")? [TRANSCRIBE]
+    /// ```
+    ///
+    /// with the `lang:{code}` segment present iff `language` is `Some`
+    /// (upstream: `if request.language is not None: tokens +=
+    /// tokenizer.encode(f"lang:{request.language}", bos=False, eos=False)`).
+    ///
+    /// # Language-code tokenization (honest scope)
+    ///
+    /// Upstream runs the full tekken regex over `"lang:{code}"`. For a code
+    /// of pure lowercase ASCII letters the split is provably
+    /// `["lang", ":{code}"]`: the pattern's first alternative
+    /// `[^\r\n\p{L}\p{N}]?[\p{Lu}…]*[\p{Ll}…]+` matches `lang` (letters
+    /// run), then at `:` matches the optional leading non-letter plus the
+    /// lowercase run `:{code}` (leftmost-first alternation). Each piece is
+    /// then byte-pair encoded — exactly what [`Self::encode_piece`] does.
+    /// Codes containing anything but lowercase ASCII letters (digits,
+    /// hyphens, uppercase — e.g. `zh-CN`) would split differently under the
+    /// full regex, so they are rejected with an explicit error rather than
+    /// encoded unfaithfully (FR-EX-08). ISO 639-1/-3 codes (`en`, `fr`,
+    /// `ja`, `deu`, …) all fit the accepted alphabet.
+    ///
+    /// Verified against the offline `mistral_common` dump: `"en"` produces
+    /// `post_audio = [[/INST], "lang", ":", "en", [TRANSCRIBE]]` =
+    /// `[4, 9909, 1058, 1262, 34]` on the shipping tekken vocab (see the
+    /// env-gated bit-check test `voxtral_transcription_prompt.rs`).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::NotImplemented`] without a compact vocab;
+    /// - [`VokraError::ModelLoad`] if a required special token
+    ///   (`<s>` / `[INST]` / `[BEGIN_AUDIO]` / `[/INST]` / `[TRANSCRIBE]`)
+    ///   is absent from the vocab;
+    /// - [`VokraError::InvalidArgument`] on a language code outside
+    ///   `[a-z]{1,8}`.
+    pub fn transcription_prompt(&self, language: Option<&str>) -> Result<TranscriptionPrompt> {
+        let bos = self.token_id_of_special("<s>")?;
+        let inst = self.token_id_of_special("[INST]")?;
+        let begin_audio = self.token_id_of_special("[BEGIN_AUDIO]")?;
+        let inst_end = self.token_id_of_special("[/INST]")?;
+        let transcribe = self.token_id_of_special("[TRANSCRIBE]")?;
+
+        let mut post_audio = vec![inst_end];
+        if let Some(code) = language {
+            if code.is_empty() || code.len() > 8 || !code.bytes().all(|b| b.is_ascii_lowercase()) {
+                return Err(VokraError::InvalidArgument(format!(
+                    "voxtral tokenizer: language code `{code}` is outside the runtime-encodable \
+                     alphabet [a-z]{{1,8}}. The runtime mirrors the tekken regex split only for \
+                     pure lowercase-ASCII codes (ISO 639-1/-3); other codes would need the full \
+                     tekken pre-tokenizer to encode faithfully — pass a lowercase two/three-letter \
+                     code, or None to omit the `lang:` segment (upstream semantics)."
+                )));
+            }
+            post_audio.extend(self.encode_piece(b"lang")?);
+            // ":{code}" is ONE regex piece (optional leading non-letter +
+            // lowercase run) — see the docstring's split reasoning.
+            let mut colon_code = Vec::with_capacity(1 + code.len());
+            colon_code.push(b':');
+            colon_code.extend_from_slice(code.as_bytes());
+            post_audio.extend(self.encode_piece(&colon_code)?);
+        }
+        post_audio.push(transcribe);
+
+        Ok(TranscriptionPrompt {
+            pre_audio: vec![bos, inst, begin_audio],
+            post_audio,
+        })
     }
 
     /// Fingerprints `bytes` as a SentencePiece proto blob. This is a
@@ -488,5 +749,225 @@ mod tests {
     fn detect_sentencepiece_proto_negative_on_empty() {
         assert!(!VoxtralTokenizer::detect_sentencepiece_proto(&[]));
         assert!(!VoxtralTokenizer::detect_sentencepiece_proto(&[0x00]));
+    }
+
+    // -----------------------------------------------------------------
+    // Encode surface (P2 cc-05/07 follow-up): special-name lookup, piece
+    // BPE, transcription prompt.
+    // -----------------------------------------------------------------
+
+    /// Builds a compact-vocab blob from `(special, bytes)` entries.
+    fn blob_from(entries: &[(u8, &[u8])]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        for (sp, bytes) in entries {
+            v.push(*sp);
+            v.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            v.extend_from_slice(bytes);
+        }
+        v
+    }
+
+    /// A tekken-shaped miniature vocab: specials at the REAL shipping ids
+    /// (1 = `<s>`, 2 = `</s>`, 3 = `[INST]`, 4 = `[/INST]`, 24 = `[AUDIO]`,
+    /// 25 = `[BEGIN_AUDIO]`, 34 = `[TRANSCRIBE]`), text tokens for the
+    /// `lang:en` pieces plus the single bytes BPE needs. Filler entries are
+    /// unique unmergeable text tokens.
+    fn tekken_mini() -> VoxtralTokenizer {
+        let mut entries: Vec<(u8, Vec<u8>)> = (0..64u32)
+            .map(|i| (0u8, format!("<f{i}>").into_bytes()))
+            .collect();
+        let mut set = |id: usize, sp: u8, bytes: &[u8]| {
+            entries[id] = (sp, bytes.to_vec());
+        };
+        set(0, 1, b"<unk>");
+        set(1, 1, b"<s>");
+        set(2, 1, b"</s>");
+        set(3, 1, b"[INST]");
+        set(4, 1, b"[/INST]");
+        set(24, 1, b"[AUDIO]");
+        set(25, 1, b"[BEGIN_AUDIO]");
+        set(34, 1, b"[TRANSCRIBE]");
+        set(40, 0, b"lang");
+        set(41, 0, b":");
+        set(42, 0, b"en");
+        set(50, 0, b"e");
+        set(51, 0, b"n");
+        // Single bytes for the "fr" BPE-path test: no "fr" merged token, so
+        // the encode must fall back to the byte pair.
+        set(52, 0, b"f");
+        set(53, 0, b"r");
+        let flat: Vec<(u8, &[u8])> = entries.iter().map(|(sp, b)| (*sp, b.as_slice())).collect();
+        VoxtralTokenizer::from_bytes(blob_from(&flat), 2).unwrap()
+    }
+
+    #[test]
+    fn special_lookup_finds_shipping_names_at_their_ids() {
+        let t = tekken_mini();
+        assert_eq!(t.token_id_of_special("<s>").unwrap(), 1);
+        assert_eq!(t.token_id_of_special("[INST]").unwrap(), 3);
+        assert_eq!(t.token_id_of_special("[/INST]").unwrap(), 4);
+        assert_eq!(t.token_id_of_special("[AUDIO]").unwrap(), 24);
+        assert_eq!(t.token_id_of_special("[BEGIN_AUDIO]").unwrap(), 25);
+        assert_eq!(t.token_id_of_special("[TRANSCRIBE]").unwrap(), 34);
+    }
+
+    #[test]
+    fn special_lookup_missing_name_is_model_load_error() {
+        let t = tekken_mini();
+        let err = t.token_id_of_special("[NOT_A_TOKEN]").unwrap_err();
+        assert!(matches!(err, VokraError::ModelLoad(_)), "{err:?}");
+    }
+
+    #[test]
+    fn special_lookup_ignores_text_entries_with_special_looking_bytes() {
+        // A TEXT token whose bytes read "[INST]" must not be returned by the
+        // special lookup (user-typed bracket text is not a control token).
+        let entries: &[(u8, &[u8])] = &[(0, b"[INST]"), (1, b"[INST]")];
+        let t = VoxtralTokenizer::from_bytes(blob_from(entries), 0).unwrap();
+        assert_eq!(t.token_id_of_special("[INST]").unwrap(), 1);
+    }
+
+    #[test]
+    fn special_lookup_without_compact_vocab_is_not_implemented() {
+        let blob = vec![0x0A, 0xFF, 0xFF, 0xFF]; // proto fingerprint
+        let t = VoxtralTokenizer::from_bytes(blob, 2).unwrap();
+        assert!(matches!(
+            t.token_id_of_special("<s>"),
+            Err(VokraError::NotImplemented(_))
+        ));
+    }
+
+    #[test]
+    fn encode_piece_whole_piece_shortcut() {
+        let t = tekken_mini();
+        assert_eq!(t.encode_piece(b"lang").unwrap(), vec![40]);
+        assert_eq!(t.encode_piece(b":").unwrap(), vec![41]);
+        assert_eq!(t.encode_piece(b"en").unwrap(), vec![42]);
+    }
+
+    #[test]
+    fn encode_piece_bpe_merges_lowest_rank_first() {
+        // ":en": no whole-piece entry, bytes [':', 'e', 'n']. Candidate
+        // merges: ('e','n') → "en" (id 42). ':'+"en" → ":en" absent. Result
+        // must be [":" = 41, "en" = 42] — the shipping tekken shape.
+        let t = tekken_mini();
+        assert_eq!(t.encode_piece(b":en").unwrap(), vec![41, 42]);
+        // ":fr": "fr" has no merged entry → stays as single bytes.
+        assert_eq!(t.encode_piece(b":fr").unwrap(), vec![41, 52, 53]);
+    }
+
+    #[test]
+    fn encode_piece_merge_priority_is_by_id_leftmost_on_tie() {
+        // Vocab: bytes a(id 3), b(id 4), c(id 5); merges "ab"(id 1),
+        // "bc"(id 2), "abc" absent. For "abc": lowest-id merge is "ab"
+        // (1 < 2) even though "bc" also matches → [ab, c] = [1, 5]. A
+        // naive left-to-right greedy would also pick "ab" here, so pin the
+        // priority with the mirrored vocab too: "ab"(id 2), "bc"(id 1) →
+        // must produce [a, bc] = [3, 1].
+        let v1: &[(u8, &[u8])] = &[
+            (0, b"<pad>"),
+            (0, b"ab"),
+            (0, b"bc"),
+            (0, b"a"),
+            (0, b"b"),
+            (0, b"c"),
+        ];
+        let t1 = VoxtralTokenizer::from_bytes(blob_from(v1), 0).unwrap();
+        assert_eq!(t1.encode_piece(b"abc").unwrap(), vec![1, 5]);
+        let v2: &[(u8, &[u8])] = &[
+            (0, b"<pad>"),
+            (0, b"bc"),
+            (0, b"ab"),
+            (0, b"a"),
+            (0, b"b"),
+            (0, b"c"),
+        ];
+        let t2 = VoxtralTokenizer::from_bytes(blob_from(v2), 0).unwrap();
+        assert_eq!(t2.encode_piece(b"abc").unwrap(), vec![3, 1]);
+    }
+
+    #[test]
+    fn encode_piece_missing_single_byte_is_invalid_argument() {
+        let t = tekken_mini();
+        // 'z' has no single-byte entry in the mini vocab and "zz" is not a
+        // whole-piece entry.
+        let err = t.encode_piece(b"zz").unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)), "{err:?}");
+    }
+
+    #[test]
+    fn encode_piece_empty_and_no_vocab_are_errors() {
+        let t = tekken_mini();
+        assert!(matches!(
+            t.encode_piece(b""),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let proto = VoxtralTokenizer::from_bytes(vec![0x0A, 0xFF, 0xFF, 0xFF], 2).unwrap();
+        assert!(matches!(
+            proto.encode_piece(b"lang"),
+            Err(VokraError::NotImplemented(_))
+        ));
+    }
+
+    #[test]
+    fn encode_piece_duplicate_bytes_prefers_lowest_id() {
+        // Two text entries with identical bytes: the encode map must keep
+        // the lowest id (rank order = merge preference).
+        let entries: &[(u8, &[u8])] = &[(0, b"x"), (0, b"dup"), (0, b"dup")];
+        let t = VoxtralTokenizer::from_bytes(blob_from(entries), 0).unwrap();
+        assert_eq!(t.encode_piece(b"dup").unwrap(), vec![1]);
+    }
+
+    #[test]
+    fn transcription_prompt_matches_shipping_layout_for_en() {
+        // On the tekken-shaped mini vocab the prompt must reproduce the
+        // exact structure the offline mistral_common dump pinned:
+        // pre = [<s>, [INST], [BEGIN_AUDIO]], post = [[/INST], "lang", ":",
+        // "en", [TRANSCRIBE]]. (The REAL-vocab bit-check against the dump
+        // ids lives in the env-gated voxtral_transcription_prompt.rs.)
+        let t = tekken_mini();
+        let p = t.transcription_prompt(Some("en")).unwrap();
+        assert_eq!(p.pre_audio, vec![1, 3, 25]);
+        assert_eq!(p.post_audio, vec![4, 40, 41, 42, 34]);
+    }
+
+    #[test]
+    fn transcription_prompt_language_none_omits_lang_segment() {
+        // Upstream: `if request.language is not None` — None skips the
+        // whole "lang:{code}" run.
+        let t = tekken_mini();
+        let p = t.transcription_prompt(None).unwrap();
+        assert_eq!(p.pre_audio, vec![1, 3, 25]);
+        assert_eq!(p.post_audio, vec![4, 34]);
+    }
+
+    #[test]
+    fn transcription_prompt_rejects_non_lowercase_ascii_codes() {
+        let t = tekken_mini();
+        for bad in ["EN", "zh-CN", "e n", "", "abcdefghi", "ja1"] {
+            let err = t.transcription_prompt(Some(bad)).unwrap_err();
+            assert!(
+                matches!(err, VokraError::InvalidArgument(_)),
+                "code {bad:?}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn transcription_prompt_missing_special_is_model_load_error() {
+        // A vocab without [TRANSCRIBE] must fail loudly — the prompt cannot
+        // be fabricated from partial specials.
+        let entries: &[(u8, &[u8])] = &[
+            (1, b"<unk>"),
+            (1, b"<s>"),
+            (1, b"</s>"),
+            (1, b"[INST]"),
+            (1, b"[/INST]"),
+            (1, b"[BEGIN_AUDIO]"),
+        ];
+        let t = VoxtralTokenizer::from_bytes(blob_from(entries), 2).unwrap();
+        let err = t.transcription_prompt(None).unwrap_err();
+        assert!(matches!(err, VokraError::ModelLoad(_)), "{err:?}");
     }
 }

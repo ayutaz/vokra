@@ -26,7 +26,7 @@
 #      by name + normalized signature, and `sort -u` collapses two impls
 #      that share both name AND signature into one entry. Sufficient for
 #      changelog input, insufficient as a semver freeze gate (which fires
-#      at M4-12, not here).
+#      at M5-13, not here).
 #   2. `pub` items inside `#[cfg(test)]` modules would be extracted if any
 #      existed. This workspace has none as of v0.9 (verified across all
 #      99 .rs files in vokra-core / vokra-ops / vokra-capi), and test
@@ -59,9 +59,10 @@
 #
 # NOT WIRED INTO CI
 #   Per M3-16 spec §T03 last paragraph and the sibling C-ABI tool
-#   (`scripts/abi-diff.sh`), CI gating is deferred to M4-12 with the v1.0
-#   freeze. Run this from a pre-commit hook or manually to snapshot the
-#   v0.9 Rust surface.
+#   (`scripts/abi-diff.sh`), CI gating is deferred to M5-13 with the v1.0
+#   GA freeze (the 2026-07-14 v-label reassignment #2 moved the freeze WP
+#   M4-12 → M5-13). Run this from a pre-commit hook or manually to snapshot
+#   the v1.0-rc Rust surface.
 #
 # ZERO-DEP
 #   Pure bash + awk + grep + diff + sort + find. No `cargo public-api`, no
@@ -80,7 +81,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CRATES_DIR="$ROOT/crates"
-SNAPSHOT="$ROOT/docs/abi/vokra-rust-public-api.v0.9.list"
+SNAPSHOT="$ROOT/docs/abi/vokra-rust-public-api.v1.0-rc.list"
 
 # Crates scanned. Order affects only the extraction traversal order; the
 # final output is `sort -u`-stable so downstream diffs are order-independent.
@@ -101,12 +102,20 @@ CRATES=("vokra-core" "vokra-ops" "vokra-capi")
 # All five are verified to carry `#[non_exhaustive]` at v0.9 window open
 # (verified 2026-07-11 against the working-tree source of the branch
 # `feat/m3-plan-and-wave1`).
+#
+# M4-12-T05 adds `IsaPath` (vokra-backend-cpu — a fourth crate the extractor
+# does NOT scan, but the audit reads by explicit path). M4-17 marked it
+# `#[non_exhaustive]` (T04) so future CPU ISA tiers (AMX*/SME*/RvvZvfh*, see
+# docs/abi-changelog.md "Reserved additions") land as backward-compat variant
+# additions; auditing it at the v1.0-rc baseline protects the M5-13 enum-shape
+# freeze (docs/handoff/m4-12.md §(e)-2). Verified 2026-07-15.
 NON_EXHAUSTIVE_EXPECTED=(
     "VokraError:enum:crates/vokra-core/src/error.rs"
     "OpKind:enum:crates/vokra-core/src/ir/graph.rs"
     "BackendKind:enum:crates/vokra-core/src/backend.rs"
     "GgufError:enum:crates/vokra-core/src/gguf/mod.rs"
     "StreamEvent:enum:crates/vokra-core/src/stream/event.rs"
+    "IsaPath:enum:crates/vokra-backend-cpu/src/features.rs"
 )
 
 usage() {
@@ -798,7 +807,7 @@ case "$mode" in
         use_count=$(printf '%s\n' "$anchor" | grep -c '^USE ' || true)
         mod_count=$(printf '%s\n' "$anchor" | grep -c '^MOD ' || true)
 
-        echo "Vokra Rust public-API snapshot gate (M3-16-T03; IF-01 fires at M4-12, not here)"
+        echo "Vokra Rust public-API snapshot gate (M3-16-T03; IF-01 fires at M5-13, not here)"
         echo "  crates   : ${CRATES[*]}"
         echo "  snapshot : $SNAPSHOT"
         echo "  anchor   : $fn_count fn, $struct_count struct, $enum_count enum, $trait_count trait,"
@@ -860,7 +869,7 @@ EOF
     --update-snapshot)
         mkdir -p "$(dirname "$SNAPSHOT")"
         {
-            echo "# Vokra Rust public-API snapshot — v0.9 window (M3-16-T03)."
+            echo "# Vokra Rust public-API snapshot — v1.0-rc window (M3-16-T03; rotated by M4-12)."
             echo "#"
             echo "# Regenerate with: scripts/rust-public-api-list.sh --update-snapshot"
             echo "# Diff against with: scripts/rust-public-api-list.sh"
@@ -885,8 +894,8 @@ EOF
             echo "#     Two impls sharing name AND signature collapse under sort -u."
             echo "#   * pub(crate) / pub(super) / pub(in path) are filtered out."
             echo "#   * Macro-generated pub items are invisible (source-level grep)."
-            echo "# The v0.9 tree does not exercise any of these gaps; the freeze"
-            echo "# gate at M4-12 will re-evaluate the extraction strategy."
+            echo "# The tree does not exercise any of these gaps; the freeze"
+            echo "# gate at M5-13 will re-evaluate the extraction strategy."
             echo "#"
             echo "# See docs/abi-changelog.md for the semver policy and"
             echo "# docs/tickets/m3/M3-16-abi-changelog.md for the WP scope."

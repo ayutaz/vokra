@@ -34,8 +34,11 @@
 //! Two block sizes are supported:
 //!
 //! - [`BlockSize::Two`] — **primary** for Mimi (12.5 Hz → 160 ms per block).
-//! - [`BlockSize::Four`] — variant for 25 / 50 Hz codecs (DAC, X-Codec 2,
-//!   WavTokenizer). M4+ consumers.
+//! - [`BlockSize::Four`] — variant for higher-rate **RVQ** codecs, i.e. DAC
+//!   (50-86 Hz depending on the released variant; `dac_rvq` uses it as its
+//!   primary — M4-04). WavTokenizer / X-Codec 2 are **not** paged-RVQ
+//!   consumers: they are FR-OP-31 FSQ ops (single-stage, no paged variant,
+//!   M4-16) and were mis-attributed here before the M4-04 T17 correction.
 //!
 //! [`mimi_rvq_read_summed`] reads a per-timestep-per-stream contiguous span
 //! across codebooks and returns the residual sum — the mirror of the direct
@@ -114,6 +117,8 @@
 //!
 //! [`PagedKvCache<f32>`]: vokra_core::cache::paged::PagedKvCache
 //! [`KvDims`]: vokra_core::cache::paged::KvDims
+//! [`BlockSize::Two`]: vokra_core::cache::paged::BlockSize::Two
+//! [`BlockSize::Four`]: vokra_core::cache::paged::BlockSize::Four
 
 use vokra_core::cache::paged::{KvDims, PagedKvCache};
 use vokra_core::{Result, VokraError};
@@ -130,8 +135,15 @@ use vokra_core::{Result, VokraError};
 /// runtime just consumes them here. Mimi's canonical shape is
 /// `n_codebooks = 8`, `codebook_size = 2048`, `d_model = 512`, but the op
 /// itself is shape-generic — any RVQ codec whose codebooks share
-/// `[codebook_size, d_model]` slots into the same code path (this is why
-/// FR-OP-30 groups Mimi / DAC / X-Codec 2 / WavTokenizer under one op family).
+/// `[codebook_size, d_model]` slots into the same code path. This is why
+/// FR-OP-30 groups its three ops — `encodec_rvq` / `mimi_rvq` / `dac_rvq`
+/// (SRS L124) — under one op family; [`crate::encodec_rvq`] rides this exact
+/// path and [`crate::dac_rvq`] extends it with the factorized per-quantizer
+/// projection stage (M4-04). WavTokenizer / X-Codec 2 belong to **FR-OP-31**
+/// (FSQ family, separate single-stage subgraph, M4-16) — they are *not* part
+/// of this op family, and no adapter that feeds FSQ codes into an RVQ decode
+/// is provided (the M3-06-era rustdoc mis-attributed them to FR-OP-30; fixed
+/// by M4-04 T17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MimiRvqAttrs {
     /// Number of codebooks (base + residuals). Mimi = 8.
@@ -268,19 +280,36 @@ pub fn mimi_rvq_decode(
 ) -> Result<Vec<f32>> {
     check_tables_shape(codebook_tables, attrs)?;
     check_codes_shape(codes, time, attrs)?;
+    rvq_fold_core(
+        codes,
+        time,
+        codebook_tables,
+        attrs.n_codebooks,
+        attrs.d_model,
+    )
+}
 
-    let mut out = vec![0.0_f32; time * attrs.d_model];
+/// The shape-generic gather + FP32 residual fold shared by `mimi_rvq` and
+/// `encodec_rvq` (M4-04 §D-a: one op family, one core). Callers must have
+/// validated `codes` / `codebook_tables` shapes against their own attrs (the
+/// per-row index check still happens here via [`CodebookTable::row`], so an
+/// out-of-range code is an explicit error either way — FR-EX-08).
+pub(crate) fn rvq_fold_core(
+    codes: &[u32],
+    time: usize,
+    codebook_tables: &[CodebookTable],
+    n_codebooks: usize,
+    d_model: usize,
+) -> Result<Vec<f32>> {
+    let mut out = vec![0.0_f32; time * d_model];
     for t in 0..time {
-        let out_base = t * attrs.d_model;
-        let code_base = t * attrs.n_codebooks;
-        for cb in 0..attrs.n_codebooks {
+        let out_base = t * d_model;
+        let code_base = t * n_codebooks;
+        for cb in 0..n_codebooks {
             let idx = codes[code_base + cb];
             let row = codebook_tables[cb].row(idx)?;
             // FP32 fold (see module docs — no FP16 / BF16 accumulator here).
-            for (dst, src) in out[out_base..out_base + attrs.d_model]
-                .iter_mut()
-                .zip(row.iter())
-            {
+            for (dst, src) in out[out_base..out_base + d_model].iter_mut().zip(row.iter()) {
                 *dst += *src;
             }
         }
@@ -380,22 +409,91 @@ pub fn mimi_rvq_read_summed(
     stream: usize,
     t: usize,
 ) -> Result<Vec<f32>> {
-    check_cache_shape(cache, attrs)?;
+    read_summed_core(
+        cache,
+        attrs.n_codebooks,
+        attrs.d_model,
+        stream,
+        t,
+        "mimi_rvq_read_summed",
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Shape-generic pub(crate) cores shared with `dac_rvq` (M4-04).
+//
+// The RVQ family (FR-OP-30) shares the paged-cache addressing and the
+// summed-read fold; only the attribute structs and (for DAC) the factorized
+// projection differ. These cores exist so `dac_rvq` does not duplicate the
+// cache-shape / fold logic while keeping honest, op-named error messages
+// (`op` prefixes every message).
+// ---------------------------------------------------------------------------
+
+/// Validates that `cache` has the single-layer, single-head,
+/// `d_head == d_model`, `n_codebook >= n_codebooks` shape every RVQ paged
+/// variant expects. `op` prefixes the error messages.
+pub(crate) fn check_cache_dims(
+    cache: &PagedKvCache<f32>,
+    n_codebooks: usize,
+    d_model: usize,
+    op: &str,
+) -> Result<()> {
+    let dims = cache.dims();
+    if dims.n_layer != 1 {
+        return Err(VokraError::InvalidArgument(format!(
+            "{op}: cache.n_layer must be 1 (RVQ codec state is single-layer), got {}",
+            dims.n_layer
+        )));
+    }
+    if dims.n_head != 1 {
+        return Err(VokraError::InvalidArgument(format!(
+            "{op}: cache.n_head must be 1, got {}",
+            dims.n_head
+        )));
+    }
+    if dims.d_head != d_model {
+        return Err(VokraError::InvalidArgument(format!(
+            "{op}: cache.d_head {} != d_model {d_model}",
+            dims.d_head
+        )));
+    }
+    if dims.n_codebook < n_codebooks {
+        return Err(VokraError::InvalidArgument(format!(
+            "{op}: cache.n_codebook {} < n_codebooks {n_codebooks}",
+            dims.n_codebook
+        )));
+    }
+    Ok(())
+}
+
+/// Reads and FP32-sums the per-codebook K rows at `(stream, t)` — the
+/// shape-generic core behind [`mimi_rvq_read_summed`] and
+/// `dac_rvq_read_summed`. Unwritten slots contribute zero (read-side
+/// convention; the write side is where FR-EX-08 forbids silent behaviour).
+pub(crate) fn read_summed_core(
+    cache: &PagedKvCache<f32>,
+    n_codebooks: usize,
+    d_model: usize,
+    stream: usize,
+    t: usize,
+    op: &str,
+) -> Result<Vec<f32>> {
+    check_cache_dims(cache, n_codebooks, d_model, op)?;
     let dims = cache.dims();
     if stream >= dims.n_stream {
         return Err(VokraError::InvalidArgument(format!(
-            "mimi_rvq_read_summed: stream {stream} >= cache.n_stream {}",
+            "{op}: stream {stream} >= cache.n_stream {}",
             dims.n_stream
         )));
     }
     if t >= dims.max_time {
         return Err(VokraError::InvalidArgument(format!(
-            "mimi_rvq_read_summed: t {t} >= cache.max_time {}",
+            "{op}: t {t} >= cache.max_time {}",
             dims.max_time
         )));
     }
-    let mut acc = vec![0.0_f32; attrs.d_model];
-    for cb in 0..attrs.n_codebooks {
+    let mut acc = vec![0.0_f32; d_model];
+    for cb in 0..n_codebooks {
         if let Some((k, _v)) = cache.read_step(0, t, stream, cb) {
             for (dst, src) in acc.iter_mut().zip(k.iter()) {
                 *dst += *src;
@@ -403,6 +501,117 @@ pub fn mimi_rvq_read_summed(
         }
     }
     Ok(acc)
+}
+
+/// Chunk-window summed read — the shape-generic core behind
+/// [`mimi_rvq_read_summed_range`]. Bit-identical to a per-`t`
+/// [`read_summed_core`] loop (same per-element codebook fold order); the
+/// only difference is that never-bound blocks are skipped with one
+/// page-table probe instead of `n_codebooks` probes per timestep.
+pub(crate) fn read_summed_range_core(
+    cache: &PagedKvCache<f32>,
+    n_codebooks: usize,
+    d_model: usize,
+    stream: usize,
+    time_range: std::ops::Range<usize>,
+    op: &str,
+) -> Result<Vec<f32>> {
+    check_cache_dims(cache, n_codebooks, d_model, op)?;
+    let dims = cache.dims();
+    if stream >= dims.n_stream {
+        return Err(VokraError::InvalidArgument(format!(
+            "{op}: stream {stream} >= cache.n_stream {}",
+            dims.n_stream
+        )));
+    }
+    if time_range.start > time_range.end {
+        return Err(VokraError::InvalidArgument(format!(
+            "{op}: time_range.start {} > time_range.end {}",
+            time_range.start, time_range.end
+        )));
+    }
+    if time_range.end > dims.max_time {
+        return Err(VokraError::InvalidArgument(format!(
+            "{op}: time_range.end {} > cache.max_time {}",
+            time_range.end, dims.max_time
+        )));
+    }
+
+    let n_t = time_range.end - time_range.start;
+    let mut out = vec![0.0_f32; n_t * d_model];
+    let bs = cache.block_size().divisor();
+
+    let mut t = time_range.start;
+    while t < time_range.end {
+        // First timestep of the next block; the current block's span inside
+        // the window is [t, span_end).
+        let block_end = (t / bs + 1) * bs;
+        let span_end = block_end.min(time_range.end);
+
+        // One page-table probe per block: a page covers every (stream,
+        // codebook) slot of its block, so `None` here means the whole span
+        // is unbound → its output rows stay zero (gap semantics).
+        let bound = cache
+            .logical_at(0, t, stream, 0)
+            .map(|slot| slot.is_some())?;
+        if bound {
+            for tt in t..span_end {
+                let out_base = (tt - time_range.start) * d_model;
+                let acc = &mut out[out_base..out_base + d_model];
+                for cb in 0..n_codebooks {
+                    if let Some((k, _v)) = cache.read_step(0, tt, stream, cb) {
+                        for (dst, src) in acc.iter_mut().zip(k.iter()) {
+                            *dst += *src;
+                        }
+                    }
+                }
+            }
+        }
+        t = span_end;
+    }
+    Ok(out)
+}
+
+/// Reads and sums a **chunk window** `[time_range.start, time_range.end) ×
+/// stream`, returning `[time_range.len(), d_model]` row-major features —
+/// the chunk-granular mirror of calling [`mimi_rvq_read_summed`] per `t`
+/// (bit-identical output, M4-04 T08).
+///
+/// This is the read mouth CSM / Moshi (M4-05/06) and CosyVoice2's
+/// chunk-aware CFM use to hand a features chunk to their decoder chains.
+/// The implementation walks the window **page-aware**: the paged store binds
+/// one page per (layer, time-block) covering *all* streams and codebooks
+/// (M3-03 row layout `[block_offset, stream, codebook, head, d_head]`), so an
+/// unbound block is skipped wholesale with a single page-table probe and its
+/// rows stay zero.
+///
+/// # Gap semantics
+///
+/// Unwritten slots contribute **zero** on the read side — both never-bound
+/// blocks (skipped) and never-written slots inside a bound block (pages are
+/// zero-filled on allocation and zeroed on release). This is the existing
+/// read-side convention (see [`mimi_rvq_read_summed`]); the *write* side is
+/// where FR-EX-08 forbids silent behaviour.
+///
+/// # Errors
+///
+/// [`VokraError::InvalidArgument`] on axis / dim violations,
+/// `time_range.end > max_time`, or `time_range.start > time_range.end`.
+/// An empty window (`start == end`) returns an empty `Vec` (not an error).
+pub fn mimi_rvq_read_summed_range(
+    cache: &PagedKvCache<f32>,
+    attrs: &MimiRvqAttrs,
+    stream: usize,
+    time_range: std::ops::Range<usize>,
+) -> Result<Vec<f32>> {
+    read_summed_range_core(
+        cache,
+        attrs.n_codebooks,
+        attrs.d_model,
+        stream,
+        time_range,
+        "mimi_rvq_read_summed_range",
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -555,32 +764,7 @@ fn check_codes_shape(codes: &[u32], time: usize, attrs: &MimiRvqAttrs) -> Result
 }
 
 fn check_cache_shape(cache: &PagedKvCache<f32>, attrs: &MimiRvqAttrs) -> Result<()> {
-    let dims = cache.dims();
-    if dims.n_layer != 1 {
-        return Err(VokraError::InvalidArgument(format!(
-            "mimi_rvq paged: cache.n_layer must be 1 (Mimi is single-layer), got {}",
-            dims.n_layer
-        )));
-    }
-    if dims.n_head != 1 {
-        return Err(VokraError::InvalidArgument(format!(
-            "mimi_rvq paged: cache.n_head must be 1, got {}",
-            dims.n_head
-        )));
-    }
-    if dims.d_head != attrs.d_model {
-        return Err(VokraError::InvalidArgument(format!(
-            "mimi_rvq paged: cache.d_head {} != attrs.d_model {}",
-            dims.d_head, attrs.d_model
-        )));
-    }
-    if dims.n_codebook < attrs.n_codebooks {
-        return Err(VokraError::InvalidArgument(format!(
-            "mimi_rvq paged: cache.n_codebook {} < attrs.n_codebooks {}",
-            dims.n_codebook, attrs.n_codebooks
-        )));
-    }
-    Ok(())
+    check_cache_dims(cache, attrs.n_codebooks, attrs.d_model, "mimi_rvq paged")
 }
 
 // ---------------------------------------------------------------------------

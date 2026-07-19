@@ -120,6 +120,16 @@ pub struct TtsRequest {
     /// as `length_scale`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub noise_scale: Option<f32>,
+    /// Optional language tag (`"ja"`, `"en"`, ... — the voice GGUF's
+    /// `vokra.piper.language_codes` inventory). cc-18 (2026-07-19
+    /// M4-residual audit): `SynthesisRequest.language` existed in the piper
+    /// synthesis layer since M0 but no server surface could set it. `None`
+    /// keeps the engine's language detection (the G2P's detected dominant
+    /// language / voice default). A language the loaded voice does NOT
+    /// support is an explicit 400 from the service layer (FR-EX-08 — the
+    /// engine would otherwise silently fall back to the detected language).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// High-level outcome of a `/api/tts` request as far as this schema
@@ -227,6 +237,21 @@ pub trait VoiceDefaults: Send + Sync {
     /// the named voice is loaded. `None` = voice not available (schema
     /// layer maps to [`PiperTtsError::VoiceNotAvailable`]).
     fn defaults_for(&self, voice: &str) -> Option<(f32, f32)>;
+
+    /// Every voice tag [`Self::defaults_for`] resolves, for error messages.
+    ///
+    /// cc-38 (2026-07-19 M4-residual audit): the OpenAI `/v1/audio/speech`
+    /// surface is the first one callers reach with a voice vocabulary that is
+    /// NOT Vokra's (`alloy`, `nova`, … are OpenAI's stock names, and this
+    /// server has none of them). Those requests are a 404 — mapping six
+    /// distinct OpenAI voices onto the one loaded voice would be exactly the
+    /// silent substitution FR-EX-08 forbids — so the 404 has to be
+    /// actionable: it names what this server DOES accept.
+    ///
+    /// Deliberately not a defaulted method: an implementation that resolves
+    /// voices must say which ones, and a stub returning `vec![]` would make
+    /// the error text lie about an empty registry.
+    fn available_voices(&self) -> Vec<String>;
 }
 
 /// Dispatch the request through [`SynthesizeService`] and shape the
@@ -262,6 +287,16 @@ pub fn dispatch_tts(
     if req.voice.is_empty() {
         return Err(PiperTtsError::InvalidRequest(
             "`voice` must not be empty".into(),
+        ));
+    }
+    // An explicitly-empty language is a malformed request, not "use the
+    // default" — omit the field for default behaviour (FR-EX-08: no silent
+    // reinterpretation of a present-but-empty value).
+    if req.language.as_deref() == Some("") {
+        return Err(PiperTtsError::InvalidRequest(
+            "`language` must not be empty when present (omit the field to use \
+             the voice's language detection)"
+                .into(),
         ));
     }
 
@@ -303,8 +338,13 @@ pub fn dispatch_tts(
     // 5) Build the vokra-core `SynthesisRequest`. `length_scale` /
     //    `noise_scale` are consumed at voice defaults (step 3 above)
     //    so we do NOT plumb them through — the runtime uses the voice's
-    //    baked values.
-    let syn_req = SynthesisRequest::new(&req.text);
+    //    baked values. `language` (cc-18) IS plumbed: the service layer
+    //    validates it against the voice's `vokra.piper.language_codes`
+    //    and rejects unsupported codes with an explicit 400 (FR-EX-08).
+    let mut syn_req = SynthesisRequest::new(&req.text);
+    if let Some(lang) = &req.language {
+        syn_req = syn_req.with_language(lang);
+    }
 
     let audio = service
         .synthesize(model, &syn_req)
@@ -368,6 +408,220 @@ fn encode_wav_pcm16(samples: &[f32], sample_rate: u32) -> Vec<u8> {
         buf.extend_from_slice(&i.to_le_bytes());
     }
     buf
+}
+
+// ===========================================================================
+// T12 — HTTP surface: axum route for `POST /api/tts` (campaign-2 P1 #3
+// follow-through; the 2026-07-17 server-real leg live-verified this route
+// 404'd because `build_http_app` never merged it).
+//
+// Mirrors the T06 (openai.rs) / T09 (vllm.rs) conventions: JSON extractor
+// rejection → 400 `invalid_input`, every failure through the crate-wide
+// `ServerError` envelope via `finish_request` (per-request log + OpenAI-shaped
+// error JSON), success = raw `audio/wav` bytes exactly as piper-plus HTTP
+// clients expect (no JSON envelope).
+// ===========================================================================
+
+use axum::Router;
+use axum::extract::{State, rejection::JsonRejection};
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::post;
+use std::sync::Arc;
+
+use crate::error::{ServerError, finish_request};
+use crate::service::{AUDIO_WAV_CONTENT_TYPE, InferenceService};
+use vokra_core::VokraError;
+
+/// Route path — named so `server.rs` wiring tests and the T13 compat test
+/// key on the same literal.
+pub const TTS_ROUTE: &str = "/api/tts";
+
+/// The generic voice tag the single-voice v0.5 registry answers in addition
+/// to the model alias (`piper-plus`): piper HTTP clients that do not know
+/// the per-file voice name send `"default"` (the T13 compat test does).
+pub const DEFAULT_VOICE: &str = "default";
+
+/// State for the `/api/tts` router: the synthesize dispatch plus the
+/// voice-defaults hook, both as trait objects so tests can drive the route
+/// with mocks and production passes two views of the same
+/// [`InferenceService`] `Arc`.
+#[derive(Clone)]
+pub struct TtsHttpState {
+    /// Synthesis dispatch (`InferenceService` in production).
+    pub synth: Arc<dyn SynthesizeService>,
+    /// Voice-defaults hook for the per-request override policy
+    /// (`InferenceService` in production).
+    pub voices: Arc<dyn VoiceDefaults>,
+}
+
+impl TtsHttpState {
+    /// Production state: both views onto the same registry.
+    pub fn from_service(service: Arc<InferenceService>) -> Self {
+        Self {
+            synth: service.clone(),
+            voices: service,
+        }
+    }
+}
+
+/// [`VoiceDefaults`] for the production registry. v0.5 loads exactly one
+/// piper voice (startup-required), so the resolvable tags are the generic
+/// [`DEFAULT_VOICE`] and the model alias `piper-plus`; anything else is
+/// [`PiperTtsError::VoiceNotAvailable`] → 404 (never a silent reroute to
+/// the loaded voice, FR-EX-08). Lives here rather than `service.rs` so the
+/// T04 layer stays free of HTTP-surface traits.
+impl VoiceDefaults for InferenceService {
+    fn defaults_for(&self, voice: &str) -> Option<(f32, f32)> {
+        if voice == DEFAULT_VOICE || voice == model_names::PIPER_PLUS {
+            let cfg = self.piper_voice().config();
+            Some((cfg.length_scale, cfg.noise_scale))
+        } else {
+            None
+        }
+    }
+
+    fn available_voices(&self) -> Vec<String> {
+        // Exactly the tags `defaults_for` accepts, in the order an operator
+        // would try them. Kept adjacent to that method so the two cannot
+        // drift (a 404 listing a tag the resolver rejects would be worse
+        // than no list at all).
+        vec![DEFAULT_VOICE.to_owned(), model_names::PIPER_PLUS.to_owned()]
+    }
+}
+
+/// Build the `/api/tts` router bound to `state`. Returns a plain
+/// `Router<()>` (state already applied) so `build_http_app` merges it
+/// exactly like the vLLM router.
+pub fn router(state: TtsHttpState) -> Router {
+    Router::new()
+        .route(TTS_ROUTE, post(tts_handler))
+        .with_state(state)
+}
+
+/// `POST /api/tts` — the piper-plus HTTP TTS handler.
+///
+/// * Malformed / non-JSON body → 400 `invalid_input` (same
+///   `JsonRejection` funnel as the vLLM contract routes — axum's default
+///   rejection body never leaks).
+/// * Schema/dispatch failures map through [`server_error_from_tts`]
+///   (status table pinned in the `route_tts_http` tests below).
+/// * Success → `200 OK` with `Content-Type: audio/wav` raw bytes.
+///
+/// Synthesis runs on `tokio::task::spawn_blocking` (cc-18, 2026-07-19
+/// M4-residual audit — the follow-up this doc used to carry). The engines
+/// are CPU-bound; running them on the async worker previously stalled every
+/// other task on that worker for the whole synthesis. This mirrors the
+/// wyoming.rs `transcribe` migration (the copy pattern): a `JoinError`
+/// (panicked/cancelled blocking task) is an explicit 500, never a hang.
+async fn tts_handler(
+    State(state): State<TtsHttpState>,
+    body: Result<axum::Json<TtsRequest>, JsonRejection>,
+) -> Response {
+    let start = std::time::Instant::now();
+    let (model, result) = match body {
+        Ok(axum::Json(req)) => {
+            let model_tag = req
+                .model
+                .clone()
+                .unwrap_or_else(|| model_names::PIPER_PLUS.to_owned());
+            // Move the owned request + Arc views onto the blocking pool;
+            // both trait objects are Send + Sync so the closure is Send.
+            let synth = Arc::clone(&state.synth);
+            let voices = Arc::clone(&state.voices);
+            let join = tokio::task::spawn_blocking(move || {
+                dispatch_tts(synth.as_ref(), voices.as_ref(), &req)
+            })
+            .await;
+            let outcome = match join {
+                Ok(res) => res.map(wav_response).map_err(server_error_from_tts),
+                Err(join_err) => Err(ServerError::InferenceFailed {
+                    detail: format!("tts task failed: {join_err}"),
+                }),
+            };
+            (Some(model_tag), outcome)
+        }
+        Err(err) => (
+            None,
+            Err(ServerError::InvalidInput {
+                detail: err.to_string(),
+            }),
+        ),
+    };
+    finish_request("POST", TTS_ROUTE, model.as_deref(), start, result)
+}
+
+/// Success body: raw WAV bytes, `Content-Type: audio/wav` — piper-plus
+/// clients read the body directly (`response.content`), no JSON envelope.
+fn wav_response(outcome: TtsOutcome) -> Response {
+    let TtsOutcome::Wav(bytes) = outcome;
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, AUDIO_WAV_CONTENT_TYPE)],
+        bytes,
+    )
+        .into_response()
+}
+
+/// Map the T11 schema error onto the crate-wide [`ServerError`] envelope.
+///
+/// Status table (pinned by `route_tts_http::error_status_mapping_is_pinned`):
+///
+/// * `InvalidRequest` → 400 `invalid_input`
+/// * `VoiceNotAvailable` → 404 `model_not_found` (the voice is piper's
+///   primary selector; rendered as ``voice `x``` in the message)
+/// * `PerRequestOverrideNotImplemented` → 501 `not_implemented` (carries
+///   the documented v0.5 deferral note)
+/// * `Service(UnknownModel)` → 404, `Service(SynthesizeUnavailable)` → 501
+/// * `Service(Inference(UnsupportedOp))` → 501 (FR-EX-08 — a backend hole
+///   is surfaced, never silently rewritten to CPU)
+/// * `Service(Inference(InvalidArgument))` → 400 — **this is the
+///   plain-text-without-G2P path**: the `PassthroughPhonemizer` raises an
+///   explicit `InvalidArgument` for non-phoneme-id text, and the caller
+///   sees an honest 400 naming the fix, never silent garbage audio
+/// * `Service(Inference(NotImplemented))` → 501; everything else → 500
+fn server_error_from_tts(err: PiperTtsError) -> ServerError {
+    match err {
+        PiperTtsError::InvalidRequest(msg) => ServerError::InvalidInput {
+            detail: format!("/api/tts: {msg}"),
+        },
+        PiperTtsError::VoiceNotAvailable(v) => ServerError::ModelNotFound {
+            model: format!("voice `{v}`"),
+        },
+        e @ PiperTtsError::PerRequestOverrideNotImplemented { .. } => ServerError::NotImplemented {
+            detail: e.to_string(),
+        },
+        PiperTtsError::Service(inner) => server_error_from_service(inner),
+    }
+}
+
+/// [`ServiceError`] → [`ServerError`] leg of [`server_error_from_tts`].
+/// Split out so the status table is testable per service variant.
+/// `pub(crate)` so the OpenAI `/v1/audio/speech` surface (cc-38,
+/// `api::openai_speech`) maps identical service failures to identical status
+/// codes. Two TTS routes disagreeing about what a `SynthesizeUnavailable`
+/// means would be a contract bug, so they share one table.
+pub(crate) fn server_error_from_service(err: ServiceError) -> ServerError {
+    match err {
+        ServiceError::UnknownModel(m) => ServerError::ModelNotFound { model: m },
+        e @ ServiceError::SynthesizeUnavailable { .. } => ServerError::NotImplemented {
+            detail: e.to_string(),
+        },
+        ServiceError::Inference(VokraError::UnsupportedOp(detail)) => {
+            ServerError::UnsupportedOp { detail }
+        }
+        ServiceError::Inference(VokraError::InvalidArgument(detail)) => {
+            ServerError::InvalidInput { detail }
+        }
+        ServiceError::Inference(VokraError::NotImplemented(what)) => ServerError::NotImplemented {
+            detail: what.to_owned(),
+        },
+        e @ (ServiceError::Inference(_)
+        | ServiceError::ModelLoadFailed { .. }
+        | ServiceError::InvalidConfig(_)) => ServerError::InferenceFailed {
+            detail: e.to_string(),
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +703,9 @@ mod route_tts {
                 None
             }
         }
+        fn available_voices(&self) -> Vec<String> {
+            vec![self.voice.to_owned()]
+        }
     }
 
     fn default_voices() -> FakeVoices {
@@ -495,6 +752,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert_eq!(json, r#"{"text":"hello","voice":"en_US-lessac-medium"}"#);
@@ -522,6 +780,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let err = dispatch_tts(&PanicOnCall, &voices, &req).expect_err("must reject empty text");
@@ -539,6 +798,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let err = dispatch_tts(
@@ -565,6 +825,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let err = dispatch_tts(
@@ -591,6 +852,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let outcome = dispatch_tts(
@@ -620,6 +882,7 @@ mod route_tts {
             model: None,
             length_scale: Some(1.1),
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         dispatch_tts(
@@ -640,6 +903,7 @@ mod route_tts {
             model: None,
             length_scale: Some(0.8),
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let err = dispatch_tts(
@@ -674,6 +938,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: Some(1.0),
+            language: None,
         };
         let voices = default_voices();
         let err = dispatch_tts(
@@ -703,6 +968,7 @@ mod route_tts {
             model: None,
             length_scale: Some(f32::NAN),
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let err = dispatch_tts(
@@ -719,6 +985,84 @@ mod route_tts {
         ));
     }
 
+    // -------- Language plumbing (cc-18) --------
+
+    /// `language` must reach `SynthesisRequest.language` verbatim — the
+    /// field existed in the synthesis layer since M0 with no server surface
+    /// able to set it (cc-18, 2026-07-19 M4-residual audit).
+    #[test]
+    fn language_is_plumbed_into_synthesis_request() {
+        use std::sync::Mutex;
+        struct CaptureSynth {
+            seen: Mutex<Vec<Option<String>>>,
+        }
+        impl SynthesizeService for CaptureSynth {
+            fn synthesize(
+                &self,
+                _model: &str,
+                request: &SynthesisRequest,
+            ) -> Result<SynthesizedAudio, ServiceError> {
+                self.seen.lock().unwrap().push(request.language.clone());
+                Ok(SynthesizedAudio::new(vec![0.0], 22_050))
+            }
+        }
+        let capture = CaptureSynth {
+            seen: Mutex::new(Vec::new()),
+        };
+        let voices = default_voices();
+
+        // With a language → forwarded verbatim.
+        let req = TtsRequest {
+            text: "hello".into(),
+            voice: "en_US-lessac-medium".into(),
+            model: None,
+            length_scale: None,
+            noise_scale: None,
+            language: Some("ja".into()),
+        };
+        dispatch_tts(&capture, &voices, &req).expect("must dispatch");
+        // Without → None (voice default / detection preserved).
+        let req = TtsRequest {
+            language: None,
+            ..req
+        };
+        dispatch_tts(&capture, &voices, &req).expect("must dispatch");
+
+        let seen = capture.seen.lock().unwrap().clone();
+        assert_eq!(seen, vec![Some("ja".to_owned()), None]);
+    }
+
+    /// Present-but-empty `language` is 400 before any engine call — never a
+    /// silent "treat as default" (FR-EX-08).
+    #[test]
+    fn empty_language_is_400_before_engine_call() {
+        struct PanicOnCall;
+        impl SynthesizeService for PanicOnCall {
+            fn synthesize(
+                &self,
+                _model: &str,
+                _request: &SynthesisRequest,
+            ) -> Result<SynthesizedAudio, ServiceError> {
+                panic!("must not be called for empty language");
+            }
+        }
+        let req = TtsRequest {
+            text: "hello".into(),
+            voice: "en_US-lessac-medium".into(),
+            model: None,
+            length_scale: None,
+            noise_scale: None,
+            language: Some(String::new()),
+        };
+        let voices = default_voices();
+        let err =
+            dispatch_tts(&PanicOnCall, &voices, &req).expect_err("must reject empty language");
+        match err {
+            PiperTtsError::InvalidRequest(msg) => assert!(msg.contains("language")),
+            other => panic!("expected InvalidRequest, got {other}"),
+        }
+    }
+
     // -------- Model routing --------
 
     #[test]
@@ -729,6 +1073,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         // FakeSynth only recognises `piper-plus`; a wrong default would
@@ -751,6 +1096,7 @@ mod route_tts {
             model: Some("elevenlabs".into()),
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let err = dispatch_tts(
@@ -779,6 +1125,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let err =
@@ -805,6 +1152,7 @@ mod route_tts {
             model: None,
             length_scale: None,
             noise_scale: None,
+            language: None,
         };
         let voices = default_voices();
         let outcome = dispatch_tts(
@@ -870,5 +1218,310 @@ mod route_tts {
         let e = PiperTtsError::Service(ServiceError::UnknownModel("gpt".into()));
         assert!(e.to_string().contains("gpt"));
         assert!(std::error::Error::source(&e).is_some());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T12 tests — `cargo test piper_http::route_tts_http`
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod route_tts_http {
+    //! Route-level acceptance: the axum surface (JSON extractor, status
+    //! mapping, `audio/wav` success body) driven via `tower::ServiceExt`
+    //! oneshot — no live listener, no GGUF, mocks only. The live wired-server
+    //! path is covered by `tests/piper_http_compat.rs` +
+    //! `tests/tts_g2p_injection.rs` (env-gated on real voices).
+
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt as _;
+    use vokra_core::{SynthesisRequest, SynthesizedAudio, VokraError};
+
+    /// Mock synth: 4 deterministic samples for `piper-plus`, else the same
+    /// errors the production registry raises.
+    struct MockSynth;
+    impl SynthesizeService for MockSynth {
+        fn synthesize(
+            &self,
+            model: &str,
+            _request: &SynthesisRequest,
+        ) -> Result<SynthesizedAudio, ServiceError> {
+            match model {
+                model_names::PIPER_PLUS => {
+                    Ok(SynthesizedAudio::new(vec![0.0, 0.5, -0.5, 1.0], 22_050))
+                }
+                other => Err(ServiceError::UnknownModel(other.to_owned())),
+            }
+        }
+    }
+
+    /// Mock synth that raises the exact error the production
+    /// `PassthroughPhonemizer` raises for plain text when no real G2P is
+    /// configured — the FR-EX-08 explicit-error path this route must
+    /// surface as 400, never as fabricated audio.
+    struct PassthroughStyleSynth;
+    impl SynthesizeService for PassthroughStyleSynth {
+        fn synthesize(
+            &self,
+            _model: &str,
+            request: &SynthesisRequest,
+        ) -> Result<SynthesizedAudio, ServiceError> {
+            Err(ServiceError::Inference(VokraError::InvalidArgument(
+                format!(
+                    "PassthroughPhonemizer: `{}` is not a phoneme id (use `[[symbol]]` for symbols)",
+                    request.text.split_whitespace().next().unwrap_or(""),
+                ),
+            )))
+        }
+    }
+
+    /// Single-voice defaults mock accepting the same tags the production
+    /// `impl VoiceDefaults for InferenceService` accepts.
+    struct MockVoices;
+    impl VoiceDefaults for MockVoices {
+        fn defaults_for(&self, voice: &str) -> Option<(f32, f32)> {
+            (voice == DEFAULT_VOICE || voice == model_names::PIPER_PLUS).then_some((1.1, 0.667))
+        }
+        fn available_voices(&self) -> Vec<String> {
+            vec![DEFAULT_VOICE.to_owned(), model_names::PIPER_PLUS.to_owned()]
+        }
+    }
+
+    fn app(synth: Arc<dyn SynthesizeService>) -> Router {
+        router(TtsHttpState {
+            synth,
+            voices: Arc::new(MockVoices),
+        })
+    }
+
+    async fn post_tts(app: Router, body: &str) -> (StatusCode, String, Vec<u8>) {
+        let req = Request::builder()
+            .method("POST")
+            .uri(TTS_ROUTE)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_owned()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
+        (status, ct, bytes)
+    }
+
+    #[tokio::test]
+    async fn tts_route_returns_wav_from_mock_service() {
+        let (status, ct, body) = post_tts(
+            app(Arc::new(MockSynth)),
+            r#"{"text":"1 2 3","voice":"default"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ct, AUDIO_WAV_CONTENT_TYPE);
+        assert_eq!(&body[0..4], b"RIFF", "body must be a RIFF/WAVE container");
+        assert_eq!(&body[8..12], b"WAVE");
+        // 44-byte header + 4 samples * 2 bytes.
+        assert_eq!(body.len(), 44 + 8);
+    }
+
+    #[tokio::test]
+    async fn tts_route_malformed_json_is_400_invalid_input() {
+        let (status, _ct, body) = post_tts(app(Arc::new(MockSynth)), "{not json").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("error envelope is JSON");
+        assert_eq!(v["error"]["type"], "invalid_input");
+    }
+
+    #[tokio::test]
+    async fn tts_route_unknown_voice_is_404_model_not_found() {
+        let (status, _ct, body) = post_tts(
+            app(Arc::new(MockSynth)),
+            r#"{"text":"1 2","voice":"de_DE-thorsten-medium"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["type"], "model_not_found");
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("de_DE-thorsten-medium")
+        );
+    }
+
+    /// FR-EX-08 anchor: plain text on a server whose registry still holds
+    /// the default `PassthroughPhonemizer` (no `--piper-g2p`) must be an
+    /// explicit 400 that names the phonemizer — never a 200 with garbage
+    /// audio, never a 500 masking a client-fixable input.
+    #[tokio::test]
+    async fn tts_route_plain_text_without_g2p_is_explicit_400() {
+        let (status, _ct, body) = post_tts(
+            app(Arc::new(PassthroughStyleSynth)),
+            r#"{"text":"Hello world","voice":"default"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["type"], "invalid_input");
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("PassthroughPhonemizer"),
+            "the explicit error must name the phonemizer so the operator \
+             knows to pass --piper-g2p; got {v}"
+        );
+    }
+
+    /// cc-18: a `language` the loaded voice does not support surfaces as an
+    /// explicit 400 naming the supported set (the `InferenceService` piper
+    /// arm raises `VokraError::InvalidArgument` BEFORE the engine's silent
+    /// detected-language fallback can fire; this pins the HTTP mapping).
+    #[tokio::test]
+    async fn tts_route_unsupported_language_is_explicit_400() {
+        struct RejectLangSynth;
+        impl SynthesizeService for RejectLangSynth {
+            fn synthesize(
+                &self,
+                _model: &str,
+                request: &SynthesisRequest,
+            ) -> Result<SynthesizedAudio, ServiceError> {
+                // Mirrors the InferenceService::synthesize language gate
+                // (service.rs) byte-for-byte in spirit: unsupported code →
+                // InvalidArgument listing the supported inventory.
+                match request.language.as_deref() {
+                    Some(lang) if lang != "ja" && lang != "en" => Err(ServiceError::Inference(
+                        VokraError::InvalidArgument(format!(
+                            "synthesize: language `{lang}` is not supported by the loaded \
+                                 piper-plus voice (supported: [ja, en])"
+                        )),
+                    )),
+                    _ => Ok(SynthesizedAudio::new(vec![0.0], 22_050)),
+                }
+            }
+        }
+        let (status, _ct, body) = post_tts(
+            app(Arc::new(RejectLangSynth)),
+            r#"{"text":"1 2","voice":"default","language":"fr"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["type"], "invalid_input");
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("language `fr` is not supported"),
+            "message must name the rejected language, got {v}"
+        );
+    }
+
+    /// The full PiperTtsError → ServerError status table, pinned.
+    #[test]
+    fn error_status_mapping_is_pinned() {
+        use PiperTtsError as E;
+        let cases: Vec<(E, StatusCode, &str)> = vec![
+            (
+                E::InvalidRequest("`text` must not be empty".into()),
+                StatusCode::BAD_REQUEST,
+                "invalid_input",
+            ),
+            (
+                E::VoiceNotAvailable("fr_FR".into()),
+                StatusCode::NOT_FOUND,
+                "model_not_found",
+            ),
+            (
+                E::PerRequestOverrideNotImplemented {
+                    knob: "length_scale",
+                    requested: 0.8,
+                    default: 1.1,
+                },
+                StatusCode::NOT_IMPLEMENTED,
+                "not_implemented",
+            ),
+            (
+                E::Service(ServiceError::UnknownModel("elevenlabs".into())),
+                StatusCode::NOT_FOUND,
+                "model_not_found",
+            ),
+            (
+                E::Service(ServiceError::SynthesizeUnavailable {
+                    model: "kokoro".into(),
+                    reason: "M2-07 deferred",
+                }),
+                StatusCode::NOT_IMPLEMENTED,
+                "not_implemented",
+            ),
+            (
+                E::Service(ServiceError::Inference(
+                    vokra_core::VokraError::UnsupportedOp("flow on Metal".into()),
+                )),
+                StatusCode::NOT_IMPLEMENTED,
+                "unsupported_op",
+            ),
+            (
+                E::Service(ServiceError::Inference(
+                    vokra_core::VokraError::InvalidArgument("PassthroughPhonemizer: ...".into()),
+                )),
+                StatusCode::BAD_REQUEST,
+                "invalid_input",
+            ),
+            (
+                E::Service(ServiceError::Inference(
+                    vokra_core::VokraError::NotImplemented("kokoro G2P bridge"),
+                )),
+                StatusCode::NOT_IMPLEMENTED,
+                "not_implemented",
+            ),
+            (
+                E::Service(ServiceError::Inference(vokra_core::VokraError::ModelLoad(
+                    "gguf glitch".into(),
+                ))),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "inference_failed",
+            ),
+            (
+                E::Service(ServiceError::InvalidConfig("bad pair".into())),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "inference_failed",
+            ),
+        ];
+        for (err, want_status, want_tag) in cases {
+            let desc = err.to_string();
+            let mapped = server_error_from_tts(err);
+            assert_eq!(mapped.status(), want_status, "status for {desc:?}");
+            assert_eq!(mapped.type_tag(), want_tag, "type tag for {desc:?}");
+        }
+    }
+
+    /// The override-deferral 501 must carry the documented note so clients
+    /// learn the omission fix without reading source.
+    #[tokio::test]
+    async fn tts_route_override_501_carries_deferral_note() {
+        let (status, _ct, body) = post_tts(
+            app(Arc::new(MockSynth)),
+            r#"{"text":"1 2","voice":"default","length_scale":0.5}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not wired in v0.5")
+        );
     }
 }

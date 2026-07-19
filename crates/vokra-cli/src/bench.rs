@@ -107,7 +107,7 @@ struct BenchArgs {
 /// Parses a `--backend` value. The variants always exist (core enum); whether
 /// they are *usable* depends on the CLI's compiled features — an unavailable
 /// backend fails loudly at inference, never silently on CPU.
-fn parse_backend(v: &str) -> Result<BackendKind, String> {
+pub(crate) fn parse_backend(v: &str) -> Result<BackendKind, String> {
     match v {
         "cpu" => Ok(BackendKind::Cpu),
         "metal" => Ok(BackendKind::Metal),
@@ -457,6 +457,11 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
         return match args.task_hint {
             Some(TaskHint::MelFrontend) => execute_mel_frontend_standalone(args),
             Some(TaskHint::Cosyvoice2Synthetic) => execute_cosyvoice2_synthetic_standalone(args),
+            Some(TaskHint::CsmFixtureTokenizer) => Err(
+                "bench: --task does not select the CSM fixture tokenizer (it is a \
+                 `vokra-cli run --fixture-tokenizer` flag; bench has no CSM task yet)"
+                    .to_owned(),
+            ),
             None => Err("unreachable: parse_args guarantees a task hint".to_owned()),
         };
     }
@@ -472,6 +477,53 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
     verify_hifigan_int8(task, None, None)?;
 
     let (task_name, audio_seconds, samples) = match task {
+        // S2S (CSM, M4-05) has no bench harness yet — RTF/TTFA reference
+        // numbers ride the streaming test + owner track (T19/T30). Reject
+        // rather than fabricate a measurement (FR-EX-08).
+        ModelTask::S2s => {
+            return Err(
+                "bench: arch `csm` (S2S) has no bench task yet — TTFA/RTF reference \
+                 numbers come from the M4-05 streaming reference measurement; real-model \
+                 numbers are the owner track"
+                    .to_owned(),
+            );
+        }
+        // Voxtral (M3-10 / P2 cc-10) is routed through `vokra-cli run` but
+        // has no bench task: a real-checkpoint RTF number needs the
+        // multi-GB weights + a stable measurement lab (the M2-14 defer),
+        // and the synthetic path would measure nothing meaningful. Reject
+        // rather than fabricate (FR-EX-08).
+        ModelTask::AsrVoxtral => {
+            return Err(
+                "bench: arch `voxtral` has no bench task yet — real-checkpoint RTF is the \
+                 owner track (needs the multi-GB weights on a stable measurement host); \
+                 use `vokra-cli run --model <voxtral.gguf> --input <in.wav>` for a \
+                 functional run"
+                    .to_owned(),
+            );
+        }
+        // Same posture for the Moshi duplex (M4-06): per-frame latency
+        // reference numbers ride the duplex demo + owner track (T26/T30).
+        ModelTask::S2sDuplex => {
+            return Err(
+                "bench: arch `moshi` (full-duplex S2S) has no bench task yet — \
+                 real-model per-frame latency is the owner track (M4-06 T30); \
+                 refusing to fabricate a measurement (FR-EX-08)"
+                    .to_owned(),
+            );
+        }
+        // Speaker embedding (CAM++): no bench task is defined — the run-side
+        // Speaker arm prints the embedding L2-norm / cosine, but a timing
+        // harness needs a settled fbank+embed window definition first.
+        // Reject rather than fabricate a measurement (FR-EX-08).
+        ModelTask::Speaker => {
+            return Err(
+                "bench: arch `campplus` (speaker embedding) has no bench task yet — \
+                 use `vokra-cli run --model <campplus.gguf> --input <a.wav>` for the \
+                 embedding itself (FR-EX-08: refusing to fabricate a measurement)"
+                    .to_owned(),
+            );
+        }
         ModelTask::Vad => {
             let path = args
                 .input
@@ -543,6 +595,21 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 Ok(())
             })?;
             ("mel-frontend", audio_seconds, samples)
+        }
+        // Kokoro (M2-07 / cc-24) is routed through `vokra-cli run` but has no
+        // bench task. A Kokoro forward needs a style vector (`run --style`),
+        // and the bench harness has no flag to supply one — benching with a
+        // fabricated (e.g. zero) style would measure a synthesis the model was
+        // never asked to perform. Reject rather than invent an input
+        // (FR-EX-08); adding `bench --style` is the follow-up.
+        ModelTask::TtsKokoro => {
+            return Err(
+                "bench: arch `kokoro-82m-istftnet` has no bench task yet — a Kokoro forward \
+                 needs an explicit style vector and `bench` has no --style flag; use \
+                 `vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32>` \
+                 for a real synthesis"
+                    .to_owned(),
+            );
         }
         ModelTask::Cosyvoice2Synthetic => {
             // The engine's load_session does NOT route the cosyvoice2 arch

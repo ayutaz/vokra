@@ -19,6 +19,13 @@ vokra-backend-cpu.workspace = true
 # 8-language G2P is reused OUT of the workspace, so this stays a first-party
 # `vokra-*` dependency and the zero-dependency gate is preserved (NFR-DS-02).
 vokra-piper-plus.workspace = true
+# M4 cc-06 (Moshi full-7B on 16 GB machines): `MoshiEngine::from_path` loads
+# through the true-mmap GGUF path (`vokra_mmap::open_gguf`) with mapped-lazy
+# temporal blocks, instead of the old fs::read + parse(to_vec) double copy.
+# First-party crate, ZERO external deps (raw mmap/MapViewOfFile FFI — no libc /
+# memmap2), so the zero-dependency gate (NFR-DS-02) still holds. Promoted from
+# dev-dependencies (where the Voxtral real-GGUF gated test already used it).
+vokra-mmap = { path = "../vokra-mmap" }
 # Phase 3 (GPU execution): the imperative `Compute` dispatcher routes the model
 # hot path (GEMM first) onto the Metal backend. `vokra-backend-metal` is a
 # first-party `vokra-*` crate with ZERO external deps (raw Objective-C / Metal
@@ -49,6 +56,35 @@ vokra-backend-cuda = { workspace = true, optional = true }
 # routed through this feature therefore surfaces as an explicit `UnsupportedOp`
 # from `Compute::for_backend` — never a silent CPU fall back (FR-EX-08).
 vokra-backend-vulkan = { workspace = true, optional = true }
+# M4-01 (GPU execution), WebGPU arm: symmetric with the Metal / CUDA / Vulkan
+# arms — an OPTIONAL first-party dep behind the `webgpu` feature, so default
+# builds never even name it (NFR-PT-01). `vokra-backend-webgpu` is a
+# first-party `vokra-*` crate with ZERO external deps (raw
+# `#[link(wasm_import_module)]` extern-import shim + hand-written JS glue —
+# NO wgpu / wasm-bindgen / web-sys binding crate; the import-object
+# resolution at instantiate time is the WASM dlopen equivalent), so the
+# zero-dependency gate (NFR-DS-02) still holds. The `Compute::WebGpu` arm is
+# additionally `cfg(target_arch = "wasm32")`-gated inside this crate
+# (WebGPU is reached through browser imports — there is nothing to import
+# outside a JS host). A missing adapter / an uncovered op is an explicit
+# `BackendUnavailable` / `UnsupportedOp` — never a silent CPU fall back
+# (FR-EX-08).
+vokra-backend-webgpu = { workspace = true, optional = true }
+
+[dev-dependencies]
+# M4-04 T10/T11 (test-only edge, runtime direction untouched): the codec GGUF
+# binder roundtrip tests build a synthetic checkpoint, run it through the
+# offline vokra-convert library, and bind the result back — proving the
+# converter-derived tensors and the runtime binder agree bit-for-bit.
+vokra-convert = { path = "../vokra-convert" }
+# M4-05 T25 (test-only edge): the CSM quality gate consumes the M4-18
+# degradation gate (MelLoss + AudioMosMetric G2 branch) from vokra-eval —
+# first-party, acyclic (vokra-eval depends only on core/ops/backend-cpu),
+# root Cargo.lock stays vokra-* only (NFR-DS-02).
+vokra-eval = { path = "../vokra-eval" }
+# vokra-mmap moved to [dependencies] (M4 cc-06 — MoshiEngine::from_path mmap
+# wiring); the Voxtral real-GGUF gated test (tests/voxtral_real_gguf.rs) keeps
+# using it from there.
 
 [features]
 # Off by default: enable with `--features metal` on macOS / iOS to route the
@@ -63,8 +99,32 @@ cuda = ["dep:vokra-backend-cuda"]
 # to route the model hot path onto the Vulkan backend. In the M3-02 foundation
 # slice the Vulkan backend covers no hot op, so any `Compute::for_backend` with
 # `BackendKind::Vulkan` currently returns `UnsupportedOp` — never a silent CPU
-# fall back. Real GPU parity is verified once T14〜T22 SPIR-V kernels land.
-vulkan = ["dep:vokra-backend-vulkan"]
+# fall back. Real GPU parity is verified once the precompiled `.spv` kernels
+# land (M4-13-T16, owner).
+#
+# M4-15-T02 (ADR M4-15 §(a)): the feature also forwards to the backend crate's
+# own `vulkan` feature. Before this fix the measured resolution was
+# `vokra-backend-vulkan [default]` — the optional dep was activated but its raw
+# Vulkan FFI stayed compiled out, so a CPU + Vulkan-only build
+# (`--no-default-features --features vulkan` on vokra-capi / vokra-cli) would
+# ship a permanent `BackendUnavailable` stub. Forwarding guarantees the dlopen
+# FFI path COMPILES in that build target; it still loads libvulkan only at
+# runtime (nothing is linked or bundled — NFR-DS-02), and on macOS / iOS the
+# backend stays an explicit stub via its target cfg (FR-EX-08, no silent
+# fallback either way).
+vulkan = ["dep:vokra-backend-vulkan", "vokra-backend-vulkan/vulkan"]
+# Off by default: enable with `--features webgpu --target wasm32-unknown-unknown`
+# to route the model hot path onto the browser WebGPU backend (M4-01). On any
+# non-wasm32 target the feature compiles but the `Compute::WebGpu` arm is
+# cfg'd out, so `Compute::for_backend(BackendKind::WebGpu, …)` is an explicit
+# `BackendUnavailable` (FR-EX-08 — the WASM CPU/SIMD128 path is only ever the
+# caller's explicit `BackendKind::Cpu` choice). Coverage: the six Whisper hot
+# ops (Gemm / Gemv / Softmax / LayerNorm / Gelu / Conv1d); the RVQ codec ops
+# stay explicit `UnsupportedOp` (same posture as Metal / CUDA).
+# (forwards the backend crate's own `webgpu` feature so the extern-import
+# context actually compiles on wasm32 — on native targets the backend's
+# target gate keeps the explicit-BackendUnavailable stubs.)
+webgpu = ["dep:vokra-backend-webgpu", "vokra-backend-webgpu/webgpu"]
 
 # M1-01-D: reference RTF bench for the piper-plus native TTS (hand-rolled
 # std::time measurement, no external bench crate — NFR-DS-02). It is env-gated

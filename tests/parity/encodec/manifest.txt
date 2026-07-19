@@ -1,0 +1,10 @@
+M4-04 T15 EnCodec RVQ reference fixture (SYNTHETIC weights — FR-OP-32)
+reference: encodec (MIT code) public API — ResidualVectorQuantizer.decode on fixed-seed random codebooks; encodec==0.1.1, torch==2.9.1, numpy==2.2.6
+canonical config source: EncodecModel.encodec_model_24khz(pretrained=False) constructed model — n_q=32, bins=1024, dimension=128 (read from the model object, not hard-coded)
+weights: NONE downloaded / used — codebooks are torch.randn with the seed below (pretrained EnCodec weights are CC-BY-NC 4.0 and permanently zoo-excluded; they are not used even for fixture generation)
+fixture subset: first 8 quantizers, rows sliced to 128
+shapes: codebook_tables_sliced [(8, 128, 128)]; codes [(32, 8)] u32; decoded_features [(32, 128)]
+seed: 0; codes in [0, 128)
+sha256 codebook_tables_sliced.f32 48f4bf06b20978b267f65ef715e67ee9a161a11e7d60b31fa266ac0b658ccb52
+sha256 codes.u32 19f73c0f407c81c5ae57f757cf464d8be8f713dedef9e36c0387e7f73304bdf1
+sha256 decoded_features.f32 913e37d0ac62c852d32beb325440faa0e89b4e8daa97f0b6d2a73b8276c35648

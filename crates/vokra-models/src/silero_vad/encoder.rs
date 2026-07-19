@@ -6,7 +6,7 @@
 //! canonical frame the time length collapses `3 -> 3 -> 2 -> 1 -> 1`, so the
 //! output is `[128, 1]`.
 
-use super::math::{conv1d, relu_in_place};
+use super::math::{conv1d_wt, relu_in_place};
 use super::pseudo_stft::Magnitude;
 use super::weights::RateWeights;
 
@@ -27,11 +27,13 @@ pub(super) fn encode(w: &RateWeights, mag: &Magnitude) -> EncoderOut {
     let mut len = mag.frames;
     for (layer, stride) in w.encoder.iter().zip(STRIDES) {
         debug_assert_eq!(layer.c_in, c_in);
-        let out = conv1d(
+        // M5-14 Wave-2 (T21): the transposed-weight formulation of the same
+        // conv — bit-identical per element (see `math::conv1d_wt`).
+        let out = conv1d_wt(
             &data,
             c_in,
             len,
-            &layer.weight,
+            &layer.weight_t,
             Some(&layer.bias),
             layer.c_out,
             layer.k,

@@ -98,6 +98,9 @@ pub mod gguf;
 pub mod ir;
 pub mod json;
 pub mod kv_quant;
+// M4-20 T14: reserved op-kind anchors for the M5-residual audio ops (declared,
+// never registered — the KOKORO_ISTFT_HEAD_OP pattern; ADR M4-20 §D-6).
+pub mod m5_residual_ops;
 pub mod pipeline;
 pub mod prenorm;
 pub mod quant;
@@ -119,16 +122,20 @@ pub use cache::paged_quant::{
 };
 pub use complex::Complex32;
 pub use compliance::{
-    ComplianceConfig, ComplianceLevel, CompliancePolicy, DisclosureConfig, LicenseClass,
-    LicenseResolution, ResolutionSource, SpeakerEmbeddingPolicy, VoiceCloningPolicy,
+    AttributionInfo, ComplianceConfig, ComplianceLevel, CompliancePolicy, DisclosureConfig,
+    LicenseClass, LicenseResolution, ResolutionSource, SpeakerEmbeddingPolicy, VoiceCloningPolicy,
     WatermarkBackendStatus, WatermarkConfig, check_weight_license, registry_lookup,
-    resolve_license_class, stamp_provenance,
+    resolve_attribution, resolve_license_class, stamp_attribution, stamp_provenance,
 };
 pub use decode::{
     CfgMode, DecodeStepper, LogitsSource, Sampler, SamplerConfig, TOKEN_FLAG_EOT, apply_cfg,
     apply_cfg_inplace, argmax, sample_sequence,
 };
-pub use engines::{AsrEngine, SynthesisRequest, TtsEngine, VadEngine, VadStreamHandle};
+pub use engines::{
+    AsrEngine, DialogContextTurn, DialogRequest, DuplexInterruptHandle, DuplexPushReport,
+    DuplexSessionConfig, S2sDuplexEngine, S2sDuplexHandle, S2sEngine, SynthesisRequest, TtsEngine,
+    VadEngine, VadStreamHandle,
+};
 pub use error::{Result, VokraError};
 pub use gguf::{
     FieldMismatch, FrontendPolicy, FrontendSpec, GgmlType, GgufBuilder, GgufError, GgufFile,

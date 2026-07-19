@@ -1,0 +1,11 @@
+loadavg_start={ 3.51 4.79 6.93 }
+vokra_cpu_threads_env=unset
+model_load_seconds=0.588731
+iter0_beam_wall_s=8.459633
+iter1_beam_wall_s=8.440697
+iter2_beam_wall_s=8.574819
+MEDIAN beam_wall_s=8.459633 rtf=0.7691
+beam_tokens=[50258, 50259, 50359, 50363, 400, 370, 452, 7177, 6280, 11, 1029, 406, 437, 428, 1941, 393, 360, 337, 291, 11, 1029, 437, 291, 393, 360, 337, 428, 1941, 13, 50257]
+PROFDUMP-BEGIN whisper.beam
+PROFDUMP-END whisper.beam
+loadavg_end={ 3.62 4.70 6.78 }

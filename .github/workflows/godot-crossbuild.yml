@@ -67,10 +67,11 @@ name: godot-crossbuild
 on:
   workflow_dispatch:
   schedule:
-    # Weekly Monday 06:00 UTC. 1h after gpu-vulkan-parity (05:00 UTC), 1h
-    # before gpu-cuda-rtf (07:00 UTC on the self-hosted runner). Off-peak
+    # Weekly Monday 08:30 UTC — the last slot in the weekly stagger (the
+    # earlier slots run kokoro 04:00, whisper 05:00, vulkan 05:30,
+    # cuda-rtf 06:00, csm 06:30, web-wasm 07:00, moshi 07:30, utmos 08:00). Off-peak
     # US/EU business hours.
-    - cron: '0 6 * * 1'
+    - cron: '30 8 * * 1'
 
 permissions:
   contents: read

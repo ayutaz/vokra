@@ -27,6 +27,7 @@ const KEY_AE_FFN_DIM: &str = "vokra.voxtral.audio_encoder.ffn_dim";
 const KEY_TD_N_LAYER: &str = "vokra.voxtral.text_decoder.n_layer";
 const KEY_TD_N_HEAD_Q: &str = "vokra.voxtral.text_decoder.n_head_q";
 const KEY_TD_N_HEAD_KV: &str = "vokra.voxtral.text_decoder.n_head_kv";
+const KEY_TD_HEAD_DIM: &str = "vokra.voxtral.text_decoder.head_dim";
 const KEY_TD_HIDDEN_DIM: &str = "vokra.voxtral.text_decoder.hidden_dim";
 const KEY_TD_FFN_DIM: &str = "vokra.voxtral.text_decoder.ffn_dim";
 const KEY_TD_VOCAB_SIZE: &str = "vokra.voxtral.text_decoder.vocab_size";
@@ -77,6 +78,14 @@ pub struct TextDecoderConfig {
     pub n_head_q: usize,
     /// Key/value attention heads (`n_head_q % n_head_kv == 0` — GQA).
     pub n_head_kv: usize,
+    /// Explicit per-head width. Mistral **decouples** this from
+    /// `hidden_dim / n_head_q` — the shipping `Voxtral-Mini-3B-2507` has
+    /// `hidden_dim = 3072` but 32 query heads × `head_dim = 128` (a
+    /// 4096-wide Q projection). `0` means "derive as `hidden_dim /
+    /// n_head_q`" — the pre-M4 behaviour, kept so GGUFs converted before
+    /// the `vokra.voxtral.text_decoder.head_dim` key existed still load.
+    /// Read through [`Self::head_dim`], never directly.
+    pub head_dim: usize,
     /// Decoder hidden width `d_text`.
     pub hidden_dim: usize,
     /// SwiGLU FFN inner width.
@@ -92,13 +101,32 @@ pub struct TextDecoderConfig {
 }
 
 impl TextDecoderConfig {
-    /// Per-head width (`hidden_dim / n_head_q`). Mistral variants ship a
-    /// fixed `head_dim=128`, but the value is derived from the shape here
-    /// so the loader validates the config self-consistently. Returns `0`
-    /// when `n_head_q == 0` (the shape-only converter sentinel).
+    /// Per-head width — the explicit `head_dim` metadata when present, else
+    /// derived as `hidden_dim / n_head_q` (pre-M4 GGUF compatibility).
+    /// Returns `0` on the shape-only converter sentinel path (`n_head_q ==
+    /// 0` with no explicit value), which every forward entry point rejects.
     #[must_use]
     pub fn head_dim(&self) -> usize {
-        self.hidden_dim.checked_div(self.n_head_q).unwrap_or(0)
+        if self.head_dim != 0 {
+            self.head_dim
+        } else {
+            self.hidden_dim.checked_div(self.n_head_q).unwrap_or(0)
+        }
+    }
+
+    /// Q projection output width: `n_head_q * head_dim()`. Equals
+    /// `hidden_dim` only when the checkpoint ties `head_dim` to
+    /// `hidden_dim / n_head_q` (NOT true of the shipping Voxtral mini).
+    #[must_use]
+    pub fn q_hidden(&self) -> usize {
+        self.n_head_q * self.head_dim()
+    }
+
+    /// K/V projection output width: `n_head_kv * head_dim()` — also the
+    /// per-layer KV cache row width.
+    #[must_use]
+    pub fn kv_hidden(&self) -> usize {
+        self.n_head_kv * self.head_dim()
     }
 }
 
@@ -147,12 +175,23 @@ impl VoxtralConfig {
         let td_n_ctx = opt_u32(file, KEY_TD_N_CTX);
         let td_n_head_q = opt_u32(file, KEY_TD_N_HEAD_Q);
         let td_n_head_kv = opt_u32(file, KEY_TD_N_HEAD_KV);
+        let td_head_dim = opt_u32(file, KEY_TD_HEAD_DIM);
         let td_rope_base = opt_f32(file, KEY_TD_ROPE_BASE);
         let td_rms_norm_eps = opt_f32(file, KEY_TD_RMS_NORM_EPS);
 
-        if td_n_head_q != 0 && td_hidden_dim != 0 && td_hidden_dim % td_n_head_q != 0 {
+        // The divisibility requirement only concerns the DERIVED head width
+        // (pre-M4 GGUFs without the explicit head_dim key). With an explicit
+        // head_dim, `hidden_dim / n_head_q` is never consulted — Mistral
+        // decouples the two (mini-3b: 3072 hidden, 32 heads x 128).
+        if td_head_dim == 0
+            && td_n_head_q != 0
+            && td_hidden_dim != 0
+            && td_hidden_dim % td_n_head_q != 0
+        {
             return Err(bad(format!(
-                "text_decoder.n_head_q ({td_n_head_q}) must divide text_decoder.hidden_dim ({td_hidden_dim})"
+                "text_decoder.n_head_q ({td_n_head_q}) must divide text_decoder.hidden_dim \
+                 ({td_hidden_dim}) when no explicit text_decoder.head_dim is present — \
+                 re-convert with a converter that writes {KEY_TD_HEAD_DIM}"
             )));
         }
         if td_n_head_kv != 0 && td_n_head_q != 0 && td_n_head_q % td_n_head_kv != 0 {
@@ -180,6 +219,7 @@ impl VoxtralConfig {
                 n_layer: td_n_layer as usize,
                 n_head_q: td_n_head_q as usize,
                 n_head_kv: td_n_head_kv as usize,
+                head_dim: td_head_dim as usize,
                 hidden_dim: td_hidden_dim as usize,
                 ffn_dim: td_ffn_dim as usize,
                 vocab_size: td_vocab as usize,
@@ -258,7 +298,9 @@ mod tests {
     }
 
     #[test]
-    fn reads_voxtral_mini_hparams() {
+    fn reads_legacy_hparams_without_head_dim_key() {
+        // A pre-M4 GGUF (no `text_decoder.head_dim` key) derives head_dim as
+        // `hidden_dim / n_head_q` — 3072 / 24 = 128 in this fixture.
         let file = GgufFile::parse(valid_builder().to_bytes().unwrap()).unwrap();
         let cfg = VoxtralConfig::from_gguf(&file).unwrap();
         assert_eq!(cfg.audio.n_layer, 24);
@@ -267,9 +309,58 @@ mod tests {
         assert_eq!(cfg.text.n_layer, 28);
         assert_eq!(cfg.text.n_head_q, 24);
         assert_eq!(cfg.text.n_head_kv, 8);
-        assert_eq!(cfg.text.head_dim(), 128);
+        assert_eq!(cfg.text.head_dim, 0, "no explicit key → 0 sentinel field");
+        assert_eq!(cfg.text.head_dim(), 128, "derived hidden_dim / n_head_q");
+        assert_eq!(cfg.text.q_hidden(), 3072);
+        assert_eq!(cfg.text.kv_hidden(), 1024);
         assert!((cfg.text.rope_base - 1_000_000.0).abs() < 1.0);
         assert_eq!(cfg.mode, "asr");
+    }
+
+    #[test]
+    fn reads_real_mini_hparams_with_explicit_head_dim() {
+        // The shipping Voxtral-Mini-3B-2507 shape: hidden 3072, 32 query
+        // heads x head_dim 128 (Q projection 4096-wide — head_dim decoupled
+        // from hidden_dim / n_head_q, which would be 96), 8 KV heads, 30
+        // layers (config.json, 2026-07-16 real-weight eval).
+        let mut b = valid_builder();
+        b.add_u32(KEY_TD_N_LAYER, 30);
+        b.add_u32(KEY_TD_N_HEAD_Q, 32);
+        b.add_u32(KEY_TD_N_HEAD_KV, 8);
+        b.add_u32(KEY_TD_HEAD_DIM, 128);
+        b.add_u32(KEY_TD_VOCAB_SIZE, 131_072);
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let cfg = VoxtralConfig::from_gguf(&file).unwrap();
+        assert_eq!(cfg.text.n_layer, 30);
+        assert_eq!(cfg.text.n_head_q, 32);
+        assert_eq!(cfg.text.n_head_kv, 8);
+        assert_eq!(cfg.text.head_dim(), 128, "explicit key wins");
+        assert_eq!(cfg.text.q_hidden(), 4096, "32 x 128 != hidden_dim 3072");
+        assert_eq!(cfg.text.kv_hidden(), 1024, "8 x 128");
+    }
+
+    #[test]
+    fn explicit_head_dim_lifts_the_divisibility_requirement() {
+        // hidden_dim 3070 is NOT divisible by 32 query heads — legal when an
+        // explicit head_dim decouples the two, rejected when it must be
+        // derived.
+        let mut b = valid_builder();
+        b.add_u32(KEY_TD_HIDDEN_DIM, 3070);
+        b.add_u32(KEY_TD_N_HEAD_Q, 32);
+        b.add_u32(KEY_TD_HEAD_DIM, 128);
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        assert!(VoxtralConfig::from_gguf(&file).is_ok());
+
+        let mut b = valid_builder();
+        b.add_u32(KEY_TD_HIDDEN_DIM, 3070);
+        b.add_u32(KEY_TD_N_HEAD_Q, 32);
+        // No head_dim key → the derived path must reject the non-divisible
+        // split rather than silently flooring 3070 / 32.
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        assert!(matches!(
+            VoxtralConfig::from_gguf(&file),
+            Err(VokraError::ModelLoad(_))
+        ));
     }
 
     #[test]

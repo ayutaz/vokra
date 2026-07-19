@@ -1,6 +1,6 @@
 # license-audit.md — Vokra 依存ライセンス総覧
 
-**最終更新**: 2026-07-04（M2-13: research flag enforcement 機構の実装を §3 末尾に追記 / M1-02: GGUF K-quant + safetensors runtime direct-load のフォーマット参照を追記 / M0-08: §3 CAM++ 行を Vokra が実際に変換対応した具体ソース `ayousanz/campplus-onnx`（上流 `iic/speech_campplus`）に更新 / 2026-07-06: §2・§6 の backend binding crate（cudarc/metal-rs）を「実装は不採用＝手書き生 FFI」に、§2/§5 G2P を実装済 `integrations/vokra-piper-g2p` に、§6 CUDA を no-silent-fallback（explicit `BackendUnavailable`）に現物実装と整合）
+**最終更新**: 2026-07-04（M2-13: research flag enforcement 機構の実装を §3 末尾に追記 / M1-02: GGUF K-quant + safetensors runtime direct-load のフォーマット参照を追記 / M0-08: §3 CAM++ 行を Vokra が実際に変換対応した具体ソース `ayousanz/campplus-onnx`（上流 `iic/speech_campplus`）に更新 / 2026-07-06: §2・§6 の backend binding crate（cudarc/metal-rs）を「実装は不採用＝手書き生 FFI」に、§2/§5 G2P を実装済 `integrations/vokra-piper-g2p` に、§6 CUDA を no-silent-fallback（explicit `BackendUnavailable`）に現物実装と整合 / 2026-07-15: §4 音声処理ライブラリ表の Vokra 採用時期ラベルを §3 + M4 実装状況と整合（denoise=v1.0-rc/M4-20、wfst=v1.0 GA/M5、C2PA embedding は deferred）、§3 Bark 行を post-v1.0 GA に更新、§3 Matcha-TTS 行の配布ラベルを「★ post-v1.0 GA」に更新（Bark と同 tier の齟齬解消、FACT SHEET MODELS 整合）、§2 wgpu 行を「実装は不採用」（M4-01 raw WebGPU extern-import shim、NFR-DS-02 zero-dep）に更新し stale label `v0.1-v1.5` を除去）
 **目的**: Vokra が依存するすべての Rust crate、モデル weight、音声 codec、vocoder、辞書、G2P、audio 前処理ライブラリのライセンスを列挙し、Apache 2.0 core との互換性、Unity/Godot Asset Store 配布可否、商用ゲーム組込可否を明示する。
 
 **運用**:
@@ -30,7 +30,7 @@
 |-------|----------|-----|------------|-----|
 | **std** | Apache 2.0 / MIT | Rust 標準 | ○ | |
 | **rayon** | Apache 2.0 / MIT | work-stealing thread pool | ○ | libomp/OpenMP は使わない |
-| **wgpu** | Apache 2.0 / MIT | WebGPU/Vulkan/Metal/DX12 backend | ○ | v0.1-v1.5 |
+| **wgpu** | Apache 2.0 / MIT | WebGPU/Vulkan/Metal/DX12 backend | ○ | **実装は不採用** — WebGPU backend は wgpu を使わず、raw WebGPU extern-import shim を手書き実装（M4-01、NFR-DS-02 zero-dep、cudarc/metal-rs と同じ生 FFI 方針） |
 | **cudarc** | Apache 2.0 / MIT | CUDA driver API bindings | ○ | **実装は不採用** — CUDA backend は binding crate（cudarc/cust/rustacuda）を使わず、Driver API + NVRTC を手書き生 FFI で `dlopen`（`libcuda`/`libnvrtc`）実装（NFR-DS-02 zero-dep、`third_party/NVIDIA-EULA.md` Binding-crate note）。cudart/cudnn/cublas は bundle せず system install 検出のみ |
 | **metal-rs** | MIT | Metal API bindings | ○ | **実装は不採用** — Metal backend は binding crate（metal-rs/objc2/objc/core-foundation）を使わず、Obj-C/Metal を手書き生 FFI（`#[link(kind="framework")]`）実装（NFR-DS-02 zero-dep） |
 | **ash** | Apache 2.0 / MIT | Vulkan bindings | ○ | Android/Linux backend |
@@ -48,6 +48,7 @@
 | **axum** or **actix-web** (server 用途) | MIT / Apache 2.0 | HTTP server | ○ | vLLM 互換 API 用 |
 | **candle-core** / **candle-transformers** (参考用) | Apache 2.0 / MIT | Rust ML | ○ | Whisper reference 実装として参照可、Vokra は自前実装だが kernel の参考にする |
 | **cbindgen** | MPL-2.0 | C ABI ヘッダ生成 | ○ (build-only) | ビルド時のみ、成果物には含まれない |
+| **SBOM generator（first-party、`scripts/sbom/generate_spdx.py`）** | Apache 2.0（Vokra 本体） | SBOM (SPDX 2.3) 生成 | ○ (build-only) | M4-15。第三者 SBOM crate（cargo-sbom / cargo-cyclonedx 等）は不採用 — `cargo tree` + python3 標準ライブラリのみで生成し root Cargo.lock 不変（NFR-DS-02、ADR M4-15 §(b)）。成果物に入るのは生成された SPDX JSON のみ |
 
 **未確認 / 要検討**:
 - **G2P（実装済、M0）**: 実 8 言語 G2P は依頼者作 MIT crate `piper-plus-g2p`（piper-plus repo 内）を **out-of-workspace の opt-in 統合 crate `integrations/vokra-piper-g2p`**（root workspace 非 member・独自 `Cargo.lock`・git `rev` pin）から呼び出して提供。`piper-plus-g2p` の非 `vokra-*` 推移依存（jpreprocess/regex/serde 等）は zero-dep runtime（NFR-DS-02）に入らず、`vokra_piper_plus::Phonemizer` trait 境界で注入。text→音声 JA/EN 実動、**eSpeak-NG (GPL-3.0) 不使用**。in-runtime Rust 化・`phonemizer-rs`/`phonikud` は将来検討
@@ -65,6 +66,33 @@
 - **GGUF / ggml K-quant ブロックレイアウト** (`Q4_K`/`Q5_K`/`Q6_K` の `block_q*_K` 構造・`get_scale_min_k4` パッキング): ggml / llama.cpp (**MIT**) の `k_quants.h` / `dequantize_row_q*_K` から **フォーマット仕様のみ** を参照し、Vokra 独自の scalar・`unsafe`-free 実装を新規記述 (M1-02、`crates/vokra-core/src/gguf/quant/`)。バイトレイアウトはフォーマットそのものであり著作物のコピーではない (whisper.cpp 型 native 再実装、CLAUDE.md 方針)。正当性は外部ファイルに依存しない in-repo の analytic oracle (closed-form super-block + quantize→dequant roundtrip) で pin。外部 crate 依存はゼロ (NFR-DS-02)。
 - **safetensors ヘッダ (JSON) フォーマット**: Hugging Face の on-disk 仕様 (**Apache-2.0**) を参照し、reader / JSON パーサとも Vokra 独自記述 (std-only、外部 crate なし)。ONNX/protobuf は runtime に入らない。
 
+### vokra-server の crate-scoped 例外（2026-07-19、依頼者承認）
+
+**対象は `integrations/vokra-server` の除外 workspace のみ**。root `Cargo.lock` は `vokra-*` のみで不変（NFR-DS-02 は無関係）。すべて **opt-in の `--piper-g2p`**（既定 OFF）が引き込む単一の依存鎖から来る:
+
+```
+vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev 41f3696)
+  -> jpreprocess / lindera-dictionary / encoding / quick-xml
+```
+
+| 種別 | 対象 | 判断 |
+|---|---|---|
+| **CC0-1.0** | `encoding-index-{japanese,korean,simpchinese,singlebyte,tradchinese}` + `encoding_index_tests` | **許可**（依頼者承認 2026-07-19、理由「ライブラリに制約が出ない」）。実体は Unicode↔レガシー CJK の**符号位置対応表 = データ**。`allow` への一括追加ではなく crate 限定にしたのは、CC0 が著作権は放棄しても**特許権を waive しない**ため（Vokra が Apache-2.0 を選んだ理由は特許 grant）。将来の CC0 **コード**依存は改めて審査を要する |
+| **CDLA-Permissive-2.0** | `webpki-roots`（0.26.11 / 1.0.8） | **許可**（同承認）。Mozilla の CA 証明書バンドル = 同じく許諾型データライセンスで下流に義務を課さない。0.26.11 は `ureq` ← `jpreprocess-naist-jdic` の **build-dependency**、1.0.8 は `reqwest` の **dev-dependency** — **いずれも製品バイナリには入らない** |
+
+**RUSTSEC ignore 4 件**（`integrations/vokra-server/deny.toml` に根拠を全文記載）:
+
+| ID | 内容 | 到達性 |
+|---|---|---|
+| RUSTSEC-2026-0194 | quick-xml 0.37.5 — 重複属性名チェックの二次時間（remote DoS） | **到達不能**。quick-xml の唯一の利用箇所は piper-plus-g2p の SSML パーサだが、`vokra-piper-g2p` / `vokra-server` はどちらも `ssml` / `SsmlParser` を一切参照しない（TTS は plain text に対し `phonemize` を呼ぶのみ）|
+| RUSTSEC-2026-0195 | quick-xml 0.37.5 — namespace 宣言の無制限確保（memory DoS） | **二重に到達不能**。`NsReader` 固有だが、piper-plus-g2p は plain `Reader` のみ使用 |
+| RUSTSEC-2025-0141 | bincode unmaintained（← jpreprocess-core） | 脆弱性ではなく保守状態。同梱 NAIST JDIC 辞書の読込に使用（バイト列は crate 同梱でリクエスト由来ではない）|
+| RUSTSEC-2021-0153 | `encoding` unmaintained（← lindera-dictionary） | 同上。上記 CC0 例外と同じ crate 群 |
+
+**恒久的な修正は upstream 側**: quick-xml >= 0.41 への更新は `piper-plus-g2p` の `^0.37` に対し semver 非互換のため、本リポジトリからは到達できない（`cargo update` 不可）。`ayutaz/piper-plus` の rev を進める際に 4 件とも再評価すること。
+
+**再評価トリガー（重要）**: SSML を受け付ける実装（`/api/tts` や `/v1/audio/speech` での `<speak>` パススルー等）を入れた瞬間に RUSTSEC-2026-0194/0195 は**実際に live になる**（リクエスト本文が攻撃者制御になるため）。その場合は先に piper-plus を更新し、ignore を外すこと。
+
 ---
 
 ## 3. モデル Weight ライセンス表
@@ -76,27 +104,27 @@
 | **piper-plus (ayutaz) 全モデル** | MIT | MIT | ○ | ★ 公式 zoo | 依頼者作、8 言語、eSpeak-NG 依存なし |
 | **Kokoro-82M** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | hexgrad、iSTFTNet 系 vocoder |
 | **CosyVoice / CosyVoice2 / CosyVoice3** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Alibaba FunAudioLLM。**M3-09 で自前実装 scaffold**（`crates/vokra-models/src/cosyvoice2/`、text encoder + Flow Matching stub + Mimi bridge + GGUF converter。実 checkpoint parity は依頼者 HF アクセス前提の follow-up）。 |
-| **Sesame CSM-1B** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Sesame AI Labs |
-| **Moshi (Helium + Mimi)** | Apache 2.0 | **CC-BY 4.0** | ○ (要 credit) | ★ 公式 zoo | Kyutai、attribution 表示義務 → docs/legal-compliance.md 参照 |
+| **Sesame CSM-1B** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Sesame AI Labs。**M4-05 で native 自前実装**（`crates/vokra-models/src/csm/` = Llama-3.2-flavor backbone + depth transformer + Mimi neural chain（`crates/vokra-models/src/mimi/`、M4-06 Moshi と共有）、`vokra-cli convert --model csm`、`registry_lookup("sesame-csm"/"csm-1b") == Permissive`）。実 checkpoint / tokenizer は **HF gated repo**（sesame/csm-1b + meta-llama/Llama-3.2-1B）= T29 依頼者入手 + §3.1 sign-off 前提、**zoo 公開は sign-off 通過が前提**（sign-off 前に配布 URL を公開しない）。Mimi weight（Kyutai CC-BY 4.0）の attribution は NOTICE §5 が encoder / neural decoder 消費分まで cover。 |
+| **Moshi (Helium + Mimi)** | Apache 2.0 | **CC-BY 4.0** | ○ (要 credit) | ★ 公式 zoo | Kyutai、attribution 表示義務 → docs/legal-compliance.md 参照。**M4-06 で native 自前実装**（`crates/vokra-models/src/moshi/` = Helium temporal transformer + per-step-weight depformer + inner monologue + full-duplex session、Mimi neural chain は M4-05 共有 module を consume、`vokra-cli convert --model moshi`、`registry_lookup("moshi") == AttributionRequired`）。**FR-MD-09 attribution 表示機能を実装**（converter が `vokra.provenance.attribution` を焼き込み → `Session::attribution` Rust API + C ABI `vokra_model_attribution` + `vokra-cli` 起動 banner の 3 面、chunk 不在時は registry fallback で AttributionRequired が常に非空 — NOTICE §5 が LM weight 消費分まで cover）。実 checkpoint（`kyutai/moshiko-pytorch-bf16`、~15GB BF16）の sourcing + §3.1 sign-off は T29 依頼者、**zoo 公開は sign-off 通過が前提**。CLI banner の `--quiet` 抑止可否は sign-off 判定事項として flag 済（M4-06-T24）。 |
 | **Voxtral (Mistral)** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Mistral、2025-07 リリース。**M3-10 で自前実装 scaffold**（`crates/vokra-models/src/voxtral/`、Whisper 派生 audio encoder + Mistral GQA/RoPE/SwiGLU/RMSNorm text decoder + ASR/S2S heads + config-aware converter `convert_voxtral_file`。実 multilang WER は follow-up）。 |
-| **DAC (Descript)** | MIT | MIT | ○ | ★ 公式 zoo | Descript 公式 |
-| **Mimi codec (Kyutai)** | Apache 2.0 | CC-BY 4.0 | ○ (要 credit) | ★ 公式 zoo | Moshi パッケージの一部。**M3-06 で `mimi_rvq` op を実装**（`crates/vokra-ops/src/mimi_rvq.rs`、CC-BY 4.0 attribution は `NOTICE` §5 に記載、`registry_lookup("mimi") == AttributionRequired`）。 |
-| **WavTokenizer** | MIT | MIT | ○ | ★ 公式 zoo | 中山大 |
-| **X-Codec 2 (Llasa)** | MIT | MIT | ○ | ★ 公式 zoo | HKUST |
+| **DAC (Descript)** | MIT | MIT | ○ | ★ 公式 zoo | Descript 公式。**M4-04 で `dac_rvq` op + converter + standalone zoo GGUF を実装**（`crates/vokra-ops/src/dac_rvq.rs` factorized decode、`vokra-cli convert --model dac`（要 `dac_prepare_checkpoint.py` side-car）、zoo primary = 24 kHz / 8 kbps variant（tag 0.0.4、75 Hz）。配布解禁は §3.1 の owner sign-off 待ち = fail-closed）。 |
+| **Mimi codec (Kyutai)** | Apache 2.0 | CC-BY 4.0 | ○ (要 credit) | ★ 公式 zoo | Moshi パッケージの一部。**M3-06 で `mimi_rvq` op を実装**（`crates/vokra-ops/src/mimi_rvq.rs`、CC-BY 4.0 attribution は `NOTICE` §5 に記載、`registry_lookup("mimi") == AttributionRequired`）。**M4-04 で standalone codec GGUF（`vokra.mimi.*` persisted、`vokra-cli convert --model mimi`）+ CSM/Moshi 向け multi-stream streaming 完成**（配布物同梱の NOTICE §5 で attribution 充足、standalone zoo 配布判断は §3.1 Mimi 行の sign-off に含める）。 |
+| **WavTokenizer** | MIT | MIT | ○ | ★ 公式 zoo | 中山大 (repo owner jishengpeng)。**M4-16 で `wavtokenizer_vq` op を実装**（`crates/vokra-ops/src/fsq_codec.rs`、FSQ family = RVQ と別サブグラフ、parity fixture は合成 weight のみ = pretrained 未使用）。GitHub `jishengpeng/WavTokenizer` LICENSE = MIT を 2026-07-15 に CC 再確認。配布解禁は §3.1 owner sign-off 待ち = fail-closed（M4-16-T14） |
+| **X-Codec 2 (Llasa)** | MIT（GitHub `zhenye234/X-Codec-2.0` + PyPI `xcodec2` 0.1.5 metadata、2026-07-15 CC 確認） | **⚠ 齟齬 — T14 確定待ち**: 本表旧値 MIT ↔ milestones.md §8 / deliverables.md §3.5「MIT+Apache 2.0 dual」↔ **HF `HKUSTAudio/xcodec2`（weight 配布 repo）README front-matter `license: cc-by-nc-4.0`（2026-07-15 CC fetch）** | **⚠ T14 判定待ち**（weight が CC-BY-NC 4.0 確定なら ✕ 非商用） | **⚠ 保留**（sign-off 空欄 = 配布不可の fail-closed 運用が既に効いている） | HKUST。**M4-16 で `xcodec2_fsq` op を実装**（`crates/vokra-ops/src/fsq_codec.rs`、engine op のみ = EnCodec FR-OP-32 と同じ「op は対応・weight は別判定」姿勢が可能。parity fixture は合成 projection のみ + reference code は vector-quantize-pytorch 1.17.8 (MIT) = **pretrained weight 未 DL・未使用**）。license 表記の 3 系統齟齬は §3.1 flag 節参照、確定は T14 owner sign-off。NC 確定時は `license_class.rs` の `xcodec2` 分類（現 Permissive）の変更差し戻しが必要 |
 | **openWakeWord** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | dscripka |
 | **CAM++ Speaker Embedding** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Alibaba 3D-Speaker `iic/speech_campplus`。`vokra-convert`（`ModelKind::CamPlus`）で GGUF 変換対応済、変換元 ONNX は `ayousanz/campplus-onnx`（約 27MB、Apache-2.0）。6.91M params、fbank80→192-d embedding（native forward） |
 | **ECAPA-TDNN (SpeechBrain)** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | SpeechBrain |
 | **WeSpeaker** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | Duke Kunshan |
-| **DeepFilterNet3** | MIT | MIT | ○ | ★ 公式 zoo | Rikorose、Speech Enhancement |
-| **RNNoise** | BSD | BSD | ○ | ★ 公式 zoo | Xiph |
-| **GTCRN** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo | 2023 |
+| **DeepFilterNet3** | **MIT / Apache-2.0 dual**（upstream Rikorose/DeepFilterNet の LICENSE-MIT + LICENSE-APACHE、2026-07-17 campaign-2 で一次確認） | 同左（checkpoint は同リポジトリ配布物として同一 dual、release sha256 `49c52edc…`） | ○ | ★ 公式 zoo（要 owner sign-off T18） | Rikorose、Speech Enhancement。**M4-20 (c) で `denoise` op を native 自前実装** → **2026-07-17 に実 checkpoint での完全実装・parity 達成**（`9b718d1`: libDF topology 転写 = Vorbis-window STFT/ERB frontend + conv/GRU encoder + ERB/DF decoder + lookahead deep filtering、115 verbatim upstream-named tensors、`vokra.denoise.*` schema v2、`convert --model denoise`）。**実測: enhanced 波形 max \|Δ\| 4.17e-7、SI-SNR 14.768399 dB vs upstream 14.768398 dB（gap 2.0e-7 dB）、21 stage tap 全 PASS**（env-gated `parity_denoise_dfn3`）。**owner 残は T18 の最終 license sign-off のみ**（T17 の実 checkpoint parity は達成済）。attribution は NOTICE §8（DeepFilterNet MIT）記載。 |
+| **RNNoise** | BSD | BSD | ○ | ★ 公式 zoo | Xiph。denoise 代替候補（M4-20 (c)、DeepFilterNet が第一候補）。 |
+| **GTCRN** | Apache 2.0 | Apache 2.0 | ○ | ★ 公式 zoo（要 owner license 事前確認 T18） | 2023。denoise 代替候補。license 事前確認は owner T18（`docs/m4-scope-expansion-2026-07-13.md` §BIG-10 依頼者タスク）。 |
 | **AudioSeal (Meta)** | MIT | MIT | ○ | ★ 公式 zoo | 推奨デフォルト watermark |
 | **F5-TTS (SWivid)** | MIT | **CC-BY-NC 4.0** | ✕ 非商用 | ✕ research flag | エンジンは対応、weight 別途取得 |
 | **E2-TTS** | MIT | 要確認 | △ | ✕ audit 後判断 | 論文実装のみ |
 | **Fish-Speech v1.4/v1.5** | Apache 2.0 | **CC-BY-NC-SA 4.0** | ✕ 非商用+ShareAlike | ✕ research flag | |
-| **Bark (Suno)** | MIT | MIT (元 CC-BY-NC → 変更) | △ | ✕ (Suno voice cloning 方針で禁止) | v2.0+ 検討、research flag |
+| **Bark (Suno)** | MIT | MIT (元 CC-BY-NC → 変更) | △ | ✕ (Suno voice cloning 方針で禁止) | post-v1.0 GA 検討、research flag |
 | **StyleTTS 2** | MIT | 要確認 | △ | ✕ audit 後判断 | |
-| **Matcha-TTS** | MIT | MIT | ○ | ★ v2.0+ | |
+| **Matcha-TTS** | MIT | MIT | ○ | ★ post-v1.0 GA | |
 | **RVC v2** | MIT | **不明 / 学習権利疑い** | △ | ✕ **vokra-voiceclone-experimental** に分離 | training data copyright laundering の Reddit/GitHub Issue で複数指摘 |
 | **GPT-SoVITS** | MIT | 不明 | △ | ✕ voiceclone-experimental 分離 | |
 | **EnCodec (Meta)** | MIT | **CC-BY-NC 4.0** | ✕ 非商用 | ✕ research flag | 商用は DAC/Mimi/WavTokenizer 推奨。**FR-OP-32 恒久制約**により公式 model zoo 非搭載を維持（M2-13 runtime gate + release CI 側の `scripts/compliance/check-encodec-exclusion.sh` 二重防御、M3-06 ADR §D2）。 |
@@ -142,6 +170,16 @@
 | **CosyVoice2-0.5B** | **Apache-2.0** | Hugging Face `FunAudioLLM/CosyVoice2-0.5B` model card の license: apache-2.0 タグ；`FunAudioLLM/CosyVoice` GitHub リポジトリ LICENSE ファイル（Apache License Version 2.0） | `Permissive` | ✓ | ______________ |
 | **Voxtral-Mini-3B-2507** | **Apache-2.0** | Hugging Face `mistralai/Voxtral-Mini-3B-2507` model card の license: apache-2.0 タグ | `Permissive` | ✓ | ______________ |
 | **Voxtral-Small-24B-2507** | **Apache-2.0** | Hugging Face `mistralai/Voxtral-Small-24B-2507` model card の license: apache-2.0 タグ | `Permissive` | ✓ | ______________ |
+| **DAC (Descript)** | **MIT** | `descriptinc/descript-audio-codec` GitHub リポジトリ LICENSE ファイル（MIT、GitHub API license.spdx_id = MIT を 2026-07-15 に CC 確認）；weights は同リポジトリの GitHub releases 配布物（`weights_24khz.pth` 等、`dac/utils/__init__.py` L18-39 の pinned URL 表）で **別段の weight license ファイルは同梱されていない**（リポジトリ LICENSE の下で公表） | `Permissive` | ✓ | ______________ |
+| **WavTokenizer** | **MIT** | `jishengpeng/WavTokenizer` GitHub リポジトリ LICENSE ファイル（MIT License、copyright jishengpeng 2024 — 2026-07-15 CC fetch）；released checkpoints（`WavTokenizer-{small,medium}-*-24k-4096`）は同リポジトリ README から配布・別段の weight license 記載なし | `Permissive` | ✓ | ______________ |
+
+**M4-14 activation note（Whisper family 完成 = M2-06 carry-over、2026-07-15）**: Whisper **small / medium / turbo** は M4-14 で `parity-whisper-real.yml` の parity CI matrix に昇格（workflow_dispatch opt-in leg。base / large-v3 と同一の HF DL → `vokra-cli convert` → dumper → `cargo test parity_whisper` 経路）。5 サイズ共通 MIT/MIT ゆえ**本表への新規行追加は無し**（上記 Whisper 行と §3 model zoo 行が M2-06 時点から 5 サイズをカバー済、FR-MD-13 の追記は本 note）。**provenance 注意（owner sign-off 時の混同防止）**: turbo の HF checkpoint は `openai/whisper-large-v3-turbo` — large-v3（`openai/whisper-large-v3`）とは**別 checkpoint**（distilled、decoder 4 層）だが、tokenizer は large-v3 と同一の 51866-token vocabulary を共有する（in-repo anchor: `vokra-convert` whisper converter の n_vocab 行、dumper の `vocab_resource_for` は両サイズを同一 bundled resource に標準化 = M4-14-T03）。実 sign-off（下記 template の Whisper small/medium/turbo 行の空欄記入）は M4-14-T11（依頼者）。
+
+**M4-16 activation note + X-Codec 2 license 齟齬 flag（FSQ codec family、2026-07-15）**: M4-16 で `wavtokenizer_vq` / `xcodec2_fsq` op を実装（`crates/vokra-ops/src/fsq_codec.rs`、engine op のみ・parity fixture は合成 weight のみ = **pretrained weight は未 DL・未使用**）。**X-Codec 2 の license 表記は 3 系統で不一致**（CC は事実の surface まで、確定は M4-16-T14 依頼者 sign-off）:
+
+1. **code**: GitHub `zhenye234/X-Codec-2.0` = MIT badge、PyPI `xcodec2==0.1.5` package metadata = MIT（いずれも 2026-07-15 CC fetch）。
+2. **weight 配布 repo**: HF `HKUSTAudio/xcodec2`（`model.safetensors` 3.29 GB の在処）README YAML front-matter = **`license: cc-by-nc-4.0`**（2026-07-15 CC fetch）— 本表旧値「MIT/MIT」とも milestones.md §8 / deliverables.md §3.5「MIT+Apache 2.0 dual」とも一致しない。
+3. **T14 判定事項**: (a) weight license の実体確定（HF タグが正なら weight は CC-BY-NC 4.0 = 公式 zoo 非搭載・research flag 系へ、EnCodec FR-OP-32 と同型の「op は対応・weight 除外」運用）、(b) per-file か combined か（milestones/deliverables の「dual」表記の出所確認・SoT 表記統一）、(c) NC 確定時は `crates/vokra-core/src/compliance/license_class.rs` の `"x-codec-2" | "xcodec2" => Permissive` 分類の変更を CC に差し戻す（現分類のままだと weight-load gate が NC weight を素通しするため）。**sign-off 空欄 = 配布不可（fail-closed）が既に効いており、判定完了まで zoo 配布は発生しない**。
 
 **Attribution 要（CC-BY 4.0、公式 zoo 搭載可、NOTICE 記載必須）**:
 
@@ -190,7 +228,13 @@
 | **CosyVoice2-0.5B** | Apache-2.0 | 2026-07-10 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M3-09 対応 |
 | **Voxtral-Mini-3B-2507** | Apache-2.0 | 2026-07-10 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M3-10 対応 |
 | **Voxtral-Small-24B-2507** | Apache-2.0 | 2026-07-10 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M3-10 対応 |
-| **Mimi codec (Kyutai)** | CC-BY 4.0 | 2026-07-10 | ______________ | ☐ Commercial (attribution 込) / ☐ Research-only / ☐ Rejected | M3-06 で NOTICE §5 反映済、機構 gate 済 |
+| **Mimi codec (Kyutai)** | CC-BY 4.0 | 2026-07-10 | ______________ | ☐ Commercial (attribution 込) / ☐ Research-only / ☐ Rejected | M3-06 で NOTICE §5 反映済、機構 gate 済。**M4-04 standalone zoo 対応** — standalone codec GGUF（`--model mimi`、kyutai/moshiko-pytorch-bf16 tokenizer safetensors 由来）の zoo 配布判断も本行の sign-off で一括（M4-04-T20） |
+| **DAC 24khz (Descript)** | MIT | 2026-07-15 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M4-04 対応（`dac_rvq` op + `--model dac` converter、zoo primary = 24 kHz/8 kbps tag 0.0.4）。§3 表は ★ 公式 zoo 指定済だが本行 sign-off まで配布不可（fail-closed、M4-04-T20） |
+| **WavTokenizer** | MIT | 2026-07-15 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M4-16 対応（`wavtokenizer_vq` op、fixture は合成のみ）。released 構成 vocab 4096 / d_model 512（ADR M4-16 §D-c） |
+| **X-Codec 2 (Llasa)** | **齟齬 — code MIT / HF weight タグ CC-BY-NC 4.0** | 2026-07-15 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M4-16 対応（`xcodec2_fsq` op、fixture は合成のみ）。**T14 判定 3 点**: weight license 実体（HF `HKUSTAudio/xcodec2` タグ cc-by-nc-4.0 vs 本表旧値 MIT vs milestones/deliverables「MIT+Apache dual」）／per-file か combined か／NC 確定時の `license_class.rs` 分類変更差し戻し（§CC-verified の M4-16 flag 節参照） |
+| **Sesame CSM-1B** | Apache-2.0 | 2026-07-15 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M4-05 対応（§3 表は ★ 公式 zoo 指定）。実 checkpoint / tokenizer は **HF gated repo**（`sesame/csm-1b` + `meta-llama/Llama-3.2-1B`）= T29 依頼者入手。共有 Mimi neural chain の weight（Kyutai **CC-BY 4.0**）attribution は NOTICE §5 が cover。本行 sign-off まで配布不可（fail-closed） |
+| **Moshi (Helium + Mimi)** | CC-BY 4.0 | 2026-07-15 | ______________ | ☐ Commercial (attribution 込) / ☐ Research-only / ☐ Rejected | M4-06 対応（§3 表は ★ 公式 zoo 指定、attribution 表示義務）。実 checkpoint `kyutai/moshiko-pytorch-bf16`（~15GB BF16）= T29 依頼者入手。FR-MD-09 attribution 表示（`vokra_model_attribution` 他 3 面）実装済、NOTICE §5 が LM weight 消費分まで cover。本行 sign-off まで配布不可（fail-closed）。CLI banner `--quiet` 抑止可否も本 sign-off 判定事項（M4-06-T24） |
+| **DeepFilterNet3** | **MIT / Apache-2.0 dual**（2026-07-17 一次確認） | 2026-07-15（license 精査 2026-07-17 更新） | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | M4-20 (c) 対応（`denoise` op、§3 表は ★ 公式 zoo（要 owner sign-off T18））。**T17 実 checkpoint parity は 2026-07-17 に達成済**（`9b718d1`、SI-SNR gap 2.0e-7 dB / 波形 max |Δ| 4.17e-7 / 21 tap PASS）→ **残は T18 の owner sign-off のみ**（本欄の署名・判定は owner 記入、CC は pre-fill しない）。attribution は NOTICE §8（DeepFilterNet MIT）記載。本行 sign-off まで配布不可（fail-closed） |
 
 ---
 
@@ -201,19 +245,19 @@
 | **pocketfft** (C++) | BSD-3-Clause | FFT | 参考（Rust 移植） | FFTW3 (GPL) 排除 |
 | **realfft** (Rust) | MIT/Apache 2.0 | RFFT | ★ 採用 | pocketfft の実質後継 |
 | **speexdsp resampler** (C) | BSD | polyphase sinc interpolation | 参考（Rust 移植） | soxr (LGPL) 排除 |
-| **speexdsp AEC** (C) | BSD | Acoustic Echo Cancellation | ★ v1.5 採用予定 (Rust port) | WebRTC AEC3 と選択 |
-| **WebRTC AEC3** | BSD | AEC | ★ 候補 (Rust port 検討) | speexdsp と選択 |
-| **RNNoise** | BSD | Noise Suppression | ★ v0.5 採用予定 | |
-| **DeepFilterNet3** (Rust) | MIT | Noise Suppression | ★ v0.5 採用予定 | Rikorose 公式 |
-| **GTCRN** | Apache 2.0 | Noise Suppression | ★ v1.0 検討 | |
+| **speexdsp AEC** (C) | BSD | Acoustic Echo Cancellation | ★ **採用**（M4-03 で Rust port 実施 = `vokra-ops::aec`、mdf.c AUMDF float build、upstream pin `7a158783df74`。attribution は NOTICE §7 + `THIRD_PARTY_LICENSES/speexdsp-LICENSE.txt`、ADR M4-03 §D-(a)） | WebRTC AEC3 と比較の上で採用 |
+| **WebRTC AEC3** | BSD | AEC | ✕ **M4-03 で不採用**（ADR M4-03 §D-(a) 参照: 実装規模が数十ファイル級で 30 分チケット列に収まらず、delay estimator が queue 設計と絡む。license 上の問題ではない — 将来の再評価は妨げない） | speexdsp AEC を採用 |
+| **RNNoise** | BSD | Noise Suppression | ★ v1.0-rc（M4-20 (c) 代替候補） | |
+| **DeepFilterNet3** (Rust) | MIT | Noise Suppression | ★ v1.0-rc（M4-20 (c) 第一候補、owner sign-off T18） | Rikorose 公式 |
+| **GTCRN** | Apache 2.0 | Noise Suppression | ★ v1.0-rc 検討（M4-20 (c) 代替候補） | |
 | **AudioSeal** (Meta) | MIT | Watermark | ★ 推奨デフォルト | |
 | **SynthID audio** (Google DeepMind) | Google 個別契約要 | Watermark | 検討中 | 代替: SilentCipher / WaveGuard (OSS) |
-| **C2PA (c2pa-rs)** | Apache 2.0 | Content provenance manifest | ★ v0.5 採用 | Adobe |
+| **C2PA (c2pa-rs)** | Apache 2.0 | Content provenance manifest | △ config 面のみ（embedding deferred、§3 Article 50 checklist 参照） | Adobe |
 | **libsamplerate** | BSD | resample | 検討中 | speexdsp と比較 |
 | **libsoxr** | LGPL | resample | ✕ 排除 | speexdsp で代替 |
 | **rubberband** | GPL | pitch shift / time stretch | ✕ 排除 | 自前実装 or 除外 |
 | **libespeak-ng** | GPL-3.0-or-later | G2P | ✕ 排除 | piper-plus 独自 G2P、または misaki / IPA 辞書 |
-| **OpenFST** | Apache 2.0 | WFST decoder | ★ v1.0 検討 (Rust port) | |
+| **OpenFST** | Apache 2.0 | WFST decoder | ★ v1.0 GA / M5 検討 (Rust port) | |
 | **kenlm** | LGPL | n-gram LM | ✕ 検討中止 | 独自 Rust 実装 or `lm-rs` |
 | **librosa** (Python 参考) | ISC | Mel filter bank 参考 | 参考のみ | Slaney/HTK 両対応の Rust 実装を独自 |
 | **torchaudio** (Python 参考) | BSD | 参考 | 参考のみ | |

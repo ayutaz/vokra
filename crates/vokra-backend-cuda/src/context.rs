@@ -1010,6 +1010,17 @@ struct AttnChainDims {
     /// (FR-EX-08); with `use_flash_attn = true` the wrapper either launches or
     /// returns an explicit error.
     use_flash_attn: bool,
+    /// M4-07-T09: whether [`CudaContext::launch_attn_chain`] may route the
+    /// chain through the FlashAttention **v3** launcher
+    /// ([`CudaContext::launch_flash_attn_v3`], Hopper WGMMA). Same contract
+    /// shape as [`Self::use_flash_attn`]: `true` is a **promise** that the
+    /// capability probe held (SM >= 9.0 + lazy `compute_90a` compile Ready +
+    /// smem opt-in + `d_head == 64` + no `VOKRA_CUDA_DISABLE_FA_V3`), set
+    /// only by the decoder-step session probe, the encoder opt-in
+    /// (`fa_v3_encoder_decision`) and the `flash_attn_v3_dev` diagnostic.
+    /// Dispatch priority is **v3 > v2 > decomposed**, and all three are GPU
+    /// paths — never a silent CPU fallback (FR-EX-08).
+    use_flash_attn_v3: bool,
 }
 
 /// Device pointers for one fused-attention launch chain: inputs (`xq`, `q_w`,
@@ -1127,6 +1138,20 @@ pub struct CudaContext {
     /// path's `6·N + 1`). `Cell` because every op takes `&self` and the context is
     /// already thread-affine (`!Send`/`!Sync`).
     submissions: Cell<u64>,
+    /// M4-07-T03: lazy FA v3 (Hopper WGMMA) module slot. Empty until the
+    /// first capability query ([`Self::fa_v3_slot`]); on a device probing
+    /// SM ≥ 9.0 it holds the `compute_90a`-compiled module + kernel handle
+    /// (`FaV3Slot::Ready`), on everything else `FaV3Slot::Disabled(reason)`
+    /// — and on non-Hopper devices the NVRTC compile is never even attempted
+    /// (zero startup cost, no incompatible PTX near `cuModuleLoadData`).
+    /// `OnceCell` (std) because the context is already `!Send`/`!Sync`.
+    fa_v3: std::cell::OnceCell<crate::fa_v3::FaV3Slot>,
+    /// M4-07-T10: encoder opt-in flag for FA v3 (default **off** — the
+    /// encoder / `attn_dev` / cross-attention chains stay byte-for-byte
+    /// decomposed unless this is raised). Set from the
+    /// `VOKRA_CUDA_FA_V3_ENCODER` env var at construction or via
+    /// [`Self::set_fa_v3_encoder_opt_in`].
+    fa_v3_encoder: Cell<bool>,
 }
 
 impl CudaContext {
@@ -1196,6 +1221,10 @@ impl CudaContext {
                 dequant_gemv_q5_0: m.dequant_gemv_q5_0,
                 dequant_gemv_q8_0: m.dequant_gemv_q8_0,
                 submissions: Cell::new(0),
+                fa_v3: std::cell::OnceCell::new(),
+                fa_v3_encoder: Cell::new(crate::fa_v3::fa_v3_env_encoder_opt_in(
+                    std::env::var_os("VOKRA_CUDA_FA_V3_ENCODER").as_deref(),
+                )),
             }),
             Err(e) => {
                 // SAFETY: `context` is the just-created owned context; destroy it
@@ -1243,6 +1272,196 @@ impl CudaContext {
             "cuDeviceGetAttribute(MAX_SHARED_MEMORY_PER_BLOCK_OPTIN)",
         )?;
         Ok(val)
+    }
+
+    /// Compute-capability major of the owned device (`cuDeviceGetAttribute`,
+    /// ordinal 75 — the same value [`crate::vokra_cuda_probe`] reports). Used
+    /// by the FA v3 lazy slot to decide whether the `compute_90a` compile is
+    /// attempted at all (M4-07-T03).
+    fn compute_capability_major(&self) -> Result<c_int> {
+        let mut val: c_int = 0;
+        // SAFETY: resolved `cuDeviceGetAttribute` entry point; `&mut val` is a
+        // valid writable c_int; the attribute ordinal is the documented enum
+        // value; `self.device` is the ordinal-0 handle from `Self::new`.
+        let r = unsafe {
+            (self.driver.cu_device_get_attribute)(
+                &mut val,
+                sys::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+                self.device,
+            )
+        };
+        sys::check(
+            &self.driver,
+            r,
+            "cuDeviceGetAttribute(compute_capability_major)",
+        )?;
+        Ok(val)
+    }
+
+    // ---- M4-07: FlashAttention v3 lazy slot (Hopper-only compile) -----------
+
+    /// The FA v3 slot, initialised on first use (M4-07-T03). The init chain —
+    /// every stage failing DISABLES FA v3 with an explicit stderr note and
+    /// leaves FA v2 / decomposed untouched (GPU-internal path selection, not
+    /// a silent CPU fallback; FR-EX-08):
+    ///
+    /// 1. device probe `compute_capability_major >= 9` (below → **no compile
+    ///    attempt at all**: a `compute_90a` PTX must never reach a non-Hopper
+    ///    `cuModuleLoadData`, and non-Hopper startup cost stays zero);
+    /// 2. optional driver symbols (`cuFuncSetAttribute` — required for the
+    ///    82 944-byte dynamic-smem opt-in; `cuTensorMapEncodeTiled` — the
+    ///    Hopper-era-driver canary + TMA plumbing, ADR M4-07 §(e));
+    /// 3. opt-in shared-memory budget ≥ [`crate::fa_v3::FLASH_ATTN_V3_MIN_SHARED_BYTES`];
+    /// 4. NVRTC compile of [`crate::fa_v3::KERNELS_CUDA_FA_V3`] pinned to
+    ///    `compute_90a` (the `VOKRA_NVRTC_GPU_ARCH` escape hatch is
+    ///    deliberately NOT honored — `compute_90` would not enable WGMMA);
+    /// 5. `cuModuleLoadData` + `cuModuleGetFunction` +
+    ///    `cuFuncSetAttribute(MAX_DYNAMIC_SHARED_SIZE_BYTES)`.
+    fn fa_v3_slot(&self) -> &crate::fa_v3::FaV3Slot {
+        self.fa_v3.get_or_init(|| {
+            let slot = self.fa_v3_init();
+            if let crate::fa_v3::FaV3Slot::Disabled(reason) = &slot {
+                // Explicit, not silent (FR-EX-08). This workspace is zero-dep
+                // (no `log` crate), so stderr is the logging channel.
+                eprintln!("vokra-backend-cuda: FA v3 disabled: {reason}");
+            }
+            slot
+        })
+    }
+
+    /// [`Self::fa_v3_slot`] init body; returns `Ready` or `Disabled(reason)`.
+    fn fa_v3_init(&self) -> crate::fa_v3::FaV3Slot {
+        use crate::fa_v3::{self, FaV3Slot};
+
+        let major = match self.compute_capability_major() {
+            Ok(m) => m,
+            Err(e) => return FaV3Slot::Disabled(format!("compute-capability probe failed: {e}")),
+        };
+        if !fa_v3::fa_v3_should_attempt_compile(major) {
+            return FaV3Slot::Disabled(format!(
+                "device reports SM {major}.x; FA v3 (WGMMA) requires SM >= 9.0 (Hopper) — \
+                 compute_90a compile not attempted"
+            ));
+        }
+        let Some(set_attr) = self.driver.cu_func_set_attribute else {
+            return FaV3Slot::Disabled(
+                "driver does not export cuFuncSetAttribute (required for the FA v3 \
+                 dynamic shared-memory opt-in)"
+                    .to_owned(),
+            );
+        };
+        if self.driver.cu_tensor_map_encode_tiled.is_none() {
+            // Hopper-era-driver canary (ADR M4-07 §(e)): a driver too old to
+            // export the TMA descriptor encoder cannot JIT compute_90a PTX
+            // either — degrade before handing it an incompatible module.
+            return FaV3Slot::Disabled(
+                "driver does not export cuTensorMapEncodeTiled (pre-CUDA-12 driver \
+                 cannot JIT compute_90a PTX)"
+                    .to_owned(),
+            );
+        }
+        let budget = self.max_shared_memory_per_block_optin().unwrap_or(0);
+        if budget < fa_v3::FLASH_ATTN_V3_MIN_SHARED_BYTES {
+            return FaV3Slot::Disabled(format!(
+                "opt-in shared memory {budget} B < required {} B",
+                fa_v3::FLASH_ATTN_V3_MIN_SHARED_BYTES
+            ));
+        }
+
+        let nvrtc = match Nvrtc::load() {
+            Ok(n) => n,
+            Err(e) => return FaV3Slot::Disabled(format!("NVRTC unavailable: {e}")),
+        };
+        let arch = c"--gpu-architecture=compute_90a";
+        debug_assert_eq!(
+            arch.to_str().expect("ascii"),
+            fa_v3::FA_V3_GENCODE_FLAG,
+            "the CStr literal and the documented constant must agree"
+        );
+        let ptx = match compile_ptx_for_arch(
+            &nvrtc,
+            fa_v3::KERNELS_CUDA_FA_V3,
+            c"vokra_kernels_fa_v3.cu",
+            "FA v3 kernels (compute_90a)",
+            arch,
+        ) {
+            Ok(p) => p,
+            Err(e) => return FaV3Slot::Disabled(format!("NVRTC compute_90a compile failed: {e}")),
+        };
+        let module = match load_module(&self.driver, &ptx) {
+            Ok(m) => m,
+            Err(e) => return FaV3Slot::Disabled(format!("FA v3 module load failed: {e}")),
+        };
+        let kernel = match get_function(&self.driver, module, fa_v3::FA_V3_KERNEL_SYMBOL) {
+            Ok(k) => k,
+            Err(e) => {
+                // SAFETY: `module` is the just-loaded owned module; unload it
+                // exactly once before reporting the disable reason (no leak).
+                unsafe { (self.driver.cu_module_unload)(module) };
+                return FaV3Slot::Disabled(format!("FA v3 kernel symbol missing: {e}"));
+            }
+        };
+        // Opt the kernel into its dynamic shared-memory budget (> 48 KiB
+        // default cap). Failure disables FA v3 — launching would fail anyway.
+        // SAFETY: `set_attr` is the resolved `cuFuncSetAttribute`; `kernel`
+        // is a valid function handle from the module above; the attribute
+        // ordinal + byte value are the documented cuda.h forms.
+        let r = unsafe {
+            set_attr(
+                kernel,
+                fa_v3::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                fa_v3::FLASH_ATTN_V3_MIN_SHARED_BYTES,
+            )
+        };
+        if r != sys::CUDA_SUCCESS {
+            // SAFETY: unload the owned module exactly once on this exit path.
+            unsafe { (self.driver.cu_module_unload)(module) };
+            return FaV3Slot::Disabled(format!(
+                "cuFuncSetAttribute(MAX_DYNAMIC_SHARED_SIZE_BYTES) failed (CUresult {r})"
+            ));
+        }
+        FaV3Slot::Ready(crate::fa_v3::FaV3Module { module, kernel })
+    }
+
+    /// Whether the FA v3 fused path is available on this context (Hopper +
+    /// compiled + shared-memory opt-in applied). Triggers the lazy init on
+    /// first call; `false` is never silent (the init printed the reason).
+    pub fn fa_v3_available(&self) -> bool {
+        matches!(self.fa_v3_slot(), crate::fa_v3::FaV3Slot::Ready(_))
+    }
+
+    /// The FA v3 disable reason, if the slot resolved to `Disabled` (for
+    /// error surfaces that must carry the probe verdict — e.g. the
+    /// `VOKRA_CUDA_FORCE_FA_V3` explicit error, T09).
+    fn fa_v3_disable_reason(&self) -> Option<&str> {
+        match self.fa_v3_slot() {
+            crate::fa_v3::FaV3Slot::Ready(_) => None,
+            crate::fa_v3::FaV3Slot::Disabled(reason) => Some(reason.as_str()),
+        }
+    }
+
+    /// The loaded FA v3 kernel handle, or an explicit error naming the
+    /// disable reason. Reached only from `launch_flash_attn_v3` — a caller
+    /// that sets `use_flash_attn_v3 = true` without the probe promise gets
+    /// this explicit error, never a silent fallback (FR-EX-08).
+    fn fa_v3_function(&self) -> Result<sys::CUfunction> {
+        match self.fa_v3_slot() {
+            crate::fa_v3::FaV3Slot::Ready(m) => Ok(m.kernel),
+            crate::fa_v3::FaV3Slot::Disabled(reason) => Err(VokraError::BackendUnavailable(
+                format!("FA v3 kernel unavailable: {reason}"),
+            )),
+        }
+    }
+
+    /// M4-07-T10: encoder FA v3 opt-in (default **off**). When raised — via
+    /// this builder method or the `VOKRA_CUDA_FA_V3_ENCODER` env var at
+    /// construction — [`Self::encode_prenorm_stack`] routes its self-attention
+    /// chains through FA v3 **iff** the capability probe holds; on a
+    /// non-Hopper device the opt-in stays a no-op (decomposed continues, with
+    /// an explicit stderr note from the lazy init — not an error: opt-in is a
+    /// preference, unlike the `VOKRA_CUDA_FORCE_FA_V3` force which errors).
+    pub fn set_fa_v3_encoder_opt_in(&self, on: bool) {
+        self.fa_v3_encoder.set(on);
     }
 
     /// Row-major FP32 GEMM on the GPU with optional per-column bias:
@@ -2191,6 +2410,7 @@ impl CudaContext {
                 // `CudaDecodeSession::new`'s d_head/shared-memory probe flips
                 // this true for the decoder-step self-attention.
                 use_flash_attn: false,
+                use_flash_attn_v3: false,
             },
             &AttnChainPtrs {
                 xq: xq_buf.ptr,
@@ -2260,6 +2480,14 @@ impl CudaContext {
         // `t_q ≫ BR` will amortise the fusion, but skips it whenever the
         // tile would be wasted. Not a CPU fallback — falls through to the
         // decomposed GPU path below (FR-EX-08 preserved).
+        // M4-07-T09/T11: FA v3 arm — highest priority, gated on the
+        // `FA_V3_MIN_TQ = 64` warpgroup tile height (the fa_v3 module's
+        // single-sourced predicate; below it the fusion cost dominates just
+        // like FA v2's t_q gate). Falls through to the FA v2 arm / the
+        // decomposed chain — GPU-internal selection, never a CPU fallback.
+        if crate::fa_v3::fa_v3_gate_selects(dims.use_flash_attn_v3, dims.t_q) {
+            return self.launch_flash_attn_v3(dims, ptrs);
+        }
         const FA_V2_MIN_TQ: usize = 16; // BR tile size — below this ≥50% of the tile is wasted
         if dims.use_flash_attn && dims.t_q >= FA_V2_MIN_TQ {
             return self.launch_flash_attn_v2(dims, ptrs);
@@ -2705,6 +2933,212 @@ impl CudaContext {
             gemm_block,
             &mut p_out,
             "cuLaunchKernel(vokra_gemm_f32 attn out-proj [FA v2])",
+        )
+    }
+
+    /// M4-07-T08 FlashAttention **v3** fused-attention path (Hopper WGMMA;
+    /// `docs/adr/M4-07-fa-v3-hopper.md`). Chain shape is byte-for-byte the
+    /// FA v2 launcher's — q-proj GEMM → per-head {qh/vh/kh gather → **fused
+    /// kernel** → scatter} → out-proj GEMM — with the middle launch swapped
+    /// for `vokra_flash_attn_v3_causal_f32` (one warpgroup / 128 threads per
+    /// block, `BR3 = 64` query rows per block, 82 944 B dynamic shared
+    /// memory opted in at lazy-module init). Head parallelism stays the
+    /// host-side per-head loop + head-relative scratch reuse — deliberately
+    /// identical to [`Self::launch_flash_attn_v2`], never grid-folded on top
+    /// of it (ADR M4-07 §(b): one mechanism, no double cover).
+    ///
+    /// The `qh` gather pre-multiplies Q by `dims.scale` and the kernel
+    /// receives `scale = 1.0` — the same folding convention as FA v2, so the
+    /// score semantics stay single-sourced. `kh_t` scratch is reused as
+    /// NON-transposed `kh` (`[t_kv, hd]`), exactly like the FA v2 path.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::BackendUnavailable`] when the FA v3 lazy slot is not
+    /// `Ready` (a caller that sets `use_flash_attn_v3` without the probe
+    /// promise gets this **explicit** error — never a silent fallback,
+    /// FR-EX-08) or on a driver launch failure.
+    fn launch_flash_attn_v3(&self, dims: &AttnChainDims, ptrs: &AttnChainPtrs) -> Result<()> {
+        // Resolve the lazily-compiled kernel FIRST: on a non-Hopper device
+        // this is the explicit-refusal point (contract-violation callers
+        // included), before any launch is issued.
+        let fa_v3_kernel = self.fa_v3_function()?;
+
+        let (t_q, t_kv, d, n_head) = (dims.t_q, dims.t_kv, dims.d, dims.n_head);
+        let hd = d / n_head;
+
+        // Warpgroup tile constants — MUST match the kernel-side `FA3_BR` /
+        // `FA3_D` defines in `fa_v3::KERNELS_CUDA_FA_V3`.
+        const BR3_HOST: usize = 64;
+        let shared_bytes = crate::fa_v3::FLASH_ATTN_V3_MIN_SHARED_BYTES as c_uint;
+
+        let tq_hd_n = t_q * hd;
+        let tkv_hd_n = t_kv * hd;
+        let t_q_u = t_q as c_uint;
+        let t_kv_u = t_kv as c_uint;
+        let d_u = d as c_uint;
+        let hd_u = hd as c_uint;
+        let has_bias_q: c_uint = u32::from(dims.has_q_bias);
+        let has_bias_out: c_uint = u32::from(dims.has_out_bias);
+        let scale_v = dims.scale;
+        let one_v = 1.0f32;
+
+        // FA v3 kernel scalar args (`scale = 1.0`: Q pre-scaled in the qh
+        // gather, matching FA v2's numerics convention).
+        let t_q_i = t_q as c_int;
+        let t_kv_i = t_kv as c_int;
+        let hd_i = hd as c_int;
+        let q_offset_i = dims.q_offset as c_int;
+        let causal_b = dims.causal;
+        let fa_scale = 1.0f32;
+
+        let gemm_block = (BLOCK, BLOCK, 1);
+        let gemm_grid = |n: usize, m: usize| {
+            (
+                n.div_ceil(BLOCK as usize) as c_uint,
+                m.div_ceil(BLOCK as usize) as c_uint,
+                1,
+            )
+        };
+        let lin_block = (BLOCK_1D, 1, 1);
+        let lin_grid = |elems: usize| (elems.div_ceil(BLOCK_1D as usize) as c_uint, 1, 1);
+
+        // 1. q = xq · q_w (+q_bias) — identical to the decomposed / FA v2 paths.
+        let mut p_q: [*mut c_void; 8] = [
+            ptr_arg(&ptrs.xq),
+            ptr_arg(&ptrs.q_w),
+            ptr_arg(&ptrs.q_bias),
+            ptr_arg(&ptrs.q),
+            uint_arg(&t_q_u),
+            uint_arg(&d_u),
+            uint_arg(&d_u),
+            uint_arg(&has_bias_q),
+        ];
+        self.launch_async(
+            self.gemm,
+            gemm_grid(d, t_q),
+            gemm_block,
+            &mut p_q,
+            "cuLaunchKernel(vokra_gemm_f32 attn q-proj [FA v3])",
+        )?;
+
+        // 2. Per-head: gather → FA v3 → scatter (stream-ordered scratch reuse,
+        // the same pattern as the decomposed / FA v2 chains).
+        for h in 0..n_head {
+            let c0_u = (h * hd) as c_uint;
+
+            // qh[i,c] = q[i, c0+c] * scale — pre-scale so the kernel gets 1.0.
+            let mut p_qh: [*mut c_void; 7] = [
+                ptr_arg(&ptrs.q),
+                ptr_arg(&ptrs.qh),
+                uint_arg(&t_q_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+                f32_arg(&scale_v),
+            ];
+            self.launch_async(
+                self.col_gather,
+                lin_grid(tq_hd_n),
+                lin_block,
+                &mut p_qh,
+                "cuLaunchKernel(vokra_col_gather_f32 attn qh [FA v3])",
+            )?;
+            // vh[j,c] = v[j, c0+c].
+            let mut p_vh: [*mut c_void; 7] = [
+                ptr_arg(&ptrs.v),
+                ptr_arg(&ptrs.vh),
+                uint_arg(&t_kv_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+                f32_arg(&one_v),
+            ];
+            self.launch_async(
+                self.col_gather,
+                lin_grid(tkv_hd_n),
+                lin_block,
+                &mut p_vh,
+                "cuLaunchKernel(vokra_col_gather_f32 attn vh [FA v3])",
+            )?;
+            // kh[j,c] = k[j, c0+c] — NON-transposed gather into the `kh_t`
+            // scratch (the FA v3 kernel, like FA v2, consumes `[t_kv, hd]`).
+            let mut p_kh: [*mut c_void; 7] = [
+                ptr_arg(&ptrs.k),
+                ptr_arg(&ptrs.kh_t),
+                uint_arg(&t_kv_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+                f32_arg(&one_v),
+            ];
+            self.launch_async(
+                self.col_gather,
+                lin_grid(tkv_hd_n),
+                lin_block,
+                &mut p_kh,
+                "cuLaunchKernel(vokra_col_gather_f32 attn kh [FA v3])",
+            )?;
+            // FA v3 fused per-head launch: one warpgroup (128 threads) per
+            // BR3 = 64 query rows; head parallelism is the per-head loop
+            // (kernel is single-head via head-relative pointers).
+            let mut p_fa: [*mut c_void; 10] = [
+                ptr_arg(&ptrs.qh),
+                ptr_arg(&ptrs.kh_t), // reused: non-transposed kh, [t_kv, hd].
+                ptr_arg(&ptrs.vh),
+                ptr_arg(&ptrs.ctx_h),
+                int_arg(&t_q_i),
+                int_arg(&t_kv_i),
+                int_arg(&hd_i),
+                int_arg(&q_offset_i),
+                bool_arg(&causal_b),
+                f32_arg(&fa_scale),
+            ];
+            let fa_grid = (t_q.div_ceil(BR3_HOST) as c_uint, 1, 1);
+            let fa_block: (c_uint, c_uint, c_uint) = (128, 1, 1);
+            self.launch_async_shared(
+                fa_v3_kernel,
+                fa_grid,
+                fa_block,
+                shared_bytes,
+                &mut p_fa,
+                "cuLaunchKernel(vokra_flash_attn_v3_causal_f32 attn)",
+            )?;
+            // context[i, c0+c] = ctx_h[i,c].
+            let mut p_scatter: [*mut c_void; 6] = [
+                ptr_arg(&ptrs.ctx_h),
+                ptr_arg(&ptrs.context),
+                uint_arg(&t_q_u),
+                uint_arg(&hd_u),
+                uint_arg(&d_u),
+                uint_arg(&c0_u),
+            ];
+            self.launch_async(
+                self.col_scatter,
+                lin_grid(tq_hd_n),
+                lin_block,
+                &mut p_scatter,
+                "cuLaunchKernel(vokra_col_scatter_f32 attn [FA v3])",
+            )?;
+        }
+
+        // 3. out = context · out_w (+out_bias) — identical to the other paths.
+        let mut p_out: [*mut c_void; 8] = [
+            ptr_arg(&ptrs.context),
+            ptr_arg(&ptrs.out_w),
+            ptr_arg(&ptrs.out_bias),
+            ptr_arg(&ptrs.out),
+            uint_arg(&t_q_u),
+            uint_arg(&d_u),
+            uint_arg(&d_u),
+            uint_arg(&has_bias_out),
+        ];
+        self.launch_async(
+            self.gemm,
+            gemm_grid(d, t_q),
+            gemm_block,
+            &mut p_out,
+            "cuLaunchKernel(vokra_gemm_f32 attn out-proj [FA v3])",
         )
     }
 
@@ -3216,6 +3650,7 @@ impl CudaContext {
                 // chain as `attn_f32`; the FA v2 seam is gated on the session
                 // constructor's probe, not on the entrypoint.
                 use_flash_attn: false,
+                use_flash_attn_v3: false,
             },
             &AttnChainPtrs {
                 xq: xq.buf.ptr,
@@ -3360,6 +3795,7 @@ impl CudaContext {
                 // `2 + 7·n_head` chain, never FA v2. The FA v2 seam is on
                 // [`Self::flash_attn_dev`] / `CudaDecodeSession`.
                 use_flash_attn: false,
+                use_flash_attn_v3: false,
             },
             &AttnChainPtrs {
                 xq: xq.buf.ptr,
@@ -3542,6 +3978,8 @@ impl CudaContext {
                 // consistency with the field's contract ("FA v2 is on the
                 // current chain").
                 use_flash_attn: true,
+                // v2 diagnostic wrapper: never the v3 kernel.
+                use_flash_attn_v3: false,
             },
             &AttnChainPtrs {
                 xq: xq.buf.ptr,
@@ -3562,6 +4000,140 @@ impl CudaContext {
                 // launch that writes it.
                 kh_t: kh_buf.ptr,
                 // Unused by FA v2 — bound to the never-read dummy.
+                scores: dummy.ptr,
+                probs: dummy.ptr,
+                ctx_h: ctx_h_buf.ptr,
+                out: out.buf.ptr,
+            },
+        )?;
+        self.sync_stream("cuStreamSynchronize")
+    }
+
+    /// M4-07-T12: device-in/out fused attention that **unconditionally**
+    /// dispatches the FA v3 fused kernel ([`Self::launch_flash_attn_v3`]) —
+    /// the testing / diagnostic wrapper the FA v3 primitive-parity tests use,
+    /// exactly symmetric with [`Self::flash_attn_dev`] (FA v2). Bypasses the
+    /// runtime `FA_V3_MIN_TQ = 64` gate so any `t_q >= 1` shape can be
+    /// exercised; **never** the runtime path — sessions and `attn_dev`
+    /// funnel through the gated [`Self::launch_attn_chain`].
+    ///
+    /// On a non-Hopper device (or any config where the lazy slot resolved to
+    /// `Disabled`) this returns the slot's **explicit**
+    /// [`VokraError::BackendUnavailable`] naming the reason — the parity
+    /// tests use that as their clean-skip signal (FR-EX-08: refusal is loud,
+    /// never a silent CPU or v2 substitution).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::InvalidArgument`] per
+    ///   [`crate::fa_v3::flash_attn_v3_validate_args`] (zero dims,
+    ///   `d % n_head != 0`, `d/n_head != 64`, causal window past the K/V
+    ///   range) or on a tensor-length mismatch.
+    /// - [`VokraError::BackendUnavailable`] when FA v3 is unavailable on
+    ///   this device/driver, or on an allocation / launch failure.
+    #[allow(clippy::too_many_arguments)] // fused-attention operand set (mirrors flash_attn_dev)
+    pub fn flash_attn_v3_dev(
+        &self,
+        t_q: usize,
+        t_kv: usize,
+        d: usize,
+        n_head: usize,
+        xq: &CudaDeviceTensor<'_>,
+        q_w: &CudaDeviceTensor<'_>,
+        q_bias: Option<&CudaDeviceTensor<'_>>,
+        k: &CudaDeviceTensor<'_>,
+        v: &CudaDeviceTensor<'_>,
+        out_w: &CudaDeviceTensor<'_>,
+        out_bias: Option<&CudaDeviceTensor<'_>>,
+        scale: f32,
+        causal: bool,
+        q_offset: usize,
+        out: &mut CudaDeviceTensor<'_>,
+    ) -> Result<()> {
+        crate::fa_v3::flash_attn_v3_validate_args(t_q, t_kv, d, n_head, causal, q_offset)?;
+        let hd = d / n_head;
+        let dd = checked_mul(d, d, "flash_attn_v3_dev d*d")?;
+        let tkvd = checked_mul(t_kv, d, "flash_attn_v3_dev t_kv*d")?;
+        expect_len(
+            "flash_attn_v3_dev xq",
+            xq.len,
+            checked_mul(t_q, d, "flash_attn_v3_dev t_q*d")?,
+        )?;
+        expect_len("flash_attn_v3_dev q_w", q_w.len, dd)?;
+        expect_len("flash_attn_v3_dev k", k.len, tkvd)?;
+        expect_len("flash_attn_v3_dev v", v.len, tkvd)?;
+        expect_len("flash_attn_v3_dev out_w", out_w.len, dd)?;
+        expect_len(
+            "flash_attn_v3_dev out",
+            out.len,
+            checked_mul(t_q, d, "flash_attn_v3_dev out")?,
+        )?;
+        if let Some(b) = q_bias {
+            expect_len("flash_attn_v3_dev q_bias", b.len, d)?;
+        }
+        if let Some(b) = out_bias {
+            expect_len("flash_attn_v3_dev out_bias", b.len, d)?;
+        }
+        let f = size_of::<f32>();
+        let tqd = checked_mul(
+            checked_mul(t_q, d, "flash_attn_v3_dev t_q*d")?,
+            f,
+            "flash_attn_v3_dev t_q*d bytes",
+        )?;
+        let tq_hd_b = checked_mul(
+            checked_mul(t_q, hd, "flash_attn_v3_dev t_q*hd")?,
+            f,
+            "flash_attn_v3_dev qh bytes",
+        )?;
+        let tkv_hd_b = checked_mul(
+            checked_mul(t_kv, hd, "flash_attn_v3_dev t_kv*hd")?,
+            f,
+            "flash_attn_v3_dev vh bytes",
+        )?;
+        // FA v3, like FA v2, never touches `scores` / `probs` (the fused
+        // softmax lives in registers + shared memory inside the kernel);
+        // bind the shared dummy for the typed-but-inert pointer slots.
+        let dummy = self.alloc(f)?;
+        let q_buf = self.alloc(tqd)?;
+        let context_buf = self.alloc(tqd)?;
+        let qh_buf = self.alloc(tq_hd_b)?;
+        let vh_buf = self.alloc(tkv_hd_b)?;
+        let kh_buf = self.alloc(tkv_hd_b)?;
+        let ctx_h_buf = self.alloc(tq_hd_b)?;
+        // Direct dispatch — deliberately NOT via `launch_attn_chain` (whose
+        // FA_V3_MIN_TQ gate would silently fall through for small t_q; the
+        // whole point of this wrapper is unconditional v3 exercise).
+        self.launch_flash_attn_v3(
+            &AttnChainDims {
+                t_q,
+                t_kv,
+                d,
+                n_head,
+                scale,
+                has_q_bias: q_bias.is_some(),
+                has_out_bias: out_bias.is_some(),
+                causal,
+                q_offset,
+                use_flash_attn: false,
+                // Marker only — `launch_flash_attn_v3` is called directly,
+                // not through the gate; kept `true` for the field contract
+                // ("FA v3 is on the current chain").
+                use_flash_attn_v3: true,
+            },
+            &AttnChainPtrs {
+                xq: xq.buf.ptr,
+                q_w: q_w.buf.ptr,
+                q_bias: bias_ptr(q_bias, dummy.ptr),
+                k: k.buf.ptr,
+                v: v.buf.ptr,
+                out_w: out_w.buf.ptr,
+                out_bias: bias_ptr(out_bias, dummy.ptr),
+                q: q_buf.ptr,
+                context: context_buf.ptr,
+                qh: qh_buf.ptr,
+                vh: vh_buf.ptr,
+                // Reused as non-transposed kh `[t_kv, hd]`, like FA v2.
+                kh_t: kh_buf.ptr,
                 scores: dummy.ptr,
                 probs: dummy.ptr,
                 ctx_h: ctx_h_buf.ptr,
@@ -3651,6 +4223,60 @@ impl CudaContext {
     ) -> Result<()> {
         let hd = d / n_head;
         let scale = (hd as f32).powf(-0.5);
+
+        // M4-07-T10: encoder FA v3 opt-in decision, evaluated once per stack
+        // call. Default off = `Decomposed` without ever touching the lazy
+        // FA v3 slot (no compile, no stderr — default paths bit-identical).
+        // The availability probe (which fires the lazy compute_90a compile)
+        // is consulted only when the opt-in / force was actually requested.
+        let enc_opt_in = self.fa_v3_encoder.get() && hd == 64;
+        let enc_force =
+            crate::fa_v3::fa_v3_env_force(std::env::var_os("VOKRA_CUDA_FORCE_FA_V3").as_deref());
+        let enc_disabled = crate::fa_v3::fa_v3_env_disabled(
+            std::env::var_os("VOKRA_CUDA_DISABLE_FA_V3").as_deref(),
+        );
+        let enc_avail = (enc_opt_in || enc_force) && hd == 64 && self.fa_v3_available();
+        let enc_v3 = match crate::fa_v3::fa_v3_encoder_decision(
+            enc_opt_in,
+            enc_force,
+            enc_disabled,
+            enc_avail,
+        ) {
+            crate::fa_v3::FaV3Decision::Select => true,
+            crate::fa_v3::FaV3Decision::Decomposed => {
+                if enc_opt_in {
+                    // The opt-in was requested but cannot be honored on this
+                    // device/config — say so (never silent, FR-EX-08), then
+                    // continue on the decomposed GPU chain (a preference is
+                    // not a force).
+                    eprintln!(
+                        "vokra-backend-cuda: FA v3 encoder opt-in requested but not \
+                         selectable ({}); continuing on the decomposed GPU chain",
+                        if enc_disabled {
+                            "VOKRA_CUDA_DISABLE_FA_V3 is set"
+                        } else {
+                            "FA v3 unavailable on this device — see the reason above"
+                        }
+                    );
+                }
+                false
+            }
+            crate::fa_v3::FaV3Decision::ForceViolation => {
+                return Err(VokraError::BackendUnavailable(format!(
+                    "VOKRA_CUDA_FORCE_FA_V3 is set but FA v3 cannot run the encoder \
+                     chain: {}",
+                    if enc_disabled {
+                        "VOKRA_CUDA_DISABLE_FA_V3 is also set (contradictory forcing)".to_owned()
+                    } else if hd != 64 {
+                        format!("d_head ({hd}) must be 64")
+                    } else {
+                        self.fa_v3_disable_reason()
+                            .unwrap_or("FA v3 slot unexpectedly unavailable")
+                            .to_owned()
+                    }
+                )));
+            }
+        };
 
         // H2D `h` + every weight up front (before any launch).
         let h = self.upload(hidden)?;
@@ -3749,6 +4375,11 @@ impl CudaContext {
                     // as `attn_dev`; the FA v2 opt-in belongs to the
                     // decoder-step session, which is a distinct entrypoint.
                     use_flash_attn: false,
+                    // M4-07-T10: FA v3 encoder opt-in (default off — `enc_v3`
+                    // is false unless the opt-in flag / env was raised AND
+                    // the Hopper probe held, so default paths stay
+                    // bit-identical).
+                    use_flash_attn_v3: enc_v3,
                 },
                 &AttnChainPtrs {
                     xq: ln.buf.ptr,
@@ -4146,6 +4777,13 @@ impl Drop for CudaContext {
                 (self.driver.cu_stream_synchronize)(self.stream);
                 (self.driver.cu_stream_destroy)(self.stream);
             }
+            // M4-07: the lazily-compiled FA v3 module (present only when a
+            // Hopper device initialised the slot to `Ready`).
+            if let Some(crate::fa_v3::FaV3Slot::Ready(m)) = self.fa_v3.get() {
+                if !m.module.is_null() {
+                    (self.driver.cu_module_unload)(m.module);
+                }
+            }
             if !self.kernels_module.is_null() {
                 (self.driver.cu_module_unload)(self.kernels_module);
             }
@@ -4337,6 +4975,14 @@ pub struct CudaDecodeSession {
     /// M2-03 default-path numerics are 1-bit-identical to the release before
     /// this follow-up.
     use_flash_attn: bool,
+    /// M4-07-T09: session-scoped FA v3 opt-in, probed once at construction
+    /// (SM >= 9.0 lazy `compute_90a` compile Ready + smem opt-in + `d_head
+    /// == 64`, minus `VOKRA_CUDA_DISABLE_FA_V3`). Routes the same two
+    /// attention chains as [`Self::use_flash_attn`] — but note the
+    /// `FA_V3_MIN_TQ = 64` runtime gate: the decoder's steady state
+    /// (`t_q = 1`) never reaches the v3 kernel (honest-negative inheritance,
+    /// see [`crate::fa_v3::FA_V3_MIN_TQ`]); prefix steps (`t_q >= 64`) do.
+    use_flash_attn_v3: bool,
     /// Owned last so it drops **after** every device buffer above.
     ctx: CudaContext,
 }
@@ -4481,6 +5127,44 @@ impl CudaDecodeSession {
             use_flash_attn = false;
         }
 
+        // M4-07-T09: FA v3 session probe — the Hopper-only lazy compile
+        // fires here (once per context; non-Hopper devices skip the compile
+        // and record the reason). `VOKRA_CUDA_DISABLE_FA_V3` deselects like
+        // the FA v2 hatch above; `VOKRA_CUDA_FORCE_FA_V3` turns any
+        // non-selection into an explicit constructor error (FR-EX-08 — a
+        // force must never quietly measure the wrong path).
+        let fa_v3_force =
+            crate::fa_v3::fa_v3_env_force(std::env::var_os("VOKRA_CUDA_FORCE_FA_V3").as_deref());
+        let fa_v3_disabled = crate::fa_v3::fa_v3_env_disabled(
+            std::env::var_os("VOKRA_CUDA_DISABLE_FA_V3").as_deref(),
+        );
+        // The availability probe (lazy compile trigger) is consulted only
+        // when it can matter — d_head must fit the kernel tile either way.
+        let fa_v3_avail = hd == 64 && ctx.fa_v3_available();
+        let use_flash_attn_v3 = match crate::fa_v3::fa_v3_session_decision(
+            hd,
+            fa_v3_force,
+            fa_v3_disabled,
+            fa_v3_avail,
+        ) {
+            crate::fa_v3::FaV3Decision::Select => true,
+            crate::fa_v3::FaV3Decision::Decomposed => false,
+            crate::fa_v3::FaV3Decision::ForceViolation => {
+                return Err(VokraError::BackendUnavailable(format!(
+                    "VOKRA_CUDA_FORCE_FA_V3 is set but FA v3 is unavailable for this                      session: {}",
+                    if fa_v3_disabled {
+                        "VOKRA_CUDA_DISABLE_FA_V3 is also set (contradictory forcing)".to_owned()
+                    } else if hd != 64 {
+                        format!("d_head ({hd}) must be 64")
+                    } else {
+                        ctx.fa_v3_disable_reason()
+                            .unwrap_or("FA v3 slot unexpectedly unavailable")
+                            .to_owned()
+                    }
+                )));
+            }
+        };
+
         Ok(CudaDecodeSession {
             layers: buffers.layers,
             token_emb: buffers.token_emb.take().expect("token_emb built"),
@@ -4515,6 +5199,7 @@ impl CudaDecodeSession {
             pos: 0,
             last_t: 0,
             use_flash_attn,
+            use_flash_attn_v3,
             ctx,
         })
     }
@@ -4755,6 +5440,7 @@ impl CudaDecodeSession {
                     causal: true,
                     q_offset: start,
                     use_flash_attn: self.use_flash_attn,
+                    use_flash_attn_v3: self.use_flash_attn_v3,
                 },
                 &AttnChainPtrs {
                     xq: self.ln.ptr,
@@ -4800,6 +5486,7 @@ impl CudaDecodeSession {
                     causal: false,
                     q_offset: 0,
                     use_flash_attn: self.use_flash_attn,
+                    use_flash_attn_v3: self.use_flash_attn_v3,
                 },
                 &AttnChainPtrs {
                     xq: self.ln.ptr,
@@ -5262,6 +5949,26 @@ fn bool_arg(p: &bool) -> *mut c_void {
 /// forbidden in this WP (ADR M3-01 (b), setting a Hopper gencode alone is safe
 /// because the FA v2 kernel makes no WGMMA-only assumptions).
 fn compile_ptx(nvrtc: &Nvrtc, source: &str, unit: &core::ffi::CStr, what: &str) -> Result<Vec<u8>> {
+    // M4-07-T03: thin wrapper — the shared KERNELS_CUDA behaviour (compute_89
+    // default + VOKRA_NVRTC_GPU_ARCH escape hatch, both inside gencode_flag())
+    // is unchanged to the bit; only the FA v3 program calls the arch-explicit
+    // variant below with its fixed `compute_90a`.
+    compile_ptx_for_arch(nvrtc, source, unit, what, &gencode_flag())
+}
+
+/// [`compile_ptx`] generalised over the `--gpu-architecture` flag
+/// (M4-07-T03). `arch_flag` is the complete NVRTC option string (e.g.
+/// `--gpu-architecture=compute_90a` for the FA v3 program — which is a fixed
+/// constant, deliberately NOT routed through [`gencode_flag`]'s
+/// `VOKRA_NVRTC_GPU_ARCH` escape hatch: plain `compute_90` would not enable
+/// WGMMA, so honoring the env var for that program could only mis-compile).
+fn compile_ptx_for_arch(
+    nvrtc: &Nvrtc,
+    source: &str,
+    unit: &core::ffi::CStr,
+    what: &str,
+    arch_flag: &core::ffi::CStr,
+) -> Result<Vec<u8>> {
     let src = std::ffi::CString::new(source).map_err(|_| {
         VokraError::InvalidArgument(format!("{what} CUDA source contains an interior NUL"))
     })?;
@@ -5283,10 +5990,39 @@ fn compile_ptx(nvrtc: &Nvrtc, source: &str, unit: &core::ffi::CStr, what: &str) 
     sys::check_nvrtc(nvrtc, r, "nvrtcCreateProgram")?;
 
     // `prog` now exists; ensure it is destroyed on every exit path.
-    let result = compile_and_extract_ptx(nvrtc, prog, what);
+    let result = compile_and_extract_ptx(nvrtc, prog, what, arch_flag);
     // SAFETY: `prog` is a valid program handle; destroyed exactly once here.
     unsafe { (nvrtc.destroy_program)(&mut prog) };
     result
+}
+
+/// M4-07 diagnostic / test surface (re-exported `#[doc(hidden)]` from the
+/// crate root): NVRTC-compile `source` for an explicit `--gpu-architecture=
+/// {arch}` and return the PTX bytes. Loads NVRTC itself — **no GPU or driver
+/// is required** (NVRTC stops at PTX generation), so the `compute_90a`
+/// feasibility test (`tests/fa_v3_nvrtc_feasibility.rs`, M4-07-T02) runs on
+/// any CUDA-toolkit host and clean-skips where the library is absent.
+///
+/// # Errors
+///
+/// [`VokraError::BackendUnavailable`] when NVRTC is not installed or the
+/// compile fails (the NVRTC log is embedded); [`VokraError::InvalidArgument`]
+/// for interior-NUL inputs.
+#[doc(hidden)]
+pub fn nvrtc_compile_for_arch(source: &str, arch: &str) -> Result<Vec<u8>> {
+    // Validate the argument boundary before touching the library so the
+    // negative is deterministic on NVRTC-less hosts too.
+    let flag = std::ffi::CString::new(format!("--gpu-architecture={arch}")).map_err(|_| {
+        VokraError::InvalidArgument("arch flag contains an interior NUL".to_owned())
+    })?;
+    let nvrtc = Nvrtc::load()?;
+    compile_ptx_for_arch(
+        &nvrtc,
+        source,
+        c"vokra_nvrtc_diagnostic.cu",
+        &format!("diagnostic compile ({arch})"),
+        &flag,
+    )
 }
 
 /// Resolves the NVRTC `--gpu-architecture=compute_XX` flag to pass this
@@ -5326,13 +6062,20 @@ fn gencode_flag() -> std::ffi::CString {
         .unwrap_or_else(|_| std::ffi::CString::new("--gpu-architecture=compute_89").unwrap())
 }
 
-/// Compiles `prog` with the M3-01-T07 gencode pin (`--gpu-architecture=compute_89`
-/// by default, `VOKRA_NVRTC_GPU_ARCH` overrides) and extracts its PTX. On a
-/// compile failure the NVRTC log is surfaced in the error (labelled `what`).
-fn compile_and_extract_ptx(nvrtc: &Nvrtc, prog: sys::NvrtcProgram, what: &str) -> Result<Vec<u8>> {
-    let arch = gencode_flag();
+/// Compiles `prog` with the caller's `--gpu-architecture` flag (the shared
+/// KERNELS_CUDA path passes [`gencode_flag`]'s compute_89-default /
+/// env-overridable value; the FA v3 path passes its fixed `compute_90a`) and
+/// extracts its PTX. On a compile failure the NVRTC log is surfaced in the
+/// error (labelled `what`).
+fn compile_and_extract_ptx(
+    nvrtc: &Nvrtc,
+    prog: sys::NvrtcProgram,
+    what: &str,
+    arch: &core::ffi::CStr,
+) -> Result<Vec<u8>> {
     // `options` holds raw `*const c_char` pointers into `arch`'s owned buffer;
-    // `arch` must live until nvrtcCompileProgram returns.
+    // `arch` must live until nvrtcCompileProgram returns (it is a borrowed
+    // CStr owned by the caller for the whole call).
     let options: [*const c_char; 1] = [arch.as_ptr()];
     // SAFETY: `prog` is a valid program; `options` is a 1-slot array of
     // NUL-terminated C strings owned by `arch` (alive for the call).

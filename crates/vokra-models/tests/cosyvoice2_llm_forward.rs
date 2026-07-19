@@ -307,17 +307,22 @@ fn step_refuses_past_n_ctx() {
 }
 
 // -----------------------------------------------------------------------------
-// Real HF-checkpoint parity (owner-side flip-the-switch)
+// Real HF-checkpoint parity (harness surface)
 // -----------------------------------------------------------------------------
 
 #[test]
-fn parity_hf_reference_is_not_wired_today() {
-    // Honest signal: the real-checkpoint gate returns NotImplemented until
-    // the T02 tensor manifest lands. Owners flipping this test on to
-    // green must first drop the real GGUF into the workspace and swap
-    // the harness body.
+fn parity_hf_reference_harness_reports_measured_numbers() {
+    // The harness itself is real (closed by the 2026-07-16 eval): fed a
+    // self-consistent reference it passes with a zero-delta report; the
+    // real reference dump run is env-gated in `tests/parity_cosyvoice2.rs`
+    // (never a fabricated pass — the dump only exists owner-side).
     let cfg = make_config();
-    let err = parity::assert_vs_hf_reference(&cfg, &[])
-        .expect_err("HF real-checkpoint parity is owner-side (T02)");
-    assert!(format!("{err:?}").contains("NotImplemented"));
+    let backbone = LlmBackbone::synthesized(cfg, SEED).expect("build");
+    let tokens = [0u32, 5, 9];
+    let reference = backbone.forward(&tokens, 0).expect("forward");
+    let report = parity::assert_vs_hf_reference(&backbone, &tokens, &reference, 1e-6)
+        .expect("self-consistent reference must pass");
+    assert_eq!(report.t, tokens.len());
+    assert_eq!(report.max_abs_delta, 0.0);
+    assert_eq!(report.argmax_matches, tokens.len());
 }

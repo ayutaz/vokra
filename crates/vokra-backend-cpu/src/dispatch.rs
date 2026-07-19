@@ -39,6 +39,73 @@ pub(crate) type LayerNormKernel = fn(&[f32], &mut [f32], usize, usize, &[f32], &
 /// `log10(max(·, floor))` values. `(weights[n_mels*n_bins], power[n_bins],
 /// n_mels, n_bins, floor, out_log[n_mels])`.
 pub(crate) type FusedLogmelKernel = fn(&[f32], &[f32], usize, usize, f32, &mut [f32]);
+/// `m == 1` GEMM row kernel (M5-14-T10): `out[j] = bias[j] + Σ_l a[l]·b[l, j]`
+/// over `cols` columns of a row-major `b` whose row stride is `stride`
+/// (`b[0]` is the first column of the range). Bit-identical per element to
+/// the general GEMM's `m == 1` row (same FMA chain in the vector column
+/// region, same plain mul+add scalar tail), but streams `b` row-contiguously
+/// instead of walking it per column strip.
+/// `(cols, k, stride, a[k], b[(k-1)*stride + cols], bias?[cols], out[cols])`.
+pub(crate) type GemmM1Kernel = fn(usize, usize, usize, &[f32], &[f32], Option<&[f32]>, &mut [f32]);
+/// Packed-panel GEMM micro-kernel (M5-14-T05/T08): one `PACK_MR`-row ×
+/// `ncols`-column output tile over a packed A strip (`ap`, layout `[l][MR]`,
+/// `kc*MR` elements) and a packed B strip (`bp`, layout `[l][strip_width]`,
+/// zero-padded past the valid columns). Seeds from `bias` / zero when
+/// `accumulate` is false, else continues from the values already in `c`;
+/// loads/stores only the `rows` valid rows at `c + r*ldc` and the `ncols`
+/// valid columns.
+///
+/// # Safety
+/// `ap`/`bp` must carry the documented packed element counts, `c` must point
+/// at a tile origin such that `rows` rows × `ncols` columns at row stride
+/// `ldc` stay inside the output buffer, no other thread may access those
+/// elements concurrently, and `bias` (when `Some`) must carry at least
+/// `ncols` elements. Callers also uphold the ISA gate of the containing
+/// module (dispatch invariant).
+pub(crate) type GemmMicroKernel = unsafe fn(
+    kc: usize,
+    ap: &[f32],
+    bp: &[f32],
+    c: *mut f32,
+    ldc: usize,
+    rows: usize,
+    ncols: usize,
+    bias: Option<&[f32]>,
+    accumulate: bool,
+);
+
+/// How an ISA's packed GEMM covers the columns past the last full `nr`-wide
+/// strip — chosen to reproduce that ISA's LEGACY per-element operation for
+/// every column (the M5-14 bit-identity invariant).
+#[derive(Clone, Copy)]
+// Each variant is constructed only by its arch's table (`Vec4` on aarch64,
+// `Scalar`/`Masked` on x86-64) but matched by the target-independent driver,
+// so single-arch lib builds see "unconstructed" variants — by design.
+#[allow(dead_code)]
+pub(crate) enum PackedTail {
+    /// Plain mul+add scalar chains from the strip boundary (legacy AVX2).
+    Scalar,
+    /// One 4-wide FMA strip to the 4-column boundary, then scalar mul+add
+    /// chains (legacy NEON).
+    Vec4,
+    /// One zero-padded strip with masked load/store — FMA chains for every
+    /// column (legacy AVX-512).
+    Masked,
+}
+
+/// An ISA's packed-panel GEMM kernel set (M5-14-T05..T08). `None` in the
+/// table ⇒ that ISA keeps the legacy kernel for every shape.
+#[derive(Clone, Copy)]
+pub(crate) struct PackedGemm {
+    /// Full column-strip width (8 for NEON/AVX2, 16 for AVX-512). The
+    /// blocking constant `NC` is a multiple of every `nr`.
+    pub(crate) nr: usize,
+    /// The strip micro-kernel (handles `ncols == nr` and the ISA's partial
+    /// widths per [`PackedTail`]).
+    pub(crate) micro: GemmMicroKernel,
+    /// Column-tail convention (see [`PackedTail`]).
+    pub(crate) tail: PackedTail,
+}
 
 /// A bundle of function pointers, one per kernel kind, all resolved to the
 /// same [`IsaPath`]. Populated by [`build_table`] and cached in [`selected`].
@@ -60,6 +127,14 @@ pub(crate) struct KernelTable {
     /// the same op within FP32 rounding (within-CPU-backend dispatch, not a
     /// cross-backend fallback — FR-EX-08 unaffected).
     pub(crate) fused_logmel: FusedLogmelKernel,
+    /// M5-14-T10 `m == 1` GEMM row fast path; `None` ⇒ `gemm` handles m == 1
+    /// (scalar / RVV / WASM tiers — unchanged behaviour). Bit-identical per
+    /// element to `gemm`'s m == 1 row, so routing cannot shift parity.
+    pub(crate) gemm_m1: Option<GemmM1Kernel>,
+    /// M5-14-T05/T08 packed cache-blocked GEMM micro-kernels; `None` ⇒ every
+    /// shape stays on the legacy `gemm` kernel. Bit-identical per element to
+    /// `gemm` (see `kernels::gemm_driver`), so routing cannot shift parity.
+    pub(crate) gemm_packed: Option<PackedGemm>,
 }
 
 fn scalar_table() -> KernelTable {
@@ -75,6 +150,10 @@ fn scalar_table() -> KernelTable {
         softmax: scalar::softmax,
         layer_norm: scalar::layer_norm,
         fused_logmel: scalar_fused_logmel,
+        // The scalar gemm is already an l-outer streaming (axpy) formulation
+        // with no strided-B pathology; packing would only add copies.
+        gemm_m1: None,
+        gemm_packed: None,
     }
 }
 
@@ -123,6 +202,14 @@ fn avx2_table() -> KernelTable {
         softmax: avx2::softmax,
         layer_norm: avx2::layer_norm,
         fused_logmel: fused_logmel_avx2::fused_logmel_apply_frame_avx2,
+        gemm_m1: Some(avx2::gemm_m1),
+        gemm_packed: Some(PackedGemm {
+            nr: 8,
+            micro: avx2::gemm_micro_packed,
+            // Legacy AVX2 goes scalar mul+add straight after the 8-wide
+            // column region (no 4-wide loop) — mirror that exactly.
+            tail: PackedTail::Scalar,
+        }),
     }
 }
 
@@ -149,6 +236,14 @@ fn neon_table() -> KernelTable {
         softmax: neon::softmax,
         layer_norm: neon::layer_norm,
         fused_logmel: fused_logmel_neon::fused_logmel_apply_frame_neon,
+        gemm_m1: Some(neon::gemm_m1),
+        gemm_packed: Some(PackedGemm {
+            nr: 8,
+            micro: neon::gemm_micro_packed,
+            // Legacy NEON covers [n8, n4) with a 4-wide FMA loop before the
+            // scalar mul+add remainder — mirror that exactly.
+            tail: PackedTail::Vec4,
+        }),
     }
 }
 
@@ -180,6 +275,10 @@ fn rvv_table() -> KernelTable {
         softmax: rvv::softmax,
         layer_norm: rvv::layer_norm,
         fused_logmel: rvv::fused_logmel,
+        // RVV keeps the legacy gemm for every shape (scaffold tier; packed
+        // micro-kernels are an M5+ follow-up on real RVV silicon).
+        gemm_m1: None,
+        gemm_packed: None,
     }
 }
 
@@ -190,15 +289,228 @@ fn rvv_table() -> KernelTable {
     unreachable!("RVV kernel table requested on a non-riscv64 target")
 }
 
+// M4-08-T09: RISC-V RVV draft-0.7.1 dispatch tier (T-Head C910/C906 =
+// LicheePi 4A / Milk-V Duo). Compiled only on riscv64, exactly like the
+// RVV 1.0 tier — but the two are encoding-incompatible peers, so this table
+// routes to `kernels::rvv071` (`.insn` raw words), never to `kernels::rvv`.
+// `features::select_isa` cannot select `Rvv071` unless the host probed
+// `rvv_071 = true` (xtheadvector token / cpu-vector 0.7.1 signal with the
+// RVV 1.0 misdetection guard, ADR M4-08 §b), and `table_for` rejects it via
+// `CpuFeatures::supports` everywhere else — so the unreachable! stub below
+// is genuinely unreachable in all production paths.
+#[cfg(target_arch = "riscv64")]
+fn rvv071_table() -> KernelTable {
+    use crate::kernels::rvv071;
+    KernelTable {
+        gemm: rvv071::gemm,
+        gemv: rvv071::gemv,
+        add: rvv071::add,
+        mul: rvv071::mul,
+        relu: rvv071::relu,
+        sigmoid: rvv071::sigmoid,
+        tanh: rvv071::tanh,
+        gelu: rvv071::gelu,
+        softmax: rvv071::softmax,
+        layer_norm: rvv071::layer_norm,
+        fused_logmel: rvv071::fused_logmel,
+        // Same posture as the RVV 1.0 tier: legacy gemm for every shape.
+        gemm_m1: None,
+        gemm_packed: None,
+    }
+}
+
+#[cfg(not(target_arch = "riscv64"))]
+fn rvv071_table() -> KernelTable {
+    // Unreachable: `features::select_isa` never yields `Rvv071` off riscv64
+    // (the probe is /proc/cpuinfo-based and riscv64-gated), and `table_for`
+    // rejects it via `CpuFeatures::supports`.
+    unreachable!("RVV 0.7.1 kernel table requested on a non-riscv64 target")
+}
+
+// M4-01-T04: WASM SIMD128 dispatch tier. Compiled only when the wasm32
+// artifact is built WITH `-C target-feature=+simd128` (the crate gates the
+// `wasm_simd128` kernels module on the same cfg). This is COMPILE-TIME
+// dispatch: WASM has no runtime CPU feature detection (SIMD acceptance is a
+// module-validation decision), so unlike AVX2/NEON there is no CPUID-style
+// probe — `CpuFeatures::detect().wasm_simd128` is `cfg!(target_feature =
+// "simd128")` and the base (no-SIMD) artifact selects `Scalar`. Distribution
+// is a 2-artifact build + JS loader `WebAssembly.validate` select
+// (scripts/build-wasm.sh, ADR M4-01-webgpu-wasm §4).
+//
+// Relaxed SIMD is NOT adopted (Safari-partial per the CLAUDE.md quarterly
+// watch + relaxed-fma nondeterminism vs NFR-QL-01); the kernels use
+// deterministic mul + add only.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+fn wasm_simd128_table() -> KernelTable {
+    use crate::kernels::wasm_simd128;
+    KernelTable {
+        gemm: wasm_simd128::gemm,
+        gemv: wasm_simd128::gemv,
+        add: wasm_simd128::add,
+        mul: wasm_simd128::mul,
+        // M4-01-T05 vectorized GEMM/GEMV/add/mul; the SIMD128 completion adds
+        // f32x4 relu / sigmoid / tanh / gelu / softmax / layer_norm (the
+        // transcendentals ride the `simd-transcendental` feature exactly like
+        // NEON — SIMD poly `exp` on, scalar `std::exp` off). Within-CPU-backend
+        // dispatch, not a cross-backend fallback, so FR-EX-08 is unaffected.
+        relu: wasm_simd128::relu,
+        sigmoid: wasm_simd128::sigmoid,
+        tanh: wasm_simd128::tanh,
+        gelu: wasm_simd128::gelu,
+        softmax: wasm_simd128::softmax,
+        layer_norm: wasm_simd128::layer_norm,
+        // `fused_logmel` stays on the portable scalar reference: it needs a
+        // vectorized `log10` (the AVX2 / NEON tiers use dedicated
+        // `fused_logmel_{avx2,neon}` modules with a `vlog10` polynomial); a
+        // WASM `vlog10` port is a separate follow-up. Within-CPU-backend
+        // dispatch (FR-EX-08 unaffected).
+        fused_logmel: scalar_fused_logmel,
+        // SIMD128 packed micro-kernels are a Wave-2+ follow-up; the wasm32
+        // tier keeps the legacy gemm for every shape (unchanged behaviour).
+        gemm_m1: None,
+        gemm_packed: None,
+    }
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+fn wasm_simd128_table() -> KernelTable {
+    // Unreachable: `features::select_isa` never yields `WasmSimd128` off a
+    // simd128-enabled wasm32 build (`CpuFeatures::detect().wasm_simd128` is a
+    // compile-time `cfg!` constant), and `table_for` rejects it via
+    // `CpuFeatures::supports`.
+    unreachable!("WASM SIMD128 kernel table requested off a simd128-enabled wasm32 build")
+}
+
+// M4-17-T05: x86-64 AVX-512 f32 dispatch tier. The `avx512` kernels module
+// is compiled only on x86-64; `features::select_isa` cannot yield `Avx512`
+// elsewhere (the probe fields stay false) and `table_for` rejects it via
+// `CpuFeatures::supports`, so the stub is genuinely unreachable.
+//
+// Transcendental activations (sigmoid / tanh / gelu) delegate to the AVX2
+// kernels: `supports(Avx512)` includes AVX2+FMA (ADR M4-17 §(b)-4), any
+// AVX-512 host can run them, and the delegation keeps the
+// `simd-transcendental` feature posture automatically in sync with the AVX2
+// tier (avx2 kernels are scalar-backed by default, vexp under the feature).
+#[cfg(target_arch = "x86_64")]
+fn avx512_table() -> KernelTable {
+    use crate::kernels::avx2;
+    use crate::kernels::avx512;
+    KernelTable {
+        gemm: avx512::gemm,
+        gemv: avx512::gemv,
+        add: avx512::add,
+        mul: avx512::mul,
+        relu: avx512::relu,
+        sigmoid: avx2::sigmoid,
+        tanh: avx2::tanh,
+        gelu: avx2::gelu,
+        softmax: avx512::softmax,
+        layer_norm: avx512::layer_norm,
+        fused_logmel: avx512::fused_logmel,
+        gemm_m1: Some(avx512::gemm_m1),
+        gemm_packed: Some(PackedGemm {
+            nr: 16,
+            micro: avx512::gemm_micro_packed,
+            // Legacy AVX-512 is FMA everywhere (masked tail, no scalar
+            // remainder) — mirror that exactly.
+            tail: PackedTail::Masked,
+        }),
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn avx512_table() -> KernelTable {
+    // Unreachable: `features::select_isa` never yields `Avx512` off x86-64,
+    // and `table_for` rejects it via `CpuFeatures::supports`.
+    unreachable!("AVX-512 kernel table requested on a non-x86-64 target")
+}
+
+// M4-17-T05: specialized-tier f32 tables. The INT8 / BF16 / FP16 kernels are
+// a separate dispatch surface (`kernels::kquant_gemv_i8*` /
+// `kernels::gemm_bf16_on` / `kernels::gemm_fp16_on` — ADR M4-17 §(b)-2), so
+// selecting one of these tiers as the process-wide path installs the best
+// f32 kernels its `supports` gate guarantees (thin delegation, no second
+// kernel implementation):
+//
+// - `Avx512Vnni` / `Avx512Bf16` → the AVX-512 f32 kernels (their gate
+//   includes the full F/DQ/BW/VL bundle);
+// - `AvxVnni256` → the AVX2 kernels (AVX-VNNI parts are AVX2+FMA parts);
+// - `NeonFp16` / `NeonDotprod` / `NeonI8mm` / `NeonBf16` → the NEON baseline
+//   kernels (NEON is unconditional on AArch64).
+//
+// Within-CPU-backend dispatch, not a cross-backend fallback: every table
+// computes the same f32 ops within FP32 rounding (FR-EX-08 unaffected).
+#[cfg(target_arch = "x86_64")]
+fn avx512vnni_table() -> KernelTable {
+    avx512_table()
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn avx512vnni_table() -> KernelTable {
+    // Unreachable: probe fields are x86-64-only (see avx512_table stub).
+    unreachable!("AVX-512 VNNI kernel table requested on a non-x86-64 target")
+}
+
+#[cfg(target_arch = "x86_64")]
+fn avx512bf16_table() -> KernelTable {
+    avx512_table()
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn avx512bf16_table() -> KernelTable {
+    // Unreachable: probe fields are x86-64-only (see avx512_table stub).
+    unreachable!("AVX-512 BF16 kernel table requested on a non-x86-64 target")
+}
+
+#[cfg(target_arch = "x86_64")]
+fn avxvnni256_table() -> KernelTable {
+    avx2_table()
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn avxvnni256_table() -> KernelTable {
+    // Unreachable: probe fields are x86-64-only (see avx512_table stub).
+    unreachable!("AVX-VNNI-256 kernel table requested on a non-x86-64 target")
+}
+
+#[cfg(target_arch = "aarch64")]
+fn neon_ext_table() -> KernelTable {
+    // Shared by NeonFp16 / NeonDotprod / NeonI8mm / NeonBf16 — all four
+    // delegate their f32 table to the NEON baseline kernels (the specialized
+    // kernels live on the separate dispatch surface, see above).
+    neon_table()
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn neon_ext_table() -> KernelTable {
+    // Unreachable: `features::select_isa` never yields a Neon* tier off
+    // aarch64, and `table_for` rejects them via `CpuFeatures::supports`.
+    unreachable!("NEON server-tier kernel table requested on a non-aarch64 target")
+}
+
 /// Maps an [`IsaPath`] to its kernel table — the single source of truth for
 /// the ISA → implementation mapping (used by both production dispatch and the
 /// `*_on` test entry points).
+///
+/// Deliberately an **exhaustive** match even though `IsaPath` is
+/// `#[non_exhaustive]` (the attribute has no effect within the defining
+/// crate): a future variant added without a table arm must be a compile
+/// error here, never a runtime surprise (M4-17-T05).
 fn build_table(isa: IsaPath) -> KernelTable {
     match isa {
         IsaPath::Scalar => scalar_table(),
         IsaPath::Avx2 => avx2_table(),
         IsaPath::Neon => neon_table(),
         IsaPath::Rvv => rvv_table(),
+        IsaPath::Rvv071 => rvv071_table(),
+        IsaPath::WasmSimd128 => wasm_simd128_table(),
+        IsaPath::Avx512 => avx512_table(),
+        IsaPath::Avx512Vnni => avx512vnni_table(),
+        IsaPath::Avx512Bf16 => avx512bf16_table(),
+        IsaPath::AvxVnni256 => avxvnni256_table(),
+        IsaPath::NeonFp16 | IsaPath::NeonDotprod | IsaPath::NeonI8mm | IsaPath::NeonBf16 => {
+            neon_ext_table()
+        }
     }
 }
 
@@ -307,7 +619,7 @@ pub fn fused_log_mel_dispatch(
     //   out    : per-frame log-mel output of length n_mels
     // Shape validation:
     let n_bins = pcm.len();
-    if mel_fb.len() % n_bins != 0 {
+    if !mel_fb.len().is_multiple_of(n_bins) {
         return Err(VokraError::InvalidArgument(format!(
             "fused_log_mel_dispatch: mel_fb.len() {} is not a multiple of n_bins {}",
             mel_fb.len(),
@@ -345,7 +657,7 @@ pub(crate) fn fused_log_mel_dispatch_on(
 ) -> Result<()> {
     const FLOOR: f32 = 1e-10;
     let n_bins = pcm.len();
-    if n_bins == 0 || mel_fb.len() % n_bins != 0 {
+    if n_bins == 0 || !mel_fb.len().is_multiple_of(n_bins) {
         return Err(VokraError::InvalidArgument(
             "fused_log_mel_dispatch_on: bad pcm / mel_fb shape".into(),
         ));
@@ -389,7 +701,7 @@ mod tests {
         // (they are arch-exclusive); every unsupported path must be an
         // explicit BackendUnavailable, never a silent fallback (FR-EX-08).
         let feats = CpuFeatures::detect();
-        for isa in [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv] {
+        for isa in IsaPath::ALL_SIMD {
             if !feats.supports(isa) {
                 assert!(matches!(
                     table_for(isa),
@@ -481,7 +793,7 @@ mod tests {
         let pcm = [1.0f32, 2.0, 3.0];
         let mel_fb = [1.0f32; 3];
         let mut out = [0.0f32; 1];
-        for isa in [IsaPath::Avx2, IsaPath::Neon, IsaPath::Rvv] {
+        for isa in IsaPath::ALL_SIMD {
             if !feats.supports(isa) {
                 assert!(matches!(
                     fused_log_mel_dispatch_on(isa, &pcm, &mel_fb, &mut out),

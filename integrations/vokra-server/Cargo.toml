@@ -45,6 +45,28 @@ name = "tts_latency"
 path = "benches/tts_latency.rs"
 harness = false
 
+# --- GPU backend passthrough (cc-30, 2026-07-19 M4-residual audit). ---
+#
+# `--backend metal|cuda|vulkan` can only SELECT a backend that was COMPILED
+# into this binary, so the runtime knob needs a matching build-time knob. Each
+# feature here forwards 1:1 to the `vokra-models` feature of the same name,
+# which in turn activates the corresponding `vokra-backend-*` crate.
+#
+# These add NO third-party dependencies: every backend crate is `vokra-*` and
+# reaches its GPU API through raw FFI (Metal via objc msgSend, CUDA via dlopen
+# of libcuda + NVRTC, Vulkan via dlopen of libvulkan) — no `metal-rs`, no
+# `cudarc`, no `ash`. The ROOT `Cargo.lock` is untouched either way (this crate
+# is its own workspace), so NFR-DS-02 is unaffected.
+#
+# Default is CPU-only. Requesting an uncompiled backend at runtime is a hard
+# startup error naming the feature to rebuild with — never a silent CPU fall
+# back under a GPU label (FR-EX-08); see `service::ensure_backend_available`.
+[features]
+default = []
+metal = ["vokra-models/metal"]
+cuda = ["vokra-models/cuda"]
+vulkan = ["vokra-models/vulkan"]
+
 [dependencies]
 # --- HTTP / async stack (T02 c04; ADR: axum + hyper 1.x + tokio + tower, all
 # MIT). ---
@@ -107,12 +129,25 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 #
 # By path (these stay zero-dependency themselves). `vokra-piper-plus` supplies
 # the `Phonemizer` trait boundary + `PassthroughPhonemizer` default; the real
-# 8-language G2P lives out-of-workspace in `integrations/vokra-piper-g2p` and
-# is injected via `InferenceService::with_phonemizer` so this crate never
-# depends on jpreprocess / lindera / icu.
+# 8-language G2P is injected via `InferenceService::with_phonemizer` (see the
+# `vokra-piper-g2p` entry below).
 vokra-core = { path = "../../crates/vokra-core" }
 vokra-models = { path = "../../crates/vokra-models" }
 vokra-piper-plus = { path = "../../crates/vokra-piper-plus" }
+
+# --- Real 8-language G2P bridge (campaign-2 P1 fix, 2026-07-17). ---
+#
+# Sibling EXCLUDED workspace (`integrations/vokra-piper-g2p`) that links the
+# client's own MIT `piper-plus-g2p` (jpreprocess / naist-jdic / regex / serde —
+# all third-party, all confined to these isolated lockfiles; the ROOT
+# `Cargo.lock` stays `vokra-*`-only, NFR-DS-02). Linking it here lets the
+# production binary honour `--piper-g2p` and turn plain text into real
+# phoneme ids at `/api/tts` + Wyoming `synthesize`. The G2P still crosses into
+# the runtime ONLY via the `vokra_piper_plus::Phonemizer` trait boundary
+# (`InferenceService::with_phonemizer`); without `--piper-g2p` the default
+# `PassthroughPhonemizer` behaviour is byte-for-byte unchanged (raw phoneme
+# ids / `[[symbol]]` literals only, plain text = explicit error, FR-EX-08).
+vokra-piper-g2p = { path = "../vokra-piper-g2p" }
 
 [dev-dependencies]
 # Test-only HTTP client for /health probe. Small, MIT/Apache-2.0.

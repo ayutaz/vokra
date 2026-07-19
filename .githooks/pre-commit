@@ -15,13 +15,24 @@ fi
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-echo "pre-commit [1/3]: cargo fmt --all -- --check"
+echo "pre-commit [1/5]: cargo fmt --all -- --check"
 cargo fmt --all -- --check
 
-echo "pre-commit [2/3]: forbidden symbols (strtod / locale-dependent parsers)"
+echo "pre-commit [2/5]: forbidden symbols (strtod / locale-dependent parsers)"
 bash scripts/check-forbidden-symbols.sh
 
-echo "pre-commit [3/3]: zero-dependency invariant (Cargo.lock)"
+echo "pre-commit [3/5]: zero-dependency invariant (Cargo.lock)"
 bash scripts/check-zero-deps.sh
+
+# ~120 ms. Catches a byte-hashed fixture committed without a .gitattributes eol
+# pin, which otherwise surfaces as a CRLF hash mismatch on windows-latest an
+# hour later (already happened twice: *.wgsl, then csm/context.json).
+echo "pre-commit [4/5]: fixture eol pins (.gitattributes)"
+bash scripts/check-fixture-eol-pins.sh
+
+# ~85 ms. Catches `<producer> | grep -q` under `set -o pipefail`, an idiom that
+# FAILS OPEN once the producer outsizes the pipe buffer — see the script header.
+echo "pre-commit [5/5]: pipefail/grep -q fail-open lint"
+python3 scripts/compliance/lint-pipefail-grep-q.py
 
 echo "pre-commit: OK"

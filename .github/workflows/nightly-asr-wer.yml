@@ -1,0 +1,392 @@
+# Vokra nightly ASR-WER — X-06 quality-verification leg (ADVISORY).
+#
+# `docs/milestones.md` §10 X-06 splits nightly quality verification into
+# "CI job definition + threshold-breach revert/block operation = CC" and
+# "Tier 2 device lab (self-hosted runners) = owner". This workflow is the
+# CC half, open since M1. It measures Whisper WER on a pinned LibriSpeech
+# dev-clean subset every night and reports a verdict against a threshold
+# seeded from a real measurement.
+#
+# SCOPE — the ASR-WER leg only
+# ----------------------------
+# X-06 also names two things this workflow deliberately does NOT do:
+#   * the LJSpeech TTS UTMOS/MOS leg — belongs to M5-15, which owns the
+#     UTMOS un-defer (weights + license sign-off). Wiring a UTMOS job here
+#     would either need weights that do not exist yet or a fabricated
+#     score; both are barred (NFR-QL-04).
+#   * the Tier-2 device matrix (iOS / Android / WASM / Pi 3-5 / RK3588 /
+#     Jetson) — that is the owner's self-hosted lab, gated on hardware
+#     procurement (§11 machine-acquisition row). GitHub-hosted runners
+#     cannot stand in for it.
+# The VCTK VC-similarity leg named in X-06 is likewise out of scope here.
+#
+# ADVISORY POSTURE
+# ----------------
+# Not a required check, and there is no `pull_request:` trigger — this leg
+# must never block a merge. It does FAIL the run on a threshold breach, so
+# the nightly goes red and is actionable: X-06's exit criteria require that
+# a breach drives revert/block (NFR-MT-07), which a job that always exits 0
+# could not support. Same posture as the parity-*-real workflows: they
+# assert, but they are not in the required set.
+#
+# THRESHOLD PROVENANCE
+# --------------------
+# Nightly default: 6.0%, against a measured whisper-base baseline of 4.3689%
+# (9 word edits over 206 reference words) on the pinned 8-utterance subset.
+#
+# The baseline is NOT the 3.947% headline in
+# docs/bench-baselines/m1-real-weight-eval-2026-07-16/report.md: that figure
+# is the 9-file aggregate including jfk-30s.wav, which this leg does not
+# score. It was recomputed over the LibriSpeech utterances alone, then
+# reproduced end-to-end from the OpenSLR tarball (delta +0.0000%).
+#
+# Each corpus slice carries its OWN measured baseline and threshold
+# (tools/eval/librispeech_wer.py CALIBRATIONS), because slice choice moves
+# WER more than the gate width: the full 15-utterance chapter measures
+# 6.1765% (21 edits / 340 words) — above the 8-utterance slice's 6.0%
+# threshold — since the 7 utterances the campaign excluded are harder. One
+# shared threshold would therefore have made `all_in_chapter` runs fail for
+# reasons that are not regressions. A slice with no calibration is reported
+# as a plain measurement with no verdict rather than judged against a number
+# from a different corpus.
+#
+# Both thresholds come from one rule: baseline + 1.6pp, rounded up to the
+# nearest 0.2pp. The rationale lives next to HEADROOM_PP in the scorer
+# (single source); tools/eval/test_librispeech_wer.py holds this file's
+# WER_THRESHOLD mirror to it and re-derives both thresholds.
+#
+# DETERMINISM
+# -----------
+# Whisper greedy decode is deterministic, and flac→WAV decoding was verified
+# bit-identical (int16, sample-for-sample, all 8 utterances) to the WAVs the
+# campaign measured. So run-to-run variance is zero and the headroom exists
+# only for upstream checkpoint re-uploads and benign refactor churn — it is
+# not a noise budget.
+#
+# Zero-dep invariant (NFR-DS-02): root Cargo.lock is never modified. The
+# Python stack lives in a /tmp venv; a `git diff --exit-code` guard catches
+# accidental mutation. No Cargo dependency is added by this leg.
+#
+# Corpus: LibriSpeech dev-clean (OpenSLR resource 12), CC BY 4.0,
+# Panayotov et al. 2015. Downloaded at run time, never committed.
+
+name: nightly-asr-wer
+
+on:
+  schedule:
+    # 05:17 UTC daily. The nightly ladder is staggered off the top of the
+    # hour to dodge GH Actions cron congestion: nightly-il2cpp 04:17,
+    # nightly-webgl 04:47, this leg 05:17. It also clears the weekly Monday
+    # series entirely (Kokoro 04:00, Whisper 05:00, Vulkan 05:30, CUDA-RTF
+    # 06:00, CSM 06:30, web-wasm 07:00, Moshi 07:30, UTMOS 08:00, Godot
+    # 08:30). test_librispeech_wer.py re-derives this from the workflow tree
+    # rather than trusting this comment.
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      threshold:
+        description: "Override the WER pass threshold (fraction, e.g. 0.06). Blank = the slice's own calibrated threshold."
+        required: false
+        default: ""
+      all_in_chapter:
+        description: "Score all 15 utterances of 1272/128104 instead of the campaign 8. Uses the chapter-15 calibration (baseline 6.1765%, threshold 7.8%)."
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-asr-wer
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Mirror of tools/eval/librispeech_wer.py DEFAULT_THRESHOLD. The oracle
+  # test asserts the two stay equal, so this cannot silently drift.
+  WER_THRESHOLD: "0.06"
+  HF_ID: openai/whisper-base
+  GGUF: whisper-base.gguf
+  SPEAKER: "1272"
+  CHAPTER: "128104"
+  # sha256 of the OpenSLR dev-clean tarball (337,926,286 bytes) as used by
+  # the 2026-07-16 campaign, computed from that exact file. A mismatch means
+  # the corpus changed under us and the baseline needs re-measuring — which
+  # is why it hard-fails rather than warning.
+  DEV_CLEAN_SHA256: "76f87d090650617fca0cac8f88b9416e0ebf80350acb97b343a85fa903728ab3"
+  DEV_CLEAN_URL: "https://www.openslr.org/resources/12/dev-clean.tar.gz"
+  HF_HOME: ${{ github.workspace }}/.hf-cache
+  HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
+
+jobs:
+  asr-wer:
+    name: whisper-base WER (LibriSpeech dev-clean)
+    runs-on: ubuntu-latest
+    # HF DL (~290 MB) + convert + corpus DL (~338 MB) + 8 transcriptions of
+    # ~98 s total audio. Comfortably inside 45 min; the cap only bounds a
+    # genuinely stuck run.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-asr-wer
+
+      - name: Cache HF checkpoint
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.HF_HOME }}
+          key: hf-hub-whisper-base-asr-wer
+          restore-keys: |
+            hf-hub-whisper-base-
+
+      - name: Cache LibriSpeech dev-clean tarball
+        # Keyed on the pinned digest: if the digest constant changes, the
+        # cache misses and the new corpus is fetched, which is exactly the
+        # behaviour a deliberate corpus bump needs.
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.corpus-cache
+          key: librispeech-dev-clean-${{ env.DEV_CLEAN_SHA256 }}
+
+      - name: Install Python scoring deps
+        # jiwer = WER/CER. transformers = whisper's EnglishTextNormalizer
+        # (pure-python; torch is NOT needed and is deliberately not
+        # installed — see load_normalizer() for the equivalence check
+        # against the openai-whisper implementation the campaign used).
+        # soundfile = flac→WAV. huggingface_hub = checkpoint download.
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/vokra-py-asrwer
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-asrwer/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "jiwer>=3,<4" \
+            "transformers>=4.44,<4.60" \
+            "soundfile>=0.12,<1" \
+            "huggingface_hub>=0.24,<1"
+          python -m pip list | grep -Ei '^(jiwer|transformers|soundfile|huggingface[-_]hub)\b'
+
+      - name: Unit-test the scorer and this workflow's surface
+        # The oracle is stdlib-only, so it runs before the heavy assets are
+        # fetched: a broken threshold mirror or a cron collision should fail
+        # in seconds, not after a 600 MB download.
+        shell: bash
+        run: python3 tools/eval/test_librispeech_wer.py
+
+      - name: Build vokra-cli (release)
+        run: cargo build --release -p vokra-cli
+
+      - name: Download whisper-base checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-asrwer/bin/activate
+          python3 - <<'PYEOF'
+          import os
+          from huggingface_hub import snapshot_download
+          local = snapshot_download(
+              repo_id=os.environ["HF_ID"],
+              allow_patterns=["model.safetensors", "config.json", "normalizer.json"],
+          )
+          with open("/tmp/hf-paths.env", "w") as f:
+              f.write(f"HF_SAFETENSORS={local}/model.safetensors\n")
+              # normalizer.json ships the English spelling map the scorer
+              # needs; taking it from the checkpoint keeps normalization
+              # version-matched to the weights being scored.
+              f.write(f"HF_NORMALIZER={local}/normalizer.json\n")
+          print("snapshot_download OK:", local)
+          PYEOF
+          cat /tmp/hf-paths.env >> "$GITHUB_ENV"
+          set -a
+          # shellcheck disable=SC1091
+          . /tmp/hf-paths.env
+          set +a
+          test -f "$HF_SAFETENSORS"
+          test -f "$HF_NORMALIZER"
+
+      - name: Convert safetensors → GGUF
+        # No --quantize: the baseline was measured on fp32 weights, so
+        # quantization error must not be folded into the WER being gated.
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./target/release/vokra-cli convert \
+            --model whisper \
+            --input "$HF_SAFETENSORS" \
+            --output "$GGUF"
+          ls -lh "$GGUF"
+
+      - name: Download LibriSpeech dev-clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.corpus-cache"
+          TARBALL="$GITHUB_WORKSPACE/.corpus-cache/dev-clean.tar.gz"
+          if [ ! -f "$TARBALL" ]; then
+            echo "fetching $DEV_CLEAN_URL"
+            curl -fL --retry 3 --retry-delay 10 -o "$TARBALL" "$DEV_CLEAN_URL"
+          else
+            echo "cache hit: $TARBALL"
+          fi
+          echo "${DEV_CLEAN_SHA256}  ${TARBALL}" | sha256sum -c - || {
+            echo "::error::LibriSpeech dev-clean checksum mismatch. The corpus at" \
+                 "$DEV_CLEAN_URL is no longer the one the baseline was measured on;" \
+                 "re-measure the baseline before repinning DEV_CLEAN_SHA256." >&2
+            exit 1
+          }
+          echo "TARBALL=$TARBALL" >> "$GITHUB_ENV"
+
+      - name: Extract the pinned corpus subset
+        shell: bash
+        env:
+          CORPUS_DIR: ${{ github.workspace }}/.corpus
+        run: |
+          set -euo pipefail
+          mkdir -p "$CORPUS_DIR"
+          echo "CORPUS_DIR=$CORPUS_DIR" >> "$GITHUB_ENV"
+          # <<<subset-extract
+          # Pull ONLY speaker/chapter $SPEAKER/$CHAPTER out of the 338 MB
+          # archive. Extracting the whole corpus would cost minutes and disk
+          # for utterances nothing scores. An empty extraction is a hard
+          # error: scoring would otherwise proceed against no audio and the
+          # failure would surface later as a confusing "missing transcript".
+          stage="$(mktemp -d)"
+          trap 'rm -rf "$stage"' EXIT
+          member="LibriSpeech/dev-clean/${SPEAKER}/${CHAPTER}"
+          tar xzf "$TARBALL" -C "$stage" "$member"
+          src="$stage/$member"
+          if [ ! -d "$src" ]; then
+            echo "::error::archive member $member not found in $TARBALL" >&2
+            exit 1
+          fi
+          n_flac="$(find "$src" -name '*.flac' | wc -l | tr -d ' ')"
+          if [ "$n_flac" -eq 0 ]; then
+            echo "::error::no .flac extracted from $member — refusing to score an empty corpus" >&2
+            exit 1
+          fi
+          mkdir -p "$CORPUS_DIR/dev-clean/${SPEAKER}"
+          rm -rf "$CORPUS_DIR/dev-clean/${SPEAKER}/${CHAPTER}"
+          mv "$src" "$CORPUS_DIR/dev-clean/${SPEAKER}/"
+          echo "extracted $n_flac flac from $member"
+          # subset-extract>>>
+          ls -la "$CORPUS_DIR/dev-clean/${SPEAKER}/${CHAPTER}" | head
+
+      - name: Decode flac → 16 kHz mono WAV
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-asrwer/bin/activate
+          mkdir -p "$GITHUB_WORKSPACE/.wav"
+          echo "WAV_DIR=$GITHUB_WORKSPACE/.wav" >> "$GITHUB_ENV"
+          WAV_DIR="$GITHUB_WORKSPACE/.wav" python3 - <<'PYEOF'
+          import os, sys
+          from pathlib import Path
+          import soundfile as sf
+
+          corpus = Path(os.environ["CORPUS_DIR"]) / "dev-clean"
+          out = Path(os.environ["WAV_DIR"])
+          n = 0
+          for flac in sorted(corpus.rglob("*.flac")):
+              data, sr = sf.read(flac, dtype="int16")
+              # LibriSpeech is 16 kHz mono by construction. Assert rather
+              # than resample: a silent resample here would change what the
+              # baseline measured, and vokra-cli only accepts mono WAV.
+              if sr != 16000 or data.ndim != 1:
+                  sys.exit(f"::error::{flac} is {sr} Hz, ndim={data.ndim}; expected 16 kHz mono")
+              sf.write(out / f"{flac.stem}.wav", data, sr, subtype="PCM_16")
+              n += 1
+          print(f"decoded {n} utterances")
+          if n == 0:
+              sys.exit("::error::no audio decoded")
+          PYEOF
+
+      - name: Transcribe with vokra-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          TR="$GITHUB_WORKSPACE/.transcripts"
+          mkdir -p "$TR"
+          echo "TRANSCRIPTS=$TR" >> "$GITHUB_ENV"
+          for wav in "$WAV_DIR"/*.wav; do
+            stem="$(basename "$wav" .wav)"
+            if ! out="$(./target/release/vokra-cli run --model "$GGUF" --input "$wav")"; then
+              echo "::error::vokra-cli run failed on $stem" >&2
+              exit 1
+            fi
+            # `run` prints the transcript as `asr: <text>`. A missing line
+            # means the CLI contract changed; failing here keeps that from
+            # masquerading as a WER regression.
+            text="$(printf '%s\n' "$out" | sed -n 's/^asr: //p' | head -1)"
+            if [ -z "$text" ]; then
+              echo "::error::no 'asr: ' line for $stem; got:" >&2
+              printf '%s\n' "$out" >&2
+              exit 1
+            fi
+            printf '%s\n' "$text" > "$TR/$stem.txt"
+          done
+          echo "transcribed $(find "$TR" -name '*.txt' | wc -l | tr -d ' ') utterances"
+
+      - name: Score WER and apply the threshold
+        id: score
+        shell: bash
+        # Dispatch inputs reach the script through the environment, never by
+        # `${{ }}` interpolation into the `run:` body. `threshold` is a
+        # free-text field, so interpolating it would splice attacker-chosen
+        # text into the shell (GitHub's script-injection guidance); via env
+        # it is only ever a value.
+        env:
+          THRESHOLD_IN: ${{ github.event.inputs.threshold }}
+          ALL_IN_CHAPTER: ${{ github.event.inputs.all_in_chapter }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-asrwer/bin/activate
+          EXTRA=()
+          # Only forward --threshold when the dispatcher actually supplied
+          # one. Passing $WER_THRESHOLD unconditionally would override each
+          # slice's own calibrated threshold — which is exactly the bug that
+          # would make an `all_in_chapter` run fail against the 8-utterance
+          # slice's number.
+          if [ -n "${THRESHOLD_IN:-}" ]; then
+            EXTRA+=(--threshold "$THRESHOLD_IN")
+          fi
+          if [ "${ALL_IN_CHAPTER:-}" = "true" ]; then
+            EXTRA+=(--all-in-chapter)
+          fi
+          set +e
+          python3 tools/eval/librispeech_wer.py \
+            --librispeech-root "$CORPUS_DIR" \
+            --transcripts "$TRANSCRIPTS" \
+            --normalizer-json "$HF_NORMALIZER" \
+            --model whisper-base \
+            --json-out "$GITHUB_WORKSPACE/asr-wer-report.json" \
+            --summary-out /tmp/asr-wer-summary.md \
+            "${EXTRA[@]}"
+          rc=$?
+          set -e
+          cat /tmp/asr-wer-summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          exit "$rc"
+
+      - name: Upload WER report
+        # Runs even on a breach: the report is the evidence the revert/block
+        # decision (NFR-MT-07) is made from.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asr-wer-report
+          path: asr-wer-report.json
+          if-no-files-found: warn
+
+      - name: Guard the root Cargo.lock (NFR-DS-02)
+        if: always()
+        shell: bash
+        run: git diff --exit-code Cargo.lock

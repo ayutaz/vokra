@@ -1,0 +1,11 @@
+loadavg_start={ 1.83 4.88 7.10 }
+vokra_cpu_threads_env=unset
+model_load_seconds=0.004455
+audio_seconds=11.000
+iter0_wall_s=0.454616
+iter1_wall_s=0.451659
+iter2_wall_s=0.452257
+MEDIAN wall_s=0.452257 rtf=0.0411
+PROFDUMP-BEGIN dfn3
+PROFDUMP-END dfn3
+loadavg_end={ 1.83 4.88 7.10 }

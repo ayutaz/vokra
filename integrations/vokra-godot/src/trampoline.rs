@@ -287,6 +287,178 @@ unsafe fn write_nil_return(interface: Option<&InterfaceTable>, r_return: GDExten
 //   var s: VokraStream = session.vad_open_stream(sample_rate: int)
 // ---------------------------------------------------------------------------
 
+/// Method binding trampoline: `VokraSession::load_model(String) -> int`.
+///
+/// Arity: 1 argument. Instance: non-null VokraSession. Return: Int
+/// ([`crate::ffi::capi::VokraStatus`] numeric code, `0` == OK).
+///
+/// This is the method that makes every other `VokraSession` method
+/// reachable: until it runs, `SessionInstance::inner` is `None` and
+/// [`session_transcribe`] / [`session_synthesize`] report `InvalidMethod`.
+/// Both demo scenes call it first (`demos/asr_demo/main.gd:66`,
+/// `demos/tts_demo/main.gd:76`).
+///
+/// # Error posture: in-band status vs. CallError
+///
+/// The two failure classes are deliberately reported differently:
+///
+/// - **Caller-shape errors** (wrong arity, NULL instance, non-String
+///   argument, extension not initialised) are *GDScript coding errors*.
+///   They surface as a `GDExtensionCallError`, matching every other
+///   trampoline in this module.
+/// - **Load failures** (missing file, unreadable GGUF, interior-NUL path)
+///   are *expected runtime conditions* — the model file is user-supplied
+///   data, not code. They surface as a non-zero `VokraStatus` written
+///   into `r_return`, with `r_error` left at `Ok`. That is the contract
+///   the shipped demo GDScript already codes against
+///   (`if load_status != 0:`); raising a CallError instead would abort
+///   the GDScript assignment and rob the scene of the status code it
+///   prints.
+///
+/// Both are explicit failures — FR-EX-08 is about never *silently*
+/// degrading, not about funnelling every error through one channel.
+///
+/// # A failed load clears any previously loaded model
+///
+/// Calling `load_model` twice, where the second call fails, leaves
+/// `inner == None` rather than the first call's session. Keeping the
+/// stale model would mean a caller who ignores the returned status
+/// silently transcribes with a *different model than it asked for* —
+/// exactly the silent-fallback posture FR-EX-08 forbids. After a failed
+/// load, subsequent `transcribe` / `synthesize` calls report
+/// `InvalidMethod`, so the failure stays visible.
+///
+/// # Safety
+///
+/// C ABI entry from Godot. Same raw-pointer contract as
+/// [`session_transcribe`].
+pub unsafe extern "C" fn session_load_model(
+    _method_userdata: *mut c_void,
+    p_instance: GDExtensionClassInstancePtr,
+    p_args: *const GDExtensionConstVariantPtr,
+    p_argument_count: GDExtensionInt,
+    r_return: GDExtensionVariantPtr,
+    r_error: *mut GDExtensionCallError,
+) {
+    // Panic firewall (NFR-RL-07). A panic across the C ABI would UB —
+    // Godot's C stack has no unwind tables.
+    let _ = catch_panic(move || {
+        // SAFETY: same as `session_transcribe`.
+        unsafe { zero_return(r_return) };
+        if !unsafe { enforce_arity(p_argument_count, 1, r_error) } {
+            return;
+        }
+        if !unsafe { enforce_instance(p_instance, r_error) } {
+            return;
+        }
+
+        // SAFETY: `p_args` is a `p_argument_count == 1` array of Variant
+        // pointers per Godot's contract. `p_instance` was validated
+        // non-null above; it came from `create_session_instance`'s
+        // `Box::into_raw` and points at a live `SessionInstance`.
+        // `r_return` / `r_error` are writable per Godot's ClassDB
+        // contract.
+        let handled = unsafe {
+            crate::with_interface(|iface| {
+                dispatch_session_load_model(iface, p_instance, p_args, r_return, r_error);
+            })
+        };
+        if handled.is_none() {
+            // Extension not initialised — FR-EX-08.
+            // SAFETY: `r_error` doc — NULL or writable.
+            unsafe { report_pending(r_error) };
+        }
+    });
+}
+
+/// Inner dispatch for [`session_load_model`]. Same split rationale as
+/// [`dispatch_session_transcribe`].
+///
+/// # Safety
+///
+/// - `p_instance` is a live `*mut SessionInstance` (`Box::into_raw`).
+/// - `p_args` is a valid array of at least 1 `GDExtensionConstVariantPtr`.
+/// - `r_return` is NULL or a writable 24-byte Variant slot.
+/// - `r_error` is NULL or a writable `GDExtensionCallError*`.
+/// - `iface` is a live resolved [`crate::ffi::interface::InterfaceTable`].
+unsafe fn dispatch_session_load_model(
+    iface: &crate::ffi::interface::InterfaceTable,
+    p_instance: GDExtensionClassInstancePtr,
+    p_args: *const GDExtensionConstVariantPtr,
+    r_return: GDExtensionVariantPtr,
+    r_error: *mut GDExtensionCallError,
+) {
+    // (1) Type-check + unpack `p_args[0]` as String → owned Rust String.
+    //
+    // SAFETY: `p_args` has at least 1 valid entry per caller doc.
+    let arg0 = unsafe { arg_ptr(p_args, 0) };
+    // SAFETY: `iface` is live; `arg0` is a live Variant pointer.
+    let path = match unsafe { crate::variant::variant_to_string_owned(iface, arg0) } {
+        Ok(s) => s,
+        Err(_actual_ty) => {
+            // Caller-shape error → CallError (see fn doc).
+            //
+            // SAFETY: `r_error` doc.
+            unsafe {
+                report_error(
+                    r_error,
+                    GDExtensionCallErrorType::InvalidArgument,
+                    0,
+                    GDExtensionVariantType::String as i32,
+                );
+            }
+            return;
+        }
+    };
+
+    // (2) Recover a *mutable* borrow of the `SessionInstance` — unlike the
+    // read-only trampolines, this one writes `inner`.
+    //
+    // SAFETY: `p_instance` came from `create_session_instance` (see
+    // `crate::registry`) and has NOT been freed — Godot's ClassDB lifecycle
+    // runs `free_instance_func` only after this trampoline returns. No other
+    // Rust alias exists *for the duration of this call* because
+    // `VokraSession::from_file` does not reenter Godot, so nothing can call
+    // back into another trampoline on this instance while the borrow lives.
+    //
+    // CALLER PRECONDITION, not a guarantee Godot makes: one `VokraSession`
+    // Object must not be used from two threads at once. Godot dispatches a
+    // method on whichever thread calls it, and GDScript exposes `Thread`, so
+    // a concurrent `load_model` + `transcribe` on the SAME object would
+    // alias this `&mut` against the `&` those trampolines take. The demos are
+    // single-threaded and this matches the pre-existing posture of the
+    // `VokraStream` trampolines, which already take `&mut` on the same terms.
+    // Lifting the restriction means giving `SessionInstance` interior
+    // mutability with a lock and reworking every trampoline — a design change
+    // to take deliberately, not a local patch.
+    let session_inst = unsafe { &mut *(p_instance as *mut crate::registry::SessionInstance) };
+
+    // (3) Load. Dropping any previously held session happens here, on
+    // assignment — including on the failure path, where `inner` is reset
+    // to `None` so a stale model can never serve a later call (see fn
+    // doc).
+    let status = match crate::session::VokraSession::from_file(&path) {
+        Ok(session) => {
+            session_inst.inner = Some(session);
+            crate::ffi::capi::VokraStatus::Ok
+        }
+        Err(err) => {
+            session_inst.inner = None;
+            err.status
+        }
+    };
+
+    // (4) Write the status code. A NULL `r_return` is a Godot host
+    // contract violation (4.3 documents it as non-null for a method with
+    // a declared return value — and `load_model` declares Int), so skip
+    // rather than UB the constructor.
+    if !r_return.is_null() {
+        // SAFETY: `iface` is live; `r_return` is non-null and writable
+        // 24 bytes (Godot ClassDB contract).
+        unsafe { crate::variant::variant_from_i64(iface, r_return, status as i64) };
+    }
+}
+
 /// Method binding trampoline: `VokraSession::transcribe(PackedFloat32Array, int) -> String`.
 ///
 /// Arity: 2 arguments. Instance: non-null VokraSession. Return: String.
@@ -1281,6 +1453,7 @@ pub unsafe extern "C" fn test_panicking_trampoline(
 #[cfg(test)]
 #[allow(dead_code)]
 fn trampoline_signatures_fit_gdextension_class_method_call() {
+    let _: crate::ffi::gdextension::GDExtensionClassMethodCall = session_load_model;
     let _: crate::ffi::gdextension::GDExtensionClassMethodCall = session_transcribe;
     let _: crate::ffi::gdextension::GDExtensionClassMethodCall = session_synthesize;
     let _: crate::ffi::gdextension::GDExtensionClassMethodCall = session_vad_open_stream;

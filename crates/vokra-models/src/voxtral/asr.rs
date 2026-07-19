@@ -33,10 +33,17 @@
 //! of the greedy decode from `bos_id`, not audio-conditioned ASR. This is
 //! intentional per FR-EX-08 — callers see either a real (audio-conditioned)
 //! token sequence, an honest (LM-prior) token sequence, or an explicit error;
-//! never a fabricated audio-shaped transcript. Real ASR accuracy against a
-//! Voxtral checkpoint requires (a) the adapter tensors + hparams from the
-//! upstream release passed via `convert_voxtral_file`'s `--adapter-config`
-//! side-car, and (b) a real-checkpoint parity dump (T19+).
+//! never a fabricated audio-shaped transcript.
+//!
+//! # Trained transcription-prompt layout (P2 cc-05/07 follow-up, default)
+//!
+//! With an active adapter, the transcribe path defaults to the **trained
+//! transcription-request wrapper** — runtime-constructed from the embedded
+//! compact vocab, decoded after `[TRANSCRIBE]` (see [`AsrPromptLayout`]).
+//! The 2026-07-19 real-checkpoint finding: only this layout yields actual
+//! transcriptions; the bare soft-prefix + BOS layout produces fluent but
+//! non-transcript English and remains available as the explicit
+//! [`AsrPromptLayout::BareSoftPrefix`] opt-in.
 //!
 //! [`AudioAdapter`]: super::AudioAdapter
 //!
@@ -54,7 +61,34 @@ use vokra_core::{AsrEngine, BackendKind, Result, Transcription, VokraError};
 
 use super::asr_head::{MISTRAL_BOS_ID, MISTRAL_EOS_ID};
 use super::beam_search::{BeamConfig, BeamResult};
+use super::tokenizer::TranscriptionPrompt;
 use super::{AsrHead, VoxtralModel, VoxtralTokenizer};
+
+/// Prompt layout the audio-conditioned transcribe path uses (P2 cc-05/07
+/// follow-up). Only consulted when the loaded GGUF carries an ACTIVE audio
+/// adapter — a GGUF without one has no audio conditioning, so both variants
+/// collapse to the honest LM-continuation decode from `bos_id` (the
+/// documented Wave 7 posture, not a fallback).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AsrPromptLayout {
+    /// The **trained transcription-request wrapper** (default): the runtime
+    /// builds `[<s>][INST][BEGIN_AUDIO] {audio} [/INST]("lang:xx")?[TRANSCRIBE]`
+    /// from the embedded compact vocab
+    /// ([`VoxtralTokenizer::transcription_prompt`]) and greedy/beam-decodes
+    /// after `[TRANSCRIBE]`. This is the layout
+    /// `VoxtralProcessor.apply_transcription_request` produces upstream and
+    /// the only one that yields actual transcriptions on the real
+    /// checkpoint (2026-07-19: the bare layout produced fluent but
+    /// non-transcript English).
+    #[default]
+    Transcription,
+    /// The legacy **bare soft-prefix + BOS** layout — explicit opt-in. The
+    /// audio soft-prefix rows are followed directly by `bos_id` with no
+    /// instruction wrapper; the output is honest LM continuation
+    /// conditioned on the audio, NOT a transcription. Kept for
+    /// experimentation and as the pre-P2 behavior anchor.
+    BareSoftPrefix,
+}
 
 /// A Voxtral engine that speaks the [`AsrEngine`] trait. Holds the loaded
 /// [`VoxtralModel`] plus its embedded tokenizer, the runtime backend and
@@ -142,6 +176,14 @@ pub struct VoxtralAsr {
     bos_id: u32,
     /// EOS token id (Mistral's `</s>` = 2 unless overridden).
     eos_id: u32,
+    /// Prompt layout for the audio-conditioned path (see
+    /// [`AsrPromptLayout`]). Defaults to the trained transcription wrapper.
+    prompt_layout: AsrPromptLayout,
+    /// Transcription language for the `lang:{code}` prompt segment
+    /// (lowercase ISO 639 code). `None` omits the segment — upstream
+    /// `TranscriptionRequest.language = None` semantics. Defaults to
+    /// `Some("en")`.
+    language: Option<String>,
 }
 
 impl VoxtralAsr {
@@ -176,6 +218,8 @@ impl VoxtralAsr {
             max_new_tokens: 0, // 0 => DEFAULT_MAX_NEW_TOKENS
             bos_id: MISTRAL_BOS_ID,
             eos_id: MISTRAL_EOS_ID,
+            prompt_layout: AsrPromptLayout::default(),
+            language: Some("en".to_owned()),
         })
     }
 
@@ -231,6 +275,76 @@ impl VoxtralAsr {
         self.bos_id = bos_id;
         self.eos_id = eos_id;
         self
+    }
+
+    /// Selects the prompt layout for the audio-conditioned path. Defaults
+    /// to [`AsrPromptLayout::Transcription`] (the trained wrapper);
+    /// [`AsrPromptLayout::BareSoftPrefix`] is the explicit opt-in back to
+    /// the pre-P2 soft-prefix + BOS behavior (honest LM continuation, not a
+    /// transcription — see the enum docs).
+    #[must_use]
+    pub fn with_prompt_layout(mut self, layout: AsrPromptLayout) -> Self {
+        self.prompt_layout = layout;
+        self
+    }
+
+    /// The configured prompt layout.
+    #[must_use]
+    pub fn prompt_layout(&self) -> AsrPromptLayout {
+        self.prompt_layout
+    }
+
+    /// Sets the transcription language for the `lang:{code}` prompt segment
+    /// (lowercase ISO 639 code, e.g. `"en"`, `"fr"`, `"ja"`). `None` omits
+    /// the segment (upstream `TranscriptionRequest.language = None`
+    /// semantics — the model then infers the language). Defaults to
+    /// `Some("en")`. Only consulted on the
+    /// [`AsrPromptLayout::Transcription`] path; validation (the
+    /// runtime-encodable `[a-z]{1,8}` alphabet) happens at transcribe time
+    /// inside [`VoxtralTokenizer::transcription_prompt`].
+    #[must_use]
+    pub fn with_language(mut self, language: Option<String>) -> Self {
+        self.language = language;
+        self
+    }
+
+    /// The configured transcription language code.
+    #[must_use]
+    pub fn language(&self) -> Option<&str> {
+        self.language.as_deref()
+    }
+
+    /// Builds the runtime transcription prompt from the embedded tokenizer.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`] when no tokenizer is attached (the prompt
+    /// cannot be constructed — re-convert with tokenizer bytes, attach one
+    /// via [`Self::with_tokenizer`], or opt into
+    /// [`AsrPromptLayout::BareSoftPrefix`]); plus every error surfaced by
+    /// [`VoxtralTokenizer::transcription_prompt`] (proto-only vocab, missing
+    /// special names, invalid language code).
+    fn build_transcription_prompt(&self) -> Result<TranscriptionPrompt> {
+        let tok = self.tokenizer.as_ref().ok_or_else(|| {
+            VokraError::ModelLoad(
+                "voxtral::VoxtralAsr: the trained transcription-prompt layout (the default) \
+                 needs the embedded tokenizer (`vokra.tokenizer.model` compact vocab) to \
+                 construct the prompt at runtime. Re-convert with tokenizer bytes, attach one \
+                 via `with_tokenizer(...)`, or opt into the bare layout via \
+                 `with_prompt_layout(AsrPromptLayout::BareSoftPrefix)` (FR-EX-08 — never a \
+                 silently different prompt)."
+                    .into(),
+            )
+        })?;
+        tok.transcription_prompt(self.language.as_deref())
+    }
+
+    /// `true` iff the audio-conditioned trained-layout path applies: the
+    /// loaded GGUF carries an active adapter AND the configured layout is
+    /// [`AsrPromptLayout::Transcription`].
+    fn uses_transcription_layout(&self) -> bool {
+        self.model.audio_adapter().is_active()
+            && self.prompt_layout == AsrPromptLayout::Transcription
     }
 
     /// Beam-search transcribe: PCM → up to `config.beam_size` decoded
@@ -290,8 +404,21 @@ impl VoxtralAsr {
             self.model.text_decoder(),
         )
         .with_adapter(self.model.audio_adapter());
-        let beams =
-            head.transcribe_beam(effective_backend, &log_mel, n_frames, self.bos_id, config)?;
+        // Layout resolution mirrors `transcribe_ids` (greedy): trained
+        // transcription wrapper when an active adapter is present and the
+        // layout was not explicitly switched to bare.
+        let beams = if self.uses_transcription_layout() {
+            let prompt = self.build_transcription_prompt()?;
+            head.transcribe_beam_with_prompt(
+                effective_backend,
+                &log_mel,
+                n_frames,
+                &prompt,
+                config,
+            )?
+        } else {
+            head.transcribe_beam(effective_backend, &log_mel, n_frames, self.bos_id, config)?
+        };
 
         // Detokenize each beam. A GGUF without an embedded tokenizer
         // surfaces an explicit error — no fabrication.
@@ -548,8 +675,32 @@ pub struct TranscribedBeam {
     pub result: BeamResult,
 }
 
-impl AsrEngine for VoxtralAsr {
-    fn transcribe(&self, pcm: &[f32]) -> Result<Transcription> {
+impl VoxtralAsr {
+    /// Greedy transcribe returning the raw generated token ids (the exact
+    /// sequence [`AsrEngine::transcribe`] detokenises — that entry point is
+    /// literally `decode(transcribe_ids(pcm))`). Useful for EOS-termination
+    /// checks, token-level parity tests and callers with their own
+    /// detokeniser.
+    ///
+    /// # Prompt layout (P2 cc-05/07 follow-up)
+    ///
+    /// With an ACTIVE audio adapter and the default
+    /// [`AsrPromptLayout::Transcription`], the decode runs through the
+    /// trained transcription-request wrapper built AT RUNTIME from the
+    /// embedded compact vocab
+    /// ([`VoxtralTokenizer::transcription_prompt`] with
+    /// [`Self::language`]) — no offline prompt dump. The explicit
+    /// [`AsrPromptLayout::BareSoftPrefix`] opt-in (or an adapter-less GGUF)
+    /// keeps the legacy soft-prefix/BOS decode — honest LM continuation,
+    /// not a transcription.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`AsrEngine::transcribe`] surfaces except the
+    /// detokenizer-missing error: empty PCM, `n_mels = 0` config, backend
+    /// gates, prompt-construction failures (missing tokenizer / special
+    /// names on the trained layout), decode errors.
+    pub fn transcribe_ids(&self, pcm: &[f32]) -> Result<Vec<u32>> {
         if pcm.is_empty() {
             return Err(VokraError::InvalidArgument(
                 "voxtral::VoxtralAsr::transcribe: pcm slice is empty".into(),
@@ -578,9 +729,9 @@ impl AsrEngine for VoxtralAsr {
         //     Unix/Windows + `cuda`. A platform / build with no GPU backend
         //     surfaces an explicit `BackendUnavailable` (no silent CPU fall
         //     back, FR-EX-08). The GPU dispatch is exercised via the same
-        //     `AsrHead::transcribe` entry — the internal `TextDecoderSession`
-        //     builds its `Compute` with the selected backend, so every GEMM /
-        //     softmax the Mistral decoder emits is routed to the GPU. The
+        //     `AsrHead` entry — the internal `TextDecoderSession` builds its
+        //     `Compute` with the selected backend, so every GEMM / softmax
+        //     the Mistral decoder emits is routed to the GPU. The
         //     `VoxtralMetalDecodeSession` / `VoxtralCudaDecodeSession` types
         //     provide the API surface the caller reaches for elsewhere (unit
         //     tests, streaming layer); the `AsrHead` path exercises the same
@@ -588,27 +739,46 @@ impl AsrEngine for VoxtralAsr {
         let effective_backend = self.select_effective_backend()?;
 
         // 2) Autoregressive greedy through the AsrHead (encoder + text
-        //    decoder session + KV cache). When the loaded GGUF carries an
-        //    active audio adapter (M3-10 Wave 8) the head routes through the
-        //    soft-prefix audio-conditioning path; otherwise it stays on the
-        //    honest Wave 7 LM-continuation path.
+        //    decoder session + KV cache), with the prompt-layout resolution
+        //    documented on the method: trained transcription wrapper when
+        //    an active adapter is present and the layout was not explicitly
+        //    switched to bare; soft-prefix/BOS (or bare BOS without an
+        //    adapter) otherwise.
         let head = AsrHead::new(
             self.model.config(),
             self.model.audio_encoder(),
             self.model.text_decoder(),
         )
         .with_adapter(self.model.audio_adapter());
-        let ids = head.transcribe(
-            effective_backend,
-            &log_mel,
-            n_frames,
-            self.bos_id,
-            self.eos_id,
-            self.max_new_tokens,
-        )?;
+        if self.uses_transcription_layout() {
+            let prompt = self.build_transcription_prompt()?;
+            head.transcribe_with_prompt(
+                effective_backend,
+                &log_mel,
+                n_frames,
+                &prompt,
+                self.eos_id,
+                self.max_new_tokens,
+            )
+        } else {
+            head.transcribe(
+                effective_backend,
+                &log_mel,
+                n_frames,
+                self.bos_id,
+                self.eos_id,
+                self.max_new_tokens,
+            )
+        }
+    }
+}
 
-        // 3) Detokenise. A GGUF without an embedded tokenizer surfaces
-        //    an explicit error — no fabrication.
+impl AsrEngine for VoxtralAsr {
+    fn transcribe(&self, pcm: &[f32]) -> Result<Transcription> {
+        let ids = self.transcribe_ids(pcm)?;
+
+        // Detokenise. A GGUF without an embedded tokenizer surfaces
+        // an explicit error — no fabrication.
         let text = match &self.tokenizer {
             Some(tok) => tok.decode(&ids)?,
             None => {
@@ -634,13 +804,19 @@ mod tests {
 
     /// Config large enough to run the full autoregressive decode: text
     /// hidden = 4, GQA 2/1, n_ctx = 16 so `bos + max_new = 8` tokens fit.
+    ///
+    /// `audio.n_ctx = 1500`: the `VoxtralAsr::transcribe` front-end always
+    /// produces the 30 s / 3000-frame Whisper mel window, and the full-stack
+    /// encoder enforces the upstream strict length contract (post-conv
+    /// length == n_ctx — see `audio_encoder::forward`), so any fixture that
+    /// reaches the PCM path must carry the real 1500-position geometry.
     fn tiny_config() -> VoxtralConfig {
         VoxtralConfig {
             audio: AudioEncoderConfig {
                 n_layer: 1,
                 n_head: 2,
                 hidden_dim: 4,
-                n_ctx: 8,
+                n_ctx: 1500,
                 n_mels: 2,
                 ffn_dim: 8,
             },
@@ -648,6 +824,7 @@ mod tests {
                 n_layer: 1,
                 n_head_q: 2,
                 n_head_kv: 1,
+                head_dim: 0,
                 hidden_dim: 4,
                 ffn_dim: 8,
                 vocab_size: 8,
@@ -703,6 +880,7 @@ mod tests {
             .collect();
         TextDecoder {
             token_emb,
+            lm_head: None,
             blocks,
             final_norm_gamma: vec![1.0f32; d],
             prefix: "",
@@ -718,6 +896,8 @@ mod tests {
             conv2_b: vec![0.0; cfg.audio.hidden_dim],
             pos_emb: vec![0.0; cfg.audio.n_ctx * cfg.audio.hidden_dim],
             has_learned_pos_emb: true,
+            layers: crate::voxtral::test_support::passthrough_layers(&cfg),
+            ln_post: crate::voxtral::test_support::identity_ln(cfg.audio.hidden_dim),
         };
         let text = tiny_decoder(&cfg);
         VoxtralModel {
@@ -739,9 +919,12 @@ mod tests {
             conv2_b: vec![0.0; cfg.audio.hidden_dim],
             pos_emb: vec![0.0; cfg.audio.n_ctx * cfg.audio.hidden_dim],
             has_learned_pos_emb: true,
+            layers: crate::voxtral::test_support::passthrough_layers(&cfg),
+            ln_post: crate::voxtral::test_support::identity_ln(cfg.audio.hidden_dim),
         };
         let text = TextDecoder {
             token_emb: Vec::new(),
+            lm_head: None,
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",
@@ -1024,6 +1207,216 @@ mod tests {
         let asr = asr.with_bos_eos(42, 99);
         assert_eq!(asr.bos_id(), 42);
         assert_eq!(asr.eos_id(), 99);
+    }
+
+    // -------- P2 cc-05/07: prompt-layout resolution ------------------------
+
+    /// A tekken-shaped compact vocab (64 entries) with the shipping special
+    /// names at their real ids plus the `lang:en` pieces — enough for the
+    /// runtime transcription prompt to build and every id to fit a
+    /// `vocab_size = 64` decoder.
+    fn tekken_shaped_tokenizer(eos: u32) -> VoxtralTokenizer {
+        let mut entries: Vec<(u8, Vec<u8>)> = (0..64u32)
+            .map(|i| (0u8, format!("<f{i}>").into_bytes()))
+            .collect();
+        let mut set = |id: usize, sp: u8, bytes: &[u8]| entries[id] = (sp, bytes.to_vec());
+        set(0, 1, b"<unk>");
+        set(1, 1, b"<s>");
+        set(2, 1, b"</s>");
+        set(3, 1, b"[INST]");
+        set(4, 1, b"[/INST]");
+        set(24, 1, b"[AUDIO]");
+        set(25, 1, b"[BEGIN_AUDIO]");
+        set(34, 1, b"[TRANSCRIBE]");
+        set(40, 0, b"lang");
+        set(41, 0, b":");
+        set(42, 0, b"en");
+        // Single bytes the ":en" piece needs to byte-pair encode (the real
+        // tekken vocab carries every single byte; verified 2026-07-19).
+        set(50, 0, b"e");
+        set(51, 0, b"n");
+        let mut blob = (entries.len() as u32).to_le_bytes().to_vec();
+        for (sp, bytes) in &entries {
+            blob.push(*sp);
+            blob.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            blob.extend_from_slice(bytes);
+        }
+        VoxtralTokenizer::from_bytes(blob, eos).unwrap()
+    }
+
+    /// tiny_model with an ACTIVE identity linear adapter and a 64-entry
+    /// vocab so the trained-layout prompt ids are in range.
+    fn tiny_model_with_adapter() -> VoxtralModel {
+        use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile};
+        let mut cfg = tiny_config();
+        cfg.text.vocab_size = 64;
+        // The soft prefix is one row per encoder position (audio.n_ctx =
+        // 1500 — the real 30 s geometry the PCM front-end forces), so the
+        // decoder context must hold prefix + prompt segments + generated.
+        cfg.text.n_ctx = 1600;
+        let d = cfg.text.hidden_dim;
+        let audio = AudioEncoder {
+            conv1_w: vec![0.0; cfg.audio.hidden_dim * cfg.audio.n_mels * 3],
+            conv1_b: vec![0.0; cfg.audio.hidden_dim],
+            conv2_w: vec![0.0; cfg.audio.hidden_dim * cfg.audio.hidden_dim * 3],
+            conv2_b: vec![0.0; cfg.audio.hidden_dim],
+            pos_emb: (0..cfg.audio.n_ctx * cfg.audio.hidden_dim)
+                .map(|i| ((i as i32 % 3) - 1) as f32 * 0.1)
+                .collect(),
+            has_learned_pos_emb: true,
+            layers: crate::voxtral::test_support::passthrough_layers(&cfg),
+            ln_post: crate::voxtral::test_support::identity_ln(cfg.audio.hidden_dim),
+        };
+        let text = tiny_decoder(&cfg);
+        let mut b = GgufBuilder::new();
+        b.add_string("vokra.voxtral.adapter.kind", "linear");
+        b.add_string("vokra.voxtral.adapter.tensor_prefix", "audio_adapter.");
+        b.add_u32("vokra.voxtral.adapter.in_dim", d as u32);
+        b.add_u32("vokra.voxtral.adapter.out_dim", d as u32);
+        b.add_bool("vokra.voxtral.adapter.has_bias", false);
+        b.add_bool("vokra.voxtral.adapter.has_layernorm", false);
+        let mut w = vec![0.0f32; d * d];
+        for i in 0..d {
+            w[i * d + i] = 1.0;
+        }
+        b.add_tensor(
+            "audio_adapter.weight",
+            GgmlType::F32,
+            vec![d as u64, d as u64],
+            w.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        )
+        .unwrap();
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let adapter = crate::voxtral::AudioAdapter::from_gguf(&file).unwrap();
+        assert!(adapter.is_active());
+        VoxtralModel {
+            config: cfg,
+            audio,
+            text,
+            audio_adapter: adapter,
+        }
+    }
+
+    #[test]
+    fn default_layout_is_transcription_and_language_en() {
+        let asr = VoxtralAsr::new(tiny_model()).unwrap();
+        assert_eq!(asr.prompt_layout(), AsrPromptLayout::Transcription);
+        assert_eq!(asr.language(), Some("en"));
+        let asr = asr
+            .with_prompt_layout(AsrPromptLayout::BareSoftPrefix)
+            .with_language(Some("fr".to_owned()));
+        assert_eq!(asr.prompt_layout(), AsrPromptLayout::BareSoftPrefix);
+        assert_eq!(asr.language(), Some("fr"));
+        let asr = asr.with_language(None);
+        assert_eq!(asr.language(), None);
+    }
+
+    #[test]
+    fn adapterless_model_ignores_layout_and_keeps_lm_continuation_path() {
+        // tiny_model has AudioAdapter::none() → the layout is not consulted
+        // (documented posture) and greedy transcribe works exactly as
+        // before the P2 change.
+        let vocab = tiny_config().text.vocab_size;
+        let asr = VoxtralAsr::new(tiny_model())
+            .unwrap()
+            .with_max_new_tokens(3)
+            .with_bos_eos(1, vocab as u32 + 10)
+            .with_tokenizer(tiny_tokenizer(vocab, 999));
+        let pcm = vec![0.5f32; 16_000];
+        let t = asr.transcribe(&pcm).expect("adapterless greedy still runs");
+        assert!(!t.text.is_empty());
+    }
+
+    #[test]
+    fn active_adapter_default_layout_without_tokenizer_is_explicit_error() {
+        // Trained layout + no tokenizer: the prompt cannot be constructed —
+        // explicit ModelLoad naming the bare opt-in, never a silent bare
+        // decode (FR-EX-08).
+        let asr = VoxtralAsr::new(tiny_model_with_adapter())
+            .unwrap()
+            .with_max_new_tokens(2);
+        let pcm = vec![0.5f32; 16_000];
+        let err = asr.transcribe(&pcm).unwrap_err();
+        let VokraError::ModelLoad(msg) = &err else {
+            panic!("expected ModelLoad, got {err:?}");
+        };
+        assert!(msg.contains("BareSoftPrefix"), "actionable: {msg}");
+    }
+
+    #[test]
+    fn active_adapter_default_layout_with_nameless_vocab_is_explicit_error() {
+        // A compact vocab WITHOUT the tekken special names cannot build the
+        // prompt → explicit ModelLoad from the special lookup.
+        let asr = VoxtralAsr::new(tiny_model_with_adapter())
+            .unwrap()
+            .with_max_new_tokens(2)
+            .with_tokenizer(tiny_tokenizer(64, 2));
+        let pcm = vec![0.5f32; 16_000];
+        let err = asr.transcribe(&pcm).unwrap_err();
+        assert!(matches!(err, VokraError::ModelLoad(_)), "{err:?}");
+    }
+
+    #[test]
+    fn active_adapter_trained_layout_runs_with_tekken_shaped_vocab() {
+        // The full default path: active adapter + compact vocab carrying
+        // the special names → runtime prompt build → segmented decode →
+        // detokenized text. Deterministic across calls.
+        let asr = VoxtralAsr::new(tiny_model_with_adapter())
+            .unwrap()
+            .with_max_new_tokens(3)
+            .with_bos_eos(1, 9999) // eos unreachable in the 64-vocab
+            .with_tokenizer(tekken_shaped_tokenizer(2));
+        let pcm = vec![0.5f32; 16_000];
+        let ids = asr.transcribe_ids(&pcm).expect("trained layout runs");
+        assert_eq!(ids.len(), 3);
+        assert!(ids.iter().all(|&t| t < 64));
+        let t = asr.transcribe(&pcm).expect("engine surface runs");
+        assert!(!t.text.is_empty());
+        let t2 = asr.transcribe(&pcm).unwrap();
+        assert_eq!(t.text, t2.text);
+    }
+
+    #[test]
+    fn bare_soft_prefix_opt_in_restores_legacy_path_with_active_adapter() {
+        // The explicit opt-in must run the pre-P2 soft-prefix + BOS decode
+        // even with an active adapter — and must NOT require the tekken
+        // special names (a plain tiny tokenizer suffices).
+        let asr = VoxtralAsr::new(tiny_model_with_adapter())
+            .unwrap()
+            .with_prompt_layout(AsrPromptLayout::BareSoftPrefix)
+            .with_max_new_tokens(3)
+            .with_bos_eos(1, 9999)
+            .with_tokenizer(tiny_tokenizer(64, 2));
+        let pcm = vec![0.5f32; 16_000];
+        let t = asr.transcribe(&pcm).expect("bare opt-in runs");
+        assert!(!t.text.is_empty());
+    }
+
+    #[test]
+    fn trained_layout_invalid_language_is_invalid_argument() {
+        let asr = VoxtralAsr::new(tiny_model_with_adapter())
+            .unwrap()
+            .with_max_new_tokens(2)
+            .with_tokenizer(tekken_shaped_tokenizer(2))
+            .with_language(Some("EN".to_owned()));
+        let pcm = vec![0.5f32; 16_000];
+        let err = asr.transcribe(&pcm).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)), "{err:?}");
+    }
+
+    #[test]
+    fn trained_layout_beam_size_one_matches_greedy() {
+        let asr = VoxtralAsr::new(tiny_model_with_adapter())
+            .unwrap()
+            .with_max_new_tokens(3)
+            .with_bos_eos(1, 9999)
+            .with_tokenizer(tekken_shaped_tokenizer(2));
+        let pcm = vec![0.5f32; 16_000];
+        let greedy = asr.transcribe(&pcm).unwrap();
+        let bc = BeamConfig::greedy(9999, 3);
+        let beams = asr.transcribe_beam(&pcm, &bc).unwrap();
+        assert_eq!(beams.len(), 1);
+        assert_eq!(beams[0].text, greedy.text);
     }
 
     // -------- M3-10 GPU session opt-in surface -----------------------------

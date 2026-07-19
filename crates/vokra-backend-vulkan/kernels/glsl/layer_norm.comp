@@ -1,17 +1,30 @@
-// layer_norm.comp — M3-02-T17.
+// layer_norm.comp — M3-02-T17 / M4-13-T06.
 // `y[i,j] = (x[i,j] - mean_i) / sqrt(var_i + eps) * gamma[j] + beta[j]`.
 //
-// `eps` MUST match the CPU implementation (M0-08-T07): default `1e-5`, but the
-// caller passes the model's config value via push constant so bit-exact
-// reproduction of every model's config is possible (CLAUDE.md, "STFT vs FFT"
-// spirit — spec-driven).
+// `eps` MUST match the CPU implementation (M0-08-T07): the caller passes the
+// model's config value via push constant — this shader never invents an
+// epsilon (CLAUDE.md "STFT vs FFT" spirit — spec-driven). `var_i` is the
+// biased (population) variance, matching PyTorch `nn.LayerNorm` and the CPU
+// backend's `layer_norm_f32`. The arithmetic mirrors the CPU kernel
+// operation-for-operation (`* inv_cols`, not `/ cols`), leaving only the
+// reduction order as the FP32 difference (NFR-QL-01 atol = 0.01 absorbs it).
+//
+// Portability note (M4-13-T06, ADR M3-02-spirv-generation §7 2026-07-14
+// addendum (d)): rewritten from the subgroup-reduce skeleton (wrong when
+// the workgroup spans several subgroups — lavapipe sg=8 / Mali sg=16 /
+// RDNA sg=64) to barrier-based shared-memory tree reductions; no subgroup
+// extension needed. Subgroup-tuned variant is a post-soak perf follow-up.
+//
+// Uniform control flow: `barrier()` must be reached by every invocation.
+// The dispatch contract (`plan_layer_norm` in src/plan.rs) launches EXACTLY
+// `rows` workgroups, so no early return exists.
 //
 // Compile with:
 //   glslc --target-env=vulkan1.1 -o precompiled/layer_norm.spv glsl/layer_norm.comp
 
 #version 450
-#extension GL_KHR_shader_subgroup_arithmetic : enable
 
+// Must stay in sync with `shader_local_size("layer_norm")` in src/plan.rs.
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
 layout(push_constant) uniform PC {
@@ -25,31 +38,49 @@ layout(std430, set = 0, binding = 1) readonly buffer GammaBuf { float gamma[];  
 layout(std430, set = 0, binding = 2) readonly buffer BetaBuf  { float beta[];    };
 layout(std430, set = 0, binding = 3) writeonly buffer OutBuf  { float out_buf[]; };
 
+const uint WG_SIZE = 32u;
+shared float scratch[WG_SIZE];
+
 void main() {
-    uint row = gl_WorkGroupID.x;
-    uint lane = gl_SubgroupInvocationID;
-    uint sg_size = gl_SubgroupSize;
-    if (row >= pc.rows) {
-        return;
-    }
-    // Mean (sum of x / cols).
+    uint row = gl_WorkGroupID.x;        // dispatch guarantees row < pc.rows
+    uint lid = gl_LocalInvocationID.x;
+    float inv_cols = 1.0 / float(pc.cols);
+
+    // Pass 1: mean = (Σ x) * inv_cols.
     float lane_sum = 0.0;
-    for (uint j = lane; j < pc.cols; j += sg_size) {
+    for (uint j = lid; j < pc.cols; j += WG_SIZE) {
         lane_sum += in_buf[row * pc.cols + j];
     }
-    float total = subgroupAdd(lane_sum);
-    float mean = total / float(pc.cols);
-    // Variance (mean of (x - mean)^2).
+    scratch[lid] = lane_sum;
+    barrier();
+    for (uint s = WG_SIZE / 2u; s > 0u; s >>= 1u) {
+        if (lid < s) {
+            scratch[lid] += scratch[lid + s];
+        }
+        barrier();
+    }
+    float mean = scratch[0] * inv_cols;
+    barrier(); // all lanes read scratch[0] before it is reused below
+
+    // Pass 2: biased variance = (Σ (x - mean)^2) * inv_cols.
     float lane_var = 0.0;
-    for (uint j = lane; j < pc.cols; j += sg_size) {
+    for (uint j = lid; j < pc.cols; j += WG_SIZE) {
         float d = in_buf[row * pc.cols + j] - mean;
         lane_var += d * d;
     }
-    float var_total = subgroupAdd(lane_var);
-    float var = var_total / float(pc.cols);
+    scratch[lid] = lane_var;
+    barrier();
+    for (uint s = WG_SIZE / 2u; s > 0u; s >>= 1u) {
+        if (lid < s) {
+            scratch[lid] += scratch[lid + s];
+        }
+        barrier();
+    }
+    float var = scratch[0] * inv_cols;
     float inv_std = 1.0 / sqrt(var + pc.eps);
-    // Normalise + scale + shift.
-    for (uint j = lane; j < pc.cols; j += sg_size) {
+
+    // Pass 3: normalise + scale + shift.
+    for (uint j = lid; j < pc.cols; j += WG_SIZE) {
         float v = (in_buf[row * pc.cols + j] - mean) * inv_std;
         out_buf[row * pc.cols + j] = v * gamma[j] + beta[j];
     }

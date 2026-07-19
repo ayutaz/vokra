@@ -11,15 +11,25 @@
 # → cargo test parity_whisper with VOKRA_WHISPER_{SIZE}_GGUF pointing at the
 # freshly-built GGUF.
 #
-# Matrix scope (task rubric §CI job 設計要件 #2):
+# Matrix scope (M2-06 design; extended to the full 5-size family by M4-14-T05,
+# the M2-06 carry-over completion — see docs/adr/M4-14-whisper-family.md §D3):
 #   * base       — runs on every whisper-touching PR AND on workflow_dispatch
 #   * large-v3   — runs ONLY on workflow_dispatch (2.9 GB HF DL + 3 GB GGUF
 #                  artifact make it too expensive for per-PR use)
-# The other three sizes in the parity_whisper table (small / medium / turbo)
-# stay under the "owner-driven local regen" path from
-# docs/m2-owner-verification-checklist.md §3; the CC design phase considered
-# a 5-way matrix but the task rubric narrows CI to [base, large-v3] to keep
-# runner minutes bounded and avoid a per-PR ~6.6 GB HF download.
+#   * small / medium / turbo — workflow_dispatch ONLY (~1 / ~3 / ~1.6 GB HF
+#                  DLs), each behind its own include_* input so the owner can
+#                  dispatch any subset (M4-14-T10 runs all three). Weekly cron
+#                  and PR triggers stay base-only: runner minutes bounded, no
+#                  per-PR multi-GB downloads.
+#
+# turbo atol note (M4-14): turbo (distilled 809M, decoder 4 layers — the only
+# asymmetric size) may need a per-size atol calibration. The applied
+# tolerances live in atol_for() in crates/vokra-models/tests/parity_whisper.rs
+# (the SINGLE SOURCE) and are mirrored in this workflow's PER_SIZE_ATOL dict;
+# the verdict step cross-checks the Rust-printed atol against the mirror and
+# fails on drift, and a calibration may land only after the owner's
+# real-checkpoint measurement (M4-14-T10) — never pre-emptively
+# (fabricated-pass ban; Kokoro PROSODY_F0_ATOL precedent).
 #
 # Zero-dep invariant (NFR-DS-02): this workflow does NOT modify root
 # Cargo.lock. The dumper Python venv is /tmp-scoped; vokra-cli convert
@@ -48,6 +58,22 @@ on:
     inputs:
       include_large_v3:
         description: "Also run large-v3 leg (2.9 GB HF DL + 3 GB GGUF artifact)."
+        required: false
+        default: "true"
+      # M4-14-T05: the three M2-06 carry-over sizes. Defaults mirror
+      # include_large_v3 ("true" + a `!= "false"` gate below): dispatching the
+      # workflow is itself the opt-in act, and each leg can be opted OUT for a
+      # cheaper run. Cron / PR triggers never see these (base-only).
+      include_small:
+        description: "Also run small leg (~1 GB HF DL; M4-14 carry-over size)."
+        required: false
+        default: "true"
+      include_medium:
+        description: "Also run medium leg (~3 GB HF DL; M4-14 carry-over size)."
+        required: false
+        default: "true"
+      include_turbo:
+        description: "Also run turbo leg (~1.6 GB HF DL; M4-14 carry-over size — shares the large-v3 51866 tokenizer)."
         required: false
         default: "true"
   # Weekly schedule matches the Kokoro parity workflow's cadence
@@ -80,12 +106,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Preflight: (1) compute the size matrix (base only on PR, base + large-v3
-  # on workflow_dispatch when the input opt-in is not "false"), (2) detect
-  # whether tests/fixtures/audio/jfk-30s.wav has been committed yet. The
-  # parity leg is gated on the WAV being present so this workflow can be
-  # landed BEFORE the owner commits the audio without breaking whisper PR
-  # CI; once the WAV is committed, the gate flips green automatically.
+  # Preflight: (1) compute the size matrix (base only on PR/cron; on
+  # workflow_dispatch every size whose include_* opt-in is not "false" —
+  # base unconditional + small/medium/large-v3/turbo, M4-14-T05 / ADR
+  # M4-14 §D3), (2) detect whether tests/fixtures/audio/jfk-30s.wav has
+  # been committed yet. The parity leg is gated on the WAV being present
+  # so this workflow can be landed BEFORE the owner commits the audio
+  # without breaking whisper PR CI; once the WAV is committed, the gate
+  # flips green automatically.
   setup:
     name: setup
     runs-on: ubuntu-latest
@@ -100,8 +128,24 @@ jobs:
         run: |
           set -euo pipefail
           include='{"size":"base","hf_id":"openai/whisper-base","env_var":"VOKRA_WHISPER_BASE_GGUF","fixture_dir":"tests/parity/whisper_base","gguf":"whisper-base.gguf"}'
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.include_large_v3 }}" != "false" ]; then
-            include="${include},"'{"size":"large-v3","hf_id":"openai/whisper-large-v3","env_var":"VOKRA_WHISPER_LARGE_V3_GGUF","fixture_dir":"tests/parity/whisper_large_v3","gguf":"whisper-large-v3.gguf"}'
+          # Non-base sizes are workflow_dispatch-only (runner-minutes
+          # red-line: cron / PR triggers must never pull multi-GB HF
+          # checkpoints). Field contracts: env_var mirrors the Rust
+          # harness's size_env_var(), fixture_dir its fixtures_dir_for(),
+          # hf_id the dumper's SUPPORTED_MODELS (M4-14-T05).
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ github.event.inputs.include_small }}" != "false" ]; then
+              include="${include},"'{"size":"small","hf_id":"openai/whisper-small","env_var":"VOKRA_WHISPER_SMALL_GGUF","fixture_dir":"tests/parity/whisper_small","gguf":"whisper-small.gguf"}'
+            fi
+            if [ "${{ github.event.inputs.include_medium }}" != "false" ]; then
+              include="${include},"'{"size":"medium","hf_id":"openai/whisper-medium","env_var":"VOKRA_WHISPER_MEDIUM_GGUF","fixture_dir":"tests/parity/whisper_medium","gguf":"whisper-medium.gguf"}'
+            fi
+            if [ "${{ github.event.inputs.include_large_v3 }}" != "false" ]; then
+              include="${include},"'{"size":"large-v3","hf_id":"openai/whisper-large-v3","env_var":"VOKRA_WHISPER_LARGE_V3_GGUF","fixture_dir":"tests/parity/whisper_large_v3","gguf":"whisper-large-v3.gguf"}'
+            fi
+            if [ "${{ github.event.inputs.include_turbo }}" != "false" ]; then
+              include="${include},"'{"size":"turbo","hf_id":"openai/whisper-large-v3-turbo","env_var":"VOKRA_WHISPER_TURBO_GGUF","fixture_dir":"tests/parity/whisper_turbo","gguf":"whisper-turbo.gguf"}'
+            fi
           fi
           echo "matrix={\"include\":[${include}]}" >> "$GITHUB_OUTPUT"
           {
@@ -168,6 +212,8 @@ jobs:
     runs-on: ubuntu-latest
     # HF DL + convert + dump + parity averages ~15 min for base, ~45 min
     # for large-v3 (2.9 GB checkpoint DL + 3 GB GGUF write dominates).
+    # The M4-14 carry-over legs sit inside that envelope (small ~1 GB /
+    # turbo ~1.6 GB / medium ~3 GB ≈ large-v3's DL weight class).
     # 60 min cap matches parity-kokoro-real.yml so a truly stuck run is
     # bounded consistently across the two model families.
     timeout-minutes: 60
@@ -325,12 +371,17 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC1091
           . /tmp/vokra-py-whisper/bin/activate
-          # Map matrix size to dumper --model arg:
-          #   base       -> whisper-base
-          #   large-v3   -> whisper-large-v3
+          # Map matrix size to dumper --model arg (whisper-{size}; the
+          # dumper's SUPPORTED_MODELS maps whisper-turbo to the
+          # openai/whisper-large-v3-turbo HF id). All 5 family sizes are
+          # mapped (M4-14-T05); an unknown SIZE hard-fails — explicit
+          # error, no silent fallback (FR-EX-08).
           case "$SIZE" in
             base) DUMPER_MODEL=whisper-base ;;
+            small) DUMPER_MODEL=whisper-small ;;
+            medium) DUMPER_MODEL=whisper-medium ;;
             large-v3) DUMPER_MODEL=whisper-large-v3 ;;
+            turbo) DUMPER_MODEL=whisper-turbo ;;
             *) echo "::error::unknown SIZE=$SIZE"; exit 2 ;;
           esac
           python3 tools/parity/dump_whisper_reference.py \
@@ -409,6 +460,150 @@ jobs:
             grep -E '^\[parity\]' /tmp/parity.log || echo "(no [parity] diagnostic lines emitted)"
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Per-size atol verdict + fabricated-pass guard
+        # M4-14-T06 (ADR M4-14 §D2). Parses the `[parity] <ctx>: max |Δ| =
+        # <val> over <n> elems (atol <atol>)` lines that assert_close()
+        # (crates/vokra-models/tests/parity_whisper.rs) prints and emits a
+        # per-row "ctx / size / max|Δ| / applied atol / verdict" table to the
+        # step summary.
+        #
+        # PER_SIZE_ATOL below is a REDUNDANT MIRROR of the Rust
+        # `atol_for(size)` lookup — the Rust function is the SINGLE SOURCE;
+        # this dict must never be edited on its own. The three redundant
+        # record sites for any future per-size calibration are: (1) atol_for
+        # + its rustdoc, (2) docs/adr/M4-14-whisper-family.md §D2, (3) this
+        # dict. Drift between (1) and (3) is caught mechanically: every
+        # parsed line's Rust-printed atol is cross-checked against the
+        # mirror and any mismatch fails this step.
+        #
+        # Fabricated-pass guards (both hard-fail):
+        #   1. atol drift — Rust-printed atol != PER_SIZE_ATOL[size];
+        #   2. inconsistency — a max |Δ| above its mirror atol while the
+        #      cargo test exit (PARITY_EXIT) claims success.
+        # When cargo test itself failed, the table reports FAIL but this
+        # step exits 0 — the job still fails via the tail-position
+        # PARITY_EXIT gate, which stays the canonical failure signal.
+        #
+        # turbo note: every size (turbo included) sits at the 0.01 default
+        # (NFR-QL-01). turbo (distilled 809M, decoder 4 layers — the only
+        # asymmetric size) may need a calibration, but a looser value may
+        # land ONLY after the owner's T10 real-checkpoint measurement, set
+        # honestly at the measured floor × 1.5–2 (Kokoro PROSODY_F0_ATOL
+        # precedent) — never pre-emptively.
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          # Tee target of the "Run parity test" step; env-overridable so the
+          # TDD oracle (tools/parity/test_parity_whisper_workflow.py) can
+          # inject a private log.
+          LOG = os.environ.get("VOKRA_PARITY_LOG", "/tmp/parity.log")
+          SIZE = os.environ.get("SIZE", "?")
+          PARITY_EXIT = os.environ.get("PARITY_EXIT", "")
+
+          # MIRROR of atol_for() in crates/vokra-models/tests/parity_whisper.rs
+          # (the single source — see the step comment; do NOT edit this dict
+          # without the Rust lookup + ADR M4-14 §D2 moving in lockstep).
+          # All five sizes are the NFR-QL-01 FP32 bound. turbo stays 0.01
+          # until the owner's T10 measurement justifies a calibration
+          # (fabricated-pass ban).
+          PER_SIZE_ATOL = {
+              "base": 0.01,
+              "small": 0.01,
+              "medium": 0.01,
+              "large-v3": 0.01,
+              "turbo": 0.01,
+          }
+
+          if not os.path.exists(LOG):
+              print(f"::warning::no parity log at {LOG}; cannot build the atol verdict table")
+              sys.exit(0)
+          log = open(LOG, "r", errors="replace").read()
+
+          # assert_close()'s diagnostic line — a stable machine contract
+          # (see its rustdoc). ctx is either "<size>: …" (size-table loops)
+          # or a base-pinned label ("log-mel", the Metal/CUDA e2e legs),
+          # matching the atol_for(...) argument at each call site.
+          LINE = re.compile(
+              r"^\[parity\] (?P<ctx>.+): max \|Δ\| = (?P<val>\S+) "
+              r"over \d+ elems \(atol (?P<atol>\S+)\)\s*$",
+              re.MULTILINE,
+          )
+
+          rows = []
+          drift = []
+          exceeded = []
+          for m in LINE.finditer(log):
+              ctx = m.group("ctx")
+              size = next(
+                  (s for s in PER_SIZE_ATOL if ctx.startswith(f"{s}: ")), "base"
+              )
+              mirror = PER_SIZE_ATOL[size]
+              note = ""
+              try:
+                  val = float(m.group("val"))
+                  printed = float(m.group("atol"))
+              except ValueError:
+                  rows.append((ctx, size, m.group("val"), mirror, "?",
+                               "non-numeric value in log"))
+                  continue
+              if printed != mirror:
+                  drift.append(ctx)
+                  verdict = "DRIFT"
+                  note = (f"Rust-printed atol {printed} != workflow mirror "
+                          f"{mirror} — atol_for() and PER_SIZE_ATOL out of sync")
+              else:
+                  verdict = "PASS" if val <= mirror else "FAIL"
+                  if verdict == "FAIL":
+                      exceeded.append(ctx)
+              rows.append((ctx, size, m.group("val"), mirror, verdict, note))
+
+          out = [
+              f"### per-size atol verdict — leg `{SIZE}`",
+              "",
+              "applied atol = `atol_for(size)` (crates/vokra-models/tests/"
+              "parity_whisper.rs, the single source; PER_SIZE_ATOL here is "
+              "its drift-checked mirror — ADR M4-14 §D2). All sizes 0.01 "
+              "(NFR-QL-01); turbo calibration only after the owner's T10 "
+              "measurement.",
+              "",
+              "| context | size | max \\|Δ\\| | applied atol | verdict | notes |",
+              "|---------|------|-----------|--------------|---------|-------|",
+          ]
+          for ctx, size, raw, atol, verdict, note in rows:
+              out.append(f"| `{ctx}` | `{size}` | `{raw}` | `{atol}` | {verdict} | {note} |")
+          if not rows:
+              out.append("| (no `[parity]` lines observed) | | | | ? | "
+                         "harness did not reach an assert_close call |")
+
+          if drift:
+              overall = "DRIFT — Rust atol_for() and workflow PER_SIZE_ATOL disagree"
+          elif exceeded:
+              overall = "FAIL — at least one context exceeded its per-size atol"
+          else:
+              overall = "all observed contexts within their per-size atol"
+          out.extend(["", f"**Overall**: {overall}"])
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(out) + "\n")
+          print("\n".join(out))
+
+          if drift:
+              print(f"::error::atol drift on {len(drift)} context(s): "
+                    f"{drift} — update atol_for() / ADR §D2 / PER_SIZE_ATOL "
+                    "together (fabricated-pass guard)")
+              sys.exit(1)
+          if exceeded and PARITY_EXIT == "0":
+              print(f"::error::{len(exceeded)} context(s) exceeded their atol "
+                    f"yet cargo test exited 0: {exceeded} — log/harness "
+                    "inconsistency (fabricated-pass guard)")
+              sys.exit(1)
+          PY
       - name: Zero-dep guard (root Cargo.lock unchanged)
         # NFR-DS-02: the whole regen must not have mutated the root workspace
         # lockfile. Any diff means we accidentally pulled a new dep during

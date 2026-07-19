@@ -41,7 +41,7 @@ use std::sync::Arc;
 // `WatermarkBackendStatus` is referenced only in doc-links below (rustdoc
 // intra-doc link); dropping it from the `use` list avoids the unused-import
 // warning while keeping the doc reference valid via its full path.
-use vokra_core::decode::BeamSearchConfig;
+use vokra_core::decode::{BeamHypothesis, BeamSearchConfig};
 use vokra_core::{
     AsrEngine, BackendKind, CompliancePolicy, GgufFile, SynthesisRequest, SynthesizedAudio,
     VokraError, WatermarkConfig,
@@ -77,6 +77,17 @@ pub mod model_names {
     pub const WHISPER_BASE: &str = "whisper-base";
     /// M2-06 large-v3 alias.
     pub const WHISPER_LARGE_V3: &str = "whisper-large-v3";
+    /// cc-39 small alias — matches the GGUF's own `vokra.model.name`.
+    pub const WHISPER_SMALL: &str = "whisper-small";
+    /// cc-39 medium alias.
+    pub const WHISPER_MEDIUM: &str = "whisper-medium";
+    /// cc-39 turbo alias (the GGUF's `vokra.model.name`).
+    pub const WHISPER_TURBO: &str = "whisper-turbo";
+    /// cc-39 turbo alias under its upstream Hugging Face id
+    /// (`openai/whisper-large-v3-turbo`) — the spelling most clients have.
+    /// Routed to the SAME engine as [`WHISPER_TURBO`]; both are advertised
+    /// so the catalogue never implies two distinct engines exist.
+    pub const WHISPER_LARGE_V3_TURBO: &str = "whisper-large-v3-turbo";
     /// M3-10 Voxtral generic alias — routed to the loaded Voxtral engine
     /// (mini-3b or small-24b, whichever was configured).
     pub const VOXTRAL: &str = "voxtral";
@@ -86,8 +97,237 @@ pub mod model_names {
     pub const VOXTRAL_SMALL_24B: &str = "voxtral-small-24b";
     /// piper-plus native TTS alias.
     pub const PIPER_PLUS: &str = "piper-plus";
+    /// OpenAI stock TTS alias (`/v1/audio/speech` `model = "tts-1"`), routed
+    /// to [`PIPER_PLUS`] — the same convention as [`WHISPER_1`] → base
+    /// (cc-38, 2026-07-19 M4-residual audit).
+    ///
+    /// Only the base tier is aliased. `tts-1-hd` is deliberately NOT mapped:
+    /// it names a higher-quality tier this server does not have, so accepting
+    /// it would be a quality claim we cannot back — it stays an explicit 404.
+    pub const TTS_1: &str = "tts-1";
     /// Kokoro-82M native TTS alias.
     pub const KOKORO: &str = "kokoro";
+}
+
+/// One pre-warmed engine slot, as named by `--model-backend <SLOT>=<BACKEND>`
+/// (cc-30, 2026-07-19 M4-residual audit).
+///
+/// The string spellings match the model-path flags (`--whisper-base` ⇒
+/// `whisper-base`) so an operator never has to learn a second vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModelSlot {
+    /// `--whisper-base`.
+    WhisperBase,
+    /// `--whisper-small` (cc-39).
+    WhisperSmall,
+    /// `--whisper-medium` (cc-39).
+    WhisperMedium,
+    /// `--whisper-turbo` (cc-39).
+    WhisperTurbo,
+    /// `--whisper-large-v3`.
+    WhisperLargeV3,
+    /// `--piper-plus`.
+    PiperPlus,
+    /// `--kokoro`.
+    Kokoro,
+    /// `--voxtral`.
+    Voxtral,
+    /// `--silero-vad`.
+    SileroVad,
+}
+
+impl ModelSlot {
+    /// Every slot, in the order [`Self::ALL_NAMES`] lists them. Used by the
+    /// startup path to walk overrides and by the config layer's error text.
+    pub const ALL: [Self; 9] = [
+        Self::WhisperBase,
+        Self::WhisperSmall,
+        Self::WhisperMedium,
+        Self::WhisperTurbo,
+        Self::WhisperLargeV3,
+        Self::PiperPlus,
+        Self::Kokoro,
+        Self::Voxtral,
+        Self::SileroVad,
+    ];
+
+    /// Accepted `<SLOT>` spellings, for `--help` and error messages.
+    pub const ALL_NAMES: [&'static str; 9] = [
+        "whisper-base",
+        "whisper-small",
+        "whisper-medium",
+        "whisper-turbo",
+        "whisper-large-v3",
+        "piper-plus",
+        "kokoro",
+        "voxtral",
+        "silero-vad",
+    ];
+
+    /// Parse a `<SLOT>` token. `None` = unknown slot (the config layer turns
+    /// that into an explicit error listing [`Self::ALL_NAMES`] — never a
+    /// silently-dropped override, FR-EX-08).
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|slot| slot.as_str() == s)
+    }
+
+    /// The canonical spelling of this slot.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WhisperBase => "whisper-base",
+            Self::WhisperSmall => "whisper-small",
+            Self::WhisperMedium => "whisper-medium",
+            Self::WhisperTurbo => "whisper-turbo",
+            Self::WhisperLargeV3 => "whisper-large-v3",
+            Self::PiperPlus => "piper-plus",
+            Self::Kokoro => "kokoro",
+            Self::Voxtral => "voxtral",
+            Self::SileroVad => "silero-vad",
+        }
+    }
+}
+
+/// Per-slot backend overrides (cc-30). A slot left `None` runs on
+/// [`ServiceConfig::backend`].
+///
+/// Stored as one `Option` per slot rather than a map so the set of valid
+/// slots is exhaustively checked by the compiler when a new engine lands
+/// (a `HashMap<String, _>` would let a new slot silently miss its override).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BackendOverrides {
+    whisper_base: Option<BackendKind>,
+    whisper_small: Option<BackendKind>,
+    whisper_medium: Option<BackendKind>,
+    whisper_turbo: Option<BackendKind>,
+    whisper_large_v3: Option<BackendKind>,
+    piper_plus: Option<BackendKind>,
+    kokoro: Option<BackendKind>,
+    voxtral: Option<BackendKind>,
+    silero_vad: Option<BackendKind>,
+}
+
+impl BackendOverrides {
+    /// The override for `slot`, if any.
+    pub fn get(&self, slot: ModelSlot) -> Option<BackendKind> {
+        match slot {
+            ModelSlot::WhisperBase => self.whisper_base,
+            ModelSlot::WhisperSmall => self.whisper_small,
+            ModelSlot::WhisperMedium => self.whisper_medium,
+            ModelSlot::WhisperTurbo => self.whisper_turbo,
+            ModelSlot::WhisperLargeV3 => self.whisper_large_v3,
+            ModelSlot::PiperPlus => self.piper_plus,
+            ModelSlot::Kokoro => self.kokoro,
+            ModelSlot::Voxtral => self.voxtral,
+            ModelSlot::SileroVad => self.silero_vad,
+        }
+    }
+
+    /// Set (or replace) the override for `slot`. The config layer checks for
+    /// a duplicate *within one precedence layer* before calling this; the
+    /// cross-layer merge ([`Self::or`]) deliberately replaces.
+    pub fn set(&mut self, slot: ModelSlot, backend: BackendKind) {
+        let cell = match slot {
+            ModelSlot::WhisperBase => &mut self.whisper_base,
+            ModelSlot::WhisperSmall => &mut self.whisper_small,
+            ModelSlot::WhisperMedium => &mut self.whisper_medium,
+            ModelSlot::WhisperTurbo => &mut self.whisper_turbo,
+            ModelSlot::WhisperLargeV3 => &mut self.whisper_large_v3,
+            ModelSlot::PiperPlus => &mut self.piper_plus,
+            ModelSlot::Kokoro => &mut self.kokoro,
+            ModelSlot::Voxtral => &mut self.voxtral,
+            ModelSlot::SileroVad => &mut self.silero_vad,
+        };
+        *cell = Some(backend);
+    }
+
+    /// Slot-by-slot `Option::or`: keeps `self`'s value where it has one and
+    /// adopts `lower`'s otherwise. Used to fold CLI > env > TOML.
+    #[must_use]
+    pub fn or(&self, lower: &Self) -> Self {
+        let mut out = *self;
+        for slot in ModelSlot::ALL {
+            if out.get(slot).is_none() {
+                if let Some(b) = lower.get(slot) {
+                    out.set(slot, b);
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether any slot carries an override.
+    pub fn is_empty(&self) -> bool {
+        ModelSlot::ALL.iter().all(|s| self.get(*s).is_none())
+    }
+}
+
+/// Verify that `backend` is usable by THIS binary, before any engine loads
+/// (cc-30, 2026-07-19 M4-residual audit).
+///
+/// [`vokra_models::Compute::for_backend`] is the authority: a backend whose
+/// Cargo feature was not compiled in returns
+/// [`VokraError::BackendUnavailable`], and a compiled-in backend whose device
+/// cannot be opened fails in its context constructor. Both are hard startup
+/// errors here rather than per-request 500s — a server that binds a port must
+/// be able to answer on the backend it was told to use (FR-EX-08: never a
+/// silent CPU fall back under a GPU label).
+///
+/// The probe passes an EMPTY required-op set, so it answers exactly one
+/// question: "can this binary open this backend at all?". Per-op coverage
+/// holes are a different failure and still surface per request as an explicit
+/// `UnsupportedOp` from the model hot path — this check does not (and must
+/// not) pretend to validate them.
+///
+/// # Errors
+///
+/// [`ServiceError::InvalidConfig`] naming the Cargo feature to rebuild with.
+pub fn ensure_backend_available(backend: BackendKind) -> Result<(), ServiceError> {
+    vokra_models::Compute::for_backend(backend, &[])
+        .map(drop)
+        .map_err(|source| {
+            ServiceError::InvalidConfig(format!(
+                "backend `{}` was requested but is not usable by this vokra-server binary: \
+                 {source}. GPU backends are opt-in Cargo features that forward to \
+                 vokra-models — rebuild with `cargo build --release --features {}` (and \
+                 make sure the device/driver is present). Refusing to start on a \
+                 different backend than the one requested (FR-EX-08).",
+                backend_flag_name(backend),
+                backend_feature_name(backend),
+            ))
+        })
+}
+
+/// The `--backend` spelling of a [`BackendKind`], for error text.
+fn backend_flag_name(backend: BackendKind) -> &'static str {
+    match backend {
+        BackendKind::Cpu => "cpu",
+        BackendKind::Metal => "metal",
+        BackendKind::Cuda => "cuda",
+        BackendKind::Vulkan => "vulkan",
+        other => {
+            // `BackendKind` is `#[non_exhaustive]`-in-spirit (WebGpu, and NPU
+            // delegates land in M5): fall back to the Debug spelling rather
+            // than inventing a flag name that does not exist.
+            debug_assert!(false, "unmapped BackendKind {other:?}");
+            "<unknown>"
+        }
+    }
+}
+
+/// The Cargo feature that compiles a [`BackendKind`] into this binary.
+/// `vokra-server`'s features forward 1:1 to `vokra-models`' (see its
+/// `Cargo.toml`), so the name is the same on both sides.
+fn backend_feature_name(backend: BackendKind) -> &'static str {
+    match backend {
+        // CPU is always compiled in; naming a feature here would be wrong,
+        // but the arm must exist — a CPU probe failure is a real bug, not a
+        // missing feature.
+        BackendKind::Cpu => "<none — cpu is always built in>",
+        BackendKind::Metal => "metal",
+        BackendKind::Cuda => "cuda",
+        BackendKind::Vulkan => "vulkan",
+        _ => "<unknown>",
+    }
 }
 
 /// Configuration for [`InferenceService::build`], populated from the CLI /
@@ -110,6 +350,29 @@ pub struct ServiceConfig {
     /// embeds its vocab (M2-06) so this is usually unnecessary; kept for
     /// the converter-A path.
     pub whisper_large_v3_tokenizer: Option<PathBuf>,
+    /// Optional path to a Whisper **small** GGUF (cc-39, 2026-07-19
+    /// M4-residual audit). Model-side support landed with M4-14 and all four
+    /// sizes transcribe byte-identically to onnxruntime
+    /// (`docs/bench-baselines/m1-real-weight-eval-2026-07-16/report.md`), but
+    /// the server only ever had base + large-v3 slots. Absent ⇒
+    /// `whisper-small` requests are [`ServiceError::UnknownModel`], never
+    /// silently served by a different size (FR-EX-08).
+    pub whisper_small_gguf: Option<PathBuf>,
+    /// Optional Whisper small tokenizer sidecar. Every converter-B GGUF
+    /// embeds `vokra.tokenizer.model` (verified on the real
+    /// `whisper-small.gguf`), so this is normally unnecessary — kept for the
+    /// converter-A path, exactly like large-v3's.
+    pub whisper_small_tokenizer: Option<PathBuf>,
+    /// Optional path to a Whisper **medium** GGUF (cc-39).
+    pub whisper_medium_gguf: Option<PathBuf>,
+    /// Optional Whisper medium tokenizer sidecar (see
+    /// [`Self::whisper_small_tokenizer`]).
+    pub whisper_medium_tokenizer: Option<PathBuf>,
+    /// Optional path to a Whisper **large-v3-turbo** GGUF (cc-39).
+    pub whisper_turbo_gguf: Option<PathBuf>,
+    /// Optional Whisper turbo tokenizer sidecar (see
+    /// [`Self::whisper_small_tokenizer`]).
+    pub whisper_turbo_tokenizer: Option<PathBuf>,
     /// Path to the piper-plus voice GGUF. **Required** for the same
     /// reason as `whisper_base_gguf`.
     pub piper_plus_gguf: PathBuf,
@@ -136,9 +399,21 @@ pub struct ServiceConfig {
     /// Optional path to a Silero VAD v5 GGUF. When absent, the Wyoming
     /// chunk-boundary VAD helper is disabled (chunks are used as-is).
     pub silero_vad_gguf: Option<PathBuf>,
-    /// Backend the pre-warmed engines run on. Applied uniformly across
-    /// engines; a per-model backend override is a T03 follow-up.
+    /// Default backend the pre-warmed engines run on. A slot with an entry
+    /// in [`Self::backend_overrides`] uses that instead.
+    ///
+    /// Every distinct backend actually selected is probed once at
+    /// [`InferenceService::build`] time via [`ensure_backend_available`]: a
+    /// backend not compiled into this binary is a hard startup error, never a
+    /// silent CPU fall back (FR-EX-08).
     pub backend: BackendKind,
+    /// Per-model backend overrides (cc-30, 2026-07-19 M4-residual audit —
+    /// this is the "a per-model backend override is a T03 follow-up" note
+    /// that sat on `backend` since M2-09-T04).
+    ///
+    /// Empty = every engine runs on [`Self::backend`], which is exactly the
+    /// pre-cc-30 behaviour.
+    pub backend_overrides: BackendOverrides,
     /// Compliance policy for every GGUF load (default: strict). Threaded
     /// through the M2-13 weight-license gate (FR-CP-03).
     pub compliance: CompliancePolicy,
@@ -168,15 +443,110 @@ impl ServiceConfig {
             whisper_base_tokenizer: None,
             whisper_large_v3_gguf: None,
             whisper_large_v3_tokenizer: None,
+            whisper_small_gguf: None,
+            whisper_small_tokenizer: None,
+            whisper_medium_gguf: None,
+            whisper_medium_tokenizer: None,
+            whisper_turbo_gguf: None,
+            whisper_turbo_tokenizer: None,
             piper_plus_gguf,
             kokoro_gguf: None,
             voxtral_gguf: None,
             silero_vad_gguf: None,
             backend: BackendKind::Cpu,
+            backend_overrides: BackendOverrides::default(),
             compliance: CompliancePolicy::strict(),
             // Design-intent defaults, embedding is deferred (2026-07-04 drop).
             watermark: WatermarkConfig::default(),
         }
+    }
+
+    /// The backend `slot` will actually run on (cc-30): its per-model
+    /// override if it has one, otherwise [`Self::backend`].
+    ///
+    /// **Silero VAD is always CPU.** `SileroVadV5` exposes no backend
+    /// selector at all (it is a small LSTM subgraph with a hand-written CPU
+    /// kernel — unlike Whisper / piper / Kokoro / Voxtral it has no
+    /// `with_backend`), so no value here could be honoured. Returning `Cpu`
+    /// is therefore a statement of fact, not a fallback: an *explicit*
+    /// `--model-backend silero-vad=…` is rejected outright by
+    /// [`Self::validate_backend_overrides`] (FR-EX-08 — an override the
+    /// runtime cannot honour must fail loudly), and a non-CPU *global*
+    /// default is announced at startup rather than silently ignored.
+    pub fn backend_for(&self, slot: ModelSlot) -> BackendKind {
+        if slot == ModelSlot::SileroVad {
+            return BackendKind::Cpu;
+        }
+        self.backend_overrides.get(slot).unwrap_or(self.backend)
+    }
+
+    /// Every config-consistency check, run BEFORE any weight is read.
+    ///
+    /// Ordering matters and is load-bearing: a half-configured slot must be
+    /// reported as the misconfiguration it is, not masked by whichever file
+    /// happens to fail to open first. `build` therefore calls this before
+    /// touching the filesystem, so `whisper_large_v3_tokenizer` without its
+    /// GGUF surfaces as that error even when the base GGUF path is also
+    /// wrong. (Pinned by `registry::build_rejects_large_v3_tokenizer_without_gguf`.)
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::InvalidConfig`] naming the offending field.
+    pub fn validate(&self) -> Result<(), ServiceError> {
+        // An optional Whisper slot given a tokenizer sidecar but no GGUF is
+        // a typo'd path, not a no-op (FR-EX-08). Checked for all four
+        // optional sizes, not just large-v3 (cc-39).
+        for (slot, gguf, tok) in [
+            (
+                "whisper-large-v3",
+                &self.whisper_large_v3_gguf,
+                &self.whisper_large_v3_tokenizer,
+            ),
+            (
+                "whisper-small",
+                &self.whisper_small_gguf,
+                &self.whisper_small_tokenizer,
+            ),
+            (
+                "whisper-medium",
+                &self.whisper_medium_gguf,
+                &self.whisper_medium_tokenizer,
+            ),
+            (
+                "whisper-turbo",
+                &self.whisper_turbo_gguf,
+                &self.whisper_turbo_tokenizer,
+            ),
+        ] {
+            if gguf.is_none() {
+                if let Some(tok) = tok {
+                    return Err(orphan_tokenizer_error(slot, tok));
+                }
+            }
+        }
+        self.validate_backend_overrides()
+    }
+
+    /// Reject per-model overrides that no engine could honour (cc-30).
+    ///
+    /// Only Silero VAD is in this category today. Accepting the flag and
+    /// quietly running CPU would be exactly the silent-substitution failure
+    /// FR-EX-08 exists to prevent.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::InvalidConfig`] naming the slot and the reason.
+    pub fn validate_backend_overrides(&self) -> Result<(), ServiceError> {
+        if let Some(requested) = self.backend_overrides.get(ModelSlot::SileroVad) {
+            return Err(ServiceError::InvalidConfig(format!(
+                "--model-backend silero-vad={} cannot be honoured: the Silero VAD v5 engine \
+                 has no backend selector (it is a CPU-only LSTM subgraph — `SileroVadV5` \
+                 exposes no `with_backend`). Drop the override rather than have the server \
+                 accept it and run CPU anyway (FR-EX-08).",
+                backend_flag_name(requested),
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -290,12 +660,24 @@ pub trait TranscribeService: Send + Sync {
         // Default behaviour: fall through to greedy for beam_size 0..=1,
         // hard-error for beam_size > 1. Concrete implementations override
         // this to route their supported engines through a real beam path.
+        //
+        // cc-19 (2026-07-19 M4-residual audit): a word-timestamps ask on an
+        // implementation that has not overridden this method MUST NOT fold
+        // into greedy-with-empty-words — that would be a silently fabricated
+        // "no words" alignment (FR-EX-08 / NFR-RL-06). Explicit error instead.
+        if req.word_timestamps == Some(true) {
+            return Err(ServiceError::Inference(VokraError::UnsupportedOp(format!(
+                "transcribe_beam: model `{model}` does not support word_timestamps on this \
+                 TranscribeService implementation (FR-EX-08 — word timings are never fabricated)",
+            ))));
+        }
         match req.beam_size {
             None | Some(0..=1) => {
                 let text = self.transcribe(model, pcm)?;
                 Ok(TranscribeBeamResponse {
                     text,
                     alternatives: Vec::new(),
+                    words: Vec::new(),
                 })
             }
             Some(_) => Err(ServiceError::Inference(VokraError::UnsupportedOp(format!(
@@ -336,6 +718,14 @@ pub struct TranscribeBeamRequest {
     /// Upper bound on generated tokens. `None` picks the engine default
     /// (`DEFAULT_MAX_NEW_TOKENS`).
     pub max_new_tokens: Option<usize>,
+    /// Emit word-level timestamps (M4-20, FR-OP-40). `None`/`Some(false)`
+    /// leaves [`TranscribeBeamResponse::words`] empty (backward compat). When
+    /// `Some(true)`, the Whisper backend runs the cross-attention alignment
+    /// (via [`vokra_core::decode::BeamSearchConfig::word_timestamps`]) even at
+    /// `beam_size <= 1` — greedy `transcribe` produces no alignment — and
+    /// surfaces one entry per word. A model without alignment heads makes this
+    /// an explicit error, never a silent empty list (FR-EX-08).
+    pub word_timestamps: Option<bool>,
 }
 
 /// One n-best alternative in the beam-search response.
@@ -358,6 +748,20 @@ pub struct TranscribeAlternative {
     pub length_normalized_score: f64,
 }
 
+/// One word-level timestamp entry (M4-20, FR-OP-40). The `word` text is the
+/// detokenization of the aligned token span; `start` / `end` are seconds into
+/// the audio.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WordTimestamp {
+    /// Detokenized word text (the aligned token span, spaces included as the
+    /// tokenizer produced them).
+    pub word: String,
+    /// Word start time in seconds.
+    pub start: f64,
+    /// Word end time in seconds.
+    pub end: f64,
+}
+
 /// n-best transcribe response (M3-15 Wave 10 A). `text` always carries
 /// the top-1 (matches the legacy [`TranscribeService::transcribe`]
 /// response shape exactly). `alternatives` is empty on the greedy path,
@@ -372,6 +776,39 @@ pub struct TranscribeBeamResponse {
     /// the request was greedy — that preserves the legacy top-1 shape
     /// verbatim so a caller who never sets `beam_size` sees no change.
     pub alternatives: Vec<TranscribeAlternative>,
+    /// Word-level timestamps for the top-1 hypothesis (M4-20). Empty unless
+    /// [`TranscribeBeamRequest::word_timestamps`] was `Some(true)` and the
+    /// backend produced an alignment. Additive field — callers that never
+    /// request word timestamps see an empty list.
+    pub words: Vec<WordTimestamp>,
+}
+
+/// Model-catalogue view for `GET /v1/models` (cc-18, 2026-07-19 M4-residual
+/// audit — the enumeration helpers below existed since T04 but no HTTP route
+/// ever exposed them).
+///
+/// Kept as its own narrow trait (rather than widening [`TranscribeService`])
+/// so the route can be driven by a mock in tests and so non-registry servers
+/// (health-only boot) simply do not mount the route — an honest 404, never an
+/// empty fabricated catalogue (FR-EX-08).
+pub trait ModelCatalog: Send + Sync {
+    /// Every model id the HTTP routes accept, in a stable order. Aliases that
+    /// route to the same engine (e.g. `whisper-base` / `whisper-1`) are each
+    /// listed — the catalogue's contract is "these ids are accepted", not
+    /// "these engines are distinct".
+    fn model_ids(&self) -> Vec<String>;
+}
+
+impl ModelCatalog for InferenceService {
+    fn model_ids(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .asr_model_names()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        v.extend(self.tts_model_names().into_iter().map(str::to_owned));
+        v
+    }
 }
 
 /// Text-to-speech dispatch trait, keyed by the request's `model` name.
@@ -403,6 +840,13 @@ pub struct InferenceService {
     /// configured. Absent ⇒ `whisper-large-v3` requests are
     /// [`ServiceError::UnknownModel`] (never silently routed to base).
     asr_large: Option<Arc<WhisperAsr>>,
+    /// Whisper small ASR (cc-39) — present iff configured. Same
+    /// no-substitution rule as `asr_large`.
+    asr_small: Option<Arc<WhisperAsr>>,
+    /// Whisper medium ASR (cc-39) — present iff configured.
+    asr_medium: Option<Arc<WhisperAsr>>,
+    /// Whisper large-v3-turbo ASR (cc-39) — present iff configured.
+    asr_turbo: Option<Arc<WhisperAsr>>,
     /// piper-plus native TTS — always present (default v0.5 TTS).
     tts_piper: Arc<PiperPlusTts>,
     /// Kokoro TTS — advertised iff configured. `synthesize` is unavailable
@@ -447,12 +891,23 @@ impl InferenceService {
     /// compiles standalone; the real G2P is injected with
     /// [`InferenceService::with_phonemizer`].
     pub fn build(config: &ServiceConfig) -> Result<Arc<Self>, ServiceError> {
-        // Config sanity: large-v3 tokenizer without the large-v3 GGUF is a
-        // misconfiguration, not a silent no-op.
-        if config.whisper_large_v3_tokenizer.is_some() && config.whisper_large_v3_gguf.is_none() {
-            return Err(ServiceError::InvalidConfig(
-                "whisper_large_v3_tokenizer set without whisper_large_v3_gguf".into(),
-            ));
+        // Config consistency first, before any filesystem access: the
+        // operator must see the flag they typed named back at them, not a
+        // load error for whichever slot happened to be read first.
+        config.validate()?;
+
+        // cc-30: every backend this config actually selects must be usable by
+        // THIS binary before a single weight is read. Probing up-front keeps
+        // the failure at startup (where the operator sees it) instead of on
+        // the first request, and the probe is once-per-distinct-backend so a
+        // 9-slot config does not open 9 GPU contexts.
+        let mut probed: Vec<BackendKind> = Vec::new();
+        for slot in ModelSlot::ALL {
+            let backend = config.backend_for(slot);
+            if !probed.contains(&backend) {
+                ensure_backend_available(backend)?;
+                probed.push(backend);
+            }
         }
 
         // Whisper base — required.
@@ -460,20 +915,36 @@ impl InferenceService {
             "whisper-base",
             &config.whisper_base_gguf,
             config.whisper_base_tokenizer.as_deref(),
-            config.backend,
+            config.backend_for(ModelSlot::WhisperBase),
         )?);
 
-        // Whisper large-v3 — optional.
-        let asr_large = if let Some(path) = &config.whisper_large_v3_gguf {
-            Some(Arc::new(load_whisper(
-                "whisper-large-v3",
-                path,
-                config.whisper_large_v3_tokenizer.as_deref(),
-                config.backend,
-            )?))
-        } else {
-            None
-        };
+        // Whisper large-v3 + the three cc-39 sizes — all optional, all with
+        // the same "tokenizer sidecar without its GGUF is a misconfiguration"
+        // rule (a silent no-op would hide a typo'd path).
+        let asr_large = load_optional_whisper(
+            "whisper-large-v3",
+            config.whisper_large_v3_gguf.as_deref(),
+            config.whisper_large_v3_tokenizer.as_deref(),
+            config.backend_for(ModelSlot::WhisperLargeV3),
+        )?;
+        let asr_small = load_optional_whisper(
+            "whisper-small",
+            config.whisper_small_gguf.as_deref(),
+            config.whisper_small_tokenizer.as_deref(),
+            config.backend_for(ModelSlot::WhisperSmall),
+        )?;
+        let asr_medium = load_optional_whisper(
+            "whisper-medium",
+            config.whisper_medium_gguf.as_deref(),
+            config.whisper_medium_tokenizer.as_deref(),
+            config.backend_for(ModelSlot::WhisperMedium),
+        )?;
+        let asr_turbo = load_optional_whisper(
+            "whisper-turbo",
+            config.whisper_turbo_gguf.as_deref(),
+            config.whisper_turbo_tokenizer.as_deref(),
+            config.backend_for(ModelSlot::WhisperTurbo),
+        )?;
 
         // piper-plus — required. `from_gguf_with_policy` consumes the
         // `GgufFile` (see crates/vokra-models/src/piper_plus/mod.rs:207).
@@ -485,7 +956,7 @@ impl InferenceService {
                     path: config.piper_plus_gguf.clone(),
                     source,
                 })?
-                .with_backend(config.backend),
+                .with_backend(config.backend_for(ModelSlot::PiperPlus)),
         );
 
         // Kokoro — optional. Loader takes raw bytes, not a `GgufFile`.
@@ -502,7 +973,7 @@ impl InferenceService {
                         path: path.clone(),
                         source,
                     })?
-                    .with_backend(config.backend),
+                    .with_backend(config.backend_for(ModelSlot::Kokoro)),
             ))
         } else {
             None
@@ -520,7 +991,15 @@ impl InferenceService {
                     path: path.clone(),
                     source,
                 })?;
-            Some(Arc::new(engine))
+            // cc-30: Voxtral DOES have a backend selector
+            // (`VoxtralAsr::with_backend`, M3-10 Wave 9) but this registry
+            // never applied it — so before cc-30 a Voxtral engine silently
+            // stayed on its `BackendKind::Cpu` default even when the rest of
+            // the registry was configured otherwise. Applying it here makes
+            // `ServiceConfig::backend`'s "applied uniformly" doc true.
+            Some(Arc::new(
+                engine.with_backend(config.backend_for(ModelSlot::Voxtral)),
+            ))
         } else {
             None
         };
@@ -551,6 +1030,9 @@ impl InferenceService {
         Ok(Arc::new(Self {
             asr_base,
             asr_large,
+            asr_small,
+            asr_medium,
+            asr_turbo,
             tts_piper,
             tts_kokoro,
             asr_voxtral,
@@ -582,6 +1064,9 @@ impl InferenceService {
                 let rebuilt = Self {
                     asr_base: Arc::clone(&self.asr_base),
                     asr_large: self.asr_large.clone(),
+                    asr_small: self.asr_small.clone(),
+                    asr_medium: self.asr_medium.clone(),
+                    asr_turbo: self.asr_turbo.clone(),
                     tts_piper: Arc::clone(&self.tts_piper),
                     tts_kokoro: self.tts_kokoro.clone(),
                     asr_voxtral: self.asr_voxtral.clone(),
@@ -594,6 +1079,20 @@ impl InferenceService {
         }
     }
 
+    /// Returns the loaded piper-plus voice (always present — it is part of
+    /// the required startup minimum).
+    ///
+    /// The production startup path uses this to derive the real 8-language
+    /// G2P from the voice's own GGUF metadata
+    /// (`vokra_piper_g2p::PiperPlusG2p::from_voice` reads
+    /// `vokra.piper.phoneme_symbols` / `language_codes`) before swapping it
+    /// in via [`Self::with_phonemizer`] — the out-of-workspace G2P crate is
+    /// deliberately NOT imported here (T04 stays HTTP/G2P-free), only the
+    /// engine handle is exposed.
+    pub fn piper_voice(&self) -> &Arc<PiperPlusTts> {
+        &self.tts_piper
+    }
+
     /// Returns the Whisper ASR engine keyed by `model` (or `None` if the
     /// alias does not name a Whisper variant or the corresponding engine is
     /// not configured). Voxtral aliases return `None` here — use
@@ -602,6 +1101,16 @@ impl InferenceService {
         match model {
             model_names::WHISPER_1 | model_names::WHISPER_BASE => Some(&self.asr_base),
             model_names::WHISPER_LARGE_V3 => self.asr_large.as_ref(),
+            // cc-39. An unconfigured size returns `None` here and becomes
+            // `ServiceError::UnknownModel` → HTTP 404 at the caller. It must
+            // NEVER fall through to `asr_base`: a caller who asked for medium
+            // and silently got base would have no way to detect the swap
+            // (RED-LINE, FR-EX-08).
+            model_names::WHISPER_SMALL => self.asr_small.as_ref(),
+            model_names::WHISPER_MEDIUM => self.asr_medium.as_ref(),
+            model_names::WHISPER_TURBO | model_names::WHISPER_LARGE_V3_TURBO => {
+                self.asr_turbo.as_ref()
+            }
             _ => None,
         }
     }
@@ -633,7 +1142,7 @@ impl InferenceService {
     /// unavailable in v0.5).
     pub fn has_tts_available(&self, model: &str) -> bool {
         match model {
-            model_names::PIPER_PLUS => true,
+            model_names::PIPER_PLUS | model_names::TTS_1 => true,
             model_names::KOKORO => false, // advertised, synthesize deferred
             _ => false,
         }
@@ -649,6 +1158,19 @@ impl InferenceService {
     /// path — the server MUST reflect that).
     pub fn asr_model_names(&self) -> Vec<&'static str> {
         let mut v = vec![model_names::WHISPER_BASE, model_names::WHISPER_1];
+        // cc-39: sizes are advertised in ascending order after base so
+        // `GET /v1/models` reads naturally; each appears only when its GGUF
+        // was actually configured.
+        if self.asr_small.is_some() {
+            v.push(model_names::WHISPER_SMALL);
+        }
+        if self.asr_medium.is_some() {
+            v.push(model_names::WHISPER_MEDIUM);
+        }
+        if self.asr_turbo.is_some() {
+            v.push(model_names::WHISPER_TURBO);
+            v.push(model_names::WHISPER_LARGE_V3_TURBO);
+        }
         if self.asr_large.is_some() {
             v.push(model_names::WHISPER_LARGE_V3);
         }
@@ -664,7 +1186,11 @@ impl InferenceService {
     /// present, even though its synthesize is unavailable — the caller
     /// can still see the advertised catalogue).
     pub fn tts_model_names(&self) -> Vec<&'static str> {
-        let mut v = vec![model_names::PIPER_PLUS];
+        // `tts-1` is listed alongside `piper-plus` for the same reason
+        // `whisper-1` is listed alongside `whisper-base`: the catalogue's
+        // contract is "these ids are accepted", not "these engines are
+        // distinct" (cc-38).
+        let mut v = vec![model_names::PIPER_PLUS, model_names::TTS_1];
         if self.tts_kokoro.is_some() {
             v.push(model_names::KOKORO);
         }
@@ -746,96 +1272,95 @@ impl TranscribeService for InferenceService {
         pcm: &[f32],
         req: &TranscribeBeamRequest,
     ) -> Result<TranscribeBeamResponse, ServiceError> {
-        // ---- Whisper: greedy + beam wired end-to-end (M3-15 Wave 11). ---
+        // ---- Whisper: greedy + beam wired end-to-end (M3-15 Wave 11;
+        // M4-20 word timestamps). ----------------------------------------
         if let Some(engine) = self.resolve_asr(model) {
+            let want_words = req.word_timestamps.unwrap_or(false);
             let beam_size_effective = req.beam_size.unwrap_or(0);
-            match beam_size_effective {
-                0 | 1 => {
-                    let text = engine
-                        .transcribe(pcm)
-                        .map(|t| t.text)
+
+            // Greedy fast-path only when word timestamps are NOT requested:
+            // greedy `transcribe` produces no cross-attention alignment, so a
+            // caller who wants word timestamps must go through the beam/align
+            // path even at width 1. Backward compat is otherwise preserved —
+            // a request that sets neither `beam_size > 1` nor `word_timestamps`
+            // is byte-for-byte the legacy greedy shape.
+            if matches!(beam_size_effective, 0 | 1) && !want_words {
+                let text = engine
+                    .transcribe(pcm)
+                    .map(|t| t.text)
+                    .map_err(ServiceError::Inference)?;
+                return Ok(TranscribeBeamResponse {
+                    text,
+                    alternatives: Vec::new(),
+                    words: Vec::new(),
+                });
+            }
+
+            // Beam / alignment path. `n == 1` is greedy-equivalent, used when
+            // only word timestamps were requested (`beam_size <= 1`).
+            let n = beam_size_effective.max(1);
+            let cfg = whisper_beam_config(n, req, model)?;
+            let hyps = engine
+                .transcribe_tokens_beam_nbest(pcm, &cfg)
+                .map_err(ServiceError::Inference)?;
+            // FR-EX-08: an empty n-best list is a bug in the beam driver, not
+            // a "return greedy" fallback.
+            if hyps.is_empty() {
+                return Err(ServiceError::Inference(VokraError::ModelLoad(
+                    "transcribe_beam: whisper beam search produced no hypothesis".into(),
+                )));
+            }
+            let best = &hyps[0];
+            // Top-1 mirrored into `text` (backward-compat top-1 shape).
+            let text = engine
+                .render_ids(&best.tokens)
+                .map_err(ServiceError::Inference)?;
+            // `alternatives` stays empty for greedy-equivalent widths
+            // (`beam_size <= 1`) so the legacy top-1 shape is preserved; it is
+            // populated + ranked only for a genuine beam request (`> 1`).
+            let alternatives = if beam_size_effective > 1 {
+                let mut v: Vec<TranscribeAlternative> = Vec::with_capacity(hyps.len());
+                for h in &hyps {
+                    let t = engine
+                        .render_ids(&h.tokens)
                         .map_err(ServiceError::Inference)?;
-                    return Ok(TranscribeBeamResponse {
-                        text,
-                        alternatives: Vec::new(),
+                    v.push(TranscribeAlternative {
+                        text: t,
+                        log_prob: h.score as f64,
+                        length_normalized_score: h.normalized_score as f64,
                     });
                 }
-                n => {
-                    // Wave 12, M3-15 follow-up: `BeamSearchConfig` now carries
-                    // a `no_repeat_ngram_size` field (ported from Voxtral's
-                    // beam search); the Wave 11 explicit `UnsupportedOp` has
-                    // been lifted. `req.no_repeat_ngram.unwrap_or(0)` maps
-                    // straight into the config field — `0` is the schema
-                    // default and disables blocking.
-                    let ngram = req.no_repeat_ngram.unwrap_or(0);
-
-                    // length_penalty defaults to 1.0 to match
-                    // `BeamSearchConfig::new` (HF length_penalty), NOT the
-                    // Voxtral default of 0.6 — the two engines use different
-                    // ranking primitives. A negative or non-finite value is
-                    // rejected up-front (FR-EX-08 — the ranking would be
-                    // undefined).
-                    let length_penalty = req.length_penalty.unwrap_or(1.0);
-                    if !length_penalty.is_finite() || length_penalty < 0.0 {
-                        return Err(ServiceError::Inference(VokraError::InvalidArgument(
-                            format!(
-                                "transcribe_beam: model `{model}` (whisper backend) requires \
-                                 length_penalty to be a non-negative finite float (maps to \
-                                 BeamSearchConfig::length_normalization), got {length_penalty}",
-                            ),
-                        )));
-                    }
-                    let max_new = req
-                        .max_new_tokens
-                        .filter(|&v| v > 0)
-                        .unwrap_or(WHISPER_DEFAULT_MAX_NEW_TOKENS);
-
-                    // `BeamSearchConfig::new(n, max_new)` seeds
-                    // `length_normalization = 1.0`, `n_best = 1`,
-                    // `early_stopping = true`, `word_timestamps = false`,
-                    // `no_repeat_ngram_size = 0`. Overlay the caller fields
-                    // (length_penalty, n_best, no_repeat_ngram_size).
-                    let mut cfg = BeamSearchConfig::new(n, max_new);
-                    cfg.length_normalization = length_penalty;
-                    cfg.n_best = n;
-                    cfg.no_repeat_ngram_size = ngram;
-
-                    let hyps = engine
-                        .transcribe_tokens_beam_nbest(pcm, &cfg)
-                        .map_err(ServiceError::Inference)?;
-                    // FR-EX-08: an empty n-best list is a bug in the beam
-                    // driver, not a "return greedy" fallback.
-                    if hyps.is_empty() {
-                        return Err(ServiceError::Inference(VokraError::ModelLoad(
-                            "transcribe_beam: whisper beam search produced no hypothesis".into(),
-                        )));
-                    }
-                    let mut alternatives: Vec<TranscribeAlternative> =
-                        Vec::with_capacity(hyps.len());
-                    for h in &hyps {
-                        let text = engine
-                            .render_ids(&h.tokens)
-                            .map_err(ServiceError::Inference)?;
-                        alternatives.push(TranscribeAlternative {
-                            text,
-                            log_prob: h.score as f64,
-                            length_normalized_score: h.normalized_score as f64,
-                        });
-                    }
-                    // Top-1 mirrored into `text` (backward-compat with the
-                    // legacy top-1 shape — the `alternatives[0].text` is the
-                    // same string).
-                    let text = alternatives
-                        .first()
-                        .map(|a| a.text.clone())
-                        .unwrap_or_default();
-                    return Ok(TranscribeBeamResponse { text, alternatives });
-                }
-            }
+                v
+            } else {
+                Vec::new()
+            };
+            // Word timestamps come from the best (first) hypothesis only —
+            // `beam_search` aligns only the best. Detokenize each word span
+            // with the engine's tokenizer.
+            let words = if want_words {
+                whisper_word_timestamps(best, |ids| engine.render_ids(ids))?
+            } else {
+                Vec::new()
+            };
+            return Ok(TranscribeBeamResponse {
+                text,
+                alternatives,
+                words,
+            });
         }
 
         // ---- Voxtral: greedy + beam wired end-to-end. ------------------
         if let Some(engine) = self.resolve_voxtral(model) {
+            // Word timestamps are a Whisper-only surface (cross-attention DTW,
+            // M4-20). Voxtral has no such alignment here, so accepting the flag
+            // and returning an empty list would be a silent fabrication —
+            // reject it explicitly (FR-EX-08).
+            if req.word_timestamps == Some(true) {
+                return Err(ServiceError::Inference(VokraError::UnsupportedOp(format!(
+                    "transcribe_beam: model `{model}` (voxtral backend) does not support \
+                     word_timestamps (Whisper-only cross-attention alignment, M4-20)",
+                ))));
+            }
             let beam_size_effective = req.beam_size.unwrap_or(0);
             match beam_size_effective {
                 0 | 1 => {
@@ -846,6 +1371,7 @@ impl TranscribeService for InferenceService {
                     return Ok(TranscribeBeamResponse {
                         text,
                         alternatives: Vec::new(),
+                        words: Vec::new(),
                     });
                 }
                 _ => {
@@ -878,13 +1404,108 @@ impl TranscribeService for InferenceService {
                         .first()
                         .map(|a| a.text.clone())
                         .unwrap_or_default();
-                    return Ok(TranscribeBeamResponse { text, alternatives });
+                    return Ok(TranscribeBeamResponse {
+                        text,
+                        alternatives,
+                        words: Vec::new(),
+                    });
                 }
             }
         }
 
         Err(ServiceError::UnknownModel(model.to_owned()))
     }
+}
+
+/// Builds the Whisper [`BeamSearchConfig`] from a beam request (M3-15 length
+/// penalty / n-best / n-gram + M4-20 `word_timestamps`). Extracted from
+/// [`InferenceService::transcribe_beam`] so the request→config passthrough —
+/// including the M4-20 `word_timestamps` bit — is unit-testable without a real
+/// engine.
+///
+/// # Errors
+///
+/// [`ServiceError::Inference`]([`VokraError::InvalidArgument`]) if
+/// `length_penalty` is negative or non-finite (the GNMT ranking would be
+/// undefined, FR-EX-08).
+fn whisper_beam_config(
+    n: usize,
+    req: &TranscribeBeamRequest,
+    model: &str,
+) -> Result<BeamSearchConfig, ServiceError> {
+    // length_penalty defaults to 1.0 to match `BeamSearchConfig::new` (HF
+    // length_penalty), NOT the Voxtral default of 0.6 — the two engines use
+    // different ranking primitives.
+    let length_penalty = req.length_penalty.unwrap_or(1.0);
+    if !length_penalty.is_finite() || length_penalty < 0.0 {
+        return Err(ServiceError::Inference(VokraError::InvalidArgument(
+            format!(
+                "transcribe_beam: model `{model}` (whisper backend) requires length_penalty to be a \
+             non-negative finite float (maps to BeamSearchConfig::length_normalization), got \
+             {length_penalty}",
+            ),
+        )));
+    }
+    let max_new = req
+        .max_new_tokens
+        .filter(|&v| v > 0)
+        .unwrap_or(WHISPER_DEFAULT_MAX_NEW_TOKENS);
+    // `BeamSearchConfig::new(n, max_new)` seeds `length_normalization = 1.0`,
+    // `n_best = 1`, `early_stopping = true`, `word_timestamps = false`,
+    // `no_repeat_ngram_size = 0`. Overlay the caller fields.
+    let mut cfg = BeamSearchConfig::new(n, max_new);
+    cfg.length_normalization = length_penalty;
+    cfg.n_best = n;
+    cfg.no_repeat_ngram_size = req.no_repeat_ngram.unwrap_or(0);
+    cfg.word_timestamps = req.word_timestamps.unwrap_or(false);
+    Ok(cfg)
+}
+
+/// Maps a best hypothesis's word timings (M4-20) into the response DTO,
+/// detokenizing each aligned token span with `detokenize`. The
+/// [`vokra_core::decode::word_timing::WordTiming::token_start`] /
+/// `token_end` are absolute indices into `hyp.tokens` (the Whisper consumer
+/// emits them so, see `whisper::beam_glue`).
+///
+/// `detokenize` is passed as a closure (the caller supplies
+/// [`WhisperAsr::render_ids`]) so the span→DTO mapping is unit-testable
+/// without a real engine.
+///
+/// Returns an empty list when the hypothesis carries no alignment: when word
+/// timestamps were requested, [`vokra_core::decode::beam_search`] already
+/// raised the explicit FR-EX-08 error for a model without alignment heads
+/// before we reach here, so this branch is only hit off the word-timestamp
+/// path.
+///
+/// # Errors
+///
+/// [`ServiceError::Inference`] if a timing's token span is out of range
+/// (an alignment/decoder bug, surfaced not swallowed) or detokenization fails.
+fn whisper_word_timestamps(
+    hyp: &BeamHypothesis,
+    detokenize: impl Fn(&[u32]) -> vokra_core::Result<String>,
+) -> Result<Vec<WordTimestamp>, ServiceError> {
+    let Some(timings) = &hyp.word_timestamps else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(timings.len());
+    for w in timings {
+        let span = hyp.tokens.get(w.token_start..w.token_end).ok_or_else(|| {
+            ServiceError::Inference(VokraError::InvalidArgument(format!(
+                "transcribe_beam: word-timing token span {}..{} out of range for {} tokens",
+                w.token_start,
+                w.token_end,
+                hyp.tokens.len(),
+            )))
+        })?;
+        let word = detokenize(span).map_err(ServiceError::Inference)?;
+        out.push(WordTimestamp {
+            word,
+            start: w.start as f64,
+            end: w.end as f64,
+        });
+    }
+    Ok(out)
 }
 
 impl SynthesizeService for InferenceService {
@@ -894,10 +1515,35 @@ impl SynthesizeService for InferenceService {
         request: &SynthesisRequest,
     ) -> Result<SynthesizedAudio, ServiceError> {
         match model {
-            model_names::PIPER_PLUS => self
-                .tts_piper
-                .synthesize_full(request, self.phonemizer.as_ref())
-                .map_err(ServiceError::Inference),
+            // `tts-1` is the OpenAI stock alias for the default TTS engine
+            // (cc-38) — same treatment as `whisper-1` on the ASR side.
+            model_names::PIPER_PLUS | model_names::TTS_1 => {
+                // cc-18 (2026-07-19 M4-residual audit): a `language` the voice
+                // does not support must be an explicit error at the service
+                // boundary. The engine's `synthesize_full` maps an unknown
+                // code to `None` and silently falls back to the phonemizer's
+                // detected language (crates/vokra-models/src/piper_plus/mod.rs
+                // `language_id(..).unwrap_or(utt.lid)`) — honest surfaces
+                // must reject BEFORE that fallback (FR-EX-08). The supported
+                // set comes from the voice GGUF's own
+                // `vokra.piper.language_codes` metadata.
+                if let Some(lang) = request.language.as_deref() {
+                    let cfg = self.tts_piper.config();
+                    if cfg.language_id(lang).is_none() {
+                        return Err(ServiceError::Inference(VokraError::InvalidArgument(
+                            format!(
+                                "synthesize: language `{lang}` is not supported by the loaded \
+                                 piper-plus voice (supported: [{}]) — refusing to silently fall \
+                                 back to the voice default (FR-EX-08)",
+                                cfg.language_codes.join(", "),
+                            ),
+                        )));
+                    }
+                }
+                self.tts_piper
+                    .synthesize_full(request, self.phonemizer.as_ref())
+                    .map_err(ServiceError::Inference)
+            }
             model_names::KOKORO => {
                 if self.tts_kokoro.is_none() {
                     return Err(ServiceError::UnknownModel(model.to_owned()));
@@ -1066,6 +1712,42 @@ fn open_gguf(slot: &'static str, path: &Path) -> Result<GgufFile, ServiceError> 
         path: path.to_path_buf(),
         source: VokraError::ModelLoad(format!("{slot} GGUF at {path:?}: {e}")),
     })
+}
+
+/// The one canonical "tokenizer sidecar without its GGUF" error, shared by
+/// the up-front [`ServiceConfig::validate`] pass and the loader below so the
+/// two can never word it differently.
+///
+/// `slot` is the hyphenated engine name (`whisper-large-v3`); the message
+/// quotes the underscore FIELD names, which is what an operator reading a
+/// TOML file or a `ServiceConfig` literal is looking at.
+fn orphan_tokenizer_error(slot: &str, tokenizer: &Path) -> ServiceError {
+    let field = slot.replace('-', "_");
+    ServiceError::InvalidConfig(format!(
+        "{field}_tokenizer set without {field}_gguf (orphan sidecar: {tokenizer:?}); \
+         refusing to start with a half-configured slot"
+    ))
+}
+
+/// Load an OPTIONAL Whisper slot (large-v3 + the cc-39 small / medium /
+/// turbo sizes).
+///
+/// Returns `Ok(None)` when the slot is simply not configured. The
+/// orphan-tokenizer arm is normally unreachable — [`ServiceConfig::validate`]
+/// rejects that combination before `build` reads any file — but it is kept
+/// rather than `unreachable!()`d so this function is total on its own terms:
+/// a future caller cannot turn a half-configured slot into a silent `None`.
+fn load_optional_whisper(
+    slot: &'static str,
+    gguf: Option<&Path>,
+    tokenizer: Option<&Path>,
+    backend: BackendKind,
+) -> Result<Option<Arc<WhisperAsr>>, ServiceError> {
+    match (gguf, tokenizer) {
+        (Some(path), tok) => Ok(Some(Arc::new(load_whisper(slot, path, tok, backend)?))),
+        (None, Some(tok)) => Err(orphan_tokenizer_error(slot, tok)),
+        (None, None) => Ok(None),
+    }
 }
 
 fn load_whisper(
@@ -1335,6 +2017,7 @@ mod registry {
                     return Ok(TranscribeBeamResponse {
                         text: self.transcribe(model, pcm)?,
                         alternatives: Vec::new(),
+                        words: Vec::new(),
                     });
                 }
                 let ngram = req.no_repeat_ngram.unwrap_or(0);
@@ -1361,7 +2044,11 @@ mod registry {
                     })
                     .collect();
                 let text = alternatives[0].text.clone();
-                return Ok(TranscribeBeamResponse { text, alternatives });
+                return Ok(TranscribeBeamResponse {
+                    text,
+                    alternatives,
+                    words: Vec::new(),
+                });
             }
             // Voxtral: beam supported (Wave 10).
             if matches!(
@@ -1375,6 +2062,7 @@ mod registry {
                     return Ok(TranscribeBeamResponse {
                         text: self.transcribe(model, pcm)?,
                         alternatives: Vec::new(),
+                        words: Vec::new(),
                     });
                 }
                 // Emit `bs` synthetic ranked alternatives so the response
@@ -1388,7 +2076,11 @@ mod registry {
                     })
                     .collect();
                 let text = alternatives[0].text.clone();
-                return Ok(TranscribeBeamResponse { text, alternatives });
+                return Ok(TranscribeBeamResponse {
+                    text,
+                    alternatives,
+                    words: Vec::new(),
+                });
             }
             Err(ServiceError::UnknownModel(model.to_owned()))
         }
@@ -1476,6 +2168,7 @@ mod registry {
                 length_penalty: Some(0.6),
                 no_repeat_ngram: Some(2),
                 max_new_tokens: Some(16),
+                word_timestamps: None,
             };
             let resp = svc
                 .transcribe_beam(alias, &pcm, &req)
@@ -1558,6 +2251,7 @@ mod registry {
             length_penalty: Some(1.0),
             no_repeat_ngram: None,
             max_new_tokens: None,
+            word_timestamps: None,
         };
         let resp = svc
             .transcribe_beam(model_names::WHISPER_BASE, &pcm, &req)
@@ -1722,6 +2416,217 @@ mod registry {
         }
     }
 
+    // -----------------------------------------------------------------
+    // M4-20 — word-timestamp request → BeamSearchConfig → response DTO
+    // -----------------------------------------------------------------
+
+    /// The M4-20 wiring the real `InferenceService` whisper branch relies on:
+    /// `req.word_timestamps` must reach `BeamSearchConfig::word_timestamps`.
+    /// `whisper_beam_config` is the exact helper the branch calls, so this
+    /// exercises the real passthrough (incl. the M3-15 length-penalty /
+    /// n-gram / n-best fields) without needing a real Whisper GGUF.
+    #[test]
+    fn whisper_beam_config_passes_word_timestamps_and_beam_fields() {
+        // word_timestamps = Some(true) flows into the config flag.
+        let req = TranscribeBeamRequest {
+            word_timestamps: Some(true),
+            ..Default::default()
+        };
+        let cfg = whisper_beam_config(3, &req, model_names::WHISPER_BASE).unwrap();
+        assert!(cfg.word_timestamps, "word_timestamps must reach the config");
+        assert_eq!(cfg.beam_width, 3);
+
+        // Defaults off, and the other beam knobs still pass through.
+        let req2 = TranscribeBeamRequest {
+            beam_size: Some(4),
+            length_penalty: Some(0.7),
+            no_repeat_ngram: Some(2),
+            ..Default::default()
+        };
+        let cfg2 = whisper_beam_config(4, &req2, model_names::WHISPER_BASE).unwrap();
+        assert!(!cfg2.word_timestamps, "word_timestamps defaults off");
+        assert_eq!(cfg2.n_best, 4);
+        assert_eq!(cfg2.no_repeat_ngram_size, 2);
+        assert!((cfg2.length_normalization - 0.7).abs() < 1e-6);
+
+        // A negative length_penalty is still rejected (FR-EX-08).
+        let bad = TranscribeBeamRequest {
+            length_penalty: Some(-0.5),
+            ..Default::default()
+        };
+        assert!(matches!(
+            whisper_beam_config(2, &bad, model_names::WHISPER_BASE),
+            Err(ServiceError::Inference(VokraError::InvalidArgument(_))),
+        ));
+    }
+
+    /// The span→DTO mapping (`whisper_word_timestamps`) turns the best
+    /// hypothesis's per-word `WordTiming`s into `WordTimestamp`s, detokenizing
+    /// each absolute token span. Driven with a synthetic hypothesis + a fake
+    /// detokenizer, so it proves the wiring independent of any real model.
+    #[test]
+    fn whisper_word_timestamps_maps_spans_to_dto() {
+        use vokra_core::decode::word_timing::WordTiming;
+        // prefix (1) + 3 content tokens + eot; two words spanning [1,3) and [3,4).
+        let hyp = BeamHypothesis {
+            tokens: vec![50258, 100, 101, 102, 50257],
+            score: -1.0,
+            normalized_score: -0.5,
+            word_timestamps: Some(vec![
+                WordTiming {
+                    token_start: 1,
+                    token_end: 3,
+                    start: 0.0,
+                    end: 0.5,
+                },
+                WordTiming {
+                    token_start: 3,
+                    token_end: 4,
+                    start: 0.5,
+                    end: 1.0,
+                },
+            ]),
+        };
+        // Fake detokenizer: joins the span ids so we can see which span each
+        // word covers (a real engine would return words).
+        let words = whisper_word_timestamps(&hyp, |ids| {
+            Ok(ids.iter().map(u32::to_string).collect::<Vec<_>>().join("_"))
+        })
+        .unwrap();
+        assert_eq!(
+            words,
+            vec![
+                WordTimestamp {
+                    word: "100_101".into(),
+                    start: 0.0,
+                    end: 0.5,
+                },
+                WordTimestamp {
+                    word: "102".into(),
+                    start: 0.5,
+                    end: 1.0,
+                },
+            ],
+        );
+    }
+
+    /// No alignment on the hypothesis → an empty list (not an error): the
+    /// explicit FR-EX-08 error for a model without alignment heads is raised
+    /// upstream in `beam_search`, before this mapping runs.
+    #[test]
+    fn whisper_word_timestamps_none_alignment_is_empty() {
+        let hyp = BeamHypothesis {
+            tokens: vec![1, 2, 3],
+            score: 0.0,
+            normalized_score: 0.0,
+            word_timestamps: None,
+        };
+        let words = whisper_word_timestamps(&hyp, |_| Ok(String::new())).unwrap();
+        assert!(words.is_empty());
+    }
+
+    /// An out-of-range token span surfaces an explicit error — never a
+    /// silently-truncated or fabricated word (FR-EX-08).
+    #[test]
+    fn whisper_word_timestamps_out_of_range_span_errors() {
+        use vokra_core::decode::word_timing::WordTiming;
+        let hyp = BeamHypothesis {
+            tokens: vec![1, 2],
+            score: 0.0,
+            normalized_score: 0.0,
+            word_timestamps: Some(vec![WordTiming {
+                token_start: 1,
+                token_end: 5, // past the end of `tokens`
+                start: 0.0,
+                end: 1.0,
+            }]),
+        };
+        let err = whisper_word_timestamps(&hyp, |_| Ok(String::new())).unwrap_err();
+        assert!(matches!(
+            err,
+            ServiceError::Inference(VokraError::InvalidArgument(_)),
+        ));
+    }
+
+    /// Test double honouring `word_timestamps` the way the real whisper branch
+    /// does — surfacing per-word entries only when the flag is set. Proves the
+    /// request field flows all the way to `TranscribeBeamResponse::words`
+    /// independent of a real model (the "synthetic scorer returns Some(timings)"
+    /// wiring check).
+    struct WhisperWordTsCapable;
+    impl TranscribeService for WhisperWordTsCapable {
+        fn transcribe(&self, model: &str, _pcm: &[f32]) -> Result<String, ServiceError> {
+            match model {
+                model_names::WHISPER_1 | model_names::WHISPER_BASE => Ok("hello world".into()),
+                other => Err(ServiceError::UnknownModel(other.to_owned())),
+            }
+        }
+
+        fn transcribe_beam(
+            &self,
+            model: &str,
+            _pcm: &[f32],
+            req: &TranscribeBeamRequest,
+        ) -> Result<TranscribeBeamResponse, ServiceError> {
+            if !matches!(model, model_names::WHISPER_1 | model_names::WHISPER_BASE) {
+                return Err(ServiceError::UnknownModel(model.to_owned()));
+            }
+            let words = if req.word_timestamps.unwrap_or(false) {
+                vec![
+                    WordTimestamp {
+                        word: "hello".into(),
+                        start: 0.0,
+                        end: 0.5,
+                    },
+                    WordTimestamp {
+                        word: "world".into(),
+                        start: 0.5,
+                        end: 1.0,
+                    },
+                ]
+            } else {
+                Vec::new()
+            };
+            Ok(TranscribeBeamResponse {
+                text: "hello world".into(),
+                alternatives: Vec::new(),
+                words,
+            })
+        }
+    }
+
+    #[test]
+    fn word_timestamps_request_flows_to_response_words() {
+        let svc: Box<dyn TranscribeService> = Box::new(WhisperWordTsCapable);
+        let pcm = vec![0.0f32; 16];
+
+        // Default request (word_timestamps None) → empty words (backward compat).
+        let r0 = svc
+            .transcribe_beam(
+                model_names::WHISPER_BASE,
+                &pcm,
+                &TranscribeBeamRequest::default(),
+            )
+            .unwrap();
+        assert!(
+            r0.words.is_empty(),
+            "a request that never sets word_timestamps must surface no words",
+        );
+
+        // word_timestamps = Some(true) → the response carries per-word entries.
+        let req = TranscribeBeamRequest {
+            word_timestamps: Some(true),
+            ..Default::default()
+        };
+        let r1 = svc
+            .transcribe_beam(model_names::WHISPER_BASE, &pcm, &req)
+            .unwrap();
+        assert_eq!(r1.words.len(), 2, "word_timestamps must surface words");
+        assert_eq!(r1.words[0].word, "hello");
+        assert_eq!(r1.words[1].word, "world");
+        assert!(r1.words[0].start <= r1.words[0].end);
+    }
+
     #[test]
     fn beam_response_types_are_send_sync() {
         // The beam response propagates across HTTP handlers, so keeping
@@ -1730,6 +2635,7 @@ mod registry {
         assert_send_sync::<TranscribeBeamRequest>();
         assert_send_sync::<TranscribeBeamResponse>();
         assert_send_sync::<TranscribeAlternative>();
+        assert_send_sync::<WordTimestamp>();
     }
 
     #[test]
@@ -2324,5 +3230,258 @@ mod compliance {
             opted_out.backend_status(),
             vokra_core::WatermarkBackendStatus::Deferred,
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// cc-39 / cc-30 — whisper size slots + per-model backend selection.
+// (2026-07-19 M4-residual audit.)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod size_slots_and_backends {
+    //! Plumbing tests that need no weights: alias stability, the
+    //! no-substitution rule for unconfigured sizes, slot→backend resolution,
+    //! and the two config-rejection paths (uncompiled backend, un-honourable
+    //! override).
+    //!
+    //! The real-GGUF counterpart (a wired server actually answering on each
+    //! slot) lives in `tests/real_gguf_slots.rs`, env-gated — see cc-40.
+
+    use super::*;
+    use std::path::PathBuf;
+
+    fn cfg() -> ServiceConfig {
+        ServiceConfig::minimum(
+            PathBuf::from("/tmp/base.gguf"),
+            PathBuf::from("/tmp/piper.gguf"),
+        )
+    }
+
+    #[test]
+    fn cc39_size_aliases_are_stable_and_distinct() {
+        assert_eq!(model_names::WHISPER_SMALL, "whisper-small");
+        assert_eq!(model_names::WHISPER_MEDIUM, "whisper-medium");
+        assert_eq!(model_names::WHISPER_TURBO, "whisper-turbo");
+        assert_eq!(
+            model_names::WHISPER_LARGE_V3_TURBO,
+            "whisper-large-v3-turbo"
+        );
+        // Every advertised ASR alias must be unique — two names collapsing to
+        // one string would make the catalogue lie about what it accepts.
+        let all = [
+            model_names::WHISPER_1,
+            model_names::WHISPER_BASE,
+            model_names::WHISPER_SMALL,
+            model_names::WHISPER_MEDIUM,
+            model_names::WHISPER_TURBO,
+            model_names::WHISPER_LARGE_V3_TURBO,
+            model_names::WHISPER_LARGE_V3,
+        ];
+        let mut sorted = all.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), all.len(), "aliases must be distinct: {all:?}");
+    }
+
+    #[test]
+    fn cc39_minimum_config_leaves_every_size_slot_absent() {
+        let c = cfg();
+        assert!(c.whisper_small_gguf.is_none());
+        assert!(c.whisper_medium_gguf.is_none());
+        assert!(c.whisper_turbo_gguf.is_none());
+        assert!(c.whisper_small_tokenizer.is_none());
+        assert!(c.whisper_medium_tokenizer.is_none());
+        assert!(c.whisper_turbo_tokenizer.is_none());
+    }
+
+    /// RED-LINE (cc-39): a tokenizer sidecar with no matching GGUF is a
+    /// misconfiguration for EVERY optional size, not just large-v3. Silently
+    /// ignoring it would hide a typo'd path.
+    #[test]
+    fn cc39_tokenizer_without_gguf_is_rejected_for_every_size() {
+        // `WhisperAsr` is not `Debug`, so the Ok arm cannot go through
+        // `expect_err` — match instead.
+        for slot in ["whisper-small", "whisper-medium", "whisper-turbo"] {
+            match load_optional_whisper(
+                slot,
+                None,
+                Some(Path::new("/tmp/orphan.tok")),
+                BackendKind::Cpu,
+            ) {
+                Err(ServiceError::InvalidConfig(msg)) => {
+                    let field = slot.replace('-', "_");
+                    assert!(
+                        msg.contains(&field) && msg.contains("orphan.tok"),
+                        "{slot}: the error must name the field and the orphan path; got: {msg}"
+                    );
+                }
+                Err(other) => panic!("{slot}: expected InvalidConfig, got {other:?}"),
+                Ok(_) => panic!("{slot}: orphan tokenizer must be rejected, not accepted"),
+            }
+        }
+        // Neither set = simply not configured, which is fine.
+        match load_optional_whisper("test-slot", None, None, BackendKind::Cpu) {
+            Ok(None) => {}
+            Ok(Some(_)) => panic!("an unconfigured slot must not produce an engine"),
+            Err(e) => panic!("an unconfigured slot is not an error, got {e:?}"),
+        }
+    }
+
+    /// The orphan-sidecar check must fire BEFORE any file is opened, for
+    /// every size — otherwise a config typo is masked by whichever GGUF
+    /// happens to fail to load first. This is the cc-39 generalisation of
+    /// `registry::build_rejects_large_v3_tokenizer_without_gguf`, which pins
+    /// the same ordering for large-v3; both paths are non-existent here, so
+    /// only the up-front validation can produce `InvalidConfig`.
+    #[test]
+    fn cc39_orphan_tokenizer_is_caught_before_any_file_is_read() {
+        /// (field stem, setter for that size's tokenizer sidecar).
+        type SidecarSetter = (&'static str, fn(&mut ServiceConfig, PathBuf));
+        let sizes: [SidecarSetter; 3] = [
+            ("whisper_small", |c, p| c.whisper_small_tokenizer = Some(p)),
+            ("whisper_medium", |c, p| {
+                c.whisper_medium_tokenizer = Some(p)
+            }),
+            ("whisper_turbo", |c, p| c.whisper_turbo_tokenizer = Some(p)),
+        ];
+        for (field, set) in sizes {
+            let mut c = cfg(); // both required paths point at /tmp/*.gguf, which do not exist
+            set(&mut c, PathBuf::from("/nonexistent/tok.bin"));
+            match InferenceService::build(&c) {
+                Err(ServiceError::InvalidConfig(msg)) => {
+                    assert!(
+                        msg.contains(&format!("{field}_tokenizer"))
+                            && msg.contains(&format!("{field}_gguf")),
+                        "{field}: the config error must name both fields; got: {msg}"
+                    );
+                }
+                Err(other) => panic!(
+                    "{field}: config validation must precede file I/O, but got a load error: \
+                     {other}"
+                ),
+                Ok(_) => panic!("{field}: orphan sidecar must be rejected"),
+            }
+        }
+    }
+
+    /// cc-30: a slot with no override inherits the global default; a slot
+    /// with one uses it. Silero is the documented exception.
+    #[test]
+    fn cc30_backend_for_resolves_override_then_default() {
+        let mut c = cfg();
+        c.backend = BackendKind::Metal;
+        assert_eq!(c.backend_for(ModelSlot::WhisperBase), BackendKind::Metal);
+        assert_eq!(c.backend_for(ModelSlot::PiperPlus), BackendKind::Metal);
+
+        c.backend_overrides
+            .set(ModelSlot::WhisperBase, BackendKind::Cpu);
+        assert_eq!(
+            c.backend_for(ModelSlot::WhisperBase),
+            BackendKind::Cpu,
+            "an override must beat the global default"
+        );
+        assert_eq!(
+            c.backend_for(ModelSlot::PiperPlus),
+            BackendKind::Metal,
+            "other slots keep the global default"
+        );
+
+        // Silero has no backend selector at all — it is CPU whatever the
+        // global default says (and the startup path announces that).
+        assert_eq!(
+            c.backend_for(ModelSlot::SileroVad),
+            BackendKind::Cpu,
+            "silero-vad has no `with_backend`; it can only be CPU"
+        );
+    }
+
+    /// cc-30 FR-EX-08: an override the runtime cannot honour is rejected,
+    /// never accepted-then-ignored.
+    #[test]
+    fn cc30_silero_backend_override_is_an_explicit_error() {
+        let mut c = cfg();
+        assert!(c.validate_backend_overrides().is_ok(), "no override = fine");
+
+        c.backend_overrides
+            .set(ModelSlot::SileroVad, BackendKind::Metal);
+        let err = c
+            .validate_backend_overrides()
+            .expect_err("silero override must be rejected");
+        let msg = err.to_string();
+        assert!(
+            matches!(err, ServiceError::InvalidConfig(_)),
+            "expected InvalidConfig, got {err:?}"
+        );
+        assert!(
+            msg.contains("silero-vad") && msg.contains("no backend selector"),
+            "the error must name the slot and the reason; got: {msg}"
+        );
+    }
+
+    /// cc-30: CPU is always compiled in, so it always probes clean. This is
+    /// the control for the negative case below.
+    #[test]
+    fn cc30_cpu_backend_is_always_available() {
+        ensure_backend_available(BackendKind::Cpu).expect("cpu must always be selectable");
+    }
+
+    /// cc-30 core contract: a backend that was NOT compiled into this binary
+    /// is an explicit error naming the Cargo feature to rebuild with — never
+    /// a silent downgrade to CPU.
+    ///
+    /// Which backends are compiled in depends on this build's features, so
+    /// the test asserts the *shape* of the outcome per backend rather than
+    /// hard-coding a verdict: either the probe succeeds (feature on, device
+    /// present) or it fails with an actionable rebuild instruction. A silent
+    /// `Ok` for a backend that cannot run is the only forbidden outcome, and
+    /// that is exactly what `Compute::for_backend` rules out.
+    #[test]
+    fn cc30_uncompiled_backend_error_names_its_cargo_feature() {
+        for (backend, feature) in [
+            (BackendKind::Metal, "metal"),
+            (BackendKind::Cuda, "cuda"),
+            (BackendKind::Vulkan, "vulkan"),
+        ] {
+            match ensure_backend_available(backend) {
+                Ok(()) => {
+                    // Compiled in AND the device opened. Nothing to assert
+                    // beyond "it did not lie" — the engines will really run
+                    // there. Printed so `--nocapture` records WHICH arm this
+                    // build took (the assertion alone cannot tell you).
+                    eprintln!("cc30: {backend:?} probe = AVAILABLE (feature `{feature}` on)");
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    assert!(
+                        msg.contains(&format!("--features {feature}")),
+                        "{backend:?} rejection must tell the operator which feature to \
+                         rebuild with; got: {msg}"
+                    );
+                    assert!(
+                        msg.contains("FR-EX-08"),
+                        "{backend:?} rejection must state the no-fallback rule; got: {msg}"
+                    );
+                    eprintln!("cc30: {backend:?} probe = REJECTED (actionable): {msg}");
+                }
+            }
+        }
+    }
+
+    /// The default build is CPU-only, so `ServiceConfig::minimum` must keep
+    /// selecting CPU — cc-30 adds a knob, it does not change the default.
+    #[test]
+    fn cc30_minimum_config_still_defaults_to_cpu_everywhere() {
+        let c = cfg();
+        assert_eq!(c.backend, BackendKind::Cpu);
+        assert!(c.backend_overrides.is_empty());
+        for slot in ModelSlot::ALL {
+            assert_eq!(
+                c.backend_for(slot),
+                BackendKind::Cpu,
+                "slot {} must default to CPU",
+                slot.as_str()
+            );
+        }
     }
 }

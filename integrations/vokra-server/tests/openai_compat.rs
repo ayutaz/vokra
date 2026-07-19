@@ -25,11 +25,10 @@
 //! shutdown trigger. It never opens a listening socket on a fixed port,
 //! so parallel `cargo test` runs and constrained CI sandboxes work.
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use vokra_server::{Config, spawn_server_for_test};
+use vokra_server::{Config, spawn_server_for_test, spawn_server_for_test_wired};
 
 // ---------- fixture: minimal 16-bit PCM WAV of a 440 Hz tone ----------
 
@@ -121,69 +120,13 @@ fn build_multipart(boundary: &str, wav: &[u8], model: &str) -> Vec<u8> {
     b
 }
 
-/// POST the multipart body via a raw TCP write/read. Returns
-/// `(status, body_bytes)`. Uses a bounded read + 5 s hard timeout so a
-/// stuck server can't hang the test suite.
-async fn http_post_multipart(
-    addr: SocketAddr,
-    path: &str,
-    boundary: &str,
-    body: &[u8],
-) -> std::io::Result<(u16, Vec<u8>)> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut sock = tokio::net::TcpStream::connect(addr).await?;
-    let head = format!(
-        "POST {path} HTTP/1.1\r\n\
-         Host: 127.0.0.1\r\n\
-         Content-Type: multipart/form-data; boundary={boundary}\r\n\
-         Content-Length: {len}\r\n\
-         Connection: close\r\n\r\n",
-        len = body.len(),
-    );
-    sock.write_all(head.as_bytes()).await?;
-    sock.write_all(body).await?;
-    sock.flush().await?;
-
-    let mut buf = Vec::new();
-    tokio::time::timeout(Duration::from_secs(5), sock.read_to_end(&mut buf))
-        .await
-        .map_err(|_| std::io::Error::other("http read timeout"))??;
-
-    // Parse "HTTP/1.1 NNN ..." and split at the header/body boundary.
-    let sep = buf
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| std::io::Error::other("no header terminator"))?;
-    let head_str = std::str::from_utf8(&buf[..sep])
-        .map_err(|e| std::io::Error::other(format!("utf8: {e}")))?;
-    let first_line = head_str.lines().next().unwrap_or("");
-    let status: u16 = first_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| std::io::Error::other(format!("bad status line: {first_line:?}")))?;
-
-    // Body may be chunked or plain. `Connection: close` above requests
-    // plain framing, and hyper honours that, so treat the rest as body.
-    // If a `Transfer-Encoding: chunked` slipped in, tolerate it by
-    // stripping the first chunk-size line (best-effort — the T07 handler
-    // returns a small JSON that fits in one chunk).
-    let body_bytes = if head_str
-        .lines()
-        .any(|l| l.eq_ignore_ascii_case("Transfer-Encoding: chunked"))
-    {
-        let raw = &buf[sep + 4..];
-        // First line is hex size; skip to the following CRLF.
-        raw.windows(2)
-            .position(|w| w == b"\r\n")
-            .map(|i| raw[i + 2..].to_vec())
-            .unwrap_or_else(|| raw.to_vec())
-    } else {
-        buf[sep + 4..].to_vec()
-    };
-
-    Ok((status, body_bytes))
-}
+// cc-09 (2026-07-19 M4-residual audit): the per-file raw-TCP helper is
+// replaced by the shared `tests/support/mod.rs` client (complete-response
+// detection + bounded reset retry — see its module docs for the root cause
+// this fixes; this file POSTs the LARGEST bodies of the suite, so it had
+// the widest unread-body RST window on unmounted-route runs).
+mod support;
+use support::http_post_multipart;
 
 // ---------- schema check ----------
 
@@ -255,6 +198,7 @@ async fn run_row(row: &Row) {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         wyoming_bind: "127.0.0.1:0".parse().unwrap(),
         config_file: None,
+        ..Config::default()
     };
     let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn server");
 
@@ -322,6 +266,7 @@ async fn server_boots_and_health_probes_green() {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         wyoming_bind: "127.0.0.1:0".parse().unwrap(),
         config_file: None,
+        ..Config::default()
     };
     let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn");
     let mut sock = tokio::net::TcpStream::connect(handles.http_actual)
@@ -342,4 +287,182 @@ async fn server_boots_and_health_probes_green() {
     );
     trigger.trigger();
     tokio::time::sleep(Duration::from_millis(20)).await;
+}
+
+// ===========================================================================
+// cc-19 (2026-07-19 M4-residual audit) — real-GGUF word-timestamps e2e.
+//
+// The unit/route suites drive the words[] surface with mocks; this row proves
+// the WIRED production path end-to-end: real Whisper GGUF + real speech WAV →
+// `verbose_json` + `timestamp_granularities[]=word` → a non-empty `words[]`
+// with monotone, in-bounds timings.
+//
+// Gated exactly like the rows above: absent GGUFs skip with an explicit
+// eprintln (never a silent success, FR-EX-08 posture). `spawn_server_for_test_wired`
+// runs the FULL production startup (eager registry build), so the tested
+// surface IS the production surface.
+//
+// VERIFIED 2026-07-19 on the M1 iMac (this exact invocation):
+//
+//   VOKRA_WHISPER_BASE_GGUF=~/.cache/vokra-eval/gguf/whisper-base.gguf \
+//   VOKRA_PIPER_PLUS_GGUF=~/.cache/vokra-eval/gguf/piper-plus-css10-ja-6lang-neutralspk.gguf \
+//   cargo test --release --manifest-path integrations/vokra-server/Cargo.toml \
+//     --test openai_compat -- --nocapture verbose_json_word_timestamps_e2e
+//
+//   → PASS — 22 words over 11.00s, text=" And so my fellow Americans, ask not
+//     what your country can do for you, ask what you can do for your country."
+//
+// NOTE on the piper path: the wired startup requires BOTH a Whisper and a
+// piper voice (`service_config_from_config`'s required minimum), so this ASR
+// test needs a loadable voice even though it never synthesizes. Of the voices
+// in the local eval cache only `piper-plus-css10-ja-6lang-neutralspk.gguf`
+// loads against the current loader; the others fail on stale tensor
+// shapes/names (`spk_proj.0.weight` absent, `dec.ups.2.weight` [64,32,8] vs
+// [64,32,16]) — a fixture-vintage issue, unrelated to cc-19. A configured but
+// unloadable GGUF stays a HARD failure here (the operator set the path;
+// silently skipping it would violate FR-EX-08).
+// ===========================================================================
+
+/// The piper voice the wired startup path also requires (the server refuses
+/// to boot ASR-only — `service_config_from_config`'s required minimum).
+fn piper_gguf_for_wired_boot() -> Option<PathBuf> {
+    std::env::var_os("VOKRA_PIPER_PLUS_GGUF").map(PathBuf::from)
+}
+
+/// The 30 s JFK fixture committed for the Whisper real-audio parity CI
+/// (`tests/fixtures/audio/jfk-30s.wav`, repo root). Returns `None` when the
+/// file is absent (the sidecar-hash placeholder state).
+fn jfk_wav_path() -> Option<PathBuf> {
+    let p =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/audio/jfk-30s.wav");
+    p.exists().then_some(p)
+}
+
+/// Multipart body for the word-timestamps ask.
+fn build_multipart_words(boundary: &str, wav: &[u8], model: &str) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    b.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"file\"; filename=\"jfk-30s.wav\"\r\n",
+    );
+    b.extend_from_slice(b"Content-Type: audio/wav\r\n\r\n");
+    b.extend_from_slice(wav);
+    b.extend_from_slice(b"\r\n");
+    for (name, value) in [
+        ("model", model),
+        ("response_format", "verbose_json"),
+        ("timestamp_granularities[]", "word"),
+    ] {
+        b.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        b.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+        );
+        b.extend_from_slice(value.as_bytes());
+        b.extend_from_slice(b"\r\n");
+    }
+    b.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    b
+}
+
+#[tokio::test]
+async fn verbose_json_word_timestamps_e2e_with_real_gguf() {
+    let (Some(whisper), Some(piper), Some(wav_path)) = (
+        whisper_gguf_for("base"),
+        piper_gguf_for_wired_boot(),
+        jfk_wav_path(),
+    ) else {
+        eprintln!(
+            "openai_compat[cc-19 words e2e]: SKIP — needs VOKRA_WHISPER_BASE_GGUF \
+             (or VOKRA_WHISPER_GGUF) + VOKRA_PIPER_PLUS_GGUF + \
+             tests/fixtures/audio/jfk-30s.wav. Not a pass.",
+        );
+        return;
+    };
+    if !whisper.exists() || !piper.exists() {
+        eprintln!(
+            "openai_compat[cc-19 words e2e]: SKIP — configured GGUF path missing \
+             (whisper={}, piper={}). Not a pass.",
+            whisper.display(),
+            piper.display(),
+        );
+        return;
+    }
+    let wav = std::fs::read(&wav_path).expect("read jfk fixture");
+
+    let cfg = Config {
+        http_bind: "127.0.0.1:0".parse().unwrap(),
+        wyoming_bind: "127.0.0.1:0".parse().unwrap(),
+        config_file: None,
+        whisper_base_gguf: Some(whisper),
+        piper_plus_gguf: Some(piper),
+        ..Config::default()
+    };
+    let (handles, trigger) = spawn_server_for_test_wired(cfg)
+        .await
+        .expect("wired server must boot with the configured GGUFs");
+
+    let boundary = "----vokraServerCc19Boundary";
+    let body = build_multipart_words(boundary, &wav, "whisper-1");
+    // Real 30 s decode with cross-attention alignment — well past the shared
+    // client's 5 s default deadline.
+    let result = support::http_request_with_timeout(
+        handles.http_actual,
+        "POST",
+        "/v1/audio/transcriptions",
+        Some(&format!("multipart/form-data; boundary={boundary}")),
+        &body,
+        Duration::from_secs(300),
+    )
+    .await;
+
+    // Tear the server down before asserting so a failure cannot leak a
+    // listener into the process.
+    trigger.trigger();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let resp = result.expect("POST /v1/audio/transcriptions");
+    assert_eq!(
+        resp.status,
+        200,
+        "cc-19 words e2e: expected 200, got {}; body: {:?}",
+        resp.status,
+        String::from_utf8_lossy(&resp.body),
+    );
+    let v: serde_json::Value =
+        serde_json::from_slice(&resp.body).expect("verbose_json body must be JSON");
+    assert_eq!(v["task"], "transcribe");
+    assert!(
+        v["text"].as_str().is_some_and(|t| !t.trim().is_empty()),
+        "transcription text must be non-empty: {v}",
+    );
+    let words = v["words"].as_array().expect("words[] must be present");
+    assert!(!words.is_empty(), "words[] must be non-empty: {v}");
+
+    // Monotone non-decreasing starts, each span well-formed and inside the
+    // reported duration. A fabricated/degenerate alignment fails here.
+    let duration = v["duration"].as_f64().expect("duration must be a number");
+    let mut prev_start = f64::NEG_INFINITY;
+    for w in words {
+        let start = w["start"].as_f64().expect("word.start must be a number");
+        let end = w["end"].as_f64().expect("word.end must be a number");
+        assert!(
+            w["word"].as_str().is_some(),
+            "word.word must be a string: {w}",
+        );
+        assert!(
+            start >= prev_start,
+            "word starts must be non-decreasing: {start} after {prev_start} in {v}",
+        );
+        assert!(end >= start, "word end {end} must be >= start {start}");
+        assert!(
+            start >= 0.0 && end <= duration + 1.0,
+            "word span [{start}, {end}] must lie inside the {duration}s audio",
+        );
+        prev_start = start;
+    }
+    eprintln!(
+        "openai_compat[cc-19 words e2e]: PASS — {} words over {duration:.2}s, text={:?}",
+        words.len(),
+        v["text"].as_str().unwrap_or_default(),
+    );
 }

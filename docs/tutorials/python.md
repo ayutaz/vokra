@@ -12,7 +12,7 @@ with zero third-party Python runtime dependencies.
 pip install "vokra==0.1.0"
 ```
 
-Pin the exact version — the Vokra C ABI is not frozen before v1.0
+Pin the exact version — the Vokra C ABI is not frozen before v1.0 GA
 (IF-01), so upgrades may require code changes.
 
 **Distribution**: wheels are published on PyPI via `cibuildwheel`. Supported

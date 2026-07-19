@@ -9,9 +9,11 @@
 //! RVV-less harts); the remaining kernels currently forward to the portable
 //! scalar reference in [`super::scalar`]. The runtime dispatch table
 //! nevertheless routes through this module on any host that probes as RVV,
-//! which is what the CI cross-build + differential test verify. Later WPs
-//! (M4-08 for RVV 0.7.1 fallback; M4+ follow-ups for GEMM / softmax / mel
-//! inline-asm rewrites) will replace the scalar delegates one-by-one.
+//! which is what the CI cross-build + differential test verify. The RVV
+//! 0.7.1 fallback tier landed in M4-08 as the encoding-incompatible peer
+//! module [`super::rvv071`] (T-Head C910/C906 — LicheePi 4A / Milk-V Duo);
+//! M4+/M5 follow-ups will replace the remaining scalar delegates (GEMM /
+//! softmax / mel inline-asm rewrites) one-by-one in both tiers.
 //!
 //! # Why inline asm instead of `std::arch::riscv64` intrinsics?
 //!

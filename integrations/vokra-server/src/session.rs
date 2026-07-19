@@ -404,27 +404,29 @@ impl SessionRegistry {
     /// [`SessionGuard::drop`] — direct calls exist only for tests where
     /// a session must be forcibly reclaimed without dropping the guard.
     ///
-    /// Zeroes every layer's KV state for `slot` before returning it to
-    /// the free list. This defence-in-depth zero prevents a subsequent
-    /// acquirer from observing stale KV rows if it forgets to append
-    /// before reading (M3-03 `release_layer` semantics extended to
-    /// "release stream").
+    /// Retires every layer's KV state for `slot` before returning it to
+    /// the free list, so a subsequent acquirer cannot observe stale KV
+    /// rows even if it reads before appending.
     fn release_internal(&self, id: SessionId, slot: StreamSlot) {
         let mut inner = self.lock();
-        // Zero every (layer, block) touched for this stream. We use the
-        // public `iter_time_range` + a manual overwrite via
-        // `append_step` with a zero row, because `PagedKvCache` does not
-        // expose a stream-scoped clear primitive. This is O(n_layer *
-        // n_pages_per_layer * n_head * d_head) and runs strictly on
-        // release; the hot append/read path is unaffected.
+        // cc-37: `PagedKvCache::release_stream` retires the slot in O(1)
+        // by bumping its generation — every row the departing session
+        // stamped then reads as unbound. This replaces the M3-15 T04
+        // stopgap, which zeroed the slot by looping `append_step` with
+        // zero rows over every (layer, committed t): O(n_layer *
+        // committed * n_head * d_head) element writes on every release,
+        // which does not survive contact with large-v3-sized dims.
         //
-        // For M3-15 the registry is sized modestly (n_stream ~ 10, small
-        // decoder dims for tests), so this is bounded. When large-v3 is
-        // wired in an integrator will likely want a purpose-built
-        // `release_stream` API on `PagedKvCache` — filed as follow-up
-        // (M3-15 T04 discussion). Until then we zero conservatively so
-        // "state leak" tests (T10) cannot observe stale data.
-        Self::zero_stream_rows(&mut inner.cache, slot);
+        // The only error is an out-of-range stream, which cannot happen
+        // here — `slot` came from this registry's own free list, sized to
+        // the same `n_stream` the cache was built with. Surfaced as a
+        // panic rather than swallowed so a future refactor that breaks
+        // that invariant is loud (NFR-RL-07 keeps the runtime up via the
+        // HTTP-side CatchPanicLayer).
+        inner
+            .cache
+            .release_stream(slot.0)
+            .expect("stream slot is always in range for this registry's cache");
         // Drop from `live` (O(n_stream), n_stream is bounded and small).
         if let Some(pos) = inner.live.iter().position(|(sid, _)| *sid == id) {
             inner.live.swap_remove(pos);
@@ -432,35 +434,6 @@ impl SessionRegistry {
         // Return to the free list. `push` on a Vec sized to `n_stream`
         // never reallocates (see `Self::new`).
         inner.free_streams.push(slot);
-    }
-
-    /// Zero every previously written row belonging to `slot` in `cache`.
-    ///
-    /// See [`Self::release_internal`] for the rationale (defence in
-    /// depth against a caller reading before appending on the next
-    /// acquire).
-    fn zero_stream_rows(cache: &mut PagedKvCache<f32>, slot: StreamSlot) {
-        let dims = *cache.dims();
-        let per_slot = dims.n_head * dims.d_head;
-        let zeros = vec![0.0_f32; per_slot];
-        // Best-effort: iterate all (layer, t) inside the stream slot and
-        // append zeros. `append_step` will silently re-bind pages that
-        // were previously bound; we only touch time steps up to the
-        // currently committed position — full-arena wipes would defeat
-        // the sparse-page allocator on a lightly used session.
-        //
-        // NOTE: we intentionally treat errors as no-op. The only reason
-        // `append_step` can fail here is (a) a bounds violation (which we
-        // manually check via `dims`) or (b) KV cache exhaustion (which we
-        // avoid by rebinding already-bound pages only). Both are caller
-        // bugs we cannot fix mid-release, and panicking here would break
-        // NFR-RL-07.
-        let committed = cache.positions().min(dims.max_time);
-        for layer in 0..dims.n_layer {
-            for t in 0..committed {
-                let _ = cache.append_step(layer, t, slot.0, 0, &zeros, &zeros);
-            }
-        }
     }
 
     /// Locks the internal `Mutex`, panicking on poisoning. A poisoned
@@ -654,11 +627,19 @@ mod tests {
     }
 
     #[test]
-    fn state_release_zeroes_stream_kv_rows() {
+    fn state_release_retires_stream_kv_rows() {
         // T10 (state leak) primitive check: a session writes to its
         // stream, its guard drops, the next session reuses the same
-        // stream slot and must observe zeros — not the previous
-        // session's data.
+        // stream slot and must NOT observe the previous session's data.
+        //
+        // Since cc-37 the release is O(1) (a generation bump) rather
+        // than a zero-fill, so a retired row reads as `None` instead of
+        // `Some(zeros)`. Both satisfy the isolation property; the
+        // assertion below is written against the property itself — "the
+        // old values are not observable" — so it holds for either
+        // mechanism and, critically, cannot pass vacuously: an
+        // implementation that skipped invalidation entirely would return
+        // `Some([7.0, 8.0])` and fail here.
         let cfg = SessionRegistryConfig {
             n_layer: 1,
             n_head: 1,
@@ -681,17 +662,68 @@ mod tests {
                 assert_eq!(k, &[7.0, 8.0]);
                 assert_eq!(v, &[9.0, 10.0]);
             });
-            // guard dropped here → release zeros the row
+            // guard dropped here → release retires the row
         }
-        // Reacquire — same slot, must see zeros.
+        // Reacquire — same slot, must not see the previous occupant.
         let g2 = reg.try_acquire().unwrap();
         assert_eq!(g2.stream(), StreamSlot(0));
         reg.with_cache_ref(|c| {
-            if let Some((k, v)) = c.read_step(0, 0, g2.stream().0, 0) {
-                // The block may still be *bound*, but its rows must be
-                // zero after release.
-                assert!(k.iter().all(|x| *x == 0.0), "k not zeroed: {k:?}");
-                assert!(v.iter().all(|x| *x == 0.0), "v not zeroed: {v:?}");
+            match c.read_step(0, 0, g2.stream().0, 0) {
+                // Retired: unreachable through the public read path.
+                None => {}
+                // Or (pre-cc-37 mechanism) present but zeroed.
+                Some((k, v)) => {
+                    assert!(k.iter().all(|x| *x == 0.0), "k leaked: {k:?}");
+                    assert!(v.iter().all(|x| *x == 0.0), "v leaked: {v:?}");
+                }
+            }
+        });
+    }
+
+    /// The same isolation property across the *whole* committed span, with a
+    /// partial rewrite by the new occupant — the case a coarser (per-page)
+    /// invalidation would miss, since `block_size = 2` puts t=0 and t=1 in one
+    /// page. Writing only t=0 must not resurrect the previous session's t=1.
+    #[test]
+    fn state_release_survives_partial_rewrite_by_next_session() {
+        let cfg = SessionRegistryConfig {
+            n_layer: 1,
+            n_head: 1,
+            d_head: 2,
+            n_stream: 1,
+            max_time: 4,
+            block_size: BlockSize::Two,
+        };
+        let reg = SessionRegistry::new(cfg).unwrap();
+        {
+            let g = reg.try_acquire().unwrap();
+            reg.with_cache(|c| {
+                for t in 0..4 {
+                    let x = 50.0 + t as f32;
+                    c.append_step(0, t, g.stream().0, 0, &[x, x], &[x, x])
+                        .unwrap();
+                }
+                c.advance(4);
+            });
+        }
+        let g2 = reg.try_acquire().unwrap();
+        // New occupant writes ONLY t = 0, in the page that also holds t = 1.
+        reg.with_cache(|c| {
+            c.append_step(0, 0, g2.stream().0, 0, &[1.0, 1.0], &[2.0, 2.0])
+                .unwrap();
+        });
+        reg.with_cache_ref(|c| {
+            let (k, v) = c.read_step(0, 0, g2.stream().0, 0).expect("own row");
+            assert_eq!(k, &[1.0, 1.0]);
+            assert_eq!(v, &[2.0, 2.0]);
+            for t in 1..4 {
+                let stale = 50.0 + t as f32;
+                if let Some((k, v)) = c.read_step(0, t, g2.stream().0, 0) {
+                    assert!(
+                        !k.contains(&stale) && !v.contains(&stale),
+                        "t {t}: previous session's row {stale} leaked through a partial rewrite"
+                    );
+                }
             }
         });
     }

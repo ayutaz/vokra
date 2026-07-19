@@ -174,9 +174,10 @@ users of the runtime — see [`docs/legal-compliance.md`](legal-compliance.md).
 
 ## 7. What Vokra does not (yet) do
 
-- **Speaker diarization** (`pyannote`-equivalent): planned; not shipped
-  in v0.5.
-- **Bark / StyleTTS 2**: planned for v2.0+ after license audit.
+- **Speaker diarization** (`pyannote`-equivalent): planned for v1.0 GA
+  (M5); not in the current v1.0-rc.
+- **Bark / StyleTTS 2**: planned for after v1.0 GA (post-v1.0 GA), pending
+  license audit.
 - **Voice cloning (RVC v2 / GPT-SoVITS)**: intentionally moved to the
   separate `vokra-voiceclone-experimental` repository for legal reasons
   (ELVIS Act / NO FAKES Act).

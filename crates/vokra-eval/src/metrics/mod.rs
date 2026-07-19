@@ -7,15 +7,18 @@
 //! - [`AudioRefMetric`] — hypothesis waveform vs reference waveform
 //!   ([`MelLoss`]);
 //! - [`AudioMosMetric`] — a **reference-free** neural MOS predictor
-//!   (UTMOS / DNSMOS). This trait is the reserved slot for M1-09b and is
-//!   deliberately left without an implementation here: those metrics are neural
-//!   networks that need model weights, which are not available yet. Wiring one
-//!   in later is additive — no existing caller of [`Metric`] changes.
+//!   (UTMOS / DNSMOS). The trait was the reserved M1-09b slot; M4-18 wired in
+//!   the first implementor, [`utmos::Utmos`] — a weight-deferred wav2vec2
+//!   skeleton (real UTMOS weights are still owner-sourced, see the module
+//!   docs). The wiring was additive — no existing caller of [`Metric`]
+//!   changed. DNSMOS remains unimplemented (license fail-closed, M4-18 T03).
 
 pub mod mel_loss;
+pub mod utmos;
 pub mod wer;
 
 pub use mel_loss::MelLoss;
+pub use utmos::{Utmos, UtmosConfig, UtmosWeights};
 pub use wer::{Cer, Wer, edit_distance};
 
 use vokra_core::Result;
@@ -65,10 +68,12 @@ pub trait AudioRefMetric: Metric {
 
 /// A **reference-free** neural MOS metric (UTMOS / DNSMOS).
 ///
-/// Reserved slot for M1-09b — intentionally without any implementation in this
-/// WP because those metrics are neural networks whose weights are not yet
-/// available. Once the weights land, a type implementing this trait plugs into
-/// the same [`Metric`] machinery with no change to existing callers.
+/// Reserved as the M1-09b slot; the first implementor is [`utmos::Utmos`]
+/// (M4-18) — a config-driven wav2vec2 + regression-head skeleton whose real
+/// weights are still owner-sourced (the kickoff gate deferred them, see
+/// `utmos` module docs). The trait itself is unchanged from M1-09a, so the
+/// wiring was additive for every existing [`Metric`] caller. DNSMOS has no
+/// implementor (license fail-closed until the owner's T03 verification).
 pub trait AudioMosMetric: Metric {
     /// Predicts a mean-opinion score for a single `audio` clip at
     /// `sample_rate`.

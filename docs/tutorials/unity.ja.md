@@ -12,7 +12,8 @@ C# API 付きで配布しています。
   `.github/workflows/nightly-il2cpp.yml` の nightly IL2CPP smoke test で
   検証済み）
 - 対応プラットフォーム: macOS / Windows / Linux / iOS / Android
-  （Editor + Standalone / Player）。WebGL は `0.1.x` ではスコープ外
+  （Editor + Standalone / Player）。WebGL は staticlib リンク経路が v1.0-rc（M4-02、`vokra_session_create_from_bytes` 経由）で追加済。
+  Unity WebGL CI の検証は `secrets.UNITY_LICENSE` 設定待ち
 - iOS ビルド: Xcode 14 以上。Android ビルド: Unity インストールに合った
   Android SDK / NDK
 

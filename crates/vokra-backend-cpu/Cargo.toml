@@ -3,7 +3,12 @@ name = "vokra-backend-cpu"
 description = "Vokra CPU backend (x86-64 AVX2 / ARM64 NEON kernels with runtime ISA dispatch; kernels land in M0-08)"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# M4-17: the AVX-512 server-tier intrinsics (`_mm512_*`, vpdpbusd, vdpbf16ps)
+# stabilized in Rust 1.89, so this crate's floor is higher than the workspace
+# 1.85 declaration (crate-level override; cargo enforces it per-crate). The
+# ARM64 dotprod/i8mm/fp16/bf16 tiers use inline asm and do not raise it
+# further. See docs/adr/M4-17-cpu-isa-server-tier.md §(g).
+rust-version = "1.89"
 license.workspace = true
 publish.workspace = true
 

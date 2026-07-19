@@ -608,6 +608,12 @@ impl ProsodyPredictor {
     /// The runs the full upstream prosody predictor forward
     /// `encoded [d_model, T] channel-major + style [style_dim] → ProsodyOutput`.
     ///
+    /// `length_scale` scales the per-phoneme sigmoid-sum BEFORE rounding —
+    /// the reciprocal of upstream `KModel.forward_with_tokens`'s `speed`
+    /// parameter (`model.py:108`:
+    /// `duration = torch.sigmoid(duration).sum(axis=-1) / speed`). Pass `1.0`
+    /// for the upstream-default duration semantics (parity fixtures use 1.0).
+    ///
     /// # Errors
     ///
     /// [`VokraError::InvalidArgument`] on any shape mismatch (FR-EX-08).
@@ -617,6 +623,7 @@ impl ProsodyPredictor {
         encoded: &[f32],
         style: &[f32],
         t: usize,
+        length_scale: f32,
     ) -> Result<ProsodyOutput> {
         let d = self.d_model;
         let sd = self.style_dim;
@@ -704,10 +711,15 @@ impl ProsodyPredictor {
                 &mut dur_row,
             )?;
             let sum: f32 = dur_row.iter().map(|&v| sigmoid(v)).sum();
+            // Upstream `model.py:108-109`: `round(sigmoid(duration).sum(-1)
+            // / speed).clamp(min=1)`; `length_scale = 1/speed` multiplies.
             // round + clamp to [1, 1024] (upper bound guards against a
-            // pathological +inf saturation blowing the frame buffer).
-            let d_int = if sum.is_finite() {
-                (sum.round() as i64).clamp(1, 1024) as usize
+            // pathological +inf saturation blowing the frame buffer;
+            // upstream has no upper clamp but max_dur = 50 sigmoids × scale
+            // keeps real values far below it).
+            let scaled = sum * length_scale;
+            let d_int = if scaled.is_finite() {
+                (scaled.round() as i64).clamp(1, 1024) as usize
             } else {
                 1
             };
@@ -822,7 +834,7 @@ impl ProsodyPredictor {
         // the order of `sqrt(k) · ULP · ||x||` which stacks on top of the ~9×
         // amplification of the upstream ~3e-3 hidden delta. See
         // `docs/adr/0007-kokoro-native.md` §"T17-fixup #4" for the full
-        // analysis + decoder-precedent link (`adain_conditioned` in nn.rs).
+        // analysis + decoder-precedent link (`adain_conditioned_residual` in nn.rs).
         debug_assert_eq!(proj_w.len(), cur_ch);
         debug_assert_eq!(proj_b.len(), 1);
         let bias0 = proj_b[0];
@@ -869,7 +881,7 @@ impl ProsodyPredictor {
                 "kokoro stochastic prosody path not part of the upstream reference",
             ));
         }
-        let out = self.forward_upstream(encoded, style, t)?;
+        let out = self.forward_upstream(encoded, style, t, 1.0)?;
 
         // Downgrade durations → log_dur.
         let log_dur: Vec<f32> = out
@@ -1484,7 +1496,7 @@ mod tests {
         let encoded = vec![0.0f32; d * t];
         let style = vec![0.0f32; sd];
         let out = p
-            .forward_upstream(&encoded, &style, t)
+            .forward_upstream(&encoded, &style, t, 1.0)
             .expect("forward should succeed");
         // Duration count matches phoneme count.
         assert_eq!(out.durations.len(), t);
@@ -1507,9 +1519,11 @@ mod tests {
         let sd = p.style_dim;
         let encoded: Vec<f32> = (0..d * t).map(|i| 0.01 + i as f32 * 0.01).collect();
         let style: Vec<f32> = (0..sd).map(|i| 0.05 + i as f32 * 0.05).collect();
-        let a = p.forward_upstream(&encoded, &style, t).expect("first call");
+        let a = p
+            .forward_upstream(&encoded, &style, t, 1.0)
+            .expect("first call");
         let b = p
-            .forward_upstream(&encoded, &style, t)
+            .forward_upstream(&encoded, &style, t, 1.0)
             .expect("second call");
         assert_eq!(a.durations, b.durations, "durations differ across calls");
         assert_eq!(a.f0, b.f0, "f0 differs across calls");
@@ -1530,10 +1544,10 @@ mod tests {
         assert!(sd >= 2, "test needs style_dim >= 2 for a permutation");
         let encoded: Vec<f32> = (0..d * t).map(|i| 0.02 + i as f32 * 0.01).collect();
         let a = p
-            .forward_upstream(&encoded, &[0.1, 0.2], t)
+            .forward_upstream(&encoded, &[0.1, 0.2], t, 1.0)
             .expect("first ok");
         let b = p
-            .forward_upstream(&encoded, &[0.2, 0.1], t)
+            .forward_upstream(&encoded, &[0.2, 0.1], t, 1.0)
             .expect("permuted ok");
         assert_ne!(
             (a.f0, a.n, a.hidden),
@@ -1552,7 +1566,7 @@ mod tests {
         let t = 3;
         let encoded = vec![0.0f32; d * t - 1];
         let style = vec![0.0f32; sd];
-        match p.forward_upstream(&encoded, &style, t) {
+        match p.forward_upstream(&encoded, &style, t, 1.0) {
             Err(VokraError::InvalidArgument(msg)) => {
                 assert!(msg.contains("encoded"), "error must name `encoded`: {msg}");
             }
@@ -1570,7 +1584,7 @@ mod tests {
         let t = 3;
         let encoded = vec![0.0f32; d * t];
         let style = vec![0.0f32; sd + 1];
-        match p.forward_upstream(&encoded, &style, t) {
+        match p.forward_upstream(&encoded, &style, t, 1.0) {
             Err(VokraError::InvalidArgument(msg)) => {
                 assert!(msg.contains("style"), "error must name `style`: {msg}");
             }

@@ -131,6 +131,17 @@ pub mod fused_logmel_test_probe_neon {
     };
 }
 
+/// Test-only probe exposing the M5-14 packed-GEMM driver's routing predicate
+/// and blocking constants to `tests/gemm_packed_parity.rs`, so the shape grid
+/// can cross every blocking boundary and pin the hot Wave-0 shapes to the
+/// packed route (anti-fake-green). Not part of the crate's public API.
+#[doc(hidden)]
+pub mod gemm_test_probe {
+    pub use crate::kernels::gemm_driver::{
+        KC, MC, NC, PACK_MR, active_gemm_has_m1, active_gemm_has_packed, would_use_packed,
+    };
+}
+
 use vokra_core::{AudioGraph, Backend, OpKind, Result, Tensor, VokraError};
 
 /// CPU backend handle implementing the `vokra-core` [`Backend`] trait.

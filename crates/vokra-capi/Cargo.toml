@@ -34,6 +34,23 @@ vokra-core.workspace = true
 # (M0-09-T06). Runtime dep, unlike cbindgen which is a build-only CLI tool
 # (MPL-2.0, not a workspace dependency — see ADR-0003 / license-audit.md).
 vokra-models.workspace = true
+# M4-03: the `vokra_aec_*` surface wraps vokra_ops::Aec (SpeexDSP MDF port)
+# plus the vokra-core far-end reference queue. Workspace-internal dependency
+# (NFR-DS-02 zero-dep unchanged).
+vokra-ops.workspace = true
+# M4 cc-06: `vokra_session_create_from_file` opens the GGUF through the
+# true-mmap loader (lazy page faulting) instead of a whole-file owned read —
+# the Moshi full-7B GGUF must never be buffered (~14.3 GiB) next to the
+# engine's weights. First-party, zero external deps; the bytes-based create
+# (`vokra_session_create_from_bytes`) is untouched.
+vokra-mmap = { path = "../vokra-mmap" }
+
+[dev-dependencies]
+# M4-06 T20/T24 (test-only edge): the duplex / attribution C ABI tests
+# build a converted synthetic Moshi GGUF through the offline vokra-convert
+# library — first-party, acyclic, root Cargo.lock stays vokra-* only
+# (NFR-DS-02; the vokra-models dev-edge precedent).
+vokra-convert = { path = "../vokra-convert" }
 
 [features]
 # --------------------------------------------------------------------------
@@ -51,6 +68,24 @@ vokra-models.workspace = true
 # the exact anti-pattern this feature is documenting the absence of.
 # --------------------------------------------------------------------------
 cpu = []
+# --------------------------------------------------------------------------
+# CPU + Vulkan-only build target (M4-15-T02, ADR M4-15 §(a), FR-BE-09
+# partial: build target only).
+#
+# `cargo build --release -p vokra-capi --no-default-features --features
+# vulkan` produces the shipped cdylib for the CPU + Vulkan-only build
+# target: the CPU backend stays in (it is a mandatory dep, the baseline),
+# the Vulkan backend compiles its raw dlopen FFI (via
+# `vokra-models/vulkan` → `vokra-backend-vulkan/vulkan`), and the metal /
+# cuda backends never enter the dependency graph (both are `dep:`-optional
+# in vokra-models and NOT activated by this feature — verified by the
+# `build-target-vulkan-only` CI job's `cargo tree` audit). No NVIDIA or
+# Metal/ObjC symbol can appear in the artifact; the
+# scripts/compliance/check-cpu-vulkan-only-no-nvidia.sh scanner enforces
+# that mechanically. No new C ABI symbol is introduced by the build target
+# (SKU detection API is post-v1.0 additive — ADR M4-15 §(d)).
+# --------------------------------------------------------------------------
+vulkan = ["vokra-models/vulkan"]
 # Explicit no-op default so `--no-default-features` on the audit-trail
 # build does not need to be paired with anything else — the CPU-only
 # build is the default shape.

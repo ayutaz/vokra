@@ -1,9 +1,11 @@
-# Kokoro-82M real-checkpoint parity CI (M2 owner checklist item 3).
+# Kokoro-82M real-checkpoint parity CI (M2 owner checklist item 3;
+# reference re-grounded 2026-07-16 — P1 fidelity fix).
 #
-# Acid test for T17-fixup #4 (commit 58a18a8: prosody f0 f64 accumulator in
-# AdainResBlk + F0_proj/N_proj). The Rust parity harness
-# `crates/vokra-models/tests/parity_kokoro.rs` compares 9 tensors against a
-# PyTorch reference at FP32 atol=0.01 (NFR-QL-01). Kokoro parity depends on a
+# The Rust parity harness `crates/vokra-models/tests/parity_kokoro.rs`
+# compares 9 tensors against fixtures hooked from the TRUE upstream `kokoro`
+# pip package (`tools/parity/dump_kokoro_reference.py`) at FP32 atol=0.01
+# (NFR-QL-01; the three decoder tensors carry measured per-tensor bounds —
+# see the summary-step comment below). Kokoro parity depends on a
 # 327 MB `kokoro-v1_0.pth` weight file + 54 per-voice `voices/*.pt` files, so
 # it is impractical to run on every PR — this workflow is opt-in
 # (workflow_dispatch, weekly cron, and a narrow pull_request paths filter that
@@ -43,7 +45,7 @@
 #     tells the owner exactly which tensor drifted.
 #
 #   * Honest reporting (project posture, FR-EX-08):
-#     - The `atol = 0.01` in `parity_kokoro.rs` is not moved by this workflow.
+#     - The tolerances in `parity_kokoro.rs` are not moved by this workflow.
 #     - The per-tensor summary shows max |Δ| for every tensor, PASS or FAIL,
 #       so a f0 regression cannot be silently masked.
 #     - Fixture drift (regenerated `tests/parity/kokoro/*.f32` differing from
@@ -145,14 +147,29 @@ jobs:
       # (torch 2.12.1, numpy 2.4.6, safetensors 0.8.0, huggingface_hub 0.36.2)
       # so the CI reproduction is bit-close to the developer's workstation.
       # Root Cargo.lock is untouched (verified by the final zero-dep guard).
-      - name: Provision parity venv (torch + safetensors + huggingface_hub)
+      - name: Provision parity venv (kokoro + torch + safetensors)
         run: |
           set -euo pipefail
           python -m venv "${PARITY_VENV}"
           # shellcheck disable=SC1091
           . "${PARITY_VENV}/bin/activate"
           python -m pip install --upgrade pip
+          # `kokoro` is the TRUE upstream reference the dumper hooks
+          # (2026-07-16 P1 fidelity fix — the dumper aborts loudly without
+          # it, never falling back to a re-implementation). It pulls
+          # transformers / misaki / loguru; torch stays pinned explicitly.
+          # `click` is pinned explicitly even though nothing here depends on
+          # it directly: `kokoro` -> `misaki` -> `spacy`, and spacy's
+          # `cli/_util.py` does `from click import NoSuchOption` at IMPORT
+          # time (not only when its CLI runs). A fresh CI resolve landed
+          # spacy without click and the dumper died on
+          # `ModuleNotFoundError: No module named 'click'` before reaching
+          # any tensor. The local reference venv that produced the committed
+          # fixtures has click 8.4.2, so the pin makes CI reproduce that venv
+          # instead of depending on transitive resolution.
           python -m pip install \
+            'kokoro==0.9.4' \
+            'click==8.4.2' \
             'torch==2.12.1' \
             'numpy==2.4.6' \
             'safetensors==0.8.0' \
@@ -160,12 +177,69 @@ jobs:
           # hf_transfer is optional but massively speeds the .pth download.
           python -m pip install 'hf_transfer>=0.1.9' || true
           python - <<'PY'
-          import torch, numpy, safetensors, huggingface_hub
-          print(f"parity venv: torch={torch.__version__} "
+          import kokoro, torch, numpy, safetensors, huggingface_hub
+          print(f"parity venv: kokoro={kokoro.__version__} "
+                f"torch={torch.__version__} "
                 f"numpy={numpy.__version__} "
                 f"safetensors={safetensors.__version__} "
                 f"huggingface_hub={huggingface_hub.__version__}")
           PY
+
+      # Record the execution environment BEFORE any numbers are produced.
+      #
+      # Why this exists: this job regenerates the reference fixtures from
+      # upstream torch on the runner (see "Regenerate reference fixtures"
+      # below), so BOTH sides of every comparison are computed here. Both
+      # dispatch on CPU features — Vokra through its own ISA selection, torch
+      # through MKL/oneDNN — and the hosted runner pool is heterogeneous
+      # (Intel Xeon with AVX-512 vs AMD EPYC without). Two runs of identical
+      # code therefore sample two different error fields, which is not a
+      # theory: b6a9af0 and 34fe40c differ by no kokoro-relevant line, and
+      # every reported tensor moved —
+      #
+      #     text_encoder 2.354e-6 -> 1.907e-6   (23%)
+      #     bert         1.526e-5 -> 1.836e-5   (20%)
+      #     prosody_f0   2.144e-3 -> 3.571e-3   (67%)
+      #     decoder_mag  2.744e-1 -> 2.087e-1   (31%)
+      #     decoder_pcm  4.341e-2 -> 1.576e-2  (175%, FAIL then PASS)
+      #
+      # Neither run recorded what it ran on, so the variance was untrackable
+      # and a single failing observation looked like a fault. It is not
+      # attributable without this step. Keep it BEFORE the parity run so the
+      # environment is on record even when a later step dies.
+      #
+      # Never fails the job: this is instrumentation, not a gate. A runner
+      # whose /proc/cpuinfo or torch build we cannot read still produces a
+      # valid parity verdict — it just produces a less diagnosable one.
+      - name: Record execution environment (CPU / ISA / torch dispatch)
+        if: always()
+        run: |
+          set +e
+          model="$(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//')"
+          flags="$(grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2-)"
+          isa=""
+          for f in avx512f avx512vnni avx512bw avx2 fma f16c; do
+            case " $flags " in *" $f "*) isa="${isa:+$isa }$f" ;; esac
+          done
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate" 2>/dev/null
+          torch_caps="$(python -c 'import torch; print(torch.backends.cpu.get_cpu_capability())' 2>/dev/null)"
+          {
+            echo "### Execution environment"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| CPU | \`${model:-unknown}\` |"
+            echo "| ISA (Vokra-relevant) | \`${isa:-none detected}\` |"
+            echo "| nproc | \`$(nproc 2>/dev/null || echo '?')\` |"
+            echo "| torch CPU capability | \`${torch_caps:-unknown}\` |"
+            echo ""
+            echo "Both the Vokra output and the regenerated reference are"
+            echo "computed on this CPU, and both dispatch on its features."
+            echo "Compare this block across runs before reading any single"
+            echo "max-|Δ| as evidence of a code fault."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "cpu=${model:-unknown} isa=${isa:-none} torch=${torch_caps:-unknown}"
 
       - name: Download Kokoro-82M @ pinned SHA (HF hub)
         env:
@@ -223,12 +297,12 @@ jobs:
             echo "- Size: $(wc -c < "${RUNNER_TEMP}/kokoro-82m.gguf" | numfmt --to=iec) (raw: $(wc -c < "${RUNNER_TEMP}/kokoro-82m.gguf") bytes)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Regenerate reference fixtures against the real checkpoint. The dumper
-      # snapshot_downloads from the same HF_HOME cache the download step
-      # populated, so this doesn't re-hit the network for the .pth. Writes
-      # into tests/parity/kokoro/ so `git diff` in the next step surfaces
-      # drift.
-      - name: Regenerate reference fixtures (mode=full)
+      # Regenerate reference fixtures against the real checkpoint by hooking
+      # the TRUE upstream `kokoro` package (KModel). Consumes the staged
+      # .pth + config.json the download step produced (no re-download).
+      # Writes into tests/parity/kokoro/ so `git diff` in the next step
+      # surfaces drift.
+      - name: Regenerate reference fixtures (true-upstream hooks)
         env:
           KOKORO_VENV: ${{ env.PARITY_VENV }}
         run: |
@@ -236,8 +310,8 @@ jobs:
           # shellcheck disable=SC1091
           . "${PARITY_VENV}/bin/activate"
           python tools/parity/dump_kokoro_reference.py \
-            --mode full \
-            --model hexgrad/Kokoro-82M \
+            --checkpoint "${RUNNER_TEMP}/kokoro-stage/kokoro-v1_0.pth" \
+            --config "${RUNNER_TEMP}/kokoro-stage/config.json" \
             tests/parity/kokoro
 
       - name: Detect fixture drift (informational only, never auto-commits)
@@ -255,9 +329,9 @@ jobs:
               cat "${RUNNER_TEMP}/fixture-drift.txt"
               echo '```'
               echo ""
-              echo "**Owner action**: if this drift is intentional (e.g. a T17 followup"
-              echo "landed a new tensor), run \`python tools/parity/dump_kokoro_reference.py"
-              echo "--mode full\` locally and commit \`tests/parity/kokoro/\`. If not"
+              echo "**Owner action**: if this drift is intentional (e.g. a followup"
+              echo "landed a new tensor), run \`python tools/parity/dump_kokoro_reference.py\`"
+              echo "locally (kokoro==0.9.4 venv) and commit \`tests/parity/kokoro/\`. If not"
               echo "intentional, inspect the diff — a silent fixture change would"
               echo "invalidate every previous parity claim."
             } >> "$GITHUB_STEP_SUMMARY"
@@ -282,6 +356,79 @@ jobs:
           echo "PARITY_EXIT=${exit_code}" >> "$GITHUB_ENV"
           echo "parity cargo test exited with ${exit_code}"
 
+      # Failure path only: re-run with the Vokra SIMD path disabled.
+      #
+      # This is the decisive split, and it runs on the exact machine that just
+      # failed. Both sides of the comparison are computed on this runner and
+      # both dispatch on its CPU features, so a failure has two candidate
+      # causes that no aggregate statistic can tell apart:
+      #
+      #   (i)  a fault in Vokra's micro-kernel for THIS ISA, or
+      #   (ii) an ordinary implementation difference against torch that this
+      #        ISA merely happens to expose more than another.
+      #
+      # `VOKRA_CPU_ISA=scalar` removes Vokra's SIMD from the picture while
+      # leaving the reference untouched. So:
+      #
+      #   scalar ~= the SIMD number  -> Vokra's SIMD kernel is exonerated;
+      #                                 the gap is (ii), and lives in the
+      #                                 algorithm or the reference.
+      #   scalar << the SIMD number  -> the SIMD kernel IS the fault (i).
+      #                                 Fix the kernel; do NOT touch the bound.
+      #
+      # Needed because the maintaining machine is Apple Silicon and cannot
+      # execute the x86 tiles: `VOKRA_CPU_ISA=scalar` on M1 moves pcm by at
+      # most 1.53e-6, which bounds NEON but says nothing about AVX2/AVX-512.
+      # This step is the only place that measurement can be made.
+      #
+      # Non-fatal by construction (`|| true`): the verdict has already been
+      # decided by the step above. This only adds evidence, and a crash here
+      # must not overwrite a legitimate parity failure with a different error.
+      - name: Diagnose failure — re-run with VOKRA_CPU_ISA=scalar
+        if: always() && env.PARITY_EXIT != '0'
+        env:
+          VOKRA_KOKORO_GGUF: ${{ runner.temp }}/kokoro-82m.gguf
+          VOKRA_CPU_ISA: scalar
+        run: |
+          set +e
+          cargo test --release -p vokra-models --test parity_kokoro -- --nocapture \
+            > "${RUNNER_TEMP}/parity-scalar.txt" 2>&1
+          scalar_exit=$?
+          # Build the report ONCE, then send it to the step summary, the job
+          # log, and an artifact. The first firing of this step (afbbee6, on
+          # an EPYC host) wrote only to $GITHUB_STEP_SUMMARY, which is
+          # readable in the web UI but not through the REST API and not in
+          # `gh run view --log` — so the diagnostic fired and its finding was
+          # unrecoverable afterwards. A diagnostic that cannot be read back
+          # is not a diagnostic.
+          report="${RUNNER_TEMP}/scalar-verdict.md"
+          {
+            echo "### Scalar-ISA re-run (failure path)"
+            echo ""
+            echo "Same runner, same GGUF, same reference — Vokra's SIMD path"
+            echo "disabled via \`VOKRA_CPU_ISA=scalar\`."
+            echo ""
+            echo "| tensor | SIMD | scalar |"
+            echo "| --- | --- | --- |"
+          } > "$report"
+          for t in text_encoder bert prosody_f0 decoder_mag decoder_phase decoder_pcm; do
+            simd="$(grep -oE "kokoro ${t}[^=]*= [0-9.e+-]+" "${RUNNER_TEMP}/parity-log.txt" 2>/dev/null | grep -oE '[0-9.e+-]+$' | head -1)"
+            scal="$(grep -oE "kokoro ${t}[^=]*= [0-9.e+-]+" "${RUNNER_TEMP}/parity-scalar.txt" 2>/dev/null | grep -oE '[0-9.e+-]+$' | head -1)"
+            echo "| \`${t}\` | \`${simd:-?}\` | \`${scal:-?}\` |" >> "$report"
+          done
+          {
+            echo ""
+            echo "Scalar run exit: \`${scalar_exit}\`."
+            echo ""
+            echo "**Reading**: values close together exonerate the SIMD kernel"
+            echo "and point at the algorithm or the reference. A scalar column"
+            echo "materially lower means the SIMD micro-kernel for this ISA is"
+            echo "the fault — fix the kernel, do not widen the bound."
+          } >> "$report"
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          cat "$report"
+          true
+
       # Parse the parity log and emit a per-tensor markdown table. Uses only
       # the standard library + regex so a torch/numpy import here would be
       # pure overhead. All 9 tracked tensors are enumerated whether the log
@@ -304,18 +451,30 @@ jobs:
           log = open(LOG, "r", errors="replace").read()
 
           ATOL = 0.01
-          # Per-tensor tolerance for `prosody_f0`. See
-          # `crates/vokra-models/tests/parity_kokoro.rs` `PROSODY_F0_ATOL`
-          # docstring for the architectural derivation:
-          # `f0 max |Δ|` is bounded from below by the shared BiLSTM
-          # summation-order match with PyTorch's SGEMM (~3e-3 on hidden)
-          # times the `F0_proj` `Conv1d(→1, k=1)` linear amplification
-          # factor (~9× on the shipping Kokoro-82M weights) — theoretical
-          # lower bound ~2.7e-2. Setting the workflow summary threshold to
-          # 0.05 (twice the architectural lower bound) matches the Rust
-          # test's `PROSODY_F0_ATOL`, so the "PASS/FAIL" markers here and
-          # in the underlying `cargo test` agree byte-for-byte.
-          PROSODY_F0_ATOL = 0.05
+          # Per-tensor max-|Δ| bounds for the three DECODER tensors. Kept in
+          # LOCK-STEP with `crates/vokra-models/tests/parity_kokoro.rs`
+          # (`DECODER_MAG_ATOL` const block — measured 2026-07-16 against
+          # the TRUE upstream `kokoro` package fixtures, bound = measured ×
+          # ~2). Rationale: the NSF source path's `angle(STFT(...))` feature
+          # has an atan2 branch cut at near-zero-magnitude bins; ulp-level
+          # drift of the harmonic source signal (sin of 10^3-10^4-rad f32
+          # phases across two libm/FFT stacks) flips a handful of bins by
+          # 2π, which the trained convs propagate into bounded logit deltas
+          # (measured on M1: mag 2.51e-1 / phase 1.49e-1 / pcm 1.92e-2).
+          # OPEN (2026-07-19): the first Linux run measured pcm 4.34e-2 and
+          # FAILED this gate. The bound was deliberately NOT widened on one
+          # x86 observation — see the OPEN note in parity_kokoro.rs for the
+          # full measurement and what to check. This suite is advisory (not a
+          # required check), so a red run here blocks nothing. The Rust
+          # test ALSO gates mean-|Δ| per decoder tensor (systematic-drift
+          # catch); this summary reports the max side.
+          # NOTE: the pre-2026-07-16 `PROSODY_F0_ATOL = 0.05` override is
+          # gone — against the true upstream reference prosody_f0 measures
+          # 3.0e-3, inside the default ATOL (the old ~3e-3 "hidden bound"
+          # was an artifact of the flawed same-author reference).
+          DECODER_MAG_ATOL = 0.5
+          DECODER_PHASE_ATOL = 0.3
+          DECODER_PCM_ATOL = 0.04
 
           def find(pattern, flags=0):
               m = re.search(pattern, log, flags)
@@ -353,19 +512,22 @@ jobs:
               ("decoder_pcm",        find(r"^\s*pcm\s+max = "    + num, M)),
           ]
 
-          # Per-tensor atol lookup. Every non-f0 prosody / decoder /
-          # text_encoder / bert tensor uses the strict `ATOL = 0.01`; only
-          # `prosody_f0` uses the wider `PROSODY_F0_ATOL = 0.05` bound
-          # (architectural derivation in the const's docstring above).
+          # Per-tensor atol lookup. Every text_encoder / bert / prosody
+          # tensor uses the strict `ATOL = 0.01`; the three decoder tensors
+          # use the measured branch-cut bounds above (lock-step with the
+          # Rust consts).
           per_tensor_atol = {
-              "prosody_f0": PROSODY_F0_ATOL,
+              "decoder_mag": DECODER_MAG_ATOL,
+              "decoder_phase": DECODER_PHASE_ATOL,
+              "decoder_pcm": DECODER_PCM_ATOL,
           }
           out = [
               "### Kokoro-82M parity acid test — per-tensor max |Δ|",
               "",
-              f"atol = {ATOL} (default), prosody_f0 override = {PROSODY_F0_ATOL} "
-              f"(see `crates/vokra-models/tests/parity_kokoro.rs` `ATOL` / "
-              f"`PROSODY_F0_ATOL`)",
+              f"atol = {ATOL} (default); decoder overrides mag/phase/pcm = "
+              f"{DECODER_MAG_ATOL}/{DECODER_PHASE_ATOL}/{DECODER_PCM_ATOL} "
+              f"(see `crates/vokra-models/tests/parity_kokoro.rs` "
+              f"`DECODER_MAG_ATOL` const block)",
               "",
               "| tensor | max |Δ| | verdict | notes |",
               "|--------|---------|---------|-------|",
@@ -386,24 +548,22 @@ jobs:
                   any_fail = True
               note = ""
               if tensor_atol != ATOL:
-                  note = f"per-tensor atol = {tensor_atol} (F0_proj ~9x amplification bound)"
+                  note = f"per-tensor atol = {tensor_atol} (NSF angle branch-cut bound)"
               out.append(f"| `{name}` | `{raw}` | {verdict} | {note} |")
 
           out.extend([
               "",
               f"**Overall**: {'FAIL — at least one tensor exceeded its per-tensor atol' if any_fail else 'all observed tensors within their per-tensor atol'}",
               "",
-              "**T17-fixup #4 acid test result**: this workflow's PASS/FAIL is",
-              "the canonical answer for whether the prosody f0 f64 accumulator",
-              "fixup (commit 58a18a8) clears the architectural F0_proj-",
-              "amplification bound on the real Kokoro-82M checkpoint. Honest",
-              "reporting: every observed delta is printed above regardless of",
-              "PASS / FAIL. `prosody_f0` uses a wider per-tensor `atol = 0.05`",
-              "because F0_proj (Conv1d 256→1) amplifies the shared-BiLSTM",
-              "hidden delta (~3e-3, pinned by scalar-loop / SGEMM match) by",
-              "~9x, giving a theoretical lower bound of ~2.7e-2 that is not",
-              "reachable by adding more f64 accumulators (T17-fixup #5/#6",
-              "measured this and were reverted at commit 89fb52b).",
+              "**Reference provenance (2026-07-16 P1 fidelity fix)**: the",
+              "fixtures are hooked activations of the TRUE upstream `kokoro`",
+              "pip package (`tools/parity/dump_kokoro_reference.py`), not a",
+              "re-implementation. Honest reporting: every observed delta is",
+              "printed above regardless of PASS / FAIL. The three decoder",
+              "tensors carry measured branch-cut bounds (NSF `angle(STFT)`",
+              "atan2 discontinuity at near-zero-magnitude bins under",
+              "ulp-level source drift); the Rust test additionally gates",
+              "mean-|Δ| per decoder tensor to catch systematic drift.",
           ])
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
               f.write("\n".join(out) + "\n")
@@ -446,6 +606,8 @@ jobs:
           name: kokoro-parity-artifacts
           path: |
             ${{ runner.temp }}/parity-log.txt
+            ${{ runner.temp }}/parity-scalar.txt
+            ${{ runner.temp }}/scalar-verdict.md
             ${{ runner.temp }}/fixture-drift.txt
             ${{ runner.temp }}/voicepack-report.md
             ${{ runner.temp }}/bisect.txt

@@ -29,6 +29,14 @@ use vokra_core::{Result, VokraError};
 /// by the M0 converter).
 pub const KEY_TOKENIZER_MODEL: &str = "vokra.tokenizer.model";
 
+/// Python `string.punctuation` (the 32 ASCII punctuation characters), the exact
+/// set openai-whisper `tokenizer.py::split_tokens_on_spaces` treats as a
+/// word boundary (`subword.strip() in string.punctuation`). Transcribed verbatim
+/// from CPython's `string` module (CLAUDE.md ハルシネーション厳禁); do not
+/// reorder or "clean up" — membership is a substring test that must match
+/// Python's `in` operator character-for-character.
+const ASCII_PUNCTUATION: &str = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+
 struct Entry {
     special: bool,
     bytes: Vec<u8>,
@@ -127,6 +135,109 @@ impl WhisperTokenizer {
             }
         }
         Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Per-word token counts for `tokens`, grouping subword tokens into words
+    /// (M4-20, FR-OP-40 `word_timestamps`). This is the tokenizer-specific
+    /// grouping [`vokra_core::decode::words_from_alignment`] needs to turn the
+    /// per-token cross-attention timings into one timing per **word**.
+    ///
+    /// Transcribed from openai-whisper `tokenizer.py::split_to_word_tokens`
+    /// (the space-delimited path — `split_tokens_on_unicode` then
+    /// `split_tokens_on_spaces`, CLAUDE.md ハルシネーション厳禁): first regroup
+    /// the tokens so each subword decodes to valid unicode (a multi-byte char
+    /// split across BPE tokens is merged), then merge subwords into words,
+    /// starting a **new word** on a leading space, a punctuation subword, a
+    /// special first token, or the very first subword; otherwise the subword
+    /// joins the running word. The returned counts sum to `tokens.len()`, so
+    /// they can be handed straight to `words_from_alignment` alongside the
+    /// per-token times.
+    ///
+    /// # Boundary vs openai
+    ///
+    /// * The decode used here is [`decode`](Self::decode) (skips specials),
+    ///   not openai's `decode_with_timestamps` (renders timestamp tokens as
+    ///   `<|x.xx|>`); a special first token is still caught by the
+    ///   `is_special` check, so the word boundaries agree for text tokens.
+    ///   Exact per-token numeric parity vs openai stays owner (needs a real
+    ///   checkpoint + vocab).
+    /// * The CJK "no spaces" path (openai splits zh/ja/th/lo/my/yue on unicode
+    ///   only) needs a language tag the M0 tokenizer does not carry; that
+    ///   refinement is a follow-up. The space path is the default.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] if any token id is out of range (via
+    /// [`decode`](Self::decode) / [`is_special`](Self::is_special)).
+    pub fn word_token_lens(&self, tokens: &[u32]) -> Result<Vec<usize>> {
+        // Stage 1: unicode subword grouping (openai split_tokens_on_unicode).
+        let subword_lens = self.split_lens_on_unicode(tokens)?;
+
+        // Stage 2: merge subwords into words (openai split_tokens_on_spaces).
+        let mut words: Vec<usize> = Vec::with_capacity(subword_lens.len());
+        let mut cursor = 0usize;
+        for &sub_len in &subword_lens {
+            let sub_tokens = &tokens[cursor..cursor + sub_len];
+            let subword = self.decode(sub_tokens)?;
+            // `sub_len >= 1` for every group, so `sub_tokens[0]` is valid.
+            let special = self.is_special(sub_tokens[0])?;
+            let with_space = subword.starts_with(' ');
+            // Python `subword.strip() in string.punctuation` is a substring
+            // test; `str::contains(&str)` matches it (incl. the empty-string
+            // edge that Python's `in` also treats as present).
+            let punctuation = ASCII_PUNCTUATION.contains(subword.trim());
+            if special || with_space || punctuation || words.is_empty() {
+                words.push(sub_len);
+            } else {
+                *words.last_mut().expect("words non-empty in else branch") += sub_len;
+            }
+            cursor += sub_len;
+        }
+        Ok(words)
+    }
+
+    /// Per-subword token counts, regrouping `tokens` so each group decodes to
+    /// valid unicode (openai-whisper `tokenizer.py::split_tokens_on_unicode`,
+    /// transcribed — CLAUDE.md ハルシネーション厳禁). A byte token that is the
+    /// lone first half of a multi-byte character decodes to U+FFFD on its own;
+    /// it is held back until the group decodes cleanly, unless the replacement
+    /// character is *genuine* at that position in the full decode (i.e. the
+    /// input really carried an undecodable byte there — don't wait forever).
+    ///
+    /// The counts sum to `tokens.len()`: a trailing group that never decodes
+    /// cleanly (an incomplete character at the very end) is still emitted, so
+    /// the caller's `sum(lens) == tokens.len()` invariant holds. openai drops
+    /// such a dangling remainder, but keeping it accounted for is required by
+    /// [`words_from_alignment`](vokra_core::decode::words_from_alignment) and
+    /// only differs on malformed tails a well-formed hypothesis never produces.
+    fn split_lens_on_unicode(&self, tokens: &[u32]) -> Result<Vec<usize>> {
+        const REPLACEMENT: char = '\u{FFFD}';
+        // Full decode (as a scalar sequence) to distinguish a genuine U+FFFD
+        // from one produced by a split multi-byte char.
+        let decoded_full: Vec<char> = self.decode(tokens)?.chars().collect();
+
+        let mut lens: Vec<usize> = Vec::new();
+        let mut group_start = 0usize; // first token index of the current group
+        let mut unicode_offset = 0usize; // scalars emitted by earlier groups
+        for end in 1..=tokens.len() {
+            let decoded: Vec<char> = self.decode(&tokens[group_start..end])?.chars().collect();
+            let emit = match decoded.iter().position(|&c| c == REPLACEMENT) {
+                None => true,
+                Some(pos) => decoded_full.get(unicode_offset + pos).copied() == Some(REPLACEMENT),
+            };
+            if emit {
+                lens.push(end - group_start);
+                unicode_offset += decoded.len();
+                group_start = end;
+            }
+        }
+        // Defensive: account for a trailing group that never decoded cleanly
+        // (keeps `sum(lens) == tokens.len()` for the caller). A well-formed
+        // hypothesis ends on a complete character and never hits this.
+        if group_start < tokens.len() {
+            lens.push(tokens.len() - group_start);
+        }
+        Ok(lens)
     }
 
     fn entry(&self, id: u32) -> Result<&Entry> {
@@ -235,5 +346,69 @@ mod tests {
             WhisperTokenizer::from_bytes(&[1, 0, 0, 0], 0), // count=1, no record
             Err(VokraError::ModelLoad(_))
         ));
+    }
+
+    // ---- M4-20: subword -> word grouping (word_token_lens) ----------------
+
+    /// Builds a tokenizer from a synthetic `(special, bytes)` vocabulary — the
+    /// "synthetic token->string map" the M4-20 split-rule tests drive.
+    fn tok(entries: &[(u8, &[u8])]) -> WhisperTokenizer {
+        let mut v = Vec::new();
+        v.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        for (sp, bytes) in entries {
+            v.push(*sp);
+            v.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            v.extend_from_slice(bytes);
+        }
+        WhisperTokenizer::from_bytes(&v, 0).unwrap()
+    }
+
+    #[test]
+    fn word_token_lens_merges_leading_space_and_punctuation() {
+        // openai split_tokens_on_spaces: id0 "hel" starts word 0, id1 "lo"
+        // (no space/punct/special) joins it -> "hello"; id2 "," is punctuation
+        // -> new word; id3 " world" has a leading space -> new word.
+        // Tokens "hel","lo",","," world"  ->  word_token_lens [2, 1, 1].
+        let t = tok(&[(0, b"hel"), (0, b"lo"), (0, b","), (0, b" world")]);
+        assert_eq!(t.word_token_lens(&[0, 1, 2, 3]).unwrap(), vec![2, 1, 1]);
+    }
+
+    #[test]
+    fn word_token_lens_groups_multibyte_char_split_across_tokens() {
+        // 'é' = U+00E9 = bytes C3 A9. id0 " a" (leading space) is word 0;
+        // id1 = [0x20,0xC3] (space + first half of é) decodes to " \u{FFFD}"
+        // and is held back until id2 = [0xA9] completes it -> subword " é"
+        // (one unicode group of 2 tokens), which starts a new word (leading
+        // space). So [" a"], [" é"]  ->  word_token_lens [1, 2].
+        let t = tok(&[(0, b" a"), (0, &[0x20, 0xC3]), (0, &[0xA9])]);
+        // Sanity: the split really merges the two byte tokens into one subword.
+        assert_eq!(t.split_lens_on_unicode(&[0, 1, 2]).unwrap(), vec![1, 2]);
+        assert_eq!(t.word_token_lens(&[0, 1, 2]).unwrap(), vec![1, 2]);
+    }
+
+    #[test]
+    fn word_token_lens_special_token_starts_a_new_word() {
+        // A special first token forces a new word (openai `special` rule).
+        // "hi", <special>, " yo"  ->  three words [1, 1, 1] (the special is
+        // its own single-token word; " yo" starts a new one on its space).
+        let t = tok(&[(0, b"hi"), (1, b""), (0, b" yo")]);
+        assert_eq!(t.word_token_lens(&[0, 1, 2]).unwrap(), vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn word_token_lens_sums_to_token_count() {
+        // The invariant words_from_alignment relies on: the per-word counts
+        // partition all the input tokens.
+        let t = tok(&[(0, b" the"), (0, b" quick"), (0, b"est"), (0, b"!")]);
+        let lens = t.word_token_lens(&[0, 1, 2, 3]).unwrap();
+        assert_eq!(lens.iter().sum::<usize>(), 4);
+        // " the" | " quick"+"est" | "!"  ->  [1, 2, 1].
+        assert_eq!(lens, vec![1, 2, 1]);
+    }
+
+    #[test]
+    fn word_token_lens_empty_is_empty() {
+        let t = tok(&[(0, b"a")]);
+        assert_eq!(t.word_token_lens(&[]).unwrap(), Vec::<usize>::new());
     }
 }

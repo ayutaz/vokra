@@ -485,6 +485,12 @@ mod tests {
 
     #[test]
     fn with_interface_dispatches_closure_when_initialised() {
+        // Serialize against every other test that mutates
+        // `EXTENSION_STATE` (the trampoline `MockStateGuard` tests and the
+        // registry recorder tests all share it).
+        let _lock = crate::registry::tests::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Populate via the entry point (uses the sig-aware mock).
         {
             let mut guard = EXTENSION_STATE.lock().unwrap();
@@ -507,10 +513,26 @@ mod tests {
         assert_eq!(ok, 1);
 
         // Now `with_interface` MUST hand us the resolved table.
-        let variant_get_type_addr = super::with_interface(|iface| iface.variant_get_type as usize);
+        //
+        // Assert *behaviourally* rather than by comparing fn-pointer
+        // addresses. A release build is free to merge identically-bodied
+        // functions (LLVM ICF) and to materialise more than one address
+        // for the same fn item, so `iface.variant_get_type as usize ==
+        // mock_variant_get_type as usize` is not a sound identity test —
+        // it failed deterministically under `--release` while the binding
+        // itself was correct. Behaviour is the right equivalence class
+        // here: ICF only merges functions that ARE behaviourally
+        // identical.
+        //
+        // SAFETY: the sig-aware mock ignores its Variant argument, so a
+        // NULL Variant pointer is sound for both the direct call and the
+        // one routed through the resolved table.
+        let via_interface =
+            super::with_interface(|iface| unsafe { (iface.variant_get_type)(ptr::null()) });
+        let direct = unsafe { crate::ffi::interface::tests::mock_variant_get_type(ptr::null()) };
         assert_eq!(
-            variant_get_type_addr,
-            Some(crate::ffi::interface::tests::mock_variant_get_type as *const () as usize),
+            via_interface,
+            Some(direct),
             "with_interface must expose the resolved variant_get_type",
         );
 

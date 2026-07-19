@@ -38,8 +38,15 @@ Run (from the repo root)::
         --model whisper-base --audio tests/fixtures/audio/jfk-30s.wav
 
 The checkpoint is fetched with ``WhisperForConditionalGeneration.from_pretrained``
-(cached by the Hugging Face hub). Only ``torch`` / ``transformers`` / ``numpy``
-are required at runtime; WAV parsing uses the stdlib ``struct`` module.
+(cached by the Hugging Face hub). ``--checkpoint-dir`` substitutes a LOCAL
+snapshot directory (config.json + model.safetensors + tokenizer files, e.g. a
+prior ``snapshot_download`` of the same hub id) for fully offline regeneration
+— ``--model`` still selects the size identity / output dir / vocab-resource
+gate, and the manifest ``model`` key stays the hub id the local snapshot
+mirrors (the caller asserts that correspondence by choosing the dir; drift
+shows up immediately as parity failure, never silently). Only ``torch`` /
+``transformers`` / ``numpy`` are required at runtime; WAV parsing uses the
+stdlib ``struct`` module.
 """
 
 from __future__ import annotations
@@ -141,6 +148,15 @@ def resolve_special_tokens(tok: WhisperTokenizer) -> tuple[list[int], int]:
 # first TEXT_VOCAB_LEN records are byte-identical across base..large-v3, so they
 # are also written to the vokra-convert resource that the GGUF converter embeds.
 TEXT_VOCAB_LEN = 50257
+# Full tokenizer length of the large-v3 FAMILY (large-v3 + its distilled turbo
+# derivative, which inherits the identical tokenizer). In-repo anchor:
+# crates/vokra-convert/src/models/whisper.rs
+# `all_whisper_sizes_metadata_are_consistent` rows pin n_vocab = 51866 for both
+# large-v3 and turbo (the +1 over base's 51865 is the `<|yue|>` language token).
+# Used by the fabricated-fixture guard in main() — a bundled-resource dump whose
+# tokenizer is NOT this exact length must hard-fail, never silently write a
+# drifted resource (M4-14-T03).
+LARGE_V3_FAMILY_VOCAB_N = 51866
 # Where the converter loads the bundled text-vocab resource from (repo-relative).
 VOCAB_RESOURCE = (
     Path(__file__).resolve().parents[2]
@@ -149,6 +165,25 @@ VOCAB_RESOURCE = (
     / "resources"
     / "whisper_multilingual_text_vocab.bin"
 )
+
+
+def vocab_resource_for(size: str) -> Path | None:
+    """Bundled text-vocab resource gate (M4-14-T03; ADR M4-14 §D4).
+
+    The bundled resource is regenerated from the large-v3 FAMILY tokenizer:
+    the first 50257 records are byte-identical across all multilingual sizes,
+    so any checkpoint is technically valid, but we standardise on the 51866
+    family (large-v3 **and** turbo — turbo is large-v3's distilled derivative
+    and inherits the identical tokenizer) to avoid drift. Pre-M4-14 this gate
+    excluded turbo, leaving two code paths for one vocabulary; now both sizes
+    share the single bundled-resource path, so any upstream tokenizer drift
+    between them surfaces as a git diff on the resource (caught by the
+    parity-whisper-real.yml fixture-drift report) instead of passing silently.
+
+    base/small/medium (51865) stay on the tokenizer-derived per-size path and
+    return ``None``.
+    """
+    return VOCAB_RESOURCE if size in ("whisper-large-v3", "whisper-turbo") else None
 
 
 def load_pcm(path: Path, n_samples: int) -> np.ndarray:
@@ -317,6 +352,19 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--checkpoint-dir",
+        default=None,
+        help=(
+            "Optional LOCAL checkpoint directory (an HF snapshot of the --model "
+            "hub id: config.json + model.safetensors + tokenizer files) for "
+            "offline regeneration. When set, from_pretrained loads from this "
+            "directory instead of the hub; --model still selects the size "
+            "identity, output dir and vocab-resource gate. FR-EX-08: a missing "
+            "or config-less directory is a hard error, never a silent hub "
+            "fallback."
+        ),
+    )
+    parser.add_argument(
         "out_dir",
         nargs="?",
         default=None,
@@ -329,6 +377,18 @@ def main() -> None:
 
     size = args.model
     model_id = SUPPORTED_MODELS[size]
+    # Where the weights actually load from: the hub id, or a local snapshot
+    # of that same hub id (offline path). Validated eagerly — FR-EX-08.
+    load_source = model_id
+    if args.checkpoint_dir is not None:
+        ckpt_dir = Path(args.checkpoint_dir)
+        if not ckpt_dir.is_dir() or not (ckpt_dir / "config.json").is_file():
+            sys.exit(
+                f"--checkpoint-dir {ckpt_dir} is not a checkpoint snapshot "
+                "(missing directory or config.json) — refusing a silent hub "
+                "fallback (FR-EX-08)"
+            )
+        load_source = str(ckpt_dir)
     out_dir = Path(args.out_dir) if args.out_dir is not None else Path(f"tests/parity/{size.replace('-', '_')}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -343,16 +403,17 @@ def main() -> None:
     except ValueError:
         pcm_source = str(audio_path)
 
-    # The bundled text-vocab resource is regenerated only from the largest tail
-    # (whisper-large-v3) — the first 50257 records are byte-identical across all
-    # multilingual sizes, so any multilingual checkpoint is technically valid,
-    # but we standardise on large-v3 to avoid drift.
-    vocab_resource = VOCAB_RESOURCE if size == "whisper-large-v3" else None
+    # The bundled text-vocab resource is regenerated only from the 51866-token
+    # large-v3 family (large-v3 + turbo, which share the identical tokenizer) —
+    # see vocab_resource_for()'s docstring for the standardisation rationale
+    # (M4-14-T03: pre-M4-14 turbo was excluded, leaving a second, driftable
+    # code path for the same vocabulary).
+    vocab_resource = vocab_resource_for(size)
 
     torch.manual_seed(TORCH_SEED)
-    processor = WhisperProcessor.from_pretrained(model_id)
-    tok = WhisperTokenizer.from_pretrained(model_id)  # slow tokenizer (has byte_decoder)
-    model = WhisperForConditionalGeneration.from_pretrained(model_id)
+    processor = WhisperProcessor.from_pretrained(load_source)
+    tok = WhisperTokenizer.from_pretrained(load_source)  # slow tokenizer (has byte_decoder)
+    model = WhisperForConditionalGeneration.from_pretrained(load_source)
     model.eval()
 
     prefix, eot = resolve_special_tokens(tok)
@@ -390,6 +451,22 @@ def main() -> None:
             tokens.append(nxt)
 
     vocab_n = dump_tokenizer(out_dir / "tokenizer.bin", tok, vocab_resource=vocab_resource)
+
+    # Fabricated-fixture guard (M4-14-T03): on the bundled-resource path
+    # (large-v3 / turbo) the tokenizer must be the exact shared 51866-token
+    # family vocabulary. A drifted upstream tokenizer would otherwise silently
+    # rewrite BOTH the per-size tokenizer.bin fixture and the converter's
+    # embedded resource; hard-fail instead (FR-EX-08: announce, never
+    # substitute). NB: dump_tokenizer has already written the files at this
+    # point — the non-zero exit makes CI/owner treat this run's output as
+    # rejected (never commit it), which the no-auto-commit red-line enforces.
+    if vocab_resource is not None and vocab_n != LARGE_V3_FAMILY_VOCAB_N:
+        sys.exit(
+            f"{size}: tokenizer has {vocab_n} entries but the shared "
+            f"large-v3/turbo family vocabulary must have "
+            f"{LARGE_V3_FAMILY_VOCAB_N} — refusing a drifted bundled-resource "
+            "dump (fabricated-fixture guard, M4-14-T03)"
+        )
 
     # Detokenizer reference samples (ids -> text), including a multibyte case.
     samples = []

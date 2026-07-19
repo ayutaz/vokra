@@ -27,21 +27,47 @@ per sample rate, selected in the ONNX by a top-level `If(sr == 16000)` (verified
 the compare constant is `16000`, `then` = 16 kHz, `else` = 8 kHz).
 
 ```
-frame  [512 @16k / 256 @8k]
+input  [ctx + frame = 576 @16k / 288 @8k]   official interface (default stream)
+       [bare frame  = 512 @16k / 256 @8k]   raw 1:1 graph interface (parity only)
   -> reflect-pad RIGHT by n_fft/4            (64 @16k / 32 @8k)
   -> Conv1d(1, 2*bins, k=n_fft, stride=n_fft/2)     learned pseudo-STFT
        n_fft = 256 @16k / 128 @8k;  2*bins = 258 / 130
   -> magnitude = sqrt(real^2 + imag^2)              real=ch[0..bins], imag=ch[bins..2*bins]
-       -> [bins, 3]                                 bins = 129 @16k / 65 @8k
+       -> [bins, 4]  (official) / [bins, 3]  (raw)  bins = 129 @16k / 65 @8k
   -> encoder: Conv1d(k=3,pad=1)+ReLU x4, strides 1,2,2,1
-       channels bins->128->64->64->128;  time 3->3->2->1->1  -> [128, 1]
+       channels bins->128->64->64->128;  time 4->4->2->1->1 (or 3->3->2->1->1)  -> [128, 1]
   -> LSTM(128,128)   h/c carried across frames        -> [128]
   -> ReLU -> Conv1d(128,1,k=1) -> Sigmoid             -> probability
 ```
 
-Only LSTM `h`/`c` cross frame boundaries; the reflection pad is internal to each
-frame, so **no audio context is carried** between frames (matches the ONNX
-interface, whose only state input is `[2,1,128]` = h/c).
+The ONNX graph's time axis is dynamic and its only *state* input is
+`[2,1,128]` = h/c — but **official usage carries audio context too, outside
+the graph**: the upstream python wrapper (`utils_vad.py OnnxWrapper`) prepends
+the previous frame's last 64 samples (@ 16 kHz; 32 @ 8 kHz) to every fixed
+frame, zeros before the first, and resets that context together with the LSTM
+state (`reset_states`). `stream.rs` reproduces exactly that (the default,
+`ContextMode::Official`); `forward_chunk` uses the zero context of a fresh
+stream.
+
+**2026-07-16 real-weight eval P1**: feeding bare `[1, 512]` frames (the
+original M0 implementation) is numerically faithful to the raw graph interface
+(ORT on the identical inputs matches ≤ 1.13e-6) but semantically wrong — on
+real speech the probabilities collapse (max prob 0.0037 on `jfk-30s.wav`,
+zero segments at the official threshold 0.5, vs 4 segments / max prob 0.9999
+through the official interface). The raw interface is therefore kept only as
+`ContextMode::Raw` / `SileroVadV5::open_raw_stream` (test-gated, for parity
+against the bare-frame fixtures); every public entry point uses the official
+context.
+
+**2026-07-19 (8 kHz quadrant)**: the same comparison at 8 kHz shows the raw
+interface fails *differently* but no less completely. On the decimated clip
+`jfk-30s-8k.wav` bare `[1, 256]` frames peak at **0.646** — they do cross the
+0.5 threshold, unlike the 16 kHz collapse to 0.0037 — yet never sustain speech
+for the default `min_speech` (250 ms), so the segment count is still **zero**
+against the official interface's four. Any consumer that lowered `min_speech`
+or thresholded per frame would therefore get spurious detections at 8 kHz
+where 16 kHz merely gets silence; this is a second, independent reason the raw
+interface is not a supported entry point.
 
 ## GGUF weight map (per rate)
 
@@ -83,6 +109,7 @@ Determined empirically by matching against ORT ground truth — never guessed
 | LSTM bias | apply both `bias_ih` + `bias_hh` | PyTorch convention; confirmed by e2e match |
 | head | ReLU → Conv1d(k=1) → Sigmoid; time frame = 1 so ONNX `ReduceMean` is a no-op | e2e match |
 | state | `h`/`c` zero-initialised; `[2,1,128]` in ONNX = (h,c) | ORT reset reproduces first frame |
+| **rolling context** | official wrapper prepends previous frame's last 64 samples @16k / 32 @8k (zeros at start, reset with state); graph then sees 576 / 288 and 4 STFT frames | upstream `utils_vad.py OnnxWrapper` source; e2e ctx parity vs ORT fed `[1,576]` (2.1e-6 synthetic, 6.1e-6 jfk); same dynamic-length Rust path, no op change |
 
 ## Parity (NFR-QL-01, atol = 0.01 FP32)
 
@@ -97,24 +124,35 @@ Measured max abs error vs ORT (this implementation, FP32):
 | pseudo-STFT conv (T04) | 0.0 (bit-exact) | 0.0 (bit-exact) |
 | magnitude (T05) | 0.0 (bit-exact) | 0.0 (bit-exact) |
 | encoder output (T06) | 4.9e-4 | 1.0e-5 |
-| **e2e streaming prob (T09)** | **7.9e-8** | **3.2e-6** |
+| **e2e streaming prob, raw interface (T09)** | **7.9e-8** | **3.2e-6** |
+| e2e streaming prob, official context | 2.1e-6 | 3.3e-7 |
+| e2e real speech `jfk-30s.wav`, official context | 6.1e-6 (max prob 1.0000; segments at 0.5 = 4, spans identical to upstream `get_speech_timestamps` on the ORT reference) | 1.2e-6 on `jfk-30s-8k.wav` (max prob 1.0000; 4 segments, spans identical to the ORT reference and within one 8 kHz frame of the rate-normalised 16 kHz spans) |
 
 Layer intermediates (conv/magnitude/encoder) are true ORT ground truth (lifted
 branch graphs). The final probability is true ORT ground truth (full model,
-state carried). No intermediate was fabricated; nothing had to be deferred to
-e2e for these stages.
+state carried; the official-context references feed ORT `[1,576]` / `[1,288]`
+exactly as the upstream wrapper does). No intermediate was fabricated; nothing
+had to be deferred to e2e for these stages.
 
-## Known conversion gap (followup for `vokra-convert`, M0-03)
+## Conversion (both-rate, fixed 2026-07-16)
 
-The current `vokra-convert` Silero path (`crates/vokra-convert/src/models/silero.rs`)
-strips the `If`-branch prefix and de-dups colliding names, on the assumption the
-two branches "recompute the same network". **They do not** — the 8 kHz and 16 kHz
-branches carry different weights for *all 15* tensors. The de-dup therefore keeps
-only one rate (the 8 kHz branch) and **silently drops the entire 16 kHz model**.
+Historical gap: the original M0 `vokra-convert` Silero path stripped the
+`If`-branch context and de-duped the colliding embedded parameter names, on the
+assumption the two branches "recompute the same network". **They do not** — the
+8 kHz and 16 kHz branches carry different weights for *all 15* tensors — so it
+silently dropped the entire 16 kHz model (confirmed empirically in the
+2026-07-16 real-weight eval: 16 kHz input → explicit "model has no weights for
+16000 Hz").
 
-Until that is fixed, the corrected both-rate fixture GGUF
-(`tests/parity/silero_vad/silero-vad-v5.gguf`, 30 tensors, `sr8k.*` / `sr16k.*`)
-is produced directly from the ONNX by `gen_reference.py`. `from_gguf` still loads
-the legacy single-rate output (8 kHz only) so today's converter is not broken —
-it just cannot serve 16 kHz. Fixing `vokra-convert` to emit rate-namespaced
-Silero weights is the recommended M0-03 follow-up.
+Fixed: `crates/vokra-convert/src/models/silero.rs` now recovers each
+`Constant`'s branch from its scope-qualified *output* name
+(`If_0_then_branch__Inline_0__…` = 16 kHz / `If_0_else_branch__…` = 8 kHz, per
+the `If(sr == 16000)` selector) and emits the corrected rate-namespaced scheme
+(`sr16k.*` / `sr8k.*`, 30 tensors, name-sorted; op-scope float strays and
+non-float control-flow constants are skipped with per-category counts).
+`vokra-cli convert --model silero-vad` on the master `silero_vad.onnx`
+(sha256 `1a153a22…`) reproduces the fixture GGUF
+`tests/parity/silero_vad/silero-vad-v5.gguf` **byte-identically**
+(sha256 `9de80aca…`), so converter and fixture generation are now the same
+artifact. `from_gguf` still accepts the legacy single-rate (bare-name) scheme
+for old GGUFs.

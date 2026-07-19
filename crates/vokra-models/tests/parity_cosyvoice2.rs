@@ -24,15 +24,34 @@
 //! the CosyVoice2 GGUF fixture is available (T29 model zoo publication).
 
 use std::env;
+use std::path::Path;
 
 use vokra_core::gguf::chunks::KEY_MODEL_ARCH;
-use vokra_core::gguf::{GgufBuilder, GgufMetadataValue};
+use vokra_core::gguf::{GgufBuilder, GgufFile, GgufMetadataValue};
 use vokra_core::{CompliancePolicy, SynthesisRequest, TtsEngine, VokraError};
+use vokra_models::cosyvoice2::llm::{LlmBackbone, parity};
 use vokra_models::cosyvoice2::{CosyVoice2Config, CosyVoice2Tts, MimiBridge};
 
 /// The env var CI / owners set to point the gated tests at a real
 /// CosyVoice2 GGUF. Absent = skip (never fabricate a pass).
 const GGUF_ENV: &str = "VOKRA_COSYVOICE2_GGUF";
+
+/// The env var pointing at the HF reference-dump **directory** for the
+/// real-checkpoint LLM parity test — the layout the 2026-07-16 real-weight
+/// eval produced (`~/.cache/vokra-eval/out/tts-cosyvoice2/`):
+///
+/// - `true_hf_logits.npy` — `[t, vocab]` f32 C-order dump of
+///   `transformers` `Qwen2ForCausalLM` (eager, f32) logits over the real
+///   `FunAudioLLM/CosyVoice2-0.5B` `llm.pt` (generator: `ref_true.py` in
+///   the same dir; reference validity was pinned by the eval at
+///   mirror(with-bias) vs transformers = 2.098e-5).
+/// - `token-ids.json` — `{"ids": [u32, ...], ...}`, the token ids the dump
+///   was generated over.
+///
+/// Absent = clean skip. **Present = fully binding**: a missing GGUF env, a
+/// missing/malformed dump, a synthesized-weight bind or a parity miss all
+/// hard-fail (no silent skip once opted in).
+const HF_REFERENCE_ENV: &str = "VOKRA_COSYVOICE2_HF_REFERENCE";
 
 /// Builds a synthetic CosyVoice2 GGUF with model-card + Mimi defaults and
 /// caller-controlled `arch` / `flow_schedule` fields.
@@ -131,10 +150,10 @@ fn parity_cosyvoice2_unknown_schedule_fails_up_front() {
     assert!(matches!(err, VokraError::InvalidArgument(_)));
 }
 
-/// Gated: the concrete per-tensor parity + MEL loss checks land with
-/// T22/T23. Today this test only verifies the env var gating shape (skip
-/// cleanly when unset) so the CI harness can be enabled at any time
-/// without changing this file (mirrors `parity_kokoro.rs` T22 shape).
+/// Gated: env-var-gated load smoke (skip cleanly when unset) so the CI
+/// harness can be enabled at any time without changing this file (mirrors
+/// `parity_kokoro.rs` T22 shape). The forward-parity gate is
+/// [`parity_cosyvoice2_llm_forward_vs_hf_reference`] below.
 #[test]
 fn parity_cosyvoice2_gguf_smoke() {
     let Some(gguf_path) = env::var(GGUF_ENV).ok() else {
@@ -144,21 +163,203 @@ fn parity_cosyvoice2_gguf_smoke() {
         );
         return;
     };
-    // The gated body: load the GGUF, check the arch, and hand off to the
-    // (future) per-tensor parity comparisons at T22/T23. Today we only
-    // verify the load path succeeds so an owner running the harness
-    // against a real Apache-2.0 GGUF gets one green + one clear next step.
+    // The gated body: load the GGUF and check the arch. A re-converted
+    // (post-hparam-fix) GGUF binds the real LLM weights here; a pre-fix
+    // GGUF (0-placeholder hparams) still loads with `llm = None`.
     let tts = CosyVoice2Tts::from_path_with_policy(&gguf_path, &CompliancePolicy::strict())
         .expect("real CosyVoice2 GGUF must load under strict compliance");
     // A stock CosyVoice2 GGUF is Apache 2.0; the registry admits it
-    // without a research flag. We do not exercise the forward path yet.
+    // without a research flag.
     assert_eq!(
         tts.config().sample_rate,
         24_000,
         "the CosyVoice2 model card fixes the PCM rate at 24 kHz"
     );
     eprintln!(
-        "cosyvoice2 GGUF loaded from {gguf_path}: sample_rate=24_000 — per-tensor / \
-         MEL loss parity assertions land with T22/T23 (see M3-09-T22-T23 spec)"
+        "cosyvoice2 GGUF loaded from {gguf_path}: sample_rate=24_000, llm bound: {} — \
+         run the {HF_REFERENCE_ENV}-gated test for forward parity vs the HF dump",
+        tts.llm().is_some(),
     );
+}
+
+// -----------------------------------------------------------------------------
+// Real-checkpoint forward parity vs the transformers reference dump
+// -----------------------------------------------------------------------------
+
+/// Tolerance for the real-weight forward vs the `transformers` eager
+/// reference.
+///
+/// Honest-atol rationale (feedback-honest-parity-atol): the 2026-07-16
+/// eval measured the pure f32 GEMM-order floor for this exact forward at
+/// max |Δ| = 1.45e-4 (vokra vs a bias-less PyTorch mirror of the same ops,
+/// full 24-layer depth, logits |max| ≈ 13), and the with-bias mirror
+/// pinned the reference itself at 2.098e-5 vs transformers. The bias adds
+/// one fused per-column affine per Q/K/V GEMM, which does not change the
+/// error scale. atol = 3e-4 ≈ 2× the measured floor — tight enough that a
+/// representation bug (the pre-fix bias gap measured max |Δ| = 12.92)
+/// fails by 4+ orders of magnitude. The argmax 10/10 gate is asserted
+/// independently by the harness.
+///
+/// Measured on the fix landing (2026-07-16, M1, re-converted GGUF with
+/// `--config`): max |Δ| = 3.433e-5, mean |Δ| = 2.008e-6, argmax 10/10.
+const HF_PARITY_ATOL: f32 = 3e-4;
+
+/// Flip-the-switch real-checkpoint parity (closed by the 2026-07-16 eval,
+/// P1 fix #4): forwards the eval's token ids through the **real-weight**
+/// LLM backbone and compares every logit against the with-bias
+/// `transformers` reference dump.
+///
+/// Skips cleanly only when [`HF_REFERENCE_ENV`] is unset. Once set,
+/// everything is binding — missing GGUF env, unreadable/malformed dump,
+/// synthesized bind, tolerance or argmax miss all fail the test loudly.
+#[test]
+fn parity_cosyvoice2_llm_forward_vs_hf_reference() {
+    let Some(ref_dir) = env::var(HF_REFERENCE_ENV).ok() else {
+        eprintln!(
+            "{HF_REFERENCE_ENV} unset — skipping cosyvoice2 real-checkpoint LLM \
+             parity; this is a clean skip (never a fabricated pass)"
+        );
+        return;
+    };
+    // Opted in: every failure below is hard (no silent skip).
+    let gguf_path = env::var(GGUF_ENV).unwrap_or_else(|_| {
+        panic!(
+            "{HF_REFERENCE_ENV} is set but {GGUF_ENV} is not — the parity run needs \
+             the re-converted GGUF too (opted-in ⇒ incomplete setup is a failure)"
+        )
+    });
+    let ref_dir = Path::new(&ref_dir);
+    let token_ids = read_token_ids(&ref_dir.join("token-ids.json"));
+    let (shape, reference) = read_npy_f32_2d(&ref_dir.join("true_hf_logits.npy"));
+    assert_eq!(
+        shape.0,
+        token_ids.len(),
+        "reference dump rows {} != token id count {}",
+        shape.0,
+        token_ids.len()
+    );
+
+    let bytes = std::fs::read(&gguf_path)
+        .unwrap_or_else(|e| panic!("{GGUF_ENV} = {gguf_path}: unreadable: {e}"));
+    let file = GgufFile::parse(bytes).expect("GGUF parse");
+    let cfg = CosyVoice2Config::from_gguf(&file).expect("cosyvoice2 config");
+    let backbone = LlmBackbone::from_gguf_with_weights(&file, &cfg)
+        .expect("real-weight bind (re-convert with --config if this names 0-hparams)");
+    assert!(
+        !backbone.weights().is_synthesized,
+        "parity must run against real weights, never the synthesized fixture"
+    );
+    assert_eq!(
+        backbone.config().vocab_size,
+        shape.1,
+        "GGUF vocab != reference dump vocab width"
+    );
+
+    let report = parity::assert_vs_hf_reference(&backbone, &token_ids, &reference, HF_PARITY_ATOL)
+        .expect("forward parity vs transformers eager reference");
+    eprintln!(
+        "cosyvoice2 LLM real-checkpoint parity PASS: t={} vocab={} max|Δ|={:.6e} \
+         mean|Δ|={:.6e} argmax {}/{} (atol {HF_PARITY_ATOL:.1e})",
+        report.t,
+        report.vocab,
+        report.max_abs_delta,
+        report.mean_abs_delta,
+        report.argmax_matches,
+        report.t,
+    );
+}
+
+/// Reads the eval's `token-ids.json` (`{"ids": [int, ...], ...}`) with the
+/// zero-dep `vokra_core::json` parser. Panics with context on any
+/// deviation — the file is part of the opted-in fixture set.
+fn read_token_ids(path: &Path) -> Vec<u32> {
+    let bytes =
+        std::fs::read(path).unwrap_or_else(|e| panic!("{}: unreadable: {e}", path.display()));
+    let root = vokra_core::json::parse(&bytes)
+        .unwrap_or_else(|e| panic!("{}: not valid JSON: {e}", path.display()));
+    let ids = root
+        .get("ids")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("{}: no `ids` array", path.display()));
+    ids.iter()
+        .map(|v| {
+            v.as_u64()
+                .and_then(|x| u32::try_from(x).ok())
+                .unwrap_or_else(|| panic!("{}: non-u32 entry in `ids`: {v:?}", path.display()))
+        })
+        .collect()
+}
+
+/// Minimal strict NumPy `.npy` reader for the reference dump: v1/v2/v3
+/// header, little-endian f32 (`'<f4'`), C-order, rank-2 shape. Anything
+/// else panics with the offending field — this is a test fixture reader,
+/// not a general NumPy port (format spec: numpy/lib/format.py).
+fn read_npy_f32_2d(path: &Path) -> ((usize, usize), Vec<f32>) {
+    let bytes =
+        std::fs::read(path).unwrap_or_else(|e| panic!("{}: unreadable: {e}", path.display()));
+    let ctx = path.display();
+    assert!(
+        bytes.len() >= 10 && bytes[0..6] == *b"\x93NUMPY",
+        "{ctx}: not a .npy file (bad magic)"
+    );
+    let major = bytes[6];
+    let (header_len, header_start) = match major {
+        1 => (u16::from_le_bytes([bytes[8], bytes[9]]) as usize, 10usize),
+        2 | 3 => (
+            u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize,
+            12usize,
+        ),
+        other => panic!("{ctx}: unsupported .npy major version {other}"),
+    };
+    let header_end = header_start + header_len;
+    assert!(bytes.len() >= header_end, "{ctx}: truncated .npy header");
+    let header = std::str::from_utf8(&bytes[header_start..header_end])
+        .unwrap_or_else(|e| panic!("{ctx}: non-UTF-8 .npy header: {e}"));
+
+    // The header is a Python dict literal; assert the exact dtype/order we
+    // support instead of parsing Python.
+    assert!(
+        header.contains("'descr': '<f4'"),
+        "{ctx}: dtype is not little-endian f32 ('<f4'): {header}"
+    );
+    assert!(
+        header.contains("'fortran_order': False"),
+        "{ctx}: fortran_order must be False (C-order): {header}"
+    );
+    let shape_field = header
+        .split("'shape':")
+        .nth(1)
+        .unwrap_or_else(|| panic!("{ctx}: no 'shape' in .npy header: {header}"));
+    let open = shape_field
+        .find('(')
+        .unwrap_or_else(|| panic!("{ctx}: malformed shape tuple: {header}"));
+    let close = shape_field
+        .find(')')
+        .unwrap_or_else(|| panic!("{ctx}: malformed shape tuple: {header}"));
+    let dims: Vec<usize> = shape_field[open + 1..close]
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.parse()
+                .unwrap_or_else(|e| panic!("{ctx}: bad shape dim `{s}`: {e}"))
+        })
+        .collect();
+    let [rows, cols] = dims[..] else {
+        panic!("{ctx}: expected a rank-2 shape, got {dims:?}");
+    };
+
+    let payload = &bytes[header_end..];
+    let want_bytes = rows * cols * 4;
+    assert_eq!(
+        payload.len(),
+        want_bytes,
+        "{ctx}: payload {} bytes != shape ({rows}, {cols}) × 4",
+        payload.len()
+    );
+    let data = payload
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    ((rows, cols), data)
 }

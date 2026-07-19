@@ -5,7 +5,8 @@
 //!
 //! - `VokraSession` — an `Object` subclass holding a
 //!   [`crate::session::VokraSession`] behind a Rust-owned `SessionInstance`
-//!   allocation. Methods: `transcribe`, `synthesize`, `vad_open_stream`.
+//!   allocation. Methods: `load_model`, `transcribe`, `synthesize`,
+//!   `vad_open_stream`.
 //! - `VokraStream` — an `Object` subclass wrapping
 //!   [`crate::vad::VokraStream`]. Methods: `push_pcm`, `poll`, `interrupt`.
 //!   Signals: `asr_chunk(prob: float)`, `tts_chunk(pcm: PackedFloat32Array)`.
@@ -19,10 +20,12 @@
 //! `VokraSession.new()`. We allocate a `SessionInstance` on the heap
 //! (`Box::into_raw`) and return the resulting `*mut SessionInstance`
 //! as our `GDExtensionClassInstancePtr`. The paired `free_instance_func`
-//! reclaims it via `Box::from_raw`. **T05 note**: the instance holds
-//! `Option<VokraSession>` = `None` at first — a future `load(path: String)`
-//! method (M3-18) populates it. This makes the `new() -> load()` two-step
-//! explicit at the GDScript surface, matching how uPiper's Session works.
+//! reclaims it via `Box::from_raw`. The instance holds
+//! `Option<VokraSession>` = `None` at first; the registered
+//! `load_model(path: String) -> int` method
+//! ([`crate::trampoline::session_load_model`]) populates it. This makes
+//! the `new() -> load_model()` two-step explicit at the GDScript surface,
+//! matching how uPiper's Session works.
 //!
 //! Instance-binding pointers on the Godot Object are OUT-OF-SCOPE for T05:
 //! we don't override `object_set_instance` on the Godot side because our
@@ -63,7 +66,7 @@ use crate::ffi::gdextension::{
     GDExtensionBool, GDExtensionClassCreationInfo3, GDExtensionClassInstancePtr,
     GDExtensionClassLibraryPtr, GDExtensionClassMethodArgumentMetadata, GDExtensionClassMethodInfo,
     GDExtensionInt, GDExtensionObjectPtr, GDExtensionPropertyInfo, GDExtensionStringNamePtr,
-    GDExtensionVariantType, method_flags,
+    GDExtensionStringPtr, GDExtensionVariantType, STRING_SIZE, method_flags,
 };
 use crate::ffi::interface::InterfaceTable;
 
@@ -162,6 +165,10 @@ pub mod class_names {
 
 pub mod method_names {
     // VokraSession methods (T06).
+    /// Two-step `new() -> load_model(path)` construction. Named to match
+    /// the GDScript both demo scenes already ship
+    /// (`demos/asr_demo/main.gd`, `demos/tts_demo/main.gd`).
+    pub const LOAD_MODEL: &[u8] = b"load_model\0";
     pub const TRANSCRIBE: &[u8] = b"transcribe\0";
     pub const SYNTHESIZE: &[u8] = b"synthesize\0";
     pub const VAD_OPEN_STREAM: &[u8] = b"vad_open_stream\0";
@@ -179,6 +186,7 @@ pub mod signal_names {
 }
 
 pub mod arg_names {
+    pub const PATH: &[u8] = b"path\0";
     pub const PCM: &[u8] = b"pcm\0";
     pub const SAMPLE_RATE: &[u8] = b"sample_rate\0";
     pub const TEXT: &[u8] = b"text\0";
@@ -194,13 +202,18 @@ pub mod arg_names {
 
 /// Instance data attached to every `VokraSession` Godot Object.
 ///
-/// At T05 the inner session is always `None`. A future `load(path)` method
-/// (M3-18) transitions it to `Some(...)`. Methods dispatched through
-/// [`crate::trampoline`] will read `.inner` behind the raw pointer.
+/// The inner session starts as `None`;
+/// [`crate::trampoline::session_load_model`] transitions it to `Some(..)`
+/// on a successful GGUF load. Methods dispatched through
+/// [`crate::trampoline`] read `.inner` behind the raw pointer.
 pub struct SessionInstance {
-    /// Populated after `load(path)`. Reading a `None` here from a method
-    /// trampoline is documented to return `InvalidMethod` (matches
-    /// `report_pending` in `trampoline.rs`).
+    /// Populated after a successful `load_model(path)`. Reading a `None`
+    /// here from a method trampoline is documented to return
+    /// `InvalidMethod` (matches `report_pending` in `trampoline.rs`).
+    ///
+    /// A *failed* `load_model` resets this to `None` even if a previous
+    /// load had succeeded — see [`crate::trampoline::session_load_model`]
+    /// for why leaving a stale model in place would violate FR-EX-08.
     pub inner: Option<crate::session::VokraSession>,
 }
 
@@ -210,9 +223,67 @@ pub struct StreamInstance {
     pub inner: Option<crate::vad::VokraStream>,
 }
 
+/// Build the Godot-side Object for one of our extension classes and bind a
+/// Rust instance allocation to it.
+///
+/// This is the shape every GDExtension `create_instance_func` must have
+/// (godot-cpp's `ClassDB::_create_instance` does exactly this):
+///
+/// 1. `classdb_construct_object(<parent class>)` — makes a real Godot
+///    `Object`. Returning anything else from `create_instance_func`
+///    crashes Godot, which `dynamic_cast`s the returned pointer as an
+///    `Object *`.
+/// 2. Allocate the Rust-side instance data (`Box::into_raw`).
+/// 3. `object_set_instance(obj, <our class>, instance)` — Godot hands this
+///    exact pointer back as `p_instance` to every method trampoline and to
+///    `free_instance_func`.
+///
+/// Returns NULL if Godot could not construct the Object; the Rust
+/// allocation is only made after that succeeds, so the failure path
+/// cannot leak.
+///
+/// # Safety
+///
+/// `interface` must hold live Godot fn pointers, and this must run on the
+/// Godot main thread (ClassDB's creation path is single-threaded).
+unsafe fn create_bound_object(
+    interface: &InterfaceTable,
+    class_name_bytes: &'static [u8],
+    make_instance: impl FnOnce() -> GDExtensionClassInstancePtr,
+) -> GDExtensionObjectPtr {
+    let mut parent = OwnedStringName::new();
+    let mut class_name = OwnedStringName::new();
+    // SAFETY: live fn pointers per caller doc; both byte constants are
+    // NUL-terminated.
+    unsafe {
+        parent.init_utf8(interface, class_names::PARENT_OBJECT);
+        class_name.init_utf8(interface, class_name_bytes);
+    }
+
+    // SAFETY: `parent` is a live StringName for the duration of the call.
+    let object = unsafe { (interface.classdb_construct_object)(parent.as_ptr()) };
+    if object.is_null() {
+        // Godot refused to construct the parent Object. FR-EX-08: report
+        // the failure as a NULL instance rather than fabricating a
+        // half-built object.
+        return ptr::null_mut();
+    }
+
+    let instance = make_instance();
+    // SAFETY: `object` is a live Godot Object just constructed above;
+    // `class_name` is a registered extension class extending `Object`;
+    // `instance` is a `Box::into_raw` allocation whose ownership now
+    // transfers to Godot (reclaimed by our `free_instance_func`).
+    unsafe {
+        (interface.object_set_instance)(object, class_name.as_ptr(), instance);
+    }
+    object
+}
+
 /// `create_instance_func` for `VokraSession`. Godot invokes this when
-/// GDScript does `VokraSession.new()`. We allocate a `SessionInstance`
-/// with `inner = None`.
+/// GDScript does `VokraSession.new()` (or `ClassDB.instantiate(..)`). We
+/// allocate a `SessionInstance` with `inner = None` and bind it to a
+/// freshly constructed Godot Object — see [`create_bound_object`].
 ///
 /// # Safety
 ///
@@ -225,8 +296,18 @@ pub unsafe extern "C" fn create_session_instance(
     // allocator aborts on OOM), but `catch_panic` defends against arbitrary
     // future body changes.
     let res = crate::error::catch_panic(|| {
-        let boxed = Box::new(SessionInstance { inner: None });
-        Box::into_raw(boxed) as GDExtensionObjectPtr
+        // SAFETY: ClassDB dispatch implies the extension is initialised, so
+        // the interface is live. `None` (pre-init / post-deinit) is
+        // surfaced as a NULL Object rather than a fabricated instance.
+        let created = unsafe {
+            crate::with_interface(|iface| {
+                create_bound_object(iface, class_names::VOKRA_SESSION, || {
+                    Box::into_raw(Box::new(SessionInstance { inner: None }))
+                        as GDExtensionClassInstancePtr
+                })
+            })
+        };
+        created.unwrap_or(ptr::null_mut())
     });
     res.unwrap_or(ptr::null_mut())
 }
@@ -267,8 +348,16 @@ pub unsafe extern "C" fn create_stream_instance(
     _p_class_userdata: *mut c_void,
 ) -> GDExtensionObjectPtr {
     let res = crate::error::catch_panic(|| {
-        let boxed = Box::new(StreamInstance { inner: None });
-        Box::into_raw(boxed) as GDExtensionObjectPtr
+        // SAFETY: see `create_session_instance`.
+        let created = unsafe {
+            crate::with_interface(|iface| {
+                create_bound_object(iface, class_names::VOKRA_STREAM, || {
+                    Box::into_raw(Box::new(StreamInstance { inner: None }))
+                        as GDExtensionClassInstancePtr
+                })
+            })
+        };
+        created.unwrap_or(ptr::null_mut())
     });
     res.unwrap_or(ptr::null_mut())
 }
@@ -395,7 +484,10 @@ unsafe fn register_session_class(library: GDExtensionClassLibraryPtr, interface:
             &info,
         );
 
-        // Now register the three methods.
+        // Now register the four methods. `load_model` goes first because
+        // it is the one the other three depend on (they report
+        // `InvalidMethod` until it has populated `SessionInstance::inner`).
+        register_session_load_model(library, interface, class_name.as_ptr());
         register_session_transcribe(library, interface, class_name.as_ptr());
         register_session_synthesize(library, interface, class_name.as_ptr());
         register_session_vad_open_stream(library, interface, class_name.as_ptr());
@@ -469,20 +561,193 @@ unsafe fn register_stream_class(library: GDExtensionClassLibraryPtr, interface: 
 
 const PROPERTY_USAGE_DEFAULT: u32 = 7; // STORAGE(1) | EDITOR(2) | NETWORK(4)
 
+/// Backing storage for one Godot `String`. Godot pins `sizeof(String) == 8`
+/// on LP64 (a single `CowData` pointer) — see
+/// [`crate::ffi::gdextension::STRING_SIZE`]. Same "opaque scratch buffer we
+/// hand to a Godot constructor" discipline as [`OwnedStringName`].
+///
+/// Like `OwnedStringName` this has no `Drop`, but for a stronger reason
+/// than that type's documented controlled leak: the only `String` built
+/// here is EMPTY, and an empty Godot `String` holds a null `CowData` — no
+/// heap allocation is made, so there is nothing to release. This would stop
+/// being true the moment a non-empty String is constructed through this
+/// type, which is why the constructor is `new_empty` rather than a general
+/// `from_utf8`.
+#[repr(C, align(8))]
+struct OwnedString {
+    storage: [u8; STRING_SIZE],
+}
+
+impl OwnedString {
+    /// Construct an empty Godot `String`.
+    ///
+    /// # Safety
+    ///
+    /// `interface.string_new_with_utf8_chars_and_len` must be a live Godot
+    /// fn pointer. The resulting String is valid only while `self` lives.
+    unsafe fn new_empty(interface: &InterfaceTable) -> Self {
+        let mut this = Self {
+            storage: [0u8; STRING_SIZE],
+        };
+        // SAFETY: `storage` is a writable STRING_SIZE-byte, 8-aligned
+        // buffer. A zero length with a NUL-terminated empty source is the
+        // documented way to build an empty String. `c""` is the empty C
+        // string literal — a lone NUL — so the pointer is valid to read.
+        unsafe {
+            (interface.string_new_with_utf8_chars_and_len)(
+                this.storage.as_mut_ptr() as *mut c_void,
+                c"".as_ptr(),
+                0,
+            );
+        }
+        this
+    }
+
+    fn as_ptr(&self) -> GDExtensionStringPtr {
+        self.storage.as_ptr() as *mut c_void
+    }
+}
+
+/// Owned empty `StringName` + empty `String` for the two
+/// [`GDExtensionPropertyInfo`] fields we do not otherwise populate.
+///
+/// # Why this exists (NULL is not a legal "unused" marker)
+///
+/// Godot converts every `GDExtensionPropertyInfo` we hand it into its own
+/// `PropertyInfo` by **unconditionally dereferencing** both pointers:
+///
+/// ```cpp
+/// PropertyInfo(Variant::Type(p_info.type),
+///              *reinterpret_cast<const StringName *>(p_info.name),
+///              PropertyHint(p_info.hint),
+///              *reinterpret_cast<const String *>(p_info.hint_string),
+///              p_info.usage,
+///              *reinterpret_cast<const StringName *>(p_info.class_name));
+/// ```
+///
+/// There is no NULL check on `hint_string` / `class_name`. Passing
+/// `ptr::null_mut()` — which this file did until the M3-11 T19 headless
+/// leg caught it — segfaults Godot inside
+/// `GDExtension::_register_extension_class_method`, i.e. the extension
+/// killed the host process the first time any method was registered.
+/// Reproduced identically on Godot 4.3-stable and 4.7.1-stable.
+///
+/// godot-cpp never hits this because its `PropertyInfo` wrapper always
+/// materialises real (empty) StringName / String values.
+///
+/// One scratch is shared by every PropertyInfo within a single
+/// registration call: Godot copies the values out during registration
+/// ("Provided struct can be safely freed once the function returns" —
+/// `gdextension_interface.h`), so a shared empty value is sound.
+struct EmptyPropertyFields {
+    class_name: OwnedStringName,
+    hint_string: OwnedString,
+}
+
+impl EmptyPropertyFields {
+    /// # Safety
+    ///
+    /// `interface` must hold live Godot fn pointers.
+    unsafe fn new(interface: &InterfaceTable) -> Self {
+        let mut class_name = OwnedStringName::new();
+        // SAFETY: caller guarantees live fn pointers; `b"\0"` is a
+        // NUL-terminated empty string.
+        unsafe {
+            class_name.init_utf8(interface, b"\0");
+        }
+        Self {
+            class_name,
+            // SAFETY: same.
+            hint_string: unsafe { OwnedString::new_empty(interface) },
+        }
+    }
+}
+
 /// Build a `GDExtensionPropertyInfo` for an argument/return value.
 ///
-/// StringName pointers MUST live for the duration of the register call.
+/// Every pointer inside the returned struct — `name`, and both fields of
+/// `empties` — MUST stay live for the duration of the register call. See
+/// [`EmptyPropertyFields`] for why `class_name` / `hint_string` cannot be
+/// NULL.
 fn make_property_info(
     ty: GDExtensionVariantType,
     name: GDExtensionStringNamePtr,
+    empties: &EmptyPropertyFields,
 ) -> GDExtensionPropertyInfo {
     GDExtensionPropertyInfo {
         r#type: ty,
         name,
-        class_name: ptr::null_mut(),
+        class_name: empties.class_name.as_ptr(),
         hint: 0,
-        hint_string: ptr::null_mut(),
+        hint_string: empties.hint_string.as_ptr(),
         usage: PROPERTY_USAGE_DEFAULT,
+    }
+}
+
+/// `VokraSession::load_model(path: String) -> int`.
+///
+/// The second half of the `new() -> load_model(path)` two-step documented
+/// in this module's "Instance lifetime" section. Returns a
+/// [`crate::ffi::capi::VokraStatus`] numeric code rather than raising a
+/// CallError, because a missing / unreadable GGUF is an expected runtime
+/// condition that GDScript branches on:
+///
+/// ```gdscript
+/// var load_status: int = session.load_model(MODEL_PATH)
+/// if load_status != 0:
+///     _status.text = "Error: load_model returned status=%d" % load_status
+/// ```
+///
+/// See [`crate::trampoline::session_load_model`] for the error-posture
+/// split between in-band status codes and CallErrors.
+///
+/// # Safety
+///
+/// See [`register`].
+unsafe fn register_session_load_model(
+    library: GDExtensionClassLibraryPtr,
+    interface: &InterfaceTable,
+    class_name: GDExtensionStringNamePtr,
+) {
+    let mut method_name = OwnedStringName::new();
+    let mut arg0 = OwnedStringName::new();
+    let mut ret_name = OwnedStringName::new();
+    // SAFETY: interface live; byte constants NUL-terminated.
+    unsafe {
+        method_name.init_utf8(interface, method_names::LOAD_MODEL);
+        arg0.init_utf8(interface, arg_names::PATH);
+        ret_name.init_utf8(interface, b"status\0");
+    }
+
+    // SAFETY: `interface` holds live Godot fn pointers (caller doc).
+    let empties = unsafe { EmptyPropertyFields::new(interface) };
+    let mut args = [make_property_info(
+        GDExtensionVariantType::String,
+        arg0.as_ptr(),
+        &empties,
+    )];
+    let mut args_meta = [GDExtensionClassMethodArgumentMetadata::None];
+    let mut ret_info = make_property_info(GDExtensionVariantType::Int, ret_name.as_ptr(), &empties);
+
+    let method_info = GDExtensionClassMethodInfo {
+        name: method_name.as_ptr(),
+        method_userdata: ptr::null_mut(),
+        call_func: Some(crate::trampoline::session_load_model),
+        ptrcall_func: None,
+        method_flags: method_flags::NORMAL,
+        has_return_value: 1,
+        return_value_info: &mut ret_info,
+        return_value_metadata: GDExtensionClassMethodArgumentMetadata::None,
+        argument_count: args.len() as u32,
+        arguments_info: args.as_mut_ptr(),
+        arguments_metadata: args_meta.as_mut_ptr(),
+        default_argument_count: 0,
+        default_arguments: ptr::null_mut(),
+    };
+
+    // SAFETY: all pointers inside method_info are live for this call.
+    unsafe {
+        (interface.classdb_register_extension_class_method)(library, class_name, &method_info);
     }
 }
 
@@ -508,15 +773,22 @@ unsafe fn register_session_transcribe(
         ret_name.init_utf8(interface, b"result\0");
     }
 
+    // SAFETY: `interface` holds live Godot fn pointers (caller doc).
+    let empties = unsafe { EmptyPropertyFields::new(interface) };
     let mut args = [
-        make_property_info(GDExtensionVariantType::PackedFloat32Array, arg0.as_ptr()),
-        make_property_info(GDExtensionVariantType::Int, arg1.as_ptr()),
+        make_property_info(
+            GDExtensionVariantType::PackedFloat32Array,
+            arg0.as_ptr(),
+            &empties,
+        ),
+        make_property_info(GDExtensionVariantType::Int, arg1.as_ptr(), &empties),
     ];
     let mut args_meta = [
         GDExtensionClassMethodArgumentMetadata::None,
         GDExtensionClassMethodArgumentMetadata::None,
     ];
-    let mut ret_info = make_property_info(GDExtensionVariantType::String, ret_name.as_ptr());
+    let mut ret_info =
+        make_property_info(GDExtensionVariantType::String, ret_name.as_ptr(), &empties);
 
     let method_info = GDExtensionClassMethodInfo {
         name: method_name.as_ptr(),
@@ -560,12 +832,19 @@ unsafe fn register_session_synthesize(
         ret_name.init_utf8(interface, b"result\0");
     }
 
+    // SAFETY: `interface` holds live Godot fn pointers (caller doc).
+    let empties = unsafe { EmptyPropertyFields::new(interface) };
     let mut args = [make_property_info(
         GDExtensionVariantType::String,
         arg0.as_ptr(),
+        &empties,
     )];
     let mut args_meta = [GDExtensionClassMethodArgumentMetadata::None];
-    let mut ret_info = make_property_info(GDExtensionVariantType::Dictionary, ret_name.as_ptr());
+    let mut ret_info = make_property_info(
+        GDExtensionVariantType::Dictionary,
+        ret_name.as_ptr(),
+        &empties,
+    );
 
     let method_info = GDExtensionClassMethodInfo {
         name: method_name.as_ptr(),
@@ -614,14 +893,17 @@ unsafe fn register_session_vad_open_stream(
         ret_name.init_utf8(interface, b"stream\0");
     }
 
+    // SAFETY: `interface` holds live Godot fn pointers (caller doc).
+    let empties = unsafe { EmptyPropertyFields::new(interface) };
     let mut args = [make_property_info(
         GDExtensionVariantType::Int,
         arg0.as_ptr(),
+        &empties,
     )];
     let mut args_meta = [GDExtensionClassMethodArgumentMetadata::None];
     // Returns a Nil Variant at ClassDB level; the trampoline is expected
     // to box the Godot Object separately.
-    let mut ret_info = make_property_info(GDExtensionVariantType::Nil, ret_name.as_ptr());
+    let mut ret_info = make_property_info(GDExtensionVariantType::Nil, ret_name.as_ptr(), &empties);
 
     let method_info = GDExtensionClassMethodInfo {
         name: method_name.as_ptr(),
@@ -663,9 +945,12 @@ unsafe fn register_stream_push_pcm(
         arg0.init_utf8(interface, arg_names::PCM);
     }
 
+    // SAFETY: `interface` holds live Godot fn pointers (caller doc).
+    let empties = unsafe { EmptyPropertyFields::new(interface) };
     let mut args = [make_property_info(
         GDExtensionVariantType::PackedFloat32Array,
         arg0.as_ptr(),
+        &empties,
     )];
     let mut args_meta = [GDExtensionClassMethodArgumentMetadata::None];
 
@@ -711,14 +996,18 @@ unsafe fn register_stream_poll(
         ret_name.init_utf8(interface, b"probs\0");
     }
 
+    // SAFETY: `interface` holds live Godot fn pointers (caller doc).
+    let empties = unsafe { EmptyPropertyFields::new(interface) };
     let mut args = [make_property_info(
         GDExtensionVariantType::Int,
         arg0.as_ptr(),
+        &empties,
     )];
     let mut args_meta = [GDExtensionClassMethodArgumentMetadata::None];
     let mut ret_info = make_property_info(
         GDExtensionVariantType::PackedFloat32Array,
         ret_name.as_ptr(),
+        &empties,
     );
 
     let method_info = GDExtensionClassMethodInfo {
@@ -811,9 +1100,12 @@ unsafe fn register_stream_asr_chunk_signal(
         arg0.init_utf8(interface, arg_names::PROB);
     }
 
+    // SAFETY: `interface` holds live Godot fn pointers (caller doc).
+    let empties = unsafe { EmptyPropertyFields::new(interface) };
     let arg_infos = [make_property_info(
         GDExtensionVariantType::Float,
         arg0.as_ptr(),
+        &empties,
     )];
     // SAFETY: name + arg_info alive for this call.
     unsafe {
@@ -845,9 +1137,12 @@ unsafe fn register_stream_tts_chunk_signal(
         arg0.init_utf8(interface, arg_names::PCM);
     }
 
+    // SAFETY: `interface` holds live Godot fn pointers (caller doc).
+    let empties = unsafe { EmptyPropertyFields::new(interface) };
     let arg_infos = [make_property_info(
         GDExtensionVariantType::PackedFloat32Array,
         arg0.as_ptr(),
+        &empties,
     )];
     // SAFETY: name + arg_info alive for this call.
     unsafe {
@@ -919,6 +1214,12 @@ pub(crate) mod tests {
             has_return: bool,
             has_call_func: bool,
             method_flags: u32,
+            /// Declared return Variant type, read back from
+            /// `return_value_info`. `None` when the method declares no
+            /// return value. Lets tests assert the GDScript-visible
+            /// signature (e.g. `load_model` MUST return Int so the demo's
+            /// `var load_status: int = session.load_model(...)` coerces).
+            return_type: Option<GDExtensionVariantType>,
         },
         SignalRegistered {
             class_name: String,
@@ -927,6 +1228,20 @@ pub(crate) mod tests {
         },
         ClassUnregistered {
             class_name: String,
+        },
+        /// `classdb_construct_object(<class>)` — the Godot-side Object a
+        /// `create_instance_func` must build.
+        ObjectConstructed {
+            class_name: String,
+        },
+        /// `object_set_instance(obj, <class>, instance)` — binds our Rust
+        /// allocation to that Object.
+        InstanceBound {
+            class_name: String,
+            object_is_null: bool,
+            /// Raw instance pointer, so a test can reclaim the leaked
+            /// allocation through `free_*_instance`.
+            instance: usize,
         },
     }
 
@@ -982,6 +1297,7 @@ pub(crate) mod tests {
             b if b == class_names::VOKRA_SESSION => class_names::VOKRA_SESSION,
             b if b == class_names::VOKRA_STREAM => class_names::VOKRA_STREAM,
             b if b == class_names::PARENT_OBJECT => class_names::PARENT_OBJECT,
+            b if b == method_names::LOAD_MODEL => method_names::LOAD_MODEL,
             b if b == method_names::TRANSCRIBE => method_names::TRANSCRIBE,
             b if b == method_names::SYNTHESIZE => method_names::SYNTHESIZE,
             b if b == method_names::VAD_OPEN_STREAM => method_names::VAD_OPEN_STREAM,
@@ -990,12 +1306,14 @@ pub(crate) mod tests {
             b if b == method_names::INTERRUPT => method_names::INTERRUPT,
             b if b == signal_names::ASR_CHUNK => signal_names::ASR_CHUNK,
             b if b == signal_names::TTS_CHUNK => signal_names::TTS_CHUNK,
+            b if b == arg_names::PATH => arg_names::PATH,
             b if b == arg_names::PCM => arg_names::PCM,
             b if b == arg_names::SAMPLE_RATE => arg_names::SAMPLE_RATE,
             b if b == arg_names::TEXT => arg_names::TEXT,
             b if b == arg_names::CAPACITY => arg_names::CAPACITY,
             b if b == arg_names::PROB => arg_names::PROB,
             b if b == b"result\0" => b"result\0",
+            b if b == b"status\0" => b"status\0",
             b if b == b"stream\0" => b"stream\0",
             b if b == b"probs\0" => b"probs\0",
             _ => b"<unrecorded>\0",
@@ -1053,6 +1371,18 @@ pub(crate) mod tests {
         // SAFETY: caller (registry.rs) provides a valid pointer.
         let info = unsafe { &*p_method_info };
         let method_name = resolve_name(info.name);
+        // Read back the declared return type. `return_value_info` is only
+        // meaningful when `has_return_value != 0`; a void method leaves it
+        // NULL (see `register_stream_push_pcm`).
+        let return_type = if info.has_return_value != 0 && !info.return_value_info.is_null() {
+            // SAFETY: `has_return_value != 0` means the registering fn
+            // populated `return_value_info` with a live
+            // `GDExtensionPropertyInfo` that outlives this call (it is a
+            // stack local in the caller's frame).
+            Some(unsafe { (*info.return_value_info).r#type })
+        } else {
+            None
+        };
         EVENTS.lock().unwrap().push(Event::MethodRegistered {
             class_name,
             method_name,
@@ -1060,6 +1390,7 @@ pub(crate) mod tests {
             has_return: info.has_return_value != 0,
             has_call_func: info.call_func.is_some(),
             method_flags: info.method_flags,
+            return_type,
         });
     }
 
@@ -1076,6 +1407,40 @@ pub(crate) mod tests {
             class_name,
             signal_name,
             arg_count: p_argument_count,
+        });
+    }
+
+    /// Stand-in for a Godot `Object`. The registry only NULL-checks the
+    /// value and forwards it to `object_set_instance`, so any stable
+    /// non-null address works.
+    static FAKE_GODOT_OBJECT: u8 = 0;
+
+    unsafe extern "C" fn mock_classdb_construct_object(
+        p_classname: crate::ffi::gdextension::GDExtensionConstStringNamePtr,
+    ) -> GDExtensionObjectPtr {
+        EVENTS.lock().unwrap().push(Event::ObjectConstructed {
+            class_name: resolve_name(p_classname as *mut _),
+        });
+        &FAKE_GODOT_OBJECT as *const u8 as GDExtensionObjectPtr
+    }
+
+    /// `classdb_construct_object` that refuses to build — drives the
+    /// FR-EX-08 "Godot said no" path in [`create_bound_object`].
+    unsafe extern "C" fn mock_classdb_construct_object_fails(
+        _p_classname: crate::ffi::gdextension::GDExtensionConstStringNamePtr,
+    ) -> GDExtensionObjectPtr {
+        ptr::null_mut()
+    }
+
+    unsafe extern "C" fn mock_object_set_instance(
+        p_o: GDExtensionObjectPtr,
+        p_classname: crate::ffi::gdextension::GDExtensionConstStringNamePtr,
+        p_instance: GDExtensionClassInstancePtr,
+    ) {
+        EVENTS.lock().unwrap().push(Event::InstanceBound {
+            class_name: resolve_name(p_classname as *mut _),
+            object_is_null: p_o.is_null(),
+            instance: p_instance as usize,
         });
     }
 
@@ -1108,6 +1473,8 @@ pub(crate) mod tests {
             classdb_register_extension_class_method: mock_classdb_register_extension_class_method,
             classdb_register_extension_class_signal: mock_classdb_register_extension_class_signal,
             classdb_unregister_extension_class: mock_classdb_unregister_extension_class,
+            classdb_construct_object: mock_classdb_construct_object,
+            object_set_instance: mock_object_set_instance,
             string_name_new_with_utf8_chars: mock_string_name_new_with_utf8_chars,
             string_name_new_with_latin1_chars: mock_string_name_new_with_latin1_chars,
             mem_alloc: mock_mem_alloc,
@@ -1303,7 +1670,8 @@ pub(crate) mod tests {
             })
             .collect();
         let expected_methods = [
-            ("VokraSession".to_string(), "transcribe".to_string(), 2u32),
+            ("VokraSession".to_string(), "load_model".to_string(), 1u32),
+            ("VokraSession".to_string(), "transcribe".to_string(), 2),
             ("VokraSession".to_string(), "synthesize".to_string(), 1),
             ("VokraSession".to_string(), "vad_open_stream".to_string(), 1),
             ("VokraStream".to_string(), "push_pcm".to_string(), 1),
@@ -1338,6 +1706,65 @@ pub(crate) mod tests {
                 signal_events.contains(s),
                 "expected signal registration {s:?} missing from events",
             );
+        }
+    }
+
+    /// `load_model(path: String) -> int` is the entry point BOTH demo
+    /// scenes call first (`demos/asr_demo/main.gd:66`,
+    /// `demos/tts_demo/main.gd:76`), and the GDScript there binds the
+    /// result to a statically-typed `int`:
+    ///
+    /// ```gdscript
+    /// var load_status: int = session.load_model(MODEL_PATH)
+    /// ```
+    ///
+    /// A declared return type other than `Int` would make Godot reject
+    /// that assignment at runtime, so the type is asserted here rather
+    /// than left to owner smoke.
+    #[test]
+    fn load_model_is_registered_on_session_returning_int() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_recorder();
+        let interface = make_mock_interface();
+        // SAFETY: mock interface's fn ptrs are live; single-threaded test.
+        unsafe { register(ptr::null_mut(), &interface) };
+
+        let events = EVENTS.lock().unwrap().clone();
+        let load_model = events
+            .iter()
+            .find(|e| {
+                matches!(
+                    e,
+                    Event::MethodRegistered { class_name, method_name, .. }
+                        if class_name == "VokraSession" && method_name == "load_model"
+                )
+            })
+            .cloned()
+            .expect("VokraSession::load_model must be registered — both demos call it first");
+
+        match load_model {
+            Event::MethodRegistered {
+                arg_count,
+                has_return,
+                has_call_func,
+                return_type,
+                ..
+            } => {
+                assert_eq!(arg_count, 1, "load_model takes exactly one arg (path)");
+                assert!(has_return, "load_model returns a status int");
+                assert!(
+                    has_call_func,
+                    "load_model MUST carry a dispatch trampoline — without one \
+                     Godot would reject the call and the demos could never load a model",
+                );
+                assert_eq!(
+                    return_type,
+                    Some(GDExtensionVariantType::Int),
+                    "load_model must declare an Int return so GDScript's \
+                     `var load_status: int = session.load_model(path)` coerces",
+                );
+            }
+            other => panic!("expected MethodRegistered, got {other:?}"),
         }
     }
 
@@ -1425,25 +1852,151 @@ pub(crate) mod tests {
         );
     }
 
+    /// Install a mock interface in `EXTENSION_STATE` for the duration of a
+    /// test. Mirrors `trampoline::tests::MockStateGuard`, which is private
+    /// to that module.
+    struct StateGuard;
+
+    impl StateGuard {
+        fn install(interface: InterfaceTable) -> Self {
+            let mut guard = crate::EXTENSION_STATE.lock().unwrap();
+            *guard = Some(crate::ExtensionState {
+                library: ptr::null_mut(),
+                interface,
+            });
+            Self
+        }
+    }
+
+    impl Drop for StateGuard {
+        fn drop(&mut self) {
+            if let Ok(mut guard) = crate::EXTENSION_STATE.lock() {
+                *guard = None;
+            }
+        }
+    }
+
+    /// Regression test for the crash the M3-11 T19 headless leg caught.
+    ///
+    /// `create_instance_func` MUST return a Godot `Object` built by
+    /// `classdb_construct_object`, with the Rust allocation attached via
+    /// `object_set_instance`. Returning the bare `Box::into_raw` pointer
+    /// — which this file did before T19 — makes Godot `dynamic_cast` a
+    /// non-Object and segfault on the first `VokraSession.new()`.
     #[test]
-    fn create_session_instance_yields_droppable_boxed_pointer() {
-        // SAFETY: `create_session_instance` returns a Box::into_raw'd
-        // pointer; feeding it to `free_session_instance` reclaims it.
+    fn create_session_instance_constructs_object_and_binds_rust_instance() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_recorder();
+        let _state = StateGuard::install(make_mock_interface());
+
+        // SAFETY: mock interface installed; single-threaded test.
+        let obj = unsafe { create_session_instance(ptr::null_mut()) };
+        assert!(!obj.is_null(), "must return a Godot Object, not NULL");
+
+        let events = EVENTS.lock().unwrap().clone();
+        // The Object is constructed from the PARENT class name — Godot
+        // rejects constructing a not-yet-instantiable extension class.
+        assert!(
+            events.iter().any(
+                |e| matches!(e, Event::ObjectConstructed { class_name } if class_name == "Object")
+            ),
+            "must construct the parent Object; got {events:#?}",
+        );
+
+        let bound = events
+            .iter()
+            .find_map(|e| match e {
+                Event::InstanceBound {
+                    class_name,
+                    object_is_null,
+                    instance,
+                } => Some((class_name.clone(), *object_is_null, *instance)),
+                _ => None,
+            })
+            .expect("must bind the Rust instance via object_set_instance");
+        assert_eq!(bound.0, "VokraSession", "bind under our extension class");
+        assert!(!bound.1, "the bound Object must not be NULL");
+        assert_ne!(bound.2, 0, "the bound instance pointer must not be NULL");
+
+        // The bound pointer is the `SessionInstance` Godot will hand back
+        // to every trampoline — and it must be reclaimable by our paired
+        // `free_instance_func`.
+        //
+        // SAFETY: `bound.2` is the `Box::into_raw(SessionInstance)` we just
+        // produced and have not freed.
         unsafe {
-            let raw = create_session_instance(ptr::null_mut());
-            assert!(!raw.is_null(), "create must yield non-null pointer");
-            free_session_instance(ptr::null_mut(), raw as GDExtensionClassInstancePtr);
+            free_session_instance(ptr::null_mut(), bound.2 as GDExtensionClassInstancePtr);
         }
     }
 
     #[test]
-    fn create_stream_instance_yields_droppable_boxed_pointer() {
-        // SAFETY: same rationale.
+    fn create_stream_instance_constructs_object_and_binds_rust_instance() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_recorder();
+        let _state = StateGuard::install(make_mock_interface());
+
+        // SAFETY: mock interface installed; single-threaded test.
+        let obj = unsafe { create_stream_instance(ptr::null_mut()) };
+        assert!(!obj.is_null(), "must return a Godot Object, not NULL");
+
+        let events = EVENTS.lock().unwrap().clone();
+        let bound = events
+            .iter()
+            .find_map(|e| match e {
+                Event::InstanceBound {
+                    class_name,
+                    instance,
+                    ..
+                } => Some((class_name.clone(), *instance)),
+                _ => None,
+            })
+            .expect("must bind the Rust instance via object_set_instance");
+        assert_eq!(bound.0, "VokraStream");
+
+        // SAFETY: reclaim the allocation we just produced.
         unsafe {
-            let raw = create_stream_instance(ptr::null_mut());
-            assert!(!raw.is_null(), "create must yield non-null pointer");
-            free_stream_instance(ptr::null_mut(), raw as GDExtensionClassInstancePtr);
+            free_stream_instance(ptr::null_mut(), bound.1 as GDExtensionClassInstancePtr);
         }
+    }
+
+    /// FR-EX-08: when Godot cannot construct the Object, we surface NULL
+    /// rather than fabricating an instance — and we must NOT have
+    /// allocated (and leaked) the Rust side first.
+    #[test]
+    fn create_instance_returns_null_when_godot_refuses_to_construct() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_recorder();
+        let mut iface = make_mock_interface();
+        iface.classdb_construct_object = mock_classdb_construct_object_fails;
+        let _state = StateGuard::install(iface);
+
+        // SAFETY: mock interface installed; single-threaded test.
+        let obj = unsafe { create_session_instance(ptr::null_mut()) };
+        assert!(obj.is_null(), "a refused construction must yield NULL");
+
+        let events = EVENTS.lock().unwrap().clone();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::InstanceBound { .. })),
+            "no instance may be allocated or bound when construction fails",
+        );
+    }
+
+    /// Pre-init / post-deinit: no resolved interface means we cannot build
+    /// an Object at all. NULL is the honest answer (FR-EX-08); the old
+    /// code path would have handed Godot a raw Rust pointer.
+    #[test]
+    fn create_instance_returns_null_when_extension_uninitialised() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        {
+            let mut state = crate::EXTENSION_STATE.lock().unwrap();
+            *state = None;
+        }
+        // SAFETY: no interface installed; the fn must bail before any
+        // Godot call.
+        let obj = unsafe { create_session_instance(ptr::null_mut()) };
+        assert!(obj.is_null(), "uninitialised extension must yield NULL");
     }
 
     #[test]

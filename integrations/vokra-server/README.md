@@ -24,8 +24,12 @@ cargo build --release
 
 # Launch with a Whisper base GGUF and a piper-plus voice GGUF
 ./target/release/vokra-server \
-    --asr-base /path/to/whisper-base.gguf \
-    --tts-piper /path/to/piper-voice.gguf
+    --whisper-base /path/to/whisper-base.gguf \
+    --piper-plus /path/to/piper-voice.gguf
+
+# Add --piper-g2p to synthesize from plain text (real 8-language G2P,
+# derived from the voice GGUF metadata). Without it, plain-text TTS
+# requests return an explicit 400 and only raw phoneme-id payloads work.
 ```
 
 By default the HTTP listener binds `127.0.0.1:8080` and the Wyoming
@@ -45,17 +49,21 @@ built-in default.
 
 | Flag | Env var | Config key | Default | Notes |
 |---|---|---|---|---|
-| `--http-bind` | `VOKRA_HTTP_BIND` | `http.bind` | `127.0.0.1:8080` | Public exposure requires reverse proxy |
-| `--wyoming-bind` | `VOKRA_WYOMING_BIND` | `wyoming.bind` | `127.0.0.1:10300` | HA Wyoming reference port |
-| `--asr-base` | `VOKRA_ASR_BASE` | `models.asr_base` | (required) | Whisper base GGUF |
-| `--asr-large-v3` | `VOKRA_ASR_LARGE_V3` | `models.asr_large_v3` | (unset → unavailable) | Whisper large-v3 GGUF (M2-06) |
-| `--tts-piper` | `VOKRA_TTS_PIPER` | `models.tts_piper` | (required for TTS) | piper-plus native voice GGUF |
-| `--tts-kokoro` | `VOKRA_TTS_KOKORO` | `models.tts_kokoro` | (unset → unavailable) | Kokoro-82M GGUF (M2-07 skeleton) |
-| `--backend` | `VOKRA_BACKEND` | `runtime.backend` | `cpu` | `cpu` \| `metal` \| `cuda` |
-| `--config` | `VOKRA_CONFIG` | — | (none) | Path to TOML config file |
-| `--max-body-bytes` | `VOKRA_MAX_BODY` | `http.max_body_bytes` | `26214400` (25 MiB) | OpenAI parity |
-| `--request-timeout-secs` | `VOKRA_REQ_TIMEOUT` | `http.request_timeout_secs` | `60` | Per-request deadline |
-| `--max-connections` | `VOKRA_MAX_CONN` | `http.max_connections` | `100` | DoS ceiling |
+| `--http-bind` | `VOKRA_HTTP_BIND` | (CLI/env only) | `127.0.0.1:8080` | Public exposure requires reverse proxy |
+| `--wyoming-bind` | `VOKRA_WYOMING_BIND` | (CLI/env only) | `127.0.0.1:10300` | HA Wyoming reference port |
+| `--whisper-base` | `VOKRA_WHISPER_BASE` | `whisper_base` | (unset → ASR unavailable) | Whisper base GGUF |
+| `--whisper-base-tokenizer` | `VOKRA_WHISPER_BASE_TOKENIZER` | `whisper_base_tokenizer` | (unset) | Optional external tokenizer side-car |
+| `--whisper-large-v3` | `VOKRA_WHISPER_LARGE_V3` | `whisper_large_v3` | (unset → unavailable) | Whisper large-v3 GGUF (M2-06) |
+| `--whisper-large-v3-tokenizer` | `VOKRA_WHISPER_LARGE_V3_TOKENIZER` | `whisper_large_v3_tokenizer` | (unset) | Optional external tokenizer side-car |
+| `--piper-plus` | `VOKRA_PIPER_PLUS` | `piper_plus` | (unset → TTS unavailable) | piper-plus native voice GGUF |
+| `--piper-g2p` | `VOKRA_PIPER_G2P` | `piper_g2p = true` | off | Inject the real 8-language G2P (plain-text TTS); off = explicit-error passthrough (raw phoneme ids only) |
+| `--kokoro` | `VOKRA_KOKORO` | `kokoro` | (unset → unavailable) | Kokoro-82M GGUF |
+| `--voxtral` | `VOKRA_VOXTRAL` | `voxtral` | (unset → unavailable) | Voxtral GGUF |
+| `--silero-vad` | `VOKRA_SILERO_VAD` | `silero_vad` | (unset → unavailable) | Silero VAD GGUF |
+| `--config` | `VOKRA_CONFIG` | — | (none) | Path to TOML config file (flat keys mirror the flag names with underscores) |
+
+Request-body size is capped at 25 MiB (OpenAI parity) as a compiled-in
+limit (`api/openai.rs::MAX_BODY_BYTES`); there is no CLI flag for it.
 
 Unknown model names, missing GGUFs, and unimplemented backend/op
 combinations return an explicit error — **no silent CPU fallback**
@@ -142,21 +150,41 @@ placeholder response with explicit non-implementation notice
 launch, otherwise the model is `unavailable` and requests receive an
 explicit error, never a silent substitution.
 
-| API | Endpoint | whisper-base | whisper-large-v3 | whisper-turbo | piper-plus | Kokoro-82M |
+| API | Endpoint | whisper-base | whisper-small/medium/turbo | whisper-large-v3 | piper-plus | Kokoro-82M |
 |---|---|---|---|---|---|---|
-| OpenAI | `POST /v1/audio/transcriptions` | OK | gated (M2-06) | out of scope (v1.0+) | n/a | n/a |
-| OpenAI | `POST /v1/audio/speech` | n/a | n/a | n/a | out of scope (v1.0+) | out of scope (v1.0+) |
+| OpenAI | `POST /v1/audio/transcriptions` | OK | gated (cc-39) | gated (M2-06) | n/a | n/a |
+| OpenAI | `POST /v1/audio/speech` | n/a | n/a | n/a | OK (cc-38) | gated + M2-07 skeleton → 501 |
+| OpenAI | `GET /v1/models` | OK | OK (advertised when gated-in) | OK | OK | OK |
 | vLLM | `POST /v1/completions` | stub (501) | stub (501) | stub (501) | n/a | n/a |
 | vLLM | `POST /v1/chat/completions` | stub (501) | stub (501) | stub (501) | n/a | n/a |
 | piper-plus HTTP | `POST /api/tts` | n/a | n/a | n/a | OK | gated + M2-07 skeleton → 501 |
-| Wyoming | `transcribe` / audio events | OK | gated (M2-06) | out of scope | n/a | n/a |
+| Wyoming | `transcribe` / audio events | OK | gated (cc-39) | gated (M2-06) | n/a | n/a |
 | Wyoming | `synthesize` / audio events | n/a | n/a | n/a | OK | gated + M2-07 skeleton → 501 |
 
 Notes:
 
-- `whisper-turbo` (FR-MD-04 follow-on) is out of scope for v0.5 in
-  every API row; requests naming it receive 501 + `type:
-  "not_implemented"`, never a base-model substitution.
+- `whisper-small` / `whisper-medium` / `whisper-turbo` are served when
+  their GGUF is supplied at launch (`--whisper-small` etc., cc-39;
+  `whisper-turbo` also answers to its upstream id
+  `whisper-large-v3-turbo`). **An unconfigured size is a 404, never a
+  substitution by another size** — verified against real weights in
+  `tests/real_gguf_slots.rs`. This supersedes the earlier "out of scope
+  (v1.0+)" row: model-side support landed with M4-14 and all four sizes
+  transcribe byte-identically to onnxruntime
+  (`docs/bench-baselines/m1-real-weight-eval-2026-07-16/report.md`).
+- `POST /v1/audio/speech` (cc-38) returns `audio/wav`. Three deliberate
+  deviations from OpenAI, each an explicit status rather than a
+  plausible-looking response: compressed `response_format`
+  (mp3/opus/aac/flac) and OpenAI's headerless 24 kHz `pcm` are **501**
+  (Vokra links no audio encoder or resampler, and adding one would mean a
+  third-party codec dependency); `speed` other than `1.0` is **501** (the
+  native runtime does not wire per-request `length_scale`); and OpenAI's
+  stock voice names (`alloy`, `nova`, …) are **404** rather than being
+  folded onto the one loaded voice. Omitting `response_format` yields
+  `wav`, not OpenAI's `mp3` default. `model: "tts-1"` is accepted as the
+  stock alias for the default TTS engine (the same convention as
+  `whisper-1` → base); `tts-1-hd` is **not** aliased — it names a quality
+  tier this server does not have.
 - vLLM `/v1/completions` and `/v1/chat/completions` are **contract-only
   stubs** in v0.5 — schema-conformant JSON is returned but no LLM is
   loaded (plan §D9). Real completion generation lands with the
@@ -168,8 +196,44 @@ Notes:
 - CC-BY-NC weights (F5-TTS / Fish-Speech / EnCodec) are refused at
   registry load without a research flag (plan §D11 / M2-13); they
   never appear in this matrix.
-- Backend selection (CPU / Metal / CUDA) is fixed at server startup
-  and applies uniformly across all rows above.
+- Backend selection is fixed at server startup: `--backend <cpu|metal|
+  cuda|vulkan>` sets the default and `--model-backend <SLOT>=<BACKEND>`
+  overrides individual engines (cc-30). A backend can only be *selected*
+  if it was *compiled in* — the GPU backends are opt-in Cargo features
+  that forward to `vokra-models` (`cargo build --release --features
+  metal`). Requesting an uncompiled backend is a **hard startup error**
+  naming the feature to rebuild with, never a silent CPU fall back
+  (FR-EX-08). Two engines are exceptions worth knowing: Silero VAD has no
+  backend selector at all (CPU-only by construction — an explicit
+  `--model-backend silero-vad=…` is rejected, and a non-CPU global default
+  is announced as not applying to it), and Voxtral only began honouring
+  the setting with cc-30 (it previously stayed on CPU regardless).
+
+## Stability & versioning tier (experimental)
+
+**The `vokra-server` network APIs — the OpenAI-/vLLM-/piper-plus-compatible
+HTTP endpoints AND the Wyoming Protocol JSONL/TCP listener — are a
+protocol-tracking / experimental governance tier and are NOT covered by
+Vokra's v1.0 semver stability guarantee.**
+
+- These surfaces are **not part of the Vokra C ABI freeze** (the frozen,
+  semver-stable interface is `include/vokra.h` at v1.0 GA). See
+  `docs/handoff/m4-12.md` §(e)-1 ("HTTP/gRPC/WebSocket API is NOT part of the
+  C ABI freeze"; "the future Wyoming Protocol Server lives at a separate
+  governance tier").
+- The **Wyoming endpoint tracks upstream `rhasspy/wyoming` semantics** and
+  follows *that project's* versioning — a breaking change in the
+  HA-community-driven Wyoming Protocol is **not** a Vokra semver violation.
+  Treat the Wyoming surface as experimental and pin your integration to a
+  tested Vokra build rather than assuming cross-version wire stability.
+- The HTTP endpoints aim for drop-in compatibility with the upstream shapes
+  they mirror (OpenAI audio, vLLM, piper-plus, faster-whisper) and likewise
+  track those upstreams, not Vokra semver.
+
+(The formal `## Non-C-ABI surface areas` section of `include/vokra.h`'s
+STABILITY block is added at **M5-13** — the C ABI freeze — per
+`docs/handoff/m4-12.md` §(e)-1; this README documents the exclusion ahead of
+that.)
 
 ## Connection examples
 
@@ -224,8 +288,8 @@ Steps to register the server with Home Assistant OS / Container:
 
    ```
    vokra-server --wyoming-bind 0.0.0.0:10300 \
-                --asr-base   /path/to/whisper-base.gguf \
-                --tts-piper  /path/to/piper-voice.gguf
+                --whisper-base /path/to/whisper-base.gguf \
+                --piper-plus   /path/to/piper-voice.gguf --piper-g2p
    ```
 
 2. **In Home Assistant, open Settings → Devices & Services → Add

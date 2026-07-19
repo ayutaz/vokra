@@ -37,17 +37,51 @@
 #
 #   * Tests: `cargo test -p vokra-backend-vulkan --features vulkan` runs
 #     every integration test under `crates/vokra-backend-vulkan/tests/`. As of
-#     Wave 8+9 (2026-07-09) that's 8 files / ~39 tests; new tests added by
-#     T14〜T22 auto-join the run.
+#     M4-13-T16 (2026-07-19) that's 13 files / 82 tests plus 47 lib tests
+#     (see the inventory on the test step below); new tests auto-join the
+#     run. With the .spv blobs committed, the blob-gated dispatch + parity
+#     legs now RUN on lavapipe instead of skipping.
 #
-#   * Not a required check: this workflow is opt-in until (a) lavapipe on
+#   * Drift gate (M4-13-T14/T16 / ADR §4-(b)): `scripts/compile-vulkan-shaders.sh
+#     --check` is a TWO-STAGE gate against the committed
+#     kernels/precompiled/*.spv (all 12 committed since M4-13-T16,
+#     2026-07-19, produced by glslangValidator 16.4.0 — pinned in
+#     kernels/precompiled/PROVENANCE):
+#       (1) source-hash gate — every committed blob's .comp source is
+#           SHA-256-compared against the hash PROVENANCE recorded at
+#           compile time. Compiler-independent, runs on this runner
+#           regardless of its glslang version; an edited source without a
+#           recompile fails the run.
+#       (2) recompile byte-diff — ONLY when the runner's compiler family
+#           AND version match the PROVENANCE pin. apt's glslang-tools
+#           generally differs from the pinned Homebrew glslang 16.4.0, and
+#           SPIR-V is not byte-stable across compiler versions, so on a
+#           mismatch the byte-diff is skipped with an honest note instead
+#           of spuriously reporting drift (fabricated-FAIL prevention —
+#           the mirror image of no fabricated pass).
+#     Blob-BYTE integrity is separately enforced on every host (including
+#     this runner and the Apple authoring host) by the SHA-256 pins in
+#     crates/vokra-backend-vulkan/src/spirv.rs — `verify_pinned_hashes` +
+#     `sha256sums_file_matches_manifest_pins` run in the cargo test step
+#     below and need no Vulkan driver.
+#
+#   * Not a required check: this workflow is opt-in until lavapipe on
 #     GitHub-hosted runners has been stable across 4+ consecutive cron runs
-#     AND (b) the M3-02-T36 recompile-and-diff gate lands. lavapipe is a CPU
-#     fallback ICD and its exact SPIR-V behavior can drift with each Mesa
-#     release — pinning it via branch protection today would false-fail PRs
-#     that don't touch Vulkan code. See ADR M3-02-spirv-generation §3 (b) for
-#     the "no toolchain in the ubuntu-latest default; blob is committed"
-#     policy — this CI is the runtime dispatch analogue of that policy.
+#     (the M3-02-T36 recompile-and-diff gate is now wired — M4-13-T14).
+#     lavapipe is a CPU fallback ICD and its exact SPIR-V behavior can drift
+#     with each Mesa release — pinning it via branch protection today would
+#     false-fail PRs that don't touch Vulkan code. Promotion to a required
+#     check is the owner's judgment after the consecutive-green window
+#     (M4-13-T18). See ADR M3-02-spirv-generation §3 (b) for the "no
+#     toolchain in the ubuntu-latest default; blob is committed" policy —
+#     this CI is the runtime dispatch analogue of that policy.
+#
+#   * lavapipe limitation (M4-13 handoff, IMPORTANT): lavapipe proves the
+#     Rust FFI dispatch chain + kernel MATH on a conformant CPU ICD. It
+#     CANNOT catch driver-level GLSL→SPIR-V compiler bugs in real Android
+#     GPU drivers (Adreno / Mali) — the Android real-device soak
+#     (M4-13-T17, owner) is therefore the WP's exit hard gate, not this
+#     workflow.
 #
 #   * Honest reporting (FR-EX-08):
 #     - The Vulkan tests already surface `VokraError::BackendUnavailable` as a
@@ -69,20 +103,27 @@
 #     runner side — they are runner infrastructure, not Vokra dependencies.
 #
 # Untested on this machine: lavapipe's ability to load and dispatch the
-# `copy_f32` / `add_f32` hand-crafted SPIR-V modules has NOT been verified
-# from this CC session's environment (Apple Silicon macOS authoring host has
-# no libvulkan). The workflow is scaffolding; the initial workflow_dispatch
-# run is an owner handoff.
+# SPIR-V modules (the hand-crafted `copy_f32` / `add_f32` pair AND the 12
+# glslangValidator-produced blobs committed in M4-13-T16) has NOT been
+# verified from this CC session's environment — the Apple Silicon macOS
+# authoring host has no Vulkan target arm (the crate's real-FFI path is
+# cfg-gated to linux/android/windows; macOS uses Metal), so every dispatch
+# test skips there with a logged reason. The manifest SHA-256 pins and the
+# type-level check of the real-FFI arm (cargo check --target
+# x86_64-unknown-linux-gnu --features vulkan) ARE verified on the authoring
+# host. The initial workflow_dispatch run is an owner handoff (M4-13-T18).
 
 name: gpu-vulkan-parity
 
 on:
   workflow_dispatch:
   schedule:
-    # Weekly Monday 05:00 UTC. 1h after parity-kokoro-real (04:00 UTC), 1h
-    # before gpu-cuda-rtf (06:00 UTC). Off-peak US/EU business hours so a
+    # Weekly Monday 05:30 UTC. Slotted between parity-whisper-real
+    # (05:00 UTC) and gpu-cuda-rtf (06:00 UTC) — see the shared schedule
+    # table in parity-kokoro-real.yml; every weekly job gets its own slot
+    # so a shared-runner queue never serialises two of them. Off-peak US/EU business hours so a
     # Mesa hub / apt outage surfaces without blocking active development.
-    - cron: '0 5 * * 1'
+    - cron: '30 5 * * 1'
 
 permissions:
   contents: read
@@ -158,6 +199,28 @@ jobs:
           vulkaninfo --summary 2>&1 | head -80 >> "$GITHUB_STEP_SUMMARY" || echo "(vulkaninfo unavailable)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+      - name: SPIR-V drift gate (M4-13-T14/T16 / ADR §4-(b), two-stage)
+        # Stage 1 (always): source-hash gate — each committed
+        # kernels/precompiled/*.spv's .comp source is SHA-256-compared
+        # against kernels/precompiled/PROVENANCE (recorded at --update
+        # time). Compiler-independent: an edited .comp without a recompile
+        # fails this step (exit 1) no matter which glslang this runner has.
+        # Stage 2 (conditional): full recompile byte-diff, run ONLY when
+        # the runner's compiler family AND version match the PROVENANCE pin
+        # (glslangValidator 16.4.0, Homebrew glslang). apt's glslang-tools
+        # is usually a different version, and SPIR-V is not byte-stable
+        # across compiler versions, so on a mismatch the script skips the
+        # byte-diff with an honest note instead of spuriously failing —
+        # blob-byte integrity is still enforced by the SHA-256 pins in
+        # src/spirv.rs (verify_pinned_hashes +
+        # sha256sums_file_matches_manifest_pins in the cargo test step,
+        # driver-free). glslang-tools is still installed so stage 2 CAN run
+        # whenever the apt version catches up to the pin.
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends glslang-tools
+          ./scripts/compile-vulkan-shaders.sh --check
+
       - name: Build vokra-backend-vulkan (--features vulkan)
         # Release build so the smoke dispatch tests exercise the same code the
         # user would see when linking `--features vulkan`. Clippy is out of
@@ -167,26 +230,41 @@ jobs:
 
       - name: Run Vulkan integration tests (--features vulkan)
         # `cargo test` runs every integration test under
-        # `crates/vokra-backend-vulkan/tests/`. Current inventory (Wave 8+9,
-        # 2026-07-09) is:
+        # `crates/vokra-backend-vulkan/tests/`. Current inventory
+        # (M4-13-T16, 2026-07-19) is:
         #
-        #   eval_op_dispatch.rs          — 6 tests (Copy / Add via graph
-        #                                   executor Vulkan arm)
-        #   gemm_pipeline_selection.rs   — 4 tests (subgroup vs coop-matrix
-        #                                   probe walk)
-        #   graph_executor_vulkan.rs     — 4 tests (run_graph dispatch chain)
-        #   handcrafted_add_f32.rs       — 6 tests (add_f32 bytecode + cap
-        #                                   assertion)
-        #   host_device_roundtrip.rs     — 4 tests (probe queue family +
-        #                                   device roundtrip)
-        #   no_silent_fallback.rs        — 2 tests (FR-EX-08 gate)
-        #   probe_honest.rs              — 3 tests (probe + BackendUnavailable)
-        #   smoke_dispatch.rs            — ~10 tests (copy_f32 / add_f32
-        #                                   round-trips)
+        #   eval_op_dispatch.rs             — 7 tests (Copy/Add + blob-driven
+        #                                      lock-step + padding fix)
+        #   gemm_pipeline_selection.rs      — 6 tests (subgroup vs coop-matrix
+        #                                      + RequireCoopMatrix explicit error)
+        #   glsl_mirror.rs                  — 12 tests (host-side arithmetic
+        #                                      transcriptions of the .comp bodies)
+        #   graph_arm_coverage.rs           — 3 tests (CUDA-parity coverage set,
+        #                                      host-portable)
+        #   graph_executor_vulkan.rs        — 4 tests (run_graph dispatch chain)
+        #   handcrafted_add_f32.rs          — 6 tests (add_f32 bytecode + cap
+        #                                      assertion)
+        #   host_device_roundtrip.rs        — 3 tests (probe queue family +
+        #                                      device roundtrip)
+        #   kernel_dispatch.rs              — 14 tests (typed dispatch arms,
+        #                                      CPU differentials — blobs
+        #                                      committed, so these RUN here)
+        #   no_silent_fallback.rs           — 2 tests (FR-EX-08 gate)
+        #   parity_vulkan.rs                — 10 tests (M4-13-T12 Whisper-dims
+        #                                      per-kernel parity — RUN here)
+        #   parity_whisper_chain_vulkan.rs  — 2 tests (M4-13-T13 model-level
+        #                                      chain + CPU oracle self-check)
+        #   probe_honest.rs                 — 3 tests (probe + BackendUnavailable)
+        #   smoke_dispatch.rs               — 10 tests (copy_f32 / add_f32
+        #                                      round-trips)
         #
-        # All are host-portable: they either run the round-trip on lavapipe
-        # or surface VokraError::BackendUnavailable and skip cleanly. New
-        # tests added by T14〜T22 auto-join without touching this workflow.
+        # Plus 47 lib tests (manifest integrity: SHA-256 pin verification +
+        # SHA256SUMS cross-check run driver-free). All are host-portable:
+        # they either run the round-trip on lavapipe or surface
+        # VokraError::BackendUnavailable with a logged skip. Since the
+        # M4-13-T16 .spv commit the blob gates are open — this workflow now
+        # exercises every kernel's real dispatch on lavapipe. New tests
+        # auto-join without touching this workflow.
         #
         # `2>&1 | tee vulkan-test-output.log` captures stdout+stderr so an
         # ICD failure that only shows in stderr is preserved for artifact

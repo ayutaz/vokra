@@ -35,11 +35,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "vokra-backend-webgpu"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "vokra-backend-cpu",
+ "vokra-core",
+]
+
+[[package]]
 name = "vokra-capi"
 version = "0.1.0-alpha.0"
 dependencies = [
+ "vokra-convert",
  "vokra-core",
+ "vokra-mmap",
  "vokra-models",
+ "vokra-ops",
 ]
 
 [[package]]
@@ -49,6 +60,7 @@ dependencies = [
  "vokra-convert",
  "vokra-core",
  "vokra-eval",
+ "vokra-mmap",
  "vokra-models",
  "vokra-ops",
 ]
@@ -58,6 +70,8 @@ name = "vokra-convert"
 version = "0.1.0-alpha.0"
 dependencies = [
  "vokra-core",
+ "vokra-mmap",
+ "vokra-ops",
 ]
 
 [[package]]
@@ -68,6 +82,7 @@ version = "0.1.0-alpha.0"
 name = "vokra-eval"
 version = "0.1.0-alpha.0"
 dependencies = [
+ "vokra-backend-cpu",
  "vokra-core",
  "vokra-ops",
 ]
@@ -87,7 +102,11 @@ dependencies = [
  "vokra-backend-cuda",
  "vokra-backend-metal",
  "vokra-backend-vulkan",
+ "vokra-backend-webgpu",
+ "vokra-convert",
  "vokra-core",
+ "vokra-eval",
+ "vokra-mmap",
  "vokra-ops",
  "vokra-piper-plus",
 ]
@@ -113,4 +132,14 @@ name = "vokra-piper-plus"
 version = "0.1.0-alpha.0"
 dependencies = [
  "vokra-core",
+]
+
+[[package]]
+name = "vokra-wasm-harness"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "vokra-backend-cpu",
+ "vokra-backend-webgpu",
+ "vokra-core",
+ "vokra-models",
 ]

@@ -72,7 +72,25 @@ impl Mmap {
     /// GGUF anyway).
     pub fn open(path: impl AsRef<Path>) -> io::Result<Mmap> {
         let path = path.as_ref();
-        #[cfg(unix)]
+        // Emscripten is `target_family = "unix"`, so it must be carved out
+        // BEFORE the generic unix arm (M4-02, ADR M4-02 §8): on Emscripten
+        // virtual filesystems `mmap` is copy-semantics — no lazy paging, no
+        // zero-copy — so the "true mmap" contract of this crate cannot hold,
+        // and under Unity-bundled Emscripten versions the prebuilt rust-std
+        // syscall ABI is additionally skewed. Explicit error, never a silent
+        // degradation (FR-EX-08).
+        #[cfg(target_os = "emscripten")]
+        {
+            let _ = path;
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "vokra-mmap is not supported on Emscripten (virtual-FS mmap is \
+                 copy-semantics, not a true lazy mapping); load the model \
+                 through the buffered GgufFile path instead — e.g. \
+                 GgufFile::parse / vokra_session_create_from_bytes",
+            ))
+        }
+        #[cfg(all(unix, not(target_os = "emscripten")))]
         {
             unix::open(path)
         }
@@ -120,7 +138,9 @@ impl Drop for Mmap {
         if self.ptr.is_null() || self.len == 0 {
             return;
         }
-        #[cfg(unix)]
+        // No emscripten arm: `Mmap::open` never constructs a mapping there
+        // (explicit Unsupported error above), so there is nothing to release.
+        #[cfg(all(unix, not(target_os = "emscripten")))]
         unix::unmap(self.ptr, self.len);
         #[cfg(windows)]
         windows::unmap(self.ptr, self.len);
@@ -149,9 +169,12 @@ pub fn open_gguf(path: impl AsRef<Path>) -> Result<GgufFile, GgufError> {
     GgufFile::from_external(Box::new(mmap))
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "emscripten")))]
 mod unix {
     //! POSIX `mmap` / `munmap` binding (no `libc` crate).
+    //!
+    //! Emscripten is excluded even though it is `target_family = "unix"`:
+    //! see `Mmap::open` (M4-02 explicit Unsupported branch).
 
     use std::fs::File;
     use std::io;

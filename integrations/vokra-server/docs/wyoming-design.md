@@ -31,8 +31,8 @@ Header JSON shape (subset used by Vokra):
 | Field            | Type           | Notes                                                              |
 |------------------|----------------|--------------------------------------------------------------------|
 | `type`           | string         | Event kind, e.g. `audio-chunk`, `transcribe`, `synthesize`, `info` |
-| `data`           | object \| null | Small structured payload (rate, width, channels, text, ...)         |
-| `data_length`    | integer \| 0   | Byte count of the optional structured `data` blob (rarely used)     |
+| `data`           | object \| null | Header-inline structured payload — LEGACY (`wyoming` 1.0.0) location |
+| `data_length`    | integer \| 0   | Byte count of the structured `data` continuation — the STANDARD location for event fields since `wyoming` 1.2.0 |
 | `payload_length` | integer \| 0   | Byte count of the raw binary payload (PCM samples for audio-chunk)  |
 | `version`        | string \| null | Optional protocol version tag                                       |
 
@@ -41,6 +41,25 @@ immediately at the next byte (no attachment). This document records
 `payload_length` as the load-bearing field for audio framing; a client that
 ignores it and line-buffers the socket will corrupt any payload containing
 `0x0A`.
+
+### 2.0 Data continuation merge (load-bearing since `wyoming` 1.2.0)
+
+`wyoming` 1.0.0 wrote the event's `data` dict inline in the header.
+**`wyoming` 1.2.0+ (through 1.10.0, the entire Home Assistant generation)
+pops `data` OUT of the header into the `data_length` continuation**
+(`wyoming/event.py::async_write_event`), and the reader MERGES it back over
+any header-inline `data`, continuation keys winning
+(`async_read_event`: `data_dict = event_dict.get("data", {});
+data_dict.update(json.loads(data_bytes))`). Concretely: the `audio-start`
+rate/width/channels, every `audio-chunk`'s format dict, the `synthesize`
+text, and `transcribe` params all arrive in the continuation from any modern
+client. A server that reads-and-discards the continuation therefore fails
+every data-bearing event (the campaign-2 P1). Vokra's parser implements the
+merge (`merge_data_continuation` in `src/api/wyoming.rs`); Vokra's writer
+mirrors the modern upstream writer (`write_event_frame`) — data in the
+continuation, `data_length`/`payload_length` omitted when absent, no inline
+`data` key. The legacy inline style remains accepted on the read side via
+the same merged view.
 
 ### 2.1 Event catalogue used by Vokra (v0.5)
 
@@ -93,13 +112,20 @@ Rules:
 
 1. Header line: `read_until(b'\n', ...)`. Enforce a max header length
    (e.g. 64 KiB) to bound memory before `serde_json::from_str`.
-2. `data` bytes: `read_exact(&mut buf[..data_length])`.
+2. `data` bytes: `read_exact(&mut buf[..data_length])`, then **MERGE** the
+   parsed JSON object over any header-inline `data` (continuation keys win —
+   §2.0). Reading-and-discarding here loses every event field a modern
+   client sends. Cap `data_length` (1 MiB) before allocating — the upstream
+   python lib allocates blindly; Vokra rejects with an explicit error.
 3. `payload` bytes: `read_exact(&mut buf[..payload_length])`. The payload is
    opaque binary — treating it as text WILL corrupt PCM whenever a sample
    byte equals `0x0A`.
-4. Writer side is the mirror: serialize header JSON, write `\n`, then write
-   the exact `data_length` and `payload_length` bytes with `write_all`. Never
-   interleave writes from multiple tasks on the same socket without a mutex.
+4. Writer side mirrors the MODERN upstream writer (`async_write_event`,
+   `wyoming` >= 1.2.0): pop `data` out of the header into the continuation,
+   set `data_length` (omit when data is empty), set `payload_length` only
+   when a payload follows, then write header JSON + `\n` + data bytes +
+   payload bytes with `write_all`. Never interleave writes from multiple
+   tasks on the same socket without a mutex.
 
 ## 4. Streaming bridge to Vokra runtime
 
@@ -135,3 +161,39 @@ Rules:
   round-trip of PCM chunks (input == output within tolerance) — this is the
   regression guard for risk R5.
 - HA on-device verification is deferred to M2-15 (owner: requester).
+
+## 7. Barge-in (M4-19, FR-ST-03)
+
+The accept loop's full ASR+TTS handler (`run_wyoming_connection`) supports
+barge-in on the TTS emit path. Semantics and provenance:
+
+- **Trigger (契機)**: a new `audio-start` event received on the same
+  connection *while a TTS `synthesize` is emitting* is treated as the barge-in
+  trigger (the satellite's wake word / next utterance beginning). `audio-start`
+  is a documented upstream `rhasspy/wyoming` event (§2.1); we do **not** invent
+  a bespoke control event (CLAUDE.md 発明禁止). **Owner-confirmable follow-up**:
+  if upstream defines a *dedicated* barge-in / interrupt control event, adopt
+  it here and keep the `audio-start` heuristic as a fallback — recorded so the
+  choice is a deliberate future edit, not silent drift.
+- **Effect**: the `audio-chunk` emit loop polls a connection-scoped barge-in
+  flag (`wyoming::BargeIn`, an `Arc<AtomicBool>` mirroring the M3-14
+  `vokra_core::stream::InterruptHandle` Release/Acquire semantics) at each
+  chunk boundary. When raised it stops emitting the remaining chunks and sends
+  `audio-stop` immediately — from an HA satellite's view the audio output cuts
+  (the barge-in体感). The still-buffered event (the trigger `audio-start`) is
+  then processed as the start of a fresh ASR utterance.
+- **Batch vs streaming**: v0.5 TTS is *batch synth* (`SynthesizeService`
+  returns the whole `SynthesizedAudio` up front), so "barge-in" here means
+  "stop sending the remaining `audio-chunk`s"; the un-emitted PCM tail is
+  discarded. There is no SPSC ring to `EventPoller::drain_all` on this path —
+  that becomes load-bearing only for a future *streaming* synth form, at which
+  point true mid-synthesis stop (halting the synth kernel) lands (follow-up).
+  For a streaming ASR path (`Session::open_step_stream`, §4) the real
+  `Stream::interrupt()` / `InterruptHandle` apply directly.
+- **Concurrency / framing**: a per-connection reader-pump task frames every
+  inbound event (header + `read_exact` payload, §3 R5) onto a bounded channel;
+  the emit loop watches that channel for the trigger. Because the pump owns the
+  reader exclusively, watching for a mid-emit trigger never cancels a partial
+  read (no cancel-safety hazard).
+- **FR-EX-08**: an *unknown* control event mid-emit is surfaced as an `error`
+  event, never silently dropped.

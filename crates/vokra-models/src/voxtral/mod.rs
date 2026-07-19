@@ -53,16 +53,19 @@ pub mod text_decoder_session_metal;
 pub mod tokenizer;
 
 pub use adapter::{AdapterActivation, AdapterKind, AudioAdapter, MlpLayerShape};
-pub use asr::{TranscribedBeam, VoxtralAsr};
+pub use asr::{AsrPromptLayout, TranscribedBeam, VoxtralAsr};
 pub use asr_head::AsrHead;
 pub use audio_encoder::{AudioEncoder, AudioEncoderOutput};
-pub use beam_search::{BeamConfig, BeamResult, beam_search_decode};
+pub use beam_search::{
+    BeamConfig, BeamResult, beam_search_decode, beam_search_decode_with_segments,
+};
 pub use config::VoxtralConfig;
 pub use s2s_head::S2sHead;
 pub use streaming::{StreamingAsr, StreamingChunk, StreamingConfig};
 pub use text_decoder::{TextDecoder, TextDecoderStep};
 pub use text_decoder_session::{
     DEFAULT_MAX_NEW_TOKENS, TextDecoderKvSnapshot, TextDecoderSession, greedy_decode,
+    greedy_decode_with_segments,
 };
 #[cfg(all(feature = "cuda", any(unix, windows)))]
 pub use text_decoder_session_cuda::{ResidencyMode as CudaResidencyMode, VoxtralCudaDecodeSession};
@@ -70,7 +73,7 @@ pub use text_decoder_session_cuda::{ResidencyMode as CudaResidencyMode, VoxtralC
 pub use text_decoder_session_metal::{
     ResidencyMode as MetalResidencyMode, VoxtralMetalDecodeSession,
 };
-pub use tokenizer::VoxtralTokenizer;
+pub use tokenizer::{TranscriptionPrompt, VoxtralTokenizer};
 
 use vokra_core::gguf::GgufFile;
 use vokra_core::{FrontendPolicy, Result, VokraError};

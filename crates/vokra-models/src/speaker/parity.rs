@@ -116,6 +116,85 @@ fn camplus_network_parity_all_stages() {
     assert!(max_abs_diff(&api, &want) <= ATOL, "embed API parity");
 }
 
+// ---- M4-20 (b): speaker_verify e2e over the CAM++ trigger (FR-OP-81) --------
+
+/// `speaker_verify` (T05/T06) over the **committed onnxruntime reference
+/// embedding** (`embedding.f32`, the 7e-6-matched 192-d vector): the cosine of
+/// the real embedding with itself is 1.0, and a decorrelated copy is strictly
+/// lower. This runs with no GGUF (uses the committed parity fixture as the
+/// "土台", ADR M4-20 §D-4 / ticket T07), so it validates the cosine core on a
+/// real CAM++ embedding in CI.
+#[test]
+fn speaker_verify_on_reference_embedding() {
+    use super::{cosine_similarity, speaker_verify};
+
+    let emb = read_f32("embedding.f32");
+    assert_eq!(emb.len(), 192, "reference embedding is 192-d");
+
+    // Self-similarity of the real (non-normalized) embedding = 1.0.
+    let self_sim = cosine_similarity(&emb, &emb).unwrap();
+    assert!(
+        (self_sim - 1.0).abs() < 1e-5,
+        "self cosine of the reference embedding must be 1.0, got {self_sim}"
+    );
+
+    // A rolled copy (same values, permuted dimensions) decorrelates the vector:
+    // strictly below the self-similarity. This is the "same > different" order
+    // on a real embedding without a second recording (a real distinct-speaker
+    // fixture is owner territory, T07 note).
+    let mut rolled = emb.clone();
+    rolled.rotate_left(37);
+    let cross = cosine_similarity(&emb, &rolled).unwrap();
+    assert!(
+        cross < self_sim,
+        "a decorrelated copy must score below self ({cross} !< {self_sim})"
+    );
+
+    // Threshold decision plumbing over the real embedding.
+    let r = speaker_verify(&emb, &emb, Some(0.99)).unwrap();
+    assert_eq!(r.accepted, Some(true));
+}
+
+/// GGUF-gated same-vs-different-input ordering over the real CAM++ network
+/// (trigger e2e, T07): the same fbank produces an identical embedding (cosine
+/// 1.0), while a perturbed fbank produces a different embedding scoring
+/// strictly lower. Demonstrates the `speaker_verify` ordering through the real
+/// encoder; the absolute EER threshold and a real distinct-speaker recording
+/// are owner territory. Skips cleanly without `VOKRA_CAMPLUS_GGUF` (no
+/// fabricated pass).
+#[test]
+fn speaker_verify_same_input_beats_perturbed_input() {
+    use super::speaker_verify;
+
+    let Some(enc) = load_encoder() else {
+        eprintln!("skipping speaker_verify e2e: set VOKRA_CAMPLUS_GGUF to run");
+        return;
+    };
+    let fbank = read_f32("input_fbank.f32");
+    assert_eq!(fbank.len(), T * 80);
+
+    let a = enc.embed(&fbank, T).expect("CAM++ embed A");
+
+    // Same input → identical embedding → cosine 1.0 (accepted at any sane
+    // threshold).
+    let same = speaker_verify(&a, &a, Some(0.5)).unwrap();
+    assert!((same.similarity - 1.0).abs() < 1e-5, "same input → 1.0");
+    assert_eq!(same.accepted, Some(true));
+
+    // A perturbed fbank (a distinct utterance proxy) → different embedding →
+    // strictly lower similarity.
+    let perturbed: Vec<f32> = fbank.iter().map(|v| v * 0.85 + 0.3).collect();
+    let b = enc.embed(&perturbed, T).expect("CAM++ embed B");
+    let cross = speaker_verify(&a, &b, None).unwrap();
+    eprintln!("speaker_verify: same=1.0 cross={:.4}", cross.similarity);
+    assert!(
+        cross.similarity < same.similarity,
+        "different input must score below the same input ({} !< {})",
+        cross.similarity,
+        same.similarity
+    );
+}
+
 #[test]
 fn camplus_embed_rejects_wrong_length() {
     let Some(enc) = load_encoder() else {

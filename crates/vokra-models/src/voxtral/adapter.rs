@@ -47,9 +47,17 @@ use crate::compute::Compute;
 
 /// `vokra.voxtral.adapter.kind` — string: one of `"none"` (no conditioning),
 /// `"linear"` (single Linear + optional bias + optional LayerNorm),
-/// `"mlp"` (multi-Linear + activation stack), or `"downsample_linear"`
-/// (time-axis avg-pool then Linear).
+/// `"mlp"` (multi-Linear + activation stack), `"downsample_linear"`
+/// (time-axis avg-pool then Linear), or `"frame_stack_mlp"` (time-axis
+/// frame **concatenation** then the MLP stack — the real Voxtral projector
+/// shape, see [`AdapterKind::FrameStackMlp`]).
 const KEY_ADAPTER_KIND: &str = "vokra.voxtral.adapter.kind";
+
+/// `vokra.voxtral.adapter.frame_stack` — u32 ≥ 1, only for
+/// `frame_stack_mlp`: how many consecutive encoder frames are concatenated
+/// into one projector row (4 on the shipping Voxtral mini —
+/// `params.json multimodal.downsample_args.downsample_factor`).
+const KEY_ADAPTER_FRAME_STACK: &str = "vokra.voxtral.adapter.frame_stack";
 
 /// `vokra.voxtral.adapter.in_dim` — u32.
 const KEY_ADAPTER_IN_DIM: &str = "vokra.voxtral.adapter.in_dim";
@@ -175,6 +183,38 @@ pub enum AdapterKind {
         has_bias: bool,
         /// Whether the projection ships a post-LayerNorm.
         has_layernorm: bool,
+    },
+    /// ×`frame_stack` time-axis frame **concatenation**, then the MLP stack —
+    /// the real Voxtral projector shape (M4-residual cc-05).
+    ///
+    /// Upstream (`modeling_voxtral.py`, transformers 4.57.6,
+    /// `VoxtralForConditionalGeneration.get_audio_features` line 452) takes
+    /// the `[T, hidden]` encoder output and does
+    /// `reshape(-1, intermediate_size)` with `intermediate_size = frame_stack
+    /// × hidden` — on a row-major contiguous tensor that is exactly
+    /// "concatenate `frame_stack` **consecutive** frames per output row"
+    /// (**chunk** order, NOT interleave: row `r` = `[h[N·r], h[N·r+1], …,
+    /// h[N·r+N−1]]`). The stacked rows then run through
+    /// `VoxtralMultiModalProjector` (lines 385–392): `linear_1` → activation
+    /// → `linear_2`, i.e. an [`Mlp`](Self::Mlp)-shaped stack whose first
+    /// stage consumes `frame_stack × hidden` channels.
+    ///
+    /// A `t_in` not divisible by `frame_stack` is an explicit error — the
+    /// upstream `reshape` would throw on a non-divisible element count, and
+    /// the encoder's strict `max_source_positions` input contract makes the
+    /// real length (1500 = 4 × 375) always divisible. No silent pad /
+    /// truncate (FR-EX-08).
+    FrameStackMlp {
+        /// How many consecutive frames form one projector row (`>= 1`; 4 on
+        /// the shipping mini — `params.json
+        /// multimodal.downsample_args.downsample_factor`).
+        frame_stack: usize,
+        /// Per-stage `[in, out]` widths (`layers[0].in_dim == frame_stack ×
+        /// encoder_hidden`).
+        layers: Vec<MlpLayerShape>,
+        /// Activation between stages (not after the last one — upstream
+        /// applies `act` only between `linear_1` and `linear_2`).
+        activation: AdapterActivation,
     },
 }
 
@@ -348,62 +388,66 @@ impl AudioAdapter {
             }
             "mlp" => {
                 let (in_dim, out_dim) = read_dims(file)?;
-                let hidden_dims = parse_dim_list(
-                    file.get(KEY_ADAPTER_MLP_HIDDEN_DIMS)
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(""),
+                let (layers, stages) = load_mlp_stack(
+                    file,
+                    &prefix,
+                    &weight_sub,
+                    &bias_sub,
+                    &ln_gamma_sub,
+                    &ln_beta_sub,
+                    in_dim,
+                    out_dim,
+                    has_bias,
+                    has_ln,
                 )?;
-                let layer_names = parse_str_list(
-                    file.get(KEY_ADAPTER_MLP_LAYER_NAMES)
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(""),
-                );
-                // Compute per-stage in/out widths.
-                let mut widths: Vec<(usize, usize)> = Vec::new();
-                let mut prev = in_dim;
-                for &h in &hidden_dims {
-                    widths.push((prev, h));
-                    prev = h;
-                }
-                widths.push((prev, out_dim));
-                if !layer_names.is_empty() && layer_names.len() != widths.len() {
-                    return Err(bad(format!(
-                        "mlp_layer_names has {} entries but computed layer count is {}",
-                        layer_names.len(),
-                        widths.len()
-                    )));
-                }
-                let mut layers: Vec<MlpLayerShape> = Vec::with_capacity(widths.len());
-                let mut stages: Vec<AdapterLinear> = Vec::with_capacity(widths.len());
-                for (i, &(li, lo)) in widths.iter().enumerate() {
-                    let sub = if layer_names.is_empty() {
-                        format!("layers.{i}")
-                    } else {
-                        layer_names[i].clone()
-                    };
-                    let stage = load_linear(
-                        file,
-                        &prefix,
-                        &sub,
-                        &weight_sub,
-                        &bias_sub,
-                        &ln_gamma_sub,
-                        &ln_beta_sub,
-                        li,
-                        lo,
-                        has_bias,
-                        has_ln,
-                    )?;
-                    stages.push(stage);
-                    layers.push(MlpLayerShape {
-                        in_dim: li,
-                        out_dim: lo,
-                        has_bias,
-                        has_layernorm: has_ln,
-                    });
-                }
                 Ok(Self {
                     kind: AdapterKind::Mlp { layers, activation },
+                    activation,
+                    stages,
+                    time_stride: 1,
+                    ln_eps: 1e-5,
+                })
+            }
+            "frame_stack_mlp" => {
+                let (in_dim, out_dim) = read_dims(file)?;
+                let frame_stack = file
+                    .get(KEY_ADAPTER_FRAME_STACK)
+                    .and_then(|v| v.as_u64())
+                    .and_then(|n| usize::try_from(n).ok())
+                    .ok_or_else(|| {
+                        bad(format!(
+                            "frame_stack_mlp requires `{KEY_ADAPTER_FRAME_STACK}` (u32 >= 1) — \
+                             the converter writes it from the adapter side-car (no invented \
+                             runtime default, FR-EX-08)"
+                        ))
+                    })?;
+                if frame_stack == 0 {
+                    return Err(bad("frame_stack must be >= 1".to_owned()));
+                }
+                if in_dim % frame_stack != 0 {
+                    return Err(bad(format!(
+                        "frame_stack_mlp: in_dim {in_dim} must be a multiple of frame_stack \
+                         {frame_stack} (in_dim = frame_stack × encoder hidden width)"
+                    )));
+                }
+                let (layers, stages) = load_mlp_stack(
+                    file,
+                    &prefix,
+                    &weight_sub,
+                    &bias_sub,
+                    &ln_gamma_sub,
+                    &ln_beta_sub,
+                    in_dim,
+                    out_dim,
+                    has_bias,
+                    has_ln,
+                )?;
+                Ok(Self {
+                    kind: AdapterKind::FrameStackMlp {
+                        frame_stack,
+                        layers,
+                        activation,
+                    },
                     activation,
                     stages,
                     time_stride: 1,
@@ -452,7 +496,8 @@ impl AudioAdapter {
                 })
             }
             other => Err(bad(format!(
-                "unknown adapter kind `{other}` (expected none|linear|mlp|downsample_linear)"
+                "unknown adapter kind `{other}` (expected \
+                 none|linear|mlp|downsample_linear|frame_stack_mlp)"
             ))),
         }
     }
@@ -469,6 +514,12 @@ impl AudioAdapter {
     ///   configured activation between stages.
     /// * `AdapterKind::DownsampleLinear` — `t_out = t_in / time_stride` (avg
     ///   pool over `time_stride` consecutive rows, then a GEMM).
+    /// * `AdapterKind::FrameStackMlp` — `t_out = t_in / frame_stack`
+    ///   (concatenate `frame_stack` consecutive rows into one — a pure
+    ///   row-major reinterpretation, byte-identical to upstream's
+    ///   `reshape(-1, intermediate_size)` — then the MLP stack). `t_in` not
+    ///   divisible by `frame_stack` is an explicit error (see the variant
+    ///   docs — upstream's reshape would throw, never pad).
     ///
     /// # Errors
     ///
@@ -555,6 +606,72 @@ impl AudioAdapter {
                 let out = self.apply_stage(compute, &self.stages[0], &pooled, t_out, *in_dim)?;
                 debug_assert_eq!(out.len(), t_out * *out_dim);
                 Ok(out)
+            }
+            AdapterKind::FrameStackMlp {
+                frame_stack,
+                layers,
+                ..
+            } => {
+                let n = *frame_stack;
+                let first = layers.first().ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "voxtral audio adapter: FrameStackMlp has zero layers".into(),
+                    )
+                })?;
+                // The stacked row width must match the first stage's input.
+                if hidden_in * n != first.in_dim {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "voxtral audio adapter FrameStackMlp: encoder hidden {hidden_in} × \
+                         frame_stack {n} != first stage in_dim {} — the adapter side-car and \
+                         the encoder width disagree",
+                        first.in_dim
+                    )));
+                }
+                // Upstream `reshape(-1, intermediate_size)` semantics: hard
+                // error on a non-divisible length, never pad / truncate
+                // (modeling_voxtral.py get_audio_features L452 — a reshape
+                // of a non-divisible element count throws; the encoder's
+                // strict input contract makes T = 1500 = 4 × 375 in
+                // practice). FR-EX-08.
+                if t_in % n != 0 {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "voxtral audio adapter FrameStackMlp: t_in {t_in} not divisible by \
+                         frame_stack {n} — upstream reshape(-1, {}) would reject this length \
+                         (no silent pad/truncate, FR-EX-08)",
+                        first.in_dim
+                    )));
+                }
+                // Row-major [t_in, hidden_in] IS row-major
+                // [t_in / n, n * hidden_in] — the concatenation of n
+                // consecutive frames per row is a pure reinterpretation of
+                // the same buffer (chunk order: out[r] = h[n·r] ‖ h[n·r+1]
+                // ‖ … ‖ h[n·r+n−1]), so no data movement happens here and
+                // the layout is bit-identical to upstream's contiguous
+                // reshape by construction.
+                let t_stacked = t_in / n;
+                let stacked_h = hidden_in * n;
+                let mut cur = input.to_vec();
+                let mut cur_h = stacked_h;
+                for (i, (stage_meta, stage_weights)) in
+                    layers.iter().zip(self.stages.iter()).enumerate()
+                {
+                    self.check_hidden(
+                        &format!("FrameStackMlp.layer[{i}].in"),
+                        stage_meta.in_dim,
+                        cur_h,
+                    )?;
+                    let mut out =
+                        self.apply_stage(compute, stage_weights, &cur, t_stacked, cur_h)?;
+                    // Activation between stages (skip after final) — matches
+                    // upstream linear_1 → act → linear_2.
+                    let last = i + 1 == layers.len();
+                    if !last {
+                        self.activate(compute, &mut out)?;
+                    }
+                    cur = out;
+                    cur_h = stage_meta.out_dim;
+                }
+                Ok(cur)
             }
         }
     }
@@ -659,7 +776,9 @@ pub(crate) fn out_dim(kind: &AdapterKind) -> usize {
     match kind {
         AdapterKind::None => 0,
         AdapterKind::Linear { out_dim, .. } => *out_dim,
-        AdapterKind::Mlp { layers, .. } => layers.last().map(|l| l.out_dim).unwrap_or(0),
+        AdapterKind::Mlp { layers, .. } | AdapterKind::FrameStackMlp { layers, .. } => {
+            layers.last().map(|l| l.out_dim).unwrap_or(0)
+        }
         AdapterKind::DownsampleLinear { out_dim, .. } => *out_dim,
     }
 }
@@ -718,6 +837,80 @@ fn parse_str_list(s: &str) -> Vec<String> {
         .filter(|t| !t.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+/// Computes the per-stage `(in, out)` widths of an MLP stack and binds every
+/// stage's tensors. Shared by the `"mlp"` and `"frame_stack_mlp"` loader
+/// arms (the stacking factor changes only where the *input* comes from, not
+/// how the linear stack itself is described / bound).
+#[allow(clippy::too_many_arguments)]
+fn load_mlp_stack(
+    file: &GgufFile,
+    prefix: &str,
+    weight_sub: &str,
+    bias_sub: &str,
+    ln_gamma_sub: &str,
+    ln_beta_sub: &str,
+    in_dim: usize,
+    out_dim: usize,
+    has_bias: bool,
+    has_ln: bool,
+) -> Result<(Vec<MlpLayerShape>, Vec<AdapterLinear>)> {
+    let hidden_dims = parse_dim_list(
+        file.get(KEY_ADAPTER_MLP_HIDDEN_DIMS)
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+    )?;
+    let layer_names = parse_str_list(
+        file.get(KEY_ADAPTER_MLP_LAYER_NAMES)
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+    );
+    // Compute per-stage in/out widths.
+    let mut widths: Vec<(usize, usize)> = Vec::new();
+    let mut prev = in_dim;
+    for &h in &hidden_dims {
+        widths.push((prev, h));
+        prev = h;
+    }
+    widths.push((prev, out_dim));
+    if !layer_names.is_empty() && layer_names.len() != widths.len() {
+        return Err(bad(format!(
+            "mlp_layer_names has {} entries but computed layer count is {}",
+            layer_names.len(),
+            widths.len()
+        )));
+    }
+    let mut layers: Vec<MlpLayerShape> = Vec::with_capacity(widths.len());
+    let mut stages: Vec<AdapterLinear> = Vec::with_capacity(widths.len());
+    for (i, &(li, lo)) in widths.iter().enumerate() {
+        let sub = if layer_names.is_empty() {
+            format!("layers.{i}")
+        } else {
+            layer_names[i].clone()
+        };
+        let stage = load_linear(
+            file,
+            prefix,
+            &sub,
+            weight_sub,
+            bias_sub,
+            ln_gamma_sub,
+            ln_beta_sub,
+            li,
+            lo,
+            has_bias,
+            has_ln,
+        )?;
+        stages.push(stage);
+        layers.push(MlpLayerShape {
+            in_dim: li,
+            out_dim: lo,
+            has_bias,
+            has_layernorm: has_ln,
+        });
+    }
+    Ok((layers, stages))
 }
 
 /// Assembles a full tensor name `"{prefix}{layer_sub}.{weight_sub}"` (skipping
@@ -1113,6 +1306,214 @@ mod tests {
         assert_eq!(parse_str_list("a"), vec!["a"]);
         assert_eq!(parse_str_list("a, b ,c"), vec!["a", "b", "c"]);
         assert_eq!(parse_str_list("a,,b"), vec!["a", "b"]);
+    }
+
+    // ---------------- FrameStackMlp (real Voxtral projector shape) ----------
+
+    /// Builds a `frame_stack_mlp` GGUF: ×`stack` frame concat then a single
+    /// `Linear(in_dim → out_dim)` stage (no hidden dims) named `layers.0`.
+    fn frame_stack_gguf(stack: u32, in_dim: usize, out_dim: usize, w: &[f32]) -> GgufFile {
+        let mut b = GgufBuilder::new();
+        b.add_string(KEY_ADAPTER_KIND, "frame_stack_mlp");
+        b.add_string(KEY_ADAPTER_TENSOR_PREFIX, "proj.");
+        b.add_u32(KEY_ADAPTER_IN_DIM, in_dim as u32);
+        b.add_u32(KEY_ADAPTER_OUT_DIM, out_dim as u32);
+        b.add_u32(KEY_ADAPTER_FRAME_STACK, stack);
+        b.add_bool(KEY_ADAPTER_HAS_BIAS, false);
+        b.add_bool(KEY_ADAPTER_HAS_LN, false);
+        b.add_string(KEY_ADAPTER_ACTIVATION, "gelu");
+        assert_eq!(w.len(), out_dim * in_dim);
+        b.add_tensor(
+            "proj.layers.0.weight",
+            GgmlType::F32,
+            vec![out_dim as u64, in_dim as u64],
+            w.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        )
+        .unwrap();
+        GgufFile::parse(b.to_bytes().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn kind_frame_stack_mlp_pins_chunk_concat_order() {
+        // ×4 stack over [t=8, h=2] → [2, 8], identity projection. The
+        // expected rows PIN the upstream `reshape(-1, N·h)` semantics:
+        // **chunk** concatenation of 4 consecutive frames
+        // (out[r] = h[4r] ‖ h[4r+1] ‖ h[4r+2] ‖ h[4r+3]), NOT an
+        // interleave ([h[0][0], h[1][0], …]). Getting this wrong garbles
+        // every downstream projection — this is the load-bearing layout
+        // oracle for cc-05.
+        let mut ident = vec![0.0f32; 8 * 8];
+        for i in 0..8 {
+            ident[i * 8 + i] = 1.0;
+        }
+        let file = frame_stack_gguf(4, 8, 8, &ident);
+        let a = AudioAdapter::from_gguf(&file).unwrap();
+        assert!(a.is_active());
+        assert!(matches!(
+            a.kind(),
+            AdapterKind::FrameStackMlp { frame_stack: 4, .. }
+        ));
+        // Frame t = [10t, 10t + 1].
+        let input: Vec<f32> = (0..8)
+            .flat_map(|t| [10.0 * t as f32, 10.0 * t as f32 + 1.0])
+            .collect();
+        let out = a.apply(&compute(), &input, 8, 2).unwrap();
+        let expected = vec![
+            0.0, 1.0, 10.0, 11.0, 20.0, 21.0, 30.0, 31.0, // row 0 = frames 0..4
+            40.0, 41.0, 50.0, 51.0, 60.0, 61.0, 70.0, 71.0, // row 1 = frames 4..8
+        ];
+        assert_eq!(
+            out, expected,
+            "chunk order (consecutive frames), not interleave"
+        );
+    }
+
+    #[test]
+    fn kind_frame_stack_mlp_equals_mlp_on_prestacked_input() {
+        // Bit-identity oracle: frame_stack_mlp(x, t, h) must equal
+        // mlp(stacked(x), t / N, N·h) with the SAME projection tensors —
+        // proving the variant is exactly "reinterpret rows, then the Mlp
+        // stack" (including the between-stages-only activation), with no
+        // hidden extra math.
+        let stack = 2usize;
+        let h = 3usize;
+        let in_dim = stack * h; // 6
+        let hidden = 4usize;
+        let out_dim = 5usize;
+        // Two stages: 6 → 4 (gelu) → 5, deterministic non-trivial weights.
+        let w0: Vec<f32> = (0..hidden * in_dim)
+            .map(|i| ((i % 7) as f32 - 3.0) * 0.11)
+            .collect();
+        let w1: Vec<f32> = (0..out_dim * hidden)
+            .map(|i| ((i % 5) as f32 - 2.0) * 0.07)
+            .collect();
+        let build = |kind: &str| -> GgufFile {
+            let mut b = GgufBuilder::new();
+            b.add_string(KEY_ADAPTER_KIND, kind);
+            b.add_string(KEY_ADAPTER_TENSOR_PREFIX, "p.");
+            b.add_u32(KEY_ADAPTER_IN_DIM, in_dim as u32);
+            b.add_u32(KEY_ADAPTER_OUT_DIM, out_dim as u32);
+            if kind == "frame_stack_mlp" {
+                b.add_u32(KEY_ADAPTER_FRAME_STACK, stack as u32);
+            }
+            b.add_string(KEY_ADAPTER_MLP_HIDDEN_DIMS, "4");
+            b.add_string(KEY_ADAPTER_ACTIVATION, "gelu");
+            b.add_bool(KEY_ADAPTER_HAS_BIAS, false);
+            b.add_bool(KEY_ADAPTER_HAS_LN, false);
+            b.add_tensor(
+                "p.layers.0.weight",
+                GgmlType::F32,
+                vec![hidden as u64, in_dim as u64],
+                w0.iter().flat_map(|v| v.to_le_bytes()).collect(),
+            )
+            .unwrap();
+            b.add_tensor(
+                "p.layers.1.weight",
+                GgmlType::F32,
+                vec![out_dim as u64, hidden as u64],
+                w1.iter().flat_map(|v| v.to_le_bytes()).collect(),
+            )
+            .unwrap();
+            GgufFile::parse(b.to_bytes().unwrap()).unwrap()
+        };
+        let fs = AudioAdapter::from_gguf(&build("frame_stack_mlp")).unwrap();
+        let mlp = AudioAdapter::from_gguf(&build("mlp")).unwrap();
+
+        let t = 4usize; // → 2 stacked rows.
+        let input: Vec<f32> = (0..t * h).map(|i| (i as f32) * 0.3 - 1.0).collect();
+        let via_stack = fs.apply(&compute(), &input, t, h).unwrap();
+        // Row-major [t, h] reinterpreted as [t/stack, stack·h] is the same
+        // buffer — hand the identical slice to the plain Mlp.
+        let via_mlp = mlp.apply(&compute(), &input, t / stack, in_dim).unwrap();
+        assert_eq!(via_stack, via_mlp, "stack-then-MLP must be bit-identical");
+        assert_eq!(via_stack.len(), (t / stack) * out_dim);
+    }
+
+    #[test]
+    fn kind_frame_stack_mlp_rejects_non_divisible_t() {
+        let mut ident = vec![0.0f32; 8 * 8];
+        for i in 0..8 {
+            ident[i * 8 + i] = 1.0;
+        }
+        let file = frame_stack_gguf(4, 8, 8, &ident);
+        let a = AudioAdapter::from_gguf(&file).unwrap();
+        // t = 7 not divisible by 4 → explicit error (upstream reshape would
+        // throw; no silent pad/truncate).
+        let input = vec![0.0f32; 7 * 2];
+        let err = a.apply(&compute(), &input, 7, 2).unwrap_err();
+        assert!(
+            matches!(err, VokraError::InvalidArgument(ref m) if m.contains("frame_stack")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn kind_frame_stack_mlp_rejects_hidden_mismatch() {
+        let mut ident = vec![0.0f32; 8 * 8];
+        for i in 0..8 {
+            ident[i * 8 + i] = 1.0;
+        }
+        let file = frame_stack_gguf(4, 8, 8, &ident);
+        let a = AudioAdapter::from_gguf(&file).unwrap();
+        // hidden 3 × stack 4 = 12 != in_dim 8 → explicit error.
+        let input = vec![0.0f32; 4 * 3];
+        assert!(matches!(
+            a.apply(&compute(), &input, 4, 3),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn kind_frame_stack_mlp_missing_frame_stack_key_is_model_load_error() {
+        let mut b = GgufBuilder::new();
+        b.add_string(KEY_ADAPTER_KIND, "frame_stack_mlp");
+        b.add_u32(KEY_ADAPTER_IN_DIM, 8);
+        b.add_u32(KEY_ADAPTER_OUT_DIM, 8);
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        let err = AudioAdapter::from_gguf(&file).unwrap_err();
+        assert!(
+            matches!(err, VokraError::ModelLoad(ref m) if m.contains("frame_stack")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn kind_frame_stack_mlp_zero_stack_is_model_load_error() {
+        let mut b = GgufBuilder::new();
+        b.add_string(KEY_ADAPTER_KIND, "frame_stack_mlp");
+        b.add_u32(KEY_ADAPTER_IN_DIM, 8);
+        b.add_u32(KEY_ADAPTER_OUT_DIM, 8);
+        b.add_u32(KEY_ADAPTER_FRAME_STACK, 0);
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        assert!(matches!(
+            AudioAdapter::from_gguf(&file),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
+    #[test]
+    fn kind_frame_stack_mlp_in_dim_not_multiple_of_stack_is_model_load_error() {
+        let mut b = GgufBuilder::new();
+        b.add_string(KEY_ADAPTER_KIND, "frame_stack_mlp");
+        b.add_u32(KEY_ADAPTER_IN_DIM, 6); // 6 % 4 != 0
+        b.add_u32(KEY_ADAPTER_OUT_DIM, 8);
+        b.add_u32(KEY_ADAPTER_FRAME_STACK, 4);
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        assert!(matches!(
+            AudioAdapter::from_gguf(&file),
+            Err(VokraError::ModelLoad(_))
+        ));
+    }
+
+    #[test]
+    fn frame_stack_mlp_out_dim_is_last_stage() {
+        let mut ident = vec![0.0f32; 8 * 8];
+        for i in 0..8 {
+            ident[i * 8 + i] = 1.0;
+        }
+        let file = frame_stack_gguf(4, 8, 8, &ident);
+        let a = AudioAdapter::from_gguf(&file).unwrap();
+        assert_eq!(super::out_dim(a.kind()), 8);
     }
 
     #[test]

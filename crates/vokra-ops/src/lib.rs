@@ -46,10 +46,48 @@
 // written in safe Rust; the opt-out is kept for the SIMD kernels of later WPs.
 #![allow(unsafe_code)]
 
+// ---- M4-03 aec (FR-OP-60, runtime function — not an OpKind variant) -----
+// SpeexDSP MDF/AUMDF float-build port; the time-tagged far-end queue lives
+// in vokra-core::stream::aec_ref (crate edge runs ops → core). New module +
+// re-export kept as one localized patch block (M3-05/M3-06 pattern) so
+// parallel M4 waves rebase cleanly.
+pub mod aec;
+// -------------------------------------------------------------------------
+// ---- M4-20 (c) speech-enhancement subset (FR-OP-61/62/63) ---------------
+// agc / hpf / loudness_norm are RUNTIME FUNCTIONS (per-frame state or
+// whole-signal transforms), NOT `OpKind` variants (ADR M4-20 §D-5, the
+// runtime-function posture of `flow_sampler` / FR-EX-10): first-class in the
+// public API, absent from `dispatch.rs` (a graph-side call falls into the
+// existing `UnsupportedOp` default, FR-EX-08). `denoise` (FR-OP-61,
+// DeepFilterNet MIT) is a network — its forward + GGUF binding live in the
+// `denoise` module. Localized patch block for clean parallel-wave rebases.
+pub mod agc;
+pub mod denoise;
+pub mod hpf;
+pub mod loudness_norm;
+// -------------------------------------------------------------------------
 pub mod attrs;
+// ---- M4-04 dac_rvq codec decode (RVQ family, FR-OP-30) ------------------
+// DAC's factorized (low-dim codebook + per-quantizer out_proj) residual VQ
+// decode. Shapes verified from the upstream descript-audio-codec (MIT)
+// implementation + the 24 kHz checkpoint metadata (ADR M4-04 §T02). Paged
+// variant primary block size = 4 (75-86 Hz released variants).
+pub mod dac_rvq;
+// -------------------------------------------------------------------------
 pub mod dct;
+// ---- M4-04 encodec_rvq (engine op only — FR-OP-32 permanent weight
+// exclusion; parity uses synthetic codebooks, never pretrained weights) ----
+pub mod encodec_rvq;
+// -------------------------------------------------------------------------
 pub mod dispatch;
 pub mod fft;
+// ---- M4-16 FSQ codec family (FR-OP-31, runtime functions — not OpKind
+// variants). Single-stage subgraph, deliberately separate from the RVQ
+// family (FR-OP-30: mimi_rvq / dac_rvq / encodec_rvq): no cross-codebook
+// residual sum, no paged variant, no cross-family adapter. Localized patch
+// block (M3-05/M3-06 pattern) for clean parallel-wave rebases.
+pub mod fsq_codec;
+// -------------------------------------------------------------------------
 // ---- M3-05 flow_sampler / ODE solvers (runtime function, FR-EX-10) -----
 // New module + re-export block, kept as a single localized patch so Wave 3
 // (M3-06 / M3-07) has a clean rebase target. The op-only re-export follows
@@ -88,7 +126,28 @@ pub mod resample;
 pub mod stft;
 pub mod window;
 
+// ---- M4-03 aec re-exports ------------------------------------------------
+pub use aec::{Aec, AecAttrs, AecStatus};
+// ---------------------------------------------------------------------------
+// ---- M4-04 dac_rvq re-exports --------------------------------------------
+pub use dac_rvq::{
+    DacOutProj, DacRvqAttrs, dac_paged_dims, dac_rvq_decode, dac_rvq_decode_paged,
+    dac_rvq_read_summed, dac_rvq_read_summed_range,
+};
+// ---------------------------------------------------------------------------
+// ---- M4-20 (c) speech-enhancement re-exports ----------------------------
+pub use agc::{AgcAttrs, AgcState, agc};
+pub use denoise::{
+    DeepFilterNetConfig, DenoiseModel, DenoiseTaps, TensorSpec, denoise,
+    denoise_skipped_checkpoint_tensors, denoise_synthesized_tensors, denoise_tensor_manifest,
+};
+pub use hpf::{HpfAttrs, HpfState, hpf};
+pub use loudness_norm::{LoudnessNormAttrs, integrated_lufs, loudness_norm};
+// -------------------------------------------------------------------------
 pub use dct::dct;
+// ---- M4-04 encodec_rvq re-exports -----------------------------------------
+pub use encodec_rvq::{EncodecRvqAttrs, encodec_rvq_decode};
+// ---------------------------------------------------------------------------
 pub use dispatch::{OpValue, dispatch};
 // ---- M3-05 flow_sampler re-exports --------------------------------------
 pub use flow_sampler::{
@@ -96,6 +155,12 @@ pub use flow_sampler::{
     Schedule, flow_sample,
 };
 // -------------------------------------------------------------------------
+// ---- M4-16 fsq_codec re-exports ------------------------------------------
+pub use fsq_codec::{
+    FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes,
+    wavtokenizer_vq_decode, xcodec2_fsq_decode,
+};
+// ---------------------------------------------------------------------------
 pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};
 pub use fused_logmel::fused_log_mel_scalar;
 // ---- M3-07 hifigan_generator re-exports ---------------------------------
@@ -114,7 +179,7 @@ pub use mfcc::mfcc;
 // ---- M3-06 mimi_rvq re-exports ------------------------------------------
 pub use mimi_rvq::{
     CodebookTable, MimiDecoder, MimiRvqAttrs, codebook_lookup, mimi_paged_dims, mimi_rvq_decode,
-    mimi_rvq_decode_paged, mimi_rvq_read_summed,
+    mimi_rvq_decode_paged, mimi_rvq_read_summed, mimi_rvq_read_summed_range,
 };
 // -------------------------------------------------------------------------
 pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};

@@ -87,14 +87,22 @@ for id in ios-arm64 ios-arm64_x86_64-simulator; do
 done
 
 # --- (d) static-only tree assertions (T11) -------------------------------------
-if find "$XCF" -type d -name '*.framework' | grep -q .; then
+# Captured into variables rather than `find ... | grep -q .`: `grep -q .` exits
+# on the very first line, and under `set -o pipefail` the still-running `find`
+# then dies of SIGPIPE (141), which becomes the pipeline status and flips the
+# `if` to false — the check would report a static-only tree while .framework
+# directories are present. Capturing also drops the duplicate find on the
+# failure path. See scripts/compliance/test-nvidia-scanner-sigpipe.sh.
+frameworks="$(find "$XCF" -type d -name '*.framework' 2>/dev/null || true)"
+if [ -n "$frameworks" ]; then
     echo "verify-ios-xcframework: FAIL .framework directory in tree (dynamic; violates NFR-RL-03)" >&2
-    find "$XCF" -type d -name '*.framework' >&2
+    printf '%s\n' "$frameworks" >&2
     exit 1
 fi
-if find "$XCF" -type f -name '*.dylib' | grep -q .; then
+dylibs="$(find "$XCF" -type f -name '*.dylib' 2>/dev/null || true)"
+if [ -n "$dylibs" ]; then
     echo "verify-ios-xcframework: FAIL .dylib in tree (dynamic; violates NFR-RL-03)" >&2
-    find "$XCF" -type f -name '*.dylib' >&2
+    printf '%s\n' "$dylibs" >&2
     exit 1
 fi
 echo "  static-only tree: no .framework, no .dylib"
@@ -203,8 +211,25 @@ verify_slice() {
     count="$(printf '%s\n' "$defined" | grep -cE '^_vokra_' || true)"
 
     # (d.iii) no _dlopen references (T11) — capi does not dlopen; CUDA gated out
-    if nm -u -arch "$arch" "$lib" 2>/dev/null | grep -qE '(^| )_dlopen( |$)'; then
+    #
+    # Captured like `defined` above, NOT `nm -u ... | grep -q '_dlopen'`. Under
+    # `set -o pipefail`, `grep -q` exits at the first match while `nm` is still
+    # streaming; nm dies of SIGPIPE (141), pipefail makes that the pipeline
+    # status, and the `if` takes the false branch — the gate would pass a slice
+    # that *does* reference _dlopen.
+    #
+    # This was not theoretical here. Measured on a real `cargo build -p
+    # vokra-capi` archive: `nm -u libvokra.a` emits 21113 lines / 1_680_730
+    # bytes — 25x the 64 KiB pipe buffer. Probing it for a symbol that occurs
+    # at line 2 of 21113, the old idiom answered "not found" and the captured
+    # idiom answered "found". So this leg was failing open unconditionally on
+    # the real artifact, not just on some hypothetical large one.
+    local undefined dlopen_refs
+    undefined="$(nm -u -arch "$arch" "$lib" 2>/dev/null || true)"
+    dlopen_refs="$(printf '%s\n' "$undefined" | grep -E '(^| )_dlopen( |$)' || true)"
+    if [ -n "$dlopen_refs" ]; then
         echo "verify-ios-xcframework: FAIL $lib ($arch) references _dlopen (violates NFR-RL-03 static-only)" >&2
+        printf '  %s\n' "$dlopen_refs" >&2
         exit 1
     fi
 

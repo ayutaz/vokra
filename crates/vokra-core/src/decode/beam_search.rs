@@ -9,11 +9,13 @@
 //! # FR-OP-40 attributes
 //!
 //! [`BeamSearchConfig`] exposes all five: `beam_width`, `length_normalization`,
-//! `early_stopping`, `n_best` and `word_timestamps`. `word_timestamps` is
-//! **defined but not implemented in M0** (WP completion = demo + parity); it is
-//! an explicit [`VokraError::NotImplemented`] when enabled, never a silent
-//! no-op. `max_new_tokens` is an operational termination bound beyond the five
-//! attributes.
+//! `early_stopping`, `n_best` and `word_timestamps`. `word_timestamps`
+//! (implemented in **M4-20**) attaches word-level timings to the best
+//! hypothesis via the scorer's [`BeamScorer::align_words`]; when the scorer
+//! supplies no alignment it is an explicit [`VokraError::UnsupportedOp`], never
+//! a silent no-op (FR-EX-08, ADR M4-20 §D-3 — this replaced the M0
+//! `NotImplemented` gate). `max_new_tokens` is an operational termination bound
+//! beyond the five attributes.
 //!
 //! # M0 simplicity
 //!
@@ -24,6 +26,7 @@
 //! not change this interface. Data structures avoid interior sharing so a
 //! future static-arena pass (FR-EX-05) is not precluded.
 
+use crate::decode::word_timing::WordTiming;
 use crate::error::{Result, VokraError};
 
 /// Scores next tokens for the beam search (model-independent interface).
@@ -36,6 +39,22 @@ pub trait BeamScorer {
 
     /// Vocabulary size (the length of every [`logprobs`](Self::logprobs) result).
     fn vocab_size(&self) -> usize;
+
+    /// Word-level timestamps for a completed hypothesis (M4-20, FR-OP-40
+    /// `word_timestamps`). Called **only** when
+    /// [`BeamSearchConfig::word_timestamps`] is set, on the best hypothesis's
+    /// full token sequence, after the search finished.
+    ///
+    /// The default returns `Ok(None)` — "this scorer supplies no alignment".
+    /// A model that can align (e.g. Whisper via cross-attention DTW, ADR
+    /// M4-20 §D-3) overrides this to return `Ok(Some(timings))`. Per FR-EX-08
+    /// [`beam_search`] turns a `None` under `word_timestamps` into an explicit
+    /// [`VokraError::UnsupportedOp`], never a silent no-op — so the default
+    /// keeps every existing scorer backward-compatible while making the
+    /// "requested but unavailable" case loud.
+    fn align_words(&mut self, _tokens: &[u32]) -> Result<Option<Vec<WordTiming>>> {
+        Ok(None)
+    }
 }
 
 /// Beam-search attributes (FR-OP-40) plus an operational length cap.
@@ -53,8 +72,10 @@ pub struct BeamSearchConfig {
     pub early_stopping: bool,
     /// Number of hypotheses to return, best-first.
     pub n_best: usize,
-    /// Emit word-level timestamps. **Unimplemented in M0** — enabling it is an
-    /// explicit [`VokraError::NotImplemented`].
+    /// Emit word-level timestamps (M4-20). When set, the best hypothesis's
+    /// [`BeamHypothesis::word_timestamps`] is filled from
+    /// [`BeamScorer::align_words`]; a scorer with no alignment support is an
+    /// explicit [`VokraError::UnsupportedOp`] (FR-EX-08).
     pub word_timestamps: bool,
     /// Maximum number of tokens to generate past the prefix (operational bound,
     /// not an FR-OP-40 attribute).
@@ -112,6 +133,11 @@ pub struct BeamHypothesis {
     pub score: f32,
     /// Length-normalized ranking score (`score / len^α`).
     pub normalized_score: f32,
+    /// Word-level timings (M4-20, FR-OP-40). `None` unless
+    /// [`BeamSearchConfig::word_timestamps`] was set **and** the scorer
+    /// supplied an alignment; only the best (returned-first) hypothesis is
+    /// aligned. Additive field — existing callers ignore it.
+    pub word_timestamps: Option<Vec<WordTiming>>,
 }
 
 /// Runs beam search from `prefix`, expanding until `eot`, all beams finish, or
@@ -124,7 +150,8 @@ pub struct BeamHypothesis {
 ///
 /// - [`VokraError::InvalidArgument`] for an empty `prefix`, `beam_width == 0`
 ///   or `n_best == 0`;
-/// - [`VokraError::NotImplemented`] if `word_timestamps` is enabled;
+/// - [`VokraError::UnsupportedOp`] if `word_timestamps` is set but the
+///   [`BeamScorer`] supplies no alignment (FR-EX-08, M4-20);
 /// - any error surfaced by the [`BeamScorer`].
 pub fn beam_search(
     scorer: &mut dyn BeamScorer,
@@ -132,11 +159,6 @@ pub fn beam_search(
     eot: u32,
     config: &BeamSearchConfig,
 ) -> Result<Vec<BeamHypothesis>> {
-    if config.word_timestamps {
-        return Err(VokraError::NotImplemented(
-            "beam_search word_timestamps (FR-OP-40 attribute; M0 defines but does not implement it)",
-        ));
-    }
     if prefix.is_empty() {
         return Err(VokraError::InvalidArgument(
             "beam_search: prefix must not be empty".into(),
@@ -240,6 +262,7 @@ pub fn beam_search(
                 normalized_score: h.score / denom,
                 score: h.score,
                 tokens: h.tokens,
+                word_timestamps: None,
             }
         })
         .collect();
@@ -250,6 +273,27 @@ pub fn beam_search(
     });
     dedup_by_tokens(&mut out);
     out.truncate(config.n_best);
+
+    // M4-20 (a): fill word-level timestamps on the best hypothesis. The scorer
+    // must supply an alignment (Whisper cross-attention DTW, ADR M4-20 §D-3);
+    // a scorer that cannot is an explicit error under `word_timestamps`
+    // (FR-EX-08) — never a silent no-op. Only the best (returned-first)
+    // hypothesis is aligned; the alignment pass is decode-independent
+    // (openai-whisper `find_alignment` posture).
+    if config.word_timestamps
+        && let Some(best) = out.first_mut()
+    {
+        match scorer.align_words(&best.tokens)? {
+            Some(timings) => best.word_timestamps = Some(timings),
+            None => {
+                return Err(VokraError::UnsupportedOp(
+                    "beam_search: word_timestamps requested but the scorer supplies no \
+                     alignment (cross-attention) — FR-EX-08"
+                        .into(),
+                ));
+            }
+        }
+    }
     Ok(out)
 }
 
@@ -478,14 +522,83 @@ mod tests {
     }
 
     #[test]
-    fn word_timestamps_is_explicit_not_implemented() {
+    fn word_timestamps_without_alignment_is_explicit_unsupported() {
+        // M4-20 (a) + FR-EX-08: a scorer that does not override `align_words`
+        // (the default `Ok(None)`) requested with `word_timestamps = true`
+        // must yield an EXPLICIT error, never a silent no-op / empty field.
         let mut s = scorer();
         let mut cfg = BeamSearchConfig::greedy(4);
         cfg.word_timestamps = true;
-        assert!(matches!(
-            beam_search(&mut s, &[0], EOT, &cfg),
-            Err(VokraError::NotImplemented(_))
-        ));
+        match beam_search(&mut s, &[0], EOT, &cfg) {
+            Err(VokraError::UnsupportedOp(msg)) => {
+                assert!(msg.contains("word_timestamps"), "message: {msg}");
+                assert!(
+                    msg.contains("FR-EX-08"),
+                    "message must cite FR-EX-08: {msg}"
+                );
+            }
+            other => panic!("expected UnsupportedOp for missing alignment, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn word_timestamps_off_never_calls_align() {
+        // Regression: with the flag off, `align_words` must not be consulted —
+        // a scorer whose `align_words` panics still succeeds when the flag is
+        // clear (guards against always-calling the aligner).
+        struct PanicAligner(MockScorer);
+        impl BeamScorer for PanicAligner {
+            fn logprobs(&mut self, t: &[u32]) -> Result<Vec<f32>> {
+                self.0.logprobs(t)
+            }
+            fn vocab_size(&self) -> usize {
+                self.0.vocab_size()
+            }
+            fn align_words(&mut self, _t: &[u32]) -> Result<Option<Vec<WordTiming>>> {
+                panic!("align_words must not be called when word_timestamps is off");
+            }
+        }
+        let mut s = PanicAligner(scorer());
+        let cfg = BeamSearchConfig::greedy(8); // word_timestamps defaults false
+        let hyps = beam_search(&mut s, &[0], EOT, &cfg).unwrap();
+        assert!(hyps[0].word_timestamps.is_none());
+    }
+
+    #[test]
+    fn word_timestamps_attaches_to_best_when_scorer_aligns() {
+        // A scorer that DOES supply an alignment fills the best hypothesis's
+        // `word_timestamps` (and only the best one).
+        struct AligningScorer(MockScorer);
+        impl BeamScorer for AligningScorer {
+            fn logprobs(&mut self, t: &[u32]) -> Result<Vec<f32>> {
+                self.0.logprobs(t)
+            }
+            fn vocab_size(&self) -> usize {
+                self.0.vocab_size()
+            }
+            fn align_words(&mut self, tokens: &[u32]) -> Result<Option<Vec<WordTiming>>> {
+                // A trivial one-word alignment spanning the whole sequence.
+                Ok(Some(vec![WordTiming {
+                    token_start: 0,
+                    token_end: tokens.len(),
+                    start: 0.0,
+                    end: 0.5,
+                }]))
+            }
+        }
+        let mut s = AligningScorer(scorer());
+        let mut cfg = BeamSearchConfig::new(3, 8);
+        cfg.n_best = 3;
+        cfg.word_timestamps = true;
+        let hyps = beam_search(&mut s, &[0], EOT, &cfg).unwrap();
+        let best = &hyps[0];
+        let wt = best.word_timestamps.as_ref().expect("best is aligned");
+        assert_eq!(wt.len(), 1);
+        assert_eq!(wt[0].token_end, best.tokens.len());
+        // Only the best hypothesis is aligned.
+        for h in &hyps[1..] {
+            assert!(h.word_timestamps.is_none(), "only the best is aligned");
+        }
     }
 
     #[test]

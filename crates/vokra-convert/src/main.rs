@@ -1,7 +1,8 @@
 //! `vokra-convert` command-line entry point (M0-03, FR-TL-01).
 //!
 //! ```text
-//! vokra-convert --model <whisper|silero-vad> --input <ckpt> --output <out.gguf>
+//! vokra-convert --model <whisper|silero-vad|piper-plus|campplus|kokoro|cosyvoice2|voxtral|mimi|dac|csm|moshi|denoise>
+//!               --input <ckpt> [--config <side-car>] --output <out.gguf>
 //! ```
 //!
 //! `whisper` auto-detects the size (base / small / medium / large-v3 / turbo)
@@ -16,15 +17,20 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use vokra_convert::{ModelKind, convert_file, convert_file_quantized, convert_piper_plus_file};
-use vokra_core::gguf::{FrontendSpec, GgmlType, GgufFile};
+use vokra_convert::{
+    ModelKind, convert_cosyvoice2_file, convert_csm_file, convert_dac_file, convert_file,
+    convert_file_quantized, convert_moshi_file, convert_piper_plus_file,
+};
+use vokra_core::gguf::{FrontendSpec, GgmlType};
 
 const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
+    vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
+    vokra-convert --model <cosyvoice2|csm|moshi> --input <ckpt.safetensors> [--config <side-car>] --output <out.gguf>
 
 OPTIONS:
     --model <kind>     whisper (safetensors; size auto-detected from
@@ -32,12 +38,29 @@ OPTIONS:
                        turbo — unknown shapes error out, no silent fallback
                        per FR-EX-08), silero-vad (ONNX), campplus (CAM++
                        speaker-encoder ONNX), kokoro (Kokoro-82M StyleTTS 2
-                       派生 iSTFTNet safetensors) or piper-plus (MB-iSTFT-VITS2
-                       voice: ONNX + config.json). `whisper-base` is accepted
-                       as a backward-compatible alias for `whisper` (size is
-                       still derived from the checkpoint, not the flag).
+                       派生 iSTFTNet safetensors), piper-plus (MB-iSTFT-VITS2
+                       voice: ONNX + config.json), cosyvoice2 (CosyVoice2-0.5B
+                       LLM safetensors), voxtral (Mistral Voxtral safetensors;
+                       shape-only here — the config-aware / adapter path is
+                       `vokra-cli convert`), mimi (Kyutai Mimi codec
+                       safetensors), dac (prepared DAC safetensors +
+                       config.json), csm (Sesame CSM-1B safetensors) or
+                       moshi (Kyutai Moshi safetensors). `whisper-base` is
+                       accepted as a backward-compatible alias for `whisper`
+                       (size is still derived from the checkpoint, not the
+                       flag).
     --input <path>     upstream checkpoint file
-    --config <path>    piper-plus config.json (piper-plus only)
+    --config <path>    piper-plus config.json (piper-plus, required) OR the
+                       DAC prepare-script config.json (dac, required — from
+                       tools/parity/dac_prepare_checkpoint.py) OR the
+                       upstream HF config.json for cosyvoice2 (Qwen2
+                       schema; supplies the attention head split +
+                       rope_theta/rms_norm_eps/n_ctx that tensor shapes
+                       cannot determine) OR the raw Llama-3.2 tokenizer
+                       file (csm; optional — without it the runtime text
+                       path fails loudly) OR the raw SentencePiece
+                       tokenizer file (moshi; optional — without it the
+                       monologue decode fails loudly)
     --output <path>    GGUF file to write
     --quantize <kind>  K-quantize large weight matrices: q4_k | q5_k | q6_k
                        (whisper only; biases/norms stay F32)
@@ -81,6 +104,52 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             }
+        }
+        ModelKind::Dac => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            match &config {
+                Some(config) => convert_dac_file(&input, config, &output),
+                None => {
+                    eprintln!(
+                        "error: --model dac requires --config <config.json> (from \
+                         tools/parity/dac_prepare_checkpoint.py)\n\n{USAGE}"
+                    );
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        ModelKind::Csm => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            // --config carries the raw Llama-3.2 tokenizer file (optional —
+            // the repo is gated, T29; without it the runtime text path
+            // fails loudly, M4-05-T05).
+            convert_csm_file(&input, config.as_deref(), &output)
+        }
+        ModelKind::Moshi => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            // --config carries the raw SentencePiece tokenizer file
+            // (tokenizer_spm_32k_3.model — public in the kyutai repo;
+            // without it the monologue decode fails loudly, M4-06-T22).
+            convert_moshi_file(&input, config.as_deref(), &output)
+        }
+        ModelKind::CosyVoice2 => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            // --config carries the upstream HF config.json (Qwen2 schema).
+            // Optional: without it only the shape-derived hparams are
+            // written and the runtime refuses the LLM bind (loud note).
+            convert_cosyvoice2_file(&input, config.as_deref(), &output)
         }
         _ => match quant {
             Some(q) => convert_file_quantized(model, &input, &output, q),
@@ -144,7 +213,9 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 let v = args.get(i + 1).ok_or("--model requires a value")?;
                 model = Some(ModelKind::from_arg(v).ok_or_else(|| {
                     format!(
-                        "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | piper-plus | campplus | kokoro)"
+                        "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | \
+                         piper-plus | campplus | kokoro | cosyvoice2 | voxtral | mimi | \
+                         dac | csm | moshi | denoise)"
                     )
                 })?);
                 i += 2;
@@ -190,8 +261,14 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
 
 /// Re-opens the produced GGUF through the runtime loader and prints a
 /// verification line. Returns `Err(code)` if the output does not load.
+///
+/// Opens through the true-mmap loader (`vokra_mmap::open_gguf`) so the
+/// verify pass touches only the header/metadata pages — verifying a
+/// multi-GiB output (the 14 GiB Moshi full-7B GGUF) stays within the
+/// streaming converter's bounded-memory contract instead of re-reading
+/// the whole file into an owned buffer (M4 cc-06).
 fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
-    let file = match GgufFile::open(output) {
+    let file = match vokra_mmap::open_gguf(output) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("error: output GGUF failed to load back: {e}");
@@ -334,6 +411,133 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                 "; arch={arch} audio_layers={ae_n_layer} text_layers={td_n_layer} vocab={vocab} mode={mode}"
             );
         }
+        ModelKind::Mimi => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let n_cb = file
+                .get("vokra.mimi.n_codebooks")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cb_size = file
+                .get("vokra.mimi.codebook_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let d_model = file
+                .get("vokra.mimi.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!("; arch={arch} n_codebooks={n_cb} codebook_size={cb_size} d_model={d_model}");
+        }
+        ModelKind::Csm => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let bb_layers = file
+                .get("vokra.csm.arch.backbone.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dt_layers = file
+                .get("vokra.csm.arch.depth.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_cb = file
+                .get("vokra.csm.audio.n_codebooks")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let audio_vocab = file
+                .get("vokra.csm.audio.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} backbone_layers={bb_layers} depth_layers={dt_layers} \
+                 n_codebooks={n_cb} audio_vocab={audio_vocab}"
+            );
+        }
+        ModelKind::Moshi => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let tm_layers = file
+                .get("vokra.moshi.arch.temporal.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dt_layers = file
+                .get("vokra.moshi.arch.depth.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_q_in = file
+                .get("vokra.moshi.audio.n_q_in")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dep_q = file
+                .get("vokra.moshi.audio.dep_q")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let attribution = file
+                .get("vokra.provenance.attribution")
+                .and_then(|v| v.as_str())
+                .map(|_| "present")
+                .unwrap_or("ABSENT");
+            println!(
+                "; arch={arch} temporal_layers={tm_layers} depth_layers={dt_layers} \
+                 n_q_in={n_q_in} dep_q={dep_q} attribution={attribution}"
+            );
+        }
+        ModelKind::Denoise => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let n_fft = file
+                .get("vokra.denoise.n_fft")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_erb = file
+                .get("vokra.denoise.n_erb")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let df_bins = file
+                .get("vokra.denoise.df_bins")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let df_order = file
+                .get("vokra.denoise.df_order")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} n_fft={n_fft} n_erb={n_erb} df_bins={df_bins} df_order={df_order}"
+            );
+        }
+        ModelKind::Dac => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let n_cb = file
+                .get("vokra.dac.n_codebooks")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cb_dim = file
+                .get("vokra.dac.codebook_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let d_model = file
+                .get("vokra.dac.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr = file
+                .get("vokra.dac.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} n_codebooks={n_cb} codebook_dim={cb_dim} d_model={d_model} \
+                 sample_rate={sr}"
+            );
+        }
     }
     Ok(())
 }
@@ -438,6 +642,33 @@ mod tests {
         .expect("valid piper args");
         assert_eq!(parsed.model, ModelKind::PiperPlus);
         assert_eq!(parsed.config, Some(PathBuf::from("c.json")));
+    }
+
+    /// Campaign-1 P3 #11 (campaign-2 cli-enablers Fix B): every kind
+    /// `ModelKind::from_arg` accepts parses through the standalone binary,
+    /// and the help text lists each one. No new kinds are added.
+    #[test]
+    fn parses_every_model_kind_and_help_lists_them() {
+        let kinds: &[(&str, ModelKind)] = &[
+            ("whisper", ModelKind::Whisper),
+            ("whisper-base", ModelKind::Whisper),
+            ("silero-vad", ModelKind::SileroVad),
+            ("piper-plus", ModelKind::PiperPlus),
+            ("campplus", ModelKind::CamPlus),
+            ("kokoro", ModelKind::Kokoro),
+            ("cosyvoice2", ModelKind::CosyVoice2),
+            ("voxtral", ModelKind::Voxtral),
+            ("mimi", ModelKind::Mimi),
+            ("dac", ModelKind::Dac),
+            ("csm", ModelKind::Csm),
+            ("moshi", ModelKind::Moshi),
+        ];
+        for (name, kind) in kinds {
+            let parsed = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
+                .unwrap_or_else(|e| panic!("--model {name} should parse: {e}"));
+            assert_eq!(parsed.model, *kind, "--model {name}");
+            assert!(USAGE.contains(name), "USAGE lists `{name}`");
+        }
     }
 
     #[test]

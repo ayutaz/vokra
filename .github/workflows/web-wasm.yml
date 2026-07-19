@@ -1,0 +1,183 @@
+# Vokra Web / WASM CI leg (M4-01-T22, advisory).
+#
+# Jobs:
+#   1. wasm-build — 2-artifact cross-build (simd128 / base, ADR M4-01 §4) +
+#      root Cargo.lock diff tripwire (NFR-DS-02) + Node kernel parity
+#      (tools/wasm/run-kernel-parity.mjs — WebAssembly.validate SIMD probe
+#      HARD-FAILS if the runner's Node lacks SIMD; no fabricated skip) +
+#      npm pack / publish --dry-run of the assembled web/pkg (T20 layout).
+#   2. whisper-wasm-e2e — OPT-IN (workflow_dispatch input run_whisper_e2e):
+#      fetches openai/whisper-base from HF + `vokra-cli convert` (the
+#      parity-whisper-real.yml pattern) and runs the JFK transcription
+#      through BOTH wasm artifacts (tools/wasm/run-whisper-wasm.mjs,
+#      transcript must equal the parity-whisper-real expectation). Opt-in
+#      because of the multi-GB HF download (same posture as the
+#      include_large_v3 input there).
+#   3. webgpu-smoke — HONEST ESTABLISHMENT RECORD (M4-01-T22 requirement):
+#      whether a GitHub-hosted ubuntu-latest runner can produce a WebGPU
+#      compute adapter headlessly could NOT be established from the M4-01
+#      authoring environment (an Apple-Silicon host without the runner
+#      image; driving a headless browser from CI would also add npm-side
+#      tooling — puppeteer — that the owner has not signed off). Per the
+#      spec's fallback branch, the WebGPU dispatch legs are DELEGATED to
+#      local real-GPU verification (CC M1 iMac Chrome via
+#      tools/wasm/parity.html) + the owner spot check (T28 / M4-11), and
+#      this job only prints that delegation record — a clean, visible skip,
+#      never a fabricated pass (the parity-whisper-real sidecar-gate
+#      posture). If the owner later approves a puppeteer-based leg, wire it
+#      here and delete the skip step.
+#
+# NOT a required check (advisory start — NFR-MT-02 tiers WASM as nightly;
+# the gpu-vulkan-parity.yml advisory precedent + consecutive-green owner
+# promotion applies).
+#
+# Zero-dep (NFR-DS-02): no Rust dependency is added; the Node harness and
+# the JS glue have zero npm dependencies. The whisper job's Python venv is
+# /tmp-scoped (the parity-whisper-real isolation pattern).
+
+name: web-wasm
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_whisper_e2e:
+        description: "Run the Whisper base WASM e2e (multi-GB HF download)"
+        type: boolean
+        default: false
+  schedule:
+    # Mondays 07:00 UTC — 1-2h after the other weekly parity crons so a
+    # shared runner pool doesn't stack them.
+    - cron: "0 7 * * 1"
+  pull_request:
+    paths:
+      - "crates/vokra-backend-webgpu/**"
+      - "crates/vokra-backend-cpu/src/kernels/wasm_simd128.rs"
+      - "crates/vokra-backend-cpu/src/features.rs"
+      - "crates/vokra-backend-cpu/src/dispatch.rs"
+      - "tests/wasm-harness/**"
+      - "tools/wasm/**"
+      - "web/**"
+      - "scripts/build-wasm.sh"
+      - ".github/workflows/web-wasm.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  wasm-build:
+    name: wasm 2-artifact build + Node kernel parity + npm dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Snapshot root Cargo.lock (NFR-DS-02 tripwire)
+        run: cp Cargo.lock /tmp/Cargo.lock.before
+
+      - name: Build 2 artifacts + assemble web/pkg (scripts/build-wasm.sh)
+        run: ./scripts/build-wasm.sh all
+
+      - name: Root Cargo.lock unchanged (zero-dep tripwire)
+        run: |
+          git diff --exit-code Cargo.lock
+          diff /tmp/Cargo.lock.before Cargo.lock
+
+      - name: Node kernel parity (simd128 vs scalar differentials, T06)
+        run: node tools/wasm/run-kernel-parity.mjs
+
+      - name: Whisper e2e gated skip is honest (no model in CI checkout)
+        # Without a GGUF the runner must print the explicit SKIP and exit 0
+        # (the model-gated posture); the real e2e is job 2 (opt-in).
+        run: node tools/wasm/run-whisper-wasm.mjs
+
+      - name: npm publish --dry-run (web/pkg, token-free, T20/T23)
+        working-directory: web/pkg
+        run: |
+          npm pack --dry-run
+          # Prerelease/dev semver requires an explicit dist-tag.
+          npm publish --dry-run --access public --tag dev
+
+      - name: Upload artifacts (wasm + assembled pkg)
+        uses: actions/upload-artifact@v4
+        with:
+          name: vokra-web-dist
+          path: |
+            web/dist/*.wasm
+            web/pkg/
+          retention-days: 7
+
+  whisper-wasm-e2e:
+    name: Whisper base WASM e2e (opt-in — HF download)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: github.event_name == 'workflow_dispatch' && inputs.run_whisper_e2e
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Build vokra-cli (converter) + wasm artifacts
+        run: |
+          cargo build --release -p vokra-cli
+          ./scripts/build-wasm.sh harness
+
+      - name: Fetch whisper-base checkpoint (HF snapshot_download, /tmp venv)
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/vokra-py-web
+          . /tmp/vokra-py-web/bin/activate
+          pip install --quiet "huggingface_hub>=0.23"
+          python3 - <<'PYEOF'
+          from huggingface_hub import snapshot_download
+          local_dir = snapshot_download(
+              repo_id="openai/whisper-base",
+              allow_patterns=[
+                  "model.safetensors", "config.json", "generation_config.json",
+                  "preprocessor_config.json", "tokenizer.json", "tokenizer_config.json",
+                  "vocab.json", "merges.txt", "added_tokens.json", "normalizer.json",
+                  "special_tokens_map.json",
+              ],
+          )
+          with open("/tmp/hf-paths.env", "w") as f:
+              f.write(f"HF_SAFETENSORS={local_dir}/model.safetensors\n")
+          print("snapshot_download OK:", local_dir)
+          PYEOF
+          cat /tmp/hf-paths.env >> "$GITHUB_ENV"
+
+      - name: Convert safetensors → GGUF (vokra-cli convert)
+        run: |
+          mkdir -p models
+          ./target/release/vokra-cli convert \
+            --model whisper \
+            --input "$HF_SAFETENSORS" \
+            --output models/whisper-base.gguf
+
+      - name: JFK transcription through BOTH wasm artifacts (T19)
+        run: node tools/wasm/run-whisper-wasm.mjs
+
+  webgpu-smoke:
+    name: WebGPU smoke (delegated — honest record)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Delegation record (clean skip, never a fabricated pass)
+        run: |
+          {
+            echo "## WebGPU smoke: delegated to real-GPU verification"
+            echo
+            echo "The M4-01 authoring pass could not establish whether a GitHub-hosted"
+            echo "ubuntu-latest runner exposes a headless WebGPU compute adapter, and a"
+            echo "browser-driving leg would add npm tooling (puppeteer) that needs owner"
+            echo "sign-off. Per the M4-01-T22 fallback branch, the WebGPU dispatch legs run:"
+            echo
+            echo "- locally on a real GPU: tools/wasm/parity.html via web/demo/serve.mjs"
+            echo "  (CC M1 iMac Chrome; per-kernel atol=0.01 vs the CPU oracle)"
+            echo "- owner spot check: M4-01-T28 (Chrome/Edge/Safari) → M4-11 formal判定"
+            echo
+            echo "This job is a visible delegation record — it asserts nothing."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::WebGPU smoke delegated to local real GPU + owner T28/M4-11 (see step summary)"

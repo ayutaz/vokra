@@ -513,6 +513,29 @@ pub type GDExtensionInterfaceClassdbUnregisterExtensionClass = unsafe extern "C"
     p_class_name: GDExtensionConstStringNamePtr,
 );
 
+/// `classdb_construct_object` (Godot 4.1) — header line 2692.
+///
+/// Constructs a Godot-side `Object` of `p_classname`. A
+/// `create_instance_func` MUST return one of these, NOT a bare pointer to
+/// its own Rust allocation: Godot `dynamic_cast`s the returned pointer as
+/// an `Object *`, so anything else segfaults. See
+/// [`crate::registry::create_session_instance`].
+pub type GDExtensionInterfaceClassdbConstructObject =
+    unsafe extern "C" fn(p_classname: GDExtensionConstStringNamePtr) -> GDExtensionObjectPtr;
+
+/// `object_set_instance` (Godot 4.1) — header line 2440.
+///
+/// Attaches an extension-owned instance pointer to a Godot `Object`.
+/// `p_classname` must be a registered extension class that extends
+/// `p_o`'s class. The pointer handed in here is exactly what Godot later
+/// passes back as `p_instance` to every method trampoline and to
+/// `free_instance_func`.
+pub type GDExtensionInterfaceObjectSetInstance = unsafe extern "C" fn(
+    p_o: GDExtensionObjectPtr,
+    p_classname: GDExtensionConstStringNamePtr,
+    p_instance: GDExtensionClassInstancePtr,
+);
+
 /// `string_name_new_with_utf8_chars` (Godot 4.2). Constructs a StringName in
 /// caller-owned storage from a NUL-terminated UTF-8 buffer.
 pub type GDExtensionInterfaceStringNameNewWithUtf8Chars =

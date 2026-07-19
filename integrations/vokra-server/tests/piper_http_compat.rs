@@ -11,26 +11,29 @@
 //!   invariant: TTS output that emits NaN/Inf silently is a regression
 //!   (BigVGAN/Vocos in INT8 fail this — fp16 is required, and even fp16
 //!   must produce finite samples end-to-end).
-//! * Voice model (native GGUF) is gated on `VOKRA_PIPER_GGUF` (same env
-//!   as `crates/vokra-models/benches/piper_rtf.rs` and the piper parity
-//!   tests). When absent, the row skips cleanly with a non-silent
-//!   `eprintln!` (FR-EX-08 posture — never fake success).
+//! * Real weights are gated on `VOKRA_PIPER_GGUF` (voice, same env as
+//!   `crates/vokra-models/benches/piper_rtf.rs`) **and**
+//!   `VOKRA_WHISPER_GGUF` (whisper-base — the wired server's required
+//!   startup minimum is ASR + TTS together, FR-EX-08 no half-wired boot).
+//!   When either is absent the row skips cleanly with a non-silent
+//!   `eprintln!` (never fake success).
 //!
-//! The `/api/tts` router itself lands in T11/T12. Until then the route
-//! stub returns `404` and this test emits a `route pending` skip — the
-//! same "committed contract test that flips to green the moment the
-//! route wires" pattern used by `tests/openai_compat.rs`. No test churn
-//! is required when T11/T12 land.
+//! T12 landed (campaign-2 P1 #3 fix, 2026-07-17): the route is now merged
+//! into `build_http_app` by the production startup path, and this test
+//! boots that exact path via `spawn_server_for_test_wired` with
+//! `piper_g2p = true`, so the historical "`404` = router pending" skip is
+//! GONE — a 404 is now a hard regression. Plain "Hello world" text is
+//! synthesized by the real 8-language G2P injected from
+//! `integrations/vokra-piper-g2p`.
 //!
-//! Bind is `127.0.0.1:0` (OS-assigned free port) via
-//! `spawn_server_for_test`; no fixed port is ever opened. Parallel
-//! `cargo test` runs and constrained CI sandboxes both work.
+//! Bind is `127.0.0.1:0` (OS-assigned free port); no fixed port is ever
+//! opened. Parallel `cargo test` runs and constrained CI sandboxes both
+//! work.
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use vokra_server::{Config, spawn_server_for_test};
+use vokra_server::{Config, spawn_server_for_test, spawn_server_for_test_wired};
 
 // ---------- GGUF gating (mirrors `piper_rtf.rs`) ----------
 
@@ -40,74 +43,21 @@ fn piper_gguf() -> Option<PathBuf> {
     std::env::var_os("VOKRA_PIPER_GGUF").map(PathBuf::from)
 }
 
+/// Returns the whisper-base GGUF path when `VOKRA_WHISPER_GGUF` is set
+/// (the wired server refuses to boot TTS-only — FR-EX-08).
+fn whisper_gguf() -> Option<PathBuf> {
+    std::env::var_os("VOKRA_WHISPER_GGUF").map(PathBuf::from)
+}
+
 // ---------- raw HTTP JSON client ----------
 
-/// POST `body` as `application/json` over a raw TCP connection and
-/// return `(status, headers_text, body_bytes)`. A 5 s hard timeout
-/// guards against a stuck handler hanging the suite.
-///
-/// We intentionally do NOT use `reqwest` here so that the response body
-/// is delivered to us as raw bytes (no charset re-decoding), which is
-/// mandatory when validating a binary `audio/wav` payload byte-for-byte.
-async fn http_post_json(
-    addr: SocketAddr,
-    path: &str,
-    body: &[u8],
-) -> std::io::Result<(u16, String, Vec<u8>)> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut sock = tokio::net::TcpStream::connect(addr).await?;
-    let head = format!(
-        "POST {path} HTTP/1.1\r\n\
-         Host: 127.0.0.1\r\n\
-         Content-Type: application/json\r\n\
-         Content-Length: {len}\r\n\
-         Connection: close\r\n\r\n",
-        len = body.len(),
-    );
-    sock.write_all(head.as_bytes()).await?;
-    sock.write_all(body).await?;
-    sock.flush().await?;
-
-    let mut buf = Vec::new();
-    tokio::time::timeout(Duration::from_secs(5), sock.read_to_end(&mut buf))
-        .await
-        .map_err(|_| std::io::Error::other("http read timeout"))??;
-
-    let sep = buf
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| std::io::Error::other("no header terminator"))?;
-    let head_str = std::str::from_utf8(&buf[..sep])
-        .map_err(|e| std::io::Error::other(format!("utf8: {e}")))?
-        .to_string();
-    let first_line = head_str.lines().next().unwrap_or("");
-    let status: u16 = first_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| std::io::Error::other(format!("bad status line: {first_line:?}")))?;
-
-    // Body framing. Server sets `Connection: close` (client also asked
-    // for it), so hyper serves a plain content-length body — treat the
-    // rest verbatim. Tolerate a chunked encoding fallback the same way
-    // `openai_compat.rs` does (best-effort strip of the first chunk
-    // header) so a future handler variation does not silently corrupt
-    // the RIFF header check.
-    let body_bytes = if head_str
-        .lines()
-        .any(|l| l.eq_ignore_ascii_case("Transfer-Encoding: chunked"))
-    {
-        let raw = &buf[sep + 4..];
-        raw.windows(2)
-            .position(|w| w == b"\r\n")
-            .map(|i| raw[i + 2..].to_vec())
-            .unwrap_or_else(|| raw.to_vec())
-    } else {
-        buf[sep + 4..].to_vec()
-    };
-
-    Ok((status, head_str, body_bytes))
-}
+// cc-09 (2026-07-19 M4-residual audit): the per-file raw-TCP helper is
+// replaced by the shared `tests/support/mod.rs` client (complete-response
+// detection + bounded reset retry + strict chunked decode — see its module
+// docs). Raw bytes are still delivered verbatim (no reqwest charset
+// re-decoding), which the binary `audio/wav` byte-for-byte checks need.
+mod support;
+use support::http_post_json_with_head as http_post_json;
 
 // ---------- WAV validation ----------
 
@@ -288,11 +238,12 @@ fn assert_wav_and_samples_finite(buf: &[u8]) {
 
 #[tokio::test]
 async fn tts_returns_valid_wav_with_finite_samples() {
-    // GGUF gate — skip cleanly if the fixture is not on this runner.
-    let Some(gguf) = piper_gguf() else {
+    // GGUF gate — skip cleanly if the fixtures are not on this runner.
+    let (Some(gguf), Some(whisper)) = (piper_gguf(), whisper_gguf()) else {
         eprintln!(
-            "piper_http_compat: skipping — set VOKRA_PIPER_GGUF=<voice.gguf> \
-             to exercise the /api/tts contract."
+            "piper_http_compat: skipping — set VOKRA_PIPER_GGUF=<voice.gguf> AND \
+             VOKRA_WHISPER_GGUF=<whisper-base.gguf> to exercise the /api/tts \
+             contract on the wired production path."
         );
         return;
     };
@@ -301,19 +252,32 @@ async fn tts_returns_valid_wav_with_finite_samples() {
         "piper_http_compat: VOKRA_PIPER_GGUF points at missing file: {}",
         gguf.display(),
     );
+    assert!(
+        whisper.exists(),
+        "piper_http_compat: VOKRA_WHISPER_GGUF points at missing file: {}",
+        whisper.display(),
+    );
 
+    // Full production startup path: eager engine loads + real-G2P injection
+    // (`piper_g2p = true` so plain "Hello world" is really phonemized by the
+    // 8-language G2P, not rejected by the passthrough).
     let cfg = Config {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         wyoming_bind: "127.0.0.1:0".parse().unwrap(),
         config_file: None,
+        whisper_base_gguf: Some(whisper),
+        piper_plus_gguf: Some(gguf),
+        piper_g2p: Some(true),
+        ..Config::default()
     };
-    let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn server");
+    let (handles, trigger) = spawn_server_for_test_wired(cfg)
+        .await
+        .expect("spawn server");
 
     // piper-plus HTTP shape (T11 confirms the exact field set). The
     // `text` field is the only required input; `voice` is included
     // because the piper-plus reference server treats voice selection as
-    // mandatory once >1 voice is registered. The T12 handler is free to
-    // ignore fields it does not consume.
+    // mandatory once >1 voice is registered.
     let body = br#"{"text":"Hello world","voice":"default"}"#;
 
     let result = http_post_json(handles.http_actual, "/api/tts", body).await;
@@ -325,17 +289,9 @@ async fn tts_returns_valid_wav_with_finite_samples() {
 
     let (status, headers, resp_body) = result.expect("POST /api/tts");
 
-    if status == 404 {
-        // T11/T12 have not landed yet. Emit a non-silent skip so CI
-        // logs surface the pending contract. This test flips to a live
-        // green assertion the moment T12 wires the router — no churn.
-        eprintln!(
-            "piper_http_compat: /api/tts returned 404 — \
-             T11/T12 router not yet wired; contract test pending."
-        );
-        return;
-    }
-
+    // T12 is landed: a 404 here is a wiring REGRESSION (the campaign-2
+    // server-real leg live-verified exactly this failure), not a pending
+    // contract.
     assert_eq!(
         status,
         200,
@@ -369,6 +325,7 @@ async fn server_boots_and_health_probes_green() {
         http_bind: "127.0.0.1:0".parse().unwrap(),
         wyoming_bind: "127.0.0.1:0".parse().unwrap(),
         config_file: None,
+        ..Config::default()
     };
     let (handles, trigger) = spawn_server_for_test(cfg).await.expect("spawn");
     let mut sock = tokio::net::TcpStream::connect(handles.http_actual)

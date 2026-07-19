@@ -26,12 +26,19 @@
 //! be injected into a `Session` without `vokra-core` knowing any model
 //! specifics.
 
+// M4-04 T10/T11: standalone codec GGUF binders (Mimi / DAC) — dumb bridges
+// from the converter-derived tensors to the vokra-ops RVQ decode inputs.
+pub mod codec;
 pub mod compute;
 pub mod cosyvoice2;
+pub mod csm;
 pub mod kokoro;
+pub mod mimi;
+pub mod moshi;
 pub mod piper_plus;
 pub mod silero_vad;
 pub mod speaker;
+pub(crate) mod tls_scratch;
 pub mod voxtral;
 pub mod whisper;
 

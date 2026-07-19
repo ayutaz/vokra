@@ -50,6 +50,11 @@
 
 pub(crate) mod scalar;
 
+// M5-14 Wave-1 (T05/T09/T10): packed cache-blocked GEMM driver — routing,
+// pack routines and thread-local scratch. Per-ISA micro-kernels live in the
+// arch modules below; ISAs without them keep the legacy kernels bit-for-bit.
+pub(crate) mod gemm_driver;
+
 // Native vectorized `exp` shared by the AVX2 / NEON transcendental kernels
 // (M1-05-EXP). Compiled only under the `simd-transcendental` feature; without
 // it, `sigmoid` / `tanh` / `gelu` / softmax-exp stay scalar-backed and this
@@ -60,8 +65,48 @@ pub(crate) mod vexp;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod avx2;
 
+// M4-17-T07..T11: AVX-512 f32 kernel tier (F/DQ/BW/VL bundle) + the VNNI
+// INT8 / BF16 matmul cores. Compiled only on x86-64; runtime entry is gated
+// by `CpuFeatures::supports(IsaPath::Avx512*)` (the SIGILL guard), and the
+// binary itself stays at the SSE2 baseline — the AVX-512 encodings exist
+// only inside the per-function `#[target_feature]` cores (ADR M4-17 §(g)).
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod avx512;
+
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod neon;
+
+// M4-17-T13: AVX-VNNI 256-bit INT8 group-sum core (Alder Lake+ client INT8
+// main path; AVX-512 is fused off on those parts, ADR M4-17 §(d)).
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod avxvnni256;
+
+// M4-17-T14..T17: ARM64 server-tier cores. dotprod / i8mm / fp16 / bf16
+// vector intrinsics are unstable on the pinned rustc, so these use
+// `core::arch::asm!` with `.arch_extension` fences (M3-13 RVV precedent,
+// ADR M4-17 §(g)); each encoding is reached only after the corresponding
+// `CpuFeatures::supports` gate (SIGILL guard).
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod neon_bf16;
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod neon_dotprod;
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod neon_fp16;
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod neon_i8mm;
+
+// M4-17-T10..T17: K-quants SIMD dequant fusion (bit-identical to the
+// vokra-core scalar reference) + the specialized INT8 / BF16 / FP16
+// dispatch surface. Target-independent orchestration (the per-arch cores
+// live in the modules above / in `avx512`).
+pub(crate) mod kquant;
+
+pub use kquant::{
+    BF16_REL, FP16_REL, KQUANT_GROUP, KQuantDtype, bf16_to_f32, dot_precision_bound,
+    f16_to_f32 as f16_bits_to_f32, f32_to_bf16_rne, f32_to_f16_rne, f64_to_f16_rne, fp16_fma_emu,
+    gemm_bf16_on, gemm_fp16_on, int8_error_bound, kquant_dequant_on, kquant_gemv_i8,
+    kquant_gemv_i8_on, kquant_gemv2_i8_on,
+};
 
 // M3-13-T04..T09: RISC-V RVV 1.0 base kernels + Zvfh feature-gated fp16 path.
 // Compiled only on `target_arch = "riscv64"` — the runtime dispatch layer
@@ -72,6 +117,29 @@ pub(crate) mod neon;
 // M4+ inline-asm rewrites).
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod rvv;
+
+// M4-08-T07/T08: RISC-V RVV **draft 0.7.1** kernels (T-Head C910/C906 =
+// LicheePi 4A / Milk-V Duo). A peer tier to `rvv` — NOT a subset of it: the
+// 0.7.1 and ratified-1.0 instruction encodings are incompatible, so the two
+// modules share no instruction bytes (ADR M4-08 §d). Compiled only on
+// `target_arch = "riscv64"`; the runtime dispatch layer gates entry via
+// `CpuFeatures::supports` (needs `rvv_071 = true` — the xtheadvector /
+// cpu-vector detection signals with the RVV 1.0 misdetection guard).
+// Scaffold split mirrors `rvv`: `add` emits real 0.7.1 words via `.insn`,
+// the rest delegate to `scalar::*` pending M4+/M5 rewrites.
+#[cfg(target_arch = "riscv64")]
+pub(crate) mod rvv071;
+
+// M4-01-T04/T05: WASM SIMD128 f32x4 kernels (`core::arch::wasm32` intrinsics,
+// std-builtin — no external crate). Compiled ONLY when the wasm32 artifact is
+// built with `-C target-feature=+simd128`: WASM has no runtime CPU feature
+// detection (SIMD acceptance is decided at module validation), so the
+// simd/base split is a 2-artifact distribution + JS loader select
+// (scripts/build-wasm.sh + web/pkg/index.js `WebAssembly.validate` probe —
+// ADR M4-01-webgpu-wasm §4), NOT an AVX2/NEON-style runtime dispatch.
+// Relaxed SIMD is not adopted (deterministic mul + add only, NFR-QL-01).
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+pub(crate) mod wasm_simd128;
 
 // Fused log-mel inner kernel (M2-04-T06): AVX2 8-lane FMA `_mm256_fmadd_ps`
 // over the filterbank weights row + `vlog10_avx2` polynomial approximation.
@@ -96,15 +164,17 @@ use crate::features::IsaPath;
 
 // ---- production GEMM / GEMV execution (row-parallel when `parallel` is on) ----
 //
-// The `*_f32` public wrappers below route through these. When the `parallel`
-// feature is on (native, multi-core host) the large GEMM/GEMV are split over
-// disjoint output rows by `crate::pool` — bit-identical to the inline call (same
-// per-element FMA chain), so parity is preserved. The `*_f32_on` differential
-// entry points deliberately do NOT use the pool: they stay single-thread so a
-// forced-ISA run is the single-thread numeric reference the pool is compared
-// against. Off `parallel` (or on WASM / single core) both paths run inline.
+// The `*_f32` public wrappers below route through these. GEMM goes through
+// the M5-14 packed driver (`kernels::gemm_driver`): m == 1 takes the ISA row
+// kernel, large shapes the packed cache-blocked path (pool-parallel over
+// disjoint output tiles), everything else the legacy pool row-split — all
+// three routes are **bit-identical** per element to the legacy kernel, so
+// parity is preserved (asserted by `tests/gemm_packed_parity.rs`). The
+// `*_f32_on` differential entry points deliberately do NOT use the driver or
+// the pool: they stay on the forced-ISA single-thread legacy kernel, which is
+// the numeric reference the production path is compared against. Off
+// `parallel` (or on WASM / single core) the driver runs its loops inline.
 
-#[cfg(all(feature = "parallel", not(target_family = "wasm")))]
 #[allow(clippy::too_many_arguments)]
 fn run_gemm(
     m: usize,
@@ -115,21 +185,7 @@ fn run_gemm(
     bias: Option<&[f32]>,
     out: &mut [f32],
 ) {
-    crate::pool::parallel_gemm(dispatch::table().gemm, m, n, k, a, b, bias, out);
-}
-
-#[cfg(not(all(feature = "parallel", not(target_family = "wasm"))))]
-#[allow(clippy::too_many_arguments)]
-fn run_gemm(
-    m: usize,
-    n: usize,
-    k: usize,
-    a: &[f32],
-    b: &[f32],
-    bias: Option<&[f32]>,
-    out: &mut [f32],
-) {
-    (dispatch::table().gemm)(m, n, k, a, b, bias, out);
+    gemm_driver::run(m, n, k, a, b, bias, out);
 }
 
 #[cfg(all(feature = "parallel", not(target_family = "wasm")))]

@@ -15,7 +15,7 @@
 #      and is the pre-commit / advisory CI hook.
 #   - `abi-diff.sh` (this script) is a REPORT tool. It never fails on a
 #      delta; it just classifies the delta so the M3-16-T04 aggregator, and
-#      later the M4-12 freeze-flip, can consume it as input. Exit codes are
+#      later the M5-13 freeze-flip, can consume it as input. Exit codes are
 #      reserved for setup errors (missing anchor / bad flag / missing
 #      header).
 #
@@ -33,9 +33,14 @@
 #   docs/abi/vokra.h.v0.9-baseline.symbols          -- v0.9 window baseline
 #                                                      (`--anchor v0.9`,
 #                                                      symbols-format,
-#                                                      rotated by check-abi-
-#                                                      changelog.sh
-#                                                      --update-snapshot).
+#                                                      historical since the
+#                                                      v1.0-rc rotation).
+#   docs/abi/vokra.h.v1.0-rc-baseline.symbols       -- v1.0-rc window baseline
+#                                                      (`--anchor v1.0-rc`,
+#                                                      symbols-format; the
+#                                                      active check-abi-
+#                                                      changelog.sh anchor
+#                                                      since M4-12).
 #
 # ANCHOR FORMATS
 #   The script auto-detects the anchor format so callers can point
@@ -53,7 +58,8 @@
 #   scripts/abi-diff.sh                          -- diff current vs. M0 anchor (default)
 #   scripts/abi-diff.sh --anchor <path|label>    -- diff against a named anchor.
 #                                                   Label shortcuts: `m0` (default,
-#                                                   raw header), `v0.9` (symbols).
+#                                                   raw header), `v0.9` (symbols),
+#                                                   `v1.0-rc` (symbols).
 #                                                   Anything else is treated as a
 #                                                   path; the format is auto-
 #                                                   detected (see ANCHOR FORMATS).
@@ -78,8 +84,10 @@
 #   scripts/abi-diff.sh --help                   -- this text
 #
 # NOT WIRED INTO CI
-#   Per M3-16 spec §T02 last paragraph: CI gating is left to M4-12
-#   (`docs/tickets/m3/M3-16-abi-changelog.md` §T02 内容 bullet 4). This
+#   Per M3-16 spec §T02 last paragraph: CI gating is left to M5-13
+#   (`docs/tickets/m3/M3-16-abi-changelog.md` §T02 内容 bullet 4; the
+#   2026-07-14 v-label reassignment #2 moved the freeze WP M4-12 → M5-13).
+#   This
 #   script produces a report — the caller decides whether a delta is
 #   expected.
 #
@@ -108,6 +116,7 @@ DEFAULT_HEADER="$ROOT/include/vokra.h"
 # can point --anchor at either kind of file.
 ANCHOR_M0="$ROOT/include/vokra.h.m0-anchor"
 ANCHOR_V09="$ROOT/docs/abi/vokra.h.v0.9-baseline.symbols"
+ANCHOR_V1RC="$ROOT/docs/abi/vokra.h.v1.0-rc-baseline.symbols"
 GEN_C_ABI="$ROOT/scripts/gen-c-abi.sh"
 
 usage() {
@@ -715,7 +724,7 @@ while [ $# -gt 0 ]; do
             ;;
         *)
             echo "error: unknown argument '$1'" >&2
-            echo "usage: $0 [--anchor <path|m0|v0.9>] [--header <path>] [--regenerate] [--format text|machine] [--self-test | --help]" >&2
+            echo "usage: $0 [--anchor <path|m0|v0.9|v1.0-rc>] [--header <path>] [--regenerate] [--format text|machine] [--self-test | --help]" >&2
             exit 2
             ;;
     esac
@@ -731,15 +740,17 @@ esac
 
 # Resolve anchor label -> path.
 case "$anchor_arg" in
-    m0)   anchor_path="$ANCHOR_M0" ;;
-    v0.9) anchor_path="$ANCHOR_V09" ;;
-    *)    anchor_path="$anchor_arg" ;;
+    m0)      anchor_path="$ANCHOR_M0" ;;
+    v0.9)    anchor_path="$ANCHOR_V09" ;;
+    v1.0-rc) anchor_path="$ANCHOR_V1RC" ;;
+    *)       anchor_path="$anchor_arg" ;;
 esac
 
 if [ ! -f "$anchor_path" ]; then
     echo "error: anchor not found: $anchor_path" >&2
     echo "       known labels: m0 -> $ANCHOR_M0" >&2
     echo "                     v0.9 -> $ANCHOR_V09" >&2
+    echo "                     v1.0-rc -> $ANCHOR_V1RC" >&2
     exit 2
 fi
 

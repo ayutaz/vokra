@@ -49,7 +49,7 @@ pub use frontend_spec::{FieldMismatch, FrontendPolicy, FrontendSpec};
 pub use reader::{AsBytes, GgufFile};
 pub use tensor::{GgmlType, GgufTensorInfo};
 pub use value::{GgufArray, GgufMetadataValue, GgufValueType};
-pub use writer::GgufBuilder;
+pub use writer::{GgufBuilder, GgufStreamWriter, GgufTensorDecl};
 
 use std::fmt;
 
@@ -163,6 +163,12 @@ pub enum GgufError {
     },
     /// An underlying I/O error (only from [`GgufFile::open`]).
     Io(std::io::Error),
+    /// A [`writer::GgufStreamWriter`] contract violation: payloads must be
+    /// supplied exactly once each, in declaration order, and the metadata
+    /// builder must not carry queued tensors (the message names the misuse).
+    /// Loud by design — a mis-sequenced stream would silently corrupt the
+    /// tensor-data region (FR-EX-08).
+    InvalidStreamUse(String),
 }
 
 impl fmt::Display for GgufError {
@@ -230,6 +236,9 @@ impl fmt::Display for GgufError {
                 )
             }
             Self::Io(e) => write!(f, "I/O error: {e}"),
+            Self::InvalidStreamUse(msg) => {
+                write!(f, "invalid GGUF stream-writer use: {msg}")
+            }
         }
     }
 }

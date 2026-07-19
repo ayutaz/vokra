@@ -1,0 +1,153 @@
+# Vokra UTMOS parity (M4-18 T12 CI wiring — flip-the-switch, weights deferred).
+#
+# Purpose: run the UTMOS parity harness (crates/vokra-eval/tests/parity_utmos.rs)
+# against a real converted GGUF once — and only once — the owner flips the
+# M4-18 switch. The kickoff-week gate auto-deferred the UTMOS weights +
+# license to a v1.0.x patch (owner sourcing still open), so TODAY this
+# workflow's parity leg cannot run: there is no weight URL to download and no
+# committed reference fixture. Instead of fabricating either (NFR-QL-04 ban),
+# the setup job detects the flip artifacts and SKIPS CLEANLY with an explicit
+# annotation — the same "missing input is announced, never silently
+# substituted" posture as parity-whisper-real.yml's audio-fixture gate.
+#
+# Flip artifacts the setup job looks for (both required):
+#   1. tests/parity/utmos/source.env with at least one non-comment line —
+#      owner commits it at flip time (after the T02 license sign-off in
+#      docs/license-audit.md) with:
+#          CKPT_URL=<https url of the upstream UTMOS checkpoint>
+#          CKPT_SHA256=<sha256 of that file>
+#      The checkpoint itself is NEVER committed (weight license is
+#      owner-gated; the repo ships no weights).
+#   2. tests/parity/utmos/score.json — the offline-generated reference
+#      fixture (format + honest-atol rule: tests/parity/utmos/README.md).
+#
+# The parity leg then: downloads + sha256-verifies the checkpoint, converts
+# it with `vokra-convert --model utmos` (T05 — lands together with the flip;
+# until then a premature flip fails LOUDLY at this step rather than skipping),
+# and runs `VOKRA_UTMOS_GGUF=... cargo test -p vokra-eval --test parity_utmos`.
+#
+# Zero-dep invariant (NFR-DS-02): root Cargo.lock is never modified; a final
+# `git diff --exit-code Cargo.lock` guard catches accidental mutation.
+#
+# NOT a required check: workflow_dispatch + weekly cron + narrow PR path
+# filter only, matching the Kokoro/Whisper real-parity workflows (promote to
+# required only after weeks of consecutive green, owner decision).
+
+name: parity-utmos
+
+on:
+  workflow_dispatch:
+  # Weekly cadence alongside the other real-parity workflows; offset to
+  # Monday 08:00 UTC — its own slot in the weekly stagger (Kokoro 04:00,
+  # Whisper 05:00, Vulkan 05:30, CUDA-RTF 06:00, CSM 06:30, web-wasm 07:00,
+  # Moshi 07:30, UTMOS 08:00, Godot 08:30).
+  schedule:
+    - cron: "0 8 * * 1"
+  pull_request:
+    paths:
+      - "crates/vokra-eval/src/metrics/utmos.rs"
+      - "crates/vokra-eval/tests/parity_utmos.rs"
+      - "tests/parity/utmos/**"
+      - ".github/workflows/parity-utmos.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parity-utmos-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Preflight: detect whether the owner has flipped the M4-18 switch.
+  # Absent artifacts => clean skip with an explicit annotation (the honest
+  # posture while the weights are deferred — never a fabricated pass).
+  setup:
+    name: setup
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.flip.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect M4-18 flip artifacts
+        id: flip
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC=tests/parity/utmos/source.env
+          FIX=tests/parity/utmos/score.json
+          src_has_content=0
+          if [ -f "$SRC" ] && grep -vE '^\s*(#|$)' "$SRC" | grep -q .; then
+            src_has_content=1
+          fi
+          if [ "$src_has_content" -eq 1 ] && [ -f "$FIX" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### parity-utmos"
+              echo ""
+              echo "flip artifacts: **present** (\`$SRC\` + \`$FIX\`) — running the parity leg."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            missing_reason="unknown"
+            if [ ! -f "$SRC" ]; then
+              missing_reason="source.env absent"
+            elif [ "$src_has_content" -eq 0 ]; then
+              missing_reason="source.env is placeholder-only (no non-comment line)"
+            elif [ ! -f "$FIX" ]; then
+              missing_reason="score.json reference fixture absent"
+            fi
+            {
+              echo "### parity-utmos"
+              echo ""
+              echo "UTMOS gate: **weight absent** (\`$missing_reason\`) — parity leg skipping."
+              echo ""
+              echo "The M4-18 kickoff gate auto-deferred the UTMOS weights + license"
+              echo "(v1.0.x patch; owner sourcing open — \`docs/license-audit.md\` sign-off"
+              echo "queue). This skip is the honest posture: no weight, no fixture, no"
+              echo "fabricated pass (NFR-QL-04). Flip recipe: \`tests/parity/utmos/README.md\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning file=tests/parity/utmos/README.md::UTMOS gate: weight absent ($missing_reason) — parity-utmos skipping (M4-18 deferred; FR-EX-08 explicit skip, not a synthetic fallback)"
+          fi
+
+  parity-utmos:
+    name: parity-utmos
+    needs: setup
+    if: needs.setup.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Download + verify the upstream checkpoint (owner-declared URL)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source tests/parity/utmos/source.env
+          : "${CKPT_URL:?source.env must define CKPT_URL}"
+          : "${CKPT_SHA256:?source.env must define CKPT_SHA256}"
+          curl -fL --retry 3 -o /tmp/utmos-checkpoint "$CKPT_URL"
+          echo "${CKPT_SHA256}  /tmp/utmos-checkpoint" | sha256sum -c -
+      - name: Convert to a vokra.utmos.* GGUF (T05 converter)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # T05 lands together with the flip. If the owner flipped the
+          # artifacts before the converter landed, this step fails LOUDLY —
+          # a half-flip must never look like a pass or a skip.
+          cargo run --release -p vokra-convert -- \
+            --model utmos \
+            --input /tmp/utmos-checkpoint \
+            --output /tmp/utmos.gguf
+      - name: Run the parity harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          VOKRA_UTMOS_GGUF=/tmp/utmos.gguf \
+            cargo test -p vokra-eval --test parity_utmos -- --nocapture
+      - name: Zero-dep tripwire (root Cargo.lock untouched)
+        shell: bash
+        run: git diff --exit-code Cargo.lock

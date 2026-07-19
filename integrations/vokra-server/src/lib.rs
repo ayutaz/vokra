@@ -49,10 +49,15 @@ pub mod latency;
 pub mod scheduler;
 pub mod session;
 
+pub use api::wyoming::{BargeIn, WyomingBackend};
 pub use config::{Config, ConfigError, HELP_TEXT, parse_args};
 pub use latency::{LatencyRecorder, LatencyReport};
 pub use scheduler::{Scheduler, SchedulerConfig, SchedulerError, SchedulerSession};
-pub use server::{ServerHandles, run_with_config, spawn_server, spawn_server_for_test};
+pub use server::{
+    ServerHandles, run_with_config, spawn_server, spawn_server_for_test,
+    spawn_server_for_test_wired, spawn_server_for_test_with_service, spawn_server_full,
+    spawn_server_with_service,
+};
 pub use session::{
     RegistryError, ServerSession, SessionGuard, SessionId, SessionRegistry, SessionRegistryConfig,
     StreamSlot,

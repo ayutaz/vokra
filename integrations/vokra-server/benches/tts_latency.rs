@@ -180,6 +180,9 @@ impl VoiceDefaults for FakeVoices {
             None
         }
     }
+    fn available_voices(&self) -> Vec<String> {
+        vec!["en_US-lessac-medium".to_owned()]
+    }
 }
 
 /// Builds the canonical short-utterance [`TtsRequest`] the harness
@@ -192,6 +195,9 @@ fn short_request() -> TtsRequest {
         model: None, // defaults to piper-plus
         length_scale: None,
         noise_scale: None,
+        // cc-18: `None` keeps the voice's own language detection, so the
+        // measured path is unchanged from the pre-cc-18 baseline.
+        language: None,
     }
 }
 

@@ -20,6 +20,11 @@ vokra-core.workspace = true
 vokra-models.workspace = true
 vokra-ops.workspace = true
 vokra-convert = { path = "../vokra-convert" }
+# M4 cc-06: session GGUFs open through the true-mmap loader (header pages
+# faulted lazily) instead of a whole-file owned read — on the Moshi full-7B
+# GGUF the old `Session::from_file` buffered ~14.3 GiB alongside the engine's
+# own mmap. First-party, zero external deps (NFR-DS-02 preserved).
+vokra-mmap = { path = "../vokra-mmap" }
 
 # Optional GPU backends for `bench --backend metal|cuda` (RTF on a real GPU).
 # Both are first-party `vokra-*` crates pulled through `vokra-models`, so the
@@ -28,6 +33,14 @@ vokra-convert = { path = "../vokra-convert" }
 [features]
 metal = ["vokra-models/metal"]
 cuda = ["vokra-models/cuda"]
+# M4-15-T02: CPU + Vulkan-only build target (`--no-default-features
+# --features vulkan`, ADR M4-15 §(a)). Symmetric with `metal` / `cuda` above;
+# `bench --backend vulkan` already parses to `BackendKind::Vulkan`. The
+# transitive `vokra-models/vulkan` forwards to the backend crate's raw-FFI
+# feature, so the dlopen path compiles on Linux / Android / Windows while the
+# stock CLI stays CPU-only (feature OFF by default) and the root Cargo.lock
+# stays vokra-*-only (NFR-DS-02).
+vulkan = ["vokra-models/vulkan"]
 
 # dev-only: M2-08 T14 policy e2e test uses `vokra-eval::check_degradation` for
 # the NFR-QL-02 5% gate; `vokra-eval` is a first-party `vokra-*` crate with no

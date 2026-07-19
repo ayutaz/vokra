@@ -26,6 +26,43 @@ allow = [
     "Unicode-3.0",
     "Zlib",
 ]
+# CC0-1.0 — crate-scoped exception, owner-approved 2026-07-19 on the ground
+# that CC0 imposes no obligation on downstream users of this library.
+#
+# These are character-encoding INDEX TABLES (Unicode <-> legacy CJK codepoint
+# maps) plus their shared test data — data, not code — and they are reachable
+# only through the Japanese G2P chain that plain-text JA TTS needs:
+#   vokra-server -> vokra-piper-g2p -> piper-plus-g2p (owner's MIT crate)
+#     -> jpreprocess -> lindera-dictionary -> encoding -> encoding-index-*
+#
+# Scoped per crate rather than added to `allow` above: CC0 dedicates
+# copyright to the public domain but explicitly does NOT waive patent rights,
+# and Vokra is Apache-2.0 precisely for its patent grant. Keeping the
+# exception narrow means a future CC0 *code* dependency still has to come
+# back for review instead of inheriting this decision. Same treatment the
+# Unicode-3.0 entry above got for ICU4X-derived tables.
+# Evaluation recorded in docs/license-audit.md.
+exceptions = [
+    { crate = "encoding-index-japanese", allow = ["CC0-1.0"] },
+    { crate = "encoding-index-korean", allow = ["CC0-1.0"] },
+    { crate = "encoding-index-simpchinese", allow = ["CC0-1.0"] },
+    { crate = "encoding-index-singlebyte", allow = ["CC0-1.0"] },
+    { crate = "encoding-index-tradchinese", allow = ["CC0-1.0"] },
+    { crate = "encoding_index_tests", allow = ["CC0-1.0"] },
+    # CDLA-Permissive-2.0 — crate-scoped, owner-approved 2026-07-19 on the
+    # same ground as the CC0 block above: a permissive DATA licence that
+    # imposes no obligation on downstream users.
+    #
+    # webpki-roots is Mozilla's CA certificate bundle (certificate data, not
+    # code). Neither copy reaches the shipped binary:
+    #   * 0.26.11 — ureq <- jpreprocess-naist-jdic BUILD-dependency (fetches
+    #     the JA dictionary at build time), same G2P chain as the CC0 crates;
+    #   * 1.0.8   — reqwest, a DEV-dependency (the /health probe client).
+    # Scoped per crate for the same reason as CC0: a future CDLA dependency
+    # that does ship in the binary should come back for review.
+    # Evaluation recorded in docs/license-audit.md.
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
+]
 
 [bans]
 # Forward-compat guard: the ADR (docs/adr-http-stack.md) explicitly rejects
@@ -40,3 +77,49 @@ deny = [
 
 [advisories]
 version = 2
+# All three entries below enter through ONE chain — the optional `--piper-g2p`
+# front-end (off by default), i.e.
+#   vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus,
+#   rev 41f3696) -> jpreprocess / lindera / quick-xml
+# The real fix for all three is upstream in piper-plus, not here: this repo
+# pins piper-plus-g2p by rev and cannot bump ITS dependencies. Each entry
+# below records why it is safe to carry until that bump, and what would make
+# it unsafe. Re-check whenever the piper-plus rev is advanced.
+ignore = [
+    # RUSTSEC-2026-0194 — quick-xml 0.37.5: quadratic time in the duplicate
+    # attribute-name check (`BytesStart::attributes()` with the default
+    # `with_checks(true)`), reachable remotely in the reporter's case via a
+    # crafted XML document. Fix requires quick-xml >= 0.41, which is a
+    # semver-INCOMPATIBLE bump for piper-plus-g2p's `^0.37` — `cargo update`
+    # cannot reach it from here.
+    #
+    # NOT REACHABLE FROM VOKRA. The only quick-xml user in that crate is its
+    # SSML parser (`piper-plus-g2p/src/ssml.rs`: `SsmlParser::parse` ->
+    # `parse_xml` -> `get_attr` -> `attributes()`), and neither
+    # `vokra-piper-g2p` nor `vokra-server` references `ssml` / `SsmlParser`
+    # anywhere — the server's TTS path calls `phonemize` on plain text and
+    # never enters the XML reader. Verified by grep over both crates at the
+    # time of writing.
+    #
+    # THIS BECOMES LIVE the moment anything here starts accepting SSML (an
+    # `<speak>` passthrough on /api/tts or /v1/audio/speech would do it),
+    # because the request body is attacker-controlled. Anyone wiring SSML must
+    # bump piper-plus first and drop this entry.
+    "RUSTSEC-2026-0194",
+    # RUSTSEC-2026-0195 — quick-xml 0.37.5: unbounded namespace-declaration
+    # allocation, memory-exhaustion DoS. Same crate, same upstream fix
+    # (>= 0.41). Doubly unreachable here: it is specific to `NsReader`, and
+    # piper-plus-g2p's ssml.rs uses plain `Reader` (grep: no `NsReader` in the
+    # crate) — on top of the SSML path itself being unreferenced by Vokra.
+    "RUSTSEC-2026-0195",
+    # RUSTSEC-2025-0141 — bincode unmaintained (via jpreprocess-core). A
+    # maintenance status, not a vulnerability; used to load the bundled NAIST
+    # JDIC dictionary, whose bytes ship with the crate rather than arriving
+    # from a request.
+    "RUSTSEC-2025-0141",
+    # RUSTSEC-2021-0153 — `encoding` unmaintained (via lindera-dictionary).
+    # Same shape: the CJK index tables it provides are static data used while
+    # building/reading the bundled dictionary. (These are the same crates the
+    # CC0-1.0 licence exception above covers.)
+    "RUSTSEC-2021-0153",
+]

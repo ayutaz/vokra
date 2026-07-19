@@ -86,7 +86,7 @@ pub struct KokoroTts {
     dims: Dims,
     text_encoder: TextEncoder,
     /// Upstream Kokoro-82M PL-BERT branch (`bert.module.*` +
-    /// `bert_encoder.module.*`, 178 → 128 → 4× ALBERT → 768 → 512). When present
+    /// `bert_encoder.module.*`, 178 → 128 → 12× ALBERT → 768 → 512). When present
     /// its `[t, 512]` output replaces the [`TextEncoder`] output as the prosody
     /// predictor's input, matching the upstream Kokoro pipeline. Absent on slim
     /// fixture voices (fall-through to text-encoder features documented at the
@@ -195,15 +195,23 @@ impl KokoroTts {
     /// Synthesizes PCM from a phoneme id sequence — the M2-07-T18 low-level
     /// native path, mirroring [`crate::piper_plus::PiperPlusTts::synthesize_phonemes`].
     ///
-    /// The pipeline is
-    /// `text_encoder → [bert →] prosody → length_regulate → decoder → PCM`.
-    /// When the optional PL-BERT branch is loaded (upstream Kokoro-82M carries
-    /// it), its `[t, 512]` output replaces the text-encoder output as the
-    /// prosody-predictor input (the T13-beta seam documented in
-    /// `docs/adr/0007-kokoro-native.md`). The chosen features are transposed
-    /// from `[t, hidden]` row-major to `[hidden, t]` channel-major (the layout
-    /// every downstream stage consumes; the layout mismatch is pinned at the
-    /// module boundary here, not silently inside a component).
+    /// The pipeline mirrors upstream `KModel.forward_with_tokens`
+    /// (`kokoro==0.9.4` `model.py:86-119`):
+    ///
+    /// 1. `bert → bert_encoder` (`d_en`) feeds the prosody predictor;
+    /// 2. the predictor yields per-phoneme durations
+    ///    (`round(sigmoid.sum / speed).clamp(min=1)` — `model.py:107-109`)
+    ///    plus the `F0Ntrain` F0 / energy contours at 2× frame rate
+    ///    (`model.py:114-115`);
+    /// 3. the **text-encoder output `t_en`** — NOT the BERT features — is
+    ///    length-regulated into the decoder's `asr` input
+    ///    (`asr = t_en @ pred_aln_trg`, `model.py:116-117`);
+    /// 4. the decoder consumes `(asr, F0_pred, N_pred, ref_s[:, :128])`
+    ///    (`model.py:118`).
+    ///
+    /// Feeding length-regulated BERT features + zero F0/N to the decoder
+    /// (the pre-fix wiring) was the P1 upstream divergence found by the
+    /// 2026-07-16 real-weight eval (round-trip WER 1.0).
     ///
     /// # Style resolution
     ///
@@ -211,8 +219,16 @@ impl KokoroTts {
     /// loud [`VokraError::InvalidArgument`] rather than a silent zero-style
     /// default (FR-EX-08):
     ///
-    /// - `style_override = Some(vec)` — the caller-supplied style vector wins;
-    ///   `vec.len()` must equal `config.style_dim`.
+    /// - `style_override = Some(vec)` — the caller-supplied style vector wins.
+    ///   Two lengths are accepted:
+    ///   * `2·style_dim` (= 256 for Kokoro-82M): upstream's full `ref_s`
+    ///     voicepack row — `[:style_dim]` conditions the DECODER,
+    ///     `[style_dim:]` conditions the PROSODY predictor
+    ///     (`model.py:104` + `:118`). This is the fidelity path for real
+    ///     voicepack styles (e.g. `af_heart.pt` rows).
+    ///   * `style_dim` (= 128): one vector used for BOTH halves — equivalent
+    ///     to `ref_s = concat([s, s])`. Kept for the parity fixtures and
+    ///     backward compatibility.
     /// - `voice = Some(name)` — the name is looked up in the voice table
     ///   ([`KokoroConfig::voice_names`]); an unknown name is a loud
     ///   [`VokraError::InvalidArgument`]. Because the voicepack tensor schema
@@ -225,18 +241,20 @@ impl KokoroTts {
     ///
     /// # Scales
     ///
-    /// - `noise_scale` is reserved for the Kokoro stochastic prosody path
-    ///   (M2-07-T13 follow-on); the current deterministic scaffold ignores it
-    ///   rather than pretending to apply a noise it has not yet wired.
-    /// - `length_scale` scales each per-phoneme duration before frame
-    ///   expansion (`w = max(1, ceil(exp(log_dur) · length_scale))`), matching
-    ///   the piper convention. `1.0` disables scaling.
+    /// - `noise_scale` is reserved: the SineGen dither upstream injects is
+    ///   deterministically neutralized (see
+    ///   `decoder/generator.rs::Generator::forward` §Determinism); the
+    ///   parameter is consumed, not silently dropped.
+    /// - `length_scale` multiplies the per-phoneme sigmoid-sum before
+    ///   rounding — the reciprocal of upstream's `speed`
+    ///   (`duration = sigmoid(...).sum(-1) / speed`, `model.py:108`). `1.0`
+    ///   reproduces upstream defaults.
     ///
     /// # Errors
     ///
     /// Any component error propagates verbatim (all typed): out-of-range
     /// phoneme id from the text encoder, shape mismatch inside prosody /
-    /// decoder, or the two style-resolution errors above.
+    /// decoder, or the style-resolution errors above.
     pub fn synthesize_phonemes(
         &self,
         phoneme_ids: &[i64],
@@ -245,17 +263,20 @@ impl KokoroTts {
         noise_scale: f32,
         length_scale: f32,
     ) -> Result<SynthesizedAudio> {
-        // Reserved for the stochastic prosody path (M2-07-T13 follow-on).
-        // Consumed here so the parameter is not silently dropped.
+        // Reserved — the stochastic SineGen dither is deterministically
+        // neutralized (generator.rs §Determinism). Consumed here so the
+        // parameter is not silently dropped.
         let _ = noise_scale;
 
         // 1) Resolve the style vector (FR-EX-08: never a silent zero default).
         let style: Vec<f32> = if let Some(s) = style_override {
-            if s.len() != self.config.style_dim {
+            let sd = self.config.style_dim;
+            if s.len() != sd && s.len() != 2 * sd {
                 return Err(VokraError::InvalidArgument(format!(
-                    "kokoro TTS: style_override len {} != style_dim ({})",
+                    "kokoro TTS: style_override len {} — expected style_dim ({sd}) \
+                     or 2·style_dim ({}) for a full ref_s voicepack row",
                     s.len(),
-                    self.config.style_dim,
+                    2 * sd,
                 )));
             }
             s.to_vec()
@@ -274,8 +295,9 @@ impl KokoroTts {
                 "kokoro TTS: no style — pass style_override or a voice name".to_owned(),
             ));
         };
+        let (style_decoder, style_prosody) = split_ref_s(&style, self.config.style_dim);
 
-        // 2) Text encoder → [t, hidden_dim] row-major.
+        // 2) Text encoder → t_en [t, hidden_dim] row-major (`model.py:116`).
         let enc_arr = self.text_encoder.forward(phoneme_ids)?;
         let t_in = enc_arr.rows;
         let hidden = enc_arr.cols;
@@ -285,15 +307,22 @@ impl KokoroTts {
                 hidden, self.config.hidden_dim,
             )));
         }
+        // Transpose t_en to [hidden, t] channel-major — the decoder's asr
+        // source (length-regulated below).
+        let mut t_en_ch = vec![0.0f32; hidden * t_in];
+        for ti in 0..t_in {
+            for c in 0..hidden {
+                t_en_ch[c * t_in + ti] = enc_arr.data[ti * hidden + c];
+            }
+        }
 
-        // 3) Prosody-input features. Upstream Kokoro feeds the PL-BERT branch's
-        //    `[t, 512]` output (not the text encoder's) to `predictor.text_encoder`;
-        //    the T13-beta seam (`docs/adr/0007-kokoro-native.md`) makes bert the
-        //    prosody source when the branch is present, and falls back to the
-        //    text-encoder output otherwise. Both sources produce `[t, hidden_dim]`
-        //    row-major features; a bert-vs-hidden width mismatch is a loud error
-        //    rather than a silent fallback (FR-EX-08).
-        let features_row: Vec<f32> = if let Some(bert) = &self.bert {
+        // 3) Prosody-input features `d_en`. Upstream feeds the PL-BERT
+        //    branch's `[t, 512]` output (`bert → bert_encoder`,
+        //    `model.py:102-103`) to `predictor.text_encoder` — never `t_en`.
+        //    A slim fixture voice without the PL-BERT branch falls back to
+        //    the text-encoder output (the T13-beta seam); real Kokoro-82M
+        //    always carries the branch.
+        let d_en_ch: Vec<f32> = if let Some(bert) = &self.bert {
             let bert_out = bert.forward(phoneme_ids)?;
             let bert_cols = bert_out.len() / t_in;
             if bert_cols != hidden {
@@ -304,54 +333,51 @@ impl KokoroTts {
                     bert_cols, hidden,
                 )));
             }
-            bert_out
+            let mut ch = vec![0.0f32; hidden * t_in];
+            for ti in 0..t_in {
+                for c in 0..hidden {
+                    ch[c * t_in + ti] = bert_out[ti * hidden + c];
+                }
+            }
+            ch
         } else {
-            enc_arr.data.clone()
+            t_en_ch.clone()
         };
 
-        // 4) Transpose to [hidden_dim, T] channel-major (the layout prosody /
-        //    length regulation / decoder consume — piper's convention).
-        let mut encoded_ch = vec![0.0f32; hidden * t_in];
-        for ti in 0..t_in {
-            for c in 0..hidden {
-                encoded_ch[c * t_in + ti] = features_row[ti * hidden + c];
-            }
+        // 4) Prosody predictor (upstream path): durations via
+        //    `round(sigmoid.sum · length_scale).clamp(min=1)` + F0/N contours
+        //    at 2·t_frames (`model.py:105-115`). Style: the PROSODY half.
+        let pros = self
+            .prosody
+            .forward_upstream(&d_en_ch, style_prosody, t_in, length_scale)?;
+        let t_frames: usize = pros.durations.iter().sum();
+        if t_frames == 0 {
+            return Err(VokraError::InvalidArgument(
+                "kokoro TTS: prosody predicted zero total frames".to_owned(),
+            ));
         }
 
-        // 5) Prosody predictor → (log_dur, f0, energy) each [T] via the
-        //    backward-compat adapter. The upstream forward
-        //    ([`ProsodyPredictor::forward_upstream`]) is used by the T17 parity
-        //    landing; the adapter is called here so the wiring stays stable
-        //    across the phase-3 → parity boundary. `deterministic = true`: the
-        //    stochastic path is deferred and returns NotImplemented rather
-        //    than being silently skipped.
-        let (log_dur, _f0, _energy) =
-            self.prosody
-                .forward(&encoded_ch, &style, t_in, /*deterministic=*/ true)?;
+        // 5) Length regulation of t_en → asr [hidden, t_frames]
+        //    (`asr = t_en @ pred_aln_trg`, `model.py:116-117`).
+        let (asr, t_frames_actual) = nn::length_regulate(&t_en_ch, hidden, t_in, &pros.durations);
+        debug_assert_eq!(t_frames_actual, t_frames);
 
-        // 6) Length regulation: `w = max(1, ceil(exp(log_dur) · length_scale))`
-        //    (piper convention). Values are clamped to `[1, 1024]` per phoneme
-        //    to keep a degenerate scaffold-time `log_dur` from allocating an
-        //    unbounded frame buffer via a `+inf as usize` saturation.
-        let durations: Vec<usize> = log_dur
-            .iter()
-            .map(|&l| {
-                let v = (l.exp() * length_scale).ceil();
-                if v.is_finite() && v >= 1.0 {
-                    (v as usize).min(1024)
-                } else {
-                    1
-                }
-            })
-            .collect();
-        let (z, t_frames) = nn::length_regulate(&encoded_ch, hidden, t_in, &durations);
-
-        // 7) Decoder → PCM at `config.sample_rate`. [`Decoder::forward`]
-        //    dispatches to stub / real mode internally based on the canary
-        //    tensor seen at load time; real-mode currently feeds zero F0/N
-        //    contours (M2-07-T17 landing wires the real prosody contours via
-        //    [`Decoder::forward_full`]).
-        let pcm = self.decoder.forward(&z, t_frames, &style)?;
+        // 6) Decoder → PCM at `config.sample_rate`, with the REAL F0/N
+        //    contours and the DECODER style half (`model.py:118`). The
+        //    stub-mode branch (voice without decoder tensors — synthetic
+        //    smoke fixtures only) keeps the legacy shape-only reduction.
+        let pcm = if self.decoder.is_real() {
+            self.decoder.forward_full(
+                &asr,
+                &pros.f0,
+                &pros.n,
+                style_decoder,
+                t_frames,
+                decoder::PhaseActivation::Sin,
+            )?
+        } else {
+            self.decoder.forward(&asr, t_frames, style_decoder)?
+        };
 
         Ok(SynthesizedAudio::new(pcm, self.config.sample_rate))
     }
@@ -408,7 +434,9 @@ impl KokoroTts {
     /// 3. Transpose to `[hidden_dim, t]` channel-major (the layout prosody
     ///    consumes).
     /// 4. Call [`ProsodyPredictor::forward_upstream`] with the caller-supplied
-    ///    `style` vector (validated against `config.style_dim`).
+    ///    `style` (`style_dim` for both halves, or `2·style_dim` — the
+    ///    PROSODY half `[style_dim:]` is used, matching upstream
+    ///    `s = ref_s[:, 128:]`, `model.py:104`), `length_scale = 1.0`.
     ///
     /// Returns a tuple `(durations, f0, n, hidden, t_frames)`:
     /// * `durations` — per-phoneme integer duration counts as `Vec<i64>`
@@ -422,7 +450,7 @@ impl KokoroTts {
     ///
     /// # Errors
     ///
-    /// * `style` length mismatch vs `config.style_dim` — a loud
+    /// * `style` length neither `style_dim` nor `2·style_dim` — a loud
     ///   [`VokraError::InvalidArgument`] rather than a silent zero-pad.
     /// * Any component error propagates verbatim (text encoder / bert /
     ///   prosody shape mismatches).
@@ -433,13 +461,16 @@ impl KokoroTts {
         phoneme_ids: &[i64],
         style: &[f32],
     ) -> Result<(Vec<i64>, Vec<f32>, Vec<f32>, Vec<f32>, usize)> {
-        if style.len() != self.config.style_dim {
+        let sd = self.config.style_dim;
+        if style.len() != sd && style.len() != 2 * sd {
             return Err(VokraError::InvalidArgument(format!(
-                "kokoro TTS: prosody parity style len {} != style_dim ({})",
+                "kokoro TTS: prosody parity style len {} — expected style_dim ({sd}) \
+                 or 2·style_dim ({})",
                 style.len(),
-                self.config.style_dim,
+                2 * sd,
             )));
         }
+        let (_style_decoder, style_prosody) = split_ref_s(style, sd);
         let enc_arr = self.text_encoder.forward(phoneme_ids)?;
         let t_in = enc_arr.rows;
         let hidden = enc_arr.cols;
@@ -468,7 +499,9 @@ impl KokoroTts {
                 encoded_ch[c * t_in + ti] = features_row[ti * hidden + c];
             }
         }
-        let out = self.prosody.forward_upstream(&encoded_ch, style, t_in)?;
+        let out = self
+            .prosody
+            .forward_upstream(&encoded_ch, style_prosody, t_in, 1.0)?;
         let t_frames: usize = out.durations.iter().sum();
         let durations_i64: Vec<i64> = out.durations.iter().map(|&d| d as i64).collect();
         Ok((durations_i64, out.f0, out.n, out.hidden, t_frames))
@@ -479,16 +512,21 @@ impl KokoroTts {
     /// for the M2-07-T15 decoder parity harness
     /// (`crates/vokra-models/tests/parity_kokoro.rs::decoder_forward_bit_parity`).
     ///
-    /// Pipeline mirrors [`Self::synthesize_phonemes`] up to the decoder call:
-    /// 1. `text_encoder.forward(phoneme_ids)` → `[t, hidden_dim]` row-major.
-    /// 2. If `bert` present, override with `bert.forward(phoneme_ids)`.
-    /// 3. Transpose to `[hidden_dim, t_in]` channel-major.
-    /// 4. Prosody predictor via `forward_upstream` for the durations (F0/N are
-    ///    NOT fed downstream — mirrors the mainline `Decoder::forward` which
-    ///    feeds zero F0 / N contours).
-    /// 5. Length-regulate the encoder features → `[hidden, t_frames]`.
-    /// 6. Call [`Decoder::forward_full_intermediate`] with zero F0 / N and
-    ///    `PhaseActivation::Sin` (matches the mainline path).
+    /// Pipeline is the FULL upstream `forward_with_tokens` up to the
+    /// pre-iSTFT split (`model.py:86-119`):
+    /// 1. `text_encoder.forward(phoneme_ids)` → `t_en` `[t, hidden_dim]`.
+    /// 2. `bert.forward(phoneme_ids)` → `d_en` (prosody-predictor input;
+    ///    falls back to `t_en` on a slim voice without the PL-BERT branch).
+    /// 3. Prosody `forward_upstream` → durations + REAL F0/N contours.
+    /// 4. Length-regulate **`t_en`** → `asr` `[hidden, t_frames]`
+    ///    (`asr = t_en @ pred_aln_trg`).
+    /// 5. [`Decoder::forward_full_intermediate`] with the real F0/N, the
+    ///    decoder style half, and `PhaseActivation::Sin`.
+    ///
+    /// This IS the `synthesize_phonemes` pipeline with intermediates
+    /// exposed — the parity harness therefore exercises the exact mainline
+    /// math (the pre-fix variant fed zero F0/N + BERT features, testing a
+    /// wiring the mainline no longer has).
     ///
     /// The mag / phase tensors returned are `[n_half · t_gen]` channel-major
     /// (same layout as the reference dumper's
@@ -496,7 +534,7 @@ impl KokoroTts {
     ///
     /// # Errors
     ///
-    /// * `style` length mismatch vs `config.style_dim` — a loud
+    /// * `style` length neither `style_dim` nor `2·style_dim` — a loud
     ///   [`VokraError::InvalidArgument`] rather than a silent zero-pad.
     /// * Stub-mode voice (no decoder tensors) — the intermediate accessor
     ///   requires real-mode weights and fails loudly.
@@ -509,14 +547,17 @@ impl KokoroTts {
         phoneme_ids: &[i64],
         style: &[f32],
     ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>)> {
-        if style.len() != self.config.style_dim {
+        let sd = self.config.style_dim;
+        if style.len() != sd && style.len() != 2 * sd {
             return Err(VokraError::InvalidArgument(format!(
-                "kokoro TTS: decoder parity style len {} != style_dim ({})",
+                "kokoro TTS: decoder parity style len {} — expected style_dim ({sd}) \
+                 or 2·style_dim ({})",
                 style.len(),
-                self.config.style_dim,
+                2 * sd,
             )));
         }
-        // 1. Text encoder → [t_in, hidden] row-major.
+        let (style_decoder, style_prosody) = split_ref_s(style, sd);
+        // 1. Text encoder → t_en [t_in, hidden] row-major.
         let enc_arr = self.text_encoder.forward(phoneme_ids)?;
         let t_in = enc_arr.rows;
         let hidden = enc_arr.cols;
@@ -526,9 +567,16 @@ impl KokoroTts {
                 hidden, self.config.hidden_dim,
             )));
         }
-        // 2. Prefer bert output as encoder features when the branch is present
-        //    (matches `synthesize_phonemes` and the reference dumper).
-        let features_row: Vec<f32> = if let Some(bert) = &self.bert {
+        // Transpose t_en to channel-major [hidden, t_in] — the asr source.
+        let mut t_en_ch = vec![0.0f32; hidden * t_in];
+        for ti in 0..t_in {
+            for c in 0..hidden {
+                t_en_ch[c * t_in + ti] = enc_arr.data[ti * hidden + c];
+            }
+        }
+        // 2. Prosody-predictor input d_en: bert output when the branch is
+        //    present (upstream always), else the t_en fallback (slim voices).
+        let d_en_ch: Vec<f32> = if let Some(bert) = &self.bert {
             let bert_out = bert.forward(phoneme_ids)?;
             let bert_cols = bert_out.len() / t_in;
             if bert_cols != hidden {
@@ -537,41 +585,126 @@ impl KokoroTts {
                     bert_cols, hidden,
                 )));
             }
-            bert_out
-        } else {
-            enc_arr.data.clone()
-        };
-        // 3. Transpose to channel-major [hidden, t_in].
-        let mut encoded_ch = vec![0.0f32; hidden * t_in];
-        for ti in 0..t_in {
-            for c in 0..hidden {
-                encoded_ch[c * t_in + ti] = features_row[ti * hidden + c];
+            let mut ch = vec![0.0f32; hidden * t_in];
+            for ti in 0..t_in {
+                for c in 0..hidden {
+                    ch[c * t_in + ti] = bert_out[ti * hidden + c];
+                }
             }
-        }
-        // 4. Prosody (upstream path) — we only need durations. F0 / N are not
-        //    fed to the decoder in this parity harness (matches the reference
-        //    dumper's ``_forward_decoder``: both feed zero f0 / n contours,
-        //    validating decoder math rather than the yet-unwired F0 handling).
-        let pros = self.prosody.forward_upstream(&encoded_ch, style, t_in)?;
-        // 5. Length-regulate encoder features → [hidden, t_frames].
-        let (z, t_frames) = nn::length_regulate(&encoded_ch, hidden, t_in, &pros.durations);
+            ch
+        } else {
+            t_en_ch.clone()
+        };
+        // 3. Prosody (upstream path): durations + REAL F0/N contours.
+        let pros = self
+            .prosody
+            .forward_upstream(&d_en_ch, style_prosody, t_in, 1.0)?;
+        // 4. Length-regulate t_en → asr [hidden, t_frames].
+        let (asr, t_frames) = nn::length_regulate(&t_en_ch, hidden, t_in, &pros.durations);
         if t_frames == 0 {
             return Err(VokraError::InvalidArgument(
                 "kokoro TTS: decoder parity produced t_frames = 0".to_owned(),
             ));
         }
-        // 6. Zero F0 / N (mirrors mainline `Decoder::forward`).
-        let f0 = vec![0.0f32; t_frames];
-        let n = vec![0.0f32; t_frames];
-        // Dispatch through the intermediate accessor.
+        // 5. Dispatch through the intermediate accessor with the real
+        //    contours and the decoder style half.
         self.decoder.forward_full_intermediate(
-            &z,
-            &f0,
-            &n,
-            style,
+            &asr,
+            &pros.f0,
+            &pros.n,
+            style_decoder,
             t_frames,
             decoder::PhaseActivation::Sin,
         )
+    }
+}
+
+impl KokoroTts {
+    /// Runs the decoder on CALLER-SUPPLIED prosody outputs — the module
+    /// isolation bridge for the decoder parity harness.
+    ///
+    /// [`Self::decoder_forward_for_parity`] runs the full pipeline, so its
+    /// decoder inputs carry the (honest, bounded) prosody deltas — and the
+    /// NSF source path is **discontinuously** sensitive to them: the
+    /// harmonic-source STFT's `angle` feature has an atan2 branch cut, so an
+    /// ε difference in F0 flips near-zero-magnitude bins by 2π (measured on
+    /// the fixture: f0 max |Δ| ≈ 3e-3 → ~1.2k flipped bins → decoder logit
+    /// max |Δ| ≈ 2). Feeding the REFERENCE durations / F0 / N (from the
+    /// upstream-true fixtures) isolates the decoder math itself, which is
+    /// what the `decoder_*` fixtures gate. The composed pipeline is covered
+    /// by the e2e acceptance (round-trip WER / mel-L1), not by pretending
+    /// the branch cut away (FR-EX-08: the exclusion is documented, not
+    /// silent).
+    ///
+    /// `durations` length must equal `phoneme_ids` length; `f0` / `n` length
+    /// must equal `2 · sum(durations)`.
+    #[doc(hidden)]
+    #[allow(clippy::type_complexity)]
+    pub fn decoder_forward_with_reference_contours(
+        &self,
+        phoneme_ids: &[i64],
+        style: &[f32],
+        durations: &[usize],
+        f0: &[f32],
+        n: &[f32],
+    ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>)> {
+        let sd = self.config.style_dim;
+        if style.len() != sd && style.len() != 2 * sd {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro TTS: decoder parity style len {} — expected style_dim ({sd}) \
+                 or 2·style_dim ({})",
+                style.len(),
+                2 * sd,
+            )));
+        }
+        let (style_decoder, _style_prosody) = split_ref_s(style, sd);
+        if durations.len() != phoneme_ids.len() {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro TTS: durations len {} != phoneme_ids len {}",
+                durations.len(),
+                phoneme_ids.len(),
+            )));
+        }
+        let enc_arr = self.text_encoder.forward(phoneme_ids)?;
+        let t_in = enc_arr.rows;
+        let hidden = enc_arr.cols;
+        let mut t_en_ch = vec![0.0f32; hidden * t_in];
+        for ti in 0..t_in {
+            for c in 0..hidden {
+                t_en_ch[c * t_in + ti] = enc_arr.data[ti * hidden + c];
+            }
+        }
+        let (asr, t_frames) = nn::length_regulate(&t_en_ch, hidden, t_in, durations);
+        if t_frames == 0 {
+            return Err(VokraError::InvalidArgument(
+                "kokoro TTS: reference durations sum to 0 frames".to_owned(),
+            ));
+        }
+        self.decoder.forward_full_intermediate(
+            &asr,
+            f0,
+            n,
+            style_decoder,
+            t_frames,
+            decoder::PhaseActivation::Sin,
+        )
+    }
+}
+
+/// Splits a resolved style vector into `(decoder_half, prosody_half)`.
+///
+/// A `2·style_dim` vector is upstream's full `ref_s` voicepack row —
+/// `[:style_dim]` conditions the decoder, `[style_dim:]` the prosody
+/// predictor (`model.py:104` `s = ref_s[:, 128:]` + `:118`
+/// `ref_s[:, :128]`). A plain `style_dim` vector is used for both halves
+/// (equivalent to `ref_s = concat([s, s])` — the parity-fixture
+/// convention). Callers validate the length BEFORE calling; any other
+/// length is a caller bug caught by their loud checks.
+fn split_ref_s(style: &[f32], style_dim: usize) -> (&[f32], &[f32]) {
+    if style.len() == 2 * style_dim {
+        (&style[..style_dim], &style[style_dim..])
+    } else {
+        (style, style)
     }
 }
 

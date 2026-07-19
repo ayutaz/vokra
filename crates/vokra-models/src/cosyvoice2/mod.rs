@@ -217,22 +217,28 @@ impl CosyVoice2Tts {
         }
         check_weight_license(&file, policy)?;
         let config = CosyVoice2Config::from_gguf(&file)?;
-        // Try to bind the LLM backbone off the same GGUF. `from_gguf`
-        // reads the LLM-side `vokra.cosyvoice2.arch.*` keys and refuses
-        // the 0-placeholder shape config with `InvalidArgument`. That
-        // rejection is honest at the LLM level (a synthesized fixture
-        // needs real dims), but at the engine level a scaffold-only
-        // converter GGUF must still load — we surface the LLM handle as
-        // `None` in that case so downstream callers get a loud
-        // [`VokraError::NotImplemented`] from
-        // [`CosyVoice2Tts::synthesize`] rather than an
-        // [`VokraError::InvalidArgument`] on load. Wrong-type keys still
-        // bubble up as `InvalidArgument` (they are structural GGUF
-        // errors, not shape-config zeros).
-        let llm = match llm::LlmBackbone::from_gguf(&file, &config) {
-            Ok(b) => Some(b),
-            Err(VokraError::InvalidArgument(_)) => None,
-            Err(e) => return Err(e),
+        // Bind the LLM backbone off the same GGUF. `from_gguf` binds **real
+        // weights** when the GGUF carries the backbone tensors, else a
+        // synthesized fixture against the metadata shape.
+        //
+        // Exactly one binding failure is tolerated: a GGUF whose LLM dims are
+        // all the converter's 0 sentinel (a pre-hparam-fix conversion). Such a
+        // container must stay loadable so it can be inspected and re-converted,
+        // so the LLM handle is surfaced as `None` and
+        // [`CosyVoice2Tts::synthesize`] names that as the reason.
+        //
+        // The condition is read off the *config*, not off the error variant.
+        // Keying it on `InvalidArgument` (as this did until the 2026-07-19
+        // audit, cc-28) also swallowed genuinely malformed GGUFs — wrong-typed
+        // metadata keys and non-GQA-well-formed dims raise the same variant —
+        // so a broken container reported a successful load and only failed
+        // later, misattributed. Everything except the sentinel now propagates
+        // (FR-EX-08); real tensor-binding problems were and remain `ModelLoad`.
+        let llm_cfg = llm::LlmBackboneConfig::from_gguf(&file, &config)?;
+        let llm = if llm_cfg.is_placeholder_shape() {
+            None
+        } else {
+            Some(llm::LlmBackbone::from_gguf(&file, &config)?)
         };
         Ok(Self {
             config,
@@ -285,11 +291,11 @@ impl CosyVoice2Tts {
 
     /// Access to the LLM backbone (M3-09-T07/T08 body).
     ///
-    /// `None` when the GGUF was the shape-only converter path (0-
-    /// placeholder dims — the synthesized fixture path requires real
-    /// dims). Real dims → `Some(LlmBackbone)` whose `forward` /
-    /// `step` / `greedy_decode` run against a synthesized fixture until
-    /// the T02 tensor manifest lands.
+    /// `None` when the GGUF carries 0-placeholder dims (the pre-hparam-fix
+    /// converter path — re-convert with `--config` to populate them).
+    /// Real dims → `Some(LlmBackbone)`: **real weights** when the GGUF
+    /// carries the backbone tensors (`LlmWeights::from_gguf`), else the
+    /// seed-deterministic synthesized fixture (metadata-only test GGUFs).
     #[must_use]
     pub fn llm(&self) -> Option<&llm::LlmBackbone> {
         self.llm.as_ref()
@@ -368,10 +374,21 @@ impl TtsEngine for CosyVoice2Tts {
     fn synthesize(&self, request: &SynthesisRequest) -> Result<SynthesizedAudio> {
         // Reference the LLM backbone handle so the engine's chain owner
         // is visible in-source (documented dependency, not consumed
-        // today). `None` on the shape-only converter path — the
-        // NotImplemented signal below still fires.
+        // today).
         let _ = self.llm.as_ref().map(|l| l.config());
         let _ = request.text.as_str();
+        if self.llm.is_none() {
+            // Name the actual blocker instead of letting this GGUF fall through
+            // to the generic scaffold message: the container loaded, but it
+            // carries no usable LLM hparams, and re-converting is the fix.
+            return Err(VokraError::NotImplemented(
+                "CosyVoice2 TtsEngine::synthesize: this GGUF carries 0-placeholder \
+                 LLM dims (a pre-hparam-fix conversion), so no backbone is bound. \
+                 Re-convert with `vokra-cli convert --model cosyvoice2 --config \
+                 <upstream config.json>` — note that CosyVoice2-0.5B's top-level \
+                 config.json is a stub; the real one is CosyVoice-BlankEN/config.json",
+            ));
+        }
         Err(VokraError::NotImplemented(
             "CosyVoice2 TtsEngine::synthesize needs T06 tokenizer, T07/T08 LLM \
              backbone, T10/T11 Flow Matching CFM, T13 Mimi decoder and T14/T15 \
@@ -481,6 +498,55 @@ mod tests {
         assert!(tts.watermark().any_enabled());
     }
 
+    /// A 0-placeholder GGUF is the one LLM-binding failure the engine
+    /// deliberately tolerates (the container must stay loadable), and it must
+    /// keep loading — with the LLM handle honestly absent.
+    #[test]
+    fn placeholder_shape_gguf_loads_with_absent_llm() {
+        let bytes = minimal_gguf_bytes(EXPECTED_ARCH);
+        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect("placeholder GGUF must still load");
+        assert!(tts.llm().is_none(), "0-placeholder dims → no LLM backbone");
+    }
+
+    /// Regression for the 2026-07-19 audit (cc-28): the engine used to key its
+    /// tolerance on the *error variant* (`InvalidArgument` → `None`), so a GGUF
+    /// that was genuinely malformed rather than merely old was swallowed just
+    /// the same and reported a successful load. Non-zero but non-GQA dims are
+    /// exactly that case — `n_head = 7` does not divide `hidden_dim = 512` — and
+    /// must now fail loudly (FR-EX-08).
+    #[test]
+    fn malformed_llm_dims_fail_loudly_instead_of_binding_none() {
+        let mut b = GgufBuilder::new();
+        b.add_string(KEY_MODEL_ARCH, EXPECTED_ARCH);
+        b.add_string("vokra.model.name", "cosyvoice2-0.5b");
+        b.add_u32(config::KEY_SAMPLE_RATE, 24_000);
+        // Non-zero (so not the placeholder sentinel) but not GQA-well-formed.
+        b.add_u32(config::KEY_VOCAB_SIZE, 1024);
+        b.add_u32(config::KEY_HIDDEN_DIM, 512);
+        b.add_u32(config::KEY_N_LAYER, 2);
+        b.add_u32(config::KEY_N_HEAD, 7);
+        b.add_u32(config::KEY_FFN_DIM, 1024);
+        b.add_u32(config::KEY_FLOW_NFE, 0);
+        b.add_u32(config::KEY_MIMI_N_CODEBOOKS, 0);
+        b.add_u32(config::KEY_MIMI_CODEBOOK_SIZE, 0);
+        b.add_u32(config::KEY_MIMI_D_MODEL, 0);
+        b.add_u32(config::KEY_STREAMING_CHUNK_SIZE, 0);
+        b.add_u32(config::KEY_STREAMING_CHUNK_HOP, 0);
+        b.add_metadata(
+            config::KEY_FLOW_SCHEDULE,
+            GgufMetadataValue::String("linear".to_owned()),
+        );
+        let bytes = b.to_bytes().expect("gguf serialize");
+
+        let err = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect_err("malformed LLM dims must not load as `llm = None`");
+        assert!(
+            matches!(err, VokraError::InvalidArgument(_)),
+            "unexpected error variant: {err:?}"
+        );
+    }
+
     #[test]
     fn synthesize_is_not_implemented_never_silent() {
         // No silent zero-fill fallback (FR-EX-08).
@@ -490,7 +556,17 @@ mod tests {
         let err = tts
             .synthesize(&SynthesisRequest::new("hello world"))
             .expect_err("scaffold must not produce audio");
-        assert!(matches!(err, VokraError::NotImplemented(_)));
+        let VokraError::NotImplemented(msg) = err else {
+            panic!("unexpected error variant: {err:?}");
+        };
+        // This fixture carries 0-placeholder LLM dims, so the message must name
+        // *that* blocker and its fix, not the generic scaffold text. Asserting
+        // only the variant let the branch added for the 2026-07-19 audit
+        // (cc-28) be deleted with every test still green.
+        assert!(
+            msg.contains("0-placeholder") && msg.contains("--config"),
+            "placeholder GGUF must name its own blocker: {msg}"
+        );
     }
 
     #[test]

@@ -28,7 +28,7 @@ use super::greedy::{DEFAULT_MAX_NEW_TOKENS, greedy_decode};
 use super::tokenizer::WhisperTokenizer;
 use crate::compute::Compute;
 use crate::whisper::WHISPER_HOT_OPS;
-use crate::whisper::beam_glue::{WhisperBeamScorer, WhisperLogitsSource};
+use crate::whisper::beam_glue::{self, WhisperBeamScorer, WhisperLogitsSource};
 use vokra_core::decode::{
     BeamHypothesis, BeamSearchConfig, SamplerConfig, beam_search, sample_sequence,
 };
@@ -166,9 +166,33 @@ impl WhisperAsr {
         // scorer's per-step decoder runs on the CPU backend as before.
         let compute = Compute::for_backend(self.backend_kind, WHISPER_HOT_OPS)?;
         let encoder = self.model.encode_pcm_with(&compute, pcm)?;
-        let mut scorer = WhisperBeamScorer::new(Arc::clone(&self.model), &encoder)?;
         let cfg = self.model.config();
-        beam_search(&mut scorer, &cfg.decoder_start_ids, cfg.eot, config)
+        // The clip's TRUE (unpadded) audio-position count for the word-
+        // timestamp alignment (openai timing.py:208 `weights[:, :, :
+        // num_frames // 2]`); the mel front-end zero-pads to the 30 s window
+        // and the alignment must not span the padding (campaign-2 P2).
+        let n_valid_audio = beam_glue::valid_audio_positions(pcm.len());
+        // Attach the detokenizer when present so `word_timestamps` alignment
+        // merges subword timings into per-word timings (M4-20); without a
+        // tokenizer the alignment stays per-token. The two scorer types differ
+        // only in the borrowed-tokenizer lifetime, so drive `beam_search` in
+        // each arm rather than unifying to a trait object.
+        match &self.tokenizer {
+            Some(tok) => {
+                let mut scorer = WhisperBeamScorer::with_tokenizer(
+                    Arc::clone(&self.model),
+                    &encoder,
+                    tok,
+                    n_valid_audio,
+                )?;
+                beam_search(&mut scorer, &cfg.decoder_start_ids, cfg.eot, config)
+            }
+            None => {
+                let mut scorer =
+                    WhisperBeamScorer::new(Arc::clone(&self.model), &encoder, n_valid_audio)?;
+                beam_search(&mut scorer, &cfg.decoder_start_ids, cfg.eot, config)
+            }
+        }
     }
 
     /// Transcribes `pcm` with stochastic sampling (temperature / top-k / top-p /
@@ -280,7 +304,7 @@ mod tests {
     fn transcribe_tokens_beam_nbest_returns_multiple_hypotheses() {
         let model = tiny_model(2);
         let enc = tiny_encoder(model.config().d_model, 4);
-        let mut scorer = WhisperBeamScorer::new(Arc::clone(&model), &enc).unwrap();
+        let mut scorer = WhisperBeamScorer::new(Arc::clone(&model), &enc, enc.n_ctx).unwrap();
         let start = model.config().decoder_start_ids.clone();
         let eot = model.config().eot;
 
@@ -322,8 +346,8 @@ mod tests {
     fn transcribe_tokens_beam_top1_matches_nbest_head() {
         let model = tiny_model(2);
         let enc = tiny_encoder(model.config().d_model, 4);
-        let mut scorer1 = WhisperBeamScorer::new(Arc::clone(&model), &enc).unwrap();
-        let mut scorer2 = WhisperBeamScorer::new(Arc::clone(&model), &enc).unwrap();
+        let mut scorer1 = WhisperBeamScorer::new(Arc::clone(&model), &enc, enc.n_ctx).unwrap();
+        let mut scorer2 = WhisperBeamScorer::new(Arc::clone(&model), &enc, enc.n_ctx).unwrap();
         let start = model.config().decoder_start_ids.clone();
         let eot = model.config().eot;
 

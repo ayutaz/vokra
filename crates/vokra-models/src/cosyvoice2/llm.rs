@@ -17,8 +17,9 @@
 //!   Every field is **read from the GGUF** — nothing is hard-coded (CLAUDE.md
 //!   "ハルシネーション厳禁": tensor names and hparams live in the metadata,
 //!   never in Rust literals).
-//! - [`LlmWeights`] — Mistral-style transformer weight store:
-//!   token embedding + per-block (RMSNorm γ ×2, GQA Q/K/V/O, SwiGLU
+//! - [`LlmWeights`] — Mistral/Qwen2-style transformer weight store:
+//!   token embedding + per-block (RMSNorm γ ×2, GQA Q/K/V/O with
+//!   **optional Q/K/V biases** — the Qwen2 family ships them, SwiGLU
 //!   gate/up/down) + final RMSNorm γ, plus a synthesized-fixture builder
 //!   ([`LlmWeights::synthesized`]) driven by [`vokra_core::rng::SplitMix64`]
 //!   with Xavier-like initialisation so shape + numerical stability can be
@@ -46,21 +47,23 @@
 //!   the Mistral GQA/RoPE/SwiGLU/RMSNorm primitives serve both models. A
 //!   future GQA bug fix lands once.
 //!
-//! # Real-checkpoint parity contract (T02 owner runs)
+//! # Real-checkpoint parity contract (closed 2026-07-16)
 //!
-//! - The upstream `iic/CosyVoice2-0.5B` HuggingFace release ships a
-//!   Qwen2-0.5B backbone; the T02 owner ticket records
-//!   `tensor_name → shape/dtype` in `docs/adr/M3-09-cosyvoice2.md` §T02
-//!   and feeds `vokra-convert::models::cosyvoice2` (T03).
-//! - Once the GGUF fixture arrives, [`LlmBackbone::from_gguf_with_weights`]
-//!   swaps the synthesized store for a real `LlmWeights::from_gguf` binding
-//!   (that method is a `NotImplemented` stub today so the owner-side path
-//!   fails loudly — never a silent zero-fill).
+//! - The upstream `iic/CosyVoice2-0.5B` release ships a Qwen2-0.5B
+//!   backbone **with Q/K/V attention biases**; the tensor-name manifest
+//!   was recorded by the real-weight eval
+//!   (`docs/bench-baselines/m1-real-weight-eval-2026-07-16/report.md`
+//!   §4 / §6-2) and feeds `vokra-convert::models::cosyvoice2` (T03/T04).
+//! - [`LlmWeights::from_gguf`] binds every backbone tensor verbatim
+//!   (missing / mis-shaped tensors fail loudly with the offending name —
+//!   never a silent zero-fill), and [`LlmBackbone::from_gguf`] routes a
+//!   tensor-carrying GGUF to that real binding automatically.
 //! - The parity harness lives beside [`crate::cosyvoice2::llm::parity`] —
-//!   `forward_matches_step_by_step` is a deterministic property test that
-//!   runs today; `parity_vs_hf_reference` is the flip-the-switch owner
-//!   test that returns [`VokraError::NotImplemented`] until the fixture
-//!   arrives.
+//!   `forward_matches_step_by_step` is a deterministic property test;
+//!   `assert_vs_hf_reference` compares a real-weight forward against the
+//!   `transformers` eager reference dump and returns the measured
+//!   [`parity::HfParityReport`] (max/mean |Δ| + argmax agreement). The
+//!   env-gated runner is `tests/parity_cosyvoice2.rs`.
 //!
 //! # No silent fallback (FR-EX-08)
 //!
@@ -92,8 +95,10 @@ const LLM_HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::Gemv, HotOp::Softmax];
 //
 // The five keys in [`CosyVoice2Config`] (vocab_size / hidden_dim / n_layer /
 // n_head / ffn_dim) are already read; here we add the LLM-specific keys the
-// backbone needs on top. All are optional today (converter shape-only path,
-// T02 upstream inspection still open) — a `0` / sentinel means "not yet
+// backbone needs on top. The converter writes them when the upstream HF
+// `config.json` is passed (`vokra-convert --model cosyvoice2 --config …`) —
+// the head split / RoPE θ / ε / n_ctx are not derivable from tensor shapes.
+// All remain optional at read time — a `0` / absent sentinel means "not
 // populated". The forward path enforces `!= 0` at first use so a `0`-
 // placeholder GGUF fails loudly at the earliest wrong shape rather than
 // silently deep inside a GEMM.
@@ -116,11 +121,11 @@ pub const DEFAULT_ROPE_BASE_QWEN2: f32 = 1_000_000.0;
 pub const DEFAULT_RMS_NORM_EPS: f32 = 1e-5;
 
 /// Seed for the synthesized weight fixture built by
-/// [`LlmBackbone::from_gguf`] on the shape-only converter path (T02
-/// tensor-store binding is still open). Arbitrary but stable so callers
-/// can reproduce byte-for-byte; the constant reads as ASCII
-/// `"cosyv0.9\0"` mixed with `0xC0DE_C0DE` to make it distinct from the
-/// Voxtral / Kokoro fixtures.
+/// [`LlmBackbone::from_gguf`] on the **metadata-only** GGUF path (test
+/// fixtures without weight tensors; a tensor-carrying GGUF binds real
+/// weights instead). Arbitrary but stable so callers can reproduce
+/// byte-for-byte; the constant reads as ASCII `"cosyv0.9\0"` mixed with
+/// `0xC0DE_C0DE` to make it distinct from the Voxtral / Kokoro fixtures.
 pub const FROM_GGUF_DEFAULT_SEED: u64 = 0xC0DE_C0DE_C0DE_C0DE;
 
 /// LLM-side hparam snapshot resolved from the CosyVoice2 GGUF metadata.
@@ -249,9 +254,27 @@ impl LlmBackboneConfig {
             && self.n_head_q % self.n_head_kv == 0
             && self.hidden_dim % self.n_head_q == 0
     }
+
+    /// True when every LLM dimension is the converter's 0 sentinel, i.e. the
+    /// GGUF was produced before the hparams were derived (`--config` absent).
+    ///
+    /// This is deliberately narrower than "cannot host a backbone": a config
+    /// with *some* non-zero dims that still fails [`Self::is_gqa_well_formed`]
+    /// is **malformed**, not merely old, and callers must not treat the two
+    /// alike. [`super::CosyVoice2Tts::from_gguf_with_policy`] tolerates only
+    /// the sentinel (FR-EX-08).
+    #[must_use]
+    pub fn is_placeholder_shape(&self) -> bool {
+        self.n_head_q == 0
+            && self.n_head_kv == 0
+            && self.hidden_dim == 0
+            && self.vocab_size == 0
+            && self.n_layer == 0
+            && self.ffn_dim == 0
+    }
 }
 
-/// Per-block Mistral-style weight bundle.
+/// Per-block Mistral/Qwen2-style weight bundle.
 ///
 /// - `attn_norm_gamma` / `ffn_norm_gamma` — RMSNorm scales (`[hidden_dim]`,
 ///   no bias — RMSNorm is scale-only).
@@ -261,12 +284,18 @@ impl LlmBackboneConfig {
 ///   are `[out, in]` and get transposed once at load time (T07).
 ///   Shapes: `q_w_t = [d, d]`, `k_w_t = v_w_t = [d, kv_hidden]`,
 ///   `o_w_t = [d, d]`.
+/// - `q_b` / `k_b` / `v_b` — **optional** Q/K/V projection biases. Mistral
+///   ships bias-less attention projections (`None`), but the **Qwen2
+///   family — including the deployed CosyVoice2-0.5B backbone — ships
+///   Q/K/V biases** and they are numerically load-bearing (measured
+///   layer-0 max |bias|: q = 51.13, k = 62.49 on the real
+///   `FunAudioLLM/CosyVoice2-0.5B` `llm.pt`; dropping them moves the
+///   full-depth logits by max |Δ| ≈ 12.92 and flips every argmax — see
+///   `docs/bench-baselines/m1-real-weight-eval-2026-07-16/report.md` §8
+///   row 4). O / gate / up / down remain bias-less in both families.
 /// - `ffn_gate_w_t` / `ffn_up_w_t` — SwiGLU projections
 ///   (`[d, ffn_dim]` each), `ffn_down_w_t` — down projection
 ///   (`[ffn_dim, d]`).
-///
-/// The transformer projections are **bias-less** (Mistral / Qwen2
-/// convention).
 #[derive(Debug, Clone)]
 pub struct LlmBlockWeights {
     /// Pre-attention RMSNorm γ (`[hidden_dim]`, no bias — RMSNorm is
@@ -275,13 +304,22 @@ pub struct LlmBlockWeights {
     /// Q projection weight, row-major `[hidden_dim, hidden_dim]` already
     /// transposed for `Compute::gemm_f32`.
     pub q_w_t: Vec<f32>,
+    /// Q projection bias (`[hidden_dim]`), `None` for bias-less
+    /// (Mistral-style) checkpoints.
+    pub q_b: Option<Vec<f32>>,
     /// K projection weight, row-major `[hidden_dim, kv_hidden_dim]`
     /// already transposed for row-major GEMM. `kv_hidden_dim = n_head_kv
     /// * head_dim`.
     pub k_w_t: Vec<f32>,
+    /// K projection bias (`[kv_hidden_dim]`), `None` for bias-less
+    /// checkpoints.
+    pub k_b: Option<Vec<f32>>,
     /// V projection weight, row-major `[hidden_dim, kv_hidden_dim]`
     /// already transposed.
     pub v_w_t: Vec<f32>,
+    /// V projection bias (`[kv_hidden_dim]`), `None` for bias-less
+    /// checkpoints.
+    pub v_b: Option<Vec<f32>>,
     /// O (output) projection weight, row-major `[hidden_dim, hidden_dim]`
     /// already transposed.
     pub o_w_t: Vec<f32>,
@@ -327,7 +365,11 @@ impl LlmWeights {
     /// The weights are drawn from [`SplitMix64`] mapped to a
     /// **uniform in `(-bound, +bound)`** where
     /// `bound = sqrt(6 / (fan_in + fan_out))` — the standard Xavier / Glorot
-    /// bound for `nn.Linear` in PyTorch. RMSNorm γ vectors are initialised
+    /// bound for `nn.Linear` in PyTorch. Q/K/V projection **biases** are
+    /// populated too (Qwen2-style, so the bias forward path is exercised by
+    /// every synthesized fixture) with a uniform draw in
+    /// `(-1/sqrt(fan_in), +1/sqrt(fan_in))` — the PyTorch `nn.Linear` bias
+    /// bound. RMSNorm γ vectors are initialised
     /// to `1.0` (the PyTorch default) so a fresh Mistral block is close to
     /// an identity residual on the first step, ensuring `NaN`-free
     /// end-to-end runs on any config that satisfies the GQA constraint.
@@ -373,10 +415,14 @@ impl LlmWeights {
         for _ in 0..config.n_layer {
             let attn_norm_gamma = vec![1.0f32; d];
             let ffn_norm_gamma = vec![1.0f32; d];
-            // Attention projections.
+            // Attention projections. Each bias is drawn right after its
+            // weight so the RNG stream reads in declaration order.
             let q_w_t = xavier_uniform(&mut rng, d * d, d, d);
+            let q_b = Some(bias_uniform(&mut rng, d, d));
             let k_w_t = xavier_uniform(&mut rng, d * kv_hidden, d, kv_hidden);
+            let k_b = Some(bias_uniform(&mut rng, kv_hidden, d));
             let v_w_t = xavier_uniform(&mut rng, d * kv_hidden, d, kv_hidden);
+            let v_b = Some(bias_uniform(&mut rng, kv_hidden, d));
             let o_w_t = xavier_uniform(&mut rng, d * d, d, d);
             // SwiGLU FFN.
             let ffn_gate_w_t = xavier_uniform(&mut rng, d * ffn, d, ffn);
@@ -385,8 +431,11 @@ impl LlmWeights {
             blocks.push(LlmBlockWeights {
                 attn_norm_gamma,
                 q_w_t,
+                q_b,
                 k_w_t,
+                k_b,
                 v_w_t,
+                v_b,
                 o_w_t,
                 ffn_norm_gamma,
                 ffn_gate_w_t,
@@ -403,32 +452,268 @@ impl LlmWeights {
         })
     }
 
-    /// Loads real weights from the CosyVoice2 GGUF via T07 tensor-store
-    /// binding.
+    /// True when `file` carries the CosyVoice2 LLM backbone tensor set
+    /// (detected by the token-embedding tensor,
+    /// [`T_TOKEN_EMB`]). A metadata-only GGUF (synthetic
+    /// test fixture / scaffold converter output without weights) returns
+    /// `false`.
+    #[must_use]
+    pub fn has_backbone_tensors(file: &GgufFile) -> bool {
+        file.tensor_info(T_TOKEN_EMB).is_some()
+    }
+
+    /// Loads **real** weights from a CosyVoice2 GGUF (T07 tensor-store
+    /// binding, closed by the 2026-07-16 real-weight eval).
     ///
-    /// **Not implemented today** — the T02 upstream inspection is still
-    /// open, so the tensor-name manifest does not exist. The runtime does
-    /// not fabricate names (CLAUDE.md hallucination ban). When the T02
-    /// owner ticket delivers `docs/adr/M3-09-cosyvoice2.md` §T02 with the
-    /// `tensor_name → shape/dtype` table, this method binds every tensor
-    /// verbatim through [`GgufFile::tensor_f32`] and returns
-    /// `is_synthesized = false`.
+    /// # Tensor-name contract
+    ///
+    /// The GGUF carries the upstream `FunAudioLLM/CosyVoice2-0.5B`
+    /// `llm.pt` tensor names **verbatim** (the converter copies them
+    /// unchanged — `crates/vokra-convert/src/models/cosyvoice2.rs`). The
+    /// name manifest was recorded by the real-weight eval
+    /// (`docs/bench-baselines/m1-real-weight-eval-2026-07-16/report.md`
+    /// §4 / §6-2; raw TSV `llm-pt-manifest.tsv` in the eval out dir) —
+    /// nothing here is invented (CLAUDE.md hallucination ban):
+    ///
+    /// - `llm.model.model.embed_tokens.weight` — `[vocab, d]`, also the
+    ///   tied LM head.
+    /// - `llm.model.model.layers.{i}.input_layernorm.weight` — `[d]`.
+    /// - `llm.model.model.layers.{i}.self_attn.{q,k,v}_proj.weight` —
+    ///   `[out, d]` with `out = d` for Q and `out = kv_hidden` for K/V,
+    ///   **plus `.bias` tensors** (`[out]`) — the Qwen2 family ships
+    ///   Q/K/V biases and they are load-bearing (max |Δ| 12.92 / argmax
+    ///   0-of-10 when dropped, eval §8 row 4).
+    /// - `llm.model.model.layers.{i}.self_attn.o_proj.weight` — `[d, d]`,
+    ///   bias-less.
+    /// - `llm.model.model.layers.{i}.post_attention_layernorm.weight` —
+    ///   `[d]`.
+    /// - `llm.model.model.layers.{i}.mlp.{gate,up,down}_proj.weight` —
+    ///   SwiGLU projections, bias-less.
+    /// - `llm.model.model.norm.weight` — `[d]` final RMSNorm.
+    /// - `llm.model.lm_head.weight` — optional; when present it must be
+    ///   **byte-identical** to the token embedding (the deployed
+    ///   CosyVoice2-0.5B ships it tied — eval measured max |Δ| = 0.0).
+    ///   The runtime models a tied head, so an *untied* head is a loud
+    ///   [`VokraError::ModelLoad`], never a silently-wrong forward.
+    ///
+    /// # Bias policy (FR-EX-08)
+    ///
+    /// Q/K/V biases are bound when present. Presence must be consistent
+    /// (all three per layer, and uniformly across layers) — a partial
+    /// bias set means a malformed conversion and fails loudly. An
+    /// unexpected bias tensor on a projection the runtime treats as
+    /// bias-less (`o_proj` / `gate` / `up` / `down`) is also a loud error:
+    /// ignoring a real tensor would silently change the forward.
     ///
     /// # Errors
     ///
-    /// [`VokraError::NotImplemented`] — the honest signal until T02 lands.
-    /// After T02 lands, propagates any tensor-missing / mis-shaped error
-    /// verbatim with the offending name.
-    pub fn from_gguf(_file: &GgufFile, _config: &LlmBackboneConfig) -> Result<Self> {
-        Err(VokraError::NotImplemented(
-            "CosyVoice2 LLM real-weight binding is deferred to T02 upstream \
-             inspection + T07 tensor-store scan; today the runtime refuses to \
-             invent tensor names (FR-EX-08 — never a silent zero-fill fallback). \
-             Use LlmWeights::synthesized(config, seed) for the numerical \
-             stability / shape verification path against the deterministic \
-             fixture.",
-        ))
+    /// [`VokraError::ModelLoad`] naming the offending tensor on any
+    /// missing / mis-shaped / unsupported tensor.
+    pub fn from_gguf(file: &GgufFile, config: &LlmBackboneConfig) -> Result<Self> {
+        if !config.is_gqa_well_formed()
+            || config.vocab_size == 0
+            || config.n_layer == 0
+            || config.ffn_dim == 0
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "cosyvoice2 LLM from_gguf: hparams are not a loadable shape \
+                 (vocab={}, hidden={}, n_layer={}, n_head_q={}, n_head_kv={}, ffn={}) — \
+                 re-convert the checkpoint with real hparams (`vokra-convert --model \
+                 cosyvoice2 --config <upstream config.json>`)",
+                config.vocab_size,
+                config.hidden_dim,
+                config.n_layer,
+                config.n_head_q,
+                config.n_head_kv,
+                config.ffn_dim,
+            )));
+        }
+        let d = config.hidden_dim;
+        let kv_hidden = config.kv_hidden_dim();
+        let ffn = config.ffn_dim;
+        let vocab = config.vocab_size;
+
+        let token_emb = bound_tensor(file, T_TOKEN_EMB, &[vocab, d])?;
+
+        let mut blocks = Vec::with_capacity(config.n_layer);
+        // Bias presence must be uniform across layers; remember layer 0's.
+        let mut bias_expected: Option<bool> = None;
+        for i in 0..config.n_layer {
+            let p = layer_prefix(i);
+            let attn_norm_gamma = bound_tensor(file, &format!("{p}input_layernorm.weight"), &[d])?;
+            let q_w_t = bound_linear_t(file, &format!("{p}self_attn.q_proj.weight"), d, d)?;
+            let k_w_t = bound_linear_t(file, &format!("{p}self_attn.k_proj.weight"), d, kv_hidden)?;
+            let v_w_t = bound_linear_t(file, &format!("{p}self_attn.v_proj.weight"), d, kv_hidden)?;
+            let q_b = optional_bias(file, &format!("{p}self_attn.q_proj.bias"), d)?;
+            let k_b = optional_bias(file, &format!("{p}self_attn.k_proj.bias"), kv_hidden)?;
+            let v_b = optional_bias(file, &format!("{p}self_attn.v_proj.bias"), kv_hidden)?;
+            let present = [q_b.is_some(), k_b.is_some(), v_b.is_some()];
+            let n_present = present.iter().filter(|&&x| x).count();
+            if n_present != 0 && n_present != 3 {
+                return Err(VokraError::ModelLoad(format!(
+                    "cosyvoice2 LLM from_gguf: layer {i} has a partial Q/K/V bias set \
+                     (q={}, k={}, v={}) — all three or none (FR-EX-08, a partial set \
+                     means a malformed conversion)",
+                    present[0], present[1], present[2],
+                )));
+            }
+            let has_bias = n_present == 3;
+            match bias_expected {
+                None => bias_expected = Some(has_bias),
+                Some(expected) if expected != has_bias => {
+                    return Err(VokraError::ModelLoad(format!(
+                        "cosyvoice2 LLM from_gguf: layer {i} bias presence ({has_bias}) \
+                         differs from layer 0 ({expected}) — mixed-bias checkpoints are \
+                         a malformed conversion (FR-EX-08)",
+                    )));
+                }
+                Some(_) => {}
+            }
+            // Projections the runtime treats as bias-less: an unexpected
+            // bias tensor would be silently dropped — refuse instead.
+            for biasless in [
+                format!("{p}self_attn.o_proj.bias"),
+                format!("{p}mlp.gate_proj.bias"),
+                format!("{p}mlp.up_proj.bias"),
+                format!("{p}mlp.down_proj.bias"),
+            ] {
+                if file.tensor_info(&biasless).is_some() {
+                    return Err(VokraError::ModelLoad(format!(
+                        "cosyvoice2 LLM from_gguf: `{biasless}` present but the runtime \
+                         models that projection as bias-less — refusing to silently \
+                         drop a real tensor (FR-EX-08)",
+                    )));
+                }
+            }
+            let o_w_t = bound_linear_t(file, &format!("{p}self_attn.o_proj.weight"), d, d)?;
+            let ffn_norm_gamma =
+                bound_tensor(file, &format!("{p}post_attention_layernorm.weight"), &[d])?;
+            let ffn_gate_w_t = bound_linear_t(file, &format!("{p}mlp.gate_proj.weight"), d, ffn)?;
+            let ffn_up_w_t = bound_linear_t(file, &format!("{p}mlp.up_proj.weight"), d, ffn)?;
+            let ffn_down_w_t = bound_linear_t(file, &format!("{p}mlp.down_proj.weight"), ffn, d)?;
+            blocks.push(LlmBlockWeights {
+                attn_norm_gamma,
+                q_w_t,
+                q_b,
+                k_w_t,
+                k_b,
+                v_w_t,
+                v_b,
+                o_w_t,
+                ffn_norm_gamma,
+                ffn_gate_w_t,
+                ffn_up_w_t,
+                ffn_down_w_t,
+            });
+        }
+        // The layer walk above binds exactly `n_layer` blocks; a checkpoint
+        // carrying more layers than the hparams claim would silently
+        // truncate the model — refuse.
+        let one_past = format!("{}input_layernorm.weight", layer_prefix(config.n_layer));
+        if file.tensor_info(&one_past).is_some() {
+            return Err(VokraError::ModelLoad(format!(
+                "cosyvoice2 LLM from_gguf: `{one_past}` exists but hparams say \
+                 n_layer = {} — the GGUF carries more layers than the metadata \
+                 claims (FR-EX-08, no silent truncation)",
+                config.n_layer,
+            )));
+        }
+        let final_norm_gamma = bound_tensor(file, T_FINAL_NORM, &[d])?;
+
+        // Tied-head guarantee: the runtime computes `logits = h @ emb^T`.
+        // When the checkpoint ships an explicit `lm_head`, it must be
+        // byte-identical to the embedding (the deployed CosyVoice2-0.5B
+        // is — eval measured max |Δ| = 0.0); anything else would make the
+        // tied-head forward silently wrong.
+        if let Some(head_info) = file.tensor_info(T_LM_HEAD) {
+            let emb_info = file
+                .tensor_info(T_TOKEN_EMB)
+                .expect("embed bound above, so the descriptor exists");
+            let same_meta =
+                head_info.dtype == emb_info.dtype && head_info.dimensions == emb_info.dimensions;
+            if !same_meta || file.tensor_bytes(head_info) != file.tensor_bytes(emb_info) {
+                return Err(VokraError::ModelLoad(format!(
+                    "cosyvoice2 LLM from_gguf: `{T_LM_HEAD}` is present but not \
+                     byte-identical to `{T_TOKEN_EMB}` — the runtime models a tied \
+                     LM head and refuses to run a silently-wrong untied forward \
+                     (FR-EX-08)",
+                )));
+            }
+        }
+
+        Ok(Self {
+            token_emb,
+            blocks,
+            final_norm_gamma,
+            is_synthesized: false,
+        })
     }
+}
+
+// --- Real-checkpoint tensor names (eval-recorded, never invented) -----------
+//
+// Source of truth: `docs/bench-baselines/m1-real-weight-eval-2026-07-16/`
+// (report §4 / §6-2 + `llm-pt-manifest.tsv`) — the deployed
+// `FunAudioLLM/CosyVoice2-0.5B` `llm.pt` state-dict names, copied verbatim
+// into the GGUF by `vokra-convert --model cosyvoice2`.
+
+/// Token embedding / tied LM head — `[vocab, d]`.
+pub const T_TOKEN_EMB: &str = "llm.model.model.embed_tokens.weight";
+/// Final RMSNorm γ — `[d]`.
+pub const T_FINAL_NORM: &str = "llm.model.model.norm.weight";
+/// Optional explicit LM head — must be byte-identical to [`T_TOKEN_EMB`].
+pub const T_LM_HEAD: &str = "llm.model.lm_head.weight";
+
+/// Per-layer tensor-name prefix (`llm.model.model.layers.{i}.`).
+fn layer_prefix(i: usize) -> String {
+    format!("llm.model.model.layers.{i}.")
+}
+
+/// Binds a tensor by exact name + shape; any mismatch names the tensor.
+fn bound_tensor(file: &GgufFile, name: &str, want: &[usize]) -> Result<Vec<f32>> {
+    let info = file.tensor_info(name).ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "cosyvoice2 LLM from_gguf: `{name}` missing from GGUF"
+        ))
+    })?;
+    let got: Vec<usize> = info.dimensions.iter().map(|&x| x as usize).collect();
+    if got != want {
+        return Err(VokraError::ModelLoad(format!(
+            "cosyvoice2 LLM from_gguf: `{name}` shape {got:?} != expected {want:?}"
+        )));
+    }
+    file.tensor_f32(name)
+        .map_err(|e| VokraError::ModelLoad(format!("cosyvoice2 LLM from_gguf: `{name}`: {e}")))
+}
+
+/// Binds a `[out, in]` projection weight (safetensors convention) and
+/// transposes it once into the row-major `[in, out]` layout the forward's
+/// `Compute::gemm_f32` consumes (same pattern as
+/// `voxtral::text_decoder::linear`).
+fn bound_linear_t(
+    file: &GgufFile,
+    name: &str,
+    in_features: usize,
+    out_features: usize,
+) -> Result<Vec<f32>> {
+    let w = bound_tensor(file, name, &[out_features, in_features])?;
+    let mut w_t = vec![0.0f32; in_features * out_features];
+    for o in 0..out_features {
+        let row = &w[o * in_features..(o + 1) * in_features];
+        for (i, &v) in row.iter().enumerate() {
+            w_t[i * out_features + o] = v;
+        }
+    }
+    Ok(w_t)
+}
+
+/// Binds an optional `[len]` bias tensor: absent → `Ok(None)`; present with
+/// the wrong shape → loud error (never silently skipped).
+fn optional_bias(file: &GgufFile, name: &str, len: usize) -> Result<Option<Vec<f32>>> {
+    if file.tensor_info(name).is_none() {
+        return Ok(None);
+    }
+    Ok(Some(bound_tensor(file, name, &[len])?))
 }
 
 /// Draws `n` f32 values uniformly in `(-bound, +bound)` where
@@ -438,6 +723,20 @@ fn xavier_uniform(rng: &mut SplitMix64, n: usize, fan_in: usize, fan_out: usize)
     let mut v = Vec::with_capacity(n);
     for _ in 0..n {
         // next_unit_f32() ∈ (0, 1); map to (-bound, +bound).
+        let u = rng.next_unit_f32();
+        v.push((u * 2.0 - 1.0) * bound);
+    }
+    v
+}
+
+/// Draws `n` f32 bias values uniformly in `(-bound, +bound)` where
+/// `bound = 1 / sqrt(fan_in)` — the PyTorch `nn.Linear` bias bound. Like
+/// [`xavier_uniform`] this is a stability fixture, not a bit-for-bit
+/// PyTorch reproduction.
+fn bias_uniform(rng: &mut SplitMix64, n: usize, fan_in: usize) -> Vec<f32> {
+    let bound = 1.0f32 / (fan_in as f32).sqrt();
+    let mut v = Vec::with_capacity(n);
+    for _ in 0..n {
         let u = rng.next_unit_f32();
         v.push((u * 2.0 - 1.0) * bound);
     }
@@ -526,32 +825,59 @@ impl LlmBackbone {
         Self::new(config, weights)
     }
 
-    /// Loads the LLM backbone from a CosyVoice2 GGUF file with **synthesized**
-    /// weights — the honest bridge for the shape-only converter path today.
+    /// Loads the LLM backbone from a CosyVoice2 GGUF file.
     ///
-    /// Reads the shape config verbatim from the GGUF metadata, then builds
-    /// synthesized weights against that shape. This lets the caller
-    /// (`CosyVoice2Tts::from_gguf_with_policy`) hold a config-only handle
-    /// today; once T02/T07 land the real tensor-store binding path,
-    /// [`Self::from_gguf_with_weights`] swaps the synthesized store for the
-    /// real one.
+    /// Reads the shape config verbatim from the GGUF metadata, then:
+    ///
+    /// - **Backbone tensors present** ([`LlmWeights::has_backbone_tensors`],
+    ///   i.e. a real converter output) → binds the **real weights** via
+    ///   [`LlmWeights::from_gguf`]; any tensor problem is a loud
+    ///   [`VokraError::ModelLoad`] — never a fall-back to the synthesized
+    ///   fixture (FR-EX-08).
+    /// - **Metadata-only GGUF** (synthetic test fixtures) → builds the
+    ///   seed-deterministic **synthesized** store against the metadata
+    ///   shape, the numerical-stability bridge the T09 harness uses.
     ///
     /// # Errors
     ///
     /// - [`VokraError::InvalidArgument`] on any GGUF metadata key with a
     ///   wrong type.
     /// - [`VokraError::InvalidArgument`] if the config carries a
-    ///   0-placeholder sentinel (converter shape-only path — no synthesized
-    ///   fixture is meaningful at zero dims).
+    ///   0-placeholder sentinel — for a tensor-carrying GGUF that means a
+    ///   pre-hparam-fix conversion (re-convert with `--config`); for a
+    ///   metadata-only GGUF no synthesized fixture is meaningful at zero
+    ///   dims. (`CosyVoice2Tts::from_gguf_with_policy` maps this variant
+    ///   to a `None` LLM handle so scaffold GGUFs still load.)
+    /// - [`VokraError::ModelLoad`] from the real tensor binding.
     pub fn from_gguf(file: &GgufFile, cfg: &CosyVoice2Config) -> Result<Self> {
         let llm_cfg = LlmBackboneConfig::from_gguf(file, cfg)?;
-        // Reject the 0-placeholder path — a converter without dims cannot
-        // host a fixture (FR-EX-08, no silent zero-fill fallback).
-        if !llm_cfg.is_gqa_well_formed()
+        let zero_shape = !llm_cfg.is_gqa_well_formed()
             || llm_cfg.vocab_size == 0
             || llm_cfg.n_layer == 0
-            || llm_cfg.ffn_dim == 0
-        {
+            || llm_cfg.ffn_dim == 0;
+        if LlmWeights::has_backbone_tensors(file) {
+            if zero_shape {
+                return Err(VokraError::InvalidArgument(format!(
+                    "cosyvoice2 LLM backbone: GGUF carries the backbone tensors but a \
+                     0-placeholder shape config (vocab={}, n_layer={}, n_head_q={}, \
+                     n_head_kv={}, hidden={}, ffn={}) — this is a pre-hparam-fix \
+                     conversion. Re-convert with `vokra-convert --model cosyvoice2 \
+                     --config <upstream config.json>` so the real hparams are \
+                     derived and written.",
+                    llm_cfg.vocab_size,
+                    llm_cfg.n_layer,
+                    llm_cfg.n_head_q,
+                    llm_cfg.n_head_kv,
+                    llm_cfg.hidden_dim,
+                    llm_cfg.ffn_dim,
+                )));
+            }
+            let weights = LlmWeights::from_gguf(file, &llm_cfg)?;
+            return Self::new(llm_cfg, weights);
+        }
+        // Reject the 0-placeholder path — a converter without dims cannot
+        // host a fixture (FR-EX-08, no silent zero-fill fallback).
+        if zero_shape {
             return Err(VokraError::InvalidArgument(format!(
                 "cosyvoice2 LLM backbone: GGUF carries a 0-placeholder shape config \
                  (vocab={}, n_layer={}, n_head_q={}, n_head_kv={}, hidden={}, ffn={}) — \
@@ -566,19 +892,17 @@ impl LlmBackbone {
                 llm_cfg.ffn_dim,
             )));
         }
-        // Default seed for the from-GGUF path: arbitrary but stable
+        // Default seed for the metadata-only path: arbitrary but stable
         // 64-bit constant, documented so callers can reproduce the
-        // synthesized fixture bit-for-bit. Once T02/T07 land, this path
-        // swaps for the real weight binding via
-        // [`Self::from_gguf_with_weights`].
+        // synthesized fixture bit-for-bit.
         Self::synthesized(llm_cfg, FROM_GGUF_DEFAULT_SEED)
     }
 
     /// Loads the LLM backbone from a CosyVoice2 GGUF **with real weights**
-    /// via the T07 tensor-store scan.
-    ///
-    /// Today this delegates to [`LlmWeights::from_gguf`] which returns
-    /// [`VokraError::NotImplemented`] until T02 lands.
+    /// via the tensor-store binding ([`LlmWeights::from_gguf`]) — never the
+    /// synthesized fixture. This is the entry point the real-checkpoint
+    /// parity harness uses; a metadata-only GGUF fails loudly with the
+    /// missing embedding tensor named.
     ///
     /// # Errors
     ///
@@ -931,6 +1255,23 @@ fn validate_shapes(config: &LlmBackboneConfig, weights: &LlmWeights) -> Result<(
                 )));
             }
         }
+        // Optional Q/K/V biases: when present, the length must match the
+        // projection's output width (the per-column affine of gemm_f32).
+        let bias_checks = [
+            ("q_b", b.q_b.as_ref(), d),
+            ("k_b", b.k_b.as_ref(), kv_hidden),
+            ("v_b", b.v_b.as_ref(), kv_hidden),
+        ];
+        for (name, bias, want) in bias_checks {
+            if let Some(bias) = bias {
+                if bias.len() != want {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "cosyvoice2 LlmBackbone::new: block[{i}].{name} len {} != expected {want}",
+                        bias.len(),
+                    )));
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -992,12 +1333,38 @@ fn forward_impl(
         // ---------- Pre-norm self-attention ----------
         rms_norm(&h, &block.attn_norm_gamma, eps, t, &mut norm)?;
 
-        // Q = norm @ q_w_t: [t, d] × [d, d] → [t, d]
-        compute.gemm_f32(t, d, d, &norm, &block.q_w_t, None, &mut q_proj)?;
-        // K = norm @ k_w_t: [t, d] × [d, kv_hidden] → [t, kv_hidden]
-        compute.gemm_f32(t, kv_hidden, d, &norm, &block.k_w_t, None, &mut k_proj)?;
-        // V = norm @ v_w_t: [t, d] × [d, kv_hidden] → [t, kv_hidden]
-        compute.gemm_f32(t, kv_hidden, d, &norm, &block.v_w_t, None, &mut v_proj)?;
+        // Q = norm @ q_w_t (+ q_b): [t, d] × [d, d] → [t, d]. The bias is
+        // the per-column affine `gemm_f32` already models (Qwen2 ships
+        // Q/K/V biases; Mistral passes `None`).
+        compute.gemm_f32(
+            t,
+            d,
+            d,
+            &norm,
+            &block.q_w_t,
+            block.q_b.as_deref(),
+            &mut q_proj,
+        )?;
+        // K = norm @ k_w_t (+ k_b): [t, d] × [d, kv_hidden] → [t, kv_hidden]
+        compute.gemm_f32(
+            t,
+            kv_hidden,
+            d,
+            &norm,
+            &block.k_w_t,
+            block.k_b.as_deref(),
+            &mut k_proj,
+        )?;
+        // V = norm @ v_w_t (+ v_b): [t, d] × [d, kv_hidden] → [t, kv_hidden]
+        compute.gemm_f32(
+            t,
+            kv_hidden,
+            d,
+            &norm,
+            &block.v_w_t,
+            block.v_b.as_deref(),
+            &mut v_proj,
+        )?;
 
         // Apply RoPE per-head to Q and K.
         for h_q in 0..n_head_q {
@@ -1164,11 +1531,12 @@ fn argmax_u32(row: &[f32]) -> u32 {
 ///   one token at a time, and checks that the last-position logits
 ///   agree up to a tight tolerance (KV-cache consistency across bulk vs
 ///   incremental).
-/// - **[`parity::assert_vs_hf_reference`]** — the "flip-the-switch" real
-///   checkpoint harness owners run when the T02 tensor manifest arrives.
-///   Returns [`VokraError::NotImplemented`] today.
+/// - **[`parity::assert_vs_hf_reference`]** — the real-checkpoint harness:
+///   forwards real token ids through a real-weight backbone and compares
+///   every logit against the `transformers` eager reference dump,
+///   returning the measured [`parity::HfParityReport`].
 pub mod parity {
-    use super::{LlmBackbone, LlmBackboneConfig, LlmBackboneStep};
+    use super::{LlmBackbone, LlmBackboneStep};
     use vokra_core::{Result, VokraError};
 
     /// Runs `forward([tokens[..n]])` and `step`-per-token over the same
@@ -1232,25 +1600,109 @@ pub mod parity {
         Ok(())
     }
 
-    /// **Real-checkpoint parity vs the HuggingFace reference.**
+    /// Measured outcome of a [`assert_vs_hf_reference`] run — the numbers
+    /// an owner reports (max / mean |Δ| and per-position argmax agreement).
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct HfParityReport {
+        /// Number of reference positions compared.
+        pub t: usize,
+        /// Vocab width of each logits row.
+        pub vocab: usize,
+        /// Max |vokra − reference| over all `t × vocab` logits.
+        pub max_abs_delta: f32,
+        /// Mean |vokra − reference| (f64 accumulator — summing `t × vocab`
+        /// small deltas in f32 would lose precision).
+        pub mean_abs_delta: f64,
+        /// Positions whose argmax agrees with the reference (`0..=t`).
+        pub argmax_matches: usize,
+    }
+
+    /// **Real-checkpoint parity vs the HuggingFace reference logits.**
     ///
-    /// Owners run this against `iic/CosyVoice2-0.5B` once the T02 tensor
-    /// manifest lands. Today it returns [`VokraError::NotImplemented`] —
-    /// the honest signal that the real fixture is not wired.
+    /// Runs `backbone.forward(token_ids, 0)` and compares every logit
+    /// against `reference_logits` (`[t, vocab]` row-major, `t =
+    /// token_ids.len()`) — the dump the reference generator produced with
+    /// `transformers` `Qwen2ForCausalLM` (eager, f32) over the real
+    /// `FunAudioLLM/CosyVoice2-0.5B` `llm.pt` (see
+    /// `docs/bench-baselines/m1-real-weight-eval-2026-07-16/report.md` §4;
+    /// generator script `ref_true.py` in the eval out dir).
+    ///
+    /// Passes only when **both** hold:
+    ///
+    /// - `max |Δ| <= atol`, and
+    /// - the argmax of every position agrees (`argmax_matches == t`).
+    ///
+    /// On success the measured [`HfParityReport`] is returned so the
+    /// caller reports real numbers instead of a bare green; on failure the
+    /// same numbers ride the error message (never a fabricated pass, and
+    /// the tolerance is the caller's to justify — see the atol rationale
+    /// at the gated test in `tests/parity_cosyvoice2.rs`).
     ///
     /// # Errors
     ///
-    /// [`VokraError::NotImplemented`] until T02 lands.
+    /// - [`VokraError::InvalidArgument`] if `token_ids` is empty or
+    ///   `reference_logits` is not `t × vocab`.
+    /// - [`VokraError::InvalidArgument`] carrying the measured report when
+    ///   the tolerance or the argmax gate fails.
+    /// - Propagates forward errors verbatim.
     pub fn assert_vs_hf_reference(
-        _config: &LlmBackboneConfig,
-        _reference_logits: &[f32],
-    ) -> Result<()> {
-        Err(VokraError::NotImplemented(
-            "CosyVoice2 LLM real-checkpoint parity is deferred to T02 upstream \
-             inspection + T07 tensor-store scan; today the real HF weights are \
-             not committed to the workspace and the runtime refuses to fabricate \
-             a pass (FR-EX-08).",
-        ))
+        backbone: &LlmBackbone,
+        token_ids: &[u32],
+        reference_logits: &[f32],
+        atol: f32,
+    ) -> Result<HfParityReport> {
+        if token_ids.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "cosyvoice2 LLM HF parity: token_ids must be non-empty".into(),
+            ));
+        }
+        let t = token_ids.len();
+        let vocab = backbone.config().vocab_size;
+        if reference_logits.len() != t * vocab {
+            return Err(VokraError::InvalidArgument(format!(
+                "cosyvoice2 LLM HF parity: reference logits len {} != t*vocab = {}*{} = {} — \
+                 the dump does not match the model / token ids",
+                reference_logits.len(),
+                t,
+                vocab,
+                t * vocab,
+            )));
+        }
+        let ours = backbone.forward(token_ids, 0)?;
+        debug_assert_eq!(ours.len(), t * vocab, "forward output is [t, vocab]");
+
+        let mut max_abs_delta = 0.0f32;
+        let mut sum_abs_delta = 0.0f64;
+        let mut argmax_matches = 0usize;
+        for i in 0..t {
+            let ours_row = &ours[i * vocab..(i + 1) * vocab];
+            let ref_row = &reference_logits[i * vocab..(i + 1) * vocab];
+            for (a, b) in ours_row.iter().zip(ref_row.iter()) {
+                let delta = (a - b).abs();
+                if delta > max_abs_delta {
+                    max_abs_delta = delta;
+                }
+                sum_abs_delta += f64::from(delta);
+            }
+            if super::argmax_u32(ours_row) == super::argmax_u32(ref_row) {
+                argmax_matches += 1;
+            }
+        }
+        let report = HfParityReport {
+            t,
+            vocab,
+            max_abs_delta,
+            mean_abs_delta: sum_abs_delta / (t as f64 * vocab as f64),
+            argmax_matches,
+        };
+        if !max_abs_delta.is_finite() || max_abs_delta > atol || argmax_matches != t {
+            return Err(VokraError::InvalidArgument(format!(
+                "cosyvoice2 LLM HF parity FAILED: max |Δ| = {:.6e} (atol {atol:.6e}), \
+                 mean |Δ| = {:.6e}, argmax {}/{} — {report:?}",
+                report.max_abs_delta, report.mean_abs_delta, report.argmax_matches, report.t,
+            )));
+        }
+        Ok(report)
     }
 }
 
@@ -1426,14 +1878,22 @@ mod tests {
     }
 
     #[test]
-    fn from_gguf_with_weights_returns_not_implemented_until_t02_lands() {
+    fn from_gguf_with_weights_fails_loudly_on_metadata_only_gguf() {
+        // The real-weight entry point must never fall back to the
+        // synthesized fixture: a GGUF without the backbone tensors is a
+        // loud ModelLoad naming the missing embedding (FR-EX-08).
         let mut b = GgufBuilder::new();
         seed_config(&mut b);
         b.add_u32(KEY_LLM_N_HEAD_KV, 2);
         let (file, cfg) = parse_config(b.to_bytes().unwrap());
         let err = LlmBackbone::from_gguf_with_weights(&file, &cfg)
-            .expect_err("real weight binding is T02");
-        assert!(matches!(err, VokraError::NotImplemented(_)));
+            .expect_err("metadata-only GGUF has no weights to bind");
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(msg.contains(T_TOKEN_EMB), "must name the tensor: {msg}");
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1476,6 +1936,19 @@ mod tests {
             assert_eq!(b.ffn_gate_w_t.len(), d * ffn);
             assert_eq!(b.ffn_up_w_t.len(), d * ffn);
             assert_eq!(b.ffn_down_w_t.len(), ffn * d);
+            // Qwen2-style: the synthesized fixture populates Q/K/V biases
+            // so the bias forward path is always exercised.
+            assert_eq!(b.q_b.as_ref().map(Vec::len), Some(d));
+            assert_eq!(b.k_b.as_ref().map(Vec::len), Some(kv_hidden));
+            assert_eq!(b.v_b.as_ref().map(Vec::len), Some(kv_hidden));
+            let some_bias_nonzero = b
+                .q_b
+                .iter()
+                .chain(b.k_b.iter())
+                .chain(b.v_b.iter())
+                .flatten()
+                .any(|&x| x != 0.0);
+            assert!(some_bias_nonzero, "synthesized biases must not be all-zero");
         }
         assert!(w.is_synthesized);
     }
@@ -1504,14 +1977,37 @@ mod tests {
     }
 
     #[test]
-    fn from_gguf_weights_returns_not_implemented() {
+    fn from_gguf_weights_names_missing_embed_on_empty_gguf() {
         let cfg = test_config();
         let mut b = GgufBuilder::new();
         b.add_string(KEY_MODEL_ARCH, "cosyvoice2");
         let bytes = b.to_bytes().unwrap();
         let file = GgufFile::parse(bytes).unwrap();
-        let err = LlmWeights::from_gguf(&file, &cfg).expect_err("T02 not landed");
-        assert!(matches!(err, VokraError::NotImplemented(_)));
+        let err = LlmWeights::from_gguf(&file, &cfg).expect_err("no tensors to bind");
+        match err {
+            VokraError::ModelLoad(msg) => assert!(msg.contains(T_TOKEN_EMB), "{msg}"),
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_gguf_weights_rejects_zero_placeholder_hparams() {
+        let mut cfg = test_config();
+        cfg.vocab_size = 0;
+        let mut b = GgufBuilder::new();
+        b.add_string(KEY_MODEL_ARCH, "cosyvoice2");
+        let bytes = b.to_bytes().unwrap();
+        let file = GgufFile::parse(bytes).unwrap();
+        let err = LlmWeights::from_gguf(&file, &cfg).expect_err("0-shape is not loadable");
+        match err {
+            VokraError::ModelLoad(msg) => {
+                assert!(
+                    msg.contains("re-convert") || msg.contains("Re-convert"),
+                    "{msg}"
+                );
+            }
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
     }
 
     // ---- primitive re-export tests --------------------------------------
@@ -1910,10 +2406,52 @@ mod tests {
     }
 
     #[test]
-    fn parity_hf_reference_returns_not_implemented_today() {
+    fn parity_hf_reference_passes_on_self_consistent_dump() {
+        // Internal oracle: a reference dump equal to the backbone's own
+        // forward must PASS with max |Δ| = 0 and full argmax agreement.
         let cfg = test_config();
-        let err = parity::assert_vs_hf_reference(&cfg, &[]).expect_err("HF fixture not wired");
-        assert!(matches!(err, VokraError::NotImplemented(_)));
+        let backbone = LlmBackbone::synthesized(cfg, 42).unwrap();
+        let tokens = [0u32, 1, 2, 3];
+        let reference = backbone.forward(&tokens, 0).unwrap();
+        let report = parity::assert_vs_hf_reference(&backbone, &tokens, &reference, 1e-6)
+            .expect("self-consistency must pass");
+        assert_eq!(report.t, tokens.len());
+        assert_eq!(report.vocab, 16);
+        assert_eq!(report.max_abs_delta, 0.0);
+        assert_eq!(report.argmax_matches, tokens.len());
+    }
+
+    #[test]
+    fn parity_hf_reference_fails_loudly_beyond_atol() {
+        let cfg = test_config();
+        let backbone = LlmBackbone::synthesized(cfg, 42).unwrap();
+        let tokens = [0u32, 1, 2];
+        let mut reference = backbone.forward(&tokens, 0).unwrap();
+        // Perturb one logit well beyond any tolerance; this also flips
+        // nothing argmax-wise necessarily, so the atol gate is what fires.
+        reference[5] += 1.0;
+        let err = parity::assert_vs_hf_reference(&backbone, &tokens, &reference, 1e-3)
+            .expect_err("1.0 delta must fail at atol 1e-3");
+        match err {
+            VokraError::InvalidArgument(msg) => {
+                assert!(msg.contains("HF parity FAILED"), "{msg}");
+                assert!(
+                    msg.contains("argmax"),
+                    "report numbers ride the error: {msg}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parity_hf_reference_rejects_mis_shaped_dump() {
+        let cfg = test_config();
+        let backbone = LlmBackbone::synthesized(cfg, 42).unwrap();
+        // 3 tokens need 3*16 reference logits; hand it 5 values.
+        let err = parity::assert_vs_hf_reference(&backbone, &[0, 1, 2], &[0.0; 5], 1e-3)
+            .expect_err("shape mismatch must fail before any forward");
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
     }
 
     // ---- LlmBackboneStep API tests --------------------------------------
@@ -1925,5 +2463,540 @@ mod tests {
         s.advance();
         s.advance();
         assert_eq!(s.seq_len, 2);
+    }
+
+    // ---- Q/K/V bias semantics --------------------------------------------
+
+    /// Strips the Q/K/V biases off a weight store (Mistral-style view of
+    /// the same weights).
+    fn without_biases(mut w: LlmWeights) -> LlmWeights {
+        for b in &mut w.blocks {
+            b.q_b = None;
+            b.k_b = None;
+            b.v_b = None;
+        }
+        w
+    }
+
+    #[test]
+    fn forward_with_zero_bias_matches_biasless_bit_identically() {
+        // bias = Some(zeros) and bias = None must produce IEEE-equal logits:
+        // gemm_f32's per-column affine adds `0.0` to the same accumulation
+        // order. Compared with `assert_eq!` on f32 (−0.0 == +0.0 passes;
+        // any NaN fails loudly).
+        let cfg = test_config();
+        let base = LlmWeights::synthesized(&cfg, 42).unwrap();
+        let no_bias = without_biases(base.clone());
+        let mut zero_bias = no_bias.clone();
+        for b in &mut zero_bias.blocks {
+            b.q_b = Some(vec![0.0; cfg.hidden_dim]);
+            b.k_b = Some(vec![0.0; cfg.kv_hidden_dim()]);
+            b.v_b = Some(vec![0.0; cfg.kv_hidden_dim()]);
+        }
+        let tokens = [0u32, 1, 2, 3];
+        let a = LlmBackbone::new(cfg.clone(), no_bias)
+            .unwrap()
+            .forward(&tokens, 0)
+            .unwrap();
+        let b = LlmBackbone::new(cfg, zero_bias)
+            .unwrap()
+            .forward(&tokens, 0)
+            .unwrap();
+        assert_eq!(a, b, "zero bias must be bit-identical to bias-less");
+    }
+
+    #[test]
+    fn nonzero_bias_changes_the_forward() {
+        // Sanity that the biases actually flow into the math: the same
+        // weights with and without their (non-zero) synthesized biases
+        // must produce different logits.
+        let cfg = test_config();
+        let with_bias = LlmWeights::synthesized(&cfg, 42).unwrap();
+        let no_bias = without_biases(with_bias.clone());
+        let tokens = [0u32, 1, 2];
+        let a = LlmBackbone::new(cfg.clone(), with_bias)
+            .unwrap()
+            .forward(&tokens, 0)
+            .unwrap();
+        let b = LlmBackbone::new(cfg, no_bias)
+            .unwrap()
+            .forward(&tokens, 0)
+            .unwrap();
+        assert_ne!(a, b, "dropping non-zero Q/K/V biases must move the logits");
+    }
+
+    #[test]
+    fn parity_forward_matches_step_by_step_with_biases() {
+        // The KV-cache consistency property must hold on the biased path
+        // too (K/V rows entering the cache carry the bias).
+        let cfg = test_config();
+        let backbone = LlmBackbone::synthesized(cfg, 7).unwrap();
+        assert!(
+            backbone.weights().blocks.iter().all(|b| b.q_b.is_some()),
+            "synthesized fixture is biased by construction"
+        );
+        parity::forward_matches_step_by_step(&backbone, &[0, 1, 2, 3], 1e-3)
+            .expect("bulk vs incremental must agree with biases");
+    }
+
+    #[test]
+    fn new_rejects_wrong_bias_length() {
+        let cfg = test_config();
+        let mut w = LlmWeights::synthesized(&cfg, 42).unwrap();
+        w.blocks[0].k_b = Some(vec![0.0; cfg.hidden_dim + 1]); // wrong width
+        let err = LlmBackbone::new(cfg, w).expect_err("bad bias length");
+        match err {
+            VokraError::InvalidArgument(msg) => assert!(msg.contains("k_b"), "{msg}"),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    // ---- Real tensor-store binding (from_gguf) ---------------------------
+
+    /// Little-endian f32 payload for `GgufBuilder::add_tensor`.
+    fn f32_bytes(v: &[f32]) -> Vec<u8> {
+        v.iter().flat_map(|x| x.to_le_bytes()).collect()
+    }
+
+    /// Deterministic position-dependent fill: distinct values so the
+    /// `[out, in]` → `[in, out]` transpose in the binder cannot pass by
+    /// accident.
+    fn fill(n: usize, seed: u64) -> Vec<f32> {
+        let mut rng = SplitMix64::new(seed);
+        (0..n).map(|_| rng.next_unit_f32() * 0.2 - 0.1).collect()
+    }
+
+    /// Transposes a `[out, in]` row-major matrix into `[in, out]` — the
+    /// test-side oracle for the binder's load-time transpose.
+    fn transpose(w: &[f32], out_features: usize, in_features: usize) -> Vec<f32> {
+        let mut w_t = vec![0.0f32; w.len()];
+        for o in 0..out_features {
+            for i in 0..in_features {
+                w_t[i * out_features + o] = w[o * in_features + i];
+            }
+        }
+        w_t
+    }
+
+    /// Builds a GGUF carrying real (deterministic) backbone tensors under
+    /// the upstream names plus matching metadata, and the [`LlmWeights`]
+    /// oracle the binder must reproduce. `with_bias` controls the Q/K/V
+    /// bias tensors (Qwen2 vs Mistral shape); `with_lm_head` adds a tied
+    /// `lm_head` copy.
+    fn real_weight_gguf(with_bias: bool, with_lm_head: bool) -> (Vec<u8>, LlmWeights) {
+        let cfg = test_config(); // vocab 16, d 8, layers 2, ffn 16, kv_hidden 4
+        let d = cfg.hidden_dim;
+        let kv = cfg.kv_hidden_dim();
+        let ffn = cfg.ffn_dim;
+        let vocab = cfg.vocab_size;
+
+        let mut b = GgufBuilder::new();
+        b.add_string(KEY_MODEL_ARCH, "cosyvoice2");
+        b.add_u32(super::super::config::KEY_SAMPLE_RATE, 24_000);
+        b.add_u32(super::super::config::KEY_VOCAB_SIZE, vocab as u32);
+        b.add_u32(super::super::config::KEY_HIDDEN_DIM, d as u32);
+        b.add_u32(super::super::config::KEY_N_LAYER, cfg.n_layer as u32);
+        b.add_u32(super::super::config::KEY_N_HEAD, cfg.n_head_q as u32);
+        b.add_u32(super::super::config::KEY_FFN_DIM, ffn as u32);
+        b.add_u32(super::super::config::KEY_FLOW_NFE, 4);
+        b.add_string(super::super::config::KEY_FLOW_SCHEDULE, "linear");
+        b.add_u32(super::super::config::KEY_MIMI_N_CODEBOOKS, 4);
+        b.add_u32(super::super::config::KEY_MIMI_CODEBOOK_SIZE, 16);
+        b.add_u32(super::super::config::KEY_MIMI_D_MODEL, 8);
+        b.add_u32(super::super::config::KEY_STREAMING_CHUNK_SIZE, 4);
+        b.add_u32(super::super::config::KEY_STREAMING_CHUNK_HOP, 4);
+        b.add_u32(KEY_LLM_N_HEAD_KV, cfg.n_head_kv as u32);
+        b.add_u32(KEY_LLM_N_CTX, cfg.n_ctx as u32);
+
+        let mut seed = 1u64;
+        let mut next = |n: usize| {
+            seed += 1;
+            fill(n, seed)
+        };
+        use vokra_core::gguf::GgmlType::F32;
+
+        let emb = next(vocab * d);
+        b.add_tensor(
+            T_TOKEN_EMB,
+            F32,
+            vec![vocab as u64, d as u64],
+            f32_bytes(&emb),
+        )
+        .unwrap();
+        if with_lm_head {
+            // Deployed CosyVoice2-0.5B ships lm_head byte-identical to the
+            // embedding (eval measured max |Δ| = 0.0).
+            b.add_tensor(
+                T_LM_HEAD,
+                F32,
+                vec![vocab as u64, d as u64],
+                f32_bytes(&emb),
+            )
+            .unwrap();
+        }
+
+        let mut blocks = Vec::new();
+        for i in 0..cfg.n_layer {
+            let p = layer_prefix(i);
+            let attn_norm = next(d);
+            let q_w = next(d * d);
+            let k_w = next(kv * d);
+            let v_w = next(kv * d);
+            let o_w = next(d * d);
+            let ffn_norm = next(d);
+            let gate_w = next(ffn * d);
+            let up_w = next(ffn * d);
+            let down_w = next(d * ffn);
+            let (q_b, k_b, v_b) = if with_bias {
+                (Some(next(d)), Some(next(kv)), Some(next(kv)))
+            } else {
+                (None, None, None)
+            };
+
+            let add = |b: &mut GgufBuilder, name: String, dims: Vec<u64>, data: &[f32]| {
+                b.add_tensor(&name, F32, dims, f32_bytes(data)).unwrap();
+            };
+            add(
+                &mut b,
+                format!("{p}input_layernorm.weight"),
+                vec![d as u64],
+                &attn_norm,
+            );
+            add(
+                &mut b,
+                format!("{p}self_attn.q_proj.weight"),
+                vec![d as u64, d as u64],
+                &q_w,
+            );
+            add(
+                &mut b,
+                format!("{p}self_attn.k_proj.weight"),
+                vec![kv as u64, d as u64],
+                &k_w,
+            );
+            add(
+                &mut b,
+                format!("{p}self_attn.v_proj.weight"),
+                vec![kv as u64, d as u64],
+                &v_w,
+            );
+            if let (Some(q_b), Some(k_b), Some(v_b)) = (&q_b, &k_b, &v_b) {
+                add(
+                    &mut b,
+                    format!("{p}self_attn.q_proj.bias"),
+                    vec![d as u64],
+                    q_b,
+                );
+                add(
+                    &mut b,
+                    format!("{p}self_attn.k_proj.bias"),
+                    vec![kv as u64],
+                    k_b,
+                );
+                add(
+                    &mut b,
+                    format!("{p}self_attn.v_proj.bias"),
+                    vec![kv as u64],
+                    v_b,
+                );
+            }
+            add(
+                &mut b,
+                format!("{p}self_attn.o_proj.weight"),
+                vec![d as u64, d as u64],
+                &o_w,
+            );
+            add(
+                &mut b,
+                format!("{p}post_attention_layernorm.weight"),
+                vec![d as u64],
+                &ffn_norm,
+            );
+            add(
+                &mut b,
+                format!("{p}mlp.gate_proj.weight"),
+                vec![ffn as u64, d as u64],
+                &gate_w,
+            );
+            add(
+                &mut b,
+                format!("{p}mlp.up_proj.weight"),
+                vec![ffn as u64, d as u64],
+                &up_w,
+            );
+            add(
+                &mut b,
+                format!("{p}mlp.down_proj.weight"),
+                vec![d as u64, ffn as u64],
+                &down_w,
+            );
+
+            blocks.push(LlmBlockWeights {
+                attn_norm_gamma: attn_norm,
+                q_w_t: transpose(&q_w, d, d),
+                q_b,
+                k_w_t: transpose(&k_w, kv, d),
+                k_b,
+                v_w_t: transpose(&v_w, kv, d),
+                v_b,
+                o_w_t: transpose(&o_w, d, d),
+                ffn_norm_gamma: ffn_norm,
+                ffn_gate_w_t: transpose(&gate_w, ffn, d),
+                ffn_up_w_t: transpose(&up_w, ffn, d),
+                ffn_down_w_t: transpose(&down_w, d, ffn),
+            });
+        }
+        let final_norm = next(d);
+        b.add_tensor(T_FINAL_NORM, F32, vec![d as u64], f32_bytes(&final_norm))
+            .unwrap();
+
+        let expected = LlmWeights {
+            token_emb: emb,
+            blocks,
+            final_norm_gamma: final_norm,
+            is_synthesized: false,
+        };
+        (b.to_bytes().unwrap(), expected)
+    }
+
+    fn assert_weights_equal(got: &LlmWeights, want: &LlmWeights) {
+        assert_eq!(got.token_emb, want.token_emb, "token_emb");
+        assert_eq!(got.final_norm_gamma, want.final_norm_gamma, "final_norm");
+        assert_eq!(got.blocks.len(), want.blocks.len());
+        for (i, (g, w)) in got.blocks.iter().zip(want.blocks.iter()).enumerate() {
+            assert_eq!(g.attn_norm_gamma, w.attn_norm_gamma, "block[{i}] attn_norm");
+            assert_eq!(g.q_w_t, w.q_w_t, "block[{i}] q_w_t (transpose)");
+            assert_eq!(g.k_w_t, w.k_w_t, "block[{i}] k_w_t (transpose)");
+            assert_eq!(g.v_w_t, w.v_w_t, "block[{i}] v_w_t (transpose)");
+            assert_eq!(g.o_w_t, w.o_w_t, "block[{i}] o_w_t (transpose)");
+            assert_eq!(g.q_b, w.q_b, "block[{i}] q_b");
+            assert_eq!(g.k_b, w.k_b, "block[{i}] k_b");
+            assert_eq!(g.v_b, w.v_b, "block[{i}] v_b");
+            assert_eq!(g.ffn_norm_gamma, w.ffn_norm_gamma, "block[{i}] ffn_norm");
+            assert_eq!(g.ffn_gate_w_t, w.ffn_gate_w_t, "block[{i}] gate");
+            assert_eq!(g.ffn_up_w_t, w.ffn_up_w_t, "block[{i}] up");
+            assert_eq!(g.ffn_down_w_t, w.ffn_down_w_t, "block[{i}] down");
+        }
+        assert!(
+            !got.is_synthesized,
+            "real binding must not claim synthesized"
+        );
+    }
+
+    #[test]
+    fn from_gguf_binds_real_biased_weights_verbatim() {
+        let (bytes, expected) = real_weight_gguf(true, true);
+        let (file, cfg) = parse_config(bytes);
+        let backbone = LlmBackbone::from_gguf(&file, &cfg).expect("real binding");
+        assert_weights_equal(backbone.weights(), &expected);
+        // The bound store forwards finitely and honors the KV-consistency
+        // property.
+        parity::forward_matches_step_by_step(&backbone, &[0, 1, 2], 1e-3).expect("consistency");
+    }
+
+    #[test]
+    fn from_gguf_binds_biasless_weights_as_none() {
+        let (bytes, expected) = real_weight_gguf(false, false);
+        let (file, cfg) = parse_config(bytes);
+        let backbone = LlmBackbone::from_gguf(&file, &cfg).expect("real binding");
+        assert!(backbone.weights().blocks.iter().all(|b| b.q_b.is_none()));
+        assert_weights_equal(backbone.weights(), &expected);
+    }
+
+    #[test]
+    fn from_gguf_real_binding_matches_test_oracle_forward() {
+        // End-to-end: the GGUF-bound store and the test-side oracle store
+        // must produce bit-identical logits (same values, same math).
+        let (bytes, expected) = real_weight_gguf(true, false);
+        let (file, cfg) = parse_config(bytes);
+        let bound = LlmBackbone::from_gguf(&file, &cfg).expect("real binding");
+        let oracle = LlmBackbone::new(bound.config().clone(), expected).unwrap();
+        let tokens = [0u32, 3, 7, 1];
+        assert_eq!(
+            bound.forward(&tokens, 0).unwrap(),
+            oracle.forward(&tokens, 0).unwrap(),
+            "bound weights must reproduce the oracle forward bit-for-bit"
+        );
+    }
+
+    #[test]
+    fn from_gguf_rejects_partial_bias_set() {
+        // Drop k/v biases but keep q: per-layer all-or-none must fire.
+        let (bytes, _) = real_weight_gguf(false, false);
+        let file = GgufFile::parse(bytes).unwrap();
+        // Rebuild with an injected lone q bias on layer 0.
+        let mut b = GgufBuilder::new();
+        for (k, v) in file.metadata() {
+            b.add_metadata(k, v.clone());
+        }
+        for t in file.tensors() {
+            b.add_tensor(
+                &t.name,
+                t.dtype,
+                t.dimensions.clone(),
+                file.tensor_bytes(t).to_vec(),
+            )
+            .unwrap();
+        }
+        b.add_tensor(
+            "llm.model.model.layers.0.self_attn.q_proj.bias",
+            vokra_core::gguf::GgmlType::F32,
+            vec![8],
+            f32_bytes(&[0.5; 8]),
+        )
+        .unwrap();
+        let (file, cfg) = parse_config(b.to_bytes().unwrap());
+        let err = LlmBackbone::from_gguf(&file, &cfg).expect_err("partial bias set");
+        match err {
+            VokraError::ModelLoad(msg) => assert!(msg.contains("partial"), "{msg}"),
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_gguf_rejects_unexpected_biasless_projection_bias() {
+        // An o_proj bias tensor would be silently dropped by the forward —
+        // the binder must refuse instead (FR-EX-08).
+        let (bytes, _) = real_weight_gguf(true, false);
+        let file = GgufFile::parse(bytes).unwrap();
+        let mut b = GgufBuilder::new();
+        for (k, v) in file.metadata() {
+            b.add_metadata(k, v.clone());
+        }
+        for t in file.tensors() {
+            b.add_tensor(
+                &t.name,
+                t.dtype,
+                t.dimensions.clone(),
+                file.tensor_bytes(t).to_vec(),
+            )
+            .unwrap();
+        }
+        b.add_tensor(
+            "llm.model.model.layers.1.self_attn.o_proj.bias",
+            vokra_core::gguf::GgmlType::F32,
+            vec![8],
+            f32_bytes(&[0.5; 8]),
+        )
+        .unwrap();
+        let (file, cfg) = parse_config(b.to_bytes().unwrap());
+        let err = LlmBackbone::from_gguf(&file, &cfg).expect_err("unexpected o_proj bias");
+        match err {
+            VokraError::ModelLoad(msg) => assert!(msg.contains("o_proj.bias"), "{msg}"),
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_gguf_rejects_untied_lm_head() {
+        let (bytes, _) = real_weight_gguf(true, false);
+        let file = GgufFile::parse(bytes).unwrap();
+        let mut b = GgufBuilder::new();
+        for (k, v) in file.metadata() {
+            b.add_metadata(k, v.clone());
+        }
+        for t in file.tensors() {
+            b.add_tensor(
+                &t.name,
+                t.dtype,
+                t.dimensions.clone(),
+                file.tensor_bytes(t).to_vec(),
+            )
+            .unwrap();
+        }
+        // An lm_head that differs from the embedding: the tied-head
+        // forward would be silently wrong, so the binder must refuse.
+        b.add_tensor(
+            T_LM_HEAD,
+            vokra_core::gguf::GgmlType::F32,
+            vec![16, 8],
+            f32_bytes(&fill(16 * 8, 999)),
+        )
+        .unwrap();
+        let (file, cfg) = parse_config(b.to_bytes().unwrap());
+        let err = LlmBackbone::from_gguf(&file, &cfg).expect_err("untied lm_head");
+        match err {
+            VokraError::ModelLoad(msg) => assert!(msg.contains("tied"), "{msg}"),
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_gguf_rejects_more_layers_than_hparams_claim() {
+        let (bytes, _) = real_weight_gguf(true, false);
+        let file = GgufFile::parse(bytes).unwrap();
+        let mut b = GgufBuilder::new();
+        for (k, v) in file.metadata() {
+            b.add_metadata(k, v.clone());
+        }
+        for t in file.tensors() {
+            b.add_tensor(
+                &t.name,
+                t.dtype,
+                t.dimensions.clone(),
+                file.tensor_bytes(t).to_vec(),
+            )
+            .unwrap();
+        }
+        // n_layer = 2 in the metadata; a layers.2.* tensor means the GGUF
+        // carries more depth than the hparams claim → refuse (no silent
+        // truncation).
+        b.add_tensor(
+            "llm.model.model.layers.2.input_layernorm.weight",
+            vokra_core::gguf::GgmlType::F32,
+            vec![8],
+            f32_bytes(&[1.0; 8]),
+        )
+        .unwrap();
+        let (file, cfg) = parse_config(b.to_bytes().unwrap());
+        let err = LlmBackbone::from_gguf(&file, &cfg).expect_err("extra layer");
+        match err {
+            VokraError::ModelLoad(msg) => assert!(msg.contains("more layers"), "{msg}"),
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_gguf_tensors_with_zero_hparams_is_invalid_argument() {
+        // A pre-hparam-fix conversion (real tensors, 0-placeholder
+        // metadata) maps to InvalidArgument so `CosyVoice2Tts` can keep
+        // loading it with `llm = None` (documented back-compat), while the
+        // message tells the owner to re-convert.
+        let (bytes, _) = real_weight_gguf(true, false);
+        let file = GgufFile::parse(bytes).unwrap();
+        let mut b = GgufBuilder::new();
+        for (k, v) in file.metadata() {
+            // Zero out the shape hparams, keep everything else.
+            let zeroed = matches!(
+                k.as_str(),
+                "vokra.cosyvoice2.arch.vocab_size"
+                    | "vokra.cosyvoice2.arch.hidden_dim"
+                    | "vokra.cosyvoice2.arch.n_layer"
+                    | "vokra.cosyvoice2.arch.n_head"
+                    | "vokra.cosyvoice2.arch.ffn_dim"
+            );
+            if zeroed {
+                b.add_u32(k, 0);
+            } else {
+                b.add_metadata(k, v.clone());
+            }
+        }
+        for t in file.tensors() {
+            b.add_tensor(
+                &t.name,
+                t.dtype,
+                t.dimensions.clone(),
+                file.tensor_bytes(t).to_vec(),
+            )
+            .unwrap();
+        }
+        let (file, cfg) = parse_config(b.to_bytes().unwrap());
+        let err = LlmBackbone::from_gguf(&file, &cfg).expect_err("0-hparams with tensors");
+        match err {
+            VokraError::InvalidArgument(msg) => {
+                assert!(msg.contains("pre-hparam-fix"), "{msg}");
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
     }
 }

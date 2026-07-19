@@ -1,0 +1,11 @@
+M4-04 T13 Mimi RVQ reference fixture (sliced)
+reference: moshi (Kyutai) public API — SplitResidualVectorQuantizer.decode; moshi==0.2.13, torch==2.9.1, numpy==2.2.6
+checkpoint pin: kyutai/moshiko-pytorch-bf16 rev 2bfc9ae6e89079a5cc7ed2a68436010d91a3d289 tokenizer-e351c8d8-checkpoint125.safetensors (ADR M4-04 §D-k)
+checkpoint sha256: 09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50
+weights license: CC-BY 4.0 (Kyutai) — attribution: NOTICE §5 'Mimi Codec (Kyutai / Moshi authors)'; this fixture embeds sliced rows of those weights
+shapes: codebook_tables_sliced [(8, 48, 512)] f32; codes [(32, 8)] u32; decoded_features [(32, 512)] f32
+seed: 0; codes in [0, 48); books = 1 semantic + 7 acoustic (num_codebooks=8 prefix of the physical 32)
+note: reference projects AFTER the per-split residual sum; the Vokra op sums pre-projected rows — equal for the bias-free linear proj up to FP32 reassociation (measured bound recorded in parity_mimi_reference.rs)
+sha256 codebook_tables_sliced.f32 a6466d6cde5f25c0f046cd4e13ce0c370a9067f7d35a135f7a6bc9d600ad3be9
+sha256 codes.u32 119dad110eaad14de38f85f01b7e9af732af4142ce2ba4d86eb07ff354719d62
+sha256 decoded_features.f32 bd75e5b85d68f84e94b140df65e64d5b75c11280aac7f3ef6f7a73997b1e5240

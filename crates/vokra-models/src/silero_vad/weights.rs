@@ -38,10 +38,30 @@ use super::SampleRate;
 /// A bound `Conv1d` weight (`[c_out, c_in, k]` row-major) with its bias.
 pub(super) struct Conv1dW {
     pub(super) weight: Vec<f32>,
+    /// The same weight transposed to `[c_in·k, c_out]` (tap-major, output
+    /// channel fastest), built once at load (M5-14 Wave-2 T21). The conv hot
+    /// loop iterates taps outer / output channels inner over contiguous
+    /// `weight_t` rows — the auto-vectorizable, **bit-identical** formulation
+    /// of the original per-channel scalar reduction (`math::conv1d_wt`).
+    pub(super) weight_t: Vec<f32>,
     pub(super) bias: Vec<f32>,
     pub(super) c_out: usize,
     pub(super) c_in: usize,
     pub(super) k: usize,
+}
+
+impl Conv1dW {
+    /// `[c_out, c_in, k]` → `[c_in·k, c_out]` (see `weight_t`).
+    fn transpose(weight: &[f32], c_out: usize, c_in: usize, k: usize) -> Vec<f32> {
+        let taps = c_in * k;
+        let mut t = vec![0.0f32; taps * c_out];
+        for co in 0..c_out {
+            for tap in 0..taps {
+                t[tap * c_out + co] = weight[co * taps + tap];
+            }
+        }
+        t
+    }
 }
 
 /// The full weight set for one sample rate (one ONNX `If` branch).
@@ -173,8 +193,10 @@ fn load_rate(gguf: &GgufFile, rate: SampleRate, prefix: Option<&str>) -> Result<
 /// Loads a `Conv1d` weight (no bias yet) validating its `[c_out, c_in, k]` shape.
 fn conv(gguf: &GgufFile, name: &str, c_out: usize, c_in: usize, k: usize) -> Result<Conv1dW> {
     let weight = vec1d(gguf, name, &[c_out, c_in, k])?;
+    let weight_t = Conv1dW::transpose(&weight, c_out, c_in, k);
     Ok(Conv1dW {
         weight,
+        weight_t,
         bias: Vec::new(),
         c_out,
         c_in,
@@ -196,6 +218,7 @@ impl RateWeights {
         let bins = rate.bins();
         let conv = |c_out: usize, c_in: usize, k: usize| Conv1dW {
             weight: vec![0.0; c_out * c_in * k],
+            weight_t: vec![0.0; c_out * c_in * k],
             bias: vec![0.0; c_out],
             c_out,
             c_in,
@@ -204,6 +227,7 @@ impl RateWeights {
         Self {
             stft: Conv1dW {
                 weight: vec![0.0; 2 * bins * rate.n_fft()],
+                weight_t: vec![0.0; 2 * bins * rate.n_fft()],
                 bias: Vec::new(),
                 c_out: 2 * bins,
                 c_in: 1,

@@ -1,0 +1,147 @@
+<!doctype html>
+<!-- Vokra WebGPU browser parity harness (M4-01-T18) — the TEST surface,
+     separate from the demo. Serve from the repo root with the COOP/COEP
+     server:  node web/demo/serve.mjs   →  http://localhost:8788/tools/wasm/parity.html
+
+     Requires `scripts/build-wasm.sh all` first (web/dist = the simd128
+     artifact WITH test entries + web/pkg = the assembled glue this page
+     imports through web/pkg/index.js). Gated skip (fabricated-pass
+     prohibition): without a
+     WebGPU adapter or cross-origin isolation the page reports SKIPPED with
+     the reason; per-kernel legs compare WGSL outputs against the CPU oracle
+     at atol = 0.01 (NFR-QL-01). The optional Whisper leg needs a
+     whisper-base .gguf picked by hand (greedy transcripts must MATCH
+     between explicit cpu and webgpu backends). -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Vokra WebGPU parity harness</title>
+  <style>
+    body { font: 14px/1.5 ui-monospace, monospace; margin: 2rem auto; max-width: 52rem; padding: 0 1rem; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+    td, th { border: 1px solid #8886; padding: 0.3rem 0.6rem; text-align: left; }
+    .pass { color: #2a2; } .fail { color: #c33; } .skip { color: #a80; }
+    #summary { font-size: 1.1rem; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Vokra WebGPU per-kernel parity (atol = 0.01, NFR-QL-01)</h1>
+  <div id="summary">initialising…</div>
+  <table id="results"><tr><th>kernel</th><th>max |Δ| vs CPU oracle</th><th>verdict</th></tr></table>
+
+  <h2>Whisper base e2e (optional; greedy transcript cpu == webgpu)</h2>
+  <p>
+    <label>model (.gguf): <input type="file" id="model" accept=".gguf" /></label>
+    <label>audio (.wav 16 kHz mono PCM16, e.g. tests/fixtures/audio/jfk-30s.wav):
+      <input type="file" id="audio" accept=".wav" /></label>
+    <button id="runWhisper" disabled>run</button>
+  </p>
+  <div id="whisper"></div>
+
+  <script type="module">
+    import { initGpuProxy, attachVokraGpuProxy, CTL_WORDS, DATA_CAPACITY, HEADER_BYTES }
+      from "../../crates/vokra-backend-webgpu/glue/vokra_webgpu.js";
+    import { wavToF32 } from "../../web/pkg/index.js";
+
+    const summary = document.getElementById("summary");
+    const table = document.getElementById("results");
+    const skip = (reason) => {
+      summary.textContent = `SKIPPED: ${reason}`;
+      summary.className = "skip";
+    };
+
+    // Gated-skip preconditions (honest reporting, never a fabricated pass).
+    if (!crossOriginIsolated) {
+      skip("page is not cross-origin isolated — serve via `node web/demo/serve.mjs` (COOP/COEP)");
+      throw new Error("not cross-origin isolated");
+    }
+    const gpu = await initGpuProxy();
+    if (!gpu.ok) {
+      skip(`no WebGPU adapter: ${gpu.error}`);
+      throw new Error(gpu.error);
+    }
+
+    const ctl = new SharedArrayBuffer(CTL_WORDS * 4);
+    const data = new SharedArrayBuffer(HEADER_BYTES + DATA_CAPACITY);
+    const wasmBytes = await (await fetch("../../web/dist/vokra_wasm_simd128.wasm")).arrayBuffer();
+    const worker = new Worker(new URL("./parity_worker.js", import.meta.url), { type: "module" });
+    attachVokraGpuProxy(worker, { ctl: new Int32Array(ctl), data: new Uint8Array(data), device: gpu.device });
+
+    let nextId = 1;
+    const request = (msg, transfer = []) =>
+      new Promise((resolve, reject) => {
+        const id = nextId++;
+        const onMessage = (ev) => {
+          const m = ev.data;
+          if (!m || m.type !== "reply" || m.id !== id) return;
+          worker.removeEventListener("message", onMessage);
+          m.ok ? resolve(m.value) : reject(new Error(m.error));
+        };
+        worker.addEventListener("message", onMessage);
+        worker.postMessage({ ...msg, id }, transfer);
+      });
+
+    await new Promise((resolve, reject) => {
+      worker.addEventListener("message", function onMsg(ev) {
+        if (ev.data?.type === "ready") { worker.removeEventListener("message", onMsg); resolve(); }
+        if (ev.data?.type === "initError") { worker.removeEventListener("message", onMsg); reject(new Error(ev.data.error)); }
+      });
+      worker.postMessage({ type: "init", wasmBytes, gpu: { available: true }, ctl, data }, [wasmBytes]);
+    });
+
+    try {
+      const results = await request({ type: "runKernels" });
+      let fails = 0;
+      for (const r of results) {
+        const row = table.insertRow();
+        row.insertCell().textContent = r.name;
+        row.insertCell().textContent = r.maxAbsDiff.toExponential(3);
+        const v = row.insertCell();
+        v.textContent = r.pass ? "PASS" : "FAIL";
+        v.className = r.pass ? "pass" : "fail";
+        if (!r.pass) fails++;
+      }
+      summary.textContent = fails === 0
+        ? `all ${results.length} kernel parity checks PASS (record these numbers in docs/bench-baselines/web-*/)`
+        : `${fails}/${results.length} kernel parity checks FAILED`;
+      summary.className = fails === 0 ? "pass" : "fail";
+    } catch (e) {
+      summary.textContent = `harness error: ${e}`;
+      summary.className = "fail";
+    }
+
+    // Optional Whisper leg.
+    const modelInput = document.getElementById("model");
+    const audioInput = document.getElementById("audio");
+    const btn = document.getElementById("runWhisper");
+    const out = document.getElementById("whisper");
+    const ready = () => { btn.disabled = !(modelInput.files.length && audioInput.files.length); };
+    modelInput.addEventListener("change", ready);
+    audioInput.addEventListener("change", ready);
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      out.textContent = "running (cpu then webgpu)…";
+      try {
+        const gguf = await modelInput.files[0].arrayBuffer();
+        const pcm = wavToF32(new Uint8Array(await audioInput.files[0].arrayBuffer()));
+        const pcmBuf = pcm.buffer.slice(0);
+        const r = await request({ type: "transcribeBoth", gguf, pcm: pcmBuf }, [gguf, pcmBuf]);
+        out.innerHTML = "";
+        const p1 = document.createElement("div");
+        p1.textContent = `cpu    (rtf ${r.cpu.rtf.toFixed(3)}): ${r.cpu.text}`;
+        const p2 = document.createElement("div");
+        p2.textContent = `webgpu (rtf ${r.gpu.rtf.toFixed(3)}): ${r.gpu.text}`;
+        const verdict = document.createElement("div");
+        verdict.textContent = r.match ? "greedy transcripts MATCH" : "TRANSCRIPT MISMATCH";
+        verdict.className = r.match ? "pass" : "fail";
+        out.append(p1, p2, verdict);
+      } catch (e) {
+        out.textContent = `error: ${e}`;
+        out.className = "fail";
+      } finally {
+        ready();
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,64 @@
+# Vokra C ABI anchor snapshot — v1.0-rc (M4) window.
+#
+# Origin: the v1.0-rc-window ABI anchor for the M4 prerelease
+# series (semver 1.0.0-rc.N). Rotated here from the v0.9 anchor
+# by M4-12 (2026-07-14 v-label reassignment #2 re-scope). The
+# capture commit + exported-symbol counts are recorded in
+# docs/abi-changelog.md "Baseline snapshot: v1.0-rc".
+#
+# Regenerate with: scripts/check-abi-changelog.sh --update-snapshot
+# Diff against with: scripts/check-abi-changelog.sh
+# Historical diff:  scripts/abi-diff.sh --anchor v1.0-rc
+#
+# One line per exported symbol, format:
+#   FUNC <name>|<normalized prototype>
+#   TYPEDEF <name>|<normalized declaration>
+#
+# NOT frozen: the IF-01 freeze fires at v1.0 GA (M5-13), not
+# here. The pre-1.0 prerelease policy (free rename/remove with a
+# dated changelog entry) stays in force through the rc series.
+# See docs/abi-changelog.md for the schema and freeze policy.
+FUNC vokra_aec_create|enum vokra_status_t vokra_aec_create(const struct vokra_aec_config_t *config, struct vokra_aec_t **out_aec, struct vokra_aec_ref_writer_t **out_writer)
+FUNC vokra_aec_destroy|void vokra_aec_destroy(struct vokra_aec_t *aec)
+FUNC vokra_aec_process|enum vokra_status_t vokra_aec_process(struct vokra_aec_t *aec, const float *mic, uint64_t mic_pos, float *out, size_t num_samples, enum vokra_aec_status_t *out_status, size_t *out_missing)
+FUNC vokra_aec_ref_push|enum vokra_status_t vokra_aec_ref_push(struct vokra_aec_ref_writer_t *writer, const float *pcm, size_t num_samples, uint64_t playback_pos, size_t *out_accepted)
+FUNC vokra_aec_ref_writer_destroy|void vokra_aec_ref_writer_destroy(struct vokra_aec_ref_writer_t *writer)
+FUNC vokra_aec_reset|enum vokra_status_t vokra_aec_reset(struct vokra_aec_t *aec)
+FUNC vokra_asr_transcribe|enum vokra_status_t vokra_asr_transcribe(const struct vokra_session_t *session, const float *pcm, size_t num_samples, int32_t sample_rate, char **out_text_utf8)
+FUNC vokra_audio_free|void vokra_audio_free(float *pcm, size_t num_samples)
+FUNC vokra_last_error|const char *vokra_last_error(void)
+FUNC vokra_model_attribution|enum vokra_status_t vokra_model_attribution(const struct vokra_session_t *session, char *buf, size_t buf_len, size_t *out_needed)
+FUNC vokra_s2s_duplex_destroy|void vokra_s2s_duplex_destroy(struct vokra_s2s_duplex_t *duplex)
+FUNC vokra_s2s_duplex_open|enum vokra_status_t vokra_s2s_duplex_open(const struct vokra_session_t *session, int32_t deterministic, uint64_t seed, int32_t aec_disabled_explicitly, uint64_t playback_offset_samples, struct vokra_s2s_duplex_t **out_duplex)
+FUNC vokra_s2s_frame_hop|enum vokra_status_t vokra_s2s_frame_hop(const struct vokra_s2s_duplex_t *duplex, size_t *out_hop)
+FUNC vokra_s2s_interrupt_destroy|void vokra_s2s_interrupt_destroy(struct vokra_s2s_interrupt_t *interrupt)
+FUNC vokra_s2s_interrupt_handle|enum vokra_status_t vokra_s2s_interrupt_handle(const struct vokra_s2s_duplex_t *duplex, struct vokra_s2s_interrupt_t **out_interrupt)
+FUNC vokra_s2s_interrupt|enum vokra_status_t vokra_s2s_interrupt(const struct vokra_s2s_interrupt_t *interrupt)
+FUNC vokra_s2s_pull_audio|enum vokra_status_t vokra_s2s_pull_audio(struct vokra_s2s_duplex_t *duplex, float *out_pcm, size_t capacity, size_t *out_len)
+FUNC vokra_s2s_push_mic|enum vokra_status_t vokra_s2s_push_mic(struct vokra_s2s_duplex_t *duplex, const float *pcm, size_t len, int32_t *out_emitted)
+FUNC vokra_s2s_sample_rate|enum vokra_status_t vokra_s2s_sample_rate(const struct vokra_s2s_duplex_t *duplex, uint32_t *out_rate)
+FUNC vokra_s2s_text|enum vokra_status_t vokra_s2s_text(const struct vokra_s2s_duplex_t *duplex, char *buf, size_t buf_len, size_t *out_needed)
+FUNC vokra_session_create_from_bytes|enum vokra_status_t vokra_session_create_from_bytes(const uint8_t *data, size_t len, struct vokra_session_t **out_session)
+FUNC vokra_session_create_from_file|enum vokra_status_t vokra_session_create_from_file(const char *path_utf8, struct vokra_session_t **out_session)
+FUNC vokra_session_destroy|void vokra_session_destroy(struct vokra_session_t *session)
+FUNC vokra_session_retain|enum vokra_status_t vokra_session_retain(const struct vokra_session_t *session, struct vokra_session_t **out_session)
+FUNC vokra_stream_destroy|void vokra_stream_destroy(struct vokra_stream_t *stream)
+FUNC vokra_stream_interrupt|enum vokra_status_t vokra_stream_interrupt(struct vokra_stream_t *stream)
+FUNC vokra_stream_open|enum vokra_status_t vokra_stream_open(const struct vokra_session_t *session, int32_t sample_rate, struct vokra_stream_t **out_stream)
+FUNC vokra_stream_poll_events|enum vokra_status_t vokra_stream_poll_events(struct vokra_stream_t *stream, struct vokra_event_t *out_events, size_t capacity, size_t *out_count)
+FUNC vokra_stream_poll|enum vokra_status_t vokra_stream_poll(struct vokra_stream_t *stream, float *out_probs, size_t capacity, size_t *out_count)
+FUNC vokra_stream_push_pcm|enum vokra_status_t vokra_stream_push_pcm(struct vokra_stream_t *stream, const float *pcm, size_t num_samples)
+FUNC vokra_string_free|void vokra_string_free(char *s)
+FUNC vokra_tts_synthesize|enum vokra_status_t vokra_tts_synthesize(const struct vokra_session_t *session, const char *text_utf8, float **out_pcm, size_t *out_num_samples, int32_t *out_sample_rate)
+FUNC vokra_version|const char *vokra_version(void)
+TYPEDEF vokra_aec_config_t|typedef struct vokra_aec_config_t { uint32_t sample_rate; size_t frame_size; size_t filter_length; size_t ref_queue_capacity_samples; } vokra_aec_config_t
+TYPEDEF vokra_aec_ref_writer_t|typedef struct vokra_aec_ref_writer_t vokra_aec_ref_writer_t
+TYPEDEF vokra_aec_status_t|typedef enum vokra_aec_status_t { VOKRA_AEC_CANCELLED = 0, VOKRA_AEC_PASS_THROUGH = 1, VOKRA_AEC_PARTIAL_REFERENCE = 2, VOKRA_AEC_RESET = 3, } vokra_aec_status_t
+TYPEDEF vokra_aec_t|typedef struct vokra_aec_t vokra_aec_t
+TYPEDEF vokra_event_kind_t|typedef enum vokra_event_kind_t { VOKRA_EVENT_UNKNOWN = 0, VOKRA_EVENT_SPEECH_PROB = 1, VOKRA_EVENT_TOKEN = 2, } vokra_event_kind_t
+TYPEDEF vokra_event_t|typedef struct vokra_event_t { enum vokra_event_kind_t kind; uint32_t a; float b; } vokra_event_t
+TYPEDEF vokra_s2s_duplex_t|typedef struct vokra_s2s_duplex_t vokra_s2s_duplex_t
+TYPEDEF vokra_s2s_interrupt_t|typedef struct vokra_s2s_interrupt_t vokra_s2s_interrupt_t
+TYPEDEF vokra_session_t|typedef struct vokra_session_t vokra_session_t
+TYPEDEF vokra_status_t|typedef enum vokra_status_t { VOKRA_OK = 0, VOKRA_ERROR_IO = 1, VOKRA_ERROR_MODEL_LOAD = 2, VOKRA_ERROR_UNSUPPORTED_OP = 3, VOKRA_ERROR_BACKEND_UNAVAILABLE = 4, VOKRA_ERROR_INVALID_ARGUMENT = 5, VOKRA_ERROR_GRAPH_VALIDATION = 6, VOKRA_ERROR_NOT_IMPLEMENTED = 7, VOKRA_ERROR_PANIC = 8, VOKRA_ERROR_OTHER = 9, } vokra_status_t
+TYPEDEF vokra_stream_t|typedef struct vokra_stream_t vokra_stream_t

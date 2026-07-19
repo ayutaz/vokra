@@ -9,7 +9,12 @@
 //! * per-stage, first frame / zero state (from lifted `If`-branch ORT graphs):
 //!   pseudo-STFT conv (T04), magnitude (T05), encoder output (T06);
 //! * single-frame end-to-end probability (T07);
-//! * multi-frame streaming with LSTM state carry-over, both rates (T09).
+//! * multi-frame streaming with LSTM state carry-over, both rates (T09), on
+//!   **both** interfaces: the raw bare-frame graph interface (`probs_<tag>.txt`)
+//!   and the official rolling-context wrapper semantics (`probs_<tag>_ctx.txt`);
+//! * real-speech detection over the committed `jfk-30s.wav` against the
+//!   official-context ORT reference, including default-parameter segmentation
+//!   (the 2026-07-16 real-weight eval P1 regression).
 //!
 //! FP32 tolerance is `atol = 0.01` (NFR-QL-01). The stage references are ORT
 //! float32 tensors; small accumulation-order differences stay well inside it.
@@ -114,35 +119,148 @@ fn stage_test(rate: SampleRate) {
     );
 }
 
-/// e2e streaming parity: push the whole WAV, compare every frame probability to
-/// the ORT reference with LSTM state carried across frames.
-fn stream_test(rate: SampleRate) {
+/// e2e streaming parity on the **raw** 1:1 graph interface (bare fixed frames,
+/// no rolling audio context): push the whole WAV through a raw stream and
+/// compare every frame probability to the ORT bare-frame reference. This pins
+/// the numerically faithful graph port; real-speech *detection* is the
+/// official-context interface's job ([`stream_ctx_test`]).
+fn stream_raw_test(rate: SampleRate) {
     let model = SileroVadV5::open(test_gguf_path()).unwrap();
     let wav = read_wav_f32(parity_dir().join(format!("test_{}.wav", tag(rate)))).unwrap();
     assert_eq!(wav.sample_rate, rate.hz());
 
-    let mut stream = model.open_stream();
+    let mut stream = model.open_raw_stream();
     let probs = stream.push_pcm(&wav.samples, rate.hz()).unwrap();
     let reference = read_floats(&format!("probs_{}.txt", tag(rate)));
     assert_eq!(probs.len(), reference.len(), "{} frame count", tag(rate));
 
     let err = max_abs_err(&probs, &reference);
     eprintln!(
-        "[silero parity {}] e2e streaming frames={} max_abs_err={err:.3e} (atol={ATOL})",
+        "[silero parity {} raw] e2e streaming frames={} max_abs_err={err:.3e} (atol={ATOL})",
         tag(rate),
         probs.len()
     );
-    assert!(err < ATOL, "{} e2e prob err {err} >= {ATOL}", tag(rate));
+    assert!(err < ATOL, "{} raw e2e prob err {err} >= {ATOL}", tag(rate));
+}
 
-    // T07: single frame (fresh state) equals the first streaming frame.
+/// e2e streaming parity on the **official** interface (the default,
+/// `VadEngine::open_stream`): 64-sample (@ 16 kHz; 32 @ 8 kHz) rolling context
+/// prepended to every frame, exactly as the upstream python wrapper
+/// (`utils_vad.py OnnxWrapper`) drives the ONNX. Reference =
+/// `probs_<tag>_ctx.txt` (ORT fed `[1, 576]` / `[1, 288]`).
+fn stream_ctx_test(rate: SampleRate) {
+    let model = SileroVadV5::open(test_gguf_path()).unwrap();
+    let wav = read_wav_f32(parity_dir().join(format!("test_{}.wav", tag(rate)))).unwrap();
+    assert_eq!(wav.sample_rate, rate.hz());
+
+    let mut stream = model.open_stream();
+    let probs = stream.push_pcm(&wav.samples, rate.hz()).unwrap();
+    let reference = read_floats(&format!("probs_{}_ctx.txt", tag(rate)));
+    assert_eq!(
+        probs.len(),
+        reference.len(),
+        "{} ctx frame count",
+        tag(rate)
+    );
+
+    let err = max_abs_err(&probs, &reference);
+    eprintln!(
+        "[silero parity {} ctx] e2e streaming frames={} max_abs_err={err:.3e} (atol={ATOL})",
+        tag(rate),
+        probs.len()
+    );
+    assert!(err < ATOL, "{} ctx e2e prob err {err} >= {ATOL}", tag(rate));
+
+    // T07: single frame (fresh state) follows the same official semantics —
+    // it equals the first frame of a fresh official stream (zero context).
     let single = model
         .forward_chunk(rate, &wav.samples[..rate.frame_len()])
         .unwrap();
     assert!(
         (single - reference[0]).abs() < ATOL,
-        "{} single-chunk",
+        "{} single-chunk vs ctx reference",
         tag(rate)
     );
+}
+
+/// Speech segments from per-frame probabilities — a faithful reduction of the
+/// upstream segmenter at **default parameters**: threshold 0.5, neg_threshold
+/// `max(threshold - 0.15, 0.01)` = 0.35, min_speech 250 ms, min_silence
+/// 100 ms, speech_pad 30 ms, `max_speech_duration_s = inf` (so the upstream
+/// max-speech split branch never fires and its bookkeeping is dead code).
+/// Source: snakers4/silero-vad master `src/silero_vad/utils_vad.py`
+/// `get_speech_timestamps` (the wrapper shipped with the pinned master ONNX,
+/// sha256 `1a153a22…`).
+///
+/// `audio_len` drives the trailing-segment close and the end-pad clamp; pass
+/// `probs.len() * frame_len` so segmentation covers exactly the complete
+/// frames both engines scored (trailing partial frames are dropped by the
+/// stream), matching how the 2026-07-16 eval applied the upstream segmenter.
+fn speech_segments(
+    probs: &[f32],
+    sample_rate: usize,
+    frame_len: usize,
+    audio_len: usize,
+) -> Vec<(usize, usize)> {
+    const THRESHOLD: f32 = 0.5;
+    const NEG_THRESHOLD: f32 = 0.35;
+    let min_speech = sample_rate * 250 / 1000; // > gate, samples
+    let min_silence = sample_rate * 100 / 1000;
+    let pad = sample_rate * 30 / 1000;
+
+    let mut triggered = false;
+    let mut start = 0usize;
+    let mut temp_end = 0usize; // 0 = unset (upstream sentinel convention)
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for (i, &p) in probs.iter().enumerate() {
+        let cur = i * frame_len;
+        if p >= THRESHOLD && temp_end != 0 {
+            temp_end = 0;
+        }
+        if p >= THRESHOLD && !triggered {
+            triggered = true;
+            start = cur;
+            continue;
+        }
+        if p < NEG_THRESHOLD && triggered {
+            if temp_end == 0 {
+                temp_end = cur;
+            }
+            if cur - temp_end >= min_silence {
+                if temp_end - start > min_speech {
+                    spans.push((start, temp_end));
+                }
+                temp_end = 0;
+                triggered = false;
+            }
+        }
+    }
+    if triggered && audio_len - start > min_speech {
+        spans.push((start, audio_len));
+    }
+
+    // Pad pass (upstream tail of get_speech_timestamps): widen the first start
+    // and last end by `pad`; short inter-segment gaps (< 2*pad) are split in
+    // half, longer ones padded from both sides.
+    let n = spans.len();
+    for i in 0..n {
+        if i == 0 {
+            spans[i].0 = spans[i].0.saturating_sub(pad);
+        }
+        if i + 1 < n {
+            let gap = spans[i + 1].0 - spans[i].1;
+            if gap < 2 * pad {
+                spans[i].1 += gap / 2;
+                spans[i + 1].0 -= gap / 2;
+            } else {
+                spans[i].1 = (spans[i].1 + pad).min(audio_len);
+                spans[i + 1].0 = spans[i + 1].0.saturating_sub(pad);
+            }
+        } else {
+            spans[i].1 = (spans[i].1 + pad).min(audio_len);
+        }
+    }
+    spans
 }
 
 #[test]
@@ -156,11 +274,183 @@ fn stage_parity_8k() {
 }
 
 #[test]
-fn vad_stream_parity_16k() {
-    stream_test(SampleRate::Hz16000);
+fn vad_stream_parity_raw_16k() {
+    stream_raw_test(SampleRate::Hz16000);
 }
 
 #[test]
-fn vad_stream_parity_8k() {
-    stream_test(SampleRate::Hz8000);
+fn vad_stream_parity_raw_8k() {
+    stream_raw_test(SampleRate::Hz8000);
+}
+
+#[test]
+fn vad_stream_parity_ctx_16k() {
+    stream_ctx_test(SampleRate::Hz16000);
+}
+
+#[test]
+fn vad_stream_parity_ctx_8k() {
+    stream_ctx_test(SampleRate::Hz8000);
+}
+
+/// Real-speech regression for the 2026-07-16 real-weight eval **P1**: the raw
+/// bare-frame interface collapses on real speech (max prob 0.0037 on this
+/// clip → zero segments at the official threshold 0.5), while the official
+/// rolling-context interface detects 4 segments. Reference =
+/// `probs_jfk30s_ctx.txt`: ORT 1.19.2 over the pinned master `silero_vad.onnx`
+/// (sha256 `1a153a22…`, the ONNX the fixture GGUF is extracted from) in
+/// official ctx576 streaming over the committed
+/// `tests/fixtures/audio/jfk-30s.wav` (sha256 `58adb4ea…`); byte-identical to
+/// the eval's independent dump. Expected segments recorded from the eval's
+/// upstream `get_speech_timestamps` run (analyze.py, threshold 0.5, defaults).
+#[test]
+fn vad_real_speech_jfk_official_context() {
+    let model = SileroVadV5::open(test_gguf_path()).unwrap();
+    let wav = read_wav_f32(parity_dir().join("../../fixtures/audio/jfk-30s.wav")).unwrap();
+    assert_eq!(wav.sample_rate, 16_000, "jfk fixture rate");
+
+    let mut stream = model.open_stream();
+    let probs = stream.push_pcm(&wav.samples, 16_000).unwrap();
+    let reference = read_floats("probs_jfk30s_ctx.txt");
+    assert_eq!(probs.len(), reference.len(), "jfk frame count");
+
+    let err = max_abs_err(&probs, &reference);
+    let max_prob = probs.iter().fold(0.0f32, |a, &b| a.max(b));
+    eprintln!(
+        "[silero parity jfk ctx] frames={} max_abs_err={err:.3e} max_prob={max_prob:.4}",
+        probs.len()
+    );
+    assert!(err < ATOL, "jfk ctx prob err {err} >= {ATOL}");
+    // The product-level symptom the context layer fixes: real speech must
+    // actually clear the official threshold (pre-fix max prob was 0.0037).
+    assert!(max_prob > 0.99, "real speech max prob {max_prob} <= 0.99");
+
+    // Default-parameter segmentation: the replica must reproduce the upstream
+    // get_speech_timestamps spans on the ORT reference, and our probabilities
+    // must yield the identical segments.
+    let audio_len = probs.len() * 512;
+    let ort_segments = speech_segments(&reference, 16_000, 512, audio_len);
+    assert_eq!(
+        ort_segments,
+        [
+            (5152, 36320),
+            (52256, 71136),
+            (86048, 122848),
+            (130592, 169952)
+        ],
+        "segmenter replica vs upstream get_speech_timestamps on the ORT reference"
+    );
+    let got_segments = speech_segments(&probs, 16_000, 512, audio_len);
+    assert_eq!(got_segments, ort_segments, "segments at threshold 0.5");
+
+    // Pin the honest negative: the raw interface stays numerically faithful to
+    // the bare-frame ONNX interface but cannot detect real speech — nobody
+    // should mistake it for a usable default (eval measured max prob 0.0037).
+    let mut raw = model.open_raw_stream();
+    let raw_probs = raw.push_pcm(&wav.samples, 16_000).unwrap();
+    let raw_max = raw_probs.iter().fold(0.0f32, |a, &b| a.max(b));
+    assert!(raw_max < 0.05, "raw-512 jfk max prob {raw_max} >= 0.05");
+    assert!(
+        speech_segments(&raw_probs, 16_000, 512, audio_len).is_empty(),
+        "raw-512 must yield no segments at threshold 0.5 (the documented gap)"
+    );
+}
+
+/// Real speech through the **8 kHz** official-context branch (ctx288) — the
+/// quadrant the ctx fix (`7639dc0`) never covered: it was verified on synthetic
+/// audio at both rates but on real speech at 16 kHz only.
+///
+/// Input is `jfk-30s-8k.wav`, the committed 16 kHz clip decimated by
+/// `gen_reference.py::halfband_decimate` (anti-aliased Kaiser-sinc; plain
+/// `x[::2]` would alias 4-8 kHz content back into the band). The WAV is
+/// committed rather than resampled here so this test and ORT score
+/// byte-identical samples. Reference = `probs_jfk8k_ctx.txt`, ORT 1.19.2 over
+/// the same pinned master `silero_vad.onnx` as the 16 kHz leg.
+///
+/// The 8 kHz graph is a *separate* weight set (`sr8k.*`, selected by the ONNX's
+/// `If(sr == 16000)`), so this exercises code and weights the 16 kHz leg never
+/// touches.
+#[test]
+fn vad_real_speech_jfk_8k_official_context() {
+    const FRAME: usize = 256;
+    let model = SileroVadV5::open(test_gguf_path()).unwrap();
+    let wav = read_wav_f32(parity_dir().join("jfk-30s-8k.wav")).unwrap();
+    assert_eq!(wav.sample_rate, 8_000, "8 kHz fixture rate");
+
+    let mut stream = model.open_stream();
+    let probs = stream.push_pcm(&wav.samples, 8_000).unwrap();
+    let reference = read_floats("probs_jfk8k_ctx.txt");
+    assert_eq!(probs.len(), reference.len(), "jfk 8k frame count");
+
+    let err = max_abs_err(&probs, &reference);
+    let max_prob = probs.iter().fold(0.0f32, |a, &b| a.max(b));
+    eprintln!(
+        "[silero parity jfk 8k ctx] frames={} max_abs_err={err:.3e} max_prob={max_prob:.4}",
+        probs.len()
+    );
+    assert!(err < ATOL, "jfk 8k ctx prob err {err} >= {ATOL}");
+    assert!(max_prob > 0.99, "real speech max prob {max_prob} <= 0.99");
+
+    // Segments must match the ORT reference exactly, and the reference itself
+    // must reproduce the spans measured from the upstream segmenter (2026-07-19).
+    let audio_len = probs.len() * FRAME;
+    let ort_segments = speech_segments(&reference, 8_000, FRAME, audio_len);
+    assert_eq!(
+        ort_segments,
+        [
+            (2320, 18416),
+            (26128, 35568),
+            (43024, 61424),
+            (65296, 85232)
+        ],
+        "segmenter replica vs upstream get_speech_timestamps on the 8 kHz ORT reference"
+    );
+    let got_segments = speech_segments(&probs, 8_000, FRAME, audio_len);
+    assert_eq!(
+        got_segments, ort_segments,
+        "8 kHz segments at threshold 0.5"
+    );
+
+    // Cross-rate agreement: the same utterance must yield the same number of
+    // segments at both rates, with spans agreeing to within one 8 kHz frame
+    // once the 16 kHz spans are rate-normalised. (Two of the four are exactly
+    // equal; the boundary frames of the first and last differ by one frame.)
+    let ref16 = read_floats("probs_jfk30s_ctx.txt");
+    let seg16 = speech_segments(&ref16, 16_000, 512, ref16.len() * 512);
+    assert_eq!(
+        seg16.len(),
+        got_segments.len(),
+        "segment count across rates"
+    );
+    for (i, (&(a8, b8), &(a16, b16))) in got_segments.iter().zip(&seg16).enumerate() {
+        let (a16, b16) = (a16 / 2, b16 / 2);
+        assert!(
+            a8.abs_diff(a16) <= FRAME && b8.abs_diff(b16) <= FRAME,
+            "segment {i} across rates: 8k ({a8}, {b8}) vs 16k/2 ({a16}, {b16})"
+        );
+    }
+
+    // The 16 kHz leg's honest negative repeats here, but the failure mode is
+    // rate-dependent and worth recording: at 8 kHz the raw bare-frame interface
+    // peaks at 0.646 on this clip — it does cross the 0.5 threshold, unlike the
+    // 16 kHz collapse to 0.0037 — yet it never holds speech long enough to
+    // satisfy min_speech (250 ms), so it still yields **zero** segments against
+    // the official interface's four. Only that product-level fact is asserted;
+    // the peak is printed, not thresholded, so this stays a measurement rather
+    // than a tuned bound.
+    let mut raw = model.open_raw_stream();
+    let raw_probs = raw.push_pcm(&wav.samples, 8_000).unwrap();
+    let raw_max = raw_probs.iter().fold(0.0f32, |a, &b| a.max(b));
+    let raw_segments = speech_segments(&raw_probs, 8_000, FRAME, audio_len);
+    eprintln!(
+        "[silero parity jfk 8k raw] max_prob={raw_max:.4} segments={} \
+         (official: {} segments)",
+        raw_segments.len(),
+        got_segments.len()
+    );
+    assert!(
+        raw_segments.is_empty(),
+        "raw-256 must yield no segments at threshold 0.5 (the documented gap); \
+         got {raw_segments:?} with peak {raw_max}"
+    );
 }
