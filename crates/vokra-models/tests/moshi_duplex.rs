@@ -436,3 +436,98 @@ fn watermark_config_default_is_on_and_backend_deferred() {
         "default ON (config-only posture; embedding stays Deferred)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// M4-RESIDUAL-B (C) — opt-in output limiter on the duplex output path.
+// ---------------------------------------------------------------------------
+
+/// Drives the synthesized-fixture duplex for a fixed number of pushes and
+/// returns the concatenated model PCM under the given limiter (deterministic).
+fn duplex_output_under(limiter: vokra_models::csm::OutputLimiter) -> Vec<f32> {
+    let engine = engine_with_aec(11);
+    let mut s = engine
+        .open_duplex_session(&DuplexSessionConfig::new().deterministic())
+        .expect("session")
+        .with_output_limiter(limiter);
+    assert_eq!(s.output_limiter(), limiter, "limiter setter takes effect");
+    let hop = s.frame_hop();
+    let mut pcm = Vec::new();
+    for step in 0..8 {
+        s.push_mic_frame(&mic_frame(hop, step)).expect("push");
+        while let Some(frame) = s.pull_model_frame().expect("pull") {
+            pcm.extend_from_slice(&frame);
+        }
+    }
+    pcm
+}
+
+fn peak(pcm: &[f32]) -> f32 {
+    pcm.iter().fold(0.0f32, |m, &s| m.max(s.abs()))
+}
+
+/// The default (`None`) limiter, and an explicit `None`, both reproduce the
+/// pre-limiter output BYTE-for-byte — the shipping path is unchanged
+/// (FR-EX-08). `Clamp` bounds every sample to `[-1, 1]`; `PeakNormalize` bounds
+/// the peak to ≤ 1.0. Peaks are a **synthesized-bridge** measurement (printed),
+/// not a real-Mimi-weight value.
+#[test]
+fn duplex_output_limiter_none_is_bit_identical_and_bounds_are_enforced() {
+    use vokra_models::csm::OutputLimiter;
+
+    // Default field == None: a session with no limiter set and one set to None
+    // produce identical audio (and identical to each other run-to-run).
+    let default_session_pcm = {
+        let engine = engine_with_aec(11);
+        let mut s = engine
+            .open_duplex_session(&DuplexSessionConfig::new().deterministic())
+            .expect("session");
+        assert_eq!(s.output_limiter(), OutputLimiter::None, "default is None");
+        let hop = s.frame_hop();
+        let mut pcm = Vec::new();
+        for step in 0..8 {
+            s.push_mic_frame(&mic_frame(hop, step)).expect("push");
+            while let Some(frame) = s.pull_model_frame().expect("pull") {
+                pcm.extend_from_slice(&frame);
+            }
+        }
+        pcm
+    };
+    let none_pcm = duplex_output_under(OutputLimiter::None);
+    assert_eq!(
+        none_pcm.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+        default_session_pcm
+            .iter()
+            .map(|s| s.to_bits())
+            .collect::<Vec<_>>(),
+        "explicit None == default (unset) == bit-identical"
+    );
+
+    let raw_peak = peak(&none_pcm);
+    eprintln!(
+        "moshi duplex synthesized-bridge output peak (None) = {raw_peak} \
+         (synthesized fixture value — NOT a real-Mimi-weight measurement)"
+    );
+
+    let clamp_pcm = duplex_output_under(OutputLimiter::Clamp);
+    assert!(
+        clamp_pcm.iter().all(|&s| (-1.0..=1.0).contains(&s)),
+        "Clamp bounds every sample to [-1, 1]"
+    );
+
+    let peaknorm_pcm = duplex_output_under(OutputLimiter::PeakNormalize);
+    assert!(
+        peak(&peaknorm_pcm) <= 1.0 + 1e-6,
+        "PeakNormalize bounds the peak to <= 1.0 (got {})",
+        peak(&peaknorm_pcm)
+    );
+
+    // Within-range frames pass PeakNormalize unchanged (attenuate-only): if the
+    // fixture never exceeds 1.0, None == PeakNormalize bit-for-bit.
+    if raw_peak <= 1.0 {
+        assert_eq!(
+            none_pcm.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+            peaknorm_pcm.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
+            "attenuate-only: an all-within-range stream is untouched"
+        );
+    }
+}

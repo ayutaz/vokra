@@ -610,7 +610,7 @@ fn emit_audio(
 /// FR-EX-08 forbids. The message names every offending character so a caller
 /// can see whether they passed graphemes by mistake — the most likely error,
 /// since there is no G2P bridge in-tree to convert them.
-fn kokoro_phoneme_ids(text: &str, symbols: &[String]) -> Result<Vec<i64>, String> {
+pub(crate) fn kokoro_phoneme_ids(text: &str, symbols: &[String]) -> Result<Vec<i64>, String> {
     let content = if is_id_sequence(text) {
         kokoro_content_from_ids(text, symbols)?
     } else {
@@ -719,7 +719,7 @@ fn kokoro_content_from_symbols(text: &str, symbols: &[String]) -> Result<Vec<i64
 /// `2·style_dim` — the two lengths `KokoroTts::synthesize_phonemes` accepts.
 /// Both checks happen here so a truncated dump is named as such rather than
 /// surfacing as a shape error from inside the prosody predictor.
-fn read_style_vector(path: &str, style_dim: usize) -> Result<Vec<f32>, String> {
+pub(crate) fn read_style_vector(path: &str, style_dim: usize) -> Result<Vec<f32>, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("--style {path}: {e}"))?;
     // `%` rather than `usize::is_multiple_of`: this crate inherits the
     // workspace MSRV (1.85) and that method is stable only since 1.87.

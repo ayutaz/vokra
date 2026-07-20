@@ -75,6 +75,22 @@
 //!    fixtures) converts as before; a checkpoint **with** the chain that
 //!    deviates from the moshi-native geometry is a loud error naming the
 //!    offending tensor (FR-EX-08 — never a silent partial mapping).
+//!
+//! # Dual-write is by design — do NOT dedup without a both-consumer proof
+//!
+//! The verbatim pass-through group (item 1) and the derived structural group
+//! (item 5, `mimi.enc.*` / `mimi.dec.*`) **coexist on purpose**: they feed
+//! *different* consumers — the verbatim names let an M4-05/06 (CSM / Moshi) or
+//! external tool read the raw checkpoint from the same GGUF without re-running
+//! this converter, while the structural names are what the Vokra runtime binders
+//! (`vokra-models::mimi::{MimiEncoder, MimiNeuralDecoder}`) actually load. This
+//! is **not** redundancy to strip: `tests/mimi_dual_write_guard.rs` (M4-RESIDUAL-B)
+//! converts the real checkpoint and asserts both groups exist + both consumers
+//! bind, so a size-optimization dedup that silently drops one group turns that
+//! guard red. Dedup is **deferred** until both consumers are re-wired to a
+//! single-source tensor (ADR `M4-RESIDUAL-B` §(B) open question 4) — the fresh
+//! dual-write GGUF measures ~906 MB; the ~519 MB verbatim-only cache is a
+//! **stale** pre-chain artifact (structural-empty) that fails the neural binder.
 
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
@@ -154,7 +170,10 @@ pub(crate) struct MimiReport {
     pub(crate) d_model: usize,
     /// Structural `mimi.enc.*` / `mimi.dec.*` tensors written by the
     /// neural-chain adapter (`0` when the checkpoint carries no chain —
-    /// quantizer-only synthetic fixtures).
+    /// quantizer-only synthetic fixtures). These coexist with the verbatim
+    /// pass-through ([`Self::written`]) **by design** (module docs "Dual-write
+    /// is by design"): the two groups feed different consumers; do not dedup
+    /// without a both-consumer proof.
     pub(crate) structural_written: usize,
 }
 

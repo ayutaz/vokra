@@ -55,7 +55,7 @@ pub mod streaming;
 pub mod tokenizer;
 
 pub use aec_front::{AecFront, EchoPath};
-pub use audio::{CsmAudioDecodeChain, CsmAudioDecodeState};
+pub use audio::{CsmAudioDecodeChain, CsmAudioDecodeState, OutputLimiter};
 pub use backbone::{
     CSM_FROM_GGUF_DEFAULT_SEED, CsmBackbone, CsmBackboneState, CsmBackboneWeights, CsmFrame,
 };
