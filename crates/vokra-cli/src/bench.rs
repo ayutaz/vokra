@@ -117,8 +117,14 @@ pub(crate) fn parse_backend(v: &str) -> Result<BackendKind, String> {
         // surfaces an explicit `UnsupportedOp` from `Compute::for_backend` (no
         // silent CPU fall back, FR-EX-08).
         "vulkan" => Ok(BackendKind::Vulkan),
+        // CoreML delegate (M5-01) — recognised at parse time so the CLI accepts
+        // the name; the scaffold slice has no wired execution path, so any
+        // actual run surfaces an explicit `UnsupportedOp` (ANE present) or
+        // `BackendUnavailable` (no ANE / `coreml` feature off) from
+        // `Compute::for_backend` (no silent CPU fall back, FR-EX-08).
+        "coreml" => Ok(BackendKind::CoreMl),
         other => Err(format!(
-            "unknown --backend `{other}` (cpu | metal | cuda | vulkan)"
+            "unknown --backend `{other}` (cpu | metal | cuda | vulkan | coreml)"
         )),
     }
 }
@@ -1004,6 +1010,23 @@ mod tests {
 
     fn args(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn parse_backend_accepts_every_selector_and_rejects_unknown() {
+        // Each name maps to its enum variant; whether the backend is *usable*
+        // depends on the compiled features, but the name must always parse so
+        // an unavailable backend fails loudly at inference, never silently on
+        // CPU (FR-EX-08). `coreml` (M5-01) is accepted here even though its
+        // execution path is scaffold-only.
+        assert_eq!(parse_backend("cpu"), Ok(BackendKind::Cpu));
+        assert_eq!(parse_backend("metal"), Ok(BackendKind::Metal));
+        assert_eq!(parse_backend("cuda"), Ok(BackendKind::Cuda));
+        assert_eq!(parse_backend("vulkan"), Ok(BackendKind::Vulkan));
+        assert_eq!(parse_backend("coreml"), Ok(BackendKind::CoreMl));
+        // An unknown name is a loud parse error naming the valid set.
+        let err = parse_backend("qnn").expect_err("qnn is not a selectable backend yet");
+        assert!(err.contains("coreml"), "error must list coreml: {err}");
     }
 
     // ----- M2-08-T12: HiFi-GAN INT8 opt-in verify gate --------------------

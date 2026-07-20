@@ -39,6 +39,7 @@ vokra-backend-metal = { path = "crates/vokra-backend-metal" }
 vokra-backend-cuda = { path = "crates/vokra-backend-cuda" }
 vokra-backend-vulkan = { path = "crates/vokra-backend-vulkan" }
 vokra-backend-webgpu = { path = "crates/vokra-backend-webgpu" }
+vokra-backend-coreml = { path = "crates/vokra-backend-coreml" }
 vokra-models = { path = "crates/vokra-models" }
 vokra-piper-plus = { path = "crates/vokra-piper-plus" }
 vokra-capi = { path = "crates/vokra-capi" }

@@ -71,6 +71,18 @@ vokra-backend-vulkan = { workspace = true, optional = true }
 # (FR-EX-08).
 vokra-backend-webgpu = { workspace = true, optional = true }
 
+# Off by default: the CoreML delegate backend (Apple ANE, M5-01) reached behind
+# the `coreml` feature. An OPTIONAL first-party dep, so default builds never
+# name it (NFR-PT-01). `vokra-backend-coreml` is a first-party `vokra-*` crate
+# with ZERO external deps (raw Objective-C / CoreML framework FFI — NO objc /
+# objc2 / objc2-core-ml / core-foundation binding crate), so the zero-dependency
+# gate (NFR-DS-02) still holds. Its `Compute` arm is additionally
+# `cfg(any(target_os = "macos", target_os = "ios"))`-gated. Scaffold slice: no
+# op has a wired execution path yet, so `for_backend(CoreMl, …)` returns an
+# explicit `UnsupportedOp` (or `BackendUnavailable` with no ANE) — never a
+# silent CPU fall back (FR-EX-08). The op path lands after the M5-01-T02 ADR.
+vokra-backend-coreml = { workspace = true, optional = true }
+
 [dev-dependencies]
 # M4-04 T10/T11 (test-only edge, runtime direction untouched): the codec GGUF
 # binder roundtrip tests build a synthetic checkpoint, run it through the
@@ -125,6 +137,15 @@ vulkan = ["dep:vokra-backend-vulkan", "vokra-backend-vulkan/vulkan"]
 # context actually compiles on wasm32 — on native targets the backend's
 # target gate keeps the explicit-BackendUnavailable stubs.)
 webgpu = ["dep:vokra-backend-webgpu", "vokra-backend-webgpu/webgpu"]
+# Off by default: enable with `--features coreml` on macOS / iOS to make the
+# CoreML delegate backend (Apple ANE, M5-01) selectable through the `Compute`
+# seam. In the scaffold slice the backend covers no hot op, so any
+# `Compute::for_backend` with `BackendKind::CoreMl` returns an explicit
+# `UnsupportedOp` (an ANE-present host) or `BackendUnavailable` (no ANE) —
+# never a silent CPU fall back (FR-EX-08). The op-execution path lands after
+# the M5-01-T02 model-supply ADR is ratified (owner). On non-Apple targets the
+# backend crate's own target gate keeps it an explicit stub.
+coreml = ["dep:vokra-backend-coreml"]
 
 # M1-01-D: reference RTF bench for the piper-plus native TTS (hand-rolled
 # std::time measurement, no external bench crate — NFR-DS-02). It is env-gated

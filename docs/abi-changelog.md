@@ -228,6 +228,32 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-07-20 — 1.0.0-rc.1-dev (M5-01: CoreML delegate backend selector — Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+untouched. This is deliberate and load-bearing for M5-13: a **C-level** CoreML
+delegate selector is *not* exposed during the v1.0-rc window. `include/vokra.h`
+records that a backend/delegate selector, if ever exported, is "an M5 decision
+after the real-hardware NPU bakeoff", and `docs/handoff/m4-12.md` says to land
+the delegate API as a *new* C symbol after the ANE/Hexagon bakeoff. So the only
+way to select CoreML in the rc window is the Rust surface
+(`SessionBuilder::with_backend(BackendKind::CoreMl)` / `vokra-cli --backend
+coreml`). `scripts/check-abi-changelog.sh` does not gate on this entry (no C
+symbol changed); it is recorded for the v1.0-rc baseline snapshot
+(`scripts/rust-public-api-list.sh` picks the variant up) and for the M5-13
+freeze decision on whether to promote the selector to the C ABI.
+
+Scaffold status: the backend covers no op yet (the execution path lands after
+the M5-01-T02 model-supply ADR), so selecting it is an explicit `UnsupportedOp`
+(ANE present) or `BackendUnavailable` (no ANE) — never a silent CPU fall back.
+No GGUF metadata schema is added by this slice; if the T02 ADR chooses a
+`vokra.coreml.*` artifact-binding scheme, that schema addition gets its own
+dated entry (per the "GGUF metadata schema" scope rule above).
+
+| Crate / area              | Symbol                 | Kind  | Signature                            | Rationale                                                        | Breaking? | PR    |
+| ------------------------- | ---------------------- | ----- | ------------------------------------ | ---------------------------------------------------------------- | --------- | ----- |
+| `vokra-core::backend`     | `BackendKind::CoreMl`  | Added | `enum BackendKind { …, CoreMl }` (`#[non_exhaustive]`, additive) | CoreML delegate selector (FR-BE-06), WP M5-01; raw ObjC/CoreML FFI, no binding crate. C-ABI exposure deferred to M5-13 post-bakeoff | no        | (TBD) |
+
 ### 2026-07-15 — 1.0.0-rc.1-dev (M4-06: Moshi full-duplex S2S + FR-MD-09 attribution)
 
 Additive C ABI surface (WP **M4-06**, FR-MD-09 / FR-OP-60 / FR-ST-03):

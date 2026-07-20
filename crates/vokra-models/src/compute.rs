@@ -265,6 +265,21 @@ impl HotOp {
                 | HotOp::Conv1d
         )
     }
+
+    /// Whether the CoreML delegate backend's [`Compute`] seam covers this op
+    /// (M5-01-T10).
+    ///
+    /// **Scaffold slice:** the CoreML backend has NO wired execution path — it
+    /// turns on the M5-01-T02 model-supply ADR (owner-ratified), so this is
+    /// deliberately `false` for every op, the honest state (mirrors the Vulkan
+    /// foundation slice). Consequently `for_backend(CoreMl, &required)` returns
+    /// an explicit [`VokraError::UnsupportedOp`] for every non-empty `required`
+    /// — never a silent CPU fall back (FR-EX-08).
+    #[cfg(all(feature = "coreml", any(target_os = "macos", target_os = "ios")))]
+    fn covered_by_coreml(self) -> bool {
+        let _ = self;
+        false
+    }
 }
 
 /// A typed, zero-malloc compute dispatcher the imperative model hot path calls
@@ -425,6 +440,40 @@ impl Compute {
                 Ok(Compute {
                     be: Be::WebGpu(vokra_backend_webgpu::WebGpuContext::new()?),
                 })
+            }
+            #[cfg(all(feature = "coreml", any(target_os = "macos", target_os = "ios")))]
+            BackendKind::CoreMl => {
+                // Probe first: no reachable Apple Neural Engine is a
+                // `BackendUnavailable` (an Intel Mac, or a runner that hides
+                // the ANE), never a silent CPU fall back (FR-EX-08 / NFR-RL-06).
+                let caps = vokra_backend_coreml::vokra_coreml_probe()?;
+                // Coverage gate, kept in lock-step with `covered_by_coreml`
+                // (the `coreml_coverage_is_empty_in_scaffold` test pins the
+                // two together): in the scaffold slice every op is uncovered,
+                // so a non-empty `required` reports the first uncovered op.
+                if let Some(op) = required.iter().copied().find(|op| !op.covered_by_coreml()) {
+                    return Err(VokraError::UnsupportedOp(format!(
+                        "coreml delegate backend has no wired execution path for {op:?} in the \
+                         M5-01 scaffold slice ({}); the model requires {required:?}. The op path \
+                         lands after the M5-01-T02 model-supply ADR is ratified. One model = one \
+                         backend — Vokra does not silently run the uncovered ops on the CPU \
+                         (FR-EX-08). Select BackendKind::Cpu explicitly for now.",
+                        caps.summary()
+                    )));
+                }
+                // `required` empty AND every op uncovered — the scaffold cannot
+                // construct a usable `Compute::CoreMl` dispatcher (no callable
+                // execution path). Surface an explicit error rather than
+                // pretending a coverage-empty dispatcher is usable (same shape
+                // as the Vulkan foundation slice). Once the T02 ADR lands and
+                // the execution path is wired, this becomes
+                // `Ok(Compute { be: Be::CoreMl(...) })`.
+                Err(VokraError::UnsupportedOp(format!(
+                    "coreml delegate Compute path has no wired execution in the M5-01 scaffold \
+                     slice ({}) — no covered required set exists. Wait for the M5-01-T02 ADR + \
+                     the execution-path ticket.",
+                    caps.summary()
+                )))
             }
             other => Err(VokraError::BackendUnavailable(format!(
                 "{other:?} backend is not built into vokra-models (build with the `metal` feature \
@@ -2410,6 +2459,57 @@ mod tests {
         assert!(matches!(
             Compute::for_backend(BackendKind::Vulkan, &[]),
             Err(VokraError::UnsupportedOp(_))
+        ));
+    }
+
+    /// CoreML scaffold slice: `covered_by_coreml` is `false` for every variant,
+    /// so `for_backend(CoreMl, …)` never silently runs on the CPU. Because the
+    /// arm probes the ANE first, the outcome is probe-gated and honest:
+    /// `UnsupportedOp` on a host WITH an ANE (coverage empty), or
+    /// `BackendUnavailable` on a host without one — never `Ok` in the scaffold,
+    /// and never a fabricated pass. When the M5-01-T02 ADR + execution path
+    /// land, flip the covered variants in `HotOp::covered_by_coreml` and tighten
+    /// this test.
+    #[cfg(all(feature = "coreml", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn coreml_coverage_is_empty_in_scaffold() {
+        for op in [
+            HotOp::Gemm,
+            HotOp::Gemv,
+            HotOp::Softmax,
+            HotOp::LayerNorm,
+            HotOp::Gelu,
+            HotOp::Conv1d,
+            HotOp::MimiRvq,
+            HotOp::DacRvq,
+            HotOp::EncodecRvq,
+            HotOp::WavTokenizerVq,
+            HotOp::Xcodec2Fsq,
+        ] {
+            assert!(
+                !op.covered_by_coreml(),
+                "{op:?} unexpectedly covered by the M5-01 scaffold CoreML backend (no execution \
+                 path is wired). If the T02 ADR + execution path have landed, update \
+                 `HotOp::covered_by_coreml` and shrink this test accordingly.",
+            );
+            // The seam must never return `Ok` in the scaffold, and must never
+            // fall back to the CPU. On an ANE host it is `UnsupportedOp`; with
+            // no ANE it is `BackendUnavailable` (a probe-gated skip, not a
+            // fabricated pass). `Compute` has no `Debug`, so assert on the
+            // matched shape rather than formatting the value.
+            assert!(
+                matches!(
+                    Compute::for_backend(BackendKind::CoreMl, &[op]),
+                    Err(VokraError::UnsupportedOp(_)) | Err(VokraError::BackendUnavailable(_))
+                ),
+                "for_backend(CoreMl, &[{op:?}]) must be UnsupportedOp (ANE present) or \
+                 BackendUnavailable (no ANE) in the scaffold — never Ok, never a CPU fall back",
+            );
+        }
+        // Empty required set is also explicit (no callable execution path).
+        assert!(matches!(
+            Compute::for_backend(BackendKind::CoreMl, &[]),
+            Err(VokraError::UnsupportedOp(_)) | Err(VokraError::BackendUnavailable(_))
         ));
     }
 

@@ -137,6 +137,32 @@ pub enum BackendKind {
     /// WASM CPU (SIMD128) path instead is the caller's *explicit*
     /// [`BackendKind::Cpu`] choice.
     WebGpu,
+    /// CoreML delegate backend (Apple ANE, FR-BE-06). Implemented in
+    /// `vokra-backend-coreml` (M5-01) with raw Objective-C / CoreML framework
+    /// FFI (no `objc` / `objc2` / `objc2-core-ml` / `core-foundation` binding
+    /// crate), reached through the `vokra-models` `Compute` dispatcher behind
+    /// its `coreml` feature (compiled only on macOS / iOS). Unlike the dlopen
+    /// backends this is a *delegate*: the intended execution unit is a declared
+    /// submodel, and CoreML's own placement onto ANE / GPU / CPU inside that
+    /// submodel is Apple's runtime concern — not a Vokra-side op partition
+    /// (which the [`Backend`] trait's "same op coverage" rule forbids) and not
+    /// a silent fallback.
+    ///
+    /// **Scaffold status (M5-01):** the op-execution path lands after the
+    /// model-supply ADR (M5-01-T02) is ratified, so every hot op is currently
+    /// reported as
+    /// [`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp). A host
+    /// with no reachable Apple Neural Engine (an Intel Mac, or any non-Apple
+    /// target where the backend is compiled out) is an explicit
+    /// [`VokraError::BackendUnavailable`](crate::VokraError::BackendUnavailable)
+    /// — never a silent CPU fall back (FR-EX-08 / NFR-RL-06).
+    ///
+    /// A **C-level** selector for this delegate is intentionally *not* exported
+    /// during the v1.0-rc window; that is an M5-13 decision after the
+    /// real-hardware NPU bakeoff (`include/vokra.h`, `docs/handoff/m4-12.md`).
+    /// The Rust-side surface (`with_backend` / `vokra-cli --backend coreml`) is
+    /// the only way to select it for now.
+    CoreMl,
 }
 
 #[cfg(test)]
