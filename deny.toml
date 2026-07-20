@@ -110,4 +110,21 @@ deny = [
     { crate = "wasm-bindgen-futures", reason = "M4-01 red line / NFR-DS-02: JS glue is hand-written; no wasm-bindgen toolchain (ADR M4-01 §5/§6)" },
     { crate = "js-sys", reason = "M4-01 red line / NFR-DS-02: JS glue is hand-written; no wasm-bindgen toolchain (ADR M4-01 §5/§6)" },
     { crate = "web-sys", reason = "M4-01 red line / NFR-DS-02: JS glue is hand-written; no wasm-bindgen toolchain (ADR M4-01 §5/§6)" },
+    # Objective-C / Apple-framework binding crates — the M2-01 (Metal) red line,
+    # extended by M5-01 (CoreML). Both backends talk to the Objective-C runtime
+    # and their Apple frameworks through hand-declared `unsafe extern` blocks
+    # linked with `#[link(kind = "framework")]`; a binding crate would add
+    # non-`vokra-*` entries to Cargo.lock (NFR-DS-02). This ban was previously
+    # documented only in the Metal crate docs — M5-01-T08 wires it into the
+    # machine-checked gate so a stray dependency cannot pull one in.
+    { crate = "objc", reason = "M2-01 / M5-01 red line / NFR-DS-02: Metal & CoreML use raw ObjC-runtime FFI; no binding crate" },
+    { crate = "objc2", reason = "M2-01 / M5-01 red line / NFR-DS-02: Metal & CoreML use raw ObjC-runtime FFI; no binding crate" },
+    { crate = "objc-sys", reason = "M2-01 / M5-01 red line / NFR-DS-02: Metal & CoreML use raw ObjC-runtime FFI; no binding crate" },
+    { crate = "objc2-core-ml", reason = "M5-01 red line / NFR-DS-02: CoreML is reached via raw framework FFI; no binding crate" },
+    { crate = "objc2-foundation", reason = "M2-01 / M5-01 red line / NFR-DS-02: Foundation is reached via raw framework FFI; no binding crate" },
+    { crate = "objc2-metal", reason = "M2-01 red line / NFR-DS-02: Metal is reached via raw framework FFI; no binding crate" },
+    { crate = "core-foundation", reason = "M2-01 / M5-01 red line / NFR-DS-02: no CoreFoundation binding crate; raw framework FFI only" },
+    { crate = "core-foundation-sys", reason = "M2-01 / M5-01 red line / NFR-DS-02: no CoreFoundation binding crate; raw framework FFI only" },
+    { crate = "metal", reason = "M2-01 red line / NFR-DS-02: the Metal backend is raw ObjC/Metal FFI; no `metal` binding crate" },
+    { crate = "coreml", reason = "M5-01 red line / NFR-DS-02: the CoreML backend is raw ObjC/CoreML FFI; no `coreml` binding crate" },
 ]
