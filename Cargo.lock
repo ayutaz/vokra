@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "vokra-backend-coreml"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "vokra-core",
+]
+
+[[package]]
 name = "vokra-backend-cpu"
 version = "0.1.0-alpha.0"
 dependencies = [

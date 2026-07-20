@@ -1,0 +1,21 @@
+[package]
+name = "vokra-backend-coreml"
+description = "Vokra CoreML delegate backend (macOS/iOS, Apple ANE): raw Objective-C / CoreML FFI — NO binding crate — with an ANE-aware compute-device probe. Scaffold slice of M5-01; the workspace stays dependency-free (NFR-DS-02). The op-execution path lands after the T02 model-supply ADR is ratified."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Zero external dependencies (NFR-DS-02): the only runtime dependency is the
+# first-party `vokra-core` (for the `Backend` trait / `OpKind` / `VokraError`).
+# The CoreML, Foundation and Objective-C runtime symbols are declared inline in
+# `unsafe extern` blocks and linked with `#[link(..., kind = "framework")]` —
+# NO `objc` / `objc2` / `objc2-core-ml` / `core-foundation` binding crate is
+# used, so Cargo.lock keeps only `vokra-*` crates (scripts/check-zero-deps.sh),
+# and deny.toml bans those crate families as a machine-checked guard (M5-01-T08).
+[dependencies]
+vokra-core.workspace = true
+
+[lints]
+workspace = true
