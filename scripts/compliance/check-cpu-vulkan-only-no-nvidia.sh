@@ -103,6 +103,15 @@ fi
 # neither matches innocent symbols that merely contain "cu".
 NVIDIA_SYM_RE='^_?(cu[A-Z]|cuda[A-Z]|cudart|cudnn|cublas|nvrtc)'
 METAL_SYM_RE='^_?(objc_msgSend|MTL[A-Z]|OBJC_CLASS_\$_MTL)'
+# CoreML (M5-01, FR-BE-09): the CoreML delegate backend is framework-linked
+# like Metal — unlike the dlopen'd CUDA — so a CPU + Vulkan-only build that
+# accidentally pulled it in would leave undefined CoreML symbols behind, not a
+# runtime dlopen. Match the CoreML C entry point we call (MLAllComputeDevices)
+# and the ObjC class symbols (`_OBJC_CLASS_$_ML<Upper>`). `ML[A-Z]` needs M then
+# L then an upper — disjoint from Metal's `MTL` (M then T), so the two tiers do
+# not overlap. `objc_msgSend` is already caught by METAL_SYM_RE (both backends
+# share the ObjC runtime), so it is not repeated here.
+COREML_SYM_RE='^_?(MLAllComputeDevices|OBJC_CLASS_\$_ML[A-Z])'
 
 scan_symbols() {
     # scan_symbols <lib> — prints offending symbols (one per line).
@@ -113,7 +122,7 @@ scan_symbols() {
     esac
     [ -n "$dump" ] || return 0
     printf '%s\n' "$dump" | awk '{print $NF}' \
-        | grep -E "$NVIDIA_SYM_RE|$METAL_SYM_RE" || true
+        | grep -E "$NVIDIA_SYM_RE|$METAL_SYM_RE|$COREML_SYM_RE" || true
 }
 
 for f in "${libs[@]:-}"; do

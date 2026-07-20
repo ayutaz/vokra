@@ -345,6 +345,14 @@ jobs:
             feature: metal
           - os: ubuntu-latest
             feature: cuda
+          # CoreML delegate scaffold (M5-01). Builds/clippies/tests the crate
+          # on an Apple runner. The runtime tests are probe-gated: whether a
+          # hosted macOS runner exposes the Apple Neural Engine is UNKNOWN, so a
+          # runner with no ANE takes the honest BackendUnavailable path (a
+          # skip), never a fabricated pass. Build + clippy always exercise the
+          # framework-linked FFI.
+          - os: macos-latest
+            feature: coreml
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -365,6 +373,13 @@ jobs:
       - name: Test backend crate (${{ matrix.feature }})
         if: matrix.feature == 'cuda'
         run: cargo test -p vokra-backend-cuda
+      # M5-01-T11: run the CoreML backend crate's own probe/coverage tests on
+      # the coreml arm. The crate has no feature of its own, so it compiles
+      # unconditionally; its ANE probe test skips cleanly (BackendUnavailable)
+      # on a runner that hides the Neural Engine — an honest skip, not a pass.
+      - name: Test backend crate (${{ matrix.feature }})
+        if: matrix.feature == 'coreml'
+        run: cargo test -p vokra-backend-coreml
 
   # M4-15: CPU + Vulkan-only build target (FR-BE-09 partial — build target
   # only; ADR M4-15). Builds the shipped cdylib + CLI with

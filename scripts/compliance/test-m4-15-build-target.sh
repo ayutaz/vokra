@@ -235,8 +235,25 @@ else
         else
             skipped "s4 could not build the objc-symbol fixture"
         fi
+
+        # s4b — CoreML (M5-01, FR-BE-09) symbol is rejected. The CoreML
+        # delegate backend is framework-linked like Metal, so this build target
+        # must not contain it either. A cdylib referencing MLAllComputeDevices
+        # (the CoreML C entry point the probe calls) leaves an undefined
+        # `_MLAllComputeDevices` the scanner's COREML_SYM_RE tier must catch.
+        make_artifact_dir "$SCRATCH/art-coreml"
+        if make_lib "$SCRATCH/art-coreml/libvokra.so" \
+            'extern int MLAllComputeDevices(void); int f(void) { return MLAllComputeDevices(); }'; then
+            if bash "$SCANNER" "$SCRATCH/art-coreml" >/dev/null 2>&1; then
+                bad "s4b scanner accepted a cdylib referencing MLAllComputeDevices (CoreML)"
+            else
+                ok "s4b undefined CoreML MLAllComputeDevices reference rejected (exit 1)"
+            fi
+        else
+            skipped "s4b could not build the CoreML-symbol fixture"
+        fi
     else
-        skipped "s3/s3b/s4 need a C compiler for symbol fixtures"
+        skipped "s3/s3b/s4/s4b need a C compiler for symbol fixtures"
     fi
 
     # s5 — missing NOTICE is rejected.
