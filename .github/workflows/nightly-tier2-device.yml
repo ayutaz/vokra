@@ -1,0 +1,219 @@
+# Vokra Tier 1/2 device RTF nightly — X-06 (milestones.md §10, NFR-PF-09/10).
+#
+# Split of responsibility (milestones.md §10 X-06 row):
+#   * CI job definition + threshold-breach revert/block = CC  (this file)
+#   * self-hosted device lab (Pi 5 / 4 / 3B / Zero 2 W) machine acquisition,
+#     maintenance, runner registration = owner (§11 machine-acquisition row,
+#     X-06-T20).
+#
+# It measures the NFR-PF-09/10 device thresholds nightly and FAILS on a breach
+# so the nightly is actionable (NFR-MT-07 revert/block; see the runbook
+# docs/handoff/x-06-breach-response.md). Thresholds:
+#
+#   | device       | Pi model     | leg                | threshold      | req        |
+#   |--------------|--------------|--------------------|----------------|------------|
+#   | rpi5-base    | Pi 5         | Whisper base RTF   | < 0.5          | NFR-PF-09  |
+#   | rpi4-base    | Pi 4         | Whisper base RTF   | < 1.0          | NFR-PF-10  |
+#   | rpi3b-tiny   | Pi 3B        | Whisper tiny (Q4_K) RTF | < 2.0     | NFR-PF-10  |
+#   | pizero2w-vad | Pi Zero 2 W  | Silero VAD RTF     | < 1.0 (real-time) | NFR-PF-10 |
+#   | rpi5-kokoro  | Pi 5         | Kokoro RTF         | < 1.0 (real-time) | NFR-PF-09 |
+#
+# Kokoro is measurable now that `vokra-cli bench --style` landed (X-06-T24);
+# its row is gated on the owner staging a Kokoro GGUF + a style vector on the
+# runner (the same staging every device row needs), and clean-skips otherwise.
+#
+# Honest reporting (FR-EX-08, fabricated pass 禁止): with NO device runner in
+# the fleet the `check-runner-availability` job emits `## Skipped: no
+# self-hosted runner` and the measure legs are `if: false`-guarded so a weekly
+# cron cannot red with "no matching runner" before a runner exists — the exact
+# gpu-cuda-rtf.yml (§118-125) pattern. A skip is never recorded as a met
+# threshold.
+#
+# NOT a required check (no device at PR time; hardware-lab flakiness must not
+# block PRs — same posture as gpu-cuda-rtf / parity-*-real). Promotion after
+# sustained green is an owner decision.
+#
+# Zero-dep (NFR-DS-02): a `git diff --exit-code Cargo.lock` tripwire guards the
+# root lockfile; no runtime dependency is added.
+
+name: nightly-tier2-device
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: "Optional single device id to run (rpi5-base | rpi4-base | rpi3b-tiny | pizero2w-vad | rpi5-kokoro). Blank = all."
+        required: false
+        default: ""
+  schedule:
+    # 05:47 UTC daily. Nightly ladder: il2cpp 04:17, webgl 04:47, asr-wer
+    # 05:17, this device leg 05:47 — off the top of the hour and off the other
+    # nightly slots.
+    - cron: "47 5 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-tier2-device
+  cancel-in-progress: false
+
+jobs:
+  # Gate: is a self-hosted device runner registered? Runs on ubuntu-latest so
+  # it always executes; its output tells the measure legs to skip vs proceed.
+  check-runner-availability:
+    name: check-runner-availability
+    runs-on: ubuntu-latest
+    outputs:
+      run_available: ${{ steps.check.outputs.run_available }}
+      skip_reason: ${{ steps.check.outputs.skip_reason }}
+    steps:
+      - name: Check whether a Tier 2 self-hosted device runner is present
+        id: check
+        env:
+          TIER2_ENABLED: ${{ vars.VOKRA_TIER2_SELF_HOSTED }}
+        run: |
+          set -euo pipefail
+          # Enabled only when the owner has (a) set repo variable
+          # VOKRA_TIER2_SELF_HOSTED=true and (b) registered device runners with
+          # the labels rpi5 / rpi4 / rpi3b / pizero2w (X-06-T20, §11). Both
+          # default unset in the land state — this workflow is scaffolding.
+          if [ "${TIER2_ENABLED:-}" = "true" ]; then
+            echo "run_available=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_available=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=no self-hosted device runner: set repo variable VOKRA_TIER2_SELF_HOSTED=true and register Pi runners with labels rpi5/rpi4/rpi3b/pizero2w (X-06-T20)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Emit skip annotation when unavailable
+        if: steps.check.outputs.run_available != 'true'
+        env:
+          SKIP_REASON: ${{ steps.check.outputs.skip_reason }}
+        run: |
+          {
+            echo "## Skipped: no self-hosted runner"
+            echo ""
+            echo "The Tier 1/2 device matrix needs Pi runners (rpi5/rpi4/rpi3b/pizero2w)."
+            echo ""
+            echo "**Reason**: ${SKIP_REASON}"
+            echo ""
+            echo "This job is workflow_dispatch + daily cron only and is **not a required check**."
+            echo "No NFR-PF-09/10 threshold was measured — this skip did not verify any RTF."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Measure the NFR-PF-09/10 thresholds on the device fleet. Guarded off with
+  # `if: false` so the workflow lands / lints / resolves green with no runner.
+  # When the owner stands the fleet up (VOKRA_TIER2_SELF_HOSTED=true + labelled
+  # runners + staged GGUFs), remove the `false` to start firing.
+  measure:
+    name: measure ${{ matrix.device }}
+    needs: check-runner-availability
+    # DELIBERATE `if: false` — the measure legs need self-hosted Pi runners
+    # that are not in the fleet yet. Removing the `false` before X-06-T20
+    # registers them would red every nightly with "no matching runner". Mirror
+    # of gpu-cuda-rtf.yml §118-125.
+    if: false && needs.check-runner-availability.outputs.run_available == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - device: rpi5-base
+            label: rpi5
+            pi: "Pi 5"
+            leg: whisper-base
+            gguf_var: VOKRA_TIER2_WHISPER_BASE_GGUF
+            threshold: "0.5"   # NFR-PF-09
+            req: NFR-PF-09
+          - device: rpi4-base
+            label: rpi4
+            pi: "Pi 4"
+            leg: whisper-base
+            gguf_var: VOKRA_TIER2_WHISPER_BASE_GGUF
+            threshold: "1.0"   # NFR-PF-10
+            req: NFR-PF-10
+          - device: rpi3b-tiny
+            label: rpi3b
+            pi: "Pi 3B"
+            leg: whisper-tiny
+            gguf_var: VOKRA_TIER2_WHISPER_TINY_GGUF
+            threshold: "2.0"   # NFR-PF-10 (Whisper tiny Q4_K)
+            req: NFR-PF-10
+          - device: pizero2w-vad
+            label: pizero2w
+            pi: "Pi Zero 2 W"
+            leg: silero-vad
+            gguf_var: VOKRA_TIER2_SILERO_GGUF
+            threshold: "1.0"   # NFR-PF-10 Silero VAD real-time (RTF < 1.0)
+            req: NFR-PF-10
+          - device: rpi5-kokoro
+            label: rpi5
+            pi: "Pi 5"
+            leg: kokoro
+            gguf_var: VOKRA_TIER2_KOKORO_GGUF
+            threshold: "1.0"   # NFR-PF-09 Kokoro real-time (RTF < 1.0)
+            req: NFR-PF-09
+    runs-on: [self-hosted, "${{ matrix.label }}"]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build vokra-cli (release)
+        run: cargo build --release -p vokra-cli
+
+      - name: Measure ${{ matrix.leg }} RTF and apply the ${{ matrix.req }} threshold
+        env:
+          LEG: ${{ matrix.leg }}
+          PI: ${{ matrix.pi }}
+          REQ: ${{ matrix.req }}
+          THRESHOLD: ${{ matrix.threshold }}
+          # The owner stages the model GGUF per device and points the matching
+          # repo variable at it. Absent → clean skip (never a fabricated pass).
+          GGUF: ${{ vars[matrix.gguf_var] }}
+          # Kokoro additionally needs a style vector + phonemes (X-06-T24).
+          KOKORO_STYLE: ${{ vars.VOKRA_TIER2_KOKORO_STYLE }}
+          KOKORO_PHONEMES: ${{ vars.VOKRA_TIER2_KOKORO_PHONEMES }}
+          WAV: ${{ vars.VOKRA_TIER2_WAV }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GGUF:-}" ] || [ ! -f "${GGUF:-}" ]; then
+            {
+              echo "## ${PI} — ${LEG}: clean skip (no staged GGUF)"
+              echo "Set repo variable pointing at the model GGUF on this runner. No ${REQ} threshold was measured."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::${PI}/${LEG}: no staged GGUF — clean skip, not a pass."
+            exit 0
+          fi
+          # Arch-routed: whisper → Asr, silero-vad → Vad, kokoro → TtsKokoro.
+          # --task is deliberately never passed (hard error on non-whisper arch).
+          OUT=""
+          if [ "$LEG" = kokoro ]; then
+            if [ -z "${KOKORO_STYLE:-}" ] || [ -z "${KOKORO_PHONEMES:-}" ]; then
+              echo "::notice::${PI}/kokoro: no staged style/phonemes — clean skip, not a pass."
+              exit 0
+            fi
+            OUT="$(./target/release/vokra-cli bench --model "$GGUF" --text "$KOKORO_PHONEMES" --style "$KOKORO_STYLE" --iters 10 --warmup 3 --format json)"
+          else
+            OUT="$(./target/release/vokra-cli bench --model "$GGUF" --input "$WAV" --iters 10 --warmup 3 --format json)"
+          fi
+          echo "$OUT"
+          RTF="$(printf '%s' "$OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["rtf"])')"
+          BREACH="$(python3 -c "print(1 if float('$RTF') > float('$THRESHOLD') else 0)")"
+          {
+            echo "## ${PI} — ${LEG} RTF (${REQ})"
+            echo "| metric | value |"
+            echo "|--------|-------|"
+            echo "| measured RTF | ${RTF} |"
+            echo "| threshold | < ${THRESHOLD} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$BREACH" -eq 1 ]; then
+            echo "**FAIL**: RTF ${RTF} exceeds the ${REQ} threshold ${THRESHOLD}." >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::${PI}/${LEG} RTF ${RTF} > ${THRESHOLD} (${REQ}) — see docs/handoff/x-06-breach-response.md"
+            exit 1
+          fi
+          echo "**PASS**: RTF ${RTF} within the ${REQ} threshold ${THRESHOLD}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Guard the root Cargo.lock (NFR-DS-02)
+        if: always()
+        run: git diff --exit-code Cargo.lock

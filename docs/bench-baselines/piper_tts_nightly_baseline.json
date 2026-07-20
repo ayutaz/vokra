@@ -1,0 +1,11 @@
+{
+  "$placeholder": true,
+  "task": "tts",
+  "rtf": null,
+  "wp": "X-06-T12",
+  "model": "piper-plus GGUF — NONE committed (open question #7: GGUF source unsettled). The nightly leg clean-skips unless the owner stages one and sets the VOKRA_PIPER_GGUF repo variable.",
+  "input": "--text (TTS is text-driven, not --input); pinned to DEFAULT_BENCH_TEXT for determinism.",
+  "seed_via": ".github/workflows/nightly-asr-wer.yml piper companion step, ubuntu-latest, once a piper GGUF source is settled. The owner reviews the artifact/summary and commits the real rtf here.",
+  "do_not_seed_from": "an M1/aarch64 rig.",
+  "gate": "advisory record-only (open question #6). Clean-skips while no piper GGUF is staged — never a fabricated measurement (FR-EX-08)."
+}

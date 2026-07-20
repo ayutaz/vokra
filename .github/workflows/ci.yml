@@ -965,6 +965,55 @@ jobs:
             --warmup 5 \
             --baseline docs/bench-baselines/mel_frontend_baseline.json \
             --format json
+      - name: Silero VAD RTF regression check (X-06-T09, advisory, placeholder-gated)
+        # X-06-T09 (model-level regression, guards the M5-14 CPU wins): the
+        # committed Silero GGUF (tests/parity/silero_vad/silero-vad-v5.gguf,
+        # 2.1 MB) + committed WAV need NO download, so this can run at PR time.
+        #
+        # The baseline JSON MUST be seeded from an ubuntu-latest CI run: an
+        # M1/aarch64 rig false-fails the 5% gate (docs/bench-baselines/README.md,
+        # the mel-frontend NEON-skew example). Until the owner seeds it (via
+        # bench-baseline-capture.yml, then commits the reviewed rtf), this step
+        # CLEAN-SKIPS — baseline_gate.py detects the placeholder and no verdict
+        # is claimed (fabricated pass 禁止, FR-EX-08). A MALFORMED baseline exits
+        # 2 and FAILS this step, so the gate is provably not a no-op.
+        #
+        # Arch-routed: silero-vad → ModelTask::Vad automatically. `--task` is a
+        # hard error on this arch (engine.rs), so it is deliberately absent.
+        #
+        # advisory (open question #1): this step lives in the REQUIRED
+        # bench-regression job, so to stay advisory-by-default it must NOT fail
+        # the job on a Silero regression — it ANNOTATES. The owner promotes it
+        # to a hard gate by setting repo variable VOKRA_SILERO_GATE_REQUIRED=true
+        # (no code change), once shared-runner RTF variance is shown to hold the
+        # 5% gate. The mel step above is the established required leg.
+        env:
+          SILERO_REQUIRED: ${{ vars.VOKRA_SILERO_GATE_REQUIRED }}
+        run: |
+          set -euo pipefail
+          BASE=docs/bench-baselines/silero_vad_baseline.json
+          STATE="$(python3 tools/bench/baseline_gate.py "$BASE")"
+          if [ "$STATE" = placeholder ]; then
+            echo "::notice::Silero VAD RTF baseline is a placeholder (not yet seeded on ubuntu-latest). Clean skip — no regression verdict claimed. Seed via .github/workflows/bench-baseline-capture.yml (owner)."
+            exit 0
+          fi
+          set +e
+          ./target/release/vokra-cli bench \
+            --model tests/parity/silero_vad/silero-vad-v5.gguf \
+            --input tests/fixtures/audio/jfk-30s.wav \
+            --iters 30 \
+            --warmup 5 \
+            --baseline "$BASE" \
+            --format json
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            if [ "${SILERO_REQUIRED:-}" = "true" ]; then
+              echo "::error::Silero VAD RTF regressed >5% and VOKRA_SILERO_GATE_REQUIRED=true — failing (owner-promoted hard gate)."
+              exit 1
+            fi
+            echo "::warning::Silero VAD RTF regressed >5% vs the seeded baseline (ADVISORY — not failing the required job; set VOKRA_SILERO_GATE_REQUIRED=true to promote, open question #1)."
+          fi
 
   # M2-09-T19 vokra-server single-binary deployment gate (FR-SV-01, NFR-DS-02,
   # NFR-MT-07). Verifies four properties of the OUT-OF-WORKSPACE

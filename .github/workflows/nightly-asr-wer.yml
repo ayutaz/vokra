@@ -20,6 +20,17 @@
 #     cannot stand in for it.
 # The VCTK VC-similarity leg named in X-06 is likewise out of scope here.
 #
+# MODEL-RTF COMPANION (X-06-T11/T12, ADVISORY, record-only)
+# ---------------------------------------------------------
+# Two companion steps ride this leg to guard the M5-14 CPU wins without an
+# extra download: (T11) the SAME whisper-base GGUF this leg already converts
+# is benched for RTF, and (T12) a piper-plus TTS RTF leg that clean-skips
+# until a piper GGUF is staged (open question #7). Both are placeholder-gated
+# (docs/bench-baselines/*_nightly_baseline.json) and record-only: a
+# regression is annotated but does NOT fail the nightly (open question #6 —
+# full-model RTF on a shared runner is noisier than the mel gate). The WER
+# breach below is the actionable gate; the RTF companion is a measurement.
+#
 # ADVISORY POSTURE
 # ----------------
 # Not a required check, and there is no `pull_request:` trigger — this leg
@@ -334,6 +345,80 @@ jobs:
             printf '%s\n' "$text" > "$TR/$stem.txt"
           done
           echo "transcribed $(find "$TR" -name '*.txt' | wc -l | tr -d ' ') utterances"
+
+      - name: Whisper base RTF companion (X-06-T11, advisory record-only)
+        # Model-level RTF of the SAME whisper-base GGUF already converted above
+        # — no extra download. Placeholder-gated: while the baseline is a
+        # placeholder we measure for the record and claim no verdict; once the
+        # owner seeds it (ubuntu-latest, then commits), a >5% regression is
+        # ANNOTATED but does NOT fail the nightly (open question #6). The
+        # actionable gate on this workflow is the WER breach in the next step.
+        # Arch-routed: whisper → ModelTask::Asr; --task is deliberately absent.
+        shell: bash
+        env:
+          RTF_BASE: docs/bench-baselines/whisper_base_asr_nightly_baseline.json
+        run: |
+          set -euo pipefail
+          WAV="$(find "$WAV_DIR" -name '*.wav' | sort | head -1)"
+          if [ -z "$WAV" ]; then
+            echo "::warning::no decoded WAV for the RTF companion — skipping (the WER leg is the gate)"
+            exit 0
+          fi
+          STATE="$(python3 tools/bench/baseline_gate.py "$RTF_BASE")"
+          {
+            echo "### Whisper base RTF companion (advisory, X-06-T11)"
+            echo ""
+            echo '```json'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$STATE" = placeholder ]; then
+            echo "::notice::whisper-base RTF baseline is a placeholder — measuring for the record, no regression verdict."
+            ./target/release/vokra-cli bench --model "$GGUF" --input "$WAV" \
+              --iters 5 --warmup 2 --format json | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            set +e
+            ./target/release/vokra-cli bench --model "$GGUF" --input "$WAV" \
+              --iters 5 --warmup 2 --baseline "$RTF_BASE" --format json | tee -a "$GITHUB_STEP_SUMMARY"
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              echo "::warning::whisper-base RTF regressed >5% vs the seeded baseline (advisory record — see open question #6 before promoting to a hard gate)"
+            fi
+          fi
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Piper TTS RTF companion (X-06-T12, advisory, staged-GGUF-gated)
+        # No piper GGUF is committed (open question #7 — source unsettled), so
+        # this CLEAN-SKIPS unless the owner stages one and sets the repo
+        # variable VOKRA_PIPER_GGUF. Never fabricates a measurement (FR-EX-08).
+        # TTS is --text-driven (not --input); the text is pinned for
+        # determinism. Arch-routed: piper → ModelTask::Tts (no --task).
+        shell: bash
+        env:
+          PIPER_GGUF: ${{ vars.VOKRA_PIPER_GGUF }}
+          RTF_BASE: docs/bench-baselines/piper_tts_nightly_baseline.json
+        run: |
+          set -euo pipefail
+          if [ -z "${PIPER_GGUF:-}" ] || [ ! -f "${PIPER_GGUF:-}" ]; then
+            echo "::notice::no staged piper GGUF (repo variable VOKRA_PIPER_GGUF unset or path absent) — clean skip, not a pass. Committed piper GGUF is open question #7."
+            exit 0
+          fi
+          STATE="$(python3 tools/bench/baseline_gate.py "$RTF_BASE")"
+          if [ "$STATE" = placeholder ]; then
+            echo "::notice::piper RTF baseline is a placeholder — measuring for the record, no verdict."
+            ./target/release/vokra-cli bench --model "$PIPER_GGUF" \
+              --text "the quick brown fox jumps over the lazy dog" \
+              --iters 5 --warmup 2 --format json | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            set +e
+            ./target/release/vokra-cli bench --model "$PIPER_GGUF" \
+              --text "the quick brown fox jumps over the lazy dog" \
+              --iters 5 --warmup 2 --baseline "$RTF_BASE" --format json | tee -a "$GITHUB_STEP_SUMMARY"
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              echo "::warning::piper RTF regressed >5% (advisory record)"
+            fi
+          fi
 
       - name: Score WER and apply the threshold
         id: score

@@ -152,6 +152,7 @@ ID を持ちます）。
 |---|---|
 | `FR-BE-01` | CPU バックエンドを第一級バックエンドとすること。x86-64 / ARM64 / RISC-V / WASM にまたがる runtime ISA dispatch の階層を持つ。 |
 | `FR-BE-05` | WebGPU バックエンド。binding crate ではなく手書きの extern-import shim として実装し、zero-dependency 不変条件を保つ。 |
+| `FR-BE-06` | delegate 型 NPU バックエンド（Apple ANE = CoreML、Qualcomm Hexagon = QNN）。binding crate を使わず生の framework/dlopen FFI で到達する。 |
 | `FR-BE-09` | critical-safe ビルド SKU。ベンダー GPU/NPU 経路をコンパイル時に除外し、その結果を SBOM に明示する。 |
 
 ## FR-MD

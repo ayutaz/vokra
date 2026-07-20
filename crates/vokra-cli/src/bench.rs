@@ -4,6 +4,7 @@
 //! ```text
 //! vokra-cli bench --model vad.gguf --input speech.wav --iters 20 --warmup 3
 //! vokra-cli bench --model voice.gguf --text "hello" --format json --baseline base.json
+//! vokra-cli bench --model kokoro.gguf --text "<phonemes>" --style ref_s.f32  # X-06-T24
 //! ```
 //!
 //! Timing uses `std::time::Instant` only (no external bench crate — NFR-DS-02),
@@ -53,6 +54,12 @@ struct BenchArgs {
     model: Option<String>,
     input: Option<String>,
     text: Option<String>,
+    /// `--style <path>` — kokoro only (X-06-T24): a raw little-endian f32 style
+    /// vector, `style_dim` or `2·style_dim` floats. Mirrors `run --style`. When
+    /// absent the Kokoro arch keeps its explicit reject (benching with a
+    /// fabricated style would measure a synthesis the model was never asked to
+    /// perform — FR-EX-08). `None` for every other arch.
+    style: Option<String>,
     iters: usize,
     warmup: usize,
     format: Format,
@@ -203,7 +210,14 @@ USAGE:
 IN-PROCESS OPTIONS:
     --model <path>       GGUF model file (arch selects VAD / ASR / TTS)
     --input <path>       mono WAV input (required for VAD and ASR)
-    --text <string>      text to synthesize (TTS; defaults to a fixed phrase)
+    --text <string>      text to synthesize (TTS; defaults to a fixed phrase).
+                         For kokoro this is misaki IPA phonemes (or a raw-id
+                         sequence), not English text — there is no G2P bridge.
+    --style <path>       kokoro only (X-06-T24): raw little-endian f32 style
+                         vector (style_dim or 2*style_dim floats). Required to
+                         bench kokoro (a forward conditions on a style row);
+                         absent, the kokoro arch is an explicit reject, never a
+                         fabricated-input measurement (FR-EX-08).
     --iters <n>          timed iterations           [default 10]
     --warmup <n>         untimed warm-up iterations [default 3]
     --format kv|json     report format              [default kv]
@@ -242,6 +256,7 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
     let mut model: Option<String> = None;
     let mut input: Option<String> = None;
     let mut text: Option<String> = None;
+    let mut style: Option<String> = None;
     let mut iters: usize = 10;
     let mut warmup: usize = 3;
     let mut format = Format::Kv;
@@ -269,6 +284,13 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
             }
             "--text" => {
                 text = Some(args.get(i + 1).ok_or("--text requires a value")?.clone());
+                i += 2;
+            }
+            "--style" => {
+                // X-06-T24: kokoro RTF measurement input. Recognised at parse
+                // time; only the `ModelTask::TtsKokoro` arm consumes it. Mirrors
+                // `run --style` — a raw f32 style dump.
+                style = Some(args.get(i + 1).ok_or("--style requires a path")?.clone());
                 i += 2;
             }
             "--iters" => {
@@ -407,6 +429,7 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
         model,
         input,
         text,
+        style,
         iters,
         warmup,
         format,
@@ -602,20 +625,54 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("mel-frontend", audio_seconds, samples)
         }
-        // Kokoro (M2-07 / cc-24) is routed through `vokra-cli run` but has no
-        // bench task. A Kokoro forward needs a style vector (`run --style`),
-        // and the bench harness has no flag to supply one — benching with a
-        // fabricated (e.g. zero) style would measure a synthesis the model was
-        // never asked to perform. Reject rather than invent an input
-        // (FR-EX-08); adding `bench --style` is the follow-up.
+        // Kokoro (M2-07 / cc-24) needs an explicit style vector to synthesize:
+        // a Kokoro forward conditions its decoder + prosody predictor on a
+        // style row, and benching with a fabricated (e.g. zero) style would
+        // measure a synthesis the model was never asked to perform. X-06-T24
+        // adds `bench --style` so the NFR-PF-09 "Kokoro real-time" row can be
+        // measured; ABSENT a --style the arch keeps its explicit reject
+        // (FR-EX-08 — no fabricated input). The synthesis path is the exact
+        // one `run --style` exercises (`KokoroTts::synthesize_phonemes`), so
+        // the RTF numbers are comparable and the helper functions are shared.
         ModelTask::TtsKokoro => {
-            return Err(
-                "bench: arch `kokoro-82m-istftnet` has no bench task yet — a Kokoro forward \
-                 needs an explicit style vector and `bench` has no --style flag; use \
-                 `vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32>` \
-                 for a real synthesis"
-                    .to_owned(),
-            );
+            let Some(style_path) = args.style.as_deref() else {
+                return Err(
+                    "bench: arch `kokoro-82m-istftnet` requires --style <s.f32> — a Kokoro \
+                     forward conditions its decoder + prosody predictor on a style row, and \
+                     benching without one would measure a synthesis the model was never asked \
+                     to perform (FR-EX-08). Pass --style <raw f32 dump> (style_dim or \
+                     2*style_dim floats) with --text <phonemes>, as in \
+                     `vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32>`"
+                        .to_owned(),
+                );
+            };
+            // Kokoro takes misaki IPA phonemes (or a raw-id sequence), NOT the
+            // English DEFAULT_BENCH_TEXT: feeding graphemes would fail the
+            // phoneme lookup. Require --text explicitly rather than defaulting.
+            let text = args.text.as_deref().ok_or(
+                "bench (kokoro): --text <phonemes> is required (Kokoro takes misaki IPA \
+                 phonemes or a raw-id sequence, not the default English text)",
+            )?;
+            // Rebuild the concrete engine from the model path — Kokoro's
+            // `TtsEngine::synthesize` is a hard NotImplemented (no G2P bridge),
+            // so `session.tts()` cannot serve it; this mirrors `run_kokoro`.
+            let tts = vokra_models::kokoro::KokoroTts::from_path(model_path)
+                .map_err(|e| e.to_string())?
+                .with_backend(args.backend);
+            let config = tts.config();
+            let ids = crate::run::kokoro_phoneme_ids(text, &config.phoneme_symbols)?;
+            let style = crate::run::read_style_vector(style_path, config.style_dim)?;
+            // One synth up front to learn the output length (RTF denominator).
+            let first = tts
+                .synthesize_phonemes(&ids, None, Some(&style), 0.0, 1.0)
+                .map_err(|e| e.to_string())?;
+            let audio_seconds = first.samples.len() as f64 / f64::from(first.sample_rate);
+            let samples = time_iters(args.warmup, args.iters, || {
+                tts.synthesize_phonemes(&ids, None, Some(&style), 0.0, 1.0)
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            })?;
+            ("kokoro", audio_seconds, samples)
         }
         ModelTask::Cosyvoice2Synthetic => {
             // The engine's load_session does NOT route the cosyvoice2 arch
@@ -1161,6 +1218,29 @@ mod tests {
         );
     }
 
+    /// X-06-T24: `--style <path>` parses into `BenchArgs.style` for the Kokoro
+    /// RTF measurement. The arch-level consumption (a real synth) needs a
+    /// Kokoro GGUF and is exercised by the owner track / `vokra-cli run`
+    /// parity; parse-level is the CC-verifiable surface.
+    #[test]
+    fn parses_style_flag_for_kokoro_rtf() {
+        let a = parse_args(&args(&["--model", "kokoro.gguf", "--style", "ref_s.f32"]))
+            .expect("valid --style");
+        assert_eq!(a.style.as_deref(), Some("ref_s.f32"));
+        // Default: no style (every non-Kokoro arch, and the reject path).
+        let a = parse_args(&args(&["--model", "m.gguf"])).expect("valid");
+        assert_eq!(a.style, None);
+    }
+
+    /// `--style` with no following value is a loud error, not a silent drop.
+    #[test]
+    fn rejects_style_flag_without_value() {
+        let err = parse_args(&args(&["--model", "kokoro.gguf", "--style"]))
+            .err()
+            .unwrap();
+        assert!(err.contains("--style requires a path"), "got: {err}");
+    }
+
     #[test]
     fn parses_task_mel_frontend_hint() {
         let a = parse_args(&args(&["--model", "m.gguf", "--task", "mel-frontend"]))
@@ -1376,6 +1456,7 @@ mod tests {
             model: None,
             input: None,
             text: None,
+            style: None,
             iters: 2,
             warmup: 1,
             format: Format::Kv,
@@ -1427,6 +1508,7 @@ mod tests {
             model: None,
             input: Some(wav_path.to_string_lossy().into_owned()),
             text: None,
+            style: None,
             iters: 1,
             warmup: 0,
             format: Format::Kv,
@@ -1456,6 +1538,7 @@ mod tests {
             model: None,
             input: None,
             text: None,
+            style: None,
             iters: 1,
             warmup: 0,
             format: Format::Kv,
@@ -1524,6 +1607,7 @@ mod tests {
             model: Some(gguf_path.to_string_lossy().into_owned()),
             input: Some(wav_path.to_string_lossy().into_owned()),
             text: None,
+            style: None,
             iters: 1,
             warmup: 0,
             format: Format::Kv,
@@ -1557,6 +1641,7 @@ mod tests {
             model: Some(silero_fixture()),
             input: None,
             text: None,
+            style: None,
             iters: 1,
             warmup: 0,
             format: Format::Kv,
@@ -1591,6 +1676,7 @@ mod tests {
             model: Some(silero_fixture()),
             input: Some(wav_path.to_string_lossy().into_owned()),
             text: None,
+            style: None,
             iters: 2,
             warmup: 1,
             format: Format::Kv,

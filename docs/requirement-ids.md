@@ -156,6 +156,7 @@ Backends. Only the IDs cited publicly are listed; each backend has its own.
 |---|---|
 | `FR-BE-01` | The CPU backend as a first-class backend, with a runtime ISA-dispatch ladder spanning x86-64, ARM64, RISC-V and WASM. |
 | `FR-BE-05` | The WebGPU backend, written as a hand-rolled extern-import shim rather than through a binding crate, so the zero-dependency invariant holds. |
+| `FR-BE-06` | Delegate-style NPU backends (Apple ANE via CoreML, Qualcomm Hexagon via QNN), reached through raw framework/dlopen FFI with no binding crate. |
 | `FR-BE-09` | A critical-safe build SKU that compiles out vendor GPU/NPU paths and states the result in the SBOM. |
 
 ## FR-MD
