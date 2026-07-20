@@ -115,6 +115,16 @@ fn shape_grid() -> Vec<(usize, usize, usize)> {
         // -- attention-shaped (n or k small, the whisper per-head family) --
         (150, 64, 150),
         (150, 150, 64),
+        // -- M5-14-BACKLOG-T06: the batched-beam row counts (m ∈ 3..7) now on
+        //    the packed route (widened gate). Each pads m to the MR=8 strip and
+        //    must stay bit-identical to the legacy kernel; MACs kept above
+        //    PACKED_MIN_MACS so they actually route to packed (asserted by
+        //    `routing_thresholds_route_the_hot_shapes`). d_model / ffn shapes. --
+        (3, 768, 768), // beam 3 folded, attn/proj (1.77 M MACs)
+        (5, 768, 768), // beam 5 folded, attn/proj (the T06 positive-pin shape)
+        (7, 512, 129), // beam 7, k odd single KC block, n % 8 == 0 (0.40 M)
+        (4, 1088, 96), // beam 4 crossing the NC=1024 slab at thin m (0.42 M)
+        (6, 260, 200), // beam 6, NEON 4-wide strip + scalar tail (n % 8 == 4)
     ]
 }
 
@@ -359,7 +369,32 @@ fn routing_thresholds_route_the_hot_shapes() {
     assert!(probe::would_use_packed(1500, 1500, 64));
     // CAM++ thin-m / huge-n conv-as-GEMM shape.
     assert!(probe::would_use_packed(32, 43920, 288));
-    // Tiny shapes stay on the legacy kernel.
+
+    // -- M5-14-BACKLOG-T06 routing pin (batched-beam gate widening) --
+    //
+    // The gate was lowered from `m >= PACK_MR` (8) to `m >= 3` after the
+    // packed-vs-legacy break-even microbench (`tests/m5_14_backlog_bench.rs`,
+    // NeonDotprod/M1): m ∈ 3..7 packed beats legacy at every shape past the
+    // MACs gate, m == 2 does not. These POSITIVE assertions are the anti-fake-
+    // green guard for the widening — they are true ONLY if the `m >= 3` floor
+    // actually fired (each is below the old `m >= 8` floor). n = k = 768 is the
+    // whisper-small d_model; MACs = m·768·768 ≥ 1.77 M ≫ PACKED_MIN_MACS.
+    assert!(probe::would_use_packed(3, 768, 768)); // beam 3 folded
+    assert!(probe::would_use_packed(5, 768, 768)); // beam 5 folded (spec pin)
+    assert!(probe::would_use_packed(7, 512, 512)); // beam 7, 1.84 M MACs
+    // m == 2 is DELIBERATELY excluded (packed loses below ~1 M MACs — thin-m
+    // dispatch not amortised over two rows). It must stay off the packed route
+    // even at a large, gate-passing shape (1.18 M MACs), i.e. on the legacy
+    // route exactly as before this WP.
+    assert!(!probe::would_use_packed(2, 768, 768));
+    // The measured routing floor and the code's constant must agree: m == 3 is
+    // the smallest routed row count, m == 2 the largest un-routed one (at a
+    // shape whose only failing gate is `m >= 3`, so this pins the floor value,
+    // not some other gate).
+    assert!(probe::would_use_packed(3, 512, 512) && !probe::would_use_packed(2, 512, 512));
+
+    // Tiny shapes stay on the legacy kernel (MACs gate — unchanged by T06:
+    // m == 4 clears the `m >= 3` floor yet 4·8·8 = 256 ≪ PACKED_MIN_MACS).
     assert!(!probe::would_use_packed(2, 4, 4));
     assert!(!probe::would_use_packed(4, 8, 8));
     // m == 1 routes to the axpy row path wherever the ISA provides it, and

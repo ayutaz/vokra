@@ -228,6 +228,31 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-07-20 — 1.0.0-rc.1-dev (M5-14-BACKLOG: batched-beam scoring interface — Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+untouched (a grep for `beam` / `logits` / `scorer` in the header matches **0**
+symbols; beam search is a host-side Rust runtime function, FR-OP-40, never a C
+export). Two model↔decoder traits gain a **batched** sibling method, each with
+a **default implementation that loops the existing single-item method in order**
+— so every existing `LogitsSource` / `BeamScorer` keeps byte-for-byte identical
+behaviour, and `scripts/check-abi-changelog.sh` does not gate on this entry (no
+C symbol changed). It is recorded for the v1.0-rc baseline snapshot
+(`scripts/rust-public-api-list.sh` picks the variants up) and the M5-13 freeze.
+
+`beam_search` now expands every active beam through `logprobs_batch` in one
+call, so a scorer with a batched decoder step can fold the `beam_width` per-beam
+forwards into one forward; the default keeps the prior per-beam behaviour
+bit-for-bit. An optimized override (Whisper folding the projections into an
+m = `beam_width` GEMM) is deferred to a follow-up (measured to help only at
+beam ≥ 5, ADR `M5-14-BACKLOG`); the interface + its bit-identity oracle land now.
+Both new methods are **additive** (default-provided) so no `impl` breaks.
+
+| Crate / area          | Symbol                       | Kind  | Signature                                                        | Rationale                                                              | Breaking? | PR    |
+| --------------------- | ---------------------------- | ----- | --------------------------------------------------------------- | --------------------------------------------------------------------- | --------- | ----- |
+| `vokra-core::decode`  | `LogitsSource::logits_batch` | Added | `fn logits_batch(&mut self, prefixes: &[&[u32]]) -> Result<Vec<Vec<f32>>>` (default = loop `logits`) | batched next-token logits for beam expansion (M5-14-BACKLOG-T07) | no        | (TBD) |
+| `vokra-core::decode`  | `BeamScorer::logprobs_batch` | Added | `fn logprobs_batch(&mut self, prefixes: &[&[u32]]) -> Result<Vec<Vec<f32>>>` (default = loop `logprobs`) | batched log-probs; `beam_search` folds all active beams into one call | no        | (TBD) |
+
 ### 2026-07-20 — 1.0.0-rc.1-dev (M5-01: CoreML delegate backend selector — Rust surface only)
 
 Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is

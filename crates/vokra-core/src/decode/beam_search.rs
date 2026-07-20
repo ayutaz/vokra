@@ -40,6 +40,22 @@ pub trait BeamScorer {
     /// Vocabulary size (the length of every [`logprobs`](Self::logprobs) result).
     fn vocab_size(&self) -> usize;
 
+    /// Batched [`logprobs`](Self::logprobs): one log-prob vector per prefix, in
+    /// the **same order** as `prefixes` (M5-14-BACKLOG-T07). `beam_search`
+    /// expands every active beam through this in one call, so a scorer with a
+    /// batched decoder step folds `beam_width` per-beam forwards into one
+    /// batched forward.
+    ///
+    /// The default loops [`logprobs`](Self::logprobs) in order — byte-for-byte
+    /// identical to per-beam scoring, so every existing scorer is unaffected. An
+    /// override must return the same bits as the loop (its parity oracle pins
+    /// this); `beam_search` applies the per-beam no-repeat-n-gram mask and the
+    /// top-K selection to the returned vectors unchanged, so batching cannot
+    /// alter which hypotheses are kept.
+    fn logprobs_batch(&mut self, prefixes: &[&[u32]]) -> Result<Vec<Vec<f32>>> {
+        prefixes.iter().map(|p| self.logprobs(p)).collect()
+    }
+
     /// Word-level timestamps for a completed hypothesis (M4-20, FR-OP-40
     /// `word_timestamps`). Called **only** when
     /// [`BeamSearchConfig::word_timestamps`] is set, on the best hypothesis's
@@ -186,14 +202,31 @@ pub fn beam_search(
         }
 
         // Expand every active beam and gather all candidate continuations.
+        // One batched scoring call over all active beams (M5-14-BACKLOG-T07):
+        // a scorer with a batched decoder step folds the `beam_width` per-beam
+        // forwards into one forward. The default `logprobs_batch` loops
+        // `logprobs` in order, so for every existing scorer this is byte-for-byte
+        // the prior per-beam behaviour; an override is pinned bit-identical to
+        // the loop, so the masking + top-K below (and thus which hypotheses are
+        // kept) are unchanged either way.
+        let all_lp = {
+            let batch: Vec<&[u32]> = active.iter().map(|h| h.tokens.as_slice()).collect();
+            scorer.logprobs_batch(&batch)?
+        };
+        let vocab = scorer.vocab_size();
+        if all_lp.len() != active.len() {
+            return Err(VokraError::InvalidArgument(format!(
+                "beam_search: logprobs_batch returned {} vectors, expected {} (one per active beam)",
+                all_lp.len(),
+                active.len()
+            )));
+        }
         let mut candidates: Vec<Hyp> = Vec::new();
-        for hyp in &active {
-            let mut lp = scorer.logprobs(&hyp.tokens)?;
-            if lp.len() != scorer.vocab_size() {
+        for (hyp, mut lp) in active.iter().zip(all_lp) {
+            if lp.len() != vocab {
                 return Err(VokraError::InvalidArgument(format!(
-                    "beam_search: scorer returned {} logprobs, expected vocab_size {}",
+                    "beam_search: scorer returned {} logprobs, expected vocab_size {vocab}",
                     lp.len(),
-                    scorer.vocab_size()
                 )));
             }
             // No-repeat n-gram blocking: mask any candidate that would
@@ -203,11 +236,7 @@ pub fn beam_search(
             // finite candidates exist — the loop below explicitly skips them
             // (mirrors the Voxtral pattern).
             if config.no_repeat_ngram_size > 0 {
-                let mask = ngram_block_mask(
-                    &hyp.tokens,
-                    config.no_repeat_ngram_size,
-                    scorer.vocab_size(),
-                );
+                let mask = ngram_block_mask(&hyp.tokens, config.no_repeat_ngram_size, vocab);
                 for (i, &blocked) in mask.iter().enumerate() {
                     if blocked {
                         lp[i] = f32::NEG_INFINITY;
@@ -853,6 +882,107 @@ mod tests {
             "with no_repeat_ngram_size = 2 the (1, 2) bigram must appear at most once, got \
              tokens {blocked_tokens:?} with count = {blocked_bigram_count}"
         );
+    }
+
+    // ---------- logprobs_batch (M5-14-BACKLOG-T07) ----------------------
+
+    #[test]
+    fn default_logprobs_batch_matches_per_beam_loop() {
+        // The default `logprobs_batch` must be byte-for-byte the per-prefix
+        // loop (order preserved), so a scorer without a batched forward is
+        // unaffected by the beam search calling the batch entry.
+        let mut s = scorer();
+        let prefixes: &[&[u32]] = &[&[0], &[0, 1], &[0, 2], &[0, 1, 3]];
+        let batched = s.logprobs_batch(prefixes).unwrap();
+        assert_eq!(batched.len(), prefixes.len());
+        let mut looped = Vec::new();
+        for p in prefixes {
+            looped.push(s.logprobs(p).unwrap());
+        }
+        for (b, l) in batched.iter().zip(&looped) {
+            for (x, y) in b.iter().zip(l) {
+                assert_eq!(x.to_bits(), y.to_bits(), "batch != loop bitwise");
+            }
+        }
+    }
+
+    #[test]
+    fn batched_scorer_sees_all_active_beams_and_result_is_unchanged() {
+        // A scorer that overrides `logprobs_batch` (a) records the batch sizes
+        // it is asked for — proving beam_search folds every active beam into a
+        // single call — and (b) returns exactly what the per-beam loop would,
+        // so the beam result is identical to the non-overriding scorer.
+        struct BatchSpyScorer {
+            inner: MockScorer,
+            max_batch: std::cell::Cell<usize>,
+        }
+        impl BeamScorer for BatchSpyScorer {
+            fn logprobs(&mut self, t: &[u32]) -> Result<Vec<f32>> {
+                self.inner.logprobs(t)
+            }
+            fn vocab_size(&self) -> usize {
+                self.inner.vocab_size()
+            }
+            fn logprobs_batch(&mut self, prefixes: &[&[u32]]) -> Result<Vec<Vec<f32>>> {
+                self.max_batch.set(self.max_batch.get().max(prefixes.len()));
+                // Bit-identical to the default loop (an optimized override would
+                // fold the forwards but return the same bits — pinned elsewhere).
+                prefixes.iter().map(|p| self.inner.logprobs(p)).collect()
+            }
+        }
+        let mut cfg = BeamSearchConfig::new(3, 8);
+        cfg.n_best = 3;
+
+        let mut plain = scorer();
+        let want = beam_search(&mut plain, &[0], EOT, &cfg).unwrap();
+
+        let mut spy = BatchSpyScorer {
+            inner: scorer(),
+            max_batch: std::cell::Cell::new(0),
+        };
+        let got = beam_search(&mut spy, &[0], EOT, &cfg).unwrap();
+
+        assert_eq!(got, want, "overriding logprobs_batch changed the result");
+        assert!(
+            spy.max_batch.get() >= 2,
+            "beam_search never batched more than one beam (max seen {})",
+            spy.max_batch.get()
+        );
+    }
+
+    #[test]
+    fn logprobs_batch_length_mismatch_is_rejected() {
+        // A broken override that returns the wrong number of vectors must be an
+        // explicit error, never a silent truncation (FR-EX-08).
+        struct WrongCountScorer(MockScorer);
+        impl BeamScorer for WrongCountScorer {
+            fn logprobs(&mut self, t: &[u32]) -> Result<Vec<f32>> {
+                self.0.logprobs(t)
+            }
+            fn vocab_size(&self) -> usize {
+                self.0.vocab_size()
+            }
+            fn logprobs_batch(&mut self, prefixes: &[&[u32]]) -> Result<Vec<Vec<f32>>> {
+                // Drop the last vector — one too few.
+                let mut out: Vec<Vec<f32>> = prefixes
+                    .iter()
+                    .map(|p| self.0.logprobs(p))
+                    .collect::<Result<_>>()?;
+                out.pop();
+                Ok(out)
+            }
+        }
+        // Width 3 so a step has multiple active beams to mis-count.
+        let mut s = WrongCountScorer(scorer());
+        let cfg = BeamSearchConfig::new(3, 8);
+        // The first step has a single active beam (the prefix), so pop → 0
+        // vectors; either way the count check must fire on some step.
+        match beam_search(&mut s, &[0], EOT, &cfg) {
+            Err(VokraError::InvalidArgument(msg)) => {
+                assert!(msg.contains("logprobs_batch"), "message: {msg}");
+            }
+            other => panic!("expected InvalidArgument for wrong batch count, got {other:?}"),
+        }
     }
 
     #[test]

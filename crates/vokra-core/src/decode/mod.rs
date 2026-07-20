@@ -66,4 +66,19 @@ pub trait LogitsSource {
 
     /// Vocabulary size (the length of every [`logits`](Self::logits) result).
     fn vocab_size(&self) -> usize;
+
+    /// Batched [`logits`](Self::logits): one logits vector per prefix, in the
+    /// **same order** as `prefixes` (M5-14-BACKLOG-T07).
+    ///
+    /// The default implementation loops [`logits`](Self::logits) in order, so
+    /// it is byte-for-byte identical to calling `logits` once per prefix — a
+    /// model that has no batched forward keeps its exact behaviour. A model
+    /// with a batched decoder step (e.g. Whisper folding the `beam_width`
+    /// per-beam projections into one m = `beam_width` GEMM) overrides this; the
+    /// override **must** return the same bits as the per-prefix loop (the
+    /// packed-GEMM parity invariant makes an m = N GEMM bit-identical to N
+    /// m = 1 GEMMs row-for-row), which its parity oracle pins.
+    fn logits_batch(&mut self, prefixes: &[&[u32]]) -> Result<Vec<Vec<f32>>> {
+        prefixes.iter().map(|p| self.logits(p)).collect()
+    }
 }

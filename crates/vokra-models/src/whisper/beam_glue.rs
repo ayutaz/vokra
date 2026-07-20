@@ -531,6 +531,46 @@ mod tests {
         }
     }
 
+    /// M5-14-BACKLOG-T08 batched-forward bit-identity oracle: scoring N
+    /// beam-shaped prefixes through [`LogitsSource::logits_batch`] must be
+    /// bit-for-bit (`==`) identical to scoring each prefix through
+    /// [`LogitsSource::logits`] in the same order (the per-beam route).
+    ///
+    /// The default `logits_batch` **is** that loop, so this holds by
+    /// construction today; it exists to pin the contract a future optimized
+    /// override must meet — one that folds the `beam_width` per-beam
+    /// projections into a single m = `beam_width` GEMM (T09). That override can
+    /// be bit-identical because the packed-GEMM driver's parity invariant makes
+    /// an m = N GEMM produce each row's bits identically to the m = 1 GEMM for
+    /// that row (`vokra-backend-cpu/tests/gemm_packed_parity.rs`); this test is
+    /// the model-side gate that would catch any divergence.
+    #[test]
+    fn batched_logits_bitwise_matches_per_beam_scoring() {
+        let model = tiny_model(2);
+        let enc = tiny_encoder(model.config().d_model, 4);
+        // One beam step's worth of queries: sibling children of a shared parent
+        // plus a deeper generation, exactly the shapes beam_search batches.
+        let prefixes: [&[u32]; 4] = [&[1, 2, 1], &[1, 2, 0], &[1, 2, 1, 2], &[1, 2, 0, 1]];
+
+        // Batched (one call).
+        let mut batched_src = WhisperLogitsSource::new(Arc::clone(&model), &enc).unwrap();
+        let batch: Vec<&[u32]> = prefixes.to_vec();
+        let batched = batched_src.logits_batch(&batch).unwrap();
+        assert_eq!(batched.len(), prefixes.len());
+
+        // Per-beam, same order, on an independently constructed source — so a
+        // future override that keeps different internal state is still checked
+        // against the plain per-prefix scoring, not against itself.
+        let mut loop_src = WhisperLogitsSource::new(Arc::clone(&model), &enc).unwrap();
+        for (i, p) in prefixes.iter().enumerate() {
+            let want = loop_src.logits(p).unwrap();
+            assert_eq!(
+                batched[i], want,
+                "prefix {p:?}: batched != per-beam scoring"
+            );
+        }
+    }
+
     /// M5-14-T13 regression pin: beam search over the incremental-KV scorer
     /// must select the same hypotheses as over an M0-style always-recompute
     /// scorer (reset + full-prefix replay per query) on the synthetic

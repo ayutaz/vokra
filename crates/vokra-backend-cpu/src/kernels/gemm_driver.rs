@@ -104,6 +104,20 @@ const NR_MAX: usize = 16;
 /// ~8% BEHIND legacy; at 262K (32,128,64) it is ~20% ahead and the gap only
 /// widens with size — so the gate sits at the measured break-even.
 const PACKED_MIN_MACS: usize = 1 << 18;
+/// Minimum `m` (row count) the packed path is routed for. Wave-1 gated this at
+/// [`PACK_MR`] (8); **M5-14-BACKLOG-T06** lowered it to 3 after measuring the
+/// packed-vs-legacy break-even at `m ∈ 2..7` on NeonDotprod / M1
+/// (`tests/m5_14_backlog_bench.rs`, run 2026-07-20): for `m ∈ 3..7` packed
+/// beats the legacy kernel at **every** shape past the MACs gate (measured
+/// packed/legacy 0.15–0.94 at k ∈ {768, 3072}), so folding `beam_width`
+/// per-beam m=1 decoder forwards into one m=beam_width GEMM routes to the fast
+/// path. `m == 2` is **deliberately excluded**: packed loses to the legacy
+/// kernel below ~1 M MACs (its thin-m dispatch + full-A pack is not amortised
+/// over two rows — measured packed/legacy 1.02–1.38 at 12 K–786 K MACs), so
+/// m == 2 stays on the legacy route exactly as before this WP (no regression).
+/// `m == 1` never reaches this gate — it is served by the axpy [`m1_path`] in
+/// [`run`] before the packed check.
+const PACKED_MIN_M: usize = 3;
 /// Packing needs at least two column strips' worth of width to matter.
 const PACKED_MIN_N: usize = 16;
 /// Very shallow k has nothing to block; the legacy kernel handles it.
@@ -182,7 +196,7 @@ impl SendPtr {
 /// hot Wave-0 shapes to the packed route (`gemm_test_probe`). Thresholds are
 /// performance routing only: every route computes bit-identical results.
 pub fn would_use_packed(m: usize, n: usize, k: usize) -> bool {
-    m >= PACK_MR
+    m >= PACKED_MIN_M
         && n >= PACKED_MIN_N
         && k >= PACKED_MIN_K
         && m.saturating_mul(n).saturating_mul(k) >= PACKED_MIN_MACS
@@ -196,6 +210,34 @@ pub fn active_gemm_has_packed() -> bool {
 /// Whether the active dispatch table carries the m == 1 row kernel.
 pub fn active_gemm_has_m1() -> bool {
     dispatch::table().gemm_m1.is_some()
+}
+
+/// Test / bench-only (`gemm_test_probe`): forces the packed cache-blocked path
+/// **regardless** of the [`would_use_packed`] routing gate, so the parity suite
+/// and the M5-14-BACKLOG break-even microbench can drive the packed
+/// micro-kernels at `m < PACK_MR` — the beam-width row counts the production
+/// gate does not (yet) route (Finding 4). Returns `false` (leaving `out`
+/// untouched) when the active ISA ships no packed kernels; the caller then
+/// skips. **Never on the production path** — [`run`] still gates every real
+/// GEMM through [`would_use_packed`], so this shim cannot change any model's
+/// numerics; it only lets a test/bench reach a route the gate withholds.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)] // GEMM's intrinsic parameter set
+pub fn packed_forced(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    b: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) -> bool {
+    if let Some(pk) = dispatch::table().gemm_packed {
+        packed_path(&pk, m, n, k, a, b, bias, out);
+        true
+    } else {
+        false
+    }
 }
 
 /// Production GEMM entry (routes `kernels::gemm_f32`). Inputs are
