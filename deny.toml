@@ -127,4 +127,18 @@ deny = [
     { crate = "core-foundation-sys", reason = "M2-01 / M5-01 red line / NFR-DS-02: no CoreFoundation binding crate; raw framework FFI only" },
     { crate = "metal", reason = "M2-01 red line / NFR-DS-02: the Metal backend is raw ObjC/Metal FFI; no `metal` binding crate" },
     { crate = "coreml", reason = "M5-01 red line / NFR-DS-02: the CoreML backend is raw ObjC/CoreML FFI; no `coreml` binding crate" },
+    # QNN / Qualcomm Hexagon binding crates — M5-02 red line (NFR-DS-02): the QNN
+    # delegate backend loads the Qualcomm AI Engine Direct runtime (libQnnHtp.so /
+    # QnnHtp.dll) at RUNTIME via dlopen and resolves each symbol by name (Qualcomm
+    # EULA install model — nothing bundled or linked). A binding/wrapper crate
+    # would add non-`vokra-*` entries to Cargo.lock. Ban the plausible families so
+    # a stray dependency cannot introduce one. NOTE: this is DISTINCT from the
+    # NNAPI ban above — QNN targets the Hexagon NPU through Qualcomm's own SDK,
+    # whereas NNAPI (permanently unsupported, FR-BE-07) is the Android abstraction
+    # Google deprecated in Android 15. They are not the same thing.
+    { crate = "qnn", reason = "M5-02 red line / NFR-DS-02: the QNN backend is raw dlopen FFI; no `qnn` binding crate (NOT NNAPI — FR-BE-07)" },
+    { crate = "qnn-sys", reason = "M5-02 red line / NFR-DS-02: the QNN backend is raw dlopen FFI; no `qnn-sys` binding crate" },
+    { crate = "qualcomm-qnn", reason = "M5-02 red line / NFR-DS-02: the QNN backend is raw dlopen FFI; no Qualcomm QNN binding crate" },
+    { crate = "hexagon", reason = "M5-02 red line / NFR-DS-02: the QNN backend is raw dlopen FFI; no Hexagon binding crate" },
+    { crate = "hexagon-sys", reason = "M5-02 red line / NFR-DS-02: the QNN backend is raw dlopen FFI; no Hexagon binding crate" },
 ]

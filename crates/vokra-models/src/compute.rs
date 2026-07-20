@@ -280,6 +280,25 @@ impl HotOp {
         let _ = self;
         false
     }
+
+    /// Whether the QNN delegate backend's [`Compute`] seam covers this op
+    /// (M5-02-T07).
+    ///
+    /// **Scaffold slice:** the QNN backend has NO wired execution path — QNN
+    /// graph construction lands in the SDK-gated re-issue wave (owner T11 gates
+    /// it), so this is deliberately `false` for every op, the honest state
+    /// (mirrors the Vulkan foundation slice and the CoreML scaffold).
+    /// Consequently `for_backend(Qnn, &required)` returns an explicit
+    /// [`VokraError::UnsupportedOp`] for every op it reaches (after the probe) —
+    /// never a silent CPU fall back (FR-EX-08).
+    #[cfg(all(
+        feature = "qnn",
+        any(target_os = "android", target_os = "linux", target_os = "windows")
+    ))]
+    fn covered_by_qnn(self) -> bool {
+        let _ = self;
+        false
+    }
 }
 
 /// A typed, zero-malloc compute dispatcher the imperative model hot path calls
@@ -366,7 +385,11 @@ impl Compute {
                 feature = "vulkan",
                 any(target_os = "linux", target_os = "android", target_os = "windows")
             ),
-            all(feature = "webgpu", target_arch = "wasm32")
+            all(feature = "webgpu", target_arch = "wasm32"),
+            all(
+                feature = "qnn",
+                any(target_os = "android", target_os = "linux", target_os = "windows")
+            )
         )))]
         let _ = required;
         match kind {
@@ -475,11 +498,50 @@ impl Compute {
                     caps.summary()
                 )))
             }
+            #[cfg(all(
+                feature = "qnn",
+                any(target_os = "android", target_os = "linux", target_os = "windows")
+            ))]
+            BackendKind::Qnn => {
+                // Probe first: no reachable QNN runtime is a `BackendUnavailable`
+                // (no SDK installed, a runner without the Hexagon runtime), never
+                // a silent CPU fall back (FR-EX-08 / NFR-RL-06). Mirrors the
+                // CoreML delegate arm above (the sister M5-01 WP).
+                let caps = vokra_backend_qnn::vokra_qnn_probe()?;
+                // Coverage gate, kept in lock-step with `covered_by_qnn` (the
+                // `qnn_coverage_is_empty_in_scaffold` test pins the two
+                // together): in the scaffold slice every op is uncovered, so a
+                // non-empty `required` reports the first uncovered op.
+                if let Some(op) = required.iter().copied().find(|op| !op.covered_by_qnn()) {
+                    return Err(VokraError::UnsupportedOp(format!(
+                        "qnn delegate backend has no wired execution path for {op:?} in the M5-02 \
+                         scaffold slice ({}); the model requires {required:?}. QNN graph \
+                         construction lands in the SDK-gated re-issue wave. One model = one \
+                         backend — Vokra does not silently run the uncovered ops on the CPU \
+                         (FR-EX-08). Select BackendKind::Cpu explicitly for now.",
+                        caps.summary()
+                    )));
+                }
+                // `required` empty AND every op uncovered — the scaffold cannot
+                // construct a usable `Compute::Qnn` dispatcher (no callable
+                // execution path). Surface an explicit error rather than
+                // pretending a coverage-empty dispatcher is usable (same shape
+                // as the Vulkan foundation slice / CoreML scaffold). Once the
+                // graph-construction re-issue wave lands (owner T11 gates it),
+                // this becomes `Ok(Compute { be: Be::Qnn(...) })`.
+                Err(VokraError::UnsupportedOp(format!(
+                    "qnn delegate Compute path has no wired execution in the M5-02 scaffold slice \
+                     ({}) — no covered required set exists. Wait for the SDK-gated \
+                     graph-construction re-issue wave.",
+                    caps.summary()
+                )))
+            }
             other => Err(VokraError::BackendUnavailable(format!(
                 "{other:?} backend is not built into vokra-models (build with the `metal` feature \
                  on macOS / iOS for Metal, the `cuda` feature on Windows / Linux for CUDA, the \
-                 `vulkan` feature on Linux / Android / Windows for Vulkan, or the `webgpu` \
-                 feature on wasm32 for browser WebGPU)"
+                 `vulkan` feature on Linux / Android / Windows for Vulkan, the `webgpu` \
+                 feature on wasm32 for browser WebGPU, or the `qnn` feature on Android / Linux / \
+                 Windows for the Qualcomm Hexagon NPU delegate)"
             ))),
         }
     }
@@ -2510,6 +2572,93 @@ mod tests {
         assert!(matches!(
             Compute::for_backend(BackendKind::CoreMl, &[]),
             Err(VokraError::UnsupportedOp(_)) | Err(VokraError::BackendUnavailable(_))
+        ));
+    }
+
+    /// QNN scaffold slice: `covered_by_qnn` is `false` for every variant, so
+    /// `for_backend(Qnn, …)` never silently runs on the CPU. Because the arm
+    /// probes the QNN runtime first, the outcome is probe-gated and honest:
+    /// `UnsupportedOp` on a host WITH a QNN runtime (coverage empty), or
+    /// `BackendUnavailable` on a host without one (every CI runner today) —
+    /// never `Ok` in the scaffold, and never a fabricated pass. When the
+    /// SDK-gated graph-construction re-issue wave lands, flip the covered
+    /// variants in `HotOp::covered_by_qnn` and tighten this test.
+    #[cfg(all(
+        feature = "qnn",
+        any(target_os = "android", target_os = "linux", target_os = "windows")
+    ))]
+    #[test]
+    fn qnn_coverage_is_empty_in_scaffold() {
+        for op in [
+            HotOp::Gemm,
+            HotOp::Gemv,
+            HotOp::Softmax,
+            HotOp::LayerNorm,
+            HotOp::Gelu,
+            HotOp::Conv1d,
+            HotOp::MimiRvq,
+            HotOp::DacRvq,
+            HotOp::EncodecRvq,
+            HotOp::WavTokenizerVq,
+            HotOp::Xcodec2Fsq,
+        ] {
+            assert!(
+                !op.covered_by_qnn(),
+                "{op:?} unexpectedly covered by the M5-02 scaffold QNN backend (no execution path \
+                 is wired). If the SDK-gated re-issue wave has landed, update \
+                 `HotOp::covered_by_qnn` and shrink this test accordingly.",
+            );
+            // The seam must never return `Ok` in the scaffold, and must never
+            // fall back to the CPU. On a QNN host it is `UnsupportedOp`; with no
+            // QNN runtime it is `BackendUnavailable` (a probe-gated skip, not a
+            // fabricated pass). `Compute` has no `Debug`, so assert on the
+            // matched shape rather than formatting the value.
+            assert!(
+                matches!(
+                    Compute::for_backend(BackendKind::Qnn, &[op]),
+                    Err(VokraError::UnsupportedOp(_)) | Err(VokraError::BackendUnavailable(_))
+                ),
+                "for_backend(Qnn, &[{op:?}]) must be UnsupportedOp (QNN runtime present) or \
+                 BackendUnavailable (no runtime) in the scaffold — never Ok, never a CPU fall back",
+            );
+        }
+        // Empty required set is also explicit (no callable execution path).
+        assert!(matches!(
+            Compute::for_backend(BackendKind::Qnn, &[]),
+            Err(VokraError::UnsupportedOp(_)) | Err(VokraError::BackendUnavailable(_))
+        ));
+    }
+
+    /// Off-target / feature-off build: `BackendKind::Qnn` falls to the
+    /// target-agnostic error path — an explicit `BackendUnavailable` naming the
+    /// `qnn` feature. Never a silent CPU substitute (FR-EX-08). This is the path
+    /// taken on the macOS authoring host (QNN is not an Apple backend) and in
+    /// every default build.
+    #[cfg(not(all(
+        feature = "qnn",
+        any(target_os = "android", target_os = "linux", target_os = "windows")
+    )))]
+    #[test]
+    fn qnn_not_compiled_in_is_explicit_backend_unavailable() {
+        // `Compute` does not derive `Debug`, so unwrap the error manually.
+        let err = match Compute::for_backend(BackendKind::Qnn, &[HotOp::Gemm]) {
+            Ok(_) => panic!("Qnn must fail explicitly when not compiled in"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, VokraError::BackendUnavailable(_)),
+            "expected BackendUnavailable, got {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("qnn"),
+            "the error must name the `qnn` feature so the caller knows what to enable: {msg}"
+        );
+        // make_backend has no Qnn arm (QNN is a delegate, not a per-op graph
+        // backend — same as CoreML); it is BackendUnavailable regardless.
+        assert!(matches!(
+            make_backend(BackendKind::Qnn),
+            Err(VokraError::BackendUnavailable(_))
         ));
     }
 

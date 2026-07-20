@@ -40,6 +40,7 @@ vokra-backend-cuda = { path = "crates/vokra-backend-cuda" }
 vokra-backend-vulkan = { path = "crates/vokra-backend-vulkan" }
 vokra-backend-webgpu = { path = "crates/vokra-backend-webgpu" }
 vokra-backend-coreml = { path = "crates/vokra-backend-coreml" }
+vokra-backend-qnn = { path = "crates/vokra-backend-qnn" }
 vokra-models = { path = "crates/vokra-models" }
 vokra-piper-plus = { path = "crates/vokra-piper-plus" }
 vokra-capi = { path = "crates/vokra-capi" }
@@ -49,7 +50,8 @@ vokra-mmap = { path = "crates/vokra-mmap" }
 # the workspace is safe-by-default (`unsafe_code = "deny"`). `unsafe` +
 # SIMD intrinsics / C ABI code are permitted ONLY in vokra-ops,
 # vokra-backend-cpu, vokra-backend-metal, vokra-backend-cuda,
-# vokra-backend-vulkan, vokra-backend-webgpu, vokra-capi, vokra-mmap and
+# vokra-backend-vulkan, vokra-backend-webgpu, vokra-backend-coreml,
+# vokra-backend-qnn, vokra-capi, vokra-mmap and
 # vokra-wasm-harness. The
 # vokra-mmap opt-out backs the self-declared POSIX `mmap` / Win32 file-mapping
 # FFI for true zero-copy GGUF loading; vokra-backend-metal backs the
@@ -66,7 +68,13 @@ vokra-mmap = { path = "crates/vokra-mmap" }
 # browser WebGPU API (NO `wgpu` / `wasm-bindgen` binding crate — import-object
 # resolution at instantiate time is the WASM dlopen equivalent, M4-01);
 # vokra-wasm-harness backs the (ptr, len) wasm ABI boundary of the Web entry
-# crate (M4-01 — test entries + session API over hand-written JS glue).
+# crate (M4-01 — test entries + session API over hand-written JS glue);
+# vokra-backend-coreml backs the self-declared Objective-C runtime + CoreML /
+# Foundation framework FFI (NO objc2 / objc2-core-ml binding crate — M5-01);
+# vokra-backend-qnn backs the self-declared QNN (Qualcomm AI Engine Direct) FFI
+# loaded at RUNTIME via dlopen / LoadLibrary (NO qnn-sys / hexagon binding crate,
+# and no SDK is bundled or linked — Qualcomm EULA install model — see its crate
+# docs; QNN is the Hexagon NPU delegate, NOT NNAPI, M5-02).
 # All add no external crate. These crates opt out locally with
 # `#![allow(unsafe_code)]` at their
 # crate root. Public API boundaries must

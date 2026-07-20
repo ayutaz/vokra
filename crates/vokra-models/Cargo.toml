@@ -82,6 +82,18 @@ vokra-backend-webgpu = { workspace = true, optional = true }
 # explicit `UnsupportedOp` (or `BackendUnavailable` with no ANE) — never a
 # silent CPU fall back (FR-EX-08). The op path lands after the M5-01-T02 ADR.
 vokra-backend-coreml = { workspace = true, optional = true }
+# Off by default: the QNN delegate backend (Qualcomm Hexagon NPU, M5-02) reached
+# behind the `qnn` feature. An OPTIONAL first-party dep, so default builds never
+# name it (NFR-PT-01). `vokra-backend-qnn` is a first-party `vokra-*` crate with
+# ZERO external deps (raw QNN / Qualcomm AI Engine Direct FFI loaded at runtime
+# via dlopen — NO qnn-sys / hexagon binding crate, no bundled SDK), so the
+# zero-dependency gate (NFR-DS-02) still holds. Its `Compute` arm is additionally
+# `cfg(any(target_os = "android", "linux", "windows"))`-gated (QNN is NOT an Apple
+# backend and is NOT NNAPI, FR-BE-07). Scaffold slice: no op has a wired
+# execution path yet, so `for_backend(Qnn, …)` returns an explicit `UnsupportedOp`
+# (QNN runtime present) or `BackendUnavailable` (no runtime) — never a silent CPU
+# fall back (FR-EX-08). QNN graph construction lands in the SDK-gated re-issue wave.
+vokra-backend-qnn = { workspace = true, optional = true }
 
 [dev-dependencies]
 # M4-04 T10/T11 (test-only edge, runtime direction untouched): the codec GGUF
@@ -146,6 +158,19 @@ webgpu = ["dep:vokra-backend-webgpu", "vokra-backend-webgpu/webgpu"]
 # the M5-01-T02 model-supply ADR is ratified (owner). On non-Apple targets the
 # backend crate's own target gate keeps it an explicit stub.
 coreml = ["dep:vokra-backend-coreml"]
+# Off by default: enable with `--features qnn` on Android / Linux / Windows to
+# make the QNN delegate backend (Qualcomm Hexagon NPU, M5-02) selectable through
+# the `Compute` seam. Forwards to the backend crate's own `qnn` feature (the
+# `vulkan` pattern) so its raw dlopen FFI actually COMPILES in that build target;
+# it still loads libQnnHtp only at runtime (nothing linked or bundled — Qualcomm
+# EULA install model, NFR-DS-02). In the scaffold slice the backend covers no hot
+# op, so any `Compute::for_backend` with `BackendKind::Qnn` returns an explicit
+# `UnsupportedOp` (a QNN-runtime-present host) or `BackendUnavailable` (no runtime)
+# — never a silent CPU fall back (FR-EX-08). QNN graph construction lands in the
+# SDK-gated re-issue wave (owner T11 gates it). On non-Android/Linux/Windows
+# targets (macOS / iOS / WASM) the backend crate's own target gate keeps it an
+# explicit stub — QNN is NOT an Apple backend and is NOT NNAPI (FR-BE-07).
+qnn = ["dep:vokra-backend-qnn", "vokra-backend-qnn/qnn"]
 
 # M1-01-D: reference RTF bench for the piper-plus native TTS (hand-rolled
 # std::time measurement, no external bench crate — NFR-DS-02). It is env-gated

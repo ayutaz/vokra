@@ -130,8 +130,15 @@ pub(crate) fn parse_backend(v: &str) -> Result<BackendKind, String> {
         // `BackendUnavailable` (no ANE / `coreml` feature off) from
         // `Compute::for_backend` (no silent CPU fall back, FR-EX-08).
         "coreml" => Ok(BackendKind::CoreMl),
+        // QNN delegate (Qualcomm Hexagon NPU, M5-02) — recognised at parse time
+        // so the CLI accepts the name; the scaffold slice has no wired execution
+        // path, so any actual run surfaces an explicit `UnsupportedOp` (QNN
+        // runtime present) or `BackendUnavailable` (no runtime / `qnn` feature
+        // off) from `Compute::for_backend` (no silent CPU fall back, FR-EX-08).
+        // NOT NNAPI (FR-BE-07) — QNN is the Hexagon NPU delegate.
+        "qnn" => Ok(BackendKind::Qnn),
         other => Err(format!(
-            "unknown --backend `{other}` (cpu | metal | cuda | vulkan | coreml)"
+            "unknown --backend `{other}` (cpu | metal | cuda | vulkan | coreml | qnn)"
         )),
     }
 }
@@ -1074,16 +1081,24 @@ mod tests {
         // Each name maps to its enum variant; whether the backend is *usable*
         // depends on the compiled features, but the name must always parse so
         // an unavailable backend fails loudly at inference, never silently on
-        // CPU (FR-EX-08). `coreml` (M5-01) is accepted here even though its
-        // execution path is scaffold-only.
+        // CPU (FR-EX-08). `coreml` (M5-01) / `qnn` (M5-02) are accepted here even
+        // though their execution paths are scaffold-only.
         assert_eq!(parse_backend("cpu"), Ok(BackendKind::Cpu));
         assert_eq!(parse_backend("metal"), Ok(BackendKind::Metal));
         assert_eq!(parse_backend("cuda"), Ok(BackendKind::Cuda));
         assert_eq!(parse_backend("vulkan"), Ok(BackendKind::Vulkan));
         assert_eq!(parse_backend("coreml"), Ok(BackendKind::CoreMl));
-        // An unknown name is a loud parse error naming the valid set.
-        let err = parse_backend("qnn").expect_err("qnn is not a selectable backend yet");
+        assert_eq!(parse_backend("qnn"), Ok(BackendKind::Qnn));
+        // An unknown name is a loud parse error naming the valid set. `tpu` is
+        // deliberately not a Vokra backend (NNAPI is likewise not a selector —
+        // FR-BE-07, permanently unsupported — so it must never parse either).
+        let err = parse_backend("tpu").expect_err("tpu is not a selectable backend");
         assert!(err.contains("coreml"), "error must list coreml: {err}");
+        assert!(err.contains("qnn"), "error must list qnn: {err}");
+        assert!(
+            parse_backend("nnapi").is_err(),
+            "nnapi must never parse (FR-BE-07)"
+        );
     }
 
     // ----- M2-08-T12: HiFi-GAN INT8 opt-in verify gate --------------------

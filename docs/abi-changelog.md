@@ -228,6 +228,36 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-07-21 — 1.0.0-rc.1-dev (M5-02: QNN delegate backend selector — Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+untouched. This is deliberate and load-bearing for M5-13: a **C-level** QNN
+delegate selector is *not* exposed during the v1.0-rc window (same posture as
+M5-01 CoreML). `include/vokra.h` records that a backend/delegate selector, if
+ever exported, is "an M5 decision after the real-hardware NPU bakeoff", and
+`docs/handoff/m4-12.md` says to land the delegate API as a *new* C symbol after
+the ANE/Hexagon bakeoff. So the only way to select QNN in the rc window is the
+Rust surface (`SessionBuilder::with_backend(BackendKind::Qnn)` / `vokra-cli
+--backend qnn`). `scripts/check-abi-changelog.sh` does not gate on this entry
+(no C symbol changed); it is recorded for the v1.0-rc baseline snapshot
+(`scripts/rust-public-api-list.sh` audits that `BackendKind` still carries
+`#[non_exhaustive]`, so the variant addition is backward-compatible) and for the
+M5-13 freeze decision on whether to promote the selector to the C ABI.
+
+Scaffold status: the backend covers no op yet (QNN graph construction — the
+`QnnGraph_create` → `addNode` → `finalize` → `execute` path — lands in an
+SDK-gated CC re-issue wave, gated by owner T11 = SDK download + Qualcomm EULA
+acceptance + real-header layout verification), so selecting it is an explicit
+`UnsupportedOp` (QNN runtime present) or `BackendUnavailable` (no runtime / off
+target) — never a silent CPU fall back. No GGUF metadata schema is added by this
+slice; if the model-supply scheme later adds a `vokra.qnn.*` chunk, that gets its
+own dated entry. **QNN is not NNAPI** (FR-BE-07): NNAPI remains permanently
+unsupported; QNN is the Qualcomm Hexagon NPU delegate.
+
+| Crate / area              | Symbol                 | Kind  | Signature                            | Rationale                                                        | Breaking? | PR    |
+| ------------------------- | ---------------------- | ----- | ------------------------------------ | ---------------------------------------------------------------- | --------- | ----- |
+| `vokra-core::backend`     | `BackendKind::Qnn`     | Added | `enum BackendKind { …, Qnn }` (`#[non_exhaustive]`, additive) | QNN delegate selector (FR-BE-06), WP M5-02; raw QNN dlopen FFI, no binding crate, no bundled SDK. C-ABI exposure deferred to M5-13 post-bakeoff | no        | (TBD) |
+
 ### 2026-07-20 — 1.0.0-rc.1-dev (M5-14-BACKLOG: batched-beam scoring interface — Rust surface only)
 
 Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is

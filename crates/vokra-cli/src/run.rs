@@ -1465,8 +1465,8 @@ mod tests {
     // ---- --backend (bench-surface mirror) + --compare (speaker) ----------
 
     /// `--backend` parses exactly like `bench --backend` (shared
-    /// `parse_backend`): default cpu, metal/cuda/vulkan accepted at parse
-    /// time (availability is an inference-time explicit error, FR-EX-08).
+    /// `parse_backend`): default cpu, metal/cuda/vulkan/coreml/qnn accepted at
+    /// parse time (availability is an inference-time explicit error, FR-EX-08).
     #[test]
     fn parses_backend_flag_with_cpu_default() {
         use vokra_core::BackendKind;
@@ -1477,6 +1477,10 @@ mod tests {
             ("metal", BackendKind::Metal),
             ("cuda", BackendKind::Cuda),
             ("vulkan", BackendKind::Vulkan),
+            // QNN delegate (Qualcomm Hexagon NPU, M5-02): parses to the variant;
+            // an actual run is an explicit UnsupportedOp / BackendUnavailable
+            // unless built with the `qnn` feature on Android/Linux/Windows.
+            ("qnn", BackendKind::Qnn),
         ] {
             let a = parse_args(&args(&["--model", "m.gguf", "--backend", name]))
                 .unwrap_or_else(|e| panic!("--backend {name} should parse: {e}"));

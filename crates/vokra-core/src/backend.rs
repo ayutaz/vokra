@@ -163,6 +163,37 @@ pub enum BackendKind {
     /// The Rust-side surface (`with_backend` / `vokra-cli --backend coreml`) is
     /// the only way to select it for now.
     CoreMl,
+    /// QNN delegate backend (Qualcomm Hexagon NPU, FR-BE-06). Implemented in
+    /// `vokra-backend-qnn` (M5-02) with raw QNN (Qualcomm AI Engine Direct SDK)
+    /// FFI loaded at runtime via dlopen / LoadLibrary (no `qnn-sys` / `hexagon`
+    /// binding crate, no bundled SDK — Qualcomm EULA install model, the same
+    /// posture as the CUDA backend). Reached through the `vokra-models` `Compute`
+    /// dispatcher behind its `qnn` feature (compiled only on Android / Linux /
+    /// Windows). Like CoreML this is a *delegate*: the intended execution unit is
+    /// a declared submodel, not a Vokra-side op partition (which the [`Backend`]
+    /// trait's "same op coverage" rule forbids) and not a silent fallback.
+    ///
+    /// **NNAPI is a different thing and is permanently unsupported** (FR-BE-07):
+    /// QNN targets the Qualcomm Hexagon NPU through Qualcomm's own SDK, whereas
+    /// NNAPI is the Android abstraction Google deprecated in Android 15. Android's
+    /// general GPU path is Vulkan ([`BackendKind::Vulkan`]); QNN is the
+    /// Hexagon-NPU delegate. Do not conflate them.
+    ///
+    /// **Scaffold status (M5-02):** the op-execution path (QNN graph
+    /// construction) lands in the SDK-gated re-issue wave, so every hot op is
+    /// currently reported as
+    /// [`VokraError::UnsupportedOp`](crate::VokraError::UnsupportedOp). A host
+    /// with no reachable QNN runtime (no SDK installed, or any non-Android /
+    /// -Linux / -Windows target where the backend is compiled out) is an explicit
+    /// [`VokraError::BackendUnavailable`](crate::VokraError::BackendUnavailable)
+    /// — never a silent CPU fall back (FR-EX-08 / NFR-RL-06).
+    ///
+    /// A **C-level** selector for this delegate is intentionally *not* exported
+    /// during the v1.0-rc window; that is an M5-13 decision after the
+    /// real-hardware NPU bakeoff (`include/vokra.h`, `docs/handoff/m4-12.md`).
+    /// The Rust-side surface (`with_backend` / `vokra-cli --backend qnn`) is the
+    /// only way to select it for now.
+    Qnn,
 }
 
 #[cfg(test)]

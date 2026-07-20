@@ -277,6 +277,10 @@ jobs:
         run: |
           bash scripts/check-abi-changelog.sh --self-test
           bash scripts/check-abi-changelog.sh
+      - name: M5-residual ops add no C ABI symbol (self-test, then check)
+        run: |
+          bash scripts/check-m5-residual-no-abi.sh --self-test
+          bash scripts/check-m5-residual-no-abi.sh
       - name: Rust public-API surface (self-test, then snapshot compare)
         run: |
           bash scripts/rust-public-api-list.sh --self-test
@@ -353,6 +357,15 @@ jobs:
           # framework-linked FFI.
           - os: macos-latest
             feature: coreml
+          # QNN delegate scaffold (M5-02, Qualcomm Hexagon NPU). Build/clippy/
+          # test on Linux — this is where the raw dlopen FFI + the compile-time
+          # layout assert actually COMPILE (the FFI is gated on Android/Linux/
+          # Windows, so the authoring macOS host only ever built the stub). No
+          # GitHub runner has a QNN runtime, so the probe-gated tests take the
+          # honest BackendUnavailable path (a skip), never a fabricated pass.
+          # NOT NNAPI (FR-BE-07) — QNN is the Hexagon NPU delegate.
+          - os: ubuntu-latest
+            feature: qnn
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -380,6 +393,16 @@ jobs:
       - name: Test backend crate (${{ matrix.feature }})
         if: matrix.feature == 'coreml'
         run: cargo test -p vokra-backend-coreml
+      # M5-02-T10a: run the QNN backend crate's own probe/coverage tests on the
+      # qnn arm, WITH `--features qnn` so the raw dlopen FFI + the compile-time
+      # layout self-consistency assert actually compile on Linux (they are gated
+      # on `all(feature = "qnn", any(android/linux/windows))`). No runner has a
+      # QNN runtime, so the probe test skips cleanly (BackendUnavailable) — an
+      # honest skip, not a pass. The layout assert being a self-consistency guard
+      # (not a real-header check) is verified by owner T11 against the SDK.
+      - name: Test backend crate (${{ matrix.feature }})
+        if: matrix.feature == 'qnn'
+        run: cargo test -p vokra-backend-qnn --features qnn
 
   # M4-15: CPU + Vulkan-only build target (FR-BE-09 partial — build target
   # only; ADR M4-15). Builds the shipped cdylib + CLI with
@@ -931,6 +954,24 @@ jobs:
         run: |
           bash scripts/check-owner-checklist-drift.sh --self-test
           bash scripts/check-owner-checklist-drift.sh
+      - name: Zoo-manifest completeness gate (advisory, M5-12-T09)
+        # GA DoD item 2 ("all zoo models degrade < 5% / pass parity") is only
+        # honest if the zoo model set is enumerable and complete. This gate
+        # cross-references the tracked machine SoT (docs/license-audit.md's
+        # ★ 公式 zoo / ⚠ 保留 rows) against the eval zoo manifest
+        # (crates/vokra-eval/data/zoo/manifest.txt): every audit row must be
+        # claimed by a record OR an excluded_reason record, no manifest record
+        # may be a phantom, the Whisper bundle must expand to 5 sizes, and no
+        # CC-BY-NC weight may appear. A silently-dropped model would make item 2
+        # vacuously true for it — the exact defect this gate prevents.
+        # ADVISORY (continue-on-error) like its sibling doc-drift tripwires
+        # above; promotion to a required branch-protection check is an owner
+        # decision (NFR-MT-07, X-08-T28 pattern). The self-test guards the
+        # parser so a checker bug cannot manufacture a passing run.
+        continue-on-error: true
+        run: |
+          bash scripts/check-zoo-manifest-complete.sh --self-test
+          bash scripts/check-zoo-manifest-complete.sh
 
   # Performance regression gate (NFR-PF-13, M2-04). Runs the fused log-mel
   # `mel-frontend` bench through `vokra-cli bench --baseline` against a
