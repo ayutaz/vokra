@@ -68,6 +68,9 @@ fn run() -> Result<(), String> {
             print_usage();
             return Ok(());
         }
+        // The GA DoD item-2 zoo runner (M5-12) is a subcommand, not a metric:
+        // it iterates the whole zoo manifest rather than scoring one pair.
+        Some("dod") => return run_dod(&args[1..]),
         _ => {}
     }
     let cli = parse_cli(&args)?;
@@ -289,12 +292,105 @@ fn report_aggregate(name: &str, count: usize, sum: f64) {
     let mean = if count == 0 { 0.0 } else { sum / count as f64 };
     println!("metric={name} count={count} mean={mean:.6}");
 }
+/// The GA DoD item-2 zoo runner (M5-12). Iterates the zoo manifest, gates each
+/// model on weight/corpus availability, and prints an honest report — skips are
+/// skips, the UTMOS leg is flagged when it did not run, and nothing is
+/// fabricated green. Exits non-zero only on a *measured* failure/error; an
+/// INCOMPLETE run (no corpora / no weights — the current repo reality) exits 0
+/// because the report already says, loudly, that it is not an item-2 pass.
+fn run_dod(args: &[String]) -> Result<(), String> {
+    use vokra_eval::dod::{DOD_ITEM2_THRESHOLD, EnvZooRunEnv, Item2RunnerVerdict, run_dod_item2};
+    use vokra_eval::zoo::ZooManifest;
+
+    let mut zoo_path: Option<String> = None;
+    let mut corpus_root = String::from(".");
+    let mut utmos_gguf: Option<String> = None;
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => {
+                eprintln!(
+                    "vokra-eval dod — GA DoD item-2 zoo degradation runner (M5-12)\n\
+\n\
+USAGE:\n\
+    vokra-eval dod [--zoo-manifest <f>] [--corpus-root <dir>] [--utmos-gguf <f>]\n\
+\n\
+    --zoo-manifest <f>  zoo catalog (default: the built-in official manifest)\n\
+    --corpus-root <dir> base dir for a model's eval_manifest / WAV paths [.]\n\
+    --utmos-gguf <f>    converted `vokra.utmos.*` GGUF; activates the UTMOS leg.\n\
+                        Without it, generative-audio models are scored\n\
+                        mel-loss-only and the report says so (never a silent\n\
+                        UTMOS pass).\n\
+\n\
+Prints a per-model report + coverage tally + runner verdict. Skips (no weight /\n\
+no corpus) and parity-pointers are NOT passes. The final item-2 decision\n\
+(parity CI green + owner judgment) is owner work (M5-12-T11)."
+                );
+                return Ok(());
+            }
+            "--zoo-manifest" => {
+                i += 1;
+                zoo_path = Some(
+                    args.get(i)
+                        .ok_or("flag `--zoo-manifest` needs a value")?
+                        .clone(),
+                );
+            }
+            "--corpus-root" => {
+                i += 1;
+                corpus_root = args
+                    .get(i)
+                    .ok_or("flag `--corpus-root` needs a value")?
+                    .clone();
+            }
+            "--utmos-gguf" => {
+                i += 1;
+                utmos_gguf = Some(
+                    args.get(i)
+                        .ok_or("flag `--utmos-gguf` needs a value")?
+                        .clone(),
+                );
+            }
+            other => return Err(format!("unknown dod flag `{other}`")),
+        }
+        i += 1;
+    }
+
+    let manifest = match &zoo_path {
+        Some(p) => {
+            let text = std::fs::read_to_string(p).map_err(|e| format!("reading {p}: {e}"))?;
+            ZooManifest::parse(&text).map_err(|e| format!("{e}"))?
+        }
+        None => ZooManifest::builtin().map_err(|e| format!("{e}"))?,
+    };
+    let env = EnvZooRunEnv::new(
+        &corpus_root,
+        utmos_gguf.as_deref().map(std::path::Path::new),
+    )
+    .map_err(|e| format!("{e}"))?;
+    let report = run_dod_item2(&manifest, &env, DOD_ITEM2_THRESHOLD);
+    print!("{}", report.render());
+    match report.verdict() {
+        // A real regression is worth a non-zero exit for CI/owner scripts.
+        Item2RunnerVerdict::MeasuredFailures => {
+            Err("DoD item 2: at least one measured model failed the 5% gate or errored".to_owned())
+        }
+        // INCOMPLETE / MEASURED-GREEN both exit 0 — the report itself carries
+        // the honest verdict; neither is silently treated as a hard pass.
+        _ => Ok(()),
+    }
+}
+
 fn print_usage() {
     eprintln!(
         "vokra-eval — Vokra evaluation metrics (M1-09a)\n\
 \n\
 USAGE:\n\
     vokra-eval <metric> [--hyp <in> --ref <in> | --hyp-file <f> --ref-file <f> | --manifest <f>]\n\
+    vokra-eval dod [--zoo-manifest <f>] [--corpus-root <dir>] [--utmos-gguf <f>]\n\
+\n\
+SUBCOMMANDS:\n\
+    dod        GA DoD item-2 zoo degradation runner (M5-12); `vokra-eval dod --help`\n\
 \n\
 METRICS:\n\
     wer        word error rate  (edit distance over whitespace tokens / ref words)\n\

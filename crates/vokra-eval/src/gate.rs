@@ -158,6 +158,16 @@ impl QualityGateReport {
         self.audio.ran() && self.text.ran()
     }
 
+    /// `true` when the audio axis ran but on **mel-loss alone** (no UTMOS
+    /// scorer was injected) — the honest partial-gate marker. `false` for an
+    /// audio axis that ran UTMOS, and `false` when the audio axis did not run
+    /// at all (e.g. an ASR artifact). Lets a zoo-level runner tell "UTMOS was
+    /// measured" apart from "UTMOS was skipped" without re-deriving it.
+    #[must_use]
+    pub fn audio_is_mel_only(&self) -> bool {
+        matches!(&self.audio, AxisOutcome::Audio(r) if r.mel_loss_only)
+    }
+
     /// A one-artifact report block naming the axis that gated, the numbers,
     /// and — explicitly — the axis that did not run and why.
     #[must_use]
