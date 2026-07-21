@@ -100,7 +100,7 @@ pub use llm::{
     DEFAULT_RMS_NORM_EPS, DEFAULT_ROPE_BASE_QWEN2, LlmBackbone, LlmBackboneConfig, LlmBackboneStep,
 };
 pub use mimi_bridge::MimiBridge;
-pub use text_encoder::TextEncoderStub;
+pub use text_encoder::{CosyVoice2Tokenizer, TextEncoderStub};
 
 /// `vokra.model.arch` a CosyVoice2 GGUF must carry.
 ///
@@ -157,6 +157,12 @@ pub struct CosyVoice2Tts {
     /// (`vokra.cosyvoice2.arch.*` LLM-side keys), so the two are always
     /// consistent — a mismatch is impossible by construction.
     llm: Option<llm::LlmBackbone>,
+    /// Text tokenizer (M3-09-T06). `Some` when the GGUF carries the embedded
+    /// Qwen2 `vocab.json` + `merges.txt` chunks (`vokra.cosyvoice2.tokenizer.*`),
+    /// `None` for a tokenizer-less GGUF (e.g. a pre-T06 conversion). A GGUF
+    /// carrying only one of the two chunks is treated as malformed and fails
+    /// the load loudly (FR-EX-08), rather than silently binding `None`.
+    tokenizer: Option<text_encoder::CosyVoice2Tokenizer>,
     /// Selected compute backend (default [`BackendKind::Cpu`], overridable
     /// via [`CosyVoice2Tts::with_backend`]; the numeric path lands with
     /// T19/T20).
@@ -240,9 +246,22 @@ impl CosyVoice2Tts {
         } else {
             Some(llm::LlmBackbone::from_gguf(&file, &config)?)
         };
+        // Text tokenizer (T06). Present → load (a present-but-malformed pair
+        // propagates its error, FR-EX-08); wholly absent → `None`. Keying on
+        // "either chunk present" means a half-embedded pair (only vocab or
+        // only merges) hits the loud `from_gguf` missing-chunk error rather
+        // than binding a silently unusable `None`.
+        let tokenizer = if file.get(text_encoder::KEY_TOKENIZER_VOCAB).is_some()
+            || file.get(text_encoder::KEY_TOKENIZER_MERGES).is_some()
+        {
+            Some(text_encoder::CosyVoice2Tokenizer::from_gguf(&file)?)
+        } else {
+            None
+        };
         Ok(Self {
             config,
             llm,
+            tokenizer,
             backend_kind: BackendKind::Cpu,
             watermark: WatermarkConfig::default(),
         })
@@ -299,6 +318,37 @@ impl CosyVoice2Tts {
     #[must_use]
     pub fn llm(&self) -> Option<&llm::LlmBackbone> {
         self.llm.as_ref()
+    }
+
+    /// The embedded text tokenizer (M3-09-T06), or `None` when the GGUF
+    /// carries no `vokra.cosyvoice2.tokenizer.*` chunks.
+    #[must_use]
+    pub fn tokenizer(&self) -> Option<&text_encoder::CosyVoice2Tokenizer> {
+        self.tokenizer.as_ref()
+    }
+
+    /// Tokenizes `text` to Qwen2 byte-level BPE ids (M3-09-T06) — the front
+    /// end of the (still-stubbed) `synthesize` chain.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::NotImplemented`] when the GGUF carries no embedded
+    /// tokenizer (`vokra.cosyvoice2.tokenizer.*`): re-convert with `--config`
+    /// pointing at the upstream `CosyVoice-BlankEN/config.json` (the Qwen2
+    /// `vocab.json` + `merges.txt` are picked up from the same directory).
+    /// Never a silent empty result (FR-EX-08). Otherwise propagates the
+    /// tokenizer's own [`VokraError::InvalidArgument`] on an unencodable byte.
+    pub fn encode(&self, text: &str) -> Result<Vec<u32>> {
+        match &self.tokenizer {
+            Some(t) => t.encode(text),
+            None => Err(VokraError::NotImplemented(
+                "CosyVoice2 text tokenizer is not embedded in this GGUF \
+                 (vokra.cosyvoice2.tokenizer.vocab / .merges absent) — re-convert with \
+                 `vokra-cli convert --model cosyvoice2 --config \
+                 <CosyVoice-BlankEN/config.json>` so the Qwen2 vocab.json + merges.txt \
+                 are embedded alongside it",
+            )),
+        }
     }
 
     /// Runs the chunk-aware streaming pipeline with caller-supplied
@@ -390,11 +440,12 @@ impl TtsEngine for CosyVoice2Tts {
             ));
         }
         Err(VokraError::NotImplemented(
-            "CosyVoice2 TtsEngine::synthesize needs T06 tokenizer, T07/T08 LLM \
-             backbone, T10/T11 Flow Matching CFM, T13 Mimi decoder and T14/T15 \
-             chunk-aware streaming pipeline; this session lands the scaffold + \
-             chain wiring only (call synthesize_with_pipeline for the injected-\
-             closure oracle path)",
+            "CosyVoice2 TtsEngine::synthesize needs the T07/T08 LLM backbone forward, \
+             T10/T11 Flow Matching CFM, T13 Mimi decoder (and the owner codec decision \
+             — upstream 0.5B ships FSQ, not Mimi) and the T14/T15 chunk-aware streaming \
+             pipeline; the T06 text tokenizer is available via CosyVoice2Tts::encode, \
+             but this session does not expose stub audio (call synthesize_with_pipeline \
+             for the injected-closure oracle path)",
         ))
     }
 }

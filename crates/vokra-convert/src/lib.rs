@@ -837,6 +837,10 @@ fn cosyvoice2_notes(report: &models::cosyvoice2::CosyVoice2Report) -> Vec<String
             report.written, report.skipped_non_float,
         ),
     }];
+    notes.push(format!(
+        "cosyvoice2: text tokenizer embedded: {}",
+        report.tokenizer_embedded
+    ));
     notes.extend(
         report
             .notes
@@ -869,8 +873,34 @@ pub fn convert_cosyvoice2_file(
         Some(p) => Some(std::fs::read(p)?),
         None => None,
     };
-    let (builder, report) =
-        models::cosyvoice2::convert_with_config(bytes, config_bytes.as_deref())?;
+    // Qwen2 text-tokenizer side-car (T06): the upstream `vocab.json` +
+    // `merges.txt` live in the same directory as `config.json`
+    // (`CosyVoice-BlankEN/`). When a `--config` is given, pick them up from
+    // that directory and embed both (no second CLI flag needed). A partial or
+    // absent pair is a loud note in the report, not a hard error — the
+    // conversion still succeeds; the runtime text path fails loudly instead.
+    let tokenizer_bytes: Option<(Vec<u8>, Vec<u8>)> = config.and_then(|p| {
+        let dir = p.parent().unwrap_or_else(|| Path::new("."));
+        match (
+            std::fs::read(dir.join("vocab.json")),
+            std::fs::read(dir.join("merges.txt")),
+        ) {
+            (Ok(vocab), Ok(merges)) => Some((vocab, merges)),
+            _ => None,
+        }
+    });
+    let tokenizer =
+        tokenizer_bytes
+            .as_ref()
+            .map(|(vocab, merges)| models::cosyvoice2::TokenizerFiles {
+                vocab_json: vocab,
+                merges_txt: merges,
+            });
+    let (builder, report) = models::cosyvoice2::convert_with_config_and_tokenizer(
+        bytes,
+        config_bytes.as_deref(),
+        tokenizer,
+    )?;
     let notes = cosyvoice2_notes(&report);
 
     let tensor_count = builder.tensor_count();

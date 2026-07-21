@@ -50,7 +50,9 @@
 //! Rust by the runtime crate (whisper.cpp 型 self re-implementation,
 //! CLAUDE.md 設計判断 4).
 
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
 
 use crate::ConvertError;
 use crate::json::{self, JsonValue};
@@ -93,6 +95,15 @@ const KEY_MIMI_CODEBOOK_SIZE: &str = "vokra.cosyvoice2.mimi.codebook_size";
 const KEY_MIMI_D_MODEL: &str = "vokra.cosyvoice2.mimi.d_model";
 const KEY_STREAMING_CHUNK_SIZE: &str = "vokra.cosyvoice2.streaming.chunk_size";
 const KEY_STREAMING_CHUNK_HOP: &str = "vokra.cosyvoice2.streaming.chunk_hop";
+
+// --- Text tokenizer (T06): raw Qwen2 vocab.json + merges.txt, U8 embed ------
+//
+// Mirrors the runtime constants in
+// `crates/vokra-models/src/cosyvoice2/text_encoder.rs`
+// (`KEY_TOKENIZER_VOCAB` / `KEY_TOKENIZER_MERGES`) under the two-crate
+// constant rule; a round-trip test on each side catches drift.
+const KEY_TOKENIZER_VOCAB: &str = "vokra.cosyvoice2.tokenizer.vocab";
+const KEY_TOKENIZER_MERGES: &str = "vokra.cosyvoice2.tokenizer.merges";
 
 // --- Upstream tensor names (eval-recorded, never invented) ------------------
 //
@@ -166,6 +177,9 @@ pub(crate) struct CosyVoice2Report {
     /// Shape/config-derived hparams actually written; `None` when the
     /// buffer does not carry the LLM backbone tensors (scaffold inputs).
     pub(crate) derived: Option<DerivedHparams>,
+    /// Whether the Qwen2 text tokenizer (`vocab.json` + `merges.txt`) was
+    /// embedded as the `vokra.cosyvoice2.tokenizer.*` U8 chunks (T06).
+    pub(crate) tokenizer_embedded: bool,
     /// Diagnostic notes surfaced to the CLI operator. The converter never
     /// fails on a note — hard inconsistencies are `ConvertError`s instead —
     /// but a loud warning is printed so the operator does not learn about
@@ -173,10 +187,31 @@ pub(crate) struct CosyVoice2Report {
     pub(crate) notes: Vec<String>,
 }
 
-/// Converts a CosyVoice2 safetensors buffer (no config side-car) — see
-/// [`convert_with_config`].
+/// Raw Qwen2 text-tokenizer side-car files (T06): the upstream `vocab.json`
+/// and `merges.txt` bytes, embedded verbatim as U8 arrays under
+/// `vokra.cosyvoice2.tokenizer.vocab` / `.merges` (the Whisper / Voxtral /
+/// CSM zero-dep embed pattern; the runtime tokenizer is self-implemented in
+/// `crates/vokra-models/src/cosyvoice2/text_encoder.rs`).
+pub(crate) struct TokenizerFiles<'a> {
+    /// Raw `vocab.json` bytes (Qwen2 byte-level BPE vocabulary).
+    pub(crate) vocab_json: &'a [u8],
+    /// Raw `merges.txt` bytes (BPE merge ranks, one `LEFT RIGHT` per line).
+    pub(crate) merges_txt: &'a [u8],
+}
+
+/// Converts a CosyVoice2 safetensors buffer (no config / tokenizer side-car)
+/// — see [`convert_with_config_and_tokenizer`].
 pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, CosyVoice2Report), ConvertError> {
     convert_with_config(bytes, None)
+}
+
+/// Converts a CosyVoice2 safetensors buffer with no tokenizer side-car — see
+/// [`convert_with_config_and_tokenizer`].
+pub(crate) fn convert_with_config(
+    bytes: Vec<u8>,
+    config_json: Option<&[u8]>,
+) -> Result<(GgufBuilder, CosyVoice2Report), ConvertError> {
+    convert_with_config_and_tokenizer(bytes, config_json, None)
 }
 
 /// Converts a CosyVoice2 safetensors buffer into a populated GGUF builder
@@ -187,9 +222,16 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, CosyVoice2Report),
 /// (Qwen2 schema) supplying the head split + RoPE/eps/n_ctx values that
 /// tensor shapes cannot determine; without it those keys are left `0` /
 /// unwritten with a loud note and the runtime will refuse the LLM bind.
-pub(crate) fn convert_with_config(
+///
+/// `tokenizer` are the raw Qwen2 `vocab.json` + `merges.txt` bytes (T06);
+/// when present and non-empty they are embedded verbatim as the
+/// `vokra.cosyvoice2.tokenizer.*` U8 chunks. When absent (or empty) the
+/// runtime text path (`CosyVoice2Tts::encode`) fails loudly until a
+/// tokenizer-carrying GGUF is converted (FR-EX-08 — never a silent stub).
+pub(crate) fn convert_with_config_and_tokenizer(
     bytes: Vec<u8>,
     config_json: Option<&[u8]>,
+    tokenizer: Option<TokenizerFiles<'_>>,
 ) -> Result<(GgufBuilder, CosyVoice2Report), ConvertError> {
     let st = SafetensorsFile::parse(bytes)?;
     let mut report = CosyVoice2Report::default();
@@ -239,6 +281,7 @@ pub(crate) fn convert_with_config(
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
     write_hparams(&mut b, derived.as_ref(), config.as_ref());
+    embed_tokenizer(&mut b, tokenizer, &mut report);
 
     for t in st.tensors() {
         match t.dtype {
@@ -568,6 +611,65 @@ fn write_hparams(
     b.add_u32(KEY_MIMI_D_MODEL, MIMI_D_MODEL);
     b.add_u32(KEY_STREAMING_CHUNK_SIZE, 0);
     b.add_u32(KEY_STREAMING_CHUNK_HOP, 0);
+}
+
+/// Embeds the Qwen2 text tokenizer (`vocab.json` + `merges.txt`) as the two
+/// `vokra.cosyvoice2.tokenizer.*` U8 chunks (T06), or records a loud note
+/// when no (usable) tokenizer was supplied.
+///
+/// Both files are embedded together or not at all: a byte-level BPE needs the
+/// vocabulary *and* the merge ranks, so a half-supplied pair is treated as
+/// "no tokenizer" (noted) rather than written as a silently-unusable chunk.
+fn embed_tokenizer(
+    b: &mut GgufBuilder,
+    tokenizer: Option<TokenizerFiles<'_>>,
+    report: &mut CosyVoice2Report,
+) {
+    match tokenizer {
+        Some(tok) if !tok.vocab_json.is_empty() && !tok.merges_txt.is_empty() => {
+            // U8 arrays, bytes verbatim (the M2-06 Whisper / M3-10 Voxtral /
+            // M4-05 CSM zero-dep embed pattern).
+            b.add_metadata(
+                KEY_TOKENIZER_VOCAB,
+                GgufMetadataValue::Array(GgufArray {
+                    element_type: GgufValueType::U8,
+                    values: tok
+                        .vocab_json
+                        .iter()
+                        .map(|&x| GgufMetadataValue::U8(x))
+                        .collect(),
+                }),
+            );
+            b.add_metadata(
+                KEY_TOKENIZER_MERGES,
+                GgufMetadataValue::Array(GgufArray {
+                    element_type: GgufValueType::U8,
+                    values: tok
+                        .merges_txt
+                        .iter()
+                        .map(|&x| GgufMetadataValue::U8(x))
+                        .collect(),
+                }),
+            );
+            report.tokenizer_embedded = true;
+        }
+        Some(_) => {
+            report.notes.push(
+                "tokenizer side-car present but vocab.json or merges.txt was empty — \
+                 vokra.cosyvoice2.tokenizer.* not embedded"
+                    .to_owned(),
+            );
+        }
+        None => {
+            report.notes.push(
+                "no Qwen2 tokenizer side-car (vocab.json + merges.txt) supplied — \
+                 vokra.cosyvoice2.tokenizer.* not embedded; the runtime text path \
+                 (CosyVoice2Tts::encode) fails loudly until a tokenizer-carrying GGUF \
+                 is converted"
+                    .to_owned(),
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -918,5 +1020,87 @@ mod tests {
         assert_eq!(KEY_ROPE_BASE, "vokra.cosyvoice2.arch.rope_base");
         assert_eq!(KEY_RMS_NORM_EPS, "vokra.cosyvoice2.arch.rms_norm_eps");
         assert_eq!(KEY_N_CTX, "vokra.cosyvoice2.arch.n_ctx");
+    }
+
+    #[test]
+    fn tokenizer_key_strings_match_runtime_constants() {
+        // Mirror of the runtime's KEY_TOKENIZER_VOCAB / KEY_TOKENIZER_MERGES
+        // in `vokra-models/src/cosyvoice2/text_encoder.rs` (two-crate rule).
+        assert_eq!(KEY_TOKENIZER_VOCAB, "vokra.cosyvoice2.tokenizer.vocab");
+        assert_eq!(KEY_TOKENIZER_MERGES, "vokra.cosyvoice2.tokenizer.merges");
+    }
+
+    /// Reads a `U8` GGUF array metadata value back into bytes (test-side
+    /// mirror of the runtime reader).
+    fn read_u8_array(file: &GgufFile, key: &str) -> Vec<u8> {
+        match file.get(key) {
+            Some(GgufMetadataValue::Array(arr)) => arr
+                .values
+                .iter()
+                .map(|v| match v {
+                    GgufMetadataValue::U8(x) => *x,
+                    other => panic!("{key}: non-U8 element {other:?}"),
+                })
+                .collect(),
+            other => panic!("{key}: expected U8 array, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tokenizer_files_are_embedded_verbatim() {
+        // A scaffold buffer converts fine; the tokenizer chunks ride along
+        // verbatim so the runtime reads the exact upstream bytes back.
+        let vocab = br#"{"a":0,"b":1,"ab":2}"#.to_vec();
+        let merges = b"#version: 0.2\na b\n".to_vec();
+        let (builder, report) = convert_with_config_and_tokenizer(
+            minimal_safetensors_one_f32(),
+            None,
+            Some(TokenizerFiles {
+                vocab_json: &vocab,
+                merges_txt: &merges,
+            }),
+        )
+        .expect("convert");
+        assert!(report.tokenizer_embedded, "tokenizer must be embedded");
+
+        let file = GgufFile::parse(builder.to_bytes().expect("serialize")).expect("parse");
+        assert_eq!(read_u8_array(&file, KEY_TOKENIZER_VOCAB), vocab);
+        assert_eq!(read_u8_array(&file, KEY_TOKENIZER_MERGES), merges);
+    }
+
+    #[test]
+    fn no_tokenizer_side_car_is_noted_and_not_embedded() {
+        let (builder, report) = convert(minimal_safetensors_one_f32()).expect("convert");
+        assert!(!report.tokenizer_embedded);
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| n.contains("no Qwen2 tokenizer")),
+            "missing tokenizer must be a loud note: {:?}",
+            report.notes
+        );
+        let file = GgufFile::parse(builder.to_bytes().expect("serialize")).expect("parse");
+        assert!(file.get(KEY_TOKENIZER_VOCAB).is_none());
+        assert!(file.get(KEY_TOKENIZER_MERGES).is_none());
+    }
+
+    #[test]
+    fn half_supplied_tokenizer_is_not_embedded() {
+        // A byte-level BPE needs both files; an empty merges half is treated
+        // as "no tokenizer" (noted), never written as an unusable chunk.
+        let vocab = br#"{"a":0}"#.to_vec();
+        let (builder, report) = convert_with_config_and_tokenizer(
+            minimal_safetensors_one_f32(),
+            None,
+            Some(TokenizerFiles {
+                vocab_json: &vocab,
+                merges_txt: b"",
+            }),
+        )
+        .expect("convert");
+        assert!(!report.tokenizer_embedded);
+        let file = GgufFile::parse(builder.to_bytes().expect("serialize")).expect("parse");
+        assert!(file.get(KEY_TOKENIZER_VOCAB).is_none());
     }
 }
