@@ -172,6 +172,17 @@ fn tensor_dim(st: &SafetensorsFile, name: &str, axis: usize) -> u64 {
         .unwrap_or(0)
 }
 
+/// Full shape of tensor `name`, or an empty slice's-worth (`[]`) when absent.
+/// Shared with [`tensor_dim`] so a derivation can branch on rank without a
+/// second lookup helper.
+fn tensor_shape(st: &SafetensorsFile, name: &str) -> Vec<u64> {
+    st.tensors()
+        .iter()
+        .find(|t: &&SafeTensorInfo| t.name == name)
+        .map(|t| t.shape.clone())
+        .unwrap_or_default()
+}
+
 /// Counts contiguous transformer blocks named `<prefix><i>.` for
 /// `i = 0, 1, …`.
 fn count_layers(st: &SafetensorsFile, prefix: &str) -> u32 {
@@ -308,13 +319,30 @@ fn write_hparams(
     //   layer, matching ``text_encoder::TextEncoder``).
     // - decoder.module.generator.ups.<i>.           — iSTFTNet upsample stages.
     let num_voices = tensor_dim(st, "voicepack", 0);
-    // Prefer the ``voicepack`` axis 1 (a downstream fork's stacked style
-    // table); fall back to the upstream ``predictor.module.F0.0.norm1.fc.weight``
-    // whose axis 1 is exactly ``style_dim`` (StyleTTS 2 AdaLN structure).
+    // style_dim derivation from a ``voicepack`` tensor, if present, keyed on its
+    // rank:
+    //   * 2-D ``[num_voices, style_dim]`` — a downstream fork's flat stacked
+    //     table: axis 1 IS style_dim.
+    //   * ≥3-D ``[num_voices, max_tokens, 1, 2·style_dim]`` — the canonical
+    //     per-timestep voicepack (each upstream ``voices/*.pt`` is
+    //     ``[max_tokens, 1, 2·style_dim]``, stacked by
+    //     ``kokoro_prepare_checkpoint.py --stack-voicepack``): style_dim is
+    //     HALF the last axis. Using axis 1 here would mis-derive style_dim as
+    //     ``max_tokens`` (the M2-07-T02 ambiguity the prep tool docstring
+    //     warns about) and corrupt the runtime ``ref_s`` split.
+    // When no voicepack is present (the canonical release ships voices as
+    // separate ``voices/*.pt`` files), fall back to the upstream
+    // ``predictor.module.F0.0.norm1.fc.weight`` whose axis 1 is exactly
+    // ``style_dim`` (StyleTTS 2 AdaLN structure).
     let style_dim = {
-        let v = tensor_dim(st, "voicepack", 1);
-        if v > 0 {
-            v
+        let vp = tensor_shape(st, "voicepack");
+        let from_voicepack = match vp.as_slice() {
+            [_nv, sd] => *sd,
+            [.., last] if vp.len() >= 3 => last / 2,
+            _ => 0,
+        };
+        if from_voicepack > 0 {
+            from_voicepack
         } else {
             tensor_dim(st, "predictor.module.F0.0.norm1.fc.weight", 1)
         }
@@ -775,6 +803,85 @@ mod tests {
             report.notes.iter().any(|n| n.contains("voicepack rows")),
             "expected voicepack-vs-voice_names mismatch note, got: {:?}",
             report.notes
+        );
+    }
+
+    /// Packs a synthetic safetensors buffer from `(name, shape)` entries
+    /// (all-F32, all-zero payload — only shapes drive the assertions). Shared
+    /// shape of [`synthetic_kokoro_safetensors`], generalized so a test can
+    /// supply a 4-D `voicepack`.
+    fn pack_safetensors(entries: &[(&str, &[u64])]) -> Vec<u8> {
+        let mut cursor = 0usize;
+        let mut header_entries = Vec::new();
+        for &(name, shape) in entries {
+            let elems: u64 = shape.iter().product();
+            let span = elems as usize * 4;
+            let begin = cursor;
+            let end = cursor + span;
+            cursor = end;
+            let dims = shape
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            header_entries.push(format!(
+                r#""{name}":{{"dtype":"F32","shape":[{dims}],"data_offsets":[{begin},{end}]}}"#
+            ));
+        }
+        let header = format!("{{{}}}", header_entries.join(","));
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&vec![0u8; cursor]);
+        out
+    }
+
+    #[test]
+    fn stacked_voicepack_derives_style_dim_from_last_axis() {
+        // Canonical stacked voicepack `[num_voices=2, max_tokens=3, 1, 2·sd=8]`
+        // ⇒ style_dim = 8/2 = 4, NOT axis-1 max_tokens (=3). A deliberately
+        // WRONG F0-norm axis-1 (=99) proves the voicepack last-axis rule takes
+        // precedence over the fallback for the canonical shape (in a real
+        // checkpoint the two agree).
+        let ckpt = pack_safetensors(&[
+            ("voicepack", &[2, 3, 1, 8]),
+            ("text_encoder.embedding.weight", &[5, 8]),
+            ("predictor.module.F0.0.norm1.fc.weight", &[16, 99]),
+            ("decoder.generator.upsamples.0.weight", &[1, 1]),
+        ]);
+        let (builder, report) = convert(ckpt).expect("convert");
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        let u = |k: &str| file.get(k).and_then(|v| v.as_u64());
+        assert_eq!(
+            u(KEY_STYLE_DIM),
+            Some(4),
+            "4-D voicepack style_dim must be last-axis/2 (=4), not axis-1 max_tokens (=3) \
+             and not the F0-norm fallback (=99)"
+        );
+        // num_voices derives from voicepack axis 0 (no config passed).
+        assert_eq!(u(KEY_NUM_VOICES), Some(2));
+        assert_eq!(report.style_dim, 4);
+        // The 4-D voicepack round-trips verbatim into the GGUF (the runtime
+        // VoicePack::load reads these dims).
+        let info = file.tensor_info("voicepack").expect("voicepack in gguf");
+        assert_eq!(info.dimensions, vec![2, 3, 1, 8]);
+        assert_eq!(info.dtype, GgmlType::F32);
+    }
+
+    #[test]
+    fn two_d_voicepack_style_dim_unchanged() {
+        // A 2-D fork table `[num_voices, style_dim]` keeps the axis-1 rule
+        // (regression guard for the pre-existing synthetic fixture path).
+        let ckpt = pack_safetensors(&[
+            ("voicepack", &[2, 4]),
+            ("text_encoder.embedding.weight", &[3, 8]),
+        ]);
+        let (builder, _) = convert(ckpt).expect("convert");
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            file.get(KEY_STYLE_DIM).and_then(|v| v.as_u64()),
+            Some(4),
+            "2-D voicepack keeps axis-1 style_dim"
         );
     }
 
