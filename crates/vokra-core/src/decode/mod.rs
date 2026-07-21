@@ -27,8 +27,12 @@
 //!   ([`apply_cfg`], [`CfgMode`], FR-EX-10).
 //! - **M1-08f** adds [`DecodeStepper`], the cache-based incremental decode
 //!   stepper (the FR-ST-01 cache pattern) over the same [`LogitsSource`].
-//! - `ctc_decode` / `rnnt_decode` / `wfst_decode` (FR-OP-41..43) are later
-//!   milestones.
+//! - **M5-06** adds [`wfst`] (FR-OP-43 `wfst_decode`, behind the opt-in
+//!   `vokra-wfst` feature): an OpenFST binary reader + tropical semiring +
+//!   token-passing decoder + lattice/n-best, a **decode-only** search over a
+//!   pre-composed HCLG-style graph. `ctc_decode` / `rnnt_decode` (FR-OP-41/42)
+//!   remain later milestones (their per-frame emission feeder is the
+//!   reserved-but-unregistered anchor in [`crate::m5_residual_ops`]).
 
 pub mod beam_search;
 pub mod cfg;
@@ -38,6 +42,11 @@ pub mod stepper;
 // (FR-OP-40 `word_timestamps`). Model-independent — the Whisper decoder only
 // supplies the cross-attention weights (ADR M4-20 §D-2/§D-3).
 pub mod word_timing;
+// M5-06 (FR-OP-43): WFST token-passing decoder behind the opt-in `vokra-wfst`
+// feature (default OFF → `cargo test --workspace` never compiles it). Like
+// `beam_search` it is a **host-side** search, never a graph `OpKind`.
+#[cfg(feature = "vokra-wfst")]
+pub mod wfst;
 
 use crate::error::Result;
 
@@ -48,6 +57,14 @@ pub use stepper::{DecodeStepper, TOKEN_FLAG_EOT};
 pub use word_timing::{
     APPEND_PUNCTUATIONS, AlignmentParams, CrossAttention, PREPEND_PUNCTUATIONS, WordTiming,
     merge_punctuations, token_alignment, words_from_alignment,
+};
+// M5-06 (feature `vokra-wfst`): the WFST decode surface lives under
+// `vokra_core::decode::wfst::*`; these re-exports mirror the `beam_search`
+// convention so the common types are reachable at `decode::` too.
+#[cfg(feature = "vokra-wfst")]
+pub use wfst::{
+    Arc, Fst, Label, Semiring, StateId, TropicalWeight, WfstDecodeConfig, WfstDecoder,
+    WfstHypothesis, WfstLattice, read_openfst_vector,
 };
 
 /// Raw next-token logits for a model, the low-level model ↔ decoder primitive.

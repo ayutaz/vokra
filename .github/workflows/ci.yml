@@ -810,6 +810,31 @@ jobs:
         run: cargo test -p vokra-models --test parity_whisper
       - name: Quant parity (M2-08, K-quant dequant → GEMM, FP16 atol=0.01)
         run: cargo test -p vokra-core --test quant_parity
+      # M5-06 T15: WFST decode parity against the committed real-OpenFST
+      # fixtures. The `--features vokra-wfst` flag is written LITERALLY on the
+      # command: without it `parity_wfst.rs` (which is `#![cfg(feature =
+      # "vokra-wfst")]`) compiles to ZERO tests — a vacuous green / fabricated
+      # pass. Runs only in the fusion=0 cell (wfst is fusion-independent).
+      - name: WFST decode parity (M5-06, OpenFST reference, feature vokra-wfst)
+        if: matrix.fusion == '0'
+        run: cargo test -p vokra-core --test parity_wfst --features vokra-wfst
+      # M5-06 T15: the opt-in feature must build clean under `-D warnings` and
+      # must NOT perturb the zero-dep invariant (cfg-only feature, NFR-DS-02).
+      - name: WFST feature gate (M5-06, build + clippy + zero-dep, feature ON)
+        if: matrix.fusion == '0'
+        run: |
+          set -euo pipefail
+          cargo clippy -p vokra-core --features vokra-wfst --all-targets -- -D warnings
+          cargo test -p vokra-core --features vokra-wfst --lib
+          ./scripts/check-zero-deps.sh
+          # Feature ON must pull in no non-vokra crate.
+          extra=$(cargo tree -p vokra-core --features vokra-wfst \
+            | grep -vE 'vokra-|^\[|^$' || true)
+          if [ -n "$extra" ]; then
+            echo "M5-06 regression: vokra-wfst pulled in non-vokra deps:" >&2
+            echo "$extra" >&2
+            exit 1
+          fi
       - name: Policy e2e (M2-08, converter → runtime → 5% mel-loss gate)
         run: cargo test -p vokra-cli --test policy_e2e
 

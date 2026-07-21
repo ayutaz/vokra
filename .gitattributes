@@ -143,3 +143,16 @@ tests/fixtures/**/*.wav -text
 # No *.gguf rule existed anywhere; tests/parity/silero_vad/silero-vad-v5.gguf
 # is loaded byte-wise by the VAD parity fixtures.
 tests/parity/**/*.gguf -text
+
+# M5-06 WFST decode parity fixtures. These live under the crate
+# (crates/vokra-core/tests/parity/fixtures/m5-06/, the m2-08 precedent), which
+# the root-anchored `tests/parity/**` rules above do NOT reach, so pin the
+# crate-relative paths explicitly:
+#   *.fst      real OpenFST VectorFst<StdArc> binaries read byte-wise by
+#              parity_wfst.rs — LFS-free (`-filter -diff -merge`) + never eol
+#              converted (`-text`). They contain NUL bytes so git's heuristic
+#              would treat them as binary anyway, but the project pins
+#              explicitly rather than trust the heuristic.
+#   *.expected line-based text reference parsed token-wise — LF-pinned.
+crates/vokra-core/tests/parity/fixtures/m5-06/*.fst -filter -diff -merge -text
+crates/vokra-core/tests/parity/fixtures/m5-06/*.expected text eol=lf

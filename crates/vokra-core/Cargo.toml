@@ -23,5 +23,14 @@ publish.workspace = true
 # See `src/ir/fusion/patterns/snake.rs` for the co-delivery rationale.
 fusion-snake-stub = []
 
+# M5-06: opt-in `wfst_decode` (FR-OP-43). cfg-only — the OpenFST binary
+# reader + tropical semiring + token-passing decoder + lattice/n-best are a
+# from-scratch Rust port (the runtime depends on NO OpenFST code), so the flag
+# adds **no** crate dependency and the root Cargo.lock is unaffected
+# (NFR-DS-02). Default OFF: `cargo test --workspace` never compiles the
+# `decode::wfst` module, which is the mechanical proof that the op is opt-in.
+# Enable with `--features vokra-wfst`. See `src/decode/wfst/mod.rs` + ADR M5-06.
+vokra-wfst = []
+
 [lints]
 workspace = true

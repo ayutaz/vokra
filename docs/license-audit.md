@@ -263,7 +263,7 @@ vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev 41f369
 | **libsoxr** | LGPL | resample | ✕ 排除 | speexdsp で代替 |
 | **rubberband** | GPL | pitch shift / time stretch | ✕ 排除 | 自前実装 or 除外 |
 | **libespeak-ng** | GPL-3.0-or-later | G2P | ✕ 排除 | piper-plus 独自 G2P、または misaki / IPA 辞書 |
-| **OpenFST** | Apache 2.0 | WFST decoder | ★ v1.0 GA / M5 検討 (Rust port) | |
+| **OpenFST** | Apache 2.0 | WFST decoder | ★ 実装確定 (M5-06、from-scratch Rust port、runtime は OpenFST 非依存) | dev 時 parity fixture 生成のみ OpenFST CLI を使用 (成果物の依存にならない)。owner clean-room sign-off = M5-06-T17 |
 | **kenlm** | LGPL | n-gram LM | ✕ 検討中止 | 独自 Rust 実装 or `lm-rs` |
 | **librosa** (Python 参考) | ISC | Mel filter bank 参考 | 参考のみ | Slaney/HTK 両対応の Rust 実装を独自 |
 | **torchaudio** (Python 参考) | BSD | 参考 | 参考のみ | |

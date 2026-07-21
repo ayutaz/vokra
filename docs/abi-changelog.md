@@ -258,6 +258,35 @@ unsupported; QNN is the Qualcomm Hexagon NPU delegate.
 | ------------------------- | ---------------------- | ----- | ------------------------------------ | ---------------------------------------------------------------- | --------- | ----- |
 | `vokra-core::backend`     | `BackendKind::Qnn`     | Added | `enum BackendKind { …, Qnn }` (`#[non_exhaustive]`, additive) | QNN delegate selector (FR-BE-06), WP M5-02; raw QNN dlopen FFI, no binding crate, no bundled SDK. C-ABI exposure deferred to M5-13 post-bakeoff | no        | (TBD) |
 
+### 2026-07-21 — 1.0.0-rc.1-dev (M5-06: `wfst_decode` — Rust surface only, opt-in feature)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+untouched (`scripts/gen-c-abi.sh --check` = no diff; a grep for `wfst` / `fst`
+in the header matches **0** symbols; `wfst_decode` is a host-side Rust runtime
+search, like `beam_search`, never a C export — ADR M5-06 defers the C-surface
+decision to the M5-13 freeze, so a C consumer cannot call it during the rc
+window). The whole surface lives under the **opt-in `vokra-wfst` feature**
+(default OFF, cfg-only — no crate dependency, root `Cargo.lock` unchanged,
+NFR-DS-02), so it is invisible to the default build and to a default
+`rust-public-api-list.sh` run; `scripts/check-abi-changelog.sh` does not gate on
+it (no C symbol changed). Recorded here per the recording rules for the M5-13
+freeze inventory.
+
+**No GGUF metadata is added** (ADR M5-06 §3 chose the *independent `.fst`
+file* input form over a `vokra.wfst.*` GGUF chunk; the developer-side OpenFST
+toolchain composes HCLG offline and Vokra reads the finished binary). If a
+future revision adopts the GGUF-chunk form, that is an in-scope GGUF-schema
+addition and gets its own row in the "GGUF Metadata additions" section.
+
+| Crate / area                | Symbol                                            | Kind  | Signature / shape                                                                 | Rationale                                                                     | Breaking? | PR    |
+| --------------------------- | ------------------------------------------------- | ----- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | --------- | ----- |
+| `vokra-core::decode::wfst`  | module (feature `vokra-wfst`)                     | Added | `pub mod wfst` gated `#[cfg(feature = "vokra-wfst")]`                              | FR-OP-43 `wfst_decode` — decode-only token-passing WFST search                | no        | (TBD) |
+| `vokra-core::decode::wfst`  | `Semiring` / `TropicalWeight`                     | Added | trait `Semiring` (`plus`/`times`/`zero`/`one`/`approx_eq`) + tropical impl        | Viterbi min/plus semiring; `log` semiring is a documented future additive     | no        | (TBD) |
+| `vokra-core::decode::wfst`  | `Fst` / `Arc` / `StateId` / `Label`               | Added | decode-only FST + `validate()`                                                    | in-memory graph the reader/decoder share (no `compose`/`determinize`)         | no        | (TBD) |
+| `vokra-core::decode::wfst`  | `read_openfst_vector`                             | Added | `fn read_openfst_vector(&[u8]) -> Result<Fst<TropicalWeight>>`                    | from-scratch OpenFST `VectorFst<StdArc>` binary reader (no OpenFST link)      | no        | (TBD) |
+| `vokra-core::decode::wfst`  | `WfstDecoder` / `WfstDecodeConfig`                | Added | `WfstDecoder::new(&fst).decode(&emission) -> Result<Option<WfstHypothesis>>`      | frame-synchronous token-passing decode + `decode_nbest` + `lattice`          | no        | (TBD) |
+| `vokra-core::decode::wfst`  | `WfstLattice` / `WfstHypothesis` / `LatArc`       | Added | lattice + best-path + n-best output types                                         | decode output (best-first n-best mirrors `BeamHypothesis`)                    | no        | (TBD) |
+
 ### 2026-07-20 — 1.0.0-rc.1-dev (M5-14-BACKLOG: batched-beam scoring interface — Rust surface only)
 
 Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
