@@ -465,10 +465,11 @@ mod tests {
         let gated = m.gated().count();
         let excluded = m.excluded().count();
         // 15 gated (1 vad + 5 whisper + piper + kokoro + cosyvoice2 + csm +
-        // moshi + voxtral + 3 codecs) / 10 excluded (xcodec2 + 4 non-quality +
-        // 3 enhancement + audioseal + vocos).
+        // moshi + voxtral + 3 codecs) / 12 excluded (xcodec2 + titanet +
+        // pyannote license/embedding holds + 4 non-quality + 3 enhancement +
+        // audioseal + vocos).
         assert_eq!(gated, 15, "gated count drifted");
-        assert_eq!(excluded, 10, "excluded count drifted");
+        assert_eq!(excluded, 12, "excluded count drifted");
     }
 
     #[test]

@@ -810,7 +810,7 @@ mod tests {
             1,
             "Silero VAD is the one parity pointer"
         );
-        assert_eq!(rep.excluded(), 10);
+        assert_eq!(rep.excluded(), 12);
         assert_eq!(rep.verdict(), Item2RunnerVerdict::Incomplete);
         assert!(!rep.utmos_leg_available);
         let out = rep.render();

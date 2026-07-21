@@ -334,3 +334,25 @@ license = MIT
 excluded_reason = vocoder-head-component-not-a-standalone-zoo-model
 since_version = v1.0
 notes = vocos_head op; a vocoder component measured inside a TTS pipeline, not standalone.
+
+# ---- Excluded: speaker-embedding / diarization, held pending license sign-off ----
+# TitaNet + pyannote are ⚠ 保留 rows (docs/license-audit.md, added 2026-07-20). Both
+# are residual-anchor ops in m5_residual_ops.rs that are NOT implemented and are NOT
+# mel/UTMOS quality-gated; their weight license is also unconfirmed (owner T13). Listed
+# explicitly so "held for license / not-a-quality-gated-model" is distinguishable from
+# "accidentally dropped" — same rule as xcodec2 above.
+name = titanet
+family = titanet
+audit_name = TitaNet (NVIDIA NeMo)
+license = pending-M5-ORPHAN-T13
+excluded_reason = speaker-embedding-not-a-mel-utmos-quality-gated-model + license-sign-off-pending-M5-ORPHAN-T13 (NVIDIA NeMo checkpoint license unconfirmed; fail-closed)
+since_version = v1.0-rc
+notes = op unimplemented = residual anchor only (titanet_speaker_encode, m5_residual_ops.rs); CAM++ already covers speaker embedding.
+
+name = pyannote
+family = pyannote
+audit_name = pyannote (speaker diarization)
+license = pending-M5-ORPHAN-T13
+excluded_reason = diarization-not-a-mel-utmos-quality-gated-model + license-sign-off-pending-M5-ORPHAN-T13 (HF-gated usage terms unconfirmed; fail-closed)
+since_version = v1.0-rc
+notes = op unimplemented = residual anchor only (diarize, m5_residual_ops.rs, optional feature flag).
