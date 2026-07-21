@@ -48,8 +48,44 @@ permissions:
   contents: write
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # X-07-T18: semver tag gate. The tag glob `v*` (on.push.tags) accepts any
+  # `v…` string, including a non-semver one like `vfoo` that the per-job version
+  # derivation (`GITHUB_REF_NAME#v`) silently mis-parses. This job rejects a
+  # non-semver tag fail-loud so the whole release train refuses to run on a
+  # malformed tag.
+  #
+  # CRITICAL — non-tag refs ANNOUNCED-SKIP (pass): the entire dry-run / dispatch
+  # verification path runs on `workflow_dispatch` (a non-tag ref). If this job
+  # failed on non-tag refs, then `needs: validate-tag` on every other job would
+  # block the whole dry-run path (and T35's regression verify with it). So on a
+  # non-tag ref it emits a ::notice:: and PASSES — an announced skip (the gate
+  # is inapplicable when there is no tag to judge), NOT a fabricated pass.
+  # The current default version is 0.1.0-alpha.0 (Cargo.toml:21); the first
+  # release tag must be a valid `vX.Y.Z[-prerelease]` (e.g. v1.0.0-rc.1).
+  # ---------------------------------------------------------------------------
+  validate-tag:
+    name: validate-tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate semver tag (announced-skip on non-tag refs)
+        run: |
+          if [[ "${GITHUB_REF}" != refs/tags/* ]]; then
+            echo "::notice::validate-tag: non-tag ref (${GITHUB_REF}) — semver gate not applicable (workflow_dispatch / branch). Passing (announced skip, not a fabricated pass)."
+            exit 0
+          fi
+          TAG="${GITHUB_REF#refs/tags/}"
+          # v-prefixed semver: vX.Y.Z with optional -prerelease and +build.
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "validate-tag: OK — '$TAG' is a valid semver tag"
+          else
+            echo "validate-tag: FAIL — tag '$TAG' is not semver (expected vX.Y.Z[-prerelease][+build])" >&2
+            exit 1
+          fi
+
   ios-xcframework:
     name: ios-xcframework
+    needs: [validate-tag]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -91,6 +127,21 @@ jobs:
           echo "sha256=$(cat Vokra.xcframework.zip.sha256)" >> "$GITHUB_ENV"
           echo "Artifact SHA256: $(cat Vokra.xcframework.zip.sha256)"
 
+      # X-07-T03: first-party SPDX SBOM for the shipped XCFramework closure.
+      # Feature selection MATCHES the shipped build (scripts/build-ios.sh:96
+      # FEATURES="vokra-models/metal"; `--features metal` does NOT exist on
+      # vokra-capi and would fail `cargo tree`). SOURCE_DATE_EPOCH pins the
+      # `created` field so the document is reproducible (NFR-MT-03).
+      - name: Generate SPDX SBOM (X-07-T03, first-party, NFR-MT-03)
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          python3 scripts/sbom/generate_spdx.py \
+            --package vokra-capi \
+            --no-default-features \
+            --features vokra-models/metal \
+            --doc-name vokra-ios-xcframework \
+            --output build/ios/vokra-ios-xcframework.spdx.json
+
       - name: Upload workflow artifact (always, for inspection)
         uses: actions/upload-artifact@v4
         with:
@@ -98,6 +149,7 @@ jobs:
           path: |
             build/ios/Vokra.xcframework.zip
             build/ios/Vokra.xcframework.zip.sha256
+            build/ios/vokra-ios-xcframework.spdx.json
           retention-days: 30
 
       - name: Upload to GitHub Release (Step 4 — gh release upload)
@@ -109,6 +161,7 @@ jobs:
           gh release upload "$TAG" \
             build/ios/Vokra.xcframework.zip \
             build/ios/Vokra.xcframework.zip.sha256 \
+            build/ios/vokra-ios-xcframework.spdx.json \
             --clobber
 
       - name: Patch Package.swift on release branch (Step 5)
@@ -129,9 +182,11 @@ jobs:
           git config user.email "release-bot@users.noreply.github.com"
           git checkout -b "$BRANCH"
           # Replace the local `path:` binaryTarget with the `url:` + `checksum:`
-          # form. The sentinel comment `// M2-02-T09: release binaryTarget` in
-          # Package.swift marks the block to substitute; T07 owns the exact
-          # sentinel placement.
+          # form. There is NO sentinel comment in Package.swift (X-07-T22
+          # correction: the earlier note referenced a
+          # `// M2-02-T09: release binaryTarget` sentinel that does not exist);
+          # the regex below matches the actual `.binaryTarget(name: "Vokra",
+          # path: "…")` form present at Package.swift:20-22 directly.
           python3 - <<'PY'
           import os
           import pathlib
@@ -147,8 +202,9 @@ jobs:
           )
           if not pat.search(src):
               raise SystemExit(
-                  "Package.swift: expected local .binaryTarget(path:) "
-                  "form not found; T07 sentinel missing."
+                  "Package.swift: expected local "
+                  ".binaryTarget(name: \"Vokra\", path: \"…\") form not found "
+                  "(Package.swift:20-22 shape changed?)."
               )
           new_target = (
               f'.binaryTarget(name: "Vokra", url: "{url}", '
@@ -209,7 +265,7 @@ jobs:
   # ---------------------------------------------------------------------------
   unity-package-release:
     name: unity-package-release
-    needs: [ios-xcframework]
+    needs: [validate-tag, ios-xcframework]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -354,6 +410,25 @@ jobs:
           done
           echo "OK: all 6 platform slices present"
 
+      # X-07-T04: first-party SPDX SBOM for the Unity package, placed INSIDE the
+      # package tree so it ships in the tarball (pack step below picks it up).
+      # Base doc = the UPM audit build's feature selection (--no-default-features
+      # --features cpu = ci.yml:49); the Linux slice's bare --no-default-features
+      # resolves to the same closure (`cpu = []` is an empty stub). The Apple
+      # (iOS/macOS) slice additionally links vokra-backend-metal — that closure
+      # is documented by the ios-xcframework SBOM (X-07-T03, --features
+      # vokra-models/metal), assembled from the SAME XCFramework build reused by
+      # this job. `metal` alone is NOT a vokra-capi feature (would fail cargo tree).
+      - name: Generate SPDX SBOM (X-07-T04, first-party, NFR-MT-03)
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          python3 scripts/sbom/generate_spdx.py \
+            --package vokra-capi \
+            --no-default-features \
+            --features cpu \
+            --doc-name vokra-unity-package \
+            --output bindings/unity/com.vokra.unity/vokra-unity-package.spdx.json
+
       - name: Pack UPM tarball (R5 reproducibility, SOURCE_DATE_EPOCH pinned)
         run: |
           # Reproducibility per M2-11 plan §5 R5:
@@ -413,6 +488,7 @@ jobs:
           gh release upload "$TAG" \
             "${{ steps.pack.outputs.tarball }}" \
             "${{ steps.pack.outputs.tarball }}.sha256" \
+            bindings/unity/com.vokra.unity/vokra-unity-package.spdx.json \
             --clobber
 
       - name: OpenUPM publish (optional, gated on secrets.OPENUPM_TOKEN)
@@ -456,12 +532,13 @@ jobs:
   # GitHub Release assets without touching PyPI, mirroring the
   # unity-package-release dry-run idiom.
   #
-  # SBOM generation: `pypa/gh-action-pip-audit` + `cyclonedx-py`/`pip-licenses`
-  # are avoided (extra deps); instead we use the standalone SPDX generator
-  # `anchore/sbom-action` which emits SPDX-JSON without adding Python-side
-  # runtime dependencies. Each wheel's SBOM is uploaded alongside it. The
-  # SBOM covers wheel metadata (name/version/license) + bundled native lib
-  # provenance (traced back to the ci.yml build step commit SHA).
+  # SBOM generation (X-07-T07): the FIRST-PARTY generator
+  # `scripts/sbom/generate_spdx.py` emits deterministic SPDX-JSON (replacing the
+  # earlier third-party `anchore/sbom-action`, which stamped a wall-clock
+  # timestamp + random-UUID namespace and so was never reproducible). It
+  # documents the Rust dependency closure of the native library BUNDLED IN the
+  # wheel (vokra-capi). The wheel's Python metadata layer is a different scope
+  # (the vokra wheel declares no third-party Python runtime deps).
   #
   # PyPI upload path (D11): OIDC trusted publisher configured via
   # `id-token: write` permission scope; account + trusted publisher config
@@ -469,16 +546,23 @@ jobs:
   # human sign-off (`inputs.dry_run != true` + tag push).
   #
   # Zero-dep invariant unchanged (NFR-DS-02): no new Rust crate; no Cargo.lock
-  # churn; shell + gh + pypa/gh-action-pypi-publish + anchore/sbom-action.
+  # churn; shell + gh + pypa/gh-action-pypi-publish + python3 (first-party SBOM).
   # ---------------------------------------------------------------------------
   python-pypi-publish:
     name: python-pypi-publish
+    needs: [validate-tag]
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write  # OIDC for PyPI trusted publishing (T17)
     steps:
       - uses: actions/checkout@v4
+
+      # X-07-T07: the first-party SBOM generator drives `cargo tree`, so this
+      # job (previously wheel-only, no Rust) now needs the toolchain. The graph
+      # this SBOM documents is vokra-*-only, so the toolchain is used purely to
+      # read the dependency closure — no crate is built here.
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Reuse python-wheel-build artifacts from ci.yml (per-OS wheels)
         env:
@@ -511,18 +595,26 @@ jobs:
           ls -la dist/
           set -e
 
-      - name: Generate SPDX SBOM per wheel (NFR-MT-03)
-        # SPDX-JSON SBOM covering wheel metadata + bundled native lib provenance.
-        # anchore/sbom-action scans the dist/ directory and emits one SPDX
-        # document per wheel; the sbom-artifact-name pattern keeps them
-        # associated with their wheel for downstream reconciliation.
-        uses: anchore/sbom-action@v0
-        with:
-          path: dist/
-          format: spdx-json
-          artifact-name: vokra-python-sbom.spdx.json
-          upload-artifact: true
-          upload-release-assets: false
+      # X-07-T07: first-party SPDX SBOM, replacing anchore/sbom-action@v0.
+      # WHY: the first-party generator is DETERMINISTIC (SOURCE_DATE_EPOCH-pinned
+      # `created`, git-SHA namespace, sorted keys — reproducible per NFR-MT-03),
+      # whereas anchore stamps a wall-clock timestamp + a random UUID namespace,
+      # so its output is never byte-identical across two runs (defeats the
+      # reproducible-build verify, X-07-T34). It also removes a third-party
+      # action from the release path (zero-dep spirit). SCOPE (honest): this SBOM
+      # documents the Rust dependency closure of the native library BUNDLED IN
+      # the wheel (built from vokra-capi). The wheel's PYTHON metadata layer
+      # (pip/PyPI package name, Python deps) is a DIFFERENT scope not covered
+      # here — the vokra Python wheel bundles the native lib and declares no
+      # third-party Python runtime deps, so the cargo closure is the material
+      # supply-chain surface. See ADR docs/adr/X-07-release-train.md §sbom.
+      - name: Generate SPDX SBOM (X-07-T07, first-party, NFR-MT-03)
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          python3 scripts/sbom/generate_spdx.py \
+            --package vokra-capi \
+            --doc-name vokra-python-wheel \
+            --output dist/vokra-python-wheel.spdx.json
 
       - name: twine check (metadata validation, dry-run safe)
         run: |
@@ -535,6 +627,7 @@ jobs:
           name: vokra-python-release
           path: |
             dist/*.whl
+            dist/vokra-python-wheel.spdx.json
           retention-days: 30
 
       - name: Publish to PyPI (OIDC trusted publishing preferred, token fallback)
@@ -562,7 +655,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          gh release upload "$TAG" dist/*.whl --clobber
+          gh release upload "$TAG" dist/*.whl dist/vokra-python-wheel.spdx.json --clobber
 
       # Dry-run path: mirror the unity-package-release baseline — always
       # ship wheels as GitHub Release assets even when PyPI upload is
@@ -576,7 +669,7 @@ jobs:
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           if ls dist/*.whl >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/*.whl --clobber
+            gh release upload "$TAG" dist/*.whl dist/vokra-python-wheel.spdx.json --clobber
           else
             echo "python-pypi-publish (dry-run): no wheels to upload."
           fi
@@ -587,7 +680,7 @@ jobs:
           echo "== DRY RUN (python-pypi-publish) =="
           echo "Wheels  :"
           ls -la dist/*.whl 2>/dev/null || echo "  (no wheels collected)"
-          echo "SBOM    : vokra-python-sbom.spdx.json (SPDX-JSON, uploaded as artifact)"
+          echo "SBOM    : dist/vokra-python-wheel.spdx.json (first-party SPDX-JSON, X-07-T07)"
           echo "Skipping: pypa/gh-action-pypi-publish (real upload)."
           echo "Dry-run path uploaded wheels to GitHub Release assets only."
 
@@ -631,6 +724,7 @@ jobs:
   # ---------------------------------------------------------------------------
   godot-package-release:
     name: godot-package-release
+    needs: [validate-tag]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -731,6 +825,21 @@ jobs:
       - name: Compliance scan (T18 — no NVIDIA runtime + LICENSE/NOTICE)
         run: bash scripts/compliance/check-godot-package-no-nvidia.sh dist/godot/vokra-godot
 
+      # X-07-T05: first-party SPDX SBOM for the excluded Godot workspace closure.
+      # vokra-godot lives in integrations/ (its own Cargo.toml / Cargo.lock,
+      # invisible to the root manifest), so --manifest-dir points cargo tree
+      # there (X-07-T02). Written into the addon tree BEFORE the pack step so it
+      # ships inside the AssetLib zip; git SHA / SOURCE_DATE_EPOCH still derive
+      # from the repo root.
+      - name: Generate SPDX SBOM (X-07-T05, excluded workspace, NFR-MT-03)
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          python3 scripts/sbom/generate_spdx.py \
+            --package vokra-godot \
+            --manifest-dir integrations/vokra-godot \
+            --doc-name vokra-godot-assetlib \
+            --output dist/godot/vokra-godot/addons/vokra/vokra-godot-assetlib.spdx.json
+
       - name: Pack AssetLib zip (SOURCE_DATE_EPOCH pinned, --no-build)
         run: |
           set -euo pipefail
@@ -788,6 +897,7 @@ jobs:
           gh release upload "$TAG" \
             "${{ steps.pack.outputs.zip }}" \
             "${{ steps.pack.outputs.zip }}.sha256" \
+            dist/godot/vokra-godot/addons/vokra/vokra-godot-assetlib.spdx.json \
             --clobber
 
       # Godot AssetLib official registration: NOT auto-wired here. The
@@ -826,6 +936,7 @@ jobs:
   # ---------------------------------------------------------------------------
   npm-web-release:
     name: npm-web-release
+    needs: [validate-tag]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -862,6 +973,23 @@ jobs:
         working-directory: web/pkg
         run: npm version --no-git-tag-version "${{ steps.version.outputs.version }}"
 
+      # X-07-T06: first-party SPDX SBOM for the npm web package. The shipped
+      # artifact is built from vokra-wasm-harness (build-wasm.sh:106 =
+      # `cargo build ... -p vokra-wasm-harness --no-default-features`), NOT
+      # vokra-capi; the closure is vokra-wasm-harness + backend-webgpu + models
+      # + backend-cpu + core + mmap + ops + piper-plus (8 packages). Written
+      # into web/pkg (listed in package.json "files") BEFORE npm pack so it
+      # ships inside the tarball. Runs AFTER the Cargo.lock tripwire above; the
+      # generator provably leaves Cargo.lock untouched (test-generate-spdx.sh b8).
+      - name: Generate SPDX SBOM (X-07-T06, first-party, NFR-MT-03)
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          python3 scripts/sbom/generate_spdx.py \
+            --package vokra-wasm-harness \
+            --no-default-features \
+            --doc-name vokra-npm-web \
+            --output web/pkg/vokra-npm-web.spdx.json
+
       - name: Deterministic pack + SHA-256
         id: pack
         working-directory: web/pkg
@@ -882,6 +1010,7 @@ jobs:
           gh release upload "$TAG" \
             "${{ steps.pack.outputs.tarball }}" \
             "${{ steps.pack.outputs.tarball }}.sha256" \
+            web/pkg/vokra-npm-web.spdx.json \
             --clobber
 
       - name: npm publish (gated on secrets.NPM_TOKEN)
@@ -910,3 +1039,377 @@ jobs:
           echo "SHA256  : ${{ steps.pack.outputs.sha256 }}"
           npm publish --dry-run --access public --tag "${{ steps.version.outputs.disttag }}"
           echo "Skipping: gh release upload, npm publish."
+
+  # ---------------------------------------------------------------------------
+  # X-07-T11: crates.io publish dry-run (NFR-DS-03 "Cargo crate", token-free).
+  #
+  # Validates that the 15-crate publish set (topological closure of vokra-capi +
+  # vokra-cli, derived by tools/release/crates_publish_order.py) packages
+  # cleanly, WITHOUT contacting the registry for a real publish. Runs on tag AND
+  # workflow_dispatch (no upload, so no gating needed).
+  #
+  # HONEST LIMITATION (recorded in ADR §crates.io): `cargo publish --dry-run`
+  # resolves each crate's `version` dep against the LIVE crates.io index, so only
+  # the graph LEAF (vokra-core, no path deps) can fully dry-run before the first
+  # real publish — every downstream crate fails with "no matching package named
+  # vokra-* found" until its deps are actually on the registry. The pre-publish
+  # package-ability gate for ALL 15 crates is therefore `cargo package --list`
+  # (uses local path deps, no registry); the downstream publish chain is
+  # validated end-to-end incrementally by crates-io-publish (owner, T12/T14).
+  #
+  # Zero-dep (NFR-DS-02): shell + python3 stdlib + cargo (pinned toolchain).
+  # ---------------------------------------------------------------------------
+  crates-io-dry-run:
+    name: crates-io-dry-run
+    needs: [validate-tag]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify publish order is a valid topological order (X-07-T10)
+        run: python3 tools/release/crates_publish_order.py --verify
+
+      - name: cargo package --list for every crate in the set (topo order)
+        run: |
+          set -euo pipefail
+          ORDER="$(python3 tools/release/crates_publish_order.py)"
+          echo "== crates.io publish set (topological order) =="
+          echo "$ORDER"
+          COUNT=0
+          for c in $ORDER; do
+            echo "--- cargo package --list -p $c ---"
+            # --list uses LOCAL path deps (no registry), so it works for every
+            # crate before any publish. This is the pre-publish package-ability
+            # gate the completion condition depends on.
+            cargo package --list -p "$c" >/dev/null
+            COUNT=$((COUNT + 1))
+          done
+          echo "OK: all ${COUNT} crates package cleanly"
+
+      - name: cargo publish --dry-run for the graph leaf (vokra-core)
+        run: |
+          # Only the leaf can fully dry-run pre-first-publish (see job header).
+          # This proves the publish=false guard is lifted (X-07-T09) and the
+          # crate resolves against the registry shape.
+          cargo publish --dry-run --no-verify -p vokra-core
+
+      - name: Downstream dry-run status (honest, registry-gated)
+        run: |
+          N="$(python3 tools/release/crates_publish_order.py | wc -l | tr -d ' ')"
+          echo "::notice::crates-io-dry-run: cargo package --list passed for all ${N} crates. Downstream cargo publish --dry-run is gated on deps existing on crates.io (chicken-and-egg of first-time multi-crate publishing); the chain is validated incrementally by crates-io-publish (owner, X-07-T12/T14)."
+
+      - name: Root Cargo.lock unchanged (zero-dep tripwire)
+        run: git diff --exit-code Cargo.lock
+
+  # ---------------------------------------------------------------------------
+  # X-07-T12: crates.io real publish (NFR-MT-08 CD auto-publish, NFR-LC-02).
+  #
+  # Publishes the 15-crate set in topological order (deps before dependents) on
+  # tag push, gated on secrets.CRATES_IO_TOKEN. Token absent = honest ::notice::
+  # skip (the OPENUPM_TOKEN / NPM_TOKEN idiom) — the GitHub Release assets remain
+  # the baseline channel and the owner opts into crates.io in X-07-T14. crates.io
+  # is an IMMUTABLE index, so a duplicate version FAILS LOUD (no --allow-dirty,
+  # no skip-existing).
+  #
+  # X-09b: this job's existence is the precondition for docs.rs auto-doc (docs.rs
+  # builds published crates); it is why X-07 is sequenced before X-09b.
+  #
+  # Zero-dep (NFR-DS-02): shell + python3 stdlib + cargo.
+  # ---------------------------------------------------------------------------
+  crates-io-publish:
+    name: crates-io-publish
+    needs: [validate-tag, crates-io-dry-run]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Pre-publish license re-check (NFR-LC-02, immutable-index safety)
+        run: |
+          # crates.io cannot be un-published: a GPL/LGPL or otherwise
+          # non-permitted crate in the closure would be an UNRECOVERABLE license
+          # incident. Re-assert zero-dep (every Cargo.lock package is vokra-* =
+          # Apache-2.0) right before publishing — stricter than cargo-deny's
+          # allow-list. NFR-LC-02 mechanized (not a bare declaration). See ADR.
+          bash scripts/check-zero-deps.sh
+
+      - name: cargo publish (topo order, token-gated, immutable-index fail-loud)
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::notice::crates-io-publish: CRATES_IO_TOKEN not set — skipping crates.io publish (owner opt-in, X-07-T14). GitHub Release assets remain the baseline channel; crates-io-dry-run validated the package set."
+            exit 0
+          fi
+          set -euo pipefail
+          ORDER="$(python3 tools/release/crates_publish_order.py)"
+          for c in $ORDER; do
+            echo "== cargo publish -p $c =="
+            # Clean tag checkout (no --allow-dirty). No skip-existing: a
+            # duplicate version FAILS LOUD (immutable index). Modern cargo waits
+            # for the crate to appear on the index before returning, so the next
+            # crate's dep resolves.
+            cargo publish -p "$c"
+          done
+
+      - name: Dry-run / dispatch summary
+        if: inputs.dry_run == true || !startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "== crates-io-publish (dry-run / dispatch) =="
+          echo "Would publish (topological order):"
+          python3 tools/release/crates_publish_order.py
+          echo "Skipping: cargo publish (real). Requires tag + dry_run=false + secrets.CRATES_IO_TOKEN."
+
+  # ---------------------------------------------------------------------------
+  # X-07-T16: attach CHANGELOG-derived release notes to the GitHub Release
+  # (NFR-MT-03 changelog automation). A bare tag push produces a Release with
+  # empty notes; this job extracts the matching CHANGELOG section
+  # (scripts/release/extract-changelog.py, X-07-T15) and sets it as the body.
+  #
+  # Version resolution: on a tag it prefers the rolled `[X.Y.Z]` section
+  # (X-07-T17 roll-changelog is the owner's pre-tag step), falling back to
+  # `[Unreleased]` if the changelog was not rolled. If BOTH are absent/empty it
+  # FAILS LOUD rather than publishing blank/fabricated notes (FR-EX-08).
+  # Dry-run / dispatch writes the notes to the step summary only.
+  # ---------------------------------------------------------------------------
+  release-notes:
+    name: release-notes
+    needs: [validate-tag]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract release notes from CHANGELOG (X-07-T15/T16)
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="Unreleased"
+          fi
+          # Prefer the rolled [X.Y.Z] section; fall back to [Unreleased]. Never
+          # fabricate: if both are absent/empty, fail loud.
+          if python3 scripts/release/extract-changelog.py --version "$VERSION" --output release-notes.md 2>/dev/null; then
+            echo "release-notes: using [$VERSION]"
+          elif python3 scripts/release/extract-changelog.py --version Unreleased --output release-notes.md; then
+            echo "release-notes: [$VERSION] absent — using [Unreleased]"
+          else
+            echo "release-notes: no non-empty [$VERSION] or [Unreleased] section — refusing to publish blank notes (FR-EX-08)" >&2
+            exit 1
+          fi
+          echo "== release notes ($VERSION) =="
+          cat release-notes.md
+
+      - name: Attach notes to the GitHub Release (tag + non-dry-run)
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          # Create the Release with the notes if it does not exist yet, else set
+          # its body. Idempotent across re-runs of the same tag.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file release-notes.md
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file release-notes.md --verify-tag
+          fi
+
+      - name: Dry-run summary (notes to step summary only)
+        if: inputs.dry_run == true || !startsWith(github.ref, 'refs/tags/v')
+        run: |
+          {
+            echo "## Release notes (dry-run, X-07-T16)"
+            echo ""
+            echo '```markdown'
+            cat release-notes.md
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "== DRY RUN (release-notes): notes written to step summary only =="
+
+  # ---------------------------------------------------------------------------
+  # X-07-T29/T30: desktop shared-library + CLI release publish (SCAFFOLD).
+  #
+  # This closes the NFR-MT-08 gap recorded in docs/handoff/m4-11.md §(c):
+  # ci.yml#build uploads per-OS cdylibs (7-day retention) but release.yml had no
+  # desktop-lib/CLI publish job. It publishes the per-OS shared library
+  # (.dylib/.dll/.so) + C header + the per-OS `vokra` CLI, INCLUDING the
+  # x86_64-unknown-linux-musl static CLI (deliverables §3.5), with SBOM + sha256.
+  #
+  # T32-GATED (owner-undecided): the M4-11-T13 gap-flow 3-choice (M4 follow-up /
+  # M5 / requirement revision) is pending. Until the owner sets the repo
+  # variable DESKTOP_AAR_ENABLED=true after that decision (X-07-T32), the
+  # effectful steps are skipped and the job ANNOUNCES the gated state
+  # (announced skip, FR-EX-08 — NOT a fabricated pass). Asset filenames match
+  # tools/release/gen_package_managers.py ASSETS so the winget/Debian manifests
+  # can reference them.
+  # ---------------------------------------------------------------------------
+  desktop-release:
+    name: desktop-release
+    needs: [validate-tag]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: T32 gate (M4-11-T13 desktop/AAR gap-flow)
+        id: gate
+        run: |
+          if [ "${{ vars.DESKTOP_AAR_ENABLED }}" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "desktop-release: T32 enabled (vars.DESKTOP_AAR_ENABLED=true)."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::desktop-release: T32-gated scaffold — M4-11-T13 gap-flow (M4 follow-up / M5 / requirement revision) is owner-undecided; NOT building/uploading the desktop lib + CLI. Set repo variable DESKTOP_AAR_ENABLED=true after the decision (X-07-T32)."
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.gate.outputs.enabled == 'true'
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.gate.outputs.enabled == 'true'
+
+      - name: Build Linux CLI (glibc + musl static) and reuse ci.yml cdylibs
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/desktop
+          # Linux glibc CLI (built here) + musl static CLI (deliverables §3.5).
+          cargo build --release -p vokra-cli
+          cp target/release/vokra-cli "dist/desktop/vokra-cli-${V}-x86_64-linux"
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --release -p vokra-cli --target x86_64-unknown-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/vokra-cli \
+            "dist/desktop/vokra-cli-${V}-x86_64-linux-musl"
+          # Linux cdylib + C header (T29).
+          cargo build --release -p vokra-capi
+          cp target/release/libvokra.so "dist/desktop/libvokra-${V}-x86_64-linux.so"
+          cp include/vokra.h "dist/desktop/vokra.h"
+          # macOS/Windows cdylibs + CLI reused from the ci.yml run for this SHA
+          # (best-effort; a follow-up adds native macos/windows CLI builds).
+          RUN_ID="$(gh run list --workflow=ci.yml --branch="${GITHUB_REF_NAME}" \
+            --limit=20 --json databaseId,headSha,conclusion \
+            --jq ".[] | select(.headSha==\"${GITHUB_SHA}\" and .conclusion==\"success\") | .databaseId" \
+            | head -n 1 || true)"
+          if [ -n "$RUN_ID" ]; then
+            gh run download "$RUN_ID" --name vokra-capi-macos --dir reuse/macos || true
+            gh run download "$RUN_ID" --name vokra-capi-windows --dir reuse/windows || true
+            [ -f reuse/macos/libvokra.dylib ] && cp reuse/macos/libvokra.dylib "dist/desktop/libvokra-${V}-macos.dylib" || echo "desktop-release: macOS cdylib not available (follow-up)"
+            [ -f reuse/windows/vokra.dll ] && cp reuse/windows/vokra.dll "dist/desktop/vokra-${V}-windows.dll" || echo "desktop-release: Windows cdylib not available (follow-up)"
+          else
+            echo "desktop-release: no ci.yml run for SHA ${GITHUB_SHA}; shipping Linux slices only this run."
+          fi
+
+      - name: SBOM + sha256 for desktop assets
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          python3 scripts/sbom/generate_spdx.py \
+            --package vokra-capi --doc-name vokra-desktop \
+            --output dist/desktop/vokra-desktop.spdx.json
+          ( cd dist/desktop && for f in *; do
+              [ -f "$f" ] || continue
+              case "$f" in *.sha256) continue;; esac
+              sha256sum "$f" > "$f.sha256"
+            done )
+          echo "== desktop assets ==" && ls -la dist/desktop
+
+      - name: Upload desktop assets to GitHub Release (enabled + tag + non-dry-run)
+        if: steps.gate.outputs.enabled == 'true' && startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release upload "$TAG" dist/desktop/* --clobber
+
+  # ---------------------------------------------------------------------------
+  # X-07-T31: Android standalone AAR release publish (SCAFFOLD).
+  #
+  # Closes docs/handoff/m4-11.md §(c): no CD job produces a standalone AAR (the
+  # arm64 .so is only bundled into the Unity UPM / Godot addon). Packs the
+  # arm64-v8a libvokra.so (scripts/build-android.sh) into a standalone .aar with
+  # the persistentDataPath helper (deliverables §3.5 / VokraAndroidAssets), with
+  # SBOM + sha256. SAME T32 gate as desktop-release (announced skip until owner
+  # sets DESKTOP_AAR_ENABLED=true).
+  # ---------------------------------------------------------------------------
+  android-aar-release:
+    name: android-aar-release
+    needs: [validate-tag]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: T32 gate (M4-11-T13 desktop/AAR gap-flow)
+        id: gate
+        run: |
+          if [ "${{ vars.DESKTOP_AAR_ENABLED }}" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "android-aar-release: T32 enabled."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::android-aar-release: T32-gated scaffold — standalone AAR NOT built/uploaded until M4-11-T13 gap-flow is decided (X-07-T32). Set DESKTOP_AAR_ENABLED=true to enable."
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.gate.outputs.enabled == 'true'
+
+      - name: Build arm64 .so + pack standalone AAR
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME#v}"
+          bash scripts/build-android.sh
+          # Assemble a minimal standalone AAR layout: jni/<abi>/libvokra.so +
+          # AndroidManifest.xml. The persistentDataPath extraction helper
+          # (VokraAndroidAssets) ships as the consumer-side Kotlin/Java shim; a
+          # follow-up embeds it as a classes.jar. This scaffold packs the .so so
+          # the AAR is installable; owner refines the manifest metadata on enable.
+          AAR_DIR="dist/android/aar"
+          mkdir -p "$AAR_DIR/jni/arm64-v8a"
+          SO="$(find target -path '*aarch64-linux-android*release*/libvokra.so' | head -n1)"
+          if [ -z "$SO" ]; then
+            echo "android-aar-release: FAIL arm64 libvokra.so not found after build-android.sh" >&2
+            exit 1
+          fi
+          cp "$SO" "$AAR_DIR/jni/arm64-v8a/libvokra.so"
+          cat > "$AAR_DIR/AndroidManifest.xml" <<XML
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.vokra.runtime" />
+          XML
+          ( cd "$AAR_DIR" && zip -X -qr "../vokra-${V}.aar" . )
+
+      - name: SBOM + sha256 for the AAR
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME#v}"
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          python3 scripts/sbom/generate_spdx.py \
+            --package vokra-capi --no-default-features \
+            --doc-name vokra-android-aar \
+            --output "dist/android/vokra-${V}-android-aar.spdx.json"
+          ( cd dist/android && sha256sum "vokra-${V}.aar" > "vokra-${V}.aar.sha256" )
+          echo "== AAR assets ==" && ls -la dist/android
+
+      - name: Upload AAR to GitHub Release (enabled + tag + non-dry-run)
+        if: steps.gate.outputs.enabled == 'true' && startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          V="${TAG#v}"
+          gh release upload "$TAG" \
+            "dist/android/vokra-${V}.aar" \
+            "dist/android/vokra-${V}.aar.sha256" \
+            "dist/android/vokra-${V}-android-aar.spdx.json" \
+            --clobber

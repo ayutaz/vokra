@@ -5,7 +5,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+# crates.io listing metadata inherited from [workspace.package] (X-07-T09).
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 vokra-core.workspace = true
@@ -25,7 +31,7 @@ vokra-piper-plus.workspace = true
 # First-party crate, ZERO external deps (raw mmap/MapViewOfFile FFI — no libc /
 # memmap2), so the zero-dependency gate (NFR-DS-02) still holds. Promoted from
 # dev-dependencies (where the Voxtral real-GGUF gated test already used it).
-vokra-mmap = { path = "../vokra-mmap" }
+vokra-mmap.workspace = true
 # Phase 3 (GPU execution): the imperative `Compute` dispatcher routes the model
 # hot path (GEMM first) onto the Metal backend. `vokra-backend-metal` is a
 # first-party `vokra-*` crate with ZERO external deps (raw Objective-C / Metal

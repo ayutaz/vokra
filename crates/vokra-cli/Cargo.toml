@@ -5,7 +5,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+# crates.io listing metadata inherited from [workspace.package] (X-07-T09).
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 # Zero external dependencies (NFR-DS-02): every dependency is a first-party
 # `vokra-*` crate. `vokra-convert` is pulled in (by path — it is not exposed as a
@@ -19,12 +25,12 @@ publish.workspace = true
 vokra-core.workspace = true
 vokra-models.workspace = true
 vokra-ops.workspace = true
-vokra-convert = { path = "../vokra-convert" }
+vokra-convert.workspace = true
 # M4 cc-06: session GGUFs open through the true-mmap loader (header pages
 # faulted lazily) instead of a whole-file owned read — on the Moshi full-7B
 # GGUF the old `Session::from_file` buffered ~14.3 GiB alongside the engine's
 # own mmap. First-party, zero external deps (NFR-DS-02 preserved).
-vokra-mmap = { path = "../vokra-mmap" }
+vokra-mmap.workspace = true
 
 # Optional GPU backends for `bench --backend metal|cuda` (RTF on a real GPU).
 # Both are first-party `vokra-*` crates pulled through `vokra-models`, so the

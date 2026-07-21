@@ -5,7 +5,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+# crates.io listing metadata inherited from [workspace.package] (X-07-T09).
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 # Dependency isolation is the whole point of this crate (FR-LD-05, NFR-DS-02):
 # the only dependency is `vokra-core` (for its GGUF writer). safetensors, JSON
@@ -21,7 +27,7 @@ vokra-ops.workspace = true
 # the true-mmap loader instead of a whole-file heap read, so verifying a
 # 14 GiB output touches only the header pages (bounded-memory contract of
 # the streaming Moshi conversion). First-party, zero external deps.
-vokra-mmap = { path = "../vokra-mmap" }
+vokra-mmap.workspace = true
 
 [lints]
 workspace = true

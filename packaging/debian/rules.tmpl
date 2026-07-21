@@ -1,0 +1,30 @@
+#!/usr/bin/make -f
+# Debian rules for Vokra (X-07-T27). BINARY-based: installs the prebuilt
+# Linux shared library (T29) + CLI (T30) + C header, verifying their SHA256
+# against the release-asset checksums below. The @@SHA256:*@@ slots are
+# T32-gated — filled with PENDING placeholders until the owner enables T29/T30
+# and re-renders with the real assets. GENERATED — edit debian/rules.tmpl,
+# re-run tools/release/gen_package_managers.py. Sponsor upload is owner (T33).
+#
+# Expected release assets (fetched into debian/assets/ by the packaging job):
+#   libvokra-@@VERSION@@-x86_64-linux.so   sha256 @@SHA256:lib-linux@@
+#   vokra-cli-@@VERSION@@-x86_64-linux     sha256 @@SHA256:cli-linux@@
+
+export DH_VERBOSE = 1
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	# Prebuilt binaries are fetched by the release job; verify their integrity.
+	cd debian/assets && printf '%s  %s\n' \
+	  "@@SHA256:lib-linux@@" "libvokra-@@VERSION@@-x86_64-linux.so" | sha256sum -c -
+	cd debian/assets && printf '%s  %s\n' \
+	  "@@SHA256:cli-linux@@" "vokra-cli-@@VERSION@@-x86_64-linux" | sha256sum -c -
+
+override_dh_auto_install:
+	install -Dm644 debian/assets/libvokra-@@VERSION@@-x86_64-linux.so \
+	  debian/libvokra/usr/lib/x86_64-linux-gnu/libvokra.so
+	install -Dm644 include/vokra.h debian/libvokra/usr/include/vokra.h
+	install -Dm755 debian/assets/vokra-cli-@@VERSION@@-x86_64-linux \
+	  debian/vokra-cli/usr/bin/vokra

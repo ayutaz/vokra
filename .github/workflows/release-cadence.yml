@@ -1,0 +1,59 @@
+# Vokra release-cadence — 4-week release-train cadence measurement (X-07-T20/T21).
+#
+# ADVISORY ONLY. This workflow computes whether the next release is DUE
+# (>= 28 days since the last semver release tag) and posts the material to the
+# run's step summary (X-07-T21). It NEVER pushes a tag — tag issuance is
+# owner-only (red-line 6 / NFR-MT-08; the actual release invocation is
+# `release.yml` on a tag push, gated by 依頼者 in X-07-T23). "タスクは issue で
+# 管理しない" (2026-07-19) — so due status is reported to the STEP SUMMARY, not
+# an auto-filed Issue; a continuing record, if needed, goes to docs/tickets/.
+#
+# The cadence judgment contract (schema vokra.release-cadence.v1) is the SoT
+# consumed by M5-12-T06 (GA DoD item 3). Its definition lives in
+# tools/release/cadence.py, not here, so the threshold / boundary / data-source
+# are defined in exactly one place.
+#
+# Cron slot 0 9 * * 1 (Mon 09:00 UTC) is collision-free vs every other workflow
+# (verified by scripts/check-workflow-hygiene.sh). Zero-dep (NFR-DS-02): git +
+# python3 stdlib only.
+name: release-cadence
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cadence:
+    name: cadence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the full tag history to measure intervals between releases.
+          fetch-depth: 0
+
+      - name: Measure release cadence (advisory, never tags)
+        run: |
+          python3 tools/release/cadence.py --emit-summary | tee cadence.json
+          echo "== cadence judgment (advisory) =="
+          cat cadence.json
+
+      - name: Upload cadence judgment (machine-readable contract for M5-12)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-cadence-judgment
+          path: cadence.json
+          retention-days: 90
+
+      - name: Due reminder (step-summary only, no auto-tag)
+        run: |
+          DUE="$(python3 -c 'import json; print(json.load(open("cadence.json"))["due"])')"
+          if [ "$DUE" = "True" ]; then
+            echo "::notice::release-cadence: a release is DUE (>= 28 days since the last tag). Tag issuance is owner-only (X-07-T23) — see the step summary for the material. This workflow does NOT push a tag."
+          else
+            echo "::notice::release-cadence: not yet due; next check next Monday."
+          fi
