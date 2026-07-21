@@ -29,7 +29,7 @@ guessing.
 
 ## Keeping this page current
 
-**Last verified: 2026-07-21 — 97 IDs cited across the public documents.**
+**Last verified: 2026-07-21 — 103 IDs cited across the public documents.**
 
 The set this page must cover is mechanically derived, not curated by hand.
 Regenerate it with:
@@ -98,6 +98,7 @@ Business requirements. Only the two cited publicly are listed.
 |---|---|
 | `BR-02` | Multi-platform stability as a **precondition**: Windows / macOS / Linux / Android / iOS / Web (WASM) plus servers, behind one API and one binary. No platform is dropped; roadmap staging orders GPU/NPU acceleration, not platform support itself. |
 | `BR-04` | Usability from Unity and Godot: a C ABI, a single binary, an Apache-2.0 licence (so GPL is avoided), and IL2CPP / GDExtension compatibility. |
+| `BR-07` | IoT / Raspberry-Pi–class devices as a tiered support target — which device classes are fully supported, feature-limited, deferred, or unsupported (see `NFR-PT-03`). |
 
 ## FR-LD
 
@@ -147,6 +148,7 @@ from generic tensor ops.
 | `FR-OP-80` | The `speaker_encode` operator — one API over several speaker-embedding architectures. It stays in the core runtime because zero-shot TTS depends on it. |
 | `FR-OP-81` | The `speaker_verify` operator (similarity-based verification). |
 | `FR-OP-82` | The `diarize` operator, behind an optional feature flag. |
+| `FR-OP-83` | The `f0_extract` operator — one API over several pitch-extraction algorithms (RMVPE / FCPE / CREPE / PyIN / Harvest). |
 | `FR-OP-93` | Evaluation metrics (mel loss, UTMOS, DNSMOS, WER, CER) built into the runtime so quantization can be checked automatically. |
 
 ## FR-BE
@@ -170,6 +172,7 @@ Model support.
 | `FR-MD-02` | Whisper base (ASR), natively reimplemented — encoder, decoder and beam search. |
 | `FR-MD-09` | Moshi (full-duplex speech-to-speech), whose weights require an attribution-display capability. |
 | `FR-MD-10` | F5-TTS and Fish-Speech: engine support only, with the non-commercial weights separated behind a research flag. |
+| `FR-MD-11` | The RVC v2 and GPT-SoVITS voice-conversion models being out of core scope, delivered only through the separate `vokra-voiceclone-experimental` repository (see `FR-CP-04`). |
 | `FR-MD-13` | **Permanent process.** A PR that adds model support must update the licence audit and clear the legal-compliance checklist in the same PR. See [CONTRIBUTING.md](../CONTRIBUTING.md) §4. |
 
 ## FR-QT
@@ -212,6 +215,7 @@ Compliance.
 | `FR-CP-01` | Watermarking of TTS / VC output by default, with opting out being explicit. See [docs/legal-compliance.md](legal-compliance.md) for current status. |
 | `FR-CP-02` | Attaching and verifying C2PA manifests. |
 | `FR-CP-03` | Making non-commercially-licensed weights loadable only through an explicit research flag, keeping them off the default path. |
+| `FR-CP-04` | Confining voice cloning to a separate `vokra-voiceclone-experimental` repository and binary — gated behind an explicit research flag, with forced watermarking and a required consent manifest. |
 | `FR-CP-05` | Exposing model provenance, licence and frontend description as GGUF metadata so downstream users can inspect them. |
 | `FR-CP-06` | A compliance configuration API. |
 
@@ -264,6 +268,7 @@ Numerical and audio quality.
 | `NFR-QL-01` | Numerical parity against the PyTorch reference, verified per PR in CI. Per-model tolerances are stated in [`tests/parity/`](../tests/parity/) rather than being global constants — a tolerance is an architectural bound, not a knob to widen when CI is red. |
 | `NFR-QL-02` | The bound on audio-quality degradation relative to the PyTorch reference. |
 | `NFR-QL-04` | Nightly audio-quality regression runs over public evaluation subsets, where a threshold breach is treated as a blocking defect. |
+| `NFR-QL-05` | Requiring Silero VAD's pseudo-STFT to be a verbatim Rust port of the Silero implementation, not a librosa-style STFT approximation. |
 
 ## NFR-RL
 
@@ -319,6 +324,7 @@ Platform coverage.
 |---|---|
 | `NFR-PT-01` | Treating all platforms as a precondition: no mandatory dependency that exists on only one platform, and cross-build viability verified continuously in CI. Backend ordering stages acceleration, it does not select which platforms are supported. |
 | `NFR-PT-02` | The breadth of CPU support, expressed as the instruction-set baseline assumed on x86-64 and ARM64. |
+| `NFR-PT-03` | The IoT device tiering — Tier 1 fully supported, Tier 2 feature-limited, Tier 3 deferred / opt-in, Tier 4 explicitly unsupported. |
 
 ## IF
 

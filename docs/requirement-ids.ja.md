@@ -26,7 +26,7 @@ Vokra の公開文書（`README.md` / `CONTRIBUTING.md` および `docs/` 配下
 
 ## 本ページの維持
 
-**最終確認日: 2026-07-21 — 公開文書に出現する ID は 97 種類。**
+**最終確認日: 2026-07-21 — 公開文書に出現する ID は 103 種類。**
 
 本ページが網羅すべき集合は手作業ではなく機械的に導出します。再生成コマンド:
 
@@ -94,6 +94,7 @@ bash scripts/check-doc-references.sh --list   # 解決された集合を表示
 |---|---|
 | `BR-02` | **全プラットフォーム対応を前提とする**マルチプラットフォーム安定性。Windows / macOS / Linux / Android / iOS / Web (WASM) とサーバを、単一 API・単一バイナリで扱う。特定プラットフォームの切り捨ては行わず、ロードマップの段階化は GPU/NPU 高速化の順序であってプラットフォーム対応の選別ではない。 |
 | `BR-04` | Unity / Godot から使えること。C ABI、単一バイナリ、Apache-2.0（GPL 回避）、IL2CPP / GDExtension 対応。 |
+| `BR-07` | IoT / Raspberry Pi クラスのデバイスを階層化した対応対象とすること — どのデバイスクラスをフル対応 / 機能限定 / 見送り / 非対応とするか（`NFR-PT-03` 参照）。 |
 
 ## FR-LD
 
@@ -142,6 +143,7 @@ bash scripts/check-doc-references.sh --list   # 解決された集合を表示
 | `FR-OP-80` | `speaker_encode` op — 複数の話者埋め込みアーキテクチャを 1 つの API で扱う。zero-shot TTS が依存するため core に残す。 |
 | `FR-OP-81` | `speaker_verify` op（類似度による話者照合）。 |
 | `FR-OP-82` | `diarize` op。optional feature flag の背後に置く。 |
+| `FR-OP-83` | `f0_extract` op — 複数のピッチ抽出アルゴリズム（RMVPE / FCPE / CREPE / PyIN / Harvest）を 1 つの API で扱う。 |
 | `FR-OP-93` | 評価メトリクス（mel loss / UTMOS / DNSMOS / WER / CER）を runtime に内蔵し、量子化の検証を自動化できるようにする。 |
 
 ## FR-BE
@@ -166,6 +168,7 @@ ID を持ちます）。
 | `FR-MD-02` | Whisper base（ASR）の native 再実装 — encoder / decoder / beam search。 |
 | `FR-MD-09` | Moshi（full-duplex S2S）。weight のライセンス上、attribution 表示機能を要する。 |
 | `FR-MD-10` | F5-TTS / Fish-Speech。エンジン対応のみとし、非商用 weight は research flag で分離する。 |
+| `FR-MD-11` | RVC v2 / GPT-SoVITS の voice-conversion モデルを core の対象外とし、別リポジトリ `vokra-voiceclone-experimental` 経由でのみ提供すること（`FR-CP-04` 参照）。 |
 | `FR-MD-13` | **恒久プロセス。** モデル対応を追加する PR は、同じ PR でライセンス監査を更新し legal-compliance チェックリストを通すこと。[CONTRIBUTING.md](../CONTRIBUTING.md) §4 参照。 |
 
 ## FR-QT
@@ -208,6 +211,7 @@ ID を持ちます）。
 | `FR-CP-01` | TTS / VC 出力へのデフォルト watermark 付与と、opt-out を明示的にすること。現況は [docs/legal-compliance.md](legal-compliance.md) を参照。 |
 | `FR-CP-02` | C2PA manifest の付与と検証。 |
 | `FR-CP-03` | 非商用ライセンスの weight を明示的な research flag 経由でのみロード可能とし、デフォルト経路から外すこと。 |
+| `FR-CP-04` | voice cloning 機能を別リポジトリ `vokra-voiceclone-experimental`・別バイナリに分離し、明示的な research flag を必須とし、watermark を強制、consent manifest を要求すること。 |
 | `FR-CP-05` | モデルの provenance・ライセンス・フロントエンド記述を GGUF metadata として公開し、下流が検査できるようにすること。 |
 | `FR-CP-06` | コンプライアンス設定 API。 |
 
@@ -260,6 +264,7 @@ ID を持ちます）。
 | `NFR-QL-01` | PyTorch reference との数値 parity を PR ごとに CI 検証すること。モデル別の許容値はグローバル定数ではなく [`tests/parity/`](../tests/parity/) に明示する — 許容値は architectural bound であり、CI が赤いときに緩めるつまみではない。 |
 | `NFR-QL-02` | PyTorch reference に対する音声品質の劣化上限。 |
 | `NFR-QL-04` | 公開評価データ subset に対する nightly の音声品質 regression 実行。閾値割れは blocking な欠陥として扱う。 |
+| `NFR-QL-05` | Silero VAD の疑似 STFT を Silero 実装そのままの Rust 移植とし、librosa 型の STFT 近似にしないこと。 |
 
 ## NFR-RL
 
@@ -315,6 +320,7 @@ ID を持ちます）。
 |---|---|
 | `NFR-PT-01` | 全プラットフォーム対応を前提とすること。単一プラットフォームでしか成立しない必須依存を導入せず、全ターゲットへのクロスビルド可能性を CI で継続検証する。バックエンドの導入順序は高速化の段階化であり、対応プラットフォームの選別ではない。 |
 | `NFR-PT-02` | CPU 対応の広さ。x86-64 と ARM64 で前提とする命令セットの baseline として表現される。 |
+| `NFR-PT-03` | IoT デバイスの階層化 — Tier 1 フル対応 / Tier 2 機能限定 / Tier 3 見送り・opt-in / Tier 4 明示的非対応。 |
 
 ## IF
 
