@@ -940,6 +940,20 @@ jobs:
         run: bash scripts/check-zero-deps.sh
       - name: Forbidden symbols / dependencies check
         run: bash scripts/check-forbidden-symbols.sh
+      - name: no_std subset tripwire (Cortex-M55 Tier 3, M5-03-T15)
+        # NFR-PT-03 / NFR-DS-02: the no_std(+alloc) subset (vokra-core error +
+        # GGUF reader, and the vokra-vad-micro Silero forward core) must keep
+        # cross-compiling for bare-metal Cortex-M55 with no `std` leak. Same
+        # family as check-zero-deps.sh (a structural invariant, not a behaviour
+        # test) — so it lives here, per-PR, NOT on the weekly Tier-3 platform leg
+        # (.github/workflows/silero-nostd-cross-build.yml). The self-test proves
+        # the compile gate still detects an injected `use std::…` (fabricated-pass
+        # prevention). Cheap cross-build; a std leak is a hard failure. Promotion
+        # to a required branch-protection check is an owner decision (NFR-MT-07).
+        run: |
+          rustup target add thumbv8m.main-none-eabihf thumbv8m.main-none-eabi
+          bash scripts/check-nostd-subset.sh --self-test
+          bash scripts/check-nostd-subset.sh
       - name: EnCodec weight exclusion (FR-OP-32, M3-06)
         # X-08-T03. EnCodec pretrained weights are CC-BY-NC 4.0, so they are
         # permanently excluded from the shipping tree and the official model

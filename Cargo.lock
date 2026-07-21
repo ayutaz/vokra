@@ -125,6 +125,7 @@ dependencies = [
  "vokra-mmap",
  "vokra-ops",
  "vokra-piper-plus",
+ "vokra-vad-micro",
 ]
 
 [[package]]
@@ -145,6 +146,13 @@ dependencies = [
 
 [[package]]
 name = "vokra-piper-plus"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "vokra-core",
+]
+
+[[package]]
+name = "vokra-vad-micro"
 version = "0.1.0-alpha.0"
 dependencies = [
  "vokra-core",

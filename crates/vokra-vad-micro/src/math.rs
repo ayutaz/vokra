@@ -3,9 +3,17 @@
 //! These are deliberately **private** to the subgraph (FR-LD-06 / T04): the
 //! pseudo-STFT `Conv1d` and every other op run through this module's own
 //! `conv1d`, never through the generic `vokra-ops` `stft` op (NFR-QL-05) or an
-//! external crate. Implementations are portable scalar Rust; SIMD tuning is out
-//! of scope for M0-05 (that is M0-08). Compute is done in `f32` to match the
-//! model's storage and keep the streaming handle cheap.
+//! external crate. Implementations are portable scalar Rust; compute is done in
+//! `f32` to match the model's storage and keep the streaming handle cheap.
+//!
+//! M5-03 T08: the sigmoid's `exp` is [`crate::scalar::exp`] (a self-contained
+//! scalar port), NOT `f32::exp` (which lives in `std`, absent on Cortex-M55).
+//! This is what makes the std and no_std forwards bit-identical.
+
+#[cfg(not(feature = "std"))]
+use alloc::{vec, vec::Vec};
+
+use crate::scalar;
 
 /// Reflection-pads `x` on the **right** by `n` samples (NumPy `mode="reflect"`:
 /// the edge sample is not duplicated).
@@ -13,7 +21,7 @@
 /// Silero's front-end pads a fixed frame (512 @ 16 kHz / 256 @ 8 kHz) by
 /// `n_fft/4` on the right only (verified against the ONNX `Pad` node); this is
 /// the exact operation the learned pseudo-STFT expects. Requires `n < x.len()`.
-pub(super) fn reflect_pad_right(x: &[f32], n: usize) -> Vec<f32> {
+pub(crate) fn reflect_pad_right(x: &[f32], n: usize) -> Vec<f32> {
     debug_assert!(
         n < x.len(),
         "reflect pad {n} needs len > {n}, got {}",
@@ -44,7 +52,7 @@ pub(super) fn reflect_pad_right(x: &[f32], n: usize) -> Vec<f32> {
 /// reference oracle** for the transposed production path ([`conv1d_wt`]).
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
-pub(super) fn conv1d(
+pub(crate) fn conv1d(
     x: &[f32],
     c_in: usize,
     l: usize,
@@ -100,7 +108,7 @@ pub(super) fn conv1d(
 /// committed parity fixtures (7.9e-8 anchor + ctx576) byte-stable
 /// (NFR-QL-05: 1:1 subgraph semantics untouched).
 #[allow(clippy::too_many_arguments)]
-pub(super) fn conv1d_wt(
+pub(crate) fn conv1d_wt(
     x: &[f32],
     c_in: usize,
     l: usize,
@@ -147,7 +155,7 @@ pub(super) fn conv1d_wt(
 }
 
 /// Matrix-vector product `y = w @ x` with `w` stored `[m, n]` row-major.
-pub(super) fn matvec(w: &[f32], m: usize, n: usize, x: &[f32]) -> Vec<f32> {
+pub(crate) fn matvec(w: &[f32], m: usize, n: usize, x: &[f32]) -> Vec<f32> {
     debug_assert_eq!(w.len(), m * n);
     debug_assert_eq!(x.len(), n);
     let mut y = vec![0.0f32; m];
@@ -163,12 +171,16 @@ pub(super) fn matvec(w: &[f32], m: usize, n: usize, x: &[f32]) -> Vec<f32> {
 }
 
 /// Logistic sigmoid `1 / (1 + e^-x)` (`f32`; saturates cleanly at the extremes).
-pub(super) fn sigmoid(x: f32) -> f32 {
-    1.0 / (1.0 + (-x).exp())
+///
+/// M5-03 T08: `e^-x` is the self-contained [`crate::scalar::exp`], not
+/// `f32::exp` — so this resolves under `#![no_std]` and is bit-identical across
+/// the std and no_std builds.
+pub(crate) fn sigmoid(x: f32) -> f32 {
+    1.0 / (1.0 + scalar::exp(-x))
 }
 
 /// ReLU in place.
-pub(super) fn relu_in_place(v: &mut [f32]) {
+pub(crate) fn relu_in_place(v: &mut [f32]) {
     for x in v.iter_mut() {
         if *x < 0.0 {
             *x = 0.0;

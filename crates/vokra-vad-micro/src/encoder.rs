@@ -6,22 +6,30 @@
 //! canonical frame the time length collapses `3 -> 3 -> 2 -> 1 -> 1`, so the
 //! output is `[128, 1]`.
 
-use super::math::{conv1d_wt, relu_in_place};
-use super::pseudo_stft::Magnitude;
-use super::weights::RateWeights;
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+
+use crate::math::{conv1d_wt, relu_in_place};
+use crate::pseudo_stft::Magnitude;
+use crate::weights::RateWeights;
 
 /// Encoder output: `channels` × `frames`, row-major (channel-major).
-pub(super) struct EncoderOut {
-    pub(super) data: Vec<f32>,
-    pub(super) channels: usize,
-    pub(super) frames: usize,
+///
+/// Exposed for the `vokra-models::silero_vad::parity` stage harness (T06).
+pub struct EncoderOut {
+    /// Feature values, row-major `[channels, frames]` (channel-major).
+    pub data: Vec<f32>,
+    /// Feature channel count (128 for the canonical Silero encoder tail).
+    pub channels: usize,
+    /// Number of time frames (1 after the canonical collapse).
+    pub frames: usize,
 }
 
 /// Strides for the four encoder convolutions.
 const STRIDES: [usize; 4] = [1, 2, 2, 1];
 
 /// Runs the encoder conv stack on the magnitude spectrogram.
-pub(super) fn encode(w: &RateWeights, mag: &Magnitude) -> EncoderOut {
+pub fn encode(w: &RateWeights, mag: &Magnitude) -> EncoderOut {
     let mut data = mag.data.clone();
     let mut c_in = mag.bins;
     let mut len = mag.frames;
@@ -54,20 +62,28 @@ pub(super) fn encode(w: &RateWeights, mag: &Magnitude) -> EncoderOut {
 
 #[cfg(test)]
 mod tests {
-    use super::super::SampleRate;
-    use super::super::pseudo_stft::pseudo_stft;
-    use super::super::weights::RateWeights;
     use super::*;
+    use crate::SampleRate;
+    use crate::pseudo_stft::pseudo_stft;
+    use crate::weights::RateWeights;
 
     #[test]
     fn encoder_collapses_to_128_by_1() {
         for rate in [SampleRate::Hz8000, SampleRate::Hz16000] {
             let w = RateWeights::zeros_for_test(rate);
-            let mag = pseudo_stft(rate, &w, &vec![0.0; rate.frame_len()]);
+            let mag = pseudo_stft(rate, &w, &vec_zeros(rate.frame_len()));
             let enc = encode(&w, &mag);
             assert_eq!(enc.channels, 128);
             assert_eq!(enc.frames, 1);
             assert_eq!(enc.data.len(), 128);
         }
+    }
+
+    /// A no_std-safe zero vector helper (avoids `vec!` macro imports in the
+    /// test module across the std/no_std split — tests run under std anyway).
+    fn vec_zeros(n: usize) -> Vec<f32> {
+        let mut v = Vec::with_capacity(n);
+        v.resize(n, 0.0);
+        v
     }
 }

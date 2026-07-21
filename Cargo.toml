@@ -68,6 +68,11 @@ vokra-piper-plus = { path = "crates/vokra-piper-plus", version = "0.1.0-alpha.0"
 vokra-capi = { path = "crates/vokra-capi", version = "0.1.0-alpha.0" }
 vokra-mmap = { path = "crates/vokra-mmap", version = "0.1.0-alpha.0" }
 vokra-convert = { path = "crates/vokra-convert", version = "0.1.0-alpha.0" }
+# M5-03 (案1): the no_std(+alloc) Silero VAD forward core. `vokra-models`
+# depends on it (default features) and re-exports it; the Cortex-M55 Tier-3
+# build uses it with `--no-default-features`. First-party `vokra-*` crate with
+# only a `vokra-core` dep, so the root Cargo.lock stays vokra-* only (NFR-DS-02).
+vokra-vad-micro = { path = "crates/vokra-vad-micro", version = "0.1.0-alpha.0" }
 
 # Unsafe boundary policy (M0-02-T03; NFR-RL-07, SRS §5-(1)):
 # the workspace is safe-by-default (`unsafe_code = "deny"`). `unsafe` +

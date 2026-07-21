@@ -25,6 +25,13 @@ all-features = true
 [dependencies]
 vokra-core.workspace = true
 vokra-ops.workspace = true
+# M5-03 (案1): the no_std(+alloc) Silero VAD forward core. `silero_vad` is now a
+# std veneer (VadEngine impl + streaming handle + WAV reader + file `open`) over
+# this crate, which holds the shared numeric forward so the Cortex-M55 Tier-3
+# build (`--no-default-features`) never names `vokra-ops` / `vokra-backend-cpu`.
+# Default features (std) here; first-party `vokra-*`, so the root Cargo.lock
+# stays vokra-* only (NFR-DS-02). ADR docs/adr/M5-03-iot-tier3-nostd.md §(a).
+vokra-vad-micro.workspace = true
 # M0-06 reuses the M0-08 CPU compute kernels (gemm / softmax / layer_norm /
 # gelu / conv1d) and the runtime ISA log directly, rather than re-implementing
 # them in the model layer. Native model forwards call these safe wrappers.

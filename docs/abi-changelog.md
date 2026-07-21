@@ -228,6 +228,43 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-07-21 — 1.0.0-rc.1-dev (M5-03: IoT Tier 3 no_std Silero VAD — new `vokra-vad-micro` crate, Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+**untouched** (`scripts/gen-c-abi.sh --check` = no diff; a grep for `micro` /
+`nostd` / `silero` in the header matches **0** new symbols). No GGUF metadata
+schema is added. M5-03 splits the Silero VAD v5 forward core out of
+`vokra-models::silero_vad` into a new `#![no_std]`(+`alloc`) crate,
+**`vokra-vad-micro`**, so it cross-compiles for bare-metal Cortex-M55
+(thumbv8m, IoT Tier 3 / NFR-PT-03) without pulling in the std-heavy
+`vokra-ops` / `vokra-backend-cpu` (ADR `docs/adr/M5-03-iot-tier3-nostd.md`
+§(a), topology 案1). The std `vokra-models::silero_vad` is now a thin veneer
+that depends on and re-exports it.
+
+M5-13 relevance (why this is recorded here): the new crate adds a **Rust**
+public surface but **no C surface**, and it introduces a **feature-cfg
+dimension** (`std` default-ON; `--no-default-features` = `#![no_std]`) that
+M5-13's freeze snapshot must account for. `scripts/rust-public-api-list.sh`
+scans only `vokra-core` / `vokra-ops` / `vokra-capi`, so this crate does not
+appear in that snapshot; the M5-13 owner decides whether to extend the
+snapshot to `vokra-vad-micro` before the freeze. The `std`/no_std split does
+**not** change the default (std) build's Rust surface of any existing crate —
+`vokra_models::silero_vad::{SileroVadV5, SampleRate, wav::read_wav_f32}` and
+`SileroVadV5::{from_gguf, open, supports, forward_chunk, open_stream}` are all
+source-compatible (`SampleRate` is now a `pub use` re-export of
+`vokra_vad_micro::SampleRate`, the identical type). No C ABI is added or
+changed, so `scripts/check-abi-changelog.sh` does not gate on this entry.
+
+The Wave-1 `std` gate on `vokra-core`'s public modules
+(session/stream/safetensors/… behind `#[cfg(feature = "std")]`) was recorded
+under the v1.0-rc baseline; Wave 2/3 add no further `vokra-core` gating.
+
+| Crate / area                     | Symbol                                                      | Kind  | Signature / note                                                                                          | Rationale                                                                                     | Breaking? | PR    |
+| -------------------------------- | ---------------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | --------- | ----- |
+| `vokra-vad-micro` (new crate)    | `SampleRate` / `SileroWeights` / `RateWeights` / `LstmState` | Added | `#![no_std]`(+alloc) crate; `SileroWeights::{from_gguf, rate, forward_chunk}`, `run_frame`, stage fns     | no_std Silero forward core for Cortex-M55 Tier 3 (SRS §6, NFR-PT-03); first-party, `vokra-core` dep only | no        | (TBD) |
+| `vokra-vad-micro::scalar`        | `exp` / `tanh` / `sqrt`                                     | Added | `pub fn (f32) -> f32`, `core`-only (no `std`, no `libm`)                                                  | shared transcendentals so std ↔ no_std Silero are bit-identical (T08); Newton `sqrt` default (ADR §(d)) | no        | (TBD) |
+| `vokra-models::silero_vad`       | `SampleRate`                                                | Moved | now `pub use vokra_vad_micro::SampleRate` (identical type; source-compatible re-export)                   | forward core relocation (ADR §(a)); existing consumers (`vokra-cli` / `vokra-capi` / example) unchanged | no        | (TBD) |
+
 ### 2026-07-21 — 1.0.0-rc.1-dev (M5-02: QNN delegate backend selector — Rust surface only)
 
 Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is

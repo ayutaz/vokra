@@ -8,21 +8,29 @@
 //! `decoder.rnn.*` weights are the original PyTorch parameters, and this order
 //! was confirmed by matching the onnxruntime oracle to ~5e-8 (see the crate
 //! SPEC). Both `bias_ih` and `bias_hh` are applied (as PyTorch does).
+//!
+//! M5-03 T08: the cell/output `tanh` is [`crate::scalar::tanh`] (a self-contained
+//! scalar port), NOT `f32::tanh` (which lives in `std`, absent on Cortex-M55) —
+//! bit-identical across the std and no_std builds.
 
-use super::encoder::EncoderOut;
-use super::math::{matvec, sigmoid};
-use super::weights::{HIDDEN, RateWeights};
+#[cfg(not(feature = "std"))]
+use alloc::{vec, vec::Vec};
+
+use crate::encoder::EncoderOut;
+use crate::math::{matvec, sigmoid};
+use crate::scalar;
+use crate::weights::{HIDDEN, RateWeights};
 
 /// Streaming LSTM state (`h` and `c`), zero-initialised for a fresh utterance.
 #[derive(Clone)]
-pub(super) struct LstmState {
-    pub(super) h: Vec<f32>,
-    pub(super) c: Vec<f32>,
+pub struct LstmState {
+    pub(crate) h: Vec<f32>,
+    pub(crate) c: Vec<f32>,
 }
 
 impl LstmState {
     /// A zeroed state (the initial state Silero's ONNX interface feeds).
-    pub(super) fn zeros() -> Self {
+    pub fn zeros() -> Self {
         Self {
             h: vec![0.0; HIDDEN],
             c: vec![0.0; HIDDEN],
@@ -32,7 +40,7 @@ impl LstmState {
 
 /// Advances the LSTM over every frame of the encoder output, mutating `state`,
 /// and returns the final hidden vector `[128]`.
-pub(super) fn lstm_forward(w: &RateWeights, enc: &EncoderOut, state: &mut LstmState) -> Vec<f32> {
+pub(crate) fn lstm_forward(w: &RateWeights, enc: &EncoderOut, state: &mut LstmState) -> Vec<f32> {
     let t_len = enc.frames;
     let mut x = vec![0.0f32; enc.channels];
     for t in 0..t_len {
@@ -48,11 +56,12 @@ pub(super) fn lstm_forward(w: &RateWeights, enc: &EncoderOut, state: &mut LstmSt
             let f = sigmoid(
                 gih[HIDDEN + j] + w.lstm_bih[HIDDEN + j] + ghh[HIDDEN + j] + w.lstm_bhh[HIDDEN + j],
             );
-            let g = (gih[2 * HIDDEN + j]
-                + w.lstm_bih[2 * HIDDEN + j]
-                + ghh[2 * HIDDEN + j]
-                + w.lstm_bhh[2 * HIDDEN + j])
-                .tanh();
+            let g = scalar::tanh(
+                gih[2 * HIDDEN + j]
+                    + w.lstm_bih[2 * HIDDEN + j]
+                    + ghh[2 * HIDDEN + j]
+                    + w.lstm_bhh[2 * HIDDEN + j],
+            );
             let o = sigmoid(
                 gih[3 * HIDDEN + j]
                     + w.lstm_bih[3 * HIDDEN + j]
@@ -61,7 +70,7 @@ pub(super) fn lstm_forward(w: &RateWeights, enc: &EncoderOut, state: &mut LstmSt
             );
             let c_new = f * state.c[j] + i * g;
             state.c[j] = c_new;
-            state.h[j] = o * c_new.tanh();
+            state.h[j] = o * scalar::tanh(c_new);
         }
     }
     state.h.clone()
@@ -70,7 +79,7 @@ pub(super) fn lstm_forward(w: &RateWeights, enc: &EncoderOut, state: &mut LstmSt
 /// Decoder head: `ReLU -> Conv1d(128, 1, k=1) -> Sigmoid`, producing the frame's
 /// speech probability. (The head runs on the single collapsed time frame, so
 /// the ONNX `ReduceMean` over time is a no-op here.)
-pub(super) fn head_probability(w: &RateWeights, hidden: &[f32]) -> f32 {
+pub(crate) fn head_probability(w: &RateWeights, hidden: &[f32]) -> f32 {
     debug_assert_eq!(hidden.len(), HIDDEN);
     debug_assert_eq!(w.head.c_out, 1);
     debug_assert_eq!(w.head.c_in, HIDDEN);
@@ -84,8 +93,8 @@ pub(super) fn head_probability(w: &RateWeights, hidden: &[f32]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::SampleRate;
     use super::*;
+    use crate::SampleRate;
 
     #[test]
     fn zero_state_zero_input_gives_half() {
