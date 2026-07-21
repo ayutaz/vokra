@@ -80,7 +80,27 @@
 #   scripts/abi-diff.sh --format machine         -- one line per delta, prefixed
 #                                                   `+ FUNC ...` / `- FUNC ...` /
 #                                                   `~ FUNC ...` for scripts.
+#   scripts/abi-diff.sh --gate                   -- ENFORCEMENT mode (M5-13-T14a).
+#                                                   Unlike the default REPORT mode
+#                                                   (which always exits 0), --gate
+#                                                   exits 1 when it finds a
+#                                                   BLOCKING delta against the
+#                                                   anchor: any REMOVED or CHANGED
+#                                                   symbol (breaking — a semver
+#                                                   MAJOR bump is required), or an
+#                                                   ADDED symbol that is NOT yet
+#                                                   recorded in the changelog. An
+#                                                   additive symbol already named
+#                                                   in the changelog passes. This
+#                                                   is the mode a required CI check
+#                                                   runs; the M5-13 freeze wires it
+#                                                   into ci.yml after the freeze is
+#                                                   fired by the owner's v1.0 GA tag.
+#   scripts/abi-diff.sh --changelog <path>       -- changelog file --gate greps for
+#                                                   an ADDED symbol's name
+#                                                   (default: docs/abi-changelog.md).
 #   scripts/abi-diff.sh --self-test              -- unit-test the diff classifier
+#                                                   AND the --gate enforcement paths
 #   scripts/abi-diff.sh --help                   -- this text
 #
 # NOT WIRED INTO CI
@@ -102,7 +122,13 @@
 #   does not perturb NFR-DS-02).
 #
 # EXIT CODES
-#   0  ran to completion (regardless of whether a delta was found)
+#   0  REPORT mode (default): ran to completion (regardless of whether a delta
+#      was found). --gate mode: no blocking delta (clean, or only additive
+#      symbols that are already recorded in the changelog).
+#   1  --gate mode ONLY: a blocking delta was found (a REMOVED/CHANGED symbol,
+#      or an ADDED symbol with no changelog record). REPORT mode NEVER returns 1
+#      — the enforcement decision is opt-in via --gate so the historical report
+#      callers (M3-16-T04 aggregator etc.) keep their exit-0 contract.
 #   2  usage / setup error (missing header, missing anchor, bad flag,
 #      or `--regenerate` requested but cbindgen unavailable / regen failed)
 
@@ -497,6 +523,88 @@ classify() {
     return 0
 }
 
+# ---------------------------------------------------------------- gate ------
+# run_gate <anchor-symbols> <current-symbols> <changelog-path>
+#
+# ENFORCEMENT mode (M5-13-T14a). The default REPORT mode always exits 0 — that
+# is correct for the historical M3-16-T04 aggregator, but it means wiring
+# abi-diff.sh into a required CI check without a gate mode would produce a
+# PERMANENTLY GREEN empty gate (a fabricated pass). This function is the real
+# enforcement: it re-uses the machine-format delta stream and blocks on
+#
+#   * any REMOVED symbol  -> breaking, a semver MAJOR bump is required
+#   * any CHANGED symbol  -> breaking (signature change), MAJOR bump required
+#   * any ADDED symbol whose name does not appear in <changelog-path>
+#       -> an unrecorded additive change (allowed under a MINOR bump, but only
+#          once it is written down; an undocumented ABI addition is a process
+#          failure the freeze contract forbids).
+#
+# An ADDED symbol whose name IS present in the changelog passes (additive +
+# recorded = fine). A clean diff (no delta) passes. Returns 1 on any blocking
+# delta, 0 otherwise. Zero-dep: pure bash + awk + grep over the classify()
+# machine stream.
+run_gate() {
+    local anchor_syms="$1" current_syms="$2" changelog="$3"
+
+    local machine
+    machine="$(classify "$anchor_syms" "$current_syms" machine)"
+
+    local blocking=0
+    local reasons=""
+    local ln
+    while IFS= read -r ln; do
+        [ -z "$ln" ] && continue
+        case "$ln" in
+            '- '*)
+                # REMOVED symbol — always breaking.
+                blocking=1
+                reasons+="  REMOVED (breaking — requires a semver MAJOR bump): ${ln#- }"$'\n'
+                ;;
+            '~ '*)
+                # CHANGED symbol (new prototype line) — always breaking.
+                # The paired `~-` old line is intentionally ignored so a
+                # signature change counts once, not twice.
+                blocking=1
+                reasons+="  CHANGED (breaking — requires a semver MAJOR bump): ${ln#~ }"$'\n'
+                ;;
+            '~-'*)
+                # old-prototype half of a CHANGED pair — already counted above.
+                :
+                ;;
+            '+ '*)
+                # ADDED symbol — blocking ONLY if it is not recorded in the
+                # changelog. Extract the bare `vokra_*` name from the
+                # `+ KIND name|proto` machine line and grep the changelog for it.
+                local payload name
+                payload="${ln#+ }"                         # KIND name|proto
+                name="$(printf '%s' "$payload" | awk -F'|' '{print $1}' | awk '{print $2}')"
+                if [ -z "$name" ]; then
+                    # Defensive: an ADDED line we cannot name is treated as
+                    # blocking rather than silently passed (fail-closed).
+                    blocking=1
+                    reasons+="  ADDED (unparseable — fail closed): $payload"$'\n'
+                elif ! grep -Fq "$name" "$changelog" 2>/dev/null; then
+                    blocking=1
+                    reasons+="  ADDED but not recorded in the changelog: $name"$'\n'
+                fi
+                ;;
+        esac
+    done <<<"$machine"
+
+    if [ "$blocking" -eq 1 ]; then
+        {
+            echo "abi-diff --gate: FAIL — blocking ABI delta(s) against the anchor:"
+            printf '%s' "$reasons"
+            echo "  changelog checked: $changelog"
+            echo "  A REMOVED/CHANGED symbol needs a MAJOR bump; an ADDED symbol"
+            echo "  needs a changelog entry (see docs/abi-changelog.md '## Entries')."
+        } >&2
+        return 1
+    fi
+    echo "abi-diff --gate: OK (no blocking delta against $(basename "$3"))"
+    return 0
+}
+
 # ------------------------------------------------------------- self-test ---
 # self_test — exercise the classifier with a synthetic anchor + current
 # pair so a future change to the extractor or classifier can be caught
@@ -667,6 +775,56 @@ EOF
     fi
     rm -f "$tmp_syms" "$tmp_hdr"
 
+    # 9. --gate enforcement: prove the gate actually FAILS on a blocking delta
+    #    and PASSES only when it should. Without this, wiring abi-diff.sh into a
+    #    required CI check would be a fabricated pass (the report mode always
+    #    exits 0). Uses dedicated synthetic anchor/current/changelog fixtures so
+    #    the real header and anchors are never touched (M5-13-T14a red-line).
+    local g_anchor g_add_current g_rm_current tmp_cl_empty tmp_cl_recorded
+    g_anchor="$(printf '%s\n' \
+        'FUNC vokra_base_func|void vokra_base_func(void)' \
+        | LC_ALL=C sort -u)"
+    # ADDED-only pair: base + a new func.
+    g_add_current="$(printf '%s\n' \
+        'FUNC vokra_base_func|void vokra_base_func(void)' \
+        'FUNC vokra_new_func|void vokra_new_func(void)' \
+        | LC_ALL=C sort -u)"
+    # REMOVED pair: current is missing a func the anchor had.
+    g_rm_current="$g_anchor"
+    local g_rm_anchor
+    g_rm_anchor="$(printf '%s\n' \
+        'FUNC vokra_base_func|void vokra_base_func(void)' \
+        'FUNC vokra_gone_func|void vokra_gone_func(void)' \
+        | LC_ALL=C sort -u)"
+
+    tmp_cl_empty="$(mktemp -t vokra-abi-diff-cl-empty.XXXXXX)"
+    tmp_cl_recorded="$(mktemp -t vokra-abi-diff-cl-rec.XXXXXX)"
+    printf '# changelog with no mention of the added symbol\n' >"$tmp_cl_empty"
+    printf '# changelog\n- Added `vokra_new_func` in v1.0 (additive).\n' >"$tmp_cl_recorded"
+
+    # (a) unrecorded ADDED delta -> gate MUST return non-zero.
+    if run_gate "$g_anchor" "$g_add_current" "$tmp_cl_empty" >/dev/null 2>&1; then
+        echo "self-test FAILED: --gate passed an UNRECORDED ADDED delta (would be a fabricated pass)" >&2
+        ok=0
+    fi
+    # (b) same ADDED delta, now recorded in the changelog -> gate MUST pass.
+    if ! run_gate "$g_anchor" "$g_add_current" "$tmp_cl_recorded" >/dev/null 2>&1; then
+        echo "self-test FAILED: --gate blocked a RECORDED additive delta" >&2
+        ok=0
+    fi
+    # (c) REMOVED delta -> gate MUST return non-zero regardless of the changelog.
+    if run_gate "$g_rm_anchor" "$g_rm_current" "$tmp_cl_recorded" >/dev/null 2>&1; then
+        echo "self-test FAILED: --gate passed a REMOVED (breaking) delta" >&2
+        ok=0
+    fi
+    # (d) REPORT mode (classify) must STILL exit 0 on the same blocking delta —
+    #     the exit-0 contract of the historical report callers is unchanged.
+    if ! classify "$g_anchor" "$g_add_current" text >/dev/null 2>&1; then
+        echo "self-test FAILED: REPORT mode regressed (must exit 0 even with a delta)" >&2
+        ok=0
+    fi
+    rm -f "$tmp_cl_empty" "$tmp_cl_recorded"
+
     if [ "$ok" -eq 1 ]; then
         echo "abi-diff --self-test: OK"
         return 0
@@ -680,6 +838,7 @@ header=""            # empty -> resolve to DEFAULT_HEADER after arg parsing
 format="text"
 mode="diff"
 regenerate=0
+changelog="$ROOT/docs/abi-changelog.md"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -714,6 +873,18 @@ while [ $# -gt 0 ]; do
             regenerate=1
             shift
             ;;
+        --gate)
+            mode="gate"
+            shift
+            ;;
+        --changelog)
+            if [ $# -lt 2 ]; then
+                echo "error: --changelog requires an argument" >&2
+                exit 2
+            fi
+            changelog="$2"
+            shift 2
+            ;;
         --self-test)
             mode="self-test"
             shift
@@ -724,7 +895,7 @@ while [ $# -gt 0 ]; do
             ;;
         *)
             echo "error: unknown argument '$1'" >&2
-            echo "usage: $0 [--anchor <path|m0|v0.9|v1.0-rc>] [--header <path>] [--regenerate] [--format text|machine] [--self-test | --help]" >&2
+            echo "usage: $0 [--anchor <path|m0|v0.9|v1.0-rc>] [--header <path>] [--regenerate] [--format text|machine] [--gate [--changelog <path>]] [--self-test | --help]" >&2
             exit 2
             ;;
     esac
@@ -813,6 +984,19 @@ fi
 
 anchor_syms="$(load_anchor_symbols "$anchor_path")"
 current_syms="$(extract_symbols "$header")"
+
+# --gate: ENFORCEMENT mode. Returns non-zero on a blocking delta (M5-13-T14a).
+# This is deliberately checked BEFORE the report banner so the gate output is
+# the only thing on stdout for a CI consumer.
+if [ "$mode" = "gate" ]; then
+    if [ ! -f "$changelog" ]; then
+        echo "error: --gate changelog file not found: $changelog" >&2
+        exit 2
+    fi
+    set +e
+    run_gate "$anchor_syms" "$current_syms" "$changelog"
+    exit $?
+fi
 
 if [ "$format" = "text" ]; then
     echo "abi-diff: current header vs. anchor"
