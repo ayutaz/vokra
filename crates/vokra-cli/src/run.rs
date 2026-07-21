@@ -38,12 +38,14 @@ OPTIONS:
                                 the explicit AEC bypass path, FR-OP-60)
     --backend <name>            cpu | metal | cuda — backend for the model's hot
                                 ops [default cpu]. Mirrors `bench --backend`:
-                                honored by the ASR (Whisper) and speaker (CAM++)
-                                paths; VAD / TTS / S2S engines run on the CPU
-                                regardless (same as bench). metal/cuda need the
-                                CLI built with that feature — an unavailable
-                                backend fails loudly at inference, never
-                                silently on CPU (FR-EX-08).
+                                honored by the whisper / voxtral ASR, kokoro TTS
+                                and speaker (CAM++) paths. VAD, piper-plus TTS
+                                and the CSM / Moshi S2S engines run on the CPU
+                                only, so a non-CPU --backend for them is a loud
+                                error rather than a silent CPU run (FR-EX-08).
+                                For the honoring paths, metal/cuda need the CLI
+                                built with that feature — an unavailable backend
+                                fails loudly at inference, never silently on CPU.
     --compare <path>            speaker (campplus) only: second WAV; prints the
                                 cosine similarity of the two 192-d embeddings
                                 (speaker_verify, FR-OP-81)
@@ -129,10 +131,12 @@ struct RunArgs {
     text: Option<String>,
     output: Option<String>,
     /// Backend the model's hot ops run on (mirrors `bench --backend`).
-    /// Honored by the ASR (Whisper) and speaker (CAM++) paths; VAD / TTS /
-    /// S2S engines run on the CPU regardless (the engine dispatch is not
-    /// backend-parameterised for them — same as bench). An unavailable
-    /// backend fails loudly at inference (FR-EX-08), never silently on CPU.
+    /// Honored by the whisper / voxtral ASR, kokoro TTS and speaker (CAM++)
+    /// paths, whose dispatch binds `.with_backend(...)`. The VAD, piper-plus
+    /// TTS and CSM / Moshi S2S engines are not backend-parameterised, so a
+    /// non-CPU backend for them is rejected loudly in `main` rather than run
+    /// silently on the CPU (FR-EX-08). For the honoring paths an *unavailable*
+    /// backend still fails loudly at inference, never silently on CPU.
     backend: vokra_core::BackendKind,
     /// Speaker (campplus) only: second WAV for the cosine-similarity
     /// comparison. Any other task rejects the flag loudly (FR-EX-08).
@@ -379,6 +383,51 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     })
 }
 
+/// Human name for a resolved `--backend`, matching the lowercase spellings
+/// [`crate::bench::parse_backend`] accepts (used only in diagnostics).
+fn backend_flag_name(backend: vokra_core::BackendKind) -> String {
+    use vokra_core::BackendKind;
+    match backend {
+        BackendKind::Cpu => "cpu".to_owned(),
+        BackendKind::Metal => "metal".to_owned(),
+        BackendKind::Cuda => "cuda".to_owned(),
+        BackendKind::Vulkan => "vulkan".to_owned(),
+        // `BackendKind` is `#[non_exhaustive]`; the CLI parser only yields the
+        // four above today, so fall back to the debug spelling for any future
+        // variant rather than failing to name it.
+        other => format!("{other:?}").to_lowercase(),
+    }
+}
+
+/// For a task whose `run` dispatch does **not** thread `--backend` into its
+/// engine, the human label of that engine; `None` for the backend-honoring
+/// paths.
+///
+/// The VAD (Silero), piper-plus TTS and both S2S engines (CSM / Moshi) bind
+/// their concrete engine *without* `.with_backend(...)` — see `engine.rs` and
+/// the Kokoro / Voxtral / speaker arms of this file for the ones that DO — so
+/// a non-CPU `--backend` would be a silent CPU no-op for them. [`main`] uses
+/// this to reject that combination loudly (FR-EX-08). The match is exhaustive
+/// so a newly added arch must classify itself here; keep it in lock-step with
+/// the `.with_backend(...)` call sites.
+fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
+    match task {
+        ModelTask::Vad => Some("VAD (Silero)"),
+        ModelTask::Tts => Some("piper-plus TTS"),
+        ModelTask::S2s => Some("CSM speech-to-speech"),
+        ModelTask::S2sDuplex => Some("Moshi full-duplex speech-to-speech"),
+        // Backend-honoring: the concrete engine binds `.with_backend(...)`, so
+        // a non-CPU backend reaches the hot ops (and an unavailable one fails
+        // loudly at inference — the existing FR-EX-08 posture). The guard must
+        // NOT fire for these.
+        ModelTask::Asr | ModelTask::AsrVoxtral | ModelTask::TtsKokoro | ModelTask::Speaker => None,
+        // Bench-only tasks — unreachable from `run` (each hits its own explicit
+        // rejection in `main`'s `match`). Returning `None` lets that more
+        // specific error fire instead of a backend complaint.
+        ModelTask::MelFrontend | ModelTask::Cosyvoice2Synthetic => None,
+    }
+}
+
 /// Entry point for `vokra-cli run`.
 pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     if args.iter().any(|a| a == "-h" || a == "--help") {
@@ -434,6 +483,29 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
              own scales through the engine API, not the CLI)"
                 .to_owned(),
         );
+    }
+    // `--backend metal|cuda|vulkan` reaches the model's hot ops only on the
+    // arches whose `run` dispatch binds the concrete engine
+    // `.with_backend(...)`: the Whisper / Voxtral ASR paths, the Kokoro TTS
+    // path, and the speaker (CAM++) encoder. The VAD (Silero), piper-plus TTS,
+    // and both S2S engines (CSM / Moshi) bind without a backend and run on the
+    // CPU regardless. A non-CPU `--backend` for one of them would be a silent
+    // no-op — the model would run on the CPU while the caller believes the GPU
+    // is in use. Reject it loudly rather than misreport where the model ran
+    // (FR-EX-08), mirroring the per-arch flag rejections above. (The honoring
+    // arches keep their existing posture: an *unavailable* backend there fails
+    // loudly at inference, never on CPU.)
+    if a.backend != vokra_core::BackendKind::Cpu {
+        if let Some(engine_label) = cpu_only_engine_label(task) {
+            return Err(format!(
+                "run: --backend {backend} is not supported for this model — the \
+                 {engine_label} engine runs on the CPU regardless (its dispatch is not \
+                 backend-parameterised). Only the whisper / voxtral ASR, kokoro TTS, and \
+                 speaker (campplus) paths honor --backend; a non-CPU backend here would \
+                 silently run on the CPU (FR-EX-08). Re-run with --backend cpu (or omit it).",
+                backend = backend_flag_name(a.backend),
+            ));
+        }
     }
 
     match task {
@@ -2322,5 +2394,193 @@ mod tests {
                 .unwrap_err();
             assert!(err.contains("positive finite"), "{bad}: {err}");
         }
+    }
+
+    // ---- cc-36: FR-EX-08 guard for a non-CPU --backend on a CPU-only arch --
+
+    /// Every `ModelTask` is classified: the CPU-only engines (whose `run`
+    /// dispatch never threads `--backend`) return a label so the guard fires,
+    /// and the backend-honoring paths return `None` so it does NOT — the
+    /// no-regression contract for whisper / voxtral / kokoro / speaker.
+    #[test]
+    fn cpu_only_engine_label_classifies_every_task() {
+        // Silent-ignore engines → guard fires (named label).
+        assert_eq!(cpu_only_engine_label(ModelTask::Vad), Some("VAD (Silero)"));
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::Tts),
+            Some("piper-plus TTS")
+        );
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::S2s),
+            Some("CSM speech-to-speech")
+        );
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::S2sDuplex),
+            Some("Moshi full-duplex speech-to-speech")
+        );
+        // Backend-honoring arches bind `.with_backend(...)` → guard must NOT
+        // fire (no regression). This is the piece that covers whisper.
+        assert_eq!(cpu_only_engine_label(ModelTask::Asr), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::AsrVoxtral), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::TtsKokoro), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
+        // Bench-only tasks — unreachable from `run`; defer to their own error.
+        assert_eq!(cpu_only_engine_label(ModelTask::MelFrontend), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::Cosyvoice2Synthetic), None);
+    }
+
+    /// (a) `--backend metal` on the silero VAD arch is a loud FR-EX-08 error
+    /// that names the backend and the engine; (b) `--backend cpu` and the
+    /// unset default still pass the guard and reach the VAD task (which then
+    /// asks for `--input`).
+    #[test]
+    fn non_cpu_backend_on_vad_is_rejected_but_cpu_passes() {
+        let model = silero_fixture();
+        let err = main(&args(&["--model", &model, "--backend", "metal"])).unwrap_err();
+        assert!(
+            err.contains("--backend metal is not supported"),
+            "names the backend: {err}"
+        );
+        assert!(
+            err.contains("VAD (Silero)") && err.contains("runs on the CPU regardless"),
+            "explains why: {err}"
+        );
+        assert!(err.contains("FR-EX-08"), "cites the contract: {err}");
+
+        // (b) Explicit cpu is NOT rejected by the guard — it reaches the VAD
+        // task, which requires --input.
+        let err_cpu = main(&args(&["--model", &model, "--backend", "cpu"])).unwrap_err();
+        assert!(
+            !err_cpu.contains("is not supported for this model"),
+            "cpu passes the guard: {err_cpu}"
+        );
+        assert!(
+            err_cpu.contains("--input"),
+            "cpu reaches the VAD task: {err_cpu}"
+        );
+
+        // (b) Unset backend defaults to cpu — same as above.
+        let err_unset = main(&args(&["--model", &model])).unwrap_err();
+        assert!(
+            !err_unset.contains("is not supported for this model"),
+            "default backend passes the guard: {err_unset}"
+        );
+        assert!(
+            err_unset.contains("--input"),
+            "default reaches the VAD task: {err_unset}"
+        );
+    }
+
+    /// (a) `--backend cuda` on the CSM (S2S) arch is a loud FR-EX-08 error.
+    /// The guard fires before the `--text` contract check, so no --text is
+    /// needed to trip it.
+    #[test]
+    fn non_cpu_backend_on_csm_s2s_is_rejected_loudly() {
+        let model = csm_fixture_gguf("backend-guard");
+        let err = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--backend",
+            "cuda",
+        ]))
+        .unwrap_err();
+        let _ = std::fs::remove_file(&model);
+        assert!(
+            err.contains("--backend cuda is not supported"),
+            "names the backend: {err}"
+        );
+        assert!(
+            err.contains("CSM speech-to-speech"),
+            "names the engine: {err}"
+        );
+    }
+
+    /// (a) `--backend metal` on the Moshi full-duplex (S2S) arch is a loud
+    /// FR-EX-08 error. Uses the same synthetic checkpoint the duplex smoke
+    /// test converts.
+    #[test]
+    fn non_cpu_backend_on_moshi_duplex_is_rejected_loudly() {
+        let dir = std::env::temp_dir().join(format!("vokra-cli-moshi-be-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ckpt = dir.join("model.safetensors");
+        let tok = dir.join("tok.model");
+        let gguf = dir.join("moshi.gguf");
+        std::fs::write(&ckpt, moshi_fixture::synthetic_checkpoint()).unwrap();
+        std::fs::write(&tok, moshi_fixture::spm_blob(13)).unwrap();
+        vokra_convert::convert_moshi_file(&ckpt, Some(tok.as_path()), &gguf).expect("convert");
+        let err = main(&args(&[
+            "--model",
+            gguf.to_str().unwrap(),
+            "--backend",
+            "metal",
+        ]))
+        .unwrap_err();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            err.contains("--backend metal is not supported"),
+            "names the backend: {err}"
+        );
+        assert!(
+            err.contains("Moshi full-duplex speech-to-speech"),
+            "names the engine: {err}"
+        );
+    }
+
+    /// (c) No regression on a backend-honoring arch: `--backend metal` on a
+    /// voxtral GGUF passes the guard (voxtral binds `.with_backend(...)` in
+    /// the run arm), so the run fails for an UNRELATED reason (missing
+    /// --input), never with the guard's "runs on the CPU regardless" message.
+    #[test]
+    fn non_cpu_backend_on_backend_honoring_voxtral_passes_the_guard() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "voxtral");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let model =
+            std::env::temp_dir().join(format!("vokra-cli-vox-be-{}.gguf", std::process::id()));
+        std::fs::write(&model, &bytes).unwrap();
+        let err = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--backend",
+            "metal",
+        ]))
+        .unwrap_err();
+        let _ = std::fs::remove_file(&model);
+        assert!(
+            !err.contains("runs on the CPU regardless")
+                && !err.contains("is not supported for this model"),
+            "guard must not fire on voxtral: {err}"
+        );
+        assert!(
+            err.contains("--input"),
+            "voxtral reaches its own task: {err}"
+        );
+    }
+
+    /// (c) No regression on the kokoro arch either: `--backend metal` passes
+    /// the guard (kokoro TTS binds `.with_backend(...)`), reaching `run_kokoro`
+    /// which requires `--text` before it can synthesize.
+    #[test]
+    fn non_cpu_backend_on_kokoro_passes_the_guard() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "kokoro-82m-istftnet");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let model =
+            std::env::temp_dir().join(format!("vokra-cli-kok-be-{}.gguf", std::process::id()));
+        std::fs::write(&model, &bytes).unwrap();
+        let err = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--backend",
+            "metal",
+        ]))
+        .unwrap_err();
+        let _ = std::fs::remove_file(&model);
+        assert!(
+            !err.contains("runs on the CPU regardless")
+                && !err.contains("is not supported for this model"),
+            "guard must not fire on kokoro: {err}"
+        );
+        assert!(err.contains("--text"), "kokoro reaches its own task: {err}");
     }
 }
