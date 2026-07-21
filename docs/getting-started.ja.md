@@ -164,11 +164,15 @@ vokra_session_destroy(s);
   - [Unity + IL2CPP](tutorials/unity.ja.md)
   - [iOS Swift Package](tutorials/ios.ja.md)
   - [Python bindings](tutorials/python.ja.md)
+  - [Web (WASM / WebGPU)](tutorials/web.ja.md)
+  - [Android (native JNI)](tutorials/android.ja.md)
+  - [Godot GDExtension](tutorials/godot.ja.md)
+  - [デスクトップ CLI deep-dive](tutorials/cli.ja.md)
+  - [サーバ（4 互換 API）](tutorials/server.ja.md)
+- **バックエンドの追加**: [backend-guide.ja.md](backend-guide.ja.md)
+- **API リファレンス**: [api-reference.ja.md](api-reference.ja.md)
 - **他ランタイムからの移行**: [Migration Guide](migration-guide.ja.md)
   （ONNX Runtime / whisper.cpp / sherpa-onnx から）
-- **サーバ運用**: [`integrations/vokra-server`](../integrations/vokra-server)
-  で OpenAI Whisper / vLLM / piper-plus HTTP / Wyoming Protocol の 4 互換
-  API を単一バイナリで公開
 - **License / Compliance**: [`docs/license-audit.md`](license-audit.md)、
   [`docs/legal-compliance.md`](legal-compliance.md)
 

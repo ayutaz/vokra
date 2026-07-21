@@ -13,6 +13,15 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+# docs.rs (X-09b-T17): enable every backend feature so the feature-gated
+# `Compute` arms are documented. Built on an Apple target (verified green
+# locally with `cargo doc --all-features`) so the Metal / CoreML arms render as
+# real rather than cfg'd-out; CUDA / Vulkan / QNN compile via dlopen and WebGPU
+# as an explicit stub on that target. Inert for local builds; adds no deps.
+[package.metadata.docs.rs]
+default-target = "aarch64-apple-darwin"
+all-features = true
+
 [dependencies]
 vokra-core.workspace = true
 vokra-ops.workspace = true

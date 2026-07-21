@@ -29,7 +29,7 @@ guessing.
 
 ## Keeping this page current
 
-**Last verified: 2026-07-20 — 91 IDs cited across the public documents.**
+**Last verified: 2026-07-21 — 97 IDs cited across the public documents.**
 
 The set this page must cover is mechanically derived, not curated by hand.
 Regenerate it with:
@@ -139,6 +139,7 @@ from generic tensor ops.
 | `FR-OP-40` | The `beam_search` operator — beam width, length normalisation, early stopping, n-best output and word-level timestamps — provided as a host-side function. |
 | `FR-OP-41` | The `ctc_decode` operator, including language-model fusion and hotword boosting. |
 | `FR-OP-42` | The `rnnt_decode` operator and its selectable decoding strategies. |
+| `FR-OP-43` | The `wfst_decode` operator: decode-only token-passing search over a weighted finite-state transducer (a self-implemented OpenFST-equivalent behind an optional feature, no GPL dependency) for lexicon / grammar / domain-adaptation rescoring. |
 | `FR-OP-60` | The `aec` (acoustic echo cancellation) operator and the runtime-managed, time-tagged reference-signal queue it needs — a prerequisite for full-duplex speech-to-speech. |
 | `FR-OP-61` | The `denoise` (speech enhancement) operator. |
 | `FR-OP-62` | The `agc` and `hpf` operators of the capture-side audio pipeline. |
@@ -157,6 +158,7 @@ Backends. Only the IDs cited publicly are listed; each backend has its own.
 | `FR-BE-01` | The CPU backend as a first-class backend, with a runtime ISA-dispatch ladder spanning x86-64, ARM64, RISC-V and WASM. |
 | `FR-BE-05` | The WebGPU backend, written as a hand-rolled extern-import shim rather than through a binding crate, so the zero-dependency invariant holds. |
 | `FR-BE-06` | Delegate-style NPU backends (Apple ANE via CoreML, Qualcomm Hexagon via QNN), reached through raw framework/dlopen FFI with no binding crate. |
+| `FR-BE-07` | The permanent decision NOT to add an Android NNAPI backend (Google deprecated NNAPI with Android 15). Android GPU acceleration is Vulkan-only; the Qualcomm Hexagon NPU is reached through QNN (`FR-BE-06`), which is a different thing from NNAPI. |
 | `FR-BE-09` | A critical-safe build SKU that compiles out vendor GPU/NPU paths and states the result in the SBOM. |
 
 ## FR-MD
@@ -248,7 +250,9 @@ themselves are part of the private specification.
 | `NFR-PF-05` | The server-side TTS latency target. |
 | `NFR-PF-06` | The real-time-factor target for Whisper base on Android. |
 | `NFR-PF-08` | The capability target for the Web (WASM / WebGPU) target. |
+| `NFR-PF-09` | The real-time-factor target for Tier-1/Tier-2 edge devices (Raspberry Pi class), verified on real hardware in the gated nightly device workflow rather than on CI VMs (paired with `NFR-PF-10`). |
 | `NFR-PF-11` | Cold start: `mmap`-based loading keeps model load time close to zero, which is the failure mode this project was started to avoid. |
+| `NFR-PF-12` | The speed-up a delegate NPU backend (CoreML / QNN) must clear over the CPU baseline to justify adoption — the NPU-bakeoff acceptance criterion. |
 | `NFR-PF-13` | The performance regression gate — RTF / TTFA / latency are measured per PR and a regression must be justified rather than merged silently. |
 
 ## NFR-QL
@@ -294,6 +298,7 @@ Dependency licensing.
 
 | ID | What it governs |
 |---|---|
+| `NFR-LC-01` | The runtime itself is licensed Apache-2.0, with the `LICENSE` and `NOTICE` files bundled in distributions (the `NOTICE` records provenance such as the from-scratch BigVGAN reimplementation and the install-model, non-bundled NVIDIA runtime). |
 | `NFR-LC-02` | The allowed dependency licences (Apache-2.0 / MIT / BSD family), the prohibition on GPL and LGPL, and the case-by-case treatment of MPL-2.0. |
 | `NFR-LC-04` | Making a GPL/LGPL dependency a PR blocker through an automated licence check in CI. |
 

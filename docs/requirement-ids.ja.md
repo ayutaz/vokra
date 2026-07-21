@@ -26,7 +26,7 @@ Vokra の公開文書（`README.md` / `CONTRIBUTING.md` および `docs/` 配下
 
 ## 本ページの維持
 
-**最終確認日: 2026-07-20 — 公開文書に出現する ID は 91 種類。**
+**最終確認日: 2026-07-21 — 公開文書に出現する ID は 97 種類。**
 
 本ページが網羅すべき集合は手作業ではなく機械的に導出します。再生成コマンド:
 
@@ -134,6 +134,7 @@ bash scripts/check-doc-references.sh --list   # 解決された集合を表示
 | `FR-OP-40` | `beam_search` op — beam 幅、length normalization、early stopping、n-best 出力、word-level timestamps。ホスト側関数として提供する。 |
 | `FR-OP-41` | `ctc_decode` op。言語モデル融合と hotword boost を含む。 |
 | `FR-OP-42` | `rnnt_decode` op と、選択可能なデコード戦略。 |
+| `FR-OP-43` | `wfst_decode` op。重み付き有限状態トランスデューサ上の decode 専用トークンパッシング探索（GPL 依存を持たない自前 OpenFST 相当、optional feature）。辞書 / 文法 / ドメイン適応の rescoring 用。 |
 | `FR-OP-60` | `aec`（音響エコーキャンセル）op と、それが必要とする runtime 管理・時間タグ付きの参照信号 queue。full-duplex な S2S の前提条件。 |
 | `FR-OP-61` | `denoise`（音声強調）op。 |
 | `FR-OP-62` | 収音側パイプラインの `agc` / `hpf` op。 |
@@ -153,6 +154,7 @@ ID を持ちます）。
 | `FR-BE-01` | CPU バックエンドを第一級バックエンドとすること。x86-64 / ARM64 / RISC-V / WASM にまたがる runtime ISA dispatch の階層を持つ。 |
 | `FR-BE-05` | WebGPU バックエンド。binding crate ではなく手書きの extern-import shim として実装し、zero-dependency 不変条件を保つ。 |
 | `FR-BE-06` | delegate 型 NPU バックエンド（Apple ANE = CoreML、Qualcomm Hexagon = QNN）。binding crate を使わず生の framework/dlopen FFI で到達する。 |
+| `FR-BE-07` | Android NNAPI バックエンドを恒久的に追加しないという決定（Google は Android 15 で NNAPI を deprecated）。Android の GPU 高速化は Vulkan 専用。Qualcomm Hexagon NPU は QNN（`FR-BE-06`）経由で到達し、NNAPI とは別物である。 |
 | `FR-BE-09` | critical-safe ビルド SKU。ベンダー GPU/NPU 経路をコンパイル時に除外し、その結果を SBOM に明示する。 |
 
 ## FR-MD
@@ -244,7 +246,9 @@ ID を持ちます）。
 | `NFR-PF-05` | サーバ側 TTS のレイテンシ目標。 |
 | `NFR-PF-06` | Android 上の Whisper base の RTF 目標。 |
 | `NFR-PF-08` | Web（WASM / WebGPU）ターゲットの動作目標。 |
+| `NFR-PF-09` | Tier-1 / Tier-2 エッジデバイス（Raspberry Pi クラス）の real-time-factor 目標。CI VM ではなく gated nightly device workflow で実機計測する（`NFR-PF-10` と対）。 |
 | `NFR-PF-11` | cold start。`mmap` ベースのロードでモデルロード時間をほぼゼロに保つ。本プロジェクトが回避しようとした失敗モードそのもの。 |
+| `NFR-PF-12` | delegate 型 NPU バックエンド（CoreML / QNN）が採用に値するために CPU baseline に対して達成すべき速度向上 = NPU bakeoff の受け入れ基準。 |
 | `NFR-PF-13` | 性能 regression ゲート。PR ごとに RTF / TTFA / レイテンシを計測し、regression は黙って merge せず justify を要する。 |
 
 ## NFR-QL
@@ -290,6 +294,7 @@ ID を持ちます）。
 
 | ID | 何を規定するか |
 |---|---|
+| `NFR-LC-01` | 本体を Apache-2.0 でライセンスし、配布物に `LICENSE` / `NOTICE` を同梱すること（`NOTICE` には BigVGAN のスクラッチ再実装や、install モデルで非同梱の NVIDIA runtime 等の由来を記載する）。 |
 | `NFR-LC-02` | 許可する依存ライセンス（Apache-2.0 / MIT / BSD 系）、GPL・LGPL の禁止、MPL-2.0 の個別評価。 |
 | `NFR-LC-04` | CI のライセンス検査により、GPL/LGPL 依存の混入を PR ブロッカーとすること。 |
 

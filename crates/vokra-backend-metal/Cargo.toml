@@ -13,6 +13,13 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+# docs.rs (X-09b-T17): the Metal FFI is cfg(target_os = "macos"/"ios"), so
+# docs.rs's default Linux target would render an almost-empty crate. Build the
+# real API on an Apple target instead. Inert for local builds; adds no deps.
+[package.metadata.docs.rs]
+default-target = "aarch64-apple-darwin"
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+
 # Zero external dependencies (NFR-DS-02): the only runtime dependency is the
 # first-party `vokra-core` (for the `Backend` trait / `OpKind` / `VokraError`).
 # The Metal, Foundation and Objective-C runtime symbols are declared inline in

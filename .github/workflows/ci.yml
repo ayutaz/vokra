@@ -300,8 +300,9 @@ jobs:
   #      workflows. The checker PRINTS every tier-C block it skipped rather
   #      than quietly dropping it, so "verified" never overstates itself.
   #
-  # 74 blocks across 12 documents (en + ja for getting-started, web,
-  # migration-guide, python, ios, unity).
+  # 120 blocks across 24 documents (en + ja for getting-started, web,
+  # migration-guide, python, ios, unity, and — added by X-09b-T23 — the
+  # backend-guide, the cli/android/godot/server tutorials, and api-reference).
   doc-examples:
     name: doc-examples
     runs-on: ubuntu-latest
@@ -315,6 +316,50 @@ jobs:
         run: python3 tools/docs/check_doc_examples.py --self-test
       - name: Verify documentation code examples
         run: python3 tools/docs/check_doc_examples.py
+
+  # X-09b-T15: rustdoc / API-reference generation. ADVISORY (continue-on-error),
+  # not a branch-protection required check — promotion is the owner's call,
+  # same posture as doc-examples / fa-v3-confinement / the license doc-drift
+  # steps.
+  #
+  # This job asserts TWO things and DELIBERATELY NOT a third:
+  #   (1) `cargo doc --no-deps --workspace` BUILDS. That build succeeding IS the
+  #       "the API reference is auto-generated" completion item of X-09; it is a
+  #       separate fact from `-D warnings` being clean.
+  #   (2) a warning RATCHET: the rustdoc warning count must not EXCEED a recorded
+  #       baseline, so a new intra-doc-link break is blocked from landing.
+  # It does NOT assert `RUSTDOCFLAGS=-D warnings` / zero warnings. At the time
+  # this job landed the tree had 266 rustdoc warnings (82 files / 12 crates,
+  # measured with default features); a "zero warnings" gate would therefore be
+  # either a fabricated green or a rewrite an order of magnitude larger than
+  # this WP. Draining those 266 is deferred to a dedicated doc-hygiene WP — here
+  # we only stop the number GROWING. A green run means "no NEW warning", NOT
+  # "clean". Re-measure with:
+  #   cargo doc --no-deps --workspace 2>&1 | grep -c '^warning:'
+  rustdoc:
+    name: rustdoc (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo doc build + warning ratchet (NOT a zero-warning gate)
+        shell: bash
+        run: |
+          set -o pipefail
+          # Baseline measured 2026-07-21 on the dev machine (macOS, default
+          # features). ubuntu-latest documents the macOS-only Metal/CoreML items
+          # as cfg'd-out, so its count is <= this — 266 is a safe ceiling here.
+          # Owner: if a future hygiene WP lowers the real count, lower this too.
+          BASELINE=266
+          cargo doc --no-deps --workspace 2>&1 | tee /tmp/rustdoc.log
+          count=$(grep -c '^warning:' /tmp/rustdoc.log || true)
+          echo "rustdoc warnings: ${count} (baseline ${BASELINE}). This is a RATCHET, not a zero-warning gate: green means no NEW warning, not clean. The 266 are deferred to a doc-hygiene WP (X-09b-T15)."
+          if [ "${count}" -gt "${BASELINE}" ]; then
+            echo "::error::rustdoc warning count ${count} exceeds baseline ${BASELINE} — a new doc warning was introduced. Fix the new warning, or (only if the rise is intentional and justified) update BASELINE in ci.yml."
+            exit 1
+          fi
 
   # M4-07-T15: FA v3 containment red-line (design constraint §5-(7)) —
   # FA v3 symbols (flash_attn_v3 / WGMMA / wgmma / TMA_ / compute_90a) are

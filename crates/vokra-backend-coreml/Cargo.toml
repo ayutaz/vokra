@@ -13,6 +13,13 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+# docs.rs (X-09b-T17): the CoreML delegate FFI is cfg(target_os = "macos"/"ios"),
+# so build docs on an Apple target rather than docs.rs's default Linux target.
+# Inert for local builds; adds no deps (NFR-DS-02).
+[package.metadata.docs.rs]
+default-target = "aarch64-apple-darwin"
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+
 # Zero external dependencies (NFR-DS-02): the only runtime dependency is the
 # first-party `vokra-core` (for the `Backend` trait / `OpKind` / `VokraError`).
 # The CoreML, Foundation and Objective-C runtime symbols are declared inline in

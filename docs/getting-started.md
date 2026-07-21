@@ -164,11 +164,15 @@ vokra_session_destroy(s);
   - [Unity + IL2CPP](tutorials/unity.md)
   - [iOS Swift Package](tutorials/ios.md)
   - [Python bindings](tutorials/python.md)
+  - [Web (WASM / WebGPU)](tutorials/web.md)
+  - [Android (native JNI)](tutorials/android.md)
+  - [Godot GDExtension](tutorials/godot.md)
+  - [Desktop CLI deep-dive](tutorials/cli.md)
+  - [Server (four compatibility APIs)](tutorials/server.md)
+- **Adding a backend**: [backend-guide.md](backend-guide.md)
+- **API reference**: [api-reference.md](api-reference.md)
 - **Migrating from another runtime**: [Migration Guide](migration-guide.md)
   (from ONNX Runtime / whisper.cpp / sherpa-onnx)
-- **Server**: [`integrations/vokra-server`](../integrations/vokra-server)
-  exposes four HTTP compatibility APIs (OpenAI Whisper / vLLM / piper-plus
-  HTTP / Wyoming Protocol) from a single binary.
 - **License / Compliance**: [`docs/license-audit.md`](license-audit.md),
   [`docs/legal-compliance.md`](legal-compliance.md)
 

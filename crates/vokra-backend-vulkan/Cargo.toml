@@ -13,6 +13,13 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+# docs.rs (X-09b-T17): the raw Vulkan FFI is behind the opt-in `vulkan` feature
+# (a default build is BackendUnavailable stubs). Enable it so docs.rs documents
+# the real dlopen path; it builds on the default Linux target (no device
+# needed). Inert for local builds; adds no deps (NFR-DS-02).
+[package.metadata.docs.rs]
+all-features = true
+
 # Zero external dependencies (NFR-DS-02): the only runtime dependency is the
 # first-party `vokra-core` (for the `Backend` trait / `OpKind` / `VokraError`).
 # The Vulkan loader (`libvulkan.so.1` / `vulkan-1.dll`) is NOT linked at build

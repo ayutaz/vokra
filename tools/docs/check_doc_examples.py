@@ -89,6 +89,27 @@ DOCS = [
     "docs/tutorials/ios.ja.md",
     "docs/tutorials/unity.md",
     "docs/tutorials/unity.ja.md",
+    # X-09b doc-hierarchy completion: backend-guide + the four platform
+    # tutorials X-09a left out (cli / android / godot / server) + the
+    # api-reference index, each en/ja. Registered here so their shell / C /
+    # JSON examples are execution-verified too (NFR-MT-04, X-09b-T23). The
+    # Rust and GDScript snippets in these docs are intentionally UNTAGGED:
+    # this checker has no rust/gdscript tier, so tagging them would trip the
+    # "unhandled language" guard — an untagged block is a deferred tier-C
+    # prose block, which is the honest classification for an illustrative
+    # snippet the PR runner cannot compile.
+    "docs/backend-guide.md",
+    "docs/backend-guide.ja.md",
+    "docs/tutorials/cli.md",
+    "docs/tutorials/cli.ja.md",
+    "docs/tutorials/android.md",
+    "docs/tutorials/android.ja.md",
+    "docs/tutorials/godot.md",
+    "docs/tutorials/godot.ja.md",
+    "docs/tutorials/server.md",
+    "docs/tutorials/server.ja.md",
+    "docs/api-reference.md",
+    "docs/api-reference.ja.md",
 ]
 
 # Languages we defer, with the reason announced on every run.

@@ -30,6 +30,24 @@
 #   re-introduce, for the Japanese twins, exactly the "nothing is checked"
 #   failure mode this script was written to end.
 #
+#   (d)  every `<!-- anchor: <path> -->` in the X-09b doc-hierarchy files
+#        (docs/backend-guide.md + the four new platform tutorials + the
+#        api-reference index, each en/ja) resolves to a file that exists, and
+#        every one of those files is present  (掲載漏れ / crate リネーム腐り)
+#   (d), (e), (f) are the X-09b (doc-hierarchy-completion) extension. They
+#   EXTEND this X-09a script rather than living in a second checker, so there
+#   is one tool and one CI wiring (the advisory `license`-job step owned by
+#   X-09a-T10). See X-09b-T02 / X-09b unresolved-item 1.
+#   (e)  each X-09b en/ja pair carries the same number of `##` section
+#        headings (NFR-MT-04 two-language parity; tutorials have no requirement
+#        IDs, so heading count is the drift proxy that leg (b) is for glossary
+#        IDs — a one-sided translation edit is caught)
+#   (f)  every repo-relative markdown link in the hierarchy ENTRY pages
+#        (docs/getting-started.{md,ja.md} + docs/api-reference.{md,ja.md})
+#        resolves to a path that exists — external URLs and pure #fragments are
+#        out of scope. getting-started's "Next steps" fans out to every
+#        tutorial, so a renamed/absent tutorial surfaces here as a dead link.
+#
 # ID SYNTAX (the master-set regex — see docs/requirement-ids.md meta section)
 #   \b(BR|FR|NFR|IF)-([A-Z]{2}-)?[0-9]+
 #   The middle [A-Z]{2}- segment is OPTIONAL. A 3-segment-only regex silently
@@ -129,6 +147,45 @@ ROW_RE = re.compile(
 
 ANCHOR_RE = re.compile(r"<!--\s*anchor:\s*(.*?)\s*-->")
 
+# --- X-09b (doc-hierarchy-completion) extension --------------------------
+# The doc-hierarchy deliverables: backend-guide + the four platform tutorials
+# that X-09a left out (cli / android / godot / server) + the api-reference
+# index, each an en/ja pair (NFR-MT-04). Legs (d)/(e)/(f) fail loudly if any
+# of these rot. See X-09b-T02.
+X09B_PAIRS = [
+    ("docs/backend-guide.md", "docs/backend-guide.ja.md"),
+    ("docs/tutorials/cli.md", "docs/tutorials/cli.ja.md"),
+    ("docs/tutorials/android.md", "docs/tutorials/android.ja.md"),
+    ("docs/tutorials/godot.md", "docs/tutorials/godot.ja.md"),
+    ("docs/tutorials/server.md", "docs/tutorials/server.ja.md"),
+    ("docs/api-reference.md", "docs/api-reference.ja.md"),
+]
+# Entry pages whose relative links must resolve (leg f): the top of the
+# hierarchy and the API index.
+X09B_LINK_DOCS = [
+    "docs/getting-started.md",
+    "docs/getting-started.ja.md",
+    "docs/api-reference.md",
+    "docs/api-reference.ja.md",
+]
+
+# A `## ` section heading (leg e). ATX level-2; deeper/shallower levels are
+# not counted so the proxy stays coarse and translation-robust.
+HEADING_RE = re.compile(r"^##\s+\S")
+
+# An inline markdown link target: `[text](target)`. Only repo-relative targets
+# are existence-checked (leg f); external URLs / mail / pure #fragments are
+# skipped by the caller.
+LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+
+
+def headings_in(text):
+    return sum(1 for ln in text.splitlines() if HEADING_RE.match(ln)) if text else 0
+
+
+def links_in(text):
+    return LINK_RE.findall(text) if text else []
+
 
 def read(rel):
     path = os.path.join(root, rel)
@@ -209,6 +266,14 @@ if mode == "list":
         print(f"  ID     {i}")
     for a in sorted(anchors):
         print(f"  ANCHOR {a}")
+    print()
+    print("X-09b doc-hierarchy files (leg d/e):")
+    for en, ja in X09B_PAIRS:
+        for rel in (en, ja):
+            t = read(rel)
+            mark = "OK " if t is not None else "MISS"
+            nheads = headings_in(t) if t is not None else 0
+            print(f"  {mark} {rel}   ({nheads} '##')")
     sys.exit(0)
 
 failed = []
@@ -294,6 +359,71 @@ else:
     if not only_en and not only_ja:
         print(f"[c'] OK — en/ja architecture docs share {len(anchors)} anchor(s)")
 
+# ---- leg (d): X-09b doc-hierarchy files exist and their anchors resolve ---
+d_missing = []
+d_broken = []
+for en, ja in X09B_PAIRS:
+    for rel in (en, ja):
+        txt = read(rel)
+        if txt is None:
+            d_missing.append(rel)
+            continue
+        for anchor in sorted(anchors_in(txt)):
+            if any(ch.isspace() for ch in anchor):
+                d_broken.append(f"{rel}: {anchor}  (not a path — prose in an anchor comment)")
+            elif not os.path.exists(os.path.join(root, anchor)):
+                d_broken.append(f"{rel}: {anchor}  (path not found)")
+if d_missing:
+    fail("d", f"{len(d_missing)} X-09b hierarchy doc(s) missing (NFR-MT-04 two-language pair)", d_missing)
+if d_broken:
+    fail("d", f"{len(d_broken)} anchor(s) in the X-09b docs do not resolve", d_broken)
+if not d_missing and not d_broken:
+    print(f"[d] OK — {len(X09B_PAIRS) * 2} X-09b doc(s) present, all anchors resolve")
+
+# ---- leg (e): X-09b en/ja heading-count parity ---------------------------
+e_skew = []
+e_compared = 0
+for en, ja in X09B_PAIRS:
+    en_txt, ja_txt = read(en), read(ja)
+    if en_txt is None or ja_txt is None:
+        continue  # absence already reported by leg (d)
+    e_compared += 1
+    ne, nj = headings_in(en_txt), headings_in(ja_txt)
+    if ne != nj:
+        e_skew.append(f"{en} has {ne} '##' heading(s) but {ja} has {nj} (en/ja drift)")
+if e_skew:
+    fail("e", f"{len(e_skew)} X-09b pair(s) have an en/ja heading-count skew (NFR-MT-04)", e_skew)
+elif e_compared:
+    print(f"[e] OK — {e_compared} X-09b en/ja pair(s) share their '##' heading count")
+else:
+    print("[e] SKIP — no X-09b pair had both halves present (see leg d)")
+
+# ---- leg (f): entry-page relative links resolve --------------------------
+f_missing = []
+f_broken = []
+for rel in X09B_LINK_DOCS:
+    txt = read(rel)
+    if txt is None:
+        f_missing.append(rel)
+        continue
+    base = os.path.dirname(rel)
+    for target in links_in(txt):
+        t = target.strip()
+        if t.startswith(("http://", "https://", "mailto:", "#")):
+            continue
+        t = t.split("#", 1)[0]  # strip in-page #fragment
+        if not t:
+            continue
+        resolved = os.path.normpath(os.path.join(base, t))
+        if not os.path.exists(os.path.join(root, resolved)):
+            f_broken.append(f"{rel}: [..]({target}) -> {resolved} (not found)")
+if f_missing:
+    fail("f", f"{len(f_missing)} hierarchy entry page(s) missing", f_missing)
+if f_broken:
+    fail("f", f"{len(f_broken)} relative link(s) in the entry pages do not resolve", f_broken)
+if not f_missing and not f_broken:
+    print("[f] OK — entry-page relative links resolve")
+
 if failed:
     uniq = sorted(set(failed))
     print(
@@ -349,6 +479,42 @@ MD
         mkdir -p "$dir/docs/adr"
         printf 'internal only: FR-OP-99\n' >"$dir/docs/adr/secret.md"
         printf '/docs/adr/\n' >"$dir/.gitignore"
+        # X-09b doc-hierarchy files (legs d/e/f). Anchors point at the demo
+        # crate; en/ja heading counts are balanced (cp); entry-page links
+        # resolve. A healthy scaffold must pass legs d/e/f as well as a/b/c/c'.
+        mkdir -p "$dir/docs/tutorials"
+        local t
+        for t in cli android godot server; do
+            cat >"$dir/docs/tutorials/$t.md" <<'MD'
+# tutorial
+<!-- anchor: crates/demo/src/lib.rs -->
+## 1. one
+## 2. two
+MD
+            cp "$dir/docs/tutorials/$t.md" "$dir/docs/tutorials/$t.ja.md"
+        done
+        cat >"$dir/docs/backend-guide.md" <<'MD'
+# backend guide
+<!-- anchor: crates/demo/src/lib.rs -->
+## 1. one
+## 2. two
+MD
+        cp "$dir/docs/backend-guide.md" "$dir/docs/backend-guide.ja.md"
+        cat >"$dir/docs/api-reference.md" <<'MD'
+# api reference
+## 1. rust
+See [the backend guide](backend-guide.md).
+MD
+        cp "$dir/docs/api-reference.md" "$dir/docs/api-reference.ja.md"
+        cat >"$dir/docs/getting-started.md" <<'MD'
+# getting started
+## next steps
+- [cli tutorial](tutorials/cli.md)
+- [backend guide](backend-guide.md)
+- [api reference](api-reference.md)
+- [external](https://example.com)
+MD
+        cp "$dir/docs/getting-started.md" "$dir/docs/getting-started.ja.md"
         git -C "$dir" add -A >/dev/null 2>&1
         return 0
     }
@@ -484,8 +650,49 @@ MD
         rc=1
     fi
 
+    # (13) a dangling anchor in an X-09b hierarchy doc -> leg (d)
+    d="$tmproot/x09b-anchor"
+    _scaffold "$d"
+    printf '<!-- anchor: crates/gone/src/lib.rs -->\n' >>"$d/docs/backend-guide.md"
+    printf '<!-- anchor: crates/gone/src/lib.rs -->\n' >>"$d/docs/backend-guide.ja.md"
+    git -C "$d" add -A >/dev/null 2>&1
+    if analyze "$d" verify >/dev/null 2>&1; then
+        echo "self-test FAILED: a dangling X-09b anchor should fail leg (d)" >&2
+        rc=1
+    fi
+
+    # (14) a one-sided en/ja heading edit in an X-09b tutorial -> leg (e)
+    d="$tmproot/x09b-heading"
+    _scaffold "$d"
+    printf '## 3. three\n' >>"$d/docs/tutorials/cli.md"   # ja twin left unchanged
+    git -C "$d" add -A >/dev/null 2>&1
+    if analyze "$d" verify >/dev/null 2>&1; then
+        echo "self-test FAILED: an en/ja heading skew should fail leg (e)" >&2
+        rc=1
+    fi
+
+    # (15) a dead relative link on a hierarchy entry page -> leg (f)
+    d="$tmproot/x09b-link"
+    _scaffold "$d"
+    printf '%s\n' '- [dead](tutorials/nonexistent.md)' >>"$d/docs/getting-started.md"
+    git -C "$d" add -A >/dev/null 2>&1
+    if analyze "$d" verify >/dev/null 2>&1; then
+        echo "self-test FAILED: a dead entry-page link should fail leg (f)" >&2
+        rc=1
+    fi
+
+    # (16) a missing Japanese twin of an X-09b doc -> leg (d)
+    d="$tmproot/x09b-noja"
+    _scaffold "$d"
+    rm "$d/docs/tutorials/server.ja.md"
+    git -C "$d" add -A >/dev/null 2>&1
+    if analyze "$d" verify >/dev/null 2>&1; then
+        echo "self-test FAILED: a missing X-09b ja twin should fail leg (d)" >&2
+        rc=1
+    fi
+
     if [ "$rc" -eq 0 ]; then
-        echo "check-doc-references --self-test: OK (12 cases)"
+        echo "check-doc-references --self-test: OK (16 cases)"
     else
         echo "check-doc-references --self-test: FAILED" >&2
     fi
