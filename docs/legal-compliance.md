@@ -259,10 +259,12 @@ Vokra::init(VokraConfig {
   - ✅ piper-plus (依頼者作、training data 公開)
   - ✅ Whisper (OpenAI 公開 web-scraped、controversial だが Meta v Kadrey で fair use 傾向)
 - **community models** は下流責任 disclaimer 付きで別途配布:
-  - ⚠️ Bark (Suno、training data 非公開)
+  - ⚠️ Bark (Suno、training data 非公開。code+weight とも現行 MIT = https://github.com/suno-ai/bark / https://huggingface.co/suno/bark、HF model card「research purposes only」付記、2026-07-21 CC fetch)
   - ⚠️ Fish-Speech (fishaudio、training data 一部非公開)
   - ⚠️ RVC 系派生 (learned from various)
-  - ⚠️ StyleTTS 2 (training data 詳細不明)
+  - ⚠️ StyleTTS 2 (yl4579、code MIT = https://github.com/yl4579/StyleTTS2。pretrained weight は voice-consent/disclosure 条件付き usage agreement、学習データは LJSpeech/VCTK/LibriTTS = README 記載、2026-07-21 CC fetch)
+- **audit 材料整備済・tier 未確定（owner 判断待ち、M5-07）**:
+  - Matcha-TTS: code MIT (https://github.com/shivammehta25/Matcha-TTS の LICENSE、2026-07-21 CC fetch)。配布 checkpoint は README に別段の license 記載なし（Google Drive 自動 DL）。学習データは README が LJ Speech を例示するのみで、released checkpoint の provenance を網羅記載していない。→ ✅（zoo 適格）/ ⚠️（community 別途配布）の最終 tier 確定と zoo 可否は owner（`docs/license-audit.md` §3.1 の Matcha sign-off + 本 §9 の tier 判断）。CC は事実記録のみ（tier を確定しない）
 
 ### Contributory infringement 対策
 - Otonx が single 実装として "training data agnostic runtime" である旨を README/NOTICE で明記
