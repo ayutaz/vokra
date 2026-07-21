@@ -228,6 +228,48 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-07-21 — 1.0.0-rc.1-dev (M5-05: consent manifest schema + structural validator — Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+**untouched** (`scripts/gen-c-abi.sh --check` = no diff; no `vokra_consent_*` /
+`vokra_voiceclone_*` symbol exists). No GGUF metadata schema is added. M5-05
+adds the signed-consent-manifest surface to `vokra-core::compliance`
+(`docs/legal-compliance.md` §3.3 schema): a `ConsentManifest` struct + a
+`ConsentScope` enum, a zero-dependency structural validator
+(`ConsentManifest::parse`, via `vokra_core::json` — no `serde`, NFR-DS-02), a
+`SignatureStatus` enum, and a consent seam on the existing
+`SpeakerEmbeddingPolicy` (`authorize_embedding_for_tts`). Consumed by the
+separate `vokra-voiceclone-experimental` binary (FR-CP-04); core keeps voice
+cloning unrepresentable (`VoiceCloningPolicy::Disabled`-only).
+
+**Honesty boundary recorded on purpose:** `SignatureStatus` has **no `Verified`
+variant** — core performs *structural* observation of the `signature` field
+(present / absent), never a cryptographic verification. Real signature
+verification is an owner-chosen trust-root mechanism outside core (M5-05-T04);
+and the watermark forced-embed completion leg stays UNMET because
+`WatermarkConfig::backend_status()` remains `Deferred` (2026-07-04 drop) — this
+WP does **not** flip it (see `docs/adr/M5-05-watermark-dependency.md`).
+
+M5-13 relevance (why this is recorded here): these are additive **Rust** public
+items with **no C surface**, so `scripts/check-abi-changelog.sh` does not gate
+on this entry (no C symbol changed). `scripts/rust-public-api-list.sh` picks
+them up (`vokra-core::compliance::consent::*` + the new
+`SpeakerEmbeddingPolicy` method); as with the M5-01/02/03/06 entries above, the
+`docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot is **not** rotated by
+this WP — snapshot rotation is the M5-13/IF-01 freeze owner's action. All items
+are additive (existing signatures unchanged; the two new enums are
+`#[non_exhaustive]`), Breaking? = no.
+
+| Crate / area                        | Symbol                                            | Kind  | Signature / note                                                                              | Rationale                                                                              | Breaking? | PR    |
+| ----------------------------------- | ------------------------------------------------- | ----- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | --------- | ----- |
+| `vokra-core::compliance` (`consent`)| `ConsentManifest`                                 | Added | `pub struct ConsentManifest { voice_owner_name, consent_scope, grant_date, signature, vokra_session_id }` | signed consent manifest schema (FR-CP-04, `docs/legal-compliance.md` §3.3), WP M5-05    | no        | (TBD) |
+| `vokra-core::compliance` (`consent`)| `ConsentScope`                                    | Added | `pub enum ConsentScope { Commercial, Personal, Research }` (`#[non_exhaustive]`)               | consent scope token (§3.3), WP M5-05                                                     | no        | (TBD) |
+| `vokra-core::compliance` (`consent`)| `SignatureStatus`                                 | Added | `pub enum SignatureStatus { Present, Absent }` (`#[non_exhaustive]`; **no `Verified`** — structural only) | honest signature boundary (core does not verify; owner trust-root), WP M5-05            | no        | (TBD) |
+| `vokra-core::compliance` (`consent`)| `ConsentManifest::parse`                          | Added | `pub fn parse(bytes: &[u8]) -> Result<Self>`                                                   | fail-closed structural validation via `vokra_core::json` (NFR-DS-02, FR-EX-08), WP M5-05| no        | (TBD) |
+| `vokra-core::compliance` (`consent`)| `ConsentManifest::signature_status`               | Added | `pub fn signature_status(&self) -> SignatureStatus`                                            | structural signature observation (not verification), WP M5-05                            | no        | (TBD) |
+| `vokra-core::compliance` (`consent`)| `ConsentScope::{from_token, as_token}`            | Added | `pub fn from_token(&str) -> Option<Self>` / `pub fn as_token(self) -> &'static str`            | scope token round-trip, WP M5-05                                                         | no        | (TBD) |
+| `vokra-core::compliance` (`level`)  | `SpeakerEmbeddingPolicy::authorize_embedding_for_tts` | Added | `pub fn authorize_embedding_for_tts(self, consent: Option<&ConsentManifest>) -> Result<()>` | wires the reserved `RequireConsent` policy to the consent type (§3.2), WP M5-05          | no        | (TBD) |
+
 ### 2026-07-21 — 1.0.0-rc.1-dev (M5-03: IoT Tier 3 no_std Silero VAD — new `vokra-vad-micro` crate, Rust surface only)
 
 Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is

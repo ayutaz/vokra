@@ -85,6 +85,17 @@ integrations/vokra-godot/pkg/
 # sign-off (T05(iii)).
 /docs/legal/
 /docs/bench-baselines/pitch-*/
+# Fifth batch (2026-07-21, M5-05-T10): local seed for the SEPARATE
+# `vokra-voiceclone-experimental` repository (RVC v2 / GPT-SoVITS VC/cloning),
+# which by FR-CP-04 / ELVIS Act §3 / NO FAKES Act §4 must NOT ship inside the
+# public `ayutaz/vokra` repo — it is a distinct binary on a distinct
+# distribution channel. The scaffold is a full crate tree (Cargo.toml / LICENSE
+# / NOTICE / README / CI) that `git add -A` would otherwise sweep straight into
+# the public repo — exactly the accident the fourth/third batches above record.
+# It is kept local-only as the split-out seed; the actual repo creation +
+# publish is owner-only (M5-05-T15). Its own isolated workspace has its own
+# Cargo.lock, so it never touches the root zero-dep invariant (NFR-DS-02).
+/staging/
 
 # M4-01: wasm build artifacts (produced by scripts/build-wasm.sh; the npm
 # package assembles them at release time — never committed)

@@ -311,6 +311,17 @@ Vokra::init(VokraConfig {
 □ Consent manifest: voice cloning experimental は署名付き manifest 必須
 ```
 
+### 11.1 M5-05 通過記録（voice cloning experimental / FR-MD-13 / X-04(c)、2026-07-21）
+
+M5-05（`vokra-voiceclone-experimental` 分離準備）は FR-MD-11（RVC v2 / GPT-SoVITS）が実際に配布される WP であり、FR-MD-13（新規モデル対応 PR ごとの license-audit 追記 + 本 §11 checklist 通過）の到来点である。CC 実装分（T05-T09, T13）が本 checklist の各項目をどこまで満たすかを**詐称せず**記録する（判定・sign-off は owner = T15）:
+
+- **□ Consent manifest（`:311`「voice cloning experimental は署名付き manifest 必須」）— 部分充足（構造検証まで）**:
+  - **満たす**: consent manifest の schema（`ConsentManifest` / `ConsentScope`、§3.3 の 5 field を転記）と **構造検証**（`ConsentManifest::parse` = field presence / scope enum 妥当性 / `vokra_session_id`・`grant_date` 非空 / `signature` field の存在、fail-closed reject）を `crates/vokra-core/src/compliance/consent.rs`（M5-05-T05/T06）に実装。`SpeakerEmbeddingPolicy::RequireConsent` を consent 型に接続し、未署名（signature 非存在＝空）manifest を API level で reject（§3.2、M5-05-T07）。別リポ scaffold binary が両 flag（`--i-understand-risks --research-only`）+ 署名付き consent を start-up gate で強制（M5-05-T08/T09）。
+  - **満たさない（owner 待ち）**: **cryptographic signature 検証**は core 非対応（`SignatureStatus` は `Present`/`Absent` の構造判定のみ、`Verified` variant を作らない）。理由は zero-dep 制約ではなく (1) PGP/Ed25519 署名検証は security-critical で自前実装が不適切、(2) 信頼根（誰の鍵・配布・失効）が owner 決定であるため。署名検証方式の確定は M5-05-T04（owner）。
+- **□ AudioSeal watermark ON / □ C2PA manifest 埋込（`:297`/`:298`）— 未充足（embedding Deferred）**: §1.4 / §8 のとおり watermark embedding は 2026-07-04 ドロップで Deferred（`WatermarkConfig::backend_status()==Deferred`）。voice cloning binary は watermark config を強制する意図だが、embedding backend が Deferred のため「強制埋込」leg は honest-UNMET（M5-05-T09 の leg 3、`docs/adr/M5-05-watermark-dependency.md` の owner resolution 待ち）。deferred 期間の Article 50 "detectable" cue は §1.4 の deployer 側 visible disclosure が唯一の手段（MUST）。
+- **□ ELVIS Act / □ NO FAKES Act（`:301`/`:302`）— 機構は用意、法務判断は owner**: voice cloning を別リポ（`vokra-voiceclone-experimental`）に分離し core 配布経路から遮断（§3.1、FR-CP-04）。README に §3.1 warning + use-restriction を転記。tool-distributor liability の十分性判断は §1.4(d) のとおり owner/deployer（NFR-LG-02、M5-05-T04）。
+- **□ Training data provenance（`:310`）— 下流責任表示を記載**: RVC v2 / GPT-SoVITS の「不明 / 学習権利疑い」を scaffold `NOTICE` と `docs/license-audit.md` §3.1（空欄 sign-off = fail-closed）に記録。
+
 ## 12. 罰則 / 損害額 まとめ
 
 | 法令 | 主要罰則 |

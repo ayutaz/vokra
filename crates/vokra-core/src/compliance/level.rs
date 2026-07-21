@@ -17,6 +17,8 @@
 //! parent module docs.
 
 use super::WatermarkConfig;
+use super::consent::{ConsentManifest, SignatureStatus};
+use crate::error::{Result, VokraError};
 
 /// Runtime compliance posture (`docs/legal-compliance.md` §8).
 ///
@@ -66,13 +68,66 @@ pub enum VoiceCloningPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SpeakerEmbeddingPolicy {
     /// A signed consent manifest is required before extracting a speaker
-    /// embedding (default under [`ComplianceLevel::Strict`]). Enforcement is
-    /// wired to the speaker op in a later WP (`speaker_encode`, FR-OP-80,
-    /// post-M2); this type reserves the policy.
+    /// embedding (default under [`ComplianceLevel::Strict`]). The consent
+    /// decision is implemented by [`Self::authorize_embedding_for_tts`]
+    /// (M5-05-T07); the remaining wiring to the actual `speaker_encode` op
+    /// (FR-OP-80) lands when that op is introduced (the op is not present in
+    /// core yet, so this policy currently gates a *seam*, not a live op — see
+    /// the method docs).
     #[default]
     RequireConsent,
     /// Extraction permitted without a consent manifest (Standard/Research).
     Allow,
+}
+
+impl SpeakerEmbeddingPolicy {
+    /// Decides whether a speaker embedding may be extracted and fed to TTS
+    /// under this policy, given an optional [`ConsentManifest`]
+    /// (`docs/legal-compliance.md` §3.2 "unsigned embedding → TTS is rejected
+    /// at API level").
+    ///
+    /// - [`Allow`](Self::Allow): always `Ok(())` (Standard / Research).
+    /// - [`RequireConsent`](Self::RequireConsent): `Ok(())` **only** when a
+    ///   consent manifest is supplied whose signature is structurally
+    ///   [`Present`](SignatureStatus::Present); a missing manifest or an
+    ///   [`Absent`](SignatureStatus::Absent) (empty) signature is an explicit
+    ///   [`VokraError::InvalidArgument`] reject (FR-EX-08 — never a silent
+    ///   allow).
+    ///
+    /// # Honest boundary (not cryptographic)
+    ///
+    /// "Present" is a **structural** observation — that a non-empty signature
+    /// string exists — **not** a cryptographic verification (there is no
+    /// `Verified` state; see [`ConsentManifest`]). Verifying the signature is
+    /// an owner-chosen mechanism outside core (M5-05-T04 / the
+    /// `docs/adr/M5-05-watermark-dependency.md` decision).
+    ///
+    /// # Seam, not a live op
+    ///
+    /// `speaker_encode` (FR-OP-80) is not in core yet, so callers thread this
+    /// check at the point they would hand an embedding to TTS. When the op
+    /// lands it calls this before producing an embedding — no behaviour here
+    /// changes, only the call site is added.
+    pub fn authorize_embedding_for_tts(self, consent: Option<&ConsentManifest>) -> Result<()> {
+        match self {
+            Self::Allow => Ok(()),
+            Self::RequireConsent => match consent {
+                Some(m) if m.signature_status() == SignatureStatus::Present => Ok(()),
+                Some(_) => Err(VokraError::InvalidArgument(
+                    "speaker-embedding policy RequireConsent: the supplied consent manifest \
+                     is unsigned (signature absent) — a signed manifest is required before an \
+                     embedding may be fed to TTS (docs/legal-compliance.md §3.2; FR-EX-08)"
+                        .to_owned(),
+                )),
+                None => Err(VokraError::InvalidArgument(
+                    "speaker-embedding policy RequireConsent: no consent manifest supplied — a \
+                     signed manifest is required before an embedding may be fed to TTS \
+                     (docs/legal-compliance.md §3.2; FR-EX-08)"
+                        .to_owned(),
+                )),
+            },
+        }
+    }
 }
 
 /// AI-disclosure beacon configuration (`docs/legal-compliance.md` §8).
@@ -175,5 +230,49 @@ mod tests {
         assert!(!unlock(ComplianceLevel::Standard));
         assert!(unlock(ComplianceLevel::Research));
         assert!(unlock(ComplianceLevel::Disabled));
+    }
+
+    // --- M5-05-T07: SpeakerEmbeddingPolicy::RequireConsent -> consent seam ----
+
+    const SIGNED: &[u8] = br#"{"voice_owner_name":"A","consent_scope":"personal","grant_date":"2026-01-01","signature":"sig","vokra_session_id":"id"}"#;
+    const UNSIGNED: &[u8] = br#"{"voice_owner_name":"A","consent_scope":"personal","grant_date":"2026-01-01","signature":"","vokra_session_id":"id"}"#;
+
+    #[test]
+    fn require_consent_allows_with_signed_manifest() {
+        let m = ConsentManifest::parse(SIGNED).expect("valid");
+        assert!(
+            SpeakerEmbeddingPolicy::RequireConsent
+                .authorize_embedding_for_tts(Some(&m))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn require_consent_rejects_without_manifest() {
+        // FR-EX-08: no manifest under RequireConsent is an explicit reject.
+        let err = SpeakerEmbeddingPolicy::RequireConsent
+            .authorize_embedding_for_tts(None)
+            .expect_err("no consent must reject");
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn require_consent_rejects_unsigned_manifest() {
+        // §3.2: an unsigned (signature-absent) manifest is rejected.
+        let m = ConsentManifest::parse(UNSIGNED).expect("parses (present-only signature)");
+        assert_eq!(m.signature_status(), SignatureStatus::Absent);
+        let err = SpeakerEmbeddingPolicy::RequireConsent
+            .authorize_embedding_for_tts(Some(&m))
+            .expect_err("unsigned consent must reject");
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn allow_needs_no_consent() {
+        assert!(
+            SpeakerEmbeddingPolicy::Allow
+                .authorize_embedding_for_tts(None)
+                .is_ok()
+        );
     }
 }
