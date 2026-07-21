@@ -22,6 +22,21 @@ categories.workspace = true
 # crates). See `./scripts/check-zero-deps.sh` — it inspects the root
 # Cargo.lock, which is unaffected by feature toggles.
 [features]
+# M5-03-T03: `std` gates the std-only modules (session / stream / safetensors /
+# compliance / gguf writer + `GgufFile::open`). Default-ON, so every existing
+# consumer builds byte-identically to before (NFR-PT-01 cross-build
+# non-interference): with the default feature set the crate is exactly what it
+# was. With `--no-default-features` the crate becomes `#![no_std]`
+# (+ `extern crate alloc`) and only the core-clean subset — the error type and
+# the GGUF reader parse / from_external path (BTreeMap-indexed) — compiles. That
+# subset is the Cortex-M55 (thumbv8m) Tier-3 foundation (SRS §6, NFR-PT-03); the
+# final no_std boundary (which further modules join the subset) is topology-
+# dependent and resolved in M5-03 Wave 2 (see docs/adr/M5-03-iot-tier3-nostd.md).
+# `std` adds NO dependency (a cfg flag, not a crate); the zero-dep invariant
+# (NFR-DS-02) and the root Cargo.lock are unaffected.
+default = ["std"]
+std = []
+
 # M2-04-T09 / T10: opt-in stub op-kind + matcher unit tests for the
 # `Conv1d → Snake` and `Upsample → Snake → Add(residual)` fusion
 # patterns. Default OFF — the real Snake / Conv1d / Upsample ops land

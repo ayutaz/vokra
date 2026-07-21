@@ -19,6 +19,10 @@
 //! silently mishandled.
 
 use super::GgufError;
+// M5-03-T05: `String` / `Vec` are `alloc` types (core-clean, no `std::`); the
+// no_std subset imports them (inert under std, where they are in the prelude).
+#[cfg(not(feature = "std"))]
+use alloc::{string::String, vec::Vec};
 
 /// Maximum tensor rank accepted by the loader.
 ///

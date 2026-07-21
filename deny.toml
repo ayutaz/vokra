@@ -44,6 +44,17 @@ multiple-versions = "warn"
 # of the protobuf / ONNX-runtime crate families — extend it whenever a new
 # crate from these families appears.
 deny = [
+    # libm — M5-03 red line (NFR-DS-02): the no_std subset (Cortex-M55 Tier 3)
+    # needs `exp` / `tanh` / `sqrt`, which live in `std`, not `core`. The obvious
+    # crates.io answer, `libm`, is a NON-`vokra-*` dependency and would break the
+    # zero-dependency invariant (`scripts/check-zero-deps.sh` fails on any
+    # non-vokra entry in Cargo.lock). Vokra supplies these transcendentals as a
+    # from-scratch scalar port instead (crates/vokra-backend-cpu/src/kernels/
+    # scalar_transcendental.rs). Ban `libm` (and its common wrappers) so a stray
+    # dependency cannot pull it in — mirrors the check-zero-deps.sh guard.
+    { crate = "libm", reason = "M5-03 red line / NFR-DS-02: no_std transcendentals are a from-scratch scalar port; no libm crate" },
+    { crate = "micromath", reason = "M5-03 red line / NFR-DS-02: no_std transcendentals are a from-scratch scalar port; no external math crate" },
+    { crate = "libm-sys", reason = "M5-03 red line / NFR-DS-02: no_std transcendentals are a from-scratch scalar port; no libm crate" },
     # protobuf family
     { crate = "protobuf", reason = "FR-LD-05 / NFR-DS-02 / X-08: no protobuf in the runtime dependency graph" },
     { crate = "protobuf-codegen", reason = "FR-LD-05 / NFR-DS-02 / X-08: no protobuf in the runtime dependency graph" },

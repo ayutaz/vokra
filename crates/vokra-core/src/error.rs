@@ -3,7 +3,13 @@
 //! FR-API-02 mandates that the public Rust API returns
 //! [`Result<T, VokraError>`](crate::Result).
 
-use std::fmt;
+// M5-03-T04: no_std-first. `core::fmt` is `std::fmt` under std, so this is
+// unchanged for the default build (NFR-PT-01). `String` is an `alloc` type, in
+// the prelude only under std; the no_std subset imports it explicitly (this
+// import is inert under std — the prelude already provides `String`).
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
+use core::fmt;
 
 /// Error type returned by every Vokra public API (FR-API-02).
 ///
@@ -14,6 +20,13 @@ use std::fmt;
 #[non_exhaustive]
 pub enum VokraError {
     /// An I/O operation failed (file open / read / metadata, ...).
+    ///
+    /// M5-03-T04: `std::io::Error` does not exist under `#![no_std]`, so this
+    /// variant is present only in std builds. The no_std subset (Cortex-M55
+    /// Tier 3) has no filesystem, so no code path constructs it; GGUF is loaded
+    /// there from an in-memory / flash-mapped `&[u8]` via `GgufFile::parse` /
+    /// `from_external`, never `GgufFile::open`.
+    #[cfg(feature = "std")]
     Io(std::io::Error),
     /// A model file could not be loaded or parsed.
     ModelLoad(String),
@@ -165,6 +178,7 @@ pub enum VokraError {
 impl fmt::Display for VokraError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(feature = "std")]
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::ModelLoad(msg) => write!(f, "model load error: {msg}"),
             Self::UnsupportedOp(msg) => write!(f, "unsupported op: {msg}"),
@@ -226,15 +240,24 @@ impl fmt::Display for VokraError {
     }
 }
 
-impl std::error::Error for VokraError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+// M5-03-T04: `core::error::Error` is stable since Rust 1.81 (this workspace's
+// floor is well above that) and `std::error::Error` is a re-export of it, so
+// this impl is identical for the default build (NFR-PT-01) yet also holds under
+// `#![no_std]`. `std::io::Error` implements `core::error::Error`, so the
+// std-gated `Io` source still type-checks under std.
+impl core::error::Error for VokraError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
+            #[cfg(feature = "std")]
             Self::Io(e) => Some(e),
             _ => None,
         }
     }
 }
 
+// The `From<std::io::Error>` bridge exists only under std (the no_std subset has
+// no `std::io`). Loud-by-construction: no_std GGUF loading never touches fs.
+#[cfg(feature = "std")]
 impl From<std::io::Error> for VokraError {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
@@ -242,7 +265,7 @@ impl From<std::io::Error> for VokraError {
 }
 
 /// Convenience alias used across the Vokra API surface (FR-API-02).
-pub type Result<T> = std::result::Result<T, VokraError>;
+pub type Result<T> = core::result::Result<T, VokraError>;
 
 #[cfg(test)]
 mod tests {
@@ -321,5 +344,25 @@ mod tests {
         }
         assert_eq!(f(true).unwrap(), 7);
         assert!(f(false).is_err());
+    }
+
+    /// M5-03-T04: the no_std migration (`std::fmt` → `core::fmt`,
+    /// `std::error::Error` → `core::error::Error`, `std::result::Result` →
+    /// `core::result::Result`) must not change the std build's observable
+    /// behavior. A non-`Io` variant's `Display` stays byte-stable, it exposes no
+    /// `source()`, and the `Result` alias still resolves — proving the migration
+    /// is behavior-preserving for the default (std) build (NFR-PT-01).
+    #[test]
+    fn nostd_migration_preserves_std_display_and_source() {
+        let e = VokraError::UnsupportedOp("Conv1d on vulkan".to_owned());
+        assert_eq!(e.to_string(), "unsupported op: Conv1d on vulkan");
+        assert!(e.source().is_none());
+        // The alias is `core::result::Result`, structurally identical to the
+        // former `std::result::Result` for every caller (exercised through a
+        // function boundary so it is a real value, not a literal).
+        fn via_alias(v: u8) -> Result<u8> {
+            Ok(v)
+        }
+        assert!(matches!(via_alias(3), Ok(3)));
     }
 }

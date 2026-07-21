@@ -16,7 +16,17 @@
 //! All offsets and lengths are bounds-checked at parse time, so the slice
 //! accessors never index out of range and never panic (NFR-RL-07).
 
-use std::collections::HashMap;
+// M5-03-T05: no_std subset. `HashMap` needs `std` (its `RandomState` hasher is
+// seeded from the OS RNG), so the key/name indices move to `alloc`'s
+// `BTreeMap`; a `BTreeSet` replaces the duplicate-name `HashSet`. Both give
+// identical `get` / `insert` semantics — only iteration order (never observed
+// here) and asymptotics change. `alloc` types not in the core prelude are
+// imported for the no_std build (inert under std). `std::path::Path` is used
+// only by the std-gated `open()`.
+use alloc::collections::{BTreeMap, BTreeSet};
+#[cfg(not(feature = "std"))]
+use alloc::{borrow::ToOwned, boxed::Box, string::String, vec::Vec};
+#[cfg(feature = "std")]
 use std::path::Path;
 
 use super::tensor::{GgmlType, GgufTensorInfo, MAX_TENSOR_DIMS};
@@ -80,15 +90,15 @@ pub struct GgufFile {
     alignment: u64,
     /// Metadata in file order (`vokra.*` keys included).
     metadata: Vec<(String, GgufMetadataValue)>,
-    metadata_index: HashMap<String, usize>,
+    metadata_index: BTreeMap<String, usize>,
     tensors: Vec<GgufTensorInfo>,
-    tensor_index: HashMap<String, usize>,
+    tensor_index: BTreeMap<String, usize>,
     /// Absolute byte offset where the tensor-data region begins.
     tensor_data_offset: u64,
 }
 
-impl std::fmt::Debug for GgufFile {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for GgufFile {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Deliberately omit the (potentially large) backing buffer.
         let file_len = self.data().len();
         f.debug_struct("GgufFile")
@@ -108,6 +118,11 @@ impl GgufFile {
     /// Reads the whole file into memory (see the module docs on the zero-copy
     /// strategy). Returns [`GgufError::Io`] on I/O failure or a parse error
     /// variant for malformed content.
+    ///
+    /// M5-03-T05: std-only. The no_std subset (Cortex-M55 Tier 3) has no
+    /// filesystem; load GGUF from an in-memory / flash-mapped `&[u8]` via
+    /// [`GgufFile::parse`] or [`GgufFile::from_external`] instead.
+    #[cfg(feature = "std")]
     pub fn open(path: impl AsRef<Path>) -> Result<Self, GgufError> {
         let data = std::fs::read(path).map_err(GgufError::Io)?;
         Self::parse(data)
@@ -149,12 +164,15 @@ impl GgufFile {
             tensor_data_offset,
         } = parsed;
 
-        let mut metadata_index = HashMap::with_capacity(metadata.len());
+        // `BTreeMap` has no `with_capacity` (it is node-allocated, not a table);
+        // the count hint is dropped. Lookup results are identical to the former
+        // `HashMap` (M5-03-T05).
+        let mut metadata_index = BTreeMap::new();
         for (i, (k, _)) in metadata.iter().enumerate() {
             // Last occurrence wins (the writer never emits duplicate keys).
             metadata_index.insert(k.clone(), i);
         }
-        let mut tensor_index = HashMap::with_capacity(tensors.len());
+        let mut tensor_index = BTreeMap::new();
         for (i, t) in tensors.iter().enumerate() {
             tensor_index.insert(t.name.clone(), i);
         }
@@ -306,7 +324,7 @@ impl<'a> ByteReader<'a> {
             return Err(GgufError::Truncated(ctx));
         }
         let bytes = self.take(len as usize, ctx)?;
-        let s = std::str::from_utf8(bytes).map_err(GgufError::InvalidString)?;
+        let s = core::str::from_utf8(bytes).map_err(GgufError::InvalidString)?;
         Ok(s.to_owned())
     }
 }
@@ -343,7 +361,7 @@ fn parse_all(r: &mut ByteReader<'_>, file_len: usize) -> Result<Parsed, GgufErro
     let alignment = resolve_alignment(&metadata)?;
 
     let mut tensors = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = BTreeSet::new();
     for _ in 0..tensor_count {
         let name = r.gguf_string("tensor name")?;
         let n_dims = r.u32("tensor n_dims")? as usize;
@@ -564,6 +582,66 @@ mod tests {
             file.get(chunks::KEY_FRONTEND_N_FFT),
             Some(&GgufMetadataValue::U32(400))
         );
+    }
+
+    // --- M5-03-T05: BTreeMap-indexed lookup equivalence ------------------
+
+    #[test]
+    fn btreemap_index_resolves_every_metadata_key_and_tensor() {
+        // The metadata / tensor indices switched HashMap -> BTreeMap (no_std has
+        // no OS-seeded hasher). Lookup results must be identical: every key and
+        // every tensor still resolves to exactly its stored value, and a miss is
+        // still `None`. Several keys/tensors exercise the tree across nodes.
+        let mut b = GgufBuilder::new();
+        b.add_u32("vokra.a", 1);
+        b.add_u32("vokra.z", 26);
+        b.add_u32("vokra.m", 13);
+        b.add_string("vokra.name", "silero");
+        for (name, v) in [("t.first", 1.0f32), ("t.mid", 2.0), ("t.last", 3.0)] {
+            b.add_tensor(name, GgmlType::F32, vec![1], v.to_le_bytes().to_vec())
+                .unwrap();
+        }
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+
+        assert_eq!(file.get("vokra.a"), Some(&GgufMetadataValue::U32(1)));
+        assert_eq!(file.get("vokra.m"), Some(&GgufMetadataValue::U32(13)));
+        assert_eq!(file.get("vokra.z"), Some(&GgufMetadataValue::U32(26)));
+        assert_eq!(
+            file.get("vokra.name"),
+            Some(&GgufMetadataValue::String("silero".to_owned()))
+        );
+        assert_eq!(file.get("vokra.absent"), None);
+
+        for (name, want) in [("t.first", 1.0f32), ("t.mid", 2.0), ("t.last", 3.0)] {
+            assert_eq!(file.tensor_info(name).unwrap().dtype, GgmlType::F32);
+            assert_eq!(file.tensor_f32(name).unwrap(), vec![want]);
+        }
+        assert!(file.tensor_info("t.absent").is_none());
+        assert!(file.tensor_data("t.absent").is_none());
+    }
+
+    #[test]
+    fn btreemap_index_keeps_last_occurrence_like_the_former_hashmap() {
+        // Duplicate metadata keys are legal in GGUF (only tensor *names* must be
+        // unique). The index kept the last insert with HashMap; BTreeMap.insert
+        // has the identical overwrite semantics. Hand-built because the writer
+        // never emits duplicate keys.
+        let mut v = Vec::new();
+        v.extend_from_slice(b"GGUF");
+        v.extend_from_slice(&3u32.to_le_bytes());
+        v.extend_from_slice(&0u64.to_le_bytes()); // tensor_count
+        v.extend_from_slice(&2u64.to_le_bytes()); // metadata_kv_count = 2
+        for val in [7u32, 9u32] {
+            v.extend_from_slice(&5u64.to_le_bytes()); // key length
+            v.extend_from_slice(b"dup.k");
+            v.extend_from_slice(&4u32.to_le_bytes()); // value type: U32
+            v.extend_from_slice(&val.to_le_bytes());
+        }
+        let file = GgufFile::parse(v).unwrap();
+        // File order (the Vec) preserves both entries...
+        assert_eq!(file.metadata().len(), 2);
+        // ...but the index resolves to the LAST occurrence, as before.
+        assert_eq!(file.get("dup.k"), Some(&GgufMetadataValue::U32(9)));
     }
 
     #[test]

@@ -62,6 +62,15 @@ pub(crate) mod gemm_driver;
 #[cfg(feature = "simd-transcendental")]
 pub(crate) mod vexp;
 
+// M5-03-T06: self-contained scalar `exp` / `tanh` / `sqrt` in pure `core`
+// arithmetic (no `std`, no `libm`) for the no_std Cortex-M55 subset. Provided in
+// Wave 1 and exercised only by its own property tests; T08 (Wave 2) wires it
+// into the Silero forward. `#[allow(dead_code)]` covers the interim: the
+// functions are not yet called from production code (a plain `cargo build`
+// would otherwise flag them under `-D warnings`).
+#[allow(dead_code)]
+pub(crate) mod scalar_transcendental;
+
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod avx2;
 
