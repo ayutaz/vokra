@@ -132,6 +132,7 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 # 8-language G2P is injected via `InferenceService::with_phonemizer` (see the
 # `vokra-piper-g2p` entry below).
 vokra-core = { path = "../../crates/vokra-core" }
+vokra-mmap = { path = "../../crates/vokra-mmap" }
 vokra-models = { path = "../../crates/vokra-models" }
 vokra-piper-plus = { path = "../../crates/vokra-piper-plus" }
 

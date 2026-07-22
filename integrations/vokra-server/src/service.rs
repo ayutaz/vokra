@@ -984,13 +984,44 @@ impl InferenceService {
         // registration side still surfaces ModelLoad errors up-front (never
         // a silent skip).
         let asr_voxtral = if let Some(path) = &config.voxtral_gguf {
-            let file = open_gguf("voxtral", path)?;
-            let engine =
-                VoxtralAsr::from_gguf(&file).map_err(|source| ServiceError::ModelLoadFailed {
-                    slot: "voxtral",
-                    path: path.clone(),
-                    source,
-                })?;
+            // Bounded-memory bind. `open_gguf` is `GgufFile::open` (a whole-file
+            // `fs::read`), and `VoxtralAsr::from_gguf` then widens the entire
+            // `language_model` group to owned f32 on top of it — 8.71 GiB
+            // resident plus 14.95 GiB widened at the real 3B shape. That is why
+            // the `real_gguf_slots` voxtral leg has always skipped for want of
+            // >= 10 GiB free. Mapping the file and binding the decoder blocks
+            // lazily keeps values bit-identical while the blocks stay in the map.
+            let engine = match map_gguf("voxtral", path)
+                .and_then(|f| {
+                    VoxtralAsr::from_gguf_mapped(f).map_err(|source| {
+                        ServiceError::ModelLoadFailed {
+                            slot: "voxtral",
+                            path: path.clone(),
+                            source,
+                        }
+                    })
+                }) {
+                Ok(engine) => engine,
+                Err(mapped_err) => {
+                    // A quantized GGUF cannot be addressed per element, so the
+                    // mapped bind refuses it. Fall back to the resident loader
+                    // rather than refusing to serve — but say why, so the much
+                    // larger footprint is never a silent surprise (FR-EX-08).
+                    eprintln!(
+                        "vokra-server: NOTE voxtral mapped (bounded-memory) bind \
+                         unavailable — {mapped_err}; falling back to the resident \
+                         loader (widens the whole decoder to f32)"
+                    );
+                    let file = open_gguf("voxtral", path)?;
+                    VoxtralAsr::from_gguf(&file).map_err(|source| {
+                        ServiceError::ModelLoadFailed {
+                            slot: "voxtral",
+                            path: path.clone(),
+                            source,
+                        }
+                    })?
+                }
+            };
             // cc-30: Voxtral DOES have a backend selector
             // (`VoxtralAsr::with_backend`, M3-10 Wave 9) but this registry
             // never applied it — so before cc-30 a Voxtral engine silently
@@ -1705,6 +1736,23 @@ pub const AUDIO_WAV_CONTENT_TYPE: &str = "audio/wav";
 // Private helpers — GGUF open + Whisper load, factored so `build` stays
 // linear and self-documenting.
 // ---------------------------------------------------------------------------
+
+/// Opens a GGUF through the first-party mmap loader, so tensor payloads are
+/// faulted in lazily instead of copied into an owned buffer. Use this for slots
+/// whose model can bind weights straight out of the mapping; [`open_gguf`]
+/// remains correct for slots that widen everything anyway.
+fn map_gguf(
+    slot: &'static str,
+    path: &Path,
+) -> Result<std::sync::Arc<GgufFile>, ServiceError> {
+    vokra_mmap::open_gguf(path)
+        .map(std::sync::Arc::new)
+        .map_err(|e| ServiceError::ModelLoadFailed {
+            slot,
+            path: path.to_path_buf(),
+            source: VokraError::ModelLoad(format!("{slot} GGUF at {path:?} (mmap): {e}")),
+        })
+}
 
 fn open_gguf(slot: &'static str, path: &Path) -> Result<GgufFile, ServiceError> {
     GgufFile::open(path).map_err(|e| ServiceError::ModelLoadFailed {

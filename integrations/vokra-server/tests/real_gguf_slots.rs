@@ -581,10 +581,34 @@ async fn openai_speech_route_synthesizes_with_real_voice_and_g2p() {
 
 /// Minimum free memory before attempting the voxtral load, in bytes.
 ///
-/// `GgufFile::open` reads the whole file into a `Vec<u8>` (no mmap), so the
-/// floor is the file size plus headroom for the parsed engine. 10 GiB is the
-/// smallest number that is not obviously doomed for the 8.72 GiB checkpoint.
-const VOXTRAL_MIN_FREE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+/// **Was 10 GiB**, on the premise that `GgufFile::open` reads the whole file
+/// into a `Vec<u8>` and `VoxtralAsr::from_gguf` then widens the entire
+/// `language_model` group to owned f32 — 8.71 GiB resident plus 14.95 GiB
+/// widened at the real 3B shape. On this 16 GiB machine that floor was never
+/// met, so the leg had never actually run.
+///
+/// The registry now maps the file and binds the decoder blocks lazily
+/// (`map_gguf` + `VoxtralAsr::from_gguf_mapped`), which changes the arithmetic
+/// entirely. Measured end-to-end on the real 8.71 GiB checkpoint (M1 iMac,
+/// `vokra-cli run --model voxtral-mini-3b-bf16-fs.gguf`, full 30 s transcribe):
+///
+/// ```text
+///   max RSS         5,258,625,024 bytes  (4.90 GiB)
+///   peak footprint  7,043,400,768 bytes  (6.56 GiB)
+///   swaps           0
+/// ```
+///
+/// The floor is set to **8 GiB**: above the measured 6.56 GiB peak with room
+/// for a concurrently-served whisper + piper pair (this harness boots all three
+/// slots), and low enough that an ordinary idle 16 GiB host clears it. It is
+/// deliberately *not* tightened to the measured value — a floor that only just
+/// fits the best observed case turns a memory-pressure flake into a test
+/// failure.
+///
+/// If the mapped bind is ever unavailable (a quantized GGUF), the registry
+/// falls back to the resident loader with a printed note, and this floor is
+/// then too low — that path prints its own warning rather than pretending.
+const VOXTRAL_MIN_FREE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 /// Read deadline for a real-weight transcription. The shared default (5 s)
 /// is tuned for the hermetic suites; a real Whisper size on ~11 s of audio,
@@ -615,8 +639,8 @@ async fn voxtral_slot_advertises_and_routes() {
     match available_memory_bytes() {
         Some(avail) if avail >= VOXTRAL_MIN_FREE_BYTES => {
             eprintln!(
-                "cc40 voxtral: proceeding — {:.2} GiB available >= {:.2} GiB floor (checkpoint \
-                 {:.2} GiB, loaded via std::fs::read)",
+                "voxtral: proceeding — {:.2} GiB available >= {:.2} GiB floor (checkpoint \
+                 {:.2} GiB, bound through the mmap + mapped-block path)",
                 avail as f64 / 1073741824.0,
                 VOXTRAL_MIN_FREE_BYTES as f64 / 1073741824.0,
                 size as f64 / 1073741824.0,
@@ -625,8 +649,9 @@ async fn voxtral_slot_advertises_and_routes() {
         Some(avail) => {
             eprintln!(
                 "real_gguf_slots: SKIPPING voxtral slot — only {:.2} GiB available, need >= \
-                 {:.2} GiB for the {:.2} GiB checkpoint (GgufFile::open is std::fs::read, not \
-                 mmap — vokra-core gguf/reader.rs:112). Re-run on an idle host.",
+                 {:.2} GiB for the {:.2} GiB checkpoint (mapped bind: measured peak 6.56 GiB \
+                 end-to-end, floor set above it with headroom for the co-resident whisper + \
+                 piper slots). Re-run on an idle host.",
                 avail as f64 / 1073741824.0,
                 VOXTRAL_MIN_FREE_BYTES as f64 / 1073741824.0,
                 size as f64 / 1073741824.0,

@@ -75,6 +75,8 @@ pub use text_decoder_session_metal::{
 };
 pub use tokenizer::{TranscriptionPrompt, VoxtralTokenizer};
 
+use std::sync::Arc;
+
 use vokra_core::gguf::GgufFile;
 use vokra_core::{FrontendPolicy, Result, VokraError};
 
@@ -135,6 +137,43 @@ impl VoxtralModel {
         // chunk (backward compatibility with pre-Wave 8 GGUFs) — the runtime
         // then stays on the honest LM-continuation path (Wave 7 posture).
         let audio_adapter = AudioAdapter::from_gguf(file)?;
+        Ok(Self {
+            config,
+            audio,
+            text,
+            audio_adapter,
+        })
+    }
+
+    /// [`Self::from_gguf`] with the text decoder bound in **bounded memory**
+    /// ([`TextDecoder::load_mapped`]).
+    ///
+    /// On the shipping `Voxtral-Mini-3B` the `language_model` group is 7.48 GiB
+    /// stored but **14.95 GiB widened to owned f32**, so [`Self::from_gguf`]
+    /// cannot bind it on a 16 GiB host at all. This keeps the decoder blocks in
+    /// the GGUF mapping and widens one layer at a time per forward, for
+    /// **bit-identical** values (pinned by
+    /// `voxtral::text_decoder::tests::mapped_blocks_match_resident_bitwise`).
+    ///
+    /// Pass an `Arc` from `vokra_mmap::open_gguf`: the mapping must outlive the
+    /// model, and handing this a buffered [`GgufFile::open`] works but defeats
+    /// the purpose (the whole file is already resident).
+    ///
+    /// The audio tower and adapter stay resident — they are ~2.4 GiB widened at
+    /// the real shape, and the decoder is what makes the load impossible.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_gguf`], plus the mapped bind's per-layer validation. A
+    /// quantized GGUF is refused here and must use [`Self::from_gguf`].
+    pub fn from_gguf_mapped(file: Arc<GgufFile>) -> Result<Self> {
+        let config = VoxtralConfig::from_gguf(&file)?;
+        if config.audio.n_mels > 0 {
+            audio_encoder::check_frontend_spec(&file, config.audio.n_mels, FrontendPolicy::Fail)?;
+        }
+        let audio = AudioEncoder::load(&file, &config)?;
+        let audio_adapter = AudioAdapter::from_gguf(&file)?;
+        let text = TextDecoder::load_mapped(Arc::clone(&file), &config)?;
         Ok(Self {
             config,
             audio,
