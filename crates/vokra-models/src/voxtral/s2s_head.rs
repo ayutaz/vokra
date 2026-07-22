@@ -184,6 +184,7 @@ mod tests {
             final_norm_gamma: Vec::new(),
             prefix: "",
             mapped: None,
+            mapped_heads: None,
         }
     }
 

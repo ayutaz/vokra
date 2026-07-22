@@ -197,6 +197,7 @@ pub fn tiny_decoder(cfg: &VoxtralConfig) -> TextDecoder {
         final_norm_gamma: vec![1.0f32; d],
         prefix: "",
         mapped: None,
+        mapped_heads: None,
     }
 }
 

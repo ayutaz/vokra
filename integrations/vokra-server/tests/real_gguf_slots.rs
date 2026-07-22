@@ -581,34 +581,43 @@ async fn openai_speech_route_synthesizes_with_real_voice_and_g2p() {
 
 /// Minimum free memory before attempting the voxtral load, in bytes.
 ///
-/// **Was 10 GiB**, on the premise that `GgufFile::open` reads the whole file
-/// into a `Vec<u8>` and `VoxtralAsr::from_gguf` then widens the entire
-/// `language_model` group to owned f32 — 8.71 GiB resident plus 14.95 GiB
-/// widened at the real 3B shape. On this 16 GiB machine that floor was never
-/// met, so the leg had never actually run.
+/// **History.** This was 10 GiB, on the premise that `GgufFile::open` reads the
+/// whole file into a `Vec<u8>` and `VoxtralAsr::from_gguf` then widens the
+/// entire `language_model` group to owned f32 — 8.71 GiB resident plus
+/// 14.95 GiB widened at the real 3B shape. That floor could never be met on a
+/// 16 GiB host, so this leg had never actually run.
 ///
-/// The registry now maps the file and binds the decoder blocks lazily
-/// (`map_gguf` + `VoxtralAsr::from_gguf_mapped`), which changes the arithmetic
-/// entirely. Measured end-to-end on the real 8.71 GiB checkpoint (M1 iMac,
-/// `vokra-cli run --model voxtral-mini-3b-bf16-fs.gguf`, full 30 s transcribe):
+/// The registry now maps the file and binds both the decoder blocks and the
+/// vocab-sized head matrices lazily (`map_gguf` + `VoxtralAsr::from_gguf_mapped`).
+/// Measured end-to-end on the real 8.71 GiB checkpoint (M1 iMac,
+/// `vokra-cli run`, full 30 s transcribe, correct JFK output both times):
 ///
 /// ```text
-///   max RSS         5,258,625,024 bytes  (4.90 GiB)
-///   peak footprint  7,043,400,768 bytes  (6.56 GiB)
-///   swaps           0
+///                        blocks mapped     + heads mapped
+///   peak footprint       6.56 GiB          3.55 GiB
+///   max RSS              4.90 GiB          5.93 GiB
+///   swaps                0                 0
 /// ```
 ///
-/// The floor is set to **8 GiB**: above the measured 6.56 GiB peak with room
-/// for a concurrently-served whisper + piper pair (this harness boots all three
-/// slots), and low enough that an ordinary idle 16 GiB host clears it. It is
-/// deliberately *not* tightened to the measured value — a floor that only just
-/// fits the best observed case turns a memory-pressure flake into a test
-/// failure.
+/// **Read those two rows carefully.** RSS *rose* while the footprint nearly
+/// halved, and that is expected rather than a regression: mapped file pages
+/// count toward RSS once faulted in, but they are clean and the kernel can
+/// drop them at any time. The number that reflects memory this process
+/// actually holds — and therefore the number a "will this thrash" guard should
+/// key on — is the peak footprint, 3.55 GiB. Neither run swapped.
+///
+/// **Floor.** Real requirement is ~3.55 GiB of dirty footprint plus ~0.4 GiB
+/// for the whisper-base + piper slots this harness co-boots, so ~4 GiB. The
+/// floor is set to **6 GiB**: ~50 % headroom over that, so ordinary background
+/// churn cannot turn a passing run into a failure, while still refusing a host
+/// that genuinely has nothing to spare. It is deliberately not tightened to
+/// the measurement — a floor that only just fits the best observed case
+/// converts memory pressure into a test failure.
 ///
 /// If the mapped bind is ever unavailable (a quantized GGUF), the registry
-/// falls back to the resident loader with a printed note, and this floor is
-/// then too low — that path prints its own warning rather than pretending.
-const VOXTRAL_MIN_FREE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+/// falls back to the resident loader and prints why; this floor is far too low
+/// for that path, which is exactly why that fallback is loud.
+const VOXTRAL_MIN_FREE_BYTES: u64 = 6 * 1024 * 1024 * 1024;
 
 /// Read deadline for a real-weight transcription. The shared default (5 s)
 /// is tuned for the hermetic suites; a real Whisper size on ~11 s of audio,
@@ -649,9 +658,9 @@ async fn voxtral_slot_advertises_and_routes() {
         Some(avail) => {
             eprintln!(
                 "real_gguf_slots: SKIPPING voxtral slot — only {:.2} GiB available, need >= \
-                 {:.2} GiB for the {:.2} GiB checkpoint (mapped bind: measured peak 6.56 GiB \
-                 end-to-end, floor set above it with headroom for the co-resident whisper + \
-                 piper slots). Re-run on an idle host.",
+                 {:.2} GiB for the {:.2} GiB checkpoint (mapped bind: measured peak footprint 3.55 GiB \
+                 end-to-end, floor set well above it with headroom for the co-resident \
+                 whisper + piper slots). Re-run on an idle host.",
                 avail as f64 / 1073741824.0,
                 VOXTRAL_MIN_FREE_BYTES as f64 / 1073741824.0,
                 size as f64 / 1073741824.0,

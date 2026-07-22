@@ -432,6 +432,7 @@ mod tests {
             final_norm_gamma: vec![1.0f32; d],
             prefix: "",
             mapped: None,
+            mapped_heads: None,
         }
     }
 
@@ -517,6 +518,7 @@ mod tests {
             final_norm_gamma: Vec::new(),
             prefix: "",
             mapped: None,
+            mapped_heads: None,
         };
         match VoxtralMetalDecodeSession::new_from_decoder(&cfg, &td) {
             Ok(_) => panic!("must fail on 0-sentinel config"),
@@ -695,6 +697,7 @@ mod tests {
             final_norm_gamma: Vec::new(),
             prefix: "",
             mapped: None,
+            mapped_heads: None,
         };
         match VoxtralMetalDecodeSession::new_from_decoder_full_residency(&cfg, &td) {
             Ok(_) => panic!("must fail on 0-sentinel config"),

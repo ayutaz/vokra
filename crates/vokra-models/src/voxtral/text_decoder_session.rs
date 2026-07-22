@@ -738,6 +738,7 @@ mod tests {
             final_norm_gamma,
             prefix: "",
             mapped: None,
+            mapped_heads: None,
         }
     }
 
@@ -752,6 +753,7 @@ mod tests {
             final_norm_gamma: Vec::new(),
             prefix: "",
             mapped: None,
+            mapped_heads: None,
         };
         let err = match TextDecoderSession::new(&cfg, &td, BackendKind::Cpu) {
             Ok(_) => panic!("must fail — TextDecoderSession is not Debug"),
