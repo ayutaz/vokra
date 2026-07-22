@@ -42,11 +42,47 @@ U8, I8, U16, I16, U32, I32, F32, BOOL, STR, ARR, U64, I64, F64 = range(13)
 _FIXED = {U8: 1, I8: 1, U16: 2, I16: 2, U32: 4, I32: 4, F32: 4, BOOL: 1,
           U64: 8, I64: 8, F64: 8}
 
-# Licence classes that must never be republished by Vokra. Mirrors
-# `LicenseClass::requires_research_flag` in
-# crates/vokra-core/src/compliance/license_class.rs — kept as literal strings
+# Publication tiers, mirroring `LicenseClass` in
+# crates/vokra-core/src/compliance/license_class.rs. Kept as literal strings
 # because this script must not depend on the Rust build.
-NO_REDISTRIBUTE = {"noncommercial", "noncommercial-sharealike", "unknown"}
+#
+# The distinction that matters: a class being restrictive is NOT a reason to
+# refuse. Copyleft and non-commercial weights are redistributable under their
+# own terms; what changes is which obligations the card has to carry. Only two
+# things are actually refusable — a contractual ban on redistribution, and an
+# artifact that cannot state its own terms.
+PUBLISHABLE = {
+    "permissive",
+    "attribution-required",
+    "copyleft",
+    "conditional-commercial",
+    "noncommercial",
+    "noncommercial-sharealike",
+    "non-commercial",
+    "non-commercial-share-alike",
+}
+
+# Never publishable, under any flag. The prohibition is contractual, so no
+# condition on our side makes it lawful.
+FORBIDDEN = {"redistribution-forbidden"}
+
+# Cannot document its own terms -> not redistributable.
+FAIL_CLOSED = {"unknown"}
+
+# Classes whose licence must survive onto the artifact unchanged. Relabelling
+# one of these as Apache-2.0 misstates what a downstream user is bound by.
+LICENSE_PRESERVED = {
+    "copyleft",
+    "noncommercial-sharealike",
+    "non-commercial-share-alike",
+}
+
+NONCOMMERCIAL = {
+    "noncommercial",
+    "non-commercial",
+    "noncommercial-sharealike",
+    "non-commercial-share-alike",
+}
 
 TASK_HINTS = {
     "silero-vad": ("Voice activity detection", "vad"),
@@ -205,7 +241,7 @@ def usage_block(arch, name, filename):
     return label, dl + "\n" + run
 
 
-def build_card(path, repo_name=None):
+def build_card(path, repo_name=None, allow_noncommercial=False):
     g = GgufReader(path)
     arch = g.get("vokra.model.arch")
     name = repo_name or g.get("vokra.model.name") or arch or Path(path).stem
@@ -223,11 +259,25 @@ def build_card(path, repo_name=None):
             "not document its own licence, so it must not be republished. "
             "Re-convert with a current vokra-convert, which stamps provenance."
         )
-    if cls in NO_REDISTRIBUTE:
+    if cls in FORBIDDEN:
         raise Refusal(
-            f"{path}: weight licence class `{cls}` — Vokra may run this behind a "
-            "research flag but must not redistribute it. Publishing refused "
-            "(FR-CP-03 / NFR-LC-04)."
+            f"{path}: weight licence class `{cls}` — redistribution is barred by "
+            "contract or terms of use, not by a licence condition, so there is "
+            "nothing we can add to the card to make publishing lawful. Refused "
+            "unconditionally."
+        )
+    if cls in FAIL_CLOSED or cls not in PUBLISHABLE:
+        raise Refusal(
+            f"{path}: weight licence class `{cls}` is unrecognised or "
+            "unclassifiable — an artifact whose terms we cannot state must not "
+            "be republished. Re-convert, or classify it explicitly first."
+        )
+    if cls in NONCOMMERCIAL and not allow_noncommercial:
+        raise Refusal(
+            f"{path}: weight licence class `{cls}` is non-commercial. Publishing "
+            "it is an owner policy decision, so it is off by default; pass "
+            "--allow-noncommercial to acknowledge that the card will carry an "
+            "explicit non-commercial banner."
         )
     if cls == "attribution-required" and not attribution:
         # CC-BY obliges the *redistributor* to carry attribution. Publishing a
@@ -295,6 +345,60 @@ def build_card(path, repo_name=None):
         "your obligations run to the upstream author.",
         "",
     ]
+    # --- tier-specific obligations -------------------------------------
+    #
+    # These sit directly under "Licence" because they are what a reader has to
+    # act on. A card that states the licence name but not what it obliges is
+    # only half a notice.
+    if cls in LICENSE_PRESERVED:
+        body += [
+            "### ⚠️ Share-alike / copyleft — this licence travels with the file",
+            "",
+            f"This weight is **{lic}**, and that licence is *not* discharged by "
+            "attribution alone. It attaches to derivatives.",
+            "",
+            "- This GGUF is a **conversion of an upstream weight**, so it is "
+            f"itself **{lic}** — not Apache-2.0, and not covered by Vokra's own "
+            "licence.",
+            "- Anything you derive from it (a fine-tune, a re-quantisation, a "
+            "further format conversion) carries the same licence.",
+            "- Vokra's runtime is Apache-2.0. **Loading this weight does not "
+            "change that**, because these licences restrict the terms of "
+            "redistribution, not use. Shipping the *weight* onward is what "
+            "carries the obligation.",
+            "",
+        ]
+    if cls in NONCOMMERCIAL:
+        body += [
+            "### ⛔ Non-commercial — you may not use this weight commercially",
+            "",
+            f"The upstream weight is **{lic}**. It is republished here so the "
+            "model can be evaluated and used for research, and the licence is "
+            "unchanged by conversion.",
+            "",
+            "- **Do not use this in a commercial product or service.** That "
+            "restriction is upstream's, not Vokra's, and Vokra cannot waive it.",
+            "- Vokra's engine is Apache-2.0 and imposes no such limit — the "
+            "limit is on **this weight**. Other models in this organisation are "
+            "permissively licensed; check each one's card.",
+            "- Vokra's runtime refuses to load a non-commercial weight unless "
+            "an explicit research flag is set, so this restriction is enforced "
+            "at load time rather than left to the reader.",
+            "",
+        ]
+    if cls == "conditional-commercial":
+        body += [
+            "### ⚠️ Commercial use is conditional on a threshold",
+            "",
+            f"**{lic}** permits commercial use only below a stated threshold "
+            "(typically annual revenue or monthly active users); above it a "
+            "separate grant from the upstream author is required.",
+            "",
+            "**The threshold applies to you, not to Vokra** — we cannot "
+            "evaluate it on your behalf. Read the upstream licence before "
+            "shipping anything built on this weight.",
+            "",
+        ]
     if attribution:
         body += [
             "### Attribution required",
@@ -323,7 +427,9 @@ class Refusal(Exception):
 
 
 def self_test():
-    """Builds throwaway GGUFs and checks the gate both permits and refuses."""
+    """Both directions matter: refusing what must be refused, and *publishing*
+    what is publishable. An over-strict gate is a silent failure too — it looks
+    safe while quietly blocking work that was always allowed."""
     import tempfile
 
     def gguf(kvs):
@@ -336,52 +442,117 @@ def self_test():
             out += struct.pack("<Q", len(v)) + v.encode()
         return bytes(out)
 
+    def write(td, name, kvs):
+        p = Path(td) / name
+        p.write_bytes(gguf(kvs))
+        return p
+
     failures = []
+    cases = 0
     with tempfile.TemporaryDirectory() as td:
-        permissive = Path(td) / "ok.gguf"
-        permissive.write_bytes(gguf([
+        # --- T1 permissive: publishes, no banners --------------------------
+        p = write(td, "ok.gguf", [
             ("vokra.model.arch", "silero-vad"),
             ("vokra.model.name", "silero-vad-v5"),
             ("vokra.provenance.weight_license", "permissive"),
             ("vokra.provenance.license", "MIT"),
             ("vokra.provenance.source", "snakers4/silero-vad v5 (MIT)"),
-        ]))
-        card = build_card(permissive)
-        for must in ("license: MIT", "silero-vad-v5", "vokra-cli run",
-                     "snakers4/silero-vad", "SHA-256"):
+        ])
+        card = build_card(p)
+        cases += 1
+        for must in ("license: MIT", "silero-vad-v5", "vokra-cli run", "SHA-256"):
             if must not in card:
                 failures.append(f"permissive card missing {must!r}")
+        for must_not in ("Share-alike", "Non-commercial", "threshold"):
+            if must_not in card:
+                failures.append(f"permissive card wrongly carries {must_not!r}")
 
-        for cls in sorted(NO_REDISTRIBUTE):
-            p = Path(td) / f"{cls}.gguf"
-            p.write_bytes(gguf([
-                ("vokra.model.arch", "f5-tts"),
-                ("vokra.provenance.weight_license", cls),
-                ("vokra.provenance.license", "CC-BY-NC-4.0"),
-            ]))
+        # --- T3 copyleft: publishes, and says the licence travels ----------
+        p = write(td, "sa.gguf", [
+            ("vokra.model.arch", "style-bert-vits2"),
+            ("vokra.provenance.weight_license", "copyleft"),
+            ("vokra.provenance.license", "CC-BY-SA-4.0"),
+            ("vokra.provenance.attribution", "Upstream author, CC BY-SA 4.0"),
+        ])
+        card = build_card(p)
+        cases += 1
+        if "license: CC-BY-SA-4.0" not in card:
+            failures.append("copyleft card must keep the original licence label")
+        if "Share-alike" not in card or "carries the same licence" not in card:
+            failures.append("copyleft card must state that the licence propagates")
+
+        # --- T4 non-commercial: off by default, on with the flag -----------
+        p = write(td, "nc.gguf", [
+            ("vokra.model.arch", "f5-tts"),
+            ("vokra.provenance.weight_license", "noncommercial"),
+            ("vokra.provenance.license", "CC-BY-NC-4.0"),
+        ])
+        cases += 1
+        try:
+            build_card(p)
+            failures.append("non-commercial published without the explicit flag")
+        except Refusal:
+            pass
+        cases += 1
+        card = build_card(p, allow_noncommercial=True)
+        if "license: CC-BY-NC-4.0" not in card:
+            failures.append("NC card must keep the original licence label")
+        if "may not use this weight commercially" not in card:
+            failures.append("NC card must carry an unmissable non-commercial banner")
+
+        # --- conditional-commercial: publishes, states the threshold -------
+        p = write(td, "cond.gguf", [
+            ("vokra.model.arch", "indextts2"),
+            ("vokra.provenance.weight_license", "conditional-commercial"),
+            ("vokra.provenance.license", "bilibili Model Use License"),
+        ])
+        card = build_card(p)
+        cases += 1
+        if "threshold" not in card:
+            failures.append("conditional card must state the threshold applies")
+
+        # --- T5 forbidden: refused unconditionally, even with the flag -----
+        p = write(td, "forbidden.gguf", [
+            ("vokra.model.arch", "voicevox"),
+            ("vokra.provenance.weight_license", "redistribution-forbidden"),
+            ("vokra.provenance.license", "VOICEVOX terms"),
+        ])
+        for flag in (False, True):
+            cases += 1
             try:
-                build_card(p)
-                failures.append(f"class {cls!r} was NOT refused")
+                build_card(p, allow_noncommercial=flag)
+                failures.append(
+                    f"redistribution-forbidden published (allow_noncommercial={flag})"
+                )
             except Refusal:
                 pass
 
-        attr_missing = Path(td) / "attr.gguf"
-        attr_missing.write_bytes(gguf([
+        # --- unstamped / unknown: fail closed ------------------------------
+        for name, kvs in [
+            ("bare.gguf", [("vokra.model.arch", "whisper")]),
+            ("unk.gguf", [
+                ("vokra.model.arch", "mystery"),
+                ("vokra.provenance.weight_license", "unknown"),
+            ]),
+        ]:
+            p = write(td, name, kvs)
+            cases += 1
+            try:
+                build_card(p, allow_noncommercial=True)
+                failures.append(f"{name} was NOT refused")
+            except Refusal:
+                pass
+
+        # --- attribution-required without the text -------------------------
+        p = write(td, "attr.gguf", [
             ("vokra.model.arch", "mimi"),
             ("vokra.provenance.weight_license", "attribution-required"),
             ("vokra.provenance.license", "CC-BY-4.0"),
-        ]))
+        ])
+        cases += 1
         try:
-            build_card(attr_missing)
+            build_card(p)
             failures.append("attribution-required without text was NOT refused")
-        except Refusal:
-            pass
-
-        bare = Path(td) / "bare.gguf"
-        bare.write_bytes(gguf([("vokra.model.arch", "whisper")]))
-        try:
-            build_card(bare)
-            failures.append("an unstamped artifact was NOT refused")
         except Refusal:
             pass
 
@@ -389,8 +560,7 @@ def self_test():
         for f in failures:
             print(f"FAIL: {f}", file=sys.stderr)
         return 1
-    print(f"make_model_card self-test: OK "
-          f"({1 + len(NO_REDISTRIBUTE) + 2} cases)")
+    print(f"make_model_card self-test: OK ({cases} cases)")
     return 0
 
 
@@ -400,6 +570,12 @@ def main():
     ap.add_argument("--out", help="write the card here (default: stdout)")
     ap.add_argument("--repo-name", help="override the model name in the card")
     ap.add_argument("--print", action="store_true", help="write to stdout")
+    ap.add_argument(
+        "--allow-noncommercial",
+        action="store_true",
+        help="permit non-commercial weights (owner policy decision; the card "
+             "gains an explicit non-commercial banner)",
+    )
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
 
@@ -409,7 +585,7 @@ def main():
         ap.error("a GGUF path is required (or --self-test)")
 
     try:
-        card = build_card(a.gguf, a.repo_name)
+        card = build_card(a.gguf, a.repo_name, a.allow_noncommercial)
     except Refusal as e:
         print(f"make_model_card: REFUSED — {e}", file=sys.stderr)
         return 2
