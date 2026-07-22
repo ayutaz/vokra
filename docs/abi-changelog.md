@@ -366,6 +366,39 @@ addition and gets its own row in the "GGUF Metadata additions" section.
 | `vokra-core::decode::wfst`  | `WfstDecoder` / `WfstDecodeConfig`                | Added | `WfstDecoder::new(&fst).decode(&emission) -> Result<Option<WfstHypothesis>>`      | frame-synchronous token-passing decode + `decode_nbest` + `lattice`          | no        | (TBD) |
 | `vokra-core::decode::wfst`  | `WfstLattice` / `WfstHypothesis` / `LatArc`       | Added | lattice + best-path + n-best output types                                         | decode output (best-first n-best mirrors `BeamHypothesis`)                    | no        | (TBD) |
 
+### 2026-07-23 — 1.0.0-rc.1-dev (HF publication: LicenseClass gains three variants — Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+untouched; `LicenseClass` is a host-side compliance type and has never been a C
+export. Recorded here because it is a public enum without `#[non_exhaustive]`,
+so downstream exhaustive `match`es would need a new arm (permitted under the
+Pre-1.0 / prerelease policy: rename/remove free, changelog entry required).
+
+| Crate / area | Symbol | Kind | Signature / shape | Rationale | Breaking? | PR |
+| --- | --- | --- | --- | --- | --- | --- |
+| `vokra-core::compliance` | `LicenseClass::Copyleft` | Added | enum variant, wire name `"copyleft"` | Share-alike / strong copyleft (CC-BY-SA, AGPL, GPL, LGPL): redistribution permitted **with the licence preserved**. Previously CC-BY-SA mis-classified as `AttributionRequired` and AGPL fell to `Unknown`. | yes (exhaustive match) | (TBD) |
+| `vokra-core::compliance` | `LicenseClass::RedistributionForbidden` | Added | enum variant, wire name `"redistribution-forbidden"` | Contractual bans that no licence string expresses (VOICEVOX reverse-engineering clause, CSJ agreement, JSUT/JVS corpus terms). **Never inferred from text** — set only from an explicit list. | yes | (TBD) |
+| `vokra-core::compliance` | `LicenseClass::ConditionalCommercial` | Added | enum variant, wire name `"conditional-commercial"` | Threshold-conditioned commercial grants (LFM ≥$10M revenue, Boson >100k AAU, IndexTTS-2 >100M MAU). | yes | (TBD) |
+| `vokra-core::compliance` | `LicenseClass::redistributable` | Added | `pub fn redistributable(self) -> bool` | The **publishing** gate, deliberately separate from the loading gate (`requires_research_flag`). The two answers differ for nearly every non-permissive class. | no | (TBD) |
+| `vokra-core::compliance` | `LicenseClass::requires_license_preserved` | Added | `pub fn requires_license_preserved(self) -> bool` | Whether republishing must carry the original licence unchanged (relabelling a CC-BY-SA-derived GGUF as Apache-2.0 is a misrepresentation). | no | (TBD) |
+
+**Behaviour changes to existing variants** (no signature change):
+
+- `from_license_str` now tests share-alike / copyleft **before** the plain
+  `cc-by` arm. `cc-by-sa-4.0` contains `cc-by`, so the previous ordering
+  reported every share-alike weight as attribution-only. Load-bearing today:
+  Style-Bert-VITS2's mandatory runtime BERT and the JVNV weights are both
+  `cc-by-sa-4.0`.
+- `agpl-3.0` / `gpl-*` / `lgpl-*` / `openrail` now classify as `Copyleft`
+  instead of `Unknown`. These licences do not restrict *use*, so such weights
+  **no longer require a research flag to load** — the old gating was an
+  artifact of an unrecognised string, not a considered position.
+- `commercial_ok` returns `true` for `Copyleft` (AGPL/GPL/CC-BY-SA all permit
+  commercial use) and no longer doubles as the official-zoo admission test;
+  that question moved to `redistributable`.
+- `requires_attribution` now also covers `Copyleft` and
+  `NonCommercialShareAlike`, whose licences carry BY / notice-retention terms.
+
 ### 2026-07-20 — 1.0.0-rc.1-dev (M5-14-BACKLOG: batched-beam scoring interface — Rust surface only)
 
 Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
