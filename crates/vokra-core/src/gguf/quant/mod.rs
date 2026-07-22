@@ -24,6 +24,10 @@
 
 use super::GgufError;
 use super::tensor::{GgmlType, QK_K};
+// M5-03-T05: `Vec` and the `format!` macro are `alloc` (core-clean); the no_std
+// subset imports them (inert under std, where they are in the prelude).
+#[cfg(not(feature = "std"))]
+use alloc::{format, vec::Vec};
 
 mod q4_k;
 mod q5_k;
@@ -81,6 +85,23 @@ fn decode_f16(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+/// `2.0_f32.powi(n)` computed without `std` — `f32::powi` lives in `std`, not
+/// `core`, so the no_std subset (M5-03-T05) cannot call it. Every `n` this is
+/// reached with in [`f16_to_f32`] — `-24` (the subnormal scale) and
+/// `exp - 15 ∈ [-14, 15]` (the normal `f16` exponents) — is an exactly-
+/// representable normal power of two, so assembling it directly in the IEEE-754
+/// exponent field is **bit-identical** to `2.0_f32.powi(n)` (which, for base 2,
+/// is likewise exact). Not a general `powi`: valid only for the normal range.
+#[inline]
+fn exp2i(n: i32) -> f32 {
+    debug_assert!(
+        (-126..=127).contains(&n),
+        "exp2i is only exact for normal f32 exponents"
+    );
+    // Biased exponent field = n + 127, mantissa 0 ⇒ the value 2^n.
+    f32::from_bits(((n + 127) as u32) << 23)
+}
+
 /// IEEE-754 half → single precision (safe, exact; handles subnormals, inf and
 /// NaN). Shared by the dense `F16` path and the K-quant super-block scales,
 /// which store `d` / `dmin` as `ggml_half` (`f16`).
@@ -90,7 +111,7 @@ pub fn f16_to_f32(h: u16) -> f32 {
     let mant = h & 0x3ff;
     let sign_f = if sign == 1 { -1.0f32 } else { 1.0f32 };
     match exp {
-        0 => sign_f * (mant as f32) * 2.0f32.powi(-24), // subnormal / zero
+        0 => sign_f * (mant as f32) * exp2i(-24), // subnormal / zero
         0x1f => {
             if mant == 0 {
                 sign_f * f32::INFINITY
@@ -98,7 +119,7 @@ pub fn f16_to_f32(h: u16) -> f32 {
                 f32::NAN
             }
         }
-        _ => sign_f * (1.0 + (mant as f32) / 1024.0) * 2.0f32.powi(exp as i32 - 15),
+        _ => sign_f * (1.0 + (mant as f32) / 1024.0) * exp2i(exp as i32 - 15),
     }
 }
 

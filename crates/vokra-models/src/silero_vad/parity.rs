@@ -20,13 +20,13 @@
 //! float32 tensors; small accumulation-order differences stay well inside it.
 
 use vokra_core::engines::VadEngine;
-use vokra_core::gguf::GgufFile;
+use vokra_core::gguf::{AsBytes, GgufFile};
+use vokra_vad_micro::{
+    LstmState, SampleRate, SileroWeights, encode, pseudo_stft, run_frame, stft_conv,
+};
 
-use super::encoder::encode;
-use super::pseudo_stft::{pseudo_stft, stft_conv};
 use super::wav::read_wav_f32;
-use super::weights::SileroWeights;
-use super::{SampleRate, SileroVadV5, parity_dir, test_gguf_path};
+use super::{SileroVadV5, parity_dir, test_gguf_path};
 
 /// FP32 numerical parity tolerance (NFR-QL-01).
 const ATOL: f32 = 0.01;
@@ -453,4 +453,78 @@ fn vad_real_speech_jfk_8k_official_context() {
         "raw-256 must yield no segments at threshold 0.5 (the documented gap); \
          got {raw_segments:?} with peak {raw_max}"
     );
+}
+
+// ---- M5-03 T11: host-executable no_std ↔ std bit-identical differential ----
+
+/// A `&'static [u8]`-style owner standing in for the Cortex-M55 flash/XIP
+/// mapping the no_std subset loads GGUF from (`GgufFile::from_external`).
+struct FlashImage(Vec<u8>);
+
+impl AsBytes for FlashImage {
+    fn bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// T11 (M5-03): the no_std Silero forward, loaded through the **exact** path the
+/// Cortex-M55 build uses — `GgufFile::from_external` over a flash/XIP-style byte
+/// image, then [`SileroWeights::from_gguf`] + [`run_frame`] (no `f32::exp` /
+/// `tanh` / `sqrt`, no `std`) — must be **element-wise bit-identical** (`==`,
+/// not a tolerance) to the std `SileroVadV5` forward loaded from the filesystem.
+///
+/// This is bit-identical *by construction*: the transcendentals are the shared
+/// `vokra_vad_micro::scalar` port (T08) and the forward is the single source in
+/// `vokra-vad-micro` (the std `SileroVadV5` delegates to it). The test PINS that
+/// invariant — it fails if a future change makes the std path diverge from the
+/// no_std path (e.g. reintroducing a std-only transcendental on one side) or if
+/// the `from_external` load path binds different weights than `open`.
+fn assert_nostd_forward_bit_identical(wav_name: &str, rate: SampleRate) {
+    // std side: filesystem load + the raw 1:1 stream (bare frames, LSTM state
+    // carried, no rolling context) — the interface whose forward is `run_frame`.
+    let std_model = SileroVadV5::open(test_gguf_path()).expect("std open");
+    let wav = read_wav_f32(parity_dir().join(wav_name)).expect("read fixture wav");
+    assert_eq!(wav.sample_rate, rate.hz(), "fixture rate");
+    let mut std_stream = std_model.open_raw_stream();
+    let std_probs = std_stream.push_pcm(&wav.samples, rate.hz()).unwrap();
+
+    // no_std side: the SAME GGUF bytes, loaded via `from_external` (there is no
+    // `GgufFile::open` under `#![no_std]`), bound with the no_std binder, and run
+    // through `run_frame` in a hand-rolled raw loop — bit-for-bit what the
+    // Cortex-M55 firmware would execute.
+    let bytes = std::fs::read(test_gguf_path()).expect("read gguf bytes");
+    let gguf = GgufFile::from_external(Box::new(FlashImage(bytes))).expect("from_external");
+    let weights = SileroWeights::from_gguf(&gguf).expect("no_std bind");
+    let rw = weights.rate(rate).expect("rate present");
+    let frame_len = rate.frame_len();
+    let mut state = LstmState::zeros();
+    let mut micro_probs = Vec::new();
+    for frame in wav.samples.chunks_exact(frame_len) {
+        micro_probs.push(run_frame(rate, rw, frame, &mut state));
+    }
+
+    assert_eq!(
+        std_probs.len(),
+        micro_probs.len(),
+        "{} Hz frame count",
+        rate.hz()
+    );
+    // Bit-identical (`==`), NOT within a tolerance — the whole point of the
+    // shared single-source forward (M5-03 T08/T11).
+    assert_eq!(
+        std_probs,
+        micro_probs,
+        "{} Hz: no_std (from_external + run_frame) must be bit-identical to std SileroVadV5",
+        rate.hz()
+    );
+}
+
+#[test]
+fn nostd_forward_bit_identical_to_std_16k() {
+    assert_nostd_forward_bit_identical("test_16k.wav", SampleRate::Hz16000);
+}
+
+#[test]
+fn nostd_forward_bit_identical_to_std_8k() {
+    assert_nostd_forward_bit_identical("test_8k.wav", SampleRate::Hz8000);
 }

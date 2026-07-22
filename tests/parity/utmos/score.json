@@ -1,0 +1,7 @@
+{
+  "clip": "ref-clip.wav",
+  "sample_rate": 16000,
+  "expected_score": 1.3047215938568115,
+  "atol": 3e-07,
+  "provenance": "sarulab-speech/UTMOS-demo space rev 47212055c2ec (model.py sha256 79ca330b7d7fd83304b7254e10c5c3a0e0c30c2b8ae3af90847353ae8f6336d4, lightning_module.py sha256 def23a75821bb662ba95220bbb241f6762d59689f763bc007d9b8c3b254c313f) + fairseq @ d03f4e771484a433f025f47744017c2eb6e9c6bc, ckpt epoch=3-step=7459.ckpt sha256 44c57e3e4135a243b43d2c82b6a693fcd56f15f9ad0e1eb2a8b31fdecd3a49b8; generated 2026-07-20 by tools/parity/utmos_dump_reference.py (imports the upstream implementation; no mirror). Env delta vs the torch 1.11.0 pin (no macOS-arm64 wheel): torch 2.8.0 / pytorch-lightning 1.9.5 / omegaconf 2.1.2 / Python 3.9.6, M1 iMac arm64. Reference re-run band 0.0 (upstream CPU inference is deterministic over 3 runs), so the bound is the cross-implementation delta: measured |delta| 1.192e-07 x ~2.5 = 3e-07. ISA-calibrated on arm64/NEON - an x86 excursion is a re-derivation, not a widening (Kokoro AVX2/AVX-512 precedent)."
+}

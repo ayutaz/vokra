@@ -71,6 +71,31 @@ integrations/vokra-godot/pkg/
 # would both disclose that and 404 for every reader. Untracked BEFORE it ever
 # reached origin/main, so no history rewrite was needed.
 /docs/m4-residual-audit-2026-07-19.md
+# Fourth batch (2026-07-20, M5-10/11-MATERIAL T01 default proposal — owner
+# ratifies via T05(iv); see docs/adr/M5-10-11-material-pack.md Decision 2):
+# the EU legal-consultation evidence pack and the funding-pitch bench pack are
+# internal material for the owner critical path (M5-10 EU cert / M5-11 seed).
+# The evidence pack cites gitignore-local docs (milestones.md / system-
+# requirements.md line numbers that 404 in a public clone) and catalogues
+# compliance gaps (watermark embedding deferred, disclosure enforcement
+# unwired); the pitch pack's numbers are already public but its funding framing
+# (positioning / seed size / competitor strategy) is internal. Same class as
+# the m4-residual audit above. Numbers stay sourced from the tracked
+# docs/bench-baselines/*/report.md; external-deck transcription needs owner
+# sign-off (T05(iii)).
+/docs/legal/
+/docs/bench-baselines/pitch-*/
+# Fifth batch (2026-07-21, M5-05-T10): local seed for the SEPARATE
+# `vokra-voiceclone-experimental` repository (RVC v2 / GPT-SoVITS VC/cloning),
+# which by FR-CP-04 / ELVIS Act §3 / NO FAKES Act §4 must NOT ship inside the
+# public `ayutaz/vokra` repo — it is a distinct binary on a distinct
+# distribution channel. The scaffold is a full crate tree (Cargo.toml / LICENSE
+# / NOTICE / README / CI) that `git add -A` would otherwise sweep straight into
+# the public repo — exactly the accident the fourth/third batches above record.
+# It is kept local-only as the split-out seed; the actual repo creation +
+# publish is owner-only (M5-05-T15). Its own isolated workspace has its own
+# Cargo.lock, so it never touches the root zero-dep invariant (NFR-DS-02).
+/staging/
 
 # M4-01: wasm build artifacts (produced by scripts/build-wasm.sh; the npm
 # package assembles them at release time — never committed)

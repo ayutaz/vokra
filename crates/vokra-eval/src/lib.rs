@@ -26,9 +26,13 @@
 
 pub mod cosyvoice2;
 pub mod degradation;
+pub mod dod;
+pub mod gate;
 pub mod manifest;
 pub mod metrics;
+pub mod nn;
 pub mod wav;
+pub mod zoo;
 
 pub use cosyvoice2::{
     COSYVOICE2_MEL_LOSS_THRESHOLD, COSYVOICE2_SAMPLE_RATE, check_cosyvoice2_degradation,
@@ -37,8 +41,13 @@ pub use cosyvoice2::{
 pub use degradation::{
     DegradationReport, MosAssessment, MosDomain, check_degradation, check_degradation_with_utmos,
 };
+pub use dod::{
+    CorpusItem, DOD_ITEM2_THRESHOLD, DodItem2Report, EnvZooRunEnv, Item2RunnerVerdict,
+    RecordOutcome, ZooRunEnv, run_dod_item2,
+};
 pub use manifest::{Manifest, Record};
 pub use metrics::{
     AudioMosMetric, AudioRefMetric, Cer, Direction, MelLoss, Metric, TextMetric, Wer, edit_distance,
 };
 pub use wav::{Wav, read_wav};
+pub use zoo::{GatedSpec, QualityMetric, ZooKind, ZooManifest, ZooModel, ZooMosDomain, ZooTask};

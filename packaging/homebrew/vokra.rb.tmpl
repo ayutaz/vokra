@@ -1,0 +1,30 @@
+# Homebrew formula for the Vokra CLI (X-07-T24).
+#
+# BUILD-FROM-SOURCE (ADR docs/adr/X-07-release-train.md §package-managers):
+# the formula downloads the tag source tarball and builds the `vokra` CLI with
+# cargo (zero external crates — NFR-DS-02 — so the sandboxed build needs no
+# network beyond the tarball). Source-based, so it does NOT depend on the
+# T32-gated desktop binaries.
+#
+# GENERATED FILE — edit packaging/homebrew/vokra.rb.tmpl, then re-run
+# tools/release/gen_package_managers.py. Registry (tap) publish is owner
+# (X-07-T33). SBOM for the shipped closure: @@SBOM_URL@@
+class Vokra < Formula
+  desc "Speech-first inference runtime (ONNX Runtime alternative for speech AI)"
+  homepage "https://github.com/ayutaz/vokra"
+  url "@@BASE_URL@@/@@VERSION@@-src.tar.gz"
+  sha256 "@@SHA256:src@@"
+  license "Apache-2.0"
+  version "@@VERSION@@"
+
+  depends_on "rust" => :build
+
+  def install
+    system "cargo", "build", "--release", "--locked", "-p", "vokra-cli"
+    bin.install "target/release/vokra-cli" => "vokra"
+  end
+
+  test do
+    assert_match "vokra", shell_output("#{bin}/vokra --help 2>&1", 2)
+  end
+end

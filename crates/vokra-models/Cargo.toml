@@ -5,11 +5,33 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+# crates.io listing metadata inherited from [workspace.package] (X-07-T09).
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# docs.rs (X-09b-T17): enable every backend feature so the feature-gated
+# `Compute` arms are documented. Built on an Apple target (verified green
+# locally with `cargo doc --all-features`) so the Metal / CoreML arms render as
+# real rather than cfg'd-out; CUDA / Vulkan / QNN compile via dlopen and WebGPU
+# as an explicit stub on that target. Inert for local builds; adds no deps.
+[package.metadata.docs.rs]
+default-target = "aarch64-apple-darwin"
+all-features = true
 
 [dependencies]
 vokra-core.workspace = true
 vokra-ops.workspace = true
+# M5-03 (案1): the no_std(+alloc) Silero VAD forward core. `silero_vad` is now a
+# std veneer (VadEngine impl + streaming handle + WAV reader + file `open`) over
+# this crate, which holds the shared numeric forward so the Cortex-M55 Tier-3
+# build (`--no-default-features`) never names `vokra-ops` / `vokra-backend-cpu`.
+# Default features (std) here; first-party `vokra-*`, so the root Cargo.lock
+# stays vokra-* only (NFR-DS-02). ADR docs/adr/M5-03-iot-tier3-nostd.md §(a).
+vokra-vad-micro.workspace = true
 # M0-06 reuses the M0-08 CPU compute kernels (gemm / softmax / layer_norm /
 # gelu / conv1d) and the runtime ISA log directly, rather than re-implementing
 # them in the model layer. Native model forwards call these safe wrappers.
@@ -25,7 +47,7 @@ vokra-piper-plus.workspace = true
 # First-party crate, ZERO external deps (raw mmap/MapViewOfFile FFI — no libc /
 # memmap2), so the zero-dependency gate (NFR-DS-02) still holds. Promoted from
 # dev-dependencies (where the Voxtral real-GGUF gated test already used it).
-vokra-mmap = { path = "../vokra-mmap" }
+vokra-mmap.workspace = true
 # Phase 3 (GPU execution): the imperative `Compute` dispatcher routes the model
 # hot path (GEMM first) onto the Metal backend. `vokra-backend-metal` is a
 # first-party `vokra-*` crate with ZERO external deps (raw Objective-C / Metal
@@ -70,6 +92,30 @@ vokra-backend-vulkan = { workspace = true, optional = true }
 # `BackendUnavailable` / `UnsupportedOp` — never a silent CPU fall back
 # (FR-EX-08).
 vokra-backend-webgpu = { workspace = true, optional = true }
+
+# Off by default: the CoreML delegate backend (Apple ANE, M5-01) reached behind
+# the `coreml` feature. An OPTIONAL first-party dep, so default builds never
+# name it (NFR-PT-01). `vokra-backend-coreml` is a first-party `vokra-*` crate
+# with ZERO external deps (raw Objective-C / CoreML framework FFI — NO objc /
+# objc2 / objc2-core-ml / core-foundation binding crate), so the zero-dependency
+# gate (NFR-DS-02) still holds. Its `Compute` arm is additionally
+# `cfg(any(target_os = "macos", target_os = "ios"))`-gated. Scaffold slice: no
+# op has a wired execution path yet, so `for_backend(CoreMl, …)` returns an
+# explicit `UnsupportedOp` (or `BackendUnavailable` with no ANE) — never a
+# silent CPU fall back (FR-EX-08). The op path lands after the M5-01-T02 ADR.
+vokra-backend-coreml = { workspace = true, optional = true }
+# Off by default: the QNN delegate backend (Qualcomm Hexagon NPU, M5-02) reached
+# behind the `qnn` feature. An OPTIONAL first-party dep, so default builds never
+# name it (NFR-PT-01). `vokra-backend-qnn` is a first-party `vokra-*` crate with
+# ZERO external deps (raw QNN / Qualcomm AI Engine Direct FFI loaded at runtime
+# via dlopen — NO qnn-sys / hexagon binding crate, no bundled SDK), so the
+# zero-dependency gate (NFR-DS-02) still holds. Its `Compute` arm is additionally
+# `cfg(any(target_os = "android", "linux", "windows"))`-gated (QNN is NOT an Apple
+# backend and is NOT NNAPI, FR-BE-07). Scaffold slice: no op has a wired
+# execution path yet, so `for_backend(Qnn, …)` returns an explicit `UnsupportedOp`
+# (QNN runtime present) or `BackendUnavailable` (no runtime) — never a silent CPU
+# fall back (FR-EX-08). QNN graph construction lands in the SDK-gated re-issue wave.
+vokra-backend-qnn = { workspace = true, optional = true }
 
 [dev-dependencies]
 # M4-04 T10/T11 (test-only edge, runtime direction untouched): the codec GGUF
@@ -125,6 +171,28 @@ vulkan = ["dep:vokra-backend-vulkan", "vokra-backend-vulkan/vulkan"]
 # context actually compiles on wasm32 — on native targets the backend's
 # target gate keeps the explicit-BackendUnavailable stubs.)
 webgpu = ["dep:vokra-backend-webgpu", "vokra-backend-webgpu/webgpu"]
+# Off by default: enable with `--features coreml` on macOS / iOS to make the
+# CoreML delegate backend (Apple ANE, M5-01) selectable through the `Compute`
+# seam. In the scaffold slice the backend covers no hot op, so any
+# `Compute::for_backend` with `BackendKind::CoreMl` returns an explicit
+# `UnsupportedOp` (an ANE-present host) or `BackendUnavailable` (no ANE) —
+# never a silent CPU fall back (FR-EX-08). The op-execution path lands after
+# the M5-01-T02 model-supply ADR is ratified (owner). On non-Apple targets the
+# backend crate's own target gate keeps it an explicit stub.
+coreml = ["dep:vokra-backend-coreml"]
+# Off by default: enable with `--features qnn` on Android / Linux / Windows to
+# make the QNN delegate backend (Qualcomm Hexagon NPU, M5-02) selectable through
+# the `Compute` seam. Forwards to the backend crate's own `qnn` feature (the
+# `vulkan` pattern) so its raw dlopen FFI actually COMPILES in that build target;
+# it still loads libQnnHtp only at runtime (nothing linked or bundled — Qualcomm
+# EULA install model, NFR-DS-02). In the scaffold slice the backend covers no hot
+# op, so any `Compute::for_backend` with `BackendKind::Qnn` returns an explicit
+# `UnsupportedOp` (a QNN-runtime-present host) or `BackendUnavailable` (no runtime)
+# — never a silent CPU fall back (FR-EX-08). QNN graph construction lands in the
+# SDK-gated re-issue wave (owner T11 gates it). On non-Android/Linux/Windows
+# targets (macOS / iOS / WASM) the backend crate's own target gate keeps it an
+# explicit stub — QNN is NOT an Apple backend and is NOT NNAPI (FR-BE-07).
+qnn = ["dep:vokra-backend-qnn", "vokra-backend-qnn/qnn"]
 
 # M1-01-D: reference RTF bench for the piper-plus native TTS (hand-rolled
 # std::time measurement, no external bench crate — NFR-DS-02). It is env-gated

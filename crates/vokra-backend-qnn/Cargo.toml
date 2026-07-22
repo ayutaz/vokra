@@ -1,0 +1,43 @@
+[package]
+name = "vokra-backend-qnn"
+description = "Vokra QNN delegate backend (Qualcomm Hexagon NPU, Android/Linux/Windows-on-ARM): raw QNN (Qualcomm AI Engine Direct) FFI loaded at RUNTIME via dlopen — NO binding crate, no bundled SDK (Qualcomm EULA install model) — with a library/symbol probe. Scaffold slice of M5-02; the workspace stays dependency-free (NFR-DS-02). QNN graph construction lands in the SDK-gated re-issue wave (owner T11). NOT NNAPI (FR-BE-07): QNN is the Hexagon NPU delegate, NNAPI is permanently unsupported."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = true
+# crates.io listing metadata inherited from [workspace.package] (X-07-T09).
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# docs.rs (X-09b-T17): the raw QNN FFI is behind the opt-in `qnn` feature
+# (a default build is BackendUnavailable stubs). Enable it so docs.rs documents
+# the real dlopen path; it builds on the default Linux target (no device
+# needed). Inert for local builds; adds no deps (NFR-DS-02).
+[package.metadata.docs.rs]
+all-features = true
+
+# Zero external dependencies (NFR-DS-02): the only runtime dependency is the
+# first-party `vokra-core` (for the `Backend` trait / `OpKind` / `VokraError`).
+# The QNN (Qualcomm AI Engine Direct) shared library is loaded at RUNTIME via
+# dlopen / LoadLibrary (Qualcomm EULA install model — nothing is bundled or
+# linked), so Cargo.lock keeps only `vokra-*` crates (scripts/check-zero-deps.sh),
+# and deny.toml bans the QNN/Hexagon binding-crate families as a machine-checked
+# guard (M5-02-T08). NO `qnn-sys` / `hexagon` / equivalent binding crate.
+[dependencies]
+vokra-core.workspace = true
+
+[features]
+# Off by default (NFR-DS-02 / NFR-PT-01). Enabling `qnn` compiles the raw dlopen
+# FFI (`sys`) and the real probe on Android / Linux / Windows targets; on every
+# other target and in default builds the crate reduces to explicit
+# `BackendUnavailable` stubs (no QNN library link is ever seen — QNN is not an
+# Apple backend). Symmetric with `vokra-backend-vulkan`'s own `vulkan` feature;
+# `vokra-models` forwards to it via `vokra-backend-qnn/qnn` (M5-02-T08).
+qnn = []
+
+[lints]
+workspace = true

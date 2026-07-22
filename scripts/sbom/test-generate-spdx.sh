@@ -173,6 +173,54 @@ else
     bad "b9 CARGO_TERM_COLOR=always changed or broke generation (ANSI leaked into \`cargo tree\` parsing)"
 fi
 
+# b10 — X-07-T02: excluded integration workspace (integrations/vokra-godot) is
+# invisible to the root manifest (its own Cargo.toml / Cargo.lock). The
+# --manifest-dir flag runs `cargo tree` there so the release SBOM (X-07-T05
+# godot-package-release) can document that closure. RED before T02: the
+# generator had no way to reach the excluded workspace and `cargo tree -p
+# vokra-godot` from the root fails ("package ID specification did not match").
+GODOT_DIR="$ROOT/integrations/vokra-godot"
+if [ ! -d "$GODOT_DIR" ]; then
+    bad "b10 excluded workspace missing: $GODOT_DIR"
+else
+    GSBOM="$SCRATCH/vokra-godot.spdx.json"
+    if python3 "$GEN" \
+        --package vokra-godot \
+        --manifest-dir "integrations/vokra-godot" \
+        --doc-name vokra-godot-assetlib \
+        --output "$GSBOM" >/dev/null 2>"$SCRATCH/godot.err" \
+        && [ -s "$GSBOM" ]; then
+        gnames="$(python3 -c 'import json,sys; print("\n".join(sorted(p["name"] for p in json.load(open(sys.argv[1]))["packages"])))' "$GSBOM" 2>/dev/null)"
+        # The excluded workspace's own root package must be present, and the
+        # bridged runtime (vokra-capi) it path-depends on must show up in the
+        # closure — proving --manifest-dir resolved the real graph, not the root.
+        if echo "$gnames" | grep -qx "vokra-godot" \
+            && echo "$gnames" | grep -qx "vokra-capi"; then
+            ok "b10 excluded workspace SBOM lists vokra-godot + vokra-capi closure"
+        else
+            bad "b10 excluded workspace SBOM package set wrong: $(echo "$gnames" | tr '\n' ' ')"
+        fi
+        # Determinism must still hold for the excluded-workspace path.
+        python3 "$GEN" --package vokra-godot --manifest-dir "integrations/vokra-godot" \
+            --doc-name vokra-godot-assetlib --output "$SCRATCH/godot2.spdx.json" >/dev/null 2>&1
+        if cmp -s "$GSBOM" "$SCRATCH/godot2.spdx.json"; then
+            ok "b10b excluded workspace SBOM is byte-identical across two runs"
+        else
+            bad "b10b excluded workspace SBOM differs between two runs"
+        fi
+        # The document namespace must carry the ROOT git SHA (git determinism is
+        # not rerouted by --manifest-dir).
+        ROOT_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)"
+        if python3 -c 'import json,sys; ns=json.load(open(sys.argv[1]))["documentNamespace"]; sys.exit(0 if sys.argv[2] in ns else 1)' "$GSBOM" "$ROOT_SHA" 2>/dev/null; then
+            ok "b10c excluded workspace SBOM namespace derives from the root git SHA"
+        else
+            bad "b10c excluded workspace SBOM namespace did not use the root git SHA"
+        fi
+    else
+        bad "b10 excluded workspace generation failed: $(cat "$SCRATCH/godot.err" 2>/dev/null | head -3)"
+    fi
+fi
+
 echo ""
 echo "sbom self-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

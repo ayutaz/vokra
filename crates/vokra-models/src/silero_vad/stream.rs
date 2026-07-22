@@ -29,9 +29,7 @@ use std::sync::Arc;
 use vokra_core::engines::VadStreamHandle;
 use vokra_core::{Result, VokraError};
 
-use super::lstm::LstmState;
-use super::weights::SileroWeights;
-use super::{SampleRate, run_frame};
+use vokra_vad_micro::{LstmState, SampleRate, SileroWeights, run_frame};
 
 /// How PCM frames are presented to the subgraph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,10 +162,10 @@ impl VadStreamHandle for VadStream {
 mod tests {
     use vokra_core::engines::{VadEngine, VadStreamHandle};
     use vokra_core::rng::Xorshift64Star;
+    use vokra_vad_micro::{LstmState, SampleRate, run_frame};
 
-    use super::super::lstm::LstmState;
     use crate::silero_vad::wav::read_wav_f32;
-    use crate::silero_vad::{SampleRate, SileroVadV5, parity_dir, run_frame, test_gguf_path};
+    use crate::silero_vad::{SileroVadV5, parity_dir, test_gguf_path};
 
     fn stream() -> Box<dyn VadStreamHandle + Send> {
         SileroVadV5::open(test_gguf_path())

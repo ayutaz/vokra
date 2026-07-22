@@ -44,6 +44,17 @@ multiple-versions = "warn"
 # of the protobuf / ONNX-runtime crate families — extend it whenever a new
 # crate from these families appears.
 deny = [
+    # libm — M5-03 red line (NFR-DS-02): the no_std subset (Cortex-M55 Tier 3)
+    # needs `exp` / `tanh` / `sqrt`, which live in `std`, not `core`. The obvious
+    # crates.io answer, `libm`, is a NON-`vokra-*` dependency and would break the
+    # zero-dependency invariant (`scripts/check-zero-deps.sh` fails on any
+    # non-vokra entry in Cargo.lock). Vokra supplies these transcendentals as a
+    # from-scratch scalar port instead (crates/vokra-backend-cpu/src/kernels/
+    # scalar_transcendental.rs). Ban `libm` (and its common wrappers) so a stray
+    # dependency cannot pull it in — mirrors the check-zero-deps.sh guard.
+    { crate = "libm", reason = "M5-03 red line / NFR-DS-02: no_std transcendentals are a from-scratch scalar port; no libm crate" },
+    { crate = "micromath", reason = "M5-03 red line / NFR-DS-02: no_std transcendentals are a from-scratch scalar port; no external math crate" },
+    { crate = "libm-sys", reason = "M5-03 red line / NFR-DS-02: no_std transcendentals are a from-scratch scalar port; no libm crate" },
     # protobuf family
     { crate = "protobuf", reason = "FR-LD-05 / NFR-DS-02 / X-08: no protobuf in the runtime dependency graph" },
     { crate = "protobuf-codegen", reason = "FR-LD-05 / NFR-DS-02 / X-08: no protobuf in the runtime dependency graph" },
@@ -110,4 +121,35 @@ deny = [
     { crate = "wasm-bindgen-futures", reason = "M4-01 red line / NFR-DS-02: JS glue is hand-written; no wasm-bindgen toolchain (ADR M4-01 §5/§6)" },
     { crate = "js-sys", reason = "M4-01 red line / NFR-DS-02: JS glue is hand-written; no wasm-bindgen toolchain (ADR M4-01 §5/§6)" },
     { crate = "web-sys", reason = "M4-01 red line / NFR-DS-02: JS glue is hand-written; no wasm-bindgen toolchain (ADR M4-01 §5/§6)" },
+    # Objective-C / Apple-framework binding crates — the M2-01 (Metal) red line,
+    # extended by M5-01 (CoreML). Both backends talk to the Objective-C runtime
+    # and their Apple frameworks through hand-declared `unsafe extern` blocks
+    # linked with `#[link(kind = "framework")]`; a binding crate would add
+    # non-`vokra-*` entries to Cargo.lock (NFR-DS-02). This ban was previously
+    # documented only in the Metal crate docs — M5-01-T08 wires it into the
+    # machine-checked gate so a stray dependency cannot pull one in.
+    { crate = "objc", reason = "M2-01 / M5-01 red line / NFR-DS-02: Metal & CoreML use raw ObjC-runtime FFI; no binding crate" },
+    { crate = "objc2", reason = "M2-01 / M5-01 red line / NFR-DS-02: Metal & CoreML use raw ObjC-runtime FFI; no binding crate" },
+    { crate = "objc-sys", reason = "M2-01 / M5-01 red line / NFR-DS-02: Metal & CoreML use raw ObjC-runtime FFI; no binding crate" },
+    { crate = "objc2-core-ml", reason = "M5-01 red line / NFR-DS-02: CoreML is reached via raw framework FFI; no binding crate" },
+    { crate = "objc2-foundation", reason = "M2-01 / M5-01 red line / NFR-DS-02: Foundation is reached via raw framework FFI; no binding crate" },
+    { crate = "objc2-metal", reason = "M2-01 red line / NFR-DS-02: Metal is reached via raw framework FFI; no binding crate" },
+    { crate = "core-foundation", reason = "M2-01 / M5-01 red line / NFR-DS-02: no CoreFoundation binding crate; raw framework FFI only" },
+    { crate = "core-foundation-sys", reason = "M2-01 / M5-01 red line / NFR-DS-02: no CoreFoundation binding crate; raw framework FFI only" },
+    { crate = "metal", reason = "M2-01 red line / NFR-DS-02: the Metal backend is raw ObjC/Metal FFI; no `metal` binding crate" },
+    { crate = "coreml", reason = "M5-01 red line / NFR-DS-02: the CoreML backend is raw ObjC/CoreML FFI; no `coreml` binding crate" },
+    # QNN / Qualcomm Hexagon binding crates — M5-02 red line (NFR-DS-02): the QNN
+    # delegate backend loads the Qualcomm AI Engine Direct runtime (libQnnHtp.so /
+    # QnnHtp.dll) at RUNTIME via dlopen and resolves each symbol by name (Qualcomm
+    # EULA install model — nothing bundled or linked). A binding/wrapper crate
+    # would add non-`vokra-*` entries to Cargo.lock. Ban the plausible families so
+    # a stray dependency cannot introduce one. NOTE: this is DISTINCT from the
+    # NNAPI ban above — QNN targets the Hexagon NPU through Qualcomm's own SDK,
+    # whereas NNAPI (permanently unsupported, FR-BE-07) is the Android abstraction
+    # Google deprecated in Android 15. They are not the same thing.
+    { crate = "qnn", reason = "M5-02 red line / NFR-DS-02: the QNN backend is raw dlopen FFI; no `qnn` binding crate (NOT NNAPI — FR-BE-07)" },
+    { crate = "qnn-sys", reason = "M5-02 red line / NFR-DS-02: the QNN backend is raw dlopen FFI; no `qnn-sys` binding crate" },
+    { crate = "qualcomm-qnn", reason = "M5-02 red line / NFR-DS-02: the QNN backend is raw dlopen FFI; no Qualcomm QNN binding crate" },
+    { crate = "hexagon", reason = "M5-02 red line / NFR-DS-02: the QNN backend is raw dlopen FFI; no Hexagon binding crate" },
+    { crate = "hexagon-sys", reason = "M5-02 red line / NFR-DS-02: the QNN backend is raw dlopen FFI; no Hexagon binding crate" },
 ]

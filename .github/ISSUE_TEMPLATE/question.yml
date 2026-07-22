@@ -1,0 +1,55 @@
+# Question form.
+#
+# NOTE FOR MAINTAINERS: see the header of bug_report.yml. This directory holds
+# exactly two forms; a task / feature-tracking form must not be added (work
+# items live in `docs/tickets/`, maintainer decision 2026-07-19).
+#
+# English-only by design — GitHub Issue Forms have no language switch.
+name: Question
+description: Ask about usage, behaviour, or how to contribute
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Questions are welcome — including "is this supposed to work this way?"
+        and "where would this change go?".
+
+        **日本語で書いていただいて構いません。**
+
+        A few things that may answer it faster than waiting for a reply:
+
+        - [Getting Started](https://github.com/ayutaz/vokra/blob/main/docs/getting-started.md) — build and
+          run in about five minutes
+        - [Architecture](https://github.com/ayutaz/vokra/blob/main/docs/architecture.md) — crate map,
+          execution model, and the design decisions that are fixed
+        - [Requirement ID glossary](https://github.com/ayutaz/vokra/blob/main/docs/requirement-ids.md) —
+          what `FR-EX-08`, `NFR-DS-02` and friends mean when you see them in
+          the source
+        - [Good first tasks](https://github.com/ayutaz/vokra/blob/main/docs/good-first-tasks.md) — if you
+          are looking for somewhere to start
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: >
+        What you are trying to do, and anything you already tried. Optional,
+        but it usually turns one round-trip into zero.
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Vokra version or commit
+      description: Only if your question is about specific behaviour.
+    validations:
+      required: false

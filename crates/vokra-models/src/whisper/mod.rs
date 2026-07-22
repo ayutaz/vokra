@@ -83,7 +83,7 @@ pub use asr::WhisperAsr;
 pub use config::WhisperConfig;
 pub use session::WhisperSession;
 pub use tokenizer::WhisperTokenizer;
-pub use weights::WhisperWeights;
+pub use weights::{QuantBindReport, WhisperLoadOptions, WhisperWeights};
 
 use std::sync::Arc;
 
@@ -139,13 +139,34 @@ impl WhisperModel {
     /// absent; [`VokraError::FrontendMismatch`](vokra_core::VokraError) if the
     /// declared front-end differs from the runtime's.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        Self::from_gguf_with(file, WhisperLoadOptions::default())
+    }
+
+    /// [`from_gguf`](Self::from_gguf) with the M5-15 fused-quant load options.
+    ///
+    /// With [`WhisperLoadOptions::fused_quant_weights`], K-quantized
+    /// projections keep their super-blocks and run the fused INT8 kernels.
+    /// This is **CPU-only** and **not bit-identical** to the dequant path — see
+    /// the option's docs and `docs/adr/M5-15-quant.md`. [`Self::quant_report`]
+    /// says how many weights actually took each route.
+    ///
+    /// # Errors
+    ///
+    /// As [`from_gguf`](Self::from_gguf).
+    pub fn from_gguf_with(file: &GgufFile, opts: WhisperLoadOptions) -> Result<Self> {
         let config = WhisperConfig::from_gguf(file)?;
         // Whisper declares a front-end chunk; check it bit-exact before the
         // heavier weight load. VAD / piper-plus loaders deliberately skip this
         // (they write no `vokra.frontend.*`) — the gating is per-model, by caller.
         mel::check_frontend_spec(file, config.n_mels, FrontendPolicy::Fail)?;
-        let weights = WhisperWeights::load(file, &config)?;
+        let weights = WhisperWeights::load_with(file, &config, opts)?;
         Ok(Self { config, weights })
+    }
+
+    /// What the fused-quant binding did on this load (all-zero for a default
+    /// [`from_gguf`](Self::from_gguf)).
+    pub fn quant_report(&self) -> QuantBindReport {
+        self.weights.quant_report()
     }
 
     /// The model hyperparameters.

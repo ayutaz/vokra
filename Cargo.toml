@@ -27,28 +27,59 @@ edition = "2024"
 rust-version = "1.85"
 # NFR-LC-01: the whole runtime is Apache-2.0.
 license = "Apache-2.0"
-# No crates.io publishing has been decided yet (private repo, v0.1 spike);
-# guard against accidental publishes.
+# crates.io listing metadata (X-07-T09, NFR-DS-03 "Cargo crate"). Inherited by
+# the 15-crate publish set via `<field>.workspace = true` in each crate header;
+# the excluded crates (vokra-eval + the tests/parity / tests/wasm-harness
+# harnesses) do NOT inherit these and stay `publish = false`. `documentation`
+# is intentionally left UNSET so crates.io auto-links each crate to its own
+# docs.rs/<crate> page (X-09b) — a single workspace-wide URL would be wrong for
+# a multi-crate workspace; see ADR docs/adr/X-07-release-train.md §crates.io.
+repository = "https://github.com/ayutaz/vokra"
+homepage = "https://github.com/ayutaz/vokra"
+readme = "README.md"
+keywords = ["audio", "speech", "inference", "tts", "asr"]
+categories = ["multimedia::audio", "science", "api-bindings"]
+# Default is NOT publishable: the workspace-level `publish = false` guards
+# against accidental publishes of any NEW crate (crates.io is an immutable
+# index — a mistaken publish is unrecoverable). Only the 15 crates in the
+# publish closure override this with an explicit `publish = true`; the closure
+# (topological set) is derived mechanically by
+# tools/release/crates_publish_order.py and fixed in the ADR.
 publish = false
 
 [workspace.dependencies]
-vokra-core = { path = "crates/vokra-core" }
-vokra-ops = { path = "crates/vokra-ops" }
-vokra-backend-cpu = { path = "crates/vokra-backend-cpu" }
-vokra-backend-metal = { path = "crates/vokra-backend-metal" }
-vokra-backend-cuda = { path = "crates/vokra-backend-cuda" }
-vokra-backend-vulkan = { path = "crates/vokra-backend-vulkan" }
-vokra-backend-webgpu = { path = "crates/vokra-backend-webgpu" }
-vokra-models = { path = "crates/vokra-models" }
-vokra-piper-plus = { path = "crates/vokra-piper-plus" }
-vokra-capi = { path = "crates/vokra-capi" }
-vokra-mmap = { path = "crates/vokra-mmap" }
+# Intra-workspace path deps. The `version` alongside `path` (X-07-T10) is a
+# no-op for local builds (path wins) but is REQUIRED for `cargo publish`: a
+# published crate cannot reference a path-only dependency — the registry needs a
+# version to resolve. All crates share the workspace version (Cargo.toml:21), so
+# the requirement tracks it. Adding these does NOT change Cargo.lock (path
+# resolution is unchanged — verified by the zero-dep tripwire).
+vokra-core = { path = "crates/vokra-core", version = "0.1.0-alpha.0" }
+vokra-ops = { path = "crates/vokra-ops", version = "0.1.0-alpha.0" }
+vokra-backend-cpu = { path = "crates/vokra-backend-cpu", version = "0.1.0-alpha.0" }
+vokra-backend-metal = { path = "crates/vokra-backend-metal", version = "0.1.0-alpha.0" }
+vokra-backend-cuda = { path = "crates/vokra-backend-cuda", version = "0.1.0-alpha.0" }
+vokra-backend-vulkan = { path = "crates/vokra-backend-vulkan", version = "0.1.0-alpha.0" }
+vokra-backend-webgpu = { path = "crates/vokra-backend-webgpu", version = "0.1.0-alpha.0" }
+vokra-backend-coreml = { path = "crates/vokra-backend-coreml", version = "0.1.0-alpha.0" }
+vokra-backend-qnn = { path = "crates/vokra-backend-qnn", version = "0.1.0-alpha.0" }
+vokra-models = { path = "crates/vokra-models", version = "0.1.0-alpha.0" }
+vokra-piper-plus = { path = "crates/vokra-piper-plus", version = "0.1.0-alpha.0" }
+vokra-capi = { path = "crates/vokra-capi", version = "0.1.0-alpha.0" }
+vokra-mmap = { path = "crates/vokra-mmap", version = "0.1.0-alpha.0" }
+vokra-convert = { path = "crates/vokra-convert", version = "0.1.0-alpha.0" }
+# M5-03 (案1): the no_std(+alloc) Silero VAD forward core. `vokra-models`
+# depends on it (default features) and re-exports it; the Cortex-M55 Tier-3
+# build uses it with `--no-default-features`. First-party `vokra-*` crate with
+# only a `vokra-core` dep, so the root Cargo.lock stays vokra-* only (NFR-DS-02).
+vokra-vad-micro = { path = "crates/vokra-vad-micro", version = "0.1.0-alpha.0" }
 
 # Unsafe boundary policy (M0-02-T03; NFR-RL-07, SRS §5-(1)):
 # the workspace is safe-by-default (`unsafe_code = "deny"`). `unsafe` +
 # SIMD intrinsics / C ABI code are permitted ONLY in vokra-ops,
 # vokra-backend-cpu, vokra-backend-metal, vokra-backend-cuda,
-# vokra-backend-vulkan, vokra-backend-webgpu, vokra-capi, vokra-mmap and
+# vokra-backend-vulkan, vokra-backend-webgpu, vokra-backend-coreml,
+# vokra-backend-qnn, vokra-capi, vokra-mmap and
 # vokra-wasm-harness. The
 # vokra-mmap opt-out backs the self-declared POSIX `mmap` / Win32 file-mapping
 # FFI for true zero-copy GGUF loading; vokra-backend-metal backs the
@@ -65,7 +96,13 @@ vokra-mmap = { path = "crates/vokra-mmap" }
 # browser WebGPU API (NO `wgpu` / `wasm-bindgen` binding crate — import-object
 # resolution at instantiate time is the WASM dlopen equivalent, M4-01);
 # vokra-wasm-harness backs the (ptr, len) wasm ABI boundary of the Web entry
-# crate (M4-01 — test entries + session API over hand-written JS glue).
+# crate (M4-01 — test entries + session API over hand-written JS glue);
+# vokra-backend-coreml backs the self-declared Objective-C runtime + CoreML /
+# Foundation framework FFI (NO objc2 / objc2-core-ml binding crate — M5-01);
+# vokra-backend-qnn backs the self-declared QNN (Qualcomm AI Engine Direct) FFI
+# loaded at RUNTIME via dlopen / LoadLibrary (NO qnn-sys / hexagon binding crate,
+# and no SDK is bundled or linked — Qualcomm EULA install model — see its crate
+# docs; QNN is the Hexagon NPU delegate, NOT NNAPI, M5-02).
 # All add no external crate. These crates opt out locally with
 # `#![allow(unsafe_code)]` at their
 # crate root. Public API boundaries must

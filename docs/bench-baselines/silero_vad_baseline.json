@@ -1,0 +1,12 @@
+{
+  "$placeholder": true,
+  "task": "vad",
+  "rtf": null,
+  "wp": "X-06-T08/T09/T10",
+  "model": "tests/parity/silero_vad/silero-vad-v5.gguf",
+  "input": "tests/fixtures/audio/jfk-30s.wav",
+  "input_note": "chosen over test_16k.wav (open question #2): 11 s of audio gives a steadier RTF than the ~1.5 s test clip, it matches the m5-14 M1 reference (audio_seconds 11.0) for apples-to-apples cross-rig comparison, and it carries a committed sha256 sidecar.",
+  "seed_via": ".github/workflows/bench-baseline-capture.yml (workflow_dispatch, ubuntu-latest). The owner reviews the uploaded artifact and commits the real rtf here, replacing this placeholder.",
+  "do_not_seed_from": "an M1/aarch64 rig: NEON hardware skew false-fails the 5% regression gate (docs/bench-baselines/README.md, the mel-frontend NEON-skew example). Baseline JSON is ubuntu-latest-only.",
+  "gate": "advisory (open question #1); the ci.yml bench-regression step CLEAN-SKIPS while this is a placeholder — no verdict is claimed (FR-EX-08, fabricated pass 禁止)."
+}

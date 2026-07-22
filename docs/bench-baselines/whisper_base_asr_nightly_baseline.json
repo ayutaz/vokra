@@ -1,0 +1,11 @@
+{
+  "$placeholder": true,
+  "task": "asr",
+  "rtf": null,
+  "wp": "X-06-T11",
+  "model": "whisper-base (converted in-job by nightly-asr-wer.yml — no extra download)",
+  "input": "one LibriSpeech dev-clean utterance already decoded by the WER leg",
+  "seed_via": ".github/workflows/nightly-asr-wer.yml companion RTF step, run on ubuntu-latest via workflow_dispatch. The owner reviews the uploaded artifact and commits the real rtf here.",
+  "do_not_seed_from": "an M1/aarch64 rig, and note full-model ASR RTF on a GitHub-hosted shared runner is noisier than mel-frontend — this leg is ADVISORY (open question #6): it records the measurement, it does not fail the nightly on a breach until variance is characterised.",
+  "gate": "advisory record-only while a placeholder; once seeded, a >5% regression is annotated but (per open question #6) does not fail the run — the WER breach is the actionable gate on this workflow."
+}

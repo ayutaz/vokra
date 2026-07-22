@@ -87,74 +87,140 @@
 //! # Ok::<(), vokra_core::VokraError>(())
 //! ```
 
-pub mod backend;
-pub mod cache;
-pub mod complex;
-pub mod compliance;
-pub mod decode;
-pub mod engines;
+// M5-03-T03: the crate is `#![no_std]` (with `alloc`) whenever the default
+// `std` feature is disabled, so its core-clean subset cross-compiles for
+// bare-metal Cortex-M55 (thumbv8m-none, Tier 3 / NFR-PT-03). With the default
+// feature set this attribute is inert — the crate is exactly the std crate it
+// has always been (NFR-PT-01 cross-build non-interference).
+#![cfg_attr(not(feature = "std"), no_std)]
+
+// The no_std subset is alloc-dependent (the error `String`s and the GGUF
+// reader's `Vec` / `String` / `Box` / `BTreeMap`), not alloc-free. A library
+// stays allocator-agnostic; the downstream binary installs the global allocator
+// (`#[global_allocator]`). `extern crate alloc` links it in both modes — under
+// `std` it is already present, so this is harmless there (no double link).
+extern crate alloc;
+
+// --- no_std-capable modules (compile under `--no-default-features`) ----------
+// The Wave-1 core-clean subset (M5-03): the error type and the GGUF reader
+// parse / from_external path (BTreeMap-indexed). The final no_std boundary —
+// which further modules (engines, quant, …) join the subset — is topology-
+// dependent and resolved in Wave 2; see docs/adr/M5-03-iot-tier3-nostd.md.
 pub mod error;
 pub mod gguf;
+
+// --- std-only modules (gated behind the default `std` feature) ---------------
+// Present and unchanged in every default build. They are held out of the no_std
+// subset either because they use std I/O / threading / OS facilities
+// (session / stream / safetensors / compliance) or because their placement in
+// the no_std surface awaits the Wave-2 topology decision (`engines`
+// transitively needs `session` today; `runtime` / `ir` / `decode` / `cache` /
+// `quant` are not on the Silero path). See docs/adr/M5-03-iot-tier3-nostd.md.
+#[cfg(feature = "std")]
+pub mod backend;
+#[cfg(feature = "std")]
+pub mod cache;
+#[cfg(feature = "std")]
+pub mod complex;
+#[cfg(feature = "std")]
+pub mod compliance;
+#[cfg(feature = "std")]
+pub mod decode;
+#[cfg(feature = "std")]
+pub mod engines;
+#[cfg(feature = "std")]
 pub mod ir;
+#[cfg(feature = "std")]
 pub mod json;
+#[cfg(feature = "std")]
 pub mod kv_quant;
 // M4-20 T14: reserved op-kind anchors for the M5-residual audio ops (declared,
 // never registered — the KOKORO_ISTFT_HEAD_OP pattern; ADR M4-20 §D-6).
+#[cfg(feature = "std")]
 pub mod m5_residual_ops;
+#[cfg(feature = "std")]
 pub mod pipeline;
+#[cfg(feature = "std")]
 pub mod prenorm;
+#[cfg(feature = "std")]
 pub mod quant;
+#[cfg(feature = "std")]
 pub mod rng;
+#[cfg(feature = "std")]
 pub mod runtime;
+#[cfg(feature = "std")]
 pub mod safetensors;
+#[cfg(feature = "std")]
 pub mod session;
+#[cfg(feature = "std")]
 pub mod stream;
+#[cfg(feature = "std")]
 pub mod tasks;
 
+// The error type and the no_std-safe GGUF surface re-export in every build.
+pub use error::{Result, VokraError};
+pub use gguf::{GgmlType, GgufError, GgufFile, GgufTensorInfo};
+// `GgufBuilder` (writer) and the `frontend_spec` view are std-gated (M5-03-T05).
+#[cfg(feature = "std")]
+pub use gguf::{FieldMismatch, FrontendPolicy, FrontendSpec, GgufBuilder};
+
+#[cfg(feature = "std")]
 pub use backend::{Backend, BackendKind};
+#[cfg(feature = "std")]
 pub use cache::KvCache;
+#[cfg(feature = "std")]
 pub use cache::paged::{
     AllocatorSnapshot, BlockSize, GpuPagedKvCacheOps, KvDims, KvElement, KvSlot, PageId,
     PagedKvCache, TimeRangeIter,
 };
+#[cfg(feature = "std")]
 pub use cache::paged_quant::{
     AllocatorSnapshot as QuantAllocatorSnapshot, AnyBlock, QuantizedPagedKvCache,
 };
+#[cfg(feature = "std")]
 pub use complex::Complex32;
+#[cfg(feature = "std")]
 pub use compliance::{
     AttributionInfo, ComplianceConfig, ComplianceLevel, CompliancePolicy, DisclosureConfig,
     LicenseClass, LicenseResolution, ResolutionSource, SpeakerEmbeddingPolicy, VoiceCloningPolicy,
     WatermarkBackendStatus, WatermarkConfig, check_weight_license, registry_lookup,
     resolve_attribution, resolve_license_class, stamp_attribution, stamp_provenance,
 };
+#[cfg(feature = "std")]
 pub use decode::{
     CfgMode, DecodeStepper, LogitsSource, Sampler, SamplerConfig, TOKEN_FLAG_EOT, apply_cfg,
     apply_cfg_inplace, argmax, sample_sequence,
 };
+#[cfg(feature = "std")]
 pub use engines::{
     AsrEngine, DialogContextTurn, DialogRequest, DuplexInterruptHandle, DuplexPushReport,
     DuplexSessionConfig, S2sDuplexEngine, S2sDuplexHandle, S2sEngine, SynthesisRequest, TtsEngine,
     VadEngine, VadStreamHandle,
 };
-pub use error::{Result, VokraError};
-pub use gguf::{
-    FieldMismatch, FrontendPolicy, FrontendSpec, GgmlType, GgufBuilder, GgufError, GgufFile,
-    GgufTensorInfo,
-};
+#[cfg(feature = "std")]
 pub use ir::{AudioGraph, DType, Dim, GraphBuilder, Node, OpKind, TensorDesc, TensorId};
+#[cfg(feature = "std")]
 pub use kv_quant::{
     BlockQ4_0, BlockQ5_0, BlockQ8_0, F16Bits, KV_QUANT_BLOCK_SIZE, KvQuant, KvQuantBlock,
     KvQuantDequantGemvOps, QuantKind, dequantize_bytes, pack_slice, unpack_slice,
     validate_dequant_gemv,
 };
+#[cfg(feature = "std")]
 pub use pipeline::{AudioPipeline, Pipeline, PipelineStage};
+#[cfg(feature = "std")]
 pub use prenorm::{DecoderLayerView, PrenormLayer};
+#[cfg(feature = "std")]
 pub use rng::SplitMix64;
+#[cfg(feature = "std")]
 pub use runtime::{Tensor, run_graph};
+#[cfg(feature = "std")]
 pub use safetensors::{SafeTensorInfo, SafetensorsError, SafetensorsFile};
+#[cfg(feature = "std")]
 pub use session::{Session, SessionBuilder};
+#[cfg(feature = "std")]
 pub use stream::{
     EventPoller, EventSink, InterruptHandle, RawEvent, RingConsumer, RingFull, RingProducer,
     Stream, StreamEvent, StreamState, StreamStep, channel,
 };
+#[cfg(feature = "std")]
 pub use tasks::{Asr, DialogTurn, S2s, SynthesizedAudio, Transcription, Tts};

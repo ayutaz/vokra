@@ -1,56 +1,102 @@
-# UTMOS parity fixtures (M4-18 T09 — flip-the-switch, weights deferred)
+# UTMOS parity fixtures (M5-15 — flipped; the reference is upstream-generated)
 
-**No fixture is committed yet, deliberately.** The M4-18 kickoff gate deferred
-the UTMOS weights + license (owner sourcing still open), and committing an
-`expected_score` without running the real upstream reference would fabricate
-the very number the gate exists to verify (NFR-QL-04). This directory ships
-only the format contract below; the harness
-(`crates/vokra-eval/tests/parity_utmos.rs`) skips cleanly until the switch is
-flipped.
+**Status change vs M4-18.** This directory used to say "no fixture is
+committed, deliberately" because the UTMOS weights were owner-gated and writing
+an `expected_score` without running upstream would have fabricated the very
+number the gate exists to verify. The 2026-07-18 owner un-defer resolved that:
+the checkpoint is anonymously obtainable and permissively licensed (campaign-2
+`utmos-probe`), so M5-15 generated the reference **by importing the real
+upstream implementation**.
 
-## Fixture format
+What is committed here:
 
-`score.json` (single object; every field required):
+| file | what |
+|---|---|
+| `ref-clip.wav` | 2 s mono 16 kHz PCM16, cut from `tests/fixtures/audio/jfk-30s.wav` (offset 0.5 s). Small enough to keep the 99-frame parity run fast, long enough to exercise the whole stack. |
+| `score.json` | The upstream score for that clip + the honest tolerance and its derivation. |
 
-```json
-{
-  "clip": "ref-clip.wav",
-  "sample_rate": 16000,
-  "expected_score": 0.0,
-  "atol": 0.0,
-  "provenance": "sarulab-speech/UTMOS22 @ <commit>, generated YYYY-MM-DD, reproduction band <x> × <1.5-2>"
-}
+**Still not committed, deliberately:** the checkpoint itself. The weights stay
+owner-gated pending the `docs/license-audit.md` §3.1 UTMOS sign-off, and Vokra
+ships no weights.
+
+## The two harnesses
+
+| test | what it checks | env |
+|---|---|---|
+| `crates/vokra-eval/tests/parity_utmos.rs` | final score vs `score.json` | `VOKRA_UTMOS_GGUF` |
+| `crates/vokra-eval/tests/parity_utmos_stages.rs` | **every stage** vs the upstream hook points | `VOKRA_UTMOS_GGUF` + `VOKRA_UTMOS_REFDIR` |
+
+The stage harness is the load-bearing one: a single scalar cannot localize a
+fault (a swapped `ln1`/`ln2` mapping, a mis-folded weight-norm and a backwards
+LSTM direction all just read as "wrong number"), so the per-stage comparison is
+what turns a failure into a named stage.
+
+## Regenerating the reference (the whole recipe)
+
+```bash
+# 0. environment — measured, not assumed (M5-15 T38; docs/adr/M5-15-utmos.md §(d)).
+#    Python 3.9 + torch 2.8.0 + fairseq @ d03f4e77 + pytorch-lightning 1.9.5 + omegaconf 2.1.2.
+#    Python 3.11 does NOT work (fairseq@2022 trips 3.11's tightened dataclass check);
+#    the upstream pin torch==1.11.0 has no macOS-arm64 wheel at all.
+tools/parity/utmos_env_probe.sh          # records which branch this machine lands on
+
+# 1. flatten the upstream .ckpt → safetensors + config side-car
+~/.cache/vokra-eval/venv-utmos-e/bin/python tools/parity/utmos_prepare_checkpoint.py \
+    --ckpt "$CKPT" --output /tmp/utmos.safetensors --config-out /tmp/utmos-config.json
+
+# 2. convert to a vokra.utmos.* GGUF (v1 variant)
+cargo run --release -p vokra-convert -- --model utmos \
+    --input /tmp/utmos.safetensors --config /tmp/utmos-config.json --output /tmp/utmos.gguf
+
+# 3. dump the upstream reference — this IMPORTS the real implementation
+~/.cache/vokra-eval/venv-utmos-e/bin/python tools/parity/utmos_dump_reference.py \
+    --ckpt "$CKPT" --w2v "$W2V" --clip tests/parity/utmos/ref-clip.wav \
+    --outdir ~/.cache/vokra-eval/out/utmos-flip/reference
+
+# 4. run both harnesses
+VOKRA_UTMOS_GGUF=/tmp/utmos.gguf \
+VOKRA_UTMOS_REFDIR=~/.cache/vokra-eval/out/utmos-flip/reference \
+    cargo test --release -p vokra-eval --test parity_utmos_stages -- --nocapture
 ```
 
-- `clip` — mono WAV filename in this directory (PCM16 or float32, readable by
-  `vokra_eval::wav::read_wav`). Its header rate must equal `sample_rate`.
-- `sample_rate` — must also equal the GGUF's `vokra.utmos.sample_rate`
-  (the scorer rejects mismatches loudly; no silent resample, FR-EX-08).
-- `expected_score` — the score the pinned upstream implementation produced
-  for `clip`, recorded verbatim.
-- `atol` — **honest tolerance**: measure the upstream reference's own
-  reproduction error band (re-run variance / platform delta), then set
-  `atol = band × 1.5–2`. Never a constant chosen to make CI green
-  (memory `feedback-honest-parity-atol`; Kokoro `PROSODY_F0_ATOL` precedent —
-  if an architectural bound forces a wider value, record the derivation here
-  and in the rustdoc/ADR).
-- `provenance` — upstream repo + commit, generation date, and the measured
-  band the atol was derived from. The harness rejects an empty value.
+## The honesty rules this directory enforces
 
-## Owner flip recipe
+- **The reference must import upstream.** `utmos_dump_reference.py` fetches the
+  `sarulab-speech/UTMOS-demo` sources at a pinned, sha256-verified revision and
+  lets *them* build the network (the real `fairseq` `Wav2Vec2Model` at
+  `d03f4e77`). If the import fails it aborts loudly. Writing a local
+  re-implementation to produce the "reference" is banned: a mirror agrees with
+  the port by construction, so parity goes green while the audio is wrong. That
+  is exactly what happened to Kokoro (fixed in `92dbc92`, round-trip WER
+  1.0 → 0.0).
+- **Synthesized weights are refused on the parity path** (`parity_utmos.rs`).
+- **`atol` is derived, not chosen.** Each stage's bound is the *measured*
+  worst-case delta × 2, and the measurements are tabulated in the `STAGE_ATOL`
+  rustdoc in `parity_utmos_stages.rs` and in `docs/adr/M5-15-utmos.md` §(e).
+  Never widen one to chase a green — localize the stage instead. If an
+  architectural bound genuinely forces a wider value, record the derivation
+  (Kokoro `PROSODY_F0_ATOL` precedent).
+- **ISA caveat.** The bounds are calibrated on arm64/NEON. Kokoro showed that a
+  different CPU class can shift a parity delta *deterministically* (AVX2
+  4.34e-2 vs AVX-512 1.58e-2 on the same tensor). An x86 excursion is an ISA
+  re-derivation, not automatically a regression — measure and add a second
+  calibrated row rather than widening one bound to cover both.
 
-1. Complete M4-18 T02 (weight URL + `docs/license-audit.md` sign-off — the
-   fixture must not be generated from weights that failed sign-off).
-2. Run the pinned upstream SaruLab UTMOS22 on a chosen clip offline; write
-   `score.json` + the clip here (plain blobs, no git-lfs — see
-   `.gitattributes` conventions for `tests/parity/`).
-3. Convert the checkpoint: `vokra-convert --model utmos …` (T05, deferred —
-   lands with the weights; the GGUF schema it must emit is pinned by ADR
-   `M4-18-utmos-arch` §(c)/(d) and machine-verified by the round-trip test in
-   `crates/vokra-eval/src/metrics/utmos.rs`).
-4. `VOKRA_UTMOS_GGUF=path/to/utmos.gguf cargo test -p vokra-eval --test
-   parity_utmos` — the gated test stops skipping automatically. CI: run the
-   `parity-utmos` workflow via workflow_dispatch.
+## Measured result (2026-07-20, M1 iMac / arm64)
 
-The harness refuses synthesized (seed-random) weights on the parity path;
-only a GGUF converted from the real checkpoint is comparable.
+Every stage and the final score agreed with upstream:
+
+| stage | max \|Δ\| |
+|---|---|
+| `conv_out` | 1.378e-7 |
+| `feature_ln` | 2.384e-6 |
+| `feat_proj` | 7.391e-6 |
+| `pos_conv` (this stage also validates the offline weight-norm fold) | 1.621e-5 |
+| `enc_in_ln` | 3.759e-6 |
+| `enc_block_last` | 1.311e-6 |
+| `blstm_out` | 4.172e-7 |
+| `head_out` | 7.153e-7 |
+| **score** | **1.192e-7** |
+
+Cross-clip check (6 clips spanning MOS 1.27 … 4.50, native vs upstream): all
+within 9.3e-7. See `docs/adr/M5-15-utmos.md` §(f).

@@ -62,6 +62,15 @@ pub(crate) mod gemm_driver;
 #[cfg(feature = "simd-transcendental")]
 pub(crate) mod vexp;
 
+// M5-03-T06: self-contained scalar `exp` / `tanh` / `sqrt` in pure `core`
+// arithmetic (no `std`, no `libm`) for the no_std Cortex-M55 subset. Provided in
+// Wave 1 and exercised only by its own property tests; T08 (Wave 2) wires it
+// into the Silero forward. `#[allow(dead_code)]` covers the interim: the
+// functions are not yet called from production code (a plain `cargo build`
+// would otherwise flag them under `-D warnings`).
+#[allow(dead_code)]
+pub(crate) mod scalar_transcendental;
+
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod avx2;
 
@@ -104,8 +113,8 @@ pub(crate) mod kquant;
 pub use kquant::{
     BF16_REL, FP16_REL, KQUANT_GROUP, KQuantDtype, bf16_to_f32, dot_precision_bound,
     f16_to_f32 as f16_bits_to_f32, f32_to_bf16_rne, f32_to_f16_rne, f64_to_f16_rne, fp16_fma_emu,
-    gemm_bf16_on, gemm_fp16_on, int8_error_bound, kquant_dequant_on, kquant_gemv_i8,
-    kquant_gemv_i8_on, kquant_gemv2_i8_on,
+    gemm_bf16_on, gemm_fp16_on, int8_error_bound, kquant_dequant_on, kquant_gemm_i8,
+    kquant_gemm_i8_on, kquant_gemv_i8, kquant_gemv_i8_on, kquant_gemv2_i8_on, kquant_gemvn_i8_on,
 };
 
 // M3-13-T04..T09: RISC-V RVV 1.0 base kernels + Zvfh feature-gated fp16 path.
@@ -299,6 +308,48 @@ pub fn gemm_f32(
     validate_gemm(m, n, k, a, b, bias, out)?;
     run_gemm(m, n, k, a, b, bias, out);
     Ok(())
+}
+
+/// Row-major GEMM against a **K-quantized** weight matrix, with an optional
+/// per-column bias: `out[t, j] = bias[j] + Σ_l a[t, l] · dequant(wq[j, l])`
+/// (M5-15-T33, FR-QT-01).
+///
+/// This is the fused dequant-dot counterpart of [`gemm_f32`] for an
+/// `nn.Linear` whose weight stayed in its on-disk K-quant form:
+///
+/// - `a` is `[m, k]` (activations / tokens), `out` is `[m, n]` — identical to
+///   [`gemm_f32`];
+/// - `wq` is the **untransposed** `[n, k]` GGUF payload (`n` output features ×
+///   `k / 256` super-blocks per row), *not* the `[k, n]` `b` [`gemm_f32`] takes.
+///   The quant path therefore skips the `[out, in] → [in, out]` transpose the
+///   f32 loader performs;
+/// - `k` must be a positive multiple of 256 (`QK_K`) so super-blocks never
+///   straddle a weight row — an explicit error otherwise, never a silent
+///   widen (FR-EX-08).
+///
+/// **Not bit-identical to [`gemm_f32`] over the dequantized weight**: the INT8
+/// surface is bounded by the activation-quantization band
+/// ([`int8_error_bound`]), not by bit identity, so enabling this route changes
+/// model output. See `docs/adr/M5-15-quant.md`.
+#[allow(clippy::too_many_arguments)] // mirrors gemm_f32 plus the weight dtype
+pub fn gemm_q_f32(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    wq: &[u8],
+    dtype: KQuantDtype,
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) -> Result<()> {
+    expect_len("gemm_q a", a.len(), checked_mul(m, k, "gemm_q m*k")?)?;
+    expect_len("gemm_q out", out.len(), checked_mul(m, n, "gemm_q m*n")?)?;
+    if let Some(bias) = bias {
+        expect_len("gemm_q bias", bias.len(), n)?;
+    }
+    // `wq`'s length is checked against `(n, k, dtype)` by the kernel's own
+    // `validate_gemv_i8`, which owns the super-block arithmetic.
+    gemm_driver::run_q(dtype, m, n, k, a, wq, bias, out)
 }
 
 /// [`gemm_f32`] forced onto a specific `isa` (differential testing).

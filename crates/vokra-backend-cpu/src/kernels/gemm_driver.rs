@@ -66,6 +66,7 @@
 use std::cell::RefCell;
 
 use crate::dispatch::{self, GemmM1Kernel, KernelTable, PackedGemm, PackedTail};
+use crate::kernels::kquant::KQuantDtype;
 
 // ---- blocking constants (empirical on Apple M1; see the Wave-1 report) ----
 //
@@ -103,6 +104,20 @@ const NR_MAX: usize = 16;
 /// ~8% BEHIND legacy; at 262K (32,128,64) it is ~20% ahead and the gap only
 /// widens with size — so the gate sits at the measured break-even.
 const PACKED_MIN_MACS: usize = 1 << 18;
+/// Minimum `m` (row count) the packed path is routed for. Wave-1 gated this at
+/// [`PACK_MR`] (8); **M5-14-BACKLOG-T06** lowered it to 3 after measuring the
+/// packed-vs-legacy break-even at `m ∈ 2..7` on NeonDotprod / M1
+/// (`tests/m5_14_backlog_bench.rs`, run 2026-07-20): for `m ∈ 3..7` packed
+/// beats the legacy kernel at **every** shape past the MACs gate (measured
+/// packed/legacy 0.15–0.94 at k ∈ {768, 3072}), so folding `beam_width`
+/// per-beam m=1 decoder forwards into one m=beam_width GEMM routes to the fast
+/// path. `m == 2` is **deliberately excluded**: packed loses to the legacy
+/// kernel below ~1 M MACs (its thin-m dispatch + full-A pack is not amortised
+/// over two rows — measured packed/legacy 1.02–1.38 at 12 K–786 K MACs), so
+/// m == 2 stays on the legacy route exactly as before this WP (no regression).
+/// `m == 1` never reaches this gate — it is served by the axpy [`m1_path`] in
+/// [`run`] before the packed check.
+const PACKED_MIN_M: usize = 3;
 /// Packing needs at least two column strips' worth of width to matter.
 const PACKED_MIN_N: usize = 16;
 /// Very shallow k has nothing to block; the legacy kernel handles it.
@@ -181,7 +196,7 @@ impl SendPtr {
 /// hot Wave-0 shapes to the packed route (`gemm_test_probe`). Thresholds are
 /// performance routing only: every route computes bit-identical results.
 pub fn would_use_packed(m: usize, n: usize, k: usize) -> bool {
-    m >= PACK_MR
+    m >= PACKED_MIN_M
         && n >= PACKED_MIN_N
         && k >= PACKED_MIN_K
         && m.saturating_mul(n).saturating_mul(k) >= PACKED_MIN_MACS
@@ -195,6 +210,34 @@ pub fn active_gemm_has_packed() -> bool {
 /// Whether the active dispatch table carries the m == 1 row kernel.
 pub fn active_gemm_has_m1() -> bool {
     dispatch::table().gemm_m1.is_some()
+}
+
+/// Test / bench-only (`gemm_test_probe`): forces the packed cache-blocked path
+/// **regardless** of the [`would_use_packed`] routing gate, so the parity suite
+/// and the M5-14-BACKLOG break-even microbench can drive the packed
+/// micro-kernels at `m < PACK_MR` — the beam-width row counts the production
+/// gate does not (yet) route (Finding 4). Returns `false` (leaving `out`
+/// untouched) when the active ISA ships no packed kernels; the caller then
+/// skips. **Never on the production path** — [`run`] still gates every real
+/// GEMM through [`would_use_packed`], so this shim cannot change any model's
+/// numerics; it only lets a test/bench reach a route the gate withholds.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)] // GEMM's intrinsic parameter set
+pub fn packed_forced(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    b: &[f32],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) -> bool {
+    if let Some(pk) = dispatch::table().gemm_packed {
+        packed_path(&pk, m, n, k, a, b, bias, out);
+        true
+    } else {
+        false
+    }
 }
 
 /// Production GEMM entry (routes `kernels::gemm_f32`). Inputs are
@@ -225,6 +268,67 @@ pub(crate) fn run(
         return;
     }
     legacy_path(t, m, n, k, a, b, bias, out);
+}
+
+/// Production **quantized-B** GEMM entry (M5-15-T33), routing
+/// `kernels::gemm_q_f32`: `out[t, j] = bias[j] + Σ_l a[t, l] · dequant(wq[j, l])`.
+///
+/// # Why this is a sibling entry, not a branch inside [`run`]
+///
+/// [`run`]'s `b: &[f32]` contract, its m1 / packed / legacy routing and its
+/// per-element accumulation chain are all **unchanged** by this WP — that is
+/// the M5-14 bit-identity red-line, and `tests/gemm_packed_parity.rs` keeps
+/// pinning it. A quantized `b` cannot join that routing anyway:
+///
+/// - **it cannot be packed.** The pack step copies `b` into `[l][NR]` column
+///   strips, which means addressing individual `f32` elements. A K-quant `b`
+///   has no addressable elements — it is 256-element super-blocks with shared
+///   6-bit sub-scales, and slicing a strip out of one destroys the block the
+///   scales belong to. Dequantizing to pack is exactly the load-time dequant
+///   this WP exists to avoid.
+/// - **it is transposed relative to `b`.** `run` takes `b` as `[k, n]`; the
+///   GGUF weight is `[n, k]` (`[out, in]` row-major), which is precisely the
+///   layout the fused INT8 GEMV kernels want. The f32 path pays a transpose at
+///   load; the quant path keeps the bytes verbatim.
+///
+/// So the quant route branches **before** any packing, straight into the
+/// `kquant` kernels, and shares nothing mutable with [`run`].
+///
+/// # Bias
+///
+/// The f32 kernels **seed** the accumulator with `bias[j]`; this path adds it
+/// after the INT8 reduction. That is a different f32 association, so the two
+/// are not bit-identical — but the quant route is not bit-identical to the
+/// f32 route in the first place (the activation-quantization band dominates by
+/// orders of magnitude). Documented rather than hidden.
+///
+/// # Threading
+///
+/// Single-threaded. The M5-14 MT panel split is deliberately **not** extended
+/// here (M5-15-T33: "MT panel 分割を quant 経路にも適用するかは本 WP では必須
+/// としない") — the deterministic-split re-verification it would need is not
+/// paid for by this WP's goal, which is the fused-vs-dequant comparison.
+#[allow(clippy::too_many_arguments)] // GEMM's intrinsic parameter set + the weight dtype
+pub(crate) fn run_q(
+    dtype: KQuantDtype,
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    wq: &[u8],
+    bias: Option<&[f32]>,
+    out: &mut [f32],
+) -> vokra_core::Result<()> {
+    // `n` rows of quantized weight, `m` activation vectors of width `k`.
+    super::kquant::kquant_gemm_i8(dtype, n, k, m, wq, a, out)?;
+    if let Some(bias) = bias {
+        for row in out.chunks_exact_mut(n) {
+            for (o, &b) in row.iter_mut().zip(bias) {
+                *o += b;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The pre-Wave-1 production behaviour: pool row-split over the legacy

@@ -8,13 +8,47 @@
 //! discipline.
 //!
 //! This module records the M5-residual ops as reserved `&'static str` op-kind
-//! identifiers — declared, so a future M5 landing lands on a stable name, but
-//! **not** inserted into any registry / [`OpKind`](crate::ir::OpKind) and
-//! adding **no** C ABI symbol (the whole point). It is the exact
+//! identifiers — declared, so a future M5 landing lands on a stable name. It
+//! generalizes the
 //! [`KOKORO_ISTFT_HEAD_OP`](crate::quant::registry::KOKORO_ISTFT_HEAD_OP)
-//! pattern (reserved-but-unregistered, guarded by a test) generalized to the
-//! M4-20 catalogue, and it pairs with the `docs/abi-changelog.md` "Reserved
-//! additions" entry so an M5 op landing is a backward-compatible additive.
+//! reserved-but-unregistered pattern to the M4-20 catalogue, and it pairs with
+//! the `docs/abi-changelog.md` "Reserved additions" entry so an M5 op landing
+//! is a backward-compatible additive.
+//!
+//! # What "reserved" is guaranteed to mean here (and how)
+//!
+//! The reservation spans three dimensions, but they are **not** enforced the
+//! same way — two are actively checked, the third is a structural property of
+//! the type system with nothing to assert. Spelling them apart keeps this doc
+//! honest: the original wording ("not inserted into any registry / `OpKind` …
+//! adding no C ABI symbol … guarded by a test") implied one test guarded all
+//! three, which is not true and cannot be made true (M5-ORPHAN-SCOPE-T06; the
+//! `OpKind` dimension has no runtime assertion target — see the ADR
+//! `docs/adr/M5-ORPHAN-SCOPE-residual-ops-amx-sme.md` §(6)).
+//!
+//! - **Not in [`MinDtypeRegistry`](crate::quant::registry::MinDtypeRegistry)** —
+//!   *checked by a test*. `tests::new_anchors_are_reserved_but_unregistered`
+//!   asserts `reg.lookup(id).is_none()` for the six new anchors. BigVGAN is the
+//!   documented exception: its min-dtype anchor **is** registered (M2-08), only
+//!   the generator op landing is M5 — see
+//!   `tests::bigvgan_min_dtype_anchor_is_registered_but_op_is_m5`.
+//! - **Adds no C ABI symbol** — *checked by a machine gate*, not by a unit test
+//!   in this crate. `scripts/check-m5-residual-no-abi.sh` asserts that none of
+//!   these op-kind ids appears in the exported C ABI **symbol list**
+//!   (`scripts/check-abi-changelog.sh --list` — the FUNC/TYPEDEF names, not the
+//!   raw `include/vokra.h` text, which carries rustdoc comments that would
+//!   false-positive). It runs in the `abi-surface` CI job next to the ABI
+//!   changelog gate.
+//! - **Not an [`OpKind`](crate::ir::OpKind) variant** — *structural; no test,
+//!   and none is possible*. These ids are `&'static str`; `OpKind` is a
+//!   `#[non_exhaustive]` enum with **no string-resolution path** — no
+//!   `FromStr`, no `TryFrom<&str>`, no name lookup exists for it anywhere in
+//!   the workspace (only `Node::op` returns `&OpKind`). There is therefore no
+//!   mechanism by which a `&str` could ever "register" as a variant, and hence
+//!   no runtime state to assert; a would-be test would be vacuous theater. If a
+//!   string-resolution path is ever added to `OpKind`, add the non-resolution
+//!   assertion at that point (T06 followup, recorded in the ADR §(6) and the
+//!   integrated report).
 //!
 //! # Blockers (why each is M5-residual)
 //!

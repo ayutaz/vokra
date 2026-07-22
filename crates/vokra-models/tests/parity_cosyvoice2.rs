@@ -27,10 +27,10 @@ use std::env;
 use std::path::Path;
 
 use vokra_core::gguf::chunks::KEY_MODEL_ARCH;
-use vokra_core::gguf::{GgufBuilder, GgufFile, GgufMetadataValue};
+use vokra_core::gguf::{GgufArray, GgufBuilder, GgufFile, GgufMetadataValue, GgufValueType};
 use vokra_core::{CompliancePolicy, SynthesisRequest, TtsEngine, VokraError};
 use vokra_models::cosyvoice2::llm::{LlmBackbone, parity};
-use vokra_models::cosyvoice2::{CosyVoice2Config, CosyVoice2Tts, MimiBridge};
+use vokra_models::cosyvoice2::{CosyVoice2Config, CosyVoice2Tokenizer, CosyVoice2Tts, MimiBridge};
 
 /// The env var CI / owners set to point the gated tests at a real
 /// CosyVoice2 GGUF. Absent = skip (never fabricate a pass).
@@ -362,4 +362,173 @@ fn read_npy_f32_2d(path: &Path) -> ((usize, usize), Vec<f32>) {
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     ((rows, cols), data)
+}
+
+// -----------------------------------------------------------------------------
+// Text tokenizer (M3-09-T06): GGUF-embedded byte-level BPE
+// -----------------------------------------------------------------------------
+
+/// The env var pointing at a directory holding the upstream Qwen2
+/// `vocab.json` + `merges.txt` (e.g.
+/// `~/.cache/vokra-eval/weights/cosyvoice2-0.5b/CosyVoice-BlankEN`). Absent =
+/// clean skip of the real-vocab round-trip (never a fabricated pass).
+const TOKENIZER_DIR_ENV: &str = "VOKRA_COSYVOICE2_TOKENIZER_DIR";
+
+/// A tiny byte-level BPE tokenizer over the lowercase ASCII alphabet + the
+/// space byte-char ('Ġ'), with one merge (`h e` → `he`). Enough to exercise
+/// the GGUF-embed → load → encode → decode wiring on ASCII strings.
+fn small_ascii_tokenizer_files() -> (Vec<u8>, Vec<u8>) {
+    let mut entries: Vec<(String, u32)> = Vec::new();
+    let mut id = 0u32;
+    for c in b'a'..=b'z' {
+        entries.push(((c as char).to_string(), id));
+        id += 1;
+    }
+    entries.push(("Ġ".to_owned(), id)); // byte-char for ASCII space (0x20)
+    id += 1;
+    entries.push(("he".to_owned(), id)); // the (h,e) merge target
+    let mut json = String::from("{");
+    for (i, (tok, tid)) in entries.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        // No byte-char in this vocab needs JSON escaping.
+        json.push('"');
+        json.push_str(tok);
+        json.push_str("\":");
+        json.push_str(&tid.to_string());
+    }
+    json.push('}');
+    (json.into_bytes(), b"h e\n".to_vec())
+}
+
+/// Builds a synthetic CosyVoice2 GGUF (as [`synthetic_gguf`]) plus the two
+/// embedded tokenizer U8 chunks.
+fn synthetic_gguf_with_tokenizer(vocab: &[u8], merges: &[u8]) -> Vec<u8> {
+    let mut b = GgufBuilder::new();
+    b.add_string(KEY_MODEL_ARCH, "cosyvoice2");
+    b.add_string("vokra.model.name", "cosyvoice2-0.5b-synthetic");
+    b.add_u32("vokra.cosyvoice2.sample_rate", 24_000);
+    b.add_u32("vokra.cosyvoice2.arch.vocab_size", 0);
+    b.add_u32("vokra.cosyvoice2.arch.hidden_dim", 0);
+    b.add_u32("vokra.cosyvoice2.arch.n_layer", 0);
+    b.add_u32("vokra.cosyvoice2.arch.n_head", 0);
+    b.add_u32("vokra.cosyvoice2.arch.ffn_dim", 0);
+    b.add_u32("vokra.cosyvoice2.flow.nfe", 0);
+    b.add_metadata(
+        "vokra.cosyvoice2.flow.schedule",
+        GgufMetadataValue::String("linear".to_owned()),
+    );
+    b.add_u32("vokra.cosyvoice2.mimi.n_codebooks", 8);
+    b.add_u32("vokra.cosyvoice2.mimi.codebook_size", 2048);
+    b.add_u32("vokra.cosyvoice2.mimi.d_model", 512);
+    b.add_u32("vokra.cosyvoice2.streaming.chunk_size", 0);
+    b.add_u32("vokra.cosyvoice2.streaming.chunk_hop", 0);
+    let u8_array = |bytes: &[u8]| {
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U8,
+            values: bytes.iter().map(|&x| GgufMetadataValue::U8(x)).collect(),
+        })
+    };
+    b.add_metadata("vokra.cosyvoice2.tokenizer.vocab", u8_array(vocab));
+    b.add_metadata("vokra.cosyvoice2.tokenizer.merges", u8_array(merges));
+    b.to_bytes().expect("gguf serialize")
+}
+
+/// Fixture-free: a GGUF carrying the embedded tokenizer chunks loads, exposes
+/// the tokenizer, and round-trips through the engine `encode` + tokenizer
+/// `decode` — the T06 wiring, exercised without any HuggingFace download.
+#[test]
+fn parity_cosyvoice2_tokenizer_embedded_roundtrips_via_engine() {
+    let (vocab, merges) = small_ascii_tokenizer_files();
+    let bytes = synthetic_gguf_with_tokenizer(&vocab, &merges);
+    let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+        .expect("tokenizer-carrying GGUF must load");
+    let tok = tts.tokenizer().expect("tokenizer must be present");
+
+    let ids = tts.encode("hello").expect("encode");
+    assert!(!ids.is_empty(), "encode must not be empty");
+    assert_eq!(tok.decode(&ids).expect("decode"), "hello");
+
+    for s in ["he", "hello there", "abc xyz"] {
+        let e = tts
+            .encode(s)
+            .unwrap_or_else(|err| panic!("encode {s:?}: {err}"));
+        assert_eq!(tok.decode(&e).expect("decode"), s, "round-trip {s:?}");
+    }
+    // The (h,e) merge fires: "he" collapses to a single token id.
+    assert_eq!(
+        tts.encode("he").unwrap().len(),
+        1,
+        "`he` must merge to one token, not two single-byte tokens"
+    );
+}
+
+/// Fixture-free: a GGUF with no tokenizer chunks loads (the tokenizer is
+/// optional), but `encode` is a loud `NotImplemented` — never a silent empty
+/// id list (FR-EX-08).
+#[test]
+fn parity_cosyvoice2_tokenizer_absent_encode_is_loud() {
+    let bytes = synthetic_gguf("cosyvoice2", "linear");
+    let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+        .expect("tokenizer-less GGUF still loads");
+    assert!(
+        tts.tokenizer().is_none(),
+        "no tokenizer chunks → tokenizer() is None"
+    );
+    let err = tts
+        .encode("hello")
+        .expect_err("encode without a tokenizer must be loud");
+    assert!(matches!(err, VokraError::NotImplemented(_)), "got {err:?}");
+}
+
+/// Gated real-vocab round-trip: with [`TOKENIZER_DIR_ENV`] pointing at the
+/// upstream Qwen2 `vocab.json` + `merges.txt`, load the real 151k-token
+/// tokenizer and verify `decode(encode(s)) == s` over several UTF-8 strings,
+/// plus one pretokenizer-independent exact id (`" "` → 'Ġ' → 220). Skips
+/// cleanly when unset (never a fabricated pass).
+#[test]
+fn parity_cosyvoice2_tokenizer_real_vocab_roundtrip() {
+    let Some(dir) = env::var(TOKENIZER_DIR_ENV).ok() else {
+        eprintln!(
+            "{TOKENIZER_DIR_ENV} unset — skipping real Qwen2 tokenizer round-trip; \
+             this is a clean skip (never a fabricated pass)"
+        );
+        return;
+    };
+    let dir = Path::new(&dir);
+    let vocab = std::fs::read(dir.join("vocab.json"))
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.join("vocab.json").display()));
+    let merges = std::fs::read(dir.join("merges.txt"))
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.join("merges.txt").display()));
+    let tok =
+        CosyVoice2Tokenizer::from_parts(&vocab, &merges).expect("real Qwen2 tokenizer must parse");
+    eprintln!(
+        "real Qwen2 tokenizer loaded: {} base BPE tokens",
+        tok.vocab_size()
+    );
+    for s in [
+        "Hello, world!",
+        "The quick brown fox.",
+        "CosyVoice2 生成 123 test",
+        "  spaces\tand\ttabs  ",
+        "line1\nline2\n",
+    ] {
+        let ids = tok
+            .encode(s)
+            .unwrap_or_else(|e| panic!("encode {s:?}: {e}"));
+        let back = tok
+            .decode(&ids)
+            .unwrap_or_else(|e| panic!("decode {s:?}: {e}"));
+        assert_eq!(back, s, "round-trip failed for {s:?} -> {ids:?}");
+        eprintln!("round-trip OK: {s:?} -> {} ids", ids.len());
+    }
+    // Pretokenizer-independent exact id: a lone space is one piece, whose sole
+    // byte-char is 'Ġ' (byte 0x20). The shipping Qwen2 vocab.json maps
+    // "Ġ" -> 220 (verified from the file), so encode(" ") must be [220].
+    assert_eq!(
+        tok.encode(" ").expect("encode space"),
+        vec![220],
+        "space byte-char 'Ġ' must encode to the shipping Qwen2 vocab id 220"
+    );
 }

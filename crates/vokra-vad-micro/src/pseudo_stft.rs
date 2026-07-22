@@ -11,23 +11,45 @@
 //! right reflection pad is `k/4` (`pad`), the conv has stride `k/2`, and the
 //! `2*bins` output channels split as `real = ch[0..bins]`, `imag =
 //! ch[bins..2*bins]`.
+//!
+//! # M5-03 T08 / NFR-QL-05 confirmation (the `sqrt` route)
+//!
+//! The `magnitude` `sqrt` is [`crate::scalar::sqrt`] (Newton–Raphson,
+//! `core`-only, no `std`, no `unsafe`), replacing `f32::sqrt`. This module IS
+//! the NFR-QL-05 red line, so the swap was gated on re-measuring the upstream
+//! parity (`vokra-models::silero_vad::parity`): the stage `magnitude` and the
+//! e2e probabilities stay inside the FP32 ceiling (`atol = 0.01`) — the
+//! deviation from HW `vsqrt` (a bounded few ULP) never approaches the bound (the
+//! magnitude feeds a conv → ReLU → LSTM stack, none of which amplifies it toward
+//! `atol`). Whether to adopt an FP-armv8 `asm!` `vsqrt` (IEEE-exact) is the
+//! owner decision recorded in ADR M5-03 §(d)/(e); Newton is the default and
+//! keeps this crate `unsafe`-free (NFR-RL-07).
 
-use super::SampleRate;
-use super::math::{conv1d_wt, reflect_pad_right};
-use super::weights::RateWeights;
+#[cfg(not(feature = "std"))]
+use alloc::{vec, vec::Vec};
+
+use crate::SampleRate;
+use crate::math::{conv1d_wt, reflect_pad_right};
+use crate::scalar;
+use crate::weights::RateWeights;
 
 /// Output of the pseudo-STFT: magnitude spectrogram, `bins` rows × `frames`
 /// columns, stored row-major (bin-major, frame fastest).
-pub(super) struct Magnitude {
-    pub(super) data: Vec<f32>,
-    pub(super) bins: usize,
-    pub(super) frames: usize,
+pub struct Magnitude {
+    /// Magnitude values, row-major `[bins, frames]` (bin-major, frame fastest).
+    pub data: Vec<f32>,
+    /// Number of magnitude bins (`n_fft / 2 + 1`).
+    pub bins: usize,
+    /// Number of STFT frames the input collapsed to.
+    pub frames: usize,
 }
 
 /// The raw pseudo-STFT conv output `[2*bins, frames]` (channel-major), before
 /// the magnitude step. The `real`/`imag` halves live in channels `[0, bins)`
 /// and `[bins, 2*bins)`.
-pub(super) fn stft_conv(rate: SampleRate, w: &RateWeights, frame: &[f32]) -> (Vec<f32>, usize) {
+///
+/// Exposed for the `vokra-models::silero_vad::parity` stage harness (T04).
+pub fn stft_conv(rate: SampleRate, w: &RateWeights, frame: &[f32]) -> (Vec<f32>, usize) {
     let padded = reflect_pad_right(frame, rate.pad());
     // Conv1d(1, 2*bins, k=n_fft, stride=n_fft/2): a single input channel.
     // M5-14 Wave-2 (T21): transposed-weight formulation, bit-identical per
@@ -51,7 +73,7 @@ pub(super) fn stft_conv(rate: SampleRate, w: &RateWeights, frame: &[f32]) -> (Ve
 /// / 256 @ 8 kHz → 3 STFT frames) or a context-prefixed one (576 / 288 → 4;
 /// the official interface) — and returns the magnitude spectrogram. Length is
 /// dynamic exactly as in the ONNX graph.
-pub(super) fn pseudo_stft(rate: SampleRate, w: &RateWeights, frame: &[f32]) -> Magnitude {
+pub fn pseudo_stft(rate: SampleRate, w: &RateWeights, frame: &[f32]) -> Magnitude {
     let bins = rate.bins();
     let (conv, frames) = stft_conv(rate, w, frame);
     // real = channels [0, bins), imag = channels [bins, 2*bins); both [bins, frames].
@@ -60,7 +82,7 @@ pub(super) fn pseudo_stft(rate: SampleRate, w: &RateWeights, frame: &[f32]) -> M
         for t in 0..frames {
             let re = conv[b * frames + t];
             let im = conv[(bins + b) * frames + t];
-            data[b * frames + t] = (re * re + im * im).sqrt();
+            data[b * frames + t] = scalar::sqrt(re * re + im * im);
         }
     }
     Magnitude { data, bins, frames }
@@ -79,7 +101,7 @@ mod tests {
             // shape so we exercise only the shape/pad plumbing here.
             let bins = rate.bins();
             let k = rate.n_fft();
-            let w = super::super::weights::RateWeights::zeros_for_test(rate);
+            let w = crate::weights::RateWeights::zeros_for_test(rate);
             let mag = pseudo_stft(rate, &w, &vec![0.0; rate.frame_len()]);
             assert_eq!(mag.bins, bins);
             assert_eq!(mag.frames, 3, "canonical frame count for k={k}");

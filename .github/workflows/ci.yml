@@ -47,6 +47,23 @@ jobs:
         run: |
           printf 'Package build features: --no-default-features --features cpu\n'
           cargo build --release -p vokra-capi --no-default-features --features cpu
+      # X-08-T04: NFR-DS-01 "<10MB core single binary" budget gate. This lives
+      # in `build` rather than `license` because it measures the artifact
+      # `cargo build --release` just produced — the `license` job has neither a
+      # release build nor rust-cache, so wiring it there would mean building
+      # libvokra a second time. VOKRA_SIZE_SKIP_BUILD=1 reuses the artifact
+      # above (the script's own header prescribes exactly this placement).
+      #
+      # All three OS legs run it: the script measures with `wc -c` + `tr` only
+      # and probes for libvokra.dylib / libvokra.so / vokra.dll in turn, so
+      # `shell: bash` (git-bash on windows-latest) covers Windows without a
+      # special case. Nothing here is skipped silently — if the cdylib is
+      # missing the script exits 2 rather than passing.
+      - name: Binary-size budget (NFR-DS-01, <10 MiB)
+        shell: bash
+        env:
+          VOKRA_SIZE_SKIP_BUILD: "1"
+        run: bash scripts/check-binary-size.sh
       - name: Upload macOS libvokra.dylib
         if: matrix.os == 'macos-latest'
         uses: actions/upload-artifact@v4
@@ -106,6 +123,244 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
 
+  # ---------------------------------------------------------------------------
+  # X-08: gate scripts that existed and passed but were never wired to CI.
+  #
+  # Before X-08, thirteen gate scripts were enforced only by `scripts/verify.sh`
+  # (a local meta-runner) and, for two of them, the pre-commit hook — which
+  # `git commit --no-verify` / `VOKRA_SKIP_HOOKS=1` bypasses by design. The CRLF
+  # fixture-hash breakage in 9cfa49a is what that gap actually costs.
+  #
+  # Job-splitting principle: jobs are split by whether they need cargo. The
+  # grep/python-only gates run in checkout-only jobs that finish in seconds;
+  # anything needing a toolchain gets its own job so the cheap gates are not
+  # held behind a build. Every one of these was run against the working tree
+  # first (all green) AND against an injected violation (all red) — a gate
+  # whose red has never been observed is not a gate.
+  #
+  # None of these are branch-protection required checks yet: promotion is an
+  # owner action (X-08-T31) after sustained green, following the cool-off
+  # posture gpu-vulkan-parity.yml and the platform-support step already use.
+  # ---------------------------------------------------------------------------
+
+  # Checkout-only hygiene gates (X-08-T05/T06/T07/T28). No cargo, no network.
+  repo-hygiene:
+    name: repo-hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fixture EOL pins (CRLF hash breakage — regressed once, 9cfa49a)
+        # windows-latest checks out with core.autocrlf=true, so any hashed
+        # fixture without an explicit .gitattributes eol pin arrives with
+        # different bytes and breaks a hash nobody touched.
+        run: bash scripts/check-fixture-eol-pins.sh
+      - name: pipefail `| grep -q` fail-open linter (static)
+        run: python3 scripts/compliance/lint-pipefail-grep-q.py
+      - name: NVIDIA scanner fail-open behavioural test
+        # Complement to the static linter above: that one only spots the
+        # `| grep -q` string idiom, this one proves the four NVIDIA
+        # non-bundle scanners still DETECT a dirty library inside a large nm
+        # dump. Those four scanners are already CI-wired; until now nothing
+        # checked that they had not silently started failing open.
+        # Needs no cargo / network / binutils (mktemp scratch + `nm` stub).
+        run: bash scripts/compliance/test-nvidia-scanner-sigpipe.sh
+      - name: Hot-path zero-alloc regions (FR-EX-05)
+        run: bash scripts/check-hot-path-allocs.sh
+      - name: "Workflow hygiene (cron collisions / needs: ids / run: shell syntax)"
+        # New in X-08-T27. The pre-existing cron check was a unittest method on
+        # ONE workflow whose regex matched double-quoted crons only (8 of 13
+        # visible) and which compared only itself against the others. Self-test
+        # runs first so a parser regression cannot mask a real violation.
+        run: |
+          bash scripts/check-workflow-hygiene.sh --self-test
+          bash scripts/check-workflow-hygiene.sh
+
+  # Unity C# static lints (X-08-T08). Checkout-only: all three scripts are
+  # pure grep over bindings/unity/**/*.cs — zero references to cargo / rustc /
+  # cbindgen, which is why they do NOT belong in `capi-smoke` below.
+  #
+  # scripts/check-capi-thread-free.sh is deliberately NOT here: it already runs
+  # via scripts/build-unity-webgl-lib.sh:170 inside the `unity-package` job.
+  # Wiring it twice would double the runner cost and split the failure signal.
+  unity-capi-lints:
+    name: unity-capi-lints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: IL2CPP callback pattern (static / Preserve / rooted delegate)
+        run: bash scripts/check-callback-pattern.sh
+      - name: DllImport routes through NativeMethods.Lib (iOS __Internal switch)
+        run: bash scripts/check-native-methods.sh
+      - name: Unity WebGL traps (HTTP-URL fallthrough / busy-wait deadlock)
+        run: bash scripts/check-unity-webgl-traps.sh
+
+  # C ABI smoke (X-08-T09). Split from unity-capi-lints because
+  # scripts/run-capi-smoke.sh:44 runs `cargo build -p vokra-capi --release` and
+  # :47 calls gen-c-abi.sh --check, which hard-exits when cbindgen is absent
+  # (scripts/gen-c-abi.sh:29-34) — cargo AND cbindgen are both mandatory here,
+  # which is exactly the provisioning the checkout-only job avoids.
+  #
+  # The script's own header called the CI wiring "a followup"; this is it.
+  # Its ASR/TTS legs are env-gated on real GGUFs and announce a SKIP rather
+  # than pretending to pass (FR-EX-08).
+  capi-smoke:
+    name: capi-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cbindgen
+        # Same provisioning the ios-build job uses.
+        run: cargo install cbindgen --locked
+      - name: C ABI smoke (header drift + exported-symbol prefix + C tests)
+        run: bash scripts/run-capi-smoke.sh
+      - name: Verify root Cargo.lock unchanged
+        # NFR-DS-02: `cargo install cbindgen` must not touch the root lockfile.
+        run: git diff --exit-code Cargo.lock
+
+  # MSRV verification (X-08-T15). Every other toolchain reference in this repo
+  # is `dtolnay/rust-toolchain@stable`, so the declared MSRV had never once
+  # been exercised: a contributor on 1.85-1.88 hits a cargo rust-version error
+  # that CI could not reproduce.
+  #
+  # The pin is 1.89, not the workspace's declared 1.85, because
+  # crates/vokra-backend-cpu/Cargo.toml:11 raises its own floor to 1.89 (the
+  # AVX-512 intrinsics of M4-17 stabilized there) and that crate is in every
+  # build — so 1.89 is the EFFECTIVE workspace floor. Verified both ways:
+  # `cargo +1.88 check --workspace` fails with "rustc 1.88.0 is not supported
+  # by ... vokra-backend-cpu requires rustc 1.89", and 1.89 succeeds.
+  #
+  # TO RAISE THE MSRV: bump this pin, bump `rust-version` in the crate that
+  # forces the floor, and reconcile Cargo.toml:27 + docs/getting-started{,.ja}.md
+  # "Rust toolchain" line. Whether to lift the workspace declaration from 1.85
+  # to 1.89 is an open owner decision (docs/abi-changelog.md:318, X-08-T32).
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check --workspace on the effective MSRV (1.89)
+        run: cargo check --workspace
+
+  # ABI surface tracking (X-08-T11/T12) — ADVISORY, and it MUST STAY ADVISORY.
+  #
+  # ############ RED-LINE ############
+  # Do NOT add this job to the branch-protection required checks. Promoting
+  # these three from advisory to required IS the content of M5-13
+  # (docs/milestones.md §9), which fires with the C ABI freeze (IF-01) at the
+  # v1.0 GA tag. If X-08 promoted them, M5-13 would have nothing left to do.
+  # X-08 wires them as advisory; M5-13 promotes. One step each.
+  # ##################################
+  #
+  # continue-on-error mirrors the cool-off posture of the platform-support
+  # step in `license` and of gpu-vulkan-parity.yml: drift annotates the run,
+  # it does not block the PR. Each script's --self-test runs first so a parser
+  # regression cannot masquerade as "no drift".
+  abi-surface:
+    name: abi-surface (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # abi-diff compares against a baseline revision
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: C ABI diff (self-test, then diff)
+        run: |
+          bash scripts/abi-diff.sh --self-test
+          bash scripts/abi-diff.sh
+      - name: ABI changelog freshness (self-test, then check)
+        run: |
+          bash scripts/check-abi-changelog.sh --self-test
+          bash scripts/check-abi-changelog.sh
+      - name: M5-residual ops add no C ABI symbol (self-test, then check)
+        run: |
+          bash scripts/check-m5-residual-no-abi.sh --self-test
+          bash scripts/check-m5-residual-no-abi.sh
+      - name: Rust public-API surface (self-test, then snapshot compare)
+        run: |
+          bash scripts/rust-public-api-list.sh --self-test
+          bash scripts/rust-public-api-list.sh
+
+  # Documentation code examples (X-08-T18..T25) — NFR-MT-07 item (7), the one
+  # required-check slot that had no job at all. `cargo test --workspace` runs
+  # rustdoc `///` doctests only; nothing ever read the fences in the .md files.
+  #
+  # Three tiers, and the boundary is deliberate:
+  #   A  CLI surface + referenced-path existence (no compiler, no network)
+  #   B  compile / API existence (C blocks vs include/vokra.h; python / js /
+  #      json against the real binding surfaces)
+  #   C  DEFERRED and ANNOUNCED on every run — swift and csharp blocks need
+  #      toolchains a PR runner lacks, and getting-started's sh blocks download
+  #      real upstream checkpoints. Those belong to the gated / nightly
+  #      workflows. The checker PRINTS every tier-C block it skipped rather
+  #      than quietly dropping it, so "verified" never overstates itself.
+  #
+  # 120 blocks across 24 documents (en + ja for getting-started, web,
+  # migration-guide, python, ios, unity, and — added by X-09b-T23 — the
+  # backend-guide, the cli/android/godot/server tutorials, and api-reference).
+  doc-examples:
+    name: doc-examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Self-test the extractor and checkers
+        # Bidirectional fixtures: a doc-local pseudo-helper (migration-guide's
+        # `read_wav_mono_f32`) must stay GREEN, and injected drift must go RED.
+        # Without the green half, tightening the API check later could start
+        # misfiring on legitimate pseudo-helpers with nothing to catch it.
+        run: python3 tools/docs/check_doc_examples.py --self-test
+      - name: Verify documentation code examples
+        run: python3 tools/docs/check_doc_examples.py
+
+  # X-09b-T15: rustdoc / API-reference generation. ADVISORY (continue-on-error),
+  # not a branch-protection required check — promotion is the owner's call,
+  # same posture as doc-examples / fa-v3-confinement / the license doc-drift
+  # steps.
+  #
+  # This job asserts TWO things and DELIBERATELY NOT a third:
+  #   (1) `cargo doc --no-deps --workspace` BUILDS. That build succeeding IS the
+  #       "the API reference is auto-generated" completion item of X-09; it is a
+  #       separate fact from `-D warnings` being clean.
+  #   (2) a warning RATCHET: the rustdoc warning count must not EXCEED a recorded
+  #       baseline, so a new intra-doc-link break is blocked from landing.
+  # It does NOT assert `RUSTDOCFLAGS=-D warnings` / zero warnings. At the time
+  # this job landed the tree had 266 rustdoc warnings (82 files / 12 crates,
+  # measured with default features); a "zero warnings" gate would therefore be
+  # either a fabricated green or a rewrite an order of magnitude larger than
+  # this WP. Draining those 266 is deferred to a dedicated doc-hygiene WP — here
+  # we only stop the number GROWING. A green run means "no NEW warning", NOT
+  # "clean". Re-measure with:
+  #   cargo doc --no-deps --workspace 2>&1 | grep -c '^warning:'
+  rustdoc:
+    name: rustdoc (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo doc build + warning ratchet (NOT a zero-warning gate)
+        shell: bash
+        run: |
+          set -o pipefail
+          # Baseline measured 2026-07-21 on the dev machine (macOS, default
+          # features). ubuntu-latest documents the macOS-only Metal/CoreML items
+          # as cfg'd-out, so its count is <= this — 266 is a safe ceiling here.
+          # Owner: if a future hygiene WP lowers the real count, lower this too.
+          BASELINE=266
+          cargo doc --no-deps --workspace 2>&1 | tee /tmp/rustdoc.log
+          count=$(grep -c '^warning:' /tmp/rustdoc.log || true)
+          echo "rustdoc warnings: ${count} (baseline ${BASELINE}). This is a RATCHET, not a zero-warning gate: green means no NEW warning, not clean. The 266 are deferred to a doc-hygiene WP (X-09b-T15)."
+          if [ "${count}" -gt "${BASELINE}" ]; then
+            echo "::error::rustdoc warning count ${count} exceeds baseline ${BASELINE} — a new doc warning was introduced. Fix the new warning, or (only if the rise is intentional and justified) update BASELINE in ci.yml."
+            exit 1
+          fi
+
   # M4-07-T15: FA v3 containment red-line (design constraint §5-(7)) —
   # FA v3 symbols (flash_attn_v3 / WGMMA / wgmma / TMA_ / compute_90a) are
   # legal ONLY under crates/vokra-backend-cuda; this machine gate supersedes
@@ -139,6 +394,23 @@ jobs:
             feature: metal
           - os: ubuntu-latest
             feature: cuda
+          # CoreML delegate scaffold (M5-01). Builds/clippies/tests the crate
+          # on an Apple runner. The runtime tests are probe-gated: whether a
+          # hosted macOS runner exposes the Apple Neural Engine is UNKNOWN, so a
+          # runner with no ANE takes the honest BackendUnavailable path (a
+          # skip), never a fabricated pass. Build + clippy always exercise the
+          # framework-linked FFI.
+          - os: macos-latest
+            feature: coreml
+          # QNN delegate scaffold (M5-02, Qualcomm Hexagon NPU). Build/clippy/
+          # test on Linux — this is where the raw dlopen FFI + the compile-time
+          # layout assert actually COMPILE (the FFI is gated on Android/Linux/
+          # Windows, so the authoring macOS host only ever built the stub). No
+          # GitHub runner has a QNN runtime, so the probe-gated tests take the
+          # honest BackendUnavailable path (a skip), never a fabricated pass.
+          # NOT NNAPI (FR-BE-07) — QNN is the Hexagon NPU delegate.
+          - os: ubuntu-latest
+            feature: qnn
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -159,6 +431,23 @@ jobs:
       - name: Test backend crate (${{ matrix.feature }})
         if: matrix.feature == 'cuda'
         run: cargo test -p vokra-backend-cuda
+      # M5-01-T11: run the CoreML backend crate's own probe/coverage tests on
+      # the coreml arm. The crate has no feature of its own, so it compiles
+      # unconditionally; its ANE probe test skips cleanly (BackendUnavailable)
+      # on a runner that hides the Neural Engine — an honest skip, not a pass.
+      - name: Test backend crate (${{ matrix.feature }})
+        if: matrix.feature == 'coreml'
+        run: cargo test -p vokra-backend-coreml
+      # M5-02-T10a: run the QNN backend crate's own probe/coverage tests on the
+      # qnn arm, WITH `--features qnn` so the raw dlopen FFI + the compile-time
+      # layout self-consistency assert actually compile on Linux (they are gated
+      # on `all(feature = "qnn", any(android/linux/windows))`). No runner has a
+      # QNN runtime, so the probe test skips cleanly (BackendUnavailable) — an
+      # honest skip, not a pass. The layout assert being a self-consistency guard
+      # (not a real-header check) is verified by owner T11 against the SDK.
+      - name: Test backend crate (${{ matrix.feature }})
+        if: matrix.feature == 'qnn'
+        run: cargo test -p vokra-backend-qnn --features qnn
 
   # M4-15: CPU + Vulkan-only build target (FR-BE-09 partial — build target
   # only; ADR M4-15). Builds the shipped cdylib + CLI with
@@ -566,6 +855,31 @@ jobs:
         run: cargo test -p vokra-models --test parity_whisper
       - name: Quant parity (M2-08, K-quant dequant → GEMM, FP16 atol=0.01)
         run: cargo test -p vokra-core --test quant_parity
+      # M5-06 T15: WFST decode parity against the committed real-OpenFST
+      # fixtures. The `--features vokra-wfst` flag is written LITERALLY on the
+      # command: without it `parity_wfst.rs` (which is `#![cfg(feature =
+      # "vokra-wfst")]`) compiles to ZERO tests — a vacuous green / fabricated
+      # pass. Runs only in the fusion=0 cell (wfst is fusion-independent).
+      - name: WFST decode parity (M5-06, OpenFST reference, feature vokra-wfst)
+        if: matrix.fusion == '0'
+        run: cargo test -p vokra-core --test parity_wfst --features vokra-wfst
+      # M5-06 T15: the opt-in feature must build clean under `-D warnings` and
+      # must NOT perturb the zero-dep invariant (cfg-only feature, NFR-DS-02).
+      - name: WFST feature gate (M5-06, build + clippy + zero-dep, feature ON)
+        if: matrix.fusion == '0'
+        run: |
+          set -euo pipefail
+          cargo clippy -p vokra-core --features vokra-wfst --all-targets -- -D warnings
+          cargo test -p vokra-core --features vokra-wfst --lib
+          ./scripts/check-zero-deps.sh
+          # Feature ON must pull in no non-vokra crate.
+          extra=$(cargo tree -p vokra-core --features vokra-wfst \
+            | grep -vE 'vokra-|^\[|^$' || true)
+          if [ -n "$extra" ]; then
+            echo "M5-06 regression: vokra-wfst pulled in non-vokra deps:" >&2
+            echo "$extra" >&2
+            exit 1
+          fi
       - name: Policy e2e (M2-08, converter → runtime → 5% mel-loss gate)
         run: cargo test -p vokra-cli --test policy_e2e
 
@@ -626,6 +940,29 @@ jobs:
         run: bash scripts/check-zero-deps.sh
       - name: Forbidden symbols / dependencies check
         run: bash scripts/check-forbidden-symbols.sh
+      - name: no_std subset tripwire (Cortex-M55 Tier 3, M5-03-T15)
+        # NFR-PT-03 / NFR-DS-02: the no_std(+alloc) subset (vokra-core error +
+        # GGUF reader, and the vokra-vad-micro Silero forward core) must keep
+        # cross-compiling for bare-metal Cortex-M55 with no `std` leak. Same
+        # family as check-zero-deps.sh (a structural invariant, not a behaviour
+        # test) — so it lives here, per-PR, NOT on the weekly Tier-3 platform leg
+        # (.github/workflows/silero-nostd-cross-build.yml). The self-test proves
+        # the compile gate still detects an injected `use std::…` (fabricated-pass
+        # prevention). Cheap cross-build; a std leak is a hard failure. Promotion
+        # to a required branch-protection check is an owner decision (NFR-MT-07).
+        run: |
+          rustup target add thumbv8m.main-none-eabihf thumbv8m.main-none-eabi
+          bash scripts/check-nostd-subset.sh --self-test
+          bash scripts/check-nostd-subset.sh
+      - name: EnCodec weight exclusion (FR-OP-32, M3-06)
+        # X-08-T03. EnCodec pretrained weights are CC-BY-NC 4.0, so they are
+        # permanently excluded from the shipping tree and the official model
+        # zoo (docs/license-audit.md §3). The M2-13 runtime gate catches a
+        # GGUF that DECLARES an encodec arch; this is the filesystem half —
+        # a stray *encodec*.{safetensors,gguf,pth,bin} anywhere under crates/
+        # model_zoo/ docs/. Pure bash + find, no cargo, so it costs nothing
+        # in the job that already owns licence enforcement.
+        run: bash scripts/compliance/check-encodec-exclusion.sh
       - name: Platform-support matrix drift check (advisory, M4-11-T08)
         # Verifies that every evidence anchor cited by
         # docs/platform-support/v1.0-rc-support-matrix.md (workflow jobs, build
@@ -639,6 +976,86 @@ jobs:
         run: |
           bash scripts/check-platform-support.sh --self-test
           bash scripts/check-platform-support.sh
+      - name: Contributor-reference doc drift check (advisory, X-09a-T10)
+        # Verifies the two public reference documents that stand in for the
+        # unpublished planning tree: docs/requirement-ids.md (the glossary
+        # that lets an outside reader resolve a cited requirement ID) and
+        # docs/architecture.md (the crate map). Four legs: the glossary and
+        # the public docs must agree on the cited ID set in BOTH directions;
+        # the en/ja glossaries must list the same IDs; every architecture
+        # anchor must resolve; and the Japanese architecture twin must exist
+        # and carry the same anchors. Without this, a PR can cite a new
+        # requirement ID that no public reader can look up.
+        # ADVISORY (continue-on-error), same posture as the platform-support
+        # step above: drift annotates the run but does NOT block the PR.
+        # Promotion to a required check is an owner decision (NFR-MT-07)
+        # tracked by X-08-T28. The self-test guards the parsers so a checker
+        # bug cannot manufacture a passing run.
+        continue-on-error: true
+        run: |
+          bash scripts/check-doc-references.sh --self-test
+          bash scripts/check-doc-references.sh
+      - name: Contributor-funnel integrity check (advisory, X-05-T07)
+        # Legs (b)-(f) catch real drift in the contributor funnel: dead
+        # relative links, a missing en/ja twin, an SSOT pointer whose target
+        # no longer exists, an absolute template URL that resolves nowhere.
+        # Leg (a) is different: CODE_OF_CONDUCT / SECURITY are deliberately
+        # NOT landed until the owner fixes the contact points (X-05-T04) —
+        # publishing a reporting channel that reaches nobody is worse than
+        # publishing none, and Vokra ships a C ABI, raw FFI and nine
+        # `unsafe`-permitted crates. The script separates the two states with
+        # a third exit code, so this step maps them explicitly:
+        #   exit 0 → green, exit 3 → PENDING (annotate, do not fail),
+        #   exit 1 → real drift, fail the step.
+        # Without that split the check would be permanently red until T04 and
+        # would train people to ignore it; without wiring it at all, legs
+        # (b)-(f) would go unenforced, which is the defect X-08 exists to fix.
+        # ADVISORY (continue-on-error) like its sibling doc checks above;
+        # promotion to a required check is an owner decision (NFR-MT-07).
+        continue-on-error: true
+        run: |
+          bash scripts/check-community-docs.sh --self-test
+          set +e
+          bash scripts/check-community-docs.sh
+          rc=$?
+          set -e
+          if [ "$rc" -eq 3 ]; then
+            echo "::notice::contributor funnel: PENDING — files awaiting X-05-T04 (owner contact points). Drift legs (b)-(f) are green."
+            exit 0
+          fi
+          exit "$rc"
+      - name: Owner-checklist drift check (advisory, M4-RESIDUAL-A-T01)
+        # Guards the owner hand-off surface (docs/m4-owner-verification-checklist.md,
+        # docs/m3-owner-verification-checklist.md, docs/handoff/m4-19.md) against
+        # two failure modes: a CLI flag name that no longer exists reappearing in
+        # a procedure the owner is told to run, and a "CC reached this far" claim
+        # whose cited evidence file has been renamed or deleted.
+        # ADVISORY (continue-on-error): a drift annotates the run but does NOT
+        # block the PR — same posture as the platform-support step above.
+        # Promotion to a required branch-protection check is an owner decision
+        # (NFR-MT-07). The self-test guards the parser against regression.
+        continue-on-error: true
+        run: |
+          bash scripts/check-owner-checklist-drift.sh --self-test
+          bash scripts/check-owner-checklist-drift.sh
+      - name: Zoo-manifest completeness gate (advisory, M5-12-T09)
+        # GA DoD item 2 ("all zoo models degrade < 5% / pass parity") is only
+        # honest if the zoo model set is enumerable and complete. This gate
+        # cross-references the tracked machine SoT (docs/license-audit.md's
+        # ★ 公式 zoo / ⚠ 保留 rows) against the eval zoo manifest
+        # (crates/vokra-eval/data/zoo/manifest.txt): every audit row must be
+        # claimed by a record OR an excluded_reason record, no manifest record
+        # may be a phantom, the Whisper bundle must expand to 5 sizes, and no
+        # CC-BY-NC weight may appear. A silently-dropped model would make item 2
+        # vacuously true for it — the exact defect this gate prevents.
+        # ADVISORY (continue-on-error) like its sibling doc-drift tripwires
+        # above; promotion to a required branch-protection check is an owner
+        # decision (NFR-MT-07, X-08-T28 pattern). The self-test guards the
+        # parser so a checker bug cannot manufacture a passing run.
+        continue-on-error: true
+        run: |
+          bash scripts/check-zoo-manifest-complete.sh --self-test
+          bash scripts/check-zoo-manifest-complete.sh
 
   # Performance regression gate (NFR-PF-13, M2-04). Runs the fused log-mel
   # `mel-frontend` bench through `vokra-cli bench --baseline` against a
@@ -673,6 +1090,55 @@ jobs:
             --warmup 5 \
             --baseline docs/bench-baselines/mel_frontend_baseline.json \
             --format json
+      - name: Silero VAD RTF regression check (X-06-T09, advisory, placeholder-gated)
+        # X-06-T09 (model-level regression, guards the M5-14 CPU wins): the
+        # committed Silero GGUF (tests/parity/silero_vad/silero-vad-v5.gguf,
+        # 2.1 MB) + committed WAV need NO download, so this can run at PR time.
+        #
+        # The baseline JSON MUST be seeded from an ubuntu-latest CI run: an
+        # M1/aarch64 rig false-fails the 5% gate (docs/bench-baselines/README.md,
+        # the mel-frontend NEON-skew example). Until the owner seeds it (via
+        # bench-baseline-capture.yml, then commits the reviewed rtf), this step
+        # CLEAN-SKIPS — baseline_gate.py detects the placeholder and no verdict
+        # is claimed (fabricated pass 禁止, FR-EX-08). A MALFORMED baseline exits
+        # 2 and FAILS this step, so the gate is provably not a no-op.
+        #
+        # Arch-routed: silero-vad → ModelTask::Vad automatically. `--task` is a
+        # hard error on this arch (engine.rs), so it is deliberately absent.
+        #
+        # advisory (open question #1): this step lives in the REQUIRED
+        # bench-regression job, so to stay advisory-by-default it must NOT fail
+        # the job on a Silero regression — it ANNOTATES. The owner promotes it
+        # to a hard gate by setting repo variable VOKRA_SILERO_GATE_REQUIRED=true
+        # (no code change), once shared-runner RTF variance is shown to hold the
+        # 5% gate. The mel step above is the established required leg.
+        env:
+          SILERO_REQUIRED: ${{ vars.VOKRA_SILERO_GATE_REQUIRED }}
+        run: |
+          set -euo pipefail
+          BASE=docs/bench-baselines/silero_vad_baseline.json
+          STATE="$(python3 tools/bench/baseline_gate.py "$BASE")"
+          if [ "$STATE" = placeholder ]; then
+            echo "::notice::Silero VAD RTF baseline is a placeholder (not yet seeded on ubuntu-latest). Clean skip — no regression verdict claimed. Seed via .github/workflows/bench-baseline-capture.yml (owner)."
+            exit 0
+          fi
+          set +e
+          ./target/release/vokra-cli bench \
+            --model tests/parity/silero_vad/silero-vad-v5.gguf \
+            --input tests/fixtures/audio/jfk-30s.wav \
+            --iters 30 \
+            --warmup 5 \
+            --baseline "$BASE" \
+            --format json
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            if [ "${SILERO_REQUIRED:-}" = "true" ]; then
+              echo "::error::Silero VAD RTF regressed >5% and VOKRA_SILERO_GATE_REQUIRED=true — failing (owner-promoted hard gate)."
+              exit 1
+            fi
+            echo "::warning::Silero VAD RTF regressed >5% vs the seeded baseline (ADVISORY — not failing the required job; set VOKRA_SILERO_GATE_REQUIRED=true to promote, open question #1)."
+          fi
 
   # M2-09-T19 vokra-server single-binary deployment gate (FR-SV-01, NFR-DS-02,
   # NFR-MT-07). Verifies four properties of the OUT-OF-WORKSPACE

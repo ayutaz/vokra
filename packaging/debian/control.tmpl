@@ -1,0 +1,27 @@
+Source: vokra
+Section: sound
+Priority: optional
+Maintainer: ayutaz <noreply@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/ayutaz/vokra
+Rules-Requires-Root: no
+
+Package: libvokra
+Architecture: amd64
+Depends: ${misc:Depends}
+Description: Speech-first inference runtime (shared library + C header)
+ Vokra is an ONNX Runtime alternative specialised for speech AI (TTS / ASR /
+ speech-to-speech / VAD). This package ships the C ABI shared library
+ (libvokra.so) and the header (vokra.h). Zero external runtime dependencies.
+ .
+ SBOM (shipped closure): @@SBOM_URL@@
+
+Package: vokra-cli
+Architecture: amd64
+Depends: ${misc:Depends}
+Description: Vokra command-line interface
+ The `vokra` CLI: run GGUF models (VAD / ASR / TTS), convert upstream
+ checkpoints to Vokra GGUF, and benchmark RTF. Ships alongside libvokra.
+ .
+ SBOM (shipped closure): @@SBOM_URL@@

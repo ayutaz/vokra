@@ -62,6 +62,29 @@ STABILITY block at the top of `include/vokra.h`, ADR-0003, and IF-01):
   is re-anchored to that release, the freeze commitment is written into
   `include/vokra.h`, and post-1.0 breaking changes require a major bump.
 
+### CI posture of the three ABI gates (X-08, 2026-07-20) — ADVISORY until M5-13
+
+`scripts/abi-diff.sh`, `scripts/check-abi-changelog.sh` and
+`scripts/rust-public-api-list.sh` were unwired from CI until X-08. They now run
+in the `abi-surface (advisory)` job of `.github/workflows/ci.yml`, which sets
+`continue-on-error: true`.
+
+**That job must stay advisory until M5-13.** Promoting these three from
+advisory to a branch-protection required check *is* the content of M5-13
+(`docs/milestones.md` §9), which executes together with the IF-01 freeze at the
+v1.0 GA tag. X-08 deliberately wired them advisory-only so the progression is
+one step at a time: unwired → advisory (X-08) → required (M5-13). Had X-08
+promoted them, M5-13 would have had nothing left to execute. The cool-off
+posture mirrors `gpu-vulkan-parity.yml` and the platform-support drift step in
+the `license` job.
+
+Known state at wiring time: `rust-public-api-list.sh` is **already red** on
+`13a2a6e` (53 added / 13 removed lines vs.
+`docs/abi/vokra-rust-public-api.v1.0-rc.list`), from surface added in `ff12104`
+without a snapshot rotation. X-08 did not rotate it — that is M5-13/IF-01's
+call — and the advisory posture keeps the red from blocking PRs. See
+`docs/adr/X-08-ci-gate-completion.md` §2 and §7-(4).
+
 ## Entry schema
 
 One `###` heading per **PR-day + version**. Under it, a table of the
@@ -204,6 +227,195 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
   - `struct vokra_stream_t`         (opaque)
 
 ## Entries
+
+### 2026-07-21 — 1.0.0-rc.1-dev (M5-05: consent manifest schema + structural validator — Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+**untouched** (`scripts/gen-c-abi.sh --check` = no diff; no `vokra_consent_*` /
+`vokra_voiceclone_*` symbol exists). No GGUF metadata schema is added. M5-05
+adds the signed-consent-manifest surface to `vokra-core::compliance`
+(`docs/legal-compliance.md` §3.3 schema): a `ConsentManifest` struct + a
+`ConsentScope` enum, a zero-dependency structural validator
+(`ConsentManifest::parse`, via `vokra_core::json` — no `serde`, NFR-DS-02), a
+`SignatureStatus` enum, and a consent seam on the existing
+`SpeakerEmbeddingPolicy` (`authorize_embedding_for_tts`). Consumed by the
+separate `vokra-voiceclone-experimental` binary (FR-CP-04); core keeps voice
+cloning unrepresentable (`VoiceCloningPolicy::Disabled`-only).
+
+**Honesty boundary recorded on purpose:** `SignatureStatus` has **no `Verified`
+variant** — core performs *structural* observation of the `signature` field
+(present / absent), never a cryptographic verification. Real signature
+verification is an owner-chosen trust-root mechanism outside core (M5-05-T04);
+and the watermark forced-embed completion leg stays UNMET because
+`WatermarkConfig::backend_status()` remains `Deferred` (2026-07-04 drop) — this
+WP does **not** flip it (see `docs/adr/M5-05-watermark-dependency.md`).
+
+M5-13 relevance (why this is recorded here): these are additive **Rust** public
+items with **no C surface**, so `scripts/check-abi-changelog.sh` does not gate
+on this entry (no C symbol changed). `scripts/rust-public-api-list.sh` picks
+them up (`vokra-core::compliance::consent::*` + the new
+`SpeakerEmbeddingPolicy` method); as with the M5-01/02/03/06 entries above, the
+`docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot is **not** rotated by
+this WP — snapshot rotation is the M5-13/IF-01 freeze owner's action. All items
+are additive (existing signatures unchanged; the two new enums are
+`#[non_exhaustive]`), Breaking? = no.
+
+| Crate / area                        | Symbol                                            | Kind  | Signature / note                                                                              | Rationale                                                                              | Breaking? | PR    |
+| ----------------------------------- | ------------------------------------------------- | ----- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | --------- | ----- |
+| `vokra-core::compliance` (`consent`)| `ConsentManifest`                                 | Added | `pub struct ConsentManifest { voice_owner_name, consent_scope, grant_date, signature, vokra_session_id }` | signed consent manifest schema (FR-CP-04, `docs/legal-compliance.md` §3.3), WP M5-05    | no        | (TBD) |
+| `vokra-core::compliance` (`consent`)| `ConsentScope`                                    | Added | `pub enum ConsentScope { Commercial, Personal, Research }` (`#[non_exhaustive]`)               | consent scope token (§3.3), WP M5-05                                                     | no        | (TBD) |
+| `vokra-core::compliance` (`consent`)| `SignatureStatus`                                 | Added | `pub enum SignatureStatus { Present, Absent }` (`#[non_exhaustive]`; **no `Verified`** — structural only) | honest signature boundary (core does not verify; owner trust-root), WP M5-05            | no        | (TBD) |
+| `vokra-core::compliance` (`consent`)| `ConsentManifest::parse`                          | Added | `pub fn parse(bytes: &[u8]) -> Result<Self>`                                                   | fail-closed structural validation via `vokra_core::json` (NFR-DS-02, FR-EX-08), WP M5-05| no        | (TBD) |
+| `vokra-core::compliance` (`consent`)| `ConsentManifest::signature_status`               | Added | `pub fn signature_status(&self) -> SignatureStatus`                                            | structural signature observation (not verification), WP M5-05                            | no        | (TBD) |
+| `vokra-core::compliance` (`consent`)| `ConsentScope::{from_token, as_token}`            | Added | `pub fn from_token(&str) -> Option<Self>` / `pub fn as_token(self) -> &'static str`            | scope token round-trip, WP M5-05                                                         | no        | (TBD) |
+| `vokra-core::compliance` (`level`)  | `SpeakerEmbeddingPolicy::authorize_embedding_for_tts` | Added | `pub fn authorize_embedding_for_tts(self, consent: Option<&ConsentManifest>) -> Result<()>` | wires the reserved `RequireConsent` policy to the consent type (§3.2), WP M5-05          | no        | (TBD) |
+
+### 2026-07-21 — 1.0.0-rc.1-dev (M5-03: IoT Tier 3 no_std Silero VAD — new `vokra-vad-micro` crate, Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+**untouched** (`scripts/gen-c-abi.sh --check` = no diff; a grep for `micro` /
+`nostd` / `silero` in the header matches **0** new symbols). No GGUF metadata
+schema is added. M5-03 splits the Silero VAD v5 forward core out of
+`vokra-models::silero_vad` into a new `#![no_std]`(+`alloc`) crate,
+**`vokra-vad-micro`**, so it cross-compiles for bare-metal Cortex-M55
+(thumbv8m, IoT Tier 3 / NFR-PT-03) without pulling in the std-heavy
+`vokra-ops` / `vokra-backend-cpu` (ADR `docs/adr/M5-03-iot-tier3-nostd.md`
+§(a), topology 案1). The std `vokra-models::silero_vad` is now a thin veneer
+that depends on and re-exports it.
+
+M5-13 relevance (why this is recorded here): the new crate adds a **Rust**
+public surface but **no C surface**, and it introduces a **feature-cfg
+dimension** (`std` default-ON; `--no-default-features` = `#![no_std]`) that
+M5-13's freeze snapshot must account for. `scripts/rust-public-api-list.sh`
+scans only `vokra-core` / `vokra-ops` / `vokra-capi`, so this crate does not
+appear in that snapshot; the M5-13 owner decides whether to extend the
+snapshot to `vokra-vad-micro` before the freeze. The `std`/no_std split does
+**not** change the default (std) build's Rust surface of any existing crate —
+`vokra_models::silero_vad::{SileroVadV5, SampleRate, wav::read_wav_f32}` and
+`SileroVadV5::{from_gguf, open, supports, forward_chunk, open_stream}` are all
+source-compatible (`SampleRate` is now a `pub use` re-export of
+`vokra_vad_micro::SampleRate`, the identical type). No C ABI is added or
+changed, so `scripts/check-abi-changelog.sh` does not gate on this entry.
+
+The Wave-1 `std` gate on `vokra-core`'s public modules
+(session/stream/safetensors/… behind `#[cfg(feature = "std")]`) was recorded
+under the v1.0-rc baseline; Wave 2/3 add no further `vokra-core` gating.
+
+| Crate / area                     | Symbol                                                      | Kind  | Signature / note                                                                                          | Rationale                                                                                     | Breaking? | PR    |
+| -------------------------------- | ---------------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | --------- | ----- |
+| `vokra-vad-micro` (new crate)    | `SampleRate` / `SileroWeights` / `RateWeights` / `LstmState` | Added | `#![no_std]`(+alloc) crate; `SileroWeights::{from_gguf, rate, forward_chunk}`, `run_frame`, stage fns     | no_std Silero forward core for Cortex-M55 Tier 3 (SRS §6, NFR-PT-03); first-party, `vokra-core` dep only | no        | (TBD) |
+| `vokra-vad-micro::scalar`        | `exp` / `tanh` / `sqrt`                                     | Added | `pub fn (f32) -> f32`, `core`-only (no `std`, no `libm`)                                                  | shared transcendentals so std ↔ no_std Silero are bit-identical (T08); Newton `sqrt` default (ADR §(d)) | no        | (TBD) |
+| `vokra-models::silero_vad`       | `SampleRate`                                                | Moved | now `pub use vokra_vad_micro::SampleRate` (identical type; source-compatible re-export)                   | forward core relocation (ADR §(a)); existing consumers (`vokra-cli` / `vokra-capi` / example) unchanged | no        | (TBD) |
+
+### 2026-07-21 — 1.0.0-rc.1-dev (M5-02: QNN delegate backend selector — Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+untouched. This is deliberate and load-bearing for M5-13: a **C-level** QNN
+delegate selector is *not* exposed during the v1.0-rc window (same posture as
+M5-01 CoreML). `include/vokra.h` records that a backend/delegate selector, if
+ever exported, is "an M5 decision after the real-hardware NPU bakeoff", and
+`docs/handoff/m4-12.md` says to land the delegate API as a *new* C symbol after
+the ANE/Hexagon bakeoff. So the only way to select QNN in the rc window is the
+Rust surface (`SessionBuilder::with_backend(BackendKind::Qnn)` / `vokra-cli
+--backend qnn`). `scripts/check-abi-changelog.sh` does not gate on this entry
+(no C symbol changed); it is recorded for the v1.0-rc baseline snapshot
+(`scripts/rust-public-api-list.sh` audits that `BackendKind` still carries
+`#[non_exhaustive]`, so the variant addition is backward-compatible) and for the
+M5-13 freeze decision on whether to promote the selector to the C ABI.
+
+Scaffold status: the backend covers no op yet (QNN graph construction — the
+`QnnGraph_create` → `addNode` → `finalize` → `execute` path — lands in an
+SDK-gated CC re-issue wave, gated by owner T11 = SDK download + Qualcomm EULA
+acceptance + real-header layout verification), so selecting it is an explicit
+`UnsupportedOp` (QNN runtime present) or `BackendUnavailable` (no runtime / off
+target) — never a silent CPU fall back. No GGUF metadata schema is added by this
+slice; if the model-supply scheme later adds a `vokra.qnn.*` chunk, that gets its
+own dated entry. **QNN is not NNAPI** (FR-BE-07): NNAPI remains permanently
+unsupported; QNN is the Qualcomm Hexagon NPU delegate.
+
+| Crate / area              | Symbol                 | Kind  | Signature                            | Rationale                                                        | Breaking? | PR    |
+| ------------------------- | ---------------------- | ----- | ------------------------------------ | ---------------------------------------------------------------- | --------- | ----- |
+| `vokra-core::backend`     | `BackendKind::Qnn`     | Added | `enum BackendKind { …, Qnn }` (`#[non_exhaustive]`, additive) | QNN delegate selector (FR-BE-06), WP M5-02; raw QNN dlopen FFI, no binding crate, no bundled SDK. C-ABI exposure deferred to M5-13 post-bakeoff | no        | (TBD) |
+
+### 2026-07-21 — 1.0.0-rc.1-dev (M5-06: `wfst_decode` — Rust surface only, opt-in feature)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+untouched (`scripts/gen-c-abi.sh --check` = no diff; a grep for `wfst` / `fst`
+in the header matches **0** symbols; `wfst_decode` is a host-side Rust runtime
+search, like `beam_search`, never a C export — ADR M5-06 defers the C-surface
+decision to the M5-13 freeze, so a C consumer cannot call it during the rc
+window). The whole surface lives under the **opt-in `vokra-wfst` feature**
+(default OFF, cfg-only — no crate dependency, root `Cargo.lock` unchanged,
+NFR-DS-02), so it is invisible to the default build and to a default
+`rust-public-api-list.sh` run; `scripts/check-abi-changelog.sh` does not gate on
+it (no C symbol changed). Recorded here per the recording rules for the M5-13
+freeze inventory.
+
+**No GGUF metadata is added** (ADR M5-06 §3 chose the *independent `.fst`
+file* input form over a `vokra.wfst.*` GGUF chunk; the developer-side OpenFST
+toolchain composes HCLG offline and Vokra reads the finished binary). If a
+future revision adopts the GGUF-chunk form, that is an in-scope GGUF-schema
+addition and gets its own row in the "GGUF Metadata additions" section.
+
+| Crate / area                | Symbol                                            | Kind  | Signature / shape                                                                 | Rationale                                                                     | Breaking? | PR    |
+| --------------------------- | ------------------------------------------------- | ----- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | --------- | ----- |
+| `vokra-core::decode::wfst`  | module (feature `vokra-wfst`)                     | Added | `pub mod wfst` gated `#[cfg(feature = "vokra-wfst")]`                              | FR-OP-43 `wfst_decode` — decode-only token-passing WFST search                | no        | (TBD) |
+| `vokra-core::decode::wfst`  | `Semiring` / `TropicalWeight`                     | Added | trait `Semiring` (`plus`/`times`/`zero`/`one`/`approx_eq`) + tropical impl        | Viterbi min/plus semiring; `log` semiring is a documented future additive     | no        | (TBD) |
+| `vokra-core::decode::wfst`  | `Fst` / `Arc` / `StateId` / `Label`               | Added | decode-only FST + `validate()`                                                    | in-memory graph the reader/decoder share (no `compose`/`determinize`)         | no        | (TBD) |
+| `vokra-core::decode::wfst`  | `read_openfst_vector`                             | Added | `fn read_openfst_vector(&[u8]) -> Result<Fst<TropicalWeight>>`                    | from-scratch OpenFST `VectorFst<StdArc>` binary reader (no OpenFST link)      | no        | (TBD) |
+| `vokra-core::decode::wfst`  | `WfstDecoder` / `WfstDecodeConfig`                | Added | `WfstDecoder::new(&fst).decode(&emission) -> Result<Option<WfstHypothesis>>`      | frame-synchronous token-passing decode + `decode_nbest` + `lattice`          | no        | (TBD) |
+| `vokra-core::decode::wfst`  | `WfstLattice` / `WfstHypothesis` / `LatArc`       | Added | lattice + best-path + n-best output types                                         | decode output (best-first n-best mirrors `BeamHypothesis`)                    | no        | (TBD) |
+
+### 2026-07-20 — 1.0.0-rc.1-dev (M5-14-BACKLOG: batched-beam scoring interface — Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+untouched (a grep for `beam` / `logits` / `scorer` in the header matches **0**
+symbols; beam search is a host-side Rust runtime function, FR-OP-40, never a C
+export). Two model↔decoder traits gain a **batched** sibling method, each with
+a **default implementation that loops the existing single-item method in order**
+— so every existing `LogitsSource` / `BeamScorer` keeps byte-for-byte identical
+behaviour, and `scripts/check-abi-changelog.sh` does not gate on this entry (no
+C symbol changed). It is recorded for the v1.0-rc baseline snapshot
+(`scripts/rust-public-api-list.sh` picks the variants up) and the M5-13 freeze.
+
+`beam_search` now expands every active beam through `logprobs_batch` in one
+call, so a scorer with a batched decoder step can fold the `beam_width` per-beam
+forwards into one forward; the default keeps the prior per-beam behaviour
+bit-for-bit. An optimized override (Whisper folding the projections into an
+m = `beam_width` GEMM) is deferred to a follow-up (measured to help only at
+beam ≥ 5, ADR `M5-14-BACKLOG`); the interface + its bit-identity oracle land now.
+Both new methods are **additive** (default-provided) so no `impl` breaks.
+
+| Crate / area          | Symbol                       | Kind  | Signature                                                        | Rationale                                                              | Breaking? | PR    |
+| --------------------- | ---------------------------- | ----- | --------------------------------------------------------------- | --------------------------------------------------------------------- | --------- | ----- |
+| `vokra-core::decode`  | `LogitsSource::logits_batch` | Added | `fn logits_batch(&mut self, prefixes: &[&[u32]]) -> Result<Vec<Vec<f32>>>` (default = loop `logits`) | batched next-token logits for beam expansion (M5-14-BACKLOG-T07) | no        | (TBD) |
+| `vokra-core::decode`  | `BeamScorer::logprobs_batch` | Added | `fn logprobs_batch(&mut self, prefixes: &[&[u32]]) -> Result<Vec<Vec<f32>>>` (default = loop `logprobs`) | batched log-probs; `beam_search` folds all active beams into one call | no        | (TBD) |
+
+### 2026-07-20 — 1.0.0-rc.1-dev (M5-01: CoreML delegate backend selector — Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+untouched. This is deliberate and load-bearing for M5-13: a **C-level** CoreML
+delegate selector is *not* exposed during the v1.0-rc window. `include/vokra.h`
+records that a backend/delegate selector, if ever exported, is "an M5 decision
+after the real-hardware NPU bakeoff", and `docs/handoff/m4-12.md` says to land
+the delegate API as a *new* C symbol after the ANE/Hexagon bakeoff. So the only
+way to select CoreML in the rc window is the Rust surface
+(`SessionBuilder::with_backend(BackendKind::CoreMl)` / `vokra-cli --backend
+coreml`). `scripts/check-abi-changelog.sh` does not gate on this entry (no C
+symbol changed); it is recorded for the v1.0-rc baseline snapshot
+(`scripts/rust-public-api-list.sh` picks the variant up) and for the M5-13
+freeze decision on whether to promote the selector to the C ABI.
+
+Scaffold status: the backend covers no op yet (the execution path lands after
+the M5-01-T02 model-supply ADR), so selecting it is an explicit `UnsupportedOp`
+(ANE present) or `BackendUnavailable` (no ANE) — never a silent CPU fall back.
+No GGUF metadata schema is added by this slice; if the T02 ADR chooses a
+`vokra.coreml.*` artifact-binding scheme, that schema addition gets its own
+dated entry (per the "GGUF metadata schema" scope rule above).
+
+| Crate / area              | Symbol                 | Kind  | Signature                            | Rationale                                                        | Breaking? | PR    |
+| ------------------------- | ---------------------- | ----- | ------------------------------------ | ---------------------------------------------------------------- | --------- | ----- |
+| `vokra-core::backend`     | `BackendKind::CoreMl`  | Added | `enum BackendKind { …, CoreMl }` (`#[non_exhaustive]`, additive) | CoreML delegate selector (FR-BE-06), WP M5-01; raw ObjC/CoreML FFI, no binding crate. C-ABI exposure deferred to M5-13 post-bakeoff | no        | (TBD) |
 
 ### 2026-07-15 — 1.0.0-rc.1-dev (M4-06: Moshi full-duplex S2S + FR-MD-09 attribution)
 
@@ -514,7 +726,13 @@ Notes:
 
 | WP    | Chunk prefix    | Keys                                                                                                                                                                                                                                                                                                                                     | Kind                              | Status     | Rationale                                                                                                                                                                                                                                                                                                                                                                                                             | Introducing wave / commit |
 | ----- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| M4-18 | `vokra.utmos.*` | `vokra.utmos.arch.variant` (`"wav2vec2_regression.v0"` guard), `vokra.utmos.sample_rate`, `vokra.utmos.conv.{channels[],kernels[],strides[],activation}`, `vokra.utmos.transformer.{n_layer,n_head,hidden_dim,ffn_dim,norm,ln_eps}`, `vokra.utmos.head.{dims[],pool,scale,offset}` (`scale`/`offset` optional, identity defaults) | `string` + `u32` + `u32-array` + `f32` | documented | UTMOS scorer config (M4-18, weight-deferred skeleton) — read by `UtmosConfig::from_gguf` in `crates/vokra-eval/src/metrics/utmos.rs`; required keys have no silent defaults, an unknown `arch.variant` is rejected loudly (FR-EX-08). Converter-side emission (`vokra-convert --model utmos`, T05) lands with the owner weight flip (v1.0.x patch); until then only the in-crate round-trip test writes the schema. | M4 Wave 1                  |
+| M4-18 | `vokra.utmos.*` | `vokra.utmos.arch.variant` (`"wav2vec2_regression.v0"` guard), `vokra.utmos.sample_rate`, `vokra.utmos.conv.{channels[],kernels[],strides[],activation}`, `vokra.utmos.transformer.{n_layer,n_head,hidden_dim,ffn_dim,norm,ln_eps}`, `vokra.utmos.head.{dims[],pool,scale,offset}` (`scale`/`offset` optional, identity defaults) | `string` + `u32` + `u32-array` + `f32` | persisted | UTMOS scorer config — read by `UtmosConfig::from_gguf` in `crates/vokra-eval/src/metrics/utmos.rs`; required keys have no silent defaults, an unknown `arch.variant` is rejected loudly (FR-EX-08). **Status moved `documented` → `persisted` on 2026-07-20**: the M5-15 T14 converter (`vokra-convert --model utmos`, `crates/vokra-convert/src/models/utmos.rs`) writes every key in this row, so the row's original "converter-side emission lands with the owner weight flip (v1.0.x patch)" note is superseded — the 2026-07-18 un-defer removed that gate. Precision, so the promotion is not read as more than it is: the converter always emits `arch.variant = "wav2vec2_regression.v1"` (the real UTMOS22-strong checkpoint is v1), so the **`…v0` variant string itself** is still only produced by the in-crate round-trip test — that test, plus `v0_forward_is_untouched_by_the_v1_addition`, is what keeps the v0 read path exercised. | M4 Wave 1 (status updated M5-15 wave 1) |
+
+### v1.0 GA window (M5) — GGUF metadata additions
+
+| WP    | Chunk prefix    | Keys                                                                                                                                                                                                                                                                                                          | Kind                              | Status        | Rationale                                                                                                                                                                                                                                                                                       | Introducing wave / commit |
+| ----- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| M5-15 | `vokra.utmos.*` | **v1 additions** (required iff `arch.variant == "wav2vec2_regression.v1"`, forbidden for `…v0`): `vokra.utmos.conv.{group_norm_layers[],group_norm_groups[],group_norm_eps}`, `vokra.utmos.pos_conv.{kernel,groups}`, `vokra.utmos.cond.{domain_dim,domain_id,judge_dim,judge_id}`, `vokra.utmos.blstm.hidden`, `vokra.utmos.head.activation` (`"relu"` / `"none"`) | `u32` + `u32-array` + `f32` + `string` | **persisted** | The M4-18 UTMOS un-defer (依頼者承認 2026-07-18). The real UTMOS22-strong stack needs eight structures the v0 skeleton could not express, so `ARCH_VARIANT_V1 = "wav2vec2_regression.v1"` was added — **additively**, exactly as ADR `M4-18-utmos-arch.md`:41 pre-authorized: a v0 GGUF still loads and still produces the same score. `v0_forward_is_untouched_by_the_v1_addition` pins that on two axes: the GGUF and in-memory paths agree **bit-for-bit**, and the value itself is held to a golden literal (`V0_GOLDEN_SCORE`, ±1e-6 — a tolerance because the f32 forward moves by one ULP between this host's own scalar and NEON kernel paths, so bit-exactness across ISAs is measurably false; derivation in the constant's rustdoc). The M4-18 row above was moved `documented` → **persisted** to match, since `vokra-convert --model utmos` (M5-15 T14) now emits those keys as well — with the `…v0` variant *string* still test-only, as that row records. A v0-labelled GGUF carrying any v1 key is a loud `ModelLoad` error rather than a half-honoured stack (FR-EX-08). | M5-15 wave 1               |
 
 Note: `vokra.dnsmos.*` is **reserved but deliberately not designed** — DNSMOS is license fail-closed until the owner's M4-18 T03 verification (no keys are invented ahead of it).
 

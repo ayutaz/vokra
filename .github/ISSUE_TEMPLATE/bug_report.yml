@@ -1,0 +1,108 @@
+# Bug report form.
+#
+# NOTE FOR MAINTAINERS: this directory holds exactly two forms, `bug_report`
+# and `question`. Do NOT add a task / feature-tracking form. Work items are
+# tracked in `docs/tickets/`, not in GitHub Issues (maintainer decision,
+# 2026-07-19). Issues remain enabled for questions and bug reports, and the
+# engagement metrics of the quarterly review depend on them staying open.
+#
+# English-only by design: GitHub Issue Forms have no language switch, so a
+# translated copy would double the template set and the triage surface.
+# Japanese input is invited in the body instead.
+name: Bug report
+description: Something behaves differently from what the docs say
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **日本語で書いていただいて構いません。**（フォームが英語なのは GitHub の
+        Issue Form が言語切り替えを持たないためです。）
+
+        Two quick notes before you start:
+
+        - If this is a **security vulnerability**, please do not file it here.
+          Reporting instructions are being finalised; until they are published,
+          contact the maintainer through the repository's GitHub profile rather
+          than opening a public issue.
+        - If you are unsure whether it is a bug, the *Question* form is fine —
+          nobody will mind.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you observed, and what you expected instead.
+      placeholder: |
+        Expected: ...
+        Actually got: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: >
+        The commands you ran, as literally as you can. A reproduction we can
+        paste into a shell is worth more than a long description.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Vokra version or commit
+      description: "Output of `git rev-parse --short HEAD`, or a release tag."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      description: Which backend were you running on?
+      options:
+        - CPU
+        - Metal
+        - CUDA
+        - Vulkan
+        - WebGPU
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: "OS, architecture, and (for GPU backends) the device."
+      placeholder: "macOS 15.4, arm64, Apple M1"
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: >
+        Which model and size, if the problem involves one. Please do not
+        attach model weights.
+      placeholder: "whisper-base, converted with vokra-cli convert"
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output
+      description: >
+        The full error, if there is one. Vokra reports unsupported paths as
+        explicit errors rather than falling back silently, so the message text
+        is usually the fastest route to the cause.
+      render: shell
+    validations:
+      required: false

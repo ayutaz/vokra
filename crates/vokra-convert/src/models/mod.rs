@@ -12,5 +12,6 @@ pub(crate) mod mimi;
 pub(crate) mod moshi;
 pub(crate) mod piper_plus;
 pub(crate) mod silero;
+pub(crate) mod utmos;
 pub(crate) mod voxtral;
 pub(crate) mod whisper;

@@ -1,0 +1,49 @@
+[package]
+name = "vokra-vad-micro"
+description = "Vokra Silero VAD v5 forward core as a no_std(+alloc) subset for IoT Tier 3 (Cortex-M55 / thumbv8m), shared bit-identically with the std build (M5-03)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = true
+# crates.io listing metadata inherited from [workspace.package] (X-07-T09).
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# M5-03 (案1 topology, ADR M5-03-iot-tier3-nostd §(a)): this crate isolates the
+# no_std-capable Silero VAD v5 forward (weights binding + pseudo-STFT + encoder +
+# LSTM + head) so the Cortex-M55 Tier-3 build never even names the std-heavy
+# `vokra-ops` / `vokra-backend-cpu` that `vokra-models` pulls in. The std
+# `vokra-models::silero_vad` wrapper depends on this crate and re-exports it, so
+# there is ONE forward, and the std and no_std forwards are bit-identical BY
+# CONSTRUCTION (they compile from the same source; the transcendentals come from
+# the shared `scalar` module). This mirrors how `vokra-mmap` isolates unsafe.
+#
+# ZERO external dependencies (NFR-DS-02): only `vokra-core` (default-features
+# off so the no_std subset — error + GGUF reader — is what compiles). The
+# self-contained scalar `exp`/`tanh`/`sqrt` in `src/scalar.rs` mean NO `libm`
+# (deny.toml bans it). The root Cargo.lock stays `vokra-*` only.
+# A DIRECT path dep (not `vokra-core.workspace = true`) because cargo forbids a
+# workspace-inherited dep from overriding `default-features` — and this crate
+# needs `default-features = false` so the no_std subset compiles. Still a
+# first-party `vokra-*` path dep, so the root Cargo.lock stays vokra-* only
+# (NFR-DS-02); the `version` tracks the shared workspace version for `cargo
+# publish` (X-07-T10, a no-op for local path resolution).
+[dependencies]
+vokra-core = { path = "../vokra-core", version = "0.1.0-alpha.0", default-features = false }
+
+[features]
+# `std` (default-ON) forwards to `vokra-core/std` and lets the host-executable
+# differential + parity harness (and this crate's own GGUF-builder tests) use
+# the std GGUF writer. With `--no-default-features` the crate is `#![no_std]`
+# (+ `extern crate alloc`) and cross-compiles for thumbv8m (Cortex-M55, Tier 3 /
+# NFR-PT-03). `std` adds NO dependency — a cfg flag, not a crate — so the
+# zero-dep invariant (NFR-DS-02) and the root Cargo.lock are unaffected.
+default = ["std"]
+std = ["vokra-core/std"]
+
+[lints]
+workspace = true

@@ -1,0 +1,358 @@
+# Vokra official model-zoo manifest (M5-12-T02 — GA DoD item 2 machine SoT)
+#
+# One record per zoo model, `key = value` lines separated by a blank line
+# (the same mechanism `crates/vokra-eval/src/manifest.rs` parses; the typed
+# accessor lives in `crates/vokra-eval/src/zoo.rs`). This file is the input the
+# DoD item-2 runner (`vokra_eval::dod`) iterates so "every model degrades < 5 %
+# / passes numerical-parity CI" is asserted over a *known set*, not a set that
+# can silently shrink.
+#
+# WHY THIS FILE EXISTS (do not delete a record — mark it excluded):
+#   DoD item 2 claims the runner covers "all zoo models". A record that
+#   silently vanishes makes that claim vacuously true for the missing model.
+#   `scripts/check-zoo-manifest-complete.sh` gates that: every `★ 公式 zoo`
+#   (and `⚠ 保留`) row in docs/license-audit.md (the tracked machine SoT) must
+#   be claimed here by either a normal record or an `excluded_reason` record.
+#   Dropping a model is a code review event, not a diff nobody notices.
+#
+# FIELDS
+#   name           stable id (kebab), also the eval gate key stem
+#   family         model family (whisper, kokoro, ...)
+#   audit_name     EXACT model-name column (col 2, `**` stripped) of the
+#                  matching docs/license-audit.md row — this is how the
+#                  completeness gate cross-references catalog <-> manifest.
+#                  Whisper's 5 size records all carry the one bundle string.
+#   license        weight license (distribution-relevant). Cross-referenced
+#                  against docs/license-audit.md; a CC-BY-NC weight here is a
+#                  hard error (NFR-LC-04 / X-03).
+#   since_version  first Vokra version the model shipped in
+#   notes          free text (attribution reminders etc.)
+#
+# GATED records additionally carry:
+#   task           one of: asr tts s2s vad codec  (unknown -> hard error)
+#   gguf_env       env var whose presence gates the eval (weight-absent =
+#                  skipped_no_weight, never a pass)
+#   eval_manifest  path to a hyp/ref Manifest (empty = skipped_no_corpus,
+#                  a *distinct* skip from weight-absent). Supplying the corpus
+#                  is out of this WP's scope (owner / M5-15 / X-06).
+#   quality_metric one of: wer  mel_loss+utmos  roundtrip  parity_only
+#                  (must be consistent with task — unknown/mismatched -> error)
+#   mos_domain     one of: tts_synthesis  codec_streaming  n_a
+#                  (codec_streaming = UTMOS advisory-only, degradation.rs)
+#   parity_gate    the numerical-parity gate whose green the owner records as
+#                  item-2 evidence (this runner does NOT recompute it)
+#
+# EXCLUDED records carry instead:
+#   excluded_reason  why this ★/⚠ zoo row is not a mel/UTMOS quality-gated
+#                    model (KWS / speaker-embedding / enhancement / watermark /
+#                    vocoder-component), or is held pending license sign-off.
+#                    An excluded record is NOT iterated by the runner, but it
+#                    keeps the model visible so "dropped" != "forgotten".
+
+# ---- Gated: VAD -----------------------------------------------------------
+name = silero-vad-v5
+family = silero
+audit_name = Silero VAD v5
+license = MIT
+task = vad
+gguf_env = VOKRA_SILERO_VAD_GGUF
+eval_manifest =
+quality_metric = parity_only
+mos_domain = n_a
+parity_gate = crates/vokra-models parity_silero (1:1 subgraph)
+since_version = v0.1
+notes = VAD is gated by segment-span parity, not mel/UTMOS.
+
+# ---- Gated: ASR (Whisper family — one audit row, five size records) --------
+name = whisper-base
+family = whisper
+audit_name = Whisper base/small/medium/large-v3/turbo
+license = MIT
+task = asr
+gguf_env = VOKRA_WHISPER_BASE_GGUF
+eval_manifest =
+quality_metric = wer
+mos_domain = n_a
+parity_gate = crates/vokra-models parity_whisper.rs + .github/workflows/parity-whisper-real.yml
+since_version = v0.1
+notes = ASR is gated by WER, not mel/UTMOS.
+
+name = whisper-small
+family = whisper
+audit_name = Whisper base/small/medium/large-v3/turbo
+license = MIT
+task = asr
+gguf_env = VOKRA_WHISPER_SMALL_GGUF
+eval_manifest =
+quality_metric = wer
+mos_domain = n_a
+parity_gate = crates/vokra-models parity_whisper.rs + .github/workflows/parity-whisper-real.yml
+since_version = v0.5
+notes =
+
+name = whisper-medium
+family = whisper
+audit_name = Whisper base/small/medium/large-v3/turbo
+license = MIT
+task = asr
+gguf_env = VOKRA_WHISPER_MEDIUM_GGUF
+eval_manifest =
+quality_metric = wer
+mos_domain = n_a
+parity_gate = crates/vokra-models parity_whisper.rs + .github/workflows/parity-whisper-real.yml
+since_version = v0.5
+notes =
+
+name = whisper-large-v3
+family = whisper
+audit_name = Whisper base/small/medium/large-v3/turbo
+license = MIT
+task = asr
+gguf_env = VOKRA_WHISPER_LARGE_V3_GGUF
+eval_manifest =
+quality_metric = wer
+mos_domain = n_a
+parity_gate = crates/vokra-models parity_whisper.rs + .github/workflows/parity-whisper-real.yml
+since_version = v0.5
+notes =
+
+name = whisper-turbo
+family = whisper
+audit_name = Whisper base/small/medium/large-v3/turbo
+license = MIT
+task = asr
+gguf_env = VOKRA_WHISPER_TURBO_GGUF
+eval_manifest =
+quality_metric = wer
+mos_domain = n_a
+parity_gate = crates/vokra-models parity_whisper.rs + .github/workflows/parity-whisper-real.yml
+since_version = v0.5
+notes =
+
+# ---- Gated: TTS -----------------------------------------------------------
+name = piper-plus
+family = piper-plus
+audit_name = piper-plus (ayutaz) 全モデル
+license = MIT
+task = tts
+gguf_env = VOKRA_PIPER_PLUS_GGUF
+eval_manifest =
+quality_metric = mel_loss+utmos
+mos_domain = tts_synthesis
+parity_gate = crates/vokra-piper parity + integrations/vokra-piper-g2p e2e
+since_version = v0.1
+notes = per-voice 5% gate needs per-voice fixtures (X-06 nightly); family-level here.
+
+name = kokoro-82m
+family = kokoro
+audit_name = Kokoro-82M
+license = Apache-2.0
+task = tts
+gguf_env = VOKRA_KOKORO_GGUF
+eval_manifest =
+quality_metric = mel_loss+utmos
+mos_domain = tts_synthesis
+parity_gate = .github/workflows/parity-kokoro-real.yml (per-tensor atol)
+since_version = v0.5
+notes =
+
+# ---- Gated: TTS/S2S via Mimi codec (UTMOS advisory-only) -------------------
+name = cosyvoice2
+family = cosyvoice2
+audit_name = CosyVoice / CosyVoice2 / CosyVoice3
+license = Apache-2.0
+task = tts
+gguf_env = VOKRA_COSYVOICE2_GGUF
+eval_manifest =
+quality_metric = mel_loss+utmos
+mos_domain = codec_streaming
+parity_gate = crates/vokra-eval cosyvoice2 degradation (COSYVOICE2_MEL_LOSS_THRESHOLD)
+since_version = v0.9
+notes = Synthesizes through Mimi codec -> UTMOS advisory-only until owner study.
+
+name = csm-1b
+family = csm
+audit_name = Sesame CSM-1B
+license = Apache-2.0
+task = s2s
+gguf_env = VOKRA_CSM_GGUF
+eval_manifest =
+quality_metric = mel_loss+utmos
+mos_domain = codec_streaming
+parity_gate = crates/vokra-models csm parity (M4-05)
+since_version = v1.0-rc
+notes = Shared Mimi neural chain; Kyutai Mimi weight CC-BY 4.0 attribution -> NOTICE §5.
+
+name = moshi
+family = moshi
+audit_name = Moshi (Helium + Mimi)
+license = CC-BY-4.0-attribution
+task = s2s
+gguf_env = VOKRA_MOSHI_GGUF
+eval_manifest =
+quality_metric = mel_loss+utmos
+mos_domain = codec_streaming
+parity_gate = crates/vokra-models moshi parity (M4-06)
+since_version = v1.0-rc
+notes = CC-BY 4.0 weight, attribution display (FR-MD-09); needs AEC in duplex use.
+
+# ---- Gated: ASR/S2S (Voxtral — gated on WER) ------------------------------
+name = voxtral
+family = voxtral
+audit_name = Voxtral (Mistral)
+license = Apache-2.0
+task = asr
+gguf_env = VOKRA_VOXTRAL_GGUF
+eval_manifest =
+quality_metric = wer
+mos_domain = n_a
+parity_gate = crates/vokra-models voxtral parity
+since_version = v0.9
+notes = ASR head gated on WER; S2S output would be a separate audio leg.
+
+# ---- Gated: codecs (roundtrip parity, no UTMOS) ---------------------------
+name = dac
+family = dac
+audit_name = DAC (Descript)
+license = MIT
+task = codec
+gguf_env = VOKRA_DAC_GGUF
+eval_manifest =
+quality_metric = roundtrip
+mos_domain = n_a
+parity_gate = crates/vokra-ops dac_rvq parity
+since_version = v1.0-rc
+notes = zoo primary = 24 kHz / 8 kbps (tag 0.0.4, 75 Hz); distribution owner sign-off (fail-closed).
+
+name = mimi
+family = mimi
+audit_name = Mimi codec (Kyutai)
+license = CC-BY-4.0-attribution
+task = codec
+gguf_env = VOKRA_MIMI_GGUF
+eval_manifest =
+quality_metric = roundtrip
+mos_domain = n_a
+parity_gate = crates/vokra-ops mimi_rvq parity
+since_version = v0.9
+notes = CC-BY 4.0 weight attribution -> NOTICE §5; standalone GGUF vokra.mimi.*.
+
+name = wavtokenizer
+family = wavtokenizer
+audit_name = WavTokenizer
+license = MIT
+task = codec
+gguf_env = VOKRA_WAVTOKENIZER_GGUF
+eval_manifest =
+quality_metric = roundtrip
+mos_domain = n_a
+parity_gate = crates/vokra-ops fsq_codec (wavtokenizer_vq) parity
+since_version = v1.0-rc
+notes = FSQ family; distribution owner sign-off (fail-closed, M4-16-T14).
+
+# ---- Excluded: held pending license sign-off ------------------------------
+# X-Codec 2 is a ⚠ 保留 (not ★) row: weight license shows a 3-way discrepancy
+# (MIT code vs HF repo cc-by-nc-4.0 front-matter). It is listed here EXPLICITLY
+# so a reader can tell "held for license" apart from "accidentally dropped".
+name = xcodec2
+family = xcodec2
+audit_name = X-Codec 2 (Llasa)
+license = pending-M4-16-T14
+excluded_reason = license-sign-off-pending-M4-16-T14 (HF weight repo front-matter cc-by-nc-4.0; fail-closed)
+since_version = v1.0-rc
+notes = engine op exists (fsq_codec xcodec2_fsq); weight distribution blocked until sign-off.
+
+# ---- Excluded: not a mel/UTMOS quality-gated model ------------------------
+name = openwakeword
+family = openwakeword
+audit_name = openWakeWord
+license = Apache-2.0
+excluded_reason = kws-not-a-mel-utmos-quality-gated-model
+since_version = v0.1
+notes = keyword spotting; evaluated by detection metrics, not mel/UTMOS.
+
+name = campplus
+family = campplus
+audit_name = CAM++ Speaker Embedding
+license = Apache-2.0
+excluded_reason = speaker-embedding-not-a-mel-utmos-quality-gated-model
+since_version = v0.1
+notes = 192-d embedding; evaluated by cosine-similarity parity, not mel/UTMOS.
+
+name = ecapa-tdnn
+family = ecapa-tdnn
+audit_name = ECAPA-TDNN (SpeechBrain)
+license = Apache-2.0
+excluded_reason = speaker-embedding-not-a-mel-utmos-quality-gated-model
+since_version = v1.0
+notes =
+
+name = wespeaker
+family = wespeaker
+audit_name = WeSpeaker
+license = Apache-2.0
+excluded_reason = speaker-embedding-not-a-mel-utmos-quality-gated-model
+since_version = v1.0
+notes =
+
+name = deepfilternet3
+family = deepfilternet
+audit_name = DeepFilterNet3
+license = MIT-OR-Apache-2.0
+excluded_reason = enhancement-si-snr-not-a-mel-utmos-quality-gated-model
+since_version = v1.0-rc
+notes = denoise op; gated by SI-SNR vs upstream (parity), not mel/UTMOS. Owner sign-off T18.
+
+name = rnnoise
+family = rnnoise
+audit_name = RNNoise
+license = BSD-3-Clause
+excluded_reason = enhancement-si-snr-not-a-mel-utmos-quality-gated-model
+since_version = v1.0-rc
+notes = denoise alternative candidate.
+
+name = gtcrn
+family = gtcrn
+audit_name = GTCRN
+license = Apache-2.0
+excluded_reason = enhancement-si-snr-not-a-mel-utmos-quality-gated-model
+since_version = v1.0-rc
+notes = denoise alternative candidate; owner license pre-check T18.
+
+name = audioseal
+family = audioseal
+audit_name = AudioSeal (Meta)
+license = MIT
+excluded_reason = watermarker-not-a-quality-gated-model
+since_version = v1.0
+notes = watermark embed/detect; evaluated by detection AUC, not mel/UTMOS.
+
+name = vocos
+family = vocos
+audit_name = Vocos
+license = MIT
+excluded_reason = vocoder-head-component-not-a-standalone-zoo-model
+since_version = v1.0
+notes = vocos_head op; a vocoder component measured inside a TTS pipeline, not standalone.
+
+# ---- Excluded: speaker-embedding / diarization, held pending license sign-off ----
+# TitaNet + pyannote are ⚠ 保留 rows (docs/license-audit.md, added 2026-07-20). Both
+# are residual-anchor ops in m5_residual_ops.rs that are NOT implemented and are NOT
+# mel/UTMOS quality-gated; their weight license is also unconfirmed (owner T13). Listed
+# explicitly so "held for license / not-a-quality-gated-model" is distinguishable from
+# "accidentally dropped" — same rule as xcodec2 above.
+name = titanet
+family = titanet
+audit_name = TitaNet (NVIDIA NeMo)
+license = pending-M5-ORPHAN-T13
+excluded_reason = speaker-embedding-not-a-mel-utmos-quality-gated-model + license-sign-off-pending-M5-ORPHAN-T13 (NVIDIA NeMo checkpoint license unconfirmed; fail-closed)
+since_version = v1.0-rc
+notes = op unimplemented = residual anchor only (titanet_speaker_encode, m5_residual_ops.rs); CAM++ already covers speaker embedding.
+
+name = pyannote
+family = pyannote
+audit_name = pyannote (speaker diarization)
+license = pending-M5-ORPHAN-T13
+excluded_reason = diarization-not-a-mel-utmos-quality-gated-model + license-sign-off-pending-M5-ORPHAN-T13 (HF-gated usage terms unconfirmed; fail-closed)
+since_version = v1.0-rc
+notes = op unimplemented = residual anchor only (diarize, m5_residual_ops.rs, optional feature flag).

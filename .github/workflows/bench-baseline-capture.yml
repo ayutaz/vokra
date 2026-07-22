@@ -1,0 +1,100 @@
+# Vokra model-level RTF baseline capture — X-06-T10 (ADVISORY tooling).
+#
+# The bench-regression job in ci.yml gates model RTF against committed baseline
+# JSON. Those baselines MUST be measured on ubuntu-latest: an M1/aarch64 rig
+# false-fails the 5% gate (docs/bench-baselines/README.md, the mel-frontend
+# NEON-skew example). This workflow is the ubuntu-latest capture path.
+#
+# It is workflow_dispatch ONLY — the owner runs it, downloads the artifact,
+# reviews the numbers, and commits them into docs/bench-baselines/ (replacing
+# the shipped `$placeholder` files). CC provides the mechanism + the
+# placeholder-gated skip; the seed COMMIT is the owner's (red-line 6:
+# workflow_dispatch initiation + the baseline seed commit are owner tasks,
+# X-06-T20).
+#
+# No cron: this never runs on a schedule, so it takes no slot on the ladder.
+# Zero-dep (NFR-DS-02): a `git diff --exit-code Cargo.lock` tripwire guards the
+# root lockfile; no Python beyond the stdlib gate helper.
+
+name: bench-baseline-capture
+
+on:
+  workflow_dispatch:
+    inputs:
+      iters:
+        description: "Timed iterations for each capture (default 30 — more = tighter median)."
+        required: false
+        default: "30"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-baseline-capture
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    name: capture ubuntu-latest RTF baselines
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build vokra-cli (release)
+        # Release so the captured RTF is the number a user would see — same
+        # profile the ci.yml bench-regression gate builds.
+        run: cargo build --release -p vokra-cli
+
+      - name: Record the capture rig (provenance the owner attaches on commit)
+        run: |
+          set -euo pipefail
+          mkdir -p capture-out
+          {
+            echo "captured_on: ubuntu-latest (GitHub-hosted)"
+            echo "runner_os: $(uname -srmo)"
+            echo "date_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "git_head: ${GITHUB_SHA}"
+            echo "cpu: $(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')"
+            echo "note: commit these numbers into docs/bench-baselines/*.json, replacing the \$placeholder. This is the ONLY rig class the 5% CI gate is calibrated for."
+          } > capture-out/provenance.txt
+          cat capture-out/provenance.txt
+
+      - name: Capture Silero VAD baseline (committed GGUF + committed WAV)
+        env:
+          ITERS: ${{ github.event.inputs.iters }}
+        run: |
+          set -euo pipefail
+          N="${ITERS:-30}"
+          # Arch-routed: silero-vad → ModelTask::Vad. No --task (hard error on
+          # this arch). No download — both assets are committed.
+          ./target/release/vokra-cli bench \
+            --model tests/parity/silero_vad/silero-vad-v5.gguf \
+            --input tests/fixtures/audio/jfk-30s.wav \
+            --iters "$N" \
+            --warmup 5 \
+            --format json | tee capture-out/silero_vad_baseline.json
+          echo ""
+          echo "Review the rtf above, then commit capture-out/silero_vad_baseline.json"
+          echo "to docs/bench-baselines/silero_vad_baseline.json (drop the \$placeholder)."
+
+      - name: Sanity — the captured file classifies as a seeded baseline
+        # If the bench emitted something baseline_gate.py cannot read as seeded,
+        # fail here rather than uploading a file the owner would commit blind.
+        run: |
+          set -euo pipefail
+          STATE="$(python3 tools/bench/baseline_gate.py capture-out/silero_vad_baseline.json)"
+          test "$STATE" = seeded
+
+      - name: Upload captured baselines
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-baselines-ubuntu-latest
+          path: capture-out/
+          retention-days: 30
+
+      - name: Guard the root Cargo.lock (NFR-DS-02)
+        if: always()
+        run: git diff --exit-code Cargo.lock

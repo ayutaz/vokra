@@ -55,7 +55,23 @@ impl WhisperAsr {
     /// embedded `vokra.tokenizer.model` blob for forward compatibility. The
     /// backend defaults to [`BackendKind::Cpu`].
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
-        let model = Arc::new(WhisperModel::from_gguf(file)?);
+        Self::from_gguf_with(file, super::WhisperLoadOptions::default())
+    }
+
+    /// [`from_gguf`](Self::from_gguf) with the M5-15 fused-quant load options.
+    ///
+    /// With [`WhisperLoadOptions::fused_quant_weights`](super::WhisperLoadOptions::fused_quant_weights)
+    /// the K-quantized projections run the fused INT8 kernels instead of being
+    /// dequantized at load. **CPU-only and not bit-identical to the dequant
+    /// route** — this is the entry point the M5-15-T10 WER comparison drives,
+    /// which is why it exists on the ASR surface and not only on
+    /// [`WhisperModel`].
+    ///
+    /// # Errors
+    ///
+    /// As [`from_gguf`](Self::from_gguf).
+    pub fn from_gguf_with(file: &GgufFile, opts: super::WhisperLoadOptions) -> Result<Self> {
+        let model = Arc::new(WhisperModel::from_gguf_with(file, opts)?);
         let tokenizer = WhisperTokenizer::from_gguf(file, model.config().eot).ok();
         Ok(Self {
             model,

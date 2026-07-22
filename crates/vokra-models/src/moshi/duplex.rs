@@ -58,7 +58,7 @@ use super::engine::MoshiEngine;
 use super::frame::{MoshiFrameOut, MoshiGenerationState, MoshiSamplerPair};
 use super::tokenizer::decode_monologue;
 use crate::csm::aec_front::AecFront;
-use crate::csm::audio::CsmAudioDecodeState;
+use crate::csm::audio::{CsmAudioDecodeState, OutputLimiter};
 use crate::mimi::MimiEncoderState;
 use vokra_core::stream::AecRefWriter;
 
@@ -94,6 +94,10 @@ pub struct MoshiDuplexSession<E: std::borrow::Borrow<MoshiEngine> = Arc<MoshiEng
     /// Inner-monologue token stream (undelayed).
     monologue: Vec<u32>,
     interrupt: Arc<AtomicBool>,
+    /// Opt-in output limiter applied to each decoded model frame before it is
+    /// queued (M4-RESIDUAL-B (C)). Default [`OutputLimiter::None`] = the current
+    /// behaviour, bit-for-bit (FR-EX-08 — no silent change).
+    limiter: OutputLimiter,
     warnings: Vec<String>,
     /// run_inference.py first-frame convention: the first real codes are
     /// stepped twice (ADR M4-06 §D2).
@@ -163,6 +167,7 @@ impl<E: std::borrow::Borrow<MoshiEngine>> MoshiDuplexSession<E> {
             out_queue: VecDeque::new(),
             monologue: Vec::new(),
             interrupt: Arc::new(AtomicBool::new(false)),
+            limiter: OutputLimiter::None,
             warnings,
             first_frame_done: false,
             user_codes: vec![0; cfg.n_user_streams()],
@@ -185,6 +190,35 @@ impl<E: std::borrow::Borrow<MoshiEngine>> MoshiDuplexSession<E> {
     #[must_use]
     pub fn pending_frames(&self) -> usize {
         self.out_queue.len()
+    }
+
+    /// Sets the opt-in output limiter (M4-RESIDUAL-B (C)).
+    ///
+    /// Applied to each decoded model frame at the decode→queue boundary in
+    /// [`S2sDuplexHandle::push_mic_frame`]. The default is [`OutputLimiter::None`]
+    /// (bit-identical to the pre-limiter path); [`OutputLimiter::Clamp`] hard-
+    /// limits to `[-1, 1]` and [`OutputLimiter::PeakNormalize`] frame-locally
+    /// attenuates over-1.0 frames — either guards a PCM16 consumer against the
+    /// clip the synthesized-Mimi bridge can produce (peak > 1.0). Builder form so
+    /// it composes with [`MoshiEngine::open_duplex_session`] one-liners; the
+    /// mutable [`Self::set_output_limiter`] covers a live session.
+    #[must_use]
+    pub fn with_output_limiter(mut self, limiter: OutputLimiter) -> Self {
+        self.limiter = limiter;
+        self
+    }
+
+    /// The active output limiter.
+    #[must_use]
+    pub fn output_limiter(&self) -> OutputLimiter {
+        self.limiter
+    }
+
+    /// Sets the output limiter on a live session ([`Self::with_output_limiter`]
+    /// docs). Barge-in reset does not clear it — the limiter is a caller policy,
+    /// not generation state.
+    pub fn set_output_limiter(&mut self, limiter: OutputLimiter) {
+        self.limiter = limiter;
     }
 
     /// M3-14 acknowledge: flush pending output, reset the generation
@@ -279,6 +313,9 @@ impl<E: std::borrow::Borrow<MoshiEngine>> S2sDuplexHandle for MoshiDuplexSession
                 &self.frame_out.audio,
                 &mut self.frame_pcm,
             )?;
+            // Opt-in output limiter (default None = no-op = bit-identical, so
+            // the shipping path is unchanged — FR-EX-08).
+            self.limiter.apply(&mut self.frame_pcm);
             self.out_queue.push_back(self.frame_pcm.clone());
         }
         Ok(DuplexPushReport {

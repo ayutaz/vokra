@@ -1,0 +1,95 @@
+# Vokra benchmark dashboard publish — X-06-T16.
+#
+# Runs the stdlib-only generator (tools/bench/build_dashboard.py) over the
+# committed perf corpus and publishes a single self-contained static page
+# (deliverables.md:132). Two outputs:
+#   1. ALWAYS: the page uploaded as a build artifact (downloadable without
+#      any repo settings change).
+#   2. GATED: a GitHub Pages deploy, which needs the owner to enable Pages in
+#      repo settings (red-line 6) AND set repo variable VOKRA_PAGES_ENABLED=true.
+#      Until then the deploy job is skipped — the artifact is still produced.
+#
+# No cron (takes no ladder slot). Zero-dep: pure python3 stdlib; a
+# `git diff --exit-code Cargo.lock` guard keeps the root lockfile honest even
+# though this job never touches cargo.
+
+name: dashboard
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "docs/bench-baselines/**"
+      - "docs/perf/**"
+      - "docs/benchmarks/**"
+      - "tools/bench/build_dashboard.py"
+      - ".github/workflows/dashboard.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dashboard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Oracle the generator (stdlib-only, fast)
+        run: |
+          python3 tools/bench/test_build_dashboard.py
+          python3 tools/bench/test_baseline_gate.py
+
+      - name: Generate the dashboard + verify it is self-contained
+        run: |
+          set -euo pipefail
+          mkdir -p site
+          python3 tools/bench/build_dashboard.py \
+            --self-check \
+            --stamp "$(date -u +%Y-%m-%dT%H:%M:%SZ) (${GITHUB_SHA})" \
+            --out site/index.html
+
+      - name: Upload dashboard artifact (always available)
+        uses: actions/upload-artifact@v4
+        with:
+          name: vokra-benchmark-dashboard
+          path: site/index.html
+          retention-days: 30
+
+      - name: Upload GitHub Pages artifact (consumed by the gated deploy job)
+        if: vars.VOKRA_PAGES_ENABLED == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Guard the root Cargo.lock (NFR-DS-02)
+        if: always()
+        run: git diff --exit-code Cargo.lock
+
+  # GATED deploy: fires only after the owner enables Pages in repo settings
+  # (red-line 6) and sets VOKRA_PAGES_ENABLED=true. Skipped otherwise — the
+  # build artifact above is the interim publish surface.
+  deploy:
+    name: deploy to GitHub Pages (owner-gated)
+    needs: build
+    if: vars.VOKRA_PAGES_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deploy
+        uses: actions/deploy-pages@v4

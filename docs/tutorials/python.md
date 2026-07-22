@@ -83,17 +83,17 @@ exception classes:
 ```python
 from vokra import (
     Session,
-    VokraError,           # base — catches everything
-    VokraInvalidArgument, # e.g. sample-rate mismatch
-    VokraModelError,      # malformed / missing GGUF
-    VokraUnsupportedBackend,  # backend requested but not linked
+    VokraError,                # base — catches everything
+    VokraInvalidArgumentError, # e.g. sample-rate mismatch
+    VokraModelLoadError,       # malformed / missing GGUF
+    VokraBackendUnavailableError,  # backend requested but not linked
     # ...see bindings/python/src/vokra/errors.py for the full list
 )
 
 try:
     with Session.open("some-model.gguf") as s:
         s.transcribe(pcm, 16000)
-except VokraUnsupportedBackend as e:
+except VokraBackendUnavailableError as e:
     # The GPU backend a model was built for is not available in this build
     # — FR-EX-08 forbids silent fallback, so this is an explicit signal.
     print(f"backend not available: {e}")

@@ -5,7 +5,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+# crates.io listing metadata inherited from [workspace.package] (X-07-T09).
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lib]
 # Output name unified to `vokra` (M0-09-T02): libvokra.dylib / libvokra.so /
@@ -43,7 +49,7 @@ vokra-ops.workspace = true
 # the Moshi full-7B GGUF must never be buffered (~14.3 GiB) next to the
 # engine's weights. First-party, zero external deps; the bytes-based create
 # (`vokra_session_create_from_bytes`) is untouched.
-vokra-mmap = { path = "../vokra-mmap" }
+vokra-mmap.workspace = true
 
 [dev-dependencies]
 # M4-06 T20/T24 (test-only edge): the duplex / attribution C ABI tests

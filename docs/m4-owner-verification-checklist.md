@@ -1,7 +1,9 @@
 # M4 (v1.0-rc) Owner Verification Checklist
 
 **Owner**: 依頼者 (`ayutaz`) — 実機テスト・実 weight sourcing・法務 sign-off・外部契約 / インフラ provisioning・ADR 判断を担当。
-**CC-side status**: **M4 CC 実装 terminal 到達（2026-07-15、全 20 WP = M4-01〜M4-20）**。investigation 3 round のうち round 2 / round 3 = **2 連続 0 CC ticket** で terminal 判定（M3 と同じ規律）。terminal 時 verify = default 2340 / all-features 2364 passed。**その後 2026-07-16 に依頼者指示で post-terminal CC-gap 追加実装 campaign を実施**（terminal 後の追加洗い出し = ultracode 32 候補中 17 land、既存 WP 内の完成度向上 = P0 wasm ビルド破損修正・converter alignment_heads/word-timestamp・vokra-server 本番 startup 配線・CSM/Mimi from_gguf・実 M1 Metal parity + Llama MSL kernel 4種・RingKVCache・agc/hpf streaming 等）。**現 verify = default 2418 passed / all-features 2443 passed / 0 failed / 4 ignored**（新規 C ABI なし = baseline 33 fn 不変）、cargo fmt / clippy `-D warnings` / `scripts/check-zero-deps.sh`（root Cargo.lock = `vokra-*` のみ、NFR-DS-02）/ `scripts/check-abi-changelog.sh` / `scripts/check-platform-support.sh`（anchors 50）全ゲート green。branch `feat/m4-plan-and-wave1`。**本チェックリストの owner タスクは本 campaign で変更なし**（一部 CC 完成分は owner の follow-up 面をわずかに縮小するが、実 weight parity / 実機 / license / 外部インフラ / owner ADR は不変）。
+**CC-side status**: **M4 CC 実装 terminal 到達（2026-07-15、全 20 WP = M4-01〜M4-20）**。investigation 3 round のうち round 2 / round 3 = **2 連続 0 CC ticket** で terminal 判定（M3 と同じ規律）。terminal 時 verify = default 2340 / all-features 2364 passed。**その後 2026-07-16 に依頼者指示で post-terminal CC-gap 追加実装 campaign を実施**（terminal 後の追加洗い出し = ultracode 32 候補中 17 land、既存 WP 内の完成度向上 = P0 wasm ビルド破損修正・converter alignment_heads/word-timestamp・vokra-server 本番 startup 配線・CSM/Mimi from_gguf・実 M1 Metal parity + Llama MSL kernel 4種・RingKVCache・agc/hpf streaming 等）。**merge 状況（2026-07-19 更新）**: **M4 は PR #8 として main に merge 済**（merge commit `ff12104`、2026-07-19、branch `feat/m4-plan-and-wave1` → main）。本チェックリスト起草時点の「PR 未作成」前提は失効しており、**「default branch に workflow ファイルが無いので workflow_dispatch できない」というブロッカーも解消済**（§4.5）。以降 main は `13a2a6e` まで進んでいる。
+
+**verify の数値について（honest）**: **default 2418 / all-features 2443 passed / 0 failed / 4 ignored** は **2026-07-16 の post-terminal campaign 時点で記録された snapshot** であり、その後 land した実 weight 評価 campaign 1/2 と M5-14 でテストが追加されているため **現 HEAD の値ではない**。正確な現在値は full suite（`cargo test --workspace`）を実行した時に **実行条件（debug/release・doctests 有無）と併記して re-pin** すること — 条件が違うと値が変わるため、条件抜きの数字は比較できない。C ABI は新規追加なし（rc baseline 33 fn 不変）。cargo fmt / clippy `-D warnings` / `scripts/check-zero-deps.sh`（root Cargo.lock = `vokra-*` のみ、NFR-DS-02）/ `scripts/check-abi-changelog.sh` / `scripts/check-platform-support.sh`（anchors 50）は各 wave で green を確認している。**本チェックリストの owner タスクは、後続 campaign で CC 到達分が伸びた項目（§1.2 / §1.3 / §1.4 / §1.6 / §1.7 / §4.3）で縮小した**が、実機 / license sign-off / 外部インフラ / owner ADR / CI 初回 dispatch は**いずれも消えていない**。
 
 **位置付け（v-label 規律）**: M4 = **v1.0-rc**（旧 v1.5 → v1.0 GA → 2026-07-14 再割当 #2 で v1.0-rc）。本チェックリストの owner タスク消化 = **OSS 機能完成（rc）判定**（v1.0-rc close、暦月目安 2026-12〜2027-03）の入力であり、**商用 GA 宣言でも C ABI 凍結でもない**（凍結は M5-13 / v1.0 GA タグで発火 = `docs/handoff/m4-12.md` §(f)）。
 
@@ -22,51 +24,64 @@ CC 側は各モデルの **flip-the-switch parity harness**（実 checkpoint 到
 ### 1.1 Sesame CSM-1B（M4-05）
 
 - **(a)**: 公式 checkpoint（`sesame/csm-1b` + `meta-llama/Llama-3.2-1B`、いずれも HF gated repo）を入手し CC に手渡す。tensor manifest の flip-the-switch（T02/T06/T23/T24）が実 checkpoint で発火する。
-- **(b)**: HF gated repo のアカウント承諾が必要、weight は CC 機体に無い。
+- **(b)**: HF gated repo のアカウント承諾が必要、weight は CC 機体に無い。**blocker は 2026-07-17 campaign-2 の probe で 2 点に特定済** = repo metadata は 200 で到達する（`gated: auto` / apache-2.0）が **file resolve が 401** → 残るのは **(i) gate 受諾 + (ii) fresh HF token** のみ。CC 側 harness / binding は完成済ゆえ、受諾後ただちに発火する。
+  <!-- claim-evidence: docs/bench-baselines/m1-real-weight-eval-2026-07-16/report-campaign2.md#CSM probe -->
 - **(c)**: spec `M4-05-T29`（owner）。CC 到達分 = Llama-3.2-flavor backbone + depth transformer + Mimi neural chain + `assert_vs_hf_reference` harness。
 - **(d)**: checkpoint 手渡し済 + flip-the-switch テストが実 checkpoint で実行可能。
 
 ### 1.2 Moshi（M4-06）
 
-- **(a)**: 上流配布（`kyutai-labs/moshi` / HF `kyutai/moshiko-pytorch-bf16`、~15GB BF16、NOTICE §5 記載 source）から checkpoint を取得し pin、T25 workflow / T07・T15 fixture / T26 デモに供給。
-- **(b)**: ~15GB weight の sourcing、CC 機体に無い。
-- **(c)**: spec `M4-06-T29`（owner）。
-- **(d)**: fixture / workflow へ weight 供給済、flip-the-switch 発火。
+- **(a)**: **weight sourcing は完了**（2026-07-17 campaign-2）。HF `kyutai/moshiko-pytorch-bf16` = 14.32 GiB を取得済（NOTICE §5 記載 source、license を live で cc-by-4.0 確認）。切詰めモデル（temporal 32→2 / depformer 6→2、95 tensor、実 tensor bytes verbatim）で **backbone hidden max\|Δ\| 8.249e-5 / text logits 2.360e-5 / emitted frame 11/11 bit-exact**（text + 8 codebook、delay ring 込み full greedy）を実測、env-gated `parity_moshi.rs` が `is_synthesized=false` assert 付きで実発火。attribution 2 面（CLI banner + C ABI `vokra_model_attribution`）も実 GGUF から正しい CC-BY 4.0 文言を返す。
+  <!-- claim-evidence: docs/bench-baselines/m1-real-weight-eval-2026-07-16/report-campaign2.md#moshiko-pytorch-bf16 -->
+- **(b)**: **残っているのは weight の有無ではなく full-7B の実行環境**。16 GB 級機では converter ~97 GiB / torch fp32 dump ~43 GiB / `MoshiEngine::from_path` ~60 GiB と**全段 BLOCKED**（mmap 未配線）。したがって owner の判断が要るのは (i) large-RAM runner を用意するか streaming converter + mmap 配線を CC に出すか の戦略選択、(ii) `parity-moshi-real.yml` の再設計（現状の ubuntu-latest 記述のままでは完走不能 = **この dispatch は先に (i) を解いてからでないと確実に赤**）、(iii) license sign-off（§3.1）。
+- **(c)**: spec `M4-06-T29`（owner）。CC 到達分 = 実 weight での切詰め parity + duplex 実走 + attribution 3 面。
+- **(d)**: full-7B 戦略の確定 + `parity-moshi-real.yml` の再設計 + flip-the-switch 発火。**PCM quality gate は実 Mimi weight mapping 待ちの by-design refusal のまま**（捏造せず verbatim 保存）。
 
 ### 1.3 Whisper small / medium / turbo（M4-14 = M2-06 carry-over）
 
-- **(a)**: `openai/whisper-small` / `-medium` / `-large-v3-turbo` を HF 取得 → `vokra-cli convert --model whisper`（shape-driven、自動 size 検出、fp16 passthrough）→ `tools/parity/dump_whisper_reference.py` で **real-audio fixture（jfk-30s.wav 由来）を再生成 → owner レビュー後に手動 commit**（auto-commit は red-line）。その後 `parity-whisper-real.yml` を 3-size opt-in で初回 workflow_dispatch し、turbo が atol 0.01 を超過した場合のみ実測 max|Δ| を CC に渡して honest calibrate。
-- **(b)**: 実 checkpoint 変換 + real-audio fixture の owner レビュー commit + HF DL を要する CI 起動。
-- **(c)**: spec `M4-14-T09`（変換 + fixture 再生成）/ `M4-14-T10`（初回 dispatch + turbo atol 判断）。CC 到達分 = shape-driven converter（5 サイズ）+ per-size atol lookup 基盤（default 0.01 維持）+ 3-size matrix CI + dumper turbo `vocab_resource` 標準化（turbo は large-v3 と同一 51866 vocab）。
-- **(d)**: small/medium/turbo の `tests/parity/whisper_{size}/` が real-audio 由来に更新・commit 済、3-size parity leg が実 checkpoint で完走、turbo max|Δ| が記録（0.01 超過なら honest calibrate 値が確定）。
+- **(a)**: **変換 + real-audio fixture 再生成 + commit は完了済**（`9d3eaae` → PR #8 `ff12104`）。`tests/parity/whisper_{base,small,medium,turbo}/manifest.txt` は 4 サイズとも `pcm_source = tests/fixtures/audio/jfk-30s.wav` / `pcm_len = 480000` / `pcm_sha256 = 58adb4ea…` を持つ = **synthetic 1 秒ではなく実 JFK 音声由来**。owner レビュー後の手動 commit という red-line も守られている（auto-commit していない）。残る owner 作業は **`parity-whisper-real.yml` の 3-size 初回 workflow_dispatch**（M4-14-T10）。
+  <!-- claim-evidence: tests/parity/whisper_small/manifest.txt#jfk-30s.wav -->
+  <!-- claim-evidence: tests/parity/whisper_turbo/manifest.txt#jfk-30s.wav -->
+- **(b)**: HF DL を要する CI 起動は owner 引き渡し（§4.5）。**turbo atol の判断材料は取得済** = 2026-07-16 の実 weight 評価で turbo の M4-14 P1 懸念は非発現（gated leg 8/8 pass、atol 0.01 に対し余裕 ~3 桁）= **現時点で calibrate は不要**。dispatch が想定外の max\|Δ\| を出した場合のみ実測値を CC に渡して honest calibrate（実測前に atol を緩めない）。
+  <!-- claim-evidence: docs/bench-baselines/m1-real-weight-eval-2026-07-16/report.md#atol calibrate -->
+- **(c)**: spec `M4-14-T09`（変換 + fixture 再生成 = **完了**）/ `M4-14-T10`（初回 dispatch + turbo atol 判断 = **残**）。CC 到達分 = shape-driven converter（5 サイズ）+ per-size atol lookup 基盤（default 0.01 維持）+ 3-size matrix CI + dumper turbo `vocab_resource` 標準化（turbo は large-v3 と同一 51866 vocab）+ 4 サイズの転写 byte 一致実測。
+- **(d)**: 3-size parity leg が実 checkpoint で完走 + weight sign-off（§3.3）。**honest 残置**: `tests/parity/whisper_large_v3/` だけは M0-06 期の合成 1 秒 fixture（`pcm_len = 16000`、`pcm_source` なし）のままで、M4-14 の 3-size スコープ外。「Whisper family の parity fixture は全て実音声由来」と読み替えないこと。
 
 ### 1.4 DeepFilterNet（M4-20）
 
-- **(a)**: MIT checkpoint を取得し `vokra-cli convert --model denoise`（T12）で GGUF 化 → Vokra native forward（T11）と upstream DeepFilterNet（PyTorch reference）の enhanced 出力を実データ照合（atol / SNR 改善量は upstream 参照で確定）。
-- **(b)**: 実 checkpoint / PyTorch reference 実行が必須。
-- **(c)**: spec `M4-20-T17`（owner）。CC 到達分 = `crates/vokra-ops/src/denoise.rs`（STFT → ERB gain → deep-filter → iSTFT topology）+ 合成 weight での shape / GGUF round-trip 検証。
-- **(d)**: 実 checkpoint で native denoise が reference と許容誤差内一致（or honest negative の記録）。
+- **(a)**: **T17 の実 checkpoint parity は達成済**（2026-07-17、`9b718d1`）。libDF topology を転写した real 実装（Vorbis-window STFT/ERB frontend + conv/GRU encoder + ERB/DF decoder + lookahead deep filtering、**115 個の upstream 名 tensor**）で、**SI-SNR 14.768399 dB vs upstream 14.768398 dB（gap 2.0e-7 dB）/ enhanced 波形 max\|Δ\| 4.17e-7 / 21 stage tap 全 PASS**。license も dual MIT/Apache-2.0 として一次確認済。
+  <!-- claim-evidence: crates/vokra-ops/tests/parity_denoise_dfn3.rs -->
+  <!-- claim-evidence: docs/license-audit.md#14.768399 -->
+- **(b)**: **残 owner は T18 の最終 license sign-off のみ**（§3.6）。`docs/license-audit.md` §3.1 の DeepFilterNet3 行は sign-off 欄が空 = fail-closed が稼働中で、記入まで公式 zoo 配布は発生しない。**CC は sign-off 欄を pre-fill しない**。
+- **(c)**: spec `M4-20-T17`（**達成済**）/ `M4-20-T18`（owner sign-off = **残**）。CC 到達分 = `crates/vokra-ops/src/denoise.rs` の real topology 実装 + env-gated `parity_denoise_dfn3` + `vokra.denoise.*` schema v2 + `convert --model denoise`。
+- **(d)**: §3.6 の sign-off 記入で完了（parity 側の完了条件は充足済）。
 
 ### 1.5 UTMOS / DNSMOS（M4-18）
 
-- **(a)**: UTMOS weight source URL 確定（§3.5 の license と同時）→ `docs/adr/M4-18-utmos-gate.md` recipe（offline reference dump → `score.json` + clip commit → `source.env` commit → CC の T05 converter 実装依頼 → `parity-utmos` workflow_dispatch）で flip 実行。DNSMOS は license 次第（§3.5）。
-- **(b)**: weight source + license が未着（kickoff 週 gate = **現状 NO-GO-defer**、`docs/handoff/m4-18.md` §(a)）。
-- **(c)**: handoff `docs/handoff/m4-18.md` §(d) 依頼者 queue + §(e) 制約 / spec `M4-18-T02`（weight+license）`T05`（converter mapping、CC だが実 mapping は checkpoint 到着後）。CC 到達分 = `crates/vokra-eval/src/metrics/utmos.rs` skeleton + `AudioMosMetric` trait + `parity_utmos.rs` harness（synthesized 拒否 + env/fixture gated clean skip、fixture 未 commit = 実 reference 無しでの expected_score 捏造禁止）。
-- **(d)**: weight URL 確定 + license sign-off 記入 + `parity-utmos` 初回 workflow_dispatch 完走（or Rejected で defer 根拠が記録）。
+- **(a)**: **kickoff 週 gate の自動 defer は 2026-07-18 の依頼者承認で解除済（un-defer）**。campaign-2 の utmos-probe が weight の匿名取得可・license 全鎖 permissive・BVCC に academic 限定条項なしを一次資料で確認したため、defer の根拠（weight/license 未着）が消滅した。**UTMOS 実装一式の owner は M5-15（T14–T22）へ移管**され、M4 残渣ではない。
+- **(b)**: 本項で owner に残るのは **(i) DNSMOS の採否**（M5-15-T23。Microsoft P.835 系の license 一次資料検証、商用不可なら UTMOS 単独 scope に縮小 = **fail-closed を継続**）と **(ii) 評価用 weight の公式 zoo 掲載判断**（M5-15-T24）の 2 点のみ。**加えて §3.5 側に残る owner entry**（weight source URL の確定 = `tests/parity/utmos/source.env` の commit、§3.1 UTMOS 行の license sign-off、`parity-utmos` 初回 workflow_dispatch）は消えていない — 下記 (c)/(d) の通り、CC 側が到達した分だけ残作業が縮んだのであって置き換わってはいない。
+- **(c)**: 実装 spec は M5-15（gitignore ローカル）。handoff `docs/handoff/m4-18.md` §(d) queue は un-defer 前の記述である点に注意（`docs/adr/M4-18-utmos-gate.md` に supersede 注記を追記済）。**CC 到達分（2026-07-20 時点、起草時から前進）** = `crates/vokra-eval/src/metrics/utmos.rs`（v0 skeleton に加え **v1 = UTMOS22-strong 実 topology**）+ `AudioMosMetric` trait + `parity_utmos.rs`（final score）+ `parity_utmos_stages.rs`（stage 別）の 2 harness + **converter `vokra-convert --model utmos`（M5-15 T14、実 land 済）** + **reference fixture の commit 済み**（`tests/parity/utmos/score.json` + `ref-clip.wav`）。**「fixture 未 commit」という起草時の記述は失効** — 実 upstream 実装を import して生成した reference が入っており（mirror 禁止 = Kokoro `92dbc92` の教訓）、M1 iMac 実測で全 stage + score が upstream 一致（score max\|Δ\| 1.192e-7）。捏造禁止の原則自体は不変（atol は測定由来、`score.json` の `provenance` に導出を記録）。
+  <!-- claim-evidence: tests/parity/utmos/score.json -->
+  <!-- claim-evidence: crates/vokra-convert/src/models/utmos.rs -->
+- **(d)**: M5-15 側で `parity-utmos` 初回 workflow_dispatch 完走（初回起動は owner）+ DNSMOS 判定記録。**dispatch の残ブロッカーは 1 点に特定済** = `tests/parity/utmos/source.env`（weight URL + sha256）が未 commit で、これは §3.1 の UTMOS license sign-off 待ち。checkpoint 自体は永久に非 commit（Vokra は weight を配布しない）ゆえ、source.env が入るまで workflow は明示 annotation 付きで clean skip する（捏造 pass しない）。**§5.3 の G2（UTMOS defer 中の暫定判定方針）は un-defer により前提が変わった** — 追認対象は「defer 継続の是非」ではなく「M5-15 着地までの暫定 posture」になる。
 
 ### 1.6 Mimi / DAC real-checkpoint parity（M4-04 / M4-05）
 
-- **(a)**: (i) `parity-rvq-real.yml`（mimi / dac / encodec）を初回 workflow_dispatch し per-tensor max|Δ| + verdict 表を確認（M4-04-T21）。(ii) Mimi encode/decode parity（`M4-05-T14`/`T34` = **CC harness、実 checkpoint は M4-05-T29 の owner sourcing で発火**）。
-- **(b)**: 実 checkpoint 変換の CI 起動 + HF flakiness、CC 機体では未実行。
-- **(c)**: spec `M4-04-T21`（owner 初回 dispatch）/ `M4-05-T14`・`T34`（CC parity、owner checkpoint 依存）。CC 到達分 = `mimi_rvq` / `dac_rvq` op family + converter + `parity-rvq-real.yml` scaffold + upstream reference fixture 契約。
-- **(d)**: 初回 dispatch が success（差し戻し fix 後を含む）。required check への promotion はしない前提を維持（HF flakiness、Kokoro/Whisper real CI と同運用）。
+- **(a)**: **`parity-rvq-real.yml` の recipe はローカルで完全 first-fire 済**（2026-07-16）= checkpoint sha256 が workflow の pin と MATCH、venv pin 一致、**106/106 tensor PASS**、`real_codec_parity` 2/2。**Mimi は PCM roundtrip まで完通**（encode code 4384/4384 = 100% 一致、decode max\|Δ\| 3.67e-6、`ebe1cc5`）。したがって「CC 機体では未実行」は失効。
+  <!-- claim-evidence: docs/bench-baselines/m1-real-weight-eval-2026-07-16/report.md#106/106 -->
+  <!-- claim-evidence: docs/bench-baselines/m1-real-weight-eval-2026-07-16/report-campaign2.md#4384/4384 -->
+- **(b)**: **owner に残るのは 2 点**: (i) **GitHub Actions 上の正式な初回 workflow_dispatch**（ローカル first-fire は Actions 実行の代替にならない — runner 環境 / HF DL 経路は未検証）、(ii) **encodec leg は今回未実行**（EnCodec weight は CC-BY-NC ゆえ取得可否自体が owner の判断 = §3 の fail-closed 姿勢を維持するか研究用途で取得するか）。
+- **(c)**: spec `M4-04-T21`（owner 初回 dispatch）/ `M4-05-T14`・`T34`（CC parity = ローカル発火済）。CC 到達分 = `mimi_rvq` / `dac_rvq` op family + converter + `parity-rvq-real.yml` scaffold + upstream reference fixture 契約 + 実 checkpoint での first-fire。
+- **(d)**: 初回 dispatch が success（差し戻し fix 後を含む）+ encodec leg の可否判断。required check への promotion はしない前提を維持（HF flakiness、Kokoro/Whisper real CI と同運用）。
 
 ### 1.7 WavTokenizer / X-Codec 2（M4-16、FSQ）
 
-- **(a)**: CC 側 parity fixture は **合成 weight のみ（pretrained 未 DL・未使用）**。実 WavTokenizer / X-Codec 2 model の e2e parity は **後続の実モデル統合 WP**（M4 スコープ外）で発火。本フェーズの owner タスクは license sign-off（§3.4）のみ。
-- **(b)**: 実 weight は license 確定後（特に X-Codec 2 の CC-BY-NC 4.0 疑義、§3.4）。
-- **(c)**: spec `M4-16`（op のみ）+ 消費者 WP（converter metadata `documented`→`persisted` + 実モデル e2e）。
-- **(d)**: op parity（合成）green は CC 完了済 = 本カテゴリでの owner 残は license（§3.4）に集約。
+- **(a)**: **WavTokenizer は実 pretrained weight で検証済**（2026-07-16）= 実 codebook `[4096, 512]` + jfk 由来の実 codes 440 個で **max Δ = 0.0（bit-identical、atol 1e-6）**。「合成 weight のみ・pretrained 未 DL」は失効。**X-Codec 2 は honest skip** = HF `HKUSTAudio/xcodec2` の `cc-by-nc-4.0` を live 確認して fail-closed で取得を止めた（released shape + 合成 projection での max Δ = 0.0 までは検証）。
+  <!-- claim-evidence: docs/bench-baselines/m1-real-weight-eval-2026-07-16/report.md#cc-by-nc-4.0 -->
+- **(b)**: 実 weight を止めているのは能力ではなく **license 判断**（§3.4 の X-Codec 2 ruling）。**ruling が出るまで `crates/vokra-core/src/compliance/license_class.rs` が X-Codec 2 を Permissive と分類しており、NC weight を素通しする穴が開いたまま** = ruling 後の 1 行 flip は CC 側の待機タスク（owner の判定が先）。
+  <!-- claim-evidence: crates/vokra-core/src/compliance/license_class.rs#x-codec-2 -->
+- **(c)**: spec `M4-16`（op のみ）+ 消費者 WP（converter metadata `documented`→`persisted` + 実モデル e2e）。CC 到達分 = fsq op family + 実 codebook parity + license 事実の一次確認。
+- **(d)**: §3.4 の sign-off + X-Codec 2 ruling。**op parity 側は実 weight で完了済**ゆえ、本カテゴリの owner 残は license に集約される（この点は従来どおり）。
 
 ---
 
@@ -90,7 +105,8 @@ CC 側は各モデルの **flip-the-switch parity harness**（実 checkpoint 到
 
 - **(a)**: Snapdragon 8 Gen 3（Adreno 750）+ Dimensity 9300（Mali G720）実機で `cargo build --target aarch64-linux-android --features vulkan --release` → adb push → JNI wrapper で 30s 音声 transcribe → 転写 vs reference 一致 + **median RTF < 0.7（NFR-PF-06）**。
 - **(b)**: lavapipe（CPU-side ICD、CI で検証済）は **driver-level GLSL→SPIR-V コンパイラ bug を catch できない** ため実機 soak が M4-13 の exit hard gate。Android GPU 実機は CC に無い。
-- **(c)**: spec `M4-13-T17`（owner、M3-18 併走）+ handover `docs/m3-18-android-rtf-handover.md`。**依存 = M4-13-T16 の glslc `.spv` commit（§4.3）が先**。coop-matrix 非対応チップで RTF 2x 劣化なら subgroup INT8/FP16 kernel 追加 wave（別 WP へ flow）。
+- **(c)**: spec `M4-13-T17`（owner、M3-18 併走）+ handover `docs/m3-18-android-rtf-handover.md`。**依存だった M4-13-T16 の glslc `.spv` commit は完了済（§4.3）= 本 soak の前提は解除済、着手可**（12 `.spv` が `crates/vokra-backend-vulkan/kernels/precompiled/` に commit 済 + `spirv::` 24 tests green = §4.3 (d) の記録どおり）。coop-matrix 非対応チップで RTF 2x 劣化なら subgroup INT8/FP16 kernel 追加 wave（別 WP へ flow）。
+  <!-- claim-evidence: crates/vokra-backend-vulkan/kernels/precompiled/SHA256SUMS#gemm_coopmat.spv -->
 - **(d)**: Adreno 750 + Mali G720 で Whisper base が Vulkan 経由で動作 + 転写実用一致 + median RTF < 0.7。未達は SPIR-V shader 最適化 issue へ flow。
 
 ### 2.4 Web ブラウザ実機テスト（M4-01 spot check → M4-11 正式判定）
@@ -151,7 +167,7 @@ CC 側は各モデルの **flip-the-switch parity harness**（実 checkpoint 到
 ### 3.5 UTMOS / DNSMOS（M4-18）
 
 - **(a)**: UTMOS = SaruLab UTMOS22 系の weight source URL 確定 + §3.1 に UTMOS 行を追加し sign-off（学習データ由来の商用配布可否 = SaruLab MOS Challenge 2022 音声由来 weight の再配布条項確認、research-only なら評価用途限定 + zoo 除外）。DNSMOS = Microsoft P.835（`microsoft/DNS-Challenge` 系）の license 一次資料検証 → 商用 OK なら T11 GO / research-only なら T11 skip で UTMOS 単独 scope 縮小。
-- **(b)**: weight source + license 一次資料の確認（本 spec に推測 URL / license を書かない = ハルシネーション厳禁）。**kickoff 週 gate = 現状 NO-GO-defer**（`docs/handoff/m4-18.md` §(a)）で v1.0.x patch へ自動 defer 済 = **owner が defer 追認 or M4 内 flip を確定**。
+- **(b)**: weight source + license 一次資料の確認（本 spec に推測 URL / license を書かない = ハルシネーション厳禁）。**kickoff 週 gate の自動 defer は 2026-07-18 の依頼者承認で解除済（un-defer）** — campaign-2 の probe が weight 匿名取得可 + license 全鎖 permissive + BVCC に academic 限定条項なしを一次資料で確認したため。UTMOS 実装は M5-15（T14–T22）が owner。`docs/handoff/m4-18.md` §(a) の NO-GO-defer 記述は un-defer 前のもの。**DNSMOS は依頼者の最終確認まで fail-closed 継続**。
 - **(c)**: handoff `docs/handoff/m4-18.md` §(d) queue / spec `M4-18-T02`（UTMOS）`T03`（DNSMOS）。
 - **(d)**: UTMOS weight URL 確定 + §3.1 sign-off 記入（or Rejected 記録）+ DNSMOS license 判定が一次資料引用付きで記録され T11 GO/skip 確定。
 
@@ -187,10 +203,12 @@ CC 側は各モデルの **flip-the-switch parity harness**（実 checkpoint 到
 
 ### 4.3 glslc precompiled `.spv` commit（M4-13）
 
-- **(a)**: LunarG SDK / glslang install → `scripts/compile-vulkan-shaders.sh --update` で 12 `.comp`（gemm_subgroup / gemm_coopmat / gemv / softmax / softmax_causal / layer_norm / gelu / conv1d / elementwise / activation / transpose / gather）を `kernels/precompiled/*.spv` に compile + git commit + 各 blob の sha256 を `spirv.rs::SHADERS` の `expected_sha256_hex` に paste + `load_spv` arm を `include_bytes!` に置換。
-- **(b)**: glslc toolchain の developer-side install（現在 `kernels/precompiled/` は README のみ、handcrafted `copy_f32`/`add_f32` の 2 本のみ commit 済）。
-- **(c)**: spec `M4-13-T16` + `docs/adr/M3-02-spirv-generation.md` §4-(a) + `scripts/install-vulkan-toolchain.md` + handoff `docs/handoff/m4-15.md` §(b)。**§2.3 Android soak の前提**。
-- **(d)**: 12 `.spv` commit + SHA-256 pin が `verify_pinned_hashes` green + `load_spv` が該当 op で `Some(bytes)` 返却（op が lit up）。
+- **(a)**: **完了（owner 作業は残っていない）**。12 `.spv`（gemm_subgroup / gemm_coopmat / gemv / softmax / softmax_causal / layer_norm / gelu / conv1d / elementwise / activation / transpose / gather）が `crates/vokra-backend-vulkan/kernels/precompiled/` に commit 済（PR #8 `ff12104`）。`PROVENANCE` が compiler を **glslangValidator 11:16.4.0** に pin、`SHA256SUMS` + `spirv.rs::SHADERS` の `expected_sha256_hex` + `include_bytes!` arm も揃っている。
+  <!-- claim-evidence: crates/vokra-backend-vulkan/kernels/precompiled/PROVENANCE#glslangValidator -->
+  <!-- claim-evidence: crates/vokra-backend-vulkan/src/spirv.rs#include_bytes! -->
+- **(b)**: 「glslc toolchain が developer 機に無い」という前提が失効した（glslangValidator 16.4.0 導入済）ため CC 側で消化済。**この完了により §2.3 Android soak の前提（M4-13-T16 が先）が解除され、owner は Android soak に着手できる**。
+- **(c)**: spec `M4-13-T16`（**完了**）+ ADR M3-02 §4-(a) + `scripts/install-vulkan-toolchain.md` + handoff `docs/handoff/m4-15.md` §(b)。
+- **(d)**: **達成済** — `cargo test -p vokra-backend-vulkan --lib spirv::` = **24 passed / 0 failed**（`verify_pinned_hashes_is_ok_for_committed_blobs` / `sha256sums_file_matches_manifest_pins` 含む、2026-07-19 実行）。残る Vulkan の owner タスクは §2.3 実機 soak と §4.5 の lavapipe 初回 dispatch のみ。
 
 ### 4.4 secrets.UNITY_LICENSE provisioning（M4-02、M2-11 carry-over）
 
@@ -201,10 +219,15 @@ CC 側は各モデルの **flip-the-switch parity harness**（実 checkpoint 到
 
 ### 4.5 CI 初回 workflow_dispatch 群（owner 引き渡し前例）
 
-- **(a)**: CC 機体で未実行の workflow を GitHub Actions 上で初回起動: `parity-rvq-real.yml`（M4-04-T21）/ `parity-whisper-real.yml` 3-size（M4-14-T10）/ `parity-moshi-real.yml`（M4-06-T30）/ `parity-utmos.yml`（M4-18、weight 到着後）/ `gpu-vulkan-parity.yml` lavapipe（M4-13-T18）/ `web-wasm.yml` + `npm-web-release` dry-run（M4-01-T28）。
-- **(b)**: 初回 run は owner 引き渡し（プロジェクト前例、M2/M3 と同）。green / honest skip 理由の可視を確認。
+- **(a)**: CC 機体で未実行の workflow を GitHub Actions 上で初回起動: `parity-rvq-real.yml`（M4-04-T21）/ `parity-whisper-real.yml` 3-size（M4-14-T10）/ `parity-moshi-real.yml`（M4-06-T30）/ `parity-utmos.yml`（M5-15 の flip 後）/ `gpu-vulkan-parity.yml` lavapipe（M4-13-T18）/ `web-wasm.yml` + `npm-web-release` dry-run（M4-01-T28）/ `parity-kokoro-real.yml` の再 dispatch（`92dbc92` で reference 側を修正したため）。
+- **(b)**: 初回 run は owner 引き渡し（プロジェクト前例、M2/M3 と同）。green / honest skip 理由の可視を確認。**PR #8 が merge 済（`ff12104`）なので「default branch に workflow が無い」という以前の前提ブロッカーは解消済**。
 - **(c)**: 各 spec の owner ticket + 各 workflow YAML の "initial workflow_dispatch is owner handoff" コメント。
 - **(d)**: 各初回 run が green（or skip 理由が honest に可視）。**required check への promotion は数週連続 green 後の owner 判断**（HF flakiness の PR blocking 回避、Kokoro/Whisper real CI と同運用）。
+- **(e) sequencing 拘束（順序を守らないと確実に赤くなる — 起動前に確認）**:
+  - `parity-moshi-real.yml` は **§1.2 (b)-(i) の full-7B 戦略が解けてから**。現状 16 GB 級では converter/dump/load が全段 BLOCKED ゆえ、先に起動しても環境要因で赤になるだけで情報が得られない。
+  - `godot-crossbuild.yml` は **Godot compliance scanner の bash 修正が land してから**（`scripts/compliance/check-godot-package-no-nvidia.sh` の配列長展開が bash>=4.4 でのみ fail する既知欠陥。ローカル bash 3.2 では再現しない = CI でのみ露見）。**本 doc-hygiene WP ではこの修正を実装していない**（owning WP 側の作業）。
+  - `parity-csm-real` 系は **§1.1 の HF gate 受諾 + fresh token 後**。
+  - Android soak（§2.3）は §4.3 完了により **前提解除済 = 即着手可**。
 
 ---
 
@@ -226,9 +249,11 @@ CC は評価材料 + ADR 草案を **Status: Proposed** で止め、判断記録
 - **(c)**: ADR `docs/adr/M4-10-mlir-stablehlo.md`（OpKind 17 variant + backend coverage 実測 + supersede 系譜）/ spec `M4-10-T08`。
 - **(d)**: §13 記入 → Accepted。採用時は CLAUDE.md + SRS 改訂 + 新規実装 WP 起票を **M4-12 前（G7）**に完了。
 
-### 5.3 M4-18 G2 — UTMOS defer 中の M4-05/M4-06 品質判定方針の追認
+### 5.3 M4-18 G2 — M4-05/M4-06 品質判定方針の追認（UTMOS un-defer 済）
 
-- **(a)**: ratified 完了条件「MEL loss / UTMOS 劣化 5% 未満」は UTMOS defer 中 honest に判定不能ゆえ、**「mel_loss 5% gate + UTMOS は advisory（判定不能を明示）」への切替を追認・記録**（ratified 条件の変更 = owner 専権）。
+**前提更新（2026-07-18 依頼者承認の un-defer）**: 本項起草時の前提「UTMOS は defer 中で判定不能」は失効した（§1.5）。**追認対象は「defer 継続の是非」ではなく「M5-15 で UTMOS が着地するまでの暫定 posture」**に変わる。**owner の追認タスク自体は残る**（下記 (a)〜(d)）— UTMOS 着地までは mel_loss 単騎で品質判定する期間が実在し、ratified 条件からの一時的な乖離を owner が記録する必要は un-defer 後も変わらないため。
+
+- **(a)**: ratified 完了条件「MEL loss / UTMOS 劣化 5% 未満」は **UTMOS 着地前（M5-15 まで）** honest に判定不能ゆえ、**「mel_loss 5% gate + UTMOS は advisory（判定不能を明示）」への切替を追認・記録**（ratified 条件の変更 = owner 専権）。
 - **(b)**: ratified 完了条件の変更判断。機械面は `DegradationReport::mel_loss_only = true` + `KvQuantVerifyReport::utmos_unavailable = true` が「UTMOS gate: 未達」を明示（mel_loss 単騎で「UTMOS 通過」と偽らない）。
 - **(c)**: handoff `docs/handoff/m4-18.md` §(d)-4 / spec `M4-18-T01`（両方 = kickoff gate）。
 - **(d)**: 判定方針切替が記録され M4-05/06 の品質判定 posture が確定。
@@ -286,11 +311,19 @@ CC は評価材料 + ADR 草案を **Status: Proposed** で止め、判断記録
 
 **M4-11 T13 gap-flow 判断対象（owning WP 不在の残存 gap、3 択 = M4 follow-up / M5 送り / 要件改訂）**: (a) **Android AAR**（standalone AAR を出す CD job 不在、arm64 `.so` は Unity UPM / Godot addon 同梱のみ）/ (b) **desktop 共有ライブラリ + CLI の release 自動発行 job**（`release.yml` は ios/unity/pypi/godot のみ、NFR-MT-08 対照 gap）/ (c) **NFR-MT-02 Tier 2 実機 nightly**（現在 per-PR cross-build のみ、owner lab standup = X-06 後の継続タスク）。詳細 = `docs/handoff/m4-11.md` §(c) / matrix Part 11.4。
 
-**M4-19 Wyoming 申し送り（本 WP 完了条件外 = scope-guard）**: M5Stack / HA Voice Satellite soak（optional）/ Wyoming・HA community engagement（X-05、own pace）/ faster-whisper real-WER 検証（`m4_19_asr_real_gguf_round_trip_gated` を real GGUF で実行）/ CLI model wiring（M2-09-T04 carry-over = `--asr-base`/`--tts-piper` を `InferenceService::build` + `spawn_server_with_service` に配線）。詳細 = `docs/handoff/m4-19.md` §Owner tasks。
+**M4-19 Wyoming 申し送り（本 WP 完了条件外 = scope-guard）**: M5Stack / HA Voice Satellite soak（optional）/ Wyoming・HA community engagement（X-05、own pace）/ **faster-whisper real-WER 検証**（`m4_19_asr_real_gguf_round_trip_gated` を `VOKRA_WHISPER_BASE_GGUF` + `VOKRA_PIPER_GGUF` に実 GGUF を与えて実行）。詳細 = `docs/handoff/m4-19.md` §Owner tasks。
+
+> **CLI model wiring（旧 M2-09-T04 carry-over）は完了済につき本 queue から除去**。production 起動経路は `integrations/vokra-server/src/server.rs` の `run_with_config`（:65）→ `build_service`（:77、定義 :348）→ `InferenceService::build`（:353）→ `spawn_server_wired`（:84、定義 :293）で、**listener を bind する前に registry を同期構築する**。model path が未設定なら health-only + Wyoming discovery-only で起動し、設定されているのに GGUF が欠損 / 破損していれば **hard startup error**（FR-EX-08 = 半配線のまま port を開いて全 request を 404 / no-op する状態を作らない）。実 flag 名は `integrations/vokra-server/src/config.rs` の `--whisper-base`（:462）/ `--piper-plus`（:518）/ `--piper-g2p`（:537）で、`integrations/vokra-server/README.md` の quickstart と一致する。**`spawn_server_with_service`（`server.rs`:130）は Wyoming 統合テスト専用パス**（実 Whisper GGUF なしで mock backend を駆動するために HTTP listener を health-only のまま残す）であり、production の配線先ではない。
+> <!-- claim-evidence: integrations/vokra-server/src/config.rs#--whisper-base -->
+> <!-- claim-evidence: integrations/vokra-server/src/config.rs#--piper-plus -->
+> <!-- claim-evidence: integrations/vokra-server/src/server.rs#spawn_server_wired -->
+>
+> **実行時の落とし穴**: piper voice GGUF は `spk_proj.0.weight` を持つものを渡すこと。`crates/vokra-models/src/piper_plus/config.rs` の `Dims::derive`（:136）がこのテンソルを無条件に要求するため、持たない voice は load 時点で `InvalidArgument` で loudly に落ちる（FR-EX-08 としては正しい挙動だが、原因が分からないと詰まる）。M4-residual 監査 注記 3 は公開 voice の一部がこれに該当したと記録している。
+> <!-- claim-evidence: crates/vokra-models/src/piper_plus/config.rs#spk_proj.0.weight -->
 
 **M4-15 SBOM reproducible-build verify（owner 1 件）**: 同一入力から SPDX SBOM が別マシン / 別 checkout で byte-identical に再生成されることを確認（`docs/handoff/m4-15.md` §(a)、spec `M4-15-T10`）。差分は環境依存フィールドを記録して CC に fixup 依頼（fabricated pass 禁止）。
 
-**worktree 産 ADR の main checkout への sync（owner）**: worktree sandbox が main checkout への直接 Write を禁止するため、`docs/adr/M4-15-*.md` / `docs/adr/M4-18-utmos-{gate,arch}.md` 等は worktree 内作成 = **worktree cleanup 前に main checkout の `docs/adr/` へコピー保全**（`docs/handoff/m4-15.md` §(f) / `docs/handoff/m4-18.md` §(d)-6）。
+**worktree 産 ADR の main checkout への sync（owner）— 完了・close**: 対象だった M4-14 / M4-15 / M4-18（gate・arch）の 4 本はいずれも main checkout の `docs/adr/`（gitignore ローカル）に実在することを確認済。**新たな sync 作業は残っていない**。以後 worktree で ADR を起こした場合の保全手順としてのみ `docs/handoff/m4-15.md` §(f) / `docs/handoff/m4-18.md` §(d)-6 を参照する。
 
 ---
 
@@ -301,25 +334,33 @@ CC は評価材料 + ADR 草案を **Status: Proposed** で止め、判断記録
 | M4-01 | T27 npm / T28 browser spot check / **T02 WebGPU ADR（両方）** | §4.1 / §2.4 / §5.4 | ✅ WebGPU backend + WASM + npm CD dry-run |
 | M4-02 | （依頼者 0、申し送り = UNITY_LICENSE） | §4.4 | ✅ staticlib + wasm-harness leg green |
 | M4-03 | （依頼者 0、acoustic 検収は M4-05/06 吸収） | §6.3 | ✅ aec op（CPU、GPU seam なし） |
-| M4-04 | T20 DAC/Mimi sign-off / T21 parity-rvq dispatch | §3.2 / §1.6 / §4.5 | ✅ mimi_rvq + dac_rvq + parity scaffold |
-| M4-05 | T29 checkpoint+license / T30 legal+streaming demo | §1.1 / §3.1 / §2.6 | ✅ CSM native + flip-the-switch harness |
-| M4-06 | T29 weight+license / T30 full-duplex demo+dispatch | §1.2 / §3.1 / §2.6 | ✅ Moshi native + attribution 3 面 |
+| M4-04 | T20 DAC/Mimi sign-off / T21 parity-rvq dispatch | §3.2 / §1.6 / §4.5 | ✅ mimi_rvq + dac_rvq + parity scaffold + **実 checkpoint ローカル first-fire 106/106**（残 = Actions 初回 dispatch + encodec leg） |
+| M4-05 | T29 checkpoint+license / T30 legal+streaming demo | §1.1 / §3.1 / §2.6 | ✅ CSM native + flip-the-switch harness（blocker は HF gate 受諾 + fresh token の 2 点に特定済） |
+| M4-06 | T29 weight+license / T30 full-duplex demo+dispatch | §1.2 / §3.1 / §2.6 | ✅ Moshi native + attribution 3 面 + **実 weight 14.32 GiB で切詰め parity 11/11 bit-exact**（残 = full-7B RAM 戦略 + dispatch 再設計） |
 | M4-07 | T17 Hopper 有効化 / T18 FA v2 比+dashboard | §2.1 | ✅ FA v3 kernel + 3-way dispatch + gated tests |
 | M4-08 | T14 board+dump / T15 LicheePi 4A / T16 Milk-V Duo | §2.2 | ✅ RVV 0.7.1 probe/dispatch/kernel + cross-build CI |
 | M4-09 | T05 G2P 方針 3 択（ADR §8） | §5.1 | ✅ ADR 材料 3 pack + Proposed 草案 |
 | M4-10 | T08 MLIR 採否（ADR §13） | §5.2 | ✅ ADR 材料 + supersede 系譜 + Proposed 草案 |
 | M4-11 | T11 Web 実機 / T12 CDN / T13 matrix sign-off | §2.4 / §4.2 / §7 | ✅ support-matrix + drift check + CDN 材料 |
 | M4-12 | （依頼者 0、records-only、rc タグで実行済） | — | ✅ rc baseline snapshot + anchor rotation（凍結非発火） |
-| M4-13 | T16 glslc .spv / T17 Android soak / T18 dispatch | §4.3 / §2.3 / §4.5 | ✅ Vulkan 完成（CC-side、`.spv` placeholder-then-swap） |
-| M4-14 | T09 convert / T10 dispatch+atol / T11 weight sign-off | §1.3 / §3.3 | ✅ 3-size CI matrix + per-size atol lookup |
+| M4-13 | ~~T16 glslc .spv~~（完了）/ T17 Android soak / T18 dispatch | §4.3 / §2.3 / §4.5 | ✅ Vulkan 完成 + **12 `.spv` commit 済（`spirv::` 24 tests green）= T17 の前提解除** |
+| M4-14 | ~~T09 convert~~（完了）/ T10 dispatch+atol / T11 weight sign-off | §1.3 / §3.3 | ✅ 3-size CI matrix + per-size atol lookup + **4 サイズ fixture が実 jfk 音声由来**（turbo calibrate 不要の材料込み） |
 | M4-15 | T10 SBOM reproducible verify | carry-over | ✅ vulkan-only build target + SPDX SBOM + scanner |
-| M4-16 | T14 WavTokenizer/X-Codec 2 sign-off（dual-license） | §3.4 / §1.7 | ✅ fsq_codec op（合成 fixture）+ EXPERIMENTAL 記録 |
+| M4-16 | T14 WavTokenizer/X-Codec 2 sign-off（dual-license） | §3.4 / §1.7 | ✅ fsq_codec op + **WavTokenizer 実 codebook で Δ 0.0 bit-identical** / X-Codec 2 は NC を live 確認し honest skip |
 | M4-17 | T23 x86 cloud VM perf / T24 ARM64 実機 perf | §2.5 | ✅ CPU ISA server tier kernel + probe + selftest |
-| M4-18 | T02 UTMOS weight+license / T03 DNSMOS / **T01 gate（両方）** | §1.5 / §3.5 / §5.3 | ✅ UTMOS harness（NO-GO-defer、weight 非依存分完成） |
-| M4-19 | （依頼者 0、申し送り = M5Stack/community/WER/CLI wiring） | carry-over | ✅ Wyoming completion（accept loop / synthesize / barge-in） |
-| M4-20 | T17 DeepFilterNet parity / T18 sign-off+GTCRN | §1.4 / §3.6 | ✅ denoise/agc/hpf/loudness/speaker_verify + word-ts interface |
+| M4-18 | **un-defer 済（2026-07-18）→ 実装 owner は M5-15 T14–T22** / 残 = DNSMOS 採否 + zoo 掲載 **+ §3.5 の license sign-off + weight URL（`source.env`）確定 + `parity-utmos` 初回 dispatch** | §1.5 / §3.5 / §5.3 | ✅ UTMOS harness 2 本（final + stage 別）+ converter + **実 upstream 由来 reference fixture commit 済** |
+| M4-19 | （依頼者 0、申し送り = M5Stack / community / real-WER。**CLI wiring は完了につき除去**） | carry-over | ✅ Wyoming completion（accept loop / synthesize / barge-in）+ 起動時 registry 構築 |
+| M4-20 | ~~T17 DeepFilterNet parity~~（達成済）/ T18 sign-off+GTCRN | §1.4 / §3.6 | ✅ denoise/agc/hpf/loudness/speaker_verify + word-ts interface + **DFN3 実 checkpoint parity（SI-SNR gap 2.0e-7 dB）** |
 
-**カテゴリ別内訳（distinct owner チケット）**: §1 weight parity = 8（M4-05-T29 / M4-06-T29 / M4-14-T09,T10 / M4-20-T17 / M4-18-T02 / M4-04-T21 / M4-05-T14+T34=CC harness）/ §2 実機 = 12（M4-07-T17,T18 / M4-08-T14,T15,T16 / M4-13-T17 / M4-01-T28 / M4-11-T11 / M4-17-T23,T24 / M4-05-T30 / M4-06-T30）/ §3 license = 8（M4-05-T29 / M4-06-T29 / M4-14-T11 / M4-04-T20 / M4-16-T14 / M4-18-T02,T03 / M4-20-T18 + M3 queue）/ §4 infra = 6（M4-01-T27 / M4-11-T12 / M4-13-T16 / M4-02 UNITY / M4-13-T18 + 初回 dispatch 群）/ §5 ADR = 4（M4-09-T05 / M4-10-T08 / M4-18-T01 / M4-01-T02）。**一部チケットは複数カテゴリに跨る**（例: M4-05-T29 = weight sourcing §1 + license §3、M4-14-T10 = dispatch §4 + atol §1）。
+**カテゴリ別内訳（distinct owner チケット）**: 件数は **open（owner 未消化）のみ**を数え、上の WP 別表で取り消し線を入れたチケットは「完了」として併記する（表と tally が食い違わないための規律）。
+
+- **§1 weight parity = open 4**（M4-05-T29 / M4-06-T29 / M4-14-T10 / M4-04-T21）＋ **完了 2**（M4-14-T09 = 変換 + fixture 再生成 / M4-20-T17 = DFN3 実 checkpoint parity）＋ **M5-15 移管 1**（M4-18-T02 = UTMOS 実装面、§1.5。license sign-off 面は §3 に残置）＋ M4-05-T14+T34 は CC harness（ローカル発火済 = owner 作業なし）
+- **§2 実機 = open 12**（M4-07-T17,T18 / M4-08-T14,T15,T16 / M4-13-T17 / M4-01-T28 / M4-11-T11 / M4-17-T23,T24 / M4-05-T30 / M4-06-T30）
+- **§3 license = open 8**（M4-05-T29 / M4-06-T29 / M4-14-T11 / M4-04-T20 / M4-16-T14 / M4-18-T02,T03 / M4-20-T18）＋ **M3 carry-over queue**（§3.7 = CosyVoice2 / Voxtral / Mimi の sign-off、M4 の 8 件には数えないが owner 残としては存置）
+- **§4 infra = open 5**（M4-01-T27 / M4-11-T12 / M4-02 UNITY / M4-13-T18 + 初回 dispatch 群）＋ **完了 1**（M4-13-T16 = glslc `.spv` commit、§4.3 = §2.3 Android soak の前提解除）
+- **§5 ADR = open 4**（M4-09-T05 / M4-10-T08 / M4-18-T01 / M4-01-T02）
+
+**一部チケットは複数カテゴリに跨る**（例: M4-05-T29 = weight sourcing §1 + license §3、M4-14-T10 = dispatch §4 + atol §1、M4-18-T02 = §1 は M5-15 移管 / §3 license 面は残置）。
 
 ---
 

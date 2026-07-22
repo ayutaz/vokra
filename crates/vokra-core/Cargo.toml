@@ -5,7 +5,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+# crates.io listing metadata inherited from [workspace.package] (X-07-T09).
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 # No external dependencies on purpose (NFR-DS-02 "dependency minimal"):
 # the M0 skeleton is std-only (M0-02-T02).
@@ -16,12 +22,36 @@ publish.workspace = true
 # crates). See `./scripts/check-zero-deps.sh` — it inspects the root
 # Cargo.lock, which is unaffected by feature toggles.
 [features]
+# M5-03-T03: `std` gates the std-only modules (session / stream / safetensors /
+# compliance / gguf writer + `GgufFile::open`). Default-ON, so every existing
+# consumer builds byte-identically to before (NFR-PT-01 cross-build
+# non-interference): with the default feature set the crate is exactly what it
+# was. With `--no-default-features` the crate becomes `#![no_std]`
+# (+ `extern crate alloc`) and only the core-clean subset — the error type and
+# the GGUF reader parse / from_external path (BTreeMap-indexed) — compiles. That
+# subset is the Cortex-M55 (thumbv8m) Tier-3 foundation (SRS §6, NFR-PT-03); the
+# final no_std boundary (which further modules join the subset) is topology-
+# dependent and resolved in M5-03 Wave 2 (see docs/adr/M5-03-iot-tier3-nostd.md).
+# `std` adds NO dependency (a cfg flag, not a crate); the zero-dep invariant
+# (NFR-DS-02) and the root Cargo.lock are unaffected.
+default = ["std"]
+std = []
+
 # M2-04-T09 / T10: opt-in stub op-kind + matcher unit tests for the
 # `Conv1d → Snake` and `Upsample → Snake → Add(residual)` fusion
 # patterns. Default OFF — the real Snake / Conv1d / Upsample ops land
 # in `OpKind` co-delivered with their consumer model (FR-OP-11/13/14).
 # See `src/ir/fusion/patterns/snake.rs` for the co-delivery rationale.
 fusion-snake-stub = []
+
+# M5-06: opt-in `wfst_decode` (FR-OP-43). cfg-only — the OpenFST binary
+# reader + tropical semiring + token-passing decoder + lattice/n-best are a
+# from-scratch Rust port (the runtime depends on NO OpenFST code), so the flag
+# adds **no** crate dependency and the root Cargo.lock is unaffected
+# (NFR-DS-02). Default OFF: `cargo test --workspace` never compiles the
+# `decode::wfst` module, which is the mechanical proof that the op is opt-in.
+# Enable with `--features vokra-wfst`. See `src/decode/wfst/mod.rs` + ADR M5-06.
+vokra-wfst = []
 
 [lints]
 workspace = true

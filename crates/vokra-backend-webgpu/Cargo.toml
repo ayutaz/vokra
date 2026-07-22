@@ -5,7 +5,22 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+publish = true
+# crates.io listing metadata inherited from [workspace.package] (X-07-T09).
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# docs.rs (X-09b-T17): the extern-import FFI compiles under
+# cfg(all(feature = "webgpu", target_arch = "wasm32")), so build docs on wasm32
+# with the feature enabled to render the real WebGPU surface (not the native
+# stub). Inert for local builds; adds no deps (NFR-DS-02).
+[package.metadata.docs.rs]
+default-target = "wasm32-unknown-unknown"
+targets = ["wasm32-unknown-unknown"]
+all-features = true
 
 # Zero external dependencies (NFR-DS-02): the only runtime dependency is the
 # first-party `vokra-core` (Backend trait / OpKind / VokraError / Tensor).

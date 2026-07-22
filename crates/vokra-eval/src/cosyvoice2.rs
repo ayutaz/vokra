@@ -250,6 +250,8 @@ mod tests {
     /// affine shifts scores into a MOS-like positive band.
     fn tiny_utmos_24k() -> Utmos {
         let config = UtmosConfig {
+            variant: crate::metrics::utmos::ArchVariant::V0,
+            v1: None,
             sample_rate: COSYVOICE2_SAMPLE_RATE,
             conv_channels: vec![4, 6],
             conv_kernels: vec![5, 3],

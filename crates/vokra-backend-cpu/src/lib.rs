@@ -138,7 +138,8 @@ pub mod fused_logmel_test_probe_neon {
 #[doc(hidden)]
 pub mod gemm_test_probe {
     pub use crate::kernels::gemm_driver::{
-        KC, MC, NC, PACK_MR, active_gemm_has_m1, active_gemm_has_packed, would_use_packed,
+        KC, MC, NC, PACK_MR, active_gemm_has_m1, active_gemm_has_packed, packed_forced,
+        would_use_packed,
     };
 }
 

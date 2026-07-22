@@ -17,6 +17,10 @@
 
 use super::{f16_to_f32, n_blocks};
 use crate::gguf::tensor::QK_K;
+// M5-03-T05: `Vec` and the `vec!` macro are `alloc` (core-clean); the no_std
+// subset imports them (inert under std, where they are in the prelude).
+#[cfg(not(feature = "std"))]
+use alloc::{vec, vec::Vec};
 
 /// 128 low-nibble bytes + 64 high-2-bit bytes + 16 `int8` scales + `f16` `d`.
 const BLOCK_BYTES: usize = 210;

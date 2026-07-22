@@ -94,6 +94,14 @@ pub struct KokoroTts {
     bert: Option<Bert>,
     prosody: ProsodyPredictor,
     decoder: Decoder,
+    /// Stacked per-voice style table (`voices/*.pt` merged), when the voice
+    /// GGUF carries a `voicepack` tensor. `None` for the canonical conversion
+    /// (upstream ships voices as separate `voices/*.pt` files, so the default
+    /// safetensors — and thus the GGUF — has no stacked voicepack). When
+    /// `None`, a `voice = Some(name)` synthesis returns a loud, actionable
+    /// error rather than a silent zero-style fallback (FR-EX-08). Populated by
+    /// [`VoicePack::load`] at load time (M2-07-T02).
+    voicepack: Option<VoicePack>,
     /// Backend selector (`Copy`; never a live `!Send` backend, same rationale
     /// as [`crate::piper_plus::PiperPlusTts`]).
     #[allow(dead_code)] // consumed by the T18 e2e wire-up
@@ -167,6 +175,13 @@ impl KokoroTts {
         };
         let prosody = ProsodyPredictor::load(&store, &config)?;
         let decoder = Decoder::load(&store, &config)?;
+        // Optional stacked per-voice style table. Absent on the canonical
+        // conversion (voices ship as separate `voices/*.pt` files); present
+        // when the safetensors was built with
+        // `kokoro_prepare_checkpoint.py --stack-voicepack`. A malformed
+        // voicepack (wrong rank / row width / voice count) fails loudly here
+        // rather than mid-synthesis (FR-EX-08).
+        let voicepack = VoicePack::load(&store, &config)?;
         // `store` (and its GGUF backing bytes) drops here.
         Ok(Self {
             config,
@@ -175,6 +190,7 @@ impl KokoroTts {
             bert,
             prosody,
             decoder,
+            voicepack,
             backend_kind: BackendKind::Cpu,
         })
     }
@@ -231,11 +247,18 @@ impl KokoroTts {
     ///     backward compatibility.
     /// - `voice = Some(name)` — the name is looked up in the voice table
     ///   ([`KokoroConfig::voice_names`]); an unknown name is a loud
-    ///   [`VokraError::InvalidArgument`]. Because the voicepack tensor schema
-    ///   is TBD until M2-07-T02 upstream inspection
-    ///   (`docs/adr/0007-kokoro-native.md` §Voicepack), a **known** name
-    ///   returns [`VokraError::NotImplemented`] — never a silent zero-style
-    ///   fallback.
+    ///   [`VokraError::InvalidArgument`]. The resolved voice id then indexes
+    ///   the stacked voicepack row (M2-07-T02): upstream Kokoro selects
+    ///   `pack[len(ps) - 1]` from a per-voice `[max_tokens, 1, 2·style_dim]`
+    ///   table (`pipeline.py:232`), so the row is
+    ///   `min(phoneme_ids.len() - 1, max_tokens - 1)` and the resulting
+    ///   `2·style_dim` `ref_s` feeds the same [`split_ref_s`] path as a full
+    ///   voicepack `style_override`. A voice GGUF built the canonical way
+    ///   (no stacked `voicepack` tensor — upstream ships voices as separate
+    ///   `voices/*.pt` files) has nothing to look up: a **known** name then
+    ///   returns a loud [`VokraError::InvalidArgument`] naming the rebuild
+    ///   step (`--stack-voicepack`) — never a silent zero-style fallback
+    ///   (FR-EX-08).
     ///
     /// `style_override` takes precedence over `voice` when both are set.
     ///
@@ -281,15 +304,28 @@ impl KokoroTts {
             }
             s.to_vec()
         } else if let Some(name) = voice {
-            let _voice_id = self.config.voice_id(name).ok_or_else(|| {
+            let voice_id = self.config.voice_id(name).ok_or_else(|| {
                 VokraError::InvalidArgument(format!(
                     "kokoro TTS: unknown voice `{name}` (voice_names = {:?})",
                     self.config.voice_names,
                 ))
             })?;
-            return Err(VokraError::NotImplemented(
-                "kokoro voicepack style lookup TBD at M2-07-T02 (pass style_override in the meantime)",
-            ));
+            let Some(voicepack) = self.voicepack.as_ref() else {
+                return Err(VokraError::InvalidArgument(format!(
+                    "kokoro TTS: voice `{name}` (id {voice_id}) resolved, but this \
+                     voice GGUF carries no stacked `voicepack` tensor to look up \
+                     its style vector. The canonical Kokoro-82M release ships \
+                     voices as separate `voices/*.pt` files, so the default \
+                     conversion omits them — rebuild the GGUF from a safetensors \
+                     produced with \
+                     `tools/parity/kokoro_prepare_checkpoint.py --stack-voicepack`, \
+                     or pass `style_override` with the voice's `ref_s` row."
+                )));
+            };
+            // Upstream selects `pack[len(ps) - 1]` (`pipeline.py:232`); the row
+            // is `2·style_dim` by construction (validated at load), matching the
+            // full-`ref_s` `style_override` length.
+            voicepack.ref_s(voice_id, phoneme_ids.len())?.to_vec()
         } else {
             return Err(VokraError::InvalidArgument(
                 "kokoro TTS: no style — pass style_override or a voice name".to_owned(),
@@ -691,6 +727,140 @@ impl KokoroTts {
     }
 }
 
+/// Stacked per-voice style table recovered from a voice GGUF's `voicepack`
+/// tensor (M2-07-T02).
+///
+/// Upstream Kokoro-82M ships one style tensor per voice in a separate
+/// `voices/<name>.pt` file, each shaped `[max_tokens, 1, 2·style_dim]` — a
+/// per-phoneme-count *history* of `ref_s` rows (`ref_s = [decoder ; prosody]`).
+/// `tools/parity/kokoro_prepare_checkpoint.py --stack-voicepack` stacks them on
+/// a new leading axis (in `voice_names` alphabetical order) into a single
+/// `voicepack` tensor `[num_voices, max_tokens, 1, 2·style_dim]` that the Rust
+/// converter writes verbatim into the GGUF. This struct owns that table as a
+/// flat row-major buffer and resolves a `ref_s` row for `(voice_id,
+/// phoneme_count)` exactly as upstream `KPipeline` does (`pack[len(ps) - 1]`,
+/// `pipeline.py:232`), clamped to the table height.
+///
+/// A `[num_voices, max_tokens, 2·style_dim]` 3-D layout (singleton axis
+/// squeezed) is accepted as well. The buffer is row-major so the singleton axis
+/// does not change the flat layout: voice `v`, row `r`, channel `k` lives at
+/// `(v · max_tokens + r) · row_len + k`.
+struct VoicePack {
+    /// Row-major `[num_voices, max_tokens, row_len]` (the singleton `1` axis, if
+    /// present in the GGUF shape, is flattened out — it does not affect offsets).
+    data: Vec<f32>,
+    num_voices: usize,
+    max_tokens: usize,
+    /// `2·style_dim` — the full `ref_s` width (decoder half ++ prosody half).
+    row_len: usize,
+}
+
+impl VoicePack {
+    /// GGUF tensor name for the stacked voicepack (verbatim from the prep tool).
+    const TENSOR: &'static str = "voicepack";
+
+    /// Loads the stacked voicepack from a voice GGUF, if present.
+    ///
+    /// Returns `Ok(None)` when the `voicepack` tensor is absent — the canonical
+    /// conversion path, where a `voice = Some(name)` synthesis then fails
+    /// loudly at the call site (FR-EX-08). When present, the shape and element
+    /// count are validated against `config` and a malformed voicepack (wrong
+    /// rank, row width ≠ `2·style_dim`, voice count ≠ `config.num_voices`, or a
+    /// degenerate dim) is rejected with a loud [`VokraError::InvalidArgument`]
+    /// rather than loaded silently.
+    fn load(store: &TensorStore, config: &KokoroConfig) -> Result<Option<Self>> {
+        let shape = match store.shape(Self::TENSOR) {
+            Ok(shape) => shape,
+            // Absent tensor — the canonical (non-stacked) voice GGUF.
+            Err(_) => return Ok(None),
+        };
+        let row_len = 2 * config.style_dim;
+        // Accept the canonical 4-D `[nv, mt, 1, ch]` (singleton squeezed out) or
+        // a 3-D `[nv, mt, ch]` layout; anything else is malformed.
+        let (num_voices, max_tokens, ch) = match shape.as_slice() {
+            [nv, mt, one, ch] if *one == 1 => (*nv, *mt, *ch),
+            [nv, mt, ch] => (*nv, *mt, *ch),
+            other => {
+                return Err(VokraError::InvalidArgument(format!(
+                    "kokoro voicepack tensor shape {other:?} unsupported — expected \
+                     [num_voices, max_tokens, 1, 2·style_dim] or \
+                     [num_voices, max_tokens, 2·style_dim]"
+                )));
+            }
+        };
+        if ch != row_len {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro voicepack row width {ch} != 2·style_dim ({row_len}); the \
+                 voicepack must carry a full ref_s row per (voice, phoneme-count)"
+            )));
+        }
+        if num_voices != config.num_voices {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro voicepack rows {num_voices} != vokra.kokoro.num_voices \
+                 ({}); the voicepack axis 0 must be in voice_names order",
+                config.num_voices,
+            )));
+        }
+        if num_voices == 0 || max_tokens == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro voicepack degenerate dims (num_voices={num_voices}, \
+                 max_tokens={max_tokens})"
+            )));
+        }
+        let data = store.tensor(Self::TENSOR)?;
+        let expected = num_voices
+            .checked_mul(max_tokens)
+            .and_then(|v| v.checked_mul(row_len))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("kokoro voicepack element count overflow".to_owned())
+            })?;
+        if data.len() != expected {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro voicepack element count {} != num_voices·max_tokens·row_len \
+                 ({expected})",
+                data.len(),
+            )));
+        }
+        Ok(Some(Self {
+            data,
+            num_voices,
+            max_tokens,
+            row_len,
+        }))
+    }
+
+    /// Resolves the `ref_s` row (`2·style_dim` floats) for `voice_id` at the
+    /// given `phoneme_count`.
+    ///
+    /// Mirrors upstream `KPipeline.infer`: `pack[len(ps) - 1]`
+    /// (`pipeline.py:232`), where `len(ps)` is the phoneme count and `pack` is
+    /// the per-voice `[max_tokens, 1, 2·style_dim]` history. `phoneme_count` is
+    /// the number of phoneme ids supplied to
+    /// [`KokoroTts::synthesize_phonemes`] (which is upstream's `input_ids` to
+    /// `forward_with_tokens`, i.e. `len(ps)` when the caller passes the raw,
+    /// un-boundary-wrapped phonemes — the same convention the parity
+    /// `phoneme_ids.i64` fixture uses). The row is clamped to
+    /// `[0, max_tokens - 1]`; a `phoneme_count` of 0 maps to row 0.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] if `voice_id >= num_voices` (a defensive
+    /// re-check — callers resolve it via [`KokoroConfig::voice_id`] first, but a
+    /// voice-name table longer than the voicepack would otherwise index out of
+    /// bounds).
+    fn ref_s(&self, voice_id: usize, phoneme_count: usize) -> Result<&[f32]> {
+        if voice_id >= self.num_voices {
+            return Err(VokraError::InvalidArgument(format!(
+                "kokoro voicepack: voice id {voice_id} out of range 0..{}",
+                self.num_voices,
+            )));
+        }
+        let row = phoneme_count.saturating_sub(1).min(self.max_tokens - 1);
+        let base = (voice_id * self.max_tokens + row) * self.row_len;
+        Ok(&self.data[base..base + self.row_len])
+    }
+}
+
 /// Splits a resolved style vector into `(decoder_half, prosody_half)`.
 ///
 /// A `2·style_dim` vector is upstream's full `ref_s` voicepack row —
@@ -716,8 +886,11 @@ impl TtsEngine for KokoroTts {
     /// - `request.speaker_embedding = Some(vec)` (matching `style_dim`) is
     ///   used verbatim as the style vector — the parity of the low-level
     ///   `synthesize_phonemes(style_override = …)` path.
-    /// - Otherwise the voicepack table is queried (TBD at M2-07-T02 follow-on;
-    ///   returns [`VokraError::NotImplemented`]).
+    /// - Otherwise a voice name would index the stacked voicepack via
+    ///   [`KokoroTts::synthesize_phonemes`] (`voice = Some(name)`, M2-07-T02);
+    ///   the low-level path already does that lookup. This high-level adapter
+    ///   still returns [`VokraError::NotImplemented`] because it lacks the G2P
+    ///   step below, not because of the voicepack.
     /// - Both absent — the voice has no named voicepack **and** no embedding is
     ///   supplied — is a loud [`VokraError::InvalidArgument`], never a silent
     ///   zero-style default (FR-EX-08).
@@ -1141,8 +1314,9 @@ mod tests {
             )
         });
         // Style vector matched to the voice's declared style_dim; explicit
-        // override so the voicepack lookup path (`NotImplemented` until T02)
-        // is not exercised.
+        // override so this smoke exercises the decoder chain independently of
+        // whether the GGUF carries a stacked voicepack (the voice-name lookup
+        // has its own gated test below).
         let style = vec![0.0f32; tts.config().style_dim];
         // Two arbitrary in-range ids — the voice's phoneme table has ≥ 4
         // entries in every shipped Kokoro-82M voice.
@@ -1158,6 +1332,236 @@ mod tests {
             "real GGUF PCM must be all-finite (FR-EX-08)"
         );
         assert_eq!(audio.sample_rate, tts.config().sample_rate);
+    }
+
+    // -----------------------------------------------------------------------
+    // Voicepack lookup (M2-07-T02) — deterministic, no multi-MB GGUF needed
+    // -----------------------------------------------------------------------
+
+    /// Minimal GGUF builder carrying all 11 `vokra.kokoro.*` config keys with a
+    /// caller-chosen `style_dim` / `num_voices` / voice list, and NO component
+    /// tensors. Used by the voicepack tests below, which drive
+    /// [`KokoroConfig::from_gguf`] + [`VoicePack::load`] directly (bypassing the
+    /// full component loader chain, so no 82M-parameter fixture is needed).
+    fn kokoro_config_builder(style_dim: u32, num_voices: u32, voices: &[&str]) -> GgufBuilder {
+        let mut b = GgufBuilder::new();
+        b.add_u32(KEY_SAMPLE_RATE, 24_000);
+        b.add_u32(KEY_STYLE_DIM, style_dim);
+        b.add_u32(KEY_NUM_VOICES, num_voices);
+        b.add_u32(KEY_HIDDEN_DIM, 8);
+        b.add_u32(KEY_N_TEXT_LAYERS, 2);
+        b.add_u32(KEY_N_DECODER_LAYERS, 2);
+        b.add_u32(KEY_ISTFT_N_FFT, 20);
+        b.add_u32(KEY_ISTFT_HOP, 5);
+        b.add_u32(KEY_ISTFT_WIN_LENGTH, 20);
+        b.add_metadata(KEY_PHONEME_SYMBOLS, str_array(&["_", "a"]));
+        b.add_metadata(KEY_VOICE_NAMES, str_array(voices));
+        b
+    }
+
+    /// Builds a synthetic stacked voicepack `[num_voices, max_tokens, 1, row_len]`
+    /// (F32, row-major) whose element `(v, r, k)` = `v·1000 + r·10 + k`, so the
+    /// selected slice pins the exact `(voice, row)` chosen.
+    fn synthetic_voicepack_bytes(num_voices: usize, max_tokens: usize, row_len: usize) -> Vec<u8> {
+        let mut data = Vec::with_capacity(num_voices * max_tokens * row_len * 4);
+        for v in 0..num_voices {
+            for r in 0..max_tokens {
+                for k in 0..row_len {
+                    let val = (v * 1000 + r * 10 + k) as f32;
+                    data.extend_from_slice(&val.to_le_bytes());
+                }
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn voicepack_ref_s_selects_expected_row() {
+        // 2 voices, max_tokens = 4, row_len = 4 (= 2·style_dim, style_dim = 2).
+        let num_voices = 2;
+        let max_tokens = 4;
+        let row_len = 4;
+        let data: Vec<f32> = synthetic_voicepack_bytes(num_voices, max_tokens, row_len)
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let vp = VoicePack {
+            data,
+            num_voices,
+            max_tokens,
+            row_len,
+        };
+
+        // Upstream `pack[len(ps) - 1]`, clamped: count → row.
+        assert_eq!(vp.ref_s(0, 1).unwrap(), &[0.0, 1.0, 2.0, 3.0]); // count 1 → row 0
+        assert_eq!(vp.ref_s(0, 2).unwrap(), &[10.0, 11.0, 12.0, 13.0]); // count 2 → row 1
+        assert_eq!(vp.ref_s(0, 4).unwrap(), &[30.0, 31.0, 32.0, 33.0]); // count 4 → row 3
+        assert_eq!(vp.ref_s(0, 99).unwrap(), &[30.0, 31.0, 32.0, 33.0]); // clamp to row 3
+        assert_eq!(vp.ref_s(0, 0).unwrap(), &[0.0, 1.0, 2.0, 3.0]); // saturating → row 0
+        // Second voice is offset by 1000; count 3 → row 2.
+        assert_eq!(vp.ref_s(1, 3).unwrap(), &[1020.0, 1021.0, 1022.0, 1023.0]);
+    }
+
+    #[test]
+    fn voicepack_ref_s_rejects_out_of_range_voice() {
+        let vp = VoicePack {
+            data: vec![0.0f32; 2 * 4 * 4],
+            num_voices: 2,
+            max_tokens: 4,
+            row_len: 4,
+        };
+        match vp.ref_s(2, 1) {
+            Err(VokraError::InvalidArgument(msg)) => {
+                assert!(msg.contains("voice id 2"), "got: {msg}");
+            }
+            Ok(_) => panic!("voice id 2 out of range must be rejected (FR-EX-08)"),
+            Err(other) => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn voicepack_load_reads_stacked_tensor() {
+        // style_dim = 2 → row_len = 4; voicepack [2, 3, 1, 4].
+        let style_dim = 2usize;
+        let (num_voices, max_tokens, row_len) = (2usize, 3usize, 2 * style_dim);
+        let mut b = kokoro_config_builder(style_dim as u32, num_voices as u32, &["v0", "v1"]);
+        b.add_tensor(
+            VoicePack::TENSOR,
+            GgmlType::F32,
+            vec![num_voices as u64, max_tokens as u64, 1, row_len as u64],
+            synthetic_voicepack_bytes(num_voices, max_tokens, row_len),
+        )
+        .expect("voicepack tensor");
+        let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+        let cfg = KokoroConfig::from_gguf(&file).expect("config");
+        let store = TensorStore::new(file);
+        let vp = VoicePack::load(&store, &cfg)
+            .expect("load ok")
+            .expect("voicepack present");
+        assert_eq!(vp.num_voices, 2);
+        assert_eq!(vp.max_tokens, 3);
+        assert_eq!(vp.row_len, 4);
+        // voice 1, count 2 → row 1; fill is v·1000 + r·10 + k ⇒ 1000 + 10 + k.
+        assert_eq!(vp.ref_s(1, 2).unwrap(), &[1010.0, 1011.0, 1012.0, 1013.0]);
+    }
+
+    #[test]
+    fn voicepack_load_absent_is_none() {
+        let b = kokoro_config_builder(2, 2, &["v0", "v1"]);
+        let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+        let cfg = KokoroConfig::from_gguf(&file).expect("config");
+        let store = TensorStore::new(file);
+        assert!(
+            VoicePack::load(&store, &cfg).expect("load ok").is_none(),
+            "absent voicepack tensor must load as None (canonical conversion)"
+        );
+    }
+
+    #[test]
+    fn voicepack_load_rejects_wrong_row_width() {
+        // style_dim = 2 → row_len must be 4; supply a last axis of 6.
+        let mut b = kokoro_config_builder(2, 2, &["v0", "v1"]);
+        b.add_tensor(
+            VoicePack::TENSOR,
+            GgmlType::F32,
+            vec![2, 3, 1, 6],
+            synthetic_voicepack_bytes(2, 3, 6),
+        )
+        .expect("voicepack tensor");
+        let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+        let cfg = KokoroConfig::from_gguf(&file).expect("config");
+        let store = TensorStore::new(file);
+        match VoicePack::load(&store, &cfg) {
+            Err(VokraError::InvalidArgument(msg)) => {
+                assert!(msg.contains("row width 6"), "got: {msg}");
+            }
+            Ok(_) => panic!("row width 6 != 2·style_dim (4) must be rejected (FR-EX-08)"),
+            Err(other) => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn voicepack_load_rejects_voice_count_mismatch() {
+        // config declares 3 voices; voicepack carries only 2 rows.
+        let mut b = kokoro_config_builder(2, 3, &["v0", "v1", "v2"]);
+        b.add_tensor(
+            VoicePack::TENSOR,
+            GgmlType::F32,
+            vec![2, 3, 1, 4],
+            synthetic_voicepack_bytes(2, 3, 4),
+        )
+        .expect("voicepack tensor");
+        let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+        let cfg = KokoroConfig::from_gguf(&file).expect("config");
+        let store = TensorStore::new(file);
+        match VoicePack::load(&store, &cfg) {
+            Err(VokraError::InvalidArgument(msg)) => {
+                assert!(msg.contains("voicepack rows 2"), "got: {msg}");
+            }
+            Ok(_) => panic!("voicepack rows != num_voices must be rejected (FR-EX-08)"),
+            Err(other) => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// Voice-name lookup against a REAL Kokoro-82M voice GGUF, gated on
+    /// `VOKRA_KOKORO_GGUF`. Skipped cleanly when unset. This test documents
+    /// BOTH real-world states and asserts each is handled correctly:
+    ///
+    /// * A GGUF built the canonical way (no stacked voicepack — the default
+    ///   `kokoro_prepare_checkpoint.py` path) must return a loud
+    ///   [`VokraError::InvalidArgument`] naming the `--stack-voicepack` rebuild
+    ///   step — never [`VokraError::NotImplemented`] and never a silent stub.
+    /// * A GGUF built with `--stack-voicepack` must resolve the voice name to a
+    ///   real style row and synthesize non-empty, all-finite PCM.
+    ///
+    /// Any other outcome (NotImplemented, non-finite PCM, wrong error) fails.
+    #[test]
+    fn voice_name_lookup_from_real_gguf_gated() {
+        let Some(gguf_path) = std::env::var_os("VOKRA_KOKORO_GGUF") else {
+            eprintln!(
+                "[kokoro::mod::voice_name_lookup_from_real_gguf_gated] SKIP: \
+                 set VOKRA_KOKORO_GGUF to a converted Kokoro-82M voice GGUF."
+            );
+            return;
+        };
+        let tts = KokoroTts::from_path(&gguf_path)
+            .unwrap_or_else(|e| panic!("load VOKRA_KOKORO_GGUF = {gguf_path:?}: {e}"));
+        let Some(voice) = tts.config().voice_names.first().cloned() else {
+            eprintln!(
+                "[kokoro::mod::voice_name_lookup_from_real_gguf_gated] SKIP: \
+                 GGUF has no voice_names to look up."
+            );
+            return;
+        };
+        // 8 arbitrary in-range ids (every shipped voice has ≥ 178 symbols).
+        let ids = [1i64, 2, 3, 4, 5, 6, 7, 8];
+        match tts.synthesize_phonemes(&ids, Some(&voice), None, 0.0, 1.0) {
+            Ok(audio) => {
+                assert!(
+                    !audio.samples.is_empty() && audio.samples.iter().all(|s| s.is_finite()),
+                    "voicepack-backed GGUF: voice `{voice}` must synthesize finite PCM"
+                );
+                assert_eq!(audio.sample_rate, tts.config().sample_rate);
+                eprintln!(
+                    "[voice_name_lookup] voice `{voice}` synthesized {} samples \
+                     (voicepack present)",
+                    audio.samples.len()
+                );
+            }
+            Err(VokraError::InvalidArgument(msg)) => {
+                assert!(
+                    msg.contains("--stack-voicepack") && msg.contains(&voice),
+                    "no-voicepack GGUF must name the rebuild step; got: {msg}"
+                );
+                eprintln!(
+                    "[voice_name_lookup] voice `{voice}` → loud no-voicepack error \
+                     (canonical GGUF, as expected)"
+                );
+            }
+            Err(other) => {
+                panic!("voice-name lookup must be Ok or a loud InvalidArgument, not: {other:?}")
+            }
+        }
     }
 
     #[test]

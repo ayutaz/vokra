@@ -29,7 +29,8 @@
     "vokra_wasm_base.wasm",
     "README.md",
     "LICENSE",
-    "NOTICE"
+    "NOTICE",
+    "vokra-npm-web.spdx.json"
   ],
   "engines": {
     "node": ">=18"

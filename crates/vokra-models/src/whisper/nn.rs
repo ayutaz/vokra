@@ -46,8 +46,51 @@ pub(crate) fn layer_norm_into(
     compute.layer_norm_f32(x, out, rows, d, &ln.gamma, &ln.beta, LAYER_NORM_DEFAULT_EPS)
 }
 
+/// `nn.Linear` into a **pre-sized** `out` slice:
+/// `out[t, o] = bias[o] + sum_i x[t, i] * W[o, i]`.
+///
+/// The one place a Whisper projection dispatches on how its weight is stored
+/// (M5-15-T28/T34):
+///
+/// - a dense `[in, out]` weight goes to [`Compute::gemm_f32`] — the identical
+///   call the pre-M5-15 code made, so an f32 GGUF is bit-for-bit unchanged;
+/// - K-quant super-blocks go to [`Compute::gemm_q_f32`], which consumes the
+///   `[out, in]` GGUF layout directly and fuses dequant into the INT8 dot.
+///
+/// The quant arm is CPU-only by construction: `gemm_q_f32` raises an explicit
+/// `UnsupportedOp` on every GPU arm rather than falling back (FR-EX-08).
+pub(crate) fn linear_apply(
+    compute: &Compute,
+    out: &mut [f32],
+    x: &[f32],
+    t: usize,
+    lin: &Linear,
+) -> Result<()> {
+    match lin.kquant() {
+        Some((wq, dtype)) => compute.gemm_q_f32(
+            t,
+            lin.out_features,
+            lin.in_features,
+            x,
+            wq,
+            dtype,
+            lin.bias.as_deref(),
+            out,
+        ),
+        None => compute.gemm_f32(
+            t,
+            lin.out_features,
+            lin.in_features,
+            x,
+            lin.dense_w_t()?,
+            lin.bias.as_deref(),
+            out,
+        ),
+    }
+}
+
 /// `nn.Linear` into `out` (sized here):
-/// `out[t, o] = bias[o] + sum_i x[t, i] * w_t[i, o]`.
+/// `out[t, o] = bias[o] + sum_i x[t, i] * W[o, i]`.
 pub(crate) fn linear_into(
     compute: &Compute,
     out: &mut Vec<f32>,
@@ -56,15 +99,7 @@ pub(crate) fn linear_into(
     lin: &Linear,
 ) -> Result<()> {
     resize_zeroed(out, t * lin.out_features);
-    compute.gemm_f32(
-        t,
-        lin.out_features,
-        lin.in_features,
-        x,
-        &lin.w_t,
-        lin.bias.as_deref(),
-        out,
-    )
+    linear_apply(compute, out, x, t, lin)
 }
 
 /// In-place residual add `a += b` (kills the temporary the old `add_into`
@@ -120,14 +155,24 @@ pub(crate) fn mlp_into(
     resize_zeroed(mlp_h, t * ffn);
     resize_zeroed(mlp_a, t * ffn);
     resize_zeroed(out, t * d);
+    // M5-15-T28/T34: a K-quantized fc1/fc2 cannot go through the fused
+    // `mlp_f32` seam (its whole point is handing a GPU two f32 weight
+    // pointers). The quant route runs the identical `fc1 GEMM → GELU → fc2
+    // GEMM` sequence the seam's CPU arm runs, into the same caller scratch —
+    // and the quant route is CPU-only anyway, so no GPU fusion is lost.
+    if fc1.kquant().is_some() || fc2.kquant().is_some() {
+        linear_apply(compute, mlp_h, x, t, fc1)?;
+        compute.gelu_f32(mlp_h, mlp_a)?;
+        return linear_apply(compute, out, mlp_a, t, fc2);
+    }
     compute.mlp_f32(
         t,
         d,
         ffn,
         x,
-        &fc1.w_t,
+        fc1.dense_w_t()?,
         fc1.bias.as_deref(),
-        &fc2.w_t,
+        fc2.dense_w_t()?,
         fc2.bias.as_deref(),
         mlp_h,
         mlp_a,
@@ -206,11 +251,11 @@ pub(crate) fn attention_from_kv_into(
             d,
             n_head,
             xq,
-            &q_lin.w_t,
+            q_lin.dense_w_t()?,
             q_lin.bias.as_deref(),
             k,
             v,
-            &out_lin.w_t,
+            out_lin.dense_w_t()?,
             out_lin.bias.as_deref(),
             scale,
             out,
@@ -220,15 +265,7 @@ pub(crate) fn attention_from_kv_into(
     scratch.ensure(t_q, t_kv, d, n_head);
 
     // Scaled query projection into scratch.q (bias applied by the GEMM).
-    compute.gemm_f32(
-        t_q,
-        d,
-        q_lin.in_features,
-        xq,
-        &q_lin.w_t,
-        q_lin.bias.as_deref(),
-        &mut scratch.q,
-    )?;
+    linear_apply(compute, &mut scratch.q, xq, t_q, q_lin)?;
     for val in &mut scratch.q {
         *val *= scale;
     }
@@ -324,15 +361,7 @@ pub(crate) fn cross_attention_capture(
 
     // Scaled query projection.
     let mut q = vec![0.0f32; t_q * d];
-    compute.gemm_f32(
-        t_q,
-        d,
-        q_lin.in_features,
-        xq,
-        &q_lin.w_t,
-        q_lin.bias.as_deref(),
-        &mut q,
-    )?;
+    linear_apply(compute, &mut q, xq, t_q, q_lin)?;
     for val in &mut q {
         *val *= scale;
     }
@@ -430,12 +459,7 @@ mod tests {
         for i in 0..d {
             w_t[i * d + i] = 1.0;
         }
-        Linear {
-            w_t,
-            in_features: d,
-            out_features: d,
-            bias: bias.then(|| vec![0.0f32; d]),
-        }
+        Linear::dense(w_t, d, d, bias.then(|| vec![0.0f32; d]))
     }
 
     #[test]

@@ -6,8 +6,8 @@
 
 use std::path::PathBuf;
 
-use vokra_convert::{ModelKind, convert_file, convert_kokoro_file};
-use vokra_core::gguf::{FrontendSpec, GgufFile};
+use vokra_convert::{ModelKind, convert_cosyvoice2_file, convert_file, convert_kokoro_file};
+use vokra_core::gguf::{FrontendSpec, GgufFile, GgufMetadataValue};
 
 /// A unique temp path for this test process.
 fn tmp_path(tag: &str) -> PathBuf {
@@ -466,4 +466,196 @@ fn kokoro_safetensors_with_config_roundtrips_through_convert_kokoro_file() {
     let _ = std::fs::remove_file(&input);
     let _ = std::fs::remove_file(&config);
     let _ = std::fs::remove_file(&output);
+}
+
+/// M5-15-T36/T37: the `--quantize` surface widened to **voxtral only**. Every
+/// other non-whisper model keeps its explicit `ConvertError::Usage` refusal
+/// (FR-EX-08 — a flag that is silently ignored is worse than one that errors),
+/// and voxtral's own refusal through this config-less entry point points at
+/// the config-aware one instead of pretending the model is unsupported.
+#[test]
+fn quantization_is_still_refused_for_non_whisper_models() {
+    use vokra_convert::convert_file_quantized;
+    use vokra_core::gguf::GgmlType;
+
+    // `convert_file_quantized` reads the checkpoint before matching, so the
+    // input must exist for the refusal to be the thing under test.
+    let input = tmp_path("quant-refusal-in");
+    let output = tmp_path("quant-refusal-out");
+    std::fs::write(&input, synthetic_safetensors()).unwrap();
+
+    for kind in [
+        ModelKind::Kokoro,
+        ModelKind::CosyVoice2,
+        ModelKind::Mimi,
+        ModelKind::Csm,
+        ModelKind::Moshi,
+        ModelKind::CamPlus,
+    ] {
+        let e = convert_file_quantized(kind, &input, &output, GgmlType::Q4K)
+            .expect_err("non-whisper quantization must be refused");
+        let msg = e.to_string();
+        assert!(
+            msg.contains("only supported for whisper and voxtral"),
+            "{kind:?}: unexpected message: {msg}"
+        );
+    }
+
+    // Voxtral IS supported now, but not through this signature — it cannot
+    // carry the side-car config, and quantizing without it emits a GGUF whose
+    // `0` hparam sentinels the runtime refuses. The message must route the
+    // caller, not claim the model is unsupported.
+    let e = convert_file_quantized(ModelKind::Voxtral, &input, &output, GgmlType::Q6K)
+        .expect_err("config-less voxtral quantization must be refused");
+    let msg = e.to_string();
+    assert!(msg.contains("--config"), "voxtral message: {msg}");
+    assert!(
+        msg.contains("convert_voxtral_file_quantized"),
+        "voxtral message must name the supported entry point: {msg}"
+    );
+
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+}
+
+/// Builds a tiny Qwen2-shaped CosyVoice2 LLM safetensors buffer (vocab 16,
+/// hidden 8, 2 layers, ffn 16, kv_out 4, with Q/K/V biases) — the shape the
+/// `--config` cross-check accepts. All-zero payload; only shapes/names matter.
+fn synthetic_cosyvoice2_backbone() -> Vec<u8> {
+    let (vocab, d, ffn, kv) = (16u64, 8u64, 16u64, 4u64);
+    let mut entries: Vec<(String, Vec<u64>)> = vec![(
+        "llm.model.model.embed_tokens.weight".to_string(),
+        vec![vocab, d],
+    )];
+    for i in 0..2 {
+        let p = format!("llm.model.model.layers.{i}.");
+        entries.push((format!("{p}input_layernorm.weight"), vec![d]));
+        entries.push((format!("{p}self_attn.q_proj.weight"), vec![d, d]));
+        entries.push((format!("{p}self_attn.k_proj.weight"), vec![kv, d]));
+        entries.push((format!("{p}self_attn.v_proj.weight"), vec![kv, d]));
+        entries.push((format!("{p}self_attn.q_proj.bias"), vec![d]));
+        entries.push((format!("{p}self_attn.k_proj.bias"), vec![kv]));
+        entries.push((format!("{p}self_attn.v_proj.bias"), vec![kv]));
+        entries.push((format!("{p}self_attn.o_proj.weight"), vec![d, d]));
+        entries.push((format!("{p}post_attention_layernorm.weight"), vec![d]));
+        entries.push((format!("{p}mlp.gate_proj.weight"), vec![ffn, d]));
+        entries.push((format!("{p}mlp.up_proj.weight"), vec![ffn, d]));
+        entries.push((format!("{p}mlp.down_proj.weight"), vec![d, ffn]));
+    }
+    entries.push(("llm.model.model.norm.weight".to_string(), vec![d]));
+
+    let mut cursor = 0usize;
+    let mut header_entries = Vec::new();
+    for (name, shape) in &entries {
+        let elems: u64 = shape.iter().product();
+        let span = elems as usize * 4;
+        let begin = cursor;
+        let end = cursor + span;
+        cursor = end;
+        let dims = shape
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        header_entries.push(format!(
+            r#""{name}":{{"dtype":"F32","shape":[{dims}],"data_offsets":[{begin},{end}]}}"#
+        ));
+    }
+    let header = format!("{{{}}}", header_entries.join(","));
+    let mut out = Vec::new();
+    out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(&vec![0u8; cursor]);
+    out
+}
+
+/// Reads a `U8` GGUF metadata array back into bytes.
+fn u8_array(file: &GgufFile, key: &str) -> Vec<u8> {
+    file.get(key)
+        .and_then(|v| match v {
+            GgufMetadataValue::Array(a) => Some(a),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{key}: expected U8 array"))
+        .values
+        .iter()
+        .map(|v| match v {
+            GgufMetadataValue::U8(x) => *x,
+            other => panic!("{key}: non-U8 element {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn cosyvoice2_tokenizer_side_car_is_discovered_and_embedded() {
+    // M3-09-T06: `convert_cosyvoice2_file` must pick up `vocab.json` +
+    // `merges.txt` from the SAME directory as `--config` and embed them,
+    // with no extra CLI flag. The vocab/merges bytes must survive the
+    // convert → disk → GgufFile::open pipeline verbatim.
+    let dir = std::env::temp_dir().join(format!("vokra-cosy-tok-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let input = dir.join("model.safetensors");
+    let config = dir.join("config.json");
+    let output = dir.join("out.gguf");
+    let vocab = br#"{"a":0,"b":1,"ab":2}"#.to_vec();
+    let merges = b"#version: 0.2\na b\n".to_vec();
+
+    std::fs::write(&input, synthetic_cosyvoice2_backbone()).expect("write backbone");
+    // Config matching the tiny backbone shapes (head split 2/1, head_dim 4).
+    std::fs::write(
+        &config,
+        br#"{"hidden_size":8,"num_hidden_layers":2,"num_attention_heads":2,"num_key_value_heads":1,"intermediate_size":16,"vocab_size":16,"rope_theta":1000000.0,"rms_norm_eps":1e-06,"max_position_embeddings":32768}"#,
+    )
+    .expect("write config");
+    // The tokenizer side-car, discovered from config.parent().
+    std::fs::write(dir.join("vocab.json"), &vocab).expect("write vocab");
+    std::fs::write(dir.join("merges.txt"), &merges).expect("write merges");
+
+    let summary = convert_cosyvoice2_file(&input, Some(&config), &output).expect("convert");
+    assert!(
+        summary
+            .notes
+            .iter()
+            .any(|n| n.contains("text tokenizer embedded: true")),
+        "summary must report the tokenizer was embedded: {:?}",
+        summary.notes
+    );
+
+    let file = GgufFile::open(&output).expect("load output gguf");
+    assert_eq!(u8_array(&file, "vokra.cosyvoice2.tokenizer.vocab"), vocab);
+    assert_eq!(u8_array(&file, "vokra.cosyvoice2.tokenizer.merges"), merges);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cosyvoice2_without_side_car_notes_absent_tokenizer() {
+    // No vocab.json/merges.txt next to config → the conversion still succeeds
+    // (the tokenizer is optional at convert time) but the summary reports the
+    // tokenizer was NOT embedded (the runtime text path fails loudly instead).
+    let dir = std::env::temp_dir().join(format!("vokra-cosy-notok-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let input = dir.join("model.safetensors");
+    let config = dir.join("config.json");
+    let output = dir.join("out.gguf");
+    std::fs::write(&input, synthetic_cosyvoice2_backbone()).expect("write backbone");
+    std::fs::write(
+        &config,
+        br#"{"hidden_size":8,"num_hidden_layers":2,"num_attention_heads":2,"num_key_value_heads":1,"intermediate_size":16,"vocab_size":16,"rope_theta":1000000.0,"rms_norm_eps":1e-06,"max_position_embeddings":32768}"#,
+    )
+    .expect("write config");
+
+    let summary = convert_cosyvoice2_file(&input, Some(&config), &output).expect("convert");
+    assert!(
+        summary
+            .notes
+            .iter()
+            .any(|n| n.contains("text tokenizer embedded: false")),
+        "summary must report no tokenizer embedded: {:?}",
+        summary.notes
+    );
+    let file = GgufFile::open(&output).expect("load output gguf");
+    assert!(file.get("vokra.cosyvoice2.tokenizer.vocab").is_none());
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

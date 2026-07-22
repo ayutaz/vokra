@@ -1,0 +1,28 @@
+# vcpkg portfile for Vokra (X-07-T26).
+#
+# SOURCE-BASED: builds the C ABI shared/static library (crates/vokra-capi) from
+# the tag source tarball, so it is NOT dependent on the T32-gated desktop
+# binaries (this is why T26 needs only the source tarball). SHA512 is the tag
+# source tarball hash. GENERATED — edit packaging/vcpkg/ports/vokra/*.tmpl,
+# re-run gen_package_managers.py. microsoft/vcpkg PR is owner (X-07-T33).
+# SBOM: @@SBOM_URL@@
+vcpkg_download_distfile(ARCHIVE
+    URLS "@@BASE_URL@@/@@VERSION@@-src.tar.gz"
+    FILENAME "vokra-@@VERSION@@-src.tar.gz"
+    SHA512 "@@SHA512:src@@"
+)
+
+vcpkg_extract_source_archive(SOURCE_PATH ARCHIVE "${ARCHIVE}")
+
+# Vokra links only first-party crates (NFR-DS-02); the C ABI library is built by
+# cargo. The header include/vokra.h is generated/committed in-tree.
+vcpkg_execute_required_process(
+    COMMAND cargo build --release --locked -p vokra-capi
+    WORKING_DIRECTORY "${SOURCE_PATH}"
+    LOGNAME build-${TARGET_TRIPLET}
+)
+
+file(INSTALL "${SOURCE_PATH}/include/vokra.h"
+     DESTINATION "${CURRENT_PACKAGES_DIR}/include")
+file(INSTALL "${SOURCE_PATH}/LICENSE"
+     DESTINATION "${CURRENT_PACKAGES_DIR}/share/vokra" RENAME copyright)

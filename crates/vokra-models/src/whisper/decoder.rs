@@ -192,7 +192,7 @@ impl DecoderState {
                 .iter()
                 .enumerate()
                 .map(|(li, l)| decoder_layer_view(l, &cross_kv[li].0, &cross_kv[li].1))
-                .collect();
+                .collect::<Result<_>>()?;
             let dims = DecoderStepDims {
                 d,
                 n_head,
@@ -607,37 +607,43 @@ impl DecoderState {
 /// pre-projected `[n_ctx, d]` slices (`ck`/`cv`) rather than as `k`/`v` weight
 /// matrices, because they are identical for every step. Called once per block
 /// in `new_with_backend`, off the ZERO-ALLOC hot region.
+///
+/// # Errors
+///
+/// [`VokraError::UnsupportedOp`] when any projection kept its K-quant
+/// super-blocks (M5-15): the device-resident session uploads f32 weights, and
+/// the fused K-quant path is CPU-only.
 fn decoder_layer_view<'a>(
     l: &'a DecoderLayer,
     ck: &'a [f32],
     cv: &'a [f32],
-) -> DecoderLayerView<'a> {
-    DecoderLayerView {
+) -> Result<DecoderLayerView<'a>> {
+    Ok(DecoderLayerView {
         self_ln_gamma: &l.self_ln.gamma,
         self_ln_beta: &l.self_ln.beta,
-        self_q_w: &l.self_attn.q.w_t,
+        self_q_w: l.self_attn.q.dense_w_t()?,
         self_q_bias: l.self_attn.q.bias.as_deref(),
-        self_k_w: &l.self_attn.k.w_t,
+        self_k_w: l.self_attn.k.dense_w_t()?,
         self_k_bias: l.self_attn.k.bias.as_deref(),
-        self_v_w: &l.self_attn.v.w_t,
+        self_v_w: l.self_attn.v.dense_w_t()?,
         self_v_bias: l.self_attn.v.bias.as_deref(),
-        self_out_w: &l.self_attn.out.w_t,
+        self_out_w: l.self_attn.out.dense_w_t()?,
         self_out_bias: l.self_attn.out.bias.as_deref(),
         cross_ln_gamma: &l.cross_ln.gamma,
         cross_ln_beta: &l.cross_ln.beta,
-        cross_q_w: &l.cross_attn.q.w_t,
+        cross_q_w: l.cross_attn.q.dense_w_t()?,
         cross_q_bias: l.cross_attn.q.bias.as_deref(),
-        cross_out_w: &l.cross_attn.out.w_t,
+        cross_out_w: l.cross_attn.out.dense_w_t()?,
         cross_out_bias: l.cross_attn.out.bias.as_deref(),
         cross_k: ck,
         cross_v: cv,
         mlp_ln_gamma: &l.mlp_ln.gamma,
         mlp_ln_beta: &l.mlp_ln.beta,
-        fc1_w: &l.fc1.w_t,
+        fc1_w: l.fc1.dense_w_t()?,
         fc1_bias: l.fc1.bias.as_deref(),
-        fc2_w: &l.fc2.w_t,
+        fc2_w: l.fc2.dense_w_t()?,
         fc2_bias: l.fc2.bias.as_deref(),
-    }
+    })
 }
 
 /// `logits[T, n_vocab] = h[T, d] · token_embᵀ` (tied weights, no bias) into the
@@ -785,6 +791,7 @@ pub(crate) mod test_support {
         let weights = WhisperWeights {
             encoder: tiny_encoder_weights(&config),
             decoder: tiny_weights(&config),
+            quant_report: Default::default(),
         };
         Arc::new(WhisperModel::new_for_test(config, weights))
     }
@@ -799,6 +806,7 @@ pub(crate) mod test_support {
         let weights = WhisperWeights {
             encoder: tiny_encoder_weights(&config),
             decoder: tiny_weights(&config),
+            quant_report: Default::default(),
         };
         Arc::new(WhisperModel::new_for_test(config, weights))
     }
@@ -813,6 +821,7 @@ pub(crate) mod test_support {
         let weights = WhisperWeights {
             encoder: tiny_encoder_weights(&config),
             decoder: tiny_weights(&config),
+            quant_report: Default::default(),
         };
         Arc::new(WhisperModel::new_for_test(config, weights))
     }
@@ -832,12 +841,7 @@ pub(crate) mod test_support {
         out_features: usize,
         bias: Option<Vec<f32>>,
     ) -> Linear {
-        Linear {
-            w_t,
-            in_features,
-            out_features,
-            bias,
-        }
+        Linear::dense(w_t, in_features, out_features, bias)
     }
 
     /// A deterministic `rows * cols` weight buffer with small distinct values.

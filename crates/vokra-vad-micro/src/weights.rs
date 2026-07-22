@@ -30,24 +30,28 @@
 //!   `vokra-convert` emits: its branch de-dup keeps only one rate, inferred here
 //!   from the `stft.forward_basis_buffer` kernel length.
 
+#[cfg(not(feature = "std"))]
+use alloc::{borrow::ToOwned, format, vec, vec::Vec};
+
 use vokra_core::gguf::{GgmlType, GgufFile};
 use vokra_core::{Result, VokraError};
 
-use super::SampleRate;
+use crate::SampleRate;
+use crate::lstm::LstmState;
 
 /// A bound `Conv1d` weight (`[c_out, c_in, k]` row-major) with its bias.
-pub(super) struct Conv1dW {
-    pub(super) weight: Vec<f32>,
+pub(crate) struct Conv1dW {
+    pub(crate) weight: Vec<f32>,
     /// The same weight transposed to `[c_in·k, c_out]` (tap-major, output
     /// channel fastest), built once at load (M5-14 Wave-2 T21). The conv hot
     /// loop iterates taps outer / output channels inner over contiguous
     /// `weight_t` rows — the auto-vectorizable, **bit-identical** formulation
     /// of the original per-channel scalar reduction (`math::conv1d_wt`).
-    pub(super) weight_t: Vec<f32>,
-    pub(super) bias: Vec<f32>,
-    pub(super) c_out: usize,
-    pub(super) c_in: usize,
-    pub(super) k: usize,
+    pub(crate) weight_t: Vec<f32>,
+    pub(crate) bias: Vec<f32>,
+    pub(crate) c_out: usize,
+    pub(crate) c_in: usize,
+    pub(crate) k: usize,
 }
 
 impl Conv1dW {
@@ -65,30 +69,37 @@ impl Conv1dW {
 }
 
 /// The full weight set for one sample rate (one ONNX `If` branch).
-pub(super) struct RateWeights {
+///
+/// Opaque outside this crate: it appears only as an argument to the pub forward
+/// functions ([`crate::run_frame`], [`crate::pseudo_stft`], [`crate::encode`]).
+pub struct RateWeights {
     /// Pseudo-STFT basis as a `Conv1d(1, 2*bins, k)` (no bias).
-    pub(super) stft: Conv1dW,
+    pub(crate) stft: Conv1dW,
     /// Encoder stack: conv0..conv3 (strides 1,2,2,1; each followed by ReLU).
-    pub(super) encoder: [Conv1dW; 4],
+    pub(crate) encoder: [Conv1dW; 4],
     /// LSTM input weights `[4*128, 128]` (PyTorch `ifgo` gate order).
-    pub(super) lstm_wih: Vec<f32>,
+    pub(crate) lstm_wih: Vec<f32>,
     /// LSTM recurrent weights `[4*128, 128]`.
-    pub(super) lstm_whh: Vec<f32>,
+    pub(crate) lstm_whh: Vec<f32>,
     /// LSTM input bias `[4*128]`.
-    pub(super) lstm_bih: Vec<f32>,
+    pub(crate) lstm_bih: Vec<f32>,
     /// LSTM recurrent bias `[4*128]`.
-    pub(super) lstm_bhh: Vec<f32>,
+    pub(crate) lstm_bhh: Vec<f32>,
     /// Output head `Conv1d(128, 1, k=1)` before the sigmoid.
-    pub(super) head: Conv1dW,
+    pub(crate) head: Conv1dW,
 }
 
 /// LSTM hidden width (Silero v5).
-pub(super) const HIDDEN: usize = 128;
+pub(crate) const HIDDEN: usize = 128;
 
 /// Weights for whichever sample rate(s) the GGUF carries.
-pub(super) struct SileroWeights {
-    pub(super) r8k: Option<RateWeights>,
-    pub(super) r16k: Option<RateWeights>,
+///
+/// The no_std construction entry point (T19): build a
+/// [`vokra_core::gguf::GgufFile`] from a flash-mapped `&[u8]`
+/// (`GgufFile::from_external` / `parse`), then [`SileroWeights::from_gguf`].
+pub struct SileroWeights {
+    pub(crate) r8k: Option<RateWeights>,
+    pub(crate) r16k: Option<RateWeights>,
 }
 
 impl SileroWeights {
@@ -96,8 +107,9 @@ impl SileroWeights {
     ///
     /// Accepts the corrected both-rate naming (`sr8k.` / `sr16k.` prefixes) and
     /// falls back to the legacy single-rate bare naming. Missing tensors, wrong
-    /// shapes or non-`F32` dtypes are reported as [`VokraError::ModelLoad`].
-    pub(super) fn from_gguf(gguf: &GgufFile) -> Result<Self> {
+    /// shapes or non-`F32` dtypes are reported as [`VokraError::ModelLoad`]
+    /// (FR-EX-08: an explicit error, never a silent partial bind).
+    pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
         let mut r8k = None;
         let mut r16k = None;
 
@@ -145,11 +157,38 @@ impl SileroWeights {
     }
 
     /// Returns the weight set for `rate`, or `None` if the GGUF lacks it.
-    pub(super) fn rate(&self, rate: SampleRate) -> Option<&RateWeights> {
+    pub fn rate(&self, rate: SampleRate) -> Option<&RateWeights> {
         match rate {
             SampleRate::Hz8000 => self.r8k.as_ref(),
             SampleRate::Hz16000 => self.r16k.as_ref(),
         }
+    }
+
+    /// Runs a single fixed-size frame from a **fresh zero state** and returns its
+    /// speech probability — the no_std single-chunk forward entry (T19).
+    ///
+    /// Follows the official interface: a zero rolling context of
+    /// [`SampleRate::context_len`] samples is prepended (exactly the first frame
+    /// of a fresh stream, and of the upstream python wrapper after
+    /// `reset_states`). `frame` must be exactly [`SampleRate::frame_len`]
+    /// samples. Returns [`VokraError::InvalidArgument`] if the model lacks
+    /// weights for `rate` or the frame length is wrong (FR-EX-08).
+    pub fn forward_chunk(&self, rate: SampleRate, frame: &[f32]) -> Result<f32> {
+        let w = self.rate(rate).ok_or_else(|| {
+            VokraError::InvalidArgument(format!("model has no weights for {} Hz", rate.hz()))
+        })?;
+        if frame.len() != rate.frame_len() {
+            return Err(VokraError::InvalidArgument(format!(
+                "frame must be {} samples for {} Hz, got {}",
+                rate.frame_len(),
+                rate.hz(),
+                frame.len()
+            )));
+        }
+        let mut buf = vec![0.0f32; rate.context_len() + frame.len()];
+        buf[rate.context_len()..].copy_from_slice(frame);
+        let mut state = LstmState::zeros();
+        Ok(crate::vad::run_frame(rate, w, &buf, &mut state))
     }
 }
 
@@ -210,44 +249,6 @@ fn with_bias(gguf: &GgufFile, mut w: Conv1dW, bias_name: &str) -> Result<Conv1dW
     Ok(w)
 }
 
-#[cfg(test)]
-impl RateWeights {
-    /// All-zero weights of the correct per-rate shapes, for shape/plumbing tests
-    /// that must not depend on the committed GGUF fixture.
-    pub(super) fn zeros_for_test(rate: SampleRate) -> Self {
-        let bins = rate.bins();
-        let conv = |c_out: usize, c_in: usize, k: usize| Conv1dW {
-            weight: vec![0.0; c_out * c_in * k],
-            weight_t: vec![0.0; c_out * c_in * k],
-            bias: vec![0.0; c_out],
-            c_out,
-            c_in,
-            k,
-        };
-        Self {
-            stft: Conv1dW {
-                weight: vec![0.0; 2 * bins * rate.n_fft()],
-                weight_t: vec![0.0; 2 * bins * rate.n_fft()],
-                bias: Vec::new(),
-                c_out: 2 * bins,
-                c_in: 1,
-                k: rate.n_fft(),
-            },
-            encoder: [
-                conv(128, bins, 3),
-                conv(64, 128, 3),
-                conv(64, 64, 3),
-                conv(128, 64, 3),
-            ],
-            lstm_wih: vec![0.0; 4 * HIDDEN * HIDDEN],
-            lstm_whh: vec![0.0; 4 * HIDDEN * HIDDEN],
-            lstm_bih: vec![0.0; 4 * HIDDEN],
-            lstm_bhh: vec![0.0; 4 * HIDDEN],
-            head: conv(1, HIDDEN, 1),
-        }
-    }
-}
-
 /// Reads a tensor's payload as `Vec<f32>`, checking presence, dtype and shape.
 fn vec1d(gguf: &GgufFile, name: &str, expected: &[usize]) -> Result<Vec<f32>> {
     let info = gguf
@@ -281,12 +282,52 @@ fn vec1d(gguf: &GgufFile, name: &str, expected: &[usize]) -> Result<Vec<f32>> {
 }
 
 #[cfg(test)]
+impl RateWeights {
+    /// All-zero weights of the correct per-rate shapes, for shape/plumbing tests
+    /// that must not depend on the committed GGUF fixture.
+    pub(crate) fn zeros_for_test(rate: SampleRate) -> Self {
+        let bins = rate.bins();
+        let conv = |c_out: usize, c_in: usize, k: usize| Conv1dW {
+            weight: vec![0.0; c_out * c_in * k],
+            weight_t: vec![0.0; c_out * c_in * k],
+            bias: vec![0.0; c_out],
+            c_out,
+            c_in,
+            k,
+        };
+        Self {
+            stft: Conv1dW {
+                weight: vec![0.0; 2 * bins * rate.n_fft()],
+                weight_t: vec![0.0; 2 * bins * rate.n_fft()],
+                bias: Vec::new(),
+                c_out: 2 * bins,
+                c_in: 1,
+                k: rate.n_fft(),
+            },
+            encoder: [
+                conv(128, bins, 3),
+                conv(64, 128, 3),
+                conv(64, 64, 3),
+                conv(128, 64, 3),
+            ],
+            lstm_wih: vec![0.0; 4 * HIDDEN * HIDDEN],
+            lstm_whh: vec![0.0; 4 * HIDDEN * HIDDEN],
+            lstm_bih: vec![0.0; 4 * HIDDEN],
+            lstm_bhh: vec![0.0; 4 * HIDDEN],
+            head: conv(1, HIDDEN, 1),
+        }
+    }
+}
+
+// The GGUF-builder validation tests need the std-only writer
+// (`vokra_core::gguf::GgufBuilder`), so they are gated on this crate's `std`
+// feature (default-ON). They test `SileroWeights::from_gguf` directly — the
+// binding layer moved here from `vokra-models::silero_vad::weights` (M5-03 T09);
+// the model-level (`SileroVadV5` / stream) coverage stays in `vokra-models`.
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
-    use vokra_core::engines::VadEngine;
     use vokra_core::gguf::GgufBuilder;
-
-    use crate::silero_vad::SileroVadV5;
 
     /// Queues an all-zero `F32` tensor of the given logical shape.
     fn add_zeros(b: &mut GgufBuilder, name: &str, dims: &[u64]) {
@@ -348,7 +389,7 @@ mod tests {
         let mut b = GgufBuilder::new();
         add_stft_8k(&mut b, "sr8k.");
         assert!(matches!(
-            SileroVadV5::from_gguf(&to_gguf(&b)),
+            SileroWeights::from_gguf(&to_gguf(&b)),
             Err(VokraError::ModelLoad(_))
         ));
     }
@@ -360,7 +401,7 @@ mod tests {
         add_stft_8k(&mut b, "sr8k.");
         add_zeros(&mut b, "sr8k.encoder.0.reparam_conv.weight", &[128, 64, 3]);
         assert!(matches!(
-            SileroVadV5::from_gguf(&to_gguf(&b)),
+            SileroWeights::from_gguf(&to_gguf(&b)),
             Err(VokraError::ModelLoad(_))
         ));
     }
@@ -379,7 +420,7 @@ mod tests {
         )
         .expect("add f16 tensor");
         assert!(matches!(
-            SileroVadV5::from_gguf(&to_gguf(&b)),
+            SileroWeights::from_gguf(&to_gguf(&b)),
             Err(VokraError::ModelLoad(_))
         ));
     }
@@ -391,22 +432,18 @@ mod tests {
         // Bare (un-prefixed) names -> legacy scheme; kernel 128 -> 8 kHz only.
         let mut b = GgufBuilder::new();
         add_all_8k(&mut b, "");
-        let m = SileroVadV5::from_gguf(&to_gguf(&b)).expect("legacy 8 kHz model loads");
+        let w = SileroWeights::from_gguf(&to_gguf(&b)).expect("legacy 8 kHz model loads");
 
-        assert!(m.supports(SampleRate::Hz8000));
-        assert!(!m.supports(SampleRate::Hz16000));
+        assert!(w.rate(SampleRate::Hz8000).is_some());
+        assert!(w.rate(SampleRate::Hz16000).is_none());
 
-        // The absent rate is rejected at both entry points.
+        // The absent rate is rejected at the forward entry point.
         assert!(matches!(
-            m.forward_chunk(SampleRate::Hz16000, &[0.0; 512]),
+            w.forward_chunk(SampleRate::Hz16000, &[0.0; 512]),
             Err(VokraError::InvalidArgument(_))
         ));
-        let mut s16 = m.open_stream();
-        assert!(s16.push_pcm(&[0.0; 512], 16000).is_err());
-
         // The present rate is usable: a 256-sample frame yields one probability.
-        let mut s8 = m.open_stream();
-        assert_eq!(s8.push_pcm(&[0.0; 256], 8000).unwrap().len(), 1);
+        assert!(w.forward_chunk(SampleRate::Hz8000, &[0.0; 256]).is_ok());
     }
 
     #[test]
@@ -414,10 +451,48 @@ mod tests {
         // A bare stft buffer whose kernel length matches neither rate.
         let mut b = GgufBuilder::new();
         add_zeros(&mut b, "stft.forward_basis_buffer", &[1, 1, 200]);
-        let r = SileroVadV5::from_gguf(&to_gguf(&b));
+        let r = SileroWeights::from_gguf(&to_gguf(&b));
         assert!(
             matches!(&r, Err(VokraError::ModelLoad(m)) if m.contains("matches no sample rate")),
             "expected `matches no sample rate` ModelLoad"
         );
+    }
+
+    // ---- no_std construction path smoke (T19) ----
+
+    /// The T19 flash/XIP-mapped construction path, exercised on the host: build
+    /// a GGUF image in memory, hand it to the reader via the *same*
+    /// `from_external` entry point the no_std subset uses (there is no
+    /// `GgufFile::open` under `#![no_std]`), bind, and run one frame.
+    #[test]
+    fn from_external_load_then_forward_smoke() {
+        use alloc::boxed::Box;
+        use vokra_core::gguf::AsBytes;
+
+        // A `&'static [u8]`-style owner standing in for a flash/XIP mapping.
+        struct StaticImage(Vec<u8>);
+        // SAFETY-free: the trait is safe; bytes are immutable for the value's life.
+        impl AsBytes for StaticImage {
+            fn bytes(&self) -> &[u8] {
+                &self.0
+            }
+        }
+
+        let mut b = GgufBuilder::new();
+        add_all_8k(&mut b, "");
+        let image = b.to_bytes().expect("serialize gguf");
+
+        // Construct through `from_external` (the flash/XIP path), NOT `open`.
+        let gguf =
+            GgufFile::from_external(Box::new(StaticImage(image))).expect("parse external image");
+        let weights = SileroWeights::from_gguf(&gguf).expect("bind from external image");
+        let prob = weights
+            .forward_chunk(SampleRate::Hz8000, &[0.0f32; 256])
+            .expect("single-frame forward");
+        assert!((0.0..=1.0).contains(&prob), "probability in [0,1]: {prob}");
+
+        // A truncated/garbage image is an explicit error, never a silent bind.
+        let bad = GgufFile::from_external(Box::new(StaticImage(vec![0u8; 8])));
+        assert!(bad.is_err(), "malformed GGUF must error (FR-EX-08)");
     }
 }

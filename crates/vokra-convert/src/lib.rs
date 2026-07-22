@@ -44,7 +44,7 @@ mod safetensors;
 use std::fmt;
 use std::path::Path;
 
-pub use quantize::QuantizeError;
+pub use quantize::{QuantizeError, quantize};
 use vokra_core::gguf::GgmlType;
 
 /// Which model's conversion routine to run.
@@ -60,6 +60,14 @@ pub enum ModelKind {
     Whisper,
     /// `snakers4/silero-vad` v5 ONNX checkpoint.
     SileroVad,
+    /// SaruLab **UTMOS22-strong** neural MOS predictor (M5-15 T14): a
+    /// wav2vec2-base SSL encoder + listener/domain conditioning + BLSTM +
+    /// regression head, used by `vokra-eval` for the NFR-QL-02 5 % quality
+    /// gate. Convert with [`convert_utmos_file`] — it needs the config
+    /// side-car that `tools/parity/utmos_prepare_checkpoint.py` emits
+    /// alongside the flattened safetensors, so it is not a plain
+    /// single-input [`convert_file`] model.
+    Utmos,
     /// A piper-plus (MB-iSTFT-VITS2) voice: ONNX graph + `config.json`
     /// (M0-07). Convert with [`convert_piper_plus_file`] — it needs the extra
     /// `config.json` input, so it is not a plain single-input [`convert_file`]
@@ -146,6 +154,7 @@ impl ModelKind {
             // Backward-compatible alias for pre-M2-06 invocations.
             "whisper-base" => Some(Self::Whisper),
             "silero-vad" => Some(Self::SileroVad),
+            "utmos" => Some(Self::Utmos),
             "piper-plus" => Some(Self::PiperPlus),
             "campplus" => Some(Self::CamPlus),
             "kokoro" => Some(Self::Kokoro),
@@ -165,6 +174,7 @@ impl ModelKind {
         match self {
             Self::Whisper => "whisper",
             Self::SileroVad => "silero-vad",
+            Self::Utmos => "utmos",
             Self::PiperPlus => "piper-plus",
             Self::CamPlus => "campplus",
             Self::Kokoro => "kokoro",
@@ -308,6 +318,12 @@ pub fn convert_file(
         ModelKind::PiperPlus => {
             return Err(ConvertError::Usage(
                 "piper-plus needs a --config config.json; use convert_piper_plus_file".to_owned(),
+            ));
+        }
+        ModelKind::Utmos => {
+            return Err(ConvertError::Usage(
+                "utmos needs a --config config.json (emitted by                  tools/parity/utmos_prepare_checkpoint.py alongside the flattened safetensors);                  use convert_utmos_file"
+                    .to_owned(),
             ));
         }
         ModelKind::CamPlus => {
@@ -457,9 +473,23 @@ pub fn convert_file_quantized(
 
     let builder = match model {
         ModelKind::Whisper => models::whisper::convert(bytes, Some(quant))?,
+        // Voxtral has a quantization path (M5-15-T36), but it needs the
+        // side-car config this signature cannot carry: without it the GGUF
+        // gets `0` sentinels for RoPE base / RMSNorm eps / GQA split and the
+        // runtime refuses the forward (FR-EX-08). Point the caller at the
+        // config-aware entry rather than emitting an unloadable file.
+        ModelKind::Voxtral => {
+            return Err(ConvertError::Usage(
+                "voxtral quantization needs the side-car config: use \
+                 `vokra-cli convert --model voxtral --config <config.json> --quantize <kind>` \
+                 (or `convert_voxtral_file_quantized`). Quantizing without it would emit a GGUF \
+                 with `0` hparam sentinels that the runtime refuses to run."
+                    .to_owned(),
+            ));
+        }
         other => {
             return Err(ConvertError::Usage(format!(
-                "quantization (--quantize) is only supported for whisper in M1-02, not {other}"
+                "quantization (--quantize) is only supported for whisper and voxtral, not {other}"
             )));
         }
     };
@@ -691,6 +721,56 @@ pub fn convert_dac_file(
     })
 }
 
+/// Convert a prepared SaruLab UTMOS22-strong checkpoint into a Vokra GGUF
+/// (M5-15 T14).
+///
+/// `input` is the flat safetensors and `config` the JSON side-car that
+/// `tools/parity/utmos_prepare_checkpoint.py` writes from the upstream
+/// `.ckpt` (the Lightning checkpoint is a torch pickle, which the zero-dep
+/// Rust converter deliberately does not parse — the same offline-prepare
+/// split as DAC and Kokoro).
+///
+/// The mapping is total: every upstream tensor must be consumed, and any
+/// left over is a hard error rather than a silent drop (FR-EX-08).
+pub fn convert_utmos_file(
+    input: &Path,
+    config: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let config_bytes = std::fs::read(config)?;
+    let cfg = models::utmos::UtmosConvertConfig::parse(&config_bytes)?;
+    let (builder, report) = models::utmos::convert(bytes, &cfg)?;
+
+    let notes = vec![format!(
+        "utmos: {} tensor(s) emitted from {} upstream tensor(s) (all consumed), variant \
+         wav2vec2_regression.v1, {} transformer layer(s) d={}, pos_conv k={} groups={} \
+         (weight-norm folded), BLSTM hidden {}, judge_id {} / domain_id {}",
+        report.written,
+        report.consumed,
+        cfg.n_layer,
+        cfg.hidden_dim,
+        cfg.pos_conv_kernel,
+        cfg.pos_conv_groups,
+        cfg.blstm_hidden,
+        cfg.judge_id,
+        cfg.domain_id,
+    )];
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::Utmos,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
 /// Convert a Sesame CSM-1B safetensors checkpoint into a Vokra GGUF,
 /// optionally embedding the raw `meta-llama/Llama-3.2-1B` tokenizer file
 /// as `vokra.tokenizer.model` (M4-05-T03/T04/T05).
@@ -757,6 +837,10 @@ fn cosyvoice2_notes(report: &models::cosyvoice2::CosyVoice2Report) -> Vec<String
             report.written, report.skipped_non_float,
         ),
     }];
+    notes.push(format!(
+        "cosyvoice2: text tokenizer embedded: {}",
+        report.tokenizer_embedded
+    ));
     notes.extend(
         report
             .notes
@@ -789,8 +873,34 @@ pub fn convert_cosyvoice2_file(
         Some(p) => Some(std::fs::read(p)?),
         None => None,
     };
-    let (builder, report) =
-        models::cosyvoice2::convert_with_config(bytes, config_bytes.as_deref())?;
+    // Qwen2 text-tokenizer side-car (T06): the upstream `vocab.json` +
+    // `merges.txt` live in the same directory as `config.json`
+    // (`CosyVoice-BlankEN/`). When a `--config` is given, pick them up from
+    // that directory and embed both (no second CLI flag needed). A partial or
+    // absent pair is a loud note in the report, not a hard error — the
+    // conversion still succeeds; the runtime text path fails loudly instead.
+    let tokenizer_bytes: Option<(Vec<u8>, Vec<u8>)> = config.and_then(|p| {
+        let dir = p.parent().unwrap_or_else(|| Path::new("."));
+        match (
+            std::fs::read(dir.join("vocab.json")),
+            std::fs::read(dir.join("merges.txt")),
+        ) {
+            (Ok(vocab), Ok(merges)) => Some((vocab, merges)),
+            _ => None,
+        }
+    });
+    let tokenizer =
+        tokenizer_bytes
+            .as_ref()
+            .map(|(vocab, merges)| models::cosyvoice2::TokenizerFiles {
+                vocab_json: vocab,
+                merges_txt: merges,
+            });
+    let (builder, report) = models::cosyvoice2::convert_with_config_and_tokenizer(
+        bytes,
+        config_bytes.as_deref(),
+        tokenizer,
+    )?;
     let notes = cosyvoice2_notes(&report);
 
     let tensor_count = builder.tensor_count();
@@ -949,14 +1059,45 @@ pub fn convert_voxtral_file(
     config: &VoxtralConfig,
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
+    convert_voxtral_file_quantized(input, config, output, None)
+}
+
+/// [`convert_voxtral_file`] with an optional K-quant target (M5-15-T36,
+/// FR-QT-01).
+///
+/// `quant` is `Q4_K` / `Q5_K` / `Q6_K`; `None` reproduces
+/// [`convert_voxtral_file`] byte for byte. Applicability follows the same rule
+/// as the Whisper converter — rank >= 2 and a whole number of 256-element
+/// super-blocks — so biases, norms and 1-D tables stay full precision. The
+/// upstream release is BF16, which is read through the exact
+/// `SafetensorsFile::tensor_f32` widen before quantizing.
+///
+/// Voxtral is the **only** model besides Whisper with a quantization path:
+/// [`convert_file_quantized`]'s hard error for every other model is deliberate
+/// (FR-EX-08) and unchanged.
+///
+/// # Errors
+///
+/// As [`convert_voxtral_file`], plus [`ConvertError`] from the quantizer when
+/// a target dtype is not a K-quant.
+pub fn convert_voxtral_file_quantized(
+    input: &Path,
+    config: &VoxtralConfig,
+    output: &Path,
+    quant: Option<GgmlType>,
+) -> Result<ConvertSummary, ConvertError> {
     let shards = read_voxtral_checkpoint(input)?;
-    let (builder, report) = models::voxtral::convert_shards(shards, Some(config))?;
+    let (builder, report) = models::voxtral::convert_shards(shards, Some(config), quant)?;
 
     let notes = vec![format!(
-        "voxtral: {} float weights written ({} BF16 passthrough — exact), {} non-float skipped, \
-         name {}, tokenizer embedded: {}",
+        "voxtral: {} float weights written ({} BF16 passthrough — exact, {} K-quantized to {:?}, \
+         {} left full precision as quant-inapplicable), {} non-float skipped, name {}, \
+         tokenizer embedded: {}",
         report.written,
         report.bf16_passthrough,
+        report.quantized,
+        quant,
+        report.quant_inapplicable,
         report.skipped_non_float,
         report.name,
         report.tokenizer_embedded
@@ -1005,12 +1146,29 @@ pub fn convert_voxtral_file_with_adapter_config(
     adapter_config: &Path,
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
+    convert_voxtral_file_with_adapter_config_quantized(input, config, adapter_config, output, None)
+}
+
+/// [`convert_voxtral_file_with_adapter_config`] with an optional K-quant
+/// target (M5-15-T36). See [`convert_voxtral_file_quantized`] for the
+/// applicability rule.
+///
+/// # Errors
+///
+/// As [`convert_voxtral_file_with_adapter_config`], plus quantizer errors.
+pub fn convert_voxtral_file_with_adapter_config_quantized(
+    input: &Path,
+    config: &VoxtralConfig,
+    adapter_config: &Path,
+    output: &Path,
+    quant: Option<GgmlType>,
+) -> Result<ConvertSummary, ConvertError> {
     let adapter_bytes = std::fs::read(adapter_config)?;
     let spec = models::voxtral::parse_adapter_config(&adapter_bytes)?;
     let mut cfg = config.clone();
     cfg.adapter = Some(spec);
     let shards = read_voxtral_checkpoint(input)?;
-    let (builder, report) = models::voxtral::convert_shards(shards, Some(&cfg))?;
+    let (builder, report) = models::voxtral::convert_shards(shards, Some(&cfg), quant)?;
 
     let adapter_kind = cfg
         .adapter
@@ -1018,10 +1176,14 @@ pub fn convert_voxtral_file_with_adapter_config(
         .map(|a| a.kind.as_str())
         .unwrap_or("none");
     let notes = vec![format!(
-        "voxtral: {} float weights written ({} BF16 passthrough — exact), {} non-float skipped, \
-         name {}, tokenizer embedded: {}, adapter kind: {}",
+        "voxtral: {} float weights written ({} BF16 passthrough — exact, {} K-quantized to {:?}, \
+         {} left full precision as quant-inapplicable), {} non-float skipped, name {}, \
+         tokenizer embedded: {}, adapter kind: {}",
         report.written,
         report.bf16_passthrough,
+        report.quantized,
+        quant,
+        report.quant_inapplicable,
         report.skipped_non_float,
         report.name,
         report.tokenizer_embedded,

@@ -37,21 +37,39 @@
 //! match check is FR-LD-03 (M1-03). See [`chunks`] for the full scope note.
 
 mod reader;
+// M5-03-T03/T05: the GGUF *writer* is std-only (its round-trip tests and the
+// offline conversion tooling need std) and is not on the Cortex-M55 load path,
+// so it is held out of the no_std subset. The reader (parse / from_external) is
+// no_std-capable.
+#[cfg(feature = "std")]
 mod writer;
 
 pub mod chunks;
+// M5-03-T05: `frontend_spec` builds `vokra.frontend.*` chunks *through* the
+// std-gated writer (`GgufBuilder`), so it is std-only too and is not part of
+// the no_std core-clean subset. The subset is reader + tensor / value / chunks /
+// quant (the FR-LD-07 decode path); the frontend bit-exact check (FR-LD-03) is
+// a std-side concern.
+#[cfg(feature = "std")]
 pub mod frontend_spec;
 pub mod quant;
 pub mod tensor;
 pub mod value;
 
+#[cfg(feature = "std")]
 pub use frontend_spec::{FieldMismatch, FrontendPolicy, FrontendSpec};
 pub use reader::{AsBytes, GgufFile};
 pub use tensor::{GgmlType, GgufTensorInfo};
 pub use value::{GgufArray, GgufMetadataValue, GgufValueType};
+#[cfg(feature = "std")]
 pub use writer::{GgufBuilder, GgufStreamWriter, GgufTensorDecl};
 
-use std::fmt;
+// M5-03-T05: no_std-first. `core::fmt` is `std::fmt` under std (NFR-PT-01), and
+// `String` / `ToString` are `alloc` items in the prelude only under std — the
+// no_std subset imports them (inert under std).
+#[cfg(not(feature = "std"))]
+use alloc::string::{String, ToString};
+use core::fmt;
 
 /// GGUF magic bytes: the ASCII string `GGUF`.
 pub const GGUF_MAGIC: [u8; 4] = *b"GGUF";
@@ -97,7 +115,7 @@ pub enum GgufError {
     /// The file ended before a required field could be read (`ctx` names it).
     Truncated(&'static str),
     /// A string field was not valid UTF-8.
-    InvalidString(std::str::Utf8Error),
+    InvalidString(core::str::Utf8Error),
     /// A boolean field held a byte other than 0 or 1.
     InvalidBool(u8),
     /// A metadata value type tag was outside the range `0..=12`.
@@ -162,6 +180,11 @@ pub enum GgufError {
         expected: value::GgufValueType,
     },
     /// An underlying I/O error (only from [`GgufFile::open`]).
+    ///
+    /// M5-03-T05: `GgufFile::open` (and thus this variant) exists only under
+    /// std; the no_std subset loads GGUF from an in-memory / flash-mapped
+    /// `&[u8]` via `parse` / `from_external`, which never produce I/O errors.
+    #[cfg(feature = "std")]
     Io(std::io::Error),
     /// A [`writer::GgufStreamWriter`] contract violation: payloads must be
     /// supplied exactly once each, in declaration order, and the metadata
@@ -235,6 +258,7 @@ impl fmt::Display for GgufError {
                     "metadata key `{key}` has wrong type (expected {expected:?})"
                 )
             }
+            #[cfg(feature = "std")]
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::InvalidStreamUse(msg) => {
                 write!(f, "invalid GGUF stream-writer use: {msg}")
@@ -243,9 +267,14 @@ impl fmt::Display for GgufError {
     }
 }
 
-impl std::error::Error for GgufError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+// M5-03-T05: `core::error::Error` (stable since 1.81) == `std::error::Error`
+// under std, so this is unchanged for the default build (NFR-PT-01). Both
+// `std::io::Error` and `core::str::Utf8Error` implement `core::error::Error`,
+// so the source chain still type-checks; the `Io` arm is std-gated.
+impl core::error::Error for GgufError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
+            #[cfg(feature = "std")]
             Self::Io(e) => Some(e),
             Self::InvalidString(e) => Some(e),
             _ => None,
@@ -256,7 +285,9 @@ impl std::error::Error for GgufError {
 impl From<GgufError> for crate::VokraError {
     fn from(e: GgufError) -> Self {
         match e {
-            // Preserve the I/O source chain at the public boundary.
+            // Preserve the I/O source chain at the public boundary (std only —
+            // the no_std subset never constructs `GgufError::Io`).
+            #[cfg(feature = "std")]
             GgufError::Io(io) => crate::VokraError::Io(io),
             other => crate::VokraError::ModelLoad(other.to_string()),
         }

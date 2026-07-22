@@ -13,8 +13,8 @@ use std::process::ExitCode;
 use vokra_convert::{
     ModelKind, PolicyPreset, VoxtralConfig, convert_cosyvoice2_file, convert_dac_file,
     convert_file, convert_file_quantized, convert_file_with_policy, convert_kokoro_file,
-    convert_piper_plus_file, convert_voxtral_file, convert_voxtral_file_with_adapter_config,
-    parse_voxtral_hf_config,
+    convert_piper_plus_file, convert_voxtral_file_quantized,
+    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -69,8 +69,14 @@ OPTIONS:
                               transcription prompt (both are explicit
                               errors, never silent).
     --output <path>           GGUF file to write
-    --quantize <kind>         K-quantize weight matrices: q4_k | q5_k | q6_k (whisper only)
-                              Alias for --policy-preset whisper_q4_k (when kind=q4_k).
+    --quantize <kind>         K-quantize weight matrices: q4_k | q5_k | q6_k
+                              (whisper and voxtral). For whisper it is an alias
+                              for --policy-preset whisper_q4_k (when kind=q4_k).
+                              For voxtral it REQUIRES --config: without it the
+                              GGUF carries `0` hparam sentinels the runtime
+                              refuses (FR-EX-08). Biases, norms and any tensor
+                              that is not a whole number of 256-element
+                              super-blocks stay full precision.
     --policy-preset <preset>  M2-08 quantization policy preset (whisper only):
                               vocoder_safe (default) | whisper_q4_k | fp16
     -h, --help                print this help
@@ -261,11 +267,11 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             }
         }
         ModelKind::Voxtral => {
-            // Voxtral is whisper-only for quantization surface; reject rather
-            // than silently ignoring.
-            if p.quant.is_some() {
-                return Err("--quantize is only supported for whisper".to_owned());
-            }
+            // M5-15-T37: Voxtral accepts `--quantize` (the second model to do
+            // so, after whisper). `--policy-preset` is still whisper-only —
+            // the per-tensor policy machinery (`MinDtypeRegistry`, the
+            // `vokra.quant.*` chunk) is a whisper path in M2-08 and pretending
+            // otherwise would silently ignore the flag.
             if p.policy.is_some() {
                 return Err("--policy-preset is only supported for whisper".to_owned());
             }
@@ -298,23 +304,37 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 }
                 base_cfg.tokenizer_bytes = Some(bytes);
             }
+            // `--quantize` requires the base config: the shape-only path
+            // writes `0` hparam sentinels the runtime refuses at forward
+            // (FR-EX-08), so quantizing it would produce an unloadable file
+            // that *looks* like a success. Refuse loudly instead.
+            if p.quant.is_some() && p.config.is_none() {
+                return Err(
+                    "--model voxtral --quantize requires --config <config.json>: the shape-only \
+                     path writes `0` hparam sentinels (RoPE base, RMSNorm eps, GQA head split) \
+                     that the runtime rejects, so the quantized GGUF would not load"
+                        .to_owned(),
+                );
+            }
             match (&p.config, &p.adapter_config, &p.tokenizer) {
                 // M3-10 Wave 8: adapter-conditioned convert (with or without
                 // the base config / tokenizer side-cars).
-                (_, Some(adapter_json), _) => convert_voxtral_file_with_adapter_config(
+                (_, Some(adapter_json), _) => convert_voxtral_file_with_adapter_config_quantized(
                     &p.input,
                     &base_cfg,
                     adapter_json,
                     &p.output,
+                    p.quant,
                 ),
                 // Config and/or tokenizer without adapter → full hparam
                 // chunk, honest LM-continuation posture (no adapter
                 // metadata). The tokenizer-only case still needs the
                 // cfg-carrying entry point to reach `tokenizer_bytes`.
                 (Some(_), None, _) | (None, None, Some(_)) => {
-                    convert_voxtral_file(&p.input, &base_cfg, &p.output)
+                    convert_voxtral_file_quantized(&p.input, &base_cfg, &p.output, p.quant)
                 }
-                // Nothing → shape-only conversion (pre-Wave-8 behaviour).
+                // Nothing → shape-only conversion (pre-Wave-8 behaviour;
+                // `--quantize` was rejected above).
                 (None, None, None) => convert_file(model, &p.input, &p.output),
             }
         }
@@ -520,6 +540,80 @@ mod tests {
         assert!(
             USAGE.contains("whisper-base"),
             "USAGE documents the whisper-base alias"
+        );
+    }
+
+    /// M5-15-T37: `--quantize` on voxtral **without** `--config` is a loud
+    /// usage error, because the shape-only path writes `0` hparam sentinels
+    /// and the resulting GGUF would not load (FR-EX-08). The guard fires
+    /// before any file I/O, so no fixture checkpoint is needed.
+    #[test]
+    fn voxtral_quantize_without_config_is_a_loud_usage_error() {
+        let e = main(&args(&[
+            "--model",
+            "voxtral",
+            "--input",
+            "/nonexistent/ckpt.safetensors",
+            "--output",
+            "/nonexistent/out.gguf",
+            "--quantize",
+            "q6_k",
+        ]))
+        .unwrap_err();
+        assert!(e.contains("requires --config"), "message: {e}");
+        assert!(e.contains("sentinels"), "message must say why: {e}");
+    }
+
+    /// The quantization surface widened to voxtral only — every other model
+    /// that has a dedicated CLI arm keeps its explicit refusal (regression net
+    /// for M5-15-T36/T37, which deliberately did **not** open the flag up
+    /// wholesale).
+    ///
+    /// Models with no dedicated arm here (silero-vad / campplus / mimi / csm /
+    /// moshi / denoise) fall through to `convert_file_quantized`, which reads
+    /// the checkpoint before matching — so their refusal is a **library**-level
+    /// contract, pinned by
+    /// `vokra_convert`'s `quantization_is_still_refused_for_non_whisper_models`.
+    #[test]
+    fn quantize_is_still_rejected_for_models_with_a_dedicated_cli_arm() {
+        for m in ["kokoro", "cosyvoice2", "piper-plus", "dac"] {
+            let e = main(&args(&[
+                "--model",
+                m,
+                "--input",
+                "/nonexistent/ckpt",
+                "--output",
+                "/nonexistent/out.gguf",
+                "--quantize",
+                "q4_k",
+            ]))
+            .unwrap_err();
+            assert!(
+                e.contains("--quantize is only supported for whisper"),
+                "{m}: expected the whisper-only refusal, got: {e}"
+            );
+        }
+    }
+
+    /// `--policy-preset` stays whisper-only even for voxtral: the M2-08
+    /// per-tensor policy machinery is a whisper path, so accepting the flag
+    /// would silently ignore it.
+    #[test]
+    fn policy_preset_is_still_whisper_only_for_voxtral() {
+        let e = main(&args(&[
+            "--model",
+            "voxtral",
+            "--input",
+            "/nonexistent/ckpt",
+            "--output",
+            "/nonexistent/out.gguf",
+            "--policy-preset",
+            "whisper_q4_k",
+        ]))
+        .unwrap_err();
+        assert!(
+            e.contains("--policy-preset is only supported for whisper"),
+            "message: {e}"
         );
     }
 

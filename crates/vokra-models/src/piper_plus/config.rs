@@ -51,10 +51,14 @@ pub(crate) const RQS_TAIL_BOUND: f32 = 5.0;
 
 /// Decoder pre-conv output width (`dec.conv_pre.weight` is `[256, 192, 7]`).
 pub(crate) const DEC_INITIAL: usize = 256;
-/// Decoder upsample kernel / stride / pad.
-pub(crate) const DEC_UP_KERNEL: usize = 16;
+/// Decoder upsample transposed-conv stride, uniform across stages. The stride is
+/// a `ConvTranspose1d` attribute that leaves no shape trace in the GGUF, so it is
+/// not per-stage derivable (the converter baking non-uniform strides is an open
+/// item, M4-RESIDUAL-B (A) open question 3). The per-stage **kernel** is now
+/// shape-derived ([`Dims::dec_up_kernel`]) and the per-stage **pad** follows the
+/// `(kernel − stride)/2` same-padding convention (`decoder.rs`); the shipping
+/// css10 / v7 voices are the canonical kernel-16 / stride-4 / pad-6 geometry.
 pub(crate) const DEC_UP_STRIDE: usize = 4;
-pub(crate) const DEC_UP_PAD: usize = 6;
 /// ResBlock2 kernels (one MRF branch each).
 pub(crate) const RESBLOCK_KERNELS: [usize; 3] = [3, 5, 7];
 /// ResBlock2 dilation pairs, per kernel branch.
@@ -101,6 +105,11 @@ pub(crate) struct Dims {
     pub dec_initial: usize,
     /// Per-upsample output channel counts (`dec.ups.{i}.weight` dim 1).
     pub dec_up_out: Vec<usize>,
+    /// Per-upsample transposed-conv kernel widths (`dec.ups.{i}.weight` dim 2).
+    /// Shape-derived so a voice whose stages differ in kernel (the general
+    /// MB-iSTFT geometry) loads without the former `DEC_UP_KERNEL` hard-assert;
+    /// the shipping css10 / v7 voices are uniform 16 and reduce to the old const.
+    pub dec_up_kernel: Vec<usize>,
     /// Upsample stage count (`dec_up_out.len()`).
     pub n_ups: usize,
     /// FiLM stage target channels `[dec_initial, dec_up_out...]` (conditioning
@@ -151,12 +160,25 @@ impl Dims {
             n_enc_layers += 1;
         }
 
+        // Per-stage upsample geometry: out-channels (dim 1) and kernel (dim 2)
+        // are both shape-derived; the stride is a ConvTranspose attribute that
+        // leaves no shape trace (uniform `DEC_UP_STRIDE` today — see the module
+        // note on `flow_wn_dilation_rate` for the same GGUF limitation).
         let mut dec_up_out = Vec::new();
-        while let Ok(shape) = store.shape(&format!("dec.ups.{}.weight", dec_up_out.len())) {
+        let mut dec_up_kernel = Vec::new();
+        loop {
+            let i = dec_up_out.len();
+            let Ok(shape) = store.shape(&format!("dec.ups.{i}.weight")) else {
+                break;
+            };
             dec_up_out.push(*shape.get(1).ok_or_else(|| {
                 VokraError::InvalidArgument(format!(
-                    "piper voice: dec.ups.{} weight shape {shape:?} lacks an out-channel axis",
-                    dec_up_out.len()
+                    "piper voice: dec.ups.{i} weight shape {shape:?} lacks an out-channel axis"
+                ))
+            })?);
+            dec_up_kernel.push(*shape.get(2).ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "piper voice: dec.ups.{i} weight shape {shape:?} lacks a kernel axis"
                 ))
             })?);
         }
@@ -240,6 +262,7 @@ impl Dims {
             prosody_out,
             dec_initial,
             dec_up_out,
+            dec_up_kernel,
             n_ups,
             dec_channels,
             flow_n_flows,
@@ -323,10 +346,21 @@ impl PiperConfig {
             .map(|i| i as i64)
     }
 
-    /// Total decoder upsample factor (samples per encoder frame): the two
-    /// stride-4 transposed convs × the iSTFT hop × the PQMF sub-bands = 256.
-    pub fn samples_per_frame(&self) -> usize {
-        DEC_UP_STRIDE * DEC_UP_STRIDE * self.istft_hop * self.pqmf_subbands
+    /// Total decoder upsample factor (samples per encoder frame): the product
+    /// of the per-stage transposed-conv strides × the iSTFT hop × the PQMF
+    /// sub-bands. For the shipping css10 / v7 voices `up_strides` is the two
+    /// uniform stride-4 stages, giving `4·4·hop·subbands = 256`.
+    ///
+    /// `up_strides` is per-upsample-stage; the stride is a `ConvTranspose1d`
+    /// attribute with no shape trace in the GGUF, so the caller supplies it
+    /// (currently `[DEC_UP_STRIDE; n_ups]` — the decoder does not derive
+    /// non-uniform strides until the converter bakes them, an open item). This
+    /// signature was generalized from the former 2-stage constant form in
+    /// M4-RESIDUAL-B (A); **there is no production caller** — `synthesize_phonemes`
+    /// derives its frame counts from the flow output length, not this — so the
+    /// change is an API-consistency fix, verified by the unit test below.
+    pub fn samples_per_frame(&self, up_strides: &[usize]) -> usize {
+        up_strides.iter().product::<usize>() * self.istft_hop * self.pqmf_subbands
     }
 }
 
@@ -426,8 +460,16 @@ mod tests {
         assert_eq!(cfg.language_id("ja"), Some(0));
         assert_eq!(cfg.language_id("en"), Some(1));
         assert_eq!(cfg.language_id("zz"), None);
-        // samples_per_frame = DEC_UP_STRIDE^2 · hop · subbands = 16 · 5 · 3.
-        assert_eq!(cfg.samples_per_frame(), 4 * 4 * 5 * 3);
+        // samples_per_frame = Π(up_strides) · hop · subbands. Two uniform
+        // stride-4 stages (the shipping css10 / v7 geometry) = 16 · 5 · 3,
+        // reducing to the former 2-stage constant form.
+        assert_eq!(
+            cfg.samples_per_frame(&[DEC_UP_STRIDE, DEC_UP_STRIDE]),
+            4 * 4 * 5 * 3
+        );
+        // A non-uniform 3-stage geometry (kernel/stride vary per stage) takes
+        // the product: 4·4·2 · hop · subbands.
+        assert_eq!(cfg.samples_per_frame(&[4, 4, 2]), 4 * 4 * 2 * 5 * 3);
     }
 
     #[test]

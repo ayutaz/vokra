@@ -87,7 +87,11 @@ impl KokoroConfig {
     }
 
     /// Voice id for a name (`"af"`, `"am_michael"`, …), or `None` if absent.
-    #[allow(dead_code)] // consumed by the T18 e2e wiring
+    ///
+    /// The id is the position in [`Self::voice_names`], which by construction
+    /// matches axis 0 of the stacked voicepack tensor (the converter writes
+    /// both in the same alphabetical `voices/*.pt` order), so it indexes the
+    /// per-voice `ref_s` row in `KokoroTts::synthesize_phonemes` (M2-07-T02).
     pub fn voice_id(&self, name: &str) -> Option<usize> {
         self.voice_names.iter().position(|v| v == name)
     }

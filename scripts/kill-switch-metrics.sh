@@ -15,6 +15,19 @@
 #     "Discord active user" metric (2026-07-04 依頼者決定, runbook §0/§3)
 #   - Kill switch C verdict (PASS if stars >= 500 && active >= 20, else FAIL)
 #   - Kill switch K input snapshot (competitor comparison is owner judgement)
+#   - (M5-12-T05) contributors_excluding_owner — the OWNER-excluded committer
+#     count DoD item 5 consumes ("community not dependent on the maintainer
+#     alone"). Kill switch D keeps the owner-INCLUDED count; whether the
+#     threshold-of-3 should itself exclude the owner is owner work
+#     (X-05-T21/T23). This script surfaces both and decides neither. The field
+#     name matches the one the go-nogo record already documents
+#     (docs/governance/vokra-go-nogo-v0.5.md).
+#   - (M5-12-T04) dod_item4_kill_switch — an A–L scaffold for GA DoD item 4
+#     ("none of Kill switch A–L has fired"): C/D/K reuse the self-collected
+#     values above; A/B/E/F/G/H/I/J/L stay "owner-judgment-required" (competitor
+#     changelog is owner judgement, milestones.md §10.1). Verdicts are never
+#     fabricated (FR-EX-08); the final per-switch call lives in the go-nogo
+#     record (vokra-go-nogo-<phase>.md, X-05-T17).
 #
 # This script is INTENTIONALLY not wired into CI (M2-15-T02 / M2-15-T03 explicit
 # constraint: "スケジュール実行のワークフロー (.yml) にはしない" — do not resurrect
@@ -33,13 +46,18 @@
 # Exit codes: 0 = JSON written to stdout, 1 = missing dep / gh auth failure /
 # CLI arg error. Networked `gh api` errors surface as non-zero via `set -e`.
 #
-# One deliberate deviation from the runbook §4 verbatim listing: the aggregation
-# pipeline that produces $ACTIVE wraps each `grep -v` filter in
-# `{ ... || true; }` so `set -o pipefail` does not turn "zero surviving
-# authors" (Kill switch C = 0 activity, which is exactly the case we want to
-# detect) into a crash. Semantic (unique non-bot / non-Claude login count) is
-# preserved; the fix only fills in the runbook's unspecified corner behaviour
-# and is verified in this file's test entry (see `--self-test`).
+# Deviations from the runbook §4 verbatim listing (all intentional, tested):
+#  (1) the aggregation pipeline that produces $ACTIVE wraps each `grep -v`
+#      filter in `{ ... || true; }` so `set -o pipefail` does not turn "zero
+#      surviving authors" (Kill switch C = 0 activity, which is exactly the case
+#      we want to detect) into a crash. Semantic (unique non-bot / non-Claude
+#      login count) is preserved.
+#  (2) (M5-12-T04/T05) the JSON additionally emits `contributors_excluding_owner`
+#      and the `dod_item4_kill_switch` / `dod_item5` objects described above.
+#      The runbook §4 listing predates these; the runbook now points here for
+#      the DoD-item additions rather than duplicating them (no drift check
+#      enforces byte-equality, and duplicating the JSON would itself risk drift).
+# Both deviations are verified in this file's test entry (see `--self-test`).
 
 set -euo pipefail
 
@@ -142,6 +160,46 @@ self_test() {
         echo "self-test PASS: threshold FAIL when stars=499"
     fi
 
+    # Fixture 5 (M5-12-T05): the owner-included vs owner-excluded contributor
+    # filters. Same fixture, two jq expressions: owner-included keeps ayutaz
+    # (Kill switch D input), owner-excluded drops it (DoD item 5 input). jq may
+    # be absent in a bare self-test env, so this fixture is jq-guarded.
+    if command -v jq >/dev/null 2>&1; then
+        local FIX='[{"login":"ayutaz"},{"login":"alice"},{"login":"bob"},{"login":"dependabot[bot]"},{"login":"Claude"}]'
+        local INCL EXCL
+        INCL=$(printf '%s' "$FIX" | jq '[.[] | select(.login | test("bot|Claude") | not)] | length')
+        EXCL=$(printf '%s' "$FIX" \
+            | jq --arg owner ayutaz '[.[] | select((.login != $owner) and (.login | test("bot|Claude") | not))] | length')
+        if [ "$INCL" = "3" ] && [ "$EXCL" = "2" ]; then
+            echo "self-test PASS: contributors owner-included=3 (ayutaz,alice,bob), owner-excluded=2 (alice,bob)"
+        else
+            echo "self-test FAIL: expected incl=3 excl=2, got incl='$INCL' excl='$EXCL'" >&2
+            status=1
+        fi
+    else
+        echo "self-test SKIP: jq absent — contributor-exclusion filter not exercised here"
+    fi
+
+    # Fixture 6 (M5-12-T04): Kill switch 'fires' (該当) derives from the verdict
+    # — FAIL fires, PASS does not. DoD item 4 reads this per switch.
+    local KSC_V FIRES
+    KSC_V="FAIL"
+    if [ "$KSC_V" = "FAIL" ]; then FIRES=true; else FIRES=false; fi
+    if [ "$FIRES" = "true" ]; then
+        echo "self-test PASS: Kill switch FAIL -> fires=true"
+    else
+        echo "self-test FAIL: FAIL must fire" >&2
+        status=1
+    fi
+    KSC_V="PASS"
+    if [ "$KSC_V" = "FAIL" ]; then FIRES=true; else FIRES=false; fi
+    if [ "$FIRES" = "false" ]; then
+        echo "self-test PASS: Kill switch PASS -> fires=false"
+    else
+        echo "self-test FAIL: PASS must not fire" >&2
+        status=1
+    fi
+
     if [ "$status" -eq 0 ]; then
         echo "kill-switch-metrics --self-test: OK"
     fi
@@ -199,9 +257,17 @@ fi
 # 1. Stars
 STARS=$(gh repo view "$OWNER/$REPO" --json stargazerCount --jq .stargazerCount)
 
-# 2. Contributors (excluding bots and Claude Code)
-CONTRIB=$(gh api "repos/$OWNER/$REPO/contributors?per_page=100" --paginate \
+# 2. Contributors. Fetch once; derive two counts from the same snapshot.
+CONTRIB_RAW=$(gh api "repos/$OWNER/$REPO/contributors?per_page=100" --paginate)
+# Kill switch D input: excludes bots + Claude Code, INCLUDES the owner (the
+# switch wording is "committers other than Claude Code").
+CONTRIB=$(printf '%s' "$CONTRIB_RAW" \
     | jq '[.[] | select(.login | test("bot|Claude") | not)] | length')
+# DoD item 5 input: additionally excludes the owner — the count of EXTERNAL
+# committers ("community not dependent on the maintainer alone"). Field name
+# matches the go-nogo record (docs/governance/vokra-go-nogo-v0.5.md).
+CONTRIB_EXCL_OWNER=$(printf '%s' "$CONTRIB_RAW" \
+    | jq --arg owner "$OWNER" '[.[] | select((.login != $owner) and (.login | test("bot|Claude") | not))] | length')
 
 # 3a. Issues + PR active participants (3 months)
 ISSUE_AUTHORS=$(gh api "repos/$OWNER/$REPO/issues/comments?since=$SINCE&per_page=100" --paginate \
@@ -249,6 +315,14 @@ else
     KSC_VERDICT="FAIL"
 fi
 
+# "Fires" (該当) is the withdrawal-argument sense: Kill switch C FAILs its PASS
+# condition => it fires. DoD item 4 reads this per switch.
+if [ "$KSC_VERDICT" = "FAIL" ]; then
+    KSC_FIRES=true
+else
+    KSC_FIRES=false
+fi
+
 # JSON output
 cat <<EOF
 {
@@ -257,6 +331,7 @@ cat <<EOF
   "window_since": "$SINCE",
   "stars": $STARS,
   "contributors_non_bot_non_cc": $CONTRIB,
+  "contributors_excluding_owner": $CONTRIB_EXCL_OWNER,
   "issues_discussions_active_3mo": $ACTIVE,
   "kill_switch_c": {
     "threshold": {"stars_min": 500, "active_min": 20},
@@ -271,6 +346,28 @@ cat <<EOF
       "unity_asset_store_dl": null,
       "competitor_reference": "sherpa-onnx / whisper.cpp / Candle 等の star 数は依頼者が手動記入"
     }
+  },
+  "dod_item4_kill_switch": {
+    "note": "GA DoD item 4 requires that NONE of Kill switch A–L has fired. C/D/K are computed from this snapshot; A/B/E/F/G/H/I/J/L are competitor-changelog owner judgements (milestones.md §10.1) and are never auto-fabricated (FR-EX-08). The final per-switch verdict is recorded in the go-nogo record (vokra-go-nogo-<phase>.md, X-05-T17).",
+    "A": {"basis": "Unity Inference Engine fixes VITS/Metal & covers major TTS/ASR net-natively", "cadence": "quarterly", "verdict": "owner-judgment-required"},
+    "B": {"basis": "sherpa-onnx ships official Unity UPM + Godot AssetLib bindings", "cadence": "quarterly", "verdict": "owner-judgment-required"},
+    "C": {"basis": "stars >= 500 && active >= 20", "metric_verdict": "$KSC_VERDICT", "fires": $KSC_FIRES, "timing": "5–6 month point; start date owner-recorded (X-05-T23)"},
+    "D": {"basis": "< 3 committers other than Claude Code", "contributors_non_bot_non_cc": $CONTRIB, "threshold": 3, "verdict": "timing-owner-determined", "note": "start date undefined (no v0.5.0 tag); timing and whether the threshold excludes the owner are owner decisions (X-05-T23)"},
+    "E": {"basis": "major vendor (MS/Google/Apple/Meta/HF) ships an Apache-2.0 speech runtime", "cadence": "continuous-urgent", "verdict": "owner-judgment-required"},
+    "F": {"basis": "HF Candle covers Whisper/piper-plus/Kokoro/CosyVoice/Moshi/Mimi natively", "cadence": "continuous", "verdict": "owner-judgment-required"},
+    "G": {"basis": "ORT Web + WebGPU runs speech at RTF < 1.0 on Whisper base", "cadence": "12–18 months", "verdict": "owner-judgment-required"},
+    "H": {"basis": "Modular MAX Engine expands its speech-op coverage", "cadence": "quarterly", "verdict": "owner-judgment-required"},
+    "I": {"basis": ">= 3 of 6 models degrade >= 5% vs PyTorch (MEL/UTMOS)", "verdict": "owner-judgment-required", "input_ref": "GA DoD item-2 runner (vokra_eval::dod)"},
+    "J": {"basis": "HA Voice / Wyoming declines to adopt Vokra", "cadence": "at v0.5", "verdict": "owner-judgment-required"},
+    "K": {"basis": "addressable market < 10% of a comparable competitor", "verdict": "owner-judgment-required", "input_ref": "kill_switch_k"},
+    "L": {"basis": "maintainer burnout / funding exhaustion", "cadence": "continuous", "verdict": "owner-judgment-required"}
+  },
+  "dod_item5": {
+    "basis": "GA DoD item 5: >= 3 committers other than Claude Code AND community operation not dependent on the maintainer alone.",
+    "external_committers": $CONTRIB_EXCL_OWNER,
+    "threshold": 3,
+    "verdict": "owner-judgment-required",
+    "note": "Consumes the OWNER-excluded count (contributors_excluding_owner). Whether the Kill switch D threshold-of-3 should itself exclude the owner is an owner decision (X-05-T21/T23); this object surfaces the external count and decides nothing."
   }
 }
 EOF

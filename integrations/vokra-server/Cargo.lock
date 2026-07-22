@@ -2296,6 +2296,7 @@ dependencies = [
  "vokra-mmap",
  "vokra-ops",
  "vokra-piper-plus",
+ "vokra-vad-micro",
 ]
 
 [[package]]
@@ -2339,6 +2340,13 @@ dependencies = [
  "vokra-models",
  "vokra-piper-g2p",
  "vokra-piper-plus",
+]
+
+[[package]]
+name = "vokra-vad-micro"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "vokra-core",
 ]
 
 [[package]]

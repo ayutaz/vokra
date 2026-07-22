@@ -32,6 +32,67 @@ use vokra_ops::mimi_rvq::{CodebookTable, MimiRvqAttrs, mimi_paged_dims};
 
 use crate::mimi::{MimiDecoderState, MimiNeuralDecoder};
 
+/// Optional output limiter for a decoded PCM frame (M4-RESIDUAL-B (C)).
+///
+/// The `CsmAudioDecodeChain` features→PCM path can emit peaks above 1.0
+/// full-scale — campaign-2 measured **1.412** on the synthesized-Mimi bridge
+/// (`report-campaign2.md`; a synthesized value, **not** a real-Mimi-weight
+/// value) — which clip when a PCM16 consumer quantizes. This limiter is an
+/// **opt-in** post-process; the default [`OutputLimiter::None`] is a no-op, so
+/// the shipping decode path is **bit-for-bit unchanged** (FR-EX-08: no silent
+/// behaviour change).
+///
+/// The type lives here, next to the shared chain, on purpose: the same
+/// `CsmAudioDecodeChain` is consumed by **both** Moshi (`moshi/duplex.rs`, wired
+/// in this WP) and CSM (`csm/engine.rs`, scope-out here — a followup wiring, not
+/// a re-implementation), so both can reference one `OutputLimiter`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputLimiter {
+    /// No post-processing: the raw decoder output. **Default; bit-identical.**
+    #[default]
+    None,
+    /// Hard per-sample clip to `[-1.0, 1.0]`. Stateless, no inter-frame gain
+    /// variation; introduces harmonic distortion on the clipped peaks.
+    Clamp,
+    /// Frame-local, **attenuate-only** peak limit: a frame whose peak `p`
+    /// exceeds 1.0 is scaled by `1/p` so its peak becomes exactly 1.0; a frame
+    /// already within `[-1, 1]` is left untouched (no boosting → quiet passages
+    /// pass through unchanged, avoiding the main source of frame-to-frame gain
+    /// pumping).
+    ///
+    /// **Applied per decoded frame** because a streaming duplex session has no
+    /// whole-utterance lookahead. The residual limitation is that two
+    /// consecutive above-1.0 frames may receive different attenuation (audible
+    /// as mild pumping on sustained loud passages); a look-ahead / running-gain
+    /// limiter is the documented followup, out of this WP's scope.
+    PeakNormalize,
+}
+
+impl OutputLimiter {
+    /// Applies the limiter to a decoded PCM `frame` in place. [`Self::None`] is
+    /// a genuine no-op (the frame is not even scanned), so callers may also skip
+    /// the call entirely for the default path.
+    pub fn apply(self, frame: &mut [f32]) {
+        match self {
+            OutputLimiter::None => {}
+            OutputLimiter::Clamp => {
+                for s in frame.iter_mut() {
+                    *s = s.clamp(-1.0, 1.0);
+                }
+            }
+            OutputLimiter::PeakNormalize => {
+                let peak = frame.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+                if peak > 1.0 {
+                    let gain = 1.0 / peak;
+                    for s in frame.iter_mut() {
+                        *s *= gain;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The assembled codes→PCM chain (RVQ lookup + neural decoder) plus the
 /// paged per-codebook feature store for the streaming path.
 pub struct CsmAudioDecodeChain {
@@ -467,5 +528,38 @@ mod tests {
                 "{backend:?} must not accept MimiRvq through the seam today"
             );
         }
+    }
+
+    #[test]
+    fn output_limiter_default_is_none_and_bit_identical() {
+        assert_eq!(OutputLimiter::default(), OutputLimiter::None);
+        // A frame with peaks > 1.0 (the campaign-2 1.412 scenario) is left
+        // BYTE-for-byte unchanged by None — the shipping default path.
+        let src = [1.412f32, -1.2, 0.5, -0.9, 0.0, 1.0001];
+        let mut frame = src;
+        OutputLimiter::None.apply(&mut frame);
+        assert_eq!(frame.map(f32::to_bits), src.map(f32::to_bits));
+    }
+
+    #[test]
+    fn output_limiter_clamp_hard_limits_each_sample() {
+        let mut frame = [1.412f32, -1.2, 0.5, -0.9, 2.0];
+        OutputLimiter::Clamp.apply(&mut frame);
+        assert_eq!(frame, [1.0, -1.0, 0.5, -0.9, 1.0]);
+    }
+
+    #[test]
+    fn output_limiter_peak_normalize_attenuates_only_over_frames() {
+        // Over-1.0 frame: scaled by 1/peak so peak → 1.0, ratios preserved.
+        let mut loud = [1.412f32, -0.706, 0.0];
+        OutputLimiter::PeakNormalize.apply(&mut loud);
+        let peak = loud.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+        assert!((peak - 1.0).abs() < 1e-6, "peak became {peak}");
+        assert!((loud[1] / loud[0] + 0.5).abs() < 1e-6, "ratio preserved");
+        // Within-range frame: untouched (attenuate-only → no quiet-frame boost).
+        let src = [0.5f32, -0.9, 0.25];
+        let mut quiet = src;
+        OutputLimiter::PeakNormalize.apply(&mut quiet);
+        assert_eq!(quiet, src);
     }
 }

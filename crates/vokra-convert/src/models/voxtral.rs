@@ -69,6 +69,7 @@
 //! flags any downstream loader that needs the missing hparams. Real training
 //! runs always pass a config; this keeps unit tests small.
 
+use vokra_core::gguf::tensor::QK_K;
 use vokra_core::gguf::{
     FrontendSpec, GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
 };
@@ -353,6 +354,14 @@ pub struct ConvertReport {
     pub bf16_passthrough: usize,
     /// Non-float tensors that were skipped (e.g. integer position ids).
     pub skipped_non_float: usize,
+    /// Of `written`, how many were K-quantized (M5-15-T36). `0` unless a
+    /// `--quantize` target was supplied.
+    pub quantized: usize,
+    /// Tensors a `--quantize` target could **not** apply to (rank < 2 or an
+    /// element count that is not a whole number of 256-element super-blocks:
+    /// biases, norms, 1-D tables). Written in full precision — reported, not
+    /// silently absorbed.
+    pub quant_inapplicable: usize,
     /// Whether a tokenizer blob was embedded.
     pub tokenizer_embedded: bool,
     /// Derived label (`voxtral-mini-3b` etc.; `voxtral-unknown` only on the
@@ -436,7 +445,7 @@ pub(crate) fn convert(
     bytes: Vec<u8>,
     config: Option<&VoxtralConfig>,
 ) -> Result<(GgufBuilder, ConvertReport), ConvertError> {
-    convert_shards(vec![bytes], config)
+    convert_shards(vec![bytes], config, None)
 }
 
 /// Converts a Voxtral safetensors checkpoint (one buffer per shard) plus an
@@ -462,6 +471,7 @@ pub(crate) fn convert(
 pub(crate) fn convert_shards(
     buffers: Vec<Vec<u8>>,
     config: Option<&VoxtralConfig>,
+    quant: Option<GgmlType>,
 ) -> Result<(GgufBuilder, ConvertReport), ConvertError> {
     let st = Shards::parse(buffers)?;
 
@@ -513,6 +523,8 @@ pub(crate) fn convert_shards(
     let mut written = 0usize;
     let mut bf16_passthrough = 0usize;
     let mut skipped_non_float = 0usize;
+    let mut quantized = 0usize;
+    let mut quant_inapplicable = 0usize;
     let mut total = 0usize;
     for (file, t) in st.iter() {
         total += 1;
@@ -520,10 +532,36 @@ pub(crate) fn convert_shards(
             skipped_non_float += 1;
             continue;
         }
+        let name = gguf_tensor_name(&t.name);
+
+        // M5-15-T36: optional K-quantization, under the **same** applicability
+        // rule the Whisper converter uses (`convert_with_policy`): rank >= 2
+        // AND a whole number of 256-element super-blocks. Biases, norms and
+        // 1-D tables therefore stay full precision. Unlike Whisper's policy
+        // path this *skips* rather than errors — Voxtral has no per-tensor
+        // policy to have been mis-specified, so a rank-1 bias hitting a
+        // whole-model `--quantize` is expected, not a user mistake. The count
+        // is reported either way.
+        //
+        // The source is read through `tensor_f32`, so a **BF16** checkpoint
+        // quantizes correctly (761 of 762 tensors in `mistralai/Voxtral-Mini-3B`
+        // are BF16 — without this the flag would be a no-op). BF16 → f32 is
+        // exact, so the only lossy step is the K-quant itself.
+        if let Some(target) = quant {
+            if t.shape.len() >= 2 && t.element_count() % QK_K as u64 == 0 {
+                let data = file.tensor_f32(&t.name)?;
+                let payload = crate::quantize::quantize(target, &data)?;
+                b.add_tensor(&name, target, t.shape.clone(), payload)?;
+                quantized += 1;
+                written += 1;
+                continue;
+            }
+            quant_inapplicable += 1;
+        }
+
         if t.dtype == GgmlType::BF16 {
             bf16_passthrough += 1;
         }
-        let name = gguf_tensor_name(&t.name);
         b.add_tensor(
             &name,
             t.dtype,
@@ -558,6 +596,8 @@ pub(crate) fn convert_shards(
             written,
             bf16_passthrough,
             skipped_non_float,
+            quantized,
+            quant_inapplicable,
             tokenizer_embedded,
             name,
         },
@@ -1302,6 +1342,97 @@ mod tests {
         out
     }
 
+    /// Synthetic BF16 shard with one **quantizable** matrix
+    /// (`[4, 256]` = 1024 elements = 4 super-blocks, rows 256-aligned) and one
+    /// rank-1 bias that no K-quant target can apply to. BF16 because the real
+    /// release is BF16 for 761 of its 762 tensors — an f32-only fixture would
+    /// not exercise the widen-then-quantize path at all.
+    fn synthetic_voxtral_bf16_quantizable() -> Vec<u8> {
+        // BF16 = the top 16 bits of the f32 pattern.
+        let bf16 = |v: f32| ((v.to_bits() >> 16) as u16).to_le_bytes();
+        let w: Vec<u8> = (0..4 * 256)
+            .flat_map(|i: i32| bf16((i % 17) as f32 * 0.125 - 1.0))
+            .collect();
+        let bias: Vec<u8> = (0..4).flat_map(|i: i32| bf16(i as f32)).collect();
+        // Keep the shape-derivation tensors present so `convert_shards` can
+        // derive hparams (both also happen to be quant-inapplicable).
+        let conv: Vec<u8> = (0..12).flat_map(|i: i32| bf16(i as f32)).collect();
+        let (w_end, b_end, c_end) = (w.len(), w.len() + bias.len(), w.len() + bias.len() + 12 * 2);
+        let header = format!(
+            r#"{{"language_model.model.embed_tokens.weight":{{"dtype":"BF16","shape":[4,256],"data_offsets":[0,{w_end}]}},"audio_tower.layers.0.fc1.bias":{{"dtype":"BF16","shape":[4],"data_offsets":[{w_end},{b_end}]}},"audio_tower.conv1.weight":{{"dtype":"BF16","shape":[2,2,3],"data_offsets":[{b_end},{c_end}]}}}}"#,
+        );
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&w);
+        out.extend_from_slice(&bias);
+        out.extend_from_slice(&conv);
+        out
+    }
+
+    /// M5-15-T36: a `--quantize` target K-quantizes the eligible matrices,
+    /// leaves the rest full precision, and reports both counts. The BF16 →
+    /// f32 widen on the way in is exact, so the only lossy step is the
+    /// K-quant itself.
+    #[test]
+    fn quant_target_quantizes_eligible_tensors_and_reports_the_rest() {
+        for target in [GgmlType::Q4K, GgmlType::Q5K, GgmlType::Q6K] {
+            let (builder, report) = convert_shards(
+                vec![synthetic_voxtral_bf16_quantizable()],
+                None,
+                Some(target),
+            )
+            .unwrap();
+            let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+
+            assert_eq!(report.written, 3, "{target:?}: all three tensors written");
+            assert_eq!(report.quantized, 1, "{target:?}: only the [4,256] matrix");
+            assert_eq!(
+                report.quant_inapplicable, 2,
+                "{target:?}: rank-1 bias + the 12-element conv"
+            );
+            // A quantized tensor that was BF16 is no longer BF16 passthrough.
+            assert_eq!(report.bf16_passthrough, 2, "{target:?}");
+
+            let w = file
+                .tensor_info("language_model.model.embed_tokens.weight")
+                .unwrap();
+            assert_eq!(w.dtype, target, "{target:?}: matrix dtype");
+            assert_eq!(w.dimensions, vec![4, 256], "{target:?}: shape preserved");
+            // Rows stay 256-aligned, i.e. the runtime's fused binder accepts it.
+            assert!(w.dimensions[1] as usize % 256 == 0);
+            // The bias stayed BF16 in full precision.
+            assert_eq!(
+                file.tensor_info("audio_tower.layers.0.fc1.bias")
+                    .unwrap()
+                    .dtype,
+                GgmlType::BF16,
+                "{target:?}: bias must not be quantized"
+            );
+            // And it still decodes.
+            assert_eq!(
+                file.tensor_f32("language_model.model.embed_tokens.weight")
+                    .unwrap()
+                    .len(),
+                4 * 256
+            );
+        }
+    }
+
+    /// `quant = None` must reproduce the pre-M5-15 bytes exactly — the new
+    /// parameter is additive.
+    #[test]
+    fn no_quant_target_is_byte_identical_to_the_previous_path() {
+        let bytes = synthetic_voxtral_bf16_quantizable();
+        let (a, ra) = convert_shards(vec![bytes.clone()], None, None).unwrap();
+        let (b, rb) = convert(bytes, None).unwrap();
+        assert_eq!(a.to_bytes().unwrap(), b.to_bytes().unwrap());
+        assert_eq!(ra.quantized, 0);
+        assert_eq!(rb.quantized, 0);
+        assert_eq!(ra.quant_inapplicable, 0, "not counted without a target");
+        assert_eq!(ra.bf16_passthrough, 3);
+    }
+
     #[test]
     fn convert_writes_model_arch_and_frontend_spec() {
         let (builder, report) = convert(synthetic_voxtral(), None).unwrap();
@@ -1957,7 +2088,8 @@ mod tests {
         let (first, second) = entries.split_at(entries.len() / 2);
         let shard_a = build_safetensors(first);
         let shard_b = build_safetensors(second);
-        let (builder, report) = convert_shards(vec![shard_a, shard_b], Some(&gqa_cfg())).unwrap();
+        let (builder, report) =
+            convert_shards(vec![shard_a, shard_b], Some(&gqa_cfg()), None).unwrap();
         assert_eq!(report.written, entries.len());
         assert_eq!(report.name, "voxtral-test-gqa");
         let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
@@ -1978,7 +2110,7 @@ mod tests {
         let shard_a = build_safetensors(&entries);
         let dup = build_safetensors(&entries[..1]); // embed_tokens again
         assert!(matches!(
-            convert_shards(vec![shard_a, dup], Some(&gqa_cfg())),
+            convert_shards(vec![shard_a, dup], Some(&gqa_cfg()), None),
             Err(ConvertError::Parse(_))
         ));
     }

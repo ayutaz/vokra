@@ -6,9 +6,13 @@
 //! `x + cond(g)` after `conv_pre` (`dec.cond` is `[256, 512, 1]`); the zero-shot
 //! v7 voice uses multi-stage gated FiLM — `dec.cond` `[2·256, 512, 1]` after
 //! `conv_pre`, plus a `dec.cond_layers.{i}` after each upsample+MRF stage.
-//! Two stride-4 transposed-conv upsample stages, an MRF of three ResBlock2
-//! branches each, a sub-band iSTFT, and PQMF synthesis; total upsample = 4·4
-//! (ups) · 4 (iSTFT hop) · 4 (PQMF) = 256 samples/frame.
+//! `n_ups` transposed-conv upsample stages (**per-stage shape-driven**: the
+//! kernel comes from each `dec.ups.{i}.weight` shape, the stride is uniform
+//! `DEC_UP_STRIDE`, the pad is `(kernel − stride)/2`; the ResBlock MRF table and
+//! the sub-band post-conv width follow `n_ups` too), an MRF of three ResBlock2
+//! branches per stage, a sub-band iSTFT, and PQMF synthesis. The shipping css10
+//! / v7 voices are the canonical **two** stride-4 / kernel-16 stages: total
+//! upsample = 4·4 (ups) · 4 (iSTFT hop) · 4 (PQMF) = 256 samples/frame.
 //!
 //! The sub-band iSTFT is the **first real consumer of the M0-04 `istft` op**
 //! (`vokra-ops`), which is the point of doing piper-plus natively (ADR-0002
@@ -18,8 +22,8 @@ use vokra_core::ir::graph::IstftAttrs;
 use vokra_ops::{Spectrogram, istft};
 
 use super::config::{
-    DEC_INITIAL, DEC_UP_KERNEL, DEC_UP_PAD, DEC_UP_STRIDE, Dims, GIN, HIDDEN, LRELU_SLOPE,
-    PQMF_TAPS, RESBLOCK_DILATIONS, RESBLOCK_KERNELS,
+    DEC_INITIAL, DEC_UP_STRIDE, Dims, GIN, HIDDEN, LRELU_SLOPE, PQMF_TAPS, RESBLOCK_DILATIONS,
+    RESBLOCK_KERNELS,
 };
 use super::nn;
 use super::weights::TensorStore;
@@ -122,13 +126,34 @@ enum Cond {
     },
 }
 
+/// One transposed-conv upsample stage: weights + the per-stage geometry the
+/// generalized loader derives (kernel from the tensor shape, stride uniform,
+/// pad = (kernel − stride)/2). The shipping css10 / v7 voices have two uniform
+/// kernel-16 / stride-4 / pad-6 stages; a voice with per-stage-varying kernels
+/// (the general MB-iSTFT geometry) loads here without a hard-coded kernel.
+struct UpStage {
+    /// `dec.ups.{i}.weight` `[in_ch, out_ch, kernel]`.
+    w: Vec<f32>,
+    /// `dec.ups.{i}.bias` `[out_ch]`.
+    b: Vec<f32>,
+    in_ch: usize,
+    out_ch: usize,
+    kernel: usize,
+    stride: usize,
+    pad: usize,
+}
+
 /// The MB-iSTFT decoder.
 pub(super) struct Decoder {
-    conv_pre: (Vec<f32>, Vec<f32>),               // [256, 192, 7]
-    cond: Cond,                                   // additive (1.11.0) or FiLM (v7)
-    ups: Vec<(Vec<f32>, Vec<f32>, usize, usize)>, // (w, b, in_ch, out_ch)
+    conv_pre: (Vec<f32>, Vec<f32>), // [256, 192, 7]
+    cond: Cond,                     // additive (1.11.0) or FiLM (v7)
+    ups: Vec<UpStage>,
     resblocks: Vec<ResBlock>,
-    subband_conv_post: (Vec<f32>, Vec<f32>), // [72, 64, 7]
+    /// Input-channel count the sub-band post-conv expects = the last upsample
+    /// stage's output width (`dec_up_out[n_ups−1]`; 64 for css10 / v7, where it
+    /// equals the former `DEC_INITIAL/4` constant).
+    subband_in_ch: usize,
+    subband_conv_post: (Vec<f32>, Vec<f32>), // [subbands·(n_fft+2), subband_in_ch, 7]
     pqmf_updown: Vec<f32>,                   // [4, 1, 4]
     pqmf_synthesis: Vec<f32>,                // [1, 4, 63]
     n_fft: usize,
@@ -153,34 +178,48 @@ impl Decoder {
         hop: usize,
         subbands: usize,
     ) -> Result<Self> {
-        let ch0 = DEC_INITIAL / 2; // 128
-        let ch1 = DEC_INITIAL / 4; // 64
         // Upsample stages, shape-driven from Dims: `ups[i]` maps
-        // `dec_channels[i] → dec_up_out[i]` (`== dec_channels[i+1]`).
+        // `dec_channels[i] → dec_up_out[i]` (`== dec_channels[i+1]`). The kernel
+        // is per-stage (`dec_up_kernel[i]`, shape-derived — the former
+        // `DEC_UP_KERNEL = 16` hard-assert is gone), the stride is uniform
+        // (`DEC_UP_STRIDE`, not shape-derivable), and the pad follows the
+        // `(kernel − stride)/2` same-padding convention. For css10 / v7 (kernel
+        // 16, stride 4) that is pad 6 — the former `DEC_UP_PAD` constant.
         let mut ups = Vec::with_capacity(dims.n_ups);
         for i in 0..dims.n_ups {
             let in_ch = dims.dec_channels[i];
             let out_ch = dims.dec_up_out[i];
-            ups.push((
-                store.tensor_shaped(
-                    &format!("dec.ups.{i}.weight"),
-                    &[in_ch, out_ch, DEC_UP_KERNEL],
-                )?,
-                store.tensor_shaped(&format!("dec.ups.{i}.bias"), &[out_ch])?,
+            let kernel = dims.dec_up_kernel[i];
+            let stride = DEC_UP_STRIDE;
+            let pad = kernel.saturating_sub(stride) / 2;
+            ups.push(UpStage {
+                w: store.tensor_shaped(&format!("dec.ups.{i}.weight"), &[in_ch, out_ch, kernel])?,
+                b: store.tensor_shaped(&format!("dec.ups.{i}.bias"), &[out_ch])?,
                 in_ch,
                 out_ch,
-            ));
+                kernel,
+                stride,
+                pad,
+            });
         }
 
-        let mut resblocks = Vec::with_capacity(6);
-        for stage in 0..2 {
-            let ch = if stage == 0 { ch0 } else { ch1 };
+        // MRF ResBlock table, one MRF (three branches) per upsample stage — so
+        // `n_ups · RESBLOCK_KERNELS.len()` blocks, NOT a fixed 6. Each stage's
+        // channel width is that stage's upsample output `dec_up_out[stage]`
+        // (128, 64 for the shipping 2-stage voice = the former `DEC_INITIAL/2`,
+        // `/4`). This keeps `forward`'s `resblocks[i·num_kernels + branch]`
+        // in-range for every stage (a 3-stage voice used to index 6..8 into a
+        // 6-element table = OOB panic, hidden behind the old kernel assert).
+        let num_kernels = RESBLOCK_KERNELS.len();
+        let mut resblocks = Vec::with_capacity(dims.n_ups * num_kernels);
+        for stage in 0..dims.n_ups {
+            let ch = dims.dec_up_out[stage];
             for (branch, (&k, &dil)) in RESBLOCK_KERNELS
                 .iter()
                 .zip(RESBLOCK_DILATIONS.iter())
                 .enumerate()
             {
-                let idx = stage * RESBLOCK_KERNELS.len() + branch;
+                let idx = stage * num_kernels + branch;
                 let p = format!("dec.resblocks.{idx}");
                 resblocks.push(ResBlock {
                     convs: [
@@ -226,6 +265,10 @@ impl Decoder {
         };
 
         let sub_out = subbands * (n_fft + 2);
+        // The sub-band post-conv consumes the last upsample stage's output
+        // (64 for css10 / v7 = the former `DEC_INITIAL/4` constant); shape-driven
+        // so a voice whose final stage is not 64 wide still loads.
+        let subband_in_ch = *dims.dec_channels.last().expect("n_ups >= 1 (Dims::derive)");
         Ok(Self {
             conv_pre: (
                 store.tensor_shaped("dec.conv_pre.weight", &[DEC_INITIAL, HIDDEN, 7])?,
@@ -234,8 +277,10 @@ impl Decoder {
             cond,
             ups,
             resblocks,
+            subband_in_ch,
             subband_conv_post: (
-                store.tensor_shaped("dec.subband_conv_post.weight", &[sub_out, ch1, 7])?,
+                store
+                    .tensor_shaped("dec.subband_conv_post.weight", &[sub_out, subband_in_ch, 7])?,
                 store.tensor_shaped("dec.subband_conv_post.bias", &[sub_out])?,
             ),
             pqmf_updown: store.tensor_shaped("dec.pqmf.updown_filter", &[subbands, 1, subbands])?,
@@ -296,25 +341,27 @@ impl Decoder {
             Cond::Film { pre, .. } => pre.apply(&mut x, t_frames, g),
         }
 
-        // Two upsample stages, each followed by the MRF average.
+        // Upsample stages (`n_ups`, not a fixed 2), each followed by the MRF
+        // average. Per-stage kernel / stride / pad (uniform for css10 / v7 =
+        // the former constants; shape-driven so a per-stage-varying voice runs).
         let mut t = t_frames;
         let num_kernels = RESBLOCK_KERNELS.len();
-        for (i, (uw, ub, in_ch, out_ch)) in self.ups.iter().enumerate() {
+        for (i, up_stage) in self.ups.iter().enumerate() {
             nn::leaky_relu(&mut x, LRELU_SLOPE);
             let (up, tout) = nn::conv_transpose1d(
                 &x,
-                *in_ch,
+                up_stage.in_ch,
                 t,
-                uw,
-                *out_ch,
-                DEC_UP_KERNEL,
-                Some(ub),
-                DEC_UP_STRIDE,
-                DEC_UP_PAD,
+                &up_stage.w,
+                up_stage.out_ch,
+                up_stage.kernel,
+                Some(&up_stage.b),
+                up_stage.stride,
+                up_stage.pad,
                 1,
             );
             t = tout;
-            let mut xs = vec![0.0f32; out_ch * t];
+            let mut xs = vec![0.0f32; up_stage.out_ch * t];
             for branch in 0..num_kernels {
                 let rb = &self.resblocks[i * num_kernels + branch];
                 let out = rb.forward(compute, up.clone(), t);
@@ -334,12 +381,26 @@ impl Decoder {
             }
         }
 
-        // subband_conv_post → [subbands*(n_fft+2), T].
+        // subband_conv_post → [subbands*(n_fft+2), T]. Its input width is the
+        // last upsample stage's output (`subband_in_ch`, shape-driven; 64 for
+        // css10 / v7 = the former `DEC_INITIAL/4`).
         nn::leaky_relu(&mut x, LRELU_SLOPE);
-        let ch1 = DEC_INITIAL / 4;
         let sub_out = self.subbands * (self.n_fft + 2);
         let (sw, sb) = &self.subband_conv_post;
-        let (spec_raw, _) = nn::conv1d(compute, &x, ch1, t, sw, sub_out, 7, Some(sb), 1, 3, 1, 1);
+        let (spec_raw, _) = nn::conv1d(
+            compute,
+            &x,
+            self.subband_in_ch,
+            t,
+            sw,
+            sub_out,
+            7,
+            Some(sb),
+            1,
+            3,
+            1,
+            1,
+        );
 
         // Per-subband iSTFT → sub-band waveforms, trimmed to T·hop.
         let sub_len = t * self.hop;
@@ -489,4 +550,239 @@ fn periodic_hann(n: usize) -> Vec<f32> {
     (0..n)
         .map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / n as f32).cos())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    //! Per-stage shape-driven geometry tests (M4-RESIDUAL-B (A), T04/T05/T07).
+    //!
+    //! A synthetic degenerate-dims `TensorStore` is assembled directly through
+    //! `GgufBuilder`, then `Decoder::load` + `forward` are exercised for a
+    //! **3-stage** voice (the shipping voices are 2-stage). This is a
+    //! **self-consistency structural smoke** (no reference oracle): it proves
+    //! (a) the ResBlock table is built `n_ups·num_kernels` deep so `forward`'s
+    //! `resblocks[i·num_kernels + branch]` never runs off the end (the latent
+    //! OOB the old fixed `for stage in 0..2` hid behind the kernel hard-assert),
+    //! (b) per-stage kernels differing from 16 load without the former
+    //! `DEC_UP_KERNEL` assert, and (c) `forward` completes with the output length
+    //! the fixture's known geometry (∏ strides · hop · sub-bands) predicts —
+    //! computed independently, NOT from the metadata-only `samples_per_frame`.
+
+    use super::*;
+    use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile};
+
+    /// Little-endian f32 bytes.
+    fn f32le(v: &[f32]) -> Vec<u8> {
+        v.iter().flat_map(|x| x.to_le_bytes()).collect()
+    }
+
+    /// Deterministic small `[-0.1, 0.1)` weights (no external RNG — NFR-DS-02),
+    /// so the conv / GEMM / iSTFT / PQMF math runs on non-degenerate data.
+    fn pat(n: usize, seed: u64) -> Vec<f32> {
+        let mut x = seed | 1;
+        (0..n)
+            .map(|_| {
+                x ^= x >> 12;
+                x ^= x << 25;
+                x ^= x >> 27;
+                let bits = (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40) as u32;
+                bits as f32 / (1u32 << 24) as f32 * 0.2 - 0.1
+            })
+            .collect()
+    }
+
+    fn add(b: &mut GgufBuilder, name: &str, dims: &[usize], seed: u64) {
+        let n: usize = dims.iter().product();
+        b.add_tensor(
+            name,
+            GgmlType::F32,
+            dims.iter().map(|&d| d as u64).collect(),
+            f32le(&pat(n, seed)),
+        )
+        .expect("add synthetic tensor");
+    }
+
+    /// Assembles a `TensorStore` + matching `Dims` for an `n_ups`-stage additive
+    /// (single-speaker) MB-iSTFT decoder with the given per-stage upsample
+    /// kernels and output widths. Only the tensors `Decoder::load` reads are
+    /// written; the ResBlock channel of stage `s` is `dec_up_out[s]` and the
+    /// sub-band post-conv input width is the last stage output.
+    fn synth_store(
+        kernels: &[usize],
+        dec_up_out: &[usize],
+        n_fft: usize,
+        subbands: usize,
+    ) -> (TensorStore, Dims) {
+        let n_ups = kernels.len();
+        assert_eq!(dec_up_out.len(), n_ups);
+        let mut dec_channels = vec![DEC_INITIAL];
+        dec_channels.extend_from_slice(dec_up_out);
+        let subband_in = *dec_channels.last().unwrap();
+        let num_kernels = RESBLOCK_KERNELS.len();
+        let sub_out = subbands * (n_fft + 2);
+
+        let mut b = GgufBuilder::new();
+        // conv_pre + additive cond (fixed medium widths).
+        add(&mut b, "dec.conv_pre.weight", &[DEC_INITIAL, HIDDEN, 7], 1);
+        add(&mut b, "dec.conv_pre.bias", &[DEC_INITIAL], 2);
+        add(&mut b, "dec.cond.weight", &[DEC_INITIAL, GIN, 1], 3);
+        add(&mut b, "dec.cond.bias", &[DEC_INITIAL], 4);
+        // Upsample stages (per-stage kernel).
+        for i in 0..n_ups {
+            add(
+                &mut b,
+                &format!("dec.ups.{i}.weight"),
+                &[dec_channels[i], dec_up_out[i], kernels[i]],
+                100 + i as u64,
+            );
+            add(
+                &mut b,
+                &format!("dec.ups.{i}.bias"),
+                &[dec_up_out[i]],
+                150 + i as u64,
+            );
+        }
+        // ResBlock MRF table, n_ups · num_kernels deep.
+        for (stage, &ch) in dec_up_out.iter().enumerate() {
+            for (branch, &k) in RESBLOCK_KERNELS.iter().enumerate() {
+                let idx = stage * num_kernels + branch;
+                let p = format!("dec.resblocks.{idx}");
+                add(
+                    &mut b,
+                    &format!("{p}.convs.0.weight"),
+                    &[ch, ch, k],
+                    200 + idx as u64,
+                );
+                add(
+                    &mut b,
+                    &format!("{p}.convs.0.bias"),
+                    &[ch],
+                    250 + idx as u64,
+                );
+                add(
+                    &mut b,
+                    &format!("{p}.convs.1.weight"),
+                    &[ch, ch, k],
+                    300 + idx as u64,
+                );
+                add(
+                    &mut b,
+                    &format!("{p}.convs.1.bias"),
+                    &[ch],
+                    350 + idx as u64,
+                );
+            }
+        }
+        add(
+            &mut b,
+            "dec.subband_conv_post.weight",
+            &[sub_out, subband_in, 7],
+            400,
+        );
+        add(&mut b, "dec.subband_conv_post.bias", &[sub_out], 401);
+        add(
+            &mut b,
+            "dec.pqmf.updown_filter",
+            &[subbands, 1, subbands],
+            402,
+        );
+        add(
+            &mut b,
+            "dec.pqmf.synthesis_filter",
+            &[1, subbands, PQMF_TAPS + 1],
+            403,
+        );
+
+        let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+        let store = TensorStore::new(file);
+        let dims = Dims {
+            gin: GIN,
+            spk_emb_dim: 192,
+            hidden: HIDDEN,
+            n_enc_layers: 1,
+            ffn: 768,
+            dp_filter: 208,
+            prosody_in: 3,
+            prosody_out: 16,
+            dec_initial: DEC_INITIAL,
+            dec_up_out: dec_up_out.to_vec(),
+            dec_up_kernel: kernels.to_vec(),
+            n_ups,
+            dec_channels,
+            flow_n_flows: 1,
+            flow_wn_layers: 1,
+            flow_wn_dilation_rate: 1,
+            film: false,
+        };
+        (store, dims)
+    }
+
+    /// A 3-stage voice with a **non-uniform** last kernel (16, 16, 8 — the mera
+    /// HiFi-GAN geometry's upsample kernels) loads: per-stage kernels honoured,
+    /// pad = (kernel − stride)/2, and the ResBlock table is 3·3 = 9 deep. The old
+    /// `for stage in 0..2` built only 6, so `forward` would index 6..8 (OOB).
+    #[test]
+    fn synth_3stage_loads_with_nups_deep_resblock_table() {
+        let (store, dims) = synth_store(&[16, 16, 8], &[8, 8, 8], 4, 2);
+        let dec = Decoder::load(&store, &dims, 4, 2, 2).expect("load 3-stage decoder");
+        assert_eq!(dec.ups.len(), 3, "3 upsample stages");
+        assert_eq!(
+            dec.resblocks.len(),
+            3 * RESBLOCK_KERNELS.len(),
+            "ResBlock table must be n_ups·num_kernels deep (not the fixed 6)"
+        );
+        // Per-stage kernel / stride / pad honoured (pad = (kernel − stride)/2).
+        assert_eq!(dec.ups[0].kernel, 16);
+        assert_eq!(dec.ups[2].kernel, 8);
+        assert_eq!(dec.ups[0].pad, (16 - DEC_UP_STRIDE) / 2);
+        assert_eq!(dec.ups[2].pad, (8 - DEC_UP_STRIDE) / 2);
+        assert_eq!(dec.subband_in_ch, 8);
+    }
+
+    /// `forward` completes for the 3-stage voice (no `resblocks` OOB) and emits
+    /// exactly `t_frames · ∏strides · hop · sub-bands` samples — derived from the
+    /// fixture geometry, not the metadata `samples_per_frame`. With pad =
+    /// (kernel − stride)/2 each transposed conv is an exact `×stride` upsample.
+    #[test]
+    fn synth_3stage_forward_output_length_matches_geometry() {
+        let (n_fft, hop, subbands) = (4, 2, 2);
+        let (store, dims) = synth_store(&[16, 16, 8], &[8, 8, 8], n_fft, subbands);
+        let dec = Decoder::load(&store, &dims, n_fft, hop, subbands).expect("load");
+        let t_frames = 4usize;
+        let z = pat(HIDDEN * t_frames, 9);
+        let g = pat(GIN, 10);
+        let pcm = dec
+            .forward(&Compute::cpu(), &z, t_frames, &g)
+            .expect("3-stage forward");
+        // Each stage upsamples ×DEC_UP_STRIDE (pad = (k−s)/2 ⇒ out = in·stride).
+        let strides_product = DEC_UP_STRIDE.pow(dims.n_ups as u32);
+        let expected = t_frames * strides_product * hop * subbands;
+        assert_eq!(
+            pcm.len(),
+            expected,
+            "output length must follow the geometry"
+        );
+        assert!(pcm.iter().all(|s| s.is_finite()), "PCM must be finite");
+    }
+
+    /// The 2-stage geometry (the shipping css10 / v7 voices) still builds the
+    /// canonical 6-deep table and forwards — the generalization reduces cleanly.
+    #[test]
+    fn synth_2stage_reduces_to_six_resblocks() {
+        let (n_fft, hop, subbands) = (4, 4, 4);
+        let (store, dims) = synth_store(&[16, 16], &[128, 64], n_fft, subbands);
+        let dec = Decoder::load(&store, &dims, n_fft, hop, subbands).expect("load 2-stage");
+        assert_eq!(dec.resblocks.len(), 6, "2-stage table is 6 deep");
+        assert_eq!(dec.subband_in_ch, 64, "last stage width = DEC_INITIAL/4");
+        let t_frames = 3usize;
+        let pcm = dec
+            .forward(
+                &Compute::cpu(),
+                &pat(HIDDEN * t_frames, 11),
+                t_frames,
+                &pat(GIN, 12),
+            )
+            .expect("2-stage forward");
+        assert_eq!(pcm.len(), t_frames * DEC_UP_STRIDE.pow(2) * hop * subbands);
+    }
 }

@@ -103,13 +103,25 @@ def created_timestamp(root: str) -> str:
 
 
 def resolve_graph(
-    root: str, package: str, features: list[str], no_default_features: bool
+    root: str,
+    package: str,
+    features: list[str],
+    no_default_features: bool,
+    tree_cwd: str | None = None,
 ) -> list[tuple[str, str]]:
     # `--color never`: CI exports CARGO_TERM_COLOR=always, which makes cargo
     # wrap the dedup marker in ANSI escapes ("... (/path) \x1b[33m\x1b[2m(*)")
     # and TREE_LINE then rejects the line as format drift. It only shows up
     # once a package appears twice in the graph, so it stayed latent until
     # vokra-mmap became a shared dependency.
+    #
+    # `tree_cwd` (X-07-T02): the excluded integration workspaces
+    # (`integrations/vokra-godot` et al.) carry their OWN Cargo.toml / Cargo.lock
+    # and are invisible to the root manifest, so `cargo tree` must run WITH THAT
+    # DIRECTORY AS CWD to resolve their closure. Only the `cargo tree` invocation
+    # moves; the git SHA + SOURCE_DATE_EPOCH determinism still derive from the
+    # repository root (`root`), because the excluded workspace lives inside the
+    # same git checkout. Defaults to `root` (the root workspace) when unset.
     cmd = [
         "cargo",
         "tree",
@@ -126,7 +138,7 @@ def resolve_graph(
         cmd.append("--no-default-features")
     if features:
         cmd += ["--features", ",".join(features)]
-    out = run(cmd, cwd=root)
+    out = run(cmd, cwd=tree_cwd or root)
 
     pkgs: dict[str, str] = {}
     for raw in out.splitlines():
@@ -241,19 +253,42 @@ def main() -> None:
         help="SPDX document name (default: <package>-sbom)",
     )
     ap.add_argument("--output", required=True, help="output path for the SPDX JSON")
+    ap.add_argument(
+        "--manifest-dir",
+        default=None,
+        help=(
+            "directory to run `cargo tree` in (default: repo root). Point this at "
+            "an EXCLUDED integration workspace such as integrations/vokra-godot to "
+            "document its closure; git SHA / SOURCE_DATE_EPOCH still derive from "
+            "the repository root."
+        ),
+    )
     args = ap.parse_args()
 
     features = [f for f in args.features.split(",") if f]
     root = repo_root()
     sha = git_head_sha(root)
     created = created_timestamp(root)
-    graph = resolve_graph(root, args.package, features, args.no_default_features)
+    tree_cwd = None
+    if args.manifest_dir:
+        tree_cwd = args.manifest_dir
+        if not os.path.isabs(tree_cwd):
+            tree_cwd = os.path.join(root, tree_cwd)
+        tree_cwd = os.path.abspath(tree_cwd)
+        if not os.path.isdir(tree_cwd):
+            fail(f"--manifest-dir is not a directory: {tree_cwd}")
+        if not os.path.isfile(os.path.join(tree_cwd, "Cargo.toml")):
+            fail(f"--manifest-dir has no Cargo.toml: {tree_cwd}")
+    graph = resolve_graph(
+        root, args.package, features, args.no_default_features, tree_cwd
+    )
 
     feature_comment = (
         f"Dependency graph of {args.package} resolved by `cargo tree -e normal` "
         f"with feature selection: "
         f"{'--no-default-features ' if args.no_default_features else ''}"
-        f"--features {','.join(features) if features else '(none)'}. "
+        f"--features {','.join(features) if features else '(none)'}"
+        f"{f' [manifest-dir {args.manifest_dir}]' if args.manifest_dir else ''}. "
         f"Runtime dependencies only (no dev/build deps). "
         f"Generated at commit {sha}."
     )

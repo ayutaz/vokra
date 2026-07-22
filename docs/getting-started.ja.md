@@ -8,7 +8,11 @@ ASR → TTS の 3 デモを CPU で動かします。GPU（Metal / CUDA）や配
 
 ## 前提条件
 
-- **Rust ツールチェイン**: 1.75 以上（`rustup default stable`）
+- **Rust ツールチェイン**: 1.89 以上（`rustup default stable`）。1.89 は *実効*
+  MSRV です。workspace の宣言は `rust-version = "1.85"`（edition 2024 の下限）
+  ですが、`vokra-backend-cpu` が AVX-512 intrinsics（Rust 1.89 で安定化）の
+  ため自身の下限を 1.89 に引き上げており、この crate は全ビルドに入ります。
+  CI の `msrv` job で検証しています。
 - **git**: リポジトリの取得に使用
 - **Python 3.10+**: モデル変換の PyTorch 依存を用意するだけで、Vokra ラン
   タイム自体は Python に依存しません（`FR-LD-05`）
@@ -160,11 +164,15 @@ vokra_session_destroy(s);
   - [Unity + IL2CPP](tutorials/unity.ja.md)
   - [iOS Swift Package](tutorials/ios.ja.md)
   - [Python bindings](tutorials/python.ja.md)
+  - [Web (WASM / WebGPU)](tutorials/web.ja.md)
+  - [Android (native JNI)](tutorials/android.ja.md)
+  - [Godot GDExtension](tutorials/godot.ja.md)
+  - [デスクトップ CLI deep-dive](tutorials/cli.ja.md)
+  - [サーバ（4 互換 API）](tutorials/server.ja.md)
+- **バックエンドの追加**: [backend-guide.ja.md](backend-guide.ja.md)
+- **API リファレンス**: [api-reference.ja.md](api-reference.ja.md)
 - **他ランタイムからの移行**: [Migration Guide](migration-guide.ja.md)
   （ONNX Runtime / whisper.cpp / sherpa-onnx から）
-- **サーバ運用**: [`integrations/vokra-server`](../integrations/vokra-server)
-  で OpenAI Whisper / vLLM / piper-plus HTTP / Wyoming Protocol の 4 互換
-  API を単一バイナリで公開
 - **License / Compliance**: [`docs/license-audit.md`](license-audit.md)、
   [`docs/legal-compliance.md`](legal-compliance.md)
 

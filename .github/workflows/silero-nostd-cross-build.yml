@@ -1,0 +1,123 @@
+# M5-03 Silero VAD no_std cross-build CI — Cortex-M55 (thumbv8m) Tier 3.
+#
+# Purpose (docs/adr/M5-03-iot-tier3-nostd.md §(g), ticket M5-03-T10):
+#   Prove the no_std(+alloc) Silero VAD forward core (`vokra-vad-micro`) and the
+#   `vokra-core` subset it sits on keep cross-compiling for bare-metal Cortex-M55
+#   — the rustc targets `thumbv8m.main-none-eabihf` (FP-armv8 hard-float) and
+#   `thumbv8m.main-none-eabi` (soft-float). This is the CI half of the
+#   completion condition "Cortex-M55 で Silero VAD が動作" (SRS §6, NFR-PT-03);
+#   the literal on-silicon / Arm-FVP run is an owner task (M5-03-T17).
+#
+# Cadence — WEEKLY, deliberately NOT per-PR (NFR-MT-02):
+#   Cortex-M55 is a **Tier 3** platform (`docs/system-requirements.md` NFR-MT-02
+#   = "Tier 3 weekly community"), unlike the RISC-V `riscv-cross-build` leg,
+#   which is a Tier 1 devboard target and correctly runs per-PR inside ci.yml.
+#   So this is an INDEPENDENT workflow on `workflow_dispatch` + a weekly Monday
+#   cron, mirroring the cool-off posture of gpu-vulkan-parity.yml /
+#   godot-crossbuild.yml. It is NOT a required branch-protection check; the
+#   owner promotes it after a consecutive-green window (M5-03-T18).
+#
+#   NOTE (the fast half runs per-PR anyway): the std-mixin tripwire
+#   `scripts/check-nostd-subset.sh` — which cross-builds the same no_std subset
+#   as its authoritative compile gate — runs PER-PR in ci.yml's `license` job
+#   (M5-03-T15). That catches a std leak on every PR; this weekly leg adds the
+#   soft-float ABI target + clippy + the release build, and keeps the Tier-3
+#   cadence honest per NFR-MT-02 (the split rationale is ADR §(j)).
+#
+# Helium (MVE) — scalar only, honestly (ADR §(e), measured):
+#   MVE intrinsics are NOT on stable Rust (measured: E0658
+#   `stdarch_arm_neon_intrinsics`; `mve.fp` target_feature invalid on stable).
+#   The forward therefore runs SCALAR on Cortex-M55 and meets the completion
+#   condition without Helium. Because no MVE `asm!` was adopted, there is
+#   deliberately NO asm-grep tripwire here (unlike riscv-cross-build's RVV
+#   mnemonic grep) — writing one would be fabricating a check for instructions
+#   we do not emit. A raw-asm MVE accel is an opt-in owner follow-up (M5-03-T18).
+#
+# Zero-dep (NFR-DS-02):
+#   Cross-building adds no crate to the root Cargo.lock (the no_std subset has
+#   only the first-party `vokra-core` dep). The last step diffs Cargo.lock as a
+#   belt-and-suspenders tripwire, the same one riscv-cross-build uses.
+#
+# Untested on this machine: the initial `workflow_dispatch` run is an owner
+# handoff — the authoring host (Apple Silicon macOS) DID cross-build both
+# thumbv8m targets locally (M5-03 verification), but this GitHub-hosted
+# ubuntu-latest run has not yet executed.
+
+name: silero-nostd-cross-build
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly Monday 10:00 UTC — an unused slot on the shared weekly ladder
+    # (kokoro 04:00, whisper 05:00, vulkan 05:30, cuda 06:00, csm 06:30,
+    # web-wasm 07:00, moshi 07:30, utmos 08:00, godot 08:30, release-cadence
+    # 09:00). Off-peak US/EU so a rustup/apt hiccup surfaces without blocking
+    # active development. Tier 3 cadence per NFR-MT-02 (ADR §(j)).
+    - cron: '0 10 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: silero-nostd-cross-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  cross-build:
+    name: cross-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Both Cortex-M55 ABIs: hard-float (FP-armv8) and soft-float.
+          targets: thumbv8m.main-none-eabihf, thumbv8m.main-none-eabi
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: silero-nostd-cross-build
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: std-mixin tripwire (authoritative compile gate + symbol scan)
+        # scripts/check-nostd-subset.sh cross-builds the no_std subset
+        # (vokra-core + vokra-vad-micro) for both thumbv8m ABIs with
+        # --no-default-features (= #![no_std]) and nm-scans the rlibs for any
+        # leaked `std` namespace symbol. --self-test first proves the compile
+        # gate still detects an injected `use std::…` leak (fabricated-pass
+        # prevention). This is the same gate ci.yml runs per-PR; running it here
+        # too keeps the weekly leg self-contained.
+        run: |
+          bash scripts/check-nostd-subset.sh --self-test
+          bash scripts/check-nostd-subset.sh
+
+      - name: Cross-build vokra-vad-micro (thumbv8m.main-none-eabihf, release)
+        # Release build so the size/opt behaviour matches a shipped firmware
+        # library. `--no-default-features` flips the crate to #![no_std]; the
+        # Silero forward + the self-contained scalar exp/tanh/sqrt (no libm)
+        # compile with only `core` + `alloc`.
+        run: cargo build --release -p vokra-vad-micro --no-default-features --target thumbv8m.main-none-eabihf
+
+      - name: Cross-build vokra-vad-micro (thumbv8m.main-none-eabi, soft-float)
+        # The soft-float ABI variant — Cortex-M55 parts configured without the
+        # FPU, and the ABI the Newton `sqrt` default (no HW `vsqrt` dependence)
+        # keeps working on.
+        run: cargo build --release -p vokra-vad-micro --no-default-features --target thumbv8m.main-none-eabi
+
+      - name: Cross-build vokra-core no_std subset (both ABIs)
+        # The foundation the forward sits on (error + GGUF reader parse /
+        # from_external). Building it standalone isolates a std leak in the
+        # subset from one in the forward.
+        run: |
+          cargo build --release -p vokra-core --no-default-features --target thumbv8m.main-none-eabihf
+          cargo build --release -p vokra-core --no-default-features --target thumbv8m.main-none-eabi
+
+      - name: Clippy (thumbv8m.main-none-eabihf, deny warnings)
+        # Deny warnings on the no_std configuration too — catches
+        # target-specific lint regressions the host build would miss.
+        run: cargo clippy --release -p vokra-vad-micro --no-default-features --target thumbv8m.main-none-eabihf --all-targets -- -D warnings
+
+      - name: Zero-dep invariant (Cargo.lock unchanged by the cross-build)
+        # NFR-DS-02: cross-building the no_std subset must NOT add any crate to
+        # the root Cargo.lock. The no_std subset has only the first-party
+        # `vokra-core` dep, so this diff must be empty.
+        run: git diff --exit-code Cargo.lock

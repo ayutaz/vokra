@@ -114,7 +114,8 @@ pub(crate) fn encode(
     // + `normed` allocations sit here in `encode()`, OUTSIDE the ZERO-ALLOC
     // `encoder_block` region, so the hot-path alloc guard stays green.
     if compute.prenorm_stack_is_fused() {
-        let layers: Vec<PrenormLayer<'_>> = w.layers.iter().map(prenorm_view).collect();
+        let layers: Vec<PrenormLayer<'_>> =
+            w.layers.iter().map(prenorm_view).collect::<Result<_>>()?;
         let mut normed = vec![0.0f32; t * d];
         compute.encode_prenorm_encoder(
             t,
@@ -236,25 +237,32 @@ pub(crate) fn encoder_block(
 /// (`k_bias: None`); every other projection carries one. Called once per block in
 /// `encode()`, off the ZERO-ALLOC hot region. `pub(crate)` so the Voxtral
 /// audio tower's fused-stack path reuses the identical view.
-pub(crate) fn prenorm_view(l: &EncoderLayer) -> PrenormLayer<'_> {
-    PrenormLayer {
+/// # Errors
+///
+/// [`VokraError::UnsupportedOp`] when any projection kept its K-quant
+/// super-blocks (M5-15): this view exists to hand a device f32 weight
+/// pointers, and the fused K-quant path is CPU-only. Failing here is the
+/// FR-EX-08-correct outcome — the alternative is uploading a weight that is
+/// not there.
+pub(crate) fn prenorm_view(l: &EncoderLayer) -> Result<PrenormLayer<'_>> {
+    Ok(PrenormLayer {
         attn_ln_gamma: &l.attn_ln.gamma,
         attn_ln_beta: &l.attn_ln.beta,
-        q_w: &l.attn.q.w_t,
+        q_w: l.attn.q.dense_w_t()?,
         q_bias: l.attn.q.bias.as_deref(),
-        k_w: &l.attn.k.w_t,
+        k_w: l.attn.k.dense_w_t()?,
         k_bias: l.attn.k.bias.as_deref(),
-        v_w: &l.attn.v.w_t,
+        v_w: l.attn.v.dense_w_t()?,
         v_bias: l.attn.v.bias.as_deref(),
-        out_w: &l.attn.out.w_t,
+        out_w: l.attn.out.dense_w_t()?,
         out_bias: l.attn.out.bias.as_deref(),
         mlp_ln_gamma: &l.mlp_ln.gamma,
         mlp_ln_beta: &l.mlp_ln.beta,
-        fc1_w: &l.fc1.w_t,
+        fc1_w: l.fc1.dense_w_t()?,
         fc1_bias: l.fc1.bias.as_deref(),
-        fc2_w: &l.fc2.w_t,
+        fc2_w: l.fc2.dense_w_t()?,
         fc2_bias: l.fc2.bias.as_deref(),
-    }
+    })
 }
 
 /// Conv1d output length for the given kernel / stride / padding.

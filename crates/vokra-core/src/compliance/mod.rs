@@ -42,10 +42,12 @@
 //! returns [`VokraError::ResearchLicenseRequired`], it never skips or
 //! substitutes.
 
+mod consent;
 mod level;
 mod license_class;
 mod watermark;
 
+pub use consent::{ConsentManifest, ConsentScope, SignatureStatus};
 pub use level::{
     ComplianceConfig, ComplianceLevel, DisclosureConfig, SpeakerEmbeddingPolicy, VoiceCloningPolicy,
 };

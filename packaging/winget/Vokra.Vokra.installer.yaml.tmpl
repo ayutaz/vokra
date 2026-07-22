@@ -1,0 +1,21 @@
+# winget installer manifest for Vokra (X-07-T25).
+# Installs the Windows CLI (a zip archive of vokra-cli.exe). Binary-based, so
+# InstallerSha256 references the T30 Windows CLI asset — a T32-gated build that
+# is filled with a PENDING placeholder until the owner enables T30 + tags.
+# GENERATED — edit the .tmpl, re-run gen_package_managers.py. SBOM: @@SBOM_URL@@
+PackageIdentifier: Vokra.Vokra
+PackageVersion: "@@VERSION@@"
+Platform:
+  - Windows.Desktop
+MinimumOSVersion: 10.0.0.0
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: vokra-cli.exe
+    PortableCommandAlias: vokra
+Installers:
+  - Architecture: x64
+    InstallerUrl: "@@BASE_URL@@/vokra-cli-@@VERSION@@-x86_64-windows.zip"
+    InstallerSha256: "@@SHA256:cli-windows@@"
+ManifestType: installer
+ManifestVersion: 1.6.0
