@@ -344,8 +344,9 @@ mod tests {
         spec.write_into(&mut b);
         let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
 
-        // All 13 keys present and no others.
-        assert_eq!(file.metadata().len(), 13);
+        // All 13 frontend keys present and no others, plus the 2 unconditional
+        // `vokra.schema.*` stamps the writer adds to every GGUF.
+        assert_eq!(file.metadata().len(), 13 + 2);
         let read = FrontendSpec::from_gguf(&file).unwrap();
         assert_eq!(read, spec);
     }

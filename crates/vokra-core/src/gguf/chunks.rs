@@ -143,6 +143,30 @@ pub const KEY_PROVENANCE_SOURCE: &str = "vokra.provenance.source";
 /// without a displayable string.
 pub const KEY_PROVENANCE_ATTRIBUTION: &str = "vokra.provenance.attribution";
 
+/// `vokra.schema.version` — Vokra GGUF **schema** generation (`UINT32`).
+///
+/// Hand-bumped ([`SCHEMA_VERSION`]) whenever a converter starts emitting a
+/// metadata or tensor group that loaders may rely on. Its whole purpose is to
+/// make a **stale artifact** — a GGUF produced by an older converter, missing a
+/// group newer code expects — visible at load instead of degrading quietly.
+///
+/// Absent means "produced before schema stamping existed", which is a real
+/// answer, not an error: every GGUF converted up to that point lacks the key.
+/// Read it through [`crate::gguf::schema::schema_version`].
+///
+/// **Not** the crate version: `CARGO_PKG_VERSION` has been `0.1.0-alpha.0`
+/// across M0…M5, so it cannot distinguish two artifacts from different
+/// converter generations. That is exactly the case this key exists for.
+pub const KEY_SCHEMA_VERSION: &str = "vokra.schema.version";
+
+/// `vokra.schema.producer` — the converter build that wrote the file, e.g.
+/// `"vokra-convert 0.1.0-alpha.0"` (`STRING`).
+///
+/// Diagnostic companion to [`KEY_SCHEMA_VERSION`]: it identifies the build for
+/// a bug report but must never gate behaviour, because the version string does
+/// not move between releases yet.
+pub const KEY_SCHEMA_PRODUCER: &str = "vokra.schema.producer";
+
 // `vokra.quant.*` — quantization policy metadata (M2-08, FR-QT-02).
 //
 // The runtime reads its quantization policy **only** from GGUF metadata (no

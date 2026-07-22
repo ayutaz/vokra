@@ -221,9 +221,35 @@ impl GgufBuilder {
         let mut metadata: Vec<(String, GgufMetadataValue)> = self
             .metadata
             .iter()
-            .filter(|(k, _)| k != chunks::KEY_GENERAL_ALIGNMENT)
+            .filter(|(k, _)| {
+                k != chunks::KEY_GENERAL_ALIGNMENT
+                    && k != chunks::KEY_SCHEMA_VERSION
+                    && k != chunks::KEY_SCHEMA_PRODUCER
+            })
             .cloned()
             .collect();
+        // Schema stamp — written here, at the one choke point every
+        // serialization passes through (`to_bytes`, `GgufStreamWriter`,
+        // `metadata_count`), rather than in each of the 13 model converters.
+        // Only three of those share a provenance helper, so a per-converter
+        // stamp would silently miss the rest, and a GGUF that escapes unstamped
+        // is exactly the artifact this is meant to make visible.
+        //
+        // Any caller-supplied value is filtered out above so this cannot be
+        // spoofed or duplicated: the stamp always describes the build that
+        // actually wrote the bytes.
+        metadata.push((
+            chunks::KEY_SCHEMA_VERSION.to_owned(),
+            GgufMetadataValue::U32(crate::gguf::schema::SCHEMA_VERSION),
+        ));
+        metadata.push((
+            chunks::KEY_SCHEMA_PRODUCER.to_owned(),
+            GgufMetadataValue::String(format!(
+                "{} {}",
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION")
+            )),
+        ));
         if self.alignment != DEFAULT_ALIGNMENT {
             metadata.push((
                 chunks::KEY_GENERAL_ALIGNMENT.to_owned(),
@@ -708,7 +734,8 @@ mod tests {
         b.add_u32("k", 2);
         let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
         assert_eq!(file.get("k"), Some(&GgufMetadataValue::U32(2)));
-        assert_eq!(file.metadata().len(), 1);
+        // 1 caller key + the 2 unconditional `vokra.schema.*` stamps.
+        assert_eq!(file.metadata().len(), 1 + 2);
     }
 
     #[test]

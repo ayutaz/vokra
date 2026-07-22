@@ -53,12 +53,14 @@ pub mod chunks;
 #[cfg(feature = "std")]
 pub mod frontend_spec;
 pub mod quant;
+pub mod schema;
 pub mod tensor;
 pub mod value;
 
 #[cfg(feature = "std")]
 pub use frontend_spec::{FieldMismatch, FrontendPolicy, FrontendSpec};
 pub use reader::{AsBytes, GgufFile};
+pub use schema::{SCHEMA_VERSION, SchemaGeneration, schema_version, stale_group_hint};
 pub use tensor::{GgmlType, GgufTensorInfo};
 pub use value::{GgufArray, GgufMetadataValue, GgufValueType};
 #[cfg(feature = "std")]
