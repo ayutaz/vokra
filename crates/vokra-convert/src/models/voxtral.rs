@@ -69,6 +69,7 @@
 //! flags any downstream loader that needs the missing hparams. Real training
 //! runs always pass a config; this keeps unit tests small.
 
+use vokra_core::compliance::LicenseClass;
 use vokra_core::gguf::tensor::QK_K;
 use vokra_core::gguf::{
     FrontendSpec, GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
@@ -490,6 +491,17 @@ pub(crate) fn convert_shards(
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    // Self-describing redistribution (publishing to a public model hub): the
+    // artifact must carry its own licence, not rely on a consumer running
+    // Vokra's registry resolver. Values transcribed from
+    // docs/license-audit.md §3, which holds the primary-source citations.
+    vokra_core::stamp_provenance(
+        &mut b,
+        LicenseClass::Permissive,
+        "Apache-2.0",
+        Some("voxtral"),
+        Some("mistralai/Voxtral-Mini-3B (Apache-2.0)"),
+    );
     b.add_string(chunks::KEY_MODEL_NAME, &name);
     // Encoder is Whisper-derived; the frontend spec is Whisper's for the same
     // n_mels (128 on Voxtral). Runtime front-end check gates a mismatched GGUF

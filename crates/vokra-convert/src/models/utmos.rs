@@ -36,6 +36,7 @@
 //! This is the same offline-fold posture as the DAC converter's `out_proj`
 //! (`models/dac.rs`), and it means the runtime binds a plain grouped conv.
 
+use vokra_core::compliance::LicenseClass;
 use vokra_core::gguf::{
     GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
 };
@@ -266,6 +267,17 @@ pub(crate) fn convert(
 
     // ---- metadata ----------------------------------------------------------
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    // Self-describing redistribution (publishing to a public model hub): the
+    // artifact must carry its own licence, not rely on a consumer running
+    // Vokra's registry resolver. Values transcribed from
+    // docs/license-audit.md §3, which holds the primary-source citations.
+    vokra_core::stamp_provenance(
+        &mut b,
+        LicenseClass::Permissive,
+        "MIT",
+        Some("utmos"),
+        Some("sarulab-speech/UTMOS22 (MIT)"),
+    );
     b.add_string("vokra.utmos.arch.variant", ARCH_VARIANT_V1);
     b.add_u32("vokra.utmos.sample_rate", cfg.sample_rate);
     b.add_metadata("vokra.utmos.conv.channels", u32_array(&cfg.conv_channels));

@@ -21,6 +21,7 @@
 //! consumer (M0-06) reads them in the same order; consistency within Vokra is
 //! the contract.
 
+use vokra_core::compliance::LicenseClass;
 use vokra_core::gguf::{
     FrontendSpec, GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
     tensor::QK_K,
@@ -479,6 +480,17 @@ pub(crate) fn convert_with_policy(
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    // Self-describing redistribution (publishing to a public model hub): the
+    // artifact must carry its own licence, not rely on a consumer running
+    // Vokra's registry resolver. Values transcribed from
+    // docs/license-audit.md §3, which holds the primary-source citations.
+    vokra_core::stamp_provenance(
+        &mut b,
+        LicenseClass::Permissive,
+        "MIT",
+        Some(ARCH),
+        Some("openai/whisper (MIT) — OpenAI official release"),
+    );
     b.add_string(chunks::KEY_MODEL_NAME, name);
     // The front-end spec's n_mels MUST come from the checkpoint (80 base / 128
     // large-v3), matching the hparams written by `write_hparams`; a hardcoded 80

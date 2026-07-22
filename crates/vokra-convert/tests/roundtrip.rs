@@ -43,7 +43,7 @@ fn whisper_safetensors_roundtrips_through_convert_file() {
     // 2 model keys + 13 frontend keys + 13 `vokra.whisper.*` hyperparameter keys
     // (M0-06-T04: n_mels, n_audio_ctx/state/head/layer, n_text_ctx/state/head/
     // layer, n_vocab, ffn_dim, eot, decoder_start_ids).
-    assert_eq!(summary.metadata_count, 30); // +2: vokra.schema.{version,producer}
+    assert_eq!(summary.metadata_count, 34); // +2 vokra.schema.* +4 vokra.provenance.*
 
     let file = GgufFile::open(&output).expect("load output gguf");
     assert_eq!(file.tensors().len(), 2);
@@ -239,7 +239,7 @@ fn kokoro_safetensors_roundtrips_through_convert_file() {
     // hidden_dim, istft.n_fft/hop/win_length, phoneme_symbols, voice_names).
     // Kokoro deliberately does NOT emit `vokra.frontend.*` — it is a TTS
     // decoder with no runtime-controlled input front-end.
-    assert_eq!(summary.metadata_count, 15); // +2: vokra.schema.{version,producer}
+    assert_eq!(summary.metadata_count, 19); // +2 vokra.schema.* +4 vokra.provenance.*
 
     let file = GgufFile::open(&output).expect("load output gguf");
     assert_eq!(file.tensors().len(), 5);
@@ -399,9 +399,9 @@ fn kokoro_safetensors_with_config_roundtrips_through_convert_kokoro_file() {
     // introduces new metadata keys, only replaces the *values* on
     // `phoneme_symbols` / `voice_names` / `num_voices`.
     assert_eq!(
-        summary.metadata_count, 15,
-        "config path emits the same 15 metadata keys as the placeholder path \
-         (2 model + 11 kokoro + 2 vokra.schema.*)"
+        summary.metadata_count, 19,
+        "config path emits the same 19 metadata keys as the placeholder path \
+         (2 model + 11 kokoro + 2 vokra.schema.* + 4 vokra.provenance.*)"
     );
 
     let file = GgufFile::open(&output).expect("load output gguf");

@@ -38,6 +38,7 @@
 //! to FP32 too, so the runtime loads a single dtype and computes in FP32.
 
 use std::collections::{BTreeMap, HashMap};
+use vokra_core::compliance::LicenseClass;
 
 use vokra_core::gguf::{
     GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
@@ -161,6 +162,17 @@ pub(crate) fn convert(onnx_bytes: &[u8]) -> Result<(GgufBuilder, CamPlusReport),
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    // Self-describing redistribution (publishing to a public model hub): the
+    // artifact must carry its own licence, not rely on a consumer running
+    // Vokra's registry resolver. Values transcribed from
+    // docs/license-audit.md §3, which holds the primary-source citations.
+    vokra_core::stamp_provenance(
+        &mut b,
+        LicenseClass::Permissive,
+        "Apache-2.0",
+        Some("campplus"),
+        Some("iic/speech_campplus via ayousanz/campplus-onnx (Apache-2.0)"),
+    );
     b.add_string(chunks::KEY_MODEL_NAME, "campplus");
     add_u32_array(&mut b, KEY_BLOCK_CONFIG, &block_config);
     b.add_u32(KEY_GROWTH, growth);

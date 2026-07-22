@@ -41,6 +41,7 @@
 //! (control flow, which weight feeds which op) is M0-05's 1:1-subgraph job; the
 //! tensor names here are the contract M0-05 loads against.
 
+use vokra_core::compliance::LicenseClass;
 use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
 
 use crate::ConvertError;
@@ -84,6 +85,17 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, SileroReport), Con
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    // Self-describing redistribution (publishing to a public model hub): the
+    // artifact must carry its own licence, not rely on a consumer running
+    // Vokra's registry resolver. Values transcribed from
+    // docs/license-audit.md §3, which holds the primary-source citations.
+    vokra_core::stamp_provenance(
+        &mut b,
+        LicenseClass::Permissive,
+        "MIT",
+        Some("silero-vad-v5"),
+        Some("snakers4/silero-vad v5 (MIT)"),
+    );
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
 
     let mut report = SileroReport::default();
