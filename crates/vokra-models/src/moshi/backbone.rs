@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex};
 
 use vokra_core::cache::paged::{BlockSize, KvDims, PagedKvCache};
 use vokra_core::cache::ring::RingKvCache;
-use vokra_core::gguf::{GgmlType, GgufFile, GgufTensorInfo};
+use vokra_core::gguf::{GgufFile, GgufTensorInfo};
 use vokra_core::rng::SplitMix64;
 use vokra_core::{BackendKind, Result, VokraError};
 
@@ -50,6 +50,15 @@ use crate::compute::{Compute, HotOp};
 use crate::cosyvoice2::llm::LlmBlockWeights;
 use crate::csm::backbone::xavier_uniform;
 use crate::csm::rope::{llama3_inv_freqs, rope_apply_adjacent};
+use crate::mapped_weights::{MappedModel, lock_scratch, mapped_info, transpose_widen, widen_into};
+
+/// Error identity for the Moshi mapped store: the resident alternative is
+/// `MoshiEngine::from_gguf_with_policy`, which dequantizes block-wise and so
+/// accepts payload dtypes the mapped path cannot address per element.
+const MOSHI_MAPPED: MappedModel = MappedModel {
+    name: "moshi",
+    resident_entry: "MoshiEngine::from_gguf_with_policy",
+};
 use crate::voxtral::text_decoder::{hadamard_inplace, rms_norm, silu_inplace};
 
 /// Compute-seam hot ops the Moshi backbone + depformer dispatch (the CSM
@@ -352,12 +361,32 @@ impl MappedTemporalBlocks {
         for i in 0..config.temporal.n_layer {
             let p = format!("transformer.layers.{i}");
             locs.push(MappedLayerLocs {
-                in_proj: mapped_info(&file, &format!("{p}.self_attn.in_proj_weight"), 3 * d * d)?,
-                out_proj: mapped_info(&file, &format!("{p}.self_attn.out_proj.weight"), d * d)?,
-                norm1: mapped_info(&file, &format!("{p}.norm1.alpha"), d)?,
-                norm2: mapped_info(&file, &format!("{p}.norm2.alpha"), d)?,
-                lin_in: mapped_info(&file, &format!("{p}.gating.linear_in.weight"), 2 * h * d)?,
-                lin_out: mapped_info(&file, &format!("{p}.gating.linear_out.weight"), d * h)?,
+                in_proj: mapped_info(
+                    &file,
+                    &format!("{p}.self_attn.in_proj_weight"),
+                    3 * d * d,
+                    MOSHI_MAPPED,
+                )?,
+                out_proj: mapped_info(
+                    &file,
+                    &format!("{p}.self_attn.out_proj.weight"),
+                    d * d,
+                    MOSHI_MAPPED,
+                )?,
+                norm1: mapped_info(&file, &format!("{p}.norm1.alpha"), d, MOSHI_MAPPED)?,
+                norm2: mapped_info(&file, &format!("{p}.norm2.alpha"), d, MOSHI_MAPPED)?,
+                lin_in: mapped_info(
+                    &file,
+                    &format!("{p}.gating.linear_in.weight"),
+                    2 * h * d,
+                    MOSHI_MAPPED,
+                )?,
+                lin_out: mapped_info(
+                    &file,
+                    &format!("{p}.gating.linear_out.weight"),
+                    d * h,
+                    MOSHI_MAPPED,
+                )?,
             });
         }
         let scratch = Mutex::new(MappedBlockScratch {
@@ -393,13 +422,7 @@ impl MappedTemporalBlocks {
 
     /// Locks the shared materialization scratch (whole-forward hold).
     fn lock_scratch(&self) -> Result<std::sync::MutexGuard<'_, MappedBlockScratch>> {
-        self.scratch.lock().map_err(|_| {
-            VokraError::InvalidArgument(
-                "moshi mapped blocks: materialization scratch mutex poisoned (a \
-                 prior panic mid-forward); reload the engine"
-                    .into(),
-            )
-        })
+        lock_scratch(&self.scratch, MOSHI_MAPPED)
     }
 
     /// Widens + transposes layer `layer` out of the mapping into
@@ -424,6 +447,7 @@ impl MappedTemporalBlocks {
             d,
             d,
             &mut b.q_w_t,
+            MOSHI_MAPPED,
         )?;
         transpose_widen(
             &bytes[d * d * esz..2 * d * d * esz],
@@ -431,6 +455,7 @@ impl MappedTemporalBlocks {
             d,
             d,
             &mut b.k_w_t,
+            MOSHI_MAPPED,
         )?;
         transpose_widen(
             &bytes[2 * d * d * esz..3 * d * d * esz],
@@ -438,6 +463,7 @@ impl MappedTemporalBlocks {
             d,
             d,
             &mut b.v_w_t,
+            MOSHI_MAPPED,
         )?;
         transpose_widen(
             self.file.tensor_bytes(&locs.out_proj),
@@ -445,16 +471,19 @@ impl MappedTemporalBlocks {
             d,
             d,
             &mut b.o_w_t,
+            MOSHI_MAPPED,
         )?;
         widen_into(
             self.file.tensor_bytes(&locs.norm1),
             locs.norm1.dtype,
             &mut b.attn_norm_gamma,
+            MOSHI_MAPPED,
         )?;
         widen_into(
             self.file.tensor_bytes(&locs.norm2),
             locs.norm2.dtype,
             &mut b.ffn_norm_gamma,
+            MOSHI_MAPPED,
         )?;
         // Packed [2h, d] gate/up halves.
         let bytes = self.file.tensor_bytes(&locs.lin_in);
@@ -465,6 +494,7 @@ impl MappedTemporalBlocks {
             h,
             d,
             &mut b.ffn_gate_w_t,
+            MOSHI_MAPPED,
         )?;
         transpose_widen(
             &bytes[h * d * esz..2 * h * d * esz],
@@ -472,6 +502,7 @@ impl MappedTemporalBlocks {
             h,
             d,
             &mut b.ffn_up_w_t,
+            MOSHI_MAPPED,
         )?;
         transpose_widen(
             self.file.tensor_bytes(&locs.lin_out),
@@ -479,6 +510,7 @@ impl MappedTemporalBlocks {
             d,
             h,
             &mut b.ffn_down_w_t,
+            MOSHI_MAPPED,
         )?;
         // Helium attention is bias-less (fused in_proj has no bias
         // tensor); pinned here so a stale scratch can never leak one.
@@ -486,136 +518,6 @@ impl MappedTemporalBlocks {
         b.k_b = None;
         b.v_b = None;
         Ok(&scratch.block)
-    }
-}
-
-/// Resolves a tensor descriptor for the mapped store: present, exact
-/// element count, dtype in `{F32, BF16}` (loud otherwise — FR-EX-08).
-fn mapped_info(file: &GgufFile, name: &str, want_elems: usize) -> Result<GgufTensorInfo> {
-    let info = file
-        .tensor_info(name)
-        .ok_or_else(|| VokraError::ModelLoad(format!("moshi: tensor `{name}`: missing")))?;
-    let elems = info
-        .element_count()
-        .map_err(|e| VokraError::ModelLoad(format!("moshi: tensor `{name}`: {e}")))?;
-    if elems != want_elems as u64 {
-        return Err(VokraError::ModelLoad(format!(
-            "moshi: tensor `{name}` has {elems} elements, expected {want_elems}"
-        )));
-    }
-    match info.dtype {
-        GgmlType::F32 | GgmlType::BF16 => Ok(info.clone()),
-        other => Err(VokraError::ModelLoad(format!(
-            "moshi mapped blocks: tensor `{name}` has dtype {other:?}; the \
-             bounded-memory mapped path supports F32 and BF16 payloads only — \
-             load through MoshiEngine::from_gguf_with_policy (resident) for \
-             other dtypes (FR-EX-08: explicit, not silent)"
-        ))),
-    }
-}
-
-/// Square tile edge for [`transpose_widen`], in elements.
-///
-/// The naive `dst[c * rows + r]` walk writes with a `rows * 4`-byte stride,
-/// so at Moshi-7B shapes (`rows` = 4096 / 11264) essentially every element
-/// costs a cache miss *and* a TLB miss. Tiling bounds the working set of an
-/// inner pass to `TILE` short runs on each side: per tile the destination
-/// touches `TILE` contiguous runs of `TILE` f32 (128 B each at `TILE = 32`)
-/// and the source `TILE` contiguous runs of `TILE` elements — together a few
-/// KiB, i.e. L1-resident, and each destination page is revisited `TILE` times
-/// while it is still mapped rather than once per full sweep.
-///
-/// 32 is chosen so a destination run (32 x 4 B = 128 B) is an exact multiple
-/// of the 64 B cache line on both aarch64 and x86-64, with no partial-line
-/// writes at tile boundaries for aligned starts.
-const TRANSPOSE_TILE: usize = 32;
-
-/// Widens + transposes a `[rows, cols]` row-major `F32`/`BF16` payload
-/// into `dst` as `[cols, rows]` — the fused equivalent of
-/// `quant::dequantize` + [`transpose`], byte-formula-identical to both
-/// (BF16: top half of the f32 pattern shifted up — exact; F32:
-/// `from_le_bytes`).
-///
-/// The traversal is **tiled** ([`TRANSPOSE_TILE`]) purely for locality: every
-/// destination element is written exactly once, from the same source element,
-/// through the same widening formula as the untiled walk. Reordering
-/// independent writes cannot change any value, so the result is
-/// **bit-identical** to the naive order — pinned by
-/// `tiled_transpose_matches_naive_bitwise` (odd shapes, both dtypes) and, at
-/// the store level, by `mapped_blocks_match_resident_bitwise_over_a_real_mmap`.
-fn transpose_widen(
-    src: &[u8],
-    dtype: GgmlType,
-    rows: usize,
-    cols: usize,
-    dst: &mut Vec<f32>,
-) -> Result<()> {
-    let n = rows * cols;
-    if src.len() != n * dtype.type_size() {
-        return Err(VokraError::ModelLoad(format!(
-            "moshi mapped blocks: payload is {} bytes, expected {} ({n} x {:?})",
-            src.len(),
-            n * dtype.type_size(),
-            dtype
-        )));
-    }
-    if !matches!(dtype, GgmlType::F32 | GgmlType::BF16) {
-        return Err(VokraError::ModelLoad(format!(
-            "moshi mapped blocks: unsupported dtype {dtype:?} (bind-time \
-             validation should have rejected this)"
-        )));
-    }
-    dst.clear();
-    dst.resize(n, 0.0);
-    let is_f32 = dtype == GgmlType::F32;
-    let esz = dtype.type_size();
-    for r0 in (0..rows).step_by(TRANSPOSE_TILE) {
-        let r_end = (r0 + TRANSPOSE_TILE).min(rows);
-        for c0 in (0..cols).step_by(TRANSPOSE_TILE) {
-            let c_end = (c0 + TRANSPOSE_TILE).min(cols);
-            for r in r0..r_end {
-                let row_base = r * cols;
-                for c in c0..c_end {
-                    let i = (row_base + c) * esz;
-                    dst[c * rows + r] = if is_f32 {
-                        f32::from_le_bytes([src[i], src[i + 1], src[i + 2], src[i + 3]])
-                    } else {
-                        f32::from_bits(u32::from(u16::from_le_bytes([src[i], src[i + 1]])) << 16)
-                    };
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Widens a dense `F32`/`BF16` payload into `dst` in storage order (the
-/// γ vectors — no transpose).
-fn widen_into(src: &[u8], dtype: GgmlType, dst: &mut Vec<f32>) -> Result<()> {
-    let esz = dtype.type_size();
-    match dtype {
-        GgmlType::F32 => {
-            dst.clear();
-            dst.reserve(src.len() / esz);
-            for c in src.chunks_exact(4) {
-                dst.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
-            }
-            Ok(())
-        }
-        GgmlType::BF16 => {
-            dst.clear();
-            dst.reserve(src.len() / esz);
-            for c in src.chunks_exact(2) {
-                dst.push(f32::from_bits(
-                    u32::from(u16::from_le_bytes([c[0], c[1]])) << 16,
-                ));
-            }
-            Ok(())
-        }
-        other => Err(VokraError::ModelLoad(format!(
-            "moshi mapped blocks: unsupported dtype {other:?} (bind-time \
-             validation should have rejected this)"
-        ))),
     }
 }
 
@@ -1495,6 +1397,8 @@ fn validate_block_shapes(config: &MoshiConfig, weights: &MoshiBackboneWeights) -
 
 #[cfg(test)]
 mod tests {
+    use vokra_core::gguf::GgmlType;
+
     use super::*;
 
     fn backbone() -> MoshiBackbone {
@@ -1870,113 +1774,6 @@ mod tests {
         let h_src = src.forward(&steps, &mut s1).unwrap();
         let h_re = reloaded.forward(&steps, &mut s2).unwrap();
         assert_eq!(h_src, h_re, "pack → GGUF → unpack is exact");
-    }
-
-    /// The untiled reference walk `transpose_widen` replaced — kept verbatim
-    /// as the oracle so the tiling can never drift into a value change.
-    fn transpose_widen_naive(
-        src: &[u8],
-        dtype: GgmlType,
-        rows: usize,
-        cols: usize,
-        dst: &mut Vec<f32>,
-    ) {
-        dst.clear();
-        dst.resize(rows * cols, 0.0);
-        for r in 0..rows {
-            for c in 0..cols {
-                dst[c * rows + r] = match dtype {
-                    GgmlType::F32 => {
-                        let i = (r * cols + c) * 4;
-                        f32::from_le_bytes([src[i], src[i + 1], src[i + 2], src[i + 3]])
-                    }
-                    GgmlType::BF16 => {
-                        let i = (r * cols + c) * 2;
-                        f32::from_bits(u32::from(u16::from_le_bytes([src[i], src[i + 1]])) << 16)
-                    }
-                    other => panic!("oracle covers F32/BF16 only, got {other:?}"),
-                };
-            }
-        }
-    }
-
-    /// Tiling is a pure traversal reorder: every destination element is
-    /// written once, from the same source element, through the same formula.
-    /// Shapes deliberately straddle `TRANSPOSE_TILE` (partial edge tiles on
-    /// both axes, and the degenerate 1-row / 1-col cases) so an off-by-one in
-    /// the tile clamp cannot hide.
-    #[test]
-    fn tiled_transpose_matches_naive_bitwise() {
-        // A deterministic bit pattern that exercises sign / exponent /
-        // mantissa, including values whose BF16 top-half is negative.
-        let word = |k: usize| -> u16 { ((k as u32).wrapping_mul(2_654_435_761) >> 16) as u16 };
-
-        for &(rows, cols) in &[
-            (1, 1),
-            (1, 77),
-            (77, 1),
-            (TRANSPOSE_TILE, TRANSPOSE_TILE),
-            (TRANSPOSE_TILE + 1, TRANSPOSE_TILE - 1),
-            (33, 65),
-            (70, 37),
-            (129, 31),
-        ] {
-            let n = rows * cols;
-
-            // --- BF16 ---
-            let mut bf16 = Vec::with_capacity(n * 2);
-            for k in 0..n {
-                bf16.extend_from_slice(&word(k).to_le_bytes());
-            }
-            let (mut got, mut want) = (Vec::new(), Vec::new());
-            transpose_widen(&bf16, GgmlType::BF16, rows, cols, &mut got).unwrap();
-            transpose_widen_naive(&bf16, GgmlType::BF16, rows, cols, &mut want);
-            assert_eq!(
-                got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-                want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-                "BF16 {rows}x{cols}: tiled transpose must be bit-identical"
-            );
-
-            // --- F32 ---
-            let mut f32b = Vec::with_capacity(n * 4);
-            for k in 0..n {
-                let bits = (u32::from(word(k)) << 16) | u32::from(word(k + 1));
-                f32b.extend_from_slice(&bits.to_le_bytes());
-            }
-            let (mut got, mut want) = (Vec::new(), Vec::new());
-            transpose_widen(&f32b, GgmlType::F32, rows, cols, &mut got).unwrap();
-            transpose_widen_naive(&f32b, GgmlType::F32, rows, cols, &mut want);
-            assert_eq!(
-                got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-                want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-                "F32 {rows}x{cols}: tiled transpose must be bit-identical"
-            );
-        }
-    }
-
-    /// A short payload is still a loud bind-time error, and an unsupported
-    /// dtype is rejected before any allocation (the tiled rewrite moved the
-    /// dtype check ahead of the fill — pin both).
-    #[test]
-    fn transpose_widen_rejects_bad_payload_and_dtype() {
-        let mut dst = Vec::new();
-        let err = transpose_widen(&[0u8; 6], GgmlType::BF16, 2, 2, &mut dst).unwrap_err();
-        assert!(
-            format!("{err}").contains("payload is 6 bytes"),
-            "short payload must name the byte counts, got: {err}"
-        );
-        // The payload check runs first, so reach the dtype arm with a
-        // correctly-sized (if semantically meaningless) quantized payload.
-        let q4k = vec![0u8; 4 * GgmlType::Q4K.type_size()];
-        let err = transpose_widen(&q4k, GgmlType::Q4K, 2, 2, &mut dst).unwrap_err();
-        assert!(
-            format!("{err}").contains("unsupported dtype"),
-            "unsupported dtype must be explicit, got: {err}"
-        );
-        assert!(
-            dst.is_empty(),
-            "an unsupported dtype must be rejected before the destination is filled"
-        );
     }
 
     #[test]

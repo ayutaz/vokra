@@ -549,6 +549,7 @@ mod tests {
             blocks,
             final_norm_gamma: vec![1.0f32; d],
             prefix: "",
+            mapped: None,
         }
     }
 
@@ -627,6 +628,7 @@ mod tests {
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",
+            mapped: None,
         };
         let head = AsrHead::new(&cfg, &ae, &td);
         assert!(matches!(
@@ -953,6 +955,7 @@ mod tests {
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",
+            mapped: None,
         };
         let head = AsrHead::new(&cfg, &ae, &td);
         let bc = BeamConfig::greedy(2, 4);

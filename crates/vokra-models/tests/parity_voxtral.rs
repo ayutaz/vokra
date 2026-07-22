@@ -445,7 +445,14 @@ fn decoder_step_logits_and_greedy_match_committed_fixtures() {
     let expected_logits = read_f32("text_decoder_step_out.f32.bin");
     let expected_tokens = read_tokens_i64("asr_tokens.i64.bin");
 
-    let decoder = TextDecoder::load(&file, &cfg).expect("bind the real GQA text decoder");
+    // Bind through the BOUNDED-MEMORY store. The resident `TextDecoder::load`
+    // widens `language_model` to ~14.95 GiB of owned f32 (7.48 GiB stored
+    // BF16), which does not fit on a 16 GiB host — this leg was unrunnable
+    // there until the mapped path landed. Values are bit-identical to the
+    // resident binding (pinned by `mapped_blocks_match_resident_bitwise`), so
+    // this still tests the same numbers, just without the heap blowup.
+    let decoder = TextDecoder::load_mapped(std::sync::Arc::new(file), &cfg)
+        .expect("bind the real GQA text decoder (mapped)");
     let mut session = TextDecoderSession::cpu(&cfg, &decoder).expect("cpu decoder session");
 
     // Replay the exact transcription-request prompt layout the reference

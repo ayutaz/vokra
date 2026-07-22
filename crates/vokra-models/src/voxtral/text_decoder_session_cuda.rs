@@ -136,7 +136,7 @@ impl<'m> VoxtralCudaDecodeSession<'m> {
     /// - [`VokraError::UnsupportedOp`] if a Voxtral hot op is not covered
     ///   by the CUDA backend on this build.
     /// - [`VokraError::ModelLoad`] if `config` carries a `0`-sentinel
-    ///   value or if `decoder.blocks.len() != config.text.n_layer`.
+    ///   value or if `decoder.n_layer() != config.text.n_layer`.
     ///
     /// [`VokraError::BackendUnavailable`]: vokra_core::VokraError::BackendUnavailable
     /// [`VokraError::UnsupportedOp`]: vokra_core::VokraError::UnsupportedOp
@@ -366,6 +366,7 @@ mod tests {
             blocks,
             final_norm_gamma: vec![1.0f32; d],
             prefix: "",
+            mapped: None,
         }
     }
 
@@ -438,6 +439,7 @@ mod tests {
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",
+            mapped: None,
         };
         match VoxtralCudaDecodeSession::new_from_decoder(&cfg, &td) {
             Ok(_) => panic!("must fail on 0-sentinel config"),
@@ -588,6 +590,7 @@ mod tests {
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",
+            mapped: None,
         };
         match VoxtralCudaDecodeSession::new_from_decoder_full_residency(&cfg, &td) {
             Ok(_) => panic!("must fail on 0-sentinel config"),
