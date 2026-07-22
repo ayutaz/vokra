@@ -514,11 +514,35 @@ fn mapped_info(file: &GgufFile, name: &str, want_elems: usize) -> Result<GgufTen
     }
 }
 
+/// Square tile edge for [`transpose_widen`], in elements.
+///
+/// The naive `dst[c * rows + r]` walk writes with a `rows * 4`-byte stride,
+/// so at Moshi-7B shapes (`rows` = 4096 / 11264) essentially every element
+/// costs a cache miss *and* a TLB miss. Tiling bounds the working set of an
+/// inner pass to `TILE` short runs on each side: per tile the destination
+/// touches `TILE` contiguous runs of `TILE` f32 (128 B each at `TILE = 32`)
+/// and the source `TILE` contiguous runs of `TILE` elements — together a few
+/// KiB, i.e. L1-resident, and each destination page is revisited `TILE` times
+/// while it is still mapped rather than once per full sweep.
+///
+/// 32 is chosen so a destination run (32 x 4 B = 128 B) is an exact multiple
+/// of the 64 B cache line on both aarch64 and x86-64, with no partial-line
+/// writes at tile boundaries for aligned starts.
+const TRANSPOSE_TILE: usize = 32;
+
 /// Widens + transposes a `[rows, cols]` row-major `F32`/`BF16` payload
 /// into `dst` as `[cols, rows]` — the fused equivalent of
 /// `quant::dequantize` + [`transpose`], byte-formula-identical to both
 /// (BF16: top half of the f32 pattern shifted up — exact; F32:
 /// `from_le_bytes`).
+///
+/// The traversal is **tiled** ([`TRANSPOSE_TILE`]) purely for locality: every
+/// destination element is written exactly once, from the same source element,
+/// through the same widening formula as the untiled walk. Reordering
+/// independent writes cannot change any value, so the result is
+/// **bit-identical** to the naive order — pinned by
+/// `tiled_transpose_matches_naive_bitwise` (odd shapes, both dtypes) and, at
+/// the store level, by `mapped_blocks_match_resident_bitwise_over_a_real_mmap`.
 fn transpose_widen(
     src: &[u8],
     dtype: GgmlType,
@@ -535,32 +559,31 @@ fn transpose_widen(
             dtype
         )));
     }
+    if !matches!(dtype, GgmlType::F32 | GgmlType::BF16) {
+        return Err(VokraError::ModelLoad(format!(
+            "moshi mapped blocks: unsupported dtype {dtype:?} (bind-time \
+             validation should have rejected this)"
+        )));
+    }
     dst.clear();
     dst.resize(n, 0.0);
-    match dtype {
-        GgmlType::F32 => {
-            for r in 0..rows {
-                for c in 0..cols {
-                    let i = (r * cols + c) * 4;
-                    dst[c * rows + r] =
-                        f32::from_le_bytes([src[i], src[i + 1], src[i + 2], src[i + 3]]);
+    let is_f32 = dtype == GgmlType::F32;
+    let esz = dtype.type_size();
+    for r0 in (0..rows).step_by(TRANSPOSE_TILE) {
+        let r_end = (r0 + TRANSPOSE_TILE).min(rows);
+        for c0 in (0..cols).step_by(TRANSPOSE_TILE) {
+            let c_end = (c0 + TRANSPOSE_TILE).min(cols);
+            for r in r0..r_end {
+                let row_base = r * cols;
+                for c in c0..c_end {
+                    let i = (row_base + c) * esz;
+                    dst[c * rows + r] = if is_f32 {
+                        f32::from_le_bytes([src[i], src[i + 1], src[i + 2], src[i + 3]])
+                    } else {
+                        f32::from_bits(u32::from(u16::from_le_bytes([src[i], src[i + 1]])) << 16)
+                    };
                 }
             }
-        }
-        GgmlType::BF16 => {
-            for r in 0..rows {
-                for c in 0..cols {
-                    let i = (r * cols + c) * 2;
-                    dst[c * rows + r] =
-                        f32::from_bits(u32::from(u16::from_le_bytes([src[i], src[i + 1]])) << 16);
-                }
-            }
-        }
-        other => {
-            return Err(VokraError::ModelLoad(format!(
-                "moshi mapped blocks: unsupported dtype {other:?} (bind-time \
-                 validation should have rejected this)"
-            )));
         }
     }
     Ok(())
@@ -1847,6 +1870,113 @@ mod tests {
         let h_src = src.forward(&steps, &mut s1).unwrap();
         let h_re = reloaded.forward(&steps, &mut s2).unwrap();
         assert_eq!(h_src, h_re, "pack → GGUF → unpack is exact");
+    }
+
+    /// The untiled reference walk `transpose_widen` replaced — kept verbatim
+    /// as the oracle so the tiling can never drift into a value change.
+    fn transpose_widen_naive(
+        src: &[u8],
+        dtype: GgmlType,
+        rows: usize,
+        cols: usize,
+        dst: &mut Vec<f32>,
+    ) {
+        dst.clear();
+        dst.resize(rows * cols, 0.0);
+        for r in 0..rows {
+            for c in 0..cols {
+                dst[c * rows + r] = match dtype {
+                    GgmlType::F32 => {
+                        let i = (r * cols + c) * 4;
+                        f32::from_le_bytes([src[i], src[i + 1], src[i + 2], src[i + 3]])
+                    }
+                    GgmlType::BF16 => {
+                        let i = (r * cols + c) * 2;
+                        f32::from_bits(u32::from(u16::from_le_bytes([src[i], src[i + 1]])) << 16)
+                    }
+                    other => panic!("oracle covers F32/BF16 only, got {other:?}"),
+                };
+            }
+        }
+    }
+
+    /// Tiling is a pure traversal reorder: every destination element is
+    /// written once, from the same source element, through the same formula.
+    /// Shapes deliberately straddle `TRANSPOSE_TILE` (partial edge tiles on
+    /// both axes, and the degenerate 1-row / 1-col cases) so an off-by-one in
+    /// the tile clamp cannot hide.
+    #[test]
+    fn tiled_transpose_matches_naive_bitwise() {
+        // A deterministic bit pattern that exercises sign / exponent /
+        // mantissa, including values whose BF16 top-half is negative.
+        let word = |k: usize| -> u16 { ((k as u32).wrapping_mul(2_654_435_761) >> 16) as u16 };
+
+        for &(rows, cols) in &[
+            (1, 1),
+            (1, 77),
+            (77, 1),
+            (TRANSPOSE_TILE, TRANSPOSE_TILE),
+            (TRANSPOSE_TILE + 1, TRANSPOSE_TILE - 1),
+            (33, 65),
+            (70, 37),
+            (129, 31),
+        ] {
+            let n = rows * cols;
+
+            // --- BF16 ---
+            let mut bf16 = Vec::with_capacity(n * 2);
+            for k in 0..n {
+                bf16.extend_from_slice(&word(k).to_le_bytes());
+            }
+            let (mut got, mut want) = (Vec::new(), Vec::new());
+            transpose_widen(&bf16, GgmlType::BF16, rows, cols, &mut got).unwrap();
+            transpose_widen_naive(&bf16, GgmlType::BF16, rows, cols, &mut want);
+            assert_eq!(
+                got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "BF16 {rows}x{cols}: tiled transpose must be bit-identical"
+            );
+
+            // --- F32 ---
+            let mut f32b = Vec::with_capacity(n * 4);
+            for k in 0..n {
+                let bits = (u32::from(word(k)) << 16) | u32::from(word(k + 1));
+                f32b.extend_from_slice(&bits.to_le_bytes());
+            }
+            let (mut got, mut want) = (Vec::new(), Vec::new());
+            transpose_widen(&f32b, GgmlType::F32, rows, cols, &mut got).unwrap();
+            transpose_widen_naive(&f32b, GgmlType::F32, rows, cols, &mut want);
+            assert_eq!(
+                got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "F32 {rows}x{cols}: tiled transpose must be bit-identical"
+            );
+        }
+    }
+
+    /// A short payload is still a loud bind-time error, and an unsupported
+    /// dtype is rejected before any allocation (the tiled rewrite moved the
+    /// dtype check ahead of the fill — pin both).
+    #[test]
+    fn transpose_widen_rejects_bad_payload_and_dtype() {
+        let mut dst = Vec::new();
+        let err = transpose_widen(&[0u8; 6], GgmlType::BF16, 2, 2, &mut dst).unwrap_err();
+        assert!(
+            format!("{err}").contains("payload is 6 bytes"),
+            "short payload must name the byte counts, got: {err}"
+        );
+        // The payload check runs first, so reach the dtype arm with a
+        // correctly-sized (if semantically meaningless) quantized payload.
+        let q4k = vec![0u8; 4 * GgmlType::Q4K.type_size()];
+        let err = transpose_widen(&q4k, GgmlType::Q4K, 2, 2, &mut dst).unwrap_err();
+        assert!(
+            format!("{err}").contains("unsupported dtype"),
+            "unsupported dtype must be explicit, got: {err}"
+        );
+        assert!(
+            dst.is_empty(),
+            "an unsupported dtype must be rejected before the destination is filled"
+        );
     }
 
     #[test]
