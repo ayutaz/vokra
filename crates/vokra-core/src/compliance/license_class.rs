@@ -359,6 +359,9 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "voxtral" | "openwakeword" => LicenseClass::Permissive,
         // Commercial-OK codecs (FR-OP-32): DAC / WavTokenizer / X-Codec 2 = MIT.
         "dac" | "wavtokenizer" | "x-codec-2" | "xcodec2" => LicenseClass::Permissive,
+        // SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B — Apache 2.0
+        // code + weight (docs/license-audit.md, model card).
+        "dia" | "dia-1.6b" | "dia-1_6b" => LicenseClass::Permissive,
         // --- attribution-required (CC-BY-4.0) --------------------------------
         "mimi" | "moshi" => LicenseClass::AttributionRequired,
         // --- gated: CC-BY-NC (research flag) ---------------------------------
@@ -389,7 +392,12 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
             // id like `cosyvoice2-0.5b` is still Apache 2.0. Guarded on the
             // dash so `cosyvoicexyz` cannot slip through.
             || id.starts_with("cosyvoice2-")
-            || id.starts_with("cosyvoice-") =>
+            || id.starts_with("cosyvoice-")
+            // nari-labs Dia first-party family (Apache 2.0 code + weight —
+            // SoTA plan Phase 1-4, 2026-07-24): a specific variant id like
+            // `dia-1.6b` or a future `dia-3b` still resolves permissive.
+            // Guarded on the dash so `diagnostics` cannot slip through.
+            || id.starts_with("dia-") =>
         {
             LicenseClass::Permissive
         }
@@ -703,6 +711,10 @@ mod tests {
             "piper-plus-mb-istft-vits2",
             "silero-vad",
             "campplus",
+            // SoTA plan Phase 1-4 (2026-07-24) — nari-labs Dia canonical id
+            // and the variant HF publishes.
+            "dia",
+            "dia-1.6b",
         ] {
             assert_eq!(registry_lookup(id), Some(LicenseClass::Permissive), "{id}");
         }
@@ -734,6 +746,9 @@ mod tests {
             // + weight, so a variant id like `cosyvoice2-0.5b` still resolves
             // permissive (docs/license-audit.md).
             "cosyvoice2-0.5b",
+            // Dia family (SoTA Phase 1-4): a future `dia-3b` still resolves
+            // permissive without being individually listed.
+            "dia-3b",
         ] {
             assert_eq!(registry_lookup(id), Some(LicenseClass::Permissive), "{id}");
         }

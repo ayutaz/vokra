@@ -32,6 +32,12 @@ pub mod codec;
 pub mod compute;
 pub mod cosyvoice2;
 pub mod csm;
+// SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B TTS
+// (Apache 2.0). Text encoder + delayed-AR decoder over DAC 44.1 kHz RVQ
+// frames. Config is transcribed verbatim from
+// huggingface.co/nari-labs/Dia-1.6B/config.json (CLAUDE.md ハルシネー
+// ション厳禁); real-checkpoint binding is a follow-up wave (T29-equivalent).
+pub mod dia;
 pub mod kokoro;
 pub(crate) mod mapped_weights;
 pub mod mimi;

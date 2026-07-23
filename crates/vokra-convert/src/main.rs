@@ -1,7 +1,7 @@
 //! `vokra-convert` command-line entry point (M0-03, FR-TL-01).
 //!
 //! ```text
-//! vokra-convert --model <whisper|silero-vad|piper-plus|campplus|kokoro|cosyvoice2|voxtral|mimi|dac|csm|moshi|denoise>
+//! vokra-convert --model <whisper|silero-vad|piper-plus|campplus|kokoro|cosyvoice2|voxtral|mimi|dac|csm|moshi|denoise|dia>
 //!               --input <ckpt> [--config <side-car>] --output <out.gguf>
 //! ```
 //!
@@ -27,7 +27,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -45,11 +45,12 @@ OPTIONS:
                        shape-only here — the config-aware / adapter path is
                        `vokra-cli convert`), mimi (Kyutai Mimi codec
                        safetensors), dac (prepared DAC safetensors +
-                       config.json), csm (Sesame CSM-1B safetensors) or
-                       moshi (Kyutai Moshi safetensors). `whisper-base` is
-                       accepted as a backward-compatible alias for `whisper`
-                       (size is still derived from the checkpoint, not the
-                       flag).
+                       config.json), csm (Sesame CSM-1B safetensors),
+                       moshi (Kyutai Moshi safetensors) or dia (nari-labs
+                       Dia-1.6B safetensors — SoTA plan Phase 1-4).
+                       `whisper-base` is accepted as a backward-compatible
+                       alias for `whisper` (size is still derived from the
+                       checkpoint, not the flag).
     --input <path>     upstream checkpoint file
     --config <path>    piper-plus config.json (piper-plus, required) OR the
                        DAC prepare-script config.json (dac, required — from
@@ -242,7 +243,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                     format!(
                         "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | \
                          piper-plus | campplus | kokoro | cosyvoice2 | voxtral | mimi | \
-                         dac | csm | moshi | denoise)"
+                         dac | csm | moshi | denoise | dia)"
                     )
                 })?);
                 i += 2;
@@ -589,6 +590,35 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  sample_rate={sr}"
             );
         }
+        ModelKind::Dia => {
+            // SoTA plan Phase 1-4 (2026-07-24). The `vokra.dia.*` chunk group
+            // is written entirely from primary-source-transcribed constants —
+            // the summary reads back the anchoring shape triples.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let enc_layers = file
+                .get("vokra.dia.arch.encoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_layers = file
+                .get("vokra.dia.arch.decoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let channels = file
+                .get("vokra.dia.channels")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr = file
+                .get("vokra.dia.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} encoder_layers={enc_layers} decoder_layers={dec_layers} \
+                 channels={channels} sample_rate={sr}"
+            );
+        }
     }
     Ok(())
 }
@@ -803,6 +833,7 @@ mod tests {
             ("dac", ModelKind::Dac),
             ("csm", ModelKind::Csm),
             ("moshi", ModelKind::Moshi),
+            ("dia", ModelKind::Dia),
         ];
         for (name, kind) in kinds {
             let parsed = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
