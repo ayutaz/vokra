@@ -2437,6 +2437,31 @@ mod tests {
     /// `audio_limit = 0.99`) explicitly clamped, so this fixture also
     /// exercises the terminal saturation branch.
     fn small_hift_generator() -> HiFTGenerator {
+        let (cfg, weights) = small_hift_generator_bundle();
+        HiFTGenerator::new(cfg, weights).expect("small hift generator must build")
+    }
+
+    /// Return the `(config, weights)` bundle that backs [`small_hift_generator`]
+    /// so Wave 3c-3 `new(...)` validation tests can mutate a single field
+    /// before calling `HiFTGenerator::new` — the goal is to isolate exactly
+    /// one error path per test rather than reject "any of many" mistakes.
+    ///
+    /// Shape crib (all row-major, derived from
+    /// `base_channels = 8, in_channels = 4, upsample_rates = [2, 2],
+    ///  upsample_kernel_sizes = [4, 4], istft_n_fft = 8, istft_hop_len = 2`
+    /// which resolves `output_channels_at(0) = 4`,
+    /// `output_channels_at(1) = 2`, `downsample_us = [2, 1]`,
+    /// `source_downs stage 0: k=4 stride=2 pad=1`, `stage 1: k=1 stride=1 pad=0`,
+    /// `n_fft + 2 = 10`):
+    ///
+    /// * `conv_pre_w`      [8, 4, 7]  = 224
+    /// * `ups_w[0]`        [8, 4, 4]  = 128 (ConvTranspose1d in-ch-leading)
+    /// * `ups_w[1]`        [4, 2, 4]  = 32
+    /// * `source_downs_w[0]` [4, 10, 4] = 160
+    /// * `source_downs_w[1]` [2, 10, 1] = 20
+    /// * `conv_post_w`     [10, 2, 7] = 140
+    /// * `m_source_linear_w` [nb_harmonics + 1 = 3]
+    fn small_hift_generator_bundle() -> (HiFTGeneratorConfig, HiFTGeneratorWeights) {
         let cfg = HiFTGeneratorConfig {
             in_channels: 4,
             base_channels: 8,
@@ -2522,7 +2547,7 @@ mod tests {
             f0_predictor_weights: f0_weights,
         };
 
-        HiFTGenerator::new(cfg, weights).expect("small hift generator must build")
+        (cfg, weights)
     }
 
     #[test]
@@ -2598,5 +2623,168 @@ mod tests {
         let via_wrapper = g.f0_predictor_forward(&mel, t_mel).unwrap();
         let via_direct = g.f0_predictor.forward(&mel, t_mel).unwrap();
         assert_eq!(via_wrapper, via_direct);
+    }
+
+    // -----------------------------------------------------------------------
+    // Wave 3c-3: HiFTGenerator construction validation + additional helper /
+    // forward edge-case coverage. Wave 3c-2 already landed the primary
+    // forward-length / determinism / audio-limit pins under the
+    // `hift_generator_forward_*` names above, so the tests below focus on the
+    // paths not yet covered:
+    //
+    //   * positive smoke pin of the `new` accept path (the failing counterparts
+    //     already have coverage from `hift_generator_forward_rejects_*`, but
+    //     no test hitherto pinned "the reference bundle really does build");
+    //   * three `new` reject paths that isolate individual invariants
+    //     (`ups[i]: kernel < stride`, `resblock_dilation_sizes` length,
+    //     `conv_pre_w` shape) — each starts from the same reference bundle so
+    //     the harness demonstrates loud-error on a single, targeted mutation;
+    //   * a forward pass on the all-zero mel edge case;
+    //   * three focused helper-function coverage tests requested by the wave
+    //     spec (positive / negative leaky_relu branches split apart, and
+    //     `upsample_nearest_row_major` at factor=2 — the existing helper tests
+    //     use the both-branch combined form and factor=3 respectively).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn hift_gen_new_accepts_small_synthesized_shapes() {
+        // Pin that the reference (cfg, weights) bundle actually clears every
+        // invariant `HiFTGenerator::new` enforces — a positive counterpart to
+        // the `hift_gen_new_rejects_*` tests below. Also spot-checks the
+        // config accessors so a future refactor that silently drops a field
+        // would trip here.
+        let (cfg, weights) = small_hift_generator_bundle();
+        let g = HiFTGenerator::new(cfg, weights).expect("reference bundle must build");
+        assert_eq!(g.config().in_channels, 4);
+        assert_eq!(g.config().base_channels, 8);
+        assert_eq!(g.config().num_upsamples(), 2);
+        assert_eq!(g.config().num_kernels(), 1);
+        assert_eq!(g.config().total_upsample_factor(), 8);
+    }
+
+    #[test]
+    fn hift_gen_new_rejects_ups_kernel_less_than_stride() {
+        // Upstream `padding = (kernel - stride) // 2` in `HiFTGenerator.ups`
+        // requires `kernel >= stride`. The Vokra port surfaces the same
+        // constraint at construction time so a silent underflow can never
+        // reach the runtime path. Set stage 0 kernel = 1 (< stride = 2) and
+        // resize `ups_w[0]` to match the smaller kernel so the shape check
+        // does not intercept the failure earlier.
+        let (mut cfg, mut weights) = small_hift_generator_bundle();
+        cfg.upsample_kernel_sizes = vec![1, 4];
+        weights.ups_w[0] = vec![0.0f32; 8 * 4]; // matches [in=8, out=4, k=1] (k=1 elided)
+        let err = HiFTGenerator::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("kernel 1 < stride 2"), "{msg}");
+    }
+
+    #[test]
+    fn hift_gen_new_rejects_mismatched_resblock_dilations() {
+        // `resblock_dilation_sizes` must have one branch list per
+        // `resblock_kernel_sizes` entry — the two together encode the MRF
+        // branch geometry. Push a second dilation list without adding a
+        // second kernel and expect the loud check to fire.
+        let (mut cfg, weights) = small_hift_generator_bundle();
+        cfg.resblock_dilation_sizes = vec![vec![1], vec![3]]; // 2 branches vs 1 kernel
+        let err = HiFTGenerator::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("resblock_dilation_sizes"), "{msg}");
+        assert!(msg.contains("length 2"), "{msg}");
+    }
+
+    #[test]
+    fn hift_gen_new_rejects_conv_pre_wrong_shape() {
+        // `conv_pre_w` is expected to be [base_channels, in_channels, 7] =
+        // [8, 4, 7] = 224 elements for the reference bundle. Shortening it
+        // must produce a loud error rather than silently truncating the
+        // first mel projection.
+        let (cfg, mut weights) = small_hift_generator_bundle();
+        weights.conv_pre_w = vec![0.0f32; 10]; // deliberately wrong (expected 224)
+        let err = HiFTGenerator::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("conv_pre_w"), "{msg}");
+    }
+
+    #[test]
+    fn hift_gen_forward_zero_mel_produces_bounded_output() {
+        // Zero mel + all-zero weights collapse the analysis stack to
+        // `x_post = 0` on every bin, so `magnitude = min(exp(0), 100) = 1`
+        // and `phase = sin(0) = 0`. The iSTFT sees a constant unit-magnitude
+        // spectrum → a non-trivial impulse-train waveform that the
+        // `audio_limit = 0.99` clamp must still bound. Pins finiteness,
+        // length, and clamp saturation on the zero-input path — the
+        // deliberately non-zero mel in `hift_generator_forward_output_is_
+        // finite_and_bounded_by_audio_limit` above cannot cover this branch
+        // because with all-zero weights the mel value never reaches the
+        // decoder.
+        let g = small_hift_generator();
+        let t_mel = 3;
+        let mel = vec![0.0f32; 4 * t_mel];
+        let audio = g.forward(&mel, t_mel).unwrap();
+        assert_eq!(audio.len(), t_mel * g.cfg.total_upsample_factor() as usize);
+        let limit = g.cfg.audio_limit;
+        for (k, &v) in audio.iter().enumerate() {
+            assert!(v.is_finite(), "non-finite sample at {k}: {v}");
+            assert!(
+                v.abs() <= limit + 1e-6,
+                "sample {k} = {v} exceeds audio_limit = {limit}"
+            );
+        }
+    }
+
+    #[test]
+    fn leaky_relu_positive_input_is_identity() {
+        // Positive branch: `x` should pass through unchanged regardless of
+        // slope. Split apart from the combined `leaky_relu_matches_reference_
+        // on_both_branches` pin so a regression that only affects the
+        // positive side gets a dedicated failure locator.
+        assert_eq!(leaky_relu(0.0, 0.1), 0.0);
+        assert_eq!(leaky_relu(0.25, 0.1), 0.25);
+        assert_eq!(leaky_relu(3.5, 0.01), 3.5);
+        assert_eq!(leaky_relu(1e6, 0.5), 1e6);
+    }
+
+    #[test]
+    fn leaky_relu_negative_input_scaled_by_slope() {
+        // Negative branch: `x * slope`. Same rationale for the split as the
+        // positive counterpart above.
+        assert!((leaky_relu(-1.0, 0.1) - (-0.1)).abs() < 1e-6);
+        assert!((leaky_relu(-2.5, 0.1) - (-0.25)).abs() < 1e-6);
+        assert!((leaky_relu(-4.0, 0.01) - (-0.04)).abs() < 1e-6);
+        // slope = 0 yields ReLU (the `x > 0` branch guards against the
+        // strictly-zero boundary handing zero back through the negative path,
+        // so `leaky_relu(0.0, 0.0) == 0.0` regardless — checked in the
+        // positive branch above; here we only need to pin the strict
+        // negative slope = 0 case).
+        assert_eq!(leaky_relu(-1.5, 0.0), 0.0);
+    }
+
+    #[test]
+    fn upsample_nearest_factor_two_repeats_each_sample() {
+        // Upstream `nn.Upsample(scale_factor=2, mode="nearest")` on `[a, b, c]`
+        // yields `[a, a, b, b, c, c]`. The existing helper test uses
+        // factor=3; factor=2 is the value HiFTGenerator actually reaches
+        // (per-stage upsample rate for the reference bundle) so it deserves
+        // its own dedicated pin.
+        let input = [1.0f32, 2.0, 3.0];
+        let out = upsample_nearest_row_major(&input, 1, 3, 2);
+        assert_eq!(out, vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0]);
+    }
+
+    #[test]
+    fn reflection_pad_left_prepends_reflected_sample() {
+        // pad_left = 1 on `[a, b, c, d]` prepends `input[1] = b`, giving
+        // `[b, a, b, c, d]` — verified against PyTorch's own docs example.
+        // Adds a focused "prepend" pin distinct from the existing
+        // `reflection_pad_1d_left_pad_one_mirrors_index_one` test: this one
+        // asserts the single-element prepend contract rather than the full
+        // output sequence, so a regression that only flips the prepended
+        // sample gets an isolated locator.
+        let input = [10.0f32, 20.0, 30.0, 40.0];
+        let out = reflection_pad_1d_left(&input, 1, 4, 1).unwrap();
+        assert_eq!(out.len(), 5, "pad_left = 1 must lengthen the row by 1");
+        assert_eq!(out[0], 20.0, "prepended sample must be input[1]");
+        // The rest of the row must be the original sequence, undisturbed.
+        assert_eq!(&out[1..], &input[..]);
     }
 }
