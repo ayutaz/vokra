@@ -99,6 +99,14 @@ on:
         description: "実行対象 leg (空 = 全 6 leg、kokoro / whisper-base / silero-vad-v5 / piper-plus / campplus / dac のいずれか)。"
         required: false
         default: ""
+  # Phase 5a-1 (2026-07-23): PR-every 化。fixture-only ゆえ 6 leg のうち 5 leg
+  # は staged GGUF 無しで clean-skip し数秒で終わる (silero-vad-v5 のみ真の
+  # fixture-only で実行)。path filter は入れない = 依頼者指示「e2e テストは
+  # PR ごとに回す」に従い全 PR で trigger、code side の regression を PR 段階
+  # で捕捉する。silero leg は真の fixture-only なので確実な PR-every smoke に
+  # なる。他 5 leg は skip 記録として GH Actions log に "no staged GGUF" が
+  # 残り、runner-hosted staging を有効化すれば自動発火する。
+  pull_request:
   schedule:
     # 06:17 UTC daily. Nightly ladder (workflows/README.md §4):
     #   04:17 nightly-il2cpp
@@ -115,7 +123,9 @@ permissions:
   contents: read
 
 concurrency:
-  # 同一 branch 上の superseded run は cancel する (fixture-only ゆえ副作用ゼロ)。
+  # 同一 branch/PR 上の superseded run は cancel する (fixture-only ゆえ副作用ゼロ)。
+  # PR trigger では github.ref = refs/pull/<N>/merge に展開され、PR ごとに
+  # 独立 group となる (superseded 再 push で古い run を cancel)。
   group: nightly-full-parity-${{ github.ref }}
   cancel-in-progress: true
 

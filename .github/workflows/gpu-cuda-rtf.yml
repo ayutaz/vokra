@@ -58,6 +58,20 @@ on:
     # use (parity-kokoro-real @ 04:00 UTC, parity-whisper-real @ 05:00 UTC),
     # spaced so a runner used by all three doesn't stack them.
     - cron: '0 6 * * 1'
+  # Phase 5a-2 (2026-07-23): narrow PR path filter — CUDA backend / RTF sanity
+  # / baseline docs / this workflow。self-hosted runner 未提供時は
+  # check-runner-availability gate が clean skip する既存 pattern を
+  # 維持 (fabricated pass 禁止 FR-EX-08)。
+  pull_request:
+    paths:
+      - '.github/workflows/gpu-cuda-rtf.yml'
+      - 'crates/vokra-core/**'
+      - 'crates/vokra-ops/**'
+      - 'crates/vokra-backend-cuda/**'
+      - 'crates/vokra-models/src/whisper/**'
+      - 'crates/vokra-models/src/compute.rs'
+      - 'crates/vokra-convert/src/models/whisper.rs'
+      - 'docs/perf/cuda-large-v3-baseline.json'
 
 # All jobs treat the self-hosted runner as **optional infrastructure**. A
 # stand-in `check-runner-availability` job is the entry: it emits the skip

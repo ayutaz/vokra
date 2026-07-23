@@ -85,15 +85,26 @@ on:
   schedule:
     - cron: "0 5 * * 1"
   pull_request:
+    # Phase 5a-3 (2026-07-23): whisper native forward / converter / dumper /
+    # audio fixture sidecar / this workflow に加え、共有依存 (vokra-core /
+    # vokra-ops / compute seam / STFT/Mel op / CPU dispatch / beam search /
+    # decoder) を追加。base leg のみ PR で走る (small/medium/large-v3/turbo
+    # は workflow_dispatch 専用 = 数 GB HF DL の runner-minutes red-line)。
+    # PR で whisper に影響しうる crate を触ったら必ず base leg が発火し、
+    # code side の regression を weekly cron ではなく PR で捕捉する。
     paths:
-      - "tools/parity/dump_whisper_reference.py"
+      - ".github/workflows/parity-whisper-real.yml"
+      - "crates/vokra-cli/src/convert.rs"
+      - "crates/vokra-convert/resources/whisper_multilingual_text_vocab.bin"
+      - "crates/vokra-convert/src/models/whisper.rs"
+      - "crates/vokra-core/**"
+      - "crates/vokra-models/src/compute.rs"
       - "crates/vokra-models/src/whisper/**"
       - "crates/vokra-models/tests/parity_whisper.rs"
-      - "crates/vokra-convert/src/models/whisper.rs"
-      - "crates/vokra-convert/resources/whisper_multilingual_text_vocab.bin"
-      - "crates/vokra-cli/src/convert.rs"
-      - ".github/workflows/parity-whisper-real.yml"
+      - "crates/vokra-ops/**"
       - "tests/fixtures/audio/jfk-30s.wav.sha256"
+      - "tests/parity/whisper_base/**"
+      - "tools/parity/dump_whisper_reference.py"
 
 permissions:
   contents: read

@@ -1,0 +1,75 @@
+# typos (crate-ci/typos) configuration for the Vokra repo — Phase 5b, X-08
+# successor. See .github/workflows/ci-quality.yml `typos` job for the CI
+# wiring. Advisory only; a typo hit annotates the run but does not block PRs.
+#
+# Guiding principles:
+#   * Skip binary / generated / vendored trees so the check completes fast
+#     and never trips on random bytes that happen to spell a dictionary word.
+#   * The typos default dictionary is CONSERVATIVE — it flags known typos,
+#     not unknown words. So project / brand names (Vokra, Kokoro, Voxtral,
+#     CosyVoice, Silero, Moshi, Piper, Mimi, DAC, DFN3, Wyoming, etc.) do
+#     NOT need to be listed here unless the dictionary later starts flagging
+#     one of them. Add per-word overrides ONLY on a false-positive
+#     observation, with a comment naming what version of typos flagged it.
+
+[files]
+extend-exclude = [
+    # Build artifacts and vendor trees — never scan.
+    "target/",
+    "third_party/",
+    "**/target/",
+    # Lockfiles — dependency hashes and download paths are noise for a
+    # spellchecker, and Cargo.lock is the NFR-DS-02 zero-dep sentinel we do
+    # not want typos rewriting under any circumstance.
+    "**/Cargo.lock",
+    "**/package-lock.json",
+    "**/pnpm-lock.yaml",
+    "**/yarn.lock",
+    # Binary weight / fixture / audio / shader artifacts.
+    "**/*.gguf",
+    "**/*.safetensors",
+    "**/*.wav",
+    "**/*.flac",
+    "**/*.pcm",
+    "**/*.bin",
+    "**/*.spv",
+    "**/*.png",
+    "**/*.jpg",
+    "**/*.jpeg",
+    "**/*.pdf",
+    # Fixture directories — hashes, encoded tokens, and reference dumps
+    # trigger noise faster than they add value.
+    "tests/fixtures/",
+    "**/tests/fixtures/",
+    "docs/bench-baselines/",
+    # ABI symbol dumps and manifest lists — one-token-per-line files that
+    # only ever contain mangled or C-ABI identifiers.
+    "docs/abi/",
+    "crates/vokra-eval/data/zoo/manifest.txt",
+    # Minified assets (WASM/web bundle drops).
+    "**/*.min.js",
+    "**/*.min.css",
+    # Precompiled Vulkan SPIR-V shader manifests reference opcodes, not prose.
+    "crates/vokra-backend-vulkan/kernels/precompiled/",
+]
+
+[default]
+# Regex-level ignores applied to the CONTENT of every scanned line. Hex
+# literals and short base-16 sequences appear all over device / codec code
+# (Metal argument slots, SPIR-V opcodes, GGUF magic bytes) and must never
+# be spellchecked.
+extend-ignore-re = [
+    # Hex literals: 0xDEADBEEF, 0x1234, etc.
+    "0x[0-9A-Fa-f]+",
+    # SHA-1 / SHA-256 / commit hashes (7-64 hex chars).
+    "\\b[0-9a-fA-F]{7,64}\\b",
+    # Base64-ish tokens (>=20 chars of alphanumerics + / +) — GGUF blobs,
+    # test fixtures pasted into docs, etc.
+    "\\b[A-Za-z0-9+/]{20,}={0,2}\\b",
+]
+
+# Per-word overrides. Empty by default; populate ONLY on an observed false
+# positive, with a comment naming the offending typos version. Format:
+#   [default.extend-words]
+#   theWord = "theWord"       # v1.48.0 flagged this as "theTypo"
+[default.extend-words]

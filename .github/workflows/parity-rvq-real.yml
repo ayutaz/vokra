@@ -41,16 +41,26 @@ on:
     # not blank every scheduled gate at once.
     - cron: '0 6 * * 2'
   pull_request:
+    # Phase 5a-3 (2026-07-23): Mimi + DAC codec ops / converter / dumper /
+    # sliced parity fixtures / this workflow に加え、共有依存 (vokra-core =
+    # OpKind / tensor / graph executor 定義) を追加。EnCodec は FR-OP-32 で
+    # 常時除外 (grep guard step で workflow 自身の DL 混入を assert 継続)。
     paths:
       - '.github/workflows/parity-rvq-real.yml'
-      - 'tools/parity/mimi_dump.py'
-      - 'tools/parity/dac_prepare_checkpoint.py'
-      - 'crates/vokra-ops/src/mimi_rvq.rs'
-      - 'crates/vokra-ops/src/dac_rvq.rs'
-      - 'crates/vokra-convert/src/models/mimi.rs'
       - 'crates/vokra-convert/src/models/dac.rs'
+      - 'crates/vokra-convert/src/models/mimi.rs'
+      - 'crates/vokra-core/**'
       - 'crates/vokra-models/src/codec.rs'
+      - 'crates/vokra-models/src/mimi/**'
       - 'crates/vokra-models/tests/real_codec_parity.rs'
+      - 'crates/vokra-ops/src/dac_rvq.rs'
+      - 'crates/vokra-ops/src/mimi_rvq.rs'
+      - 'crates/vokra-ops/tests/parity_dac_reference.rs'
+      - 'crates/vokra-ops/tests/parity_mimi_reference.rs'
+      - 'tests/parity/dac/**'
+      - 'tests/parity/mimi/**'
+      - 'tools/parity/dac_prepare_checkpoint.py'
+      - 'tools/parity/mimi_dump.py'
 
 concurrency:
   group: parity-rvq-real-${{ github.ref }}

@@ -86,19 +86,25 @@ on:
     # a HF hub outage that morning surfaces without blocking active development.
     - cron: '0 4 * * 1'
   pull_request:
-    # Narrow paths filter — kokoro parity fixtures / native forward /
-    # converter / dumper / sidecar / this workflow. PRs touching any of these
-    # will re-run the acid test on top of the pinned checkpoint. Anything
-    # else uses the fast per-PR ci.yml `parity` job (fixture-only, no HF DL).
+    # Phase 5a-3 (2026-07-23): kokoro parity fixtures / native forward /
+    # converter / dumper / sidecar / this workflow に加え、共有依存
+    # (vokra-core / vokra-ops / compute seam / STFT/iSTFT/Mel op / CPU dispatch
+    # / GEMM hot path) を追加。PR で kokoro に影響しうる crate を触ったら
+    # 必ず acid test が発火し、fabricated pass を避ける。それ以外は
+    # 高速な per-PR ci.yml `parity` job (fixture-only、no HF DL) で回転する。
     paths:
       - '.github/workflows/parity-kokoro-real.yml'
+      - 'crates/vokra-convert/src/models/kokoro.rs'
+      - 'crates/vokra-core/**'
+      - 'crates/vokra-models/src/compute.rs'
+      - 'crates/vokra-models/src/kokoro/**'
+      - 'crates/vokra-models/tests/parity_kokoro.rs'
+      - 'crates/vokra-ops/**'
+      - 'scripts/parity/download-kokoro.sh'
+      - 'tests/parity/kokoro/**'
       - 'tools/parity/dump_kokoro_reference.py'
       - 'tools/parity/kokoro_bisect.py'
       - 'tools/parity/kokoro_prepare_checkpoint.py'
-      - 'scripts/parity/download-kokoro.sh'
-      - 'crates/vokra-models/src/kokoro/**'
-      - 'crates/vokra-models/tests/parity_kokoro.rs'
-      - 'crates/vokra-convert/src/models/kokoro.rs'
 
 # Cancel superseded runs on the same ref. The job is a ~40 minute one-shot
 # (HF DL + convert + parity), so a rapid re-push should not double-book the

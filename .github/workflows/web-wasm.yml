@@ -49,16 +49,26 @@ on:
     # shared runner pool doesn't stack them.
     - cron: "0 7 * * 1"
   pull_request:
+    # Phase 5a-3 (2026-07-23): WebGPU backend / WASM SIMD128 kernel / CPU
+    # features + dispatch / wasm harness / node scripts / web package /
+    # build script / this workflow に加え、共有依存 (vokra-core = graph
+    # executor + tensor 定義、vokra-ops = kernel の caller、vokra-cli =
+    # whisper e2e leg で `vokra-cli convert` を実行) を追加。whisper-wasm-e2e
+    # leg は workflow_dispatch input opt-in 継続 (multi-GB HF DL 回避)、
+    # WebGPU smoke leg は honest skip 記録継続 (headless GPU adapter 未確立)。
     paths:
-      - "crates/vokra-backend-webgpu/**"
-      - "crates/vokra-backend-cpu/src/kernels/wasm_simd128.rs"
-      - "crates/vokra-backend-cpu/src/features.rs"
+      - ".github/workflows/web-wasm.yml"
       - "crates/vokra-backend-cpu/src/dispatch.rs"
+      - "crates/vokra-backend-cpu/src/features.rs"
+      - "crates/vokra-backend-cpu/src/kernels/wasm_simd128.rs"
+      - "crates/vokra-backend-webgpu/**"
+      - "crates/vokra-cli/src/convert.rs"
+      - "crates/vokra-core/**"
+      - "crates/vokra-ops/**"
+      - "scripts/build-wasm.sh"
       - "tests/wasm-harness/**"
       - "tools/wasm/**"
       - "web/**"
-      - "scripts/build-wasm.sh"
-      - ".github/workflows/web-wasm.yml"
 
 permissions:
   contents: read

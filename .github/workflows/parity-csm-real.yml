@@ -30,6 +30,22 @@ on:
     # Weekly cron: keeps the synthetic format pin + reader green and prints
     # the honest "real reference absent" skip until T29.
     - cron: "30 6 * * 1"
+  # Phase 5a-2 (2026-07-23): narrow PR path filter — CSM parity fixtures /
+  # native forward / converter / dumper / this workflow. PRs that don't touch
+  # those paths never trigger this job. Synthetic format-pin leg runs on every
+  # matching PR; real T29 leg is dispatch-only (gated repos ゆえ CI では
+  # anonymous fetch 不可 = honest skip)。
+  pull_request:
+    paths:
+      - ".github/workflows/parity-csm-real.yml"
+      - "crates/vokra-core/**"
+      - "crates/vokra-ops/**"
+      - "crates/vokra-models/src/csm/**"
+      - "crates/vokra-models/tests/parity_csm.rs"
+      - "crates/vokra-convert/src/models/csm.rs"
+      - "tools/parity/csm_dump.py"
+      - "tools/parity/README-csm.md"
+      - "tests/parity/csm/**"
 
 permissions:
   contents: read

@@ -1,0 +1,120 @@
+# Vokra test coverage measurement (Phase 5b, X-08 successor).
+#
+# Purpose: produce an lcov.info measurement of `cargo llvm-cov --workspace`
+# and upload it to Codecov so PR reviewers see line/branch coverage deltas
+# for the change. This is an ADVISORY job — it is NOT a branch-protection
+# required check. The coverage number itself is a health signal, not a gate;
+# a PR that lowers coverage is a discussion, not a hard block. Promotion to
+# required is an owner decision after sustained green (NFR-MT-07), same
+# cool-off posture the ci-quality advisory jobs describe.
+#
+# What is measured:
+#   * Root Cargo workspace only (crates/vokra-*). Integration workspaces
+#     (integrations/vokra-server, integrations/vokra-piper-g2p, etc.) are
+#     excluded from the root workspace by design (NFR-DS-02 zero-dep
+#     invariant) and are NOT covered here — they have their own build /
+#     test gates in ci-quality.yml (server-compat) and ci.yml.
+#   * Default features. all-features (vulkan,metal,cuda) would compile more
+#     code, but Metal/CUDA cannot execute on ubuntu-latest (no GPU / no
+#     Metal driver), so measurement would be misleading — the branches
+#     shown as uncovered would actually be untestable-on-this-runner, not
+#     genuinely dead. If a future WP wires a GPU runner, add a matrix.
+#   * Unit + integration tests. Doctests are cargo-nightly gated (llvm-cov
+#     --doctests requires nightly) and are deliberately out of scope for a
+#     stable-toolchain advisory job.
+#
+# NFR-DS-02: cargo-llvm-cov is installed via taiki-e/install-action into
+# ~/.cargo/bin; it does NOT modify the root Cargo.lock. The final `git diff
+# --exit-code Cargo.lock` step proves this on every run — copy of the same
+# tripwire pattern used by capi-smoke and server-compat.
+
+name: Coverage
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Own concurrency group; cancel superseded PR runs on non-main refs so a
+# fast follow-up push does not queue behind a stale coverage build.
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+  # Codecov v5+ uses OIDC when no upload token is present (public repo
+  # unauthenticated upload path). id-token: write is required for that
+  # exchange even though we do not read any other cloud provider identity.
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coverage:
+    name: coverage (advisory)
+    runs-on: ubuntu-latest
+    # 60-minute ceiling: workspace has ~2900 tests as of 2026-07-23; with
+    # llvm-cov instrumentation a full run is ~15-25min. 60 leaves headroom
+    # for a slow runner without pretending success on a hung build.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain (stable + llvm-tools-preview)
+        # llvm-tools-preview ships llvm-profdata / llvm-cov which cargo-llvm-cov
+        # invokes. cargo-llvm-cov bundles llvm-tools when the component is
+        # missing, but installing it via rustup is the documented path and
+        # keeps the toolchain reproducible.
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Verify root Cargo.lock unchanged after tool install
+        # NFR-DS-02 tripwire — `taiki-e/install-action` installs prebuilt
+        # binaries into ~/.cargo/bin and must not touch the workspace
+        # lockfile. Same pattern as capi-smoke / server-compat.
+        run: git diff --exit-code Cargo.lock
+      - name: cargo llvm-cov --workspace --lcov (default features only)
+        # Default features only: see the file header for why all-features
+        # would fabricate uncovered branches on a GPU-less runner.
+        # --ignore-filename-regex excludes generated / vendored / test
+        # scaffolding paths from the numerator+denominator so the reported
+        # number reflects production code, not test helpers.
+        run: |
+          cargo llvm-cov --workspace \
+            --lcov \
+            --output-path lcov.info \
+            --ignore-filename-regex '(tests/|benches/|examples/|third_party/)'
+      - name: Coverage summary (job log)
+        # Human-readable summary printed to $GITHUB_STEP_SUMMARY so reviewers
+        # can see the totals without opening Codecov. --summary-only re-uses
+        # the profile data cached from the previous step (no re-run).
+        run: |
+          {
+            echo "### cargo llvm-cov summary"
+            echo ""
+            echo '```'
+            cargo llvm-cov report --summary-only 2>&1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage to Codecov
+        # v7 is current major (verified 2026-07-23 via gh api).
+        # `token` is intentionally omitted: public repo unauthenticated
+        # upload is allowed and this repo has not been configured with a
+        # Codecov project token. If a future WP provisions CODECOV_TOKEN,
+        # pass it here via secrets.
+        # fail_ci_if_error: false — a Codecov CDN blip must not turn this
+        # advisory job red; the local llvm-cov step is the ground truth.
+        uses: codecov/codecov-action@v7
+        with:
+          files: lcov.info
+          disable_search: true
+          fail_ci_if_error: false
+          flags: unittests
+          name: vokra-workspace-coverage

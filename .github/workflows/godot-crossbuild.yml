@@ -72,13 +72,28 @@ on:
     # cuda-rtf 06:00, csm 06:30, web-wasm 07:00, moshi 07:30, utmos 08:00). Off-peak
     # US/EU business hours.
     - cron: '30 8 * * 1'
+  # Phase 5a-2 (2026-07-23): narrow PR path filter — Godot GDExtension crate /
+  # crossbuild driver script / compliance scanner / this workflow。5 target
+  # matrix (macOS x2 / Linux x64 / Windows MSVC / Android arm64) は fail-fast:
+  # false ゆえ 1 target regression が他をマスクせず PR で全部並列検証される。
+  pull_request:
+    paths:
+      - '.github/workflows/godot-crossbuild.yml'
+      - 'integrations/vokra-godot/**'
+      - 'scripts/build-godot-gdextension.sh'
+      - 'scripts/compliance/check-godot-package-no-nvidia.sh'
+      - 'scripts/build-android.sh'
 
 permissions:
   contents: read
 
 concurrency:
+  # PR runs get PR-scoped groups (github.ref = refs/pull/<N>/merge) so a
+  # follow-up push cancels the superseded run. Schedule / workflow_dispatch
+  # runs on main stay `cancel-in-progress: false` to protect the weekly
+  # crossbuild artifact chain from a coincident dispatch nuking it.
   group: godot-crossbuild-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   crossbuild:
