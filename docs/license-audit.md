@@ -133,7 +133,7 @@ vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev 41f369
 | **RVC v2** | MIT | **不明 / 学習権利疑い** | △ | ✕ **vokra-voiceclone-experimental** に分離 | training data copyright laundering の Reddit/GitHub Issue で複数指摘 |
 | **GPT-SoVITS** | MIT | 不明 | △ | ✕ voiceclone-experimental 分離 | |
 | **EnCodec (Meta)** | MIT | **CC-BY-NC 4.0** | ✕ 非商用 | ✕ research flag | 商用は DAC/Mimi/WavTokenizer 推奨。**FR-OP-32 恒久制約**により公式 model zoo 非搭載を維持（M2-13 runtime gate + release CI 側の `scripts/compliance/check-encodec-exclusion.sh` 二重防御、M3-06 ADR §D2）。 |
-| **BigVGAN reference (NVIDIA)** | **NVIDIA Source Code License-NC** | 非商用 | ✕ | ✕ | Vokra は **論文からスクラッチ再実装**、reference 未使用 (NOTICE 明記) |
+| **BigVGAN reference (NVIDIA)** | **MIT** | MIT | ○ | 未実装（trigger model 待ち） | **2026-07-22 訂正**: `github.com/NVIDIA/BigVGAN/LICENSE` は標準 MIT（`Copyright (c) 2024 NVIDIA CORPORATION`）、HF `nvidia/bigvgan_v2_24khz_100band_256x` も `license: mit`。旧記述「NVIDIA Source Code License-NC ゆえ論文からスクラッチ再実装」の**非商用前提は失効**しており、reference の直接移植が MIT 帰属表示で可能（`docs/tickets/sota-coverage-plan-2026-07-22.md` §1(b)）。実装は trigger model（IndexTTS-2 / F5-TTS 代替 / dots.tts-soar）着手時に。 |
 | **HiFi-GAN reference** | MIT | MIT (公式) | ○ | ○ | Kaggle 系派生は要確認 |
 | **Vocos** | MIT | MIT | ○ | ★ 公式 zoo | Charactr AI **実装状況: 未実装**（量子化 min-dtype anchor のみで kernel なし）。 |
 
@@ -411,6 +411,6 @@ vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev 41f369
 - [Mimi codec attribution (Kyutai)](https://huggingface.co/kyutai/mimi)
 - [Meta AudioSeal](https://github.com/facebookresearch/audioseal)
 - [c2pa-rs (Adobe)](https://github.com/contentauth/c2pa-rs)
-- [NVIDIA BigVGAN activations.py (NC ライセンス reference)](https://github.com/NVIDIA/BigVGAN/blob/main/activations.py)
+- [NVIDIA BigVGAN (MIT、2024 変更後)](https://github.com/NVIDIA/BigVGAN/blob/main/LICENSE)
 - [F5-TTS SWivid (weight CC-BY-NC 4.0)](https://github.com/SWivid/F5-TTS)
 - [Fish-Speech LICENSE](https://github.com/fishaudio/fish-speech)

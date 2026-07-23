@@ -23,10 +23,11 @@
 /// research flag is required to load it (FR-CP-03).
 ///
 /// Ordering of severity (least to most restricted): [`Permissive`] <
-/// [`AttributionRequired`] < [`NonCommercial`] / [`NonCommercialShareAlike`] <
-/// [`Unknown`]. Everything from [`NonCommercial`] onward is gated
-/// ([`Self::requires_research_flag`]); [`Unknown`] is gated deliberately so an
-/// unclassifiable weight fails **closed** rather than open.
+/// [`AttributionRequired`] < [`InheritedRestriction`] / [`Copyleft`] <
+/// [`NonCommercial`] / [`NonCommercialShareAlike`] < [`Unknown`]. Everything
+/// from [`NonCommercial`] onward is gated ([`Self::requires_research_flag`]);
+/// [`Unknown`] is gated deliberately so an unclassifiable weight fails
+/// **closed** rather than open.
 ///
 /// [`Permissive`]: LicenseClass::Permissive
 /// [`AttributionRequired`]: LicenseClass::AttributionRequired
@@ -35,6 +36,7 @@
 /// [`Copyleft`]: LicenseClass::Copyleft
 /// [`RedistributionForbidden`]: LicenseClass::RedistributionForbidden
 /// [`ConditionalCommercial`]: LicenseClass::ConditionalCommercial
+/// [`InheritedRestriction`]: LicenseClass::InheritedRestriction
 /// [`Unknown`]: LicenseClass::Unknown
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LicenseClass {
@@ -89,6 +91,24 @@ pub enum LicenseClass {
     /// evaluate, so the obligation this class creates is disclosure: the
     /// threshold must be stated wherever the weight is published.
     ConditionalCommercial,
+    /// The licence text carries **usage restrictions that flow to downstream
+    /// users** — the Responsible-AI Licence family (`OpenRAIL-M` a.k.a.
+    /// `creativeml-openrail-m`, `RAIL-D`, `BigScience-OpenRAIL-M`).
+    ///
+    /// Loading is unrestricted and commercial use is not per-se barred (the
+    /// licences all state so), but the negative use-case list they carry
+    /// (weapons, mass surveillance, targeting protected classes, etc.) must
+    /// be preserved when a derivative artefact is republished — otherwise a
+    /// downstream user cannot see the restriction they are bound by.
+    ///
+    /// Distinct from [`Copyleft`](Self::Copyleft) even though the two share
+    /// the same publish-with-licence-preserved verdict: share-alike
+    /// propagates the *licence* (a derivative's terms match the source),
+    /// whereas OpenRAIL propagates *use restrictions* (the derivative's use
+    /// is still bound by the source's negative use-case list). Same gate
+    /// state, different reason — modelling them separately keeps the
+    /// obligation legible to the caller.
+    InheritedRestriction,
     /// Training-rights unclear / license unstated / unrecognized string
     /// ("要確認"): classification failed. **Research flag required** so an
     /// unknown weight fails closed (never mistaken for permissive).
@@ -135,6 +155,7 @@ impl LicenseClass {
                 | Self::AttributionRequired
                 | Self::Copyleft
                 | Self::ConditionalCommercial
+                | Self::InheritedRestriction
         )
     }
 
@@ -143,7 +164,10 @@ impl LicenseClass {
     /// CC-BY-SA-derived GGUF as Apache-2.0) is a misrepresentation, not a
     /// paperwork slip, so this is what a publishing gate keys on.
     pub fn requires_license_preserved(self) -> bool {
-        matches!(self, Self::Copyleft | Self::NonCommercialShareAlike)
+        matches!(
+            self,
+            Self::Copyleft | Self::NonCommercialShareAlike | Self::InheritedRestriction
+        )
     }
 
     /// Whether **commercial use** of a weight of this class is permitted
@@ -164,7 +188,10 @@ impl LicenseClass {
     pub fn commercial_ok(self) -> bool {
         matches!(
             self,
-            Self::Permissive | Self::AttributionRequired | Self::Copyleft
+            Self::Permissive
+                | Self::AttributionRequired
+                | Self::Copyleft
+                | Self::InheritedRestriction
         )
     }
 
@@ -175,7 +202,10 @@ impl LicenseClass {
     pub fn requires_attribution(self) -> bool {
         matches!(
             self,
-            Self::AttributionRequired | Self::Copyleft | Self::NonCommercialShareAlike
+            Self::AttributionRequired
+                | Self::Copyleft
+                | Self::NonCommercialShareAlike
+                | Self::InheritedRestriction
         )
     }
 
@@ -191,6 +221,7 @@ impl LicenseClass {
             Self::Copyleft => "copyleft",
             Self::RedistributionForbidden => "redistribution-forbidden",
             Self::ConditionalCommercial => "conditional-commercial",
+            Self::InheritedRestriction => "inherited-restriction",
             Self::Unknown => "unknown",
         }
     }
@@ -210,6 +241,7 @@ impl LicenseClass {
             "copyleft" | "share-alike" | "sharealike" => Some(Self::Copyleft),
             "redistribution-forbidden" => Some(Self::RedistributionForbidden),
             "conditional-commercial" => Some(Self::ConditionalCommercial),
+            "inherited-restriction" | "openrail" | "rail" => Some(Self::InheritedRestriction),
             "unknown" => Some(Self::Unknown),
             _ => None,
         }
@@ -250,6 +282,20 @@ impl LicenseClass {
                 Self::NonCommercial
             };
         }
+        // Responsible-AI licence family (OpenRAIL-M / creativeml-openrail-m /
+        // RAIL-D) BEFORE the share-alike arm. These carry usage restrictions
+        // that flow downstream — see [`Self::InheritedRestriction`]. Modelled
+        // separately from share-alike even though both end up
+        // `requires_license_preserved = true`, because the reason it must be
+        // preserved differs (usage list vs licence terms). Matching before
+        // the share-alike arm is deliberate: share-alike matches on `-sa` /
+        // `sharealike` tokens, `openrail` matches on the licence family name
+        // — the two sets do not collide, so the order is a semantic choice
+        // rather than a substring hazard, but keeping it first keeps the
+        // more specific classification in front of the more general one.
+        if norm.contains("openrail") || norm.contains("rail-m") {
+            return Self::InheritedRestriction;
+        }
         // Share-alike and strong copyleft, BEFORE the plain `cc-by` arm.
         //
         // Order matters and the previous ordering was wrong: `cc-by-sa-4.0`
@@ -262,12 +308,7 @@ impl LicenseClass {
         // AGPL/GPL/LGPL land here too: redistribution is permitted with the
         // licence preserved, which is a different disposition from `Unknown`
         // (where the fail-closed answer is "we do not know, so refuse").
-        if has_sa
-            || norm.contains("agpl")
-            || norm.contains("gpl")
-            || norm.contains("copyleft")
-            || norm.contains("openrail")
-        {
+        if has_sa || norm.contains("agpl") || norm.contains("gpl") || norm.contains("copyleft") {
             return Self::Copyleft;
         }
         // Attribution (CC-BY, not -NC, not -SA): matched after both.
@@ -374,12 +415,7 @@ mod tests {
     /// weights are both `cc-by-sa-4.0`.
     #[test]
     fn share_alike_is_copyleft_not_merely_attribution() {
-        for s in [
-            "cc-by-sa-4.0",
-            "CC BY SA 4.0",
-            "cc_by_sa_3.0",
-            "creativeml-openrail-m",
-        ] {
+        for s in ["cc-by-sa-4.0", "CC BY SA 4.0", "cc_by_sa_3.0"] {
             assert_eq!(
                 LicenseClass::from_license_str(s),
                 LicenseClass::Copyleft,
@@ -432,6 +468,10 @@ mod tests {
             (AttributionRequired, true, true),
             (Copyleft, true, true),
             (ConditionalCommercial, true, true),
+            // Use-restriction propagates downstream but licence itself allows
+            // publishing with the restrictions preserved. Same publish verdict
+            // as Copyleft, distinct semantic (see the variant docstring).
+            (InheritedRestriction, true, true),
             // Contractually barred: loading a weight you legitimately hold is
             // fine; Vokra handing it to a third party is not.
             (RedistributionForbidden, true, false),
@@ -491,6 +531,7 @@ mod tests {
             NonCommercialShareAlike,
             RedistributionForbidden,
             ConditionalCommercial,
+            InheritedRestriction,
             Unknown,
         ] {
             assert_eq!(
@@ -500,6 +541,52 @@ mod tests {
                 c.as_str()
             );
         }
+    }
+
+    /// OpenRAIL-family licences carry usage restrictions that flow downstream
+    /// but do not restrict commercial use or require a research flag to load.
+    /// Modelled distinctly from [`LicenseClass::Copyleft`] because they share
+    /// the same "preserve licence when republishing" verdict for different
+    /// reasons (use-case list vs derivative-licence terms).
+    #[test]
+    fn openrail_is_inherited_restriction_not_copyleft() {
+        for s in [
+            "openrail",
+            "OpenRAIL-M",
+            "creativeml-openrail-m",
+            "CreativeML OpenRAIL-M",
+            "bigscience-openrail-m",
+            "RAIL-M",
+        ] {
+            let c = LicenseClass::from_license_str(s);
+            assert_eq!(
+                c,
+                LicenseClass::InheritedRestriction,
+                "{s} must classify as inherited-restriction"
+            );
+            assert!(!c.requires_research_flag(), "{s}: loading is unrestricted");
+            assert!(c.commercial_ok(), "{s}: commercial use is permitted");
+            assert!(c.redistributable(), "{s}: republishable");
+            assert!(
+                c.requires_license_preserved(),
+                "{s}: use-case list must travel with the artefact"
+            );
+            assert!(c.requires_attribution(), "{s}: attribution required");
+        }
+        // Canonical class name round-trips.
+        assert_eq!(
+            LicenseClass::from_class_str("inherited-restriction"),
+            Some(LicenseClass::InheritedRestriction)
+        );
+        // Short aliases (`openrail`, `rail`) also parse.
+        assert_eq!(
+            LicenseClass::from_class_str("openrail"),
+            Some(LicenseClass::InheritedRestriction)
+        );
+        assert_eq!(
+            LicenseClass::from_class_str("rail"),
+            Some(LicenseClass::InheritedRestriction)
+        );
     }
 
     #[test]
