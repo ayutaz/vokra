@@ -119,6 +119,22 @@ jobs:
           find "$DIR" -name '*.txt'
 YML
 
+    # Out-of-scope: comment lines that mention `find | head` textually
+    # (this file's own gate step comment in ci.yml, workflow-level docs).
+    # A false positive here defeats the checker's own installation.
+    cat > "$tmp/.github/workflows/comment-only.yml" <<'YML'
+name: commentonly
+on: [push]
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          # Prevents the `find | head` landmine — advisory text only, no actual command.
+          # See scripts/check-find-hygiene.sh: `find "$X" -name '*.wav' | head` is banned.
+          echo "safe"
+YML
+
     out="$tmp/out"
     if WORKFLOW_DIR="$tmp/.github/workflows" bash "$0" > "$out" 2>&1; then
         echo "self-test FAIL: bad tree passed" >&2
@@ -150,6 +166,11 @@ YML
         cat "$out" >&2
         exit 1
     fi
+    if grep -q 'comment-only.yml' "$out"; then
+        echo "self-test FAIL: comment-only.yml (comment lines) mis-flagged" >&2
+        cat "$out" >&2
+        exit 1
+    fi
 
     # Positive-only tree must be silent.
     rm -f "$tmp/.github/workflows/bad.yml" "$tmp/.github/workflows/bad-loop.yml"
@@ -177,12 +198,16 @@ for wf in "$WORKFLOW_DIR"/*.yml "$WORKFLOW_DIR"/*.yaml; do
     # cleaner in awk.
     awk -v WF="$wf" '
         # A `find ... | head` line lacking `-type`.
+        # Skip YAML/shell comment-only lines (leading `#`) — the tripwire
+        # itself and workflow-level documentation mention the pattern as
+        # prose ("prevents find | head ..." text) and would otherwise
+        # match its own explanation.
         /find[^|]*\| *head/ {
+            trimmed = $0
+            sub(/^[[:space:]]+/, "", trimmed)
+            if (substr(trimmed, 1, 1) == "#") next
             if ($0 !~ /-type[[:space:]]+[fdlpcbs]/) {
-                # Strip the LEFT indent to reduce noise in the output.
-                line = $0
-                sub(/^[[:space:]]+/, "", line)
-                printf("%s:%d: `find | head` without `-type f|d|...` — %s\n", WF, NR, line)
+                printf("%s:%d: `find | head` without `-type f|d|...` — %s\n", WF, NR, trimmed)
                 any_fail = 1
             }
         }
