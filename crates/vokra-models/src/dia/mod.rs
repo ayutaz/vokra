@@ -1142,4 +1142,573 @@ mod tests {
     fn expected_arch_is_dia() {
         assert_eq!(EXPECTED_ARCH, "dia");
     }
+
+    // -----------------------------------------------------------------------
+    // Gap-fill tests (sota-phase1 audit, 2026-07-24).
+    //
+    // These 23 tests close the untested pub-API, error-branch, edge-case,
+    // determinism, and integration gaps flagged by the audit. Everything runs
+    // synthesized (no HF checkpoint), zero-dep, deterministic.
+    // -----------------------------------------------------------------------
+
+    /// Pins [`DiaEncoderConfig::attn_hidden`] to `n_head * head_dim` AND
+    /// captures the primary source's **deliberate** `n_embd != attn_hidden`
+    /// mismatch on the encoder (docstring §113-120, config.json —
+    /// `n_embd=1024` vs `attn_hidden = 16 * 128 = 2048`). A well-meaning
+    /// refactor that "fixes" the mismatch by forcing `attn_hidden = n_embd`
+    /// would silently corrupt every encoder Q/K/V/O shape check in
+    /// [`DiaTts::new`]; `tiny_for_tests` keeps them equal (16 == 16) so this
+    /// test is the only guard.
+    #[test]
+    fn encoder_attn_hidden_pins_formula_and_deliberate_mismatch() {
+        let c16 = DiaConfig::dia_1_6b();
+        assert_eq!(
+            c16.encoder.attn_hidden(),
+            c16.encoder.n_head * c16.encoder.head_dim
+        );
+        assert_eq!(c16.encoder.attn_hidden(), 16 * 128);
+        // Deliberate mismatch — Dia's encoder projects the residual stream
+        // (`n_embd=1024`) into a larger attention hidden (`2048`).
+        assert_ne!(c16.encoder.attn_hidden(), c16.encoder.n_embd);
+
+        let ct = DiaConfig::tiny_for_tests();
+        assert_eq!(
+            ct.encoder.attn_hidden(),
+            ct.encoder.n_head * ct.encoder.head_dim
+        );
+        assert_eq!(ct.encoder.attn_hidden(), 4 * 4);
+        // tiny_for_tests happens to satisfy `n_embd == attn_hidden` — that
+        // is precisely why the dia_1_6b assertion above is load-bearing.
+        assert_eq!(ct.encoder.attn_hidden(), ct.encoder.n_embd);
+    }
+
+    /// Pins [`DiaDecoderConfig::kv_hidden_dim`] to `kv_heads * gqa_head_dim`.
+    /// The GQA broadcast width is what [`DiaTts::new`] derives every
+    /// `sa_k_proj` / `sa_v_proj` shape check from (lines 761-762); a bad
+    /// formula would silently misalign the KV projection.
+    #[test]
+    fn decoder_kv_hidden_dim_pins_formula() {
+        let c16 = DiaConfig::dia_1_6b();
+        assert_eq!(
+            c16.decoder.kv_hidden_dim(),
+            c16.decoder.kv_heads * c16.decoder.gqa_head_dim
+        );
+        assert_eq!(c16.decoder.kv_hidden_dim(), 4 * 128);
+        // GQA broadcast — `kv_hidden` (512) is smaller than `n_embd` (2048).
+        assert_ne!(c16.decoder.kv_hidden_dim(), c16.decoder.n_embd);
+
+        let ct = DiaConfig::tiny_for_tests();
+        assert_eq!(
+            ct.decoder.kv_hidden_dim(),
+            ct.decoder.kv_heads * ct.decoder.gqa_head_dim
+        );
+        assert_eq!(ct.decoder.kv_hidden_dim(), 2 * 4);
+    }
+
+    /// Pins the encoder-ill-formed arm of [`DiaConfig::validate_for_forward`]
+    /// (line 294) — asymmetric to `config_gqa_ill_formed_is_rejected`, which
+    /// only exercises the decoder half.
+    #[test]
+    fn config_encoder_ill_formed_is_rejected() {
+        let mut c = DiaConfig::tiny_for_tests();
+        c.encoder.n_layer = 0;
+        match c.validate_for_forward() {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("encoder ill-formed"),
+                "message must name encoder-ill-formed arm: {msg}"
+            ),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// Pins the zero-size-hparam arm of [`DiaConfig::validate_for_forward`]
+    /// (line 328) — any of {src_vocab, tgt_vocab, channels, text_length,
+    /// audio_length} = 0 must fail loudly. Covers all five subfields via
+    /// individual mutations (avoids a complex `fn`-pointer table that would
+    /// trip `clippy::type_complexity`).
+    #[test]
+    fn config_zero_size_hparam_is_rejected() {
+        fn assert_zero_size(name: &str, c: &DiaConfig) {
+            match c.validate_for_forward() {
+                Err(VokraError::InvalidArgument(msg)) => assert!(
+                    msg.contains("zero-size hparam"),
+                    "{name}=0 must hit zero-size arm, got: {msg}"
+                ),
+                other => panic!("{name}=0 expected InvalidArgument, got {other:?}"),
+            }
+        }
+        let base = DiaConfig::tiny_for_tests();
+
+        let mut c = base.clone();
+        c.src_vocab_size = 0;
+        assert_zero_size("src_vocab_size", &c);
+
+        // tgt_vocab_size=0 also forces the special ids to 0 so the
+        // vocab-fit loop doesn't trip first (the special-id check runs
+        // after the zero-size arm).
+        let mut c = base.clone();
+        c.tgt_vocab_size = 0;
+        c.audio_bos_value = 0;
+        c.audio_eos_value = 0;
+        c.audio_pad_value = 0;
+        assert_zero_size("tgt_vocab_size", &c);
+
+        // channels=0 must also drop delay_pattern to preserve the
+        // length-matches-channels invariant so the zero-size arm fires
+        // before the length check.
+        let mut c = base.clone();
+        c.channels = 0;
+        c.delay_pattern.clear();
+        assert_zero_size("channels", &c);
+
+        let mut c = base.clone();
+        c.text_length = 0;
+        assert_zero_size("text_length", &c);
+
+        let mut c = base;
+        c.audio_length = 0;
+        assert_zero_size("audio_length", &c);
+    }
+
+    /// Pins the `text_embedding.len()` mismatch arm of [`DiaTts::new`]
+    /// (line 680). An off-by-one in the embed table would slip past every
+    /// other test.
+    #[test]
+    fn dia_tts_new_rejects_text_embedding_size_mismatch() {
+        let c = DiaConfig::tiny_for_tests();
+        let mut w = DiaWeights::synthesized(&c, 7).expect("weights");
+        w.text_embedding.pop();
+        match DiaTts::new(c, w) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("text_embedding"),
+                "message must name text_embedding: {msg}"
+            ),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// Pins the `encoder_norm.len()` mismatch arm of [`DiaTts::new`]
+    /// (line 694).
+    #[test]
+    fn dia_tts_new_rejects_encoder_norm_size_mismatch() {
+        let c = DiaConfig::tiny_for_tests();
+        let mut w = DiaWeights::synthesized(&c, 7).expect("weights");
+        w.encoder_norm.pop();
+        match DiaTts::new(c, w) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("encoder_norm"),
+                "message must name encoder_norm: {msg}"
+            ),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// Pins the `channel_embeddings.len() != channels` arm of [`DiaTts::new`]
+    /// (line 725) — asymmetric to the tested `encoder_blocks.len()` arm.
+    #[test]
+    fn dia_tts_new_rejects_channel_embeddings_count_mismatch() {
+        let c = DiaConfig::tiny_for_tests();
+        let mut w = DiaWeights::synthesized(&c, 7).expect("weights");
+        w.channel_embeddings.pop();
+        match DiaTts::new(c, w) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("channel_embeddings.len()"),
+                "message must name channel_embeddings.len(): {msg}"
+            ),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// Pins the `channel_embeddings[i]` size mismatch arm of [`DiaTts::new`]
+    /// (line 734).
+    #[test]
+    fn dia_tts_new_rejects_channel_embedding_size_mismatch() {
+        let c = DiaConfig::tiny_for_tests();
+        let mut w = DiaWeights::synthesized(&c, 7).expect("weights");
+        w.channel_embeddings[0].pop();
+        match DiaTts::new(c, w) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("channel_embeddings[0]"),
+                "message must name channel_embeddings[0]: {msg}"
+            ),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// Pins the `decoder_blocks.len() != decoder.n_layer` arm of
+    /// [`DiaTts::new`] (line 741) — asymmetric to the tested encoder
+    /// equivalent.
+    #[test]
+    fn dia_tts_new_rejects_decoder_blocks_count_mismatch() {
+        let c = DiaConfig::tiny_for_tests();
+        let mut w = DiaWeights::synthesized(&c, 7).expect("weights");
+        w.decoder_blocks.pop();
+        match DiaTts::new(c, w) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("decoder_blocks.len()"),
+                "message must name decoder_blocks.len(): {msg}"
+            ),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// Pins the `decoder_norm.len()` mismatch arm of [`DiaTts::new`]
+    /// (line 748).
+    #[test]
+    fn dia_tts_new_rejects_decoder_norm_size_mismatch() {
+        let c = DiaConfig::tiny_for_tests();
+        let mut w = DiaWeights::synthesized(&c, 7).expect("weights");
+        w.decoder_norm.pop();
+        match DiaTts::new(c, w) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("decoder_norm"),
+                "message must name decoder_norm: {msg}"
+            ),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// Pins the decoder-block per-tensor size mismatch arm of [`DiaTts::new`]
+    /// (line 775). The decoder loop is a distinct 14-entry check that a
+    /// copy-paste bug from the encoder loop could silently break; we truncate
+    /// `sa_k_proj` (which depends on `kv_hidden_dim`, so a formula regression
+    /// would hit here too).
+    #[test]
+    fn dia_tts_new_rejects_decoder_block_tensor_size_mismatch() {
+        let c = DiaConfig::tiny_for_tests();
+        let mut w = DiaWeights::synthesized(&c, 7).expect("weights");
+        w.decoder_blocks[0].sa_k_proj.pop();
+        match DiaTts::new(c, w) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("decoder block 0") && msg.contains("sa_k_proj"),
+                "message must name decoder block 0 + sa_k_proj: {msg}"
+            ),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// Pins the `logit_heads.len() != channels` arm of [`DiaTts::new`]
+    /// (line 782).
+    #[test]
+    fn dia_tts_new_rejects_logit_heads_count_mismatch() {
+        let c = DiaConfig::tiny_for_tests();
+        let mut w = DiaWeights::synthesized(&c, 7).expect("weights");
+        w.logit_heads.pop();
+        match DiaTts::new(c, w) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("logit_heads.len()"),
+                "message must name logit_heads.len(): {msg}"
+            ),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// Pins the `logit_heads[i]` size mismatch arm of [`DiaTts::new`]
+    /// (line 791).
+    #[test]
+    fn dia_tts_new_rejects_logit_head_size_mismatch() {
+        let c = DiaConfig::tiny_for_tests();
+        let mut w = DiaWeights::synthesized(&c, 7).expect("weights");
+        w.logit_heads[0].pop();
+        match DiaTts::new(c, w) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("logit_heads[0]"),
+                "message must name logit_heads[0]: {msg}"
+            ),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// Builds a minimal [`DacCodecGguf`] from pub fields — `with_dac` only
+    /// inspects `attrs.n_codebooks` and `sample_rate`, so empty
+    /// `tables`/`out_projs` are fine (the real decode chain is unreached).
+    fn stub_dac(n_codebooks: usize, sample_rate: u32) -> DacCodecGguf {
+        DacCodecGguf {
+            attrs: vokra_ops::DacRvqAttrs {
+                n_codebooks,
+                codebook_size: 1,
+                codebook_dim: 1,
+                d_model: 1,
+            },
+            tables: Vec::new(),
+            out_projs: Vec::new(),
+            sample_rate,
+            hop_length: 1,
+        }
+    }
+
+    /// Pins the happy path of [`DiaTts::with_dac`]: a codec with
+    /// `n_codebooks == channels` and matching sample rate binds successfully
+    /// and becomes observable via [`DiaTts::dac`].
+    #[test]
+    fn with_dac_happy_path_binds_dac() {
+        let c = DiaConfig::tiny_for_tests();
+        let w = DiaWeights::synthesized(&c, 7).expect("weights");
+        let tts = DiaTts::new(c.clone(), w).expect("dia tts");
+        assert!(tts.dac().is_none(), "sanity: no DAC before with_dac");
+        let dac = stub_dac(c.channels, c.sample_rate);
+        let tts = tts.with_dac(dac).expect("with_dac happy path");
+        let bound = tts.dac().expect("dac must be bound");
+        assert_eq!(bound.attrs.n_codebooks, c.channels);
+        assert_eq!(bound.sample_rate, c.sample_rate);
+    }
+
+    /// Pins the `n_codebooks < channels` arm of [`DiaTts::with_dac`]
+    /// (line 819) — a codec with fewer codebooks than Dia channels would
+    /// misroute channel indices at decode time.
+    #[test]
+    fn with_dac_rejects_codebook_shortfall() {
+        let c = DiaConfig::tiny_for_tests();
+        let short = c.channels - 1;
+        let w = DiaWeights::synthesized(&c, 7).expect("weights");
+        let tts = DiaTts::new(c.clone(), w).expect("dia tts");
+        let dac = stub_dac(short, c.sample_rate);
+        match tts.with_dac(dac) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("codebooks") && msg.contains("channels"),
+                "message must name codebook / channel mismatch: {msg}"
+            ),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// Pins the sample-rate mismatch arm of [`DiaTts::with_dac`] (line 824)
+    /// — a DAC codec whose sample rate does not match Dia's configured
+    /// rate must be rejected.
+    #[test]
+    fn with_dac_rejects_sample_rate_mismatch() {
+        let c = DiaConfig::tiny_for_tests();
+        let w = DiaWeights::synthesized(&c, 7).expect("weights");
+        let tts = DiaTts::new(c.clone(), w).expect("dia tts");
+        // 48 kHz codec against Dia's 44.1 kHz.
+        let dac = stub_dac(c.channels, 48_000);
+        match tts.with_dac(dac) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("sample_rate"),
+                "message must name sample_rate: {msg}"
+            ),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// Pins the length-cap boundary: `text_ids.len() == cfg.text_length`
+    /// (exactly at the cap) must be accepted — i.e. the guard is `>` not
+    /// `>=`. Currently only `text_length + 1` (>) is exercised; an off-by-one
+    /// from `>` to `>=` would go undetected.
+    #[test]
+    fn synthesize_accepts_exactly_at_text_length_cap() {
+        let c = DiaConfig::tiny_for_tests();
+        let cap = c.text_length;
+        let w = DiaWeights::synthesized(&c, 7).expect("weights");
+        let tts = DiaTts::new(c, w).expect("dia tts");
+        let exactly_at = vec![0i64; cap];
+        // Past the length + vocab guards; synthesized weights → NotImplemented.
+        match tts.synthesize(&exactly_at) {
+            Err(VokraError::NotImplemented(_)) => {}
+            other => panic!("expected NotImplemented at length cap, got {other:?}"),
+        }
+    }
+
+    /// Pins the vocab-range boundary: `text_ids` containing
+    /// `src_vocab_size - 1` (the max valid id) must be accepted — i.e. the
+    /// guard is `>= vocab`, not `> vocab`.
+    #[test]
+    fn synthesize_accepts_max_valid_id() {
+        let c = DiaConfig::tiny_for_tests();
+        let max_id = (c.src_vocab_size - 1) as i64;
+        let w = DiaWeights::synthesized(&c, 7).expect("weights");
+        let tts = DiaTts::new(c, w).expect("dia tts");
+        match tts.synthesize(&[max_id]) {
+            Err(VokraError::NotImplemented(_)) => {}
+            other => panic!("expected NotImplemented for max-valid id, got {other:?}"),
+        }
+    }
+
+    /// Pins the Xavier bound guarantee (docstring §630-641): every drawn
+    /// weight lies in `[-a, +a]` with `a = sqrt(6 / (fan_in + fan_out))`. A
+    /// bad rescale from u01 to the signed range (say `u01 * a` instead of
+    /// `(u01*2-1) * a`) would silently double the mean and slip past shape
+    /// checks; this test asserts every entry in two representative tensors.
+    #[test]
+    fn xavier_draws_stay_within_bounds() {
+        let c = DiaConfig::tiny_for_tests();
+        let w = DiaWeights::synthesized(&c, 0xC0FFEE).expect("weights");
+
+        // text_embedding: fan_in = src_vocab_size, fan_out = enc.n_embd.
+        let a_te = (6.0f32 / (c.src_vocab_size + c.encoder.n_embd) as f32).sqrt();
+        assert!(
+            !w.text_embedding.is_empty(),
+            "text_embedding must be non-empty"
+        );
+        for (i, v) in w.text_embedding.iter().enumerate() {
+            assert!(
+                v.abs() <= a_te,
+                "text_embedding[{i}]={v} exceeds Xavier bound ±{a_te}"
+            );
+        }
+
+        // encoder_blocks[0].q_proj: fan_in = n_embd, fan_out = attn_hidden.
+        let a_q = (6.0f32 / (c.encoder.n_embd + c.encoder.attn_hidden()) as f32).sqrt();
+        for (i, v) in w.encoder_blocks[0].q_proj.iter().enumerate() {
+            assert!(
+                v.abs() <= a_q,
+                "encoder_blocks[0].q_proj[{i}]={v} exceeds bound ±{a_q}"
+            );
+        }
+    }
+
+    /// Pins [`DiaTts::is_synthesized`] to the underlying weight flag. Every
+    /// existing test builds via [`DiaWeights::synthesized`] which sets the
+    /// flag to `true`; a real-checkpoint bind path lands the `false` branch
+    /// and this test guards it.
+    #[test]
+    fn dia_tts_is_synthesized_reflects_weight_flag() {
+        let c = DiaConfig::tiny_for_tests();
+        let mut w = DiaWeights::synthesized(&c, 7).expect("weights");
+        w.is_synthesized = false;
+        let tts = DiaTts::new(c, w).expect("dia tts");
+        assert!(
+            !tts.is_synthesized(),
+            "is_synthesized must reflect DiaWeights.is_synthesized=false"
+        );
+    }
+
+    /// Pins the no-DAC-bound arm of [`DiaTts::synthesize`] (line 905). It is
+    /// unreachable via `DiaWeights::synthesized` (which short-circuits at
+    /// line 894) but reachable by flipping the pub `is_synthesized` flag,
+    /// which is the shape a real-checkpoint bind path will take. Message
+    /// must name the DAC blocker so callers know to call
+    /// [`DiaTts::with_dac`] — FR-EX-08, never a silent zero-fill.
+    #[test]
+    fn synthesize_without_dac_is_loud_not_implemented() {
+        let c = DiaConfig::tiny_for_tests();
+        let mut w = DiaWeights::synthesized(&c, 7).expect("weights");
+        // Pretend a real checkpoint so we skip the synthesized-weight arm.
+        w.is_synthesized = false;
+        let tts = DiaTts::new(c, w).expect("dia tts");
+        assert!(tts.dac().is_none(), "sanity: no DAC bound");
+        match tts.synthesize(&[0, 1, 2]).unwrap_err() {
+            VokraError::NotImplemented(msg) => assert!(
+                msg.contains("DAC") && msg.contains("with_dac"),
+                "message must name DAC blocker + with_dac call: {msg}"
+            ),
+            other => panic!("expected NotImplemented, got {other:?}"),
+        }
+    }
+
+    /// Pins same-seed determinism across the decoder half
+    /// (`channel_embeddings`, `decoder_blocks`, `logit_heads`). The existing
+    /// determinism test only asserts on `text_embedding` and
+    /// `encoder_blocks[0].q_proj`; a nondeterminism regression that only
+    /// affects the decoder-side draws would go undetected without this.
+    #[test]
+    fn synthesized_decoder_half_is_deterministic_under_same_seed() {
+        let c = DiaConfig::tiny_for_tests();
+        let w1 = DiaWeights::synthesized(&c, 0xDEC0DE).expect("w1");
+        let w2 = DiaWeights::synthesized(&c, 0xDEC0DE).expect("w2");
+
+        assert_eq!(
+            w1.channel_embeddings.len(),
+            w2.channel_embeddings.len(),
+            "channel_embeddings count diverged"
+        );
+        for i in 0..w1.channel_embeddings.len() {
+            assert_eq!(
+                w1.channel_embeddings[i], w2.channel_embeddings[i],
+                "channel_embeddings[{i}] diverged under same seed"
+            );
+        }
+
+        assert_eq!(
+            w1.decoder_blocks.len(),
+            w2.decoder_blocks.len(),
+            "decoder_blocks count diverged"
+        );
+        for i in 0..w1.decoder_blocks.len() {
+            let a = &w1.decoder_blocks[i];
+            let b = &w2.decoder_blocks[i];
+            assert_eq!(a.sa_q_proj, b.sa_q_proj, "decoder[{i}].sa_q_proj");
+            assert_eq!(a.sa_k_proj, b.sa_k_proj, "decoder[{i}].sa_k_proj");
+            assert_eq!(a.sa_v_proj, b.sa_v_proj, "decoder[{i}].sa_v_proj");
+            assert_eq!(a.sa_o_proj, b.sa_o_proj, "decoder[{i}].sa_o_proj");
+            assert_eq!(a.xa_q_proj, b.xa_q_proj, "decoder[{i}].xa_q_proj");
+            assert_eq!(a.xa_k_proj, b.xa_k_proj, "decoder[{i}].xa_k_proj");
+            assert_eq!(a.xa_v_proj, b.xa_v_proj, "decoder[{i}].xa_v_proj");
+            assert_eq!(a.xa_o_proj, b.xa_o_proj, "decoder[{i}].xa_o_proj");
+            assert_eq!(a.gate_proj, b.gate_proj, "decoder[{i}].gate_proj");
+            assert_eq!(a.up_proj, b.up_proj, "decoder[{i}].up_proj");
+            assert_eq!(a.down_proj, b.down_proj, "decoder[{i}].down_proj");
+        }
+
+        assert_eq!(
+            w1.logit_heads.len(),
+            w2.logit_heads.len(),
+            "logit_heads count diverged"
+        );
+        for i in 0..w1.logit_heads.len() {
+            assert_eq!(
+                w1.logit_heads[i], w2.logit_heads[i],
+                "logit_heads[{i}] diverged under same seed"
+            );
+        }
+    }
+
+    /// Integration smoke: a config that captures Dia-1.6B's **deliberate**
+    /// architectural mismatch (`enc.n_embd != enc.attn_hidden` and GQA
+    /// `dec.kv_hidden_dim != dec.n_embd`) shape-flows end-to-end through
+    /// [`DiaWeights::synthesized`] and [`DiaTts::new`]. `tiny_for_tests`
+    /// keeps `enc.n_embd == attn_hidden` (16 == 16), so a "well-meaning"
+    /// refactor that forces them equal on the encoder side would pass every
+    /// other test.
+    ///
+    /// We use a proxy config with the same architectural property at a
+    /// testable scale rather than `DiaConfig::dia_1_6b()` itself, whose
+    /// synthesized weights allocate ~6.5 GB and would violate the 100 ms /
+    /// low-memory test budget.
+    #[test]
+    fn shape_flow_with_encoder_attn_hidden_mismatch_end_to_end() {
+        let cfg = DiaConfig {
+            encoder: DiaEncoderConfig {
+                n_layer: 2,
+                n_embd: 8,
+                n_head: 4,
+                head_dim: 4, // attn_hidden = 16 != n_embd = 8 (mirrors 1024 vs 2048).
+                n_hidden: 16,
+            },
+            decoder: DiaDecoderConfig {
+                n_layer: 2,
+                n_embd: 16,
+                gqa_query_heads: 4,
+                kv_heads: 2, // kv_hidden = 8 != n_embd = 16 (GQA broadcast).
+                gqa_head_dim: 4,
+                cross_query_heads: 4,
+                cross_head_dim: 4,
+                n_hidden: 32,
+            },
+            src_vocab_size: 8,
+            tgt_vocab_size: 12,
+            channels: 3,
+            delay_pattern: vec![0, 1, 2],
+            text_length: 32,
+            audio_length: 32,
+            text_pad_value: 0,
+            audio_bos_value: 10,
+            audio_eos_value: 8,
+            audio_pad_value: 9,
+            norm_eps: 1e-5,
+            rope_max_timescale: 10_000.0,
+            rope_min_timescale: 1.0,
+            sample_rate: DIA_SAMPLE_RATE,
+        };
+        // Sanity: the proxy really does capture the mismatch.
+        assert_ne!(cfg.encoder.attn_hidden(), cfg.encoder.n_embd);
+        assert_ne!(cfg.decoder.kv_hidden_dim(), cfg.decoder.n_embd);
+        cfg.validate_for_forward()
+            .expect("proxy config is well-formed");
+
+        let w = DiaWeights::synthesized(&cfg, 0xAB).expect("weights");
+        let tts = DiaTts::new(cfg.clone(), w).expect("shape flow end-to-end");
+        assert_eq!(tts.config().encoder.n_embd, cfg.encoder.n_embd);
+        assert!(tts.is_synthesized());
+    }
 }
