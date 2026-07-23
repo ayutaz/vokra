@@ -64,7 +64,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build (release)
@@ -97,21 +97,21 @@ jobs:
         run: bash scripts/check-binary-size.sh
       - name: Upload macOS libvokra.dylib
         if: matrix.os == 'macos-latest'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: vokra-capi-macos
           path: target/release/libvokra.dylib
           retention-days: 7
       - name: Upload Windows vokra.dll
         if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: vokra-capi-windows
           path: target/release/vokra.dll
           retention-days: 7
       - name: Upload Linux libvokra.so
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: vokra-capi-linux
           path: target/release/libvokra.so
@@ -125,7 +125,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Test (workspace)
@@ -135,7 +135,7 @@ jobs:
     name: fmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -146,7 +146,7 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -176,7 +176,7 @@ jobs:
     name: ios-build
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install rustup iOS targets
         run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
       - name: Install cbindgen
@@ -190,7 +190,7 @@ jobs:
       - name: Verify Swift Package resolves
         run: swift package describe
       - name: Upload XCFramework artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: Vokra-xcframework
           path: build/ios/Vokra.xcframework
@@ -219,7 +219,7 @@ jobs:
     env:
       VOKRA_DISABLE_FUSION: ${{ matrix.fusion }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Numerical parity tests (tests/parity)
@@ -288,7 +288,7 @@ jobs:
     name: license
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Ensure Cargo.lock exists (cargo-audit requires a lockfile)
         run: |
@@ -463,26 +463,26 @@ jobs:
     needs: [build, ios-build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Download Vokra-xcframework (from ios-build)
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: Vokra-xcframework
           path: build/ios/Vokra.xcframework
       - name: Download macOS libvokra.dylib (from build/macos-latest)
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: vokra-capi-macos
           path: artifacts/macos
       - name: Download Windows vokra.dll (from build/windows-latest)
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: vokra-capi-windows
           path: artifacts/windows
       - name: Download Linux libvokra.so (from build/ubuntu-latest)
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: vokra-capi-linux
           path: artifacts/linux
@@ -570,7 +570,7 @@ jobs:
       - name: UPM dependencies check (.dependencies=={} & no Sentis)
         run: bash scripts/check-unity-package-deps.sh bindings/unity/com.vokra.unity
       - name: Upload UPM package artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: Vokra-unity-package
           path: bindings/unity/com.vokra.unity-*.tgz
@@ -628,26 +628,26 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Download macOS libvokra.dylib (from build/macos-latest)
         if: matrix.os == 'macos-latest'
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: vokra-capi-macos
           path: bindings/python/native
       - name: Download Windows vokra.dll (from build/windows-latest)
         if: matrix.os == 'windows-latest'
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: vokra-capi-windows
           path: bindings/python/native
       - name: Download Linux libvokra.so (from build/ubuntu-latest)
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: vokra-capi-linux
           path: bindings/python/native
@@ -673,7 +673,7 @@ jobs:
         # (v3.0.0 changelog for the enforcement addition). Bump to v3+
         # only after threading a proper `CIBW_REPAIR_WHEEL_COMMAND` that
         # retags each wheel to a platform-specific slot.
-        uses: pypa/cibuildwheel@v2.23.4
+        uses: pypa/cibuildwheel@v4.1.0
         with:
           package-dir: bindings/python
           output-dir: bindings/python/dist
@@ -812,7 +812,7 @@ jobs:
           python -m pip install pytest
           pytest bindings/python/tests -v
       - name: Upload wheels artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: vokra-python-wheels-${{ matrix.os }}
           path: bindings/python/dist/*.whl

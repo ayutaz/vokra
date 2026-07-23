@@ -132,7 +132,7 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       wav_present: ${{ steps.wav.outputs.present }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Compute size matrix
         id: matrix
         shell: bash
@@ -234,14 +234,14 @@ jobs:
       ENV_VAR: ${{ matrix.env_var }}
       FIXTURE_DIR: ${{ matrix.fixture_dir }}
       GGUF: ${{ matrix.gguf }}
-      # Steer HF cache into a repo-local path so actions/cache@v5 can
+      # Steer HF cache into a repo-local path so actions/cache@v6 can
       # snapshot it deterministically. Kokoro workflow uses the same
       # pattern (parity-kokoro-real.yml env.HF_HOME).
       HF_HOME: ${{ github.workspace }}/.hf-cache
       HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
@@ -258,7 +258,7 @@ jobs:
         # churn elsewhere. Restore key gives a warm hit if the dumper file
         # changed but the checkpoint set didn't. Path is the whole HF_HOME
         # (matches parity-kokoro-real.yml's HF cache pattern).
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ env.HF_HOME }}
           key: hf-hub-${{ matrix.size }}-${{ hashFiles('tools/parity/dump_whisper_reference.py') }}
@@ -662,7 +662,7 @@ jobs:
         # against the pinned WAV + HF checkpoint on this run). `if: always()`
         # so a parity FAIL still ships the artifact for owner triage.
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: whisper-${{ matrix.size }}-fixture
           path: |
@@ -680,7 +680,7 @@ jobs:
         # produced` so an OOM during cargo test still gives owner the GGUF
         # to reproduce locally.
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: whisper-${{ matrix.size }}-gguf
           path: ${{ matrix.gguf }}
