@@ -33,6 +33,7 @@ pub mod compute;
 pub mod cosyvoice2;
 pub mod csm;
 pub mod kokoro;
+pub(crate) mod mapped_weights;
 pub mod mimi;
 pub mod moshi;
 pub mod piper_plus;

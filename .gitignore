@@ -114,3 +114,7 @@ integrations/vokra-godot/pkg/
 # native binaries are assembled by CD, never committed (CHANGELOG "Not
 # included"; only .gitkeep + the hand-authored .meta are tracked).
 /bindings/unity/com.vokra.unity/Plugins/WebGL/libvokra.a
+
+# Secrets — never commit (HF token etc.)
+.env
+.env.*

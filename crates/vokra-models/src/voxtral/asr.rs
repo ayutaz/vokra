@@ -240,6 +240,23 @@ impl VoxtralAsr {
         Ok(asr)
     }
 
+    /// [`Self::from_gguf`] with the text decoder bound in **bounded memory**
+    /// ([`VoxtralModel::from_gguf_mapped`]) — the only way to load the real 3B
+    /// checkpoint on a host that cannot hold ~15 GiB of widened decoder
+    /// weights. Values are bit-identical to [`Self::from_gguf`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_gguf`], plus the mapped bind's per-layer validation.
+    pub fn from_gguf_mapped(file: Arc<vokra_core::gguf::GgufFile>) -> Result<Self> {
+        let model = VoxtralModel::from_gguf_mapped(Arc::clone(&file))?;
+        let mut asr = Self::new(model)?;
+        if let Ok(tok) = VoxtralTokenizer::from_gguf(&file, MISTRAL_EOS_ID) {
+            asr.tokenizer = Some(Arc::new(tok));
+        }
+        Ok(asr)
+    }
+
     /// Shared handle to the underlying model.
     #[must_use]
     pub fn model(&self) -> &Arc<VoxtralModel> {
@@ -884,6 +901,8 @@ mod tests {
             blocks,
             final_norm_gamma: vec![1.0f32; d],
             prefix: "",
+            mapped: None,
+            mapped_heads: None,
         }
     }
 
@@ -928,6 +947,8 @@ mod tests {
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",
+            mapped: None,
+            mapped_heads: None,
         };
         VoxtralModel {
             config: cfg,

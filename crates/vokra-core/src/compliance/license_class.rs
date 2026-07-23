@@ -32,6 +32,9 @@
 /// [`AttributionRequired`]: LicenseClass::AttributionRequired
 /// [`NonCommercial`]: LicenseClass::NonCommercial
 /// [`NonCommercialShareAlike`]: LicenseClass::NonCommercialShareAlike
+/// [`Copyleft`]: LicenseClass::Copyleft
+/// [`RedistributionForbidden`]: LicenseClass::RedistributionForbidden
+/// [`ConditionalCommercial`]: LicenseClass::ConditionalCommercial
 /// [`Unknown`]: LicenseClass::Unknown
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LicenseClass {
@@ -49,6 +52,43 @@ pub enum LicenseClass {
     /// Non-commercial *and* share-alike, e.g. CC-BY-NC-SA-4.0 (Fish-Speech
     /// v1.4/v1.5). **Research flag required.**
     NonCommercialShareAlike,
+    /// Redistribution is permitted **only with the original licence
+    /// preserved** — share-alike or strong copyleft (CC-BY-SA, AGPL, GPL,
+    /// LGPL). Loading is unrestricted; the obligation is on *republishing*.
+    ///
+    /// Distinct from [`AttributionRequired`](Self::AttributionRequired):
+    /// CC-BY asks only for credit, whereas share-alike propagates to a
+    /// converted artifact, so a GGUF derived from a CC-BY-SA weight is itself
+    /// CC-BY-SA and cannot be relabelled Apache-2.0. Getting this wrong is a
+    /// misrepresentation, not merely a missing credit — which is why
+    /// `from_license_str` tests share-alike *before* the plain `cc-by` arm.
+    Copyleft,
+    /// Redistribution is forbidden by contract or terms of use, **regardless
+    /// of any licence string on the artifact**. Never publishable.
+    ///
+    /// This is categorically unlike the copyleft and non-commercial classes,
+    /// which permit redistribution under conditions: here there are no
+    /// conditions that make it lawful. Examples: VOICEVOX `.vvm` (its terms
+    /// forbid `逆コンパイル・リバースエンジニアリング`, which a format
+    /// conversion requires, and separately forbid publishing the method);
+    /// CSJ-trained weights (the licence contract defines trained models as
+    /// derivative works and the academic tier bars third-party provision);
+    /// JSUT / JVS-trained weights (`Re-distribution is not permitted`).
+    ///
+    /// Never inferred from a licence string — only ever set from an explicit
+    /// list, because the prohibition lives in a contract the artifact does not
+    /// carry.
+    RedistributionForbidden,
+    /// Commercial use is permitted **below a stated threshold** (annual
+    /// revenue or monthly active users) and needs a separate grant above it —
+    /// e.g. LFM Open License v1.0 (revenue >= $10M), the Boson Higgs Audio 2
+    /// Community License (>100k annual active users), IndexTTS-2 (>100M MAU
+    /// or >CNY 1bn revenue).
+    ///
+    /// Loading is unrestricted. The threshold is the *downstream user's* to
+    /// evaluate, so the obligation this class creates is disclosure: the
+    /// threshold must be stated wherever the weight is published.
+    ConditionalCommercial,
     /// Training-rights unclear / license unstated / unrecognized string
     /// ("要確認"): classification failed. **Research flag required** so an
     /// unknown weight fails closed (never mistaken for permissive).
@@ -67,18 +107,76 @@ impl LicenseClass {
         )
     }
 
-    /// Whether this class is cleared for commercial use / the official model
-    /// zoo (Apache-2.0/MIT/BSD or CC-BY). The public zoo admits only these
-    /// (BR-10); [`crate::compliance`] uses this to keep CC-BY-NC weights out of
-    /// default paths.
-    pub fn commercial_ok(self) -> bool {
-        matches!(self, Self::Permissive | Self::AttributionRequired)
+    /// Whether **Vokra may republish** a weight of this class — i.e. upload a
+    /// converted artifact to a public model hub.
+    ///
+    /// Deliberately separate from [`Self::requires_research_flag`], which gates
+    /// *loading*. The two answers differ for almost every non-permissive class,
+    /// and conflating them produces one of two failures: refusing to publish
+    /// something that is perfectly publishable under its own terms, or
+    /// publishing something whose terms forbid it.
+    ///
+    /// - [`Copyleft`](Self::Copyleft) is **publishable** — with the original
+    ///   licence preserved on the artifact, never relabelled.
+    /// - [`ConditionalCommercial`](Self::ConditionalCommercial) is
+    ///   **publishable** — the threshold is the downstream user's to evaluate,
+    ///   so the obligation is to state it.
+    /// - [`RedistributionForbidden`](Self::RedistributionForbidden) is **never**
+    ///   publishable, and unlike every other class no condition makes it so.
+    /// - The non-commercial classes are an **owner policy decision**, not a
+    ///   code one, so they answer `false` here and are re-enabled (if ever)
+    ///   explicitly rather than by default.
+    /// - [`Unknown`](Self::Unknown) fails closed: an unclassifiable weight is
+    ///   not republished.
+    pub fn redistributable(self) -> bool {
+        matches!(
+            self,
+            Self::Permissive
+                | Self::AttributionRequired
+                | Self::Copyleft
+                | Self::ConditionalCommercial
+        )
     }
 
-    /// Whether downstream must display attribution for this class
-    /// (CC-BY-4.0). Advisory (non-gating) — enforced via NOTICE, not this gate.
+    /// Whether republishing must carry the **original licence unchanged** —
+    /// share-alike / copyleft. Relabelling such an artifact (e.g. publishing a
+    /// CC-BY-SA-derived GGUF as Apache-2.0) is a misrepresentation, not a
+    /// paperwork slip, so this is what a publishing gate keys on.
+    pub fn requires_license_preserved(self) -> bool {
+        matches!(self, Self::Copyleft | Self::NonCommercialShareAlike)
+    }
+
+    /// Whether **commercial use** of a weight of this class is permitted
+    /// outright.
+    ///
+    /// [`Copyleft`](Self::Copyleft) answers `true`: AGPL / GPL / CC-BY-SA all
+    /// permit commercial use, and restrict *redistribution terms* rather than
+    /// use. [`ConditionalCommercial`](Self::ConditionalCommercial) answers
+    /// `false` because the answer genuinely depends on the user's revenue or
+    /// user count, which this type cannot know — the fail-safe reading is
+    /// "must be evaluated", not "yes".
+    ///
+    /// This used to double as the official-zoo admission test (BR-10:
+    /// Apache-2.0 / MIT only). Those two questions diverged when the zoo policy
+    /// changed to admit copyleft weights under their own licences, so the
+    /// publishing question now lives in [`Self::redistributable`] and this
+    /// predicate answers only what its name says.
+    pub fn commercial_ok(self) -> bool {
+        matches!(
+            self,
+            Self::Permissive | Self::AttributionRequired | Self::Copyleft
+        )
+    }
+
+    /// Whether downstream must display attribution for this class (CC-BY-4.0,
+    /// and the copyleft family, whose licences all carry a BY / notice-
+    /// retention term). Advisory (non-gating) — enforced via NOTICE, not this
+    /// gate.
     pub fn requires_attribution(self) -> bool {
-        matches!(self, Self::AttributionRequired)
+        matches!(
+            self,
+            Self::AttributionRequired | Self::Copyleft | Self::NonCommercialShareAlike
+        )
     }
 
     /// The stable canonical name written to / read from
@@ -90,6 +188,9 @@ impl LicenseClass {
             Self::AttributionRequired => "attribution-required",
             Self::NonCommercial => "non-commercial",
             Self::NonCommercialShareAlike => "non-commercial-share-alike",
+            Self::Copyleft => "copyleft",
+            Self::RedistributionForbidden => "redistribution-forbidden",
+            Self::ConditionalCommercial => "conditional-commercial",
             Self::Unknown => "unknown",
         }
     }
@@ -106,6 +207,9 @@ impl LicenseClass {
             "non-commercial-share-alike" | "noncommercial-sharealike" => {
                 Some(Self::NonCommercialShareAlike)
             }
+            "copyleft" | "share-alike" | "sharealike" => Some(Self::Copyleft),
+            "redistribution-forbidden" => Some(Self::RedistributionForbidden),
+            "conditional-commercial" => Some(Self::ConditionalCommercial),
             "unknown" => Some(Self::Unknown),
             _ => None,
         }
@@ -146,7 +250,27 @@ impl LicenseClass {
                 Self::NonCommercial
             };
         }
-        // Attribution (CC-BY, not -NC): matched only after ruling out -NC.
+        // Share-alike and strong copyleft, BEFORE the plain `cc-by` arm.
+        //
+        // Order matters and the previous ordering was wrong: `cc-by-sa-4.0`
+        // contains `cc-by`, so testing attribution first classified every
+        // share-alike weight as merely attribution-required. That understates
+        // the obligation — CC-BY asks for credit, CC-BY-SA propagates to a
+        // converted artifact, so a GGUF built from a CC-BY-SA weight is itself
+        // CC-BY-SA. Publishing it as Apache-2.0 would be a misrepresentation.
+        //
+        // AGPL/GPL/LGPL land here too: redistribution is permitted with the
+        // licence preserved, which is a different disposition from `Unknown`
+        // (where the fail-closed answer is "we do not know, so refuse").
+        if has_sa
+            || norm.contains("agpl")
+            || norm.contains("gpl")
+            || norm.contains("copyleft")
+            || norm.contains("openrail")
+        {
+            return Self::Copyleft;
+        }
+        // Attribution (CC-BY, not -NC, not -SA): matched after both.
         if norm.contains("cc-by") || norm.starts_with("by-") {
             return Self::AttributionRequired;
         }
@@ -236,6 +360,147 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The bug this class ordering exists to prevent.** `cc-by-sa-4.0`
+    /// contains the substring `cc-by`, so an attribution-first match reported
+    /// every share-alike weight as merely attribution-required. That is not a
+    /// pedantic distinction: CC-BY asks for credit, CC-BY-SA propagates to a
+    /// converted artifact, so a GGUF built from a CC-BY-SA weight is itself
+    /// CC-BY-SA. Publishing it under an Apache-2.0 label would misstate the
+    /// terms a downstream user is bound by.
+    ///
+    /// Concretely load-bearing today: Style-Bert-VITS2's mandatory runtime
+    /// BERT (`ku-nlp/deberta-v2-large-japanese-char-wwm`) and the JVNV corpus
+    /// weights are both `cc-by-sa-4.0`.
+    #[test]
+    fn share_alike_is_copyleft_not_merely_attribution() {
+        for s in [
+            "cc-by-sa-4.0",
+            "CC BY SA 4.0",
+            "cc_by_sa_3.0",
+            "creativeml-openrail-m",
+        ] {
+            assert_eq!(
+                LicenseClass::from_license_str(s),
+                LicenseClass::Copyleft,
+                "{s} must classify as copyleft, not attribution-required"
+            );
+        }
+        // Plain CC-BY must NOT be swept up by the same arm.
+        for s in ["cc-by-4.0", "CC BY 4.0"] {
+            assert_eq!(
+                LicenseClass::from_license_str(s),
+                LicenseClass::AttributionRequired,
+                "{s} is attribution-only"
+            );
+        }
+        // Non-commercial still wins over share-alike (it is the stronger bar).
+        assert_eq!(
+            LicenseClass::from_license_str("cc-by-nc-sa-4.0"),
+            LicenseClass::NonCommercialShareAlike
+        );
+    }
+
+    /// AGPL / GPL weights used to fall through to `Unknown`, which fails
+    /// closed and therefore demanded a research flag to *load*. That was an
+    /// artifact of not recognising the string, not a considered position:
+    /// these licences do not restrict use at all. They restrict the terms of
+    /// redistribution, which is a different gate.
+    #[test]
+    fn strong_copyleft_is_recognised_and_loadable() {
+        for s in ["agpl-3.0", "AGPL-3.0-only", "gpl-3.0", "lgpl-2.1"] {
+            let c = LicenseClass::from_license_str(s);
+            assert_eq!(c, LicenseClass::Copyleft, "{s}");
+            assert!(!c.requires_research_flag(), "{s}: loading is unrestricted");
+            assert!(c.commercial_ok(), "{s}: commercial use is permitted");
+            assert!(
+                c.redistributable(),
+                "{s}: republishable with the licence kept"
+            );
+            assert!(c.requires_license_preserved(), "{s}: may not be relabelled");
+        }
+    }
+
+    /// The publishing gate and the loading gate answer different questions,
+    /// and the classes where they disagree are exactly the ones worth pinning.
+    #[test]
+    fn redistribution_and_loading_are_separate_questions() {
+        use LicenseClass::*;
+        // (class, may load without a research flag, may Vokra republish)
+        for (c, loadable, publishable) in [
+            (Permissive, true, true),
+            (AttributionRequired, true, true),
+            (Copyleft, true, true),
+            (ConditionalCommercial, true, true),
+            // Contractually barred: loading a weight you legitimately hold is
+            // fine; Vokra handing it to a third party is not.
+            (RedistributionForbidden, true, false),
+            // Owner policy decision, so `false` until explicitly re-enabled.
+            (NonCommercial, false, false),
+            (NonCommercialShareAlike, false, false),
+            (Unknown, false, false),
+        ] {
+            assert_eq!(
+                !c.requires_research_flag(),
+                loadable,
+                "{c:?}: loadable-without-flag"
+            );
+            assert_eq!(c.redistributable(), publishable, "{c:?}: publishable");
+        }
+    }
+
+    /// `RedistributionForbidden` must never be reachable by parsing a licence
+    /// string. The prohibition lives in a contract the artifact does not carry
+    /// (VOICEVOX's reverse-engineering ban, the CSJ licence agreement, the
+    /// JSUT/JVS corpus terms), so inferring it from text would be guessing —
+    /// and guessing the *other* way would silently authorise a publish.
+    #[test]
+    fn redistribution_forbidden_is_never_inferred_from_a_string() {
+        for s in [
+            "voicevox",
+            "csj",
+            "jsut",
+            "redistribution-forbidden",
+            "do-not-redistribute",
+            "proprietary",
+        ] {
+            assert_ne!(
+                LicenseClass::from_license_str(s),
+                LicenseClass::RedistributionForbidden,
+                "{s} must not be inferred as redistribution-forbidden"
+            );
+        }
+        // It round-trips through the canonical class name, which is how an
+        // explicit list sets it.
+        assert_eq!(
+            LicenseClass::from_class_str("redistribution-forbidden"),
+            Some(LicenseClass::RedistributionForbidden)
+        );
+    }
+
+    /// Every class must round-trip through its canonical wire name, or a
+    /// stamped GGUF would read back as something else.
+    #[test]
+    fn every_class_round_trips_through_its_wire_name() {
+        use LicenseClass::*;
+        for c in [
+            Permissive,
+            AttributionRequired,
+            Copyleft,
+            NonCommercial,
+            NonCommercialShareAlike,
+            RedistributionForbidden,
+            ConditionalCommercial,
+            Unknown,
+        ] {
+            assert_eq!(
+                LicenseClass::from_class_str(c.as_str()),
+                Some(c),
+                "{c:?} must round-trip via {:?}",
+                c.as_str()
+            );
+        }
+    }
 
     #[test]
     fn gate_membership_matches_severity() {

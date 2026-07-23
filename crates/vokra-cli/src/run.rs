@@ -999,9 +999,30 @@ fn run_voxtral(session: &Session, a: &RunArgs) -> Result<(), String> {
         .ok_or("run (voxtral ASR): --input <in.wav> is required")?;
     let clip = wav::read_wav(path)?;
 
-    let mut asr = VoxtralAsr::from_gguf(session.gguf())
-        .map_err(|e| e.to_string())?
-        .with_backend(a.backend);
+    // Bind through the BOUNDED-MEMORY store. `Session` already holds a parse of
+    // this file, but `Session::open` reads it into an owned buffer, and
+    // `VoxtralAsr::from_gguf` would then widen the whole `language_model` group
+    // to f32 on top of that — 14.95 GiB at the real 3B shape, which simply does
+    // not fit on a 16 GiB host. Re-opening through the mapping and binding the
+    // decoder blocks lazily keeps the values bit-identical (pinned by
+    // `mapped_blocks_match_resident_bitwise`) while the blocks stay in the map.
+    //
+    // A quantized GGUF cannot be addressed per element, so the mapped bind
+    // refuses it; fall back to the resident path rather than failing the run,
+    // and say so (FR-EX-08: the change of route is visible, not silent).
+    let mapped = std::sync::Arc::new(vokra_mmap::open_gguf(&a.model).map_err(|e| e.to_string())?);
+    let mut asr = match VoxtralAsr::from_gguf_mapped(std::sync::Arc::clone(&mapped)) {
+        Ok(asr) => asr,
+        Err(e) => {
+            eprintln!(
+                "vokra: NOTE voxtral mapped (bounded-memory) bind unavailable — {e}\n\
+                 vokra: falling back to the resident loader (this widens the whole \
+                 decoder to f32; expect a much larger footprint)"
+            );
+            VoxtralAsr::from_gguf(session.gguf()).map_err(|e| e.to_string())?
+        }
+    }
+    .with_backend(a.backend);
     if a.bare_prompt {
         asr = asr.with_prompt_layout(AsrPromptLayout::BareSoftPrefix);
     }

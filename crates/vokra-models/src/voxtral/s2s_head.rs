@@ -183,6 +183,8 @@ mod tests {
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",
+            mapped: None,
+            mapped_heads: None,
         }
     }
 

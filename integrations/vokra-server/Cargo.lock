@@ -2337,6 +2337,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "vokra-core",
+ "vokra-mmap",
  "vokra-models",
  "vokra-piper-g2p",
  "vokra-piper-plus",

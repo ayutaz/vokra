@@ -11,12 +11,25 @@ third-party component with distribution-relevant terms is added.
 --------------------------------------------------------------------------
 1. BigVGAN: scratch (clean-room) reimplementation policy
 --------------------------------------------------------------------------
-The NVIDIA BigVGAN reference implementation is distributed under the
-NVIDIA Source Code License-NC (non-commercial), which is incompatible with
-Vokra's Apache 2.0 licensing. Vokra therefore does not use, port, or derive
-code from the NVIDIA reference implementation. The BigVGAN-compatible
-vocoder operator in Vokra will be reimplemented from scratch based on the
-published paper only.
+CORRECTION (2026-07-22): the NVIDIA BigVGAN reference is **no longer**
+non-commercial. github.com/NVIDIA/BigVGAN now ships a standard MIT license
+("MIT License / Copyright (c) 2024 NVIDIA CORPORATION"), and the released
+weights (e.g. nvidia/bigvgan_v2_24khz_100band_256x) declare `license: mit`.
+
+The clean-room policy below was written when the reference was under the
+NVIDIA Source Code License-NC. That premise no longer holds: a direct port
+under MIT attribution is now permissible, and the scratch-reimplementation
+constraint is lifted. Retained here rather than deleted so the reason the
+operator was originally scoped as a from-paper rebuild stays legible.
+
+  BigVGAN
+  Copyright (c) 2024 NVIDIA CORPORATION
+  Licensed under the MIT License.
+  https://github.com/NVIDIA/BigVGAN
+
+If the reference is ported, the MIT license text is to be reproduced in
+crates/vokra-ops/THIRD_PARTY_LICENSES/bigvgan-LICENSE.txt in the same pull
+request (see section 9).
 
 Timing note: this is a forward-looking policy statement. The BigVGAN
 operator is not implemented in the current v0.1 spike (milestone M0); it is
@@ -167,6 +180,83 @@ when the real DeepFilterNet checkpoint is added to the model zoo (owner
 sign-off, docs/license-audit.md §3 — M4-20 T18). RNNoise (BSD, Xiph) and
 GTCRN (Apache 2.0) are alternate denoise candidates; their attribution is
 added here if/when they are integrated.
+
+--------------------------------------------------------------------------
+10. Japanese G2P chain (Open JTalk lineage) — BSD-3-Clause notices
+--------------------------------------------------------------------------
+Vokra's Japanese text-to-speech front-end resolves grapheme-to-phoneme
+through `jpreprocess`, a Rust reimplementation of Open JTalk that bundles
+the NAIST Japanese Dictionary. It is used by the excluded workspace
+`integrations/vokra-piper-g2p`, which drives plain-Japanese synthesis for
+the piper-plus voices.
+
+That lineage is permissively licensed end to end -- there is no GPL
+obligation anywhere in it, because the HTS Working Group elected the BSD
+arm of MeCab's disjunctive tri-license upstream. Vokra makes the same
+election explicitly, and records it here so an auditor does not have to
+infer which branch was taken:
+
+  **Vokra elects the BSD-3-Clause arm of the MeCab tri-license
+  (GPL-2.0 / LGPL-2.1 / BSD-3-Clause).**
+
+BSD-3-Clause clause 2 requires that a *binary* redistribution reproduce the
+copyright notice and conditions. Vokra ships binaries, so these notices are
+carried here rather than left to the upstream packaging -- which does not
+discharge the obligation on our behalf.
+
+  jpreprocess
+  Licensed under the BSD-3-Clause License.
+  https://github.com/jpreprocess/jpreprocess
+
+  Open JTalk
+  Copyright (c) 2008-2016 Nagoya Institute of Technology
+                          Department of Computer Science
+  Licensed under a Modified BSD (3-clause) License.
+  http://open-jtalk.sourceforge.net/
+
+  hts_engine API
+  Copyright (c) 2001-2015 Nagoya Institute of Technology
+                          Department of Computer Science
+  Copyright (c) 2001-2008 Tokyo Institute of Technology
+                          Interdisciplinary Graduate School of
+                          Science and Engineering
+  Licensed under a Modified BSD (3-clause) License.
+  http://hts-engine.sourceforge.net/
+
+  MeCab
+  Copyright (c) 2001-2008, Taku Kudo
+  Copyright (c) 2004-2008, Nippon Telegraph and Telephone Corporation
+  Tri-licensed GPL-2.0 / LGPL-2.1 / BSD-3-Clause; Vokra uses it under
+  BSD-3-Clause (see the election above).
+  https://taku910.github.io/mecab/
+
+  NAIST Japanese Dictionary (NAIST-JDic)
+  Copyright (c) 2009, Nara Institute of Science and Technology
+  Licensed under a Modified BSD (3-clause) License.
+
+  UniDic (as vendored in the Open JTalk lineage)
+  Copyright (c) The UniDic Consortium / NINJAL
+  The artifacts vendored in this chain are BSD-3-Clause.
+  NOTE: NINJAL's own direct UniDic distribution is tri-licensed
+  GPL-2.0 / LGPL-2.1 / Modified BSD. Anything that pulls UniDic directly
+  (rather than through this chain) must make the BSD election explicitly.
+  https://clrd.ninjal.ac.jp/unidic/
+
+Deliberately NOT used, and why:
+
+  - **eSpeak-NG (GPL-3.0)** is never linked. The common Python route reaches
+    it through `phonemizer` via in-process `ctypes` dynamic linking, which is
+    the strongest form of the copyleft argument -- not a subprocess shell-out.
+  - **num2words (LGPL-2.1+)** is not used in any Japanese numeral path. It is
+    trivially reimplementable and its PyPI metadata declares a bare "LGPL"
+    with no version, which also defeats automated scanners.
+  - **pyopenjtalk's bundled `mei_normal.htsvoice`** (CC BY 3.0, MMDAgent
+    Project Team) is not redistributed. Its attribution requirement attaches
+    to synthesis and wheel redistribution, neither of which Vokra performs.
+
+The BSD-3-Clause license texts are to be reproduced under
+integrations/vokra-piper-g2p/THIRD_PARTY_LICENSES/ when the Japanese G2P
+path is included in a binary release artifact.
 
 --------------------------------------------------------------------------
 9. Maintaining this file

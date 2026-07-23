@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, convert_cosyvoice2_file, convert_csm_file, convert_dac_file, convert_file,
+    ModelKind, convert_cosyvoice2_file, convert_csm_file, convert_dac_file, convert_file_licensed,
     convert_file_quantized, convert_moshi_file, convert_piper_plus_file, convert_utmos_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType};
@@ -75,6 +75,13 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // `restamp` is a distinct subcommand (metadata-only provenance rewrite of an
+    // existing GGUF — no `--model`), so it is dispatched before the converter
+    // arg parser, which requires `--model`.
+    if args.first().map(String::as_str) == Some("restamp") {
+        return run_restamp(&args[1..]);
+    }
+
     let parsed = match parse_args(&args) {
         Ok(p) => p,
         Err(msg) => {
@@ -88,6 +95,7 @@ fn main() -> ExitCode {
         config,
         output,
         quant,
+        license,
     } = parsed;
 
     let result = match model {
@@ -170,7 +178,7 @@ fn main() -> ExitCode {
         }
         _ => match quant {
             Some(q) => convert_file_quantized(model, &input, &output, q),
-            None => convert_file(model, &input, &output),
+            None => convert_file_licensed(model, &input, &output, license.as_deref()),
         },
     };
 
@@ -204,6 +212,7 @@ struct Parsed {
     config: Option<PathBuf>,
     output: PathBuf,
     quant: Option<GgmlType>,
+    license: Option<String>,
 }
 
 /// Parses the `--quantize` argument into a K-quant target dtype.
@@ -222,6 +231,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut config: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut quant: Option<GgmlType> = None;
+    let mut license: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -263,6 +273,14 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 );
                 i += 2;
             }
+            "--license" => {
+                license = Some(
+                    args.get(i + 1)
+                        .ok_or("--license requires an SPDX id")?
+                        .clone(),
+                );
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -273,6 +291,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         config,
         output: output.ok_or("--output is required")?,
         quant,
+        license,
     })
 }
 
@@ -572,6 +591,96 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         }
     }
     Ok(())
+}
+
+/// `vokra-convert restamp` — rewrite an existing GGUF's provenance metadata
+/// without re-materialising tensors (the low-memory publish path).
+fn run_restamp(args: &[String]) -> ExitCode {
+    const USAGE: &str = "\
+USAGE:
+    vokra-convert restamp --input <in.gguf> --output <out.gguf> \\
+        --license <spdx> [--model-id <id>] [--source <text>] [--attribution <text>]
+
+Rewrites vokra.provenance.* on an existing GGUF, copying tensors verbatim (peak
+memory = one tensor). For a large artifact that was converted before provenance
+stamping, or is too big to re-convert on this machine.
+";
+    let mut input = None;
+    let mut output = None;
+    let mut license = None;
+    let mut model_id = None;
+    let mut source = None;
+    let mut attribution = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            "--input" => {
+                input = args.get(i + 1).map(PathBuf::from);
+                i += 2;
+            }
+            "--output" => {
+                output = args.get(i + 1).map(PathBuf::from);
+                i += 2;
+            }
+            "--license" => {
+                license = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--model-id" => {
+                model_id = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--source" => {
+                source = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--attribution" => {
+                attribution = args.get(i + 1).cloned();
+                i += 2;
+            }
+            other => {
+                eprintln!("error: unexpected argument `{other}`\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let (Some(input), Some(output), Some(license)) = (input, output, license) else {
+        eprintln!("error: --input, --output and --license are required\n\n{USAGE}");
+        return ExitCode::from(2);
+    };
+    // model_id / source default to advisory placeholders if omitted.
+    let model_id = model_id.unwrap_or_else(|| "restamped".to_owned());
+    let source = source.unwrap_or_else(|| format!("restamped GGUF (licence {license})"));
+
+    match vokra_convert::restamp_provenance(
+        &input,
+        &output,
+        &license,
+        &model_id,
+        &source,
+        attribution.as_deref(),
+    ) {
+        Ok(summary) => {
+            println!(
+                "restamped: {} tensors, {} metadata keys -> {}",
+                summary.tensor_count,
+                summary.metadata_count,
+                output.display()
+            );
+            for note in &summary.notes {
+                println!("  note: {note}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]

@@ -50,6 +50,7 @@
 //! Rust by the runtime crate (whisper.cpp 型 self re-implementation,
 //! CLAUDE.md 設計判断 4).
 
+use vokra_core::compliance::LicenseClass;
 use vokra_core::gguf::{
     GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
 };
@@ -279,6 +280,17 @@ pub(crate) fn convert_with_config_and_tokenizer(
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    // Self-describing redistribution (publishing to a public model hub): the
+    // artifact must carry its own licence, not rely on a consumer running
+    // Vokra's registry resolver. Values transcribed from
+    // docs/license-audit.md §3, which holds the primary-source citations.
+    vokra_core::stamp_provenance(
+        &mut b,
+        LicenseClass::Permissive,
+        "Apache-2.0",
+        Some("cosyvoice2"),
+        Some("FunAudioLLM/CosyVoice2-0.5B (Apache-2.0)"),
+    );
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
     write_hparams(&mut b, derived.as_ref(), config.as_ref());
     embed_tokenizer(&mut b, tokenizer, &mut report);

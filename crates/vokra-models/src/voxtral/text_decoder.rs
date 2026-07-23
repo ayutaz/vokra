@@ -42,11 +42,22 @@
 //! synthesized weights. Real-checkpoint parity is deferred to a follow-up
 //! ticket (T19+) that requires an upstream Voxtral safetensors dump.
 
-use vokra_core::gguf::GgufFile;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use vokra_core::gguf::{GgufFile, GgufTensorInfo};
 use vokra_core::{KvCache, Result, VokraError};
 
 use super::VoxtralConfig;
 use crate::compute::Compute;
+use crate::mapped_weights::{MappedModel, lock_scratch, mapped_info, transpose_widen, widen_into};
+
+/// Error identity for the Voxtral mapped store: the resident alternative is
+/// [`TextDecoder::load`], which goes through `GgufFile::tensor_f32` and so
+/// dequantizes block-wise payloads the mapped path cannot address per element.
+const VOXTRAL_MAPPED: MappedModel = MappedModel {
+    name: "voxtral",
+    resident_entry: "TextDecoder::load",
+};
 
 /// A `nn.Linear` decoded for direct row-major GEMM (`w_t` is `[in, out]`).
 ///
@@ -91,6 +102,348 @@ pub(crate) struct DecoderBlock {
     pub(crate) ffn: SwiGluFfn,
 }
 
+/// Where one mapped layer's nine tensors live inside the GGUF.
+///
+/// Voxtral stores every projection separately (no fused QKV or gate/up pack,
+/// unlike Moshi), so a layer is nine independent descriptors rather than six.
+struct MappedTextLayerLocs {
+    attn_norm: GgufTensorInfo,
+    q: GgufTensorInfo,
+    k: GgufTensorInfo,
+    v: GgufTensorInfo,
+    o: GgufTensorInfo,
+    ffn_norm: GgufTensorInfo,
+    gate: GgufTensorInfo,
+    up: GgufTensorInfo,
+    down: GgufTensorInfo,
+}
+
+/// Decoder blocks left **in the GGUF mapping** and widened to f32 one layer at
+/// a time during the forward pass — the Voxtral counterpart of
+/// `moshi::backbone::MappedTemporalBlocks`.
+///
+/// Motivation, measured on the real `mistralai/Voxtral-Mini-3B` GGUF: the
+/// `language_model` tensors are 7.48 GiB stored (BF16) but **14.95 GiB once
+/// widened to owned f32**, so [`TextDecoder::load`] cannot bind the decoder on
+/// a 16 GiB machine at all. Mapping the blocks moves that bulk off the heap
+/// and leaves only the head tensors resident.
+///
+/// - **Bind time** ([`Self::bind`]): all nine tensors of every layer are
+///   resolved and shape/dtype-validated up front, so a malformed GGUF fails at
+///   load rather than mid-stream (FR-EX-08).
+/// - **Step time** ([`Self::materialize_into`]): the requested layer is
+///   widened + transposed straight out of the mapped bytes into the reused
+///   scratch block, producing **bit-identical** f32 values to the resident
+///   binding — same widening formula, same `[out, in]` -> `[in, out]` index
+///   math (pinned by `mapped_blocks_match_resident_bitwise`).
+///
+/// # What this does *not* bound
+///
+/// Only the per-layer blocks are mapped. `token_emb` and (when untied)
+/// `lm_head` stay resident: at the shipping mini they are `[131072, 3072]`
+/// each, i.e. ~1.5 GiB apiece. The honest ceiling is therefore
+/// "~3 GiB of heads + one layer of scratch", not "bounded". Streaming the
+/// `lm_head` GEMV out of the mapping is a separate change — it would have to
+/// replace [`TextDecoder::output_head`]'s `&[f32]` contract.
+///
+/// The scratch sits behind a `Mutex` so the owning decoder stays `Send + Sync`
+/// (`VoxtralAsr` is served concurrently from the server registry). Concurrent
+/// sessions on one decoder therefore **serialize** their block forwards on
+/// this lock — the bounded-memory trade; per-session scratch would multiply
+/// the buffer per session.
+pub struct MappedTextBlocks {
+    file: Arc<GgufFile>,
+    locs: Vec<MappedTextLayerLocs>,
+    scratch: Mutex<DecoderBlock>,
+    d: usize,
+    q_hidden: usize,
+    kv_hidden: usize,
+    ffn_dim: usize,
+}
+
+impl std::fmt::Debug for MappedTextBlocks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MappedTextBlocks")
+            .field("n_layer", &self.locs.len())
+            .field("d", &self.d)
+            .field("q_hidden", &self.q_hidden)
+            .field("kv_hidden", &self.kv_hidden)
+            .field("ffn_dim", &self.ffn_dim)
+            .finish()
+    }
+}
+
+impl MappedTextBlocks {
+    /// Resolves and validates every layer's nine tensors against `cfg`.
+    ///
+    /// `prefix` must be the same one [`pick_prefix`] chose for the resident
+    /// path, so both bindings name identical tensors.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`] naming any missing tensor, any element count
+    /// that disagrees with the config shapes, or any payload dtype outside
+    /// `{F32, BF16}` (a quantized GGUF must use the resident loader).
+    pub fn bind(file: Arc<GgufFile>, cfg: &VoxtralConfig, prefix: &str) -> Result<Self> {
+        let d = cfg.text.hidden_dim;
+        let head_dim = cfg.text.head_dim();
+        let q_hidden = cfg.text.n_head_q * head_dim;
+        let kv_hidden = cfg.text.n_head_kv * head_dim;
+        let ffn_dim = cfg.text.ffn_dim;
+        if d == 0 || head_dim == 0 || q_hidden == 0 || kv_hidden == 0 || ffn_dim == 0 {
+            return Err(bad(format!(
+                "mapped bind needs non-zero shapes (d={d}, head_dim={head_dim}, \
+                 q_hidden={q_hidden}, kv_hidden={kv_hidden}, ffn_dim={ffn_dim}) — \
+                 re-convert with a converter that writes the full \
+                 vokra.voxtral.text_decoder.* group"
+            )));
+        }
+        let m = VOXTRAL_MAPPED;
+        let mut locs = Vec::with_capacity(cfg.text.n_layer);
+        for i in 0..cfg.text.n_layer {
+            let p = format!("{prefix}layers.{i}");
+            locs.push(MappedTextLayerLocs {
+                attn_norm: mapped_info(&file, &format!("{p}.input_layernorm.weight"), d, m)?,
+                q: mapped_info(
+                    &file,
+                    &format!("{p}.self_attn.q_proj.weight"),
+                    q_hidden * d,
+                    m,
+                )?,
+                k: mapped_info(
+                    &file,
+                    &format!("{p}.self_attn.k_proj.weight"),
+                    kv_hidden * d,
+                    m,
+                )?,
+                v: mapped_info(
+                    &file,
+                    &format!("{p}.self_attn.v_proj.weight"),
+                    kv_hidden * d,
+                    m,
+                )?,
+                o: mapped_info(
+                    &file,
+                    &format!("{p}.self_attn.o_proj.weight"),
+                    d * q_hidden,
+                    m,
+                )?,
+                ffn_norm: mapped_info(
+                    &file,
+                    &format!("{p}.post_attention_layernorm.weight"),
+                    d,
+                    m,
+                )?,
+                gate: mapped_info(&file, &format!("{p}.mlp.gate_proj.weight"), ffn_dim * d, m)?,
+                up: mapped_info(&file, &format!("{p}.mlp.up_proj.weight"), ffn_dim * d, m)?,
+                down: mapped_info(&file, &format!("{p}.mlp.down_proj.weight"), d * ffn_dim, m)?,
+            });
+        }
+        Ok(Self {
+            file,
+            locs,
+            scratch: Mutex::new(empty_block(d, q_hidden, kv_hidden, ffn_dim)),
+            d,
+            q_hidden,
+            kv_hidden,
+            ffn_dim,
+        })
+    }
+
+    /// Number of mapped layers (must equal `cfg.text.n_layer`).
+    pub fn n_layer(&self) -> usize {
+        self.locs.len()
+    }
+
+    /// Locks the shared materialization scratch (whole-forward hold).
+    fn lock_scratch(&self) -> Result<MutexGuard<'_, DecoderBlock>> {
+        lock_scratch(&self.scratch, VOXTRAL_MAPPED)
+    }
+
+    /// Widens + transposes `layer` out of the mapping into `scratch`.
+    ///
+    /// Each projection is stored `[out, in]` and consumed as `w_t = [in, out]`,
+    /// exactly as the resident [`linear`] builds it — so the transpose
+    /// arguments are `(rows = out, cols = in)`.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`] if a payload's byte length disagrees with the
+    /// bound shape (bind-time validation should have made this unreachable).
+    fn materialize_into<'a>(
+        &self,
+        scratch: &'a mut DecoderBlock,
+        layer: usize,
+    ) -> Result<&'a DecoderBlock> {
+        let locs = &self.locs[layer];
+        let (d, q_hidden, kv_hidden, ffn_dim) =
+            (self.d, self.q_hidden, self.kv_hidden, self.ffn_dim);
+        let m = VOXTRAL_MAPPED;
+        let f = &self.file;
+
+        widen_into(
+            f.tensor_bytes(&locs.attn_norm),
+            locs.attn_norm.dtype,
+            &mut scratch.attn_norm_gamma,
+            m,
+        )?;
+        let t = |info: &GgufTensorInfo, rows, cols, dst: &mut Vec<f32>| {
+            transpose_widen(f.tensor_bytes(info), info.dtype, rows, cols, dst, m)
+        };
+        t(&locs.q, q_hidden, d, &mut scratch.attn.q.w_t)?;
+        t(&locs.k, kv_hidden, d, &mut scratch.attn.k.w_t)?;
+        t(&locs.v, kv_hidden, d, &mut scratch.attn.v.w_t)?;
+        t(&locs.o, d, q_hidden, &mut scratch.attn.o.w_t)?;
+        widen_into(
+            f.tensor_bytes(&locs.ffn_norm),
+            locs.ffn_norm.dtype,
+            &mut scratch.ffn_norm_gamma,
+            m,
+        )?;
+        t(&locs.gate, ffn_dim, d, &mut scratch.ffn.gate.w_t)?;
+        t(&locs.up, ffn_dim, d, &mut scratch.ffn.up.w_t)?;
+        t(&locs.down, d, ffn_dim, &mut scratch.ffn.down.w_t)?;
+        Ok(scratch)
+    }
+}
+
+/// An all-empty block with the right shape metadata — the mapped scratch
+/// before its first materialization. The `w_t` vectors size themselves on the
+/// first `transpose_widen` (which `resize`s), so this allocates nothing.
+fn empty_block(d: usize, q_hidden: usize, kv_hidden: usize, ffn_dim: usize) -> DecoderBlock {
+    let lin = |in_features, out_features| Linear {
+        w_t: Vec::new(),
+        in_features,
+        out_features,
+    };
+    DecoderBlock {
+        attn_norm_gamma: Vec::new(),
+        attn: GqaAttention {
+            q: lin(d, q_hidden),
+            k: lin(d, kv_hidden),
+            v: lin(d, kv_hidden),
+            o: lin(q_hidden, d),
+        },
+        ffn_norm_gamma: Vec::new(),
+        ffn: SwiGluFfn {
+            gate: lin(d, ffn_dim),
+            up: lin(d, ffn_dim),
+            down: lin(ffn_dim, d),
+        },
+    }
+}
+
+/// Rows of the vocab-sized head matrices, served straight out of the GGUF
+/// mapping instead of as owned f32.
+///
+/// At the shipping Voxtral-Mini shape `token_emb` and the untied `lm_head` are
+/// `[131072, 3072]` each — **~1.5 GiB apiece widened**, i.e. ~3 GiB of the
+/// decoder's resident cost, more than the mapped blocks leave behind. Neither
+/// is used in a way that needs the whole matrix live:
+///
+/// - `token_emb` is read **one row per token** (`embed_row_into`).
+/// - `lm_head` is consumed by a per-row GEMV, so it can be walked in **row
+///   chunks** (`logits_into`): `out[v] = Σ_c head[v, c] * x[c]` involves no
+///   cross-row term, and each row's accumulation order is untouched, so the
+///   chunked result is **bit-identical** to the resident one.
+///
+/// Scratches sit behind mutexes so the owning decoder stays `Send + Sync`.
+pub struct MappedHeads {
+    file: Arc<GgufFile>,
+    token_emb: GgufTensorInfo,
+    /// `None` = the checkpoint ties the head to `token_emb` (upstream
+    /// `tie_word_embeddings`), exactly as the resident `lm_head: Option<_>`.
+    lm_head: Option<GgufTensorInfo>,
+    vocab: usize,
+    d: usize,
+    /// One widened head chunk (`HEAD_CHUNK_ROWS x d`).
+    chunk: Mutex<Vec<f32>>,
+}
+
+/// Rows of the head matrix widened per GEMV chunk.
+///
+/// 512 rows x 3072 f32 = 6 MiB — small enough to stay in L2/L3 across the
+/// chunk's GEMV, and large enough that the per-chunk call overhead is noise
+/// against 512 dot products of length `d`.
+const HEAD_CHUNK_ROWS: usize = 512;
+
+impl std::fmt::Debug for MappedHeads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MappedHeads")
+            .field("vocab", &self.vocab)
+            .field("d", &self.d)
+            .field("untied_lm_head", &self.lm_head.is_some())
+            .finish()
+    }
+}
+
+impl MappedHeads {
+    /// Resolves and validates the head tensors without widening them.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`] on a missing tensor, an element count that
+    /// disagrees with `[vocab, d]`, or a dtype the mapped path cannot widen.
+    fn bind(file: Arc<GgufFile>, prefix: &str, vocab: usize, d: usize) -> Result<Self> {
+        let m = VOXTRAL_MAPPED;
+        let token_emb = mapped_info(&file, &format!("{prefix}embed_tokens.weight"), vocab * d, m)?;
+        let lm_head_name = format!("{}lm_head.weight", lm_head_base(prefix));
+        let lm_head = if file.tensor_info(&lm_head_name).is_some() {
+            Some(mapped_info(&file, &lm_head_name, vocab * d, m)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            file,
+            token_emb,
+            lm_head,
+            vocab,
+            d,
+            chunk: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// The tensor the logits GEMV reads: the untied head when present, else
+    /// the tied token embedding — the mapped mirror of
+    /// [`TextDecoder::output_head`].
+    fn head_info(&self) -> &GgufTensorInfo {
+        self.lm_head.as_ref().unwrap_or(&self.token_emb)
+    }
+
+    /// Widens row `row` of `info` into `dst` (exactly `d` values).
+    fn widen_rows(
+        &self,
+        info: &GgufTensorInfo,
+        first_row: usize,
+        n_rows: usize,
+        dst: &mut Vec<f32>,
+    ) -> Result<()> {
+        let esz = info.dtype.type_size();
+        let bytes = self.file.tensor_bytes(info);
+        let start = first_row * self.d * esz;
+        let end = start + n_rows * self.d * esz;
+        widen_into(&bytes[start..end], info.dtype, dst, VOXTRAL_MAPPED)
+    }
+}
+
+/// Per-forward block dispatch: resident slice or mapped materialization (the
+/// guard is held for the whole forward so consecutive layers reuse one scratch
+/// allocation). Mirrors `moshi::backbone::BlockSource`.
+enum BlockSource<'a> {
+    Resident(&'a [DecoderBlock]),
+    Mapped(&'a MappedTextBlocks, MutexGuard<'a, DecoderBlock>),
+}
+
+impl BlockSource<'_> {
+    /// The block for `layer` (materializing it on the mapped path).
+    fn block(&mut self, layer: usize) -> Result<&DecoderBlock> {
+        match self {
+            Self::Resident(blocks) => Ok(&blocks[layer]),
+            Self::Mapped(m, guard) => m.materialize_into(guard, layer),
+        }
+    }
+}
+
 /// All text-decoder weights. The logits head is the untied `lm_head` when
 /// the checkpoint ships one, else the tied token embedding — read it through
 /// [`TextDecoder::output_head`].
@@ -103,8 +456,16 @@ pub struct TextDecoder {
     /// byte-compared ≠ `embed_tokens` in the 2026-07-16 eval). `None` = tied
     /// (genuinely absent tensor, upstream `tie_word_embeddings` semantics).
     pub(crate) lm_head: Option<Vec<f32>>,
-    /// Per-block weights.
+    /// Per-block weights — populated by [`TextDecoder::load`] (resident) and
+    /// left **empty** by [`TextDecoder::load_mapped`], where `mapped` serves
+    /// the blocks instead. Exactly one of the two is ever non-empty.
     pub(crate) blocks: Vec<DecoderBlock>,
+    /// Bounded-memory block store. `Some` only on the mapped path; the
+    /// forward dispatches on this (see [`BlockSource`]).
+    pub(crate) mapped: Option<MappedTextBlocks>,
+    /// Bounded-memory head store. `Some` only on the mapped path, where
+    /// `token_emb` / `lm_head` are left empty and served from the mapping.
+    pub(crate) mapped_heads: Option<MappedHeads>,
     /// Final RMSNorm γ (post-block, pre-head).
     pub(crate) final_norm_gamma: Vec<f32>,
     /// Which safetensors prefix the tensors were found under.
@@ -128,6 +489,8 @@ impl TextDecoder {
                 token_emb: Vec::new(),
                 lm_head: None,
                 blocks: Vec::new(),
+                mapped: None,
+                mapped_heads: None,
                 final_norm_gamma: Vec::new(),
                 prefix: "",
             });
@@ -208,6 +571,67 @@ impl TextDecoder {
             token_emb,
             lm_head,
             blocks,
+            mapped: None,
+            mapped_heads: None,
+            final_norm_gamma,
+            prefix: prefix_label(prefix),
+        })
+    }
+
+    /// Binds the decoder in **bounded memory**: head tensors resident, the
+    /// per-layer blocks left in the GGUF mapping and widened one at a time
+    /// during the forward ([`MappedTextBlocks`]).
+    ///
+    /// Use this when the checkpoint's `language_model` group is too large to
+    /// materialise as owned f32 — on the shipping `Voxtral-Mini-3B` that group
+    /// is 7.48 GiB stored but **14.95 GiB widened**, which [`Self::load`]
+    /// cannot bind on a 16 GiB host. Values are bit-identical to
+    /// [`Self::load`]; only the residency differs.
+    ///
+    /// Requires an `Arc<GgufFile>` because the mapping must outlive the
+    /// decoder — pass one from `vokra_mmap::open_gguf`. Handing it a buffered
+    /// [`GgufFile::open`] file works but defeats the purpose (the whole file
+    /// is already resident).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::load`] for the head tensors, plus [`MappedTextBlocks::bind`]
+    /// for the per-layer validation (a quantized GGUF is refused here and must
+    /// use [`Self::load`]).
+    pub fn load_mapped(file: Arc<GgufFile>, cfg: &VoxtralConfig) -> Result<Self> {
+        if cfg.text.n_layer == 0 || cfg.text.hidden_dim == 0 {
+            // Same shape-only sentinel as `load` — nothing to map.
+            return Self::load(&file, cfg);
+        }
+        let prefix = pick_prefix(&file);
+        let d = cfg.text.hidden_dim;
+        let vocab = cfg.text.vocab_size;
+        if vocab == 0 {
+            return Err(bad("text_decoder.vocab_size must be non-zero".to_owned()));
+        }
+        // Heads stay in the mapping too: at the real shape `token_emb` and the
+        // untied `lm_head` are ~1.5 GiB each once widened — more than the
+        // mapped blocks leave behind — and neither is consumed in a way that
+        // needs the whole matrix live (see `MappedHeads`).
+        let final_norm_gamma = tensor(&file, &format!("{prefix}norm.weight"), &[d])?;
+        let mapped_heads = MappedHeads::bind(Arc::clone(&file), prefix, vocab, d)?;
+        let mapped = MappedTextBlocks::bind(Arc::clone(&file), cfg, prefix)?;
+        if mapped.n_layer() != cfg.text.n_layer {
+            return Err(bad(format!(
+                "mapped store bound {} layers, config says {}",
+                mapped.n_layer(),
+                cfg.text.n_layer
+            )));
+        }
+        Ok(Self {
+            // Empty on purpose: `mapped` / `mapped_heads` are the sources. A
+            // populated resident field alongside them would be a second source
+            // of truth for the same weights.
+            token_emb: Vec::new(),
+            lm_head: None,
+            blocks: Vec::new(),
+            mapped: Some(mapped),
+            mapped_heads: Some(mapped_heads),
             final_norm_gamma,
             prefix: prefix_label(prefix),
         })
@@ -220,10 +644,14 @@ impl TextDecoder {
         self.prefix
     }
 
-    /// Number of loaded blocks.
+    /// Number of decoder layers, whichever residency backs them (the
+    /// resident `blocks` store or the mapped one — exactly one is populated).
     #[must_use]
     pub fn n_layer(&self) -> usize {
-        self.blocks.len()
+        match &self.mapped {
+            Some(m) => m.n_layer(),
+            None => self.blocks.len(),
+        }
     }
 
     /// Whether the checkpoint shipped a separate (untied) `lm_head.weight`.
@@ -236,6 +664,94 @@ impl TextDecoder {
     /// `lm_head` when present, else the tied token embedding.
     pub(crate) fn output_head(&self) -> &[f32] {
         self.lm_head.as_deref().unwrap_or(&self.token_emb)
+    }
+
+    /// Writes token `tok`'s embedding row (`d` values) into `dst`.
+    ///
+    /// Residency-agnostic: a resident decoder copies the row out of the owned
+    /// matrix, a mapped one widens it straight from the mapping. Identical
+    /// values either way.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`] if the row is out of range for the bound
+    /// vocabulary.
+    pub(crate) fn embed_row_into(&self, tok: usize, d: usize, dst: &mut Vec<f32>) -> Result<()> {
+        match &self.mapped_heads {
+            None => {
+                let end = tok * d + d;
+                if end > self.token_emb.len() {
+                    return Err(bad(format!(
+                        "token id {tok} out of range for token_emb of {} rows",
+                        self.token_emb.len() / d.max(1)
+                    )));
+                }
+                dst.clear();
+                dst.extend_from_slice(&self.token_emb[tok * d..end]);
+                Ok(())
+            }
+            Some(h) => {
+                if tok >= h.vocab {
+                    return Err(bad(format!(
+                        "token id {tok} out of range for token_emb of {} rows",
+                        h.vocab
+                    )));
+                }
+                let info = h.token_emb.clone();
+                h.widen_rows(&info, tok, 1, dst)
+            }
+        }
+    }
+
+    /// Computes one logits row: `out[v] = Σ_c head[v, c] * x[c]`.
+    ///
+    /// The mapped path walks the head in [`HEAD_CHUNK_ROWS`] chunks, widening
+    /// each chunk just before its GEMV. Rows carry no cross-row term and each
+    /// row's accumulation order is unchanged, so the result is **bit-identical**
+    /// to the resident single-call GEMV (pinned by
+    /// `mapped_heads_match_resident_bitwise`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the compute seam's errors, plus widening errors on the
+    /// mapped path.
+    pub(crate) fn logits_into(
+        &self,
+        compute: &Compute,
+        vocab: usize,
+        d: usize,
+        x: &[f32],
+        out: &mut [f32],
+    ) -> Result<()> {
+        let Some(h) = &self.mapped_heads else {
+            return compute.gemv_f32(vocab, d, self.output_head(), x, None, out);
+        };
+        let info = h.head_info().clone();
+        let mut chunk = lock_scratch(&h.chunk, VOXTRAL_MAPPED)?;
+        let mut row0 = 0usize;
+        while row0 < vocab {
+            let rows = HEAD_CHUNK_ROWS.min(vocab - row0);
+            h.widen_rows(&info, row0, rows, &mut chunk)?;
+            compute.gemv_f32(rows, d, &chunk, x, None, &mut out[row0..row0 + rows])?;
+            row0 += rows;
+        }
+        Ok(())
+    }
+
+    /// Number of vocabulary rows the head stores, whichever residency backs it.
+    pub(crate) fn head_rows(&self, d: usize) -> usize {
+        match &self.mapped_heads {
+            Some(h) => h.vocab,
+            None => self.output_head().len() / d.max(1),
+        }
+    }
+
+    /// Number of token-embedding rows, whichever residency backs it.
+    pub(crate) fn token_emb_rows(&self, d: usize) -> usize {
+        match &self.mapped_heads {
+            Some(h) => h.vocab,
+            None => self.token_emb.len() / d.max(1),
+        }
     }
 }
 
@@ -412,6 +928,9 @@ pub(crate) struct StepScratch {
     pub(crate) ffn_down: Vec<f32>,
     /// Logits per step `[t, vocab_size]`.
     pub(crate) logits: Vec<f32>,
+    /// One token-embedding row, reused across steps (the mapped head path
+    /// widens into it rather than borrowing an owned matrix).
+    pub(crate) embed_row: Vec<f32>,
 }
 
 impl StepScratch {
@@ -445,6 +964,7 @@ impl StepScratch {
             ffn_up: Vec::with_capacity(max_t_q * ffn_dim),
             ffn_down: Vec::with_capacity(max_t_q * d),
             logits: Vec::with_capacity(max_t_q * vocab_size),
+            embed_row: Vec::with_capacity(d),
         }
     }
 }
@@ -501,10 +1021,13 @@ pub(crate) fn forward_step(
             cfg.text.n_ctx
         )));
     }
-    if decoder.blocks.len() != n_layer {
+    // Residency-agnostic: `n_layer()` reads whichever store is populated
+    // (resident `blocks` or the mapped one), so a mapped decoder is not
+    // mistaken for an unloaded one.
+    if decoder.n_layer() != n_layer {
         return Err(VokraError::ModelLoad(format!(
             "voxtral text_decoder.forward_step: loaded blocks {} != config n_layer {n_layer}",
-            decoder.blocks.len()
+            decoder.n_layer()
         )));
     }
 
@@ -517,9 +1040,11 @@ pub(crate) fn forward_step(
                 "voxtral text_decoder.forward_step: token id {tok} >= vocab {vocab}"
             )));
         }
-        let src = &decoder.token_emb[tok * d..tok * d + d];
+        // Residency-agnostic row fetch: resident copies out of the owned
+        // matrix, mapped widens the single row straight from the mapping.
+        decoder.embed_row_into(tok, d, &mut scratch.embed_row)?;
         let dst = &mut scratch.h[i * d..i * d + d];
-        dst.copy_from_slice(src);
+        dst.copy_from_slice(&scratch.embed_row);
     }
 
     forward_step_body(compute, cfg, decoder, scratch, kv_cache, t, position_offset)
@@ -591,10 +1116,13 @@ pub(crate) fn forward_step_with_embed_prefix(
             cfg.text.n_ctx
         )));
     }
-    if decoder.blocks.len() != n_layer {
+    // Residency-agnostic: `n_layer()` reads whichever store is populated
+    // (resident `blocks` or the mapped one), so a mapped decoder is not
+    // mistaken for an unloaded one.
+    if decoder.n_layer() != n_layer {
         return Err(VokraError::ModelLoad(format!(
             "voxtral text_decoder.forward_step_with_embed_prefix: loaded blocks {} != config n_layer {n_layer}",
-            decoder.blocks.len()
+            decoder.n_layer()
         )));
     }
     // Prime the hidden state from the caller-supplied embeddings.
@@ -654,18 +1182,18 @@ fn forward_step_body(
             "voxtral text_decoder.forward_step: n_head_q ({n_head_q}) must be divisible by n_head_kv ({n_head_kv}) — GQA"
         )));
     }
-    if decoder.token_emb.len() != vocab * d {
+    // Row counts, not slice lengths: a mapped decoder keeps the resident
+    // vectors empty on purpose, so measuring `.len()` would reject it.
+    if decoder.token_emb_rows(d) != vocab {
         return Err(VokraError::ModelLoad(format!(
-            "voxtral text_decoder.forward_step: token_emb len {} != vocab*d {}",
-            decoder.token_emb.len(),
-            vocab * d
+            "voxtral text_decoder.forward_step: token_emb has {} rows != vocab {vocab}",
+            decoder.token_emb_rows(d)
         )));
     }
-    if decoder.output_head().len() != vocab * d {
+    if decoder.head_rows(d) != vocab {
         return Err(VokraError::ModelLoad(format!(
-            "voxtral text_decoder.forward_step: lm_head len {} != vocab*d {}",
-            decoder.output_head().len(),
-            vocab * d
+            "voxtral text_decoder.forward_step: lm_head has {} rows != vocab {vocab}",
+            decoder.head_rows(d)
         )));
     }
 
@@ -681,7 +1209,16 @@ fn forward_step_body(
     resize_zero(&mut scratch.ffn_up, t * ffn_dim);
     resize_zero(&mut scratch.ffn_down, t * d);
 
-    for (layer_idx, block) in decoder.blocks.iter().enumerate() {
+    // Resident blocks iterate the owned store; mapped blocks widen one layer
+    // at a time into the decoder's shared scratch (guard held for the whole
+    // forward — `BlockSource` docs). Values are bit-identical between the two
+    // sources (`MappedTextBlocks` docs).
+    let mut blocks = match &decoder.mapped {
+        Some(m) => BlockSource::Mapped(m, m.lock_scratch()?),
+        None => BlockSource::Resident(&decoder.blocks),
+    };
+    for layer_idx in 0..decoder.n_layer() {
+        let block = blocks.block(layer_idx)?;
         // ---------- Pre-norm self-attention ----------
         rms_norm(
             &scratch.h,
@@ -902,12 +1439,14 @@ fn forward_step_body(
     // we compute row-by-row via gemv:
     //   logits[i, v] = Σ_c norm[i, c] * head[v, c]
     //   ⇒ logits_row_i = gemv(m=vocab, k=d, a=head, x=norm_row_i)
-    let head = decoder.output_head();
     resize_zero(&mut scratch.logits, t * vocab);
     for i in 0..t {
         let x = &scratch.norm[i * d..(i + 1) * d];
         let out = &mut scratch.logits[i * vocab..(i + 1) * vocab];
-        compute.gemv_f32(vocab, d, head, x, None, out)?;
+        // Residency-agnostic: resident issues one GEMV over the owned matrix,
+        // mapped walks it in row chunks. Rows are independent, so the values
+        // are identical either way.
+        decoder.logits_into(compute, vocab, d, x, out)?;
     }
     Ok(())
 }
@@ -987,6 +1526,315 @@ fn linear(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Builds a GGUF carrying a full text decoder (heads + `n_layer` blocks)
+    /// with deterministic non-trivial weights, in the requested payload dtype.
+    ///
+    /// `dtype` drives the mapped store's two supported widen paths: BF16 is
+    /// the real-checkpoint hot path (761 of 762 Voxtral tensors), F32 the
+    /// other. Values are generated as BF16-representable patterns so the two
+    /// dtypes describe the *same* numbers — the resident/mapped comparison is
+    /// then about residency, not about dtype rounding.
+    fn decoder_gguf(cfg: &VoxtralConfig, dtype: vokra_core::gguf::GgmlType) -> GgufFile {
+        use vokra_core::gguf::{GgmlType, GgufBuilder};
+        let d = cfg.text.hidden_dim;
+        let vocab = cfg.text.vocab_size;
+        let ffn = cfg.text.ffn_dim;
+        let q_hidden = cfg.text.n_head_q * cfg.text.head_dim();
+        let kv_hidden = cfg.text.n_head_kv * cfg.text.head_dim();
+
+        // A deterministic value whose low 16 mantissa bits are zero, so the
+        // f32 and BF16 encodings denote exactly the same number.
+        let val = |seed: usize, i: usize| -> f32 {
+            let k = (seed.wrapping_mul(2_654_435_761).wrapping_add(i * 40_503)) as u32;
+            let bits = (k >> 16) << 16;
+            let v = f32::from_bits(bits);
+            if v.is_finite() {
+                v.clamp(-2.0, 2.0)
+            } else {
+                0.25
+            }
+        };
+        let bytes = |vals: &[f32]| -> Vec<u8> {
+            match dtype {
+                GgmlType::F32 => vals.iter().flat_map(|v| v.to_le_bytes()).collect(),
+                GgmlType::BF16 => vals
+                    .iter()
+                    .flat_map(|v| (((v.to_bits()) >> 16) as u16).to_le_bytes())
+                    .collect(),
+                other => panic!("fixture covers F32/BF16 only, got {other:?}"),
+            }
+        };
+        let mut b = GgufBuilder::new();
+        let put = |b: &mut GgufBuilder, name: &str, dims: Vec<u64>, seed: usize| {
+            let n: usize = dims.iter().map(|&x| x as usize).product();
+            let vals: Vec<f32> = (0..n).map(|i| val(seed, i)).collect();
+            b.add_tensor(name, dtype, dims, bytes(&vals)).unwrap();
+        };
+        put(
+            &mut b,
+            "model.embed_tokens.weight",
+            vec![vocab as u64, d as u64],
+            1,
+        );
+        put(&mut b, "model.norm.weight", vec![d as u64], 2);
+        for i in 0..cfg.text.n_layer {
+            let p = format!("model.layers.{i}");
+            put(
+                &mut b,
+                &format!("{p}.input_layernorm.weight"),
+                vec![d as u64],
+                10 + i,
+            );
+            put(
+                &mut b,
+                &format!("{p}.self_attn.q_proj.weight"),
+                vec![q_hidden as u64, d as u64],
+                20 + i,
+            );
+            put(
+                &mut b,
+                &format!("{p}.self_attn.k_proj.weight"),
+                vec![kv_hidden as u64, d as u64],
+                30 + i,
+            );
+            put(
+                &mut b,
+                &format!("{p}.self_attn.v_proj.weight"),
+                vec![kv_hidden as u64, d as u64],
+                40 + i,
+            );
+            put(
+                &mut b,
+                &format!("{p}.self_attn.o_proj.weight"),
+                vec![d as u64, q_hidden as u64],
+                50 + i,
+            );
+            put(
+                &mut b,
+                &format!("{p}.post_attention_layernorm.weight"),
+                vec![d as u64],
+                60 + i,
+            );
+            put(
+                &mut b,
+                &format!("{p}.mlp.gate_proj.weight"),
+                vec![ffn as u64, d as u64],
+                70 + i,
+            );
+            put(
+                &mut b,
+                &format!("{p}.mlp.up_proj.weight"),
+                vec![ffn as u64, d as u64],
+                80 + i,
+            );
+            put(
+                &mut b,
+                &format!("{p}.mlp.down_proj.weight"),
+                vec![d as u64, ffn as u64],
+                90 + i,
+            );
+        }
+        GgufFile::parse(b.to_bytes().unwrap()).unwrap()
+    }
+
+    /// Runs a few decode steps and returns the raw f32 hidden state, so two
+    /// residencies can be compared bit-for-bit rather than by tolerance.
+    fn run_steps(cfg: &VoxtralConfig, dec: &TextDecoder) -> Vec<u32> {
+        let compute = Compute::for_backend(vokra_core::BackendKind::Cpu, &[]).unwrap();
+        let kv_hidden = cfg.text.n_head_kv * cfg.text.head_dim();
+        let mut scratch = StepScratch::with_reserve(
+            4,
+            cfg.text.hidden_dim,
+            cfg.text.n_head_q * cfg.text.head_dim(),
+            kv_hidden,
+            cfg.text.head_dim(),
+            cfg.text.ffn_dim,
+            cfg.text.vocab_size,
+            8,
+        );
+        let mut kv = KvCache::with_reserve(cfg.text.n_layer, kv_hidden, 8);
+        let mut out = Vec::new();
+        for (step, tok) in [1u32, 2, 3].into_iter().enumerate() {
+            forward_step(&compute, cfg, dec, &mut scratch, &mut kv, &[tok], step).unwrap();
+            out.extend(scratch.logits.iter().map(|v| v.to_bits()));
+        }
+        out
+    }
+
+    /// **The bounded-memory contract's numerical half.** Materializing a layer
+    /// at a time out of the mapping must reproduce the resident f32 forward
+    /// BIT-identically — same widen formula, same `[out, in]` -> `[in, out]`
+    /// index math. Anything less would make the mapped path a different model,
+    /// not a cheaper loader.
+    ///
+    /// Both payload dtypes are covered because the mapped store widens them
+    /// through different arms.
+    #[test]
+    fn mapped_blocks_match_resident_bitwise() {
+        use vokra_core::gguf::GgmlType;
+        for dtype in [GgmlType::BF16, GgmlType::F32] {
+            let cfg = crate::voxtral::test_support::gqa_config();
+            let file = decoder_gguf(&cfg, dtype);
+            let resident = TextDecoder::load(&file, &cfg).unwrap();
+            let mapped =
+                TextDecoder::load_mapped(Arc::new(decoder_gguf(&cfg, dtype)), &cfg).unwrap();
+
+            assert_eq!(
+                resident.n_layer(),
+                cfg.text.n_layer,
+                "resident bound all layers"
+            );
+            assert_eq!(
+                mapped.n_layer(),
+                cfg.text.n_layer,
+                "mapped bound all layers"
+            );
+            assert!(
+                mapped.blocks.is_empty(),
+                "mapped must not also own resident blocks"
+            );
+            assert!(
+                resident.mapped.is_none(),
+                "resident must not own a mapped store"
+            );
+
+            assert_eq!(
+                run_steps(&cfg, &resident),
+                run_steps(&cfg, &mapped),
+                "{dtype:?}: mapped forward must be bit-identical to resident"
+            );
+        }
+    }
+
+    /// The head store is the other half of the bounded-memory contract: the
+    /// chunked GEMV over mapped rows must reproduce the resident single-call
+    /// GEMV **bit-for-bit**, and a mapped decoder must serve embedding rows
+    /// identically. If either drifted, the memory saving would be bought with
+    /// a different model.
+    ///
+    /// `gqa_config`'s vocab is deliberately larger than [`HEAD_CHUNK_ROWS`] is
+    /// not — so this also pins the single-partial-chunk case; the
+    /// multi-chunk case is covered by raising vocab past the chunk edge.
+    #[test]
+    fn mapped_heads_match_resident_bitwise() {
+        use vokra_core::gguf::GgmlType;
+        for dtype in [GgmlType::BF16, GgmlType::F32] {
+            for vocab in [
+                crate::voxtral::test_support::gqa_config().text.vocab_size,
+                HEAD_CHUNK_ROWS + 7,
+            ] {
+                let mut cfg = crate::voxtral::test_support::gqa_config();
+                cfg.text.vocab_size = vocab;
+                let resident = TextDecoder::load(&decoder_gguf(&cfg, dtype), &cfg).unwrap();
+                let mapped =
+                    TextDecoder::load_mapped(Arc::new(decoder_gguf(&cfg, dtype)), &cfg).unwrap();
+
+                assert!(
+                    mapped.token_emb.is_empty() && mapped.lm_head.is_none(),
+                    "a mapped decoder must not also own resident head matrices"
+                );
+                assert_eq!(mapped.head_rows(cfg.text.hidden_dim), vocab);
+                assert_eq!(mapped.token_emb_rows(cfg.text.hidden_dim), vocab);
+
+                // Embedding rows must match exactly, including the last row.
+                let d = cfg.text.hidden_dim;
+                for tok in [0usize, 1, vocab - 1] {
+                    let (mut a, mut b) = (Vec::new(), Vec::new());
+                    resident.embed_row_into(tok, d, &mut a).unwrap();
+                    mapped.embed_row_into(tok, d, &mut b).unwrap();
+                    assert_eq!(
+                        a.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                        b.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                        "{dtype:?} vocab={vocab}: embed row {tok} must be bit-identical"
+                    );
+                }
+
+                // And the full decode, which exercises the chunked head GEMV.
+                assert_eq!(
+                    run_steps(&cfg, &resident),
+                    run_steps(&cfg, &mapped),
+                    "{dtype:?} vocab={vocab}: mapped heads must be bit-identical"
+                );
+            }
+        }
+    }
+
+    /// An out-of-range token is a loud error on both residencies — the mapped
+    /// path must not silently read a neighbouring row out of the mapping.
+    #[test]
+    fn an_out_of_range_token_is_rejected_on_both_residencies() {
+        use vokra_core::gguf::GgmlType;
+        let cfg = crate::voxtral::test_support::gqa_config();
+        let d = cfg.text.hidden_dim;
+        let vocab = cfg.text.vocab_size;
+        let resident = TextDecoder::load(&decoder_gguf(&cfg, GgmlType::BF16), &cfg).unwrap();
+        let mapped =
+            TextDecoder::load_mapped(Arc::new(decoder_gguf(&cfg, GgmlType::BF16)), &cfg).unwrap();
+        let mut out = Vec::new();
+        for (label, dec) in [("resident", &resident), ("mapped", &mapped)] {
+            let err = dec.embed_row_into(vocab, d, &mut out).unwrap_err();
+            assert!(
+                format!("{err}").contains("out of range"),
+                "{label}: out-of-range token must be explicit, got: {err}"
+            );
+        }
+    }
+
+    /// A payload dtype the mapped path cannot widen in place must be refused
+    /// loudly, naming the resident constructor — never widened wrong, never a
+    /// silent fallback (FR-EX-08).
+    #[test]
+    fn mapped_bind_refuses_unsupported_dtype_and_points_at_the_resident_loader() {
+        use vokra_core::gguf::{GgmlType, GgufBuilder};
+        let cfg = crate::voxtral::test_support::gqa_config();
+        let d = cfg.text.hidden_dim;
+        let mut b = GgufBuilder::new();
+        b.add_tensor(
+            "model.embed_tokens.weight",
+            GgmlType::F32,
+            vec![cfg.text.vocab_size as u64, d as u64],
+            vec![0u8; cfg.text.vocab_size * d * 4],
+        )
+        .unwrap();
+        // F16 is correctly sized for any element count, so this reaches the
+        // dtype arm rather than tripping the element-count check first. The
+        // mapped path serves F32/BF16 only — F16 has no in-place widen here.
+        b.add_tensor(
+            "model.layers.0.input_layernorm.weight",
+            GgmlType::F16,
+            vec![d as u64],
+            vec![0u8; d * GgmlType::F16.type_size()],
+        )
+        .unwrap();
+        let file = Arc::new(GgufFile::parse(b.to_bytes().unwrap()).unwrap());
+        let err = MappedTextBlocks::bind(Arc::clone(&file), &cfg, "model.").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("voxtral"),
+            "names the model that refused: {msg}"
+        );
+        assert!(
+            msg.contains("TextDecoder::load"),
+            "points at the resident loader so the refusal is actionable: {msg}"
+        );
+    }
+
+    /// A missing layer tensor is a loud bind-time error naming the tensor —
+    /// the load fails, never a forward halfway through a stream.
+    #[test]
+    fn mapped_bind_names_a_missing_tensor() {
+        use vokra_core::gguf::GgufBuilder;
+        let cfg = crate::voxtral::test_support::gqa_config();
+        let b = GgufBuilder::new();
+        let file = Arc::new(GgufFile::parse(b.to_bytes().unwrap()).unwrap());
+        let err = MappedTextBlocks::bind(file, &cfg, "model.").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("model.layers.0.input_layernorm.weight") && msg.contains("missing"),
+            "must name the first missing tensor: {msg}"
+        );
+    }
 
     #[test]
     fn rms_norm_normalises_row_to_unit_rms() {
@@ -1605,6 +2453,8 @@ mod tests {
             TextDecoder {
                 token_emb,
                 lm_head: None,
+                mapped: None,
+                mapped_heads: None,
                 blocks: vec![DecoderBlock {
                     attn_norm_gamma: vec![1.0f32; d],
                     attn: GqaAttention {

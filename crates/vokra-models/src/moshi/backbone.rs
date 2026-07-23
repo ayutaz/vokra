@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex};
 
 use vokra_core::cache::paged::{BlockSize, KvDims, PagedKvCache};
 use vokra_core::cache::ring::RingKvCache;
-use vokra_core::gguf::{GgmlType, GgufFile, GgufTensorInfo};
+use vokra_core::gguf::{GgufFile, GgufTensorInfo};
 use vokra_core::rng::SplitMix64;
 use vokra_core::{BackendKind, Result, VokraError};
 
@@ -50,6 +50,15 @@ use crate::compute::{Compute, HotOp};
 use crate::cosyvoice2::llm::LlmBlockWeights;
 use crate::csm::backbone::xavier_uniform;
 use crate::csm::rope::{llama3_inv_freqs, rope_apply_adjacent};
+use crate::mapped_weights::{MappedModel, lock_scratch, mapped_info, transpose_widen, widen_into};
+
+/// Error identity for the Moshi mapped store: the resident alternative is
+/// `MoshiEngine::from_gguf_with_policy`, which dequantizes block-wise and so
+/// accepts payload dtypes the mapped path cannot address per element.
+const MOSHI_MAPPED: MappedModel = MappedModel {
+    name: "moshi",
+    resident_entry: "MoshiEngine::from_gguf_with_policy",
+};
 use crate::voxtral::text_decoder::{hadamard_inplace, rms_norm, silu_inplace};
 
 /// Compute-seam hot ops the Moshi backbone + depformer dispatch (the CSM
@@ -352,12 +361,32 @@ impl MappedTemporalBlocks {
         for i in 0..config.temporal.n_layer {
             let p = format!("transformer.layers.{i}");
             locs.push(MappedLayerLocs {
-                in_proj: mapped_info(&file, &format!("{p}.self_attn.in_proj_weight"), 3 * d * d)?,
-                out_proj: mapped_info(&file, &format!("{p}.self_attn.out_proj.weight"), d * d)?,
-                norm1: mapped_info(&file, &format!("{p}.norm1.alpha"), d)?,
-                norm2: mapped_info(&file, &format!("{p}.norm2.alpha"), d)?,
-                lin_in: mapped_info(&file, &format!("{p}.gating.linear_in.weight"), 2 * h * d)?,
-                lin_out: mapped_info(&file, &format!("{p}.gating.linear_out.weight"), d * h)?,
+                in_proj: mapped_info(
+                    &file,
+                    &format!("{p}.self_attn.in_proj_weight"),
+                    3 * d * d,
+                    MOSHI_MAPPED,
+                )?,
+                out_proj: mapped_info(
+                    &file,
+                    &format!("{p}.self_attn.out_proj.weight"),
+                    d * d,
+                    MOSHI_MAPPED,
+                )?,
+                norm1: mapped_info(&file, &format!("{p}.norm1.alpha"), d, MOSHI_MAPPED)?,
+                norm2: mapped_info(&file, &format!("{p}.norm2.alpha"), d, MOSHI_MAPPED)?,
+                lin_in: mapped_info(
+                    &file,
+                    &format!("{p}.gating.linear_in.weight"),
+                    2 * h * d,
+                    MOSHI_MAPPED,
+                )?,
+                lin_out: mapped_info(
+                    &file,
+                    &format!("{p}.gating.linear_out.weight"),
+                    d * h,
+                    MOSHI_MAPPED,
+                )?,
             });
         }
         let scratch = Mutex::new(MappedBlockScratch {
@@ -393,13 +422,7 @@ impl MappedTemporalBlocks {
 
     /// Locks the shared materialization scratch (whole-forward hold).
     fn lock_scratch(&self) -> Result<std::sync::MutexGuard<'_, MappedBlockScratch>> {
-        self.scratch.lock().map_err(|_| {
-            VokraError::InvalidArgument(
-                "moshi mapped blocks: materialization scratch mutex poisoned (a \
-                 prior panic mid-forward); reload the engine"
-                    .into(),
-            )
-        })
+        lock_scratch(&self.scratch, MOSHI_MAPPED)
     }
 
     /// Widens + transposes layer `layer` out of the mapping into
@@ -424,6 +447,7 @@ impl MappedTemporalBlocks {
             d,
             d,
             &mut b.q_w_t,
+            MOSHI_MAPPED,
         )?;
         transpose_widen(
             &bytes[d * d * esz..2 * d * d * esz],
@@ -431,6 +455,7 @@ impl MappedTemporalBlocks {
             d,
             d,
             &mut b.k_w_t,
+            MOSHI_MAPPED,
         )?;
         transpose_widen(
             &bytes[2 * d * d * esz..3 * d * d * esz],
@@ -438,6 +463,7 @@ impl MappedTemporalBlocks {
             d,
             d,
             &mut b.v_w_t,
+            MOSHI_MAPPED,
         )?;
         transpose_widen(
             self.file.tensor_bytes(&locs.out_proj),
@@ -445,16 +471,19 @@ impl MappedTemporalBlocks {
             d,
             d,
             &mut b.o_w_t,
+            MOSHI_MAPPED,
         )?;
         widen_into(
             self.file.tensor_bytes(&locs.norm1),
             locs.norm1.dtype,
             &mut b.attn_norm_gamma,
+            MOSHI_MAPPED,
         )?;
         widen_into(
             self.file.tensor_bytes(&locs.norm2),
             locs.norm2.dtype,
             &mut b.ffn_norm_gamma,
+            MOSHI_MAPPED,
         )?;
         // Packed [2h, d] gate/up halves.
         let bytes = self.file.tensor_bytes(&locs.lin_in);
@@ -465,6 +494,7 @@ impl MappedTemporalBlocks {
             h,
             d,
             &mut b.ffn_gate_w_t,
+            MOSHI_MAPPED,
         )?;
         transpose_widen(
             &bytes[h * d * esz..2 * h * d * esz],
@@ -472,6 +502,7 @@ impl MappedTemporalBlocks {
             h,
             d,
             &mut b.ffn_up_w_t,
+            MOSHI_MAPPED,
         )?;
         transpose_widen(
             self.file.tensor_bytes(&locs.lin_out),
@@ -479,6 +510,7 @@ impl MappedTemporalBlocks {
             d,
             h,
             &mut b.ffn_down_w_t,
+            MOSHI_MAPPED,
         )?;
         // Helium attention is bias-less (fused in_proj has no bias
         // tensor); pinned here so a stale scratch can never leak one.
@@ -486,113 +518,6 @@ impl MappedTemporalBlocks {
         b.k_b = None;
         b.v_b = None;
         Ok(&scratch.block)
-    }
-}
-
-/// Resolves a tensor descriptor for the mapped store: present, exact
-/// element count, dtype in `{F32, BF16}` (loud otherwise — FR-EX-08).
-fn mapped_info(file: &GgufFile, name: &str, want_elems: usize) -> Result<GgufTensorInfo> {
-    let info = file
-        .tensor_info(name)
-        .ok_or_else(|| VokraError::ModelLoad(format!("moshi: tensor `{name}`: missing")))?;
-    let elems = info
-        .element_count()
-        .map_err(|e| VokraError::ModelLoad(format!("moshi: tensor `{name}`: {e}")))?;
-    if elems != want_elems as u64 {
-        return Err(VokraError::ModelLoad(format!(
-            "moshi: tensor `{name}` has {elems} elements, expected {want_elems}"
-        )));
-    }
-    match info.dtype {
-        GgmlType::F32 | GgmlType::BF16 => Ok(info.clone()),
-        other => Err(VokraError::ModelLoad(format!(
-            "moshi mapped blocks: tensor `{name}` has dtype {other:?}; the \
-             bounded-memory mapped path supports F32 and BF16 payloads only — \
-             load through MoshiEngine::from_gguf_with_policy (resident) for \
-             other dtypes (FR-EX-08: explicit, not silent)"
-        ))),
-    }
-}
-
-/// Widens + transposes a `[rows, cols]` row-major `F32`/`BF16` payload
-/// into `dst` as `[cols, rows]` — the fused equivalent of
-/// `quant::dequantize` + [`transpose`], byte-formula-identical to both
-/// (BF16: top half of the f32 pattern shifted up — exact; F32:
-/// `from_le_bytes`).
-fn transpose_widen(
-    src: &[u8],
-    dtype: GgmlType,
-    rows: usize,
-    cols: usize,
-    dst: &mut Vec<f32>,
-) -> Result<()> {
-    let n = rows * cols;
-    if src.len() != n * dtype.type_size() {
-        return Err(VokraError::ModelLoad(format!(
-            "moshi mapped blocks: payload is {} bytes, expected {} ({n} x {:?})",
-            src.len(),
-            n * dtype.type_size(),
-            dtype
-        )));
-    }
-    dst.clear();
-    dst.resize(n, 0.0);
-    match dtype {
-        GgmlType::F32 => {
-            for r in 0..rows {
-                for c in 0..cols {
-                    let i = (r * cols + c) * 4;
-                    dst[c * rows + r] =
-                        f32::from_le_bytes([src[i], src[i + 1], src[i + 2], src[i + 3]]);
-                }
-            }
-        }
-        GgmlType::BF16 => {
-            for r in 0..rows {
-                for c in 0..cols {
-                    let i = (r * cols + c) * 2;
-                    dst[c * rows + r] =
-                        f32::from_bits(u32::from(u16::from_le_bytes([src[i], src[i + 1]])) << 16);
-                }
-            }
-        }
-        other => {
-            return Err(VokraError::ModelLoad(format!(
-                "moshi mapped blocks: unsupported dtype {other:?} (bind-time \
-                 validation should have rejected this)"
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// Widens a dense `F32`/`BF16` payload into `dst` in storage order (the
-/// γ vectors — no transpose).
-fn widen_into(src: &[u8], dtype: GgmlType, dst: &mut Vec<f32>) -> Result<()> {
-    let esz = dtype.type_size();
-    match dtype {
-        GgmlType::F32 => {
-            dst.clear();
-            dst.reserve(src.len() / esz);
-            for c in src.chunks_exact(4) {
-                dst.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
-            }
-            Ok(())
-        }
-        GgmlType::BF16 => {
-            dst.clear();
-            dst.reserve(src.len() / esz);
-            for c in src.chunks_exact(2) {
-                dst.push(f32::from_bits(
-                    u32::from(u16::from_le_bytes([c[0], c[1]])) << 16,
-                ));
-            }
-            Ok(())
-        }
-        other => Err(VokraError::ModelLoad(format!(
-            "moshi mapped blocks: unsupported dtype {other:?} (bind-time \
-             validation should have rejected this)"
-        ))),
     }
 }
 
@@ -1472,6 +1397,8 @@ fn validate_block_shapes(config: &MoshiConfig, weights: &MoshiBackboneWeights) -
 
 #[cfg(test)]
 mod tests {
+    use vokra_core::gguf::GgmlType;
+
     use super::*;
 
     fn backbone() -> MoshiBackbone {

@@ -34,6 +34,7 @@
 //! size versus the FP16 ONNX, which is acceptable for M0 (no size gate).
 
 use std::collections::HashMap;
+use vokra_core::compliance::LicenseClass;
 
 use vokra_core::gguf::{
     GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
@@ -251,6 +252,17 @@ pub(crate) fn convert(
     let mut report = PiperPlusReport::default();
 
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    // Self-describing redistribution (publishing to a public model hub): the
+    // artifact must carry its own licence, not rely on a consumer running
+    // Vokra's registry resolver. Values transcribed from
+    // docs/license-audit.md §3, which holds the primary-source citations.
+    vokra_core::stamp_provenance(
+        &mut b,
+        LicenseClass::Permissive,
+        "MIT",
+        Some("piper-plus"),
+        Some("ayutaz/piper-plus (MIT)"),
+    );
     b.add_string(KEY_MODEL_NAME, &config.name);
     b.add_u32(KEY_SAMPLE_RATE, config.sample_rate);
     b.add_u32(KEY_NUM_SYMBOLS, config.num_symbols);

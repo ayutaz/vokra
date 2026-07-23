@@ -574,6 +574,8 @@ mod tests {
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",
+            mapped: None,
+            mapped_heads: None,
         }
     }
 
@@ -625,6 +627,8 @@ mod tests {
             blocks,
             final_norm_gamma: vec![1.0f32; d],
             prefix: "",
+            mapped: None,
+            mapped_heads: None,
         }
     }
 

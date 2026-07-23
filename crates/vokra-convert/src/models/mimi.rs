@@ -112,6 +112,13 @@ const KEY_D_MODEL: &str = "vokra.mimi.d_model";
 // block the Moshi / CSM converters carry) -----------------------------------
 const KEY_MIMI_SAMPLE_RATE: &str = "vokra.mimi.sample_rate";
 const KEY_MIMI_FRAME_RATE_MHZ: &str = "vokra.mimi.frame_rate_mhz";
+
+/// FR-MD-09 attribution text for the Kyutai Mimi weights (CC-BY 4.0). Mirrors
+/// `NOTICE` §5 and the Moshi converter's wording — one credit, two artifacts.
+const MIMI_ATTRIBUTION_TEXT: &str = "This application uses the Mimi neural audio codec by Kyutai. \
+Mimi weights are licensed under CC-BY 4.0 (attribution required; commercial use permitted). \
+Copyright (c) Kyutai / Moshi authors. Source: https://github.com/kyutai-labs/moshi";
+
 const KEY_MIMI_SEANET_DIMENSION: &str = "vokra.mimi.seanet.dimension";
 const KEY_MIMI_SEANET_N_FILTERS: &str = "vokra.mimi.seanet.n_filters";
 const KEY_MIMI_SEANET_N_RESIDUAL_LAYERS: &str = "vokra.mimi.seanet.n_residual_layers";
@@ -342,6 +349,11 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, MimiReport), Conve
         Some("mimi"),
         Some("kyutai/moshiko-pytorch-bf16 tokenizer-e351c8d8-checkpoint125.safetensors"),
     );
+    // CC-BY 4.0 obliges whoever redistributes these weights to carry the
+    // credit. Burning it into the artifact is what lets a downstream consumer
+    // — and `scripts/publish/make_model_card.py` — discharge that without
+    // having to know Kyutai's terms independently.
+    vokra_core::stamp_attribution(&mut b, MIMI_ATTRIBUTION_TEXT);
 
     let mut report = MimiReport {
         n_codebooks,

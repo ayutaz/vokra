@@ -366,6 +366,62 @@ addition and gets its own row in the "GGUF Metadata additions" section.
 | `vokra-core::decode::wfst`  | `WfstDecoder` / `WfstDecodeConfig`                | Added | `WfstDecoder::new(&fst).decode(&emission) -> Result<Option<WfstHypothesis>>`      | frame-synchronous token-passing decode + `decode_nbest` + `lattice`          | no        | (TBD) |
 | `vokra-core::decode::wfst`  | `WfstLattice` / `WfstHypothesis` / `LatArc`       | Added | lattice + best-path + n-best output types                                         | decode output (best-first n-best mirrors `BeamHypothesis`)                    | no        | (TBD) |
 
+### 2026-07-23 — 1.0.0-rc.1-dev #3 (HF publication: restamp_provenance — Rust surface only)
+
+Additive **Rust public API** only; C ABI untouched.
+
+| Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
+| --- | --- | --- | --- | --- | --- | --- |
+| `vokra-convert` | `restamp_provenance` | Added | `pub fn restamp_provenance(input, output, license: &str, model_id: &str, source: &str, attribution: Option<&str>) -> Result<ConvertSummary, ConvertError>` | Rewrite `vokra.provenance.*` on an existing GGUF **without re-materialising tensors** — mmap the input, copy each payload straight to a `GgufStreamWriter`. Peak memory is one tensor payload, not the whole file. Publishes 8.7 GiB Voxtral on a 16 GiB host (measured: peak footprint 6.4 MB) where full re-conversion needs >16 GiB RAM. Also rescues every pre-provenance cache GGUF without re-running its converter. | no | (TBD) |
+
+CLI: `vokra-convert restamp --input <in.gguf> --output <out.gguf> --license <spdx> [--model-id <id>] [--source <text>] [--attribution <text>]` — subcommand routed before the converter arg parser (no `--model`).
+
+### 2026-07-23 — 1.0.0-rc.1-dev #2 (HF publication: convert_file_licensed — Rust surface only)
+
+Additive **Rust public API** only; C ABI untouched (conversion is an offline
+Rust tool, never a C export).
+
+| Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
+| --- | --- | --- | --- | --- | --- | --- |
+| `vokra-convert` | `convert_file_licensed` | Added | `pub fn convert_file_licensed(model, input, output, license: Option<&str>) -> Result<ConvertSummary, ConvertError>` | Override the stamped weight licence when the distribution *source* declares a different one from the converter's built-in default (Whisper is MIT on OpenAI's GitHub but the HF weight repos tag base/small/medium as apache-2.0). Keeps the GGUF the single source of truth the model card is generated from. `convert_file` now delegates to it with `None` — its signature and behaviour are unchanged. | no | (TBD) |
+
+CLI: `vokra-convert` gains `--license <spdx>`, routed to `convert_file_licensed`
+on the plain single-input path (Whisper etc.). GGUF metadata effect: overrides
+`vokra.provenance.{weight_license,license,source}` when set.
+
+### 2026-07-23 — 1.0.0-rc.1-dev (HF publication: LicenseClass gains three variants — Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+untouched; `LicenseClass` is a host-side compliance type and has never been a C
+export. Recorded here because it is a public enum without `#[non_exhaustive]`,
+so downstream exhaustive `match`es would need a new arm (permitted under the
+Pre-1.0 / prerelease policy: rename/remove free, changelog entry required).
+
+| Crate / area | Symbol | Kind | Signature / shape | Rationale | Breaking? | PR |
+| --- | --- | --- | --- | --- | --- | --- |
+| `vokra-core::compliance` | `LicenseClass::Copyleft` | Added | enum variant, wire name `"copyleft"` | Share-alike / strong copyleft (CC-BY-SA, AGPL, GPL, LGPL): redistribution permitted **with the licence preserved**. Previously CC-BY-SA mis-classified as `AttributionRequired` and AGPL fell to `Unknown`. | yes (exhaustive match) | (TBD) |
+| `vokra-core::compliance` | `LicenseClass::RedistributionForbidden` | Added | enum variant, wire name `"redistribution-forbidden"` | Contractual bans that no licence string expresses (VOICEVOX reverse-engineering clause, CSJ agreement, JSUT/JVS corpus terms). **Never inferred from text** — set only from an explicit list. | yes | (TBD) |
+| `vokra-core::compliance` | `LicenseClass::ConditionalCommercial` | Added | enum variant, wire name `"conditional-commercial"` | Threshold-conditioned commercial grants (LFM ≥$10M revenue, Boson >100k AAU, IndexTTS-2 >100M MAU). | yes | (TBD) |
+| `vokra-core::compliance` | `LicenseClass::redistributable` | Added | `pub fn redistributable(self) -> bool` | The **publishing** gate, deliberately separate from the loading gate (`requires_research_flag`). The two answers differ for nearly every non-permissive class. | no | (TBD) |
+| `vokra-core::compliance` | `LicenseClass::requires_license_preserved` | Added | `pub fn requires_license_preserved(self) -> bool` | Whether republishing must carry the original licence unchanged (relabelling a CC-BY-SA-derived GGUF as Apache-2.0 is a misrepresentation). | no | (TBD) |
+
+**Behaviour changes to existing variants** (no signature change):
+
+- `from_license_str` now tests share-alike / copyleft **before** the plain
+  `cc-by` arm. `cc-by-sa-4.0` contains `cc-by`, so the previous ordering
+  reported every share-alike weight as attribution-only. Load-bearing today:
+  Style-Bert-VITS2's mandatory runtime BERT and the JVNV weights are both
+  `cc-by-sa-4.0`.
+- `agpl-3.0` / `gpl-*` / `lgpl-*` / `openrail` now classify as `Copyleft`
+  instead of `Unknown`. These licences do not restrict *use*, so such weights
+  **no longer require a research flag to load** — the old gating was an
+  artifact of an unrecognised string, not a considered position.
+- `commercial_ok` returns `true` for `Copyleft` (AGPL/GPL/CC-BY-SA all permit
+  commercial use) and no longer doubles as the official-zoo admission test;
+  that question moved to `redistributable`.
+- `requires_attribution` now also covers `Copyleft` and
+  `NonCommercialShareAlike`, whose licences carry BY / notice-retention terms.
+
 ### 2026-07-20 — 1.0.0-rc.1-dev (M5-14-BACKLOG: batched-beam scoring interface — Rust surface only)
 
 Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
@@ -698,6 +754,7 @@ Recording rules for entries here:
 | RW-fix | `vokra.voxtral.text_decoder.*` (extension) | Adds `vokra.voxtral.text_decoder.{head_dim,n_head_q,n_head_kv,rope_base,rms_norm_eps,n_ctx}` to the M3-10 base set ({n_layer,hidden_dim,ffn_dim,vocab_size}). `head_dim` decouples the attention width from `hidden/n_head_q` (real Voxtral-Mini: 32 q-heads x 128 = 4096 != hidden 3072); `head_dim = 0` (or absent) = legacy `hidden/n_head_q` derivation, so pre-fix GGUFs still load. Written by `crates/vokra-convert/src/models/voxtral.rs`, read by `VoxtralConfig::from_gguf` (`crates/vokra-models/src/voxtral/config.rs`). | `u32` + `f32` | persisted | Real-weight campaign fix `12e574e` (GQA loader + BF16 passthrough converter): the real checkpoint's GQA head split and untied `lm_head` are now representable; converter also accepts sharded `*.index.json` input and hard-errors on weightless output. | 2026-07-16 (campaign 1 P1 fix) |
 | RW-fix | `vokra.cosyvoice2.arch.*` (extension + real values) | Adds **written** emission of `vokra.cosyvoice2.arch.{n_head_kv,rope_base,rms_norm_eps,n_ctx}` (key strings pre-existed as read-side constants only) and replaces the previously **0-placeholder** values of `arch.{vocab_size,hidden_dim,n_layer,n_head,ffn_dim}` with shape-derived reals (0.5B: vocab 151936 / hidden 896 / 24L / ffn 4864; head split 14q/2kv from `--config`, cross-checked vs shapes). Plus q/k/v bias tensors now travel in the GGUF. | `u32` + `f32` | persisted | Real-weight campaign fix `7336079`: pre-fix GGUFs bound `llm=None` (all-zero hparams); old files still load (back-compat verified). NOTE: `~/.cache` artifacts converted before this fix are stale — reconvert. | 2026-07-16 (campaign 1 P1 fix) |
 | RW-fix | `vokra.denoise.*` (schema v2 — REPLACES the M4-20 scaffold row above) | Config keys now: `vokra.denoise.{n_fft,hop,sample_rate,n_erb,df_bins,df_order,min_nb_erb_freqs,conv_lookahead,df_lookahead,conv_ch,emb_hidden_dim,df_hidden_dim,enc_linear_groups,linear_groups,df_gru_linear_groups,emb_num_layers,df_num_layers}` (`u32`) + `vokra.denoise.{lsnr_min,lsnr_max,norm_alpha}` (`f32`). **REMOVED**: `vokra.denoise.hidden` and the 6 scaffold tensor names — tensors are now the 115 verbatim upstream-named DeepFilterNet3 tensors (exact-shape validated, unknown names hard-error). Written by the real-checkpoint converter (`convert --model denoise`), read by `DenoiseModel::from_gguf`. | `u32` + `f32` + tensors | persisted | Campaign-2 P1 fix `9b718d1` (DFN3 real topology, sample-level parity SI-SNR gap 2.0e-7 dB). Pre-1.0 removal is legal (prerelease ABI policy) and recorded here per the recording rules; scaffold-schema GGUFs no longer load (hard error, FR-EX-08). | 2026-07-17 (campaign 2 P1 fix) |
+| M5-resid | `vokra.schema.*` | `vokra.schema.version` (`u32`) + `vokra.schema.producer` (`string`). Written **unconditionally by `GgufBuilder::effective_metadata`**, so every Vokra-written GGUF carries them — not per-converter (only 4 of 13 model converters share a provenance helper, so a per-converter stamp would silently miss the rest). Caller-supplied values are filtered out and replaced, so the stamp cannot be spoofed. Read via `vokra_core::gguf::schema::{schema_version,producer,describe,stale_group_hint}`. Absent = **pre-stamping artifact** (every GGUF converted before 2026-07-22), which is a first-class answer, not an error — old files keep loading. | `u32` + `string` | persisted | Makes a **stale** GGUF visible. Observed 2026-07-22: a cached `mimi.gguf` (319 tensors / 9 keys, no `vokra.mimi.seanet.*`) loaded clean in one consumer and silently fell back to a synthesized bridge, while a re-conversion produced 603 tensors / 36 keys with a bindable PCM chain. `SCHEMA_VERSION` is a hand-bumped generation integer, deliberately **not** `CARGO_PKG_VERSION` — that string has been `0.1.0-alpha.0` since M0 and was identical on both sides of the incident. | 2026-07-22 |
 | RW-fix | `vokra.mimi.*` (standalone converter now emits the neural chain) | The **standalone** mimi converter (`convert --model mimi`) now also writes the `vokra.mimi.seanet.*`/`quantizer.*`/`transformer.*` config chunk group (previously CSM-converter-only, see the M4-05 row) **plus 284 structural `mimi.enc.*`/`mimi.dec.*` tensors** (linear transposes `w_t`, fused in_proj splits, channel-wise upsample dense expansion — mathematically exact re-layouts of the same bytes) alongside the raw passthrough, making standalone Mimi GGUFs PCM-encode/decode bindable. | `u32` + `f32` tensors | persisted | Campaign-2 fix `ebe1cc5` (first real-weight PCM roundtrip: encode codes 4384/4384 = 100% vs upstream, decode max delta 3.67e-6). Runtime binds the structural names when present; raw-only GGUFs keep the previous behavior. | 2026-07-17 (campaign 2) |
 | RW-fix | silero both-rate tensor namespaces `sr16k.*` / `sr8k.*` | The silero-vad converter emits **both** sample-rate branches as namespaced tensors (`sr16k.stft.forward_basis_buffer`, `sr8k.*`, name-sorted; then-branch = 16 k per `If(sr==16000)`), replacing the previous 8 kHz-only de-duplicated output that hard-errored on 16 kHz input. Output is byte-identical to the committed fixture GGUF. | tensors (naming) | persisted | Campaign-1 P1 fix `7639dc0` (official ctx576/288 rolling context + both-rate converter). Tensor-name schema change on the model file, no metadata key change. | 2026-07-16 (campaign 1 P1 fix) |
 

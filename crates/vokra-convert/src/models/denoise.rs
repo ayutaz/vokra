@@ -45,6 +45,17 @@ pub(crate) fn convert_builder(data: Vec<u8>) -> Result<(GgufBuilder, usize)> {
 
     let mut b = GgufBuilder::new();
     cfg.write_gguf_metadata(&mut b);
+    // Self-describing redistribution: the artifact carries its own licence
+    // rather than relying on a consumer running Vokra's registry resolver.
+    // Dual-licensed upstream (LICENSE-MIT + LICENSE-APACHE), verified
+    // 2026-07-17 — docs/license-audit.md §3 DeepFilterNet3 row.
+    vokra_core::stamp_provenance(
+        &mut b,
+        vokra_core::compliance::LicenseClass::Permissive,
+        "MIT OR Apache-2.0",
+        Some("deepfilternet3"),
+        Some("Rikorose/DeepFilterNet (MIT OR Apache-2.0)"),
+    );
     for spec in &manifest {
         let info = st.tensor_info(&spec.name).ok_or_else(|| {
             VokraError::ModelLoad(format!(
@@ -128,6 +139,17 @@ pub fn convert_denoise_file(input: &Path, output: &Path) -> Result<()> {
 pub fn convert_denoise_synthetic(cfg: DeepFilterNetConfig, seed: u64) -> Result<Vec<u8>> {
     let mut b = GgufBuilder::new();
     cfg.write_gguf_metadata(&mut b);
+    // Self-describing redistribution: the artifact carries its own licence
+    // rather than relying on a consumer running Vokra's registry resolver.
+    // Dual-licensed upstream (LICENSE-MIT + LICENSE-APACHE), verified
+    // 2026-07-17 — docs/license-audit.md §3 DeepFilterNet3 row.
+    vokra_core::stamp_provenance(
+        &mut b,
+        vokra_core::compliance::LicenseClass::Permissive,
+        "MIT OR Apache-2.0",
+        Some("deepfilternet3"),
+        Some("Rikorose/DeepFilterNet (MIT OR Apache-2.0)"),
+    );
     for (spec, data) in denoise_synthesized_tensors(&cfg, seed) {
         let bytes: Vec<u8> = data.iter().flat_map(|v| v.to_le_bytes()).collect();
         let mut dims: Vec<u64> = spec.shape.iter().map(|&d| d as u64).collect();

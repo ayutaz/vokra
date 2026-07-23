@@ -141,6 +141,7 @@ from generic tensor ops.
 | `FR-OP-41` | The `ctc_decode` operator, including language-model fusion and hotword boosting. |
 | `FR-OP-42` | The `rnnt_decode` operator and its selectable decoding strategies. |
 | `FR-OP-43` | The `wfst_decode` operator: decode-only token-passing search over a weighted finite-state transducer (a self-implemented OpenFST-equivalent behind an optional feature, no GPL dependency) for lexicon / grammar / domain-adaptation rescoring. |
+| `FR-OP-51` | The `kws` (keyword spotting) operator — a first-class op compatible with openWakeWord and Porcupine. Kept in the core runtime because always-on wake-word detection is a distinct workload from ASR and cannot be composed out of the `stft` / conv / matmul primitives without leaving latency on the table. |
 | `FR-OP-60` | The `aec` (acoustic echo cancellation) operator and the runtime-managed, time-tagged reference-signal queue it needs — a prerequisite for full-duplex speech-to-speech. |
 | `FR-OP-61` | The `denoise` (speech enhancement) operator. |
 | `FR-OP-62` | The `agc` and `hpf` operators of the capture-side audio pipeline. |

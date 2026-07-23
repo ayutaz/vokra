@@ -126,10 +126,13 @@ impl<'m> TextDecoderSession<'m> {
         }
         let q_hidden = n_head_q * head_dim;
         let kv_hidden = n_head_kv * head_dim;
-        if decoder.blocks.len() != n_layer {
+        // Residency-agnostic: a mapped decoder keeps `blocks` empty on
+        // purpose (`MappedTextBlocks` is the source), so counting `blocks`
+        // directly would reject it as "unloaded".
+        if decoder.n_layer() != n_layer {
             return Err(VokraError::ModelLoad(format!(
                 "voxtral::TextDecoderSession: loaded blocks {} != config n_layer {n_layer}",
-                decoder.blocks.len()
+                decoder.n_layer()
             )));
         }
 
@@ -734,6 +737,8 @@ mod tests {
             blocks,
             final_norm_gamma,
             prefix: "",
+            mapped: None,
+            mapped_heads: None,
         }
     }
 
@@ -747,6 +752,8 @@ mod tests {
             blocks: Vec::new(),
             final_norm_gamma: Vec::new(),
             prefix: "",
+            mapped: None,
+            mapped_heads: None,
         };
         let err = match TextDecoderSession::new(&cfg, &td, BackendKind::Cpu) {
             Ok(_) => panic!("must fail — TextDecoderSession is not Debug"),

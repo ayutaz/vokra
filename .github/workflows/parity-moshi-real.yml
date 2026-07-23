@@ -198,13 +198,10 @@ jobs:
       - name: Truncate the checkpoint (real weight bytes, tm/dt layer subset)
         run: |
           . .venv-moshi/bin/activate
-          CKPT=$(python - <<'PY'
-          import os
-          from huggingface_hub import hf_hub_download
-          print(hf_hub_download(os.environ["MOSHIKO_REPO"], "model.safetensors",
-                                revision=os.environ["MOSHIKO_REVISION"]))
-          PY
-          )
+          # `python -c` (not a heredoc) — a heredoc closer inside `$(...)` and a
+          # `run: |` block scalar cannot sit at column 0, so bash never sees it
+          # terminate. `python -c` sidesteps the whole shape.
+          CKPT=$(python -c "import os; from huggingface_hub import hf_hub_download; print(hf_hub_download(os.environ['MOSHIKO_REPO'], 'model.safetensors', revision=os.environ['MOSHIKO_REVISION']))")
           python tools/parity/moshi_truncate.py --src "$CKPT" \
             --dst moshiko-trunc.safetensors \
             --keep-tm "${TRUNC_TM}" --keep-dt "${TRUNC_DT}"
@@ -214,14 +211,9 @@ jobs:
       - name: Dump the staged upstream reference (truncated, argmax, deterministic)
         run: |
           . .venv-moshi/bin/activate
-          MIMI=$(python - <<'PY'
-          import os
-          from huggingface_hub import hf_hub_download
-          print(hf_hub_download(os.environ["MOSHIKO_REPO"],
-                                "tokenizer-e351c8d8-checkpoint125.safetensors",
-                                revision=os.environ["MOSHIKO_REVISION"]))
-          PY
-          )
+          # `python -c` — heredoc-inside-$() is unterminable in a `run: |` block
+          # (see the truncation step above for the full rationale).
+          MIMI=$(python -c "import os; from huggingface_hub import hf_hub_download; print(hf_hub_download(os.environ['MOSHIKO_REPO'], 'tokenizer-e351c8d8-checkpoint125.safetensors', revision=os.environ['MOSHIKO_REVISION']))")
           mkdir -p parity-out
           python tools/parity/moshi_dump.py real --out parity-out \
             --steps "${PARITY_STEPS}" \
@@ -232,13 +224,9 @@ jobs:
       - name: Convert the truncated checkpoint (streaming, BF16 passthrough)
         run: |
           . .venv-moshi/bin/activate
-          TOK=$(python - <<'PY'
-          import os
-          from huggingface_hub import hf_hub_download
-          print(hf_hub_download(os.environ["MOSHIKO_REPO"], "tokenizer_spm_32k_3.model",
-                                revision=os.environ["MOSHIKO_REVISION"]))
-          PY
-          )
+          # `python -c` — heredoc-inside-$() is unterminable in a `run: |` block
+          # (see the truncation step above for the full rationale).
+          TOK=$(python -c "import os; from huggingface_hub import hf_hub_download; print(hf_hub_download(os.environ['MOSHIKO_REPO'], 'tokenizer_spm_32k_3.model', revision=os.environ['MOSHIKO_REVISION']))")
           # Bounded memory by construction (M4 cc-06): header-only checkpoint
           # open + GgufStreamWriter, one tensor payload in RAM at a time.
           cargo run --release -p vokra-convert -- --model moshi \

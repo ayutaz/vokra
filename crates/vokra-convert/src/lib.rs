@@ -297,6 +297,33 @@ pub fn convert_file(
     input: &Path,
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
+    convert_file_licensed(model, input, output, None)
+}
+
+/// [`convert_file`] with an explicit weight-licence override.
+///
+/// Each converter stamps the licence it knows for its model. That is right when
+/// the model has one canonical licence, but wrong when the *actual distribution
+/// source* declares a different one — e.g. OpenAI's Whisper is MIT on GitHub,
+/// yet the Hugging Face weight repos this checkpoint may have come from tag
+/// `base`/`small`/`medium` as `apache-2.0`. Publishing must state the licence
+/// of the artifact being redistributed, so when the two disagree the caller
+/// passes the source's SPDX id here and it overrides the stamped
+/// `vokra.provenance.{weight_license,license}` — keeping the GGUF the single
+/// source of truth the model card is generated from (no card/artifact drift).
+///
+/// `license` is the raw SPDX string (e.g. `"apache-2.0"`); the class is
+/// re-derived from it. `None` keeps the converter's built-in stamp.
+///
+/// # Errors
+///
+/// As [`convert_file`].
+pub fn convert_file_licensed(
+    model: ModelKind,
+    input: &Path,
+    output: &Path,
+    license: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
     // Moshi streams tensor-by-tensor (the 14 GiB full-7B checkpoint must
     // never be materialized whole — bounded-memory contract); it routes
     // through `convert_moshi_file` BEFORE the whole-file read below.
@@ -305,7 +332,7 @@ pub fn convert_file(
     }
     let bytes = std::fs::read(input)?;
 
-    let (builder, notes) = match model {
+    let (mut builder, notes) = match model {
         ModelKind::Whisper => (models::whisper::convert(bytes, None)?, Vec::new()),
         ModelKind::SileroVad => {
             let (builder, report) = models::silero::convert(bytes)?;
@@ -439,6 +466,26 @@ pub fn convert_file(
             (builder, notes)
         }
     };
+
+    // Override the stamped licence when the caller supplies the distribution
+    // source's SPDX id (add_string overwrites the key in place, so the model's
+    // model_id / source / attribution stamps are preserved — only the licence
+    // and its class change).
+    if let Some(lic) = license {
+        let class = vokra_core::LicenseClass::from_license_str(lic);
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            class.as_str(),
+        );
+        builder.add_string(vokra_core::gguf::chunks::KEY_PROVENANCE_LICENSE, lic);
+        // The built-in `source` string names the converter's default licence
+        // (e.g. "openai/whisper (MIT)"); once the licence is overridden that
+        // parenthetical would contradict it, so restate the source neutrally.
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_PROVENANCE_SOURCE,
+            &format!("upstream distribution source (licence {lic} per source)"),
+        );
+    }
 
     let tensor_count = builder.tensor_count();
     let metadata_count = builder.metadata_count();
@@ -1201,6 +1248,112 @@ pub fn convert_voxtral_file_with_adapter_config_quantized(
         metadata_count,
         output_bytes: out_bytes.len() as u64,
         notes,
+    })
+}
+
+/// Rewrite an existing GGUF's provenance metadata without re-materialising its
+/// tensor payloads.
+///
+/// This is the low-memory publish path used when a converted artifact was
+/// stamped with an incomplete provenance group (or none), and re-running the
+/// full converter is impractical because the checkpoint no longer fits in this
+/// host's RAM. The input is opened via [`vokra_mmap`] so tensor bytes are
+/// fault-in-only, and every payload is streamed straight into a new file via
+/// [`GgufStreamWriter`] — peak footprint stays at roughly one tensor plus
+/// mapped-page cost, not the whole file.
+///
+/// `license` is the raw SPDX id (class re-derived from it); `model_id` and
+/// `source` are advisory provenance strings; `attribution`, when `Some`, sets
+/// the CC-BY display text a downstream must show.
+///
+/// # Errors
+///
+/// [`ConvertError`] if the input cannot be opened/parsed, a tensor payload is
+/// malformed, or the output cannot be written.
+#[allow(clippy::too_many_arguments)]
+pub fn restamp_provenance(
+    input: &Path,
+    output: &Path,
+    license: &str,
+    model_id: &str,
+    source: &str,
+    attribution: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
+    use vokra_core::gguf::chunks;
+    use vokra_core::gguf::{GgufBuilder, GgufStreamWriter, GgufTensorDecl};
+
+    // mmap the input so tensor payloads fault in lazily (never a whole-file
+    // read) — this is what keeps the 8.7 GiB Voxtral case within memory.
+    let file = vokra_mmap::open_gguf(input)
+        .map_err(|e| ConvertError::Parse(format!("restamp: opening {input:?}: {e}")))?;
+
+    // Carry every existing metadata key EXCEPT the ones we set ourselves: the
+    // provenance group (replaced below) and the schema stamps (the writer
+    // re-emits them universally, so passing them in would duplicate).
+    let mut b = GgufBuilder::new();
+    for (k, v) in file.metadata() {
+        if k == chunks::KEY_PROVENANCE_WEIGHT_LICENSE
+            || k == chunks::KEY_PROVENANCE_LICENSE
+            || k == chunks::KEY_PROVENANCE_MODEL_ID
+            || k == chunks::KEY_PROVENANCE_SOURCE
+            || k == chunks::KEY_PROVENANCE_ATTRIBUTION
+            || k == chunks::KEY_SCHEMA_VERSION
+            || k == chunks::KEY_SCHEMA_PRODUCER
+        {
+            continue;
+        }
+        b.add_metadata(k, v.clone());
+    }
+
+    // Inject provenance (same conduit the converters use).
+    let class = vokra_core::LicenseClass::from_license_str(license);
+    b.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, class.as_str());
+    b.add_string(chunks::KEY_PROVENANCE_LICENSE, license);
+    b.add_string(chunks::KEY_PROVENANCE_MODEL_ID, model_id);
+    b.add_string(chunks::KEY_PROVENANCE_SOURCE, source);
+    if let Some(text) = attribution {
+        b.add_string(chunks::KEY_PROVENANCE_ATTRIBUTION, text);
+    }
+
+    // Declare tensors in the input's order; the stream writer wants only
+    // declarations up front, then payloads one at a time.
+    let decls: Vec<GgufTensorDecl> = file
+        .tensors()
+        .iter()
+        .map(|t| GgufTensorDecl {
+            name: t.name.clone(),
+            dtype: t.dtype,
+            dimensions: t.dimensions.clone(),
+        })
+        .collect();
+    let tensor_count = decls.len();
+
+    let out_file = std::fs::File::create(output)?;
+    let mut w = GgufStreamWriter::begin(std::io::BufWriter::new(out_file), &b, &decls)?;
+    // Copy each payload straight from the mapping — no widening, no owned copy
+    // beyond the single tensor being written.
+    let infos: Vec<_> = file.tensors().to_vec();
+    for info in &infos {
+        let bytes = file.tensor_bytes(info);
+        w.write_tensor(&info.name, bytes)?;
+    }
+    let out_writer = w.finish()?;
+    let out_file = out_writer
+        .into_inner()
+        .map_err(|e| ConvertError::Io(e.into_error()))?;
+    out_file.sync_all().map_err(ConvertError::Io)?;
+    let output_bytes = out_file.metadata().map_err(ConvertError::Io)?.len();
+
+    Ok(ConvertSummary {
+        model: ModelKind::Voxtral, // placeholder; restamp is model-agnostic
+        tensor_count,
+        metadata_count: b.metadata_count(),
+        output_bytes,
+        notes: vec![format!(
+            "restamp: {tensor_count} tensors copied verbatim from {input:?}; \
+             provenance set to license={license} class={} (tensors unchanged)",
+            class.as_str()
+        )],
     })
 }
 
