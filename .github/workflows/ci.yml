@@ -336,6 +336,23 @@ jobs:
         # model_zoo/ docs/. Pure bash + find, no cargo, so it costs nothing
         # in the job that already owns licence enforcement.
         run: bash scripts/compliance/check-encodec-exclusion.sh
+      - name: Workflow advisory-suffix tripwire (§8.2 canonical form)
+        # .github/workflows/README.md §8.2 canonical shape for advisory steps:
+        #   - name: <what> (advisory, record-only)
+        #     id: <slug>
+        #     continue-on-error: true
+        # This tripwire greps every `continue-on-error: true` step in
+        # .github/workflows/*.yml and asserts its `- name:` value contains
+        # the `advisory` lexeme. Prevents the bug class caught in
+        # fix/nightly-asr-wer-2026-07-23 P1 (step DOCUMENTED as advisory but
+        # LEXICALLY hard-failed). Self-test runs the RED (missing suffix) and
+        # GREEN (present suffix) cases against a synthetic workflow tree in
+        # $RUNNER_TEMP, so a checker bug cannot manufacture a passing run.
+        # HARD FAIL (not advisory) because the shape invariant is Vokra's
+        # own contract, not upstream drift — a violation is a Vokra defect.
+        run: |
+          bash scripts/check-workflow-advisory-suffix.sh --self-test
+          bash scripts/check-workflow-advisory-suffix.sh
       - name: Platform-support matrix drift check (advisory, record-only, M4-11-T08)
         id: platform-support-drift
         # Verifies that every evidence anchor cited by
