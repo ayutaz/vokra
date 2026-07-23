@@ -22,6 +22,16 @@
 //! The concrete per-tensor `atol = 0.01` (NFR-QL-01) checks + the MEL loss
 //! 5% gate (NFR-QL-02, T23 `vokra-eval` bridge) land with T22/T23 once
 //! the CosyVoice2 GGUF fixture is available (T29 model zoo publication).
+//!
+//! # SoTA plan §1(a) 訂正 (2026-07-24): `MimiBridge` is deprecated
+//!
+//! This harness still imports [`MimiBridge`] because the pre-existing
+//! `parity_cosyvoice2_mimi_bridge_accepts_kyutai_defaults` test continues
+//! to exercise the deprecated bridge's shape gate. The correct terminal
+//! vocoder for CosyVoice2 is [`HiFTChain`]; new parity tests must use
+//! that instead. `#![allow(deprecated)]` at the module level silences
+//! deprecation warnings from the retained bridge test.
+#![allow(deprecated)]
 
 use std::env;
 use std::path::Path;

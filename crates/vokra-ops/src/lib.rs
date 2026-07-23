@@ -105,6 +105,14 @@ pub mod fused_logmel;
 // the module-level docstring.
 pub mod hifigan;
 // -------------------------------------------------------------------------
+// ---- SoTA plan Phase 1-2 HiFTNet vocoder --------------------------------
+// HiFTNet = "Neural Source Filter + ISTFTNet" (upstream CosyVoice2/3 +
+// Chatterbox family). This module hosts the F0 predictor (Wave 2) and,
+// once Wave 3 lands, the HiFTGenerator chain. The NSF core lives in
+// [`crate::nsf`] rather than here so a caller can drive it without pulling
+// the full generator.
+pub mod hiftnet;
+// -------------------------------------------------------------------------
 pub mod istft;
 pub mod istft_streaming;
 pub mod kaldi_fbank;
@@ -119,6 +127,14 @@ pub mod mfcc;
 // model zoo (FR-OP-32 — enforced by the M2-13 compliance gate and the
 // `scripts/compliance/check-encodec-exclusion.sh` release-side script).
 pub mod mimi_rvq;
+// -------------------------------------------------------------------------
+// ---- SoTA plan Phase 1-2 NSF (HiFTNet source-filter core) ---------------
+// Neural Source Filter (SineGen + SourceModuleHnNSF) — verbatim port of the
+// upstream CosyVoice implementation (`cosyvoice/hifigan/generator.py` L163-
+// 368). Consumed by the HiFTNet vocoder; multiple published models feed the
+// same layer (CosyVoice2 / CosyVoice3 / Chatterbox family), so this lives in
+// `vokra-ops` rather than a per-model module.
+pub mod nsf;
 // -------------------------------------------------------------------------
 pub mod preprocess;
 pub mod prosody;

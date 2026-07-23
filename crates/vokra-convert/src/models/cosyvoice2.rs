@@ -132,12 +132,22 @@ const COSYVOICE2_SAMPLE_RATE: u32 = 24_000;
 /// Sourced from the Mimi paper (Kyutai) / M3-06 module documentation —
 /// stable model-card invariants, not invented numbers. The runtime rejects
 /// a `0` codec shape at load (`MimiBridge::from_config`), so we do
-/// **not** emit `0` placeholders on these three axes. NOTE (recorded by the
-/// 2026-07-16 eval as an open owner/CC design item): the upstream
-/// CosyVoice2-0.5B release does **not** ship Mimi — it ships an FSQ
-/// `speech_tokenizer_v2` + `flow.pt` + `hift.pt`; the Mimi bridge is the
-/// M3-06 design decision this converter follows until that item is
-/// resolved.
+/// **not** emit `0` placeholders on these three axes.
+///
+/// # SoTA plan §1(a) 訂正 (2026-07-24) — wrong-premise decision resolved
+///
+/// The 2026-07-16 eval's open design item ("upstream CosyVoice2-0.5B does
+/// not ship Mimi — it ships FSQ + flow.pt + hift.pt") was settled by the
+/// 2026-07-22 SoTA plan §1(a) 訂正: CosyVoice2's terminal vocoder is
+/// **HiFTNet** (`cosyvoice/hifigan/generator.py:378 HiFTGenerator`), NOT
+/// the Mimi codec. `vokra-models::cosyvoice2::mimi_bridge` is now
+/// `#[deprecated]` and the correct chain is
+/// `cosyvoice2::hift_chain::HiFTChain`. This converter still emits the
+/// canonical Mimi shape constants to keep the load-side compliance gate's
+/// non-zero requirement satisfied for pre-migration test GGUFs; the
+/// `vokra.cosyvoice2.mimi.*` metadata will be dropped in the T13
+/// codec-migration follow-up. NEW converters must not add Mimi wiring for
+/// CosyVoice2.
 const MIMI_N_CODEBOOKS: u32 = 8;
 const MIMI_CODEBOOK_SIZE: u32 = 2048;
 const MIMI_D_MODEL: u32 = 512;

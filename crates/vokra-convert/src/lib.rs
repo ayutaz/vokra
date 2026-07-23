@@ -138,6 +138,26 @@ pub enum ModelKind {
     /// published DFN3 hyper-parameters ride the `vokra.denoise.*` chunk.
     /// Dual MIT / Apache-2.0 code + weights (docs/license-audit.md).
     Denoise,
+    /// nari-labs **Dia-1.6B** safetensors checkpoint (SoTA plan Phase 1-4,
+    /// 2026-07-24). Text encoder (12L / 1024d / 16h × 128 head_dim / 4096
+    /// FFN) + delayed-AR decoder (18L / 2048d GQA 16Q ÷ 4KV × 128 head_dim /
+    /// cross-attn 16Q × 128 / 8192 FFN) over 9 DAC 44.1 kHz codebook
+    /// channels with `delay_pattern=[0,8..15]`. Apache 2.0 code + weight.
+    /// All hparams transcribed verbatim from `huggingface.co/nari-labs/
+    /// Dia-1.6B/config.json`; every F32 / F16 tensor passes through
+    /// verbatim. The upstream release ships torch `.pth`, so callers pre-
+    /// flatten it to safetensors offline (the CSM / DAC pattern).
+    Dia,
+    /// Zyphra **Zonos-v0.1-transformer** safetensors checkpoint (SoTA plan
+    /// Phase 1-5, 2026-07-24). Single-stack GQA transformer (26L / 2048d /
+    /// 16Q ÷ 4KV × 128 head_dim / SwiGLU 8192 inner) with a typed prefix
+    /// conditioner (espeak / speaker / Fourier / integer) over 9 DAC 44.1
+    /// kHz codebook channels with `delay_pattern=[1..9]`. Apache 2.0 code
+    /// plus weight. All hparams (including the 7 conditioner descriptors)
+    /// transcribed verbatim from `huggingface.co/Zyphra/Zonos-v0.1-transformer/config.json`;
+    /// every F32 / F16 tensor passes through verbatim. Ships safetensors
+    /// directly — no `.pth` prepare step (unlike Dia).
+    Zonos,
 }
 
 impl ModelKind {
@@ -165,6 +185,8 @@ impl ModelKind {
             "csm" => Some(Self::Csm),
             "moshi" => Some(Self::Moshi),
             "denoise" => Some(Self::Denoise),
+            "dia" | "dia-1.6b" | "dia-1_6b" => Some(Self::Dia),
+            "zonos" | "zonos-v0.1" | "zonos-v0_1" | "zonos-v0.1-transformer" => Some(Self::Zonos),
             _ => None,
         }
     }
@@ -185,6 +207,8 @@ impl ModelKind {
             Self::Csm => "csm",
             Self::Moshi => "moshi",
             Self::Denoise => "denoise",
+            Self::Dia => "dia",
+            Self::Zonos => "zonos",
         }
     }
 }
@@ -463,6 +487,31 @@ pub fn convert_file_licensed(
                  checkpoint tensors skipped by policy: erb_fb, df_dec.df_fc_a.*), \
                  loadability re-checked via DenoiseModel::from_gguf"
             )];
+            (builder, notes)
+        }
+        ModelKind::Dia => {
+            // SoTA plan Phase 1-4: pass every F32/F16 tensor through verbatim
+            // and stamp the `vokra.dia.*` chunk group from the primary-source
+            // constants transcribed in `models::dia`.
+            let (builder, report) = models::dia::convert(bytes)?;
+            let mut notes = vec![format!(
+                "dia: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(report.notes.iter().map(|n| format!("dia warning: {n}")));
+            (builder, notes)
+        }
+        ModelKind::Zonos => {
+            // SoTA plan Phase 1-5: pass every F32/F16 tensor through verbatim
+            // and stamp the `vokra.zonos.*` chunk group (backbone hparams +
+            // vocab + delay pattern + 7 typed prefix-conditioner descriptors)
+            // from the primary-source constants transcribed in `models::zonos`.
+            let (builder, report) = models::zonos::convert(bytes)?;
+            let mut notes = vec![format!(
+                "zonos: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(report.notes.iter().map(|n| format!("zonos warning: {n}")));
             (builder, notes)
         }
     };
@@ -1249,6 +1298,41 @@ pub fn convert_voxtral_file_with_adapter_config_quantized(
         output_bytes: out_bytes.len() as u64,
         notes,
     })
+}
+
+/// Convert a nari-labs **Dia-1.6B** safetensors checkpoint into a Vokra GGUF
+/// (SoTA plan Phase 1-4, 2026-07-24).
+///
+/// This is the named entry point that mirrors `convert_csm_file` /
+/// `convert_dac_file` / `convert_kokoro_file`. It is functionally identical
+/// to `convert_file(ModelKind::Dia, input, output)` — Dia has no side-car
+/// config or tokenizer to embed (the source vocab is byte-level and the
+/// hparams are transcribed as constants in `models::dia`) — but the named
+/// entry keeps the `convert_*_file` naming symmetry with the other
+/// TTS / codec models.
+///
+/// The upstream Dia release ships torch `.pth`; run a prepare-checkpoint
+/// script (CSM / DAC pattern) to flatten it to safetensors first.
+pub fn convert_dia_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::Dia, input, output)
+}
+
+/// Convert a Zyphra **Zonos-v0.1-transformer** safetensors checkpoint into a
+/// Vokra GGUF (SoTA plan Phase 1-5, 2026-07-24).
+///
+/// This is the named entry point that mirrors `convert_dia_file` /
+/// `convert_csm_file` / `convert_kokoro_file`. It is functionally identical
+/// to `convert_file(ModelKind::Zonos, input, output)` — Zonos has no
+/// side-car config or tokenizer to embed (every hparam is transcribed as
+/// constants in `models::zonos`, and the eSpeak-NG phoneme conditioner keeps
+/// its tokenizer state inside the tensor manifest) — but the named entry
+/// keeps the `convert_*_file` naming symmetry with the other TTS / codec
+/// models.
+///
+/// The upstream Zonos-v0.1-transformer release ships safetensors directly;
+/// no `.pth` prepare step is required (unlike Dia).
+pub fn convert_zonos_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::Zonos, input, output)
 }
 
 /// Rewrite an existing GGUF's provenance metadata without re-materialising its
