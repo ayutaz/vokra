@@ -228,6 +228,55 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-07-24 — 1.0.0-rc.1-dev (SoTA Phase 1: HiFTNet vocoder primitives + NSF module — Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+**untouched** (`scripts/gen-c-abi.sh --check` = no diff; a grep for `hiftnet` /
+`nsf` / `snake` in the header matches **0** new symbols). No GGUF metadata
+schema is added at the Vokra prefix level for this Phase 1 slice; the models
+that consume these primitives (CosyVoice2 HiFTGenerator chain, and the
+scaffolds for Dia-1.6B / Zonos-v0.1) reuse the existing
+`vokra.cosyvoice2.*` / model-specific chunks that were already recorded in
+the v0.9 baseline. Phase 1 wires the HiFTNet (Neural Source Filter +
+iSTFTNet) vocoder as the correct upstream chain for CosyVoice2
+(`cosyvoice/hifigan/generator.py:378 class HiFTGenerator`, arXiv:2412.10117)
+— superseding the previously-scaffolded `mimi_bridge.rs` which was based on
+the 2026-07-22 corrected SSOT (SoTA plan §1(a): CosyVoice2 does **not** use
+Mimi; Mimi is Moshi/CSM-only).
+
+M5-13 relevance (why this is recorded here): all items are additive **Rust**
+public items with **no C surface**, so `scripts/check-abi-changelog.sh` does
+not gate on this entry (no C symbol changed). `scripts/rust-public-api-list.sh`
+picks them up (`vokra-ops::nsf::*` and `vokra-ops::hiftnet::*`); as with the
+M5-01/02/03/05/06 entries below, the
+`docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot is **not** rotated by
+this PR — snapshot rotation is the M5-13/IF-01 freeze owner's action. All
+items are additive (existing signatures unchanged; `NsfEntropy` is
+`#[non_exhaustive]` for future extension), Breaking? = no.
+
+New model scaffolds landed under this PR (`vokra-models::dia`,
+`vokra-models::zonos`, and the corresponding converters `vokra-convert::models::dia`
+/ `vokra-convert::models::zonos`) are excluded from the
+`rust-public-api-list.sh` scan surface (scan crates =
+`vokra-core` / `vokra-ops` / `vokra-capi` only — same posture as
+`vokra-models` scaffolds landed in prior WPs). CosyVoice2 wiring
+(`vokra-models::cosyvoice2::hift_chain`) is likewise `vokra-models`
+internal, not part of the snapshot. Real-weight parity harnesses (Dia /
+Zonos / real CosyVoice2 checkpoint) land here as flip-the-switch skeletons;
+they do not add public surface until owner provides the checkpoints
+(`docs/m4-owner-verification-checklist.md`).
+
+| Crate / area              | Symbol                                                                                                                       | Kind  | Signature / note                                                                                                                                    | Rationale                                                                                                | Breaking? | PR    |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | --------- | ----- |
+| `vokra-ops::nsf` (new mod) | `SineGen` / `SineGenConfig` / `SineGenOutput`                                                                                | Added | `pub struct` + `pub fn new(cfg) -> Self` + `pub fn forward(&self, f0: &[f32], entropy: NsfEntropy) -> Result<SineGenOutput>`                          | Sine oscillator front-end for NSF (HiFTNet upstream; CosyVoice2 arXiv:2412.10117 §Vocoder), SoTA Phase 1-2 wave 1 | no        | (TBD) |
+| `vokra-ops::nsf`          | `SourceModuleHnNSF` / `SourceModuleHnNSFConfig` / `SourceModuleHnNSFWeights` / `SourceModuleHnNSFOutput`                     | Added | `pub struct` + `pub fn new(cfg, weights) -> Result<Self>` + `pub fn forward(&self, f0, entropy) -> Result<SourceModuleHnNSFOutput>`                   | Harmonic-plus-noise Neural Source Filter (paired with HiFTGenerator), SoTA Phase 1-2 wave 1              | no        | (TBD) |
+| `vokra-ops::nsf`          | `NsfEntropy`                                                                                                                 | Added | `pub enum NsfEntropy { Deterministic, /* future variants */ }` (`#[non_exhaustive]`)                                                                  | entropy source knob for NSF noise term (owner-selectable at higher layers), SoTA Phase 1-2               | no        | (TBD) |
+| `vokra-ops::hiftnet` (new mod) | `F0Predictor` / `F0PredictorConfig` / `F0PredictorWeights`                                                              | Added | `pub struct` + `pub fn new(cfg, weights) -> Result<Self>` + `pub fn forward(&self, mel, t_mel) -> Result<Vec<f32>>`                                    | F0 predictor (Conv1d+ELU stack + Linear head) driving NSF from mel, SoTA Phase 1-2 wave 2                | no        | (TBD) |
+| `vokra-ops::hiftnet`      | `Snake`                                                                                                                      | Added | `pub struct Snake { alpha: Vec<f32>, alpha_logscale: bool }` + `pub fn new(alpha, alpha_logscale) -> Result<Self>` + `pub fn forward_in_place(x, channels, time) -> Result<()>` | Snake activation (BigVGAN/HiFTNet), per-channel alpha, SoTA Phase 1-2 wave 3a                            | no        | (TBD) |
+| `vokra-ops::hiftnet`      | `ResBlock` / `ResBlockConfig` / `ResBlockWeights`                                                                            | Added | `pub struct` + `pub fn new(cfg, weights) -> Result<Self>` + `pub fn forward_in_place(x, t) -> Result<()>`                                             | HiFTNet MRF residual block with dilated Conv1d, SoTA Phase 1-2 wave 3b                                   | no        | (TBD) |
+| `vokra-ops::hiftnet`      | `HiFTGenerator` / `HiFTGeneratorConfig` / `HiFTGeneratorWeights`                                                             | Added | `pub struct` + `pub fn new(cfg, weights) -> Result<Self>` + `pub fn forward(&self, mel, t) -> Result<Vec<f32>>` + accessors (`config`, `num_kernels`, `num_upsamples`, `output_channels_at`, `total_upsample_factor`) | HiFTNet generator (NSF + iSTFTNet vocoder head, Snake) for CosyVoice2 mel → PCM, SoTA Phase 1-2 wave 3c  | no        | (TBD) |
+| `vokra-ops::hiftnet`      | `f0_predictor_forward` (module fn)                                                                                            | Added | `pub fn f0_predictor_forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>>` (on `F0Predictor`)                                                | direct-use convenience for CosyVoice2 chain wiring, SoTA Phase 1-2 wave 2                                | no        | (TBD) |
+
 ### 2026-07-21 — 1.0.0-rc.1-dev (M5-05: consent manifest schema + structural validator — Rust surface only)
 
 Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
