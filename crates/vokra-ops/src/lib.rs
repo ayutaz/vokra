@@ -105,6 +105,14 @@ pub mod fused_logmel;
 // the module-level docstring.
 pub mod hifigan;
 // -------------------------------------------------------------------------
+// ---- SoTA plan Phase 1-2 HiFTNet vocoder --------------------------------
+// HiFTNet = "Neural Source Filter + ISTFTNet" (upstream CosyVoice2/3 +
+// Chatterbox family). This module hosts the F0 predictor (Wave 2) and,
+// once Wave 3 lands, the HiFTGenerator chain. The NSF core lives in
+// [`crate::nsf`] rather than here so a caller can drive it without pulling
+// the full generator.
+pub mod hiftnet;
+// -------------------------------------------------------------------------
 pub mod istft;
 pub mod istft_streaming;
 pub mod kaldi_fbank;
