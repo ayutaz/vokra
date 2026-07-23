@@ -426,20 +426,50 @@ jobs:
         with:
           workspaces: |
             integrations/vokra-server
+          # 案 B (2026-07-23): matrix triple 別 cache key を明示。Swatinem のデフォルト
+          # key は workflow + workspace + Cargo.lock hash だが、triple 差 (musl vs
+          # aarch64-apple-darwin vs pc-windows-msvc) は自動で識別されないため、
+          # cache tarball が triple 間で相互 pollution する / 逆に PR 間で miss する。
+          # 明示指定で triple 別に分離して hit 率を上げる。
+          shared-key: server-compat-${{ matrix.triple }}
       - name: Install musl toolchain (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: Cross-build vokra-server (release, ${{ matrix.triple }})
+      - name: Cross-build vokra-server (${{ matrix.triple }})
         # FR-SV-01 cross-target proof: the server binary must build on the
-        # three officially supported single-binary triples. macOS ARM64 is the
-        # native runner triple (no --target needed on apple-silicon runners
-        # but we pass it explicitly for symmetry); Windows uses the MSVC ABI;
-        # Linux uses musl for static linkage (see T19 for the static-link
-        # verification — this leg only proves the toolchain wiring compiles).
+        # three officially supported single-binary triples. macOS ARM64 は
+        # native runner triple (Windows は MSVC ABI、Linux は musl で静的 link
+        # 検証 = T19、この leg 自体は toolchain wiring が通ることの検証)。
+        #
+        # profile 選択 (2026-07-23 の CI 高速化 — 案 C):
+        #   - ubuntu-latest (run_tests: true) は compat tests を実 release で
+        #     回すため `--release` 必須。
+        #   - macos-latest / windows-latest (run_tests: false) は toolchain
+        #     wiring が通る検証だけで dev profile で目的達成 = release build
+        #     不要ゆえ dev に切り替えて 30 min 級の short-circuit を狙う。
+        #     実 release 面の性能検証は release.yml が担当。
+        #
+        # --target 選択 (2026-07-23 の CI 高速化 — 案 A):
+        #   - ubuntu-latest (musl) / windows-latest (MSVC) は cross-target 検証
+        #     のため必須。
+        #   - macos-latest 上の aarch64-apple-darwin は既に native triple ゆえ
+        #     `--target` を付けると `target/aarch64-apple-darwin/` 経由になって
+        #     Swatinem cache が per-target dir で別枠になり hit 率が下がる。
+        #     native path (`target/`) を使うため macos leg のみ --target を落とす。
         shell: bash
         run: |
-          cargo build --release \
-            --target ${{ matrix.triple }} \
+          set -euo pipefail
+          if [ "${{ matrix.run_tests }}" = "true" ]; then
+            PROFILE_ARG="--release"
+          else
+            PROFILE_ARG=""
+          fi
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            TARGET_ARG=""
+          else
+            TARGET_ARG="--target ${{ matrix.triple }}"
+          fi
+          cargo build $PROFILE_ARG $TARGET_ARG \
             -p vokra-server \
             --manifest-path integrations/vokra-server/Cargo.toml
       - name: cargo-deny (server crate, NFR-LC-04)
