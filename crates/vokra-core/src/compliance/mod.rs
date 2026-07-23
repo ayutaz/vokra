@@ -495,6 +495,41 @@ mod tests {
         assert!(r.is_research_only());
     }
 
+    /// InheritedRestriction (OpenRAIL family) must flow through both
+    /// resolver paths — an explicit canonical class stamp and a raw licence
+    /// string — and load without a research flag. This pins the M4-scope
+    /// SoTA plan §4 addition end-to-end at the resolver boundary, not just
+    /// at the `from_license_str` classifier.
+    #[test]
+    fn resolve_recognises_inherited_restriction_via_class_and_license() {
+        // Explicit canonical class flows through unchanged.
+        let mut b = GgufBuilder::new();
+        stamp_provenance(
+            &mut b,
+            LicenseClass::InheritedRestriction,
+            "creativeml-openrail-m",
+            Some("some-openrail-model"),
+            None,
+        );
+        let r = resolve_license_class(&parse(&b));
+        assert_eq!(r.class, LicenseClass::InheritedRestriction);
+        assert_eq!(r.source, ResolutionSource::ExplicitClass);
+        // OpenRAIL is loadable without a research flag (the negative
+        // use-case list travels with the artefact, but the model itself
+        // is not research-only in the sense the gate cares about).
+        assert!(!r.is_research_only());
+
+        // Raw licence string alone (no explicit class stamp): the openrail
+        // matcher in `from_license_str` picks it up on the `ExplicitLicense`
+        // path.
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_PROVENANCE_LICENSE, "openrail-m");
+        let r = resolve_license_class(&parse(&b));
+        assert_eq!(r.class, LicenseClass::InheritedRestriction);
+        assert_eq!(r.source, ResolutionSource::ExplicitLicense);
+        assert!(!r.is_research_only());
+    }
+
     #[test]
     fn gate_rejects_noncommercial_without_flag() {
         let mut b = GgufBuilder::new();
