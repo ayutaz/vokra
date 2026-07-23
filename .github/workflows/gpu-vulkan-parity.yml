@@ -124,13 +124,30 @@ on:
     # so a shared-runner queue never serialises two of them. Off-peak US/EU business hours so a
     # Mesa hub / apt outage surfaces without blocking active development.
     - cron: '30 5 * * 1'
+  # Phase 5a-2 (2026-07-23): narrow PR path filter — Vulkan backend / SPIR-V
+  # blobs / compile script / this workflow。lavapipe (Mesa CPU-only ICD) は
+  # ubuntu-latest 上で常に installable ゆえ PR で毎回 dispatch 実行される。
+  # SHA-256 pin 検証 (verify_pinned_hashes) は driver-free で必ず走り、
+  # blob byte drift を PR 段階で捕捉する。
+  pull_request:
+    paths:
+      - '.github/workflows/gpu-vulkan-parity.yml'
+      - 'crates/vokra-core/**'
+      - 'crates/vokra-ops/**'
+      - 'crates/vokra-backend-vulkan/**'
+      - 'crates/vokra-models/src/compute.rs'
+      - 'scripts/compile-vulkan-shaders.sh'
 
 permissions:
   contents: read
 
 concurrency:
+  # PR runs get PR-scoped groups (github.ref = refs/pull/<N>/merge) so a
+  # follow-up push cancels the superseded run. Schedule / workflow_dispatch
+  # runs on main stay `cancel-in-progress: false` to protect the weekly
+  # parity artifact chain from a coincident dispatch nuking it.
   group: gpu-vulkan-parity-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   parity:
@@ -147,7 +164,7 @@ jobs:
       # unsafe FFI is wrapped in Result-returning shims) surfaces stack.
       RUST_BACKTRACE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -284,7 +301,7 @@ jobs:
 
       - name: Upload test output (always, so failures are diagnosable)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: vulkan-test-output-${{ github.run_id }}
           path: vulkan-test-output.log

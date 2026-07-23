@@ -98,7 +98,7 @@ vokra_session_destroy(session);
 ヘッダに対してコンパイルし、共有ライブラリをリンクします:
 
 ```sh
-cc app.c -Iinclude -Ltarget/release -lvokra -Wl,-rpath,target/release -o app
+cc app.c -I include -L target/release -lvokra -Wl,-rpath,target/release -o app
 ```
 
 実行可能な e2e サンプル（ASR / TTS / VAD）は [`tests/capi/`](tests/capi) にあります。`scripts/run-capi-smoke.sh` がビルドと実行を行います。M0（v0.1 spike）の ABI は **安定していません** — v1.0 の semver コミットまでは互換性を壊す変更があり得ます。

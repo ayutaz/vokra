@@ -9,7 +9,7 @@
 # M2-11 plan), the __Internal / native-lib platform conditional (D4), and the
 # VokraAndroidAssets.EnsureLocalCopy passthrough on non-Android paths (D6).
 #
-# License handling: game-ci/unity-builder@v4 and unity-test-runner@v3 require
+# License handling: game-ci/unity-builder@v5 and unity-test-runner@v3 require
 # `secrets.UNITY_LICENSE` (a Unity Personal / Pro license file exported to
 # base64). This repository does NOT provision that secret by default — the WP
 # spec explicitly defers the license decision to the owner. When the secret is
@@ -78,7 +78,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -109,7 +109,7 @@ jobs:
           echo "m_EditorVersion: 2022.3.40f1" > "$PROJ/ProjectSettings/ProjectVersion.txt"
 
       - name: Cache Unity Library folder
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: nightly-consumer/Library
           key: unity-library-il2cpp-${{ hashFiles('nightly-consumer/Packages/manifest.json') }}
@@ -117,7 +117,7 @@ jobs:
             unity-library-il2cpp-
 
       - name: Build Linux IL2CPP Standalone (headless)
-        uses: game-ci/unity-builder@v4
+        uses: game-ci/unity-builder@v5
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
         with:
@@ -169,7 +169,7 @@ jobs:
 
       - name: Upload player log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: nightly-il2cpp-player-log
           path: ${{ runner.temp }}/vokra-nightly/

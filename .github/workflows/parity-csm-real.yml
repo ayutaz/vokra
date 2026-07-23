@@ -30,6 +30,12 @@ on:
     # Weekly cron: keeps the synthetic format pin + reader green and prints
     # the honest "real reference absent" skip until T29.
     - cron: "30 6 * * 1"
+  # Advisory posture 維持: CSM は gated repo (sesame/csm-1b) からの download
+  # を含むため、per-PR trigger 追加は HF flakiness / gated auth を merge gate
+  # 化してしまう。schedule + workflow_dispatch のみで運用し、
+  # test_parity_csm_workflow.py::test_is_advisory_not_a_required_check の
+  # invariant を尊重する (この comment は Phase 5a-2 の trigger 追加を
+  # 撤回した旨の記録)。
 
 permissions:
   contents: read
@@ -39,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable

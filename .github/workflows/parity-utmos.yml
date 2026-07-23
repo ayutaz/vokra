@@ -46,11 +46,22 @@ on:
   schedule:
     - cron: "0 8 * * 1"
   pull_request:
+    # Phase 5a-3 (2026-07-23): UTMOS metric / harness / fixtures / converter /
+    # dumper / this workflow に加え、共有依存 (vokra-core / vokra-ops =
+    # metric NN op が乗る座) を追加。setup job の "ready=false" (source.env
+    # 未提供 = owner UTMOS sign-off 前) では clean-skip 継続 (fabricated pass
+    # 禁止 NFR-QL-04)。
     paths:
+      - ".github/workflows/parity-utmos.yml"
+      - "crates/vokra-convert/src/models/utmos.rs"
+      - "crates/vokra-core/**"
       - "crates/vokra-eval/src/metrics/utmos.rs"
       - "crates/vokra-eval/tests/parity_utmos.rs"
+      - "crates/vokra-ops/**"
       - "tests/parity/utmos/**"
-      - ".github/workflows/parity-utmos.yml"
+      - "tools/parity/utmos_dump_reference.py"
+      - "tools/parity/utmos_env_probe.sh"
+      - "tools/parity/utmos_prepare_checkpoint.py"
 
 permissions:
   contents: read
@@ -72,7 +83,7 @@ jobs:
     outputs:
       ready: ${{ steps.flip.outputs.ready }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Detect M4-18 flip artifacts
         id: flip
         shell: bash
@@ -134,7 +145,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Download + verify the upstream checkpoint (owner-declared URL)
         shell: bash

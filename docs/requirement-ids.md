@@ -52,7 +52,7 @@ Two details of that command are load-bearing:
 **Who updates it**: whoever first cites a requirement ID in a public document
 adds its row in the same pull request. This is not left to periodic review —
 `scripts/check-doc-references.sh` compares the cited set against the rows
-below in **both directions**, so an uncatalogued ID and a stale leftover row
+below in **both directions**, so an uncataloged ID and a stale leftover row
 both fail the check. The script runs in CI (advisory) and can be run locally:
 
 ```bash

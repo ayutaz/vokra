@@ -1,0 +1,36 @@
+# Vokra CODEOWNERS
+#
+# 公開コントリビュータからの PR は歓迎します。ただし本プロジェクトは single
+# maintainer 体制のため、レビュー承認と merge 判断は @ayutaz に集約されます。
+# GitHub の branch protection と併用することで、下記パターンにマッチする
+# 変更には @ayutaz のレビューが自動で必須になります。
+#
+# 参考: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# 注意: CODEOWNERS はファイルの末尾で最後にマッチしたパターンが勝ちます。
+# 汎用パターンを先頭、より特殊なパターンを後方に配置しています。
+
+# ---- 汎用（デフォルト）------------------------------------------------------
+# すべてのファイルは @ayutaz を owner とする
+*                                       @ayutaz
+
+# ---- CI/CD / リポジトリ設定 -------------------------------------------------
+# workflows、CODEOWNERS 自体、branch protection 関連は owner-only
+/.github/                               @ayutaz
+
+# ---- C ABI 凍結面 -----------------------------------------------------------
+# vokra-capi は v1.0 GA (M5-13) で凍結対象、非互換 change は owner-only 判断
+/crates/vokra-capi/                     @ayutaz
+
+# ---- GGUF スキーマ ----------------------------------------------------------
+# GGUF metadata / loader の非互換変更は既存モデル配布物と互換性境界を破るため
+# owner-only 判断（`vokra.*` chunk 命名・provenance stamp 含む）
+/crates/vokra-core/src/gguf/            @ayutaz
+
+# ---- 法務 / ライセンス ------------------------------------------------------
+# EU AI Act / SB 942 / ELVIS Act 等の legal-compliance 判断は owner-only
+/docs/legal-compliance.md               @ayutaz
+
+# license audit の §3.1 sign-off はモデル配布可否の最終決定であり owner-only
+# (fail-closed default: CC が事前に埋めない、依頼者の明示的判断のみ)
+/docs/license-audit.md                  @ayutaz

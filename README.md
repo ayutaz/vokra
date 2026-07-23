@@ -227,7 +227,7 @@ vokra_session_destroy(session);
 Compile against the header and link the shared library:
 
 ```sh
-cc app.c -Iinclude -Ltarget/release -lvokra -Wl,-rpath,target/release -o app
+cc app.c -I include -L target/release -lvokra -Wl,-rpath,target/release -o app
 ```
 
 Runnable end-to-end examples (ASR / TTS / VAD) live in

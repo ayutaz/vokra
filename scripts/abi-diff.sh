@@ -582,7 +582,7 @@ run_gate() {
                     # Defensive: an ADDED line we cannot name is treated as
                     # blocking rather than silently passed (fail-closed).
                     blocking=1
-                    reasons+="  ADDED (unparseable — fail closed): $payload"$'\n'
+                    reasons+="  ADDED (unparsable — fail closed): $payload"$'\n'
                 elif ! grep -Fq "$name" "$changelog" 2>/dev/null; then
                     blocking=1
                     reasons+="  ADDED but not recorded in the changelog: $name"$'\n'

@@ -85,15 +85,26 @@ on:
   schedule:
     - cron: "0 5 * * 1"
   pull_request:
+    # Phase 5a-3 (2026-07-23): whisper native forward / converter / dumper /
+    # audio fixture sidecar / this workflow に加え、共有依存 (vokra-core /
+    # vokra-ops / compute seam / STFT/Mel op / CPU dispatch / beam search /
+    # decoder) を追加。base leg のみ PR で走る (small/medium/large-v3/turbo
+    # は workflow_dispatch 専用 = 数 GB HF DL の runner-minutes red-line)。
+    # PR で whisper に影響しうる crate を触ったら必ず base leg が発火し、
+    # code side の regression を weekly cron ではなく PR で捕捉する。
     paths:
-      - "tools/parity/dump_whisper_reference.py"
+      - ".github/workflows/parity-whisper-real.yml"
+      - "crates/vokra-cli/src/convert.rs"
+      - "crates/vokra-convert/resources/whisper_multilingual_text_vocab.bin"
+      - "crates/vokra-convert/src/models/whisper.rs"
+      - "crates/vokra-core/**"
+      - "crates/vokra-models/src/compute.rs"
       - "crates/vokra-models/src/whisper/**"
       - "crates/vokra-models/tests/parity_whisper.rs"
-      - "crates/vokra-convert/src/models/whisper.rs"
-      - "crates/vokra-convert/resources/whisper_multilingual_text_vocab.bin"
-      - "crates/vokra-cli/src/convert.rs"
-      - ".github/workflows/parity-whisper-real.yml"
+      - "crates/vokra-ops/**"
       - "tests/fixtures/audio/jfk-30s.wav.sha256"
+      - "tests/parity/whisper_base/**"
+      - "tools/parity/dump_whisper_reference.py"
 
 permissions:
   contents: read
@@ -121,7 +132,7 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       wav_present: ${{ steps.wav.outputs.present }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Compute size matrix
         id: matrix
         shell: bash
@@ -223,14 +234,14 @@ jobs:
       ENV_VAR: ${{ matrix.env_var }}
       FIXTURE_DIR: ${{ matrix.fixture_dir }}
       GGUF: ${{ matrix.gguf }}
-      # Steer HF cache into a repo-local path so actions/cache@v4 can
+      # Steer HF cache into a repo-local path so actions/cache@v5 can
       # snapshot it deterministically. Kokoro workflow uses the same
       # pattern (parity-kokoro-real.yml env.HF_HOME).
       HF_HOME: ${{ github.workspace }}/.hf-cache
       HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
@@ -247,7 +258,7 @@ jobs:
         # churn elsewhere. Restore key gives a warm hit if the dumper file
         # changed but the checkpoint set didn't. Path is the whole HF_HOME
         # (matches parity-kokoro-real.yml's HF cache pattern).
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.HF_HOME }}
           key: hf-hub-${{ matrix.size }}-${{ hashFiles('tools/parity/dump_whisper_reference.py') }}
@@ -651,7 +662,7 @@ jobs:
         # against the pinned WAV + HF checkpoint on this run). `if: always()`
         # so a parity FAIL still ships the artifact for owner triage.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: whisper-${{ matrix.size }}-fixture
           path: |
@@ -669,7 +680,7 @@ jobs:
         # produced` so an OOM during cargo test still gives owner the GGUF
         # to reproduce locally.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: whisper-${{ matrix.size }}-gguf
           path: ${{ matrix.gguf }}

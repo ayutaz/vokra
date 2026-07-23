@@ -39,7 +39,7 @@ Or build one by hand (from the repo root, after
 `cargo build -p vokra-capi --release`):
 
 ```sh
-cc tests/capi/smoke_vad.c -Iinclude -Ltarget/release -lvokra \
+cc tests/capi/smoke_vad.c -I include -L target/release -lvokra \
     -Wl,-rpath,target/release -o /tmp/smoke_vad
 /tmp/smoke_vad
 ```

@@ -77,14 +77,23 @@ on:
     # 07:00, moshi 07:30, utmos 08:00, godot 08:30).
     - cron: "30 7 * * 1"
   pull_request:
+    # Phase 5a-3 (2026-07-23): Moshi native forward / converter / dumper /
+    # truncator / this workflow に加え、共有依存 (vokra-core / vokra-ops /
+    # mimi codec = Moshi の RVQ codec) を追加。cron leg は MOSHI_PARITY_ENABLE
+    # gate で clean-skip する既存 pattern を維持 (dispatch は無条件、weight
+    # sourcing を owner が承認するまで PR は clean skip)。
     paths:
+      - ".github/workflows/parity-moshi-real.yml"
+      - "crates/vokra-convert/src/models/moshi.rs"
+      - "crates/vokra-core/**"
+      - "crates/vokra-models/src/compute.rs"
+      - "crates/vokra-models/src/mimi/**"
       - "crates/vokra-models/src/moshi/**"
       - "crates/vokra-models/tests/parity_moshi.rs"
-      - "crates/vokra-convert/src/models/moshi.rs"
+      - "crates/vokra-ops/**"
       - "tools/parity/moshi_dump.py"
       - "tools/parity/moshi_inspect.py"
       - "tools/parity/moshi_truncate.py"
-      - ".github/workflows/parity-moshi-real.yml"
 
 env:
   # `main` until the T29 owner sourcing pins a snapshot revision.
@@ -130,7 +139,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Rust toolchain
         run: rustup show active-toolchain
@@ -143,7 +152,7 @@ jobs:
           df -h /
 
       - name: Cache HF hub
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/huggingface
           key: hf-moshiko-${{ env.MOSHIKO_REVISION }}

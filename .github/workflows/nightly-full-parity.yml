@@ -1,0 +1,431 @@
+# Vokra 夜間 fixture-only full-parity gate (ADVISORY, X-06 の間隔補完 leg)。
+#
+# 位置付け (§workflows/README.md §3 vs §4)
+# ----------------------------------------
+# 既存の per-model parity は「Monday 04:00〜09:00 UTC」の週次 stagger で
+# 動く: parity-kokoro-real / parity-whisper-real / gpu-vulkan-parity /
+# gpu-cuda-rtf / parity-csm-real / web-wasm / parity-moshi-real /
+# parity-utmos / godot-crossbuild、加えて Tuesday 06:00 UTC の
+# parity-rvq-real の 10 workflow。これらは real HF Hub DL + 完全 parity
+# を行うため PR gate には入らず、**週次で 1 回だけ** 回転する。
+#
+# 週次 cadence だけだと code 側の regression が入っても月曜まで検出できず、
+# 月〜土 に land した bug は最悪 6 日ラグで nightly ダッシュボードに乗る。
+# 本 workflow はその隙間を埋めるための **日次 fixture-only** parity で、
+# 週次の real-DL parity とは別役割を担う:
+#
+#   * 週次 real-DL parity (§3): 上流 checkpoint の pinned SHA から改めて
+#     GGUF を再構築し、reference fixture も **再生成**して bit 一致を
+#     確認する。上流の re-upload / license 変化 / fixture drift を捕捉する。
+#   * 夜間 fixture-only parity (§4、本 file): commit 済 `tests/parity/*/`
+#     fixtures と、runner 側に **既に staged された GGUF** (owner が cache
+#     ないし self-hosted 上に用意) を突合するだけ。HF Hub には触れない。
+#     code 側 (Rust forward / GGUF loader / converter output shape) の
+#     regression を daily で捕まえるための **速度重視 acid test**。
+#
+# つまり週次 = 「reference と weight を作り直して照合」、
+# 夜間 = 「committed fixture と staged weight で code を毎日炙る」。
+# 重複ではなく、regression 検出遅延を 6 日 → 1 日 に短縮する補完 leg。
+#
+# Fabricated-pass 禁止 (FR-EX-08、CLAUDE.md §Claude Code へのお願い)
+# ------------------------------------------------------------------
+# ubuntu-latest は runner が ephemeral のため、owner が repo variable
+# `VOKRA_NIGHTLY_<MODEL>_GGUF` (self-hosted 側の staged path、または
+# actions/cache で seed した path) を明示的に設定しない限り GGUF は
+# 存在しない。以下のロジックで honest-report:
+#
+#   1. commit 済 fixture dir (`tests/parity/<model>/`) が存在するかを
+#      **必ず**検査し、無ければ hard fail (fixture の revert / repo
+#      corruption を検出、silent skip 禁止)。
+#   2. vars.VOKRA_NIGHTLY_<MODEL>_GGUF が unset なら「## Skipped: no
+#      staged GGUF (leg <id>)」を step summary に出して exit 0
+#      (fabricated pass ではなく、明示的 skip 記録)。
+#   3. var が設定されていても runner 上に file が無ければ、同様に
+#      「## Skipped: staged GGUF path does not exist」で exit 0。
+#   4. var 有り + file 有りの場合のみ実際に `cargo test` を走らせ、
+#      test の verdict をそのまま job status に反映する。
+#
+# silero-vad-v5 leg **のみ例外**: 上流 ONNX 由来の GGUF (~1.7 MB) は
+# `tests/parity/silero_vad/silero-vad-v5.gguf` として commit 済 fixture
+# の一部で、env var 不要で常に走る (真の fixture-only)。この leg が
+# green を出さなければ code 側の regression 確定なので、確実な daily
+# smoke になる。他の 5 leg は staged weight があるときのみ acid test
+# として発火する。
+#
+# 週次 vs 夜間 の重複回避
+# ----------------------
+# * fixture そのものの regeneration は行わない (それは週次の役割)。
+# * HF Hub からの DL は一切しない (それも週次の役割)。
+# * Python venv は不要 (Rust 側 parity harness のみで完結)。
+#   → 週次と依存が完全に非重複、`cargo` だけで走るので runtime も短い。
+#
+# Required check には登録しない (advisory)
+# -----------------------------------------
+# 週次 parity と同様、GH-hosted runner 依存 + optional staged weight の
+# 都合上、赤化しても PR merge を止めない。連続 4+ 週 green を確認できた
+# 段階で owner が required 昇格するかを判断する
+# (workflows/README.md §2.1 の promotion policy に従う)。
+#
+# 実装 detail: matrix cell の default 6 leg
+# -----------------------------------------
+# leg           | GGUF var                          | test filter
+# ------------- | --------------------------------- | -----------------------------------
+# kokoro        | VOKRA_NIGHTLY_KOKORO_GGUF         | vokra-models --test parity_kokoro
+# whisper-base  | VOKRA_NIGHTLY_WHISPER_BASE_GGUF   | vokra-models --test parity_whisper
+# silero-vad-v5 | (常時、fixture 内蔵)              | vokra-models --lib silero_vad::parity
+# piper-plus    | VOKRA_NIGHTLY_PIPER_V7_GGUF       | vokra-models --lib piper_plus::parity_v7
+# campplus      | VOKRA_NIGHTLY_CAMPLUS_GGUF        | vokra-models --lib speaker::parity
+# dac           | VOKRA_NIGHTLY_DAC_GGUF (+ REF)    | vokra-models --test real_codec_parity real_dac
+#
+# whisper-base leg は fixture の `whisper_base/` のみを対象とし、
+# `nightly-asr-wer` (05:17 UTC) が別途カバーする real-audio LibriSpeech
+# WER 計測は行わない (VOKRA_WHISPER_REAL_AUDIO を意図的に設定しない、
+# 責務分離)。small/medium/turbo/large-v3 は Monday 05:00 UTC の
+# parity-whisper-real 側で opt-in される。
+#
+# Zero-dep 不変条件 (NFR-DS-02)
+# -----------------------------
+# root `Cargo.lock` は `vokra-*` のみで、本 workflow でも変更しない。
+# 各 leg 末尾に `git diff --exit-code Cargo.lock` の tripwire を置き、
+# 万一 `cargo` の side-effect で lockfile が変わっても即 fail する。
+# Python venv も含めない (parity 実行に不要)。
+
+name: nightly-full-parity
+
+on:
+  workflow_dispatch:
+    inputs:
+      leg:
+        description: "実行対象 leg (空 = 全 6 leg、kokoro / whisper-base / silero-vad-v5 / piper-plus / campplus / dac のいずれか)。"
+        required: false
+        default: ""
+  # Phase 5a-1 (2026-07-23): PR-every 化。fixture-only ゆえ 6 leg のうち 5 leg
+  # は staged GGUF 無しで clean-skip し数秒で終わる (silero-vad-v5 のみ真の
+  # fixture-only で実行)。path filter は入れない = 依頼者指示「e2e テストは
+  # PR ごとに回す」に従い全 PR で trigger、code side の regression を PR 段階
+  # で捕捉する。silero leg は真の fixture-only なので確実な PR-every smoke に
+  # なる。他 5 leg は skip 記録として GH Actions log に "no staged GGUF" が
+  # 残り、runner-hosted staging を有効化すれば自動発火する。
+  pull_request:
+  schedule:
+    # 06:17 UTC daily. Nightly ladder (workflows/README.md §4):
+    #   04:17 nightly-il2cpp
+    #   04:47 nightly-webgl
+    #   05:17 nightly-asr-wer
+    #   05:47 nightly-tier2-device
+    #   06:17 nightly-full-parity  ← 本 file
+    # 30 分 offset で GH Actions cron 集中 (:00) を避け、月曜週次 crons
+    # (04:00 kokoro / 05:00 whisper / 05:30 vulkan / 06:00 cuda-rtf / ...)
+    # とも衝突しない。
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  # 同一 branch/PR 上の superseded run は cancel する (fixture-only ゆえ副作用ゼロ)。
+  # PR trigger では github.ref = refs/pull/<N>/merge に展開され、PR ごとに
+  # 独立 group となる (superseded 再 push で古い run を cancel)。
+  group: nightly-full-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-parity:
+    name: full-parity ${{ matrix.leg }}
+    runs-on: ubuntu-latest
+    # 6 leg のうち silero だけ真の fixture-only、他は staged GGUF が無ければ
+    # clean-skip して数秒で終わる。build cache warm 前提で 1 leg 最大 15 min、
+    # 30 min の上限は truly stuck run の cap のみ。
+    timeout-minutes: 30
+    strategy:
+      # 1 leg 落ちても他の leg の結果を握り潰さない (fixture drift の局所化)。
+      fail-fast: false
+      matrix:
+        include:
+          - leg: kokoro
+            model_name: "Kokoro-82M"
+            gguf_var: VOKRA_NIGHTLY_KOKORO_GGUF
+            fixture_dir: tests/parity/kokoro
+            test_crate: vokra-models
+            test_flag: "--test parity_kokoro"
+            test_filter: ""
+            needs_gguf: "true"
+          - leg: whisper-base
+            model_name: "Whisper base (log-mel + encoder/decoder/greedy fixtures)"
+            gguf_var: VOKRA_NIGHTLY_WHISPER_BASE_GGUF
+            fixture_dir: tests/parity/whisper_base
+            test_crate: vokra-models
+            test_flag: "--test parity_whisper"
+            # 明示的に "base" のみに絞り、real-audio 系 (nightly-asr-wer で
+            # cover) には触れないため VOKRA_WHISPER_REAL_AUDIO は不設定。
+            test_filter: ""
+            needs_gguf: "true"
+          - leg: silero-vad-v5
+            model_name: "Silero VAD v5 (fixture-only 常時走行)"
+            # 上流 ONNX 由来の 1.7 MB GGUF が commit 済 fixture として同梱、
+            # env var 不要。needs_gguf=false で常に実行される。
+            gguf_var: ""
+            fixture_dir: tests/parity/silero_vad
+            test_crate: vokra-models
+            test_flag: "--lib"
+            test_filter: "silero_vad::parity"
+            needs_gguf: "false"
+          - leg: piper-plus
+            model_name: "piper-plus v7 (JA/multilingual zero-shot voice fixture)"
+            gguf_var: VOKRA_NIGHTLY_PIPER_V7_GGUF
+            fixture_dir: tests/parity/piper_plus_v7
+            test_crate: vokra-models
+            test_flag: "--lib"
+            test_filter: "piper_plus::parity_v7"
+            needs_gguf: "true"
+          - leg: campplus
+            model_name: "CAM++ speaker encoder (fbank80 -> 192-d embedding)"
+            gguf_var: VOKRA_NIGHTLY_CAMPLUS_GGUF
+            fixture_dir: tests/parity/camplus
+            test_crate: vokra-models
+            test_flag: "--lib"
+            test_filter: "speaker::parity"
+            needs_gguf: "true"
+          - leg: dac
+            model_name: "DAC 24kHz codec (RVQ decode against sliced fixtures)"
+            gguf_var: VOKRA_NIGHTLY_DAC_GGUF
+            fixture_dir: tests/parity/dac
+            test_crate: vokra-models
+            test_flag: "--test real_codec_parity"
+            test_filter: "real_dac"
+            needs_gguf: "true"
+    steps:
+      # 単一 leg 実行モード: workflow_dispatch で `leg` input が指定された
+      # 場合、指定 leg 以外は最初にここで exit する (matrix は cell 単位で
+      # skip できないため step レベルで判定)。
+      - name: Gate — single-leg selector (workflow_dispatch)
+        id: gate
+        env:
+          REQUESTED_LEG: ${{ inputs.leg }}
+          CURRENT_LEG: ${{ matrix.leg }}
+        run: |
+          set -euo pipefail
+          if [ -n "${REQUESTED_LEG:-}" ] && [ "${REQUESTED_LEG}" != "${CURRENT_LEG}" ]; then
+            {
+              echo "## Skipped: workflow_dispatch selector"
+              echo ""
+              echo "Requested leg = \`${REQUESTED_LEG}\`, this cell = \`${CURRENT_LEG}\`."
+              echo ""
+              echo "他 leg の parity は動いていない (この cell は selector で明示的に skip)。"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "skip_reason=selector-mismatch" >> "$GITHUB_OUTPUT"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.gate.outputs.should_run == 'true'
+        uses: actions/checkout@v5
+
+      - name: Set up Rust toolchain (stable)
+        if: steps.gate.outputs.should_run == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        if: steps.gate.outputs.should_run == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          # leg 毎に独立した cache namespace (matrix 内で share すると target/
+          # の他 leg 由来 artifact が混じって debug しづらい)。
+          key: nightly-full-parity-${{ matrix.leg }}
+
+      # commit 済 fixture dir の存在検査。これが空だったら fixture の revert
+      # / working-tree corruption / gitignore 誤設定なので HARD FAIL する
+      # (silent skip = fabricated pass の一種、FR-EX-08)。
+      - name: Verify committed fixture directory presence
+        if: steps.gate.outputs.should_run == 'true'
+        env:
+          FIXTURE_DIR: ${{ matrix.fixture_dir }}
+          LEG: ${{ matrix.leg }}
+        run: |
+          set -euo pipefail
+          if [ ! -d "${FIXTURE_DIR}" ]; then
+            echo "::error::fixture dir '${FIXTURE_DIR}' が commit tree に無い (leg=${LEG})。revert / gitignore 誤設定 / repo corruption を疑う。"
+            exit 1
+          fi
+          fixture_count=$(find "${FIXTURE_DIR}" -maxdepth 1 -type f \( -name "*.f32" -o -name "*.i64" -o -name "*.u32" -o -name "*.txt" -o -name "*.gguf" -o -name "*.wav" \) 2>/dev/null | wc -l)
+          if [ "${fixture_count}" -eq 0 ]; then
+            echo "::error::fixture dir '${FIXTURE_DIR}' は存在するが parity artefact (*.f32 / *.i64 / *.u32 / *.txt / *.gguf / *.wav) が 0 件 (leg=${LEG})。fixture の意図せぬ削除を疑う。"
+            exit 1
+          fi
+          {
+            echo "### Committed fixture check — ${LEG}"
+            echo ""
+            echo "| item | value |"
+            echo "| --- | --- |"
+            echo "| fixture dir | \`${FIXTURE_DIR}\` |"
+            echo "| artefact count (top-level) | ${fixture_count} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Staged GGUF の解決 + 存在確認。silero-vad-v5 leg は needs_gguf=false
+      # なので env-var lookup を skip して skip=false (実行) にする。
+      # 他 leg は var 有り + file 有り のときのみ実行、それ以外は明示 skip。
+      - name: Resolve staged GGUF (honest skip when absent)
+        if: steps.gate.outputs.should_run == 'true'
+        id: gguf
+        env:
+          NEEDS_GGUF: ${{ matrix.needs_gguf }}
+          GGUF_VAR_NAME: ${{ matrix.gguf_var }}
+          # matrix 内で `vars[matrix.gguf_var]` は展開できないので、6 leg 分の
+          # var を全部 env に落とし、matrix.gguf_var の値を key として dispatch。
+          # 未 set の owner variable は空文字列に評価される (fabricated pass 禁止:
+          # 空 = 「未 staged」で skip 判定に回す)。
+          V_KOKORO: ${{ vars.VOKRA_NIGHTLY_KOKORO_GGUF }}
+          V_WHISPER_BASE: ${{ vars.VOKRA_NIGHTLY_WHISPER_BASE_GGUF }}
+          V_PIPER_V7: ${{ vars.VOKRA_NIGHTLY_PIPER_V7_GGUF }}
+          V_CAMPLUS: ${{ vars.VOKRA_NIGHTLY_CAMPLUS_GGUF }}
+          V_DAC: ${{ vars.VOKRA_NIGHTLY_DAC_GGUF }}
+          V_DAC_REF: ${{ vars.VOKRA_NIGHTLY_DAC_REF_DIR }}
+          LEG: ${{ matrix.leg }}
+        run: |
+          set -euo pipefail
+          if [ "${NEEDS_GGUF}" = "false" ]; then
+            {
+              echo "should_test=true"
+              echo "gguf_path="
+              echo "dac_ref_dir="
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "### Staged GGUF — ${LEG}"
+              echo ""
+              echo "この leg は env var 不要 (真の fixture-only): committed \`silero-vad-v5.gguf\` を直接使用。"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          case "${GGUF_VAR_NAME}" in
+            VOKRA_NIGHTLY_KOKORO_GGUF)       GGUF="${V_KOKORO}" ;;
+            VOKRA_NIGHTLY_WHISPER_BASE_GGUF) GGUF="${V_WHISPER_BASE}" ;;
+            VOKRA_NIGHTLY_PIPER_V7_GGUF)     GGUF="${V_PIPER_V7}" ;;
+            VOKRA_NIGHTLY_CAMPLUS_GGUF)      GGUF="${V_CAMPLUS}" ;;
+            VOKRA_NIGHTLY_DAC_GGUF)          GGUF="${V_DAC}" ;;
+            *)
+              echo "::error::unknown gguf_var mapping '${GGUF_VAR_NAME}' — workflow の env lookup と matrix 定義が食い違っている"
+              exit 1
+              ;;
+          esac
+          if [ -z "${GGUF:-}" ]; then
+            {
+              echo "### Skipped: no staged GGUF — ${LEG}"
+              echo ""
+              echo "repo variable \`${GGUF_VAR_NAME}\` が未 set。owner が self-hosted runner か actions/cache 経由で GGUF を stage し、その absolute path を variable に登録すると本 leg が発火する。"
+              echo ""
+              echo "**この skip は fabricated pass ではない**: parity は 1 tensor も測定していない。"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::${LEG}: ${GGUF_VAR_NAME} が未 set — clean skip (parity 未測定)"
+            echo "should_test=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ ! -f "${GGUF}" ]; then
+            {
+              echo "### Skipped: staged GGUF path does not exist — ${LEG}"
+              echo ""
+              echo "variable \`${GGUF_VAR_NAME}\` = \`${GGUF}\` は指定されているが、runner 上に file が存在しない。self-hosted runner の staging 手順を確認、または actions/cache の hit を確認すること。"
+              echo ""
+              echo "**この skip は fabricated pass ではない**: parity は 1 tensor も測定していない。"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::${LEG}: ${GGUF_VAR_NAME}=${GGUF} は runner 上に存在しない — clean skip (parity 未測定)"
+            echo "should_test=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          size_bytes=$(wc -c < "${GGUF}" | tr -d '[:space:]')
+          size_human=$(numfmt --to=iec --suffix=B "${size_bytes}" 2>/dev/null || echo "${size_bytes} bytes")
+          echo "should_test=true" >> "$GITHUB_OUTPUT"
+          echo "gguf_path=${GGUF}" >> "$GITHUB_OUTPUT"
+          # DAC leg は追加で reference dir も必要 (real_codec_parity.rs は
+          # VOKRA_DAC_GGUF + VOKRA_DAC_REF_DIR の両方が揃うと発火)。REF_DIR
+          # が未 set の場合は最終 test 側で skip される (harness 自身の
+          # honest-skip に委ねる)。
+          if [ "${LEG}" = "dac" ] && [ -n "${V_DAC_REF:-}" ]; then
+            echo "dac_ref_dir=${V_DAC_REF}" >> "$GITHUB_OUTPUT"
+          else
+            echo "dac_ref_dir=" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "### Staged GGUF — ${LEG}"
+            echo ""
+            echo "| item | value |"
+            echo "| --- | --- |"
+            echo "| variable | \`${GGUF_VAR_NAME}\` |"
+            echo "| path | \`${GGUF}\` |"
+            echo "| size | ${size_human} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run parity leg (${{ matrix.leg }})
+        if: steps.gate.outputs.should_run == 'true' && steps.gguf.outputs.should_test == 'true'
+        id: parity
+        env:
+          # 対応する Rust test 側 env var を populate する。needs_gguf=false
+          # (silero) の場合は下記 5 個は空 → harness 側は元々 env var
+          # 不要なので影響なし。
+          VOKRA_KOKORO_GGUF: ${{ matrix.leg == 'kokoro' && steps.gguf.outputs.gguf_path || '' }}
+          VOKRA_WHISPER_BASE_GGUF: ${{ matrix.leg == 'whisper-base' && steps.gguf.outputs.gguf_path || '' }}
+          VOKRA_PIPER_V7_GGUF: ${{ matrix.leg == 'piper-plus' && steps.gguf.outputs.gguf_path || '' }}
+          VOKRA_CAMPLUS_GGUF: ${{ matrix.leg == 'campplus' && steps.gguf.outputs.gguf_path || '' }}
+          VOKRA_DAC_GGUF: ${{ matrix.leg == 'dac' && steps.gguf.outputs.gguf_path || '' }}
+          VOKRA_DAC_REF_DIR: ${{ matrix.leg == 'dac' && steps.gguf.outputs.dac_ref_dir || '' }}
+          TEST_CRATE: ${{ matrix.test_crate }}
+          TEST_FLAG: ${{ matrix.test_flag }}
+          TEST_FILTER: ${{ matrix.test_filter }}
+          LEG: ${{ matrix.leg }}
+        run: |
+          set -euo pipefail
+          # 明示的に --release: parity harness 側の tolerance は release
+          # profile での測定値に紐付いており、debug で回すと 4-6x 遅い
+          # 上に、integer overflow check の accumulation order 差で
+          # atol を微妙に超えることがある (Kokoro parity の historical bug)。
+          LOG="${RUNNER_TEMP}/parity-${LEG}.log"
+          set +e
+          # shellcheck disable=SC2086
+          cargo test --release -p "${TEST_CRATE}" ${TEST_FLAG} -- --nocapture ${TEST_FILTER} \
+            2>&1 | tee "${LOG}"
+          exit_code=${PIPESTATUS[0]}
+          set -e
+          echo "PARITY_EXIT=${exit_code}" >> "$GITHUB_ENV"
+          echo "log_path=${LOG}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Parity run — ${LEG}"
+            echo ""
+            echo "| item | value |"
+            echo "| --- | --- |"
+            echo "| test crate | \`${TEST_CRATE}\` |"
+            echo "| test flag | \`${TEST_FLAG}\` |"
+            echo "| test filter | \`${TEST_FILTER:-<none>}\` |"
+            echo "| exit code | \`${exit_code}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Failure 時に log 末尾 200 行 + 完全 log を artifact として上げる。
+      # nightly が赤化したとき owner が「その日何が起きたか」を artifact
+      # だけで triage できるように (step summary は 1 MB cap のため log
+      # 全体を貼れない)。
+      - name: Upload parity log (failure triage)
+        if: always() && steps.gate.outputs.should_run == 'true' && steps.gguf.outputs.should_test == 'true' && steps.parity.outputs.log_path != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: nightly-full-parity-${{ matrix.leg }}-log
+          path: ${{ steps.parity.outputs.log_path }}
+          retention-days: 7
+          if-no-files-found: warn
+
+      # Zero-dep invariant (NFR-DS-02): parity leg が何らかの副作用で
+      # root Cargo.lock を触った瞬間 fail。安全弁として全 leg 末尾に置く。
+      - name: Zero-dependency invariant (root Cargo.lock unchanged)
+        if: steps.gate.outputs.should_run == 'true'
+        run: git diff --exit-code Cargo.lock
+
+      # Parity exit code の伝搬。skip した leg は PARITY_EXIT を
+      # 設定していないので、この step 自体が skip されて job は green
+      # (=明示 skip、fabricated pass ではない: 前段の step summary に
+      # `Skipped:` セクションが残る)。
+      - name: Fail if parity FAILed (honest exit propagation)
+        if: steps.gate.outputs.should_run == 'true' && steps.gguf.outputs.should_test == 'true' && env.PARITY_EXIT != '0'
+        env:
+          LEG: ${{ matrix.leg }}
+        run: |
+          echo "::error::${LEG} parity exited with ${PARITY_EXIT} — 詳細は step summary + upload artifact を参照"
+          exit "${PARITY_EXIT}"
