@@ -1250,4 +1250,240 @@ mod tests {
         // slot is enforced by the numeric equality here.
         assert_eq!(ZONOS_NUM_CODEBOOKS, 9);
     }
+
+    // -----------------------------------------------------------------------
+    // Gap-fill tests (sota-phase1 audit, 2026-07-24).
+    //
+    // These 10 tests close the untested `ZonosTts::with_dac` pub API (both
+    // error branches + success path — the audit called this "0 of 3
+    // covered"), the four `ZonosTts::new` codebook_embeddings / logit_heads
+    // count-and-size branches (a converter regression would trip exactly
+    // these), the two `ZonosTts::synthesize` NotImplemented branches
+    // (no-DAC + real-weights-forward-not-landed), and the
+    // `validate_for_forward` zero-size hparam branch. All feasible with
+    // in-memory fixtures (no external checkpoint), deterministic, zero-dep.
+    // -----------------------------------------------------------------------
+
+    /// Builds a minimal [`DacCodecGguf`] from pub fields. [`ZonosTts::with_dac`]
+    /// only inspects `attrs.n_codebooks` and `sample_rate`, so empty
+    /// `tables` / `out_projs` are fine — the real decode chain is never
+    /// reached from this scaffold's tests (and the audit's synthesize final
+    /// arm is reached before decode runs).
+    fn stub_dac(n_codebooks: usize, sample_rate: u32) -> DacCodecGguf {
+        DacCodecGguf {
+            attrs: vokra_ops::DacRvqAttrs {
+                n_codebooks,
+                codebook_size: 1,
+                codebook_dim: 1,
+                d_model: 1,
+            },
+            tables: Vec::new(),
+            out_projs: Vec::new(),
+            sample_rate,
+            hop_length: 1,
+        }
+    }
+
+    /// Pins the zero-size hparam arm of [`ZonosConfig::validate_for_forward`]
+    /// (line 474). `is_well_formed` only inspects `backbone` fields, so a
+    /// well-formed backbone paired with `num_codebooks == 0` reaches the
+    /// zero-size guard rather than short-circuiting earlier. Also pin the
+    /// `delay_pattern.len() == 0` case matching so the audit's line-474
+    /// branch — not the line-489 delay-pattern-length branch — is what
+    /// fires here (FR-EX-08 — the error message must name the zero-size
+    /// hparam).
+    #[test]
+    fn config_zero_size_hparam_is_rejected() {
+        let mut c = ZonosConfig::tiny_for_tests();
+        c.num_codebooks = 0;
+        // Match the length so we don't trip the delay_pattern.len() branch
+        // (line 489) before the zero-size branch (line 474) fires.
+        c.delay_pattern = Vec::new();
+        match c.validate_for_forward() {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("zero-size hparam"),
+                "must name the zero-size hparam branch, got: {msg}"
+            ),
+            other => panic!("expected InvalidArgument(zero-size hparam), got {other:?}"),
+        }
+    }
+
+    /// Pins line 730 of [`ZonosTts::new`]:
+    /// `codebook_embeddings.len() != num_codebooks` — the count-side
+    /// converter regression on the codebook embedding tables.
+    #[test]
+    fn zonos_tts_new_rejects_codebook_embeddings_count_mismatch() {
+        let c = ZonosConfig::tiny_for_tests();
+        let mut w = ZonosWeights::synthesized(&c, 7).expect("weights");
+        w.codebook_embeddings.pop();
+        match ZonosTts::new(c, w) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("codebook_embeddings.len()") && msg.contains("num_codebooks"),
+                "must name codebook_embeddings count mismatch, got: {msg}"
+            ),
+            other => panic!("expected InvalidArgument(count mismatch), got {other:?}"),
+        }
+    }
+
+    /// Pins line 738 of [`ZonosTts::new`]:
+    /// `codebook_embeddings[i].len() != codebook_vocab * d_model` — the
+    /// per-tensor size-side converter regression on a codebook embedding.
+    #[test]
+    fn zonos_tts_new_rejects_codebook_embeddings_size_mismatch() {
+        let c = ZonosConfig::tiny_for_tests();
+        let mut w = ZonosWeights::synthesized(&c, 7).expect("weights");
+        // Count stays correct; one row is short by a single f32.
+        w.codebook_embeddings[0].pop();
+        match ZonosTts::new(c, w) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("codebook_embeddings[0].len()"),
+                "must name the offending codebook_embeddings[i] size, got: {msg}"
+            ),
+            other => panic!("expected InvalidArgument(size mismatch), got {other:?}"),
+        }
+    }
+
+    /// Pins line 779 of [`ZonosTts::new`]:
+    /// `logit_heads.len() != num_codebooks` — the count-side converter
+    /// regression on the per-codebook logit heads.
+    #[test]
+    fn zonos_tts_new_rejects_logit_heads_count_mismatch() {
+        let c = ZonosConfig::tiny_for_tests();
+        let mut w = ZonosWeights::synthesized(&c, 7).expect("weights");
+        w.logit_heads.pop();
+        match ZonosTts::new(c, w) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("logit_heads.len()") && msg.contains("num_codebooks"),
+                "must name logit_heads count mismatch, got: {msg}"
+            ),
+            other => panic!("expected InvalidArgument(count mismatch), got {other:?}"),
+        }
+    }
+
+    /// Pins line 787 of [`ZonosTts::new`]:
+    /// `logit_heads[i].len() != d_model * head_vocab` — the per-tensor
+    /// size-side converter regression on a logit head.
+    #[test]
+    fn zonos_tts_new_rejects_logit_heads_size_mismatch() {
+        let c = ZonosConfig::tiny_for_tests();
+        let mut w = ZonosWeights::synthesized(&c, 7).expect("weights");
+        // Count stays correct; head 0 is short by one f32.
+        w.logit_heads[0].pop();
+        match ZonosTts::new(c, w) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("logit_heads[0].len()"),
+                "must name the offending logit_heads[i] size, got: {msg}"
+            ),
+            other => panic!("expected InvalidArgument(size mismatch), got {other:?}"),
+        }
+    }
+
+    /// Pins the happy path of [`ZonosTts::with_dac`]: a codec with
+    /// `n_codebooks >= cfg.num_codebooks` and a matching sample rate binds
+    /// successfully and becomes observable via [`ZonosTts::dac`]. The audit
+    /// flagged the DAC-bind happy path as the primary observable slot that
+    /// went untested (`dac()` returning `Some(...)` was never exercised).
+    #[test]
+    fn with_dac_happy_path_binds_dac() {
+        let c = ZonosConfig::tiny_for_tests();
+        let w = ZonosWeights::synthesized(&c, 7).expect("weights");
+        let tts = ZonosTts::new(c.clone(), w).expect("zonos tts");
+        assert!(tts.dac().is_none(), "sanity: no DAC before with_dac");
+        let dac = stub_dac(c.num_codebooks, c.sample_rate);
+        let tts = tts.with_dac(dac).expect("with_dac happy path");
+        let bound = tts.dac().expect("dac must be bound after with_dac");
+        assert_eq!(bound.attrs.n_codebooks, c.num_codebooks);
+        assert_eq!(bound.sample_rate, c.sample_rate);
+    }
+
+    /// Pins line 819 of [`ZonosTts::with_dac`]:
+    /// `dac.attrs.n_codebooks < cfg.num_codebooks` — the channel-misroute
+    /// guard. The module docstring (line 810-811) explicitly warns that a
+    /// codebook shortfall "would misroute channel indices at decode time";
+    /// FR-EX-08 requires this to fail loud rather than silently truncate.
+    #[test]
+    fn with_dac_rejects_codebook_shortfall() {
+        let c = ZonosConfig::tiny_for_tests();
+        let short = c.num_codebooks - 1;
+        let w = ZonosWeights::synthesized(&c, 7).expect("weights");
+        let tts = ZonosTts::new(c.clone(), w).expect("zonos tts");
+        let dac = stub_dac(short, c.sample_rate);
+        match tts.with_dac(dac) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("codebooks") && msg.contains("channels"),
+                "must name codebook / channel mismatch, got: {msg}"
+            ),
+            other => panic!("expected InvalidArgument(codebook shortfall), got {other:?}"),
+        }
+    }
+
+    /// Pins line 824 of [`ZonosTts::with_dac`]:
+    /// `dac.sample_rate != cfg.sample_rate` — the 44.1 kHz DAC binding
+    /// guard. Zonos-v0.1 is explicitly bound to descript/dac_44khz
+    /// upstream; a DAC with a different sample rate is a load-time bug
+    /// (FR-EX-08 — never a silent resample).
+    #[test]
+    fn with_dac_rejects_sample_rate_mismatch() {
+        let c = ZonosConfig::tiny_for_tests();
+        let w = ZonosWeights::synthesized(&c, 7).expect("weights");
+        let tts = ZonosTts::new(c.clone(), w).expect("zonos tts");
+        // Pair matching codebooks with a 24 kHz DAC to isolate this branch
+        // from the codebook-shortfall guard.
+        let dac = stub_dac(c.num_codebooks, 24_000);
+        match tts.with_dac(dac) {
+            Err(VokraError::InvalidArgument(msg)) => assert!(
+                msg.contains("sample_rate") && msg.contains("dac_44khz"),
+                "must name sample_rate + dac_44khz binding, got: {msg}"
+            ),
+            other => panic!("expected InvalidArgument(sample_rate mismatch), got {other:?}"),
+        }
+    }
+
+    /// Pins line 904 of [`ZonosTts::synthesize`]: the no-DAC-bound arm. It
+    /// is unreachable via [`ZonosWeights::synthesized`] (which short-circuits
+    /// at line 892 first) but reachable by flipping the pub
+    /// `is_synthesized` flag, which is the shape a real-checkpoint bind
+    /// path will take. Message must name the DAC blocker + `with_dac`
+    /// call so callers know how to unblock — FR-EX-08, never a silent
+    /// zero-fill.
+    #[test]
+    fn synthesize_without_dac_is_loud_not_implemented() {
+        let c = ZonosConfig::tiny_for_tests();
+        let mut w = ZonosWeights::synthesized(&c, 7).expect("weights");
+        // Pretend a real checkpoint so we skip the synthesized-weight arm.
+        w.is_synthesized = false;
+        let tts = ZonosTts::new(c, w).expect("zonos tts");
+        assert!(tts.dac().is_none(), "sanity: no DAC bound");
+        match tts.synthesize(&[0, 1, 2]).unwrap_err() {
+            VokraError::NotImplemented(msg) => assert!(
+                msg.contains("DAC") && msg.contains("with_dac"),
+                "message must name DAC blocker + with_dac call, got: {msg}"
+            ),
+            other => panic!("expected NotImplemented(no DAC), got {other:?}"),
+        }
+    }
+
+    /// Pins line 912 of [`ZonosTts::synthesize`]: the final "real weights +
+    /// DAC bound but forward not landed" arm. Reachable by flipping
+    /// `is_synthesized = false` **and** binding a DAC via
+    /// [`ZonosTts::with_dac`]. The message must name the follow-up wave
+    /// (prefix-conditioner projection + delayed-AR decoder forward) so a
+    /// silent zero-fill never sneaks past FR-EX-08.
+    #[test]
+    fn synthesize_real_weights_with_dac_returns_forward_not_landed() {
+        let c = ZonosConfig::tiny_for_tests();
+        let mut w = ZonosWeights::synthesized(&c, 7).expect("weights");
+        w.is_synthesized = false;
+        let tts = ZonosTts::new(c.clone(), w).expect("zonos tts");
+        let dac = stub_dac(c.num_codebooks, c.sample_rate);
+        let tts = tts.with_dac(dac).expect("with_dac happy path");
+        match tts.synthesize(&[0, 1, 2]).unwrap_err() {
+            VokraError::NotImplemented(msg) => assert!(
+                msg.contains("prefix-conditioner") && msg.contains("forward"),
+                "message must name the pending prefix-conditioner forward, \
+                 got: {msg}"
+            ),
+            other => panic!("expected NotImplemented(forward not landed), got {other:?}"),
+        }
+    }
 }
