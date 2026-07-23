@@ -366,6 +366,16 @@ addition and gets its own row in the "GGUF Metadata additions" section.
 | `vokra-core::decode::wfst`  | `WfstDecoder` / `WfstDecodeConfig`                | Added | `WfstDecoder::new(&fst).decode(&emission) -> Result<Option<WfstHypothesis>>`      | frame-synchronous token-passing decode + `decode_nbest` + `lattice`          | no        | (TBD) |
 | `vokra-core::decode::wfst`  | `WfstLattice` / `WfstHypothesis` / `LatArc`       | Added | lattice + best-path + n-best output types                                         | decode output (best-first n-best mirrors `BeamHypothesis`)                    | no        | (TBD) |
 
+### 2026-07-23 — 1.0.0-rc.1-dev #3 (HF publication: restamp_provenance — Rust surface only)
+
+Additive **Rust public API** only; C ABI untouched.
+
+| Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
+| --- | --- | --- | --- | --- | --- | --- |
+| `vokra-convert` | `restamp_provenance` | Added | `pub fn restamp_provenance(input, output, license: &str, model_id: &str, source: &str, attribution: Option<&str>) -> Result<ConvertSummary, ConvertError>` | Rewrite `vokra.provenance.*` on an existing GGUF **without re-materialising tensors** — mmap the input, copy each payload straight to a `GgufStreamWriter`. Peak memory is one tensor payload, not the whole file. Publishes 8.7 GiB Voxtral on a 16 GiB host (measured: peak footprint 6.4 MB) where full re-conversion needs >16 GiB RAM. Also rescues every pre-provenance cache GGUF without re-running its converter. | no | (TBD) |
+
+CLI: `vokra-convert restamp --input <in.gguf> --output <out.gguf> --license <spdx> [--model-id <id>] [--source <text>] [--attribution <text>]` — subcommand routed before the converter arg parser (no `--model`).
+
 ### 2026-07-23 — 1.0.0-rc.1-dev #2 (HF publication: convert_file_licensed — Rust surface only)
 
 Additive **Rust public API** only; C ABI untouched (conversion is an offline

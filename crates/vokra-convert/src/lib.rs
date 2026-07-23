@@ -1294,3 +1294,115 @@ mod compliance_conduit_tests {
         assert!(check_weight_license(&file, &CompliancePolicy::strict()).is_err());
     }
 }
+
+/// Rewrites a GGUF's `vokra.provenance.*` metadata **without re-materialising
+/// tensors** — the low-memory path for publishing a large artifact that was
+/// converted before provenance stamping existed.
+///
+/// A GGUF built by an older converter (or a large one like Voxtral whose
+/// re-conversion needs more RAM than the machine has) carries valid tensors but
+/// no `vokra.provenance.weight_license`, so the publish gate refuses it. Full
+/// re-conversion would fix that but reads the whole checkpoint into memory; this
+/// instead opens the existing GGUF through the mmap loader, copies every tensor
+/// payload straight from the mapping to the output one at a time
+/// ([`GgufStreamWriter`]), and injects the provenance keys into the metadata.
+/// Peak memory is one tensor payload, not the whole file.
+///
+/// The tensor bytes are **identical** to the input — only metadata changes. The
+/// writer additionally re-stamps `vokra.schema.*` (its universal behaviour), so
+/// the output is also marked with the current schema generation.
+///
+/// `license` is the raw SPDX id (class re-derived from it); `model_id` and
+/// `source` are advisory provenance strings; `attribution`, when `Some`, sets
+/// the CC-BY display text a downstream must show.
+///
+/// # Errors
+///
+/// [`ConvertError`] if the input cannot be opened/parsed, a tensor payload is
+/// malformed, or the output cannot be written.
+#[allow(clippy::too_many_arguments)]
+pub fn restamp_provenance(
+    input: &Path,
+    output: &Path,
+    license: &str,
+    model_id: &str,
+    source: &str,
+    attribution: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
+    use vokra_core::gguf::chunks;
+    use vokra_core::gguf::{GgufBuilder, GgufStreamWriter, GgufTensorDecl};
+
+    // mmap the input so tensor payloads fault in lazily (never a whole-file
+    // read) — this is what keeps the 8.7 GiB Voxtral case within memory.
+    let file = vokra_mmap::open_gguf(input)
+        .map_err(|e| ConvertError::Parse(format!("restamp: opening {input:?}: {e}")))?;
+
+    // Carry every existing metadata key EXCEPT the ones we set ourselves: the
+    // provenance group (replaced below) and the schema stamps (the writer
+    // re-emits them universally, so passing them in would duplicate).
+    let mut b = GgufBuilder::new();
+    for (k, v) in file.metadata() {
+        if k == chunks::KEY_PROVENANCE_WEIGHT_LICENSE
+            || k == chunks::KEY_PROVENANCE_LICENSE
+            || k == chunks::KEY_PROVENANCE_MODEL_ID
+            || k == chunks::KEY_PROVENANCE_SOURCE
+            || k == chunks::KEY_PROVENANCE_ATTRIBUTION
+            || k == chunks::KEY_SCHEMA_VERSION
+            || k == chunks::KEY_SCHEMA_PRODUCER
+        {
+            continue;
+        }
+        b.add_metadata(k, v.clone());
+    }
+
+    // Inject provenance (same conduit the converters use).
+    let class = vokra_core::LicenseClass::from_license_str(license);
+    b.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, class.as_str());
+    b.add_string(chunks::KEY_PROVENANCE_LICENSE, license);
+    b.add_string(chunks::KEY_PROVENANCE_MODEL_ID, model_id);
+    b.add_string(chunks::KEY_PROVENANCE_SOURCE, source);
+    if let Some(text) = attribution {
+        b.add_string(chunks::KEY_PROVENANCE_ATTRIBUTION, text);
+    }
+
+    // Declare tensors in the input's order; the stream writer wants only
+    // declarations up front, then payloads one at a time.
+    let decls: Vec<GgufTensorDecl> = file
+        .tensors()
+        .iter()
+        .map(|t| GgufTensorDecl {
+            name: t.name.clone(),
+            dtype: t.dtype,
+            dimensions: t.dimensions.clone(),
+        })
+        .collect();
+    let tensor_count = decls.len();
+
+    let out_file = std::fs::File::create(output)?;
+    let mut w = GgufStreamWriter::begin(std::io::BufWriter::new(out_file), &b, &decls)?;
+    // Copy each payload straight from the mapping — no widening, no owned copy
+    // beyond the single tensor being written.
+    let infos: Vec<_> = file.tensors().to_vec();
+    for info in &infos {
+        let bytes = file.tensor_bytes(info);
+        w.write_tensor(&info.name, bytes)?;
+    }
+    let out_writer = w.finish()?;
+    let out_file = out_writer
+        .into_inner()
+        .map_err(|e| ConvertError::Io(e.into_error()))?;
+    out_file.sync_all().map_err(ConvertError::Io)?;
+    let output_bytes = out_file.metadata().map_err(ConvertError::Io)?.len();
+
+    Ok(ConvertSummary {
+        model: ModelKind::Voxtral, // placeholder; restamp is model-agnostic
+        tensor_count,
+        metadata_count: b.metadata_count(),
+        output_bytes,
+        notes: vec![format!(
+            "restamp: {tensor_count} tensors copied verbatim from {input:?}; \
+             provenance set to license={license} class={} (tensors unchanged)",
+            class.as_str()
+        )],
+    })
+}
