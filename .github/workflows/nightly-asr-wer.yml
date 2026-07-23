@@ -40,6 +40,25 @@
 # could not support. Same posture as the parity-*-real workflows: they
 # assert, but they are not in the required set.
 #
+# CORPUS PROVENANCE FAILURE MODES
+# -------------------------------
+# The advisory posture applies to two categories of failure with opposite
+# meanings:
+#   (a) upstream CDN drift (curl failure or sha256 mismatch on the OpenSLR
+#       tarball, or missing/empty archive member) → NOT a Vokra regression,
+#       so it is downgraded to `::warning::`, records corpus_ok=false on
+#       the step output, and skips every downstream step (WER + both RTF
+#       companions) via `if: steps.<id>.outputs.corpus_ok == 'true'`. The
+#       drift blob is `rm -f`'d from cache so the next run re-fetches
+#       (silent double-fetch prevention). Owner WP X-10 tracks the
+#       recurrence fix (self-mirror the tarball under Vokra's control so
+#       upstream CDN drift stops surfacing as nightly red).
+#   (b) WER > slice-calibrated threshold → real regression, still hard-
+#       fails per NFR-MT-07. The Score WER step's gate character is intact:
+#       it runs iff corpus_ok=true, and exits 1 on breach. corpus_ok=true
+#       is only emitted on the success path of both Download and Extract;
+#       any other state (unset, false) cascades skip through downstream.
+#
 # THRESHOLD PROVENANCE
 # --------------------
 # Nightly default: 6.0%, against a measured whisper-base baseline of 4.3689%
@@ -122,8 +141,10 @@ env:
   CHAPTER: "128104"
   # sha256 of the OpenSLR dev-clean tarball (337,926,286 bytes) as used by
   # the 2026-07-16 campaign, computed from that exact file. A mismatch means
-  # the corpus changed under us and the baseline needs re-measuring — which
-  # is why it hard-fails rather than warning.
+  # the corpus changed under us — advisory-downgraded because it is not a
+  # Vokra regression; the WER breach in the next step remains the actionable
+  # gate. Owner WP X-10 tracks the self-mirror that would eliminate the
+  # drift class entirely (see CORPUS PROVENANCE FAILURE MODES above).
   DEV_CLEAN_SHA256: "76f87d090650617fca0cac8f88b9416e0ebf80350acb97b343a85fa903728ab3"
   DEV_CLEAN_URL: "https://www.openslr.org/resources/12/dev-clean.tar.gz"
   HF_HOME: ${{ github.workspace }}/.hf-cache
@@ -236,6 +257,7 @@ jobs:
           ls -lh "$GGUF"
 
       - name: Download LibriSpeech dev-clean
+        id: corpus-download
         shell: bash
         run: |
           set -euo pipefail
@@ -243,19 +265,35 @@ jobs:
           TARBALL="$GITHUB_WORKSPACE/.corpus-cache/dev-clean.tar.gz"
           if [ ! -f "$TARBALL" ]; then
             echo "fetching $DEV_CLEAN_URL"
-            curl -fL --retry 3 --retry-delay 10 -o "$TARBALL" "$DEV_CLEAN_URL"
+            if ! curl -fL --retry 3 --retry-delay 10 -o "$TARBALL" "$DEV_CLEAN_URL"; then
+              echo "::warning::LibriSpeech dev-clean download from $DEV_CLEAN_URL failed;" \
+                   "upstream CDN drift is not a Vokra regression — advisory downgrade." \
+                   "Owner WP X-10 (self-mirror) tracks the recurrence fix."
+              rm -f "$TARBALL"
+              echo "corpus_ok=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           else
             echo "cache hit: $TARBALL"
           fi
-          echo "${DEV_CLEAN_SHA256}  ${TARBALL}" | sha256sum -c - || {
-            echo "::error::LibriSpeech dev-clean checksum mismatch. The corpus at" \
-                 "$DEV_CLEAN_URL is no longer the one the baseline was measured on;" \
-                 "re-measure the baseline before repinning DEV_CLEAN_SHA256." >&2
-            exit 1
-          }
+          if ! echo "${DEV_CLEAN_SHA256}  ${TARBALL}" | sha256sum -c -; then
+            echo "::warning::LibriSpeech dev-clean checksum mismatch at" \
+                 "$DEV_CLEAN_URL — the corpus changed under us; not a Vokra" \
+                 "regression, so advisory-downgraded. Cache is invalidated" \
+                 "(rm -f) to force re-fetch on the next run (silent double-" \
+                 "fetch prevention). Owner WP X-10 (self-mirror) tracks the" \
+                 "recurrence fix; re-measure the baseline before repinning" \
+                 "DEV_CLEAN_SHA256 if this becomes intentional."
+            rm -f "$TARBALL"
+            echo "corpus_ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "TARBALL=$TARBALL" >> "$GITHUB_ENV"
+          echo "corpus_ok=true" >> "$GITHUB_OUTPUT"
 
       - name: Extract the pinned corpus subset
+        id: corpus-extract
+        if: steps.corpus-download.outputs.corpus_ok == 'true'
         shell: bash
         env:
           CORPUS_DIR: ${{ github.workspace }}/.corpus
@@ -266,22 +304,31 @@ jobs:
           # <<<subset-extract
           # Pull ONLY speaker/chapter $SPEAKER/$CHAPTER out of the 338 MB
           # archive. Extracting the whole corpus would cost minutes and disk
-          # for utterances nothing scores. An empty extraction is a hard
-          # error: scoring would otherwise proceed against no audio and the
-          # failure would surface later as a confusing "missing transcript".
+          # for utterances nothing scores. Missing member / empty extraction
+          # was previously a hard error; it is now advisory-downgraded
+          # (corpus_ok=false + downstream skip) because it means upstream
+          # repackaging rather than a Vokra regression — same class as sha
+          # mismatch above (see CORPUS PROVENANCE FAILURE MODES).
           stage="$(mktemp -d)"
           trap 'rm -rf "$stage"' EXIT
           member="LibriSpeech/dev-clean/${SPEAKER}/${CHAPTER}"
           tar xzf "$TARBALL" -C "$stage" "$member"
           src="$stage/$member"
           if [ ! -d "$src" ]; then
-            echo "::error::archive member $member not found in $TARBALL" >&2
-            exit 1
+            echo "::warning::archive member $member not found in $TARBALL —" \
+                 "advisory downgrade (upstream repackaging, not a Vokra" \
+                 "regression). Owner WP X-10 (self-mirror) tracks the" \
+                 "recurrence fix."
+            echo "corpus_ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          n_flac="$(find "$src" -name '*.flac' | wc -l | tr -d ' ')"
+          n_flac="$(find "$src" -type f -name '*.flac' | wc -l | tr -d ' ')"
           if [ "$n_flac" -eq 0 ]; then
-            echo "::error::no .flac extracted from $member — refusing to score an empty corpus" >&2
-            exit 1
+            echo "::warning::no .flac extracted from $member — advisory" \
+                 "downgrade (upstream repackaging, not a Vokra regression)." \
+                 "Owner WP X-10 (self-mirror) tracks the recurrence fix."
+            echo "corpus_ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           mkdir -p "$CORPUS_DIR/dev-clean/${SPEAKER}"
           rm -rf "$CORPUS_DIR/dev-clean/${SPEAKER}/${CHAPTER}"
@@ -289,8 +336,10 @@ jobs:
           echo "extracted $n_flac flac from $member"
           # subset-extract>>>
           ls -la "$CORPUS_DIR/dev-clean/${SPEAKER}/${CHAPTER}" | head
+          echo "corpus_ok=true" >> "$GITHUB_OUTPUT"
 
       - name: Decode flac → 16 kHz mono WAV
+        if: steps.corpus-extract.outputs.corpus_ok == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -321,6 +370,7 @@ jobs:
           PYEOF
 
       - name: Transcribe with vokra-cli
+        if: steps.corpus-extract.outputs.corpus_ok == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -344,7 +394,7 @@ jobs:
             fi
             printf '%s\n' "$text" > "$TR/$stem.txt"
           done
-          echo "transcribed $(find "$TR" -name '*.txt' | wc -l | tr -d ' ') utterances"
+          echo "transcribed $(find "$TR" -type f -name '*.txt' | wc -l | tr -d ' ') utterances"
 
       - name: Whisper base RTF companion (X-06-T11, advisory record-only)
         # Model-level RTF of the SAME whisper-base GGUF already converted above
@@ -354,12 +404,19 @@ jobs:
         # ANNOTATED but does NOT fail the nightly (open question #6). The
         # actionable gate on this workflow is the WER breach in the next step.
         # Arch-routed: whisper → ModelTask::Asr; --task is deliberately absent.
+        if: steps.corpus-extract.outputs.corpus_ok == 'true'
         shell: bash
         env:
           RTF_BASE: docs/bench-baselines/whisper_base_asr_nightly_baseline.json
         run: |
           set -euo pipefail
-          WAV="$(find "$WAV_DIR" -name '*.wav' | sort | head -1)"
+          # -type f: WAV_DIR's basename is `.wav`, so `-name '*.wav'` on its
+          # own matches the directory itself and `head -1` hands back a
+          # directory path that would crash the bench downstream. -type f
+          # restricts the glob to regular files — the latent hazard fires on
+          # every successful run, not just failure branches, so this hygiene
+          # fix belongs alongside the advisory-posture rework.
+          WAV="$(find "$WAV_DIR" -type f -name '*.wav' | sort | head -1)"
           if [ -z "$WAV" ]; then
             echo "::warning::no decoded WAV for the RTF companion — skipping (the WER leg is the gate)"
             exit 0
@@ -372,8 +429,19 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$STATE" = placeholder ]; then
             echo "::notice::whisper-base RTF baseline is a placeholder — measuring for the record, no regression verdict."
+            # Advisory contract requires this branch to survive bench
+            # failures the same way the seeded branch does — otherwise a
+            # bench crash while the baseline is a placeholder would fail
+            # the nightly for a record-only measurement (implementation
+            # drift from the advisory self-declaration above).
+            set +e
             ./target/release/vokra-cli bench --model "$GGUF" --input "$WAV" \
               --iters 5 --warmup 2 --format json | tee -a "$GITHUB_STEP_SUMMARY"
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              echo "::warning::whisper-base bench (placeholder) failed with rc=$rc — advisory record, not gating"
+            fi
           else
             set +e
             ./target/release/vokra-cli bench --model "$GGUF" --input "$WAV" \
@@ -392,6 +460,12 @@ jobs:
         # variable VOKRA_PIPER_GGUF. Never fabricates a measurement (FR-EX-08).
         # TTS is --text-driven (not --input); the text is pinned for
         # determinism. Arch-routed: piper → ModelTask::Tts (no --task).
+        # The corpus_ok guard keeps every downstream step under a single
+        # skip predicate for consistent reasoning; piper does not read the
+        # corpus, but running only companions after a corpus-provenance
+        # failure would leave the nightly claiming a partial pass while the
+        # actual quality gate never ran.
+        if: steps.corpus-extract.outputs.corpus_ok == 'true'
         shell: bash
         env:
           PIPER_GGUF: ${{ vars.VOKRA_PIPER_GGUF }}
@@ -405,9 +479,19 @@ jobs:
           STATE="$(python3 tools/bench/baseline_gate.py "$RTF_BASE")"
           if [ "$STATE" = placeholder ]; then
             echo "::notice::piper RTF baseline is a placeholder — measuring for the record, no verdict."
+            # Advisory contract requires this branch to survive bench
+            # failures the same way the seeded branch does — otherwise a
+            # bench crash while the baseline is a placeholder would fail
+            # the nightly for a record-only measurement.
+            set +e
             ./target/release/vokra-cli bench --model "$PIPER_GGUF" \
               --text "the quick brown fox jumps over the lazy dog" \
               --iters 5 --warmup 2 --format json | tee -a "$GITHUB_STEP_SUMMARY"
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              echo "::warning::piper bench (placeholder) failed with rc=$rc — advisory record"
+            fi
           else
             set +e
             ./target/release/vokra-cli bench --model "$PIPER_GGUF" \
@@ -422,6 +506,12 @@ jobs:
 
       - name: Score WER and apply the threshold
         id: score
+        # corpus_ok guard skips this step iff Download or Extract advisory-
+        # downgraded (upstream CDN drift). When it DOES run — i.e. corpus
+        # provenance is intact — the WER-breach exit 1 is preserved, so the
+        # NFR-MT-07 revert/block driver stays actionable. This is the gate;
+        # never soften the threshold or the exit 1.
+        if: steps.corpus-extract.outputs.corpus_ok == 'true'
         shell: bash
         # Dispatch inputs reach the script through the environment, never by
         # `${{ }}` interpolation into the `run:` body. `threshold` is a
