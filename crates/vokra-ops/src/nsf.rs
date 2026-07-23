@@ -698,4 +698,409 @@ mod tests {
             assert!(g.is_finite());
         }
     }
+
+    /// Pins that `SineGen::config()` returns the exact `SineGenConfig` used at
+    /// construction (trivial accessor coverage — catches a future refactor that
+    /// stored a normalised or defaulted copy).
+    #[test]
+    fn sine_gen_config_accessor_returns_construction_config() {
+        let cfg = SineGenConfig {
+            samp_rate: 16_000,
+            harmonic_num: 5,
+            sine_amp: 0.25,
+            noise_std: 0.01,
+            voiced_threshold: 42.0,
+        };
+        let sine = SineGen::new(cfg);
+        let got = sine.config();
+        assert_eq!(got.samp_rate, 16_000);
+        assert_eq!(got.harmonic_num, 5);
+        assert_eq!(got.sine_amp, 0.25);
+        assert_eq!(got.noise_std, 0.01);
+        assert_eq!(got.voiced_threshold, 42.0);
+        assert_eq!(got.out_channels(), 6);
+    }
+
+    /// Pins that `SourceModuleHnNSF::config()` returns the exact
+    /// `SourceModuleHnNSFConfig` used at construction (trivial accessor
+    /// coverage; symmetric with the SineGen accessor above).
+    #[test]
+    fn source_module_config_accessor_returns_construction_config() {
+        let cfg = SourceModuleHnNSFConfig {
+            sine_gen: SineGenConfig {
+                samp_rate: 44_100,
+                harmonic_num: 2,
+                sine_amp: 0.15,
+                noise_std: 0.005,
+                voiced_threshold: 10.0,
+            },
+        };
+        let weights = SourceModuleHnNSFWeights {
+            linear_w: vec![0.1, 0.2, 0.3],
+            linear_b: 0.4,
+        };
+        let src = SourceModuleHnNSF::new(cfg, weights).unwrap();
+        let got = src.config();
+        assert_eq!(got.sine_gen.samp_rate, 44_100);
+        assert_eq!(got.sine_gen.harmonic_num, 2);
+        assert_eq!(got.sine_gen.sine_amp, 0.15);
+        assert_eq!(got.sine_gen.voiced_threshold, 10.0);
+    }
+
+    /// Pins today's silent-propagation semantics for NaN in the F0 sequence.
+    ///
+    /// Root cause: `cs += NaN * gain` → `cs = NaN`, then
+    /// `cs - cs.floor() = NaN - NaN = NaN` → `sin(NaN) = NaN`, and `uv = NaN >
+    /// voiced_threshold = false` so the mask is 0. Under IEEE-754 `0.0 * NaN =
+    /// NaN`, so the mask does not scrub NaN out — the sample is corrupted
+    /// silently, and the poisoned cumulative sum carries the NaN forward to all
+    /// downstream timesteps. F0 predictors do emit NaN in production; if this
+    /// contract ever changes (e.g. an explicit reject or a scrub-to-zero) this
+    /// test must be updated deliberately, not slipped through.
+    #[test]
+    fn sine_gen_nan_in_f0_propagates_silently() {
+        let cfg = SineGenConfig {
+            samp_rate: 22_050,
+            harmonic_num: 0, // H+1 = 1 → sine_waves[j*1+0] == sine_waves[j]
+            voiced_threshold: 0.0,
+            ..Default::default()
+        };
+        let sine = SineGen::new(cfg);
+        let mut f0 = vec![100.0f32; 4];
+        f0[1] = f32::NAN;
+        let out = sine.forward(&f0, NsfEntropy::Deterministic).unwrap();
+
+        // Sample 0 is generated before the NaN and must remain finite.
+        assert!(
+            out.sine_waves[0].is_finite(),
+            "sample before NaN must be finite: got {}",
+            out.sine_waves[0]
+        );
+        // Sample 1 (where NaN entered f0) is silently NaN.
+        assert!(
+            out.sine_waves[1].is_nan(),
+            "NaN in f0[1] must propagate through .sin() and 0*NaN mask"
+        );
+        // Cumsum is poisoned → all downstream samples also NaN.
+        assert!(out.sine_waves[2].is_nan(), "cumsum keeps NaN forward");
+        assert!(out.sine_waves[3].is_nan(), "cumsum keeps NaN forward");
+        // uv follows IEEE-754 (`NaN > x` is false) → 0 at the NaN slot.
+        assert_eq!(out.uv[1], 0.0, "NaN > voiced_threshold is false → uv=0");
+    }
+
+    /// Pins today's silent-poisoning semantics for +Inf/-Inf in the F0
+    /// sequence.
+    ///
+    /// Root cause: `cs += Inf * gain` → `cs = Inf`, then `Inf.floor() = Inf`,
+    /// and `Inf - Inf = NaN`. Unlike the NaN case, `Inf > voiced_threshold` is
+    /// `true`, so `uv = 1` and NaN reaches the output via `sin(NaN) = NaN` and
+    /// `NaN * 1 + 0 = NaN`. Same downstream cumsum poisoning applies.
+    #[test]
+    fn sine_gen_infinity_in_f0_produces_nan_via_cumsum_overflow() {
+        let cfg = SineGenConfig {
+            samp_rate: 22_050,
+            harmonic_num: 0, // H+1 = 1
+            voiced_threshold: 0.0,
+            ..Default::default()
+        };
+        let sine = SineGen::new(cfg);
+        let mut f0 = vec![100.0f32; 4];
+        f0[1] = f32::INFINITY;
+        let out = sine.forward(&f0, NsfEntropy::Deterministic).unwrap();
+
+        assert!(
+            out.sine_waves[0].is_finite(),
+            "sample before Inf must be finite: got {}",
+            out.sine_waves[0]
+        );
+        assert!(
+            out.sine_waves[1].is_nan(),
+            "Inf.floor() = Inf then Inf - Inf = NaN must reach sine_waves"
+        );
+        assert!(out.sine_waves[2].is_nan(), "cumsum stays Inf → NaN forward");
+        assert!(out.sine_waves[3].is_nan(), "cumsum stays Inf → NaN forward");
+        // `Inf > 0.0` is true — uv is 1 at the Inf slot (unlike NaN).
+        assert_eq!(out.uv[1], 1.0, "Inf > voiced_threshold is true → uv=1");
+    }
+
+    /// Pins that `f0[j] == voiced_threshold` is **unvoiced** (strict `>`),
+    /// independent of the specific threshold value. A future refactor that
+    /// swaps `>` for `>=` would only be caught by the existing zero-f0 test
+    /// under `voiced_threshold = 0`; this test uses a non-zero threshold so the
+    /// boundary check is unambiguous.
+    #[test]
+    fn sine_gen_voiced_threshold_is_strict_greater() {
+        let cfg = SineGenConfig {
+            samp_rate: 22_050,
+            harmonic_num: 0,
+            voiced_threshold: 50.0,
+            ..Default::default()
+        };
+        let sine = SineGen::new(cfg);
+        // Exactly at threshold, and just above/below, in one call to make the
+        // boundary crossing explicit.
+        let f0 = vec![49.999_9, 50.0, 50.000_1];
+        let out = sine.forward(&f0, NsfEntropy::Deterministic).unwrap();
+        assert_eq!(out.uv[0], 0.0, "below threshold → unvoiced");
+        assert_eq!(
+            out.uv[1], 0.0,
+            "at threshold must be unvoiced (strict >), got uv=1 — did > become >=?"
+        );
+        assert_eq!(out.uv[2], 1.0, "above threshold → voiced");
+    }
+
+    /// Pins `T = 1` — the degenerate single-frame case. `sine_waves` must be
+    /// length `H+1`, the cumsum reduces to `f0[0] * (i+1) / sr`, and the
+    /// transpose is a no-op. Catches an off-by-one in the `T=1` boundary of the
+    /// `[H+1, T] → [T, H+1]` transpose loop.
+    #[test]
+    fn sine_gen_single_element_f0() {
+        let cfg = SineGenConfig {
+            samp_rate: 22_050,
+            harmonic_num: 2, // H+1 = 3
+            sine_amp: 0.1,
+            voiced_threshold: 0.0,
+            ..Default::default()
+        };
+        let sine = SineGen::new(cfg);
+        let f0 = vec![440.0f32];
+        let out = sine.forward(&f0, NsfEntropy::Deterministic).unwrap();
+
+        assert_eq!(out.sine_waves.len(), 3, "T*(H+1) = 1*3");
+        assert_eq!(out.uv, vec![1.0]);
+        assert_eq!(out.noise, vec![0.0, 0.0, 0.0]);
+
+        // Hand-computed fundamental: theta = 2π * (440/22050), sin(theta).
+        let two_pi = 2.0 * std::f32::consts::PI;
+        let expected0 = 0.1 * (two_pi * (440.0_f32 / 22_050.0)).sin();
+        // 2nd-harmonic: theta = 2π * (2*440/22050).
+        let expected1 = 0.1 * (two_pi * (2.0 * 440.0_f32 / 22_050.0)).sin();
+        assert!(
+            (out.sine_waves[0] - expected0).abs() < 1e-6,
+            "channel 0 got {}, expected {}",
+            out.sine_waves[0],
+            expected0
+        );
+        assert!(
+            (out.sine_waves[1] - expected1).abs() < 1e-6,
+            "channel 1 got {}, expected {}",
+            out.sine_waves[1],
+            expected1
+        );
+    }
+
+    /// Pins the seeded unvoiced-branch formula
+    /// `noise_amp = (1 - uv) * sine_amp / 3` (upstream L209). With all-zero F0
+    /// this is the ONLY path exercised, so the values are dominated by
+    /// `sine_amp / 3` (0.1 here). A regression that swapped `uv` / `(1 - uv)`
+    /// would collapse `noise_amp` to `noise_std` (0.003 here) and shrink every
+    /// sample by ~30×; a regression that dropped the unvoiced branch would
+    /// leave `noise = 0` and this test would also fail.
+    ///
+    /// Sanity-checked empirically at head: seed 12345 yields max |noise| ≈
+    /// 0.341 (H+1=3, T=16); the 0.05 floor gives >6× margin over the correct
+    /// formula and >4× over the alternative signal.
+    #[test]
+    fn sine_gen_seeded_all_zero_f0_produces_nonzero_noise() {
+        let cfg = SineGenConfig {
+            samp_rate: 22_050,
+            harmonic_num: 2, // H+1 = 3
+            sine_amp: 0.3,   // → noise_amp under correct formula = 0.1
+            noise_std: 0.003,
+            voiced_threshold: 0.0,
+        };
+        let sine = SineGen::new(cfg);
+        let f0 = vec![0.0f32; 16];
+        let out = sine.forward(&f0, NsfEntropy::Seeded(12345)).unwrap();
+
+        // All-zero f0 → uv all 0.
+        assert!(out.uv.iter().all(|&u| u == 0.0));
+        // Noise must actually be drawn.
+        assert!(
+            out.noise.iter().any(|&n| n != 0.0),
+            "seeded unvoiced branch must produce non-zero noise"
+        );
+        // Magnitude discriminates the correct formula from the swapped one.
+        let max_abs = out.noise.iter().fold(0.0f32, |acc, &n| acc.max(n.abs()));
+        assert!(
+            max_abs > 0.05,
+            "seeded unvoiced noise magnitude too small: got max_abs={} \
+             (expected ~sine_amp/3 = 0.1 scale, not noise_std = 0.003 scale)",
+            max_abs
+        );
+        // sine_waves = sine * uv + noise = 0 + noise → must equal noise.
+        assert_eq!(
+            out.sine_waves, out.noise,
+            "under uv=0 deterministic, sine_waves must equal noise elementwise"
+        );
+    }
+
+    /// Concrete numerical pin on the `Linear + Tanh` composition, closing the
+    /// audit gap that today's only test asserts `abs < 1.0` (any tanh output).
+    /// Uses `H+1 = 2`, `T = 1`, deterministic entropy, hand-chosen weights, and
+    /// hand-computes `tanh(w0*s0 + w1*s1 + b)`. Catches off-by-one in the
+    /// `j * h1 + i` sine_waves index, a channel swap in `linear_w`, or a
+    /// misplaced bias.
+    #[test]
+    fn source_module_forward_hand_computed_single_step() {
+        let cfg = SourceModuleHnNSFConfig {
+            sine_gen: SineGenConfig {
+                samp_rate: 22_050,
+                harmonic_num: 1, // H+1 = 2
+                sine_amp: 0.1,
+                noise_std: 0.003,
+                voiced_threshold: 0.0,
+            },
+        };
+        let weights = SourceModuleHnNSFWeights {
+            linear_w: vec![0.7, 0.3],
+            linear_b: 0.05,
+        };
+        let src = SourceModuleHnNSF::new(cfg, weights).unwrap();
+        let f0 = vec![100.0f32];
+        let out = src.forward(&f0, NsfEntropy::Deterministic).unwrap();
+
+        // Hand-compute the two sine channels at t=0 (deterministic → zero
+        // phase → sin(theta) with theta = 2π * (c+1) * 100 / 22050).
+        let two_pi = 2.0 * std::f32::consts::PI;
+        let s0 = 0.1 * (two_pi * (100.0_f32 / 22_050.0)).sin();
+        let s1 = 0.1 * (two_pi * (2.0 * 100.0_f32 / 22_050.0)).sin();
+        // Under deterministic entropy uv=1 (100 > 0) and noise=0, so the
+        // masked-and-noise-mixed sine_wavs equal the raw sinusoids.
+        let acc = 0.05 + s0 * 0.7 + s1 * 0.3;
+        let expected = acc.tanh();
+
+        assert_eq!(out.sine_merge.len(), 1);
+        assert!(
+            (out.sine_merge[0] - expected).abs() < 1e-6,
+            "sine_merge[0] = {}, expected {} (Linear + Tanh mismatch)",
+            out.sine_merge[0],
+            expected
+        );
+        assert_eq!(out.noise[0], 0.0);
+        assert_eq!(out.uv[0], 1.0);
+    }
+
+    /// Pins the RNG **sub-stream disjointness** invariant. Three separator
+    /// constants (`0xA5A5…` for SineGen phase, `0xDEAD…` for SineGen internal
+    /// noise, `0xC0FFEE…` for SourceModule noise) exist explicitly to keep the
+    /// streams independent. This test would fail if a regression collapsed any
+    /// two of them to the same value, at two layers:
+    ///
+    /// 1. The three base states derived from `seed = 0` are pairwise distinct.
+    /// 2. The 16 Gaussian samples drawn from each are pairwise distinct — this
+    ///    catches an accidental copy that made two sub-streams share a base.
+    ///
+    /// Empirically sanity-checked at head: all three streams begin with
+    /// distinct first samples (see probe run in the audit fix), so the test is
+    /// deterministic under the fixed seed=0.
+    #[test]
+    fn nsf_seeded_sub_streams_are_disjoint() {
+        // Layer 1 — the three base constants are pairwise distinct u64 values.
+        let phase_base = 0u64.wrapping_add(0xA5A5_A5A5_A5A5_A5A5);
+        let sine_noise_base = 0u64.wrapping_add(0xDEAD_BEEF_CAFE_BABE);
+        let src_noise_base = 0u64.wrapping_add(0xC0FF_EE00_C0FF_EE00);
+        assert_ne!(
+            phase_base, sine_noise_base,
+            "phase and SineGen-noise bases collapsed"
+        );
+        assert_ne!(
+            phase_base, src_noise_base,
+            "phase and SourceModule-noise bases collapsed"
+        );
+        assert_ne!(
+            sine_noise_base, src_noise_base,
+            "SineGen-noise and SourceModule-noise bases collapsed"
+        );
+
+        // Layer 2 — the derived Gaussian streams must actually differ. If a
+        // regression re-used a base constant, seed=0 + same constant would
+        // produce bit-identical streams from `next_gaussian_std`.
+        let n = 16;
+        let draw = |seed: u64| -> Vec<f32> {
+            let mut s = seed;
+            (0..n).map(|_| next_gaussian_std(&mut s)).collect()
+        };
+        let phase_stream = draw(phase_base);
+        let sine_stream = draw(sine_noise_base);
+        let src_stream = draw(src_noise_base);
+        assert_ne!(
+            phase_stream, sine_stream,
+            "phase and SineGen-noise streams collapsed"
+        );
+        assert_ne!(
+            phase_stream, src_stream,
+            "phase and SourceModule-noise streams collapsed"
+        );
+        assert_ne!(
+            sine_stream, src_stream,
+            "SineGen-noise and SourceModule-noise streams collapsed"
+        );
+    }
+
+    /// Symmetric with `sine_gen_different_seeds_differ`. A regression that
+    /// hard-coded the SourceModule noise seed base (or dropped the
+    /// `seed → state` derivation) would leave the noise identical across seeds
+    /// even though the phase-driven sine_merge still changes — this test
+    /// catches both simultaneously.
+    #[test]
+    fn source_module_different_seeds_differ() {
+        let cfg = SourceModuleHnNSFConfig {
+            sine_gen: SineGenConfig {
+                samp_rate: 22_050,
+                harmonic_num: 2,
+                sine_amp: 0.3,
+                ..Default::default()
+            },
+        };
+        let weights = SourceModuleHnNSFWeights {
+            linear_w: vec![0.5, 0.25, 0.25],
+            linear_b: 0.0,
+        };
+        let src = SourceModuleHnNSF::new(cfg, weights).unwrap();
+        let f0 = vec![150.0f32; 32];
+        let out_a = src.forward(&f0, NsfEntropy::Seeded(1)).unwrap();
+        let out_b = src.forward(&f0, NsfEntropy::Seeded(2)).unwrap();
+        assert_ne!(
+            out_a.noise, out_b.noise,
+            "different seeds must yield different SourceModule noise draws"
+        );
+        assert_ne!(
+            out_a.sine_merge, out_b.sine_merge,
+            "different seeds must change sine_merge via SineGen phase draws"
+        );
+    }
+
+    /// Pins the **statistical soundness** of `next_gaussian_std`: samples from
+    /// the Marsaglia polar method must approximate `N(0, 1)`. The
+    /// finite/bounded loop test above would still pass if the
+    /// `factor = sqrt(-2 ln s / s)` term lost a constant (e.g. the `sqrt`
+    /// dropped, or `-2` became `-1`), producing a wrongly-scaled Gaussian that
+    /// still passes `.is_finite()`.
+    ///
+    /// Deterministic given the fixed seed (`0xCAFEBABE`). Empirically at head:
+    /// `mean ≈ -0.0095`, `variance ≈ 0.997` over N=20000 samples. Tolerances
+    /// 0.05 give a >6× margin over the sampling error under a correct
+    /// implementation and a >10× margin below the swing that a
+    /// missing-`sqrt` or wrong-`-2` regression would produce (variance ~0.5).
+    ///
+    /// Runtime target: <100 ms. 20k Marsaglia iterations (≈2× rejection ratio)
+    /// with SplitMix64+ln+sqrt is single-digit ms even in debug builds.
+    #[test]
+    fn next_gaussian_std_has_correct_mean_and_variance() {
+        let mut state = 0xCAFE_BABE_u64;
+        let n = 20_000usize;
+        let samples: Vec<f32> = (0..n).map(|_| next_gaussian_std(&mut state)).collect();
+        assert!(samples.iter().all(|s| s.is_finite()));
+        let mean = samples.iter().sum::<f32>() / n as f32;
+        let variance = samples.iter().map(|s| (s - mean).powi(2)).sum::<f32>() / n as f32;
+        assert!(
+            mean.abs() < 0.05,
+            "mean drift: got {mean}, expected ~0 (tol 0.05)"
+        );
+        assert!(
+            (variance - 1.0).abs() < 0.05,
+            "variance drift: got {variance}, expected ~1.0 (tol 0.05)"
+        );
+    }
 }
