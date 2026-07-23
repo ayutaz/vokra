@@ -779,3 +779,361 @@ fn hift_gen_matches_external_reference_when_available() {
         "reference max |Δ| = {max_abs_delta:.6} exceeds atol = {EXTERNAL_ATOL:.6}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// SoTA plan Phase 1-2 audit follow-up (2026-07-24): gap-fill tests.
+//
+// The upstream harness pins determinism, mel-input sensitivity, and shape
+// stability, plus a flip-the-switch external-reference hook. The audit
+// flagged three residual holes:
+//
+//   1. The CENTRAL invariant of the flip-the-switch design — that
+//      `synth_generator_weights` and `load_weights_from_bytes` walk
+//      identical tensor sequences — was not pinned. Silent drift on either
+//      side would only surface when an owner produced a fixture, and
+//      would look like an unexplained reference-parity failure. The two
+//      round-trip tests below pin the invariant end-to-end (layout ==
+//      then forward ==).
+//   2. All four fixture-loader error branches (2 non-multiple-of-4 gates
+//      + `take_from` truncation propagation + trailing-floats layout
+//      mismatch) were unreachable from the existing tests, so a refactor
+//      that weakened any guardrail would go unnoticed. The four
+//      loader-error tests below feed shaped-to-fail byte streams to
+//      pin each `Err(_)` branch.
+//   3. Weight-influence sensitivity was untested — every existing test
+//      either fixed the weights or varied the mel, so a silent
+//      weights-are-ignored regression (converter that always uses
+//      defaults, or a forward that drops the weight tensors on the
+//      source-fusion chain) would pass every assertion. The final test
+//      below pins that distinct weights on the same mel produce distinct
+//      audio.
+// ---------------------------------------------------------------------------
+
+/// Push every `f32` in `src` to `out` as little-endian bytes. Mirrors the
+/// `f32::from_le_bytes` walk in [`load_weights_from_bytes`].
+fn push_f32s(out: &mut Vec<u8>, src: &[f32]) {
+    for &v in src {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+}
+
+/// Serialize a [`ResBlockWeights`] bundle in the same per-branch order
+/// [`synth_res_block`] emits.
+fn push_res_block(out: &mut Vec<u8>, rb: &ResBlockWeights) {
+    let n = rb.convs1_w.len();
+    for i in 0..n {
+        push_f32s(out, &rb.convs1_w[i]);
+        push_f32s(out, &rb.convs1_b[i]);
+        push_f32s(out, &rb.convs2_w[i]);
+        push_f32s(out, &rb.convs2_b[i]);
+        push_f32s(out, &rb.activations1_alpha[i]);
+        push_f32s(out, &rb.activations2_alpha[i]);
+    }
+}
+
+/// Serialize a [`HiFTGeneratorWeights`] bundle to raw little-endian f32
+/// bytes in the exact walk [`load_weights_from_bytes`] consumes and
+/// [`synth_generator_weights`] emits.
+///
+/// The three walks (synth, load, this serializer) must stay in lockstep;
+/// the round-trip tests below use this helper to prove they still do.
+/// A reorder on any of the three trips [`hift_gen_serialize_load_round_trip_bit_identical_layout`]
+/// on the very next `cargo test` run.
+fn serialize_generator_weights(w: &HiFTGeneratorWeights) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+
+    // (1) conv_pre
+    push_f32s(&mut out, &w.conv_pre_w);
+    push_f32s(&mut out, &w.conv_pre_b);
+
+    // (2) ups (per stage)
+    for i in 0..w.ups_w.len() {
+        push_f32s(&mut out, &w.ups_w[i]);
+        push_f32s(&mut out, &w.ups_b[i]);
+    }
+
+    // (3) source_downs (per stage)
+    for i in 0..w.source_downs_w.len() {
+        push_f32s(&mut out, &w.source_downs_w[i]);
+        push_f32s(&mut out, &w.source_downs_b[i]);
+    }
+
+    // (4) source_resblocks (per stage)
+    for rb in &w.source_resblock_weights {
+        push_res_block(&mut out, rb);
+    }
+
+    // (5) resblocks (row-major over [i * num_kernels + j])
+    for rb in &w.resblock_weights {
+        push_res_block(&mut out, rb);
+    }
+
+    // (6) conv_post
+    push_f32s(&mut out, &w.conv_post_w);
+    push_f32s(&mut out, &w.conv_post_b);
+
+    // (7) source module linear head — vector then single scalar
+    push_f32s(&mut out, &w.m_source_linear_w);
+    out.extend_from_slice(&w.m_source_linear_b.to_le_bytes());
+
+    // (8) F0 predictor: 5 conv weight+bias pairs, then linear_w, linear_b
+    let f0 = &w.f0_predictor_weights;
+    for i in 0..f0.conv_weights.len() {
+        push_f32s(&mut out, &f0.conv_weights[i]);
+        push_f32s(&mut out, &f0.conv_biases[i]);
+    }
+    push_f32s(&mut out, &f0.linear_w);
+    push_f32s(&mut out, &f0.linear_b);
+
+    out
+}
+
+/// Per-field bit-identical assertion on two [`ResBlockWeights`] bundles.
+/// Split out so the top-level round-trip test can point at the exact
+/// branch that drifted (the `Debug` printout of a whole
+/// `HiFTGeneratorWeights` bundle is unreadable).
+fn assert_res_block_bit_identical(a: &ResBlockWeights, b: &ResBlockWeights, tag: &str) {
+    assert_eq!(a.convs1_w, b.convs1_w, "{tag}: convs1_w drift");
+    assert_eq!(a.convs1_b, b.convs1_b, "{tag}: convs1_b drift");
+    assert_eq!(a.convs2_w, b.convs2_w, "{tag}: convs2_w drift");
+    assert_eq!(a.convs2_b, b.convs2_b, "{tag}: convs2_b drift");
+    assert_eq!(
+        a.activations1_alpha, b.activations1_alpha,
+        "{tag}: activations1_alpha drift"
+    );
+    assert_eq!(
+        a.activations2_alpha, b.activations2_alpha,
+        "{tag}: activations2_alpha drift"
+    );
+}
+
+/// Per-field bit-identical assertion on two [`HiFTGeneratorWeights`]
+/// bundles. Walks every leaf so a silent drop or reorder trips the
+/// message that points at the exact tensor.
+fn assert_generator_weights_bit_identical(a: &HiFTGeneratorWeights, b: &HiFTGeneratorWeights) {
+    assert_eq!(a.conv_pre_w, b.conv_pre_w, "conv_pre_w drift");
+    assert_eq!(a.conv_pre_b, b.conv_pre_b, "conv_pre_b drift");
+    assert_eq!(a.ups_w, b.ups_w, "ups_w drift");
+    assert_eq!(a.ups_b, b.ups_b, "ups_b drift");
+    assert_eq!(a.source_downs_w, b.source_downs_w, "source_downs_w drift");
+    assert_eq!(a.source_downs_b, b.source_downs_b, "source_downs_b drift");
+    assert_eq!(
+        a.source_resblock_weights.len(),
+        b.source_resblock_weights.len(),
+        "source_resblock_weights count drift"
+    );
+    for (i, (x, y)) in a
+        .source_resblock_weights
+        .iter()
+        .zip(b.source_resblock_weights.iter())
+        .enumerate()
+    {
+        assert_res_block_bit_identical(x, y, &format!("source_resblock[{i}]"));
+    }
+    assert_eq!(
+        a.resblock_weights.len(),
+        b.resblock_weights.len(),
+        "resblock_weights count drift"
+    );
+    for (i, (x, y)) in a
+        .resblock_weights
+        .iter()
+        .zip(b.resblock_weights.iter())
+        .enumerate()
+    {
+        assert_res_block_bit_identical(x, y, &format!("resblock[{i}]"));
+    }
+    assert_eq!(a.conv_post_w, b.conv_post_w, "conv_post_w drift");
+    assert_eq!(a.conv_post_b, b.conv_post_b, "conv_post_b drift");
+    assert_eq!(
+        a.m_source_linear_w, b.m_source_linear_w,
+        "m_source_linear_w drift"
+    );
+    // Bit-pattern compare on the scalar catches ±0 / signalling-NaN drift
+    // that `==` would silently accept.
+    assert_eq!(
+        a.m_source_linear_b.to_bits(),
+        b.m_source_linear_b.to_bits(),
+        "m_source_linear_b drift"
+    );
+    assert_eq!(
+        a.f0_predictor_weights.conv_weights, b.f0_predictor_weights.conv_weights,
+        "f0.conv_weights drift"
+    );
+    assert_eq!(
+        a.f0_predictor_weights.conv_biases, b.f0_predictor_weights.conv_biases,
+        "f0.conv_biases drift"
+    );
+    assert_eq!(
+        a.f0_predictor_weights.linear_w, b.f0_predictor_weights.linear_w,
+        "f0.linear_w drift"
+    );
+    assert_eq!(
+        a.f0_predictor_weights.linear_b, b.f0_predictor_weights.linear_b,
+        "f0.linear_b drift"
+    );
+}
+
+#[test]
+fn hift_gen_serialize_load_round_trip_bit_identical_layout() {
+    // Central invariant of the flip-the-switch design:
+    // `synth_generator_weights` and `load_weights_from_bytes` must walk
+    // identical tensor sequences. Serialize the synthesized bundle in the
+    // documented walk order, feed those bytes through the loader, and
+    // assert every leaf tensor is bit-identical. A reorder or missed
+    // tensor on either the synth or the load side trips here.
+    let cfg = small_hift_config();
+    let mut state = 0xC0FF_EE00_DEAD_BEEFu64;
+    let original = synth_generator_weights(&mut state, &cfg);
+
+    let bytes = serialize_generator_weights(&original);
+    let reconstructed = load_weights_from_bytes(&cfg, &bytes)
+        .expect("round-trip load must succeed on well-formed bytes");
+
+    assert_generator_weights_bit_identical(&original, &reconstructed);
+}
+
+#[test]
+fn hift_gen_serialize_load_round_trip_forward_bit_identical() {
+    // Ultimate contract of the flip-the-switch harness: a well-formed
+    // fixture reconstructs the exact model. Even if the layout matches,
+    // this test proves the reconstructed generator forwards to
+    // bit-identical audio versus the direct-synth generator — the two
+    // must be functionally interchangeable, not merely field-equal
+    // (e.g. a hypothetical serializer that lossily rounded a subset of
+    // weights would pass a partial layout check but fail here).
+    let cfg = small_hift_config();
+    let mut state = 0x1122_3344_5566_7788u64;
+    let original = synth_generator_weights(&mut state, &cfg);
+    let bytes = serialize_generator_weights(&original);
+    let reconstructed =
+        load_weights_from_bytes(&cfg, &bytes).expect("round-trip load must succeed");
+
+    let gen_direct =
+        HiFTGenerator::new(cfg.clone(), original).expect("direct-synth generator must build");
+    let gen_reconstructed =
+        HiFTGenerator::new(cfg.clone(), reconstructed).expect("reconstructed generator must build");
+
+    let in_ch = cfg.in_channels as usize;
+    let t_mel = 8;
+    let mel = build_deterministic_mel(in_ch, t_mel, 0x9988_7766_5544_3322u64);
+    let audio_direct = gen_direct
+        .forward(&mel, t_mel)
+        .expect("direct generator forward");
+    let audio_reconstructed = gen_reconstructed
+        .forward(&mel, t_mel)
+        .expect("reconstructed generator forward");
+
+    assert_eq!(
+        audio_direct, audio_reconstructed,
+        "reconstructed generator must forward to bit-identical audio \
+         (round-trip contract of the flip-the-switch harness)"
+    );
+}
+
+#[test]
+fn load_weights_from_bytes_rejects_non_multiple_of_4() {
+    // A byte stream whose length is not a multiple of 4 cannot be
+    // interpreted as an f32 LE sequence — the loader's very first gate
+    // has to reject it loudly (FR-EX-08: no silent truncation of the
+    // fixture stream).
+    let cfg = small_hift_config();
+    let err = load_weights_from_bytes(&cfg, &[0u8; 3])
+        .expect_err("non-multiple-of-4 byte length must surface an error");
+    assert!(
+        err.contains("is not a multiple of 4 bytes"),
+        "expected non-multiple-of-4 error message, got: {err}"
+    );
+}
+
+#[test]
+fn load_weights_from_bytes_rejects_truncated_stream() {
+    // A stream that is a valid f32-multiple length but too short to
+    // populate every weight must surface the `take_from` truncation
+    // message rather than silently producing a partial model. 4 bytes =
+    // 1 f32, way short of the ~2000 floats the small config needs, so
+    // the first `take_from` call runs out on `conv_pre_w`.
+    let cfg = small_hift_config();
+    let err = load_weights_from_bytes(&cfg, &[0u8; 4])
+        .expect_err("undersized-but-4-aligned stream must surface an error");
+    assert!(
+        err.contains("truncated at offset"),
+        "expected truncation error message, got: {err}"
+    );
+}
+
+#[test]
+fn load_weights_from_bytes_rejects_trailing_floats() {
+    // Serialize a valid weights bundle, then append one extra f32 worth
+    // of zero bytes. The loader's terminal `cursor != floats.len()` gate
+    // must reject that layout mismatch — otherwise a fixture produced
+    // against a different config could silently populate a partial model
+    // and leak the extra parameters, defeating the whole point of the
+    // walk-order contract.
+    let cfg = small_hift_config();
+    let mut state = 0xFEED_FACE_CAFE_BABEu64;
+    let weights = synth_generator_weights(&mut state, &cfg);
+    let mut bytes = serialize_generator_weights(&weights);
+    bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+    let err = load_weights_from_bytes(&cfg, &bytes)
+        .expect_err("oversized-but-4-aligned stream must surface an error");
+    assert!(
+        err.contains("trailing floats after populating the model"),
+        "expected trailing-floats error message, got: {err}"
+    );
+}
+
+#[test]
+fn f32_stream_rejects_non_multiple_of_4() {
+    // Same guardrail as `load_weights_from_bytes` but on the raw
+    // mel / expected-audio byte parser. 5 bytes cannot decode into a
+    // valid f32 LE sequence, so the length gate must surface loudly
+    // (FR-EX-08). Without this test the loader could be quietly relaxed
+    // to `chunks_exact` + drop-the-remainder and every existing
+    // parity_hiftnet test would still pass.
+    let err =
+        f32_stream(&[0u8; 5]).expect_err("non-multiple-of-4 byte length must surface an error");
+    assert!(
+        err.contains("raw f32 stream length"),
+        "expected non-multiple-of-4 error message, got: {err}"
+    );
+}
+
+#[test]
+fn hift_gen_weight_influence_sensitivity() {
+    // Complement of `hift_gen_different_seeds_produce_different_output`
+    // (same weights + different mels → different audio). Here we fix
+    // the mel and vary the generator seed. A silent weights-are-ignored
+    // regression (e.g. a converter that always installs the default
+    // bundle, or a forward that drops the ResBlock outputs on the
+    // source-fusion chain) would collapse both outputs to the same
+    // waveform and trip here even though every current always-on test
+    // (which either fixes the weights or the mel) would still pass.
+    let gen_a = build_deterministic_hift_generator(0x0A0A_0A0A_0A0A_0A0Au64);
+    let gen_b = build_deterministic_hift_generator(0xB0B0_B0B0_B0B0_B0B0u64);
+    let cfg = small_hift_config();
+    let in_ch = cfg.in_channels as usize;
+    let t_mel = 8;
+    let mel = build_deterministic_mel(in_ch, t_mel, 0xF00D_D00F_F00D_D00Fu64);
+
+    let audio_a = gen_a
+        .forward(&mel, t_mel)
+        .expect("weight-A forward must succeed");
+    let audio_b = gen_b
+        .forward(&mel, t_mel)
+        .expect("weight-B forward must succeed");
+
+    assert_ne!(
+        audio_a, audio_b,
+        "distinct weights on the same mel must produce distinct audio — \
+         a silent weights-are-ignored regression would collapse them"
+    );
+    assert!(
+        audio_a.iter().all(|s| s.is_finite() && s.abs() <= 0.99),
+        "audio_a violated finiteness or audio_limit"
+    );
+    assert!(
+        audio_b.iter().all(|s| s.is_finite() && s.abs() <= 0.99),
+        "audio_b violated finiteness or audio_limit"
+    );
+}
