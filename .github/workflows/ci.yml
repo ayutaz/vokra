@@ -673,7 +673,7 @@ jobs:
         # (v3.0.0 changelog for the enforcement addition). Bump to v3+
         # only after threading a proper `CIBW_REPAIR_WHEEL_COMMAND` that
         # retags each wheel to a platform-specific slot.
-        uses: pypa/cibuildwheel@v4.1.0
+        uses: pypa/cibuildwheel@v2.23.4
         with:
           package-dir: bindings/python
           output-dir: bindings/python/dist
