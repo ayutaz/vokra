@@ -497,6 +497,304 @@ fn conv_transpose1d(
 }
 
 // ---------------------------------------------------------------------------
+// ResBlock (upstream L41-93, dilated Conv1d pair + Snake + residual)
+// ---------------------------------------------------------------------------
+
+/// Hyperparameters for [`ResBlock`] — verbatim from upstream `ResBlock.__init__`.
+///
+/// Upstream defaults are `channels=512, kernel_size=3, dilations=[1, 3, 5]`.
+/// Each `dilations[i]` produces one branch (a `Conv1d(dilation=d) → Snake →
+/// Conv1d(dilation=1) → Snake → residual` sub-block); with the default list
+/// that is 3 branches.
+#[derive(Debug, Clone)]
+pub struct ResBlockConfig {
+    /// Feature channels — the layer preserves the channel count end-to-end.
+    pub channels: u32,
+    /// Conv kernel size (`kernel_size` upstream, default 3).
+    pub kernel_size: u32,
+    /// Per-branch dilation for `convs1` (`convs2` is always dilation=1
+    /// upstream). Length = number of branches.
+    pub dilations: Vec<u32>,
+}
+
+/// Learned parameters for [`ResBlock`] — one weight/bias per Conv1d (2 per
+/// dilation) and one Snake `alpha` per activation (2 per dilation).
+#[derive(Debug, Clone)]
+pub struct ResBlockWeights {
+    /// One row-major `[channels, channels, kernel]` weight per branch —
+    /// `convs1[i]` uses `dilations[i]` for its stride-1 dilated convolution.
+    pub convs1_w: Vec<Vec<f32>>,
+    /// One `[channels]` bias per `convs1[i]`.
+    pub convs1_b: Vec<Vec<f32>>,
+    /// One row-major `[channels, channels, kernel]` weight per branch —
+    /// `convs2[i]` is always dilation=1 upstream (`get_padding(k, 1)`).
+    pub convs2_w: Vec<Vec<f32>>,
+    /// One `[channels]` bias per `convs2[i]`.
+    pub convs2_b: Vec<Vec<f32>>,
+    /// One `[channels]` Snake alpha per `activations1[i]`.
+    pub activations1_alpha: Vec<Vec<f32>>,
+    /// One `[channels]` Snake alpha per `activations2[i]`.
+    pub activations2_alpha: Vec<Vec<f32>>,
+}
+
+/// ResBlock (upstream L41-93). Sequential branches of
+/// `Snake → dilated Conv1d → Snake → Conv1d → residual`; the branch
+/// results accumulate via the residual connection so a single call
+/// mutates its input in place across every branch.
+#[derive(Debug, Clone)]
+pub struct ResBlock {
+    cfg: ResBlockConfig,
+    weights: ResBlockWeights,
+    activations1: Vec<Snake>,
+    activations2: Vec<Snake>,
+}
+
+impl ResBlock {
+    /// Build a `ResBlock` from its config and weights. Fails loudly on
+    /// any shape disagreement — an inconsistent branch count between
+    /// `convs1`, `convs2`, and the two activation vectors would silently
+    /// truncate the forward loop otherwise.
+    pub fn new(cfg: ResBlockConfig, weights: ResBlockWeights) -> Result<Self> {
+        let n_branches = cfg.dilations.len();
+        if n_branches == 0 {
+            return Err(VokraError::InvalidArgument(
+                "ResBlock: dilations must not be empty".to_owned(),
+            ));
+        }
+        if cfg.channels == 0 || cfg.kernel_size == 0 {
+            return Err(VokraError::InvalidArgument(
+                "ResBlock: channels and kernel_size must be > 0".to_owned(),
+            ));
+        }
+        for (name, v) in [
+            ("convs1_w", weights.convs1_w.len()),
+            ("convs1_b", weights.convs1_b.len()),
+            ("convs2_w", weights.convs2_w.len()),
+            ("convs2_b", weights.convs2_b.len()),
+            ("activations1_alpha", weights.activations1_alpha.len()),
+            ("activations2_alpha", weights.activations2_alpha.len()),
+        ] {
+            if v != n_branches {
+                return Err(VokraError::InvalidArgument(format!(
+                    "ResBlock: {name} has {v} entries but dilations has {n_branches}"
+                )));
+            }
+        }
+        let ch = cfg.channels as usize;
+        let k = cfg.kernel_size as usize;
+        let expected_w = ch * ch * k;
+        for i in 0..n_branches {
+            if weights.convs1_w[i].len() != expected_w {
+                return Err(VokraError::InvalidArgument(format!(
+                    "ResBlock convs1_w[{i}]: expected length {expected_w} \
+                     ({ch}*{ch}*{k}), got {}",
+                    weights.convs1_w[i].len(),
+                )));
+            }
+            if weights.convs2_w[i].len() != expected_w {
+                return Err(VokraError::InvalidArgument(format!(
+                    "ResBlock convs2_w[{i}]: expected length {expected_w} \
+                     ({ch}*{ch}*{k}), got {}",
+                    weights.convs2_w[i].len(),
+                )));
+            }
+            if weights.convs1_b[i].len() != ch {
+                return Err(VokraError::InvalidArgument(format!(
+                    "ResBlock convs1_b[{i}]: expected length {ch}, got {}",
+                    weights.convs1_b[i].len(),
+                )));
+            }
+            if weights.convs2_b[i].len() != ch {
+                return Err(VokraError::InvalidArgument(format!(
+                    "ResBlock convs2_b[{i}]: expected length {ch}, got {}",
+                    weights.convs2_b[i].len(),
+                )));
+            }
+        }
+        // Snake activations — upstream `Snake(channels, alpha_logscale=False)`
+        // twice per branch. `alpha_logscale=False` is upstream's default for
+        // ResBlock activations.
+        let mut activations1 = Vec::with_capacity(n_branches);
+        let mut activations2 = Vec::with_capacity(n_branches);
+        for i in 0..n_branches {
+            activations1.push(Snake::new(weights.activations1_alpha[i].clone(), false)?);
+            activations2.push(Snake::new(weights.activations2_alpha[i].clone(), false)?);
+            if activations1[i].channels() != ch {
+                return Err(VokraError::InvalidArgument(format!(
+                    "ResBlock activations1_alpha[{i}]: expected {ch} channels, got {}",
+                    activations1[i].channels()
+                )));
+            }
+            if activations2[i].channels() != ch {
+                return Err(VokraError::InvalidArgument(format!(
+                    "ResBlock activations2_alpha[{i}]: expected {ch} channels, got {}",
+                    activations2[i].channels()
+                )));
+            }
+        }
+        Ok(Self {
+            cfg,
+            weights,
+            activations1,
+            activations2,
+        })
+    }
+
+    /// Immutable access to the [`ResBlockConfig`] this block was built with.
+    pub fn config(&self) -> &ResBlockConfig {
+        &self.cfg
+    }
+
+    /// Forward pass. Reproduces upstream `ResBlock.forward`
+    /// (`generator.py:88-93`):
+    ///
+    /// ```text
+    /// for idx in range(len(self.convs1)):
+    ///     xt = self.activations1[idx](x)
+    ///     xt = self.convs1[idx](xt)
+    ///     xt = self.activations2[idx](xt)
+    ///     xt = self.convs2[idx](xt)
+    ///     x = xt + x
+    /// return x
+    /// ```
+    ///
+    /// `x` is a `[channels, t]` row-major buffer; forward mutates it in
+    /// place so an outer caller (the HiFTGenerator chain) does not have to
+    /// juggle allocations.
+    pub fn forward_in_place(&self, x: &mut [f32], t: usize) -> Result<()> {
+        let ch = self.cfg.channels as usize;
+        let k = self.cfg.kernel_size as usize;
+        if x.len() != ch * t {
+            return Err(VokraError::InvalidArgument(format!(
+                "ResBlock forward: input length {} != channels * t = {}",
+                x.len(),
+                ch * t
+            )));
+        }
+        for (idx, &dilation) in self.cfg.dilations.iter().enumerate() {
+            let d = dilation as usize;
+            // xt = activations1[idx](x)
+            let mut xt = x.to_vec();
+            self.activations1[idx].forward_in_place(&mut xt, ch, t)?;
+            // xt = convs1[idx](xt) — dilated same-padding
+            let pad1 = get_padding(k, d);
+            xt = conv1d_dilated_same_padding(
+                &xt,
+                ch,
+                ch,
+                k,
+                d,
+                pad1,
+                t,
+                &self.weights.convs1_w[idx],
+                &self.weights.convs1_b[idx],
+            )?;
+            // xt = activations2[idx](xt)
+            self.activations2[idx].forward_in_place(&mut xt, ch, t)?;
+            // xt = convs2[idx](xt) — dilation=1
+            let pad2 = get_padding(k, 1);
+            xt = conv1d_dilated_same_padding(
+                &xt,
+                ch,
+                ch,
+                k,
+                1,
+                pad2,
+                t,
+                &self.weights.convs2_w[idx],
+                &self.weights.convs2_b[idx],
+            )?;
+            // x = xt + x
+            for (dst, &delta) in x.iter_mut().zip(xt.iter()) {
+                *dst += delta;
+            }
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dilated same-padding Conv1d helper (upstream `get_padding(k, d)` mirror)
+// ---------------------------------------------------------------------------
+
+/// Upstream `get_padding(kernel_size, dilation)` returns
+/// `(kernel_size * dilation - dilation) // 2 = dilation * (kernel_size - 1) / 2`.
+/// The formula matches PyTorch's same-length dilated convolution.
+#[inline]
+fn get_padding(kernel: usize, dilation: usize) -> usize {
+    dilation * (kernel - 1) / 2
+}
+
+/// Dilated same-padding 1-D convolution.
+///
+/// Same interface as [`conv1d_same_padding`] plus an explicit `dilation`.
+/// A separate helper (rather than a `dilation=1` default on the original)
+/// keeps the F0 predictor's inner loop free of the extra `d_i` multiply on
+/// paths that will never use it.
+#[allow(clippy::too_many_arguments)]
+fn conv1d_dilated_same_padding(
+    input: &[f32],
+    in_ch: usize,
+    out_ch: usize,
+    kernel: usize,
+    dilation: usize,
+    padding: usize,
+    t: usize,
+    weight: &[f32],
+    bias: &[f32],
+) -> Result<Vec<f32>> {
+    if input.len() != in_ch * t {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv1d_dilated_same_padding: input length {} != in_ch * t = {}",
+            input.len(),
+            in_ch * t
+        )));
+    }
+    if weight.len() != out_ch * in_ch * kernel {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv1d_dilated_same_padding: weight length {} != out_ch * in_ch * kernel = {}",
+            weight.len(),
+            out_ch * in_ch * kernel
+        )));
+    }
+    if bias.len() != out_ch {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv1d_dilated_same_padding: bias length {} != out_ch = {out_ch}",
+            bias.len()
+        )));
+    }
+    if dilation == 0 || kernel == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv1d_dilated_same_padding: dilation and kernel must be > 0".to_owned(),
+        ));
+    }
+    let mut output = vec![0.0f32; out_ch * t];
+    let t_i = t as isize;
+    let pad_i = padding as isize;
+    let d_i = dilation as isize;
+    for (oc, &b) in bias.iter().enumerate() {
+        let row_offset = oc * t;
+        let w_offset = oc * in_ch * kernel;
+        for ti in 0..t {
+            let mut acc = b;
+            for ic in 0..in_ch {
+                let x_row = ic * t;
+                let w_row = w_offset + ic * kernel;
+                for k in 0..kernel {
+                    let src = ti as isize + k as isize * d_i - pad_i;
+                    if src < 0 || src >= t_i {
+                        continue;
+                    }
+                    acc += input[x_row + src as usize] * weight[w_row + k];
+                }
+            }
+            output[row_offset + ti] = acc;
+        }
+    }
+    Ok(output)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -805,5 +1103,164 @@ mod tests {
         assert!(conv_transpose1d(&input, 2, 2, 3, 0, 1, 4, &weight, &bias).is_err());
         // t_in = 0 triggers a loud error.
         assert!(conv_transpose1d(&[], 2, 2, 3, 1, 1, 0, &weight, &bias).is_err());
+    }
+
+    #[test]
+    fn get_padding_formula_matches_upstream() {
+        // Upstream `get_padding(k, d) = (k*d - d) / 2 = d * (k - 1) / 2`.
+        assert_eq!(get_padding(3, 1), 1);
+        assert_eq!(get_padding(3, 3), 3);
+        assert_eq!(get_padding(3, 5), 5);
+        assert_eq!(get_padding(7, 1), 3);
+        assert_eq!(get_padding(11, 1), 5);
+    }
+
+    #[test]
+    fn dilated_conv_dilation_one_matches_undilated() {
+        // With dilation=1 the dilated helper must produce the same output
+        // as the plain-dilation conv1d_same_padding.
+        let input: Vec<f32> = (0..(2 * 6)).map(|i| (i as f32) * 0.1).collect();
+        let weight: Vec<f32> = (0..(3 * 2 * 3)).map(|i| ((i % 5) as f32) * 0.02).collect();
+        let bias = vec![0.1f32, -0.2, 0.05];
+        let a = conv1d_same_padding(&input, 2, 3, 3, 1, 6, &weight, &bias);
+        let b = conv1d_dilated_same_padding(&input, 2, 3, 3, 1, 1, 6, &weight, &bias).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn dilated_conv_dilation_greater_than_one_broadens_receptive_field() {
+        // With dilation=3 the same-padding formula gives padding = 3.
+        // Zero input + non-zero bias → output equals bias.
+        let input = vec![0.0f32; 4 * 8];
+        let weight = vec![0.0f32; 4 * 4 * 3];
+        let bias = vec![0.5f32, -0.5, 0.25, 1.0];
+        let pad = get_padding(3, 3);
+        let out = conv1d_dilated_same_padding(&input, 4, 4, 3, 3, pad, 8, &weight, &bias).unwrap();
+        assert_eq!(out.len(), 4 * 8);
+        for (oc, &b) in bias.iter().enumerate() {
+            for t_idx in 0..8 {
+                assert_eq!(out[oc * 8 + t_idx], b);
+            }
+        }
+    }
+
+    // Build a small ResBlock with zero weights + zero alphas. Under Snake
+    // with `alpha = 0`, `snake(x) = x + (1/(0+1e-9)) * sin(0)^2 = x`, so
+    // the whole branch collapses to `x = x + 0 = x`; the block acts as
+    // the identity. Handy for shape / determinism tests.
+    fn zero_res_block(channels: usize, kernel_size: usize, dilations: Vec<u32>) -> ResBlock {
+        let n = dilations.len();
+        let cfg = ResBlockConfig {
+            channels: channels as u32,
+            kernel_size: kernel_size as u32,
+            dilations,
+        };
+        let weights = ResBlockWeights {
+            convs1_w: vec![vec![0.0f32; channels * channels * kernel_size]; n],
+            convs1_b: vec![vec![0.0f32; channels]; n],
+            convs2_w: vec![vec![0.0f32; channels * channels * kernel_size]; n],
+            convs2_b: vec![vec![0.0f32; channels]; n],
+            activations1_alpha: vec![vec![0.0f32; channels]; n],
+            activations2_alpha: vec![vec![0.0f32; channels]; n],
+        };
+        ResBlock::new(cfg, weights).unwrap()
+    }
+
+    #[test]
+    fn res_block_zero_weights_is_identity() {
+        // With every conv weight = 0 the residual carries the input
+        // unchanged; Snake with alpha = 0 is identity by the closed form
+        // above.
+        let rb = zero_res_block(4, 3, vec![1, 3, 5]);
+        let t = 6;
+        let mut x: Vec<f32> = (0..(4 * t)).map(|i| (i as f32) * 0.1).collect();
+        let x0 = x.clone();
+        rb.forward_in_place(&mut x, t).unwrap();
+        for (a, b) in x.iter().zip(x0.iter()) {
+            assert!(
+                (a - b).abs() < 1e-6,
+                "identity broken at diff = {}",
+                (a - b).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn res_block_forward_preserves_shape_and_finiteness() {
+        let rb = zero_res_block(8, 3, vec![1, 3, 5]);
+        let t = 16;
+        let mut x = vec![0.0f32; 8 * t];
+        rb.forward_in_place(&mut x, t).unwrap();
+        assert_eq!(x.len(), 8 * t);
+        assert!(x.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn res_block_forward_rejects_wrong_input_length() {
+        let rb = zero_res_block(4, 3, vec![1, 3]);
+        let mut x = vec![0.0f32; 4 * 6 - 1]; // one short
+        let err = rb.forward_in_place(&mut x, 6).unwrap_err();
+        assert!(err.to_string().contains("input length"), "{err}");
+    }
+
+    #[test]
+    fn res_block_new_rejects_empty_dilations() {
+        let cfg = ResBlockConfig {
+            channels: 4,
+            kernel_size: 3,
+            dilations: vec![],
+        };
+        let weights = ResBlockWeights {
+            convs1_w: vec![],
+            convs1_b: vec![],
+            convs2_w: vec![],
+            convs2_b: vec![],
+            activations1_alpha: vec![],
+            activations2_alpha: vec![],
+        };
+        let err = ResBlock::new(cfg, weights).unwrap_err();
+        assert!(
+            err.to_string().contains("dilations must not be empty"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn res_block_new_rejects_branch_count_mismatch() {
+        let cfg = ResBlockConfig {
+            channels: 4,
+            kernel_size: 3,
+            dilations: vec![1, 3, 5],
+        };
+        // convs1_w has 2 entries but dilations has 3.
+        let weights = ResBlockWeights {
+            convs1_w: vec![vec![0.0f32; 4 * 4 * 3]; 2],
+            convs1_b: vec![vec![0.0f32; 4]; 3],
+            convs2_w: vec![vec![0.0f32; 4 * 4 * 3]; 3],
+            convs2_b: vec![vec![0.0f32; 4]; 3],
+            activations1_alpha: vec![vec![0.0f32; 4]; 3],
+            activations2_alpha: vec![vec![0.0f32; 4]; 3],
+        };
+        let err = ResBlock::new(cfg, weights).unwrap_err();
+        assert!(err.to_string().contains("convs1_w has 2 entries"), "{err}");
+    }
+
+    #[test]
+    fn res_block_new_rejects_wrong_conv_weight_shape() {
+        let cfg = ResBlockConfig {
+            channels: 4,
+            kernel_size: 3,
+            dilations: vec![1],
+        };
+        let weights = ResBlockWeights {
+            convs1_w: vec![vec![0.0f32; 10]], // wrong length
+            convs1_b: vec![vec![0.0f32; 4]],
+            convs2_w: vec![vec![0.0f32; 4 * 4 * 3]],
+            convs2_b: vec![vec![0.0f32; 4]],
+            activations1_alpha: vec![vec![0.0f32; 4]],
+            activations2_alpha: vec![vec![0.0f32; 4]],
+        };
+        let err = ResBlock::new(cfg, weights).unwrap_err();
+        assert!(err.to_string().contains("convs1_w[0]"), "{err}");
     }
 }
