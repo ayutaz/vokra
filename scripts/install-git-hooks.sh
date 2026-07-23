@@ -14,8 +14,21 @@ cd "$ROOT"
 git config core.hooksPath .githooks
 
 echo "Installed: core.hooksPath -> .githooks"
-echo "  pre-commit (fast):  cargo fmt --check, forbidden symbols, zero-dependency invariant"
-echo "  pre-push  (full):   cargo clippy -D warnings, cargo test --workspace"
+echo "  pre-commit (fast):  cargo fmt --check, forbidden symbols, zero-dependency invariant,"
+echo "                      fixture-eol pins, pipefail/grep-q lint"
+echo "  pre-push  (compiling):"
+echo "    * compliance scanner sigpipe test (always, ~5 s)"
+echo "    * cargo clippy --all-targets -- -D warnings"
+echo "    * cargo test --workspace   (or cargo nextest run --workspace + cargo test --doc"
+echo "                                if cargo-nextest is installed; ~60% faster)"
+echo
+echo "Iteration-speed fast-paths (silent skip forbidden — reason is always printed):"
+echo "  * documentation-only diffs (docs/**, .github/**, *.md, *.yml, *.yaml, etc.)"
+echo "    skip clippy + test; the compliance scanner still runs."
+echo "  * VOKRA_HOOK_DEEP=1 forces the full check regardless of diff shape."
+echo
+echo "Optional (recommended): install cargo-nextest for the parallel test runner:"
+echo "  cargo install cargo-nextest --locked"
 echo
 echo "Bypass once:  git commit --no-verify   /   git push --no-verify"
 echo "Or per-run:   VOKRA_SKIP_HOOKS=1 git ..."
