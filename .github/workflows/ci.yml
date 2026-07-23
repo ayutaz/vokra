@@ -336,7 +336,8 @@ jobs:
         # model_zoo/ docs/. Pure bash + find, no cargo, so it costs nothing
         # in the job that already owns licence enforcement.
         run: bash scripts/compliance/check-encodec-exclusion.sh
-      - name: Platform-support matrix drift check (advisory, M4-11-T08)
+      - name: Platform-support matrix drift check (advisory, record-only, M4-11-T08)
+        id: platform-support-drift
         # Verifies that every evidence anchor cited by
         # docs/platform-support/v1.0-rc-support-matrix.md (workflow jobs, build
         # scripts, benchmark docs) still exists — so the platform-support
@@ -345,11 +346,16 @@ jobs:
         # block the PR. Promotion to a required branch-protection check is an
         # owner decision (NFR-MT-07), mirroring gpu-vulkan-parity.yml's
         # cool-off posture. The self-test guards the parser against regression.
+        # Canonical §8.2 form: name suffix "(advisory, record-only)" +
+        # explicit `id:` — required by scripts/check-workflow-advisory-suffix.sh
+        # (§8.2 tripwire) so a copy-paste of this block into a new workflow
+        # cannot silently drop the advisory-shape discipline.
         continue-on-error: true
         run: |
           bash scripts/check-platform-support.sh --self-test
           bash scripts/check-platform-support.sh
-      - name: Contributor-reference doc drift check (advisory, X-09a-T10)
+      - name: Contributor-reference doc drift check (advisory, record-only, X-09a-T10)
+        id: contributor-reference-drift
         # Verifies the two public reference documents that stand in for the
         # unpublished planning tree: docs/requirement-ids.md (the glossary
         # that lets an outside reader resolve a cited requirement ID) and
@@ -368,7 +374,8 @@ jobs:
         run: |
           bash scripts/check-doc-references.sh --self-test
           bash scripts/check-doc-references.sh
-      - name: Contributor-funnel integrity check (advisory, X-05-T07)
+      - name: Contributor-funnel integrity check (advisory, record-only, X-05-T07)
+        id: contributor-funnel-integrity
         # Legs (b)-(f) catch real drift in the contributor funnel: dead
         # relative links, a missing en/ja twin, an SSOT pointer whose target
         # no longer exists, an absolute template URL that resolves nowhere.
@@ -397,7 +404,8 @@ jobs:
             exit 0
           fi
           exit "$rc"
-      - name: Owner-checklist drift check (advisory, M4-RESIDUAL-A-T01)
+      - name: Owner-checklist drift check (advisory, record-only, M4-RESIDUAL-A-T01)
+        id: owner-checklist-drift
         # Guards the owner hand-off surface (docs/m4-owner-verification-checklist.md,
         # docs/m3-owner-verification-checklist.md, docs/handoff/m4-19.md) against
         # two failure modes: a CLI flag name that no longer exists reappearing in
@@ -411,7 +419,8 @@ jobs:
         run: |
           bash scripts/check-owner-checklist-drift.sh --self-test
           bash scripts/check-owner-checklist-drift.sh
-      - name: Zoo-manifest completeness gate (advisory, M5-12-T09)
+      - name: Zoo-manifest completeness gate (advisory, record-only, M5-12-T09)
+        id: zoo-manifest-complete
         # GA DoD item 2 ("all zoo models degrade < 5% / pass parity") is only
         # honest if the zoo model set is enumerable and complete. This gate
         # cross-references the tracked machine SoT (docs/license-audit.md's
