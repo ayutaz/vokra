@@ -356,6 +356,58 @@ mod tests {
         out
     }
 
+    fn minimal_safetensors_one_f16() -> Vec<u8> {
+        // Single f16 tensor with a distinctive, non-zero payload so the
+        // byte-verbatim round-trip test can prove no silent truncation /
+        // byte-swap happened: shape [2, 3] × sizeof(f16) = 12 bytes. The
+        // half-precision encodings 0x3C00…0x4600 decode to 1.0, 2.0, 3.0,
+        // 4.0, 5.0, 6.0 respectively, but the converter never dequantizes
+        // — the raw u16 bytes are what round-trips.
+        let payload: [u16; 6] = [0x3C00, 0x4000, 0x4200, 0x4400, 0x4500, 0x4600];
+        let mut data_region = Vec::new();
+        for v in payload {
+            data_region.extend_from_slice(&v.to_le_bytes());
+        }
+        let header = r#"{"backbone.embeddings.0.weight":{"dtype":"F16","shape":[2,3],"data_offsets":[0,12]}}"#;
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&data_region);
+        out
+    }
+
+    fn minimal_safetensors_one_bf16() -> Vec<u8> {
+        // Single bf16 tensor: the `vokra-core` safetensors reader accepts
+        // BF16 (M4-06, the all-BF16 `kyutai/moshiko` release), but the
+        // Zonos `convert()` loop only pipes F32 / F16 through — so this
+        // fixture exercises the `_ => report.skipped_non_float += 1` arm.
+        // Shape [2, 3] × sizeof(bf16) = 12 bytes (same byte span as F16).
+        let header = r#"{"backbone.embeddings.0.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&[0u8; 12]);
+        out
+    }
+
+    fn minimal_safetensors_duplicate_name() -> Vec<u8> {
+        // Two tensor entries with the same key. The `vokra-core` JSON
+        // parser preserves duplicate keys (objects are stored as
+        // `Vec<(String, JsonValue)>`, not a map), and the safetensors
+        // header parser pushes both descriptors onto its `Vec` (the
+        // secondary name index is a HashMap that overwrites, but
+        // `.tensors()` returns the full Vec). The Zonos converter walks
+        // `.tensors()`, so the second `GgufBuilder::add_tensor` call hits
+        // `GgufError::DuplicateTensor`. Two F32 shape-[1] tensors, 4
+        // bytes each, contiguous data region.
+        let header = r#"{"a":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"a":{"dtype":"F32","shape":[1],"data_offsets":[4,8]}}"#;
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&[0u8; 8]);
+        out
+    }
+
     #[test]
     fn arch_string_matches_runtime_constant() {
         // The two crates only share `vokra-core`, so this constant is the
@@ -514,5 +566,152 @@ mod tests {
         assert_eq!(CONDITIONERS[6].kind, "integer");
         assert_eq!(CONDITIONERS[6].min_val_i, -1);
         assert_eq!(CONDITIONERS[6].max_val_i, 126);
+    }
+
+    /// Pins the `GgmlType::F16` half of the `match` arm at the top of the
+    /// `convert()` tensor loop: the existing `round_trip_carries_arch_chunks
+    /// _and_provenance` test only fed F32, leaving ~50% of the passthrough
+    /// arm untested. A refactor that accidentally routed F16 out of the
+    /// verbatim path (e.g. into a quantize branch) would flip
+    /// `written == 1` to `written == 0` here.
+    #[test]
+    fn f16_tensor_passes_through_and_counts_written() {
+        let (_, report) = convert(minimal_safetensors_one_f16()).expect("convert");
+        assert_eq!(report.written, 1);
+        assert_eq!(report.skipped_non_float, 0);
+        assert!(
+            report.notes.is_empty(),
+            "F16 pass-through must not fire the loud note: {:?}",
+            report.notes
+        );
+    }
+
+    /// Pins the `_ => report.skipped_non_float += 1` arm at line 259: the
+    /// `vokra-core` safetensors reader graduated BF16 from "future
+    /// extension" to "supported" in M4-06, so the arm is genuinely
+    /// reachable — contradicting the `ZonosReport::skipped_non_float`
+    /// doc comment that calls it a "defensive counter". This also covers
+    /// the second path into the loud note (`written == 0` via a skipped
+    /// non-float tensor) which the existing `zero_tensor_conversion_
+    /// surfaces_a_loud_note` test did not exercise (that one hits an
+    /// empty `{}` header).
+    #[test]
+    fn bf16_tensor_increments_skipped_and_surfaces_loud_note() {
+        let (_, report) = convert(minimal_safetensors_one_bf16()).expect("convert");
+        assert_eq!(report.written, 0);
+        assert_eq!(report.skipped_non_float, 1);
+        assert!(
+            report.notes.iter().any(|n| n.contains("no float tensors")),
+            "BF16-only conversion must emit the loud note: {:?}",
+            report.notes
+        );
+    }
+
+    /// Pins the `?` on `SafetensorsFile::parse(bytes)?` at line 232: any
+    /// buffer shorter than the 8-byte header-length prefix returns
+    /// `SafetensorsError::Truncated`, which the `?` must forward as
+    /// `ConvertError::Parse` (FR-EX-08: no silent success, no panic).
+    /// Covers both the "garbage bytes" error branch and the "empty
+    /// bytes" edge case in one shot — both hit the same `data.len() < 8`
+    /// check, and a regression that swallowed either would show here.
+    #[test]
+    fn short_buffers_propagate_safetensors_parse_error() {
+        for garbage in [Vec::new(), vec![0u8; 4], vec![0u8; 7]] {
+            let n = garbage.len();
+            let err = convert(garbage).expect_err(&format!("len {n}: expected error, got Ok"));
+            match err {
+                ConvertError::Parse(_) => {}
+                other => panic!("len {n}: expected ConvertError::Parse, got {other:?}"),
+            }
+        }
+    }
+
+    /// Pins the `?` on `b.add_tensor(...)?` at line 255: the safetensors
+    /// JSON header parser preserves duplicate keys (see the fixture
+    /// doc), so `st.tensors()` yields both entries; the second
+    /// `GgufBuilder::add_tensor` call must then hit
+    /// `GgufError::DuplicateTensor`, which the `?` must forward as
+    /// `ConvertError::Gguf`. Without this test a future refactor that
+    /// silently deduped tensor names would ship broken (FR-EX-08).
+    #[test]
+    fn duplicate_tensor_name_propagates_gguf_error() {
+        let err = convert(minimal_safetensors_duplicate_name())
+            .expect_err("duplicate tensor name must error");
+        match err {
+            ConvertError::Gguf(msg) => {
+                assert!(
+                    msg.to_lowercase().contains("duplicate"),
+                    "unexpected Gguf error message: {msg}"
+                );
+            }
+            other => panic!("expected ConvertError::Gguf, got {other:?}"),
+        }
+    }
+
+    /// Pins the module doc contract on lines 27-31: "GGUF tensor names
+    /// are the upstream safetensors names verbatim" and "passes every
+    /// F32 / F16 tensor through unchanged". The existing round-trip
+    /// test asserts `report.written == 1` but never re-parses the output
+    /// GGUF, so a regression that silently renamed the tensor, swapped
+    /// shape order, or byte-scrambled the payload would still pass the
+    /// metadata assertions. This walks the fixture through the
+    /// safetensors reader to capture the input (name, dtype, shape,
+    /// bytes) triple, then converts, serializes, re-parses, and diffs
+    /// every field. Uses the F16 fixture because its payload is a
+    /// distinctive non-zero bit pattern (0x3C00…0x4600) that a partial
+    /// truncation or byte-swap cannot silently mimic.
+    #[test]
+    fn round_trip_carries_tensor_bytes_verbatim() {
+        let bytes = minimal_safetensors_one_f16();
+        let st = SafetensorsFile::parse(bytes.clone()).expect("parse safetensors");
+        let (input_name, input_shape, input_dtype, input_payload) = {
+            let t = st.tensors().first().expect("one tensor in fixture");
+            (
+                t.name.clone(),
+                t.shape.clone(),
+                t.dtype,
+                st.tensor_bytes(t).to_vec(),
+            )
+        };
+
+        let (builder, report) = convert(bytes).expect("convert");
+        assert_eq!(report.written, 1);
+
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+
+        let info = file
+            .tensor_info(&input_name)
+            .unwrap_or_else(|| panic!("output GGUF must carry tensor `{input_name}`"));
+        assert_eq!(info.dtype, input_dtype, "dtype must be preserved verbatim");
+        assert_eq!(
+            info.dimensions, input_shape,
+            "shape must be preserved verbatim"
+        );
+        assert_eq!(
+            file.tensor_bytes(info),
+            input_payload.as_slice(),
+            "payload bytes must round-trip byte-for-byte (verbatim contract)"
+        );
+    }
+
+    /// Pins the invariant documented at lines 119-121: "codebook k is
+    /// rolled by k+1 → [1, 2, ..., NUM_CODEBOOKS]". If a future v0.2
+    /// bumped `NUM_CODEBOOKS` without extending `DELAY_PATTERN` (or vice
+    /// versa) the drift would surface only at model bind time as a
+    /// runtime shape mismatch; this asserts the k+1 rule at CI time so
+    /// the converter never emits a `vokra.zonos.delay_pattern_count`
+    /// that disagrees with `vokra.zonos.num_codebooks`.
+    #[test]
+    fn delay_pattern_length_matches_num_codebooks() {
+        assert_eq!(NUM_CODEBOOKS as usize, DELAY_PATTERN.len());
+        for (i, &d) in DELAY_PATTERN.iter().enumerate() {
+            assert_eq!(
+                d,
+                (i + 1) as u32,
+                "delay_pattern[{i}] must be {} (k+1 rule)",
+                i + 1
+            );
+        }
     }
 }
