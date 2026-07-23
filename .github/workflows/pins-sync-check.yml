@@ -60,13 +60,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: check_pins_sync self-test (stdlib-only)
-        # Runs BEFORE the network-less real check so a bad script is
-        # caught in seconds, not after PyYAML install.
-        shell: bash
-        run: python3 .github/scripts/check_pins_sync.py self-test
-
       - name: Install probe deps (isolated venv; does NOT touch root Cargo.lock)
+        # Must run BEFORE the self-test step: check_pins_sync.py imports
+        # PyYAML at the top of check_forward / check_reverse, so the
+        # self-test needs the venv on PATH. The "stdlib-only" claim in an
+        # earlier revision was inaccurate — script uses PyYAML for the
+        # catalog parse (deliberate, per-run venv is the isolation seam).
         shell: bash
         run: |
           set -euo pipefail
@@ -75,6 +74,16 @@ jobs:
           . /tmp/vokra-pins-sync-venv/bin/activate
           python -m pip install --upgrade pip
           python -m pip install "pyyaml==6.0.2"
+
+      - name: check_pins_sync self-test (via venv PyYAML)
+        # Runs BEFORE the real check so a bad script is caught in seconds.
+        # Requires the venv installed in the previous step.
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-pins-sync-venv/bin/activate
+          python3 .github/scripts/check_pins_sync.py self-test
 
       - name: Run sync check (forward + reverse legs)
         shell: bash

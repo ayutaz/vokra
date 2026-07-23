@@ -63,14 +63,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: pins_probe self-test (stdlib-only)
-        # The self-test proves the enforcement + rendering logic is
-        # intact BEFORE the heavy network probes fire. Runs pure stdlib
-        # so a broken script surfaces in seconds, not after 13 fetches.
-        shell: bash
-        run: python3 .github/scripts/pins_probe.py self-test
-
       - name: Install probe deps (isolated venv; does NOT touch root Cargo.lock)
+        # Must run BEFORE the self-test step: pins_probe.py imports PyYAML
+        # to parse the catalog. The "stdlib-only" claim in an earlier
+        # revision was inaccurate — script uses PyYAML for the catalog
+        # parse (deliberate, per-run venv is the isolation seam).
         shell: bash
         run: |
           set -euo pipefail
@@ -80,6 +77,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "pyyaml==6.0.2" "huggingface_hub>=0.24,<1"
           python -m pip list | grep -Ei '^(pyyaml|huggingface[-_]hub)\b'
+
+      - name: pins_probe self-test (via venv PyYAML)
+        # The self-test proves the enforcement + rendering logic is
+        # intact BEFORE the heavy network probes fire. Requires the
+        # venv installed in the previous step.
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-pins-venv/bin/activate
+          python3 .github/scripts/pins_probe.py self-test
 
       - name: Emit probe plan from pins.yaml
         id: plan
