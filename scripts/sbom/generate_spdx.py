@@ -147,7 +147,7 @@ def resolve_graph(
             continue
         m = TREE_LINE.match(line)
         if not m:
-            fail(f"unparseable `cargo tree` line (format drift?): {line!r}")
+            fail(f"unparsable `cargo tree` line (format drift?): {line!r}")
         name, version = m.group("name"), m.group("version")
         prev = pkgs.get(name)
         if prev is not None and prev != version:

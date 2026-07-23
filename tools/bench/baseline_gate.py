@@ -19,7 +19,7 @@ Contract:
       - neither                         -> raise (malformed; the CI step
         must FAIL, not silently pass — a broken baseline is a defect, not a
         skip)
-  * missing file / unparseable JSON     -> raise
+  * missing file / unparsable JSON      -> raise
 
 CLI: `python3 tools/bench/baseline_gate.py <path>` prints the classification
 to stdout and exits 0; a missing/malformed file prints to stderr and exits 2

@@ -102,7 +102,7 @@ def expand_field(spec, lo, hi, where):
         if "/" in part:
             part, _, step_s = part.partition("/")
             if not step_s.isdigit() or int(step_s) == 0:
-                problems.append(f"{where}: unparseable cron step '{step_s}'")
+                problems.append(f"{where}: unparsable cron step '{step_s}'")
                 return None
             step = int(step_s)
         if part == "*":
@@ -110,13 +110,13 @@ def expand_field(spec, lo, hi, where):
         elif "-" in part.lstrip("-"):
             a, _, b = part.partition("-")
             if not (a.isdigit() and b.isdigit()):
-                problems.append(f"{where}: unparseable cron range '{part}'")
+                problems.append(f"{where}: unparsable cron range '{part}'")
                 return None
             lo_i, hi_i = int(a), int(b)
         elif part.isdigit():
             lo_i = hi_i = int(part)
         else:
-            problems.append(f"{where}: unparseable cron field '{part}'")
+            problems.append(f"{where}: unparsable cron field '{part}'")
             return None
         if lo_i < lo or hi_i > hi or lo_i > hi_i:
             problems.append(f"{where}: cron field out of range '{part}'")
@@ -647,7 +647,7 @@ YML
         rc=1
     fi
 
-    # (5) An unparseable cron must be a hard error, never a silent pass.
+    # (5) An unparsable cron must be a hard error, never a silent pass.
     mkdir -p "$tmp/badcron"
     cat >"$tmp/badcron/a.yml" <<'YML'
 name: A

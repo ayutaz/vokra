@@ -537,7 +537,7 @@ MD
     printf 'New requirement NFR-QL-01 landed.\n' >>"$d/README.md"
     git -C "$d" add -A >/dev/null 2>&1
     if analyze "$d" verify >/dev/null 2>&1; then
-        echo "self-test FAILED: an uncatalogued ID should fail leg (a)" >&2
+        echo "self-test FAILED: an uncataloged ID should fail leg (a)" >&2
         rc=1
     fi
 

@@ -90,7 +90,7 @@ class TestClassify(unittest.TestCase):
             with self.assertRaises(bg.BaselineError):
                 bg.classify(p)
 
-    def test_unparseable_json_raises(self):
+    def test_unparsable_json_raises(self):
         with tempfile.TemporaryDirectory() as td:
             p = write(Path(td), "{not json")
             with self.assertRaises(bg.BaselineError):
