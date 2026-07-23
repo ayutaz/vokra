@@ -16,6 +16,10 @@
 
 use vokra_core::{Result, VokraError};
 
+use crate::nsf::{
+    SineGenConfig, SourceModuleHnNSF, SourceModuleHnNSFConfig, SourceModuleHnNSFWeights,
+};
+
 // ---------------------------------------------------------------------------
 // F0Predictor (upstream ConvRNNF0Predictor — no RNN despite the name)
 // ---------------------------------------------------------------------------
@@ -792,6 +796,474 @@ fn conv1d_dilated_same_padding(
         }
     }
     Ok(output)
+}
+
+// ---------------------------------------------------------------------------
+// HiFTGenerator (upstream L378-490: NSF + ISTFTNet)
+// ---------------------------------------------------------------------------
+
+/// Hyperparameters for [`HiFTGenerator`]. Defaults mirror the upstream
+/// CosyVoice HiFTNet __init__ signature (`generator.py:378-395`) so a caller
+/// only needs to override the values their voice checkpoint disagrees with.
+///
+/// Upstream ships CosyVoice2 at `sampling_rate = 22050`, mel `in_channels =
+/// 80`, `upsample_rates = [8, 8]`, `istft = {n_fft: 16, hop_len: 4}` which
+/// gives `total_upsample_factor = 8 * 8 * 4 = 256`. Every model that feeds
+/// HiFTNet uses those knobs today; the vector fields stay `Vec` rather than
+/// arrays so a future 24-kHz variant (which upstream flags via
+/// `sinegen_type='2'`) can differ without a struct migration.
+#[derive(Debug, Clone)]
+pub struct HiFTGeneratorConfig {
+    /// Mel channels on the input (upstream `in_channels`, default 80).
+    pub in_channels: u32,
+    /// Base conv channels; every upsample stage `i` uses
+    /// `base_channels / 2^i` on its input side and `base_channels / 2^(i+1)`
+    /// on the output side (upstream `base_channels`, default 512).
+    pub base_channels: u32,
+    /// Number of harmonics on the source (upstream `nb_harmonics`, default 8;
+    /// forwarded to `SourceModuleHnNSF`'s `harmonic_num`).
+    pub nb_harmonics: u32,
+    /// Audio sampling rate in Hz (upstream `sampling_rate`, default 22050).
+    pub sampling_rate: u32,
+    /// SineGen `sine_amp` (upstream `nsf_alpha`, default 0.1).
+    pub nsf_alpha: f32,
+    /// SineGen `noise_std` (upstream `nsf_sigma`, default 0.003).
+    pub nsf_sigma: f32,
+    /// SineGen `voiced_threshold` (upstream `nsf_voiced_threshold`, default 10).
+    pub nsf_voiced_threshold: f32,
+    /// Per-stage stride (upstream `upsample_rates`, default `[8, 8]`).
+    pub upsample_rates: Vec<u32>,
+    /// Per-stage kernel size (upstream `upsample_kernel_sizes`, default `[16, 16]`).
+    /// Must have the same length as `upsample_rates`.
+    pub upsample_kernel_sizes: Vec<u32>,
+    /// iSTFT window size (upstream `istft_params["n_fft"]`, default 16).
+    pub istft_n_fft: u32,
+    /// iSTFT hop length (upstream `istft_params["hop_len"]`, default 4).
+    pub istft_hop_len: u32,
+    /// MRF (multi-receptive-field) branch kernel sizes (upstream
+    /// `resblock_kernel_sizes`, default `[3, 7, 11]`).
+    pub resblock_kernel_sizes: Vec<u32>,
+    /// MRF branch dilation lists (upstream `resblock_dilation_sizes`, default
+    /// `[[1,3,5], [1,3,5], [1,3,5]]`). Length must match
+    /// `resblock_kernel_sizes`.
+    pub resblock_dilation_sizes: Vec<Vec<u32>>,
+    /// Source-side ResBlock branch kernels (upstream
+    /// `source_resblock_kernel_sizes`, default `[7, 11]`).
+    pub source_resblock_kernel_sizes: Vec<u32>,
+    /// Source-side ResBlock dilations (upstream
+    /// `source_resblock_dilation_sizes`, default `[[1,3,5], [1,3,5]]`).
+    pub source_resblock_dilation_sizes: Vec<Vec<u32>>,
+    /// Leaky-ReLU negative slope (upstream `lrelu_slope`, default 0.1).
+    pub lrelu_slope: f32,
+    /// Terminal clamp on the produced waveform (upstream `audio_limit`,
+    /// default 0.99).
+    pub audio_limit: f32,
+}
+
+impl Default for HiFTGeneratorConfig {
+    fn default() -> Self {
+        Self {
+            in_channels: 80,
+            base_channels: 512,
+            nb_harmonics: 8,
+            sampling_rate: 22050,
+            nsf_alpha: 0.1,
+            nsf_sigma: 0.003,
+            nsf_voiced_threshold: 10.0,
+            upsample_rates: vec![8, 8],
+            upsample_kernel_sizes: vec![16, 16],
+            istft_n_fft: 16,
+            istft_hop_len: 4,
+            resblock_kernel_sizes: vec![3, 7, 11],
+            resblock_dilation_sizes: vec![vec![1, 3, 5], vec![1, 3, 5], vec![1, 3, 5]],
+            source_resblock_kernel_sizes: vec![7, 11],
+            source_resblock_dilation_sizes: vec![vec![1, 3, 5], vec![1, 3, 5]],
+            lrelu_slope: 0.1,
+            audio_limit: 0.99,
+        }
+    }
+}
+
+impl HiFTGeneratorConfig {
+    /// Number of upsample stages (== `upsample_rates.len()`).
+    pub fn num_upsamples(&self) -> usize {
+        self.upsample_rates.len()
+    }
+
+    /// Number of MRF kernels per stage (== `resblock_kernel_sizes.len()`).
+    /// Every upsample stage runs this many parallel `ResBlock` branches that
+    /// are averaged into a single feature map (upstream's `xs / num_kernels`).
+    pub fn num_kernels(&self) -> usize {
+        self.resblock_kernel_sizes.len()
+    }
+
+    /// Total upsample factor applied to the F0 signal before the source
+    /// module — `prod(upsample_rates) * istft_hop_len`. With upstream
+    /// defaults this is `8 * 8 * 4 = 256`.
+    pub fn total_upsample_factor(&self) -> u32 {
+        self.upsample_rates.iter().product::<u32>() * self.istft_hop_len
+    }
+
+    /// Feature channels the layer produces on stage `i`'s output side —
+    /// `base_channels / 2^(i+1)`. Stage 0 halves, stage 1 quarters, and so
+    /// on. Upstream ships 2 stages so the final channel count is
+    /// `base_channels / 4 = 128`.
+    pub fn output_channels_at(&self, stage: usize) -> u32 {
+        self.base_channels >> (stage as u32 + 1)
+    }
+}
+
+/// Learned parameters for [`HiFTGenerator`].
+///
+/// Every conv weight is row-major:
+/// - `conv_pre_w`: `[base_channels, in_channels, 7]`
+/// - `ups_w[i]`: `[in_ch_i, out_ch_i, upsample_kernel_sizes[i]]` (PyTorch
+///   `nn.ConvTranspose1d` layout with in-channels leading — same as
+///   [`conv_transpose1d`] takes).
+/// - `source_downs_w[i]`: `[out_ch_i, istft_n_fft + 2, kernel_i]` (regular
+///   Conv1d). `kernel_i` and stride are chosen by upstream's decision:
+///   `u == 1` gives `k = 1, stride = 1`; otherwise `k = 2u, stride = u,
+///   padding = u/2`.
+/// - `conv_post_w`: `[istft_n_fft + 2, output_channels_at(num_ups - 1), 7]`
+///
+/// `f0_predictor_weights` is the standalone F0 predictor (Wave 2).
+/// `m_source_linear_w` / `m_source_linear_b` is upstream
+/// `SourceModuleHnNSF.l_linear` (Linear(nb_harmonics + 1, 1)).
+///
+/// `resblock_weights` has length `num_upsamples * num_kernels` — laid out
+/// row-major (upstream `resblocks[i * num_kernels + j]`).
+/// `source_resblock_weights` has length `num_upsamples`.
+#[derive(Debug, Clone)]
+pub struct HiFTGeneratorWeights {
+    /// Row-major `[base_channels, in_channels, 7]` — the initial mel
+    /// projection.
+    pub conv_pre_w: Vec<f32>,
+    /// `[base_channels]` bias for `conv_pre`.
+    pub conv_pre_b: Vec<f32>,
+    /// Per-stage upsample ConvTranspose1d weights, row-major
+    /// `[in_ch_i, out_ch_i, k_i]`. Length must equal `num_upsamples`.
+    pub ups_w: Vec<Vec<f32>>,
+    /// Per-stage ups bias, `[out_ch_i]`.
+    pub ups_b: Vec<Vec<f32>>,
+    /// Per-stage source-down Conv1d weight, `[out_ch_i, n_fft+2, k]`.
+    pub source_downs_w: Vec<Vec<f32>>,
+    /// Per-stage source-down Conv1d bias, `[out_ch_i]`.
+    pub source_downs_b: Vec<Vec<f32>>,
+    /// Per-stage source ResBlock weights.
+    pub source_resblock_weights: Vec<ResBlockWeights>,
+    /// Row-major `num_upsamples * num_kernels` ResBlock weights.
+    pub resblock_weights: Vec<ResBlockWeights>,
+    /// Row-major `[n_fft+2, output_channels_at(num_ups - 1), 7]` post-conv.
+    pub conv_post_w: Vec<f32>,
+    /// `[n_fft+2]` post-conv bias.
+    pub conv_post_b: Vec<f32>,
+    /// Linear head for the source module: `[nb_harmonics + 1]`.
+    pub m_source_linear_w: Vec<f32>,
+    /// Scalar bias for the source module linear head.
+    pub m_source_linear_b: f32,
+    /// Weights for the standalone F0 predictor (Wave 2).
+    pub f0_predictor_weights: F0PredictorWeights,
+}
+
+/// HiFTNet generator — the full "Neural Source Filter + ISTFTNet" stack.
+/// Forward and decode land in Wave 3c-2 (this Wave 3c-1 lands only the
+/// config / weights / new so a caller can already validate a synthesised
+/// weight bundle end-to-end at construction).
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fields consumed by forward/decode in Wave 3c-2
+pub struct HiFTGenerator {
+    cfg: HiFTGeneratorConfig,
+    f0_predictor: F0Predictor,
+    m_source: SourceModuleHnNSF,
+    conv_pre_w: Vec<f32>,
+    conv_pre_b: Vec<f32>,
+    ups_w: Vec<Vec<f32>>,
+    ups_b: Vec<Vec<f32>>,
+    source_downs_w: Vec<Vec<f32>>,
+    source_downs_b: Vec<Vec<f32>>,
+    source_downs_kernel: Vec<u32>,
+    source_downs_stride: Vec<u32>,
+    source_downs_padding: Vec<u32>,
+    source_resblocks: Vec<ResBlock>,
+    resblocks: Vec<ResBlock>,
+    conv_post_w: Vec<f32>,
+    conv_post_b: Vec<f32>,
+}
+
+impl HiFTGenerator {
+    /// Build a `HiFTGenerator` from its config + weights bundle. Every
+    /// shape is checked upfront so a mismatch surfaces at build time rather
+    /// than mid-forward. F0Predictor and SourceModuleHnNSF ownership pass
+    /// into this struct — after construction only the generator is exposed.
+    pub fn new(cfg: HiFTGeneratorConfig, weights: HiFTGeneratorWeights) -> Result<Self> {
+        // ---- Config-shape invariants -----------------------------------
+        let n_ups = cfg.num_upsamples();
+        let n_kernels = cfg.num_kernels();
+        if n_ups == 0 {
+            return Err(VokraError::InvalidArgument(
+                "HiFTGenerator: upsample_rates must not be empty".to_owned(),
+            ));
+        }
+        if cfg.upsample_kernel_sizes.len() != n_ups {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator: upsample_kernel_sizes length {} != \
+                 upsample_rates length {n_ups}",
+                cfg.upsample_kernel_sizes.len()
+            )));
+        }
+        if n_kernels == 0 {
+            return Err(VokraError::InvalidArgument(
+                "HiFTGenerator: resblock_kernel_sizes must not be empty".to_owned(),
+            ));
+        }
+        if cfg.resblock_dilation_sizes.len() != n_kernels {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator: resblock_dilation_sizes length {} != \
+                 resblock_kernel_sizes length {n_kernels}",
+                cfg.resblock_dilation_sizes.len()
+            )));
+        }
+        if cfg.source_resblock_kernel_sizes.len() != n_ups {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator: source_resblock_kernel_sizes length {} != \
+                 num_upsamples {n_ups}",
+                cfg.source_resblock_kernel_sizes.len()
+            )));
+        }
+        if cfg.source_resblock_dilation_sizes.len() != n_ups {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator: source_resblock_dilation_sizes length {} != \
+                 num_upsamples {n_ups}",
+                cfg.source_resblock_dilation_sizes.len()
+            )));
+        }
+        if cfg.istft_n_fft == 0 || cfg.istft_hop_len == 0 {
+            return Err(VokraError::InvalidArgument(
+                "HiFTGenerator: istft_n_fft and istft_hop_len must be > 0".to_owned(),
+            ));
+        }
+
+        // ---- Sub-modules -----------------------------------------------
+        let f0_predictor = F0Predictor::new(
+            F0PredictorConfig {
+                num_class: 1,
+                in_channels: cfg.in_channels,
+                cond_channels: cfg.base_channels,
+                kernel_size: 3,
+                num_layers: 5,
+            },
+            weights.f0_predictor_weights,
+        )?;
+
+        let m_source = SourceModuleHnNSF::new(
+            SourceModuleHnNSFConfig {
+                sine_gen: SineGenConfig {
+                    samp_rate: cfg.sampling_rate,
+                    harmonic_num: cfg.nb_harmonics,
+                    sine_amp: cfg.nsf_alpha,
+                    noise_std: cfg.nsf_sigma,
+                    voiced_threshold: cfg.nsf_voiced_threshold,
+                },
+            },
+            SourceModuleHnNSFWeights {
+                linear_w: weights.m_source_linear_w,
+                linear_b: weights.m_source_linear_b,
+            },
+        )?;
+
+        // ---- conv_pre --------------------------------------------------
+        let bc = cfg.base_channels as usize;
+        let inc = cfg.in_channels as usize;
+        let expected_conv_pre_w = bc * inc * 7;
+        if weights.conv_pre_w.len() != expected_conv_pre_w {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator conv_pre_w: expected length {expected_conv_pre_w} \
+                 ({bc}*{inc}*7), got {}",
+                weights.conv_pre_w.len()
+            )));
+        }
+        if weights.conv_pre_b.len() != bc {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator conv_pre_b: expected length {bc}, got {}",
+                weights.conv_pre_b.len()
+            )));
+        }
+
+        // ---- ups + shape derivations -----------------------------------
+        if weights.ups_w.len() != n_ups || weights.ups_b.len() != n_ups {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator ups: expected {n_ups} weight and bias sets, \
+                 got {} weights / {} biases",
+                weights.ups_w.len(),
+                weights.ups_b.len()
+            )));
+        }
+        for i in 0..n_ups {
+            let in_ch = (cfg.base_channels >> (i as u32)) as usize;
+            let out_ch = (cfg.base_channels >> (i as u32 + 1)) as usize;
+            let k = cfg.upsample_kernel_sizes[i] as usize;
+            let expected = in_ch * out_ch * k;
+            if weights.ups_w[i].len() != expected {
+                return Err(VokraError::InvalidArgument(format!(
+                    "HiFTGenerator ups_w[{i}]: expected length {expected} \
+                     ({in_ch}*{out_ch}*{k}), got {}",
+                    weights.ups_w[i].len()
+                )));
+            }
+            if weights.ups_b[i].len() != out_ch {
+                return Err(VokraError::InvalidArgument(format!(
+                    "HiFTGenerator ups_b[{i}]: expected length {out_ch}, got {}",
+                    weights.ups_b[i].len()
+                )));
+            }
+            let stride = cfg.upsample_rates[i] as usize;
+            if k < stride {
+                return Err(VokraError::InvalidArgument(format!(
+                    "HiFTGenerator ups[{i}]: kernel {k} < stride {stride} \
+                     (upstream `padding = (k-u)//2` requires k >= u)"
+                )));
+            }
+        }
+
+        // ---- source_downs (upstream `downsample_rates` + `downsample_cum_rates`)
+        // downsample_rates = [1] + upsample_rates[::-1][:-1]
+        // → e.g. upsample [8, 8] gives [1, 8]
+        // downsample_cum_rates reversed gives the per-stage `u`.
+        let mut downsample_rates: Vec<u32> = Vec::with_capacity(n_ups);
+        downsample_rates.push(1);
+        for i in (0..n_ups - 1).rev() {
+            downsample_rates.push(cfg.upsample_rates[i]);
+        }
+        let mut downsample_cum: Vec<u32> = Vec::with_capacity(n_ups);
+        let mut acc: u32 = 1;
+        for &r in &downsample_rates {
+            acc = acc.saturating_mul(r);
+            downsample_cum.push(acc);
+        }
+        let downsample_us: Vec<u32> = downsample_cum.iter().rev().copied().collect();
+
+        let (mut source_downs_kernel, mut source_downs_stride, mut source_downs_padding) = (
+            Vec::with_capacity(n_ups),
+            Vec::with_capacity(n_ups),
+            Vec::with_capacity(n_ups),
+        );
+        if weights.source_downs_w.len() != n_ups || weights.source_downs_b.len() != n_ups {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator source_downs: expected {n_ups} weight+bias, \
+                 got {}+{}",
+                weights.source_downs_w.len(),
+                weights.source_downs_b.len()
+            )));
+        }
+        let n_fft_plus_2 = cfg.istft_n_fft as usize + 2;
+        for (i, &u) in downsample_us.iter().enumerate() {
+            let out_ch = cfg.output_channels_at(i) as usize;
+            let (k, stride, padding) = if u == 1 {
+                (1u32, 1u32, 0u32)
+            } else {
+                (u * 2, u, u / 2)
+            };
+            source_downs_kernel.push(k);
+            source_downs_stride.push(stride);
+            source_downs_padding.push(padding);
+            let expected = out_ch * n_fft_plus_2 * (k as usize);
+            if weights.source_downs_w[i].len() != expected {
+                return Err(VokraError::InvalidArgument(format!(
+                    "HiFTGenerator source_downs_w[{i}]: expected length \
+                     {expected} ({out_ch}*{n_fft_plus_2}*{k}), got {}",
+                    weights.source_downs_w[i].len()
+                )));
+            }
+            if weights.source_downs_b[i].len() != out_ch {
+                return Err(VokraError::InvalidArgument(format!(
+                    "HiFTGenerator source_downs_b[{i}]: expected length \
+                     {out_ch}, got {}",
+                    weights.source_downs_b[i].len()
+                )));
+            }
+        }
+
+        // ---- source_resblocks -----------------------------------------
+        if weights.source_resblock_weights.len() != n_ups {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator source_resblock_weights: expected {n_ups}, got {}",
+                weights.source_resblock_weights.len()
+            )));
+        }
+        let mut source_resblocks = Vec::with_capacity(n_ups);
+        for (i, rbw) in weights.source_resblock_weights.into_iter().enumerate() {
+            let ch = cfg.output_channels_at(i);
+            let cfg_i = ResBlockConfig {
+                channels: ch,
+                kernel_size: cfg.source_resblock_kernel_sizes[i],
+                dilations: cfg.source_resblock_dilation_sizes[i].clone(),
+            };
+            source_resblocks.push(ResBlock::new(cfg_i, rbw)?);
+        }
+
+        // ---- resblocks -------------------------------------------------
+        let n_rbs = n_ups * n_kernels;
+        if weights.resblock_weights.len() != n_rbs {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator resblock_weights: expected {n_rbs} \
+                 (num_ups * num_kernels = {n_ups} * {n_kernels}), got {}",
+                weights.resblock_weights.len()
+            )));
+        }
+        let mut resblocks = Vec::with_capacity(n_rbs);
+        for (idx, rbw) in weights.resblock_weights.into_iter().enumerate() {
+            let i = idx / n_kernels;
+            let j = idx % n_kernels;
+            let ch = cfg.output_channels_at(i);
+            let cfg_ij = ResBlockConfig {
+                channels: ch,
+                kernel_size: cfg.resblock_kernel_sizes[j],
+                dilations: cfg.resblock_dilation_sizes[j].clone(),
+            };
+            resblocks.push(ResBlock::new(cfg_ij, rbw)?);
+        }
+
+        // ---- conv_post -------------------------------------------------
+        let final_ch = cfg.output_channels_at(n_ups - 1) as usize;
+        let expected_conv_post_w = n_fft_plus_2 * final_ch * 7;
+        if weights.conv_post_w.len() != expected_conv_post_w {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator conv_post_w: expected length {expected_conv_post_w} \
+                 ({n_fft_plus_2}*{final_ch}*7), got {}",
+                weights.conv_post_w.len()
+            )));
+        }
+        if weights.conv_post_b.len() != n_fft_plus_2 {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator conv_post_b: expected length {n_fft_plus_2}, got {}",
+                weights.conv_post_b.len()
+            )));
+        }
+
+        Ok(Self {
+            cfg,
+            f0_predictor,
+            m_source,
+            conv_pre_w: weights.conv_pre_w,
+            conv_pre_b: weights.conv_pre_b,
+            ups_w: weights.ups_w,
+            ups_b: weights.ups_b,
+            source_downs_w: weights.source_downs_w,
+            source_downs_b: weights.source_downs_b,
+            source_downs_kernel,
+            source_downs_stride,
+            source_downs_padding,
+            source_resblocks,
+            resblocks,
+            conv_post_w: weights.conv_post_w,
+            conv_post_b: weights.conv_post_b,
+        })
+    }
+
+    /// Immutable access to the config this generator was built with.
+    pub fn config(&self) -> &HiFTGeneratorConfig {
+        &self.cfg
+    }
 }
 
 // ---------------------------------------------------------------------------
