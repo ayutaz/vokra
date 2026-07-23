@@ -93,6 +93,13 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # 2026-07-23 CI 高速化: feature 別 shared-key を明示。Swatinem のデフォルト
+          # は workflow + workspace + Cargo.lock hash なので、同一 OS の feature 違い
+          # (macos × metal vs macos × coreml、ubuntu × cuda vs ubuntu × qnn) が
+          # target/ dir で相互 pollution する。feature 別に cache tarball を分けて
+          # 各 arm を独立に warm 化する。godot-crossbuild.yml が同型パターン。
+          shared-key: gpu-backends-${{ matrix.os }}-${{ matrix.feature }}
       - name: Build (--features ${{ matrix.feature }})
         run: cargo build -p vokra-models -p vokra-cli --features ${{ matrix.feature }}
       - name: Clippy (--features ${{ matrix.feature }})
