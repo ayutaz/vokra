@@ -346,11 +346,16 @@ jobs:
           rustup component add llvm-tools
           bash scripts/build-unity-webgl-lib.sh
 
-      - name: Reuse macOS + Windows cdylibs from ci.yml artifacts (best-effort)
+      - name: Reuse macOS + Windows cdylibs from ci.yml artifacts (advisory, record-only, best-effort)
+        id: reuse-desktop-cdylibs
         # T13 unity-package CI job produces per-OS cdylibs. Attempt to fetch
         # them via `gh run download` scoped to the tag SHA so the release
         # tarball ships all five platforms. Missing artifacts are non-fatal
         # for this wire-up; the summary flags any absence for owner review.
+        # §8.2 canonical form: name suffix `(advisory, record-only)` + explicit
+        # `id:` — required by scripts/check-workflow-advisory-suffix.sh
+        # (§8.2 tripwire, Commit L). "best-effort" retained as an operational
+        # descriptor after the canonical suffix.
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -750,7 +755,8 @@ jobs:
           echo "version=${V}" >> "$GITHUB_OUTPUT"
           echo "Release version: ${V}"
 
-      - name: Reuse per-target cdylibs from godot-crossbuild.yml matrix
+      - name: Reuse per-target cdylibs from godot-crossbuild.yml matrix (advisory, record-only)
+        id: reuse-godot-cdylibs
         # T16 crossbuild produces one vokra-godot-<triple> artifact per
         # platform. Fetch each via `gh run download` scoped to the tag
         # SHA and reassemble under integrations/vokra-godot/pkg/lib/.
@@ -758,6 +764,8 @@ jobs:
         # assembles with whichever platforms did land — the T18 scan
         # will then note the empty per-platform slot as a package
         # completeness gap rather than a bundled-NVIDIA failure.
+        # §8.2 canonical form: name suffix + explicit `id:` — see the
+        # sibling step above.
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1377,7 +1385,7 @@ jobs:
           # the AAR is installable; owner refines the manifest metadata on enable.
           AAR_DIR="dist/android/aar"
           mkdir -p "$AAR_DIR/jni/arm64-v8a"
-          SO="$(find target -path '*aarch64-linux-android*release*/libvokra.so' | head -n1)"
+          SO="$(find target -type f -path '*aarch64-linux-android*release*/libvokra.so' | head -n1)"
           if [ -z "$SO" ]; then
             echo "android-aar-release: FAIL arm64 libvokra.so not found after build-android.sh" >&2
             exit 1

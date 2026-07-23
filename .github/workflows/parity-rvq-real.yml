@@ -154,31 +154,70 @@ jobs:
           print(f"rvq parity venv OK: torch={torch.__version__}")
           PY
 
-      - name: Download Mimi checkpoint @ pinned revision
+      # §8.2 canonical advisory pattern (see .github/workflows/README.md §8.2
+      # and §8.4). `pins.yaml` declares this entry as
+      # drift_policy.upstream_mismatch=advisory (Mimi: kyutai HF, DAC: descript
+      # GitHub Release) — Vokra does not own byte-identity of the upstream
+      # publish. A SHA mismatch or fetch failure is an EXTERNAL drift event,
+      # not a Vokra regression, so this step downgrades to `::warning::` +
+      # `codec_ok=false` and the downstream converter/dumper/parity steps
+      # cascade-skip via `if: steps.<id>.outputs.codec_ok == 'true'`. When the
+      # mirror block in pins.yaml is populated (WP X-10 pattern extended to
+      # codecs), drift_policy.mirror_mismatch=hard_fail escalates automatically.
+      - name: Download Mimi checkpoint @ pinned revision (advisory, record-only)
+        id: mimi-download
+        continue-on-error: true
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p "${HF_HOME}"
           DEST="${HF_HOME}/${MIMI_FILE}"
           if [ ! -f "${DEST}" ]; then
-            curl -fsSL --retry 3 \
+            if ! curl -fsSL --retry 3 \
               "https://huggingface.co/${MIMI_REPO}/resolve/${MIMI_REVISION}/${MIMI_FILE}" \
-              -o "${DEST}"
+              -o "${DEST}"; then
+              echo "::warning::mimi checkpoint fetch failed from kyutai/moshiko-pytorch-bf16@${MIMI_REVISION} — advisory downgrade (upstream HF, not a Vokra regression). See pins.yaml entry mimi-codec."
+              rm -f "${DEST}"
+              echo "codec_ok=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
-          echo "${MIMI_SHA256}  ${DEST}" | sha256sum -c -
+          if ! echo "${MIMI_SHA256}  ${DEST}" | sha256sum -c -; then
+            echo "::warning::mimi checkpoint SHA drift at kyutai/moshiko-pytorch-bf16@${MIMI_REVISION} — advisory downgrade (upstream, not a Vokra regression). See pins.yaml entry mimi-codec."
+            rm -f "${DEST}"
+            echo "codec_ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "mimi checkpoint: $(du -h "${DEST}" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+          echo "codec_ok=true" >> "$GITHUB_OUTPUT"
 
-      - name: Download DAC checkpoint @ pinned release URL
+      - name: Download DAC checkpoint @ pinned release URL (advisory, record-only)
+        id: dac-download
+        continue-on-error: true
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p .dac-cache
           DEST=".dac-cache/weights_24khz.pth"
           if [ ! -f "${DEST}" ]; then
-            curl -fsSL --retry 3 "${DAC_URL}" -o "${DEST}"
+            if ! curl -fsSL --retry 3 "${DAC_URL}" -o "${DEST}"; then
+              echo "::warning::dac checkpoint fetch failed from descript-audio-codec release 0.0.4 — advisory downgrade (upstream GitHub Release, not a Vokra regression). See pins.yaml entry dac-24khz-8kbps."
+              rm -f "${DEST}"
+              echo "codec_ok=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
-          echo "${DAC_SHA256}  ${DEST}" | sha256sum -c -
+          if ! echo "${DAC_SHA256}  ${DEST}" | sha256sum -c -; then
+            echo "::warning::dac checkpoint SHA drift at descript-audio-codec release 0.0.4 — advisory downgrade (upstream, not a Vokra regression). See pins.yaml entry dac-24khz-8kbps."
+            rm -f "${DEST}"
+            echo "codec_ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "dac checkpoint: $(du -h "${DEST}" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+          echo "codec_ok=true" >> "$GITHUB_OUTPUT"
 
       - name: Prepare DAC checkpoint (.pth → safetensors + config side-car)
+        if: steps.dac-download.outputs.codec_ok == 'true'
         run: |
           set -euo pipefail
           # shellcheck disable=SC1091
@@ -189,10 +228,14 @@ jobs:
             --config-out "${RUNNER_TEMP}/dac-24khz-config.json" \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # vokra-cli build cascade-skips too — with both codecs absent, no
+      # downstream converter/parity work remains to gate on.
       - name: Build vokra-cli (release)
+        if: steps.mimi-download.outputs.codec_ok == 'true' || steps.dac-download.outputs.codec_ok == 'true'
         run: cargo build --release -p vokra-cli
 
       - name: Convert Mimi → GGUF (converter e2e)
+        if: steps.mimi-download.outputs.codec_ok == 'true'
         run: |
           set -euo pipefail
           ./target/release/vokra-cli convert --model mimi \
@@ -200,6 +243,7 @@ jobs:
             --output "${RUNNER_TEMP}/mimi.gguf" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Convert DAC → GGUF (converter e2e)
+        if: steps.dac-download.outputs.codec_ok == 'true'
         run: |
           set -euo pipefail
           ./target/release/vokra-cli convert --model dac \
@@ -209,38 +253,85 @@ jobs:
 
       # FULL-table reference dumps: rows = the full codebook_size, so every
       # table row is compared (the committed PR fixtures are 48/192-row
-      # slices; this is the full-fat pass).
+      # slices; this is the full-fat pass). Runs iff at least one codec
+      # download succeeded — the dumper commands are independent.
       - name: Dump full-table references (moshi / descript-audio-codec)
+        if: steps.mimi-download.outputs.codec_ok == 'true' || steps.dac-download.outputs.codec_ok == 'true'
         run: |
           set -euo pipefail
           # shellcheck disable=SC1091
           . "${PARITY_VENV}/bin/activate"
-          python tools/parity/mimi_dump.py mimi \
-            --checkpoint "${HF_HOME}/${MIMI_FILE}" \
-            --out "${RUNNER_TEMP}/mimi-ref" --seed 7 --time 64 --rows 2048 --books 8
-          python tools/parity/mimi_dump.py dac \
-            --checkpoint .dac-cache/weights_24khz.pth \
-            --out "${RUNNER_TEMP}/dac-ref" --seed 7 --time 64 --rows 1024 --books 32
+          if [ "${{ steps.mimi-download.outputs.codec_ok }}" = "true" ]; then
+            python tools/parity/mimi_dump.py mimi \
+              --checkpoint "${HF_HOME}/${MIMI_FILE}" \
+              --out "${RUNNER_TEMP}/mimi-ref" --seed 7 --time 64 --rows 2048 --books 8
+          fi
+          if [ "${{ steps.dac-download.outputs.codec_ok }}" = "true" ]; then
+            python tools/parity/mimi_dump.py dac \
+              --checkpoint .dac-cache/weights_24khz.pth \
+              --out "${RUNNER_TEMP}/dac-ref" --seed 7 --time 64 --rows 1024 --books 32
+          fi
 
-      - name: Full-table parity (per-tensor max |Δ| + verdict)
+      # Per-codec parity steps. Split from the single `Full-table parity` step
+      # (2026-07-23 fix branch adversarial-final P1): the single-step form set
+      # both VOKRA_{MIMI,DAC}_GGUF env vars unconditionally, so a mixed-success
+      # scenario (e.g., Mimi HF SHA drift → codec_ok=false; DAC release fetch
+      # → codec_ok=true) would run `cargo test --test real_codec_parity` which
+      # includes BOTH real_mimi_gguf_full_table_parity and real_dac_gguf_full_table_parity;
+      # the Mimi test would then panic on `GgufFile::open` because the Convert
+      # Mimi step was skipped, hard-failing the job on a scenario the header
+      # (lines 163-164) explicitly documents as `cascade-skip via own codec_ok`.
+      # Splitting per-codec + narrowing `cargo test` to the codec-specific test
+      # name restores the advisory contract while keeping the single-codec
+      # success path bit-identical to the pre-fix behaviour.
+      - name: Full-table parity — Mimi (per-tensor max |Δ| + verdict, advisory, record-only, X-10)
+        if: steps.mimi-download.outputs.codec_ok == 'true'
         run: |
           set -euo pipefail
           set +e
           VOKRA_MIMI_GGUF="${RUNNER_TEMP}/mimi.gguf" \
           VOKRA_MIMI_REF_DIR="${RUNNER_TEMP}/mimi-ref" \
-          VOKRA_DAC_GGUF="${RUNNER_TEMP}/dac.gguf" \
-          VOKRA_DAC_REF_DIR="${RUNNER_TEMP}/dac-ref" \
-            cargo test -p vokra-models --release --test real_codec_parity -- --nocapture \
-            2>&1 | tee "${RUNNER_TEMP}/parity-log.txt"
+            cargo test -p vokra-models --release --test real_codec_parity \
+              real_mimi_gguf_full_table_parity -- --nocapture \
+            2>&1 | tee "${RUNNER_TEMP}/parity-mimi-log.txt"
           PARITY_EXIT=${PIPESTATUS[0]}
           set -e
           {
             echo ""
-            echo "## RVQ real-checkpoint parity (atol = 0.01, NFR-QL-01)"
+            echo "## RVQ real-checkpoint parity — Mimi (atol = 0.01, NFR-QL-01)"
             echo ""
             echo '| tensor | max abs diff | verdict |'
             echo '| ------ | ------------ | ------- |'
-            grep '^PARITY ' "${RUNNER_TEMP}/parity-log.txt" \
+            grep '^PARITY ' "${RUNNER_TEMP}/parity-mimi-log.txt" \
+              | awk '{gsub("max\\|Δ\\|=", "", $3); gsub("atol=", "", $4); print "| " $2 " | " $3 " | " $5 " |"}'
+            echo ""
+            if [ "${PARITY_EXIT}" -ne 0 ]; then
+              echo '**VERDICT: FAIL — at least one tensor exceeded atol (or the harness errored).**'
+            else
+              echo '**VERDICT: PASS — every tensor within atol.**'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "${PARITY_EXIT}"
+
+      - name: Full-table parity — DAC (per-tensor max |Δ| + verdict, advisory, record-only, X-10)
+        if: steps.dac-download.outputs.codec_ok == 'true'
+        run: |
+          set -euo pipefail
+          set +e
+          VOKRA_DAC_GGUF="${RUNNER_TEMP}/dac.gguf" \
+          VOKRA_DAC_REF_DIR="${RUNNER_TEMP}/dac-ref" \
+            cargo test -p vokra-models --release --test real_codec_parity \
+              real_dac_gguf_full_table_parity -- --nocapture \
+            2>&1 | tee "${RUNNER_TEMP}/parity-dac-log.txt"
+          PARITY_EXIT=${PIPESTATUS[0]}
+          set -e
+          {
+            echo ""
+            echo "## RVQ real-checkpoint parity — DAC (atol = 0.01, NFR-QL-01)"
+            echo ""
+            echo '| tensor | max abs diff | verdict |'
+            echo '| ------ | ------------ | ------- |'
+            grep '^PARITY ' "${RUNNER_TEMP}/parity-dac-log.txt" \
               | awk '{gsub("max\\|Δ\\|=", "", $3); gsub("atol=", "", $4); print "| " $2 " | " $3 " | " $5 " |"}'
             echo ""
             if [ "${PARITY_EXIT}" -ne 0 ]; then

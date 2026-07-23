@@ -262,6 +262,18 @@ vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev 41f369
 | **RVC v2** | 不明 / 学習権利疑い（code MIT、weight の学習データ権利関係が公表資料で確定できない = §3 表 + 上記 §CC-verified の記述、推定を書かない） | 2026-07-21 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | **未判定（判断不能）**: 学習データの権利関係が公表資料で確定できない。`vokra-voiceclone-experimental` 別リポの運用方針に従属。M5-05 対応（`vokra-voiceclone-experimental` 別リポ配布 = FR-CP-04、上記 §CC-verified「判断は依頼者の別リポジトリ運用方針に従属」の到来点）。**本欄の署名・判定は owner 記入、CC は pre-fill しない**。本行 sign-off まで公式配布不可（fail-closed） |
 | **GPT-SoVITS** | 不明（code MIT、weight license 不明 = §3 表、推定を書かない） | 2026-07-21 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | **未判定（判断不能）**: 同上。M5-05 対応（`vokra-voiceclone-experimental` 別リポ配布 = FR-CP-04、上記 §CC-verified「判断は依頼者の別リポジトリ運用方針に従属」の到来点）。**本欄の署名・判定は owner 記入、CC は pre-fill しない**。本行 sign-off まで公式配布不可（fail-closed） |
 
+### 3.2 Corpus / dataset owner sign-off（依頼者記入）
+
+**位置付け**: §3.1 の Owner sign-off は **配布モデル weight** を対象とする。本節は **CI / 評価 / benchmark で消費する corpus / dataset** の再配布可否を対象とする。判定原則・fail-closed default（空欄 = 未判定 = 配布不可）は §3.1 と同じ。
+
+**運用**: 本節に登録された corpus のうち Vokra が自前 mirror（HF Hub dataset repo など）に再配布するものは、WP X-10（LibriSpeech pattern を canonical）の 5 段 gate `scripts/publish/upload.sh` の §3.1 sign-off check と同型に、本節の sign-off を必須 gate として参照する。upload gate は `LicenseClass::redistributable() == true` + LICENSE 実文書同梱 + provenance 刻印 + 本節 sign-off ☑ + `--allow-noncommercial` 明示（NC の場合）を全て満たさない限り実 push しない。
+
+**記入経緯（2026-07-23、fix/nightly-asr-wer-2026-07-23 branch）**: X-10-T02 upload gate 前提として、CC が LibriSpeech dev-clean を**空欄**で登録した。**LibriSpeech の CC-BY 4.0 は permissive + attribution required で `LicenseClass::AttributionRequired.redistributable() == true`** ゆえライセンス条文上は再配布可だが、mirror 実 upload + attribution 実文書同梱の owner 実行（X-10-T02/T03）と判定の owner 署名は分離する（fail-closed）。
+
+| Corpus / Dataset | License | CC-verified date | Owner sign-off (YYYY-MM-DD) | Approval | Notes |
+|---|---|---|---|---|---|
+| **LibriSpeech dev-clean** (OpenSLR resource 12, Panayotov et al. 2015) | CC-BY-4.0 | 2026-07-23 | ______________ | ☐ Commercial (redistribute OK, attribution 要) / ☐ Research-only / ☐ Rejected | **未判定**: `nightly-asr-wer.yml` が消費する 337,926,286 B の ASR eval corpus（8-utterance slice: chapter 128104 speaker 1272）。**WP X-10-T02 upload gate 前提の空欄行**（fix/nightly-asr-wer-2026-07-23 で CC 起票）。CC-BY 4.0 は商用可・再配布時 **Panayotov, V., Chen, G., Povey, D., & Khudanpur, S. (2015). "LibriSpeech: An ASR corpus based on public domain audio books." ICASSP 2015** の attribution 保存必須（NFR-LC-01）。mirror 実装候補は ADR X-10 §Option A = `huggingface.co/datasets/vokra/librispeech-dev-clean` + `publish-one.sh` 5-gate pipe（catalog-reality / redistributable / provenance 刻印 / §3.1 sign-off / allow-noncommercial の corpus 版）。**本欄の署名まで X-10-T02 の実 mirror upload は禁止**（fail-closed） |
+
 ---
 
 ## 4. Codec / Vocoder / 音声処理ライブラリ

@@ -95,6 +95,7 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 | Monday | 08:00 | .github/workflows/parity-utmos.yml | UTMOS 22 STRONG parity (M4-18 un-defer 材料) |
 | Monday | 08:30 | .github/workflows/godot-crossbuild.yml | Godot GDExtension 5-target crossbuild + AssetLib zip package |
 | Monday | 09:00 | .github/workflows/release-cadence.yml | リリース cadence レポート |
+| Monday | 09:30 | .github/workflows/corpus-drift-detector.yml | `.github/pins.yaml` 全 entry の drift 検査（upstream=advisory / mirror=hard_fail、informational） |
 | Monday | 10:00 | .github/workflows/silero-nostd-cross-build.yml | vokra-vad-micro (M5-03 no_std) thumbv8m cross build |
 | Tuesday | 06:00 | .github/workflows/parity-rvq-real.yml | Mimi/DAC RVQ codec 実 parity (Monday hub outage で全滅回避のため火曜) |
 
@@ -195,6 +196,121 @@ narrow path filter で該当 crate / dumper / fixture を触った場合のみ�
   正当化されない → **適用しない**。
 - 再評価条件: (a) 具体の workflow が 6h の GH Actions timeout に接触して fail 化、
   (b) GitHub が public repo 向け無料枠 larger runner を提供開始、いずれかで再判定。
+
+---
+
+## 8. Advisory step / job canonical form (SoT)
+
+Advisory checks and steps record measurements without gating merges. §2 defines
+WHICH checks are advisory; this section defines HOW to write one so the shape
+is consistent across workflows. Adopting this idiom prevents the class of bugs
+seen in `fix/nightly-asr-wer-2026-07-23` P1 — a step that DOCUMENTED itself as
+advisory-downgraded but LEXICALLY was a bare `tar` under `set -euo pipefail`,
+i.e. hard-failed on the very drift mode it claimed to tolerate.
+
+### 8.1 Job level
+
+- Do NOT add to branch-protection required list.
+- If the job's failure signal itself should not fail the workflow, set
+  `continue-on-error: true` on the job.
+- Downstream aggregator jobs must use `if: always()` (or an explicit
+  `needs.<job>.outputs.<gate>` guard); `success()` is wrong because
+  `continue-on-error: true` still reports `success` on failure.
+
+### 8.2 Step level — canonical bash block
+
+```yaml
+- name: <what it measures> (advisory, record-only)
+  id: <slug>
+  continue-on-error: true         # (a) defence in depth
+  shell: bash
+  run: |
+    set -euo pipefail
+    # ... measurement / probe ...
+    if ! <probe>; then             # (b) catch expected failure mode
+      echo "::warning::<what drifted> — advisory downgrade" \
+           "(<upstream|environment>, not a Vokra regression). See <WP-ID>."
+      echo "<gate>=false" >> "$GITHUB_OUTPUT"
+      exit 0                       # step exits 0; downstream `if:` cascades skip
+    fi
+    echo "<gate>=true" >> "$GITHUB_OUTPUT"
+```
+
+Rules:
+
+- **(a)** `continue-on-error: true` guards against an unhandled failure inside
+  the block (nested `set -e`, `mktemp` `trap` fires, a helper script's exit
+  leaking out). Keep it even when (b) is used — it is defence in depth.
+- **(b)** For expected-and-benign failure modes (CDN drift, missing optional
+  weights, upstream repackaging), catch them with `if ! <cmd>; then ... exit 0`
+  so the step's exit code stays 0 AND the sticky `outputs.<gate>=false` signal
+  drives downstream cascade skip. Do NOT rely on (a) alone — (a) makes the
+  step exit 0 to the job, but `steps.<slug>.outputs.<gate>` will be UNSET,
+  which is neither `'true'` nor `'false'` and can produce silent-skip bugs.
+- **downstream `if:`** — every step downstream of an advisory probe MUST guard
+  with `if: steps.<slug>.outputs.<gate> == 'true'`. Do not use `success()`:
+  the advisory step succeeds on the failure path too (that is the whole point).
+- **step name suffix** — `(advisory, record-only)` in the step name documents
+  intent inline. Optional tripwire `scripts/check-workflow-advisory-suffix.sh`
+  greps `continue-on-error: true` steps for the suffix (follow-up).
+
+### 8.3 Placeholder / dev-branch guard
+
+Advisory sections that branch on a placeholder (e.g. "when weights arrive")
+must wrap the divergent block so distinct non-zero exits are preserved:
+
+```bash
+set +e
+<placeholder command>
+rc=$?
+set -e
+if [ "$rc" -ne 0 ]; then
+  echo "::warning::placeholder branch inactive (rc=$rc) — advisory"
+  echo "<gate>=false" >> "$GITHUB_OUTPUT"
+  exit 0
+fi
+```
+
+The naked `<cmd> || true` idiom is BANNED because it collapses all non-zero
+exits into a single "OK" signal, making the drift detector (§8.5) unable to
+distinguish "placeholder awaiting provisioning" from "advisory actively broken".
+
+The distinction against FR-EX-08 (no silent CPU fallback): placeholder-inactive
+is a KNOWN missing-input state (permitted; the gate cascade correctly skips
+the downstream measurement), whereas silent CPU fallback is a WRONG-answer
+state (banned; the caller believes it got GPU results but got CPU numbers).
+
+### 8.4 CDN / corpus drift operational flow
+
+1. `corpus-drift-detector.yml` (weekly Monday 09:30 UTC) emits `::warning::`
+   for any pinned external URL whose current sha256 differs from
+   `.github/pins.yaml`.
+2. If the drift is persistent (2 consecutive weeks), owner opens or advances
+   WP X-10-Txx (self-mirror) — see `docs/adr/X-10-corpus-self-mirror.md`.
+3. Owner uploads a bit-identical mirror to
+   `huggingface.co/datasets/vokra/<slug>` via the existing 5-gate
+   `scripts/publish-one.sh` pipe. Mirror SHA lands in
+   `.github/pins.yaml:entries[*].mirror.hf_revision` +
+   `entries[*].mirror.sha256`.
+4. Workflow env switches to the graceful-fallback seam:
+   `${{ vars.VOKRA_CORPUS_<SLUG>_MIRROR_URL || '<upstream-url>' }}`.
+   Existing behaviour is preserved when the org variable is unset — so the
+   seam can land in a separate PR from the mirror upload (see
+   `nightly-asr-wer.yml` commit B for the canonical implementation).
+5. Once the mirror is live, drift detector continues to compare BOTH upstream
+   (advisory) AND mirror (hard-fail: Vokra owns byte-identity).
+
+### 8.5 Related tripwires
+
+- `.github/workflows/pins-sync-check.yml` — every entry in
+  `.github/pins.yaml` must appear verbatim in its `owning_workflow` and
+  every typed SHA literal in a workflow env must be registered in the
+  catalog (catches "workflow edited without updating catalog" and
+  "unregistered pin added to a workflow"). START ADVISORY, promote to
+  required after 4 consecutive weeks of green (matches §2 policy).
+- `.github/workflows/corpus-drift-detector.yml` — weekly probe per §8.4.
+- `docs/adr/X-10-corpus-self-mirror.md` — the mirror decision itself
+  (gitignore-local internal ADR).
 
 ---
 

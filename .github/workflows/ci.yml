@@ -336,7 +336,38 @@ jobs:
         # model_zoo/ docs/. Pure bash + find, no cargo, so it costs nothing
         # in the job that already owns licence enforcement.
         run: bash scripts/compliance/check-encodec-exclusion.sh
-      - name: Platform-support matrix drift check (advisory, M4-11-T08)
+      - name: Workflow advisory-suffix tripwire (§8.2 canonical form)
+        # .github/workflows/README.md §8.2 canonical shape for advisory steps:
+        #   - name: <what> (advisory, record-only)
+        #     id: <slug>
+        #     continue-on-error: true
+        # This tripwire greps every `continue-on-error: true` step in
+        # .github/workflows/*.yml and asserts its `- name:` value contains
+        # the `advisory` lexeme. Prevents the bug class caught in
+        # fix/nightly-asr-wer-2026-07-23 P1 (step DOCUMENTED as advisory but
+        # LEXICALLY hard-failed). Self-test runs the RED (missing suffix) and
+        # GREEN (present suffix) cases against a synthetic workflow tree in
+        # $RUNNER_TEMP, so a checker bug cannot manufacture a passing run.
+        # HARD FAIL (not advisory) because the shape invariant is Vokra's
+        # own contract, not upstream drift — a violation is a Vokra defect.
+        run: |
+          bash scripts/check-workflow-advisory-suffix.sh --self-test
+          bash scripts/check-workflow-advisory-suffix.sh
+      - name: Workflow find-hygiene tripwire (basename-glob predatory guard)
+        # Prevents the `find | head` landmine class caught in commit 8832ff0
+        # (nightly-asr-wer.yml RTF companion): a `find "$X" -name '*.wav' | head`
+        # matches DIRECTORIES whose basename ends in `.wav` too, then the
+        # caller hands a directory path to `ffmpeg -i` and crashes on every
+        # successful run. This tripwire greps every workflow for such lines
+        # and requires an explicit `-type f` / `-type d` / etc. Self-test
+        # runs RED (bare -name) and GREEN (with -type) cases against a
+        # synthetic workflow tree so a checker bug cannot silently pass.
+        # HARD FAIL: shape invariant, not upstream drift.
+        run: |
+          bash scripts/check-find-hygiene.sh --self-test
+          bash scripts/check-find-hygiene.sh
+      - name: Platform-support matrix drift check (advisory, record-only, M4-11-T08)
+        id: platform-support-drift
         # Verifies that every evidence anchor cited by
         # docs/platform-support/v1.0-rc-support-matrix.md (workflow jobs, build
         # scripts, benchmark docs) still exists — so the platform-support
@@ -345,11 +376,16 @@ jobs:
         # block the PR. Promotion to a required branch-protection check is an
         # owner decision (NFR-MT-07), mirroring gpu-vulkan-parity.yml's
         # cool-off posture. The self-test guards the parser against regression.
+        # Canonical §8.2 form: name suffix "(advisory, record-only)" +
+        # explicit `id:` — required by scripts/check-workflow-advisory-suffix.sh
+        # (§8.2 tripwire) so a copy-paste of this block into a new workflow
+        # cannot silently drop the advisory-shape discipline.
         continue-on-error: true
         run: |
           bash scripts/check-platform-support.sh --self-test
           bash scripts/check-platform-support.sh
-      - name: Contributor-reference doc drift check (advisory, X-09a-T10)
+      - name: Contributor-reference doc drift check (advisory, record-only, X-09a-T10)
+        id: contributor-reference-drift
         # Verifies the two public reference documents that stand in for the
         # unpublished planning tree: docs/requirement-ids.md (the glossary
         # that lets an outside reader resolve a cited requirement ID) and
@@ -368,7 +404,8 @@ jobs:
         run: |
           bash scripts/check-doc-references.sh --self-test
           bash scripts/check-doc-references.sh
-      - name: Contributor-funnel integrity check (advisory, X-05-T07)
+      - name: Contributor-funnel integrity check (advisory, record-only, X-05-T07)
+        id: contributor-funnel-integrity
         # Legs (b)-(f) catch real drift in the contributor funnel: dead
         # relative links, a missing en/ja twin, an SSOT pointer whose target
         # no longer exists, an absolute template URL that resolves nowhere.
@@ -397,7 +434,8 @@ jobs:
             exit 0
           fi
           exit "$rc"
-      - name: Owner-checklist drift check (advisory, M4-RESIDUAL-A-T01)
+      - name: Owner-checklist drift check (advisory, record-only, M4-RESIDUAL-A-T01)
+        id: owner-checklist-drift
         # Guards the owner hand-off surface (docs/m4-owner-verification-checklist.md,
         # docs/m3-owner-verification-checklist.md, docs/handoff/m4-19.md) against
         # two failure modes: a CLI flag name that no longer exists reappearing in
@@ -411,7 +449,8 @@ jobs:
         run: |
           bash scripts/check-owner-checklist-drift.sh --self-test
           bash scripts/check-owner-checklist-drift.sh
-      - name: Zoo-manifest completeness gate (advisory, M5-12-T09)
+      - name: Zoo-manifest completeness gate (advisory, record-only, M5-12-T09)
+        id: zoo-manifest-complete
         # GA DoD item 2 ("all zoo models degrade < 5% / pass parity") is only
         # honest if the zoo model set is enumerable and complete. This gate
         # cross-references the tracked machine SoT (docs/license-audit.md's

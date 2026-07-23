@@ -208,7 +208,7 @@ jobs:
           set -euo pipefail
           # game-ci layout: build/<target>/<name>/ — locate index.html.
           BUILD_ROOT="nightly-webgl-consumer/build/WebGL"
-          INDEX="$(find "$BUILD_ROOT" -maxdepth 3 -name index.html | head -n1)"
+          INDEX="$(find "$BUILD_ROOT" -maxdepth 3 -type f -name index.html | head -n1)"
           if [ -z "$INDEX" ]; then
             echo "::error::WebGL build produced no index.html" >&2
             find "$BUILD_ROOT" -maxdepth 4 -type f | head -50 >&2 || true
