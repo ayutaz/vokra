@@ -95,6 +95,7 @@ file 側 comment に埋め込まれている「stagger 一覧」も本 table を
 | Monday | 08:00 | .github/workflows/parity-utmos.yml | UTMOS 22 STRONG parity (M4-18 un-defer 材料) |
 | Monday | 08:30 | .github/workflows/godot-crossbuild.yml | Godot GDExtension 5-target crossbuild + AssetLib zip package |
 | Monday | 09:00 | .github/workflows/release-cadence.yml | リリース cadence レポート |
+| Monday | 09:30 | .github/workflows/corpus-drift-detector.yml | `.github/pins.yaml` 全 entry の drift 検査（upstream=advisory / mirror=hard_fail、informational） |
 | Monday | 10:00 | .github/workflows/silero-nostd-cross-build.yml | vokra-vad-micro (M5-03 no_std) thumbv8m cross build |
 | Tuesday | 06:00 | .github/workflows/parity-rvq-real.yml | Mimi/DAC RVQ codec 実 parity (Monday hub outage で全滅回避のため火曜) |
 

@@ -1,0 +1,145 @@
+# Vokra pinned-external drift detector — informational weekly probe.
+#
+# Every entry in `.github/pins.yaml` is probed against its live upstream
+# (and its Vokra-owned mirror when the mirror block is populated). Drift
+# posture matches the pins.yaml catalog:
+#
+#   upstream_mismatch=advisory → ::warning:: + job continues (OpenSLR /
+#     HF Hub / GitHub Release drift is not a Vokra defect)
+#   mirror_mismatch=hard_fail  → ::error::   + exit 1 (Vokra owns byte-
+#     identity of anything we mirrored)
+#   no_revision=warn           → ::warning:: (pinned by branch/name only;
+#     WP X-10-T05 will land explicit SHAs)
+#   toolchain skip             → informational only (no content SHA)
+#
+# Why weekly and not nightly: the goal is to convert "nightly-asr-wer went
+# red at 05:17 UTC, root cause is CDN drift" from a next-morning surprise
+# into a Monday-morning annotated advisory. Nightly cadence would flood
+# the Actions billing dashboard with no additional signal.
+#
+# Cron slot: Monday 09:30 UTC. This is a 30-minute pocket between
+# release-cadence (09:00) and silero-nostd-cross-build (10:00), off the
+# top of the hour to dodge GH Actions cron congestion, and does not
+# collide with any other workflow (see .github/workflows/README.md §3).
+#
+# Zero-dep NFR-DS-02: PyYAML + huggingface_hub are installed into a
+# per-run venv (CI-side only). `root Cargo.lock` is never touched. Same
+# posture as parity-whisper-real / parity-kokoro-real, which already pip-
+# install real-weight scoring stacks in isolated venvs.
+#
+# Not a required check — never in branch protection. Advisory posture per
+# .github/workflows/README.md §2. Promotion to required is owner
+# judgement after 4 consecutive green weeks (matches the pins-sync-check
+# promotion policy landed in commit E of the same fix branch).
+
+name: corpus-drift-detector
+
+on:
+  schedule:
+    - cron: '30 9 * * 1'    # Monday 09:30 UTC — see cron rationale above
+  workflow_dispatch:
+    inputs:
+      focus_entry:
+        description: "pins.yaml entry name to probe alone (empty = all)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: corpus-drift-detector
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: probe every pins.yaml entry
+    runs-on: ubuntu-latest
+    timeout-minutes: 45   # 338 MB LibriSpeech + N × HF repo_info; comfortable margin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: pins_probe self-test (stdlib-only)
+        # The self-test proves the enforcement + rendering logic is
+        # intact BEFORE the heavy network probes fire. Runs pure stdlib
+        # so a broken script surfaces in seconds, not after 13 fetches.
+        shell: bash
+        run: python3 .github/scripts/pins_probe.py self-test
+
+      - name: Install probe deps (isolated venv; does NOT touch root Cargo.lock)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/vokra-pins-venv
+          # shellcheck disable=SC1091
+          . /tmp/vokra-pins-venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install "pyyaml==6.0.2" "huggingface_hub>=0.24,<1"
+          python -m pip list | grep -Ei '^(pyyaml|huggingface[-_]hub)\b'
+
+      - name: Emit probe plan from pins.yaml
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-pins-venv/bin/activate
+          python3 .github/scripts/pins_probe.py emit-plan > /tmp/pins-plan.json
+          count="$(python3 -c 'import json; print(json.load(open("/tmp/pins-plan.json"))["count"])')"
+          echo "plan_count=${count}" >> "$GITHUB_OUTPUT"
+          echo "planned ${count} probe rows"
+
+      - name: Run probes (advisory / hard-fail per drift_policy)
+        id: probe
+        # Never fail the job here — probe failures become `error` verdicts
+        # that the next step surfaces as warnings. A broken network path
+        # must not be reported as clean.
+        continue-on-error: true
+        shell: bash
+        env:
+          FOCUS: ${{ inputs.focus_entry }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-pins-venv/bin/activate
+          python3 .github/scripts/pins_probe.py run \
+            --plan /tmp/pins-plan.json \
+            --focus "${FOCUS:-}" \
+            --out /tmp/pins-verdicts.jsonl
+          wc -l /tmp/pins-verdicts.jsonl
+
+      - name: Enforce drift_policy
+        id: enforce
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/pins_probe.py enforce --verdicts /tmp/pins-verdicts.jsonl
+
+      - name: Emit run summary table
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            printf '## corpus-drift-detector verdicts (%s)\n\n' "$(date -u +%FT%TZ)"
+            echo "| name | kind | verdict | expected | observed | policy |"
+            echo "|---|---|---|---|---|---|"
+            if [ -f /tmp/pins-verdicts.jsonl ]; then
+              python3 .github/scripts/pins_probe.py to-md /tmp/pins-verdicts.jsonl
+            else
+              echo "| _(no verdicts emitted — run step failed before probing)_ |  |  |  |  |  |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload verdicts artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pins-verdicts
+          path: /tmp/pins-verdicts.jsonl
+          retention-days: 30
+          if-no-files-found: warn
