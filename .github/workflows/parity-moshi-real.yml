@@ -96,9 +96,11 @@ on:
       - "tools/parity/moshi_truncate.py"
 
 env:
-  # `main` until the T29 owner sourcing pins a snapshot revision.
+  # Snapshot SHA (kyutai/moshiko-pytorch-bf16@main as of 2026-07-23) —
+  # same commit the mimi-codec pin below already resolves to. pins.yaml
+  # `moshiko-pytorch-bf16` MUST carry the same value.
   MOSHIKO_REPO: kyutai/moshiko-pytorch-bf16
-  MOSHIKO_REVISION: main
+  MOSHIKO_REVISION: "2bfc9ae6e89079a5cc7ed2a68436010d91a3d289"
   # kyutai-labs/moshi main at the ADR M4-06 §D2 transcription date
   # (2026-07-15 fetch — loaders.py/_lm_kwargs etc.).
   MOSHI_GIT_SHA: e6a55d2722a65870ef52a6c9f6ecfc0e90f38362

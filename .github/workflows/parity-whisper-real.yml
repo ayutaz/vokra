@@ -138,24 +138,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          include='{"size":"base","hf_id":"openai/whisper-base","env_var":"VOKRA_WHISPER_BASE_GGUF","fixture_dir":"tests/parity/whisper_base","gguf":"whisper-base.gguf"}'
+          include='{"size":"base","hf_id":"openai/whisper-base","hf_revision":"e37978b90ca9030d5170a5c07aadb050351a65bb","env_var":"VOKRA_WHISPER_BASE_GGUF","fixture_dir":"tests/parity/whisper_base","gguf":"whisper-base.gguf"}'
           # Non-base sizes are workflow_dispatch-only (runner-minutes
           # red-line: cron / PR triggers must never pull multi-GB HF
           # checkpoints). Field contracts: env_var mirrors the Rust
           # harness's size_env_var(), fixture_dir its fixtures_dir_for(),
-          # hf_id the dumper's SUPPORTED_MODELS (M4-14-T05).
+          # hf_id the dumper's SUPPORTED_MODELS (M4-14-T05). hf_revision is
+          # a snapshot SHA that MUST match pins.yaml `whisper-{size}` and is
+          # threaded into snapshot_download so the CI cache key ties to
+          # the exact commit, not `main` (X-10-T05 companion).
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             if [ "${{ github.event.inputs.include_small }}" != "false" ]; then
-              include="${include},"'{"size":"small","hf_id":"openai/whisper-small","env_var":"VOKRA_WHISPER_SMALL_GGUF","fixture_dir":"tests/parity/whisper_small","gguf":"whisper-small.gguf"}'
+              include="${include},"'{"size":"small","hf_id":"openai/whisper-small","hf_revision":"973afd24965f72e36ca33b3055d56a652f456b4d","env_var":"VOKRA_WHISPER_SMALL_GGUF","fixture_dir":"tests/parity/whisper_small","gguf":"whisper-small.gguf"}'
             fi
             if [ "${{ github.event.inputs.include_medium }}" != "false" ]; then
-              include="${include},"'{"size":"medium","hf_id":"openai/whisper-medium","env_var":"VOKRA_WHISPER_MEDIUM_GGUF","fixture_dir":"tests/parity/whisper_medium","gguf":"whisper-medium.gguf"}'
+              include="${include},"'{"size":"medium","hf_id":"openai/whisper-medium","hf_revision":"abdf7c39ab9d0397620ccaea8974cc764cd0953e","env_var":"VOKRA_WHISPER_MEDIUM_GGUF","fixture_dir":"tests/parity/whisper_medium","gguf":"whisper-medium.gguf"}'
             fi
             if [ "${{ github.event.inputs.include_large_v3 }}" != "false" ]; then
-              include="${include},"'{"size":"large-v3","hf_id":"openai/whisper-large-v3","env_var":"VOKRA_WHISPER_LARGE_V3_GGUF","fixture_dir":"tests/parity/whisper_large_v3","gguf":"whisper-large-v3.gguf"}'
+              include="${include},"'{"size":"large-v3","hf_id":"openai/whisper-large-v3","hf_revision":"06f233fe06e710322aca913c1bc4249a0d71fce1","env_var":"VOKRA_WHISPER_LARGE_V3_GGUF","fixture_dir":"tests/parity/whisper_large_v3","gguf":"whisper-large-v3.gguf"}'
             fi
             if [ "${{ github.event.inputs.include_turbo }}" != "false" ]; then
-              include="${include},"'{"size":"turbo","hf_id":"openai/whisper-large-v3-turbo","env_var":"VOKRA_WHISPER_TURBO_GGUF","fixture_dir":"tests/parity/whisper_turbo","gguf":"whisper-turbo.gguf"}'
+              include="${include},"'{"size":"turbo","hf_id":"openai/whisper-large-v3-turbo","hf_revision":"41f01f3fe87f28c78e2fbf8b568835947dd65ed9","env_var":"VOKRA_WHISPER_TURBO_GGUF","fixture_dir":"tests/parity/whisper_turbo","gguf":"whisper-turbo.gguf"}'
             fi
           fi
           echo "matrix={\"include\":[${include}]}" >> "$GITHUB_OUTPUT"
@@ -231,6 +234,10 @@ jobs:
     env:
       SIZE: ${{ matrix.size }}
       HF_ID: ${{ matrix.hf_id }}
+      # Snapshot SHA per size (X-10-T05 companion). MUST match pins.yaml
+      # `whisper-{size}` hf_revision. Read by snapshot_download so the
+      # HF cache key is content-addressed, not floating on `main`.
+      HF_REVISION: ${{ matrix.hf_revision }}
       ENV_VAR: ${{ matrix.env_var }}
       FIXTURE_DIR: ${{ matrix.fixture_dir }}
       GGUF: ${{ matrix.gguf }}
@@ -325,6 +332,7 @@ jobs:
           # the WhisperProcessor / model.generate paths use.
           local_dir = snapshot_download(
               repo_id=repo_id,
+              revision=os.environ["HF_REVISION"],
               allow_patterns=[
                   "model.safetensors",
                   "config.json",
