@@ -45,14 +45,19 @@
 # The advisory posture applies to two categories of failure with opposite
 # meanings:
 #   (a) upstream CDN drift (curl failure or sha256 mismatch on the OpenSLR
-#       tarball, or missing/empty archive member) → NOT a Vokra regression,
-#       so it is downgraded to `::warning::`, records corpus_ok=false on
-#       the step output, and skips every downstream step (WER + both RTF
-#       companions) via `if: steps.<id>.outputs.corpus_ok == 'true'`. The
-#       drift blob is `rm -f`'d from cache so the next run re-fetches
-#       (silent double-fetch prevention). Owner WP X-10 tracks the
-#       recurrence fix (self-mirror the tarball under Vokra's control so
-#       upstream CDN drift stops surfacing as nightly red).
+#       tarball, tar extraction failure, or missing/empty archive member)
+#       → NOT a Vokra regression, so it is downgraded to `::warning::`,
+#       records corpus_ok=false on the step output, and skips every
+#       downstream step (WER + both RTF companions) via
+#       `if: steps.<id>.outputs.corpus_ok == 'true'`. The local drift blob
+#       is removed (`rm -f "$TARBALL"`) so the post-step `actions/cache@v6`
+#       save does not persist a bad blob in the current cache-MISS run;
+#       actual re-fetch on the NEXT run relies on either a cache-key SHA
+#       change (bump `DEV_CLEAN_SHA256`) or the WP X-10 self-mirror flip,
+#       NOT on a magical re-fetch of the same SHA-keyed blob. Owner WP
+#       X-10 (self-mirror) tracks the recurrence fix (self-mirror the
+#       tarball under Vokra's control so upstream CDN drift stops
+#       surfacing as nightly red).
 #   (b) WER > slice-calibrated threshold → real regression, still hard-
 #       fails per NFR-MT-07. The Score WER step's gate character is intact:
 #       it runs iff corpus_ok=true, and exits 1 on breach. corpus_ok=true
@@ -279,10 +284,14 @@ jobs:
           if ! echo "${DEV_CLEAN_SHA256}  ${TARBALL}" | sha256sum -c -; then
             echo "::warning::LibriSpeech dev-clean checksum mismatch at" \
                  "$DEV_CLEAN_URL — the corpus changed under us; not a Vokra" \
-                 "regression, so advisory-downgraded. Cache is invalidated" \
-                 "(rm -f) to force re-fetch on the next run (silent double-" \
-                 "fetch prevention). Owner WP X-10 (self-mirror) tracks the" \
-                 "recurrence fix; re-measure the baseline before repinning" \
+                 "regression, so advisory-downgraded. Local drift blob is" \
+                 "removed (rm -f) so the post-step actions/cache save does" \
+                 "not persist a bad blob in the current cache-MISS run;" \
+                 "actual re-fetch on the NEXT run relies on cache-key SHA" \
+                 "change (bump DEV_CLEAN_SHA256) or the WP X-10 self-mirror" \
+                 "flip, not on a magical re-fetch of the same SHA-keyed" \
+                 "blob. Owner WP X-10 (self-mirror) tracks the recurrence" \
+                 "fix; re-measure the baseline before repinning" \
                  "DEV_CLEAN_SHA256 if this becomes intentional."
             rm -f "$TARBALL"
             echo "corpus_ok=false" >> "$GITHUB_OUTPUT"
@@ -309,16 +318,40 @@ jobs:
           # (corpus_ok=false + downstream skip) because it means upstream
           # repackaging rather than a Vokra regression — same class as sha
           # mismatch above (see CORPUS PROVENANCE FAILURE MODES).
+          #
+          # The `tar xzf` call is wrapped in `if ! ... ; then` so a tar-level
+          # failure (BSD tar exit 1, GNU tar exit 2 on missing member, or any
+          # nonzero exit) becomes advisory rather than killing the step via
+          # `set -euo pipefail`. Two distinct failure modes flow through this
+          # block:
+          #   (i)  tar itself exited nonzero — caught by the `if ! ... ; then`
+          #        wrap directly below. Typical cause: upstream repackaged
+          #        without the requested member.
+          #   (ii) tar exited 0 but the extracted tree does not contain the
+          #        expected chapter subdir — caught by `[ ! -d "$src" ]`
+          #        below. Typical cause: upstream kept the dev-clean subtree
+          #        but replaced 1272/128104 with something else.
+          # Both emit corpus_ok=false with the same downstream cascade.
           stage="$(mktemp -d)"
           trap 'rm -rf "$stage"' EXIT
           member="LibriSpeech/dev-clean/${SPEAKER}/${CHAPTER}"
-          tar xzf "$TARBALL" -C "$stage" "$member"
+          if ! tar xzf "$TARBALL" -C "$stage" "$member" 2>"$stage/tar.err"; then
+            echo "::warning::tar failed to extract $member from $TARBALL —" \
+                 "advisory downgrade (tar itself exited nonzero; typically" \
+                 "GNU tar exit 2 / BSD tar exit 1 on missing member, i.e." \
+                 "upstream repackaging, not a Vokra regression). Owner WP" \
+                 "X-10 (self-mirror) tracks the recurrence fix."
+            cat "$stage/tar.err" >&2 || true
+            echo "corpus_ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           src="$stage/$member"
           if [ ! -d "$src" ]; then
             echo "::warning::archive member $member not found in $TARBALL —" \
-                 "advisory downgrade (upstream repackaging, not a Vokra" \
-                 "regression). Owner WP X-10 (self-mirror) tracks the" \
-                 "recurrence fix."
+                 "advisory downgrade (tar succeeded but the extracted tree" \
+                 "does not contain the expected chapter subdir; upstream" \
+                 "repackaging, not a Vokra regression). Owner WP X-10 (self-" \
+                 "mirror) tracks the recurrence fix."
             echo "corpus_ok=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
