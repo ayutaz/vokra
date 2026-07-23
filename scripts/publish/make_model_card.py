@@ -241,6 +241,37 @@ def usage_block(arch, name, filename):
     return label, dl + "\n" + run
 
 
+# Hugging Face only accepts a fixed vocabulary of `license:` values, all
+# lower-case (`mit`, not `MIT`). A licence outside that set — dual expressions
+# like "MIT OR Apache-2.0", or bespoke names — must map to `other`, with the
+# real name kept in the card body where it is authoritative. This is a display
+# concern only: the binding licence text is the LICENSE file and the body.
+_HF_LICENSES = {
+    "apache-2.0", "mit", "openrail", "bigscience-openrail-m",
+    "creativeml-openrail-m", "bsd", "bsd-2-clause", "bsd-3-clause",
+    "bsd-3-clause-clear", "cc0-1.0", "cc-by-3.0", "cc-by-4.0", "cc-by-sa-3.0",
+    "cc-by-sa-4.0", "cc-by-nc-3.0", "cc-by-nc-4.0", "cc-by-nc-nd-4.0",
+    "cc-by-nc-sa-3.0", "cc-by-nc-sa-4.0", "cdla-sharing-1.0",
+    "cdla-permissive-2.0", "agpl-3.0", "gpl", "gpl-2.0", "gpl-3.0", "lgpl",
+    "lgpl-2.1", "lgpl-3.0", "isc", "mpl-2.0", "openmdw-1.1", "openrail++",
+    "unlicense", "zlib", "unknown", "other",
+}
+
+
+def hf_license_tag(lic):
+    """Maps a licence string to a value Hugging Face's YAML validator accepts.
+
+    Exact match (case-insensitively) wins; anything else — including dual
+    expressions such as "MIT OR Apache-2.0" — becomes `other`. Returning the
+    wrong tag would be rejected at upload; inventing one would misrepresent, so
+    `other` is the honest fallback and the body carries the precise name.
+    """
+    if not lic:
+        return "other"
+    norm = lic.strip().lower()
+    return norm if norm in _HF_LICENSES else "other"
+
+
 def build_card(path, repo_name=None, allow_noncommercial=False):
     g = GgufReader(path)
     arch = g.get("vokra.model.arch")
@@ -294,7 +325,8 @@ def build_card(path, repo_name=None, allow_noncommercial=False):
     digest = sha256(path)
     size_mb = Path(path).stat().st_size / (1024 * 1024)
 
-    front = ["---", f"license: {lic or 'other'}", "library_name: vokra",
+    hf_tag = hf_license_tag(lic)
+    front = ["---", f"license: {hf_tag}", "library_name: vokra",
              "tags:", "  - vokra", "  - gguf"]
     if label:
         front.append(f"  - {label.lower().replace(' ', '-')}")
@@ -345,6 +377,14 @@ def build_card(path, repo_name=None, allow_noncommercial=False):
         "your obligations run to the upstream author.",
         "",
     ]
+    if hf_tag == "other" and lic:
+        body += [
+            f"> The Hugging Face `license:` tag is set to `other` because "
+            f"`{lic}` is not one of Hugging Face's accepted tag values. The "
+            "authoritative licence is the one named above and reproduced in the "
+            "`LICENSE` file — not the tag.",
+            "",
+        ]
     # --- tier-specific obligations -------------------------------------
     #
     # These sit directly under "Licence" because they are what a reader has to
@@ -460,7 +500,8 @@ def self_test():
         ])
         card = build_card(p)
         cases += 1
-        for must in ("license: MIT", "silero-vad-v5", "vokra-cli run", "SHA-256"):
+        for must in ("license: mit", "silero-vad-v5", "vokra-cli run", "SHA-256",
+                     "under **MIT**"):
             if must not in card:
                 failures.append(f"permissive card missing {must!r}")
         for must_not in ("Share-alike", "Non-commercial", "threshold"):
@@ -476,7 +517,7 @@ def self_test():
         ])
         card = build_card(p)
         cases += 1
-        if "license: CC-BY-SA-4.0" not in card:
+        if "license: cc-by-sa-4.0" not in card or "**CC-BY-SA-4.0**" not in card:
             failures.append("copyleft card must keep the original licence label")
         if "Share-alike" not in card or "carries the same licence" not in card:
             failures.append("copyleft card must state that the licence propagates")
@@ -495,7 +536,7 @@ def self_test():
             pass
         cases += 1
         card = build_card(p, allow_noncommercial=True)
-        if "license: CC-BY-NC-4.0" not in card:
+        if "license: cc-by-nc-4.0" not in card or "**CC-BY-NC-4.0**" not in card:
             failures.append("NC card must keep the original licence label")
         if "may not use this weight commercially" not in card:
             failures.append("NC card must carry an unmissable non-commercial banner")

@@ -129,7 +129,11 @@ case "$signoff_state" in
 esac
 
 echo "== 3/4  accompanying files =="
-cp "$gguf" "$outdir/"
+# Stage the weight only if it is not already the one in the output dir
+# (re-running with the staged file as input must be a no-op, not an error).
+if [[ "$(cd "$(dirname "$gguf")" && pwd)/$(basename "$gguf")" != "$(cd "$outdir" && pwd)/$(basename "$gguf")" ]]; then
+  cp "$gguf" "$outdir/"
+fi
 python3 - "$gguf" "$outdir" "$repo" <<'PY'
 import hashlib, subprocess, sys, datetime
 from pathlib import Path
@@ -192,13 +196,25 @@ if [[ $push -eq 0 ]]; then
   echo "  Staged in: $outdir"
   exit 0
 fi
-[[ -n "${HF_TOKEN:-}" ]] || { echo "upload: HF_TOKEN is not set" >&2; exit 4; }
+# Accept either HF_TOKEN (the conventional name) or HF (what this project's
+# .env happens to use). Never echoed, never passed as an argument.
+tok="${HF_TOKEN:-${HF:-}}"
+[[ -n "$tok" ]] || { echo "upload: neither HF_TOKEN nor HF is set" >&2; exit 4; }
 [[ -f "$outdir/LICENSE" ]] || {
   echo "upload: REFUSED — $outdir/LICENSE is missing. Publishing a weight" >&2
   echo "  without its licence text does not discharge the obligation." >&2
   exit 5; }
-command -v hf >/dev/null 2>&1 || {
-  echo "upload: the 'hf' CLI is not installed (pip install -U huggingface_hub)" >&2
+python3 -c "import huggingface_hub" 2>/dev/null || {
+  echo "upload: huggingface_hub is not installed (pip install -U huggingface_hub)" >&2
   exit 6; }
 echo "  pushing $outdir -> $repo"
-hf upload "$repo" "$outdir" --repo-type model
+# Token via env, not argv, so it never lands in the process table.
+HF_UPLOAD_TOKEN="$tok" python3 - "$repo" "$outdir" <<'PY'
+import os, sys
+from huggingface_hub import HfApi
+repo, folder = sys.argv[1], sys.argv[2]
+api = HfApi(token=os.environ["HF_UPLOAD_TOKEN"])
+api.create_repo(repo, repo_type="model", exist_ok=True)
+api.upload_folder(repo_id=repo, folder_path=folder, repo_type="model")
+print(f"  uploaded {folder} -> https://huggingface.co/{repo}")
+PY
