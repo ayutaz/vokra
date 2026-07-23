@@ -67,7 +67,7 @@ jobs:
     name: cross-build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           # Both Cortex-M55 ABIs: hard-float (FP-armv8) and soft-float.

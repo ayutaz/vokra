@@ -105,7 +105,65 @@ done
 
 echo "== build-godot-gdextension (canonical publish = CD, NFR-MT-08) =="
 
+# ---- Detect aggregate mode ------------------------------------------------
+#
+# T17 CI package job aggregate mode: the 5-target crossbuild matrix has
+# already been (a) built per-target on separate runners, (b) uploaded as
+# artifacts, (c) downloaded into staging/, and (d) mirrored into both
+# $PKG_STAGE_ROOT/{triple}/ AND the AssetLib $BIN_DIR/<platform>/<arch>/
+# tree by preceding workflow steps (see
+# .github/workflows/godot-crossbuild.yml package job "assemble AssetLib
+# layout" step). When this script is invoked as `--no-build --pack` in
+# that context there is no single SRC to resolve/copy: we only need to
+# overlay the .gdextension + LICENSE/NOTICE + fetch-demo-models template
+# and pack the zip.
+#
+# Detect via: --no-build + no TARGET_TRIPLE + at least one triple-named
+# directory exists under $PKG_STAGE_ROOT. Otherwise fall through to the
+# T11/T12 single-SRC path (host cargo build or explicit TARGET_TRIPLE
+# cross build).
+AGGREGATE_MODE=0
+if [ "$DO_BUILD" -eq 0 ] && [ -z "${TARGET_TRIPLE:-}" ]; then
+    if [ -d "$PKG_STAGE_ROOT" ]; then
+        for _stage_d in "$PKG_STAGE_ROOT"/*/; do
+            # If the glob matched nothing, "$_stage_d" holds the literal
+            # unexpanded pattern (not a real directory), so [ -d ] is
+            # false and we exit the loop with AGGREGATE_MODE unchanged.
+            if [ -d "$_stage_d" ]; then
+                AGGREGATE_MODE=1
+                break
+            fi
+        done
+        unset _stage_d
+    fi
+fi
+
+if [ "$AGGREGATE_MODE" -eq 1 ]; then
+    echo "build-godot-gdextension: aggregate mode (CI package job)"
+    echo "                        crossbuild artifacts pre-staged under $PKG_STAGE_ROOT/"
+
+    # Sanity: refuse to proceed with a stub-only tree (no libraries under
+    # bin/<platform>/<arch>/). This catches the case where the workflow's
+    # pre-staging step failed to mirror artifacts into $BIN_DIR — we
+    # want to fail loudly here rather than ship an empty AssetLib zip
+    # (FR-EX-08 spirit: no silent stub distribution).
+    STAGED_LIBS=$(find "$BIN_DIR" -mindepth 3 -maxdepth 3 -type f \
+                  \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) \
+                  2>/dev/null | sort || true)
+    if [ -z "$STAGED_LIBS" ]; then
+        echo "build-godot-gdextension: FAIL aggregate mode found zero cdylibs under $BIN_DIR" >&2
+        echo "                        expected cross-target artifacts at" >&2
+        echo "                        bin/<platform>/<arch>/lib*.so|dylib|dll" >&2
+        echo "                        (workflow pre-staging step likely failed)" >&2
+        exit 1
+    fi
+    echo "build-godot-gdextension: aggregate mode bin/ inventory:"
+    echo "$STAGED_LIBS" | sed 's|^|  |'
+else
+
 # ---- Resolve triple → cdylib basename + AssetLib subdir -------------------
+# (unindented on purpose to keep the diff small; body lifted verbatim from
+# the T11/T12 single-SRC path — reachable only when AGGREGATE_MODE=0.)
 #
 # T12 crossbuild matrix. When ${TARGET_TRIPLE} is set we treat it as the
 # authoritative selector and skip host detection entirely; every supported
@@ -232,6 +290,8 @@ fi
 mkdir -p "$PKG_STAGE_DIR"
 cp -f "$SRC" "$PKG_STAGE_DIR/$SRC_NAME"
 echo "build-godot-gdextension: synced pkg stage $PKG_STAGE_DIR/$SRC_NAME"
+
+fi  # end AGGREGATE_MODE dispatch (aggregate branch had no SRC to sync)
 
 # ---- .gdextension + LICENSE / NOTICE -------------------------------------
 # Copy the template `vokra.gdextension` that ships with the crate. T12

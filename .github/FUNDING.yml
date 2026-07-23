@@ -1,0 +1,15 @@
+# Vokra funding configuration
+#
+# 公式仕様: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+#
+# TODO(owner): GitHub Sponsors の setup が完了しているかは未確認。
+#   - setup 済であれば下記の `github:` 行が有効になり、リポジトリの
+#     "Sponsor" ボタンから @ayutaz へ誘導されます。
+#   - まだ setup していない場合は Sponsor ボタンが表示されないだけで
+#     エラーにはなりませんが、混乱を避けたい場合はこの file を削除するか
+#     `github:` 行をコメントアウトしてください。
+#   - Patreon / Ko-fi / Buy Me a Coffee 等を追加する場合は `custom:` に
+#     URL を追記してください（例: custom: ["https://ko-fi.com/ayutaz"]）。
+
+github: [ayutaz]
+custom: []

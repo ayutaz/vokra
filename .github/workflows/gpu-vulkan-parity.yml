@@ -147,7 +147,7 @@ jobs:
       # unsafe FFI is wrapped in Result-returning shims) surfaces stack.
       RUST_BACKTRACE: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -284,7 +284,7 @@ jobs:
 
       - name: Upload test output (always, so failures are diagnosable)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: vulkan-test-output-${{ github.run_id }}
           path: vulkan-test-output.log

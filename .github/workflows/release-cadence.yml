@@ -31,7 +31,7 @@ jobs:
     name: cadence
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # Need the full tag history to measure intervals between releases.
           fetch-depth: 0
@@ -43,7 +43,7 @@ jobs:
           cat cadence.json
 
       - name: Upload cadence judgment (machine-readable contract for M5-12)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-cadence-judgment
           path: cadence.json

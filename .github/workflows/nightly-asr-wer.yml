@@ -138,8 +138,8 @@ jobs:
     # genuinely stuck run.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
@@ -148,7 +148,7 @@ jobs:
           key: nightly-asr-wer
 
       - name: Cache HF checkpoint
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.HF_HOME }}
           key: hf-hub-whisper-base-asr-wer
@@ -159,7 +159,7 @@ jobs:
         # Keyed on the pinned digest: if the digest constant changes, the
         # cache misses and the new corpus is fetched, which is exactly the
         # behaviour a deliberate corpus bump needs.
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.corpus-cache
           key: librispeech-dev-clean-${{ env.DEV_CLEAN_SHA256 }}
@@ -465,7 +465,7 @@ jobs:
         # Runs even on a breach: the report is the evidence the revert/block
         # decision (NFR-MT-07) is made from.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: asr-wer-report
           path: asr-wer-report.json

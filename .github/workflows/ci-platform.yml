@@ -1,0 +1,752 @@
+# Vokra CI platform build gates (part of the 2026-07-23 split;
+# see .github/workflows/ci.yml header for the full split rationale).
+#
+# What lives here vs. elsewhere:
+#
+#   * .github/workflows/ci.yml         — required checks (build / test / fmt
+#                                        / clippy / parity / license) plus
+#                                        the artifact chain that feeds
+#                                        ios-build / unity-package /
+#                                        python-wheel-build. Kept together
+#                                        so the artifact producer/consumer
+#                                        pair (build → unity-package /
+#                                        python-wheel-build) stays in one
+#                                        workflow file (cross-workflow
+#                                        artifact downloads are not cheaply
+#                                        supported by GitHub Actions).
+#
+#   * .github/workflows/ci-quality.yml — advisory lint / audit / doc-drift /
+#                                        server-compat surface.
+#
+#   * .github/workflows/ci-platform.yml — THIS FILE. Platform build target
+#                                        proofs, RTF regression gate, GPU
+#                                        backend feature-gate coverage,
+#                                        cross-target audit
+#                                        (build-target-vulkan-only /
+#                                        riscv-cross-build /
+#                                        cpu-isa-server-tier), and
+#                                        server-deployment (single-binary
+#                                        static-link + non-contamination
+#                                        proof). None of these are (yet)
+#                                        branch-protection required checks —
+#                                        promotion is an owner decision after
+#                                        sustained green (NFR-MT-07).
+
+name: CI Platform
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Own concurrency group so cancels in this file cannot cascade into
+# ci.yml / ci-quality.yml.
+concurrency:
+  group: ci-platform-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # GPU backend feature gates (M2-01 Metal / M2-03 CUDA). The default build/test
+  # jobs cover only the CPU path; this keeps the optional `metal` / `cuda`
+  # features compiling and lint-clean. Metal builds/tests on the Apple-silicon
+  # macOS runner (its GPU-backed parity tests actually execute); CUDA is
+  # build/lint only on Linux — GitHub runners have no NVIDIA GPU, so the dlopen'd,
+  # probe-gated device tests skip cleanly. Both are first-party `vokra-*` crates,
+  # so the zero-dependency invariant (checked in `license`) is unaffected.
+  gpu-backends:
+    name: gpu-backends
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            feature: metal
+          - os: ubuntu-latest
+            feature: cuda
+          # CoreML delegate scaffold (M5-01). Builds/clippies/tests the crate
+          # on an Apple runner. The runtime tests are probe-gated: whether a
+          # hosted macOS runner exposes the Apple Neural Engine is UNKNOWN, so a
+          # runner with no ANE takes the honest BackendUnavailable path (a
+          # skip), never a fabricated pass. Build + clippy always exercise the
+          # framework-linked FFI.
+          - os: macos-latest
+            feature: coreml
+          # QNN delegate scaffold (M5-02, Qualcomm Hexagon NPU). Build/clippy/
+          # test on Linux — this is where the raw dlopen FFI + the compile-time
+          # layout assert actually COMPILE (the FFI is gated on Android/Linux/
+          # Windows, so the authoring macOS host only ever built the stub). No
+          # GitHub runner has a QNN runtime, so the probe-gated tests take the
+          # honest BackendUnavailable path (a skip), never a fabricated pass.
+          # NOT NNAPI (FR-BE-07) — QNN is the Hexagon NPU delegate.
+          - os: ubuntu-latest
+            feature: qnn
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (--features ${{ matrix.feature }})
+        run: cargo build -p vokra-models -p vokra-cli --features ${{ matrix.feature }}
+      - name: Clippy (--features ${{ matrix.feature }})
+        run: cargo clippy -p vokra-models -p vokra-cli --features ${{ matrix.feature }} --all-targets -- -D warnings
+      - name: Test (--features ${{ matrix.feature }})
+        run: cargo test -p vokra-models --features ${{ matrix.feature }}
+      # M3-01-T22: also run vokra-backend-cuda's own probe/coverage/parity tests
+      # on the CUDA arm (the crate has no `cuda` feature of its own — see
+      # `Cargo.toml` — so it compiles unconditionally and its device-gated tests
+      # skip cleanly on the ubuntu-latest runner without a GPU).
+      - name: Test backend crate (${{ matrix.feature }})
+        if: matrix.feature == 'cuda'
+        run: cargo test -p vokra-backend-cuda
+      # M5-01-T11: run the CoreML backend crate's own probe/coverage tests on
+      # the coreml arm. The crate has no feature of its own, so it compiles
+      # unconditionally; its ANE probe test skips cleanly (BackendUnavailable)
+      # on a runner that hides the Neural Engine — an honest skip, not a pass.
+      - name: Test backend crate (${{ matrix.feature }})
+        if: matrix.feature == 'coreml'
+        run: cargo test -p vokra-backend-coreml
+      # M5-02-T10a: run the QNN backend crate's own probe/coverage tests on the
+      # qnn arm, WITH `--features qnn` so the raw dlopen FFI + the compile-time
+      # layout self-consistency assert actually compile on Linux (they are gated
+      # on `all(feature = "qnn", any(android/linux/windows))`). No runner has a
+      # QNN runtime, so the probe test skips cleanly (BackendUnavailable) — an
+      # honest skip, not a pass. The layout assert being a self-consistency guard
+      # (not a real-header check) is verified by owner T11 against the SDK.
+      - name: Test backend crate (${{ matrix.feature }})
+        if: matrix.feature == 'qnn'
+        run: cargo test -p vokra-backend-qnn --features qnn
+
+  # M4-15: CPU + Vulkan-only build target (FR-BE-09 partial — build target
+  # only; ADR M4-15). Builds the shipped cdylib + CLI with
+  # `--no-default-features --features vulkan`, proves the metal / cuda
+  # backends stay OUT of the dependency graph (cargo tree audit + the
+  # scripts/compliance/check-cpu-vulkan-only-no-nvidia.sh symbol scanner),
+  # runs the vokra-models suite under the vulkan feature (GitHub runners have
+  # no Vulkan device, so device-gated tests skip cleanly — same shape as the
+  # gpu-backends cuda arm; the REAL dispatch legs live in
+  # gpu-vulkan-parity.yml / M4-13), assembles the artifact dir (cdylib +
+  # LICENSE + build-time NOTICE variant), generates the deterministic
+  # SPDX 2.3 SBOM (NFR-MT-03 / X-07; release.yml attachment is a follow-up —
+  # docs/handoff/m4-15.md §(d)), and runs the M4-15 neutral-wording gate.
+  # Advisory job: required-check promotion is an owner decision after the
+  # M4-13 Vulkan parity runs are stably green (docs/handoff/m4-15.md §(c)).
+  # Zero-dep (NFR-DS-02): nothing here may touch the root Cargo.lock — the
+  # last step is the same mutation tripwire riscv-cross-build uses.
+  build-target-vulkan-only:
+    name: build-target-vulkan-only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build vokra-capi (CPU + Vulkan-only, audit trail)
+        # The printf line makes the feature selection discoverable in the CI
+        # log for auditors — same audit-trail pattern as the CPU-only UPM
+        # build in the `build` job (M2-11-T13 / Reviewer 3).
+        run: |
+          printf 'Build-target features: --no-default-features --features vulkan\n'
+          cargo build --release -p vokra-capi --no-default-features --features vulkan
+      - name: Build vokra-cli (CPU + Vulkan-only)
+        run: cargo build --release -p vokra-cli --no-default-features --features vulkan
+      - name: Clippy (CPU + Vulkan-only, deny warnings)
+        run: cargo clippy -p vokra-capi -p vokra-cli --no-default-features --features vulkan --all-targets -- -D warnings
+      - name: Test vokra-models (--features vulkan)
+        # No Vulkan device on GitHub-hosted runners: the device-gated tests
+        # skip cleanly (announced skip, never a fabricated pass). The real
+        # dispatch / parity legs are owned by gpu-vulkan-parity.yml (M4-13).
+        run: cargo test -p vokra-models --features vulkan
+      - name: Dependency-graph exclusion audit (FR-BE-09)
+        # The SBOM documents the exclusion; this step ENFORCES it: the
+        # CPU + Vulkan-only closure must contain vokra-backend-vulkan and
+        # must not contain vokra-backend-metal / vokra-backend-cuda.
+        run: |
+          set -euo pipefail
+          tree="$(cargo tree -p vokra-capi --no-default-features --features vulkan -e normal --prefix none)"
+          printf '%s\n' "$tree"
+          printf '%s\n' "$tree" | grep -q 'vokra-backend-vulkan' \
+            || { echo '::error::vokra-backend-vulkan missing from the CPU + Vulkan-only graph'; exit 1; }
+          if printf '%s\n' "$tree" | grep -qE 'vokra-backend-(metal|cuda)'; then
+            echo '::error::excluded backend crate present in the CPU + Vulkan-only graph'
+            exit 1
+          fi
+      - name: M4-15 tooling scratch-tree tests
+        # NOTICE-variant generator + non-link scanner + neutral-wording gate,
+        # exercised against scratch trees with real compiled negative
+        # fixtures (undefined cudaMalloc / cuInit / objc_msgSend refs).
+        run: bash scripts/compliance/test-m4-15-build-target.sh
+      - name: Assemble artifact dir (cdylib + LICENSE + NOTICE variant)
+        run: |
+          set -euo pipefail
+          mkdir -p dist/cpu-vulkan-only
+          cp target/release/libvokra.so dist/cpu-vulkan-only/
+          cp LICENSE dist/cpu-vulkan-only/LICENSE
+          bash scripts/gen-notice-cpu-vulkan-only.sh --out dist/cpu-vulkan-only/NOTICE
+      - name: Generate SPDX 2.3 SBOM (deterministic)
+        run: |
+          python3 scripts/sbom/generate_spdx.py \
+            --package vokra-capi \
+            --no-default-features \
+            --features vulkan \
+            --doc-name vokra-capi-cpu-vulkan-only \
+            --output dist/cpu-vulkan-only/vokra-capi.spdx.json
+      - name: SBOM self-test (structure / exclusion / determinism)
+        run: bash scripts/sbom/test-generate-spdx.sh
+      - name: NVIDIA / Metal non-link scanner
+        run: bash scripts/compliance/check-cpu-vulkan-only-no-nvidia.sh dist/cpu-vulkan-only
+      - name: Neutral-wording gate (M4-15-T08)
+        run: |
+          bash scripts/compliance/check-no-market-claims.sh \
+            dist/cpu-vulkan-only \
+            CHANGELOG.md \
+            scripts/gen-notice-cpu-vulkan-only.sh \
+            scripts/sbom \
+            scripts/compliance/check-cpu-vulkan-only-no-nvidia.sh \
+            docs/handoff/m4-15.md
+      - name: Upload CPU + Vulkan-only artifact (cdylib + legal files + SBOM)
+        uses: actions/upload-artifact@v6
+        with:
+          name: vokra-cpu-vulkan-only-linux
+          path: dist/cpu-vulkan-only/
+          retention-days: 7
+      - name: Verify root Cargo.lock unchanged
+        # NFR-DS-02: neither the feature-selected build nor the SBOM
+        # tooling may add anything to the root lockfile.
+        run: git diff --exit-code Cargo.lock
+
+  # RISC-V RVV 1.0 cross-build (M3-13-T10, FR-BE-01, NFR-PT-01). The completion
+  # bar for M3-13 (milestones.md §7.2) is "RVV 1.0 target のクロスビルドが CI
+  # で継続検証 + RVV dispatch path の単体テスト通過" — this job satisfies the
+  # cross-build leg; the dispatch-path unit tests are exercised by the regular
+  # `test` matrix (they compile on every host and only the /proc/cpuinfo parser
+  # is riscv64-gated). GitHub-hosted runners have no RVV silicon and no
+  # qemu-user pre-installed, so we do not attempt to *execute* the riscv64
+  # binary here — the ADR (docs/adr/M3-13-riscv-rvv-1.0.md §d) explicitly scopes
+  # this WP to cross-build + host-executable differential tests; real
+  # SpacemiT K1 / Banana Pi BPI-F3 RTF measurement is an owner follow-up.
+  #
+  # `-p vokra-backend-cpu` is deliberately narrow: this is a library-only crate
+  # so `cargo build` produces an rlib and does not invoke the target linker
+  # (no cross-linker needed on the Ubuntu runner). Building the full workspace
+  # would need `riscv64-linux-gnu-gcc` in PATH and pulls in every downstream
+  # crate — orthogonal to the M3-13 completion condition. The zero-dep
+  # invariant (NFR-DS-02, root Cargo.lock unchanged) is enforced by the
+  # existing `license` job; adding a target does not alter dependencies.
+  riscv-cross-build:
+    name: riscv-cross-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv64gc-unknown-linux-gnu
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Cross-build vokra-backend-cpu (riscv64gc-unknown-linux-gnu)
+        # Baseline rv64gc target — shared by BOTH RISC-V vector tiers, no new
+        # target needed: RVV 1.0 instructions land only inside the
+        # `.option arch, +v` fences in `kernels::rvv::add` (see
+        # docs/adr/M3-13-riscv-rvv-1.0.md §e), and the M4-08 RVV 0.7.1 tier
+        # (`kernels::rvv071::add`) is sealed even tighter — raw `.insn` words
+        # with no `.option arch` at all (LLVM has no xtheadvector assembler
+        # support, ADR M4-08 §T01). The surrounding binary stays at rv64gc so
+        # the same artifact runs on RVV-less harts (probe returns
+        # `rvv_v = false` / `rvv_071 = false` → dispatch falls back to scalar
+        # within the CPU backend, which is NOT the FR-EX-08 cross-backend
+        # silent-fallback rule). This build also evaluates the compile-time
+        # `const _: () = assert!(…)` pins on the five 0.7.1 instruction words
+        # in kernels/rvv071.rs (an encode regression fails the build itself).
+        run: cargo build --release --target riscv64gc-unknown-linux-gnu -p vokra-backend-cpu
+      - name: Clippy vokra-backend-cpu (riscv64gc)
+        # Deny warnings on the riscv64 configuration too — catches
+        # target-specific lint regressions in the `cfg(target_arch = "riscv64")`
+        # blocks (`features::detect_riscv_caps`, `kernels::rvv`,
+        # `kernels::rvv071`).
+        run: cargo clippy --release --target riscv64gc-unknown-linux-gnu -p vokra-backend-cpu --all-targets -- -D warnings
+      - name: Verify RVV instructions land in the emitted binary
+        # Belt-and-suspenders: `cargo build` succeeds even if `.option arch, +v`
+        # is silently ignored by the LLVM integrated assembler in some future
+        # regression, so we re-emit asm and grep for the four RVV mnemonics
+        # our kernel uses. Any drop-out here is a hard error, not a warning.
+        run: |
+          set -euo pipefail
+          cargo rustc --release --target riscv64gc-unknown-linux-gnu -p vokra-backend-cpu -- --emit=asm
+          ASM=$(find target/riscv64gc-unknown-linux-gnu/release/deps -name 'vokra_backend_cpu-*.s' | head -n 1)
+          test -n "$ASM"
+          for mnemonic in vsetvli vle32 vfadd vse32; do
+            if ! grep -q "$mnemonic" "$ASM"; then
+              echo "M3-13 regression: $mnemonic missing from riscv64gc asm ($ASM)" >&2
+              exit 1
+            fi
+          done
+          echo "M3-13 RVV kernel: emitted asm contains vsetvli / vle32 / vfadd / vse32." >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify RVV 0.7.1 raw words land in the emitted binary (M4-08)
+        # M4-08-T11 belt-and-suspenders, twin of the 1.0 mnemonic grep above:
+        # the 0.7.1 demonstrator kernel has no mnemonics to grep (LLVM lacks
+        # xtheadvector), so we grep for the five `.insn` raw words emitted by
+        # kernels/rvv071.rs::add. LLVM renders the asm! const operands in
+        # decimal (`.insn 0x4, <decimal>`); the values below are the
+        # compile-time-pinned words, decimal <-> hex <-> 0.7.1 mnemonic:
+        #   10842839 = 0x00A572D7  vsetvli t0, a0, e32, m4 (0.7.1 vtypei 0x0A)
+        #   33943559 = 0x0205F007  vle.v   v0, (a1)        (width=111 = SEW)
+        #   33976839 = 0x02067207  vle.v   v4, (a2)
+        #   33690711 = 0x02021457  vfadd.vv v8, v0, v4
+        #   34010151 = 0x0206F427  vse.v   v8, (a3)
+        # If a future rustc/LLVM stops emitting the words (or re-renders the
+        # directive in an unexpected shape) this step fails hard — never a
+        # silent drop of the 0.7.1 tier. Execution of these words is only
+        # possible on real T-Head silicon: upstream qemu has no xtheadvector /
+        # 0.7.1 emulation (ADR M4-08 §T01), so this job intentionally stops at
+        # cross-build + encoding presence; on-device runs are the owner track
+        # (M4-08-T15 LicheePi 4A / M4-08-T16 Milk-V Duo).
+        run: |
+          set -euo pipefail
+          ASM=$(find target/riscv64gc-unknown-linux-gnu/release/deps -name 'vokra_backend_cpu-*.s' | head -n 1)
+          test -n "$ASM"
+          for word in 10842839 33943559 33976839 33690711 34010151; do
+            if ! grep -Eq "\.insn.*[^0-9]${word}([^0-9]|$)" "$ASM"; then
+              echo "M4-08 regression: .insn word ${word} missing from riscv64gc asm ($ASM)" >&2
+              exit 1
+            fi
+          done
+          echo "M4-08 RVV 0.7.1 kernel: emitted asm contains all five .insn raw words." >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify rv64gc baseline is not polluted by a global vector enable (M4-08)
+        # Both RISC-V vector tiers rely on the SINGLE-BASELINE-BINARY contract
+        # (kernels/rvv.rs + kernels/rvv071.rs module docs): stable rustc has no
+        # vreg clobber class, which is only sound while the surrounding
+        # compilation stays at rv64gc — no global `-C target-feature=+v` (or
+        # any vector-enabling variant) may ever be configured. Scan the
+        # repo-level cargo configs and this workflow for such a flag; fail
+        # hard if one appears.
+        run: |
+          set -euo pipefail
+          violations=0
+          for f in .cargo/config .cargo/config.toml .github/workflows/ci.yml .github/workflows/ci-platform.yml; do
+            [ -f "$f" ] || continue
+            # Comment lines (leading '#' after the grep -n "NN:" prefix) are
+            # documentation — including this very step's own rationale — and
+            # cannot enable a target feature; only live config/run lines can.
+            if grep -En "target-feature[^#]*[+](v|zve|xtheadvector)" "$f" | grep -Ev "^[0-9]+:[[:space:]]*#"; then
+              echo "M4-08 violation: global RISC-V vector enable found in $f (breaks the rv64gc baseline / V-clobber soundness premise)" >&2
+              violations=1
+            fi
+          done
+          if [ -n "${RUSTFLAGS:-}" ] && echo "$RUSTFLAGS" | grep -Eq "target-feature[^ ]*[+](v|zve|xtheadvector)"; then
+            echo "M4-08 violation: RUSTFLAGS carries a global RISC-V vector enable: $RUSTFLAGS" >&2
+            violations=1
+          fi
+          [ "$violations" -eq 0 ]
+          echo "M4-08 baseline check: no global RISC-V vector enable in cargo configs / workflow / RUSTFLAGS." >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify root Cargo.lock unchanged
+        # NFR-DS-02: cross-building for riscv64 must not add any new crates to
+        # the root Cargo.lock (the target is std-only). Any diff here means a
+        # riscv64-only crate crept into vokra-backend-cpu — reject the PR.
+        run: git diff --exit-code Cargo.lock
+
+  # Windows on ARM64 build audit (Phase 3b Task 4b / M4-11 platform coverage,
+  # informational). `.github/workflows/README.md` §7.2 is the primary source
+  # for the promotion / non-promotion decision.
+  #
+  # `windows-11-arm` runner reference (actions/runner-images README, 2026-07):
+  # ARM64 (aarch64-pc-windows-msvc) GitHub-hosted image, first shipped in
+  # public preview 2025-04 (public repos, free of charge). The 2026-07
+  # runner-images README lists it WITHOUT a `preview` badge (only the sibling
+  # `windows-11-vs2026-arm` label still carries one), so we treat it as GA
+  # for our purposes; `continue-on-error: true` below keeps a runner
+  # regression from cascading into sibling jobs either way.
+  #
+  # Why not folded into the ci.yml build/test matrix:
+  #   * The required-check names `build (windows-latest)` / `test (windows-latest)`
+  #     are pinned by branch protection and MUST remain untouched (see the
+  #     ci.yml header, `.github/workflows/README.md` §1, and the "変更禁止事項"
+  #     preamble). Adding `windows-11-arm` to the matrix would either rewrite
+  #     the emitted check names or force an aggregator retrofit — both riskier
+  #     than a peer advisory job.
+  #   * Rust `aarch64-pc-windows-msvc` is tier-2, and vokra has never been
+  #     end-to-end verified on ARM64 Windows silicon. Keeping this isolated as
+  #     an advisory job avoids blocking merges on unknown-territory failures.
+  #
+  # Promotion path (mirrors M4-15 build-target-vulkan-only): after several
+  # weeks of sustained green, owner decision on whether to fold into the
+  # required matrix (NFR-MT-07).
+  #
+  # Zero-dep (NFR-DS-02): identical `Cargo.lock` tripwire as riscv-cross-build
+  # and build-target-vulkan-only — adding a new target must not touch the root
+  # lockfile.
+  build-windows-arm64:
+    name: build-windows-arm64
+    # Advisory-only; a runner outage or fresh regression on the tier-2 target
+    # cannot cascade into required checks (branch-protection is name-pinned to
+    # `build (windows-latest)` / `test (windows-latest)`) and cannot mask
+    # itself as a fabricated pass either — a red result is visible on the run
+    # summary, we just do not fail the workflow.
+    continue-on-error: true
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Pin the target explicitly so this exercises aarch64-pc-windows-msvc
+          # regardless of what the runner image's default toolchain provides.
+          targets: aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - name: Build vokra-cli (release, aarch64-pc-windows-msvc)
+        # Narrow scope on purpose: `-p vokra-cli` exercises the workspace's
+        # public consumer surface without pulling every crate through the
+        # ARM64 linker on the first pass. Broadening to `--workspace` is a
+        # follow-up after this leg stabilises (owner promotion decision).
+        run: cargo build --release -p vokra-cli --target aarch64-pc-windows-msvc
+      - name: Build vokra-capi (release, aarch64-pc-windows-msvc)
+        run: cargo build --release -p vokra-capi --target aarch64-pc-windows-msvc
+      - name: Verify root Cargo.lock unchanged
+        # NFR-DS-02 (same tripwire as riscv-cross-build / build-target-vulkan-only):
+        # cross-target compilation must not add anything to the root lockfile.
+        run: git diff --exit-code Cargo.lock
+
+  # M4-17 CPU ISA server-tier verification (ADR M4-17 §(f)). Two legs:
+  # ubuntu-latest (x86-64) and macos-latest (Apple Silicon). The scalar-oracle
+  # differentials are runtime-detect gated — a runner without a tier skips
+  # that tier's execution leg (never a fabricated pass): GitHub x86-64 runners
+  # are Ice-Lake/Zen4-class and usually execute the AVX-512 F/VNNI legs (bf16
+  # only on Zen4-class); the macOS arm64 runner executes the NEON fp16 +
+  # dotprod legs for real (i8mm/bf16 are Apple M2+ = owner silicon, T24).
+  # The asm-mnemonic tripwire mirrors the M3-13 RVV job: `cargo build`
+  # succeeding does not prove the `.arch_extension`-fenced asm / the
+  # #[target_feature] intrinsics actually emitted their encodings, so we
+  # re-emit asm and grep for them. Intel SDE is deliberately NOT wired
+  # (optional per the M4-17 spec; owner adds it if desired). perf is
+  # advisory-only and owner-measured (cloud VM per-run, T23) — no numeric
+  # perf assert lives here.
+  cpu-isa-server-tier:
+    name: cpu-isa-server-tier (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Server-tier differential (runtime-detect gated, --nocapture logs skips)
+        run: cargo test --release -p vokra-backend-cpu --test server_tier_parity -- --nocapture
+      - name: Full backend-cpu suite on this runner
+        run: cargo test --release -p vokra-backend-cpu
+      - name: Forced-scalar leg (single-binary dispatch honors the override)
+        run: VOKRA_CPU_ISA=scalar cargo test --release -p vokra-backend-cpu --test single_binary_dispatch
+      # Record what this runner actually is, then pin the ISA under test.
+      #
+      # The step above runs on `active_isa()` — the HOST default — and the
+      # hosted pool is heterogeneous (AMD EPYC without AVX-512, Intel Xeon
+      # with it). So which micro-kernel tiles get exercised is decided by
+      # which machine the job lands on, and nothing recorded which. An
+      # AVX2-only fault could sit green for as long as the scheduler kept
+      # handing out Xeons.
+      #
+      # Not hypothetical: kokoro-parity-real returns bit-identical numbers
+      # within a CPU class and different numbers across classes, failing
+      # 100% on EPYC and passing 100% on Xeon (see the (E) note in
+      # crates/vokra-models/tests/parity_kokoro.rs).
+      #
+      # Forcing avx2 is safe on every x86-64 runner — AVX-512 parts implement
+      # AVX2 — so this leg deterministically covers the AVX2 tiles no matter
+      # what we land on, while the unforced leg above still covers whatever
+      # is native. Skipped on non-x86 hosts, where `avx2` is not a valid
+      # override (macos-latest is aarch64; its native leg covers NEON).
+      - name: Record runner ISA
+        run: |
+          set +e
+          case "$(uname -s)" in
+            Linux)  grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- ;;
+            Darwin) sysctl -n machdep.cpu.brand_string ;;
+          esac
+          echo "arch=$(uname -m)"
+      # Scoped to gemm_packed_parity, and within it everything EXCEPT
+      # `routing_thresholds_route_the_hot_shapes`. That one asserts the
+      # host's routing decisions and is override-incompatible by design (the
+      # same reason the scalar leg above targets a single test rather than
+      # the suite: `dispatch::active_isa_is_stable_and_host_supported`
+      # documents "no override" as its precondition). Verified locally on M1
+      # that the remaining 6 pass identically with and without an override,
+      # so a failure here is a real AVX2 result, not override fallout.
+      #
+      # `--skip` rather than naming the three tests: a numerical test added
+      # to this file later should be covered on AVX2 automatically.
+      - name: Forced-AVX2 leg (x86-64 only — pins the tiles under test)
+        if: runner.arch == 'X64'
+        run: |
+          VOKRA_CPU_ISA=avx2 cargo test --release -p vokra-backend-cpu \
+            --test gemm_packed_parity -- --skip routing_thresholds
+      - name: Verify server-tier encodings land in the emitted asm
+        # Belt-and-suspenders (RVV-job pattern): grep the re-emitted asm for
+        # the tier mnemonics — x86-64: vpdpbusd (VNNI-512 + VNNI-256),
+        # vdpbf16ps (BF16), a zmm register use (AVX-512 f32); aarch64: sdot
+        # (dotprod), smmla (i8mm), bfmmla (bf16), fmla on .8h (fp16).
+        run: |
+          set -euo pipefail
+          cargo rustc --release -p vokra-backend-cpu -- --emit=asm
+          ASM=$(find target/release/deps -name 'vokra_backend_cpu-*.s' | head -n 1)
+          test -n "$ASM"
+          if [ "$(uname -m)" = "x86_64" ]; then
+            MNEMONICS="vpdpbusd vdpbf16ps zmm"
+          else
+            MNEMONICS="sdot smmla bfmmla"
+          fi
+          for mnemonic in $MNEMONICS; do
+            if ! grep -q "$mnemonic" "$ASM"; then
+              echo "M4-17 regression: $mnemonic missing from emitted asm ($ASM)" >&2
+              exit 1
+            fi
+          done
+          if [ "$(uname -m)" != "x86_64" ]; then
+            # Apple's integrated assembler prints `fmla.8h v0, ...`; the GNU
+            # dialect prints `fmla v0.8h, ...` — accept both.
+            if ! grep -Eq 'fmla(\.8h[[:space:]]|[[:space:]]+v[0-9]+\.8h)' "$ASM"; then
+              echo "M4-17 regression: fp16 'fmla .8h' missing from emitted asm ($ASM)" >&2
+              exit 1
+            fi
+          fi
+          echo "M4-17 server-tier kernels: emitted asm contains the tier encodings ($MNEMONICS)." >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify root Cargo.lock unchanged
+        # NFR-DS-02: the server tiers are std::arch + inline asm only — no
+        # new crate may appear in the root Cargo.lock.
+        run: git diff --exit-code Cargo.lock
+
+  # Performance regression gate (NFR-PF-13, M2-04). Runs the fused log-mel
+  # `mel-frontend` bench through `vokra-cli bench --baseline` against a
+  # committed baseline (`docs/bench-baselines/mel_frontend_baseline.json`,
+  # captured with fusion OFF). Fusion is ON by default here, so any run
+  # slower than baseline * 1.05 fails with exit code 3 (bench.rs
+  # REGRESSION_THRESHOLD = 0.05). Locked to `ubuntu-latest` for the
+  # deterministic scalar + AVX2 path — NEON on macos-latest has too much
+  # hardware skew to hold a strict 5% gate, so the gate stays off there.
+  bench-regression:
+    name: bench-regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build vokra-cli (release)
+        run: cargo build --release -p vokra-cli
+      - name: mel-frontend regression check (5% gate, fusion enabled)
+        # M2-04-T13 WP completion: fused log-mel PR merges only when this job
+        # (regression), build/test/fmt/clippy/gpu-backends/license (zero-dep),
+        # and `parity` (both fusion matrix legs) are all green. Reviewer
+        # verifies via `gh pr checks`; two followup issues are linked in the
+        # PR description: (a) Snake fusion kernel body + BigVGAN AMP fusion
+        # co-delivered with FR-OP-13/11/14 consumer arrival, and (b) GPU fused
+        # log-mel kernels (Metal MSL `MetalContext::fused_logmel_f32` + CUDA
+        # NVRTC `fused_logmel_kernel`).
+        run: |
+          ./target/release/vokra-cli bench \
+            --task mel-frontend \
+            --iters 30 \
+            --warmup 5 \
+            --baseline docs/bench-baselines/mel_frontend_baseline.json \
+            --format json
+      - name: Silero VAD RTF regression check (X-06-T09, advisory, placeholder-gated)
+        # X-06-T09 (model-level regression, guards the M5-14 CPU wins): the
+        # committed Silero GGUF (tests/parity/silero_vad/silero-vad-v5.gguf,
+        # 2.1 MB) + committed WAV need NO download, so this can run at PR time.
+        #
+        # The baseline JSON MUST be seeded from an ubuntu-latest CI run: an
+        # M1/aarch64 rig false-fails the 5% gate (docs/bench-baselines/README.md,
+        # the mel-frontend NEON-skew example). Until the owner seeds it (via
+        # bench-baseline-capture.yml, then commits the reviewed rtf), this step
+        # CLEAN-SKIPS — baseline_gate.py detects the placeholder and no verdict
+        # is claimed (fabricated pass 禁止, FR-EX-08). A MALFORMED baseline exits
+        # 2 and FAILS this step, so the gate is provably not a no-op.
+        #
+        # Arch-routed: silero-vad → ModelTask::Vad automatically. `--task` is a
+        # hard error on this arch (engine.rs), so it is deliberately absent.
+        #
+        # advisory (open question #1): this step lives in the REQUIRED
+        # bench-regression job, so to stay advisory-by-default it must NOT fail
+        # the job on a Silero regression — it ANNOTATES. The owner promotes it
+        # to a hard gate by setting repo variable VOKRA_SILERO_GATE_REQUIRED=true
+        # (no code change), once shared-runner RTF variance is shown to hold the
+        # 5% gate. The mel step above is the established required leg.
+        env:
+          SILERO_REQUIRED: ${{ vars.VOKRA_SILERO_GATE_REQUIRED }}
+        run: |
+          set -euo pipefail
+          BASE=docs/bench-baselines/silero_vad_baseline.json
+          STATE="$(python3 tools/bench/baseline_gate.py "$BASE")"
+          if [ "$STATE" = placeholder ]; then
+            echo "::notice::Silero VAD RTF baseline is a placeholder (not yet seeded on ubuntu-latest). Clean skip — no regression verdict claimed. Seed via .github/workflows/bench-baseline-capture.yml (owner)."
+            exit 0
+          fi
+          set +e
+          ./target/release/vokra-cli bench \
+            --model tests/parity/silero_vad/silero-vad-v5.gguf \
+            --input tests/fixtures/audio/jfk-30s.wav \
+            --iters 30 \
+            --warmup 5 \
+            --baseline "$BASE" \
+            --format json
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            if [ "${SILERO_REQUIRED:-}" = "true" ]; then
+              echo "::error::Silero VAD RTF regressed >5% and VOKRA_SILERO_GATE_REQUIRED=true — failing (owner-promoted hard gate)."
+              exit 1
+            fi
+            echo "::warning::Silero VAD RTF regressed >5% vs the seeded baseline (ADVISORY — not failing the required job; set VOKRA_SILERO_GATE_REQUIRED=true to promote, open question #1)."
+          fi
+
+  # M2-09-T19 vokra-server single-binary deployment gate (FR-SV-01, NFR-DS-02,
+  # NFR-MT-07). Verifies four properties of the OUT-OF-WORKSPACE
+  # `integrations/vokra-server/` crate on every PR:
+  #
+  #   1. It cross-builds cleanly to `x86_64-unknown-linux-musl` as a
+  #      statically-linked release binary (Docker-free deployment target).
+  #      `file` confirms `statically linked`; `ldd` confirms no dynamic
+  #      dependencies (glibc-free, portable across distros).
+  #
+  #   2. The static binary starts standalone and answers `GET /health` with
+  #      200 OK — no Docker, no reverse proxy, no external runtime deps
+  #      (FR-SV-01). Bind is 127.0.0.1 on a random high port to avoid
+  #      collision on shared runners.
+  #
+  #   3. The runtime workspace stays uncontaminated: `cargo tree -p vokra-core`
+  #      must not pull `hyper` / `tokio` / `axum` / `serde` / `onnx` /
+  #      `protobuf` (server-only deps stay confined to integrations/, per the
+  #      excluded-workspace pattern). Enforces NFR-DS-02 at the graph level in
+  #      addition to the lockfile-level `check-zero-deps.sh`.
+  #
+  #   4. `scripts/check-zero-deps.sh` re-run against the root `Cargo.lock` —
+  #      belt-and-suspenders with the `license` job, verifying the server
+  #      dependencies did not leak into the root graph via any workspace
+  #      member.
+  #
+  # The server crate is NOT in the root workspace (its Cargo.toml has an empty
+  # `[workspace]` table and root `Cargo.toml` `exclude = ["integrations"]`),
+  # so this job builds it explicitly via `--manifest-path` and does not
+  # perturb the root workspace build cache.
+  server-deployment:
+    name: server-deployment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            integrations/vokra-server
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Runtime workspace non-contamination (cargo tree -p vokra-core)
+        # FR-SV-01 / NFR-DS-02: the runtime graph must not know about the
+        # server's HTTP / async / serde stack. `cargo tree -e normal` prints
+        # the full normal-dep graph; grep -F fixed-string search rejects any
+        # forbidden crate name. `set -o pipefail` propagates a `cargo tree`
+        # failure past the tee.
+        run: |
+          set -euo pipefail
+          echo "::group::cargo tree -p vokra-core"
+          cargo tree -e normal -p vokra-core > /tmp/vokra-core-tree.txt
+          cat /tmp/vokra-core-tree.txt
+          echo "::endgroup::"
+          forbidden="hyper tokio axum serde serde_json onnx onnxruntime protobuf prost tonic"
+          fail=0
+          for crate in $forbidden; do
+            if grep -qE "^[^a-zA-Z0-9_-]*${crate}[[:space:]]v" /tmp/vokra-core-tree.txt; then
+              echo "::error::vokra-core depends on forbidden crate: ${crate}"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::runtime workspace non-contamination check failed (FR-SV-01, NFR-DS-02)"
+            exit 1
+          fi
+      - name: Zero-dependency invariant on root Cargo.lock (NFR-DS-02)
+        # Belt-and-suspenders with the `license` job: the server crate's
+        # third-party deps must not leak into the root Cargo.lock. This scans
+        # the SAME root Cargo.lock and asserts vokra-* only.
+        run: bash scripts/check-zero-deps.sh
+      - name: Build vokra-server (release, x86_64-unknown-linux-musl)
+        run: |
+          cargo build --release \
+            --target x86_64-unknown-linux-musl \
+            -p vokra-server \
+            --manifest-path integrations/vokra-server/Cargo.toml
+      - name: Verify statically linked (file)
+        # A musl-linked release binary must be statically linked. Modern
+        # toolchains (rustc >= 1.86 on Ubuntu 24.04 runners) default to PIE +
+        # musl static, which `file` reports as either `statically linked` (old
+        # binutils) or `static-pie linked` (new binutils). Both are the "no
+        # dynamic dependencies" state we want — a shared-lib linkage would
+        # instead read `dynamically linked` and would fail this gate. The
+        # `ldd` step below is the belt-and-suspenders guard against `=>`
+        # entries (see next step).
+        run: |
+          set -euo pipefail
+          BIN=integrations/vokra-server/target/x86_64-unknown-linux-musl/release/vokra-server
+          test -f "$BIN"
+          file "$BIN"
+          file "$BIN" | grep -Eq "statically linked|static-pie linked"
+      - name: Verify no dynamic dependencies (ldd)
+        # `ldd` on a truly-static binary prints "not a dynamic executable" (or
+        # exits nonzero); either way, ANY `=>` line means a dyn dep was
+        # pulled in, which breaks Docker-free portable deployment.
+        run: |
+          set -euo pipefail
+          BIN=integrations/vokra-server/target/x86_64-unknown-linux-musl/release/vokra-server
+          if ldd "$BIN" 2>&1 | grep -q "=>"; then
+            echo "::error::vokra-server has dynamic dependencies (breaks FR-SV-01 single-binary deployment):"
+            ldd "$BIN"
+            exit 1
+          fi
+          ldd "$BIN" || true
+      - name: Docker-less standalone startup smoke test (curl /health)
+        # FR-SV-01: run the static binary directly (no Docker, no reverse
+        # proxy, no launcher). Bind loopback on a random high port so the
+        # test cannot collide with anything else on the runner and cannot
+        # inadvertently expose a listener beyond the runner.
+        run: |
+          set -euo pipefail
+          BIN=integrations/vokra-server/target/x86_64-unknown-linux-musl/release/vokra-server
+          # Random ephemeral high port (49152-65535 range).
+          PORT=$((49152 + RANDOM % 16000))
+          echo "Starting vokra-server on 127.0.0.1:${PORT}"
+          # `--http-bind` sets the HTTP listener (OpenAI / vLLM / piper-plus
+          # endpoints). The Wyoming listener defaults to 127.0.0.1:10300;
+          # since it is not what this smoke tests, letting it use its
+          # default is fine (loopback + a different port, no collision on
+          # the random ephemeral HTTP port).
+          "$BIN" --http-bind "127.0.0.1:${PORT}" &
+          SERVER_PID=$!
+          # Ensure the background process is reaped even on failure.
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          # Poll /health for up to ~10s (startup should be well under 1s).
+          for i in $(seq 1 20); do
+            if curl -fsS --max-time 1 "http://127.0.0.1:${PORT}/health" > /tmp/health.txt; then
+              echo "health probe succeeded on attempt $i:"
+              cat /tmp/health.txt
+              kill "$SERVER_PID" 2>/dev/null || true
+              wait "$SERVER_PID" 2>/dev/null || true
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "::error::vokra-server did not answer /health within 10s"
+          kill "$SERVER_PID" 2>/dev/null || true
+          exit 1
+      - name: Verify root Cargo.lock unchanged
+        # Sanity: the whole job must not have mutated the root workspace
+        # lockfile. If cargo somehow touched it, the isolation pattern is
+        # broken and the change must be reviewed.
+        run: git diff --exit-code Cargo.lock

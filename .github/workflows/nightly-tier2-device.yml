@@ -156,7 +156,7 @@ jobs:
     runs-on: [self-hosted, "${{ matrix.label }}"]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Build vokra-cli (release)

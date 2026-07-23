@@ -1,0 +1,513 @@
+# Vokra CI quality / advisory gates (part of the 2026-07-23 split;
+# see .github/workflows/ci.yml header for the full split rationale).
+#
+# What lives here vs. elsewhere:
+#
+#   * .github/workflows/ci.yml         — required checks (build / test / fmt
+#                                        / clippy / parity / license) plus
+#                                        the artifact chain that feeds
+#                                        ios-build / unity-package /
+#                                        python-wheel-build.
+#
+#   * .github/workflows/ci-quality.yml — THIS FILE. Advisory lint / doc-drift
+#                                        / MSRV / ABI-surface / rustdoc /
+#                                        FA v3 confinement / Python license
+#                                        audit / server-compat. None of
+#                                        these are (yet) branch-protection
+#                                        required checks — promotion to
+#                                        required is an owner decision after
+#                                        sustained green (NFR-MT-07), same
+#                                        cool-off posture the individual
+#                                        job docstrings describe.
+#
+#   * .github/workflows/ci-platform.yml — platform build / RTF regression /
+#                                        server-deployment / GPU backend /
+#                                        cross-target audit.
+#
+# Split principle: jobs are split by whether they need cargo. The grep /
+# python-only gates run in checkout-only jobs that finish in seconds;
+# anything needing a toolchain gets its own job so the cheap gates are not
+# held behind a build. Every one of these was run against the working tree
+# first (all green) AND against an injected violation (all red) — a gate
+# whose red has never been observed is not a gate.
+
+name: CI Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Own concurrency group so cancels in this file cannot cascade into
+# ci.yml / ci-platform.yml.
+concurrency:
+  group: ci-quality-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Checkout-only hygiene gates (X-08-T05/T06/T07/T28). No cargo, no network.
+  repo-hygiene:
+    name: repo-hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Fixture EOL pins (CRLF hash breakage — regressed once, 9cfa49a)
+        # windows-latest checks out with core.autocrlf=true, so any hashed
+        # fixture without an explicit .gitattributes eol pin arrives with
+        # different bytes and breaks a hash nobody touched.
+        run: bash scripts/check-fixture-eol-pins.sh
+      - name: pipefail `| grep -q` fail-open linter (static)
+        run: python3 scripts/compliance/lint-pipefail-grep-q.py
+      - name: NVIDIA scanner fail-open behavioural test
+        # Complement to the static linter above: that one only spots the
+        # `| grep -q` string idiom, this one proves the four NVIDIA
+        # non-bundle scanners still DETECT a dirty library inside a large nm
+        # dump. Those four scanners are already CI-wired; until now nothing
+        # checked that they had not silently started failing open.
+        # Needs no cargo / network / binutils (mktemp scratch + `nm` stub).
+        run: bash scripts/compliance/test-nvidia-scanner-sigpipe.sh
+      - name: Hot-path zero-alloc regions (FR-EX-05)
+        run: bash scripts/check-hot-path-allocs.sh
+      - name: "Workflow hygiene (cron collisions / needs: ids / run: shell syntax)"
+        # New in X-08-T27. The pre-existing cron check was a unittest method on
+        # ONE workflow whose regex matched double-quoted crons only (8 of 13
+        # visible) and which compared only itself against the others. Self-test
+        # runs first so a parser regression cannot mask a real violation.
+        run: |
+          bash scripts/check-workflow-hygiene.sh --self-test
+          bash scripts/check-workflow-hygiene.sh
+
+  # Unity C# static lints (X-08-T08). Checkout-only: all three scripts are
+  # pure grep over bindings/unity/**/*.cs — zero references to cargo / rustc /
+  # cbindgen, which is why they do NOT belong in `capi-smoke` below.
+  #
+  # scripts/check-capi-thread-free.sh is deliberately NOT here: it already runs
+  # via scripts/build-unity-webgl-lib.sh:170 inside the `unity-package` job.
+  # Wiring it twice would double the runner cost and split the failure signal.
+  unity-capi-lints:
+    name: unity-capi-lints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: IL2CPP callback pattern (static / Preserve / rooted delegate)
+        run: bash scripts/check-callback-pattern.sh
+      - name: DllImport routes through NativeMethods.Lib (iOS __Internal switch)
+        run: bash scripts/check-native-methods.sh
+      - name: Unity WebGL traps (HTTP-URL fallthrough / busy-wait deadlock)
+        run: bash scripts/check-unity-webgl-traps.sh
+
+  # C ABI smoke (X-08-T09). Split from unity-capi-lints because
+  # scripts/run-capi-smoke.sh:44 runs `cargo build -p vokra-capi --release` and
+  # :47 calls gen-c-abi.sh --check, which hard-exits when cbindgen is absent
+  # (scripts/gen-c-abi.sh:29-34) — cargo AND cbindgen are both mandatory here,
+  # which is exactly the provisioning the checkout-only job avoids.
+  #
+  # The script's own header called the CI wiring "a followup"; this is it.
+  # Its ASR/TTS legs are env-gated on real GGUFs and announce a SKIP rather
+  # than pretending to pass (FR-EX-08).
+  capi-smoke:
+    name: capi-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cbindgen
+        # Same provisioning the ios-build job uses.
+        run: cargo install cbindgen --locked
+      - name: C ABI smoke (header drift + exported-symbol prefix + C tests)
+        run: bash scripts/run-capi-smoke.sh
+      - name: Verify root Cargo.lock unchanged
+        # NFR-DS-02: `cargo install cbindgen` must not touch the root lockfile.
+        run: git diff --exit-code Cargo.lock
+
+  # MSRV verification (X-08-T15). Every other toolchain reference in this repo
+  # is `dtolnay/rust-toolchain@stable`, so the declared MSRV had never once
+  # been exercised: a contributor on 1.85-1.88 hits a cargo rust-version error
+  # that CI could not reproduce.
+  #
+  # The pin is 1.89, not the workspace's declared 1.85, because
+  # crates/vokra-backend-cpu/Cargo.toml:11 raises its own floor to 1.89 (the
+  # AVX-512 intrinsics of M4-17 stabilized there) and that crate is in every
+  # build — so 1.89 is the EFFECTIVE workspace floor. Verified both ways:
+  # `cargo +1.88 check --workspace` fails with "rustc 1.88.0 is not supported
+  # by ... vokra-backend-cpu requires rustc 1.89", and 1.89 succeeds.
+  #
+  # TO RAISE THE MSRV: bump this pin, bump `rust-version` in the crate that
+  # forces the floor, and reconcile Cargo.toml:27 + docs/getting-started{,.ja}.md
+  # "Rust toolchain" line. Whether to lift the workspace declaration from 1.85
+  # to 1.89 is an open owner decision (docs/abi-changelog.md:318, X-08-T32).
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check --workspace on the effective MSRV (1.89)
+        run: cargo check --workspace
+
+  # ABI surface tracking (X-08-T11/T12) — ADVISORY, and it MUST STAY ADVISORY.
+  #
+  # ############ RED-LINE ############
+  # Do NOT add this job to the branch-protection required checks. Promoting
+  # these three from advisory to required IS the content of M5-13
+  # (docs/milestones.md §9), which fires with the C ABI freeze (IF-01) at the
+  # v1.0 GA tag. If X-08 promoted them, M5-13 would have nothing left to do.
+  # X-08 wires them as advisory; M5-13 promotes. One step each.
+  # ##################################
+  #
+  # continue-on-error mirrors the cool-off posture of the platform-support
+  # step in `license` and of gpu-vulkan-parity.yml: drift annotates the run,
+  # it does not block the PR. Each script's --self-test runs first so a parser
+  # regression cannot masquerade as "no drift".
+  abi-surface:
+    name: abi-surface (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # abi-diff compares against a baseline revision
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: C ABI diff (self-test, then diff)
+        run: |
+          bash scripts/abi-diff.sh --self-test
+          bash scripts/abi-diff.sh
+      - name: ABI changelog freshness (self-test, then check)
+        run: |
+          bash scripts/check-abi-changelog.sh --self-test
+          bash scripts/check-abi-changelog.sh
+      - name: M5-residual ops add no C ABI symbol (self-test, then check)
+        run: |
+          bash scripts/check-m5-residual-no-abi.sh --self-test
+          bash scripts/check-m5-residual-no-abi.sh
+      - name: Rust public-API surface (self-test, then snapshot compare)
+        run: |
+          bash scripts/rust-public-api-list.sh --self-test
+          bash scripts/rust-public-api-list.sh
+
+  # Documentation code examples (X-08-T18..T25) — NFR-MT-07 item (7), the one
+  # required-check slot that had no job at all. `cargo test --workspace` runs
+  # rustdoc `///` doctests only; nothing ever read the fences in the .md files.
+  #
+  # Three tiers, and the boundary is deliberate:
+  #   A  CLI surface + referenced-path existence (no compiler, no network)
+  #   B  compile / API existence (C blocks vs include/vokra.h; python / js /
+  #      json against the real binding surfaces)
+  #   C  DEFERRED and ANNOUNCED on every run — swift and csharp blocks need
+  #      toolchains a PR runner lacks, and getting-started's sh blocks download
+  #      real upstream checkpoints. Those belong to the gated / nightly
+  #      workflows. The checker PRINTS every tier-C block it skipped rather
+  #      than quietly dropping it, so "verified" never overstates itself.
+  #
+  # 120 blocks across 24 documents (en + ja for getting-started, web,
+  # migration-guide, python, ios, unity, and — added by X-09b-T23 — the
+  # backend-guide, the cli/android/godot/server tutorials, and api-reference).
+  doc-examples:
+    name: doc-examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Self-test the extractor and checkers
+        # Bidirectional fixtures: a doc-local pseudo-helper (migration-guide's
+        # `read_wav_mono_f32`) must stay GREEN, and injected drift must go RED.
+        # Without the green half, tightening the API check later could start
+        # misfiring on legitimate pseudo-helpers with nothing to catch it.
+        run: python3 tools/docs/check_doc_examples.py --self-test
+      - name: Verify documentation code examples
+        run: python3 tools/docs/check_doc_examples.py
+
+  # X-09b-T15: rustdoc / API-reference generation. ADVISORY (continue-on-error),
+  # not a branch-protection required check — promotion is the owner's call,
+  # same posture as doc-examples / fa-v3-confinement / the license doc-drift
+  # steps.
+  #
+  # This job asserts TWO things and DELIBERATELY NOT a third:
+  #   (1) `cargo doc --no-deps --workspace` BUILDS. That build succeeding IS the
+  #       "the API reference is auto-generated" completion item of X-09; it is a
+  #       separate fact from `-D warnings` being clean.
+  #   (2) a warning RATCHET: the rustdoc warning count must not EXCEED a recorded
+  #       baseline, so a new intra-doc-link break is blocked from landing.
+  # It does NOT assert `RUSTDOCFLAGS=-D warnings` / zero warnings. At the time
+  # this job landed the tree had 266 rustdoc warnings (82 files / 12 crates,
+  # measured with default features); a "zero warnings" gate would therefore be
+  # either a fabricated green or a rewrite an order of magnitude larger than
+  # this WP. Draining those 266 is deferred to a dedicated doc-hygiene WP — here
+  # we only stop the number GROWING. A green run means "no NEW warning", NOT
+  # "clean". Re-measure with:
+  #   cargo doc --no-deps --workspace 2>&1 | grep -c '^warning:'
+  rustdoc:
+    name: rustdoc (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo doc build + warning ratchet (NOT a zero-warning gate)
+        shell: bash
+        run: |
+          set -o pipefail
+          # Baseline measured 2026-07-21 on the dev machine (macOS, default
+          # features). ubuntu-latest documents the macOS-only Metal/CoreML items
+          # as cfg'd-out, so its count is <= this — 266 is a safe ceiling here.
+          # Owner: if a future hygiene WP lowers the real count, lower this too.
+          BASELINE=266
+          cargo doc --no-deps --workspace 2>&1 | tee /tmp/rustdoc.log
+          count=$(grep -c '^warning:' /tmp/rustdoc.log || true)
+          echo "rustdoc warnings: ${count} (baseline ${BASELINE}). This is a RATCHET, not a zero-warning gate: green means no NEW warning, not clean. The 266 are deferred to a doc-hygiene WP (X-09b-T15)."
+          if [ "${count}" -gt "${BASELINE}" ]; then
+            echo "::error::rustdoc warning count ${count} exceeds baseline ${BASELINE} — a new doc warning was introduced. Fix the new warning, or (only if the rise is intentional and justified) update BASELINE in ci.yml."
+            exit 1
+          fi
+
+  # M4-07-T15: FA v3 containment red-line (design constraint §5-(7)) —
+  # FA v3 symbols (flash_attn_v3 / WGMMA / wgmma / TMA_ / compute_90a) are
+  # legal ONLY under crates/vokra-backend-cuda; this machine gate supersedes
+  # the M3-01 "no FA v3 anywhere" PR-checklist grep. ADVISORY start: not a
+  # branch-protection required check — promotion is the owner's call after
+  # sustained green (standard workflow-promotion discipline). Fixture
+  # red/green coverage lives in
+  # crates/vokra-backend-cuda/tests/fa_v3_confinement.rs.
+  fa-v3-confinement:
+    name: fa-v3-confinement (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: FA v3 symbols confined to vokra-backend-cuda
+        run: ./scripts/check-fa-v3-confinement.sh
+
+  # M2-12-T16 Python binding license audit (NFR-LC-02, NFR-LC-04). Belt-and-
+  # suspenders with the root `license` job (which owns the Rust side via
+  # cargo-deny). This job enforces the Python-side allowlist on the build /
+  # runtime deps declared in `bindings/python/pyproject.toml` so a GPL / LGPL
+  # crate cannot creep in through a Python transitive dep (e.g. a hatchling
+  # plugin flipping license, or a wheel-time build tool). Runs in an isolated
+  # venv so the runner's ambient site-packages cannot mask a bad license.
+  #
+  # Allowlist (matches D13 / plan §1):
+  #   Apache-2.0 ; MIT ; BSD-3-Clause ; BSD-2-Clause ; PSF-2.0 ; Python-2.0
+  # (numpy = BSD-3, hatchling = MIT, pytest = MIT are all covered; anything
+  # outside this set — GPL / LGPL / MPL / CC-BY-NC — fails the job.)
+  python-license-audit:
+    name: python-license-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Create isolated venv and install binding + audit tool
+        # `pip install .` reads bindings/python/pyproject.toml so build / runtime
+        # deps materialize in this venv. `pip-licenses` (MIT) enumerates every
+        # installed distribution and enforces --allow-only. Isolated venv so the
+        # runner's ambient site-packages cannot mask a bad license.
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/vokra-py-audit
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-audit/bin/activate
+          python -m pip install --upgrade pip
+          if [ -f bindings/python/pyproject.toml ]; then
+            python -m pip install ./bindings/python
+          else
+            echo "bindings/python/pyproject.toml not yet present — auditing pip-licenses toolchain only."
+          fi
+          python -m pip install pip-licenses
+      - name: pip-licenses --allow-only (NFR-LC-02 GPL/LGPL block)
+        # --allow-only fails nonzero if ANY installed dist reports a license
+        # outside the allowlist. The venv holds only the binding's transitive
+        # deps + pip-licenses itself; pip / setuptools / prettytable / wheel
+        # are added to the allowlist so the toolchain itself does not trip the
+        # gate (they are all MIT / BSD / Apache).
+        #
+        # Historical note: the flag `--with-system=false` used to hide
+        # pip/setuptools, but pip-licenses 5.x turned `-s/--with-system` into a
+        # store_true flag that no longer accepts `=false` (fails with "ignored
+        # explicit argument"). Rather than pin an old release, we drop the
+        # flag (default already omits system packages) and rely on the
+        # allowlist expansion to cover the standard toolchain packages.
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-py-audit/bin/activate
+          pip-licenses \
+            --format=markdown \
+            --allow-only 'Apache-2.0;Apache Software License;MIT;MIT License;BSD-3-Clause;BSD License;BSD-2-Clause;PSF-2.0;Python-2.0' \
+            | tee /tmp/pip-licenses.md
+          {
+            echo "### Python binding license audit"
+            echo ""
+            cat /tmp/pip-licenses.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # M2-09-T22 vokra-server 4-API compat + cross-target build + cargo-deny (FR-SV-01..05,
+  # NFR-MT-07, NFR-LC-04). This job is REQUIRED on `main` PRs — it is what blocks a
+  # break in any of the four documented compat surfaces (OpenAI `/v1/audio/transcriptions`,
+  # vLLM `/v1/completions` + `/v1/chat/completions` schema, piper-plus `/api/tts`,
+  # Wyoming Protocol) from landing. Complements `server-deployment` (T19), which owns
+  # single-binary / static-link / non-contamination proof.
+  #
+  # Design notes (M2-09 plan §3.2 T22, §5 R1):
+  #
+  #   * Compat tests live under `integrations/vokra-server/tests/{openai_compat,
+  #     vllm_compat, piper_http_compat, wyoming_compat}.rs` and speak the wire
+  #     protocols (multipart, JSONL over TCP, application/json). They run via
+  #     `--manifest-path integrations/vokra-server/Cargo.toml` so the excluded-
+  #     workspace pattern (empty `[workspace]`, own Cargo.lock) is respected and
+  #     the root workspace build cache is untouched.
+  #
+  #   * GGUF-gate: Whisper `base` is the per-PR default — CI writes a synthetic
+  #     `.gguf` fixture path into `VOKRA_WHISPER_BASE_GGUF` (the tests treat an
+  #     absent path as "skip", not "fail", per FR-EX-08 no-silent-fallback: model
+  #     absence is an explicit skip, not a fabricated pass). Whisper `large-v3`
+  #     stays nightly-only (`VOKRA_WHISPER_LARGE_V3_GGUF`) — we intentionally do
+  #     NOT set it on per-PR runs so the large-v3 branch is skipped, keeping the
+  #     PR path fast and avoiding a 1.5GB weight download per PR. The per-test
+  #     skip decision + a summary counter is printed to `$GITHUB_STEP_SUMMARY`
+  #     so reviewers can see at a glance which compat legs actually executed vs
+  #     skipped (audit trail for the "GGUF-gated skip" pattern documented in
+  #     `integrations/vokra-server/tests/openai_compat.rs`).
+  #
+  #   * Cross-target matrix: FR-SV-01 requires a single binary on Linux x86_64
+  #     (musl static, handled in `server-deployment`), macOS ARM64 (Apple
+  #     silicon default runner), and Windows x86_64. This matrix cross-builds
+  #     the release binary on all three so a Windows-only build regression
+  #     (e.g. tokio winsock, path separators in include_bytes!, MSVC linker
+  #     flags) blocks the PR at the same gate as the Linux musl smoke test.
+  #     macOS ARM64 uses the default apple-silicon runner triple so no extra
+  #     `--target` flag is needed (build is native). Test execution runs on
+  #     Ubuntu only (the compat tests are wire-protocol-level and OS-agnostic;
+  #     testing on all three would triple runner minutes with no additional
+  #     coverage).
+  #
+  #   * cargo-deny (NFR-LC-04): the server crate has its own `deny.toml`
+  #     (integrations/vokra-server/deny.toml) permitting the HTTP / async /
+  #     serde stack while banning GPL/LGPL and onnx/protobuf families. This job
+  #     runs the check against the server workspace explicitly. The root
+  #     `license` job continues to enforce zero-dep on the runtime workspace.
+  server-compat:
+    name: server-compat
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            triple: x86_64-unknown-linux-musl
+            run_tests: true
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+            run_tests: false
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
+            run_tests: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            integrations/vokra-server
+      - name: Install musl toolchain (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Cross-build vokra-server (release, ${{ matrix.triple }})
+        # FR-SV-01 cross-target proof: the server binary must build on the
+        # three officially supported single-binary triples. macOS ARM64 is the
+        # native runner triple (no --target needed on apple-silicon runners
+        # but we pass it explicitly for symmetry); Windows uses the MSVC ABI;
+        # Linux uses musl for static linkage (see T19 for the static-link
+        # verification — this leg only proves the toolchain wiring compiles).
+        shell: bash
+        run: |
+          cargo build --release \
+            --target ${{ matrix.triple }} \
+            -p vokra-server \
+            --manifest-path integrations/vokra-server/Cargo.toml
+      - name: cargo-deny (server crate, NFR-LC-04)
+        if: matrix.os == 'ubuntu-latest'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses advisories bans
+          manifest-path: integrations/vokra-server/Cargo.toml
+      - name: Locate Whisper base GGUF fixture (per-PR GGUF-gate)
+        # Per M2-09 plan §3.2 T22: base is per-PR, large-v3 is nightly-only.
+        # We set VOKRA_WHISPER_BASE_GGUF to a repo-committed tiny fixture if
+        # one exists; otherwise leave unset so tests take the documented "skip"
+        # branch (openai_compat.rs `whisper_gguf_for()` returns None → the
+        # test asserts nothing and the skip is counted in the summary below).
+        # This is the FR-EX-08 no-silent-fallback shape: absence → explicit
+        # skip, never a fabricated pass. large-v3 is deliberately NOT set here.
+        if: matrix.run_tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          FIXTURE="$GITHUB_WORKSPACE/tests/fixtures/whisper-base.gguf"
+          if [ -f "$FIXTURE" ]; then
+            echo "VOKRA_WHISPER_BASE_GGUF=$FIXTURE" >> "$GITHUB_ENV"
+            echo "Whisper base GGUF fixture: $FIXTURE" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No Whisper base GGUF fixture found; base-gated tests will skip." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Whisper large-v3 is nightly-only; large-v3-gated tests will skip on per-PR runs." >> "$GITHUB_STEP_SUMMARY"
+      - name: Compat tests (openai / vllm / piper_http / wyoming)
+        # M2-09-T22 required checks: these four test binaries speak the wire
+        # protocols end-to-end. On main-PR builds this is where a compat break
+        # is caught. Each test binds 127.0.0.1 on an ephemeral port picked by
+        # the test itself (see openai_compat.rs / wyoming_compat.rs); no
+        # coordination or shared-port setup is needed.
+        if: matrix.run_tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release \
+            --manifest-path integrations/vokra-server/Cargo.toml \
+            -p vokra-server \
+            --test openai_compat \
+            --test vllm_compat \
+            --test piper_http_compat \
+            --test wyoming_compat \
+            -- --nocapture
+      - name: GGUF-gate skip summary
+        # Print the compat matrix state to the job summary so reviewers see
+        # which legs executed vs skipped without spelunking test logs. Base is
+        # per-PR (may skip if fixture absent); large-v3 skips on per-PR runs
+        # by design; nightly runs will set both env vars.
+        if: matrix.run_tests && always()
+        shell: bash
+        run: |
+          {
+            echo "### server-compat GGUF-gate summary"
+            echo ""
+            echo "| model | env var | state on this run |"
+            echo "|-------|---------|-------------------|"
+            if [ -n "${VOKRA_WHISPER_BASE_GGUF:-}" ]; then
+              echo "| whisper base | VOKRA_WHISPER_BASE_GGUF | present (tests executed) |"
+            else
+              echo "| whisper base | VOKRA_WHISPER_BASE_GGUF | absent (tests skipped) |"
+            fi
+            if [ -n "${VOKRA_WHISPER_LARGE_V3_GGUF:-}" ]; then
+              echo "| whisper large-v3 | VOKRA_WHISPER_LARGE_V3_GGUF | present (nightly / cached) |"
+            else
+              echo "| whisper large-v3 | VOKRA_WHISPER_LARGE_V3_GGUF | absent (per-PR skip by design) |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify root Cargo.lock unchanged
+        # T22 mutation-guard: cross-building the server crate must never
+        # perturb the root Cargo.lock — the excluded-workspace pattern is what
+        # keeps the root zero-dep. Any diff here means server deps leaked into
+        # the runtime graph (NFR-DS-02 breach, plan §5 R1).
+        shell: bash
+        run: git diff --exit-code Cargo.lock

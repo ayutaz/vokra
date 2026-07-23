@@ -124,7 +124,7 @@ jobs:
     if: false && needs.check-runner-availability.outputs.run_available == 'true'
     runs-on: [self-hosted, linux, cuda-rtx-4090]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Emit device + driver + toolkit versions to the summary
         # Belt-and-suspenders: even if the check-runner job passed, we still
@@ -218,7 +218,7 @@ jobs:
 
       - name: Upload measurement log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cuda-rtf-runs-${{ github.run_id }}
           path: rtf-runs.log

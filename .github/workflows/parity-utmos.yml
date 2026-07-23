@@ -72,7 +72,7 @@ jobs:
     outputs:
       ready: ${{ steps.flip.outputs.ready }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Detect M4-18 flip artifacts
         id: flip
         shell: bash
@@ -134,7 +134,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Download + verify the upstream checkpoint (owner-declared URL)
         shell: bash

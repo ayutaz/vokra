@@ -83,7 +83,7 @@ jobs:
       HF_HOME: ${{ github.workspace }}/.hf-cache
       HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # FR-OP-32 grep guard: this workflow must never grow an EnCodec weight
       # download step. The word is assembled at runtime so the guard cannot
@@ -104,7 +104,7 @@ jobs:
           echo "guard OK: no ${BANNED} fetch step present"
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -115,7 +115,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Cache checkpoints
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ${{ env.HF_HOME }}

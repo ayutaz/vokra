@@ -1,0 +1,49 @@
+# Dependabot 設定 (SoT: このファイル)
+#
+# 対象 ecosystem:
+#   - GitHub Actions のみ (`.github/workflows/*.yml` の `uses:` に載る action の pin バージョン)
+#
+# 対象外 (意図的除外):
+#   - Rust crate: root `Cargo.lock` は `vokra-*` のみを許す zero-dep 不変条件
+#     (NFR-DS-02) を持つため、`cargo` ecosystem を dependabot 対象にすると
+#     `zero-dep` gate を巻き込みで壊す PR が量産される。crate 更新は
+#     除外 workspace 側 (integrations/*, vokra-server, vokra-godot 等) に
+#     限定して手動で行う。
+#   - Python / npm: 補助 tool は venv/isolated build のみで、production 面には
+#     bundle しないため dependabot 対象外 (M4/M5 tickets で運用継続を判断)。
+#
+# schedule:
+#   毎週月曜 UTC 00:00 = JST 09:00。週次 parity cron 群 (Monday 04:00-10:00 UTC =
+#   §3 stagger、workflows/README.md 参照) より前に投げるので、PR がその週の parity
+#   結果を巻き込みで反映しやすい。
+#
+# limit / labels / reviewer:
+#   - open-pull-requests-limit: 5 (同時にレビュー可能な上限を controlled に保つ)
+#   - labels: ci + dependencies (Kill switch 監視や release note で機械的に filter するため)
+#   - reviewers: ayutaz (依頼者が唯一の maintainer)
+#
+# grouping:
+#   `production-actions` に全 action を集約し、major/minor/patch を 1 PR に束ねる。
+#   個別 PR が量産されるのを防ぎ、branch protection の required check 消費を最小化する。
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "00:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "ci"
+      - "dependencies"
+    reviewers:
+      - "ayutaz"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      production-actions:
+        patterns:
+          - "*"
