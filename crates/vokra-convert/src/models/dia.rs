@@ -266,6 +266,32 @@ mod tests {
         out
     }
 
+    /// A single F16 tensor at the top of the file (shape [2,3] → 6 elements ×
+    /// 2 bytes = 12 bytes). Real Dia-1.6B checkpoints are likely served in F16
+    /// (~3.2 GB), so the F16 leg of the union match arm must be reachable.
+    fn minimal_safetensors_one_f16() -> Vec<u8> {
+        let header = r#"{"encoder.embed_tokens.weight":{"dtype":"F16","shape":[2,3],"data_offsets":[0,12]}}"#;
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&[0u8; 12]);
+        out
+    }
+
+    /// A single BF16 tensor at the top of the file (shape [2,3] → 6 elements ×
+    /// 2 bytes = 12 bytes). BF16 graduated to a supported safetensors dtype in
+    /// M4-06 (moshiko is all-BF16), so BF16 tensors now reach `convert()` and
+    /// land in the `_ =>` arm — pinning the `skipped_non_float` counter's real
+    /// trigger.
+    fn minimal_safetensors_one_bf16() -> Vec<u8> {
+        let header = r#"{"encoder.embed_tokens.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&[0u8; 12]);
+        out
+    }
+
     #[test]
     fn arch_string_matches_runtime_constant() {
         // The two crates only share `vokra-core`, so this constant is the
@@ -369,6 +395,110 @@ mod tests {
             report.notes.iter().any(|n| n.contains("no float tensors")),
             "zero-tensor conversion must emit a loud note: {:?}",
             report.notes
+        );
+    }
+
+    /// Pins the F16 leg of the `GgmlType::F32 | GgmlType::F16` union match arm.
+    /// A real Dia-1.6B checkpoint is likely served in F16 (~3.2 GB); a typo
+    /// dropping `| GgmlType::F16` would silently bin every F16 tensor into
+    /// `skipped_non_float` and only surface downstream at the FR-EX-08 shape
+    /// gate. This test catches that regression at the converter boundary.
+    #[test]
+    fn f16_tensor_passes_through_verbatim() {
+        let (builder, report) = convert(minimal_safetensors_one_f16()).expect("convert");
+        assert_eq!(report.written, 1, "F16 must reach the pass-through arm");
+        assert_eq!(
+            report.skipped_non_float, 0,
+            "F16 must not land in the skipped counter"
+        );
+
+        // The tensor survives the round trip under its upstream name and
+        // preserves its F16 dtype (payload is 12 bytes = 6 × F16).
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        let info = file
+            .tensor_info("encoder.embed_tokens.weight")
+            .expect("tensor present");
+        assert_eq!(info.dtype, GgmlType::F16);
+        assert_eq!(info.dimensions, vec![2, 3]);
+        assert_eq!(file.tensor_bytes(info).len(), 12);
+    }
+
+    /// Pins the `_ =>` arm of the tensor-dtype match: BF16 graduated to a
+    /// supported safetensors dtype in M4-06 (moshiko is all-BF16) so BF16
+    /// tensors now reach `convert()` and MUST be counted, not silently
+    /// dropped. The in-file comment claiming "the safetensors reader rejects
+    /// unknown dtypes at parse time" is stale for BF16 — this test guards
+    /// against a regression where somebody assumes the comment is still true
+    /// and, for example, promotes BF16 into the pass-through arm without
+    /// deciding how to widen it.
+    #[test]
+    fn bf16_tensor_is_counted_as_skipped_non_float() {
+        let (builder, report) = convert(minimal_safetensors_one_bf16()).expect("convert");
+        assert_eq!(
+            report.written, 0,
+            "BF16 must not currently pass through — Dia converter is F32/F16 only"
+        );
+        assert_eq!(
+            report.skipped_non_float, 1,
+            "BF16 must increment the skipped counter"
+        );
+        // With zero float tensors written, the loud "no float tensors" note
+        // fires — a BF16-only checkpoint would surface the situation.
+        assert!(
+            report.notes.iter().any(|n| n.contains("no float tensors")),
+            "BF16-only conversion must emit the zero-float note: {:?}",
+            report.notes
+        );
+        // Metadata (arch / hparams) still lands — the report reflects the
+        // tensor pass, not a failure of the conversion.
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH)
+        );
+        assert!(
+            file.tensor_info("encoder.embed_tokens.weight").is_none(),
+            "BF16 tensor must not be written"
+        );
+    }
+
+    /// Pins `SafetensorsFile::parse(bytes)?` error propagation on line 156.
+    /// A malformed input must surface as `Err(ConvertError::Parse(_))`, not
+    /// as a silently-empty successful conversion (FR-EX-08 loud fail).
+    #[test]
+    fn malformed_input_returns_parse_error() {
+        // Case 1: empty buffer — shorter than the mandatory 8-byte header
+        // length prefix, so `SafetensorsFile::parse` returns `Truncated`.
+        let err = convert(Vec::new()).expect_err("empty buffer must be rejected");
+        assert!(
+            matches!(err, ConvertError::Parse(_)),
+            "expected ConvertError::Parse, got {err:?}"
+        );
+
+        // Case 2: declared header length runs off the end of the buffer —
+        // 8 bytes of prefix claiming a 1024-byte header inside a 10-byte
+        // buffer. Also `Truncated`.
+        let mut truncated = Vec::new();
+        truncated.extend_from_slice(&1024u64.to_le_bytes());
+        truncated.extend_from_slice(b"{}");
+        let err = convert(truncated).expect_err("truncated header must be rejected");
+        assert!(
+            matches!(err, ConvertError::Parse(_)),
+            "expected ConvertError::Parse, got {err:?}"
+        );
+
+        // Case 3: valid length prefix but malformed JSON body — parses as
+        // `SafetensorsError::Json` and maps to `ConvertError::Parse`.
+        let bad_json = b"{not-json"; // 9 bytes, but not valid JSON.
+        let mut bad = Vec::new();
+        bad.extend_from_slice(&(bad_json.len() as u64).to_le_bytes());
+        bad.extend_from_slice(bad_json);
+        let err = convert(bad).expect_err("malformed JSON must be rejected");
+        assert!(
+            matches!(err, ConvertError::Parse(_)),
+            "expected ConvertError::Parse, got {err:?}"
         );
     }
 }
