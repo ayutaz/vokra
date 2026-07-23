@@ -2787,4 +2787,562 @@ mod tests {
         // The rest of the row must be the original sequence, undisturbed.
         assert_eq!(&out[1..], &input[..]);
     }
+
+    // -----------------------------------------------------------------------
+    // SoTA Phase 1 audit follow-up (2026-07-24). Coverage plugs the following
+    // gaps flagged by the audit of `crates/vokra-ops/src/hiftnet.rs`:
+    //
+    //   * `F0Predictor::config` / `ResBlock::config` accessors were never
+    //     called from a test (silent-drop guard).
+    //   * `HiFTGeneratorConfig::output_channels_at` and
+    //     `HiFTGeneratorConfig::Default::default` are the upstream contract
+    //     with CosyVoice2 checkpoints; silent drift would only surface at
+    //     real-weight parity time.
+    //   * `F0Predictor::new` has six error paths (num_class == 0, zero
+    //     channels/kernel_size, wrong linear_w / linear_b length, per-layer
+    //     conv bias mismatch) that no test exercises.
+    //   * `conv_transpose1d`'s `2 * padding > (t_in - 1) * stride + kernel`
+    //     underflow guard is never triggered.
+    //   * `ResBlock::new` rejects zero channels / kernel_size — untested.
+    //   * `HiFTGenerator::new` has nine construction-validation branches
+    //     (empty upsample_rates, empty resblock_kernel_sizes, zero istft
+    //     params, wrong conv_post_w shape, ups count mismatch, source_downs
+    //     shape mismatch, source_resblock kernel / dilation count mismatch,
+    //     wrong resblock_weights count) with no pinning.
+    //   * NaN in the mel input must propagate to the audio — the audit
+    //     highlighted that `abs()`/`clamp()` preserve NaN in Rust and a
+    //     refactor to `v.max(min).min(max)` would silently sanitize it.
+    //   * The `magnitude.min(1e2)` clamp in `HiFTGenerator::decode` (only
+    //     fires when `exp()` saturates to +inf, which the all-zero fixture
+    //     cannot exercise) — verify a large `conv_post_b` cannot leak NaN
+    //     into the audio.
+    //   * Integration: `HiFTGenerator::forward` is only exercised with the
+    //     all-zero fixture, so the fusion path `x = x + si` collapses to
+    //     trivial cases. Perturb `source_downs_b` and confirm the audio
+    //     changes so a wire bug that dropped the fusion residual would trip.
+    //   * `Snake::forward_in_place` and `ResBlock::forward_in_place` had no
+    //     dedicated same-input-twice determinism pin (implicit via the
+    //     top-level HiFT determinism test but no isolated locator).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn f0_predictor_config_accessor_returns_construction_config() {
+        // Pin that `F0Predictor::config()` mirrors the exact values passed
+        // to `new()`. Without this, a refactor that silently drops a field
+        // (e.g., loses `num_layers` from the stored copy) would go
+        // undetected by the shape-based forward tests.
+        let cfg = F0PredictorConfig {
+            num_class: 1,
+            in_channels: 4,
+            cond_channels: 8,
+            kernel_size: 3,
+            num_layers: 3,
+        };
+        let weights = F0PredictorWeights {
+            conv_weights: vec![
+                vec![0.0f32; 8 * 4 * 3],
+                vec![0.0f32; 8 * 8 * 3],
+                vec![0.0f32; 8 * 8 * 3],
+            ],
+            conv_biases: vec![vec![0.0f32; 8]; 3],
+            linear_w: vec![0.0f32; 8],
+            linear_b: vec![0.0f32; 1],
+        };
+        let p = F0Predictor::new(cfg, weights).unwrap();
+        let stored = p.config();
+        assert_eq!(stored.num_class, 1);
+        assert_eq!(stored.in_channels, 4);
+        assert_eq!(stored.cond_channels, 8);
+        assert_eq!(stored.kernel_size, 3);
+        assert_eq!(stored.num_layers, 3);
+    }
+
+    #[test]
+    fn res_block_config_accessor_returns_construction_config() {
+        // Pin that `ResBlock::config()` mirrors the exact values passed to
+        // `new()`. Same silent-drop rationale as the F0Predictor accessor
+        // pin above.
+        let rb = zero_res_block(4, 3, vec![1, 3, 5]);
+        let stored = rb.config();
+        assert_eq!(stored.channels, 4);
+        assert_eq!(stored.kernel_size, 3);
+        assert_eq!(stored.dilations, vec![1, 3, 5]);
+    }
+
+    #[test]
+    fn hift_generator_config_output_channels_at_matches_shift_formula() {
+        // `output_channels_at(stage) == base_channels >> (stage + 1)` is
+        // used internally by `HiFTGenerator::new` when it derives the
+        // per-stage output channel count. A regression that swapped the
+        // shift direction or the `+ 1` offset would break the derived
+        // resblock / source_downs shapes silently — pin the formula
+        // directly on both the reference small bundle (base_channels = 8)
+        // and the upstream CosyVoice2 base_channels = 512.
+        let cfg_small = HiFTGeneratorConfig {
+            base_channels: 8,
+            ..HiFTGeneratorConfig::default()
+        };
+        assert_eq!(cfg_small.output_channels_at(0), 4);
+        assert_eq!(cfg_small.output_channels_at(1), 2);
+        assert_eq!(cfg_small.output_channels_at(2), 1);
+
+        let cfg_upstream = HiFTGeneratorConfig::default();
+        assert_eq!(cfg_upstream.output_channels_at(0), 256);
+        assert_eq!(cfg_upstream.output_channels_at(1), 128);
+    }
+
+    #[test]
+    fn hift_generator_config_default_pins_upstream_cosyvoice2_values() {
+        // Upstream CosyVoice2's HiFTNet ships with a fixed set of
+        // hyperparameters (`generator.py:378-395`). Silent drift in any of
+        // them would break real-weight parity, so pin every field of
+        // `HiFTGeneratorConfig::default()` verbatim.
+        let d = HiFTGeneratorConfig::default();
+        assert_eq!(d.in_channels, 80);
+        assert_eq!(d.base_channels, 512);
+        assert_eq!(d.nb_harmonics, 8);
+        assert_eq!(d.sampling_rate, 22050);
+        assert_eq!(d.nsf_alpha, 0.1);
+        assert_eq!(d.nsf_sigma, 0.003);
+        assert_eq!(d.nsf_voiced_threshold, 10.0);
+        assert_eq!(d.upsample_rates, vec![8, 8]);
+        assert_eq!(d.upsample_kernel_sizes, vec![16, 16]);
+        assert_eq!(d.istft_n_fft, 16);
+        assert_eq!(d.istft_hop_len, 4);
+        assert_eq!(d.resblock_kernel_sizes, vec![3, 7, 11]);
+        assert_eq!(
+            d.resblock_dilation_sizes,
+            vec![vec![1, 3, 5], vec![1, 3, 5], vec![1, 3, 5]]
+        );
+        assert_eq!(d.source_resblock_kernel_sizes, vec![7, 11]);
+        assert_eq!(
+            d.source_resblock_dilation_sizes,
+            vec![vec![1, 3, 5], vec![1, 3, 5]]
+        );
+        assert_eq!(d.lrelu_slope, 0.1);
+        assert_eq!(d.audio_limit, 0.99);
+        // Derived accessors under the default config.
+        assert_eq!(d.num_upsamples(), 2);
+        assert_eq!(d.num_kernels(), 3);
+        assert_eq!(d.total_upsample_factor(), 8 * 8 * 4);
+    }
+
+    #[test]
+    fn f0_predictor_new_rejects_num_class_zero() {
+        // The early `num_class == 0` check (line 108) is a distinct branch
+        // from the `num_class != 1` check (line 169) — a `num_class = 0`
+        // config should trip the earlier `must be >= 1` message rather than
+        // reaching the `must be 1` clause. Weights content does not matter
+        // because the check fires before any shape validation.
+        let cfg = F0PredictorConfig {
+            num_class: 0,
+            in_channels: 4,
+            cond_channels: 8,
+            kernel_size: 3,
+            num_layers: 1,
+        };
+        let weights = F0PredictorWeights {
+            conv_weights: vec![vec![0.0f32; 8 * 4 * 3]],
+            conv_biases: vec![vec![0.0f32; 8]],
+            linear_w: vec![0.0f32; 8],
+            linear_b: vec![0.0f32; 1],
+        };
+        let err = F0Predictor::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("num_class must be >= 1"), "{msg}");
+    }
+
+    #[test]
+    fn f0_predictor_new_rejects_zero_channels_or_kernel_size() {
+        // `in_channels == 0 || cond_channels == 0 || kernel_size == 0`
+        // (line 113) must fail loudly rather than silently produce a
+        // degenerate weight tensor of length 0. Pick `in_channels = 0`;
+        // weights content is irrelevant since the check fires before shape
+        // validation.
+        let cfg = F0PredictorConfig {
+            num_class: 1,
+            in_channels: 0,
+            cond_channels: 8,
+            kernel_size: 3,
+            num_layers: 1,
+        };
+        let weights = F0PredictorWeights {
+            conv_weights: vec![vec![0.0f32; 0]],
+            conv_biases: vec![vec![0.0f32; 8]],
+            linear_w: vec![0.0f32; 8],
+            linear_b: vec![0.0f32; 1],
+        };
+        let err = F0Predictor::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("channels / kernel_size must be > 0"), "{msg}");
+    }
+
+    #[test]
+    fn f0_predictor_new_rejects_wrong_linear_w_length() {
+        // `linear_w` must have length `num_class * cond_channels` (line
+        // 151). With `num_class = 1` and `cond_channels = 8` the expected
+        // length is 8; supply 5 and expect a loud error whose message
+        // includes `linear_w`.
+        let cfg = F0PredictorConfig {
+            num_class: 1,
+            in_channels: 4,
+            cond_channels: 8,
+            kernel_size: 3,
+            num_layers: 1,
+        };
+        let weights = F0PredictorWeights {
+            conv_weights: vec![vec![0.0f32; 8 * 4 * 3]],
+            conv_biases: vec![vec![0.0f32; 8]],
+            linear_w: vec![0.0f32; 5], // wrong (expected 8)
+            linear_b: vec![0.0f32; 1],
+        };
+        let err = F0Predictor::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("linear_w"), "{msg}");
+    }
+
+    #[test]
+    fn f0_predictor_new_rejects_wrong_linear_b_length() {
+        // `linear_b` must have length `num_class` (line 159). With
+        // `num_class = 1` supply 3 and expect a loud error whose message
+        // mentions `linear_b`.
+        let cfg = F0PredictorConfig {
+            num_class: 1,
+            in_channels: 4,
+            cond_channels: 8,
+            kernel_size: 3,
+            num_layers: 1,
+        };
+        let weights = F0PredictorWeights {
+            conv_weights: vec![vec![0.0f32; 8 * 4 * 3]],
+            conv_biases: vec![vec![0.0f32; 8]],
+            linear_w: vec![0.0f32; 8],
+            linear_b: vec![0.0f32; 3], // wrong (expected 1)
+        };
+        let err = F0Predictor::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("linear_b"), "{msg}");
+    }
+
+    #[test]
+    fn f0_predictor_new_rejects_wrong_conv_bias_length() {
+        // Per-layer conv bias must have length `cond_channels` (line 143).
+        // The existing conv-weight-shape test covers `conv_weights` but not
+        // `conv_biases`. Supply a wrong-length bias on layer 0 and expect
+        // the error message to identify both the layer and the field.
+        let cfg = F0PredictorConfig {
+            num_class: 1,
+            in_channels: 4,
+            cond_channels: 8,
+            kernel_size: 3,
+            num_layers: 2,
+        };
+        let weights = F0PredictorWeights {
+            conv_weights: vec![vec![0.0f32; 8 * 4 * 3], vec![0.0f32; 8 * 8 * 3]],
+            conv_biases: vec![
+                vec![0.0f32; 5], // wrong (expected 8)
+                vec![0.0f32; 8],
+            ],
+            linear_w: vec![0.0f32; 8],
+            linear_b: vec![0.0f32; 1],
+        };
+        let err = F0Predictor::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("conv layer 0"), "{msg}");
+        assert!(msg.contains("bias length"), "{msg}");
+    }
+
+    #[test]
+    fn conv_transpose1d_rejects_padding_exceeds_core_underflow_guard() {
+        // `t_out = (t_in - 1) * stride + kernel - 2 * padding` must not
+        // underflow. Line 465 guards `2 * padding > core`. Trigger it with
+        // `t_in = 1, stride = 1, kernel = 2, padding = 2 => core = 2, 2*pad
+        // = 4 > 2`. All other shape checks must pass so the guard is the
+        // only failure path.
+        let input = vec![0.0f32; 1]; // in_ch=1, t_in=1
+        let weight = vec![0.0f32; 2]; // in_ch=1, out_ch=1, k=2 (literal `1*1` elided)
+        let bias = vec![0.0f32; 1]; // out_ch=1
+        let err = conv_transpose1d(&input, 1, 1, 2, 1, 2, 1, &weight, &bias).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("2*padding"), "{msg}");
+        assert!(msg.contains("exceeds"), "{msg}");
+    }
+
+    #[test]
+    fn res_block_new_rejects_zero_channels_or_kernel_size() {
+        // `channels == 0 || kernel_size == 0` (line 570) must fail loudly.
+        // Keep dilations non-empty so the earlier `dilations must not be
+        // empty` check does not intercept. Weights content is irrelevant
+        // because the check fires before any shape validation.
+        let cfg = ResBlockConfig {
+            channels: 0,
+            kernel_size: 3,
+            dilations: vec![1],
+        };
+        let weights = ResBlockWeights {
+            convs1_w: vec![vec![0.0f32; 0]],
+            convs1_b: vec![vec![0.0f32; 0]],
+            convs2_w: vec![vec![0.0f32; 0]],
+            convs2_b: vec![vec![0.0f32; 0]],
+            activations1_alpha: vec![vec![0.0f32; 0]],
+            activations2_alpha: vec![vec![0.0f32; 0]],
+        };
+        let err = ResBlock::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("channels and kernel_size must be > 0"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn hift_gen_new_rejects_empty_upsample_rates() {
+        // `upsample_rates` empty (line 1002) — n_ups = 0 would divide by
+        // zero downstream (e.g., `output_channels_at(num_ups - 1)`) and
+        // must be caught at construction.
+        let (mut cfg, weights) = small_hift_generator_bundle();
+        cfg.upsample_rates = vec![];
+        let err = HiFTGenerator::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("upsample_rates must not be empty"), "{msg}");
+    }
+
+    #[test]
+    fn hift_gen_new_rejects_empty_resblock_kernel_sizes() {
+        // `resblock_kernel_sizes` empty (line 1014) — n_kernels = 0 makes
+        // the later `xs / num_kernels` divide by zero. Must fail at build
+        // time. Keep upsample_rates intact so the earlier n_ups check
+        // passes first.
+        let (mut cfg, weights) = small_hift_generator_bundle();
+        cfg.resblock_kernel_sizes = vec![];
+        let err = HiFTGenerator::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("resblock_kernel_sizes must not be empty"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn hift_gen_new_rejects_zero_istft_params() {
+        // `istft_n_fft == 0 || istft_hop_len == 0` (line 1040) — a zero
+        // n_fft would divide by zero in `n_fft/2 + 1`. Setting only
+        // `istft_n_fft` to 0 is sufficient; all prior config-shape checks
+        // still pass because the small bundle keeps upsample / resblock
+        // lengths consistent.
+        let (mut cfg, weights) = small_hift_generator_bundle();
+        cfg.istft_n_fft = 0;
+        let err = HiFTGenerator::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("istft_n_fft and istft_hop_len must be > 0"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn hift_gen_new_rejects_wrong_conv_post_w_shape() {
+        // Mirror of the existing `hift_gen_new_rejects_conv_pre_wrong_shape`
+        // pin, but on `conv_post_w` (line 1229). The reference shape is
+        // `[n_fft+2, final_ch, 7] = [10, 2, 7] = 140`; truncating it must
+        // surface a loud error rather than silently mis-projecting the
+        // spectrogram head.
+        let (cfg, mut weights) = small_hift_generator_bundle();
+        weights.conv_post_w = vec![0.0f32; 100]; // wrong (expected 140)
+        let err = HiFTGenerator::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("conv_post_w"), "{msg}");
+    }
+
+    #[test]
+    fn hift_gen_new_rejects_ups_count_mismatch() {
+        // Distinct from the `hift_gen_new_rejects_ups_kernel_less_than_stride`
+        // pin: line 1093 rejects `ups_w.len() != n_ups`. Truncate to one
+        // entry (n_ups is 2 for the reference bundle) and expect the count
+        // error, not a per-stage shape error.
+        let (cfg, mut weights) = small_hift_generator_bundle();
+        weights.ups_w.pop(); // now length 1 vs n_ups = 2
+        let err = HiFTGenerator::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("ups"), "{msg}");
+    }
+
+    #[test]
+    fn hift_gen_new_rejects_source_downs_shape_mismatch() {
+        // `source_downs_w[i]` shape check (line 1170). Keep the count
+        // correct so the earlier `source_downs` count check does not
+        // intercept, and truncate stage 0's weight tensor to catch the
+        // per-stage shape check specifically.
+        let (cfg, mut weights) = small_hift_generator_bundle();
+        weights.source_downs_w[0] = vec![0.0f32; 100]; // wrong (expected 160)
+        let err = HiFTGenerator::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("source_downs_w[0]"), "{msg}");
+    }
+
+    #[test]
+    fn hift_gen_new_rejects_source_resblock_kernel_count_mismatch() {
+        // `source_resblock_kernel_sizes.len() != n_ups` (line 1026). Keep
+        // `source_resblock_dilation_sizes` at the correct length so the
+        // sibling dilation check does not intercept.
+        let (mut cfg, weights) = small_hift_generator_bundle();
+        cfg.source_resblock_kernel_sizes = vec![3]; // length 1 vs n_ups = 2
+        let err = HiFTGenerator::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("source_resblock_kernel_sizes"), "{msg}");
+    }
+
+    #[test]
+    fn hift_gen_new_rejects_source_resblock_dilation_count_mismatch() {
+        // `source_resblock_dilation_sizes.len() != n_ups` (line 1033).
+        // Keep `source_resblock_kernel_sizes` correct so the sibling kernel
+        // check fires only when its dilation counterpart does not first.
+        let (mut cfg, weights) = small_hift_generator_bundle();
+        cfg.source_resblock_dilation_sizes = vec![vec![1]]; // length 1 vs n_ups = 2
+        let err = HiFTGenerator::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("source_resblock_dilation_sizes"), "{msg}");
+    }
+
+    #[test]
+    fn hift_gen_new_rejects_wrong_resblock_weights_count() {
+        // `resblock_weights.len() != n_ups * n_kernels` (line 1206). The
+        // reference bundle has 2 ups * 1 kernel = 2 entries; truncate to
+        // 1 and expect the loud "num_ups * num_kernels" error.
+        let (cfg, mut weights) = small_hift_generator_bundle();
+        weights.resblock_weights.pop(); // now length 1 vs expected 2
+        let err = HiFTGenerator::new(cfg, weights).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("resblock_weights"), "{msg}");
+        assert!(msg.contains("num_ups * num_kernels"), "{msg}");
+    }
+
+    #[test]
+    fn hift_generator_forward_propagates_nan_from_mel_to_audio() {
+        // NaN in the mel input must reach the audio output. Rust's `abs()`
+        // and `clamp()` both preserve NaN, so the current pipeline is
+        // NaN-transparent. A regression that refactors the terminal clamp
+        // to `v.max(-limit).min(limit)` would sanitize NaN silently
+        // (IEEE 754 minNum/maxNum discard NaN when the other operand is
+        // finite) — this pin catches that class of change. Even with the
+        // all-zero small fixture, NaN reaches the audio because `0.0 * NaN
+        // = NaN` under IEEE 754 and the accumulator carries it through
+        // every conv1d in the chain.
+        let g = small_hift_generator();
+        let t_mel = 3;
+        let mut mel = vec![0.0f32; 4 * t_mel];
+        mel[0] = f32::NAN; // channel 0, time 0
+        let audio = g.forward(&mel, t_mel).unwrap();
+        assert!(
+            audio.iter().any(|v| v.is_nan()),
+            "NaN in mel must reach at least one audio sample"
+        );
+    }
+
+    #[test]
+    fn hift_generator_forward_magnitude_clamp_prevents_saturation_overflow() {
+        // The `magnitude.min(1e2)` clamp on line 1583 only fires when
+        // `exp(x_post)` saturates to +inf. Under the all-zero small
+        // fixture, `x_post = 0` gives `exp(0) = 1`, so the clamp is silent.
+        // Driving `conv_post_b[0]` to 100 makes `exp(100)` = +inf in f32;
+        // without the clamp, `magnitude * sin(phase)` computes `+inf * 0 =
+        // NaN` and the NaN leaks into the audio (via iSTFT + terminal
+        // clamp — the latter preserves NaN in Rust). This pin verifies the
+        // clamp actually fires: with it, the audio must remain finite and
+        // bounded by `audio_limit` even at saturating `conv_post_b`.
+        let (cfg, mut weights) = small_hift_generator_bundle();
+        // Row 0 is the DC magnitude row. exp(100) overflows f32.
+        weights.conv_post_b[0] = 100.0;
+        let g = HiFTGenerator::new(cfg, weights).expect("mutated bundle must build");
+        let t_mel = 3;
+        let mel = vec![0.0f32; 4 * t_mel];
+        let audio = g.forward(&mel, t_mel).unwrap();
+        let limit = g.cfg.audio_limit;
+        for (k, &v) in audio.iter().enumerate() {
+            assert!(
+                v.is_finite(),
+                "sample {k} = {v} must be finite (magnitude clamp missing?)"
+            );
+            assert!(
+                v.abs() <= limit + 1e-6,
+                "sample {k} = {v} exceeds audio_limit = {limit}"
+            );
+        }
+    }
+
+    #[test]
+    fn hift_generator_forward_source_downs_fusion_contributes_to_output() {
+        // The all-zero fixture makes `si = 0` at every stage, so a wire
+        // bug that swapped the fusion residual (`x = x + si` → `x = x`)
+        // would still produce identical audio under every existing test.
+        // Give `conv_post_w` a small linear response so downstream values
+        // reach the iSTFT input, then compare a baseline against a variant
+        // whose *last-stage* `source_downs_b` is non-zero. Perturbing the
+        // last stage is deliberate: earlier-stage fusion outputs are
+        // zeroed by the following stage's zero-weight `ups`
+        // (ConvTranspose1d output = bias broadcast = 0 when weights and
+        // bias are both 0), so a stage-0 perturbation cannot survive to
+        // the audio under the all-zero fixture. The last-stage fusion is
+        // followed only by MRF (identity under zero weights) + `conv_post`
+        // (small linear), which does propagate the perturbation to the
+        // waveform — a bug that dropped `x = x + si` from the last stage
+        // would leave the audio identical to the baseline.
+        let (cfg, mut w_baseline) = small_hift_generator_bundle();
+        w_baseline.conv_post_w = vec![0.01f32; w_baseline.conv_post_w.len()];
+        let g_baseline =
+            HiFTGenerator::new(cfg.clone(), w_baseline.clone()).expect("baseline must build");
+
+        let mut w_perturbed = w_baseline.clone();
+        // Constant bias broadcast through source_downs → non-zero `si` on
+        // the last stage. Zero convs in the source_resblock keep `si` a
+        // constant, so the perturbation is a predictable additive offset.
+        let last = w_perturbed.source_downs_b.len() - 1;
+        w_perturbed.source_downs_b[last] = vec![0.5f32; w_perturbed.source_downs_b[last].len()];
+        let g_perturbed = HiFTGenerator::new(cfg, w_perturbed).expect("perturbed must build");
+
+        let t_mel = 3;
+        let mel = vec![0.0f32; 4 * t_mel];
+        let audio_baseline = g_baseline.forward(&mel, t_mel).unwrap();
+        let audio_perturbed = g_perturbed.forward(&mel, t_mel).unwrap();
+
+        assert_eq!(audio_baseline.len(), audio_perturbed.len());
+        assert_ne!(
+            audio_baseline, audio_perturbed,
+            "fusion `x = x + si` must propagate source_downs to the audio"
+        );
+        let limit = g_baseline.cfg.audio_limit;
+        for &v in audio_baseline.iter().chain(audio_perturbed.iter()) {
+            assert!(v.is_finite());
+            assert!(v.abs() <= limit + 1e-6);
+        }
+    }
+
+    #[test]
+    fn snake_forward_in_place_deterministic_on_same_input() {
+        // Two identical calls on the same buffer must produce identical
+        // output. Dedicated locator for a `Snake` regression (e.g.,
+        // accidental interior mutability of `alpha`) that a top-level
+        // HiFT determinism test would still catch but with a coarser
+        // failure signal.
+        let snake = Snake::new(vec![0.7f32, -0.3, 1.5, 2.0], false).unwrap();
+        let input: Vec<f32> = (0..(4 * 2)).map(|i| (i as f32) * 0.05 - 0.1).collect();
+        let mut a = input.clone();
+        let mut b = input.clone();
+        snake.forward_in_place(&mut a, 4, 2).unwrap();
+        snake.forward_in_place(&mut b, 4, 2).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn res_block_forward_in_place_deterministic_on_same_input() {
+        // Two calls on identical input must produce identical output. Same
+        // isolated-locator rationale as the Snake determinism pin above.
+        let rb = zero_res_block(4, 3, vec![1, 3, 5]);
+        let input: Vec<f32> = (0..(4 * 6)).map(|i| (i as f32) * 0.1).collect();
+        let mut a = input.clone();
+        let mut b = input.clone();
+        rb.forward_in_place(&mut a, 6).unwrap();
+        rb.forward_in_place(&mut b, 6).unwrap();
+        assert_eq!(a, b);
+    }
 }
