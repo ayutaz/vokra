@@ -1,0 +1,85 @@
+# Vokra pinned-external sync tripwire — informational.
+#
+# Assert that `.github/pins.yaml` and `.github/workflows/*.yml` stay in
+# lock-step. Two enforcement legs:
+#
+#   1. FORWARD (catalog → workflow): every `pinned_value` literal in
+#      pins.yaml appears in its `owning_workflow`.
+#   2. REVERSE (workflow → catalog): every typed SHA-shaped literal
+#      (`_SHA256`, `_REVISION`, `_GIT_SHA`) in any workflow env is
+#      registered in pins.yaml (or explicitly allowlisted with a
+#      justification in `.github/pins-allowlist.txt`).
+#
+# Runs on push/PR against pins.yaml or workflows/*.yml — the majority of
+# PRs are unaffected. `continue-on-error: true` on the job during the
+# initial 4-week soak; promote to a required check under branch protection
+# once the noise floor is characterised (matches README §2 promotion
+# policy).
+#
+# Zero-dep NFR-DS-02: PyYAML in per-run venv (CI-only). Nothing lands in
+# root Cargo.lock.
+
+name: pins-sync-check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/pins.yaml'
+      - '.github/pins-allowlist.txt'
+      - '.github/scripts/check_pins_sync.py'
+      - '.github/workflows/*.yml'
+  pull_request:
+    paths:
+      - '.github/pins.yaml'
+      - '.github/pins-allowlist.txt'
+      - '.github/scripts/check_pins_sync.py'
+      - '.github/workflows/*.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pins-sync-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: pins.yaml ↔ workflow sync (advisory, record-only)
+    runs-on: ubuntu-latest
+    # 4-week advisory soak per README §2 promotion policy. Owner drops
+    # this after consecutive weeks of green and promotes to a required
+    # check via branch protection.
+    continue-on-error: true
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: check_pins_sync self-test (stdlib-only)
+        # Runs BEFORE the network-less real check so a bad script is
+        # caught in seconds, not after PyYAML install.
+        shell: bash
+        run: python3 .github/scripts/check_pins_sync.py self-test
+
+      - name: Install probe deps (isolated venv; does NOT touch root Cargo.lock)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/vokra-pins-sync-venv
+          # shellcheck disable=SC1091
+          . /tmp/vokra-pins-sync-venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install "pyyaml==6.0.2"
+
+      - name: Run sync check (forward + reverse legs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /tmp/vokra-pins-sync-venv/bin/activate
+          python3 .github/scripts/check_pins_sync.py check

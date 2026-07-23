@@ -1,0 +1,18 @@
+# Legitimate exceptions to check_pins_sync reverse leg (workflow → catalog).
+#
+# Format: `<workflow-basename>:<literal>  # <justification>`
+#   * `<workflow-basename>` — file name only (no path)
+#   * `<literal>`           — exact 40-hex or 64-hex string
+#   * `<justification>`     — MANDATORY, describes why this drift is OK
+#
+# Lines beginning with `#` and blank lines are ignored. The `#` after the
+# literal must carry human text — an empty justification is rejected by
+# `check_pins_sync.py` so a silent allowlist cannot accumulate.
+#
+# Typical valid reasons:
+#   * git commit SHA embedded in a workflow comment for documentation
+#   * SHA anchored in a test fixture description
+#   * one-off reference to an upstream release/tag SHA that is NOT a pin
+#
+# Empty at commit E landing time (reverse leg comes out clean on the
+# 2026-07-23 tree). Entries here should be audited quarterly.
