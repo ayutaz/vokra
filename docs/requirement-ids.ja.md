@@ -136,6 +136,7 @@ bash scripts/check-doc-references.sh --list   # 解決された集合を表示
 | `FR-OP-41` | `ctc_decode` op。言語モデル融合と hotword boost を含む。 |
 | `FR-OP-42` | `rnnt_decode` op と、選択可能なデコード戦略。 |
 | `FR-OP-43` | `wfst_decode` op。重み付き有限状態トランスデューサ上の decode 専用トークンパッシング探索（GPL 依存を持たない自前 OpenFST 相当、optional feature）。辞書 / 文法 / ドメイン適応の rescoring 用。 |
+| `FR-OP-51` | `kws`（キーワードスポッティング）op — openWakeWord / Porcupine 互換の第一級 op。常時起動の wake-word 検出は ASR とは別ワークロードで、`stft` / conv / matmul プリミティブから合成するとレイテンシに余分が出るため core ランタイムに残す。 |
 | `FR-OP-60` | `aec`（音響エコーキャンセル）op と、それが必要とする runtime 管理・時間タグ付きの参照信号 queue。full-duplex な S2S の前提条件。 |
 | `FR-OP-61` | `denoise`（音声強調）op。 |
 | `FR-OP-62` | 収音側パイプラインの `agc` / `hpf` op。 |

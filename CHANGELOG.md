@@ -13,17 +13,159 @@ therefore not frozen — see the `[1.0.0-rc.1]` ABI-policy notes below.
 ## [Unreleased]
 
 This section accumulates **all** untagged feature deltas — **v0.5 (M2) +
-v0.9 (M3) + v1.0-rc (M4)** — that roll into `[1.0.0-rc.1]`. CC-side
-implementation is complete for the WPs listed below; owner-side
-verification (real-device RTF / GPU / NPU measurement, real-weight
-parity flip-the-switch, license sign-off, PyPI / Unity / npm / CDN
-provisioning) is tracked in the per-milestone owner checklists
-(`docs/m2-owner-verification-checklist.md`,
+v0.9 (M3) + v1.0-rc (M4) + real-weight verify / HF publication (post-M5)**
+— that roll into `[1.0.0-rc.1]`. CC-side implementation is complete for
+the WPs listed below; owner-side verification (real-device RTF / GPU /
+NPU measurement, real-weight parity flip-the-switch, license sign-off,
+PyPI / Unity / npm / CDN provisioning) is tracked in the per-milestone
+owner checklists (`docs/m2-owner-verification-checklist.md`,
 `docs/m3-owner-verification-checklist.md`,
-`docs/m4-owner-verification-checklist.md`). Added entries are grouped by
+`docs/m4-owner-verification-checklist.md`,
+`docs/m5-owner-verification-checklist.md`). Added entries are grouped by
 milestone below.
 
 ### Added
+
+#### Real-weight verification + Hugging Face publication (2026-07-22 / -23)
+
+- **`huggingface.co/vokra` — 16 models live**: this org now distributes
+  Vokra-converted GGUFs directly. Every artifact carries a matching
+  model card generated from its own metadata, a `LICENSE` file, a
+  `NOTICE` (for attribution-required weights), and a `SOURCE.md` with
+  the upstream URL and re-conversion recipe. The 16 models are:
+  whisper-{base,small,medium,turbo} (apache-2.0 / mit — matched to the
+  actual HF distribution repo per size), kokoro-82m and
+  kokoro-82m-stacked (Apache-2.0, config-aware with 54 voices + 178
+  phoneme symbols), piper-plus-css10-ja-6lang (MIT) and
+  piper-plus-mera-multilingual (Apache-2.0), silero-vad-v5 (MIT,
+  both-rate), campplus-speaker-encoder (Apache-2.0), dac-24khz (MIT),
+  mimi (CC-BY-4.0 with Kyutai attribution stamped in-card),
+  deepfilternet3 (MIT/Apache-2.0 dual), utmos22-strong (MIT),
+  moshiko-7b-bf16 (CC-BY-4.0, 15 GB, with an unmissable "not real-time
+  on this runtime" warning), and voxtral-mini-3b-2507 (Apache-2.0,
+  8.7 GB, published via `restamp_provenance` because full reconversion
+  needs >16 GB RAM).
+- **`vokra-convert restamp` subcommand** and public `restamp_provenance`
+  Rust API: rewrite `vokra.provenance.*` on an existing GGUF **without
+  re-materialising tensors** — mmap the input, copy each tensor payload
+  straight to `GgufStreamWriter`, inject fresh provenance keys. Measured
+  on the 8.7 GB Voxtral cache: peak footprint 6.4 MB, max RSS 5.4 GB
+  (mmap page faults, dirty ≈ 0), swap 0. This unlocks large-model
+  publishing on 16 GB hosts and rescues every pre-provenance-stamping
+  cache GGUF without re-running any converter.
+- **`--license <spdx>` override** on `vokra-convert`'s single-input
+  path (Whisper etc.), backed by the additive public
+  `convert_file_licensed`: publishes with the *actual distribution
+  source's* SPDX id rather than the converter's built-in default.
+  Whisper's canonical GitHub is MIT but HF's per-size weight cards
+  disagree, so `whisper-{base,small,medium}` publish as `apache-2.0` and
+  `whisper-turbo` as `mit`, matching each source verbatim.
+- **`LicenseClass` gains three variants** (Rust public API): `Copyleft`
+  (CC-BY-SA / AGPL / GPL / LGPL / OpenRAIL — republishable, but the
+  original licence must survive on the artifact), `RedistributionForbidden`
+  (VOICEVOX / CSJ / JSUT-JVS — contractual bans no licence string
+  encodes; never inferred from text, only set from an explicit list), and
+  `ConditionalCommercial` (LFM ≥ $10M revenue, Boson > 100k AAU,
+  IndexTTS-2 > 100M MAU). Plus two new predicates —
+  `redistributable()` (the publishing gate) and
+  `requires_license_preserved()` (relabelling-ban check) — because
+  publishing and loading are different questions with different failure
+  modes. Also fixes a real misclassification: `from_license_str` now
+  tests share-alike **before** plain `cc-by`, so `cc-by-sa-4.0` no
+  longer falls through to `AttributionRequired` (the previous ordering
+  understated Style-Bert-VITS2's ku-nlp/deberta-v2-large runtime BERT
+  and JVNV weight obligations).
+- **GGUF schema-generation stamp** (`vokra.schema.version` +
+  `vokra.schema.producer`): the writer emits both keys at the single
+  choke point every serialisation passes through, so every Vokra-written
+  GGUF is self-identifying and stale artifacts are visible via
+  `stale_group_hint()` — the same hint machinery that made the July 22
+  Mimi drift diagnosable ("pre-stamping, likely older converter,
+  re-convert").
+- **Publication pipeline**
+  (`scripts/publish/{make_model_card.py,upload.sh,publish-one.sh,fetch_license.sh,check-catalog-reality.sh,publishability-report.py}`):
+  card is generated from the artifact (never hand-written, so card and
+  weight cannot disagree), five-tier gate (T1 permissive / T2
+  attribution / T3 copyleft-with-notice / T4 non-commercial behind
+  `--allow-noncommercial` / T5 always-refused), dry-run-by-default
+  uploader that blocks on blank §3.1 sign-off or missing LICENSE file,
+  and a catalog-vs-reality gate that fails when `docs/license-audit.md`
+  advertises `★ 公式 zoo` for a row that has no implementation.
+- **Voxtral text decoder mapped-lazy path** (`TextDecoder::load_mapped`,
+  `MappedTextBlocks`, `MappedHeads`): the resident decoder needs
+  ~15 GiB of f32 for the shipping Mistral-3B, which does not fit a
+  16 GB host at all. The mapped path keeps `language_model.*` in the
+  GGUF mapping and widens one layer at a time per forward, plus streams
+  the `[131072, 3072]` embedding/head matrices in 512-row chunks —
+  bit-identical to the resident binding, verified over BF16/F32 and
+  both a single-chunk and multi-chunk vocab. The CLI and the server's
+  voxtral slot are both routed through it. Peak footprint dropped from
+  ~15 GiB (impossible on this host) to 3.55 GiB, and the previously
+  memory-blocked `decoder_step_logits` parity leg now runs and matches
+  27 upstream tokens exactly with a 6.4e-4 tap max delta.
+- **Moshi mapped-lazy transpose tiling**: the naive `dst[c*rows+r]`
+  walk in `transpose_widen` wrote with a `rows * 4`-byte stride (16 KiB
+  at d=4096, 44 KiB at h=11264), essentially cache-missing every
+  element. Tiling 32×32 dropped user CPU 38 % (252 → 156 s on a real
+  5-frame duplex run) while leaving peak footprint unchanged
+  (11.4 GB → 11.4 GB) — memory-first invariant preserved, tensor bytes
+  identical, and the shared kernel then extracted into
+  `crates/vokra-models/src/mapped_weights.rs` for the Voxtral port to
+  reuse.
+- **`convert_file_licensed`**: signature `pub fn
+  convert_file_licensed(model, input, output, license: Option<&str>) ->
+  Result<ConvertSummary, ConvertError>` on `vokra-convert`. Non-breaking
+  (public API only; the C ABI has no conversion surface).
+- **Real-weight verification report** at
+  `docs/bench-baselines/awaiting-real-weight-2026-07-22/report.md`:
+  end-to-end measurement (Voxtral audio tower parity, Moshi full-7B
+  conversion + duplex on the M1 iMac, Mimi cache-vs-fresh divergence,
+  the CSM gated-repo blocker), all numbers from tool output.
+
+### Changed
+
+#### Real-weight verification + HF publication (2026-07-22 / -23)
+
+- **`NOTICE` §1 (BigVGAN)**: replaced the "NVIDIA SCL-NC → scratch
+  reimplementation only" policy with the correction that
+  `github.com/NVIDIA/BigVGAN` is now standard MIT (verified from
+  primary source, 2026-07-22). The original reasoning is retained
+  rather than deleted so the reason the operator was originally scoped
+  as a from-paper rebuild stays legible.
+- **`NOTICE` §10** (new): the Japanese G2P chain Vokra actually ships
+  and runs — `jpreprocess` + Open JTalk + hts_engine + MeCab + NAIST-JDic
+  + UniDic — now carries per-component BSD-3-Clause attributions, plus
+  the **explicit MeCab BSD-election** so an auditor does not have to
+  guess which branch of the disjunctive tri-licence was taken. Records
+  what is deliberately NOT used and why (eSpeak-NG GPL-3.0 via
+  `phonemizer`'s in-process ctypes linking, `num2words` LGPL-2.1+, the
+  bundled `mei_normal.htsvoice` CC-BY-3.0).
+- **`docs/license-audit.md` §3.1**: sign-off rows filled in verbatim by
+  Claude Code at owner instruction — 20 rows signed (16 Commercial, 4
+  Research-only, 1 Rejected), 5 rows deliberately left blank because
+  their disposition depends on information not verifiable from the
+  licence text alone (Sesame CSM behind a gated repo, TitaNet / pyannote
+  with unverified licences, RVC / GPT-SoVITS with unresolved training-
+  data rights). Each row's basis lives in its Notes column and a header
+  block records who filled them under what principles.
+- **`from_license_str` classification order**: share-alike / copyleft
+  tokens are now matched before the plain `cc-by` arm. Behavioural
+  effect on existing artifacts: AGPL/GPL/LGPL/OpenRAIL weights load
+  without a research flag (they used to fall through to `Unknown`,
+  which required one — an artifact of an unrecognised string, not a
+  considered position); CC-BY-SA weights classify as `Copyleft` rather
+  than `AttributionRequired` (upgrading, not downgrading, the encoded
+  obligation).
+- **`convert_file` delegates to `convert_file_licensed(…, None)`**;
+  signature and behaviour are unchanged.
+- **`make_model_card.py` gate**: dropped the "permissive-only" hard
+  refuse in favour of the T1–T5 tier model; still refuses T5 and
+  unstamped artifacts unconditionally, still refuses T4 without an
+  explicit `--allow-noncommercial` flag.
+
+#### v0.5 (M2)
+
+- **Metal backend** (M2-01): hand-written `objc_msgSend` FFI + MSL
 
 #### v0.5 (M2)
 

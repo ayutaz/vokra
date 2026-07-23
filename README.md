@@ -116,6 +116,25 @@ for production use yet, but the following are implemented and validated:
   CC-BY-NC / CC-BY-NC-SA weights (F5-TTS / Fish-Speech / EnCodec) unless the
   caller opts in — from the same `vokra.provenance.*` chunk the compliance
   API surfaces.
+- **Model hub**: [`huggingface.co/vokra`](https://huggingface.co/vokra) —
+  **16 converted GGUFs live** as of 2026-07-23. Every artifact carries a
+  matching model card generated from its own metadata, a `LICENSE`, a
+  `NOTICE` (attribution-required cases), and a `SOURCE.md` with the
+  upstream URL and re-conversion recipe. The publication path
+  (`scripts/publish/*.sh`) is a five-tier gate that fails closed on
+  contractual bans (VOICEVOX / CSJ / JSUT-JVS), on artifacts that cannot
+  state their own licence, and on blank owner sign-off; a
+  `restamp_provenance` low-memory rewrite lets an 8.7 GB checkpoint
+  publish on a 16 GB host without vast.ai (peak footprint measured at
+  6.4 MB). Currently live: **whisper-{base,small,medium,turbo}** (matched
+  to each source repo's licence, apache-2.0 / mit), **kokoro-82m** and
+  **kokoro-82m-stacked** (54 voices + 178 phoneme symbols),
+  **piper-plus-css10-ja-6lang** and **piper-plus-mera-multilingual**,
+  **silero-vad-v5**, **campplus-speaker-encoder**, **dac-24khz**, **mimi**
+  (CC-BY-4.0 with Kyutai attribution in-card), **deepfilternet3**,
+  **utmos22-strong**, **moshiko-7b-bf16** (15 GB, with an unmissable
+  "not real-time on this runtime" warning), and **voxtral-mini-3b-2507**
+  (8.7 GB).
 
 Everything above holds Vokra's **zero-external-dependency** invariant: the
 resolved dependency graph contains only first-party `vokra-*` crates,
