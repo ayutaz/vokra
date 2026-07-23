@@ -1385,7 +1385,7 @@ jobs:
           # the AAR is installable; owner refines the manifest metadata on enable.
           AAR_DIR="dist/android/aar"
           mkdir -p "$AAR_DIR/jni/arm64-v8a"
-          SO="$(find target -path '*aarch64-linux-android*release*/libvokra.so' | head -n1)"
+          SO="$(find target -type f -path '*aarch64-linux-android*release*/libvokra.so' | head -n1)"
           if [ -z "$SO" ]; then
             echo "android-aar-release: FAIL arm64 libvokra.so not found after build-android.sh" >&2
             exit 1

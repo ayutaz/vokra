@@ -287,7 +287,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo rustc --release --target riscv64gc-unknown-linux-gnu -p vokra-backend-cpu -- --emit=asm
-          ASM=$(find target/riscv64gc-unknown-linux-gnu/release/deps -name 'vokra_backend_cpu-*.s' | head -n 1)
+          ASM=$(find target/riscv64gc-unknown-linux-gnu/release/deps -type f -name 'vokra_backend_cpu-*.s' | head -n 1)
           test -n "$ASM"
           for mnemonic in vsetvli vle32 vfadd vse32; do
             if ! grep -q "$mnemonic" "$ASM"; then
@@ -317,7 +317,7 @@ jobs:
         # (M4-08-T15 LicheePi 4A / M4-08-T16 Milk-V Duo).
         run: |
           set -euo pipefail
-          ASM=$(find target/riscv64gc-unknown-linux-gnu/release/deps -name 'vokra_backend_cpu-*.s' | head -n 1)
+          ASM=$(find target/riscv64gc-unknown-linux-gnu/release/deps -type f -name 'vokra_backend_cpu-*.s' | head -n 1)
           test -n "$ASM"
           for word in 10842839 33943559 33976839 33690711 34010151; do
             if ! grep -Eq "\.insn.*[^0-9]${word}([^0-9]|$)" "$ASM"; then
@@ -501,7 +501,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo rustc --release -p vokra-backend-cpu -- --emit=asm
-          ASM=$(find target/release/deps -name 'vokra_backend_cpu-*.s' | head -n 1)
+          ASM=$(find target/release/deps -type f -name 'vokra_backend_cpu-*.s' | head -n 1)
           test -n "$ASM"
           if [ "$(uname -m)" = "x86_64" ]; then
             MNEMONICS="vpdpbusd vdpbf16ps zmm"

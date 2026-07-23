@@ -353,6 +353,19 @@ jobs:
         run: |
           bash scripts/check-workflow-advisory-suffix.sh --self-test
           bash scripts/check-workflow-advisory-suffix.sh
+      - name: Workflow find-hygiene tripwire (basename-glob predatory guard)
+        # Prevents the `find | head` landmine class caught in commit 8832ff0
+        # (nightly-asr-wer.yml RTF companion): a `find "$X" -name '*.wav' | head`
+        # matches DIRECTORIES whose basename ends in `.wav` too, then the
+        # caller hands a directory path to `ffmpeg -i` and crashes on every
+        # successful run. This tripwire greps every workflow for such lines
+        # and requires an explicit `-type f` / `-type d` / etc. Self-test
+        # runs RED (bare -name) and GREEN (with -type) cases against a
+        # synthetic workflow tree so a checker bug cannot silently pass.
+        # HARD FAIL: shape invariant, not upstream drift.
+        run: |
+          bash scripts/check-find-hygiene.sh --self-test
+          bash scripts/check-find-hygiene.sh
       - name: Platform-support matrix drift check (advisory, record-only, M4-11-T08)
         id: platform-support-drift
         # Verifies that every evidence anchor cited by
