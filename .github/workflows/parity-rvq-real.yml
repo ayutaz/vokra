@@ -272,26 +272,66 @@ jobs:
               --out "${RUNNER_TEMP}/dac-ref" --seed 7 --time 64 --rows 1024 --books 32
           fi
 
-      - name: Full-table parity (per-tensor max |Δ| + verdict)
-        if: steps.mimi-download.outputs.codec_ok == 'true' || steps.dac-download.outputs.codec_ok == 'true'
+      # Per-codec parity steps. Split from the single `Full-table parity` step
+      # (2026-07-23 fix branch adversarial-final P1): the single-step form set
+      # both VOKRA_{MIMI,DAC}_GGUF env vars unconditionally, so a mixed-success
+      # scenario (e.g., Mimi HF SHA drift → codec_ok=false; DAC release fetch
+      # → codec_ok=true) would run `cargo test --test real_codec_parity` which
+      # includes BOTH real_mimi_gguf_full_table_parity and real_dac_gguf_full_table_parity;
+      # the Mimi test would then panic on `GgufFile::open` because the Convert
+      # Mimi step was skipped, hard-failing the job on a scenario the header
+      # (lines 163-164) explicitly documents as `cascade-skip via own codec_ok`.
+      # Splitting per-codec + narrowing `cargo test` to the codec-specific test
+      # name restores the advisory contract while keeping the single-codec
+      # success path bit-identical to the pre-fix behaviour.
+      - name: Full-table parity — Mimi (per-tensor max |Δ| + verdict, advisory, record-only, X-10)
+        if: steps.mimi-download.outputs.codec_ok == 'true'
         run: |
           set -euo pipefail
           set +e
           VOKRA_MIMI_GGUF="${RUNNER_TEMP}/mimi.gguf" \
           VOKRA_MIMI_REF_DIR="${RUNNER_TEMP}/mimi-ref" \
-          VOKRA_DAC_GGUF="${RUNNER_TEMP}/dac.gguf" \
-          VOKRA_DAC_REF_DIR="${RUNNER_TEMP}/dac-ref" \
-            cargo test -p vokra-models --release --test real_codec_parity -- --nocapture \
-            2>&1 | tee "${RUNNER_TEMP}/parity-log.txt"
+            cargo test -p vokra-models --release --test real_codec_parity \
+              real_mimi_gguf_full_table_parity -- --nocapture \
+            2>&1 | tee "${RUNNER_TEMP}/parity-mimi-log.txt"
           PARITY_EXIT=${PIPESTATUS[0]}
           set -e
           {
             echo ""
-            echo "## RVQ real-checkpoint parity (atol = 0.01, NFR-QL-01)"
+            echo "## RVQ real-checkpoint parity — Mimi (atol = 0.01, NFR-QL-01)"
             echo ""
             echo '| tensor | max abs diff | verdict |'
             echo '| ------ | ------------ | ------- |'
-            grep '^PARITY ' "${RUNNER_TEMP}/parity-log.txt" \
+            grep '^PARITY ' "${RUNNER_TEMP}/parity-mimi-log.txt" \
+              | awk '{gsub("max\\|Δ\\|=", "", $3); gsub("atol=", "", $4); print "| " $2 " | " $3 " | " $5 " |"}'
+            echo ""
+            if [ "${PARITY_EXIT}" -ne 0 ]; then
+              echo '**VERDICT: FAIL — at least one tensor exceeded atol (or the harness errored).**'
+            else
+              echo '**VERDICT: PASS — every tensor within atol.**'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "${PARITY_EXIT}"
+
+      - name: Full-table parity — DAC (per-tensor max |Δ| + verdict, advisory, record-only, X-10)
+        if: steps.dac-download.outputs.codec_ok == 'true'
+        run: |
+          set -euo pipefail
+          set +e
+          VOKRA_DAC_GGUF="${RUNNER_TEMP}/dac.gguf" \
+          VOKRA_DAC_REF_DIR="${RUNNER_TEMP}/dac-ref" \
+            cargo test -p vokra-models --release --test real_codec_parity \
+              real_dac_gguf_full_table_parity -- --nocapture \
+            2>&1 | tee "${RUNNER_TEMP}/parity-dac-log.txt"
+          PARITY_EXIT=${PIPESTATUS[0]}
+          set -e
+          {
+            echo ""
+            echo "## RVQ real-checkpoint parity — DAC (atol = 0.01, NFR-QL-01)"
+            echo ""
+            echo '| tensor | max abs diff | verdict |'
+            echo '| ------ | ------------ | ------- |'
+            grep '^PARITY ' "${RUNNER_TEMP}/parity-dac-log.txt" \
               | awk '{gsub("max\\|Δ\\|=", "", $3); gsub("atol=", "", $4); print "| " $2 " | " $3 " | " $5 " |"}'
             echo ""
             if [ "${PARITY_EXIT}" -ne 0 ]; then
