@@ -21,6 +21,24 @@
 #     locates the pin by string-match, not by line number, so a routine
 #     edit that shifts lines does NOT require pins.yaml churn — only a
 #     `pinned_value` change does.
+#
+# Deliberate non-entries (2026-07-23 decision, X-10-T05 companion):
+#   * glslang toolchain — the version (16.4.0) is pinned in
+#     `crates/vokra-backend-vulkan/kernels/precompiled/PROVENANCE` and
+#     cross-referenced in `.github/workflows/gpu-vulkan-parity.yml` comments;
+#     apt's `glslang-tools` is what CI actually installs, and its version is
+#     Ubuntu-image-derived, not a URL-addressable artefact. A catalog row
+#     would `drift_policy=skip` (same as `emsdk-toolchain`) and add
+#     dual-edit surface for zero drift coverage — Dependabot does not
+#     manage apt packages, so no automated bump could ever race with it.
+#   * Third-party GitHub Actions — bumped by `.github/dependabot.yml`'s
+#     `production-actions` group weekly (`chore(deps)` PRs). Registering
+#     them here would create a dual-edit obligation on every Dependabot PR
+#     (workflow + catalog) with no additional drift-detection benefit —
+#     Dependabot IS the drift detector for actions. MSRV-critical action
+#     pins (`dtolnay/rust-toolchain@1.89` / `pypa/cibuildwheel@v2.23.4`)
+#     are kept manual via `.github/dependabot.yml` `ignore:` and live in
+#     that file, not here.
 
 schema_version: 1
 
@@ -59,15 +77,15 @@ entries:
       license: MIT
     pinned_value:
       hf_id: openai/whisper-base
-      hf_revision: null              # WARN: currently on `main` (floating)
+      hf_revision: "e37978b90ca9030d5170a5c07aadb050351a65bb"
     drift_policy:
       upstream_mismatch: advisory
       mirror_mismatch: hard_fail
-      no_revision: warn              # drift detector emits ::warning:: until repinned
     notes: |
-      Also referenced by parity-whisper-real.yml:141 and web-wasm.yml:147
-      under the SAME repo_id. Pin an explicit HF commit SHA in WP X-10-T05
-      companion (all 3 workflows in one PR to stay atomic).
+      Same repo_id is also pinned by parity-whisper-real.yml (matrix `base`
+      leg) and web-wasm.yml. All three workflows carry the same 40-hex
+      revision from this landing so `check_pins_sync` covers them under
+      one entry. Snapshot pinned 2026-07-23 (X-10-T05 companion).
 
   - name: kokoro-82m
     kind: checkpoint
@@ -95,13 +113,13 @@ entries:
       license: MIT
     pinned_value:
       hf_id: openai/whisper-small
-      hf_revision: null
+      hf_revision: "973afd24965f72e36ca33b3055d56a652f456b4d"
     drift_policy:
       upstream_mismatch: advisory
       mirror_mismatch: hard_fail
-      no_revision: warn
     notes: |
       M4-14 carry-over. Opt-in via workflow_dispatch include_small.
+      Snapshot pinned 2026-07-23 (X-10-T05 companion).
 
   - name: whisper-medium
     kind: checkpoint
@@ -112,13 +130,12 @@ entries:
       license: MIT
     pinned_value:
       hf_id: openai/whisper-medium
-      hf_revision: null
+      hf_revision: "abdf7c39ab9d0397620ccaea8974cc764cd0953e"
     drift_policy:
       upstream_mismatch: advisory
       mirror_mismatch: hard_fail
-      no_revision: warn
     notes: |
-      M4-14 carry-over.
+      M4-14 carry-over. Snapshot pinned 2026-07-23 (X-10-T05 companion).
 
   - name: whisper-large-v3
     kind: checkpoint
@@ -129,13 +146,13 @@ entries:
       license: MIT
     pinned_value:
       hf_id: openai/whisper-large-v3
-      hf_revision: null
+      hf_revision: "06f233fe06e710322aca913c1bc4249a0d71fce1"
     drift_policy:
       upstream_mismatch: advisory
       mirror_mismatch: hard_fail
-      no_revision: warn
     notes: |
-      ~2.9 GB. M4-14 carry-over.
+      ~2.9 GB. M4-14 carry-over. Snapshot pinned 2026-07-23 (X-10-T05
+      companion).
 
   - name: whisper-large-v3-turbo
     kind: checkpoint
@@ -146,13 +163,13 @@ entries:
       license: MIT
     pinned_value:
       hf_id: openai/whisper-large-v3-turbo
-      hf_revision: null
+      hf_revision: "41f01f3fe87f28c78e2fbf8b568835947dd65ed9"
     drift_policy:
       upstream_mismatch: advisory
       mirror_mismatch: hard_fail
-      no_revision: warn
     notes: |
-      ~1.6 GB. Shares large-v3 51866 tokenizer.
+      ~1.6 GB. Shares large-v3 51866 tokenizer. Snapshot pinned 2026-07-23
+      (X-10-T05 companion).
 
   - name: moshiko-pytorch-bf16
     kind: checkpoint
@@ -164,13 +181,14 @@ entries:
       attribution_required: true
     pinned_value:
       hf_id: kyutai/moshiko-pytorch-bf16
-      hf_revision: main             # WARN: explicit `main` per file comment until T29
+      hf_revision: "2bfc9ae6e89079a5cc7ed2a68436010d91a3d289"
     drift_policy:
       upstream_mismatch: advisory
       mirror_mismatch: hard_fail
-      no_revision: warn
     notes: |
-      T29 sourcing pending; pin to snapshot SHA when landed. 15 GB.
+      Snapshot pinned 2026-07-23 (X-10-T05 companion) — the same commit
+      the mimi-codec entry below is already pinned to, which was already
+      the effective revision of the tokenizer file that entry hashes. 15 GB.
       Includes tokenizer_spm_32k_3.model + tokenizer-e351c8d8-checkpoint125.safetensors.
 
   - name: moshi-python
@@ -233,14 +251,14 @@ entries:
       license: MIT
     pinned_value:
       hf_id: openai/whisper-base
-      hf_revision: null
+      hf_revision: "e37978b90ca9030d5170a5c07aadb050351a65bb"
     drift_policy:
       upstream_mismatch: advisory
       mirror_mismatch: hard_fail
-      no_revision: warn
     notes: |
       Opt-in via workflow_dispatch run_whisper_e2e. Duplicate of the
-      whisper-base entry — sync in one PR when repinning.
+      whisper-base entry — the two hf_revision values MUST stay in lockstep.
+      Snapshot pinned 2026-07-23 (X-10-T05 companion).
 
   - name: emsdk-toolchain
     kind: toolchain
@@ -263,32 +281,36 @@ entries:
   - name: utmos22-strong
     kind: checkpoint
     owning_workflow: .github/workflows/parity-utmos.yml
-    owning_line: 0                  # source.env commit で埋まる (unlanded pin)
+    owning_line: 0                  # source.env-indirection: forward literal search skipped
     upstream:
       url: https://huggingface.co/spaces/sarulab-speech/UTMOS-demo
       license: MIT
     pinned_value:
-      sha256: null                  # source.env commit で埋まる
+      sha256: "44c57e3e4135a243b43d2c82b6a693fcd56f15f9ad0e1eb2a8b31fdecd3a49b8"
     drift_policy:
-      upstream_mismatch: skip       # unlanded pin — probe short-circuits in run_probes
+      upstream_mismatch: skip       # HF space resolve URL is content-addressed by construction; pins_probe cannot verify from the space URL alone (no resolve path) — kept skip until pins_probe supports HF space resolve pattern
       mirror_mismatch: hard_fail    # once mirror block populated (X-10 pattern extension)
     notes: |
-      UTMOS22-strong (SaruLab, MIT). Placeholder catalog entry for the
-      parity-utmos.yml `setup` job, which currently clean-skips because
-      tests/parity/utmos/source.env is not committed (waits on
-      docs/license-audit.md §3.1 UTMOS sign-off).
+      UTMOS22-strong (SaruLab, MIT). Landed 2026-07-23 with the
+      docs/license-audit.md §3.1 UTMOS sign-off (yousan ☑ Commercial); the
+      parity-utmos.yml setup gate flips ready=true from this commit onward.
 
-      Pin lands when owner commits source.env with CKPT_URL + CKPT_SHA256;
-      at that point owning_line moves to the actual line and pinned_value.sha256
-      absorbs the SHA. Until then drift_policy.upstream_mismatch=skip means
-      pins_probe.py records `skip` without hitting the network, and
-      check_pins_sync.py treats owning_line=0 as an "unlanded pin" sentinel
-      (forward literal search is skipped; the reverse leg still catches any
-      orphan SHA that lands in a workflow without a catalog entry).
+      Pin source-of-truth: tests/parity/utmos/source.env (not the workflow
+      yml — the workflow uses `source tests/parity/utmos/source.env` and
+      reads $CKPT_URL / $CKPT_SHA256 into its fetch + sha256 verification
+      step). That indirection is why owning_line stays 0: forward literal
+      search in the workflow yml would find nothing; check_pins_sync.py's
+      owning_line=0 sentinel keeps the forward leg skipped for source.env-
+      referenced pins. The SHA recorded here (44c57e3e...) MUST match
+      tests/parity/utmos/source.env CKPT_SHA256; editing either side
+      requires editing the other.
 
-      Reference SHA (informational only, NOT pinned by this entry): the
-      2026-07-17 campaign-2 utmos-probe measured
-      `44c57e3e4135a243b43d2c82b6a693fcd56f15f9ad0e1eb2a8b31fdecd3a49b8`
-      for `epoch=3-step=7459.ckpt`. See docs/license-audit.md §3 UTMOS row.
+      Measurement: 2026-07-17 campaign-2 utmos-probe fetched
+      epoch=3-step=7459.ckpt from HF space sarulab-speech/UTMOS-demo at
+      revision 47212055c2ec... and measured sha256 44c57e3e... The source.env
+      URL uses HF's `resolve/<40-hex>/` immutable resolve path pinned to
+      that revision, so the tarball is byte-stable even if the space's
+      `main` branch moves.
 
-      Tracked WPs: M4-18 T2 (defer-lift) + M5-15 T14 (converter, CC done).
+      Tracked WPs: M4-18 T2 (defer-lift) + M5-15 T14 (converter, CC done) +
+      M5-15 UTMOS COMPLETION.

@@ -141,6 +141,11 @@ env:
   # test asserts the two stay equal, so this cannot silently drift.
   WER_THRESHOLD: "0.06"
   HF_ID: openai/whisper-base
+  # Snapshot SHA (openai/whisper-base@main as of 2026-07-23). Pinned to
+  # eliminate the drift-detector `no_revision: warn` on this entry.
+  # pins.yaml `whisper-base` MUST carry the same value. web-wasm.yml uses
+  # the same repo_id and the same SHA (pins.yaml `whisper-base-wasm`).
+  HF_REVISION: "e37978b90ca9030d5170a5c07aadb050351a65bb"
   GGUF: whisper-base.gguf
   SPEAKER: "1272"
   CHAPTER: "128104"
@@ -243,6 +248,7 @@ jobs:
           from huggingface_hub import snapshot_download
           local = snapshot_download(
               repo_id=os.environ["HF_ID"],
+              revision=os.environ["HF_REVISION"],
               allow_patterns=["model.safetensors", "config.json", "normalizer.json"],
           )
           with open("/tmp/hf-paths.env", "w") as f:

@@ -126,13 +126,20 @@ def check_forward(pins_path: Path) -> list[str]:
     for entry in entries:
         wf = REPO / entry["owning_workflow"]
         line = entry.get("owning_line") or 1
-        # `owning_line: 0` is the sentinel for "pin registered ahead of the
-        # workflow's source.env commit" (unlanded pin, e.g. UTMOS awaiting
-        # owner sign-off + weight URL). drift_policy.upstream_mismatch=skip
-        # short-circuits pins_probe.py for the same rows. The sync forward
-        # leg SKIPS forward-string search for these entries because the
-        # literal has not been committed to the workflow yet. It stays in
-        # the catalog so the reverse leg still refuses orphan pins.
+        # `owning_line: 0` is the "no forward literal search" sentinel. It
+        # covers two shapes:
+        #   (1) UNLANDED pin — pin registered in the catalog ahead of the
+        #       committing workflow value (e.g. LibriSpeech mirror before
+        #       vars.VOKRA_CORPUS_..._MIRROR_URL is set), and
+        #   (2) SOURCE.ENV-INDIRECTED pin — the workflow imports the pin
+        #       via `source <path>/source.env` (UTMOS pattern), so the
+        #       literal lives in the sourced file rather than the workflow
+        #       yml. A forward literal grep of the workflow would find
+        #       nothing even though the pin IS landed.
+        # drift_policy.upstream_mismatch=skip short-circuits pins_probe.py
+        # for shape (1); shape (2) still probes because the SHA is real.
+        # The reverse leg still refuses orphan pins under any workflow env
+        # naming pattern (`_SHA256`, `_REVISION`, `_GIT_SHA`).
         if entry.get("owning_line") == 0:
             continue
         if not wf.exists():

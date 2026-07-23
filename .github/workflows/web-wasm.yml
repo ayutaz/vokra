@@ -124,6 +124,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     if: github.event_name == 'workflow_dispatch' && inputs.run_whisper_e2e
+    env:
+      # Snapshot SHA (openai/whisper-base@main as of 2026-07-23). MUST
+      # match pins.yaml `whisper-base-wasm` hf_revision and stay in
+      # lockstep with nightly-asr-wer.yml env.HF_REVISION.
+      WHISPER_BASE_REVISION: "e37978b90ca9030d5170a5c07aadb050351a65bb"
     steps:
       - uses: actions/checkout@v7
 
@@ -142,9 +147,11 @@ jobs:
           . /tmp/vokra-py-web/bin/activate
           pip install --quiet "huggingface_hub>=0.23"
           python3 - <<'PYEOF'
+          import os
           from huggingface_hub import snapshot_download
           local_dir = snapshot_download(
               repo_id="openai/whisper-base",
+              revision=os.environ["WHISPER_BASE_REVISION"],
               allow_patterns=[
                   "model.safetensors", "config.json", "generation_config.json",
                   "preprocessor_config.json", "tokenizer.json", "tokenizer_config.json",
