@@ -259,3 +259,36 @@ entries:
       of the emsdk repo itself floats — only the installed emsdk
       toolchain version is pinned. drift_policy=skip because a content
       SHA does not exist for a version identifier.
+
+  - name: utmos22-strong
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-utmos.yml
+    owning_line: 0                  # source.env commit で埋まる (unlanded pin)
+    upstream:
+      url: https://huggingface.co/spaces/sarulab-speech/UTMOS-demo
+      license: MIT
+    pinned_value:
+      sha256: null                  # source.env commit で埋まる
+    drift_policy:
+      upstream_mismatch: skip       # unlanded pin — probe short-circuits in run_probes
+      mirror_mismatch: hard_fail    # once mirror block populated (X-10 pattern extension)
+    notes: |
+      UTMOS22-strong (SaruLab, MIT). Placeholder catalog entry for the
+      parity-utmos.yml `setup` job, which currently clean-skips because
+      tests/parity/utmos/source.env is not committed (waits on
+      docs/license-audit.md §3.1 UTMOS sign-off).
+
+      Pin lands when owner commits source.env with CKPT_URL + CKPT_SHA256;
+      at that point owning_line moves to the actual line and pinned_value.sha256
+      absorbs the SHA. Until then drift_policy.upstream_mismatch=skip means
+      pins_probe.py records `skip` without hitting the network, and
+      check_pins_sync.py treats owning_line=0 as an "unlanded pin" sentinel
+      (forward literal search is skipped; the reverse leg still catches any
+      orphan SHA that lands in a workflow without a catalog entry).
+
+      Reference SHA (informational only, NOT pinned by this entry): the
+      2026-07-17 campaign-2 utmos-probe measured
+      `44c57e3e4135a243b43d2c82b6a693fcd56f15f9ad0e1eb2a8b31fdecd3a49b8`
+      for `epoch=3-step=7459.ckpt`. See docs/license-audit.md §3 UTMOS row.
+
+      Tracked WPs: M4-18 T2 (defer-lift) + M5-15 T14 (converter, CC done).

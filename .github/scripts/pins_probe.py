@@ -180,7 +180,19 @@ def run_probes(plan: list[dict], focus: str = "") -> list[dict]:
         kind = row["kind"]
         pv = row["pinned_value"]
         up = row["upstream"]
-        if kind == "toolchain":
+        # `drift_policy.upstream_mismatch: skip` short-circuits the probe
+        # BEFORE dispatch. Used for unlanded pins (owner sign-off / weight
+        # URL pending) so the placeholder row does not force a probe against
+        # a null SHA. The row still appears in the catalog + sync check so
+        # its presence is auditable and the workflow file scan (--check leg)
+        # can allow the owning_line=0 sentinel. Kept explicit (not inferred
+        # from `sha256 is None`) so a genuinely missing SHA in a landed pin
+        # still probes and drifts.
+        if (row.get("drift_policy") or {}).get("upstream_mismatch") == "skip" and kind != "toolchain":
+            r["verdict"], r["expected"], r["observed"] = (
+                "skip", "<pin unlanded>", "<policy: upstream_mismatch=skip>"
+            )
+        elif kind == "toolchain":
             r["verdict"], r["expected"], r["observed"] = ("skip", pv.get("version", "<?>"), "<version, not content>")
         elif kind == "corpus" or kind == "codec":
             # If pinned_value has a `sha256`, content-hash probe.
@@ -444,10 +456,54 @@ class _RenderTests(unittest.TestCase):
         self.assertIn("no_revision", md)
 
 
+class _RunProbesSkipTests(unittest.TestCase):
+    """`drift_policy.upstream_mismatch=skip` short-circuits before probe."""
+
+    def test_unlanded_checkpoint_row_short_circuits(self):
+        # Placeholder row for an unlanded pin (UTMOS). No hf_id, no sha256 —
+        # a bare kind dispatch would try _probe_hf_revision and error out.
+        # The skip policy must short-circuit BEFORE dispatch so the row
+        # records `skip` without any network call.
+        plan = [{
+            "name": "utmos22-strong",
+            "kind": "checkpoint",
+            "owning_workflow": ".github/workflows/parity-utmos.yml",
+            "owning_line": 0,
+            "upstream": {"url": "https://example/", "license": "MIT"},
+            "pinned_value": {"sha256": None},
+            "drift_policy": {"upstream_mismatch": "skip", "mirror_mismatch": "hard_fail"},
+            "mirror": {},
+        }]
+        verdicts = run_probes(plan)
+        self.assertEqual(len(verdicts), 1)
+        self.assertEqual(verdicts[0]["verdict"], "skip")
+        self.assertEqual(verdicts[0]["target"], "upstream")
+        # And enforce must not error on it.
+        self.assertEqual(enforce(verdicts), 0)
+
+    def test_landed_row_still_probes(self):
+        # A row with drift_policy.upstream_mismatch=advisory (the normal
+        # case) must NOT get the skip short-circuit — regression guard.
+        # We synthesise an entry whose kind falls into the `else` branch
+        # (unknown kind → "error" verdict), which proves the dispatch ran.
+        plan = [{
+            "name": "landed",
+            "kind": "unknown-kind-to-force-error",
+            "owning_workflow": ".github/workflows/foo.yml",
+            "owning_line": 42,
+            "upstream": {"url": "https://example/", "license": "MIT"},
+            "pinned_value": {"sha256": "a" * 64},
+            "drift_policy": {"upstream_mismatch": "advisory", "mirror_mismatch": "hard_fail"},
+            "mirror": {},
+        }]
+        verdicts = run_probes(plan)
+        self.assertEqual(verdicts[0]["verdict"], "error")
+
+
 def _cmd_self_test(_args: argparse.Namespace) -> int:
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
-    for cls in (_EnforceTests, _RenderTests):
+    for cls in (_EnforceTests, _RenderTests, _RunProbesSkipTests):
         suite.addTests(loader.loadTestsFromTestCase(cls))
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)

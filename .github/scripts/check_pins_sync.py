@@ -126,6 +126,15 @@ def check_forward(pins_path: Path) -> list[str]:
     for entry in entries:
         wf = REPO / entry["owning_workflow"]
         line = entry.get("owning_line") or 1
+        # `owning_line: 0` is the sentinel for "pin registered ahead of the
+        # workflow's source.env commit" (unlanded pin, e.g. UTMOS awaiting
+        # owner sign-off + weight URL). drift_policy.upstream_mismatch=skip
+        # short-circuits pins_probe.py for the same rows. The sync forward
+        # leg SKIPS forward-string search for these entries because the
+        # literal has not been committed to the workflow yet. It stays in
+        # the catalog so the reverse leg still refuses orphan pins.
+        if entry.get("owning_line") == 0:
+            continue
         if not wf.exists():
             problems.append(
                 f"::error file={entry['owning_workflow']}::pins.yaml entry "
@@ -269,6 +278,40 @@ class _ForwardTests(unittest.TestCase):
                 "    upstream:\n      url: https://example/\n      license: MIT\n"
                 f"    pinned_value:\n      sha256: '{sha}'\n"
                 "    drift_policy:\n      upstream_mismatch: advisory\n",
+                encoding="utf-8",
+            )
+            import check_pins_sync as m
+
+            orig = m.REPO
+            m.REPO = root
+            try:
+                problems = m.check_forward(pins)
+            finally:
+                m.REPO = orig
+            self.assertEqual(problems, [])
+
+    def test_owning_line_zero_skips_forward_literal_search(self):
+        """owning_line: 0 is the unlanded-pin sentinel (X-10-T05, UTMOS pattern)."""
+        import tempfile
+
+        sha = "cafe" + "0" * 60
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / ".github" / "workflows").mkdir(parents=True)
+            # Workflow deliberately does NOT contain the SHA. Forward leg
+            # must not complain because owning_line=0 says "not yet landed".
+            (root / ".github" / "workflows" / "fake.yml").write_text(
+                "name: fake\non: [push]\n", encoding="utf-8"
+            )
+            pins = root / ".github" / "pins.yaml"
+            pins.write_text(
+                "schema_version: 1\nentries:\n"
+                "  - name: unlanded\n    kind: checkpoint\n"
+                "    owning_workflow: .github/workflows/fake.yml\n"
+                "    owning_line: 0\n"
+                "    upstream:\n      url: https://example/\n      license: MIT\n"
+                f"    pinned_value:\n      sha256: '{sha}'\n"
+                "    drift_policy:\n      upstream_mismatch: skip\n",
                 encoding="utf-8",
             )
             import check_pins_sync as m
