@@ -338,4 +338,37 @@ mod tests {
         let err = HiFTChain::new(cfg, weights).expect_err("mismatched ups must fail");
         assert!(matches!(err, VokraError::InvalidArgument(_)), "{err:?}");
     }
+
+    /// A cloned `HiFTChain` must produce byte-identical PCM for the same
+    /// mel as the original. `#[derive(Clone)]` on line 89 is a documented
+    /// public contract — [`super::CosyVoice2Tts`] is intended to carry an
+    /// `Option<HiFTChain>` field (see the type docstring on lines 66-74),
+    /// so the wrapper *will* be cloned. This pins Clone as a deep,
+    /// independent copy: a future refactor that turned `generator` into
+    /// `Arc<Mutex<HiFTGenerator>>` (or any other shared-state form) would
+    /// still typecheck and pass every existing test, but the original and
+    /// its clone would silently share generator state and diverge under
+    /// concurrent forward calls. Comparing element-wise PCM equality
+    /// catches any such regression on a deterministic input.
+    #[test]
+    fn hift_chain_clone_produces_forward_equivalent_output() {
+        let (cfg, weights) = small_hift_chain_bundle();
+        let original = HiFTChain::new(cfg.clone(), weights).expect("build");
+        let cloned = original.clone();
+        // Accessors on the clone must mirror the original (config is
+        // owned by the internal generator; a shallow-clone regression
+        // that swapped in a fresh default config would trip this).
+        assert_eq!(cloned.config().in_channels, original.config().in_channels);
+        assert_eq!(cloned.sample_rate(), original.sample_rate());
+        let t_mel = 4;
+        let mel: Vec<f32> = (0..(cfg.in_channels as usize * t_mel))
+            .map(|i| ((i % 7) as f32) * 0.03 - 0.05)
+            .collect();
+        let orig_pcm = original.forward(&mel, t_mel).expect("orig forward");
+        let cloned_pcm = cloned.forward(&mel, t_mel).expect("cloned forward");
+        assert_eq!(
+            orig_pcm, cloned_pcm,
+            "Clone must be a deep, independent copy of the generator",
+        );
+    }
 }
