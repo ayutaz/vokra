@@ -19,3 +19,8 @@ pub(crate) mod silero;
 pub(crate) mod utmos;
 pub(crate) mod voxtral;
 pub(crate) mod whisper;
+// SoTA plan Phase 1-5 (2026-07-24): Zyphra Zonos-v0.1-transformer
+// (Apache 2.0) safetensors → GGUF with the `vokra.zonos.*` chunk group.
+// Every float tensor passes through verbatim; every hparam (including the
+// 7 typed prefix conditioners) is transcribed from the upstream config.json.
+pub(crate) mod zonos;

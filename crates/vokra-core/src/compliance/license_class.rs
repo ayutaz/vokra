@@ -362,6 +362,14 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B — Apache 2.0
         // code + weight (docs/license-audit.md, model card).
         "dia" | "dia-1.6b" | "dia-1_6b" => LicenseClass::Permissive,
+        // SoTA plan Phase 1-5 (2026-07-24): Zyphra Zonos-v0.1-transformer —
+        // Apache 2.0 code + weight (HF `Zyphra/Zonos-v0.1-transformer`
+        // model card `license: apache-2.0`, docs/tickets/sota-coverage-
+        // plan-2026-07-22.md §3.3). Both HF variants (transformer, hybrid)
+        // resolve permissive by prefix below; the canonical id + the
+        // `zonos-v0.1` short form are listed here for a lookup that does
+        // not require the prefix walk.
+        "zonos" | "zonos-v0.1" | "zonos-v0_1" => LicenseClass::Permissive,
         // --- attribution-required (CC-BY-4.0) --------------------------------
         "mimi" | "moshi" => LicenseClass::AttributionRequired,
         // --- gated: CC-BY-NC (research flag) ---------------------------------
@@ -397,7 +405,13 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
             // SoTA plan Phase 1-4, 2026-07-24): a specific variant id like
             // `dia-1.6b` or a future `dia-3b` still resolves permissive.
             // Guarded on the dash so `diagnostics` cannot slip through.
-            || id.starts_with("dia-") =>
+            || id.starts_with("dia-")
+            // Zyphra Zonos first-party family (Apache 2.0 code + weight —
+            // SoTA plan Phase 1-5, 2026-07-24): specific HF variant ids
+            // like `zonos-v0.1-transformer` / `zonos-v0.1-hybrid` still
+            // resolve permissive without being individually listed. The
+            // dash guard keeps unrelated ids from matching.
+            || id.starts_with("zonos-") =>
         {
             LicenseClass::Permissive
         }
@@ -715,6 +729,10 @@ mod tests {
             // and the variant HF publishes.
             "dia",
             "dia-1.6b",
+            // SoTA plan Phase 1-5 (2026-07-24) — Zyphra Zonos canonical id
+            // and the short form the CLI accepts.
+            "zonos",
+            "zonos-v0.1",
         ] {
             assert_eq!(registry_lookup(id), Some(LicenseClass::Permissive), "{id}");
         }
@@ -749,6 +767,11 @@ mod tests {
             // Dia family (SoTA Phase 1-4): a future `dia-3b` still resolves
             // permissive without being individually listed.
             "dia-3b",
+            // Zonos family (SoTA Phase 1-5): both HF variants and a future
+            // `zonos-v0.2` still resolve permissive via the family prefix.
+            "zonos-v0.1-transformer",
+            "zonos-v0.1-hybrid",
+            "zonos-v0.2",
         ] {
             assert_eq!(registry_lookup(id), Some(LicenseClass::Permissive), "{id}");
         }

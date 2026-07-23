@@ -22,7 +22,7 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
@@ -34,7 +34,7 @@ USAGE:
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
                               campplus | kokoro | cosyvoice2 | voxtral | mimi | dac |
-                              csm | moshi | denoise | dia
+                              csm | moshi | denoise | dia | zonos
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
@@ -43,6 +43,9 @@ OPTIONS:
                               (dia: nari-labs Dia-1.6B — a prepared safetensors
                               from the upstream torch .pth; every hparam is
                               transcribed from the primary-source config.json)
+                              (zonos: Zyphra Zonos-v0.1-transformer — ships
+                              safetensors directly; every hparam is transcribed
+                              from the primary-source config.json)
     --input <path>            upstream checkpoint file. For voxtral, a
                               `*.index.json` path reads every shard listed in
                               its weight_map (the raw sharded BF16 release)
@@ -136,7 +139,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                         "unknown model `{v}` \
                          (whisper [alias: whisper-base] | silero-vad | piper-plus | \
                          campplus | kokoro | cosyvoice2 | voxtral | mimi | dac | \
-                         csm | moshi | denoise | dia)"
+                         csm | moshi | denoise | dia | zonos)"
                     )
                 })?);
                 i += 2;
@@ -530,6 +533,7 @@ mod tests {
             ("csm", ModelKind::Csm),
             ("moshi", ModelKind::Moshi),
             ("dia", ModelKind::Dia),
+            ("zonos", ModelKind::Zonos),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

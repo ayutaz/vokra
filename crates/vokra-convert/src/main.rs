@@ -619,6 +619,40 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  channels={channels} sample_rate={sr}"
             );
         }
+        ModelKind::Zonos => {
+            // SoTA plan Phase 1-5 (2026-07-24). The `vokra.zonos.*` chunk
+            // group is written entirely from primary-source-transcribed
+            // constants — the summary reads back the anchoring shape triples
+            // (single uniform GQA backbone, 9 codebook channels, 44.1 kHz).
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let bb_layers = file
+                .get("vokra.zonos.arch.backbone.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let d_model = file
+                .get("vokra.zonos.arch.backbone.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let num_cb = file
+                .get("vokra.zonos.num_codebooks")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr = file
+                .get("vokra.zonos.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let conds = file
+                .get("vokra.zonos.prefix_conditioner.count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} backbone_layers={bb_layers} d_model={d_model} \
+                 num_codebooks={num_cb} conditioners={conds} sample_rate={sr}"
+            );
+        }
     }
     Ok(())
 }
