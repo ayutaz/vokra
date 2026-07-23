@@ -148,7 +148,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.100
+      # NOTE: `dtolnay/rust-toolchain@1.89` は **MSRV pin** = 一般的な action
+      # の version tag ではない。dependabot は これを version bump 対象と誤認
+      # しやすい (2026-07-23 の PR #14 で `@1.89` → `@1.100` に誤 bump された
+      # 実績) ので、`.github/dependabot.yml` の ignore rule で
+      # `dtolnay/rust-toolchain` を除外している。ここは MSRV 変更時にのみ
+      # 手で書き換える (docs/abi-changelog.md:318, X-08-T32)。
+      - uses: dtolnay/rust-toolchain@1.89
       - uses: Swatinem/rust-cache@v2
       - name: cargo check --workspace on the effective MSRV (1.89)
         run: cargo check --workspace

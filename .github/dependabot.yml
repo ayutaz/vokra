@@ -43,6 +43,13 @@ updates:
       - "ayutaz"
     commit-message:
       prefix: "chore(deps)"
+    # ignore:
+    #   `dtolnay/rust-toolchain@1.89` は MSRV pin であって version tag ではない
+    #   ため dependabot に自動 bump させない (2026-07-23 の PR #14 で `@1.89` →
+    #   `@1.100` に誤 bump されて msrv job が false-pass 化した実績)。
+    #   MSRV 変更は docs/abi-changelog.md + X-08-T32 の owner 判断で手動更新。
+    ignore:
+      - dependency-name: "dtolnay/rust-toolchain"
     groups:
       production-actions:
         patterns:
