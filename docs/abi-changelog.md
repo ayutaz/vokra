@@ -366,6 +366,19 @@ addition and gets its own row in the "GGUF Metadata additions" section.
 | `vokra-core::decode::wfst`  | `WfstDecoder` / `WfstDecodeConfig`                | Added | `WfstDecoder::new(&fst).decode(&emission) -> Result<Option<WfstHypothesis>>`      | frame-synchronous token-passing decode + `decode_nbest` + `lattice`          | no        | (TBD) |
 | `vokra-core::decode::wfst`  | `WfstLattice` / `WfstHypothesis` / `LatArc`       | Added | lattice + best-path + n-best output types                                         | decode output (best-first n-best mirrors `BeamHypothesis`)                    | no        | (TBD) |
 
+### 2026-07-23 — 1.0.0-rc.1-dev #2 (HF publication: convert_file_licensed — Rust surface only)
+
+Additive **Rust public API** only; C ABI untouched (conversion is an offline
+Rust tool, never a C export).
+
+| Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
+| --- | --- | --- | --- | --- | --- | --- |
+| `vokra-convert` | `convert_file_licensed` | Added | `pub fn convert_file_licensed(model, input, output, license: Option<&str>) -> Result<ConvertSummary, ConvertError>` | Override the stamped weight licence when the distribution *source* declares a different one from the converter's built-in default (Whisper is MIT on OpenAI's GitHub but the HF weight repos tag base/small/medium as apache-2.0). Keeps the GGUF the single source of truth the model card is generated from. `convert_file` now delegates to it with `None` — its signature and behaviour are unchanged. | no | (TBD) |
+
+CLI: `vokra-convert` gains `--license <spdx>`, routed to `convert_file_licensed`
+on the plain single-input path (Whisper etc.). GGUF metadata effect: overrides
+`vokra.provenance.{weight_license,license,source}` when set.
+
 ### 2026-07-23 — 1.0.0-rc.1-dev (HF publication: LicenseClass gains three variants — Rust surface only)
 
 Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is

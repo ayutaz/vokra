@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, convert_cosyvoice2_file, convert_csm_file, convert_dac_file, convert_file,
+    ModelKind, convert_cosyvoice2_file, convert_csm_file, convert_dac_file, convert_file_licensed,
     convert_file_quantized, convert_moshi_file, convert_piper_plus_file, convert_utmos_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType};
@@ -88,6 +88,7 @@ fn main() -> ExitCode {
         config,
         output,
         quant,
+        license,
     } = parsed;
 
     let result = match model {
@@ -170,7 +171,7 @@ fn main() -> ExitCode {
         }
         _ => match quant {
             Some(q) => convert_file_quantized(model, &input, &output, q),
-            None => convert_file(model, &input, &output),
+            None => convert_file_licensed(model, &input, &output, license.as_deref()),
         },
     };
 
@@ -204,6 +205,7 @@ struct Parsed {
     config: Option<PathBuf>,
     output: PathBuf,
     quant: Option<GgmlType>,
+    license: Option<String>,
 }
 
 /// Parses the `--quantize` argument into a K-quant target dtype.
@@ -222,6 +224,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut config: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut quant: Option<GgmlType> = None;
+    let mut license: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -263,6 +266,14 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 );
                 i += 2;
             }
+            "--license" => {
+                license = Some(
+                    args.get(i + 1)
+                        .ok_or("--license requires an SPDX id")?
+                        .clone(),
+                );
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -273,6 +284,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         config,
         output: output.ok_or("--output is required")?,
         quant,
+        license,
     })
 }
 

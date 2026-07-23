@@ -297,6 +297,33 @@ pub fn convert_file(
     input: &Path,
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
+    convert_file_licensed(model, input, output, None)
+}
+
+/// [`convert_file`] with an explicit weight-licence override.
+///
+/// Each converter stamps the licence it knows for its model. That is right when
+/// the model has one canonical licence, but wrong when the *actual distribution
+/// source* declares a different one — e.g. OpenAI's Whisper is MIT on GitHub,
+/// yet the Hugging Face weight repos this checkpoint may have come from tag
+/// `base`/`small`/`medium` as `apache-2.0`. Publishing must state the licence
+/// of the artifact being redistributed, so when the two disagree the caller
+/// passes the source's SPDX id here and it overrides the stamped
+/// `vokra.provenance.{weight_license,license}` — keeping the GGUF the single
+/// source of truth the model card is generated from (no card/artifact drift).
+///
+/// `license` is the raw SPDX string (e.g. `"apache-2.0"`); the class is
+/// re-derived from it. `None` keeps the converter's built-in stamp.
+///
+/// # Errors
+///
+/// As [`convert_file`].
+pub fn convert_file_licensed(
+    model: ModelKind,
+    input: &Path,
+    output: &Path,
+    license: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
     // Moshi streams tensor-by-tensor (the 14 GiB full-7B checkpoint must
     // never be materialized whole — bounded-memory contract); it routes
     // through `convert_moshi_file` BEFORE the whole-file read below.
@@ -305,7 +332,7 @@ pub fn convert_file(
     }
     let bytes = std::fs::read(input)?;
 
-    let (builder, notes) = match model {
+    let (mut builder, notes) = match model {
         ModelKind::Whisper => (models::whisper::convert(bytes, None)?, Vec::new()),
         ModelKind::SileroVad => {
             let (builder, report) = models::silero::convert(bytes)?;
@@ -439,6 +466,26 @@ pub fn convert_file(
             (builder, notes)
         }
     };
+
+    // Override the stamped licence when the caller supplies the distribution
+    // source's SPDX id (add_string overwrites the key in place, so the model's
+    // model_id / source / attribution stamps are preserved — only the licence
+    // and its class change).
+    if let Some(lic) = license {
+        let class = vokra_core::LicenseClass::from_license_str(lic);
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            class.as_str(),
+        );
+        builder.add_string(vokra_core::gguf::chunks::KEY_PROVENANCE_LICENSE, lic);
+        // The built-in `source` string names the converter's default licence
+        // (e.g. "openai/whisper (MIT)"); once the licence is overridden that
+        // parenthetical would contradict it, so restate the source neutrally.
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_PROVENANCE_SOURCE,
+            &format!("upstream distribution source (licence {lic} per source)"),
+        );
+    }
 
     let tensor_count = builder.tensor_count();
     let metadata_count = builder.metadata_count();
