@@ -1,0 +1,22 @@
+# vokra-misaki-g2p Python-side dependencies.
+#
+# The Rust CLI shells out to python/misaki_bridge.py, which imports the
+# upstream `misaki` package. `misaki` is Kokoro-82M's own G2P (its trained
+# vocabulary is what `vokra.kokoro.phoneme_symbols` records at conversion
+# time), so a Vokra-side re-implementation would drift out of parity by
+# construction — we run the real thing.
+#
+# Install into an isolated venv:
+#
+#     python3 -m venv .venv
+#     .venv/bin/pip install -r requirements.txt
+#
+# Then point the Rust CLI at that interpreter:
+#
+#     vokra-misaki-g2p --python .venv/bin/python …
+#
+# Extras keyed on language — installing them all pulls in the JA/ZH/KO
+# frontends (jaconv / pypinyin / hanja etc.). Drop the ones you do not need
+# if you want a leaner env.
+
+misaki[en,ja,zh,ko]==0.9.4
