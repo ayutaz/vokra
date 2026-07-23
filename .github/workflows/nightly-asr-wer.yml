@@ -150,8 +150,20 @@ env:
   # Vokra regression; the WER breach in the next step remains the actionable
   # gate. Owner WP X-10 tracks the self-mirror that would eliminate the
   # drift class entirely (see CORPUS PROVENANCE FAILURE MODES above).
-  DEV_CLEAN_SHA256: "76f87d090650617fca0cac8f88b9416e0ebf80350acb97b343a85fa903728ab3"
-  DEV_CLEAN_URL: "https://www.openslr.org/resources/12/dev-clean.tar.gz"
+  #
+  # WP X-10-T04/T05 graceful-fallback seam: env values are the effective
+  # URL/SHA at run time. Behaviour is UNCHANGED when the org variables
+  # `VOKRA_CORPUS_LIBRISPEECH_MIRROR_URL` /
+  # `VOKRA_CORPUS_LIBRISPEECH_MIRROR_SHA256` are unset — the literal below
+  # is used as the fallback default (OpenSLR canonical). When owner lands
+  # WP X-10-T02/T03 (mirror upload + var populate + pins.yaml mirror row),
+  # the mirror URL replaces upstream WITHOUT any further edit to this file.
+  # The literal SHA below MUST equal `lw.DEV_CLEAN_SHA256` in
+  # `tools/eval/librispeech_wer.py`; the oracle
+  # `test_workflow_fallback_pin_matches_calibration` asserts this to catch
+  # silent drift when someone edits one side in isolation.
+  DEV_CLEAN_SHA256: ${{ vars.VOKRA_CORPUS_LIBRISPEECH_MIRROR_SHA256 || '76f87d090650617fca0cac8f88b9416e0ebf80350acb97b343a85fa903728ab3' }}
+  DEV_CLEAN_URL: ${{ vars.VOKRA_CORPUS_LIBRISPEECH_MIRROR_URL || 'https://www.openslr.org/resources/12/dev-clean.tar.gz' }}
   HF_HOME: ${{ github.workspace }}/.hf-cache
   HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
 

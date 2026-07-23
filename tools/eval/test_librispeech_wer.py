@@ -377,6 +377,77 @@ class TestWorkflowSurface(unittest.TestCase):
     def test_pins_the_corpus_checksum_the_scorer_recorded(self):
         self.assertIn(lw.DEV_CLEAN_SHA256, self.text)
 
+    def test_workflow_url_uses_the_vars_fallback_seam(self):
+        """WP X-10-T04/T05 graceful-fallback seam.
+
+        The workflow env's DEV_CLEAN_URL must be a `${{ vars.<KEY> ||
+        '<literal>' }}` expression so that a Vokra-owned mirror can be
+        introduced by setting an org variable, without editing this
+        workflow. The literal fallback must remain the OpenSLR canonical
+        URL so behaviour is UNCHANGED when the org variable is unset.
+        """
+        # Anchor to the `env:` mapping, tolerate any quoting/whitespace.
+        # env values are top-level under `env:`, so the anchor is
+        # `\n  DEV_CLEAN_URL:` (two-space indent for job-level env).
+        m = re.search(
+            r"\n  DEV_CLEAN_URL:\s*"
+            r"\$\{\{\s*vars\.(VOKRA_CORPUS_LIBRISPEECH_MIRROR_URL)\s*\|\|\s*"
+            r"'([^']+)'\s*\}\}",
+            self.text,
+        )
+        self.assertIsNotNone(
+            m,
+            "DEV_CLEAN_URL must be `${{ vars.VOKRA_CORPUS_LIBRISPEECH_MIRROR_URL || "
+            "'<openslr-url>' }}` — the WP X-10-T04/T05 graceful-fallback seam",
+        )
+        self.assertEqual(
+            m.group(2),
+            "https://www.openslr.org/resources/12/dev-clean.tar.gz",
+            "fallback URL must remain OpenSLR canonical so unset-var behaviour "
+            "matches pre-seam behaviour bit-for-bit",
+        )
+
+    def test_workflow_fallback_pin_matches_calibration(self):
+        """The literal SHA in the fallback must equal `lw.DEV_CLEAN_SHA256`.
+
+        Prevents silent drift where someone edits the workflow env literal
+        in isolation and forgets the scorer side (or vice versa). Same
+        posture as `test_threshold_default_matches_the_scorer` for the
+        WER_THRESHOLD constant.
+        """
+        m = re.search(
+            r"\n  DEV_CLEAN_SHA256:\s*"
+            r"\$\{\{\s*vars\.(VOKRA_CORPUS_LIBRISPEECH_MIRROR_SHA256)\s*\|\|\s*"
+            r"'([0-9a-f]{64})'\s*\}\}",
+            self.text,
+        )
+        self.assertIsNotNone(
+            m,
+            "DEV_CLEAN_SHA256 must be `${{ vars.VOKRA_CORPUS_LIBRISPEECH_MIRROR_SHA256 || "
+            "'<64-hex-sha>' }}` — the WP X-10-T04/T05 graceful-fallback seam",
+        )
+        self.assertEqual(
+            m.group(2),
+            lw.DEV_CLEAN_SHA256,
+            "workflow fallback SHA must equal lw.DEV_CLEAN_SHA256; both sides "
+            "describe the same OpenSLR file and must not drift silently",
+        )
+
+    def test_cache_key_still_binds_to_the_effective_sha(self):
+        """SHA-key change is the actual re-fetch mechanism (see P2 docstring).
+
+        If someone accidentally rewrote the cache key to a static string,
+        a corpus-swap tripwire (bump DEV_CLEAN_SHA256 to re-fetch on drift)
+        would silently stop working. Anchor the key to `env.DEV_CLEAN_SHA256`
+        so any refactor has to touch this test.
+        """
+        self.assertIn(
+            "key: librispeech-dev-clean-${{ env.DEV_CLEAN_SHA256 }}",
+            self.text,
+            "corpus cache key must interpolate env.DEV_CLEAN_SHA256 so a pin bump "
+            "actually forces a cache miss and re-fetch",
+        )
+
     def test_guards_the_root_cargo_lock(self):
         """Zero-dep NFR-DS-02: same tripwire the other asset workflows carry."""
         self.assertIn("git diff --exit-code", self.text)
