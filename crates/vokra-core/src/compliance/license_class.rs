@@ -604,6 +604,11 @@ mod tests {
         assert!(LicenseClass::AttributionRequired.commercial_ok());
         assert!(!LicenseClass::NonCommercial.commercial_ok());
         assert!(!LicenseClass::Unknown.commercial_ok());
+        // InheritedRestriction is loadable + commercial-OK (OpenRAIL family
+        // constrains specific use cases, not commercial use itself) and
+        // carries the same attribution obligation as the CC-BY family.
+        assert!(LicenseClass::InheritedRestriction.commercial_ok());
+        assert!(LicenseClass::InheritedRestriction.requires_attribution());
         assert!(LicenseClass::AttributionRequired.requires_attribution());
         assert!(!LicenseClass::Permissive.requires_attribution());
     }
@@ -640,11 +645,31 @@ mod tests {
                 "{s}"
             );
         }
-        // NVIDIA BigVGAN reference is non-commercial too.
+        // `NVIDIA Source Code License-NC` (a licence family, not a specific
+        // model): the string parses to NonCommercial regardless of which
+        // model presently carries it. BigVGAN itself moved to MIT in 2024
+        // (see `docs/license-audit.md` §3), so this assertion pins the
+        // parser's behaviour on the licence text, NOT the current status
+        // of any model that historically shipped under it.
         assert_eq!(
             LicenseClass::from_license_str("NVIDIA Source Code License-NC"),
             LicenseClass::NonCommercial
         );
+        // Responsible-AI Licence family (OpenRAIL-M) — audit rows for
+        // downstream OpenRAIL-tagged models parse to InheritedRestriction,
+        // distinct from Copyleft even though both preserve the licence on
+        // republishing.
+        for s in [
+            "openrail-m",
+            "creativeml-openrail-m",
+            "BigScience-OpenRAIL-M",
+        ] {
+            assert_eq!(
+                LicenseClass::from_license_str(s),
+                LicenseClass::InheritedRestriction,
+                "{s}"
+            );
+        }
         // Attribution (CC-BY without NC) is NOT gated.
         assert_eq!(
             LicenseClass::from_license_str("CC-BY-4.0"),
