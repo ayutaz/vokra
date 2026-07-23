@@ -14,11 +14,13 @@
 //! / Chatterbox family), so this lives in `vokra-ops` rather than a
 //! per-model module.
 
+use vokra_core::ir::graph::{IstftAttrs, StftAttrs};
 use vokra_core::{Result, VokraError};
 
 use crate::nsf::{
-    SineGenConfig, SourceModuleHnNSF, SourceModuleHnNSFConfig, SourceModuleHnNSFWeights,
+    NsfEntropy, SineGenConfig, SourceModuleHnNSF, SourceModuleHnNSFConfig, SourceModuleHnNSFWeights,
 };
+use crate::{Spectrogram, istft, stft};
 
 // ---------------------------------------------------------------------------
 // F0Predictor (upstream ConvRNNF0Predictor — no RNN despite the name)
@@ -966,11 +968,9 @@ pub struct HiFTGeneratorWeights {
 }
 
 /// HiFTNet generator — the full "Neural Source Filter + ISTFTNet" stack.
-/// Forward and decode land in Wave 3c-2 (this Wave 3c-1 lands only the
-/// config / weights / new so a caller can already validate a synthesised
-/// weight bundle end-to-end at construction).
+/// See [`Self::forward`] for the top-level call sequence and [`Self::decode`]
+/// for the fusion/upsample chain (upstream `generator.py:467-506`).
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // fields consumed by forward/decode in Wave 3c-2
 pub struct HiFTGenerator {
     cfg: HiFTGeneratorConfig,
     f0_predictor: F0Predictor,
@@ -1264,6 +1264,516 @@ impl HiFTGenerator {
     pub fn config(&self) -> &HiFTGeneratorConfig {
         &self.cfg
     }
+
+    /// Forward pass. Reproduces upstream `HiFTGenerator.forward`
+    /// (`generator.py:497-506`):
+    ///
+    /// ```text
+    /// speech_feat = batch['speech_feat'].transpose(1, 2).to(device)
+    /// f0 = self.f0_predictor(speech_feat)
+    /// s = self.f0_upsamp(f0[:, None]).transpose(1, 2)   # bs, n, t
+    /// s, _, _ = self.m_source(s)
+    /// s = s.transpose(1, 2)
+    /// generated_speech = self.decode(x=speech_feat, s=s)
+    /// ```
+    ///
+    /// `mel` is row-major `[in_channels, t_mel]`. Returns the reconstructed
+    /// waveform as a `Vec<f32>` of length `(t_current - 1) * istft_hop_len`,
+    /// where `t_current = t_mel * prod(upsample_rates) + 1` (the final
+    /// `nn.ReflectionPad1d((1, 0))` contributes the trailing `+ 1`). Under
+    /// upstream defaults `(prod(upsample_rates), istft_hop_len) = (64, 4)`,
+    /// so the audio length equals `t_source = t_mel * total_upsample_factor()`.
+    ///
+    /// The source module is driven with [`NsfEntropy::Deterministic`] —
+    /// upstream sets the noise draw's amplitude to `sine_amp / 3` but the
+    /// port only offers deterministic entropy for now, so the noise branch
+    /// stays at exactly zero rather than being re-derived from a stream.
+    /// Upstream also returns `(generated_speech, f0)`; the Vokra port
+    /// returns only the audio — a caller who needs the F0 sequence can call
+    /// [`Self::f0_predictor_forward`] on the same mel input.
+    pub fn forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
+        let in_ch = self.cfg.in_channels as usize;
+        if t_mel == 0 {
+            return Err(VokraError::InvalidArgument(
+                "HiFTGenerator forward: t_mel must be > 0".to_owned(),
+            ));
+        }
+        if mel.len() != in_ch * t_mel {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator forward: mel length {} != in_channels * t_mel = {}",
+                mel.len(),
+                in_ch * t_mel
+            )));
+        }
+
+        // f0 = self.f0_predictor(speech_feat)      → [t_mel]
+        let f0 = self.f0_predictor.forward(mel, t_mel)?;
+
+        // s = self.f0_upsamp(f0[:, None]).transpose(1, 2)   → [1, t_source] flat = [t_source]
+        let factor = self.cfg.total_upsample_factor() as usize;
+        let s_upsampled = upsample_nearest_row_major(&f0, 1, t_mel, factor);
+        let t_source = t_mel * factor;
+
+        // s, _, _ = self.m_source(s) — [t_source]
+        let src_out = self
+            .m_source
+            .forward(&s_upsampled, NsfEntropy::Deterministic)?;
+        if src_out.sine_merge.len() != t_source {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator forward: source module returned {} samples, expected {t_source}",
+                src_out.sine_merge.len()
+            )));
+        }
+
+        // generated_speech = self.decode(x=speech_feat, s=s)
+        self.decode(mel, &src_out.sine_merge, t_mel, t_source)
+    }
+
+    /// Convenience: run only the F0 predictor on `mel`. Kept as a thin
+    /// wrapper so a caller who wants both the audio (via [`Self::forward`])
+    /// and the F0 sequence (upstream returns both from `forward`) does not
+    /// have to hold a separate F0 predictor handle.
+    pub fn f0_predictor_forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
+        self.f0_predictor.forward(mel, t_mel)
+    }
+
+    /// Decode step — upstream `HiFTGenerator.decode` (`generator.py:467-490`):
+    ///
+    /// ```text
+    /// s_stft_real, s_stft_imag = self._stft(s.squeeze(1))
+    /// s_stft = torch.cat([s_stft_real, s_stft_imag], dim=1)   # [B, 2F, T]
+    ///
+    /// x = self.conv_pre(x)
+    /// for i in range(self.num_upsamples):
+    ///     x = F.leaky_relu(x, self.lrelu_slope)
+    ///     x = self.ups[i](x)
+    ///     if i == self.num_upsamples - 1: x = self.reflection_pad(x)
+    ///
+    ///     si = self.source_downs[i](s_stft)
+    ///     si = self.source_resblocks[i](si)
+    ///     x = x + si
+    ///
+    ///     xs = None
+    ///     for j in range(self.num_kernels):
+    ///         xs = self.resblocks[i * self.num_kernels + j](x) if xs is None \
+    ///              else xs + self.resblocks[i * self.num_kernels + j](x)
+    ///     x = xs / self.num_kernels
+    ///
+    /// x = F.leaky_relu(x)          # default negative_slope = 0.01
+    /// x = self.conv_post(x)
+    /// magnitude = torch.exp(x[:, :F, :])
+    /// phase    = torch.sin(x[:, F:, :])
+    /// x = self._istft(magnitude, phase)     # clips magnitude at 1e2 first
+    /// x = torch.clamp(x, -self.audio_limit, self.audio_limit)
+    /// ```
+    ///
+    /// `x` is row-major `[in_channels, t_mel]` (the mel front end);
+    /// `s` is `[t_source]` (the upsampled source signal). `t_source` is
+    /// carried in explicitly so we fail loudly on any caller mistake
+    /// instead of silently trusting `s.len()`.
+    fn decode(&self, x: &[f32], s: &[f32], t_mel: usize, t_source: usize) -> Result<Vec<f32>> {
+        let in_ch = self.cfg.in_channels as usize;
+        let base_ch = self.cfg.base_channels as usize;
+        let n_fft = self.cfg.istft_n_fft as usize;
+        let hop_len = self.cfg.istft_hop_len as usize;
+        let f_bins = n_fft / 2 + 1; // half-spectrum bin count
+        let two_f = n_fft + 2; // stacked real + imag row count
+        let num_ups = self.cfg.num_upsamples();
+        let num_kernels = self.cfg.num_kernels();
+        let lrelu_slope = self.cfg.lrelu_slope;
+
+        if x.len() != in_ch * t_mel {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator decode: x length {} != in_channels * t_mel = {}",
+                x.len(),
+                in_ch * t_mel
+            )));
+        }
+        if s.len() != t_source {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator decode: s length {} != t_source = {t_source}",
+                s.len()
+            )));
+        }
+
+        // ---- s_stft = concat([Re, Im], dim=1) : [n_fft+2, t_stft] ---------
+        //
+        // Upstream `_stft` calls `torch.stft(x, n_fft, hop_len, win_length =
+        // n_fft, window = hann_periodic, return_complex=True)` — `center`
+        // defaults to `True`, `normalized` to `False` (== backward norm).
+        // Vokra `StftAttrs::new(n_fft, hop)` picks the same knobs, so the
+        // transform is bit-for-bit equivalent to the upstream call.
+        //
+        // Vokra `Spectrogram` is row-major `[frames, bins]`; upstream stacks
+        // the half-spectrum along the channel (row) axis and keeps time on
+        // the column axis. Transpose so rows are `(Re bins, Im bins)` and
+        // cols are frames.
+        let stft_attrs = StftAttrs::new(n_fft, hop_len);
+        let spec = stft(s, &stft_attrs)?;
+        let t_stft = spec.frames;
+        if spec.bins != f_bins {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFTGenerator decode: STFT produced {} bins, expected n_fft/2+1 = {f_bins}",
+                spec.bins
+            )));
+        }
+        let mut s_stft = vec![0.0f32; two_f * t_stft];
+        for f in 0..f_bins {
+            for tt in 0..t_stft {
+                s_stft[f * t_stft + tt] = spec.re[tt * f_bins + f];
+                s_stft[(f_bins + f) * t_stft + tt] = spec.im[tt * f_bins + f];
+            }
+        }
+
+        // ---- x = conv_pre(x)  → [base_ch, t_mel] --------------------------
+        //
+        // Upstream `Conv1d(in_channels, base_channels, 7, 1, padding=3)` is
+        // a same-length convolution — kernel = 7, stride = 1, padding = 3.
+        let mut x_current = conv1d_same_padding(
+            x,
+            in_ch,
+            base_ch,
+            7,
+            3,
+            t_mel,
+            &self.conv_pre_w,
+            &self.conv_pre_b,
+        );
+        let mut t_current = t_mel;
+
+        for i in 0..num_ups {
+            // x = F.leaky_relu(x, self.lrelu_slope)
+            for v in x_current.iter_mut() {
+                *v = leaky_relu(*v, lrelu_slope);
+            }
+
+            // x = self.ups[i](x)
+            //
+            // Upstream `ConvTranspose1d(base_ch/2^i, base_ch/2^(i+1), k=u_k[i],
+            // stride=u[i], padding=(k-u)//2)` produces
+            // `t_out = (t_in - 1) * stride + k - 2 * padding = t_in * stride`
+            // for the fixed `padding = (k - u) // 2` upstream ships. The
+            // helper is faithful to that formula but takes `padding`
+            // explicitly, so we derive it here rather than folding it in.
+            let stride = self.cfg.upsample_rates[i] as usize;
+            let kernel = self.cfg.upsample_kernel_sizes[i] as usize;
+            let padding = (kernel - stride) / 2;
+            let in_stage = base_ch >> i;
+            let out_stage = base_ch >> (i + 1);
+            x_current = conv_transpose1d(
+                &x_current,
+                in_stage,
+                out_stage,
+                kernel,
+                stride,
+                padding,
+                t_current,
+                &self.ups_w[i],
+                &self.ups_b[i],
+            )?;
+            t_current *= stride;
+
+            // Terminal reflection pad — upstream `nn.ReflectionPad1d((1, 0))`
+            // only fires on the last stage (`if i == self.num_upsamples - 1`).
+            if i == num_ups - 1 {
+                x_current = reflection_pad_1d_left(&x_current, out_stage, t_current, 1)?;
+                t_current += 1;
+            }
+
+            // ---- fusion: si = source_downs[i](s_stft) → source_resblocks[i]
+            let k_src = self.source_downs_kernel[i] as usize;
+            let stride_src = self.source_downs_stride[i] as usize;
+            let padding_src = self.source_downs_padding[i] as usize;
+            let mut si = conv1d_strided_no_dilation(
+                &s_stft,
+                two_f,
+                out_stage,
+                k_src,
+                stride_src,
+                padding_src,
+                t_stft,
+                &self.source_downs_w[i],
+                &self.source_downs_b[i],
+            )?;
+            let t_si = si.len() / out_stage;
+            if t_si != t_current {
+                // Upstream's downsample_rates / downsample_cum_rates choice
+                // guarantees `t_si == t_current` at every stage — failing
+                // here means the config's upsample_rates and istft params
+                // are inconsistent, and we surface it loudly rather than
+                // silently truncating one side (FR-EX-08).
+                return Err(VokraError::InvalidArgument(format!(
+                    "HiFTGenerator decode: source_downs[{i}] produced t_si = {t_si} but \
+                     stage t_current = {t_current} (upstream contract mismatch — check \
+                     upsample_rates × istft_hop_len against t_mel)"
+                )));
+            }
+            self.source_resblocks[i].forward_in_place(&mut si, t_si)?;
+
+            // x = x + si  (both [out_stage, t_current])
+            if x_current.len() != si.len() {
+                return Err(VokraError::InvalidArgument(format!(
+                    "HiFTGenerator decode: fusion length mismatch — x has {} samples, si has {}",
+                    x_current.len(),
+                    si.len()
+                )));
+            }
+            for (dst, &delta) in x_current.iter_mut().zip(si.iter()) {
+                *dst += delta;
+            }
+
+            // ---- MRF: xs = sum_j resblocks[i*num_kernels + j](x); x = xs / num_kernels
+            let mut xs_accum = vec![0.0f32; out_stage * t_current];
+            for j in 0..num_kernels {
+                let mut xt = x_current.clone();
+                self.resblocks[i * num_kernels + j].forward_in_place(&mut xt, t_current)?;
+                for (acc, &v) in xs_accum.iter_mut().zip(xt.iter()) {
+                    *acc += v;
+                }
+            }
+            let inv_n = 1.0 / (num_kernels as f32);
+            for v in xs_accum.iter_mut() {
+                *v *= inv_n;
+            }
+            x_current = xs_accum;
+        }
+
+        // ---- final F.leaky_relu (default negative_slope = 0.01) ----------
+        for v in x_current.iter_mut() {
+            *v = leaky_relu(*v, 0.01);
+        }
+
+        // ---- conv_post: [final_ch, t_current] → [n_fft+2, t_current] -----
+        let final_ch = base_ch >> num_ups;
+        let x_post = conv1d_same_padding(
+            &x_current,
+            final_ch,
+            two_f,
+            7,
+            3,
+            t_current,
+            &self.conv_post_w,
+            &self.conv_post_b,
+        );
+
+        // ---- magnitude / phase / complex reassembly ----------------------
+        //
+        // Upstream (`generator.py:485-489` + `_istft` L459-465):
+        //
+        //   magnitude = exp(x[:, :F, :])
+        //   phase     = sin(x[:, F:, :])
+        //   magnitude = clip(magnitude, max=1e2)
+        //   real = magnitude * cos(phase)
+        //   img  = magnitude * sin(phase)
+        //
+        // The clip is applied AFTER exp (so a large exponent that overflows
+        // to +inf in f32 still collapses to 1e2 by `min(inf, 100) = 100`
+        // under IEEE-754 rules — we preserve that exact order).
+        //
+        // Layout: `x_post` is row-major `[n_fft+2, t_current]` with real
+        // bins in rows [0, F) and imag bins in rows [F, 2F). Vokra
+        // `Spectrogram` is row-major `[frames, bins]`, so we transpose from
+        // `[F, t_current]` to `[t_current, F]` while filling in real/imag.
+        let mut re_out = vec![0.0f32; t_current * f_bins];
+        let mut im_out = vec![0.0f32; t_current * f_bins];
+        for f in 0..f_bins {
+            let row_mag = f * t_current;
+            let row_pha = (f_bins + f) * t_current;
+            for tt in 0..t_current {
+                let magnitude = x_post[row_mag + tt].exp().min(1e2);
+                let phase = x_post[row_pha + tt].sin();
+                let dst = tt * f_bins + f;
+                re_out[dst] = magnitude * phase.cos();
+                im_out[dst] = magnitude * phase.sin();
+            }
+        }
+        let spec_out = Spectrogram {
+            frames: t_current,
+            bins: f_bins,
+            re: re_out,
+            im: im_out,
+        };
+
+        // ---- iSTFT + audio_limit clamp -----------------------------------
+        //
+        // `IstftAttrs::new(n_fft, hop_len)` inherits the same window / norm
+        // / center defaults as the forward analysis, so this pairs
+        // bit-exactly with the earlier `stft` call above (M0-04-T12 COLA
+        // path).
+        let istft_attrs = IstftAttrs::new(n_fft, hop_len);
+        let mut audio = istft(&spec_out, &istft_attrs)?;
+        let limit = self.cfg.audio_limit;
+        for v in audio.iter_mut() {
+            *v = v.clamp(-limit, limit);
+        }
+        Ok(audio)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Private helpers for HiFTGenerator's forward + decode chain
+// ---------------------------------------------------------------------------
+
+/// Leaky ReLU: `x` if `x > 0`, otherwise `x * slope`.
+///
+/// Upstream reaches for this twice — once in each upsample stage with the
+/// configured `lrelu_slope` (default 0.1), and once immediately before
+/// `conv_post` where the call is written `F.leaky_relu(x)` (PyTorch's
+/// functional default is `negative_slope = 0.01`).
+#[inline]
+fn leaky_relu(x: f32, slope: f32) -> f32 {
+    if x > 0.0 { x } else { x * slope }
+}
+
+/// Nearest-neighbour upsampling by an integer `factor` along the time axis
+/// of a row-major `[ch, t_in]` tensor.
+///
+/// Upstream `nn.Upsample(scale_factor=factor, mode='nearest')` on a 1-D
+/// signal `[a, b, c]` with `factor = 3` produces `[a, a, a, b, b, b, c, c, c]`.
+/// The port mirrors that — `output[i] = input[i / factor]` per channel.
+fn upsample_nearest_row_major(input: &[f32], ch: usize, t_in: usize, factor: usize) -> Vec<f32> {
+    if factor == 0 || t_in == 0 {
+        return Vec::new();
+    }
+    let t_out = t_in * factor;
+    let mut output = vec![0.0f32; ch * t_out];
+    for c in 0..ch {
+        let src = c * t_in;
+        let dst = c * t_out;
+        for i in 0..t_out {
+            output[dst + i] = input[src + i / factor];
+        }
+    }
+    output
+}
+
+/// Left-side reflection padding on a row-major `[ch, t]` tensor.
+///
+/// Upstream `nn.ReflectionPad1d((pad_left, 0))` reflects the input past its
+/// left boundary, *excluding* the boundary sample itself — for
+/// `pad_left = 1` and channel data `[a, b, c, ...]` the result is
+/// `[b, a, b, c, ...]` (PyTorch docs, "Pads the input tensor using the
+/// reflection of the input boundary."). The upstream `HiFTGenerator` uses
+/// `pad_left = 1` on the last upsample stage only; larger paddings are
+/// supported here for defensive completeness but each fires the same
+/// mirror formula.
+fn reflection_pad_1d_left(input: &[f32], ch: usize, t: usize, pad_left: usize) -> Result<Vec<f32>> {
+    if pad_left == 0 {
+        return Ok(input.to_vec());
+    }
+    if input.len() != ch * t {
+        return Err(VokraError::InvalidArgument(format!(
+            "reflection_pad_1d_left: input length {} != ch * t = {}",
+            input.len(),
+            ch * t
+        )));
+    }
+    if t <= pad_left {
+        return Err(VokraError::InvalidArgument(format!(
+            "reflection_pad_1d_left: t ({t}) must exceed pad_left ({pad_left}) — reflection \
+             needs an interior sample at index pad_left"
+        )));
+    }
+    let t_out = t + pad_left;
+    let mut output = vec![0.0f32; ch * t_out];
+    for c in 0..ch {
+        let src = c * t;
+        let dst = c * t_out;
+        // Reflected prefix: output[i] = input[pad_left - i] for i in 0..pad_left.
+        for i in 0..pad_left {
+            output[dst + i] = input[src + pad_left - i];
+        }
+        // Original samples shifted right by pad_left.
+        for j in 0..t {
+            output[dst + pad_left + j] = input[src + j];
+        }
+    }
+    Ok(output)
+}
+
+/// Strided 1-D convolution with explicit `padding` and no dilation.
+///
+/// Output length: `t_out = (t_in + 2 * padding - kernel) / stride + 1` —
+/// the standard PyTorch `nn.Conv1d` formula. Used by `HiFTGenerator.decode`
+/// to downsample the concatenated STFT source stream so its time axis
+/// meets each upsample stage's `t_current`; the existing
+/// [`conv1d_same_padding`] helper only covers stride = 1, so a dedicated
+/// strided path avoids folding an unused `stride == 1` fast-path onto
+/// every same-padded convolution in this file.
+///
+/// Naive `O(out_ch × in_ch × kernel × t_out)` loop; every source-side
+/// convolution in HiFTNet is small (`in_ch = n_fft + 2 = 18`,
+/// `out_ch ≤ 256`, `kernel ≤ 16`), so the arithmetic budget per synthesis
+/// step stays modest.
+// The 9-arg surface matches the underlying nn primitive faithfully — see
+// the same rationale on [`conv1d_same_padding`] and [`conv_transpose1d`].
+#[allow(clippy::too_many_arguments)]
+fn conv1d_strided_no_dilation(
+    input: &[f32],
+    in_ch: usize,
+    out_ch: usize,
+    kernel: usize,
+    stride: usize,
+    padding: usize,
+    t_in: usize,
+    weight: &[f32],
+    bias: &[f32],
+) -> Result<Vec<f32>> {
+    if stride == 0 || kernel == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv1d_strided_no_dilation: stride and kernel must be > 0".to_owned(),
+        ));
+    }
+    if input.len() != in_ch * t_in {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv1d_strided_no_dilation: input length {} != in_ch * t_in = {}",
+            input.len(),
+            in_ch * t_in
+        )));
+    }
+    if weight.len() != out_ch * in_ch * kernel {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv1d_strided_no_dilation: weight length {} != out_ch * in_ch * kernel = {}",
+            weight.len(),
+            out_ch * in_ch * kernel
+        )));
+    }
+    if bias.len() != out_ch {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv1d_strided_no_dilation: bias length {} != out_ch = {out_ch}",
+            bias.len()
+        )));
+    }
+    if t_in + 2 * padding < kernel {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv1d_strided_no_dilation: t_in ({t_in}) + 2*padding ({padding}) < kernel \
+             ({kernel})"
+        )));
+    }
+    let t_out = (t_in + 2 * padding - kernel) / stride + 1;
+    let mut output = vec![0.0f32; out_ch * t_out];
+    let t_i = t_in as isize;
+    let pad_i = padding as isize;
+    for (oc, &b) in bias.iter().enumerate() {
+        let row = oc * t_out;
+        let w_off = oc * in_ch * kernel;
+        for to in 0..t_out {
+            let mut acc = b;
+            for ic in 0..in_ch {
+                let x_row = ic * t_in;
+                let w_row = w_off + ic * kernel;
+                for k in 0..kernel {
+                    let src = (to * stride) as isize + k as isize - pad_i;
+                    if src < 0 || src >= t_i {
+                        continue;
+                    }
+                    acc += input[x_row + src as usize] * weight[w_row + k];
+                }
+            }
+            output[row + to] = acc;
+        }
+    }
+    Ok(output)
 }
 
 // ---------------------------------------------------------------------------
@@ -1734,5 +2244,359 @@ mod tests {
         };
         let err = ResBlock::new(cfg, weights).unwrap_err();
         assert!(err.to_string().contains("convs1_w[0]"), "{err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Helpers landed in Wave 3c-2 (private, but exposed to tests via the
+    // module boundary).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn leaky_relu_matches_reference_on_both_branches() {
+        // Positive branch is identity.
+        assert_eq!(leaky_relu(0.0, 0.1), 0.0);
+        assert_eq!(leaky_relu(2.5, 0.1), 2.5);
+        // Negative branch scales by slope.
+        assert!((leaky_relu(-3.0, 0.1) - (-0.3)).abs() < 1e-6);
+        // Default 0.01 slope (upstream `F.leaky_relu(x)` — the final
+        // pre-conv_post call in decode).
+        assert!((leaky_relu(-5.0, 0.01) - (-0.05)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn upsample_nearest_row_major_repeats_each_sample() {
+        // Upstream `nn.Upsample(scale_factor=3, mode="nearest")` on `[a, b]`
+        // yields `[a, a, a, b, b, b]`.
+        let input = [1.0f32, 2.0];
+        let out = upsample_nearest_row_major(&input, 1, 2, 3);
+        assert_eq!(out, vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn upsample_nearest_row_major_preserves_channels() {
+        // Two channels, each of length 3, upsampled 4x → per-channel repeat
+        // stays inside its own row (row-major layout `[ch, t]`).
+        let input = vec![
+            10.0, 20.0, 30.0, // channel 0
+            -1.0, -2.0, -3.0, // channel 1
+        ];
+        let out = upsample_nearest_row_major(&input, 2, 3, 4);
+        assert_eq!(out.len(), 2 * 3 * 4);
+        // Channel 0
+        assert_eq!(
+            &out[0..12],
+            &[
+                10.0, 10.0, 10.0, 10.0, 20.0, 20.0, 20.0, 20.0, 30.0, 30.0, 30.0, 30.0
+            ][..]
+        );
+        // Channel 1
+        assert_eq!(
+            &out[12..24],
+            &[
+                -1.0, -1.0, -1.0, -1.0, -2.0, -2.0, -2.0, -2.0, -3.0, -3.0, -3.0, -3.0
+            ][..]
+        );
+    }
+
+    #[test]
+    fn upsample_nearest_row_major_factor_one_is_identity() {
+        let input = vec![0.5f32, -0.5, 0.25, -0.25];
+        let out = upsample_nearest_row_major(&input, 1, 4, 1);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn reflection_pad_1d_left_pad_one_mirrors_index_one() {
+        // Upstream `nn.ReflectionPad1d((1, 0))` on `[a, b, c, d]` yields
+        // `[b, a, b, c, d]` (see torch docs example).
+        let input = [1.0f32, 2.0, 3.0, 4.0];
+        let out = reflection_pad_1d_left(&input, 1, 4, 1).unwrap();
+        assert_eq!(out, vec![2.0, 1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn reflection_pad_1d_left_pad_zero_is_identity() {
+        // A no-op guard: pad_left = 0 must return the input verbatim, so
+        // callers can supply it unconditionally without a branch of their own.
+        let input = vec![7.0f32, 8.0, 9.0];
+        let out = reflection_pad_1d_left(&input, 1, 3, 0).unwrap();
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn reflection_pad_1d_left_multichannel_preserves_channel_isolation() {
+        // Row-major `[ch, t]`: reflection per channel must not leak into
+        // the neighbouring row.
+        let input = vec![
+            10.0, 20.0, 30.0, // channel 0
+            -1.0, -2.0, -3.0, // channel 1
+        ];
+        let out = reflection_pad_1d_left(&input, 2, 3, 1).unwrap();
+        assert_eq!(out.len(), 2 * 4);
+        assert_eq!(&out[0..4], &[20.0, 10.0, 20.0, 30.0][..]);
+        assert_eq!(&out[4..8], &[-2.0, -1.0, -2.0, -3.0][..]);
+    }
+
+    #[test]
+    fn reflection_pad_1d_left_rejects_pad_at_least_t() {
+        // pad_left = 1 needs input[1], so t = 1 is insufficient — the
+        // reflection would read out of bounds.
+        let input = [5.0f32];
+        let err = reflection_pad_1d_left(&input, 1, 1, 1).unwrap_err();
+        assert!(err.to_string().contains("must exceed pad_left"), "{err}");
+    }
+
+    #[test]
+    fn conv1d_strided_length_formula_matches_upstream_hift_source_downs() {
+        // Upstream HiFTGenerator source_downs stage 0 with u = 8:
+        // k = 16, stride = 8, padding = 4. `t_stft = t_mel * 64 + 1`; for
+        // t_mel = 1 → t_stft = 65, t_out = (65 + 8 - 16)/8 + 1 = 8. That
+        // matches the ups[0] output length `t_mel * upsample_rates[0] = 8`.
+        let n_fft_plus_2 = 18;
+        let out_ch = 4;
+        let t_stft = 65;
+        let input = vec![0.1f32; n_fft_plus_2 * t_stft];
+        let weight = vec![0.01f32; out_ch * n_fft_plus_2 * 16];
+        let bias = vec![0.0f32; out_ch];
+        let out = conv1d_strided_no_dilation(
+            &input,
+            n_fft_plus_2,
+            out_ch,
+            16,
+            8,
+            4,
+            t_stft,
+            &weight,
+            &bias,
+        )
+        .unwrap();
+        assert_eq!(out.len(), out_ch * 8);
+        assert!(out.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn conv1d_strided_stride_one_kernel_one_matches_source_downs_last_stage() {
+        // Upstream last stage with u = 1: k = 1, stride = 1, pad = 0.
+        // t_out == t_in.
+        let n_fft_plus_2 = 10;
+        let out_ch = 2;
+        let t_stft = 9;
+        // Weight is [out_ch, n_fft_plus_2, k=1] — a plain per-channel mix
+        // (kernel = 1 makes the third dimension trivial, so we drop the
+        // literal `* 1` from the allocation to keep clippy quiet).
+        let weight = vec![1.0f32; out_ch * n_fft_plus_2];
+        let bias = vec![0.5f32; out_ch];
+        let input: Vec<f32> = (0..n_fft_plus_2 * t_stft)
+            .map(|i| (i as f32) * 0.01)
+            .collect();
+        let out = conv1d_strided_no_dilation(
+            &input,
+            n_fft_plus_2,
+            out_ch,
+            1,
+            1,
+            0,
+            t_stft,
+            &weight,
+            &bias,
+        )
+        .unwrap();
+        assert_eq!(out.len(), out_ch * t_stft);
+    }
+
+    #[test]
+    fn conv1d_strided_rejects_shape_mismatches() {
+        let input = vec![0.0f32; 4 * 6];
+        let weight = vec![0.0f32; 2 * 4 * 3];
+        let bias = vec![0.0f32; 2];
+        // Wrong weight length triggers a loud error.
+        assert!(conv1d_strided_no_dilation(&input, 4, 2, 3, 1, 1, 6, &weight[..5], &bias).is_err());
+        // Wrong bias length triggers a loud error.
+        assert!(conv1d_strided_no_dilation(&input, 4, 2, 3, 1, 1, 6, &weight, &bias[..1]).is_err());
+        // Zero stride triggers a loud error.
+        assert!(conv1d_strided_no_dilation(&input, 4, 2, 3, 0, 1, 6, &weight, &bias).is_err());
+        // Zero kernel triggers a loud error.
+        assert!(conv1d_strided_no_dilation(&input, 4, 2, 0, 1, 1, 6, &weight, &bias).is_err());
+        // Wrong input length triggers a loud error.
+        assert!(conv1d_strided_no_dilation(&input[..5], 4, 2, 3, 1, 1, 6, &weight, &bias).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // HiFTGenerator forward + decode — end-to-end shape / determinism pins.
+    // -----------------------------------------------------------------------
+
+    /// Build a small synthesized `HiFTGenerator` whose config still satisfies
+    /// the upstream `t_si == t_current` construction contract:
+    /// `n_fft = 8, hop_len = 2, upsample_rates = [2, 2]`, giving
+    /// `total_upsample_factor = 2 * 2 * 2 = 8` and
+    /// `t_stft = t_mel * 4 + 1 = t_current_final`.
+    ///
+    /// Every weight is 0, so the pipeline reduces to
+    /// `x_post = 0 ⇒ magnitude = min(exp(0), 100) = 1, phase = sin(0) = 0`
+    /// on every bin — bounded, finite, deterministic, and (because
+    /// `audio_limit = 0.99`) explicitly clamped, so this fixture also
+    /// exercises the terminal saturation branch.
+    fn small_hift_generator() -> HiFTGenerator {
+        let cfg = HiFTGeneratorConfig {
+            in_channels: 4,
+            base_channels: 8,
+            nb_harmonics: 2,
+            sampling_rate: 16000,
+            nsf_alpha: 0.1,
+            nsf_sigma: 0.003,
+            nsf_voiced_threshold: 10.0,
+            upsample_rates: vec![2, 2],
+            upsample_kernel_sizes: vec![4, 4],
+            istft_n_fft: 8,
+            istft_hop_len: 2,
+            resblock_kernel_sizes: vec![3],
+            resblock_dilation_sizes: vec![vec![1]],
+            source_resblock_kernel_sizes: vec![3, 3],
+            source_resblock_dilation_sizes: vec![vec![1], vec![1]],
+            lrelu_slope: 0.1,
+            audio_limit: 0.99,
+        };
+
+        // F0Predictor (cond_channels = base_channels = 8, num_layers = 5).
+        let mut f0_conv_weights = vec![vec![0.0f32; 8 * 4 * 3]]; // layer 0: [8, 4, 3]
+        for _ in 1..5 {
+            f0_conv_weights.push(vec![0.0f32; 8 * 8 * 3]); // layers 1-4: [8, 8, 3]
+        }
+        let f0_weights = F0PredictorWeights {
+            conv_weights: f0_conv_weights,
+            conv_biases: vec![vec![0.0f32; 8]; 5],
+            linear_w: vec![0.0f32; 8],
+            linear_b: vec![0.0f32; 1],
+        };
+
+        let ups_w = vec![
+            vec![0.0f32; 8 * 4 * 4], // ups[0]: [in=8, out=4, k=4]
+            vec![0.0f32; 4 * 2 * 4], // ups[1]: [in=4, out=2, k=4]
+        ];
+        let ups_b = vec![vec![0.0f32; 4], vec![0.0f32; 2]];
+
+        // downsample_us for upsample_rates=[2, 2] resolves to [2, 1]:
+        //   downsample_rates = [1, 2], cum = [1, 2], reversed = [2, 1].
+        // Stage 0 uses u = 2 → k = 4, stride = 2, pad = 1; stage 1 uses u = 1
+        // → k = 1, stride = 1, pad = 0.
+        let n_fft_plus_2 = 10;
+        let source_downs_w = vec![
+            vec![0.0f32; 4 * n_fft_plus_2 * 4], // stage 0: [out=4, in=10, k=4]
+            vec![0.0f32; 2 * n_fft_plus_2],     // stage 1: [out=2, in=10, k=1] (kernel = 1 elided)
+        ];
+        let source_downs_b = vec![vec![0.0f32; 4], vec![0.0f32; 2]];
+
+        let make_res_zero = |ch: usize, k: usize, n_branches: usize| ResBlockWeights {
+            convs1_w: vec![vec![0.0f32; ch * ch * k]; n_branches],
+            convs1_b: vec![vec![0.0f32; ch]; n_branches],
+            convs2_w: vec![vec![0.0f32; ch * ch * k]; n_branches],
+            convs2_b: vec![vec![0.0f32; ch]; n_branches],
+            activations1_alpha: vec![vec![0.0f32; ch]; n_branches],
+            activations2_alpha: vec![vec![0.0f32; ch]; n_branches],
+        };
+
+        // source_resblocks: one per stage.
+        let source_resblock_weights = vec![
+            make_res_zero(4, 3, 1), // stage 0: channels = 4
+            make_res_zero(2, 3, 1), // stage 1: channels = 2
+        ];
+        // resblocks: row-major [num_ups * num_kernels], num_kernels = 1.
+        let resblock_weights = vec![
+            make_res_zero(4, 3, 1), // resblocks[0]: stage 0, kernel 0
+            make_res_zero(2, 3, 1), // resblocks[1]: stage 1, kernel 0
+        ];
+
+        let weights = HiFTGeneratorWeights {
+            conv_pre_w: vec![0.0f32; 8 * 4 * 7],
+            conv_pre_b: vec![0.0f32; 8],
+            ups_w,
+            ups_b,
+            source_downs_w,
+            source_downs_b,
+            source_resblock_weights,
+            resblock_weights,
+            conv_post_w: vec![0.0f32; n_fft_plus_2 * 2 * 7],
+            conv_post_b: vec![0.0f32; n_fft_plus_2],
+            m_source_linear_w: vec![0.0f32; 3], // nb_harmonics + 1 = 3
+            m_source_linear_b: 0.0,
+            f0_predictor_weights: f0_weights,
+        };
+
+        HiFTGenerator::new(cfg, weights).expect("small hift generator must build")
+    }
+
+    #[test]
+    fn hift_generator_forward_output_length_matches_upstream_contract() {
+        // `t_current_final = t_mel * prod(upsample_rates) + 1 = t_mel * 4 + 1`,
+        // and the istft output length is `(t_current - 1) * hop_len =
+        // (t_mel * 4) * 2 = t_mel * 8 = t_source`. Under upstream defaults
+        // that equals `t_mel * total_upsample_factor()`, i.e. the source
+        // signal length.
+        let g = small_hift_generator();
+        for t_mel in [1usize, 2, 3, 5] {
+            let mel = vec![0.0f32; 4 * t_mel];
+            let audio = g.forward(&mel, t_mel).unwrap();
+            assert_eq!(
+                audio.len(),
+                t_mel * g.cfg.total_upsample_factor() as usize,
+                "t_mel = {t_mel}"
+            );
+        }
+    }
+
+    #[test]
+    fn hift_generator_forward_is_deterministic_on_same_input() {
+        // NsfEntropy::Deterministic + identical input ⇒ identical output.
+        let g = small_hift_generator();
+        let t_mel = 4;
+        let mel: Vec<f32> = (0..(4 * t_mel))
+            .map(|i| ((i % 7) as f32) * 0.03 - 0.05)
+            .collect();
+        let a = g.forward(&mel, t_mel).unwrap();
+        let b = g.forward(&mel, t_mel).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn hift_generator_forward_output_is_finite_and_bounded_by_audio_limit() {
+        let g = small_hift_generator();
+        let t_mel = 3;
+        let mel: Vec<f32> = (0..(4 * t_mel)).map(|i| (i as f32) * 0.01).collect();
+        let audio = g.forward(&mel, t_mel).unwrap();
+        let limit = g.cfg.audio_limit;
+        for (k, &v) in audio.iter().enumerate() {
+            assert!(v.is_finite(), "non-finite sample at {k}: {v}");
+            assert!(
+                v.abs() <= limit + 1e-6,
+                "sample {k} = {v} exceeds audio_limit = {limit}"
+            );
+        }
+    }
+
+    #[test]
+    fn hift_generator_forward_rejects_wrong_mel_shape() {
+        let g = small_hift_generator();
+        let mel = vec![0.0f32; 4 * 4 - 1]; // one short
+        let err = g.forward(&mel, 4).unwrap_err();
+        assert!(err.to_string().contains("mel length"), "{err}");
+    }
+
+    #[test]
+    fn hift_generator_forward_rejects_zero_t_mel() {
+        let g = small_hift_generator();
+        let err = g.forward(&[], 0).unwrap_err();
+        assert!(err.to_string().contains("t_mel must be > 0"), "{err}");
+    }
+
+    #[test]
+    fn hift_generator_f0_predictor_forward_matches_direct_call() {
+        // The `f0_predictor_forward` convenience wrapper must return the
+        // same sequence the internal F0Predictor produces on the same mel.
+        let g = small_hift_generator();
+        let t_mel = 6;
+        let mel: Vec<f32> = (0..(4 * t_mel)).map(|i| (i as f32) * 0.02 - 0.1).collect();
+        let via_wrapper = g.f0_predictor_forward(&mel, t_mel).unwrap();
+        let via_direct = g.f0_predictor.forward(&mel, t_mel).unwrap();
+        assert_eq!(via_wrapper, via_direct);
     }
 }
