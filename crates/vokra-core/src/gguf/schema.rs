@@ -37,6 +37,10 @@
 //! it to `CARGO_PKG_VERSION`: that string has been `0.1.0-alpha.0` since M0 and
 //! would have been identical on both sides of the incident above.
 
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::String;
+
 use crate::gguf::chunks::{KEY_SCHEMA_PRODUCER, KEY_SCHEMA_VERSION};
 use crate::gguf::{GgufFile, GgufMetadataValue};
 
