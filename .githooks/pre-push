@@ -5,6 +5,27 @@
 # for something reproducible locally ("run the same commands before pushing",
 # CONTRIBUTING.md §2). Slower than pre-commit. Bypass with `git push
 # --no-verify` or VOKRA_SKIP_HOOKS=1.
+#
+# ITERATION-SPEED FAST-PATHS (2026-07-23):
+#
+# * Fast-path (a): if the diff since the tracking upstream (or origin/main
+#   when the branch is brand-new) touches ONLY documentation-shape files
+#   (docs/**, .github/**, *.md, *.yml, *.yaml, dotfiles that never affect
+#   compilation), the clippy + test legs SKIP. The compliance scanner
+#   sigpipe test always runs (5 s) — it is trivially cheap and is not
+#   dependent on the diff.
+#
+# * Fast-path (c): when the deep path DOES run, `cargo nextest run
+#   --workspace` is used when `cargo-nextest` is on the developer's PATH
+#   (~60% faster than `cargo test`, https://nexte.st). Missing tool falls
+#   back to `cargo test --workspace` with a one-line install hint — never
+#   a hard error. `cargo nextest` does NOT execute doc-tests, so `cargo
+#   test --workspace --doc` runs alongside it.
+#
+# Neither fast-path silently substitutes correctness: (a) prints why it
+# skipped, (c) prints which runner it chose, and both are visible in the
+# hook output. Force the full check regardless of diff content with
+# VOKRA_HOOK_DEEP=1 (or VOKRA_SKIP_HOOKS=1 for the pre-existing bypass).
 
 set -euo pipefail
 
@@ -16,17 +37,62 @@ fi
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-# ~5 s, and first so a broken compliance gate is reported before the multi-minute
-# clippy/test legs. Proves the NVIDIA non-bundle scanners still REJECT a package
-# whose nm dump exceeds the pipe buffer — the SIGPIPE fail-open they shipped with.
+# ---------------------------------------------------------------------------
+# Fast-path (a): is every file in the push diff documentation-shape?
+#
+# The classifier lives in .githooks/lib-fastpath.sh so the regression test
+# `scripts/test-pre-push-fastpath.sh` can source and drive it directly. An
+# empty diff or an unresolvable base falls through to the DEEP path — never
+# fast — so a broken symbolic ref cannot accidentally silence the gate.
+# ---------------------------------------------------------------------------
+
+# shellcheck source=lib-fastpath.sh
+source "$ROOT/.githooks/lib-fastpath.sh"
+
+# ---------------------------------------------------------------------------
+# Step 1 always runs: ~5 s, and first so a broken compliance gate is
+# reported before the multi-minute clippy/test legs. Proves the NVIDIA
+# non-bundle scanners still REJECT a package whose nm dump exceeds the pipe
+# buffer — the SIGPIPE fail-open they shipped with.
+# ---------------------------------------------------------------------------
+
 echo "pre-push [1/3]: compliance scanner fail-open regression test"
 bash scripts/compliance/test-nvidia-scanner-sigpipe.sh
 
-echo "pre-push [2/3]: cargo clippy --all-targets -- -D warnings"
+# ---------------------------------------------------------------------------
+# Fast-path branch.
+# ---------------------------------------------------------------------------
+
+if is_docs_only_diff; then
+    echo "pre-push [2/3]: SKIP cargo clippy — $fastpath_reason"
+    echo "pre-push [3/3]: SKIP cargo test  — $fastpath_reason"
+    echo "pre-push: OK (fast-path — override with VOKRA_HOOK_DEEP=1)"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Deep path.
+# ---------------------------------------------------------------------------
+
+echo "pre-push [2/3]: cargo clippy --all-targets -- -D warnings  ($fastpath_reason)"
 cargo clippy --all-targets -- -D warnings
 
-echo "pre-push [3/3]: cargo test --workspace"
-cargo test --workspace
+# Fast-path (c): prefer cargo-nextest for the workspace test leg when
+# available. Fall back to `cargo test --workspace` with a hint so a missing
+# tool never blocks the push.
+if command -v cargo-nextest >/dev/null 2>&1; then
+    echo "pre-push [3/3]: cargo nextest run --workspace"
+    cargo nextest run --workspace
+    # `cargo nextest` does not run doc-tests; run them via `cargo test --doc`
+    # so behaviour matches `cargo test --workspace`.
+    echo "pre-push [3/3]: cargo test --workspace --doc  (doc-tests not covered by nextest)"
+    cargo test --workspace --doc
+else
+    echo "pre-push [3/3]: cargo test --workspace"
+    echo "  hint: install cargo-nextest to parallelise this leg (~60% faster):"
+    echo "        cargo install cargo-nextest --locked"
+    cargo test --workspace
+fi
 
 # NOTE: this hook does NOT compile the metal/cuda/vulkan-gated targets. Feature
 # unification during `cargo test --workspace` reaches some of them but is not a

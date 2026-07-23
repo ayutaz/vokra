@@ -115,13 +115,31 @@ bash scripts/install-git-hooks.sh   # sets core.hooksPath -> .githooks
 ```
 
 - **pre-commit** (fast, no compile): `cargo fmt --all -- --check`,
-  `scripts/check-forbidden-symbols.sh`, `scripts/check-zero-deps.sh`.
-- **pre-push** (full, mirrors CI's compiling checks):
-  `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace`.
+  `scripts/check-forbidden-symbols.sh`, `scripts/check-zero-deps.sh`,
+  `scripts/check-fixture-eol-pins.sh`, `scripts/compliance/lint-pipefail-grep-q.py`.
+- **pre-push** (compiling, mirrors CI):
+  `scripts/compliance/test-nvidia-scanner-sigpipe.sh` (always),
+  `cargo clippy --all-targets -- -D warnings`,
+  `cargo test --workspace` (or `cargo nextest run --workspace` + `cargo
+  test --workspace --doc` when `cargo-nextest` is installed locally —
+  ~60% faster on the workspace test leg; the hook falls back to plain
+  `cargo test` when it is missing, never a hard error).
 
-Bypass a run with `git commit --no-verify` / `git push --no-verify`, or
-`VOKRA_SKIP_HOOKS=1 git ...`. Uninstall with
-`git config --unset core.hooksPath`.
+**Fast-paths for iteration speed.** The pre-push hook classifies the diff
+since the tracking upstream (or `origin/main` for brand-new branches). When
+every file changed is documentation-shape (`docs/**`, `.github/**`,
+`*.md`, `*.yml` / `*.yaml`, `include/*.h`, root dotfiles / `LICENSE` /
+`NOTICE` / `README` / `CONTRIBUTING` / `CHANGELOG`), the clippy + test
+legs are **skipped**; the compliance scanner still runs. Any `.rs`,
+`Cargo.toml`, `Cargo.lock`, `scripts/`, `tools/`, `tests/`,
+`integrations/`, `.githooks/` change or an unrecognised extension puts the
+hook back on the full path. Force the full path regardless of diff shape
+with `VOKRA_HOOK_DEEP=1`. Skip everything (including the compliance
+scanner) with `git push --no-verify` or `VOKRA_SKIP_HOOKS=1`. The
+classifier lives in `.githooks/lib-fastpath.sh` and its behaviour is
+pinned by `scripts/test-pre-push-fastpath.sh` (17 cases).
+
+Uninstall with `git config --unset core.hooksPath`.
 
 `scripts/check-zero-deps.sh` enforces the **zero-external-dependency**
 invariant (NFR-DS-02): `Cargo.lock` must contain only first-party `vokra-*`
