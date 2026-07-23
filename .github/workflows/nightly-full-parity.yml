@@ -221,7 +221,7 @@ jobs:
 
       - name: Checkout
         if: steps.gate.outputs.should_run == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Set up Rust toolchain (stable)
         if: steps.gate.outputs.should_run == 'true'
@@ -405,7 +405,7 @@ jobs:
       # 全体を貼れない)。
       - name: Upload parity log (failure triage)
         if: always() && steps.gate.outputs.should_run == 'true' && steps.gguf.outputs.should_test == 'true' && steps.parity.outputs.log_path != ''
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: nightly-full-parity-${{ matrix.leg }}-log
           path: ${{ steps.parity.outputs.log_path }}

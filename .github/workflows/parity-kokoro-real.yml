@@ -19,7 +19,7 @@
 #     shim scripts). PRs that don't touch those paths never trigger this job.
 #
 #   * HF fetch is pinned by SHA (env.KOKORO_REVISION) and cached
-#     (actions/cache@v5 on HF_HOME). The pin catches an upstream re-upload;
+#     (actions/cache@v6 on HF_HOME). The pin catches an upstream re-upload;
 #     an anchor-size mismatch on kokoro-v1_0.pth surfaces as a WARNING (not a
 #     FAIL) so a benign re-upload doesn't spuriously break the job.
 #
@@ -142,18 +142,18 @@ jobs:
     # on a warm cache; the 60 min cap catches a truly stuck run.
     timeout-minutes: 60
     env:
-      # HF cache lives under $GITHUB_WORKSPACE so actions/cache@v5 keys stay
+      # HF cache lives under $GITHUB_WORKSPACE so actions/cache@v6 keys stay
       # workspace-relative and stable across jobs. `HF_HUB_CACHE` is checked
       # by newer huggingface_hub versions, `HF_HOME` by older ones — set both.
       HF_HOME: ${{ github.workspace }}/.hf-cache
       HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Python 3.12 — the parity-venv target the local repo uses (3.11 also
       # works but 3.12 is CI's default modern LTS).
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -168,7 +168,7 @@ jobs:
       # tag ("v1") so a future scheme change (e.g. adding `samples/*.wav` to
       # the download) can bump the tag and invalidate the cache cleanly.
       - name: Cache Kokoro-82M HF checkpoint
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ env.HF_HOME }}
           key: kokoro-hf-${{ env.KOKORO_REVISION }}-v1
@@ -672,7 +672,7 @@ jobs:
       # GGUF alone is ~330 MB; artifact quota is 500 MB/single, 10 GB/workflow.
       - name: Upload parity artifacts
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: kokoro-parity-artifacts
           path: |

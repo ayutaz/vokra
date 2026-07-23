@@ -123,7 +123,7 @@ jobs:
       TARGET_TRIPLE: ${{ matrix.target }}
       RUST_BACKTRACE: '1'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -221,7 +221,7 @@ jobs:
           ls -la "$F"
 
       - name: Upload cdylib artifact (${{ matrix.target }})
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: vokra-godot-${{ matrix.target }}
           path: integrations/vokra-godot/pkg/lib/${{ matrix.target }}/
@@ -247,13 +247,13 @@ jobs:
     needs: crossbuild
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Downloading all matrix artifacts populates each per-target subdir
       # under a common root; we then re-run build-godot-gdextension.sh in
       # --no-build --pack mode to lay out the AssetLib tree.
       - name: Download per-target cdylibs from crossbuild matrix
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: vokra-godot-*
           path: staging/
@@ -308,7 +308,7 @@ jobs:
         run: bash scripts/build-godot-gdextension.sh --no-build --pack
 
       - name: Upload AssetLib package artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: Vokra-godot-assetlib
           path: |

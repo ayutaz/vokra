@@ -61,7 +61,7 @@ jobs:
     # for a slow runner without pretending success on a hung build.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install Rust toolchain (stable + llvm-tools-preview)
         # llvm-tools-preview ships llvm-profdata / llvm-cov which cargo-llvm-cov
         # invokes. cargo-llvm-cov bundles llvm-tools when the component is

@@ -88,7 +88,7 @@ jobs:
             feature: qnn
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -144,7 +144,7 @@ jobs:
     name: build-target-vulkan-only
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -213,7 +213,7 @@ jobs:
             scripts/compliance/check-cpu-vulkan-only-no-nvidia.sh \
             docs/handoff/m4-15.md
       - name: Upload CPU + Vulkan-only artifact (cdylib + legal files + SBOM)
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: vokra-cpu-vulkan-only-linux
           path: dist/cpu-vulkan-only/
@@ -245,7 +245,7 @@ jobs:
     name: riscv-cross-build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: riscv64gc-unknown-linux-gnu
@@ -392,7 +392,7 @@ jobs:
     continue-on-error: true
     runs-on: windows-11-arm
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           # Pin the target explicitly so this exercises aarch64-pc-windows-msvc
@@ -434,7 +434,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Server-tier differential (runtime-detect gated, --nocapture logs skips)
@@ -533,7 +533,7 @@ jobs:
     name: bench-regression
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build vokra-cli (release)
@@ -637,7 +637,7 @@ jobs:
     name: server-deployment
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl

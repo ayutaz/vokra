@@ -43,6 +43,24 @@ updates:
       - "ayutaz"
     commit-message:
       prefix: "chore(deps)"
+    # ignore:
+    #   下記は「単なる version tag ではない」pin で、dependabot に自動 bump
+    #   させると CI が false-pass 化 (msrv) or hard fail (cibuildwheel) する。
+    #
+    #   - dtolnay/rust-toolchain@1.89
+    #       MSRV pin。2026-07-23 の PR #14 で `@1.89` → `@1.100` に誤 bump
+    #       されて msrv job が事実上 stable check になっていた実績。
+    #       MSRV 変更は docs/abi-changelog.md + X-08-T32 の owner 判断で手動更新。
+    #
+    #   - pypa/cibuildwheel@v2.23.4
+    #       v3.0.0 が「hybrid pure-python wheel = pre-built native lib inject」
+    #       スキームを hard reject する破壊的変更を導入 (Vokra はまさに
+    #       hatchling + `src/vokra/_lib/` に cdylib inject する hybrid スキーム
+    #       ゆえ v3+ 移行は CIBW_REPAIR_WHEEL_COMMAND 追加設計が必要)。
+    #       詳細は .github/workflows/ci.yml:660-676 のコメント。
+    ignore:
+      - dependency-name: "dtolnay/rust-toolchain"
+      - dependency-name: "pypa/cibuildwheel"
     groups:
       production-actions:
         patterns:

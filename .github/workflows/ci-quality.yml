@@ -56,7 +56,7 @@ jobs:
     name: repo-hygiene
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Fixture EOL pins (CRLF hash breakage — regressed once, 9cfa49a)
         # windows-latest checks out with core.autocrlf=true, so any hashed
         # fixture without an explicit .gitattributes eol pin arrives with
@@ -94,7 +94,7 @@ jobs:
     name: unity-capi-lints
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: IL2CPP callback pattern (static / Preserve / rooted delegate)
         run: bash scripts/check-callback-pattern.sh
       - name: DllImport routes through NativeMethods.Lib (iOS __Internal switch)
@@ -115,7 +115,7 @@ jobs:
     name: capi-smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install cbindgen
@@ -147,7 +147,13 @@ jobs:
     name: msrv
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
+      # NOTE: `dtolnay/rust-toolchain@1.89` は **MSRV pin** = 一般的な action
+      # の version tag ではない。dependabot は これを version bump 対象と誤認
+      # しやすい (2026-07-23 の PR #14 で `@1.89` → `@1.100` に誤 bump された
+      # 実績) ので、`.github/dependabot.yml` の ignore rule で
+      # `dtolnay/rust-toolchain` を除外している。ここは MSRV 変更時にのみ
+      # 手で書き換える (docs/abi-changelog.md:318, X-08-T32)。
       - uses: dtolnay/rust-toolchain@1.89
       - uses: Swatinem/rust-cache@v2
       - name: cargo check --workspace on the effective MSRV (1.89)
@@ -172,7 +178,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # abi-diff compares against a baseline revision
       - uses: dtolnay/rust-toolchain@stable
@@ -215,7 +221,7 @@ jobs:
     name: doc-examples
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Self-test the extractor and checkers
         # Bidirectional fixtures: a doc-local pseudo-helper (migration-guide's
         # `read_wav_mono_f32`) must stay GREEN, and injected drift must go RED.
@@ -249,7 +255,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo doc build + warning ratchet (NOT a zero-warning gate)
@@ -281,7 +287,7 @@ jobs:
     name: fa-v3-confinement (advisory)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: FA v3 symbols confined to vokra-backend-cuda
         run: ./scripts/check-fa-v3-confinement.sh
 
@@ -301,9 +307,9 @@ jobs:
     name: python-license-audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Create isolated venv and install binding + audit tool
@@ -412,7 +418,7 @@ jobs:
             run_tests: false
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.triple }}
@@ -539,7 +545,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-audit
@@ -595,7 +601,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Spellcheck (typos)
         # `crate-ci/typos@v1` is a moving major tag; the entrypoint pins the
         # typos CLI itself (currently v1.48.0, verified 2026-07-23 via
@@ -632,7 +638,7 @@ jobs:
     name: vokra-piper-g2p (excluded workspace)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -677,9 +683,9 @@ jobs:
     name: python-parity-oracles
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Create isolated venv and install pytest
@@ -754,9 +760,9 @@ jobs:
     name: shell-self-tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Set up Python 3.12 (for make_model_card.py --self-test)
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Run each script's --self-test (collect ALL failures, do not fail-fast)

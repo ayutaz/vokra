@@ -88,7 +88,7 @@ jobs:
     needs: [validate-tag]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -143,7 +143,7 @@ jobs:
             --output build/ios/vokra-ios-xcframework.spdx.json
 
       - name: Upload workflow artifact (always, for inspection)
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: Vokra-xcframework-release
           path: |
@@ -268,7 +268,7 @@ jobs:
     needs: [validate-tag, ios-xcframework]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -294,7 +294,7 @@ jobs:
           echo "Release version: ${V}"
 
       - name: Download iOS XCFramework artifact from ios-xcframework job
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: Vokra-xcframework-release
           path: build/ios/
@@ -471,7 +471,7 @@ jobs:
           echo "sha256 = $(cat "${TARBALL}.sha256")"
 
       - name: Upload workflow artifact (always, for inspection)
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: Vokra-unity-package-release
           path: |
@@ -556,7 +556,7 @@ jobs:
       contents: write
       id-token: write  # OIDC for PyPI trusted publishing (T17)
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # X-07-T07: the first-party SBOM generator drives `cargo tree`, so this
       # job (previously wheel-only, no Rust) now needs the toolchain. The graph
@@ -622,7 +622,7 @@ jobs:
           python3 -m twine check dist/*.whl
 
       - name: Upload workflow artifact (wheels + SBOM, for inspection)
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: vokra-python-release
           path: |
@@ -727,7 +727,7 @@ jobs:
     needs: [validate-tag]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Compute release version (semver from tag, v-prefix stripped)
         id: version
@@ -880,7 +880,7 @@ jobs:
           echo "sha256 = $(cat "${ZIP}.sha256")"
 
       - name: Upload workflow artifact (always, for inspection)
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: Vokra-godot-assetlib-release
           path: |
@@ -939,7 +939,7 @@ jobs:
     needs: [validate-tag]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -1064,7 +1064,7 @@ jobs:
     needs: [validate-tag]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -1125,7 +1125,7 @@ jobs:
     needs: [validate-tag, crates-io-dry-run]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -1185,7 +1185,7 @@ jobs:
     needs: [validate-tag]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Extract release notes from CHANGELOG (X-07-T15/T16)
         run: |
@@ -1255,7 +1255,7 @@ jobs:
     needs: [validate-tag]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: T32 gate (M4-11-T13 desktop/AAR gap-flow)
         id: gate
@@ -1346,7 +1346,7 @@ jobs:
     needs: [validate-tag]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: T32 gate (M4-11-T13 desktop/AAR gap-flow)
         id: gate

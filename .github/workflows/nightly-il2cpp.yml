@@ -78,7 +78,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -109,7 +109,7 @@ jobs:
           echo "m_EditorVersion: 2022.3.40f1" > "$PROJ/ProjectSettings/ProjectVersion.txt"
 
       - name: Cache Unity Library folder
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: nightly-consumer/Library
           key: unity-library-il2cpp-${{ hashFiles('nightly-consumer/Packages/manifest.json') }}
@@ -169,7 +169,7 @@ jobs:
 
       - name: Upload player log
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: nightly-il2cpp-player-log
           path: ${{ runner.temp }}/vokra-nightly/
