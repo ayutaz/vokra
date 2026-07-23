@@ -120,6 +120,14 @@ pub mod mfcc;
 // `scripts/compliance/check-encodec-exclusion.sh` release-side script).
 pub mod mimi_rvq;
 // -------------------------------------------------------------------------
+// ---- SoTA plan Phase 1-2 NSF (HiFTNet source-filter core) ---------------
+// Neural Source Filter (SineGen + SourceModuleHnNSF) — verbatim port of the
+// upstream CosyVoice implementation (`cosyvoice/hifigan/generator.py` L163-
+// 368). Consumed by the HiFTNet vocoder; multiple published models feed the
+// same layer (CosyVoice2 / CosyVoice3 / Chatterbox family), so this lives in
+// `vokra-ops` rather than a per-model module.
+pub mod nsf;
+// -------------------------------------------------------------------------
 pub mod preprocess;
 pub mod prosody;
 pub mod resample;
