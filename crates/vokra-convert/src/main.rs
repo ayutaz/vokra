@@ -593,6 +593,96 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
     Ok(())
 }
 
+/// `vokra-convert restamp` — rewrite an existing GGUF's provenance metadata
+/// without re-materialising tensors (the low-memory publish path).
+fn run_restamp(args: &[String]) -> ExitCode {
+    const USAGE: &str = "\
+USAGE:
+    vokra-convert restamp --input <in.gguf> --output <out.gguf> \\
+        --license <spdx> [--model-id <id>] [--source <text>] [--attribution <text>]
+
+Rewrites vokra.provenance.* on an existing GGUF, copying tensors verbatim (peak
+memory = one tensor). For a large artifact that was converted before provenance
+stamping, or is too big to re-convert on this machine.
+";
+    let mut input = None;
+    let mut output = None;
+    let mut license = None;
+    let mut model_id = None;
+    let mut source = None;
+    let mut attribution = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            "--input" => {
+                input = args.get(i + 1).map(PathBuf::from);
+                i += 2;
+            }
+            "--output" => {
+                output = args.get(i + 1).map(PathBuf::from);
+                i += 2;
+            }
+            "--license" => {
+                license = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--model-id" => {
+                model_id = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--source" => {
+                source = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--attribution" => {
+                attribution = args.get(i + 1).cloned();
+                i += 2;
+            }
+            other => {
+                eprintln!("error: unexpected argument `{other}`\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let (Some(input), Some(output), Some(license)) = (input, output, license) else {
+        eprintln!("error: --input, --output and --license are required\n\n{USAGE}");
+        return ExitCode::from(2);
+    };
+    // model_id / source default to advisory placeholders if omitted.
+    let model_id = model_id.unwrap_or_else(|| "restamped".to_owned());
+    let source = source.unwrap_or_else(|| format!("restamped GGUF (licence {license})"));
+
+    match vokra_convert::restamp_provenance(
+        &input,
+        &output,
+        &license,
+        &model_id,
+        &source,
+        attribution.as_deref(),
+    ) {
+        Ok(summary) => {
+            println!(
+                "restamped: {} tensors, {} metadata keys -> {}",
+                summary.tensor_count,
+                summary.metadata_count,
+                output.display()
+            );
+            for note in &summary.notes {
+                println!("  note: {note}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,95 +859,5 @@ mod tests {
             ]))),
             "--output is required"
         );
-    }
-}
-
-/// `vokra-convert restamp` — rewrite an existing GGUF's provenance metadata
-/// without re-materialising tensors (the low-memory publish path).
-fn run_restamp(args: &[String]) -> ExitCode {
-    const USAGE: &str = "\
-USAGE:
-    vokra-convert restamp --input <in.gguf> --output <out.gguf> \\
-        --license <spdx> [--model-id <id>] [--source <text>] [--attribution <text>]
-
-Rewrites vokra.provenance.* on an existing GGUF, copying tensors verbatim (peak
-memory = one tensor). For a large artifact that was converted before provenance
-stamping, or is too big to re-convert on this machine.
-";
-    let mut input = None;
-    let mut output = None;
-    let mut license = None;
-    let mut model_id = None;
-    let mut source = None;
-    let mut attribution = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "-h" | "--help" => {
-                print!("{USAGE}");
-                return ExitCode::SUCCESS;
-            }
-            "--input" => {
-                input = args.get(i + 1).map(PathBuf::from);
-                i += 2;
-            }
-            "--output" => {
-                output = args.get(i + 1).map(PathBuf::from);
-                i += 2;
-            }
-            "--license" => {
-                license = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--model-id" => {
-                model_id = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--source" => {
-                source = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--attribution" => {
-                attribution = args.get(i + 1).cloned();
-                i += 2;
-            }
-            other => {
-                eprintln!("error: unexpected argument `{other}`\n\n{USAGE}");
-                return ExitCode::from(2);
-            }
-        }
-    }
-    let (Some(input), Some(output), Some(license)) = (input, output, license) else {
-        eprintln!("error: --input, --output and --license are required\n\n{USAGE}");
-        return ExitCode::from(2);
-    };
-    // model_id / source default to advisory placeholders if omitted.
-    let model_id = model_id.unwrap_or_else(|| "restamped".to_owned());
-    let source = source.unwrap_or_else(|| format!("restamped GGUF (licence {license})"));
-
-    match vokra_convert::restamp_provenance(
-        &input,
-        &output,
-        &license,
-        &model_id,
-        &source,
-        attribution.as_deref(),
-    ) {
-        Ok(summary) => {
-            println!(
-                "restamped: {} tensors, {} metadata keys -> {}",
-                summary.tensor_count,
-                summary.metadata_count,
-                output.display()
-            );
-            for note in &summary.notes {
-                println!("  note: {note}");
-            }
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
-        }
     }
 }

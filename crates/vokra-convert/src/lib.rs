@@ -1251,66 +1251,16 @@ pub fn convert_voxtral_file_with_adapter_config_quantized(
     })
 }
 
-#[cfg(test)]
-mod compliance_conduit_tests {
-    //! The minimal M2-13 conduit (FR-CP-05): a converter stamps a GGUF's weight
-    //! license class via [`vokra_core::stamp_provenance`], and the runtime's
-    //! research-flag gate reads it back. Exercised at the `GgufBuilder` level —
-    //! exactly what the `convert*` routines assemble internally — so no existing
-    //! converter output (and its metadata-count assertions) is disturbed.
-    use vokra_core::gguf::{GgufBuilder, GgufFile, chunks};
-    use vokra_core::{CompliancePolicy, LicenseClass, check_weight_license, resolve_license_class};
-
-    #[test]
-    fn converter_stamps_permissive_and_runtime_admits_it() {
-        // What a Whisper/piper converter would do (MIT = permissive).
-        let mut b = GgufBuilder::new();
-        b.add_string(chunks::KEY_MODEL_ARCH, "whisper");
-        vokra_core::stamp_provenance(
-            &mut b,
-            LicenseClass::Permissive,
-            "MIT",
-            Some("whisper-base"),
-            Some("openai/whisper-base"),
-        );
-        let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
-        assert_eq!(resolve_license_class(&file).class, LicenseClass::Permissive);
-        assert!(check_weight_license(&file, &CompliancePolicy::strict()).is_ok());
-    }
-
-    #[test]
-    fn converter_stamps_noncommercial_and_runtime_gates_it() {
-        // A future F5-TTS / EnCodec converter stamping CC-BY-NC makes the
-        // runtime refuse the weight without a research flag.
-        let mut b = GgufBuilder::new();
-        vokra_core::stamp_provenance(
-            &mut b,
-            LicenseClass::NonCommercial,
-            "CC-BY-NC-4.0",
-            Some("encodec"),
-            None,
-        );
-        let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
-        assert!(check_weight_license(&file, &CompliancePolicy::strict()).is_err());
-    }
-}
-
-/// Rewrites a GGUF's `vokra.provenance.*` metadata **without re-materialising
-/// tensors** — the low-memory path for publishing a large artifact that was
-/// converted before provenance stamping existed.
+/// Rewrite an existing GGUF's provenance metadata without re-materialising its
+/// tensor payloads.
 ///
-/// A GGUF built by an older converter (or a large one like Voxtral whose
-/// re-conversion needs more RAM than the machine has) carries valid tensors but
-/// no `vokra.provenance.weight_license`, so the publish gate refuses it. Full
-/// re-conversion would fix that but reads the whole checkpoint into memory; this
-/// instead opens the existing GGUF through the mmap loader, copies every tensor
-/// payload straight from the mapping to the output one at a time
-/// ([`GgufStreamWriter`]), and injects the provenance keys into the metadata.
-/// Peak memory is one tensor payload, not the whole file.
-///
-/// The tensor bytes are **identical** to the input — only metadata changes. The
-/// writer additionally re-stamps `vokra.schema.*` (its universal behaviour), so
-/// the output is also marked with the current schema generation.
+/// This is the low-memory publish path used when a converted artifact was
+/// stamped with an incomplete provenance group (or none), and re-running the
+/// full converter is impractical because the checkpoint no longer fits in this
+/// host's RAM. The input is opened via [`vokra_mmap`] so tensor bytes are
+/// fault-in-only, and every payload is streamed straight into a new file via
+/// [`GgufStreamWriter`] — peak footprint stays at roughly one tensor plus
+/// mapped-page cost, not the whole file.
 ///
 /// `license` is the raw SPDX id (class re-derived from it); `model_id` and
 /// `source` are advisory provenance strings; `attribution`, when `Some`, sets
@@ -1405,4 +1355,48 @@ pub fn restamp_provenance(
             class.as_str()
         )],
     })
+}
+
+#[cfg(test)]
+mod compliance_conduit_tests {
+    //! The minimal M2-13 conduit (FR-CP-05): a converter stamps a GGUF's weight
+    //! license class via [`vokra_core::stamp_provenance`], and the runtime's
+    //! research-flag gate reads it back. Exercised at the `GgufBuilder` level —
+    //! exactly what the `convert*` routines assemble internally — so no existing
+    //! converter output (and its metadata-count assertions) is disturbed.
+    use vokra_core::gguf::{GgufBuilder, GgufFile, chunks};
+    use vokra_core::{CompliancePolicy, LicenseClass, check_weight_license, resolve_license_class};
+
+    #[test]
+    fn converter_stamps_permissive_and_runtime_admits_it() {
+        // What a Whisper/piper converter would do (MIT = permissive).
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, "whisper");
+        vokra_core::stamp_provenance(
+            &mut b,
+            LicenseClass::Permissive,
+            "MIT",
+            Some("whisper-base"),
+            Some("openai/whisper-base"),
+        );
+        let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+        assert_eq!(resolve_license_class(&file).class, LicenseClass::Permissive);
+        assert!(check_weight_license(&file, &CompliancePolicy::strict()).is_ok());
+    }
+
+    #[test]
+    fn converter_stamps_noncommercial_and_runtime_gates_it() {
+        // A future F5-TTS / EnCodec converter stamping CC-BY-NC makes the
+        // runtime refuse the weight without a research flag.
+        let mut b = GgufBuilder::new();
+        vokra_core::stamp_provenance(
+            &mut b,
+            LicenseClass::NonCommercial,
+            "CC-BY-NC-4.0",
+            Some("encodec"),
+            None,
+        );
+        let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+        assert!(check_weight_license(&file, &CompliancePolicy::strict()).is_err());
+    }
 }
