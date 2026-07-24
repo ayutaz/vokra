@@ -46,6 +46,17 @@ pub mod canary;
 pub mod codec;
 pub mod compute;
 pub mod cosyvoice2;
+// SoTA plan Phase 3 (2026-07-24): FunAudioLLM Fun-CosyVoice3-0.5B TTS
+// (apache-2.0). Same architecture as CosyVoice2 — Qwen2 LLM backbone +
+// chunk-aware Flow Matching CFM + **HiFTNet** vocoder (arXiv:2505.17589
+// + `cosyvoice/hifigan/generator.py` `HiFTGenerator` — SoTA plan §1(a)
+// 訂正 2026-07-22). The Phase 3 refinements (Dual-Resolution Speech
+// Representations + Core-Cocktail Training) are training-side and leave
+// the runtime forward operators byte-identical to CosyVoice2. This
+// module re-exports the CosyVoice2 HiFTChain seam directly and delegates
+// its follow-up wave to the CosyVoice2 forward path — a very cheap
+// follow-on that adds no new op / kernel.
+pub mod cosyvoice3;
 pub mod csm;
 // SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B TTS
 // (Apache 2.0). Text encoder + delayed-AR decoder over DAC 44.1 kHz RVQ

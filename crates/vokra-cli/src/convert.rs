@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, PolicyPreset, VoxtralConfig, convert_cosyvoice2_file, convert_dac_file,
-    convert_file, convert_file_quantized, convert_file_with_policy, convert_kokoro_file,
-    convert_piper_plus_file, convert_voxtral_file_quantized,
+    ModelKind, PolicyPreset, VoxtralConfig, convert_cosyvoice2_file, convert_cosyvoice3_file,
+    convert_dac_file, convert_file, convert_file_quantized, convert_file_with_policy,
+    convert_kokoro_file, convert_piper_plus_file, convert_voxtral_file_quantized,
     convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
@@ -26,6 +26,7 @@ USAGE:
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
+    vokra-cli convert --model cosyvoice3 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model voxtral --input <ckpt.safetensors | model.safetensors.index.json> \
                       [--config <config.json>] [--adapter-config <adapter.json>] \
@@ -33,7 +34,7 @@ USAGE:
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
-                              campplus | kokoro | cosyvoice2 | voxtral | mimi | dac |
+                              campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
                               parakeet-tdt | parakeet-ctc | canary | omniasr-ctc |
                               distil-whisper
@@ -96,6 +97,20 @@ OPTIONS:
                               directly; every hparam is transcribed
                               verbatim from config.json; weight license =
                               MIT permissive)
+                              (cosyvoice3: FunAudioLLM Fun-CosyVoice3-0.5B-2512
+                              — same architecture as CosyVoice2 (Qwen2 LLM
+                              backbone + chunk-aware Flow Matching CFM +
+                              HiFTNet vocoder — arXiv:2505.17589 + SoTA
+                              plan §1(a) 訂正 2026-07-22); Phase 3
+                              refinements (DRSR + Core-Cocktail) are
+                              training-side and leave the runtime operators
+                              byte-identical to CosyVoice2; `--config`
+                              accepts the upstream HF config.json (Qwen2
+                              schema — head split + rope / eps / n_ctx
+                              are not shape-derivable; without it the
+                              runtime refuses the LLM bind loudly per
+                              FR-EX-08); weight license = apache-2.0
+                              permissive)
     --input <path>            upstream checkpoint file. For voxtral, a
                               `*.index.json` path reads every shard listed in
                               its weight_map (the raw sharded BF16 release)
@@ -188,7 +203,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                     format!(
                         "unknown model `{v}` \
                          (whisper [alias: whisper-base] | silero-vad | piper-plus | \
-                         campplus | kokoro | cosyvoice2 | voxtral | mimi | dac | \
+                         campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac | \
                          csm | moshi | denoise | dia | zonos | kyutai-stt | \
                          parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
                          distil-whisper)"
@@ -410,6 +425,24 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             // runtime refuses the LLM bind (loud converter note).
             convert_cosyvoice2_file(&p.input, p.config.as_deref(), &p.output)
         }
+        ModelKind::CosyVoice3 => {
+            // Quantization surface is whisper-only; reject rather than
+            // silently ignoring (same posture as CosyVoice2).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            // --config = upstream HF config.json (Qwen2 schema). Same
+            // requirement as CosyVoice2: without it only the shape-derived
+            // hparams are written and the runtime refuses the LLM bind
+            // (loud converter note). SoTA plan Phase 3: the Fun-CosyVoice3
+            // pipeline (Qwen2 LLM → chunk-aware CFM → HiFTNet) is
+            // topologically identical to CosyVoice2, so the CosyVoice2
+            // shape-derivation walk is reused verbatim under the covers.
+            convert_cosyvoice3_file(&p.input, p.config.as_deref(), &p.output)
+        }
         ModelKind::Dac => {
             // M4-04 T11: DAC needs the prepare-script config side-car (the
             // shape facts live in the upstream .pth metadata the safetensors
@@ -544,6 +577,50 @@ mod tests {
     }
 
     #[test]
+    fn parses_cosyvoice3_with_config() {
+        // Config-driven Fun-CosyVoice3 path: parallel to CosyVoice2 (Qwen2
+        // schema config), only the arch label differs. The plain
+        // `--input`-only path still converts with shape-derived hparams
+        // only (and the runtime refuses the LLM bind).
+        let p = parse_args(&args(&[
+            "--model",
+            "cosyvoice3",
+            "--input",
+            "llm.safetensors",
+            "--config",
+            "config.json",
+            "--output",
+            "o.gguf",
+        ]))
+        .expect("valid");
+        assert_eq!(p.model, ModelKind::CosyVoice3);
+        assert_eq!(p.config, Some(PathBuf::from("config.json")));
+    }
+
+    #[test]
+    fn parses_fun_cosyvoice3_variant_ids() {
+        // Every accepted spelling from `ModelKind::from_arg` parses via
+        // the CLI front-end (aliases the HF release + fairseq / modelscope
+        // variants).
+        for spelling in [
+            "cosyvoice3",
+            "cosyvoice-3",
+            "fun-cosyvoice3",
+            "fun-cosyvoice-3",
+            "fun-cosyvoice3-0.5b",
+            "fun-cosyvoice3-0.5b-2512",
+            "fun-cosyvoice3-0_5b",
+            "fun-cosyvoice3-0_5b-2512",
+        ] {
+            let p = parse_args(&args(&[
+                "--model", spelling, "--input", "i", "--output", "o",
+            ]))
+            .unwrap_or_else(|e| panic!("--model {spelling} should parse: {e}"));
+            assert_eq!(p.model, ModelKind::CosyVoice3, "--model {spelling}");
+        }
+    }
+
+    #[test]
     fn parses_cosyvoice2_with_config() {
         // Config-driven CosyVoice2 path (P1 #4 / P2 #7 fix): `--config`
         // carries the upstream HF config.json (Qwen2 schema) so the
@@ -579,6 +656,7 @@ mod tests {
             ("campplus", ModelKind::CamPlus),
             ("kokoro", ModelKind::Kokoro),
             ("cosyvoice2", ModelKind::CosyVoice2),
+            ("cosyvoice3", ModelKind::CosyVoice3),
             ("voxtral", ModelKind::Voxtral),
             ("mimi", ModelKind::Mimi),
             ("dac", ModelKind::Dac),
@@ -642,7 +720,7 @@ mod tests {
     /// `vokra_convert`'s `quantization_is_still_refused_for_non_whisper_models`.
     #[test]
     fn quantize_is_still_rejected_for_models_with_a_dedicated_cli_arm() {
-        for m in ["kokoro", "cosyvoice2", "piper-plus", "dac"] {
+        for m in ["kokoro", "cosyvoice2", "cosyvoice3", "piper-plus", "dac"] {
             let e = main(&args(&[
                 "--model",
                 m,

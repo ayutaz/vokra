@@ -18,8 +18,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, convert_cosyvoice2_file, convert_csm_file, convert_dac_file, convert_file_licensed,
-    convert_file_quantized, convert_moshi_file, convert_piper_plus_file, convert_utmos_file,
+    ModelKind, convert_cosyvoice2_file, convert_cosyvoice3_file, convert_csm_file,
+    convert_dac_file, convert_file_licensed, convert_file_quantized, convert_moshi_file,
+    convert_piper_plus_file, convert_utmos_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType};
 
@@ -213,6 +214,20 @@ fn main() -> ExitCode {
             // Optional: without it only the shape-derived hparams are
             // written and the runtime refuses the LLM bind (loud note).
             convert_cosyvoice2_file(&input, config.as_deref(), &output)
+        }
+        ModelKind::CosyVoice3 => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            // SoTA plan Phase 3 (2026-07-24): Fun-CosyVoice3 shares the
+            // CosyVoice2 topology (Qwen2 LLM + chunk-aware CFM + HiFTNet
+            // vocoder), so the shape-derivation walk delegates verbatim.
+            // Same `--config` requirement — the upstream HF config.json
+            // (Qwen2 schema) is optional; without it only the
+            // shape-derived hparams are written and the runtime refuses
+            // the LLM bind (loud note per FR-EX-08).
+            convert_cosyvoice3_file(&input, config.as_deref(), &output)
         }
         _ => match quant {
             Some(q) => convert_file_quantized(model, &input, &output, q),
@@ -469,6 +484,36 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                 .unwrap_or(0);
             let hidden_dim = file
                 .get("vokra.cosyvoice2.arch.hidden_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} sample_rate={sr} n_layer={n_layer} n_head={n_head} \
+                 hidden_dim={hidden_dim}"
+            );
+        }
+        ModelKind::CosyVoice3 => {
+            // SoTA plan Phase 3: shape-parallel to CosyVoice2 but reads
+            // the `vokra.cosyvoice3.*` chunk group (byte-parallel to
+            // CosyVoice2's) so the verify surface reflects the arch
+            // label the operator invoked.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let sr = file
+                .get("vokra.cosyvoice3.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_layer = file
+                .get("vokra.cosyvoice3.arch.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_head = file
+                .get("vokra.cosyvoice3.arch.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let hidden_dim = file
+                .get("vokra.cosyvoice3.arch.hidden_dim")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
             println!(

@@ -371,6 +371,21 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         "campplus" | "cam++" => LicenseClass::Permissive,
         "kokoro" | "kokoro-82m" | "cosyvoice" | "cosyvoice2" | "sesame-csm" | "csm-1b"
         | "voxtral" | "openwakeword" => LicenseClass::Permissive,
+        // SoTA plan Phase 3 (2026-07-24): FunAudioLLM Fun-CosyVoice3-0.5B —
+        // TTS with the CosyVoice2 topology (Qwen2 LLM + chunk-aware CFM +
+        // HiFTNet vocoder). Weight license = **apache-2.0** per the model-
+        // card header (`huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512`,
+        // fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」). Redundant
+        // with the `cosyvoice-` / `cosyvoice3-` family walks below, but the
+        // exact canonical spellings + `fun-` HF-prefix variants are listed
+        // here so an id lookup returns quickly without hitting the prefix
+        // arms.
+        "cosyvoice3"
+        | "fun-cosyvoice3"
+        | "fun-cosyvoice3-0.5b"
+        | "fun-cosyvoice3-0.5b-2512"
+        | "fun-cosyvoice3-0_5b"
+        | "fun-cosyvoice3-0_5b-2512" => LicenseClass::Permissive,
         // Commercial-OK codecs (FR-OP-32): DAC / WavTokenizer / X-Codec 2 = MIT.
         "dac" | "wavtokenizer" | "x-codec-2" | "xcodec2" => LicenseClass::Permissive,
         // SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B — Apache 2.0
@@ -469,6 +484,17 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
             // dash so `cosyvoicexyz` cannot slip through.
             || id.starts_with("cosyvoice2-")
             || id.starts_with("cosyvoice-")
+            // Fun-CosyVoice3 first-party family (apache-2.0 weight — SoTA
+            // plan Phase 3, 2026-07-24): a specific HF variant id like
+            // `fun-cosyvoice3-0.5b-2512` or a future
+            // `fun-cosyvoice3-3b` still resolves permissive. Guarded on
+            // the dash so unrelated ids (`cosyvoice3` prefixed anything
+            // the family doesn't ship) cannot slip through. The
+            // `fun-cosyvoice3-` prefix covers the canonical HF release
+            // spellings; `cosyvoice3-` covers the short-form aliases
+            // (`cosyvoice3-0.5b`).
+            || id.starts_with("fun-cosyvoice3-")
+            || id.starts_with("cosyvoice3-")
             // nari-labs Dia first-party family (Apache 2.0 code + weight —
             // SoTA plan Phase 1-4, 2026-07-24): a specific variant id like
             // `dia-1.6b` or a future `dia-3b` still resolves permissive.
@@ -1006,6 +1032,12 @@ mod tests {
             // + weight, so a variant id like `cosyvoice2-0.5b` still resolves
             // permissive (docs/license-audit.md).
             "cosyvoice2-0.5b",
+            // Fun-CosyVoice3 first-party family (SoTA plan Phase 3): apache-2.0
+            // weight, so canonical + variant ids all resolve permissive via
+            // the `fun-cosyvoice3-` / `cosyvoice3-` prefix walks.
+            "fun-cosyvoice3-0.5b",
+            "fun-cosyvoice3-0.5b-2512",
+            "cosyvoice3-0.5b",
             // Dia family (SoTA Phase 1-4): a future `dia-3b` still resolves
             // permissive without being individually listed.
             "dia-3b",

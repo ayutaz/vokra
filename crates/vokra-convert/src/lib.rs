@@ -90,6 +90,27 @@ pub enum ModelKind {
     /// sizes) are `0`-placeholders pending T02 upstream inspection — the
     /// runtime rejects `0` at load per `CosyVoice2Config::from_gguf`.
     CosyVoice2,
+    /// `FunAudioLLM/Fun-CosyVoice3-0.5B-2512` safetensors checkpoint (SoTA
+    /// plan Phase 3, 2026-07-24). Same architecture as CosyVoice2 — Qwen2
+    /// LLM backbone + chunk-aware Flow Matching CFM + **HiFTNet** vocoder
+    /// (arXiv:2505.17589 + `cosyvoice/hifigan/generator.py` `HiFTGenerator`
+    /// per SoTA plan §1(a) 訂正 2026-07-22). Phase 3 refinements
+    /// (Dual-Resolution Speech Representations + Core-Cocktail Training)
+    /// are training-side and leave the runtime forward operators
+    /// byte-identical to CosyVoice2, so this converter delegates the tensor
+    /// walk + shape derivation to `models::cosyvoice2` and rewrites the
+    /// arch label + model name + provenance + metadata chunk prefix so the
+    /// runtime dispatches to `vokra-models::cosyvoice3`. Weights are bound
+    /// verbatim; the same `--config` (upstream HF Qwen2 `config.json`)
+    /// requirement applies — without it the head split / rope / eps / n_ctx
+    /// stay `0`-absent and the runtime refuses the LLM bind (FR-EX-08).
+    /// Weight license = **apache-2.0** (permissive — no runtime-side
+    /// attribution obligation), transcribed from
+    /// `huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512` model-card
+    /// header. Convert with [`convert_cosyvoice3_file`] to embed the
+    /// Qwen2 tokenizer side-car (`vocab.json` + `merges.txt` picked up
+    /// from the config's directory, mirroring the CosyVoice2 flow).
+    CosyVoice3,
     /// Mistral **Voxtral** safetensors checkpoint (M3-10 foundation): a
     /// Whisper-derived audio encoder plus a Mistral (GQA/RoPE/SwiGLU/RMSNorm)
     /// text decoder for ASR and S2S. The tokenizer and optional side-car
@@ -298,6 +319,14 @@ impl ModelKind {
             "campplus" => Some(Self::CamPlus),
             "kokoro" => Some(Self::Kokoro),
             "cosyvoice2" => Some(Self::CosyVoice2),
+            "cosyvoice3"
+            | "cosyvoice-3"
+            | "fun-cosyvoice3"
+            | "fun-cosyvoice-3"
+            | "fun-cosyvoice3-0.5b"
+            | "fun-cosyvoice3-0.5b-2512"
+            | "fun-cosyvoice3-0_5b"
+            | "fun-cosyvoice3-0_5b-2512" => Some(Self::CosyVoice3),
             "voxtral" => Some(Self::Voxtral),
             "mimi" => Some(Self::Mimi),
             "dac" => Some(Self::Dac),
@@ -343,6 +372,7 @@ impl ModelKind {
             Self::CamPlus => "campplus",
             Self::Kokoro => "kokoro",
             Self::CosyVoice2 => "cosyvoice2",
+            Self::CosyVoice3 => "cosyvoice3",
             Self::Voxtral => "voxtral",
             Self::Mimi => "mimi",
             Self::Dac => "dac",
@@ -561,6 +591,16 @@ pub fn convert_file_licensed(
             // with a `--config` for the full hparam chunk.
             let (builder, report) = models::cosyvoice2::convert(bytes)?;
             (builder, cosyvoice2_notes(&report))
+        }
+        ModelKind::CosyVoice3 => {
+            // SoTA plan Phase 3: same shape-driven walk as CosyVoice2, but
+            // the emitted GGUF carries the CosyVoice3 arch label + hparam
+            // prefix so the runtime dispatches to `vokra-models::cosyvoice3`.
+            // Same `--config` requirement — use `convert_cosyvoice3_file`
+            // for the full hparam chunk (Qwen2 head split + rope / eps /
+            // n_ctx aren't shape-derivable).
+            let (builder, report) = models::cosyvoice3::convert_with_config(bytes, None)?;
+            (builder, cosyvoice3_notes(&report))
         }
         ModelKind::Voxtral => {
             // Foundation path (M3-10): shape-only conversion writes `0`
@@ -1275,6 +1315,124 @@ pub fn convert_cosyvoice2_file(
 
     Ok(ConvertSummary {
         model: ModelKind::CosyVoice2,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
+/// Formats the operator-facing notes for a Fun-CosyVoice3 conversion (shared
+/// by [`convert_file`] and [`convert_cosyvoice3_file`]).
+///
+/// The shape-derivation report is the CosyVoice2 report (delegated),
+/// so the format mirrors [`cosyvoice2_notes`] with the arch label
+/// swapped — an operator reading the log sees the arch they invoked.
+fn cosyvoice3_notes(report: &models::cosyvoice3::CosyVoice3Report) -> Vec<String> {
+    let mut notes = vec![match report.derived {
+        Some(d) => format!(
+            "cosyvoice3: {} float weights written, {} non-float skipped; derived \
+             hparams: vocab={} hidden={} n_layer={} ffn={} n_head={} n_head_kv={} \
+             n_ctx={} attn_bias={}",
+            report.written,
+            report.skipped_non_float,
+            d.vocab_size,
+            d.hidden_dim,
+            d.n_layer,
+            d.ffn_dim,
+            d.n_head,
+            d.n_head_kv,
+            d.n_ctx,
+            d.has_attn_bias,
+        ),
+        None => format!(
+            "cosyvoice3: {} float weights written, {} non-float skipped (no LLM \
+             backbone tensors — numeric hparams are 0-placeholders and the runtime \
+             rejects the LLM bind at load)",
+            report.written, report.skipped_non_float,
+        ),
+    }];
+    notes.push(format!(
+        "cosyvoice3: text tokenizer embedded: {}",
+        report.tokenizer_embedded
+    ));
+    // The delegated CosyVoice2 walk surfaces its notes verbatim under a
+    // `cosyvoice2 warning:` prefix; rewrite the prefix so operators see
+    // the arch label they invoked (the rewrite is the same one the
+    // converter's error paths use).
+    notes.extend(report.notes.iter().map(|n| {
+        format!(
+            "cosyvoice3 warning: {}",
+            n.replace("cosyvoice2", "cosyvoice3")
+        )
+    }));
+    notes
+}
+
+/// Converts a Fun-CosyVoice3 LLM safetensors checkpoint (the upstream
+/// `FunAudioLLM/Fun-CosyVoice3-0.5B-2512` `llm.pt` exported with
+/// verbatim names) into a Vokra GGUF, optionally consuming the upstream
+/// HF `config.json` (Qwen2 schema) via `config`.
+///
+/// Very-cheap follow-on to [`convert_cosyvoice2_file`]: the tensor
+/// walk, shape derivation, Q/K/V bias uniformity check, and Qwen2
+/// tokenizer pick-up (from the config's directory) are all delegated
+/// to the CosyVoice2 converter. This entry point rewrites the arch
+/// label + model name + provenance + metadata chunk prefix so the
+/// runtime dispatches to `vokra-models::cosyvoice3` (SoTA plan
+/// §1(a) 訂正 2026-07-22: CosyVoice3's terminal vocoder is HiFTNet,
+/// same as CosyVoice2 — no runtime op / kernel is duplicated). The
+/// same `--config` requirement applies: without it the head split /
+/// rope / eps / n_ctx stay `0`-absent and the runtime refuses the LLM
+/// bind loudly (FR-EX-08).
+pub fn convert_cosyvoice3_file(
+    input: &Path,
+    config: Option<&Path>,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let config_bytes = match config {
+        Some(p) => Some(std::fs::read(p)?),
+        None => None,
+    };
+    // Qwen2 text-tokenizer side-car: the upstream `vocab.json` +
+    // `merges.txt` live in the same directory as `config.json`
+    // (the CosyVoice2 pick-up pattern). When a `--config` is given, pick
+    // them up from that directory and embed both (no second CLI flag
+    // needed). A partial or absent pair is a loud note in the report,
+    // not a hard error — the conversion still succeeds; the runtime
+    // text path fails loudly instead.
+    let tokenizer_bytes: Option<(Vec<u8>, Vec<u8>)> = config.and_then(|p| {
+        let dir = p.parent().unwrap_or_else(|| Path::new("."));
+        match (
+            std::fs::read(dir.join("vocab.json")),
+            std::fs::read(dir.join("merges.txt")),
+        ) {
+            (Ok(vocab), Ok(merges)) => Some((vocab, merges)),
+            _ => None,
+        }
+    });
+    let tokenizer =
+        tokenizer_bytes
+            .as_ref()
+            .map(|(vocab, merges)| models::cosyvoice2::TokenizerFiles {
+                vocab_json: vocab,
+                merges_txt: merges,
+            });
+    let (builder, report) = models::cosyvoice3::convert_with_config_and_tokenizer(
+        bytes,
+        config_bytes.as_deref(),
+        tokenizer,
+    )?;
+    let notes = cosyvoice3_notes(&report);
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::CosyVoice3,
         tensor_count,
         metadata_count,
         output_bytes: out_bytes.len() as u64,

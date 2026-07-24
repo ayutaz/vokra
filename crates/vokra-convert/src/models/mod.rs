@@ -13,6 +13,15 @@ pub(crate) mod campplus;
 // (attention-decoder search) primitives — no per-model op duplication.
 pub(crate) mod canary;
 pub(crate) mod cosyvoice2;
+// SoTA plan Phase 3 (2026-07-24): FunAudioLLM Fun-CosyVoice3-0.5B (apache-2.0
+// permissive) — same architecture as CosyVoice2 (Qwen2 LLM backbone +
+// chunk-aware CFM + HiFTNet vocoder). The tensor walk / shape derivation /
+// Q/K/V bias uniformity check is delegated to `cosyvoice2::convert_*`; this
+// module rewrites the arch label, model name, provenance, and metadata chunk
+// prefix so the runtime dispatches to `vokra-models::cosyvoice3` (Phase 3
+// refinements DRSR + Core-Cocktail are training-side and leave the runtime
+// operators byte-identical to CosyVoice2). No new op — a very cheap follow-on.
+pub(crate) mod cosyvoice3;
 pub(crate) mod csm;
 pub(crate) mod dac;
 // SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B (Apache 2.0)
