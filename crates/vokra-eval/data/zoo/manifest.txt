@@ -35,10 +35,20 @@
 #   eval_manifest  path to a hyp/ref Manifest (empty = skipped_no_corpus,
 #                  a *distinct* skip from weight-absent). Supplying the corpus
 #                  is out of this WP's scope (owner / M5-15 / X-06).
-#   quality_metric one of: wer  mel_loss+utmos  roundtrip  parity_only
-#                  (must be consistent with task — unknown/mismatched -> error)
+#   quality_metric one of: wer  cer  mel_loss+utmos  roundtrip  parity_only
+#                  (must be consistent with task — unknown/mismatched -> error).
+#                  ASR accepts wer OR cer (JA-ASR-0): wer for EN/multi, cer for
+#                  Japanese and other languages without meaningful whitespace
+#                  tokenisation.
 #   mos_domain     one of: tts_synthesis  codec_streaming  n_a
 #                  (codec_streaming = UTMOS advisory-only, degradation.rs)
+#   language       OPTIONAL, one of: ja  en  zh  ko  multi  ... (any string;
+#                  absent/empty = None). JA-ASR-0: language = ja FORCES
+#                  quality_metric = cer — a JA record tagged wer is a hard
+#                  error because WER on Japanese reads as catastrophic even for
+#                  correct output (whisper-large-v3: WER 55.1 / CER 8.5 on the
+#                  same JSUT audio). Only JA carries a forced-metric rule
+#                  today; extending it to zh/ko is a follow-up (JA-ASR-1..5).
 #   parity_gate    the numerical-parity gate whose green the owner records as
 #                  item-2 evidence (this runner does NOT recompute it)
 #

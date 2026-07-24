@@ -34,7 +34,7 @@
 //! corpora and never touch env vars or the filesystem. [`EnvZooRunEnv`] is the
 //! thin real adapter (`std::env` + `std::fs` + `wav` decode + `Utmos`).
 
-use crate::gate::{QualityGateReport, gate_asr_text, gate_generative_audio};
+use crate::gate::{AsrPrimaryMetric, QualityGateReport, gate_asr_text, gate_generative_audio};
 use crate::metrics::AudioMosMetric;
 use crate::zoo::{GatedSpec, QualityMetric, ZooManifest, ZooModel};
 use vokra_core::{Result, VokraError};
@@ -517,8 +517,33 @@ fn score_item(
                 ground_truth,
                 reference_hyp,
                 hyp,
-            } => gate_asr_text(&model.name, ground_truth, reference_hyp, hyp, threshold),
+            } => gate_asr_text(
+                &model.name,
+                ground_truth,
+                reference_hyp,
+                hyp,
+                threshold,
+                AsrPrimaryMetric::Wer,
+            ),
             CorpusItem::AudioPair { .. } => Err(mismatch(model, "wer", "an AudioPair")),
+        },
+        // JA-ASR-0: CER is the primary metric for languages without meaningful
+        // whitespace tokenisation. Corpus shape is identical to WER (AsrTriple
+        // with ground_truth / reference_hyp / hyp); only the gating axis differs.
+        QualityMetric::Cer => match item {
+            CorpusItem::AsrTriple {
+                ground_truth,
+                reference_hyp,
+                hyp,
+            } => gate_asr_text(
+                &model.name,
+                ground_truth,
+                reference_hyp,
+                hyp,
+                threshold,
+                AsrPrimaryMetric::Cer,
+            ),
+            CorpusItem::AudioPair { .. } => Err(mismatch(model, "cer", "an AudioPair")),
         },
         QualityMetric::MelLossUtmos => match item {
             CorpusItem::AudioPair {
@@ -638,7 +663,9 @@ impl ZooRunEnv for EnvZooRunEnv {
         let mut items = Vec::with_capacity(man.records.len());
         for rec in &man.records {
             let item = match spec.quality_metric {
-                QualityMetric::Wer => CorpusItem::AsrTriple {
+                // WER (EN / multi) and CER (JA-ASR-0) share the same triple:
+                // ground_truth / reference_hyp / hyp. Only the *gate* differs.
+                QualityMetric::Wer | QualityMetric::Cer => CorpusItem::AsrTriple {
                     ground_truth: corpus_field(rec, "ground_truth", spec)?,
                     reference_hyp: corpus_field(rec, "reference_hyp", spec)?,
                     hyp: corpus_field(rec, "hyp", spec)?,
@@ -884,6 +911,121 @@ mod tests {
         let rep = run_dod_item2(&m, &env, DOD_ITEM2_THRESHOLD);
         assert_eq!(rep.failed(), 1);
         assert_eq!(rep.verdict(), Item2RunnerVerdict::MeasuredFailures);
+    }
+
+    // ---- JA-ASR-0: CER-primary routing in the item-2 runner ----------------
+    //
+    // The runner must dispatch `quality_metric = cer` records to the
+    // CER-primary gate, not the WER-primary one. To test this end-to-end
+    // through run_dod_item2 (rather than score_item in isolation) we parse a
+    // one-record manifest with a JA record and drive it through a FakeEnv.
+
+    fn ja_asr_manifest() -> ZooManifest {
+        // A minimal but complete JA record: language = ja + quality_metric =
+        // cer (JA-ASR-0 valid shape). Both fields required by the schema.
+        ZooManifest::parse(
+            "\
+name = kotoba-whisper-v2.0
+family = whisper
+audit_name = kotoba-whisper v2.x
+license = Apache-2.0
+task = asr
+gguf_env = VOKRA_KOTOBA_WHISPER_GGUF
+eval_manifest =
+quality_metric = cer
+mos_domain = n_a
+language = ja
+parity_gate = parity_whisper_ja
+since_version = v0.9
+notes = JA leg
+",
+        )
+        .expect("JA-ASR-0 manifest must parse")
+    }
+
+    #[test]
+    fn ja_asr_dod_runner_gates_on_cer_and_passes_when_cer_is_clean() {
+        // The JA scenario: hyp differs from reference at the *word* level but
+        // not at the *character* level (impossible for real JA, but the point
+        // here is the routing — the runner must not gate on WER for a JA
+        // record). We use "cat dog" swap where CER regression is bounded
+        // below 5% by adding filler characters, and a 1-of-25-char English
+        // regression which reads as: CER 0.04 (<5%) / WER 0.20 (>5%).
+        // Under WER-primary this fails; under CER-primary (JA route) it
+        // passes — this is the JA-ASR-0 property, expressed in the runner.
+        let m = ja_asr_manifest();
+        let env = FakeEnv::new()
+            .with_weight("VOKRA_KOTOBA_WHISPER_GGUF")
+            .with_corpus(
+                "kotoba-whisper-v2.0",
+                Ok(Some(vec![CorpusItem::AsrTriple {
+                    ground_truth: "the quick brown fox jumps".into(),
+                    reference_hyp: "the quick brown fox jumps".into(),
+                    hyp: "the quick brown box jumps".into(), // 1/25 CER, 1/5 WER
+                }])),
+            );
+        let rep = run_dod_item2(&m, &env, DOD_ITEM2_THRESHOLD);
+        let k = rep
+            .outcomes
+            .iter()
+            .find(|o| o.name() == "kotoba-whisper-v2.0")
+            .expect("JA record scored");
+        assert!(
+            k.is_pass(),
+            "JA route must pass on 1/25 CER regression (WER would fail — that is JA-ASR-0's point): {k:?}"
+        );
+        assert_eq!(rep.verdict(), Item2RunnerVerdict::MeasuredGreen);
+    }
+
+    #[test]
+    fn ja_asr_dod_runner_fails_on_a_real_cer_regression() {
+        // Symmetry check: a 1/4 CER regression on a JA record must fail.
+        // The route change does not turn the gate off — only the axis moves.
+        let m = ja_asr_manifest();
+        let env = FakeEnv::new()
+            .with_weight("VOKRA_KOTOBA_WHISPER_GGUF")
+            .with_corpus(
+                "kotoba-whisper-v2.0",
+                Ok(Some(vec![CorpusItem::AsrTriple {
+                    ground_truth: "abcd".into(),
+                    reference_hyp: "abcd".into(),
+                    hyp: "abcX".into(), // 1/4 CER = 0.25 > 0.05
+                }])),
+            );
+        let rep = run_dod_item2(&m, &env, DOD_ITEM2_THRESHOLD);
+        assert_eq!(rep.failed(), 1);
+        assert_eq!(rep.verdict(), Item2RunnerVerdict::MeasuredFailures);
+    }
+
+    #[test]
+    fn cer_metric_reports_a_wrong_corpus_shape_loudly() {
+        // FR-EX-08: an AudioPair fed to a CER model errors, same shape as WER.
+        let m = ja_asr_manifest();
+        let env = FakeEnv::new()
+            .with_weight("VOKRA_KOTOBA_WHISPER_GGUF")
+            .with_corpus(
+                "kotoba-whisper-v2.0",
+                Ok(Some(vec![CorpusItem::AudioPair {
+                    reference: tone(16_000),
+                    hypothesis: tone(16_000),
+                    sample_rate: 16_000,
+                }])),
+            );
+        let rep = run_dod_item2(&m, &env, DOD_ITEM2_THRESHOLD);
+        let k = rep
+            .outcomes
+            .iter()
+            .find(|o| o.name() == "kotoba-whisper-v2.0")
+            .unwrap();
+        assert!(matches!(k, RecordOutcome::Errored { .. }), "{k:?}");
+        let msg = match k {
+            RecordOutcome::Errored { message, .. } => message,
+            _ => unreachable!(),
+        };
+        assert!(
+            msg.contains("quality_metric 'cer'") && msg.contains("AudioPair"),
+            "must name the CER metric and the wrong shape: {msg}"
+        );
     }
 
     // ---- corpus-shape mismatch errors loudly (FR-EX-08) --------------------

@@ -85,7 +85,17 @@ impl ZooTask {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QualityMetric {
     /// Word-error-rate increase vs the upstream reference transcript (ASR).
+    /// English / multi-lingual ASR — whitespace tokenisation is meaningful.
     Wer,
+    /// Character-error-rate increase vs the upstream reference transcript
+    /// (ASR). Required for Japanese and other languages without meaningful
+    /// whitespace tokenisation (JA-ASR-0): a JA ASR measured on WER reads as
+    /// catastrophically broken even when the transcription is correct
+    /// (whisper-large-v3: CER 8.5 / WER 55.1 on identical output — the WER is
+    /// an artifact of `split_whitespace`, not a real regression). Both WER
+    /// and CER are always computed and reported; the primary metric only
+    /// decides which one *gates*.
+    Cer,
     /// Log-mel L1 loss + UTMOS decrease vs the upstream reference (TTS / S2S).
     /// The UTMOS half is only computable once a scorer is injected; without
     /// one the runner reports `mel_loss_only` — never a silent UTMOS pass.
@@ -101,13 +111,14 @@ impl QualityMetric {
     fn parse(s: &str, line: usize) -> Result<Self> {
         Ok(match s {
             "wer" => Self::Wer,
+            "cer" => Self::Cer,
             "mel_loss+utmos" => Self::MelLossUtmos,
             "roundtrip" => Self::Roundtrip,
             "parity_only" => Self::ParityOnly,
             other => {
                 return Err(VokraError::InvalidArgument(format!(
                     "zoo manifest (line {line}): unknown quality_metric '{other}' \
-                     (expected one of: wer  mel_loss+utmos  roundtrip  parity_only)"
+                     (expected one of: wer  cer  mel_loss+utmos  roundtrip  parity_only)"
                 )));
             }
         })
@@ -118,6 +129,7 @@ impl QualityMetric {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Wer => "wer",
+            Self::Cer => "cer",
             Self::MelLossUtmos => "mel_loss+utmos",
             Self::Roundtrip => "roundtrip",
             Self::ParityOnly => "parity_only",
@@ -190,6 +202,15 @@ pub struct GatedSpec {
     pub quality_metric: QualityMetric,
     /// UTMOS domain selection (or not-applicable).
     pub mos_domain: ZooMosDomain,
+    /// Language axis (JA-ASR-0). `None` = language-agnostic / multi-lingual
+    /// (the historical default — every pre-JA-ASR-0 record parses unchanged).
+    /// `Some("ja")` = Japanese, and forces `quality_metric = cer` (a JA record
+    /// tagged `wer` is a hard error because WER is meaningless for JA — see
+    /// [`QualityMetric::Cer`]). Other language codes (`"en"`, `"zh"`, `"ko"`,
+    /// `"multi"`, ...) are accepted for future JA-ASR follow-ups but only JA
+    /// currently carries a validation rule; extending the JA-style rule to
+    /// e.g. Chinese is a follow-up (JA-ASR-1..5).
+    pub language: Option<String>,
     /// The numerical-parity gate whose green the owner records as evidence.
     pub parity_gate: String,
 }
@@ -308,7 +329,19 @@ impl ZooManifest {
                     let task = ZooTask::parse(&req("task")?, line)?;
                     let quality_metric = QualityMetric::parse(&req("quality_metric")?, line)?;
                     let mos_domain = ZooMosDomain::parse(&req("mos_domain")?, line)?;
-                    validate_task_metric(task, quality_metric, mos_domain, line)?;
+                    // language is optional — absent/empty = None (backward
+                    // compatible with every pre-JA-ASR-0 record).
+                    let language = match rec.get("language").map(str::trim) {
+                        Some(v) if !v.is_empty() => Some(v.to_owned()),
+                        _ => None,
+                    };
+                    validate_task_metric(
+                        task,
+                        quality_metric,
+                        mos_domain,
+                        language.as_deref(),
+                        line,
+                    )?;
                     ZooKind::Gated(GatedSpec {
                         task,
                         gguf_env: req("gguf_env")?,
@@ -316,6 +349,7 @@ impl ZooManifest {
                         eval_manifest: rec.get("eval_manifest").unwrap_or("").trim().to_owned(),
                         quality_metric,
                         mos_domain,
+                        language,
                         parity_gate: req("parity_gate")?,
                     })
                 }
@@ -357,29 +391,51 @@ impl ZooManifest {
     }
 }
 
-/// Enforces the task↔metric↔domain consistency a runner relies on to dispatch.
+/// Enforces the task↔metric↔domain↔language consistency a runner relies on
+/// to dispatch.
 ///
 /// A mismatch (an `asr` record tagged `mel_loss+utmos`, a TTS record tagged
-/// `n_a` domain, …) is a manifest-authoring bug that would make the runner
-/// score the wrong axis — caught here, loudly, rather than producing a
-/// confidently-wrong number (FR-EX-08).
+/// `n_a` domain, a `language = ja` record tagged `wer` — the JA-ASR-0 rule,
+/// …) is a manifest-authoring bug that would make the runner score the wrong
+/// axis — caught here, loudly, rather than producing a confidently-wrong
+/// number (FR-EX-08).
 fn validate_task_metric(
     task: ZooTask,
     metric: QualityMetric,
     domain: ZooMosDomain,
+    language: Option<&str>,
     line: usize,
 ) -> Result<()> {
-    let expected = match task {
-        ZooTask::Asr => QualityMetric::Wer,
-        ZooTask::Tts | ZooTask::S2s => QualityMetric::MelLossUtmos,
-        ZooTask::Vad => QualityMetric::ParityOnly,
-        ZooTask::Codec => QualityMetric::Roundtrip,
+    // Which metrics is each task allowed to gate on?
+    let allowed: &[QualityMetric] = match task {
+        // ASR: WER (EN / multi) or CER (JA and others without whitespace
+        // tokenisation) — JA-ASR-0. Historically only WER was accepted; CER
+        // is additive so every pre-JA-ASR-0 record still validates.
+        ZooTask::Asr => &[QualityMetric::Wer, QualityMetric::Cer],
+        ZooTask::Tts | ZooTask::S2s => &[QualityMetric::MelLossUtmos],
+        ZooTask::Vad => &[QualityMetric::ParityOnly],
+        ZooTask::Codec => &[QualityMetric::Roundtrip],
     };
-    if metric != expected {
+    if !allowed.contains(&metric) {
+        let allowed_str: Vec<&str> = allowed.iter().map(|m| m.as_str()).collect();
         return Err(VokraError::InvalidArgument(format!(
-            "zoo manifest (line {line}): task '{}' requires quality_metric '{}', got '{}'",
+            "zoo manifest (line {line}): task '{}' requires quality_metric in [{}], got '{}'",
             task.as_str(),
-            expected.as_str(),
+            allowed_str.join(", "),
+            metric.as_str()
+        )));
+    }
+    // JA-ASR-0: Japanese ASR MUST use CER. WER on Japanese would report a
+    // catastrophic-looking number even when the transcription is correct
+    // (whisper-large-v3 measured WER 55.1 / CER 8.5 on identical JSUT output
+    // — the WER is a split_whitespace artifact, not a real regression), and
+    // a JA model whose gate fires on WER would fail every quantized artifact
+    // for the wrong reason. This is a hard schema error, not a runtime warning.
+    if language == Some("ja") && metric != QualityMetric::Cer {
+        return Err(VokraError::InvalidArgument(format!(
+            "zoo manifest (line {line}): language = 'ja' requires quality_metric = 'cer' \
+             (JA-ASR-0 — Japanese has no meaningful whitespace tokenisation; WER reads as \
+             broken even for correct output. Got quality_metric = '{}')",
             metric.as_str()
         )));
     }
@@ -541,6 +597,10 @@ notes =
         assert_eq!(g.quality_metric, QualityMetric::Wer);
         assert_eq!(g.mos_domain, ZooMosDomain::NotApplicable);
         assert_eq!(g.eval_manifest, "", "empty eval_manifest -> no corpus");
+        assert_eq!(
+            g.language, None,
+            "backward-compat: absent language field parses as None"
+        );
         assert_eq!(w.notes, "hi");
         assert!(matches!(m.models[1].kind, ZooKind::Excluded { .. }));
         assert_eq!(m.gated().count(), 1);
@@ -701,5 +761,157 @@ since_version = v1
 ";
         let err = ZooManifest::parse(text).expect_err("empty excluded_reason must fail");
         assert!(format!("{err}").contains("present but empty"), "{err}");
+    }
+
+    // ---- JA-ASR-0: language axis + CER primary metric ----------------------
+
+    #[test]
+    fn parses_a_japanese_asr_record_with_cer_primary() {
+        // A JA ASR record: language = ja + quality_metric = cer is the
+        // JA-ASR-0 shape; every field parses and validate_task_metric agrees.
+        let text = "\
+name = kotoba-whisper-v2.0
+family = whisper
+audit_name = kotoba-whisper v2.x
+license = Apache-2.0
+task = asr
+gguf_env = VOKRA_KOTOBA_WHISPER_GGUF
+eval_manifest =
+quality_metric = cer
+mos_domain = n_a
+language = ja
+parity_gate = crates/vokra-models parity_whisper.rs (JA leg)
+since_version = v0.9
+notes = JA ASR gated on CER (JA-ASR-0); WER stays informational only.
+";
+        let m = ZooManifest::parse(text).expect("JA record must parse");
+        assert_eq!(m.models.len(), 1);
+        let g = m.models[0].gated().unwrap();
+        assert_eq!(g.task, ZooTask::Asr);
+        assert_eq!(g.quality_metric, QualityMetric::Cer);
+        assert_eq!(g.language.as_deref(), Some("ja"));
+        // CER round-trips through as_str.
+        assert_eq!(QualityMetric::Cer.as_str(), "cer");
+    }
+
+    #[test]
+    fn cer_is_a_valid_metric_for_asr_task() {
+        // ASR now accepts either WER or CER (JA-ASR-0). The historical WER
+        // path still parses (see parses_a_gated_and_an_excluded_record) —
+        // this test asserts the *new* CER path also parses without JA.
+        let text = "\
+name = some-asr
+family = x
+audit_name = X
+license = MIT
+task = asr
+gguf_env = E
+eval_manifest =
+quality_metric = cer
+mos_domain = n_a
+parity_gate = g
+since_version = v1
+";
+        let m = ZooManifest::parse(text).expect("ASR + CER must parse (JA-ASR-0)");
+        assert_eq!(
+            m.models[0].gated().unwrap().quality_metric,
+            QualityMetric::Cer
+        );
+    }
+
+    #[test]
+    fn ja_language_forces_cer_and_rejects_wer_loudly() {
+        // The core JA-ASR-0 validation: language = ja + quality_metric = wer
+        // is a hard error, because WER on Japanese is a split_whitespace
+        // artifact and would fail every quantized artifact for the wrong
+        // reason (whisper-large-v3: WER 55.1 / CER 8.5 on identical output).
+        let text = "\
+name = broken
+family = x
+audit_name = X
+license = MIT
+task = asr
+gguf_env = E
+eval_manifest =
+quality_metric = wer
+mos_domain = n_a
+language = ja
+parity_gate = g
+since_version = v1
+";
+        let err = ZooManifest::parse(text).expect_err("JA + WER must fail");
+        let msg = format!("{err}");
+        assert!(msg.contains("JA-ASR-0"), "must cite the rule: {msg}");
+        assert!(msg.contains("language = 'ja'"), "{msg}");
+        assert!(msg.contains("quality_metric = 'cer'"), "{msg}");
+    }
+
+    #[test]
+    fn empty_language_field_is_treated_as_none() {
+        // `language =` (empty value) must parse as None, same as absent — the
+        // "unspecified" record shape stays writable in both forms.
+        let text = "\
+name = x
+family = x
+audit_name = X
+license = MIT
+task = asr
+gguf_env = E
+eval_manifest =
+quality_metric = wer
+mos_domain = n_a
+language =
+parity_gate = g
+since_version = v1
+";
+        let m = ZooManifest::parse(text).expect("empty language must parse");
+        assert_eq!(m.models[0].gated().unwrap().language, None);
+    }
+
+    #[test]
+    fn non_ja_language_does_not_force_cer_yet() {
+        // Only JA carries a metric-forcing rule today (JA-ASR-0); e.g. an "en"
+        // ASR record with WER must parse. Extending the JA-style forced-CER
+        // rule to other languages (zh/ko/th) is a follow-up (JA-ASR-1..5).
+        let text = "\
+name = en-asr
+family = x
+audit_name = X
+license = MIT
+task = asr
+gguf_env = E
+eval_manifest =
+quality_metric = wer
+mos_domain = n_a
+language = en
+parity_gate = g
+since_version = v1
+";
+        let m = ZooManifest::parse(text).expect("EN + WER stays valid");
+        assert_eq!(m.models[0].gated().unwrap().language.as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn unknown_cer_still_rejects_non_asr_tasks() {
+        // A TTS record tagged CER is nonsense — the runner would try to score
+        // an audio artifact on a text metric. CER is only allowed on ASR.
+        let text = "\
+name = x
+family = x
+audit_name = X
+license = MIT
+task = tts
+gguf_env = E
+quality_metric = cer
+mos_domain = tts_synthesis
+parity_gate = g
+since_version = v1
+";
+        let err = ZooManifest::parse(text).expect_err("TTS + CER must fail");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("requires quality_metric in") && msg.contains("mel_loss+utmos"),
+            "must reject: {msg}"
+        );
     }
 }

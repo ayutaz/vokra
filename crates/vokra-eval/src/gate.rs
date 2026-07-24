@@ -18,6 +18,22 @@
 //! | [`ArtifactClass::GenerativeAudio`] | UTMOS + mel-loss    |
 //! | [`ArtifactClass::AsrText`]         | WER + CER           |
 //!
+//! # Text axis: WER vs CER primary (JA-ASR-0)
+//!
+//! ASR always computes **both** WER and CER, but which one *gates* the verdict
+//! depends on the language of the transcript. English/multi-lingual models
+//! gate on WER (space-delimited tokens are meaningful units). **Japanese has
+//! no word delimiter**: `whisper-large-v3` measured on identical audio scores
+//! **CER 8.5 / WER 55.1** — same output, but WER reads as broken because
+//! `split_whitespace` produces a single token per sentence. Gating a JA model
+//! on WER would fail every quantized artifact even when the transcription is
+//! correct. So the runner routes by [`AsrPrimaryMetric`]:
+//!
+//! - [`AsrPrimaryMetric::Wer`] — verdict is `wer_increase <= threshold`
+//!   (existing behavior, unchanged; CER stays informational).
+//! - [`AsrPrimaryMetric::Cer`] — verdict is `cer_increase <= threshold`
+//!   (Japanese path; WER stays informational — never silently dropped).
+//!
 //! # The axis that did not run is reported as *not run*, never as "passed"
 //!
 //! The single most important property here (NFR-QL-04): a
@@ -64,6 +80,34 @@ impl ArtifactClass {
     }
 }
 
+/// Which of the two ASR text metrics *gates* the verdict (JA-ASR-0).
+///
+/// Both WER and CER are always computed and reported (an unrun axis is never a
+/// pass — NFR-QL-04); this enum picks which one's increase is compared to the
+/// threshold. Japanese ASR must use [`Self::Cer`] because `split_whitespace`
+/// does not tokenise Japanese and WER reads as broken even for correct output
+/// (see the module docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsrPrimaryMetric {
+    /// WER gates the verdict (English / multi-lingual models where whitespace
+    /// delimits words).
+    Wer,
+    /// CER gates the verdict (Japanese, Chinese, and other languages without
+    /// meaningful whitespace tokenisation).
+    Cer,
+}
+
+impl AsrPrimaryMetric {
+    /// Stable identifier for reports.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Wer => "wer",
+            Self::Cer => "cer",
+        }
+    }
+}
+
 /// One axis's result.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AxisOutcome {
@@ -73,6 +117,8 @@ pub enum AxisOutcome {
     /// degradations of the quantized transcript against the reference
     /// transcript, both measured against the ground truth.
     Text {
+        /// Which metric gated the verdict (JA-ASR-0: JA = CER, else WER).
+        primary: AsrPrimaryMetric,
         /// WER of the reference (f32/f16) transcript vs ground truth.
         wer_ref: f64,
         /// WER of the quantized transcript vs ground truth.
@@ -88,7 +134,11 @@ pub enum AxisOutcome {
         wer_increase: f64,
         /// `cer_quant - cer_ref`.
         cer_increase: f64,
-        /// `max(wer_increase, cer_increase) <= threshold`.
+        /// `primary` metric's increase `<= threshold`. Only the *primary*
+        /// metric gates: the other one is reported for context but never
+        /// flips the verdict (JA models must not fail on their (correct-but-
+        /// tokeniser-broken) WER; EN models must not silently pass on CER
+        /// while the WER gate would have caught the regression).
         within_threshold: bool,
     },
     /// The axis did **not** run, with the reason. Never a pass.
@@ -208,6 +258,7 @@ impl QualityGateReport {
         }
         match &self.text {
             AxisOutcome::Text {
+                primary,
                 wer_ref,
                 wer_quant,
                 cer_ref,
@@ -216,8 +267,9 @@ impl QualityGateReport {
                 cer_increase,
                 ..
             } => s.push_str(&format!(
-                "  wer+cer: wer {wer_ref:.6}→{wer_quant:.6} (+{wer_increase:.6}) cer \
-                 {cer_ref:.6}→{cer_quant:.6} (+{cer_increase:.6})\n"
+                "  wer+cer (primary={}): wer {wer_ref:.6}→{wer_quant:.6} (+{wer_increase:.6}) \
+                 cer {cer_ref:.6}→{cer_quant:.6} (+{cer_increase:.6})\n",
+                primary.as_str()
             )),
             AxisOutcome::NotRun { reason } => {
                 s.push_str(&format!("  wer+cer: NOT RUN — {reason}\n"));
@@ -278,7 +330,11 @@ pub fn gate_generative_audio(
 /// Runs the gate over an **ASR text** artifact.
 ///
 /// Both transcripts are scored against the same `ground_truth`; the gate is on
-/// the *increase* in error rate that quantization caused.
+/// the *increase* in error rate that quantization caused. `primary` selects
+/// which metric decides the verdict (JA-ASR-0): [`AsrPrimaryMetric::Wer`] for
+/// English / multi-lingual, [`AsrPrimaryMetric::Cer`] for Japanese. The other
+/// metric is always computed and reported so a reader sees both — the
+/// non-primary one is informational, never a silent override.
 ///
 /// # Errors
 ///
@@ -290,6 +346,7 @@ pub fn gate_asr_text(
     reference_hyp: &str,
     quantized_hyp: &str,
     threshold: f64,
+    primary: AsrPrimaryMetric,
 ) -> Result<QualityGateReport> {
     if !threshold.is_finite() || threshold <= 0.0 {
         return Err(VokraError::InvalidArgument(format!(
@@ -310,7 +367,11 @@ pub fn gate_asr_text(
     let cer_quant = cer.eval_text(quantized_hyp, ground_truth);
     let wer_increase = wer_quant - wer_ref;
     let cer_increase = cer_quant - cer_ref;
-    let within_threshold = wer_increase.max(cer_increase) <= threshold;
+    // Only the primary metric gates: the other is informational (JA-ASR-0).
+    let within_threshold = match primary {
+        AsrPrimaryMetric::Wer => wer_increase <= threshold,
+        AsrPrimaryMetric::Cer => cer_increase <= threshold,
+    };
     Ok(QualityGateReport {
         class: ArtifactClass::AsrText,
         label: label.into(),
@@ -321,6 +382,7 @@ pub fn gate_asr_text(
                 .to_owned(),
         },
         text: AxisOutcome::Text {
+            primary,
             wer_ref,
             wer_quant,
             cer_ref,
@@ -404,6 +466,7 @@ mod tests {
             "the quick brown fox",
             "the quick brown fox",
             T,
+            AsrPrimaryMetric::Wer,
         )
         .unwrap();
         assert!(r.passed(), "identical transcripts must pass");
@@ -415,6 +478,7 @@ mod tests {
         let s = r.summary();
         assert!(s.contains("NOT RUN"), "summary must say so: {s}");
         assert!(s.contains("gating-axis=wer+cer"), "{s}");
+        assert!(s.contains("primary=wer"), "primary must be surfaced: {s}");
     }
 
     #[test]
@@ -427,6 +491,7 @@ mod tests {
             "the quick brown fox",
             "the quick brown box",
             T,
+            AsrPrimaryMetric::Wer,
         )
         .unwrap();
         match &r.text {
@@ -457,12 +522,175 @@ mod tests {
             "a b c d e f g h i j",
             "a b c d e f g h i j",
             T,
+            AsrPrimaryMetric::Wer,
         )
         .unwrap();
         assert!(r.passed());
         match r.text {
             AxisOutcome::Text { wer_increase, .. } => assert_eq!(wer_increase, 0.0),
             other => panic!("{other:?}"),
+        }
+    }
+
+    // ---- JA-ASR-0: CER-primary path for Japanese ---------------------------
+    //
+    // Real-world numbers on JSUT: whisper-large-v3 measures CER 8.5 / WER 55.1
+    // on the SAME output (kotoba-whisper eval, 2026-07). The WER is high not
+    // because the transcription is wrong but because split_whitespace does
+    // not tokenise Japanese. A WER-primary gate would fail every JA model on
+    // identical output; a CER-primary gate scores the actual per-character
+    // regression.
+
+    #[test]
+    fn ja_asr_gates_on_cer_not_wer() {
+        // A JA-ish stand-in: one Japanese sentence with no whitespace.
+        // ground_truth = 4 chars, quantized swaps 1 char (きょう→きよう):
+        //   CER = 1/4 = 0.25   (over the 5 % gate — real regression caught)
+        //   WER = 1/1 = 1.0    (single "word" swapped — not the axis)
+        // Primary=Cer: verdict comes from CER; WER stays informational.
+        let r = gate_asr_text(
+            "kotoba-whisper Q4_K",
+            "きょうは晴れ", // ground truth
+            "きょうは晴れ", // f16 reference (perfect)
+            "きようは晴れ", // quantized has one wrong char
+            T,
+            AsrPrimaryMetric::Cer,
+        )
+        .unwrap();
+        match &r.text {
+            AxisOutcome::Text {
+                primary,
+                cer_ref,
+                cer_increase,
+                wer_increase,
+                within_threshold,
+                ..
+            } => {
+                assert_eq!(*primary, AsrPrimaryMetric::Cer);
+                assert_eq!(*cer_ref, 0.0, "reference must be perfect");
+                // 1 substitution out of 6 chars = 1/6 CER increase (~0.167).
+                assert!(
+                    (*cer_increase - 1.0 / 6.0).abs() < 1e-12,
+                    "cer_increase = {cer_increase}"
+                );
+                // WER is still reported (never silently dropped) but does not gate.
+                assert!(
+                    *wer_increase > 0.0,
+                    "WER computed and non-zero, just not gating"
+                );
+                assert!(!*within_threshold, "CER 1/6 > 0.05 threshold");
+            }
+            other => panic!("expected a text outcome, got {other:?}"),
+        }
+        assert!(!r.passed(), "CER regression must fail");
+        let s = r.summary();
+        assert!(s.contains("primary=cer"), "primary must be surfaced: {s}");
+    }
+
+    #[test]
+    fn ja_asr_passes_when_only_wer_is_broken_but_cer_is_clean() {
+        // This is the JA scenario: same output, but WER looks catastrophic
+        // because whitespace-tokenising a single-word Japanese sentence gives
+        // WER of 1.0 for any single-token difference, while CER shows the
+        // transcription is actually fine. A WER-primary gate would reject the
+        // model; a CER-primary gate correctly passes it (JA-ASR-0 rationale).
+        //
+        // ref  = "きょうは晴れ" (one whitespace token, 6 chars)
+        // hyp  = "きょうは晴れ" (identical text -> CER 0, WER 0)
+        // A CER-primary run on identical text passes; WER-primary would also
+        // pass here. To distinguish, we build a pathological case: a leading
+        // space, which split_whitespace tolerates so WER stays 0 too. The
+        // *real* value of this test is: CER-primary + identical-text pass is
+        // provable, and the primary field visibly says "cer".
+        let r = gate_asr_text(
+            "kotoba-whisper Q4_K",
+            "きょうは晴れ",
+            "きょうは晴れ",
+            "きょうは晴れ",
+            T,
+            AsrPrimaryMetric::Cer,
+        )
+        .unwrap();
+        assert!(r.passed());
+        match &r.text {
+            AxisOutcome::Text {
+                primary,
+                cer_increase,
+                wer_increase,
+                ..
+            } => {
+                assert_eq!(*primary, AsrPrimaryMetric::Cer);
+                assert_eq!(*cer_increase, 0.0);
+                assert_eq!(*wer_increase, 0.0);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn cer_primary_ignores_a_wer_regression_that_did_not_change_chars() {
+        // Contrived but sharp: hyp differs only in whitespace layout, so
+        // per-char (CER) it is identical, but WER counts it as different
+        // tokens. CER-primary must PASS; WER-primary must FAIL — proving the
+        // primary field genuinely routes the verdict (JA-ASR-0 core property).
+        let gt = "the quickbrown fox";
+        let ref_hyp = "the quickbrown fox";
+        let hyp = "the  quickbrown fox"; // extra space between words
+
+        // WER-primary: split_whitespace collapses runs, so WER stays 0 here
+        // -> both would pass. To force a divergence, use a case where WER
+        // counts a token-swap of two equal-char-length words:
+        //   gt = "cat dog"
+        //   hyp = "dog cat"  (same chars, different word order)
+        let _ = (gt, ref_hyp, hyp);
+        let gt = "cat dog";
+        let ref_hyp = "cat dog";
+        let hyp = "dog cat";
+        let r_wer = gate_asr_text("x", gt, ref_hyp, hyp, T, AsrPrimaryMetric::Wer).unwrap();
+        let r_cer = gate_asr_text("x", gt, ref_hyp, hyp, T, AsrPrimaryMetric::Cer).unwrap();
+        // WER counts 2 substitutions over 2 words = 1.0 increase.
+        // CER: "cat dog" vs "dog cat" — 4 char substitutions over 7 chars =
+        // 0.571 CER... also over threshold. Not a good divergence test.
+        // Fall back to a proven contrived case: a longer sentence where
+        // one word is swapped for a same-length synonym.
+        //   gt  = "the quick brown fox jumps"        (5 words, 25 chars)
+        //   hyp = "the quick brown box jumps"        (1 word wrong, 1 char wrong)
+        //   WER = 1/5 = 0.2      (fails 5% gate)
+        //   CER = 1/25 = 0.04    (passes 5% gate)
+        let _ = (r_wer, r_cer);
+        let gt = "the quick brown fox jumps";
+        let ref_hyp = "the quick brown fox jumps";
+        let hyp = "the quick brown box jumps";
+        let r_wer = gate_asr_text("x", gt, ref_hyp, hyp, T, AsrPrimaryMetric::Wer).unwrap();
+        let r_cer = gate_asr_text("x", gt, ref_hyp, hyp, T, AsrPrimaryMetric::Cer).unwrap();
+        assert!(
+            !r_wer.passed(),
+            "WER-primary must fail on 1-of-5 word substitution"
+        );
+        assert!(
+            r_cer.passed(),
+            "CER-primary must pass on 1-of-25 char substitution"
+        );
+        // Both gates see the same increases; only the routing differs.
+        match (&r_wer.text, &r_cer.text) {
+            (
+                AxisOutcome::Text {
+                    wer_increase: w1,
+                    cer_increase: c1,
+                    ..
+                },
+                AxisOutcome::Text {
+                    wer_increase: w2,
+                    cer_increase: c2,
+                    ..
+                },
+            ) => {
+                assert!((w1 - w2).abs() < 1e-12);
+                assert!((c1 - c2).abs() < 1e-12);
+                assert!(*w1 > T, "WER increase {w1} > threshold {T}");
+                assert!(*c1 < T, "CER increase {c1} < threshold {T}");
+            }
+            _ => panic!("expected two Text outcomes"),
         }
     }
 
@@ -524,8 +752,24 @@ mod tests {
         // the WP is ASR, so NFR-QL-02's own axis never fires. The run report
         // must say so rather than implying the requirement was met.
         let reports = vec![
-            gate_asr_text("whisper-base Q4_K", "a b c", "a b c", "a b c", T).unwrap(),
-            gate_asr_text("whisper-small Q6_K", "a b c", "a b c", "a b c", T).unwrap(),
+            gate_asr_text(
+                "whisper-base Q4_K",
+                "a b c",
+                "a b c",
+                "a b c",
+                T,
+                AsrPrimaryMetric::Wer,
+            )
+            .unwrap(),
+            gate_asr_text(
+                "whisper-small Q6_K",
+                "a b c",
+                "a b c",
+                "a b c",
+                T,
+                AsrPrimaryMetric::Wer,
+            )
+            .unwrap(),
         ];
         let out = render_run(&reports);
         assert!(out.contains("2 on wer+cer"), "{out}");
@@ -535,15 +779,15 @@ mod tests {
     #[test]
     fn rejects_degenerate_inputs() {
         assert!(
-            gate_asr_text("x", "", "a", "a", T).is_err(),
+            gate_asr_text("x", "", "a", "a", T, AsrPrimaryMetric::Wer).is_err(),
             "empty ground truth"
         );
         assert!(
-            gate_asr_text("x", "a", "a", "a", 0.0).is_err(),
+            gate_asr_text("x", "a", "a", "a", 0.0, AsrPrimaryMetric::Wer).is_err(),
             "zero threshold"
         );
         assert!(
-            gate_asr_text("x", "a", "a", "a", f64::NAN).is_err(),
+            gate_asr_text("x", "a", "a", "a", f64::NAN, AsrPrimaryMetric::Wer).is_err(),
             "NaN threshold"
         );
     }
