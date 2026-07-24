@@ -1,0 +1,395 @@
+# tts-dac family real-checkpoint parity CI (SoTA plan Phase 1 flip-the-switch).
+#
+# Runs the env-gated harness `crates/vokra-models/tests/parity_tts_dac.rs`
+# against REAL Vokra GGUFs converted from upstream safetensors for the two
+# DAC-terminal TTS models the SoTA plan Phase 1 pinned:
+#
+#   * dia    — nari-labs/Dia-1.6B            (Apache-2.0, DAC 44.1 kHz)
+#   * zonos  — Zyphra/Zonos-v0.1-transformer (Apache-2.0, DAC 44.1 kHz)
+#
+# Both native modules ship as SCAFFOLDS on this branch (`DiaTts` / `ZonosTts`
+# validate shape and refuse to synthesize off `*Weights::synthesized`,
+# FR-EX-08 — no fabricated audio from synthesized weights). What THIS
+# workflow verifies today, honestly:
+#
+#   1. `vokra-cli convert --model <arch>` succeeds on the real upstream
+#      safetensors (converter-e2e).
+#   2. The emitted GGUF's `vokra.<arch>.*` metadata chunk values match the
+#      primary-source Rust config transcribed from the upstream `config.json`
+#      (`DiaConfig::dia_1_6b` / `ZonosConfig::zonos_v0_1_transformer`).
+#   3. Every advertised tensor has a well-formed shape and every F32
+#      passthrough payload is finite.
+#
+# The flip-the-switch step is the harness's `VOKRA_<ARCH>_REFDIR` gate: it
+# panics loudly (never a fabricated pass) until the scaffold gains a real
+# `<Arch>Tts::from_gguf` + stage-tap accessors. This workflow does NOT set
+# `VOKRA_<ARCH>_REFDIR`; the owner sets it after the follow-up wave lands the
+# real forward. The env var pattern lets us activate stage-tap parity by
+# editing this workflow alone once the forward is ready.
+#
+# Design (parity-kokoro-real.yml / parity-rvq-real.yml discipline):
+#
+#   * Trigger: workflow_dispatch (owner-driven initial dispatch) + weekly
+#     cron + a NARROW pull_request paths filter (only fires on dia/zonos-
+#     adjacent code, plus the converter shims + this workflow itself). PRs
+#     that don't touch these paths never trigger this job.
+#
+#   * NOT a required check. HF flakiness posture is inherited (M2 Phase 3
+#     rule); an owner may promote it after weeks of consecutive greens.
+#
+#   * The cron leg CLEAN-SKIPS unless the repository variable
+#     `VOKRA_TTS_DAC_ENABLE` is `1` (owner sets it once the pinned SHAs are
+#     confirmed reproducible). An annotation records the skip explicitly —
+#     fabricated pass 禁止, a skip is always visibly a skip.
+#
+#   * workflow_dispatch exposes per-model `include_dia` / `include_zonos`
+#     inputs so the owner can dispatch either alone (each safetensors is
+#     multi-GB; the runner has ~14 GiB free on ubuntu-latest after the
+#     dotnet/android/ghc reclamation the codec workflow uses).
+#
+#   * HF snapshot pins live in `env.DIA_REVISION` / `env.ZONOS_REVISION`
+#     (fetched 2026-07-25 via huggingface.co/api/models/... — the SAME SHAs
+#     the harness's `skip_reason` reproduces in the log so a divergence is
+#     visible in either surface). Same SHA appears in the harness's
+#     skip-reason string; a review that bumps one must bump the other.
+#
+#   * The final `git diff --exit-code Cargo.lock` step proves the root
+#     zero-dep invariant (NFR-DS-02) held — a `cargo install` step that
+#     leaked a workspace dep would fail here.
+
+name: parity-tts-dac-real
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_dia:
+        description: >-
+          Run the nari-labs/Dia-1.6B parity leg (~6 GB safetensors + ~3 GB
+          GGUF artifact). Default: true.
+        required: false
+        default: 'true'
+        type: string
+      include_zonos:
+        description: >-
+          Run the Zyphra/Zonos-v0.1-transformer parity leg (~3 GB safetensors
+          + ~1.5 GB GGUF artifact). Default: true.
+        required: false
+        default: 'true'
+        type: string
+  schedule:
+    # Weekly Monday 10:00 UTC. This slot is shared with silero-nostd-cross-build,
+    # which is a light no_std cross-compile (no HF DL, no parity payload); the
+    # two jobs allocate separate ubuntu-latest runners and do not contend. Slot
+    # rationale mirrors the moshi/utmos header stagger: off-peak US/EU business
+    # hours so a hub-side outage that morning surfaces without blocking active
+    # development.
+    - cron: '0 10 * * 1'
+  pull_request:
+    # Narrow paths filter — this job only fires when the PR touches dia/zonos
+    # code, the converter shims, the harness itself, or this workflow. Every
+    # other PR flows through the fast per-PR `parity` check in ci.yml (fixture-
+    # only, no HF DL).
+    paths:
+      - '.github/workflows/parity-tts-dac-real.yml'
+      - 'crates/vokra-convert/src/models/dia.rs'
+      - 'crates/vokra-convert/src/models/zonos.rs'
+      - 'crates/vokra-models/src/dia/**'
+      - 'crates/vokra-models/src/zonos/**'
+      - 'crates/vokra-models/tests/parity_tts_dac.rs'
+      # Shared dependencies whose regressions could reach dia/zonos:
+      - 'crates/vokra-core/src/gguf/**'
+      - 'crates/vokra-models/src/codec.rs'
+
+concurrency:
+  group: parity-tts-dac-real-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Snapshot SHAs pinned 2026-07-25 via huggingface.co/api/models/<repo>.
+  # Bumping either is a deliberate act — the harness's `skip_reason` names
+  # both SHAs so a mid-review drift is caught by either surface.
+  DIA_REPO: nari-labs/Dia-1.6B
+  DIA_REVISION: '257bc72f9b78182ccc6fa07675a9ae4c1a44e2cd'
+  DIA_LICENSE: Apache-2.0
+  ZONOS_REPO: Zyphra/Zonos-v0.1-transformer
+  ZONOS_REVISION: '9d8331fc49cb5ba8aad2bb56cafd809c66598f4e'
+  ZONOS_LICENSE: Apache-2.0
+  PARITY_VENV: /tmp/vokra-tts-dac-parity
+  CARGO_TERM_COLOR: always
+
+jobs:
+  setup:
+    name: gate (tts-dac fetch opt-in)
+    runs-on: ubuntu-latest
+    outputs:
+      run_parity: ${{ steps.decide.outputs.run_parity }}
+      run_dia: ${{ steps.decide.outputs.run_dia }}
+      run_zonos: ${{ steps.decide.outputs.run_zonos }}
+    steps:
+      - id: decide
+        env:
+          ENABLE_VAR: ${{ vars.VOKRA_TTS_DAC_ENABLE }}
+          INCLUDE_DIA: ${{ inputs.include_dia }}
+          INCLUDE_ZONOS: ${{ inputs.include_zonos }}
+        run: |
+          # workflow_dispatch: run whatever the owner opted into (default: both).
+          # pull_request: proceed unconditionally (path filter above already
+          # scoped it). schedule: gate on the repo variable, clean-skip
+          # otherwise with a ::notice:: (fabricated pass 禁止 — a skip must be
+          # visibly a skip).
+          case "${{ github.event_name }}" in
+            workflow_dispatch)
+              echo "run_parity=true" >> "$GITHUB_OUTPUT"
+              # Empty / unset dispatch input defaults to include; explicit
+              # "false" turns off.
+              if [ "${INCLUDE_DIA:-true}" = "false" ]; then
+                echo "run_dia=false" >> "$GITHUB_OUTPUT"
+                echo "workflow_dispatch: include_dia=false — skipping dia leg"
+              else
+                echo "run_dia=true" >> "$GITHUB_OUTPUT"
+                echo "workflow_dispatch: dia leg enabled"
+              fi
+              if [ "${INCLUDE_ZONOS:-true}" = "false" ]; then
+                echo "run_zonos=false" >> "$GITHUB_OUTPUT"
+                echo "workflow_dispatch: include_zonos=false — skipping zonos leg"
+              else
+                echo "run_zonos=true" >> "$GITHUB_OUTPUT"
+                echo "workflow_dispatch: zonos leg enabled"
+              fi
+              ;;
+            pull_request)
+              echo "run_parity=true" >> "$GITHUB_OUTPUT"
+              echo "run_dia=true"    >> "$GITHUB_OUTPUT"
+              echo "run_zonos=true"  >> "$GITHUB_OUTPUT"
+              echo "pull_request: proceeding with both legs (path filter matched)"
+              ;;
+            schedule|*)
+              if [ "${ENABLE_VAR}" = "1" ]; then
+                echo "run_parity=true" >> "$GITHUB_OUTPUT"
+                echo "run_dia=true"    >> "$GITHUB_OUTPUT"
+                echo "run_zonos=true"  >> "$GITHUB_OUTPUT"
+                echo "VOKRA_TTS_DAC_ENABLE=1: proceeding with both legs on cron"
+              else
+                echo "run_parity=false" >> "$GITHUB_OUTPUT"
+                echo "run_dia=false"    >> "$GITHUB_OUTPUT"
+                echo "run_zonos=false"  >> "$GITHUB_OUTPUT"
+                echo "::notice title=parity-tts-dac-real clean skip::VOKRA_TTS_DAC_ENABLE is not '1' — the ~9 GB weekly parity fetch is gated on an opt-in repo variable. Set it to '1' (repository settings → variables) to enable, or dispatch this workflow manually. This is a clean gated skip, not a pass (fabricated pass 禁止, FR-EX-08)."
+              fi
+              ;;
+          esac
+
+  parity:
+    name: parity (${{ matrix.arch }})
+    needs: setup
+    if: needs.setup.outputs.run_parity == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: dia
+            repo: nari-labs/Dia-1.6B
+            revision_env: DIA_REVISION
+            gguf_env: VOKRA_DIA_GGUF
+            gate_output: run_dia
+          - arch: zonos
+            repo: Zyphra/Zonos-v0.1-transformer
+            revision_env: ZONOS_REVISION
+            gguf_env: VOKRA_ZONOS_GGUF
+            gate_output: run_zonos
+    env:
+      HF_HOME: ${{ github.workspace }}/.hf-cache-${{ matrix.arch }}
+      HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache-${{ matrix.arch }}
+    steps:
+      - name: Per-matrix-entry gate
+        id: entry-gate
+        env:
+          RUN_DIA: ${{ needs.setup.outputs.run_dia }}
+          RUN_ZONOS: ${{ needs.setup.outputs.run_zonos }}
+        run: |
+          case "${{ matrix.arch }}" in
+            dia)   RUN="${RUN_DIA}"   ;;
+            zonos) RUN="${RUN_ZONOS}" ;;
+            *)     RUN="false"         ;;
+          esac
+          echo "run=${RUN}" >> "$GITHUB_OUTPUT"
+          if [ "${RUN}" != "true" ]; then
+            echo "::notice::${{ matrix.arch }} leg skipped by dispatcher opt-out (setup output gate_output=${{ matrix.gate_output }})"
+          fi
+
+      - name: Checkout
+        if: steps.entry-gate.outputs.run == 'true'
+        uses: actions/checkout@v7
+
+      - name: Free hosted-runner disk (multi-GB safetensors + GGUF need headroom)
+        if: steps.entry-gate.outputs.run == 'true'
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Set up Python 3.12
+        if: steps.entry-gate.outputs.run == 'true'
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Set up Rust toolchain
+        if: steps.entry-gate.outputs.run == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        if: steps.entry-gate.outputs.run == 'true'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache HF snapshot
+        if: steps.entry-gate.outputs.run == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.HF_HOME }}
+          # Include the pinned SHA in the key so a revision bump invalidates
+          # the cache automatically. `v1` is a workflow-owned cache scheme
+          # tag; bump when the download shape changes.
+          key: tts-dac-${{ matrix.arch }}-${{ env[matrix.revision_env] }}-v1
+
+      - name: Provision parity venv (huggingface_hub + safetensors + torch)
+        if: steps.entry-gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          python -m venv "${PARITY_VENV}"
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python -m pip install --upgrade pip
+          # torch is the smallest arch-appropriate dep: both models ship as
+          # torch pickles / safetensors and the future reference dumper will
+          # need it. Kept minimal here — the CPU-only wheel + safetensors +
+          # huggingface_hub cover the download + a future dumper. Numpy stays
+          # a torch transitive so we don't overpin.
+          python -m pip install \
+            'torch==2.9.1' \
+            'safetensors>=0.4' \
+            'huggingface_hub>=0.24'
+          # hf_transfer speeds the multi-GB safetensors pull.
+          python -m pip install 'hf_transfer>=0.1.9' || true
+          python - <<'PY'
+          import torch, safetensors, huggingface_hub
+          print(f"tts-dac parity venv: torch={torch.__version__} "
+                f"safetensors={safetensors.__version__} "
+                f"huggingface_hub={huggingface_hub.__version__}")
+          PY
+
+      - name: Fetch upstream snapshot at pinned SHA
+        if: steps.entry-gate.outputs.run == 'true'
+        env:
+          HF_HUB_ENABLE_HF_TRANSFER: '1'
+          REVISION: ${{ env[matrix.revision_env] }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          # `python -c` (not a heredoc): a heredoc inside $() cannot be closed
+          # from column 0 in a `run: |` block; `python -c` sidesteps that.
+          python -c "
+          import os, sys
+          from huggingface_hub import snapshot_download
+          path = snapshot_download(
+              repo_id='${{ matrix.repo }}',
+              revision=os.environ['REVISION'],
+              allow_patterns=['*.safetensors', '*.json', '*.txt'],
+              cache_dir=os.environ['HF_HOME'],
+          )
+          print(f'snapshot: {path}')
+          # Emit the path for the next step.
+          with open(os.environ['GITHUB_ENV'], 'a') as fh:
+              fh.write(f'SNAPSHOT_DIR={path}\n')
+          "
+          ls -la "${SNAPSHOT_DIR}"
+          {
+            echo "### ${{ matrix.arch }} snapshot"
+            echo ""
+            echo "- Repo: \`${{ matrix.repo }}\`"
+            echo "- Revision: \`${REVISION}\`"
+            echo "- Snapshot dir: \`${SNAPSHOT_DIR}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build vokra-cli (release)
+        if: steps.entry-gate.outputs.run == 'true'
+        run: cargo build --release -p vokra-cli
+
+      - name: Convert upstream safetensors → Vokra GGUF (vokra-cli convert --model ${{ matrix.arch }})
+        if: steps.entry-gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          # Locate the safetensors file inside the snapshot. Both upstream
+          # repos ship a single top-level `model.safetensors`; fall back to a
+          # find sweep so a future upstream re-org (multi-shard) does not
+          # silently pick the wrong file.
+          SAFETENSORS="${SNAPSHOT_DIR}/model.safetensors"
+          if [ ! -f "${SAFETENSORS}" ]; then
+            SAFETENSORS="$(find "${SNAPSHOT_DIR}" -maxdepth 2 -name '*.safetensors' | head -n1)"
+          fi
+          if [ -z "${SAFETENSORS}" ] || [ ! -f "${SAFETENSORS}" ]; then
+            echo "::error::no safetensors file located under ${SNAPSHOT_DIR} — upstream re-org?"
+            exit 1
+          fi
+          GGUF_PATH="${RUNNER_TEMP}/${{ matrix.arch }}.gguf"
+          ./target/release/vokra-cli convert \
+            --model "${{ matrix.arch }}" \
+            --input "${SAFETENSORS}" \
+            --output "${GGUF_PATH}"
+          echo "${{ matrix.gguf_env }}=${GGUF_PATH}" >> "$GITHUB_ENV"
+          echo "GGUF size: $(du -h "${GGUF_PATH}" | cut -f1) ($(wc -c < "${GGUF_PATH}") bytes)"
+          {
+            echo "### ${{ matrix.arch }} GGUF"
+            echo ""
+            echo "- Path: \`${GGUF_PATH}\`"
+            echo "- Size: $(du -h "${GGUF_PATH}" | cut -f1) (raw: $(wc -c < "${GGUF_PATH}") bytes)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run parity_tts_dac harness (VOKRA_<ARCH>_GGUF set)
+        if: steps.entry-gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          set +e
+          # Only fire the matching per-arch test; the other arch would skip
+          # cleanly anyway (env var unset in this leg), but scoping the run
+          # keeps the log unambiguous per matrix entry.
+          cargo test --release -p vokra-models --test parity_tts_dac \
+            parity_tts_dac_${{ matrix.arch }} -- --nocapture \
+            2>&1 | tee "${RUNNER_TEMP}/parity-${{ matrix.arch }}.log"
+          PARITY_EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "PARITY_EXIT=${PARITY_EXIT}" >> "$GITHUB_ENV"
+          {
+            echo "### parity_tts_dac::${{ matrix.arch }}"
+            echo ""
+            echo '```'
+            tail -c 8192 "${RUNNER_TEMP}/parity-${{ matrix.arch }}.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Zero-dep invariant (root Cargo.lock unchanged, NFR-DS-02)
+        if: steps.entry-gate.outputs.run == 'true'
+        run: git diff --exit-code Cargo.lock
+
+      - name: Upload parity artifacts
+        if: always() && steps.entry-gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: parity-tts-dac-${{ matrix.arch }}-artifacts
+          path: |
+            ${{ runner.temp }}/parity-${{ matrix.arch }}.log
+            ${{ runner.temp }}/${{ matrix.arch }}.gguf
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Propagate parity exit code
+        if: steps.entry-gate.outputs.run == 'true' && env.PARITY_EXIT != '0'
+        run: |
+          echo "::error::parity_tts_dac::${{ matrix.arch }} exited with ${PARITY_EXIT} — see summary + artifacts"
+          exit "${PARITY_EXIT}"
