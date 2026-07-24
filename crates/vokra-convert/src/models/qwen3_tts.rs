@@ -589,35 +589,154 @@ mod tests {
         assert_eq!(file.tensor_bytes(info).len(), 12);
     }
 
-    /// Pins the `_ =>` arm of the tensor-dtype match: BF16 (the upstream
-    /// serving format for Qwen3-TTS-0.6B) must reach the
-    /// `skipped_non_float` counter and trip the loud "no float tensors"
-    /// note when it is the sole tensor.
+    /// Mirrors [`f16_tensor_passes_through_verbatim`] for BF16 — the
+    /// upstream serving format for Qwen3-TTS-0.6B. Per the ADR
+    /// (docs/adr/qwen3-tts-bf16.md, Accepted 2026-07-25, strategy
+    /// A_passthrough), BF16 must reach the pass-through arm verbatim
+    /// (emitted as GGUF type 30 = `GgmlType::BF16`, no convert-time
+    /// widening — the runtime widens BF16 → f32 losslessly at load via
+    /// the single choke point `vokra-core::gguf::quant::decode_bf16`).
+    /// Rewrite of the M4-06 posture pin
+    /// `bf16_tensor_is_counted_as_skipped_non_float` — the ADR's
+    /// red-line demands the symmetric rewrite so a latent silent-widen
+    /// cannot slip in undetected.
     #[test]
-    fn bf16_tensor_is_counted_as_skipped_non_float() {
-        let (builder, report) = convert(minimal_safetensors_one_bf16()).expect("convert");
+    fn bf16_tensor_passes_through_verbatim() {
+        // Build a BF16 payload with known non-zero bit patterns so a
+        // subsequent byte-identity assert catches any silent widen /
+        // downcast attempt (the raw zeroed payload of the shared
+        // fixture would round-trip trivially through F32/F16 widen too).
+        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
+        let bf16: Vec<u8> = values
+            .iter()
+            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
+            .collect();
+        assert_eq!(bf16.len(), 12, "6 elements × 2 bytes BF16 payload");
+        let header = r#"{"talker.embed_tokens.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
+        let mut input = Vec::new();
+        input.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        input.extend_from_slice(header.as_bytes());
+        input.extend_from_slice(&bf16);
+
+        let (builder, report) = convert(input).expect("convert");
         assert_eq!(
-            report.written, 0,
-            "BF16 must not currently pass through — Qwen3-TTS converter is F32/F16 only"
+            report.written, 1,
+            "BF16 must reach the pass-through arm (ADR A_passthrough)"
         );
         assert_eq!(
-            report.skipped_non_float, 1,
-            "BF16 must increment the skipped counter"
+            report.skipped_non_float, 0,
+            "BF16 must not land in the skipped counter after ADR A_passthrough"
         );
+        assert_eq!(
+            report.bf16_passthrough, 1,
+            "BF16 tensor must increment the observability counter"
+        );
+        // Loud-silence check for FR-EX-08: the zero-float note is a
+        // false-positive here because BF16 IS a float.
         assert!(
-            report.notes.iter().any(|n| n.contains("no float tensors")),
-            "BF16-only conversion must emit the zero-float note: {:?}",
+            !report.notes.iter().any(|n| n.contains("no float tensors")),
+            "BF16 pass-through must not emit the zero-float note: {:?}",
             report.notes
         );
+
+        // Round-trip through the GGUF: dtype preserved, payload
+        // byte-identical (Moshi's assert_eq!(info.dtype, GgmlType::BF16,
+        // "no convert-time widening") posture — the safetensors.rs:728-738
+        // pin pattern).
         let out = builder.to_bytes().expect("serialize");
         let file = GgufFile::parse(out).expect("parse");
+        let info = file
+            .tensor_info("talker.embed_tokens.weight")
+            .expect("BF16 tensor present in output");
         assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some(ARCH)
+            info.dtype,
+            GgmlType::BF16,
+            "no convert-time widening — BF16 stays BF16 (GGUF type 30)"
         );
-        assert!(
-            file.tensor_info("talker.embed_tokens.weight").is_none(),
-            "BF16 tensor must not be written"
+        assert_eq!(info.dimensions, vec![2, 3]);
+        assert_eq!(
+            file.tensor_bytes(info).len(),
+            12,
+            "2 rows × 3 cols × 2 B BF16 verbatim"
+        );
+        assert_eq!(
+            file.tensor_bytes(info),
+            bf16.as_slice(),
+            "BF16 payload must be byte-identical to input (no silent widen)"
+        );
+    }
+
+    /// Pins the "mixed-dtype loops don't collapse to one arm" contract:
+    /// a BF16 tensor and an F32 tensor in the same safetensors input
+    /// must **both** pass through with their dtypes preserved. Guards
+    /// against a regression where a naive `if bf16 { ... } else` refactor
+    /// would only emit one branch of the match.
+    #[test]
+    fn bf16_and_f32_mixed_pass_through_side_by_side() {
+        // Header declares tensors in order:
+        //   talker.embed_tokens.weight — BF16, [2,3] → 12 bytes @ [0..12)
+        //   talker.other.weight        — F32,  [1,2] →  8 bytes @ [12..20)
+        // Safetensors sorts entries by data_offsets lexicographically
+        // (the reader tolerates any JSON order), so the payload appends
+        // BF16 first, then F32.
+        let bf16_vals: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
+        let bf16: Vec<u8> = bf16_vals
+            .iter()
+            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
+            .collect();
+        let f32_vals: [f32; 2] = [7.0, -8.25];
+        let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+
+        let header = r#"{"talker.embed_tokens.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]},"talker.other.weight":{"dtype":"F32","shape":[1,2],"data_offsets":[12,20]}}"#;
+        let mut input = Vec::new();
+        input.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        input.extend_from_slice(header.as_bytes());
+        input.extend_from_slice(&bf16);
+        input.extend_from_slice(&f32_bytes);
+
+        let (builder, report) = convert(input).expect("convert");
+        assert_eq!(
+            report.written, 2,
+            "both BF16 and F32 tensors must pass through"
+        );
+        assert_eq!(
+            report.bf16_passthrough, 1,
+            "only the BF16 tensor increments the BF16 counter"
+        );
+        assert_eq!(
+            report.skipped_non_float, 0,
+            "no tensor may reach the skipped arm"
+        );
+
+        // Both tensors survive the round-trip with their upstream names
+        // and dtypes preserved.
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        let bf16_info = file
+            .tensor_info("talker.embed_tokens.weight")
+            .expect("BF16 tensor present");
+        assert_eq!(bf16_info.dtype, GgmlType::BF16, "BF16 stays BF16");
+        assert_eq!(file.tensor_bytes(bf16_info), bf16.as_slice());
+
+        let f32_info = file
+            .tensor_info("talker.other.weight")
+            .expect("F32 tensor present");
+        assert_eq!(f32_info.dtype, GgmlType::F32, "F32 stays F32");
+        assert_eq!(file.tensor_bytes(f32_info), f32_bytes.as_slice());
+    }
+
+    /// Regression guard for the additive [`Qwen3TtsReport::bf16_passthrough`]
+    /// field: on an F32-only input the new counter defaults to `0` (via
+    /// the `#[derive(Default)]` on the report), proving the additive
+    /// field does not shift or contaminate the other counters.
+    #[test]
+    fn bf16_passthrough_report_field_is_additive_default_zero() {
+        let (_, report) = convert(minimal_safetensors_one_f32()).expect("convert");
+        assert_eq!(report.written, 1, "F32 tensor still counted verbatim");
+        assert_eq!(report.skipped_non_float, 0);
+        assert_eq!(
+            report.bf16_passthrough, 0,
+            "F32-only input must leave the BF16 counter at the Default 0"
         );
     }
 
