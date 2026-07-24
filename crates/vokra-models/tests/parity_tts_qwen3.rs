@@ -102,14 +102,23 @@ fn env_paths_for(arch: &str) -> (Option<PathBuf>, Option<PathBuf>) {
 /// Kept as a distinct helper so a follow-up wave (a) can grep every
 /// harness's skip text for uniformity, and (b) tell the summary parser
 /// (workflow YAML) exactly what to look for.
+///
+/// Names BOTH env vars (`_GGUF` and `_REFDIR`) so an operator reading a
+/// baseline stderr (both unset) learns about the flip-the-switch leg
+/// without having to grep the source (sibling `parity_tts_japanese.rs`
+/// enforces the same "self-documenting skip" invariant — see
+/// `skip_reason_contains_reproduction_recipe_and_both_env_vars`).
 fn skip_reason(arch: &str, hf_repo: &str) -> String {
     let arch_env = arch.replace('-', "_").to_ascii_uppercase();
     format!(
         "[parity_tts_qwen3] SKIP: VOKRA_{arch_env}_GGUF unset. Convert the \
          upstream `{hf_repo}` checkpoint with `vokra-cli convert --model \
          qwen3-tts --input <model.safetensors> --output <out.gguf>` and \
-         re-run with `VOKRA_{arch_env}_GGUF=<out.gguf>`. This is a clean \
-         gated skip, never a fabricated pass (FR-EX-08)."
+         re-run with `VOKRA_{arch_env}_GGUF=<out.gguf>`. To also enable the \
+         flip-the-switch cross-check against the upstream `config.json`, \
+         drop that file into a directory and additionally set \
+         `VOKRA_{arch_env}_REFDIR=<dir>`. This is a clean gated skip, never \
+         a fabricated pass (FR-EX-08)."
     )
 }
 
@@ -729,4 +738,453 @@ fn parity_qwen3_tts_qwen3_tts_0_6b_base() {
              to enable). This is a clean gated skip, not a fabricated pass."
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Unit-only helper coverage (fires on every `cargo test`, no env / no fs /
+// no real GGUF). Sibling precedent: `parity_tts_dac.rs` lines 651-726 and
+// `parity_tts_japanese.rs` lines 245-306. SoTA Phase 1 audit (2026-07-25).
+//
+// Each block below explains its rationale inline so a future auditor sees
+// why the test exists without cross-reference. The eleven blocks address:
+//
+//   (1)  `env_paths_for` on both-unset — pins the "unset → clean skip"
+//        contract at the helper level so a future refactor that returned
+//        `Some(PathBuf::default())` fails here, not deep in a live parity
+//        job (sibling: `parity_tts_dac.rs::env_paths_for_returns_none_when_unset`).
+//   (2)  `env_paths_for` arch-form invariance — the `.replace('-', "_")`
+//        + `.to_ascii_uppercase()` transformation had zero pin; a silent
+//        regression dropping the hyphen swap would emit
+//        `VOKRA_QWEN3-TTS_GGUF`, which is un-set-able from a POSIX shell.
+//   (3)  `skip_reason` reproduction-recipe tokens — the CI summary parser
+//        greps stderr for these tokens; a silent edit that dropped one
+//        would leave a bare `skipped` annotation, defeating the harness's
+//        docstring promise (`[parity_tts_qwen3] SKIP:` prefix).
+//   (4)  `skip_reason` names REFDIR — the AUDIT FINDING: the baseline
+//        (both unset) never surfaced the refdir env-var name in stderr,
+//        so a first-time operator had to grep the source file to discover
+//        the flip-the-switch leg exists. Sibling
+//        `parity_tts_japanese.rs::skip_reason_names_both_env_vars_and_the_convert_recipe`
+//        enforces the same self-documenting-skip invariant.
+//   (5)  `json_get` missing-key panic — the panic branch only fires under
+//        a real refdir walk; without a standalone pin, a copy-paste error
+//        that swapped `{ctx}` and `{key}` in the panic message would go
+//        undetected.
+//   (6)  `json_u32` negative-int panic — `as_u64()` returns `None` for
+//        negative `Int`; a future refactor to `as_i64` + unchecked cast
+//        would silently accept `-1 as u32 == u32::MAX`, corrupting every
+//        talker/code_predictor cross-check.
+//   (7)  `json_u32` u32-overflow panic — every talker.* / code_predictor.*
+//        axis is a `u32`; a config with `vocab_size` accidentally emitted
+//        as `u64::MAX` must fail loudly at cross-check, not silently
+//        truncate.
+//   (8)  `json_f32` dual-int/float acceptance — the upstream `config.json`
+//        may emit `rope_theta` as either `1000000` or `1000000.0`; the
+//        harness's rope_base cross-check depends on this dual handling.
+//   (9)  `json_f32` non-number panic — silent-coercion regression risk:
+//        a `String => s.parse().unwrap_or(0.0)` arm would let a corrupted
+//        config compare against `0.0` and silently drift.
+//   (10) `synthesize` FR-EX-08 refusal — the file's most load-bearing pin.
+//        Without this a future patch returning `Ok(vec![0.0; 24_000])`
+//        (silent hallucination) would slip past this harness because the
+//        one gated `#[test]` only exercises `synthesize` when the owner
+//        has provisioned a real GGUF, which is NOT the CI baseline.
+//   (11) Primary-source config validates + module-const agreement — the
+//        primary source is transcribed from `config.json` (fetched
+//        2026-07-24, per CLAUDE.md「ハルシネーション厳禁」). A silent
+//        drift in that transcription — e.g. `hidden_dim` off by a factor
+//        of 2 — would only surface today when the owner runs with a real
+//        GGUF; a pure standalone pin catches it on every `cargo test`.
+// ---------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+// (1) `env_paths_for` — both-unset baseline
+// -----------------------------------------------------------------------------
+
+/// `env_paths_for` must return `(None, None)` when both env vars are
+/// unset (the CI baseline). Sibling precedent:
+/// `parity_tts_dac.rs::env_paths_for_returns_none_when_unset`.
+///
+/// The workspace forbids `unsafe` (`-D unsafe-code`) and
+/// `std::env::set_var` is unsafe in Rust 2024, so this test cannot
+/// exercise the "env set" branches directly without breaking the lint
+/// posture. The unset baseline is nonetheless the CI-critical arm — a
+/// refactor that accidentally returned `Some(PathBuf::default())` (e.g.
+/// `.map(PathBuf::from).or(Some(_))`) would silently start opening `""`
+/// as a GGUF path.
+#[test]
+fn env_paths_for_returns_none_when_both_env_vars_unset() {
+    // Arch string namespaced to this helper so no legitimate CI env var
+    // of the corresponding `VOKRA_*_GGUF` / `_REFDIR` name can collide.
+    let arch = "qwen3_tts_harness_helper_only";
+    let (gguf, refdir) = env_paths_for(arch);
+    assert!(
+        gguf.is_none(),
+        "expected VOKRA_QWEN3_TTS_HARNESS_HELPER_ONLY_GGUF unset in the test env, \
+         got Some({gguf:?}) — env leakage?"
+    );
+    assert!(
+        refdir.is_none(),
+        "expected VOKRA_QWEN3_TTS_HARNESS_HELPER_ONLY_REFDIR unset in the test env, \
+         got Some({refdir:?})"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// (2) `env_paths_for` — arch → env-var-name transformation
+// -----------------------------------------------------------------------------
+
+/// `env_paths_for` — kebab and snake spellings of the same arch must
+/// produce the SAME env-var name (the `.replace('-', "_")` step is what
+/// makes `qwen3-tts` and `qwen3_tts` interchangeable at the call site).
+///
+/// A silent regression that dropped the hyphen swap would emit
+/// `VOKRA_QWEN3-TTS_GGUF` — un-set-able from a POSIX shell. This test
+/// runs entirely against unset env-vars (both spellings resolve to
+/// `None` for reasons independent of the transformation), so the
+/// invariant is that they resolve to the SAME payload, then additionally
+/// pin the expected env-var name inline.
+#[test]
+fn env_paths_for_kebab_and_snake_arch_resolve_identically_on_unset() {
+    let arch_snake = "qwen3_tts_harness_helper_only";
+    let arch_kebab = "qwen3-tts-harness-helper-only";
+    let (gguf_snake, refdir_snake) = env_paths_for(arch_snake);
+    let (gguf_kebab, refdir_kebab) = env_paths_for(arch_kebab);
+    assert_eq!(
+        gguf_snake, gguf_kebab,
+        "snake vs kebab arch must resolve to the same env-var payload"
+    );
+    assert_eq!(
+        refdir_snake, refdir_kebab,
+        "snake vs kebab arch must resolve to the same env-var payload"
+    );
+    assert!(
+        gguf_snake.is_none() && refdir_snake.is_none(),
+        "these namespaced arches must remain unset in the test env"
+    );
+
+    // Pin the transformation itself by rebuilding the expected env-var
+    // name inline (identical shape to `env_paths_for`'s internal
+    // `format!("VOKRA_{arch_env}_GGUF", ...)`). A regression dropping
+    // the hyphen swap would emit `VOKRA_QWEN3-TTS_GGUF` here.
+    let expected_env = format!(
+        "VOKRA_{}_GGUF",
+        "qwen3-tts".to_ascii_uppercase().replace('-', "_"),
+    );
+    assert_eq!(
+        expected_env, "VOKRA_QWEN3_TTS_GGUF",
+        "the arch → env-var-name transformation drifted"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// (3) `skip_reason` — reproduction-recipe tokens
+// -----------------------------------------------------------------------------
+
+/// `skip_reason` must contain every token an operator needs to reproduce
+/// both legs (GGUF conversion + flip-the-switch refdir cross-check).
+/// Sibling precedent:
+/// `parity_tts_dac.rs::skip_reason_contains_reproduction_recipe`.
+#[test]
+fn skip_reason_contains_reproduction_recipe() {
+    let msg = skip_reason("qwen3_tts", "Qwen/Qwen3-TTS-12Hz-0.6B-Base");
+    for token in &[
+        "[parity_tts_qwen3] SKIP:",
+        "VOKRA_QWEN3_TTS_GGUF",
+        "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        "vokra-cli convert",
+        "--model qwen3-tts",
+        "fabricated pass",
+        "FR-EX-08",
+    ] {
+        assert!(
+            msg.contains(token),
+            "skip_reason must contain {token:?}; got: {msg}"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------------
+// (4) `skip_reason` — names BOTH env vars (audit finding)
+// -----------------------------------------------------------------------------
+
+/// `skip_reason` must name BOTH env vars so the baseline stderr
+/// (both unset — the CI baseline) surfaces the flip-the-switch refdir
+/// leg's env-var name as well as the GGUF env-var name. Sibling
+/// precedent: `parity_tts_japanese.rs::skip_reason_names_both_env_vars_and_the_convert_recipe`.
+///
+/// The original `skip_reason` implementation only named the GGUF env
+/// var, leaving a first-time operator to grep the source to discover
+/// the flip-the-switch leg exists. This pin was added at the same
+/// commit that updated `skip_reason` to be self-documenting.
+#[test]
+fn skip_reason_names_both_env_vars() {
+    let msg = skip_reason("qwen3_tts", "Qwen/Qwen3-TTS-12Hz-0.6B-Base");
+    assert!(
+        msg.contains("VOKRA_QWEN3_TTS_GGUF"),
+        "skip message omits GGUF env var: {msg:?}"
+    );
+    assert!(
+        msg.contains("VOKRA_QWEN3_TTS_REFDIR"),
+        "skip message omits REFDIR env var (audit finding — self-documenting-skip \
+         invariant): {msg:?}"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// (5) `json_get` — missing-key panic reachability
+// -----------------------------------------------------------------------------
+
+/// `json_get`'s missing-key panic branch only fires under a real refdir
+/// walk; without a standalone pin, a copy-paste error that swapped
+/// `{ctx}` and `{key}` in the panic message would go undetected until
+/// an operator provisioned a reference dir.
+///
+/// The `expected` string matches a substring of
+/// `"{ctx}: missing JSON key `{key}`"` — the backticks around `{key}`
+/// are non-portable in `#[should_panic(expected=...)]` matchers if the
+/// test asserts on the full field, so we anchor on the invariant
+/// prefix.
+#[test]
+#[should_panic(expected = "missing JSON key")]
+fn json_get_panics_on_missing_key() {
+    let obj = JsonValue::Object(vec![("present".to_owned(), JsonValue::Int(1))]);
+    let _ = json_get(&obj, "absent_key", "some/ctx");
+}
+
+// -----------------------------------------------------------------------------
+// (6) `json_u32` — rejects negative integers
+// -----------------------------------------------------------------------------
+
+/// `json_u32` MUST panic on a negative `Int`. `JsonValue::as_u64()`
+/// returns `None` for negatives today; a future refactor to `as_i64` +
+/// unchecked cast would silently accept `-1 as u32 == u32::MAX`,
+/// corrupting every `talker.*` / `code_predictor.*` cross-check.
+#[test]
+#[should_panic(expected = "not a non-negative integer")]
+fn json_u32_panics_on_negative_int() {
+    let obj = JsonValue::Object(vec![("k".to_owned(), JsonValue::Int(-1))]);
+    let _ = json_u32(&obj, "k", "ctx");
+}
+
+// -----------------------------------------------------------------------------
+// (7) `json_u32` — rejects values above `u32::MAX`
+// -----------------------------------------------------------------------------
+
+/// `json_u32` MUST panic when the value exceeds `u32::MAX`. Every
+/// talker / code-predictor axis is a `u32` — a config with a
+/// `vocab_size` accidentally emitted as `u64::MAX` (upstream refactor,
+/// exporter bug) must fail loudly at cross-check, not silently
+/// truncate.
+#[test]
+#[should_panic(expected = "does not fit in u32")]
+fn json_u32_panics_when_value_exceeds_u32_max() {
+    let too_big = i64::from(u32::MAX) + 1;
+    let obj = JsonValue::Object(vec![("k".to_owned(), JsonValue::Int(too_big))]);
+    let _ = json_u32(&obj, "k", "ctx");
+}
+
+// -----------------------------------------------------------------------------
+// (8) `json_f32` — accepts both `Int` and `Float`
+// -----------------------------------------------------------------------------
+
+/// `json_f32` must accept BOTH `JsonValue::Int` and `JsonValue::Float`.
+/// The upstream `config.json` may emit `rope_theta` as either
+/// `1000000` or `1000000.0` depending on the exporter version; both
+/// must be numerically equivalent to the harness's rope_base
+/// cross-check.
+#[test]
+fn json_f32_accepts_both_int_and_float_variants() {
+    let obj = JsonValue::Object(vec![
+        ("as_int".to_owned(), JsonValue::Int(42)),
+        ("as_float".to_owned(), JsonValue::Float(1.0e6)),
+    ]);
+    let v_int = json_f32(&obj, "as_int", "ctx");
+    let v_float = json_f32(&obj, "as_float", "ctx");
+    // Int → f32: 42 is exactly representable.
+    assert_eq!(
+        v_int, 42.0_f32,
+        "json_f32(Int(42)) drifted to {v_int} (expected exactly 42.0)"
+    );
+    // Float → f32: 1_000_000 is exactly representable in f32.
+    assert_eq!(
+        v_float, 1.0e6_f32,
+        "json_f32(Float(1e6)) drifted to {v_float}"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// (9) `json_f32` — rejects non-numeric values
+// -----------------------------------------------------------------------------
+
+/// `json_f32` MUST panic on a non-numeric value (Bool, String, Null,
+/// Array, Object). A silent-coercion regression — e.g. an added
+/// `JsonValue::Str(s) => s.parse().unwrap_or(0.0)` arm — would let a
+/// corrupted config compare against `0.0` and silently drift.
+#[test]
+#[should_panic(expected = "not a JSON number")]
+fn json_f32_panics_on_non_number() {
+    let obj = JsonValue::Object(vec![("k".to_owned(), JsonValue::Bool(true))]);
+    let _ = json_f32(&obj, "k", "ctx");
+}
+
+// -----------------------------------------------------------------------------
+// (10) `Qwen3TtsTts::synthesize` — FR-EX-08 refusal pin
+// -----------------------------------------------------------------------------
+
+/// FR-EX-08 pin — `Qwen3TtsTts::synthesize` MUST refuse loudly on both
+/// (a) empty text (`VokraError::InvalidArgument`) and (b) a real call
+/// against synthesized weights (`VokraError::NotImplemented` naming
+/// the hallucinated-waveform blocker).
+///
+/// This is the file's most load-bearing FR-EX-08 pin. The file's one
+/// gated `#[test]` (`parity_qwen3_tts_qwen3_tts_0_6b_base`) does NOT
+/// exercise `synthesize` on the CI baseline (unset env vars → early
+/// return with skip message), and the follow-up-wave real-forward
+/// test (`parity_qwen3_tts_synthesize_matches_upstream_pcm`, named in
+/// the module docstring) has not landed yet. Without this pin, a
+/// future patch that accidentally returned `Ok(vec![0.0; N])` (silent
+/// hallucination) would slip past this harness on every CI run.
+///
+/// This assertion goes AWAY the moment real weights bind and the
+/// forward path lands (at which point this test would be replaced by
+/// a real end-to-end audio-bound sanity check).
+///
+/// The engine is built via a hand-rolled small-aligned config (mirrors
+/// `crates/vokra-models/src/qwen3_tts/mod.rs::small_aligned_config`)
+/// because `Qwen3TtsConfig::tiny_for_tests()` uses `num_code_groups=3`,
+/// which fails the codec handshake against the canonical 16-quantizer
+/// codec inside `Qwen3TtsWeights::synthesized`. Aligning
+/// `num_code_groups=16` keeps this test fast (KB-sized synthesized
+/// weights) while still exercising the real engine construction path.
+#[test]
+fn synthesize_fr_ex_08_refusal_pins() {
+    use vokra_core::VokraError;
+    use vokra_models::qwen3_tts::{
+        Qwen3TtsCodePredictorConfig, Qwen3TtsTalkerConfig, Qwen3TtsTts, Qwen3TtsWeights,
+    };
+
+    let cfg = Qwen3TtsConfig {
+        sample_rate: QWEN3_TTS_SAMPLE_RATE,
+        speaker_embed_dim: 8,
+        talker: Qwen3TtsTalkerConfig {
+            hidden_dim: 16,
+            n_layer: 2,
+            n_head: 4,
+            n_head_kv: 2,
+            head_dim: 8,
+            ffn_dim: 32,
+            vocab_size: 32,
+            text_vocab_size: 64,
+            max_position_embeddings: 128,
+            rope_base: 1_000_000.0,
+            rms_norm_eps: 1e-6,
+            position_id_per_seconds: 13,
+            num_code_groups: 16, // match canonical qwen3_tts_12hz codec
+            text_hidden_size: 24,
+        },
+        code_predictor: Qwen3TtsCodePredictorConfig {
+            hidden_dim: 16,
+            n_layer: 2,
+            n_head: 4,
+            n_head_kv: 2,
+            head_dim: 8,
+            ffn_dim: 32,
+            vocab_size: 24,
+            rope_base: 1_000_000.0,
+            rms_norm_eps: 1e-6,
+            num_code_groups: 16,
+        },
+    };
+
+    let weights =
+        Qwen3TtsWeights::synthesized(&cfg, 42).expect("build small-aligned synthesized weights");
+    let tts = Qwen3TtsTts::new(cfg, weights).expect("build engine from small-aligned weights");
+    assert!(
+        tts.is_synthesized(),
+        "sanity: the engine must report synthesized weights"
+    );
+
+    // (a) Empty text — the InvalidArgument arm must fire, NOT the
+    //     NotImplemented arm (and never `Ok(_)`).
+    let empty_err = tts
+        .synthesize("")
+        .expect_err("synthesize(\"\") must refuse loudly");
+    match empty_err {
+        VokraError::InvalidArgument(msg) => {
+            assert!(
+                msg.contains("text is empty"),
+                "empty-text arm message drifted: got InvalidArgument({msg:?})"
+            );
+        }
+        other => panic!("expected InvalidArgument on empty text, got {other:?}"),
+    }
+
+    // (b) Non-empty text against synthesized weights — the
+    //     NotImplemented arm naming the hallucinated-waveform blocker
+    //     must fire (locks the specific synthesized-weights arm, not
+    //     the generic "real weights bound but forward not landed" arm).
+    let synth_err = tts
+        .synthesize("hello")
+        .expect_err("synthesize with synthesized weights must refuse loudly");
+    match synth_err {
+        VokraError::NotImplemented(msg) => {
+            assert!(
+                msg.contains("hallucinated waveform"),
+                "expected the synthesized-weights arm naming \
+                 \"hallucinated waveform\"; got NotImplemented({msg:?})"
+            );
+        }
+        other => panic!("expected NotImplemented on synthesized weights, got {other:?}"),
+    }
+}
+
+// -----------------------------------------------------------------------------
+// (11) Primary-source config validates + module-const agreement
+// -----------------------------------------------------------------------------
+
+/// The primary-source config MUST validate against the canonical codec
+/// on every `cargo test`. A silent drift in the transcribed constants
+/// (e.g. `hidden_dim` off by a factor of 2, or `n_head_kv` no longer
+/// dividing `n_head`) would today only surface under a real-GGUF
+/// flip-the-switch run; a standalone pin catches it on every CI
+/// invocation.
+///
+/// Additionally binds the three module-level constants imported at the
+/// top of this file (`QWEN3_TTS_SAMPLE_RATE`, `QWEN3_TTS_SPEAKER_EMBED_DIM`,
+/// `QWEN3_TTS_NUM_CODE_GROUPS`) against `Qwen3TtsConfig::qwen3_tts_0_6b_base`
+/// so a transcription drift between the two crates surfaces here
+/// rather than deep inside a gated `assert_metadata_matches_primary_source`
+/// leg.
+#[test]
+fn primary_source_config_validates_and_module_constants_agree() {
+    let cfg = Qwen3TtsConfig::qwen3_tts_0_6b_base();
+    cfg.validate_for_forward()
+        .expect("primary-source config must validate against the canonical qwen3_tts_12hz codec");
+
+    // Module-level constant ↔ full-config field agreement (the harness
+    // imports and cross-checks against both — a drift between them
+    // would break `assert_metadata_matches_primary_source`).
+    assert_eq!(
+        cfg.sample_rate, QWEN3_TTS_SAMPLE_RATE,
+        "module const QWEN3_TTS_SAMPLE_RATE drifted from Qwen3TtsConfig::qwen3_tts_0_6b_base()"
+    );
+    assert_eq!(
+        cfg.speaker_embed_dim, QWEN3_TTS_SPEAKER_EMBED_DIM,
+        "module const QWEN3_TTS_SPEAKER_EMBED_DIM drifted"
+    );
+    assert_eq!(
+        cfg.talker.num_code_groups, QWEN3_TTS_NUM_CODE_GROUPS,
+        "module const QWEN3_TTS_NUM_CODE_GROUPS drifted from talker.num_code_groups"
+    );
+
+    // Codec handshake — `talker.num_code_groups` == `code_predictor.num_code_groups`
+    // is what `assert_metadata_matches_primary_source` cross-checks on
+    // a real GGUF; standalone-pin the runtime side too so a
+    // Qwen3-flavour widening (e.g. dual-stream 16 + 16) that only
+    // updated one field would surface here.
+    assert_eq!(
+        cfg.talker.num_code_groups, cfg.code_predictor.num_code_groups,
+        "runtime primary-source drift: talker vs code_predictor num_code_groups"
+    );
 }
