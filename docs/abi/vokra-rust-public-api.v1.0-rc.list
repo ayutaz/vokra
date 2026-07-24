@@ -150,6 +150,7 @@ ENUM vokra-ops::flow_sampler::Schedule|pub enum Schedule {
 ENUM vokra-ops::hifigan::CalibrationStrategy|pub enum CalibrationStrategy {
 ENUM vokra-ops::hifigan::HifiGanPrecision|pub enum HifiGanPrecision {
 ENUM vokra-ops::hifigan::SpectralCheckResult|pub enum SpectralCheckResult {
+ENUM vokra-ops::nsf::NsfEntropy|pub enum NsfEntropy {
 FN vokra-capi::aec::vokra_aec_create|pub unsafe extern "C" fn vokra_aec_create(
 FN vokra-capi::aec::vokra_aec_destroy|pub unsafe extern "C" fn vokra_aec_destroy(aec: *mut vokra_aec_t) {
 FN vokra-capi::aec::vokra_aec_process|pub unsafe extern "C" fn vokra_aec_process(
@@ -705,6 +706,23 @@ FN vokra-ops::hifigan::new|pub fn new(strategy: CalibrationStrategy) -> Self {
 FN vokra-ops::hifigan::validate|pub fn validate(&self) -> Result<()> {
 FN vokra-ops::hifigan::with_int8_opt_in|pub fn with_int8_opt_in(
 FN vokra-ops::hifigan::with_threshold|pub fn with_threshold(threshold: f32) -> Self {
+FN vokra-ops::hiftnet::channels|pub fn channels(&self) -> usize {
+FN vokra-ops::hiftnet::config|pub fn config(&self) -> &F0PredictorConfig {
+FN vokra-ops::hiftnet::config|pub fn config(&self) -> &HiFTGeneratorConfig {
+FN vokra-ops::hiftnet::config|pub fn config(&self) -> &ResBlockConfig {
+FN vokra-ops::hiftnet::f0_predictor_forward|pub fn f0_predictor_forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
+FN vokra-ops::hiftnet::forward_in_place|pub fn forward_in_place(&self, x: &mut [f32], channels: usize, time: usize) -> Result<()> {
+FN vokra-ops::hiftnet::forward_in_place|pub fn forward_in_place(&self, x: &mut [f32], t: usize) -> Result<()> {
+FN vokra-ops::hiftnet::forward|pub fn forward(&self, mel: &[f32], t: usize) -> Result<Vec<f32>> {
+FN vokra-ops::hiftnet::forward|pub fn forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
+FN vokra-ops::hiftnet::new|pub fn new(alpha: Vec<f32>, alpha_logscale: bool) -> Result<Self> {
+FN vokra-ops::hiftnet::new|pub fn new(cfg: F0PredictorConfig, weights: F0PredictorWeights) -> Result<Self> {
+FN vokra-ops::hiftnet::new|pub fn new(cfg: HiFTGeneratorConfig, weights: HiFTGeneratorWeights) -> Result<Self> {
+FN vokra-ops::hiftnet::new|pub fn new(cfg: ResBlockConfig, weights: ResBlockWeights) -> Result<Self> {
+FN vokra-ops::hiftnet::num_kernels|pub fn num_kernels(&self) -> usize {
+FN vokra-ops::hiftnet::num_upsamples|pub fn num_upsamples(&self) -> usize {
+FN vokra-ops::hiftnet::output_channels_at|pub fn output_channels_at(&self, stage: usize) -> u32 {
+FN vokra-ops::hiftnet::total_upsample_factor|pub fn total_upsample_factor(&self) -> u32 {
 FN vokra-ops::hpf::attrs|pub fn attrs(&self) -> &HpfAttrs {
 FN vokra-ops::hpf::butterworth|pub fn butterworth(cutoff_hz: f32, sample_rate: u32) -> Self {
 FN vokra-ops::hpf::hpf|pub fn hpf(input: &[f32], attrs: &HpfAttrs) -> Result<Vec<f32>> {
@@ -744,6 +762,13 @@ FN vokra-ops::mimi_rvq::new|pub fn new(attrs: MimiRvqAttrs, tables: Vec<Codebook
 FN vokra-ops::mimi_rvq::new|pub fn new(codebook_size: usize, d_model: usize, data: Vec<f32>) -> Result<Self> {
 FN vokra-ops::mimi_rvq::row|pub fn row(&self, index: u32) -> Result<&[f32]> {
 FN vokra-ops::mimi_rvq::tables|pub fn tables(&self) -> &[CodebookTable] {
+FN vokra-ops::nsf::config|pub fn config(&self) -> &SineGenConfig {
+FN vokra-ops::nsf::config|pub fn config(&self) -> &SourceModuleHnNSFConfig {
+FN vokra-ops::nsf::forward|pub fn forward(&self, f0: &[f32], entropy: NsfEntropy) -> Result<SineGenOutput> {
+FN vokra-ops::nsf::forward|pub fn forward(&self, f0: &[f32], entropy: NsfEntropy) -> Result<SourceModuleHnNSFOutput> {
+FN vokra-ops::nsf::new|pub fn new(cfg: SineGenConfig) -> Self {
+FN vokra-ops::nsf::new|pub fn new(cfg: SourceModuleHnNSFConfig, weights: SourceModuleHnNSFWeights) -> Result<Self> {
+FN vokra-ops::nsf::out_channels|pub fn out_channels(&self) -> usize {
 FN vokra-ops::preprocess::apply_frontend|pub fn apply_frontend(pcm: &[f32], in_rate: u32, spec: &FrontendSpec) -> Result<Vec<f32>> {
 FN vokra-ops::preprocess::dc_offset_remove|pub fn dc_offset_remove(pcm: &[f32]) -> Vec<f32> {
 FN vokra-ops::preprocess::pre_emphasis|pub fn pre_emphasis(pcm: &[f32], coeff: f32) -> Vec<f32> {
@@ -839,6 +864,7 @@ MOD vokra-ops::frontend|pub mod frontend;
 MOD vokra-ops::fsq_codec|pub mod fsq_codec;
 MOD vokra-ops::fused_logmel|pub mod fused_logmel;
 MOD vokra-ops::hifigan|pub mod hifigan;
+MOD vokra-ops::hiftnet|pub mod hiftnet;
 MOD vokra-ops::hpf|pub mod hpf;
 MOD vokra-ops::istft_streaming|pub mod istft_streaming;
 MOD vokra-ops::istft|pub mod istft;
@@ -848,6 +874,7 @@ MOD vokra-ops::loudness_norm|pub mod loudness_norm;
 MOD vokra-ops::mel|pub mod mel;
 MOD vokra-ops::mfcc|pub mod mfcc;
 MOD vokra-ops::mimi_rvq|pub mod mimi_rvq;
+MOD vokra-ops::nsf|pub mod nsf;
 MOD vokra-ops::preprocess|pub mod preprocess;
 MOD vokra-ops::prosody|pub mod prosody;
 MOD vokra-ops::resample|pub mod resample;
@@ -997,6 +1024,16 @@ STRUCT vokra-ops::hifigan::HifiGanWeights|pub struct HifiGanWeights {
 STRUCT vokra-ops::hifigan::MrfBranchWeights|pub struct MrfBranchWeights {
 STRUCT vokra-ops::hifigan::ResBlockLayer|pub struct ResBlockLayer {
 STRUCT vokra-ops::hifigan::UpsampleStageWeights|pub struct UpsampleStageWeights {
+STRUCT vokra-ops::hiftnet::F0PredictorConfig|pub struct F0PredictorConfig {
+STRUCT vokra-ops::hiftnet::F0PredictorWeights|pub struct F0PredictorWeights {
+STRUCT vokra-ops::hiftnet::F0Predictor|pub struct F0Predictor {
+STRUCT vokra-ops::hiftnet::HiFTGeneratorConfig|pub struct HiFTGeneratorConfig {
+STRUCT vokra-ops::hiftnet::HiFTGeneratorWeights|pub struct HiFTGeneratorWeights {
+STRUCT vokra-ops::hiftnet::HiFTGenerator|pub struct HiFTGenerator {
+STRUCT vokra-ops::hiftnet::ResBlockConfig|pub struct ResBlockConfig {
+STRUCT vokra-ops::hiftnet::ResBlockWeights|pub struct ResBlockWeights {
+STRUCT vokra-ops::hiftnet::ResBlock|pub struct ResBlock {
+STRUCT vokra-ops::hiftnet::Snake|pub struct Snake {
 STRUCT vokra-ops::hpf::HpfAttrs|pub struct HpfAttrs {
 STRUCT vokra-ops::hpf::HpfState|pub struct HpfState {
 STRUCT vokra-ops::istft_streaming::IstftStreamingState|pub struct IstftStreamingState {
@@ -1006,6 +1043,13 @@ STRUCT vokra-ops::mel::MelFilterbank|pub struct MelFilterbank {
 STRUCT vokra-ops::mimi_rvq::CodebookTable|pub struct CodebookTable {
 STRUCT vokra-ops::mimi_rvq::MimiDecoder|pub struct MimiDecoder {
 STRUCT vokra-ops::mimi_rvq::MimiRvqAttrs|pub struct MimiRvqAttrs {
+STRUCT vokra-ops::nsf::SineGenConfig|pub struct SineGenConfig {
+STRUCT vokra-ops::nsf::SineGenOutput|pub struct SineGenOutput {
+STRUCT vokra-ops::nsf::SineGen|pub struct SineGen {
+STRUCT vokra-ops::nsf::SourceModuleHnNSFConfig|pub struct SourceModuleHnNSFConfig {
+STRUCT vokra-ops::nsf::SourceModuleHnNSFOutput|pub struct SourceModuleHnNSFOutput {
+STRUCT vokra-ops::nsf::SourceModuleHnNSFWeights|pub struct SourceModuleHnNSFWeights {
+STRUCT vokra-ops::nsf::SourceModuleHnNSF|pub struct SourceModuleHnNSF {
 STRUCT vokra-ops::prosody::ProsodyControl|pub struct ProsodyControl {
 STRUCT vokra-ops::stft::Spectrogram|pub struct Spectrogram {
 TRAIT vokra-core::backend::Backend|pub trait Backend {
