@@ -58,6 +58,24 @@ pub mod canary;
 // — the Llama primitives and HiFTNet seam are shared with CosyVoice2 /
 // CosyVoice3.
 pub mod chatterbox;
+// SoTA plan Phase 3 (2026-07-24): Resemble AI Chatterbox-Turbo TTS
+// (MIT). 350M-parameter distilled Turbo variant of Chatterbox — swaps
+// the backbone family from Llama_520M to **gpt2-medium** (30 layers ×
+// 16 heads × 1024 hidden — same shape, different topology: LayerNorm
+// with bias + fused QKV with bias + GELU FFN, not RMSNorm + SwiGLU),
+// swaps sample rate 24 kHz → **32 kHz**, and swaps the text vocabulary
+// 2454 (multilingual) / 704 (English-only) → **50 276** (GPT-2 base
+// 50 257 + 19 paralinguistic tags [angry]/[fear]/[surprised]/
+// [whispering]/[cough]/[laugh]/[chuckle]/… from `added_tokens.json`).
+// Also shrinks speech vocabulary 8194 → 6563, max text tokens 2048 →
+// 402, max speech tokens 4096 → 604, and distils the speech-token-to-
+// mel decoder from 10 sampling steps to a single step. Terminal
+// vocoder = S3Gen HiFT-GAN — same shared HiFTChain seam as CosyVoice2
+// / CosyVoice3 / base Chatterbox (SoTA plan §1(a) 訂正 2026-07-22).
+// Every hparam transcribed verbatim from `t3_turbo_v1.yaml` at
+// `huggingface.co/ResembleAI/chatterbox-turbo` (fetched 2026-07-24 —
+// CLAUDE.md「ハルシネーション厳禁」).
+pub mod chatterbox_turbo;
 pub mod codec;
 pub mod compute;
 pub mod cosyvoice2;

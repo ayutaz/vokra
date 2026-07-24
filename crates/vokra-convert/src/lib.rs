@@ -320,6 +320,31 @@ pub enum ModelKind {
     /// constant); a variant tag (multilingual vs english-only) is a
     /// caller argument and defaults to multilingual.
     Chatterbox,
+    /// Resemble AI **Chatterbox-Turbo** safetensors checkpoint
+    /// (SoTA plan Phase 3, 2026-07-24). MIT weight + code. 350M-parameter
+    /// distilled Turbo variant of Chatterbox. Backbone family swaps
+    /// from **Llama_520M** (base Chatterbox) to **gpt2-medium**
+    /// (`hidden_size=1024`, `num_hidden_layers=30`, `num_attention_heads=16`,
+    /// `head_dim=64` — MHA with GPT-2's LayerNorm-with-bias + fused-QKV-
+    /// with-bias + GELU FFN topology, not Llama's RMSNorm + SwiGLU);
+    /// sample rate swaps from 24 kHz to **32 kHz**; text-token vocabulary
+    /// swaps from 2454 (multilingual) / 704 (English-only) to **50 276**
+    /// (GPT-2 base 50 257 + 19 paralinguistic tags [angry]/[fear]/
+    /// [surprised]/[whispering]/[cough]/[laugh]/[chuckle]/… from
+    /// `added_tokens.json`); speech-token vocabulary shrinks 8194 → 6563;
+    /// max text/speech tokens shrink 2048 → 402 / 4096 → 604 for
+    /// low-latency serving; the speech-token-to-mel decoder is distilled
+    /// from 10 sampling steps to a single step. Terminal vocoder =
+    /// S3Gen HiFT-GAN — same shared `HiFTChain` seam as CosyVoice2 /
+    /// CosyVoice3 / base Chatterbox (SoTA plan §1(a) 訂正 2026-07-22, no
+    /// new op or backend kernel added). Every hparam transcribed
+    /// **verbatim** from `t3_turbo_v1.yaml` at
+    /// `huggingface.co/ResembleAI/chatterbox-turbo` (fetched
+    /// 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」). Convert with
+    /// [`convert_chatterbox_turbo_file`] — the converter takes no config
+    /// side-car (every hparam is fixed for the Turbo release and
+    /// transcribed as compile-time constants).
+    ChatterboxTurbo,
 }
 
 impl ModelKind {
@@ -392,6 +417,17 @@ impl ModelKind {
             | "chatterbox-mtl23ls-v3"
             | "chatterbox-english"
             | "chatterbox_en" => Some(Self::Chatterbox),
+            // Resemble AI Chatterbox-Turbo family — 350M distilled Turbo
+            // variant. Accept the canonical release id, the underscore
+            // spelling used by the arch tag, the v1 stem
+            // (`t3_turbo_v1.safetensors`), and the sibling ONNX release id
+            // (which still routes here because the runtime never loads
+            // the ONNX graph — the safetensors path is the only real
+            // conversion input, FR-LD-05).
+            "chatterbox-turbo"
+            | "chatterbox_turbo"
+            | "chatterbox-turbo-v1"
+            | "chatterbox-turbo-onnx" => Some(Self::ChatterboxTurbo),
             _ => None,
         }
     }
@@ -422,6 +458,7 @@ impl ModelKind {
             Self::OmniasrCtc => "omniasr-ctc",
             Self::DistilWhisper => "distil-whisper",
             Self::Chatterbox => "chatterbox",
+            Self::ChatterboxTurbo => "chatterbox-turbo",
         }
     }
 }
@@ -878,6 +915,31 @@ pub fn convert_file_licensed(
                     .notes
                     .iter()
                     .map(|n| format!("chatterbox warning: {n}")),
+            );
+            (builder, notes)
+        }
+        ModelKind::ChatterboxTurbo => {
+            // SoTA plan Phase 3 (2026-07-24): pass every F32/F16 tensor
+            // through verbatim and stamp the `vokra.chatterbox_turbo.*`
+            // chunk group (GPT-2-medium backbone axes + STFT frontend +
+            // sentinel tokens + paralinguistic tag count) from the
+            // transcribed constants in `models::chatterbox_turbo`. The
+            // arch tag is intentionally distinct from base Chatterbox
+            // because Turbo swaps backbone family + sample rate + text
+            // vocabulary — silently sharing the base arch tag would
+            // misrepresent the loaded model. Provenance = MIT
+            // (Permissive — no runtime-side attribution obligation; the
+            // whole Chatterbox family ships under a single MIT LICENSE).
+            let (builder, report) = models::chatterbox_turbo::convert(bytes)?;
+            let mut notes = vec![format!(
+                "chatterbox-turbo: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("chatterbox-turbo warning: {n}")),
             );
             (builder, notes)
         }
@@ -1824,6 +1886,46 @@ pub fn convert_chatterbox_file(
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::Chatterbox, input, output)
+}
+
+/// Convert a Resemble AI **Chatterbox-Turbo** T3 safetensors
+/// checkpoint into a Vokra GGUF (SoTA plan Phase 3, 2026-07-24).
+///
+/// This is the named entry point that mirrors `convert_chatterbox_file`
+/// / `convert_dia_file` / `convert_zonos_file` / `convert_csm_file` /
+/// `convert_kokoro_file`. It is functionally identical to
+/// `convert_file(ModelKind::ChatterboxTurbo, input, output)` —
+/// Chatterbox-Turbo takes no side-car config on this conversion path
+/// (every hparam of the `vokra.chatterbox_turbo.*` chunk group is
+/// transcribed as compile-time constants in `models::chatterbox_turbo`
+/// from `t3_turbo_v1.yaml`, primary source
+/// `huggingface.co/ResembleAI/chatterbox-turbo`) — but the named entry
+/// keeps the `convert_*_file` naming symmetry with the other TTS
+/// models.
+///
+/// The Turbo variant is 350M parameters (vs base's 500M) and differs
+/// from base Chatterbox on three architectural axes:
+/// - Backbone family: **gpt2-medium** (LayerNorm-with-bias +
+///   fused-QKV-with-bias + GELU FFN) instead of Llama_520M
+///   (RMSNorm + SwiGLU) — same 30 × 16 × 1024 shape.
+/// - Sample rate: **32 kHz** instead of 24 kHz.
+/// - Text-token vocabulary: **50 276** (GPT-2 base 50 257 + 19 native
+///   paralinguistic tags: `[angry]` / `[fear]` / `[surprised]` /
+///   `[whispering]` / `[cough]` / `[laugh]` / `[chuckle]` / …) instead
+///   of the base's 2454 (multilingual) / 704 (English-only).
+///
+/// The upstream release is `ResembleAI/chatterbox-turbo` on HuggingFace;
+/// the backbone weight is `t3_turbo_v1.safetensors` (~1.92 GB). Weight
+/// license = **MIT** (`github.com/resemble-ai/chatterbox/LICENSE` —
+/// Copyright (c) 2025 Resemble AI, fetched 2026-07-24) — the whole
+/// Chatterbox family (base + Turbo + multilingual variants) ships under
+/// a single MIT LICENSE. The M2-13 gate passes commercially without
+/// any attribution obligation.
+pub fn convert_chatterbox_turbo_file(
+    input: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::ChatterboxTurbo, input, output)
 }
 
 /// Convert a Zyphra **Zonos-v0.1-transformer** safetensors checkpoint into a

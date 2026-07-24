@@ -23,6 +23,20 @@ pub(crate) mod canary;
 // (`vokra-models::cosyvoice2::hift_chain::HiFTChain`, SoTA plan §1(a) 訂正
 // 2026-07-22) — no new op or backend kernel is added.
 pub(crate) mod chatterbox;
+// SoTA plan Phase 3 (2026-07-24): Resemble AI Chatterbox-Turbo TTS
+// (MIT weight, Permissive) safetensors → GGUF with the
+// `vokra.chatterbox_turbo.*` chunk group. Every F32 / F16 tensor
+// passes through verbatim; every hparam is transcribed from the
+// primary source `t3_turbo_v1.yaml`
+// (`huggingface.co/ResembleAI/chatterbox-turbo`, fetched 2026-07-24).
+// Distinct arch tag from base Chatterbox because Turbo swaps backbone
+// family (gpt2-medium vs Llama_520M) + sample rate (32 kHz vs 24 kHz)
+// + text vocabulary (50 276 vs 2454/704 — GPT-2 base 50 257 + 19
+// paralinguistic tags from `added_tokens.json`); the terminal vocoder
+// is still S3Gen HiFT-GAN so the shared HiFTChain seam
+// (`vokra-models::cosyvoice2::hift_chain::HiFTChain`) applies —
+// no new op or backend kernel is added.
+pub(crate) mod chatterbox_turbo;
 pub(crate) mod cosyvoice2;
 // SoTA plan Phase 3 (2026-07-24): FunAudioLLM Fun-CosyVoice3-0.5B (apache-2.0
 // permissive) — same architecture as CosyVoice2 (Qwen2 LLM backbone +
