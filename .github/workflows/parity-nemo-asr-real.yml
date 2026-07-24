@@ -84,8 +84,10 @@ on:
           - canary
           - omniasr_ctc
   schedule:
-    # Mondays 09:00 UTC — its own slot in the weekly real-parity stagger.
-    - cron: "0 9 * * 1"
+    # Mondays 09:05 UTC — shifted off the 09:00 slot to avoid the
+    # cron-collision guard (repo-hygiene check-workflow-hygiene) sharing
+    # minute/hour/day-of-week with release-cadence.yml.
+    - cron: "5 9 * * 1"
   pull_request:
     # Narrow paths filter: PR runs only when the five NeMo-ASR modules,
     # their converters, the harness, or this workflow itself change. Every

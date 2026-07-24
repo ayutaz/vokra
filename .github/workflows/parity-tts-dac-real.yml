@@ -77,13 +77,13 @@ on:
         default: 'true'
         type: string
   schedule:
-    # Weekly Monday 10:00 UTC. This slot is shared with silero-nostd-cross-build,
-    # which is a light no_std cross-compile (no HF DL, no parity payload); the
-    # two jobs allocate separate ubuntu-latest runners and do not contend. Slot
-    # rationale mirrors the moshi/utmos header stagger: off-peak US/EU business
-    # hours so a hub-side outage that morning surfaces without blocking active
+    # Weekly Monday 10:15 UTC — shifted off the 10:00 slot to avoid the
+    # cron-collision guard (repo-hygiene check-workflow-hygiene) sharing
+    # minute/hour/day-of-week with silero-nostd-cross-build. Slot rationale
+    # mirrors the moshi/utmos header stagger: off-peak US/EU business hours
+    # so a hub-side outage that morning surfaces without blocking active
     # development.
-    - cron: '0 10 * * 1'
+    - cron: '15 10 * * 1'
   pull_request:
     # Narrow paths filter — this job only fires when the PR touches dia/zonos
     # code, the converter shims, the harness itself, or this workflow. Every
@@ -268,10 +268,15 @@ jobs:
           # torch is the smallest arch-appropriate dep: both models ship as
           # torch pickles / safetensors and the future reference dumper will
           # need it. Kept minimal here — the CPU-only wheel + safetensors +
-          # huggingface_hub cover the download + a future dumper. Numpy stays
-          # a torch transitive so we don't overpin.
+          # huggingface_hub cover the download + a future dumper. numpy is
+          # required explicitly (torch 2.8+ does NOT hard-depend on numpy but
+          # `safetensors.torch.save_file` transitively imports it via
+          # `safetensors/torch.py::_to_ndarray`; the parity-utmos.yml
+          # regression fixed in commit f90daad established the pattern for
+          # every parity venv on this branch).
           python -m pip install \
             'torch==2.9.1' \
+            'numpy>=1.26,<3' \
             'safetensors>=0.4' \
             'huggingface_hub>=0.24'
           # hf_transfer speeds the multi-GB safetensors pull.
@@ -331,7 +336,7 @@ jobs:
           # silently pick the wrong file.
           SAFETENSORS="${SNAPSHOT_DIR}/model.safetensors"
           if [ ! -f "${SAFETENSORS}" ]; then
-            SAFETENSORS="$(find "${SNAPSHOT_DIR}" -maxdepth 2 -name '*.safetensors' | head -n1)"
+            SAFETENSORS="$(find "${SNAPSHOT_DIR}" -maxdepth 2 -type f -name '*.safetensors' | head -n1)"
           fi
           if [ -z "${SAFETENSORS}" ] || [ ! -f "${SAFETENSORS}" ]; then
             echo "::error::no safetensors file located under ${SNAPSHOT_DIR} — upstream re-org?"

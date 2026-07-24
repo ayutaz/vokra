@@ -87,12 +87,15 @@ on:
         required: false
         default: "true"
   schedule:
-    # Mondays 09:30 UTC — its own slot in the weekly stagger (kokoro 04:00,
-    # whisper 05:00, vulkan 05:30, cuda-rtf 06:00, rvq 06:00 Tue, csm 06:30,
-    # web-wasm 07:00, moshi 07:30, utmos 08:00, godot 08:30, whisper-extras
-    # 09:30). Offsetting keeps one HF hub outage morning from blanking every
+    # Mondays 09:35 UTC — shifted off the 09:30 slot to avoid the
+    # cron-collision guard (repo-hygiene check-workflow-hygiene) sharing
+    # minute/hour/day-of-week with corpus-drift-detector.yml. Weekly stagger
+    # (kokoro 04:00, whisper 05:00, vulkan 05:30, cuda-rtf 06:00,
+    # rvq 06:00 Tue, csm 06:30, web-wasm 07:00, moshi 07:30, utmos 08:00,
+    # godot 08:30, nemo-asr 09:05, corpus-drift 09:30, whisper-extras 09:35).
+    # Offsetting keeps one HF hub outage morning from blanking every
     # scheduled parity gate at once.
-    - cron: "30 9 * * 1"
+    - cron: "35 9 * * 1"
   pull_request:
     # Fires only on whisper-extras-adjacent changes so per-PR runner
     # minutes stay bounded. Includes both crates' converter + runtime
