@@ -139,6 +139,15 @@ pub mod nsf;
 pub mod preprocess;
 pub mod prosody;
 pub mod resample;
+// ---- SoTA plan Phase 2 rnnt_decode (ASR primitive, FR-OP-42) ------------
+// RNN-T / TDT decoding: greedy + beam + TDT (duration head). Consumed by
+// parakeet-rnnt-1.1b and parakeet-tdt v2/v3/1.1b (CC-BY-4.0). Ported /
+// cross-referenced against NeMo's classical greedy and TDT beam decoders
+// (see the module docstring for exact line refs); label-looping (~1500x
+// RTFx) is a deferred follow-up. Localized re-export block for clean
+// parallel-wave rebases.
+pub mod rnnt_decode;
+// -------------------------------------------------------------------------
 pub mod stft;
 pub mod window;
 
@@ -201,6 +210,9 @@ pub use mimi_rvq::{
 pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};
 pub use prosody::{ApplyProsody, ProsodyControl};
 pub use resample::resample;
+// ---- SoTA plan Phase 2 rnnt_decode re-exports ---------------------------
+pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
+// -------------------------------------------------------------------------
 pub use stft::{Spectrogram, stft};
 pub use vokra_core::Complex32;
 
