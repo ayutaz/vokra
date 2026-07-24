@@ -52,9 +52,10 @@
 //! family).
 
 use std::env;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
-use vokra_core::gguf::{GgufFile, GgufMetadataValue};
+use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile, GgufMetadataValue};
 
 /// FP32 default tolerance (NFR-QL-01). Referenced by the future
 /// numerical-parity leg when the T29 weight bindings land.
@@ -607,4 +608,379 @@ fn nemo_asr_arch_list_matches_expected_arch_constants() {
         );
     }
     assert_eq!(NEMO_ASR_ARCHES.len(), 5, "family cardinality changed");
+}
+
+// ---------------------------------------------------------------------------
+// Always-on GGUF-fabrication self-tests (no env, no checkpoint)
+//
+// The tests above cover *intent* (env-var naming, skip-banner shape, arch
+// list cardinality) — but the helper layer (`read_u32`, `expect_u32_metadata`,
+// `open_and_check_arch`, `assert_has_any_tensor`, `note_refdir`) is the pure
+// seam the flip-the-switch harness rests on. Every panic branch, every
+// wrong-type absorb, every three-arm match is reachable via a minimum-viable
+// GGUF built in-memory through `GgufBuilder::to_bytes()` + a temp file, so
+// the seam can be pinned without a checkpoint or owner action. A fabricated
+// pass a converter regression could hide behind (e.g. `sample_rate` emitted
+// as String instead of U32 — `read_u32` silently returns `None`) is the exact
+// shape these tests document.
+// ---------------------------------------------------------------------------
+
+/// PID-scoped tempfile path so parallel test threads never collide.
+fn temp_gguf_path(tag: &str) -> PathBuf {
+    env::temp_dir().join(format!(
+        "vokra_parity_nemo_asr_{}_{}.gguf",
+        tag,
+        std::process::id(),
+    ))
+}
+
+fn write_temp_gguf(tag: &str, bytes: &[u8]) -> PathBuf {
+    let p = temp_gguf_path(tag);
+    std::fs::write(&p, bytes).unwrap_or_else(|e| panic!("write {}: {e}", p.display()));
+    p
+}
+
+/// Metadata-only builder pre-populated with the given arch tag.
+fn builder_with_arch(arch: &str) -> GgufBuilder {
+    let mut b = GgufBuilder::new();
+    b.add_string("vokra.model.arch", arch);
+    b
+}
+
+/// Adds a minimum-viable single-element F32 tensor so `assert_has_any_tensor`
+/// is satisfied.
+fn add_dummy_tensor(b: &mut GgufBuilder) {
+    b.add_tensor("nemo.dummy", GgmlType::F32, vec![1], vec![0u8; 4])
+        .expect("add dummy tensor");
+}
+
+/// Runs a closure that MUST panic and returns the payload as a String. Cargo
+/// test captures per-test stderr, so intentional panic exercises inside the
+/// closure do not spam the console unless the test itself fails.
+fn expect_panic<F>(f: F) -> String
+where
+    F: FnOnce() + panic::UnwindSafe,
+{
+    let payload = panic::catch_unwind(f).expect_err("closure was expected to panic but returned");
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        String::from("<non-string panic payload>")
+    }
+}
+
+#[test]
+fn read_u32_covers_every_shape_variant() {
+    let mut b = builder_with_arch("nemo-asr-test");
+    b.add_u32("vokra.foo.u32", 41);
+    b.add_metadata("vokra.foo.u64_fits", GgufMetadataValue::U64(42));
+    b.add_metadata("vokra.foo.u64_overflow", GgufMetadataValue::U64(u64::MAX));
+    b.add_string("vokra.foo.str", "hello");
+    // Deliberately not a `PI` approximation — clippy 1.95's
+    // `approx_constant` lint flags any float within 1e-2 of `PI`, and this
+    // test only cares about the tag being non-numeric-integer.
+    b.add_f32("vokra.foo.f32", 2.5);
+    b.add_bool("vokra.foo.bool", true);
+    let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+
+    // (a) absent → None
+    assert_eq!(read_u32(&file, "vokra.foo.absent"), None);
+    // (b) U32 → Some(v)
+    assert_eq!(read_u32(&file, "vokra.foo.u32"), Some(41));
+    // (c) U64 fitting → Some(v as u32)
+    assert_eq!(read_u32(&file, "vokra.foo.u64_fits"), Some(42));
+    // (d) U64 overflow → None (u32::try_from errors)
+    assert_eq!(read_u32(&file, "vokra.foo.u64_overflow"), None);
+    // (e) wrong-type variants collapse to None. This is the fabricated-pass
+    // shape the shape_validation gap pins: a converter regression that
+    // emits `vokra.<arch>.sample_rate` as String/F32/Bool cannot silently
+    // degrade the harness. If `read_u32` ever grows a wrong-type error path
+    // (a legitimate hardening), this test's expectations flip accordingly.
+    assert_eq!(read_u32(&file, "vokra.foo.str"), None);
+    assert_eq!(read_u32(&file, "vokra.foo.f32"), None);
+    assert_eq!(read_u32(&file, "vokra.foo.bool"), None);
+}
+
+#[test]
+fn expect_u32_metadata_wrong_type_currently_absorbed_as_absent() {
+    // Pins the shape_validation hazard: a converter that stamps
+    // `vokra.<arch>.sample_rate` as String / F32 / Bool routes through
+    // `read_u32` → None → `expect_u32_metadata`'s absent branch
+    // (eprintln only, no panic). This test locks that behavior so any
+    // future fix that starts panicking on wrong-type has to update this
+    // pin — i.e. the hazard cannot regress silently.
+    let cases: &[(&str, GgufMetadataValue)] = &[
+        ("vokra.foo.str", GgufMetadataValue::String("nope".into())),
+        ("vokra.foo.f32", GgufMetadataValue::F32(41.0)),
+        ("vokra.foo.bool", GgufMetadataValue::Bool(true)),
+    ];
+    for (key, value) in cases {
+        let mut b = builder_with_arch("nemo-asr-test");
+        b.add_metadata(key, value.clone());
+        let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+        // Must not panic even though the key is present-but-mistyped.
+        expect_u32_metadata(&file, "test-arch", key, 42);
+    }
+}
+
+#[test]
+fn expect_u32_metadata_mismatch_panics_with_both_values() {
+    let mut b = builder_with_arch("nemo-asr-test");
+    b.add_u32("vokra.foo.k", 41);
+    let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+    let msg = expect_panic(AssertUnwindSafe(|| {
+        expect_u32_metadata(&file, "test-arch", "vokra.foo.k", 42);
+    }));
+    assert!(msg.contains("41"), "observed value 41 missing: {msg}");
+    assert!(msg.contains("42"), "expected value 42 missing: {msg}");
+    assert!(
+        msg.contains("primary-source drift") || msg.contains("primary source"),
+        "documented message shape drifted: {msg}"
+    );
+    assert!(msg.contains("test-arch"), "arch tag missing: {msg}");
+    assert!(msg.contains("vokra.foo.k"), "key missing: {msg}");
+}
+
+#[test]
+fn expect_u32_metadata_absent_does_not_panic() {
+    // The docstring promises "not gated" for absent keys — the converter's
+    // coverage of the metadata block is itself iterating during Phase 2,
+    // so silence-with-eprintln is by design here.
+    let b = builder_with_arch("nemo-asr-test");
+    let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+    expect_u32_metadata(&file, "test-arch", "vokra.foo.k", 42);
+}
+
+#[test]
+fn open_and_check_arch_missing_arch_metadata_panics() {
+    // No `vokra.model.arch` at all — the converter must always stamp it.
+    let mut b = GgufBuilder::new();
+    b.add_tensor("t", GgmlType::F32, vec![1], vec![0u8; 4])
+        .unwrap();
+    let path = write_temp_gguf("no_arch", &b.to_bytes().expect("serialize"));
+    let msg = expect_panic(AssertUnwindSafe(|| {
+        let _ = open_and_check_arch(&path, "nemo-asr-test");
+    }));
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        msg.contains("no `vokra.model.arch`"),
+        "documented message shape drifted: {msg}"
+    );
+    assert!(msg.contains("nemo-asr-test"), "arch tag missing: {msg}");
+}
+
+#[test]
+fn open_and_check_arch_arch_mismatch_panics() {
+    let mut b = builder_with_arch("wrong-arch");
+    add_dummy_tensor(&mut b);
+    let path = write_temp_gguf("wrong_arch", &b.to_bytes().expect("serialize"));
+    let msg = expect_panic(AssertUnwindSafe(|| {
+        let _ = open_and_check_arch(&path, "nemo-asr-test");
+    }));
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        msg.contains("tag mismatch"),
+        "documented message shape drifted: {msg}"
+    );
+    assert!(msg.contains("wrong-arch"), "actual arch missing: {msg}");
+    assert!(
+        msg.contains("nemo-asr-test"),
+        "expected arch missing: {msg}"
+    );
+}
+
+#[test]
+fn open_and_check_arch_missing_file_panics() {
+    let path = env::temp_dir().join(format!(
+        "vokra_parity_nemo_asr_nonexistent_{}.gguf",
+        std::process::id()
+    ));
+    // Make sure it doesn't exist (previous run may have left one behind).
+    let _ = std::fs::remove_file(&path);
+    let msg = expect_panic(AssertUnwindSafe(|| {
+        let _ = open_and_check_arch(&path, "nemo-asr-test");
+    }));
+    assert!(
+        msg.contains("open GGUF"),
+        "documented message shape drifted: {msg}"
+    );
+    assert!(msg.contains("nemo-asr-test"), "arch tag missing: {msg}");
+}
+
+#[test]
+fn assert_has_any_tensor_panics_on_empty_gguf() {
+    // Metadata-only, zero tensors — the shape-only converter regression
+    // this branch is meant to catch.
+    let b = builder_with_arch("nemo-asr-test");
+    let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+    let msg = expect_panic(AssertUnwindSafe(|| {
+        assert_has_any_tensor(&file, "nemo-asr-test");
+    }));
+    assert!(
+        msg.contains("no tensors"),
+        "documented message shape drifted: {msg}"
+    );
+    assert!(msg.contains("nemo-asr-test"), "tag missing: {msg}");
+}
+
+#[test]
+fn note_refdir_covers_three_arm_match() {
+    // (a) None → no panic.
+    note_refdir(None, "nemo-asr-test");
+
+    // (b) Some(valid dir) → no panic.
+    let dir = env::temp_dir().join(format!(
+        "vokra_parity_nemo_asr_refdir_ok_{}",
+        std::process::id(),
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    note_refdir(Some(&dir), "nemo-asr-test");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // (c) Some(file path — exists but not a dir) → panic.
+    let file_path = env::temp_dir().join(format!(
+        "vokra_parity_nemo_asr_refdir_file_{}.txt",
+        std::process::id(),
+    ));
+    std::fs::write(&file_path, b"not a directory").unwrap();
+    let msg = expect_panic(AssertUnwindSafe(|| {
+        note_refdir(Some(&file_path), "kyutai_stt");
+    }));
+    let _ = std::fs::remove_file(&file_path);
+    assert!(
+        msg.contains("does not name a directory"),
+        "documented message shape drifted: {msg}"
+    );
+    assert!(
+        msg.contains(&refdir_env("kyutai_stt")),
+        "refdir env-var name missing from diagnostic: {msg}"
+    );
+
+    // (d) Some(nonexistent path) → panic (same arm as (c) — pinning that
+    // both `is not a directory` and `does not exist` land in the same
+    // loud-fail path, so a mistyped env var never silently no-ops).
+    let ghost = env::temp_dir().join(format!(
+        "vokra_parity_nemo_asr_refdir_ghost_{}_never",
+        std::process::id(),
+    ));
+    let _ = std::fs::remove_dir_all(&ghost);
+    let _ = std::fs::remove_file(&ghost);
+    let msg = expect_panic(AssertUnwindSafe(|| {
+        note_refdir(Some(&ghost), "canary");
+    }));
+    assert!(
+        msg.contains("does not name a directory"),
+        "documented message shape drifted: {msg}"
+    );
+    assert!(
+        msg.contains(&refdir_env("canary")),
+        "refdir env-var name missing from diagnostic: {msg}"
+    );
+}
+
+#[test]
+fn env_paths_for_returns_none_for_synthetic_never_armed_arch() {
+    // A synthetic arch key that no matrix entry (or workflow) ever
+    // consumes so no concurrent test can race the env var. Pins the
+    // clean-skip seam that the per-model
+    // `let Some(gguf) = gguf else { return; }` guard depends on —
+    // regressing it into an `unwrap()` would only surface on a real
+    // matrix run with env unset (dark territory).
+    let arch = "__parity_nemo_asr_never_armed__";
+    let (gguf, refdir) = env_paths_for(arch);
+    assert!(gguf.is_none(), "synthetic gguf env leaked: {gguf:?}");
+    assert!(refdir.is_none(), "synthetic refdir env leaked: {refdir:?}");
+}
+
+#[test]
+fn nemo_asr_arches_bridge_to_expected_arch_constants() {
+    use vokra_models::{canary, kyutai_stt, omniasr_ctc, parakeet, parakeet_ctc};
+    // Every arch key must round-trip through the underscore-to-dash
+    // bridge to its module's `EXPECTED_ARCH`. Guards against a family-list
+    // rename or an `EXPECTED_ARCH` rename that would let one side drift
+    // silently until an owner armed env for that model.
+    let bridged: &[(&str, &str)] = &[
+        ("kyutai_stt", kyutai_stt::EXPECTED_ARCH),
+        ("parakeet_tdt", parakeet::EXPECTED_ARCH),
+        ("parakeet_ctc", parakeet_ctc::EXPECTED_ARCH),
+        ("canary", canary::EXPECTED_ARCH),
+        ("omniasr_ctc", omniasr_ctc::EXPECTED_ARCH),
+    ];
+    for (key, expected) in bridged {
+        assert_eq!(
+            key.replace('_', "-"),
+            *expected,
+            "underscore-to-dash bridge broke for {key}"
+        );
+        // Also pin that the key is in the family list — a rename that
+        // dropped the entry would fail here.
+        assert!(
+            NEMO_ASR_ARCHES.contains(key),
+            "{key} missing from NEMO_ASR_ARCHES"
+        );
+    }
+}
+
+#[test]
+fn nemo_asr_arch_list_has_no_duplicates() {
+    // The existing `matches!`-plus-len check would still accept
+    // `["kyutai_stt", "kyutai_stt", "kyutai_stt", "canary", "omniasr_ctc"]`
+    // — a plausible copy-paste typo. Pin the uniqueness invariant.
+    use std::collections::HashSet;
+    let unique: HashSet<&&str> = NEMO_ASR_ARCHES.iter().collect();
+    assert_eq!(
+        unique.len(),
+        NEMO_ASR_ARCHES.len(),
+        "NEMO_ASR_ARCHES contains a duplicate arch key: {NEMO_ASR_ARCHES:?}"
+    );
+}
+
+#[test]
+fn skip_reason_per_arch_message_is_distinct_and_carries_arch_name() {
+    // Every arch's banner must (a) name the arch itself so owners can grep
+    // the CI log for a specific model (beyond just the env-var suffix
+    // check the existing test does) and (b) be distinct from every other
+    // arch's banner (guards against a bug that substituted one arch name
+    // for another verbatim).
+    for a in NEMO_ASR_ARCHES {
+        let msg = skip_reason(a);
+        assert!(msg.contains(a), "arch name {a} missing from skip banner");
+    }
+    for (i, a) in NEMO_ASR_ARCHES.iter().enumerate() {
+        for b in NEMO_ASR_ARCHES.iter().skip(i + 1) {
+            assert_ne!(
+                skip_reason(a),
+                skip_reason(b),
+                "skip banners for {a} and {b} collided — a bug that substituted \
+                 one arch name for another would slip past the content check"
+            );
+        }
+    }
+}
+
+#[test]
+fn minimum_viable_gguf_composes_all_three_helpers() {
+    // Fabricates the *smallest* GGUF the harness accepts as an armed
+    // input: one 1-element F32 tensor + arch tag + one positive u32
+    // hparam. Runs `open_and_check_arch` + `assert_has_any_tensor` +
+    // `expect_u32_metadata` in the same order the per-model tests do,
+    // proving the three helpers compose end-to-end with zero env and
+    // zero checkpoint — the seam the whole harness rests on.
+    let mut b = builder_with_arch("nemo-asr-test");
+    b.add_u32("vokra.nemo_asr_test.sample_rate", 16_000);
+    add_dummy_tensor(&mut b);
+    let path = write_temp_gguf("minimum_viable", &b.to_bytes().expect("serialize"));
+
+    let file = open_and_check_arch(&path, "nemo-asr-test");
+    assert_has_any_tensor(&file, "nemo-asr-test");
+    expect_u32_metadata(
+        &file,
+        "nemo-asr-test",
+        "vokra.nemo_asr_test.sample_rate",
+        16_000,
+    );
+    let _ = std::fs::remove_file(&path);
 }
