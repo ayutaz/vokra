@@ -298,6 +298,28 @@ pub enum ModelKind {
     /// note is deliberately deferred; the scaffold stops at shape /
     /// weight-store flow).
     OmniasrCtc,
+    /// Resemble AI **Chatterbox-Multilingual** T3 safetensors checkpoint
+    /// (SoTA plan Phase 3, 2026-07-24). MIT weight + code. T3 =
+    /// **Llama_520M** backbone (`hidden_size=1024`, `num_hidden_layers=30`,
+    /// MHA `num_attention_heads=num_key_value_heads=16`, `head_dim=64`,
+    /// SwiGLU `intermediate_size=4096`, `rope_theta=500_000`,
+    /// `rms_norm_eps=1e-5`) driving speech-token AR sampling; the
+    /// terminal vocoder is HiFT-GAN (S3Gen) — the same `HiFTGenerator`
+    /// topology CosyVoice2 / CosyVoice3 use, wired through the shared
+    /// `vokra-models::cosyvoice2::hift_chain::HiFTChain` seam per SoTA
+    /// plan §1(a) 訂正 2026-07-22 (no new op or backend kernel added).
+    /// The multilingual variant is identified by
+    /// `text_tokens_dict_size = 2454` (English-only baseline = 704) and
+    /// ships 23 languages
+    /// (`src/chatterbox/mtl_tts.py::SUPPORTED_LANGUAGES`). Every hparam
+    /// is transcribed **verbatim** from `github.com/resemble-ai/chatterbox`
+    /// (`src/chatterbox/models/t3/`) — the release ships safetensors +
+    /// Python code, no `config.json` on HF, so the primary source is the
+    /// code. Convert with [`convert_chatterbox_file`] — the converter
+    /// takes no config side-car (every hparam is a compile-time
+    /// constant); a variant tag (multilingual vs english-only) is a
+    /// caller argument and defaults to multilingual.
+    Chatterbox,
 }
 
 impl ModelKind {
@@ -358,6 +380,18 @@ impl ModelKind {
             | "distil-large-v3"
             | "distil-large-v3.5"
             | "distil-large-v3_5" => Some(Self::DistilWhisper),
+            // Resemble AI Chatterbox family — the multilingual variant is
+            // the canonical Phase 3 landing. Accept the family, the two HF
+            // variant tags, and the raw `t3_mtl23ls_v{2,3}` checkpoint
+            // filenames.
+            "chatterbox"
+            | "chatterbox-multilingual"
+            | "chatterbox-multilingual-v2"
+            | "chatterbox-multilingual-v3"
+            | "chatterbox-mtl23ls-v2"
+            | "chatterbox-mtl23ls-v3"
+            | "chatterbox-english"
+            | "chatterbox_en" => Some(Self::Chatterbox),
             _ => None,
         }
     }
@@ -387,6 +421,7 @@ impl ModelKind {
             Self::Canary => "canary",
             Self::OmniasrCtc => "omniasr-ctc",
             Self::DistilWhisper => "distil-whisper",
+            Self::Chatterbox => "chatterbox",
         }
     }
 }
@@ -820,6 +855,29 @@ pub fn convert_file_licensed(
                     .notes
                     .iter()
                     .map(|n| format!("distil-whisper warning: {n}")),
+            );
+            (builder, notes)
+        }
+        ModelKind::Chatterbox => {
+            // SoTA plan Phase 3 (2026-07-24): pass every F32/F16 tensor
+            // through verbatim and stamp the `vokra.chatterbox.*` chunk
+            // group (T3 axes + Llama_520M backbone + norm/RoPE) from the
+            // transcribed constants in `models::chatterbox`. Provenance =
+            // MIT (Permissive — no runtime-side attribution obligation).
+            // The default dispatch path tags the GGUF as the multilingual
+            // variant (`t3_mtl23ls_v3.safetensors`); the English-only path
+            // is reachable through the variant-taking internal converter.
+            let (builder, report) = models::chatterbox::convert(bytes)?;
+            let mut notes = vec![format!(
+                "chatterbox: {} float weights written verbatim, {} non-float skipped, \
+                 variant {:?}",
+                report.written, report.skipped_non_float, report.variant,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("chatterbox warning: {n}")),
             );
             (builder, notes)
         }
@@ -1742,6 +1800,30 @@ pub fn convert_voxtral_file_with_adapter_config_quantized(
 /// script (CSM / DAC pattern) to flatten it to safetensors first.
 pub fn convert_dia_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::Dia, input, output)
+}
+
+/// Convert a Resemble AI **Chatterbox-Multilingual** T3 safetensors
+/// checkpoint into a Vokra GGUF (SoTA plan Phase 3, 2026-07-24).
+///
+/// This is the named entry point that mirrors `convert_dia_file` /
+/// `convert_zonos_file` / `convert_csm_file` / `convert_kokoro_file`. It is
+/// functionally identical to `convert_file(ModelKind::Chatterbox, input,
+/// output)` — Chatterbox has no side-car config or tokenizer to embed
+/// (every hparam is transcribed as constants in `models::chatterbox`; the
+/// release stores hparams in Python code and ships no `config.json` on HF)
+/// — but the named entry keeps the `convert_*_file` naming symmetry with
+/// the other TTS models.
+///
+/// The upstream release is `ResembleAI/chatterbox` on HuggingFace; the
+/// multilingual variant weight is `t3_mtl23ls_v3.safetensors` (v2 also
+/// shipped). Weight license = **MIT** (`github.com/resemble-ai/chatterbox/LICENSE`
+/// — Copyright (c) 2025 Resemble AI, fetched 2026-07-24) — the M2-13 gate
+/// passes commercially without any attribution obligation.
+pub fn convert_chatterbox_file(
+    input: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::Chatterbox, input, output)
 }
 
 /// Convert a Zyphra **Zonos-v0.1-transformer** safetensors checkpoint into a

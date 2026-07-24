@@ -12,6 +12,17 @@ pub(crate) mod campplus;
 // body via `Stacking { factor: 8 }`) and `vokra_ops::beam_search`
 // (attention-decoder search) primitives — no per-model op duplication.
 pub(crate) mod canary;
+// SoTA plan Phase 3 (2026-07-24): Resemble AI Chatterbox-Multilingual TTS
+// (MIT weight, Permissive) safetensors → GGUF with the `vokra.chatterbox.*`
+// chunk group. Every F32 / F16 tensor passes through verbatim; every hparam
+// is transcribed from the primary source (`github.com/resemble-ai/chatterbox`
+// — `src/chatterbox/models/t3/`). No `config.json` on HF (the release stores
+// hparams in Python code), so the converter takes no config side-car; the
+// variant tag (multilingual vs english-only) is a caller argument, defaulted
+// to Multilingual by [`convert`]. Reuses the shared HiFTChain seam
+// (`vokra-models::cosyvoice2::hift_chain::HiFTChain`, SoTA plan §1(a) 訂正
+// 2026-07-22) — no new op or backend kernel is added.
+pub(crate) mod chatterbox;
 pub(crate) mod cosyvoice2;
 // SoTA plan Phase 3 (2026-07-24): FunAudioLLM Fun-CosyVoice3-0.5B (apache-2.0
 // permissive) — same architecture as CosyVoice2 (Qwen2 LLM backbone +

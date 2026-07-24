@@ -386,6 +386,22 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "fun-cosyvoice3-0.5b-2512"
         | "fun-cosyvoice3-0_5b"
         | "fun-cosyvoice3-0_5b-2512" => LicenseClass::Permissive,
+        // SoTA plan Phase 3 (2026-07-24): Resemble AI Chatterbox-Multilingual
+        // TTS — T3 (Llama_520M backbone) + HiFT-GAN vocoder. Weight license
+        // = **MIT** per `github.com/resemble-ai/chatterbox/LICENSE`
+        // (Copyright (c) 2025 Resemble AI, fetched 2026-07-24 — CLAUDE.md
+        // 「ハルシネーション厳禁」). Redundant with the `chatterbox-` family
+        // walk below, but the exact canonical spellings + the two variant
+        // tags + the raw checkpoint stems are listed here so an id lookup
+        // returns quickly without hitting the prefix arm.
+        "chatterbox"
+        | "chatterbox-multilingual"
+        | "chatterbox-multilingual-v2"
+        | "chatterbox-multilingual-v3"
+        | "chatterbox-mtl23ls-v2"
+        | "chatterbox-mtl23ls-v3"
+        | "chatterbox-english"
+        | "chatterbox_en" => LicenseClass::Permissive,
         // Commercial-OK codecs (FR-OP-32): DAC / WavTokenizer / X-Codec 2 = MIT.
         "dac" | "wavtokenizer" | "x-codec-2" | "xcodec2" => LicenseClass::Permissive,
         // SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B — Apache 2.0
@@ -535,7 +551,23 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
             // MIT.
             || id.starts_with("distil-large-")
             || id.starts_with("distil-medium-")
-            || id.starts_with("distil-small-") =>
+            || id.starts_with("distil-small-")
+            // Resemble AI Chatterbox family (MIT weight — SoTA plan
+            // Phase 3, 2026-07-24): specific HF variant ids like
+            // `chatterbox-multilingual-v3` / `chatterbox-nano` /
+            // `chatterbox-turbo` (a future release) or the raw
+            // `chatterbox-mtl23ls-v3` checkpoint stem still resolve
+            // permissive. Guarded on the dash so unrelated ids
+            // (`chatterbox-something-not-shipped-by-resemble`) still
+            // land under this permissive arm — which is correct here:
+            // the whole family ships under a single MIT LICENSE at
+            // `github.com/resemble-ai/chatterbox/LICENSE`, unlike NVIDIA's
+            // multi-checkpoint releases where different sizes can carry
+            // different licences. The `chatterbox_` alias variant covers
+            // the `chatterbox_en` underscore spelling and any future
+            // underscore stem.
+            || id.starts_with("chatterbox-")
+            || id.starts_with("chatterbox_") =>
         {
             LicenseClass::Permissive
         }

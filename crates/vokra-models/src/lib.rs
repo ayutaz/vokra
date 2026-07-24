@@ -43,6 +43,21 @@
 // vokra_ops::beam_search for the attention-decoder search) rather than
 // duplicating.
 pub mod canary;
+// SoTA plan Phase 3 (2026-07-24): Resemble AI Chatterbox-Multilingual TTS
+// (MIT). T3 = Llama_520M backbone (hidden=1024 / n_layer=30 / MHA n_head=16
+// n_head_kv=16 / head_dim=64 / SwiGLU ffn=4096 / RoPE θ=500000 llama3-scaled)
+// + HiFT-GAN vocoder (S3Gen terminal — same `HiFTGenerator` topology
+// CosyVoice2 / CosyVoice3 use, wired through the shared
+// `cosyvoice2::hift_chain::HiFTChain` seam per SoTA plan §1(a) 訂正
+// 2026-07-22). Every hparam transcribed verbatim from
+// `github.com/resemble-ai/chatterbox` (`src/chatterbox/models/t3/`) —
+// the release ships safetensors + Python code, no `config.json` on HF, so
+// the primary source is the code. Multilingual variant identifier =
+// `text_tokens_dict_size == 2454` (English-only = 704); 23 languages
+// listed in `mtl_tts.py::SUPPORTED_LANGUAGES`. No new op or backend kernel
+// — the Llama primitives and HiFTNet seam are shared with CosyVoice2 /
+// CosyVoice3.
+pub mod chatterbox;
 pub mod codec;
 pub mod compute;
 pub mod cosyvoice2;

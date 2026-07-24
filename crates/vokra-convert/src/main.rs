@@ -1015,6 +1015,60 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  n_text_layer={n_text_layer} n_mels={n_mels} n_vocab={n_vocab}"
             );
         }
+        ModelKind::Chatterbox => {
+            // SoTA plan Phase 3 (2026-07-24): Chatterbox verify surface —
+            // arch/name plus the T3 axes that identify the multilingual vs
+            // English-only variant and pin the Llama_520M backbone shape.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let variant = file
+                .get("vokra.chatterbox.variant")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let text_vocab = file
+                .get("vokra.chatterbox.arch.text_vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let speech_vocab = file
+                .get("vokra.chatterbox.arch.speech_vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let hidden = file
+                .get("vokra.chatterbox.arch.hidden_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_layer = file
+                .get("vokra.chatterbox.arch.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_head = file
+                .get("vokra.chatterbox.arch.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let head_dim = file
+                .get("vokra.chatterbox.arch.head_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let ffn_dim = file
+                .get("vokra.chatterbox.arch.ffn_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr = file
+                .get("vokra.chatterbox.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} variant={variant} text_vocab={text_vocab} \
+                 speech_vocab={speech_vocab} hidden={hidden} n_layer={n_layer} \
+                 n_head={n_head} head_dim={head_dim} ffn={ffn_dim} sample_rate={sr}"
+            );
+        }
     }
     Ok(())
 }

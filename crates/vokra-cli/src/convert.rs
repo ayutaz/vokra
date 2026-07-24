@@ -11,10 +11,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, PolicyPreset, VoxtralConfig, convert_cosyvoice2_file, convert_cosyvoice3_file,
-    convert_dac_file, convert_file, convert_file_quantized, convert_file_with_policy,
-    convert_kokoro_file, convert_piper_plus_file, convert_voxtral_file_quantized,
-    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
+    ModelKind, PolicyPreset, VoxtralConfig, convert_chatterbox_file, convert_cosyvoice2_file,
+    convert_cosyvoice3_file, convert_dac_file, convert_file, convert_file_quantized,
+    convert_file_with_policy, convert_kokoro_file, convert_piper_plus_file,
+    convert_voxtral_file_quantized, convert_voxtral_file_with_adapter_config_quantized,
+    parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -22,11 +23,12 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|chatterbox> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice3 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
+    vokra-cli convert --model chatterbox --input <t3.safetensors> --output <out.gguf>
     vokra-cli convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model voxtral --input <ckpt.safetensors | model.safetensors.index.json> \
                       [--config <config.json>] [--adapter-config <adapter.json>] \
@@ -37,7 +39,7 @@ OPTIONS:
                               campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
                               parakeet-tdt | parakeet-ctc | canary | omniasr-ctc |
-                              distil-whisper
+                              distil-whisper | chatterbox
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
@@ -111,6 +113,25 @@ OPTIONS:
                               runtime refuses the LLM bind loudly per
                               FR-EX-08); weight license = apache-2.0
                               permissive)
+                              (chatterbox: Resemble AI Chatterbox-Multilingual
+                              — T3 (Llama_520M backbone: hidden=1024 /
+                              n_layer=30 / MHA n_head=16 n_head_kv=16 /
+                              head_dim=64 / SwiGLU ffn=4096 / RoPE θ=500000
+                              llama3-scaled) driving speech-token AR
+                              sampling; terminal vocoder = HiFT-GAN (S3Gen)
+                              wired through the shared HiFTChain seam
+                              (SoTA plan §1(a) 訂正 2026-07-22, same seam
+                              as CosyVoice2 / CosyVoice3); multilingual
+                              variant covers 23 languages
+                              (mtl_tts.py::SUPPORTED_LANGUAGES) — the T3
+                              text-token vocabulary of 2454 pins the
+                              multilingual identity vs the English-only
+                              baseline at 704; no `config.json` on HF
+                              (the release stores hparams in Python code),
+                              so no --config side-car — every hparam is
+                              transcribed verbatim from the upstream
+                              source tree; weight license = MIT permissive
+                              — no attribution obligation)
     --input <path>            upstream checkpoint file. For voxtral, a
                               `*.index.json` path reads every shard listed in
                               its weight_map (the raw sharded BF16 release)
@@ -206,7 +227,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac | \
                          csm | moshi | denoise | dia | zonos | kyutai-stt | \
                          parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
-                         distil-whisper)"
+                         distil-whisper | chatterbox)"
                     )
                 })?);
                 i += 2;
@@ -462,6 +483,20 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 }
             }
         }
+        ModelKind::Chatterbox => {
+            // SoTA plan Phase 3 (2026-07-24): Chatterbox has no `config.json`
+            // on HF (the release stores every hparam in Python code), so the
+            // CLI takes no --config side-car — the transcribed constants in
+            // `models::chatterbox` are authoritative. Quantization surface is
+            // whisper-only (same posture as CosyVoice3 / dia / zonos).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_chatterbox_file(&p.input, &p.output)
+        }
         _ => {
             // Ticket precedence: an explicit --policy-preset wins; else the
             // legacy --quantize q4_k alias maps to the whisper_q4_k preset;
@@ -597,6 +632,30 @@ mod tests {
         assert_eq!(p.config, Some(PathBuf::from("config.json")));
     }
 
+    /// Every accepted spelling from `ModelKind::from_arg` parses via the CLI
+    /// front-end for the Chatterbox family — the family, both HF variant
+    /// tags, and the raw `t3_mtl23ls_v{2,3}` checkpoint stems.
+    #[test]
+    fn parses_chatterbox_variant_ids() {
+        for spelling in [
+            "chatterbox",
+            "chatterbox-multilingual",
+            "chatterbox-multilingual-v2",
+            "chatterbox-multilingual-v3",
+            "chatterbox-mtl23ls-v2",
+            "chatterbox-mtl23ls-v3",
+            "chatterbox-english",
+            "chatterbox_en",
+        ] {
+            let p = parse_args(&args(&[
+                "--model", spelling, "--input", "i", "--output", "o",
+            ]))
+            .unwrap_or_else(|e| panic!("--model {spelling} should parse: {e}"));
+            assert_eq!(p.model, ModelKind::Chatterbox, "--model {spelling}");
+            assert!(p.config.is_none(), "chatterbox takes no --config side-car");
+        }
+    }
+
     #[test]
     fn parses_fun_cosyvoice3_variant_ids() {
         // Every accepted spelling from `ModelKind::from_arg` parses via
@@ -670,6 +729,7 @@ mod tests {
             ("canary", ModelKind::Canary),
             ("omniasr-ctc", ModelKind::OmniasrCtc),
             ("distil-whisper", ModelKind::DistilWhisper),
+            ("chatterbox", ModelKind::Chatterbox),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
@@ -720,7 +780,14 @@ mod tests {
     /// `vokra_convert`'s `quantization_is_still_refused_for_non_whisper_models`.
     #[test]
     fn quantize_is_still_rejected_for_models_with_a_dedicated_cli_arm() {
-        for m in ["kokoro", "cosyvoice2", "cosyvoice3", "piper-plus", "dac"] {
+        for m in [
+            "kokoro",
+            "cosyvoice2",
+            "cosyvoice3",
+            "chatterbox",
+            "piper-plus",
+            "dac",
+        ] {
             let e = main(&args(&[
                 "--model",
                 m,
