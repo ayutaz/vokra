@@ -104,6 +104,18 @@ pub mod ctc_decode;
 pub mod dac_rvq;
 // -------------------------------------------------------------------------
 pub mod dct;
+// ---- SoTA plan Phase 4 ddpm_sampler (TTS primitive, new class) ---------
+// DDPM sampler with `v-prediction` support (Salimans & Ho 2022) and a
+// cosine β schedule (Nichol & Dhariwal 2021) — the two axes VibeVoice
+// (Microsoft, MIT, `huggingface.co/microsoft/VibeVoice-1.5B`) needs and
+// the existing `flow_sampler` cannot express (its DDIM/DPM++ branches
+// carry `ε`-prediction with a linear α schedule pinned inside the
+// solver per ADR M3-05 §D4). Runtime function, NOT an OpKind variant
+// (same posture as `flow_sampler` / `mimi_rvq` / `dac_rvq` /
+// `qwen3_tts_codec` / `vae_continuous` — FR-OP-30 / FR-EX-10 / ADR
+// M3-06 §D-b). Localized re-export block for clean parallel-wave rebases.
+pub mod ddpm_sampler;
+// -------------------------------------------------------------------------
 // ---- M4-04 encodec_rvq (engine op only — FR-OP-32 permanent weight
 // exclusion; parity uses synthetic codebooks, never pretrained weights) ----
 pub mod encodec_rvq;
@@ -258,6 +270,12 @@ pub use dispatch::{OpValue, dispatch};
 pub use flow_sampler::{
     CfgMode, CfgScaleProfile, FlowSamplerConfig, FlowSamplerState, ForwardPass, OdeSolver,
     Schedule, flow_sample,
+};
+// -------------------------------------------------------------------------
+// ---- SoTA plan Phase 4 ddpm_sampler re-exports --------------------------
+pub use ddpm_sampler::{
+    BetaSchedule, DdpmSamplerConfig, PredictionType, build_alphas_cumprod, ddpm_sample,
+    pick_inference_timesteps,
 };
 // -------------------------------------------------------------------------
 // ---- M4-16 fsq_codec re-exports ------------------------------------------
