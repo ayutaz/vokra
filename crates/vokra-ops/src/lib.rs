@@ -67,6 +67,15 @@ pub mod hpf;
 pub mod loudness_norm;
 // -------------------------------------------------------------------------
 pub mod attrs;
+// ---- SoTA plan Phase 3 BigVGAN vocoder (TTS bigvgan_generator primitive) ---
+// Anti-aliased periodic-activation vocoder — verbatim port of upstream
+// NVIDIA/BigVGAN (MIT, Copyright (c) 2024 NVIDIA CORPORATION). AMPBlock1 +
+// Snake/SnakeBeta + tanh terminal — see module docstring for the exact
+// upstream line references and a note on the (deferred) alias-free
+// activation wrapper. Snake activation is reused from [`crate::hiftnet`];
+// SnakeBeta lives here.
+pub mod bigvgan_generator;
+// ---------------------------------------------------------------------------
 // ---- SoTA plan Phase 2 Conformer / FastConformer ASR encoder ------------
 // One implementation covers both — FastConformer differs only in the
 // subsampling stem (`ConvSubsampleKind::Stacking { factor }`). Consumed by
@@ -174,6 +183,12 @@ pub mod window;
 // ---- M4-03 aec re-exports ------------------------------------------------
 pub use aec::{Aec, AecAttrs, AecStatus};
 // ---------------------------------------------------------------------------
+// ---- SoTA plan Phase 3 bigvgan_generator re-exports ---------------------
+pub use bigvgan_generator::{
+    AmpBlock1, AmpBlock1Weights, BigVGanConfig, BigVGanGenerator, BigVGanWeights, SnakeBeta,
+    SnakeKind,
+};
+// -------------------------------------------------------------------------
 // ---- SoTA plan Phase 2 ctc_decode re-exports ----------------------------
 pub use ctc_decode::{CtcBeamAttrs, CtcHypothesis, ctc_decode_beam, ctc_decode_greedy};
 // -------------------------------------------------------------------------
