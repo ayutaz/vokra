@@ -485,13 +485,17 @@ fn assert_gguf_matches_reference_config(file: &GgufFile, refdir: &Path, gguf_pat
          dir is not Qwen3-TTS-12Hz-0.6B-Base or upstream renamed the config type"
     );
 
-    // The `talker.*` and `code_predictor.*` sub-blocks carry the transcribed
-    // hparams. Miss = the reference is a different variant / release shape
-    // → hard-fail (opted-in setup completeness).
-    let talker = json_get(&root, "talker", &ctx_top);
-    let cp = json_get(&root, "code_predictor", &ctx_top);
-    let ctx_talker = format!("{ctx_top}#talker");
-    let ctx_cp = format!("{ctx_top}#code_predictor");
+    // The `talker_config.*` sub-block carries the transcribed hparams. The
+    // `code_predictor_config` is nested inside `talker_config` (verified
+    // 2026-07-25 against huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base
+    // config.json — the initial harness assumed a flat `talker` /
+    // `code_predictor` top-level pair, but upstream nests them). Miss =
+    // the reference is a different variant / release shape → hard-fail
+    // (opted-in setup completeness).
+    let talker = json_get(&root, "talker_config", &ctx_top);
+    let cp = json_get(talker, "code_predictor_config", &ctx_top);
+    let ctx_talker = format!("{ctx_top}#talker_config");
+    let ctx_cp = format!("{ctx_top}#talker_config.code_predictor_config");
 
     // --- Talker cross-checks (GGUF vs upstream config.json) ---
     // Plain fns (not closures) so both accumulators can coexist without
