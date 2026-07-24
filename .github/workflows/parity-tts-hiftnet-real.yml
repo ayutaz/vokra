@@ -1,0 +1,535 @@
+# `tts-hiftnet` family real-checkpoint parity CI (SoTA Phase 1, 2026-07-25).
+#
+# Runs the flip-the-switch harness
+# (`crates/vokra-models/tests/parity_tts_hiftnet.rs`) against the four
+# HiFTNet-vocoder TTS families the runtime carries today:
+#
+#   * `cosyvoice3`               — FunAudioLLM/Fun-CosyVoice3-0.5B-2512 (apache-2.0)
+#   * `chatterbox_multilingual`  — ResembleAI/chatterbox (T3 mtl23ls_v3, MIT)
+#   * `chatterbox_turbo`         — ResembleAI/chatterbox-turbo           (MIT)
+#   * `chatterbox_nano`          — ResembleAI/chatterbox-nano            (MIT)
+#
+# HiFTNet (`HiFTGenerator` = Neural Source Filter + ISTFTNet + MRF/Snake,
+# CosyVoice upstream `cosyvoice/hifigan/generator.py`) is the shared
+# terminal vocoder — the SoTA plan §1(a) 訂正 (2026-07-22) seam under
+# `crate::cosyvoice2::hift_chain::HiFTChain`. This workflow is the CI
+# side of the flip-the-switch pattern the harness carries: once an
+# owner publishes a converted GGUF (and optionally an upstream
+# reference-dump directory), the corresponding leg fires end-to-end;
+# absent a GGUF, the leg SKIPs cleanly with a per-family annotation
+# that names the exact env var to set (FR-EX-08 explicit skip, not a
+# synthetic fallback — 「fabricated pass 禁止」).
+#
+# # Design (parity-kokoro-real.yml discipline)
+#
+#   * Trigger: workflow_dispatch (owner-driven, includes per-family
+#     toggles) + weekly cron @ Mon 10:30 UTC (its own slot in the
+#     staggered weekly ladder — kokoro 04, whisper 05, vulkan 05:30,
+#     cuda-rtf 06, csm 06:30, web-wasm 07, moshi 07:30, utmos 08,
+#     godot 08:30, tts-hiftnet 10:30) + narrow pull_request paths
+#     filter that only fires on tts-hiftnet-adjacent code changes.
+#
+#   * Repository variable gate: `VOKRA_TTS_HIFTNET_ENABLE = 1` is the
+#     opt-in for the SCHEDULED / PR triggers. `workflow_dispatch`
+#     proceeds regardless (the dispatcher opted in). Absent the
+#     variable, the setup job clean-skips with a
+#     `::notice::VOKRA_TTS_HIFTNET_ENABLE unset — clean skip, not a
+#     pass` annotation. `moshi_parity_real.yml` uses the exact same
+#     posture (`MOSHI_PARITY_ENABLE`).
+#
+#   * Per-family matrix (with `include_*` workflow_dispatch inputs):
+#     Chatterbox-Multilingual and Chatterbox-Nano flow on every
+#     dispatch by default (the smallest reference downloads); the
+#     Turbo + CosyVoice3 legs require an explicit `include_*` input.
+#     The scheduled cron leg runs only the small legs so the runner-
+#     minutes footprint stays bounded.
+#
+#   * HF fetch is `snapshot_download` at the harness-pinned SHA (the
+#     workflow's env: block is the SoT; the harness's Rust-side
+#     `hf_revision` field is verified-equal by the ambient sanity
+#     test the harness embeds — a drift there fails on every PR that
+#     touches the harness).
+#
+#   * The Rust converter runs verbatim (`vokra-cli convert --model
+#     <alias>`) — same dispatch table `.github/workflows/parity-*-real.yml`
+#     already use. Python parity venv is installed inline to a
+#     `/tmp`-scoped venv; the final `git diff --exit-code Cargo.lock`
+#     step proves the zero-dep invariant (NFR-DS-02) held.
+#
+#   * Honest reporting: the harness prints per-family arch / sample
+#     rate / hparam count / tensor count for PASSes and names the
+#     drifting chunk on FAIL. If `VOKRA_TTS_HIFTNET_<ARCH>_REFDIR`
+#     also carries an upstream `hparams.json` dump, the hparam-level
+#     round-trip cross-check fires. Stage-tap comparison is
+#     DEFERRED until a live `synthesize` binds (each runtime module's
+#     `synthesize` currently returns `NotImplemented` — see the
+#     harness's module-level docstring for the T29-equivalent
+#     follow-up plan).
+#
+#   * NOT a required check. Same rationale as the other real-parity
+#     workflows: HF flakiness must never block PRs. Owner promotes
+#     after consecutive greens.
+
+name: parity-tts-hiftnet-real
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_cosyvoice3:
+        description: "Run the CosyVoice3 leg (Fun-CosyVoice3-0.5B, ~11.8 GB HF DL — apache-2.0)."
+        type: boolean
+        default: false
+      include_chatterbox_multilingual:
+        description: "Run the Chatterbox-Multilingual leg (t3_mtl23ls_v3 inside ResembleAI/chatterbox, ~23 GB repo; single-file DL of the mtl23ls_v3 safetensors is ~2.1 GB — MIT)."
+        type: boolean
+        default: true
+      include_chatterbox_turbo:
+        description: "Run the Chatterbox-Turbo leg (t3_turbo_v1, ~1.5 GB HF DL — MIT)."
+        type: boolean
+        default: false
+      include_chatterbox_nano:
+        description: "Run the Chatterbox-Nano leg (t3_nano_v1, ~0.8 GB HF DL — MIT)."
+        type: boolean
+        default: true
+  schedule:
+    # Weekly Monday 10:30 UTC — own slot in the staggered ladder (see
+    # header rationale). Off-peak US/EU business hours so an HF outage
+    # that morning surfaces without blocking active development.
+    - cron: "30 10 * * 1"
+  pull_request:
+    # Only fires on tts-hiftnet-adjacent code so per-PR CI cost stays
+    # bounded. Any PR that touches the harness, one of the four
+    # runtime modules, one of the four converters, or this workflow
+    # itself triggers a run (behind the ENABLE gate below).
+    paths:
+      - ".github/workflows/parity-tts-hiftnet-real.yml"
+      - "crates/vokra-convert/src/models/chatterbox.rs"
+      - "crates/vokra-convert/src/models/chatterbox_nano.rs"
+      - "crates/vokra-convert/src/models/chatterbox_turbo.rs"
+      - "crates/vokra-convert/src/models/cosyvoice3.rs"
+      - "crates/vokra-core/**"
+      - "crates/vokra-models/src/chatterbox/**"
+      - "crates/vokra-models/src/chatterbox_nano/**"
+      - "crates/vokra-models/src/chatterbox_turbo/**"
+      - "crates/vokra-models/src/cosyvoice3/**"
+      - "crates/vokra-models/src/cosyvoice2/hift_chain/**"
+      - "crates/vokra-models/tests/parity_tts_hiftnet.rs"
+      - "crates/vokra-ops/src/hiftnet/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parity-tts-hiftnet-real-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  # Harness-pinned SHAs (kept in lock-step with the `hf_revision`
+  # fields inside `crates/vokra-models/tests/parity_tts_hiftnet.rs`;
+  # the harness's `skip_reason_names_the_expected_env_var` test
+  # asserts SHA equality on every PR touching the file, so a bump
+  # here without a matching harness edit fails CI).
+  COSYVOICE3_REPO: FunAudioLLM/Fun-CosyVoice3-0.5B-2512
+  COSYVOICE3_REVISION: "29e01c4e8d000f4bcd70751be16fa94bf3d85a18"
+  CHATTERBOX_REPO: ResembleAI/chatterbox
+  CHATTERBOX_REVISION: "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18"
+  CHATTERBOX_TURBO_REPO: ResembleAI/chatterbox-turbo
+  CHATTERBOX_TURBO_REVISION: "749d1c1a46eb10492095d68fbcf55691ccf137cd"
+  CHATTERBOX_NANO_REPO: ResembleAI/chatterbox-nano
+  CHATTERBOX_NANO_REVISION: "71ccd1d0081b430592cea481f4307e764e07bc64"
+  PARITY_VENV: /tmp/vokra-py-tts-hiftnet
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Preflight gate: opt-in for the scheduled / PR triggers. A
+  # workflow_dispatch run always proceeds (the dispatcher opted in);
+  # the scheduled and PR runs require `VOKRA_TTS_HIFTNET_ENABLE=1`
+  # so a repository can adopt the workflow without immediately
+  # spending ~20 min of runner time every Monday (fabricated pass
+  # 禁止: the setup job's clean skip is explicit, not silent).
+  setup:
+    name: gate (VOKRA_TTS_HIFTNET_ENABLE)
+    runs-on: ubuntu-latest
+    outputs:
+      run_parity: ${{ steps.decide.outputs.run_parity }}
+      run_cosyvoice3: ${{ steps.decide.outputs.run_cosyvoice3 }}
+      run_chatterbox_multilingual: ${{ steps.decide.outputs.run_chatterbox_multilingual }}
+      run_chatterbox_turbo: ${{ steps.decide.outputs.run_chatterbox_turbo }}
+      run_chatterbox_nano: ${{ steps.decide.outputs.run_chatterbox_nano }}
+    steps:
+      - id: decide
+        env:
+          ENABLE_VAR: ${{ vars.VOKRA_TTS_HIFTNET_ENABLE }}
+          INPUT_COSY3: ${{ github.event.inputs.include_cosyvoice3 }}
+          INPUT_MTL: ${{ github.event.inputs.include_chatterbox_multilingual }}
+          INPUT_TURBO: ${{ github.event.inputs.include_chatterbox_turbo }}
+          INPUT_NANO: ${{ github.event.inputs.include_chatterbox_nano }}
+        run: |
+          set -euo pipefail
+          # ---- overall gate ----------------------------------------
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run_parity=true" >> "$GITHUB_OUTPUT"
+            echo "dispatch run: proceeding (the dispatcher opted in)"
+          elif [ "${ENABLE_VAR}" = "1" ]; then
+            echo "run_parity=true" >> "$GITHUB_OUTPUT"
+            echo "VOKRA_TTS_HIFTNET_ENABLE=1 → proceeding on scheduled/PR trigger"
+          else
+            echo "run_parity=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=parity-tts-hiftnet-real clean skip::VOKRA_TTS_HIFTNET_ENABLE unset — set the repository variable to 1 (or workflow_dispatch) to run the ~2-12 GB HF downloads. This is a clean gated skip, not a pass (fabricated pass 禁止)."
+          fi
+
+          # ---- per-family gates ------------------------------------
+          # Defaults mirror the workflow_dispatch inputs' defaults
+          # (multilingual + nano ON, turbo + cosyvoice3 OFF). The
+          # scheduled cron leg uses these defaults too so the weekly
+          # runner-minutes cost stays under the small-legs budget.
+          run_cosy3="false"
+          run_mtl="true"
+          run_turbo="false"
+          run_nano="true"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            run_cosy3="${INPUT_COSY3:-false}"
+            run_mtl="${INPUT_MTL:-true}"
+            run_turbo="${INPUT_TURBO:-false}"
+            run_nano="${INPUT_NANO:-true}"
+          fi
+          echo "run_cosyvoice3=${run_cosy3}"               >> "$GITHUB_OUTPUT"
+          echo "run_chatterbox_multilingual=${run_mtl}"    >> "$GITHUB_OUTPUT"
+          echo "run_chatterbox_turbo=${run_turbo}"         >> "$GITHUB_OUTPUT"
+          echo "run_chatterbox_nano=${run_nano}"           >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### parity-tts-hiftnet-real gate decision"
+            echo ""
+            echo "| leg | scheduled? |"
+            echo "| --- | --- |"
+            echo "| cosyvoice3               | ${run_cosy3} |"
+            echo "| chatterbox_multilingual  | ${run_mtl} |"
+            echo "| chatterbox_turbo         | ${run_turbo} |"
+            echo "| chatterbox_nano          | ${run_nano} |"
+            echo ""
+            echo "Legs skipped here get a per-family ::notice:: in the parity job."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  parity:
+    name: parity-tts-hiftnet-${{ matrix.arch }}
+    needs: setup
+    if: needs.setup.outputs.run_parity == 'true'
+    runs-on: ubuntu-latest
+    # Long-tail budget: CosyVoice3 is the ~11.8 GB / ~1200 tensor
+    # download+convert; 120 min is comfortable for even that one.
+    # The three chatterbox variants each fit comfortably in 45 min.
+    timeout-minutes: 120
+    strategy:
+      # A per-family failure must not tear down the sibling legs —
+      # they're independent (per-model checkpoint, per-model gguf,
+      # per-model test). This is honest reporting: partial coverage
+      # is more useful than nothing.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: cosyvoice3
+            display: Fun-CosyVoice3-0.5B
+            hf_repo_env: COSYVOICE3_REPO
+            hf_rev_env: COSYVOICE3_REVISION
+            license: apache-2.0
+            gate_output: run_cosyvoice3
+            convert_alias: fun-cosyvoice3-0.5b-2512
+            # The Fun-CosyVoice3 checkpoint ships llm.pt / flow.pt /
+            # hift.pt (torch pickles) alongside a mixed-format
+            # bundle including an ONNX file the runtime never
+            # touches (FR-LD-05). The zero-dep converter takes
+            # safetensors only, so a `torch.load → safetensors`
+            # sidecar is REQUIRED before `vokra-cli convert` runs;
+            # the sidecar file is TBD (Phase 2 follow-up owner
+            # task). Until it lands, this leg is EXPECTED to skip
+            # its convert step and let the harness's own
+            # unset-env-var skip fire — an FR-EX-08 explicit skip,
+            # not a synthetic fallback.
+            sidecar_note: "cosyvoice3 conversion requires torch→safetensors sidecar (Phase 2 owner)"
+          - arch: chatterbox_multilingual
+            display: Chatterbox-Multilingual (T3 mtl23ls_v3)
+            hf_repo_env: CHATTERBOX_REPO
+            hf_rev_env: CHATTERBOX_REVISION
+            license: MIT
+            gate_output: run_chatterbox_multilingual
+            convert_alias: chatterbox-mtl23ls-v3
+            sidecar_note: "chatterbox multilingual ships t3_mtl23ls_v3.safetensors directly — no sidecar"
+          - arch: chatterbox_turbo
+            display: Chatterbox-Turbo (t3_turbo_v1)
+            hf_repo_env: CHATTERBOX_TURBO_REPO
+            hf_rev_env: CHATTERBOX_TURBO_REVISION
+            license: MIT
+            gate_output: run_chatterbox_turbo
+            convert_alias: chatterbox-turbo-v1
+            sidecar_note: "chatterbox-turbo ships t3_turbo_v1.safetensors directly — no sidecar"
+          - arch: chatterbox_nano
+            display: Chatterbox-Nano (t3_nano_v1)
+            hf_repo_env: CHATTERBOX_NANO_REPO
+            hf_rev_env: CHATTERBOX_NANO_REVISION
+            license: MIT
+            gate_output: run_chatterbox_nano
+            convert_alias: chatterbox-nano-v1
+            sidecar_note: "chatterbox-nano ships t3_nano_v1.safetensors directly — no sidecar"
+    env:
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
+      HF_HUB_ENABLE_HF_TRANSFER: "1"
+      ARCH: ${{ matrix.arch }}
+      DISPLAY_NAME: ${{ matrix.display }}
+      HF_REPO: ${{ vars[matrix.hf_repo_env] || env[matrix.hf_repo_env] }}
+      HF_REVISION: ${{ env[matrix.hf_rev_env] }}
+      LICENSE_TAG: ${{ matrix.license }}
+      SIDECAR_NOTE: ${{ matrix.sidecar_note }}
+      CONVERT_ALIAS: ${{ matrix.convert_alias }}
+    steps:
+      # Per-family gate. Honors the include_* inputs (workflow_dispatch)
+      # and the small-legs-only default (scheduled / PR).
+      - id: family_gate
+        name: Per-family gate (${{ matrix.arch }})
+        run: |
+          set -euo pipefail
+          # The gate output is one of {run_cosyvoice3,
+          # run_chatterbox_multilingual, run_chatterbox_turbo,
+          # run_chatterbox_nano}. Read the correct one via a small
+          # case, then translate into a step output the following
+          # steps' `if:` conditions can pin on.
+          case "${ARCH}" in
+            cosyvoice3)               val='${{ needs.setup.outputs.run_cosyvoice3 }}' ;;
+            chatterbox_multilingual)  val='${{ needs.setup.outputs.run_chatterbox_multilingual }}' ;;
+            chatterbox_turbo)         val='${{ needs.setup.outputs.run_chatterbox_turbo }}' ;;
+            chatterbox_nano)          val='${{ needs.setup.outputs.run_chatterbox_nano }}' ;;
+            *) echo "::error::unknown arch ${ARCH}" ; exit 1 ;;
+          esac
+          echo "run=${val}" >> "$GITHUB_OUTPUT"
+          if [ "${val}" != "true" ]; then
+            echo "::notice title=${DISPLAY_NAME}::skipping — per-family gate off for this trigger (include_${ARCH}=false or scheduled small-legs-only default). This is an EXPLICIT skip (FR-EX-08), not a fabricated pass."
+            {
+              echo "### ${DISPLAY_NAME}: skipped"
+              echo ""
+              echo "Per-family gate returned \`${val}\`. Trigger a workflow_dispatch"
+              echo "with the matching \`include_${ARCH}\` input to force this leg."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Checkout
+        if: steps.family_gate.outputs.run == 'true'
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        if: steps.family_gate.outputs.run == 'true'
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust toolchain
+        if: steps.family_gate.outputs.run == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        if: steps.family_gate.outputs.run == 'true'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache HF checkpoint (${{ matrix.arch }})
+        if: steps.family_gate.outputs.run == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.HF_HOME }}
+          # Per-arch key so a bump on one repo does not invalidate
+          # the others. The v1 tag lets a future scheme change bump
+          # the cache without dropping the pinned SHA.
+          key: tts-hiftnet-${{ matrix.arch }}-${{ env.HF_REVISION }}-v1
+
+      - name: Provision parity venv (torch + safetensors + huggingface_hub)
+        if: steps.family_gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          python -m venv "${PARITY_VENV}"
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python -m pip install --upgrade pip
+          # Torch is used by the Phase 2 sidecar (cosyvoice3 llm.pt →
+          # safetensors); on chatterbox legs the checkpoint is
+          # already safetensors, so torch is a defensive install for
+          # a future sidecar. safetensors + huggingface_hub are
+          # required by every leg.
+          python -m pip install \
+            'torch==2.8.0' \
+            'numpy>=1.26,<3' \
+            'safetensors==0.8.0' \
+            'huggingface_hub==0.36.2'
+          python -m pip install 'hf_transfer>=0.1.9' || true
+          # `-c` avoids the YAML-`|` × bash-`<<` column-1 collision;
+          # see the snapshot-download step's comment for detail.
+          python -c 'import torch, numpy, safetensors, huggingface_hub; print(f"parity venv: torch={torch.__version__} numpy={numpy.__version__} safetensors={safetensors.__version__} huggingface_hub={huggingface_hub.__version__}")'
+
+      - name: Snapshot download @ pinned SHA (${{ matrix.arch }})
+        if: steps.family_gate.outputs.run == 'true'
+        env:
+          STAGE: ${{ runner.temp }}/${{ matrix.arch }}-stage
+          SNAP_PATH_FILE: ${{ runner.temp }}/snapshot-${{ matrix.arch }}.path
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          mkdir -p "${STAGE}"
+          # `python -c` (not a heredoc): a heredoc's closing
+          # delimiter would need to sit at column 1 to end the
+          # bash heredoc, but column 1 also ends the YAML `|`
+          # block scalar — the two rules are mutually exclusive.
+          # A `-c` script sidesteps both. Consumes HF_REPO /
+          # HF_REVISION / HF_HOME from the env; writes the
+          # resolved local snapshot path to SNAP_PATH_FILE so the
+          # convert step can find the primary safetensors without
+          # re-scanning the HF cache. Filter to safetensors +
+          # configuration files — the runtime never consumes ONNX
+          # (FR-LD-05, permanent per CLAUDE.md 設計判断 4).
+          python -c '
+          import os
+          from huggingface_hub import snapshot_download
+          local = snapshot_download(
+              repo_id=os.environ["HF_REPO"],
+              revision=os.environ["HF_REVISION"],
+              cache_dir=os.environ["HF_HOME"],
+              allow_patterns=[
+                  "*.safetensors",
+                  "*.pt",
+                  "*.yaml",
+                  "*.json",
+                  "*LICENSE*",
+                  "README*",
+                  "*.txt",
+              ],
+          )
+          with open(os.environ["SNAP_PATH_FILE"], "w") as f:
+              f.write(local)
+          print(f"snapshot: {local}")
+          '
+          {
+            echo "### ${DISPLAY_NAME}: HF snapshot"
+            echo ""
+            echo "- repo: \`${HF_REPO}\`"
+            echo "- revision: \`${HF_REVISION}\`"
+            echo "- license: \`${LICENSE_TAG}\`"
+            echo "- sidecar: \`${SIDECAR_NOTE}\`"
+            echo "- local snapshot path: \`$(cat "${SNAP_PATH_FILE}")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build vokra-cli (release)
+        if: steps.family_gate.outputs.run == 'true'
+        run: cargo build --release -p vokra-cli
+
+      - name: Convert to Vokra GGUF (${{ matrix.arch }})
+        if: steps.family_gate.outputs.run == 'true'
+        id: convert
+        env:
+          SNAP_PATH_FILE: ${{ runner.temp }}/snapshot-${{ matrix.arch }}.path
+        run: |
+          set -euo pipefail
+          OUT="${RUNNER_TEMP}/${ARCH}.gguf"
+          # Discover the primary safetensors file for this arch.
+          # Each Chatterbox variant ships exactly one T3 file with
+          # a stable name (t3_mtl23ls_v3 / t3_turbo_v1 /
+          # t3_nano_v1); CosyVoice3 requires the sidecar (Phase 2
+          # owner) to produce `llm.safetensors` from `llm.pt`, so
+          # this leg is EXPECTED to short-circuit until then with
+          # a loud skip marker rather than a fabricated pass.
+          SNAP_ROOT="$(cat "${SNAP_PATH_FILE}")"
+          case "${ARCH}" in
+            cosyvoice3)              want='llm.safetensors' ;;
+            chatterbox_multilingual) want='t3_mtl23ls_v3.safetensors' ;;
+            chatterbox_turbo)        want='t3_turbo_v1.safetensors' ;;
+            chatterbox_nano)         want='t3_nano_v1.safetensors' ;;
+            *) echo "::error::unknown arch ${ARCH}" ; exit 1 ;;
+          esac
+          SAFETENSORS="$(find "${SNAP_ROOT}" -maxdepth 3 -name "${want}" -print -quit || true)"
+          if [ -z "${SAFETENSORS:-}" ] || [ ! -f "${SAFETENSORS}" ]; then
+            echo "::notice title=${DISPLAY_NAME} convert::no primary safetensors present under ${SNAP_ROOT} (SIDECAR_NOTE=\"${SIDECAR_NOTE}\") — the parity leg below will hit the harness's unset-env-var skip. Fabricated pass 禁止."
+            echo "converted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ./target/release/vokra-cli convert \
+            --model "${CONVERT_ALIAS}" \
+            --input "${SAFETENSORS}" \
+            --output "${OUT}"
+          echo "converted=true"     >> "$GITHUB_OUTPUT"
+          echo "gguf_path=${OUT}"   >> "$GITHUB_OUTPUT"
+          echo "GGUF size: $(wc -c < "${OUT}") bytes"
+
+      - name: Run parity_tts_hiftnet (${{ matrix.arch }})
+        if: steps.family_gate.outputs.run == 'true'
+        id: parity
+        env:
+          # Only pointing at the GGUF path env var when the convert
+          # step actually produced one — a Phase 2 sidecar
+          # follow-up will fill in the CosyVoice3 leg. When absent,
+          # the harness's own skip path is exercised (proving the
+          # gated-skip surface is honest end-to-end).
+          #
+          # We use a per-arch env-var key computed via bash `case`
+          # to match the naming scheme the Rust harness pins
+          # (`VOKRA_TTS_HIFTNET_<ARCH>_GGUF`).
+          RUNNER_TEMP_GGUF: ${{ steps.convert.outputs.gguf_path }}
+          RUNNER_CONVERTED: ${{ steps.convert.outputs.converted }}
+        run: |
+          set +e
+          extra_env=()
+          if [ "${RUNNER_CONVERTED}" = "true" ]; then
+            case "${ARCH}" in
+              cosyvoice3)              key="VOKRA_TTS_HIFTNET_COSYVOICE3_GGUF" ;;
+              chatterbox_multilingual) key="VOKRA_TTS_HIFTNET_CHATTERBOX_MULTILINGUAL_GGUF" ;;
+              chatterbox_turbo)        key="VOKRA_TTS_HIFTNET_CHATTERBOX_TURBO_GGUF" ;;
+              chatterbox_nano)         key="VOKRA_TTS_HIFTNET_CHATTERBOX_NANO_GGUF" ;;
+            esac
+            export "${key}=${RUNNER_TEMP_GGUF}"
+            extra_env+=("${key}=${RUNNER_TEMP_GGUF}")
+          fi
+          # Run only the single-arch test to keep the log focused;
+          # the always-on sanity tests are covered by any other leg
+          # and by every ci.yml run.
+          case "${ARCH}" in
+            cosyvoice3)              tname=parity_tts_hiftnet_cosyvoice3 ;;
+            chatterbox_multilingual) tname=parity_tts_hiftnet_chatterbox_multilingual ;;
+            chatterbox_turbo)        tname=parity_tts_hiftnet_chatterbox_turbo ;;
+            chatterbox_nano)         tname=parity_tts_hiftnet_chatterbox_nano ;;
+          esac
+          cargo test --release -p vokra-models --test parity_tts_hiftnet -- \
+            --nocapture --test-threads=1 --exact "${tname}" \
+            2>&1 | tee "${RUNNER_TEMP}/parity-${ARCH}.txt"
+          exit_code=${PIPESTATUS[0]}
+          echo "PARITY_EXIT=${exit_code}" >> "$GITHUB_ENV"
+          echo "cargo test exited with ${exit_code}"
+          {
+            echo "### ${DISPLAY_NAME}: parity result"
+            echo ""
+            echo "- exit: \`${exit_code}\`"
+            echo "- test: \`${tname}\`"
+            echo "- env: \`${extra_env[*]:-<none — leg exercised the SKIP path>}\`"
+            echo ""
+            echo "Log tail:"
+            echo ""
+            echo '```'
+            tail -c 4096 "${RUNNER_TEMP}/parity-${ARCH}.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Zero-dep tripwire (root Cargo.lock untouched, NFR-DS-02)
+        if: steps.family_gate.outputs.run == 'true'
+        run: git diff --exit-code Cargo.lock
+
+      - name: Upload parity artifacts (${{ matrix.arch }})
+        if: always() && steps.family_gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tts-hiftnet-${{ matrix.arch }}-artifacts
+          path: |
+            ${{ runner.temp }}/parity-${{ matrix.arch }}.txt
+            ${{ runner.temp }}/${{ matrix.arch }}.gguf
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Fail if parity FAILed (honest exit propagation)
+        if: steps.family_gate.outputs.run == 'true' && env.PARITY_EXIT != '0'
+        run: |
+          echo "::error::${DISPLAY_NAME} parity_tts_hiftnet exited with ${PARITY_EXIT} — see summary + artifacts"
+          exit "${PARITY_EXIT}"
