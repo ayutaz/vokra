@@ -1310,4 +1310,312 @@ mod tests {
         // Unregistered -> None (caller fails closed to Unknown).
         assert_eq!(registry_lookup("totally-unknown-model"), None);
     }
+
+    /// SoTA plan Phase 2-5 (2026-07-24): every new family added to
+    /// `registry_lookup` in this campaign must (a) resolve to the exact
+    /// license class the module doc quotes from its primary source, (b) keep
+    /// working when the id is case-perturbed (registry does an
+    /// ASCII-lower-case up front), and (c) accept the family-prefix walk for
+    /// a hypothetical future variant so an untagged variant GGUF loads on
+    /// the correct gate.
+    ///
+    /// This test pins every new arm the campaign added:
+    ///
+    /// - `distil-whisper` / `distil-large` / `distil-medium` / `distil-small`
+    ///   family (MIT, Permissive) — Phase 2.
+    /// - `kotoba-whisper` family (Apache-2.0, Permissive) — Phase 5 JA-ASR-2.
+    /// - `chatterbox` / `chatterbox-turbo` / `chatterbox-nano` +
+    ///   `chatterbox_` alias family (MIT, Permissive) — Phase 3.
+    /// - `qwen3-tts` family (Apache-2.0, Permissive) — Phase 3.
+    /// - `voxcpm` / `voxcpm2` family (Apache-2.0, Permissive) — Phase 4.
+    /// - `vibevoice` family (MIT, Permissive) — Phase 4.
+    /// - `irodori` / `irodori-tts` family (MIT, Permissive) — Phase 5
+    ///   JA-TTS-1.
+    /// - `vits-ja` / `vits_ja` / ESPnet-JSUT-VITS / ESPnet-JVS-VITS /
+    ///   COEIROINK-VITS (**RedistributionForbidden**) — Phase 5 JA-TTS-2.
+    ///   This is the ONE arm that is *not* Permissive and where a wrong
+    ///   verdict would silently authorise republishing a corpus that
+    ///   explicitly bans it (JSUT / JVS terms).
+    /// - `dac` / `wavtokenizer` / `x-codec-2` / `xcodec2` (Permissive).
+    #[test]
+    fn sota_plan_registry_entries_resolve_to_the_correct_class() {
+        // ---- Phase 2: distil-whisper (MIT) -----------------------------
+        for id in [
+            "distil-whisper",
+            "distil-whisper-large-v3",
+            "distil-whisper-large-v3.5",
+            "distil-whisper-large-v3_5",
+            "distil-large-v3",
+            "distil-large-v3.5",
+            "distil-large-v3_5",
+            // Case-insensitivity is provided by the top-of-fn lower-case.
+            "Distil-Whisper-Large-v3.5",
+            "DISTIL-LARGE-V3",
+            // Family-prefix walk covers a hypothetical future variant.
+            "distil-whisper-small.en",
+            "distil-medium-en",
+            "distil-small-multilingual",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::Permissive),
+                "distil-whisper family: {id}"
+            );
+        }
+
+        // ---- Phase 5 JA-ASR-2: kotoba-whisper (Apache-2.0) --------------
+        for id in [
+            "kotoba-whisper",
+            "kotoba-whisper-v1.0",
+            "kotoba-whisper-v1_0",
+            "kotoba-whisper-v1.1",
+            "kotoba-whisper-v2.0",
+            "kotoba-whisper-v2_1",
+            "kotoba-whisper-bilingual",
+            "kotoba-whisper-bilingual-v1.0",
+            "kotoba-whisper-bilingual-v1_0",
+            // Case-insensitive.
+            "Kotoba-Whisper-v2.0",
+            "KOTOBA-WHISPER-V1_1",
+            // Family prefix — a hypothetical `v3.0` still resolves.
+            "kotoba-whisper-v3.0",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::Permissive),
+                "kotoba-whisper family: {id}"
+            );
+        }
+
+        // ---- Phase 3: chatterbox (base + multilingual + turbo + nano) (MIT)
+        for id in [
+            // base + multilingual arm
+            "chatterbox",
+            "chatterbox-multilingual",
+            "chatterbox-multilingual-v2",
+            "chatterbox-multilingual-v3",
+            "chatterbox-mtl23ls-v2",
+            "chatterbox-mtl23ls-v3",
+            "chatterbox-english",
+            "chatterbox_en",
+            // turbo arm
+            "chatterbox-turbo",
+            "chatterbox_turbo",
+            "chatterbox-turbo-v1",
+            "chatterbox-turbo-onnx",
+            // nano arm
+            "chatterbox-nano",
+            "chatterbox_nano",
+            "chatterbox-nano-v1",
+            // Case-insensitive.
+            "Chatterbox-Turbo",
+            "CHATTERBOX_NANO",
+            // Family prefix — a hypothetical future variant.
+            "chatterbox-japanese",
+            "chatterbox-huge-v4",
+            "chatterbox_multi",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::Permissive),
+                "chatterbox family: {id}"
+            );
+        }
+
+        // ---- Phase 3: qwen3-tts (Apache-2.0) ----------------------------
+        for id in [
+            "qwen3-tts",
+            "qwen3_tts",
+            "qwen3-tts-0.6b",
+            "qwen3-tts-0_6b",
+            "qwen3-tts-12hz-0.6b-base",
+            "qwen3-tts-12hz-0_6b-base",
+            "qwen3-tts-12hz-0.6b",
+            // Case-insensitive.
+            "Qwen3-TTS-12Hz-0.6B-Base",
+            // Family prefix — a hypothetical future variant.
+            "qwen3-tts-24hz-1.7b-base",
+            "qwen3-tts-12hz-0.6b-customvoice",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::Permissive),
+                "qwen3-tts family: {id}"
+            );
+        }
+
+        // ---- Phase 4: voxcpm / voxcpm2 (Apache-2.0) ---------------------
+        for id in [
+            "voxcpm",
+            "voxcpm2",
+            "voxcpm-0.5b",
+            "voxcpm-0_5b",
+            "voxcpm-0.5b-base",
+            "voxcpm-0_5b-base",
+            // Case-insensitive.
+            "VoxCPM-0.5B",
+            // Family prefix — a hypothetical future variant.
+            "voxcpm-1.5b",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::Permissive),
+                "voxcpm family: {id}"
+            );
+        }
+
+        // ---- Phase 4: vibevoice (MIT) -----------------------------------
+        for id in [
+            "vibevoice",
+            "vibevoice-1.5b",
+            "vibevoice-1_5b",
+            "vibevoice-1.5b-base",
+            "vibevoice-1_5b-base",
+            // Case-insensitive.
+            "VibeVoice-1.5B",
+            "VIBEVOICE",
+            // Family prefix — a hypothetical future variant.
+            "vibevoice-7b",
+            "vibevoice-large",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::Permissive),
+                "vibevoice family: {id}"
+            );
+        }
+
+        // ---- Phase 5 JA-TTS-1: irodori (MIT) ----------------------------
+        for id in [
+            "irodori",
+            "irodori-tts",
+            "irodori_tts",
+            "irodori-tts-500m",
+            "irodori-tts-500m-v2",
+            "irodori-tts-500m-v2-voicedesign",
+            "irodori-tts-500m-v3",
+            "irodori-tts-500m-v3-base",
+            "irodori-tts-600m-v3-voicedesign",
+            // Case-insensitive.
+            "Irodori-TTS-500M-v3",
+            // Family prefix — a hypothetical future variant.
+            "irodori-tts-2.5b-v4",
+            // `irodori-` prefix walk also matches (a non-`-tts-` spelling).
+            "irodori-japanese-v1",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::Permissive),
+                "irodori family: {id}"
+            );
+        }
+
+        // ---- FR-OP-32 codecs (Permissive) --------------------------------
+        for id in ["dac", "wavtokenizer", "x-codec-2", "xcodec2"] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::Permissive),
+                "codec: {id}"
+            );
+        }
+
+        // ---- Phase 5 JA-TTS-2: vits-ja (RedistributionForbidden) --------
+        //
+        // The one arm that is NOT Permissive. Every id here MUST resolve to
+        // `RedistributionForbidden` because the trained weights carry
+        // corpus-level redistribution bans (JSUT / JVS / COEIROINK). A
+        // wrong verdict here would silently authorise publishing a corpus
+        // that explicitly forbids it — the exact class of drift the audit
+        // is designed to catch.
+        for id in [
+            "vits-ja",
+            "vits_ja",
+            "espnet-vits-ja",
+            "espnet-jsut-vits",
+            "espnet-jvs-vits",
+            "coeiroink-vits",
+            // Case-insensitive.
+            "VITS-JA",
+            "ESPnet-JSUT-VITS",
+        ] {
+            let c = registry_lookup(id);
+            assert_eq!(
+                c,
+                Some(LicenseClass::RedistributionForbidden),
+                "vits-ja: {id} MUST be RedistributionForbidden (JSUT / JVS \
+                 corpus bans re-distribution) — silently returning Permissive \
+                 would authorise a forbidden publish."
+            );
+            // Cross-check the derived predicates — the class must fail the
+            // publish gate but stay loadable (owner may still hold the
+            // weights locally for their own inference).
+            let c = c.unwrap();
+            assert!(
+                !c.redistributable(),
+                "{id}: publish gate must fail on vits-ja"
+            );
+            assert!(
+                !c.requires_research_flag(),
+                "{id}: loading is unrestricted (only republish is barred)"
+            );
+        }
+    }
+
+    /// SoTA plan Phase 2 (2026-07-24): the new CC-BY-4.0 ASR families
+    /// (Kyutai STT, NVIDIA Parakeet CTC/TDT + Canary AED) must all resolve
+    /// to `AttributionRequired`, keep the M2-13 gate green (commercial
+    /// allowed) *and* activate the FR-MD-09 attribution surface. Meta's
+    /// omniASR-CTC ships Apache-2.0 by contrast, so it must land under
+    /// `Permissive` — proving the arms are family-specific and not a
+    /// blanket "all ASR is attribution-required" default.
+    #[test]
+    fn sota_plan_phase2_asr_families_resolve_correctly() {
+        // Kyutai STT (CC-BY-4.0) - explicit ids already covered above;
+        // pin the derived predicates so a caller can rely on the class
+        // semantics staying stable.
+        for id in [
+            "kyutai-stt",
+            "kyutai-stt-2.6b-en",
+            "kyutai-stt-2.6b",
+            "stt-2.6b-en",
+            "kyutai-stt-1b-en",
+        ] {
+            let c = registry_lookup(id).unwrap_or_else(|| panic!("{id} not registered"));
+            assert_eq!(c, LicenseClass::AttributionRequired, "{id}");
+            assert!(c.commercial_ok(), "{id}: CC-BY 4.0 commercial-ok");
+            assert!(c.requires_attribution(), "{id}: attribution required");
+            assert!(c.redistributable(), "{id}: republishable with credit");
+            assert!(!c.requires_research_flag(), "{id}: loadable");
+        }
+        // NVIDIA Parakeet family (CC-BY-4.0).
+        for id in [
+            "parakeet-tdt",
+            "parakeet-ctc-1.1b",
+            "parakeet-rnnt-1.1b",
+            "canary-1b-v2",
+            "canary-3b-v3",
+        ] {
+            let c = registry_lookup(id).unwrap_or_else(|| panic!("{id} not registered"));
+            assert_eq!(c, LicenseClass::AttributionRequired, "{id}");
+            assert!(c.commercial_ok(), "{id}");
+            assert!(c.requires_attribution(), "{id}");
+        }
+        // Meta omniASR-CTC ships Apache-2.0 — MUST be Permissive, not
+        // AttributionRequired. Regression guard against a blanket
+        // "all *-ctc- is CC-BY" default (NVIDIA vs Meta divergence).
+        for id in [
+            "omniasr-ctc",
+            "omniasr-ctc-1b",
+            "omniasr-ctc-300m",
+            "omniasr-ctc-3b",
+            "omniasr-ctc-7b",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::Permissive),
+                "{id}: Meta omniASR-CTC ships Apache-2.0 — must NOT be \
+                 attribution-required like NVIDIA's Parakeet-CTC / Canary."
+            );
+        }
+    }
 }
