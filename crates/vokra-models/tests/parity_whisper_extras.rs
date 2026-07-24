@@ -77,6 +77,7 @@
 
 #![allow(clippy::items_after_statements)]
 
+use std::panic;
 use std::path::{Path, PathBuf};
 
 use vokra_core::VokraError;
@@ -756,4 +757,354 @@ fn skip_reason_includes_env_var_and_upstream_repo() {
             "skip_reason must name the kebab-case model tag: {msg}",
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Additional unit-only coverage (audit follow-up 2026-07-25) — every test
+// below runs on every `cargo test`, needs no checkpoint, and pins a seam or
+// contract that the two env-gated per-model tests only exercise transitively.
+// ---------------------------------------------------------------------------
+
+/// Downcast a panic payload to a `String` for substring assertions. Mirrors
+/// the shape used in `parity_nemo_asr.rs` so callers can inspect the panic
+/// message directly.
+fn panic_payload_string(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_owned()
+    }
+}
+
+/// Per-test unique tempfs entry under `env::temp_dir()`. `cargo test` runs
+/// tests within one binary in parallel threads that share a PID, so the
+/// caller must pass a distinct `tag` per test to avoid inter-test races.
+fn temp_scratch(tag: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "vokra_parity_whisper_extras_{}_{}",
+        tag,
+        std::process::id(),
+    ))
+}
+
+/// Direct unit-test coverage of the flip-the-switch seam. `env_paths_for`
+/// (lines 150-154) IS the switch — the two env-gated per-model tests
+/// exercise it only when an owner provisions fixtures, so on the CI baseline
+/// (env vars unset) a regression that made this helper return
+/// `(Some(PathBuf::new()), _)` on an unset env var would slip past the two
+/// existing tests silently (both would still take the early-return skip
+/// path, but for the wrong reason). Namespaced arch slug so no `VOKRA_*_GGUF`
+/// / `_REFDIR` env var could plausibly collide.
+///
+/// The workspace forbids `unsafe` (`unsafe_code = "deny"` in workspace
+/// `Cargo.toml`) and `std::env::set_var` is `unsafe` in Rust 2024, so the
+/// Some-branch (env set, path visible) cannot be exercised directly without
+/// breaking the workspace lint — see the equivalent note in
+/// `parity_tts_dac.rs::env_paths_for_returns_none_when_unset`. The
+/// Some-branch is transitively exercised by the two per-model tests as soon
+/// as an owner provisions `VOKRA_<ARCH>_GGUF`.
+#[test]
+fn env_paths_for_returns_none_when_both_unset() {
+    // A slug intentionally namespaced to this helper. `env_paths_for` will
+    // read `VOKRA_WHISPER_EXTRAS_HARNESS_PROBE_ONLY_GGUF` /
+    // `_REFDIR` — no CI job could plausibly set these.
+    let arch = "whisper_extras_harness_probe_only";
+    let (gguf, refdir) = env_paths_for(arch);
+    assert!(
+        gguf.is_none(),
+        "expected {} unset in the test env, got Some({:?}) — env leakage \
+         from another process, or a regression in env_paths_for that returns \
+         Some on an unset env var (flip-the-switch seam broken)",
+        gguf_env_var(arch),
+        gguf,
+    );
+    assert!(
+        refdir.is_none(),
+        "expected {} unset in the test env, got Some({:?}) — env leakage or \
+         asymmetric handling of the refdir arm",
+        refdir_env_var(arch),
+        refdir,
+    );
+}
+
+/// `refdir_check_pending_forward_binding` must panic loudly when the path
+/// does not exist, and the panic message must name the specific env var so
+/// an owner reading a red CI can immediately unset or re-provision it.
+///
+/// This is the "opt-in but broken" branch of the flip-the-switch: an owner
+/// set `VOKRA_<ARCH>_REFDIR` but the dump directory was deleted / moved.
+/// Silent skip would let the CI report "flip-the-switch wiring OK" without
+/// ever actually reading the dumps — a fabricated-pass shape.
+#[test]
+fn refdir_check_panics_on_nonexistent_path() {
+    let arch = "distil_whisper";
+    let refdir = temp_scratch("nonexistent");
+    // Ensure the path really does not exist. Both variants (in case a prior
+    // interrupted run left something behind).
+    let _ = std::fs::remove_dir_all(&refdir);
+    let _ = std::fs::remove_file(&refdir);
+
+    let refdir_captured = refdir.clone();
+    let payload = panic::catch_unwind(move || {
+        refdir_check_pending_forward_binding(arch, &refdir_captured);
+    })
+    .expect_err("refdir_check_pending_forward_binding must panic on a nonexistent path");
+
+    let msg = panic_payload_string(&*payload);
+    assert!(
+        msg.contains("does not exist or is not a directory"),
+        "panic must name the failure mode; got: {msg}",
+    );
+    assert!(
+        msg.contains("VOKRA_DISTIL_WHISPER_REFDIR"),
+        "panic must name the specific env var (owner-actionable); got: {msg}",
+    );
+    assert!(
+        msg.contains(&format!("{refdir:?}")),
+        "panic must show the offending path so the owner can inspect it; got: {msg}",
+    );
+}
+
+/// `refdir_check_pending_forward_binding` must reject a path that exists but
+/// is a regular file, not a directory. Without this guard a CI where the
+/// owner accidentally set `VOKRA_<ARCH>_REFDIR` to a tarball path
+/// (`/tmp/refdir.tar.gz`) would surface a confusing `read_dir` error deep
+/// inside the helper instead of the intended early rejection.
+#[test]
+fn refdir_check_panics_when_path_is_regular_file() {
+    let arch = "kotoba_whisper";
+    let path = temp_scratch("regular_file");
+    // Ensure a clean slate then materialize a file at the path.
+    let _ = std::fs::remove_dir_all(&path);
+    let _ = std::fs::remove_file(&path);
+    std::fs::write(&path, b"not a directory").expect("write temp file for refdir test");
+
+    let path_captured = path.clone();
+    let payload = panic::catch_unwind(move || {
+        refdir_check_pending_forward_binding(arch, &path_captured);
+    })
+    .expect_err("refdir_check_pending_forward_binding must reject regular files");
+
+    // Cleanup before the assertions so a message-shape regression does not
+    // leak the temp file across CI runs.
+    let _ = std::fs::remove_file(&path);
+
+    let msg = panic_payload_string(&*payload);
+    assert!(
+        msg.contains("does not exist or is not a directory"),
+        "panic must name the failure mode consistently with the missing-path \
+         branch (one message shape for both `.is_dir() == false` reasons); \
+         got: {msg}",
+    );
+    assert!(
+        msg.contains("VOKRA_KOTOBA_WHISPER_REFDIR"),
+        "panic must name the specific env var (owner-actionable); got: {msg}",
+    );
+}
+
+/// Happy-path pin for `refdir_check_pending_forward_binding`: an existing
+/// empty directory must NOT panic. This is the branch owners actually hit
+/// once they provision a refdir; before this test, that branch was only
+/// exercised by an owner running the parity job against a real dump — a
+/// regression that made the helper panic on an empty directory (e.g. a
+/// future refactor asserting `entries.len() >= 1`) would silently pass on
+/// CI where no real refdir is ever set.
+#[test]
+fn refdir_check_empty_directory_does_not_panic() {
+    let arch = "distil_whisper";
+    let dir = temp_scratch("empty_dir");
+    // Best-effort cleanup of any stale artifact then materialize the dir
+    // and drain any lingering entries so the "empty" invariant holds.
+    let _ = std::fs::remove_file(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create empty temp dir for refdir test");
+    for entry in std::fs::read_dir(&dir)
+        .expect("read empty temp dir")
+        .flatten()
+    {
+        let p = entry.path();
+        if p.is_dir() {
+            let _ = std::fs::remove_dir_all(&p);
+        } else {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+
+    // Wiring-only smoke — must not panic. If a future refactor tightens the
+    // helper to require entries.len() >= 1 (or similar), that decision must
+    // be paired with an explicit update to this pin — the header rustdoc's
+    // "WIRING-ONLY smoke that keeps the CI path warm" contract depends on it.
+    refdir_check_pending_forward_binding(arch, &dir);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Distil scaffold `.transcribe(&[])` — the empty-audio boundary — must be
+/// rejected loudly with [`VokraError::InvalidArgument`]. The existing
+/// env-gated test exercises the scaffold with 16 000 samples of silence
+/// (which hits the `NotImplemented` fabricated-pass ban); empty audio is a
+/// separate, real edge case: a caller passing an empty PCM buffer must get
+/// a loud error, not a silently-accepted empty transcript. Anchors the
+/// documented `# Errors` contract on `DistilWhisperAsr::transcribe`.
+#[test]
+fn distil_whisper_scaffold_rejects_empty_pcm() {
+    // Tiny config — the empty-check runs before any weight access, so the
+    // shape does not matter; using tiny_for_tests keeps synthesized-weight
+    // allocation to KB and the test fast.
+    let cfg = vokra_models::distil_whisper::DistilWhisperConfig::tiny_for_tests();
+    let asr = build_distil_whisper_asr_from_synthesized(&cfg);
+    let err = asr
+        .transcribe(&[])
+        .expect_err("empty PCM must be rejected loudly (FR-EX-08 fail-loud boundary)");
+    match err {
+        VokraError::InvalidArgument(msg) => {
+            assert!(
+                msg.contains("distil-whisper"),
+                "InvalidArgument on empty PCM must name the model so callers \
+                 mixing multiple ASR engines can attribute the error; got: {msg}",
+            );
+            assert!(
+                msg.contains("empty"),
+                "InvalidArgument on empty PCM must name the boundary (`empty`) so \
+                 the caller sees WHY the input was refused; got: {msg}",
+            );
+        }
+        other => panic!(
+            "expected InvalidArgument on empty PCM, got {other:?} — a \
+             NotImplemented / panic short-circuit would let a real caller \
+             silently accept an empty PCM buffer (or worse: crash the process \
+             instead of returning a recoverable error). See DistilWhisperAsr::\
+             transcribe `# Errors` docstring.",
+        ),
+    }
+}
+
+/// Kotoba scaffold `.transcribe(&[])` — mirror of the distil boundary test.
+/// The two scaffolds construct differently (distil takes injected weights,
+/// kotoba takes only `cfg`) so this is not redundant coverage: a rebase
+/// that dropped the empty-check on the kotoba side alone would slip past
+/// the distil test.
+#[test]
+fn kotoba_whisper_scaffold_rejects_empty_pcm() {
+    let cfg = vokra_models::kotoba_whisper::KotobaWhisperConfig::tiny_for_tests();
+    let asr = vokra_models::kotoba_whisper::KotobaWhisperAsr::new(cfg)
+        .expect("build kotoba-whisper asr on tiny_for_tests config");
+    let err = asr
+        .transcribe(&[])
+        .expect_err("empty PCM must be rejected loudly (FR-EX-08 fail-loud boundary)");
+    match err {
+        VokraError::InvalidArgument(msg) => {
+            assert!(
+                msg.contains("kotoba-whisper"),
+                "InvalidArgument on empty PCM must name the model so callers \
+                 mixing multiple ASR engines can attribute the error; got: {msg}",
+            );
+            assert!(
+                msg.contains("empty"),
+                "InvalidArgument on empty PCM must name the boundary (`empty`) so \
+                 the caller sees WHY the input was refused; got: {msg}",
+            );
+        }
+        other => panic!(
+            "expected InvalidArgument on empty PCM, got {other:?} — a \
+             NotImplemented / panic short-circuit would let a real caller \
+             silently accept an empty PCM buffer. See KotobaWhisperAsr::\
+             transcribe `# Errors` docstring.",
+        ),
+    }
+}
+
+/// Membership pin for the `FAMILY` manifest. `family_arch_slugs_are_distinct`
+/// calls `Vec::dedup` on the slugs — but on an EMPTY family the deduped +
+/// sorted Vec is trivially equal to itself, so an accidental deletion of
+/// both entries would slip past both existing family tests. This test flips
+/// that failure mode into a loud, specific mismatch and names the two
+/// canonical members so a rebase that dropped either one is immediately
+/// visible.
+///
+/// When a genuine new member lands (e.g. `distil-medium.en`, or a future
+/// `kotoba-whisper-v3`), the maintainer must update the pinned set here —
+/// that friction is exactly what the header comment (lines 87-90) invites.
+#[test]
+fn family_membership_is_pinned() {
+    assert!(
+        FAMILY.len() >= 2,
+        "FAMILY must contain at least the two canonical members \
+         (distil-whisper + kotoba-whisper); a rebase that emptied FAMILY \
+         would let family_arch_slugs_are_distinct pass on an empty Vec"
+    );
+
+    let mut got: Vec<&'static str> = FAMILY.iter().map(|m| m.expected_arch).collect();
+    got.sort_unstable();
+
+    let mut want: Vec<&'static str> = vec!["distil-whisper", "kotoba-whisper"];
+    want.sort_unstable();
+
+    assert_eq!(
+        got, want,
+        "FAMILY membership drift: expected sorted expected_arch set = {want:?}, \
+         got {got:?}. If a new member is being added, update this pin AND the \
+         SPDX-distinctness test below; if a member is being removed, weigh the \
+         provenance / license fallout first (see the arch_slug rustdoc).",
+    );
+}
+
+/// Guards against a rebase-time copy-paste bug that would set both members'
+/// `weight_license_spdx` to the same value (e.g. both `MIT`) — such a bug
+/// would let the WRONG SPDX ride into the produced GGUFs and silently break
+/// the downstream license-audit tooling that pattern-matches on the exact
+/// SPDX literal (see the per-model rustdoc on `weight_license_spdx`, and
+/// the license-round-trip assertions inside the two env-gated per-model
+/// tests). Distinctness across FAMILY today is a strict property; if a
+/// future member legitimately shares a license with an existing one, this
+/// test must be re-shaped to check a specific expected multiset.
+#[test]
+fn family_license_spdx_values_are_distinct() {
+    let mut licenses: Vec<&'static str> = FAMILY.iter().map(|m| m.weight_license_spdx).collect();
+    licenses.sort_unstable();
+    let mut deduped = licenses.clone();
+    deduped.dedup();
+    assert_eq!(
+        licenses, deduped,
+        "weight_license_spdx values must be pairwise distinct across FAMILY, \
+         got {licenses:?}. A copy-paste bug that set both members to the same \
+         SPDX literal would let the WRONG license ride into GGUFs — \
+         downstream license-audit tooling pattern-matches on the exact literal \
+         (see per-model rustdoc `# Weight license`).",
+    );
+}
+
+/// `skip_reason` must carry three grep-friendly wording contracts that the
+/// existing `skip_reason_includes_env_var_and_upstream_repo` does not pin:
+///
+/// - `SKIP:` prefix — CI log aggregators distinguish green-skips from
+///   green-passes by scanning for this literal. Softening to `[skipped]` or
+///   `SKIPPED —` would silently break every dashboard scraper.
+/// - `FR-EX-08` requirement anchor — cross-refs the fabricated-pass ban so
+///   a future reader can trace WHY the harness refuses to synthesize a pass.
+/// - `fabricated pass` self-audit wording — mirrors the harness rustdoc
+///   (lines 15-22). A refactor that dropped this wording would erase the
+///   discipline signal even though the env-var + repo tokens are still present.
+#[test]
+fn skip_reason_contains_grep_prefix_and_fr_ex_08_anchors() {
+    let msg = skip_reason("distil_whisper", "distil-whisper/distil-large-v3.5");
+    assert!(
+        msg.contains("SKIP:"),
+        "skip_reason must carry the literal `SKIP:` prefix (grep contract for \
+         CI log aggregators — a `[skipped]` / `SKIPPED —` softening would \
+         silently break dashboard scrapers); got: {msg}",
+    );
+    assert!(
+        msg.contains("FR-EX-08"),
+        "skip_reason must anchor the fabricated-pass ban to requirement \
+         FR-EX-08 (traceability); got: {msg}",
+    );
+    assert!(
+        msg.contains("fabricated pass"),
+        "skip_reason must include the `fabricated pass` self-audit wording \
+         (discipline signal — mirrors the harness rustdoc lines 15-22); \
+         got: {msg}",
+    );
 }
