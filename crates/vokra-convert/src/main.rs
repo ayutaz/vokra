@@ -27,7 +27,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -49,10 +49,14 @@ OPTIONS:
                        moshi (Kyutai Moshi safetensors), dia (nari-labs
                        Dia-1.6B safetensors — SoTA plan Phase 1-4),
                        zonos (Zyphra Zonos-v0.1-transformer safetensors —
-                       SoTA plan Phase 1-5), or kyutai-stt (Kyutai
+                       SoTA plan Phase 1-5), kyutai-stt (Kyutai
                        STT-2.6B-EN decoder-only English streaming ASR
                        over Mimi tokens — SoTA plan Phase 2; weight
-                       license = CC-BY 4.0 attribution required).
+                       license = CC-BY 4.0 attribution required), or
+                       parakeet-tdt (NVIDIA Parakeet-TDT-0.6B-v3 English
+                       ASR — FastConformer encoder + TDT decoder — SoTA
+                       plan Phase 2; weight license = CC-BY 4.0
+                       attribution required).
                        `whisper-base` is accepted as a backward-compatible
                        alias for `whisper` (size is still derived from the
                        checkpoint, not the flag).
@@ -692,6 +696,55 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  n_q={n_q} text_card={text_card} sample_rate={sr}"
             );
         }
+        ModelKind::Parakeet => {
+            // SoTA plan Phase 2 (2026-07-24). The `vokra.parakeet.*` chunk
+            // group is written entirely from primary-source-transcribed
+            // constants — the summary reads back the anchoring shape triples
+            // (24-layer FastConformer encoder, MHA 8-head, 2-layer 640-d
+            // RNN-T prediction net, 8193 vocab, 5 duration bins, 16 kHz).
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let enc_layers = file
+                .get("vokra.parakeet.arch.encoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let d_model = file
+                .get("vokra.parakeet.arch.encoder.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_head = file
+                .get("vokra.parakeet.arch.encoder.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_layers = file
+                .get("vokra.parakeet.arch.decoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_d_model = file
+                .get("vokra.parakeet.arch.decoder.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let vocab = file
+                .get("vokra.parakeet.joint.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_dur = file
+                .get("vokra.parakeet.joint.n_durations")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr = file
+                .get("vokra.parakeet.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} encoder_layers={enc_layers} d_model={d_model} \
+                 n_head={n_head} decoder_layers={dec_layers} \
+                 decoder_d_model={dec_d_model} vocab={vocab} \
+                 n_durations={n_dur} sample_rate={sr}"
+            );
+        }
     }
     Ok(())
 }
@@ -909,6 +962,7 @@ mod tests {
             ("dia", ModelKind::Dia),
             ("zonos", ModelKind::Zonos),
             ("kyutai-stt", ModelKind::KyutaiStt),
+            ("parakeet-tdt", ModelKind::Parakeet),
         ];
         for (name, kind) in kinds {
             let parsed = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

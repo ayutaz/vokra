@@ -380,6 +380,17 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         "kyutai-stt" | "kyutai-stt-2.6b-en" | "kyutai-stt-2.6b" | "stt-2.6b-en" => {
             LicenseClass::AttributionRequired
         }
+        // SoTA plan Phase 2 (2026-07-24): NVIDIA Parakeet-TDT-0.6B-v3 —
+        // English ASR (FastConformer encoder + TDT decoder). Weight
+        // license = CC-BY 4.0 (`huggingface.co/nvidia/parakeet-tdt-0.6b-v3`
+        // model card explicitly states "Use of this model is governed by
+        // the CC-BY-4.0 license"). The M2-13 gate passes commercially
+        // *and* the FR-MD-09 attribution surface activates. Note this
+        // resolves to CC-BY 4.0 (not the Apache-2.0 permissive one) —
+        // NVIDIA's own model card carries the CC-BY-4.0 grant.
+        "parakeet-tdt" | "parakeet-tdt-0.6b-v3" | "parakeet-tdt-0.6b" | "parakeet" => {
+            LicenseClass::AttributionRequired
+        }
         // --- gated: CC-BY-NC (research flag) ---------------------------------
         "f5-tts" | "encodec" => LicenseClass::NonCommercial,
         // --- gated: CC-BY-NC-SA (research flag) ------------------------------
@@ -431,6 +442,13 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // this arm resolves to CC-BY 4.0, not the Apache-2.0 permissive
         // one — Kyutai's audio/text checkpoints ship CC-BY 4.0.
         _ if id.starts_with("kyutai-stt-") => LicenseClass::AttributionRequired,
+        // Parakeet family (SoTA plan Phase 2, 2026-07-24): a specific
+        // variant id like `parakeet-tdt-1.1b` or `parakeet-rnnt-1.1b`
+        // still resolves attribution-required. Guarded on the dash so
+        // unrelated ids cannot slip through. NVIDIA's whole Parakeet
+        // family ships under CC-BY 4.0 (per the 0.6B-v3 model card + the
+        // NeMo release convention).
+        _ if id.starts_with("parakeet-") => LicenseClass::AttributionRequired,
         _ => return None,
     };
     Some(class)
@@ -790,6 +808,32 @@ mod tests {
         // Guard: a random id containing "stt" that is NOT under the
         // Kyutai family prefix still fails closed to `None`.
         assert_eq!(registry_lookup("some-random-stt-model"), None);
+        // SoTA plan Phase 2 (2026-07-24): NVIDIA Parakeet-TDT-0.6B-v3.
+        // Canonical id + the variant spellings the CLI + converter
+        // accept — all resolve to CC-BY 4.0 attribution-required
+        // (NVIDIA's model card explicitly grants CC-BY-4.0).
+        for id in [
+            "parakeet-tdt",
+            "parakeet-tdt-0.6b-v3",
+            "parakeet-tdt-0.6b",
+            "parakeet",
+            // Case-insensitive.
+            "Parakeet-TDT-0.6B-v3",
+            // Family prefix — a hypothetical future
+            // `parakeet-tdt-1.1b` / `parakeet-rnnt-1.1b` still
+            // resolves attribution-required by the walk.
+            "parakeet-tdt-1.1b",
+            "parakeet-rnnt-1.1b",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::AttributionRequired),
+                "{id}"
+            );
+        }
+        // Guard: a random id starting with "parakeetx" is NOT under
+        // the family prefix (the dash guard rejects it).
+        assert_eq!(registry_lookup("parakeetx-something"), None);
         // Case-insensitive.
         assert_eq!(registry_lookup("F5-TTS"), Some(LicenseClass::NonCommercial));
         // First-party **variant** ids (not canonical) still resolve permissive by

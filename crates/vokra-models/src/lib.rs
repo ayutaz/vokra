@@ -50,6 +50,19 @@ pub mod kokoro;
 // a follow-up wave (T29-equivalent). Weights: CC-BY 4.0
 // (AttributionRequired — FR-MD-09 attribution surface).
 pub mod kyutai_stt;
+// SoTA plan Phase 2 (2026-07-24): NVIDIA Parakeet TDT-0.6B-v3 — English
+// streaming ASR built on a FastConformer encoder (8× subsampling,
+// 24-layer / d_model=1024 / MHA) + a 2-layer 640-d RNN-T prediction
+// network + a joint head with 5 TDT duration bins ([0, 1, 2, 3, 4]) and
+// an 8193-piece vocab (8192 SentencePiece + 1 blank at 8192). Config is
+// transcribed verbatim from
+// huggingface.co/nvidia/parakeet-tdt-0.6b-v3/raw/main/config.json
+// (CLAUDE.md ハルシネーション厳禁); real-checkpoint binding is a
+// follow-up wave (T29-equivalent). Weights: CC-BY 4.0
+// (AttributionRequired — FR-MD-09 attribution surface). Reuses two
+// existing ops (vokra_ops::conformer for the encoder body,
+// vokra_ops::rnnt_decode for the TDT decoder) rather than duplicating.
+pub mod parakeet;
 // SoTA plan Phase 1-5 (2026-07-24): Zyphra Zonos-v0.1-transformer TTS
 // (Apache 2.0). Single-stack GQA transformer with typed prefix conditioner
 // (espeak / speaker / Fourier / integer) over DAC 44.1 kHz RVQ frames.

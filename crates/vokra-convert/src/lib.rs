@@ -173,6 +173,22 @@ pub enum ModelKind {
     /// pattern); this M2-13-preserving path handles F32 / F16 checkpoints
     /// today and skips BF16 with the loud "no float tensors" note.
     KyutaiStt,
+    /// NVIDIA **Parakeet-TDT-0.6B-v3** safetensors checkpoint (SoTA
+    /// plan Phase 2, 2026-07-24). English ASR: a FastConformer encoder
+    /// (`num_hidden_layers=24`, `hidden_size=1024`, MHA
+    /// `num_attention_heads=num_key_value_heads=8`, `intermediate_size
+    /// =4096`, `subsampling_factor=8`, `conv_kernel_size=9`,
+    /// `num_mel_bins=128`, `max_position_embeddings=5000`) + a 2-layer
+    /// 640-d RNN-T prediction network + a joint / TDT head with
+    /// `durations=[0,1,2,3,4]`, `vocab_size=8193` (blank at 8192),
+    /// `max_symbols_per_step=10`. CC-BY 4.0 weight
+    /// (`AttributionRequired` — the converter stamps the FR-MD-09
+    /// attribution text). Every hparam is transcribed verbatim from
+    /// `huggingface.co/nvidia/parakeet-tdt-0.6b-v3/raw/main/config.json`.
+    /// Reuses the shared `vokra_ops::conformer` (FastConformer encoder
+    /// body via `Stacking { factor: 8 }`) and `vokra_ops::rnnt_decode`
+    /// (`Tdt` variant) primitives — no per-model op duplication.
+    Parakeet,
 }
 
 impl ModelKind {
@@ -205,6 +221,12 @@ impl ModelKind {
             "kyutai-stt" | "kyutai-stt-2.6b-en" | "kyutai-stt-2.6b" | "stt-2.6b-en" => {
                 Some(Self::KyutaiStt)
             }
+            "parakeet"
+            | "parakeet-tdt"
+            | "parakeet-tdt-0.6b-v3"
+            | "parakeet-tdt-0.6b"
+            | "parakeet-tdt-0_6b-v3"
+            | "parakeet-tdt-0_6b" => Some(Self::Parakeet),
             _ => None,
         }
     }
@@ -228,6 +250,7 @@ impl ModelKind {
             Self::Dia => "dia",
             Self::Zonos => "zonos",
             Self::KyutaiStt => "kyutai-stt",
+            Self::Parakeet => "parakeet-tdt",
         }
     }
 }
@@ -550,6 +573,26 @@ pub fn convert_file_licensed(
                     .notes
                     .iter()
                     .map(|n| format!("kyutai-stt warning: {n}")),
+            );
+            (builder, notes)
+        }
+        ModelKind::Parakeet => {
+            // SoTA plan Phase 2: pass every F32/F16 tensor through
+            // verbatim and stamp the `vokra.parakeet.*` chunk group
+            // (encoder / decoder / joint / duration bins) from the
+            // primary-source constants transcribed in `models::parakeet`.
+            // Provenance = CC-BY 4.0 (AttributionRequired) + FR-MD-09
+            // attribution text.
+            let (builder, report) = models::parakeet::convert(bytes)?;
+            let mut notes = vec![format!(
+                "parakeet-tdt: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("parakeet-tdt warning: {n}")),
             );
             (builder, notes)
         }
@@ -1399,6 +1442,29 @@ pub fn convert_kyutai_stt_file(
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::KyutaiStt, input, output)
+}
+
+/// Convert an NVIDIA **Parakeet-TDT-0.6B-v3** safetensors checkpoint
+/// into a Vokra GGUF (SoTA plan Phase 2, 2026-07-24).
+///
+/// This is the named entry point that mirrors `convert_kyutai_stt_file`
+/// / `convert_dia_file` / `convert_zonos_file`. It is functionally
+/// identical to `convert_file(ModelKind::Parakeet, input, output)` —
+/// Parakeet has no side-car config or tokenizer to embed at this
+/// scaffold stage (every hparam is transcribed as constants in
+/// `models::parakeet`; the SentencePiece tokenizer follows in a
+/// follow-up wave via the `--config` side-car pattern) — but the named
+/// entry keeps the `convert_*_file` naming symmetry with the other ASR
+/// / TTS models.
+///
+/// The upstream Parakeet release ships raw safetensors (F32 per
+/// `config.json` `dtype: "float32"`); BF16-converted variants currently
+/// reach the `skipped_non_float` counter and the converter surfaces the
+/// "no float tensors" loud note. Provenance is stamped **CC-BY 4.0**
+/// (`AttributionRequired`) and the FR-MD-09 attribution surface
+/// activates so a downstream must show the NVIDIA attribution.
+pub fn convert_parakeet_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::Parakeet, input, output)
 }
 
 /// Rewrite an existing GGUF's provenance metadata without re-materialising its

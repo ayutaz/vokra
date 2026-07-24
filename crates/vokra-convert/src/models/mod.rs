@@ -21,6 +21,14 @@ pub(crate) mod kokoro;
 pub(crate) mod kyutai_stt;
 pub(crate) mod mimi;
 pub(crate) mod moshi;
+// SoTA plan Phase 2 (2026-07-24): NVIDIA Parakeet-TDT-0.6B-v3 — English
+// ASR (FastConformer encoder + TDT decoder). CC-BY 4.0 weight
+// (AttributionRequired). Every F32 / F16 tensor passes through
+// verbatim; every hparam is transcribed from the upstream
+// `config.json` (encoder_config + decoder + joint / TDT). Reuses the
+// `vokra_ops::conformer` + `vokra_ops::rnnt_decode` primitives — no
+// per-model op duplication.
+pub(crate) mod parakeet;
 pub(crate) mod piper_plus;
 pub(crate) mod silero;
 pub(crate) mod utmos;
