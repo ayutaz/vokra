@@ -103,7 +103,9 @@
 use std::path::{Path, PathBuf};
 
 use vokra_core::VokraError;
-use vokra_core::gguf::{GgufFile, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufFile, GgufMetadataValue, GgufValueType, chunks,
+};
 use vokra_models::irodori::{
     IRODORI_SAMPLE_RATE, IRODORI_TEXT_TOKENIZER_REPO, IrodoriConfig, IrodoriTts, IrodoriWeights,
 };
@@ -1022,4 +1024,758 @@ fn parity_tts_japanese_vits_ja() {
              unset. (Shape / metadata leg passed above.)"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helper-level unit tests — the pure-function surface that the flip-the-switch
+// contract rests on (env seam, manifest parser, shape validators, skip
+// diagnostics). Every test below is deterministic (no wall-clock, no external
+// state), fast (< 100 ms), and feasible without a real GGUF / checkpoint —
+// scratch dirs are stemmed with PID + nanoseconds so parallel `cargo test`
+// never collides, and synthetic GGUFs are built via `GgufBuilder::to_bytes()`
+// + `GgufFile::parse()` so no filesystem GGUF is ever required.
+//
+// The workspace commits to `-D unsafe_code` and Rust 2024 marks
+// `std::env::set_var` as `unsafe`, so the negative env case uses a namespaced
+// arch guaranteed unset in CI (rather than mutating the process environment).
+// ---------------------------------------------------------------------------
+
+/// Returns a fresh, empty scratch directory under `std::env::temp_dir()`.
+/// Stemmed with the test label + PID + nanoseconds so parallel `cargo
+/// test` (and cross-file collisions with other parity harnesses in this
+/// crate) never trip over each other.
+fn make_scratch_dir(label: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "vokra_parity_tts_japanese_{}_{}_{}",
+        label,
+        std::process::id(),
+        nanos,
+    ));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("mkdir {}: {e}", dir.display()));
+    dir
+}
+
+/// Build a minimal, well-formed GGUF byte image with the requested arch
+/// tag and one 1-element F32 tensor named `probe.f32`. Enough to satisfy
+/// `GgufFile::parse` + `tensor_info("probe.f32")` in the compare-against
+/// tests below. Nothing model-specific.
+fn build_minimal_gguf(arch: &str, tensor_name: &str, value: f32) -> Vec<u8> {
+    let mut b = GgufBuilder::new();
+    b.add_string(chunks::KEY_MODEL_ARCH, arch);
+    b.add_tensor(
+        tensor_name,
+        GgmlType::F32,
+        vec![1],
+        value.to_le_bytes().to_vec(),
+    )
+    .expect("writer accepts a well-formed 1-elem F32 tensor");
+    b.to_bytes().expect("serialize synthetic GGUF")
+}
+
+/// Build a metadata-only GGUF (zero tensors). Used by the
+/// `assert_tensor_count_positive` panic test.
+fn build_metadata_only_gguf(arch: &str) -> Vec<u8> {
+    let mut b = GgufBuilder::new();
+    b.add_string(chunks::KEY_MODEL_ARCH, arch);
+    b.to_bytes().expect("serialize metadata-only GGUF")
+}
+
+/// Build a GGUF that carries one metadata key with an arbitrary typed
+/// value. Used by the `expect_string` / `expect_u32_array` shape-validation
+/// tests to plant a `wrong-type` value at a key that the harness reads.
+fn build_gguf_with_metadata(arch: &str, key: &str, value: GgufMetadataValue) -> Vec<u8> {
+    let mut b = GgufBuilder::new();
+    b.add_string(chunks::KEY_MODEL_ARCH, arch);
+    b.add_metadata(key, value);
+    // A single 1-elem F32 probe tensor so parses/tests that check tensor
+    // presence don't trip on an entirely empty file.
+    b.add_tensor(
+        "probe.f32",
+        GgmlType::F32,
+        vec![1],
+        0.0f32.to_le_bytes().to_vec(),
+    )
+    .expect("writer accepts a well-formed 1-elem F32 tensor");
+    b.to_bytes().expect("serialize typed-metadata GGUF")
+}
+
+/// Extract the `&str` panic message from a `catch_unwind` payload.
+/// `panic!` with a formatted `String` yields a `String` payload; the
+/// plain `&str` variant is also fielded so the helper is drop-in for
+/// both.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_owned()
+    }
+}
+
+// --- env_paths_for ------------------------------------------------------
+
+/// `env_paths_for` MUST return `(None, None)` for an arch whose env vars
+/// are guaranteed unset (gap #1). Uses a namespaced arch slug
+/// (`ttsja_env_probe` → `VOKRA_TTSJA_ENV_PROBE_GGUF` / `_REFDIR`) so no
+/// CI env var of that name could plausibly exist. This pins the "unset →
+/// clean skip" contract at the seam a hosted-CI or operator-desktop run
+/// traverses BEFORE ever touching a GGUF — a regression that returned
+/// `Some(PathBuf::new())` (or swapped the tuple order) would let both
+/// `parity_tts_japanese_irodori` and `parity_tts_japanese_vits_ja` take
+/// the WRONG code path and produce a synthetic-looking failure instead of
+/// an honest skip. FR-EX-08 (silent fallback banned).
+#[test]
+fn env_paths_for_returns_none_when_env_unset() {
+    let arch = "ttsja_env_probe";
+    // Precondition: derive the env var names the harness would query and
+    // confirm they are indeed unset in the current process before we
+    // trust the (None, None) return as evidence of correctness.
+    let gguf_key = gguf_env_var(arch);
+    let refdir_key = refdir_env_var(arch);
+    assert!(
+        std::env::var_os(&gguf_key).is_none(),
+        "test precondition failed: {gguf_key} is set in the environment — either \
+         env leakage or the probe arch namespace clashes with an operator-set \
+         var; rename the probe arch"
+    );
+    assert!(
+        std::env::var_os(&refdir_key).is_none(),
+        "test precondition failed: {refdir_key} is set in the environment"
+    );
+
+    let (gguf, refdir) = env_paths_for(arch);
+    assert!(
+        gguf.is_none(),
+        "expected {gguf_key} unset → env_paths_for gguf slot None; got \
+         Some({gguf:?}) — regression: seam returns Some on an unset env var \
+         (flip-the-switch broken)"
+    );
+    assert!(
+        refdir.is_none(),
+        "expected {refdir_key} unset → env_paths_for refdir slot None; got \
+         Some({refdir:?}) — regression: asymmetric handling of the refdir arm"
+    );
+}
+
+// --- read_ref_manifest --------------------------------------------------
+
+/// `read_ref_manifest` MUST return `Err(...)` when `manifest.txt` is
+/// absent from the refdir (gap #2). The rustdoc explicitly promises "a
+/// set-but-empty REFDIR is not silently downgraded to no comparison
+/// (fabricated pass)". A regression that swallowed the I/O error and
+/// returned `Ok(vec![])` would silently downgrade the byte-level leg to
+/// a no-op for every gated model.
+#[test]
+fn read_ref_manifest_missing_file_returns_err() {
+    let dir = make_scratch_dir("no_manifest");
+    let err = match read_ref_manifest(&dir) {
+        Ok(stages) => panic!(
+            "read_ref_manifest MUST surface Err when manifest.txt is absent \
+             (set-but-empty REFDIR is not a fabricated pass); got Ok with {} \
+             stage(s)",
+            stages.len()
+        ),
+        Err(e) => e,
+    };
+    // The message must at least name the manifest filename so the
+    // operator knows *which* refdir is malformed.
+    assert!(
+        err.contains("manifest.txt"),
+        "err message must name the manifest.txt filename; got: {err}"
+    );
+    // The `read <path>: <io error>` prefix is the format string the
+    // implementation currently ships — a change here should be a
+    // conscious edit, not a silent regression.
+    assert!(
+        err.starts_with("read "),
+        "err message must start with the 'read <path>:' prefix so an \
+         operator can grep the stderr log; got: {err}"
+    );
+}
+
+/// `read_ref_manifest` boundary: a zero-byte `manifest.txt` MUST return
+/// `Ok(vec![])` — distinct from the missing-file case (gap #3). Together
+/// with `compare_against_refdir_returns_zero_zero_on_empty_manifest`
+/// below this pins that "materialised-but-empty manifest" is a valid,
+/// loud "no stages yet" state — a legitimate operator misconfiguration
+/// (touching the file to check permissions is common) must NOT collapse
+/// to the missing-file Err arm.
+#[test]
+fn read_ref_manifest_empty_file_returns_empty_vec() {
+    let dir = make_scratch_dir("empty_manifest");
+    // Zero-byte file: the read succeeds, the split yields no lines, the
+    // for loop body never executes → Ok(vec![]).
+    std::fs::write(dir.join("manifest.txt"), b"").expect("write empty manifest");
+    let stages = read_ref_manifest(&dir)
+        .expect("zero-byte manifest.txt must return Ok(vec![]), not Err (missing-file arm)");
+    assert!(
+        stages.is_empty(),
+        "zero-byte manifest must yield 0 RefStage entries; got {} — parser \
+         hallucinated a row from empty input",
+        stages.len()
+    );
+}
+
+/// `read_ref_manifest` MUST silently ignore lines that do NOT begin with
+/// `sha256 ` — blank lines, `# comment` lines, and any other prefix
+/// (gap #4). This undocumented behaviour lets an operator drop a comment
+/// header (e.g. `# generated by dump.py at <sha>`) into a manifest
+/// without breaking the parse. If a future refactor tightened this to
+/// `return Err(...)` on unknown prefixes, real reference dumps with
+/// headers would break silently — this test pins the current behaviour
+/// so any such refactor becomes visible.
+#[test]
+fn read_ref_manifest_ignores_non_sha256_lines() {
+    let dir = make_scratch_dir("mixed_lines");
+    // Mix: comment / blank / valid / unknown-prefix / blank / valid.
+    // Only the two sha256 rows should surface in the output.
+    let body = "\
+# generated by tools/parity/dump_irodori.py at commit abc123
+
+sha256 stage.one 1111111100000001
+md5    stage.other 2222222200000002
+some free-form footer text
+
+sha256 stage.two 3333333300000003
+";
+    std::fs::write(dir.join("manifest.txt"), body).expect("write mixed manifest");
+    let stages = read_ref_manifest(&dir).expect("mixed manifest must parse (non-sha256 ignored)");
+    let names: Vec<&str> = stages.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["stage.one", "stage.two"],
+        "parser must silently drop non-`sha256 ` lines and preserve the \
+         file order of the surviving rows; got {names:?}"
+    );
+}
+
+/// `read_ref_manifest` happy path: a manifest with three valid
+/// `sha256 <name> <hex>` lines yields three `RefStage` entries in FILE
+/// ORDER with correct `.name` values (gap #5). The rustdoc pins
+/// "exactly once, in file order" — that invariant has zero direct tests
+/// today. A regression that swapped `parts.next()` for `parts.next_back()`
+/// or accidentally called `.dedup()` would silently break byte-level
+/// parity across every reference dump.
+#[test]
+fn read_ref_manifest_happy_path_returns_stages_in_order() {
+    let dir = make_scratch_dir("happy_path");
+    // Three well-formed rows, ordered so a regression that reversed
+    // iteration would surface in the assertions.
+    let body = "\
+sha256 encoder.h0 deadbeef00000001
+sha256 dit.block.0.attn.wq cafefade00000002
+sha256 vits.decoder.final feedbead00000003
+";
+    std::fs::write(dir.join("manifest.txt"), body).expect("write happy-path manifest");
+    let stages = read_ref_manifest(&dir).expect("happy-path manifest must parse");
+    assert_eq!(
+        stages.len(),
+        3,
+        "expected exactly 3 RefStage entries; got {} — parser dropped or \
+         duplicated rows",
+        stages.len()
+    );
+    // Order is load-bearing (the compare loop iterates in file order and
+    // an operator eyeballing the stderr log expects the same order).
+    assert_eq!(
+        stages[0].name, "encoder.h0",
+        "row 0 name mismatch; parser walked out of order?"
+    );
+    assert_eq!(
+        stages[1].name, "dit.block.0.attn.wq",
+        "row 1 name mismatch; parser walked out of order?"
+    );
+    assert_eq!(
+        stages[2].name, "vits.decoder.final",
+        "row 2 name mismatch; parser walked out of order?"
+    );
+}
+
+/// `read_ref_manifest` MUST reject a `sha256 ` line with no name token
+/// (line is `sha256 ` followed by nothing / only whitespace) with an Err
+/// naming the "missing name" arm (gap #6). Distinct from the missing-hex
+/// case because the two `ok_or_else` arms are dead code from a coverage
+/// perspective — a regression that swapped the error messages or
+/// reordered the two `parts.next()` calls would silently invert operator
+/// diagnostics.
+#[test]
+fn read_ref_manifest_line_missing_name_returns_err() {
+    let dir = make_scratch_dir("missing_name");
+    // "sha256 " (prefix + trailing space only) → strip_prefix returns
+    // Some(""), split_whitespace yields 0 tokens, first parts.next() =
+    // None → "missing name" arm fires.
+    std::fs::write(dir.join("manifest.txt"), "sha256 \n").expect("write malformed manifest");
+    let err = match read_ref_manifest(&dir) {
+        Ok(stages) => panic!(
+            "sha256-prefixed line with no name token must be a hard Err, \
+             not a silent skip; got Ok with {} stage(s)",
+            stages.len()
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains("missing name"),
+        "err message must name the specific arm ('missing name') so an \
+         operator can distinguish it from the missing-hex arm; got: {err}"
+    );
+}
+
+/// `read_ref_manifest` MUST reject a `sha256 <name>` line with no hex
+/// token (line has exactly one name token, no hex) with an Err naming
+/// the "missing hex" arm (gap #7). Symmetric to the missing-name test —
+/// pins the second `ok_or_else` arm and asserts the message is DIFFERENT
+/// from the missing-name case (operator debuggability).
+#[test]
+fn read_ref_manifest_line_missing_hex_returns_err() {
+    let dir = make_scratch_dir("missing_hex");
+    // "sha256 name_only" → strip_prefix returns Some("name_only"),
+    // first parts.next() = Some("name_only"), second parts.next() =
+    // None → "missing hex" arm fires.
+    std::fs::write(dir.join("manifest.txt"), "sha256 name_only\n")
+        .expect("write malformed manifest");
+    let err = match read_ref_manifest(&dir) {
+        Ok(stages) => panic!(
+            "sha256-prefixed line with a name but no hex must be a hard Err, \
+             not a silent skip; got Ok with {} stage(s)",
+            stages.len()
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains("missing hex"),
+        "err message must name the specific arm ('missing hex') so an \
+         operator can distinguish it from the missing-name arm; got: {err}"
+    );
+    // Cross-check: the missing-hex arm must NOT mis-report itself as
+    // missing-name (that would defeat the whole point of two arms).
+    assert!(
+        !err.contains("missing name"),
+        "err message must not conflate the two arms; got: {err}"
+    );
+}
+
+// --- hf_repo_for --------------------------------------------------------
+
+/// `hf_repo_for("<unknown>")` MUST panic loudly (gap #8). The panic
+/// branch at the `_ =>` arm is defensive code that would only fire on a
+/// mis-typed `FAMILY` entry — which is exactly the failure mode we want
+/// caught pre-commit (a silent typo would silently produce a broken
+/// skip message pointing at a non-existent HF repo). `#[should_panic]`
+/// pins that the "unknown arch" substring appears in the message so an
+/// operator sees which arm fired.
+#[test]
+#[should_panic(expected = "unknown arch")]
+fn hf_repo_for_panics_on_unknown_arch() {
+    let _ = hf_repo_for("nemo");
+}
+
+// --- skip_reason --------------------------------------------------------
+
+/// The `irodori` skip message MUST NOT leak the JSUT corpus-terms note
+/// (gap #9). The corpus block is `vits_ja`-exclusive because JSUT is the
+/// specific corpus that forbids re-distribution of the trained weight —
+/// irodori rides Aratako's permissive MIT release. A regression that
+/// widened the corpus note to every family would legally mis-attribute
+/// the block and confuse an operator following the skip message. This
+/// belt-and-braces test complements
+/// `skip_reason_names_both_env_vars_and_the_convert_recipe` (which only
+/// asserts vits_ja HAS these strings).
+#[test]
+fn skip_reason_irodori_omits_jsut_corpus_note() {
+    let msg = skip_reason("irodori", hf_repo_for("irodori"));
+    assert!(
+        !msg.contains("JSUT"),
+        "irodori skip message must NOT mention JSUT (that block is \
+         vits_ja-exclusive); got: {msg:?}"
+    );
+    assert!(
+        !msg.contains("Re-distribution is not permitted"),
+        "irodori skip message must NOT quote the JSUT redistribution ban \
+         (that block is vits_ja-exclusive); got: {msg:?}"
+    );
+    // Sanity: the vits_ja counterpart still carries both, so the family
+    // asymmetry is what we're pinning (not a whole-family drop).
+    let vits_msg = skip_reason("vits_ja", hf_repo_for("vits_ja"));
+    assert!(
+        vits_msg.contains("JSUT"),
+        "vits_ja skip message MUST still name JSUT (the asymmetry is the \
+         point of this test); got: {vits_msg:?}"
+    );
+}
+
+/// The skip message MUST spell out the exact ATOL numeric value (gap #10)
+/// so a future ATOL bump forces the operator-facing recipe text to update
+/// in lock-step. The format string stringifies `{ATOL}` with Rust's
+/// default float Display; a widening or format change (e.g. renaming
+/// `ATOL` to a `Cow<'static, str>` recipe blob) would silently drop that
+/// datum from operator diagnostics.
+#[test]
+fn skip_reason_includes_atol_value() {
+    // Both members must carry the value in the "byte-level reference
+    // comparison (atol = 0.01)" recipe blurb.
+    for &arch in FAMILY {
+        let msg = skip_reason(arch, hf_repo_for(arch));
+        assert!(
+            msg.contains("0.01"),
+            "{arch}: skip message must contain the ATOL numeric value \
+             (currently 0.01) so a future ATOL bump forces the recipe text \
+             to update in lock-step; got: {msg:?}"
+        );
+        // The word "atol" itself must appear so the number isn't dangling.
+        assert!(
+            msg.contains("atol"),
+            "{arch}: skip message must contain the word 'atol' next to the \
+             numeric value; got: {msg:?}"
+        );
+    }
+}
+
+// --- env-var derivation kebab-case normalisation ------------------------
+
+/// `gguf_env_var` / `refdir_env_var` MUST normalise `-` to `_` before
+/// upper-casing (gap #11). Today only snake_case arches (`irodori`,
+/// `vits_ja`) are covered by `env_var_derivation_is_stable_across_family`
+/// — so the `.replace('-', '_')` call is dead-tested and could be
+/// deleted with zero test failure. The `FAMILY` slug convention could
+/// shift to kebab-case at any point (many upstream repos use it), and
+/// the harness would still be expected to derive the same env var name
+/// the operator has already exported.
+#[test]
+fn env_var_derivation_normalizes_kebab_case() {
+    // The kebab form of `vits_ja` is what the CLI's `--model` flag
+    // consumes (see `cli_model` mapping in `skip_reason`), and an
+    // operator who accidentally passed the kebab form as the arch slug
+    // must still see the canonical `_`-separated env var.
+    assert_eq!(
+        gguf_env_var("vits-ja"),
+        "VOKRA_VITS_JA_GGUF",
+        "gguf_env_var must normalise '-' to '_' before upper-casing so \
+         kebab-case arch slugs map to the same env var as snake_case"
+    );
+    assert_eq!(
+        refdir_env_var("vits-ja"),
+        "VOKRA_VITS_JA_REFDIR",
+        "refdir_env_var must normalise '-' to '_' before upper-casing so \
+         kebab-case arch slugs map to the same env var as snake_case"
+    );
+    // A double-hyphen probe: multi-hyphen arch names (e.g. an
+    // upstream that shipped as `foo-bar-baz`) must fully normalise.
+    assert_eq!(
+        gguf_env_var("foo-bar-baz"),
+        "VOKRA_FOO_BAR_BAZ_GGUF",
+        "gguf_env_var must normalise EVERY '-' occurrence, not just the first"
+    );
+}
+
+// --- compare_against_refdir --------------------------------------------
+
+/// `compare_against_refdir` MUST panic — not return `(0, 0)` — when the
+/// refdir has no `manifest.txt` (gap #12). The panic message is
+/// load-bearing: it carries BOTH "manifest.txt unreadable" and
+/// "fabricated pass 禁止" substrings, and it names the ctx label, so an
+/// operator eyeballing the CI log is taught the rule AND can identify
+/// which parity leg fired. A refactor that shortened the banner or
+/// quietly downgraded to `Ok((0, 0))` would defeat the honest-parity
+/// contract the rustdoc promises.
+#[test]
+fn compare_against_refdir_panics_on_missing_manifest() {
+    // A minimal but well-formed GGUF so the panic fires on the manifest
+    // read (the very first thing compare_against_refdir does), not on
+    // some earlier tensor-access path.
+    let gguf_bytes = build_minimal_gguf("irodori-tts", "probe.f32", 0.0);
+    let file = GgufFile::parse(gguf_bytes).expect("parse synthetic gguf");
+    let bad_refdir = make_scratch_dir("compare_no_manifest");
+    // Deliberately do NOT write manifest.txt into `bad_refdir`.
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        compare_against_refdir(&file, &bad_refdir, "irodori");
+    }))
+    .expect_err(
+        "compare_against_refdir must panic (not return (0, 0)) when the \
+         refdir has no manifest.txt — the operator explicitly opted into \
+         the byte-level leg by setting REFDIR",
+    );
+    let msg = panic_message(&*panic);
+    assert!(
+        msg.contains("manifest.txt unreadable"),
+        "panic message must carry the 'manifest.txt unreadable' phrase \
+         so an operator knows which arm fired; got: {msg}"
+    );
+    assert!(
+        msg.contains("fabricated pass 禁止"),
+        "panic message must carry the 'fabricated pass 禁止' rule anchor \
+         so the panic itself self-documents the honest-parity contract; \
+         got: {msg}"
+    );
+    // The ctx label must be present so an operator with multiple parity
+    // legs (irodori + vits_ja + …) can identify the failing one.
+    assert!(
+        msg.contains("irodori"),
+        "panic message must carry the ctx label so an operator with \
+         multiple gated legs can identify the failing one; got: {msg}"
+    );
+}
+
+// --- expect_string ------------------------------------------------------
+
+/// `expect_string` MUST panic with a message that names the missing key
+/// when the key is entirely absent from the GGUF (gap #13). The panic
+/// message shape is the FAIL surface an operator sees; a message
+/// regression (e.g. loss of the key name) would surface as an
+/// inscrutable "panicked at unwrap_or_else". Feasible without a real
+/// weight — `GgufBuilder::to_bytes()` + `GgufFile::parse()` is enough.
+#[test]
+fn expect_string_panics_when_key_missing() {
+    // GGUF with the arch tag but no `vokra.irodori.model_family` key.
+    let bytes = build_minimal_gguf("irodori-tts", "probe.f32", 0.0);
+    let file = GgufFile::parse(bytes).expect("parse synthetic gguf");
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = expect_string(&file, "vokra.irodori.model_family");
+    }))
+    .expect_err(
+        "expect_string must panic when the key is absent (a missing arch \
+         tag is not a 'maybe compatible' state, FR-EX-08)",
+    );
+    let msg = panic_message(&*panic);
+    assert!(
+        msg.contains("vokra.irodori.model_family"),
+        "panic message must name the missing key so an operator can find \
+         it in the converter; got: {msg}"
+    );
+    assert!(
+        msg.contains("missing"),
+        "panic message must name the 'missing' arm so an operator can \
+         distinguish it from the 'not a string' arm; got: {msg}"
+    );
+}
+
+/// `expect_string` MUST panic with a message that names the wrong-type
+/// arm when the key exists but is stored as a non-string type (gap #14).
+/// This is exactly the branch a bad converter would trip (e.g. stamping
+/// `model_family` as a `u32` opset instead of a `String` slug).
+#[test]
+fn expect_string_panics_when_wrong_type() {
+    // GGUF where the target key is stored as U32 (writer offers no
+    // native `add_u32_at_string_key`; `add_u32` is used for the wrong
+    // type on purpose so `expect_string.as_str()` returns None).
+    let key = "vokra.irodori.model_family";
+    let bytes = {
+        let mut b = GgufBuilder::new();
+        b.add_string(chunks::KEY_MODEL_ARCH, "irodori-tts");
+        b.add_u32(key, 42);
+        b.add_tensor(
+            "probe.f32",
+            GgmlType::F32,
+            vec![1],
+            0.0f32.to_le_bytes().to_vec(),
+        )
+        .expect("writer accepts a well-formed 1-elem F32 tensor");
+        b.to_bytes().expect("serialize wrong-type GGUF")
+    };
+    let file = GgufFile::parse(bytes).expect("parse synthetic gguf");
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = expect_string(&file, key);
+    }))
+    .expect_err(
+        "expect_string must panic when the key exists but is the wrong \
+         type (FR-EX-08 — no silent type coercion)",
+    );
+    let msg = panic_message(&*panic);
+    assert!(
+        msg.contains(key),
+        "panic message must name the offending key; got: {msg}"
+    );
+    assert!(
+        msg.contains("not a string"),
+        "panic message must name the 'not a string' arm so an operator \
+         knows it's a type mismatch (not an absence); got: {msg}"
+    );
+}
+
+// --- expect_u32_array ---------------------------------------------------
+
+/// `expect_u32_array` MUST panic with 'is not an array' when the key
+/// exists but is a scalar (gap #15). This is a real converter-mistake
+/// surface (a stringified list stored as one string instead of an
+/// array); the panic message must name the offending key.
+#[test]
+fn expect_u32_array_panics_on_non_array() {
+    let key = "vokra.vits_ja.decoder.upsample_scales";
+    let bytes = build_gguf_with_metadata(
+        "vits-ja",
+        key,
+        // Deliberately a String where the harness expects an Array.
+        GgufMetadataValue::String("[8, 8, 2, 2]".to_owned()),
+    );
+    let file = GgufFile::parse(bytes).expect("parse synthetic gguf");
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = expect_u32_array(&file, key);
+    }))
+    .expect_err(
+        "expect_u32_array must panic when the key exists but is not an \
+         array (a stringified list is exactly the converter mistake this \
+         guard catches)",
+    );
+    let msg = panic_message(&*panic);
+    assert!(
+        msg.contains(key),
+        "panic message must name the offending key; got: {msg}"
+    );
+    assert!(
+        msg.contains("is not an array"),
+        "panic message must name the 'is not an array' arm; got: {msg}"
+    );
+}
+
+/// `expect_u32_array` MUST panic with the 'does not fit in u32' message
+/// when an element exceeds `u32::MAX` (gap #16). The suffix that
+/// surfaces `element_type` is the single hardest datum for an operator
+/// to reconstruct after the fact; a regression that dropped it would be
+/// silently costly.
+#[test]
+fn expect_u32_array_panics_on_element_too_large() {
+    let key = "vokra.vits_ja.decoder.upsample_scales";
+    // Build a U64 array whose sole element is `u32::MAX + 1` — passes
+    // `as_u64()` (widens U64 → u64 directly) but fails `u32::try_from`.
+    let too_big: u64 = u64::from(u32::MAX) + 1;
+    let bytes = build_gguf_with_metadata(
+        "vits-ja",
+        key,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U64,
+            values: vec![GgufMetadataValue::U64(too_big)],
+        }),
+    );
+    let file = GgufFile::parse(bytes).expect("parse synthetic gguf");
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = expect_u32_array(&file, key);
+    }))
+    .expect_err(
+        "expect_u32_array must panic when an element exceeds u32::MAX \
+         (no silent truncation, FR-EX-08)",
+    );
+    let msg = panic_message(&*panic);
+    assert!(
+        msg.contains(key),
+        "panic message must name the offending key; got: {msg}"
+    );
+    assert!(
+        msg.contains("does not fit in u32"),
+        "panic message must name the 'does not fit in u32' arm; got: {msg}"
+    );
+    // The element_type suffix is the operator's only clue to which
+    // array-of-what tripped the guard.
+    assert!(
+        msg.contains("element_type"),
+        "panic message must carry the 'element_type = ...' suffix so an \
+         operator can see the offending array's element type; got: {msg}"
+    );
+    assert!(
+        msg.contains("U64"),
+        "panic message must render the offending element_type ({:?}); got: {msg}",
+        GgufValueType::U64
+    );
+}
+
+// --- assert_arch --------------------------------------------------------
+
+/// `assert_arch` MUST panic with a message that names BOTH the actual
+/// arch string in the GGUF and the expected arch string when they
+/// differ (gap #17). This is the sole guard against a mis-routed
+/// converter (an irodori GGUF handed to the vits_ja test); the error
+/// message quality is load-bearing for triage.
+#[test]
+fn assert_arch_panics_on_mismatch() {
+    // GGUF stamped with the WRONG arch tag on purpose.
+    let bytes = build_minimal_gguf("wrong-arch", "probe.f32", 0.0);
+    let file = GgufFile::parse(bytes).expect("parse synthetic gguf");
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_arch(&file, "irodori-tts", "irodori");
+    }))
+    .expect_err(
+        "assert_arch must panic when the GGUF's arch tag differs from \
+         the expected string (no silent mis-routing, FR-EX-08)",
+    );
+    let msg = panic_message(&*panic);
+    assert!(
+        msg.contains("wrong-arch"),
+        "panic message must name the ACTUAL arch found in the GGUF so an \
+         operator sees what was stamped; got: {msg}"
+    );
+    assert!(
+        msg.contains("irodori-tts"),
+        "panic message must name the EXPECTED arch so an operator sees \
+         what the harness demanded; got: {msg}"
+    );
+    // The ctx label ("irodori" here) must appear so an operator with
+    // multiple parity legs can identify the failing one.
+    assert!(
+        msg.contains("irodori"),
+        "panic message must carry the ctx label so an operator with \
+         multiple gated legs can identify the failing one; got: {msg}"
+    );
+    // The guidance line ("right converted GGUF for this test") must
+    // survive so the panic self-documents the fix.
+    assert!(
+        msg.contains("right converted GGUF"),
+        "panic message must carry the 'right converted GGUF' guidance \
+         so an operator knows the fix is 'point at the correct GGUF'; \
+         got: {msg}"
+    );
+}
+
+// --- assert_tensor_count_positive --------------------------------------
+
+/// `assert_tensor_count_positive` MUST panic with the 'no float tensors
+/// passed through' guidance when the GGUF has metadata only (zero
+/// tensors) (gap #18). The guidance block is the difference between a
+/// triageable failure and an inscrutable one: it points the operator at
+/// the exact converter arm (the BF16 pass-through path) that would have
+/// silently emitted a metadata-only GGUF.
+#[test]
+fn assert_tensor_count_positive_panics_on_zero_tensors() {
+    let bytes = build_metadata_only_gguf("irodori-tts");
+    let file = GgufFile::parse(bytes).expect("parse metadata-only gguf");
+    // Precondition — the file really has 0 tensors (guards against a
+    // future regression that auto-injects a placeholder tensor).
+    assert_eq!(
+        file.tensors().len(),
+        0,
+        "test precondition: metadata-only GGUF must actually have 0 tensors"
+    );
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_tensor_count_positive(&file, "irodori");
+    }))
+    .expect_err(
+        "assert_tensor_count_positive must panic when the GGUF has zero \
+         tensors (metadata-only GGUFs are a converter-arm failure, not a \
+         'shape OK' state, FR-EX-08)",
+    );
+    let msg = panic_message(&*panic);
+    assert!(
+        msg.contains("irodori"),
+        "panic message must carry the ctx label so an operator with \
+         multiple gated legs can identify the failing one; got: {msg}"
+    );
+    assert!(
+        msg.contains("zero tensors"),
+        "panic message must name the actual failure mode ('zero tensors') \
+         so an operator immediately understands the shape; got: {msg}"
+    );
+    assert!(
+        msg.contains("no float tensors passed through"),
+        "panic message must quote the converter rustdoc arm ('no float \
+         tensors passed through') so an operator can grep the converter \
+         source for the fix; got: {msg}"
+    );
+    assert!(
+        msg.contains("streaming BF16 pass-through path"),
+        "panic message must point at the 'streaming BF16 pass-through \
+         path' so an operator sees the actionable next step; got: {msg}"
+    );
 }
