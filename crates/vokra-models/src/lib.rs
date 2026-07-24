@@ -225,6 +225,31 @@ pub mod qwen3_tts;
 pub mod silero_vad;
 pub mod speaker;
 pub(crate) mod tls_scratch;
+// SoTA plan Phase 4 (2026-07-24): OpenBMB **VoxCPM-0.5B** end-to-end
+// diffusion-autoregressive TTS (apache-2.0 end-to-end — code + weight
+// under a single grant, huggingface.co/openbmb/VoxCPM-0.5B). NEW CLASS
+// vs every earlier target in this crate — the terminal decoding hop is
+// neither a vocoder-LM (HiFTChain) nor a codec-LM (any RVQ / FSQ
+// decoder) but a **continuous VAE decoder** consuming flow-matching
+// sampler output. Topology: MiniCPM-4 LM backbone (24-layer / 1024d /
+// GQA 16 Q ÷ 2 KV / SwiGLU 4096 / RoPE θ=10000 with longrope scaling /
+// RMSNorm ε=1e-5 / vocab=73448) + 6-layer residual acoustic LM +
+// 4-layer local encoder + 4-layer local DiT + UnifiedCFM flow-matching
+// sampler (Euler solver, `inference_cfg_rate=2.0`) + AudioVAE V2
+// continuous encoder / decoder (16 kHz PCM in → 25 Hz continuous
+// latents → 48 kHz PCM out; `feat_dim=64` LM feature width matches VAE
+// `latent_dim=64`) + inline scalar-quantization bottleneck
+// (`scalar_quantization_latent_dim=256`, `scalar_quantization_scale=9`
+// — inside the LM hidden stream, NOT a codec). Every hparam transcribed
+// verbatim from `huggingface.co/openbmb/VoxCPM-0.5B/raw/main/config.json`
+// and `openbmb/VoxCPM/src/voxcpm/modules/audiovae/audio_vae_v2.py`
+// (`AudioVAEConfig` defaults). Reuses two ops: shared **new** SoTA plan
+// Phase 4 primitive `vokra_ops::vae_continuous` (introduced with this
+// model, shared with the planned VibeVoice consumer) and existing
+// `vokra_ops::flow_sampler` (Euler / linear schedule / CFG SplitBatch).
+// Distinct arch tag from every sibling — silently sharing would
+// misroute the runtime dispatch.
+pub mod voxcpm2;
 pub mod voxtral;
 pub mod whisper;
 pub mod zonos;

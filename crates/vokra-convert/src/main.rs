@@ -1263,6 +1263,76 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  code_predictor.vocab={cp_vocab}"
             );
         }
+        ModelKind::VoxCpm2 => {
+            // SoTA plan Phase 4 (2026-07-24): VoxCPM-0.5B verify surface —
+            // arch / name plus the MiniCPM-4 LM axes + AudioVAE V2
+            // axes + the VAE handshake (`feat_dim == vae.latent_dim`)
+            // that identifies the continuous VAE + diffusion-decoder
+            // topology distinct from CosyVoice2/3's vocoder-LM and
+            // Qwen3-TTS's codec-LM.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let family = file
+                .get("vokra.voxcpm2.model_family")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let feat = file
+                .get("vokra.voxcpm2.feat_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let patch = file
+                .get("vokra.voxcpm2.patch_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let lm_hidden = file
+                .get("vokra.voxcpm2.lm.hidden_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let lm_n_layer = file
+                .get("vokra.voxcpm2.lm.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let lm_n_head = file
+                .get("vokra.voxcpm2.lm.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let lm_n_head_kv = file
+                .get("vokra.voxcpm2.lm.n_head_kv")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let lm_vocab = file
+                .get("vokra.voxcpm2.lm.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dit_n_layer = file
+                .get("vokra.voxcpm2.dit.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr_in = file
+                .get("vokra.vae_continuous.sample_rate_hz")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr_out = file
+                .get("vokra.vae_continuous.out_sample_rate_hz")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let vae_latent = file
+                .get("vokra.vae_continuous.latent_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} family={family} feat_dim={feat} patch_size={patch} \
+                 lm.hidden={lm_hidden} lm.n_layer={lm_n_layer} lm.n_head={lm_n_head} \
+                 lm.n_head_kv={lm_n_head_kv} lm.vocab={lm_vocab} dit.n_layer={dit_n_layer} \
+                 vae.sr_in={sr_in} vae.sr_out={sr_out} vae.latent_dim={vae_latent}"
+            );
+        }
     }
     Ok(())
 }

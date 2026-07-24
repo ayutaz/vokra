@@ -198,6 +198,17 @@ pub mod rnnt_decode;
 pub mod snac_decode;
 // -------------------------------------------------------------------------
 pub mod stft;
+// ---- SoTA plan Phase 4 vae_continuous (TTS primitive, new class) --------
+// Continuous VAE encoder / decoder scaffold — the first consumer is
+// VoxCPM-0.5B (openbmb/VoxCPM, apache-2.0) which pairs a continuous latent
+// stream with a diffusion / flow-matching feature generator (unlike every
+// existing codec op in this crate, which is discrete RVQ or FSQ). Shared
+// across VoxCPM2 and the planned VibeVoice consumer. Runtime function, NOT
+// an OpKind variant (same posture as `flow_sampler` / `mimi_rvq` /
+// `dac_rvq` / `qwen3_tts_codec` — FR-OP-30 / FR-EX-10 / ADR M3-06 §D-b).
+// Localized re-export block for clean parallel-wave rebases.
+pub mod vae_continuous;
+// -------------------------------------------------------------------------
 pub mod window;
 
 // ---- M4-03 aec re-exports ------------------------------------------------
@@ -278,6 +289,12 @@ pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
 pub use snac_decode::{SnacConfig, SnacDecoder, SnacWeights};
 // -------------------------------------------------------------------------
 pub use stft::{Spectrogram, stft};
+// ---- SoTA plan Phase 4 vae_continuous re-exports ------------------------
+pub use vae_continuous::{
+    ContinuousVaeConfig, ContinuousVaeDecoder, ContinuousVaeDecoderWeights, ContinuousVaeEncoder,
+    ContinuousVaeEncoderWeights, continuous_vae_decode, continuous_vae_encode,
+};
+// -------------------------------------------------------------------------
 pub use vokra_core::Complex32;
 
 #[cfg(test)]

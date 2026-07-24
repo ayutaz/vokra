@@ -14,7 +14,7 @@ use vokra_convert::{
     ModelKind, PolicyPreset, VoxtralConfig, convert_chatterbox_file, convert_chatterbox_nano_file,
     convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
     convert_dac_file, convert_file, convert_file_quantized, convert_file_with_policy,
-    convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file,
+    convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file, convert_voxcpm2_file,
     convert_voxtral_file_quantized, convert_voxtral_file_with_adapter_config_quantized,
     parse_voxtral_hf_config,
 };
@@ -621,6 +621,23 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 return Err("--policy-preset is only supported for whisper".to_owned());
             }
             convert_qwen3_tts_file(&p.input, &p.output)
+        }
+        ModelKind::VoxCpm2 => {
+            // SoTA plan Phase 4 (2026-07-24): VoxCPM-0.5B ships a real
+            // `config.json`, but every field is fixed for the 0.5B release
+            // and byte-parallel to the transcribed constants in
+            // `models::voxcpm2` — so the CLI takes no --config side-car
+            // today (a future 0.5B-CustomVoice / 1.5B variant that reshapes
+            // the LM backbone or the AudioVAE would demand one).
+            // Quantization surface is whisper-only (same posture as
+            // Qwen3-TTS / Chatterbox family / CosyVoice3 / dia / zonos).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_voxcpm2_file(&p.input, &p.output)
         }
         _ => {
             // Ticket precedence: an explicit --policy-preset wins; else the

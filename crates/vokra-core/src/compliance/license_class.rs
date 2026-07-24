@@ -449,6 +449,19 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "qwen3-tts-12hz-0.6b-base"
         | "qwen3-tts-12hz-0_6b-base"
         | "qwen3-tts-12hz-0.6b" => LicenseClass::Permissive,
+        // SoTA plan Phase 4 (2026-07-24): OpenBMB VoxCPM-0.5B — end-to-end
+        // diffusion-autoregressive TTS. Weight license = **apache-2.0**
+        // **end-to-end** — code + weight all under a single apache-2.0
+        // grant (`huggingface.co/openbmb/VoxCPM-0.5B` model-card
+        // `license: apache-2.0` + `github.com/OpenBMB/VoxCPM/LICENSE`,
+        // fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」). The
+        // M2-13 gate passes commercially without any attribution
+        // obligation on the runtime side. The exact canonical spellings
+        // + arch-tag underscore variant + the common short forms are
+        // listed here so an id lookup returns quickly without hitting
+        // the `voxcpm-` prefix arm below.
+        "voxcpm" | "voxcpm2" | "voxcpm-0.5b" | "voxcpm-0_5b" | "voxcpm-0.5b-base"
+        | "voxcpm-0_5b-base" => LicenseClass::Permissive,
         // Commercial-OK codecs (FR-OP-32): DAC / WavTokenizer / X-Codec 2 = MIT.
         "dac" | "wavtokenizer" | "x-codec-2" | "xcodec2" => LicenseClass::Permissive,
         // SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B — Apache 2.0
@@ -625,7 +638,16 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
             // slip through. The `qwen3_tts` (underscore) alias covers
             // the arch tag spelling only — a future underscore variant
             // family would need its own explicit prefix.
-            || id.starts_with("qwen3-tts-") =>
+            || id.starts_with("qwen3-tts-")
+            // OpenBMB VoxCPM first-party family (apache-2.0 end-to-end —
+            // SoTA plan Phase 4, 2026-07-24): specific HF variant ids
+            // like `voxcpm-0.5b` / a future `voxcpm-0.5b-customvoice` /
+            // `voxcpm-1.5b` still resolve permissive. Guarded on the
+            // dash so unrelated ids (`voxcpmsomething`) cannot slip
+            // through. The `voxcpm2` (arch-tag) alias covers only the
+            // arch-tag spelling — a future underscore variant family
+            // would need its own explicit prefix.
+            || id.starts_with("voxcpm-") =>
         {
             LicenseClass::Permissive
         }

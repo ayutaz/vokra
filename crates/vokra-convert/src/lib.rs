@@ -410,6 +410,62 @@ pub enum ModelKind {
     /// takes no config side-car (every hparam is fixed for the 0.6B
     /// release and transcribed as compile-time constants).
     Qwen3Tts,
+    /// OpenBMB **VoxCPM-0.5B** safetensors checkpoint (SoTA plan Phase 4,
+    /// 2026-07-24). Apache-2.0 end-to-end — LM + AudioVAE + Python
+    /// pipeline all under a single apache-2.0 grant
+    /// (`huggingface.co/openbmb/VoxCPM-0.5B` model-card + LICENSE,
+    /// fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」). NEW
+    /// **class** of TTS vs every earlier target: end-to-end diffusion-
+    /// autoregressive with a **continuous VAE + diffusion decoder** —
+    /// the terminal decoding hop is neither vocoder-LM (HiFTChain) nor
+    /// codec-LM (any RVQ / FSQ codec) but a continuous VAE decoder
+    /// consuming flow-matching sampler output.
+    ///
+    /// Topology chains a MiniCPM-4 LM backbone (`hidden_size=1024`,
+    /// `num_hidden_layers=24`, GQA `num_attention_heads=16` /
+    /// `num_key_value_heads=2` for a very wide group ratio 8, SwiGLU
+    /// `intermediate_size=4096`, RoPE `theta=10000` with longrope
+    /// scaling / 32-entry `long_factor` and `short_factor` tables /
+    /// `rms_norm_eps=1e-5` / `vocab_size=73448` /
+    /// `max_position_embeddings=32_768`; MiniCPM-specific
+    /// `scale_emb=12` / `dim_model_base=256` / `scale_depth=1.4`)
+    /// through a 6-layer residual acoustic LM (same backbone family,
+    /// `vocab_size=0`), a 4-layer local encoder (`hidden_dim=1024`,
+    /// `ffn_dim=4096`, `num_heads=16`), a 4-layer local DiT (same axes),
+    /// a UnifiedCFM flow-matching sampler (`sigma_min=1e-6`,
+    /// `solver=euler`, `inference_cfg_rate=2.0`,
+    /// `t_scheduler=log-norm` — the latter is training-side; inference
+    /// walks a linear `t_span`), an AudioVAE V2 continuous encoder /
+    /// decoder (`sample_rate=16_000`, `out_sample_rate=48_000`,
+    /// `encoder_dim=128`, `encoder_rates=[2,5,8,8]` → 25 Hz continuous
+    /// latents, `latent_dim=64`, `decoder_dim=2048`,
+    /// `decoder_rates=[8,6,5,2,2,2]` → 48 kHz PCM out, `depthwise=true`),
+    /// and an inline scalar-quantization bottleneck
+    /// (`scalar_quantization_latent_dim=256`,
+    /// `scalar_quantization_scale=9` — inside the LM hidden stream,
+    /// distinct from the FSQ *codec* family).
+    ///
+    /// `patch_size=2` (LM slots two VAE frames per step), `feat_dim=64`
+    /// (equals `vae.latent_dim` — the runtime enforces this handshake
+    /// loudly per FR-EX-08), `max_length=4096`. Introduces the shared
+    /// new SoTA plan Phase 4 primitive `vokra_ops::vae_continuous`
+    /// (shared with the planned VibeVoice consumer); reuses the
+    /// existing `vokra_ops::flow_sampler` for the CFM sampler. Every
+    /// hparam transcribed verbatim from
+    /// `huggingface.co/openbmb/VoxCPM-0.5B/raw/main/config.json` and
+    /// `openbmb/VoxCPM/src/voxcpm/modules/audiovae/audio_vae_v2.py`
+    /// (`AudioVAEConfig(BaseModel)` defaults).
+    ///
+    /// Distinct arch tag from CosyVoice2/3 / Qwen3-TTS / Chatterbox
+    /// family / Dia / Zonos / CSM / Voxtral / Kyutai STT / Moshi —
+    /// silently sharing would mis-route the runtime dispatch. The
+    /// upstream release is BF16 (~1 GB); today's F32/F16 pass-through
+    /// hits the `skipped_non_float` counter on BF16 tensors and the
+    /// converter surfaces the loud "no float tensors" note. Convert
+    /// with [`convert_voxcpm2_file`] — the converter takes no config
+    /// side-car (every hparam is fixed for the 0.5B release and
+    /// transcribed as compile-time constants).
+    VoxCpm2,
 }
 
 impl ModelKind {
@@ -513,6 +569,12 @@ impl ModelKind {
             | "qwen3-tts-12hz-0.6b-base"
             | "qwen3-tts-12hz-0_6b-base"
             | "qwen3-tts-12hz-0.6b" => Some(Self::Qwen3Tts),
+            // OpenBMB VoxCPM family — canonical HF release + arch-tag
+            // underscore spelling + common short forms. All spellings
+            // resolve to the same 0.5B release today; a future variant
+            // (0.5B-CustomVoice / 1.5B) would be a distinct `ModelKind`.
+            "voxcpm" | "voxcpm2" | "voxcpm-0.5b" | "voxcpm-0_5b" | "voxcpm-0.5b-base"
+            | "voxcpm-0_5b-base" => Some(Self::VoxCpm2),
             _ => None,
         }
     }
@@ -546,6 +608,7 @@ impl ModelKind {
             Self::ChatterboxTurbo => "chatterbox-turbo",
             Self::ChatterboxNano => "chatterbox-nano",
             Self::Qwen3Tts => "qwen3-tts",
+            Self::VoxCpm2 => "voxcpm",
         }
     }
 }
@@ -1081,6 +1144,30 @@ pub fn convert_file_licensed(
                     .iter()
                     .map(|n| format!("qwen3-tts warning: {n}")),
             );
+            (builder, notes)
+        }
+        ModelKind::VoxCpm2 => {
+            // SoTA plan Phase 4 (2026-07-24): pass every F32/F16 tensor
+            // through verbatim and stamp the `vokra.voxcpm2.*` +
+            // `vokra.vae_continuous.*` chunk groups (MiniCPM-4 LM
+            // backbone + 6-layer residual acoustic LM + 4-layer local
+            // encoder + 4-layer local DiT + UnifiedCFM sampler +
+            // AudioVAE V2 continuous encoder / decoder + inline
+            // scalar-quantization bottleneck) from the transcribed
+            // constants in `models::voxcpm2`. NEW CLASS of TTS vs every
+            // sibling: the terminal decoding hop is a continuous VAE
+            // decoder consuming flow-matching sampler output (not
+            // vocoder-LM HiFTChain, not codec-LM RVQ / FSQ) — silently
+            // sharing an arch tag would mis-route the runtime dispatch.
+            // Provenance = apache-2.0 end-to-end (Permissive — no
+            // runtime-side attribution obligation; code + weight all
+            // under a single apache-2.0 grant).
+            let (builder, report) = models::voxcpm2::convert(bytes)?;
+            let mut notes = vec![format!(
+                "voxcpm2: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(report.notes.iter().map(|n| format!("voxcpm2 warning: {n}")));
             (builder, notes)
         }
     };
@@ -2173,6 +2260,85 @@ pub fn convert_chatterbox_nano_file(
 /// obligation on the runtime side.
 pub fn convert_qwen3_tts_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::Qwen3Tts, input, output)
+}
+
+/// Convert an OpenBMB **VoxCPM-0.5B** safetensors checkpoint into a Vokra
+/// GGUF (SoTA plan Phase 4, 2026-07-24).
+///
+/// This is the named entry point that mirrors `convert_qwen3_tts_file`
+/// / `convert_chatterbox_nano_file` / `convert_dia_file` /
+/// `convert_zonos_file`. It is functionally identical to
+/// `convert_file(ModelKind::VoxCpm2, input, output)` — VoxCPM takes no
+/// side-car config on this conversion path (every hparam of the
+/// `vokra.voxcpm2.*` + `vokra.vae_continuous.*` chunk groups is
+/// transcribed as compile-time constants in `models::voxcpm2` from the
+/// primary sources
+/// `huggingface.co/openbmb/VoxCPM-0.5B/raw/main/config.json` and
+/// `openbmb/VoxCPM/src/voxcpm/modules/audiovae/audio_vae_v2.py`) — but
+/// the named entry keeps the `convert_*_file` naming symmetry with the
+/// other TTS models.
+///
+/// VoxCPM-0.5B is a **new class** of TTS vs every earlier target: an
+/// end-to-end **diffusion-autoregressive** speech synthesizer whose
+/// terminal decoding hop is a **continuous VAE decoder** consuming
+/// flow-matching sampler output — not vocoder-LM (HiFTChain) and not
+/// codec-LM (any RVQ / FSQ codec). Topology:
+///
+/// - **MiniCPM-4 LM backbone** — decoder-only transformer,
+///   `hidden_size=1024`, `num_hidden_layers=24`, GQA
+///   `num_attention_heads=16` / `num_key_value_heads=2` (group ratio 8,
+///   very wide compared to Qwen2/3's 2/8), SwiGLU
+///   `intermediate_size=4096`, RoPE `theta=10000` with **longrope
+///   scaling** (32-entry `long_factor` / `short_factor` tables — the
+///   long-context extension does not widen `rope_theta`), `rms_norm_eps
+///   =1e-5`, `vocab_size=73_448`, `max_position_embeddings=32_768`,
+///   MiniCPM-specific scale knobs (`scale_emb=12`, `dim_model_base=256`,
+///   `scale_depth=1.4`, `use_mup=false`).
+/// - **Residual acoustic LM** — 6 layers, same backbone family, `vocab_size=0`.
+/// - **Local encoder** — 4-layer transformer (`hidden_dim=1024`,
+///   `ffn_dim=4096`, `num_heads=16`) — consumes the continuous VAE
+///   feature stream, lifts it to LM width.
+/// - **Local DiT + UnifiedCFM** — the **diffusion decoder**: 4-layer
+///   transformer that predicts velocity in the VAE latent space, driven
+///   by a conditional flow-matching sampler (`sigma_min=1e-6`,
+///   `solver=euler`, `inference_cfg_rate=2.0`,
+///   `t_scheduler=log-norm` — training-side; inference walks a linear
+///   `t_span`). Reuses [`vokra_ops::flow_sampler`] (Euler / linear /
+///   SplitBatch CFG).
+/// - **Scalar-quantization bottleneck** — inline FSQ projection on the
+///   LM hidden stream (`scalar_quantization_latent_dim=256`,
+///   `scalar_quantization_scale=9`). Distinct from the FSQ *codec*
+///   family (`wavtokenizer_vq`, `xcodec2_fsq`) — the projection stays
+///   continuous.
+/// - **AudioVAE V2** continuous encoder / decoder — the SoTA plan Phase
+///   4 **new op** `vokra_ops::vae_continuous` introduced with this model
+///   and shared with the planned VibeVoice consumer. Encoder consumes
+///   16 kHz mono PCM (`sample_rate=16_000`) with `encoder_dim=128`,
+///   `encoder_rates=[2,5,8,8]` (hop 640 → 25 Hz frames) → `latent_dim=64`
+///   continuous latents; decoder upsamples with `decoder_dim=2048`,
+///   `decoder_rates=[8,6,5,2,2,2]` (hop 1920 → `out_sample_rate=48_000`
+///   PCM out), `depthwise=true`. **VAE handshake**: the LM step feature
+///   width (`feat_dim=64`) MUST equal the VAE latent width
+///   (`latent_dim=64`); the runtime rejects a mismatch loudly at load
+///   per FR-EX-08.
+///
+/// # BF16 posture
+///
+/// The upstream VoxCPM-0.5B release ships **BF16** safetensors
+/// (`config.json.dtype = "bfloat16"`); today's F32/F16 pass-through arm
+/// hits the `skipped_non_float` counter on BF16 tensors and the
+/// converter surfaces the loud "no float tensors" note. Pre-widen
+/// offline (F32) or wait for the streaming BF16 pass-through path
+/// (T29-equivalent — the Moshi / Kyutai STT pattern) to convert the
+/// release build directly.
+///
+/// Weight license = **apache-2.0** **end-to-end**
+/// (`huggingface.co/openbmb/VoxCPM-0.5B` model-card + `LICENSE`,
+/// fetched 2026-07-24) — code + weight all under a single apache-2.0
+/// grant. The M2-13 gate passes commercially without any attribution
+/// obligation on the runtime side.
+pub fn convert_voxcpm2_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::VoxCpm2, input, output)
 }
 
 /// Convert a Zyphra **Zonos-v0.1-transformer** safetensors checkpoint into a

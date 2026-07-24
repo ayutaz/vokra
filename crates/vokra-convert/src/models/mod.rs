@@ -135,6 +135,27 @@ pub(crate) mod piper_plus;
 pub(crate) mod qwen3_tts;
 pub(crate) mod silero;
 pub(crate) mod utmos;
+// SoTA plan Phase 4 (2026-07-24): OpenBMB **VoxCPM-0.5B** (apache-2.0
+// end-to-end weight) safetensors → GGUF with the `vokra.voxcpm2.*` and
+// `vokra.vae_continuous.*` chunk groups. NEW class of TTS vs every
+// earlier target — the terminal decoding hop is a continuous VAE
+// decoder consuming flow-matching sampler output (not vocoder-LM
+// HiFTChain, not codec-LM RVQ / FSQ). Topology: MiniCPM-4 LM backbone
+// (24-layer / 1024d / GQA 16 Q ÷ 2 KV / SwiGLU 4096 / RoPE θ=10000
+// with longrope scaling / RMSNorm ε=1e-5 / vocab=73448) + 6-layer
+// residual acoustic LM + 4-layer local encoder + 4-layer local DiT +
+// UnifiedCFM flow-matching sampler (Euler / inference_cfg_rate=2.0) +
+// AudioVAE V2 continuous encoder / decoder (16 kHz PCM in → 25 Hz
+// latents → 48 kHz PCM out) + inline scalar-quantization bottleneck
+// (`scalar_quantization_latent_dim=256`, `scalar_quantization_scale=9`).
+// Every F32 / F16 tensor passes through verbatim; every hparam is
+// transcribed from the primary source
+// `huggingface.co/openbmb/VoxCPM-0.5B/raw/main/config.json` +
+// `openbmb/VoxCPM/src/voxcpm/modules/audiovae/audio_vae_v2.py`
+// (`AudioVAEConfig` defaults). Distinct arch tag from CosyVoice2/3 /
+// Qwen3-TTS / Chatterbox family because VoxCPM's terminal step is
+// vae_continuous_decode, NOT HiFTChain or any RVQ / FSQ codec.
+pub(crate) mod voxcpm2;
 pub(crate) mod voxtral;
 pub(crate) mod whisper;
 // SoTA plan Phase 1-5 (2026-07-24): Zyphra Zonos-v0.1-transformer
