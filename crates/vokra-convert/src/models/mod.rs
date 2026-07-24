@@ -219,6 +219,28 @@ pub(crate) mod vibevoice;
 // `Schedule::Linear` | `Schedule::Sway`) and the shared
 // `crate::codec::DacCodecGguf` seam for the paired DACVAE decode.
 pub(crate) mod irodori;
+// SoTA plan Phase 5 JA-TTS-2 (2026-07-24): ESPnet-family Japanese
+// **plain VITS** (Kim et al. 2021 VITS + HiFi-GAN generator) —
+// architecture Apache-2.0 (ESPnet `espnet2/gan_tts/vits/`) + MIT
+// (`jaywalnut310/vits` reference). Distinct arch tag from piper-plus
+// because plain VITS decodes through a HiFi-GAN generator directly
+// while piper-plus (MB-iSTFT-VITS2) decodes through a sub-band iSTFT
+// + PQMF post-net (silently sharing an arch tag would misroute the
+// runtime dispatch). Every F32 / F16 tensor passes through verbatim;
+// every hparam is transcribed from the primary sources
+// `egs2/jsut/tts1/conf/tuning/train_vits.yaml` +
+// `egs2/jvs/tts1/conf/tuning/finetune_vits.yaml` +
+// `espnet2/gan_tts/vits/{vits,generator}.py` (fetched 2026-07-24 —
+// CLAUDE.md「ハルシネーション厳禁」). Reuses the shared
+// `vokra_ops::hifigan_generator` (M3-07, FR-OP-10) primitive via
+// `VitsJaConfig::to_hifigan_attrs`; no new op or backend kernel is
+// added. **⚠️  Weight redistribution default**: the JSUT / JVS /
+// COEIROINK corpus terms forbid trained-weight redistribution, so
+// the provenance stamp defaults to
+// `LicenseClass::RedistributionForbidden`. A user who trained on a
+// permissive corpus overrides at the outer
+// `convert_file --license <spdx>` boundary.
+pub(crate) mod vits_ja;
 pub(crate) mod voxtral;
 pub(crate) mod whisper;
 // SoTA plan Phase 1-5 (2026-07-24): Zyphra Zonos-v0.1-transformer

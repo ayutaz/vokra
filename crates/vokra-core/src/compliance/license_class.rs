@@ -599,6 +599,37 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // exact-match arm so an id lookup returns the canonical
         // spellings quickly.
         "omniasr-ctc" | "omniasr-ctc-1b" => LicenseClass::Permissive,
+        // SoTA plan Phase 5 JA-TTS-2 (2026-07-24): ESPnet-family
+        // Japanese plain VITS (JSUT / JVS / COEIROINK deployments +
+        // any downstream that consumes the shared `vits-ja` arch tag).
+        // The **architecture** rides Apache-2.0 (ESPnet's
+        // `espnet2/gan_tts/vits/` source) + MIT (`jaywalnut310/vits`
+        // reference implementation) and is always independently
+        // implementable. The **trained weight**, however, is bound by
+        // the corpus terms it was trained on:
+        //
+        // - **JSUT** (`sites.google.com/site/shinnosuketakamichi/publication/jsut`)
+        //   pins single-speaker Japanese TTS training data with the
+        //   explicit clause *"Re-distribution is not permitted"*.
+        // - **JVS** (`sites.google.com/site/shinnosuketakamichi/research-topics/jvs_corpus`)
+        //   pins the 100-speaker Japanese corpus with the same
+        //   re-distribution ban.
+        // - **COEIROINK** ships per-character licence terms that a
+        //   converter cannot machine-check.
+        //
+        // The default class is therefore `RedistributionForbidden` —
+        // never a downstream permissive default — and a user who
+        // trained on a permissive corpus overrides at conversion time
+        // via `vokra-convert --license <spdx>`. Aliases cover the
+        // canonical arch tag + the underscore variant + the three
+        // upstream deployment ids (ESPnet-JSUT / ESPnet-JVS / COEIROINK).
+        //
+        // (See `crates/vokra-models/src/vits_ja/mod.rs` module doc for
+        // the JSUT / JVS terms + the `support the architecture, refuse
+        // the weights` rationale from
+        // `docs/tickets/sota-coverage-plan-2026-07-22.md` §2.4.)
+        "vits-ja" | "vits_ja" | "espnet-vits-ja" | "espnet-jsut-vits" | "espnet-jvs-vits"
+        | "coeiroink-vits" => LicenseClass::RedistributionForbidden,
         // --- gated: CC-BY-NC (research flag) ---------------------------------
         "f5-tts" | "encodec" => LicenseClass::NonCommercial,
         // --- gated: CC-BY-NC-SA (research flag) ------------------------------

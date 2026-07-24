@@ -28,7 +28,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|kotoba-whisper> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -96,7 +96,23 @@ OPTIONS:
                        permissive — no runtime-side attribution
                        obligation. **JA-ASR-2 axis**: n_text_layer=2 is
                        read from checkpoint tensor names, never
-                       hard-coded).
+                       hard-coded), or
+                       vits-ja (ESPnet-family Japanese plain VITS —
+                       Kim et al. 2021 VITS + HiFi-GAN generator, as
+                       shipped by ESPnet's
+                       egs2/jsut/tts1/conf/tuning/train_vits.yaml +
+                       egs2/jvs/tts1/conf/tuning/finetune_vits.yaml
+                       + COEIROINK deployments — SoTA plan Phase 5
+                       JA-TTS-2; ships F32/F16 safetensors directly.
+                       Distinct arch tag from piper-plus because plain
+                       VITS decodes through a HiFi-GAN generator
+                       directly while piper-plus (MB-iSTFT-VITS2)
+                       decodes through a sub-band iSTFT + PQMF post-net.
+                       **⚠️  Weight redistribution default is
+                       `RedistributionForbidden`**: JSUT / JVS /
+                       COEIROINK corpus terms forbid trained-weight
+                       redistribution; override with --license <spdx>
+                       if you trained on a permissive corpus).
                        `whisper-base` is accepted as a backward-compatible
                        alias for `whisper` (size is still derived from the
                        checkpoint, not the flag).
@@ -308,7 +324,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          piper-plus | campplus | kokoro | cosyvoice2 | voxtral | mimi | \
                          dac | csm | moshi | denoise | dia | zonos | kyutai-stt | \
                          parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
-                         distil-whisper | kotoba-whisper)"
+                         distil-whisper | kotoba-whisper | vits-ja)"
                     )
                 })?);
                 i += 2;
@@ -1545,6 +1561,73 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  text_tokenizer={text_tok}"
             );
         }
+        ModelKind::VitsJa => {
+            // SoTA plan Phase 5 JA-TTS-2 (2026-07-24): plain VITS JA
+            // verify surface — arch / name plus the text-encoder +
+            // flow + SDP + HiFi-GAN decoder axes that identify the
+            // Kim et al. 2021 VITS + plain HiFi-GAN generator path
+            // distinct from piper-plus's MB-iSTFT-VITS2 (sub-band
+            // iSTFT + PQMF post-net).
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let family = file
+                .get("vokra.vits_ja.model_family")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let sr = file
+                .get("vokra.vits_ja.sample_rate_hz")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let hidden = file
+                .get("vokra.vits_ja.hidden_channels")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_mels = file
+                .get("vokra.vits_ja.n_mels")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let aux_channels = file
+                .get("vokra.vits_ja.aux_channels")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let text_layer = file
+                .get("vokra.vits_ja.text.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let text_head = file
+                .get("vokra.vits_ja.text.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let flow_flows = file
+                .get("vokra.vits_ja.flow.n_flow")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sdp_flows = file
+                .get("vokra.vits_ja.sdp.n_flow")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_init = file
+                .get("vokra.vits_ja.decoder.initial_channel")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_kernel = file
+                .get("vokra.vits_ja.decoder.kernel_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} family={family} sample_rate={sr} \
+                 hidden_channels={hidden} n_mels={n_mels} aux_channels={aux_channels} \
+                 text.n_layer={text_layer} text.n_head={text_head} \
+                 flow.n_flow={flow_flows} sdp.n_flow={sdp_flows} \
+                 decoder.initial_channel={dec_init} decoder.kernel_size={dec_kernel}"
+            );
+        }
     }
     Ok(())
 }
@@ -1768,6 +1851,7 @@ mod tests {
             ("omniasr-ctc", ModelKind::OmniasrCtc),
             ("distil-whisper", ModelKind::DistilWhisper),
             ("kotoba-whisper", ModelKind::KotobaWhisper),
+            ("vits-ja", ModelKind::VitsJa),
         ];
         for (name, kind) in kinds {
             let parsed = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

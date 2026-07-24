@@ -337,6 +337,34 @@ pub mod vibevoice;
 // side attribution obligation; `gh api /repos/Aratako/Irodori-TTS/license`
 // → `MIT`).
 pub mod irodori;
+// SoTA plan Phase 5 JA-TTS-2 (2026-07-24): **plain VITS** — the Kim et al.
+// 2021 VITS (arXiv:2106.06103) architecture as shipped by ESPnet's
+// `espnet2/gan_tts/vits/{vits,generator}.py` + the JA-family recipes
+// (`egs2/jsut/tts1/conf/tuning/train_vits.yaml` and
+// `egs2/jvs/tts1/conf/tuning/finetune_vits.yaml`) + COEIROINK deployments.
+// Distinct from piper-plus (MB-iSTFT-VITS2): plain VITS decodes through
+// a **HiFi-GAN generator directly** (no sub-band iSTFT, no PQMF), while
+// piper-plus decodes through a sub-band iSTFT + PQMF post-net. Every
+// architectural axis (text-encoder blocks / heads / FFN expand /
+// dropout / macaron / conformer-conv, SDP kernel / dropout / flows,
+// residual affine coupling flow kernel / layers / base_dilation /
+// use_only_mean, HiFi-GAN decoder kernel / initial_channel / upsample
+// scales+kernels / MRF resblock kernels+dilations, hidden_channels,
+// segment_size, aux_channels, sample_rate) is transcribed verbatim from
+// the ESPnet primary sources (fetched 2026-07-24 — CLAUDE.md
+// 「ハルシネーション厳禁」). Reuses the shared `vokra_ops::hifigan_generator`
+// (M3-07) primitive via `VitsJaConfig::to_hifigan_attrs`; no new op or
+// backend kernel is added. **⚠️  Weight redistribution note**: the
+// publicly distributed ESPnet-JSUT / ESPnet-JVS / COEIROINK JA VITS
+// checkpoints ride on corpus terms that forbid re-distribution of the
+// trained weight (JSUT: `Re-distribution is not permitted`, JVS: same);
+// the converter default-stamps GGUFs produced from those checkpoints as
+// `LicenseClass::RedistributionForbidden`. Users who trained their own
+// permissive-corpus VITS override with `vokra-convert --license <spdx>`.
+// Architecture is Apache-2.0 (ESPnet) + MIT (jaywalnut310/vits) and is
+// always independently implementable (whisper.cpp 型 self re-imp,
+// CLAUDE.md 設計判断 4).
+pub mod vits_ja;
 pub mod voxtral;
 pub mod whisper;
 pub mod zonos;

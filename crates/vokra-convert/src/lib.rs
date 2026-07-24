@@ -616,6 +616,44 @@ pub enum ModelKind {
     /// 600M VoiceDesign / 2.5B variant that reshapes the DiT or adds
     /// caption conditioning would demand `--config`).
     Irodori,
+    /// ESPnet-family Japanese **plain VITS** safetensors checkpoint
+    /// (SoTA plan Phase 5 JA-TTS-2, 2026-07-24). Architecture is
+    /// Apache-2.0 (ESPnet `espnet2/gan_tts/vits/`) + MIT
+    /// (`jaywalnut310/vits` reference).
+    ///
+    /// This is Kim et al. 2021 VITS (arXiv:2106.06103) — a text
+    /// encoder, stochastic duration predictor, normalising flow, and
+    /// **plain HiFi-GAN generator** (Kong et al. 2020,
+    /// arXiv:2010.05646). The architecture is shared with piper-plus
+    /// (MB-iSTFT-VITS2) up to the flow output, but the decoder is a
+    /// HiFi-GAN generator directly (**no sub-band iSTFT, no PQMF**),
+    /// which is why the two arch tags cannot alias. Every
+    /// architectural axis is transcribed verbatim from
+    /// `egs2/jsut/tts1/conf/tuning/train_vits.yaml`, from
+    /// `egs2/jvs/tts1/conf/tuning/finetune_vits.yaml`, and from
+    /// `espnet2/gan_tts/vits/{vits,generator}.py` (fetched 2026-07-24
+    /// — CLAUDE.md「ハルシネーション厳禁」).
+    ///
+    /// **⚠️  Weight redistribution default is `RedistributionForbidden`**.
+    /// The publicly distributed ESPnet-JSUT / ESPnet-JVS / COEIROINK
+    /// checkpoints ride on corpus terms that forbid trained-weight
+    /// redistribution (JSUT: *"Re-distribution is not permitted"*, JVS:
+    /// same, COEIROINK: per-character licence terms a converter cannot
+    /// machine-check). The provenance stamp therefore defaults to
+    /// `RedistributionForbidden`; a user who trained on a permissive
+    /// corpus overrides via `vokra-convert --license <spdx>`. Architecture
+    /// is always independently implementable — the block runs (whisper.cpp
+    /// 型 self re-imp, CLAUDE.md 設計判断 4). See
+    /// `docs/tickets/sota-coverage-plan-2026-07-22.md` §2.4 for the
+    /// "support the architecture, refuse the weights" rationale.
+    ///
+    /// Convert with [`convert_vits_ja_file`]. The converter takes no
+    /// side-car config today (the JSUT 22 kHz single-speaker recipe
+    /// axes are byte-parallel to the transcribed constants in
+    /// `models::vits_ja`; a `--config` axis for the JVS multi-speaker
+    /// / full-band 44 kHz / downstream re-training variants is a
+    /// follow-up).
+    VitsJa,
 }
 
 impl ModelKind {
@@ -775,6 +813,16 @@ impl ModelKind {
             | "irodori-tts-500m-v3"
             | "irodori-tts-500m-v3-base"
             | "irodori-tts-600m-v3-voicedesign" => Some(Self::Irodori),
+            // ESPnet-family Japanese plain VITS (SoTA plan Phase 5
+            // JA-TTS-2, 2026-07-24). Accept the canonical arch tag +
+            // the underscore variant + the three upstream deployment
+            // ids (ESPnet-JSUT / ESPnet-JVS / COEIROINK). All
+            // spellings resolve to the same JSUT 22 kHz single-speaker
+            // converter path today; the JVS multi-speaker + full-band
+            // 44 kHz + downstream re-training variants share the same
+            // tensor topology and are follow-up `--config` axes.
+            "vits-ja" | "vits_ja" | "vits-jp" | "vits_jp" | "espnet-vits-ja" | "espnet-vits-jp"
+            | "espnet-jsut-vits" | "espnet-jvs-vits" | "coeiroink-vits" => Some(Self::VitsJa),
             _ => None,
         }
     }
@@ -812,6 +860,7 @@ impl ModelKind {
             Self::VoxCpm2 => "voxcpm",
             Self::VibeVoice => "vibevoice",
             Self::Irodori => "irodori",
+            Self::VitsJa => "vits-ja",
         }
     }
 }
@@ -1455,6 +1504,28 @@ pub fn convert_file_licensed(
                 report.written, report.skipped_non_float,
             )];
             notes.extend(report.notes.iter().map(|n| format!("irodori warning: {n}")));
+            (builder, notes)
+        }
+        ModelKind::VitsJa => {
+            // SoTA plan Phase 5 JA-TTS-2 (2026-07-24): pass every F32/F16
+            // tensor through verbatim and stamp the `vokra.vits_ja.*`
+            // chunk group (Kim et al. 2021 VITS text encoder / SDP /
+            // residual affine coupling flow / plain HiFi-GAN generator)
+            // from the transcribed constants in `models::vits_ja`.
+            // Distinct arch tag from piper-plus (MB-iSTFT-VITS2) —
+            // silently sharing would misroute the runtime dispatch (the
+            // piper-plus decoder consumes a different tensor topology:
+            // sub-band iSTFT + PQMF). **⚠️  Provenance defaults to
+            // `RedistributionForbidden`**: the ESPnet-JSUT / ESPnet-JVS /
+            // COEIROINK corpus terms forbid trained-weight
+            // redistribution. A user who trained on a permissive corpus
+            // overrides at the outer `--license <spdx>` boundary below.
+            let (builder, report) = models::vits_ja::convert(bytes)?;
+            let mut notes = vec![format!(
+                "vits-ja: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(report.notes.iter().map(|n| format!("vits-ja warning: {n}")));
             (builder, notes)
         }
     };
@@ -2789,6 +2860,78 @@ pub fn convert_vibevoice_file(input: &Path, output: &Path) -> Result<ConvertSumm
 /// verdict as apache-2.0).
 pub fn convert_irodori_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::Irodori, input, output)
+}
+
+/// Convert an ESPnet-family Japanese **plain VITS** safetensors
+/// checkpoint into a Vokra GGUF (SoTA plan Phase 5 JA-TTS-2,
+/// 2026-07-24).
+///
+/// This is the named entry point that mirrors `convert_irodori_file` /
+/// `convert_vibevoice_file` / `convert_voxcpm2_file` / etc. It is
+/// functionally identical to
+/// `convert_file(ModelKind::VitsJa, input, output)` — plain VITS JA
+/// takes no side-car config on this conversion path today (every
+/// hparam of the `vokra.vits_ja.*` chunk group is transcribed as
+/// compile-time constants in `models::vits_ja` from the primary
+/// sources `egs2/jsut/tts1/conf/tuning/train_vits.yaml` +
+/// `egs2/jvs/tts1/conf/tuning/finetune_vits.yaml` +
+/// `espnet2/gan_tts/vits/{vits,generator}.py`) — but the named entry
+/// keeps the `convert_*_file` naming symmetry with the other TTS
+/// models.
+///
+/// # Architecture (from primary sources)
+///
+/// plain VITS JA is Kim et al. 2021 VITS (arXiv:2106.06103) — a text
+/// encoder + stochastic duration predictor + normalising flow +
+/// **plain HiFi-GAN generator** (Kong et al. 2020, arXiv:2010.05646).
+/// Topology axes (all transcribed verbatim, fetched 2026-07-24 —
+/// CLAUDE.md「ハルシネーション厳禁」):
+///
+/// - **Text encoder** — Conformer-style (`use_conformer_conv=false`
+///   on the JA recipes), `n_layer=6`, `n_head=2`, `ffn_expand=4`,
+///   `positionwise_conv_kernel=3`, `dropout=0.1`,
+///   `attention_dropout=0.1`, `use_macaron_style=true`.
+/// - **Stochastic duration predictor** — `kernel_size=3`,
+///   `dropout=0.5`, `n_flow=4`, `dds_conv_layers=3`.
+/// - **Residual affine coupling flow** — `n_flow=4`, `kernel_size=5`,
+///   `base_dilation=1`, `n_layer=4`, `use_only_mean=true`.
+/// - **HiFi-GAN decoder (22 kHz JA recipe)** — `kernel_size=7`,
+///   `initial_channel=512`, `upsample_scales=[8, 8, 2, 2]`,
+///   `upsample_kernel_sizes=[16, 16, 4, 4]`,
+///   `resblock_kernel_sizes=[3, 7, 11]`,
+///   `resblock_dilations=[[1, 3, 5], [1, 3, 5], [1, 3, 5]]`.
+///   Distinct from piper-plus (MB-iSTFT-VITS2), which decodes
+///   through a sub-band iSTFT + PQMF post-net.
+/// - **Global axes** — `hidden_channels=192`, `segment_size=32`,
+///   `aux_channels=513` (`n_fft/2 + 1` for the 22 kHz recipe's
+///   `n_fft=1024`), `n_mels=80`, `sample_rate=22050`.
+///
+/// # ⚠️  Weight redistribution default — `RedistributionForbidden`
+///
+/// The publicly distributed ESPnet-JSUT / ESPnet-JVS / COEIROINK JA
+/// VITS checkpoints ride on **corpus terms that forbid trained-weight
+/// redistribution**:
+///
+/// - **JSUT** — *"Re-distribution is not permitted"*
+///   (`sites.google.com/site/shinnosuketakamichi/publication/jsut`).
+/// - **JVS** — same re-distribution ban
+///   (`sites.google.com/site/shinnosuketakamichi/research-topics/jvs_corpus`).
+/// - **COEIROINK** — per-character licence terms that a converter
+///   cannot machine-check.
+///
+/// The converter therefore default-stamps the artifact as
+/// [`vokra_core::LicenseClass::RedistributionForbidden`]. A user who
+/// trained their own permissive-corpus VITS overrides at the outer
+/// `--license <spdx>` boundary of `convert_file`, which rewrites the
+/// provenance chunk to the correct SPDX id.
+///
+/// Architecture rides Apache-2.0 (ESPnet) + MIT (jaywalnut310/vits)
+/// and is *always* independently implementable — the block runs
+/// (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+/// See `docs/tickets/sota-coverage-plan-2026-07-22.md` §2.4 for the
+/// "support the architecture, refuse the weights" rationale.
+pub fn convert_vits_ja_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::VitsJa, input, output)
 }
 
 /// Convert a Zyphra **Zonos-v0.1-transformer** safetensors checkpoint into a

@@ -15,8 +15,9 @@ use vokra_convert::{
     convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
     convert_dac_file, convert_file, convert_file_quantized, convert_file_with_policy,
     convert_irodori_file, convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file,
-    convert_vibevoice_file, convert_voxcpm2_file, convert_voxtral_file_quantized,
-    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
+    convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
+    convert_voxtral_file_quantized, convert_voxtral_file_with_adapter_config_quantized,
+    parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -24,7 +25,7 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|vits-ja> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
@@ -48,7 +49,7 @@ OPTIONS:
                               parakeet-tdt | parakeet-ctc | canary | omniasr-ctc |
                               distil-whisper | kotoba-whisper |
                               chatterbox | chatterbox-turbo | chatterbox-nano |
-                              qwen3-tts | voxcpm | vibevoice | irodori
+                              qwen3-tts | voxcpm | vibevoice | irodori | vits-ja
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
@@ -226,6 +227,28 @@ OPTIONS:
                               — no --config side-car; weight license =
                               apache-2.0 permissive end-to-end — no
                               attribution obligation on the runtime side)
+                              (vits-ja: ESPnet-family Japanese plain
+                              VITS — Kim et al. 2021 VITS + plain
+                              HiFi-GAN generator, as shipped by
+                              ESPnet's egs2/jsut/tts1/conf/tuning/
+                              train_vits.yaml + jvs/tts1/finetune_vits
+                              + COEIROINK deployments; distinct arch
+                              tag from piper-plus because plain VITS
+                              decodes through a HiFi-GAN generator
+                              directly while piper-plus (MB-iSTFT-VITS2)
+                              decodes through a sub-band iSTFT + PQMF
+                              post-net; every hparam is transcribed
+                              verbatim from the ESPnet primary sources
+                              — SoTA plan Phase 5 JA-TTS-2; **⚠️
+                              weight redistribution default is
+                              `RedistributionForbidden`**: JSUT / JVS /
+                              COEIROINK corpus terms forbid
+                              trained-weight redistribution — architecture
+                              rides Apache-2.0 (ESPnet) + MIT
+                              (jaywalnut310/vits) and is always
+                              independently implementable; override
+                              with --license <spdx> at conversion time
+                              if trained on a permissive corpus)
     --input <path>            upstream checkpoint file. For voxtral, a
                               `*.index.json` path reads every shard listed in
                               its weight_map (the raw sharded BF16 release)
@@ -323,7 +346,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
                          distil-whisper | kotoba-whisper | \
                          chatterbox | chatterbox-turbo | chatterbox-nano | \
-                         qwen3-tts | voxcpm | vibevoice | irodori)"
+                         qwen3-tts | voxcpm | vibevoice | irodori | vits-ja)"
                     )
                 })?);
                 i += 2;
@@ -697,6 +720,36 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             }
             convert_irodori_file(&p.input, &p.output)
         }
+        ModelKind::VitsJa => {
+            // SoTA plan Phase 5 JA-TTS-2 (2026-07-24): plain VITS JA
+            // (ESPnet-family Kim et al. 2021 VITS + HiFi-GAN generator)
+            // has no upstream `config.json` — every hparam lives in the
+            // ESPnet training yamls (`egs2/jsut/tts1/conf/tuning/
+            // train_vits.yaml` + `egs2/jvs/tts1/conf/tuning/
+            // finetune_vits.yaml`) and is transcribed as compile-time
+            // constants in `models::vits_ja` (JSUT 22 kHz single-speaker
+            // recipe defaults). No --config side-car today; JVS
+            // multi-speaker + full-band 44 kHz + downstream re-training
+            // variants share the same tensor topology and will land as
+            // a follow-up `--config` axis. Quantization surface is
+            // whisper-only (same posture as Irodori / VibeVoice /
+            // VoxCPM / Qwen3-TTS / Chatterbox family / CosyVoice3 /
+            // dia / zonos).
+            //
+            // **⚠️  Weight redistribution default is
+            // `RedistributionForbidden`**: the JSUT / JVS / COEIROINK
+            // corpus terms forbid trained-weight redistribution. A user
+            // who trained on a permissive corpus overrides via
+            // `vokra-convert --license <spdx>` (the standalone binary)
+            // or the shared `convert_file_licensed` path.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_vits_ja_file(&p.input, &p.output)
+        }
         _ => {
             // Ticket precedence: an explicit --policy-preset wins; else the
             // legacy --quantize q4_k alias maps to the whisper_q4_k preset;
@@ -1009,6 +1062,7 @@ mod tests {
             ("voxcpm", ModelKind::VoxCpm2),
             ("vibevoice", ModelKind::VibeVoice),
             ("irodori", ModelKind::Irodori),
+            ("vits-ja", ModelKind::VitsJa),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
