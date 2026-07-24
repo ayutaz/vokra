@@ -64,7 +64,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use vokra_core::gguf::chunks::KEY_MODEL_ARCH;
-use vokra_core::gguf::{GgmlType, GgufFile};
+use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile};
 
 use vokra_models::dia::{self, DiaConfig};
 use vokra_models::zonos::{self, ZonosConditionerKind, ZonosConfig};
@@ -723,4 +723,372 @@ fn flip_the_switch_deferred_names_both_owner_steps() {
             "flip_the_switch_deferred must contain {token:?}; got: {msg}"
         );
     }
+}
+
+// =============================================================================
+// Additional helper-level coverage (Phase 1 SoTA plan audit gap-fill,
+// 2026-07-25). Each block's rationale is inlined so a future auditor sees
+// why the test exists without cross-reference. Six gaps are addressed:
+//
+//   (1) `capitalize_first` had zero tests — a pure helper whose output the
+//       owner-facing panic in `flip_the_switch_deferred` transitively relies
+//       on. A regression that returned `""` or dropped the multi-byte tail
+//       would produce panic text like `TtsTts` or bare `Tts` and no other
+//       test would notice.
+//   (2) `skip_reason` / `flip_the_switch_deferred` were dia-only — the zonos
+//       leg's messages were never asserted, so a hard-coded `"dia"` or
+//       `"DIA"` leak in either format string would ship undetected.
+//   (3) `skip_reason` interpolation was tested only with a real arch — a
+//       hard-coded `"DIA"` in the format string would still pass the dia
+//       test because the tokens coincide with the hardcoded value.
+//   (4) `env_paths_for`'s file-existence filter had no test (documented as
+//       "unsafe env::set_var forbids" — the subprocess workaround preserves
+//       `-D unsafe-code` at the workspace level).
+//   (5) `assert_common_gguf_invariants` panic arms had no negative tests —
+//       untested assertions are dead code from a verification standpoint.
+//   (6) `env_paths_for` determinism across calls not pinned — locks out an
+//       accidental global mutation / thread-local cache regression.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// (Gap 1) `capitalize_first` — pure helper the panic messages rely on.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn capitalize_first_empty_returns_empty() {
+    // Pins the `chars().next()` early-return arm (`None => String::new()`).
+    // A refactor that made this arm allocate a non-empty string (or panic)
+    // would fail here before it surfaced downstream in `flip_the_switch_deferred`.
+    assert_eq!(capitalize_first(""), "");
+}
+
+#[test]
+fn capitalize_first_uppercases_ascii_first_char() {
+    assert_eq!(capitalize_first("a"), "A");
+    // Idempotent on an already-capital first char: `'D'.to_uppercase() == 'D'`.
+    assert_eq!(capitalize_first("Dia"), "Dia");
+}
+
+#[test]
+fn capitalize_first_pins_the_two_ty_strings_flip_switch_depends_on() {
+    // The `flip_the_switch_deferred` panic embeds `"{ty}Tts"` where `ty` is
+    // this function's output. Changing either transformation here would
+    // silently change the owner-facing failure text (`DiaTts` / `ZonosTts`),
+    // and only `flip_the_switch_deferred_names_both_owner_steps` +
+    // `_for_zonos` catch it transitively — pin it directly.
+    assert_eq!(capitalize_first("dia"), "Dia");
+    assert_eq!(capitalize_first("zonos"), "Zonos");
+}
+
+#[test]
+fn capitalize_first_preserves_multibyte_tail() {
+    // The `chars().next()` + `to_uppercase().collect::<String>() + c.as_str()`
+    // composition must not silently drop the tail when the first char is
+    // multi-byte. `'é'.to_uppercase()` yields the single char `'É'`, so a
+    // byte-oriented substitute (e.g. `s[..1].to_uppercase() + &s[1..]`)
+    // would corrupt the tail here.
+    assert_eq!(capitalize_first("éclair"), "Éclair");
+}
+
+// -----------------------------------------------------------------------------
+// (Gap 2) Per-model zonos mirror of the dia skip/flip tests.
+// -----------------------------------------------------------------------------
+
+/// `skip_reason` — zonos arch. Mirrors `skip_reason_contains_reproduction_recipe`
+/// so a hardcoded "dia" / "DIA" leak in the format string surfaces here.
+#[test]
+fn skip_reason_contains_zonos_reproduction_recipe() {
+    let msg = skip_reason(
+        "zonos",
+        "Zyphra/Zonos-v0.1-transformer",
+        "9d8331fc49cb5ba8aad2bb56cafd809c66598f4e",
+        "Apache-2.0",
+    );
+    for token in &[
+        "VOKRA_ZONOS_GGUF",
+        "Zyphra/Zonos-v0.1-transformer",
+        "9d8331fc49cb5ba8aad2bb56cafd809c66598f4e",
+        "Apache-2.0",
+        "vokra-cli convert",
+        "--model zonos",
+        "fabricated pass",
+    ] {
+        assert!(
+            msg.contains(token),
+            "skip_reason(zonos) must contain {token:?}; got: {msg}"
+        );
+    }
+}
+
+/// `flip_the_switch_deferred` — zonos arch. Also exercises `capitalize_first("zonos")`
+/// end-to-end via the embedded `{ty}Tts` (`ZonosTts`) token.
+#[test]
+fn flip_the_switch_deferred_names_both_owner_steps_for_zonos() {
+    let msg = flip_the_switch_deferred("zonos", &PathBuf::from("/tmp/zonos_refdir"));
+    for token in &[
+        "VOKRA_ZONOS_REFDIR",
+        "/tmp/zonos_refdir",
+        "from_gguf",
+        "stage-tap",
+        "fabricated pass",
+        "ZonosTts", // pins capitalize_first("zonos") end-to-end
+    ] {
+        assert!(
+            msg.contains(token),
+            "flip_the_switch_deferred(zonos) must contain {token:?}; got: {msg}"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------------
+// (Gap 3) `skip_reason` interpolation with an arbitrary arch name.
+// -----------------------------------------------------------------------------
+
+/// Uses a *synthetic* arch name so a regression that hardcoded any real arch
+/// literal (`"dia"` / `"DIA"` / `"zonos"`) into the format string would still
+/// pass the dia + zonos tests (their tokens coincide with the hardcoded value)
+/// but would fail here because none of those literals appears in the expected
+/// output. This is the interpolation-vs-coincidence guard.
+#[test]
+fn skip_reason_interpolates_arch_verbatim() {
+    let msg = skip_reason("foobar", "acme/foobar-1b", "deadbeef", "MIT");
+    for token in &[
+        "VOKRA_FOOBAR_GGUF",      // pins `.to_ascii_uppercase()` on the arch
+        "VOKRA_FOOBAR_REFDIR",    // pins the second interpolation site
+        "--model foobar",         // pins the arch flows into the CLI recipe
+        "parity_tts_dac::foobar", // pins the log-prefix
+        "acme/foobar-1b",         // pins hf_repo substitution
+        "deadbeef",               // pins revision substitution
+        "MIT",                    // pins license substitution
+    ] {
+        assert!(
+            msg.contains(token),
+            "skip_reason must interpolate {token:?} verbatim; got: {msg}"
+        );
+    }
+}
+
+// -----------------------------------------------------------------------------
+// (Gap 4) `env_paths_for` file-existence filter via subprocess.
+//
+// `std::env::set_var` is unsafe in Rust 2024 and the workspace commits to
+// `-D unsafe-code`, so the `.is_file()` / `.is_dir()` filter — the seam
+// that keeps a stale env pointer from turning into a fabricated pass —
+// cannot be exercised in-process. Spawn `current_exe()` with the target
+// env vars set to paths that do NOT exist and `--exact` filtered to this
+// test; the inner branch (guarded by a helper env var) then asserts
+// `env_paths_for` drops both to `None`. Fires uniformly on Linux/macOS/Windows.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn env_paths_for_drops_missing_paths_via_subprocess() {
+    const HELPER_ENV: &str = "VOKRA_TTS_DAC_FILTER_SUBPROC";
+    const HELPER_ARCH: &str = "tts_dac_filter_probe";
+    const OUTER_TEST_NAME: &str = "env_paths_for_drops_missing_paths_via_subprocess";
+    const CANARY: &str = "VOKRA_TTS_DAC_FILTER_SUBPROC_CANARY_OK";
+
+    // Inner (subprocess) branch: HELPER_ENV is set, and the two probe env
+    // vars point at paths that DO NOT exist. `env_paths_for` must drop both
+    // to `None` via its `.is_file()` / `.is_dir()` filter. A canary marker
+    // is printed to stderr on success so the parent can distinguish "test
+    // ran + passed" from "test did not match the --exact filter" (which
+    // would otherwise be a silent false-pass).
+    if std::env::var_os(HELPER_ENV).is_some() {
+        let (gguf, refdir) = env_paths_for(HELPER_ARCH);
+        assert!(
+            gguf.is_none(),
+            "filter regression: env_paths_for kept a non-existent GGUF path; \
+             got Some({gguf:?}) — a stale VOKRA_*_GGUF pointer would now \
+             yield a fabricated pass at GgufFile::open (FR-EX-08)"
+        );
+        assert!(
+            refdir.is_none(),
+            "filter regression: env_paths_for kept a non-existent REFDIR path; \
+             got Some({refdir:?}) — a stale VOKRA_*_REFDIR pointer would now \
+             flip the switch on reference dumps that never arrived"
+        );
+        eprintln!("{CANARY}");
+        return;
+    }
+
+    // Outer branch: construct two ghost paths (built but never created) and
+    // spawn the same test binary with them wired into the target env vars.
+    let ghost_stem = format!(
+        "vokra-tts-dac-filter-ghost-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    );
+    let ghost_dir = std::env::temp_dir().join(&ghost_stem);
+    let ghost_file = ghost_dir.join("no-such.gguf");
+    // NB: neither `ghost_dir` nor `ghost_file` is created — `is_dir()` /
+    // `is_file()` must return false on the subprocess side.
+
+    let exe = std::env::current_exe().expect("current_exe under cargo test");
+    let out = std::process::Command::new(&exe)
+        .args(["--exact", OUTER_TEST_NAME, "--nocapture"])
+        .env(HELPER_ENV, "1")
+        .env(
+            format!("VOKRA_{}_GGUF", HELPER_ARCH.to_ascii_uppercase()),
+            &ghost_file,
+        )
+        .env(
+            format!("VOKRA_{}_REFDIR", HELPER_ARCH.to_ascii_uppercase()),
+            &ghost_dir,
+        )
+        .output()
+        .expect("spawn env_paths_for filter subprocess");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "env_paths_for filter subprocess failed:\n  status: {:?}\n  stdout:\n{stdout}\n  stderr:\n{stderr}",
+        out.status,
+    );
+    assert!(
+        stderr.contains(CANARY),
+        "subprocess did not run the inner branch — `--exact {OUTER_TEST_NAME}` \
+         matched zero tests (typo? test moved?); stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// (Gap 5) `assert_common_gguf_invariants` panic arms — three focused
+// negative tests pin the six failure arms via representative failure modes.
+// Uses `GgufBuilder` (a shared writer primitive in vokra-core) to build
+// synthetic GGUF bytes; `catch_unwind` isolates the panic and lets us
+// inspect the message. No real weight file is required — the whole point
+// of these tests is that a converter regression would surface here loud
+// and early, rather than waiting for a bad real GGUF to arrive.
+// -----------------------------------------------------------------------------
+
+/// Extract the `&str` panic message from a `catch_unwind` payload. `panic!`
+/// with a formatted `String` yields a `String` payload; the plain `&str`
+/// variant is also fielded so the helper is drop-in for both.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_owned()
+    }
+}
+
+/// Build a GGUF byte image with the given arch tag and one well-formed F32
+/// tensor. A common base the negative tests then mutate one field at a time.
+/// (Not used by the rank-0 / NaN tests, which need a specific bad tensor.)
+fn build_minimal_gguf(arch: &str) -> Vec<u8> {
+    let mut b = GgufBuilder::new();
+    b.add_string(KEY_MODEL_ARCH, arch);
+    // One well-formed tensor so the "zero tensors" arm doesn't fire ahead
+    // of the arch-mismatch arm.
+    b.add_tensor("t.f32", GgmlType::F32, vec![1], vec![0u8; 4])
+        .expect("writer accepts a well-formed 1-elem F32 tensor");
+    b.to_bytes().expect("serialize synthetic GGUF")
+}
+
+#[test]
+fn assert_common_gguf_invariants_rejects_wrong_arch() {
+    // Arch mismatch is the first arm (fires before the tensor loop). Pins
+    // that a converter emitting the wrong `vokra.model.arch` is caught with
+    // BOTH names in the message so drift is instantly diagnosable.
+    let gguf = GgufFile::parse(build_minimal_gguf("whisper")).expect("parse synthetic");
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_common_gguf_invariants(&gguf, "dia");
+    }))
+    .expect_err("arch mismatch must panic (converter or EXPECTED_ARCH drift)");
+    let msg = panic_message(&*panic);
+    assert!(
+        msg.contains("whisper") && msg.contains("dia"),
+        "arch-mismatch panic must name BOTH arch strings so drift is \
+         instantly diagnosable; got: {msg}"
+    );
+}
+
+#[test]
+fn assert_common_gguf_invariants_rejects_rank_zero_tensor() {
+    // Rank-0 tensor is what the "dimensions has rank 0" arm catches. The
+    // writer accepts it (empty-dim element count = 1), the reader accepts
+    // it (`n_dims = 0` is representable), the invariant guard rejects it
+    // — this test pins that middle arm and names the offending tensor.
+    let mut b = GgufBuilder::new();
+    b.add_string(KEY_MODEL_ARCH, "dia");
+    b.add_tensor("t.rank0", GgmlType::F32, vec![], vec![0u8; 4])
+        .expect("writer accepts rank-0 (element count = 1)");
+    let gguf = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_common_gguf_invariants(&gguf, "dia");
+    }))
+    .expect_err("rank-0 tensor must panic");
+    let msg = panic_message(&*panic);
+    assert!(
+        msg.contains("t.rank0") && msg.contains("rank 0"),
+        "rank-0 panic must name the offending tensor and the 'rank 0' \
+         arm; got: {msg}"
+    );
+}
+
+#[test]
+fn assert_common_gguf_invariants_rejects_nan_in_f32_payload() {
+    // A non-finite F32 payload is what the "F32 passthrough" NaN/Inf arm
+    // catches — the arm that keeps a converter regression from silently
+    // leaking NaN into an "otherwise valid" GGUF (the F32 passthrough
+    // path is expected to preserve safetensors bytes verbatim).
+    let mut b = GgufBuilder::new();
+    b.add_string(KEY_MODEL_ARCH, "dia");
+    let mut payload = Vec::with_capacity(8);
+    payload.extend_from_slice(&1.0f32.to_le_bytes()); // finite, index 0
+    payload.extend_from_slice(&f32::NAN.to_le_bytes()); // non-finite, index 1
+    b.add_tensor("t.nan", GgmlType::F32, vec![2], payload)
+        .expect("payload length matches 2 * 4 bytes");
+    let gguf = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_common_gguf_invariants(&gguf, "dia");
+    }))
+    .expect_err("NaN payload must panic");
+    let msg = panic_message(&*panic);
+    assert!(
+        msg.contains("t.nan") && msg.contains("non-finite"),
+        "NaN panic must name the offending tensor and mention 'non-finite'; \
+         got: {msg}"
+    );
+    // The NaN we injected was at index 1; the check names the first offender
+    // so triage points straight at the bad element.
+    assert!(
+        msg.contains("index 1"),
+        "NaN panic must name the offending index (1) so triage is direct; \
+         got: {msg}"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// (Gap 6) `env_paths_for` determinism — no observable state across calls.
+// -----------------------------------------------------------------------------
+
+/// Pins that `env_paths_for` is pure: repeated calls with the same arch
+/// return the same tuple. Guards against an accidental global mutation /
+/// thread-local cache regression that would silently change observed
+/// behaviour on the 2nd call. Trivial cost, complements the single-call
+/// `env_paths_for_returns_none_when_unset`.
+#[test]
+fn env_paths_for_is_deterministic_across_calls() {
+    // Namespace differs from the other helper tests so there is no
+    // cross-test env-var collision even under parallel `cargo test`.
+    let arch = "tts_dac_harness_determinism_probe";
+    let a = env_paths_for(arch);
+    let b = env_paths_for(arch);
+    assert_eq!(
+        a, b,
+        "env_paths_for must be pure — repeated calls with the same arch \
+         must return identical tuples"
+    );
+    assert_eq!(
+        a,
+        (None, None),
+        "with no env set, both entries must be None"
+    );
 }
