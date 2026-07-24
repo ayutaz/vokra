@@ -198,6 +198,17 @@ pub mod rnnt_decode;
 pub mod snac_decode;
 // -------------------------------------------------------------------------
 pub mod stft;
+// ---- SoTA plan Phase JA JA-ASR-1 waveform_frontend (raw-waveform 7-layer
+// strided conv stem, FR-OP-40) — the mel-free ASR input path wav2vec 2.0 /
+// HuBERT / k2SSL consume. Runtime function, NOT an `OpKind` variant (same
+// posture as [`fsq_codec`] / [`mimi_rvq`] / [`dac_rvq`] — ADR M4-04 §D-b /
+// ADR M4-16 §D-b): the heterogeneous inputs (`&[f32]` raw PCM + per-layer
+// weight bundles) do not fit the `OpValue` dispatch surface, and the
+// planned consumers (jonatasgrosman wav2vec 2.0, reazonspeech k2SSL,
+// omniASR-CTC) are imperative models that want the tight function API.
+// Localized re-export block for clean parallel-wave rebases.
+pub mod waveform_frontend;
+// -------------------------------------------------------------------------
 // ---- SoTA plan Phase 4 vae_continuous (TTS primitive, new class) --------
 // Continuous VAE encoder / decoder scaffold — the first consumer is
 // VoxCPM-0.5B (openbmb/VoxCPM, apache-2.0) which pairs a continuous latent
@@ -289,6 +300,12 @@ pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
 pub use snac_decode::{SnacConfig, SnacDecoder, SnacWeights};
 // -------------------------------------------------------------------------
 pub use stft::{Spectrogram, stft};
+// ---- SoTA plan Phase JA JA-ASR-1 waveform_frontend re-exports -----------
+pub use waveform_frontend::{
+    ConvLayerAttrs, ConvLayerWeights, Norm, WaveformFrontendAttrs, WaveformFrontendWeights,
+    waveform_frontend,
+};
+// -------------------------------------------------------------------------
 // ---- SoTA plan Phase 4 vae_continuous re-exports ------------------------
 pub use vae_continuous::{
     ContinuousVaeConfig, ContinuousVaeDecoder, ContinuousVaeDecoderWeights, ContinuousVaeEncoder,
