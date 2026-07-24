@@ -7,6 +7,50 @@
 //! `vokra.provenance.*` metadata chunks the native Qwen3-TTS
 //! implementation (`crates/vokra-models/src/qwen3_tts/`) reads.
 //!
+//! # ADR: BF16 handling — pass-through, streaming (moshi pattern) — Accepted 2026-07-25
+//!
+//! **Decision**: BF16 tensors are emitted verbatim as GGUF type 30
+//! (`GgmlType::BF16`) via the streaming path
+//! `SafetensorsFileReader::open` + `GgufStreamWriter::begin` + one
+//! reused `Vec<u8>` scratch per tensor — the exact posture of
+//! `crates/vokra-convert/src/models/moshi.rs:390-444 convert_streaming`
+//! and the byte-identity pin `stream_writer_matches_builder_bytes`
+//! (`crates/vokra-core/src/gguf/writer.rs:795`). No convert-time
+//! widening; runtime widens BF16 → f32 losslessly via the single choke
+//! point `crates/vokra-core/src/gguf/quant/mod.rs:65-70 decode_bf16`
+//! (BF16 is the top 16 bits of an f32 — `bits << 16` is exact).
+//!
+//! **Rationale (4 axes)**: (1) precedent — Moshi + Voxtral both land
+//! BF16 pass-through on real Kyutai / HF BF16 checkpoints; (2) peak
+//! footprint = one tensor payload (~350 MiB order for the 0.6B
+//! embedding / lm_head) vs ~7 GiB free on GHA `ubuntu-latest` after
+//! the cleanup recipe — 1-digit headroom + future-proof to Qwen3-1.7B
+//! / 3B / 7B siblings; (3) runtime already supports BF16 GGUF loads
+//! (`GgmlType::BF16 = 30`, safetensors reader `map_dtype` accepts
+//! `"BF16"`); (4) zero-dep (NFR-DS-02) preserved — every helper is
+//! `vokra-core` self-contained.
+//!
+//! **Rejected**: (B) streaming BF16 → F32 widen (doubles on-disk /
+//! cache size, no precedent, breaks CI cache assumptions at 1.7B+);
+//! (C) BF16 → F16 downcast (exponent range 8 → 5 bits — Inf /
+//! underflow on attention scale / LayerNorm gain tensors is
+//! deterministic, not probabilistic).
+//!
+//! **Red-lines** (permanent): F16 downcast forbidden;
+//! `GgufBuilder::to_bytes()` on a whole-model builder forbidden
+//! (streaming end-to-end); the existing regression pin
+//! `bf16_tensor_is_counted_as_skipped_non_float` must be **rewritten
+//! symmetrically** to `bf16_tensor_passes_through_verbatim` (mirror of
+//! `f16_tensor_passes_through_verbatim` + Moshi's `assert_eq!(info.dtype,
+//! GgmlType::BF16, "no convert-time widening")` at
+//! `crates/vokra-core/src/safetensors.rs:728-738`) — one-way removal
+//! would let a latent silent-widen slip in undetected;
+//! no silent BF16 → F32 emit path (FR-EX-08).
+//!
+//! Deep dive (context, memory calculus, TDD-Red assertions, full
+//! alternatives analysis): `docs/adr/qwen3-tts-bf16.md` (local SoT,
+//! gitignored per CLAUDE.md `docs/adr/` policy).
+//!
 //! # What is transcribed vs. shape-driven
 //!
 //! - **Transcribed constants** — every hparam of the
