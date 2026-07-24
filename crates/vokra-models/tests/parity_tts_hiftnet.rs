@@ -826,10 +826,21 @@ fn env_var_naming_is_stable() {
         chatterbox_nano_spec().gguf_env_key(),
         "VOKRA_TTS_HIFTNET_CHATTERBOX_NANO_GGUF"
     );
-    // And the paired refdir keys.
+    // And the paired refdir keys. All four are pinned in lock-step so a
+    // workflow-YAML edit that renames one env var but forgets its sibling
+    // fails here before it silently degrades the flip-the-switch cross-check
+    // for the missing model.
     assert_eq!(
         cosyvoice3_spec().refdir_env_key(),
         "VOKRA_TTS_HIFTNET_COSYVOICE3_REFDIR"
+    );
+    assert_eq!(
+        chatterbox_multilingual_spec().refdir_env_key(),
+        "VOKRA_TTS_HIFTNET_CHATTERBOX_MULTILINGUAL_REFDIR"
+    );
+    assert_eq!(
+        chatterbox_turbo_spec().refdir_env_key(),
+        "VOKRA_TTS_HIFTNET_CHATTERBOX_TURBO_REFDIR"
     );
     assert_eq!(
         chatterbox_nano_spec().refdir_env_key(),
@@ -861,4 +872,296 @@ fn skip_reason_names_the_expected_env_var() {
         s.contains("5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18"),
         "{s}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Flip-the-switch seam + per-model coverage extensions
+// (Scout audit 2026-07-25 — parity_tts_hiftnet.rs coverage gap fill)
+//
+// The eight tests above already anchor the always-on posture (spec-table ↔
+// runtime constants, env var naming for 2/4 refdir keys, skip_reason
+// content for cosyvoice3 (fully) + multilingual (partially)). The seven
+// blocks below extend that posture along the two remaining feasible axes:
+//
+//   (1) `env_paths_for` pure-function seam — the seam every gated test
+//       depends on to produce a CLEAN skip (FR-EX-08). Direct unit tests
+//       for the unset-both branch (in-process, namespaced arch) and the
+//       set-both branch (subprocess, so `-D unsafe-code` is preserved —
+//       `std::env::set_var` is `unsafe` in Rust 2024). A regression that
+//       returned `Some(PathBuf::new())` on an unset env (or `None` on a
+//       set env) would slip past every per-model test silently.
+//   (2) `skip_reason` per-model coverage — the message body currently
+//       only asserted for cosyvoice3 (fully) + multilingual (partially,
+//       without the license or FR-EX-08 marker). Four iteration-style
+//       tests pin (a) env-key + hf_repo + hf_revision, (b) FR-EX-08
+//       marker, (c) family + CLI recipe substrings, (d) license SPDX —
+//       one per dimension so a failure points to the exact regression.
+// ---------------------------------------------------------------------------
+
+/// `env_paths_for` MUST return `(None, None)` for an arch whose env vars
+/// are unset. Uses a namespaced arch slug so no CI env var of the
+/// corresponding `VOKRA_TTS_HIFTNET_*_GGUF` / `_REFDIR` name could
+/// plausibly collide. This pins the "unset → clean skip" contract at the
+/// helper level: a regression that returned `Some(PathBuf::new())` (or a
+/// default) would let every per-model test take the skip path for the
+/// WRONG reason (they would then try to open `""` and produce a
+/// synthetic-looking failure instead of an honest skip).
+#[test]
+fn env_paths_for_returns_none_when_env_unset() {
+    let arch = "hiftnet_env_paths_probe_only";
+    let (gguf, refdir) = env_paths_for(arch);
+    assert!(
+        gguf.is_none(),
+        "expected VOKRA_TTS_HIFTNET_{}_GGUF unset in the test env, got Some({:?}) — env \
+         leakage from another process, or a regression in env_paths_for that returns \
+         Some on an unset env var (flip-the-switch seam broken)",
+        arch.to_ascii_uppercase(),
+        gguf,
+    );
+    assert!(
+        refdir.is_none(),
+        "expected VOKRA_TTS_HIFTNET_{}_REFDIR unset in the test env, got Some({:?}) — env \
+         leakage or asymmetric handling of the refdir arm",
+        arch.to_ascii_uppercase(),
+        refdir,
+    );
+}
+
+/// `env_paths_for` MUST return `(Some, Some)` when both env vars are set,
+/// and each `PathBuf` MUST round-trip the exact bytes the caller wrote.
+/// Symmetric to `env_paths_for_returns_none_when_env_unset` — without this
+/// test, a bug that ALWAYS returned `None` would still pass the negative
+/// case. Uses the subprocess pattern from `parity_tts_dac.rs` (same file
+/// docstring rationale) because `std::env::set_var` is `unsafe` in Rust
+/// 2024 and the workspace commits to `-D unsafe-code`; the outer branch
+/// spawns the same test binary with the target env vars set to synthetic
+/// ghost paths, and the inner branch does the in-process assertions.
+#[test]
+fn env_paths_for_returns_some_when_env_set_via_subprocess() {
+    const HELPER_ENV: &str = "VOKRA_TTS_HIFTNET_ENV_PATHS_SUBPROC";
+    const HELPER_ARCH: &str = "hiftnet_env_paths_positive_probe";
+    const OUTER_TEST_NAME: &str = "env_paths_for_returns_some_when_env_set_via_subprocess";
+    const CANARY: &str = "VOKRA_TTS_HIFTNET_ENV_PATHS_POSITIVE_OK";
+
+    let gguf_key = format!(
+        "VOKRA_TTS_HIFTNET_{}_GGUF",
+        HELPER_ARCH.to_ascii_uppercase()
+    );
+    let refdir_key = format!(
+        "VOKRA_TTS_HIFTNET_{}_REFDIR",
+        HELPER_ARCH.to_ascii_uppercase()
+    );
+
+    // Inner (subprocess) branch: `HELPER_ENV` is set, and the two probe
+    // env vars point at synthetic ghost paths. `env_paths_for` MUST return
+    // `Some` on each slot with exactly the bytes the outer branch wrote.
+    // A canary marker is printed to stderr on success so the parent can
+    // distinguish "test ran + passed" from "test did not match the
+    // --exact filter" (which would otherwise be a silent false-pass).
+    if std::env::var_os(HELPER_ENV).is_some() {
+        let expected_gguf =
+            std::env::var_os(&gguf_key).expect("outer branch must set the gguf env var");
+        let expected_refdir =
+            std::env::var_os(&refdir_key).expect("outer branch must set the refdir env var");
+        let (gguf, refdir) = env_paths_for(HELPER_ARCH);
+        let gguf = gguf.unwrap_or_else(|| {
+            panic!(
+                "positive-case regression: env_paths_for returned None for a SET gguf env \
+                 var ({gguf_key}) — flip-the-switch seam would never engage even after \
+                 an owner provisions the fixture (FR-EX-08 fabricated skip)"
+            )
+        });
+        let refdir = refdir.unwrap_or_else(|| {
+            panic!(
+                "positive-case regression: env_paths_for returned None for a SET refdir \
+                 env var ({refdir_key}) — cross-check leg would silently never fire"
+            )
+        });
+        assert_eq!(
+            gguf.as_os_str(),
+            expected_gguf,
+            "env_paths_for must round-trip the exact gguf path bytes; got {gguf:?}, \
+             expected {expected_gguf:?}"
+        );
+        assert_eq!(
+            refdir.as_os_str(),
+            expected_refdir,
+            "env_paths_for must round-trip the exact refdir path bytes; got {refdir:?}, \
+             expected {expected_refdir:?}"
+        );
+        eprintln!("{CANARY}");
+        return;
+    }
+
+    // Outer branch: construct two ghost paths (uniquely stemmed with PID +
+    // nanos; never created — `env_paths_for` in THIS file does NOT filter
+    // on `.is_file()`/`.is_dir()`, so existence is irrelevant; the point
+    // is `Some(PathBuf::from(env_bytes))` round-trip) and spawn the same
+    // test binary with them wired into the target env vars.
+    let stem = format!(
+        "vokra-hiftnet-env-paths-positive-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    );
+    let ghost_gguf = std::env::temp_dir().join(format!("{stem}.gguf"));
+    let ghost_refdir = std::env::temp_dir().join(stem);
+
+    let exe = std::env::current_exe().expect("current_exe under cargo test");
+    let out = std::process::Command::new(&exe)
+        .args(["--exact", OUTER_TEST_NAME, "--nocapture"])
+        .env(HELPER_ENV, "1")
+        .env(&gguf_key, &ghost_gguf)
+        .env(&refdir_key, &ghost_refdir)
+        .output()
+        .expect("spawn env_paths_for positive-case subprocess");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "env_paths_for positive-case subprocess failed:\n  status: {:?}\n  stdout:\n{stdout}\n  stderr:\n{stderr}",
+        out.status,
+    );
+    assert!(
+        stderr.contains(CANARY),
+        "subprocess did not run the inner branch — `--exact {OUTER_TEST_NAME}` matched \
+         zero tests (typo? test moved?); stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+}
+
+/// `skip_reason` MUST name each spec's OWN `gguf_env_key()`, `hf_repo`,
+/// and `hf_revision`. Extends `skip_reason_names_the_expected_env_var`
+/// (which only fully covers cosyvoice3 + partially covers multilingual)
+/// to all four specs. A converter/spec rename or a hardcoded literal in
+/// the format string would surface here for the two currently-unpinned
+/// specs (turbo, nano) instead of silently degrading their CI skip
+/// banner.
+#[test]
+fn skip_reason_names_env_var_and_repo_for_all_specs() {
+    for spec in [
+        cosyvoice3_spec(),
+        chatterbox_multilingual_spec(),
+        chatterbox_turbo_spec(),
+        chatterbox_nano_spec(),
+    ] {
+        let msg = skip_reason(&spec);
+        let env_key = spec.gguf_env_key();
+        assert!(
+            msg.contains(&env_key),
+            "{}: skip_reason must contain its own gguf env key {env_key:?}; got: {msg}",
+            spec.display_name,
+        );
+        assert!(
+            msg.contains(spec.hf_repo),
+            "{}: skip_reason must contain its own hf_repo {:?}; got: {msg}",
+            spec.display_name,
+            spec.hf_repo,
+        );
+        assert!(
+            msg.contains(spec.hf_revision),
+            "{}: skip_reason must contain its own hf_revision {:?}; got: {msg}",
+            spec.display_name,
+            spec.hf_revision,
+        );
+    }
+}
+
+/// `skip_reason` MUST embed the `FR-EX-08` marker for every spec. The
+/// comment at the top of `skip_reason` calls this out as the whole reason
+/// the message body exists (explicit skip, not synthetic fallback). A
+/// well-meaning refactor that shortened the banner could drop the marker
+/// without any of the existing per-model content assertions noticing.
+#[test]
+fn skip_reason_contains_fr_ex_08_marker_for_all_specs() {
+    for spec in [
+        cosyvoice3_spec(),
+        chatterbox_multilingual_spec(),
+        chatterbox_turbo_spec(),
+        chatterbox_nano_spec(),
+    ] {
+        let msg = skip_reason(&spec);
+        assert!(
+            msg.contains("FR-EX-08"),
+            "{}: skip_reason must contain the FR-EX-08 marker (guards the \
+             fabricated-pass 禁止 invariant that motivates the harness); got: {msg}",
+            spec.display_name,
+        );
+    }
+}
+
+/// `skip_reason` MUST name the `tts-hiftnet` family tag, the
+/// `HiFTGenerator` vocoder id, and the `vokra-cli` + `convert` CLI
+/// recipe substrings. Family tag lets an owner reading a broken CI log
+/// jump to the right handoff doc; recipe is the one command they need to
+/// type. Both are load-bearing content that a refactor could accidentally
+/// elide.
+#[test]
+fn skip_reason_names_family_and_cli_recipe_for_all_specs() {
+    for spec in [
+        cosyvoice3_spec(),
+        chatterbox_multilingual_spec(),
+        chatterbox_turbo_spec(),
+        chatterbox_nano_spec(),
+    ] {
+        let msg = skip_reason(&spec);
+        assert!(
+            msg.contains("tts-hiftnet"),
+            "{}: skip_reason must name the tts-hiftnet family (owner needs it to \
+             jump to the right handoff doc); got: {msg}",
+            spec.display_name,
+        );
+        assert!(
+            msg.contains("HiFTGenerator"),
+            "{}: skip_reason must name the HiFTGenerator vocoder (family seam id); \
+             got: {msg}",
+            spec.display_name,
+        );
+        assert!(
+            msg.contains("vokra-cli"),
+            "{}: skip_reason must name `vokra-cli` in the recipe (the one command \
+             an owner needs to type); got: {msg}",
+            spec.display_name,
+        );
+        assert!(
+            msg.contains("convert"),
+            "{}: skip_reason must name the `convert` subcommand in the recipe; \
+             got: {msg}",
+            spec.display_name,
+        );
+    }
+}
+
+/// `skip_reason` MUST embed each spec's `license_spdx` verbatim. The
+/// three chatterbox specs pin `MIT`; cosyvoice3 pins `apache-2.0`. A
+/// spec-table typo that dropped `license_spdx` to `""` would print an
+/// empty parenthesised license in the banner without any test failing
+/// — the SPDX is the field an owner cross-references against
+/// `docs/license-audit.md` when a fixture lands in a PR review.
+#[test]
+fn skip_reason_contains_license_spdx_for_all_specs() {
+    for spec in [
+        cosyvoice3_spec(),
+        chatterbox_multilingual_spec(),
+        chatterbox_turbo_spec(),
+        chatterbox_nano_spec(),
+    ] {
+        assert!(
+            !spec.license_spdx.is_empty(),
+            "{}: spec-table `license_spdx` is empty — the parenthesised license in \
+             the skip banner would render as `()` and defeat the docs/license-audit.md \
+             cross-reference invariant",
+            spec.display_name,
+        );
+        let msg = skip_reason(&spec);
+        assert!(
+            msg.contains(spec.license_spdx),
+            "{}: skip_reason must contain license SPDX {:?} (docs/license-audit.md \
+             cross-reference); got: {msg}",
+            spec.display_name,
+            spec.license_spdx,
+        );
+    }
 }
