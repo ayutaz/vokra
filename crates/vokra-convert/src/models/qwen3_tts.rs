@@ -822,4 +822,378 @@ mod tests {
             );
         }
     }
+
+    // ─── Adversarial BF16 coverage ────────────────────────────────────────
+    //
+    // The ADR (docs/adr/qwen3-tts-bf16.md, strategy A_passthrough) rests on
+    // three properties of the runtime widening `bits << 16`:
+    //   (a) every BF16 bit pattern round-trips as a byte-identical BF16
+    //       payload through the converter (no silent widen / downcast);
+    //   (b) `decode_bf16` widens **every** IEEE-754 corner (±Inf, quiet /
+    //       signaling NaN, subnormals) to an f32 whose bit pattern equals
+    //       the BF16 pattern shifted left 16 (i.e. mathematically exact);
+    //   (c) the safetensors parser rejects malformed BF16 payloads *loudly*
+    //       (FR-EX-08 no silent truncation) — odd byte counts, byte spans
+    //       that disagree with `shape × 2`, empty tensors, and payloads that
+    //       run past the data region all fail with a parse error rather
+    //       than passing a truncated / wrong-shape tensor to the runtime.
+    //
+    // These tests pin (a), (b) and (c) end-to-end through `convert()` (not
+    // through `decode_bf16` directly — that function is private to
+    // `vokra-core::gguf::quant`, so the round-trip happens through
+    // `GgufFile::tensor_f32`, which routes through `dequantize` →
+    // `decode_bf16` per the ADR's single-choke-point invariant).
+
+    /// Builds a synthetic single-BF16-tensor safetensors buffer with a
+    /// caller-supplied raw payload. Panics if `bf16_bytes.len()` disagrees
+    /// with `shape × 2`.
+    fn safetensors_one_bf16(shape: &[u64], bf16_bytes: &[u8]) -> Vec<u8> {
+        let elems: u64 = shape.iter().product();
+        let expected = elems as usize * 2;
+        assert_eq!(
+            bf16_bytes.len(),
+            expected,
+            "test fixture: payload len must match shape × 2 BF16"
+        );
+        let shape_str = shape
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let header = format!(
+            r#"{{"talker.embed_tokens.weight":{{"dtype":"BF16","shape":[{shape_str}],"data_offsets":[0,{}]}}}}"#,
+            bf16_bytes.len()
+        );
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(bf16_bytes);
+        out
+    }
+
+    /// Encodes 16-bit BF16 patterns as little-endian bytes (pass-through
+    /// helper; deliberately does *not* touch f32 so a converter regression
+    /// that silently widens can't sneak past by matching the same "value").
+    fn bf16_pattern_bytes(patterns: &[u16]) -> Vec<u8> {
+        patterns.iter().flat_map(|p| p.to_le_bytes()).collect()
+    }
+
+    /// Attack 1 — BF16 quiet NaN (0x7FC0) and signalling NaN (0x7FA0) both
+    /// survive the pass-through as byte-identical bytes AND decode to
+    /// F32 patterns whose bits equal `pattern << 16` (which is `is_nan()`
+    /// by construction for any BF16 with `exp = 0xFF` and non-zero
+    /// mantissa). A silent BF16 → F32 widen at convert time would still
+    /// round-trip *values* (NaN in → NaN out), so this test asserts on the
+    /// dtype (`GgmlType::BF16`) AND the raw bytes AND the decoded f32 bit
+    /// pattern — three concentric fences.
+    #[test]
+    fn bf16_nan_bit_patterns_survive_pass_through_and_decode_as_nan() {
+        // 0x7FC0: sign 0, exp 0xFF, mantissa 0b1000000 (MSB set) → quiet NaN.
+        // 0x7FA0: sign 0, exp 0xFF, mantissa 0b0100000 (bit 5 set)  → signalling NaN.
+        // 0xFFC1: sign 1, exp 0xFF, mantissa non-zero               → quiet NaN with payload.
+        let patterns: [u16; 3] = [0x7FC0, 0x7FA0, 0xFFC1];
+        let bytes = bf16_pattern_bytes(&patterns);
+        let input = safetensors_one_bf16(&[3], &bytes);
+
+        let (builder, report) = convert(input).expect("convert");
+        assert_eq!(report.written, 1);
+        assert_eq!(report.bf16_passthrough, 1);
+        assert_eq!(report.skipped_non_float, 0);
+
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        let info = file.tensor_info("talker.embed_tokens.weight").unwrap();
+        // Fence 1: dtype stayed BF16 (no convert-time widening).
+        assert_eq!(info.dtype, GgmlType::BF16);
+        // Fence 2: raw bytes byte-identical to input.
+        assert_eq!(file.tensor_bytes(info), bytes.as_slice());
+        // Fence 3: `decode_bf16` (via tensor_f32) widens to the exact
+        // f32 pattern `bits << 16`, and every result is is_nan().
+        let decoded = file.tensor_f32("talker.embed_tokens.weight").unwrap();
+        assert_eq!(decoded.len(), 3);
+        for (i, (dec, pat)) in decoded.iter().zip(patterns.iter()).enumerate() {
+            let want_bits = (u32::from(*pat)) << 16;
+            assert_eq!(
+                dec.to_bits(),
+                want_bits,
+                "element {i}: BF16 0x{pat:04X} must decode to f32 bits 0x{want_bits:08X}"
+            );
+            assert!(
+                dec.is_nan(),
+                "element {i}: BF16 0x{pat:04X} widened to non-NaN f32 (bits 0x{:08X})",
+                dec.to_bits()
+            );
+        }
+    }
+
+    /// Attack 2 — BF16 ±Infinity (0x7F80 / 0xFF80) survive as bytes AND
+    /// decode to `f32::INFINITY` / `f32::NEG_INFINITY` exactly.
+    #[test]
+    fn bf16_positive_and_negative_infinity_survive_and_decode_correctly() {
+        // 0x7F80: sign 0, exp 0xFF, mantissa 0 → +∞.
+        // 0xFF80: sign 1, exp 0xFF, mantissa 0 → -∞.
+        let patterns: [u16; 2] = [0x7F80, 0xFF80];
+        let bytes = bf16_pattern_bytes(&patterns);
+        let input = safetensors_one_bf16(&[2], &bytes);
+
+        let (builder, report) = convert(input).expect("convert");
+        assert_eq!(report.bf16_passthrough, 1);
+
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        let info = file.tensor_info("talker.embed_tokens.weight").unwrap();
+        assert_eq!(info.dtype, GgmlType::BF16);
+        assert_eq!(file.tensor_bytes(info), bytes.as_slice());
+        let decoded = file.tensor_f32("talker.embed_tokens.weight").unwrap();
+        assert_eq!(decoded, vec![f32::INFINITY, f32::NEG_INFINITY]);
+        // Bit-exact: `bits << 16` for 0x7F80 is 0x7F800000 = f32::INFINITY.
+        assert_eq!(decoded[0].to_bits(), f32::INFINITY.to_bits());
+        assert_eq!(decoded[1].to_bits(), f32::NEG_INFINITY.to_bits());
+    }
+
+    /// Attack 3 — BF16 subnormals (0x0001 = smallest positive subnormal;
+    /// 0x0080 = smallest positive normal; the pair covers the subnormal /
+    /// normal boundary in both directions). The `bits << 16` widen turns
+    /// a BF16 subnormal into an f32 subnormal with the **same mathematical
+    /// value** (both formats' subnormal formula reduces to `mantissa ×
+    /// 2^-(bias + mantissa_bits)`, and the shift preserves this). Some CPUs
+    /// flush subnormals to zero (FTZ / DAZ), so this test also asserts the
+    /// decode does NOT flush.
+    #[test]
+    fn bf16_subnormals_survive_and_decode_without_flush_to_zero() {
+        // 0x0001: sign 0, exp 0x00, mantissa 0b0000001 → smallest positive
+        //         BF16 subnormal = 2^-133.
+        // 0x0080: sign 0, exp 0x01, mantissa 0        → smallest positive
+        //         BF16 normal = 2^-126.
+        // 0x007F: sign 0, exp 0x00, mantissa 0b1111111 → largest positive
+        //         BF16 subnormal = (2^7 - 1) × 2^-133.
+        // 0x8001: sign 1, exp 0x00, mantissa 0b0000001 → -smallest subnormal.
+        let patterns: [u16; 4] = [0x0001, 0x0080, 0x007F, 0x8001];
+        let bytes = bf16_pattern_bytes(&patterns);
+        let input = safetensors_one_bf16(&[4], &bytes);
+
+        let (builder, report) = convert(input).expect("convert");
+        assert_eq!(report.bf16_passthrough, 1);
+
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        let info = file.tensor_info("talker.embed_tokens.weight").unwrap();
+        assert_eq!(info.dtype, GgmlType::BF16);
+        assert_eq!(file.tensor_bytes(info), bytes.as_slice());
+
+        let decoded = file.tensor_f32("talker.embed_tokens.weight").unwrap();
+        for (i, (dec, pat)) in decoded.iter().zip(patterns.iter()).enumerate() {
+            let want_bits = (u32::from(*pat)) << 16;
+            assert_eq!(
+                dec.to_bits(),
+                want_bits,
+                "element {i}: BF16 0x{pat:04X} must decode to f32 bits 0x{want_bits:08X} \
+                 (subnormals must not be flushed by the widen)"
+            );
+        }
+        // Bit-verified mathematical values.
+        assert!(decoded[0] > 0.0, "smallest BF16 subnormal decodes to > 0.0");
+        assert_eq!(decoded[0], f32::from_bits(0x0001_0000));
+        assert_eq!(decoded[1], f32::from_bits(0x0080_0000)); // 2^-126
+        assert_eq!(decoded[3], -f32::from_bits(0x0001_0000));
+        // 0x0080 is the smallest positive f32 normal (= f32::MIN_POSITIVE).
+        assert_eq!(decoded[1], f32::MIN_POSITIVE);
+    }
+
+    /// Attack 4 — a BF16 tensor whose `data_offsets` span is not a multiple
+    /// of 2 (odd byte count) must be rejected at parse time, NOT silently
+    /// truncated to floor(bytes / 2) elements. Building a header where
+    /// shape=[3] BF16 (needs 6 bytes) is declared with a 5-byte data span:
+    /// the parser must fail because `end - begin = 5 ≠ 6 = shape × 2`.
+    /// The alternative — silently emitting a 2-element BF16 tensor
+    /// (chunks_exact discards the odd byte) — would mis-shape the tensor
+    /// at runtime, violating FR-EX-08.
+    #[test]
+    fn bf16_odd_byte_span_is_rejected_at_parse_not_silently_truncated() {
+        let header =
+            r#"{"talker.embed_tokens.weight":{"dtype":"BF16","shape":[3],"data_offsets":[0,5]}}"#;
+        let mut input = Vec::new();
+        input.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        input.extend_from_slice(header.as_bytes());
+        input.extend_from_slice(&[0u8; 5]);
+
+        let err = convert(input).expect_err("odd BF16 byte span must not silently truncate");
+        match err {
+            ConvertError::Parse(msg) => {
+                // `SafetensorsError::BadEntry` explicitly names the mismatch;
+                // pinning the substring makes silent-truncation regressions
+                // (e.g. dropping the byte-span check in parse_header_entries)
+                // trip loudly instead of degrading to a mis-shaped tensor.
+                assert!(
+                    msg.contains("byte span") && msg.contains("does not match shape/dtype"),
+                    "expected byte-span mismatch diagnostic, got: {msg}"
+                );
+            }
+            other => panic!("expected ConvertError::Parse, got {other:?}"),
+        }
+    }
+
+    /// Attack 5 — an empty BF16 tensor (`shape=[0]`, 0 payload bytes)
+    /// converts cleanly: it lands on the pass-through arm, increments the
+    /// BF16 counter, and round-trips through the GGUF as a zero-byte BF16
+    /// tensor. Regression guard for a naive `if bytes.is_empty()` early
+    /// return that would misclassify the empty tensor as skipped_non_float.
+    #[test]
+    fn bf16_empty_tensor_shape_zero_converts_cleanly() {
+        let header =
+            r#"{"talker.embed_tokens.weight":{"dtype":"BF16","shape":[0],"data_offsets":[0,0]}}"#;
+        let mut input = Vec::new();
+        input.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        input.extend_from_slice(header.as_bytes());
+
+        let (builder, report) = convert(input).expect("empty BF16 must convert cleanly");
+        assert_eq!(report.written, 1);
+        assert_eq!(
+            report.bf16_passthrough, 1,
+            "empty BF16 must still increment the BF16 counter (it IS a BF16 tensor)"
+        );
+        assert_eq!(report.skipped_non_float, 0);
+
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        let info = file.tensor_info("talker.embed_tokens.weight").unwrap();
+        assert_eq!(info.dtype, GgmlType::BF16);
+        assert_eq!(info.dimensions, vec![0]);
+        assert_eq!(file.tensor_bytes(info).len(), 0);
+        // Decode: `dequantize(BF16, &[], 0)` returns Ok(vec![]).
+        assert_eq!(
+            file.tensor_f32("talker.embed_tokens.weight").unwrap(),
+            Vec::<f32>::new()
+        );
+    }
+
+    /// Attack 6 — a BF16 tensor whose declared byte span is exactly half
+    /// of `shape × 2` (100 bytes for [10, 10] instead of 200) must be
+    /// rejected at parse time. Mirrors Attack 4 but at a *matching-parity*
+    /// scale (both spans are even), so it targets the shape check
+    /// specifically rather than any odd-byte heuristic.
+    #[test]
+    fn bf16_shape_dtype_mismatch_half_size_is_rejected() {
+        let header = r#"{"talker.embed_tokens.weight":{"dtype":"BF16","shape":[10,10],"data_offsets":[0,100]}}"#;
+        let mut input = Vec::new();
+        input.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        input.extend_from_slice(header.as_bytes());
+        input.extend_from_slice(&[0u8; 100]);
+
+        let err = convert(input).expect_err("100 bytes for a 10×10 BF16 tensor must be rejected");
+        match err {
+            ConvertError::Parse(msg) => {
+                assert!(
+                    msg.contains("byte span") && msg.contains("100"),
+                    "expected byte-span mismatch diagnostic naming the 100 bytes, got: {msg}"
+                );
+                // The expected size is 200; the diagnostic should say so.
+                assert!(
+                    msg.contains("200"),
+                    "expected diagnostic to mention the 200-byte expected size, got: {msg}"
+                );
+            }
+            other => panic!("expected ConvertError::Parse, got {other:?}"),
+        }
+    }
+
+    /// Attack 7 — a `[1024, 1024]` BF16 tensor (2 MiB payload) round-trips
+    /// byte-identically. Bytes are populated with a deterministic linear
+    /// congruential pattern so any single-bit drop / duplication / offset
+    /// shift trips loudly. Also exercises the alignment padding in
+    /// `GgufBuilder::to_bytes` at a realistic weight-tensor scale.
+    #[test]
+    fn bf16_large_tensor_1024x1024_round_trips_bit_identically() {
+        const ROWS: usize = 1024;
+        const COLS: usize = 1024;
+        const N_BYTES: usize = ROWS * COLS * 2;
+        // Deterministic LCG (Numerical Recipes constants): every byte is a
+        // function of its index, so a shift / drop / duplication produces
+        // a byte-level diff the assert_eq will report precisely.
+        let mut state: u32 = 0xDEAD_BEEF;
+        let mut bytes = Vec::with_capacity(N_BYTES);
+        for _ in 0..N_BYTES {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            bytes.push((state >> 24) as u8);
+        }
+        assert_eq!(bytes.len(), N_BYTES);
+        let input = safetensors_one_bf16(&[ROWS as u64, COLS as u64], &bytes);
+
+        let (builder, report) = convert(input).expect("large BF16 must convert");
+        assert_eq!(report.written, 1);
+        assert_eq!(report.bf16_passthrough, 1);
+
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        let info = file.tensor_info("talker.embed_tokens.weight").unwrap();
+        assert_eq!(info.dtype, GgmlType::BF16);
+        assert_eq!(info.dimensions, vec![ROWS as u64, COLS as u64]);
+        assert_eq!(file.tensor_bytes(info).len(), N_BYTES);
+        assert_eq!(
+            file.tensor_bytes(info),
+            bytes.as_slice(),
+            "2 MiB BF16 payload must survive round-trip byte-identically"
+        );
+    }
+
+    /// Attack 8 — report accounting invariant:
+    /// `report.written + report.skipped_non_float == n_input_tensors` for
+    /// **every** mixed input the safetensors reader will accept. Today the
+    /// reader accepts only F32 / F16 / BF16, so this reduces to
+    /// `report.written == n_input_tensors` on any well-formed input; the
+    /// test pins the invariant so a future dtype (I8 / I32 codebook ids
+    /// etc.) that lands on the skipped arm still preserves it, catching
+    /// a regression that would double-count or drop a tensor entirely.
+    #[test]
+    fn report_written_plus_skipped_equals_input_tensor_count() {
+        // Three tensors of three different accepted dtypes in one file.
+        // Header lists them lexicographically by data_offsets (F32 first,
+        // then BF16, then F16 — matches how the payload is laid out below).
+        let f32_vals: [f32; 2] = [7.0, -8.25];
+        let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let bf16_vals: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
+        let bf16_bytes: Vec<u8> = bf16_vals
+            .iter()
+            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
+            .collect();
+        let f16_bytes: Vec<u8> = [0x3C00u16, 0x4000, 0x4200]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+
+        let header = format!(
+            r#"{{"a_f32":{{"dtype":"F32","shape":[1,2],"data_offsets":[0,{}]}},"b_bf16":{{"dtype":"BF16","shape":[2,3],"data_offsets":[{},{}]}},"c_f16":{{"dtype":"F16","shape":[3],"data_offsets":[{},{}]}}}}"#,
+            f32_bytes.len(),
+            f32_bytes.len(),
+            f32_bytes.len() + bf16_bytes.len(),
+            f32_bytes.len() + bf16_bytes.len(),
+            f32_bytes.len() + bf16_bytes.len() + f16_bytes.len(),
+        );
+        let mut input = Vec::new();
+        input.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        input.extend_from_slice(header.as_bytes());
+        input.extend_from_slice(&f32_bytes);
+        input.extend_from_slice(&bf16_bytes);
+        input.extend_from_slice(&f16_bytes);
+
+        let (_, report) = convert(input).expect("mixed dtype input must convert");
+        let n_input_tensors: usize = 3;
+        assert_eq!(
+            report.written + report.skipped_non_float,
+            n_input_tensors,
+            "invariant: every input tensor lands on exactly one arm \
+             (written={}, skipped_non_float={}, n_input={n_input_tensors})",
+            report.written,
+            report.skipped_non_float,
+        );
+        // Sharpen the invariant: today all three dtypes are floats, so
+        // written==3 and skipped==0 (breaking down which side of the
+        // invariant each tensor lands on).
+        assert_eq!(report.written, 3);
+        assert_eq!(report.skipped_non_float, 0);
+        assert_eq!(
+            report.bf16_passthrough, 1,
+            "exactly one BF16 tensor in the mixed input"
+        );
+    }
 }
