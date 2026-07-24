@@ -11,11 +11,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, PolicyPreset, VoxtralConfig, convert_chatterbox_file, convert_chatterbox_turbo_file,
-    convert_cosyvoice2_file, convert_cosyvoice3_file, convert_dac_file, convert_file,
-    convert_file_quantized, convert_file_with_policy, convert_kokoro_file, convert_piper_plus_file,
-    convert_voxtral_file_quantized, convert_voxtral_file_with_adapter_config_quantized,
-    parse_voxtral_hf_config,
+    ModelKind, PolicyPreset, VoxtralConfig, convert_chatterbox_file, convert_chatterbox_nano_file,
+    convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
+    convert_dac_file, convert_file, convert_file_quantized, convert_file_with_policy,
+    convert_kokoro_file, convert_piper_plus_file, convert_voxtral_file_quantized,
+    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -23,13 +23,14 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|chatterbox|chatterbox-turbo> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|chatterbox|chatterbox-turbo|chatterbox-nano> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice3 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model chatterbox --input <t3.safetensors> --output <out.gguf>
     vokra-cli convert --model chatterbox-turbo --input <t3_turbo_v1.safetensors> --output <out.gguf>
+    vokra-cli convert --model chatterbox-nano --input <t3_nano_v1.safetensors> --output <out.gguf>
     vokra-cli convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model voxtral --input <ckpt.safetensors | model.safetensors.index.json> \
                       [--config <config.json>] [--adapter-config <adapter.json>] \
@@ -40,7 +41,7 @@ OPTIONS:
                               campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
                               parakeet-tdt | parakeet-ctc | canary | omniasr-ctc |
-                              distil-whisper | chatterbox | chatterbox-turbo
+                              distil-whisper | chatterbox | chatterbox-turbo | chatterbox-nano
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
@@ -152,6 +153,32 @@ OPTIONS:
                               (huggingface.co/ResembleAI/chatterbox-turbo)
                               — no --config side-car; weight license =
                               MIT permissive — no attribution obligation)
+                              (chatterbox-nano: Resemble AI Chatterbox-Nano
+                              — compact 110M-parameter architecture
+                              advertised at ~3x realtime on an 8-core CPU;
+                              keeps base's Llama_520M backbone (SwiGLU +
+                              RMSNorm + RoPE — 30 layers × 16 heads ×
+                              1024 hidden, head_dim=64, ffn=4096,
+                              rope_theta=500000, rms_norm_eps=1e-5) —
+                              distinct from Turbo which swaps the
+                              backbone to gpt2-medium; adopts Turbo's
+                              low-latency profile: sample rate 24 kHz
+                              → 32 kHz, text vocabulary 2454/704 →
+                              50 276 (GPT-2 base 50 257 + 19
+                              paralinguistic tags), speech vocabulary
+                              8194 → 6563, max text/speech tokens
+                              2048/4096 → 402/604, 1-step distilled
+                              mel decoder; distinguishing sentinel:
+                              stop_text_token = 50256 (GPT-2
+                              <|endoftext|>) — distinct from both base
+                              and Turbo which use 0; terminal vocoder
+                              = S3Gen HiFT-GAN (same shared HiFTChain
+                              seam as base + Turbo + CosyVoice2/3);
+                              every hparam is transcribed verbatim
+                              from t3_nano_v1.yaml
+                              (huggingface.co/ResembleAI/chatterbox-nano)
+                              — no --config side-car; weight license =
+                              MIT permissive — no attribution obligation)
     --input <path>            upstream checkpoint file. For voxtral, a
                               `*.index.json` path reads every shard listed in
                               its weight_map (the raw sharded BF16 release)
@@ -247,7 +274,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac | \
                          csm | moshi | denoise | dia | zonos | kyutai-stt | \
                          parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
-                         distil-whisper | chatterbox | chatterbox-turbo)"
+                         distil-whisper | chatterbox | chatterbox-turbo | chatterbox-nano)"
                     )
                 })?);
                 i += 2;
@@ -533,6 +560,22 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             }
             convert_chatterbox_turbo_file(&p.input, &p.output)
         }
+        ModelKind::ChatterboxNano => {
+            // SoTA plan Phase 3 (2026-07-24): Chatterbox-Nano ships a real
+            // `t3_nano_v1.yaml` alongside the safetensors, but every field
+            // on that side-car is fixed for the Nano release and byte-parallel
+            // to the transcribed constants in `models::chatterbox_nano` — so
+            // the CLI takes no --config side-car today. Quantization surface
+            // is whisper-only (same posture as base Chatterbox / Chatterbox-
+            // Turbo / CosyVoice3 / dia / zonos).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_chatterbox_nano_file(&p.input, &p.output)
+        }
         _ => {
             // Ticket precedence: an explicit --policy-preset wins; else the
             // legacy --quantize q4_k alias maps to the whisper_q4_k preset;
@@ -718,6 +761,26 @@ mod tests {
         }
     }
 
+    /// Every accepted spelling from `ModelKind::from_arg` parses via the CLI
+    /// front-end for the Chatterbox-Nano family — the canonical HF release
+    /// id, the underscore spelling (== the arch tag), and the v1 checkpoint
+    /// stem. Nano does not ship an ONNX sibling release, so no `-onnx`
+    /// alias here (distinct from Turbo).
+    #[test]
+    fn parses_chatterbox_nano_variant_ids() {
+        for spelling in ["chatterbox-nano", "chatterbox_nano", "chatterbox-nano-v1"] {
+            let p = parse_args(&args(&[
+                "--model", spelling, "--input", "i", "--output", "o",
+            ]))
+            .unwrap_or_else(|e| panic!("--model {spelling} should parse: {e}"));
+            assert_eq!(p.model, ModelKind::ChatterboxNano, "--model {spelling}");
+            assert!(
+                p.config.is_none(),
+                "chatterbox-nano takes no --config side-car"
+            );
+        }
+    }
+
     #[test]
     fn parses_fun_cosyvoice3_variant_ids() {
         // Every accepted spelling from `ModelKind::from_arg` parses via
@@ -793,6 +856,7 @@ mod tests {
             ("distil-whisper", ModelKind::DistilWhisper),
             ("chatterbox", ModelKind::Chatterbox),
             ("chatterbox-turbo", ModelKind::ChatterboxTurbo),
+            ("chatterbox-nano", ModelKind::ChatterboxNano),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
@@ -849,6 +913,7 @@ mod tests {
             "cosyvoice3",
             "chatterbox",
             "chatterbox-turbo",
+            "chatterbox-nano",
             "piper-plus",
             "dac",
         ] {

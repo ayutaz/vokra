@@ -37,6 +37,20 @@ pub(crate) mod chatterbox;
 // (`vokra-models::cosyvoice2::hift_chain::HiFTChain`) applies —
 // no new op or backend kernel is added.
 pub(crate) mod chatterbox_turbo;
+// SoTA plan Phase 3 (2026-07-24): Resemble AI Chatterbox-Nano TTS
+// (MIT weight, Permissive) safetensors → GGUF with the
+// `vokra.chatterbox_nano.*` chunk group. Every F32 / F16 tensor
+// passes through verbatim; every hparam is transcribed from the
+// primary source `t3_nano_v1.yaml`
+// (`huggingface.co/ResembleAI/chatterbox-nano`, fetched 2026-07-24).
+// Distinct arch tag from base Chatterbox + Turbo because Nano keeps
+// base's Llama_520M backbone family but swaps sample rate (32 kHz vs
+// 24 kHz) + text vocabulary (50 276 GPT-2 vs 2454/704) +
+// stop-text sentinel (50 256 GPT-2 EOT vs 0); the terminal vocoder
+// is still S3Gen HiFT-GAN so the shared HiFTChain seam
+// (`vokra-models::cosyvoice2::hift_chain::HiFTChain`) applies —
+// no new op or backend kernel is added.
+pub(crate) mod chatterbox_nano;
 pub(crate) mod cosyvoice2;
 // SoTA plan Phase 3 (2026-07-24): FunAudioLLM Fun-CosyVoice3-0.5B (apache-2.0
 // permissive) — same architecture as CosyVoice2 (Qwen2 LLM backbone +

@@ -345,6 +345,35 @@ pub enum ModelKind {
     /// side-car (every hparam is fixed for the Turbo release and
     /// transcribed as compile-time constants).
     ChatterboxTurbo,
+    /// Resemble AI **Chatterbox-Nano** safetensors checkpoint
+    /// (SoTA plan Phase 3, 2026-07-24). MIT weight + code. Compact
+    /// 110M-parameter architecture advertised at ~3× realtime on an
+    /// 8-core CPU. Keeps base Chatterbox's **Llama_520M** backbone
+    /// (SwiGLU + RMSNorm + RoPE — MHA `hidden_size=1024`,
+    /// `num_hidden_layers=30`, `num_attention_heads=num_key_value_heads=16`,
+    /// `head_dim=64`, `intermediate_size=4096`, `rope_theta=500_000`,
+    /// `rms_norm_eps=1e-5`; `t3_nano_v1.yaml::llama_config_name = Llama_520M`
+    /// is authoritative over the stale `gpt_transformer_type: gpt2`
+    /// training-side legacy flag) — **distinct from Turbo which swaps
+    /// the backbone to gpt2-medium**. Adopts Turbo's low-latency
+    /// serving profile: sample rate 24 kHz → **32 kHz**; text-token
+    /// vocabulary 2454/704 → **50 276** (GPT-2 base 50 257 + 19
+    /// paralinguistic tags from `added_tokens.json`); speech-token
+    /// vocabulary 8194 → **6563**; max text/speech tokens 2048/4096 →
+    /// **402/604**; speech-token-to-mel decoder distilled from 10
+    /// sampling steps to a single step. **Distinguishing sentinel**:
+    /// `stop_text_token = 50256` (GPT-2 `<|endoftext|>`) — distinct
+    /// from both base and Turbo which use `0`. Terminal vocoder =
+    /// S3Gen HiFT-GAN (same shared `HiFTChain` seam as CosyVoice2 /
+    /// CosyVoice3 / base Chatterbox / Chatterbox-Turbo per SoTA plan
+    /// §1(a) 訂正 2026-07-22, no new op or backend kernel added).
+    /// Every hparam transcribed **verbatim** from `t3_nano_v1.yaml`
+    /// at `huggingface.co/ResembleAI/chatterbox-nano` (fetched
+    /// 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」). Convert with
+    /// [`convert_chatterbox_nano_file`] — the converter takes no
+    /// config side-car (every hparam is fixed for the Nano release
+    /// and transcribed as compile-time constants).
+    ChatterboxNano,
 }
 
 impl ModelKind {
@@ -428,6 +457,14 @@ impl ModelKind {
             | "chatterbox_turbo"
             | "chatterbox-turbo-v1"
             | "chatterbox-turbo-onnx" => Some(Self::ChatterboxTurbo),
+            // Resemble AI Chatterbox-Nano family — compact 110M variant.
+            // Accept the canonical HF release id, the underscore spelling
+            // (== the arch tag), and the v1 stem
+            // (`t3_nano_v1.safetensors`). Chatterbox-Nano does not ship
+            // an ONNX sibling release, so no `-onnx` alias here.
+            "chatterbox-nano" | "chatterbox_nano" | "chatterbox-nano-v1" => {
+                Some(Self::ChatterboxNano)
+            }
             _ => None,
         }
     }
@@ -459,6 +496,7 @@ impl ModelKind {
             Self::DistilWhisper => "distil-whisper",
             Self::Chatterbox => "chatterbox",
             Self::ChatterboxTurbo => "chatterbox-turbo",
+            Self::ChatterboxNano => "chatterbox-nano",
         }
     }
 }
@@ -940,6 +978,32 @@ pub fn convert_file_licensed(
                     .notes
                     .iter()
                     .map(|n| format!("chatterbox-turbo warning: {n}")),
+            );
+            (builder, notes)
+        }
+        ModelKind::ChatterboxNano => {
+            // SoTA plan Phase 3 (2026-07-24): pass every F32/F16 tensor
+            // through verbatim and stamp the `vokra.chatterbox_nano.*`
+            // chunk group (Llama_520M backbone axes + STFT frontend +
+            // GPT-2 sentinel tokens + paralinguistic tag count) from
+            // the transcribed constants in `models::chatterbox_nano`.
+            // The arch tag is intentionally distinct from both base
+            // Chatterbox and Turbo because Nano keeps base's Llama_520M
+            // backbone but swaps sample rate + text vocab + stop-text
+            // sentinel — silently sharing either sibling's arch tag
+            // would misrepresent the loaded model. Provenance = MIT
+            // (Permissive — no runtime-side attribution obligation; the
+            // whole Chatterbox family ships under a single MIT LICENSE).
+            let (builder, report) = models::chatterbox_nano::convert(bytes)?;
+            let mut notes = vec![format!(
+                "chatterbox-nano: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("chatterbox-nano warning: {n}")),
             );
             (builder, notes)
         }
@@ -1926,6 +1990,59 @@ pub fn convert_chatterbox_turbo_file(
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::ChatterboxTurbo, input, output)
+}
+
+/// Convert a Resemble AI **Chatterbox-Nano** T3 safetensors checkpoint
+/// into a Vokra GGUF (SoTA plan Phase 3, 2026-07-24).
+///
+/// This is the named entry point that mirrors
+/// `convert_chatterbox_file` / `convert_chatterbox_turbo_file` /
+/// `convert_dia_file` / `convert_zonos_file` / `convert_csm_file` /
+/// `convert_kokoro_file`. It is functionally identical to
+/// `convert_file(ModelKind::ChatterboxNano, input, output)` —
+/// Chatterbox-Nano takes no side-car config on this conversion path
+/// (every hparam of the `vokra.chatterbox_nano.*` chunk group is
+/// transcribed as compile-time constants in `models::chatterbox_nano`
+/// from `t3_nano_v1.yaml`, primary source
+/// `huggingface.co/ResembleAI/chatterbox-nano`) — but the named entry
+/// keeps the `convert_*_file` naming symmetry with the other TTS
+/// models.
+///
+/// The Nano variant is a compact 110M-parameter Chatterbox
+/// advertised at ~3× realtime on an 8-core CPU. It **keeps base
+/// Chatterbox's Llama_520M backbone** (SwiGLU + RMSNorm + RoPE — 30 ×
+/// 16 × 1024 with `head_dim=64`, `ffn=4096`, `rope_theta=500000`,
+/// `rms_norm_eps=1e-5`) — distinct from Turbo which swaps the
+/// backbone to gpt2-medium. It **adopts Turbo's low-latency serving
+/// profile**:
+/// - Sample rate: **32 kHz** instead of base's 24 kHz.
+/// - Text-token vocabulary: **50 276** (GPT-2 base 50 257 + 19 native
+///   paralinguistic tags: `[angry]` / `[fear]` / `[surprised]` /
+///   `[whispering]` / `[cough]` / `[laugh]` / `[chuckle]` / …)
+///   instead of the base's 2454 (multilingual) / 704 (English-only).
+/// - Speech-token vocabulary: **6563** instead of the base's 8194.
+/// - Max text/speech tokens: **402/604** instead of the base's
+///   2048/4096.
+/// - Speech-token-to-mel decoder distilled from 10 sampling steps to
+///   a single step.
+///
+/// **Distinguishing sentinel**: `stop_text_token = 50256` (the GPT-2
+/// `<|endoftext|>` token id) — distinct from both base Chatterbox and
+/// Turbo which use `0`. Nano is the only member of the family whose
+/// T3 stop-text sentinel is the GPT-2 EOT id.
+///
+/// The upstream release is `ResembleAI/chatterbox-nano` on HuggingFace;
+/// the backbone weight is `t3_nano_v1.safetensors`. Weight license =
+/// **MIT** (`github.com/resemble-ai/chatterbox/LICENSE` — Copyright
+/// (c) 2025 Resemble AI, fetched 2026-07-24) — the whole Chatterbox
+/// family (base + Turbo + Nano + multilingual variants) ships under a
+/// single MIT LICENSE. The M2-13 gate passes commercially without
+/// any attribution obligation.
+pub fn convert_chatterbox_nano_file(
+    input: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::ChatterboxNano, input, output)
 }
 
 /// Convert a Zyphra **Zonos-v0.1-transformer** safetensors checkpoint into a

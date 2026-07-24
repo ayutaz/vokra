@@ -76,6 +76,30 @@ pub mod chatterbox;
 // `huggingface.co/ResembleAI/chatterbox-turbo` (fetched 2026-07-24 —
 // CLAUDE.md「ハルシネーション厳禁」).
 pub mod chatterbox_turbo;
+// SoTA plan Phase 3 (2026-07-24): Resemble AI Chatterbox-Nano TTS
+// (MIT). Compact 110M-parameter architecture advertised at
+// ~3× realtime on an 8-core CPU. Keeps base Chatterbox's **Llama_520M**
+// backbone (SwiGLU + RMSNorm + RoPE — MHA n_head=16 n_head_kv=16
+// head_dim=64 hidden=1024 ffn=4096 layers=30, per
+// `LLAMA_520M_CONFIG_DICT`; Nano's `t3_nano_v1.yaml` sets
+// `llama_config_name: Llama_520M` which is authoritative over the
+// stale `gpt_transformer_type: gpt2` training-side legacy flag) —
+// distinct from Turbo which swaps the backbone to gpt2-medium. Adopts
+// Turbo's low-latency serving profile: sample rate 24 kHz → 32 kHz;
+// text vocabulary 2454 (base multilingual) / 704 (base English) →
+// **50 276** (GPT-2 base 50 257 + 19 paralinguistic tags [angry] /
+// [fear] / [surprised] / [whispering] / [cough] / [laugh] / [chuckle]
+// / … from `added_tokens.json`); speech vocabulary 8194 → 6563; max
+// text tokens 2048 → 402; max speech tokens 4096 → 604; speech-token-
+// to-mel decoder distilled from 10 sampling steps to a single step.
+// **Distinguishing sentinel**: `stop_text_token = 50256` (the GPT-2
+// `<|endoftext|>` token id) — distinct from both base and Turbo which
+// use 0. Terminal vocoder = S3Gen HiFT-GAN — same shared HiFTChain
+// seam as CosyVoice2 / CosyVoice3 / base Chatterbox / Chatterbox-Turbo
+// (SoTA plan §1(a) 訂正 2026-07-22). Every hparam transcribed verbatim
+// from `t3_nano_v1.yaml` at `huggingface.co/ResembleAI/chatterbox-nano`
+// (fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」).
+pub mod chatterbox_nano;
 pub mod codec;
 pub mod compute;
 pub mod cosyvoice2;

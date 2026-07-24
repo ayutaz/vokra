@@ -417,6 +417,20 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "chatterbox_turbo"
         | "chatterbox-turbo-v1"
         | "chatterbox-turbo-onnx" => LicenseClass::Permissive,
+        // SoTA plan Phase 3 (2026-07-24): Resemble AI Chatterbox-Nano —
+        // compact 110M-parameter Chatterbox variant advertised at
+        // ~3× realtime on an 8-core CPU (Llama_520M backbone + 32 kHz
+        // S3Gen HiFT-GAN vocoder + GPT-2 text tokenizer + distilled
+        // 1-step mel decoder). Weight license = MIT (same
+        // `github.com/resemble-ai/chatterbox/LICENSE` — the whole
+        // Chatterbox family, base + Turbo + Nano + multilingual variants,
+        // ships under a single MIT LICENSE, fetched 2026-07-24 —
+        // CLAUDE.md「ハルシネーション厳禁」). Redundant with the
+        // `chatterbox-` / `chatterbox_` family walks below, but the
+        // canonical id + underscore spelling (== arch tag) + v1 stem
+        // are listed here so an id lookup returns quickly without
+        // hitting the prefix arm.
+        "chatterbox-nano" | "chatterbox_nano" | "chatterbox-nano-v1" => LicenseClass::Permissive,
         // Commercial-OK codecs (FR-OP-32): DAC / WavTokenizer / X-Codec 2 = MIT.
         "dac" | "wavtokenizer" | "x-codec-2" | "xcodec2" => LicenseClass::Permissive,
         // SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B — Apache 2.0

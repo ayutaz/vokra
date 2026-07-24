@@ -1126,6 +1126,68 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  sample_rate={sr}"
             );
         }
+        ModelKind::ChatterboxNano => {
+            // SoTA plan Phase 3 (2026-07-24): Chatterbox-Nano verify surface —
+            // arch/name plus the Llama_520M backbone axes + STFT frontend +
+            // paralinguistic tag count + the distinguishing GPT-2 EOT
+            // stop_text_token that identify the Nano variant vs base
+            // Chatterbox (sample rate + text vocab swap) and vs Turbo
+            // (Llama_520M backbone family instead of gpt2-medium).
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let backbone = file
+                .get("vokra.chatterbox_nano.backbone_family")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let text_vocab = file
+                .get("vokra.chatterbox_nano.arch.text_vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let speech_vocab = file
+                .get("vokra.chatterbox_nano.arch.speech_vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let hidden = file
+                .get("vokra.chatterbox_nano.arch.hidden_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_layer = file
+                .get("vokra.chatterbox_nano.arch.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_head = file
+                .get("vokra.chatterbox_nano.arch.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let head_dim = file
+                .get("vokra.chatterbox_nano.arch.head_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let paraling = file
+                .get("vokra.chatterbox_nano.arch.paralinguistic_tag_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let stop_text = file
+                .get("vokra.chatterbox_nano.token.stop_text")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr = file
+                .get("vokra.chatterbox_nano.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} backbone={backbone} text_vocab={text_vocab} \
+                 speech_vocab={speech_vocab} hidden={hidden} n_layer={n_layer} \
+                 n_head={n_head} head_dim={head_dim} paralinguistic_tags={paraling} \
+                 stop_text_token={stop_text} sample_rate={sr}"
+            );
+        }
     }
     Ok(())
 }
