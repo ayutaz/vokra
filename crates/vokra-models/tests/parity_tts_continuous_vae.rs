@@ -86,7 +86,7 @@
 use std::path::{Path, PathBuf};
 
 use vokra_core::VokraError;
-use vokra_core::gguf::{GgufFile, chunks};
+use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile, chunks};
 use vokra_models::vibevoice::{
     VIBEVOICE_ENCODER_SAMPLE_RATE, VibeVoiceConfig, VibeVoiceTts, VibeVoiceWeights,
 };
@@ -689,4 +689,383 @@ fn parity_vibevoice() {
              (Shape / metadata leg passed above.)"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helper coverage extensions (Scout audit 2026-07-25 — parity_tts_continuous_vae
+// coverage gap fill).
+//
+// The 4 sanity tests above pin the always-on contract (family list, arch
+// pins, env-var derivation, skip_reason substrings) and the 2 parity tests
+// gate the flip-the-switch path behind a real GGUF. Neither exercises the
+// two non-trivial helpers that carry `Err` and `panic!` branches designed
+// to prevent fabricated passes:
+//
+//   * `env_paths_for` — the seam every gated test depends on to produce a
+//     CLEAN skip. A regression that returned `Some(PathBuf::new())` on an
+//     unset env var (or dropped the OsString → PathBuf conversion) would
+//     never surface without direct coverage.
+//   * `read_ref_manifest` — 2 explicit `Err` arms (missing-name /
+//     missing-hex) plus a "missing manifest.txt → Err" arm that the
+//     rustdoc explicitly promises "is not silently downgraded to no
+//     comparison (fabricated pass)". Zero direct tests today.
+//   * `compare_against_refdir` — the load-bearing `panic!(...manifest.txt
+//     unreadable ... fabricated pass 禁止)` message and the empty-manifest
+//     `(0, 0)` short-circuit that keeps the "flip green stage-by-stage"
+//     contract honest.
+//
+// Every test below uses std::fs + std::env::temp_dir + `GgufBuilder`, no
+// real GGUF or third-party dep (NFR-DS-02 preserved). Temp dirs are stemmed
+// with PID + nanoseconds so parallel `cargo test` never collides. No env
+// var is mutated at runtime — the workspace commits to `-D unsafe-code`
+// and `std::env::set_var` is `unsafe` in Rust 2024, so the negative case
+// for `env_paths_for` uses a namespaced arch guaranteed unset in CI.
+// ---------------------------------------------------------------------------
+
+/// Returns a fresh, empty scratch directory under `std::env::temp_dir()`.
+/// Stemmed with the test label + PID + nanoseconds so parallel `cargo
+/// test` (and cross-file collisions with other parity harnesses in this
+/// crate) never trip over each other.
+fn make_scratch_dir(label: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "vokra_parity_tts_continuous_vae_{}_{}_{}",
+        label,
+        std::process::id(),
+        nanos,
+    ));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("mkdir {}: {e}", dir.display()));
+    dir
+}
+
+/// Build a minimal, well-formed GGUF byte image with the requested arch
+/// and one 1-element F32 tensor named `probe.f32`. Enough to satisfy
+/// `GgufFile::parse` + `tensor_info("probe.f32")` in the compare-against
+/// tests below. The bytes here are the same shape a real converter would
+/// emit for a scaffold weight; nothing model-specific.
+fn build_minimal_gguf(arch: &str, tensor_name: &str, value: f32) -> Vec<u8> {
+    let mut b = GgufBuilder::new();
+    b.add_string(chunks::KEY_MODEL_ARCH, arch);
+    b.add_tensor(
+        tensor_name,
+        GgmlType::F32,
+        vec![1],
+        value.to_le_bytes().to_vec(),
+    )
+    .expect("writer accepts a well-formed 1-elem F32 tensor");
+    b.to_bytes().expect("serialize synthetic GGUF")
+}
+
+/// Extract the `&str` panic message from a `catch_unwind` payload. `panic!`
+/// with a formatted `String` yields a `String` payload; the plain `&str`
+/// variant is also fielded so the helper is drop-in for both.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_owned()
+    }
+}
+
+// --- env_paths_for -----------------------------------------------------
+
+/// `env_paths_for` MUST return `(None, None)` for an arch whose env vars
+/// are guaranteed unset. Uses a namespaced arch slug (`ttscvae_env_probe`
+/// → `VOKRA_TTSCVAE_ENV_PROBE_GGUF` / `_REFDIR`) so no CI env var of that
+/// name could plausibly exist. This pins the "unset → clean skip"
+/// contract at the seam: a regression that returned `Some(PathBuf::new())`
+/// (or swapped the tuple order) would let both `parity_voxcpm2` and
+/// `parity_vibevoice` take the WRONG code path — they would try to open
+/// `""` and produce a synthetic-looking failure instead of an honest
+/// skip. FR-EX-08 (silent fallback banned): a fabricated skip is exactly
+/// the failure mode the seam-level test rules out.
+#[test]
+fn env_paths_for_returns_none_when_env_unset() {
+    let arch = "ttscvae_env_probe";
+    // Belt-and-braces: derive the env var names the harness would query
+    // and assert they are indeed unset in the current process before we
+    // trust the (None, None) return as evidence of correctness.
+    let gguf_key = gguf_env_var(arch);
+    let refdir_key = refdir_env_var(arch);
+    assert!(
+        std::env::var_os(&gguf_key).is_none(),
+        "test precondition failed: {gguf_key} is set in the environment — either \
+         env leakage or the arch namespace clashes with an operator-set var; \
+         rename the probe arch"
+    );
+    assert!(
+        std::env::var_os(&refdir_key).is_none(),
+        "test precondition failed: {refdir_key} is set in the environment"
+    );
+
+    let (gguf, refdir) = env_paths_for(arch);
+    assert!(
+        gguf.is_none(),
+        "expected {gguf_key} unset → env_paths_for gguf slot None; got Some({gguf:?}) \
+         — regression: seam returns Some on an unset env var (flip-the-switch broken)"
+    );
+    assert!(
+        refdir.is_none(),
+        "expected {refdir_key} unset → env_paths_for refdir slot None; got Some({refdir:?}) \
+         — regression: asymmetric handling of the refdir arm"
+    );
+}
+
+// --- read_ref_manifest ---------------------------------------------------
+
+/// `read_ref_manifest` MUST return `Err(...)` when `manifest.txt` is
+/// absent from the refdir — the rustdoc explicitly promises "a set-but-
+/// empty REFDIR is not silently downgraded to no comparison (fabricated
+/// pass)". Without this test, a regression that swallowed the I/O error
+/// and returned `Ok(vec![])` would silently downgrade the byte-level leg
+/// to a no-op for every gated model.
+#[test]
+fn read_ref_manifest_missing_file_returns_err() {
+    let dir = make_scratch_dir("no_manifest");
+    let err = match read_ref_manifest(&dir) {
+        Ok(stages) => panic!(
+            "read_ref_manifest MUST surface Err when manifest.txt is absent \
+             (set-but-empty REFDIR is not a fabricated pass); got Ok with {} \
+             stage(s)",
+            stages.len()
+        ),
+        Err(e) => e,
+    };
+    // The message must at least name the manifest path so the operator
+    // knows *which* refdir is malformed. Anchor the substring loosely
+    // (path components + "manifest.txt") to survive path-formatting drift
+    // across platforms.
+    assert!(
+        err.contains("manifest.txt"),
+        "err message must name the manifest.txt filename; got: {err}"
+    );
+    // The `read <path>: <io error>` prefix is the format string the
+    // implementation currently ships — a change here should be a
+    // conscious edit, not a silent regression.
+    assert!(
+        err.starts_with("read "),
+        "err message must start with the 'read <path>:' prefix so an \
+         operator can grep the stderr log; got: {err}"
+    );
+}
+
+/// `read_ref_manifest` MUST reject a `sha256 ` line with no name token
+/// (line is `sha256 ` followed by nothing / only whitespace) with an Err
+/// naming the "missing name" arm. Distinct from the missing-hex case
+/// because the two `ok_or_else` arms are dead code from a coverage
+/// perspective — a regression that swapped the error messages or
+/// reordered the two `parts.next()` calls would silently invert operator
+/// diagnostics.
+#[test]
+fn read_ref_manifest_line_missing_name_returns_err() {
+    let dir = make_scratch_dir("missing_name");
+    // "sha256 " (prefix + trailing space only) → strip_prefix returns
+    // Some(""), split_whitespace yields 0 tokens, first parts.next() =
+    // None → "missing name" arm fires.
+    std::fs::write(dir.join("manifest.txt"), "sha256 \n").expect("write malformed manifest");
+    let err = match read_ref_manifest(&dir) {
+        Ok(stages) => panic!(
+            "sha256-prefixed line with no name token must be a hard Err, \
+             not a silent skip; got Ok with {} stage(s)",
+            stages.len()
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains("missing name"),
+        "err message must name the specific arm ('missing name') so an \
+         operator can distinguish it from the missing-hex arm; got: {err}"
+    );
+}
+
+/// `read_ref_manifest` MUST reject a `sha256 <name>` line with no hex
+/// token (line has exactly one name token, no hex) with an Err naming
+/// the "missing hex" arm. Symmetric to the missing-name test — pins the
+/// second `ok_or_else` arm and asserts the message is DIFFERENT from the
+/// missing-name case (operator debuggability).
+#[test]
+fn read_ref_manifest_line_missing_hex_returns_err() {
+    let dir = make_scratch_dir("missing_hex");
+    // "sha256 name_only" → strip_prefix returns Some("name_only"),
+    // first parts.next() = Some("name_only"), second parts.next() =
+    // None → "missing hex" arm fires.
+    std::fs::write(dir.join("manifest.txt"), "sha256 name_only\n")
+        .expect("write malformed manifest");
+    let err = match read_ref_manifest(&dir) {
+        Ok(stages) => panic!(
+            "sha256-prefixed line with a name but no hex must be a hard Err, \
+             not a silent skip; got Ok with {} stage(s)",
+            stages.len()
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains("missing hex"),
+        "err message must name the specific arm ('missing hex') so an \
+         operator can distinguish it from the missing-name arm; got: {err}"
+    );
+    // Cross-check: the missing-hex arm must NOT mis-report itself as
+    // missing-name (that would defeat the whole point of two arms).
+    assert!(
+        !err.contains("missing name"),
+        "err message must not conflate the two arms; got: {err}"
+    );
+}
+
+/// `read_ref_manifest` happy path: a manifest with three valid
+/// `sha256 <name> <hex>` lines yields three `RefStage` entries in file
+/// order with correct `.name` values. The parser has zero direct tests
+/// today — a regression that swapped `parts.next()` for `parts.next_back()`
+/// or accidentally called `.dedup()` would silently break byte-level
+/// parity across every reference dump.
+#[test]
+fn read_ref_manifest_happy_path_returns_stages_in_order() {
+    let dir = make_scratch_dir("happy_path");
+    // Three well-formed rows, ordered so a regression that reversed
+    // iteration would surface in the assertions.
+    let body = "\
+sha256 encoder.h0 deadbeef00000001
+sha256 dit.block.0.attn.wq cafefade00000002
+sha256 vae.decoder.final feedbead00000003
+";
+    std::fs::write(dir.join("manifest.txt"), body).expect("write happy-path manifest");
+    let stages = read_ref_manifest(&dir).expect("happy-path manifest must parse");
+    assert_eq!(
+        stages.len(),
+        3,
+        "expected exactly 3 RefStage entries; got {} — parser dropped or \
+         duplicated rows",
+        stages.len()
+    );
+    // Order is load-bearing (the compare loop iterates in file order and
+    // an operator eyeballing the stderr log expects the same order).
+    assert_eq!(
+        stages[0].name, "encoder.h0",
+        "row 0 name mismatch; parser walked out of order?"
+    );
+    assert_eq!(
+        stages[1].name, "dit.block.0.attn.wq",
+        "row 1 name mismatch; parser walked out of order?"
+    );
+    assert_eq!(
+        stages[2].name, "vae.decoder.final",
+        "row 2 name mismatch; parser walked out of order?"
+    );
+}
+
+/// `read_ref_manifest` MUST silently ignore lines that do NOT begin with
+/// `sha256 ` — blank lines, `# comment` lines, and any other prefix. This
+/// undocumented behaviour lets an operator drop a comment header (e.g.
+/// `# generated by dump.py at <sha>`) into a manifest without breaking
+/// the parse. If a future refactor tightened this to `return Err(...)`
+/// on unknown prefixes, real reference dumps with headers would break
+/// silently — this test pins the current behaviour so the refactor
+/// becomes visible.
+#[test]
+fn read_ref_manifest_ignores_non_sha256_lines() {
+    let dir = make_scratch_dir("mixed_lines");
+    // Mix: comment / blank / valid / unknown-prefix / blank / valid.
+    // Only the two sha256 rows should surface in the output.
+    let body = "\
+# generated by tools/parity/dump_voxcpm2.py at commit abc123
+
+sha256 stage.one 1111111100000001
+md5    stage.other 2222222200000002
+some free-form footer text
+
+sha256 stage.two 3333333300000003
+";
+    std::fs::write(dir.join("manifest.txt"), body).expect("write mixed manifest");
+    let stages = read_ref_manifest(&dir).expect("mixed manifest must parse (non-sha256 ignored)");
+    let names: Vec<&str> = stages.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["stage.one", "stage.two"],
+        "parser must silently drop non-`sha256 ` lines and preserve the \
+         file order of the surviving rows; got {names:?}"
+    );
+}
+
+// --- compare_against_refdir --------------------------------------------
+
+/// `compare_against_refdir` MUST panic — not return `(0, 0)` — when the
+/// refdir has no `manifest.txt`. The panic message is load-bearing: it
+/// carries BOTH "manifest.txt unreadable" and "fabricated pass 禁止"
+/// substrings so an operator eyeballing the CI log is taught the rule.
+/// A refactor that shortened the banner to `panic!("manifest missing")`
+/// would drop the self-documenting halves and silently degrade the
+/// error surface.
+#[test]
+fn compare_against_refdir_panics_on_missing_manifest() {
+    // A minimal but well-formed GGUF so the panic fires on the manifest
+    // read (the very first thing compare_against_refdir does), not on
+    // some earlier tensor-access path we would have to work around.
+    let gguf_bytes = build_minimal_gguf("voxcpm2", "probe.f32", 0.0);
+    let file = GgufFile::parse(gguf_bytes).expect("parse synthetic gguf");
+    let bad_refdir = make_scratch_dir("panic_no_manifest");
+    // Deliberately do NOT write manifest.txt into `bad_refdir`.
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        compare_against_refdir(&file, &bad_refdir, "voxcpm2");
+    }))
+    .expect_err(
+        "compare_against_refdir must panic (not return (0, 0)) when the \
+         refdir has no manifest.txt — the operator explicitly opted into \
+         the byte-level leg by setting REFDIR",
+    );
+    let msg = panic_message(&*panic);
+    assert!(
+        msg.contains("manifest.txt unreadable"),
+        "panic message must carry the 'manifest.txt unreadable' phrase \
+         so an operator knows which arm fired; got: {msg}"
+    );
+    assert!(
+        msg.contains("fabricated pass 禁止"),
+        "panic message must carry the 'fabricated pass 禁止' rule anchor \
+         so the panic itself self-documents the honest-parity contract; \
+         got: {msg}"
+    );
+    // Also verify the ctx label is included so an operator with multiple
+    // parity legs can identify the failing one.
+    assert!(
+        msg.contains("voxcpm2"),
+        "panic message must carry the ctx label so an operator with \
+         multiple gated legs can identify the failing one; got: {msg}"
+    );
+}
+
+/// `compare_against_refdir` MUST return `(0, 0)` (not panic) when the
+/// manifest exists but contains no `sha256 ...` rows — only comments /
+/// blank lines. This is the legitimate operator state where a reference
+/// dump is being staged incrementally: the manifest exists but no stage
+/// has been added yet. The docstring at lines 322–324 promises "the
+/// harness is meant to flip green stage-by-stage, not all-or-nothing" —
+/// a regression that panicked here would break that contract.
+#[test]
+fn compare_against_refdir_returns_zero_zero_on_empty_manifest() {
+    let gguf_bytes = build_minimal_gguf("vibevoice", "probe.f32", 0.0);
+    let file = GgufFile::parse(gguf_bytes).expect("parse synthetic gguf");
+    let refdir = make_scratch_dir("empty_manifest");
+    // Manifest exists (satisfies the Err → panic arm) but has no
+    // `sha256 ` lines. Comments + blank lines only.
+    let body = "\
+# reference dump staging in progress
+# no stages materialized yet
+
+";
+    std::fs::write(refdir.join("manifest.txt"), body).expect("write empty-stages manifest");
+
+    let (compared, skipped) = compare_against_refdir(&file, &refdir, "vibevoice");
+    assert_eq!(
+        (compared, skipped),
+        (0, 0),
+        "empty-stages manifest must yield (0, 0) — the flip-green-stage-\
+         by-stage contract requires the harness to no-op cleanly while a \
+         reference dump is being materialized, not panic",
+    );
 }
