@@ -28,7 +28,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|kotoba-whisper> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -85,7 +85,18 @@ OPTIONS:
                        differs — SoTA plan Phase 2; ships F32
                        safetensors directly; weight license = MIT
                        permissive — no runtime-side attribution
-                       obligation).
+                       obligation), or
+                       kotoba-whisper (Kotoba Technologies
+                       kotoba-whisper-v1.x / v2.x / bilingual family —
+                       Japanese-distilled Whisper: large-v3 encoder +
+                       shrunk 2-layer decoder; same tensor topology as
+                       distil-large-v3.5 but distinct upstream release
+                       — SoTA plan Phase 5 JA-ASR-2; ships F32/F16
+                       safetensors directly; weight license = Apache-2.0
+                       permissive — no runtime-side attribution
+                       obligation. **JA-ASR-2 axis**: n_text_layer=2 is
+                       read from checkpoint tensor names, never
+                       hard-coded).
                        `whisper-base` is accepted as a backward-compatible
                        alias for `whisper` (size is still derived from the
                        checkpoint, not the flag).
@@ -296,7 +307,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                         "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | \
                          piper-plus | campplus | kokoro | cosyvoice2 | voxtral | mimi | \
                          dac | csm | moshi | denoise | dia | zonos | kyutai-stt | \
-                         parakeet-tdt | parakeet-ctc | canary | omniasr-ctc)"
+                         parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
+                         distil-whisper | kotoba-whisper)"
                     )
                 })?);
                 i += 2;
@@ -1015,6 +1027,48 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  n_text_layer={n_text_layer} n_mels={n_mels} n_vocab={n_vocab}"
             );
         }
+        ModelKind::KotobaWhisper => {
+            // SoTA plan Phase 5 JA-ASR-2 (2026-07-24): Kotoba
+            // Technologies kotoba-whisper family — Japanese-distilled
+            // Whisper (large-v3 encoder + 2-layer decoder). Reuses the
+            // `vokra.whisper.*` chunk schema (schema shared with
+            // vanilla Whisper) so the verify surface here is the same
+            // shape as Whisper's: n_audio_layer / n_text_layer are
+            // the interesting pair (the JA-ASR-2 data-driven decoder
+            // axis).
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let d_model = file
+                .get("vokra.whisper.n_audio_state")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_audio_layer = file
+                .get("vokra.whisper.n_audio_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_text_layer = file
+                .get("vokra.whisper.n_text_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_mels = file
+                .get("vokra.whisper.n_mels")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_vocab = file
+                .get("vokra.whisper.n_vocab")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} d_model={d_model} n_audio_layer={n_audio_layer} \
+                 n_text_layer={n_text_layer} n_mels={n_mels} n_vocab={n_vocab}"
+            );
+        }
         ModelKind::Chatterbox => {
             // SoTA plan Phase 3 (2026-07-24): Chatterbox verify surface —
             // arch/name plus the T3 axes that identify the multilingual vs
@@ -1333,6 +1387,164 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  vae.sr_in={sr_in} vae.sr_out={sr_out} vae.latent_dim={vae_latent}"
             );
         }
+        ModelKind::VibeVoice => {
+            // SoTA plan Phase 4 (2026-07-24): VibeVoice-1.5B verify surface —
+            // arch / name plus the Qwen2 decoder LM axes + acoustic + semantic
+            // tokenizer VAE dims + diffusion-head axes (prediction_type,
+            // beta_schedule, num_inference_steps) that identify the DDPM
+            // v-prediction path distinct from VoxCPM's UnifiedCFM flow-
+            // matching sampler.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let family = file
+                .get("vokra.vibevoice.model_family")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let dec_hidden = file
+                .get("vokra.vibevoice.decoder.hidden_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_n_layer = file
+                .get("vokra.vibevoice.decoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_n_head = file
+                .get("vokra.vibevoice.decoder.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_n_head_kv = file
+                .get("vokra.vibevoice.decoder.n_head_kv")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_vocab = file
+                .get("vokra.vibevoice.decoder.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let acoustic_vae = file
+                .get("vokra.vibevoice.acoustic_vae_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let semantic_vae = file
+                .get("vokra.vibevoice.semantic_vae_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let acoustic_sr = file
+                .get("vokra.vibevoice.acoustic.sample_rate_hz")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let head_layers = file
+                .get("vokra.vibevoice.diffusion_head.head_layers")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let pred_type = file
+                .get("vokra.vibevoice.diffusion_head.prediction_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let beta_sched = file
+                .get("vokra.vibevoice.diffusion_head.ddpm_beta_schedule")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let n_inf_steps = file
+                .get("vokra.vibevoice.diffusion_head.ddpm_num_inference_steps")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} family={family} decoder.hidden={dec_hidden} \
+                 decoder.n_layer={dec_n_layer} decoder.n_head={dec_n_head} \
+                 decoder.n_head_kv={dec_n_head_kv} decoder.vocab={dec_vocab} \
+                 acoustic.vae_dim={acoustic_vae} semantic.vae_dim={semantic_vae} \
+                 acoustic.sr={acoustic_sr} head.layers={head_layers} \
+                 head.prediction_type={pred_type} head.beta_schedule={beta_sched} \
+                 head.num_inference_steps={n_inf_steps}"
+            );
+        }
+        ModelKind::Irodori => {
+            // SoTA plan Phase 5 JA-TTS-1 (2026-07-24): Irodori-TTS-500M-v3
+            // verify surface — arch / name plus the RF-DiT body axes +
+            // text-encoder + speaker-encoder axes + duration-predictor
+            // enable flag that identify the Rectified-Flow / Linear-or-Sway
+            // schedule path distinct from VoxCPM's EpsS-schedule
+            // flow-matching sampler and VibeVoice's DDPM sampler.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let family = file
+                .get("vokra.irodori.model_family")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let sr = file
+                .get("vokra.irodori.sample_rate_hz")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dit_latent = file
+                .get("vokra.irodori.dit.latent_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dit_model = file
+                .get("vokra.irodori.dit.model_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dit_layers = file
+                .get("vokra.irodori.dit.num_layers")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dit_heads = file
+                .get("vokra.irodori.dit.num_heads")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dit_adaln_rank = file
+                .get("vokra.irodori.dit.adaln_rank")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let text_vocab = file
+                .get("vokra.irodori.text.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let text_dim = file
+                .get("vokra.irodori.text.dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let text_layers = file
+                .get("vokra.irodori.text.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let speaker_dim = file
+                .get("vokra.irodori.speaker.dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let speaker_layers = file
+                .get("vokra.irodori.speaker.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let duration_enabled = file
+                .get("vokra.irodori.duration.enabled")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let text_tok = file
+                .get("vokra.irodori.text_tokenizer_repo")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} family={family} sample_rate={sr} \
+                 dit.latent_dim={dit_latent} dit.model_dim={dit_model} \
+                 dit.num_layers={dit_layers} dit.num_heads={dit_heads} \
+                 dit.adaln_rank={dit_adaln_rank} text.vocab={text_vocab} text.dim={text_dim} \
+                 text.n_layer={text_layers} speaker.dim={speaker_dim} \
+                 speaker.n_layer={speaker_layers} duration.enabled={duration_enabled} \
+                 text_tokenizer={text_tok}"
+            );
+        }
     }
     Ok(())
 }
@@ -1555,6 +1767,7 @@ mod tests {
             ("canary", ModelKind::Canary),
             ("omniasr-ctc", ModelKind::OmniasrCtc),
             ("distil-whisper", ModelKind::DistilWhisper),
+            ("kotoba-whisper", ModelKind::KotobaWhisper),
         ];
         for (name, kind) in kinds {
             let parsed = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

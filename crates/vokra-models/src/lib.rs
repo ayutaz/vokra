@@ -134,7 +134,23 @@ pub mod dia;
 // with the distil-shrunk decoder depth). Weights: MIT (Permissive — no
 // runtime-side attribution obligation).
 pub mod distil_whisper;
+// SoTA plan Phase 5 JA-ASR-2 (2026-07-24): Kotoba Technologies
+// **kotoba-whisper** — Whisper large-v3 encoder + a 2-layer decoder
+// distilled on Japanese ReazonSpeech audio (multi-day Japanese ASR
+// corpus). Same tensor topology as distil-large-v3.5 (identical shape
+// quintuple `(1280, 32, 2, 128, 51866)`) but distinct upstream release
+// (Kotoba Technologies) with **apache-2.0** weights (distil-whisper is
+// MIT). Config is transcribed verbatim from
+// huggingface.co/kotoba-tech/kotoba-whisper-v2.0/raw/main/config.json
+// (CLAUDE.md ハルシネーション厳禁); real-checkpoint binding is a
+// follow-up wave (T29-equivalent — delegates to `crate::whisper::WhisperModel`
+// with the kotoba-shrunk decoder depth). Weights: Apache-2.0 (Permissive
+// — no runtime-side attribution obligation). The JA-ASR-2 axis
+// (data-driven decoder depth) is honored by the shared WhisperConfig
+// loader — this module rides on top of it with a distinct arch tag
+// (`"kotoba-whisper"`) for correct provenance / telemetry.
 pub mod kokoro;
+pub mod kotoba_whisper;
 // SoTA plan Phase 2 (2026-07-24): Kyutai STT-2.6B-EN — decoder-only
 // English streaming ASR that consumes Mimi tokens (n_q=32, card=2048) and
 // emits text tokens. Backbone is a 48-layer / dim=2048 / MHA transformer
@@ -250,6 +266,77 @@ pub(crate) mod tls_scratch;
 // Distinct arch tag from every sibling — silently sharing would
 // misroute the runtime dispatch.
 pub mod voxcpm2;
+// SoTA plan Phase 4 (2026-07-24): Microsoft **VibeVoice-1.5B** long-form
+// multi-speaker end-to-end diffusion-autoregressive TTS (MIT — code +
+// weight under a single grant, huggingface.co/microsoft/VibeVoice-1.5B).
+// SECOND consumer of the continuous VAE + diffusion decoder class (after
+// VoxCPM-0.5B) — but where VoxCPM uses a flow-matching sampler, VibeVoice
+// uses a **DDPM** sampler (v-prediction + cosine β schedule). Topology:
+// (a) Qwen2 decoder LM (28L / d=1536 / MHA n_head=12 n_head_kv=2 (GQA
+// ratio 6) / SwiGLU ffn=8960 / RoPE θ=1_000_000 / RMSNorm ε=1e-6 /
+// vocab=151_936 / max_positions=65_536 / tie_word_embeddings=true) +
+// (b) acoustic σ-VAE tokenizer (vae_dim=64, mirror-symmetric
+// encoder/decoder at 24 kHz, encoder_ratios=[8,5,5,4,2,2] → 7.5 Hz
+// frame rate) + (c) semantic tokenizer (encoder-only deterministic,
+// vae_dim=128, std_dist_type="none") + (d) diffusion head (4-layer
+// AdaLN-modulated MLP, hidden=1536, head_ffn_ratio=3.0 → ffn_dim=4608,
+// prediction_type="v_prediction", diffusion_type="ddpm",
+// ddpm_num_steps=1000, ddpm_num_inference_steps=20,
+// ddpm_beta_schedule="cosine"). Every hparam transcribed verbatim from
+// `huggingface.co/microsoft/VibeVoice-1.5B/raw/main/config.json` and
+// `github.com/microsoft/VibeVoice/blob/main/vibevoice/modular/
+// configuration_vibevoice.py`. Reuses two ops: shared Phase 4 primitive
+// `vokra_ops::vae_continuous` (introduced with VoxCPM and shared with
+// this VibeVoice consumer per the vae_continuous rustdoc) and the SoTA
+// plan Phase 4 **new** primitive `vokra_ops::ddpm_sampler` introduced
+// with this model. Distinct arch tag from VoxCPM / CosyVoice2/3 /
+// Qwen3-TTS / Chatterbox family / Dia / Zonos / CSM / Voxtral /
+// Kyutai STT / Moshi — silently sharing would misroute the runtime
+// dispatch (VoxCPM → flow_sample, VibeVoice → ddpm_sample; the two
+// samplers are irreconcilable).
+pub mod vibevoice;
+// SoTA plan Phase 5 JA-TTS-1 (2026-07-24): Aratako **Irodori-TTS-500M-v3**
+// Japanese TTS (MIT). A Rectified-Flow Diffusion Transformer (RF-DiT)
+// over the paired `Semantic-DACVAE-Japanese-32dim` codec (32-d continuous
+// latent → 48 kHz PCM). Topology: (a) prompt-text encoder (`text_dim=512`
+// / `text_layers=10` / `text_heads=8` / `text_mlp_ratio=2.6` — Llama-
+// family self-attention with RoPE + a sigmoid gate on the output
+// projection, initialized from the LLM-JP-3 150M checkpoint; text_vocab
+// = 99574; add_bos=true), (b) reference-latent (speaker) encoder
+// (`speaker_dim=768` / `speaker_layers=8` / `speaker_heads=12` /
+// `speaker_mlp_ratio=2.6` / `speaker_patch_size=1`) driving speaker /
+// style conditioning off a reference DACVAE latent, (c) RF-DiT body
+// (`latent_dim=32` / `model_dim=1280` / `num_layers=12` / `num_heads=20`
+// (`head_dim=64`) / `mlp_ratio=2.875` / `timestep_embed_dim=512` /
+// `adaln_rank=192` with Low-Rank AdaLN modulation; SwiGLU FFN + RoPE;
+// `norm_eps=1e-5`; joint-attention against text + speaker contexts), and
+// (d) integrated duration predictor (v3 phase-2: `duration_aux_dim=14` /
+// `duration_hidden_dim=1024` / `duration_layers=3` /
+// `duration_attention_heads=8` / `duration_dropout=0.1` /
+// `duration_architecture="token_sum_adarn_zero_no_aux"` /
+// `duration_token_init_frames=9.0` /
+// `duration_speaker_fusion="adarn_zero"`). Sampling: Euler ODE over the
+// rectified-flow ODE (`x_t = (1-t) x_0 + t z`, `v = z - x_0`) integrated
+// from t=1 to t=0 in 40 default steps under a Linear or Sway (F5-TTS)
+// schedule with independent split-batch CFG on three axes (text /
+// caption / speaker; scales 3.0 / 3.0 / 5.0; cfg window t ∈ [0.5, 1.0]).
+// Reuses the shared `vokra_ops::flow_sampler` primitive (M3-05,
+// `OdeSolver::Euler` + `Schedule::Linear` | `Schedule::Sway`) and the
+// shared `crate::codec::DacCodecGguf` seam for the paired DACVAE decode.
+// No new op is added — every RF-DiT / text-encoder / speaker-encoder
+// building block is Linear + RMSNorm + SwiGLU + RoPE + softmax
+// attention, all covered by the existing kernel inventory. Distinct
+// arch tag from every sibling — silently sharing would misroute the
+// runtime dispatch (VibeVoice → ddpm_sample, VoxCPM → EpsS flow_sample,
+// Irodori → Linear/Sway flow_sample with a distinct latent width 32
+// vs the Phase-4 siblings' 64). Every hparam transcribed verbatim from
+// `github.com/Aratako/Irodori-TTS` (`configs/train_500m_v3_phase1_body.yaml`
+// + `configs/train_500m_v3_phase2_duration.yaml` +
+// `irodori_tts/config.py::ModelConfig`, fetched 2026-07-24 — CLAUDE.md
+// 「ハルシネーション厳禁」). Weights: MIT (`Permissive` — no runtime-
+// side attribution obligation; `gh api /repos/Aratako/Irodori-TTS/license`
+// → `MIT`).
+pub mod irodori;
 pub mod voxtral;
 pub mod whisper;
 pub mod zonos;

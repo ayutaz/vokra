@@ -77,6 +77,21 @@ pub(crate) mod dia;
 // Whisper op inventory (STFT / mel filterbank / GEMM / GEMV / softmax /
 // layer-norm / GELU / conv1d) — no new op is added.
 pub(crate) mod distil_whisper;
+// SoTA plan Phase 5 JA-ASR-2 (2026-07-24): Kotoba Technologies
+// **kotoba-whisper** family — Japanese-distilled Whisper (large-v3
+// encoder + shrunk 2-layer decoder — same tensor topology as
+// distil-large-v3.5, but distilled on ReazonSpeech Japanese audio
+// and released under **apache-2.0**, distinct from distil-whisper's
+// MIT). Every F32 / F16 tensor passes through verbatim under the
+// upstream HF Whisper name; hparams ride the `vokra.whisper.*` chunk
+// schema (schema shared with vanilla Whisper — the "very cheap
+// follow-on" contract in the task). The JA-ASR-2 axis (data-driven
+// decoder depth) is honored by the shape-driven `count_layers` walk
+// — the converter reads `n_text_layer=2` from the checkpoint's
+// tensor names, never hard-coding to 32. Reuses the shared Whisper
+// op inventory (STFT / mel filterbank / GEMM / GEMV / softmax /
+// layer-norm / GELU / conv1d) — no new op is added.
+pub(crate) mod kotoba_whisper;
 // M4-20 T12/T17: DeepFilterNet3 `denoise` → `vokra.denoise.*` GGUF (real
 // checkpoint parse from the prepared safetensors, verbatim upstream names).
 pub mod denoise;
@@ -156,6 +171,54 @@ pub(crate) mod utmos;
 // Qwen3-TTS / Chatterbox family because VoxCPM's terminal step is
 // vae_continuous_decode, NOT HiFTChain or any RVQ / FSQ codec.
 pub(crate) mod voxcpm2;
+// SoTA plan Phase 4 (2026-07-24): Microsoft **VibeVoice-1.5B** (MIT
+// end-to-end weight) safetensors → GGUF with the `vokra.vibevoice.*`
+// chunk group. SECOND consumer of the continuous VAE + diffusion
+// decoder class (after VoxCPM-0.5B) — but where VoxCPM uses a
+// UnifiedCFM flow-matching sampler, VibeVoice uses a **DDPM** sampler
+// (v-prediction + cosine β schedule). Topology: Qwen2 decoder LM
+// (28-layer / 1536d / MHA n_head=12 n_head_kv=2 (GQA ratio 6) /
+// SwiGLU 8960 / RoPE θ=1_000_000 / RMSNorm ε=1e-6 / vocab=151_936 /
+// max_positions=65_536 / tie_word_embeddings=true) + acoustic σ-VAE
+// tokenizer (vae_dim=64, mirror-symmetric encoder/decoder at 24 kHz,
+// encoder_ratios=[8,5,5,4,2,2] → 7.5 Hz frame rate) + semantic
+// tokenizer (encoder-only deterministic, vae_dim=128) + 4-layer
+// AdaLN-modulated MLP diffusion head (hidden=1536, head_ffn_ratio=3.0 →
+// ffn_dim=4608, latent_size=64, prediction_type="v_prediction",
+// diffusion_type="ddpm", ddpm_num_steps=1000,
+// ddpm_num_inference_steps=20, ddpm_beta_schedule="cosine"). Every
+// F32 / F16 tensor passes through verbatim; every hparam is
+// transcribed from the primary sources
+// `huggingface.co/microsoft/VibeVoice-1.5B/raw/main/config.json` and
+// `github.com/microsoft/VibeVoice/blob/main/vibevoice/modular/
+// configuration_vibevoice.py`. Distinct arch tag from VoxCPM /
+// CosyVoice2/3 / Qwen3-TTS / Chatterbox family — silently sharing
+// would misroute the runtime dispatch (VoxCPM → flow_sample,
+// VibeVoice → ddpm_sample).
+pub(crate) mod vibevoice;
+// SoTA plan Phase 5 JA-TTS-1 (2026-07-24): Aratako **Irodori-TTS-500M-v3**
+// Japanese TTS (MIT weight + code, verified via
+// `gh api /repos/Aratako/Irodori-TTS/license` → `MIT`, fetched
+// 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」) safetensors → GGUF
+// with the `vokra.irodori.*` chunk group. A Rectified-Flow Diffusion
+// Transformer (RF-DiT) over the paired `Semantic-DACVAE-Japanese-32dim`
+// codec (32-d continuous latent → 48 kHz PCM). Every F32 / F16 tensor
+// passes through verbatim; every hparam is transcribed from
+// `train_500m_v3_phase1_body.yaml` + `train_500m_v3_phase2_duration.yaml`
+// + `irodori_tts/config.py::ModelConfig` at
+// `github.com/Aratako/Irodori-TTS`. Distinct arch tag from every
+// sibling — silently sharing would misroute the runtime dispatch
+// (VibeVoice → ddpm_sample, VoxCPM → EpsS flow_sample, Irodori →
+// Linear/Sway flow_sample with a distinct latent width 32 vs the
+// Phase-4 siblings' 64). No side-car config today: every field is
+// fixed for the 500M-v3 release and byte-parallel to the transcribed
+// constants; a future 600M VoiceDesign / 2.5B variant that reshapes
+// the DiT or adds caption conditioning would demand `--config`. No
+// new op or backend kernel — reuses the shared
+// `vokra_ops::flow_sampler` primitive (M3-05, `OdeSolver::Euler` +
+// `Schedule::Linear` | `Schedule::Sway`) and the shared
+// `crate::codec::DacCodecGguf` seam for the paired DACVAE decode.
+pub(crate) mod irodori;
 pub(crate) mod voxtral;
 pub(crate) mod whisper;
 // SoTA plan Phase 1-5 (2026-07-24): Zyphra Zonos-v0.1-transformer

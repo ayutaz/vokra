@@ -271,6 +271,29 @@ pub enum ModelKind {
     /// Whisper op inventory (STFT / mel filterbank / GEMM / GEMV /
     /// softmax / layer-norm / GELU / conv1d) — no new op is added.
     DistilWhisper,
+    /// Kotoba Technologies **kotoba-whisper** family safetensors
+    /// checkpoint (SoTA plan Phase 5 JA-ASR-2, 2026-07-24).
+    /// Japanese-distilled Whisper: large-v3 encoder (32 layers,
+    /// d_model=1280, n_mels=128) + shrunk 2-layer decoder — same
+    /// tensor topology as distil-large-v3.5, but distilled on
+    /// ReazonSpeech Japanese audio and released under **apache-2.0**
+    /// (distil-whisper is MIT). Every hparam (`d_model=1280`,
+    /// `n_audio_layer=32`, `n_text_layer=2`, `n_mels=128`,
+    /// `vocab_size=51866`, `ffn_dim=5120`, `n_audio_ctx=1500`,
+    /// `n_text_ctx=448`) is transcribed verbatim from
+    /// `huggingface.co/kotoba-tech/kotoba-whisper-v2.0/raw/main/
+    /// config.json`. Apache-2.0 weight (`Permissive` — no runtime-side
+    /// attribution obligation). The GGUF carries
+    /// `vokra.model.arch = "kotoba-whisper"` (distinct from vanilla
+    /// Whisper's `"whisper"` and distil-whisper's `"distil-whisper"`)
+    /// but the same `vokra.whisper.*` hparam chunk schema — the
+    /// "very cheap follow-on" contract in the task. **JA-ASR-2 axis**:
+    /// the converter reads `n_text_layer` from the checkpoint's
+    /// tensor names via `count_layers`, never hard-coding to 32.
+    /// Reuses the shared Whisper op inventory (STFT / mel filterbank /
+    /// GEMM / GEMV / softmax / layer-norm / GELU / conv1d) — no new
+    /// op is added.
+    KotobaWhisper,
     /// Meta **omniASR-CTC-1B** — the Omnilingual ASR family's 1B
     /// wav2vec 2.0 CTC checkpoint (SoTA plan Phase 2, 2026-07-24).
     /// Multilingual ASR across **1600+ languages** (`facebook/omniASR-CTC-1B`):
@@ -466,6 +489,133 @@ pub enum ModelKind {
     /// side-car (every hparam is fixed for the 0.5B release and
     /// transcribed as compile-time constants).
     VoxCpm2,
+    /// Microsoft **VibeVoice-1.5B** safetensors checkpoint (SoTA plan
+    /// Phase 4, 2026-07-24). MIT end-to-end — code + weight under a
+    /// single MIT grant (`huggingface.co/microsoft/VibeVoice-1.5B`
+    /// model-card + `github.com/microsoft/VibeVoice/blob/main/LICENSE`,
+    /// fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」). SECOND
+    /// consumer of the **continuous VAE + diffusion decoder** class
+    /// (after VoxCPM-0.5B) — but where VoxCPM uses a UnifiedCFM
+    /// flow-matching sampler, VibeVoice uses a **DDPM** sampler
+    /// (v-prediction + cosine β schedule + 20 reduced-step inference on
+    /// 1000 training steps). This axis introduces the SoTA plan Phase 4
+    /// **new** primitive `vokra_ops::ddpm_sampler`; the acoustic VAE
+    /// half shares the existing `vokra_ops::vae_continuous` primitive
+    /// (introduced with VoxCPM and shared with this VibeVoice consumer
+    /// per the vae_continuous rustdoc).
+    ///
+    /// Topology chains a **Qwen2 decoder LM** (`decoder_config`,
+    /// Qwen2.5-1.5B flavour — `hidden_size=1536`,
+    /// `num_hidden_layers=28`, MHA `num_attention_heads=12`, GQA
+    /// `num_key_value_heads=2` (group ratio 6), SwiGLU
+    /// `intermediate_size=8960`, RoPE `theta=1_000_000` no scaling,
+    /// `rms_norm_eps=1e-6`, `vocab_size=151_936`,
+    /// `max_position_embeddings=65_536`,
+    /// `tie_word_embeddings=true`, `sliding_window=null`,
+    /// `use_sliding_window=false`) through an **acoustic tokenizer**
+    /// (`acoustic_tokenizer_config`, σ-VAE with mirror-symmetric
+    /// encoder / decoder — `vae_dim=64`, `std_dist_type="gaussian"`
+    /// with `fix_std=0.5`, `encoder_ratios=decoder_ratios=[8,5,5,4,2,2]`
+    /// (product 3200 → **7.5 Hz** frame rate at 24 kHz input),
+    /// `encoder_n_filters=decoder_n_filters=32`,
+    /// `encoder_depths="3-3-3-3-3-3-8"`,
+    /// `mixer_layer="depthwise_conv"`, `layernorm="RMSNorm"`,
+    /// `layernorm_eps=1e-5`, `causal=true`, `channels=1`,
+    /// `conv_bias=true`, `disable_last_norm=true`,
+    /// `layer_scale_init_value=1e-6`), a **semantic tokenizer**
+    /// (`semantic_tokenizer_config`, encoder-**only** variant of the
+    /// same chain — `vae_dim=128`, `std_dist_type="none"` deterministic
+    /// with `fix_std=0`, same `encoder_ratios=[8,5,5,4,2,2]`),
+    /// and a **diffusion head** (`diffusion_head_config`, 4-layer
+    /// AdaLN-modulated MLP with SwiGLU FFN — `hidden_size=1536`,
+    /// `head_layers=4`, `head_ffn_ratio=3.0` (SwiGLU inner dim
+    /// `int(1536·3)=4608`), `rms_norm_eps=1e-5`, `latent_size=64`,
+    /// `speech_vae_dim=64`, `prediction_type="v_prediction"`,
+    /// `diffusion_type="ddpm"`, `ddpm_num_steps=1000`,
+    /// `ddpm_num_inference_steps=20`, `ddpm_beta_schedule="cosine"`,
+    /// `ddpm_batch_mul=4`).
+    ///
+    /// Every hparam transcribed verbatim from
+    /// `huggingface.co/microsoft/VibeVoice-1.5B/raw/main/config.json`
+    /// and `github.com/microsoft/VibeVoice/blob/main/vibevoice/
+    /// modular/configuration_vibevoice.py` (fetched 2026-07-24 —
+    /// CLAUDE.md「ハルシネーション厳禁」).
+    ///
+    /// Distinct arch tag from VoxCPM / CosyVoice2/3 / Qwen3-TTS /
+    /// Chatterbox family / Dia / Zonos / CSM / Voxtral / Kyutai STT /
+    /// Moshi — silently sharing would misroute the runtime dispatch
+    /// (VoxCPM → `flow_sample`, VibeVoice → `ddpm_sample`; the two
+    /// samplers are irreconcilable, see the
+    /// `vokra_ops::ddpm_sampler` rustdoc for the argument).
+    ///
+    /// The upstream release is BF16 (`torch_dtype = "bfloat16"`);
+    /// today's F32/F16 pass-through hits the `skipped_non_float`
+    /// counter on the BF16 tensors and the converter surfaces the
+    /// loud "no float tensors" note. Convert with
+    /// [`convert_vibevoice_file`] — the converter takes no config
+    /// side-car (every hparam is fixed for the 1.5B release and
+    /// transcribed as compile-time constants; a future 7B variant
+    /// would demand `--config`).
+    VibeVoice,
+    /// Aratako **Irodori-TTS-500M-v3** safetensors checkpoint (SoTA plan
+    /// Phase 5 JA-TTS-1, 2026-07-24). MIT end-to-end — code + weight
+    /// under a single MIT LICENSE at `github.com/Aratako/Irodori-TTS/blob/main/LICENSE`
+    /// (verified via `gh api /repos/Aratako/Irodori-TTS/license` →
+    /// `MIT`, fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」).
+    /// A **Rectified-Flow Diffusion Transformer (RF-DiT)** over the
+    /// paired `Aratako/Semantic-DACVAE-Japanese-32dim` codec (32-d
+    /// continuous latent → 48 kHz PCM). Topology chains a **prompt-text
+    /// encoder** (Llama-family self-attention with RoPE + a sigmoid gate
+    /// on the output projection, initialized from the LLM-JP-3 150M
+    /// checkpoint — `text_vocab_size=99_574`, `text_dim=512`,
+    /// `text_layers=10`, `text_heads=8` (`head_dim=64`),
+    /// `text_mlp_ratio=2.6`, `text_add_bos=true`), a **reference-latent
+    /// (speaker) encoder** (self-attention transformer over patched
+    /// reference DACVAE latents — `speaker_dim=768`, `speaker_layers=8`,
+    /// `speaker_heads=12` (`head_dim=64`), `speaker_mlp_ratio=2.6`,
+    /// `speaker_patch_size=1`), a **RF-DiT body** (joint-attention DiT
+    /// blocks with Low-Rank AdaLN modulation, SwiGLU FFN + RoPE —
+    /// `latent_dim=32`, `latent_patch_size=1`, `model_dim=1280`,
+    /// `num_layers=12`, `num_heads=20` (`head_dim=64`),
+    /// `mlp_ratio=2.875`, `timestep_embed_dim=512`, `adaln_rank=192`,
+    /// `norm_eps=1e-5`), and an **integrated duration predictor** (v3
+    /// phase-2: `duration_aux_dim=14`, `duration_hidden_dim=1024`,
+    /// `duration_layers=3`, `duration_attention_heads=8`,
+    /// `duration_dropout=0.1`,
+    /// `duration_architecture="token_sum_adarn_zero_no_aux"`,
+    /// `duration_token_init_frames=9.0`,
+    /// `duration_speaker_fusion="adarn_zero"`).
+    ///
+    /// Sampling integrates the rectified-flow ODE
+    /// (`x_t = (1-t) x_0 + t z`, `v = z - x_0`) with an **Euler** step
+    /// from `t=1` to `t=0` in 40 default steps under a `Schedule::Linear`
+    /// or `Schedule::Sway` (F5-TTS toggle) — both directly supported by
+    /// the existing `vokra_ops::flow_sampler` primitive (M3-05), with
+    /// independent split-batch CFG on three axes (text / caption /
+    /// speaker; per-axis scales 3.0 / 3.0 / 5.0; cfg window t ∈
+    /// `[0.5, 1.0]`).
+    ///
+    /// Every hparam transcribed verbatim from
+    /// `github.com/Aratako/Irodori-TTS` (`configs/train_500m_v3_phase1_body.yaml`
+    /// plus `configs/train_500m_v3_phase2_duration.yaml` plus
+    /// `irodori_tts/config.py::ModelConfig`, fetched 2026-07-24 —
+    /// CLAUDE.md「ハルシネーション厳禁」).
+    ///
+    /// Distinct arch tag from every Phase-4 continuous-VAE sibling
+    /// (VoxCPM / VibeVoice) and every earlier sibling (CosyVoice2/3 /
+    /// Qwen3-TTS / Chatterbox family / Dia / Zonos / CSM / Voxtral /
+    /// Kyutai STT / Moshi) — silently sharing an arch tag would
+    /// misroute the runtime dispatch (VibeVoice → `ddpm_sample`,
+    /// VoxCPM → `flow_sample` with EpsS schedule, Irodori →
+    /// `flow_sample` with Linear / Sway schedule and a distinct latent
+    /// width of 32 vs the Phase-4 siblings' 64).
+    ///
+    /// Convert with [`convert_irodori_file`] — the converter takes no
+    /// side-car config today (every hparam is fixed for the 500M-v3
+    /// release and transcribed as compile-time constants; a future
+    /// 600M VoiceDesign / 2.5B variant that reshapes the DiT or adds
+    /// caption conditioning would demand `--config`).
+    Irodori,
 }
 
 impl ModelKind {
@@ -526,6 +676,27 @@ impl ModelKind {
             | "distil-large-v3"
             | "distil-large-v3.5"
             | "distil-large-v3_5" => Some(Self::DistilWhisper),
+            // Kotoba Technologies kotoba-whisper family (SoTA plan
+            // Phase 5 JA-ASR-2, 2026-07-24). Accept the canonical arch
+            // spelling, the underscore variant, and every currently-
+            // shipped HF release id (v1.0 / v1.1 / v2.0 / v2.1 /
+            // bilingual-v1.0). All spellings resolve to the same
+            // apache-2.0 Japanese-distilled checkpoint family; only
+            // the distilled weights and training corpus differ, which
+            // the shape-driven converter cannot distinguish.
+            "kotoba-whisper"
+            | "kotoba_whisper"
+            | "kotoba-whisper-v1.0"
+            | "kotoba-whisper-v1_0"
+            | "kotoba-whisper-v1.1"
+            | "kotoba-whisper-v1_1"
+            | "kotoba-whisper-v2.0"
+            | "kotoba-whisper-v2_0"
+            | "kotoba-whisper-v2.1"
+            | "kotoba-whisper-v2_1"
+            | "kotoba-whisper-bilingual"
+            | "kotoba-whisper-bilingual-v1.0"
+            | "kotoba-whisper-bilingual-v1_0" => Some(Self::KotobaWhisper),
             // Resemble AI Chatterbox family — the multilingual variant is
             // the canonical Phase 3 landing. Accept the family, the two HF
             // variant tags, and the raw `t3_mtl23ls_v{2,3}` checkpoint
@@ -575,6 +746,35 @@ impl ModelKind {
             // (0.5B-CustomVoice / 1.5B) would be a distinct `ModelKind`.
             "voxcpm" | "voxcpm2" | "voxcpm-0.5b" | "voxcpm-0_5b" | "voxcpm-0.5b-base"
             | "voxcpm-0_5b-base" => Some(Self::VoxCpm2),
+            // Microsoft VibeVoice family — canonical HF release + arch-tag
+            // spelling + common short forms. Every spelling resolves to the
+            // 1.5B release today; a future 7B variant would be a distinct
+            // `ModelKind` when it lands (its config axes reshape the Qwen2
+            // backbone).
+            "vibevoice"
+            | "vibevoice-1.5b"
+            | "vibevoice-1_5b"
+            | "vibevoice-1.5b-base"
+            | "vibevoice-1_5b-base" => Some(Self::VibeVoice),
+            // Aratako Irodori-TTS family (SoTA plan Phase 5 JA-TTS-1,
+            // 2026-07-24). Accept the canonical arch spelling, the
+            // underscore variant, and every currently-shipped HF
+            // release id (500M / 500M-v2 / 500M-v2-VoiceDesign /
+            // 500M-v3 / 600M-v3-VoiceDesign). All spellings resolve to
+            // the same 500M-v3-shape converter today; the VoiceDesign
+            // 3-branch variant reshapes the DiT (adds a caption
+            // encoder) and would be a distinct `ModelKind` when its
+            // config axes land as first-class constants (a future
+            // `IrodoriVoiceDesign` variant).
+            "irodori"
+            | "irodori-tts"
+            | "irodori_tts"
+            | "irodori-tts-500m"
+            | "irodori-tts-500m-v2"
+            | "irodori-tts-500m-v2-voicedesign"
+            | "irodori-tts-500m-v3"
+            | "irodori-tts-500m-v3-base"
+            | "irodori-tts-600m-v3-voicedesign" => Some(Self::Irodori),
             _ => None,
         }
     }
@@ -604,11 +804,14 @@ impl ModelKind {
             Self::Canary => "canary",
             Self::OmniasrCtc => "omniasr-ctc",
             Self::DistilWhisper => "distil-whisper",
+            Self::KotobaWhisper => "kotoba-whisper",
             Self::Chatterbox => "chatterbox",
             Self::ChatterboxTurbo => "chatterbox-turbo",
             Self::ChatterboxNano => "chatterbox-nano",
             Self::Qwen3Tts => "qwen3-tts",
             Self::VoxCpm2 => "voxcpm",
+            Self::VibeVoice => "vibevoice",
+            Self::Irodori => "irodori",
         }
     }
 }
@@ -1045,6 +1248,37 @@ pub fn convert_file_licensed(
             );
             (builder, notes)
         }
+        ModelKind::KotobaWhisper => {
+            // SoTA plan Phase 5 JA-ASR-2 (2026-07-24): pass every
+            // F32/F16 tensor through verbatim and stamp the
+            // `vokra.whisper.*` chunk group (schema shared with
+            // vanilla Whisper — kotoba-whisper differs only in
+            // `n_text_layer`, not in the schema) from the checkpoint's
+            // tensor shapes. Provenance = **Apache-2.0** (Permissive)
+            // — no runtime-side attribution obligation, distinct from
+            // distil-whisper's MIT stamp. The arch stamp
+            // `vokra.model.arch = "kotoba-whisper"` is distinct from
+            // vanilla Whisper's `"whisper"` and distil-whisper's
+            // `"distil-whisper"` so the runtime can label the loaded
+            // model correctly. **JA-ASR-2 axis**: `n_text_layer` is
+            // read from the checkpoint's `model.decoder.layers.*`
+            // prefix count via `count_layers`, never hard-coded to
+            // 32 — the runtime's shared `WhisperConfig::from_gguf`
+            // (data-driven since M0) honors whatever value lands
+            // here.
+            let (builder, report) = models::kotoba_whisper::convert(bytes)?;
+            let mut notes = vec![format!(
+                "kotoba-whisper: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("kotoba-whisper warning: {n}")),
+            );
+            (builder, notes)
+        }
         ModelKind::Chatterbox => {
             // SoTA plan Phase 3 (2026-07-24): pass every F32/F16 tensor
             // through verbatim and stamp the `vokra.chatterbox.*` chunk
@@ -1168,6 +1402,59 @@ pub fn convert_file_licensed(
                 report.written, report.skipped_non_float,
             )];
             notes.extend(report.notes.iter().map(|n| format!("voxcpm2 warning: {n}")));
+            (builder, notes)
+        }
+        ModelKind::VibeVoice => {
+            // SoTA plan Phase 4 (2026-07-24): pass every F32/F16 tensor
+            // through verbatim and stamp the `vokra.vibevoice.*` chunk
+            // group (Qwen2 decoder LM + acoustic σ-VAE tokenizer +
+            // semantic encoder-only deterministic tokenizer + 4-layer
+            // AdaLN-modulated diffusion head with DDPM v-prediction +
+            // cosine β schedule) from the transcribed constants in
+            // `models::vibevoice`. SECOND consumer of the continuous
+            // VAE + diffusion decoder class (after VoxCPM); the sampler
+            // differs (VibeVoice → `ddpm_sample`, VoxCPM →
+            // `flow_sample`) so silently sharing an arch tag would
+            // mis-route the runtime dispatch. Provenance = **MIT**
+            // end-to-end (Permissive — no runtime-side attribution
+            // obligation; code + weight all under a single MIT grant,
+            // huggingface.co/microsoft/VibeVoice-1.5B model card + the
+            // repo's LICENSE).
+            let (builder, report) = models::vibevoice::convert(bytes)?;
+            let mut notes = vec![format!(
+                "vibevoice: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("vibevoice warning: {n}")),
+            );
+            (builder, notes)
+        }
+        ModelKind::Irodori => {
+            // SoTA plan Phase 5 JA-TTS-1 (2026-07-24): pass every F32/F16
+            // tensor through verbatim and stamp the `vokra.irodori.*`
+            // chunk group (RF-DiT body + LLM-JP-3 prompt-text encoder +
+            // reference-latent speaker encoder + v3 phase-2 duration
+            // predictor) from the transcribed constants in
+            // `models::irodori`. THIRD consumer of the continuous-latent
+            // + DiT class (after VoxCPM + VibeVoice); the sampler is
+            // Rectified-Flow Euler with a Linear or Sway schedule (F5-TTS
+            // toggle), NOT VibeVoice's DDPM and NOT VoxCPM's EpsS-
+            // schedule flow-matching — silently sharing an arch tag
+            // would misroute the runtime dispatch. Provenance = **MIT**
+            // end-to-end (Permissive — no runtime-side attribution
+            // obligation; code + weight all under a single MIT LICENSE
+            // at `github.com/Aratako/Irodori-TTS`, verified via
+            // `gh api /repos/Aratako/Irodori-TTS/license` → `MIT`).
+            let (builder, report) = models::irodori::convert(bytes)?;
+            let mut notes = vec![format!(
+                "irodori: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(report.notes.iter().map(|n| format!("irodori warning: {n}")));
             (builder, notes)
         }
     };
@@ -2341,6 +2628,169 @@ pub fn convert_voxcpm2_file(input: &Path, output: &Path) -> Result<ConvertSummar
     convert_file(ModelKind::VoxCpm2, input, output)
 }
 
+/// Convert a Microsoft **VibeVoice-1.5B** safetensors checkpoint into a
+/// Vokra GGUF (SoTA plan Phase 4, 2026-07-24).
+///
+/// This is the named entry point that mirrors `convert_voxcpm2_file` /
+/// `convert_qwen3_tts_file` / `convert_chatterbox_nano_file` /
+/// `convert_dia_file` / `convert_zonos_file` / `convert_csm_file` /
+/// `convert_kokoro_file`. It is functionally identical to
+/// `convert_file(ModelKind::VibeVoice, input, output)` — VibeVoice
+/// takes no side-car config on this conversion path (every hparam of
+/// the `vokra.vibevoice.*` chunk group is transcribed as compile-time
+/// constants in `models::vibevoice` from the primary sources
+/// `huggingface.co/microsoft/VibeVoice-1.5B/raw/main/config.json` and
+/// `github.com/microsoft/VibeVoice/blob/main/vibevoice/modular/
+/// configuration_vibevoice.py`) — but the named entry keeps the
+/// `convert_*_file` naming symmetry with the other TTS models.
+///
+/// VibeVoice-1.5B is the **second** consumer of the continuous VAE +
+/// diffusion decoder class (after VoxCPM-0.5B) — but where VoxCPM uses
+/// a UnifiedCFM flow-matching sampler, VibeVoice uses a **DDPM**
+/// sampler (`v-prediction` + `cosine` β schedule + 20 reduced-step
+/// inference on 1000 training steps). This axis introduces the SoTA
+/// plan Phase 4 **new** primitive `vokra_ops::ddpm_sampler`; the
+/// acoustic VAE half shares the existing `vokra_ops::vae_continuous`
+/// primitive (introduced with VoxCPM per that module's rustdoc).
+///
+/// Topology:
+///
+/// - **Qwen2 decoder LM** — decoder-only transformer,
+///   `hidden_size=1536`, `num_hidden_layers=28`, GQA
+///   `num_attention_heads=12` / `num_key_value_heads=2` (group ratio
+///   6), SwiGLU `intermediate_size=8960`, RoPE `theta=1_000_000` no
+///   scaling, `rms_norm_eps=1e-6`, `vocab_size=151_936`,
+///   `max_position_embeddings=65_536`, `tie_word_embeddings=true`,
+///   `sliding_window=null`, `use_sliding_window=false`.
+/// - **Acoustic σ-VAE tokenizer** — mirror-symmetric encoder /
+///   decoder, `vae_dim=64`, `std_dist_type="gaussian"` with
+///   `fix_std=0.5`, `encoder_ratios=decoder_ratios=[8,5,5,4,2,2]`
+///   (product 3200 → 7.5 Hz frame rate at 24 kHz input),
+///   `encoder_n_filters=decoder_n_filters=32`,
+///   `encoder_depths="3-3-3-3-3-3-8"`,
+///   `mixer_layer="depthwise_conv"`, `layernorm="RMSNorm"`,
+///   `layernorm_eps=1e-5`, `causal=true`.
+/// - **Semantic tokenizer** — encoder-**only** deterministic variant
+///   of the same causal-Conv1d chain, `vae_dim=128`,
+///   `std_dist_type="none"` with `fix_std=0`, same
+///   `encoder_ratios=[8,5,5,4,2,2]`. VibeVoice does NOT decode the
+///   semantic latents back to audio.
+/// - **Diffusion head** — 4-layer AdaLN-modulated MLP with SwiGLU
+///   FFN, `hidden_size=1536` (= LM hidden — square `cond_proj`),
+///   `head_layers=4`, `head_ffn_ratio=3.0` → SwiGLU inner dim 4608,
+///   `rms_norm_eps=1e-5`, `latent_size=64` (= acoustic
+///   `vae_dim` — the VAE handshake),
+///   `prediction_type="v_prediction"`, `diffusion_type="ddpm"`,
+///   `ddpm_num_steps=1000`, `ddpm_num_inference_steps=20`,
+///   `ddpm_beta_schedule="cosine"`, `ddpm_batch_mul=4`.
+///
+/// # BF16 posture
+///
+/// The upstream VibeVoice-1.5B release ships **BF16** safetensors
+/// (`config.json.torch_dtype = "bfloat16"`); today's F32/F16
+/// pass-through arm hits the `skipped_non_float` counter on BF16
+/// tensors and the converter surfaces the loud "no float tensors"
+/// note. Pre-widen offline (F32) or wait for the streaming BF16
+/// pass-through path (T29-equivalent — the Moshi / Kyutai STT /
+/// VoxCPM pattern) to convert the release build directly.
+///
+/// Weight license = **MIT** end-to-end
+/// (`huggingface.co/microsoft/VibeVoice-1.5B` model-card `license: MIT`
+/// alongside `github.com/microsoft/VibeVoice/blob/main/LICENSE`,
+/// fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」). The M2-13
+/// gate passes commercially without any attribution obligation on the
+/// runtime side (MIT is a `Permissive` license class, same commercial
+/// verdict as apache-2.0). Note: the task description's "Apache-2.0"
+/// hint is superseded by the primary-source verdict of MIT — VibeVoice
+/// is MIT end-to-end.
+pub fn convert_vibevoice_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::VibeVoice, input, output)
+}
+
+/// Convert an Aratako **Irodori-TTS-500M-v3** safetensors checkpoint into
+/// a Vokra GGUF (SoTA plan Phase 5 JA-TTS-1, 2026-07-24).
+///
+/// This is the named entry point that mirrors `convert_vibevoice_file` /
+/// `convert_voxcpm2_file` / `convert_qwen3_tts_file` /
+/// `convert_chatterbox_nano_file` / `convert_dia_file` /
+/// `convert_zonos_file` / `convert_csm_file` / `convert_kokoro_file`. It
+/// is functionally identical to
+/// `convert_file(ModelKind::Irodori, input, output)` — Irodori-TTS-500M-v3
+/// takes no side-car config on this conversion path (every hparam of
+/// the `vokra.irodori.*` chunk group is transcribed as compile-time
+/// constants in `models::irodori` from the primary sources
+/// `github.com/Aratako/Irodori-TTS/blob/main/configs/train_500m_v3_phase1_body.yaml`
+/// plus `..._phase2_duration.yaml` plus
+/// `github.com/Aratako/Irodori-TTS/blob/main/irodori_tts/config.py::ModelConfig`)
+/// — but the named entry keeps the `convert_*_file` naming symmetry with
+/// the other TTS models.
+///
+/// Irodori-TTS-500M-v3 is the **third** consumer of the continuous-latent
+/// plus DiT class (after VoxCPM-0.5B and VibeVoice-1.5B) — but this time
+/// the DiT is trained with **Rectified Flow** (Liu et al. 2022,
+/// arxiv 2209.03003) instead of DDPM (VibeVoice) or the UnifiedCFM
+/// flow-matching sampler with an EpsS-style schedule (VoxCPM). Sampling
+/// integrates the RF ODE (`x_t = (1-t) x_0 + t z`, `v = z - x_0`) with
+/// an **Euler** step over a `Schedule::Linear` or `Schedule::Sway`
+/// schedule — both directly supported by the existing
+/// `vokra_ops::flow_sampler` primitive (M3-05), so no new sampler is
+/// added by this model.
+///
+/// Topology:
+///
+/// - **Prompt-text encoder** — Llama-family self-attention with RoPE +
+///   a sigmoid gate on the output projection, initialized from the
+///   LLM-JP-3 150M checkpoint (`text_tokenizer_repo = "llm-jp/llm-jp-3-150m"`,
+///   Apache-2.0); `text_vocab_size=99_574`, `text_dim=512`,
+///   `text_layers=10`, `text_heads=8` (`head_dim=64`),
+///   `text_mlp_ratio=2.6`, `text_add_bos=true`.
+/// - **Reference-latent (speaker) encoder** — self-attention transformer
+///   over patched reference DACVAE latents driving speaker / style
+///   conditioning; `speaker_dim=768`, `speaker_layers=8`,
+///   `speaker_heads=12` (`head_dim=64`), `speaker_mlp_ratio=2.6`,
+///   `speaker_patch_size=1`.
+/// - **RF-DiT body** — joint-attention DiT blocks with Low-Rank AdaLN
+///   modulation, SwiGLU FFN + RoPE, RMSNorm ε=1e-5; `latent_dim=32`
+///   (matches the paired `Semantic-DACVAE-Japanese-32dim` codec),
+///   `latent_patch_size=1`, `model_dim=1280`, `num_layers=12`,
+///   `num_heads=20` (`head_dim=64`), `mlp_ratio=2.875` (SwiGLU inner
+///   dim 3680), `timestep_embed_dim=512`, `adaln_rank=192`.
+/// - **Duration predictor (v3 phase-2)** — integrated automatic length
+///   estimation: `duration_aux_dim=14`, `duration_hidden_dim=1024`,
+///   `duration_layers=3`, `duration_attention_heads=8`,
+///   `duration_dropout=0.1`,
+///   `duration_architecture="token_sum_adarn_zero_no_aux"`,
+///   `duration_token_init_frames=9.0`,
+///   `duration_speaker_fusion="adarn_zero"`.
+///
+/// Terminal decode: the paired `Aratako/Semantic-DACVAE-Japanese-32dim`
+/// codec (a `dacvae.DACVAE` variant of the Meta open-source
+/// `facebookresearch/dacvae` codec, Apache 2.0) — 32-d continuous latent
+/// → 48 kHz mono PCM. Callers inject the codec through
+/// `IrodoriTts::with_codec` once the paired GGUF is prepared (the same
+/// `DacCodecGguf`-shaped seam Dia + Zonos use with vanilla DAC).
+///
+/// # BF16 posture
+///
+/// The upstream Irodori-TTS release trains in bf16
+/// (`TrainConfig.precision = "bf16"`) but the released
+/// `model.safetensors` blob is typically served in F32 / F16 (the
+/// `save_pretrained` default). If a downstream ships BF16, today's
+/// F32/F16 pass-through arm hits the `skipped_non_float` counter and
+/// the "no float tensors" loud note fires. Pre-widen offline to F32
+/// (the CSM / Kokoro / VoxCPM pattern) to convert a BF16 checkpoint
+/// directly.
+///
+/// Weight license = **MIT** end-to-end (`github.com/Aratako/Irodori-TTS/blob/main/LICENSE`
+/// verified via `gh api /repos/Aratako/Irodori-TTS/license` → `MIT`,
+/// fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」). The M2-13
+/// gate passes commercially without any attribution obligation on the
+/// runtime side (MIT is a `Permissive` license class, same commercial
+/// verdict as apache-2.0).
+pub fn convert_irodori_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::Irodori, input, output)
+}
+
 /// Convert a Zyphra **Zonos-v0.1-transformer** safetensors checkpoint into a
 /// Vokra GGUF (SoTA plan Phase 1-5, 2026-07-24).
 ///
@@ -2620,6 +3070,78 @@ pub fn convert_distil_whisper_file(
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::DistilWhisper, input, output)
+}
+
+/// Convert a Kotoba Technologies **kotoba-whisper** family
+/// safetensors checkpoint into a Vokra GGUF (SoTA plan Phase 5
+/// JA-ASR-2, 2026-07-24).
+///
+/// This is the named entry point that mirrors `convert_distil_whisper_file`
+/// / `convert_omniasr_ctc_file` / `convert_canary_file` /
+/// `convert_parakeet_ctc_file` / `convert_kyutai_stt_file`. It is
+/// functionally identical to `convert_file(ModelKind::KotobaWhisper,
+/// input, output)` — kotoba-whisper has no side-car config or
+/// tokenizer to embed at this scaffold stage (every hparam is
+/// shape-derived from the checkpoint's tensors and the Whisper
+/// multilingual tokenizer boundary constants are the same invariants
+/// the vanilla Whisper / distil-whisper converters use) — but the
+/// named entry keeps the `convert_*_file` naming symmetry with the
+/// other ASR / TTS models.
+///
+/// # Architecture summary
+///
+/// - **Encoder** (identical to Whisper `large-v3`): `d_model=1280`,
+///   `n_audio_layer=32`, `n_audio_head=20` (head_dim=64), `ffn_dim=5120`,
+///   `n_mels=128`, `n_audio_ctx=1500`.
+/// - **Decoder** (the JA-ASR-2 axis): `n_text_layer=2` (large-v3 has
+///   32), `n_text_head=20`, `n_text_ctx=448`.
+/// - **Tokenizer**: large-v3 multilingual byte-level BPE,
+///   `vocab_size=51866` (`eos_token_id=50257`,
+///   `decoder_start_token_id=50258`).
+/// - **Sample rate**: 16 kHz (Whisper convention).
+///
+/// # Architecture differences vs. vanilla Whisper large-v3
+///
+/// - `n_text_layer` = **2** (large-v3: 32). This is the JA-ASR-2
+///   axis — the converter reads it from the checkpoint's tensor
+///   names via `count_layers`, never hard-coded to 32; the runtime's
+///   shared `WhisperConfig::from_gguf` (data-driven since M0)
+///   honors whatever value lands here. The converter enforces
+///   `n_text_layer < n_audio_layer` (FR-EX-08) so a mislabelled
+///   vanilla Whisper checkpoint (32/32) cannot slip through as
+///   kotoba-whisper.
+///
+/// # Distinct from distil-whisper (same shape, different upstream)
+///
+/// kotoba-whisper and `distil-whisper/distil-large-v3.5` share the
+/// exact same architectural shape, but kotoba-whisper is Apache-2.0
+/// (distinct from distil-whisper's MIT) and is Japanese-specialized
+/// (distilled on ReazonSpeech). The compliance registry resolves
+/// both to Permissive, but the GGUF provenance stamp differs
+/// (`weight_license = "Apache-2.0"` here vs `"MIT"` in the
+/// distil-whisper converter) and the arch tag is distinct
+/// (`"kotoba-whisper"` vs `"distil-whisper"`).
+///
+/// # BF16 posture
+///
+/// The kotoba-whisper releases are `torch_dtype: float32` /
+/// `float16` per their `config.json`, so no BF16 pass-through is
+/// required to convert the release builds. A downstream that
+/// pre-widens to F16 offline lands on the F16 arm (also
+/// pass-through); BF16 tensors reach the `skipped_non_float`
+/// counter — never a silent widen. The weight license stamped is
+/// **Apache-2.0** (`Permissive`) so the M2-13 gate passes
+/// commercially without an attribution obligation on the runtime
+/// side.
+///
+/// # Errors
+///
+/// As [`convert_file`].
+pub fn convert_kotoba_whisper_file(
+    input: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::KotobaWhisper, input, output)
 }
 
 /// Rewrite an existing GGUF's provenance metadata without re-materialising its

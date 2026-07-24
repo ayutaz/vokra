@@ -366,6 +366,30 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "distil-large-v3"
         | "distil-large-v3.5"
         | "distil-large-v3_5" => LicenseClass::Permissive,
+        // SoTA plan Phase 5 JA-ASR-2 (2026-07-24): Kotoba Technologies
+        // **kotoba-whisper** family — Japanese-distilled Whisper (large-v3
+        // encoder + shrunk 2-layer decoder — same tensor topology as
+        // distil-large-v3.5, but distilled on ReazonSpeech Japanese audio
+        // and released under a different upstream). Weight license =
+        // **apache-2.0** per every HF model card in the family
+        // (`kotoba-tech/kotoba-whisper-v1.0`, `-v1.1`, `-v2.0`, `-v2.1`,
+        // `-bilingual-v1.0`, fetched 2026-07-24 — CLAUDE.md
+        // 「ハルシネーション厳禁」). Redundant with the `kotoba-whisper-`
+        // family walk below, but the exact canonical spellings are
+        // listed here so an id lookup returns quickly without hitting
+        // the prefix arms.
+        "kotoba-whisper"
+        | "kotoba-whisper-v1.0"
+        | "kotoba-whisper-v1_0"
+        | "kotoba-whisper-v1.1"
+        | "kotoba-whisper-v1_1"
+        | "kotoba-whisper-v2.0"
+        | "kotoba-whisper-v2_0"
+        | "kotoba-whisper-v2.1"
+        | "kotoba-whisper-v2_1"
+        | "kotoba-whisper-bilingual"
+        | "kotoba-whisper-bilingual-v1.0"
+        | "kotoba-whisper-bilingual-v1_0" => LicenseClass::Permissive,
         "piper-plus" | "piper-plus-mb-istft-vits2" => LicenseClass::Permissive,
         "silero-vad" | "silero-vad-v5" => LicenseClass::Permissive,
         "campplus" | "cam++" => LicenseClass::Permissive,
@@ -462,6 +486,50 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // the `voxcpm-` prefix arm below.
         "voxcpm" | "voxcpm2" | "voxcpm-0.5b" | "voxcpm-0_5b" | "voxcpm-0.5b-base"
         | "voxcpm-0_5b-base" => LicenseClass::Permissive,
+        // SoTA plan Phase 4 (2026-07-24): Microsoft VibeVoice-1.5B —
+        // long-form multi-speaker end-to-end diffusion-autoregressive
+        // TTS. Weight license = **MIT** **end-to-end** — code + weight
+        // all under a single MIT grant
+        // (`huggingface.co/microsoft/VibeVoice-1.5B` model-card
+        // `license: MIT` + `github.com/microsoft/VibeVoice/blob/main/
+        // LICENSE`, fetched 2026-07-24 — CLAUDE.md「ハルシネーション
+        // 厳禁」). MIT is a `Permissive` license class — same
+        // commercial verdict as apache-2.0 (no runtime-side attribution
+        // obligation on the runtime side), just a different SPDX
+        // string. The exact canonical spellings + arch-tag variant +
+        // common short forms are listed here so an id lookup returns
+        // quickly without hitting the `vibevoice-` prefix arm below.
+        //
+        // Note the model card carries usage restrictions (no voice
+        // impersonation without recorded consent, no deepfakes, no
+        // non-English/Chinese, no non-speech audio) — those are
+        // **policy obligations**, not license terms; the MIT LICENSE
+        // itself carries no field-of-use restriction, so
+        // `Permissive` remains the correct license class.
+        "vibevoice"
+        | "vibevoice-1.5b"
+        | "vibevoice-1_5b"
+        | "vibevoice-1.5b-base"
+        | "vibevoice-1_5b-base" => LicenseClass::Permissive,
+        // SoTA plan Phase 5 JA-TTS-1 (2026-07-24): Aratako Irodori-TTS
+        // family — Japanese Rectified-Flow Diffusion Transformer TTS.
+        // Weight license = **MIT** per `github.com/Aratako/Irodori-TTS/blob/main/LICENSE`
+        // (verified via `gh api /repos/Aratako/Irodori-TTS/license` →
+        // `MIT`, fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」).
+        // Redundant with the `irodori-` prefix arm below, but the exact
+        // canonical spellings — canonical id + underscore arch tag + v1
+        // / v2 / v2-VoiceDesign / v3 / 600M-v3-VoiceDesign HF release ids
+        // — are listed here so an id lookup returns quickly without
+        // hitting the prefix arm.
+        "irodori"
+        | "irodori-tts"
+        | "irodori_tts"
+        | "irodori-tts-500m"
+        | "irodori-tts-500m-v2"
+        | "irodori-tts-500m-v2-voicedesign"
+        | "irodori-tts-500m-v3"
+        | "irodori-tts-500m-v3-base"
+        | "irodori-tts-600m-v3-voicedesign" => LicenseClass::Permissive,
         // Commercial-OK codecs (FR-OP-32): DAC / WavTokenizer / X-Codec 2 = MIT.
         "dac" | "wavtokenizer" | "x-codec-2" | "xcodec2" => LicenseClass::Permissive,
         // SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B — Apache 2.0
@@ -612,6 +680,17 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
             || id.starts_with("distil-large-")
             || id.starts_with("distil-medium-")
             || id.starts_with("distil-small-")
+            // Kotoba Technologies kotoba-whisper family (Apache-2.0 weight —
+            // SoTA plan Phase 5 JA-ASR-2, 2026-07-24): specific HF variant
+            // ids like `kotoba-whisper-v2.0` / `kotoba-whisper-bilingual-v1.0`
+            // or a future `kotoba-whisper-v3.0` still resolve permissive.
+            // Guarded on the dash so unrelated ids (`kotoba-whisper` prefixed
+            // anything the family doesn't ship) cannot slip through. Distinct
+            // upstream from distil-whisper (Japanese-fine-tuned by Kotoba
+            // Technologies, released under apache-2.0 rather than MIT), but
+            // shares the same tensor topology (large-v3 encoder + 2-layer
+            // decoder).
+            || id.starts_with("kotoba-whisper-")
             // Resemble AI Chatterbox family (MIT weight — SoTA plan
             // Phase 3, 2026-07-24): specific HF variant ids like
             // `chatterbox-multilingual-v3` / `chatterbox-nano` /
@@ -647,7 +726,39 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
             // through. The `voxcpm2` (arch-tag) alias covers only the
             // arch-tag spelling — a future underscore variant family
             // would need its own explicit prefix.
-            || id.starts_with("voxcpm-") =>
+            || id.starts_with("voxcpm-")
+            // Microsoft VibeVoice first-party family (MIT end-to-end —
+            // SoTA plan Phase 4, 2026-07-24): specific HF variant ids
+            // like `vibevoice-1.5b` / a future `vibevoice-7b` /
+            // `vibevoice-large` still resolve permissive. Guarded on
+            // the dash so unrelated ids (`vibevoiceanything`) cannot
+            // slip through. The `vibevoice` (arch-tag) alias covers
+            // only the arch-tag spelling — a future underscore
+            // variant family would need its own explicit prefix.
+            //
+            // MIT is a `Permissive` license class — same commercial
+            // verdict as apache-2.0. The model card's usage
+            // restrictions (no impersonation without recorded consent,
+            // no deepfakes, English/Chinese only, no non-speech
+            // audio) are **policy obligations**, not license terms;
+            // the MIT LICENSE itself carries no field-of-use
+            // restriction, so `Permissive` remains correct.
+            || id.starts_with("vibevoice-")
+            // Aratako Irodori-TTS first-party family (MIT end-to-end —
+            // SoTA plan Phase 5 JA-TTS-1, 2026-07-24): specific HF
+            // variant ids like `irodori-tts-500m-v3` /
+            // `irodori-tts-600m-v3-voicedesign` / a future 2.5B variant
+            // still resolve permissive. Guarded on the dash so unrelated
+            // ids (`irodori-anything-else-unowned`) cannot slip through.
+            // The `irodori` / `irodori-tts` / `irodori_tts` arch-tag
+            // aliases are pinned in the fast-path arm above.
+            //
+            // MIT is a `Permissive` license class — same commercial
+            // verdict as apache-2.0; the model card's `text_tokenizer_repo
+            // = "llm-jp/llm-jp-3-150m"` (Apache-2.0) transitively inherits
+            // Permissive too.
+            || id.starts_with("irodori-tts-")
+            || id.starts_with("irodori-") =>
         {
             LicenseClass::Permissive
         }

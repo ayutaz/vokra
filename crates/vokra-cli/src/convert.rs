@@ -14,9 +14,9 @@ use vokra_convert::{
     ModelKind, PolicyPreset, VoxtralConfig, convert_chatterbox_file, convert_chatterbox_nano_file,
     convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
     convert_dac_file, convert_file, convert_file_quantized, convert_file_with_policy,
-    convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file, convert_voxcpm2_file,
-    convert_voxtral_file_quantized, convert_voxtral_file_with_adapter_config_quantized,
-    parse_voxtral_hf_config,
+    convert_irodori_file, convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file,
+    convert_vibevoice_file, convert_voxcpm2_file, convert_voxtral_file_quantized,
+    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -24,7 +24,7 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
@@ -33,6 +33,9 @@ USAGE:
     vokra-cli convert --model chatterbox-turbo --input <t3_turbo_v1.safetensors> --output <out.gguf>
     vokra-cli convert --model chatterbox-nano --input <t3_nano_v1.safetensors> --output <out.gguf>
     vokra-cli convert --model qwen3-tts --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model voxcpm --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model vibevoice --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model irodori --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model voxtral --input <ckpt.safetensors | model.safetensors.index.json> \
                       [--config <config.json>] [--adapter-config <adapter.json>] \
@@ -43,8 +46,9 @@ OPTIONS:
                               campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
                               parakeet-tdt | parakeet-ctc | canary | omniasr-ctc |
-                              distil-whisper | chatterbox | chatterbox-turbo | chatterbox-nano |
-                              qwen3-tts
+                              distil-whisper | kotoba-whisper |
+                              chatterbox | chatterbox-turbo | chatterbox-nano |
+                              qwen3-tts | voxcpm | vibevoice | irodori
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
@@ -104,6 +108,21 @@ OPTIONS:
                               directly; every hparam is transcribed
                               verbatim from config.json; weight license =
                               MIT permissive)
+                              (kotoba-whisper: Kotoba Technologies
+                              kotoba-whisper-v1.x / v2.x / bilingual
+                              family — Japanese-distilled Whisper
+                              (large-v3 encoder + shrunk 2-layer decoder,
+                              distilled on ReazonSpeech Japanese audio);
+                              same tensor topology as distil-large-v3.5
+                              but distinct upstream release (Kotoba
+                              Technologies vs HuggingFace) with Apache-2.0
+                              weights (distinct from distil-whisper's
+                              MIT); ships safetensors directly; every
+                              hparam is transcribed verbatim from
+                              config.json — SoTA plan Phase 5 JA-ASR-2;
+                              **JA-ASR-2 axis**: n_text_layer=2 is read
+                              from checkpoint tensor names via
+                              count_layers, never hard-coded to 32)
                               (cosyvoice3: FunAudioLLM Fun-CosyVoice3-0.5B-2512
                               — same architecture as CosyVoice2 (Qwen2 LLM
                               backbone + chunk-aware Flow Matching CFM +
@@ -302,8 +321,9 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac | \
                          csm | moshi | denoise | dia | zonos | kyutai-stt | \
                          parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
-                         distil-whisper | chatterbox | chatterbox-turbo | chatterbox-nano | \
-                         qwen3-tts)"
+                         distil-whisper | kotoba-whisper | \
+                         chatterbox | chatterbox-turbo | chatterbox-nano | \
+                         qwen3-tts | voxcpm | vibevoice | irodori)"
                     )
                 })?);
                 i += 2;
@@ -639,6 +659,44 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             }
             convert_voxcpm2_file(&p.input, &p.output)
         }
+        ModelKind::VibeVoice => {
+            // SoTA plan Phase 4 (2026-07-24): VibeVoice-1.5B ships a real
+            // `config.json`, but every field is fixed for the 1.5B release
+            // and byte-parallel to the transcribed constants in
+            // `models::vibevoice` — so the CLI takes no --config side-car
+            // today (a future 7B variant that reshapes the Qwen2 backbone
+            // would demand one).
+            // Quantization surface is whisper-only (same posture as
+            // VoxCPM / Qwen3-TTS / Chatterbox family / CosyVoice3 / dia /
+            // zonos).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_vibevoice_file(&p.input, &p.output)
+        }
+        ModelKind::Irodori => {
+            // SoTA plan Phase 5 JA-TTS-1 (2026-07-24): Irodori-TTS-500M-v3
+            // has no upstream `config.json` — every hparam lives in the
+            // `train_500m_v3_phase{1,2}_*.yaml` files at
+            // `github.com/Aratako/Irodori-TTS` and is fixed for the 500M-v3
+            // release, so it is transcribed as compile-time constants in
+            // `models::irodori` and the CLI takes no --config side-car
+            // today (a future 600M-v3-VoiceDesign / 2.5B variant that
+            // reshapes the DiT or adds caption conditioning would demand
+            // one). Quantization surface is whisper-only (same posture as
+            // VibeVoice / VoxCPM / Qwen3-TTS / Chatterbox family /
+            // CosyVoice3 / dia / zonos).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_irodori_file(&p.input, &p.output)
+        }
         _ => {
             // Ticket precedence: an explicit --policy-preset wins; else the
             // legacy --quantize q4_k alias maps to the whisper_q4_k preset;
@@ -943,10 +1001,14 @@ mod tests {
             ("canary", ModelKind::Canary),
             ("omniasr-ctc", ModelKind::OmniasrCtc),
             ("distil-whisper", ModelKind::DistilWhisper),
+            ("kotoba-whisper", ModelKind::KotobaWhisper),
             ("chatterbox", ModelKind::Chatterbox),
             ("chatterbox-turbo", ModelKind::ChatterboxTurbo),
             ("chatterbox-nano", ModelKind::ChatterboxNano),
             ("qwen3-tts", ModelKind::Qwen3Tts),
+            ("voxcpm", ModelKind::VoxCpm2),
+            ("vibevoice", ModelKind::VibeVoice),
+            ("irodori", ModelKind::Irodori),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
@@ -1005,6 +1067,9 @@ mod tests {
             "chatterbox-turbo",
             "chatterbox-nano",
             "qwen3-tts",
+            "voxcpm",
+            "vibevoice",
+            "irodori",
             "piper-plus",
             "dac",
         ] {
