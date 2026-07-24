@@ -299,7 +299,13 @@ jobs:
           . "${PARITY_VENV}/bin/activate"
           # `python -c` (not a heredoc): a heredoc inside $() cannot be closed
           # from column 0 in a `run: |` block; `python -c` sidesteps that.
-          python -c "
+          #
+          # GitHub Actions semantics: `$GITHUB_ENV` writes propagate to the
+          # NEXT step, not the current one. So we capture the snapshot path
+          # from stdout (the `snapshot: <path>` line) and use it inline in
+          # this same step, then also emit to `$GITHUB_ENV` so downstream
+          # steps (convert / harness / uploader) see it.
+          SNAPSHOT_STDOUT="$(python -c "
           import os, sys
           from huggingface_hub import snapshot_download
           path = snapshot_download(
@@ -309,10 +315,15 @@ jobs:
               cache_dir=os.environ['HF_HOME'],
           )
           print(f'snapshot: {path}')
-          # Emit the path for the next step.
-          with open(os.environ['GITHUB_ENV'], 'a') as fh:
-              fh.write(f'SNAPSHOT_DIR={path}\n')
-          "
+          ")"
+          echo "${SNAPSHOT_STDOUT}"
+          SNAPSHOT_DIR="$(echo "${SNAPSHOT_STDOUT}" | awk -F'snapshot: ' '/^snapshot: /{print $2; exit}')"
+          if [ -z "${SNAPSHOT_DIR}" ] || [ ! -d "${SNAPSHOT_DIR}" ]; then
+            echo "::error::snapshot_download did not print a resolvable path (got: ${SNAPSHOT_STDOUT})"
+            exit 1
+          fi
+          # Propagate to subsequent steps.
+          echo "SNAPSHOT_DIR=${SNAPSHOT_DIR}" >> "$GITHUB_ENV"
           ls -la "${SNAPSHOT_DIR}"
           {
             echo "### ${{ matrix.arch }} snapshot"
