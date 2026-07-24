@@ -35,7 +35,7 @@ OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
                               campplus | kokoro | cosyvoice2 | voxtral | mimi | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
-                              parakeet-tdt | parakeet-ctc
+                              parakeet-tdt | parakeet-ctc | canary
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
@@ -63,6 +63,17 @@ OPTIONS:
                               or wait for the streaming BF16 path; every
                               hparam is transcribed from config.json;
                               weight license = CC-BY 4.0 attribution required)
+                              (canary: NVIDIA Canary-1B-v2 — multilingual
+                              multi-task ASR / AST (25 European languages;
+                              FastConformer encoder + Transformer AED
+                              decoder); distributed as a .nemo tarball —
+                              use a prepare-checkpoint script to flatten
+                              to safetensors first; encoder / decoder
+                              hparams stated on the model card are
+                              transcribed verbatim, others from the shared
+                              FastConformer-Transformer AED reference
+                              config; weight license = CC-BY 4.0
+                              attribution required)
     --input <path>            upstream checkpoint file. For voxtral, a
                               `*.index.json` path reads every shard listed in
                               its weight_map (the raw sharded BF16 release)
@@ -157,7 +168,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          (whisper [alias: whisper-base] | silero-vad | piper-plus | \
                          campplus | kokoro | cosyvoice2 | voxtral | mimi | dac | \
                          csm | moshi | denoise | dia | zonos | kyutai-stt | \
-                         parakeet-tdt | parakeet-ctc)"
+                         parakeet-tdt | parakeet-ctc | canary)"
                     )
                 })?);
                 i += 2;
@@ -555,6 +566,7 @@ mod tests {
             ("kyutai-stt", ModelKind::KyutaiStt),
             ("parakeet-tdt", ModelKind::Parakeet),
             ("parakeet-ctc", ModelKind::ParakeetCtc),
+            ("canary", ModelKind::Canary),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

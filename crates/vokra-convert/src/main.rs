@@ -27,7 +27,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -61,7 +61,15 @@ OPTIONS:
                        — FastConformer encoder + CTC head, no RNN-T
                        prediction network — SoTA plan Phase 2; ships BF16
                        — pre-widen to F32 offline for now; weight license
-                       = CC-BY 4.0 attribution required).
+                       = CC-BY 4.0 attribution required), or
+                       canary (NVIDIA Canary-1B-v2 multilingual multi-task
+                       ASR / AST across 25 European languages —
+                       FastConformer encoder (32 layers) + Transformer AED
+                       decoder (8 layers) — SoTA plan Phase 2; distributed
+                       as a .nemo tarball, flatten to safetensors with a
+                       prepare-checkpoint script first; upstream is BF16 —
+                       pre-widen to F32 offline for now; weight license =
+                       CC-BY 4.0 attribution required).
                        `whisper-base` is accepted as a backward-compatible
                        alias for `whisper` (size is still derived from the
                        checkpoint, not the flag).
@@ -805,6 +813,64 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  pad_token_id={pad_id} sample_rate={sr}"
             );
         }
+        ModelKind::Canary => {
+            // SoTA plan Phase 2 (2026-07-24). The `vokra.canary.*` chunk
+            // group is written entirely from primary-source-transcribed
+            // constants — the summary reads back the anchoring shape
+            // triples (32-layer FastConformer encoder, MHA 8-head,
+            // 128-bin log-mel, attention_bias=true, 8-layer Transformer
+            // decoder, 16 384 vocab, 16 kHz).
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let enc_layers = file
+                .get("vokra.canary.arch.encoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let enc_d_model = file
+                .get("vokra.canary.arch.encoder.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let enc_n_head = file
+                .get("vokra.canary.arch.encoder.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let in_dim = file
+                .get("vokra.canary.arch.encoder.in_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_layers = file
+                .get("vokra.canary.arch.decoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_d_model = file
+                .get("vokra.canary.arch.decoder.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_n_head = file
+                .get("vokra.canary.arch.decoder.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_max_seq = file
+                .get("vokra.canary.arch.decoder.max_sequence_length")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let vocab = file
+                .get("vokra.canary.head.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr = file
+                .get("vokra.canary.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} encoder_layers={enc_layers} enc_d_model={enc_d_model} \
+                 enc_n_head={enc_n_head} in_dim={in_dim} decoder_layers={dec_layers} \
+                 dec_d_model={dec_d_model} dec_n_head={dec_n_head} \
+                 dec_max_seq={dec_max_seq} vocab={vocab} sample_rate={sr}"
+            );
+        }
     }
     Ok(())
 }
@@ -1024,6 +1090,7 @@ mod tests {
             ("kyutai-stt", ModelKind::KyutaiStt),
             ("parakeet-tdt", ModelKind::Parakeet),
             ("parakeet-ctc", ModelKind::ParakeetCtc),
+            ("canary", ModelKind::Canary),
         ];
         for (name, kind) in kinds {
             let parsed = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

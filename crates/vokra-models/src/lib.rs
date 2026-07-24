@@ -28,6 +28,21 @@
 
 // M4-04 T10/T11: standalone codec GGUF binders (Mimi / DAC) — dumb bridges
 // from the converter-derived tensors to the vokra-ops RVQ decode inputs.
+// SoTA plan Phase 2 (2026-07-24): NVIDIA Canary-1B-v2 — multilingual
+// multi-task ASR / AST (25 European languages). FastConformer encoder
+// (32 layers / d_model=1024 / MHA / attention_bias=true / num_mel_bins=128)
+// + Transformer decoder (8 layers / d_model=1024 / MHA / cross-attn to
+// encoder + FFN, AED style) + unified SentencePiece vocab (16,384 tokens
+// with task tokens `<source_lang>`, `<target_lang>`, `<taskname>`, `<pnc>`,
+// `<itn>`, `<timestamp>`, `<diarize>`, `<emotion>` inline). Every hparam
+// stated on the model card is transcribed verbatim; every hparam not on
+// the card is transcribed from the shared FastConformer-Transformer AED
+// reference config (fast-conformer_aed.yaml — the Canary family reference).
+// Weights: CC-BY 4.0 (AttributionRequired — FR-MD-09 attribution surface).
+// Reuses two existing ops (vokra_ops::conformer for the encoder body,
+// vokra_ops::beam_search for the attention-decoder search) rather than
+// duplicating.
+pub mod canary;
 pub mod codec;
 pub mod compute;
 pub mod cosyvoice2;

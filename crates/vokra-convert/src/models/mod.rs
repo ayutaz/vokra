@@ -1,6 +1,17 @@
 //! Per-model conversion routines (upstream checkpoint to GGUF builder).
 
 pub(crate) mod campplus;
+// SoTA plan Phase 2 (2026-07-24): NVIDIA Canary-1B-v2 — multilingual
+// multi-task ASR / AST (25 European languages). FastConformer encoder
+// (32 layers) + Transformer decoder (8 layers, AED). CC-BY 4.0 weight
+// (AttributionRequired). Every F32 / F16 tensor passes through
+// verbatim; every hparam on the model card is transcribed from it and
+// every remaining axis from the shared FastConformer-Transformer AED
+// reference config (fast-conformer_aed.yaml — the whole Canary family's
+// reference). Reuses the `vokra_ops::conformer` (FastConformer encoder
+// body via `Stacking { factor: 8 }`) and `vokra_ops::beam_search`
+// (attention-decoder search) primitives — no per-model op duplication.
+pub(crate) mod canary;
 pub(crate) mod cosyvoice2;
 pub(crate) mod csm;
 pub(crate) mod dac;

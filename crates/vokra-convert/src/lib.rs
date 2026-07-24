@@ -209,6 +209,31 @@ pub enum ModelKind {
     /// body via `Stacking { factor: 8 }`) and `vokra_ops::ctc_decode`
     /// (greedy / beam CTC) primitives — no per-model op duplication.
     ParakeetCtc,
+    /// NVIDIA **Canary-1B-v2** safetensors checkpoint (SoTA plan Phase 2,
+    /// 2026-07-24). Multilingual multi-task ASR / AST across 25 European
+    /// languages: a FastConformer encoder (`num_hidden_layers=32`,
+    /// `hidden_size=1024`, MHA `num_attention_heads=num_key_value_heads=8`,
+    /// `intermediate_size=4096`, `subsampling_factor=8`,
+    /// `conv_kernel_size=9`, `num_mel_bins=128`, `attention_bias=true`,
+    /// `scale_input=false`, `max_position_embeddings=5000`) + a
+    /// Transformer decoder (`num_layers=8`, `hidden_size=1024`, MHA
+    /// `num_attention_heads=8`, `inner_size=4096`,
+    /// `max_sequence_length=1024`, `pre_ln=true`, `hidden_act="relu"`)
+    /// with cross-attention from the encoder output. Vocab: a unified
+    /// SentencePiece with `vocab_size=16 384`, including inline task
+    /// tokens `<source_lang>`, `<target_lang>`, `<taskname>`, `<pnc>`,
+    /// `<itn>`, `<timestamp>`, `<diarize>`, `<emotion>`. CC-BY 4.0
+    /// weight (`AttributionRequired` — the converter stamps the
+    /// FR-MD-09 attribution text). Every hparam stated on the model
+    /// card is transcribed verbatim; every remaining hparam is
+    /// transcribed from the shared FastConformer-Transformer AED
+    /// reference config
+    /// (`github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/conf/speech_multitask/fast-conformer_aed.yaml`).
+    /// Reuses the shared `vokra_ops::conformer` (FastConformer encoder
+    /// body via `Stacking { factor: 8 }`) and `vokra_ops::beam_search`
+    /// (attention-decoder search — OP-3) primitives — no per-model op
+    /// duplication.
+    Canary,
 }
 
 impl ModelKind {
@@ -250,6 +275,7 @@ impl ModelKind {
             "parakeet-ctc" | "parakeet-ctc-1.1b" | "parakeet-ctc-1.1B" | "parakeet-ctc-1_1b" => {
                 Some(Self::ParakeetCtc)
             }
+            "canary" | "canary-1b-v2" | "canary-1b-v2-en" | "canary-1b_v2" => Some(Self::Canary),
             _ => None,
         }
     }
@@ -275,6 +301,7 @@ impl ModelKind {
             Self::KyutaiStt => "kyutai-stt",
             Self::Parakeet => "parakeet-tdt",
             Self::ParakeetCtc => "parakeet-ctc",
+            Self::Canary => "canary",
         }
     }
 }
@@ -639,6 +666,21 @@ pub fn convert_file_licensed(
                     .iter()
                     .map(|n| format!("parakeet-ctc warning: {n}")),
             );
+            (builder, notes)
+        }
+        ModelKind::Canary => {
+            // SoTA plan Phase 2: pass every F32/F16 tensor through
+            // verbatim and stamp the `vokra.canary.*` chunk group
+            // (FastConformer encoder + Transformer AED decoder + head)
+            // from the primary-source constants transcribed in
+            // `models::canary`. Provenance = CC-BY 4.0
+            // (AttributionRequired) + FR-MD-09 attribution text.
+            let (builder, report) = models::canary::convert(bytes)?;
+            let mut notes = vec![format!(
+                "canary: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(report.notes.iter().map(|n| format!("canary warning: {n}")));
             (builder, notes)
         }
     };
@@ -1552,6 +1594,50 @@ pub fn convert_parakeet_ctc_file(
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::ParakeetCtc, input, output)
+}
+
+/// Convert an NVIDIA **Canary-1B-v2** safetensors checkpoint into a Vokra
+/// GGUF (SoTA plan Phase 2, 2026-07-24).
+///
+/// This is the named entry point that mirrors `convert_parakeet_ctc_file` /
+/// `convert_parakeet_file` / `convert_kyutai_stt_file`. It is functionally
+/// identical to `convert_file(ModelKind::Canary, input, output)` — Canary
+/// has no side-car config or tokenizer to embed at this scaffold stage
+/// (every hparam is transcribed as constants in `models::canary`; the
+/// unified SentencePiece tokenizer follows in a follow-up wave via the
+/// `--config` side-car pattern) — but the named entry keeps the
+/// `convert_*_file` naming symmetry with the other ASR / TTS models.
+///
+/// # Architecture summary
+///
+/// - Encoder: FastConformer, **32 layers** (model card), `d_model=1024`,
+///   `n_heads=8`, `ff_expansion_factor=4` → `ffn_dim=4096`,
+///   `conv_kernel_size=9`, `num_mel_bins=128`, `subsampling_factor=8`,
+///   `attention_bias=true`, `scale_input=false`,
+///   `max_position_embeddings=5000` (family reference defaults from
+///   `fast-conformer_aed.yaml`).
+/// - Decoder: Transformer, **8 layers** (model card), `d_model=1024`,
+///   `n_heads=8`, `inner_size=4096`, `max_sequence_length=1024`,
+///   `pre_ln=true`, `hidden_act="relu"` (family reference / flash
+///   convention).
+/// - Vocab: unified SentencePiece, **16 384 tokens** (model card),
+///   inline task tokens (`<source_lang>`, `<target_lang>`, `<taskname>`,
+///   `<pnc>`, `<itn>`, `<timestamp>`, `<diarize>`, `<emotion>`).
+/// - Sample rate: **16 kHz** (model card, mono .wav / .flac).
+///
+/// # BF16 posture
+///
+/// The upstream Canary-1B-v2 `.nemo` tarball's PyTorch checkpoint is
+/// typically **BF16**; today's pass-through arm handles only F32 / F16,
+/// so BF16 tensors reach the `skipped_non_float` counter and the
+/// converter surfaces the "no float tensors" loud note. Pre-widen offline
+/// during the `.nemo` prepare step (F32) or wait for the streaming BF16
+/// pass-through path (T29-equivalent — the Moshi pattern) to convert the
+/// release build directly. Provenance is stamped **CC-BY 4.0**
+/// (`AttributionRequired`) and the FR-MD-09 attribution surface activates
+/// so a downstream must show the NVIDIA attribution.
+pub fn convert_canary_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::Canary, input, output)
 }
 
 /// Rewrite an existing GGUF's provenance metadata without re-materialising its

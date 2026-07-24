@@ -402,6 +402,17 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // exact-match arm for parity with the parakeet-tdt arm above and
         // so an id search returns the canonical spellings quickly.
         "parakeet-ctc" | "parakeet-ctc-1.1b" => LicenseClass::AttributionRequired,
+        // SoTA plan Phase 2 (2026-07-24): NVIDIA Canary-1B-v2 —
+        // multilingual multi-task ASR / AST (25 European languages;
+        // FastConformer encoder + Transformer AED decoder). Weight
+        // license = CC-BY 4.0 (`huggingface.co/nvidia/canary-1b-v2`
+        // model card explicitly states "CC-BY-4.0" for the model
+        // weights). The M2-13 gate passes commercially *and* the
+        // FR-MD-09 attribution surface activates. Redundant with the
+        // `canary-` family walk below, but kept as an explicit
+        // exact-match arm for parity with the parakeet-tdt /
+        // parakeet-ctc arms above.
+        "canary" | "canary-1b-v2" => LicenseClass::AttributionRequired,
         // --- gated: CC-BY-NC (research flag) ---------------------------------
         "f5-tts" | "encodec" => LicenseClass::NonCommercial,
         // --- gated: CC-BY-NC-SA (research flag) ------------------------------
@@ -460,6 +471,14 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // family ships under CC-BY 4.0 (per the 0.6B-v3 model card + the
         // NeMo release convention).
         _ if id.starts_with("parakeet-") => LicenseClass::AttributionRequired,
+        // Canary family (SoTA plan Phase 2, 2026-07-24): a specific
+        // variant id like `canary-1b-v2-en` or a future `canary-3b-v3`
+        // still resolves attribution-required. Guarded on the dash so
+        // unrelated ids (`canary-` prefixed anything the family doesn't
+        // ship) cannot slip through into the permissive bucket by
+        // accident. NVIDIA's whole Canary family ships under CC-BY 4.0
+        // (per the 1B-v2 model card).
+        _ if id.starts_with("canary-") => LicenseClass::AttributionRequired,
         _ => return None,
     };
     Some(class)
@@ -867,6 +886,32 @@ mod tests {
                 "{id}"
             );
         }
+        // SoTA plan Phase 2 (2026-07-24): NVIDIA Canary-1B-v2. Canonical
+        // id + variant spellings — all resolve to CC-BY 4.0
+        // attribution-required (NVIDIA's model card explicitly states
+        // CC-BY-4.0 for the whole Canary family).
+        for id in [
+            "canary",
+            "canary-1b-v2",
+            // Case-insensitive (via lower-casing before lookup).
+            "Canary-1B-v2",
+            "CANARY",
+            // Family prefix — a hypothetical future
+            // `canary-1b-v2-en` / `canary-3b-v3` / `canary-180m-flash`
+            // still resolves attribution-required by the walk.
+            "canary-1b-v2-en",
+            "canary-3b-v3",
+            "canary-180m-flash",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::AttributionRequired),
+                "{id}"
+            );
+        }
+        // Guard: a random id starting with "canaryx" is NOT under the
+        // family prefix (the dash guard rejects it).
+        assert_eq!(registry_lookup("canaryx-something"), None);
         // Case-insensitive.
         assert_eq!(registry_lookup("F5-TTS"), Some(LicenseClass::NonCommercial));
         // First-party **variant** ids (not canonical) still resolve permissive by
