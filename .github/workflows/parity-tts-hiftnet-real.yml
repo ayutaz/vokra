@@ -230,8 +230,13 @@ jobs:
         include:
           - arch: cosyvoice3
             display: Fun-CosyVoice3-0.5B
-            hf_repo_env: COSYVOICE3_REPO
-            hf_rev_env: COSYVOICE3_REVISION
+            # NOTE(2026-07-25): `env[matrix.foo]` cannot be evaluated inside
+            # a `env:` block (Actions expression context error 422). Embed
+            # the values directly in the matrix; the workflow-level `env:`
+            # block keeps the same constants for consistency and for the
+            # gate step which uses them in a bash `case`.
+            hf_repo: FunAudioLLM/Fun-CosyVoice3-0.5B-2512
+            hf_revision: "29e01c4e8d000f4bcd70751be16fa94bf3d85a18"
             license: apache-2.0
             gate_output: run_cosyvoice3
             convert_alias: fun-cosyvoice3-0.5b-2512
@@ -249,24 +254,24 @@ jobs:
             sidecar_note: "cosyvoice3 conversion requires torch→safetensors sidecar (Phase 2 owner)"
           - arch: chatterbox_multilingual
             display: Chatterbox-Multilingual (T3 mtl23ls_v3)
-            hf_repo_env: CHATTERBOX_REPO
-            hf_rev_env: CHATTERBOX_REVISION
+            hf_repo: ResembleAI/chatterbox
+            hf_revision: "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18"
             license: MIT
             gate_output: run_chatterbox_multilingual
             convert_alias: chatterbox-mtl23ls-v3
             sidecar_note: "chatterbox multilingual ships t3_mtl23ls_v3.safetensors directly — no sidecar"
           - arch: chatterbox_turbo
             display: Chatterbox-Turbo (t3_turbo_v1)
-            hf_repo_env: CHATTERBOX_TURBO_REPO
-            hf_rev_env: CHATTERBOX_TURBO_REVISION
+            hf_repo: ResembleAI/chatterbox-turbo
+            hf_revision: "749d1c1a46eb10492095d68fbcf55691ccf137cd"
             license: MIT
             gate_output: run_chatterbox_turbo
             convert_alias: chatterbox-turbo-v1
             sidecar_note: "chatterbox-turbo ships t3_turbo_v1.safetensors directly — no sidecar"
           - arch: chatterbox_nano
             display: Chatterbox-Nano (t3_nano_v1)
-            hf_repo_env: CHATTERBOX_NANO_REPO
-            hf_rev_env: CHATTERBOX_NANO_REVISION
+            hf_repo: ResembleAI/chatterbox-nano
+            hf_revision: "71ccd1d0081b430592cea481f4307e764e07bc64"
             license: MIT
             gate_output: run_chatterbox_nano
             convert_alias: chatterbox-nano-v1
@@ -277,8 +282,8 @@ jobs:
       HF_HUB_ENABLE_HF_TRANSFER: "1"
       ARCH: ${{ matrix.arch }}
       DISPLAY_NAME: ${{ matrix.display }}
-      HF_REPO: ${{ vars[matrix.hf_repo_env] || env[matrix.hf_repo_env] }}
-      HF_REVISION: ${{ env[matrix.hf_rev_env] }}
+      HF_REPO: ${{ matrix.hf_repo }}
+      HF_REVISION: ${{ matrix.hf_revision }}
       LICENSE_TAG: ${{ matrix.license }}
       SIDECAR_NOTE: ${{ matrix.sidecar_note }}
       CONVERT_ALIAS: ${{ matrix.convert_alias }}
