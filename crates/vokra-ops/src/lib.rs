@@ -167,6 +167,18 @@ pub mod nsf;
 // -------------------------------------------------------------------------
 pub mod preprocess;
 pub mod prosody;
+// ---- SoTA plan Phase 3 qwen3_tts_codec (TTS codec primitive, FR-OP-30) --
+// 16-quantizer RVQ codec at 12.5 Hz / 24 kHz — the code → summed codec-
+// feature decode step consumed by every released Qwen3-TTS-12Hz voice
+// (Qwen/Qwen3-TTS-12Hz-{0.6B,1.7B}-{Base,CustomVoice,VoiceDesign}, Apache-2.0).
+// Distinct from Mimi / DAC / EnCodec because quantizer 0 is *semantic*
+// (larger vocab: 4096) while quantizers 1..N are acoustic (2048); a single
+// `codebook_size` axis à la `MimiRvqAttrs` cannot express the split without
+// silently clamping the semantic index (FR-EX-08). Runtime function, not an
+// OpKind variant (same posture as mimi_rvq / dac_rvq / encodec_rvq — ADR
+// M3-06 §D-b). Localized re-export block for clean parallel-wave rebases.
+pub mod qwen3_tts_codec;
+// -------------------------------------------------------------------------
 pub mod resample;
 // ---- SoTA plan Phase 2 rnnt_decode (ASR primitive, FR-OP-42) ------------
 // RNN-T / TDT decoding: greedy + beam + TDT (duration head). Consumed by
@@ -255,6 +267,9 @@ pub use mimi_rvq::{
 // -------------------------------------------------------------------------
 pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};
 pub use prosody::{ApplyProsody, ProsodyControl};
+// ---- SoTA plan Phase 3 qwen3_tts_codec re-exports -----------------------
+pub use qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_codec_decode};
+// -------------------------------------------------------------------------
 pub use resample::resample;
 // ---- SoTA plan Phase 2 rnnt_decode re-exports ---------------------------
 pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
