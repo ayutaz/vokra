@@ -1,0 +1,477 @@
+# whisper-extras real-checkpoint parity CI (SoTA plan Phase 1, 2026-07-25).
+#
+# Runs `crates/vokra-models/tests/parity_whisper_extras.rs` — the
+# flip-the-switch harness for the whisper-extras family — against real
+# HF snapshots at pinned SHAs:
+#
+#   * distil-whisper/distil-large-v3.5     (MIT / MIT)
+#     revision  728a7691f3ff1d3d971528d3203a6e9559165d41
+#   * kotoba-tech/kotoba-whisper-v2.2      (Apache-2.0 / Apache-2.0)
+#     revision  9d33482a0eb9b57f1ad80708e8ac5538246d8355
+#
+# Both models share the same architectural quintuple as Whisper large-v3
+# with a 2-layer decoder (d_model=1280 / n_audio_layer=32 / n_text_layer=2
+# / n_mels=128 / vocab=51866), differing only in upstream / license /
+# distillation corpus.
+#
+# # Honest scope (fabricated pass 禁止, FR-EX-08)
+#
+# The runtime modules (`vokra_models::distil_whisper`,
+# `vokra_models::kotoba_whisper`) are today primary-source-transcribed
+# SCAFFOLDS: their `.transcribe` returns `VokraError::NotImplemented` until
+# a T29-shaped follow-up wave binds real weights and wires the forward
+# through `crate::whisper::WhisperModel`. This workflow therefore verifies
+# what CAN be verified end-to-end today:
+#
+#   * HF snapshot download at the pinned SHA succeeds and is cache-friendly;
+#   * `vokra-cli convert --model <arch>` emits a GGUF with the correct
+#     `vokra.model.arch` stamp, every `vokra.whisper.*` hparam axis matching
+#     the primary-source config, and the SPDX weight license (`MIT` for
+#     distil, `Apache-2.0` for kotoba) written verbatim;
+#   * the distil invariant `n_text_layer < n_audio_layer` (= 2 < 32) holds on
+#     both the converter output and the Rust config factory;
+#   * representative encoder + decoder tensors exist with the expected
+#     `d²` element count (a "zero-tensor GGUF" is caught here even though
+#     the metadata-only slice would still round-trip cleanly);
+#   * the scaffold `.transcribe` refuses loudly (proof the harness is NOT
+#     claiming a real transcription pass while the forward is a scaffold);
+#   * `VOKRA_<ARCH>_REFDIR` opt-in is honored (existence check + honest
+#     "flip-the-switch pending forward binding" annotation) — the CI wiring
+#     for a future per-tensor comparison is warm; the actual comparison
+#     activates when the harness swaps its refdir-check block for a real
+#     numerical assertion.
+#
+# # Operational posture (mirrors parity-kokoro-real.yml + parity-moshi-real.yml)
+#
+#   * Trigger: workflow_dispatch (owner-driven — first dispatch after
+#     initial land) + weekly cron (Mondays 09:30 UTC — its own slot in the
+#     weekly stagger, offset from every existing parity-* cron) + narrow
+#     pull_request paths filter (only fires on whisper-extras-adjacent
+#     code so per-PR runner minutes stay bounded).
+#
+#   * NOT registered as a required check (advisory posture per SoTA plan
+#     Phase 1). HF hub flakiness must never block a PR; promotion is an
+#     explicit owner call outside this WP.
+#
+#   * Cron leg opt-in gate: repository variable `VOKRA_WHISPER_EXTRAS_ENABLE`
+#     = `1` OR workflow_dispatch. Without the flag the cron leg clean-skips
+#     with a `::notice::` annotation naming what's missing (fabricated pass
+#     禁止 — a skip is always visibly a skip). Per-model workflow_dispatch
+#     inputs (`include_distil_whisper` / `include_kotoba_whisper`) let the
+#     owner run one leg without the other; both default to `"true"` so a
+#     bare dispatch runs the full matrix.
+#
+#   * Zero-dep invariant (NFR-DS-02): the Python parity venv lives under
+#     `/tmp`, and the final `git diff --exit-code Cargo.lock` step in each
+#     matrix leg proves the root workspace lockfile was not perturbed by
+#     any `cargo` step.
+#
+#   * Cache: HF hub snapshots are cached per-revision (key stability =
+#     upstream SHA + a workflow-owned "v1" tag), so repeated runs at the
+#     same pin skip the multi-GB download.
+#
+#   * Concurrency: `cancel-in-progress` on the same ref because a fresh
+#     push should not double-book the ~40 min runner.
+
+name: parity-whisper-extras-real
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_distil_whisper:
+        description: "Run distil-whisper/distil-large-v3.5 leg (~1.5 GB HF DL + GGUF)."
+        required: false
+        default: "true"
+      include_kotoba_whisper:
+        description: "Run kotoba-tech/kotoba-whisper-v2.2 leg (~3 GB HF DL + GGUF)."
+        required: false
+        default: "true"
+  schedule:
+    # Mondays 09:30 UTC — its own slot in the weekly stagger (kokoro 04:00,
+    # whisper 05:00, vulkan 05:30, cuda-rtf 06:00, rvq 06:00 Tue, csm 06:30,
+    # web-wasm 07:00, moshi 07:30, utmos 08:00, godot 08:30, whisper-extras
+    # 09:30). Offsetting keeps one HF hub outage morning from blanking every
+    # scheduled parity gate at once.
+    - cron: "30 9 * * 1"
+  pull_request:
+    # Fires only on whisper-extras-adjacent changes so per-PR runner
+    # minutes stay bounded. Includes both crates' converter + runtime
+    # modules + the harness + this workflow itself + the shared Whisper
+    # plumbing (any change to `crates/vokra-models/src/whisper/**` can
+    # break the distil / kotoba forward once it lands, so it belongs in
+    # the paths filter now to catch pre-flip regressions).
+    paths:
+      - ".github/workflows/parity-whisper-extras-real.yml"
+      - "crates/vokra-cli/src/convert.rs"
+      - "crates/vokra-convert/src/models/distil_whisper.rs"
+      - "crates/vokra-convert/src/models/kotoba_whisper.rs"
+      - "crates/vokra-convert/src/models/whisper.rs"
+      - "crates/vokra-core/**"
+      - "crates/vokra-models/src/distil_whisper/**"
+      - "crates/vokra-models/src/kotoba_whisper/**"
+      - "crates/vokra-models/src/whisper/**"
+      - "crates/vokra-models/tests/parity_whisper_extras.rs"
+
+concurrency:
+  group: parity-whisper-extras-real-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # HF revision pins (fetched 2026-07-25). Both are the current HEAD of the
+  # respective `main` branch. Bumping either is a deliberate act; the
+  # committed rustdoc in `crates/vokra-models/tests/parity_whisper_extras.rs`
+  # names the pin dates so drift is grepable.
+  DISTIL_WHISPER_REPO: "distil-whisper/distil-large-v3.5"
+  DISTIL_WHISPER_REVISION: "728a7691f3ff1d3d971528d3203a6e9559165d41"
+  KOTOBA_WHISPER_REPO: "kotoba-tech/kotoba-whisper-v2.2"
+  KOTOBA_WHISPER_REVISION: "9d33482a0eb9b57f1ad80708e8ac5538246d8355"
+  PARITY_VENV: "/tmp/vokra-whisper-extras-parity"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Gate: cron leg opt-in + per-model dispatch inputs. Consumes the
+  # repo-level `vars.VOKRA_WHISPER_EXTRAS_ENABLE` variable so a workflow_dispatch
+  # can always run (the dispatcher opted in) while a cron leg stays silent
+  # until the owner flips the flag.
+  # ---------------------------------------------------------------------------
+  setup:
+    name: gate (whisper-extras opt-in)
+    runs-on: ubuntu-latest
+    outputs:
+      run_distil: ${{ steps.decide.outputs.run_distil }}
+      run_kotoba: ${{ steps.decide.outputs.run_kotoba }}
+    steps:
+      - id: decide
+        env:
+          ENABLE_VAR: ${{ vars.VOKRA_WHISPER_EXTRAS_ENABLE }}
+          # workflow_dispatch inputs default to "true" so a bare dispatch
+          # runs the full matrix. On non-dispatch events the inputs are
+          # empty strings; the `!= "false"` gate below preserves the
+          # "matrix runs unless the owner opted out per model" contract.
+          INPUT_DISTIL: ${{ inputs.include_distil_whisper }}
+          INPUT_KOTOBA: ${{ inputs.include_kotoba_whisper }}
+        run: |
+          set -euo pipefail
+          gate_leg() {
+            # $1 = arch slug (distil / kotoba), $2 = input flag (may be
+            # empty on cron/PR events), $3 = enable env var value.
+            local arch="$1" input="$2" enable="$3" out_key
+            out_key="run_${arch}"
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              if [ "${input}" = "false" ]; then
+                echo "${out_key}=false" >> "$GITHUB_OUTPUT"
+                echo "::notice title=parity-whisper-extras-real ${arch} skip::dispatcher opted OUT of the ${arch} leg (include_${arch}_whisper=false)."
+              else
+                echo "${out_key}=true" >> "$GITHUB_OUTPUT"
+                echo "${arch}: dispatch run (proceeding — dispatcher opted in)"
+              fi
+            elif [ "${enable}" = "1" ]; then
+              echo "${out_key}=true" >> "$GITHUB_OUTPUT"
+              echo "${arch}: VOKRA_WHISPER_EXTRAS_ENABLE=1 (proceeding)"
+            else
+              echo "${out_key}=false" >> "$GITHUB_OUTPUT"
+              echo "::notice title=parity-whisper-extras-real ${arch} clean skip::set the repository variable VOKRA_WHISPER_EXTRAS_ENABLE=1 (or workflow_dispatch) to run this leg. This is a clean gated skip, not a pass (fabricated pass 禁止 — FR-EX-08)."
+            fi
+          }
+          gate_leg distil "${INPUT_DISTIL}" "${ENABLE_VAR}"
+          gate_leg kotoba "${INPUT_KOTOBA}" "${ENABLE_VAR}"
+
+  # ---------------------------------------------------------------------------
+  # Matrix over the two whisper-extras members. Each row runs the full
+  # pipeline in isolation — HF download → convert → cargo test — so a
+  # single-model failure does not mask the other's verdict. `fail-fast:
+  # false` mirrors every other parity-*-real workflow in the tree.
+  # ---------------------------------------------------------------------------
+  parity:
+    name: parity (${{ matrix.arch_slug }})
+    needs: setup
+    # Skip both legs when neither is enabled (all-false matrix produces an
+    # empty include and GitHub errors out; the `if` here short-circuits
+    # the whole job in that case).
+    if: needs.setup.outputs.run_distil == 'true' || needs.setup.outputs.run_kotoba == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch_slug: distil_whisper
+            # Kebab-case tag the `vokra-cli convert --model` flag accepts
+            # (see `crates/vokra-cli/src/convert.rs`).
+            cli_model: distil-whisper
+            hf_repo_env: DISTIL_WHISPER_REPO
+            hf_revision_env: DISTIL_WHISPER_REVISION
+            gate_output: run_distil
+          - arch_slug: kotoba_whisper
+            cli_model: kotoba-whisper
+            hf_repo_env: KOTOBA_WHISPER_REPO
+            hf_revision_env: KOTOBA_WHISPER_REVISION
+            gate_output: run_kotoba
+    env:
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
+    steps:
+      # Per-leg gate: cascade-skip iff the setup job disabled this row.
+      # This must be step 1 so every later step's `if:` can reference
+      # `env.LEG_ENABLED` regardless of matrix column.
+      - name: Per-leg opt-in check (cascade skip when disabled)
+        id: leg-gate
+        env:
+          RUN_DISTIL: ${{ needs.setup.outputs.run_distil }}
+          RUN_KOTOBA: ${{ needs.setup.outputs.run_kotoba }}
+        run: |
+          set -euo pipefail
+          case "${{ matrix.arch_slug }}" in
+            distil_whisper) enabled="${RUN_DISTIL}" ;;
+            kotoba_whisper) enabled="${RUN_KOTOBA}" ;;
+            *) echo "::error::unknown arch_slug: ${{ matrix.arch_slug }}"; exit 1 ;;
+          esac
+          echo "leg_enabled=${enabled}" >> "$GITHUB_OUTPUT"
+          if [ "${enabled}" != "true" ]; then
+            echo "::notice title=parity-whisper-extras-real ${{ matrix.arch_slug }} cascade skip::setup gate output = ${enabled}"
+          fi
+
+      - name: Checkout
+        if: steps.leg-gate.outputs.leg_enabled == 'true'
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        if: steps.leg-gate.outputs.leg_enabled == 'true'
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Set up Rust toolchain
+        if: steps.leg-gate.outputs.leg_enabled == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        if: steps.leg-gate.outputs.leg_enabled == 'true'
+        uses: Swatinem/rust-cache@v2
+
+      # Resolve the per-row HF slot into flat env vars downstream steps
+      # can read directly. Matrix expressions cannot be used inside
+      # `env:` mapping values on some runner versions; exporting via
+      # $GITHUB_ENV sidesteps that.
+      - name: Resolve HF pins for this row
+        if: steps.leg-gate.outputs.leg_enabled == 'true'
+        env:
+          HF_REPO_LOOKUP: ${{ matrix.hf_repo_env }}
+          HF_REVISION_LOOKUP: ${{ matrix.hf_revision_env }}
+        run: |
+          set -euo pipefail
+          # ARCH_SLUG_UPPER expands to DISTIL_WHISPER / KOTOBA_WHISPER —
+          # used to name the per-leg env vars VOKRA_<ARCH>_GGUF /
+          # VOKRA_<ARCH>_REFDIR that parity_whisper_extras.rs reads.
+          ARCH_UP="$(echo '${{ matrix.arch_slug }}' | tr 'a-z' 'A-Z')"
+          echo "ARCH_SLUG_UPPER=${ARCH_UP}" >> "$GITHUB_ENV"
+          # Dereference the two lookup names into concrete strings.
+          repo_var="${HF_REPO_LOOKUP}"
+          rev_var="${HF_REVISION_LOOKUP}"
+          repo="${!repo_var}"
+          rev="${!rev_var}"
+          if [ -z "${repo}" ] || [ -z "${rev}" ]; then
+            echo "::error::HF pin lookup failed: repo_var=${repo_var} rev_var=${rev_var}"
+            exit 1
+          fi
+          echo "HF_REPO=${repo}" >> "$GITHUB_ENV"
+          echo "HF_REVISION=${rev}" >> "$GITHUB_ENV"
+          echo "Resolved: ${{ matrix.arch_slug }} → ${repo}@${rev}"
+
+      # HF hub cache — one entry per (repo, revision, tag) tuple so a
+      # deliberate SHA bump invalidates cleanly, while re-runs at the same
+      # pin skip the download.
+      - name: Cache HF snapshot
+        if: steps.leg-gate.outputs.leg_enabled == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.HF_HOME }}
+          key: whisper-extras-hf-${{ matrix.arch_slug }}-${{ env.HF_REVISION }}-v1
+
+      # Python parity venv. Deps are minimal — torch (for reading the
+      # safetensors header + optional per-tensor loads later), safetensors,
+      # huggingface_hub, numpy. Root Cargo.lock is untouched (verified by
+      # the final `git diff --exit-code` step).
+      - name: Provision parity venv (torch + safetensors + huggingface_hub)
+        if: steps.leg-gate.outputs.leg_enabled == 'true'
+        run: |
+          set -euo pipefail
+          python -m venv "${PARITY_VENV}"
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python -m pip install --upgrade pip
+          # CPU torch keeps the runner lean — every check the harness does
+          # today is deterministic / integer-arithmetic (metadata + shape
+          # sanity); the torch dep is present so a future flip-the-switch
+          # wave can dump activations from the same venv without a fresh
+          # install step.
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install \
+            'safetensors>=0.4' \
+            'numpy>=2,<3' \
+            'huggingface_hub==0.36.2'
+          # Optional but massively speeds ~1-3 GB snapshot pulls.
+          python -m pip install 'hf_transfer>=0.1.9' || true
+          python - <<'PY'
+          import torch, safetensors, numpy, huggingface_hub
+          print(f"whisper-extras parity venv: torch={torch.__version__} "
+                f"numpy={numpy.__version__} "
+                f"safetensors={safetensors.__version__} "
+                f"huggingface_hub={huggingface_hub.__version__}")
+          PY
+
+      # HF snapshot download at the pinned SHA. Uses `snapshot_download`
+      # (grabs config.json + model.safetensors + tokenizer files in one
+      # atomic call) so a partial cache never trips the converter later.
+      - name: Download HF snapshot @ pinned revision
+        if: steps.leg-gate.outputs.leg_enabled == 'true'
+        env:
+          HF_HUB_ENABLE_HF_TRANSFER: '1'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python - <<PY
+          import os
+          from huggingface_hub import snapshot_download
+          repo = os.environ["HF_REPO"]
+          rev = os.environ["HF_REVISION"]
+          # allow_patterns keeps the download to the files the converter
+          # actually reads — the full checkpoint carries safetensors +
+          # tokenizer + preprocessor config; excludes ONNX / PyTorch bin
+          # dupes when present.
+          local = snapshot_download(
+              repo_id=repo,
+              revision=rev,
+              allow_patterns=[
+                  "config.json",
+                  "generation_config.json",
+                  "preprocessor_config.json",
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "special_tokens_map.json",
+                  "model.safetensors",
+                  "*.txt",
+              ],
+          )
+          print(f"snapshot @ {local}")
+          # Emit the resolved snapshot path for downstream steps.
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"HF_SNAPSHOT_DIR={local}\n")
+          PY
+
+      # Sanity: the snapshot must carry model.safetensors + config.json.
+      # A partial mirror (HF rate limit → truncated allow_patterns) would
+      # produce a green download step but a mystifying converter error;
+      # asserting here surfaces the drift immediately.
+      - name: Verify snapshot payload
+        if: steps.leg-gate.outputs.leg_enabled == 'true'
+        run: |
+          set -euo pipefail
+          test -f "${HF_SNAPSHOT_DIR}/model.safetensors" \
+            || { echo "::error::snapshot missing model.safetensors"; exit 1; }
+          test -f "${HF_SNAPSHOT_DIR}/config.json" \
+            || { echo "::error::snapshot missing config.json"; exit 1; }
+          echo "### Snapshot payload (${{ matrix.arch_slug }})" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          ls -la "${HF_SNAPSHOT_DIR}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # vokra-cli build. `--release` mirrors every other parity-*-real
+      # workflow so the exact binary the harness exercises against real
+      # weights is the release-profile one (not debug).
+      - name: Build vokra-cli (release)
+        if: steps.leg-gate.outputs.leg_enabled == 'true'
+        run: cargo build --release -p vokra-cli
+
+      # Converter e2e: safetensors → GGUF at the primary-source config
+      # values. The converter enforces the distil invariant loudly
+      # (n_text_layer < n_audio_layer), so a Whisper large-v3 checkpoint
+      # accidentally routed here fails with ConvertError::Parse rather
+      # than producing a mis-labelled GGUF.
+      - name: Convert HF snapshot → Vokra GGUF (${{ matrix.cli_model }})
+        if: steps.leg-gate.outputs.leg_enabled == 'true'
+        run: |
+          set -euo pipefail
+          OUT="${RUNNER_TEMP}/${{ matrix.arch_slug }}.gguf"
+          ./target/release/vokra-cli convert \
+            --model ${{ matrix.cli_model }} \
+            --input "${HF_SNAPSHOT_DIR}/model.safetensors" \
+            --output "${OUT}"
+          size_bytes="$(wc -c < "${OUT}")"
+          {
+            echo "### Vokra GGUF (${{ matrix.arch_slug }})"
+            echo ""
+            echo "- Path: \`${OUT}\`"
+            echo "- Size: $(numfmt --to=iec "${size_bytes}") (raw: ${size_bytes} bytes)"
+            echo "- HF pin: \`${HF_REPO}@${HF_REVISION}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "GGUF_PATH=${OUT}" >> "$GITHUB_ENV"
+
+      # The harness itself. `--test parity_whisper_extras` filters to the
+      # single-file harness; `--test-threads=1 --nocapture` keeps the
+      # eprintln! diagnostics visible in the log and prevents the two per-
+      # model tests from racing on stderr. Only the per-arch test name
+      # goes into the invocation so the leg's exit code reflects THIS
+      # model's verdict alone (the other row runs in its own matrix job).
+      - name: Run parity_whisper_extras (${{ matrix.arch_slug }})
+        if: steps.leg-gate.outputs.leg_enabled == 'true'
+        id: parity
+        run: |
+          set -euo pipefail
+          set +e
+          # Export the per-arch env var — see parity_whisper_extras.rs
+          # `gguf_env_var` (`distil_whisper` → VOKRA_DISTIL_WHISPER_GGUF /
+          # `kotoba_whisper` → VOKRA_KOTOBA_WHISPER_GGUF). The Rust helper
+          # and this shell name it identically; there is a unit test in the
+          # harness (`env_var_naming_matches_workflow`) that catches drift.
+          env_name="VOKRA_${ARCH_SLUG_UPPER}_GGUF"
+          export "${env_name}=${GGUF_PATH}"
+          cargo test --release -p vokra-models --test parity_whisper_extras \
+            "parity_whisper_extras_${{ matrix.arch_slug }}" \
+            -- --nocapture --test-threads=1 \
+            2>&1 | tee "${RUNNER_TEMP}/parity-${{ matrix.arch_slug }}-log.txt"
+          exit_code=${PIPESTATUS[0]}
+          echo "PARITY_EXIT=${exit_code}" >> "$GITHUB_ENV"
+          echo "cargo test exited with ${exit_code}"
+          {
+            echo ""
+            echo "## whisper-extras parity — ${{ matrix.arch_slug }}"
+            echo ""
+            echo "HF pin: \`${HF_REPO}@${HF_REVISION}\`"
+            echo ""
+            if [ "${exit_code}" -eq 0 ]; then
+              echo "**Verdict: PASS** — GGUF metadata + hparam parity + tensor sanity + scaffold refusal all held."
+              echo ""
+              echo "Note: transcription-level parity is PENDING the native forward binding."
+              echo "See the harness rustdoc \`# How to flip the switch\` for the follow-up wave."
+            else
+              echo "**Verdict: FAIL (exit ${exit_code})** — see the log above for which invariant broke."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "${exit_code}"
+
+      # Upload the parity log + GGUF header dump for post-mortem — the GGUF
+      # itself can be multi-GB, so only its header + our diagnostic log go
+      # into the artifact (the download is reproducible from the pinned
+      # HF revision so the payload need not be archived).
+      - name: Upload parity artifacts
+        if: always() && steps.leg-gate.outputs.leg_enabled == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: whisper-extras-parity-${{ matrix.arch_slug }}
+          path: |
+            ${{ runner.temp }}/parity-${{ matrix.arch_slug }}-log.txt
+          retention-days: 7
+          if-no-files-found: warn
+
+      # Zero-dep invariant — root Cargo.lock must NOT have moved. Python
+      # deps live in the venv, cargo build ran against workspace crates
+      # only, so any diff here is an unintended dependency landing.
+      - name: Zero-dep invariant (root Cargo.lock unchanged, NFR-DS-02)
+        if: steps.leg-gate.outputs.leg_enabled == 'true'
+        run: git diff --exit-code Cargo.lock
