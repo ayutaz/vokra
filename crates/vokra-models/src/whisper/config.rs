@@ -421,6 +421,27 @@ mod tests {
                 n_audio_ctx: 1500,
                 n_text_ctx: 448,
             },
+            // JA-ASR-2 (SoTA plan Phase 5, 2026-07-24): kotoba-whisper
+            // v1.x/v2.x — Japanese-distilled Whisper. Shares the shape
+            // quintuple with distil-large-v3.5 (large-v3 encoder + 2-
+            // layer decoder), transcribed verbatim from
+            // huggingface.co/kotoba-tech/kotoba-whisper-v2.0/raw/main/
+            // config.json (fetched 2026-07-24). Pinned here so a
+            // regression that hard-codes n_text_layer=32 for the
+            // (1280, 32, 128, 51866) prefix fails loudly at config
+            // load time.
+            Row {
+                name: "kotoba-whisper-v2.0",
+                n_audio_layer: 32,
+                n_text_layer: 2,
+                n_mels: 128,
+                n_vocab: 51866,
+                d_model: 1280,
+                n_head: 20,
+                ffn_dim: 5120,
+                n_audio_ctx: 1500,
+                n_text_ctx: 448,
+            },
         ];
 
         for Row {

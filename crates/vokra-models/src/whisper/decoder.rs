@@ -956,6 +956,35 @@ mod tests {
         assert_full_matches_cached(1);
     }
 
+    /// **JA-ASR-2 (SoTA plan Phase 5, 2026-07-24)**: the vanilla
+    /// Whisper decoder must honor an arbitrary `n_text_layer` from
+    /// GGUF metadata — 2 (kotoba-whisper / distil-large-v3.5), 4
+    /// (turbo), 8 (a hypothetical future distil), 32 (large-v3). The
+    /// runtime iterates over `w.layers.len()` (see `step_into` /
+    /// `cross_attention_weights`), and every KV cache / attention
+    /// path is sized by `cfg.n_text_layer`, so the decoder is
+    /// genuinely data-driven. This regression test pins that
+    /// property for the 2/4/8 axes that the SoTA plan's JA-ASR-2 axis
+    /// explicitly names (large-v3's 32 is already covered by the
+    /// `reads_all_whisper_size_hparams` test in `config.rs`). Every
+    /// layer count must round-trip the full-vs-cached invariant that
+    /// the KV cache correctness relies on — a broken data-driven
+    /// path would either mis-shape a matmul or drop a layer.
+    #[test]
+    fn decoder_handles_arbitrary_n_text_layer_ja_asr_2() {
+        // 2 = kotoba-whisper v1.x/v2.x / distil-large-v3.5 (the
+        // JA-ASR-2 motivating axis: Kotoba Technologies distilled
+        // large-v3 down to 2 decoder layers).
+        assert_full_matches_cached(2);
+        // 4 = whisper-turbo (already tested through
+        // reads_all_whisper_size_hparams, pinned here again against
+        // the greedy loop).
+        assert_full_matches_cached(4);
+        // 8 = a hypothetical future distil variant (no released
+        // model today, but the runtime must remain data-driven).
+        assert_full_matches_cached(8);
+    }
+
     #[test]
     fn reset_and_replay_is_bit_identical() {
         let model = tiny_model(1);
