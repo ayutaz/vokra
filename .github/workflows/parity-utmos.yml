@@ -167,7 +167,12 @@ jobs:
           # Cargo.lock is untouched — the same split DAC and Kokoro use.
           python3 -m venv /tmp/utmos-venv
           /tmp/utmos-venv/bin/pip install --quiet --upgrade pip
-          /tmp/utmos-venv/bin/pip install --quiet "torch==2.8.0" safetensors
+          # numpy is a transitive dep of safetensors.torch.save_file (it calls
+          # _to_ndarray which does `import numpy as np`). torch 2.8.0 does not
+          # pull numpy as a hard runtime dep, so we install it explicitly here
+          # — same posture as the sibling parity-rvq-real.yml / parity-whisper-
+          # real.yml / parity-kokoro-real.yml workflows.
+          /tmp/utmos-venv/bin/pip install --quiet "torch==2.8.0" "numpy>=1.26,<3" safetensors
           /tmp/utmos-venv/bin/python tools/parity/utmos_prepare_checkpoint.py \
             --ckpt /tmp/utmos-checkpoint \
             --output /tmp/utmos.safetensors \
