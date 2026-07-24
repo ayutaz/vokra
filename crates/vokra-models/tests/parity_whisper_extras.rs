@@ -405,17 +405,27 @@ fn parity_whisper_extras_distil_whisper() {
          must be < n_audio_layer={gguf_n_audio_layer}",
     );
 
-    // Provenance stamp: license must round-trip exactly (SPDX string, not
-    // a normalized alias). A converter that started writing `mit` (lower)
-    // vs `MIT` (upper) would silently break license-audit tooling that
-    // pattern-matches on the exact SPDX literal.
-    let license = expect_string(&file, chunks::KEY_PROVENANCE_WEIGHT_LICENSE);
+    // Provenance stamp: the raw SPDX literal must round-trip exactly.
+    // A converter that started writing `mit` (lower) vs `MIT` (upper) would
+    // silently break license-audit tooling that pattern-matches on the exact
+    // SPDX literal.
+    //
+    // KEY note (harness bug fixed 2026-07-25): the SPDX literal lives on
+    // `KEY_PROVENANCE_LICENSE` (raw string, "MIT"). The sibling key
+    // `KEY_PROVENANCE_WEIGHT_LICENSE` holds the resolved *canonical class
+    // name* (e.g. "permissive"), which is intentionally NOT the SPDX literal
+    // — see `crates/vokra-core/src/gguf/chunks.rs::KEY_PROVENANCE_*` and the
+    // `LicenseClass::as_str()` contract. Previously this test hit the
+    // canonical-class key by mistake and failed on real distil GGUFs where
+    // the converter correctly wrote "permissive" (dispatch run 30116427518
+    // step 14).
+    let license = expect_string(&file, chunks::KEY_PROVENANCE_LICENSE);
     assert_eq!(
         license,
         member.weight_license_spdx,
         "GGUF `{}` = {license:?}, expected {:?} (distil-whisper is MIT — see \
          module docstring `# Weight license`)",
-        chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        chunks::KEY_PROVENANCE_LICENSE,
         member.weight_license_spdx,
     );
 
@@ -613,13 +623,17 @@ fn parity_whisper_extras_kotoba_whisper() {
          must be < n_audio_layer={gguf_n_audio_layer}",
     );
 
-    let license = expect_string(&file, chunks::KEY_PROVENANCE_WEIGHT_LICENSE);
+    // KEY note: raw SPDX literal lives on `KEY_PROVENANCE_LICENSE`; the
+    // sibling `KEY_PROVENANCE_WEIGHT_LICENSE` holds the resolved canonical
+    // class name (e.g. "permissive") — see the same-file distil block above
+    // for full rationale.
+    let license = expect_string(&file, chunks::KEY_PROVENANCE_LICENSE);
     assert_eq!(
         license,
         member.weight_license_spdx,
         "GGUF `{}` = {license:?}, expected {:?} (kotoba-whisper is \
          Apache-2.0 — see module docstring `# Weight license`)",
-        chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        chunks::KEY_PROVENANCE_LICENSE,
         member.weight_license_spdx,
     );
 
