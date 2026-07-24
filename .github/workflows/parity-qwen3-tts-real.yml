@@ -1,0 +1,406 @@
+# Qwen3-TTS-0.6B family — real-checkpoint parity CI (SoTA plan Phase 3,
+# 2026-07-24 landing → parity-CI wiring 2026-07-25).
+#
+# Runs the flip-the-switch parity harness
+# (`crates/vokra-models/tests/parity_tts_qwen3.rs`) against the real
+# `Qwen/Qwen3-TTS-12Hz-0.6B-Base` release (BF16, ~0.9 GB `model.safetensors`).
+#
+# # Design (mirrors parity-moshi-real.yml discipline)
+#
+#   * Trigger: workflow_dispatch (owner-driven — first dispatch is the T29
+#     owner step) + weekly cron (Mondays 11:00 UTC — own slot in the weekly
+#     stagger: kokoro 04:00, whisper 05:00, csm 06:30, moshi 07:30, utmos
+#     08:00, qwen3-tts 11:00) + narrow pull_request paths filter that only
+#     fires on qwen3_tts-adjacent code changes.
+#
+#   * Enable gate: the cron leg **clean-skips** unless the repository
+#     variable `VOKRA_QWEN3_TTS_ENABLE` is `1` (the owner flips it after
+#     confirming the ~0.9 GB HF DL + convert on their runner budget); the
+#     annotation says so explicitly. A workflow_dispatch run proceeds
+#     regardless (the dispatcher opted in). **Fabricated pass 禁止**: a
+#     skip is always visibly a skip.
+#
+#   * Family matrix: `Qwen/Qwen3-TTS-12Hz-0.6B-Base` is the only released
+#     family member today; a future 1.7B variant drops in by extending the
+#     matrix (each member carries its own `env_var` + `hf_id` +
+#     `hf_revision`, mirroring the parity-whisper-real.yml pattern).
+#
+#   * Pinned HF revision: `QWEN3_TTS_0_6B_BASE_REVISION` env pinned to the
+#     snapshot SHA fetched at CI-wiring time (2026-07-25, HF API). Bumping
+#     it is a deliberate act — a benign upstream re-upload surfaces here as
+#     a `snapshot_download` mismatch, not as fabricated parity.
+#
+#   * Python parity venv is provisioned inline (safetensors + torch +
+#     huggingface_hub); the final `git diff --exit-code Cargo.lock` step
+#     proves the zero-dep invariant (NFR-DS-02) held.
+#
+#   * Honest reporting (FR-EX-08): the harness prints the GGUF-vs-runtime
+#     handshake + (when refdir is present) the GGUF-vs-upstream-config
+#     cross-check. Missing GGUF → skip with printed reason (never a
+#     fabricated pass). Missing refdir with GGUF present → the runtime
+#     handshake still runs and the cross-check leg is honestly skipped.
+#
+#   * NOT registered as a required check. The workflow_dispatch initial
+#     dispatch is the owner (T29-equivalent). Advisory posture matches
+#     every other `parity-*-real.yml` — HF flakiness must not gate merges.
+#
+# # Zero-dep invariant (NFR-DS-02)
+#
+# The whole Python side lives in `/tmp/vokra-py-qwen3-tts`; the Rust
+# workspace's root `Cargo.lock` is untouched. A `git diff --exit-code
+# Cargo.lock` step at the end catches any accidental root-lockfile
+# mutation from a stray `cargo add` — the same tripwire pattern the
+# Kokoro / Whisper / RVQ workflows enforce.
+
+name: parity-qwen3-tts-real
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_qwen3_tts_0_6b_base:
+        description: "Run the Qwen3-TTS-12Hz-0.6B-Base leg (~0.9 GB HF DL, only family member today)."
+        required: false
+        default: "true"
+  schedule:
+    # Weekly Monday 11:00 UTC — own slot in the parity-*-real stagger
+    # (kokoro 04:00, whisper 05:00, vulkan 05:30, cuda-rtf 06:00, csm
+    # 06:30, web-wasm 07:00, moshi 07:30, utmos 08:00, godot 08:30,
+    # qwen3-tts 11:00). Off-peak US/EU business hours so a HF hub outage
+    # surfaces without blocking active development.
+    - cron: "0 11 * * 1"
+  pull_request:
+    # Only fire on model-adjacent code changes so per-PR CI doesn't
+    # accidentally pull ~0.9 GB from HF on every touch elsewhere. The
+    # enable-gate below still holds — a PR-triggered run cleanly skips
+    # unless the owner has flipped `VOKRA_QWEN3_TTS_ENABLE=1`.
+    paths:
+      - ".github/workflows/parity-qwen3-tts-real.yml"
+      - "crates/vokra-convert/src/models/qwen3_tts.rs"
+      - "crates/vokra-core/**"
+      - "crates/vokra-models/src/compute.rs"
+      - "crates/vokra-models/src/qwen3_tts/**"
+      - "crates/vokra-models/tests/parity_tts_qwen3.rs"
+      - "crates/vokra-ops/src/qwen3_tts_codec.rs"
+      - "crates/vokra-ops/**"
+
+concurrency:
+  group: parity-qwen3-tts-real-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  # Pinned snapshot SHA on Qwen/Qwen3-TTS-12Hz-0.6B-Base (Apache-2.0
+  # end-to-end). Fetched 2026-07-25 via HF API. A bump is a deliberate
+  # act — the anchor is verified by snapshot_download's revision arg;
+  # a mismatch surfaces as a fetch error, not a silent drift.
+  QWEN3_TTS_0_6B_BASE_REVISION: 5d83992436eae1d760afd27aff78a71d676296fc
+  PARITY_VENV: /tmp/vokra-py-qwen3-tts
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Enable gate — cron cleanly skips unless the repo variable flips ON, and
+  # honest annotations mark the skip so it's never mistaken for a pass.
+  # The matrix is computed here so a future 1.7B variant drops in by
+  # extending the include list (parity-whisper-real.yml precedent).
+  setup:
+    name: setup (matrix + enable gate)
+    runs-on: ubuntu-latest
+    outputs:
+      run_parity: ${{ steps.decide.outputs.run_parity }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: decide
+        env:
+          ENABLE_VAR: ${{ vars.VOKRA_QWEN3_TTS_ENABLE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run_parity=true" >> "$GITHUB_OUTPUT"
+            echo "dispatch run: proceeding (the dispatcher opted in to the ~0.9 GB fetch + convert)."
+          elif [ "${ENABLE_VAR}" = "1" ]; then
+            echo "run_parity=true" >> "$GITHUB_OUTPUT"
+            echo "VOKRA_QWEN3_TTS_ENABLE=1: proceeding"
+          else
+            echo "run_parity=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=parity-qwen3-tts-real clean skip::Qwen3-TTS parity opt-in absent — set the repository variable VOKRA_QWEN3_TTS_ENABLE=1 (or use workflow_dispatch) to run the ~0.9 GB real-checkpoint parity. Clean gated skip, not a pass (fabricated pass 禁止, FR-EX-08)."
+          fi
+      - id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `Qwen/Qwen3-TTS-12Hz-0.6B-Base` is the only released family
+          # member today. Field contract:
+          #   * arch      — matches vokra_models::qwen3_tts::EXPECTED_ARCH
+          #                 (upper-cased + `-`→`_` → env var VOKRA_<ARCH>_GGUF)
+          #   * hf_id     — snapshot_download repo_id
+          #   * hf_revision — pinned SHA (must match env pin above)
+          #   * env_var   — mirrors env_paths_for(arch) in the harness
+          #   * gguf      — tempfile name (avoids matrix collision on
+          #                 a future 1.7B leg)
+          include=""
+          add_leg() {
+            local leg="$1"
+            if [ -n "$include" ]; then include="${include},"; fi
+            include="${include}${leg}"
+          }
+          # 0.6B-Base is the default-on leg. The workflow_dispatch input
+          # `include_qwen3_tts_0_6b_base` opts it OUT ("false") if the
+          # dispatcher only wants to test the workflow shape; cron / PR
+          # always include it.
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] \
+             || [ "${{ github.event.inputs.include_qwen3_tts_0_6b_base }}" != "false" ]; then
+            add_leg '{"arch":"qwen3_tts","hf_id":"Qwen/Qwen3-TTS-12Hz-0.6B-Base","hf_revision":"5d83992436eae1d760afd27aff78a71d676296fc","env_var":"VOKRA_QWEN3_TTS_GGUF","refdir_env_var":"VOKRA_QWEN3_TTS_REFDIR","gguf":"qwen3-tts-0.6b-base.gguf"}'
+          fi
+          echo "matrix={\"include\":[${include}]}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### parity-qwen3-tts-real matrix"
+            echo ""
+            echo "trigger: \`${{ github.event_name }}\`"
+            echo ""
+            echo "leg selection:"
+            echo "\`\`\`json"
+            echo "{\"include\":[${include}]}"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  parity:
+    name: parity (${{ matrix.arch }})
+    needs: setup
+    if: needs.setup.outputs.run_parity == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    # HF DL (~0.9 GB) + safetensors write + cargo build + parity harness
+    # averages ~20 min on a warm cache. 60 min cap matches every other
+    # parity-*-real workflow so a truly stuck run is bounded consistently.
+    timeout-minutes: 60
+    env:
+      ARCH: ${{ matrix.arch }}
+      HF_ID: ${{ matrix.hf_id }}
+      HF_REVISION: ${{ matrix.hf_revision }}
+      ENV_VAR: ${{ matrix.env_var }}
+      REFDIR_ENV_VAR: ${{ matrix.refdir_env_var }}
+      GGUF: ${{ matrix.gguf }}
+      # Steer HF cache into a repo-local path so actions/cache@v6 keys
+      # stay workspace-relative and stable across jobs (matches the
+      # Kokoro / Whisper cache pattern).
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Namespace the cache per family member so a future 1.7B leg's
+          # target/ does not collide with this one on shared runners.
+          key: parity-qwen3-tts-real-${{ matrix.arch }}
+
+      - name: Cache HF checkpoint (${{ matrix.arch }})
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.HF_HOME }}
+          key: hf-qwen3-tts-${{ matrix.arch }}-${{ matrix.hf_revision }}-v1
+
+      # Provision the parity venv (torch pinned to a CPU-only wheel; the
+      # Rust converter is safetensors-only, and no Python dumper runs
+      # today — the harness's flip-the-switch leg reads `config.json`
+      # verbatim, not a torch reference). Root Cargo.lock stays untouched
+      # (verified by the final tripwire step).
+      - name: Provision parity venv (torch CPU + safetensors + huggingface_hub)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "${PARITY_VENV}"
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python -m pip install --upgrade pip
+          # torch CPU keeps the runner lean (no dumper runs today — this
+          # is here so a future `qwen3_tts_dump.py` sibling can hook in
+          # without a workflow-level Python re-provision).
+          python -m pip install \
+            "numpy>=1.26,<3" \
+            "torch>=2.4,<3" \
+            "safetensors>=0.4,<1" \
+            "huggingface_hub>=0.24,<1"
+          # hf_transfer optional but noticeably speeds the ~0.9 GB DL.
+          python -m pip install 'hf_transfer>=0.1.9' || true
+          python - <<'PY'
+          import numpy, torch, safetensors, huggingface_hub
+          print(f"parity venv OK: numpy={numpy.__version__} "
+                f"torch={torch.__version__} "
+                f"safetensors={safetensors.__version__} "
+                f"huggingface_hub={huggingface_hub.__version__}")
+          PY
+
+      # Preflight: honest audit trail of the runner env so a future
+      # failure has full context (matches the Kokoro workflow's execution-
+      # environment recording pattern).
+      - name: Preflight — disk / arch / env
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== parity-qwen3-tts-real preflight =="
+          echo "arch=$ARCH hf_id=$HF_ID hf_revision=$HF_REVISION"
+          echo "env_var=$ENV_VAR refdir_env_var=$REFDIR_ENV_VAR gguf=$GGUF"
+          df -h .
+          python3 --version
+          cargo --version
+
+      - name: Build vokra-cli (release)
+        run: cargo build --release -p vokra-cli
+
+      # Download the pinned HF snapshot (weights + config + tokenizer +
+      # speech_tokenizer submodule). allow_patterns keeps the cache tight
+      # so a benign upstream README update doesn't invalidate the whole
+      # ~0.9 GB pull.
+      - name: Download HF checkpoint via snapshot_download
+        shell: bash
+        env:
+          HF_HUB_ENABLE_HF_TRANSFER: "1"
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python3 - <<'PYEOF'
+          import os
+          from huggingface_hub import snapshot_download
+          local_dir = snapshot_download(
+              repo_id=os.environ["HF_ID"],
+              revision=os.environ["HF_REVISION"],
+              allow_patterns=[
+                  "model.safetensors",
+                  "config.json",
+                  "generation_config.json",
+                  "preprocessor_config.json",
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "vocab.json",
+                  "merges.txt",
+                  # The Qwen3-TTS-Codec submodule lives under
+                  # `speech_tokenizer/` in the release; the harness
+                  # doesn't consume it today (converter path is
+                  # safetensors-only + the Rust codec primitive is
+                  # bit-parallel to `qwen3_tts_codec_decode`), but
+                  # snapshotting it means the follow-up wave that
+                  # binds real codec weights inherits the cache.
+                  "speech_tokenizer/**",
+              ],
+          )
+          # Pipe the resolved local dir to a tempfile so tqdm progress
+          # bars on stdout can't pollute $GITHUB_ENV.
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"HF_LOCAL_DIR={local_dir}\n")
+          print(f"snapshot_download -> {local_dir}")
+          PYEOF
+          echo "HF_LOCAL_DIR=${HF_LOCAL_DIR:-<not set>}"
+
+      - name: Convert safetensors → Vokra GGUF (vokra-cli convert)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${HF_LOCAL_DIR}"
+          ./target/release/vokra-cli convert \
+            --model qwen3-tts \
+            --input "${HF_LOCAL_DIR}/model.safetensors" \
+            --output "${RUNNER_TEMP}/${GGUF}" \
+            | tee "${RUNNER_TEMP}/convert-log.txt"
+          echo "GGUF size: $(wc -c < "${RUNNER_TEMP}/${GGUF}") bytes"
+          {
+            echo "### Vokra GGUF (${ARCH})"
+            echo ""
+            echo "- Path: \`${RUNNER_TEMP}/${GGUF}\`"
+            echo "- Size: $(wc -c < "${RUNNER_TEMP}/${GGUF}" | numfmt --to=iec) (raw: $(wc -c < "${RUNNER_TEMP}/${GGUF}") bytes)"
+            echo ""
+            echo "convert log tail:"
+            echo '```'
+            tail -20 "${RUNNER_TEMP}/convert-log.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Run the flip-the-switch parity harness. Two env vars:
+      #   * VOKRA_<ARCH>_GGUF    — the just-converted GGUF (always set here).
+      #   * VOKRA_<ARCH>_REFDIR  — the HF snapshot dir (contains the
+      #                            upstream `config.json`), so the
+      #                            cross-check leg fires too. This is the
+      #                            flip-the-switch step that verifies the
+      #                            converter's transcribed constants
+      #                            against the primary source verbatim.
+      - name: Run parity_tts_qwen3 harness (VOKRA_QWEN3_TTS_GGUF + VOKRA_QWEN3_TTS_REFDIR)
+        id: parity
+        shell: bash
+        env:
+          # Note: $ENV_VAR / $REFDIR_ENV_VAR are the NAMES; we bind them
+          # dynamically here so a future arch lands with only a matrix
+          # row change (no rewrite of this step).
+          VOKRA_QWEN3_TTS_GGUF: ${{ runner.temp }}/${{ matrix.gguf }}
+          VOKRA_QWEN3_TTS_REFDIR: ${{ env.HF_LOCAL_DIR }}
+        run: |
+          set +e
+          cargo test --release -p vokra-models --test parity_tts_qwen3 -- --nocapture \
+            2>&1 | tee "${RUNNER_TEMP}/parity-log.txt"
+          exit_code=${PIPESTATUS[0]}
+          echo "PARITY_EXIT=${exit_code}" >> "$GITHUB_ENV"
+          echo "parity cargo test exited with ${exit_code}"
+
+      - name: Summary — per-arch parity verdict
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo ""
+            echo "## parity_tts_qwen3::${ARCH} — verdict"
+            echo ""
+            if [ "${PARITY_EXIT:-1}" -eq 0 ]; then
+              echo "**PASS** — GGUF metadata handshake + flip-the-switch \`config.json\` cross-check both green."
+            else
+              echo "**FAIL** — see the harness log below."
+            fi
+            echo ""
+            echo "harness log tail:"
+            echo '```'
+            tail -60 "${RUNNER_TEMP}/parity-log.txt" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Zero-dep tripwire (NFR-DS-02): nothing in this job may have
+      # touched the root Cargo.lock. Python lives in the venv; cargo
+      # commands were `build` / `test` only (no `cargo add`).
+      - name: Zero-dep tripwire — root Cargo.lock unchanged
+        run: git diff --exit-code Cargo.lock
+
+      - name: Upload parity artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: parity-qwen3-tts-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/convert-log.txt
+            ${{ runner.temp }}/parity-log.txt
+            ${{ runner.temp }}/${{ matrix.gguf }}
+          retention-days: 7
+          if-no-files-found: warn
+
+      # Propagate the parity exit code AFTER artifacts are uploaded so a
+      # FAIL always ships diagnostic artifacts. This is the honest gate:
+      # any harness failure fails the job (no soft-pin for Qwen3-TTS today —
+      # the Kokoro AMD-EPYC ISA soft-pin doesn't apply here because the
+      # harness does not depend on FP tile dispatch; every check is either
+      # metadata (bit-exact) or `config.json` cross-check (bit-exact)).
+      - name: Fail if parity harness FAILed
+        if: env.PARITY_EXIT != '0'
+        run: |
+          echo "::error::parity_tts_qwen3::${ARCH} exited with ${PARITY_EXIT} — see summary + artifacts"
+          exit "${PARITY_EXIT}"
