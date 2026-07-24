@@ -22,7 +22,7 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
@@ -35,7 +35,7 @@ OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
                               campplus | kokoro | cosyvoice2 | voxtral | mimi | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
-                              parakeet-tdt | parakeet-ctc | canary
+                              parakeet-tdt | parakeet-ctc | canary | omniasr-ctc
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
@@ -74,6 +74,20 @@ OPTIONS:
                               FastConformer-Transformer AED reference
                               config; weight license = CC-BY 4.0
                               attribution required)
+                              (omniasr-ctc: Meta omniASR-CTC-1B —
+                              1600+ language multilingual ASR
+                              (wav2vec 2.0 waveform-in encoder + single-
+                              Linear CTC head, no RNN-T prediction
+                              network); distributed as a fairseq2 .pt +
+                              SentencePiece tokenizer — use a
+                              prepare-checkpoint script to flatten to
+                              safetensors first; every hparam is
+                              transcribed verbatim from the fairseq2
+                              registry walk (the HF release carries no
+                              config.json); weight license = Apache-2.0
+                              permissive — no runtime-side attribution
+                              obligation, unlike NVIDIA's CC-BY 4.0
+                              Parakeet-CTC / Canary)
     --input <path>            upstream checkpoint file. For voxtral, a
                               `*.index.json` path reads every shard listed in
                               its weight_map (the raw sharded BF16 release)
@@ -168,7 +182,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          (whisper [alias: whisper-base] | silero-vad | piper-plus | \
                          campplus | kokoro | cosyvoice2 | voxtral | mimi | dac | \
                          csm | moshi | denoise | dia | zonos | kyutai-stt | \
-                         parakeet-tdt | parakeet-ctc | canary)"
+                         parakeet-tdt | parakeet-ctc | canary | omniasr-ctc)"
                     )
                 })?);
                 i += 2;
@@ -567,6 +581,7 @@ mod tests {
             ("parakeet-tdt", ModelKind::Parakeet),
             ("parakeet-ctc", ModelKind::ParakeetCtc),
             ("canary", ModelKind::Canary),
+            ("omniasr-ctc", ModelKind::OmniasrCtc),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

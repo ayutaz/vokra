@@ -48,6 +48,19 @@ pub(crate) mod parakeet;
 // joint section exists for CTC). Reuses the `vokra_ops::conformer` +
 // `vokra_ops::ctc_decode` primitives — no per-model op duplication.
 pub(crate) mod parakeet_ctc;
+// SoTA plan Phase 2 (2026-07-24): Meta omniASR-CTC-1B — 1600+ language
+// multilingual ASR (wav2vec 2.0 waveform-in encoder + single-Linear CTC
+// head, no RNN-T prediction network). Apache-2.0 weight (Permissive).
+// Every F32 / F16 tensor passes through verbatim; every hparam is
+// transcribed from the upstream fairseq2 registry walk
+// (`omnilingual_asr/models/wav2vec2_asr/config.py::_1b_asr` →
+// `wav2vec2_ssl/config.py::_1b_ssl` →
+// `fairseq2/models/wav2vec2/config.py::large_lv60k`) — the HF release
+// carries no `config.json`. Reuses the `vokra_ops::ctc_decode`
+// primitive; the wav2vec 2.0 encoder body is a distinct topology
+// from FastConformer (no shared `vokra_ops::wav2vec2_encoder` op today —
+// deliberate "may need new op" follow-up).
+pub(crate) mod omniasr_ctc;
 pub(crate) mod piper_plus;
 pub(crate) mod silero;
 pub(crate) mod utmos;

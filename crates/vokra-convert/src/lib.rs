@@ -234,6 +234,33 @@ pub enum ModelKind {
     /// (attention-decoder search — OP-3) primitives — no per-model op
     /// duplication.
     Canary,
+    /// Meta **omniASR-CTC-1B** — the Omnilingual ASR family's 1B
+    /// wav2vec 2.0 CTC checkpoint (SoTA plan Phase 2, 2026-07-24).
+    /// Multilingual ASR across **1600+ languages** (`facebook/omniASR-CTC-1B`):
+    /// a wav2vec 2.0 **waveform-in** encoder (7-layer Conv1D feature
+    /// extractor at 320× total downsampling, grouped-Conv1D positional
+    /// encoder, 48-layer pre-norm Transformer with
+    /// `model_dim=1280`, MHA `num_encoder_attn_heads=16`,
+    /// `ffn_inner_dim=5120`, `max_seq_len=4096`) + a single-Linear CTC
+    /// head with `target_vocab_size=9812` (v1 SentencePiece char
+    /// tokenizer, blank at index 0 per the fairseq2 convention).
+    /// **No RNN-T prediction network, no joint / duration head** —
+    /// CTC decoding is a host-side runtime function
+    /// (`vokra_ops::ctc_decode`). Apache-2.0 weight (`Permissive` —
+    /// no runtime-side attribution obligation, unlike NVIDIA's CC-BY 4.0
+    /// Parakeet-CTC / Canary). Every hparam is transcribed verbatim
+    /// from the fairseq2 registry walk
+    /// (`omnilingual_asr/models/wav2vec2_asr/config.py::_1b_asr` →
+    /// `wav2vec2_ssl/config.py::_1b_ssl` →
+    /// `fairseq2/models/wav2vec2/config.py::large_lv60k`); the HF
+    /// release carries no `config.json`, only the `.pt` + a
+    /// SentencePiece tokenizer. Reuses `vokra_ops::ctc_decode`
+    /// (greedy / beam CTC decoding); the wav2vec 2.0 encoder body is a
+    /// distinct topology from FastConformer — no shared
+    /// `vokra_ops::wav2vec2_encoder` op today (the "may need new op"
+    /// note is deliberately deferred; the scaffold stops at shape /
+    /// weight-store flow).
+    OmniasrCtc,
 }
 
 impl ModelKind {
@@ -276,6 +303,8 @@ impl ModelKind {
                 Some(Self::ParakeetCtc)
             }
             "canary" | "canary-1b-v2" | "canary-1b-v2-en" | "canary-1b_v2" => Some(Self::Canary),
+            "omniasr-ctc" | "omniasr-ctc-1b" | "omniasr-ctc-1_1b" | "omniasr_ctc"
+            | "omniasr_ctc_1b" => Some(Self::OmniasrCtc),
             _ => None,
         }
     }
@@ -302,6 +331,7 @@ impl ModelKind {
             Self::Parakeet => "parakeet-tdt",
             Self::ParakeetCtc => "parakeet-ctc",
             Self::Canary => "canary",
+            Self::OmniasrCtc => "omniasr-ctc",
         }
     }
 }
@@ -681,6 +711,28 @@ pub fn convert_file_licensed(
                 report.written, report.skipped_non_float,
             )];
             notes.extend(report.notes.iter().map(|n| format!("canary warning: {n}")));
+            (builder, notes)
+        }
+        ModelKind::OmniasrCtc => {
+            // SoTA plan Phase 2: pass every F32/F16 tensor through
+            // verbatim and stamp the `vokra.omniasr_ctc.*` chunk group
+            // (wav2vec 2.0 encoder + CTC head — no decoder or joint
+            // section, since CTC has no RNN-T prediction network) from
+            // the primary-source constants transcribed in
+            // `models::omniasr_ctc`. Provenance = Apache-2.0
+            // (Permissive) — no runtime-side attribution obligation,
+            // unlike NVIDIA's CC-BY 4.0 Parakeet-CTC / Canary.
+            let (builder, report) = models::omniasr_ctc::convert(bytes)?;
+            let mut notes = vec![format!(
+                "omniasr-ctc: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("omniasr-ctc warning: {n}")),
+            );
             (builder, notes)
         }
     };
@@ -1638,6 +1690,78 @@ pub fn convert_parakeet_ctc_file(
 /// so a downstream must show the NVIDIA attribution.
 pub fn convert_canary_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::Canary, input, output)
+}
+
+/// Convert a Meta **omniASR-CTC-1B** safetensors checkpoint into a Vokra
+/// GGUF (SoTA plan Phase 2, 2026-07-24).
+///
+/// This is the named entry point that mirrors `convert_parakeet_ctc_file` /
+/// `convert_canary_file` / `convert_kyutai_stt_file`. It is functionally
+/// identical to `convert_file(ModelKind::OmniasrCtc, input, output)` —
+/// omniASR-CTC has no side-car config or tokenizer to embed at this
+/// scaffold stage (every hparam is transcribed as constants in
+/// `models::omniasr_ctc`; the fairseq2 registry walk fixes every axis,
+/// and the SentencePiece char tokenizer ships separately on the HF
+/// release) — but the named entry keeps the `convert_*_file` naming
+/// symmetry with the other ASR / TTS models.
+///
+/// # Architecture summary
+///
+/// - Encoder: **wav2vec 2.0 waveform-in**, `model_dim=1280`, 48-layer
+///   pre-norm Transformer, `num_encoder_attn_heads=16`,
+///   `ffn_inner_dim=5120`. Waveform features come from a fixed 7-layer
+///   Conv1D stem `[(512,10,5), (512,3,2)×4, (512,2,2)×2]` with per-layer
+///   Layer Normalization and bias (large_lv60k axes). The positional
+///   encoder is a single grouped Conv1D (`pos_conv_kernel_size=128`,
+///   `num_pos_conv_groups=16`). The wav2vec 2.0 encoder is a distinct
+///   topology from the FastConformer used by Parakeet-CTC — no shared
+///   `vokra_ops::wav2vec2_encoder` op today (the task note's "may need
+///   new op" is deliberately deferred).
+/// - CTC head: single Linear from `model_dim=1280` to
+///   `target_vocab_size=9812`, with bias (fairseq2 default
+///   `final_proj_bias=True`). **`blank_id = 0`** — the fairseq2 wav2vec
+///   2.0 convention (`torch.nn.functional.ctc_loss` called without an
+///   explicit `blank=` argument uses `blank=0`). This is different
+///   from the NeMo convention that Parakeet-CTC follows (blank at
+///   `pad_token_id = vocab_size - 1`).
+/// - Sample rate: **16 kHz** (model card + wav2vec 2.0 convention;
+///   the HF release carries no `config.json`).
+///
+/// # Architecture differences vs. Parakeet-CTC-1.1B
+///
+/// - **Waveform input**, not log-mel bins — the encoder's Conv1D stem
+///   produces the features (Parakeet-CTC takes `num_mel_bins=80` in).
+/// - `num_encoder_layers` = **48** (Parakeet-CTC: 42).
+/// - `model_dim` = **1280** (Parakeet-CTC: `d_model=1024`).
+/// - `ffn_inner_dim` = **5120** (Parakeet-CTC: `intermediate_size=4096`).
+/// - **Plain Transformer**, not FastConformer — no depthwise conv, no
+///   macaron FFN, no 8× stacking subsample.
+/// - `blank_id` = **0**, not vocab tail (fairseq2 vs NeMo convention).
+/// - `target_vocab_size` = **9812** (Parakeet-CTC: `vocab_size=1025`) —
+///   the 1600-language SentencePiece char tokenizer is much larger.
+/// - **1600+ languages**, not English-only.
+/// - License = **Apache-2.0** (`Permissive`), not CC-BY 4.0
+///   (`AttributionRequired`) — no runtime-side attribution obligation.
+///
+/// # BF16 posture
+///
+/// The `facebook/omniASR-CTC-1B.pt` checkpoint is `torch.float32` per
+/// the fairseq2 release; no BF16 pass-through is required to convert
+/// the release build. A downstream that pre-widens to F16 offline
+/// lands on the F16 arm (also pass-through); BF16 tensors reach the
+/// `skipped_non_float` counter — never a silent widen (T29-equivalent
+/// — the Moshi pattern). Provenance is stamped **Apache-2.0**
+/// (`Permissive`) so the M2-13 gate passes commercially without an
+/// attribution obligation on the runtime side.
+///
+/// # Errors
+///
+/// As [`convert_file`].
+pub fn convert_omniasr_ctc_file(
+    input: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::OmniasrCtc, input, output)
 }
 
 /// Rewrite an existing GGUF's provenance metadata without re-materialising its

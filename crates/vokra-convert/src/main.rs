@@ -27,7 +27,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -69,7 +69,15 @@ OPTIONS:
                        as a .nemo tarball, flatten to safetensors with a
                        prepare-checkpoint script first; upstream is BF16 —
                        pre-widen to F32 offline for now; weight license =
-                       CC-BY 4.0 attribution required).
+                       CC-BY 4.0 attribution required), or
+                       omniasr-ctc (Meta omniASR-CTC-1B multilingual ASR
+                       across 1600+ languages — wav2vec 2.0 waveform-in
+                       encoder (48 layers) + single-Linear CTC head —
+                       SoTA plan Phase 2; distributed as a fairseq2 .pt +
+                       SentencePiece tokenizer, flatten to safetensors
+                       with a prepare-checkpoint script first; upstream
+                       is F32; weight license = Apache-2.0 permissive —
+                       no runtime-side attribution obligation).
                        `whisper-base` is accepted as a backward-compatible
                        alias for `whisper` (size is still derived from the
                        checkpoint, not the flag).
@@ -265,7 +273,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                     format!(
                         "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | \
                          piper-plus | campplus | kokoro | cosyvoice2 | voxtral | mimi | \
-                         dac | csm | moshi | denoise | dia | zonos | kyutai-stt)"
+                         dac | csm | moshi | denoise | dia | zonos | kyutai-stt | \
+                         parakeet-tdt | parakeet-ctc | canary | omniasr-ctc)"
                     )
                 })?);
                 i += 2;
@@ -871,6 +880,49 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  dec_max_seq={dec_max_seq} vocab={vocab} sample_rate={sr}"
             );
         }
+        ModelKind::OmniasrCtc => {
+            // SoTA plan Phase 2 (2026-07-24): Meta omniASR-CTC-1B — 1600+
+            // language wav2vec 2.0 CTC ASR (encoder + single-Linear CTC head
+            // — no decoder / joint / duration bins). Verify the loaded
+            // GGUF carries the key hparam chunk group.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let model_dim = file
+                .get("vokra.omniasr_ctc.arch.encoder.model_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_layer = file
+                .get("vokra.omniasr_ctc.arch.encoder.num_encoder_layers")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_head = file
+                .get("vokra.omniasr_ctc.arch.encoder.num_encoder_attn_heads")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let feature_dim = file
+                .get("vokra.omniasr_ctc.arch.encoder.feature_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let vocab = file
+                .get("vokra.omniasr_ctc.head.target_vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let blank = file
+                .get("vokra.omniasr_ctc.head.blank_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr = file
+                .get("vokra.omniasr_ctc.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} model_dim={model_dim} n_layer={n_layer} n_head={n_head} \
+                 feature_dim={feature_dim} target_vocab={vocab} blank_id={blank} \
+                 sample_rate={sr}"
+            );
+        }
     }
     Ok(())
 }
@@ -1091,6 +1143,7 @@ mod tests {
             ("parakeet-tdt", ModelKind::Parakeet),
             ("parakeet-ctc", ModelKind::ParakeetCtc),
             ("canary", ModelKind::Canary),
+            ("omniasr-ctc", ModelKind::OmniasrCtc),
         ];
         for (name, kind) in kinds {
             let parsed = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

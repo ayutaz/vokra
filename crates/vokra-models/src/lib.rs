@@ -92,6 +92,26 @@ pub mod parakeet;
 // the encoder body, vokra_ops::ctc_decode for greedy / beam CTC decoding)
 // rather than duplicating.
 pub mod parakeet_ctc;
+// SoTA plan Phase 2 (2026-07-24): Meta omniASR-CTC-1B — 1600+ language
+// multilingual ASR built on a wav2vec 2.0 waveform-in encoder (7-layer
+// Conv1D feature extractor, 320× downsampling; grouped-Conv1D positional
+// encoder; 48-layer pre-norm Transformer, model_dim=1280, n_heads=16,
+// ffn=5120) + a single-Linear CTC head (target_vocab_size=9812 v1 char
+// tokenizer, blank at index 0 per the fairseq2 convention). No RNN-T
+// prediction network, no joint / duration head — CTC decoding is a
+// host-side runtime function (vokra_ops::ctc_decode). Every hparam is
+// transcribed verbatim from the fairseq2 registry walk
+// `omnilingual_asr/models/wav2vec2_asr/config.py::_1b_asr` →
+// `wav2vec2_ssl/config.py::_1b_ssl` →
+// `fairseq2/models/wav2vec2/config.py::large_lv60k` (CLAUDE.md ハルシネー
+// ション厳禁); real-checkpoint binding is a follow-up wave
+// (T29-equivalent). Weights: Apache-2.0 (Permissive — no runtime-side
+// attribution obligation, unlike NVIDIA's CC-BY 4.0 Parakeet-CTC). The
+// wav2vec 2.0 encoder body is a distinct topology from the FastConformer
+// used by Parakeet-CTC (no shared vokra_ops::wav2vec2_encoder op today —
+// the "may need new op" note from the task); the shared primitive
+// reused today is vokra_ops::ctc_decode.
+pub mod omniasr_ctc;
 // SoTA plan Phase 1-5 (2026-07-24): Zyphra Zonos-v0.1-transformer TTS
 // (Apache 2.0). Single-stack GQA transformer with typed prefix conditioner
 // (espeak / speaker / Fourier / integer) over DAC 44.1 kHz RVQ frames.

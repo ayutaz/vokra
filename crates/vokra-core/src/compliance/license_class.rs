@@ -413,6 +413,19 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // exact-match arm for parity with the parakeet-tdt /
         // parakeet-ctc arms above.
         "canary" | "canary-1b-v2" => LicenseClass::AttributionRequired,
+        // SoTA plan Phase 2 (2026-07-24): Meta omniASR-CTC-1B — the
+        // Omnilingual ASR family's 1B wav2vec 2.0 CTC checkpoint
+        // (`facebook/omniASR-CTC-1B` — 1600+ languages). Weight
+        // license = **Apache-2.0** (`huggingface.co/facebook/omniASR-CTC-1B`
+        // model-card `license: apache-2.0` — confirmed via the HF
+        // model API `cardData.license`). The corpus dataset ships
+        // CC-BY-4.0 separately, but the model weights are Apache-2.0
+        // — so this resolves to `Permissive`, NOT `AttributionRequired`
+        // like NVIDIA's Parakeet-CTC / Canary. Redundant with the
+        // `omniasr-ctc-` family walk below, but kept as an explicit
+        // exact-match arm so an id lookup returns the canonical
+        // spellings quickly.
+        "omniasr-ctc" | "omniasr-ctc-1b" => LicenseClass::Permissive,
         // --- gated: CC-BY-NC (research flag) ---------------------------------
         "f5-tts" | "encodec" => LicenseClass::NonCommercial,
         // --- gated: CC-BY-NC-SA (research flag) ------------------------------
@@ -452,7 +465,18 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
             // like `zonos-v0.1-transformer` / `zonos-v0.1-hybrid` still
             // resolve permissive without being individually listed. The
             // dash guard keeps unrelated ids from matching.
-            || id.starts_with("zonos-") =>
+            || id.starts_with("zonos-")
+            // Meta omniASR-CTC family (Apache-2.0 weight — SoTA plan
+            // Phase 2, 2026-07-24): specific HF variant ids like
+            // `omniasr-ctc-1b` or a future `omniasr-ctc-3b` /
+            // `omniasr-ctc-7b` (paired 300M / 3B / 7B checkpoints ship
+            // in the same fairseq2 registry under Apache-2.0 too) still
+            // resolve permissive. Guarded on the dash so unrelated ids
+            // (`omniasr-ctc` prefixed anything the family doesn't
+            // ship) cannot slip through. This is a POSITIVE-license
+            // Meta family — distinct from NVIDIA's Parakeet-CTC /
+            // Canary which ship CC-BY 4.0.
+            || id.starts_with("omniasr-ctc-") =>
         {
             LicenseClass::Permissive
         }
@@ -912,6 +936,30 @@ mod tests {
         // Guard: a random id starting with "canaryx" is NOT under the
         // family prefix (the dash guard rejects it).
         assert_eq!(registry_lookup("canaryx-something"), None);
+        // SoTA plan Phase 2 (2026-07-24): Meta omniASR-CTC-1B. Canonical
+        // id + variant spellings — all resolve to **Permissive**
+        // (Apache-2.0), NOT AttributionRequired like the NVIDIA CTC /
+        // AED families above. The whole omniASR-CTC family (paired
+        // 300M / 1B / 3B / 7B checkpoints) ships Apache-2.0 per the
+        // fairseq2 release.
+        for id in [
+            "omniasr-ctc",
+            "omniasr-ctc-1b",
+            // Case-insensitive (via lower-casing before lookup).
+            "OmniASR-CTC-1B",
+            "OMNIASR-CTC",
+            // Family prefix — the paired 300M / 3B / 7B checkpoints (and
+            // a hypothetical future size) still resolve permissive by
+            // the walk. The dash guard keeps unrelated ids out.
+            "omniasr-ctc-300m",
+            "omniasr-ctc-3b",
+            "omniasr-ctc-7b",
+        ] {
+            assert_eq!(registry_lookup(id), Some(LicenseClass::Permissive), "{id}");
+        }
+        // Guard: a random id starting with "omniasr-ctcxyz" (no dash) is
+        // NOT under the family prefix walk.
+        assert_eq!(registry_lookup("omniasr-ctcxyz-something"), None);
         // Case-insensitive.
         assert_eq!(registry_lookup("F5-TTS"), Some(LicenseClass::NonCommercial));
         // First-party **variant** ids (not canonical) still resolve permissive by
