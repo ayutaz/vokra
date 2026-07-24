@@ -177,6 +177,14 @@ pub mod resample;
 // parallel-wave rebases.
 pub mod rnnt_decode;
 // -------------------------------------------------------------------------
+// ---- SoTA plan Phase 3 snac_decode (TTS primitive, RVQ family) ----------
+// SNAC (Multi-Scale Neural Audio Codec) 3-stage hierarchical RVQ decode
+// (~12 / 23 / 47 Hz per stage for the 24 kHz variant). Reuses the factorized
+// `DacOutProj` + `CodebookTable` shapes since SNAC's per-quantizer
+// `WNConv1d(codebook_dim, input_dim)` folds identically to DAC's. Consumed
+// by Orpheus and Maya1 (upstream `hubertsiuzdak/snac`, MIT / Apache-2.0).
+pub mod snac_decode;
+// -------------------------------------------------------------------------
 pub mod stft;
 pub mod window;
 
@@ -250,6 +258,9 @@ pub use prosody::{ApplyProsody, ProsodyControl};
 pub use resample::resample;
 // ---- SoTA plan Phase 2 rnnt_decode re-exports ---------------------------
 pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
+// -------------------------------------------------------------------------
+// ---- SoTA plan Phase 3 snac_decode re-exports ---------------------------
+pub use snac_decode::{SnacConfig, SnacDecoder, SnacWeights};
 // -------------------------------------------------------------------------
 pub use stft::{Spectrogram, stft};
 pub use vokra_core::Complex32;
