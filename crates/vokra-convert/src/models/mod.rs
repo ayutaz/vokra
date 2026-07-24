@@ -12,6 +12,13 @@ pub(crate) mod dia;
 // checkpoint parse from the prepared safetensors, verbatim upstream names).
 pub mod denoise;
 pub(crate) mod kokoro;
+// SoTA plan Phase 2 (2026-07-24): Kyutai STT-2.6B-EN (CC-BY 4.0 weight,
+// AttributionRequired) safetensors → GGUF with the `vokra.kyutai_stt.*`
+// chunk group. Every F32 / F16 tensor passes through verbatim; every
+// hparam is transcribed from the upstream config.json. The upstream
+// release is BF16 and the streaming-BF16 pass-through path is a follow-up
+// (T29-equivalent — the Moshi pattern).
+pub(crate) mod kyutai_stt;
 pub(crate) mod mimi;
 pub(crate) mod moshi;
 pub(crate) mod piper_plus;

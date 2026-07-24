@@ -39,6 +39,17 @@ pub mod csm;
 // ション厳禁); real-checkpoint binding is a follow-up wave (T29-equivalent).
 pub mod dia;
 pub mod kokoro;
+// SoTA plan Phase 2 (2026-07-24): Kyutai STT-2.6B-EN — decoder-only
+// English streaming ASR that consumes Mimi tokens (n_q=32, card=2048) and
+// emits text tokens. Backbone is a 48-layer / dim=2048 / MHA transformer
+// with RoPE (max_period=100000), RMSNorm ε=1e-8, SiLU gating, sliding
+// causal attention (context=375). Depformer is present in the upstream
+// config but STT sets dep_q=0 (text-only prediction). Config is
+// transcribed verbatim from huggingface.co/kyutai/stt-2.6b-en/raw/main/
+// config.json (CLAUDE.md ハルシネーション厳禁); real-checkpoint binding is
+// a follow-up wave (T29-equivalent). Weights: CC-BY 4.0
+// (AttributionRequired — FR-MD-09 attribution surface).
+pub mod kyutai_stt;
 // SoTA plan Phase 1-5 (2026-07-24): Zyphra Zonos-v0.1-transformer TTS
 // (Apache 2.0). Single-stack GQA transformer with typed prefix conditioner
 // (espeak / speaker / Fourier / integer) over DAC 44.1 kHz RVQ frames.

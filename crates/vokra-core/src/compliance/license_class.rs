@@ -372,6 +372,14 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         "zonos" | "zonos-v0.1" | "zonos-v0_1" => LicenseClass::Permissive,
         // --- attribution-required (CC-BY-4.0) --------------------------------
         "mimi" | "moshi" => LicenseClass::AttributionRequired,
+        // SoTA plan Phase 2 (2026-07-24): Kyutai STT-2.6B-EN — English
+        // streaming ASR (decoder-only over Mimi tokens). Weight license =
+        // CC-BY 4.0 (`huggingface.co/kyutai/stt-2.6b-en` model card;
+        // `docs/license-audit.md` Kyutai row). The M2-13 gate passes
+        // commercially *and* the FR-MD-09 attribution surface activates.
+        "kyutai-stt" | "kyutai-stt-2.6b-en" | "kyutai-stt-2.6b" | "stt-2.6b-en" => {
+            LicenseClass::AttributionRequired
+        }
         // --- gated: CC-BY-NC (research flag) ---------------------------------
         "f5-tts" | "encodec" => LicenseClass::NonCommercial,
         // --- gated: CC-BY-NC-SA (research flag) ------------------------------
@@ -415,6 +423,14 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         {
             LicenseClass::Permissive
         }
+        // Kyutai STT family (SoTA plan Phase 2, 2026-07-24): a specific
+        // variant id like `kyutai-stt-6.7b-multilingual` (or a future
+        // `kyutai-stt-1b-en`) still resolves attribution-required. Guarded
+        // on the dash so unrelated ids (`kyutai-stt-x-something-else`)
+        // cannot slip through into the permissive bucket by accident. Note
+        // this arm resolves to CC-BY 4.0, not the Apache-2.0 permissive
+        // one — Kyutai's audio/text checkpoints ship CC-BY 4.0.
+        _ if id.starts_with("kyutai-stt-") => LicenseClass::AttributionRequired,
         _ => return None,
     };
     Some(class)
@@ -751,6 +767,29 @@ mod tests {
             registry_lookup("mimi"),
             Some(LicenseClass::AttributionRequired)
         );
+        // SoTA plan Phase 2 (2026-07-24): Kyutai STT-2.6B-EN. Canonical id
+        // and the two variant spellings the CLI + converter accept — all
+        // resolve to CC-BY 4.0 attribution-required (never permissive).
+        for id in [
+            "kyutai-stt",
+            "kyutai-stt-2.6b-en",
+            "kyutai-stt-2.6b",
+            "stt-2.6b-en",
+            // Case-insensitive.
+            "Kyutai-STT-2.6B-EN",
+            // Family prefix — a hypothetical future `kyutai-stt-1b-en`
+            // variant still resolves attribution-required by the walk.
+            "kyutai-stt-1b-en",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::AttributionRequired),
+                "{id}"
+            );
+        }
+        // Guard: a random id containing "stt" that is NOT under the
+        // Kyutai family prefix still fails closed to `None`.
+        assert_eq!(registry_lookup("some-random-stt-model"), None);
         // Case-insensitive.
         assert_eq!(registry_lookup("F5-TTS"), Some(LicenseClass::NonCommercial));
         // First-party **variant** ids (not canonical) still resolve permissive by

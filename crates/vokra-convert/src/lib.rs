@@ -158,6 +158,21 @@ pub enum ModelKind {
     /// every F32 / F16 tensor passes through verbatim. Ships safetensors
     /// directly — no `.pth` prepare step (unlike Dia).
     Zonos,
+    /// Kyutai **STT-2.6B-EN** safetensors checkpoint (SoTA plan Phase 2,
+    /// 2026-07-24). Decoder-only English streaming ASR: a 48-layer /
+    /// dim=2048 / MHA transformer (RoPE max_period=100000, RMSNorm
+    /// ε=1e-8, SiLU gating, sliding causal attention context=375) that
+    /// consumes 32 Mimi audio codebooks per 12.5 Hz frame and emits text
+    /// (`text_card=4000`). The depformer is structurally present but
+    /// `dep_q=0` so its per-step weights are unused. CC-BY 4.0 weight
+    /// (`AttributionRequired` — the converter stamps the FR-MD-09
+    /// attribution text). Every hparam is transcribed verbatim from
+    /// `huggingface.co/kyutai/stt-2.6b-en/raw/main/config.json`. The
+    /// upstream release is BF16 (~5.2 GB) and the streaming-BF16
+    /// pass-through path is a follow-up (T29-equivalent — the Moshi
+    /// pattern); this M2-13-preserving path handles F32 / F16 checkpoints
+    /// today and skips BF16 with the loud "no float tensors" note.
+    KyutaiStt,
 }
 
 impl ModelKind {
@@ -187,6 +202,9 @@ impl ModelKind {
             "denoise" => Some(Self::Denoise),
             "dia" | "dia-1.6b" | "dia-1_6b" => Some(Self::Dia),
             "zonos" | "zonos-v0.1" | "zonos-v0_1" | "zonos-v0.1-transformer" => Some(Self::Zonos),
+            "kyutai-stt" | "kyutai-stt-2.6b-en" | "kyutai-stt-2.6b" | "stt-2.6b-en" => {
+                Some(Self::KyutaiStt)
+            }
             _ => None,
         }
     }
@@ -209,6 +227,7 @@ impl ModelKind {
             Self::Denoise => "denoise",
             Self::Dia => "dia",
             Self::Zonos => "zonos",
+            Self::KyutaiStt => "kyutai-stt",
         }
     }
 }
@@ -512,6 +531,26 @@ pub fn convert_file_licensed(
                 report.written, report.skipped_non_float,
             )];
             notes.extend(report.notes.iter().map(|n| format!("zonos warning: {n}")));
+            (builder, notes)
+        }
+        ModelKind::KyutaiStt => {
+            // SoTA plan Phase 2: pass every F32/F16 tensor through verbatim
+            // and stamp the `vokra.kyutai_stt.*` chunk group (backbone +
+            // depformer + audio + text + streaming + delays) from the
+            // primary-source constants transcribed in `models::kyutai_stt`.
+            // Provenance = CC-BY 4.0 (AttributionRequired) + FR-MD-09
+            // attribution text.
+            let (builder, report) = models::kyutai_stt::convert(bytes)?;
+            let mut notes = vec![format!(
+                "kyutai-stt: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("kyutai-stt warning: {n}")),
+            );
             (builder, notes)
         }
     };
@@ -1333,6 +1372,33 @@ pub fn convert_dia_file(input: &Path, output: &Path) -> Result<ConvertSummary, C
 /// no `.pth` prepare step is required (unlike Dia).
 pub fn convert_zonos_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::Zonos, input, output)
+}
+
+/// Convert a Kyutai **STT-2.6B-EN** safetensors checkpoint into a Vokra
+/// GGUF (SoTA plan Phase 2, 2026-07-24).
+///
+/// This is the named entry point that mirrors `convert_dia_file` /
+/// `convert_zonos_file` / `convert_csm_file` / `convert_kokoro_file`. It
+/// is functionally identical to
+/// `convert_file(ModelKind::KyutaiStt, input, output)` — Kyutai STT has
+/// no side-car config or tokenizer to embed at this scaffold stage (every
+/// hparam is transcribed as constants in `models::kyutai_stt`; the
+/// SentencePiece tokenizer + Mimi codec ride separate GGUFs) — but the
+/// named entry keeps the `convert_*_file` naming symmetry with the other
+/// ASR / TTS models.
+///
+/// The upstream Kyutai STT release ships raw safetensors (all BF16, ~5.2
+/// GB); BF16 currently reaches the `skipped_non_float` counter and the
+/// converter surfaces the "no float tensors" loud note — the
+/// streaming-BF16 pass-through path is a follow-up wave (T29-equivalent,
+/// the Moshi pattern). Provenance is stamped **CC-BY 4.0**
+/// (`AttributionRequired`) and the FR-MD-09 attribution surface
+/// activates so a downstream must show the Kyutai attribution.
+pub fn convert_kyutai_stt_file(
+    input: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::KyutaiStt, input, output)
 }
 
 /// Rewrite an existing GGUF's provenance metadata without re-materialising its

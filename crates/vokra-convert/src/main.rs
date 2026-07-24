@@ -1,7 +1,7 @@
 //! `vokra-convert` command-line entry point (M0-03, FR-TL-01).
 //!
 //! ```text
-//! vokra-convert --model <whisper|silero-vad|piper-plus|campplus|kokoro|cosyvoice2|voxtral|mimi|dac|csm|moshi|denoise|dia>
+//! vokra-convert --model <whisper|silero-vad|piper-plus|campplus|kokoro|cosyvoice2|voxtral|mimi|dac|csm|moshi|denoise|dia|zonos|kyutai-stt>
 //!               --input <ckpt> [--config <side-car>] --output <out.gguf>
 //! ```
 //!
@@ -27,7 +27,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -46,8 +46,13 @@ OPTIONS:
                        `vokra-cli convert`), mimi (Kyutai Mimi codec
                        safetensors), dac (prepared DAC safetensors +
                        config.json), csm (Sesame CSM-1B safetensors),
-                       moshi (Kyutai Moshi safetensors) or dia (nari-labs
-                       Dia-1.6B safetensors — SoTA plan Phase 1-4).
+                       moshi (Kyutai Moshi safetensors), dia (nari-labs
+                       Dia-1.6B safetensors — SoTA plan Phase 1-4),
+                       zonos (Zyphra Zonos-v0.1-transformer safetensors —
+                       SoTA plan Phase 1-5), or kyutai-stt (Kyutai
+                       STT-2.6B-EN decoder-only English streaming ASR
+                       over Mimi tokens — SoTA plan Phase 2; weight
+                       license = CC-BY 4.0 attribution required).
                        `whisper-base` is accepted as a backward-compatible
                        alias for `whisper` (size is still derived from the
                        checkpoint, not the flag).
@@ -243,7 +248,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                     format!(
                         "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | \
                          piper-plus | campplus | kokoro | cosyvoice2 | voxtral | mimi | \
-                         dac | csm | moshi | denoise | dia)"
+                         dac | csm | moshi | denoise | dia | zonos | kyutai-stt)"
                     )
                 })?);
                 i += 2;
@@ -653,6 +658,40 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  num_codebooks={num_cb} conditioners={conds} sample_rate={sr}"
             );
         }
+        ModelKind::KyutaiStt => {
+            // SoTA plan Phase 2 (2026-07-24). The `vokra.kyutai_stt.*` chunk
+            // group is written entirely from primary-source-transcribed
+            // constants — the summary reads back the anchoring shape triples
+            // (48-layer MHA backbone, 32 Mimi codebook channels, 24 kHz).
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let bb_layers = file
+                .get("vokra.kyutai_stt.arch.backbone.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let d_model = file
+                .get("vokra.kyutai_stt.arch.backbone.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_q = file
+                .get("vokra.kyutai_stt.audio.n_q")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let text_card = file
+                .get("vokra.kyutai_stt.text.card")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr = file
+                .get("vokra.kyutai_stt.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} backbone_layers={bb_layers} d_model={d_model} \
+                 n_q={n_q} text_card={text_card} sample_rate={sr}"
+            );
+        }
     }
     Ok(())
 }
@@ -868,6 +907,8 @@ mod tests {
             ("csm", ModelKind::Csm),
             ("moshi", ModelKind::Moshi),
             ("dia", ModelKind::Dia),
+            ("zonos", ModelKind::Zonos),
+            ("kyutai-stt", ModelKind::KyutaiStt),
         ];
         for (name, kind) in kinds {
             let parsed = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
