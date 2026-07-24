@@ -3436,3 +3436,329 @@ mod compliance_conduit_tests {
         assert!(check_weight_license(&file, &CompliancePolicy::strict()).is_err());
     }
 }
+
+/// SoTA plan Phase 2-5 (2026-07-24): every ModelKind variant the campaign
+/// added — plus every alias spelling the CLI accepts for it — must be
+/// exercised by unit tests. Prior coverage only touched the *canonical*
+/// spelling per family via `parses_every_model_kind_and_help_lists_them`
+/// (in `main.rs`); this module exhaustively pins the alias walk (so a
+/// future contributor who breaks the `--config` free-form spelling gets a
+/// loud compile-time / test-time signal) and the `as_arg → from_arg`
+/// round-trip (so a dropped alias in `as_arg` can be caught).
+#[cfg(test)]
+mod modelkind_alias_and_roundtrip_tests {
+    use super::ModelKind;
+
+    /// Every `ModelKind` variant round-trips through its canonical
+    /// `--model` argument value: `as_arg` yields a stable string, and
+    /// `from_arg` returns the same variant back. A missing arm in
+    /// `as_arg` (a `_ => "..."` catch-all would be a silent misroute)
+    /// falls out immediately.
+    #[test]
+    fn every_variant_round_trips_through_as_arg_and_from_arg() {
+        use ModelKind::*;
+        for kind in [
+            Whisper,
+            SileroVad,
+            Utmos,
+            PiperPlus,
+            CamPlus,
+            Kokoro,
+            CosyVoice2,
+            CosyVoice3,
+            Voxtral,
+            Mimi,
+            Dac,
+            Csm,
+            Moshi,
+            Denoise,
+            Dia,
+            Zonos,
+            KyutaiStt,
+            Parakeet,
+            ParakeetCtc,
+            Canary,
+            OmniasrCtc,
+            DistilWhisper,
+            KotobaWhisper,
+            Chatterbox,
+            ChatterboxTurbo,
+            ChatterboxNano,
+            Qwen3Tts,
+            VoxCpm2,
+            VibeVoice,
+            Irodori,
+            VitsJa,
+        ] {
+            let arg = kind.as_arg();
+            assert!(
+                !arg.is_empty(),
+                "as_arg for {kind:?} must be a non-empty stable string"
+            );
+            let parsed = ModelKind::from_arg(arg)
+                .unwrap_or_else(|| panic!("from_arg({arg:?}) must round-trip {kind:?}"));
+            assert_eq!(
+                parsed, kind,
+                "from_arg({arg:?}) = {parsed:?} but round-trip target was {kind:?}"
+            );
+        }
+    }
+
+    /// Every SoTA-plan alias spelling the CLI accepts must dispatch to
+    /// the same variant the canonical form does. A silent mis-dispatch
+    /// (e.g. `chatterbox-turbo-onnx` landing on `ModelKind::Chatterbox`)
+    /// would map the wrong converter path onto a caller's ckpt and
+    /// silently produce a wrong-shape GGUF — this test guards against
+    /// that class of drift.
+    #[test]
+    fn sota_plan_aliases_dispatch_to_the_intended_variant() {
+        // Order: (kind, [alias spellings...])
+        let cases: &[(ModelKind, &[&str])] = &[
+            // Phase 3 — CosyVoice3
+            (
+                ModelKind::CosyVoice3,
+                &[
+                    "cosyvoice3",
+                    "cosyvoice-3",
+                    "fun-cosyvoice3",
+                    "fun-cosyvoice-3",
+                    "fun-cosyvoice3-0.5b",
+                    "fun-cosyvoice3-0.5b-2512",
+                    "fun-cosyvoice3-0_5b",
+                    "fun-cosyvoice3-0_5b-2512",
+                ],
+            ),
+            // Phase 1-4 / 1-5 aliases still present
+            (ModelKind::Dia, &["dia", "dia-1.6b", "dia-1_6b"]),
+            (
+                ModelKind::Zonos,
+                &[
+                    "zonos",
+                    "zonos-v0.1",
+                    "zonos-v0_1",
+                    "zonos-v0.1-transformer",
+                ],
+            ),
+            // Phase 2
+            (
+                ModelKind::KyutaiStt,
+                &[
+                    "kyutai-stt",
+                    "kyutai-stt-2.6b-en",
+                    "kyutai-stt-2.6b",
+                    "stt-2.6b-en",
+                ],
+            ),
+            (
+                ModelKind::Parakeet,
+                &[
+                    "parakeet",
+                    "parakeet-tdt",
+                    "parakeet-tdt-0.6b-v3",
+                    "parakeet-tdt-0.6b",
+                    "parakeet-tdt-0_6b-v3",
+                    "parakeet-tdt-0_6b",
+                ],
+            ),
+            (
+                ModelKind::ParakeetCtc,
+                &[
+                    "parakeet-ctc",
+                    "parakeet-ctc-1.1b",
+                    "parakeet-ctc-1.1B",
+                    "parakeet-ctc-1_1b",
+                ],
+            ),
+            (
+                ModelKind::Canary,
+                &["canary", "canary-1b-v2", "canary-1b-v2-en", "canary-1b_v2"],
+            ),
+            (
+                ModelKind::OmniasrCtc,
+                &[
+                    "omniasr-ctc",
+                    "omniasr-ctc-1b",
+                    "omniasr-ctc-1_1b",
+                    "omniasr_ctc",
+                    "omniasr_ctc_1b",
+                ],
+            ),
+            (
+                ModelKind::DistilWhisper,
+                &[
+                    "distil-whisper",
+                    "distil_whisper",
+                    "distil-whisper-large-v3",
+                    "distil-whisper-large-v3.5",
+                    "distil-whisper-large-v3_5",
+                    "distil-large-v3",
+                    "distil-large-v3.5",
+                    "distil-large-v3_5",
+                ],
+            ),
+            // Phase 5 JA-ASR-2 — kotoba-whisper
+            (
+                ModelKind::KotobaWhisper,
+                &[
+                    "kotoba-whisper",
+                    "kotoba_whisper",
+                    "kotoba-whisper-v1.0",
+                    "kotoba-whisper-v1_0",
+                    "kotoba-whisper-v1.1",
+                    "kotoba-whisper-v1_1",
+                    "kotoba-whisper-v2.0",
+                    "kotoba-whisper-v2_0",
+                    "kotoba-whisper-v2.1",
+                    "kotoba-whisper-v2_1",
+                    "kotoba-whisper-bilingual",
+                    "kotoba-whisper-bilingual-v1.0",
+                    "kotoba-whisper-bilingual-v1_0",
+                ],
+            ),
+            // Phase 3 — chatterbox family (base / turbo / nano)
+            (
+                ModelKind::Chatterbox,
+                &[
+                    "chatterbox",
+                    "chatterbox-multilingual",
+                    "chatterbox-multilingual-v2",
+                    "chatterbox-multilingual-v3",
+                    "chatterbox-mtl23ls-v2",
+                    "chatterbox-mtl23ls-v3",
+                    "chatterbox-english",
+                    "chatterbox_en",
+                ],
+            ),
+            (
+                ModelKind::ChatterboxTurbo,
+                &[
+                    "chatterbox-turbo",
+                    "chatterbox_turbo",
+                    "chatterbox-turbo-v1",
+                    "chatterbox-turbo-onnx",
+                ],
+            ),
+            (
+                ModelKind::ChatterboxNano,
+                &["chatterbox-nano", "chatterbox_nano", "chatterbox-nano-v1"],
+            ),
+            // Phase 3 — Qwen3-TTS
+            (
+                ModelKind::Qwen3Tts,
+                &[
+                    "qwen3-tts",
+                    "qwen3_tts",
+                    "qwen3-tts-0.6b",
+                    "qwen3-tts-0_6b",
+                    "qwen3-tts-12hz-0.6b-base",
+                    "qwen3-tts-12hz-0_6b-base",
+                    "qwen3-tts-12hz-0.6b",
+                ],
+            ),
+            // Phase 4 — VoxCPM
+            (
+                ModelKind::VoxCpm2,
+                &[
+                    "voxcpm",
+                    "voxcpm2",
+                    "voxcpm-0.5b",
+                    "voxcpm-0_5b",
+                    "voxcpm-0.5b-base",
+                    "voxcpm-0_5b-base",
+                ],
+            ),
+            // Phase 4 — VibeVoice
+            (
+                ModelKind::VibeVoice,
+                &[
+                    "vibevoice",
+                    "vibevoice-1.5b",
+                    "vibevoice-1_5b",
+                    "vibevoice-1.5b-base",
+                    "vibevoice-1_5b-base",
+                ],
+            ),
+            // Phase 5 JA-TTS-1 — Irodori
+            (
+                ModelKind::Irodori,
+                &[
+                    "irodori",
+                    "irodori-tts",
+                    "irodori_tts",
+                    "irodori-tts-500m",
+                    "irodori-tts-500m-v2",
+                    "irodori-tts-500m-v2-voicedesign",
+                    "irodori-tts-500m-v3",
+                    "irodori-tts-500m-v3-base",
+                    "irodori-tts-600m-v3-voicedesign",
+                ],
+            ),
+            // Phase 5 JA-TTS-2 — VITS-JA (RedistributionForbidden per license
+            // registry; the converter still recognises every alias so a
+            // developer who legitimately holds the weight can convert).
+            (
+                ModelKind::VitsJa,
+                &[
+                    "vits-ja",
+                    "vits_ja",
+                    "vits-jp",
+                    "vits_jp",
+                    "espnet-vits-ja",
+                    "espnet-vits-jp",
+                    "espnet-jsut-vits",
+                    "espnet-jvs-vits",
+                    "coeiroink-vits",
+                ],
+            ),
+            // Whisper — the historical alias.
+            (ModelKind::Whisper, &["whisper", "whisper-base"]),
+        ];
+        for (kind, aliases) in cases {
+            for a in aliases.iter() {
+                let parsed = ModelKind::from_arg(a)
+                    .unwrap_or_else(|| panic!("--model {a} must dispatch to {kind:?}"));
+                assert_eq!(
+                    parsed, *kind,
+                    "--model {a} routed to {parsed:?} but the alias table says {kind:?}"
+                );
+            }
+        }
+    }
+
+    /// A `--model` argument the alias table does not know MUST return None;
+    /// the CLI reports "unknown model" and refuses to run (FR-EX-08 — no
+    /// silent default onto e.g. Whisper).
+    #[test]
+    fn unknown_model_arg_returns_none() {
+        for s in [
+            "",
+            "bogus",
+            "whisper-large-v4",         // typo for whisper (unknown size)
+            "chatterbox-hyper-v99",     // future release not yet mapped
+            "irodori-something-random", // uncovered alias
+            "distil-huge-v3",           // no distil-huge- prefix
+            "kotoba-japanese-whisper",  // no kotoba-japanese- prefix
+            "voxcpm3",                  // future major bump not aliased today
+            "vits-en",                  // vits-* only covers the JA arm here
+            "whisper-base.en",          // registry-only alias, not CLI arg
+        ] {
+            assert!(
+                ModelKind::from_arg(s).is_none(),
+                "{s:?} must NOT resolve to any ModelKind (unknown model)"
+            );
+        }
+    }
+
+    /// `Denoise` and `Utmos` are canonical single-spelling variants; there
+    /// is no alias walk for them in `from_arg`, but the round-trip test
+    /// covers the canonical spelling. This test pins their canonical spellings
+    /// explicitly so a rename would fail loudly here rather than silently
+    /// break the pre-M2-06 CLI invocations that use them.
+    #[test]
+    fn denoise_and_utmos_canonical_spellings_are_stable() {
+        assert_eq!(ModelKind::from_arg("denoise"), Some(ModelKind::Denoise));
+        assert_eq!(ModelKind::from_arg("utmos"), Some(ModelKind::Utmos));
+        assert_eq!(ModelKind::Denoise.as_arg(), "denoise");
+        assert_eq!(ModelKind::Utmos.as_arg(), "utmos");
+    }
+}
