@@ -189,6 +189,26 @@ pub enum ModelKind {
     /// body via `Stacking { factor: 8 }`) and `vokra_ops::rnnt_decode`
     /// (`Tdt` variant) primitives — no per-model op duplication.
     Parakeet,
+    /// NVIDIA **Parakeet-CTC-1.1B** safetensors checkpoint (SoTA plan
+    /// Phase 2, 2026-07-24). English ASR: a FastConformer encoder
+    /// (`num_hidden_layers=42`, `hidden_size=1024`, MHA
+    /// `num_attention_heads=num_key_value_heads=8`, `intermediate_size
+    /// =4096`, `subsampling_factor=8`, `conv_kernel_size=9`,
+    /// **`num_mel_bins=80`** (differs from TDT-0.6B-v3 = 128),
+    /// **`attention_bias=true`** (differs from TDT-0.6B-v3 = false),
+    /// **`scale_input=true`** (differs from TDT-0.6B-v3 = false),
+    /// `max_position_embeddings=5000`) + a single-Linear CTC head with
+    /// `vocab_size=1025` (1024 SentencePiece pieces + 1 blank at
+    /// `pad_token_id=1024`). **No RNN-T prediction network, no joint /
+    /// duration head** — CTC decoding is a host-side runtime function
+    /// (`vokra_ops::ctc_decode`). CC-BY 4.0 weight
+    /// (`AttributionRequired` — the converter stamps the FR-MD-09
+    /// attribution text). Every hparam is transcribed verbatim from
+    /// `huggingface.co/nvidia/parakeet-ctc-1.1b/raw/main/config.json`.
+    /// Reuses the shared `vokra_ops::conformer` (FastConformer encoder
+    /// body via `Stacking { factor: 8 }`) and `vokra_ops::ctc_decode`
+    /// (greedy / beam CTC) primitives — no per-model op duplication.
+    ParakeetCtc,
 }
 
 impl ModelKind {
@@ -227,6 +247,9 @@ impl ModelKind {
             | "parakeet-tdt-0.6b"
             | "parakeet-tdt-0_6b-v3"
             | "parakeet-tdt-0_6b" => Some(Self::Parakeet),
+            "parakeet-ctc" | "parakeet-ctc-1.1b" | "parakeet-ctc-1.1B" | "parakeet-ctc-1_1b" => {
+                Some(Self::ParakeetCtc)
+            }
             _ => None,
         }
     }
@@ -251,6 +274,7 @@ impl ModelKind {
             Self::Zonos => "zonos",
             Self::KyutaiStt => "kyutai-stt",
             Self::Parakeet => "parakeet-tdt",
+            Self::ParakeetCtc => "parakeet-ctc",
         }
     }
 }
@@ -593,6 +617,27 @@ pub fn convert_file_licensed(
                     .notes
                     .iter()
                     .map(|n| format!("parakeet-tdt warning: {n}")),
+            );
+            (builder, notes)
+        }
+        ModelKind::ParakeetCtc => {
+            // SoTA plan Phase 2: pass every F32/F16 tensor through
+            // verbatim and stamp the `vokra.parakeet_ctc.*` chunk group
+            // (encoder + CTC head — no decoder / joint / duration bins,
+            // since CTC has no RNN-T prediction network) from the
+            // primary-source constants transcribed in
+            // `models::parakeet_ctc`. Provenance = CC-BY 4.0
+            // (AttributionRequired) + FR-MD-09 attribution text.
+            let (builder, report) = models::parakeet_ctc::convert(bytes)?;
+            let mut notes = vec![format!(
+                "parakeet-ctc: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("parakeet-ctc warning: {n}")),
             );
             (builder, notes)
         }
@@ -1465,6 +1510,48 @@ pub fn convert_kyutai_stt_file(
 /// activates so a downstream must show the NVIDIA attribution.
 pub fn convert_parakeet_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::Parakeet, input, output)
+}
+
+/// Convert an NVIDIA **Parakeet-CTC-1.1B** safetensors checkpoint into a
+/// Vokra GGUF (SoTA plan Phase 2, 2026-07-24).
+///
+/// This is the named entry point that mirrors `convert_parakeet_file` /
+/// `convert_kyutai_stt_file`. It is functionally identical to
+/// `convert_file(ModelKind::ParakeetCtc, input, output)` — Parakeet-CTC
+/// has no side-car config or tokenizer to embed at this scaffold stage
+/// (every hparam is transcribed as constants in `models::parakeet_ctc`;
+/// the SentencePiece tokenizer follows in a follow-up wave via the
+/// `--config` side-car pattern) — but the named entry keeps the
+/// `convert_*_file` naming symmetry with the other ASR / TTS models.
+///
+/// # Architecture differences vs. Parakeet-TDT-0.6B-v3
+///
+/// - `num_hidden_layers` = **42** (not 24)
+/// - `num_mel_bins` = **80** (not 128)
+/// - `attention_bias` = **true** (not false)
+/// - `scale_input` = **true** (not false)
+/// - **No RNN-T prediction network, no joint / duration head** — the
+///   CTC head is a single Linear from `d_model` to `vocab_size=1025`
+///   (1024 SentencePiece pieces + 1 blank at `pad_token_id=1024`),
+///   and decoding is a host-side runtime function
+///   (`vokra_ops::ctc_decode`).
+///
+/// # BF16 posture
+///
+/// The upstream Parakeet-CTC release ships **BF16** safetensors (per
+/// `config.json` `dtype: "bfloat16"`); today's pass-through arm handles
+/// only F32 / F16, so BF16 tensors reach the `skipped_non_float` counter
+/// and the converter surfaces the "no float tensors" loud note. Pre-widen
+/// offline (float32) or wait for the streaming BF16 pass-through path
+/// (T29-equivalent — the Moshi pattern) to convert the release build
+/// directly. Provenance is stamped **CC-BY 4.0** (`AttributionRequired`)
+/// and the FR-MD-09 attribution surface activates so a downstream must
+/// show the NVIDIA attribution.
+pub fn convert_parakeet_ctc_file(
+    input: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::ParakeetCtc, input, output)
 }
 
 /// Rewrite an existing GGUF's provenance metadata without re-materialising its

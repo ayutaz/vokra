@@ -27,7 +27,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -56,7 +56,12 @@ OPTIONS:
                        parakeet-tdt (NVIDIA Parakeet-TDT-0.6B-v3 English
                        ASR — FastConformer encoder + TDT decoder — SoTA
                        plan Phase 2; weight license = CC-BY 4.0
-                       attribution required).
+                       attribution required), or
+                       parakeet-ctc (NVIDIA Parakeet-CTC-1.1B English ASR
+                       — FastConformer encoder + CTC head, no RNN-T
+                       prediction network — SoTA plan Phase 2; ships BF16
+                       — pre-widen to F32 offline for now; weight license
+                       = CC-BY 4.0 attribution required).
                        `whisper-base` is accepted as a backward-compatible
                        alias for `whisper` (size is still derived from the
                        checkpoint, not the flag).
@@ -745,6 +750,61 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  n_durations={n_dur} sample_rate={sr}"
             );
         }
+        ModelKind::ParakeetCtc => {
+            // SoTA plan Phase 2 (2026-07-24). The `vokra.parakeet_ctc.*`
+            // chunk group is written entirely from primary-source-transcribed
+            // constants — the summary reads back the anchoring shape triples
+            // (42-layer FastConformer encoder, MHA 8-head, 80-bin log-mel,
+            // attention_bias=true, scale_input=true, 1025 vocab with blank
+            // at pad_token_id=1024, 16 kHz). No decoder / joint / duration
+            // group exists — CTC has no RNN-T prediction network.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let enc_layers = file
+                .get("vokra.parakeet_ctc.arch.encoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let d_model = file
+                .get("vokra.parakeet_ctc.arch.encoder.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_head = file
+                .get("vokra.parakeet_ctc.arch.encoder.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let in_dim = file
+                .get("vokra.parakeet_ctc.arch.encoder.in_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let attn_bias = file
+                .get("vokra.parakeet_ctc.arch.encoder.attention_bias")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let scale_input = file
+                .get("vokra.parakeet_ctc.arch.encoder.scale_input")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let vocab = file
+                .get("vokra.parakeet_ctc.head.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let pad_id = file
+                .get("vokra.parakeet_ctc.head.pad_token_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr = file
+                .get("vokra.parakeet_ctc.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} encoder_layers={enc_layers} d_model={d_model} \
+                 n_head={n_head} in_dim={in_dim} attention_bias={attn_bias} \
+                 scale_input={scale_input} vocab={vocab} \
+                 pad_token_id={pad_id} sample_rate={sr}"
+            );
+        }
     }
     Ok(())
 }
@@ -963,6 +1023,7 @@ mod tests {
             ("zonos", ModelKind::Zonos),
             ("kyutai-stt", ModelKind::KyutaiStt),
             ("parakeet-tdt", ModelKind::Parakeet),
+            ("parakeet-ctc", ModelKind::ParakeetCtc),
         ];
         for (name, kind) in kinds {
             let parsed = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

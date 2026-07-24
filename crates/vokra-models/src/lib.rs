@@ -63,6 +63,20 @@ pub mod kyutai_stt;
 // existing ops (vokra_ops::conformer for the encoder body,
 // vokra_ops::rnnt_decode for the TDT decoder) rather than duplicating.
 pub mod parakeet;
+// SoTA plan Phase 2 (2026-07-24): NVIDIA Parakeet-CTC-1.1B — English ASR
+// built on a FastConformer encoder (8× subsampling, 42-layer / d_model=1024
+// / MHA / attention_bias=true / scale_input=true / num_mel_bins=80) + a
+// single-Linear CTC head (vocab_size=1025 = 1024 SentencePiece + 1 blank
+// at pad_token_id=1024). No RNN-T prediction network, no joint / duration
+// head — CTC decoding is a host-side runtime function (vokra_ops::ctc_decode).
+// Config is transcribed verbatim from
+// huggingface.co/nvidia/parakeet-ctc-1.1b/raw/main/config.json
+// (CLAUDE.md ハルシネーション厳禁); real-checkpoint binding is a follow-up
+// wave (T29-equivalent). Weights: CC-BY 4.0 (AttributionRequired — FR-MD-09
+// attribution surface). Reuses two existing ops (vokra_ops::conformer for
+// the encoder body, vokra_ops::ctc_decode for greedy / beam CTC decoding)
+// rather than duplicating.
+pub mod parakeet_ctc;
 // SoTA plan Phase 1-5 (2026-07-24): Zyphra Zonos-v0.1-transformer TTS
 // (Apache 2.0). Single-stack GQA transformer with typed prefix conditioner
 // (espeak / speaker / Fourier / integer) over DAC 44.1 kHz RVQ frames.

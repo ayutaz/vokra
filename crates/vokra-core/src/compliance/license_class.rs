@@ -391,6 +391,17 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         "parakeet-tdt" | "parakeet-tdt-0.6b-v3" | "parakeet-tdt-0.6b" | "parakeet" => {
             LicenseClass::AttributionRequired
         }
+        // SoTA plan Phase 2 (2026-07-24): NVIDIA Parakeet-CTC-1.1B —
+        // English ASR (FastConformer encoder + CTC head, no RNN-T
+        // prediction network). Weight license = CC-BY 4.0
+        // (`huggingface.co/nvidia/parakeet-ctc-1.1b` model card explicitly
+        // states "License to use this model is covered by the CC-BY-4.0").
+        // The M2-13 gate passes commercially *and* the FR-MD-09
+        // attribution surface activates. Redundant with the
+        // `parakeet-` family walk below, but kept as an explicit
+        // exact-match arm for parity with the parakeet-tdt arm above and
+        // so an id search returns the canonical spellings quickly.
+        "parakeet-ctc" | "parakeet-ctc-1.1b" => LicenseClass::AttributionRequired,
         // --- gated: CC-BY-NC (research flag) ---------------------------------
         "f5-tts" | "encodec" => LicenseClass::NonCommercial,
         // --- gated: CC-BY-NC-SA (research flag) ------------------------------
@@ -834,6 +845,28 @@ mod tests {
         // Guard: a random id starting with "parakeetx" is NOT under
         // the family prefix (the dash guard rejects it).
         assert_eq!(registry_lookup("parakeetx-something"), None);
+        // SoTA plan Phase 2 (2026-07-24): NVIDIA Parakeet-CTC-1.1B.
+        // Canonical id + variant spellings — all resolve to CC-BY 4.0
+        // attribution-required (NVIDIA's model card explicitly grants
+        // CC-BY-4.0 for the CTC family too).
+        for id in [
+            "parakeet-ctc",
+            "parakeet-ctc-1.1b",
+            // Case-insensitive (via lower-casing before lookup).
+            "Parakeet-CTC-1.1B",
+            "PARAKEET-CTC",
+            // Family prefix — a hypothetical future
+            // `parakeet-ctc-0.6b` / `parakeet-ctc-6b` still resolves
+            // attribution-required by the walk.
+            "parakeet-ctc-0.6b",
+            "parakeet-ctc-6b",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::AttributionRequired),
+                "{id}"
+            );
+        }
         // Case-insensitive.
         assert_eq!(registry_lookup("F5-TTS"), Some(LicenseClass::NonCommercial));
         // First-party **variant** ids (not canonical) still resolve permissive by

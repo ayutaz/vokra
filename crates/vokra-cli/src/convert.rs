@@ -22,7 +22,7 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
@@ -35,7 +35,7 @@ OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
                               campplus | kokoro | cosyvoice2 | voxtral | mimi | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
-                              parakeet-tdt
+                              parakeet-tdt | parakeet-ctc
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
@@ -54,6 +54,13 @@ OPTIONS:
                               (parakeet-tdt: NVIDIA Parakeet-TDT-0.6B-v3 —
                               English ASR (FastConformer encoder + TDT
                               decoder); ships safetensors directly; every
+                              hparam is transcribed from config.json;
+                              weight license = CC-BY 4.0 attribution required)
+                              (parakeet-ctc: NVIDIA Parakeet-CTC-1.1B —
+                              English ASR (FastConformer encoder + CTC
+                              head, no RNN-T prediction network); ships
+                              BF16 safetensors — pre-widen to F32 offline
+                              or wait for the streaming BF16 path; every
                               hparam is transcribed from config.json;
                               weight license = CC-BY 4.0 attribution required)
     --input <path>            upstream checkpoint file. For voxtral, a
@@ -150,7 +157,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          (whisper [alias: whisper-base] | silero-vad | piper-plus | \
                          campplus | kokoro | cosyvoice2 | voxtral | mimi | dac | \
                          csm | moshi | denoise | dia | zonos | kyutai-stt | \
-                         parakeet-tdt)"
+                         parakeet-tdt | parakeet-ctc)"
                     )
                 })?);
                 i += 2;
@@ -547,6 +554,7 @@ mod tests {
             ("zonos", ModelKind::Zonos),
             ("kyutai-stt", ModelKind::KyutaiStt),
             ("parakeet-tdt", ModelKind::Parakeet),
+            ("parakeet-ctc", ModelKind::ParakeetCtc),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
