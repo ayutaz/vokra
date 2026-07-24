@@ -234,6 +234,22 @@ pub enum ModelKind {
     /// (attention-decoder search — OP-3) primitives — no per-model op
     /// duplication.
     Canary,
+    /// HuggingFace **distil-whisper / distil-large-v3.5** safetensors
+    /// checkpoint (SoTA plan Phase 2, 2026-07-24). Whisper large-v3
+    /// encoder + a 2-layer decoder — same op inventory as vanilla
+    /// Whisper, only `n_text_layer` differs. Every hparam
+    /// (`d_model=1280`, `n_audio_layer=32`, `n_text_layer=2`,
+    /// `n_mels=128`, `vocab_size=51866`, `ffn_dim=5120`,
+    /// `n_audio_ctx=1500`, `n_text_ctx=448`) is transcribed verbatim
+    /// from `huggingface.co/distil-whisper/distil-large-v3.5/raw/main/
+    /// config.json`. MIT weight (`Permissive` — no runtime-side
+    /// attribution obligation). The GGUF carries `vokra.model.arch =
+    /// "distil-whisper"` (distinct from vanilla Whisper's `"whisper"`)
+    /// but the same `vokra.whisper.*` hparam chunk schema — the
+    /// "very cheap follow-on" contract in the task. Reuses the shared
+    /// Whisper op inventory (STFT / mel filterbank / GEMM / GEMV /
+    /// softmax / layer-norm / GELU / conv1d) — no new op is added.
+    DistilWhisper,
     /// Meta **omniASR-CTC-1B** — the Omnilingual ASR family's 1B
     /// wav2vec 2.0 CTC checkpoint (SoTA plan Phase 2, 2026-07-24).
     /// Multilingual ASR across **1600+ languages** (`facebook/omniASR-CTC-1B`):
@@ -305,6 +321,14 @@ impl ModelKind {
             "canary" | "canary-1b-v2" | "canary-1b-v2-en" | "canary-1b_v2" => Some(Self::Canary),
             "omniasr-ctc" | "omniasr-ctc-1b" | "omniasr-ctc-1_1b" | "omniasr_ctc"
             | "omniasr_ctc_1b" => Some(Self::OmniasrCtc),
+            "distil-whisper"
+            | "distil_whisper"
+            | "distil-whisper-large-v3"
+            | "distil-whisper-large-v3.5"
+            | "distil-whisper-large-v3_5"
+            | "distil-large-v3"
+            | "distil-large-v3.5"
+            | "distil-large-v3_5" => Some(Self::DistilWhisper),
             _ => None,
         }
     }
@@ -332,6 +356,7 @@ impl ModelKind {
             Self::ParakeetCtc => "parakeet-ctc",
             Self::Canary => "canary",
             Self::OmniasrCtc => "omniasr-ctc",
+            Self::DistilWhisper => "distil-whisper",
         }
     }
 }
@@ -732,6 +757,29 @@ pub fn convert_file_licensed(
                     .notes
                     .iter()
                     .map(|n| format!("omniasr-ctc warning: {n}")),
+            );
+            (builder, notes)
+        }
+        ModelKind::DistilWhisper => {
+            // SoTA plan Phase 2: pass every F32/F16 tensor through
+            // verbatim and stamp the `vokra.whisper.*` chunk group
+            // (schema shared with vanilla Whisper — distil-whisper
+            // differs only in `n_text_layer`, not in the schema) from
+            // the checkpoint's tensor shapes. Provenance = MIT
+            // (Permissive) — no runtime-side attribution obligation.
+            // The arch stamp `vokra.model.arch = "distil-whisper"`
+            // is distinct from vanilla Whisper's `"whisper"` so the
+            // runtime can label the loaded model correctly.
+            let (builder, report) = models::distil_whisper::convert(bytes)?;
+            let mut notes = vec![format!(
+                "distil-whisper: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("distil-whisper warning: {n}")),
             );
             (builder, notes)
         }
@@ -1762,6 +1810,61 @@ pub fn convert_omniasr_ctc_file(
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::OmniasrCtc, input, output)
+}
+
+/// Convert a HuggingFace **distil-whisper / distil-large-v3.5**
+/// safetensors checkpoint into a Vokra GGUF (SoTA plan Phase 2,
+/// 2026-07-24).
+///
+/// This is the named entry point that mirrors `convert_omniasr_ctc_file`
+/// / `convert_canary_file` / `convert_parakeet_ctc_file` /
+/// `convert_kyutai_stt_file`. It is functionally identical to
+/// `convert_file(ModelKind::DistilWhisper, input, output)` —
+/// distil-whisper has no side-car config or tokenizer to embed at this
+/// scaffold stage (every hparam is shape-derived from the checkpoint's
+/// tensors and the Whisper multilingual tokenizer boundary constants
+/// are the same invariants the vanilla Whisper converter uses) — but
+/// the named entry keeps the `convert_*_file` naming symmetry with the
+/// other ASR / TTS models.
+///
+/// # Architecture summary
+///
+/// - **Encoder** (identical to Whisper `large-v3`): `d_model=1280`,
+///   `n_audio_layer=32`, `n_audio_head=20` (head_dim=64), `ffn_dim=5120`,
+///   `n_mels=128`, `n_audio_ctx=1500`.
+/// - **Decoder** (the distil axis): `n_text_layer=2` (large-v3 has 32),
+///   `n_text_head=20`, `n_text_ctx=448`.
+/// - **Tokenizer**: large-v3 multilingual byte-level BPE, `vocab_size=51866`
+///   (`eos_token_id=50257`, `decoder_start_token_id=50258`).
+/// - **Sample rate**: 16 kHz (Whisper convention).
+///
+/// # Architecture differences vs. vanilla Whisper large-v3
+///
+/// - `n_text_layer` = **2** (large-v3: 32). This is the entire distil
+///   difference; every other axis matches large-v3 exactly. The GGUF
+///   converter enforces `n_text_layer < n_audio_layer` (FR-EX-08) so a
+///   mislabelled vanilla Whisper checkpoint (32/32) cannot slip through
+///   as distil-whisper.
+///
+/// # BF16 posture
+///
+/// The `distil-whisper/distil-large-v3.5` release is `torch_dtype:
+/// float32` per its `config.json`, so no BF16 pass-through is required
+/// to convert the release build. A downstream that pre-widens to F16
+/// offline lands on the F16 arm (also pass-through); BF16 tensors
+/// reach the `skipped_non_float` counter — never a silent widen. The
+/// weight license stamped is **MIT** (`Permissive`) so the M2-13 gate
+/// passes commercially without an attribution obligation on the
+/// runtime side.
+///
+/// # Errors
+///
+/// As [`convert_file`].
+pub fn convert_distil_whisper_file(
+    input: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::DistilWhisper, input, output)
 }
 
 /// Rewrite an existing GGUF's provenance metadata without re-materialising its

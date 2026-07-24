@@ -19,6 +19,16 @@ pub(crate) mod dac;
 // safetensors → GGUF with the `vokra.dia.*` chunk group. Every tensor passes
 // through verbatim; every hparam is transcribed from the upstream config.json.
 pub(crate) mod dia;
+// SoTA plan Phase 2 (2026-07-24): HuggingFace distil-whisper /
+// distil-large-v3.5 (MIT weight, Permissive) — a distilled Whisper checkpoint
+// that keeps the large-v3 encoder intact (32 layers / d_model=1280 /
+// n_mels=128) and shrinks the decoder to 2 layers. Every F32 / F16 tensor
+// passes through verbatim under the upstream HF Whisper name; hparams ride
+// the `vokra.whisper.*` chunk schema (schema shared with vanilla Whisper —
+// the "very cheap follow-on" contract in the task). Reuses the shared
+// Whisper op inventory (STFT / mel filterbank / GEMM / GEMV / softmax /
+// layer-norm / GELU / conv1d) — no new op is added.
+pub(crate) mod distil_whisper;
 // M4-20 T12/T17: DeepFilterNet3 `denoise` → `vokra.denoise.*` GGUF (real
 // checkpoint parse from the prepared safetensors, verbatim upstream names).
 pub mod denoise;

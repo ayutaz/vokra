@@ -22,7 +22,7 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
@@ -35,7 +35,8 @@ OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
                               campplus | kokoro | cosyvoice2 | voxtral | mimi | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
-                              parakeet-tdt | parakeet-ctc | canary | omniasr-ctc
+                              parakeet-tdt | parakeet-ctc | canary | omniasr-ctc |
+                              distil-whisper
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
@@ -88,6 +89,13 @@ OPTIONS:
                               permissive — no runtime-side attribution
                               obligation, unlike NVIDIA's CC-BY 4.0
                               Parakeet-CTC / Canary)
+                              (distil-whisper: HuggingFace distil-large-v3.5
+                              — Whisper large-v3 encoder + 2-layer decoder
+                              (same op inventory as vanilla Whisper, only
+                              n_text_layer differs); ships safetensors
+                              directly; every hparam is transcribed
+                              verbatim from config.json; weight license =
+                              MIT permissive)
     --input <path>            upstream checkpoint file. For voxtral, a
                               `*.index.json` path reads every shard listed in
                               its weight_map (the raw sharded BF16 release)
@@ -182,7 +190,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          (whisper [alias: whisper-base] | silero-vad | piper-plus | \
                          campplus | kokoro | cosyvoice2 | voxtral | mimi | dac | \
                          csm | moshi | denoise | dia | zonos | kyutai-stt | \
-                         parakeet-tdt | parakeet-ctc | canary | omniasr-ctc)"
+                         parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
+                         distil-whisper)"
                     )
                 })?);
                 i += 2;
@@ -582,6 +591,7 @@ mod tests {
             ("parakeet-ctc", ModelKind::ParakeetCtc),
             ("canary", ModelKind::Canary),
             ("omniasr-ctc", ModelKind::OmniasrCtc),
+            ("distil-whisper", ModelKind::DistilWhisper),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

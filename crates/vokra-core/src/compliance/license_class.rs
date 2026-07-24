@@ -352,6 +352,20 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // --- first-party / official-zoo permissive (Apache-2.0 / MIT) --------
         "whisper" | "whisper-base" | "whisper-small" | "whisper-medium" | "whisper-large-v3"
         | "whisper-turbo" => LicenseClass::Permissive,
+        // SoTA plan Phase 2 (2026-07-24): distil-whisper / distil-large-v3.5 —
+        // HuggingFace's distilled Whisper (large-v3 encoder + shrunk 2-layer
+        // decoder). MIT weight license per `distil-whisper/distil-large-v3.5`
+        // model card (mirrors openai/whisper's MIT posture). Redundant with the
+        // `distil-whisper-` / `distil-large-` family walks below, but the
+        // exact canonical spellings are listed here so an id lookup returns
+        // quickly without hitting the prefix arms.
+        "distil-whisper"
+        | "distil-whisper-large-v3"
+        | "distil-whisper-large-v3.5"
+        | "distil-whisper-large-v3_5"
+        | "distil-large-v3"
+        | "distil-large-v3.5"
+        | "distil-large-v3_5" => LicenseClass::Permissive,
         "piper-plus" | "piper-plus-mb-istft-vits2" => LicenseClass::Permissive,
         "silero-vad" | "silero-vad-v5" => LicenseClass::Permissive,
         "campplus" | "cam++" => LicenseClass::Permissive,
@@ -476,7 +490,26 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
             // ship) cannot slip through. This is a POSITIVE-license
             // Meta family — distinct from NVIDIA's Parakeet-CTC /
             // Canary which ship CC-BY 4.0.
-            || id.starts_with("omniasr-ctc-") =>
+            || id.starts_with("omniasr-ctc-")
+            // HuggingFace distil-whisper family (MIT weight — SoTA plan
+            // Phase 2, 2026-07-24): a specific HF variant id like
+            // `distil-whisper-large-v3.5` or a future
+            // `distil-whisper-small.en` still resolves permissive.
+            // Guarded on the dash so unrelated ids (`distil-whisper`
+            // prefixed anything the family doesn't ship) cannot slip
+            // through. Mirrors openai/whisper's MIT posture — the
+            // family ships MIT code + MIT weights.
+            || id.starts_with("distil-whisper-")
+            // Canonical shorthand spelling used by the distil-whisper
+            // release checkpoints themselves (`distil-large-v3`,
+            // `distil-large-v3.5`, and any future `distil-large-*` /
+            // `distil-medium-*` / `distil-small-*` sibling). Guarded
+            // on the dash so unrelated ids (`distil-largely-anything`)
+            // cannot slip through. All distil-whisper variants ship
+            // MIT.
+            || id.starts_with("distil-large-")
+            || id.starts_with("distil-medium-")
+            || id.starts_with("distil-small-") =>
         {
             LicenseClass::Permissive
         }

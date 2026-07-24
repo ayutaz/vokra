@@ -27,7 +27,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -77,7 +77,14 @@ OPTIONS:
                        SentencePiece tokenizer, flatten to safetensors
                        with a prepare-checkpoint script first; upstream
                        is F32; weight license = Apache-2.0 permissive —
-                       no runtime-side attribution obligation).
+                       no runtime-side attribution obligation), or
+                       distil-whisper (HuggingFace distil-large-v3.5 —
+                       Whisper large-v3 encoder + 2-layer decoder; same
+                       op inventory as vanilla Whisper, only n_text_layer
+                       differs — SoTA plan Phase 2; ships F32
+                       safetensors directly; weight license = MIT
+                       permissive — no runtime-side attribution
+                       obligation).
                        `whisper-base` is accepted as a backward-compatible
                        alias for `whisper` (size is still derived from the
                        checkpoint, not the flag).
@@ -923,6 +930,46 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  sample_rate={sr}"
             );
         }
+        ModelKind::DistilWhisper => {
+            // SoTA plan Phase 2 (2026-07-24): HuggingFace distil-whisper /
+            // distil-large-v3.5 — Whisper large-v3 encoder + 2-layer decoder.
+            // Reuses the `vokra.whisper.*` chunk schema (schema shared with
+            // vanilla Whisper) so the verify surface here is the same shape
+            // as Whisper's: n_audio_layer / n_text_layer are the interesting
+            // pair (the distil axis).
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let d_model = file
+                .get("vokra.whisper.n_audio_state")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_audio_layer = file
+                .get("vokra.whisper.n_audio_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_text_layer = file
+                .get("vokra.whisper.n_text_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_mels = file
+                .get("vokra.whisper.n_mels")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_vocab = file
+                .get("vokra.whisper.n_vocab")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} d_model={d_model} n_audio_layer={n_audio_layer} \
+                 n_text_layer={n_text_layer} n_mels={n_mels} n_vocab={n_vocab}"
+            );
+        }
     }
     Ok(())
 }
@@ -1144,6 +1191,7 @@ mod tests {
             ("parakeet-ctc", ModelKind::ParakeetCtc),
             ("canary", ModelKind::Canary),
             ("omniasr-ctc", ModelKind::OmniasrCtc),
+            ("distil-whisper", ModelKind::DistilWhisper),
         ];
         for (name, kind) in kinds {
             let parsed = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

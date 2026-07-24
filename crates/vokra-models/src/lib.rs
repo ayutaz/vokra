@@ -53,6 +53,19 @@ pub mod csm;
 // huggingface.co/nari-labs/Dia-1.6B/config.json (CLAUDE.md ハルシネー
 // ション厳禁); real-checkpoint binding is a follow-up wave (T29-equivalent).
 pub mod dia;
+// SoTA plan Phase 2 (2026-07-24): HuggingFace distil-whisper /
+// distil-large-v3.5 — a distilled Whisper checkpoint that keeps the
+// large-v3 encoder (32-layer / d_model=1280 / n_mels=128) intact and
+// shrinks the decoder to 2 layers (same head width, same FFN dim, same
+// large-v3 multilingual vocab at 51 866). No new op / kernel — the whole
+// forward path is shared with the vanilla Whisper implementation, only
+// `n_text_layer` differs. Config is transcribed verbatim from
+// huggingface.co/distil-whisper/distil-large-v3.5/raw/main/config.json
+// (CLAUDE.md ハルシネーション厳禁); real-checkpoint binding is a
+// follow-up wave (T29-equivalent — delegates to `crate::whisper::WhisperModel`
+// with the distil-shrunk decoder depth). Weights: MIT (Permissive — no
+// runtime-side attribution obligation).
+pub mod distil_whisper;
 pub mod kokoro;
 // SoTA plan Phase 2 (2026-07-24): Kyutai STT-2.6B-EN — decoder-only
 // English streaming ASR that consumes Mimi tokens (n_q=32, card=2048) and
