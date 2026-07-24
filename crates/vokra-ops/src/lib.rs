@@ -67,6 +67,15 @@ pub mod hpf;
 pub mod loudness_norm;
 // -------------------------------------------------------------------------
 pub mod attrs;
+// ---- SoTA plan Phase 2 Conformer / FastConformer ASR encoder ------------
+// One implementation covers both — FastConformer differs only in the
+// subsampling stem (`ConvSubsampleKind::Stacking { factor }`). Consumed by
+// the parakeet family, canary, granite-speech, Qwen3-ASR, and
+// reazonspeech-nemo-v2. Verbatim port of the upstream NeMo modules
+// (`nemo/collections/asr/modules/conformer_encoder.py` +
+// `.../parts/submodules/conformer_modules.py`, MIT).
+pub mod conformer;
+// -------------------------------------------------------------------------
 // ---- M4-04 dac_rvq codec decode (RVQ family, FR-OP-30) ------------------
 // DAC's factorized (low-dim codebook + per-quantizer out_proj) residual VQ
 // decode. Shapes verified from the upstream descript-audio-codec (MIT)
