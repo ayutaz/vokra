@@ -94,13 +94,16 @@
 //! # BF16 posture
 //!
 //! The upstream Qwen3-TTS-0.6B release is served in **BF16**
-//! (README-declared "0.9B parameters in BF16"). Today's pass-through
-//! arm handles only F32 / F16, so BF16 tensors reach
-//! `skipped_non_float` and the converter surfaces the "no float
-//! tensors" loud note. Pre-widen offline to F32 (via
-//! `tools/parity/*_prepare_checkpoint.py` conventions) or wait for
-//! the streaming BF16 pass-through path (T29-equivalent — the Moshi /
-//! Kyutai STT pattern) to convert the release build directly.
+//! (README-declared "0.9B parameters in BF16"). Per the accepted ADR
+//! (docs/adr/qwen3-tts-bf16.md, strategy A_passthrough — the Moshi /
+//! Voxtral posture), BF16 tensors pass through **verbatim** as GGUF
+//! type 30 (`GgmlType::BF16`) with no convert-time widening; the
+//! runtime widens BF16 → f32 losslessly at load via the single choke
+//! point `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16` (BF16
+//! is the top 16 bits of an f32 — `bits << 16` is exact). The observability
+//! counter [`Qwen3TtsReport::bf16_passthrough`] records how many BF16
+//! tensors landed on this arm (rewrite of the M4-06 posture pin per
+//! the ADR's symmetric-rewrite red-line).
 //!
 //! # No ONNX (permanent)
 //!
@@ -219,12 +222,23 @@ const MODEL_FAMILY: &str = "qwen3";
 /// Outcome of a Qwen3-TTS conversion.
 #[derive(Debug, Default)]
 pub(crate) struct Qwen3TtsReport {
-    /// Float tensors written verbatim.
+    /// Float tensors written verbatim (F32 / F16 / BF16).
     pub(crate) written: usize,
-    /// Non-F32 / F16 tensors skipped (defensive counter — the safetensors
-    /// reader rejects unknown dtypes at parse time, but BF16 does reach
-    /// this arm since M4-06).
+    /// Non-float tensors skipped (defensive counter — the safetensors
+    /// reader accepts only `F32` / `F16` / `BF16` at parse time
+    /// (`crates/vokra-core/src/safetensors.rs map_dtype`), so any
+    /// tensor reaching this counter would signal a reader change
+    /// upstream; kept for symmetry with the sibling converters and to
+    /// surface the "no float tensors" loud note when zero writes
+    /// occur).
     pub(crate) skipped_non_float: usize,
+    /// BF16 tensors that landed on the pass-through arm (subset of
+    /// [`Self::written`]). Additive observability counter — the ADR
+    /// (docs/adr/qwen3-tts-bf16.md, strategy A_passthrough, Accepted
+    /// 2026-07-25) demands it as the symmetric rewrite of the M4-06
+    /// posture pin so a latent silent-widen cannot slip in
+    /// undetected. Mirrors `moshi::MoshiReport::bf16_passthrough`.
+    pub(crate) bf16_passthrough: usize,
     /// Operator-facing diagnostics (never fail the conversion — the
     /// runtime is the authoritative gate, FR-EX-08).
     pub(crate) notes: Vec<String>,
@@ -259,9 +273,15 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, Qwen3TtsReport), C
     );
 
     let mut report = Qwen3TtsReport::default();
+    // Float tensors pass through **verbatim** — no convert-time widening.
+    // BF16 stays GGUF `BF16` (type 30) per the accepted ADR
+    // (docs/adr/qwen3-tts-bf16.md, strategy A_passthrough); the runtime
+    // widens BF16 → f32 exactly at load via the single choke point
+    // `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`. Mirrors
+    // `moshi::convert` (`crates/vokra-convert/src/models/moshi.rs`).
     for t in st.tensors() {
         match t.dtype {
-            GgmlType::F32 | GgmlType::F16 => {
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
                 b.add_tensor(
                     &t.name,
                     t.dtype,
@@ -269,6 +289,9 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, Qwen3TtsReport), C
                     st.tensor_bytes(t).to_vec(),
                 )?;
                 report.written += 1;
+                if t.dtype == GgmlType::BF16 {
+                    report.bf16_passthrough += 1;
+                }
             }
             _ => {
                 report.skipped_non_float += 1;
@@ -280,10 +303,9 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, Qwen3TtsReport), C
             "no float tensors passed through — this GGUF is metadata-only and \
              the runtime will refuse to bind any weights (FR-EX-08). The \
              upstream Qwen3-TTS-0.6B-Base release ships \
-             `model.safetensors` in BF16 (~0.9 GB); pre-widen offline to F32 \
-             or wait for the streaming BF16 pass-through path (T29-equivalent \
-             — the Moshi / Kyutai STT pattern) to convert the release build \
-             directly."
+             `model.safetensors` in BF16 (~0.9 GB); the converter now passes \
+             BF16 tensors through verbatim (ADR A_passthrough), so a zero-write \
+             outcome here means the safetensors file itself was empty."
                 .into(),
         );
     }
@@ -357,19 +379,6 @@ mod tests {
     fn minimal_safetensors_one_f16() -> Vec<u8> {
         let header =
             r#"{"talker.embed_tokens.weight":{"dtype":"F16","shape":[2,3],"data_offsets":[0,12]}}"#;
-        let mut out = Vec::new();
-        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(&[0u8; 12]);
-        out
-    }
-
-    /// A single BF16 tensor — the upstream Qwen3-TTS release is BF16
-    /// (README-declared), so this hits the pass-through's `_ =>` arm and
-    /// MUST land in `skipped_non_float` (with the loud "no float tensors"
-    /// note).
-    fn minimal_safetensors_one_bf16() -> Vec<u8> {
-        let header = r#"{"talker.embed_tokens.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
         let mut out = Vec::new();
         out.extend_from_slice(&(header.len() as u64).to_le_bytes());
         out.extend_from_slice(header.as_bytes());
