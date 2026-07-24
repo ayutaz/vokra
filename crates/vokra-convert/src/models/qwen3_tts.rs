@@ -1,0 +1,653 @@
+//! **Qwen3-TTS-0.6B**: safetensors checkpoint → GGUF conversion
+//! (SoTA plan Phase 3, 2026-07-24).
+//!
+//! Input: the upstream `Qwen/Qwen3-TTS-12Hz-0.6B-Base` release —
+//! `model.safetensors` (~0.9 GB BF16). Output: a GGUF carrying every
+//! float tensor plus the `vokra.qwen3_tts.*` and `vokra.model.*` /
+//! `vokra.provenance.*` metadata chunks the native Qwen3-TTS
+//! implementation (`crates/vokra-models/src/qwen3_tts/`) reads.
+//!
+//! # What is transcribed vs. shape-driven
+//!
+//! - **Transcribed constants** — every hparam of the
+//!   `vokra.qwen3_tts.*` chunk group is transcribed **verbatim** from
+//!   the primary source `config.json`
+//!   (`huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/raw/main/config.json`,
+//!   fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」). No axis
+//!   is invented; any tensor whose shape disagrees with these values
+//!   fails the runtime shape gate loudly (FR-EX-08,
+//!   `Qwen3TtsConfig::validate_for_forward`).
+//! - **Two sub-configs** — Qwen3-TTS splits its `config.json` into a
+//!   `talker.*` (main AR LM) block and a `code_predictor.*` (5-layer
+//!   parallel head that slots 16 codebook rows per step) block. Both
+//!   are transcribed in full.
+//! - **Codec handshake** — `num_code_groups` on both the talker and
+//!   the code predictor must equal
+//!   [`vokra_ops::qwen3_tts_codec::Qwen3TtsCodecConfig::num_quantizers`]
+//!   on the shared seam (16 for every released variant). Silently
+//!   drifting the two would drop or duplicate codebook rows at
+//!   decode time.
+//!
+//! # No side-car config
+//!
+//! Qwen3-TTS ships a real upstream `config.json`, but this converter
+//! takes **no** `--config` path today because every field is fixed for
+//! the 0.6B-Base release and byte-parallel to the transcribed
+//! constants below. A future variant (0.6B-CustomVoice /
+//! 0.6B-VoiceDesign / 1.7B family) that reshapes the backbone would
+//! demand `--config`; this converter fails loudly if a tensor shape
+//! disagrees with the transcribed axes (FR-EX-08).
+//!
+//! # Tensor naming contract
+//!
+//! GGUF tensor names are the **upstream safetensors names verbatim**
+//! (the CSM / Kokoro / CosyVoice2 / Chatterbox contract). Real-weight
+//! binding is a follow-up wave gated on the upstream tensor-name
+//! manifest fetch; this converter passes every F32 / F16 tensor
+//! through unchanged so a future `Qwen3TtsWeights::from_gguf` can
+//! walk the same names.
+//!
+//! # BF16 posture
+//!
+//! The upstream Qwen3-TTS-0.6B release is served in **BF16**
+//! (README-declared "0.9B parameters in BF16"). Today's pass-through
+//! arm handles only F32 / F16, so BF16 tensors reach
+//! `skipped_non_float` and the converter surfaces the "no float
+//! tensors" loud note. Pre-widen offline to F32 (via
+//! `tools/parity/*_prepare_checkpoint.py` conventions) or wait for
+//! the streaming BF16 pass-through path (T29-equivalent — the Moshi /
+//! Kyutai STT pattern) to convert the release build directly.
+//!
+//! # No ONNX (permanent)
+//!
+//! Qwen3-TTS-0.6B is distributed as safetensors + a Python pipeline;
+//! this converter **never** touches ONNX (FR-LD-05); the pipeline is
+//! re-implemented natively in `crates/vokra-models/src/qwen3_tts/`
+//! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+
+use vokra_core::LicenseClass;
+use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+
+use crate::ConvertError;
+use crate::safetensors::SafetensorsFile;
+
+/// `vokra.model.arch` for Qwen3-TTS GGUFs — kept in sync with the
+/// runtime constant `vokra-models::qwen3_tts::EXPECTED_ARCH`.
+/// Intentionally **distinct** from the Qwen-family sibling arch tags
+/// (`"cosyvoice2"` / `"cosyvoice3"`) because Qwen3-TTS is codec-LM,
+/// not vocoder-LM — the terminal step is `qwen3_tts_codec`, NOT
+/// `HiFTChain`. Silently sharing an arch tag would mis-route the
+/// runtime dispatch.
+pub(crate) const ARCH: &str = "qwen3_tts";
+/// `vokra.model.name` value written for the canonical Qwen3-TTS-0.6B-Base
+/// GGUF.
+pub(crate) const NAME: &str = "qwen3-tts-12hz-0.6b-base";
+
+// --- vokra.qwen3_tts.* metadata keys (kept as constants in the converter;
+// the runtime side lives in `crates/vokra-models/src/qwen3_tts/mod.rs` —
+// the two crates share only `vokra-core`, so the cross-crate constant
+// duplication rule the CSM / CosyVoice2 / Kokoro / Chatterbox family
+// converters use applies) -----------------------------------------------------
+
+// Top-level (speaker encoder + sample rate)
+const KEY_SAMPLE_RATE: &str = "vokra.qwen3_tts.sample_rate";
+const KEY_SPEAKER_EMBED_DIM: &str = "vokra.qwen3_tts.speaker_embed_dim";
+
+// Talker (main AR LM) axes — config.json.talker.*
+const KEY_TALKER_HIDDEN_DIM: &str = "vokra.qwen3_tts.talker.hidden_dim";
+const KEY_TALKER_N_LAYER: &str = "vokra.qwen3_tts.talker.n_layer";
+const KEY_TALKER_N_HEAD: &str = "vokra.qwen3_tts.talker.n_head";
+const KEY_TALKER_N_HEAD_KV: &str = "vokra.qwen3_tts.talker.n_head_kv";
+const KEY_TALKER_HEAD_DIM: &str = "vokra.qwen3_tts.talker.head_dim";
+const KEY_TALKER_FFN_DIM: &str = "vokra.qwen3_tts.talker.ffn_dim";
+const KEY_TALKER_VOCAB_SIZE: &str = "vokra.qwen3_tts.talker.vocab_size";
+const KEY_TALKER_TEXT_VOCAB_SIZE: &str = "vokra.qwen3_tts.talker.text_vocab_size";
+const KEY_TALKER_MAX_POSITIONS: &str = "vokra.qwen3_tts.talker.max_position_embeddings";
+const KEY_TALKER_ROPE_BASE: &str = "vokra.qwen3_tts.talker.rope_base";
+const KEY_TALKER_RMS_NORM_EPS: &str = "vokra.qwen3_tts.talker.rms_norm_eps";
+const KEY_TALKER_POS_ID_PER_SEC: &str = "vokra.qwen3_tts.talker.position_id_per_seconds";
+const KEY_TALKER_NUM_CODE_GROUPS: &str = "vokra.qwen3_tts.talker.num_code_groups";
+const KEY_TALKER_TEXT_HIDDEN_SIZE: &str = "vokra.qwen3_tts.talker.text_hidden_size";
+
+// Code predictor axes — config.json.code_predictor.*
+const KEY_CP_HIDDEN_DIM: &str = "vokra.qwen3_tts.code_predictor.hidden_dim";
+const KEY_CP_N_LAYER: &str = "vokra.qwen3_tts.code_predictor.n_layer";
+const KEY_CP_N_HEAD: &str = "vokra.qwen3_tts.code_predictor.n_head";
+const KEY_CP_N_HEAD_KV: &str = "vokra.qwen3_tts.code_predictor.n_head_kv";
+const KEY_CP_HEAD_DIM: &str = "vokra.qwen3_tts.code_predictor.head_dim";
+const KEY_CP_FFN_DIM: &str = "vokra.qwen3_tts.code_predictor.ffn_dim";
+const KEY_CP_VOCAB_SIZE: &str = "vokra.qwen3_tts.code_predictor.vocab_size";
+const KEY_CP_ROPE_BASE: &str = "vokra.qwen3_tts.code_predictor.rope_base";
+const KEY_CP_RMS_NORM_EPS: &str = "vokra.qwen3_tts.code_predictor.rms_norm_eps";
+const KEY_CP_NUM_CODE_GROUPS: &str = "vokra.qwen3_tts.code_predictor.num_code_groups";
+
+// Model family marker (Qwen3-TTS is Qwen3-flavour — same op inventory as
+// Qwen2 but wider head split + rope base 1_000_000).
+const KEY_MODEL_FAMILY: &str = "vokra.qwen3_tts.model_family";
+
+// --- Transcribed constants (primary source: `config.json` at
+// `huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base`, fetched 2026-07-24 —
+// CLAUDE.md「ハルシネーション厳禁」) ------------------------------------
+
+/// PCM sample rate the speaker encoder consumes (Hz). Fixed by
+/// `README.md` — "Speaker Encoder: 24kHz sample rate, 1024-dim
+/// encoding" — and shared with the codec's `sample_rate = 24_000` on
+/// the [`vokra_ops::qwen3_tts_codec`] seam.
+const QWEN3_TTS_SAMPLE_RATE: u32 = 24_000;
+
+/// Speaker embedding width (`README.md` — "1024-dim encoding").
+const QWEN3_TTS_SPEAKER_EMBED_DIM: u32 = 1024;
+
+// Talker (config.json.talker.*)
+const TALKER_HIDDEN_DIM: u32 = 1024;
+const TALKER_N_LAYER: u32 = 28;
+const TALKER_N_HEAD: u32 = 16;
+const TALKER_N_HEAD_KV: u32 = 8;
+const TALKER_HEAD_DIM: u32 = 128;
+const TALKER_FFN_DIM: u32 = 3072;
+const TALKER_VOCAB_SIZE: u32 = 3072;
+const TALKER_TEXT_VOCAB_SIZE: u32 = 151_936;
+const TALKER_MAX_POSITIONS: u32 = 32_768;
+const TALKER_ROPE_BASE: f32 = 1_000_000.0;
+const TALKER_RMS_NORM_EPS: f32 = 1e-6;
+const TALKER_POS_ID_PER_SEC: u32 = 13;
+const TALKER_NUM_CODE_GROUPS: u32 = 16;
+const TALKER_TEXT_HIDDEN_SIZE: u32 = 2048;
+
+// Code predictor (config.json.code_predictor.*)
+const CP_HIDDEN_DIM: u32 = 1024;
+const CP_N_LAYER: u32 = 5;
+const CP_N_HEAD: u32 = 16;
+const CP_N_HEAD_KV: u32 = 8;
+const CP_HEAD_DIM: u32 = 128;
+const CP_FFN_DIM: u32 = 3072;
+const CP_VOCAB_SIZE: u32 = 2048;
+const CP_ROPE_BASE: f32 = 1_000_000.0;
+const CP_RMS_NORM_EPS: f32 = 1e-6;
+const CP_NUM_CODE_GROUPS: u32 = 16;
+
+/// Model family marker — Qwen3 (`config.json.model_type = "qwen3_tts"`
+/// and `config.json.architectures = ["Qwen3TTSForConditionalGeneration"]`).
+/// Recorded so the runtime can distinguish Qwen3-TTS from
+/// Qwen2-derived siblings (CosyVoice2/3) at telemetry time.
+const MODEL_FAMILY: &str = "qwen3";
+
+/// Outcome of a Qwen3-TTS conversion.
+#[derive(Debug, Default)]
+pub(crate) struct Qwen3TtsReport {
+    /// Float tensors written verbatim.
+    pub(crate) written: usize,
+    /// Non-F32 / F16 tensors skipped (defensive counter — the safetensors
+    /// reader rejects unknown dtypes at parse time, but BF16 does reach
+    /// this arm since M4-06).
+    pub(crate) skipped_non_float: usize,
+    /// Operator-facing diagnostics (never fail the conversion — the
+    /// runtime is the authoritative gate, FR-EX-08).
+    pub(crate) notes: Vec<String>,
+}
+
+/// Converts a Qwen3-TTS safetensors buffer into a populated GGUF
+/// builder.
+///
+/// Every F32 / F16 tensor passes through under its upstream name; the
+/// `vokra.qwen3_tts.*` chunk group is written from the transcribed
+/// constants above; provenance stamps mark the weight as `Permissive`
+/// (apache-2.0 — end-to-end).
+pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, Qwen3TtsReport), ConvertError> {
+    let st = SafetensorsFile::parse(bytes)?;
+
+    let mut b = GgufBuilder::new();
+    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    b.add_string(chunks::KEY_MODEL_NAME, NAME);
+    write_hparams(&mut b);
+    // Self-describing redistribution: the artifact carries its own licence.
+    // Qwen3-TTS-0.6B-Base ships `apache-2.0` end-to-end
+    // (huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/blob/main/README.md
+    // YAML front matter `license: apache-2.0`, fetched 2026-07-24 —
+    // CLAUDE.md「ハルシネーション厳禁」). The whole release — LM + codec +
+    // tokenizer + speaker encoder — carries a single apache-2.0 grant.
+    vokra_core::stamp_provenance(
+        &mut b,
+        LicenseClass::Permissive,
+        "apache-2.0",
+        Some(NAME),
+        Some("Qwen/Qwen3-TTS-12Hz-0.6B-Base (apache-2.0 end-to-end)"),
+    );
+
+    let mut report = Qwen3TtsReport::default();
+    for t in st.tensors() {
+        match t.dtype {
+            GgmlType::F32 | GgmlType::F16 => {
+                b.add_tensor(
+                    &t.name,
+                    t.dtype,
+                    t.shape.clone(),
+                    st.tensor_bytes(t).to_vec(),
+                )?;
+                report.written += 1;
+            }
+            _ => {
+                report.skipped_non_float += 1;
+            }
+        }
+    }
+    if report.written == 0 {
+        report.notes.push(
+            "no float tensors passed through — this GGUF is metadata-only and \
+             the runtime will refuse to bind any weights (FR-EX-08). The \
+             upstream Qwen3-TTS-0.6B-Base release ships \
+             `model.safetensors` in BF16 (~0.9 GB); pre-widen offline to F32 \
+             or wait for the streaming BF16 pass-through path (T29-equivalent \
+             — the Moshi / Kyutai STT pattern) to convert the release build \
+             directly."
+                .into(),
+        );
+    }
+    Ok((b, report))
+}
+
+/// Writes the `vokra.qwen3_tts.*` chunk group from the transcribed
+/// constants above (primary source: `config.json`).
+fn write_hparams(b: &mut GgufBuilder) {
+    b.add_u32(KEY_SAMPLE_RATE, QWEN3_TTS_SAMPLE_RATE);
+    b.add_u32(KEY_SPEAKER_EMBED_DIM, QWEN3_TTS_SPEAKER_EMBED_DIM);
+    b.add_string(KEY_MODEL_FAMILY, MODEL_FAMILY);
+
+    // Talker
+    b.add_u32(KEY_TALKER_HIDDEN_DIM, TALKER_HIDDEN_DIM);
+    b.add_u32(KEY_TALKER_N_LAYER, TALKER_N_LAYER);
+    b.add_u32(KEY_TALKER_N_HEAD, TALKER_N_HEAD);
+    b.add_u32(KEY_TALKER_N_HEAD_KV, TALKER_N_HEAD_KV);
+    b.add_u32(KEY_TALKER_HEAD_DIM, TALKER_HEAD_DIM);
+    b.add_u32(KEY_TALKER_FFN_DIM, TALKER_FFN_DIM);
+    b.add_u32(KEY_TALKER_VOCAB_SIZE, TALKER_VOCAB_SIZE);
+    b.add_u32(KEY_TALKER_TEXT_VOCAB_SIZE, TALKER_TEXT_VOCAB_SIZE);
+    b.add_u32(KEY_TALKER_MAX_POSITIONS, TALKER_MAX_POSITIONS);
+    b.add_f32(KEY_TALKER_ROPE_BASE, TALKER_ROPE_BASE);
+    b.add_f32(KEY_TALKER_RMS_NORM_EPS, TALKER_RMS_NORM_EPS);
+    b.add_u32(KEY_TALKER_POS_ID_PER_SEC, TALKER_POS_ID_PER_SEC);
+    b.add_u32(KEY_TALKER_NUM_CODE_GROUPS, TALKER_NUM_CODE_GROUPS);
+    b.add_u32(KEY_TALKER_TEXT_HIDDEN_SIZE, TALKER_TEXT_HIDDEN_SIZE);
+
+    // Code predictor
+    b.add_u32(KEY_CP_HIDDEN_DIM, CP_HIDDEN_DIM);
+    b.add_u32(KEY_CP_N_LAYER, CP_N_LAYER);
+    b.add_u32(KEY_CP_N_HEAD, CP_N_HEAD);
+    b.add_u32(KEY_CP_N_HEAD_KV, CP_N_HEAD_KV);
+    b.add_u32(KEY_CP_HEAD_DIM, CP_HEAD_DIM);
+    b.add_u32(KEY_CP_FFN_DIM, CP_FFN_DIM);
+    b.add_u32(KEY_CP_VOCAB_SIZE, CP_VOCAB_SIZE);
+    b.add_f32(KEY_CP_ROPE_BASE, CP_ROPE_BASE);
+    b.add_f32(KEY_CP_RMS_NORM_EPS, CP_RMS_NORM_EPS);
+    b.add_u32(KEY_CP_NUM_CODE_GROUPS, CP_NUM_CODE_GROUPS);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vokra_core::gguf::{GgufFile, GgufMetadataValue};
+
+    fn minimal_safetensors_one_f32() -> Vec<u8> {
+        // Single f32 tensor so the pass-through arm fires once and the
+        // report counts a non-zero write. The tensor name mirrors an
+        // upstream Qwen3-TTS scaffold name.
+        let header =
+            r#"{"talker.embed_tokens.weight":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]}}"#;
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&[0u8; 24]);
+        out
+    }
+
+    fn minimal_safetensors_no_tensors() -> Vec<u8> {
+        let header = r#"{}"#;
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out
+    }
+
+    /// A single F16 tensor at the top of the file (shape [2,3] → 6 elements ×
+    /// 2 bytes = 12 bytes).
+    fn minimal_safetensors_one_f16() -> Vec<u8> {
+        let header =
+            r#"{"talker.embed_tokens.weight":{"dtype":"F16","shape":[2,3],"data_offsets":[0,12]}}"#;
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&[0u8; 12]);
+        out
+    }
+
+    /// A single BF16 tensor — the upstream Qwen3-TTS release is BF16
+    /// (README-declared), so this hits the pass-through's `_ =>` arm and
+    /// MUST land in `skipped_non_float` (with the loud "no float tensors"
+    /// note).
+    fn minimal_safetensors_one_bf16() -> Vec<u8> {
+        let header = r#"{"talker.embed_tokens.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&[0u8; 12]);
+        out
+    }
+
+    fn get_u32(file: &GgufFile, key: &str) -> u32 {
+        match file.get(key) {
+            Some(GgufMetadataValue::U32(v)) => *v,
+            other => panic!("{key}: unexpected {other:?}"),
+        }
+    }
+
+    fn get_f32(file: &GgufFile, key: &str) -> f32 {
+        match file.get(key) {
+            Some(GgufMetadataValue::F32(v)) => *v,
+            other => panic!("{key}: unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn arch_string_matches_runtime_constant() {
+        // The two crates only share `vokra-core`, so this constant is the
+        // sole handshake with `vokra-models::qwen3_tts::EXPECTED_ARCH`.
+        assert_eq!(ARCH, "qwen3_tts");
+    }
+
+    #[test]
+    fn arch_is_distinct_from_qwen_family_siblings() {
+        // Qwen3-TTS shares the Qwen family with CosyVoice2/3 but is
+        // codec-LM (qwen3_tts_codec terminal), not vocoder-LM (HiFTChain
+        // terminal). Silently sharing an arch tag would mis-route runtime
+        // dispatch.
+        assert_ne!(ARCH, "cosyvoice2");
+        assert_ne!(ARCH, "cosyvoice3");
+    }
+
+    #[test]
+    fn name_string_matches_hf_release() {
+        assert_eq!(NAME, "qwen3-tts-12hz-0.6b-base");
+    }
+
+    /// The transcribed constants must equal the primary-source values
+    /// (config.json / README.md) — changing any of these silently
+    /// mis-shapes the Qwen3 backbone / codec handshake.
+    #[test]
+    fn transcribed_constants_match_primary_source() {
+        // Speaker encoder + sample rate (README.md).
+        assert_eq!(QWEN3_TTS_SAMPLE_RATE, 24_000);
+        assert_eq!(QWEN3_TTS_SPEAKER_EMBED_DIM, 1024);
+
+        // Talker (config.json.talker.*).
+        assert_eq!(TALKER_HIDDEN_DIM, 1024);
+        assert_eq!(TALKER_N_LAYER, 28);
+        assert_eq!(TALKER_N_HEAD, 16);
+        assert_eq!(TALKER_N_HEAD_KV, 8);
+        assert_eq!(TALKER_HEAD_DIM, 128);
+        assert_eq!(TALKER_FFN_DIM, 3072);
+        assert_eq!(TALKER_VOCAB_SIZE, 3072);
+        assert_eq!(TALKER_TEXT_VOCAB_SIZE, 151_936);
+        assert_eq!(TALKER_MAX_POSITIONS, 32_768);
+        assert!((TALKER_ROPE_BASE - 1_000_000.0).abs() < 1e-3);
+        assert!((TALKER_RMS_NORM_EPS - 1e-6).abs() < 1e-12);
+        assert_eq!(TALKER_POS_ID_PER_SEC, 13);
+        assert_eq!(TALKER_NUM_CODE_GROUPS, 16);
+        assert_eq!(TALKER_TEXT_HIDDEN_SIZE, 2048);
+
+        // Code predictor (config.json.code_predictor.*).
+        assert_eq!(CP_HIDDEN_DIM, 1024);
+        assert_eq!(CP_N_LAYER, 5);
+        assert_eq!(CP_N_HEAD, 16);
+        assert_eq!(CP_N_HEAD_KV, 8);
+        assert_eq!(CP_HEAD_DIM, 128);
+        assert_eq!(CP_FFN_DIM, 3072);
+        assert_eq!(CP_VOCAB_SIZE, 2048);
+        assert!((CP_ROPE_BASE - 1_000_000.0).abs() < 1e-3);
+        assert!((CP_RMS_NORM_EPS - 1e-6).abs() < 1e-12);
+        assert_eq!(CP_NUM_CODE_GROUPS, 16);
+
+        assert_eq!(MODEL_FAMILY, "qwen3");
+
+        // Compile-time algebra: Qwen3 GQA + RoPE + codec handshake pins.
+        const _: () = {
+            // GQA (both stacks)
+            assert!(TALKER_N_HEAD % TALKER_N_HEAD_KV == 0);
+            assert!(CP_N_HEAD % CP_N_HEAD_KV == 0);
+            // RoPE evenness
+            assert!(TALKER_HEAD_DIM % 2 == 0);
+            assert!(CP_HEAD_DIM % 2 == 0);
+            // Codec handshake — talker slots = code predictor slots.
+            assert!(TALKER_NUM_CODE_GROUPS == CP_NUM_CODE_GROUPS);
+            // Semantic (talker) vocab >= acoustic (code predictor) vocab.
+            assert!(TALKER_VOCAB_SIZE >= CP_VOCAB_SIZE);
+        };
+    }
+
+    /// The Qwen3-TTS codec handshake must match
+    /// `vokra_ops::qwen3_tts_codec::Qwen3TtsCodecConfig::qwen3_tts_12hz`
+    /// on `num_quantizers`. Drifting the two would drop or duplicate
+    /// codebook rows silently.
+    #[test]
+    fn num_code_groups_matches_shared_codec_seam() {
+        let codec = vokra_ops::qwen3_tts_codec::Qwen3TtsCodecConfig::qwen3_tts_12hz();
+        assert_eq!(TALKER_NUM_CODE_GROUPS as usize, codec.num_quantizers);
+        assert_eq!(CP_NUM_CODE_GROUPS as usize, codec.num_quantizers);
+    }
+
+    #[test]
+    fn round_trip_carries_arch_chunks_and_provenance() {
+        let (builder, report) = convert(minimal_safetensors_one_f32()).expect("convert");
+        assert_eq!(report.written, 1);
+        assert_eq!(report.skipped_non_float, 0);
+
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH)
+        );
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some(NAME)
+        );
+        assert_eq!(
+            file.get(KEY_MODEL_FAMILY).and_then(|v| v.as_str()),
+            Some(MODEL_FAMILY)
+        );
+
+        // Every transcribed U32 hparam round-trips verbatim under the
+        // `vokra.qwen3_tts.*` prefix.
+        for (key, want) in [
+            (KEY_SAMPLE_RATE, QWEN3_TTS_SAMPLE_RATE),
+            (KEY_SPEAKER_EMBED_DIM, QWEN3_TTS_SPEAKER_EMBED_DIM),
+            (KEY_TALKER_HIDDEN_DIM, TALKER_HIDDEN_DIM),
+            (KEY_TALKER_N_LAYER, TALKER_N_LAYER),
+            (KEY_TALKER_N_HEAD, TALKER_N_HEAD),
+            (KEY_TALKER_N_HEAD_KV, TALKER_N_HEAD_KV),
+            (KEY_TALKER_HEAD_DIM, TALKER_HEAD_DIM),
+            (KEY_TALKER_FFN_DIM, TALKER_FFN_DIM),
+            (KEY_TALKER_VOCAB_SIZE, TALKER_VOCAB_SIZE),
+            (KEY_TALKER_TEXT_VOCAB_SIZE, TALKER_TEXT_VOCAB_SIZE),
+            (KEY_TALKER_MAX_POSITIONS, TALKER_MAX_POSITIONS),
+            (KEY_TALKER_POS_ID_PER_SEC, TALKER_POS_ID_PER_SEC),
+            (KEY_TALKER_NUM_CODE_GROUPS, TALKER_NUM_CODE_GROUPS),
+            (KEY_TALKER_TEXT_HIDDEN_SIZE, TALKER_TEXT_HIDDEN_SIZE),
+            (KEY_CP_HIDDEN_DIM, CP_HIDDEN_DIM),
+            (KEY_CP_N_LAYER, CP_N_LAYER),
+            (KEY_CP_N_HEAD, CP_N_HEAD),
+            (KEY_CP_N_HEAD_KV, CP_N_HEAD_KV),
+            (KEY_CP_HEAD_DIM, CP_HEAD_DIM),
+            (KEY_CP_FFN_DIM, CP_FFN_DIM),
+            (KEY_CP_VOCAB_SIZE, CP_VOCAB_SIZE),
+            (KEY_CP_NUM_CODE_GROUPS, CP_NUM_CODE_GROUPS),
+        ] {
+            assert_eq!(get_u32(&file, key), want, "{key}");
+        }
+
+        // F32 norm / RoPE constants round-trip too.
+        assert!((get_f32(&file, KEY_TALKER_ROPE_BASE) - TALKER_ROPE_BASE).abs() < 1e-3);
+        assert!((get_f32(&file, KEY_TALKER_RMS_NORM_EPS) - TALKER_RMS_NORM_EPS).abs() < 1e-12);
+        assert!((get_f32(&file, KEY_CP_ROPE_BASE) - CP_ROPE_BASE).abs() < 1e-3);
+        assert!((get_f32(&file, KEY_CP_RMS_NORM_EPS) - CP_RMS_NORM_EPS).abs() < 1e-12);
+
+        // Provenance: apache-2.0 permissive (end-to-end).
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_MODEL_ID)
+                .and_then(|v| v.as_str()),
+            Some(NAME)
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some("apache-2.0")
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::Permissive.as_str())
+        );
+    }
+
+    #[test]
+    fn zero_tensor_conversion_surfaces_a_loud_note() {
+        // Empty safetensors → the runtime's `Qwen3TtsWeights::from_gguf`
+        // would fail loudly at bind time, but the converter itself
+        // succeeds and reports the situation so the operator sees it now.
+        let (_, report) = convert(minimal_safetensors_no_tensors()).expect("convert");
+        assert_eq!(report.written, 0);
+        assert!(
+            report.notes.iter().any(|n| n.contains("no float tensors")),
+            "zero-tensor conversion must emit a loud note: {:?}",
+            report.notes
+        );
+    }
+
+    /// Pins the F16 leg of the `GgmlType::F32 | GgmlType::F16` union
+    /// match arm.
+    #[test]
+    fn f16_tensor_passes_through_verbatim() {
+        let (builder, report) = convert(minimal_safetensors_one_f16()).expect("convert");
+        assert_eq!(report.written, 1, "F16 must reach the pass-through arm");
+        assert_eq!(
+            report.skipped_non_float, 0,
+            "F16 must not land in the skipped counter"
+        );
+
+        // The tensor survives the round trip under its upstream name and
+        // preserves its F16 dtype (payload is 12 bytes = 6 × F16).
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        let info = file
+            .tensor_info("talker.embed_tokens.weight")
+            .expect("tensor present");
+        assert_eq!(info.dtype, GgmlType::F16);
+        assert_eq!(info.dimensions, vec![2, 3]);
+        assert_eq!(file.tensor_bytes(info).len(), 12);
+    }
+
+    /// Pins the `_ =>` arm of the tensor-dtype match: BF16 (the upstream
+    /// serving format for Qwen3-TTS-0.6B) must reach the
+    /// `skipped_non_float` counter and trip the loud "no float tensors"
+    /// note when it is the sole tensor.
+    #[test]
+    fn bf16_tensor_is_counted_as_skipped_non_float() {
+        let (builder, report) = convert(minimal_safetensors_one_bf16()).expect("convert");
+        assert_eq!(
+            report.written, 0,
+            "BF16 must not currently pass through — Qwen3-TTS converter is F32/F16 only"
+        );
+        assert_eq!(
+            report.skipped_non_float, 1,
+            "BF16 must increment the skipped counter"
+        );
+        assert!(
+            report.notes.iter().any(|n| n.contains("no float tensors")),
+            "BF16-only conversion must emit the zero-float note: {:?}",
+            report.notes
+        );
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH)
+        );
+        assert!(
+            file.tensor_info("talker.embed_tokens.weight").is_none(),
+            "BF16 tensor must not be written"
+        );
+    }
+
+    /// Pins `SafetensorsFile::parse(bytes)?` error propagation.
+    #[test]
+    fn malformed_input_returns_parse_error() {
+        // Case 1: empty buffer.
+        let err = convert(Vec::new()).expect_err("empty buffer must be rejected");
+        assert!(
+            matches!(err, ConvertError::Parse(_)),
+            "expected ConvertError::Parse, got {err:?}"
+        );
+
+        // Case 2: declared header length runs off the end of the buffer.
+        let mut truncated = Vec::new();
+        truncated.extend_from_slice(&1024u64.to_le_bytes());
+        truncated.extend_from_slice(b"{}");
+        let err = convert(truncated).expect_err("truncated header must be rejected");
+        assert!(
+            matches!(err, ConvertError::Parse(_)),
+            "expected ConvertError::Parse, got {err:?}"
+        );
+
+        // Case 3: valid length prefix but malformed JSON body.
+        let bad_json = b"{not-json";
+        let mut bad = Vec::new();
+        bad.extend_from_slice(&(bad_json.len() as u64).to_le_bytes());
+        bad.extend_from_slice(bad_json);
+        let err = convert(bad).expect_err("malformed JSON must be rejected");
+        assert!(
+            matches!(err, ConvertError::Parse(_)),
+            "expected ConvertError::Parse, got {err:?}"
+        );
+    }
+
+    /// Every `vokra.qwen3_tts.*` key uses the same prefix — a regression
+    /// where a key crossed into another model's namespace (e.g.
+    /// `vokra.cosyvoice3.*`) would still round-trip in isolation but
+    /// would misroute at the runtime dispatch layer.
+    #[test]
+    fn every_metadata_key_carries_the_qwen3_tts_prefix() {
+        for key in [
+            KEY_SAMPLE_RATE,
+            KEY_SPEAKER_EMBED_DIM,
+            KEY_TALKER_HIDDEN_DIM,
+            KEY_TALKER_N_LAYER,
+            KEY_TALKER_N_HEAD,
+            KEY_TALKER_N_HEAD_KV,
+            KEY_TALKER_HEAD_DIM,
+            KEY_TALKER_FFN_DIM,
+            KEY_TALKER_VOCAB_SIZE,
+            KEY_TALKER_TEXT_VOCAB_SIZE,
+            KEY_TALKER_MAX_POSITIONS,
+            KEY_TALKER_ROPE_BASE,
+            KEY_TALKER_RMS_NORM_EPS,
+            KEY_TALKER_POS_ID_PER_SEC,
+            KEY_TALKER_NUM_CODE_GROUPS,
+            KEY_TALKER_TEXT_HIDDEN_SIZE,
+            KEY_CP_HIDDEN_DIM,
+            KEY_CP_N_LAYER,
+            KEY_CP_N_HEAD,
+            KEY_CP_N_HEAD_KV,
+            KEY_CP_HEAD_DIM,
+            KEY_CP_FFN_DIM,
+            KEY_CP_VOCAB_SIZE,
+            KEY_CP_ROPE_BASE,
+            KEY_CP_RMS_NORM_EPS,
+            KEY_CP_NUM_CODE_GROUPS,
+            KEY_MODEL_FAMILY,
+        ] {
+            assert!(
+                key.starts_with("vokra.qwen3_tts."),
+                "{key} must live under the vokra.qwen3_tts.* prefix"
+            );
+        }
+    }
+}

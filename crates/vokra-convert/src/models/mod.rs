@@ -120,6 +120,19 @@ pub(crate) mod parakeet_ctc;
 // deliberate "may need new op" follow-up).
 pub(crate) mod omniasr_ctc;
 pub(crate) mod piper_plus;
+// SoTA plan Phase 3 (2026-07-24): Alibaba **Qwen3-TTS-12Hz-0.6B-Base**
+// (apache-2.0 end-to-end weight) safetensors → GGUF with the
+// `vokra.qwen3_tts.*` chunk group. Discrete multi-codebook LM
+// (Qwen3-flavour 28-layer talker + 5-layer parallel code predictor +
+// shared Qwen3-TTS-Codec seam via `vokra_ops::qwen3_tts_codec`).
+// Every F32 / F16 tensor passes through verbatim; every hparam is
+// transcribed from the primary source
+// `huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/raw/main/config.json`
+// (talker.* + code_predictor.*) plus README.md (speaker encoder
+// 24 kHz / 1024-dim). Distinct arch tag from CosyVoice2/3 because
+// Qwen3-TTS is codec-LM not vocoder-LM — the terminal step is
+// qwen3_tts_codec, NOT HiFTChain.
+pub(crate) mod qwen3_tts;
 pub(crate) mod silero;
 pub(crate) mod utmos;
 pub(crate) mod voxtral;

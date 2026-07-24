@@ -374,6 +374,42 @@ pub enum ModelKind {
     /// config side-car (every hparam is fixed for the Nano release
     /// and transcribed as compile-time constants).
     ChatterboxNano,
+    /// Alibaba **Qwen3-TTS-12Hz-0.6B-Base** safetensors checkpoint
+    /// (SoTA plan Phase 3, 2026-07-24). **Apache-2.0 end-to-end** —
+    /// LM + codec + tokenizer + speaker encoder all under a single
+    /// apache-2.0 grant (`huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base`
+    /// model-card `license: apache-2.0`, fetched 2026-07-24 — CLAUDE.md
+    /// 「ハルシネーション厳禁」). Discrete multi-codebook LM: a
+    /// **Qwen3-flavour talker** (decoder-only transformer,
+    /// `hidden_size=1024`, `num_hidden_layers=28`, GQA
+    /// `num_attention_heads=16` / `num_key_value_heads=8`,
+    /// `head_dim=128`, SwiGLU `intermediate_size=3072`,
+    /// `rope_theta=1_000_000`, `rms_norm_eps=1e-6`, 3072-per-codebook
+    /// speech vocab + 151 936-token Qwen3 shared text vocab,
+    /// `max_position_embeddings=32_768`, `position_id_per_seconds=13`,
+    /// `text_hidden_size=2048`) plus a **5-layer code-predictor
+    /// parallel head** (same GQA / RoPE / RMSNorm axes,
+    /// 2048-per-codebook acoustic vocab, emits **16 codebook rows per
+    /// step**) plus the shared **Qwen3-TTS-Codec** seam
+    /// (`vokra_ops::qwen3_tts_codec` — 16-quantizer semantic +
+    /// acoustic split RVQ at 12.5 Hz output rate, 24 kHz PCM).
+    /// Speaker encoder: 24 kHz sample rate, 1024-dim embedding.
+    /// Every hparam transcribed verbatim from
+    /// `huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/raw/main/config.json`
+    /// (`talker.*` / `code_predictor.*`) plus `README.md` (speaker
+    /// encoder axes). Distinct arch tag from CosyVoice2/3 because
+    /// Qwen3-TTS is **codec-LM**, not vocoder-LM — the terminal step
+    /// is `qwen3_tts_codec`, NOT `HiFTChain`; silently sharing either
+    /// sibling's arch tag would mis-route the runtime dispatch. Reuses
+    /// the existing `qwen3_tts_codec` primitive (SoTA plan Phase 3 TTS
+    /// codec op) — no new op or backend kernel is added by this model.
+    /// The upstream release is BF16 (~0.9 GB); today's F32/F16
+    /// pass-through hits the `skipped_non_float` counter on the BF16
+    /// tensors and the converter surfaces the loud "no float tensors"
+    /// note. Convert with [`convert_qwen3_tts_file`] — the converter
+    /// takes no config side-car (every hparam is fixed for the 0.6B
+    /// release and transcribed as compile-time constants).
+    Qwen3Tts,
 }
 
 impl ModelKind {
@@ -465,6 +501,18 @@ impl ModelKind {
             "chatterbox-nano" | "chatterbox_nano" | "chatterbox-nano-v1" => {
                 Some(Self::ChatterboxNano)
             }
+            // Alibaba Qwen3-TTS family — canonical HF release + `qwen3_tts`
+            // arch-tag underscore spelling + common short forms. All spellings
+            // resolve to the same 0.6B-Base checkpoint today; a future variant
+            // (0.6B-CustomVoice / 0.6B-VoiceDesign / 1.7B) would be a distinct
+            // `ModelKind` when it lands.
+            "qwen3-tts"
+            | "qwen3_tts"
+            | "qwen3-tts-0.6b"
+            | "qwen3-tts-0_6b"
+            | "qwen3-tts-12hz-0.6b-base"
+            | "qwen3-tts-12hz-0_6b-base"
+            | "qwen3-tts-12hz-0.6b" => Some(Self::Qwen3Tts),
             _ => None,
         }
     }
@@ -497,6 +545,7 @@ impl ModelKind {
             Self::Chatterbox => "chatterbox",
             Self::ChatterboxTurbo => "chatterbox-turbo",
             Self::ChatterboxNano => "chatterbox-nano",
+            Self::Qwen3Tts => "qwen3-tts",
         }
     }
 }
@@ -1004,6 +1053,33 @@ pub fn convert_file_licensed(
                     .notes
                     .iter()
                     .map(|n| format!("chatterbox-nano warning: {n}")),
+            );
+            (builder, notes)
+        }
+        ModelKind::Qwen3Tts => {
+            // SoTA plan Phase 3 (2026-07-24): pass every F32/F16 tensor
+            // through verbatim and stamp the `vokra.qwen3_tts.*` chunk
+            // group (talker + code-predictor Qwen3 axes + codec
+            // handshake) from the transcribed constants in
+            // `models::qwen3_tts`. The arch tag is intentionally distinct
+            // from the Qwen-family siblings CosyVoice2/3 because
+            // Qwen3-TTS is codec-LM (terminal step = qwen3_tts_codec),
+            // NOT vocoder-LM (HiFTChain) — silently sharing either
+            // sibling's arch tag would mis-route the runtime dispatch.
+            // Provenance = apache-2.0 end-to-end (Permissive — no
+            // runtime-side attribution obligation; LM + codec +
+            // tokenizer + speaker encoder all under a single apache-2.0
+            // grant).
+            let (builder, report) = models::qwen3_tts::convert(bytes)?;
+            let mut notes = vec![format!(
+                "qwen3-tts: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("qwen3-tts warning: {n}")),
             );
             (builder, notes)
         }
@@ -2043,6 +2119,60 @@ pub fn convert_chatterbox_nano_file(
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::ChatterboxNano, input, output)
+}
+
+/// Convert an Alibaba **Qwen3-TTS-12Hz-0.6B-Base** safetensors
+/// checkpoint into a Vokra GGUF (SoTA plan Phase 3, 2026-07-24).
+///
+/// This is the named entry point that mirrors
+/// `convert_chatterbox_nano_file` / `convert_dia_file` /
+/// `convert_zonos_file` / `convert_csm_file` / `convert_kokoro_file`. It
+/// is functionally identical to
+/// `convert_file(ModelKind::Qwen3Tts, input, output)` — Qwen3-TTS
+/// takes no side-car config on this conversion path (every hparam of
+/// the `vokra.qwen3_tts.*` chunk group is transcribed as compile-time
+/// constants in `models::qwen3_tts` from
+/// `huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/raw/main/config.json`)
+/// — but the named entry keeps the `convert_*_file` naming symmetry
+/// with the other TTS models.
+///
+/// Qwen3-TTS-0.6B-Base is Alibaba's discrete multi-codebook LM
+/// speech synthesizer with a **Qwen3-flavour talker** (28-layer /
+/// hidden=1024 / GQA 16 Q ÷ 8 KV / head_dim=128 / SwiGLU
+/// ffn=3072 / RoPE θ=1 000 000 / RMSNorm ε=1e-6, 3072-per-codebook
+/// speech vocab + 151 936-token Qwen3 shared text vocab,
+/// max_position_embeddings=32 768) plus a **5-layer code-predictor
+/// parallel head** (same GQA / RoPE / RMSNorm axes, 2048-per-codebook
+/// acoustic vocab, emits 16 codebook rows per step) plus the shared
+/// **Qwen3-TTS-Codec** seam (`vokra_ops::qwen3_tts_codec` — 16-quantizer
+/// semantic + acoustic split RVQ at 12.5 Hz output rate, 24 kHz PCM).
+/// Speaker encoder: 24 kHz sample rate, 1024-dim embedding.
+///
+/// Distinct arch tag from CosyVoice2/3 because Qwen3-TTS is
+/// **codec-LM**, not vocoder-LM — the terminal step is
+/// `qwen3_tts_codec`, NOT `HiFTChain`. Silently sharing either
+/// sibling's arch tag would mis-route the runtime dispatch. Reuses
+/// the existing `qwen3_tts_codec` primitive (SoTA plan Phase 3 TTS
+/// codec op) — no new op or backend kernel is added by this model.
+///
+/// # BF16 posture
+///
+/// The upstream Qwen3-TTS-0.6B release ships **BF16** safetensors
+/// (README-declared "0.9B parameters in BF16"); today's pass-through
+/// arm handles only F32 / F16, so BF16 tensors reach the
+/// `skipped_non_float` counter and the converter surfaces the loud
+/// "no float tensors" note. Pre-widen offline (float32) or wait for
+/// the streaming BF16 pass-through path (T29-equivalent — the Moshi /
+/// Kyutai STT pattern) to convert the release build directly.
+///
+/// Weight license = **apache-2.0** **end-to-end**
+/// (`huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base` model-card
+/// `license: apache-2.0`, fetched 2026-07-24) — LM + codec +
+/// tokenizer + speaker encoder all under a single apache-2.0 grant.
+/// The M2-13 gate passes commercially without any attribution
+/// obligation on the runtime side.
+pub fn convert_qwen3_tts_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::Qwen3Tts, input, output)
 }
 
 /// Convert a Zyphra **Zonos-v0.1-transformer** safetensors checkpoint into a

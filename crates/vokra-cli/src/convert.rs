@@ -14,8 +14,9 @@ use vokra_convert::{
     ModelKind, PolicyPreset, VoxtralConfig, convert_chatterbox_file, convert_chatterbox_nano_file,
     convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
     convert_dac_file, convert_file, convert_file_quantized, convert_file_with_policy,
-    convert_kokoro_file, convert_piper_plus_file, convert_voxtral_file_quantized,
-    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
+    convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file,
+    convert_voxtral_file_quantized, convert_voxtral_file_with_adapter_config_quantized,
+    parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -23,7 +24,7 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|chatterbox|chatterbox-turbo|chatterbox-nano> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
@@ -31,6 +32,7 @@ USAGE:
     vokra-cli convert --model chatterbox --input <t3.safetensors> --output <out.gguf>
     vokra-cli convert --model chatterbox-turbo --input <t3_turbo_v1.safetensors> --output <out.gguf>
     vokra-cli convert --model chatterbox-nano --input <t3_nano_v1.safetensors> --output <out.gguf>
+    vokra-cli convert --model qwen3-tts --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model voxtral --input <ckpt.safetensors | model.safetensors.index.json> \
                       [--config <config.json>] [--adapter-config <adapter.json>] \
@@ -41,7 +43,8 @@ OPTIONS:
                               campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
                               parakeet-tdt | parakeet-ctc | canary | omniasr-ctc |
-                              distil-whisper | chatterbox | chatterbox-turbo | chatterbox-nano
+                              distil-whisper | chatterbox | chatterbox-turbo | chatterbox-nano |
+                              qwen3-tts
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
@@ -179,6 +182,31 @@ OPTIONS:
                               (huggingface.co/ResembleAI/chatterbox-nano)
                               — no --config side-car; weight license =
                               MIT permissive — no attribution obligation)
+                              (qwen3-tts: Alibaba Qwen3-TTS-12Hz-0.6B-Base
+                              — discrete multi-codebook LM (Qwen3-flavour
+                              28-layer talker + 5-layer parallel
+                              code-predictor + shared Qwen3-TTS-Codec seam
+                              via vokra_ops::qwen3_tts_codec, 16-quantizer
+                              semantic + acoustic split RVQ at 12.5 Hz);
+                              talker axes: hidden=1024 / n_layer=28 /
+                              GQA n_head=16 n_head_kv=8 / head_dim=128 /
+                              SwiGLU ffn=3072 / RoPE θ=1000000 /
+                              RMSNorm ε=1e-6 / speech_vocab=3072 /
+                              text_vocab=151936 / max_positions=32768;
+                              code predictor axes: n_layer=5 /
+                              acoustic_vocab=2048; speaker encoder
+                              24 kHz / 1024-dim embedding; distinct arch
+                              tag from CosyVoice2/3 because Qwen3-TTS is
+                              codec-LM not vocoder-LM (terminal step =
+                              qwen3_tts_codec, NOT HiFTChain); upstream
+                              ships BF16 (~0.9 GB) — pre-widen to F32
+                              offline or wait for the streaming BF16
+                              pass-through path; every hparam is
+                              transcribed verbatim from config.json
+                              (huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base)
+                              — no --config side-car; weight license =
+                              apache-2.0 permissive end-to-end — no
+                              attribution obligation on the runtime side)
     --input <path>            upstream checkpoint file. For voxtral, a
                               `*.index.json` path reads every shard listed in
                               its weight_map (the raw sharded BF16 release)
@@ -274,7 +302,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac | \
                          csm | moshi | denoise | dia | zonos | kyutai-stt | \
                          parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
-                         distil-whisper | chatterbox | chatterbox-turbo | chatterbox-nano)"
+                         distil-whisper | chatterbox | chatterbox-turbo | chatterbox-nano | \
+                         qwen3-tts)"
                     )
                 })?);
                 i += 2;
@@ -576,6 +605,23 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             }
             convert_chatterbox_nano_file(&p.input, &p.output)
         }
+        ModelKind::Qwen3Tts => {
+            // SoTA plan Phase 3 (2026-07-24): Qwen3-TTS-12Hz-0.6B-Base ships
+            // a real `config.json`, but every field is fixed for the 0.6B
+            // release and byte-parallel to the transcribed constants in
+            // `models::qwen3_tts` — so the CLI takes no --config side-car
+            // today (a future 0.6B-CustomVoice / 0.6B-VoiceDesign / 1.7B
+            // variant that reshapes the backbone would demand one).
+            // Quantization surface is whisper-only (same posture as
+            // Chatterbox family / CosyVoice3 / dia / zonos).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_qwen3_tts_file(&p.input, &p.output)
+        }
         _ => {
             // Ticket precedence: an explicit --policy-preset wins; else the
             // legacy --quantize q4_k alias maps to the whisper_q4_k preset;
@@ -781,6 +827,32 @@ mod tests {
         }
     }
 
+    /// Every accepted spelling from `ModelKind::from_arg` parses via the
+    /// CLI front-end for the Qwen3-TTS family — the canonical HF release
+    /// id, the arch-tag underscore spelling, and the common short forms.
+    /// Qwen3-TTS takes no --config side-car today (every hparam is fixed
+    /// for the 0.6B-Base release and transcribed as compile-time
+    /// constants).
+    #[test]
+    fn parses_qwen3_tts_variant_ids() {
+        for spelling in [
+            "qwen3-tts",
+            "qwen3_tts",
+            "qwen3-tts-0.6b",
+            "qwen3-tts-0_6b",
+            "qwen3-tts-12hz-0.6b-base",
+            "qwen3-tts-12hz-0_6b-base",
+            "qwen3-tts-12hz-0.6b",
+        ] {
+            let p = parse_args(&args(&[
+                "--model", spelling, "--input", "i", "--output", "o",
+            ]))
+            .unwrap_or_else(|e| panic!("--model {spelling} should parse: {e}"));
+            assert_eq!(p.model, ModelKind::Qwen3Tts, "--model {spelling}");
+            assert!(p.config.is_none(), "qwen3-tts takes no --config side-car");
+        }
+    }
+
     #[test]
     fn parses_fun_cosyvoice3_variant_ids() {
         // Every accepted spelling from `ModelKind::from_arg` parses via
@@ -857,6 +929,7 @@ mod tests {
             ("chatterbox", ModelKind::Chatterbox),
             ("chatterbox-turbo", ModelKind::ChatterboxTurbo),
             ("chatterbox-nano", ModelKind::ChatterboxNano),
+            ("qwen3-tts", ModelKind::Qwen3Tts),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
@@ -914,6 +987,7 @@ mod tests {
             "chatterbox",
             "chatterbox-turbo",
             "chatterbox-nano",
+            "qwen3-tts",
             "piper-plus",
             "dac",
         ] {

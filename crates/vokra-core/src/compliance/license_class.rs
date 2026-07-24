@@ -431,6 +431,24 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // are listed here so an id lookup returns quickly without
         // hitting the prefix arm.
         "chatterbox-nano" | "chatterbox_nano" | "chatterbox-nano-v1" => LicenseClass::Permissive,
+        // SoTA plan Phase 3 (2026-07-24): Alibaba Qwen3-TTS-12Hz-0.6B-Base —
+        // discrete multi-codebook LM TTS. Weight license = **apache-2.0**
+        // **end-to-end** — LM + codec + tokenizer + speaker encoder all
+        // under a single apache-2.0 grant
+        // (`huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base` model-card
+        // `license: apache-2.0`, fetched 2026-07-24 — CLAUDE.md
+        // 「ハルシネーション厳禁」). The M2-13 gate passes commercially
+        // without any attribution obligation on the runtime side. The
+        // exact canonical spellings + arch-tag underscore variant + the
+        // common short forms are listed here so an id lookup returns
+        // quickly without hitting the `qwen3-tts-` prefix arm below.
+        "qwen3-tts"
+        | "qwen3_tts"
+        | "qwen3-tts-0.6b"
+        | "qwen3-tts-0_6b"
+        | "qwen3-tts-12hz-0.6b-base"
+        | "qwen3-tts-12hz-0_6b-base"
+        | "qwen3-tts-12hz-0.6b" => LicenseClass::Permissive,
         // Commercial-OK codecs (FR-OP-32): DAC / WavTokenizer / X-Codec 2 = MIT.
         "dac" | "wavtokenizer" | "x-codec-2" | "xcodec2" => LicenseClass::Permissive,
         // SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B — Apache 2.0
@@ -596,7 +614,18 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
             // the `chatterbox_en` underscore spelling and any future
             // underscore stem.
             || id.starts_with("chatterbox-")
-            || id.starts_with("chatterbox_") =>
+            || id.starts_with("chatterbox_")
+            // Alibaba Qwen3-TTS first-party family (apache-2.0
+            // end-to-end — SoTA plan Phase 3, 2026-07-24): specific HF
+            // variant ids like `qwen3-tts-12hz-0.6b-base` /
+            // `qwen3-tts-12hz-0.6b-customvoice` /
+            // `qwen3-tts-12hz-0.6b-voicedesign` or a future
+            // `qwen3-tts-12hz-1.7b-*` still resolve permissive. Guarded
+            // on the dash so unrelated ids (`qwen3-ttsomething`) cannot
+            // slip through. The `qwen3_tts` (underscore) alias covers
+            // the arch tag spelling only — a future underscore variant
+            // family would need its own explicit prefix.
+            || id.starts_with("qwen3-tts-") =>
         {
             LicenseClass::Permissive
         }

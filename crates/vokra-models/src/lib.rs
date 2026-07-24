@@ -203,6 +203,25 @@ pub(crate) mod mapped_weights;
 pub mod mimi;
 pub mod moshi;
 pub mod piper_plus;
+// SoTA plan Phase 3 (2026-07-24): Alibaba **Qwen3-TTS-12Hz-0.6B-Base**
+// TTS (apache-2.0 end-to-end — LM + codec + tokenizer + speaker
+// encoder all under a single apache-2.0 grant, huggingface.co/Qwen/
+// Qwen3-TTS-12Hz-0.6B-Base). Discrete multi-codebook LM topology:
+// (a) Qwen3-flavour talker (decoder-only transformer, 28L / d=1024 /
+// GQA 16Q ÷ 8KV / head_dim=128 / SwiGLU ffn=3072 / RoPE θ=1000000 /
+// RMSNorm ε=1e-6, 3072-per-codebook speech vocab + 151936-token Qwen3
+// text vocab, 32768 max positions) + (b) 5-layer code-predictor
+// parallel head (same GQA/RoPE/RMSNorm axes, 2048 acoustic
+// per-codebook vocab, emits 16 codebook rows per step) + (c) shared
+// Qwen3-TTS-Codec seam (vokra_ops::qwen3_tts_codec — 16-quantizer
+// semantic + acoustic split RVQ at 12.5 Hz output rate). Every hparam
+// transcribed verbatim from config.json (talker.* / code_predictor.*)
+// and README.md (speaker encoder 24 kHz / 1024-dim). No new op —
+// consumes qwen3_tts_codec directly. Distinct arch tag from CosyVoice2
+// / CosyVoice3 / Chatterbox because Qwen3-TTS is codec-LM not
+// vocoder-LM — the terminal step is qwen3_tts_codec, NOT HiFTChain;
+// silently sharing either sibling's arch tag would mis-route.
+pub mod qwen3_tts;
 pub mod silero_vad;
 pub mod speaker;
 pub(crate) mod tls_scratch;

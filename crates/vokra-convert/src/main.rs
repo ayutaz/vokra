@@ -1188,6 +1188,81 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  stop_text_token={stop_text} sample_rate={sr}"
             );
         }
+        ModelKind::Qwen3Tts => {
+            // SoTA plan Phase 3 (2026-07-24): Qwen3-TTS verify surface —
+            // arch/name plus the Qwen3 talker + code-predictor axes + the
+            // codec handshake (`num_code_groups`) that identifies the
+            // discrete multi-codebook LM topology distinct from
+            // CosyVoice2/3's vocoder-LM topology.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let family = file
+                .get("vokra.qwen3_tts.model_family")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let sr = file
+                .get("vokra.qwen3_tts.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let spk = file
+                .get("vokra.qwen3_tts.speaker_embed_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let hidden = file
+                .get("vokra.qwen3_tts.talker.hidden_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_layer = file
+                .get("vokra.qwen3_tts.talker.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_head = file
+                .get("vokra.qwen3_tts.talker.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_head_kv = file
+                .get("vokra.qwen3_tts.talker.n_head_kv")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let head_dim = file
+                .get("vokra.qwen3_tts.talker.head_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let text_vocab = file
+                .get("vokra.qwen3_tts.talker.text_vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let speech_vocab = file
+                .get("vokra.qwen3_tts.talker.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let groups = file
+                .get("vokra.qwen3_tts.talker.num_code_groups")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cp_layers = file
+                .get("vokra.qwen3_tts.code_predictor.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cp_vocab = file
+                .get("vokra.qwen3_tts.code_predictor.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} family={family} sample_rate={sr} \
+                 speaker_embed_dim={spk} talker.hidden={hidden} talker.n_layer={n_layer} \
+                 talker.n_head={n_head} talker.n_head_kv={n_head_kv} talker.head_dim={head_dim} \
+                 talker.text_vocab={text_vocab} talker.speech_vocab={speech_vocab} \
+                 num_code_groups={groups} code_predictor.n_layer={cp_layers} \
+                 code_predictor.vocab={cp_vocab}"
+            );
+        }
     }
     Ok(())
 }
