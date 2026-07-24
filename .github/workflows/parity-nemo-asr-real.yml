@@ -1,0 +1,410 @@
+# NeMo-ASR real-checkpoint parity CI (SoTA plan Phase 2, 2026-07-24).
+#
+# Runs the flip-the-switch harness `crates/vokra-models/tests/parity_nemo_asr.rs`
+# against upstream checkpoints for five ASR architectures the SoTA plan Phase 2
+# added:
+#
+#   * kyutai_stt   — kyutai/stt-2.6b-en                      (CC-BY-4.0)
+#   * parakeet_tdt — nvidia/parakeet-tdt-0.6b-v3             (CC-BY-4.0)
+#   * parakeet_ctc — nvidia/parakeet-ctc-1.1b                (CC-BY-4.0)
+#   * canary       — nvidia/canary-1b-v2                     (CC-BY-4.0)
+#   * omniasr_ctc  — facebook/omniASR-CTC-1B                 (Apache-2.0)
+#
+# # omniASR repo pin (owner-verifiable discrepancy — honest reporting, FR-EX-08)
+#
+# The task-tracker listed `suno/omniASR-CTC-1B-v1` as the HF repo for the
+# omniASR entry. That URL returns HTTP 401 on the public HF API and is not
+# referenced anywhere in the Vokra tree; every primary source in the
+# Vokra module (`crates/vokra-models/src/omniasr_ctc/mod.rs` docstring
+# lines 7, 22, 72, 1155) names `facebook/omniASR-CTC-1B` as the upstream.
+# `huggingface.co/api/models/facebook/omniASR-CTC-1B` returns a valid SHA
+# with the Apache-2.0 license the module transcribes. This workflow pins
+# `facebook/omniASR-CTC-1B` (the accessible upstream); if the owner
+# intends a different repo, they update this file's matrix entry.
+#
+# # Structure (kokoro / whisper / moshi / csm real-parity precedent)
+#
+#   * Trigger: workflow_dispatch (owner-driven, per-model choice input) +
+#     weekly cron '0 9 * * 1' (its own slot in the weekly stagger — kokoro
+#     04:00, whisper 05:00, vulkan 05:30, cuda-rtf 06:00, csm 06:30,
+#     web-wasm 07:00, moshi 07:30, utmos 08:00, godot 08:30, nemo-asr 09:00) +
+#     a narrow pull_request paths filter that only fires on NeMo-ASR-adjacent
+#     code changes.
+#
+#   * Setup job (gate): the cron leg clean-skips unless repository variable
+#     `VOKRA_NEMO_ASR_ENABLE` is `1`. A workflow_dispatch run proceeds
+#     regardless (the dispatcher opted in). Missing gate → annotation naming
+#     the toggle, not a fabricated pass.
+#
+#   * Parity job: matrix over the five family members. Each matrix leg:
+#       1. checkout,
+#       2. python venv with torch / safetensors / numpy / huggingface_hub
+#          pinned (never touches root Cargo.lock),
+#       3. HF snapshot_download at the pinned SHA (env var per arch),
+#       4. build vokra-cli release,
+#       5. `vokra-cli convert --model <arch>`,
+#       6. `cargo test -p vokra-models parity_nemo_asr::<arch> --test parity_nemo_asr`
+#          with `VOKRA_<ARCH>_GGUF` set,
+#       7. `git diff --exit-code Cargo.lock` — zero-dep tripwire (NFR-DS-02).
+#
+#   * workflow_dispatch inputs also expose a `model` choice that selects a
+#     single arch (`all` runs every one). The matrix expands from the input.
+#
+#   * NOT a required check (M2 Phase 3 rule): HF flakiness and the shape-
+#     only scaffold posture of the five converters (BF16 → `skipped_non_float`
+#     until the streaming BF16 pass-through lands — see the CLI convert
+#     docstrings) must not block PRs. Owner promotes only after weeks of
+#     consecutive green.
+#
+#   * Honest reporting: the harness prints per-model GGUF surface details
+#     (tensor count + primary-source hparam echo) whether the leg passes or
+#     fails; a legitimate weight-shape mismatch surfaces before the deferred
+#     T29 numerical leg is armed.
+#
+# Initial workflow_dispatch = owner.
+
+name: parity-nemo-asr-real
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: >-
+          Which NeMo-ASR family arch to run. `all` runs every entry in the
+          matrix; a specific arch runs only that leg (useful for iterating
+          on one model without paying the wall-clock of the full family).
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - kyutai_stt
+          - parakeet_tdt
+          - parakeet_ctc
+          - canary
+          - omniasr_ctc
+  schedule:
+    # Mondays 09:00 UTC — its own slot in the weekly real-parity stagger.
+    - cron: "0 9 * * 1"
+  pull_request:
+    # Narrow paths filter: PR runs only when the five NeMo-ASR modules,
+    # their converters, the harness, or this workflow itself change. Every
+    # other PR clean-skips (never runs → never a fabricated cron pass).
+    paths:
+      - ".github/workflows/parity-nemo-asr-real.yml"
+      - "crates/vokra-convert/src/models/kyutai_stt.rs"
+      - "crates/vokra-convert/src/models/parakeet.rs"
+      - "crates/vokra-convert/src/models/parakeet_ctc.rs"
+      - "crates/vokra-convert/src/models/canary.rs"
+      - "crates/vokra-convert/src/models/omniasr_ctc.rs"
+      - "crates/vokra-core/**"
+      - "crates/vokra-models/src/kyutai_stt/**"
+      - "crates/vokra-models/src/parakeet/**"
+      - "crates/vokra-models/src/parakeet_ctc/**"
+      - "crates/vokra-models/src/canary/**"
+      - "crates/vokra-models/src/omniasr_ctc/**"
+      - "crates/vokra-models/tests/parity_nemo_asr.rs"
+
+# Cancel superseded runs on the same ref. Each matrix leg is a ~20-30 min
+# HF-DL + convert + smoke, so a rapid re-push must not double-book the
+# runner pool.
+concurrency:
+  group: parity-nemo-asr-real-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Python venv path (built per matrix leg's runner; the root Cargo.lock is
+  # never touched — the final zero-dep tripwire confirms).
+  PARITY_VENV: /tmp/vokra-nemo-asr-venv
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Preflight: decide whether to run at all (cron-gated by the
+  # `VOKRA_NEMO_ASR_ENABLE` repo variable; workflow_dispatch always runs).
+  # Emits `run_parity` + the matrix expansion selected by the dispatch input.
+  # ---------------------------------------------------------------------------
+  setup:
+    name: gate (checkpoint sourcing opt-in)
+    runs-on: ubuntu-latest
+    outputs:
+      run_parity: ${{ steps.decide.outputs.run_parity }}
+      matrix: ${{ steps.decide.outputs.matrix }}
+    steps:
+      - id: decide
+        env:
+          ENABLE_VAR: ${{ vars.VOKRA_NEMO_ASR_ENABLE }}
+          MODEL_INPUT: ${{ inputs.model }}
+          EVENT_NAME: ${{ github.event_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Gate: workflow_dispatch always proceeds; scheduled + PR runs
+          # require the enable flag. Fabricated-pass 禁止 = a skip is always
+          # a skip, announced via ::notice::.
+          case "${EVENT_NAME}" in
+            workflow_dispatch)
+              run_parity=true
+              echo "dispatch run: proceeding (dispatcher opted in to the multi-GB HF fetches)"
+              ;;
+            *)
+              if [ "${ENABLE_VAR:-}" = "1" ]; then
+                run_parity=true
+                echo "VOKRA_NEMO_ASR_ENABLE=1: proceeding on ${EVENT_NAME}"
+              else
+                run_parity=false
+                echo "::notice title=parity-nemo-asr-real clean skip::checkpoint sourcing is opt-in — set the repository variable VOKRA_NEMO_ASR_ENABLE=1 (or workflow_dispatch) to run the NeMo-ASR real-checkpoint parity. This is a clean gated skip, not a pass (fabricated pass 禁止, FR-EX-08)."
+              fi
+              ;;
+          esac
+          echo "run_parity=${run_parity}" >> "$GITHUB_OUTPUT"
+
+          # Matrix expansion. workflow_dispatch may narrow to a single arch;
+          # every other trigger runs the full family. The JSON blob must be
+          # a single line (GITHUB_OUTPUT multi-line rules apply otherwise).
+          model="${MODEL_INPUT:-all}"
+          case "${model}" in
+            all|"")
+              matrix='{"include":[{"arch":"kyutai_stt","hf_repo":"kyutai/stt-2.6b-en","hf_rev":"a07aec56d22be5589cd0bc8709c75b6cf3e3039d","cli_model":"kyutai-stt","license":"cc-by-4.0","env_gguf":"VOKRA_KYUTAI_STT_GGUF"},{"arch":"parakeet_tdt","hf_repo":"nvidia/parakeet-tdt-0.6b-v3","hf_rev":"7c35754d166cca382ad1e53e68b01e7c575f3a1d","cli_model":"parakeet-tdt","license":"cc-by-4.0","env_gguf":"VOKRA_PARAKEET_TDT_GGUF"},{"arch":"parakeet_ctc","hf_repo":"nvidia/parakeet-ctc-1.1b","hf_rev":"a707e818195cb97c8f7da2fc36b221a29f69a5db","cli_model":"parakeet-ctc","license":"cc-by-4.0","env_gguf":"VOKRA_PARAKEET_CTC_GGUF"},{"arch":"canary","hf_repo":"nvidia/canary-1b-v2","hf_rev":"87bc52657add533cd0156b3fc1aef027280754bf","cli_model":"canary","license":"cc-by-4.0","env_gguf":"VOKRA_CANARY_GGUF"},{"arch":"omniasr_ctc","hf_repo":"facebook/omniASR-CTC-1B","hf_rev":"8c22e3ffdaa4aab6431b128b84b991a7d9c2515c","cli_model":"omniasr-ctc","license":"apache-2.0","env_gguf":"VOKRA_OMNIASR_CTC_GGUF"}]}'
+              ;;
+            kyutai_stt)
+              matrix='{"include":[{"arch":"kyutai_stt","hf_repo":"kyutai/stt-2.6b-en","hf_rev":"a07aec56d22be5589cd0bc8709c75b6cf3e3039d","cli_model":"kyutai-stt","license":"cc-by-4.0","env_gguf":"VOKRA_KYUTAI_STT_GGUF"}]}'
+              ;;
+            parakeet_tdt)
+              matrix='{"include":[{"arch":"parakeet_tdt","hf_repo":"nvidia/parakeet-tdt-0.6b-v3","hf_rev":"7c35754d166cca382ad1e53e68b01e7c575f3a1d","cli_model":"parakeet-tdt","license":"cc-by-4.0","env_gguf":"VOKRA_PARAKEET_TDT_GGUF"}]}'
+              ;;
+            parakeet_ctc)
+              matrix='{"include":[{"arch":"parakeet_ctc","hf_repo":"nvidia/parakeet-ctc-1.1b","hf_rev":"a707e818195cb97c8f7da2fc36b221a29f69a5db","cli_model":"parakeet-ctc","license":"cc-by-4.0","env_gguf":"VOKRA_PARAKEET_CTC_GGUF"}]}'
+              ;;
+            canary)
+              matrix='{"include":[{"arch":"canary","hf_repo":"nvidia/canary-1b-v2","hf_rev":"87bc52657add533cd0156b3fc1aef027280754bf","cli_model":"canary","license":"cc-by-4.0","env_gguf":"VOKRA_CANARY_GGUF"}]}'
+              ;;
+            omniasr_ctc)
+              # NOTE: task-tracker listed `suno/omniASR-CTC-1B-v1` which
+              # returns HTTP 401 on the HF public API; the Vokra module
+              # points at `facebook/omniASR-CTC-1B` and that resolves. See
+              # the workflow header for the honest-reporting rationale.
+              matrix='{"include":[{"arch":"omniasr_ctc","hf_repo":"facebook/omniASR-CTC-1B","hf_rev":"8c22e3ffdaa4aab6431b128b84b991a7d9c2515c","cli_model":"omniasr-ctc","license":"apache-2.0","env_gguf":"VOKRA_OMNIASR_CTC_GGUF"}]}'
+              ;;
+            *)
+              echo "::error::unknown model input '${model}' — allowed: all, kyutai_stt, parakeet_tdt, parakeet_ctc, canary, omniasr_ctc"
+              exit 1
+              ;;
+          esac
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "matrix expansion: ${matrix}"
+
+  # ---------------------------------------------------------------------------
+  # Parity: one matrix leg per selected arch. Each leg is independent
+  # (fail-fast=false); a network failure on one HF repo must not mask
+  # progress on another.
+  # ---------------------------------------------------------------------------
+  parity:
+    name: parity (${{ matrix.arch }})
+    needs: setup
+    if: needs.setup.outputs.run_parity == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    env:
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
+      # Snapshot-download stage dir per matrix leg.
+      HF_STAGE: ${{ github.workspace }}/hf-stage
+      # Per-arch converted GGUF path (fed to `vokra-cli convert` and then
+      # the harness via `VOKRA_<ARCH>_GGUF`).
+      GGUF_OUT: ${{ github.workspace }}/nemo-asr-${{ matrix.arch }}.gguf
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      # HF cache keyed to the pinned revision — a bump invalidates it
+      # cleanly. The tag ("v1") is workflow-owned so a future scheme
+      # change (side-car pin, extra file) rotates by touching this file.
+      - name: Cache HF hub (${{ matrix.arch }} @ ${{ matrix.hf_rev }})
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.HF_HOME }}
+          key: nemo-asr-hf-${{ matrix.arch }}-${{ matrix.hf_rev }}-v1
+
+      # Root Cargo.lock is never touched; the pins mirror what a fresh
+      # local venv would resolve. `huggingface_hub` includes
+      # `snapshot_download` which fetches by revision.
+      - name: Provision parity venv (torch + safetensors + numpy + huggingface_hub)
+        run: |
+          set -euo pipefail
+          python -m venv "${PARITY_VENV}"
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python -m pip install --upgrade pip
+          # CPU torch keeps the runner lean; the future numerical leg is
+          # argmax-deterministic and does not need CUDA on the reference side.
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install \
+            'numpy==2.4.6' \
+            'safetensors==0.8.0' \
+            'huggingface_hub==0.36.2'
+          # hf_transfer is optional but massively speeds multi-GB downloads.
+          python -m pip install 'hf_transfer>=0.1.9' || true
+          python - <<'PY'
+          import torch, numpy, safetensors, huggingface_hub
+          print(f"parity venv: torch={torch.__version__} "
+                f"numpy={numpy.__version__} "
+                f"safetensors={safetensors.__version__} "
+                f"huggingface_hub={huggingface_hub.__version__}")
+          PY
+
+      # Snapshot the upstream release at the pinned revision. `snapshot_download`
+      # writes into HF_HOME/hub and returns the local staged path; we mirror
+      # it into HF_STAGE so the convert step has a single deterministic root.
+      - name: HF snapshot_download (${{ matrix.hf_repo }} @ ${{ matrix.hf_rev }})
+        env:
+          HF_REPO: ${{ matrix.hf_repo }}
+          HF_REV: ${{ matrix.hf_rev }}
+          HF_HUB_ENABLE_HF_TRANSFER: "1"
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          mkdir -p "${HF_STAGE}"
+          python - <<'PY'
+          import os
+          from huggingface_hub import snapshot_download
+          repo = os.environ["HF_REPO"]
+          rev = os.environ["HF_REV"]
+          stage = os.environ["HF_STAGE"]
+          local = snapshot_download(
+              repo_id=repo,
+              revision=rev,
+              cache_dir=os.environ["HF_HOME"],
+              local_dir=stage,
+              local_dir_use_symlinks=False,
+          )
+          print(f"snapshot: {repo}@{rev} -> {local}")
+          # List a few files to give the run log a shape sanity signal.
+          for name in sorted(os.listdir(local))[:20]:
+              size = os.path.getsize(os.path.join(local, name))
+              print(f"  {name:60s} {size:>12d} bytes")
+          PY
+
+      - name: Build vokra-cli (release)
+        run: cargo build --release -p vokra-cli
+
+      # Convert the upstream release into a Vokra GGUF. The five NeMo-ASR
+      # converters are shape-only at this scaffold stage (Phase 2): the
+      # exact `<Arch>Weights::from_gguf` binding lands in a follow-up wave
+      # (T29-equivalent). BF16 tensors currently reach the
+      # `skipped_non_float` counter (see the CLI convert docstrings) — the
+      # harness's tensor-presence assert catches an empty-GGUF fabricated
+      # pass either way.
+      #
+      # The converter selects its input file(s) from HF_STAGE — the
+      # canonical release layout is safetensors + config.json at the repo
+      # root, plus optional tokenizer sidecars. Every leg passes the
+      # safetensors path as the CLI's `--input`; the harness only requires
+      # a well-formed GGUF (the `vokra.model.arch` + `vokra.<arch>.*`
+      # metadata surface), so the coarser input selection is enough at
+      # this milestone.
+      - name: vokra-cli convert (${{ matrix.cli_model }})
+        env:
+          CLI_MODEL: ${{ matrix.cli_model }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          # Locate the primary safetensors payload. Every entry ships at
+          # least one *.safetensors under the repo root; multi-shard
+          # releases carry model.safetensors.index.json. We pick the
+          # index (if present) or the single file (if not).
+          shopt -s nullglob
+          candidates=(
+            "${HF_STAGE}/model.safetensors.index.json"
+            "${HF_STAGE}/model.safetensors"
+          )
+          input=""
+          for c in "${candidates[@]}"; do
+            if [ -f "$c" ]; then
+              input="$c"
+              break
+            fi
+          done
+          if [ -z "$input" ]; then
+            # Fall back: any *.safetensors in the stage.
+            for f in "${HF_STAGE}"/*.safetensors; do
+              input="$f"
+              break
+            done
+          fi
+          if [ -z "$input" ]; then
+            echo "::error::${ARCH}: no safetensors found under ${HF_STAGE} — release layout unexpected"
+            ls -la "${HF_STAGE}" || true
+            exit 1
+          fi
+          echo "converter input: ${input}"
+          ./target/release/vokra-cli convert \
+            --model "${CLI_MODEL}" \
+            --input "${input}" \
+            --output "${GGUF_OUT}"
+          size="$(wc -c < "${GGUF_OUT}")"
+          echo "converted: ${GGUF_OUT} (${size} bytes)"
+          {
+            echo "### ${ARCH} — Vokra GGUF"
+            echo ""
+            echo "- Upstream: \`${{ matrix.hf_repo }}@${{ matrix.hf_rev }}\`"
+            echo "- License: ${{ matrix.license }}"
+            echo "- CLI model: \`${CLI_MODEL}\`"
+            echo "- Output: \`${GGUF_OUT}\` (${size} bytes)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Run the flip-the-switch harness. The env var name is per-arch;
+      # `env_gguf` in the matrix carries the exact string the Rust helper
+      # `gguf_env()` produces. A drift between the two halves is caught
+      # by the `env_names_match_workflow_convention` self-test which runs
+      # unconditionally (no GGUF needed).
+      - name: parity_nemo_asr::${{ matrix.arch }}
+        env:
+          ARCH: ${{ matrix.arch }}
+          ENV_GGUF: ${{ matrix.env_gguf }}
+        run: |
+          set -euo pipefail
+          # Export the per-arch env var pointing at the freshly-converted
+          # GGUF, then filter the harness to just this arch's test.
+          export "${ENV_GGUF}=${GGUF_OUT}"
+          cargo test --release -p vokra-models --test parity_nemo_asr \
+            "parity_nemo_asr::${ARCH}" -- --nocapture
+
+      # Zero-dep tripwire (NFR-DS-02): the venv + HF hub cache + CLI build
+      # must not have touched the root Rust lockfile.
+      - name: Zero-dependency invariant (root Cargo.lock unchanged, NFR-DS-02)
+        run: git diff --exit-code Cargo.lock
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### ${{ matrix.arch }} run"
+            echo ""
+            echo "- HF: \`${{ matrix.hf_repo }}\` @ \`${{ matrix.hf_rev }}\`"
+            echo "- License: \`${{ matrix.license }}\`"
+            echo "- CLI: \`vokra-cli convert --model ${{ matrix.cli_model }}\`"
+            echo "- Env: \`${{ matrix.env_gguf }}=${GGUF_OUT}\`"
+            echo ""
+            echo "Numerical stage-tap parity is deferred until \`<Arch>Weights::from_gguf\`"
+            echo "lands (T29-equivalent follow-up); today's leg exercises the GGUF surface"
+            echo "(arch tag + \`vokra.<arch>.*\` hparam echo + tensor presence)."
+          } >> "$GITHUB_STEP_SUMMARY"
