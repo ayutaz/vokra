@@ -76,6 +76,17 @@ pub mod attrs;
 // `.../parts/submodules/conformer_modules.py`, MIT).
 pub mod conformer;
 // -------------------------------------------------------------------------
+// ---- SoTA plan Phase 2 ctc_decode (ASR primitive, FR-OP-41) -------------
+// CTC greedy blank-fold + prefix beam search with n-gram LM shallow fusion
+// and hotword boost. Runtime function, NOT an `OpKind` variant (FR-OP-40 /
+// FR-EX-10 posture — same as `beam_search` and `flow_sample`). The reserved
+// graph-op identifier lives in `vokra_core::m5_residual_ops::CTC_DECODE_OP`
+// (unregistered in the min-dtype registry). Consumed by omniASR-CTC
+// (1600 languages, Apache-2.0), parakeet-ctc-1.1b, and the
+// jonatasgrosman/wav2vec2 family. Localized re-export block for clean
+// parallel-wave rebases.
+pub mod ctc_decode;
+// -------------------------------------------------------------------------
 // ---- M4-04 dac_rvq codec decode (RVQ family, FR-OP-30) ------------------
 // DAC's factorized (low-dim codebook + per-quantizer out_proj) residual VQ
 // decode. Shapes verified from the upstream descript-audio-codec (MIT)
@@ -163,6 +174,9 @@ pub mod window;
 // ---- M4-03 aec re-exports ------------------------------------------------
 pub use aec::{Aec, AecAttrs, AecStatus};
 // ---------------------------------------------------------------------------
+// ---- SoTA plan Phase 2 ctc_decode re-exports ----------------------------
+pub use ctc_decode::{CtcBeamAttrs, CtcHypothesis, ctc_decode_beam, ctc_decode_greedy};
+// -------------------------------------------------------------------------
 // ---- M4-04 dac_rvq re-exports --------------------------------------------
 pub use dac_rvq::{
     DacOutProj, DacRvqAttrs, dac_paged_dims, dac_rvq_decode, dac_rvq_decode_paged,
