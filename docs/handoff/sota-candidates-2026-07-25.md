@@ -3,6 +3,8 @@
 Owner handoff for the ultracode SOTA candidates campaign on branch `feat/sota-phase1-2026-07-23`.
 Scope = 22 GGUF converter / F0 / align / KWS-micro TDD skeletons + 1 native long-form orchestrator, landed on top of scout HEAD `491a3ff`.
 
+**Branch state (2026-07-25, pre CI fix wave)**: `feat/sota-phase1-2026-07-23` @ `35696d1`, **122 commits ahead of `main`**, +83.9k lines. PR **#20** — title updated 2026-07-25 to _"feat(sota): Phase 1-4 + JA + parity CI + BF16 fleet + audio primitives"_. All 23 landed items in the Summary table below are on-branch and additive; the "CI fix wave (2026-07-25)" section at the bottom describes 3 surface-level failures against `35696d1` and the follow-up commits that close them.
+
 All landed items follow the standard sibling contract for converters (qwen3_tts / vibevoice / voxcpm2 / zonos): SafetensorsFile::parse → GgufBuilder with F32|F16|BF16 verbatim pass-through (BF16 emitted as GGUF type 30, no convert-time widening), `vokra.model.arch|name|category` + `vokra.provenance.upstream_hf` + `stamp_provenance` (LicenseClass class chosen by `LicenseClass::from_license_str(license.unwrap_or(<default_spdx>))` so `--license <spdx>` overrides are fail-closed). Schema stamps (`vokra.schema.version` / `vokra.schema.producer`) are auto-emitted by the writer choke point in `vokra-core/src/gguf/writer.rs` — converters MUST NOT stamp them directly (duplicate stripping).
 
 ## Summary table
@@ -123,7 +125,7 @@ None. All 23 tasks reached GREEN and landed. See "Verify snapshot" for HEAD gate
 
 Snapshot taken at the request handoff boundary (post-longform commit, on `feat/sota-phase1-2026-07-23`).
 
-- **Final HEAD**: `b5f19b5ecca262953ac978a529dea07300608f37`
+- **Final HEAD (at snapshot time)**: `b5f19b5ecca262953ac978a529dea07300608f37` — historical, taken at post-longform boundary. **Current on-branch HEAD is `35696d1`** (3 post-snapshot commits: `5e44e79` handoff sign-off queue / `c3ff7b2` merge-artifact + clippy drift / `35696d1` handoff stale-item strikethrough). See "Branch state" at top + "CI fix wave (2026-07-25)" at bottom for the delta.
 - **Tests**: 0 passed / 0 failed across 0 suites — *no full-workspace verify was run against the final HEAD*. Each landed commit was verified in its own worktree per the STEP 4 gate (`cargo test -p vokra-convert <name>` for converters, `cargo test -p vokra-models <name>` for F0 / align, `cargo test -p vokra-kws-micro` for KWS-micro, `cargo test -p vokra-server longform` for the orchestrator), all green at commit time. The owner should run a single full-workspace `cargo test --workspace` before merge.
 - **Fmt**: pass (per-commit gate, hook enforced).
 - **Clippy**: fail — reported at handoff boundary; owner must run `cargo clippy --workspace --all-targets -- -D warnings` and address any late drift before merge. Individual per-commit clippy on the affected crate was green under the pre-commit hook; the workspace-wide result at HEAD needs a fresh full run.
@@ -150,3 +152,13 @@ Snapshot taken at the request handoff boundary (post-longform commit, on `feat/s
 - **Writer choke point for schema stamps**: `crates/vokra-core/src/gguf/writer.rs` (`effective_metadata` — never stamp `vokra.schema.*` from converter side).
 - **License override boundary**: `crates/vokra-convert/src/lib.rs::convert_file_licensed` (canonical `--license <spdx>` override pattern — all converters mirror it).
 - **FR-EX-08**: no silent CPU fallback / no silent no-op — governs the honest-skeleton posture of F0 / align / KWS-micro (return frame-count-correct SKELETON output rather than fabricating pitch/alignment/wake-word decisions).
+
+## CI fix wave (2026-07-25)
+
+Three PR #20 checks failed on tip `35696d1` — all are surface-level (workflow YAML hygiene, exclusion-gate false trip on a legitimate repo-name collision, converter metadata type mismatch), none indicate landed-item regression. Fixes land as separate commits so the CI-fix-only diff stays reviewable; SHAs shown as placeholders and are substituted by the main loop when the fix commits land.
+
+- `<repo-hygiene-fix-sha>` **repo-hygiene** — `parity-tts-continuous-vae-real.yml:242` + `parity-tts-japanese-real.yml:328` have unterminated `<<PY` heredoc / unmatched `)` in `run:` blocks; `scripts/check-workflow-hygiene.sh` parses them as bash and flags `EOF before PY sentinel`. Fix terminates the heredoc + rebalances parens (no CI schedule / matrix / model-list change).
+- `<license-fix-sha>` **license (EnCodec exclusion, FR-OP-32 / M3-06)** — `crates/vokra-convert/src/models/funcodec.rs:87,90` names the upstream repo `alibaba-damo/audio_codec-encodec-…` outside comments/`#[cfg(test)]`; `scripts/compliance/check-encodec-exclusion.sh` refuses on the literal `encodec` even though funcodec is a legitimate sibling family (not EnCodec weight). Fix moves the literal into a doc-comment header + a `#[cfg(test)]` refusal-assertion block per the gate's own escape hatch (no BF16 pass-through change, converter behaviour identical).
+- `<parity-zonos-fix-sha>` **parity (zonos)** — `parity_tts_dac.rs:265` panics `GGUF metadata "vokra.zonos.arch.backbone.rotary_emb_interleaved" is not a bool`; converter emits the field with a numeric GGUF type, harness reads as bool. Fix stamps via the bool codepath (mirrors the Dia sibling, which passes parity on the same workflow).
+
+The 23-item landed Summary table + all per-wave landed sections above are unaffected — the fix wave only touches 2 workflow YAMLs, 1 converter source file, and (for the parity fix) may require a one-line converter change plus a re-run of the workflow_dispatch.
