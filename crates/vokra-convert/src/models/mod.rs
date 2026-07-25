@@ -268,6 +268,7 @@ pub(crate) mod irodori;
 // `convert_file --license <spdx>` boundary.
 pub(crate) mod vits_ja;
 pub(crate) mod voxtral;
+pub mod wespeaker;
 pub(crate) mod whisper;
 // SoTA plan Phase 5 codec (2026-07-25): fnlp XY_Tokenizer_TTSD_V0
 // (apache-2.0) safetensors → GGUF. 1 kbps RVQ-8 @ 12.5 Hz — the codec
