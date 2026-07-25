@@ -72,11 +72,12 @@
 //!
 //! ESPnet VITS checkpoints are typically served in F32 (the default
 //! `save_pretrained` posture) or F16 (mixed-precision train + widen at
-//! save). If a downstream ships BF16, this converter's F32/F16
-//! pass-through arm hits `skipped_non_float` on BF16 tensors and the
-//! "no float tensors" loud note fires. Pre-widen offline to F32 (the
-//! CSM / Kokoro / VoxCPM pattern) to convert a BF16 checkpoint
-//! directly.
+//! save). BF16 is also accepted through the pass-through arm
+//! (2026-07-25, mirror of qwen3-tts / vibevoice / voxcpm2 / moshi /
+//! voxtral): BF16 bytes emit as GGUF type 30 verbatim and the runtime
+//! widens on load via the single choke point
+//! `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16` (BF16 = top
+//! 16 bits of an f32 — `bits << 16` is exact, no precision loss).
 //!
 //! # No ONNX (permanent)
 //!
@@ -249,10 +250,21 @@ const DECODER_USE_WEIGHT_NORM: bool = true;
 /// Outcome of a plain VITS JA conversion.
 #[derive(Debug, Default)]
 pub(crate) struct VitsJaReport {
-    /// Float tensors written verbatim.
+    /// Float tensors written verbatim (F32 / F16 / BF16 — all three go
+    /// through the same byte-copy path since the BF16 pass-through land
+    /// 2026-07-25, mirror of `qwen3-tts` / `vibevoice` / `voxcpm2` /
+    /// `moshi` / `voxtral`).
     pub(crate) written: usize,
-    /// Non-F32 / F16 tensors skipped (defensive counter — BF16 lands here).
+    /// Non-F32 / F16 / BF16 tensors skipped (defensive counter — the
+    /// safetensors reader rejects unknown dtypes at parse time; anything
+    /// that reaches this arm is a quantized dtype the runtime is not
+    /// expected to consume).
     pub(crate) skipped_non_float: usize,
+    /// Of the tensors in `written`, how many were BF16 (subset counter).
+    /// Emits GGUF type 30 verbatim; runtime widens BF16 → f32 losslessly
+    /// via the single choke point `crates/vokra-core/src/gguf/quant/mod.rs
+    /// decode_bf16` (BF16 = top 16 bits of an f32 — `bits << 16` is exact).
+    pub(crate) bf16_passthrough: usize,
     /// Operator-facing diagnostics (never fail the conversion — the
     /// runtime is the authoritative gate, FR-EX-08).
     pub(crate) notes: Vec<String>,
@@ -299,7 +311,12 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, VitsJaReport), Con
     let mut report = VitsJaReport::default();
     for t in st.tensors() {
         match t.dtype {
-            GgmlType::F32 | GgmlType::F16 => {
+            // BF16 pass-through added 2026-07-25 (mirror of qwen3-tts +
+            // vibevoice + voxcpm2 + moshi + voxtral): downstream ESPnet
+            // VITS re-trainings that ship BF16 now hit this arm. Emit as
+            // GGUF type 30 verbatim; runtime widens on load via
+            // `decode_bf16` (exact, `bits << 16`).
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
                 b.add_tensor(
                     &t.name,
                     t.dtype,
@@ -307,6 +324,9 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, VitsJaReport), Con
                     st.tensor_bytes(t).to_vec(),
                 )?;
                 report.written += 1;
+                if t.dtype == GgmlType::BF16 {
+                    report.bf16_passthrough += 1;
+                }
             }
             _ => {
                 report.skipped_non_float += 1;
@@ -317,9 +337,9 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, VitsJaReport), Con
         report.notes.push(
             "no float tensors passed through — this GGUF is metadata-only and the runtime will \
              refuse to bind any weights (FR-EX-08). ESPnet-family plain VITS JA checkpoints ship \
-             F32 (default) or F16 (mixed-precision); if the checkpoint was serialized in BF16 the \
-             F32/F16 pass-through cannot consume it directly — pre-widen offline to F32 (the \
-             CSM / Kokoro / VoxCPM pattern)."
+             F32 (default) or F16 (mixed-precision); the BF16 pass-through path is now wired \
+             (2026-07-25), so this state is only reachable when the release contains no F32 / \
+             F16 / BF16 float tensors at all."
                 .into(),
         );
     }
@@ -735,17 +755,55 @@ mod tests {
         assert_eq!(report.skipped_non_float, 0);
     }
 
+    /// Pins the BF16 leg of the `GgmlType::F32 | GgmlType::F16 |
+    /// GgmlType::BF16` union: BF16 must reach the pass-through arm,
+    /// emit as GGUF type 30 verbatim, and increment `bf16_passthrough`.
+    /// Mirror of vibevoice / voxcpm2 / qwen3-tts /
+    /// `bf16_tensor_passes_through_verbatim` and moshi's `assert_eq!(
+    /// info.dtype, GgmlType::BF16, "no convert-time widening")`.
+    ///
+    /// Rewritten 2026-07-25 from the earlier "counted as skipped" pin —
+    /// the earlier pin encoded the pre-BF16-fix scaffold posture.
+    /// Removing the pin outright would let a latent silent-widen slip in
+    /// undetected; rewriting to the passes-through invariant keeps the
+    /// regression guard.
     #[test]
-    fn bf16_tensor_is_skipped_with_loud_note() {
-        // BF16 is not F32/F16 → skipped_non_float increments and the
-        // "no float tensors" loud note fires (FR-EX-08).
-        let (_builder, report) = convert(minimal_safetensors_one_bf16()).expect("convert");
-        assert_eq!(report.written, 0);
-        assert_eq!(report.skipped_non_float, 1);
-        assert!(
-            report.notes.iter().any(|n| n.contains("no float tensors")),
-            "must fire the no-float-tensors note: {:?}",
-            report.notes
+    fn bf16_tensor_passes_through_verbatim() {
+        let (builder, report) = convert(minimal_safetensors_one_bf16()).expect("convert");
+        assert_eq!(
+            report.written, 1,
+            "BF16 must reach the pass-through arm and increment `written`"
+        );
+        assert_eq!(
+            report.skipped_non_float, 0,
+            "BF16 must not land in the skipped counter"
+        );
+        assert_eq!(
+            report.bf16_passthrough, 1,
+            "BF16 subset counter must record the pass-through"
+        );
+        // The tensor survives the round trip under its upstream name and
+        // preserves its BF16 dtype (no convert-time widening — runtime
+        // widens on load via `decode_bf16`).
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        let info = file
+            .tensor_info("generator.text_encoder.emb.weight")
+            .expect("BF16 tensor must be present after pass-through");
+        assert_eq!(
+            info.dtype,
+            GgmlType::BF16,
+            "no convert-time widening — GGUF dtype must remain BF16"
+        );
+        assert_eq!(info.dimensions, vec![2, 3]);
+        assert_eq!(
+            file.tensor_bytes(info).len(),
+            12,
+            "BF16 payload = 6 elements × 2 bytes = 12 bytes"
+        );
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH)
         );
     }
 
