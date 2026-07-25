@@ -95,6 +95,7 @@ pub(crate) mod kotoba_whisper;
 // M4-20 T12/T17: DeepFilterNet3 `denoise` → `vokra.denoise.*` GGUF (real
 // checkpoint parse from the prepared safetensors, verbatim upstream names).
 pub mod denoise;
+pub mod kimi_audio;
 pub(crate) mod kokoro;
 // SoTA plan Phase 2 (2026-07-24): Kyutai STT-2.6B-EN (CC-BY 4.0 weight,
 // AttributionRequired) safetensors → GGUF with the `vokra.kyutai_stt.*`
