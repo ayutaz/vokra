@@ -97,6 +97,14 @@ integrations/vokra-godot/pkg/
 # Cargo.lock, so it never touches the root zero-dep invariant (NFR-DS-02).
 /staging/
 
+# Sixth batch (2026-07-26): Claude Code superpowers skill design specs.
+# Same class as /docs/adr/ and /docs/tickets/ — internal design/PM artefacts
+# from the brainstorming skill workflow (feature specs, section-by-section
+# design walkthroughs). They live on disk for owner review and drive the
+# subsequent writing-plans skill invocation, but are internal planning docs
+# and follow the Vokra convention of internal-doc gitignore-local.
+/docs/superpowers/
+
 # M4-01: wasm build artifacts (produced by scripts/build-wasm.sh; the npm
 # package assembles them at release time — never committed)
 /web/dist/
