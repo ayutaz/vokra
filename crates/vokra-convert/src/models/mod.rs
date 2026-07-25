@@ -145,6 +145,7 @@ pub(crate) mod parakeet_ctc;
 // from FastConformer (no shared `vokra_ops::wav2vec2_encoder` op today —
 // deliberate "may need new op" follow-up).
 pub(crate) mod omniasr_ctc;
+pub mod openvoice_v2;
 pub(crate) mod piper_plus;
 // SoTA plan Phase 3 (2026-07-24): Alibaba **Qwen3-TTS-12Hz-0.6B-Base**
 // (apache-2.0 end-to-end weight) safetensors → GGUF with the
