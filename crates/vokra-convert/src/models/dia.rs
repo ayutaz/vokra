@@ -137,11 +137,20 @@ const ROPE_MIN_TIMESCALE: f32 = 1.0;
 /// Outcome of a Dia conversion.
 #[derive(Debug, Default)]
 pub(crate) struct DiaReport {
-    /// Float tensors written verbatim.
+    /// Float tensors written verbatim (F32 / F16 / BF16 — all three go
+    /// through the same byte-copy path since the BF16 pass-through land
+    /// 2026-07-25, mirror of `qwen3-tts` / `vibevoice` / `voxcpm2`).
     pub(crate) written: usize,
-    /// Non-F32 / F16 tensors skipped (defensive counter — the safetensors
-    /// reader rejects unknown dtypes at parse time).
+    /// Non-F32 / F16 / BF16 tensors skipped (defensive counter — the
+    /// safetensors reader rejects unknown dtypes at parse time; anything
+    /// that reaches this arm is a quantized dtype the runtime is not
+    /// expected to consume).
     pub(crate) skipped_non_float: usize,
+    /// Of the tensors in `written`, how many were BF16 (subset counter).
+    /// Emits GGUF type 30 verbatim; runtime widens BF16 → f32 losslessly
+    /// via the single choke point `crates/vokra-core/src/gguf/quant/mod.rs
+    /// decode_bf16` (BF16 = top 16 bits of an f32 — `bits << 16` is exact).
+    pub(crate) bf16_passthrough: usize,
     /// Operator-facing diagnostics (never fail the conversion — the runtime
     /// is the authoritative gate, FR-EX-08).
     pub(crate) notes: Vec<String>,
@@ -149,9 +158,10 @@ pub(crate) struct DiaReport {
 
 /// Converts a Dia safetensors buffer into a populated GGUF builder.
 ///
-/// Every F32 / F16 tensor passes through under its upstream name; the
-/// `vokra.dia.*` chunk group is written from the transcribed constants
-/// above; provenance stamps mark the weight as `Permissive` (Apache 2.0).
+/// Every F32 / F16 / BF16 tensor passes through under its upstream name;
+/// the `vokra.dia.*` chunk group is written from the transcribed
+/// constants above; provenance stamps mark the weight as `Permissive`
+/// (Apache 2.0).
 pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, DiaReport), ConvertError> {
     let st = SafetensorsFile::parse(bytes)?;
 
@@ -170,7 +180,11 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, DiaReport), Conver
     let mut report = DiaReport::default();
     for t in st.tensors() {
         match t.dtype {
-            GgmlType::F32 | GgmlType::F16 => {
+            // BF16 pass-through added 2026-07-25 (mirror of qwen3-tts +
+            // vibevoice + voxcpm2). Emitted as GGUF type 30 verbatim;
+            // runtime widens on load via `decode_bf16` (exact,
+            // `bits << 16` — no convert-time precision loss).
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
                 b.add_tensor(
                     &t.name,
                     t.dtype,
@@ -178,6 +192,9 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, DiaReport), Conver
                     st.tensor_bytes(t).to_vec(),
                 )?;
                 report.written += 1;
+                if t.dtype == GgmlType::BF16 {
+                    report.bf16_passthrough += 1;
+                }
             }
             _ => {
                 report.skipped_non_float += 1;
@@ -189,7 +206,10 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, DiaReport), Conver
             "no float tensors passed through — this GGUF is metadata-only and \
              the runtime will refuse to bind any weights (FR-EX-08). The upstream \
              Dia release ships torch .pth; run a prepare-checkpoint script to \
-             flatten it into a safetensors file before conversion."
+             flatten it into a safetensors file before conversion. The BF16 \
+             pass-through path is now wired (2026-07-25), so this state is only \
+             reachable when the input contains no F32 / F16 / BF16 float tensors \
+             at all."
                 .into(),
         );
     }
@@ -271,20 +291,6 @@ mod tests {
     /// (~3.2 GB), so the F16 leg of the union match arm must be reachable.
     fn minimal_safetensors_one_f16() -> Vec<u8> {
         let header = r#"{"encoder.embed_tokens.weight":{"dtype":"F16","shape":[2,3],"data_offsets":[0,12]}}"#;
-        let mut out = Vec::new();
-        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(&[0u8; 12]);
-        out
-    }
-
-    /// A single BF16 tensor at the top of the file (shape [2,3] → 6 elements ×
-    /// 2 bytes = 12 bytes). BF16 graduated to a supported safetensors dtype in
-    /// M4-06 (moshiko is all-BF16), so BF16 tensors now reach `convert()` and
-    /// land in the `_ =>` arm — pinning the `skipped_non_float` counter's real
-    /// trigger.
-    fn minimal_safetensors_one_bf16() -> Vec<u8> {
-        let header = r#"{"encoder.embed_tokens.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
         let mut out = Vec::new();
         out.extend_from_slice(&(header.len() as u64).to_le_bytes());
         out.extend_from_slice(header.as_bytes());
@@ -424,43 +430,92 @@ mod tests {
         assert_eq!(file.tensor_bytes(info).len(), 12);
     }
 
-    /// Pins the `_ =>` arm of the tensor-dtype match: BF16 graduated to a
-    /// supported safetensors dtype in M4-06 (moshiko is all-BF16) so BF16
-    /// tensors now reach `convert()` and MUST be counted, not silently
-    /// dropped. The in-file comment claiming "the safetensors reader rejects
-    /// unknown dtypes at parse time" is stale for BF16 — this test guards
-    /// against a regression where somebody assumes the comment is still true
-    /// and, for example, promotes BF16 into the pass-through arm without
-    /// deciding how to widen it.
+    /// Pins the BF16 leg of the `GgmlType::F32 | GgmlType::F16 |
+    /// GgmlType::BF16` union match arm — BF16 (the safetensors dtype that
+    /// graduated to first-class support in M4-06 for moshiko's all-BF16
+    /// release, and the upstream serving format of an increasing share of
+    /// audio checkpoints) must reach the pass-through arm, emit as GGUF
+    /// type 30 verbatim (no convert-time widening — runtime widens
+    /// BF16 → f32 losslessly at load via the single choke point
+    /// `vokra-core::gguf::quant::decode_bf16`; `bits << 16` is exact), and
+    /// increment `bf16_passthrough`.
+    ///
+    /// Mirror of qwen3-tts / vibevoice / voxcpm2
+    /// `bf16_tensor_passes_through_verbatim` (2026-07-25 land) — the
+    /// byte-identity assert on a non-zero payload guards against a silent
+    /// widen / downcast attempt (a zeroed payload would round-trip
+    /// trivially through F32 / F16 widen too).
+    ///
+    /// Rewritten 2026-07-25 from the earlier
+    /// `bf16_tensor_is_counted_as_skipped_non_float` pin — the earlier pin
+    /// encoded the pre-BF16-fix scaffold posture. Removing the pin outright
+    /// would let a latent silent-widen slip in undetected; rewriting to the
+    /// passes-through invariant keeps the regression guard.
     #[test]
-    fn bf16_tensor_is_counted_as_skipped_non_float() {
-        let (builder, report) = convert(minimal_safetensors_one_bf16()).expect("convert");
+    fn bf16_tensor_passes_through_verbatim() {
+        // Build a BF16 payload with known non-zero bit patterns so the
+        // subsequent byte-identity assert catches any silent widen /
+        // downcast attempt. Bit pattern: top 16 bits of each f32.
+        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
+        let bf16: Vec<u8> = values
+            .iter()
+            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
+            .collect();
+        assert_eq!(bf16.len(), 12, "6 elements × 2 bytes BF16 payload");
+        let header = r#"{"encoder.embed_tokens.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
+        let mut input = Vec::new();
+        input.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        input.extend_from_slice(header.as_bytes());
+        input.extend_from_slice(&bf16);
+
+        let (builder, report) = convert(input).expect("convert");
         assert_eq!(
-            report.written, 0,
-            "BF16 must not currently pass through — Dia converter is F32/F16 only"
+            report.written, 1,
+            "BF16 must reach the pass-through arm and increment `written`"
         );
         assert_eq!(
-            report.skipped_non_float, 1,
-            "BF16 must increment the skipped counter"
+            report.skipped_non_float, 0,
+            "BF16 must not land in the skipped counter"
         );
-        // With zero float tensors written, the loud "no float tensors" note
-        // fires — a BF16-only checkpoint would surface the situation.
+        assert_eq!(
+            report.bf16_passthrough, 1,
+            "BF16 subset counter must record the pass-through"
+        );
+        // FR-EX-08 loud-silence check: the zero-float note is a false-
+        // positive for a BF16-only conversion because BF16 IS a float.
         assert!(
-            report.notes.iter().any(|n| n.contains("no float tensors")),
-            "BF16-only conversion must emit the zero-float note: {:?}",
+            !report.notes.iter().any(|n| n.contains("no float tensors")),
+            "BF16 pass-through must not emit the zero-float note: {:?}",
             report.notes
         );
-        // Metadata (arch / hparams) still lands — the report reflects the
-        // tensor pass, not a failure of the conversion.
+
+        // Round-trip through the GGUF: dtype preserved, payload
+        // byte-identical (Moshi's "no convert-time widening" posture —
+        // the `safetensors.rs:728-738` pin pattern).
         let out = builder.to_bytes().expect("serialize");
         let file = GgufFile::parse(out).expect("parse");
+        let info = file
+            .tensor_info("encoder.embed_tokens.weight")
+            .expect("BF16 tensor must be present after pass-through");
+        assert_eq!(
+            info.dtype,
+            GgmlType::BF16,
+            "no convert-time widening — GGUF dtype must remain BF16 (type 30)"
+        );
+        assert_eq!(info.dimensions, vec![2, 3]);
+        assert_eq!(
+            file.tensor_bytes(info).len(),
+            12,
+            "BF16 payload = 6 elements × 2 bytes = 12 bytes"
+        );
+        assert_eq!(
+            file.tensor_bytes(info),
+            bf16.as_slice(),
+            "BF16 payload must be byte-identical to input (no silent widen)"
+        );
         assert_eq!(
             file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
             Some(ARCH)
-        );
-        assert!(
-            file.tensor_info("encoder.embed_tokens.weight").is_none(),
-            "BF16 tensor must not be written"
         );
     }
 
