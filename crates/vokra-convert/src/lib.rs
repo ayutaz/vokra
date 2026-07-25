@@ -2222,6 +2222,12 @@ pub use models::bicodec::{BicodecReport, convert_bicodec_file};
 // generalised with a `license: Option<&str>` override for the
 // `convert_file --license <spdx>` boundary).
 pub use models::knn_vc::{KnnVcReport, convert_knn_vc_file};
+// 3D-Speaker ERes2Net speaker encoder (iic/speech_eres2net_sv_zh-cn_16k-common,
+// apache-2.0). File-based converter with per-call license override — the model
+// module is `pub mod speaker_3d` in models/mod.rs; re-exporting the surface
+// here makes it reachable from external callers (the `pub fn` in the module
+// alone is dead code because `mod models` itself is private).
+pub use models::speaker_3d::{Speaker3dReport, convert_speaker_3d_file};
 pub use models::voxtral::VoxtralConfig;
 // SoTA plan Phase 5 codec (2026-07-25): fnlp XY_Tokenizer_TTSD_V0
 // (apache-2.0) — self-contained file-based entry point with an SPDX

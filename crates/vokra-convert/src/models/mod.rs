@@ -165,6 +165,7 @@ pub(crate) mod piper_plus;
 // qwen3_tts_codec, NOT HiFTChain.
 pub(crate) mod qwen3_tts;
 pub(crate) mod silero;
+pub mod speaker_3d;
 pub mod speechtokenizer;
 // SoTA plan Phase 3 (2026-07-25): StepFun **Step-Audio-2-mini**
 // (apache-2.0 end-to-end weight) safetensors → GGUF skeleton. 8B S2S
