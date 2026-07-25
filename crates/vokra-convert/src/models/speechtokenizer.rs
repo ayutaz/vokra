@@ -206,8 +206,8 @@ mod tests {
     use std::path::PathBuf;
     use vokra_core::gguf::{GgufFile, chunks};
 
-    /// Returns a unique per-test tempfile path. Uses `std::env::temp_dir`
-    /// + `std::process::id` + a monotonic nanosecond suffix so parallel
+    /// Returns a unique per-test tempfile path. Combines `std::env::temp_dir`,
+    /// `std::process::id`, and a monotonic nanosecond suffix so parallel
     /// `cargo test` invocations do not clash (the moshi.rs pattern).
     fn tempfile_path(prefix: &str, ext: &str) -> PathBuf {
         let mut p = std::env::temp_dir();

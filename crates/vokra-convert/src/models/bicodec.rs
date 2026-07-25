@@ -370,7 +370,7 @@ mod tests {
     /// refactor that would only emit one branch of the match.
     #[test]
     fn f32_and_f16_tensors_pass_through() {
-        let f32_values: [f32; 6] = [7.0, -8.25, 0.5, -0.5, 3.14159, -2.71828];
+        let f32_values: [f32; 6] = [7.0, -8.25, 0.5, -0.5, 1.5, -3.75];
         let f32_bytes: Vec<u8> = f32_values.iter().flat_map(|v| v.to_le_bytes()).collect();
         let f16_values: [f32; 4] = [1.0, -1.0, 0.5, -0.5];
         // Round f32 → f16 (IEEE-754 half): sign 1 + exp 5 + mant 10.
