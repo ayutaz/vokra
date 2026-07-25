@@ -334,24 +334,28 @@ jobs:
           # stdout and use it inline; also emit to $GITHUB_ENV so
           # downstream steps see it. (Same pattern as parity-tts-dac
           # SNAPSHOT_DIR fix, commit 856fb02.)
-          SNAPSHOT_STDOUT="$(python - <<'PY'
+          # `python -c` (not a heredoc): a heredoc inside $() cannot be closed
+          # from column 0 in a `run: |` block, which `scripts/check-workflow-
+          # hygiene.sh` catches via `bash -n`. Mirror the parity-tts-dac
+          # precedent — single-quoted Python string literals nested inside
+          # the double-quoted `-c` argument.
+          SNAPSHOT_STDOUT="$(python -c "
           import os
           from huggingface_hub import snapshot_download
-          repo = os.environ["REPO"]
-          rev = os.environ["REVISION"]
+          repo = os.environ['REPO']
+          rev = os.environ['REVISION']
           # Only pull safetensors + config.json — no README / demo audio.
           local = snapshot_download(
               repo_id=repo,
               revision=rev,
               allow_patterns=[
-                  "*.safetensors",
-                  "*.safetensors.index.json",
-                  "config.json",
+                  '*.safetensors',
+                  '*.safetensors.index.json',
+                  'config.json',
               ],
           )
-          print(f"snapshot: {local}")
-          PY
-          )"
+          print(f'snapshot: {local}')
+          ")"
           echo "${SNAPSHOT_STDOUT}"
           CKPT_DIR="$(echo "${SNAPSHOT_STDOUT}" | awk -F'snapshot: ' '/^snapshot: /{print $2; exit}')"
           if [ -z "${CKPT_DIR}" ] || [ ! -d "${CKPT_DIR}" ]; then
