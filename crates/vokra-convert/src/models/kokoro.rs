@@ -134,14 +134,23 @@ const KOKORO_ISTFT_WIN_LENGTH: u32 = 20;
 pub(crate) struct KokoroReport {
     /// Number of float weight tensors written to the GGUF.
     pub(crate) written: usize,
-    /// Tensors whose dtype falls outside the F32/F16 range and were skipped.
+    /// Of `written`, how many were BF16 payloads passed through verbatim
+    /// (exact — the runtime widens BF16 → f32 losslessly at load: BF16 is
+    /// the top 16 bits of the f32 bit pattern, GGUF dtype `BF16` = ggml
+    /// type 30). Mirrors the voxtral 2026-07-16 P1 posture so a BF16
+    /// upstream checkpoint (safetensors admits BF16 as of M4-06) is not
+    /// silently skipped into `skipped_non_float`.
+    pub(crate) bf16_passthrough: usize,
+    /// Tensors whose dtype falls outside the F32/F16/BF16 range and were
+    /// skipped.
     ///
     /// The upstream safetensors reader (`vokra_core::safetensors`) already
-    /// rejects unknown dtypes at parse time (`SafetensorsError::UnsupportedDtype`),
-    /// so a validly parsed buffer that reaches this converter only ever holds
-    /// F32/F16 tensors. This counter is defensive/forward-compat — if the
-    /// reader is later extended to admit non-float dtypes (e.g. INT8 quant),
-    /// the skip path already exists and the report already reports.
+    /// rejects unknown dtypes at parse time (`SafetensorsError::UnsupportedDtype`,
+    /// accepted set = `F32`/`F16`/`BF16`), so a validly parsed buffer that
+    /// reaches this converter only ever holds those three dtypes. This
+    /// counter is defensive/forward-compat — if the reader is later extended
+    /// to admit non-float dtypes (e.g. INT8 quant), the skip path already
+    /// exists and the report already reports.
     pub(crate) skipped_non_float: usize,
     /// Voice names in voicepack order (populated by [`convert_with_config`]
     /// when a `--config config.json` is passed; empty on the placeholder path).
@@ -526,7 +535,7 @@ pub(crate) fn convert_with_config(
 
     for t in st.tensors() {
         match t.dtype {
-            GgmlType::F32 | GgmlType::F16 => {
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
                 b.add_tensor(
                     &t.name,
                     t.dtype,
@@ -534,11 +543,19 @@ pub(crate) fn convert_with_config(
                     st.tensor_bytes(t).to_vec(),
                 )?;
                 report.written += 1;
+                if t.dtype == GgmlType::BF16 {
+                    // Exact — GGUF `BF16` (ggml type 30) is a first-class
+                    // dtype; the runtime widens BF16 → f32 losslessly at
+                    // load (BF16 is the top 16 bits of the f32 bit pattern).
+                    // Mirrors voxtral's 2026-07-16 P1 counter.
+                    report.bf16_passthrough += 1;
+                }
             }
-            // Defensive: the upstream safetensors reader rejects non-F32/F16
-            // at parse time, so this arm is currently unreachable through a
-            // validly parsed buffer. Kept so a future reader extension does
-            // not silently write an unsupported dtype (FR-EX-08).
+            // Defensive: the upstream safetensors reader admits only
+            // F32/F16/BF16 at parse time, so this arm is currently
+            // unreachable through a validly parsed buffer. Kept so a future
+            // reader extension does not silently write an unsupported dtype
+            // (FR-EX-08).
             _ => {
                 report.skipped_non_float += 1;
             }
@@ -895,6 +912,79 @@ mod tests {
             Some(4),
             "2-D voicepack keeps axis-1 style_dim"
         );
+    }
+
+    /// Packs a synthetic safetensors buffer from `(name, dtype, shape)`
+    /// entries with a deterministic non-zero byte pattern (so a BF16
+    /// passthrough leg can compare payload bytes, not just counters). BF16
+    /// / F16 are 2 bytes per element, F32 is 4. Mirrors the voxtral test
+    /// fixture helper — safetensors accepts BF16 as of M4-06 (moshiko
+    /// checkpoint is all-BF16).
+    fn pack_safetensors_typed(entries: &[(&str, &str, &[u64])]) -> Vec<u8> {
+        fn elem_size(dtype: &str) -> usize {
+            match dtype {
+                "F32" => 4,
+                "F16" | "BF16" => 2,
+                other => panic!("test fixture: unsupported dtype {other}"),
+            }
+        }
+        let mut header = String::from("{");
+        let mut payload: Vec<u8> = Vec::new();
+        for (i, (name, dtype, dims)) in entries.iter().enumerate() {
+            let n: u64 = dims.iter().product();
+            let len = n as usize * elem_size(dtype);
+            let start = payload.len();
+            payload.extend((0..len).map(|j| ((j + i * 31) % 251) as u8 + 1));
+            let end = payload.len();
+            if i > 0 {
+                header.push(',');
+            }
+            header.push_str(&format!(
+                r#""{name}":{{"dtype":"{dtype}","shape":{dims:?},"data_offsets":[{start},{end}]}}"#
+            ));
+        }
+        header.push('}');
+        let mut out = (header.len() as u64).to_le_bytes().to_vec();
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&payload);
+        out
+    }
+
+    #[test]
+    fn bf16_tensor_passes_through_verbatim() {
+        // The upstream safetensors reader accepted BF16 in M4-06 (the
+        // moshiko checkpoint is all-BF16 and hits the same reader), so a
+        // BF16 tensor now reaches this converter's tensor-emit loop through
+        // a validly parsed buffer. The kokoro converter must (a) pass BF16
+        // through byte-identical (BF16 is a first-class GGUF dtype, ggml
+        // type 30; the runtime widens BF16 → f32 exactly at load — top 16
+        // bits of the f32 bit pattern) and (b) count it under
+        // `report.bf16_passthrough`, NOT drop it into `skipped_non_float`.
+        // Mirrors the voxtral 2026-07-16 P1 stance.
+        let entries: &[(&str, &str, &[u64])] = &[
+            ("voicepack", "F32", &[2, 4]),
+            ("text_encoder.embedding.weight", "F32", &[3, 8]),
+            ("decoder.generator.upsamples.0.weight", "F32", &[1, 1]),
+            // The tensor under test — BF16, deterministic non-zero payload.
+            ("bert.encoder.layer.0.query.weight", "BF16", &[4, 6]),
+        ];
+        let bytes = pack_safetensors_typed(entries);
+        let (builder, report) = convert(bytes.clone()).expect("convert");
+
+        // (1) Report counters: BF16 tensor accounted for, NOT skipped.
+        assert_eq!(report.bf16_passthrough, 1);
+        assert_eq!(report.skipped_non_float, 0);
+        assert_eq!(report.written, entries.len());
+
+        // (2) Byte-identical passthrough on the BF16 tensor.
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        let src = SafetensorsFile::parse(bytes).unwrap();
+        let name = "bert.encoder.layer.0.query.weight";
+        let src_t = src.tensors().iter().find(|t| t.name == name).unwrap();
+        let dst_info = file.tensor_info(name).expect("bf16 tensor in gguf");
+        assert_eq!(dst_info.dtype, GgmlType::BF16);
+        assert_eq!(dst_info.dimensions, vec![4, 6]);
+        assert_eq!(file.tensor_bytes(dst_info), src.tensor_bytes(src_t));
     }
 
     #[test]
