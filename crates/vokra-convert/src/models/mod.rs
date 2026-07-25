@@ -76,6 +76,7 @@ pub(crate) mod dac;
 // through verbatim; every hparam is transcribed from the upstream config.json.
 pub(crate) mod dia;
 pub mod ecapa_tdnn;
+pub mod emotion2vec;
 pub mod freevc;
 // SoTA plan Phase 2 (2026-07-24): HuggingFace distil-whisper /
 // distil-large-v3.5 (MIT weight, Permissive) — a distilled Whisper checkpoint

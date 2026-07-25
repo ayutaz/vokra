@@ -2228,6 +2228,11 @@ pub use models::knn_vc::{KnnVcReport, convert_knn_vc_file};
 // here makes it reachable from external callers (the `pub fn` in the module
 // alone is dead code because `mod models` itself is private).
 pub use models::speaker_3d::{Speaker3dReport, convert_speaker_3d_file};
+// SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
+// first `category = "emotion"` model in the converter tree. Standalone
+// file-based entry point (not routed through `ModelKind` dispatch)
+// exposes its `pub` API to external callers.
+pub use models::emotion2vec::{Emotion2vecReport, convert_emotion2vec_file};
 pub use models::voxtral::VoxtralConfig;
 // SoTA plan Phase 5 codec (2026-07-25): fnlp XY_Tokenizer_TTSD_V0
 // (apache-2.0) — self-contained file-based entry point with an SPDX
