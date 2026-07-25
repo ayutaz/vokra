@@ -42,6 +42,13 @@
 // Reuses two existing ops (vokra_ops::conformer for the encoder body,
 // vokra_ops::beam_search for the attention-decoder search) rather than
 // duplicating.
+// SoTA plan Phase X (2026-07-25): forced-alignment ops. `ctc_segmentation`
+// (Kürzinger et al., Interspeech 2020; reference implementation
+// github.com/lumaku/ctc-segmentation, Apache-2.0) is a pure host-side
+// algorithm — Viterbi over the standard CTC extended sequence — with no
+// external weights. Emits `Vec<AlignedToken>` for word / sub-word /
+// character granularity uniformly.
+pub mod align;
 pub mod canary;
 // SoTA plan Phase 3 (2026-07-24): Resemble AI Chatterbox-Multilingual TTS
 // (MIT). T3 = Llama_520M backbone (hidden=1024 / n_layer=30 / MHA n_head=16
