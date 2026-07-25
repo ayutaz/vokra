@@ -2208,6 +2208,14 @@ pub use models::denoise::{convert_denoise_bytes, convert_denoise_file, convert_d
 // (vokra-cli / integration tests / model-zoo publish) can drive it
 // without pulling in the private `models::step_audio2_mini` module.
 pub use models::step_audio2_mini::{StepAudio2MiniReport, convert_step_audio2_mini_file};
+// SoTA plan Phase 3 (2026-07-25): SparkAudio Spark-TTS **bicodec** codec
+// (apache-2.0 permissive) — Vokra-native GGUF builder that emits BF16 / F16 /
+// F32 tensors verbatim under their upstream safetensors names alongside the
+// `vokra.provenance.upstream_hf` / `vokra.provenance.license` /
+// `vokra.model.category = "codec"` chunks the future `bicodec::from_gguf`
+// runtime side will read. Real-weight parity is deferred to owner
+// (`docs/license-audit.md` §3.1 sign-off).
+pub use models::bicodec::{BicodecReport, convert_bicodec_file};
 pub use models::voxtral::VoxtralConfig;
 // SoTA plan Phase 5 codec (2026-07-25): fnlp XY_Tokenizer_TTSD_V0
 // (apache-2.0) — self-contained file-based entry point with an SPDX

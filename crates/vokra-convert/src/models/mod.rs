@@ -7,6 +7,7 @@
 // qwen3_tts / vibevoice / voxcpm2 pattern; real-weight parity is
 // deferred to owner (`docs/license-audit.md` §3.1 sign-off).
 pub mod baichuan_audio;
+pub mod bicodec;
 pub(crate) mod campplus;
 // SoTA plan Phase 2 (2026-07-24): NVIDIA Canary-1B-v2 — multilingual
 // multi-task ASR / AST (25 European languages). FastConformer encoder
