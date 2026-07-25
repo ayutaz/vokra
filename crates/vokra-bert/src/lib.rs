@@ -24,6 +24,7 @@
 pub trait BertEncoder {}
 
 pub mod deberta_v2;
+pub mod deberta_v3;
 pub mod tokenizer;
 
 #[cfg(test)]
