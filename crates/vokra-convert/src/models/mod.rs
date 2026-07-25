@@ -115,6 +115,7 @@ pub(crate) mod kokoro;
 pub(crate) mod kyutai_stt;
 pub(crate) mod mimi;
 pub(crate) mod moshi;
+pub mod neucodec;
 // SoTA plan Phase 2 (2026-07-24): NVIDIA Parakeet-TDT-0.6B-v3 — English
 // ASR (FastConformer encoder + TDT decoder). CC-BY 4.0 weight
 // (AttributionRequired). Every F32 / F16 tensor passes through
