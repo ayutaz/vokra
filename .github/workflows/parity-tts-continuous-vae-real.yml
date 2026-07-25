@@ -243,7 +243,12 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC1091
           . "${PARITY_VENV}/bin/activate"
-          python - <<'PY'
+          # GitHub Actions semantics: `$GITHUB_ENV` writes propagate to
+          # the NEXT step, not the current one. Capture the path from
+          # stdout and use it inline; also emit to $GITHUB_ENV so
+          # downstream steps see it. (Same pattern as parity-tts-dac
+          # SNAPSHOT_DIR fix, commit 856fb02.)
+          SNAPSHOT_STDOUT="$(python - <<'PY'
           import os
           from huggingface_hub import snapshot_download
           repo = os.environ["REPO"]
@@ -255,9 +260,15 @@ jobs:
               allow_patterns=["*.safetensors", "*.safetensors.index.json", "config.json"],
           )
           print(f"snapshot: {local}")
-          with open(os.environ["GITHUB_ENV"], "a") as f:
-              f.write(f"CKPT_DIR={local}\n")
           PY
+          )"
+          echo "${SNAPSHOT_STDOUT}"
+          CKPT_DIR="$(echo "${SNAPSHOT_STDOUT}" | awk -F'snapshot: ' '/^snapshot: /{print $2; exit}')"
+          if [ -z "${CKPT_DIR}" ] || [ ! -d "${CKPT_DIR}" ]; then
+            echo "::error::snapshot_download did not print a resolvable path (got: ${SNAPSHOT_STDOUT})"
+            exit 1
+          fi
+          echo "CKPT_DIR=${CKPT_DIR}" >> "$GITHUB_ENV"
           {
             echo "### ${{ matrix.arch }} checkpoint"
             echo ""
