@@ -23,6 +23,7 @@
 /// Placeholder trait — filled in by later tasks (Task 12).
 pub trait BertEncoder {}
 
+pub mod deberta_v2;
 pub mod tokenizer;
 
 #[cfg(test)]
