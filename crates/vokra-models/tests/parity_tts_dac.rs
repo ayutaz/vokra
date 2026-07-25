@@ -1092,3 +1092,82 @@ fn env_paths_for_is_deterministic_across_calls() {
         "with no env set, both entries must be None"
     );
 }
+
+// -----------------------------------------------------------------------------
+// `read_bool` type contract — CI failure #3 (2026-07-25) regression pin.
+// -----------------------------------------------------------------------------
+//
+// The `parity_tts_dac_zonos` leg reads 5 backbone flags via `read_bool`
+// (rotary_emb_interleaved, causal, qkv_proj_bias, out_proj_bias, rms_norm).
+// The Zonos converter previously emitted these as `u32(0/1)` with a comment
+// claiming to "match the CSM scalar-flag convention" — but CSM has never had
+// scalar bool metadata. The type mismatch surfaced as CI failure #3:
+//
+//     GGUF metadata "vokra.zonos.arch.backbone.rotary_emb_interleaved"
+//     is not a bool
+//
+// The fix (`crates/vokra-convert/src/models/zonos.rs`) switched all 5 keys
+// to `add_bool(...)`. The regression pin on the converter side is
+// `models::zonos::tests::scalar_bool_hparams_encode_as_gguf_bool_not_u32`.
+// This file is the *reader* half of that contract: it exercises `read_bool`
+// on a synthesized GGUF that mimics what the converter now emits, so a
+// future edit that regresses either side is caught here without needing
+// `VOKRA_ZONOS_GGUF` to be set.
+
+/// A GGUF built with `add_bool(...)` for a key MUST be readable via
+/// `read_bool` (which calls `.as_bool()`). Pins the writer→reader type
+/// contract that CI failure #3 (2026-07-25) broke.
+#[test]
+fn read_bool_accepts_gguf_native_bool_from_add_bool() {
+    let mut b = GgufBuilder::new();
+    b.add_string(KEY_MODEL_ARCH, "harness_read_bool_contract");
+    b.add_bool("harness.flag_true", true);
+    b.add_bool("harness.flag_false", false);
+    // One tensor so downstream invariants (which some future edit might
+    // start applying) don't reject the buffer for being metadata-only.
+    b.add_tensor("t.f32", GgmlType::F32, vec![1], vec![0u8; 4])
+        .expect("writer accepts a well-formed 1-elem F32 tensor");
+    let gguf = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+
+    assert!(
+        read_bool(&gguf, "harness.flag_true"),
+        "read_bool must return true for a Bool metadata value written as true"
+    );
+    assert!(
+        !read_bool(&gguf, "harness.flag_false"),
+        "read_bool must return false for a Bool metadata value written as false"
+    );
+}
+
+/// A GGUF that encodes a scalar flag as U32(0/1) — the pattern that
+/// caused CI failure #3 (2026-07-25) — MUST panic through `read_bool`
+/// with the exact "is not a bool" message so a future regression is
+/// instantly diagnosable rather than silently downcasting to `false`.
+/// This is the reader-side counterpart of the converter regression pin
+/// `models::zonos::tests::scalar_bool_hparams_encode_as_gguf_bool_not_u32`.
+#[test]
+fn read_bool_rejects_u32_flag_with_is_not_a_bool_message() {
+    let mut b = GgufBuilder::new();
+    b.add_string(KEY_MODEL_ARCH, "harness_read_bool_contract");
+    // Deliberately wrong encoding — this is what the buggy Zonos converter
+    // emitted before the fix.
+    b.add_u32("harness.wrong_encoding", u32::from(true));
+    b.add_tensor("t.f32", GgmlType::F32, vec![1], vec![0u8; 4])
+        .expect("writer accepts a well-formed 1-elem F32 tensor");
+    let gguf = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        read_bool(&gguf, "harness.wrong_encoding");
+    }))
+    .expect_err(
+        "read_bool must panic when handed a U32 metadata value — a silent \
+         downcast to false is exactly what CI failure #3 (2026-07-25) was \
+         supposed to prevent",
+    );
+    let msg = panic_message(&*panic);
+    assert!(
+        msg.contains("harness.wrong_encoding") && msg.contains("is not a bool"),
+        "panic must name the offending key AND say 'is not a bool' so future \
+         drift is instantly diagnosable; got: {msg}"
+    );
+}

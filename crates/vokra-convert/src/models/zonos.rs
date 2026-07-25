@@ -305,17 +305,25 @@ fn write_hparams(b: &mut GgufBuilder) {
     b.add_u32(KEY_BB_NUM_HEADS, BB_NUM_HEADS);
     b.add_u32(KEY_BB_NUM_HEADS_KV, BB_NUM_HEADS_KV);
     b.add_u32(KEY_BB_ROTARY_EMB_DIM, BB_ROTARY_EMB_DIM);
-    // Booleans ride as u32 0/1 for GGUF portability (matches the CSM
-    // scalar-flag convention).
-    b.add_u32(
-        KEY_BB_ROTARY_EMB_INTERLEAVED,
-        u32::from(BB_ROTARY_EMB_INTERLEAVED),
-    );
-    b.add_u32(KEY_BB_CAUSAL, u32::from(BB_CAUSAL));
-    b.add_u32(KEY_BB_QKV_PROJ_BIAS, u32::from(BB_QKV_PROJ_BIAS));
-    b.add_u32(KEY_BB_OUT_PROJ_BIAS, u32::from(BB_OUT_PROJ_BIAS));
+    // Scalar boolean flags ride as the GGUF-native `Bool` type
+    // (`GgufMetadataValue::Bool`). This matches the established codebase
+    // norm — `whisper.rs::vokra.quant.hifigan_int8_opt_in`,
+    // `voxtral.rs::{KEY_ADAPTER_HAS_BIAS,KEY_ADAPTER_HAS_LN}`, and the
+    // read side in `vibevoice.rs` / `irodori.rs` / `voxcpm2.rs` /
+    // `vits_ja.rs` all use `add_bool` / `as_bool()`. The parity gate
+    // `crates/vokra-models/tests/parity_tts_dac.rs::read_bool` also calls
+    // `.as_bool()`, and the runtime fields on `ZonosBackboneConfig` are
+    // `bool`, so a future `ZonosConfig::from_gguf` reads these directly
+    // without a u32 → bool conversion. A previous revision emitted these
+    // as `u32(0/1)` claiming to "match the CSM scalar-flag convention",
+    // but CSM has never had scalar bool metadata; the parity gate
+    // panicked with "is not a bool" (CI failure #3, 2026-07-25).
+    b.add_bool(KEY_BB_ROTARY_EMB_INTERLEAVED, BB_ROTARY_EMB_INTERLEAVED);
+    b.add_bool(KEY_BB_CAUSAL, BB_CAUSAL);
+    b.add_bool(KEY_BB_QKV_PROJ_BIAS, BB_QKV_PROJ_BIAS);
+    b.add_bool(KEY_BB_OUT_PROJ_BIAS, BB_OUT_PROJ_BIAS);
     b.add_f32(KEY_BB_NORM_EPSILON, BB_NORM_EPSILON);
-    b.add_u32(KEY_BB_RMS_NORM, u32::from(BB_RMS_NORM));
+    b.add_bool(KEY_BB_RMS_NORM, BB_RMS_NORM);
 
     // Vocab / codebook / heads
     b.add_u32(KEY_NUM_CODEBOOKS, NUM_CODEBOOKS);
@@ -473,14 +481,6 @@ mod tests {
             (KEY_BB_NUM_HEADS, BB_NUM_HEADS),
             (KEY_BB_NUM_HEADS_KV, BB_NUM_HEADS_KV),
             (KEY_BB_ROTARY_EMB_DIM, BB_ROTARY_EMB_DIM),
-            (
-                KEY_BB_ROTARY_EMB_INTERLEAVED,
-                u32::from(BB_ROTARY_EMB_INTERLEAVED),
-            ),
-            (KEY_BB_CAUSAL, u32::from(BB_CAUSAL)),
-            (KEY_BB_QKV_PROJ_BIAS, u32::from(BB_QKV_PROJ_BIAS)),
-            (KEY_BB_OUT_PROJ_BIAS, u32::from(BB_OUT_PROJ_BIAS)),
-            (KEY_BB_RMS_NORM, u32::from(BB_RMS_NORM)),
             (KEY_NUM_CODEBOOKS, NUM_CODEBOOKS),
             (KEY_CODEBOOK_VOCAB, CODEBOOK_VOCAB),
             (KEY_HEAD_VOCAB, HEAD_VOCAB),
@@ -491,6 +491,24 @@ mod tests {
         ] {
             match file.get(key) {
                 Some(GgufMetadataValue::U32(v)) => assert_eq!(*v, want, "{key}"),
+                other => panic!("{key}: unexpected {other:?}"),
+            }
+        }
+        // Every transcribed BOOL hparam round-trips verbatim as
+        // `GgufMetadataValue::Bool` — not u32. The parity gate
+        // `parity_tts_dac::read_bool` and a future
+        // `ZonosConfig::from_gguf` both call `.as_bool()`; if a future
+        // edit regresses one of these keys to `add_u32(u32::from(_))`
+        // this arm fires with the offending key name.
+        for (key, want) in [
+            (KEY_BB_ROTARY_EMB_INTERLEAVED, BB_ROTARY_EMB_INTERLEAVED),
+            (KEY_BB_CAUSAL, BB_CAUSAL),
+            (KEY_BB_QKV_PROJ_BIAS, BB_QKV_PROJ_BIAS),
+            (KEY_BB_OUT_PROJ_BIAS, BB_OUT_PROJ_BIAS),
+            (KEY_BB_RMS_NORM, BB_RMS_NORM),
+        ] {
+            match file.get(key) {
+                Some(GgufMetadataValue::Bool(v)) => assert_eq!(*v, want, "{key}"),
                 other => panic!("{key}: unexpected {other:?}"),
             }
         }
@@ -571,6 +589,62 @@ mod tests {
             "zero-tensor conversion must emit a loud note: {:?}",
             report.notes
         );
+    }
+
+    /// Regression pin: every zonos scalar bool metadata key MUST be
+    /// encoded as `GgufMetadataValue::Bool`, not `U32`.
+    ///
+    /// # Why this test exists
+    ///
+    /// The parity gate
+    /// (`crates/vokra-models/tests/parity_tts_dac.rs::parity_tts_dac_zonos`)
+    /// reads these keys via `read_bool` → `as_bool()`, and the runtime
+    /// field types in `ZonosBackboneConfig`
+    /// (`crates/vokra-models/src/zonos/mod.rs::rotary_emb_interleaved:
+    /// bool`, `causal: bool`, `qkv_proj_bias: bool`, `out_proj_bias:
+    /// bool`, `rms_norm: bool`) are `bool`. A previous revision emitted
+    /// these as `u32(0/1)` with a comment claiming to "match the CSM
+    /// scalar-flag convention" — but CSM has never had scalar bool
+    /// metadata (grep `crates/vokra-convert/src/models/csm.rs` for
+    /// `add_bool` / `u32::from` returns empty). The write / read type
+    /// mismatch surfaced as CI failure #3 on 2026-07-25:
+    /// `parity_tts_dac_zonos` panicked at
+    /// `crates/vokra-models/tests/parity_tts_dac.rs:265` with
+    /// `GGUF metadata "vokra.zonos.arch.backbone.rotary_emb_interleaved"
+    /// is not a bool`.
+    ///
+    /// The `write_hparams` self-test above catches this too (its Bool
+    /// arm panics with the offending key), but this test is an
+    /// additional, tightly-scoped tripwire that names the failure mode
+    /// in its panic message so a future regression is immediately
+    /// diagnosable. Keeping both is intentional: the round-trip test
+    /// asserts value equality, this one asserts encoding *type* and
+    /// tells you which mistake to avoid.
+    #[test]
+    fn scalar_bool_hparams_encode_as_gguf_bool_not_u32() {
+        let (builder, _) = convert(minimal_safetensors_one_f32()).expect("convert");
+        let file = GgufFile::parse(builder.to_bytes().expect("serialize")).expect("parse");
+        for (key, want) in [
+            (KEY_BB_ROTARY_EMB_INTERLEAVED, BB_ROTARY_EMB_INTERLEAVED),
+            (KEY_BB_CAUSAL, BB_CAUSAL),
+            (KEY_BB_QKV_PROJ_BIAS, BB_QKV_PROJ_BIAS),
+            (KEY_BB_OUT_PROJ_BIAS, BB_OUT_PROJ_BIAS),
+            (KEY_BB_RMS_NORM, BB_RMS_NORM),
+        ] {
+            match file.get(key) {
+                Some(GgufMetadataValue::Bool(v)) => {
+                    assert_eq!(*v, want, "{key}: value drift");
+                }
+                Some(GgufMetadataValue::U32(_)) => panic!(
+                    "{key} was written as U32, but the parity gate calls \
+                     `.as_bool()` on it (see \
+                     `parity_tts_dac.rs::parity_tts_dac_zonos` — CI failure \
+                     #3, 2026-07-25) and the runtime field is `bool`. Emit \
+                     via `add_bool(...)`, not `add_u32(u32::from(...))`."
+                ),
+                other => panic!("{key}: unexpected {other:?}"),
+            }
+        }
     }
 
     /// The seven conditioner descriptors match the upstream `config.json`
