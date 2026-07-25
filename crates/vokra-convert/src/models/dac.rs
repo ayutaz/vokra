@@ -107,7 +107,12 @@ impl DacConfig {
 pub(crate) struct DacReport {
     /// Upstream tensors written verbatim.
     pub(crate) written: usize,
-    /// Non-F32/F16 tensors skipped (defensive).
+    /// BF16 tensors among `written` (voxtral 12e574e / moshi posture: BF16
+    /// bytes reach the GGUF as ggml type 30, the runtime's `tensor_f32` decode
+    /// path widens BF16 → f32 **exactly** at load — BF16 is the top 16 bits
+    /// of the f32 bit pattern).
+    pub(crate) bf16_passthrough: usize,
+    /// Non-F32/F16/BF16 tensors skipped (defensive).
     pub(crate) skipped_non_float: usize,
 }
 
@@ -166,7 +171,7 @@ pub(crate) fn convert(
     let mut report = DacReport::default();
     for t in st.tensors() {
         match t.dtype {
-            GgmlType::F32 | GgmlType::F16 => {
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
                 b.add_tensor(
                     &t.name,
                     t.dtype,
@@ -174,6 +179,9 @@ pub(crate) fn convert(
                     st.tensor_bytes(t).to_vec(),
                 )?;
                 report.written += 1;
+                if t.dtype == GgmlType::BF16 {
+                    report.bf16_passthrough += 1;
+                }
             }
             _ => report.skipped_non_float += 1,
         }
@@ -413,6 +421,135 @@ mod tests {
             file.get(chunks::KEY_PROVENANCE_MODEL_ID),
             Some(GgufMetadataValue::String(s)) if s == "dac"
         ));
+    }
+
+    /// Builds a synthetic safetensors buffer containing at least one BF16
+    /// tensor **in addition to** the F32 tensors DAC's derived path requires.
+    ///
+    /// Mirrors `synthetic_dac` but appends a decoder-chain-shaped BF16 tensor
+    /// (the pass-through path is what M5-14 exercises — decoder chain is
+    /// ADR M4-04 §D-f forward-compat, never touched by the derived math).
+    /// Each BF16 element is 2 bytes; value 1.0 → `0x3F80` (voxtral 12e574e
+    /// posture: BF16 is the top 16 bits of the f32 bit pattern, widening at
+    /// load is exact).
+    fn synthetic_dac_with_bf16_tail(cfg: &DacConfig) -> (Vec<u8>, String, Vec<u8>) {
+        // Reuse the F32 base, then splice in a BF16 tensor.
+        //
+        // Rather than rebuild `build_safetensors` (which is F32-only), we
+        // hand-emit a mixed-dtype safetensors blob so the BF16 payload is
+        // byte-identical to what an upstream release would produce.
+        let bf16_name = "decoder.model.3.weight".to_string();
+        let bf16_elems: usize = 4;
+        // bf16(1.0) = 0x3F80.
+        let mut bf16_bytes = Vec::with_capacity(bf16_elems * 2);
+        for _ in 0..bf16_elems {
+            bf16_bytes.extend_from_slice(&0x3F80u16.to_le_bytes());
+        }
+
+        // Build the required F32 tensors (same as synthetic_dac).
+        let mut entries: Vec<(String, Vec<usize>, Vec<f32>)> = Vec::new();
+        for i in 0..cfg.n_codebooks {
+            let prefix = format!("quantizer.quantizers.{i}");
+            let cb: Vec<f32> = (0..cfg.codebook_size * cfg.codebook_dim)
+                .map(|k| k as f32 + i as f32 * 10.0)
+                .collect();
+            entries.push((
+                format!("{prefix}.codebook.weight"),
+                vec![cfg.codebook_size, cfg.codebook_dim],
+                cb,
+            ));
+            let mut v = Vec::new();
+            for _o in 0..cfg.d_model {
+                v.extend_from_slice(&[3.0, 4.0]);
+            }
+            entries.push((
+                format!("{prefix}.out_proj.weight_v"),
+                vec![cfg.d_model, cfg.codebook_dim, 1],
+                v,
+            ));
+            let g: Vec<f32> = (0..cfg.d_model).map(|o| (o + 1) as f32).collect();
+            entries.push((
+                format!("{prefix}.out_proj.weight_g"),
+                vec![cfg.d_model, 1, 1],
+                g,
+            ));
+            let bias: Vec<f32> = (0..cfg.d_model).map(|o| o as f32 * 0.25).collect();
+            entries.push((format!("{prefix}.out_proj.bias"), vec![cfg.d_model], bias));
+        }
+
+        // Serialize header with mixed dtype (F32 for the entries + BF16 tail).
+        let mut header = String::from("{");
+        let mut data = Vec::<u8>::new();
+        for (i, (name, shape, vals)) in entries.iter().enumerate() {
+            let start = data.len();
+            for v in vals {
+                data.extend_from_slice(&v.to_le_bytes());
+            }
+            let end = data.len();
+            if i > 0 {
+                header.push(',');
+            }
+            let dims = shape
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            header.push_str(&format!(
+                r#""{name}":{{"dtype":"F32","shape":[{dims}],"data_offsets":[{start},{end}]}}"#
+            ));
+        }
+        // BF16 tail.
+        let bf16_start = data.len();
+        data.extend_from_slice(&bf16_bytes);
+        let bf16_end = data.len();
+        header.push(',');
+        header.push_str(&format!(
+            r#""{bf16_name}":{{"dtype":"BF16","shape":[{bf16_elems}],"data_offsets":[{bf16_start},{bf16_end}]}}"#
+        ));
+        header.push('}');
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&data);
+        (out, bf16_name, bf16_bytes)
+    }
+
+    #[test]
+    fn bf16_tensor_passes_through_verbatim() {
+        // moshi.rs posture: BF16 bytes reach the GGUF verbatim (ggml type 30),
+        // the runtime's tensor_f32 path widens exactly at load. Silent
+        // skip-as-non-float would corrupt the decoder chain — FR-EX-08.
+        let cfg = tiny_config();
+        let (bytes, bf16_name, expected_bf16_bytes) = synthetic_dac_with_bf16_tail(&cfg);
+
+        let (b, report) = convert(bytes, &cfg).expect("convert with BF16 tail");
+        assert_eq!(
+            report.skipped_non_float, 0,
+            "BF16 must NOT be counted as skipped"
+        );
+        assert_eq!(
+            report.bf16_passthrough, 1,
+            "exactly one BF16 tensor was written verbatim"
+        );
+
+        let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
+        let info = file
+            .tensor_info(&bf16_name)
+            .expect("BF16 tensor must be present in the GGUF");
+        assert_eq!(
+            info.dtype,
+            GgmlType::BF16,
+            "no convert-time widening — dtype stays BF16"
+        );
+        let raw = file
+            .tensor_data(&bf16_name)
+            .expect("BF16 tensor payload must be present");
+        assert_eq!(
+            raw,
+            &expected_bf16_bytes[..],
+            "BF16 bytes round-trip byte-identically (voxtral 12e574e posture)"
+        );
     }
 
     #[test]
