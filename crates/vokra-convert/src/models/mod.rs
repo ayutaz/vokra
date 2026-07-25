@@ -150,6 +150,15 @@ pub(crate) mod piper_plus;
 // qwen3_tts_codec, NOT HiFTChain.
 pub(crate) mod qwen3_tts;
 pub(crate) mod silero;
+// SoTA plan Phase 3 (2026-07-25): StepFun **Step-Audio-2-mini**
+// (apache-2.0 end-to-end weight) safetensors → GGUF skeleton. 8B S2S
+// with a dual codebook (semantic 1024 + acoustic 4096) and a
+// flow-matching mel decoder. This is the pass-through skeleton
+// (`convert_step_audio2_mini_file`) — every F32 / F16 / BF16 tensor
+// passes through verbatim; real-weight parity is deferred to owner
+// (docs/license-audit.md §3.1 sign-off). Distinct arch tag from every
+// sibling — silently sharing would mis-route the runtime dispatch.
+pub mod step_audio2_mini;
 pub(crate) mod utmos;
 // SoTA plan Phase 4 (2026-07-24): OpenBMB **VoxCPM-0.5B** (apache-2.0
 // end-to-end weight) safetensors → GGUF with the `vokra.voxcpm2.*` and

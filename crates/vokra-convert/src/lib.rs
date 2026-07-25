@@ -2202,6 +2202,12 @@ pub fn convert_moshi_file(
 // M4-20 T12/T17: DeepFilterNet3 `denoise` offline GGUF path (real checkpoint
 // parse from the prepared safetensors + synthetic round-trip writer).
 pub use models::denoise::{convert_denoise_bytes, convert_denoise_file, convert_denoise_synthetic};
+// SoTA plan Phase 3 (2026-07-25): StepFun Step-Audio-2-mini (apache-2.0)
+// skeleton converter — every F32 / F16 / BF16 tensor passes through
+// verbatim under its upstream name. Re-exported so external callers
+// (vokra-cli / integration tests / model-zoo publish) can drive it
+// without pulling in the private `models::step_audio2_mini` module.
+pub use models::step_audio2_mini::{StepAudio2MiniReport, convert_step_audio2_mini_file};
 pub use models::voxtral::VoxtralConfig;
 
 /// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through
