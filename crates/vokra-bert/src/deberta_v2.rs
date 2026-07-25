@@ -276,3 +276,143 @@ impl FfnBlock {
         y
     }
 }
+
+/// Per-row LayerNorm: `y = (x - mean) / sqrt(var + eps) * gamma + beta`.
+pub struct LayerNorm {
+    gamma: Vec<f32>,
+    beta: Vec<f32>,
+    eps: f32,
+}
+
+impl LayerNorm {
+    pub fn new(gamma: Vec<f32>, beta: Vec<f32>, eps: f32) -> Self {
+        assert_eq!(gamma.len(), beta.len());
+        Self { gamma, beta, eps }
+    }
+
+    /// `x` is [seq_len, d] flat. Normalizes each row independently.
+    pub fn forward(&self, x: &[f32], seq_len: usize, d: usize) -> Vec<f32> {
+        assert_eq!(x.len(), seq_len * d);
+        assert_eq!(self.gamma.len(), d);
+        let mut y = vec![0.0_f32; x.len()];
+        for i in 0..seq_len {
+            let row = &x[i * d..(i + 1) * d];
+            let mean: f32 = row.iter().sum::<f32>() / d as f32;
+            let var: f32 = row.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / d as f32;
+            let inv = 1.0 / (var + self.eps).sqrt();
+            for j in 0..d {
+                y[i * d + j] = (row[j] - mean) * inv * self.gamma[j] + self.beta[j];
+            }
+        }
+        y
+    }
+}
+
+/// One DeBERTa v2 transformer block, pre-norm order.
+pub struct EncoderLayer {
+    pub attn: DisentangledAttention,
+    pub ffn: FfnBlock,
+    pub ln1: LayerNorm,
+    pub ln2: LayerNorm,
+}
+
+impl EncoderLayer {
+    /// Pre-norm order: hidden = hidden + attn(ln1(hidden)); hidden = hidden + ffn(ln2(hidden)).
+    pub fn forward(&self, hidden: &[f32], seq_len: usize) -> Vec<f32> {
+        let d = self.ln1.gamma.len();
+        let normed = self.ln1.forward(hidden, seq_len, d);
+        let attn_out = self.attn.forward(&normed, seq_len);
+        let mut h = vec![0.0_f32; hidden.len()];
+        for i in 0..hidden.len() {
+            h[i] = hidden[i] + attn_out[i];
+        }
+        let normed2 = self.ln2.forward(&h, seq_len, d);
+        let ffn_out = self.ffn.forward(&normed2, seq_len);
+        let mut y = vec![0.0_f32; hidden.len()];
+        for i in 0..hidden.len() {
+            y[i] = h[i] + ffn_out[i];
+        }
+        y
+    }
+}
+
+/// Full DeBERTa v2 encoder: token embedding lookup → embed LayerNorm →
+/// N-layer transformer stack.
+pub struct DebertaV2Encoder {
+    layers: Vec<EncoderLayer>,
+    embed: Vec<f32>, // [vocab, d_model]
+    embed_ln: LayerNorm,
+    d_model: usize,
+    vocab_size: usize,
+}
+
+impl DebertaV2Encoder {
+    pub fn forward(&self, ids: &[u32]) -> Vec<f32> {
+        let seq_len = ids.len();
+        let mut hidden = vec![0.0_f32; seq_len * self.d_model];
+        for (i, &id) in ids.iter().enumerate() {
+            let id = id as usize;
+            assert!(
+                id < self.vocab_size,
+                "token id {id} out of vocab {}",
+                self.vocab_size
+            );
+            for d in 0..self.d_model {
+                hidden[i * self.d_model + d] = self.embed[id * self.d_model + d];
+            }
+        }
+        hidden = self.embed_ln.forward(&hidden, seq_len, self.d_model);
+        for layer in &self.layers {
+            hidden = layer.forward(&hidden, seq_len);
+        }
+        hidden
+    }
+
+    /// Builds a `DebertaV2Encoder` with deterministic synthetic weights, for
+    /// structure/shape tests only (no real checkpoint involved).
+    #[doc(hidden)]
+    pub fn synthetic_for_test(
+        n_layers: usize,
+        d_model: usize,
+        n_heads: usize,
+        vocab: usize,
+        n_pos_buckets: i32,
+    ) -> Self {
+        let head_dim = d_model / n_heads;
+        let make_layer = || {
+            let w = AttnWeights {
+                wq: vec![0.01; d_model * d_model],
+                wk: vec![0.01; d_model * d_model],
+                wv: vec![0.01; d_model * d_model],
+                wq_pos: vec![0.01; d_model * d_model],
+                wk_pos: vec![0.01; d_model * d_model],
+                w_out: vec![0.01; d_model * d_model],
+                pos_embed: vec![0.001; n_pos_buckets as usize * d_model],
+                bq: vec![0.0; d_model],
+                bk: vec![0.0; d_model],
+                bv: vec![0.0; d_model],
+                bout: vec![0.0; d_model],
+            };
+            EncoderLayer {
+                attn: DisentangledAttention::new(w, d_model, n_heads, head_dim, n_pos_buckets, 512),
+                ffn: FfnBlock::new(
+                    vec![0.01; 4 * d_model * d_model],
+                    vec![0.0; 4 * d_model],
+                    vec![0.01; d_model * 4 * d_model],
+                    vec![0.0; d_model],
+                    d_model,
+                    4 * d_model,
+                ),
+                ln1: LayerNorm::new(vec![1.0; d_model], vec![0.0; d_model], 1e-7),
+                ln2: LayerNorm::new(vec![1.0; d_model], vec![0.0; d_model], 1e-7),
+            }
+        };
+        Self {
+            layers: (0..n_layers).map(|_| make_layer()).collect(),
+            embed: vec![0.01; vocab * d_model],
+            embed_ln: LayerNorm::new(vec![1.0; d_model], vec![0.0; d_model], 1e-7),
+            d_model,
+            vocab_size: vocab,
+        }
+    }
+}

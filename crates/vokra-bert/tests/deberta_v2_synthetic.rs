@@ -2,7 +2,8 @@
 //! Clean-room per arXiv:2006.03654 + HF transformers deberta_v2 (Apache-2.0).
 
 use vokra_bert::deberta_v2::{
-    relative_position_bucket, AttnWeights, DisentangledAttention, FfnBlock,
+    relative_position_bucket, AttnWeights, DebertaV2Encoder, DisentangledAttention, FfnBlock,
+    LayerNorm,
 };
 
 #[test]
@@ -100,4 +101,23 @@ fn ffn_gelu_activates() {
     let y_pos = ffn.forward(&vec![1.0_f32; d_model], 1);
     let y_neg = ffn.forward(&vec![-1.0_f32; d_model], 1);
     assert!(y_pos[0].abs() > y_neg[0].abs());
+}
+
+#[test]
+fn layer_norm_zero_mean_unit_var() {
+    let ln = LayerNorm::new(vec![1.0; 4], vec![0.0; 4], 1e-7);
+    let x = vec![1.0, 2.0, 3.0, 4.0];
+    let y = ln.forward(&x, 1, 4);
+    let mean: f32 = y.iter().sum::<f32>() / 4.0;
+    let var: f32 = y.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / 4.0;
+    assert!(mean.abs() < 1e-5, "mean {mean}");
+    assert!((var - 1.0).abs() < 1e-3, "var {var}");
+}
+
+#[test]
+fn encoder_stack_forward_shape() {
+    // 2-layer, d_model=8, vocab=16, seq=3
+    let enc = DebertaV2Encoder::synthetic_for_test(2, 8, 2, 16, 512);
+    let out = enc.forward(&[1, 2, 3]);
+    assert_eq!(out.len(), 3 * 8);
 }
