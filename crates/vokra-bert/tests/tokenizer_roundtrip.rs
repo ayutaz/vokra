@@ -33,3 +33,20 @@ fn encode_unknown_falls_back_to_unk() {
     // No piece for "xyz" -> <unk> (id 1)
     assert!(ids.contains(&1));
 }
+
+#[test]
+fn decode_round_trip() {
+    let tok = synthetic_tokenizer();
+    let ids = vec![4u32, 5, 6];
+    let text = tok.decode(&ids);
+    // ▁h + ello + ▁world -> "▁hello▁world" -> "hello world" (▁ → space, leading strip)
+    assert_eq!(text, "hello world");
+}
+
+#[test]
+fn decode_skips_special_tokens() {
+    let tok = synthetic_tokenizer();
+    let ids = vec![2u32, 4, 5, 3]; // <s> ▁h ello </s>
+    let text = tok.decode(&ids);
+    assert_eq!(text, "hello");
+}
