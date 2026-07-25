@@ -49,6 +49,11 @@ pub mod latency;
 pub mod scheduler;
 pub mod session;
 
+// Native long-form ASR orchestrator (WhisperX-style pipeline): Silero VAD →
+// Whisper (with M4-20 word timestamps) → optional CAM++ speaker embedding +
+// cosine clustering. All zero-dependency (only vokra-* crates).
+pub mod longform;
+
 pub use api::wyoming::{BargeIn, WyomingBackend};
 pub use config::{Config, ConfigError, HELP_TEXT, parse_args};
 pub use latency::{LatencyRecorder, LatencyReport};
