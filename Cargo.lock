@@ -57,6 +57,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vokra-bert"
+version = "0.1.0"
+dependencies = [
+ "vokra-core",
+ "vokra-mmap",
+]
+
+[[package]]
 name = "vokra-capi"
 version = "0.1.0-alpha.0"
 dependencies = [
