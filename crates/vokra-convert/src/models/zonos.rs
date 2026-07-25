@@ -213,11 +213,21 @@ const CONDITIONERS: [ConditionerDesc; 7] = [
 /// Outcome of a Zonos conversion.
 #[derive(Debug, Default)]
 pub(crate) struct ZonosReport {
-    /// Float tensors written verbatim.
+    /// Float tensors written verbatim (F32 / F16 / BF16 — all three go
+    /// through the same byte-copy path since the BF16 pass-through land
+    /// 2026-07-25, mirror of `qwen3-tts` / `moshi` / `voxtral` /
+    /// `vibevoice` / `voxcpm2`).
     pub(crate) written: usize,
-    /// Non-F32 / F16 tensors skipped (defensive counter — the safetensors
-    /// reader rejects unknown dtypes at parse time).
+    /// Non-F32 / F16 / BF16 tensors skipped (defensive counter — the
+    /// safetensors reader rejects unknown dtypes at parse time; anything
+    /// that reaches this arm is a quantized dtype the runtime is not
+    /// expected to consume).
     pub(crate) skipped_non_float: usize,
+    /// Of the tensors in `written`, how many were BF16 (subset counter).
+    /// Emits GGUF type 30 verbatim; runtime widens BF16 → f32 losslessly
+    /// via the single choke point `crates/vokra-core/src/gguf/quant/mod.rs
+    /// decode_bf16` (BF16 = top 16 bits of an f32 — `bits << 16` is exact).
+    pub(crate) bf16_passthrough: usize,
     /// Operator-facing diagnostics (never fail the conversion — the
     /// runtime is the authoritative gate, FR-EX-08).
     pub(crate) notes: Vec<String>,
@@ -246,7 +256,13 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, ZonosReport), Conv
     let mut report = ZonosReport::default();
     for t in st.tensors() {
         match t.dtype {
-            GgmlType::F32 | GgmlType::F16 => {
+            // BF16 pass-through added 2026-07-25 (mirror of qwen3-tts +
+            // moshi + voxtral + vibevoice + voxcpm2): the upstream
+            // `Zyphra/Zonos-v0.1-transformer` release contains BF16
+            // tensors, so the release checkpoint hits this arm. Emit as
+            // GGUF type 30 verbatim; runtime widens on load via
+            // `decode_bf16` (exact, `bits << 16`).
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
                 b.add_tensor(
                     &t.name,
                     t.dtype,
@@ -254,6 +270,9 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, ZonosReport), Conv
                     st.tensor_bytes(t).to_vec(),
                 )?;
                 report.written += 1;
+                if t.dtype == GgmlType::BF16 {
+                    report.bf16_passthrough += 1;
+                }
             }
             _ => {
                 report.skipped_non_float += 1;
@@ -377,16 +396,30 @@ mod tests {
     }
 
     fn minimal_safetensors_one_bf16() -> Vec<u8> {
-        // Single bf16 tensor: the `vokra-core` safetensors reader accepts
-        // BF16 (M4-06, the all-BF16 `kyutai/moshiko` release), but the
-        // Zonos `convert()` loop only pipes F32 / F16 through — so this
-        // fixture exercises the `_ => report.skipped_non_float += 1` arm.
-        // Shape [2, 3] × sizeof(bf16) = 12 bytes (same byte span as F16).
+        // Single BF16 tensor: the `vokra-core` safetensors reader accepts
+        // BF16 (M4-06, the all-BF16 `kyutai/moshiko` release). Prior to the
+        // BF16 pass-through land (2026-07-25, mirror of qwen3-tts / moshi /
+        // voxtral / vibevoice / voxcpm2), the Zonos `convert()` loop routed
+        // BF16 into `skipped_non_float`; the arm now emits GGUF type 30
+        // verbatim, so this fixture exercises the pass-through / round-trip
+        // byte equality contract.
+        //
+        // Payload is a distinctive non-zero bit pattern (BF16 encodings of
+        // 1.0 .. 6.0 = top 16 bits of the IEEE-754 f32 form: 0x3F80, 0x4000,
+        // 0x4040, 0x4080, 0x40A0, 0x40C0). A partial byte-swap or silent
+        // widen-to-f32 would either shorten the payload (BF16 = 2 bytes ×
+        // 6 = 12 bytes, F32 = 24 bytes) or scramble the bit pattern, both
+        // of which the round-trip test detects.
+        let payload: [u16; 6] = [0x3F80, 0x4000, 0x4040, 0x4080, 0x40A0, 0x40C0];
+        let mut data_region = Vec::new();
+        for v in payload {
+            data_region.extend_from_slice(&v.to_le_bytes());
+        }
         let header = r#"{"backbone.embeddings.0.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
         let mut out = Vec::new();
         out.extend_from_slice(&(header.len() as u64).to_le_bytes());
         out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(&[0u8; 12]);
+        out.extend_from_slice(&data_region);
         out
     }
 
@@ -586,24 +619,86 @@ mod tests {
         );
     }
 
-    /// Pins the `_ => report.skipped_non_float += 1` arm at line 259: the
-    /// `vokra-core` safetensors reader graduated BF16 from "future
-    /// extension" to "supported" in M4-06, so the arm is genuinely
-    /// reachable — contradicting the `ZonosReport::skipped_non_float`
-    /// doc comment that calls it a "defensive counter". This also covers
-    /// the second path into the loud note (`written == 0` via a skipped
-    /// non-float tensor) which the existing `zero_tensor_conversion_
-    /// surfaces_a_loud_note` test did not exercise (that one hits an
-    /// empty `{}` header).
+    /// Pins the BF16 leg of the `GgmlType::F32 | GgmlType::F16 |
+    /// GgmlType::BF16` union: BF16 (added to the pass-through arm
+    /// 2026-07-25 for the `Zyphra/Zonos-v0.1-transformer` release —
+    /// mirror of qwen3-tts / moshi / voxtral / vibevoice / voxcpm2) must
+    /// reach the pass-through arm, emit as GGUF type 30 verbatim (no
+    /// convert-time widening — runtime widens on load via
+    /// `decode_bf16`, `bits << 16` is exact), and increment the
+    /// `bf16_passthrough` subset counter.
+    ///
+    /// Rewritten 2026-07-25 from the earlier
+    /// `bf16_tensor_increments_skipped_and_surfaces_loud_note` pin —
+    /// the earlier pin encoded the pre-BF16-fix scaffold posture where
+    /// BF16 landed in `skipped_non_float`. Removing the pin outright
+    /// would let a latent silent-widen or silent-skip regression slip
+    /// in undetected; rewriting to the passes-through invariant keeps
+    /// the regression guard on the same arm.
+    ///
+    /// This test also covers the byte-verbatim round-trip contract for
+    /// BF16 payloads: the fixture uses a distinctive non-zero bit
+    /// pattern (BF16 encodings of 1.0 .. 6.0) so a partial byte-swap or
+    /// widen-to-f32 in a future refactor would flip the payload-bytes
+    /// assertion, not just the counters.
     #[test]
-    fn bf16_tensor_increments_skipped_and_surfaces_loud_note() {
-        let (_, report) = convert(minimal_safetensors_one_bf16()).expect("convert");
-        assert_eq!(report.written, 0);
-        assert_eq!(report.skipped_non_float, 1);
+    fn bf16_tensor_passes_through_verbatim() {
+        let bytes = minimal_safetensors_one_bf16();
+
+        // Capture the fixture's tensor bytes via the same safetensors reader
+        // the converter uses, so the round-trip assertion compares against a
+        // known-good source of truth (not an inlined byte literal that could
+        // drift from the fixture).
+        let st = SafetensorsFile::parse(bytes.clone()).expect("parse safetensors");
+        let (input_name, input_shape, input_dtype, input_payload) = {
+            let t = st.tensors().first().expect("one tensor in fixture");
+            (
+                t.name.clone(),
+                t.shape.clone(),
+                t.dtype,
+                st.tensor_bytes(t).to_vec(),
+            )
+        };
+        assert_eq!(input_dtype, GgmlType::BF16, "fixture must be BF16");
+        assert_eq!(input_payload.len(), 12, "BF16 payload = 6 elements × 2 B");
+
+        let (builder, report) = convert(bytes).expect("convert");
+        assert_eq!(
+            report.written, 1,
+            "BF16 must reach the pass-through arm and increment `written`"
+        );
+        assert_eq!(
+            report.skipped_non_float, 0,
+            "BF16 must not land in the skipped counter"
+        );
+        assert_eq!(
+            report.bf16_passthrough, 1,
+            "BF16 subset counter must record the pass-through"
+        );
         assert!(
-            report.notes.iter().any(|n| n.contains("no float tensors")),
-            "BF16-only conversion must emit the loud note: {:?}",
+            report.notes.is_empty(),
+            "BF16 pass-through must not fire the loud note: {:?}",
             report.notes
+        );
+
+        // Round-trip byte equality: serialize the GGUF, re-parse, verify the
+        // tensor survives under its upstream name with its BF16 dtype and
+        // its exact payload bytes.
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        let info = file
+            .tensor_info(&input_name)
+            .unwrap_or_else(|| panic!("output GGUF must carry tensor `{input_name}`"));
+        assert_eq!(
+            info.dtype,
+            GgmlType::BF16,
+            "no convert-time widening — GGUF dtype must remain BF16"
+        );
+        assert_eq!(info.dimensions, input_shape);
+        assert_eq!(
+            file.tensor_bytes(info),
+            input_payload.as_slice(),
+            "payload bytes must round-trip byte-for-byte (BF16 verbatim contract)"
         );
     }
 
