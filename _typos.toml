@@ -146,3 +146,8 @@ JSUT = "JSUT"
 # の慣用命名。typos default は "does"/"down" を提案してくるが、
 # cron 分野の慣用短縮。
 dows = "dows"
+# "minium" = 鉛丹 (red lead, Pb3O4)。ローマの碑文で刻んだ溝に詰めて遠くから
+# 読ませるのに使われた顔料で、ブランドの差し色名として assets/branding/ と
+# tools/branding/gen_brand.py に頻出。v1.48.0 が "minimum" を提案してくるが、
+# 英語・ラテン語とも実在する顔料名 (https://en.wikipedia.org/wiki/Minium_(pigment))。
+minium = "minium"
