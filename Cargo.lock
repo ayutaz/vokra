@@ -102,6 +102,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vokra-kws-micro"
+version = "0.1.0"
+dependencies = [
+ "vokra-core",
+]
+
+[[package]]
 name = "vokra-mmap"
 version = "0.1.0-alpha.0"
 dependencies = [
