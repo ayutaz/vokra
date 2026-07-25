@@ -214,3 +214,65 @@ impl DisentangledAttention {
         y
     }
 }
+
+/// FFN block: x -> Linear(d_model, d_ff) -> GELU -> Linear(d_ff, d_model)
+/// per BERT/DeBERTa convention.
+pub struct FfnBlock {
+    w1: Vec<f32>,
+    b1: Vec<f32>, // [d_ff, d_model]
+    w2: Vec<f32>,
+    b2: Vec<f32>, // [d_model, d_ff]
+    d_model: usize,
+    d_ff: usize,
+}
+
+impl FfnBlock {
+    pub fn new(
+        w1: Vec<f32>,
+        b1: Vec<f32>,
+        w2: Vec<f32>,
+        b2: Vec<f32>,
+        d_model: usize,
+        d_ff: usize,
+    ) -> Self {
+        assert_eq!(w1.len(), d_ff * d_model);
+        assert_eq!(w2.len(), d_model * d_ff);
+        Self {
+            w1,
+            b1,
+            w2,
+            b2,
+            d_model,
+            d_ff,
+        }
+    }
+
+    pub fn forward(&self, x: &[f32], seq_len: usize) -> Vec<f32> {
+        // Linear 1
+        let mut h = vec![0.0_f32; seq_len * self.d_ff];
+        for i in 0..seq_len {
+            for o in 0..self.d_ff {
+                let mut a = self.b1[o];
+                for d in 0..self.d_model {
+                    a += x[i * self.d_model + d] * self.w1[o * self.d_model + d];
+                }
+                // GELU (Hendrycks approx): 0.5*x*(1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+                let c = (2.0_f32 / std::f32::consts::PI).sqrt();
+                let g = 0.5 * a * (1.0 + (c * (a + 0.044715 * a * a * a)).tanh());
+                h[i * self.d_ff + o] = g;
+            }
+        }
+        // Linear 2
+        let mut y = vec![0.0_f32; seq_len * self.d_model];
+        for i in 0..seq_len {
+            for o in 0..self.d_model {
+                let mut a = self.b2[o];
+                for d in 0..self.d_ff {
+                    a += h[i * self.d_ff + d] * self.w2[o * self.d_ff + d];
+                }
+                y[i * self.d_model + o] = a;
+            }
+        }
+        y
+    }
+}

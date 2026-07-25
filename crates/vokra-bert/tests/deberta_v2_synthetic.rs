@@ -1,7 +1,9 @@
 //! DeBERTa v2 synthetic-weight structure tests.
 //! Clean-room per arXiv:2006.03654 + HF transformers deberta_v2 (Apache-2.0).
 
-use vokra_bert::deberta_v2::{relative_position_bucket, AttnWeights, DisentangledAttention};
+use vokra_bert::deberta_v2::{
+    relative_position_bucket, AttnWeights, DisentangledAttention, FfnBlock,
+};
 
 #[test]
 fn bucket_zero_for_same_position() {
@@ -61,4 +63,41 @@ fn attention_is_deterministic() {
     let o1 = attn.forward(&hidden, 4);
     let o2 = attn.forward(&hidden, 4);
     assert_eq!(o1, o2);
+}
+
+#[test]
+fn ffn_shape_and_determinism() {
+    let d_model = 8;
+    let d_ff = 32;
+    let ffn = FfnBlock::new(
+        vec![0.01_f32; d_ff * d_model],
+        vec![0.0; d_ff],
+        vec![0.01_f32; d_model * d_ff],
+        vec![0.0; d_model],
+        d_model,
+        d_ff,
+    );
+    let x = vec![0.1_f32; 4 * d_model];
+    let y1 = ffn.forward(&x, 4);
+    let y2 = ffn.forward(&x, 4);
+    assert_eq!(y1.len(), 4 * d_model);
+    assert_eq!(y1, y2);
+}
+
+#[test]
+fn ffn_gelu_activates() {
+    let d_model = 4;
+    let d_ff = 8;
+    // 正の入力 → gelu 正、負の入力 → gelu 小
+    let ffn = FfnBlock::new(
+        vec![1.0_f32; d_ff * d_model],
+        vec![0.0; d_ff],
+        vec![1.0_f32; d_model * d_ff],
+        vec![0.0; d_model],
+        d_model,
+        d_ff,
+    );
+    let y_pos = ffn.forward(&vec![1.0_f32; d_model], 1);
+    let y_neg = ffn.forward(&vec![-1.0_f32; d_model], 1);
+    assert!(y_pos[0].abs() > y_neg[0].abs());
 }
