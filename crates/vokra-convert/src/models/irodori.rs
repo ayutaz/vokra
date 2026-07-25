@@ -46,11 +46,12 @@
 //! The upstream Irodori-TTS release trains in bf16
 //! (`TrainConfig.precision = "bf16"`) but the released
 //! `model.safetensors` blob is typically served in F32 / F16 (the
-//! `save_pretrained` default). If a downstream ships BF16, this
-//! converter's F32/F16 pass-through arm hits `skipped_non_float` on
-//! BF16 tensors and the "no float tensors" loud note fires. Pre-widen
-//! offline to F32 (the CSM / Kokoro / VoxCPM pattern) to convert a
-//! BF16 checkpoint directly.
+//! `save_pretrained` default). Since 2026-07-25 the pass-through arm
+//! also accepts BF16 verbatim (mirror of `qwen3-tts` / `vibevoice` /
+//! `voxcpm2` — GGUF type 30 emitted unchanged; runtime widens
+//! BF16 → f32 losslessly on load via
+//! `vokra-core::gguf::quant::decode_bf16`, `bits << 16` — exact). No
+//! pre-widen step is required for a BF16 release.
 //!
 //! # No ONNX (permanent)
 //!
@@ -186,11 +187,20 @@ const DURATION_SPEAKER_FUSION: &str = "adarn_zero";
 /// Outcome of an Irodori-TTS conversion.
 #[derive(Debug, Default)]
 pub(crate) struct IrodoriReport {
-    /// Float tensors written verbatim.
+    /// Float tensors written verbatim (F32 / F16 / BF16 — all three go
+    /// through the same byte-copy path since the BF16 pass-through land
+    /// 2026-07-25, mirror of `qwen3-tts` / `vibevoice` / `voxcpm2`).
     pub(crate) written: usize,
-    /// Non-F32 / F16 tensors skipped (defensive counter — BF16 reaches
-    /// this arm since M4-06).
+    /// Non-F32 / F16 / BF16 tensors skipped (defensive counter — the
+    /// safetensors reader rejects unknown dtypes at parse time; anything
+    /// that reaches this arm is a quantized dtype the runtime is not
+    /// expected to consume).
     pub(crate) skipped_non_float: usize,
+    /// Of the tensors in `written`, how many were BF16 (subset counter).
+    /// Emits GGUF type 30 verbatim; runtime widens BF16 → f32 losslessly
+    /// via the single choke point `crates/vokra-core/src/gguf/quant/mod.rs
+    /// decode_bf16` (BF16 = top 16 bits of an f32 — `bits << 16` is exact).
+    pub(crate) bf16_passthrough: usize,
     /// Operator-facing diagnostics (never fail the conversion — the
     /// runtime is the authoritative gate, FR-EX-08).
     pub(crate) notes: Vec<String>,
@@ -227,7 +237,13 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, IrodoriReport), Co
     let mut report = IrodoriReport::default();
     for t in st.tensors() {
         match t.dtype {
-            GgmlType::F32 | GgmlType::F16 => {
+            // BF16 pass-through added 2026-07-25 (mirror of qwen3-tts +
+            // vibevoice + voxcpm2): Irodori-TTS trains in bf16
+            // (`TrainConfig.precision = "bf16"`) so a downstream BF16
+            // release hits this arm. Emit as GGUF type 30 verbatim;
+            // runtime widens on load via `decode_bf16` (exact,
+            // `bits << 16`).
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
                 b.add_tensor(
                     &t.name,
                     t.dtype,
@@ -235,6 +251,9 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, IrodoriReport), Co
                     st.tensor_bytes(t).to_vec(),
                 )?;
                 report.written += 1;
+                if t.dtype == GgmlType::BF16 {
+                    report.bf16_passthrough += 1;
+                }
             }
             _ => {
                 report.skipped_non_float += 1;
@@ -245,9 +264,9 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, IrodoriReport), Co
         report.notes.push(
             "no float tensors passed through — this GGUF is metadata-only and the runtime will \
              refuse to bind any weights (FR-EX-08). Irodori-TTS trains in bf16 \
-             (TrainConfig.precision = \"bf16\"); if the checkpoint was serialized in BF16 the \
-             F32/F16 pass-through cannot consume it directly — pre-widen offline to F32 (the \
-             CSM / Kokoro / VoxCPM pattern) or wait for the streaming BF16 pass-through path."
+             (TrainConfig.precision = \"bf16\"); the BF16 pass-through path is now wired \
+             (2026-07-25), so this state is only reachable when the release contains no \
+             F32 / F16 / BF16 float tensors at all."
                 .into(),
         );
     }
@@ -337,9 +356,11 @@ mod tests {
         out
     }
 
-    /// A single BF16 tensor — if a downstream ships BF16 this hits the
-    /// pass-through's `_ =>` arm and MUST land in `skipped_non_float`
-    /// (with the loud "no float tensors" note).
+    /// A single BF16 tensor — Irodori-TTS trains in bf16 so a
+    /// downstream release can ship BF16 directly. Since 2026-07-25 this
+    /// must hit the `GgmlType::F32 | GgmlType::F16 | GgmlType::BF16`
+    /// pass-through arm and land in `written` + `bf16_passthrough`
+    /// (mirror of `qwen3-tts` / `vibevoice` / `voxcpm2`).
     fn minimal_safetensors_one_bf16() -> Vec<u8> {
         let header =
             r#"{"text_embed.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
@@ -599,18 +620,57 @@ mod tests {
         assert!(report.notes.is_empty());
     }
 
+    /// Pins the BF16 leg of the `GgmlType::F32 | GgmlType::F16 |
+    /// GgmlType::BF16` union: BF16 (Irodori-TTS trains in bf16 per
+    /// `TrainConfig.precision = "bf16"`) must reach the pass-through
+    /// arm, emit as GGUF type 30 verbatim, and increment
+    /// `bf16_passthrough`. Mirror of vibevoice /
+    /// `bf16_tensor_passes_through_verbatim` and moshi's `assert_eq!(
+    /// info.dtype, GgmlType::BF16, "no convert-time widening")`.
+    ///
+    /// Rewritten 2026-07-25 from the earlier "counted as skipped" pin
+    /// (`bf16_tensor_is_skipped_with_loud_note`) — the earlier pin
+    /// encoded the pre-BF16-fix scaffold posture and would
+    /// tautologically fail after the fix; removing it outright would
+    /// let a latent silent-widen slip in undetected, so the slot is
+    /// re-purposed to the passes-through invariant instead.
     #[test]
-    fn bf16_tensor_is_skipped_with_loud_note() {
-        // BF16 is not F32/F16 → skipped_non_float increments and the
-        // "no float tensors" loud note fires (FR-EX-08).
-        let (_builder, report) = convert(minimal_safetensors_one_bf16()).expect("convert");
-        assert_eq!(report.written, 0);
-        assert_eq!(report.skipped_non_float, 1);
-        assert_eq!(report.notes.len(), 1);
-        assert!(
-            report.notes[0].contains("no float tensors"),
-            "note must name the blocker (got: {})",
-            report.notes[0]
+    fn bf16_tensor_passes_through_verbatim() {
+        let (builder, report) = convert(minimal_safetensors_one_bf16()).expect("convert");
+        assert_eq!(
+            report.written, 1,
+            "BF16 must reach the pass-through arm and increment `written`"
+        );
+        assert_eq!(
+            report.skipped_non_float, 0,
+            "BF16 must not land in the skipped counter"
+        );
+        assert_eq!(
+            report.bf16_passthrough, 1,
+            "BF16 subset counter must record the pass-through"
+        );
+        // The tensor survives the round trip under its upstream name and
+        // preserves its BF16 dtype (no convert-time widening — runtime
+        // widens on load via `decode_bf16`).
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        let info = file
+            .tensor_info("text_embed.weight")
+            .expect("BF16 tensor must be present after pass-through");
+        assert_eq!(
+            info.dtype,
+            GgmlType::BF16,
+            "no convert-time widening — GGUF dtype must remain BF16"
+        );
+        assert_eq!(info.dimensions, vec![2, 3]);
+        assert_eq!(
+            file.tensor_bytes(info).len(),
+            12,
+            "BF16 payload = 6 elements × 2 bytes = 12 bytes"
+        );
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH)
         );
     }
 
