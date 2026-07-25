@@ -113,7 +113,7 @@ None. All 23 tasks reached GREEN and landed. See "Verify snapshot" for HEAD gate
 - **SilentCipher** (Sony MIT, Interspeech 2024) — watermark WP.
 - **TitaNet-L** (nvidia, CC-BY-4.0) — attribution decision (§3.1 owner sign-off).
 - **CosyVoice3 正規 2025-12 版** (cstr/cosyvoice3-0.5b-2512-GGUF, Apache-2.0) — SOTA plan Phase 3 追加検討.
-- **License class extensions**: `ConditionalCommercial` / `InheritedRestriction` (owner ADR — GLM-4-Voice, MiniCPM-o, IndexTTS-2 等 3+ 実需).
+- **License class extensions**: ~~`ConditionalCommercial` / `InheritedRestriction` (owner ADR)~~ — **STALE. Both classes were landed in PR #11 (commit `69316e8`, 2026-07-23) with `redistributable()` / `requires_license_preserved()` / `commercial_ok()` / `from_license_str()` (openrail/rail → InheritedRestriction) fully wired.** What remains is per-model mapping decisions for future gap-survey candidates (GLM-4-Voice → `ConditionalCommercial`?, MiniCPM-o 2.6 → `ConditionalCommercial`?, IndexTTS-2 → `ConditionalCommercial`?). No mapping work required for this campaign's 16 converters — all are Permissive (MIT/Apache-2.0).
 - **Real weight validation & §3.1 sign-off for all Wave-1 converters** (owner per model) — publish-one.sh 5-gate refuses until sign-off row lands in `docs/license-audit.md`.
 - **Neural F0 inference for RMVPE / FCPE / CREPE** (CNN forward pass — follow-up WP; skeletons only guarantee frame-count contract).
 - **Charsiu neural aligner forward** (wav2vec2 weights + inference — follow-up WP).
