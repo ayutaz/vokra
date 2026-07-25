@@ -1,5 +1,12 @@
 //! Per-model conversion routines (upstream checkpoint to GGUF builder).
 
+// SoTA plan follow-on (2026-07-25): baichuan-inc/Baichuan-Audio
+// (apache-2.0). Category: s2s. Baichuan Omni-1.5 = Whisper-Large enc +
+// 8-layer RVQ 12.5Hz + Flow Matching mel + CosyVoice2 HiFi-GAN. Every
+// F32 / F16 / BF16 tensor passes through verbatim following the
+// qwen3_tts / vibevoice / voxcpm2 pattern; real-weight parity is
+// deferred to owner (`docs/license-audit.md` §3.1 sign-off).
+pub mod baichuan_audio;
 pub(crate) mod campplus;
 // SoTA plan Phase 2 (2026-07-24): NVIDIA Canary-1B-v2 — multilingual
 // multi-task ASR / AST (25 European languages). FastConformer encoder
