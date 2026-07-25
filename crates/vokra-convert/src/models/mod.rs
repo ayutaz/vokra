@@ -262,6 +262,11 @@ pub(crate) mod irodori;
 pub(crate) mod vits_ja;
 pub(crate) mod voxtral;
 pub(crate) mod whisper;
+// SoTA plan Phase 5 codec (2026-07-25): fnlp XY_Tokenizer_TTSD_V0
+// (apache-2.0) safetensors → GGUF. 1 kbps RVQ-8 @ 12.5 Hz — the codec
+// half of MOSS-TTSD. F32 / F16 / BF16 pass-through following the
+// qwen3_tts / vibevoice / voxcpm2 landed contract.
+pub mod xy_tokenizer;
 // SoTA plan Phase 1-5 (2026-07-24): Zyphra Zonos-v0.1-transformer
 // (Apache 2.0) safetensors → GGUF with the `vokra.zonos.*` chunk group.
 // Every float tensor passes through verbatim; every hparam (including the

@@ -2209,6 +2209,11 @@ pub use models::denoise::{convert_denoise_bytes, convert_denoise_file, convert_d
 // without pulling in the private `models::step_audio2_mini` module.
 pub use models::step_audio2_mini::{StepAudio2MiniReport, convert_step_audio2_mini_file};
 pub use models::voxtral::VoxtralConfig;
+// SoTA plan Phase 5 codec (2026-07-25): fnlp XY_Tokenizer_TTSD_V0
+// (apache-2.0) — self-contained file-based entry point with an SPDX
+// override argument (mirror of the `denoise` re-export pattern; the
+// `models::xy_tokenizer` module is private otherwise).
+pub use models::xy_tokenizer::{XyTokenizerReport, convert_xy_tokenizer_file};
 
 /// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through
 /// [`convert_voxtral_file_with_adapter_config`] (a JSON path) or by
