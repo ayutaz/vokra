@@ -20,13 +20,15 @@
 //!   (<https://github.com/Dream-High/RMVPE>, apache-2.0); polyphonic vocal
 //!   pitch with V/UV detection; required by RVC.
 //! - [`fcpe`] — Fast Context-based Pitch Estimation (skeleton).
+//! - [`crepe`] — Convolutional Representation for Pitch Estimation
+//!   (Kim et al. 2018, MIT), a monophonic CNN F0 extractor (skeleton).
 //!
 //! # Current status (skeleton)
 //!
-//! FCPE is a landed skeleton — real CNN / attention / autocorrelation
-//! inference is a follow-up WP; the current skeleton guarantees only the
-//! **frame-count contract** so downstream consumers can wire the API surface
-//! without waiting on weights.
+//! FCPE and CREPE are landed skeletons — real CNN / attention /
+//! autocorrelation inference is a follow-up WP; the current skeletons
+//! guarantee only the **frame-count contract** so downstream consumers can
+//! wire the API surface without waiting on weights.
 //!
 //! # Frame shape
 //!
@@ -37,6 +39,7 @@
 
 use std::path::PathBuf;
 
+pub mod crepe;
 pub mod fcpe;
 pub mod rmvpe;
 
@@ -67,7 +70,8 @@ pub struct F0Frame {
 ///
 /// Note: `RMVPE::from_gguf` intentionally maps its errors to the crate-wide
 /// `vokra_core::VokraError` (see [`rmvpe`]'s design-note comment) and does
-/// not use this type; `FCPE::from_gguf` uses this local error type.
+/// not use this type; `FCPE::from_gguf` and `CREPE::from_gguf` use this
+/// local error type.
 #[derive(Debug)]
 pub enum LoadError {
     /// The path did not exist or could not be opened.

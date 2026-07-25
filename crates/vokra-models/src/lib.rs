@@ -370,6 +370,13 @@ pub mod voxtral;
 pub mod whisper;
 pub mod zonos;
 
+// F0 (fundamental-frequency) extractor family (FR-OP-83). Skeleton — each
+// member (`crepe`, and future PyIN / FCPE / Harvest / RMVPE siblings) exposes a
+// GGUF `from_gguf` loader and an `extract` method whose real forward is a
+// follow-up WP. Kept in its own block so `rustfmt`'s alphabetical sort inside
+// consecutive `pub mod` blocks does not hijack the doc-preceded siblings above.
+pub mod f0;
+
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 
 #[cfg(test)]
