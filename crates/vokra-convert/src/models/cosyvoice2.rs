@@ -132,12 +132,22 @@ const COSYVOICE2_SAMPLE_RATE: u32 = 24_000;
 /// Sourced from the Mimi paper (Kyutai) / M3-06 module documentation —
 /// stable model-card invariants, not invented numbers. The runtime rejects
 /// a `0` codec shape at load (`MimiBridge::from_config`), so we do
-/// **not** emit `0` placeholders on these three axes. NOTE (recorded by the
-/// 2026-07-16 eval as an open owner/CC design item): the upstream
-/// CosyVoice2-0.5B release does **not** ship Mimi — it ships an FSQ
-/// `speech_tokenizer_v2` + `flow.pt` + `hift.pt`; the Mimi bridge is the
-/// M3-06 design decision this converter follows until that item is
-/// resolved.
+/// **not** emit `0` placeholders on these three axes.
+///
+/// # SoTA plan §1(a) 訂正 (2026-07-24) — wrong-premise decision resolved
+///
+/// The 2026-07-16 eval's open design item ("upstream CosyVoice2-0.5B does
+/// not ship Mimi — it ships FSQ + flow.pt + hift.pt") was settled by the
+/// 2026-07-22 SoTA plan §1(a) 訂正: CosyVoice2's terminal vocoder is
+/// **HiFTNet** (`cosyvoice/hifigan/generator.py:378 HiFTGenerator`), NOT
+/// the Mimi codec. `vokra-models::cosyvoice2::mimi_bridge` is now
+/// `#[deprecated]` and the correct chain is
+/// `cosyvoice2::hift_chain::HiFTChain`. This converter still emits the
+/// canonical Mimi shape constants to keep the load-side compliance gate's
+/// non-zero requirement satisfied for pre-migration test GGUFs; the
+/// `vokra.cosyvoice2.mimi.*` metadata will be dropped in the T13
+/// codec-migration follow-up. NEW converters must not add Mimi wiring for
+/// CosyVoice2.
 const MIMI_N_CODEBOOKS: u32 = 8;
 const MIMI_CODEBOOK_SIZE: u32 = 2048;
 const MIMI_D_MODEL: u32 = 512;
@@ -167,14 +177,23 @@ pub(crate) struct DerivedHparams {
 /// Outcome of a CosyVoice2 conversion.
 #[derive(Debug, Default)]
 pub(crate) struct CosyVoice2Report {
-    /// Number of float weight tensors written to the GGUF.
+    /// Number of float weight tensors written to the GGUF (F32 / F16 /
+    /// BF16 — all three go through the same byte-copy path since the BF16
+    /// pass-through land 2026-07-25, mirror of `qwen3-tts` / `vibevoice` /
+    /// `voxcpm2`).
     pub(crate) written: usize,
-    /// Tensors whose dtype falls outside the F32/F16 range and were skipped.
+    /// Tensors whose dtype falls outside the F32 / F16 / BF16 pass-through
+    /// range and were skipped.
     ///
     /// The upstream safetensors reader already rejects unknown dtypes at
     /// parse time (`SafetensorsError::UnsupportedDtype`), so this counter
     /// is defensive/forward-compat (same rationale as Kokoro).
     pub(crate) skipped_non_float: usize,
+    /// Of the tensors in `written`, how many were BF16 (subset counter).
+    /// Emits GGUF type 30 verbatim; runtime widens BF16 → f32 losslessly
+    /// via the single choke point `crates/vokra-core/src/gguf/quant/mod.rs
+    /// decode_bf16` (BF16 = top 16 bits of an f32 — `bits << 16` is exact).
+    pub(crate) bf16_passthrough: usize,
     /// Shape/config-derived hparams actually written; `None` when the
     /// buffer does not carry the LLM backbone tensors (scaffold inputs).
     pub(crate) derived: Option<DerivedHparams>,
@@ -297,7 +316,12 @@ pub(crate) fn convert_with_config_and_tokenizer(
 
     for t in st.tensors() {
         match t.dtype {
-            GgmlType::F32 | GgmlType::F16 => {
+            // BF16 pass-through added 2026-07-25 (mirror of qwen3-tts /
+            // vibevoice / voxcpm2 / moshi): downstream BF16 quantizations
+            // of this Qwen2 backbone hit this arm. Emit as GGUF type 30
+            // verbatim; runtime widens on load via `decode_bf16` (exact,
+            // `bits << 16`).
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
                 b.add_tensor(
                     &t.name,
                     t.dtype,
@@ -305,6 +329,9 @@ pub(crate) fn convert_with_config_and_tokenizer(
                     st.tensor_bytes(t).to_vec(),
                 )?;
                 report.written += 1;
+                if t.dtype == GgmlType::BF16 {
+                    report.bf16_passthrough += 1;
+                }
             }
             _ => {
                 report.skipped_non_float += 1;
@@ -699,6 +726,31 @@ mod tests {
         out.extend_from_slice(&(header.len() as u64).to_le_bytes());
         out.extend_from_slice(header.as_bytes());
         out.extend_from_slice(&[0u8; 24]);
+        out
+    }
+
+    /// Builds a minimal safetensors buffer with a single BF16 tensor. The
+    /// upstream `FunAudioLLM/CosyVoice2-0.5B` `llm.pt` ships FP32 weights,
+    /// but the shared MiniCPM / Qwen2 family lineage means BF16 releases
+    /// (and downstream BF16 quantizations) are in scope; this pins the
+    /// BF16 leg of the pass-through match arm. Non-zero payload bytes so
+    /// the round-trip byte-equality check is meaningful (all-zero would
+    /// alias silent-widen bugs).
+    fn minimal_safetensors_one_bf16() -> Vec<u8> {
+        // A single BF16 tensor of shape [2, 3] = 6 elements × 2 bytes = 12 bytes.
+        let header = r#"{"llm.wte":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
+        let payload: [u8; 12] = [
+            0x00, 0x3f, // 1.0f32 → BF16 top-16-bits (little-endian)
+            0x00, 0xbf, // -1.0
+            0x80, 0x3f, // 1.03125
+            0x40, 0x40, // 3.0
+            0x00, 0xc0, // -2.0
+            0xc0, 0x3f, // 1.5
+        ];
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&payload);
         out
     }
 
@@ -1114,5 +1166,68 @@ mod tests {
         assert!(!report.tokenizer_embedded);
         let file = GgufFile::parse(builder.to_bytes().expect("serialize")).expect("parse");
         assert!(file.get(KEY_TOKENIZER_VOCAB).is_none());
+    }
+
+    /// Pins the BF16 leg of the `GgmlType::F32 | GgmlType::F16 |
+    /// GgmlType::BF16` pass-through union: BF16 tensors must reach the
+    /// pass-through arm, emit as GGUF type 30 verbatim (no convert-time
+    /// widening), and increment `bf16_passthrough`. Mirror of qwen3-tts /
+    /// vibevoice / voxcpm2 and moshi's `assert_eq!(info.dtype,
+    /// GgmlType::BF16, "no convert-time widening")`.
+    ///
+    /// The runtime widens BF16 → f32 losslessly on load via the single
+    /// choke point `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`
+    /// (BF16 = top 16 bits of an f32 — `bits << 16` is exact), so the
+    /// converter never widens at write time.
+    #[test]
+    fn bf16_tensor_passes_through_verbatim() {
+        let bytes = minimal_safetensors_one_bf16();
+        // Capture the payload before ownership moves to `convert` so the
+        // byte-equality assertion below is against a known-good source.
+        let expected_payload = bytes[bytes.len() - 12..].to_vec();
+
+        let (builder, report) = convert(bytes).expect("convert");
+        assert_eq!(
+            report.written, 1,
+            "BF16 must reach the pass-through arm and increment `written`"
+        );
+        assert_eq!(
+            report.skipped_non_float, 0,
+            "BF16 must not land in the skipped counter"
+        );
+        assert_eq!(
+            report.bf16_passthrough, 1,
+            "BF16 subset counter must record the pass-through"
+        );
+
+        // Round-trip: the tensor survives under its upstream name, keeps
+        // its BF16 dtype (no convert-time widening), and its payload bytes
+        // are byte-identical.
+        let out = builder.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        let info = file
+            .tensor_info("llm.wte")
+            .expect("BF16 tensor must be present after pass-through");
+        assert_eq!(
+            info.dtype,
+            GgmlType::BF16,
+            "no convert-time widening — GGUF dtype must remain BF16"
+        );
+        assert_eq!(info.dimensions, vec![2, 3]);
+        let got = file.tensor_bytes(info);
+        assert_eq!(
+            got.len(),
+            12,
+            "BF16 payload = 6 elements × 2 bytes = 12 bytes"
+        );
+        assert_eq!(
+            got,
+            &expected_payload[..],
+            "BF16 payload must be byte-identical after round-trip"
+        );
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH)
+        );
     }
 }

@@ -74,6 +74,11 @@
 pub(crate) mod chunk_pipeline;
 pub(crate) mod config;
 pub(crate) mod flow_matching;
+// SoTA plan Phase 1-3 (2026-07-24): the correct terminal vocoder for
+// CosyVoice2 — mel → PCM via NSF + ISTFTNet. Replaces the wrong-premise
+// `mimi_bridge` module (which is now `#[deprecated]` and retained only for
+// the existing `chunk_pipeline` scaffold + `parity_cosyvoice2` test imports).
+pub mod hift_chain;
 // Public so integration tests can reach the parity harness
 // (`vokra_models::cosyvoice2::llm::parity`). The internal-oracle path
 // through the `pub use` list below remains the primary surface; the
@@ -96,9 +101,16 @@ use vokra_ops::{ApplyProsody, ProsodyControl};
 pub use chunk_pipeline::{ChunkAwareStreamingPipeline, PipelineChunk, PipelineOutput};
 pub use config::CosyVoice2Config;
 pub use flow_matching::{ChunkAwareCfm, ChunkContinuation, FlowMatchingRuntimeParams};
+pub use hift_chain::{HiFTChain, HiFTChainConfig, HiFTChainWeights};
 pub use llm::{
     DEFAULT_RMS_NORM_EPS, DEFAULT_ROPE_BASE_QWEN2, LlmBackbone, LlmBackboneConfig, LlmBackboneStep,
 };
+// SoTA plan Phase 1-3 (2026-07-24): re-export is intentionally
+// `#[allow(deprecated)]` — `MimiBridge` itself is marked deprecated (see
+// `mimi_bridge.rs` module docstring for the SoTA plan §1(a) 訂正 rationale)
+// but the re-export must keep working so pre-existing test imports and the
+// `chunk_pipeline` scaffold compile. New callers use `HiFTChain`.
+#[allow(deprecated)]
 pub use mimi_bridge::MimiBridge;
 pub use text_encoder::{CosyVoice2Tokenizer, TextEncoderStub};
 
@@ -172,6 +184,20 @@ pub struct CosyVoice2Tts {
     /// deployer-side disclosure MUST still applies
     /// (docs/legal-compliance.md §1.4).
     watermark: WatermarkConfig,
+    /// SoTA plan Phase 1-3 (2026-07-24): the terminal HiFTNet vocoder that
+    /// consumes the CFM's mel output and emits 24 kHz PCM. `None` until a
+    /// caller injects one via [`CosyVoice2Tts::with_hift_chain`] — the
+    /// weight-binding path off a real CosyVoice2 GGUF is deferred to the T13
+    /// codec-migration follow-up (upstream `cosyvoice/hifigan/generator.py`
+    /// tensor names have to be walked once the checkpoint is on disk).
+    ///
+    /// This field REPLACES the [`mimi_bridge::MimiBridge`] wiring the
+    /// original T13 scaffold reached for. See the module docstring for the
+    /// 2026-07-22 SoTA plan §1(a) 訂正 rationale — CosyVoice2 does NOT
+    /// consume the Mimi codec; the terminal vocoder is HiFTNet
+    /// (Neural Source Filter + ISTFTNet), and the Mimi bridge module is now
+    /// `#[deprecated]`.
+    hift_chain: Option<HiFTChain>,
 }
 
 impl CosyVoice2Tts {
@@ -264,6 +290,10 @@ impl CosyVoice2Tts {
             tokenizer,
             backend_kind: BackendKind::Cpu,
             watermark: WatermarkConfig::default(),
+            // SoTA plan Phase 1-3: the HiFTNet vocoder is caller-injected via
+            // `with_hift_chain`. Auto-binding off the GGUF is deferred to the
+            // T13 codec-migration follow-up (real tensor-name walk).
+            hift_chain: None,
         })
     }
 
@@ -289,11 +319,51 @@ impl CosyVoice2Tts {
         self
     }
 
+    /// Injects a [`HiFTChain`] — the terminal mel → PCM vocoder.
+    ///
+    /// SoTA plan Phase 1-3 (2026-07-24) seam. Until a caller provides a
+    /// [`HiFTChain`], [`CosyVoice2Tts::synthesize_pcm_from_mel`] returns
+    /// [`VokraError::NotImplemented`] (FR-EX-08 — never a silent fallback).
+    /// The full text → PCM chain also depends on the LLM (T07/T08) + Flow
+    /// Matching CFM (T10/T11) landing; a caller who has a [`HiFTChain`]
+    /// today can still exercise the mel → PCM half via
+    /// [`CosyVoice2Tts::synthesize_pcm_from_mel`].
+    ///
+    /// The chain shape is not cross-checked against
+    /// [`CosyVoice2Config::sample_rate`] here on purpose: a small-shape
+    /// harness (like the [`hift_chain`] unit-test bundle) intentionally
+    /// runs at 16 kHz, and forbidding that would collapse the internal
+    /// oracle path. Callers wiring a real CosyVoice2 checkpoint are
+    /// expected to build a [`HiFTChain`] whose
+    /// [`HiFTChainConfig::sampling_rate`] matches
+    /// `config.sample_rate` (24 kHz for upstream CosyVoice2-0.5B).
+    #[must_use]
+    pub fn with_hift_chain(mut self, chain: HiFTChain) -> Self {
+        self.hift_chain = Some(chain);
+        self
+    }
+
     /// The resolved CosyVoice2 configuration (arch + streaming + flow /
     /// mimi hyperparameters).
     #[must_use]
     pub fn config(&self) -> &CosyVoice2Config {
         &self.config
+    }
+
+    /// The caller-injected HiFTNet vocoder chain (SoTA plan Phase 1-3),
+    /// or `None` when [`CosyVoice2Tts::with_hift_chain`] has not been
+    /// called.
+    #[must_use]
+    pub fn hift_chain(&self) -> Option<&HiFTChain> {
+        self.hift_chain.as_ref()
+    }
+
+    /// True iff a [`HiFTChain`] has been injected. Convenience over
+    /// `hift_chain().is_some()` for callers checking the chain state
+    /// before invoking [`CosyVoice2Tts::synthesize_pcm_from_mel`].
+    #[must_use]
+    pub fn has_hift_chain(&self) -> bool {
+        self.hift_chain.is_some()
     }
 
     /// The current backend selection.
@@ -395,10 +465,59 @@ impl CosyVoice2Tts {
         C: FnMut(&vokra_ops::FlowSamplerState, usize, usize) -> Result<Vec<u32>>,
     {
         let cfm = flow_matching::ChunkAwareCfm::new(self.config.clone())?;
+        // SoTA plan Phase 1-3: the caller-facing chain is
+        // [`HiFTChain`], but `chunk_pipeline` still consumes the deprecated
+        // `MimiBridge` scaffold (wrong-premise composition — see
+        // `mimi_bridge.rs` module docstring). Kept as-is so pre-existing
+        // internal-oracle tests continue to pass; the migration to the
+        // HiFTNet composition lands in the CosyVoice2 T13 codec-migration
+        // follow-up. `#[allow(deprecated)]` here is scoped to this single
+        // scaffold call — new callers use `HiFTChain` directly via
+        // [`CosyVoice2Tts::synthesize_pcm_from_mel`].
+        #[allow(deprecated)]
         let bridge = mimi_bridge::MimiBridge::with_identity_decoder(&self.config)?;
         let pipeline =
             chunk_pipeline::ChunkAwareStreamingPipeline::new(&self.config, &cfm, &bridge)?;
         pipeline.synthesize(length_input, initial_state, velocity_fn, code_fn)
+    }
+
+    /// Runs the HiFTNet vocoder chain on a caller-supplied mel spectrogram,
+    /// returning the PCM as a [`SynthesizedAudio`].
+    ///
+    /// SoTA plan Phase 1-3 (2026-07-24) seam. This is the "mel → PCM" half
+    /// of the CosyVoice2 chain — the "text → mel" half (tokenizer + LLM
+    /// backbone + Flow Matching CFM) still lands in T06/T07/T08/T10, and
+    /// until it does the top-level [`TtsEngine::synthesize`] cannot produce
+    /// audio. Callers who already have a mel (from a reference implementation,
+    /// a test fixture, or an external CFM) can drive the HiFTNet vocoder
+    /// through this entry point today.
+    ///
+    /// # Arguments
+    ///
+    /// - `mel` — row-major `[in_channels, t_mel]` mel spectrogram, where
+    ///   `in_channels == self.hift_chain().unwrap().config().in_channels`.
+    /// - `t_mel` — mel timestep count (must be > 0).
+    ///
+    /// # Errors
+    ///
+    /// - [`VokraError::NotImplemented`] when no [`HiFTChain`] has been
+    ///   injected via [`CosyVoice2Tts::with_hift_chain`] (fail-loud, FR-EX-08
+    ///   — never a silent zero-fill fallback).
+    /// - Propagates every [`HiFTChain::forward`] error verbatim
+    ///   (shape mismatch, `t_mel == 0`, …).
+    pub fn synthesize_pcm_from_mel(&self, mel: &[f32], t_mel: usize) -> Result<SynthesizedAudio> {
+        let chain = self.hift_chain.as_ref().ok_or({
+            VokraError::NotImplemented(
+                "CosyVoice2Tts::synthesize_pcm_from_mel: no HiFTChain has been \
+                 injected — call `.with_hift_chain(HiFTChain::new(cfg, weights)?)` \
+                 first. SoTA plan Phase 1-3 (2026-07-24): CosyVoice2 uses HiFTNet \
+                 (Neural Source Filter + ISTFTNet) as the terminal mel → PCM \
+                 vocoder, NOT the Mimi codec — see `cosyvoice2::hift_chain` \
+                 rustdoc for the §1(a) 訂正 rationale",
+            )
+        })?;
+        let samples = chain.forward(mel, t_mel)?;
+        Ok(SynthesizedAudio::new(samples, chain.sample_rate()))
     }
 }
 
@@ -407,20 +526,25 @@ impl TtsEngine for CosyVoice2Tts {
     /// concrete numeric path).
     ///
     /// Until the LLM backbone (T07/T08), Flow Matching CFM (T10/T11), and
-    /// Mimi bridge (T13) are wired end-to-end, this returns
-    /// [`VokraError::NotImplemented`] with a clear next-step message —
-    /// never a silent zero-fill fallback (FR-EX-08).
+    /// HiFTNet vocoder chain ([`HiFTChain`], SoTA plan Phase 1-3 seam) are
+    /// wired end-to-end, this returns [`VokraError::NotImplemented`] with a
+    /// clear next-step message — never a silent zero-fill fallback
+    /// (FR-EX-08).
     ///
-    /// # Chain wiring (M3-09 partial land)
+    /// # Chain wiring (M3-09 partial land + SoTA plan Phase 1-3)
     ///
     /// The module tree is chained today — a follow-on session composes
     /// text → [`TextEncoderStub::encode`] → [`llm::LlmBackbone::forward`]
-    /// → [`ChunkAwareCfm::run_chunks`] → [`MimiBridge::decode_chunk`] by
-    /// filling in each stage's numeric path. The top-level `synthesize`
-    /// short-circuits with NotImplemented because the tokenizer (T06),
-    /// LLM weight binding (T07), and forward pass (T08) are all deferred.
+    /// → [`ChunkAwareCfm::run_chunks`] → [`HiFTChain::forward`] by filling
+    /// in each stage's numeric path. The top-level `synthesize` short-
+    /// circuits with NotImplemented because the tokenizer (T06), LLM weight
+    /// binding (T07), and forward pass (T08) are all deferred, and the
+    /// terminal vocoder ([`HiFTChain`]) must be injected by a caller
+    /// holding HiFTNet weights (via [`CosyVoice2Tts::with_hift_chain`]).
     /// The `synthesize_with_pipeline` entry point below exposes the
-    /// injected-closure oracle path for internal-oracle tests today.
+    /// injected-closure oracle path for internal-oracle tests today;
+    /// [`CosyVoice2Tts::synthesize_pcm_from_mel`] exposes the mel → PCM
+    /// half of the chain for callers who already hold a mel.
     fn synthesize(&self, request: &SynthesisRequest) -> Result<SynthesizedAudio> {
         // Reference the LLM backbone handle so the engine's chain owner
         // is visible in-source (documented dependency, not consumed
@@ -439,13 +563,30 @@ impl TtsEngine for CosyVoice2Tts {
                  config.json is a stub; the real one is CosyVoice-BlankEN/config.json",
             ));
         }
+        if self.hift_chain.is_none() {
+            // SoTA plan Phase 1-3: name the HiFTChain blocker explicitly
+            // (FR-EX-08 — the terminal vocoder must be present before we
+            // can honestly return audio, even once the LLM/CFM path lands).
+            return Err(VokraError::NotImplemented(
+                "CosyVoice2 TtsEngine::synthesize: no HiFTChain has been injected. \
+                 Call `.with_hift_chain(HiFTChain::new(cfg, weights)?)` first — \
+                 CosyVoice2 uses HiFTNet (Neural Source Filter + ISTFTNet) as the \
+                 terminal mel → PCM vocoder (SoTA plan §1(a) 訂正, 2026-07-22); \
+                 the mimi_bridge scaffold is `#[deprecated]` and must not be \
+                 revived (upstream `cosyvoice/hifigan/generator.py:378 HiFTGenerator` \
+                 confirms — see `cosyvoice2::hift_chain` rustdoc)",
+            ));
+        }
         Err(VokraError::NotImplemented(
             "CosyVoice2 TtsEngine::synthesize needs the T07/T08 LLM backbone forward, \
-             T10/T11 Flow Matching CFM, T13 Mimi decoder (and the owner codec decision \
-             — upstream 0.5B ships FSQ, not Mimi) and the T14/T15 chunk-aware streaming \
-             pipeline; the T06 text tokenizer is available via CosyVoice2Tts::encode, \
-             but this session does not expose stub audio (call synthesize_with_pipeline \
-             for the injected-closure oracle path)",
+             T10/T11 Flow Matching CFM and the T14/T15 chunk-aware streaming pipeline; \
+             the terminal HiFTChain vocoder (SoTA plan Phase 1-3) is wired, and the T06 \
+             text tokenizer is available via CosyVoice2Tts::encode. Callers holding a \
+             mel can drive the mel → PCM half today via \
+             CosyVoice2Tts::synthesize_pcm_from_mel; internal-oracle tests use \
+             synthesize_with_pipeline (still routed through the deprecated MimiBridge \
+             scaffold — the HiFTChain-based composition lands in the T13 codec-migration \
+             follow-up)",
         ))
     }
 }
@@ -716,6 +857,151 @@ mod tests {
                 assert!(v.is_finite(), "feature must be finite");
             }
         }
+    }
+
+    // ---- SoTA plan Phase 1-3 HiFTChain wiring --------------------------
+
+    /// Small-shape HiFTChain fixture used by the wiring tests below. Same
+    /// shape as `hift_chain::tests::small_hift_chain_bundle` — the private
+    /// helper cannot be reached from this module, so we rebuild the
+    /// smallest legal bundle inline. Keeping the shapes in sync with the
+    /// op-crate parity harness is guaranteed by
+    /// [`vokra_ops::hiftnet::HiFTGenerator::new`]'s own validation: any
+    /// drift here would fail its own shape check.
+    fn small_hift_chain_for_wiring() -> HiFTChain {
+        use vokra_ops::hiftnet::{F0PredictorWeights, ResBlockWeights};
+
+        let cfg = HiFTChainConfig {
+            in_channels: 4,
+            base_channels: 8,
+            nb_harmonics: 2,
+            sampling_rate: 16_000,
+            nsf_alpha: 0.1,
+            nsf_sigma: 0.003,
+            nsf_voiced_threshold: 10.0,
+            upsample_rates: vec![2, 2],
+            upsample_kernel_sizes: vec![4, 4],
+            istft_n_fft: 8,
+            istft_hop_len: 2,
+            resblock_kernel_sizes: vec![3],
+            resblock_dilation_sizes: vec![vec![1]],
+            source_resblock_kernel_sizes: vec![3, 3],
+            source_resblock_dilation_sizes: vec![vec![1], vec![1]],
+            lrelu_slope: 0.1,
+            audio_limit: 0.99,
+        };
+        let mut f0_conv_weights: Vec<Vec<f32>> = vec![vec![0.0; 8 * 4 * 3]];
+        for _ in 1..5 {
+            f0_conv_weights.push(vec![0.0; 8 * 8 * 3]);
+        }
+        let f0_weights = F0PredictorWeights {
+            conv_weights: f0_conv_weights,
+            conv_biases: vec![vec![0.0; 8]; 5],
+            linear_w: vec![0.0; 8],
+            linear_b: vec![0.0; 1],
+        };
+        let ups_w = vec![vec![0.0; 8 * 4 * 4], vec![0.0; 4 * 2 * 4]];
+        let ups_b = vec![vec![0.0; 4], vec![0.0; 2]];
+        let n_fft_plus_2 = 10;
+        let source_downs_w = vec![vec![0.0; 4 * n_fft_plus_2 * 4], vec![0.0; 2 * n_fft_plus_2]];
+        let source_downs_b = vec![vec![0.0; 4], vec![0.0; 2]];
+        let make_res_zero = |ch: usize, k: usize, n_branches: usize| ResBlockWeights {
+            convs1_w: vec![vec![0.0; ch * ch * k]; n_branches],
+            convs1_b: vec![vec![0.0; ch]; n_branches],
+            convs2_w: vec![vec![0.0; ch * ch * k]; n_branches],
+            convs2_b: vec![vec![0.0; ch]; n_branches],
+            activations1_alpha: vec![vec![0.0; ch]; n_branches],
+            activations2_alpha: vec![vec![0.0; ch]; n_branches],
+        };
+        let weights = HiFTChainWeights {
+            conv_pre_w: vec![0.0; 8 * 4 * 7],
+            conv_pre_b: vec![0.0; 8],
+            ups_w,
+            ups_b,
+            source_downs_w,
+            source_downs_b,
+            source_resblock_weights: vec![make_res_zero(4, 3, 1), make_res_zero(2, 3, 1)],
+            resblock_weights: vec![make_res_zero(4, 3, 1), make_res_zero(2, 3, 1)],
+            conv_post_w: vec![0.0; n_fft_plus_2 * 2 * 7],
+            conv_post_b: vec![0.0; n_fft_plus_2],
+            m_source_linear_w: vec![0.0; 3],
+            m_source_linear_b: 0.0,
+            f0_predictor_weights: f0_weights,
+        };
+        HiFTChain::new(cfg, weights).expect("small HiFTChain must build")
+    }
+
+    /// A fresh `CosyVoice2Tts` has no HiFTChain — the accessor + predicate
+    /// reflect that honestly. `synthesize_pcm_from_mel` therefore returns
+    /// NotImplemented naming the fix (FR-EX-08).
+    #[test]
+    fn default_load_has_no_hift_chain_and_pcm_entry_fails_loudly() {
+        let bytes = minimal_gguf_bytes(EXPECTED_ARCH);
+        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect("load");
+        assert!(!tts.has_hift_chain(), "fresh load must not carry a chain");
+        assert!(tts.hift_chain().is_none());
+        let err = tts
+            .synthesize_pcm_from_mel(&[0.0; 4], 1)
+            .expect_err("no chain → NotImplemented");
+        let VokraError::NotImplemented(msg) = err else {
+            panic!("unexpected variant: {err:?}");
+        };
+        assert!(
+            msg.contains("HiFTChain") && msg.contains("with_hift_chain"),
+            "message must name the fix: {msg}"
+        );
+    }
+
+    /// Injecting a HiFTChain via the builder makes the accessor + predicate
+    /// report it, and `synthesize_pcm_from_mel` now delegates to the chain.
+    /// The PCM sample rate on the returned audio is the chain's, not the
+    /// engine config's (a small-shape 16 kHz harness would fail otherwise —
+    /// see the `with_hift_chain` rustdoc).
+    #[test]
+    fn with_hift_chain_wires_the_pcm_entry_point() {
+        let bytes = minimal_gguf_bytes(EXPECTED_ARCH);
+        let chain = small_hift_chain_for_wiring();
+        let chain_sr = chain.sample_rate();
+        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect("load")
+            .with_hift_chain(chain);
+        assert!(tts.has_hift_chain(), "chain must be reported present");
+        assert!(tts.hift_chain().is_some());
+        let t_mel = 3;
+        let mel = vec![0.0_f32; 4 * t_mel];
+        let audio = tts
+            .synthesize_pcm_from_mel(&mel, t_mel)
+            .expect("chain must produce PCM");
+        // Length contract: t_mel * total_upsample_factor() (== 8 for the
+        // small-shape config).
+        assert_eq!(audio.samples.len(), t_mel * 8);
+        assert_eq!(audio.sample_rate, chain_sr, "SR must come from the chain");
+    }
+
+    /// The top-level `TtsEngine::synthesize` names the HiFTChain blocker
+    /// when the LLM path is otherwise wired (real dims + no chain). This
+    /// is the SoTA plan Phase 1-3 fail-loud contract — a caller who fixed
+    /// the LLM but forgot the vocoder gets a message pointing at the
+    /// second half of the migration.
+    #[test]
+    fn synthesize_names_hift_chain_blocker_when_llm_is_wired() {
+        let bytes = nondegenerate_gguf_bytes();
+        let tts = CosyVoice2Tts::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+            .expect("load");
+        // No chain injected → the second branch fires.
+        assert!(tts.llm().is_some(), "non-placeholder GGUF has LLM");
+        assert!(!tts.has_hift_chain(), "no chain injected");
+        let err = tts
+            .synthesize(&SynthesisRequest::new("hello"))
+            .expect_err("no chain → NotImplemented");
+        let VokraError::NotImplemented(msg) = err else {
+            panic!("unexpected variant: {err:?}");
+        };
+        assert!(
+            msg.contains("HiFTChain"),
+            "message must name the HiFTChain blocker: {msg}"
+        );
     }
 
     #[test]

@@ -11,10 +11,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, PolicyPreset, VoxtralConfig, convert_cosyvoice2_file, convert_dac_file,
-    convert_file, convert_file_quantized, convert_file_with_policy, convert_kokoro_file,
-    convert_piper_plus_file, convert_voxtral_file_quantized,
-    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
+    ModelKind, PolicyPreset, VoxtralConfig, convert_chatterbox_file, convert_chatterbox_nano_file,
+    convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
+    convert_dac_file, convert_file, convert_file_quantized, convert_file_with_policy,
+    convert_irodori_file, convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file,
+    convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
+    convert_voxtral_file_quantized, convert_voxtral_file_with_adapter_config_quantized,
+    parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -22,10 +25,18 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|vits-ja> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
+    vokra-cli convert --model cosyvoice3 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
+    vokra-cli convert --model chatterbox --input <t3.safetensors> --output <out.gguf>
+    vokra-cli convert --model chatterbox-turbo --input <t3_turbo_v1.safetensors> --output <out.gguf>
+    vokra-cli convert --model chatterbox-nano --input <t3_nano_v1.safetensors> --output <out.gguf>
+    vokra-cli convert --model qwen3-tts --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model voxcpm --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model vibevoice --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model irodori --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model voxtral --input <ckpt.safetensors | model.safetensors.index.json> \
                       [--config <config.json>] [--adapter-config <adapter.json>] \
@@ -33,13 +44,211 @@ USAGE:
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
-                              campplus | kokoro | cosyvoice2 | voxtral | mimi | dac |
-                              csm | moshi | denoise
+                              campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac |
+                              csm | moshi | denoise | dia | zonos | kyutai-stt |
+                              parakeet-tdt | parakeet-ctc | canary | omniasr-ctc |
+                              distil-whisper | kotoba-whisper |
+                              chatterbox | chatterbox-turbo | chatterbox-nano |
+                              qwen3-tts | voxcpm | vibevoice | irodori | vits-ja
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
                               conversion; to embed the tokenizer side-car use the
                               standalone `vokra-convert` binary's --config)
+                              (dia: nari-labs Dia-1.6B — a prepared safetensors
+                              from the upstream torch .pth; every hparam is
+                              transcribed from the primary-source config.json)
+                              (zonos: Zyphra Zonos-v0.1-transformer — ships
+                              safetensors directly; every hparam is transcribed
+                              from the primary-source config.json)
+                              (kyutai-stt: Kyutai STT-2.6B-EN — decoder-only
+                              English streaming ASR over Mimi tokens; every
+                              hparam is transcribed from config.json;
+                              weight license = CC-BY 4.0 attribution required)
+                              (parakeet-tdt: NVIDIA Parakeet-TDT-0.6B-v3 —
+                              English ASR (FastConformer encoder + TDT
+                              decoder); ships safetensors directly; every
+                              hparam is transcribed from config.json;
+                              weight license = CC-BY 4.0 attribution required)
+                              (parakeet-ctc: NVIDIA Parakeet-CTC-1.1B —
+                              English ASR (FastConformer encoder + CTC
+                              head, no RNN-T prediction network); ships
+                              BF16 safetensors — pre-widen to F32 offline
+                              or wait for the streaming BF16 path; every
+                              hparam is transcribed from config.json;
+                              weight license = CC-BY 4.0 attribution required)
+                              (canary: NVIDIA Canary-1B-v2 — multilingual
+                              multi-task ASR / AST (25 European languages;
+                              FastConformer encoder + Transformer AED
+                              decoder); distributed as a .nemo tarball —
+                              use a prepare-checkpoint script to flatten
+                              to safetensors first; encoder / decoder
+                              hparams stated on the model card are
+                              transcribed verbatim, others from the shared
+                              FastConformer-Transformer AED reference
+                              config; weight license = CC-BY 4.0
+                              attribution required)
+                              (omniasr-ctc: Meta omniASR-CTC-1B —
+                              1600+ language multilingual ASR
+                              (wav2vec 2.0 waveform-in encoder + single-
+                              Linear CTC head, no RNN-T prediction
+                              network); distributed as a fairseq2 .pt +
+                              SentencePiece tokenizer — use a
+                              prepare-checkpoint script to flatten to
+                              safetensors first; every hparam is
+                              transcribed verbatim from the fairseq2
+                              registry walk (the HF release carries no
+                              config.json); weight license = Apache-2.0
+                              permissive — no runtime-side attribution
+                              obligation, unlike NVIDIA's CC-BY 4.0
+                              Parakeet-CTC / Canary)
+                              (distil-whisper: HuggingFace distil-large-v3.5
+                              — Whisper large-v3 encoder + 2-layer decoder
+                              (same op inventory as vanilla Whisper, only
+                              n_text_layer differs); ships safetensors
+                              directly; every hparam is transcribed
+                              verbatim from config.json; weight license =
+                              MIT permissive)
+                              (kotoba-whisper: Kotoba Technologies
+                              kotoba-whisper-v1.x / v2.x / bilingual
+                              family — Japanese-distilled Whisper
+                              (large-v3 encoder + shrunk 2-layer decoder,
+                              distilled on ReazonSpeech Japanese audio);
+                              same tensor topology as distil-large-v3.5
+                              but distinct upstream release (Kotoba
+                              Technologies vs HuggingFace) with Apache-2.0
+                              weights (distinct from distil-whisper's
+                              MIT); ships safetensors directly; every
+                              hparam is transcribed verbatim from
+                              config.json — SoTA plan Phase 5 JA-ASR-2;
+                              **JA-ASR-2 axis**: n_text_layer=2 is read
+                              from checkpoint tensor names via
+                              count_layers, never hard-coded to 32)
+                              (cosyvoice3: FunAudioLLM Fun-CosyVoice3-0.5B-2512
+                              — same architecture as CosyVoice2 (Qwen2 LLM
+                              backbone + chunk-aware Flow Matching CFM +
+                              HiFTNet vocoder — arXiv:2505.17589 + SoTA
+                              plan §1(a) 訂正 2026-07-22); Phase 3
+                              refinements (DRSR + Core-Cocktail) are
+                              training-side and leave the runtime operators
+                              byte-identical to CosyVoice2; `--config`
+                              accepts the upstream HF config.json (Qwen2
+                              schema — head split + rope / eps / n_ctx
+                              are not shape-derivable; without it the
+                              runtime refuses the LLM bind loudly per
+                              FR-EX-08); weight license = apache-2.0
+                              permissive)
+                              (chatterbox: Resemble AI Chatterbox-Multilingual
+                              — T3 (Llama_520M backbone: hidden=1024 /
+                              n_layer=30 / MHA n_head=16 n_head_kv=16 /
+                              head_dim=64 / SwiGLU ffn=4096 / RoPE θ=500000
+                              llama3-scaled) driving speech-token AR
+                              sampling; terminal vocoder = HiFT-GAN (S3Gen)
+                              wired through the shared HiFTChain seam
+                              (SoTA plan §1(a) 訂正 2026-07-22, same seam
+                              as CosyVoice2 / CosyVoice3); multilingual
+                              variant covers 23 languages
+                              (mtl_tts.py::SUPPORTED_LANGUAGES) — the T3
+                              text-token vocabulary of 2454 pins the
+                              multilingual identity vs the English-only
+                              baseline at 704; no `config.json` on HF
+                              (the release stores hparams in Python code),
+                              so no --config side-car — every hparam is
+                              transcribed verbatim from the upstream
+                              source tree; weight license = MIT permissive
+                              — no attribution obligation)
+                              (chatterbox-turbo: Resemble AI Chatterbox-Turbo
+                              — 350M distilled Turbo variant of Chatterbox;
+                              backbone family swaps Llama_520M → gpt2-medium
+                              (LayerNorm-with-bias + fused-QKV-with-bias +
+                              GELU FFN — same 30 × 16 × 1024 shape as base);
+                              sample rate 24 kHz → 32 kHz; text vocabulary
+                              2454/704 → 50 276 (GPT-2 base 50 257 + 19
+                              paralinguistic tags [angry]/[fear]/[surprised]/
+                              [whispering]/[cough]/[laugh]/[chuckle]/…);
+                              speech vocabulary 8194 → 6563; max
+                              text/speech tokens 2048/4096 → 402/604;
+                              speech-token-to-mel decoder distilled from
+                              10 sampling steps to 1; terminal vocoder =
+                              S3Gen HiFT-GAN (same shared HiFTChain seam
+                              as base + CosyVoice2/3); every hparam is
+                              transcribed verbatim from t3_turbo_v1.yaml
+                              (huggingface.co/ResembleAI/chatterbox-turbo)
+                              — no --config side-car; weight license =
+                              MIT permissive — no attribution obligation)
+                              (chatterbox-nano: Resemble AI Chatterbox-Nano
+                              — compact 110M-parameter architecture
+                              advertised at ~3x realtime on an 8-core CPU;
+                              keeps base's Llama_520M backbone (SwiGLU +
+                              RMSNorm + RoPE — 30 layers × 16 heads ×
+                              1024 hidden, head_dim=64, ffn=4096,
+                              rope_theta=500000, rms_norm_eps=1e-5) —
+                              distinct from Turbo which swaps the
+                              backbone to gpt2-medium; adopts Turbo's
+                              low-latency profile: sample rate 24 kHz
+                              → 32 kHz, text vocabulary 2454/704 →
+                              50 276 (GPT-2 base 50 257 + 19
+                              paralinguistic tags), speech vocabulary
+                              8194 → 6563, max text/speech tokens
+                              2048/4096 → 402/604, 1-step distilled
+                              mel decoder; distinguishing sentinel:
+                              stop_text_token = 50256 (GPT-2
+                              <|endoftext|>) — distinct from both base
+                              and Turbo which use 0; terminal vocoder
+                              = S3Gen HiFT-GAN (same shared HiFTChain
+                              seam as base + Turbo + CosyVoice2/3);
+                              every hparam is transcribed verbatim
+                              from t3_nano_v1.yaml
+                              (huggingface.co/ResembleAI/chatterbox-nano)
+                              — no --config side-car; weight license =
+                              MIT permissive — no attribution obligation)
+                              (qwen3-tts: Alibaba Qwen3-TTS-12Hz-0.6B-Base
+                              — discrete multi-codebook LM (Qwen3-flavour
+                              28-layer talker + 5-layer parallel
+                              code-predictor + shared Qwen3-TTS-Codec seam
+                              via vokra_ops::qwen3_tts_codec, 16-quantizer
+                              semantic + acoustic split RVQ at 12.5 Hz);
+                              talker axes: hidden=1024 / n_layer=28 /
+                              GQA n_head=16 n_head_kv=8 / head_dim=128 /
+                              SwiGLU ffn=3072 / RoPE θ=1000000 /
+                              RMSNorm ε=1e-6 / speech_vocab=3072 /
+                              text_vocab=151936 / max_positions=32768;
+                              code predictor axes: n_layer=5 /
+                              acoustic_vocab=2048; speaker encoder
+                              24 kHz / 1024-dim embedding; distinct arch
+                              tag from CosyVoice2/3 because Qwen3-TTS is
+                              codec-LM not vocoder-LM (terminal step =
+                              qwen3_tts_codec, NOT HiFTChain); upstream
+                              ships BF16 (~0.9 GB) — pre-widen to F32
+                              offline or wait for the streaming BF16
+                              pass-through path; every hparam is
+                              transcribed verbatim from config.json
+                              (huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base)
+                              — no --config side-car; weight license =
+                              apache-2.0 permissive end-to-end — no
+                              attribution obligation on the runtime side)
+                              (vits-ja: ESPnet-family Japanese plain
+                              VITS — Kim et al. 2021 VITS + plain
+                              HiFi-GAN generator, as shipped by
+                              ESPnet's egs2/jsut/tts1/conf/tuning/
+                              train_vits.yaml + jvs/tts1/finetune_vits
+                              + COEIROINK deployments; distinct arch
+                              tag from piper-plus because plain VITS
+                              decodes through a HiFi-GAN generator
+                              directly while piper-plus (MB-iSTFT-VITS2)
+                              decodes through a sub-band iSTFT + PQMF
+                              post-net; every hparam is transcribed
+                              verbatim from the ESPnet primary sources
+                              — SoTA plan Phase 5 JA-TTS-2; **⚠️
+                              weight redistribution default is
+                              `RedistributionForbidden`**: JSUT / JVS /
+                              COEIROINK corpus terms forbid
+                              trained-weight redistribution — architecture
+                              rides Apache-2.0 (ESPnet) + MIT
+                              (jaywalnut310/vits) and is always
+                              independently implementable; override
+                              with --license <spdx> at conversion time
+                              if trained on a permissive corpus)
     --input <path>            upstream checkpoint file. For voxtral, a
                               `*.index.json` path reads every shard listed in
                               its weight_map (the raw sharded BF16 release)
@@ -132,8 +341,12 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                     format!(
                         "unknown model `{v}` \
                          (whisper [alias: whisper-base] | silero-vad | piper-plus | \
-                         campplus | kokoro | cosyvoice2 | voxtral | mimi | dac | \
-                         csm | moshi | denoise)"
+                         campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | dac | \
+                         csm | moshi | denoise | dia | zonos | kyutai-stt | \
+                         parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
+                         distil-whisper | kotoba-whisper | \
+                         chatterbox | chatterbox-turbo | chatterbox-nano | \
+                         qwen3-tts | voxcpm | vibevoice | irodori | vits-ja)"
                     )
                 })?);
                 i += 2;
@@ -352,6 +565,24 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             // runtime refuses the LLM bind (loud converter note).
             convert_cosyvoice2_file(&p.input, p.config.as_deref(), &p.output)
         }
+        ModelKind::CosyVoice3 => {
+            // Quantization surface is whisper-only; reject rather than
+            // silently ignoring (same posture as CosyVoice2).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            // --config = upstream HF config.json (Qwen2 schema). Same
+            // requirement as CosyVoice2: without it only the shape-derived
+            // hparams are written and the runtime refuses the LLM bind
+            // (loud converter note). SoTA plan Phase 3: the Fun-CosyVoice3
+            // pipeline (Qwen2 LLM → chunk-aware CFM → HiFTNet) is
+            // topologically identical to CosyVoice2, so the CosyVoice2
+            // shape-derivation walk is reused verbatim under the covers.
+            convert_cosyvoice3_file(&p.input, p.config.as_deref(), &p.output)
+        }
         ModelKind::Dac => {
             // M4-04 T11: DAC needs the prepare-script config side-car (the
             // shape facts live in the upstream .pth metadata the safetensors
@@ -370,6 +601,154 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                         .to_owned());
                 }
             }
+        }
+        ModelKind::Chatterbox => {
+            // SoTA plan Phase 3 (2026-07-24): Chatterbox has no `config.json`
+            // on HF (the release stores every hparam in Python code), so the
+            // CLI takes no --config side-car — the transcribed constants in
+            // `models::chatterbox` are authoritative. Quantization surface is
+            // whisper-only (same posture as CosyVoice3 / dia / zonos).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_chatterbox_file(&p.input, &p.output)
+        }
+        ModelKind::ChatterboxTurbo => {
+            // SoTA plan Phase 3 (2026-07-24): Chatterbox-Turbo ships a real
+            // `t3_turbo_v1.yaml` alongside the safetensors, but every field
+            // on that side-car is fixed for the Turbo release and byte-parallel
+            // to the transcribed constants in `models::chatterbox_turbo` — so
+            // the CLI takes no --config side-car today. Quantization surface
+            // is whisper-only (same posture as base Chatterbox / CosyVoice3 /
+            // dia / zonos).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_chatterbox_turbo_file(&p.input, &p.output)
+        }
+        ModelKind::ChatterboxNano => {
+            // SoTA plan Phase 3 (2026-07-24): Chatterbox-Nano ships a real
+            // `t3_nano_v1.yaml` alongside the safetensors, but every field
+            // on that side-car is fixed for the Nano release and byte-parallel
+            // to the transcribed constants in `models::chatterbox_nano` — so
+            // the CLI takes no --config side-car today. Quantization surface
+            // is whisper-only (same posture as base Chatterbox / Chatterbox-
+            // Turbo / CosyVoice3 / dia / zonos).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_chatterbox_nano_file(&p.input, &p.output)
+        }
+        ModelKind::Qwen3Tts => {
+            // SoTA plan Phase 3 (2026-07-24): Qwen3-TTS-12Hz-0.6B-Base ships
+            // a real `config.json`, but every field is fixed for the 0.6B
+            // release and byte-parallel to the transcribed constants in
+            // `models::qwen3_tts` — so the CLI takes no --config side-car
+            // today (a future 0.6B-CustomVoice / 0.6B-VoiceDesign / 1.7B
+            // variant that reshapes the backbone would demand one).
+            // Quantization surface is whisper-only (same posture as
+            // Chatterbox family / CosyVoice3 / dia / zonos).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_qwen3_tts_file(&p.input, &p.output)
+        }
+        ModelKind::VoxCpm2 => {
+            // SoTA plan Phase 4 (2026-07-24): VoxCPM-0.5B ships a real
+            // `config.json`, but every field is fixed for the 0.5B release
+            // and byte-parallel to the transcribed constants in
+            // `models::voxcpm2` — so the CLI takes no --config side-car
+            // today (a future 0.5B-CustomVoice / 1.5B variant that reshapes
+            // the LM backbone or the AudioVAE would demand one).
+            // Quantization surface is whisper-only (same posture as
+            // Qwen3-TTS / Chatterbox family / CosyVoice3 / dia / zonos).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_voxcpm2_file(&p.input, &p.output)
+        }
+        ModelKind::VibeVoice => {
+            // SoTA plan Phase 4 (2026-07-24): VibeVoice-1.5B ships a real
+            // `config.json`, but every field is fixed for the 1.5B release
+            // and byte-parallel to the transcribed constants in
+            // `models::vibevoice` — so the CLI takes no --config side-car
+            // today (a future 7B variant that reshapes the Qwen2 backbone
+            // would demand one).
+            // Quantization surface is whisper-only (same posture as
+            // VoxCPM / Qwen3-TTS / Chatterbox family / CosyVoice3 / dia /
+            // zonos).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_vibevoice_file(&p.input, &p.output)
+        }
+        ModelKind::Irodori => {
+            // SoTA plan Phase 5 JA-TTS-1 (2026-07-24): Irodori-TTS-500M-v3
+            // has no upstream `config.json` — every hparam lives in the
+            // `train_500m_v3_phase{1,2}_*.yaml` files at
+            // `github.com/Aratako/Irodori-TTS` and is fixed for the 500M-v3
+            // release, so it is transcribed as compile-time constants in
+            // `models::irodori` and the CLI takes no --config side-car
+            // today (a future 600M-v3-VoiceDesign / 2.5B variant that
+            // reshapes the DiT or adds caption conditioning would demand
+            // one). Quantization surface is whisper-only (same posture as
+            // VibeVoice / VoxCPM / Qwen3-TTS / Chatterbox family /
+            // CosyVoice3 / dia / zonos).
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_irodori_file(&p.input, &p.output)
+        }
+        ModelKind::VitsJa => {
+            // SoTA plan Phase 5 JA-TTS-2 (2026-07-24): plain VITS JA
+            // (ESPnet-family Kim et al. 2021 VITS + HiFi-GAN generator)
+            // has no upstream `config.json` — every hparam lives in the
+            // ESPnet training yamls (`egs2/jsut/tts1/conf/tuning/
+            // train_vits.yaml` + `egs2/jvs/tts1/conf/tuning/
+            // finetune_vits.yaml`) and is transcribed as compile-time
+            // constants in `models::vits_ja` (JSUT 22 kHz single-speaker
+            // recipe defaults). No --config side-car today; JVS
+            // multi-speaker + full-band 44 kHz + downstream re-training
+            // variants share the same tensor topology and will land as
+            // a follow-up `--config` axis. Quantization surface is
+            // whisper-only (same posture as Irodori / VibeVoice /
+            // VoxCPM / Qwen3-TTS / Chatterbox family / CosyVoice3 /
+            // dia / zonos).
+            //
+            // **⚠️  Weight redistribution default is
+            // `RedistributionForbidden`**: the JSUT / JVS / COEIROINK
+            // corpus terms forbid trained-weight redistribution. A user
+            // who trained on a permissive corpus overrides via
+            // `vokra-convert --license <spdx>` (the standalone binary)
+            // or the shared `convert_file_licensed` path.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_vits_ja_file(&p.input, &p.output)
         }
         _ => {
             // Ticket precedence: an explicit --policy-preset wins; else the
@@ -486,6 +865,146 @@ mod tests {
     }
 
     #[test]
+    fn parses_cosyvoice3_with_config() {
+        // Config-driven Fun-CosyVoice3 path: parallel to CosyVoice2 (Qwen2
+        // schema config), only the arch label differs. The plain
+        // `--input`-only path still converts with shape-derived hparams
+        // only (and the runtime refuses the LLM bind).
+        let p = parse_args(&args(&[
+            "--model",
+            "cosyvoice3",
+            "--input",
+            "llm.safetensors",
+            "--config",
+            "config.json",
+            "--output",
+            "o.gguf",
+        ]))
+        .expect("valid");
+        assert_eq!(p.model, ModelKind::CosyVoice3);
+        assert_eq!(p.config, Some(PathBuf::from("config.json")));
+    }
+
+    /// Every accepted spelling from `ModelKind::from_arg` parses via the CLI
+    /// front-end for the Chatterbox family — the family, both HF variant
+    /// tags, and the raw `t3_mtl23ls_v{2,3}` checkpoint stems.
+    #[test]
+    fn parses_chatterbox_variant_ids() {
+        for spelling in [
+            "chatterbox",
+            "chatterbox-multilingual",
+            "chatterbox-multilingual-v2",
+            "chatterbox-multilingual-v3",
+            "chatterbox-mtl23ls-v2",
+            "chatterbox-mtl23ls-v3",
+            "chatterbox-english",
+            "chatterbox_en",
+        ] {
+            let p = parse_args(&args(&[
+                "--model", spelling, "--input", "i", "--output", "o",
+            ]))
+            .unwrap_or_else(|e| panic!("--model {spelling} should parse: {e}"));
+            assert_eq!(p.model, ModelKind::Chatterbox, "--model {spelling}");
+            assert!(p.config.is_none(), "chatterbox takes no --config side-car");
+        }
+    }
+
+    /// Every accepted spelling from `ModelKind::from_arg` parses via the CLI
+    /// front-end for the Chatterbox-Turbo family — the canonical HF release
+    /// id, the underscore spelling (== the arch tag), the v1 checkpoint
+    /// stem, and the sibling ONNX release id (which still routes to the
+    /// safetensors converter because the runtime never loads ONNX,
+    /// FR-LD-05).
+    #[test]
+    fn parses_chatterbox_turbo_variant_ids() {
+        for spelling in [
+            "chatterbox-turbo",
+            "chatterbox_turbo",
+            "chatterbox-turbo-v1",
+            "chatterbox-turbo-onnx",
+        ] {
+            let p = parse_args(&args(&[
+                "--model", spelling, "--input", "i", "--output", "o",
+            ]))
+            .unwrap_or_else(|e| panic!("--model {spelling} should parse: {e}"));
+            assert_eq!(p.model, ModelKind::ChatterboxTurbo, "--model {spelling}");
+            assert!(
+                p.config.is_none(),
+                "chatterbox-turbo takes no --config side-car"
+            );
+        }
+    }
+
+    /// Every accepted spelling from `ModelKind::from_arg` parses via the CLI
+    /// front-end for the Chatterbox-Nano family — the canonical HF release
+    /// id, the underscore spelling (== the arch tag), and the v1 checkpoint
+    /// stem. Nano does not ship an ONNX sibling release, so no `-onnx`
+    /// alias here (distinct from Turbo).
+    #[test]
+    fn parses_chatterbox_nano_variant_ids() {
+        for spelling in ["chatterbox-nano", "chatterbox_nano", "chatterbox-nano-v1"] {
+            let p = parse_args(&args(&[
+                "--model", spelling, "--input", "i", "--output", "o",
+            ]))
+            .unwrap_or_else(|e| panic!("--model {spelling} should parse: {e}"));
+            assert_eq!(p.model, ModelKind::ChatterboxNano, "--model {spelling}");
+            assert!(
+                p.config.is_none(),
+                "chatterbox-nano takes no --config side-car"
+            );
+        }
+    }
+
+    /// Every accepted spelling from `ModelKind::from_arg` parses via the
+    /// CLI front-end for the Qwen3-TTS family — the canonical HF release
+    /// id, the arch-tag underscore spelling, and the common short forms.
+    /// Qwen3-TTS takes no --config side-car today (every hparam is fixed
+    /// for the 0.6B-Base release and transcribed as compile-time
+    /// constants).
+    #[test]
+    fn parses_qwen3_tts_variant_ids() {
+        for spelling in [
+            "qwen3-tts",
+            "qwen3_tts",
+            "qwen3-tts-0.6b",
+            "qwen3-tts-0_6b",
+            "qwen3-tts-12hz-0.6b-base",
+            "qwen3-tts-12hz-0_6b-base",
+            "qwen3-tts-12hz-0.6b",
+        ] {
+            let p = parse_args(&args(&[
+                "--model", spelling, "--input", "i", "--output", "o",
+            ]))
+            .unwrap_or_else(|e| panic!("--model {spelling} should parse: {e}"));
+            assert_eq!(p.model, ModelKind::Qwen3Tts, "--model {spelling}");
+            assert!(p.config.is_none(), "qwen3-tts takes no --config side-car");
+        }
+    }
+
+    #[test]
+    fn parses_fun_cosyvoice3_variant_ids() {
+        // Every accepted spelling from `ModelKind::from_arg` parses via
+        // the CLI front-end (aliases the HF release + fairseq / modelscope
+        // variants).
+        for spelling in [
+            "cosyvoice3",
+            "cosyvoice-3",
+            "fun-cosyvoice3",
+            "fun-cosyvoice-3",
+            "fun-cosyvoice3-0.5b",
+            "fun-cosyvoice3-0.5b-2512",
+            "fun-cosyvoice3-0_5b",
+            "fun-cosyvoice3-0_5b-2512",
+        ] {
+            let p = parse_args(&args(&[
+                "--model", spelling, "--input", "i", "--output", "o",
+            ]))
+            .unwrap_or_else(|e| panic!("--model {spelling} should parse: {e}"));
+            assert_eq!(p.model, ModelKind::CosyVoice3, "--model {spelling}");
+        }
+    }
+
+    #[test]
     fn parses_cosyvoice2_with_config() {
         // Config-driven CosyVoice2 path (P1 #4 / P2 #7 fix): `--config`
         // carries the upstream HF config.json (Qwen2 schema) so the
@@ -521,11 +1040,29 @@ mod tests {
             ("campplus", ModelKind::CamPlus),
             ("kokoro", ModelKind::Kokoro),
             ("cosyvoice2", ModelKind::CosyVoice2),
+            ("cosyvoice3", ModelKind::CosyVoice3),
             ("voxtral", ModelKind::Voxtral),
             ("mimi", ModelKind::Mimi),
             ("dac", ModelKind::Dac),
             ("csm", ModelKind::Csm),
             ("moshi", ModelKind::Moshi),
+            ("dia", ModelKind::Dia),
+            ("zonos", ModelKind::Zonos),
+            ("kyutai-stt", ModelKind::KyutaiStt),
+            ("parakeet-tdt", ModelKind::Parakeet),
+            ("parakeet-ctc", ModelKind::ParakeetCtc),
+            ("canary", ModelKind::Canary),
+            ("omniasr-ctc", ModelKind::OmniasrCtc),
+            ("distil-whisper", ModelKind::DistilWhisper),
+            ("kotoba-whisper", ModelKind::KotobaWhisper),
+            ("chatterbox", ModelKind::Chatterbox),
+            ("chatterbox-turbo", ModelKind::ChatterboxTurbo),
+            ("chatterbox-nano", ModelKind::ChatterboxNano),
+            ("qwen3-tts", ModelKind::Qwen3Tts),
+            ("voxcpm", ModelKind::VoxCpm2),
+            ("vibevoice", ModelKind::VibeVoice),
+            ("irodori", ModelKind::Irodori),
+            ("vits-ja", ModelKind::VitsJa),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
@@ -576,7 +1113,20 @@ mod tests {
     /// `vokra_convert`'s `quantization_is_still_refused_for_non_whisper_models`.
     #[test]
     fn quantize_is_still_rejected_for_models_with_a_dedicated_cli_arm() {
-        for m in ["kokoro", "cosyvoice2", "piper-plus", "dac"] {
+        for m in [
+            "kokoro",
+            "cosyvoice2",
+            "cosyvoice3",
+            "chatterbox",
+            "chatterbox-turbo",
+            "chatterbox-nano",
+            "qwen3-tts",
+            "voxcpm",
+            "vibevoice",
+            "irodori",
+            "piper-plus",
+            "dac",
+        ] {
             let e = main(&args(&[
                 "--model",
                 m,

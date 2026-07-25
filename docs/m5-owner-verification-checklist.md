@@ -118,3 +118,109 @@ CC landed the audit material (fail-closed, docs-only) in `docs/license-audit.md`
 - **(c)**: `docs/license-audit.md` §3.1; spec M5-07-T09/T10.
 - **(d)**: each model has a recorded tier + signed-off row.
 - **honest note**: Bark = current MIT (was CC-BY-NC → MIT 2023-05-01) but the HF card says "research purposes only"; StyleTTS 2 weight is a voice-consent usage agreement → registry `Unknown` (fail-closed); Matcha checkpoint has no separate license file (owner primary-source check pending). These are owner legal calls.
+
+---
+
+## SoTA plan Phase 1-4 + JA + BF16 fleet (2026-07-25, PR #20)
+
+CC landed the SoTA plan Phase 1-4 + JA + BF16 fleet scaffolds on branch `feat/sota-phase1-2026-07-23`. The following are owner-only actions. All checkboxes are unchecked; fail-closed default (blank / unchecked → no publish, no promote) applies until yousan-signed with primary-source verification.
+
+### 6.1 PR #20 review + merge
+
+- [ ] Review PR #20 (branch `feat/sota-phase1-2026-07-23` → `main`) and merge.
+
+### 6.2 License sign-off in `docs/license-audit.md` §3.1
+
+Fail-closed default (blank → no publish) applies until yousan-signed with primary-source verification. CC did not pre-fill any row.
+
+BF16 fleet families:
+
+- [ ] `kimi_audio`
+- [ ] `step_audio2_mini`
+- [ ] `baichuan_audio`
+- [ ] `speechtokenizer`
+- [ ] `funcodec`
+- [ ] `xy_tokenizer`
+- [ ] `bicodec`
+- [ ] `neucodec`
+- [ ] `openvoice_v2`
+- [ ] `knn_vc`
+- [ ] `freevc`
+- [ ] `meanvc`
+- [ ] `ecapa_tdnn`
+- [ ] `wespeaker`
+- [ ] `speaker_3d`
+- [ ] `emotion2vec`
+
+Phase 1-4 + JA families:
+
+- [ ] Dia
+- [ ] Zonos
+- [ ] Kyutai-STT
+- [ ] Parakeet-TDT
+- [ ] Parakeet-CTC
+- [ ] Canary
+- [ ] OmniASR-CTC
+- [ ] Distil-Large
+- [ ] CosyVoice3
+- [ ] Chatterbox × 3 variants (sign off all three at their respective rows)
+- [ ] Qwen3-TTS
+- [ ] VoxCPM2
+- [ ] VibeVoice
+- [ ] kotoba-whisper
+- [ ] Irodori
+- [ ] vits-ja (audit only — weight publication is separately excluded, see §6.8)
+
+### 6.3 Parity CI activation (7 workflows)
+
+Full runbook: `docs/handoff/parity-ci-flip-switch.md`. Per family: read the HF card → complete §3.1 sign-off (§6.2) if publishable → set the `VOKRA_<PREFIX>_ENABLE=1` repo/environment variable → `gh workflow run parity-<family>-real.yml` → confirm the workflow reports a PASS verdict.
+
+- [ ] Family 1: HF-card read → §6.2 row signed → `VOKRA_<PREFIX>_ENABLE=1` set → `gh workflow run parity-<family>-real.yml` → PASS verdict confirmed.
+- [ ] Family 2: same sequence.
+- [ ] Family 3: same sequence.
+- [ ] Family 4: same sequence.
+- [ ] Family 5: same sequence.
+- [ ] Family 6: same sequence.
+- [ ] Family 7: same sequence.
+
+### 6.4 Real-weight parity harness fire
+
+For each landed scaffold that ships a flip-the-switch harness, point the per-family `REFERENCE_DIR` env var (e.g. `VOKRA_HIFTNET_REFERENCE_DIR`) at the real dumped reference tensors and re-run the harness. Per-family env-var names are recorded in the parity CI YAMLs (`.github/workflows/parity-*.yml`).
+
+- [ ] Enumerate landed flip-the-switch scaffolds from the parity CI YAMLs.
+- [ ] For each, dump the reference tensors from the real upstream weights.
+- [ ] For each, set the `VOKRA_*_REFERENCE_DIR` env var and re-run the harness.
+- [ ] Record PASS / FAIL per family.
+
+### 6.5 misaki venv setup (Kokoro G2P)
+
+- [ ] Create a Python venv and install `misaki[en,ja,zh,ko]`.
+- [ ] Export `VOKRA_MISAKI_VENV` = venv path in the runner / dev environment.
+
+### 6.6 Follow-up WPs (CC-tracked, not owner-blocking)
+
+These are tracked on the CC side for future waves; listed here for owner visibility only. Not gating for GA.
+
+- [ ] F0 op real CNN forward (replace placeholder implementation).
+- [ ] `align` real Viterbi implementation.
+- [ ] `vokra-kws-micro` real model (replace scaffold).
+- [ ] BF16 native compute in runtime (currently upcast-to-f32 shim).
+- [ ] GPU kernel land for HiFTNet.
+- [ ] GPU kernel land for BigVGAN.
+- [ ] GPU kernel land for SNAC.
+- [ ] GPU kernel land for Qwen3-TTS-codec.
+
+### 6.7 Publication decisions (huggingface.co/vokra)
+
+Each of the ~30 new families requires yousan sign-off before upload. Per memory [[project-huggingface-vokra-publication]] the 5-gate posture applies: catalog-reality / redistributable / provenance / §3.1 sign-off / allow-noncommercial. Publication is default "not published — will decide at publish time" per fail-closed policy.
+
+- [ ] For each family in §6.2 (BF16 fleet + Phase 1-4 + JA), decide upload / withhold per the 5-gate posture and record the verdict alongside the §3.1 sign-off row.
+- [ ] Confirm each uploaded repo carries: LICENSE (upstream file, not just an SPDX tag), NOTICE (if attribution-required), `SOURCE.md` (upstream URL + re-convert recipe), and `vokra.schema.version` / `vokra.schema.producer` provenance in the GGUF.
+- [ ] Run `publish-one.sh` (never the manual upload path) for every published family.
+
+### 6.8 VITS-JA weight — excluded from vokra publication
+
+VITS-JA weight is `RedistributionForbidden` (JSUT / JVS training data forbid weight redistribution). It is excluded from `huggingface.co/vokra` irrespective of §6.2 audit sign-off. §6.2 covers the audit record only; §6.8 covers the publication exclusion.
+
+- [ ] Confirm VITS-JA weight remains excluded from `huggingface.co/vokra` regardless of the §6.2 audit outcome.
+- [ ] Verify the `check-catalog-reality.sh` / `LicenseClass::redistributable()` gate rejects any accidental attempt to publish the VITS-JA weight.

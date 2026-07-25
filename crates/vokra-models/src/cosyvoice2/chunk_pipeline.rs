@@ -64,6 +64,20 @@
 //!
 //! The pipeline additionally rejects `chunk_size == 0`, `chunk_hop == 0`,
 //! and a mismatched code closure output.
+//!
+//! # SoTA plan §1(a) 訂正 (2026-07-24): wrong-premise composition
+//!
+//! This pipeline is composed against the [`super::mimi_bridge::MimiBridge`],
+//! which was built on a wrong premise (CosyVoice2 uses HiFTNet, not the
+//! Mimi codec — see `mimi_bridge.rs` module docstring). The T13
+//! codec-migration follow-up will replace the `MimiBridge` term with the
+//! correct [`crate::cosyvoice2::hift_chain::HiFTChain`] composition
+//! (CFM emits mel, HiFTNet vocodes mel to PCM); this scaffold is kept only
+//! so the internal-oracle tests and the `parity_cosyvoice2` integration
+//! test continue to compile. `#![allow(deprecated)]` at the module level
+//! silences the deprecation warnings until that migration lands. New
+//! callers must not extend this pipeline.
+#![allow(deprecated)]
 
 use vokra_core::ir::graph::LengthConditioningAttrs;
 use vokra_core::{Result, VokraError};

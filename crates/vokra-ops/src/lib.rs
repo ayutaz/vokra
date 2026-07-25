@@ -67,6 +67,35 @@ pub mod hpf;
 pub mod loudness_norm;
 // -------------------------------------------------------------------------
 pub mod attrs;
+// ---- SoTA plan Phase 3 BigVGAN vocoder (TTS bigvgan_generator primitive) ---
+// Anti-aliased periodic-activation vocoder — verbatim port of upstream
+// NVIDIA/BigVGAN (MIT, Copyright (c) 2024 NVIDIA CORPORATION). AMPBlock1 +
+// Snake/SnakeBeta + tanh terminal — see module docstring for the exact
+// upstream line references and a note on the (deferred) alias-free
+// activation wrapper. Snake activation is reused from [`crate::hiftnet`];
+// SnakeBeta lives here.
+pub mod bigvgan_generator;
+// ---------------------------------------------------------------------------
+// ---- SoTA plan Phase 2 Conformer / FastConformer ASR encoder ------------
+// One implementation covers both — FastConformer differs only in the
+// subsampling stem (`ConvSubsampleKind::Stacking { factor }`). Consumed by
+// the parakeet family, canary, granite-speech, Qwen3-ASR, and
+// reazonspeech-nemo-v2. Verbatim port of the upstream NeMo modules
+// (`nemo/collections/asr/modules/conformer_encoder.py` +
+// `.../parts/submodules/conformer_modules.py`, MIT).
+pub mod conformer;
+// -------------------------------------------------------------------------
+// ---- SoTA plan Phase 2 ctc_decode (ASR primitive, FR-OP-41) -------------
+// CTC greedy blank-fold + prefix beam search with n-gram LM shallow fusion
+// and hotword boost. Runtime function, NOT an `OpKind` variant (FR-OP-40 /
+// FR-EX-10 posture — same as `beam_search` and `flow_sample`). The reserved
+// graph-op identifier lives in `vokra_core::m5_residual_ops::CTC_DECODE_OP`
+// (unregistered in the min-dtype registry). Consumed by omniASR-CTC
+// (1600 languages, Apache-2.0), parakeet-ctc-1.1b, and the
+// jonatasgrosman/wav2vec2 family. Localized re-export block for clean
+// parallel-wave rebases.
+pub mod ctc_decode;
+// -------------------------------------------------------------------------
 // ---- M4-04 dac_rvq codec decode (RVQ family, FR-OP-30) ------------------
 // DAC's factorized (low-dim codebook + per-quantizer out_proj) residual VQ
 // decode. Shapes verified from the upstream descript-audio-codec (MIT)
@@ -75,6 +104,18 @@ pub mod attrs;
 pub mod dac_rvq;
 // -------------------------------------------------------------------------
 pub mod dct;
+// ---- SoTA plan Phase 4 ddpm_sampler (TTS primitive, new class) ---------
+// DDPM sampler with `v-prediction` support (Salimans & Ho 2022) and a
+// cosine β schedule (Nichol & Dhariwal 2021) — the two axes VibeVoice
+// (Microsoft, MIT, `huggingface.co/microsoft/VibeVoice-1.5B`) needs and
+// the existing `flow_sampler` cannot express (its DDIM/DPM++ branches
+// carry `ε`-prediction with a linear α schedule pinned inside the
+// solver per ADR M3-05 §D4). Runtime function, NOT an OpKind variant
+// (same posture as `flow_sampler` / `mimi_rvq` / `dac_rvq` /
+// `qwen3_tts_codec` / `vae_continuous` — FR-OP-30 / FR-EX-10 / ADR
+// M3-06 §D-b). Localized re-export block for clean parallel-wave rebases.
+pub mod ddpm_sampler;
+// -------------------------------------------------------------------------
 // ---- M4-04 encodec_rvq (engine op only — FR-OP-32 permanent weight
 // exclusion; parity uses synthetic codebooks, never pretrained weights) ----
 pub mod encodec_rvq;
@@ -105,6 +146,14 @@ pub mod fused_logmel;
 // the module-level docstring.
 pub mod hifigan;
 // -------------------------------------------------------------------------
+// ---- SoTA plan Phase 1-2 HiFTNet vocoder --------------------------------
+// HiFTNet = "Neural Source Filter + ISTFTNet" (upstream CosyVoice2/3 +
+// Chatterbox family). This module hosts the F0 predictor (Wave 2) and,
+// once Wave 3 lands, the HiFTGenerator chain. The NSF core lives in
+// [`crate::nsf`] rather than here so a caller can drive it without pulling
+// the full generator.
+pub mod hiftnet;
+// -------------------------------------------------------------------------
 pub mod istft;
 pub mod istft_streaming;
 pub mod kaldi_fbank;
@@ -120,15 +169,83 @@ pub mod mfcc;
 // `scripts/compliance/check-encodec-exclusion.sh` release-side script).
 pub mod mimi_rvq;
 // -------------------------------------------------------------------------
+// ---- SoTA plan Phase 1-2 NSF (HiFTNet source-filter core) ---------------
+// Neural Source Filter (SineGen + SourceModuleHnNSF) — verbatim port of the
+// upstream CosyVoice implementation (`cosyvoice/hifigan/generator.py` L163-
+// 368). Consumed by the HiFTNet vocoder; multiple published models feed the
+// same layer (CosyVoice2 / CosyVoice3 / Chatterbox family), so this lives in
+// `vokra-ops` rather than a per-model module.
+pub mod nsf;
+// -------------------------------------------------------------------------
 pub mod preprocess;
 pub mod prosody;
+// ---- SoTA plan Phase 3 qwen3_tts_codec (TTS codec primitive, FR-OP-30) --
+// 16-quantizer RVQ codec at 12.5 Hz / 24 kHz — the code → summed codec-
+// feature decode step consumed by every released Qwen3-TTS-12Hz voice
+// (Qwen/Qwen3-TTS-12Hz-{0.6B,1.7B}-{Base,CustomVoice,VoiceDesign}, Apache-2.0).
+// Distinct from Mimi / DAC / EnCodec because quantizer 0 is *semantic*
+// (larger vocab: 4096) while quantizers 1..N are acoustic (2048); a single
+// `codebook_size` axis à la `MimiRvqAttrs` cannot express the split without
+// silently clamping the semantic index (FR-EX-08). Runtime function, not an
+// OpKind variant (same posture as mimi_rvq / dac_rvq / encodec_rvq — ADR
+// M3-06 §D-b). Localized re-export block for clean parallel-wave rebases.
+pub mod qwen3_tts_codec;
+// -------------------------------------------------------------------------
 pub mod resample;
+// ---- SoTA plan Phase 2 rnnt_decode (ASR primitive, FR-OP-42) ------------
+// RNN-T / TDT decoding: greedy + beam + TDT (duration head). Consumed by
+// parakeet-rnnt-1.1b and parakeet-tdt v2/v3/1.1b (CC-BY-4.0). Ported /
+// cross-referenced against NeMo's classical greedy and TDT beam decoders
+// (see the module docstring for exact line refs); label-looping (~1500x
+// RTFx) is a deferred follow-up. Localized re-export block for clean
+// parallel-wave rebases.
+pub mod rnnt_decode;
+// -------------------------------------------------------------------------
+// ---- SoTA plan Phase 3 snac_decode (TTS primitive, RVQ family) ----------
+// SNAC (Multi-Scale Neural Audio Codec) 3-stage hierarchical RVQ decode
+// (~12 / 23 / 47 Hz per stage for the 24 kHz variant). Reuses the factorized
+// `DacOutProj` + `CodebookTable` shapes since SNAC's per-quantizer
+// `WNConv1d(codebook_dim, input_dim)` folds identically to DAC's. Consumed
+// by Orpheus and Maya1 (upstream `hubertsiuzdak/snac`, MIT / Apache-2.0).
+pub mod snac_decode;
+// -------------------------------------------------------------------------
 pub mod stft;
+// ---- SoTA plan Phase JA JA-ASR-1 waveform_frontend (raw-waveform 7-layer
+// strided conv stem, FR-OP-40) — the mel-free ASR input path wav2vec 2.0 /
+// HuBERT / k2SSL consume. Runtime function, NOT an `OpKind` variant (same
+// posture as [`fsq_codec`] / [`mimi_rvq`] / [`dac_rvq`] — ADR M4-04 §D-b /
+// ADR M4-16 §D-b): the heterogeneous inputs (`&[f32]` raw PCM + per-layer
+// weight bundles) do not fit the `OpValue` dispatch surface, and the
+// planned consumers (jonatasgrosman wav2vec 2.0, reazonspeech k2SSL,
+// omniASR-CTC) are imperative models that want the tight function API.
+// Localized re-export block for clean parallel-wave rebases.
+pub mod waveform_frontend;
+// -------------------------------------------------------------------------
+// ---- SoTA plan Phase 4 vae_continuous (TTS primitive, new class) --------
+// Continuous VAE encoder / decoder scaffold — the first consumer is
+// VoxCPM-0.5B (openbmb/VoxCPM, apache-2.0) which pairs a continuous latent
+// stream with a diffusion / flow-matching feature generator (unlike every
+// existing codec op in this crate, which is discrete RVQ or FSQ). Shared
+// across VoxCPM2 and the planned VibeVoice consumer. Runtime function, NOT
+// an OpKind variant (same posture as `flow_sampler` / `mimi_rvq` /
+// `dac_rvq` / `qwen3_tts_codec` — FR-OP-30 / FR-EX-10 / ADR M3-06 §D-b).
+// Localized re-export block for clean parallel-wave rebases.
+pub mod vae_continuous;
+// -------------------------------------------------------------------------
 pub mod window;
 
 // ---- M4-03 aec re-exports ------------------------------------------------
 pub use aec::{Aec, AecAttrs, AecStatus};
 // ---------------------------------------------------------------------------
+// ---- SoTA plan Phase 3 bigvgan_generator re-exports ---------------------
+pub use bigvgan_generator::{
+    AmpBlock1, AmpBlock1Weights, BigVGanConfig, BigVGanGenerator, BigVGanWeights, SnakeBeta,
+    SnakeKind,
+};
+// -------------------------------------------------------------------------
+// ---- SoTA plan Phase 2 ctc_decode re-exports ----------------------------
+pub use ctc_decode::{CtcBeamAttrs, CtcHypothesis, ctc_decode_beam, ctc_decode_greedy};
+// -------------------------------------------------------------------------
 // ---- M4-04 dac_rvq re-exports --------------------------------------------
 pub use dac_rvq::{
     DacOutProj, DacRvqAttrs, dac_paged_dims, dac_rvq_decode, dac_rvq_decode_paged,
@@ -153,6 +270,12 @@ pub use dispatch::{OpValue, dispatch};
 pub use flow_sampler::{
     CfgMode, CfgScaleProfile, FlowSamplerConfig, FlowSamplerState, ForwardPass, OdeSolver,
     Schedule, flow_sample,
+};
+// -------------------------------------------------------------------------
+// ---- SoTA plan Phase 4 ddpm_sampler re-exports --------------------------
+pub use ddpm_sampler::{
+    BetaSchedule, DdpmSamplerConfig, PredictionType, build_alphas_cumprod, ddpm_sample,
+    pick_inference_timesteps,
 };
 // -------------------------------------------------------------------------
 // ---- M4-16 fsq_codec re-exports ------------------------------------------
@@ -184,8 +307,29 @@ pub use mimi_rvq::{
 // -------------------------------------------------------------------------
 pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};
 pub use prosody::{ApplyProsody, ProsodyControl};
+// ---- SoTA plan Phase 3 qwen3_tts_codec re-exports -----------------------
+pub use qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_codec_decode};
+// -------------------------------------------------------------------------
 pub use resample::resample;
+// ---- SoTA plan Phase 2 rnnt_decode re-exports ---------------------------
+pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
+// -------------------------------------------------------------------------
+// ---- SoTA plan Phase 3 snac_decode re-exports ---------------------------
+pub use snac_decode::{SnacConfig, SnacDecoder, SnacWeights};
+// -------------------------------------------------------------------------
 pub use stft::{Spectrogram, stft};
+// ---- SoTA plan Phase JA JA-ASR-1 waveform_frontend re-exports -----------
+pub use waveform_frontend::{
+    ConvLayerAttrs, ConvLayerWeights, Norm, WaveformFrontendAttrs, WaveformFrontendWeights,
+    waveform_frontend,
+};
+// -------------------------------------------------------------------------
+// ---- SoTA plan Phase 4 vae_continuous re-exports ------------------------
+pub use vae_continuous::{
+    ContinuousVaeConfig, ContinuousVaeDecoder, ContinuousVaeDecoderWeights, ContinuousVaeEncoder,
+    ContinuousVaeEncoderWeights, continuous_vae_decode, continuous_vae_encode,
+};
+// -------------------------------------------------------------------------
 pub use vokra_core::Complex32;
 
 #[cfg(test)]

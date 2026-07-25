@@ -1,4 +1,18 @@
-//! CosyVoice2 → Mimi codec bridge — stub (M3-09-T13).
+//! # DEPRECATED (2026-07-24, SoTA plan §1(a) 訂正)
+//!
+//! **CosyVoice2 uses HiFTNet (Neural Source Filter + ISTFTNet), NOT Mimi.**
+//! This module was built on a wrong premise. WebFetch to upstream
+//! `cosyvoice/hifigan/generator.py:378` confirmed `class HiFTGenerator`
+//! (docstring: `"HiFTNet Generator: Neural Source Filter + ISTFTNet"`) —
+//! no Mimi consumer exists in the CosyVoice ツリー at all. Mimi is the
+//! codec for Moshi and Sesame CSM-1B (arXiv:2410.00037 / arXiv:2410.14567),
+//! never CosyVoice2 (arXiv:2412.10117). The full 訂正 is in the SoTA plan
+//! `docs/tickets/sota-coverage-plan-2026-07-22.md` §1(a).
+//!
+//! Kept temporarily to avoid breaking existing test imports; use
+//! [`crate::cosyvoice2::hift_chain::HiFTChain`] instead.
+//!
+//! # Original (wrong-premise) rationale, retained for historical context
 //!
 //! CosyVoice2 emits residual vector-quantized codes (RVQ, `[time,
 //! n_codebooks]` `u32` indices) that the Mimi codec decodes to a
@@ -13,17 +27,32 @@
 //! `NOTICE` file (M3-06-T22 owner ticket) and in
 //! `docs/license-audit.md` §3 (T26 owner ticket). This bridge does not
 //! re-record the attribution — it consumes the M3-06 op family, which
-//! already carries the entry.
+//! already carries the entry. Note that the attribution requirement is
+//! still binding on the Moshi / CSM consumers (which really do use Mimi);
+//! this module's deprecation does not remove the attribution obligation
+//! from those callers.
 //!
-//! # Scope of this scaffold (T13)
+//! # Scope of this (deprecated) scaffold (originally M3-09-T13)
 //!
-//! The concrete decode path lands with T13: (a) bind the `MimiRvqAttrs`
-//! from the CosyVoice2 config's `vokra.cosyvoice2.mimi.*` chunk group,
-//! (b) load the codebook tables from the GGUF tensor slice, (c) call
-//! [`vokra_ops::MimiDecoder::decode`] on each chunk. This scaffold owns
-//! (a) — the attribute assembly from config — and returns
+//! The concrete decode path was to land at T13: (a) bind the
+//! `MimiRvqAttrs` from the CosyVoice2 config's `vokra.cosyvoice2.mimi.*`
+//! chunk group, (b) load the codebook tables from the GGUF tensor slice,
+//! (c) call [`vokra_ops::MimiDecoder::decode`] on each chunk. This
+//! scaffold owns (a) — the attribute assembly from config — and returns
 //! [`VokraError::NotImplemented`] on the code-→-features step until the
 //! codebook tensor binding lands.
+//!
+//! Because the premise itself was wrong, the T13 real-codebook binding
+//! will NOT be pursued for CosyVoice2 — the terminal vocoder migration
+//! is `HiFTChain` (see [`crate::cosyvoice2::hift_chain`]).
+
+// The deprecated APIs in this module are still consumed by the
+// `chunk_pipeline` scaffold + the internal-oracle tests + the
+// `parity_cosyvoice2` integration test. Silencing the deprecation
+// warning module-wide (rather than at every call site) keeps the
+// `-D warnings` gate green until those consumers migrate onto
+// `HiFTChain`. New callers must not import from this module.
+#![allow(deprecated)]
 
 use vokra_core::{Result, VokraError};
 use vokra_ops::{MimiDecoder, MimiRvqAttrs};
@@ -31,6 +60,11 @@ use vokra_ops::{MimiDecoder, MimiRvqAttrs};
 use super::config::CosyVoice2Config;
 
 /// CosyVoice2 → Mimi RVQ bridge.
+///
+/// **DEPRECATED (2026-07-24, SoTA plan §1(a) 訂正).** CosyVoice2 does not
+/// use the Mimi codec — the terminal vocoder is HiFTNet. Use
+/// [`crate::cosyvoice2::hift_chain::HiFTChain`] instead. See the module
+/// docstring for the full 訂正 rationale.
 ///
 /// Owns the `MimiRvqAttrs` derived from the CosyVoice2 config, plus an
 /// optional `MimiDecoder` handle (bound by the runtime once the codebook
@@ -43,6 +77,12 @@ use super::config::CosyVoice2Config;
 ///   decoder built by [`MimiDecoder::identity`], which lets the internal
 ///   oracle tests exercise the code-→-features seam end-to-end today
 ///   without a real Kyutai checkpoint (M3-06 identity smoke pattern).
+#[deprecated(
+    since = "0.1.0",
+    note = "CosyVoice2 uses HiFTNet (Neural Source Filter + ISTFTNet), not Mimi. \
+            Use crate::cosyvoice2::hift_chain::HiFTChain instead. See mimi_bridge \
+            module docstring for the SoTA plan §1(a) 訂正 rationale."
+)]
 #[derive(Debug)]
 pub struct MimiBridge {
     /// Shape attributes derived from the CosyVoice2 config's
@@ -57,6 +97,9 @@ pub struct MimiBridge {
 impl MimiBridge {
     /// Builds a bridge from the CosyVoice2 config.
     ///
+    /// **DEPRECATED (2026-07-24).** Use [`crate::cosyvoice2::hift_chain::HiFTChain::new`]
+    /// instead — see the module docstring.
+    ///
     /// # Errors
     ///
     /// [`VokraError::InvalidArgument`] if any of `n_codebooks` /
@@ -64,6 +107,10 @@ impl MimiBridge {
     /// silently accepts a degenerate codec shape; the converter is
     /// allowed to emit `0` placeholders during T02 upstream inspection,
     /// but the runtime rejects them on load).
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use HiFTChain::new instead. CosyVoice2 uses HiFTNet, not Mimi."
+    )]
     pub fn from_config(config: &CosyVoice2Config) -> Result<Self> {
         let attrs = MimiRvqAttrs {
             n_codebooks: config.mimi_n_codebooks as usize,
@@ -92,10 +139,17 @@ impl MimiBridge {
     /// The T13 follow-on replaces the identity decoder with one whose
     /// codebook tables are loaded from the CosyVoice2 GGUF tensor slice.
     ///
+    /// **DEPRECATED (2026-07-24).** Use [`crate::cosyvoice2::hift_chain::HiFTChain`]
+    /// instead.
+    ///
     /// # Errors
     ///
     /// Propagates [`Self::from_config`] validation errors and
     /// [`MimiDecoder::identity`] shape-validation errors.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use HiFTChain instead. CosyVoice2 uses HiFTNet, not Mimi."
+    )]
     pub fn with_identity_decoder(config: &CosyVoice2Config) -> Result<Self> {
         let mut bridge = Self::from_config(config)?;
         let decoder = MimiDecoder::identity(bridge.attrs)?;
@@ -107,12 +161,19 @@ impl MimiBridge {
     /// T13 follow-on that will read codebook tensors directly from the
     /// GGUF.
     ///
+    /// **DEPRECATED (2026-07-24).** Use [`crate::cosyvoice2::hift_chain::HiFTChain`]
+    /// instead.
+    ///
     /// # Errors
     ///
     /// [`VokraError::InvalidArgument`] if the decoder's attrs disagree
     /// with the bridge's — this is a shape sanity check that prevents a
     /// silently-mismatched decoder from producing corrupted features
     /// (FR-EX-08).
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use HiFTChain instead. CosyVoice2 uses HiFTNet, not Mimi."
+    )]
     pub fn with_decoder(mut self, decoder: MimiDecoder) -> Result<Self> {
         if *decoder.attrs() != self.attrs {
             return Err(VokraError::InvalidArgument(format!(
@@ -127,6 +188,13 @@ impl MimiBridge {
     }
 
     /// The Mimi RVQ shape attributes derived from the config.
+    ///
+    /// **DEPRECATED (2026-07-24).** Use [`crate::cosyvoice2::hift_chain::HiFTChain::config`]
+    /// on the HiFTNet chain instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use HiFTChain::config instead. CosyVoice2 uses HiFTNet, not Mimi."
+    )]
     #[must_use]
     pub fn attrs(&self) -> &MimiRvqAttrs {
         &self.attrs
@@ -134,6 +202,13 @@ impl MimiBridge {
 
     /// True iff a decoder has been bound (via
     /// [`Self::with_identity_decoder`] or [`Self::with_decoder`]).
+    ///
+    /// **DEPRECATED (2026-07-24).** Use
+    /// [`crate::cosyvoice2::CosyVoice2Tts::has_hift_chain`] instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use CosyVoice2Tts::has_hift_chain instead. CosyVoice2 uses HiFTNet, not Mimi."
+    )]
     #[must_use]
     pub fn has_decoder(&self) -> bool {
         self.decoder.is_some()
@@ -152,11 +227,19 @@ impl MimiBridge {
     /// The `codes` shape is checked up front so a caller with a
     /// wrong-length buffer gets a loud error today.
     ///
+    /// **DEPRECATED (2026-07-24).** Use [`crate::cosyvoice2::hift_chain::HiFTChain::forward`]
+    /// instead — the CosyVoice2 CFM emits a mel spectrogram, and HiFTNet
+    /// (not the Mimi codec) is the terminal vocoder.
+    ///
     /// # Errors
     ///
     /// - [`VokraError::InvalidArgument`] if `codes.len() != time *
     ///   attrs.n_codebooks` or if a bound decoder rejects an index;
     /// - [`VokraError::NotImplemented`] when no decoder is bound.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use HiFTChain::forward instead. CosyVoice2 uses HiFTNet, not Mimi."
+    )]
     pub fn decode_chunk(&self, codes: &[u32], time: usize) -> Result<Vec<f32>> {
         let expected = time.checked_mul(self.attrs.n_codebooks).ok_or_else(|| {
             VokraError::InvalidArgument(format!(

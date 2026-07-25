@@ -134,6 +134,13 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 vokra-core = { path = "../../crates/vokra-core" }
 vokra-mmap = { path = "../../crates/vokra-mmap" }
 vokra-models = { path = "../../crates/vokra-models" }
+# The Kaldi fbank front-end (`kaldi_fbank`, `KaldiFbankOpts::camplus`) that the
+# CAM++ speaker encoder expects for PCM → 192-d speaker embeddings. First-party
+# workspace crate, itself zero-dep (only `vokra-core`) — the ROOT `Cargo.lock`
+# is untouched (this crate is its own workspace). Used by the native long-form
+# orchestrator (`src/longform.rs`, WhisperX-style pipeline: Silero VAD → Whisper
+# → optional speaker embedding + cosine clustering).
+vokra-ops = { path = "../../crates/vokra-ops" }
 vokra-piper-plus = { path = "../../crates/vokra-piper-plus" }
 
 # --- Real 8-language G2P bridge (campaign-2 P1 fix, 2026-07-17). ---

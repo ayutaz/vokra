@@ -1,0 +1,518 @@
+# tts-japanese family — flip-the-switch real-checkpoint parity CI
+# (SoTA Phase 1, 2026-07-25).
+#
+# Membership (see docs/tickets/sota-coverage-plan-…):
+#
+#   * irodori  → Aratako/Irodori-TTS-500M-v3      (MIT / MIT, pinned SHA below)
+#     ─ Rectified-Flow DiT + Semantic-DACVAE-Japanese-32dim decoder, 48 kHz.
+#     ─ ⚠ HF slug correction: the SoTA plan originally named
+#       `Irodori-tech/Irodori-TTS-500M-v3`, which returns HTTP 401 on
+#       `huggingface.co/api/models/…`. The actual public HF repo is
+#       `Aratako/Irodori-TTS-500M-v3` — verified 2026-07-25 with
+#       `curl huggingface.co/api/models/Aratako/Irodori-TTS-500M-v3` →
+#       `{ "sha": "236c1e56591279fc24e3c1bf6609fc06e48dde28",
+#          "license": "mit",
+#          "pipeline_tag": "text-to-speech" }`
+#       and matching the runtime module's docstring
+#       (crates/vokra-models/src/irodori/mod.rs references
+#       `huggingface.co/Aratako/Irodori-TTS-500M-v3` verbatim).
+#
+#   * vits_ja  → espnet/kan-bayashi_jsut_vits      (Apache-2.0 code /
+#                                                   restricted weight)
+#     ─ Plain VITS + HiFi-GAN decoder — the ESPnet JA VITS recipe.
+#     ─ ⚠ Two independent blockers make this row **arch-only** in CI:
+#       (a) the HF mirror returns HTTP 401 (gated / removed from public
+#           listing; www-authenticate: Bearer, confirmed 2026-07-25);
+#       (b) the JSUT corpus terms explicitly forbid re-distribution of
+#           the trained weight
+#           (sites.google.com/site/shinnosuketakamichi/publication/jsut,
+#           "Re-distribution is not permitted").
+#     ─ The workflow therefore does NOT auto-fetch this checkpoint. The
+#       matrix row for vits_ja skips the HF download + convert steps and
+#       runs the parity harness directly. Absent an operator-provisioned
+#       GGUF (VOKRA_VITS_JA_GGUF), the Rust test honest-skips loudly
+#       (fabricated pass 禁止, FR-EX-08). Architecture rides Apache-2.0
+#       (ESPnet) + MIT (jaywalnut310/vits) code and is always independently
+#       implementable (whisper.cpp 型 clean-room re-imp, CLAUDE.md 設計判断 4).
+#
+# The Rust harness (crates/vokra-models/tests/parity_tts_japanese.rs) is
+# env-gated: `VOKRA_<ARCH>_GGUF` toggles the shape/metadata leg on, and
+# `VOKRA_<ARCH>_REFDIR` additionally toggles the byte-level reference
+# comparison (atol = 0.01, NFR-QL-01). This workflow's job is to (a) fetch
+# the pinned upstream release where allowed (irodori only), (b) build
+# vokra-cli, (c) convert to GGUF, (d) run the harness with the env vars
+# pointing at the just-built GGUF — so the moment either weight-binding
+# wave (T29-equivalent per each module rustdoc) lands, or the owner drops
+# a reference dump, the leg fires.
+#
+# Design (mirrors parity-kokoro-real.yml + parity-tts-continuous-vae-real.yml):
+#
+#   * Trigger: workflow_dispatch (owner-driven, per-arch matrix input) +
+#     weekly cron `0 12 * * 1` (Monday 12:00 UTC — its own slot in the
+#     staggered weekly parity roster: kokoro 04:00, whisper 05:00, vulkan
+#     05:30, cuda-rtf 06:00, csm 06:30, web-wasm 07:00, moshi 07:30, utmos
+#     08:00, godot 08:30, whisper-extras 09:30, tts-continuous-vae 11:30,
+#     tts-japanese 12:00) + a NARROW pull_request paths filter that only
+#     fires on model-adjacent code.
+#
+#   * Repository-variable gate `VOKRA_TTS_JA_ENABLE=1` (or a
+#     workflow_dispatch run) is required for the parity job to fire on
+#     schedule / PR. The cron path clean-skips with a `::notice::` when
+#     the variable is not set, so a cron run that finds the family not
+#     yet enabled produces a visible skip, not a fabricated pass
+#     (FR-EX-08). workflow_dispatch bypasses the gate — the dispatcher
+#     opted in.
+#
+#   * Per-model matrix: the parity job runs one row per family member.
+#     `fail-fast: false` so an Aratako HF outage does not mask a vits_ja
+#     regression (and vice versa).
+#
+#   * HF snapshot download at pinned SHA — irodori only. vits_ja skips
+#     this step by design (see the second bullet above). A snapshot
+#     re-upload / SHA drift is an ::warning:: (the SHA has changed
+#     upstream, we did not) — the workflow still runs against the new
+#     SHA, but the summary flags it so the owner can decide whether to
+#     bump the pin.
+#
+#   * Python venv is installed inline (root Cargo.lock untouched —
+#     NFR-DS-02; the final `git diff --exit-code Cargo.lock` step is the
+#     tripwire).
+#
+#   * NOT registered as a required check. HF flakiness must not block
+#     PRs (same posture as every other parity-*-real workflow);
+#     promotion to required is an explicit owner decision after
+#     consecutive greens.
+#
+#   * Initial workflow_dispatch = owner (fabricated-pass 禁止 — this CI
+#     never fires until the owner explicitly opts in).
+
+name: parity-tts-japanese-real
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: >-
+          Optional matrix filter — one of "irodori", "vits_ja", or leave
+          empty for both. Useful when triaging one family member without
+          re-running the (~1 GB) Irodori HF download.
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - irodori
+          - vits_ja
+  schedule:
+    # Weekly Monday 12:00 UTC — see header for the full staggered roster.
+    - cron: "0 12 * * 1"
+  pull_request:
+    # Fires ONLY on tts-japanese-adjacent code. Non-matching PRs run the
+    # fixture-only committed leg via the per-PR required `parity` job in
+    # ci.yml (no HF download); this workflow adds the real-checkpoint
+    # verification when it becomes reachable.
+    paths:
+      - ".github/workflows/parity-tts-japanese-real.yml"
+      - "crates/vokra-convert/src/models/irodori.rs"
+      - "crates/vokra-convert/src/models/vits_ja.rs"
+      - "crates/vokra-core/**"
+      - "crates/vokra-models/src/compute.rs"
+      - "crates/vokra-models/src/irodori/**"
+      - "crates/vokra-models/src/vits_ja/**"
+      - "crates/vokra-models/tests/parity_tts_japanese.rs"
+      - "crates/vokra-ops/**"
+
+concurrency:
+  group: parity-tts-japanese-real-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Pinned upstream revisions (fetched 2026-07-25 via huggingface.co/api/models).
+  # A drift here is an ::warning:: below, not a hard fail — Vokra does not own
+  # byte-identity of the upstream publish.
+  #
+  # irodori pin verified 2026-07-25 via
+  #   `curl huggingface.co/api/models/Aratako/Irodori-TTS-500M-v3`
+  #   → sha=236c1e56591279fc24e3c1bf6609fc06e48dde28, license=mit.
+  IRODORI_REPO: Aratako/Irodori-TTS-500M-v3
+  IRODORI_REVISION: 236c1e56591279fc24e3c1bf6609fc06e48dde28
+  # vits_ja pin is INTENTIONALLY unpinned: the HF mirror
+  # `espnet/kan-bayashi_jsut_vits` returns HTTP 401 (gated / removed from
+  # public listing) and the JSUT corpus terms forbid re-distribution of
+  # the trained weight — the workflow never auto-fetches it. Recorded as
+  # a documented sentinel so a future ADR to add gated-download support
+  # has a grepable anchor.
+  VITS_JA_REPO: espnet/kan-bayashi_jsut_vits
+  VITS_JA_REVISION: "UNFETCHABLE-corpus-restricted-see-workflow-header"
+  PARITY_VENV: /tmp/vokra-tts-japanese-parity
+  CARGO_TERM_COLOR: always
+
+jobs:
+  setup:
+    name: gate (family opt-in)
+    runs-on: ubuntu-latest
+    outputs:
+      run_parity: ${{ steps.decide.outputs.run_parity }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: decide
+        env:
+          ENABLE_VAR: ${{ vars.VOKRA_TTS_JA_ENABLE }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run_parity=true" >> "$GITHUB_OUTPUT"
+            echo "dispatch run: proceeding (the dispatcher opted in)"
+          elif [ "${ENABLE_VAR}" = "1" ]; then
+            echo "run_parity=true" >> "$GITHUB_OUTPUT"
+            echo "VOKRA_TTS_JA_ENABLE=1: proceeding"
+          else
+            echo "run_parity=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=parity-tts-japanese-real clean skip::family opt-in not enabled — set the repository variable VOKRA_TTS_JA_ENABLE=1 (or workflow_dispatch) to run the real-checkpoint conversion + parity. This is a clean gated skip, not a pass (fabricated pass 禁止, FR-EX-08)."
+          fi
+
+      - id: matrix
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          set -euo pipefail
+          case "${ONLY:-}" in
+            irodori)
+              echo 'matrix={"arch":["irodori"]}' >> "$GITHUB_OUTPUT"
+              ;;
+            vits_ja)
+              echo 'matrix={"arch":["vits_ja"]}' >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo 'matrix={"arch":["irodori","vits_ja"]}' >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+  parity:
+    name: parity-${{ matrix.arch }}
+    needs: setup
+    if: needs.setup.outputs.run_parity == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    env:
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      HF_HUB_CACHE: ${{ github.workspace }}/.hf-cache
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Free hosted-runner disk (the >= 1 GB downloads + venv need headroom)
+        if: matrix.arch == 'irodori'
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Resolve per-arch pins
+        id: pins
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          case "${ARCH}" in
+            irodori)
+              echo "repo=${IRODORI_REPO}" >> "$GITHUB_OUTPUT"
+              echo "revision=${IRODORI_REVISION}" >> "$GITHUB_OUTPUT"
+              echo "env_gguf=VOKRA_IRODORI_GGUF" >> "$GITHUB_OUTPUT"
+              echo "cli_model=irodori" >> "$GITHUB_OUTPUT"
+              echo "auto_fetch=true" >> "$GITHUB_OUTPUT"
+              ;;
+            vits_ja)
+              echo "repo=${VITS_JA_REPO}" >> "$GITHUB_OUTPUT"
+              echo "revision=${VITS_JA_REVISION}" >> "$GITHUB_OUTPUT"
+              echo "env_gguf=VOKRA_VITS_JA_GGUF" >> "$GITHUB_OUTPUT"
+              echo "cli_model=vits-ja" >> "$GITHUB_OUTPUT"
+              # vits_ja is operator-provisioned only: HF mirror is 401
+              # AND JSUT corpus terms forbid redistribution. The
+              # download + convert steps are skipped for this row; the
+              # parity harness runs and honest-skips absent
+              # VOKRA_VITS_JA_GGUF.
+              echo "auto_fetch=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::unknown matrix arch ${ARCH} — add a case here"
+              exit 1
+              ;;
+          esac
+
+      - name: Announce vits_ja operator-provisioned posture
+        if: steps.pins.outputs.auto_fetch == 'false'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### ${ARCH}: operator-provisioned only (HF auto-fetch disabled)"
+            echo ""
+            echo "The \`${VITS_JA_REPO}\` HF mirror returns HTTP 401 (gated / removed"
+            echo "from public listing, verified 2026-07-25 with"
+            echo "\`curl huggingface.co/api/models/${VITS_JA_REPO}\` returning"
+            echo "\`Invalid username or password.\`) AND the JSUT corpus terms"
+            echo "explicitly forbid re-distribution of the trained weight"
+            echo "(\`sites.google.com/site/shinnosuketakamichi/publication/jsut\`,"
+            echo "'Re-distribution is not permitted'). This workflow therefore"
+            echo "does **not** auto-fetch this checkpoint."
+            echo ""
+            echo "The parity harness runs below. Absent an operator-provisioned"
+            echo "GGUF (\`VOKRA_VITS_JA_GGUF\`), the Rust test honest-skips loudly"
+            echo "(fabricated pass 禁止, FR-EX-08). Architecture rides Apache-2.0"
+            echo "(ESPnet) + MIT (jaywalnut310/vits) code and is always"
+            echo "independently implementable (whisper.cpp 型 clean-room re-imp,"
+            echo "CLAUDE.md 設計判断 4)."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=parity-tts-japanese-real ${ARCH} arch-only::vits_ja HF auto-fetch is disabled by design — see the step summary for the corpus-terms note."
+
+      - name: Cache HF checkpoint (per revision)
+        if: steps.pins.outputs.auto_fetch == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.HF_HOME }}
+          key: tts-japanese-${{ matrix.arch }}-${{ steps.pins.outputs.revision }}-v1
+
+      - name: Provision parity venv (torch + safetensors + huggingface_hub)
+        if: steps.pins.outputs.auto_fetch == 'true'
+        run: |
+          set -euo pipefail
+          python -m venv "${PARITY_VENV}"
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python -m pip install --upgrade pip
+          # torch CPU keeps the runner lean; the conversion path is
+          # deterministic and never spins up a CUDA kernel.
+          python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            'torch==2.9.1'
+          python -m pip install \
+            'numpy>=2,<3' \
+            'safetensors>=0.4' \
+            'huggingface_hub>=0.36'
+          python -m pip install 'hf_transfer>=0.1.9' || true
+          python - <<'PY'
+          import torch, numpy, safetensors, huggingface_hub
+          print(f"parity venv: torch={torch.__version__} numpy={numpy.__version__} "
+                f"safetensors={safetensors.__version__} "
+                f"huggingface_hub={huggingface_hub.__version__}")
+          PY
+
+      # snapshot_download @ pinned SHA. Advisory posture: a SHA mismatch is
+      # an ::warning::, not a hard fail (the pin might be stale, not the
+      # checkpoint corrupted — that decision is the owner's).
+      - name: Download ${{ matrix.arch }} @ pinned SHA (HF hub)
+        if: steps.pins.outputs.auto_fetch == 'true'
+        env:
+          HF_HUB_ENABLE_HF_TRANSFER: "1"
+          REPO: ${{ steps.pins.outputs.repo }}
+          REVISION: ${{ steps.pins.outputs.revision }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          # GitHub Actions semantics: `$GITHUB_ENV` writes propagate to
+          # the NEXT step, not the current one. Capture the path from
+          # stdout and use it inline; also emit to $GITHUB_ENV so
+          # downstream steps see it. (Same pattern as parity-tts-dac
+          # SNAPSHOT_DIR fix, commit 856fb02.)
+          # `python -c` (not a heredoc): a heredoc inside $() cannot be closed
+          # from column 0 in a `run: |` block, which `scripts/check-workflow-
+          # hygiene.sh` catches via `bash -n`. Mirror the parity-tts-dac
+          # precedent — single-quoted Python string literals nested inside
+          # the double-quoted `-c` argument.
+          SNAPSHOT_STDOUT="$(python -c "
+          import os
+          from huggingface_hub import snapshot_download
+          repo = os.environ['REPO']
+          rev = os.environ['REVISION']
+          # Only pull safetensors + config.json — no README / demo audio.
+          local = snapshot_download(
+              repo_id=repo,
+              revision=rev,
+              allow_patterns=[
+                  '*.safetensors',
+                  '*.safetensors.index.json',
+                  'config.json',
+              ],
+          )
+          print(f'snapshot: {local}')
+          ")"
+          echo "${SNAPSHOT_STDOUT}"
+          CKPT_DIR="$(echo "${SNAPSHOT_STDOUT}" | awk -F'snapshot: ' '/^snapshot: /{print $2; exit}')"
+          if [ -z "${CKPT_DIR}" ] || [ ! -d "${CKPT_DIR}" ]; then
+            echo "::error::snapshot_download did not print a resolvable path (got: ${SNAPSHOT_STDOUT})"
+            exit 1
+          fi
+          echo "CKPT_DIR=${CKPT_DIR}" >> "$GITHUB_ENV"
+          {
+            echo "### ${{ matrix.arch }} checkpoint"
+            echo ""
+            echo "- Repo: \`${REPO}\`"
+            echo "- Revision: \`${REVISION}\`"
+            echo "- Local dir: \`${CKPT_DIR}\`"
+            du -sh "${CKPT_DIR}" 2>/dev/null || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build vokra-cli (release)
+        run: cargo build --release -p vokra-cli
+
+      # Pick the primary safetensors input for the converter. Multi-shard
+      # releases surface here as a sharded pack; the converter takes a
+      # single safetensors file today (BF16 pre-widening is a follow-up).
+      # If a sharded release is detected AND no `model.safetensors` exists
+      # at the root, this step surfaces a loud NOTE.
+      - name: Select safetensors input for converter
+        id: input
+        if: steps.pins.outputs.auto_fetch == 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CKPT_DIR:-}" ]; then
+            echo "::error::CKPT_DIR not set — the snapshot_download step failed"
+            exit 1
+          fi
+          if [ -f "${CKPT_DIR}/model.safetensors" ]; then
+            echo "input=${CKPT_DIR}/model.safetensors" >> "$GITHUB_OUTPUT"
+            echo "sharded=false" >> "$GITHUB_OUTPUT"
+            echo "primary safetensors: ${CKPT_DIR}/model.safetensors"
+          else
+            SHARDS=$(ls -1 "${CKPT_DIR}"/*.safetensors 2>/dev/null | head -1 || true)
+            if [ -z "${SHARDS}" ]; then
+              echo "::error::no *.safetensors under ${CKPT_DIR} — snapshot pattern miss?"
+              exit 1
+            fi
+            echo "input=${SHARDS}" >> "$GITHUB_OUTPUT"
+            echo "sharded=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### ${ARCH}: sharded safetensors detected"
+              echo ""
+              echo "No \`model.safetensors\` at the release root — using the first shard"
+              echo "(\`${SHARDS}\`) as the converter input. The T29-equivalent full-checkpoint"
+              echo "walk (multi-shard aggregation + BF16 pre-widen) is a follow-up wave."
+              echo "The parity leg here will exercise the SHARD's tensor subset only;"
+              echo "the reader / metadata / synthesize-refusal assertions still fire."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Convert to GGUF (vokra-cli convert --model ${{ steps.pins.outputs.cli_model }})
+        id: convert
+        if: steps.pins.outputs.auto_fetch == 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+          CLI_MODEL: ${{ steps.pins.outputs.cli_model }}
+          INPUT: ${{ steps.input.outputs.input }}
+        run: |
+          set -euo pipefail
+          OUT="${RUNNER_TEMP}/${ARCH}.gguf"
+          set +e
+          ./target/release/vokra-cli convert \
+            --model "${CLI_MODEL}" \
+            --input "${INPUT}" \
+            --output "${OUT}" \
+            2>&1 | tee "${RUNNER_TEMP}/convert-log.txt"
+          CONVERT_EXIT=${PIPESTATUS[0]}
+          set -e
+          if [ "${CONVERT_EXIT}" -ne 0 ]; then
+            # The BF16 unwidened source path prints a loud "no float tensors
+            # passed through" note; the converter still exits non-zero
+            # because the metadata-only GGUF is not useful.
+            {
+              echo "### ${ARCH}: conversion FAILED"
+              echo ""
+              echo '```'
+              tail -c 4096 "${RUNNER_TEMP}/convert-log.txt"
+              echo '```'
+              echo ""
+              echo "**Likely cause**: the upstream release is BF16 and the F32/F16"
+              echo "pass-through arm does not widen it. Pre-widen offline (the"
+              echo "CSM / Kokoro / VoxCPM recipe) or wait for the streaming BF16"
+              echo "pass-through path to land (T29-equivalent, per each converter's"
+              echo "rustdoc)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "converted=false" >> "$GITHUB_OUTPUT"
+            echo "gguf=" >> "$GITHUB_OUTPUT"
+            exit "${CONVERT_EXIT}"
+          fi
+          echo "converted=true" >> "$GITHUB_OUTPUT"
+          echo "gguf=${OUT}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### ${ARCH}: conversion OK"
+            echo ""
+            echo "- Output: \`${OUT}\`"
+            echo "- Size: $(wc -c < "${OUT}" | numfmt --to=iec)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Run the parity harness. For irodori, VOKRA_IRODORI_GGUF points
+      # at the just-built GGUF (real shape + metadata + synthesize-refusal
+      # legs fire). For vits_ja, VOKRA_VITS_JA_GGUF is intentionally
+      # unset (the harness honest-skips with a loud NOTE); the family's
+      # sanity tests still run either way.
+      - name: Run parity harness (${{ steps.pins.outputs.env_gguf }})
+        env:
+          ARCH: ${{ matrix.arch }}
+          GGUF: ${{ steps.convert.outputs.gguf }}
+          ENV_GGUF: ${{ steps.pins.outputs.env_gguf }}
+          AUTO_FETCH: ${{ steps.pins.outputs.auto_fetch }}
+        run: |
+          set -euo pipefail
+          if [ "${AUTO_FETCH}" = "true" ]; then
+            # irodori path — env-inject the GGUF path the harness reads.
+            # `env` avoids dynamic-var syntax pitfalls in `bash`.
+            env "${ENV_GGUF}=${GGUF}" \
+              cargo test --release -p vokra-models \
+                --test parity_tts_japanese \
+                "parity_tts_japanese_${ARCH}" -- --nocapture \
+              2>&1 | tee "${RUNNER_TEMP}/parity-${ARCH}.txt"
+          else
+            # vits_ja path — no GGUF env var. The test honest-skips
+            # loudly (the sanity tests in the same file always run and
+            # are the meaningful signal on this row).
+            cargo test --release -p vokra-models \
+              --test parity_tts_japanese \
+              "parity_tts_japanese_${ARCH}" -- --nocapture \
+              2>&1 | tee "${RUNNER_TEMP}/parity-${ARCH}.txt"
+          fi
+          {
+            echo "### ${ARCH}: parity leg"
+            echo ""
+            echo '```'
+            grep -E "^\[parity/" "${RUNNER_TEMP}/parity-${ARCH}.txt" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Zero-dep tripwire — root Cargo.lock unchanged (NFR-DS-02)
+        # Belt-and-suspenders: pip-installing torch inside the parity
+        # venv must not have moved the root Rust lockfile.
+        run: git diff --exit-code Cargo.lock
+
+      - name: Upload parity artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tts-japanese-parity-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/convert-log.txt
+            ${{ runner.temp }}/parity-*.txt
+            ${{ runner.temp }}/${{ matrix.arch }}.gguf
+          retention-days: 7
+          if-no-files-found: warn

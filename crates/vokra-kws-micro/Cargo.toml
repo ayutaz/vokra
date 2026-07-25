@@ -1,0 +1,47 @@
+# Vokra microWakeWord-style keyword-spotting forward core as a no_std(+alloc)
+# subset. Sister crate to `vokra-vad-micro` (M5-03 案1 topology), following the
+# same pattern: one crate that isolates the no_std-capable forward from the
+# std-heavy `vokra-models`, so the Cortex-M55 IoT Tier 3 build (thumbv8m,
+# NFR-PT-03) can name this crate directly without pulling std-only
+# `vokra-ops` / `vokra-backend-cpu`.
+#
+# SCAFFOLD ONLY — `KwsMicro::detect()` returns `KwsEvent::Idle` unconditionally.
+# Real inference (a TFLite-Micro forward pass on the microWakeWord model,
+# Apache 2.0, https://github.com/kahrendt/microWakeWord) is a follow-up WP.
+# `publish = false` because a skeleton that never wakes must NOT be released to
+# crates.io as if it detected wakewords.
+[package]
+name = "vokra-kws-micro"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+# ZERO external dependencies (NFR-DS-02): only `vokra-core`, with
+# `default-features = false` so the no_std subset (error + GGUF reader) is what
+# compiles. The self-contained scalar transcendentals from the sister crate
+# will be reused when the real forward lands (planned; no `libm` — deny.toml
+# bans it). Root Cargo.lock stays `vokra-*` only.
+# A DIRECT path dep (not `vokra-core.workspace = true`) because cargo forbids
+# a workspace-inherited dep from overriding `default-features`, and the no_std
+# subset requires `default-features = false`. Still a first-party `vokra-*`
+# path dep; the `version` alongside `path` tracks the shared workspace version
+# for future `cargo publish` (a no-op for local path resolution today).
+[dependencies]
+vokra-core = { path = "../vokra-core", version = "0.1.0-alpha.0", default-features = false }
+
+# Mirror of `vokra-vad-micro`'s feature layout: `std` (default-ON) forwards to
+# `vokra-core/std`. This crate's own `lib.rs` uses
+# `#![cfg_attr(not(feature = "std"), no_std)]` so it becomes `#![no_std]` when
+# `--no-default-features` is passed (thumbv8m cross-build). `std` adds NO
+# dependency — a cfg flag, not a crate — so the zero-dep invariant (NFR-DS-02)
+# and the root Cargo.lock are unaffected.
+[features]
+default = ["std"]
+std = ["vokra-core/std"]
+
+# Inherit workspace lints: `unsafe_code = "deny"` (this crate contains none)
+# and `missing_docs = "warn"` (promoted to error by CI's
+# `cargo clippy -- -D warnings`).
+[lints]
+workspace = true

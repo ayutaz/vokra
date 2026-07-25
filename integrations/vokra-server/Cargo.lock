@@ -2339,6 +2339,7 @@ dependencies = [
  "vokra-core",
  "vokra-mmap",
  "vokra-models",
+ "vokra-ops",
  "vokra-piper-g2p",
  "vokra-piper-plus",
 ]

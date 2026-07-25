@@ -314,3 +314,430 @@ entries:
 
       Tracked WPs: M4-18 T2 (defer-lift) + M5-15 T14 (converter, CC done) +
       M5-15 UTMOS COMPLETION.
+
+  # -------------------------------------------------------------------------
+  # SoTA plan Phase 1-4 flip-the-switch family harnesses (2026-07-25).
+  #
+  # Seven family workflows landed on branch feat/sota-phase1-2026-07-23 with
+  # per-family opt-in gates and per-model HF pins. The reverse leg of
+  # check_pins_sync.py demands each 40-hex `<UPPERCASE>_REVISION:` env-var
+  # value appear in pins.yaml (registered SHA); the SoTA plan added the
+  # workflows before the catalog, so this landing wire pins.yaml back
+  # into sync. Every entry follows the parity-kokoro-real.yml precedent
+  # (drift_policy=advisory upstream, hard_fail on mirror once populated).
+  #
+  # Enable-gate cross-reference (repo variable → workflow):
+  #   VOKRA_NEMO_ASR_ENABLE         → parity-nemo-asr-real.yml
+  #   VOKRA_WHISPER_EXTRAS_ENABLE   → parity-whisper-extras-real.yml
+  #   VOKRA_TTS_DAC_ENABLE          → parity-tts-dac-real.yml
+  #   VOKRA_TTS_HIFTNET_ENABLE      → parity-tts-hiftnet-real.yml
+  #   VOKRA_QWEN3_TTS_ENABLE        → parity-qwen3-tts-real.yml
+  #   VOKRA_TTS_CONT_VAE_ENABLE     → parity-tts-continuous-vae-real.yml
+  #   VOKRA_TTS_JA_ENABLE           → parity-tts-japanese-real.yml
+  # docs/handoff/parity-ci-flip-switch.md is the owner-facing table.
+  # -------------------------------------------------------------------------
+
+  # ---- NeMo-ASR family (parity-nemo-asr-real.yml) --------------------------
+  # SHAs are declared inline inside the `matrix=` bash JSON at line 172
+  # (the `all` case that ships every family member) and repeated in the
+  # per-arch narrow cases (lines 175/178/181/184/191). Forward leg does
+  # substring search in the workflow text, so `owning_line: 172` catches
+  # all five in the same anchor block. The reverse leg does NOT flag these
+  # because the pins live inside `"hf_rev":"..."` JSON strings (lowercase,
+  # no `_REVISION` suffix) — not caught by REVISION_ENV_RE. Registering
+  # them here keeps the catalog complete regardless of the reverse regex.
+
+  - name: kyutai-stt-2.6b-en
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-nemo-asr-real.yml
+    owning_line: 172
+    upstream:
+      url: https://huggingface.co/kyutai/stt-2.6b-en
+      license: CC-BY-4.0
+    pinned_value:
+      hf_id: kyutai/stt-2.6b-en
+      hf_revision: "a07aec56d22be5589cd0bc8709c75b6cf3e3039d"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 2 real-checkpoint parity CI (NeMo-ASR family).
+      Enable-gate: repo variable VOKRA_NEMO_ASR_ENABLE=1 (or workflow_dispatch).
+      Initial workflow_dispatch by owner. License sign-off pending in
+      docs/license-audit.md §3.1.
+
+  - name: parakeet-tdt-0.6b-v3
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-nemo-asr-real.yml
+    owning_line: 172
+    upstream:
+      url: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+      license: CC-BY-4.0
+    pinned_value:
+      hf_id: nvidia/parakeet-tdt-0.6b-v3
+      hf_revision: "7c35754d166cca382ad1e53e68b01e7c575f3a1d"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 2 real-checkpoint parity CI (NeMo-ASR family).
+      Enable-gate: VOKRA_NEMO_ASR_ENABLE=1. Initial workflow_dispatch by
+      owner. License sign-off pending in docs/license-audit.md §3.1.
+
+  - name: parakeet-ctc-1.1b
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-nemo-asr-real.yml
+    owning_line: 172
+    upstream:
+      url: https://huggingface.co/nvidia/parakeet-ctc-1.1b
+      license: CC-BY-4.0
+    pinned_value:
+      hf_id: nvidia/parakeet-ctc-1.1b
+      hf_revision: "a707e818195cb97c8f7da2fc36b221a29f69a5db"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 2 real-checkpoint parity CI (NeMo-ASR family).
+      Enable-gate: VOKRA_NEMO_ASR_ENABLE=1. Initial workflow_dispatch by
+      owner. License sign-off pending in docs/license-audit.md §3.1.
+
+  - name: canary-1b-v2
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-nemo-asr-real.yml
+    owning_line: 172
+    upstream:
+      url: https://huggingface.co/nvidia/canary-1b-v2
+      license: CC-BY-4.0
+    pinned_value:
+      hf_id: nvidia/canary-1b-v2
+      hf_revision: "87bc52657add533cd0156b3fc1aef027280754bf"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 2 real-checkpoint parity CI (NeMo-ASR family).
+      Enable-gate: VOKRA_NEMO_ASR_ENABLE=1. Initial workflow_dispatch by
+      owner. License sign-off pending in docs/license-audit.md §3.1.
+
+  - name: omniasr-ctc-1b
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-nemo-asr-real.yml
+    owning_line: 172
+    upstream:
+      url: https://huggingface.co/facebook/omniASR-CTC-1B
+      license: Apache-2.0
+    pinned_value:
+      hf_id: facebook/omniASR-CTC-1B
+      hf_revision: "8c22e3ffdaa4aab6431b128b84b991a7d9c2515c"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 2 real-checkpoint parity CI (NeMo-ASR family).
+      HONEST DISCREPANCY: the SoTA plan task-tracker listed
+      `suno/omniASR-CTC-1B-v1` which returns HTTP 401 on the HF public API.
+      Every primary source in the Vokra module names `facebook/omniASR-CTC-1B`;
+      that is what the workflow pins (header-documented). Enable-gate:
+      VOKRA_NEMO_ASR_ENABLE=1. Initial workflow_dispatch by owner.
+      License sign-off pending in docs/license-audit.md §3.1.
+
+  # ---- whisper-extras family (parity-whisper-extras-real.yml) --------------
+
+  - name: distil-large-v3.5
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-whisper-extras-real.yml
+    owning_line: 128
+    upstream:
+      url: https://huggingface.co/distil-whisper/distil-large-v3.5
+      license: MIT
+    pinned_value:
+      hf_id: distil-whisper/distil-large-v3.5
+      hf_revision: "728a7691f3ff1d3d971528d3203a6e9559165d41"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 1 real-checkpoint parity CI (whisper-extras family).
+      Distil-Whisper 2-layer decoder variant. Enable-gate:
+      VOKRA_WHISPER_EXTRAS_ENABLE=1 (or workflow_dispatch). Per-model
+      dispatch input include_distil_whisper toggles the leg. Initial
+      workflow_dispatch by owner. License sign-off pending in
+      docs/license-audit.md §3.1.
+
+  - name: kotoba-whisper-v2.2
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-whisper-extras-real.yml
+    owning_line: 130
+    upstream:
+      url: https://huggingface.co/kotoba-tech/kotoba-whisper-v2.2
+      license: Apache-2.0
+    pinned_value:
+      hf_id: kotoba-tech/kotoba-whisper-v2.2
+      hf_revision: "9d33482a0eb9b57f1ad80708e8ac5538246d8355"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 1 real-checkpoint parity CI (whisper-extras family).
+      Kotoba-Whisper JA distillation variant, same quintuple as large-v3
+      with 2-layer decoder. Enable-gate: VOKRA_WHISPER_EXTRAS_ENABLE=1.
+      Per-model dispatch input include_kotoba_whisper toggles the leg.
+      Initial workflow_dispatch by owner. License sign-off pending in
+      docs/license-audit.md §3.1.
+
+  # ---- tts-dac family (parity-tts-dac-real.yml) ----------------------------
+
+  - name: dia-1.6b
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-tts-dac-real.yml
+    owning_line: 115
+    upstream:
+      url: https://huggingface.co/nari-labs/Dia-1.6B
+      license: Apache-2.0
+    pinned_value:
+      hf_id: nari-labs/Dia-1.6B
+      hf_revision: "257bc72f9b78182ccc6fa07675a9ae4c1a44e2cd"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 1 real-checkpoint parity CI (tts-dac family).
+      Nari Labs Dia-1.6B with DAC 44.1 kHz terminal codec. Enable-gate:
+      VOKRA_TTS_DAC_ENABLE=1 (or workflow_dispatch). Per-model
+      dispatch input include_dia toggles the leg. Initial
+      workflow_dispatch by owner. License sign-off pending in
+      docs/license-audit.md §3.1.
+
+  - name: zonos-v0.1-transformer
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-tts-dac-real.yml
+    owning_line: 118
+    upstream:
+      url: https://huggingface.co/Zyphra/Zonos-v0.1-transformer
+      license: Apache-2.0
+    pinned_value:
+      hf_id: Zyphra/Zonos-v0.1-transformer
+      hf_revision: "9d8331fc49cb5ba8aad2bb56cafd809c66598f4e"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 1 real-checkpoint parity CI (tts-dac family).
+      Zyphra Zonos-v0.1-transformer with DAC 44.1 kHz terminal codec.
+      Enable-gate: VOKRA_TTS_DAC_ENABLE=1. Per-model dispatch input
+      include_zonos toggles the leg. Initial workflow_dispatch by
+      owner. License sign-off pending in docs/license-audit.md §3.1.
+
+  # ---- tts-hiftnet family (parity-tts-hiftnet-real.yml) --------------------
+
+  - name: fun-cosyvoice3-0.5b-2512
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-tts-hiftnet-real.yml
+    owning_line: 133
+    upstream:
+      url: https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512
+      license: Apache-2.0
+    pinned_value:
+      hf_id: FunAudioLLM/Fun-CosyVoice3-0.5B-2512
+      hf_revision: "29e01c4e8d000f4bcd70751be16fa94bf3d85a18"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 1 real-checkpoint parity CI (tts-hiftnet family).
+      FunAudioLLM Fun-CosyVoice3-0.5B, HiFTNet terminal vocoder
+      (`HiFTGenerator` = NSF + iSTFTNet + Snake). Ships torch pickles
+      (llm.pt/flow.pt/hift.pt) — Phase 2 sidecar torch→safetensors is
+      required before vokra-cli convert runs. Enable-gate:
+      VOKRA_TTS_HIFTNET_ENABLE=1. Per-model dispatch input
+      include_cosyvoice3 (default: false). Initial workflow_dispatch by
+      owner. License sign-off pending in docs/license-audit.md §3.1.
+
+  - name: chatterbox-mtl23ls-v3
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-tts-hiftnet-real.yml
+    owning_line: 135
+    upstream:
+      url: https://huggingface.co/ResembleAI/chatterbox
+      license: MIT
+    pinned_value:
+      hf_id: ResembleAI/chatterbox
+      hf_revision: "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 1 real-checkpoint parity CI (tts-hiftnet family).
+      ResembleAI Chatterbox-Multilingual (T3 mtl23ls_v3 inside the
+      chatterbox repo, ~2.1 GB single-file safetensors). Enable-gate:
+      VOKRA_TTS_HIFTNET_ENABLE=1. Per-model dispatch input
+      include_chatterbox_multilingual (default: true). Initial
+      workflow_dispatch by owner. License sign-off pending in
+      docs/license-audit.md §3.1.
+
+  - name: chatterbox-turbo-v1
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-tts-hiftnet-real.yml
+    owning_line: 137
+    upstream:
+      url: https://huggingface.co/ResembleAI/chatterbox-turbo
+      license: MIT
+    pinned_value:
+      hf_id: ResembleAI/chatterbox-turbo
+      hf_revision: "749d1c1a46eb10492095d68fbcf55691ccf137cd"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 1 real-checkpoint parity CI (tts-hiftnet family).
+      ResembleAI Chatterbox-Turbo (t3_turbo_v1). Enable-gate:
+      VOKRA_TTS_HIFTNET_ENABLE=1. Per-model dispatch input
+      include_chatterbox_turbo (default: false). Initial workflow_dispatch
+      by owner. License sign-off pending in docs/license-audit.md §3.1.
+
+  - name: chatterbox-nano-v1
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-tts-hiftnet-real.yml
+    owning_line: 139
+    upstream:
+      url: https://huggingface.co/ResembleAI/chatterbox-nano
+      license: MIT
+    pinned_value:
+      hf_id: ResembleAI/chatterbox-nano
+      hf_revision: "71ccd1d0081b430592cea481f4307e764e07bc64"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 1 real-checkpoint parity CI (tts-hiftnet family).
+      ResembleAI Chatterbox-Nano (t3_nano_v1, smallest family member).
+      Enable-gate: VOKRA_TTS_HIFTNET_ENABLE=1. Per-model dispatch input
+      include_chatterbox_nano (default: true). Initial workflow_dispatch
+      by owner. License sign-off pending in docs/license-audit.md §3.1.
+
+  # ---- Qwen3-TTS family (parity-qwen3-tts-real.yml) ------------------------
+
+  - name: qwen3-tts-12hz-0.6b-base
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-qwen3-tts-real.yml
+    owning_line: 98
+    upstream:
+      url: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base
+      license: Apache-2.0
+    pinned_value:
+      hf_id: Qwen/Qwen3-TTS-12Hz-0.6B-Base
+      hf_revision: "5d83992436eae1d760afd27aff78a71d676296fc"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 3 real-checkpoint parity CI (qwen3-tts family).
+      Only released family member today; a future 1.7B variant lands as
+      a second entry. Enable-gate: VOKRA_QWEN3_TTS_ENABLE=1 (or
+      workflow_dispatch). Initial workflow_dispatch by owner.
+      License sign-off pending in docs/license-audit.md §3.1.
+
+  # ---- tts-continuous-vae family (parity-tts-continuous-vae-real.yml) ------
+
+  - name: voxcpm2
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-tts-continuous-vae-real.yml
+    owning_line: 101
+    upstream:
+      url: https://huggingface.co/openbmb/VoxCPM2
+      license: Apache-2.0
+    pinned_value:
+      hf_id: openbmb/VoxCPM2
+      hf_revision: "bffb3df5a29440629464e5e839f4d214c8714c3d"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 4 real-checkpoint parity CI (tts-continuous-vae family).
+      OpenBMB VoxCPM2 continuous-VAE TTS. Enable-gate:
+      VOKRA_TTS_CONT_VAE_ENABLE=1 (or workflow_dispatch). Optional matrix
+      filter input `only=voxcpm2` runs this leg alone. Initial
+      workflow_dispatch by owner. License sign-off pending in
+      docs/license-audit.md §3.1.
+
+  - name: vibevoice-1.5b
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-tts-continuous-vae-real.yml
+    owning_line: 103
+    upstream:
+      url: https://huggingface.co/microsoft/VibeVoice-1.5B
+      license: MIT
+    pinned_value:
+      hf_id: microsoft/VibeVoice-1.5B
+      hf_revision: "c00898d257e6b46004e3e2866a47534085fb685a"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase 4 real-checkpoint parity CI (tts-continuous-vae family).
+      Microsoft VibeVoice-1.5B continuous-VAE TTS. Enable-gate:
+      VOKRA_TTS_CONT_VAE_ENABLE=1. Optional matrix filter input
+      `only=vibevoice` runs this leg alone. Initial workflow_dispatch by
+      owner. License sign-off pending in docs/license-audit.md §3.1.
+
+  # ---- tts-japanese family (parity-tts-japanese-real.yml) ------------------
+
+  - name: irodori-tts-500m-v3
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-tts-japanese-real.yml
+    owning_line: 141
+    upstream:
+      url: https://huggingface.co/Aratako/Irodori-TTS-500M-v3
+      license: MIT
+    pinned_value:
+      hf_id: Aratako/Irodori-TTS-500M-v3
+      hf_revision: "236c1e56591279fc24e3c1bf6609fc06e48dde28"
+    drift_policy:
+      upstream_mismatch: advisory
+      mirror_mismatch: hard_fail
+    notes: |
+      SoTA plan Phase JA real-checkpoint parity CI (tts-japanese family).
+      Aratako Irodori-TTS-500M-v3 (Rectified-Flow DiT + Semantic-DACVAE-JA
+      48 kHz). HONEST SLUG CORRECTION: the SoTA plan originally named
+      `Irodori-tech/Irodori-TTS-500M-v3` which returns HTTP 401; the
+      actual public HF repo is `Aratako/Irodori-TTS-500M-v3` (verified
+      via HF API 2026-07-25, workflow-header documented). Enable-gate:
+      VOKRA_TTS_JA_ENABLE=1 (or workflow_dispatch). Optional matrix filter
+      input `only=irodori` runs this leg alone. Initial workflow_dispatch
+      by owner. License sign-off pending in docs/license-audit.md §3.1.
+
+  - name: vits-ja-kan-bayashi-jsut-vits
+    kind: other
+    owning_workflow: .github/workflows/parity-tts-japanese-real.yml
+    owning_line: 149
+    upstream:
+      url: https://huggingface.co/espnet/kan-bayashi_jsut_vits
+      license: Apache-2.0 (code) / restricted (weight — JSUT corpus terms)
+    pinned_value:
+      hf_id: espnet/kan-bayashi_jsut_vits
+      hf_revision: "UNFETCHABLE-corpus-restricted-see-workflow-header"
+    drift_policy:
+      upstream_mismatch: skip       # sentinel string, no verifiable SHA to probe
+      mirror_mismatch: hard_fail    # only meaningful once operator-provisioned
+    notes: |
+      SoTA plan Phase JA real-checkpoint parity CI (tts-japanese family) —
+      OPERATOR-PROVISIONED SENTINEL. Two independent blockers make this row
+      arch-only in CI:
+        (a) HF mirror `espnet/kan-bayashi_jsut_vits` returns HTTP 401
+            (gated / removed from public listing, verified 2026-07-25 via
+            `curl huggingface.co/api/models/…`);
+        (b) JSUT corpus terms explicitly forbid re-distribution of the
+            trained weight (sites.google.com/site/shinnosuketakamichi/publication/jsut).
+      The workflow therefore does NOT auto-fetch this checkpoint (matrix
+      row skips the HF download + convert steps and runs the harness
+      directly; absent an operator-provisioned VOKRA_VITS_JA_GGUF, the
+      Rust test honest-skips loudly per FR-EX-08). Architecture rides
+      Apache-2.0 (ESPnet) + MIT (jaywalnut310/vits) code and is always
+      independently implementable (whisper.cpp 型 clean-room re-imp,
+      CLAUDE.md 設計判断 4). `hf_revision` field carries the sentinel
+      string verbatim so the forward literal search matches workflow
+      line 149. drift_policy.upstream_mismatch=skip because the sentinel
+      is not a probe-able SHA. Enable-gate: VOKRA_TTS_JA_ENABLE=1.
+      Optional matrix filter input `only=vits_ja`. License sign-off
+      pending in docs/license-audit.md §3.1.

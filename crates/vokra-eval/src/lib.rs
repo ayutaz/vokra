@@ -45,6 +45,10 @@ pub use dod::{
     CorpusItem, DOD_ITEM2_THRESHOLD, DodItem2Report, EnvZooRunEnv, Item2RunnerVerdict,
     RecordOutcome, ZooRunEnv, run_dod_item2,
 };
+pub use gate::{
+    ArtifactClass, AsrPrimaryMetric, AxisOutcome, QualityGateReport, gate_asr_text,
+    gate_generative_audio, render_run,
+};
 pub use manifest::{Manifest, Record};
 pub use metrics::{
     AudioMosMetric, AudioRefMetric, Cer, Direction, MelLoss, Metric, TextMetric, Wer, edit_distance,

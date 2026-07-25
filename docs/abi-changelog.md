@@ -228,6 +228,227 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-07-24 — 1.0.0-rc.1-dev (SoTA Phase 1: HiFTNet vocoder primitives + NSF module — Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+**untouched** (`scripts/gen-c-abi.sh --check` = no diff; a grep for `hiftnet` /
+`nsf` / `snake` in the header matches **0** new symbols). No GGUF metadata
+schema is added at the Vokra prefix level for this Phase 1 slice; the models
+that consume these primitives (CosyVoice2 HiFTGenerator chain, and the
+scaffolds for Dia-1.6B / Zonos-v0.1) reuse the existing
+`vokra.cosyvoice2.*` / model-specific chunks that were already recorded in
+the v0.9 baseline. Phase 1 wires the HiFTNet (Neural Source Filter +
+iSTFTNet) vocoder as the correct upstream chain for CosyVoice2
+(`cosyvoice/hifigan/generator.py:378 class HiFTGenerator`, arXiv:2412.10117)
+— superseding the previously-scaffolded `mimi_bridge.rs` which was based on
+the 2026-07-22 corrected SSOT (SoTA plan §1(a): CosyVoice2 does **not** use
+Mimi; Mimi is Moshi/CSM-only).
+
+M5-13 relevance (why this is recorded here): all items are additive **Rust**
+public items with **no C surface**, so `scripts/check-abi-changelog.sh` does
+not gate on this entry (no C symbol changed). `scripts/rust-public-api-list.sh`
+picks them up (`vokra-ops::nsf::*` and `vokra-ops::hiftnet::*`); as with the
+M5-01/02/03/05/06 entries below, the
+`docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot is **not** rotated by
+this PR — snapshot rotation is the M5-13/IF-01 freeze owner's action. All
+items are additive (existing signatures unchanged; `NsfEntropy` is
+`#[non_exhaustive]` for future extension), Breaking? = no.
+
+New model scaffolds landed under this PR (`vokra-models::dia`,
+`vokra-models::zonos`, and the corresponding converters `vokra-convert::models::dia`
+/ `vokra-convert::models::zonos`) are excluded from the
+`rust-public-api-list.sh` scan surface (scan crates =
+`vokra-core` / `vokra-ops` / `vokra-capi` only — same posture as
+`vokra-models` scaffolds landed in prior WPs). CosyVoice2 wiring
+(`vokra-models::cosyvoice2::hift_chain`) is likewise `vokra-models`
+internal, not part of the snapshot. Real-weight parity harnesses (Dia /
+Zonos / real CosyVoice2 checkpoint) land here as flip-the-switch skeletons;
+they do not add public surface until owner provides the checkpoints
+(`docs/m4-owner-verification-checklist.md`).
+
+| Crate / area              | Symbol                                                                                                                       | Kind  | Signature / note                                                                                                                                    | Rationale                                                                                                | Breaking? | PR    |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | --------- | ----- |
+| `vokra-ops::nsf` (new mod) | `SineGen` / `SineGenConfig` / `SineGenOutput`                                                                                | Added | `pub struct` + `pub fn new(cfg) -> Self` + `pub fn forward(&self, f0: &[f32], entropy: NsfEntropy) -> Result<SineGenOutput>`                          | Sine oscillator front-end for NSF (HiFTNet upstream; CosyVoice2 arXiv:2412.10117 §Vocoder), SoTA Phase 1-2 wave 1 | no        | (TBD) |
+| `vokra-ops::nsf`          | `SourceModuleHnNSF` / `SourceModuleHnNSFConfig` / `SourceModuleHnNSFWeights` / `SourceModuleHnNSFOutput`                     | Added | `pub struct` + `pub fn new(cfg, weights) -> Result<Self>` + `pub fn forward(&self, f0, entropy) -> Result<SourceModuleHnNSFOutput>`                   | Harmonic-plus-noise Neural Source Filter (paired with HiFTGenerator), SoTA Phase 1-2 wave 1              | no        | (TBD) |
+| `vokra-ops::nsf`          | `NsfEntropy`                                                                                                                 | Added | `pub enum NsfEntropy { Deterministic, /* future variants */ }` (`#[non_exhaustive]`)                                                                  | entropy source knob for NSF noise term (owner-selectable at higher layers), SoTA Phase 1-2               | no        | (TBD) |
+| `vokra-ops::hiftnet` (new mod) | `F0Predictor` / `F0PredictorConfig` / `F0PredictorWeights`                                                              | Added | `pub struct` + `pub fn new(cfg, weights) -> Result<Self>` + `pub fn forward(&self, mel, t_mel) -> Result<Vec<f32>>`                                    | F0 predictor (Conv1d+ELU stack + Linear head) driving NSF from mel, SoTA Phase 1-2 wave 2                | no        | (TBD) |
+| `vokra-ops::hiftnet`      | `Snake`                                                                                                                      | Added | `pub struct Snake { alpha: Vec<f32>, alpha_logscale: bool }` + `pub fn new(alpha, alpha_logscale) -> Result<Self>` + `pub fn forward_in_place(x, channels, time) -> Result<()>` | Snake activation (BigVGAN/HiFTNet), per-channel alpha, SoTA Phase 1-2 wave 3a                            | no        | (TBD) |
+| `vokra-ops::hiftnet`      | `ResBlock` / `ResBlockConfig` / `ResBlockWeights`                                                                            | Added | `pub struct` + `pub fn new(cfg, weights) -> Result<Self>` + `pub fn forward_in_place(x, t) -> Result<()>`                                             | HiFTNet MRF residual block with dilated Conv1d, SoTA Phase 1-2 wave 3b                                   | no        | (TBD) |
+| `vokra-ops::hiftnet`      | `HiFTGenerator` / `HiFTGeneratorConfig` / `HiFTGeneratorWeights`                                                             | Added | `pub struct` + `pub fn new(cfg, weights) -> Result<Self>` + `pub fn forward(&self, mel, t) -> Result<Vec<f32>>` + accessors (`config`, `num_kernels`, `num_upsamples`, `output_channels_at`, `total_upsample_factor`) | HiFTNet generator (NSF + iSTFTNet vocoder head, Snake) for CosyVoice2 mel → PCM, SoTA Phase 1-2 wave 3c  | no        | (TBD) |
+| `vokra-ops::hiftnet`      | `f0_predictor_forward` (module fn)                                                                                            | Added | `pub fn f0_predictor_forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>>` (on `F0Predictor`)                                                | direct-use convenience for CosyVoice2 chain wiring, SoTA Phase 1-2 wave 2                                | no        | (TBD) |
+
+### 2026-07-24 — 1.0.0-rc.1-dev (SoTA Phase 2/3/4 + JA: ASR/TTS primitives + models — Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+**untouched** (`scripts/check-abi-changelog.sh` = clean; a grep for any of the
+new module names in the header matches **0** new symbols). The GGUF metadata
+schema is extended **only under model-specific chunks** (`vokra.parakeet.*`,
+`vokra.canary.*`, `vokra.distil_whisper.*`, `vokra.kotoba_whisper.*`,
+`vokra.chatterbox.*`, `vokra.qwen3_tts.*`, `vokra.cosyvoice3.*`,
+`vokra.voxcpm.*`, `vokra.voxcpm2.*`, `vokra.vibevoice.*`, `vokra.irodori.*`,
+`vokra.vits_ja.*`) — these are additive under §"Scope: what belongs in this
+file" (recorded here in the GGUF metadata additions block at the bottom of
+this file for M5-13 rollup) and never rename existing keys.
+
+Consolidates four in-progress branches that landed additive vokra-ops
+primitives + model scaffolds on the current SoTA plan implementation branch
+`feat/sota-phase1-2026-07-23`:
+
+- **SoTA Phase 2** (ASR trigger models: Parakeet-TDT/CTC, Canary-1B-v2,
+  Kyutai-STT, OmniASR-CTC, Distil-Large-v3.5) — adds three vokra-ops
+  primitives (`conformer`, `rnnt_decode`, `ctc_decode`) plus six model
+  scaffolds under `vokra-models::{parakeet,parakeet_ctc,canary,kyutai_stt,
+  omniasr_ctc,distil_whisper}` and matching converters. FR-OP-40 /
+  FR-OP-41 / FR-OP-42.
+- **SoTA Phase 3** (TTS trigger models: FunAudioLLM-CosyVoice3-0.5B,
+  Chatterbox-Multilingual/Turbo/Nano, Qwen3-TTS-0.6B) — adds three
+  vokra-ops primitives (`bigvgan_generator`, `snac_decode`,
+  `qwen3_tts_codec`) plus five model scaffolds under
+  `vokra-models::{cosyvoice3,chatterbox,chatterbox_turbo,chatterbox_nano,
+  qwen3_tts}` and matching converters. FR-OP-11 (BigVGAN) + FR-OP-35 (SNAC
+  as an FSQ-adjacent codec landing on the shared `codebook_lookup` seam)
+  + FR-OP-36 (Qwen3-TTS 16-quantizer RVQ, semantic + acoustic split at
+  12.5 Hz).
+- **SoTA Phase 4** (long-form TTS: Microsoft VoxCPM2 + Microsoft
+  VibeVoice-1.5B) — adds two vokra-ops primitives (`vae_continuous`
+  shared between VoxCPM2 and VibeVoice per the vae_continuous rustdoc;
+  `ddpm_sampler` new to VibeVoice, distinct axes from `flow_sampler` per
+  ADR M3-05 §D4 = v-prediction + cosine β schedule) plus two model
+  scaffolds under `vokra-models::{voxcpm2,vibevoice}` and matching
+  converters. FR-OP-30 / FR-EX-10.
+- **JA (Japanese-first ASR/TTS)** — adds one vokra-ops primitive
+  (`waveform_frontend` = 7-layer strided Conv1d over raw PCM, used by
+  Kotoba-Whisper distilled encoders that skip the mel step) plus three
+  model scaffolds under `vokra-models::{kotoba_whisper,irodori,vits_ja}`
+  and matching converters, plus the eval crate's language axis
+  (`vokra-eval::lang`; CER as the JA primary metric). JA-ASR-0/1/2 +
+  JA-TTS-1/2.
+
+M5-13 relevance: this WP is additive **Rust** public items only with **no
+C surface**, so `scripts/check-abi-changelog.sh` does not gate on this
+entry (no C symbol changed). `scripts/rust-public-api-list.sh` picks all
+128 new symbols up (9 new modules under `vokra-ops`; 7 new enums; 33 new
+structs; 68 new fns; plus 9 re-exports at `vokra-ops::lib`; plus 1 type
+alias); as with all other pre-1.0-rc entries in this file, the
+`docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot **is** rotated by
+this PR (following the Phase 1 pattern at commit `351dc42`) — but the
+rotation is a mechanical restatement of the additive surface and does
+not fire IF-01 (freeze is the M5-13/v1.0 GA owner action). All items are
+additive (existing signatures unchanged; every new public enum is
+`#[non_exhaustive]`), Breaking? = no.
+
+Model scaffolds landed under this PR (`vokra-models::{parakeet,
+parakeet_ctc, canary, kyutai_stt, omniasr_ctc, distil_whisper,
+cosyvoice3, chatterbox, chatterbox_turbo, chatterbox_nano, qwen3_tts,
+voxcpm2, vibevoice, kotoba_whisper, irodori, vits_ja}`) are **excluded**
+from the `rust-public-api-list.sh` scan surface (scan crates =
+`vokra-core` / `vokra-ops` / `vokra-capi` only — same posture as prior
+`vokra-models` scaffolds landed in the SoTA Phase 1 entry above and in
+prior WPs). Real-weight parity harnesses land as flip-the-switch
+skeletons; they do not add public surface until owner provides the
+checkpoints (`docs/m4-owner-verification-checklist.md`).
+
+Adversarial audit gaps landed as tests only (`feat(sota-audit)` +
+`test(sota-audit)`): `vokra-convert::lib` gained a
+`modelkind_alias_and_roundtrip_tests` module (~100 alias→variant
+assertions across all Phase 2-5 families + Whisper 2 aliases +
+denoise/utmos canonical spellings), and
+`vokra-core::compliance::license_class` gained coverage for the
+`Copyleft` / `RedistributionForbidden` / `ConditionalCommercial`
+variants added on 2026-07-23. These are internal test items and do not
+show up in the Rust public-API snapshot.
+
+| Crate / area                          | Symbol                                                                                                                                                                                                                                                                                                            | Kind  | Signature / note                                                                                                                                                                                                                                                                                | Rationale                                                                                                                              | Breaking? | PR    |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------- | ----- |
+| `vokra-ops::conformer` (new mod)      | `ConformerEncoder` / `ConformerConfig` / `ConformerWeights` / `ConformerLayerWeights` / `ConformerConvWeights` / `ConformerSubsampleWeights` / `FeedForwardWeights` / `MhaWeights` / `ConvSubsampleKind` / `PositionEncoding`                                                                                     | Added | `pub struct` + `pub fn new(cfg, weights) -> Result<Self>` + `pub fn forward(&self, mel, mel_frames) -> Result<(Vec<f32>, usize)>` + accessors (`config`, `factor`, `has_norm`, `head_dim`, `projection_in_dim`); two `#[non_exhaustive]` enums for subsample kind + position encoding.           | NeMo Conformer/FastConformer encoder primitive for Parakeet + Canary + OmniASR-CTC, SoTA Phase 2 wave 1                                | no        | (TBD) |
+| `vokra-ops::rnnt_decode` (new mod)    | `rnnt_decode` (fn) / `RnntAttrs` / `RnntHypothesis` / `RnntDecoderKind`                                                                                                                                                                                                                                           | Added | `pub fn rnnt_decode(logits, attrs) -> Result<Vec<RnntHypothesis>>` + attrs struct + hypothesis struct + `#[non_exhaustive]` enum `{Greedy, Beam, Tdt, LabelLooping}` (label-looping stubbed; TDT active)                                                                                        | RNN-T decoder primitive (greedy + beam + TDT) for Parakeet-TDT-0.6B-v3, SoTA Phase 2 wave 1                                            | no        | (TBD) |
+| `vokra-ops::ctc_decode` (new mod)     | `ctc_decode_greedy` (fn) / `ctc_decode_beam` (fn) / `CtcBeamAttrs` / `CtcHypothesis` / `CtcBeamAttrs::plain` (ctor)                                                                                                                                                                                                | Added | `pub fn ctc_decode_greedy(logits, ...) -> Result<Vec<u32>>` + `pub fn ctc_decode_beam(logits, attrs) -> Result<Vec<CtcHypothesis>>` + attrs (blank_id + beam_width + optional n-gram LM fusion path + hotword boost) + hypothesis struct + `plain` ctor                                          | CTC decoder primitive (greedy blank-fold + prefix beam search with LM fusion + hotword boost) for OmniASR-CTC-1B + Parakeet-CTC-1.1B, SoTA Phase 2 wave 1 | no        | (TBD) |
+| `vokra-ops::bigvgan_generator` (new mod) | `BigVGanGenerator` / `BigVGanConfig` / `BigVGanWeights` / `AmpBlock1` / `AmpBlock1Weights` / `SnakeBeta` / `SnakeKind`                                                                                                                                                                                            | Added | `pub struct` + `pub fn new(cfg, weights) -> Result<Self>` + `pub fn forward(&self, mel, t_mel) -> Result<Vec<f32>>` + accessors + `#[non_exhaustive]` enum for Snake vs SnakeBeta variant                                                                                                       | anti-aliased AMPBlock1 + Snake/SnakeBeta + tanh terminal for Chatterbox family + downstream vocoder-sharing models, SoTA Phase 3 wave 1 | no        | (TBD) |
+| `vokra-ops::snac_decode` (new mod)    | `SnacDecoder` / `SnacConfig` / `SnacWeights`                                                                                                                                                                                                                                                                       | Added | `pub struct` + `pub fn new(cfg, weights) -> Result<Self>` + decode fn (multi-scale)                                                                                                                                                                                                              | Multi-Scale Neural Audio Codec 3-stage RVQ decode for Chatterbox family, SoTA Phase 3 wave 1                                            | no        | (TBD) |
+| `vokra-ops::qwen3_tts_codec` (new mod) | `Qwen3TtsCodec` / `Qwen3TtsCodecConfig` / `qwen3_tts_codec_decode` (fn) + accessors (`config`, `decode`, `frame_rate_hz`, `new`, `quantizer_vocab_size`)                                                                                                                                                          | Added | `pub struct` + `pub fn new(cfg, weights: Vec<CodebookTable>) -> Result<Self>` + `pub fn decode(&self, codes: &[Vec<u32>]) -> Result<Vec<f32>>` (16-quantizer @ 12.5 Hz, semantic + acoustic split)                                                                                                | Qwen3-TTS RVQ code→feature decode primitive for Qwen3-TTS-0.6B, SoTA Phase 3 wave 1                                                     | no        | (TBD) |
+| `vokra-ops::vae_continuous` (new mod) | `ContinuousVaeEncoder` / `ContinuousVaeDecoder` / `ContinuousVaeConfig` / `ContinuousVaeEncoderWeights` / `ContinuousVaeDecoderWeights` / `continuous_vae_encode` (fn) / `continuous_vae_decode` (fn)                                                                                                              | Added | `pub struct` encoder/decoder + `pub fn new(cfg, weights) -> Result<Self>` + module-level fns for one-shot encode/decode                                                                                                                                                                            | continuous VAE (encoder/decoder) shared between VoxCPM2 and VibeVoice, SoTA Phase 4 wave 1                                              | no        | (TBD) |
+| `vokra-ops::ddpm_sampler` (new mod)   | `ddpm_sample` (fn) / `DdpmSamplerConfig` / `BetaSchedule` / `PredictionType` / `build_alphas_cumprod` (fn) / `pick_inference_timesteps` (fn) / `DdpmSamplerConfig::vibevoice_defaults` (ctor)                                                                                                                     | Added | `pub fn ddpm_sample<F>(f, cfg) -> Result<Vec<f32>>` + config (`num_train_timesteps` + `num_inference_timesteps` + `prediction_type` + `beta_schedule`) + `#[non_exhaustive]` enums `PredictionType {Epsilon, VPrediction}` and `BetaSchedule {Linear, Cosine, ScaledLinear}` + helper fns + preset | DDPM sampler for VibeVoice-1.5B (v-prediction + cosine β schedule — the two axes flow_sampler cannot express per ADR M3-05 §D4), SoTA Phase 4 wave 1 | no        | (TBD) |
+| `vokra-ops::waveform_frontend` (new mod) | `waveform_frontend` (fn) / `WaveformFrontendAttrs` / `WaveformFrontendWeights` / `ConvLayerAttrs` / `ConvLayerWeights` / `Norm`                                                                                                                                                                                    | Added | `pub fn waveform_frontend(pcm, attrs, weights) -> Result<Vec<f32>>` + attrs (7-layer strided Conv1d chain over raw 16 kHz PCM) + `#[non_exhaustive]` enum `Norm {None, LayerNorm, GroupNorm}` for per-layer normalisation                                                                        | 7-layer strided conv frontend replacing mel for Kotoba-Whisper distilled encoders, SoTA plan JA-ASR-1                                    | no        | (TBD) |
+| `vokra-ops::lib` re-exports           | (9 new `pub use` re-exports for the modules above — one per module + `Norm` alias)                                                                                                                                                                                                                                | Added | flat re-export block per the parallel-wave rebase pattern used throughout `vokra-ops::lib`                                                                                                                                                                                                          | ergonomic top-level access mirroring existing ops (flow_sampler, mimi_rvq, etc.), SoTA Phase 2/3/4 + JA                                  | no        | (TBD) |
+
+### 2026-07-25 — 1.0.0-rc.1-dev (Wave E BF16 pass-through fleet + Wave F audio primitives + CI fix wave — Rust surface only)
+
+Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
+**untouched** (33 fn + 11 typedef, baseline unbroken; `scripts/gen-c-abi.sh --check`
+= no diff). No new C symbol is added by any of the three waves this day. The
+Rust public-API snapshot (`docs/abi/vokra-rust-public-api.v1.0-rc.list`) is
+rotated by mechanical restatement per the Phase 1 pattern (commit `351dc42`
+precedent) — **NOT an IF-01 firing**; the freeze commitment remains M5-13 /
+v1.0 GA tag / owner action. Anchor files (`docs/abi/vokra.h.*.symbols` /
+`docs/abi/vokra-rust-public-api.*.list`) are **not modified by this WP** —
+snapshot rotation is the M5-13/IF-01 freeze owner's action.
+
+**Wave E — BF16 pass-through converter fleet** (2026-07-23〜25): 15 new
+converters emit BF16 verbatim via `GgufBuilder` (`GgmlType::BF16`, GGUF type
+30 — previously landed for Moshi under the 2026-07-15 M4-06 entry) + 20
+existing converters extended with a BF16 arm. All changes are inside
+`crates/vokra-convert/src/models/*.rs` module-private paths + config chunks;
+**no new public functions in the `vokra-convert` `pub` surface**, no new GGUF
+metadata keys, no shape/layout change to any existing tensor. Existing F32 /
+F16 pathways are byte-for-byte unchanged.
+
+**Wave F — audio primitives + WhisperX-style long-form orchestrator**
+(2026-07-24〜25): `vokra-models::f0::{rmvpe, fcpe, crepe}` is a new `pub mod f0`
+with `F0Frame`, `LoadError`, and the three extractor types (`Rmvpe`, `Fcpe`,
+`Crepe`), each exposing `from_gguf` / `extract` (Rustdoc marked **SKELETON** —
+construction and I/O contract only; real inference lands in a follow-up WP
+alongside the first F0-consuming model). `vokra-models::align::{ctc_segmentation, charsiu}`
+lands the align-op skeleton plus a **full `ctc_segmentation` Viterbi
+implementation** (non-skeleton; ready for the first alignment consumer). The
+WhisperX-style native long-form orchestrator lives at
+`integrations/vokra-server/src/longform.rs` (+928 lines) — this is
+**server-side only** (isolated `integrations/vokra-server` workspace,
+"Out-of-scope" per the top of this file) and is not part of the core ABI
+surface; noted here only to explain why the core Rust-snapshot delta this
+day is core-only despite the large diff.
+
+**New crate — `vokra-kws-micro`** (Wave F sibling): `#![no_std]`(+`alloc`),
+`publish = false`, identical posture to `vokra-vad-micro` (2026-07-21 M5-03
+entry). Not part of the public API snapshot (`scripts/rust-public-api-list.sh`
+scans only `vokra-core` / `vokra-ops` / `vokra-capi`); recorded here so the
+M5-13 owner has a complete crate inventory before the freeze. Root
+`Cargo.lock` remains `vokra-*` only (NFR-DS-02).
+
+**CI fix wave** (2026-07-25, land commits from the ultracode fix workflow —
+see PR #20): repo-hygiene YAML heredoc syntax fix (`SNAPSHOT_STDOUT="$(python -
+<<'PY' ... PY )"` → `python -c "..."`) / license — FunCodec (Alibaba DAMO,
+MIT) is a **separate codec from Meta EnCodec** (CC-BY-NC 4.0), but the
+upstream slug embeds the literal substring "encodec"; owner decision
+2026-07-25 was to add an **explicit SLUG_ALLOWLIST to `scripts/compliance/
+check-encodec-exclusion.sh`** (transparency preserved for audit) rather than
+`concat!`-split the source (subagent's alternative rejected as
+"indistinguishable from defeating the audit control"); `funcodec.rs` stays
+byte-exact so `vokra.provenance.upstream_hf` cross-checks byte-for-byte
+against upstream / zonos parity `rotary_emb_interleaved` type alignment.
+**No public API changes** — recorded here for the M4-12 rc baseline-snapshot
+completeness (CI-tooling deltas the gate scripts depend on).
+
+M5-13 relevance (why this is recorded here): all items are additive **Rust**
+public items, module-private converter deltas, or CI tooling deltas with **no
+C surface**, so `scripts/check-abi-changelog.sh` does not gate on this entry
+(no C symbol changed). `scripts/rust-public-api-list.sh` picks up the new
+`f0` and `align` modules; the new `vokra-kws-micro` crate is out of its scan
+set. Rotation of the snapshot itself remains an owner action at M5-13.
+
+| Crate / area                            | Symbol                                            | Kind  | Signature / note                                                                                                                                       | Rationale                                                                                | Breaking? | PR    |
+| --------------------------------------- | ------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | --------- | ----- |
+| `vokra-models::align` (new module)      | `pub mod align`                                   | Added | `pub mod align` (contains `ctc_segmentation`, `charsiu` submodules)                                                                                     | forced-alignment / segmentation op family, Wave F                                          | no        | (TBD) |
+| `vokra-models::align::charsiu`          | Charsiu-style forced-alignment                    | Added | forced-alignment types **SKELETON** (Rustdoc-marked)                                                                                                    | forced alignment secondary path, Wave F                                                    | no        | (TBD) |
+| `vokra-models::align::ctc_segmentation` | CTC-segmentation Viterbi decoder                  | Added | full CTC-segmentation Viterbi implementation (non-skeleton; ready for first consumer)                                                                   | forced alignment via CTC (FR-OP-40 sibling), Wave F                                        | no        | (TBD) |
+| `vokra-models::f0` (new module)         | `pub mod f0`                                      | Added | `pub mod f0` (contains `rmvpe`, `fcpe`, `crepe` submodules)                                                                                             | F0 / pitch extraction op family (FR-OP-83), Wave F skeleton                                | no        | (TBD) |
+| `vokra-models::f0`                      | `F0Frame`                                         | Added | `pub struct F0Frame { … }` (per-frame f0 + confidence)                                                                                                  | shared F0 output frame across RMVPE / FCPE / CREPE, Wave F                                 | no        | (TBD) |
+| `vokra-models::f0`                      | `LoadError`                                       | Added | `pub enum LoadError` (GGUF load failure modes)                                                                                                          | shared error kind for the three extractor `from_gguf` entries, Wave F                      | no        | (TBD) |
+| `vokra-models::f0::crepe`               | `Crepe::{from_gguf, extract}`                     | Added | `pub fn from_gguf(&GgufFile) -> Result<Self, LoadError>` / `pub fn extract(&self, pcm: &[f32]) -> Result<Vec<F0Frame>>`                                 | CREPE extractor **SKELETON**; real inference in follow-up                                  | no        | (TBD) |
+| `vokra-models::f0::fcpe`                | `Fcpe::{from_gguf, extract}`                      | Added | `pub fn from_gguf(&GgufFile) -> Result<Self, LoadError>` / `pub fn extract(&self, pcm: &[f32]) -> Result<Vec<F0Frame>>`                                 | FCPE extractor **SKELETON**; real inference in follow-up                                   | no        | (TBD) |
+| `vokra-models::f0::rmvpe`               | `Rmvpe::{from_gguf, extract}`                     | Added | `pub fn from_gguf(&GgufFile) -> Result<Self, LoadError>` / `pub fn extract(&self, pcm: &[f32]) -> Result<Vec<F0Frame>>`                                 | RMVPE extractor **SKELETON**; real inference in follow-up                                  | no        | (TBD) |
+| `vokra-kws-micro` (new crate)           | crate scaffold                                    | Added | `#![no_std]`(+`alloc`), `publish = false`, `vokra-core` dep only; not in public API snapshot                                                            | no_std KWS scaffold for IoT tiers, sibling of `vokra-vad-micro`                            | no        | (TBD) |
+| `vokra-convert` (module-private)        | Wave E BF16 pass-through — 35 converters          | Added | 15 new converters + 20 existing extended with a BF16 arm via `GgufBuilder` (`GgmlType::BF16`, GGUF type 30); no new `pub` fn, no new GGUF keys           | preserve BF16 upstream fidelity end-to-end (no F32 promotion at conversion), Wave E        | no        | (TBD) |
+
 ### 2026-07-21 — 1.0.0-rc.1-dev (M5-05: consent manifest schema + structural validator — Rust surface only)
 
 Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is

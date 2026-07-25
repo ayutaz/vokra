@@ -165,10 +165,24 @@ const CLUSTER_USAGE_EPSILON: f32 = 1e-5;
 /// Conversion report.
 #[derive(Debug, Default)]
 pub(crate) struct MimiReport {
-    /// Upstream tensors written verbatim.
+    /// Upstream tensors written verbatim (F32 / F16 / BF16 — all three go
+    /// through the same byte-copy path since the BF16 pass-through land
+    /// 2026-07-25, mirror of `qwen3-tts` / `vibevoice` / `voxcpm2`).
     pub(crate) written: usize,
-    /// Non-F32/F16 tensors skipped (defensive; the checkpoint is all-F32).
+    /// Non-F32 / F16 / BF16 tensors skipped (defensive; the safetensors
+    /// reader only admits F32 / F16 / BF16, so this stays 0 in practice).
     pub(crate) skipped_non_float: usize,
+    /// Of the tensors in [`Self::written`], how many were BF16 (subset
+    /// counter). Emits GGUF type 30 verbatim; runtime widens BF16 → f32
+    /// losslessly via the single choke point
+    /// `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16` (BF16 = top
+    /// 16 bits of an f32 — `bits << 16` is exact). The upstream Mimi
+    /// checkpoint (`kyutai/moshiko-pytorch-bf16`
+    /// `tokenizer-e351c8d8-checkpoint125.safetensors`, ADR M4-04 §D-k) is
+    /// all-F32, so the physical release keeps this counter at 0; the
+    /// field pins the BF16 leg of the pass-through arm for
+    /// forward-compatibility with a hypothetical BF16 re-release.
+    pub(crate) bf16_passthrough: usize,
     /// Codebook count derived from the checkpoint (semantic + acoustic).
     pub(crate) n_codebooks: usize,
     /// Entries per codebook.
@@ -364,7 +378,15 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, MimiReport), Conve
 
     for t in st.tensors() {
         match t.dtype {
-            GgmlType::F32 | GgmlType::F16 => {
+            // BF16 pass-through added 2026-07-25 (mirror of qwen3-tts +
+            // vibevoice + voxcpm2 + moshi + voxtral): upstream Mimi ships
+            // F32 today, but the M4-05 (CSM) / M4-06 (Moshi) parent
+            // checkpoints on the same repo family
+            // (`kyutai/moshiko-pytorch-bf16`) are all-BF16 — closing the
+            // BF16 leg here future-proofs a BF16 Mimi re-release. Emit as
+            // GGUF type 30 verbatim; runtime widens on load via
+            // `decode_bf16` (exact, `bits << 16`).
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
                 b.add_tensor(
                     &t.name,
                     t.dtype,
@@ -372,6 +394,9 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, MimiReport), Conve
                     st.tensor_bytes(t).to_vec(),
                 )?;
                 report.written += 1;
+                if t.dtype == GgmlType::BF16 {
+                    report.bf16_passthrough += 1;
+                }
             }
             _ => report.skipped_non_float += 1,
         }
@@ -1716,5 +1741,159 @@ mod tests {
         ];
         let err = convert(build_safetensors(&entries)).expect_err("must reject");
         assert!(err.to_string().contains("no acoustic quantizer layers"));
+    }
+
+    /// Same as `build_safetensors` but appends a single BF16 tensor whose
+    /// payload is the bfloat16 encoding (top 16 bits of each f32) of `vals`.
+    /// The BF16 helper is used only by the BF16 pass-through pin below —
+    /// the rest of the tests are pure F32 and keep using `build_safetensors`.
+    fn build_safetensors_with_bf16(
+        f32_entries: &[(String, Vec<usize>, Vec<f32>)],
+        bf16_name: &str,
+        bf16_shape: &[usize],
+        bf16_vals: &[f32],
+    ) -> Vec<u8> {
+        let mut header = String::from("{");
+        let mut data = Vec::<u8>::new();
+        for (i, (name, shape, vals)) in f32_entries.iter().enumerate() {
+            let start = data.len();
+            for v in vals {
+                data.extend_from_slice(&v.to_le_bytes());
+            }
+            let end = data.len();
+            if i > 0 {
+                header.push(',');
+            }
+            let dims = shape
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            header.push_str(&format!(
+                r#""{name}":{{"dtype":"F32","shape":[{dims}],"data_offsets":[{start},{end}]}}"#
+            ));
+        }
+        // Append the BF16 tensor (2 bytes per element = top 16 bits of the
+        // f32 pattern — exact inverse of `decode_bf16 = bits << 16`).
+        let start = data.len();
+        for v in bf16_vals {
+            let bits = v.to_bits();
+            let bf16_bits = (bits >> 16) as u16;
+            data.extend_from_slice(&bf16_bits.to_le_bytes());
+        }
+        let end = data.len();
+        if !f32_entries.is_empty() {
+            header.push(',');
+        }
+        let dims = bf16_shape
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        header.push_str(&format!(
+            r#""{bf16_name}":{{"dtype":"BF16","shape":[{dims}],"data_offsets":[{start},{end}]}}"#
+        ));
+        header.push('}');
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&data);
+        out
+    }
+
+    /// Pins the BF16 leg of the `GgmlType::F32 | GgmlType::F16 |
+    /// GgmlType::BF16` union in the pass-through loop. BF16 (the upstream
+    /// serving format for `kyutai/moshiko-pytorch-bf16` — the very
+    /// checkpoint this converter targets, ADR M4-04 §D-k) must reach the
+    /// pass-through arm, emit as GGUF type 30 verbatim (no convert-time
+    /// widening — runtime widens on load via `vokra-core::gguf::quant::
+    /// decode_bf16`, `bits << 16` is exact), and increment
+    /// `bf16_passthrough` while leaving `skipped_non_float` at 0. Mirror
+    /// of `qwen3-tts` / `vibevoice` / `voxcpm2`
+    /// `bf16_tensor_passes_through_verbatim`.
+    #[test]
+    fn bf16_tensor_passes_through_verbatim() {
+        // Rebuild the quantizer-only surface of `synthetic_mimi` locally
+        // (no `encoder.model.0.conv.conv.weight` → the neural-chain
+        // adapter does not fire, so the general pass-through loop is the
+        // only touch point for the BF16 tensor).
+        let mut entries: Vec<(String, Vec<usize>, Vec<f32>)> = Vec::new();
+        let first_proj: Vec<f32> = (0..3)
+            .flat_map(|o| (0..2).map(move |c| (o + 1) as f32 * 0.5 + c as f32))
+            .collect();
+        let rest_proj: Vec<f32> = first_proj.iter().map(|x| -x).collect();
+        entries.push((
+            "quantizer.rvq_first.output_proj.weight".into(),
+            vec![3, 2, 1],
+            first_proj,
+        ));
+        entries.push((
+            "quantizer.rvq_rest.output_proj.weight".into(),
+            vec![3, 2, 1],
+            rest_proj,
+        ));
+        entries.push((
+            "quantizer.rvq_first.input_proj.weight".into(),
+            vec![2, 3, 1],
+            vec![0.0; 6],
+        ));
+        for (split, layer, salt) in [
+            ("rvq_first", 0usize, 1.0f32),
+            ("rvq_rest", 0, 2.0),
+            ("rvq_rest", 1, 3.0),
+        ] {
+            let base = format!("quantizer.{split}.vq.layers.{layer}._codebook");
+            let sum: Vec<f32> = (0..4 * 2).map(|i| i as f32 * salt).collect();
+            let usage: Vec<f32> = vec![1.0, 2.0, 0.0, 4.0];
+            entries.push((format!("{base}.embedding_sum"), vec![4, 2], sum));
+            entries.push((format!("{base}.cluster_usage"), vec![4], usage));
+            entries.push((format!("{base}._initialized"), vec![1], vec![1.0]));
+        }
+
+        // Arbitrary non-quantizer name — pass-through candidate only.
+        let bf16_vals: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let bytes = build_safetensors_with_bf16(&entries, "extra.bf16.weight", &[2, 3], &bf16_vals);
+
+        let (b, report) = convert(bytes).expect("convert");
+        assert_eq!(
+            report.bf16_passthrough, 1,
+            "BF16 subset counter must record the pass-through"
+        );
+        assert_eq!(
+            report.skipped_non_float, 0,
+            "BF16 must not land in the skipped counter"
+        );
+
+        // GGUF round-trip: dtype + shape + byte pattern all preserved
+        // (no convert-time widening — runtime widens on load).
+        let out = b.to_bytes().expect("serialize");
+        let file = GgufFile::parse(out).expect("parse");
+        let info = file
+            .tensor_info("extra.bf16.weight")
+            .expect("BF16 tensor must be present after pass-through");
+        assert_eq!(
+            info.dtype,
+            GgmlType::BF16,
+            "no convert-time widening — GGUF dtype must remain BF16"
+        );
+        assert_eq!(info.dimensions, vec![2, 3]);
+        let bytes_out = file.tensor_bytes(info);
+        assert_eq!(
+            bytes_out.len(),
+            12,
+            "BF16 payload = 6 elements × 2 bytes = 12 bytes"
+        );
+        // Byte-equality vs the input BF16 encoding.
+        let mut expected: Vec<u8> = Vec::new();
+        for v in &bf16_vals {
+            let bits = v.to_bits();
+            let bf16_bits = (bits >> 16) as u16;
+            expected.extend_from_slice(&bf16_bits.to_le_bytes());
+        }
+        assert_eq!(
+            bytes_out,
+            &expected[..],
+            "BF16 byte payload must round-trip verbatim"
+        );
     }
 }
