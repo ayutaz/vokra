@@ -33,13 +33,17 @@
 //!
 //! # BF16 posture
 //!
-//! The upstream Kyutai release is **BF16** (~5.2 GB for the 2.6B). The
-//! streaming-BF16 pass-through path Moshi uses is a follow-up (T29-
-//! equivalent — the same owner hand-off pattern); the M2-13 provenance
-//! chain and the `vokra.kyutai_stt.*` chunk group land now so a caller can
-//! walk the metadata surface even against a shape-only fixture. BF16
-//! tensors reach the `_ =>` arm and are counted in `skipped_non_float`
-//! (Dia posture — never a silent widen or drop).
+//! The upstream Kyutai release is **BF16** (~5.2 GB for the 2.6B). Per
+//! the sibling qwen3-tts / moshi / voxtral / vibevoice / voxcpm2 pattern,
+//! BF16 tensors pass through **verbatim** as GGUF type 30
+//! (`GgmlType::BF16`) with no convert-time widening; the runtime widens
+//! BF16 → f32 losslessly at load via the single choke point
+//! `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16` (BF16 = top 16
+//! bits of an f32 — `bits << 16` is exact). The subset counter
+//! [`KyutaiSttReport::bf16_passthrough`] records how many BF16 tensors
+//! landed on the pass-through arm (observability for the on-disk size,
+//! which is half the F32-widened layout). BF16 pass-through landed
+//! 2026-07-25.
 //!
 //! # No ONNX (permanent)
 //!
@@ -160,14 +164,22 @@ const DELAY: u32 = 0;
 /// Outcome of a Kyutai STT conversion.
 #[derive(Debug, Default)]
 pub(crate) struct KyutaiSttReport {
-    /// Float tensors written verbatim.
+    /// Float tensors written verbatim (F32 / F16 / BF16 — all three go
+    /// through the same byte-copy path since the BF16 pass-through land
+    /// 2026-07-25, mirror of `qwen3-tts` / `moshi` / `voxtral` /
+    /// `vibevoice` / `voxcpm2`).
     pub(crate) written: usize,
-    /// Non-F32 / F16 tensors skipped (the safetensors reader accepts BF16;
-    /// this converter's pass-through arm is F32 / F16 only — a real
-    /// upstream all-BF16 checkpoint falls here and the loud
-    /// "no float tensors" note fires; the streaming BF16 path is a
-    /// follow-up wave, T29-equivalent).
+    /// Non-F32 / F16 / BF16 tensors skipped (defensive counter — the
+    /// safetensors reader rejects unknown dtypes at parse time; anything
+    /// that reaches this arm is a quantized dtype the runtime is not
+    /// expected to consume).
     pub(crate) skipped_non_float: usize,
+    /// Of the tensors in `written`, how many were BF16 (subset counter).
+    /// Emits GGUF type 30 verbatim; runtime widens BF16 → f32 losslessly
+    /// via the single choke point `crates/vokra-core/src/gguf/quant/mod.rs
+    /// decode_bf16` (BF16 = top 16 bits of an f32 — `bits << 16` is
+    /// exact). Mirrors `moshi::MoshiReport::bf16_passthrough`.
+    pub(crate) bf16_passthrough: usize,
     /// Operator-facing diagnostics (never fail the conversion — the
     /// runtime is the authoritative gate, FR-EX-08).
     pub(crate) notes: Vec<String>,
@@ -199,7 +211,13 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, KyutaiSttReport), 
     let mut report = KyutaiSttReport::default();
     for t in st.tensors() {
         match t.dtype {
-            GgmlType::F32 | GgmlType::F16 => {
+            // BF16 pass-through added 2026-07-25 (mirror of qwen3-tts +
+            // moshi + voxtral + vibevoice + voxcpm2): upstream Kyutai
+            // STT-2.6B-EN ships BF16 safetensors so the release
+            // checkpoint hits this arm. Emit as GGUF type 30 verbatim;
+            // runtime widens on load via `decode_bf16` (exact,
+            // `bits << 16`).
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
                 b.add_tensor(
                     &t.name,
                     t.dtype,
@@ -207,6 +225,9 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, KyutaiSttReport), 
                     st.tensor_bytes(t).to_vec(),
                 )?;
                 report.written += 1;
+                if t.dtype == GgmlType::BF16 {
+                    report.bf16_passthrough += 1;
+                }
             }
             _ => {
                 report.skipped_non_float += 1;
@@ -218,9 +239,9 @@ pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, KyutaiSttReport), 
             "no float tensors passed through — this GGUF is metadata-only and \
              the runtime will refuse to bind any weights (FR-EX-08). The upstream \
              Kyutai STT-2.6B-EN release ships BF16 safetensors (~5.2 GB); the \
-             streaming-BF16 pass-through path is a follow-up wave (T29-equivalent, \
-             the Moshi pattern). Until then, run a prepare-checkpoint script that \
-             widens BF16 → F32 or converts a F16-widened copy."
+             BF16 pass-through path is now wired (2026-07-25), so this state is \
+             only reachable when the input contains no F32 / F16 / BF16 float \
+             tensors at all."
                 .into(),
         );
     }
@@ -299,21 +320,6 @@ mod tests {
     fn minimal_safetensors_one_f16() -> Vec<u8> {
         let header =
             r#"{"backbone.embed.0.weight":{"dtype":"F16","shape":[2,3],"data_offsets":[0,12]}}"#;
-        let mut out = Vec::new();
-        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(&[0u8; 12]);
-        out
-    }
-
-    /// A single BF16 tensor at the top of the file (shape [2,3] → 6
-    /// elements × 2 bytes = 12 bytes). The upstream Kyutai release is
-    /// **all BF16**, so BF16 tensors reach `convert()` and MUST be
-    /// counted, not silently dropped — the runtime never sees them until
-    /// the streaming-BF16 follow-up lands.
-    fn minimal_safetensors_one_bf16() -> Vec<u8> {
-        let header =
-            r#"{"backbone.embed.0.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
         let mut out = Vec::new();
         out.extend_from_slice(&(header.len() as u64).to_le_bytes());
         out.extend_from_slice(header.as_bytes());
@@ -446,41 +452,86 @@ mod tests {
         assert_eq!(file.tensor_bytes(info).len(), 12);
     }
 
-    /// The upstream Kyutai STT release is **all BF16**; BF16 tensors
-    /// currently reach the `_ =>` arm and MUST be counted, not silently
-    /// widened. This test guards against a regression where somebody
-    /// promotes BF16 into the pass-through arm without deciding how to
-    /// stream them (bounded memory — the Moshi T22 pattern).
+    /// The upstream Kyutai STT-2.6B-EN release is served in **BF16**
+    /// (~5.2 GB `model.safetensors`). Per the sibling qwen3-tts / moshi
+    /// / voxtral / vibevoice / voxcpm2 pattern, BF16 tensors must reach
+    /// the pass-through arm verbatim — emitted as GGUF type 30
+    /// (`GgmlType::BF16`) with no convert-time widening; the runtime
+    /// widens BF16 → f32 losslessly at load via the single choke point
+    /// `vokra-core::gguf::quant::decode_bf16` (BF16 = top 16 bits of an
+    /// f32, `bits << 16` is exact).
+    ///
+    /// Rewrite of the pre-BF16-fix `bf16_tensor_is_counted_as_skipped_non_float`
+    /// posture pin — removing the pin outright would let a latent
+    /// silent-widen slip in undetected; rewriting to the passes-through
+    /// invariant keeps the regression guard.
     #[test]
-    fn bf16_tensor_is_counted_as_skipped_non_float() {
-        let (builder, report) = convert(minimal_safetensors_one_bf16()).expect("convert");
+    fn bf16_tensor_passes_through_verbatim() {
+        // Build a BF16 payload with distinct non-zero bit patterns so a
+        // subsequent byte-identity assert catches any silent widen /
+        // downcast attempt (a zeroed payload would round-trip trivially
+        // through an F32/F16 widen too). Mirror of the qwen3-tts pattern.
+        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
+        let bf16: Vec<u8> = values
+            .iter()
+            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
+            .collect();
+        assert_eq!(bf16.len(), 12, "6 elements × 2 bytes BF16 payload");
+        let header =
+            r#"{"backbone.embed.0.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
+        let mut input = Vec::new();
+        input.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        input.extend_from_slice(header.as_bytes());
+        input.extend_from_slice(&bf16);
+
+        let (builder, report) = convert(input).expect("convert");
         assert_eq!(
-            report.written, 0,
-            "BF16 must not currently pass through — the streaming path is a follow-up"
+            report.written, 1,
+            "BF16 must reach the pass-through arm and increment `written`"
         );
         assert_eq!(
-            report.skipped_non_float, 1,
-            "BF16 must increment the skipped counter"
+            report.skipped_non_float, 0,
+            "BF16 must not land in the skipped counter"
         );
-        // With zero float tensors written, the loud "no float tensors"
-        // note fires — a BF16-only checkpoint (the real Kyutai release)
-        // surfaces the situation.
+        assert_eq!(
+            report.bf16_passthrough, 1,
+            "BF16 subset counter must record the pass-through"
+        );
+        // FR-EX-08 loud-silence check: the zero-float note is a
+        // false-positive here because BF16 IS a float.
         assert!(
-            report.notes.iter().any(|n| n.contains("no float tensors")),
-            "BF16-only conversion must emit the zero-float note: {:?}",
+            !report.notes.iter().any(|n| n.contains("no float tensors")),
+            "BF16 pass-through must not emit the zero-float note: {:?}",
             report.notes
         );
-        // Metadata (arch / hparams / provenance) still lands — the report
-        // reflects the tensor pass, not a failure of the conversion.
+
+        // The tensor survives the round trip under its upstream name and
+        // preserves its BF16 dtype (no convert-time widening — runtime
+        // widens on load via `decode_bf16`).
         let out = builder.to_bytes().expect("serialize");
         let file = GgufFile::parse(out).expect("parse");
+        let info = file
+            .tensor_info("backbone.embed.0.weight")
+            .expect("BF16 tensor must be present after pass-through");
+        assert_eq!(
+            info.dtype,
+            GgmlType::BF16,
+            "no convert-time widening — GGUF dtype must remain BF16"
+        );
+        assert_eq!(info.dimensions, vec![2, 3]);
+        assert_eq!(
+            file.tensor_bytes(info).len(),
+            12,
+            "BF16 payload = 6 elements × 2 bytes = 12 bytes"
+        );
+        assert_eq!(
+            file.tensor_bytes(info),
+            bf16.as_slice(),
+            "BF16 payload must be byte-identical to input (no silent widen)"
+        );
         assert_eq!(
             file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
             Some(ARCH)
-        );
-        assert!(
-            file.tensor_info("backbone.embed.0.weight").is_none(),
-            "BF16 tensor must not be written"
         );
     }
 
