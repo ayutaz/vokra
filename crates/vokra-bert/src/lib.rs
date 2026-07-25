@@ -20,8 +20,33 @@
 
 #![deny(unsafe_code)]
 
-/// Placeholder trait — filled in by later tasks (Task 12).
-pub trait BertEncoder {}
+/// Uniform BERT encoder trait — implemented by both DeBERTa v2 and v3.
+///
+/// `forward(ids)` returns hidden states as a flat `[seq_len × d_model]` Vec.
+/// Callers know `seq_len = ids.len()`, so `d_model()` is exposed for the
+/// row stride.
+pub trait BertEncoder {
+    fn forward(&self, ids: &[u32]) -> Vec<f32>;
+    fn d_model(&self) -> usize;
+}
+
+impl BertEncoder for deberta_v2::DebertaV2Encoder {
+    fn forward(&self, ids: &[u32]) -> Vec<f32> {
+        deberta_v2::DebertaV2Encoder::forward(self, ids)
+    }
+    fn d_model(&self) -> usize {
+        self.get_d_model()
+    }
+}
+
+impl BertEncoder for deberta_v3::DebertaV3Encoder {
+    fn forward(&self, ids: &[u32]) -> Vec<f32> {
+        deberta_v3::DebertaV3Encoder::forward(self, ids)
+    }
+    fn d_model(&self) -> usize {
+        self.get_d_model()
+    }
+}
 
 pub mod deberta_v2;
 pub mod deberta_v3;

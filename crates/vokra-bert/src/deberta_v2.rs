@@ -371,6 +371,10 @@ impl DebertaV2Encoder {
         hidden
     }
 
+    pub fn get_d_model(&self) -> usize {
+        self.d_model
+    }
+
     /// Builds a `DebertaV2Encoder` with deterministic synthetic weights, for
     /// structure/shape tests only (no real checkpoint involved).
     #[doc(hidden)]

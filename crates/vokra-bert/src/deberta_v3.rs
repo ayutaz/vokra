@@ -67,6 +67,10 @@ impl DebertaV3Encoder {
         hidden
     }
 
+    pub fn get_d_model(&self) -> usize {
+        self.d_model
+    }
+
     /// Builds a `DebertaV3Encoder` with deterministic synthetic weights, for
     /// structure/shape tests only (no real checkpoint involved).
     ///
