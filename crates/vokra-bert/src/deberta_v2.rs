@@ -10,6 +10,9 @@
 //!
 //! - github.com/litagin02/Style-Bert-VITS2 (AGPL-3.0)
 
+use vokra_core::gguf::GgufFile;
+use vokra_core::VokraError;
+
 /// Log-scale relative position bucket per DeBERTa v2 (§3.2, "disentangled
 /// attention"). Positions closer to `q` get finer buckets; positions far
 /// away get log-spaced buckets that saturate at `bucket_size - 1`.
@@ -414,5 +417,124 @@ impl DebertaV2Encoder {
             d_model,
             vocab_size: vocab,
         }
+    }
+}
+
+impl DebertaV2Encoder {
+    /// Loads a `DebertaV2Encoder` from a GGUF file written by the SBV2
+    /// converter.
+    ///
+    /// # Metadata keys (`vokra.bert.deberta_v2.*`)
+    ///
+    /// - `n_layers` (required), `vocab_size` (required)
+    /// - `d_model` (default 1024), `n_heads` (default 16),
+    ///   `n_pos_buckets` (default 512), `max_pos_dist` (default 512)
+    ///
+    /// # Tensor names
+    ///
+    /// - `bert.embed.weight`, `bert.embed.ln.{gamma,beta}`
+    /// - `bert.encoder.layer.<i>.attn.{wq,wk,wv,wq_pos,wk_pos,w_out,pos_embed}.weight`
+    /// - `bert.encoder.layer.<i>.attn.{wq,wk,wv,w_out}.bias`
+    /// - `bert.encoder.layer.<i>.ffn.{w1,w2}.{weight,bias}`
+    /// - `bert.encoder.layer.<i>.ln{1,2}.{gamma,beta}`
+    ///
+    /// # Known limitation
+    ///
+    /// [`AttnWeights`] has no dedicated `bq_pos`/`bk_pos` fields, so the
+    /// position-aware Q/K projections (`wq_pos`/`wk_pos`) are applied with
+    /// the *content* biases (`bq`/`bk`) in [`DisentangledAttention::forward`].
+    /// No `wq_pos.bias`/`wk_pos.bias` tensors are read here — this mirrors
+    /// that existing struct shape and is a pre-existing approximation, not
+    /// something this loader introduces.
+    pub fn from_gguf(g: &GgufFile) -> Result<Self, VokraError> {
+        let meta_u32 =
+            |key: &str| -> Option<u32> { g.get(key).and_then(|v| v.as_u64()).map(|u| u as u32) };
+        let require_u32 = |key: &str| -> Result<u32, VokraError> {
+            meta_u32(key)
+                .ok_or_else(|| VokraError::ModelLoad(format!("missing GGUF metadata key: {key}")))
+        };
+
+        let n_layers = require_u32("vokra.bert.deberta_v2.n_layers")? as usize;
+        let d_model = meta_u32("vokra.bert.deberta_v2.d_model").unwrap_or(1024) as usize;
+        let n_heads = meta_u32("vokra.bert.deberta_v2.n_heads").unwrap_or(16) as usize;
+        let vocab_size = require_u32("vokra.bert.deberta_v2.vocab_size")? as usize;
+        let n_pos_buckets = meta_u32("vokra.bert.deberta_v2.n_pos_buckets").unwrap_or(512) as i32;
+        let max_pos_dist = meta_u32("vokra.bert.deberta_v2.max_pos_dist").unwrap_or(512) as i32;
+
+        if n_heads == 0 || !d_model.is_multiple_of(n_heads) {
+            return Err(VokraError::ModelLoad(format!(
+                "vokra.bert.deberta_v2: d_model ({d_model}) not divisible by n_heads ({n_heads})"
+            )));
+        }
+        let head_dim = d_model / n_heads;
+
+        let load_tensor_f32 = |name: &str| -> Result<Vec<f32>, VokraError> {
+            g.tensor_f32(name)
+                .map_err(|e| VokraError::ModelLoad(format!("{name}: {e}")))
+        };
+
+        let embed = load_tensor_f32("bert.embed.weight")?;
+        let embed_ln = LayerNorm::new(
+            load_tensor_f32("bert.embed.ln.gamma")?,
+            load_tensor_f32("bert.embed.ln.beta")?,
+            1e-7,
+        );
+
+        let mut layers = Vec::with_capacity(n_layers);
+        for i in 0..n_layers {
+            let p = format!("bert.encoder.layer.{i}");
+            let w = AttnWeights {
+                wq: load_tensor_f32(&format!("{p}.attn.wq.weight"))?,
+                wk: load_tensor_f32(&format!("{p}.attn.wk.weight"))?,
+                wv: load_tensor_f32(&format!("{p}.attn.wv.weight"))?,
+                wq_pos: load_tensor_f32(&format!("{p}.attn.wq_pos.weight"))?,
+                wk_pos: load_tensor_f32(&format!("{p}.attn.wk_pos.weight"))?,
+                w_out: load_tensor_f32(&format!("{p}.attn.w_out.weight"))?,
+                pos_embed: load_tensor_f32(&format!("{p}.attn.pos_embed.weight"))?,
+                bq: load_tensor_f32(&format!("{p}.attn.wq.bias"))?,
+                bk: load_tensor_f32(&format!("{p}.attn.wk.bias"))?,
+                bv: load_tensor_f32(&format!("{p}.attn.wv.bias"))?,
+                bout: load_tensor_f32(&format!("{p}.attn.w_out.bias"))?,
+            };
+            let ffn = FfnBlock::new(
+                load_tensor_f32(&format!("{p}.ffn.w1.weight"))?,
+                load_tensor_f32(&format!("{p}.ffn.w1.bias"))?,
+                load_tensor_f32(&format!("{p}.ffn.w2.weight"))?,
+                load_tensor_f32(&format!("{p}.ffn.w2.bias"))?,
+                d_model,
+                4 * d_model,
+            );
+            let ln1 = LayerNorm::new(
+                load_tensor_f32(&format!("{p}.ln1.gamma"))?,
+                load_tensor_f32(&format!("{p}.ln1.beta"))?,
+                1e-7,
+            );
+            let ln2 = LayerNorm::new(
+                load_tensor_f32(&format!("{p}.ln2.gamma"))?,
+                load_tensor_f32(&format!("{p}.ln2.beta"))?,
+                1e-7,
+            );
+            layers.push(EncoderLayer {
+                attn: DisentangledAttention::new(
+                    w,
+                    d_model,
+                    n_heads,
+                    head_dim,
+                    n_pos_buckets,
+                    max_pos_dist,
+                ),
+                ffn,
+                ln1,
+                ln2,
+            });
+        }
+
+        Ok(Self {
+            layers,
+            embed,
+            embed_ln,
+            d_model,
+            vocab_size,
+        })
     }
 }
