@@ -98,7 +98,35 @@ fi
 #   (a) a `// …` comment line, or
 #   (b) a `#[cfg(test)]` module (Rust convention: tests live at end of file
 #       inside `#[cfg(test)] mod tests { … }`; we skip everything after the
-#       *first* `#[cfg(test)]` marker in a file).
+#       *first* `#[cfg(test)]` marker in a file), or
+#   (c) an explicit substring allowlist for third-party slugs that happen
+#       to embed the token "encodec" without being Meta's EnCodec codec.
+#       Each entry MUST document a distinct upstream project and why its
+#       slug cannot be renamed (provenance breadcrumb integrity). Adding
+#       an entry is a compliance-review action, not a routine change.
+#
+# Slug allowlist (line-substring match against the raw grep hit).
+# Format: exact substring that MUST appear on the source line for the hit
+# to be exempted; anything else remains scanner-flagged.
+#
+# The FunCodec entry documents: the upstream ModelScope release
+# `alibaba-damo/audio_codec-encodec-zh_en-general-16k-nq32ds320-pytorch`
+# is FunCodec (Alibaba DAMO Academy) — a *separate* codec from Meta's
+# EnCodec. The literal token "encodec" in the slug is unfortunate
+# ModelScope naming, not the CC-BY-NC-restricted Meta codec. We keep the
+# slug byte-exact because it is what `vokra.provenance.upstream_hf` is
+# stamped with, and the M2-13 runtime gate cross-checks byte-for-byte
+# against upstream. See:
+#   - crates/vokra-convert/src/models/funcodec.rs (converter)
+#   - docs/license-audit.md §3.1 (FunCodec sign-off row, MIT)
+#   - PR #20 (SoTA Phase 1-4 + JA + BF16 fleet)
+SLUG_ALLOWLIST=(
+    'audio_codec-encodec-zh_en'
+    'audio_codec-encodec-zh-en'
+    'funcodec-encodec-zh-en'
+    'funcodec-encodec-zh_en'
+)
+
 if [ -d "$ROOT/crates/vokra-convert/src" ]; then
     grep_hits="$(grep -rniE 'encodec' "$ROOT/crates/vokra-convert/src/" 2>/dev/null || true)"
     if [ -n "$grep_hits" ]; then
@@ -127,6 +155,20 @@ if [ -d "$ROOT/crates/vokra-convert/src" ]; then
             if [ -n "$cfg_test_line" ] && [ "$linenum" -gt "$cfg_test_line" ]; then
                 continue
             fi
+            # Slug allowlist — exempt third-party projects whose upstream
+            # slug happens to embed "encodec" without being Meta's EnCodec.
+            allowlisted=""
+            for slug in "${SLUG_ALLOWLIST[@]}"; do
+                case "$content" in
+                    *"$slug"*)
+                        allowlisted="1"
+                        break
+                        ;;
+                esac
+            done
+            if [ -n "$allowlisted" ]; then
+                continue
+            fi
             offending+="$hit"$'\n'
         done <<< "$grep_hits"
 
@@ -134,8 +176,11 @@ if [ -d "$ROOT/crates/vokra-convert/src" ]; then
             echo "check-encodec-exclusion: vokra-convert code path references 'encodec' outside comments and #[cfg(test)]:" >&2
             printf '%s' "$offending" >&2
             echo "" >&2
-            echo "Move the reference into a comment (documenting the exclusion) or" >&2
-            echo "into a #[cfg(test)] block asserting the M2-13 gate refuses it." >&2
+            echo "Move the reference into a comment (documenting the exclusion), or" >&2
+            echo "into a #[cfg(test)] block asserting the M2-13 gate refuses it," >&2
+            echo "or (only for third-party projects whose upstream slug embeds" >&2
+            echo "'encodec' without being Meta's codec) extend SLUG_ALLOWLIST above" >&2
+            echo "with a compliance-review-approved substring." >&2
             exit 1
         fi
     fi
