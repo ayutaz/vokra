@@ -105,6 +105,7 @@ pub(crate) mod kotoba_whisper;
 pub mod denoise;
 pub mod funcodec;
 pub mod kimi_audio;
+pub mod knn_vc;
 pub(crate) mod kokoro;
 // SoTA plan Phase 2 (2026-07-24): Kyutai STT-2.6B-EN (CC-BY 4.0 weight,
 // AttributionRequired) safetensors → GGUF with the `vokra.kyutai_stt.*`

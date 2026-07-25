@@ -2216,6 +2216,12 @@ pub use models::step_audio2_mini::{StepAudio2MiniReport, convert_step_audio2_min
 // runtime side will read. Real-weight parity is deferred to owner
 // (`docs/license-audit.md` §3.1 sign-off).
 pub use models::bicodec::{BicodecReport, convert_bicodec_file};
+// bshall/knn-vc (mit, category: vc) — WavLM + k-NN + HiFi-GAN, few-shot VC.
+// The `_file` entry lives inside the module (SoTA plan Phase 3 pattern —
+// `models::qwen3_tts` / `models::vibevoice` / `models::voxcpm2` —
+// generalised with a `license: Option<&str>` override for the
+// `convert_file --license <spdx>` boundary).
+pub use models::knn_vc::{KnnVcReport, convert_knn_vc_file};
 pub use models::voxtral::VoxtralConfig;
 // SoTA plan Phase 5 codec (2026-07-25): fnlp XY_Tokenizer_TTSD_V0
 // (apache-2.0) — self-contained file-based entry point with an SPDX
