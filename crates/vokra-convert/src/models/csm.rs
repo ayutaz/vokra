@@ -164,9 +164,16 @@ const MIMI_TRANSFORMER_LAYER_SCALE: f32 = 0.01;
 /// Outcome of a CSM conversion.
 #[derive(Debug, Default)]
 pub(crate) struct CsmReport {
-    /// Float tensors written verbatim.
+    /// Float tensors written verbatim (F32/F16/BF16 payloads pass through
+    /// byte-exact — the voxtral 12e574e / moshi posture; the runtime's
+    /// single `tensor_f32` decode path widens BF16 → f32 exactly at load).
     pub(crate) written: usize,
-    /// Non-F32/F16 tensors skipped (defensive counter — the safetensors
+    /// BF16 tensors among `written` (passed through as GGUF `BF16`,
+    /// ggml type 30 — observability for on-disk size, half the old
+    /// convert-time-widened F32 layout; `sesame/csm-1b` ships BF16
+    /// shards like Moshi).
+    pub(crate) bf16_passthrough: usize,
+    /// Non-float tensors skipped (defensive counter — the safetensors
     /// reader rejects unknown dtypes at parse time).
     pub(crate) skipped_non_float: usize,
     /// Whether a tokenizer blob was embedded.
@@ -225,9 +232,14 @@ pub(crate) fn convert(
         );
     }
 
+    // F32/F16/BF16 pass through byte-exact (BF16 stays GGUF `BF16`, ggml
+    // type 30 — voxtral 12e574e / moshi posture; the runtime widens
+    // BF16 → f32 exactly at load). Upstream `sesame/csm-1b` ships BF16
+    // shards, so omitting BF16 here would silently drop weights and
+    // produce a weightless GGUF (FR-EX-08 loud-never-silent).
     for t in st.tensors() {
         match t.dtype {
-            GgmlType::F32 | GgmlType::F16 => {
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
                 b.add_tensor(
                     &t.name,
                     t.dtype,
@@ -235,6 +247,9 @@ pub(crate) fn convert(
                     st.tensor_bytes(t).to_vec(),
                 )?;
                 report.written += 1;
+                if t.dtype == GgmlType::BF16 {
+                    report.bf16_passthrough += 1;
+                }
             }
             _ => {
                 report.skipped_non_float += 1;
@@ -445,5 +460,66 @@ mod tests {
     #[test]
     fn arch_string_matches_runtime_constant() {
         assert_eq!(ARCH, "csm");
+    }
+
+    /// A minimal safetensors buffer with one BF16 tensor. Each element is
+    /// `bf16(1.0) = 0x3F80` (little-endian on disk). Six elements → 12
+    /// bytes payload. Upstream `sesame/csm-1b` ships BF16 shards (same as
+    /// Moshi); silently dropping them would produce a weightless GGUF.
+    fn minimal_safetensors_one_bf16() -> Vec<u8> {
+        let header = r#"{"backbone.layers.0.attn.q_proj.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
+        let mut payload: Vec<u8> = Vec::with_capacity(12);
+        for _ in 0..6 {
+            payload.extend_from_slice(&0x3F80u16.to_le_bytes());
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&payload);
+        out
+    }
+
+    /// TDD RED: BF16 tensors from a raw upstream `sesame/csm-1b` shard
+    /// must pass through verbatim (voxtral 12e574e / moshi posture — the
+    /// runtime's single `tensor_f32` decode path widens BF16 → f32 exactly
+    /// at load). Without this the converter today would silently drop them
+    /// via the `_ => skipped_non_float += 1` arm and produce a weightless
+    /// GGUF from an off-the-shelf checkpoint.
+    #[test]
+    fn bf16_tensor_passes_through_verbatim() {
+        let src = minimal_safetensors_one_bf16();
+        let (builder, report) = convert(src, None).expect("convert");
+
+        assert_eq!(report.written, 1, "BF16 tensor must be written");
+        assert_eq!(
+            report.skipped_non_float, 0,
+            "BF16 must NOT be counted as skipped_non_float"
+        );
+        assert_eq!(
+            report.bf16_passthrough, 1,
+            "bf16_passthrough counter must observe the BF16 tensor"
+        );
+
+        // Round-trip byte equality on the tensor payload — BF16 stays
+        // GGUF `BF16` (ggml type 30), no convert-time widening.
+        let file =
+            GgufFile::parse(builder.to_bytes().expect("serialize")).expect("parse round-trip GGUF");
+        let info = file
+            .tensor_info("backbone.layers.0.attn.q_proj.weight")
+            .expect("BF16 tensor descriptor");
+        assert_eq!(
+            info.dtype,
+            GgmlType::BF16,
+            "BF16 must be preserved end-to-end (no convert-time widening)"
+        );
+        let raw = file
+            .tensor_data("backbone.layers.0.attn.q_proj.weight")
+            .expect("BF16 tensor bytes");
+        assert_eq!(raw.len(), 12, "6 elements × 2 bytes = 12 bytes on disk");
+        assert!(
+            raw.chunks_exact(2)
+                .all(|c| u16::from_le_bytes([c[0], c[1]]) == 0x3F80),
+            "source BF16 bytes must survive verbatim"
+        );
     }
 }
