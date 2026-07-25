@@ -71,6 +71,21 @@ pub(crate) mod cosyvoice2;
 pub(crate) mod cosyvoice3;
 pub(crate) mod csm;
 pub(crate) mod dac;
+// SBV2 v2 plan Task 11 (2026-07-26): DeBERTa v2 (`ku-nlp/deberta-v2-large-
+// japanese-char-wwm`, cc-by-sa-4.0) and v3 (`microsoft/deberta-v3-large`,
+// mit) safetensors → GGUF, category `bert`. BF16 pass-through mirror of
+// `funcodec` / `wespeaker`; hparams are checkpoint-shape-derived where
+// possible (never invented) with a documented, unverified "large"-variant
+// placeholder for the axes no single tensor shape can carry (`n_heads`,
+// `n_pos_buckets`, `max_pos_dist`). Tensor names pass through verbatim —
+// the HF -> `bert.*` rename table `DebertaV2Encoder::from_gguf` /
+// `DebertaV3Encoder::from_gguf` (`crates/vokra-bert`) expect is a real-
+// checkpoint-header question deferred to Task 30 (TODO(owner) markers in
+// both files). Lives here rather than in `vokra-bert` specifically to
+// avoid a `vokra-bert <-> vokra-convert` dependency cycle the original
+// plan's task split would have created — see `deberta_v2`'s module doc.
+pub mod deberta_v2;
+pub mod deberta_v3;
 // SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B (Apache 2.0)
 // safetensors → GGUF with the `vokra.dia.*` chunk group. Every tensor passes
 // through verbatim; every hparam is transcribed from the upstream config.json.

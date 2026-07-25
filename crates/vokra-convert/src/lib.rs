@@ -2239,6 +2239,15 @@ pub use models::voxtral::VoxtralConfig;
 // override argument (mirror of the `denoise` re-export pattern; the
 // `models::xy_tokenizer` module is private otherwise).
 pub use models::xy_tokenizer::{XyTokenizerReport, convert_xy_tokenizer_file};
+// SBV2 v2 plan Task 11 (2026-07-26): DeBERTa v2 / v3 (category `bert`) —
+// self-contained file-based entry points, re-exported so external callers
+// (integration tests / a future `ModelKind::DebertaV2`/`DebertaV3` wiring
+// pass, Task 12) can reach them (the `pub fn`s alone are unreachable —
+// and thus dead code — because `mod models` itself is private, same
+// reasoning as the `speaker_3d` re-export above). Not yet routed through
+// `ModelKind` / `convert_file` dispatch — that wiring is Task 12's job.
+pub use models::deberta_v2::{ConvertReport, convert_deberta_v2_file};
+pub use models::deberta_v3::convert_deberta_v3_file;
 
 /// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through
 /// [`convert_voxtral_file_with_adapter_config`] (a JSON path) or by
