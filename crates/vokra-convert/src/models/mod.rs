@@ -115,6 +115,7 @@ pub(crate) mod kokoro;
 // release is BF16 and the streaming-BF16 pass-through path is a follow-up
 // (T29-equivalent — the Moshi pattern).
 pub(crate) mod kyutai_stt;
+pub mod meanvc;
 pub(crate) mod mimi;
 pub(crate) mod moshi;
 pub mod neucodec;
