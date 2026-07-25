@@ -654,6 +654,36 @@ pub enum ModelKind {
     /// / full-band 44 kHz / downstream re-training variants is a
     /// follow-up).
     VitsJa,
+    /// ku-nlp **DeBERTa v2** Japanese-character BERT checkpoint (SBV2 v2
+    /// plan Task 11, 2026-07-26): a Hugging Face `transformers`
+    /// `deberta_v2` safetensors checkpoint for Japanese text
+    /// (`ku-nlp/deberta-v2-large-japanese-char-wwm`, Apache-2.0
+    /// model-card header). F32 / F16 / BF16 tensors pass through verbatim
+    /// under upstream HF names; the runtime's `DebertaV2Encoder::from_gguf`
+    /// will be written to map those names to the encoder's internal tensor
+    /// access pattern (Task 30 — today the tensor-to-schema mapping is a
+    /// deferred follow-up; every tensor is emitted verbatim so the mapping
+    /// can be validated once a real checkpoint arrives). Every hparam
+    /// required by the encoder is transcribed verbatim from the checkpoint's
+    /// `config.json` and written to the `vokra.bert.deberta_v2.*` metadata
+    /// chunk group. Convert with [`convert_deberta_v2_file`] with a
+    /// safetensors checkpoint.
+    DebertaV2,
+    /// ku-nlp **DeBERTa v3** Japanese-character BERT checkpoint (SBV2 v2
+    /// plan Task 11, 2026-07-26): a Hugging Face `transformers`
+    /// `deberta_v3` safetensors checkpoint for Japanese text
+    /// (`ku-nlp/deberta-v3-large-japanese-char-wwm`, Apache-2.0
+    /// model-card header). F32 / F16 / BF16 tensors pass through verbatim
+    /// under upstream HF names; the runtime's `DebertaV3Encoder::from_gguf`
+    /// will be written to map those names to the encoder's internal tensor
+    /// access pattern (Task 30 — today the tensor-to-schema mapping is a
+    /// deferred follow-up; every tensor is emitted verbatim so the mapping
+    /// can be validated once a real checkpoint arrives). Every hparam
+    /// required by the encoder is transcribed verbatim from the checkpoint's
+    /// `config.json` and written to the `vokra.bert.deberta_v3.*` metadata
+    /// chunk group. Convert with [`convert_deberta_v3_file`] with a
+    /// safetensors checkpoint.
+    DebertaV3,
 }
 
 impl ModelKind {
@@ -823,6 +853,17 @@ impl ModelKind {
             // tensor topology and are follow-up `--config` axes.
             "vits-ja" | "vits_ja" | "vits-jp" | "vits_jp" | "espnet-vits-ja" | "espnet-vits-jp"
             | "espnet-jsut-vits" | "espnet-jvs-vits" | "coeiroink-vits" => Some(Self::VitsJa),
+            // ku-nlp DeBERTa family (SBV2 v2 plan Task 11, 2026-07-26).
+            // Accept the canonical HF release id + underscore / hyphen
+            // variants. All spellings resolve to the same Japanese-character
+            // converter today; a future full-width hiragana / kanji
+            // normalization variant would be distinct.
+            "deberta-v2" | "deberta_v2" | "ku-nlp/deberta-v2-large-japanese-char-wwm" => {
+                Some(Self::DebertaV2)
+            }
+            "deberta-v3" | "deberta_v3" | "ku-nlp/deberta-v3-large-japanese-char-wwm" => {
+                Some(Self::DebertaV3)
+            }
             _ => None,
         }
     }
@@ -861,6 +902,8 @@ impl ModelKind {
             Self::VibeVoice => "vibevoice",
             Self::Irodori => "irodori",
             Self::VitsJa => "vits-ja",
+            Self::DebertaV2 => "deberta-v2",
+            Self::DebertaV3 => "deberta-v3",
         }
     }
 }
@@ -1527,6 +1570,52 @@ pub fn convert_file_licensed(
             )];
             notes.extend(report.notes.iter().map(|n| format!("vits-ja warning: {n}")));
             (builder, notes)
+        }
+        ModelKind::DebertaV2 => {
+            // SBV2 v2 plan Task 11 (2026-07-26): pass every F32/F16/BF16
+            // tensor through verbatim under upstream HF names and stamp the
+            // `vokra.bert.deberta_v2.*` chunk group (DeBERTa v2 transformer
+            // encoder + hparams) from the transcribed constants in
+            // `models::deberta_v2`. Provenance = Apache-2.0 (Permissive —
+            // no runtime-side attribution obligation, per HF model card
+            // `ku-nlp/deberta-v2-large-japanese-char-wwm`). Tensor-to-schema
+            // mapping (Task 30) is deferred; every tensor is emitted verbatim
+            // so the mapping can be validated once a real checkpoint arrives.
+            let report = convert_deberta_v2_file(input, output, license)?;
+            let notes = vec![format!(
+                "deberta-v2: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::DebertaV2,
+                tensor_count: report.written,
+                metadata_count: 0, // Populated by convert_deberta_v2_file's builder
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::DebertaV3 => {
+            // SBV2 v2 plan Task 11 (2026-07-26): pass every F32/F16/BF16
+            // tensor through verbatim under upstream HF names and stamp the
+            // `vokra.bert.deberta_v3.*` chunk group (DeBERTa v3 transformer
+            // encoder + hparams) from the transcribed constants in
+            // `models::deberta_v3`. Provenance = Apache-2.0 (Permissive —
+            // no runtime-side attribution obligation, per HF model card
+            // `ku-nlp/deberta-v3-large-japanese-char-wwm`). Tensor-to-schema
+            // mapping (Task 30) is deferred; every tensor is emitted verbatim
+            // so the mapping can be validated once a real checkpoint arrives.
+            let report = convert_deberta_v3_file(input, output, license)?;
+            let notes = vec![format!(
+                "deberta-v3: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::DebertaV3,
+                tensor_count: report.written,
+                metadata_count: 0, // Populated by convert_deberta_v3_file's builder
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
         }
     };
 

@@ -1628,6 +1628,72 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  decoder.initial_channel={dec_init} decoder.kernel_size={dec_kernel}"
             );
         }
+        ModelKind::DebertaV2 => {
+            // SBV2 v2 plan Task 11 (2026-07-26): DeBERTa v2 BERT encoder
+            // verify surface — arch / name / category plus the encoder
+            // axes (n_layers / vocab_size / d_model) from the
+            // `vokra.bert.deberta_v2.*` chunk group.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let n_layers = file
+                .get("vokra.bert.deberta_v2.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let d_model = file
+                .get("vokra.bert.deberta_v2.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let vocab_size = file
+                .get("vokra.bert.deberta_v2.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} category={category} n_layer={n_layers} d_model={d_model} vocab_size={vocab_size}"
+            );
+        }
+        ModelKind::DebertaV3 => {
+            // SBV2 v2 plan Task 11 (2026-07-26): DeBERTa v3 BERT encoder
+            // verify surface — arch / name / category plus the encoder
+            // axes (n_layers / vocab_size / d_model) from the
+            // `vokra.bert.deberta_v3.*` chunk group.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let n_layers = file
+                .get("vokra.bert.deberta_v3.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let d_model = file
+                .get("vokra.bert.deberta_v3.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let vocab_size = file
+                .get("vokra.bert.deberta_v3.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} category={category} n_layer={n_layers} d_model={d_model} vocab_size={vocab_size}"
+            );
+        }
     }
     Ok(())
 }
