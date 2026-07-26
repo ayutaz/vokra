@@ -250,6 +250,53 @@ impl SbV2SDP {
     }
 }
 
+/// Expands per-phoneme hidden states into a mel-frame timeline: phoneme
+/// `i`'s `[d_model]` row is repeated `durations[i]` times, and every
+/// repeated row is appended in phoneme order — the standard VITS-family
+/// length-regulator step that consumes [`SbV2SDP::sample`]'s output
+/// (mirrors `piper_plus`'s internal `length_regulate` role, but
+/// row-major/position-major here — see this module's doc "Layout
+/// convention" section — rather than piper's channel-major `[channels,
+/// t_phonemes]`).
+///
+/// `hidden` is flat, row-major `[durations.len(), d_model]` (phoneme `i`'s
+/// row is `hidden[i * d_model..(i + 1) * d_model]`). For example, with
+/// `hidden` holding two rows `[1, 2]` and `[3, 4]` (`d_model = 2`) and
+/// `durations = [2, 3]`, the output is `[1, 2, 1, 2, 3, 4, 3, 4, 3, 4]` —
+/// row 0 twice, then row 1 three times.
+///
+/// Non-positive durations (`0` or negative) contribute **no** output rows
+/// for that phoneme, rather than being cast to `usize`: a negative `i32`
+/// duration cast directly to `usize` would wrap to an enormous repeat
+/// count (a silent out-of-memory/panic hazard, not a legitimate request),
+/// so this function skips any `durations[i] <= 0` instead of casting it.
+///
+/// # Panics
+///
+/// Panics in debug builds if `hidden.len() != durations.len() * d_model`.
+pub fn length_regulate(hidden: &[f32], durations: &[i32], d_model: usize) -> Vec<f32> {
+    debug_assert_eq!(
+        hidden.len(),
+        durations.len() * d_model,
+        "hidden must be [durations.len(), d_model]"
+    );
+    let total_frames: usize = durations
+        .iter()
+        .filter(|&&dur| dur > 0)
+        .map(|&dur| dur as usize)
+        .sum();
+    let mut out = Vec::with_capacity(total_frames * d_model);
+    for (i, &dur) in durations.iter().enumerate() {
+        if dur > 0 {
+            let row = &hidden[i * d_model..(i + 1) * d_model];
+            for _ in 0..dur {
+                out.extend_from_slice(row);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

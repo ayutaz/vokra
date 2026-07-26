@@ -27,7 +27,7 @@ pub mod text_encoder;
 // Later tasks add: mod flow; mod decoder;
 //                  mod converter; mod parity;
 
-pub use duration::SbV2SDP;
+pub use duration::{SbV2SDP, length_regulate};
 pub use g2p::{Language, PhonemizeResult, SbV2Phonemizer};
 pub use speaker::SpeakerEmbedding;
 pub use style::StyleVectorInjector;

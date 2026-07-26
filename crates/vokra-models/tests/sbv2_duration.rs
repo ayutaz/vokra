@@ -1,14 +1,15 @@
-//! `SbV2SDP` (stochastic duration predictor) tests (Task 19).
+//! `SbV2SDP` (stochastic duration predictor, Task 19) and `length_regulate`
+//! (phoneme→mel timeline expansion, Task 20) tests.
 //!
-//! All three tests use an empty `flow_layers` stack — a documented,
-//! exercised no-op configuration (see `sbv2::duration`'s module doc and
-//! its own internal `#[cfg(test)]` module for coverage of a non-empty
-//! stack) — so the sampled Gaussian latent `z = rng.next_gaussian() *
-//! noise_scale_w` passes straight through to `duration =
-//! ceil(exp(z)).max(1)`.
+//! The three `SbV2SDP::sample` tests all use an empty `flow_layers` stack —
+//! a documented, exercised no-op configuration (see `sbv2::duration`'s
+//! module doc and its own internal `#[cfg(test)]` module for coverage of a
+//! non-empty stack) — so the sampled Gaussian latent `z =
+//! rng.next_gaussian() * noise_scale_w` passes straight through to
+//! `duration = ceil(exp(z)).max(1)`.
 
 use vokra_core::rng::GaussianSplitMix64;
-use vokra_models::sbv2::SbV2SDP;
+use vokra_models::sbv2::{SbV2SDP, length_regulate};
 
 /// Builds a minimal `SbV2SDP` with an empty flow stack and small,
 /// arbitrary (nonzero) tone conditioning tables.
@@ -84,4 +85,30 @@ fn sample_is_deterministic_for_fixed_seed() {
     };
 
     assert_eq!(out_1, out_2, "same seed must produce same durations");
+}
+
+/// Brief's exact concrete example: 2 phonemes with durations `[2, 3]`,
+/// `d_model = 2` — `[[1,2],[3,4]]` expands to `[[1,2],[1,2],[3,4],[3,4],[3,4]]`.
+#[test]
+fn length_regulate_simple_example() {
+    let hidden = vec![1.0, 2.0, 3.0, 4.0]; // [[1,2],[3,4]] flat
+    let durations = vec![2, 3];
+    let out = length_regulate(&hidden, &durations, 2);
+    assert_eq!(out, vec![1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0, 3.0, 4.0]);
+}
+
+/// Non-positive durations (`0` and negative) contribute zero rows to the
+/// output. This is the `SbV2SDP`-independent public-API contract for
+/// defensive callers — `length_regulate` is a standalone `pub fn`, not
+/// exclusively fed by `SbV2SDP::sample`'s own `.max(1)`-guaranteed output.
+#[test]
+fn length_regulate_skips_non_positive_durations() {
+    let hidden = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // 3 phonemes, d_model=2
+    let durations = vec![2, 0, -1]; // second skipped (0), third skipped (negative)
+    let out = length_regulate(&hidden, &durations, 2);
+    assert_eq!(
+        out,
+        vec![1.0, 2.0, 1.0, 2.0],
+        "only first phoneme (dur=2) emitted"
+    );
 }
