@@ -12,9 +12,28 @@
 //! `crates/vokra-convert/src/models/sbv2.rs` — this file only pins the
 //! externally-reachable surface.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use vokra_convert::{ModelKind, SbV2ConvertReport, convert_sbv2_file};
+
+/// Repo-root-relative real-fixture directory for the SBV2 v2 safetensors
+/// fixtures shared with the SBV2 v2 loader/parity tests
+/// (`tests/fixtures/sbv2/`, gated by the committed `*.gguf.sha256` sidecars
+/// for their converted GGUF siblings). `CARGO_MANIFEST_DIR` is
+/// `<repo>/crates/vokra-convert` — `cargo test` sets a test binary's working
+/// directory to the crate root, not the invocation directory, so every
+/// repo-root fixture path in this workspace is built this way
+/// (`parity_sbv2_real.rs`, `parity_whisper.rs`, `parity_kokoro.rs`,
+/// `parity_voxtral.rs`, `parity_csm.rs`, `parity_moshi.rs`) rather than as
+/// a bare relative literal.
+fn fixtures_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("fixtures")
+        .join("sbv2")
+}
 
 /// `ModelKind::SbV2` exists and is reachable at its canonical path —
 /// construction alone is enough; the dispatch body (`convert_file_licensed`)
@@ -51,12 +70,13 @@ fn convert_report_fields_exist() {
 #[test]
 #[ignore = "requires real SBV2 v2 safetensors fixture (Task 28)"]
 fn convert_sbv2_real_checkpoint() {
-    let input = Path::new("tests/fixtures/sbv2/sbv2-v2-multilingual-base.safetensors");
-    let config = Path::new("tests/fixtures/sbv2/sbv2-v2-multilingual-base.config.json");
+    let dir = fixtures_dir();
+    let input = dir.join("sbv2-v2-multilingual-base.safetensors");
+    let config = dir.join("sbv2-v2-multilingual-base.config.json");
     let output = std::env::temp_dir().join("vokra-sbv2-real-checkpoint-smoke.gguf");
 
-    let report =
-        convert_sbv2_file(input, &output, Some(config), None).expect("convert real checkpoint");
+    let report = convert_sbv2_file(&input, &output, Some(&config), None)
+        .unwrap_or_else(|e| panic!("{}: {e}", input.display()));
     assert!(report.written > 0);
     assert_eq!(report.read, report.written + report.skipped_non_float);
     assert!(
