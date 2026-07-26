@@ -1694,6 +1694,37 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                 "; arch={arch} name={name} category={category} n_layer={n_layers} d_model={d_model} vocab_size={vocab_size}"
             );
         }
+        ModelKind::SbV2 => {
+            // SBV2 v2 plan Task 25 (2026-07-26): SBV2 verify surface -- arch
+            // / name plus a few vokra.sbv2.* dims when a config side-car
+            // produced them. `convert_sbv2_file` omits the whole
+            // `vokra.sbv2.*` chunk (rather than stamping placeholders) when
+            // no config was supplied, so these read back as 0 in that case
+            // -- an honest "not written" signal, not a real dimension.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let d_model = file
+                .get("vokra.sbv2.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_vocab = file
+                .get("vokra.sbv2.n_vocab")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sample_rate = file
+                .get("vokra.sbv2.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} d_model={d_model} n_vocab={n_vocab} sample_rate={sample_rate}"
+            );
+        }
     }
     Ok(())
 }

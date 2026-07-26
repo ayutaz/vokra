@@ -684,6 +684,24 @@ pub enum ModelKind {
     /// chunk group. Convert with [`convert_deberta_v3_file`] with a
     /// safetensors checkpoint.
     DebertaV3,
+    /// Style-Bert-VITS2 v2 (SBV2) official checkpoint (SBV2 v2 plan Task 25,
+    /// 2026-07-26): a `litagin02/style_bert_vits2`-family safetensors
+    /// checkpoint for the multilingual (JA + EN) base model
+    /// (`docs/superpowers/specs/2026-07-26-sbv2-v2-design.md`). F32 / F16 /
+    /// BF16 tensors pass through verbatim under upstream safetensors names;
+    /// the runtime's `SbV2Model::from_gguf`
+    /// (`crates/vokra-models/src/sbv2/mod.rs`, Task 24) will be written to
+    /// map those names to the `sbv2.*` tensor hierarchy it reads (Task 30
+    /// — today the tensor-to-schema mapping is a deferred follow-up; every
+    /// tensor is emitted verbatim so the mapping can be validated once a
+    /// real checkpoint arrives). Every one of the 22 required (+ 1
+    /// optional) `vokra.sbv2.*` hparam keys is written **only** when a JSON
+    /// config side-car is supplied — see [`convert_sbv2_file`]'s doc.
+    /// **Weight license defaults to `agpl-3.0`** (→
+    /// [`LicenseClass::Copyleft`](vokra_core::LicenseClass::Copyleft) —
+    /// redistribution is permitted with the original licence preserved,
+    /// never relabelled; design doc §9). Convert with [`convert_sbv2_file`].
+    SbV2,
 }
 
 impl ModelKind {
@@ -864,6 +882,17 @@ impl ModelKind {
             "deberta-v3" | "deberta_v3" | "ku-nlp/deberta-v3-large-japanese-char-wwm" => {
                 Some(Self::DebertaV3)
             }
+            // Style-Bert-VITS2 v2 (SBV2 v2 plan Task 25, 2026-07-26). Accept
+            // the canonical arch spelling, the design doc's SKU id, and the
+            // common project-name spellings (with/without hyphen, with/
+            // without an explicit "v2"). All spellings resolve to the same
+            // multilingual base converter path today.
+            "sbv2"
+            | "sbv2-v2"
+            | "sbv2-v2-multilingual-base"
+            | "style-bert-vits2"
+            | "style_bert_vits2"
+            | "style-bert-vits2-v2" => Some(Self::SbV2),
             _ => None,
         }
     }
@@ -904,6 +933,7 @@ impl ModelKind {
             Self::VitsJa => "vits-ja",
             Self::DebertaV2 => "deberta-v2",
             Self::DebertaV3 => "deberta-v3",
+            Self::SbV2 => "sbv2",
         }
     }
 }
@@ -1613,6 +1643,39 @@ pub fn convert_file_licensed(
                 model: ModelKind::DebertaV3,
                 tensor_count: report.written,
                 metadata_count: 0, // Populated by convert_deberta_v3_file's builder
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::SbV2 => {
+            // SBV2 v2 plan Task 25 (2026-07-26): pass every F32/F16/BF16
+            // tensor through verbatim under its upstream safetensors name.
+            // This generic dispatch path has no config-side-car parameter
+            // in its own signature, so it always converts with
+            // config_side_car = None -- the vokra.sbv2.* hparam chunk is
+            // then omitted entirely rather than filled with invented
+            // placeholders (see convert_sbv2_file's doc). Call
+            // convert_sbv2_file(..., Some(config_path), ...) directly for a
+            // hparam-complete GGUF. Tensor-to-schema mapping (Task 30) is
+            // deferred; every tensor is emitted verbatim so the mapping can
+            // be validated once a real checkpoint arrives.
+            let report = convert_sbv2_file(input, output, None, license)?;
+            let mut notes = vec![format!(
+                "sbv2: {} float weights written verbatim ({} read, {} non-float skipped), \
+                 vokra.sbv2.* hparam chunk written: {}",
+                report.written, report.read, report.skipped_non_float, report.hparams_written,
+            )];
+            if !report.hparams_written {
+                notes.push(
+                    "no --config side-car: vokra.sbv2.* metadata was not written -- call \
+                     convert_sbv2_file directly with a config path for a hparam-complete GGUF"
+                        .to_owned(),
+                );
+            }
+            return Ok(ConvertSummary {
+                model: ModelKind::SbV2,
+                tensor_count: report.written,
+                metadata_count: 0, // Populated by convert_sbv2_file's builder
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             });
@@ -2337,6 +2400,12 @@ pub use models::xy_tokenizer::{XyTokenizerReport, convert_xy_tokenizer_file};
 // `ModelKind` / `convert_file` dispatch — that wiring is Task 12's job.
 pub use models::deberta_v2::{ConvertReport, convert_deberta_v2_file};
 pub use models::deberta_v3::convert_deberta_v3_file;
+// `sbv2::ConvertReport` is re-exported under an alias, not the bare name:
+// `deberta_v2::ConvertReport` already claims `vokra_convert::ConvertReport`
+// above, and the two are distinct types (SBV2's carries `hparams_written`,
+// DeBERTa's does not), so re-exporting both under the same crate-root name
+// would collide (E0252).
+pub use models::sbv2::{ConvertReport as SbV2ConvertReport, convert_sbv2_file};
 
 /// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through
 /// [`convert_voxtral_file_with_adapter_config`] (a JSON path) or by

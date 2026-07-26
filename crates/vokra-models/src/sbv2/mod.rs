@@ -26,7 +26,13 @@ pub mod g2p;
 pub mod speaker;
 pub mod style;
 pub mod text_encoder;
-// Later tasks add: mod converter; mod parity;
+// Task 25 (SBV2 v2 plan) places the safetensors -> GGUF converter in
+// `crates/vokra-convert/src/models/sbv2.rs` instead of a `mod converter`
+// here -- avoids a `vokra-models <-> vokra-convert` normal-dependency
+// cycle (this crate depends on `vokra-convert` only as a dev-dependency,
+// for M4-04-style roundtrip tests; see that file's module doc for the full
+// rationale, mirroring Task 11's identical DeBERTa converter placement).
+// Later tasks add: mod parity;
 
 pub use decoder::SbV2Decoder;
 pub use duration::{SbV2SDP, length_regulate};

@@ -180,6 +180,21 @@ pub(crate) mod piper_plus;
 // Qwen3-TTS is codec-LM not vocoder-LM — the terminal step is
 // qwen3_tts_codec, NOT HiFTChain.
 pub(crate) mod qwen3_tts;
+// SBV2 v2 plan Task 25 (2026-07-26): Style-Bert-VITS2 v2
+// (`litagin02/style_bert_vits2` family, AGPL-3.0 -> LicenseClass::Copyleft
+// default) safetensors -> GGUF, category `tts`. BF16 pass-through mirror of
+// `deberta_v2` / `funcodec` / `wespeaker`; the `vokra.sbv2.*` hparam chunk
+// (22 required + 1 optional keys) is written only when a JSON config
+// side-car is supplied -- never filled with invented placeholders (see
+// `sbv2.rs`'s module doc "Hparams" section). Tensor names pass through
+// verbatim -- the upstream-name -> `sbv2.*` rename table
+// `SbV2Model::from_gguf` (`crates/vokra-models/src/sbv2/mod.rs`, Task 24)
+// expects is a real-checkpoint-header question deferred to Task 30. Lives
+// here rather than in `vokra-models` specifically to avoid a
+// `vokra-models <-> vokra-convert` dependency cycle the design doc's
+// original task split would have created -- see `sbv2`'s module doc (same
+// rationale as Task 11's `deberta_v2` / `deberta_v3`).
+pub(crate) mod sbv2;
 pub(crate) mod silero;
 pub mod speaker_3d;
 pub mod speechtokenizer;
