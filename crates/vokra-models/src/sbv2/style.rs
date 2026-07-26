@@ -16,15 +16,18 @@
 //!
 //! Each projection is a **linear map without a bias term**:
 //! `scale_delta = proj_scale · style_vec`, `bias = proj_bias · style_vec`
-//! (no `+ b`). Per standard AdaIN practice a projection bias would be
-//! redundant with (absorbed into) the downstream affine transform's own
-//! bias, so it is omitted here. One consequence: a zero `style_vec` does
-//! *not* by itself guarantee identity injection (only zero *weights* do,
-//! since `W · 0 = 0` regardless of `W`) — the module's tests instead
-//! zero-init the weights to prove the identity case. If a real SBV2
-//! checkpoint turns out to carry a projection bias, that can be added to
-//! this struct additively (new `Option<Vec<f32>>` fields) without
-//! breaking this constructor's existing callers.
+//! (no `+ b`). Both a zero `style_vec` (for any weights) and zero
+//! weights (for any `style_vec`) independently guarantee identity
+//! injection, since the projection is a pure linear map with no bias
+//! term (`f(0) = 0` for any `W`, and `0·x = 0` for any `x`). A nonzero
+//! constant bias on the projection itself would break the first
+//! invariant — it would be absorbed into upstream layers per standard
+//! AdaIN practice, which is why this implementation omits it. The
+//! module's tests exercise the zero-weights case
+//! (`zero_projections_produce_identity`). If a real SBV2 checkpoint
+//! turns out to carry a projection bias, that can be added to this
+//! struct additively (new `Option<Vec<f32>>` fields) without breaking
+//! this constructor's existing callers.
 
 /// AdaIN-style per-utterance style conditioning: projects a `d_style`-dim
 /// style vector into a per-channel `(scale, bias)` pair over `d_target`
