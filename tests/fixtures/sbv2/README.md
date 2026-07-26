@@ -375,16 +375,19 @@ so an owner running the recipe isn't surprised):
    above) is a known follow-up, out of scope for this fixture-management
    task (it touches other crates' test files, not this directory).
 
-5. **A likely-miscoded `ModelKind::from_arg` alias.**
-   `crates/vokra-convert/src/lib.rs`'s `from_arg` accepts
-   `"ku-nlp/deberta-v3-large-japanese-char-wwm"` as an alias for
-   `ModelKind::DebertaV3` (the **EN** encoder) — that HF-repo-shaped alias
-   string looks like it was copy-pasted from the JA (`deberta-v2`) arm
-   above it rather than referring to `microsoft/deberta-v3-large` (the
-   actual EN upstream, per the SKU table above). This README's recipe
-   sidesteps it entirely by always using the canonical `--model deberta-v3`
-   spelling, never that alias — flagged here only so a future pass fixing
-   it (in `vokra-convert`, not this directory) has a pointer.
+5. **A likely-miscoded `ModelKind::from_arg` alias.** *(Fixed 2026-07-27,
+   SBV2 v2 plan Task 8.)* `crates/vokra-convert/src/lib.rs`'s `from_arg`
+   used to accept `"ku-nlp/deberta-v3-large-japanese-char-wwm"` as an
+   alias for `ModelKind::DebertaV3` (the **EN** encoder) — that
+   HF-repo-shaped alias string had been copy-pasted from the JA
+   (`deberta-v2`) arm above it. The real EN upstream is
+   `microsoft/deberta-v3-large` (per the SKU table above), and that is
+   now the HF-repo-shaped alias `from_arg` accepts for v3. The old
+   nonexistent string is covered as a negative case in
+   `modelkind_alias_and_roundtrip_tests::unknown_model_arg_returns_none`
+   so it cannot silently return `Some(DebertaV3)` again. This README's
+   recipe was unaffected — it always used the canonical `--model
+   deberta-v3` spelling.
 
 ## Clean-room reminder
 

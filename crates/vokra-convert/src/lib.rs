@@ -669,20 +669,23 @@ pub enum ModelKind {
     /// chunk group. Convert with [`convert_deberta_v2_file`] with a
     /// safetensors checkpoint.
     DebertaV2,
-    /// ku-nlp **DeBERTa v3** Japanese-character BERT checkpoint (SBV2 v2
-    /// plan Task 11, 2026-07-26): a Hugging Face `transformers`
-    /// `deberta_v3` safetensors checkpoint for Japanese text
-    /// (`ku-nlp/deberta-v3-large-japanese-char-wwm`, Apache-2.0
-    /// model-card header). F32 / F16 / BF16 tensors pass through verbatim
-    /// under upstream HF names; the runtime's `DebertaV3Encoder::from_gguf`
-    /// will be written to map those names to the encoder's internal tensor
-    /// access pattern (Task 30 — today the tensor-to-schema mapping is a
-    /// deferred follow-up; every tensor is emitted verbatim so the mapping
-    /// can be validated once a real checkpoint arrives). Every hparam
-    /// required by the encoder is transcribed verbatim from the checkpoint's
-    /// `config.json` and written to the `vokra.bert.deberta_v3.*` metadata
-    /// chunk group. Convert with [`convert_deberta_v3_file`] with a
-    /// safetensors checkpoint.
+    /// microsoft **DeBERTa v3** English BERT checkpoint (SBV2 v2 plan Task
+    /// 11, 2026-07-26; upstream/license label corrected 2026-07-27, Task 8):
+    /// a Hugging Face `transformers` `deberta_v3` safetensors checkpoint
+    /// for English text (`microsoft/deberta-v3-large`, MIT model-card
+    /// header — v3 is the SBV2 `checkpoint.bert_en` counterpart to v2's
+    /// `checkpoint.bert_ja`, see `crates/vokra-bert/src/lib.rs` and
+    /// `tests/fixtures/sbv2/README.md`). F32 / F16 / BF16 tensors pass
+    /// through verbatim under upstream HF names; the runtime's
+    /// `DebertaV3Encoder::from_gguf` will be written to map those names to
+    /// the encoder's internal tensor access pattern (Task 30 — today the
+    /// tensor-to-schema mapping is a deferred follow-up; every tensor is
+    /// emitted verbatim so the mapping can be validated once a real
+    /// checkpoint arrives). Every hparam required by the encoder is
+    /// transcribed verbatim from the checkpoint's `config.json` and
+    /// written to the `vokra.bert.deberta_v3.*` metadata chunk group.
+    /// Convert with [`convert_deberta_v3_file`] with a safetensors
+    /// checkpoint.
     DebertaV3,
     /// Style-Bert-VITS2 v2 (SBV2) official checkpoint (SBV2 v2 plan Task 25,
     /// 2026-07-26): a `litagin02/style_bert_vits2`-family safetensors
@@ -871,17 +874,19 @@ impl ModelKind {
             // tensor topology and are follow-up `--config` axes.
             "vits-ja" | "vits_ja" | "vits-jp" | "vits_jp" | "espnet-vits-ja" | "espnet-vits-jp"
             | "espnet-jsut-vits" | "espnet-jvs-vits" | "coeiroink-vits" => Some(Self::VitsJa),
-            // ku-nlp DeBERTa family (SBV2 v2 plan Task 11, 2026-07-26).
-            // Accept the canonical HF release id + underscore / hyphen
-            // variants. All spellings resolve to the same Japanese-character
-            // converter today; a future full-width hiragana / kanji
-            // normalization variant would be distinct.
+            // DeBERTa family (SBV2 v2 plan Task 11, 2026-07-26; v3 alias
+            // corrected 2026-07-27, Task 8). Accept the canonical short
+            // arch spelling, the underscore variant, and the real HF
+            // release id — different orgs for the two variants:
+            //   * v2 = `ku-nlp` (Japanese-character `checkpoint.bert_ja`)
+            //   * v3 = `microsoft` (English `checkpoint.bert_en`)
+            // The `ku-nlp/deberta-v3-...` string is NOT a real HF repo; it
+            // was a copy-paste from the v2 arm and is now covered as a
+            // negative case in `unknown_model_arg_returns_none`.
             "deberta-v2" | "deberta_v2" | "ku-nlp/deberta-v2-large-japanese-char-wwm" => {
                 Some(Self::DebertaV2)
             }
-            "deberta-v3" | "deberta_v3" | "ku-nlp/deberta-v3-large-japanese-char-wwm" => {
-                Some(Self::DebertaV3)
-            }
+            "deberta-v3" | "deberta_v3" | "microsoft/deberta-v3-large" => Some(Self::DebertaV3),
             // Style-Bert-VITS2 v2 (SBV2 v2 plan Task 25, 2026-07-26). Accept
             // the canonical arch spelling, the design doc's SKU id, and the
             // common project-name spellings (with/without hyphen, with/
@@ -1625,15 +1630,17 @@ pub fn convert_file_licensed(
             });
         }
         ModelKind::DebertaV3 => {
-            // SBV2 v2 plan Task 11 (2026-07-26): pass every F32/F16/BF16
+            // SBV2 v2 plan Task 11 (2026-07-26; upstream/license label
+            // corrected 2026-07-27, Task 8): pass every F32/F16/BF16
             // tensor through verbatim under upstream HF names and stamp the
             // `vokra.bert.deberta_v3.*` chunk group (DeBERTa v3 transformer
             // encoder + hparams) from the transcribed constants in
-            // `models::deberta_v3`. Provenance = Apache-2.0 (Permissive —
-            // no runtime-side attribution obligation, per HF model card
-            // `ku-nlp/deberta-v3-large-japanese-char-wwm`). Tensor-to-schema
-            // mapping (Task 30) is deferred; every tensor is emitted verbatim
-            // so the mapping can be validated once a real checkpoint arrives.
+            // `models::deberta_v3`. Provenance = MIT (Permissive — no
+            // runtime-side attribution obligation, per HF model card
+            // `microsoft/deberta-v3-large`; the real EN upstream, distinct
+            // from v2's `ku-nlp` JA upstream). Tensor-to-schema mapping
+            // (Task 30) is deferred; every tensor is emitted verbatim so
+            // the mapping can be validated once a real checkpoint arrives.
             let report = convert_deberta_v3_file(input, output, license)?;
             let notes = vec![format!(
                 "deberta-v3: {} float weights written verbatim, {} non-float skipped",
@@ -3692,6 +3699,14 @@ mod modelkind_alias_and_roundtrip_tests {
             VibeVoice,
             Irodori,
             VitsJa,
+            // SBV2 v2 plan Task 11 (2026-07-26) + Task 8 (2026-07-27):
+            // pin every DeBERTa/SBV2 variant's `as_arg → from_arg`
+            // round-trip so a dropped alias in either direction fails
+            // loudly (mirror of the guard the rest of this list provides
+            // for the Phase 2-5 additions above).
+            DebertaV2,
+            DebertaV3,
+            SbV2,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -3915,6 +3930,38 @@ mod modelkind_alias_and_roundtrip_tests {
             ),
             // Whisper — the historical alias.
             (ModelKind::Whisper, &["whisper", "whisper-base"]),
+            // SBV2 v2 plan Task 11 (2026-07-26) — DeBERTa v2 (JA) uses
+            // the ku-nlp Japanese-character upstream; v3 (EN, Task 8
+            // 2026-07-27 correction) uses the microsoft English
+            // upstream. Note the two variants dispatch to distinct
+            // orgs (`ku-nlp` vs `microsoft`); the nonexistent
+            // `ku-nlp/deberta-v3-large-japanese-char-wwm` string is
+            // pinned as a negative case in
+            // `unknown_model_arg_returns_none`.
+            (
+                ModelKind::DebertaV2,
+                &[
+                    "deberta-v2",
+                    "deberta_v2",
+                    "ku-nlp/deberta-v2-large-japanese-char-wwm",
+                ],
+            ),
+            (
+                ModelKind::DebertaV3,
+                &["deberta-v3", "deberta_v3", "microsoft/deberta-v3-large"],
+            ),
+            // SBV2 v2 plan Task 25 (2026-07-26) — Style-Bert-VITS2 v2.
+            (
+                ModelKind::SbV2,
+                &[
+                    "sbv2",
+                    "sbv2-v2",
+                    "sbv2-v2-multilingual-base",
+                    "style-bert-vits2",
+                    "style_bert_vits2",
+                    "style-bert-vits2-v2",
+                ],
+            ),
         ];
         for (kind, aliases) in cases {
             for a in aliases.iter() {
@@ -3944,6 +3991,12 @@ mod modelkind_alias_and_roundtrip_tests {
             "voxcpm3",                  // future major bump not aliased today
             "vits-en",                  // vits-* only covers the JA arm here
             "whisper-base.en",          // registry-only alias, not CLI arg
+            // SBV2 v2 plan Task 8 (2026-07-27) regression pin: the
+            // nonexistent copy-paste alias that used to silently resolve
+            // to Some(DebertaV3). MUST return None so a future re-add of
+            // the same drift is caught by this test rather than by an
+            // owner discovering a wrong-shape GGUF at conversion time.
+            "ku-nlp/deberta-v3-large-japanese-char-wwm",
         ] {
             assert!(
                 ModelKind::from_arg(s).is_none(),
