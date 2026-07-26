@@ -87,6 +87,18 @@ impl StyleVectorInjector {
         }
     }
 
+    /// The style-vector input dimensionality every
+    /// [`inject`](Self::inject) call's `style_vec` must match. Task 23
+    /// (`SbV2Model`'s `TtsEngine` adapter) uses this to size a default
+    /// identity (all-zero) style vector for callers of the cross-engine
+    /// [`vokra_core::SynthesisRequest`] shape, which carries no style-vector
+    /// field of its own — mirrors
+    /// [`SbV2TextEncoder::d_model`](super::text_encoder::SbV2TextEncoder::d_model)'s
+    /// identical private-field-accessor precedent.
+    pub fn d_style(&self) -> usize {
+        self.d_style
+    }
+
     /// Applies AdaIN-style style conditioning to `hidden` in place.
     ///
     /// `hidden` is a flat `[seq_len, d_target]` row-major buffer (i.e.

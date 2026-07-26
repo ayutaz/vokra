@@ -134,6 +134,7 @@ dependencies = [
  "vokra-backend-qnn",
  "vokra-backend-vulkan",
  "vokra-backend-webgpu",
+ "vokra-bert",
  "vokra-convert",
  "vokra-core",
  "vokra-eval",

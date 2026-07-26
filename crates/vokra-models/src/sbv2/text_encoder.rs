@@ -107,6 +107,17 @@ impl SbV2TextEncoder {
         }
     }
 
+    /// The hidden (model) dimension shared by every embedding table and
+    /// every transformer block — the row stride of [`forward`](Self::forward)'s
+    /// output. Task 23 (`SbV2Model::synthesize`) uses this to index the
+    /// per-position broadcast adds (speaker embedding, BERT bridge) it
+    /// performs on that output, mirroring
+    /// [`SbV2Decoder::sample_rate`](super::decoder::SbV2Decoder::sample_rate)'s
+    /// identical private-field-accessor precedent.
+    pub fn d_model(&self) -> usize {
+        self.d_model
+    }
+
     /// Encodes one phoneme sequence: `phoneme_embed[id] + tone_embed[tone]
     /// + wb_embed[word_boundary]` summed per position, then
     /// `transformer_layers` applied in order.

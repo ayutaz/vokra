@@ -48,6 +48,11 @@ vokra-piper-plus.workspace = true
 # memmap2), so the zero-dependency gate (NFR-DS-02) still holds. Promoted from
 # dev-dependencies (where the Voxtral real-GGUF gated test already used it).
 vokra-mmap.workspace = true
+# SBV2 v2 Task 23 (`sbv2::SbV2Model`): the BERT-family encoder (DeBERTa v2 JA /
+# DeBERTa v3 EN) + SentencePiece tokenizer the multilingual BERT bridge stage
+# loads. First-party `vokra-*` crate (`vokra-core` + `vokra-mmap` deps only),
+# so the zero-dependency gate (NFR-DS-02) still holds.
+vokra-bert.workspace = true
 # Phase 3 (GPU execution): the imperative `Compute` dispatcher routes the model
 # hot path (GEMM first) onto the Metal backend. `vokra-backend-metal` is a
 # first-party `vokra-*` crate with ZERO external deps (raw Objective-C / Metal

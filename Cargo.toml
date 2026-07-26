@@ -73,6 +73,12 @@ vokra-convert = { path = "crates/vokra-convert", version = "0.1.0-alpha.0" }
 # build uses it with `--no-default-features`. First-party `vokra-*` crate with
 # only a `vokra-core` dep, so the root Cargo.lock stays vokra-* only (NFR-DS-02).
 vokra-vad-micro = { path = "crates/vokra-vad-micro", version = "0.1.0-alpha.0" }
+# SBV2 v2 Stage A/Task 23: the BERT-family encoder + SentencePiece tokenizer
+# `sbv2::SbV2Model` loads (both DeBERTa v2 JA and DeBERTa v3 EN, multilingual —
+# `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md` §6/§7). First-party
+# `vokra-*` crate with only a `vokra-core` + `vokra-mmap` dep, so the root
+# Cargo.lock stays vokra-* only (NFR-DS-02).
+vokra-bert = { path = "crates/vokra-bert", version = "0.1.0-alpha.0" }
 
 # Unsafe boundary policy (M0-02-T03; NFR-RL-07, SRS §5-(1)):
 # the workspace is safe-by-default (`unsafe_code = "deny"`). `unsafe` +
