@@ -123,6 +123,18 @@ integrations/vokra-godot/pkg/
 # included"; only .gitkeep + the hand-authored .meta are tracked).
 /bindings/unity/com.vokra.unity/Plugins/WebGL/libvokra.a
 
+# SBV2 v2 real-checkpoint parity fixtures (Task 28 real parity + Task 34
+# fixture management, SBV2 v2 plan `docs/superpowers/specs/2026-07-26-
+# sbv2-v2-design.md` §10). The real checkpoints are large and licensed
+# under their own upstream terms (AGPL-3.0 / cc-by-sa-4.0 / MIT — never
+# Apache-2.0), so only the sha256 placeholders, the manifest template, and
+# the owner recipe (tests/fixtures/sbv2/README.md) are committed; the
+# actual .gguf / .safetensors weights and the Task 30 reference dump are
+# produced locally and never fabricated by CI.
+tests/fixtures/sbv2/*.gguf
+tests/fixtures/sbv2/*.safetensors
+tests/fixtures/sbv2/reference_dump/
+
 # Secrets — never commit (HF token etc.)
 .env
 .env.*

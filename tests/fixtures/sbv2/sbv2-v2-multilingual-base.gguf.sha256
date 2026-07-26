@@ -1,0 +1,32 @@
+# PLACEHOLDER — this is not a real SHA256 checksum yet.
+#
+# Comment-only body, by design: every line in this file starts with `#`,
+# so it carries zero non-comment/non-empty lines. That is the same shape
+# tests/fixtures/audio/jfk-30s.wav.sha256 used before its real audio was
+# committed (M2-06 §3), and the exact thing
+# .github/workflows/parity-whisper-real.yml's "Detect audio fixture
+# presence" step checks for (`grep -vE '^\s*(#|$)' <sidecar> | grep -q .`
+# — present only if that finds a line). A future
+# .github/workflows/parity-sbv2-real.yml is expected to gate on this same
+# shape for the SBV2 fixture family, per
+# docs/superpowers/specs/2026-07-26-sbv2-v2-design.md §10 "CI workflow" /
+# "fixture 管理". This file is intentionally still a placeholder until an
+# owner runs the real conversion recipe below.
+#
+# Role: `checkpoint.sbv2_main` in reference_dump.manifest.json — the SBV2
+# v2 multilingual (JA+EN) base acoustic model, upstream
+# litagin02/style_bert_vits2 (AGPL-3.0), converted to GGUF via
+# `vokra-cli convert --model sbv2`.
+#
+# NOT a valid `sha256sum -c` input (no `<hash>  <path>` line) — feeding
+# this file to `sha256sum -c` fails loudly, on purpose (FR-EX-08): a
+# placeholder must never be silently accepted as a real checksum.
+#
+# Owner recipe: tests/fixtures/sbv2/README.md. Once a real
+# sbv2-v2-multilingual-base.gguf has been produced (via
+# tools/parity/sbv2_prepare_checkpoint.py + `vokra-cli convert --model
+# sbv2`), replace this ENTIRE file with the single-line `sha256sum`
+# output:
+#
+#   sha256sum tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf > \
+#     tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf.sha256
