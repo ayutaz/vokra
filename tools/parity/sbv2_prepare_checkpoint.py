@@ -254,6 +254,130 @@ SCALAR_DEFAULTS: dict[str, tuple[int, str]] = {
     ),
 }
 
+# --- clean-room fallbacks (opt-in via --clean-room-defaults) --------------
+#
+# The block above (SCALAR_DEFAULTS) applies its 3 entries UNCONDITIONALLY,
+# because those 3 fields are not present in any VITS-family config.json —
+# they must come from either the code (jaywalnut310/vits Generator) or a
+# separate design doc (§10 for d_bert). The blocks below are different:
+# they cover fields that DO belong in a VITS config.json — SBV2 v2 just
+# happens to ship a weights-only release (no config.json at all) as of
+# 2026-07 (litagin/Style-Bert-VITS2-2.0-base-JP-Extra HF repo lists only
+# G_0.safetensors / D_0.safetensors / WD_0.safetensors + README).
+#
+# When --clean-room-defaults is passed, these citations kick in AFTER
+# upstream resolution + SCALAR_DEFAULTS. Every value is cited from a
+# permissive source (jaywalnut310/vits MIT configs/, jik876/hifi-gan MIT
+# configs/, yl4579/StyleTTS2 MIT, HF model cards) — NEVER from
+# litagin02/Style-Bert-VITS2 or fishaudio/Bert-VITS2 (both AGPL-3.0). See
+# docs/tickets/sbv2/task-3-decisions.md for the owner ruling that made
+# clean-room the chosen path (Decision ②, 2026-07-27).
+#
+# All values are best-effort defaults from stable published references.
+# Shape-derivation from an actually-downloaded safetensors header would
+# be more accurate; that is a separate followup (see the "SHAPE OVERRIDE"
+# note at the top of build_config_side_car).
+
+CLEAN_ROOM_SCALAR_FALLBACKS: dict[str, tuple[object, str]] = {
+    "sample_rate": (
+        44100,
+        "SBV2 v2 JP-Extra targets 44.1 kHz output "
+        "(litagin/Style-Bert-VITS2-2.0-base-JP-Extra HF README, public metadata).",
+    ),
+    "n_speakers": (
+        1,
+        "SBV2 v2 base checkpoint = single-speaker fine-tuning base. Real voice "
+        "deployments (koharune-ami, amitaro, JVNV set) override this at fine-tune "
+        "time — shape-derivable from `emb_g.weight.shape[0]` on a real voice "
+        "checkpoint.",
+    ),
+    "d_model": (
+        192,
+        "VITS default `hidden_channels=192` (jaywalnut310/vits configs/*.json, MIT — "
+        "e.g. ljs_base.json / vctk_base.json). Matches the vendored "
+        "`tools/parity/vendor/vits/attentions.py` Encoder(hidden_channels=...) "
+        "usage across all upstream reference configs.",
+    ),
+    "d_z": (
+        192,
+        "VITS default `inter_channels=192` (jaywalnut310/vits configs/*.json, MIT).",
+    ),
+    "d_speaker": (
+        256,
+        "VITS default `gin_channels=256` for multi-speaker configs "
+        "(jaywalnut310/vits configs/vctk_base.json, MIT).",
+    ),
+    "d_ff": (
+        768,
+        "VITS default `filter_channels=768` (jaywalnut310/vits configs/*.json, MIT).",
+    ),
+    "n_text_layers": (
+        6,
+        "VITS default `n_layers=6` for the text encoder "
+        "(jaywalnut310/vits configs/*.json, MIT).",
+    ),
+    "d_style": (
+        128,
+        "StyleTTS 2 (yl4579/StyleTTS2, MIT) reference style dim = 128. SBV2's "
+        "style vector API mirrors StyleTTS 2's design choice per the SBV2 v2 "
+        "design doc §10.",
+    ),
+    "n_vocab": (
+        112,
+        "Conservative upper-bound estimate for SBV2 JP-Extra G2P alphabet "
+        "(Japanese kana subset + Katakana subset + Latin + tone markers + "
+        "specials). CANONICALLY shape-derivable from `enc_p.emb.weight.shape[0]` "
+        "at convert time — this default is a pre-convert placeholder only.",
+    ),
+    "n_tones": (
+        6,
+        "JP-Extra tone alphabet size: 6 (Japanese pitch-accent tones 0..4 + "
+        "silence). CANONICALLY shape-derivable from a tone-embedding shape at "
+        "convert time.",
+    ),
+    "n_flow_layers": (
+        4,
+        "VITS default `n_flow_layer=4` (jaywalnut310/vits configs/*.json, MIT).",
+    ),
+    "n_sdp_layers": (
+        3,
+        "VITS StochasticDurationPredictor reference `n_layers_dp=3` "
+        "(jaywalnut310/vits models.py __init__ default, MIT).",
+    ),
+    "decoder_initial_channel": (
+        512,
+        "HiFi-GAN v1 default `upsample_initial_channel=512` "
+        "(jik876/hifi-gan configs/config_v1.json, MIT).",
+    ),
+}
+
+CLEAN_ROOM_ARRAY_FALLBACKS: dict[str, tuple[list[int], str]] = {
+    "decoder_upsample_rates": (
+        [8, 8, 2, 2, 2],
+        "44.1 kHz 5-stage upsample: product([8,8,2,2,2]) = 512 = hop_length at "
+        "44100 Hz (frame_rate ~86 Hz), matches BigVGAN 44 kHz / Vocos convention. "
+        "CANONICALLY shape-derivable from `dec.ups.{i}.weight` strides.",
+    ),
+    "decoder_upsample_kernel_sizes": (
+        [16, 16, 4, 4, 4],
+        "HiFi-GAN convention: per-stage kernel_size = 2 * upsample_rate "
+        "(jik876/hifi-gan configs/config_v1.json pattern, MIT).",
+    ),
+    "decoder_resblock_kernel_sizes": (
+        [3, 7, 11],
+        "HiFi-GAN v1 default `resblock_kernel_sizes=[3, 7, 11]` "
+        "(jik876/hifi-gan configs/config_v1.json, MIT).",
+    ),
+}
+
+# Special: list-of-lists, derives two flat Vokra fields
+# (decoder_resblock_dilation_counts / decoder_resblock_dilations_flat).
+CLEAN_ROOM_DILATION_FALLBACK: tuple[list[list[int]], str] = (
+    [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+    "HiFi-GAN v1 default `resblock_dilation_sizes=[[1,3,5],[1,3,5],[1,3,5]]` "
+    "(jik876/hifi-gan configs/config_v1.json, MIT).",
+)
+
 
 def dig(d: dict, dotted_path: str):
     """Walks ``dotted_path`` (e.g. ``"model.upsample_rates"``) through
@@ -280,19 +404,39 @@ def resolve(upstream: dict, candidates: list[str]):
     return None
 
 
-def build_config_side_car(upstream: dict) -> tuple[dict, dict, list]:
-    """Best-effort maps ``upstream`` (a parsed SBV2 upstream config.json)
-    onto the ``vokra.sbv2.*`` flat side-car schema
-    ``SbV2Config::parse`` expects.
+def build_config_side_car(
+    upstream: dict, use_clean_room: bool = False
+) -> tuple[dict, dict, list]:
+    """Best-effort maps ``upstream`` (a parsed SBV2 upstream config.json,
+    or an empty dict when upstream has no config at all) onto the
+    ``vokra.sbv2.*`` flat side-car schema ``SbV2Config::parse`` expects.
+
+    Resolution order (highest to lowest priority):
+      1. **Upstream config** — DIRECT_CANDIDATES / ARRAY_CANDIDATES /
+         RESBLOCK_DILATION_SIZES_CANDIDATES / LEAKY_RELU_SLOPE_CANDIDATES.
+      2. **Derived** — decoder_upsample_out_channels from initial_channel
+         and upsample_rates once both are known.
+      3. **SCALAR_DEFAULTS (always)** — 3 fields that no VITS config carries
+         (decoder_conv_pre_kernel / _post_kernel / d_bert).
+      4. **CLEAN_ROOM_*_FALLBACKS (opt-in)** — applied only when
+         ``use_clean_room=True``. Covers fields that a VITS config normally
+         carries but SBV2 v2 ships without (litagin/Style-Bert-VITS2-2.0-
+         base-JP-Extra ships weights-only). Every value is cited from
+         permissive references (VITS/HiFi-GAN MIT configs, StyleTTS 2 MIT,
+         HF model cards) — NEVER from AGPL SBV2/BV2 code.
+
+    SHAPE OVERRIDE (followup, not implemented in Wave 2a): the values in
+    CLEAN_ROOM_* are best-effort published defaults — SHAPE-DERIVING them
+    from an actually-downloaded safetensors header would beat them. See
+    docs/tickets/sbv2/task-3-decisions.md §"Implementation checklist" for
+    the followup ticket.
 
     Returns ``(config, provenance, unresolved)``:
 
     * ``config`` — only the fields that were actually resolved. Never
       contains a fabricated placeholder (see module docstring
       "CONFIDENCE").
-    * ``provenance`` — resolved key → human-readable source string (which
-      upstream path it was read from, how it was derived, or which cited
-      default it fell back to).
+    * ``provenance`` — resolved key → human-readable source string.
     * ``unresolved`` — required ``SbV2Config`` fields (a subset of
       ``ALL_TARGET_KEYS``) that could not be determined at all.
     """
@@ -328,7 +472,48 @@ def build_config_side_car(upstream: dict) -> tuple[dict, dict, list]:
                 f"derived from upstream `{path}` (flattened across branches)"
             )
 
-    if "decoder_initial_channel" in config and "decoder_upsample_rates" in config:
+    # 3. Unconditional architecture-convention defaults (3 fields).
+    for key, (default, citation) in SCALAR_DEFAULTS.items():
+        if key not in config:
+            config[key] = default
+            provenance[key] = f"architecture-convention default ({citation})"
+
+    # 4. Clean-room fallbacks (opt-in). Order matters: dilation before
+    # scalar/array so that decoder_upsample_out_channels can derive after
+    # both initial_channel and upsample_rates are populated.
+    if use_clean_room:
+        # Scalars.
+        for key, (default, citation) in CLEAN_ROOM_SCALAR_FALLBACKS.items():
+            if key not in config:
+                config[key] = default
+                provenance[key] = f"clean-room default ({citation})"
+        # Arrays.
+        for key, (default, citation) in CLEAN_ROOM_ARRAY_FALLBACKS.items():
+            if key not in config:
+                config[key] = list(default)  # copy so caller can mutate safely
+                provenance[key] = f"clean-room default ({citation})"
+        # Dilations (list-of-lists, derives two flat fields).
+        if (
+            "decoder_resblock_dilation_counts" not in config
+            and "decoder_resblock_dilations_flat" not in config
+        ):
+            branches, citation = CLEAN_ROOM_DILATION_FALLBACK
+            config["decoder_resblock_dilation_counts"] = [len(b) for b in branches]
+            config["decoder_resblock_dilations_flat"] = [d for b in branches for d in b]
+            provenance["decoder_resblock_dilation_counts"] = (
+                f"clean-room default per-branch count ({citation})"
+            )
+            provenance["decoder_resblock_dilations_flat"] = (
+                f"clean-room default flattened dilations ({citation})"
+            )
+
+    # Derived (needs initial_channel + upsample_rates, either from upstream
+    # or from clean-room, so must come AFTER both resolution passes).
+    if (
+        "decoder_upsample_out_channels" not in config
+        and "decoder_initial_channel" in config
+        and "decoder_upsample_rates" in config
+    ):
         initial = int(config["decoder_initial_channel"])
         n_stages = len(config["decoder_upsample_rates"])
         config["decoder_upsample_out_channels"] = [
@@ -338,11 +523,6 @@ def build_config_side_car(upstream: dict) -> tuple[dict, dict, list]:
             "derived: upsample_initial_channel // 2**(stage+1) — "
             "jik876/hifi-gan + jaywalnut310/vits (MIT) Generator convention"
         )
-
-    for key, (default, citation) in SCALAR_DEFAULTS.items():
-        if key not in config:
-            config[key] = default
-            provenance[key] = f"architecture-convention default ({citation})"
 
     unresolved = [k for k in ALL_TARGET_KEYS if k not in config]
     return config, provenance, unresolved
@@ -493,6 +673,20 @@ def main() -> int:
         default=None,
         help="Optional HF revision (branch / tag / commit sha) to pin.",
     )
+    parser.add_argument(
+        "--clean-room-defaults",
+        action="store_true",
+        default=False,
+        help=(
+            "Opt-in: use clean-room fallback values (VITS/HiFi-GAN/StyleTTS 2 "
+            "MIT reference defaults + HF model-card constants) for fields the "
+            "upstream config.json does not resolve, AND allow proceeding when "
+            "the upstream ships no config.json at all (SBV2 v2 base case: "
+            "litagin/Style-Bert-VITS2-2.0-base-JP-Extra publishes weights only). "
+            "Off by default so existing behavior (fail-loud on missing config) "
+            "is preserved for callers that expect an upstream config."
+        ),
+    )
     args = parser.parse_args()
 
     config_out = args.config_out or (args.output_dir / "vokra-sbv2-config.json")
@@ -526,22 +720,33 @@ def main() -> int:
 
     upstream_config_path = find_upstream_config(local_dir)
     if upstream_config_path is None:
-        sys.exit(
-            f"sbv2_prepare_checkpoint: no config.json found under {local_dir} "
-            "(checked repo root, configs/, and a recursive search) — cannot "
-            "write the vokra.sbv2.* side-car without an upstream config to "
-            "read hparams from."
+        if not args.clean_room_defaults:
+            sys.exit(
+                f"sbv2_prepare_checkpoint: no config.json found under {local_dir} "
+                "(checked repo root, configs/, and a recursive search) — cannot "
+                "write the vokra.sbv2.* side-car without an upstream config to "
+                "read hparams from. Pass --clean-room-defaults to proceed with "
+                "cited VITS/HiFi-GAN/StyleTTS 2 MIT reference defaults instead "
+                "(SBV2 v2 base case: upstream ships weights only)."
+            )
+        print(
+            f"{LOG_PREFIX} no upstream config.json — proceeding with "
+            f"--clean-room-defaults (cited MIT reference defaults)."
         )
-    print(f"{LOG_PREFIX} upstream config: {upstream_config_path}")
-    with upstream_config_path.open("r", encoding="utf-8") as f:
-        upstream_config = json.load(f)
-    if not isinstance(upstream_config, dict):
-        sys.exit(
-            f"sbv2_prepare_checkpoint: {upstream_config_path} does not parse "
-            "to a JSON object at the top level"
-        )
+        upstream_config: dict = {}
+    else:
+        print(f"{LOG_PREFIX} upstream config: {upstream_config_path}")
+        with upstream_config_path.open("r", encoding="utf-8") as f:
+            upstream_config = json.load(f)
+        if not isinstance(upstream_config, dict):
+            sys.exit(
+                f"sbv2_prepare_checkpoint: {upstream_config_path} does not parse "
+                "to a JSON object at the top level"
+            )
 
-    config, provenance, unresolved = build_config_side_car(upstream_config)
+    config, provenance, unresolved = build_config_side_car(
+        upstream_config, use_clean_room=args.clean_room_defaults
+    )
 
     print(f"{LOG_PREFIX} vokra.sbv2.* field mapping:")
     for key in ALL_TARGET_KEYS:
