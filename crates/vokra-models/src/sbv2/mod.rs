@@ -19,15 +19,16 @@
 //! - github.com/fishaudio/Bert-VITS2 (AGPL-3.0)
 //! - Any AGPL derivative of the above.
 
+pub mod decoder;
 pub mod duration;
 pub mod flow;
 pub mod g2p;
 pub mod speaker;
 pub mod style;
 pub mod text_encoder;
-// Later tasks add: mod decoder;
-//                  mod converter; mod parity;
+// Later tasks add: mod converter; mod parity;
 
+pub use decoder::SbV2Decoder;
 pub use duration::{SbV2SDP, length_regulate};
 pub use flow::SbV2Flow;
 pub use g2p::{Language, PhonemizeResult, SbV2Phonemizer};
