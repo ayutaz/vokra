@@ -2,12 +2,16 @@
 //! (Clean-room comment: see mod.rs)
 
 use std::collections::HashMap;
-use vokra_core::Result;
+use vokra_core::{Result, VokraError};
 use vokra_piper_plus::Phonemizer;
 
 /// SBV2 input language selector — drives which char-level mapping table
 /// (and which tone convention) `SbV2Phonemizer::phonemize` uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Hash` derives are required so [`Language`] can key a
+/// [`PhonemizeFixture`]'s internal `HashMap<(Language, String), _>` (Task 7);
+/// the other derives predate that use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
     /// Japanese input (SBV2 pitch-accent tones, 0-2).
     JA,
@@ -18,6 +22,19 @@ pub enum Language {
 /// The G2P output for one input string: phoneme ids in SBV2 vocabulary
 /// space, per-phoneme pitch-accent tones, per-phoneme word-boundary flags,
 /// and the original text (fed separately to the BERT bridge).
+///
+/// `Clone` (added for Task 7) is required so a [`PhonemizeFixture`] can hand
+/// out an owned copy of the pre-computed result at every
+/// [`SbV2Phonemizer::phonemize`] call without moving out of the fixture's
+/// internal map — the fixture must outlive the single [`SbV2Phonemizer`]
+/// instance it was built into (so successive lookups against the same key
+/// remain valid), which forbids returning a `&PhonemizeResult` from
+/// [`SbV2Phonemizer::phonemize`]'s existing `-> Result<PhonemizeResult>`
+/// signature. Every field is a small owned-`Vec`/`String`, so `.clone()` is
+/// a straightforward per-element copy; the piper- and synthetic-mapping paths
+/// already build fresh `Vec`s per call, so this is a peer of that per-call
+/// cost, not a new one.
+#[derive(Debug, Clone)]
 pub struct PhonemizeResult {
     /// Phoneme ids in SBV2 phoneme-table space (one per output phoneme).
     pub phoneme_ids: Vec<u16>,
@@ -29,23 +46,139 @@ pub struct PhonemizeResult {
     pub bert_input_text: String,
 }
 
+/// A pre-computed G2P output table for [`SbV2Phonemizer::from_fixture`]
+/// (Task 7) — the `(language, text)`-keyed lookup that lets a real,
+/// [`SbV2Model::from_gguf`](crate::sbv2::SbV2Model::from_gguf_with_phonemizer)-loaded
+/// model be exercised for a fixed set of test sentences without depending on
+/// a real 8-language piper-plus G2P instance.
+///
+/// # Scope: fixture-driven parity, not a G2P
+///
+/// A [`PhonemizeFixture`]-backed phonemizer is **not** a G2P — every
+/// [`SbV2Phonemizer::phonemize`] call is a plain `(language, text)` lookup,
+/// so any call whose `(language, text)` pair is absent from `entries`
+/// fails loudly with [`VokraError::InvalidArgument`] (FR-EX-08), never
+/// silently falls through to
+/// [`SbV2Phonemizer::synthetic_for_test`]'s toy char-mapping. This is
+/// deliberate: the whole point of the fixture path is to reproduce the
+/// exact ids a permissive Python reference dumper (Task 30's
+/// `tools/parity/sbv2_dump_reference.py`) fed the reference forward pass,
+/// so `SbV2Model::synthesize` compares against that dumper's own
+/// intermediate tensors down the pipeline (Task 28's
+/// `crates/vokra-models/tests/parity_sbv2_real.rs`) — falling back to a
+/// different G2P for a miss would validate nothing.
+///
+/// Populating a real production G2P is instead
+/// [`SbV2Phonemizer::from_piper_g2p`]'s job (which takes a real
+/// `Box<dyn Phonemizer>` the caller — typically the excluded-workspace
+/// `integrations/vokra-piper-g2p` crate — owns).
+#[derive(Debug, Clone, Default)]
+pub struct PhonemizeFixture {
+    // (language, text) -> the pre-computed [`PhonemizeResult`] the Python
+    // reference dumper fed the reference forward pass for that exact input.
+    // Owned `String` (not a borrow) because the fixture outlives every input
+    // string it was populated from (the dumper's transient argv), and because
+    // the [`SbV2Phonemizer::phonemize`] signature takes `&str`, forcing a
+    // lookup against an owned-`String` map key rather than a `&str`-keyed one.
+    entries: HashMap<(Language, String), PhonemizeResult>,
+}
+
+impl PhonemizeFixture {
+    /// Constructs an empty fixture. Populate it with [`insert`](Self::insert)
+    /// before handing it to [`SbV2Phonemizer::from_fixture`]; an empty
+    /// fixture is valid but every lookup will fail (FR-EX-08).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds one pre-computed [`PhonemizeResult`] to the fixture, keyed on
+    /// `(language, text)`. A later [`SbV2Phonemizer::phonemize`] call with
+    /// exactly the same `(language, text)` pair returns a `Clone` of this
+    /// result.
+    ///
+    /// Overwrites any prior entry for the same `(language, text)` key
+    /// (returns the replaced value if present, `None` otherwise) — the same
+    /// convention `HashMap::insert` uses; the fixture is a plain wrapper.
+    pub fn insert(
+        &mut self,
+        language: Language,
+        text: impl Into<String>,
+        result: PhonemizeResult,
+    ) -> Option<PhonemizeResult> {
+        self.entries.insert((language, text.into()), result)
+    }
+
+    /// Number of `(language, text)` entries populated. A fixture with `0`
+    /// entries is valid but every lookup will fail — see [`Self::new`].
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// `true` iff no `(language, text)` entries have been inserted. See
+    /// [`Self::len`].
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    // Internal lookup consumed by [`SbV2Phonemizer::phonemize`]'s fixture
+    // arm. Not `pub`: the only supported way to reach a fixture entry is
+    // through the [`SbV2Phonemizer::phonemize`] surface (which then hits this
+    // fn), so a call site that already has a [`PhonemizeFixture`] handle
+    // cannot bypass the phonemizer.
+    fn lookup(&self, language: Language, text: &str) -> Result<PhonemizeResult> {
+        // Two-step probe: `HashMap::get` needs an owned key when the map's
+        // key is `(K1, K2)` and we have `(K1, &K2)`, so borrow via a
+        // language-scoped iterator instead of allocating an owned
+        // `(Language, String)` per lookup. `entries.len()` is O(1); the scan
+        // is O(n_entries_for_language), which is the intended contract
+        // (fixtures are keyed on exact text; a full G2P would be
+        // [`SbV2Phonemizer::from_piper_g2p`] instead).
+        for ((lang, txt), result) in &self.entries {
+            if *lang == language && txt == text {
+                return Ok(result.clone());
+            }
+        }
+        Err(VokraError::InvalidArgument(format!(
+            "SbV2Phonemizer::from_fixture: no fixture entry for (language={language:?}, \
+             text={text:?}). The fixture is a fixed-set lookup (not a G2P) and every miss is \
+             a loud failure per FR-EX-08 — populate the fixture via PhonemizeFixture::insert \
+             at construction, or use SbV2Phonemizer::from_piper_g2p to route this call \
+             through a real piper-plus G2P instance."
+        )))
+    }
+}
+
 /// SBV2 grapheme-to-phoneme wrapper: maps input text to the SBV2 phoneme
 /// vocabulary (ids, tones, word boundaries) for the JA and EN language
 /// families.
 ///
-/// Two construction paths select the routing strategy:
+/// Three construction paths select the routing strategy — checked in
+/// priority order by [`phonemize`](Self::phonemize):
 ///
-/// - [`from_piper_g2p`](SbV2Phonemizer::from_piper_g2p) (Task 15) wires the
-///   real piper-plus [`Phonemizer`] reuse boundary (M1-01-A,
-///   `docs/piper-plus-integration.md` §7): input text is phonemized by the
-///   injected `ja_g2p` / `en_g2p`, and the resulting piper-plus phoneme id
-///   sequence is routed into SBV2 phoneme-table space through `ja_mapping` /
-///   `en_mapping`.
-/// - [`synthetic_for_test`](SbV2Phonemizer::synthetic_for_test) (Task 14)
-///   uses a deterministic char-level mapping instead, so this crate's own
-///   tests can prove the module wiring without depending on a real G2P
-///   instance or a real SBV2 phoneme table.
+/// 1. [`from_fixture`](Self::from_fixture) (Task 7) is checked **first**:
+///    every lookup goes through a pre-computed `(language, text)` table
+///    ([`PhonemizeFixture`]) that reproduces the exact ids a Python
+///    reference dumper fed the reference forward pass; the piper-plus and
+///    synthetic paths below are never consulted while a fixture is
+///    installed. A miss is a loud [`VokraError::InvalidArgument`], never a
+///    silent fall-through to the other paths (FR-EX-08).
+/// 2. [`from_piper_g2p`](Self::from_piper_g2p) (Task 15) wires the real
+///    piper-plus [`Phonemizer`] reuse boundary (M1-01-A,
+///    `docs/piper-plus-integration.md` §7): input text is phonemized by
+///    the injected `ja_g2p` / `en_g2p`, and the resulting piper-plus
+///    phoneme id sequence is routed into SBV2 phoneme-table space through
+///    `ja_mapping` / `en_mapping`.
+/// 3. [`synthetic_for_test`](Self::synthetic_for_test) (Task 14) uses a
+///    deterministic char-level mapping instead, so this crate's own tests
+///    can prove the module wiring without depending on a real G2P
+///    instance or a real SBV2 phoneme table.
 pub struct SbV2Phonemizer {
+    // Task 7 fixture path — see [`from_fixture`](Self::from_fixture) and the
+    // struct doc's "priority order" note. Checked FIRST by
+    // [`phonemize`](Self::phonemize); a `Some(_)` here disables the
+    // piper-plus and synthetic paths entirely (a miss inside the fixture is
+    // a loud FR-EX-08 error, not a fall-through).
+    fixtures: Option<PhonemizeFixture>,
     // Real piper-plus G2P (M1-01-A reuse boundary), when wired via
     // `from_piper_g2p`. `None` for `synthetic_for_test()` builds, where
     // `phonemize_ja`/`phonemize_en` fall back to the `*_char_mapping` tables
@@ -89,6 +222,7 @@ impl SbV2Phonemizer {
             en.insert(c, 200 + i as u16);
         }
         Self {
+            fixtures: None,
             ja_g2p: None,
             en_g2p: None,
             ja_mapping: HashMap::new(),
@@ -119,6 +253,7 @@ impl SbV2Phonemizer {
         en_mapping: HashMap<i64, u16>,
     ) -> Self {
         Self {
+            fixtures: None,
             ja_g2p: Some(ja_g2p),
             en_g2p: Some(en_g2p),
             ja_mapping,
@@ -129,17 +264,66 @@ impl SbV2Phonemizer {
         }
     }
 
+    /// Wires a pre-computed [`PhonemizeFixture`] (Task 7) — a fixed-set
+    /// `(language, text)` lookup that lets a real,
+    /// [`SbV2Model::from_gguf`](crate::sbv2::SbV2Model::from_gguf) /
+    /// [`from_gguf_with_phonemizer`](crate::sbv2::SbV2Model::from_gguf_with_phonemizer)-loaded
+    /// model be exercised for a known-set of test sentences without needing
+    /// a real 8-language piper-plus G2P instance.
+    ///
+    /// Every [`phonemize`](Self::phonemize) call goes through
+    /// [`PhonemizeFixture`]'s `(language, text)` map (see the fixture's own
+    /// doc); the piper-plus and synthetic-mapping construction paths
+    /// ([`from_piper_g2p`](Self::from_piper_g2p) /
+    /// [`synthetic_for_test`](Self::synthetic_for_test)) are never consulted
+    /// while a fixture is installed. A `(language, text)` pair absent from
+    /// the fixture is a loud [`VokraError::InvalidArgument`], never a
+    /// silent fall-through to a different path (FR-EX-08). See the
+    /// fixture's own doc for the "not a G2P, a fixed-set parity lookup"
+    /// scope; see [`SbV2Model::from_gguf_with_phonemizer`](crate::sbv2::SbV2Model::from_gguf_with_phonemizer)
+    /// for the concrete caller.
+    #[doc(hidden)] // test/fixture-only, not a production G2P — see struct doc's priority-order note
+    pub fn from_fixture(fixture: PhonemizeFixture) -> Self {
+        Self {
+            fixtures: Some(fixture),
+            ja_g2p: None,
+            en_g2p: None,
+            ja_mapping: HashMap::new(),
+            en_mapping: HashMap::new(),
+            sbv2_default_phoneme_id: 0,
+            ja_char_mapping: HashMap::new(),
+            en_char_mapping: HashMap::new(),
+        }
+    }
+
     /// Phonemize `text` under the given `language`, producing SBV2 phoneme
     /// ids, tones, word boundaries and the pass-through BERT input text.
     ///
+    /// Dispatch priority (see the struct doc's "priority order" note):
+    ///
+    /// 1. If [`from_fixture`](Self::from_fixture) was used, `(language, text)`
+    ///    must be present in the fixture; a miss is a loud
+    ///    [`VokraError::InvalidArgument`] (FR-EX-08), not a fall-through.
+    /// 2. Otherwise, if [`from_piper_g2p`](Self::from_piper_g2p) was used,
+    ///    the injected [`Phonemizer`] runs and its output is mapped into
+    ///    SBV2 phoneme-table space.
+    /// 3. Otherwise (i.e.
+    ///    [`synthetic_for_test`](Self::synthetic_for_test)), the deterministic
+    ///    char-level mapping runs.
+    ///
     /// # Errors
     ///
-    /// When wired via [`from_piper_g2p`](SbV2Phonemizer::from_piper_g2p),
-    /// propagates any error the injected piper-plus [`Phonemizer`] returns.
-    /// The synthetic char-mapping path
-    /// ([`synthetic_for_test`](SbV2Phonemizer::synthetic_for_test)) never
-    /// fails.
+    /// When wired via [`from_fixture`](Self::from_fixture), returns
+    /// [`VokraError::InvalidArgument`] for any `(language, text)` pair the
+    /// fixture does not contain. When wired via
+    /// [`from_piper_g2p`](Self::from_piper_g2p), propagates any error the
+    /// injected piper-plus [`Phonemizer`] returns. The synthetic
+    /// char-mapping path ([`synthetic_for_test`](Self::synthetic_for_test))
+    /// never fails.
     pub fn phonemize(&self, text: &str, language: Language) -> Result<PhonemizeResult> {
+        if let Some(fixture) = &self.fixtures {
+            return fixture.lookup(language, text);
+        }
         match language {
             Language::JA => self.phonemize_ja(text),
             Language::EN => self.phonemize_en(text),

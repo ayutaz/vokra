@@ -37,7 +37,7 @@ pub mod text_encoder;
 pub use decoder::SbV2Decoder;
 pub use duration::{SbV2SDP, length_regulate};
 pub use flow::SbV2Flow;
-pub use g2p::{Language, PhonemizeResult, SbV2Phonemizer};
+pub use g2p::{Language, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
 pub use parity::{ATOL_DEFAULT, PER_TENSOR_ATOL, tolerance_for};
 pub use speaker::SpeakerEmbedding;
 pub use style::StyleVectorInjector;
@@ -940,6 +940,34 @@ impl SbV2Model {
     /// / [`DebertaV3Encoder::from_gguf`] / [`SbertTokenizer::from_gguf`]
     /// return while loading `bert_ja` / `bert_en`.
     pub fn from_gguf(main: &GgufFile, bert_ja: &GgufFile, bert_en: &GgufFile) -> Result<Self> {
+        // Backwards-compatible default: install the [`UnwiredPhonemizer`]
+        // stand-in per this method's own "G2P is not loaded here" section.
+        // A caller that needs [`synthesize`](Self::synthesize) to actually
+        // run must use [`from_gguf_with_phonemizer`](Self::from_gguf_with_phonemizer)
+        // (Task 7) instead, passing a real
+        // [`SbV2Phonemizer::from_piper_g2p`] or Task 7
+        // [`SbV2Phonemizer::from_fixture`] in place of this default.
+        let phonemizer = SbV2Phonemizer::from_piper_g2p(
+            Box::new(UnwiredPhonemizer),
+            Box::new(UnwiredPhonemizer),
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+        );
+        Self::from_gguf_inner(main, bert_ja, bert_en, phonemizer)
+    }
+
+    // The full loader body — shared by [`from_gguf`] (which passes the
+    // [`UnwiredPhonemizer`]-backed default phonemizer) and Task 7's
+    // [`from_gguf_with_phonemizer`] (which passes the caller's own). Every
+    // step besides the `phonemizer` argument is identical, so both public
+    // entry points share this to guarantee the same error surface (Task 7
+    // must not silently change the load path).
+    fn from_gguf_inner(
+        main: &GgufFile,
+        bert_ja: &GgufFile,
+        bert_en: &GgufFile,
+        phonemizer: SbV2Phonemizer,
+    ) -> Result<Self> {
         // ---- metadata + tensor read helpers (mirrors
         // vokra_bert::deberta_v2::DebertaV2Encoder::from_gguf's established
         // closure shape) ----
@@ -1252,14 +1280,13 @@ impl SbV2Model {
         };
         let decoder = SbV2Decoder::new(weights, attrs, HifiGanConfig::fp32(), sample_rate);
 
-        // ---- phonemizer — deliberately NOT loaded here, see "G2P is not
-        // loaded here" above ----
-        let phonemizer = SbV2Phonemizer::from_piper_g2p(
-            Box::new(UnwiredPhonemizer),
-            Box::new(UnwiredPhonemizer),
-            std::collections::HashMap::new(),
-            std::collections::HashMap::new(),
-        );
+        // ---- phonemizer — supplied by the caller (see this fn's own doc's
+        // "G2P is not loaded here" section for why loading a G2P here isn't
+        // this signature's job). `SbV2Model::from_gguf` passes an
+        // `UnwiredPhonemizer`-backed placeholder; `from_gguf_with_phonemizer`
+        // passes the caller's own `SbV2Phonemizer` (real piper-plus G2P via
+        // `from_piper_g2p`, or a Task 7 parity `PhonemizeFixture` via
+        // `from_fixture`).
 
         Ok(Self::new(
             phonemizer,
@@ -1272,6 +1299,69 @@ impl SbV2Model {
             flow,
             decoder,
         ))
+    }
+
+    /// Task 7 sibling of [`from_gguf`](Self::from_gguf) that lets the caller
+    /// substitute the [`SbV2Phonemizer`] the loaded model carries, instead
+    /// of accepting the [`from_gguf`](Self::from_gguf) default that
+    /// [`synthesize`](Self::synthesize) refuses to run.
+    ///
+    /// # Why this exists
+    ///
+    /// [`from_gguf`](Self::from_gguf)'s 3-file signature (`main` +
+    /// `bert_ja` + `bert_en`) has no piper-plus G2P GGUF — that is a wholly
+    /// separate model with its own loading path (see
+    /// [`SbV2Phonemizer::from_piper_g2p`]'s Task 15 precedent). The default
+    /// loader installs an internal `UnwiredPhonemizer` whose every call is a
+    /// loud [`VokraError::NotImplemented`] (never a silent fall-through to
+    /// [`SbV2Phonemizer::synthetic_for_test`]'s toy char-mapping —
+    /// exactly the class of silent failure FR-EX-08 forbids). That default
+    /// is safe but blocks [`synthesize`](Self::synthesize) for callers that
+    /// have a real G2P.
+    ///
+    /// This constructor lets those callers pass their own
+    /// [`SbV2Phonemizer`] in place of the placeholder — every other
+    /// component ([`from_gguf`](Self::from_gguf) already loads (text
+    /// encoder, BERT, bridge, speaker, style, SDP, flow, decoder) is
+    /// reusable as-is.
+    ///
+    /// # Two supported call sites (per [`SbV2Phonemizer`]'s three construction paths)
+    ///
+    /// 1. **Production**: pass a real
+    ///    [`SbV2Phonemizer::from_piper_g2p`]-built phonemizer whose
+    ///    `Box<dyn Phonemizer>` implementations come from the
+    ///    excluded-workspace 8-language `integrations/vokra-piper-g2p` crate
+    ///    (see that integration's own docs for how to construct one; it
+    ///    lives outside this crate to preserve zero-dependency NFR-DS-02).
+    /// 2. **Parity fixture (Task 28)**: pass a Task 7
+    ///    [`SbV2Phonemizer::from_fixture`]-built phonemizer whose
+    ///    [`PhonemizeFixture`] holds the exact ids the permissive Python
+    ///    reference dumper (Task 30's
+    ///    `tools/parity/sbv2_dump_reference.py`) fed the reference forward
+    ///    pass for a fixed set of test sentences. This is what
+    ///    `crates/vokra-models/tests/parity_sbv2_real.rs` uses to unblock
+    ///    the end-to-end numeric-parity assertion without needing a real
+    ///    8-language G2P available in-workspace.
+    ///
+    /// # Errors
+    ///
+    /// Every error [`from_gguf`](Self::from_gguf) itself returns
+    /// (`VokraError::ModelLoad` for a missing or wrong-typed
+    /// `vokra.sbv2.*` metadata key, a missing `sbv2.*` tensor, a
+    /// `d_z`-consistency failure, a decoder array-length mismatch, a
+    /// `d_bert` mismatch across the three files, or any error the delegated
+    /// [`DebertaV2Encoder::from_gguf`] / [`DebertaV3Encoder::from_gguf`] /
+    /// [`SbertTokenizer::from_gguf`] return). This constructor and
+    /// [`from_gguf`](Self::from_gguf) share their entire loader body via a
+    /// private `from_gguf_inner`, so the error surfaces of the two are
+    /// identical.
+    pub fn from_gguf_with_phonemizer(
+        main: &GgufFile,
+        bert_ja: &GgufFile,
+        bert_en: &GgufFile,
+        phonemizer: SbV2Phonemizer,
+    ) -> Result<Self> {
+        Self::from_gguf_inner(main, bert_ja, bert_en, phonemizer)
     }
 }
 
