@@ -20,7 +20,9 @@
 //! - Any AGPL derivative of the above.
 
 pub mod g2p;
+pub mod style;
 // Later tasks add: mod text_encoder; mod duration; mod flow; mod decoder;
-//                  mod style; mod converter; mod parity;
+//                  mod converter; mod parity;
 
 pub use g2p::{Language, PhonemizeResult, SbV2Phonemizer};
+pub use style::StyleVectorInjector;
