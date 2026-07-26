@@ -321,6 +321,174 @@ impl SbV2Model {
         )
     }
 
+    /// Test-only e2e-scale constructor (Task 42,
+    /// `tests/sbv2_e2e_synthetic.rs`): a **separate** factory from
+    /// [`synthetic_for_test`](Self::synthetic_for_test) — that method's exact
+    /// 12-sample output is a Task 23/27 contract
+    /// (`tests/parity_sbv2_synthetic.rs`'s `synthetic_shape_invariants_hold`
+    /// pins it precisely), so this constructor duplicates rather than
+    /// mutates it, guaranteeing zero regression risk. This one instead
+    /// assembles a pipeline shaped to clear "sounds like real audio" bars —
+    /// more than 1 second of PCM at 44.1 kHz, every sample finite, and a
+    /// non-silent peak amplitude — for both JA and EN input text.
+    ///
+    /// Two shape changes from [`synthetic_for_test`](Self::synthetic_for_test):
+    ///
+    /// 1. **Decoder upsample ladder** — SBV2 JP-Extra's real
+    ///    `upsample_rates = [8, 8, 2, 2]` / `upsample_kernel_sizes = [16,
+    ///    16, 4, 4]` (256x total upsample, *exact* — no rounding slack, per
+    ///    `decoder.rs`'s module doc and `tests/sbv2_decoder.rs`'s
+    ///    `jp_extra_attrs`), replacing `synthetic_for_test`'s toy 2-stage
+    ///    `[2, 2]` ladder (4x).
+    /// 2. **SDP flow stack** — one [`duration::SbV2CouplingLayer`] (rather
+    ///    than `synthetic_for_test`'s empty stack) whose `proj_weight` is
+    ///    all-zero (so it ignores `cond` — i.e. ignores the
+    ///    `hidden`/tone conditioning entirely) and whose `proj_bias =
+    ///    [0.0, -FIXED_DURATION.ln()]`. Every request this factory is built
+    ///    for uses `noise_scale_w == 0.0`, which makes
+    ///    `SbV2SDP::sample`'s `x = rng.next_gaussian() * noise_scale_w`
+    ///    exactly `0.0` at every phoneme position regardless of
+    ///    `seed`/RNG state (`SbV2SDP::sample`'s own doc) — so
+    ///    `SbV2CouplingLayer::inverse(0.0, cond)` collapses to `(0.0 - (0.0
+    ///    - FIXED_DURATION.ln())) * (-0.0_f32).exp() == FIXED_DURATION.ln()`
+    ///    regardless of `cond`, and `sample`'s `duration =
+    ///    x.exp().ceil().max(1.0)` then returns exactly `FIXED_DURATION` at
+    ///    every position. A closed-form, weight-only way to reach
+    ///    e2e-scale mel lengths without touching `SbV2Model::synthesize` or
+    ///    `SbV2SDP` itself.
+    ///
+    ///    `FIXED_DURATION = 40.0`: JA's "こんにちは" (5 phonemes, all
+    ///    present in [`SbV2Phonemizer::synthetic_for_test`]'s char map —
+    ///    its table's tail literally spells "...わをんこんにちは") reaches
+    ///    `5 * 40 == 200` mel frames → `200 * 256 == 51,200` samples; EN's
+    ///    "hello world" (10 phonemes — [`g2p`]'s char-mapping path skips
+    ///    the space, see `g2p.rs`'s `phonemize_en_char_mapping`) reaches
+    ///    `10 * 40 == 400` mel frames → `400 * 256 == 102,400` samples.
+    ///    Both clear the `> 44,100` (1s at 44.1 kHz) bar with margin.
+    ///
+    /// Every synthetic weight magnitude coefficient is also bumped from
+    /// `synthetic_for_test`'s `~0.05-0.1` to `0.5` (the decoder's
+    /// conv/upsample/MRF weights and biases, and the speaker embedding
+    /// table) — cheap insurance against the accumulated HiFi-GAN forward
+    /// pass underflowing toward silence through 4 sequential upsample/MRF
+    /// stages of small-magnitude convolutions, per this task's brief.
+    #[doc(hidden)]
+    pub fn synthetic_for_test_e2e() -> Self {
+        const D_MODEL: usize = 8;
+        const D_BERT: usize = 8;
+        const D_STYLE: usize = 4;
+        const N_VOCAB: usize = 256;
+        const N_TONES: usize = 3;
+        const N_SPEAKERS: usize = 2;
+        // See this fn's doc point 2 for the full derivation of why this
+        // value is the exact per-phoneme duration every request produces.
+        const FIXED_DURATION: f32 = 40.0;
+
+        let phonemizer = SbV2Phonemizer::synthetic_for_test();
+
+        let text_encoder = SbV2TextEncoder::from_weights(
+            (0..N_VOCAB * D_MODEL)
+                .map(|i| ((i as f32) * 0.001).sin() * 0.05)
+                .collect(),
+            (0..N_TONES * D_MODEL)
+                .map(|i| ((i as f32) * 0.01).cos() * 0.02)
+                .collect(),
+            vec![0.0; 2 * D_MODEL],
+            Vec::new(), // empty transformer stack — SbV2TextEncoder's own exercised no-op precedent
+            D_MODEL,
+            N_VOCAB,
+            N_TONES,
+        );
+
+        // Same minimal 4-entry SentencePiece table as `synthetic_for_test`
+        // (see that method's doc) — any input text still tokenizes via
+        // `encode`'s per-byte `unk_id` fallback.
+        let tokenizer_pieces = vec![
+            ("<pad>".to_string(), 0.0),
+            ("<unk>".to_string(), 0.0),
+            ("<s>".to_string(), 0.0),
+            ("</s>".to_string(), 0.0),
+        ];
+        let ja_tokenizer = SbertTokenizer::from_pieces_for_test(tokenizer_pieces.clone());
+        let en_tokenizer = SbertTokenizer::from_pieces_for_test(tokenizer_pieces);
+
+        let bert = SbV2BertContainer {
+            ja_tokenizer,
+            en_tokenizer,
+            ja: DebertaV2Encoder::synthetic_for_test(2, D_BERT, 2, 16, 512),
+            en: DebertaV3Encoder::synthetic_for_test(2, D_BERT, 2, 16, 512),
+        };
+
+        let bert_bridge = BertBridge::from_conv(
+            (0..D_MODEL * D_BERT)
+                .map(|i| ((i as f32) * 0.02).sin() * 0.03)
+                .collect(),
+            vec![0.0; D_MODEL],
+            D_BERT,
+            D_MODEL,
+        );
+
+        // Bumped 0.1 -> 0.5 (this fn's doc's magnitude-bump paragraph).
+        let speaker_embed = SpeakerEmbedding::from_table(
+            (0..N_SPEAKERS * D_MODEL)
+                .map(|i| ((i as f32) * 0.05).cos() * 0.5)
+                .collect(),
+            N_SPEAKERS,
+            D_MODEL,
+        );
+
+        let style_injector = StyleVectorInjector::from_projections(
+            vec![0.0; D_MODEL * D_STYLE],
+            vec![0.0; D_MODEL * D_STYLE],
+            D_STYLE,
+            D_MODEL,
+        );
+
+        // One coupling layer that ignores `cond` entirely (all-zero
+        // proj_weight) and forces `inverse(0.0, _) == FIXED_DURATION.ln()`
+        // — see this fn's doc point 2 for the full derivation.
+        let sdp_layer = duration::SbV2CouplingLayer::new(
+            vec![0.0; 2 * D_MODEL],
+            vec![0.0, -FIXED_DURATION.ln()],
+            D_MODEL,
+        );
+        let sdp = SbV2SDP::from_weights(
+            vec![sdp_layer],
+            vec![0.0; N_TONES * D_MODEL],
+            vec![0.0; D_MODEL],
+            D_MODEL,
+            N_TONES,
+        );
+
+        let flow = SbV2Flow::from_layers(Vec::new(), D_MODEL); // empty coupling stack: z = mel_hidden unchanged
+
+        let attrs = HifiGanAttrs {
+            n_mels: D_MODEL, // the flow's d_z feeds the decoder's n_mels directly — see synthesize's doc
+            initial_channel: 8,
+            upsample_rates: vec![8, 8, 2, 2], // SBV2 JP-Extra base config (decoder.rs's module doc)
+            upsample_kernel_sizes: vec![16, 16, 4, 4], // kernel = 2*stride: exact upsample length
+            resblock_kernel_sizes: vec![3],
+            resblock_dilation_sizes: vec![vec![1]],
+            sample_rate: 44_100,
+            leaky_relu_slope: 0.1,
+        };
+        let weights = synthetic_hifigan_weights_e2e(&attrs);
+        let sample_rate = attrs.sample_rate;
+        let decoder = SbV2Decoder::new(weights, attrs, HifiGanConfig::fp32(), sample_rate);
+
+        Self::new(
+            phonemizer,
+            text_encoder,
+            bert,
+            bert_bridge,
+            speaker_embed,
+            style_injector,
+            sdp,
+            flow,
+            decoder,
+        )
+    }
+
     /// Runs the full SBV2 forward pass: G2P → text encoder → BERT (+
     /// bridge) → speaker + style conditioning → stochastic duration
     /// prediction → length regulation → normalizing flow → HiFi-GAN decoder
@@ -1202,6 +1370,113 @@ fn synthetic_hifigan_weights(attrs: &HifiGanAttrs) -> HifiGanWeights {
         }
     }
     w.conv_post_bias = vec![0.0];
+    w
+}
+
+/// Deterministic, small HiFi-GAN weight bundle for
+/// [`SbV2Model::synthetic_for_test_e2e`] (Task 42) — the same
+/// smooth-sinusoidal, bounded, nonzero shape convention as
+/// [`synthetic_hifigan_weights`] above, but with every magnitude
+/// coefficient bumped `0.05 -> 0.5` (weight) / `0.01 -> 0.1` (bias) —
+/// cheap insurance against the accumulated forward pass underflowing
+/// toward silence through the JP-Extra ladder's 4 sequential upsample/MRF
+/// stages (`synthetic_for_test_e2e`'s doc, magnitude-bump paragraph). Kept
+/// as its own function rather than parameterizing
+/// [`synthetic_hifigan_weights`] with a magnitude scale, so
+/// `synthetic_for_test`'s existing PCM values stay byte-for-byte
+/// unchanged — this crate's own precedent for two near-identical weight
+/// builders kept deliberately separate (`tests/sbv2_decoder.rs`'s
+/// `jp_extra_weights` doc explains the same choice for the same reason:
+/// no shared `HiFiGanGenerator` type to hang a parameterized helper off
+/// of).
+fn synthetic_hifigan_weights_e2e(attrs: &HifiGanAttrs) -> HifiGanWeights {
+    let conv_pre_kernel = 7;
+    let conv_post_kernel = 7;
+    let mut w = HifiGanWeights {
+        conv_pre_weight: Vec::new(),
+        conv_pre_bias: Vec::new(),
+        conv_pre_kernel,
+        upsample_weights: Vec::new(),
+        mrf_stage_weights: Vec::new(),
+        conv_post_weight: Vec::new(),
+        conv_post_bias: Vec::new(),
+        conv_post_kernel,
+    };
+    for oc in 0..attrs.initial_channel {
+        for ic in 0..attrs.n_mels {
+            for k in 0..conv_pre_kernel {
+                w.conv_pre_weight
+                    .push(((oc + ic + k) as f32 * 0.017).sin() * 0.5);
+            }
+        }
+    }
+    w.conv_pre_bias = (0..attrs.initial_channel)
+        .map(|i| (i as f32 * 0.05).cos() * 0.1)
+        .collect();
+
+    let mut in_ch = attrs.initial_channel;
+    for stage in 0..attrs.n_upsample_stages() {
+        let out_ch = (in_ch / 2).max(3);
+        let kernel = attrs.upsample_kernel_sizes[stage];
+        let stride = attrs.upsample_rates[stage];
+        let mut weight = Vec::new();
+        for ic in 0..in_ch {
+            for oc in 0..out_ch {
+                for k in 0..kernel {
+                    weight.push(((ic + oc + k + stage) as f32 * 0.023).sin() * 0.5);
+                }
+            }
+        }
+        let bias: Vec<f32> = (0..out_ch)
+            .map(|i| ((i + stage) as f32 * 0.07).cos() * 0.1)
+            .collect();
+        w.upsample_weights.push(UpsampleStageWeights {
+            weight,
+            bias,
+            in_ch,
+            out_ch,
+            kernel,
+            stride,
+        });
+
+        let mut branches = Vec::new();
+        for b in 0..attrs.n_mrf_branches() {
+            let layers = attrs.resblock_dilation_sizes[b]
+                .iter()
+                .map(|dilation| {
+                    let kernel = attrs.resblock_kernel_sizes[b];
+                    let mut weight = Vec::new();
+                    for oc in 0..out_ch {
+                        for ic in 0..out_ch {
+                            for k in 0..kernel {
+                                weight.push(((oc + ic + k + dilation) as f32 * 0.031).sin() * 0.5);
+                            }
+                        }
+                    }
+                    let bias: Vec<f32> = (0..out_ch)
+                        .map(|i| ((i + *dilation + b) as f32 * 0.11).cos() * 0.1)
+                        .collect();
+                    ResBlockLayer {
+                        weight,
+                        bias,
+                        dilation: *dilation,
+                        kernel,
+                        channels: out_ch,
+                    }
+                })
+                .collect();
+            branches.push(MrfBranchWeights { layers });
+        }
+        w.mrf_stage_weights.push(branches);
+        in_ch = out_ch;
+    }
+    for ic in 0..in_ch {
+        for k in 0..conv_post_kernel {
+            w.conv_post_weight
+                .push(((ic + k) as f32 * 0.019).sin() * 0.5);
+        }
+    }
+    w.conv_post_bias = vec![0.1];
     w
 }
 
