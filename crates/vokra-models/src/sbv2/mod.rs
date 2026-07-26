@@ -53,6 +53,7 @@ pub use text_encoder::{BertBridge, SbV2TextEncoder};
 use vokra_bert::deberta_v2::DebertaV2Encoder;
 use vokra_bert::deberta_v3::DebertaV3Encoder;
 use vokra_bert::tokenizer::SbertTokenizer;
+use vokra_core::gguf::GgufFile;
 use vokra_core::rng::GaussianSplitMix64;
 use vokra_core::{Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError};
 use vokra_ops::attrs::HifiGanAttrs;
@@ -516,6 +517,586 @@ impl TtsEngine for SbV2Model {
             seed: 0,
         };
         self.synthesize(&sbv2_request)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task 24: SbV2Model::from_gguf — real-fixture GGUF loader
+// ---------------------------------------------------------------------------
+//
+// Loads a full `SbV2Model` from three separately converted GGUF files: the
+// Task 25 converter's own `main` output, plus `bert_ja` / `bert_en` (each
+// `vokra-bert`'s Task 11 converter output). `from_gguf`'s doc is the
+// canonical `vokra.sbv2.*` metadata schema and `sbv2.*` tensor hierarchy —
+// Task 25's converter must emit exactly this shape.
+
+/// A [`vokra_piper_plus::Phonemizer`] stand-in for a [`SbV2Model`] built by
+/// [`SbV2Model::from_gguf`], which has no G2P wired at load time (see that
+/// method's "G2P is not loaded here" doc section). Every call is a loud
+/// [`VokraError::NotImplemented`] rather than a silent fallback to
+/// [`SbV2Phonemizer::synthetic_for_test`]'s toy char-mapping G2P, which
+/// would let a `from_gguf`-loaded model *load* successfully but
+/// *synthesize* wrong-but-plausible-looking audio for any real text —
+/// exactly the class of silent failure FR-EX-08 forbids.
+struct UnwiredPhonemizer;
+
+impl vokra_piper_plus::Phonemizer for UnwiredPhonemizer {
+    fn phonemize(&self, _text: &str) -> Result<Vec<i64>> {
+        Err(VokraError::NotImplemented(
+            "SbV2Model::from_gguf loads no G2P: piper-plus text-to-phoneme is a separate \
+             model with its own GGUF file, not one of the 3 files this loader's signature \
+             takes (main + bert_ja + bert_en). To synthesize, rebuild the model via \
+             SbV2Model::new, passing a real phonemizer built with \
+             SbV2Phonemizer::from_piper_g2p (see g2p.rs's Task 15 real-G2P-wiring precedent) \
+             in place of the placeholder from_gguf installs here — every other component \
+             from_gguf loads (text encoder, BERT, bridge, speaker, style, SDP, flow, decoder) \
+             is reusable as-is.",
+        ))
+    }
+}
+
+impl SbV2Model {
+    /// Loads a full SBV2 (Style-Bert-VITS2 v2) model from three separately
+    /// converted GGUF files.
+    ///
+    /// - `main` — this model's own weights: text encoder, BERT bridge,
+    ///   speaker table, style injector, stochastic duration predictor,
+    ///   normalizing flow, HiFi-GAN decoder (Task 25's converter output).
+    /// - `bert_ja` — the JA-path [`DebertaV2Encoder`] plus its own
+    ///   [`SbertTokenizer`] (`vokra-bert`'s converter output).
+    /// - `bert_en` — the EN-path [`DebertaV3Encoder`] plus its own
+    ///   [`SbertTokenizer`].
+    ///
+    /// # Metadata keys (`vokra.sbv2.*`, all read from `main`)
+    ///
+    /// Every key below is a required `u32` unless noted otherwise — a
+    /// missing or wrong-typed key is [`VokraError::ModelLoad`] naming the
+    /// key, never a silent default (FR-EX-08). Rationale for why each value
+    /// lives here (vs. being derivable some other way) follows each entry.
+    ///
+    /// - `d_model` — [`SbV2TextEncoder`]/[`SbV2SDP`]/[`SbV2Flow`]-conditioning
+    ///   shared hidden width (SBV2 v2's real-world value is 192, per
+    ///   `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md` §7's hparam
+    ///   table — this loader treats it as checkpoint-driven, never
+    ///   hard-coded).
+    /// - `d_bert` — the DeBERTa hidden width [`BertBridge`] projects
+    ///   *from*. Cross-checked against both `bert_ja`'s and `bert_en`'s own
+    ///   loaded `get_d_model()` after they load — a mismatch is
+    ///   [`VokraError::ModelLoad`], since [`SbV2Model`]'s single
+    ///   `bert_bridge` field (Task 23) is shared by both languages and can
+    ///   only have one `d_bert`.
+    /// - `d_speaker` — [`SpeakerEmbedding`]'s per-speaker embedding width.
+    ///   Read independently of `d_model`: [`synthesize`](Self::synthesize)'s
+    ///   broadcast-add `debug_assert!`s the two are equal (a documented
+    ///   scaffold limitation on the [`SbV2Model`] struct doc since Task
+    ///   23) — this loader does not paper over a real checkpoint whose
+    ///   speaker embedding is a different width (e.g. an external 512-d
+    ///   table) by silently reshaping; that would need a projection layer
+    ///   this task does not add.
+    /// - `n_speakers` — [`SpeakerEmbedding`]'s table row count.
+    /// - `d_style` — [`StyleVectorInjector`]'s input style-vector width.
+    /// - `d_z` — [`SbV2Flow`]'s latent channel width, and — since
+    ///   [`synthesize`](Self::synthesize) feeds the flow's output straight
+    ///   into the decoder (`decoder.rs`'s "bridging one layout to the
+    ///   other" doc) — also the decoder's `n_mels`. Must be even and
+    ///   non-zero ([`SbV2Flow::from_layers`]'s own panic contract); this
+    ///   loader checks that itself and returns [`VokraError::ModelLoad`]
+    ///   instead of relying on a debug-only panic.
+    /// - `n_vocab` — [`SbV2TextEncoder`]'s phoneme vocabulary size.
+    /// - `n_tones` — pitch-accent tone count, shared by the text encoder
+    ///   and [`SbV2SDP`]'s tone conditioning.
+    /// - `d_ff` — [`SbV2TransformerBlock`](text_encoder::SbV2TransformerBlock)'s
+    ///   FFN inner width. A metadata key rather than shape-derived from a
+    ///   tensor's own dimensions: this reader's GGUF tensor `dimensions`
+    ///   are stored **innermost-first** (`GgufTensorInfo::dimensions`'s own
+    ///   doc) — the opposite axis order from this crate's row-major
+    ///   `[out_dim, in_dim]` weight convention — so shape-deriving here
+    ///   would risk a silently-transposed read. This follows
+    ///   [`DebertaV2Encoder::from_gguf`]'s sibling precedent of reading
+    ///   every shape parameter from metadata instead.
+    /// - `n_text_layers` / `n_flow_layers` / `n_sdp_layers` — stack depths
+    ///   for the text encoder's transformer blocks, the flow's coupling
+    ///   layers and the SDP's coupling layers respectively. `0` is a
+    ///   legitimate, exercised empty-stack configuration for all three
+    ///   (each component's own module doc), not an error.
+    /// - `sample_rate` — PCM output rate (shared with [`HifiGanAttrs`] and
+    ///   [`SbV2Decoder`]'s own `sample_rate` field, which
+    ///   [`SbV2Decoder::new`] `debug_assert!`s agree).
+    /// - `decoder.initial_channel` / `decoder.conv_pre_kernel` /
+    ///   `decoder.conv_post_kernel` — [`HifiGanAttrs::initial_channel`] and
+    ///   the pre/post conv kernel widths
+    ///   ([`HifiGanWeights::conv_pre_kernel`] /
+    ///   [`HifiGanWeights::conv_post_kernel`]).
+    /// - `decoder.upsample_rates` (array) — per-stage transposed-conv
+    ///   stride. **Not** shape-derivable (a `ConvTranspose1d` attribute
+    ///   with no trace in a tensor's shape — the same fact
+    ///   `crates/vokra-models/src/piper_plus/config.rs`'s `DEC_UP_STRIDE`
+    ///   doc records for piper-plus's own decoder).
+    /// - `decoder.upsample_kernel_sizes` (array) — per-stage
+    ///   transposed-conv kernel width.
+    /// - `decoder.upsample_out_channels` (array) — per-stage output channel
+    ///   count. [`HifiGanAttrs`] has no field for this (only
+    ///   [`UpsampleStageWeights::out_ch`], a per-tensor loader-populated
+    ///   value) — every real HiFi-GAN preset (V1/V2/V3) has its own
+    ///   channel schedule, so this loader does not assume the halving
+    ///   ladder [`synthetic_hifigan_weights`]'s test-only helper uses.
+    /// - `decoder.resblock_kernel_sizes` (array) — per-MRF-branch kernel
+    ///   width; array length fixes `n_mrf_branches`.
+    /// - `decoder.resblock_dilation_counts` (array) — per-branch dilation
+    ///   *count* (branches need not share a layer count — e.g. HiFi-GAN
+    ///   V1's 3-layer branches vs. V3's 1-layer branches).
+    /// - `decoder.resblock_dilations_flat` (array) — every branch's
+    ///   dilation list concatenated in branch order; walked back into
+    ///   per-branch slices using `resblock_dilation_counts` as the stride
+    ///   table. A flat array avoids relying on nested-array metadata (no
+    ///   other loader in this codebase emits or reads one, so this stays
+    ///   consistent with the established flat-metadata convention).
+    /// - `decoder.leaky_relu_slope` (`f32`, **optional**, default `0.1`) —
+    ///   [`HifiGanAttrs::leaky_relu_slope`]. Defaults to the universal
+    ///   jik876/hifi-gan `LRELU_SLOPE` every sibling decoder in this
+    ///   codebase uses (`vits_ja::VITS_JA_LEAKY_RELU_SLOPE`, piper-plus's
+    ///   `LRELU_SLOPE`), so a converter need not emit it for a stock
+    ///   config.
+    ///
+    /// `n_pos_buckets` is deliberately **not** read here: it is a
+    /// DeBERTa-only concept (relative-position attention bucketing) that
+    /// [`DebertaV2Encoder::from_gguf`] / [`DebertaV3Encoder::from_gguf`]
+    /// already read from `bert_ja` / `bert_en`'s own
+    /// `vokra.bert.deberta_v{2,3}.*` metadata; [`SbV2TextEncoder`]'s own
+    /// transformer block is plain full-attention with no relative-position
+    /// bias at all (`text_encoder.rs`'s module doc), so `vokra.sbv2.*` has
+    /// nothing to bucket.
+    ///
+    /// # Tensor names (`sbv2.*`, all read from `main`)
+    ///
+    /// - `sbv2.text_encoder.phoneme_embed` / `.tone_embed` / `.wb_embed` —
+    ///   the three embedding tables ([`SbV2TextEncoder::from_weights`]'s
+    ///   first three parameters).
+    /// - Per text-encoder layer `<i>` in `0..n_text_layers`:
+    ///   `sbv2.text_encoder.layer.<i>.attn.{q,k,v,o}.weight` (bias-free,
+    ///   matching
+    ///   [`SbV2TransformerBlock`](text_encoder::SbV2TransformerBlock)'s
+    ///   struct fields exactly), `.ln1.{gamma,beta}`,
+    ///   `.ffn.w1.{weight,bias}`, `.ffn.w2.{weight,bias}`,
+    ///   `.ln2.{gamma,beta}`. The `ln1`/`ln2` naming (not the task brief's
+    ///   guessed `norm1`/`norm2`) matches both this struct's actual field
+    ///   names (`ln1_gamma`, ...) and its sibling
+    ///   [`DebertaV2Encoder::from_gguf`]'s identical `.ln1.gamma` /
+    ///   `.ln2.gamma` convention.
+    /// - `sbv2.bert_bridge.conv.weight` / `.conv.bias` —
+    ///   [`BertBridge::from_conv`]'s projection.
+    /// - `sbv2.speaker.table` — [`SpeakerEmbedding::from_table`]'s table.
+    /// - `sbv2.style_injector.proj_scale` / `.proj_bias` —
+    ///   [`StyleVectorInjector::from_projections`]'s two projections.
+    /// - `sbv2.sdp.tone_embed` / `.tone_bias` — [`SbV2SDP`]'s tone
+    ///   conditioning (`SbV2SDP::from_weights`'s `tone_proj`/`tone_bias`
+    ///   parameters; named `tone_embed` in the tensor path to mirror the
+    ///   text encoder's own `tone_embed` table).
+    /// - Per SDP flow layer `<i>` in `0..n_sdp_layers`:
+    ///   `sbv2.sdp.flow_layer.<i>.proj_weight` / `.proj_bias` — the real
+    ///   [`SbV2CouplingLayer`](duration::SbV2CouplingLayer) struct has one
+    ///   fused `[2, d_hidden]` `proj_weight` (row 0 = log-scale
+    ///   projection, row 1 = shift projection) and a `[2]` `proj_bias`,
+    ///   **not** the task brief's guessed separate
+    ///   `scale_weight`/`shift_weight`/`tone_embed_delta` names — there is
+    ///   no per-layer tone field at all; tone conditioning is the
+    ///   SDP-level `tone_embed`/`tone_bias` above, shared across every
+    ///   layer.
+    /// - Per flow layer `<i>` in `0..n_flow_layers`:
+    ///   `sbv2.flow.layer.<i>.scale_weight` / `.shift_weight` /
+    ///   `.style_proj` / `.speaker_proj` — matches
+    ///   [`SbV2AffineCouplingLayer`](flow::SbV2AffineCouplingLayer)'s four
+    ///   fields 1:1.
+    /// - `sbv2.decoder.conv_pre.{weight,bias}`,
+    ///   `sbv2.decoder.conv_post.{weight,bias}`.
+    /// - Per upsample stage `<i>` in `0..upsample_rates.len()`:
+    ///   `sbv2.decoder.upsample.<i>.{weight,bias}`.
+    /// - Per MRF branch `<j>` in `0..resblock_kernel_sizes.len()` of stage
+    ///   `<i>`, per layer `<l>` in `0..resblock_dilation_counts[j]`:
+    ///   `sbv2.decoder.mrf.<i>.<j>.layer.<l>.{weight,bias}`. The
+    ///   `layer.<l>` naming (not the task brief's guessed fixed
+    ///   `conv1`/`conv2`) handles the real, variable per-branch layer
+    ///   count [`ResBlockLayer`] requires (HiFi-GAN V1's 3 layers vs. V3's
+    ///   1).
+    ///
+    /// # G2P is not loaded here
+    ///
+    /// This loader's 3-file signature has no piper-plus G2P GGUF — that is
+    /// a wholly separate model with its own loading path (see
+    /// [`SbV2Phonemizer::from_piper_g2p`]'s Task 15 real-wiring precedent,
+    /// which takes an already-constructed `Box<dyn Phonemizer>` the caller
+    /// owns). Rather than silently falling back to
+    /// [`SbV2Phonemizer::synthetic_for_test`]'s toy char-mapping G2P — which
+    /// would let a `from_gguf`-loaded model *load* successfully but
+    /// *synthesize* wrong-but-plausible-looking audio for any real text
+    /// (exactly the class of silent failure FR-EX-08 forbids) — the
+    /// returned model's phonemizer is wired to an internal
+    /// [`UnwiredPhonemizer`] stand-in whose every call is a loud
+    /// [`VokraError::NotImplemented`]. A caller that needs `synthesize` to
+    /// work end-to-end must instead assemble a model via [`SbV2Model::new`],
+    /// passing a real phonemizer (built with
+    /// [`SbV2Phonemizer::from_piper_g2p`]) in place of this method's
+    /// placeholder — every other component `from_gguf` loads (text
+    /// encoder, BERT, bridge, speaker, style, SDP, flow, decoder) is
+    /// reusable as-is.
+    ///
+    /// # HiFi-GAN weight loading
+    ///
+    /// [`vokra_ops::hifigan::HifiGanWeights`] has no `from_gguf` of its own
+    /// (unlike [`DebertaV2Encoder`]/[`DebertaV3Encoder`]) — it is a plain
+    /// value bundle the M3-07 op-only WP intentionally left storage-format
+    /// agnostic (`hifigan.rs`'s own doc: "the M3-07 op-only WP does not
+    /// describe a storage layout"). This function reads every
+    /// [`HifiGanWeights`] tensor field itself, following the `decoder.*`
+    /// tensor-name scheme documented above.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::ModelLoad`], naming the offending metadata key or
+    /// tensor name, for any of: a missing or wrong-typed `vokra.sbv2.*`
+    /// metadata key on `main`; a missing `sbv2.*` tensor on `main`; a
+    /// `vokra.sbv2.d_z` that is zero or odd; a decoder array-length
+    /// mismatch (`upsample_kernel_sizes`/`upsample_out_channels` vs.
+    /// `upsample_rates`, or `resblock_dilation_counts` vs.
+    /// `resblock_kernel_sizes`, or `resblock_dilations_flat`'s total
+    /// length vs. the sum of `resblock_dilation_counts`); a
+    /// `vokra.sbv2.d_bert` that disagrees with `bert_ja`'s or `bert_en`'s
+    /// own loaded hidden width; or any error [`DebertaV2Encoder::from_gguf`]
+    /// / [`DebertaV3Encoder::from_gguf`] / [`SbertTokenizer::from_gguf`]
+    /// return while loading `bert_ja` / `bert_en`.
+    pub fn from_gguf(main: &GgufFile, bert_ja: &GgufFile, bert_en: &GgufFile) -> Result<Self> {
+        // ---- metadata + tensor read helpers (mirrors
+        // vokra_bert::deberta_v2::DebertaV2Encoder::from_gguf's established
+        // closure shape) ----
+        let meta_u32 =
+            |key: &str| -> Option<u32> { main.get(key).and_then(|v| v.as_u64()).map(|u| u as u32) };
+        let require_u32 = |key: &str| -> Result<u32> {
+            meta_u32(key).ok_or_else(|| {
+                VokraError::ModelLoad(format!(
+                    "SbV2Model::from_gguf: missing GGUF metadata key: {key}"
+                ))
+            })
+        };
+        let meta_f32 =
+            |key: &str| -> Option<f32> { main.get(key).and_then(|v| v.as_f64()).map(|f| f as f32) };
+        let require_array_usize = |key: &str| -> Result<Vec<usize>> {
+            let val = main.get(key).ok_or_else(|| {
+                VokraError::ModelLoad(format!(
+                    "SbV2Model::from_gguf: missing GGUF metadata key: {key}"
+                ))
+            })?;
+            let arr = val.as_array().ok_or_else(|| {
+                VokraError::ModelLoad(format!(
+                    "SbV2Model::from_gguf: GGUF metadata key {key} is not an array"
+                ))
+            })?;
+            arr.values
+                .iter()
+                .map(|v| {
+                    v.as_u64().map(|u| u as usize).ok_or_else(|| {
+                        VokraError::ModelLoad(format!(
+                            "SbV2Model::from_gguf: an element of GGUF metadata array {key} is \
+                             not an unsigned integer"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        };
+        let load_tensor_f32 = |name: &str| -> Result<Vec<f32>> {
+            main.tensor_f32(name).map_err(|e| {
+                VokraError::ModelLoad(format!("SbV2Model::from_gguf: tensor {name}: {e}"))
+            })
+        };
+
+        // ---- top-level dims ----
+        let d_model = require_u32("vokra.sbv2.d_model")? as usize;
+        let d_bert = require_u32("vokra.sbv2.d_bert")? as usize;
+        let d_speaker = require_u32("vokra.sbv2.d_speaker")? as usize;
+        let n_speakers = require_u32("vokra.sbv2.n_speakers")? as usize;
+        let d_style = require_u32("vokra.sbv2.d_style")? as usize;
+        let d_z = require_u32("vokra.sbv2.d_z")? as usize;
+        let n_vocab = require_u32("vokra.sbv2.n_vocab")? as usize;
+        let n_tones = require_u32("vokra.sbv2.n_tones")? as usize;
+        let d_ff = require_u32("vokra.sbv2.d_ff")? as usize;
+        let n_text_layers = require_u32("vokra.sbv2.n_text_layers")? as usize;
+        let n_flow_layers = require_u32("vokra.sbv2.n_flow_layers")? as usize;
+        let n_sdp_layers = require_u32("vokra.sbv2.n_sdp_layers")? as usize;
+        let sample_rate = require_u32("vokra.sbv2.sample_rate")?;
+
+        if d_z == 0 || d_z % 2 != 0 {
+            return Err(VokraError::ModelLoad(format!(
+                "SbV2Model::from_gguf: vokra.sbv2.d_z must be non-zero and even (VITS2 affine \
+                 coupling splits the flow latent into two equal channel halves — see \
+                 SbV2Flow::from_layers), got {d_z}"
+            )));
+        }
+        let half_d_z = d_z / 2;
+
+        // ---- text encoder ----
+        let phoneme_embed = load_tensor_f32("sbv2.text_encoder.phoneme_embed")?;
+        let tone_embed = load_tensor_f32("sbv2.text_encoder.tone_embed")?;
+        let wb_embed = load_tensor_f32("sbv2.text_encoder.wb_embed")?;
+        let mut transformer_layers = Vec::with_capacity(n_text_layers);
+        for i in 0..n_text_layers {
+            let p = format!("sbv2.text_encoder.layer.{i}");
+            transformer_layers.push(text_encoder::SbV2TransformerBlock::new(
+                load_tensor_f32(&format!("{p}.attn.q.weight"))?,
+                load_tensor_f32(&format!("{p}.attn.k.weight"))?,
+                load_tensor_f32(&format!("{p}.attn.v.weight"))?,
+                load_tensor_f32(&format!("{p}.attn.o.weight"))?,
+                load_tensor_f32(&format!("{p}.ln1.gamma"))?,
+                load_tensor_f32(&format!("{p}.ln1.beta"))?,
+                load_tensor_f32(&format!("{p}.ffn.w1.weight"))?,
+                load_tensor_f32(&format!("{p}.ffn.w1.bias"))?,
+                load_tensor_f32(&format!("{p}.ffn.w2.weight"))?,
+                load_tensor_f32(&format!("{p}.ffn.w2.bias"))?,
+                load_tensor_f32(&format!("{p}.ln2.gamma"))?,
+                load_tensor_f32(&format!("{p}.ln2.beta"))?,
+                d_model,
+                d_ff,
+            ));
+        }
+        let text_encoder = SbV2TextEncoder::from_weights(
+            phoneme_embed,
+            tone_embed,
+            wb_embed,
+            transformer_layers,
+            d_model,
+            n_vocab,
+            n_tones,
+        );
+
+        // ---- BERT (delegated to vokra-bert's own loaders, on the
+        // separate bert_ja / bert_en files) ----
+        let ja = DebertaV2Encoder::from_gguf(bert_ja)?;
+        let en = DebertaV3Encoder::from_gguf(bert_en)?;
+        if ja.get_d_model() != d_bert {
+            return Err(VokraError::ModelLoad(format!(
+                "SbV2Model::from_gguf: vokra.sbv2.d_bert ({d_bert}) disagrees with bert_ja's \
+                 own hidden width ({}) — main.gguf and bert_ja.gguf were not converted together",
+                ja.get_d_model()
+            )));
+        }
+        if en.get_d_model() != d_bert {
+            return Err(VokraError::ModelLoad(format!(
+                "SbV2Model::from_gguf: vokra.sbv2.d_bert ({d_bert}) disagrees with bert_en's \
+                 own hidden width ({}) — main.gguf and bert_en.gguf were not converted together",
+                en.get_d_model()
+            )));
+        }
+        let ja_tokenizer = SbertTokenizer::from_gguf(bert_ja, "vokra.bert.tokenizer")?;
+        let en_tokenizer = SbertTokenizer::from_gguf(bert_en, "vokra.bert.tokenizer")?;
+        let bert = SbV2BertContainer {
+            ja_tokenizer,
+            en_tokenizer,
+            ja,
+            en,
+        };
+
+        // ---- BERT bridge ----
+        let bert_bridge = BertBridge::from_conv(
+            load_tensor_f32("sbv2.bert_bridge.conv.weight")?,
+            load_tensor_f32("sbv2.bert_bridge.conv.bias")?,
+            d_bert,
+            d_model,
+        );
+
+        // ---- speaker ----
+        let speaker_embed = SpeakerEmbedding::from_table(
+            load_tensor_f32("sbv2.speaker.table")?,
+            n_speakers,
+            d_speaker,
+        );
+
+        // ---- style ----
+        let style_injector = StyleVectorInjector::from_projections(
+            load_tensor_f32("sbv2.style_injector.proj_scale")?,
+            load_tensor_f32("sbv2.style_injector.proj_bias")?,
+            d_style,
+            d_model,
+        );
+
+        // ---- stochastic duration predictor ----
+        let mut sdp_layers = Vec::with_capacity(n_sdp_layers);
+        for i in 0..n_sdp_layers {
+            let p = format!("sbv2.sdp.flow_layer.{i}");
+            sdp_layers.push(duration::SbV2CouplingLayer::new(
+                load_tensor_f32(&format!("{p}.proj_weight"))?,
+                load_tensor_f32(&format!("{p}.proj_bias"))?,
+                d_model,
+            ));
+        }
+        let sdp = SbV2SDP::from_weights(
+            sdp_layers,
+            load_tensor_f32("sbv2.sdp.tone_embed")?,
+            load_tensor_f32("sbv2.sdp.tone_bias")?,
+            d_model,
+            n_tones,
+        );
+
+        // ---- normalizing flow ----
+        let mut flow_layers = Vec::with_capacity(n_flow_layers);
+        for i in 0..n_flow_layers {
+            let p = format!("sbv2.flow.layer.{i}");
+            flow_layers.push(flow::SbV2AffineCouplingLayer::new(
+                load_tensor_f32(&format!("{p}.scale_weight"))?,
+                load_tensor_f32(&format!("{p}.shift_weight"))?,
+                load_tensor_f32(&format!("{p}.style_proj"))?,
+                load_tensor_f32(&format!("{p}.speaker_proj"))?,
+                half_d_z,
+                d_style,
+                d_speaker,
+            ));
+        }
+        let flow = SbV2Flow::from_layers(flow_layers, d_z);
+
+        // ---- HiFi-GAN decoder ----
+        let initial_channel = require_u32("vokra.sbv2.decoder.initial_channel")? as usize;
+        let conv_pre_kernel = require_u32("vokra.sbv2.decoder.conv_pre_kernel")? as usize;
+        let conv_post_kernel = require_u32("vokra.sbv2.decoder.conv_post_kernel")? as usize;
+        let upsample_rates = require_array_usize("vokra.sbv2.decoder.upsample_rates")?;
+        let upsample_kernel_sizes =
+            require_array_usize("vokra.sbv2.decoder.upsample_kernel_sizes")?;
+        let upsample_out_channels =
+            require_array_usize("vokra.sbv2.decoder.upsample_out_channels")?;
+        let resblock_kernel_sizes =
+            require_array_usize("vokra.sbv2.decoder.resblock_kernel_sizes")?;
+        let resblock_dilation_counts =
+            require_array_usize("vokra.sbv2.decoder.resblock_dilation_counts")?;
+        let resblock_dilations_flat =
+            require_array_usize("vokra.sbv2.decoder.resblock_dilations_flat")?;
+        let leaky_relu_slope = meta_f32("vokra.sbv2.decoder.leaky_relu_slope").unwrap_or(0.1);
+
+        let n_upsample_stages = upsample_rates.len();
+        if upsample_kernel_sizes.len() != n_upsample_stages {
+            return Err(VokraError::ModelLoad(format!(
+                "SbV2Model::from_gguf: vokra.sbv2.decoder.upsample_kernel_sizes.len() ({}) != \
+                 vokra.sbv2.decoder.upsample_rates.len() ({n_upsample_stages})",
+                upsample_kernel_sizes.len()
+            )));
+        }
+        if upsample_out_channels.len() != n_upsample_stages {
+            return Err(VokraError::ModelLoad(format!(
+                "SbV2Model::from_gguf: vokra.sbv2.decoder.upsample_out_channels.len() ({}) != \
+                 vokra.sbv2.decoder.upsample_rates.len() ({n_upsample_stages})",
+                upsample_out_channels.len()
+            )));
+        }
+        let n_mrf_branches = resblock_kernel_sizes.len();
+        if resblock_dilation_counts.len() != n_mrf_branches {
+            return Err(VokraError::ModelLoad(format!(
+                "SbV2Model::from_gguf: vokra.sbv2.decoder.resblock_dilation_counts.len() ({}) \
+                 != vokra.sbv2.decoder.resblock_kernel_sizes.len() ({n_mrf_branches})",
+                resblock_dilation_counts.len()
+            )));
+        }
+
+        let mut resblock_dilation_sizes = Vec::with_capacity(n_mrf_branches);
+        let mut cursor = 0usize;
+        for &count in &resblock_dilation_counts {
+            let end = cursor + count;
+            if end > resblock_dilations_flat.len() {
+                return Err(VokraError::ModelLoad(format!(
+                    "SbV2Model::from_gguf: vokra.sbv2.decoder.resblock_dilations_flat.len() \
+                     ({}) is shorter than the sum of resblock_dilation_counts (needs at least \
+                     {end})",
+                    resblock_dilations_flat.len()
+                )));
+            }
+            resblock_dilation_sizes.push(resblock_dilations_flat[cursor..end].to_vec());
+            cursor = end;
+        }
+        if cursor != resblock_dilations_flat.len() {
+            return Err(VokraError::ModelLoad(format!(
+                "SbV2Model::from_gguf: vokra.sbv2.decoder.resblock_dilations_flat has {} \
+                 trailing element(s) beyond the sum of resblock_dilation_counts ({cursor})",
+                resblock_dilations_flat.len() - cursor
+            )));
+        }
+
+        let attrs = HifiGanAttrs {
+            n_mels: d_z,
+            initial_channel,
+            upsample_rates: upsample_rates.clone(),
+            upsample_kernel_sizes: upsample_kernel_sizes.clone(),
+            resblock_kernel_sizes: resblock_kernel_sizes.clone(),
+            resblock_dilation_sizes: resblock_dilation_sizes.clone(),
+            sample_rate,
+            leaky_relu_slope,
+        };
+
+        let conv_pre_weight = load_tensor_f32("sbv2.decoder.conv_pre.weight")?;
+        let conv_pre_bias = load_tensor_f32("sbv2.decoder.conv_pre.bias")?;
+
+        let mut in_ch = initial_channel;
+        let mut upsample_weights = Vec::with_capacity(n_upsample_stages);
+        let mut mrf_stage_weights = Vec::with_capacity(n_upsample_stages);
+        for stage in 0..n_upsample_stages {
+            let out_ch = upsample_out_channels[stage];
+            upsample_weights.push(UpsampleStageWeights {
+                weight: load_tensor_f32(&format!("sbv2.decoder.upsample.{stage}.weight"))?,
+                bias: load_tensor_f32(&format!("sbv2.decoder.upsample.{stage}.bias"))?,
+                in_ch,
+                out_ch,
+                kernel: upsample_kernel_sizes[stage],
+                stride: upsample_rates[stage],
+            });
+
+            let mut branches = Vec::with_capacity(n_mrf_branches);
+            for (branch, dilations) in resblock_dilation_sizes.iter().enumerate() {
+                let kernel = resblock_kernel_sizes[branch];
+                let mut layers = Vec::with_capacity(dilations.len());
+                for (layer, &dilation) in dilations.iter().enumerate() {
+                    let p = format!("sbv2.decoder.mrf.{stage}.{branch}.layer.{layer}");
+                    layers.push(ResBlockLayer {
+                        weight: load_tensor_f32(&format!("{p}.weight"))?,
+                        bias: load_tensor_f32(&format!("{p}.bias"))?,
+                        dilation,
+                        kernel,
+                        channels: out_ch,
+                    });
+                }
+                branches.push(MrfBranchWeights { layers });
+            }
+            mrf_stage_weights.push(branches);
+            in_ch = out_ch;
+        }
+
+        let conv_post_weight = load_tensor_f32("sbv2.decoder.conv_post.weight")?;
+        let conv_post_bias = load_tensor_f32("sbv2.decoder.conv_post.bias")?;
+
+        let weights = HifiGanWeights {
+            conv_pre_weight,
+            conv_pre_bias,
+            conv_pre_kernel,
+            upsample_weights,
+            mrf_stage_weights,
+            conv_post_weight,
+            conv_post_bias,
+            conv_post_kernel,
+        };
+        let decoder = SbV2Decoder::new(weights, attrs, HifiGanConfig::fp32(), sample_rate);
+
+        // ---- phonemizer — deliberately NOT loaded here, see "G2P is not
+        // loaded here" above ----
+        let phonemizer = SbV2Phonemizer::from_piper_g2p(
+            Box::new(UnwiredPhonemizer),
+            Box::new(UnwiredPhonemizer),
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+        );
+
+        Ok(Self::new(
+            phonemizer,
+            text_encoder,
+            bert,
+            bert_bridge,
+            speaker_embed,
+            style_injector,
+            sdp,
+            flow,
+            decoder,
+        ))
     }
 }
 
