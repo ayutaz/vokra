@@ -101,9 +101,21 @@ impl SbV2Phonemizer {
     fn phonemize_en(&self, text: &str) -> Result<PhonemizeResult> {
         let mut ids = Vec::new();
         let mut wb = Vec::new();
+        // Tracks whether the next non-space char starts a new word. Starts
+        // `true` so the first character of the input begins word 1.
+        //
+        // Space characters are consumed without pushing any `wb` entry —
+        // the flag is carried forward and applied to the next real
+        // character instead. This keeps `wb` and `ids` the same length by
+        // construction (one entry per emitted phoneme), avoiding the
+        // previous approach's per-space phantom push + tail-truncation
+        // reconciliation, which misaligned boundaries for 3+ word inputs
+        // (see `en_phonemize_multiword_word_boundaries_aligned` regression
+        // test).
+        let mut next_is_word_start = true;
         for c in text.to_ascii_lowercase().chars() {
             if c == ' ' {
-                wb.push(true);
+                next_is_word_start = true;
                 continue;
             }
             let id = self
@@ -112,20 +124,10 @@ impl SbV2Phonemizer {
                 .copied()
                 .unwrap_or(self.sbv2_default_phoneme_id);
             ids.push(id);
-            wb.push(false);
-        }
-        if !wb.is_empty() {
-            wb[0] = true;
+            wb.push(next_is_word_start);
+            next_is_word_start = false;
         }
         let tones = vec![0u8; ids.len()];
-        // Pad wb to same length as ids (space boundaries collapsed).
-        let wb = if wb.len() > ids.len() {
-            wb[..ids.len()].to_vec()
-        } else {
-            let mut w = wb;
-            w.resize(ids.len(), false);
-            w
-        };
         Ok(PhonemizeResult {
             phoneme_ids: ids,
             tones,
