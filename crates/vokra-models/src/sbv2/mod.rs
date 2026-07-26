@@ -20,14 +20,16 @@
 //! - Any AGPL derivative of the above.
 
 pub mod duration;
+pub mod flow;
 pub mod g2p;
 pub mod speaker;
 pub mod style;
 pub mod text_encoder;
-// Later tasks add: mod flow; mod decoder;
+// Later tasks add: mod decoder;
 //                  mod converter; mod parity;
 
 pub use duration::{SbV2SDP, length_regulate};
+pub use flow::SbV2Flow;
 pub use g2p::{Language, PhonemizeResult, SbV2Phonemizer};
 pub use speaker::SpeakerEmbedding;
 pub use style::StyleVectorInjector;
