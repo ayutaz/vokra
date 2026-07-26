@@ -41,6 +41,9 @@ USAGE:
     vokra-cli convert --model voxtral --input <ckpt.safetensors | model.safetensors.index.json> \
                       [--config <config.json>] [--adapter-config <adapter.json>] \
                       [--tokenizer <tekken-vocab.bin>] --output <out.gguf>
+    vokra-cli convert --model sbv2 --input <voice.safetensors> --output <out.gguf>
+    vokra-cli convert --model deberta-v2 --input <bert_ja.safetensors> --output <out.gguf>
+    vokra-cli convert --model deberta-v3 --input <bert_en.safetensors> --output <out.gguf>
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
@@ -49,7 +52,8 @@ OPTIONS:
                               parakeet-tdt | parakeet-ctc | canary | omniasr-ctc |
                               distil-whisper | kotoba-whisper |
                               chatterbox | chatterbox-turbo | chatterbox-nano |
-                              qwen3-tts | voxcpm | vibevoice | irodori | vits-ja
+                              qwen3-tts | voxcpm | vibevoice | irodori | vits-ja |
+                              sbv2 | deberta-v2 | deberta-v3
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
@@ -249,6 +253,40 @@ OPTIONS:
                               independently implementable; override
                               with --license <spdx> at conversion time
                               if trained on a permissive corpus)
+                              (sbv2: Style-Bert-VITS2 v2 — a litagin02/
+                              style_bert_vits2-family multilingual (JA+EN)
+                              base safetensors checkpoint; this delegate
+                              performs the byte-exact F32/F16/BF16 tensor
+                              pass-through only, under upstream safetensors
+                              names — it does NOT accept a --config side-car
+                              here, so the vokra.sbv2.* hparam chunk
+                              SbV2Model::from_gguf needs is omitted (use the
+                              standalone `vokra-convert` binary's own --model
+                              sbv2 --config <config.json> for a
+                              hparam-complete GGUF); weight license defaults
+                              to agpl-3.0 (LicenseClass::Copyleft —
+                              redistribution permitted, original license
+                              text must be preserved); tensor-name mapping
+                              to the sbv2.* hierarchy from_gguf reads is a
+                              follow-up (Task 30) — today's output is a
+                              provenance-correct, byte-faithful staging
+                              artifact, not yet loadable by from_gguf)
+                              (deberta-v2 / deberta-v3: ku-nlp DeBERTa v2 /
+                              v3 Japanese-character BERT checkpoints — the
+                              JA / EN text encoders SBV2's SbV2Model wires
+                              in as --bert-ja / --bert-en (`vokra-cli run`);
+                              a HF transformers deberta_v2 / deberta_v3
+                              safetensors checkpoint. F32/F16/BF16 tensors
+                              pass through verbatim under upstream HF names
+                              with a best-effort vokra.bert.deberta_v{2,3}.*
+                              hparam chunk (shape-derived where possible, no
+                              --config needed); weight license defaults to
+                              cc-by-sa-4.0 for deberta-v2 and mit for
+                              deberta-v3 (each model's own upstream HF
+                              model-card license, not necessarily the same
+                              as the deberta_v2/deberta_v3 *code* in HF
+                              transformers, which is Apache-2.0); same Task
+                              30 tensor-name-mapping caveat as sbv2 above)
     --input <path>            upstream checkpoint file. For voxtral, a
                               `*.index.json` path reads every shard listed in
                               its weight_map (the raw sharded BF16 release)
@@ -346,7 +384,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
                          distil-whisper | kotoba-whisper | \
                          chatterbox | chatterbox-turbo | chatterbox-nano | \
-                         qwen3-tts | voxcpm | vibevoice | irodori | vits-ja)"
+                         qwen3-tts | voxcpm | vibevoice | irodori | vits-ja | \
+                         sbv2 | deberta-v2 | deberta-v3)"
                     )
                 })?);
                 i += 2;
@@ -1063,6 +1102,9 @@ mod tests {
             ("vibevoice", ModelKind::VibeVoice),
             ("irodori", ModelKind::Irodori),
             ("vits-ja", ModelKind::VitsJa),
+            ("sbv2", ModelKind::SbV2),
+            ("deberta-v2", ModelKind::DebertaV2),
+            ("deberta-v3", ModelKind::DebertaV3),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
