@@ -228,6 +228,14 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-07-26: SBV2 v2 + BERT DeBERTa v2/v3 addition (Rust surface only, advisory)
+
+- **vokra-bert (new crate)**: `SbertTokenizer`, `DebertaV2Encoder`, `DebertaV3Encoder`, `BertEncoder` trait
+- **vokra-models::sbv2 (new module)**: `SbV2Model`, `Language`, `SbV2Phonemizer`, `SbV2SynthRequest`, all supporting types
+- **vokra-convert::ModelKind**: `SbV2`, `DebertaV2`, `DebertaV3` variants added
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none.
+
 ### 2026-07-24 — 1.0.0-rc.1-dev (SoTA Phase 1: HiFTNet vocoder primitives + NSF module — Rust surface only)
 
 Additive **Rust public API** change only — the C ABI (`include/vokra.h`) is
