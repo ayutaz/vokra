@@ -16,6 +16,9 @@ bindings/unity/*.tgz.sha256
 # CI-injected prebuilt native library payload. Wheels are produced by
 # cibuildwheel in release.yml and uploaded to PyPI + GH Releases.
 __pycache__/
+.venv/
+**/.venv/
+.python-version
 *.pyc
 *.pyo
 *.egg-info/
