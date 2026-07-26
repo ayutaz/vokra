@@ -116,6 +116,16 @@ for why that tensor is still compared as float with an atol that has an
 explicit +/-1 discrete-step allowance, rather than as an exact integer
 match).
 
+Task 7 (SBV2 v2 plan) adds three **side files** alongside the 11-tensor
+list — ``phoneme_ids.bin`` (``uint16``), ``tones.bin`` (``uint8``),
+``word_boundaries.bin`` (``uint8``), all of length ``T_text`` — under the
+manifest's own ``phonemize_fixture`` block (not inside ``tensors[]``, so
+the design-doc §10 "11 dumped tensors" contract stays intact). They are
+the G2P *inputs* to the reference forward pass, replayed on the Rust side
+by ``SbV2Phonemizer::from_fixture`` +
+``SbV2Model::from_gguf_with_phonemizer`` — see this file's manifest
+schema below.
+
 # Manifest schema (this file writes; ``parity_sbv2_real.rs``'s module doc is
 # the authoritative contract this mirrors)
 
@@ -134,12 +144,33 @@ match).
         "style_vec": [0.0, "..."], "speed": 1.0,
         "noise_scale": 0.667, "noise_scale_w": 0.8, "seed": 42
       },
+      "phonemize_fixture": {                                # Task 7 addition
+        "phoneme_ids":     {"path": "reference_dump/phoneme_ids.bin",
+                            "count": T_text, "dtype": "uint16"},
+        "tones":           {"path": "reference_dump/tones.bin",
+                            "count": T_text, "dtype": "uint8"},
+        "word_boundaries": {"path": "reference_dump/word_boundaries.bin",
+                            "count": T_text, "dtype": "uint8"}
+      },
       "tensors": [
         {"name": "phoneme_embed", "path": "reference_dump/phoneme_embed.bin",
          "shape": [T_text, 192], "dtype": "float32"},
         ... (11 total, see table above)
       ]
     }
+
+``phonemize_fixture`` (Task 7) is the fixture bypass that lets the Rust
+side rebuild an ``SbV2Phonemizer`` (via ``SbV2Phonemizer::from_fixture`` +
+``SbV2Model::from_gguf_with_phonemizer``) that reproduces the exact G2P
+output the reference dumper's forward pass consumed, without needing a
+real 8-language piper-plus G2P available in-workspace (NFR-DS-02: the
+excluded ``integrations/vokra-piper-g2p`` cannot be a
+``crates/vokra-models`` dependency). The three side files are always
+1-D (their length is ``T_text``, matching every f32 tensor whose leading
+axis is ``T_text``) and use narrower dtypes than f32 —
+``phoneme_ids`` is ``uint16`` (matches the Rust ``PhonemizeResult::phoneme_ids``'s
+``Vec<u16>``), ``tones`` and ``word_boundaries`` are ``uint8``. The
+consuming Rust reader dispatches on ``dtype``.
 
 ``checkpoint.*`` are **bare filenames** (siblings of the manifest inside
 ``tests/fixtures/sbv2/``, matching Task 34's planned ``Files:`` list) —
@@ -245,8 +276,33 @@ TENSOR_SCHEMA: "list[dict]" = [
 # rather than an exact-integer comparison).
 TENSOR_DTYPE = "float32"
 
+# Task 7 (SBV2 v2 plan): phonemize-fixture side files. Sit ALONGSIDE the
+# 11-tensor `tensors[]` list (not inside it) so this dumper keeps the
+# design-doc §10 "11 dumped tensors" contract intact — the fixture files
+# are *inputs* to the SBV2 pipeline (fed into the reference forward pass
+# and reproduced verbatim by the Rust side via
+# `SbV2Phonemizer::from_fixture` + `SbV2Model::from_gguf_with_phonemizer`),
+# not intermediate outputs to numeric-diff against.
+#
+# Each entry names the raw-bytes file the real-dump path (once vendoring
+# lands) will write for exactly the one `(request.language, request.text)`
+# pair this manifest declares — `SbV2Phonemizer::phonemize` returns
+# `phoneme_ids` (u16 LE), `tones` (u8), `word_boundaries` (u8 0/1), each
+# of length `T_text` (symbolic in the schema-preview manifest, resolved to
+# a real integer once a real forward pass runs).
+#
+# The `parity_sbv2_real.rs` Rust reader (Task 28) dispatches on `dtype`
+# and reads with the corresponding element size — u16 LE via
+# `u16::from_le_bytes` for `phoneme_ids`, plain `u8` for the two others.
+PHONEMIZE_FIXTURE_SCHEMA: "list[dict]" = [
+    {"name": "phoneme_ids", "dtype": "uint16", "count_template": "T_text"},
+    {"name": "tones", "dtype": "uint8", "count_template": "T_text"},
+    {"name": "word_boundaries", "dtype": "uint8", "count_template": "T_text"},
+]
 
-def build_manifest(args: argparse.Namespace, tensor_shapes: "dict[str, list] | None" = None) -> dict:
+
+def build_manifest(args: argparse.Namespace, tensor_shapes: "dict[str, list] | None" = None,
+                   phonemize_counts: "dict[str, int] | None" = None) -> dict:
     """Builds the ``reference_dump.manifest.json`` contents.
 
     ``tensor_shapes``, when given, maps a subset of the 11 tensor names to
@@ -254,6 +310,13 @@ def build_manifest(args: argparse.Namespace, tensor_shapes: "dict[str, list] | N
     forward pass has run) — used by the (not-yet-implemented) real-dump
     path once vendoring lands. When ``None`` (schema-preview mode), every
     tensor falls back to its symbolic [`TENSOR_SCHEMA`] placeholder shape.
+
+    ``phonemize_counts``, when given, maps a subset of the 3 Task-7
+    fixture-side-file names (``phoneme_ids``/``tones``/``word_boundaries``)
+    to their real element count (`T_text`, only available once a real G2P
+    has run on ``args.text``). When ``None``, each falls back to
+    [`PHONEMIZE_FIXTURE_SCHEMA`]'s symbolic ``"T_text"`` placeholder.
+
     Everything else in the manifest (``checkpoint.*``, ``request.*``) is
     fully resolvable from ``args`` alone, real forward pass or not.
     """
@@ -270,6 +333,17 @@ def build_manifest(args: argparse.Namespace, tensor_shapes: "dict[str, list] | N
                 "dtype": TENSOR_DTYPE,
             }
         )
+
+    phonemize_counts = phonemize_counts or {}
+    phonemize_fixture = {}
+    for spec in PHONEMIZE_FIXTURE_SCHEMA:
+        name = spec["name"]
+        count = phonemize_counts.get(name, spec["count_template"])
+        phonemize_fixture[name] = {
+            "path": f"reference_dump/{name}.bin",
+            "count": count,
+            "dtype": spec["dtype"],
+        }
 
     style_vec = [0.0] * args.style_dim
 
@@ -291,6 +365,11 @@ def build_manifest(args: argparse.Namespace, tensor_shapes: "dict[str, list] | N
             "noise_scale_w": args.noise_scale_w,
             "seed": args.seed,
         },
+        # Task 7: PhonemizeFixture side files (phoneme_ids/tones/word_boundaries)
+        # — inputs to the SBV2 pipeline, not intermediates. See
+        # `PHONEMIZE_FIXTURE_SCHEMA` above and `parity_sbv2_real.rs`'s Task 7
+        # reader for the consuming shape.
+        "phonemize_fixture": phonemize_fixture,
         "tensors": tensors,
     }
 
@@ -384,6 +463,20 @@ def run_dump(args: argparse.Namespace) -> int:
     # (z_latent) -> vendored VITS/HiFi-GAN decoder (waveform), writing each
     # as raw little-endian float32 to <output-dir>/reference_dump/<name>.bin
     # plus the fully-resolved reference_dump.manifest.json alongside it.
+    #
+    # Task 7: the same G2P call whose output feeds SbV2TextEncoder above
+    # also dumps the three PhonemizeFixture side files (paths per
+    # PHONEMIZE_FIXTURE_SCHEMA):
+    #   with open(<output-dir>/reference_dump/phoneme_ids.bin, "wb") as f:
+    #       np.asarray(phon.phoneme_ids, dtype="<u2").tofile(f)   # uint16 LE
+    #   with open(<output-dir>/reference_dump/tones.bin, "wb") as f:
+    #       np.asarray(phon.tones, dtype="u1").tofile(f)          # uint8
+    #   with open(<output-dir>/reference_dump/word_boundaries.bin, "wb") as f:
+    #       np.asarray(phon.word_boundaries, dtype="u1").tofile(f)
+    # Pass their real element count (`len(phon.phoneme_ids)`) as the
+    # `phonemize_counts` dict to `build_manifest` so the emitted
+    # `phonemize_fixture.*.count` fields carry the real integer instead of
+    # the "T_text" placeholder.
     return 0  # pragma: no cover - unreachable today, see above
 
 

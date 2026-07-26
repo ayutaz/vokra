@@ -273,6 +273,23 @@
     "noise_scale_w": 0.8,
     "seed": 42
   },
+  "phonemize_fixture": {
+    "phoneme_ids": {
+      "path": "reference_dump/phoneme_ids.bin",
+      "count": "T_text",
+      "dtype": "uint16"
+    },
+    "tones": {
+      "path": "reference_dump/tones.bin",
+      "count": "T_text",
+      "dtype": "uint8"
+    },
+    "word_boundaries": {
+      "path": "reference_dump/word_boundaries.bin",
+      "count": "T_text",
+      "dtype": "uint8"
+    }
+  },
   "tensors": [
     {
       "name": "phoneme_embed",

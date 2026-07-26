@@ -52,6 +52,14 @@
 //!     "noise_scale_w": 0.8,
 //!     "seed": 42
 //!   },
+//!   "phonemize_fixture": {                                // Task 7 addition
+//!     "phoneme_ids":     {"path": "reference_dump/phoneme_ids.bin",
+//!                         "count": "T_text", "dtype": "uint16"},
+//!     "tones":           {"path": "reference_dump/tones.bin",
+//!                         "count": "T_text", "dtype": "uint8"},
+//!     "word_boundaries": {"path": "reference_dump/word_boundaries.bin",
+//!                         "count": "T_text", "dtype": "uint8"}
+//!   },
 //!   "tensors": [
 //!     {"name": "phoneme_embed",   "path": "reference_dump/phoneme_embed.bin",   "shape": ["T_text", 192]},
 //!     {"name": "text_hidden",     "path": "reference_dump/text_hidden.bin",     "shape": ["T_text", 192]},
@@ -67,6 +75,14 @@
 //!   ]
 //! }
 //! ```
+//!
+//! `phonemize_fixture` (Task 7) is the fixture-bypass G2P input this test
+//! uses to reproduce the reference forward pass's exact phoneme
+//! ids/tones/word_boundaries without needing a real 8-language piper-plus
+//! G2P available in-workspace (see the "The G2P bypass" section below for
+//! why). Each entry is one raw-bytes side file `T_text` elements long,
+//! typed by `dtype` (`uint16` LE for `phoneme_ids`, `uint8` for the two
+//! others). The Rust reader dispatches on `dtype`.
 //!
 //! * `checkpoint.*` values are **bare filenames**, siblings of this
 //!   manifest directly inside `tests/fixtures/sbv2/` — matching Task 34's
@@ -104,7 +120,7 @@
 //! `phoneme_embed` / `text_hidden` simply sit unread until a Task 28.x
 //! follow-up adds `SbV2Model` accessors and iterates them too.
 //!
-//! # A real blocker `synthesize` hits first: `from_gguf` loads no G2P
+//! # The G2P bypass: `from_gguf_with_phonemizer` + `PhonemizeFixture` (Task 7)
 //!
 //! [`SbV2Model::from_gguf`]'s own doc ("G2P is not loaded here") is explicit:
 //! the 3-file loader signature (`main` + `bert_ja` + `bert_en`) has no
@@ -119,27 +135,44 @@
 //! zero-dependency root workspace (`integrations/vokra-piper-g2p`, M1-01-A);
 //! `crates/vokra-models` cannot depend on it (NFR-DS-02).
 //!
-//! So even with a perfect, real, fully-populated fixture set, `synthesize`
-//! cannot succeed from *this* crate today — that is a pre-existing,
-//! documented architectural fact this file did not introduce and is not
-//! trying to route around with untested bypass plumbing (constructing a
-//! stand-in [`vokra_piper_plus::Phonemizer`] whose output phoneme ids just
-//! happen to equal SBV2's own phoneme space would itself be new,
-//! unverifiable-until-Task-34-lands logic — exactly the kind of risk a
-//! compile-only-DoD scaffold should not carry). The test below still
-//! attempts the real call (so the comparison fires for free the moment a
-//! G2P-wired construction path exists), and treats this **specific,
-//! already-documented** `NotImplemented` outcome as an honestly-logged,
-//! non-fabricated non-failure — never a silently-reported pass, and never
-//! confused with an actual numeric-parity breach (any *other* error, or a
-//! tolerance breach on a successful `synthesize`, still panics).
+//! Task 7 resolves this specifically for parity testing (not for
+//! production) via two additions in
+//! `crates/vokra-models/src/sbv2/g2p.rs` +
+//! `crates/vokra-models/src/sbv2/mod.rs`:
+//! [`SbV2Phonemizer::from_fixture`] (a pre-computed
+//! `(language, text) -> PhonemizeResult` lookup) and
+//! [`SbV2Model::from_gguf_with_phonemizer`] (a sibling of
+//! [`SbV2Model::from_gguf`] that swaps the internal `UnwiredPhonemizer`
+//! placeholder for a caller-supplied [`SbV2Phonemizer`]). This test uses
+//! them by reading `phonemize_fixture.*` from the manifest and its three
+//! typed side files (`phoneme_ids.bin` `uint16`, `tones.bin` `uint8`,
+//! `word_boundaries.bin` `uint8`), constructing a single-entry
+//! [`PhonemizeFixture`] keyed on the manifest's own
+//! `(request.language, request.text)` pair, wrapping that in an
+//! `SbV2Phonemizer::from_fixture`, and passing it to
+//! `SbV2Model::from_gguf_with_phonemizer` — reproducing the exact G2P
+//! output the Python reference dumper fed the reference forward pass, so
+//! `SbV2Model::synthesize` can then run end-to-end without an in-workspace
+//! 8-language G2P. A `synthesize` `Err` under this wiring is a real
+//! parity failure and always panics (there is no longer a documented
+//! `NotImplemented` outcome to log-and-pass through).
+//!
+//! The fixture-bypass is deliberately **not** a production G2P — a
+//! `(language, text)` pair absent from the fixture is a loud
+//! `VokraError::InvalidArgument`, never a silent fall-through to a
+//! different path — so this construction path validates nothing outside
+//! the one manifest-declared test sentence per run. Extending coverage
+//! means populating the fixture with more `(language, text)` entries and
+//! adding manifest side files for each, not adding a fall-through.
 
 use std::path::{Path, PathBuf};
 
-use vokra_core::VokraError;
 use vokra_core::gguf::GgufFile;
 use vokra_core::json::{self, JsonValue};
-use vokra_models::sbv2::{Language, SbV2Model, SbV2SynthRequest, tolerance_for};
+use vokra_models::sbv2::{
+    Language, PhonemizeFixture, PhonemizeResult, SbV2Model, SbV2Phonemizer, SbV2SynthRequest,
+    tolerance_for,
+};
 
 /// Repo-root-relative real-fixture directory for SBV2 parity
 /// (`tests/fixtures/sbv2/`, sibling of the existing `tests/fixtures/audio/`
@@ -192,6 +225,33 @@ fn read_f32_bin(path: &Path) -> Vec<f32> {
         .chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
+}
+
+/// Task 7: reads `path` as a flat little-endian `u16` array (dumper's
+/// `phoneme_ids.bin` format — `PHONEMIZE_FIXTURE_SCHEMA["phoneme_ids"].dtype
+/// == "uint16"` in `tools/parity/sbv2_dump_reference.py`). Panics on a
+/// non-`u16`-aligned length so a truncated/corrupt fixture is a loud
+/// failure rather than a silent short read.
+fn read_u16_bin(path: &Path) -> Vec<u16> {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert_eq!(
+        bytes.len() % 2,
+        0,
+        "{}: byte length {} is not a multiple of 2 (not u16-aligned)",
+        path.display(),
+        bytes.len(),
+    );
+    bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect()
+}
+
+/// Task 7: reads `path` as a flat `u8` array (dumper's `tones.bin` /
+/// `word_boundaries.bin` format — `PHONEMIZE_FIXTURE_SCHEMA[*].dtype ==
+/// "uint8"`). No endian conversion; every byte is one element.
+fn read_u8_bin(path: &Path) -> Vec<u8> {
+    std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
 /// Largest absolute per-element difference between two equal-length slices.
@@ -283,6 +343,108 @@ fn find_tensor<'v>(manifest: &'v JsonValue, name: &str, ctx: &str) -> (&'v str, 
     (path, shape)
 }
 
+/// Task 7: reads the manifest's `phonemize_fixture` block plus the three
+/// side files it names, and builds a single-entry [`PhonemizeFixture`]
+/// keyed on `(request.language, request.text)` — the `(language, text)`
+/// pair the Python reference dumper's forward pass used.
+///
+/// The returned fixture is exactly what a subsequent
+/// [`SbV2Model::from_gguf_with_phonemizer`] call needs to reproduce the
+/// reference G2P output byte-for-byte: [`SbV2Phonemizer::from_fixture`]
+/// wraps it, and [`SbV2Model::synthesize`] looks up the same
+/// `(language, text)` pair internally. Any inconsistency in the fixture
+/// (dtype in the manifest disagrees with what this reader knows how to
+/// parse, or the three side files have different lengths) is a loud panic
+/// — the fixture must be internally consistent before the numeric-parity
+/// assertion is trustworthy (FR-EX-08).
+fn phonemize_fixture_from_manifest(
+    manifest: &JsonValue,
+    request: &SbV2SynthRequest,
+    dir: &Path,
+    ctx: &str,
+) -> PhonemizeFixture {
+    let block = json_get(manifest, "phonemize_fixture", ctx);
+    let entry_ctx = format!("{ctx}: phonemize_fixture");
+
+    // Small local helpers: pull `{path, dtype}` from one named entry.
+    let entry_path_dtype = |name: &str| -> (PathBuf, String) {
+        let entry = json_get(block, name, &entry_ctx);
+        let rel = json_str(entry, "path", &entry_ctx);
+        let dtype = json_str(entry, "dtype", &entry_ctx);
+        (dir.join(rel), dtype.to_string())
+    };
+
+    // Read the three side files, dispatching on dtype so a manifest
+    // schema drift (e.g. a later dumper widening to u32) is caught here
+    // rather than silently mis-parsed. Only the exact dtypes
+    // `PHONEMIZE_FIXTURE_SCHEMA` declares are accepted; anything else
+    // panics with the offending name+dtype.
+    let (pids_path, pids_dtype) = entry_path_dtype("phoneme_ids");
+    require_fixture(&pids_path, "phonemize_fixture.phoneme_ids (Task 30 dump)");
+    let phoneme_ids: Vec<u16> = match pids_dtype.as_str() {
+        "uint16" => read_u16_bin(&pids_path),
+        other => panic!(
+            "{entry_ctx}: phoneme_ids dtype {other:?} is not supported by this reader (expected \
+             \"uint16\" per PHONEMIZE_FIXTURE_SCHEMA in tools/parity/sbv2_dump_reference.py)"
+        ),
+    };
+
+    let (tones_path, tones_dtype) = entry_path_dtype("tones");
+    require_fixture(&tones_path, "phonemize_fixture.tones (Task 30 dump)");
+    let tones: Vec<u8> = match tones_dtype.as_str() {
+        "uint8" => read_u8_bin(&tones_path),
+        other => panic!(
+            "{entry_ctx}: tones dtype {other:?} is not supported by this reader (expected \
+             \"uint8\" per PHONEMIZE_FIXTURE_SCHEMA in tools/parity/sbv2_dump_reference.py)"
+        ),
+    };
+
+    let (wb_path, wb_dtype) = entry_path_dtype("word_boundaries");
+    require_fixture(&wb_path, "phonemize_fixture.word_boundaries (Task 30 dump)");
+    let word_boundaries: Vec<bool> = match wb_dtype.as_str() {
+        "uint8" => read_u8_bin(&wb_path).into_iter().map(|b| b != 0).collect(),
+        other => panic!(
+            "{entry_ctx}: word_boundaries dtype {other:?} is not supported by this reader \
+             (expected \"uint8\" per PHONEMIZE_FIXTURE_SCHEMA in \
+             tools/parity/sbv2_dump_reference.py)"
+        ),
+    };
+
+    // Cross-file consistency: the three side files describe the SAME
+    // G2P output, so their lengths must all equal T_text.
+    assert_eq!(
+        tones.len(),
+        phoneme_ids.len(),
+        "{entry_ctx}: tones.len() ({}) != phoneme_ids.len() ({}) — the three side files must \
+         describe the same G2P output for the same input text",
+        tones.len(),
+        phoneme_ids.len(),
+    );
+    assert_eq!(
+        word_boundaries.len(),
+        phoneme_ids.len(),
+        "{entry_ctx}: word_boundaries.len() ({}) != phoneme_ids.len() ({}) — the three side \
+         files must describe the same G2P output for the same input text",
+        word_boundaries.len(),
+        phoneme_ids.len(),
+    );
+
+    let result = PhonemizeResult {
+        phoneme_ids,
+        tones,
+        word_boundaries,
+        // The Python dumper passes `text` unmodified as its BERT input text
+        // (the `PhonemizeResult::bert_input_text` contract on the Rust side
+        // is also "the original input text, passed through" — see g2p.rs's
+        // struct doc). Reproduce that here.
+        bert_input_text: request.text.clone(),
+    };
+
+    let mut fixture = PhonemizeFixture::new();
+    fixture.insert(request.language, request.text.clone(), result);
+    fixture
+}
+
 /// Builds the [`SbV2SynthRequest`] the Python dumper's reference forward
 /// pass used, from the manifest's `request` object (see the module doc's
 /// schema).
@@ -307,10 +469,11 @@ fn request_from_manifest(manifest: &JsonValue, ctx: &str) -> SbV2SynthRequest {
 
 /// Real-checkpoint SBV2 waveform parity, gated on the Task 34 + Task 30
 /// fixture set (`tests/fixtures/sbv2/`). See the module doc for: the
-/// manifest schema this reads, why only `waveform` is compared, and why a
-/// `synthesize` call against a `from_gguf`-loaded model is expected to
-/// return `VokraError::NotImplemented` today (an honestly-logged, non-fatal
-/// outcome) rather than a numeric comparison.
+/// manifest schema this reads (including the Task 7 `phonemize_fixture`
+/// block that bypasses the missing in-workspace 8-language G2P), why only
+/// `waveform` is compared, and how the G2P bypass wires
+/// `SbV2Model::from_gguf_with_phonemizer` +
+/// `SbV2Phonemizer::from_fixture` together.
 #[test]
 #[ignore = "Task 34 real fixture: tests/fixtures/sbv2/{reference_dump.manifest.json,*.gguf,reference_dump/*.bin}"]
 fn parity_sbv2_real_waveform_matches_reference_dump() {
@@ -348,62 +511,58 @@ fn parity_sbv2_real_waveform_matches_reference_dump() {
     let bert_en =
         GgufFile::open(&bert_en_path).unwrap_or_else(|e| panic!("{}: {e}", bert_en_path.display()));
 
-    let model = SbV2Model::from_gguf(&main, &bert_ja, &bert_en)
-        .unwrap_or_else(|e| panic!("SbV2Model::from_gguf: {e}"));
-
     let req = request_from_manifest(&manifest, &ctx);
 
-    match model.synthesize(&req) {
-        Ok(audio) => {
-            let (waveform_rel, waveform_shape) = find_tensor(&manifest, "waveform", &ctx);
-            let waveform_path = dir.join(waveform_rel);
-            require_fixture(&waveform_path, "tensors[name=waveform].path (Task 30 dump)");
-            let reference = read_f32_bin(&waveform_path);
-            let declared_len: u64 = waveform_shape.iter().product();
-            assert_eq!(
-                reference.len() as u64,
-                declared_len,
-                "{}: byte length ({} f32 elements) disagrees with the manifest's declared \
-                 `shape` {waveform_shape:?} — Task 34/30's dumper produced an inconsistent \
-                 fixture",
-                waveform_path.display(),
-                reference.len(),
-            );
-            assert_eq!(
-                audio.samples.len(),
-                reference.len(),
-                "waveform length mismatch: Rust `synthesize` produced {} samples, the \
-                 reference dump has {} — `manifest.request` must reproduce exactly the \
-                 SbV2SynthRequest the Python dumper used",
-                audio.samples.len(),
-                reference.len(),
-            );
-            let atol = tolerance_for("waveform");
-            let diff = max_abs_diff(&audio.samples, &reference);
-            assert!(
-                diff <= atol,
-                "waveform max |Δ| = {diff} exceeds atol {atol} (sbv2::parity::tolerance_for(\"waveform\"))"
-            );
-            eprintln!(
-                "[parity_sbv2_real] waveform parity OK: {} samples, max |Δ| = {diff:.3e} <= \
-                 atol {atol}",
-                audio.samples.len(),
-            );
-        }
-        Err(VokraError::NotImplemented(msg)) if msg.contains("from_gguf loads no G2P") => {
-            // Expected, already-documented limitation -- see the module doc's
-            // "A real blocker `synthesize` hits first" section. Honestly
-            // logged, not a fabricated pass: no numeric comparison ran.
-            eprintln!(
-                "[parity_sbv2_real] real fixtures loaded successfully (GGUF metadata/tensor \
-                 shape verified against a real checkpoint); `synthesize`'s documented \
-                 FR-EX-08 refusal fired as expected because `SbV2Model::from_gguf` installs \
-                 no G2P (\"{msg}\"). Waveform numeric parity is deferred to a follow-up that \
-                 assembles the model via `SbV2Model::new` with a real \
-                 `SbV2Phonemizer::from_piper_g2p`-backed phonemizer, which needs a G2P \
-                 implementation outside vokra-models' zero-dependency root workspace."
-            );
-        }
-        Err(other) => panic!("SbV2Model::synthesize: unexpected error: {other:?}"),
-    }
+    // Task 7: build the fixture G2P from the manifest's phonemize_fixture
+    // block (three typed side files) + assemble it into an
+    // SbV2Phonemizer::from_fixture; hand it to
+    // SbV2Model::from_gguf_with_phonemizer so `synthesize` below actually
+    // runs (rather than the UnwiredPhonemizer's FR-EX-08 loud refusal
+    // SbV2Model::from_gguf installs by default).
+    let fixture = phonemize_fixture_from_manifest(&manifest, &req, &dir, &ctx);
+    let phonemizer = SbV2Phonemizer::from_fixture(fixture);
+    let model = SbV2Model::from_gguf_with_phonemizer(&main, &bert_ja, &bert_en, phonemizer)
+        .unwrap_or_else(|e| panic!("SbV2Model::from_gguf_with_phonemizer: {e}"));
+
+    // `synthesize` under the Task 7 fixture wiring has no
+    // architecturally-expected NotImplemented outcome to log-and-pass:
+    // every `Err` here is a real parity failure, so propagate loudly.
+    let audio = model
+        .synthesize(&req)
+        .unwrap_or_else(|e| panic!("SbV2Model::synthesize: {e}"));
+
+    let (waveform_rel, waveform_shape) = find_tensor(&manifest, "waveform", &ctx);
+    let waveform_path = dir.join(waveform_rel);
+    require_fixture(&waveform_path, "tensors[name=waveform].path (Task 30 dump)");
+    let reference = read_f32_bin(&waveform_path);
+    let declared_len: u64 = waveform_shape.iter().product();
+    assert_eq!(
+        reference.len() as u64,
+        declared_len,
+        "{}: byte length ({} f32 elements) disagrees with the manifest's declared \
+         `shape` {waveform_shape:?} — Task 34/30's dumper produced an inconsistent \
+         fixture",
+        waveform_path.display(),
+        reference.len(),
+    );
+    assert_eq!(
+        audio.samples.len(),
+        reference.len(),
+        "waveform length mismatch: Rust `synthesize` produced {} samples, the \
+         reference dump has {} — `manifest.request` must reproduce exactly the \
+         SbV2SynthRequest the Python dumper used",
+        audio.samples.len(),
+        reference.len(),
+    );
+    let atol = tolerance_for("waveform");
+    let diff = max_abs_diff(&audio.samples, &reference);
+    assert!(
+        diff <= atol,
+        "waveform max |Δ| = {diff} exceeds atol {atol} (sbv2::parity::tolerance_for(\"waveform\"))"
+    );
+    eprintln!(
+        "[parity_sbv2_real] waveform parity OK: {} samples, max |Δ| = {diff:.3e} <= \
+         atol {atol}",
+        audio.samples.len(),
+    );
 }

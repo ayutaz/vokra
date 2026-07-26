@@ -1,5 +1,6 @@
 //! SBV2 module scaffold + G2P wrapper tests (Task 14 synthetic mapping +
-//! Task 15 real piper-plus G2P routing).
+//! Task 15 real piper-plus G2P routing + Task 7 fixture-driven parity
+//! bypass).
 //!
 //! The first three tests exercise `SbV2Phonemizer::synthetic_for_test()` — a
 //! deterministic JA/EN char-level mapping that proves the module wiring
@@ -8,8 +9,20 @@
 //! `SbV2Phonemizer::from_piper_g2p` — the real piper-plus `Phonemizer` trait
 //! boundary — via `PassthroughPhonemizer`, proving the real-G2P routing path
 //! is actually reached (not merely that it compiles).
+//!
+//! The `from_fixture_*` tests (Task 7) exercise
+//! `SbV2Phonemizer::from_fixture` — the pre-computed `(language, text)`
+//! lookup that lets `SbV2Model::from_gguf_with_phonemizer`-loaded models
+//! reproduce a Python reference dumper's exact G2P output for a fixed set
+//! of test sentences without needing a real 8-language piper-plus G2P
+//! in-workspace. They cover: (a) a match returns the pre-computed result
+//! verbatim, (b) three distinct miss cases all fail loudly (FR-EX-08:
+//! unknown text / wrong language / a text that WOULD match the synthetic
+//! char mapping but isn't in the fixture — proving the fixture path never
+//! falls through).
 
-use vokra_models::sbv2::{Language, SbV2Phonemizer};
+use vokra_core::VokraError;
+use vokra_models::sbv2::{Language, PhonemizeFixture, PhonemizeResult, SbV2Phonemizer};
 
 #[test]
 fn ja_phonemize_produces_ids() {
@@ -106,4 +119,164 @@ fn wired_with_passthrough_phonemizer() {
         "conservative rule: only the first emitted phoneme starts a word"
     );
     assert_eq!(r.bert_input_text, "3 4");
+}
+
+// ---------------------------------------------------------------------------
+// Task 7: SbV2Phonemizer::from_fixture — pre-computed (language, text) lookup
+// ---------------------------------------------------------------------------
+
+/// Small helper for the fixture tests below: builds a distinctive,
+/// deterministic [`PhonemizeResult`] so a passing test can only be
+/// explained by an actual fixture hit (not a coincidence with either the
+/// synthetic char mapping's or piper-plus's output).
+///
+/// The distinctive ids (7000/7001/...) sit far outside both other paths'
+/// output ranges: `synthetic_for_test`'s JA/EN maps only reach ids in the
+/// `100-226` band (see `g2p.rs`), and `PassthroughPhonemizer` framed by a
+/// 5-symbol table only reaches ids `0..=4` — so a `phoneme_ids[0] == 7000`
+/// assertion below is a load-bearing routing check, not a tautology.
+fn distinctive_result(bert_text: &str) -> PhonemizeResult {
+    PhonemizeResult {
+        phoneme_ids: vec![7000, 7001, 7002, 7003, 7004],
+        tones: vec![1, 2, 0, 2, 1],
+        word_boundaries: vec![true, false, true, false, true],
+        bert_input_text: bert_text.to_string(),
+    }
+}
+
+/// Task 7: a `(language, text)` pair present in the fixture returns the
+/// stored [`PhonemizeResult`] verbatim (Vec-for-Vec equal, not a
+/// close-enough shape check) — proving the fixture path actually runs.
+#[test]
+fn from_fixture_returns_precomputed_result_for_matching_text() {
+    let mut fixture = PhonemizeFixture::new();
+    let stored = distinctive_result("こんにちは");
+    fixture.insert(Language::JA, "こんにちは", stored.clone());
+
+    let phonemizer = SbV2Phonemizer::from_fixture(fixture);
+    let got = phonemizer
+        .phonemize("こんにちは", Language::JA)
+        .expect("fixture hit must succeed");
+
+    assert_eq!(got.phoneme_ids, stored.phoneme_ids);
+    assert_eq!(got.tones, stored.tones);
+    assert_eq!(got.word_boundaries, stored.word_boundaries);
+    assert_eq!(got.bert_input_text, stored.bert_input_text);
+}
+
+/// Task 7: a `(language, text)` pair absent from the fixture returns
+/// [`VokraError::InvalidArgument`] (FR-EX-08 loud refusal), never a silent
+/// success with wrong/plausible-looking ids.
+#[test]
+fn from_fixture_errors_loudly_on_unknown_text() {
+    let mut fixture = PhonemizeFixture::new();
+    fixture.insert(Language::JA, "こんにちは", distinctive_result("こんにちは"));
+
+    let phonemizer = SbV2Phonemizer::from_fixture(fixture);
+    match phonemizer.phonemize("さようなら", Language::JA) {
+        Ok(res) => {
+            panic!("unknown text must fail loudly (FR-EX-08), not silently succeed with {res:?}")
+        }
+        Err(VokraError::InvalidArgument(msg)) => {
+            assert!(
+                msg.contains("no fixture entry"),
+                "error must name the fixture-miss condition, got: {msg}"
+            );
+            assert!(
+                msg.contains("さようなら"),
+                "error must include the requested text for actionability, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::InvalidArgument, got {other:?}"),
+    }
+}
+
+/// Task 7: a fixture entry stored under one language does not silently
+/// satisfy a lookup under the other language — even for identical `text`.
+/// Proves `(language, text)` really is a compound key.
+#[test]
+fn from_fixture_errors_loudly_on_wrong_language() {
+    let mut fixture = PhonemizeFixture::new();
+    fixture.insert(Language::JA, "hello", distinctive_result("hello"));
+
+    let phonemizer = SbV2Phonemizer::from_fixture(fixture);
+    match phonemizer.phonemize("hello", Language::EN) {
+        Ok(res) => panic!(
+            "same text but wrong language must fail loudly (FR-EX-08), not silently succeed \
+             with {res:?}"
+        ),
+        Err(VokraError::InvalidArgument(msg)) => {
+            assert!(
+                msg.contains("EN"),
+                "error must name the requested language, got: {msg}"
+            );
+        }
+        Err(other) => panic!("expected VokraError::InvalidArgument, got {other:?}"),
+    }
+}
+
+/// Task 7: the fixture path never falls through to the synthetic
+/// char-mapping (or piper-plus) paths on a miss — even for input text that
+/// WOULD have produced a valid result via `synthetic_for_test`'s hiragana
+/// table (i.e. "こんにちは", the trailing sequence of that table). Proves
+/// the priority-order dispatch documented on
+/// [`SbV2Phonemizer::phonemize`].
+#[test]
+fn from_fixture_never_falls_through_to_synthetic_char_mapping() {
+    // Deliberately empty fixture: no entries at all. If the fixture path
+    // were to silently fall through to the synthetic char mapping on a
+    // miss, "こんにちは" would produce non-empty phoneme_ids (the
+    // synthetic table literally spells "...わをんこんにちは" in its final
+    // slots — see `g2p.rs`'s `synthetic_for_test`).
+    let fixture = PhonemizeFixture::new();
+    assert!(fixture.is_empty(), "test setup: fixture must start empty");
+
+    let phonemizer = SbV2Phonemizer::from_fixture(fixture);
+    match phonemizer.phonemize("こんにちは", Language::JA) {
+        Ok(res) => panic!(
+            "empty fixture must not fall through to synthetic_for_test's char mapping \
+             (FR-EX-08); instead returned {res:?}"
+        ),
+        Err(VokraError::InvalidArgument(_)) => { /* expected */ }
+        Err(other) => panic!("expected VokraError::InvalidArgument, got {other:?}"),
+    }
+}
+
+/// Task 7: `PhonemizeFixture::insert` returns the replaced value when the
+/// same `(language, text)` key is overwritten — this proves the fixture is
+/// actually keyed on `(language, text)` and not on something narrower
+/// (e.g. only `text`). Also proves the second insert's value is what the
+/// phonemizer subsequently returns.
+#[test]
+fn fixture_insert_overwrites_and_returns_prior_value() {
+    let mut fixture = PhonemizeFixture::new();
+    assert_eq!(fixture.len(), 0);
+    let first = PhonemizeResult {
+        phoneme_ids: vec![1, 2, 3],
+        tones: vec![0, 0, 0],
+        word_boundaries: vec![true, false, false],
+        bert_input_text: "test".to_string(),
+    };
+    assert!(
+        fixture
+            .insert(Language::JA, "test", first.clone())
+            .is_none()
+    );
+    assert_eq!(fixture.len(), 1);
+
+    let second = distinctive_result("test");
+    let replaced = fixture
+        .insert(Language::JA, "test", second.clone())
+        .expect("second insert with same key must return the first");
+    assert_eq!(replaced.phoneme_ids, first.phoneme_ids);
+    assert_eq!(fixture.len(), 1);
+
+    let phonemizer = SbV2Phonemizer::from_fixture(fixture);
+    let got = phonemizer
+        .phonemize("test", Language::JA)
+        .expect("fixture hit must succeed");
+    assert_eq!(
+        got.phoneme_ids, second.phoneme_ids,
+        "phonemize must reflect the latest inserted value"
+    );
 }
