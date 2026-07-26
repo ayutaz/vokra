@@ -43,7 +43,8 @@ recalled from memory to write this file.
   never the AGPL Python code itself, matching
   ``tools/parity/sbv2_prepare_checkpoint.py``'s own posture).
 
-# Status: CLI + manifest-schema scaffold; the real forward pass is deferred
+# Status: CLI + manifest-schema scaffold + Task-4 vendor-import gate landed;
+# the real forward pipeline body is still deferred
 
 This dumper has two modes:
 
@@ -58,31 +59,41 @@ This dumper has two modes:
   artifact (NFR-QL-04 / FR-EX-08). Needs no dependency beyond the stdlib,
   so it (like ``--help``) works in a bare interpreter.
 * **Real dump** (``--do-dump``): attempts the actual reference forward
-  pass. As of this commit that **always** fails loudly, in one of three
-  tiers depending on what is installed:
+  pass. As of Task 4's vendoring commit, this fails loudly at one of
+  four tiers depending on what is installed and how far execution has
+  advanced:
 
   1. ``torch`` missing -> actionable ``pip install torch``.
   2. ``transformers`` missing -> actionable ``pip install transformers``
      (Apache-2.0 — this project's authorized DeBERTa reference).
-  3. Both present -> fails at ``from vendor.vits import text_encoder``,
-     because ``tools/parity/vendor/vits/`` currently ships only a
-     ``LICENSE`` + ``README.md`` scaffold (see that directory), no vendored
-     module. This is **the** real gate: the VITS core (text encoder /
-     normalizing flow / HiFi-GAN decoder reference) has not been ported
-     yet. See that README for exactly what a follow-up needs to add.
+  3. Vendor import failure (``from vendor.vits import text_encoder / coupling
+     / flow / decoder``) -> actionable message pointing at
+     ``tools/parity/vendor/vits/README.md`` and its sha256/upstream-URL
+     trail. Before Task 4 landed this was the terminal gate (only
+     ``LICENSE`` + ``README.md`` scaffolded there); Task 4 vendored the 8
+     supporting modules so this gate now passes cleanly in a torch +
+     transformers-equipped interpreter.
+  4. Pipeline body not yet written -> ``NotImplementedError`` with an
+     actionable message. This is Task 4's new terminal gate: the vendor
+     import above now succeeds, but the design doc §7 forward pipeline
+     body (G2P -> ``SbV2TextEncoder`` -> DeBERTa-bridge -> SDP -> flow
+     -> HiFi-GAN, writing 11 ``reference_dump/*.bin`` files + a fully-
+     resolved ``reference_dump.manifest.json``) is a separate follow-up
+     task, gated on a real SBV2 v2 checkpoint being inspected first
+     (design doc §12 owner step) — otherwise a self-consistent mirror
+     of the architecture would validate nothing, the same NFR-QL-04 /
+     FR-EX-08 lesson ``tools/parity/utmos_dump_reference.py``'s own
+     module doc draws from the Kokoro ``92dbc92`` incident.
 
   Nothing is stubbed, mocked, or approximated to make this path "succeed"
-  early — an SBV2 forward pass assembled from a self-consistent mirror of
-  the architecture (rather than the real permissive reference
-  implementations) would validate nothing, the same lesson
-  ``tools/parity/utmos_dump_reference.py``'s own module doc draws from the
-  Kokoro ``92dbc92`` incident. Once vendoring lands, ``--do-dump`` gains the
-  G2P -> ``SbV2TextEncoder`` -> DeBERTa-bridge -> SDP -> flow -> HiFi-GAN
-  pipeline from design doc §7, writing ``reference_dump/*.bin`` (raw
-  little-endian f32, matching every other ``*_dump*.py`` sibling's
+  early — the writing of tier 4's pipeline body is refused (with a
+  ``NotImplementedError``, not a silent ``return 0``) until a real
+  checkpoint exists to validate the dumped tensors against. Once that
+  follow-up lands, tier 4 writes ``reference_dump/*.bin`` (raw little-
+  endian f32, matching every other ``*_dump*.py`` sibling's
   ``arr.tobytes()`` convention — *not* ``numpy.save``'s ``.npy`` format,
-  which ``parity_sbv2_real.rs``'s ``read_f32_bin`` does not parse) plus the
-  real, fully-resolved ``reference_dump.manifest.json``.
+  which ``parity_sbv2_real.rs``'s ``read_f32_bin`` does not parse) plus
+  the real, fully-resolved ``reference_dump.manifest.json``.
 
 # The 11 dumped tensors (design doc §10 / ``parity_sbv2_real.rs`` contract)
 
@@ -359,32 +370,63 @@ def run_dump(args: argparse.Namespace) -> int:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     try:
         from vendor.vits import text_encoder as _unused  # noqa: F401
+        from vendor.vits import coupling as _unused_coupling  # noqa: F401
+        from vendor.vits import flow as _unused_flow  # noqa: F401
+        from vendor.vits import decoder as _unused_decoder  # noqa: F401
     except ImportError as exc:
         sys.exit(
-            f"{LOG_PREFIX} jaywalnut310/vits (MIT) has not been vendored yet "
-            f"({exc}). tools/parity/vendor/vits/ currently ships only "
-            "LICENSE + README.md (scaffold, Task 30) — see that README's "
-            "'What a follow-up vendoring pass should add here' table for the "
-            "minimal modules (text_encoder.py / coupling.py / flow.py / "
-            "decoder.py) a follow-up must port before --do-dump can run a "
-            "real forward pass. This is deliberate scaffolding, not a bug: "
-            "fabricating a tensor dump without the real permissive reference "
-            "implementation would validate nothing (see "
-            "tools/parity/utmos_dump_reference.py's own module doc, and "
-            "memory `feedback-honest-parity-atol`) — refused rather than "
-            "attempted."
+            f"{LOG_PREFIX} jaywalnut310/vits (MIT) vendor import failed "
+            f"({exc}). Task 4 landed the 8-module vendor pass into "
+            "tools/parity/vendor/vits/ (text_encoder.py, coupling.py, "
+            "flow.py, decoder.py + supporting attentions.py, commons.py, "
+            "modules.py, transforms.py) — see that directory's README for "
+            "the full mapping table. If this error surfaces you either "
+            "(a) hit a torch API drift the vendor did not anticipate "
+            "(check the DeprecationWarning trail above), (b) the parity "
+            "venv is missing a transitive dep the vendored modules pull "
+            "in (e.g. numpy — scipy is deliberately dropped, see "
+            "vendor/vits/README.md), or (c) the vendored files themselves "
+            "drifted from what their headers claim (rerun the sha256 diff "
+            "vs upstream at the pinned commit)."
         )
+    print(f"{LOG_PREFIX} vendor.vits import OK (Task 4 vendoring at pinned commit).")
 
-    # Unreachable until the vendoring above lands. When it does, this is
-    # where the real pipeline goes (design doc §7): G2P -> SbV2TextEncoder
-    # (dump phoneme_embed/text_hidden) -> DeBERTa v2/v3 via `transformers`
-    # (dump bert_hidden_ja/bert_hidden_en) -> BertBridge (bert_bridge_out)
-    # -> speaker/style conditioning (speaker_embed/style_projected) -> SDP
-    # (sdp_sample) -> length regulator (mel_hidden) -> vendored VITS flow
-    # (z_latent) -> vendored VITS/HiFi-GAN decoder (waveform), writing each
-    # as raw little-endian float32 to <output-dir>/reference_dump/<name>.bin
-    # plus the fully-resolved reference_dump.manifest.json alongside it.
-    return 0  # pragma: no cover - unreachable today, see above
+    # ------------------------------------------------------------------
+    # FR-EX-08 loud-exit gate: Task 4 landed the VITS-core vendor import
+    # (above), but the design doc §7 forward pipeline body — G2P ->
+    # SbV2TextEncoder (dump phoneme_embed / text_hidden) -> DeBERTa v2/v3
+    # via `transformers` (dump bert_hidden_ja / bert_hidden_en) ->
+    # BertBridge (bert_bridge_out) -> speaker/style conditioning
+    # (speaker_embed / style_projected) -> SDP (sdp_sample) -> length
+    # regulator (mel_hidden) -> vendored VITS flow (z_latent) -> vendored
+    # VITS HiFi-GAN decoder (waveform), writing each as raw little-endian
+    # float32 to <output-dir>/reference_dump/<name>.bin plus the fully-
+    # resolved reference_dump.manifest.json alongside it — has NOT been
+    # written yet. Writing that pipeline body is a separate follow-up
+    # task, gated on a real SBV2 v2 checkpoint being inspected first
+    # (design doc §12 owner step) — otherwise a self-consistent mirror of
+    # the architecture would validate nothing, the same NFR-QL-04 /
+    # FR-EX-08 lesson tools/parity/utmos_dump_reference.py's own module
+    # doc draws from the Kokoro 92dbc92 incident.
+    #
+    # Failing loudly + explicitly here — rather than silently returning 0
+    # and leaving --output-dir untouched — is what FR-EX-08 requires: a
+    # `sbv2_dump_reference.py --do-dump` invocation that "succeeds" but
+    # writes nothing is itself a fabricated artifact (a downstream
+    # `parity_sbv2_real.rs` run would then diff against a nonexistent
+    # reference_dump/ directory and misread the result). See
+    # `tools/parity/vendor/vits/README.md` "What this vendoring does +
+    # does not unlock" for the full boundary of Task 4's scope.
+    # ------------------------------------------------------------------
+    raise NotImplementedError(
+        f"{LOG_PREFIX} --do-dump: vendor import gate has passed (Task 4), but "
+        "the design doc §7 forward pipeline body (G2P -> SbV2TextEncoder -> "
+        "DeBERTa bridge -> SDP -> flow -> HiFi-GAN, writing 11 "
+        "reference_dump/*.bin files + reference_dump.manifest.json) has not "
+        "been written yet — that is a separate follow-up task, gated on a "
+        "real SBV2 v2 checkpoint being inspected first (design doc §12 "
+        f"owner step). Nothing was written to {args.output_dir}."
+    )
 
 
 def parse_args(argv: "list[str] | None" = None) -> argparse.Namespace:
