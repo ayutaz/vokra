@@ -4,13 +4,36 @@
 //! compile-only signature pin, and a negative-path proof that a
 //! well-formed-but-empty `main` GGUF fails loudly (FR-EX-08) instead of
 //! panicking. The third is real-fixture gated (`#[ignore]`) — it exercises
-//! the loader against `tests/fixtures/sbv2/{main,bert_ja,bert_en}.gguf`,
-//! which land with Task 25 (converter) + Task 28 (real fixture); until
-//! then this test only proves the call site compiles.
+//! the loader against the repo-root
+//! `tests/fixtures/sbv2/{sbv2-v2-multilingual-base,deberta-v2-large-japanese-char-wwm,deberta-v3-large}.gguf`
+//! trio (matching `reference_dump.manifest.json`'s `checkpoint` block and
+//! the committed `.sha256` sidecars), which land with Task 25 (converter)
+//! and Task 28 (real fixture); until then this test only proves the call
+//! site compiles.
+
+use std::path::{Path, PathBuf};
 
 use vokra_core::VokraError;
 use vokra_core::gguf::{GgufBuilder, GgufFile};
 use vokra_models::sbv2::SbV2Model;
+
+/// Repo-root-relative real-fixture directory for SBV2 loader smoke tests
+/// (`tests/fixtures/sbv2/`, sibling of the existing `tests/fixtures/audio/`
+/// Whisper/Voxtral convention). `CARGO_MANIFEST_DIR` is
+/// `<repo>/crates/vokra-models` — `cargo test` sets a test binary's working
+/// directory to the crate root, not the invocation directory, so every
+/// repo-root fixture path in this workspace's parity/loader tests is built
+/// this way (`parity_sbv2_real.rs`, `parity_whisper.rs`, `parity_kokoro.rs`,
+/// `parity_voxtral.rs`, `parity_csm.rs`, `parity_moshi.rs`) rather than as a
+/// bare relative literal.
+fn fixtures_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("fixtures")
+        .join("sbv2")
+}
 
 /// Compile-only sanity: `from_gguf`'s type signature is stable. Taking the
 /// function as a value only type-checks if the signature matches exactly
@@ -53,22 +76,39 @@ fn from_gguf_on_empty_main_file_fails_loudly_naming_first_missing_key() {
     }
 }
 
-/// Real-fixture gated: requires
-/// `tests/fixtures/sbv2/{main.gguf,bert_ja.gguf,bert_en.gguf}`, produced by
-/// Task 25's converter from real Style-Bert-VITS2 v2 safetensors
-/// checkpoints and landed by Task 28. Ignored by default; run with
-/// `--include-ignored` once the fixtures are populated.
+/// Real-fixture gated: requires the repo-root
+/// `tests/fixtures/sbv2/{sbv2-v2-multilingual-base,deberta-v2-large-japanese-char-wwm,deberta-v3-large}.gguf`
+/// trio (matching `reference_dump.manifest.json`'s `checkpoint` block and
+/// the committed `.sha256` sidecars), produced by Task 25's converter from
+/// real Style-Bert-VITS2 v2 safetensors checkpoints and landed by Task 28.
+/// Ignored by default; run with `--include-ignored` once the fixtures are
+/// populated.
 #[test]
 #[ignore = "Task 28 real fixture"]
 fn from_gguf_loads_real_sbv2_weights() {
-    let main = GgufFile::open("tests/fixtures/sbv2/main.gguf").expect("main.gguf");
-    let bert_ja = GgufFile::open("tests/fixtures/sbv2/bert_ja.gguf").expect("bert_ja.gguf");
-    let bert_en = GgufFile::open("tests/fixtures/sbv2/bert_en.gguf").expect("bert_en.gguf");
+    // Fixture filenames match `reference_dump.manifest.json` (`checkpoint`
+    // block) and the committed `.sha256` sidecars — not the older
+    // `{main,bert_ja,bert_en}.gguf` shorthand. Paths resolve via
+    // `fixtures_dir()` (repo-root) rather than a bare relative literal so
+    // the resolution is invocation-cwd-independent, matching every other
+    // parity/loader test in this workspace.
+    let dir = fixtures_dir();
+    let main_path = dir.join("sbv2-v2-multilingual-base.gguf");
+    let bert_ja_path = dir.join("deberta-v2-large-japanese-char-wwm.gguf");
+    let bert_en_path = dir.join("deberta-v3-large.gguf");
+
+    let main =
+        GgufFile::open(&main_path).unwrap_or_else(|e| panic!("{}: {e}", main_path.display()));
+    let bert_ja =
+        GgufFile::open(&bert_ja_path).unwrap_or_else(|e| panic!("{}: {e}", bert_ja_path.display()));
+    let bert_en =
+        GgufFile::open(&bert_en_path).unwrap_or_else(|e| panic!("{}: {e}", bert_en_path.display()));
 
     // Sanity: the loader walks a real checkpoint's metadata/tensor shape
     // end to end without erroring. Per-tensor numeric parity against the
     // Python reference (d_model, n_speakers, ... and every weight value)
     // is Task 27 (synthetic) / Task 28's own dedicated parity test's job,
     // not this loader smoke test's.
-    SbV2Model::from_gguf(&main, &bert_ja, &bert_en).expect("loads");
+    SbV2Model::from_gguf(&main, &bert_ja, &bert_en)
+        .unwrap_or_else(|e| panic!("SbV2Model::from_gguf: {e}"));
 }
