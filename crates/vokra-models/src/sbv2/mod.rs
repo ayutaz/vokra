@@ -23,6 +23,7 @@ pub mod decoder;
 pub mod duration;
 pub mod flow;
 pub mod g2p;
+pub mod parity;
 pub mod speaker;
 pub mod style;
 pub mod text_encoder;
@@ -32,12 +33,12 @@ pub mod text_encoder;
 // cycle (this crate depends on `vokra-convert` only as a dev-dependency,
 // for M4-04-style roundtrip tests; see that file's module doc for the full
 // rationale, mirroring Task 11's identical DeBERTa converter placement).
-// Later tasks add: mod parity;
 
 pub use decoder::SbV2Decoder;
 pub use duration::{SbV2SDP, length_regulate};
 pub use flow::SbV2Flow;
 pub use g2p::{Language, PhonemizeResult, SbV2Phonemizer};
+pub use parity::{ATOL_DEFAULT, PER_TENSOR_ATOL, tolerance_for};
 pub use speaker::SpeakerEmbedding;
 pub use style::StyleVectorInjector;
 pub use text_encoder::{BertBridge, SbV2TextEncoder};
