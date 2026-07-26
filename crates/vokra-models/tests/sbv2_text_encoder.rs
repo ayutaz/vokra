@@ -95,3 +95,32 @@ fn bert_bridge_zero_weights_returns_zeros() {
         "zero conv weights must give an all-zero contribution"
     );
 }
+
+/// Regression: smallest valid `bert_seq_len` (1) must not panic; verifies
+/// the `debug_assert` boundary added for the empty-`bert_seq_len` defect
+/// (Task 17 review) and confirms nearest-neighbor interpolation correctly
+/// collapses every text position onto the single source row.
+#[test]
+fn bert_bridge_single_bert_position_no_panic() {
+    let d_bert = 4;
+    let d_target = 3;
+    let text_seq_len = 5;
+    let bert_seq_len = 1;
+    let bridge = BertBridge::from_conv(
+        vec![0.1; d_target * d_bert],
+        vec![0.0; d_target],
+        d_bert,
+        d_target,
+    );
+    let bert_hidden = vec![1.0_f32; bert_seq_len * d_bert];
+
+    let out = bridge.forward(&bert_hidden, text_seq_len, bert_seq_len);
+
+    assert_eq!(out.len(), text_seq_len * d_target);
+    // With bert_seq_len=1, every text position must map to source 0 -> identical d_target chunks.
+    let first_chunk = &out[..d_target];
+    for t in 1..text_seq_len {
+        let chunk = &out[t * d_target..(t + 1) * d_target];
+        assert_eq!(chunk, first_chunk, "single-source interp must broadcast");
+    }
+}

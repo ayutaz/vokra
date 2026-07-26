@@ -419,14 +419,23 @@ impl BertBridge {
     ///
     /// # Panics
     ///
-    /// Panics (via `debug_assert!`) if `bert_hidden.len() != bert_seq_len
-    /// * self.d_bert`.
+    /// Panics (via `debug_assert!`) in debug builds if `bert_seq_len ==
+    /// 0` (an empty BERT sequence has no source position for the
+    /// nearest-neighbor interpolation above to read from — the
+    /// `bert_seq_len.saturating_sub(1)` clamp below prevents `usize`
+    /// underflow but not the resulting empty-slice indexing) or if
+    /// `bert_hidden.len() != bert_seq_len * self.d_bert`.
     pub fn forward(
         &self,
         bert_hidden: &[f32],
         text_seq_len: usize,
         bert_seq_len: usize,
     ) -> Vec<f32> {
+        debug_assert!(
+            bert_seq_len > 0,
+            "BertBridge::forward requires a non-empty bert sequence (bert_seq_len == 0 \
+             has no source position for the nearest-neighbor interpolation to read from)"
+        );
         debug_assert_eq!(
             bert_hidden.len(),
             bert_seq_len * self.d_bert,
