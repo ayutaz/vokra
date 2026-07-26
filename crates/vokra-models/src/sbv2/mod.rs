@@ -21,8 +21,10 @@
 
 pub mod g2p;
 pub mod style;
-// Later tasks add: mod text_encoder; mod duration; mod flow; mod decoder;
+pub mod text_encoder;
+// Later tasks add: mod duration; mod flow; mod decoder;
 //                  mod converter; mod parity;
 
 pub use g2p::{Language, PhonemizeResult, SbV2Phonemizer};
 pub use style::StyleVectorInjector;
+pub use text_encoder::{BertBridge, SbV2TextEncoder};
