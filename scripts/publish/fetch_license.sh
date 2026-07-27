@@ -24,6 +24,7 @@ CURL="/usr/bin/curl"
 canonical_url() {
   case "$1" in
     apache-2.0)  echo "https://www.apache.org/licenses/LICENSE-2.0.txt" ;;
+    mit)         echo "https://raw.githubusercontent.com/spdx/license-list-data/main/text/MIT.txt" ;;
     cc-by-4.0)   echo "https://creativecommons.org/licenses/by/4.0/legalcode.txt" ;;
     cc-by-sa-4.0) echo "https://creativecommons.org/licenses/by-sa/4.0/legalcode.txt" ;;
     agpl-3.0)    echo "https://www.gnu.org/licenses/agpl-3.0.txt" ;;
