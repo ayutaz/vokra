@@ -85,16 +85,19 @@
 # `parity-kokoro-real.yml`'s own existing Monday-04:00-UTC slot, and
 # `parity-whisper-real.yml` already documents why IT offset itself by an
 # hour to `0 5 * * 1` ("avoids GH Actions cron collisions with the Kokoro
-# job and spreads HF hub load across the hour"). This workflow follows that
-# same established precedent and takes the next free hour, `0 6 * * 1`,
-# rather than reproducing the sketch's collision verbatim.
+# job and spreads HF hub load across the hour"). This workflow followed the
+# same precedent — first '0 6 * * 1', then '15 7 * * 1' (2026-07-27) once
+# `gpu-cuda-rtf.yml` (06:00) and `web-wasm.yml` (07:00) fully booked the
+# adjacent :00 slots and `check-workflow-hygiene.sh` started flagging
+# collisions. 07:15 is the closest free slot to the design-doc sketch, in
+# between web-wasm (07:00) and parity-moshi-real (07:30).
 
 name: parity-sbv2-real
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 6 * * 1'
+    - cron: '15 7 * * 1'
   pull_request:
     # Paths reflect the files Tasks 25-34 actually landed under, not design
     # doc §10's illustrative sketch (`tests/parity/parity_sbv2_*`, written

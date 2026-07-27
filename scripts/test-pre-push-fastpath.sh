@@ -70,7 +70,7 @@ run_case() {
     fi
 }
 
-echo "test-pre-push-fastpath: 28 cases"
+echo "test-pre-push-fastpath: 29 cases"
 echo
 
 # --- FAST-PATH cases (all inputs are docs-shape) ---
@@ -128,7 +128,13 @@ run_case "several fixture hash sidecars at once" \
     "fast" \
     "$(printf 'tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf.sha256\ntests/fixtures/sbv2/deberta-v2-large-japanese-char-wwm.gguf.sha256\ntests/fixtures/sbv2/deberta-v3-large.gguf.sha256\n')"
 
+# --- FAST-PATH case for _typos.toml (CI advisory config only) ---
+run_case "_typos.toml only (CI advisory config)" \
+    "fast" \
+    "_typos.toml"
+
 # --- DEEP-PATH cases (anything Rust-adjacent kills the fast-path) ---
+
 run_case "tools/parity Python + .rs together kills fast-path" \
     "deep" \
     "$(printf 'tools/parity/sbv2_prepare_checkpoint.py\ncrates/vokra-models/src/sbv2/mod.rs\n')"

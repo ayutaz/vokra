@@ -18,6 +18,12 @@ extend-exclude = [
     "target/",
     "third_party/",
     "**/target/",
+    # Vendored 3rd-party Python trees under tools/parity/vendor/ (e.g.
+    # jaywalnut310/vits, MIT). Copied verbatim from upstream at a pinned
+    # SHA so we can trace parity byte-identically — any typo we "fix" in
+    # these trees would silently diverge from upstream. Same class as
+    # third_party/ above; typos in upstream comments are upstream's to fix.
+    "tools/parity/vendor/",
     # Lockfiles — dependency hashes and download paths are noise for a
     # spellchecker, and Cargo.lock is the NFR-DS-02 zero-dep sentinel we do
     # not want typos rewriting under any circumstance.

@@ -80,6 +80,13 @@ is_docs_only_diff() {
             # binary, not its hash sidecar. Matched BEFORE the tests/* trigger.
             tests/fixtures/*/*.sha256)
                 ;;
+            # Root-level CI-only tool configs. `_typos.toml` (crate-ci/typos
+            # allowlist) tunes a CI advisory job; it has no effect on the
+            # Rust build/test or on `Cargo.*`. Same class as .github/* — a
+            # config that only the CI job reads. Matched before the fallback
+            # deep-path *) trigger below.
+            _typos.toml)
+                ;;
             # Scripts / tooling that may be exercised elsewhere in the hook or in tests:
             scripts/*|tools/*|.githooks/*)
                 trigger="$f"; break ;;
