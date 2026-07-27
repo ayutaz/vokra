@@ -194,6 +194,28 @@ def convert_bin_to_safetensors(bin_path: Path, out_path: Path) -> tuple[int, int
     # ships views onto shared underlying storage.
     state_dict = {k: v.contiguous() for k, v in state_dict.items()}
 
+    # Tied-weight shared storage: models with `tie_word_embeddings=true`
+    # (Qwen2, Llama, ...) ship `lm_head.weight` and `embed_tokens.weight`
+    # as views onto the same tensor storage. safetensors REFUSES to save
+    # aliased storage (would double-load at unpack). Clone the alias so
+    # the on-disk copy is independent — the runtime is free to re-tie on
+    # load. Fail-loud if a shared-storage cluster is detected AND
+    # cloning would produce a non-tensor (should never happen).
+    # Encountered on FunAudioLLM/CosyVoice2-0.5B llm.pt (Qwen2 backbone).
+    storage_ids: dict[int, str] = {}
+    for k in list(state_dict.keys()):
+        v = state_dict[k]
+        sid = v.untyped_storage().data_ptr()
+        if sid in storage_ids:
+            print(
+                f"{LOG_PREFIX}   detected tied-weight shared storage: "
+                f"{k!r} aliases {storage_ids[sid]!r} — cloning independent copy",
+                file=sys.stderr,
+            )
+            state_dict[k] = v.clone()
+        else:
+            storage_ids[sid] = k
+
     total_params = sum(v.numel() for v in state_dict.values())
     save_file(state_dict, str(out_path))
     return len(state_dict), total_params
