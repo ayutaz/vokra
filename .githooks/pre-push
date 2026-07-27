@@ -6,14 +6,28 @@
 # CONTRIBUTING.md §2). Slower than pre-commit. Bypass with `git push
 # --no-verify` or VOKRA_SKIP_HOOKS=1.
 #
-# ITERATION-SPEED FAST-PATHS (2026-07-23):
+# ITERATION-SPEED FAST-PATHS (2026-07-23; allowlist widened 2026-07-27):
 #
 # * Fast-path (a): if the diff since the tracking upstream (or origin/main
-#   when the branch is brand-new) touches ONLY documentation-shape files
-#   (docs/**, .github/**, *.md, *.yml, *.yaml, dotfiles that never affect
-#   compilation), the clippy + test legs SKIP. The compliance scanner
-#   sigpipe test always runs (5 s) — it is trivially cheap and is not
-#   dependent on the diff.
+#   when the branch is brand-new) touches ONLY files that cannot affect the
+#   Rust build, the clippy + test legs SKIP. Compliance scanner sigpipe
+#   test always runs (5 s) — it is trivially cheap and diff-independent.
+#
+#   Skippable categories (see .githooks/lib-fastpath.sh for the exact
+#   patterns and scripts/test-pre-push-fastpath.sh for the 28 pinned cases):
+#     - Docs / config: docs/**, .github/**, *.md, *.yml, *.yaml, dotfiles,
+#       LICENSE / NOTICE / CHANGELOG / CONTRIBUTING, include/*.h
+#     - Offline sidecar Python tools: tools/parity/*.py,
+#       tools/parity/{pyproject.toml,uv.lock},
+#       tools/parity/vendor/*/{*.py,*.md,LICENSE}
+#       (FR-LD-05: not linked into Rust runtime; the only Rust references
+#       are docstring citations, never `include_*!` / runtime import)
+#     - Fixture hash sidecars: tests/fixtures/*/*.sha256
+#       (consumed by CI workflow gate scripts, never by Rust tests directly)
+#
+#   Any mixture with .rs / Cargo.{toml,lock} / scripts/ / .githooks/ / other
+#   tools/* / non-.sha256 under tests/ tips the whole push into the deep
+#   path — safety default.
 #
 # * Fast-path (c): when the deep path DOES run, `cargo nextest run
 #   --workspace` is used when `cargo-nextest` is on the developer's PATH

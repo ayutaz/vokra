@@ -63,6 +63,23 @@ is_docs_only_diff() {
             # Rust / build (highest priority — must not skip):
             *.rs|Cargo.toml|Cargo.lock|rust-toolchain*|deny.toml|.cargo/*|build.rs)
                 trigger="$f"; break ;;
+            # Offline sidecar Python tools under tools/parity/ (FR-LD-05: they
+            # are not linked into the Rust runtime). Any Rust reference is
+            # docstring-only ("regenerate with `python tools/parity/foo.py`"),
+            # never `include_str!` / `include_bytes!` / runtime import — grep
+            # `crates/**/*.rs` for `tools/parity` hits confirms only comments.
+            # Matched BEFORE the generic tools/* trigger so a Python-only
+            # touch takes the fast-path. Rust code / config anywhere still
+            # trips the *.rs / Cargo.toml lines above.
+            tools/parity/*.py|tools/parity/pyproject.toml|tools/parity/uv.lock|tools/parity/vendor/*/*.py|tools/parity/vendor/*/*.md|tools/parity/vendor/*/LICENSE)
+                ;;
+            # Fixture hash sidecar files (`*.gguf.sha256` / `*.wav.sha256`).
+            # Consumed only by CI workflow gate scripts (`grep -vE '^\s*(#|$)'`
+            # for a non-comment line) and by owner-recipe README's, never by
+            # Rust tests directly — parity tests read the actual GGUF/WAV
+            # binary, not its hash sidecar. Matched BEFORE the tests/* trigger.
+            tests/fixtures/*/*.sha256)
+                ;;
             # Scripts / tooling that may be exercised elsewhere in the hook or in tests:
             scripts/*|tools/*|.githooks/*)
                 trigger="$f"; break ;;
@@ -80,6 +97,6 @@ is_docs_only_diff() {
         fastpath_reason="deep path required (first non-docs file: $trigger)"
         return 1
     fi
-    fastpath_reason="only documentation-shape files changed since $base"
+    fastpath_reason="only Rust-build-neutral files changed since $base (docs / Python sidecar / fixture hash — see .githooks/lib-fastpath.sh)"
     return 0
 }
