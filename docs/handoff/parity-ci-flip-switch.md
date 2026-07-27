@@ -38,6 +38,7 @@ no downloads happen; the run is visibly a skip, never a green pass.
 | Qwen3-TTS | `.github/workflows/parity-qwen3-tts-real.yml` | `VOKRA_QWEN3_TTS_ENABLE` | `VOKRA_QWEN3_TTS_GGUF` (+ `_REFDIR`) | qwen3_tts_0_6b_base | SoTA Phase 3. Cron Mon 11:00 UTC. Only released family member today; a future 1.7B variant lands by extending the matrix. |
 | tts-continuous-vae | `.github/workflows/parity-tts-continuous-vae-real.yml` | `VOKRA_TTS_CONT_VAE_ENABLE` | `VOKRA_VOXCPM2_GGUF` / `VOKRA_VIBEVOICE_GGUF` (+ `_REFDIR`) | voxcpm2 / vibevoice | SoTA Phase 4. Cron Mon 11:30 UTC. `only=voxcpm2` / `only=vibevoice` dispatch input runs one leg. BF16 pre-widen sidecar may be required if the release ships without an F32/F16 pass-through arm. |
 | tts-japanese | `.github/workflows/parity-tts-japanese-real.yml` | `VOKRA_TTS_JA_ENABLE` | `VOKRA_IRODORI_GGUF` / `VOKRA_VITS_JA_GGUF` (+ `_REFDIR`) | irodori / vits_ja | SoTA Phase JA. Cron Mon 12:00 UTC. `only=irodori` / `only=vits_ja`. `vits_ja` is **operator-provisioned only** (HF mirror is 401 AND JSUT corpus terms forbid weight redistribution); the workflow does not auto-fetch, and the harness honest-skips absent `VOKRA_VITS_JA_GGUF`. Irodori HF slug is `Aratako/Irodori-TTS-500M-v3` (task-tracker's `Irodori-tech/…` is 401 — honest header). |
+| deepfilternet3 | `.github/workflows/parity-deepfilternet3-real.yml` | `VOKRA_DFN3_ENABLE` | `VOKRA_DFN3_GGUF` (+ `VOKRA_DFN3_DATA_URL` for byte-parity bundle, optional `VOKRA_DFN3_DATA_SHA256`) | deepfilternet3 | M4-20 T17 follow-up. Cron Mon 12:30 UTC. **Two-phase**: Phase A (`vokra-cli convert --model denoise` on the pinned GitHub `Rikorose/DeepFilterNet` zip @ `82b0c7ad…`, sha256 `49c52edc…`) runs on `_ENABLE=1`. Phase B (byte-parity vs `parity_denoise_dfn3` reference bundle) needs `_DATA_URL` populated with a pre-baked `.tar.gz` mirror — the exact `prep_noisy.py` recipe lives outside the repo. See `docs/handoff/parity-deepfilternet3-real.md` §Phase B for the two provisioning paths. |
 
 Every workflow additionally carries a **narrow `pull_request` paths filter**
 that only fires on family-adjacent code, so per-PR runner minutes stay
@@ -76,7 +77,8 @@ For each family the owner intends to enable:
    Substitute one of `VOKRA_NEMO_ASR_ENABLE`,
    `VOKRA_WHISPER_EXTRAS_ENABLE`, `VOKRA_TTS_DAC_ENABLE`,
    `VOKRA_TTS_HIFTNET_ENABLE`, `VOKRA_QWEN3_TTS_ENABLE`,
-   `VOKRA_TTS_CONT_VAE_ENABLE`, `VOKRA_TTS_JA_ENABLE`.
+   `VOKRA_TTS_CONT_VAE_ENABLE`, `VOKRA_TTS_JA_ENABLE`,
+   `VOKRA_DFN3_ENABLE`.
 
    To disable later, `gh api -X DELETE repos/ayutaz/vokra/actions/variables/<PREFIX>_ENABLE`
    or delete via the UI. Every value other than `1` is treated as disabled

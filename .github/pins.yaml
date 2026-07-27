@@ -741,3 +741,37 @@ entries:
       is not a probe-able SHA. Enable-gate: VOKRA_TTS_JA_ENABLE=1.
       Optional matrix filter input `only=vits_ja`. License sign-off
       pending in docs/license-audit.md §3.1.
+
+  # ---- deepfilternet3 family (parity-deepfilternet3-real.yml) --------------
+
+  - name: deepfilternet3
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-deepfilternet3-real.yml
+    owning_line: 115
+    upstream:
+      url: https://github.com/Rikorose/DeepFilterNet
+      license: MIT OR Apache-2.0
+    pinned_value:
+      # GitHub-hosted (raw.githubusercontent.com) rather than HF. The pinned
+      # commit is the last one that touched models/DeepFilterNet3.zip
+      # (2023-05-23 "models: Fix zip structure") and the zip sha256 is the
+      # exact prefix the harness docstring cites (49c52edc…, L11 of
+      # crates/vokra-ops/tests/parity_denoise_dfn3.rs).
+      git_sha: "82b0c7ad33fc756284104053817d1e855d8d8386"
+      sha256: "49c52edc8947ae1f9bf50d81530beaf3a2c3245aeaf34b6f31ff535cd22284d2"
+      bytes: 7986207
+    drift_policy:
+      upstream_mismatch: hard_fail  # zip pin is content-addressed by sha256
+      mirror_mismatch: hard_fail    # only meaningful once mirror block populated
+    notes: |
+      M4-20 T17 real-checkpoint parity CI (denoise family). Rikorose
+      DeepFilterNet3 released weights (48 kHz two-stage ERB + DF speech
+      enhancement). Enable-gate: VOKRA_DFN3_ENABLE=1 (or
+      workflow_dispatch). Byte-parity leg additionally requires
+      vars.VOKRA_DFN3_DATA_URL pointing at a pre-baked reference bundle
+      (Phase B) — the exact prep_noisy.py recipe lives outside the repo
+      today; docs/handoff/parity-deepfilternet3-real.md §Phase B
+      documents the two provisioning paths (commit tools/parity/
+      dfn3_prep_noisy.py, or host a .tar.gz mirror). Initial
+      workflow_dispatch by owner. License sign-off pending in
+      docs/license-audit.md §3.1.
