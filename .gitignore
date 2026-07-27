@@ -3,6 +3,11 @@
 
 # Rust / Cargo build artifacts (M0-02-T01).
 /target
+# Session-local scratchpad for HF weight caches + publish staging + one-shot
+# helper outputs (per Claude Code scratchpad convention; 2026-07-28 の
+# 10-model publish で GBs 単位のモデルが untracked に残ったので明示化)。
+# コミット禁止。
+/scratchpad/
 # M2-02 iOS cross-compile artifacts (XCFramework staging + libvokra.a per triple).
 # The build/ tree is produced by scripts/build-ios.sh; it is not committed —
 # CI regenerates it, releases upload the .xcframework as a Release asset.
