@@ -150,6 +150,25 @@ def convert_bin_to_safetensors(bin_path: Path, out_path: Path) -> tuple[int, int
             "and retry."
         )
 
+    # Classic wrapped checkpoint: `torch.save({'state_dict': model.state_dict()}, ...)`
+    # or {'model': model.state_dict()} — a single well-known wrapper key whose
+    # value is itself a dict of tensors. Unwrap explicitly (log to stderr so
+    # it is never silent) but ONLY for the known-safe patterns; any other shape
+    # falls through to the existing non-tensor refusal. Encountered on
+    # openbmb/VoxCPM-0.5B pytorch_model.bin (state_dict wrapper).
+    if len(state_dict) == 1:
+        (only_key,) = state_dict.keys()
+        (only_val,) = state_dict.values()
+        if only_key in ("state_dict", "model", "weights", "module") and isinstance(
+            only_val, dict
+        ):
+            print(
+                f"{LOG_PREFIX}   detected wrapped checkpoint — unwrapping "
+                f"top-level key {only_key!r} ({len(only_val)} tensors inside)",
+                file=sys.stderr,
+            )
+            state_dict = only_val
+
     # Validate every value is a tensor and every key is a str.
     non_tensor_offenders: list[str] = []
     non_str_keys: list[object] = []
