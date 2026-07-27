@@ -705,6 +705,35 @@ pub enum ModelKind {
     /// redistribution is permitted with the original licence preserved,
     /// never relabelled; design doc §9). Convert with [`convert_sbv2_file`].
     SbV2,
+    /// HKUSTAudio **X-Codec 2** safetensors checkpoint (SoTA plan Phase 5
+    /// codec, 2026-07-28). Neural audio codec paired with the Llasa TTS
+    /// family. Distinct arch tag from every sibling codec (Mimi / DAC /
+    /// WavTokenizer / neucodec / step_audio2_mini) — X-Codec 2 is an
+    /// **FSQ** codec (finite scalar quantization, single FSQ level bank
+    /// per codebook), not RVQ, so silently sharing would mis-route the
+    /// runtime dispatch (FSQ has no residual chain).
+    ///
+    /// The M4-16 op-only landing implemented the FSQ decode path
+    /// (`xcodec2_fsq`, `crates/vokra-ops/src/fsq_codec.rs`, parity
+    /// fixture is synthetic vector-quantize-pytorch 1.17.8 projection);
+    /// this converter completes the "safetensors → GGUF" side. Every
+    /// F32 / F16 / BF16 tensor passes through verbatim under its upstream
+    /// safetensors name (the neucodec / step_audio2_mini contract).
+    ///
+    /// **Weight license default = `cc-by-nc-4.0`
+    /// ([`vokra_core::LicenseClass::NonCommercial`])**: the HF model
+    /// card at `huggingface.co/HKUSTAudio/xcodec2` carries `license:
+    /// cc-by-nc-4.0` on its YAML front-matter (CC-verified 2026-07-15;
+    /// sign-off 2026-07-23 yousan = ☑ Research-only,
+    /// `docs/license-audit.md` §3.1). The runtime M2-13 gate refuses to
+    /// load the resulting GGUF in commercial mode
+    /// (`requires_research_flag = true`) — an operator who never touched
+    /// the license flag cannot silently bring up an NC weight in
+    /// production. A user who legitimately holds the weight under a
+    /// distinct SPDX id overrides at the outer
+    /// `convert_file --license <spdx>` boundary (the same pattern
+    /// vits-ja / Whisper / kokoro use).
+    XCodec2,
 }
 
 impl ModelKind {
@@ -898,6 +927,14 @@ impl ModelKind {
             | "style-bert-vits2"
             | "style_bert_vits2"
             | "style-bert-vits2-v2" => Some(Self::SbV2),
+            // HKUSTAudio X-Codec 2 (SoTA plan Phase 5 codec, 2026-07-28).
+            // Accept the arch tag (`xcodec2`), the underscore + hyphen +
+            // dot variants of the canonical `x-codec-2` name, and the
+            // HF release id. Every spelling routes to the same FSQ
+            // pass-through converter today; a hypothetical `xcodec3` /
+            // `X-Codec-3` would be a distinct `ModelKind` when it lands.
+            "xcodec2" | "x-codec-2" | "x_codec_2" | "xcodec-2" | "x-codec2"
+            | "hkustaudio-xcodec2" => Some(Self::XCodec2),
             _ => None,
         }
     }
@@ -939,6 +976,7 @@ impl ModelKind {
             Self::DebertaV2 => "deberta-v2",
             Self::DebertaV3 => "deberta-v3",
             Self::SbV2 => "sbv2",
+            Self::XCodec2 => "xcodec2",
         }
     }
 }
@@ -1687,6 +1725,26 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        ModelKind::XCodec2 => {
+            // SoTA plan Phase 5 codec (2026-07-28): pass every F32 / F16 /
+            // BF16 tensor through verbatim and stamp the
+            // `vokra.model.arch = "xcodec2"` + `vokra.model.category =
+            // "codec"` + `vokra.provenance.upstream_hf =
+            // "HKUSTAudio/xcodec2"` chunk group. Provenance defaults to
+            // **cc-by-nc-4.0 / NonCommercial** — the runtime M2-13 gate
+            // refuses to load in commercial mode. A caller who trained
+            // on a permissive corpus (or holds the weight under a
+            // distinct SPDX id) overrides at the outer `--license
+            // <spdx>` boundary below (same pattern as vits-ja /
+            // Whisper / kokoro).
+            let (builder, report) = models::xcodec2::convert(bytes)?;
+            let notes = vec![format!(
+                "xcodec2: {} float weights written verbatim ({} BF16 passthrough — runtime widens \
+                 to f32 exactly at load), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            (builder, notes)
+        }
     };
 
     // Override the stamped licence when the caller supplies the distribution
@@ -2413,6 +2471,16 @@ pub use models::deberta_v3::convert_deberta_v3_file;
 // DeBERTa's does not), so re-exporting both under the same crate-root name
 // would collide (E0252).
 pub use models::sbv2::{ConvertReport as SbV2ConvertReport, convert_sbv2_file};
+// SoTA plan Phase 5 codec (2026-07-28): HKUSTAudio/xcodec2
+// (**cc-by-nc-4.0** — HF card front-matter, `docs/license-audit.md` §3.1
+// 2026-07-23 yousan = ☑ Research-only). Standalone file-based entry point
+// with an SPDX override argument (mirror of the neucodec /
+// step_audio2_mini pattern). The runtime `ModelKind::XCodec2` dispatch
+// arm above shares the same `models::xcodec2::convert` internal helper,
+// so a caller who prefers `--model xcodec2` via `convert_file_licensed`
+// and a caller who calls `convert_xcodec2_file` directly land the same
+// bytes.
+pub use models::xcodec2::{XCodec2Report, convert_xcodec2_file};
 
 /// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through
 /// [`convert_voxtral_file_with_adapter_config`] (a JSON path) or by

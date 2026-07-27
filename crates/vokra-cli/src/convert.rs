@@ -13,9 +13,9 @@ use std::process::ExitCode;
 use vokra_convert::{
     ModelKind, PolicyPreset, VoxtralConfig, convert_chatterbox_file, convert_chatterbox_nano_file,
     convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
-    convert_dac_file, convert_file, convert_file_quantized, convert_file_with_policy,
-    convert_irodori_file, convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file,
-    convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
+    convert_dac_file, convert_file, convert_file_licensed, convert_file_quantized,
+    convert_file_with_policy, convert_irodori_file, convert_kokoro_file, convert_piper_plus_file,
+    convert_qwen3_tts_file, convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
     convert_voxtral_file_quantized, convert_voxtral_file_with_adapter_config_quantized,
     parse_voxtral_hf_config,
 };
@@ -326,6 +326,15 @@ OPTIONS:
                               super-blocks stay full precision.
     --policy-preset <preset>  M2-08 quantization policy preset (whisper only):
                               vocoder_safe (default) | whisper_q4_k | fp16
+    --license <spdx>          Override the converter's built-in weight-license
+                              stamp with the caller-supplied SPDX id (e.g.
+                              `cc-by-nc-4.0` or `apache-2.0`). Honored on the
+                              generic fallthrough dispatch only (whisper /
+                              piper-plus / voxtral / kokoro / dac / chatterbox
+                              family paths ignore this flag today). Mutually
+                              exclusive with --quantize / --policy-preset —
+                              use `vokra-convert restamp` to change the
+                              license on a quantized GGUF after the fact.
     -h, --help                print this help
 ";
 
@@ -348,6 +357,15 @@ struct Parsed {
     output: PathBuf,
     quant: Option<GgmlType>,
     policy: Option<PolicyPreset>,
+    /// SoTA plan Phase 5 codec (2026-07-28) — mirror of `vokra-convert`'s
+    /// `--license` flag. Overrides the converter's built-in weight-license
+    /// stamp with the caller-supplied SPDX id (e.g. a caller who obtained
+    /// the weight under a distinct license from the module default). Only
+    /// honored on the generic fallthrough dispatch — the whisper /
+    /// piper-plus / voxtral / kokoro / dac / chatterbox family paths take
+    /// their own tailored routes and ignore this flag (loudly, if it is
+    /// passed alongside them).
+    license: Option<String>,
 }
 
 /// Parses the `--quantize` argument into a K-quant target dtype.
@@ -369,6 +387,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut output: Option<PathBuf> = None;
     let mut quant: Option<GgmlType> = None;
     let mut policy: Option<PolicyPreset> = None;
+    let mut license: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -385,7 +404,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          distil-whisper | kotoba-whisper | \
                          chatterbox | chatterbox-turbo | chatterbox-nano | \
                          qwen3-tts | voxcpm | vibevoice | irodori | vits-ja | \
-                         sbv2 | deberta-v2 | deberta-v3)"
+                         sbv2 | deberta-v2 | deberta-v3 | xcodec2)"
                     )
                 })?);
                 i += 2;
@@ -435,6 +454,11 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 })?);
                 i += 2;
             }
+            "--license" => {
+                let v = args.get(i + 1).ok_or("--license requires an SPDX id")?;
+                license = Some(v.clone());
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -452,6 +476,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         output: output.ok_or("--output is required")?,
         quant,
         policy,
+        license,
     })
 }
 
@@ -793,16 +818,41 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             // Ticket precedence: an explicit --policy-preset wins; else the
             // legacy --quantize q4_k alias maps to the whisper_q4_k preset;
             // else fall through to convert_file_quantized (Q5/Q6 legacy
-            // shapes) or the plain byte-exact path.
+            // shapes), convert_file_licensed (when --license is set — the
+            // SoTA-Phase-5 xcodec2 + generic license-override path) or the
+            // plain byte-exact path.
+            //
+            // --license is mutually exclusive with --quantize / --policy-preset
+            // for now: the tailored quant paths do not thread the license
+            // override, and silently ignoring a user flag is a bug (FR-EX-08).
             if let Some(preset) = p.policy {
+                if p.license.is_some() {
+                    return Err(
+                        "--license and --policy-preset are mutually exclusive (the policy \
+                         preset takes its own tailored path that does not thread the license \
+                         override; drop --license or use `vokra-convert restamp` after the \
+                         quantized convert)"
+                            .to_owned(),
+                    );
+                }
                 convert_file_with_policy(model, &p.input, &p.output, preset)
             } else if let Some(q) = p.quant {
+                if p.license.is_some() {
+                    return Err(
+                        "--license and --quantize are mutually exclusive on this dispatch \
+                         path (the quant path does not thread the license override; drop \
+                         --license or use `vokra-convert restamp` after the quantized convert)"
+                            .to_owned(),
+                    );
+                }
                 if q == GgmlType::Q4K {
                     // Backward-compat alias per T06 spec.
                     convert_file_with_policy(model, &p.input, &p.output, PolicyPreset::WhisperQ4K)
                 } else {
                     convert_file_quantized(model, &p.input, &p.output, q)
                 }
+            } else if p.license.is_some() {
+                convert_file_licensed(model, &p.input, &p.output, p.license.as_deref())
             } else {
                 convert_file(model, &p.input, &p.output)
             }

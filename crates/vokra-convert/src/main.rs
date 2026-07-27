@@ -1785,6 +1785,42 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                 "; arch={arch} name={name} d_model={d_model} n_vocab={n_vocab} sample_rate={sample_rate}"
             );
         }
+        ModelKind::XCodec2 => {
+            // SoTA plan Phase 5 codec (2026-07-28): X-Codec 2 verify surface —
+            // arch/name/category + upstream_hf + the licence class + SPDX id.
+            // The M4-16 op-only landing means there is no per-model
+            // `vokra.xcodec2.*` hparam chunk yet — the interesting readback
+            // here is the license triple (the whole point of this converter
+            // + the license_class flip).
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream = file
+                .get("vokra.provenance.upstream_hf")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let class = file
+                .get("vokra.provenance.weight_license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} category={category} upstream_hf={upstream} \
+                 license={license} weight_license={class}"
+            );
+        }
     }
     Ok(())
 }

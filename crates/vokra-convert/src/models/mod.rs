@@ -302,6 +302,16 @@ pub(crate) mod vits_ja;
 pub(crate) mod voxtral;
 pub mod wespeaker;
 pub(crate) mod whisper;
+// SoTA plan Phase 5 codec (2026-07-28): HKUSTAudio/xcodec2 (**cc-by-nc-4.0**
+// weight — HF card front-matter, CC-verified 2026-07-15, sign-off 2026-07-23
+// yousan = ☑ Research-only, `docs/license-audit.md` §3.1). FSQ codec paired
+// with the Llasa TTS family — the M4-16 landing implemented the FSQ decode
+// op-side (`xcodec2_fsq`, `crates/vokra-ops/src/fsq_codec.rs`); this
+// converter completes the missing "safetensors → GGUF" side. F32 / F16 /
+// BF16 pass-through mirrors the neucodec / step_audio2_mini contract; the
+// license default is NonCommercial (fail-closed) so a commercial-mode
+// caller cannot silently bring up NC weights.
+pub(crate) mod xcodec2;
 // SoTA plan Phase 5 codec (2026-07-25): fnlp XY_Tokenizer_TTSD_V0
 // (apache-2.0) safetensors → GGUF. 1 kbps RVQ-8 @ 12.5 Hz — the codec
 // half of MOSS-TTSD. F32 / F16 / BF16 pass-through following the

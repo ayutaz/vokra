@@ -530,8 +530,21 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "irodori-tts-500m-v3"
         | "irodori-tts-500m-v3-base"
         | "irodori-tts-600m-v3-voicedesign" => LicenseClass::Permissive,
-        // Commercial-OK codecs (FR-OP-32): DAC / WavTokenizer / X-Codec 2 = MIT.
-        "dac" | "wavtokenizer" | "x-codec-2" | "xcodec2" => LicenseClass::Permissive,
+        // Commercial-OK codecs (FR-OP-32): DAC / WavTokenizer = MIT.
+        //
+        // ⚠ X-Codec 2 (`x-codec-2` / `xcodec2`) was previously listed here as
+        // `Permissive`, based on the earlier reading that the whole family
+        // shipped MIT. That was **wrong for the weight-distribution repo**:
+        // the HF card at `huggingface.co/HKUSTAudio/xcodec2` carries
+        // `license: cc-by-nc-4.0` on its YAML front-matter (CC-verified
+        // 2026-07-15; sign-off 2026-07-23 yousan = ☑ Research-only,
+        // `docs/license-audit.md` §3.1). The **code** at
+        // `github.com/zhenye234/X-Codec-2.0` remains MIT — but the weight
+        // class is what M2-13 gates on, and the weight-distribution repo
+        // governs the license of the redistributed artifact. So xcodec2
+        // now lives on the NonCommercial arm below (with F5-TTS / EnCodec),
+        // fail-closed against silent commercial use.
+        "dac" | "wavtokenizer" => LicenseClass::Permissive,
         // SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B — Apache 2.0
         // code + weight (docs/license-audit.md, model card).
         "dia" | "dia-1.6b" | "dia-1_6b" => LicenseClass::Permissive,
@@ -631,7 +644,15 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         "vits-ja" | "vits_ja" | "espnet-vits-ja" | "espnet-jsut-vits" | "espnet-jvs-vits"
         | "coeiroink-vits" => LicenseClass::RedistributionForbidden,
         // --- gated: CC-BY-NC (research flag) ---------------------------------
-        "f5-tts" | "encodec" => LicenseClass::NonCommercial,
+        //
+        // X-Codec 2 (`x-codec-2` / `xcodec2`, SoTA plan Phase 5 codec)
+        // joined this arm 2026-07-28 after the CC-verified check of
+        // `huggingface.co/HKUSTAudio/xcodec2` (front-matter
+        // `license: cc-by-nc-4.0`; sign-off 2026-07-23 yousan =
+        // ☑ Research-only, `docs/license-audit.md` §3.1). See the note on
+        // the DAC / WavTokenizer arm above for the reason the earlier
+        // Permissive listing was wrong for the weight-distribution repo.
+        "f5-tts" | "encodec" | "x-codec-2" | "xcodec2" => LicenseClass::NonCommercial,
         // --- gated: CC-BY-NC-SA (research flag) ------------------------------
         "fish-speech" | "fish-speech-v1.4" | "fish-speech-v1.5" => {
             LicenseClass::NonCommercialShareAlike
@@ -1336,7 +1357,13 @@ mod tests {
     ///   This is the ONE arm that is *not* Permissive and where a wrong
     ///   verdict would silently authorise republishing a corpus that
     ///   explicitly bans it (JSUT / JVS terms).
-    /// - `dac` / `wavtokenizer` / `x-codec-2` / `xcodec2` (Permissive).
+    /// - `dac` / `wavtokenizer` (Permissive).
+    /// - `x-codec-2` / `xcodec2` (**NonCommercial** — HF card at
+    ///   `huggingface.co/HKUSTAudio/xcodec2` = `cc-by-nc-4.0`,
+    ///   `docs/license-audit.md` §3.1 2026-07-23 yousan sign-off =
+    ///   ☑ Research-only; flipped 2026-07-28 from an earlier Permissive
+    ///   listing that mistakenly read the MIT code license as governing
+    ///   weight redistribution).
     #[test]
     fn sota_plan_registry_entries_resolve_to_the_correct_class() {
         // ---- Phase 2: distil-whisper (MIT) -----------------------------
@@ -1511,11 +1538,60 @@ mod tests {
         }
 
         // ---- FR-OP-32 codecs (Permissive) --------------------------------
-        for id in ["dac", "wavtokenizer", "x-codec-2", "xcodec2"] {
+        //
+        // DAC + WavTokenizer stay Permissive (MIT weight). X-Codec 2 was
+        // previously in this list — flipped 2026-07-28 to NonCommercial
+        // after CC-verification of `huggingface.co/HKUSTAudio/xcodec2`
+        // (front-matter `license: cc-by-nc-4.0`); see the dedicated
+        // xcodec2 arm below.
+        for id in ["dac", "wavtokenizer"] {
             assert_eq!(
                 registry_lookup(id),
                 Some(LicenseClass::Permissive),
                 "codec: {id}"
+            );
+        }
+
+        // ---- SoTA plan Phase 5 codec: X-Codec 2 (NonCommercial) ---------
+        //
+        // The **weight** class flip that motivated the 2026-07-28 change.
+        // The HF card at `huggingface.co/HKUSTAudio/xcodec2` carries
+        // `license: cc-by-nc-4.0` on its YAML front-matter (CC-verified
+        // 2026-07-15; `docs/license-audit.md` §3.1 sign-off 2026-07-23
+        // yousan = ☑ Research-only). The code layer at
+        // `github.com/zhenye234/X-Codec-2.0` is MIT — but M2-13 gates on
+        // the **weight** class, and the weight-distribution repo governs
+        // the class of the redistributed artifact. Fail-closed: a
+        // commercial-mode caller cannot silently bring this up
+        // (`requires_research_flag = true`), the publish gate refuses
+        // (`redistributable = false`, `commercial_ok = false`).
+        for id in [
+            "x-codec-2",
+            "xcodec2",
+            // Case-insensitive.
+            "X-Codec-2",
+            "XCODEC2",
+        ] {
+            let c = registry_lookup(id);
+            assert_eq!(
+                c,
+                Some(LicenseClass::NonCommercial),
+                "xcodec2: {id} MUST be NonCommercial (HF card = cc-by-nc-4.0) \
+                 — silently returning Permissive would authorise a commercial \
+                 load of an NC weight."
+            );
+            let c = c.unwrap();
+            assert!(
+                c.requires_research_flag(),
+                "{id}: NC must require the research flag to load"
+            );
+            assert!(
+                !c.commercial_ok(),
+                "{id}: commercial_ok must be false for NC"
+            );
+            assert!(
+                !c.redistributable(),
+                "{id}: NonCommercial is not on the publish gate's allow-list"
             );
         }
 
