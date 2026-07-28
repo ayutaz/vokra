@@ -125,6 +125,28 @@ if scoped_crates=$(changed_workspace_crates 2>/dev/null); then
     fi
 fi
 
+# Fast-path (e) — 2026-07-28: CI-covered heavy tests are skipped locally via
+# the nextest `pre-push` profile (`.config/nextest.toml`). Excluded:
+#   * vokra-backend-{metal,cuda,vulkan,webgpu,coreml,qnn}
+#     – 実 GPU dispatch = M1 Metal で個別 40-60s × N 本 (~50 min の主犯)。
+#       CI: macos-latest / Linux+CUDA runner + parity workflows で担保。
+#   * vokra-wasm-harness — wasm32 build + browser exec は CI で担保。
+#   * vokra-parity — 実 GGUF/checkpoint 依存 integration = parity-*-real.yml。
+#
+# Skip 対象は `default-filter` で expression 化ゆえ silent 縮小ではない (hook
+# 出力に「pre-push profile」明記、CI-covered の説明は .config/nextest.toml
+# 冒頭)。VOKRA_HOOK_DEEP=1 で `--profile default` に fallback。
+#
+# Doc-tests も pre-push から除外 (CI 側で `cargo test --workspace --doc`)。
+# 個別 doc-test は各 crate compile を trigger する重量 leg = CI territory。
+
+nextest_profile="pre-push"
+nextest_skip_reason="CI-covered GPU backends / wasm harness / heavy parity integration are skipped (see .config/nextest.toml)"
+if [ "${VOKRA_HOOK_DEEP:-0}" = "1" ]; then
+    nextest_profile="default"
+    nextest_skip_reason="VOKRA_HOOK_DEEP=1 → full workspace profile"
+fi
+
 if [ -n "$scoped_args" ]; then
     echo "pre-push [2/4]: cargo check --workspace  (global compile safety net for $scoped_reason)"
     cargo check --workspace --all-targets
@@ -132,15 +154,12 @@ if [ -n "$scoped_args" ]; then
     # shellcheck disable=SC2086
     cargo clippy $scoped_args --all-targets -- -D warnings
     if command -v cargo-nextest >/dev/null 2>&1; then
-        echo "pre-push [4/4]: cargo nextest run $scoped_args  ($scoped_reason)"
+        echo "pre-push [4/4]: cargo nextest run --profile $nextest_profile $scoped_args  ($scoped_reason; $nextest_skip_reason)"
         # shellcheck disable=SC2086
-        cargo nextest run $scoped_args
-        echo "pre-push [4/4]: cargo test $scoped_args --doc  (doc-tests not covered by nextest)"
-        # shellcheck disable=SC2086
-        cargo test $scoped_args --doc
+        cargo nextest run --profile "$nextest_profile" $scoped_args
     else
-        echo "pre-push [4/4]: cargo test $scoped_args"
-        echo "  hint: install cargo-nextest to parallelise this leg (~60% faster):"
+        echo "pre-push [4/4]: cargo test $scoped_args  ($scoped_reason; nextest missing → cannot apply skip-profile filter)"
+        echo "  hint: install cargo-nextest to skip CI-covered heavy tests (~50 min saved on M1):"
         echo "        cargo install cargo-nextest --locked"
         # shellcheck disable=SC2086
         cargo test $scoped_args
@@ -149,19 +168,12 @@ else
     echo "pre-push [2/3]: cargo clippy --all-targets -- -D warnings  ($fastpath_reason)"
     cargo clippy --all-targets -- -D warnings
 
-    # Fast-path (c): prefer cargo-nextest for the workspace test leg when
-    # available. Fall back to `cargo test --workspace` with a hint so a missing
-    # tool never blocks the push.
     if command -v cargo-nextest >/dev/null 2>&1; then
-        echo "pre-push [3/3]: cargo nextest run --workspace"
-        cargo nextest run --workspace
-        # `cargo nextest` does not run doc-tests; run them via `cargo test --doc`
-        # so behaviour matches `cargo test --workspace`.
-        echo "pre-push [3/3]: cargo test --workspace --doc  (doc-tests not covered by nextest)"
-        cargo test --workspace --doc
+        echo "pre-push [3/3]: cargo nextest run --profile $nextest_profile --workspace  ($nextest_skip_reason)"
+        cargo nextest run --profile "$nextest_profile" --workspace
     else
-        echo "pre-push [3/3]: cargo test --workspace"
-        echo "  hint: install cargo-nextest to parallelise this leg (~60% faster):"
+        echo "pre-push [3/3]: cargo test --workspace  (nextest missing → cannot apply skip-profile filter)"
+        echo "  hint: install cargo-nextest to skip CI-covered heavy tests:"
         echo "        cargo install cargo-nextest --locked"
         cargo test --workspace
     fi

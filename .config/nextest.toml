@@ -1,0 +1,44 @@
+## nextest 設定 (2026-07-28 新設)
+##
+## pre-push profile: CI 側で担保されるテスト (GPU backend / heavy integration)
+## を除外し、ローカルの pre-push は CPU-only の unit + 変更影響の catch に
+## 特化。CI の default profile (--profile default = このファイルの [profile.default])
+## は workspace 全体をカバーしたまま (safety 保全)。
+##
+## 削減対象と理由:
+##   * vokra-backend-{metal,cuda,vulkan,webgpu,coreml,qnn}
+##     - 実 GPU dispatch = M1 での Metal 個別 test 40-60s × N 本
+##     - CI runner (macos-latest / Linux+CUDA) が担う (parity workflows + nightly)
+##     - ローカル M1 では Metal だけ実行され、他 backend は cfg gate で stub
+##   * vokra-wasm-harness
+##     - wasm32 target build + browser 実行 = CI (parity + release build)
+##       で担保、ローカルで毎回走らせる価値なし
+##   * tests/parity (integration)
+##     - 実 GGUF/checkpoint 依存の heavy integration = parity-*-real.yml で担保
+##
+## 保持対象 (CPU-only 単体 test): vokra-{core,ops,convert,cli,eval,mmap,models,
+## capi,bert,kws-micro,vad-micro,piper-plus}。regression の 90% はここで catch。
+##
+## Bypass:
+##   * VOKRA_HOOK_DEEP=1 (pre-push hook 経由) で --profile default に fallback
+##   * `cargo nextest run --workspace` を直接叩けば default profile
+##
+## References:
+##   * https://nexte.st/docs/configuration/
+##   * .githooks/pre-push (この profile を "pre-push" として呼ぶ)
+
+[profile.default]
+## CI 側の profile: 従来動作を保持。変更なし。
+
+[profile.pre-push]
+## Local pre-push: CI-covered heavy tests を除外。
+##
+## nextest --filter-expr `not package(...)` は package 名の完全一致で除外。
+default-filter = "not (package(vokra-backend-metal) + package(vokra-backend-cuda) + package(vokra-backend-vulkan) + package(vokra-backend-webgpu) + package(vokra-backend-coreml) + package(vokra-backend-qnn) + package(vokra-wasm-harness) + package(vokra-parity))"
+
+## Fail fast: 1 本失敗したら stop (local iteration では詳細より速報優先)
+fail-fast = true
+
+## Timeout: 個別 test が >60s (SLOW threshold) を超えたら kill。
+## CPU-only test で 60s+ は明らかに retry-hang / device wait 起因。
+slow-timeout = { period = "45s", terminate-after = 2 }
