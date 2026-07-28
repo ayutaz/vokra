@@ -8,6 +8,11 @@
 # 10-model publish で GBs 単位のモデルが untracked に残ったので明示化)。
 # コミット禁止。
 /scratchpad/
+# uv-managed Python が cwd を tools/parity/ に切り替えた際にできる二次
+# scratchpad (2026-07-28 X-Codec-2 publish で snapshot_download が
+# tools/parity/scratchpad/hf-cache/ に流れた実例)。同じ「session-local
+# HF cache + staging」ゆえ /scratchpad/ と同格で明示除外。
+/tools/parity/scratchpad/
 # M2-02 iOS cross-compile artifacts (XCFramework staging + libvokra.a per triple).
 # The build/ tree is produced by scripts/build-ios.sh; it is not committed —
 # CI regenerates it, releases upload the .xcframework as a Release asset.
