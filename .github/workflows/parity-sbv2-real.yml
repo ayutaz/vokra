@@ -190,7 +190,7 @@ jobs:
     # (multi-GB checkpoint class); a truly stuck run is still bounded.
     timeout-minutes: 60
     env:
-      SBV2_HF_REPO: litagin02/style_bert_vits2
+      SBV2_HF_REPO: litagin/Style-Bert-VITS2-2.0-base-JP-Extra
       BERT_JA_HF_REPO: ku-nlp/deberta-v2-large-japanese-char-wwm
       BERT_EN_HF_REPO: microsoft/deberta-v3-large
       FIXTURE_DIR: tests/fixtures/sbv2

@@ -371,7 +371,7 @@ jobs:
           # drift (accept model.safetensors or the first *.safetensors).
           SAFETENSORS="${ST_DIR}/model.safetensors"
           if [ ! -f "${SAFETENSORS}" ]; then
-            SAFETENSORS="$(find "${ST_DIR}" -maxdepth 2 -name '*.safetensors' | head -1)"
+            SAFETENSORS="$(find "${ST_DIR}" -maxdepth 2 -type f -name '*.safetensors' | head -1)"
           fi
           if [ -z "${SAFETENSORS:-}" ] || [ ! -f "${SAFETENSORS}" ]; then
             echo "::error::bin_to_safetensors.py did not produce a *.safetensors file under ${ST_DIR}"
