@@ -113,6 +113,15 @@ integrations/vokra-godot/pkg/
 # and follow the Vokra convention of internal-doc gitignore-local.
 /docs/superpowers/
 
+# Seventh batch (2026-07-28): specific handoff docs whose header explicitly
+# marks them "gitignore local 意図、非コミット". `docs/handoff/` is a mixed
+# zone — some handoff docs are tracked (public owner-facing summaries like
+# `model-publish-and-parity-2026-07-28.md`), others are internal PM artefacts
+# (task-by-task implementation ledgers with references to gitignored ADRs /
+# tickets / SDD progress). This section lists the internal ones explicitly so
+# tracked handoff files remain unaffected.
+/docs/handoff/sbv2-v2-phase1.md
+
 # M4-01: wasm build artifacts (produced by scripts/build-wasm.sh; the npm
 # package assembles them at release time — never committed)
 /web/dist/
