@@ -560,6 +560,20 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        // SBV2 (Task 38): the `run` arm needs the `--bert-ja` / `--bert-en`
+        // side-car GGUFs `bench`'s generic `--model`-only dispatch has no
+        // flags for, and — separately — `SbV2Model::from_gguf`'s loaded
+        // phonemizer is a placeholder that fails every synthesize call
+        // today (see `run::run_sbv2`'s doc). Reject rather than fabricate a
+        // measurement (FR-EX-08).
+        ModelTask::Sbv2 => {
+            return Err(
+                "bench: arch `sbv2` has no bench task yet — use `vokra-cli run --model \
+                 <sbv2.gguf> --bert-ja <bert_ja.gguf> --bert-en <bert_en.gguf> --text \
+                 <string>` (FR-EX-08: refusing to fabricate a measurement)"
+                    .to_owned(),
+            );
+        }
         ModelTask::Vad => {
             let path = args
                 .input

@@ -1,0 +1,502 @@
+# DeepFilterNet3 real-checkpoint parity CI (M4-20 T17 follow-up, 2026-07-28).
+#
+# Runs the env-gated harness `crates/vokra-ops/tests/parity_denoise_dfn3.rs`
+# against the REAL Vokra GGUF converted from the upstream Rikorose/DeepFilterNet
+# released checkpoint (`models/DeepFilterNet3.zip` at pinned GitHub commit
+# `82b0c7ad33fc756284104053817d1e855d8d8386`, zip sha256
+# `49c52edc8947ae1f9bf50d81530beaf3a2c3245aeaf34b6f31ff535cd22284d2` —
+# the same prefix the harness's docstring cites, so this workflow is the
+# CI counterpart to the local `~/.cache/vokra-eval` M4-20 recipe).
+#
+# The harness has TWO env-var gates (`crates/vokra-ops/tests/parity_denoise_dfn3.rs`
+# L27-L33): both must be set or `env_paths()` returns None and the test
+# returns early (which cargo reports as PASS). The workflow honours the
+# distinction rigorously — a "skip" must be **visibly** a skip, never a
+# fabricated pass (FR-EX-08):
+#
+#   1. `VOKRA_DFN3_GGUF`  — path to the converted GGUF. Produced always by
+#      this workflow via `dfn3_prepare_checkpoint.py` +
+#      `vokra-cli convert --model denoise` on the reproducible upstream zip.
+#
+#   2. `VOKRA_DFN3_DATA`  — a directory containing the reference dumps
+#      (`clean_48k.f32` / `noisy_48k.f32` / `enhanced_upstream.f32` +
+#      `taps/`). Produced by an owner-side prep_noisy.py + reference dumper
+#      run. NOT reproduced in this workflow yet — the exact prep_noisy.py
+#      recipe (specific 11 s clean source + noise seed + mixing formula that
+#      landed the harness's tight `snr_noisy = 5.002 ± 0.01` and
+#      `snr_up = 14.768 ± 0.01` bounds) lives outside the repo. Until it is
+#      committed to `tools/parity/` the "data" leg cannot fire without a
+#      pre-baked mirror.
+#
+# Design (parity-tts-continuous-vae-real.yml + parity-utmos.yml discipline):
+#
+#   * Trigger: workflow_dispatch (owner-driven initial dispatch) + weekly
+#     cron `30 12 * * 1` (Monday 12:30 UTC — its own slot in the staggered
+#     weekly parity roster: kokoro 04:00, whisper 05:00, vulkan 05:30,
+#     cuda-rtf 06:00, csm 06:30, web-wasm 07:00, moshi 07:30, utmos 08:00,
+#     godot 08:30, release-cadence 09:00, nemo-asr 09:05, whisper-extras
+#     09:35, silero-nostd 10:00, tts-dac 10:15, tts-hiftnet 10:30, qwen3-tts
+#     11:00, tts-continuous-vae 11:30, tts-japanese 12:00) + a NARROW
+#     pull_request paths filter that only fires on denoise-adjacent code.
+#
+#   * Repository-variable gate `VOKRA_DFN3_ENABLE=1` (or a workflow_dispatch
+#     run) is required for the parity job to fire on schedule / PR. The
+#     cron path clean-skips with a `::notice::` when the variable is not
+#     set — fabricated pass 禁止 (FR-EX-08).
+#
+#   * Two-phase design: CONVERSION always runs when gated in. PARITY only
+#     runs when `vars.VOKRA_DFN3_DATA_URL` is populated with a URL to a
+#     pre-baked reference bundle (a `.tar.gz` that unpacks to the layout the
+#     harness expects). Absent that variable, the parity leg emits an
+#     explicit `::notice::` documenting the Phase B gap and DOES NOT invoke
+#     `cargo test`. This keeps the "conversion is reproducible" verification
+#     valuable while refusing to let a would-be-fabricated pass leak through.
+#
+#   * Python venv is installed inline (root Cargo.lock untouched — NFR-DS-02;
+#     the final `git diff --exit-code Cargo.lock` step is the tripwire).
+#     Only torch + numpy are needed (checkpoint prep uses `torch.load` +
+#     writes safetensors via a stdlib-only writer — the reference dumper's
+#     `deepfilternet` + `soundfile` deps are Phase B, not fetched here).
+#
+#   * NOT registered as a required check. HF/GitHub flakiness must not
+#     block PRs (same posture as every other parity-*-real workflow).
+#     Promotion to required is an explicit owner decision after weeks of
+#     consecutive greens.
+#
+#   * Initial workflow_dispatch = owner. Fabricated-pass 禁止 — this CI
+#     never fires until the owner explicitly opts in.
+#
+# Handoff (Phase B enablement): docs/handoff/parity-deepfilternet3-real.md.
+
+name: parity-deepfilternet3-real
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_parity:
+        description: >-
+          When "true" AND `vars.VOKRA_DFN3_DATA_URL` is set, run the byte-
+          parity leg even on this manual dispatch. Default: false (dispatches
+          exercise the conversion path; parity is opt-in via the URL var).
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  schedule:
+    # Weekly Monday 12:30 UTC — see header for the full staggered roster.
+    - cron: "30 12 * * 1"
+  pull_request:
+    # Fires ONLY on denoise-adjacent code. Non-matching PRs run the fixture-
+    # only committed leg via the per-PR required `parity` job in ci.yml
+    # (primitives fixtures under `tests/parity/dfn3/`, no download).
+    paths:
+      - ".github/workflows/parity-deepfilternet3-real.yml"
+      - "crates/vokra-convert/src/models/denoise.rs"
+      - "crates/vokra-ops/src/denoise.rs"
+      - "crates/vokra-ops/tests/parity_denoise_dfn3.rs"
+      - "tools/parity/dfn3_prepare_checkpoint.py"
+      - "tools/parity/dfn3_dump_reference.py"
+      # Shared dependencies whose regressions could reach the denoise path:
+      - "crates/vokra-core/src/gguf/**"
+      - "crates/vokra-core/src/compliance/**"
+
+concurrency:
+  group: parity-deepfilternet3-real-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Pinned upstream release. `82b0c7ad…` is the last commit that touched
+  # `models/DeepFilterNet3.zip` (2023-05-23 "models: Fix zip structure").
+  # The zip is 7,986,207 bytes; sha256 recorded here is the identical prefix
+  # the harness docstring cites (`49c52edc…`, L11 of parity_denoise_dfn3.rs).
+  DFN3_REPO: Rikorose/DeepFilterNet
+  DFN3_GIT_SHA: "82b0c7ad33fc756284104053817d1e855d8d8386"
+  DFN3_ZIP_URL: "https://raw.githubusercontent.com/Rikorose/DeepFilterNet/82b0c7ad33fc756284104053817d1e855d8d8386/models/DeepFilterNet3.zip"
+  DFN3_ZIP_SHA256: "49c52edc8947ae1f9bf50d81530beaf3a2c3245aeaf34b6f31ff535cd22284d2"
+  DFN3_LICENSE: "MIT OR Apache-2.0"
+  PARITY_VENV: /tmp/vokra-dfn3-parity
+  CARGO_TERM_COLOR: always
+
+jobs:
+  setup:
+    name: gate (dfn3 opt-in)
+    runs-on: ubuntu-latest
+    outputs:
+      run_conversion: ${{ steps.decide.outputs.run_conversion }}
+      run_parity: ${{ steps.decide.outputs.run_parity }}
+    steps:
+      - id: decide
+        env:
+          ENABLE_VAR: ${{ vars.VOKRA_DFN3_ENABLE }}
+          DATA_URL: ${{ vars.VOKRA_DFN3_DATA_URL }}
+          FORCE_PARITY: ${{ inputs.force_parity }}
+        run: |
+          set -euo pipefail
+
+          # workflow_dispatch: the owner opted into conversion; parity fires
+          # only when force_parity=true AND DATA_URL is populated.
+          # pull_request: paths filter already scoped it; conversion runs,
+          # parity gated on DATA_URL.
+          # schedule: everything gated on ENABLE_VAR=1 to keep cron minutes
+          # tight.
+          case "${{ github.event_name }}" in
+            workflow_dispatch)
+              echo "run_conversion=true" >> "$GITHUB_OUTPUT"
+              if [ "${FORCE_PARITY:-false}" = "true" ] && [ -n "${DATA_URL:-}" ]; then
+                echo "run_parity=true" >> "$GITHUB_OUTPUT"
+                echo "workflow_dispatch: parity ENABLED (force_parity=true, DATA_URL set)"
+              else
+                echo "run_parity=false" >> "$GITHUB_OUTPUT"
+                if [ -z "${DATA_URL:-}" ]; then
+                  echo "::notice title=parity-deepfilternet3-real parity skipped::VOKRA_DFN3_DATA_URL not set — byte-level parity leg cannot run (needs a pre-baked reference bundle). Conversion + GGUF sanity WILL run. This is a clean, deliberate skip, not a pass (fabricated pass 禁止, FR-EX-08). See docs/handoff/parity-deepfilternet3-real.md for Phase B enablement."
+                else
+                  echo "workflow_dispatch: force_parity=false — conversion only"
+                fi
+              fi
+              ;;
+            pull_request)
+              echo "run_conversion=true" >> "$GITHUB_OUTPUT"
+              if [ -n "${DATA_URL:-}" ]; then
+                echo "run_parity=true" >> "$GITHUB_OUTPUT"
+                echo "pull_request: parity ENABLED (DATA_URL set)"
+              else
+                echo "run_parity=false" >> "$GITHUB_OUTPUT"
+                echo "::notice title=parity-deepfilternet3-real parity skipped::VOKRA_DFN3_DATA_URL not set — byte-level parity leg cannot run. Conversion + GGUF sanity WILL run on this PR. Clean skip, not a pass (fabricated pass 禁止)."
+              fi
+              ;;
+            schedule|*)
+              if [ "${ENABLE_VAR}" = "1" ]; then
+                echo "run_conversion=true" >> "$GITHUB_OUTPUT"
+                if [ -n "${DATA_URL:-}" ]; then
+                  echo "run_parity=true" >> "$GITHUB_OUTPUT"
+                  echo "VOKRA_DFN3_ENABLE=1 + DATA_URL set: proceeding with conversion + parity"
+                else
+                  echo "run_parity=false" >> "$GITHUB_OUTPUT"
+                  echo "::notice title=parity-deepfilternet3-real parity skipped::VOKRA_DFN3_ENABLE=1 (conversion runs) but VOKRA_DFN3_DATA_URL not set — byte-level parity leg cannot run. Clean skip, not a pass."
+                fi
+              else
+                echo "run_conversion=false" >> "$GITHUB_OUTPUT"
+                echo "run_parity=false" >> "$GITHUB_OUTPUT"
+                echo "::notice title=parity-deepfilternet3-real clean skip::VOKRA_DFN3_ENABLE is not '1' — this family opt-in is off. Set the repository variable VOKRA_DFN3_ENABLE=1 (or workflow_dispatch) to enable conversion, and additionally set VOKRA_DFN3_DATA_URL to enable byte-parity. Fabricated pass 禁止 (FR-EX-08)."
+              fi
+              ;;
+          esac
+
+  parity:
+    name: parity (dfn3)
+    needs: setup
+    if: needs.setup.outputs.run_conversion == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      HF_HOME: ${{ github.workspace }}/.dfn3-cache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # DFN3 checkpoint is only ~8 MB and the safetensors + GGUF combined
+      # add < 30 MB — the free-disk sweep the multi-GB parity workflows
+      # perform is not needed here. torch CPU wheel is ~200 MB so we take
+      # the same lean posture without the aggressive image trim.
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache DFN3 zip (per pinned commit)
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.HF_HOME }}
+          # Key on the pinned zip SHA256 so a Rikorose upstream re-upload
+          # (would change bytes) invalidates the cache automatically.
+          key: dfn3-zip-${{ env.DFN3_ZIP_SHA256 }}-v1
+
+      - name: Provision parity venv (torch CPU + numpy — checkpoint prep only)
+        run: |
+          set -euo pipefail
+          python -m venv "${PARITY_VENV}"
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python -m pip install --upgrade pip
+          # torch CPU keeps the runner lean. `dfn3_prepare_checkpoint.py`
+          # uses only `torch.load(..., weights_only=True)` + stdlib
+          # safetensors writer (no safetensors package dep) + hashlib for
+          # the sha256 manifest line.
+          # numpy is not strictly required by the prep script (torch native
+          # tensor.tobytes()), but pinned as belt-and-suspenders per the
+          # parity-utmos precedent (torch 2.8+ optionally imports numpy via
+          # `torch.utils.data`).
+          # deepfilternet + soundfile are Phase B (reference dumper) — NOT
+          # installed here.
+          python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            'torch==2.9.1'
+          python -m pip install 'numpy>=2,<3'
+          python - <<'PY'
+          import torch, numpy
+          print(f"dfn3 parity venv: torch={torch.__version__} numpy={numpy.__version__}")
+          PY
+
+      - name: Fetch DFN3 zip at pinned commit (raw.githubusercontent.com)
+        run: |
+          set -euo pipefail
+          mkdir -p "${HF_HOME}"
+          ZIP="${HF_HOME}/DeepFilterNet3.zip"
+          if [ ! -f "${ZIP}" ]; then
+            echo "cache miss — fetching ${DFN3_ZIP_URL}"
+            curl -sSLf --retry 3 --retry-delay 5 --max-time 120 \
+              "${DFN3_ZIP_URL}" -o "${ZIP}"
+          else
+            echo "cache hit — reusing ${ZIP}"
+          fi
+          echo "downloaded: $(ls -l "${ZIP}")"
+          # sha256 verify — a mismatch here is a HARD FAIL: either the
+          # upstream re-uploaded (would invalidate the pinned bounds) or
+          # the transfer corrupted. Never proceed on a mismatched artifact.
+          GOT="$(sha256sum "${ZIP}" | awk '{print $1}')"
+          if [ "${GOT}" != "${DFN3_ZIP_SHA256}" ]; then
+            echo "::error::DFN3 zip sha256 mismatch"
+            echo "  expected: ${DFN3_ZIP_SHA256}"
+            echo "  got:      ${GOT}"
+            exit 1
+          fi
+          echo "sha256 OK: ${GOT}"
+          {
+            echo "### DFN3 checkpoint"
+            echo ""
+            echo "- Upstream: \`${DFN3_REPO}\` @ \`${DFN3_GIT_SHA}\`"
+            echo "- Zip: \`${DFN3_ZIP_URL}\`"
+            echo "- sha256: \`${DFN3_ZIP_SHA256}\` ✓"
+            echo "- License: \`${DFN3_LICENSE}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Unpack DFN3 zip
+        run: |
+          set -euo pipefail
+          UNPACK="${RUNNER_TEMP}/dfn3-unpack"
+          mkdir -p "${UNPACK}"
+          unzip -o "${HF_HOME}/DeepFilterNet3.zip" -d "${UNPACK}"
+          CKPT="${UNPACK}/DeepFilterNet3/checkpoints/model_120.ckpt.best"
+          if [ ! -f "${CKPT}" ]; then
+            echo "::error::expected checkpoint file not found: ${CKPT}"
+            find "${UNPACK}" -maxdepth 3 -type f | head -20
+            exit 1
+          fi
+          echo "DFN3_CKPT=${CKPT}" >> "$GITHUB_ENV"
+          echo "DFN3_MODEL_DIR=${UNPACK}/DeepFilterNet3" >> "$GITHUB_ENV"
+          echo "checkpoint: $(ls -l "${CKPT}")"
+
+      - name: Flatten checkpoint → safetensors (dfn3_prepare_checkpoint.py)
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          SAFETENSORS="${RUNNER_TEMP}/dfn3.safetensors"
+          python tools/parity/dfn3_prepare_checkpoint.py \
+            --ckpt "${DFN3_CKPT}" \
+            --output "${SAFETENSORS}" \
+            | tee "${RUNNER_TEMP}/prep-log.txt"
+          echo "DFN3_SAFETENSORS=${SAFETENSORS}" >> "$GITHUB_ENV"
+          {
+            echo "### DFN3 safetensors"
+            echo ""
+            echo "- Path: \`${SAFETENSORS}\`"
+            echo "- Size: $(wc -c < "${SAFETENSORS}" | numfmt --to=iec)"
+            echo ""
+            echo '```'
+            tail -c 4096 "${RUNNER_TEMP}/prep-log.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build vokra-cli (release)
+        run: cargo build --release -p vokra-cli
+
+      - name: Convert safetensors → GGUF (vokra-cli convert --model denoise)
+        id: convert
+        run: |
+          set -euo pipefail
+          GGUF="${RUNNER_TEMP}/dfn3.gguf"
+          set +e
+          ./target/release/vokra-cli convert \
+            --model denoise \
+            --input "${DFN3_SAFETENSORS}" \
+            --output "${GGUF}" \
+            2>&1 | tee "${RUNNER_TEMP}/convert-log.txt"
+          CONVERT_EXIT=${PIPESTATUS[0]}
+          set -e
+          if [ "${CONVERT_EXIT}" -ne 0 ]; then
+            {
+              echo "### dfn3: conversion FAILED"
+              echo ""
+              echo '```'
+              tail -c 4096 "${RUNNER_TEMP}/convert-log.txt"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "converted=false" >> "$GITHUB_OUTPUT"
+            exit "${CONVERT_EXIT}"
+          fi
+          # Converter's own self-check runs DenoiseModel::from_gguf on the
+          # emitted bytes, so a successful convert = successful GGUF round-
+          # trip via the runtime loader. See
+          # crates/vokra-convert/src/models/denoise.rs L94-L102.
+          echo "DFN3_GGUF=${GGUF}" >> "$GITHUB_ENV"
+          echo "converted=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "### dfn3: conversion OK"
+            echo ""
+            echo "- GGUF: \`${GGUF}\`"
+            echo "- Size: $(wc -c < "${GGUF}" | numfmt --to=iec)"
+            echo "- Self-check: passed (converter re-loads via \`DenoiseModel::from_gguf\`)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fetch reference bundle (Phase B — VOKRA_DFN3_DATA_URL)
+        id: refbundle
+        if: needs.setup.outputs.run_parity == 'true'
+        env:
+          DATA_URL: ${{ vars.VOKRA_DFN3_DATA_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DATA_URL:-}" ]; then
+            # Defensive: setup should have already gated us off, but re-verify
+            # so a race between the two gates never silently proceeds.
+            echo "::error::run_parity=true but VOKRA_DFN3_DATA_URL is empty — this is a workflow bug (setup + parity gate disagreement)"
+            exit 1
+          fi
+          DATA_DIR="${RUNNER_TEMP}/dfn3-refdata"
+          mkdir -p "${DATA_DIR}"
+          BUNDLE="${RUNNER_TEMP}/dfn3-refdata.tar.gz"
+          curl -sSLf --retry 3 --retry-delay 5 --max-time 300 \
+            "${DATA_URL}" -o "${BUNDLE}"
+          echo "reference bundle: $(ls -l "${BUNDLE}")"
+          # Optional sha256 verification when owner provides one via
+          # VOKRA_DFN3_DATA_SHA256 repo var. Absent that, we still proceed
+          # (the eventual parity test bounds catch any structural drift).
+          if [ -n "${VOKRA_DFN3_DATA_SHA256:-}" ]; then
+            GOT="$(sha256sum "${BUNDLE}" | awk '{print $1}')"
+            if [ "${GOT}" != "${VOKRA_DFN3_DATA_SHA256}" ]; then
+              echo "::error::reference bundle sha256 mismatch"
+              echo "  expected: ${VOKRA_DFN3_DATA_SHA256}"
+              echo "  got:      ${GOT}"
+              exit 1
+            fi
+            echo "sha256 OK: ${GOT}"
+          fi
+          tar -xzf "${BUNDLE}" -C "${DATA_DIR}"
+          # Sanity: the harness reads the top-level flat files plus the
+          # `taps/` subdir. A malformed bundle should fail loudly here,
+          # not inside cargo test.
+          for f in clean_48k.f32 noisy_48k.f32 enhanced_upstream.f32; do
+            if [ ! -f "${DATA_DIR}/${f}" ]; then
+              echo "::error::reference bundle missing required file: ${f}"
+              ls -la "${DATA_DIR}"
+              exit 1
+            fi
+          done
+          if [ ! -d "${DATA_DIR}/taps" ]; then
+            echo "::error::reference bundle missing required directory: taps/"
+            ls -la "${DATA_DIR}"
+            exit 1
+          fi
+          echo "VOKRA_DFN3_DATA=${DATA_DIR}" >> "$GITHUB_ENV"
+          {
+            echo "### dfn3: reference bundle (Phase B) fetched"
+            echo ""
+            echo "- URL: \`${DATA_URL}\`"
+            echo "- Bundle: \`${BUNDLE}\` ($(wc -c < "${BUNDLE}" | numfmt --to=iec))"
+            echo "- Data dir: \`${DATA_DIR}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run parity_denoise_dfn3 harness (VOKRA_DFN3_GGUF + VOKRA_DFN3_DATA set)
+        if: needs.setup.outputs.run_parity == 'true'
+        run: |
+          set -euo pipefail
+          set +e
+          # Both env vars are populated by the previous steps. The harness's
+          # env_paths() will resolve them and run the full per-stage +
+          # SI-SNR bound assertion. `--nocapture` surfaces the measured
+          # max |Δ| table in the log.
+          VOKRA_DFN3_GGUF="${DFN3_GGUF}" VOKRA_DFN3_DATA="${VOKRA_DFN3_DATA}" \
+            cargo test --release -p vokra-ops \
+              --test parity_denoise_dfn3 \
+              dfn3_real_weight_stage_and_output_parity -- --nocapture \
+            2>&1 | tee "${RUNNER_TEMP}/parity-log.txt"
+          PARITY_EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "PARITY_EXIT=${PARITY_EXIT}" >> "$GITHUB_ENV"
+          # Guard against the harness returning early (both env vars need
+          # to resolve). If we see the "skipping:" prefix the harness
+          # prints when env_paths() returns None, that would be a
+          # fabricated pass — flip it to a hard failure so a broken env
+          # wiring cannot silently green.
+          if grep -q '^skipping: set VOKRA_DFN3_GGUF' "${RUNNER_TEMP}/parity-log.txt"; then
+            echo "::error::parity_denoise_dfn3 skipped despite both env vars being set — env plumbing bug"
+            PARITY_EXIT=1
+            echo "PARITY_EXIT=1" >> "$GITHUB_ENV"
+          fi
+          {
+            echo "### dfn3: parity leg"
+            echo ""
+            echo '```'
+            tail -c 8192 "${RUNNER_TEMP}/parity-log.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Emit Phase B skip notice (run_parity=false)
+        if: needs.setup.outputs.run_parity != 'true'
+        run: |
+          set -euo pipefail
+          # Explicit, visible-in-summary notice that the byte-parity leg
+          # was intentionally not run. This is what makes the workflow
+          # green-but-not-a-pass on the parity dimension: the conversion
+          # verification IS a real pass; the parity is honestly skipped.
+          {
+            echo "### dfn3: parity leg — SKIPPED (Phase B not enabled)"
+            echo ""
+            echo "The conversion path (upstream zip → safetensors → GGUF via"
+            echo "\`vokra-cli convert --model denoise\`) succeeded, but the"
+            echo "byte-level per-stage parity vs the upstream reference was"
+            echo "not run in this dispatch because \`vars.VOKRA_DFN3_DATA_URL\`"
+            echo "is unset."
+            echo ""
+            echo "To enable byte-parity on this workflow, see"
+            echo "\`docs/handoff/parity-deepfilternet3-real.md\` §Phase B."
+            echo ""
+            echo "> This is a **clean skip**, not a pass — fabricated pass 禁止 (FR-EX-08)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Zero-dep tripwire — root Cargo.lock unchanged (NFR-DS-02)
+        # Belt-and-suspenders: pip-installing torch inside the parity venv
+        # must not have moved the root Rust lockfile.
+        run: git diff --exit-code Cargo.lock
+
+      - name: Upload parity artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dfn3-parity-artifacts
+          path: |
+            ${{ runner.temp }}/convert-log.txt
+            ${{ runner.temp }}/prep-log.txt
+            ${{ runner.temp }}/parity-log.txt
+            ${{ runner.temp }}/dfn3.safetensors
+            ${{ runner.temp }}/dfn3.gguf
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Propagate parity exit code
+        if: needs.setup.outputs.run_parity == 'true' && env.PARITY_EXIT != '0'
+        run: |
+          echo "::error::parity_denoise_dfn3 exited with ${PARITY_EXIT} — see summary + artifacts"
+          exit "${PARITY_EXIT}"

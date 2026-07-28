@@ -3,6 +3,16 @@
 
 # Rust / Cargo build artifacts (M0-02-T01).
 /target
+# Session-local scratchpad for HF weight caches + publish staging + one-shot
+# helper outputs (per Claude Code scratchpad convention; 2026-07-28 の
+# 10-model publish で GBs 単位のモデルが untracked に残ったので明示化)。
+# コミット禁止。
+/scratchpad/
+# uv-managed Python が cwd を tools/parity/ に切り替えた際にできる二次
+# scratchpad (2026-07-28 X-Codec-2 publish で snapshot_download が
+# tools/parity/scratchpad/hf-cache/ に流れた実例)。同じ「session-local
+# HF cache + staging」ゆえ /scratchpad/ と同格で明示除外。
+/tools/parity/scratchpad/
 # M2-02 iOS cross-compile artifacts (XCFramework staging + libvokra.a per triple).
 # The build/ tree is produced by scripts/build-ios.sh; it is not committed —
 # CI regenerates it, releases upload the .xcframework as a Release asset.
@@ -16,6 +26,9 @@ bindings/unity/*.tgz.sha256
 # CI-injected prebuilt native library payload. Wheels are produced by
 # cibuildwheel in release.yml and uploaded to PyPI + GH Releases.
 __pycache__/
+.venv/
+**/.venv/
+.python-version
 *.pyc
 *.pyo
 *.egg-info/
@@ -97,6 +110,23 @@ integrations/vokra-godot/pkg/
 # Cargo.lock, so it never touches the root zero-dep invariant (NFR-DS-02).
 /staging/
 
+# Sixth batch (2026-07-26): Claude Code superpowers skill design specs.
+# Same class as /docs/adr/ and /docs/tickets/ — internal design/PM artefacts
+# from the brainstorming skill workflow (feature specs, section-by-section
+# design walkthroughs). They live on disk for owner review and drive the
+# subsequent writing-plans skill invocation, but are internal planning docs
+# and follow the Vokra convention of internal-doc gitignore-local.
+/docs/superpowers/
+
+# Seventh batch (2026-07-28): specific handoff docs whose header explicitly
+# marks them "gitignore local 意図、非コミット". `docs/handoff/` is a mixed
+# zone — some handoff docs are tracked (public owner-facing summaries like
+# `model-publish-and-parity-2026-07-28.md`), others are internal PM artefacts
+# (task-by-task implementation ledgers with references to gitignored ADRs /
+# tickets / SDD progress). This section lists the internal ones explicitly so
+# tracked handoff files remain unaffected.
+/docs/handoff/sbv2-v2-phase1.md
+
 # M4-01: wasm build artifacts (produced by scripts/build-wasm.sh; the npm
 # package assembles them at release time — never committed)
 /web/dist/
@@ -114,6 +144,18 @@ integrations/vokra-godot/pkg/
 # native binaries are assembled by CD, never committed (CHANGELOG "Not
 # included"; only .gitkeep + the hand-authored .meta are tracked).
 /bindings/unity/com.vokra.unity/Plugins/WebGL/libvokra.a
+
+# SBV2 v2 real-checkpoint parity fixtures (Task 28 real parity + Task 34
+# fixture management, SBV2 v2 plan `docs/superpowers/specs/2026-07-26-
+# sbv2-v2-design.md` §10). The real checkpoints are large and licensed
+# under their own upstream terms (AGPL-3.0 / cc-by-sa-4.0 / MIT — never
+# Apache-2.0), so only the sha256 placeholders, the manifest template, and
+# the owner recipe (tests/fixtures/sbv2/README.md) are committed; the
+# actual .gguf / .safetensors weights and the Task 30 reference dump are
+# produced locally and never fabricated by CI.
+tests/fixtures/sbv2/*.gguf
+tests/fixtures/sbv2/*.safetensors
+tests/fixtures/sbv2/reference_dump/
 
 # Secrets — never commit (HF token etc.)
 .env

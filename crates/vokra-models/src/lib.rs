@@ -251,6 +251,11 @@ pub mod piper_plus;
 // vocoder-LM — the terminal step is qwen3_tts_codec, NOT HiFTChain;
 // silently sharing either sibling's arch tag would mis-route.
 pub mod qwen3_tts;
+// SBV2 v2 plan (2026-07-26): Style-Bert-VITS2 v2 native TTS. Clean-room
+// Apache-2.0 implementation per `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md`
+// — see `sbv2::mod` doc comment for the full reference list and the explicit
+// NOT REFERENCED (AGPL-3.0) sources.
+pub mod sbv2;
 pub mod silero_vad;
 pub mod speaker;
 pub(crate) mod tls_scratch;

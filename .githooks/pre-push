@@ -6,14 +6,28 @@
 # CONTRIBUTING.md §2). Slower than pre-commit. Bypass with `git push
 # --no-verify` or VOKRA_SKIP_HOOKS=1.
 #
-# ITERATION-SPEED FAST-PATHS (2026-07-23):
+# ITERATION-SPEED FAST-PATHS (2026-07-23; allowlist widened 2026-07-27):
 #
 # * Fast-path (a): if the diff since the tracking upstream (or origin/main
-#   when the branch is brand-new) touches ONLY documentation-shape files
-#   (docs/**, .github/**, *.md, *.yml, *.yaml, dotfiles that never affect
-#   compilation), the clippy + test legs SKIP. The compliance scanner
-#   sigpipe test always runs (5 s) — it is trivially cheap and is not
-#   dependent on the diff.
+#   when the branch is brand-new) touches ONLY files that cannot affect the
+#   Rust build, the clippy + test legs SKIP. Compliance scanner sigpipe
+#   test always runs (5 s) — it is trivially cheap and diff-independent.
+#
+#   Skippable categories (see .githooks/lib-fastpath.sh for the exact
+#   patterns and scripts/test-pre-push-fastpath.sh for the 28 pinned cases):
+#     - Docs / config: docs/**, .github/**, *.md, *.yml, *.yaml, dotfiles,
+#       LICENSE / NOTICE / CHANGELOG / CONTRIBUTING, include/*.h
+#     - Offline sidecar Python tools: tools/parity/*.py,
+#       tools/parity/{pyproject.toml,uv.lock},
+#       tools/parity/vendor/*/{*.py,*.md,LICENSE}
+#       (FR-LD-05: not linked into Rust runtime; the only Rust references
+#       are docstring citations, never `include_*!` / runtime import)
+#     - Fixture hash sidecars: tests/fixtures/*/*.sha256
+#       (consumed by CI workflow gate scripts, never by Rust tests directly)
+#
+#   Any mixture with .rs / Cargo.{toml,lock} / scripts/ / .githooks/ / other
+#   tools/* / non-.sha256 under tests/ tips the whole push into the deep
+#   path — safety default.
 #
 # * Fast-path (c): when the deep path DOES run, `cargo nextest run
 #   --workspace` is used when `cargo-nextest` is on the developer's PATH
@@ -33,6 +47,17 @@ if [ "${VOKRA_SKIP_HOOKS:-0}" = "1" ]; then
     echo "pre-push: skipped (VOKRA_SKIP_HOOKS=1)"
     exit 0
 fi
+
+# ---------------------------------------------------------------------------
+# sccache activation (2026-07-28): `~/.cargo/config.toml` wires
+# `rustc-wrapper = "/opt/homebrew/bin/sccache"`, but cargo's default dev
+# profile enables incremental compilation, which sccache CANNOT cache
+# (Rust limitation — every rustc call reports "UnhandledCompile", cache hit
+# rate 0). Exporting `CARGO_INCREMENTAL=0` for the hook forces the classic
+# codegen path so sccache actually populates + hits the cache across
+# branches / clean rebuilds. Local `cargo build` outside the hook keeps its
+# default incremental behavior — we only override for pre-push.
+export CARGO_INCREMENTAL=0
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
@@ -74,24 +99,84 @@ fi
 # Deep path.
 # ---------------------------------------------------------------------------
 
-echo "pre-push [2/3]: cargo clippy --all-targets -- -D warnings  ($fastpath_reason)"
-cargo clippy --all-targets -- -D warnings
+# Fast-path (d) — 2026-07-28: package-scoped clippy + test when the diff
+# only touches specific `crates/<name>/` trees and no root-level build
+# config. `changed_workspace_crates` returns the touched crates; we then
+# `cargo tree --invert` each to include reverse deps, so a breaking change
+# in a shared crate still tests every downstream consumer. `cargo check
+# --workspace` still runs as a global compile safety net (~20-40 s, catches
+# breakage in crates outside the scoped list).
+#
+# Silent fall-through: any failure of the classifier / cargo-tree walk
+# reverts to `--workspace` — safety default, never silent under-testing.
+scoped_args=""
+scoped_reason=""
+scoped_crates=""
+if scoped_crates=$(changed_workspace_crates 2>/dev/null); then
+    # shellcheck disable=SC2206  # word-splitting is intentional (newline list → array).
+    scoped_arr=($scoped_crates)
+    if expanded=$(expand_reverse_deps "${scoped_arr[@]}" 2>/dev/null); then
+        # shellcheck disable=SC2206
+        expanded_arr=($expanded)
+        for c in "${expanded_arr[@]}"; do
+            scoped_args="$scoped_args -p $c"
+        done
+        scoped_reason="package-scoped to $(echo "$expanded" | wc -l | tr -d ' ') workspace crates (touched: $(echo "$scoped_crates" | tr '\n' ',' | sed 's/,$//'))"
+    fi
+fi
 
-# Fast-path (c): prefer cargo-nextest for the workspace test leg when
-# available. Fall back to `cargo test --workspace` with a hint so a missing
-# tool never blocks the push.
-if command -v cargo-nextest >/dev/null 2>&1; then
-    echo "pre-push [3/3]: cargo nextest run --workspace"
-    cargo nextest run --workspace
-    # `cargo nextest` does not run doc-tests; run them via `cargo test --doc`
-    # so behaviour matches `cargo test --workspace`.
-    echo "pre-push [3/3]: cargo test --workspace --doc  (doc-tests not covered by nextest)"
-    cargo test --workspace --doc
+# Fast-path (e) — 2026-07-28: CI-covered heavy tests are skipped locally via
+# the nextest `pre-push` profile (`.config/nextest.toml`). Excluded:
+#   * vokra-backend-{metal,cuda,vulkan,webgpu,coreml,qnn}
+#     – 実 GPU dispatch = M1 Metal で個別 40-60s × N 本 (~50 min の主犯)。
+#       CI: macos-latest / Linux+CUDA runner + parity workflows で担保。
+#   * vokra-wasm-harness — wasm32 build + browser exec は CI で担保。
+#   * vokra-parity — 実 GGUF/checkpoint 依存 integration = parity-*-real.yml。
+#
+# Skip 対象は `default-filter` で expression 化ゆえ silent 縮小ではない (hook
+# 出力に「pre-push profile」明記、CI-covered の説明は .config/nextest.toml
+# 冒頭)。VOKRA_HOOK_DEEP=1 で `--profile default` に fallback。
+#
+# Doc-tests も pre-push から除外 (CI 側で `cargo test --workspace --doc`)。
+# 個別 doc-test は各 crate compile を trigger する重量 leg = CI territory。
+
+nextest_profile="pre-push"
+nextest_skip_reason="CI-covered GPU backends / wasm harness / heavy parity integration are skipped (see .config/nextest.toml)"
+if [ "${VOKRA_HOOK_DEEP:-0}" = "1" ]; then
+    nextest_profile="default"
+    nextest_skip_reason="VOKRA_HOOK_DEEP=1 → full workspace profile"
+fi
+
+if [ -n "$scoped_args" ]; then
+    echo "pre-push [2/4]: cargo check --workspace  (global compile safety net for $scoped_reason)"
+    cargo check --workspace --all-targets
+    echo "pre-push [3/4]: cargo clippy $scoped_args --all-targets -- -D warnings  ($scoped_reason)"
+    # shellcheck disable=SC2086
+    cargo clippy $scoped_args --all-targets -- -D warnings
+    if command -v cargo-nextest >/dev/null 2>&1; then
+        echo "pre-push [4/4]: cargo nextest run --profile $nextest_profile $scoped_args  ($scoped_reason; $nextest_skip_reason)"
+        # shellcheck disable=SC2086
+        cargo nextest run --profile "$nextest_profile" $scoped_args
+    else
+        echo "pre-push [4/4]: cargo test $scoped_args  ($scoped_reason; nextest missing → cannot apply skip-profile filter)"
+        echo "  hint: install cargo-nextest to skip CI-covered heavy tests (~50 min saved on M1):"
+        echo "        cargo install cargo-nextest --locked"
+        # shellcheck disable=SC2086
+        cargo test $scoped_args
+    fi
 else
-    echo "pre-push [3/3]: cargo test --workspace"
-    echo "  hint: install cargo-nextest to parallelise this leg (~60% faster):"
-    echo "        cargo install cargo-nextest --locked"
-    cargo test --workspace
+    echo "pre-push [2/3]: cargo clippy --all-targets -- -D warnings  ($fastpath_reason)"
+    cargo clippy --all-targets -- -D warnings
+
+    if command -v cargo-nextest >/dev/null 2>&1; then
+        echo "pre-push [3/3]: cargo nextest run --profile $nextest_profile --workspace  ($nextest_skip_reason)"
+        cargo nextest run --profile "$nextest_profile" --workspace
+    else
+        echo "pre-push [3/3]: cargo test --workspace  (nextest missing → cannot apply skip-profile filter)"
+        echo "  hint: install cargo-nextest to skip CI-covered heavy tests:"
+        echo "        cargo install cargo-nextest --locked"
+        cargo test --workspace
+    fi
 fi
 
 # NOTE: this hook does NOT compile the metal/cuda/vulkan-gated targets. Feature

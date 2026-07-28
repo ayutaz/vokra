@@ -13,9 +13,9 @@ use std::process::ExitCode;
 use vokra_convert::{
     ModelKind, PolicyPreset, VoxtralConfig, convert_chatterbox_file, convert_chatterbox_nano_file,
     convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
-    convert_dac_file, convert_file, convert_file_quantized, convert_file_with_policy,
-    convert_irodori_file, convert_kokoro_file, convert_piper_plus_file, convert_qwen3_tts_file,
-    convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
+    convert_dac_file, convert_file, convert_file_licensed, convert_file_quantized,
+    convert_file_with_policy, convert_irodori_file, convert_kokoro_file, convert_piper_plus_file,
+    convert_qwen3_tts_file, convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
     convert_voxtral_file_quantized, convert_voxtral_file_with_adapter_config_quantized,
     parse_voxtral_hf_config,
 };
@@ -41,6 +41,21 @@ USAGE:
     vokra-cli convert --model voxtral --input <ckpt.safetensors | model.safetensors.index.json> \
                       [--config <config.json>] [--adapter-config <adapter.json>] \
                       [--tokenizer <tekken-vocab.bin>] --output <out.gguf>
+    vokra-cli convert --model sbv2 --input <voice.safetensors> --output <out.gguf>
+    vokra-cli convert --model deberta-v2 --input <bert_ja.safetensors> --output <out.gguf>
+    vokra-cli convert --model deberta-v3 --input <bert_en.safetensors> --output <out.gguf>
+    vokra-cli convert --model kimi-audio --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model step-audio2-mini --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model baichuan-audio --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model speechtokenizer --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model funcodec --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model xy-tokenizer --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model bicodec --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model neucodec --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model ecapa-tdnn --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model wespeaker --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model speaker-3d --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model emotion2vec --input <model.safetensors> --output <out.gguf>
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
@@ -49,7 +64,12 @@ OPTIONS:
                               parakeet-tdt | parakeet-ctc | canary | omniasr-ctc |
                               distil-whisper | kotoba-whisper |
                               chatterbox | chatterbox-turbo | chatterbox-nano |
-                              qwen3-tts | voxcpm | vibevoice | irodori | vits-ja
+                              qwen3-tts | voxcpm | vibevoice | irodori | vits-ja |
+                              sbv2 | deberta-v2 | deberta-v3 | xcodec2 |
+                              kimi-audio | step-audio2-mini | baichuan-audio |
+                              speechtokenizer | funcodec | xy-tokenizer |
+                              bicodec | neucodec | ecapa-tdnn | wespeaker |
+                              speaker-3d | emotion2vec
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
@@ -249,6 +269,40 @@ OPTIONS:
                               independently implementable; override
                               with --license <spdx> at conversion time
                               if trained on a permissive corpus)
+                              (sbv2: Style-Bert-VITS2 v2 — a litagin02/
+                              style_bert_vits2-family multilingual (JA+EN)
+                              base safetensors checkpoint; this delegate
+                              performs the byte-exact F32/F16/BF16 tensor
+                              pass-through only, under upstream safetensors
+                              names — it does NOT accept a --config side-car
+                              here, so the vokra.sbv2.* hparam chunk
+                              SbV2Model::from_gguf needs is omitted (use the
+                              standalone `vokra-convert` binary's own --model
+                              sbv2 --config <config.json> for a
+                              hparam-complete GGUF); weight license defaults
+                              to agpl-3.0 (LicenseClass::Copyleft —
+                              redistribution permitted, original license
+                              text must be preserved); tensor-name mapping
+                              to the sbv2.* hierarchy from_gguf reads is a
+                              follow-up (Task 30) — today's output is a
+                              provenance-correct, byte-faithful staging
+                              artifact, not yet loadable by from_gguf)
+                              (deberta-v2 / deberta-v3: ku-nlp DeBERTa v2 /
+                              v3 Japanese-character BERT checkpoints — the
+                              JA / EN text encoders SBV2's SbV2Model wires
+                              in as --bert-ja / --bert-en (`vokra-cli run`);
+                              a HF transformers deberta_v2 / deberta_v3
+                              safetensors checkpoint. F32/F16/BF16 tensors
+                              pass through verbatim under upstream HF names
+                              with a best-effort vokra.bert.deberta_v{2,3}.*
+                              hparam chunk (shape-derived where possible, no
+                              --config needed); weight license defaults to
+                              cc-by-sa-4.0 for deberta-v2 and mit for
+                              deberta-v3 (each model's own upstream HF
+                              model-card license, not necessarily the same
+                              as the deberta_v2/deberta_v3 *code* in HF
+                              transformers, which is Apache-2.0); same Task
+                              30 tensor-name-mapping caveat as sbv2 above)
     --input <path>            upstream checkpoint file. For voxtral, a
                               `*.index.json` path reads every shard listed in
                               its weight_map (the raw sharded BF16 release)
@@ -288,6 +342,15 @@ OPTIONS:
                               super-blocks stay full precision.
     --policy-preset <preset>  M2-08 quantization policy preset (whisper only):
                               vocoder_safe (default) | whisper_q4_k | fp16
+    --license <spdx>          Override the converter's built-in weight-license
+                              stamp with the caller-supplied SPDX id (e.g.
+                              `cc-by-nc-4.0` or `apache-2.0`). Honored on the
+                              generic fallthrough dispatch only (whisper /
+                              piper-plus / voxtral / kokoro / dac / chatterbox
+                              family paths ignore this flag today). Mutually
+                              exclusive with --quantize / --policy-preset —
+                              use `vokra-convert restamp` to change the
+                              license on a quantized GGUF after the fact.
     -h, --help                print this help
 ";
 
@@ -310,6 +373,15 @@ struct Parsed {
     output: PathBuf,
     quant: Option<GgmlType>,
     policy: Option<PolicyPreset>,
+    /// SoTA plan Phase 5 codec (2026-07-28) — mirror of `vokra-convert`'s
+    /// `--license` flag. Overrides the converter's built-in weight-license
+    /// stamp with the caller-supplied SPDX id (e.g. a caller who obtained
+    /// the weight under a distinct license from the module default). Only
+    /// honored on the generic fallthrough dispatch — the whisper /
+    /// piper-plus / voxtral / kokoro / dac / chatterbox family paths take
+    /// their own tailored routes and ignore this flag (loudly, if it is
+    /// passed alongside them).
+    license: Option<String>,
 }
 
 /// Parses the `--quantize` argument into a K-quant target dtype.
@@ -331,6 +403,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut output: Option<PathBuf> = None;
     let mut quant: Option<GgmlType> = None;
     let mut policy: Option<PolicyPreset> = None;
+    let mut license: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -346,7 +419,12 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
                          distil-whisper | kotoba-whisper | \
                          chatterbox | chatterbox-turbo | chatterbox-nano | \
-                         qwen3-tts | voxcpm | vibevoice | irodori | vits-ja)"
+                         qwen3-tts | voxcpm | vibevoice | irodori | vits-ja | \
+                         sbv2 | deberta-v2 | deberta-v3 | xcodec2 | \
+                         kimi-audio | step-audio2-mini | baichuan-audio | \
+                         speechtokenizer | funcodec | xy-tokenizer | \
+                         bicodec | neucodec | ecapa-tdnn | wespeaker | \
+                         speaker-3d | emotion2vec)"
                     )
                 })?);
                 i += 2;
@@ -396,6 +474,11 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 })?);
                 i += 2;
             }
+            "--license" => {
+                let v = args.get(i + 1).ok_or("--license requires an SPDX id")?;
+                license = Some(v.clone());
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -413,6 +496,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         output: output.ok_or("--output is required")?,
         quant,
         policy,
+        license,
     })
 }
 
@@ -754,16 +838,41 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             // Ticket precedence: an explicit --policy-preset wins; else the
             // legacy --quantize q4_k alias maps to the whisper_q4_k preset;
             // else fall through to convert_file_quantized (Q5/Q6 legacy
-            // shapes) or the plain byte-exact path.
+            // shapes), convert_file_licensed (when --license is set — the
+            // SoTA-Phase-5 xcodec2 + generic license-override path) or the
+            // plain byte-exact path.
+            //
+            // --license is mutually exclusive with --quantize / --policy-preset
+            // for now: the tailored quant paths do not thread the license
+            // override, and silently ignoring a user flag is a bug (FR-EX-08).
             if let Some(preset) = p.policy {
+                if p.license.is_some() {
+                    return Err(
+                        "--license and --policy-preset are mutually exclusive (the policy \
+                         preset takes its own tailored path that does not thread the license \
+                         override; drop --license or use `vokra-convert restamp` after the \
+                         quantized convert)"
+                            .to_owned(),
+                    );
+                }
                 convert_file_with_policy(model, &p.input, &p.output, preset)
             } else if let Some(q) = p.quant {
+                if p.license.is_some() {
+                    return Err(
+                        "--license and --quantize are mutually exclusive on this dispatch \
+                         path (the quant path does not thread the license override; drop \
+                         --license or use `vokra-convert restamp` after the quantized convert)"
+                            .to_owned(),
+                    );
+                }
                 if q == GgmlType::Q4K {
                     // Backward-compat alias per T06 spec.
                     convert_file_with_policy(model, &p.input, &p.output, PolicyPreset::WhisperQ4K)
                 } else {
                     convert_file_quantized(model, &p.input, &p.output, q)
                 }
+            } else if p.license.is_some() {
+                convert_file_licensed(model, &p.input, &p.output, p.license.as_deref())
             } else {
                 convert_file(model, &p.input, &p.output)
             }
@@ -1063,6 +1172,26 @@ mod tests {
             ("vibevoice", ModelKind::VibeVoice),
             ("irodori", ModelKind::Irodori),
             ("vits-ja", ModelKind::VitsJa),
+            ("sbv2", ModelKind::SbV2),
+            ("deberta-v2", ModelKind::DebertaV2),
+            ("deberta-v3", ModelKind::DebertaV3),
+            ("xcodec2", ModelKind::XCodec2),
+            // SoTA plan Phase 5 fleet (2026-07-28): 12 BF16 pass-through
+            // skeleton wire-ups. Each entry pins the canonical hyphenated
+            // CLI spelling ↔ `ModelKind` variant + confirms the USAGE
+            // header lists the name literally (assertion below).
+            ("kimi-audio", ModelKind::KimiAudio),
+            ("step-audio2-mini", ModelKind::StepAudio2Mini),
+            ("baichuan-audio", ModelKind::BaichuanAudio),
+            ("speechtokenizer", ModelKind::Speechtokenizer),
+            ("funcodec", ModelKind::Funcodec),
+            ("xy-tokenizer", ModelKind::XyTokenizer),
+            ("bicodec", ModelKind::Bicodec),
+            ("neucodec", ModelKind::Neucodec),
+            ("ecapa-tdnn", ModelKind::EcapaTdnn),
+            ("wespeaker", ModelKind::Wespeaker),
+            ("speaker-3d", ModelKind::Speaker3d),
+            ("emotion2vec", ModelKind::Emotion2vec),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

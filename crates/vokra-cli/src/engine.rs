@@ -72,6 +72,22 @@ pub(crate) enum ModelTask {
     /// facade has no speaker engine slot — deliberate: the embedding is a
     /// conditioning input, not a session task).
     Speaker,
+    /// Text-to-speech through SBV2 (Style-Bert-VITS2 v2 = Task 38).
+    ///
+    /// Like [`ModelTask::TtsKokoro`] / [`ModelTask::AsrVoxtral`] /
+    /// [`ModelTask::Speaker`], the dispatch returns a **bare session** and
+    /// the `run` arm binds the concrete
+    /// [`vokra_models::sbv2::SbV2Model`] itself:
+    /// `SbV2Model::from_gguf` needs THREE GGUFs (this model's own weights,
+    /// plus the `--bert-ja` / `--bert-en` DeBERTa v2 / v3 side-cars), and
+    /// the generic dispatch signature this function shares with every
+    /// other arch only carries the one `--model` path (plus the Moshi-only
+    /// optional `--mimi`, which is a poor fit here since SBV2's two
+    /// side-cars are both *required*, not optional). Binding all three in
+    /// the `run` arm — reusing `session.gguf()` for the main file, opening
+    /// `--bert-ja` / `--bert-en` fresh — keeps this shared function's
+    /// signature untouched.
+    Sbv2,
     /// Whisper log-mel front-end only (M2-04-T11). Runs
     /// [`vokra_models::whisper::mel::log_mel`] against the input WAV without
     /// touching the encoder / decoder, so bench-side RTF isolates the fused
@@ -156,6 +172,9 @@ const ARCH_VOXTRAL: &str = "voxtral";
 /// Kokoro-82M (M2-07) — matches `vokra_models::kokoro`'s `EXPECTED_ARCH` and
 /// what `vokra-convert --model kokoro` writes.
 const ARCH_KOKORO: &str = "kokoro-82m-istftnet";
+/// SBV2 / Style-Bert-VITS2 v2 (Task 38) — matches
+/// `vokra-convert::models::sbv2::ARCH` (`crates/vokra-convert/src/models/sbv2.rs`).
+const ARCH_SBV2: &str = "sbv2";
 
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
@@ -298,6 +317,22 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // and an unavailable backend errors at embed time.
             Ok((session, ModelTask::Speaker))
         }
+        ARCH_SBV2 => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_SBV2}`"
+                ));
+            }
+            // Bare session — the `run` arm binds `SbV2Model` from
+            // `session.gguf()` plus the `--bert-ja` / `--bert-en` side-car
+            // GGUFs (see `ModelTask::Sbv2` for why the engine is not
+            // injected here). A GGUF whose tensors/hparams do not bind
+            // fails loudly there (FR-EX-08) — today that includes every
+            // real conversion, since `convert_sbv2_file`'s tensor-name
+            // mapping (Task 30) has not landed yet (see that function's
+            // module doc).
+            Ok((session, ModelTask::Sbv2))
+        }
         ARCH_MOSHI => {
             if hint.is_some() {
                 return Err(format!(
@@ -389,7 +424,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
             "unsupported model arch `{other}` (expected `{ARCH_WHISPER}` / \
              `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
              `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
-             `{ARCH_KOKORO}`)"
+             `{ARCH_KOKORO}` / `{ARCH_SBV2}`)"
         )),
     }
 }
@@ -534,6 +569,72 @@ mod tests {
         let err = result.expect_err("hint on voxtral is rejected");
         assert!(
             err.contains("not supported on arch `voxtral`"),
+            "got: {err}"
+        );
+    }
+
+    /// An `sbv2` arch GGUF dispatches to [`ModelTask::Sbv2`] with a bare
+    /// session — the concrete engine binds in the `run` arm (Task 38,
+    /// mirroring the campplus / voxtral precedent), so a metadata-only
+    /// fixture is enough here.
+    #[test]
+    fn load_session_detects_sbv2_as_sbv2_task() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "sbv2");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!("vokra-cli-sbv2-arch-{}.gguf", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("sbv2 session builds (bare)");
+        assert_eq!(task, ModelTask::Sbv2);
+    }
+
+    /// Task hints are rejected on the sbv2 arch (FR-EX-08 — no silent hint
+    /// drop).
+    #[test]
+    fn load_session_rejects_hint_on_sbv2() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "sbv2");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!("vokra-cli-sbv2-hint-{}.gguf", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session_with_backend(
+            path.to_str().unwrap(),
+            BackendKind::Cpu,
+            Some(TaskHint::MelFrontend),
+        );
+        let _ = std::fs::remove_file(&path);
+        let err = result.expect_err("hint on sbv2 is rejected");
+        assert!(err.contains("not supported on arch `sbv2`"), "got: {err}");
+    }
+
+    /// `--mimi` is a Moshi-only flag: sbv2's own multi-GGUF side-cars are
+    /// `--bert-ja` / `--bert-en`, handled entirely in `run.rs`, not through
+    /// this function's `mimi` parameter.
+    #[test]
+    fn load_session_rejects_mimi_sidecar_on_sbv2_arch() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "sbv2");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-sbv2-mimi-reject-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session_with_backend_and_mimi(
+            path.to_str().unwrap(),
+            BackendKind::Cpu,
+            None,
+            Some("/no/such/mimi.gguf"),
+        );
+        let _ = std::fs::remove_file(&path);
+        let err = result.expect_err("--mimi on sbv2 is rejected");
+        assert!(
+            err.contains("--mimi is only supported on arch `moshi`"),
             "got: {err}"
         );
     }

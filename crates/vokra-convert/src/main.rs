@@ -14,13 +14,13 @@
 //! mmap-loadable and that its `vokra.*` chunks read back (the M0-03-T13 /
 //! M0-03-T16 local-run checks).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use vokra_convert::{
-    ModelKind, convert_cosyvoice2_file, convert_cosyvoice3_file, convert_csm_file,
-    convert_dac_file, convert_file_licensed, convert_file_quantized, convert_moshi_file,
-    convert_piper_plus_file, convert_utmos_file,
+    ConvertError, ConvertSummary, ModelKind, convert_cosyvoice2_file, convert_cosyvoice3_file,
+    convert_csm_file, convert_dac_file, convert_file_licensed, convert_file_quantized,
+    convert_moshi_file, convert_piper_plus_file, convert_sbv2_file, convert_utmos_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType};
 
@@ -256,6 +256,21 @@ fn main() -> ExitCode {
             // the LLM bind (loud note per FR-EX-08).
             convert_cosyvoice3_file(&input, config.as_deref(), &output)
         }
+        ModelKind::SbV2 => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            // --config carries the JSON side-car with every vokra.sbv2.*
+            // hparam (Task 25 review fast-follow, 2026-07-26): the generic
+            // `_ =>` arm below funnels through `convert_file_licensed`,
+            // whose own `SbV2` branch hard-codes `config_side_car = None`
+            // (its signature has no `--config` parameter to forward) --
+            // silently dropping this flag. Call `convert_sbv2_file`
+            // directly instead, mirroring the `Csm` / `Moshi` /
+            // `CosyVoice2` / `CosyVoice3` arms above.
+            convert_sbv2(&input, config.as_deref(), &output, license.as_deref())
+        }
         _ => match quant {
             Some(q) => convert_file_quantized(model, &input, &output, q),
             None => convert_file_licensed(model, &input, &output, license.as_deref()),
@@ -284,6 +299,51 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Converts an SBV2 v2 checkpoint via [`convert_sbv2_file`], forwarding
+/// `--config` through directly, and re-derives a [`ConvertSummary`] from its
+/// [`vokra_convert::SbV2ConvertReport`] return value.
+///
+/// The generic `_ =>` dispatch arm in [`main`] routes every other model kind
+/// through [`convert_file_licensed`], whose own `ModelKind::SbV2` branch
+/// hard-codes `config_side_car = None` (that function's signature has no
+/// `--config` parameter to forward) — so a bare `--model sbv2 --config
+/// <side-car>` invocation would silently drop the flag and always emit a
+/// hparam-empty GGUF. This helper is called from a dedicated `ModelKind::
+/// SbV2` arm instead (mirroring the `Csm` / `Moshi` / `CosyVoice2` /
+/// `CosyVoice3` arms, which each call their own model-specific converter
+/// directly). The summary-building logic below duplicates
+/// `convert_file_licensed`'s own `SbV2` branch on purpose: that branch
+/// returns `ConvertReport`, not `ConvertSummary` like every sibling
+/// wrapper, so it cannot be called from here without widening
+/// `convert_file_licensed`'s own signature (out of scope for this fix).
+fn convert_sbv2(
+    input: &Path,
+    config: Option<&Path>,
+    output: &Path,
+    license: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
+    let report = convert_sbv2_file(input, output, config, license)?;
+    let mut notes = vec![format!(
+        "sbv2: {} float weights written verbatim ({} read, {} non-float skipped), \
+         vokra.sbv2.* hparam chunk written: {}",
+        report.written, report.read, report.skipped_non_float, report.hparams_written,
+    )];
+    if !report.hparams_written {
+        notes.push(
+            "no --config side-car: vokra.sbv2.* metadata was not written -- pass \
+             --config <side-car.json> for a hparam-complete GGUF"
+                .to_owned(),
+        );
+    }
+    Ok(ConvertSummary {
+        model: ModelKind::SbV2,
+        tensor_count: report.written,
+        metadata_count: 0, // Populated by convert_sbv2_file's builder.
+        output_bytes: std::fs::metadata(output)?.len(),
+        notes,
+    })
 }
 
 struct Parsed {
@@ -1628,6 +1688,187 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  decoder.initial_channel={dec_init} decoder.kernel_size={dec_kernel}"
             );
         }
+        ModelKind::DebertaV2 => {
+            // SBV2 v2 plan Task 11 (2026-07-26): DeBERTa v2 BERT encoder
+            // verify surface — arch / name / category plus the encoder
+            // axes (n_layers / vocab_size / d_model) from the
+            // `vokra.bert.deberta_v2.*` chunk group.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let n_layers = file
+                .get("vokra.bert.deberta_v2.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let d_model = file
+                .get("vokra.bert.deberta_v2.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let vocab_size = file
+                .get("vokra.bert.deberta_v2.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} category={category} n_layer={n_layers} d_model={d_model} vocab_size={vocab_size}"
+            );
+        }
+        ModelKind::DebertaV3 => {
+            // SBV2 v2 plan Task 11 (2026-07-26): DeBERTa v3 BERT encoder
+            // verify surface — arch / name / category plus the encoder
+            // axes (n_layers / vocab_size / d_model) from the
+            // `vokra.bert.deberta_v3.*` chunk group.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let n_layers = file
+                .get("vokra.bert.deberta_v3.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let d_model = file
+                .get("vokra.bert.deberta_v3.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let vocab_size = file
+                .get("vokra.bert.deberta_v3.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} category={category} n_layer={n_layers} d_model={d_model} vocab_size={vocab_size}"
+            );
+        }
+        ModelKind::SbV2 => {
+            // SBV2 v2 plan Task 25 (2026-07-26): SBV2 verify surface -- arch
+            // / name plus a few vokra.sbv2.* dims when a config side-car
+            // produced them. `convert_sbv2_file` omits the whole
+            // `vokra.sbv2.*` chunk (rather than stamping placeholders) when
+            // no config was supplied, so these read back as 0 in that case
+            // -- an honest "not written" signal, not a real dimension.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let d_model = file
+                .get("vokra.sbv2.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_vocab = file
+                .get("vokra.sbv2.n_vocab")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sample_rate = file
+                .get("vokra.sbv2.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} d_model={d_model} n_vocab={n_vocab} sample_rate={sample_rate}"
+            );
+        }
+        ModelKind::XCodec2 => {
+            // SoTA plan Phase 5 codec (2026-07-28): X-Codec 2 verify surface —
+            // arch/name/category + upstream_hf + the licence class + SPDX id.
+            // The M4-16 op-only landing means there is no per-model
+            // `vokra.xcodec2.*` hparam chunk yet — the interesting readback
+            // here is the license triple (the whole point of this converter
+            // + the license_class flip).
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream = file
+                .get("vokra.provenance.upstream_hf")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let class = file
+                .get("vokra.provenance.weight_license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} category={category} upstream_hf={upstream} \
+                 license={license} weight_license={class}"
+            );
+        }
+        // SoTA plan Phase 5 fleet (2026-07-28): 12 BF16 pass-through
+        // skeleton verify surfaces. Every module writes the same
+        // `vokra.model.{arch,name,category}` + `vokra.provenance.{upstream_hf,
+        // license,weight_license}` chunks — no per-model hparam chunk yet
+        // (the skeletons are pass-through only). Group them into a single
+        // arm to keep the verify surface a shape-lookup, not a per-model
+        // switch we would have to keep in step with 12 real converters.
+        ModelKind::KimiAudio
+        | ModelKind::StepAudio2Mini
+        | ModelKind::BaichuanAudio
+        | ModelKind::Speechtokenizer
+        | ModelKind::Funcodec
+        | ModelKind::XyTokenizer
+        | ModelKind::Bicodec
+        | ModelKind::Neucodec
+        | ModelKind::EcapaTdnn
+        | ModelKind::Wespeaker
+        | ModelKind::Speaker3d
+        | ModelKind::Emotion2vec => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream = file
+                .get("vokra.provenance.upstream_hf")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let class = file
+                .get("vokra.provenance.weight_license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} category={category} upstream_hf={upstream} \
+                 license={license} weight_license={class}"
+            );
+        }
     }
     Ok(())
 }
@@ -1908,5 +2149,86 @@ mod tests {
             ]))),
             "--output is required"
         );
+    }
+
+    /// Regression test for Task 25's review finding: the CLI dispatch match
+    /// must forward `--config` to `convert_sbv2_file` for `--model sbv2`
+    /// instead of silently dropping it through the generic wildcard arm
+    /// (which always calls with `config_side_car = None`). Exercises the
+    /// `convert_sbv2` helper directly -- the same one the `ModelKind::SbV2`
+    /// dispatch arm calls -- with a real config side-car, and confirms the
+    /// emitted GGUF actually carries the `vokra.sbv2.*` hparam chunk the
+    /// side-car describes. Before the fix, `--model sbv2 --config <x>`
+    /// always produced a hparam-empty GGUF because the dispatch match had
+    /// no dedicated `SbV2` arm.
+    #[test]
+    fn convert_sbv2_forwards_config_and_writes_hparams() {
+        use vokra_core::gguf::GgufFile;
+
+        let pid = std::process::id();
+        let input =
+            std::env::temp_dir().join(format!("vokra-convert-main-sbv2-in-{pid}.safetensors"));
+        let config =
+            std::env::temp_dir().join(format!("vokra-convert-main-sbv2-config-{pid}.json"));
+        let output = std::env::temp_dir().join(format!("vokra-convert-main-sbv2-out-{pid}.gguf"));
+
+        // One minimal F32 tensor -- enough to exercise the pass-through
+        // path; the point of this test is the hparam chunk, not tensor
+        // coverage (mirrors `tests/roundtrip.rs`'s `synthetic_safetensors`).
+        let payload: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let header = r#"{"enc_p.emb.weight":{"dtype":"F32","shape":[2,2],"data_offsets":[0,16]}}"#;
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        blob.extend_from_slice(header.as_bytes());
+        blob.extend_from_slice(&payload);
+        std::fs::write(&input, &blob).expect("write synthetic safetensors input");
+
+        // Minimal but internally-consistent config JSON covering every
+        // field `SbV2Config::parse` requires (`crates/vokra-convert/src/
+        // models/sbv2.rs`) -- two upsample stages / one resblock branch
+        // with two dilations, so the array-length cross-checks pass.
+        let config_json = br#"{
+            "d_model": 192, "d_bert": 1024, "d_speaker": 512, "n_speakers": 3,
+            "d_style": 256, "d_z": 192, "n_vocab": 178, "n_tones": 3, "d_ff": 768,
+            "n_text_layers": 6, "n_flow_layers": 4, "n_sdp_layers": 4,
+            "sample_rate": 44100,
+            "decoder_initial_channel": 512,
+            "decoder_conv_pre_kernel": 7, "decoder_conv_post_kernel": 7,
+            "decoder_upsample_rates": [8, 8],
+            "decoder_upsample_kernel_sizes": [16, 16],
+            "decoder_upsample_out_channels": [256, 128],
+            "decoder_resblock_kernel_sizes": [3],
+            "decoder_resblock_dilation_counts": [2],
+            "decoder_resblock_dilations_flat": [1, 3],
+            "decoder_leaky_relu_slope": 0.2
+        }"#;
+        std::fs::write(&config, config_json).expect("write config side-car");
+
+        let summary = convert_sbv2(&input, Some(config.as_path()), &output, None)
+            .expect("convert_sbv2 must succeed with a valid config side-car");
+        assert_eq!(summary.tensor_count, 1);
+        assert!(
+            summary
+                .notes
+                .iter()
+                .all(|n| !n.contains("no --config side-car")),
+            "a supplied --config must not produce the missing-hparams warning: {:?}",
+            summary.notes
+        );
+
+        let file = GgufFile::open(&output).expect("reopen the emitted GGUF");
+        assert_eq!(
+            file.get("vokra.sbv2.d_model").and_then(|v| v.as_u64()),
+            Some(192),
+            "vokra.sbv2.d_model must round-trip the --config value once the \
+             CLI forwards --config through to convert_sbv2_file"
+        );
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&config).ok();
+        std::fs::remove_file(&output).ok();
     }
 }

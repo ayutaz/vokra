@@ -29,6 +29,8 @@ USAGE:
     vokra-cli run --model <voxtral.gguf> --input <in.wav> [--language <code>] [--bare-prompt]
     vokra-cli run --model <campplus.gguf> --input <a.wav> [--compare <b.wav>]
     vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32> [--output <out.wav>]
+    vokra-cli run --model <sbv2.gguf> --bert-ja <bert_ja.gguf> --bert-en <bert_en.gguf> \
+                  --text <string> [--language ja|en] [--output <out.wav>]
 
 OPTIONS:
     --model <path>              GGUF model file (arch selects VAD / ASR / TTS / S2S /
@@ -89,11 +91,18 @@ OPTIONS:
                                 `vokra.whisper.alignment_heads`; a model
                                 without them is an explicit error, never a
                                 silent empty list.
-    --language <code>           voxtral only: transcription language for the
+    --language <code>           voxtral: transcription language for the
                                 trained prompt's `lang:<code>` segment
                                 (lowercase ISO 639, default `en`). Pass
                                 `auto` to omit the segment and let the model
                                 infer the language.
+                                sbv2: which phonemizer + BERT encoder path
+                                (JA DeBERTa v2 / EN DeBERTa v3) synthesizes
+                                `--text` — `ja` (default when omitted) or
+                                `en`; any other value is a loud error rather
+                                than the silent any-non-`en`-is-JA default
+                                the underlying TtsEngine adapter otherwise
+                                applies (FR-EX-08).
     --bare-prompt               voxtral only: decode from the bare
                                 soft-prefix + BOS layout instead of the
                                 trained transcription prompt. Honest LM
@@ -121,6 +130,15 @@ OPTIONS:
                                 binds the REAL codec on both duplex ends
                                 instead of the synthesized bridge; a bind
                                 failure is a hard error (FR-EX-08)
+    --bert-ja <path>            sbv2 only, REQUIRED: the JA-path DeBERTa v2
+                                BERT GGUF (`vokra-cli convert --model
+                                deberta-v2`). `SbV2Model::from_gguf` needs
+                                this alongside --model and --bert-en; a
+                                missing value is a hard error, not a silent
+                                skip (FR-EX-08).
+    --bert-en <path>            sbv2 only, REQUIRED: the EN-path DeBERTa v3
+                                BERT GGUF (`vokra-cli convert --model
+                                deberta-v3`). See --bert-ja.
     -h, --help                  print this help
 ";
 
@@ -185,6 +203,13 @@ struct RunArgs {
     /// Kokoro only (cc-24): duration multiplier, the reciprocal of
     /// upstream's `speed`. Defaults to 1.0 = upstream default.
     length_scale: f32,
+    /// SBV2 only (Task 38), REQUIRED for that arch: path to the JA-path
+    /// DeBERTa v2 BERT GGUF `SbV2Model::from_gguf` needs alongside `--model`
+    /// and `--bert-en`. Rejected loudly on every other arch (FR-EX-08).
+    bert_ja: Option<String>,
+    /// SBV2 only (Task 38), REQUIRED for that arch: path to the EN-path
+    /// DeBERTa v3 BERT GGUF. See `bert_ja`.
+    bert_en: Option<String>,
 }
 
 fn parse_args(args: &[String]) -> Result<RunArgs, String> {
@@ -213,6 +238,8 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut voice: Option<String> = None;
     let mut style: Option<String> = None;
     let mut length_scale: f32 = 1.0;
+    let mut bert_ja: Option<String> = None;
+    let mut bert_en: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -354,6 +381,16 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 }
                 i += 2;
             }
+            "--bert-ja" => {
+                let v = args.get(i + 1).ok_or("--bert-ja requires a path")?;
+                bert_ja = Some(v.clone());
+                i += 2;
+            }
+            "--bert-en" => {
+                let v = args.get(i + 1).ok_or("--bert-en requires a path")?;
+                bert_en = Some(v.clone());
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -380,6 +417,8 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         voice,
         style,
         length_scale,
+        bert_ja,
+        bert_en,
     })
 }
 
@@ -416,6 +455,11 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         ModelTask::Tts => Some("piper-plus TTS"),
         ModelTask::S2s => Some("CSM speech-to-speech"),
         ModelTask::S2sDuplex => Some("Moshi full-duplex speech-to-speech"),
+        // SBV2 (Task 38): `SbV2Model` / `DebertaV2Encoder` / `DebertaV3Encoder`
+        // have no `.with_backend(...)` seam yet (no Metal/CUDA Compute-seam
+        // wiring for this arch today) — a non-CPU `--backend` would silently
+        // run on the CPU, same class of gap as VAD/piper-plus/CSM/Moshi above.
+        ModelTask::Sbv2 => Some("SBV2 (Style-Bert-VITS2 v2) TTS"),
         // Backend-honoring: the concrete engine binds `.with_backend(...)`, so
         // a non-CPU backend reaches the hot ops (and an unavailable one fails
         // loudly at inference — the existing FR-EX-08 posture). The guard must
@@ -451,8 +495,8 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         );
     }
     // `--word-timestamps` is a Whisper-only surface (cross-attention DTW,
-    // M4-20); `--language` / `--bare-prompt` are Voxtral prompt knobs. Each
-    // is rejected off its own arch rather than silently ignored (FR-EX-08).
+    // M4-20); `--bare-prompt` is a Voxtral-only prompt-layout knob. Each is
+    // rejected off its own arch rather than silently ignored (FR-EX-08).
     if a.word_timestamps && task != ModelTask::Asr {
         return Err(
             "run: --word-timestamps is only supported for the whisper arch — it needs the \
@@ -460,10 +504,33 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned(),
         );
     }
-    if (a.language.is_some() || a.bare_prompt) && task != ModelTask::AsrVoxtral {
+    if a.bare_prompt && task != ModelTask::AsrVoxtral {
         return Err(
-            "run: --language / --bare-prompt are only supported for the voxtral arch — they \
-             select the trained transcription prompt's `lang:` segment and layout"
+            "run: --bare-prompt is only supported for the voxtral arch — it selects the bare \
+             soft-prefix + BOS layout instead of the trained transcription prompt"
+                .to_owned(),
+        );
+    }
+    // `--language` is shared by two archs with distinct meanings: Voxtral's
+    // transcription-prompt `lang:` segment, and SBV2's JA/EN phonemizer +
+    // BERT-encoder routing (Task 38). Rejected off every other arch rather
+    // than silently ignored (FR-EX-08).
+    if a.language.is_some() && task != ModelTask::AsrVoxtral && task != ModelTask::Sbv2 {
+        return Err(
+            "run: --language is only supported for the voxtral arch (the trained \
+             transcription prompt's `lang:` segment) or the sbv2 arch (JA/EN phonemizer + \
+             BERT-encoder routing)"
+                .to_owned(),
+        );
+    }
+    // `--bert-ja` / `--bert-en` are SBV2-only side-car GGUFs (Task 38): the
+    // DeBERTa v2 (JA) / v3 (EN) BERT encoders `SbV2Model::from_gguf` requires
+    // alongside the main model file. Rejected off every other arch rather
+    // than silently ignored (FR-EX-08).
+    if (a.bert_ja.is_some() || a.bert_en.is_some()) && task != ModelTask::Sbv2 {
+        return Err(
+            "run: --bert-ja / --bert-en are only supported for the sbv2 arch — they load the \
+             DeBERTa v2 (JA) / v3 (EN) BERT side-car GGUFs SbV2Model::from_gguf requires"
                 .to_owned(),
         );
     }
@@ -594,6 +661,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::Speaker => {
             run_speaker(&session, &a)?;
+        }
+        ModelTask::Sbv2 => {
+            run_sbv2(&session, &a)?;
         }
         // `mel-frontend` is a bench-only task (M2-04-T11) — it isolates the
         // Whisper log-mel path so the fused / unfused RTF isn't polluted by
@@ -962,6 +1032,97 @@ fn run_speaker(session: &Session, a: &RunArgs) -> Result<(), String> {
         println!("speaker: cosine_similarity={:.6}", result.similarity);
     }
     Ok(())
+}
+
+/// The SBV2 (Style-Bert-VITS2 v2) synthesis path (Task 38).
+///
+/// `SbV2Model::from_gguf` needs THREE GGUFs: this model's own weights
+/// (`--model`, already opened by the generic dispatch — reused here via
+/// `session.gguf()`, mirroring [`run_speaker`]'s reuse of the session's own
+/// file) plus the two BERT side-cars `--bert-ja` / `--bert-en` (each
+/// `vokra-convert`'s DeBERTa v2 / v3 converter output — read back at
+/// runtime by `vokra-bert`'s `DebertaV2Encoder`/`DebertaV3Encoder`, opened
+/// fresh here). Like
+/// Kokoro / Voxtral / speaker, the dispatch hands back a bare session and
+/// the concrete engine binds here rather than through the [`Session`]
+/// facade, since the facade's `TtsEngine` slot has no way to carry the two
+/// extra side-car paths.
+///
+/// `--language` selects the phonemizer + BERT path (`ja` when absent, or
+/// `en`); anything else is a loud error here rather than the
+/// [`vokra_core::TtsEngine`] adapter's own silent "any string not starting
+/// with `en` is JA" default — see [`SbV2Model`]'s `TtsEngine` impl. This
+/// pre-validation lets `run` still delegate the actual `Language` selection
+/// and the correctly-`d_style`-sized default style vector to that adapter
+/// (both live behind `SbV2Model`'s private fields, unreachable from this
+/// crate).
+///
+/// # Honest scope (Task 38 does not paper over Task 24 / Task 30)
+///
+/// `SbV2Model::from_gguf`'s loaded phonemizer is its own documented
+/// `UnwiredPhonemizer` placeholder (no G2P GGUF in that loader's 3-file
+/// signature) — every synthesize call therefore fails with an explicit
+/// [`vokra_core::VokraError::NotImplemented`] today. Separately,
+/// `convert_sbv2_file`'s converter output is not yet loadable by
+/// `from_gguf` at all (its tensor names are the verbatim upstream
+/// safetensors names, not yet renamed to the `sbv2.*` hierarchy
+/// `from_gguf` reads — that rename table is Task 30). Both are pre-existing,
+/// documented limitations this CLI wiring surfaces honestly rather than
+/// hides.
+///
+/// [`SbV2Model`]: vokra_models::sbv2::SbV2Model
+fn run_sbv2(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_core::{SynthesisRequest, TtsEngine};
+    use vokra_models::sbv2::SbV2Model;
+
+    let text = a
+        .text
+        .as_deref()
+        .ok_or("run (sbv2): --text <string> is required")?;
+    let bert_ja_path = a.bert_ja.as_deref().ok_or(
+        "run (sbv2): --bert-ja <bert_ja.gguf> is required — the DeBERTa v2 (JA) BERT GGUF \
+         from `vokra-cli convert --model deberta-v2`",
+    )?;
+    let bert_en_path = a.bert_en.as_deref().ok_or(
+        "run (sbv2): --bert-en <bert_en.gguf> is required — the DeBERTa v3 (EN) BERT GGUF \
+         from `vokra-cli convert --model deberta-v3`",
+    )?;
+    // Reject anything but ja/en up front (see this fn's doc — the
+    // TtsEngine adapter's own default would otherwise silently swallow a
+    // typo like `--language jp`).
+    if let Some(lang) = a.language.as_deref() {
+        if !lang.eq_ignore_ascii_case("ja") && !lang.eq_ignore_ascii_case("en") {
+            return Err(format!(
+                "run (sbv2): --language must be `ja` or `en`, got `{lang}`"
+            ));
+        }
+    }
+
+    let bert_ja_gguf = vokra_mmap::open_gguf(bert_ja_path)
+        .map_err(|e| format!("--bert-ja {bert_ja_path}: {e}"))?;
+    let bert_en_gguf = vokra_mmap::open_gguf(bert_en_path)
+        .map_err(|e| format!("--bert-en {bert_en_path}: {e}"))?;
+
+    let model = SbV2Model::from_gguf(session.gguf(), &bert_ja_gguf, &bert_en_gguf)
+        .map_err(|e| e.to_string())?;
+
+    let mut request = SynthesisRequest::new(text);
+    if let Some(lang) = a.language.as_deref() {
+        request = request.with_language(lang);
+    }
+    // Fully-qualified: `SbV2Model` also has an inherent `synthesize(&self,
+    // req: &SbV2SynthRequest)` (a different request type) — plain
+    // `model.synthesize(&request)` would resolve to that inherent method
+    // first (Rust picks inherent methods by name before trait methods,
+    // regardless of argument type) and fail to type-check, rather than
+    // falling back to this trait impl.
+    let audio = TtsEngine::synthesize(&model, &request).map_err(|e| e.to_string())?;
+    emit_audio(
+        "sbv2",
+        &audio.samples,
+        audio.sample_rate,
+        a.output.as_deref(),
+    )
 }
 
 /// Pushes the whole clip through a fresh VAD stream and returns the per-frame
@@ -1428,6 +1589,41 @@ mod tests {
         assert!(err.contains("--mimi requires a GGUF path"), "got: {err}");
     }
 
+    /// Task 38: `--bert-ja` / `--bert-en` parse into `RunArgs`, are absent by
+    /// default, and each requires a value.
+    #[test]
+    fn parses_bert_ja_and_bert_en_flags() {
+        let a = parse_args(&args(&[
+            "--model",
+            "sbv2.gguf",
+            "--text",
+            "こんにちは",
+            "--bert-ja",
+            "bert_ja.gguf",
+            "--bert-en",
+            "bert_en.gguf",
+        ]))
+        .expect("parses");
+        assert_eq!(a.bert_ja.as_deref(), Some("bert_ja.gguf"));
+        assert_eq!(a.bert_en.as_deref(), Some("bert_en.gguf"));
+
+        let a = parse_args(&args(&["--model", "m.gguf"])).expect("parses");
+        assert!(a.bert_ja.is_none());
+        assert!(a.bert_en.is_none());
+
+        let err = match parse_args(&args(&["--model", "m.gguf", "--bert-ja"])) {
+            Err(e) => e,
+            Ok(_) => panic!("bare --bert-ja must be rejected"),
+        };
+        assert!(err.contains("--bert-ja requires a path"), "got: {err}");
+
+        let err = match parse_args(&args(&["--model", "m.gguf", "--bert-en"])) {
+            Err(e) => e,
+            Ok(_) => panic!("bare --bert-en must be rejected"),
+        };
+        assert!(err.contains("--bert-en requires a path"), "got: {err}");
+    }
+
     /// Writes a synthesized-fixture CSM GGUF (tiny shape config + mimi
     /// chunk + provenance + a placeholder tokenizer blob) into a temp file
     /// and returns its path — the M4-05-T20 host-only smoke input.
@@ -1693,18 +1889,176 @@ mod tests {
     /// `--language` / `--bare-prompt` off the voxtral arch likewise.
     #[test]
     fn voxtral_prompt_flags_on_other_arch_are_rejected() {
-        for flag in [
-            vec!["--language".to_owned(), "fr".to_owned()],
-            vec!["--bare-prompt".to_owned()],
-        ] {
-            let mut argv = args(&["--model", &silero_fixture(), "--input", "unused.wav"]);
-            argv.extend(flag);
-            let err = main(&argv).unwrap_err();
+        // `--language` is now shared by voxtral AND sbv2 (Task 38), so its
+        // rejection message differs from `--bare-prompt`'s (voxtral-only) —
+        // check each flag against its own message rather than one shared
+        // substring.
+        let mut argv = args(&["--model", &silero_fixture(), "--input", "unused.wav"]);
+        argv.extend(vec!["--language".to_owned(), "fr".to_owned()]);
+        let err = main(&argv).unwrap_err();
+        assert!(
+            err.contains("--language is only supported for the voxtral arch")
+                && err.contains("sbv2 arch"),
+            "got: {err}"
+        );
+
+        let mut argv = args(&["--model", &silero_fixture(), "--input", "unused.wav"]);
+        argv.extend(vec!["--bare-prompt".to_owned()]);
+        let err = main(&argv).unwrap_err();
+        assert!(
+            err.contains("--bare-prompt is only supported for the voxtral arch"),
+            "got: {err}"
+        );
+    }
+
+    /// Task 38: `--bert-ja` / `--bert-en` off the sbv2 arch are rejected
+    /// loudly rather than silently ignored (FR-EX-08) — mirrors
+    /// `voxtral_prompt_flags_on_other_arch_are_rejected`.
+    #[test]
+    fn sbv2_side_cars_are_rejected_on_other_models() {
+        let err = main(&args(&[
+            "--model",
+            &silero_fixture(),
+            "--input",
+            "unused.wav",
+            "--bert-ja",
+            "bert_ja.gguf",
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains("--bert-ja / --bert-en are only supported for the sbv2 arch"),
+            "got: {err}"
+        );
+
+        let err = main(&args(&[
+            "--model",
+            &silero_fixture(),
+            "--input",
+            "unused.wav",
+            "--bert-en",
+            "bert_en.gguf",
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains("--bert-ja / --bert-en are only supported for the sbv2 arch"),
+            "got: {err}"
+        );
+    }
+
+    /// Builds a metadata-only `sbv2`-arch GGUF (no real tensors) at a fresh
+    /// temp path — enough for the dispatch to select [`ModelTask::Sbv2`]
+    /// (bare session) and reach `run_sbv2`'s own argument checks, mirroring
+    /// `voxtral_metadata_only_gguf_fails_loudly_at_engine_bind`'s fixture
+    /// style.
+    fn sbv2_metadata_only_gguf(tag: &str) -> std::path::PathBuf {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "sbv2");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let model = std::env::temp_dir().join(format!(
+            "vokra-cli-sbv2-meta-{tag}-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&model, &bytes).unwrap();
+        model
+    }
+
+    /// `run_sbv2`'s three required-argument checks fire in order: `--text`,
+    /// then `--bert-ja`, then `--bert-en` — each names the missing flag
+    /// rather than a generic failure (FR-EX-08).
+    #[test]
+    fn sbv2_requires_text_then_bert_ja_then_bert_en() {
+        let model = sbv2_metadata_only_gguf("order");
+
+        let err = main(&args(&["--model", model.to_str().unwrap()])).unwrap_err();
+        assert!(err.contains("--text <string> is required"), "got: {err}");
+
+        let err = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--text",
+            "こんにちは",
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains("--bert-ja <bert_ja.gguf> is required"),
+            "got: {err}"
+        );
+
+        let err = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--text",
+            "こんにちは",
+            "--bert-ja",
+            "/no/such/bert_ja.gguf",
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains("--bert-en <bert_en.gguf> is required"),
+            "got: {err}"
+        );
+
+        let _ = std::fs::remove_file(&model);
+    }
+
+    /// With `--text` / `--bert-ja` / `--bert-en` all present, an invalid
+    /// `--language` value is rejected before any file I/O on the (here,
+    /// nonexistent) side-car paths — the CLI's own pre-validation, distinct
+    /// from the `TtsEngine` adapter's silent any-non-`en`-is-JA default (see
+    /// `run_sbv2`'s doc).
+    #[test]
+    fn sbv2_language_rejects_anything_but_ja_or_en() {
+        let model = sbv2_metadata_only_gguf("lang");
+        let err = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--text",
+            "こんにちは",
+            "--bert-ja",
+            "/no/such/bert_ja.gguf",
+            "--bert-en",
+            "/no/such/bert_en.gguf",
+            "--language",
+            "fr",
+        ]))
+        .unwrap_err();
+        let _ = std::fs::remove_file(&model);
+        assert!(
+            err.contains("--language must be `ja` or `en`, got `fr`"),
+            "got: {err}"
+        );
+    }
+
+    /// `ja` / `en` (any case) both pass the `--language` pre-validation and
+    /// reach the (here, failing) `--bert-ja` GGUF open — proving the check
+    /// does not reject the two values it is meant to accept.
+    #[test]
+    fn sbv2_language_accepts_ja_and_en_case_insensitively() {
+        let model = sbv2_metadata_only_gguf("lang-ok");
+        for lang in ["ja", "JA", "en", "EN"] {
+            let err = main(&args(&[
+                "--model",
+                model.to_str().unwrap(),
+                "--text",
+                "hello",
+                "--bert-ja",
+                "/no/such/bert_ja.gguf",
+                "--bert-en",
+                "/no/such/bert_en.gguf",
+                "--language",
+                lang,
+            ]))
+            .unwrap_err();
             assert!(
-                err.contains("--language / --bare-prompt are only supported for the voxtral"),
-                "got: {err}"
+                !err.contains("--language must be"),
+                "{lang}: rejected as an invalid language: {err}"
+            );
+            assert!(
+                err.contains("--bert-ja"),
+                "{lang}: expected the fixture --bert-ja path to fail to open: {err}"
             );
         }
+        let _ = std::fs::remove_file(&model);
     }
 
     /// A metadata-only `voxtral` GGUF reaches the run arm (dispatch is
@@ -2439,6 +2793,10 @@ mod tests {
             cpu_only_engine_label(ModelTask::S2sDuplex),
             Some("Moshi full-duplex speech-to-speech")
         );
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::Sbv2),
+            Some("SBV2 (Style-Bert-VITS2 v2) TTS")
+        );
         // Backend-honoring arches bind `.with_backend(...)` → guard must NOT
         // fire (no regression). This is the piece that covers whisper.
         assert_eq!(cpu_only_engine_label(ModelTask::Asr), None);
@@ -2543,6 +2901,30 @@ mod tests {
         );
         assert!(
             err.contains("Moshi full-duplex speech-to-speech"),
+            "names the engine: {err}"
+        );
+    }
+
+    /// SBV2 has no `.with_backend(...)` seam (Task 38) — a non-CPU
+    /// `--backend` is rejected before `run_sbv2` runs, so the metadata-only
+    /// fixture (no real tensors) is enough to trigger it.
+    #[test]
+    fn non_cpu_backend_on_sbv2_is_rejected_loudly() {
+        let model = sbv2_metadata_only_gguf("backend");
+        let err = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--backend",
+            "metal",
+        ]))
+        .unwrap_err();
+        let _ = std::fs::remove_file(&model);
+        assert!(
+            err.contains("--backend metal is not supported"),
+            "names the backend: {err}"
+        );
+        assert!(
+            err.contains("SBV2 (Style-Bert-VITS2 v2) TTS"),
             "names the engine: {err}"
         );
     }

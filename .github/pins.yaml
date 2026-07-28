@@ -741,3 +741,76 @@ entries:
       is not a probe-able SHA. Enable-gate: VOKRA_TTS_JA_ENABLE=1.
       Optional matrix filter input `only=vits_ja`. License sign-off
       pending in docs/license-audit.md §3.1.
+
+  # ---- deepfilternet3 family (parity-deepfilternet3-real.yml) --------------
+
+  - name: deepfilternet3
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-deepfilternet3-real.yml
+    owning_line: 115
+    upstream:
+      url: https://github.com/Rikorose/DeepFilterNet
+      license: MIT OR Apache-2.0
+    pinned_value:
+      # GitHub-hosted (raw.githubusercontent.com) rather than HF. The pinned
+      # commit is the last one that touched models/DeepFilterNet3.zip
+      # (2023-05-23 "models: Fix zip structure") and the zip sha256 is the
+      # exact prefix the harness docstring cites (49c52edc…, L11 of
+      # crates/vokra-ops/tests/parity_denoise_dfn3.rs).
+      git_sha: "82b0c7ad33fc756284104053817d1e855d8d8386"
+      sha256: "49c52edc8947ae1f9bf50d81530beaf3a2c3245aeaf34b6f31ff535cd22284d2"
+      bytes: 7986207
+    drift_policy:
+      upstream_mismatch: hard_fail  # zip pin is content-addressed by sha256
+      mirror_mismatch: hard_fail    # only meaningful once mirror block populated
+    notes: |
+      M4-20 T17 real-checkpoint parity CI (denoise family). Rikorose
+      DeepFilterNet3 released weights (48 kHz two-stage ERB + DF speech
+      enhancement). Enable-gate: VOKRA_DFN3_ENABLE=1 (or
+      workflow_dispatch). Byte-parity leg additionally requires
+      vars.VOKRA_DFN3_DATA_URL pointing at a pre-baked reference bundle
+      (Phase B) — the exact prep_noisy.py recipe lives outside the repo
+      today; docs/handoff/parity-deepfilternet3-real.md §Phase B
+      documents the two provisioning paths (commit tools/parity/
+      dfn3_prep_noisy.py, or host a .tar.gz mirror). Initial
+      workflow_dispatch by owner. License sign-off pending in
+      docs/license-audit.md §3.1.
+
+  # ---- deberta-v3-large family (parity-deberta-v3-large-real.yml) ----------
+
+  - name: deberta-v3-large
+    kind: checkpoint
+    owning_workflow: .github/workflows/parity-deberta-v3-large-real.yml
+    owning_line: 134
+    upstream:
+      url: https://huggingface.co/microsoft/deberta-v3-large
+      license: MIT
+    pinned_value:
+      hf_id: microsoft/deberta-v3-large
+      hf_revision: "64a8c8eab3e352a784c658aef62be1662607476f"
+    drift_policy:
+      upstream_mismatch: advisory   # HF hub SHA drift is not a Vokra defect
+      mirror_mismatch: hard_fail    # only meaningful once mirror block populated
+    notes: |
+      SBV2 v2 plan Task 31 follow-up (2026-07-28): standalone EN BERT
+      encoder real-checkpoint parity CI. Sibling of parity-sbv2-real.yml
+      (which fetches the same checkpoint as part of the full SBV2
+      multi-checkpoint pipeline) — this workflow isolates the DeBERTa v3
+      convert / round-trip / smoke leg so an EN BERT regression is caught
+      independently of the SBV2 base (AGPL-3.0) and JA BERT
+      (CC-BY-SA-4.0) checkpoint gates. Upstream ships pytorch_model.bin
+      only (no safetensors mirror at source, verified 2026-07-28 via HF
+      Hub API); the workflow bridges via
+      tools/parity/bin_to_safetensors.py (owner Task 3 Wave 2b) before
+      running vokra-cli convert --model deberta-v3. Enable-gate:
+      VOKRA_DEBERTA_V3_ENABLE=1 (or workflow_dispatch). Reference dumper
+      leg additionally requires VOKRA_DEBERTA_V3_HARNESS_READY=1 (or
+      workflow_dispatch input run_dumper=true) — but the Rust-side
+      numerical parity harness that would consume the dumps does not
+      exist yet, so the dumper leg today only publishes the reference
+      tensors as an artifact for future harness development
+      (docs/handoff/parity-deberta-v3-large-real.md §Phase B). License
+      sign-off: docs/license-audit.md §3.1 row `deberta-v3-large`
+      (2026-07-27 yousan = ☑ Commercial, MIT primary source
+      github.com/microsoft/DeBERTa/master/LICENSE). Initial
+      workflow_dispatch by owner.

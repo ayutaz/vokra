@@ -29,9 +29,10 @@ USAGE:
     vokra-cli <run|convert|bench> [options]
 
 SUBCOMMANDS:
-    run       load a GGUF and run its task (VAD probs / ASR text / TTS audio /
-              speaker embedding + cosine compare)
-    convert   convert an upstream checkpoint to a Vokra GGUF (offline tool)
+    run       load a GGUF and run its task (VAD probs / ASR text / TTS audio,
+              incl. SBV2 multi-GGUF / speaker embedding + cosine compare)
+    convert   convert an upstream checkpoint to a Vokra GGUF (offline tool,
+              incl. --model sbv2 / deberta-v2 / deberta-v3)
     bench     measure RTF / TTFA / jitter / p50-p95-p99, optional regression gate
 
 Run `vokra-cli <subcommand> --help` for that subcommand's options.

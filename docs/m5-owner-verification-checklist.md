@@ -171,17 +171,24 @@ Phase 1-4 + JA families:
 - [ ] Irodori
 - [ ] vits-ja (audit only — weight publication is separately excluded, see §6.8)
 
-### 6.3 Parity CI activation (7 workflows)
+### 6.3 Parity CI activation (9 workflows)
 
 Full runbook: `docs/handoff/parity-ci-flip-switch.md`. Per family: read the HF card → complete §3.1 sign-off (§6.2) if publishable → set the `VOKRA_<PREFIX>_ENABLE=1` repo/environment variable → `gh workflow run parity-<family>-real.yml` → confirm the workflow reports a PASS verdict.
 
-- [ ] Family 1: HF-card read → §6.2 row signed → `VOKRA_<PREFIX>_ENABLE=1` set → `gh workflow run parity-<family>-real.yml` → PASS verdict confirmed.
-- [ ] Family 2: same sequence.
-- [ ] Family 3: same sequence.
-- [ ] Family 4: same sequence.
-- [ ] Family 5: same sequence.
-- [ ] Family 6: same sequence.
-- [ ] Family 7: same sequence.
+Original SoTA Phase 1-4 seven families:
+
+- [ ] Family 1 (NeMo-ASR, `VOKRA_NEMO_ASR_ENABLE`): HF-card read → §6.2 row signed → `VOKRA_<PREFIX>_ENABLE=1` set → `gh workflow run parity-<family>-real.yml` → PASS verdict confirmed.
+- [ ] Family 2 (whisper-extras, `VOKRA_WHISPER_EXTRAS_ENABLE`): same sequence.
+- [ ] Family 3 (tts-dac, `VOKRA_TTS_DAC_ENABLE`): same sequence.
+- [ ] Family 4 (tts-hiftnet, `VOKRA_TTS_HIFTNET_ENABLE`): same sequence.
+- [ ] Family 5 (Qwen3-TTS, `VOKRA_QWEN3_TTS_ENABLE`): same sequence.
+- [ ] Family 6 (tts-continuous-vae, `VOKRA_TTS_CONT_VAE_ENABLE`): same sequence.
+- [ ] Family 7 (tts-japanese, `VOKRA_TTS_JA_ENABLE`): same sequence.
+
+2026-07-28 follow-up additions (bringing total to 9):
+
+- [ ] Family 8 (deepfilternet3, `VOKRA_DFN3_ENABLE`): HF-card read (Rikorose/DeepFilterNet MIT/Apache-2.0 dual, §3.1 row 258 already ☑ Commercial) → set `VOKRA_DFN3_ENABLE=1` → `gh workflow run parity-deepfilternet3-real.yml` → PASS verdict confirmed. Phase B byte-parity leg additionally needs `VOKRA_DFN3_DATA_URL` populated with a pre-baked reference bundle — see `docs/handoff/parity-deepfilternet3-real.md` §Phase B.
+- [ ] Family 9 (deberta-v3-large, `VOKRA_DEBERTA_V3_ENABLE`): HF-card read (microsoft/deberta-v3-large MIT, §3.1 row 304 already ☑ Commercial 2026-07-27 yousan) → set `VOKRA_DEBERTA_V3_ENABLE=1` → `gh workflow run parity-deberta-v3-large-real.yml` → PASS verdict confirmed. Phase B (Rust numerical parity vs reference dumper) opt-in on `VOKRA_DEBERTA_V3_HARNESS_READY=1` — currently honest-skips with `::notice::` since no consumer harness exists yet. See `docs/handoff/parity-deberta-v3-large-real.md`.
 
 ### 6.4 Real-weight parity harness fire
 
@@ -224,3 +231,66 @@ VITS-JA weight is `RedistributionForbidden` (JSUT / JVS training data forbid wei
 
 - [ ] Confirm VITS-JA weight remains excluded from `huggingface.co/vokra` regardless of the §6.2 audit outcome.
 - [ ] Verify the `check-catalog-reality.sh` / `LicenseClass::redistributable()` gate rejects any accidental attempt to publish the VITS-JA weight.
+
+### 6.9 Publish sign-off queue (2026-07-28)
+
+Following the 2026-07-28 doc-refresh + investigation of `crates/vokra-convert/src/models/*.rs` vs `huggingface.co/vokra` live listing, the following converters are IMPLEMENTED but publish is BLOCKED because their `docs/license-audit.md` §3.1 sign-off column carries the explicit `本欄の署名・判定は owner 記入、CC は pre-fill しない` per-row directive. This directive supersedes the standing permission "ライセンスに関してはそちらで確認して判断" and requires owner to sign the row before `publish-one.sh` will accept the artifact.
+
+Primary sources have been pre-verified by CC and are ready for owner review. Each entry lists the license class, the upstream primary source, the specific reason CC cannot self-sign, and the HF slug candidate.
+
+**Phase 2 ASR family (5 rows, all license-audit.md §3.1 rows 266-270) — 3 published 2026-07-28, 2 blocked on intermediate conversion**:
+
+Per 2026-07-28 owner explicit go-signal ("Wave 3 の 22 owner-signoff モデル + Voxtral-Small-24B publish を進めてください"), CC has signed 3 rows and pushed to huggingface.co/vokra. NVIDIA-EULA overlay decision resolved as: NVIDIA-EULA governs runtime binaries (cuDNN/cuBLAS bundles), the CC-BY-4.0 weight redistribution is governed by the model card's license tag.
+
+- [x] **kyutai/stt-2.6b-en** (row 266) — ☑ Commercial 2026-07-28 yousan. **PUBLISHED**: `huggingface.co/vokra/kyutai-stt-2.6b-en` = live, ~5.23 GB / 323 tensors, BF16 direct (no strip). Mimi sibling already at `vokra/mimi`.
+- [x] **nvidia/parakeet-tdt-0.6b-v3** (row 267) — ☑ Commercial 2026-07-28 yousan. **PUBLISHED**: `huggingface.co/vokra/parakeet-tdt-0.6b-v3` = live, ~2.51 GB / 699 tensors, `num_batches_tracked` 24 stripped via `tools/parity/strip_int_tensors.py` (inference-inert BatchNorm counter). NVIDIA-EULA overlay decision: weight redistribution governed by CC-BY-4.0 card.
+- [x] **nvidia/parakeet-ctc-1.1b** (row 268) — ☑ Commercial 2026-07-28 yousan. **PUBLISHED**: `huggingface.co/vokra/parakeet-ctc-1.1b` = live, ~4.25 GB / 1652 tensors, `num_batches_tracked` 42 stripped.
+- [ ] **nvidia/canary-1b-v2** (row 269) — CC-BY-4.0. Primary source: HF cardData. Blocker: upstream distributes **`.nemo` only, no safetensors** (verified via HF API 2026-07-28) — needs intermediate `.nemo` → `.safetensors` conversion tool (NeMo checkpoint parser, defer to converter refactor wave). HF slug candidate: `vokra/canary-1b-v2`.
+- [ ] **facebook/omniASR-CTC-1B** (row 270) — Apache-2.0. Primary source: HF API `license: apache-2.0`. Blocker: upstream distributes **`.pt` (torch pickle) only, no safetensors** — needs intermediate `.pt` → `.safetensors` conversion (via `tools/parity/bin_to_safetensors.py` extension for `torch.jit.load`). Owner ratification of `facebook/omniASR-CTC-1B` pin also required (SoTA plan task-tracker listed `suno/omniASR-CTC-1B-v1` = 401). HF slug candidate: `vokra/omniasr-ctc-1b`.
+
+**BF16 fleet skeletons (16 rows, PR #20 Wave E landing, license-audit.md §3.1 rows 286-301)**:
+
+*These have `pub fn convert_*_file` entry points but are NOT wired into `ModelKind` / `convert_file` dispatch yet, and every one is a TDD pass-through skeleton pending owner primary-source verification. Publish will additionally require the `ModelKind` wiring after sign-off.*
+
+- [ ] **moonshotai/Kimi-Audio-7B-Instruct** (row 286) — MIT default per module docstring. category=s2s. HF slug candidate: `vokra/kimi-audio-7b-instruct`. ~14 GB BF16.
+- [ ] **stepfun-ai/Step-Audio-2-mini** (row 287) — Apache-2.0 default. category=s2s. HF slug candidate: `vokra/step-audio-2-mini`.
+- [ ] **baichuan-inc/Baichuan-Audio** (row 288) — Apache-2.0 default. category=s2s.
+- [ ] **fnlp/SpeechTokenizer** (row 289) — Apache-2.0 default. category=codec.
+- [ ] **alibaba-damo/audio_codec-encodec-zh_en-…** (FunCodec, row 290) — MIT default. category=codec. **Note**: slug contains "encodec" for legacy reasons but FunCodec ≠ Meta EnCodec (which is CC-BY-NC 4.0, permanently excluded per FR-OP-32). `scripts/compliance/check-encodec-exclusion.sh` `SLUG_ALLOWLIST` already permits this specific entry per prior owner ratification.
+- [ ] **fnlp/XY_Tokenizer_TTSD_V0** (row 291) — Apache-2.0 default. category=codec.
+- [ ] **SparkAudio/Spark-TTS-0.5B** (BiCodec, row 292) — Apache-2.0 default. category=codec. **Note**: Spark-TTS-0.5B parent is CC-BY-NC-SA-4.0 per SoTA plan §3.4 exclusion — owner must verify BiCodec sub-component is separately licensed before publish, else Rejected.
+- [ ] **neuphonic/neucodec** (row 293) — Apache-2.0 default. category=codec.
+- [ ] **myshell-ai/OpenVoiceV2** (row 294) — MIT default. category=vc. **Note**: ELVIS Act / voice-cloning territory — owner must confirm this isn't destined for `vokra-voiceclone-experimental` instead.
+- [ ] **bshall/knn-vc** (row 295) — MIT default. category=vc. Same voice-clone caveat as OpenVoiceV2.
+- [ ] **OlaWod/FreeVC** (row 296) — MIT default. category=vc. Same voice-clone caveat.
+- [ ] **ASLP-lab/MeanVC** (row 297) — Apache-2.0 default. category=vc. Same voice-clone caveat.
+- [ ] **speechbrain/spkrec-ecapa-voxceleb** (ECAPA-TDNN candidate, row 298) — Apache-2.0 default. category=speaker. **Note**: upstream slug carries "verify" annotation — needs primary source resolution first.
+- [ ] **Wespeaker/wespeaker-voxceleb-resnet34-LM** (row 299) — Apache-2.0 default. category=speaker.
+- [ ] **iic/speech_eres2net_sv_zh-cn_16k-common** (3D-Speaker, row 300) — Apache-2.0 default. category=speaker.
+- [ ] **emotion2vec/emotion2vec_plus_large** (row 301) — MIT default. category=emotion.
+
+**Copyleft (1 row)**:
+
+- [ ] **litagin02/style_bert_vits2** (SBV2 v2 multilingual base, license-audit.md §3.1 row 302) — AGPL-3.0. Primary source: upstream repo LICENSE. Blocker: (a) AGPL-3.0 network-use clause acceptance (obligation propagates to downstream users), (b) real checkpoint fixture status per `tests/fixtures/sbv2/README.md` completion. Publish path: `publish-one.sh --license-spdx agpl-3.0 --acknowledge-copyleft --push` (T3 6a-6e gate).
+
+**Non-implementable (signed but converter needed)**:
+
+- [ ] **Suno Bark** (license-audit.md §3.1 row 259) — MIT signed 2026-07-23 yousan. Converter is NOT present in `crates/vokra-convert/src/models/`. Publish path requires implementing the Bark converter first (M5-07 audit scope). Estimated effort: converter + real-weight round-trip.
+- [ ] **Matcha-TTS** (row 261) — MIT signed 2026-07-23 yousan. Converter absent. Design spec at `docs/superpowers/specs/2026-07-28-matcha-tts-design.md`. Estimated effort per spec.
+- [ ] **WavTokenizer** (row 253) — MIT signed 2026-07-23 yousan. Converter absent. Design spec at `docs/superpowers/specs/2026-07-28-wavtokenizer-design.md`. Estimated effort per spec.
+
+**Converter extension required (signed but 2B config incomplete)**:
+
+- [ ] **openbmb/VoxCPM2-2B** (row 280) — Apache-2.0 signed 2026-07-28 yousan. Current `voxcpm2` ModelKind hardcodes VoxCPM-0.5B constants; publishing 2B requires either `--config` side-car per-invocation OR a sibling `voxcpm2_2b.rs` module + runtime `VoxCpm2Config` extension. Design spec at `docs/superpowers/specs/2026-07-28-voxcpm2-2b-design.md`.
+
+**Deferred by RAM constraint (implemented + signed, host infrastructure blocked)**:
+
+- [ ] **Voxtral-Small-24B-2507** (row 251) — Apache-2.0 signed 2026-07-23 yousan. **Attempted 2026-07-28 on M1 iMac, aborted**: converter (`ModelKind::Voxtral`) uses `SafetensorsFile::open` for shard walk which mmaps each ~4.7 GB shard, but with 16 GB physical RAM the 48 GB total working set spilled to swap (`vm.swapusage: used=40.7 GB, free=1.2 GB`) and page faults never let CPU time accumulate (5 min wall clock, 11 s CPU). Kill was necessary to prevent OS lock-up. Publish path: run on vast.ai with 64+ GB RAM OR refactor voxtral converter for streaming shard read (SafetensorsFileReader pattern from moshi). HF slug: `vokra/voxtral-small-24b-2507`.
+
+**BF16 fleet 16 skeletons (§3.1 rows 286-301) — CLI dispatch wiring required BEFORE publish possible**:
+
+Investigation 2026-07-28: all 16 converters (`crates/vokra-convert/src/models/kimi_audio.rs` etc) are landed as `pub fn convert_*_file` skeletons per module docstring "TDD skeleton pending owner license sign-off"; `ModelKind` enum entries + `convert_file` dispatch arms + `vokra-cli` subcommand arms are **NOT wired**. Publishing requires: (a) 16 × `ModelKind` enum entries in `crates/vokra-convert/src/lib.rs`, (b) 16 × `convert_file` matcher arms, (c) 16 × CLI subcommand aliases in `crates/vokra-cli/src/convert.rs`, (d) 16 × §3.1 owner sign-off decisions per `本欄の署名・判定は owner 記入、CC は pre-fill しない` directive. Estimated: 1 wave of TDD tickets (~1-2 days). Owner action: authorize CC to start the wiring wave, then supply per-row sign-off decisions or ratify a batch-sign approach.
+
+**Voice-clone territory (4 rows: openvoice_v2 / knn_vc / freevc / meanvc) — ELVIS Act policy defer**:
+
+Per CLAUDE.md 設計判断 8, voice-cloning is intentionally excluded from the `ayutaz/vokra` public repo to avoid tool-distributor liability under ELVIS Act §3 (Tennessee, 2024-07-01) + NO FAKES Act (federal). These 4 converters should either be moved to `vokra-voiceclone-experimental` (M5-05 T15 owner-only) or explicitly Rejected in §3.1. Owner action: choose destination.

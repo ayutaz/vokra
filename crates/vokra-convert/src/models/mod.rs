@@ -71,6 +71,21 @@ pub(crate) mod cosyvoice2;
 pub(crate) mod cosyvoice3;
 pub(crate) mod csm;
 pub(crate) mod dac;
+// SBV2 v2 plan Task 11 (2026-07-26): DeBERTa v2 (`ku-nlp/deberta-v2-large-
+// japanese-char-wwm`, cc-by-sa-4.0) and v3 (`microsoft/deberta-v3-large`,
+// mit) safetensors → GGUF, category `bert`. BF16 pass-through mirror of
+// `funcodec` / `wespeaker`; hparams are checkpoint-shape-derived where
+// possible (never invented) with a documented, unverified "large"-variant
+// placeholder for the axes no single tensor shape can carry (`n_heads`,
+// `n_pos_buckets`, `max_pos_dist`). Tensor names pass through verbatim —
+// the HF -> `bert.*` rename table `DebertaV2Encoder::from_gguf` /
+// `DebertaV3Encoder::from_gguf` (`crates/vokra-bert`) expect is a real-
+// checkpoint-header question deferred to Task 30 (TODO(owner) markers in
+// both files). Lives here rather than in `vokra-bert` specifically to
+// avoid a `vokra-bert <-> vokra-convert` dependency cycle the original
+// plan's task split would have created — see `deberta_v2`'s module doc.
+pub mod deberta_v2;
+pub mod deberta_v3;
 // SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B (Apache 2.0)
 // safetensors → GGUF with the `vokra.dia.*` chunk group. Every tensor passes
 // through verbatim; every hparam is transcribed from the upstream config.json.
@@ -165,6 +180,21 @@ pub(crate) mod piper_plus;
 // Qwen3-TTS is codec-LM not vocoder-LM — the terminal step is
 // qwen3_tts_codec, NOT HiFTChain.
 pub(crate) mod qwen3_tts;
+// SBV2 v2 plan Task 25 (2026-07-26): Style-Bert-VITS2 v2
+// (`litagin02/style_bert_vits2` family, AGPL-3.0 -> LicenseClass::Copyleft
+// default) safetensors -> GGUF, category `tts`. BF16 pass-through mirror of
+// `deberta_v2` / `funcodec` / `wespeaker`; the `vokra.sbv2.*` hparam chunk
+// (22 required + 1 optional keys) is written only when a JSON config
+// side-car is supplied -- never filled with invented placeholders (see
+// `sbv2.rs`'s module doc "Hparams" section). Tensor names pass through
+// verbatim -- the upstream-name -> `sbv2.*` rename table
+// `SbV2Model::from_gguf` (`crates/vokra-models/src/sbv2/mod.rs`, Task 24)
+// expects is a real-checkpoint-header question deferred to Task 30. Lives
+// here rather than in `vokra-models` specifically to avoid a
+// `vokra-models <-> vokra-convert` dependency cycle the design doc's
+// original task split would have created -- see `sbv2`'s module doc (same
+// rationale as Task 11's `deberta_v2` / `deberta_v3`).
+pub(crate) mod sbv2;
 pub(crate) mod silero;
 pub mod speaker_3d;
 pub mod speechtokenizer;
@@ -272,6 +302,16 @@ pub(crate) mod vits_ja;
 pub(crate) mod voxtral;
 pub mod wespeaker;
 pub(crate) mod whisper;
+// SoTA plan Phase 5 codec (2026-07-28): HKUSTAudio/xcodec2 (**cc-by-nc-4.0**
+// weight — HF card front-matter, CC-verified 2026-07-15, sign-off 2026-07-23
+// yousan = ☑ Research-only, `docs/license-audit.md` §3.1). FSQ codec paired
+// with the Llasa TTS family — the M4-16 landing implemented the FSQ decode
+// op-side (`xcodec2_fsq`, `crates/vokra-ops/src/fsq_codec.rs`); this
+// converter completes the missing "safetensors → GGUF" side. F32 / F16 /
+// BF16 pass-through mirrors the neucodec / step_audio2_mini contract; the
+// license default is NonCommercial (fail-closed) so a commercial-mode
+// caller cannot silently bring up NC weights.
+pub(crate) mod xcodec2;
 // SoTA plan Phase 5 codec (2026-07-25): fnlp XY_Tokenizer_TTSD_V0
 // (apache-2.0) safetensors → GGUF. 1 kbps RVQ-8 @ 12.5 Hz — the codec
 // half of MOSS-TTSD. F32 / F16 / BF16 pass-through following the

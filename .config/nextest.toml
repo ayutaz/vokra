@@ -1,0 +1,59 @@
+## nextest 設定 (2026-07-28 新設)
+##
+## pre-push profile: CI 側で担保されるテスト (GPU backend / heavy integration)
+## を除外し、ローカルの pre-push は CPU-only の unit + 変更影響の catch に
+## 特化。CI の default profile (--profile default = このファイルの [profile.default])
+## は workspace 全体をカバーしたまま (safety 保全)。
+##
+## 削減対象と理由:
+##   * vokra-backend-{metal,cuda,vulkan,webgpu,coreml,qnn}
+##     - 実 GPU dispatch = M1 での Metal 個別 test 40-60s × N 本
+##     - CI runner (macos-latest / Linux+CUDA) が担う (parity workflows + nightly)
+##     - ローカル M1 では Metal だけ実行され、他 backend は cfg gate で stub
+##   * vokra-wasm-harness
+##     - wasm32 target build + browser 実行 = CI (parity + release build)
+##       で担保、ローカルで毎回走らせる価値なし
+##   * tests/parity (integration)
+##     - 実 GGUF/checkpoint 依存の heavy integration = parity-*-real.yml で担保
+##
+## 保持対象 (CPU-only 単体 test): vokra-{core,ops,convert,cli,eval,mmap,models,
+## capi,bert,kws-micro,vad-micro,piper-plus}。regression の 90% はここで catch。
+##
+## Bypass:
+##   * VOKRA_HOOK_DEEP=1 (pre-push hook 経由) で --profile default に fallback
+##   * `cargo nextest run --workspace` を直接叩けば default profile
+##
+## References:
+##   * https://nexte.st/docs/configuration/
+##   * .githooks/pre-push (この profile を "pre-push" として呼ぶ)
+
+[profile.default]
+## CI 側の profile: 従来動作を保持。変更なし。
+
+[profile.pre-push]
+## Local pre-push: CI-covered heavy tests を除外。
+##
+## nextest --filter-expr `not package(...)` は package 名の完全一致で除外。
+##
+## 追加除外 (2026-07-28 push #5 実測、Metal 51 skip 後の残主犯):
+##   * vokra-eval — mel_loss / UTMOS metric unit test が個別 78-88s (合計 ~7 min、
+##     Metal test より重い個別 test)。dev-profile link 時間が本体で、実 test body
+##     は ms 単位。CI 側 parity-utmos.yml が同 crate の real-weight leg を担保
+##     (`cargo test --release -p vokra-eval --test parity_utmos`)。unit-level 数式
+##     regression は spec 内部の decision で catch 可能。
+##
+## Test-level 除外 (2026-07-28 push #6 実測):
+##   * vokra-ops waveform_frontend::tests::forward_*  = wav2vec2 base 実 forward
+##     (49×512 output for 16 kHz 1 sec input) を dev profile で走らせると 165s
+##     見込み (release 10.88s × ~15x unoptimized penalty)。実 CPU 演算 = hang
+##     ではなく正当な heavy test。release build の parity CI で担保可能。
+##   * validate_and_forward_large_lv60k_layerall = layer-all traversal も同水準。
+default-filter = "not (package(vokra-backend-metal) + package(vokra-backend-cuda) + package(vokra-backend-vulkan) + package(vokra-backend-webgpu) + package(vokra-backend-coreml) + package(vokra-backend-qnn) + package(vokra-wasm-harness) + package(vokra-parity) + package(vokra-eval)) - test(/^waveform_frontend::tests::forward_wav2vec2_base_16khz/) - test(/^waveform_frontend::tests::forward_zero_input_zero_weights/) - test(/^waveform_frontend::tests::validate_and_forward_large_lv60k/)"
+
+## Fail fast: 1 本失敗したら stop (local iteration では詳細より速報優先)
+fail-fast = true
+
+## Timeout: 個別 test が >180s を超えたら kill。dev-profile では release より
+## unoptimized penalty × 10-15x があり、90s は正当な CPU-heavy unit を kill
+## する。180s なら本当の hang (mutex deadlock / infinite loop) だけを catch。
+slow-timeout = { period = "60s", terminate-after = 3 }

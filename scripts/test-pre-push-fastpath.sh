@@ -70,7 +70,7 @@ run_case() {
     fi
 }
 
-echo "test-pre-push-fastpath: 17 cases"
+echo "test-pre-push-fastpath: 29 cases"
 echo
 
 # --- FAST-PATH cases (all inputs are docs-shape) ---
@@ -98,7 +98,59 @@ run_case "LICENSE + NOTICE + README + CHANGELOG" \
     "fast" \
     "$(printf 'LICENSE\nNOTICE\nREADME.md\nCHANGELOG.md\n')"
 
+# --- FAST-PATH cases for tools/parity offline sidecars (Python, uv, vendor) ---
+run_case "tools/parity Python script only" \
+    "fast" \
+    "tools/parity/sbv2_prepare_checkpoint.py"
+
+run_case "tools/parity pyproject + uv.lock" \
+    "fast" \
+    "$(printf 'tools/parity/pyproject.toml\ntools/parity/uv.lock\n')"
+
+run_case "tools/parity vendor tree (Python + docs)" \
+    "fast" \
+    "$(printf 'tools/parity/vendor/vits/text_encoder.py\ntools/parity/vendor/vits/README.md\ntools/parity/vendor/vits/LICENSE\n')"
+
+run_case "tools/parity Python + docs mixed" \
+    "fast" \
+    "$(printf 'tools/parity/bin_to_safetensors.py\ndocs/handoff/x.md\n')"
+
+# --- FAST-PATH cases for fixture hash sidecars ---
+run_case "SBV2 fixture hash sidecar only" \
+    "fast" \
+    "tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf.sha256"
+
+run_case "audio fixture hash sidecar only" \
+    "fast" \
+    "tests/fixtures/audio/jfk-30s.wav.sha256"
+
+run_case "several fixture hash sidecars at once" \
+    "fast" \
+    "$(printf 'tests/fixtures/sbv2/sbv2-v2-multilingual-base.gguf.sha256\ntests/fixtures/sbv2/deberta-v2-large-japanese-char-wwm.gguf.sha256\ntests/fixtures/sbv2/deberta-v3-large.gguf.sha256\n')"
+
+# --- FAST-PATH case for _typos.toml (CI advisory config only) ---
+run_case "_typos.toml only (CI advisory config)" \
+    "fast" \
+    "_typos.toml"
+
 # --- DEEP-PATH cases (anything Rust-adjacent kills the fast-path) ---
+
+run_case "tools/parity Python + .rs together kills fast-path" \
+    "deep" \
+    "$(printf 'tools/parity/sbv2_prepare_checkpoint.py\ncrates/vokra-models/src/sbv2/mod.rs\n')"
+
+run_case "tools/parity non-Python (bash script) kills fast-path" \
+    "deep" \
+    "tools/parity/cuda_rtf_variance.sh"
+
+run_case "tests/fixtures non-.sha256 (README) kills fast-path" \
+    "deep" \
+    "tests/fixtures/sbv2/README.md"
+
+run_case "tests/fixtures manifest.json kills fast-path" \
+    "deep" \
+    "tests/fixtures/sbv2/reference_dump.manifest.json"
+
 run_case ".rs kills fast-path" \
     "deep" \
     "$(printf 'docs/foo.md\ncrates/vokra-core/src/lib.rs\n')"

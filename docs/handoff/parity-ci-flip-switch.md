@@ -1,15 +1,17 @@
 # parity-CI flip-the-switch — owner runbook
 
-Tracked / public. This handoff is the operational counterpart to the seven family
+Tracked / public. This handoff is the operational counterpart to the family
 parity-CI workflows landed on `feat/sota-phase1-2026-07-23` for SoTA plan Phase
-1-4. Every workflow is **opt-in by design** — landing the harness does not fire
+1-4 (originally seven; two follow-up workflows landed 2026-07-28 — see
+`deepfilternet3` and `deberta-v3-large` rows below, taking the current family
+count to **nine**). Every workflow is **opt-in by design** — landing the harness does not fire
 the multi-GB HF downloads. The owner "flips the switch" per family after
 sign-off; before that, cron / PR events clean-skip with a visible
 `::notice::` (fabricated-pass 禁止 = FR-EX-08).
 
 ## Overview — what "flip the switch" means
 
-The seven `parity-<family>-real.yml` workflows follow the
+The nine `parity-<family>-real.yml` workflows follow the
 `parity-kokoro-real.yml` precedent. Two independent surfaces gate whether a
 real-checkpoint parity run fires:
 
@@ -38,6 +40,8 @@ no downloads happen; the run is visibly a skip, never a green pass.
 | Qwen3-TTS | `.github/workflows/parity-qwen3-tts-real.yml` | `VOKRA_QWEN3_TTS_ENABLE` | `VOKRA_QWEN3_TTS_GGUF` (+ `_REFDIR`) | qwen3_tts_0_6b_base | SoTA Phase 3. Cron Mon 11:00 UTC. Only released family member today; a future 1.7B variant lands by extending the matrix. |
 | tts-continuous-vae | `.github/workflows/parity-tts-continuous-vae-real.yml` | `VOKRA_TTS_CONT_VAE_ENABLE` | `VOKRA_VOXCPM2_GGUF` / `VOKRA_VIBEVOICE_GGUF` (+ `_REFDIR`) | voxcpm2 / vibevoice | SoTA Phase 4. Cron Mon 11:30 UTC. `only=voxcpm2` / `only=vibevoice` dispatch input runs one leg. BF16 pre-widen sidecar may be required if the release ships without an F32/F16 pass-through arm. |
 | tts-japanese | `.github/workflows/parity-tts-japanese-real.yml` | `VOKRA_TTS_JA_ENABLE` | `VOKRA_IRODORI_GGUF` / `VOKRA_VITS_JA_GGUF` (+ `_REFDIR`) | irodori / vits_ja | SoTA Phase JA. Cron Mon 12:00 UTC. `only=irodori` / `only=vits_ja`. `vits_ja` is **operator-provisioned only** (HF mirror is 401 AND JSUT corpus terms forbid weight redistribution); the workflow does not auto-fetch, and the harness honest-skips absent `VOKRA_VITS_JA_GGUF`. Irodori HF slug is `Aratako/Irodori-TTS-500M-v3` (task-tracker's `Irodori-tech/…` is 401 — honest header). |
+| deepfilternet3 | `.github/workflows/parity-deepfilternet3-real.yml` | `VOKRA_DFN3_ENABLE` | `VOKRA_DFN3_GGUF` (+ `VOKRA_DFN3_DATA_URL` for byte-parity bundle, optional `VOKRA_DFN3_DATA_SHA256`) | deepfilternet3 | M4-20 T17 follow-up. Cron Mon 12:30 UTC. **Two-phase**: Phase A (`vokra-cli convert --model denoise` on the pinned GitHub `Rikorose/DeepFilterNet` zip @ `82b0c7ad…`, sha256 `49c52edc…`) runs on `_ENABLE=1`. Phase B (byte-parity vs `parity_denoise_dfn3` reference bundle) needs `_DATA_URL` populated with a pre-baked `.tar.gz` mirror — the exact `prep_noisy.py` recipe lives outside the repo. See `docs/handoff/parity-deepfilternet3-real.md` §Phase B for the two provisioning paths. |
+| deberta-v3-large | `.github/workflows/parity-deberta-v3-large-real.yml` | `VOKRA_DEBERTA_V3_ENABLE` | `VOKRA_DEBERTA_V3_HARNESS_READY` (gates Phase B dumper leg) | deberta-v3-large | SBV2 v2 plan Task 31 follow-up, 2026-07-28 (commit `62a10b7`). Cron Mon 13:00 UTC. **Two-phase**: Phase A (`vokra-cli convert --model deberta-v3` on the pinned `microsoft/deberta-v3-large` snapshot @ `64a8c8eab3e…` — upstream ships `pytorch_model.bin` only, bridged via `tools/parity/bin_to_safetensors.py` in the parity venv) runs on `_ENABLE=1` and re-checks the emitted bytes via `deberta_v3_convert_smoke (--ignored)`. Phase B (reference dumper via `tools/parity/deberta_v3_dump_reference.py --do-dump`) is opt-in on `VOKRA_DEBERTA_V3_HARNESS_READY=1` or dispatch input `run_dumper=true`; the Rust-side numerical parity leg honest-skips with a `::notice::` because no consumer harness exists yet (only synthetic + convert-smoke tests) — fabricated pass 禁止 (FR-EX-08). If HF hits 401, set `HF_TOKEN` as a repo secret (read-only, model-card-accepted). See `docs/handoff/parity-deberta-v3-large-real.md`. |
 
 Every workflow additionally carries a **narrow `pull_request` paths filter**
 that only fires on family-adjacent code, so per-PR runner minutes stay
@@ -76,7 +80,8 @@ For each family the owner intends to enable:
    Substitute one of `VOKRA_NEMO_ASR_ENABLE`,
    `VOKRA_WHISPER_EXTRAS_ENABLE`, `VOKRA_TTS_DAC_ENABLE`,
    `VOKRA_TTS_HIFTNET_ENABLE`, `VOKRA_QWEN3_TTS_ENABLE`,
-   `VOKRA_TTS_CONT_VAE_ENABLE`, `VOKRA_TTS_JA_ENABLE`.
+   `VOKRA_TTS_CONT_VAE_ENABLE`, `VOKRA_TTS_JA_ENABLE`,
+   `VOKRA_DFN3_ENABLE`, `VOKRA_DEBERTA_V3_ENABLE`.
 
    To disable later, `gh api -X DELETE repos/ayutaz/vokra/actions/variables/<PREFIX>_ENABLE`
    or delete via the UI. Every value other than `1` is treated as disabled

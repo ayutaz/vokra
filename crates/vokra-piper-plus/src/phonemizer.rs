@@ -54,7 +54,21 @@ pub struct PhonemizedUtterance {
 /// The returned ids index the voice's phoneme embedding table. The trait is
 /// the swap point for the eventual real G2P reuse (T09 / M4-09); M0 ships only
 /// [`MockPhonemizer`].
-pub trait Phonemizer {
+///
+/// # `Send + Sync` (SBV2 Task 23)
+///
+/// Bounded `Send + Sync` so a `Box<dyn Phonemizer>` can sit inside a type
+/// that implements [`vokra_core::engines::TtsEngine`] (that trait itself
+/// requires `Send + Sync` — `SbV2Phonemizer` in `vokra-models::sbv2` holds
+/// exactly such a `Box<dyn Phonemizer>` field, and `SbV2Model` — which wraps
+/// it — implements `TtsEngine`). Every known implementor already satisfies
+/// this: [`MockPhonemizer`] / [`PassthroughPhonemizer`] hold only a
+/// [`PhonemeTable`] (a `HashMap` + three `i64`s), and the real 8-language G2P
+/// (`integrations/vokra-piper-g2p`, out-of-workspace, M1-01-A) holds only
+/// plain lookup tables/encoders — no interior mutability or non-atomic
+/// shared state in any of them — so this is additive in practice, not a
+/// behavior change.
+pub trait Phonemizer: Send + Sync {
     /// Converts `text` to a phoneme id sequence (already wrapped with the
     /// voice's BOS/EOS/PAD framing).
     ///

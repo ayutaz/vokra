@@ -776,6 +776,11 @@ jobs:
   #   * scripts/publish/fetch_license.sh      — publish-side.
   #   * scripts/publish/upload.sh             — publish-side.
   #   * scripts/publish/make_model_card.py    — publish-side.
+  #   * scripts/publish/publish-one.sh        — publish-side; orchestrates
+  #                                             the three above plus its own
+  #                                             T3 (Copyleft) gates 6a-6e.
+  #                                             --self-test is hermetic (no
+  #                                             network, no real HF token).
   #
   # DELIBERATELY EXCLUDED: scripts/check-capi-thread-free.sh --self-test —
   # its --self-test already runs in-line inside
@@ -823,6 +828,7 @@ jobs:
           run "publish/fetch_license"         bash scripts/publish/fetch_license.sh      --self-test
           run "publish/upload"                bash scripts/publish/upload.sh             --self-test
           run "publish/make_model_card"       python3 scripts/publish/make_model_card.py --self-test
+          run "publish/publish-one"           bash scripts/publish/publish-one.sh        --self-test
           echo
           if [ "${fail}" -ne 0 ]; then
               echo "One or more --self-test invocations FAILED (see per-block output above)."

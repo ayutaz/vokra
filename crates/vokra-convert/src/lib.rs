@@ -654,6 +654,185 @@ pub enum ModelKind {
     /// / full-band 44 kHz / downstream re-training variants is a
     /// follow-up).
     VitsJa,
+    /// ku-nlp **DeBERTa v2** Japanese-character BERT checkpoint (SBV2 v2
+    /// plan Task 11, 2026-07-26): a Hugging Face `transformers`
+    /// `deberta_v2` safetensors checkpoint for Japanese text
+    /// (`ku-nlp/deberta-v2-large-japanese-char-wwm`, Apache-2.0
+    /// model-card header). F32 / F16 / BF16 tensors pass through verbatim
+    /// under upstream HF names; the runtime's `DebertaV2Encoder::from_gguf`
+    /// will be written to map those names to the encoder's internal tensor
+    /// access pattern (Task 30 — today the tensor-to-schema mapping is a
+    /// deferred follow-up; every tensor is emitted verbatim so the mapping
+    /// can be validated once a real checkpoint arrives). Every hparam
+    /// required by the encoder is transcribed verbatim from the checkpoint's
+    /// `config.json` and written to the `vokra.bert.deberta_v2.*` metadata
+    /// chunk group. Convert with [`convert_deberta_v2_file`] with a
+    /// safetensors checkpoint.
+    DebertaV2,
+    /// microsoft **DeBERTa v3** English BERT checkpoint (SBV2 v2 plan Task
+    /// 11, 2026-07-26; upstream/license label corrected 2026-07-27, Task 8):
+    /// a Hugging Face `transformers` `deberta_v3` safetensors checkpoint
+    /// for English text (`microsoft/deberta-v3-large`, MIT model-card
+    /// header — v3 is the SBV2 `checkpoint.bert_en` counterpart to v2's
+    /// `checkpoint.bert_ja`, see `crates/vokra-bert/src/lib.rs` and
+    /// `tests/fixtures/sbv2/README.md`). F32 / F16 / BF16 tensors pass
+    /// through verbatim under upstream HF names; the runtime's
+    /// `DebertaV3Encoder::from_gguf` will be written to map those names to
+    /// the encoder's internal tensor access pattern (Task 30 — today the
+    /// tensor-to-schema mapping is a deferred follow-up; every tensor is
+    /// emitted verbatim so the mapping can be validated once a real
+    /// checkpoint arrives). Every hparam required by the encoder is
+    /// transcribed verbatim from the checkpoint's `config.json` and
+    /// written to the `vokra.bert.deberta_v3.*` metadata chunk group.
+    /// Convert with [`convert_deberta_v3_file`] with a safetensors
+    /// checkpoint.
+    DebertaV3,
+    /// Style-Bert-VITS2 v2 (SBV2) official checkpoint (SBV2 v2 plan Task 25,
+    /// 2026-07-26): a `litagin02/style_bert_vits2`-family safetensors
+    /// checkpoint for the multilingual (JA + EN) base model
+    /// (`docs/superpowers/specs/2026-07-26-sbv2-v2-design.md`). F32 / F16 /
+    /// BF16 tensors pass through verbatim under upstream safetensors names;
+    /// the runtime's `SbV2Model::from_gguf`
+    /// (`crates/vokra-models/src/sbv2/mod.rs`, Task 24) will be written to
+    /// map those names to the `sbv2.*` tensor hierarchy it reads (Task 30
+    /// — today the tensor-to-schema mapping is a deferred follow-up; every
+    /// tensor is emitted verbatim so the mapping can be validated once a
+    /// real checkpoint arrives). Every one of the 22 required (+ 1
+    /// optional) `vokra.sbv2.*` hparam keys is written **only** when a JSON
+    /// config side-car is supplied — see [`convert_sbv2_file`]'s doc.
+    /// **Weight license defaults to `agpl-3.0`** (→
+    /// [`LicenseClass::Copyleft`](vokra_core::LicenseClass::Copyleft) —
+    /// redistribution is permitted with the original licence preserved,
+    /// never relabelled; design doc §9). Convert with [`convert_sbv2_file`].
+    SbV2,
+    /// HKUSTAudio **X-Codec 2** safetensors checkpoint (SoTA plan Phase 5
+    /// codec, 2026-07-28). Neural audio codec paired with the Llasa TTS
+    /// family. Distinct arch tag from every sibling codec (Mimi / DAC /
+    /// WavTokenizer / neucodec / step_audio2_mini) — X-Codec 2 is an
+    /// **FSQ** codec (finite scalar quantization, single FSQ level bank
+    /// per codebook), not RVQ, so silently sharing would mis-route the
+    /// runtime dispatch (FSQ has no residual chain).
+    ///
+    /// The M4-16 op-only landing implemented the FSQ decode path
+    /// (`xcodec2_fsq`, `crates/vokra-ops/src/fsq_codec.rs`, parity
+    /// fixture is synthetic vector-quantize-pytorch 1.17.8 projection);
+    /// this converter completes the "safetensors → GGUF" side. Every
+    /// F32 / F16 / BF16 tensor passes through verbatim under its upstream
+    /// safetensors name (the neucodec / step_audio2_mini contract).
+    ///
+    /// **Weight license default = `cc-by-nc-4.0`
+    /// ([`vokra_core::LicenseClass::NonCommercial`])**: the HF model
+    /// card at `huggingface.co/HKUSTAudio/xcodec2` carries `license:
+    /// cc-by-nc-4.0` on its YAML front-matter (CC-verified 2026-07-15;
+    /// sign-off 2026-07-23 yousan = ☑ Research-only,
+    /// `docs/license-audit.md` §3.1). The runtime M2-13 gate refuses to
+    /// load the resulting GGUF in commercial mode
+    /// (`requires_research_flag = true`) — an operator who never touched
+    /// the license flag cannot silently bring up an NC weight in
+    /// production. A user who legitimately holds the weight under a
+    /// distinct SPDX id overrides at the outer
+    /// `convert_file --license <spdx>` boundary (the same pattern
+    /// vits-ja / Whisper / kokoro use).
+    XCodec2,
+    /// Moonshot AI **Kimi-Audio-7B-Instruct** safetensors checkpoint
+    /// (SoTA plan Phase 5 fleet, 2026-07-28). Category = `s2s`. BF16
+    /// pass-through skeleton — every F32 / F16 / BF16 tensor passes
+    /// through verbatim under its upstream safetensors name; the
+    /// runtime binding + real-weight parity are deferred to owner
+    /// (docs/license-audit.md §3.1 sign-off queue). Provenance =
+    /// **MIT** (Permissive — no runtime-side attribution obligation).
+    /// The `--license <spdx>` override at the outer boundary lets a
+    /// caller ship the artifact under a distinct SPDX id.
+    KimiAudio,
+    /// StepFun **Step-Audio-2-mini** safetensors checkpoint (SoTA
+    /// plan Phase 3, 2026-07-25). Category = `s2s`. 8B S2S with a
+    /// dual codebook (semantic 1024 + acoustic 4096) and a
+    /// flow-matching mel decoder. BF16 pass-through skeleton — every
+    /// F32 / F16 / BF16 tensor passes through verbatim; real-weight
+    /// parity is deferred to owner (docs/license-audit.md §3.1
+    /// sign-off queue). Distinct arch tag from every sibling —
+    /// silently sharing would mis-route the runtime dispatch.
+    /// Provenance = **apache-2.0** (Permissive).
+    StepAudio2Mini,
+    /// Baichuan-Inc **Baichuan-Audio** safetensors checkpoint (SoTA
+    /// plan follow-on, 2026-07-25). Category = `s2s`. Baichuan
+    /// Omni-1.5 = Whisper-Large encoder + 8-layer RVQ 12.5 Hz +
+    /// Flow Matching mel + CosyVoice2 HiFi-GAN. BF16 pass-through
+    /// skeleton — every F32 / F16 / BF16 tensor passes through
+    /// verbatim following the qwen3_tts / vibevoice / voxcpm2
+    /// pattern; real-weight parity is deferred to owner
+    /// (docs/license-audit.md §3.1 sign-off queue). Provenance =
+    /// **apache-2.0** (Permissive).
+    BaichuanAudio,
+    /// fnlp **SpeechTokenizer** safetensors checkpoint (SoTA plan
+    /// Phase 5 codec fleet, 2026-07-28). Category = `codec`. RVQ
+    /// audio tokenizer paired with the SpeechGPT family. BF16
+    /// pass-through skeleton — every F32 / F16 / BF16 tensor passes
+    /// through verbatim under its upstream safetensors name; the
+    /// runtime binding + real-weight parity are deferred to owner.
+    /// Provenance = **apache-2.0** (Permissive).
+    Speechtokenizer,
+    /// Alibaba DAMO **FunCodec** safetensors checkpoint (SoTA plan
+    /// Phase 5 codec fleet, 2026-07-28). Category = `codec`. MIT
+    /// weight; the `funcodec-encodec-*` slug reuses the Meta EnCodec
+    /// naming convention on the upstream side but the code is an
+    /// independent MIT re-implementation (see the
+    /// `check-encodec-exclusion.sh` allowlist for the M2-13 gate
+    /// carve-out). BF16 pass-through skeleton — every F32 / F16 /
+    /// BF16 tensor passes through verbatim. Provenance = **MIT**
+    /// (Permissive).
+    Funcodec,
+    /// fnlp **XY_Tokenizer_TTSD_V0** safetensors checkpoint (SoTA
+    /// plan Phase 5 codec, 2026-07-25). Category = `codec`. 1 kbps
+    /// RVQ-8 @ 12.5 Hz — the codec half of MOSS-TTSD. BF16 pass-
+    /// through skeleton — every F32 / F16 / BF16 tensor passes
+    /// through verbatim following the qwen3_tts / vibevoice /
+    /// voxcpm2 landed contract. Provenance = **apache-2.0**
+    /// (Permissive).
+    XyTokenizer,
+    /// SparkAudio **Spark-TTS BiCodec** safetensors checkpoint (SoTA
+    /// plan Phase 5 codec fleet, 2026-07-28). Category = `codec`.
+    /// Dual-codebook (semantic + acoustic) codec paired with
+    /// Spark-TTS. BF16 pass-through skeleton — every F32 / F16 /
+    /// BF16 tensor passes through verbatim; the runtime binding is
+    /// deferred to owner. Provenance = **apache-2.0** (Permissive).
+    Bicodec,
+    /// Neuphonic **NeuCodec** safetensors checkpoint (SoTA plan
+    /// Phase 5 codec fleet, 2026-07-28). Category = `codec`. Neural
+    /// audio codec (RVQ) for streaming TTS. BF16 pass-through
+    /// skeleton — every F32 / F16 / BF16 tensor passes through
+    /// verbatim under its upstream safetensors name. Provenance =
+    /// **apache-2.0** (Permissive).
+    Neucodec,
+    /// SpeechBrain **spkrec-ecapa-voxceleb** (ECAPA-TDNN) speaker
+    /// verification checkpoint (SoTA plan Phase 5 speaker fleet,
+    /// 2026-07-28). Category = `speaker`. TDNN-based speaker
+    /// embedding extractor. BF16 pass-through skeleton — every F32 /
+    /// F16 / BF16 tensor passes through verbatim under its upstream
+    /// safetensors name. Provenance = **apache-2.0** (Permissive).
+    EcapaTdnn,
+    /// Wespeaker **wespeaker-voxceleb-resnet34-LM** speaker
+    /// verification checkpoint (SoTA plan Phase 5 speaker fleet,
+    /// 2026-07-28). Category = `speaker`. ResNet-34 speaker embedding
+    /// extractor with large-margin fine-tuning. BF16 pass-through
+    /// skeleton — every F32 / F16 / BF16 tensor passes through
+    /// verbatim under its upstream safetensors name. Provenance =
+    /// **apache-2.0** (Permissive).
+    Wespeaker,
+    /// Alibaba IIC **speech_eres2net_sv_zh-cn_16k-common** (3D-Speaker
+    /// ERes2Net) speaker verification checkpoint (SoTA plan Phase 5
+    /// speaker fleet, 2026-07-28). Category = `speaker`. Enhanced
+    /// Res2Net variant tuned on the 3D-Speaker Zh corpus. BF16 pass-
+    /// through skeleton — every F32 / F16 / BF16 tensor passes
+    /// through verbatim. Provenance = **apache-2.0** (Permissive).
+    Speaker3d,
+    /// FunAudioLLM **emotion2vec_plus_large** speech emotion
+    /// recognition checkpoint (SoTA plan Phase 5 emotion fleet,
+    /// 2026-07-28). Category = `emotion`. Emotion embedding extractor
+    /// paired with the FunASR family. BF16 pass-through skeleton —
+    /// every F32 / F16 / BF16 tensor passes through verbatim.
+    /// Provenance = **MIT** (Permissive).
+    Emotion2vec,
 }
 
 impl ModelKind {
@@ -823,6 +1002,95 @@ impl ModelKind {
             // tensor topology and are follow-up `--config` axes.
             "vits-ja" | "vits_ja" | "vits-jp" | "vits_jp" | "espnet-vits-ja" | "espnet-vits-jp"
             | "espnet-jsut-vits" | "espnet-jvs-vits" | "coeiroink-vits" => Some(Self::VitsJa),
+            // DeBERTa family (SBV2 v2 plan Task 11, 2026-07-26; v3 alias
+            // corrected 2026-07-27, Task 8). Accept the canonical short
+            // arch spelling, the underscore variant, and the real HF
+            // release id — different orgs for the two variants:
+            //   * v2 = `ku-nlp` (Japanese-character `checkpoint.bert_ja`)
+            //   * v3 = `microsoft` (English `checkpoint.bert_en`)
+            // The `ku-nlp/deberta-v3-...` string is NOT a real HF repo; it
+            // was a copy-paste from the v2 arm and is now covered as a
+            // negative case in `unknown_model_arg_returns_none`.
+            "deberta-v2" | "deberta_v2" | "ku-nlp/deberta-v2-large-japanese-char-wwm" => {
+                Some(Self::DebertaV2)
+            }
+            "deberta-v3" | "deberta_v3" | "microsoft/deberta-v3-large" => Some(Self::DebertaV3),
+            // Style-Bert-VITS2 v2 (SBV2 v2 plan Task 25, 2026-07-26). Accept
+            // the canonical arch spelling, the design doc's SKU id, and the
+            // common project-name spellings (with/without hyphen, with/
+            // without an explicit "v2"). All spellings resolve to the same
+            // multilingual base converter path today.
+            "sbv2"
+            | "sbv2-v2"
+            | "sbv2-v2-multilingual-base"
+            | "style-bert-vits2"
+            | "style_bert_vits2"
+            | "style-bert-vits2-v2" => Some(Self::SbV2),
+            // HKUSTAudio X-Codec 2 (SoTA plan Phase 5 codec, 2026-07-28).
+            // Accept the arch tag (`xcodec2`), the underscore + hyphen +
+            // dot variants of the canonical `x-codec-2` name, and the
+            // HF release id. Every spelling routes to the same FSQ
+            // pass-through converter today; a hypothetical `xcodec3` /
+            // `X-Codec-3` would be a distinct `ModelKind` when it lands.
+            "xcodec2" | "x-codec-2" | "x_codec_2" | "xcodec-2" | "x-codec2"
+            | "hkustaudio-xcodec2" => Some(Self::XCodec2),
+            // SoTA plan Phase 5 fleet (2026-07-28): 12 BF16 pass-through
+            // skeleton wire-ups. Each entry accepts the arch tag (== the
+            // `vokra.model.arch` string the converter stamps, underscore),
+            // the CLI-friendly hyphenated spelling, and the canonical HF
+            // release id (or its underscore variant) so id lookups return
+            // quickly without hitting a future prefix arm.
+            "kimi-audio"
+            | "kimi_audio"
+            | "kimi-audio-7b-instruct"
+            | "kimi-audio-7b"
+            | "moonshotai/kimi-audio-7b-instruct" => Some(Self::KimiAudio),
+            "step-audio2-mini"
+            | "step_audio2_mini"
+            | "step-audio-2-mini"
+            | "stepfun-ai/step-audio-2-mini" => Some(Self::StepAudio2Mini),
+            "baichuan-audio" | "baichuan_audio" | "baichuan-inc/baichuan-audio" => {
+                Some(Self::BaichuanAudio)
+            }
+            "speechtokenizer"
+            | "speech-tokenizer"
+            | "speech_tokenizer"
+            | "fnlp/speechtokenizer" => Some(Self::Speechtokenizer),
+            "funcodec"
+            | "fun-codec"
+            | "fun_codec"
+            | "funcodec-encodec-zh-en-16k-nq32-ds320"
+            | "funcodec-encodec-zh_en" => Some(Self::Funcodec),
+            "xy-tokenizer"
+            | "xy_tokenizer"
+            | "xy-tokenizer-ttsd-v0"
+            | "xy_tokenizer_ttsd_v0"
+            | "fnlp/xy_tokenizer_ttsd_v0" => Some(Self::XyTokenizer),
+            "bicodec"
+            | "bi-codec"
+            | "bi_codec"
+            | "spark-tts-bicodec"
+            | "sparkaudio/spark-tts-0.5b" => Some(Self::Bicodec),
+            "neucodec" | "neu-codec" | "neu_codec" | "neuphonic/neucodec" => Some(Self::Neucodec),
+            "ecapa-tdnn"
+            | "ecapa_tdnn"
+            | "spkrec-ecapa-voxceleb"
+            | "speechbrain/spkrec-ecapa-voxceleb" => Some(Self::EcapaTdnn),
+            "wespeaker"
+            | "we-speaker"
+            | "we_speaker"
+            | "wespeaker-voxceleb-resnet34-lm"
+            | "wespeaker/wespeaker-voxceleb-resnet34-lm" => Some(Self::Wespeaker),
+            "speaker-3d"
+            | "speaker_3d"
+            | "3d-speaker"
+            | "eres2net"
+            | "speech_eres2net_sv_zh-cn_16k-common"
+            | "iic/speech_eres2net_sv_zh-cn_16k-common" => Some(Self::Speaker3d),
+            "emotion2vec"
+            | "emotion-2vec"
+            | "emotion2vec-plus-large"
+            | "emotion2vec/emotion2vec_plus_large" => Some(Self::Emotion2vec),
             _ => None,
         }
     }
@@ -861,6 +1129,26 @@ impl ModelKind {
             Self::VibeVoice => "vibevoice",
             Self::Irodori => "irodori",
             Self::VitsJa => "vits-ja",
+            Self::DebertaV2 => "deberta-v2",
+            Self::DebertaV3 => "deberta-v3",
+            Self::SbV2 => "sbv2",
+            Self::XCodec2 => "xcodec2",
+            // SoTA plan Phase 5 fleet (2026-07-28): 12 BF16 pass-through
+            // skeleton wire-ups. Every canonical CLI slug is hyphenated
+            // (matches `from_arg` above); the arch tag (underscore) rides
+            // in the GGUF's `vokra.model.arch` chunk.
+            Self::KimiAudio => "kimi-audio",
+            Self::StepAudio2Mini => "step-audio2-mini",
+            Self::BaichuanAudio => "baichuan-audio",
+            Self::Speechtokenizer => "speechtokenizer",
+            Self::Funcodec => "funcodec",
+            Self::XyTokenizer => "xy-tokenizer",
+            Self::Bicodec => "bicodec",
+            Self::Neucodec => "neucodec",
+            Self::EcapaTdnn => "ecapa-tdnn",
+            Self::Wespeaker => "wespeaker",
+            Self::Speaker3d => "speaker-3d",
+            Self::Emotion2vec => "emotion2vec",
         }
     }
 }
@@ -1527,6 +1815,298 @@ pub fn convert_file_licensed(
             )];
             notes.extend(report.notes.iter().map(|n| format!("vits-ja warning: {n}")));
             (builder, notes)
+        }
+        ModelKind::DebertaV2 => {
+            // SBV2 v2 plan Task 11 (2026-07-26): pass every F32/F16/BF16
+            // tensor through verbatim under upstream HF names and stamp the
+            // `vokra.bert.deberta_v2.*` chunk group (DeBERTa v2 transformer
+            // encoder + hparams) from the transcribed constants in
+            // `models::deberta_v2`. Provenance = Apache-2.0 (Permissive —
+            // no runtime-side attribution obligation, per HF model card
+            // `ku-nlp/deberta-v2-large-japanese-char-wwm`). Tensor-to-schema
+            // mapping (Task 30) is deferred; every tensor is emitted verbatim
+            // so the mapping can be validated once a real checkpoint arrives.
+            let report = convert_deberta_v2_file(input, output, license)?;
+            let notes = vec![format!(
+                "deberta-v2: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::DebertaV2,
+                tensor_count: report.written,
+                metadata_count: 0, // Populated by convert_deberta_v2_file's builder
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::DebertaV3 => {
+            // SBV2 v2 plan Task 11 (2026-07-26; upstream/license label
+            // corrected 2026-07-27, Task 8): pass every F32/F16/BF16
+            // tensor through verbatim under upstream HF names and stamp the
+            // `vokra.bert.deberta_v3.*` chunk group (DeBERTa v3 transformer
+            // encoder + hparams) from the transcribed constants in
+            // `models::deberta_v3`. Provenance = MIT (Permissive — no
+            // runtime-side attribution obligation, per HF model card
+            // `microsoft/deberta-v3-large`; the real EN upstream, distinct
+            // from v2's `ku-nlp` JA upstream). Tensor-to-schema mapping
+            // (Task 30) is deferred; every tensor is emitted verbatim so
+            // the mapping can be validated once a real checkpoint arrives.
+            let report = convert_deberta_v3_file(input, output, license)?;
+            let notes = vec![format!(
+                "deberta-v3: {} float weights written verbatim, {} non-float skipped",
+                report.written, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::DebertaV3,
+                tensor_count: report.written,
+                metadata_count: 0, // Populated by convert_deberta_v3_file's builder
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::SbV2 => {
+            // SBV2 v2 plan Task 25 (2026-07-26): pass every F32/F16/BF16
+            // tensor through verbatim under its upstream safetensors name.
+            // This generic dispatch path has no config-side-car parameter
+            // in its own signature, so it always converts with
+            // config_side_car = None -- the vokra.sbv2.* hparam chunk is
+            // then omitted entirely rather than filled with invented
+            // placeholders (see convert_sbv2_file's doc). Call
+            // convert_sbv2_file(..., Some(config_path), ...) directly for a
+            // hparam-complete GGUF. Tensor-to-schema mapping (Task 30) is
+            // deferred; every tensor is emitted verbatim so the mapping can
+            // be validated once a real checkpoint arrives.
+            let report = convert_sbv2_file(input, output, None, license)?;
+            let mut notes = vec![format!(
+                "sbv2: {} float weights written verbatim ({} read, {} non-float skipped), \
+                 vokra.sbv2.* hparam chunk written: {}",
+                report.written, report.read, report.skipped_non_float, report.hparams_written,
+            )];
+            if !report.hparams_written {
+                notes.push(
+                    "no --config side-car: vokra.sbv2.* metadata was not written -- call \
+                     convert_sbv2_file directly with a config path for a hparam-complete GGUF"
+                        .to_owned(),
+                );
+            }
+            return Ok(ConvertSummary {
+                model: ModelKind::SbV2,
+                tensor_count: report.written,
+                metadata_count: 0, // Populated by convert_sbv2_file's builder
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::XCodec2 => {
+            // SoTA plan Phase 5 codec (2026-07-28): pass every F32 / F16 /
+            // BF16 tensor through verbatim and stamp the
+            // `vokra.model.arch = "xcodec2"` + `vokra.model.category =
+            // "codec"` + `vokra.provenance.upstream_hf =
+            // "HKUSTAudio/xcodec2"` chunk group. Provenance defaults to
+            // **cc-by-nc-4.0 / NonCommercial** — the runtime M2-13 gate
+            // refuses to load in commercial mode. A caller who trained
+            // on a permissive corpus (or holds the weight under a
+            // distinct SPDX id) overrides at the outer `--license
+            // <spdx>` boundary below (same pattern as vits-ja /
+            // Whisper / kokoro).
+            let (builder, report) = models::xcodec2::convert(bytes)?;
+            let notes = vec![format!(
+                "xcodec2: {} float weights written verbatim ({} BF16 passthrough — runtime widens \
+                 to f32 exactly at load), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            (builder, notes)
+        }
+        // ---- SoTA plan Phase 5 fleet (2026-07-28): 12 file-based BF16 -----
+        // pass-through skeleton wire-ups. Each module exposes only a
+        // `convert_<name>_file(input, output, license)` entry (no
+        // bytes-based `convert()` helper), so we early-return with a
+        // `ConvertSummary` following the DebertaV2 / DebertaV3 / SbV2
+        // dispatch pattern. The outer `bytes = std::fs::read(input)?`
+        // is unused on this path (the file-based converter does its own
+        // I/O) — matches the DebertaV2 arm's cost profile.
+        ModelKind::KimiAudio => {
+            let report = models::kimi_audio::convert_kimi_audio_file(input, output, license)?;
+            let notes = vec![format!(
+                "kimi-audio: {} float weights written verbatim ({} BF16 passthrough — runtime \
+                 widens to f32 exactly at load), {} non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::KimiAudio,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::StepAudio2Mini => {
+            let report =
+                models::step_audio2_mini::convert_step_audio2_mini_file(input, output, license)?;
+            let notes = vec![format!(
+                "step-audio2-mini: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::StepAudio2Mini,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::BaichuanAudio => {
+            let report =
+                models::baichuan_audio::convert_baichuan_audio_file(input, output, license)?;
+            let notes = vec![format!(
+                "baichuan-audio: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::BaichuanAudio,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Speechtokenizer => {
+            let report =
+                models::speechtokenizer::convert_speechtokenizer_file(input, output, license)?;
+            let notes = vec![format!(
+                "speechtokenizer: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Speechtokenizer,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Funcodec => {
+            let report = models::funcodec::convert_funcodec_file(input, output, license)?;
+            let notes = vec![format!(
+                "funcodec: {} float weights written verbatim ({} BF16 passthrough — runtime \
+                 widens to f32 exactly at load), {} non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Funcodec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::XyTokenizer => {
+            let report = models::xy_tokenizer::convert_xy_tokenizer_file(input, output, license)?;
+            let notes = vec![format!(
+                "xy-tokenizer: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::XyTokenizer,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Bicodec => {
+            let report = models::bicodec::convert_bicodec_file(input, output, license)?;
+            let notes = vec![format!(
+                "bicodec: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Bicodec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Neucodec => {
+            let report = models::neucodec::convert_neucodec_file(input, output, license)?;
+            let notes = vec![format!(
+                "neucodec: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Neucodec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::EcapaTdnn => {
+            let report = models::ecapa_tdnn::convert_ecapa_tdnn_file(input, output, license)?;
+            let notes = vec![format!(
+                "ecapa-tdnn: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::EcapaTdnn,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Wespeaker => {
+            let report = models::wespeaker::convert_wespeaker_file(input, output, license)?;
+            let notes = vec![format!(
+                "wespeaker: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Wespeaker,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Speaker3d => {
+            let report = models::speaker_3d::convert_speaker_3d_file(input, output, license)?;
+            let notes = vec![format!(
+                "speaker-3d: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Speaker3d,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Emotion2vec => {
+            let report = models::emotion2vec::convert_emotion2vec_file(input, output, license)?;
+            let notes = vec![format!(
+                "emotion2vec: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Emotion2vec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
         }
     };
 
@@ -2239,6 +2819,31 @@ pub use models::voxtral::VoxtralConfig;
 // override argument (mirror of the `denoise` re-export pattern; the
 // `models::xy_tokenizer` module is private otherwise).
 pub use models::xy_tokenizer::{XyTokenizerReport, convert_xy_tokenizer_file};
+// SBV2 v2 plan Task 11 (2026-07-26): DeBERTa v2 / v3 (category `bert`) —
+// self-contained file-based entry points, re-exported so external callers
+// (integration tests / a future `ModelKind::DebertaV2`/`DebertaV3` wiring
+// pass, Task 12) can reach them (the `pub fn`s alone are unreachable —
+// and thus dead code — because `mod models` itself is private, same
+// reasoning as the `speaker_3d` re-export above). Not yet routed through
+// `ModelKind` / `convert_file` dispatch — that wiring is Task 12's job.
+pub use models::deberta_v2::{ConvertReport, convert_deberta_v2_file};
+pub use models::deberta_v3::convert_deberta_v3_file;
+// `sbv2::ConvertReport` is re-exported under an alias, not the bare name:
+// `deberta_v2::ConvertReport` already claims `vokra_convert::ConvertReport`
+// above, and the two are distinct types (SBV2's carries `hparams_written`,
+// DeBERTa's does not), so re-exporting both under the same crate-root name
+// would collide (E0252).
+pub use models::sbv2::{ConvertReport as SbV2ConvertReport, convert_sbv2_file};
+// SoTA plan Phase 5 codec (2026-07-28): HKUSTAudio/xcodec2
+// (**cc-by-nc-4.0** — HF card front-matter, `docs/license-audit.md` §3.1
+// 2026-07-23 yousan = ☑ Research-only). Standalone file-based entry point
+// with an SPDX override argument (mirror of the neucodec /
+// step_audio2_mini pattern). The runtime `ModelKind::XCodec2` dispatch
+// arm above shares the same `models::xcodec2::convert` internal helper,
+// so a caller who prefers `--model xcodec2` via `convert_file_licensed`
+// and a caller who calls `convert_xcodec2_file` directly land the same
+// bytes.
+pub use models::xcodec2::{XCodec2Report, convert_xcodec2_file};
 
 /// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through
 /// [`convert_voxtral_file_with_adapter_config`] (a JSON path) or by
@@ -3525,6 +4130,14 @@ mod modelkind_alias_and_roundtrip_tests {
             VibeVoice,
             Irodori,
             VitsJa,
+            // SBV2 v2 plan Task 11 (2026-07-26) + Task 8 (2026-07-27):
+            // pin every DeBERTa/SBV2 variant's `as_arg → from_arg`
+            // round-trip so a dropped alias in either direction fails
+            // loudly (mirror of the guard the rest of this list provides
+            // for the Phase 2-5 additions above).
+            DebertaV2,
+            DebertaV3,
+            SbV2,
         ] {
             let arg = kind.as_arg();
             assert!(
@@ -3748,6 +4361,38 @@ mod modelkind_alias_and_roundtrip_tests {
             ),
             // Whisper — the historical alias.
             (ModelKind::Whisper, &["whisper", "whisper-base"]),
+            // SBV2 v2 plan Task 11 (2026-07-26) — DeBERTa v2 (JA) uses
+            // the ku-nlp Japanese-character upstream; v3 (EN, Task 8
+            // 2026-07-27 correction) uses the microsoft English
+            // upstream. Note the two variants dispatch to distinct
+            // orgs (`ku-nlp` vs `microsoft`); the nonexistent
+            // `ku-nlp/deberta-v3-large-japanese-char-wwm` string is
+            // pinned as a negative case in
+            // `unknown_model_arg_returns_none`.
+            (
+                ModelKind::DebertaV2,
+                &[
+                    "deberta-v2",
+                    "deberta_v2",
+                    "ku-nlp/deberta-v2-large-japanese-char-wwm",
+                ],
+            ),
+            (
+                ModelKind::DebertaV3,
+                &["deberta-v3", "deberta_v3", "microsoft/deberta-v3-large"],
+            ),
+            // SBV2 v2 plan Task 25 (2026-07-26) — Style-Bert-VITS2 v2.
+            (
+                ModelKind::SbV2,
+                &[
+                    "sbv2",
+                    "sbv2-v2",
+                    "sbv2-v2-multilingual-base",
+                    "style-bert-vits2",
+                    "style_bert_vits2",
+                    "style-bert-vits2-v2",
+                ],
+            ),
         ];
         for (kind, aliases) in cases {
             for a in aliases.iter() {
@@ -3777,6 +4422,12 @@ mod modelkind_alias_and_roundtrip_tests {
             "voxcpm3",                  // future major bump not aliased today
             "vits-en",                  // vits-* only covers the JA arm here
             "whisper-base.en",          // registry-only alias, not CLI arg
+            // SBV2 v2 plan Task 8 (2026-07-27) regression pin: the
+            // nonexistent copy-paste alias that used to silently resolve
+            // to Some(DebertaV3). MUST return None so a future re-add of
+            // the same drift is caught by this test rather than by an
+            // owner discovering a wrong-shape GGUF at conversion time.
+            "ku-nlp/deberta-v3-large-japanese-char-wwm",
         ] {
             assert!(
                 ModelKind::from_arg(s).is_none(),
