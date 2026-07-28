@@ -221,39 +221,127 @@ def convert_bin_to_safetensors(bin_path: Path, out_path: Path) -> tuple[int, int
     return len(state_dict), total_params
 
 
+def convert_local(input_path: Path, output_path: Path) -> int:
+    """Mode b: convert a single local torch pickle (.bin / .pt) to a specific
+    .safetensors path. Same fail-loud posture as Mode a — see the module
+    docstring. Refuses to overwrite an existing output.
+
+    Encountered on `FunAudioLLM/Fun-CosyVoice3-0.5B-2512` (llm.pt / flow.pt /
+    hift.pt shipped side-by-side; the whole-repo Mode a walk would fail its
+    single-file assumption).
+    """
+    if not input_path.exists():
+        sys.exit(f"{LOG_PREFIX} --input {input_path} does not exist.")
+    if not input_path.is_file():
+        sys.exit(f"{LOG_PREFIX} --input {input_path} is not a regular file.")
+    if output_path.exists():
+        sys.exit(
+            f"{LOG_PREFIX} refusing to overwrite existing --output {output_path}. "
+            "Remove it first or pick a different --output path."
+        )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"{LOG_PREFIX} converting {input_path} -> {output_path}")
+    tensor_count, total_params = convert_bin_to_safetensors(input_path, output_path)
+    print(
+        f"{LOG_PREFIX} wrote {output_path} "
+        f"({tensor_count} tensors, {total_params:,} total params)"
+    )
+    print(f"{LOG_PREFIX} sha256 {sha256_of(output_path)}  {output_path.name}")
+    print(f"{LOG_PREFIX} done.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Download an HF model that ships .bin only, convert it to "
-            ".safetensors alongside, and print the output sha256. See the "
-            "module docstring for the FR-EX-08 fail-loud posture."
+            "Convert a torch pickle checkpoint (.bin / .pt) to safetensors. "
+            "Two mutually-exclusive modes: (a) --hf-repo + --output-dir "
+            "downloads a whole HF snapshot then converts the single .bin file "
+            "in it (the original DeBERTa-v3-large use case); (b) --input + "
+            "--output takes a local .bin / .pt file already on disk and "
+            "writes a specific .safetensors path (the Fun-CosyVoice3 use case "
+            "— the release ships llm.pt / flow.pt / hift.pt so the caller picks "
+            "one component at a time). See the module docstring for the "
+            "FR-EX-08 fail-loud posture."
         )
     )
     parser.add_argument(
         "--hf-repo",
-        required=True,
-        help="HuggingFace repo id (e.g. microsoft/deberta-v3-large).",
+        default=None,
+        help=(
+            "(Mode a) HuggingFace repo id (e.g. microsoft/deberta-v3-large). "
+            "Requires --output-dir; incompatible with --input/--output."
+        ),
     )
     parser.add_argument(
         "--output-dir",
-        required=True,
+        default=None,
         type=Path,
-        help="Directory to download the checkpoint into (created if absent).",
+        help=(
+            "(Mode a) Directory to download the checkpoint into (created if "
+            "absent)."
+        ),
     )
     parser.add_argument(
         "--revision",
         default=None,
-        help="Optional HF revision (branch / tag / commit sha) to pin.",
+        help="(Mode a) Optional HF revision (branch / tag / commit sha) to pin.",
     )
     parser.add_argument(
         "--out-basename",
         default="model.safetensors",
         help=(
-            "Output filename for the converted safetensors "
+            "(Mode a) Output filename for the converted safetensors "
             "(default: model.safetensors, mirrors HF convention)."
         ),
     )
+    parser.add_argument(
+        "--input",
+        default=None,
+        type=Path,
+        help=(
+            "(Mode b) Local torch pickle file (.bin / .pt) already on disk to "
+            "convert. Requires --output; incompatible with --hf-repo/--output-dir. "
+            "The file is loaded with torch.load(weights_only=True) — see the "
+            "module docstring for the fail-loud posture."
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        type=Path,
+        help=(
+            "(Mode b) Local .safetensors file to write. The parent directory "
+            "is created if absent. Refuses to overwrite an existing file."
+        ),
+    )
     args = parser.parse_args()
+
+    # Mode selection — exactly one of the two triples must be complete.
+    mode_a = args.hf_repo is not None or args.output_dir is not None
+    mode_b = args.input is not None or args.output is not None
+    if mode_a and mode_b:
+        sys.exit(
+            f"{LOG_PREFIX} --hf-repo/--output-dir (download mode) and --input/--output "
+            "(local mode) are mutually exclusive. Pass one triple, not both."
+        )
+    if not mode_a and not mode_b:
+        sys.exit(
+            f"{LOG_PREFIX} no mode selected — pass either --hf-repo + --output-dir "
+            "(download mode) or --input + --output (local mode). See --help."
+        )
+    if mode_b:
+        if args.input is None or args.output is None:
+            sys.exit(
+                f"{LOG_PREFIX} local mode requires BOTH --input and --output."
+            )
+        return convert_local(args.input, args.output)
+    # Mode a fall-through — the download path.
+    if args.hf_repo is None or args.output_dir is None:
+        sys.exit(
+            f"{LOG_PREFIX} download mode requires BOTH --hf-repo and --output-dir."
+        )
 
     print(f"{LOG_PREFIX} downloading {args.hf_repo!r} -> {args.output_dir}")
     local_dir = download_checkpoint(args.hf_repo, args.output_dir, args.revision)
