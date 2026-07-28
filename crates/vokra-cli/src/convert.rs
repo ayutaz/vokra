@@ -44,6 +44,18 @@ USAGE:
     vokra-cli convert --model sbv2 --input <voice.safetensors> --output <out.gguf>
     vokra-cli convert --model deberta-v2 --input <bert_ja.safetensors> --output <out.gguf>
     vokra-cli convert --model deberta-v3 --input <bert_en.safetensors> --output <out.gguf>
+    vokra-cli convert --model kimi-audio --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model step-audio2-mini --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model baichuan-audio --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model speechtokenizer --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model funcodec --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model xy-tokenizer --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model bicodec --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model neucodec --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model ecapa-tdnn --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model wespeaker --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model speaker-3d --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model emotion2vec --input <model.safetensors> --output <out.gguf>
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
@@ -53,7 +65,11 @@ OPTIONS:
                               distil-whisper | kotoba-whisper |
                               chatterbox | chatterbox-turbo | chatterbox-nano |
                               qwen3-tts | voxcpm | vibevoice | irodori | vits-ja |
-                              sbv2 | deberta-v2 | deberta-v3
+                              sbv2 | deberta-v2 | deberta-v3 | xcodec2 |
+                              kimi-audio | step-audio2-mini | baichuan-audio |
+                              speechtokenizer | funcodec | xy-tokenizer |
+                              bicodec | neucodec | ecapa-tdnn | wespeaker |
+                              speaker-3d | emotion2vec
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
@@ -404,7 +420,11 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          distil-whisper | kotoba-whisper | \
                          chatterbox | chatterbox-turbo | chatterbox-nano | \
                          qwen3-tts | voxcpm | vibevoice | irodori | vits-ja | \
-                         sbv2 | deberta-v2 | deberta-v3 | xcodec2)"
+                         sbv2 | deberta-v2 | deberta-v3 | xcodec2 | \
+                         kimi-audio | step-audio2-mini | baichuan-audio | \
+                         speechtokenizer | funcodec | xy-tokenizer | \
+                         bicodec | neucodec | ecapa-tdnn | wespeaker | \
+                         speaker-3d | emotion2vec)"
                     )
                 })?);
                 i += 2;
@@ -1155,6 +1175,23 @@ mod tests {
             ("sbv2", ModelKind::SbV2),
             ("deberta-v2", ModelKind::DebertaV2),
             ("deberta-v3", ModelKind::DebertaV3),
+            ("xcodec2", ModelKind::XCodec2),
+            // SoTA plan Phase 5 fleet (2026-07-28): 12 BF16 pass-through
+            // skeleton wire-ups. Each entry pins the canonical hyphenated
+            // CLI spelling ↔ `ModelKind` variant + confirms the USAGE
+            // header lists the name literally (assertion below).
+            ("kimi-audio", ModelKind::KimiAudio),
+            ("step-audio2-mini", ModelKind::StepAudio2Mini),
+            ("baichuan-audio", ModelKind::BaichuanAudio),
+            ("speechtokenizer", ModelKind::Speechtokenizer),
+            ("funcodec", ModelKind::Funcodec),
+            ("xy-tokenizer", ModelKind::XyTokenizer),
+            ("bicodec", ModelKind::Bicodec),
+            ("neucodec", ModelKind::Neucodec),
+            ("ecapa-tdnn", ModelKind::EcapaTdnn),
+            ("wespeaker", ModelKind::Wespeaker),
+            ("speaker-3d", ModelKind::Speaker3d),
+            ("emotion2vec", ModelKind::Emotion2vec),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

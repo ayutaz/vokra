@@ -734,6 +734,105 @@ pub enum ModelKind {
     /// `convert_file --license <spdx>` boundary (the same pattern
     /// vits-ja / Whisper / kokoro use).
     XCodec2,
+    /// Moonshot AI **Kimi-Audio-7B-Instruct** safetensors checkpoint
+    /// (SoTA plan Phase 5 fleet, 2026-07-28). Category = `s2s`. BF16
+    /// pass-through skeleton — every F32 / F16 / BF16 tensor passes
+    /// through verbatim under its upstream safetensors name; the
+    /// runtime binding + real-weight parity are deferred to owner
+    /// (docs/license-audit.md §3.1 sign-off queue). Provenance =
+    /// **MIT** (Permissive — no runtime-side attribution obligation).
+    /// The `--license <spdx>` override at the outer boundary lets a
+    /// caller ship the artifact under a distinct SPDX id.
+    KimiAudio,
+    /// StepFun **Step-Audio-2-mini** safetensors checkpoint (SoTA
+    /// plan Phase 3, 2026-07-25). Category = `s2s`. 8B S2S with a
+    /// dual codebook (semantic 1024 + acoustic 4096) and a
+    /// flow-matching mel decoder. BF16 pass-through skeleton — every
+    /// F32 / F16 / BF16 tensor passes through verbatim; real-weight
+    /// parity is deferred to owner (docs/license-audit.md §3.1
+    /// sign-off queue). Distinct arch tag from every sibling —
+    /// silently sharing would mis-route the runtime dispatch.
+    /// Provenance = **apache-2.0** (Permissive).
+    StepAudio2Mini,
+    /// Baichuan-Inc **Baichuan-Audio** safetensors checkpoint (SoTA
+    /// plan follow-on, 2026-07-25). Category = `s2s`. Baichuan
+    /// Omni-1.5 = Whisper-Large encoder + 8-layer RVQ 12.5 Hz +
+    /// Flow Matching mel + CosyVoice2 HiFi-GAN. BF16 pass-through
+    /// skeleton — every F32 / F16 / BF16 tensor passes through
+    /// verbatim following the qwen3_tts / vibevoice / voxcpm2
+    /// pattern; real-weight parity is deferred to owner
+    /// (docs/license-audit.md §3.1 sign-off queue). Provenance =
+    /// **apache-2.0** (Permissive).
+    BaichuanAudio,
+    /// fnlp **SpeechTokenizer** safetensors checkpoint (SoTA plan
+    /// Phase 5 codec fleet, 2026-07-28). Category = `codec`. RVQ
+    /// audio tokenizer paired with the SpeechGPT family. BF16
+    /// pass-through skeleton — every F32 / F16 / BF16 tensor passes
+    /// through verbatim under its upstream safetensors name; the
+    /// runtime binding + real-weight parity are deferred to owner.
+    /// Provenance = **apache-2.0** (Permissive).
+    Speechtokenizer,
+    /// Alibaba DAMO **FunCodec** safetensors checkpoint (SoTA plan
+    /// Phase 5 codec fleet, 2026-07-28). Category = `codec`. MIT
+    /// weight; the `funcodec-encodec-*` slug reuses the Meta EnCodec
+    /// naming convention on the upstream side but the code is an
+    /// independent MIT re-implementation (see the
+    /// `check-encodec-exclusion.sh` allowlist for the M2-13 gate
+    /// carve-out). BF16 pass-through skeleton — every F32 / F16 /
+    /// BF16 tensor passes through verbatim. Provenance = **MIT**
+    /// (Permissive).
+    Funcodec,
+    /// fnlp **XY_Tokenizer_TTSD_V0** safetensors checkpoint (SoTA
+    /// plan Phase 5 codec, 2026-07-25). Category = `codec`. 1 kbps
+    /// RVQ-8 @ 12.5 Hz — the codec half of MOSS-TTSD. BF16 pass-
+    /// through skeleton — every F32 / F16 / BF16 tensor passes
+    /// through verbatim following the qwen3_tts / vibevoice /
+    /// voxcpm2 landed contract. Provenance = **apache-2.0**
+    /// (Permissive).
+    XyTokenizer,
+    /// SparkAudio **Spark-TTS BiCodec** safetensors checkpoint (SoTA
+    /// plan Phase 5 codec fleet, 2026-07-28). Category = `codec`.
+    /// Dual-codebook (semantic + acoustic) codec paired with
+    /// Spark-TTS. BF16 pass-through skeleton — every F32 / F16 /
+    /// BF16 tensor passes through verbatim; the runtime binding is
+    /// deferred to owner. Provenance = **apache-2.0** (Permissive).
+    Bicodec,
+    /// Neuphonic **NeuCodec** safetensors checkpoint (SoTA plan
+    /// Phase 5 codec fleet, 2026-07-28). Category = `codec`. Neural
+    /// audio codec (RVQ) for streaming TTS. BF16 pass-through
+    /// skeleton — every F32 / F16 / BF16 tensor passes through
+    /// verbatim under its upstream safetensors name. Provenance =
+    /// **apache-2.0** (Permissive).
+    Neucodec,
+    /// SpeechBrain **spkrec-ecapa-voxceleb** (ECAPA-TDNN) speaker
+    /// verification checkpoint (SoTA plan Phase 5 speaker fleet,
+    /// 2026-07-28). Category = `speaker`. TDNN-based speaker
+    /// embedding extractor. BF16 pass-through skeleton — every F32 /
+    /// F16 / BF16 tensor passes through verbatim under its upstream
+    /// safetensors name. Provenance = **apache-2.0** (Permissive).
+    EcapaTdnn,
+    /// Wespeaker **wespeaker-voxceleb-resnet34-LM** speaker
+    /// verification checkpoint (SoTA plan Phase 5 speaker fleet,
+    /// 2026-07-28). Category = `speaker`. ResNet-34 speaker embedding
+    /// extractor with large-margin fine-tuning. BF16 pass-through
+    /// skeleton — every F32 / F16 / BF16 tensor passes through
+    /// verbatim under its upstream safetensors name. Provenance =
+    /// **apache-2.0** (Permissive).
+    Wespeaker,
+    /// Alibaba IIC **speech_eres2net_sv_zh-cn_16k-common** (3D-Speaker
+    /// ERes2Net) speaker verification checkpoint (SoTA plan Phase 5
+    /// speaker fleet, 2026-07-28). Category = `speaker`. Enhanced
+    /// Res2Net variant tuned on the 3D-Speaker Zh corpus. BF16 pass-
+    /// through skeleton — every F32 / F16 / BF16 tensor passes
+    /// through verbatim. Provenance = **apache-2.0** (Permissive).
+    Speaker3d,
+    /// FunAudioLLM **emotion2vec_plus_large** speech emotion
+    /// recognition checkpoint (SoTA plan Phase 5 emotion fleet,
+    /// 2026-07-28). Category = `emotion`. Emotion embedding extractor
+    /// paired with the FunASR family. BF16 pass-through skeleton —
+    /// every F32 / F16 / BF16 tensor passes through verbatim.
+    /// Provenance = **MIT** (Permissive).
+    Emotion2vec,
 }
 
 impl ModelKind {
@@ -935,6 +1034,63 @@ impl ModelKind {
             // `X-Codec-3` would be a distinct `ModelKind` when it lands.
             "xcodec2" | "x-codec-2" | "x_codec_2" | "xcodec-2" | "x-codec2"
             | "hkustaudio-xcodec2" => Some(Self::XCodec2),
+            // SoTA plan Phase 5 fleet (2026-07-28): 12 BF16 pass-through
+            // skeleton wire-ups. Each entry accepts the arch tag (== the
+            // `vokra.model.arch` string the converter stamps, underscore),
+            // the CLI-friendly hyphenated spelling, and the canonical HF
+            // release id (or its underscore variant) so id lookups return
+            // quickly without hitting a future prefix arm.
+            "kimi-audio"
+            | "kimi_audio"
+            | "kimi-audio-7b-instruct"
+            | "kimi-audio-7b"
+            | "moonshotai/kimi-audio-7b-instruct" => Some(Self::KimiAudio),
+            "step-audio2-mini"
+            | "step_audio2_mini"
+            | "step-audio-2-mini"
+            | "stepfun-ai/step-audio-2-mini" => Some(Self::StepAudio2Mini),
+            "baichuan-audio" | "baichuan_audio" | "baichuan-inc/baichuan-audio" => {
+                Some(Self::BaichuanAudio)
+            }
+            "speechtokenizer"
+            | "speech-tokenizer"
+            | "speech_tokenizer"
+            | "fnlp/speechtokenizer" => Some(Self::Speechtokenizer),
+            "funcodec"
+            | "fun-codec"
+            | "fun_codec"
+            | "funcodec-encodec-zh-en-16k-nq32-ds320"
+            | "funcodec-encodec-zh_en" => Some(Self::Funcodec),
+            "xy-tokenizer"
+            | "xy_tokenizer"
+            | "xy-tokenizer-ttsd-v0"
+            | "xy_tokenizer_ttsd_v0"
+            | "fnlp/xy_tokenizer_ttsd_v0" => Some(Self::XyTokenizer),
+            "bicodec"
+            | "bi-codec"
+            | "bi_codec"
+            | "spark-tts-bicodec"
+            | "sparkaudio/spark-tts-0.5b" => Some(Self::Bicodec),
+            "neucodec" | "neu-codec" | "neu_codec" | "neuphonic/neucodec" => Some(Self::Neucodec),
+            "ecapa-tdnn"
+            | "ecapa_tdnn"
+            | "spkrec-ecapa-voxceleb"
+            | "speechbrain/spkrec-ecapa-voxceleb" => Some(Self::EcapaTdnn),
+            "wespeaker"
+            | "we-speaker"
+            | "we_speaker"
+            | "wespeaker-voxceleb-resnet34-lm"
+            | "wespeaker/wespeaker-voxceleb-resnet34-lm" => Some(Self::Wespeaker),
+            "speaker-3d"
+            | "speaker_3d"
+            | "3d-speaker"
+            | "eres2net"
+            | "speech_eres2net_sv_zh-cn_16k-common"
+            | "iic/speech_eres2net_sv_zh-cn_16k-common" => Some(Self::Speaker3d),
+            "emotion2vec"
+            | "emotion-2vec"
+            | "emotion2vec-plus-large"
+            | "emotion2vec/emotion2vec_plus_large" => Some(Self::Emotion2vec),
             _ => None,
         }
     }
@@ -977,6 +1133,22 @@ impl ModelKind {
             Self::DebertaV3 => "deberta-v3",
             Self::SbV2 => "sbv2",
             Self::XCodec2 => "xcodec2",
+            // SoTA plan Phase 5 fleet (2026-07-28): 12 BF16 pass-through
+            // skeleton wire-ups. Every canonical CLI slug is hyphenated
+            // (matches `from_arg` above); the arch tag (underscore) rides
+            // in the GGUF's `vokra.model.arch` chunk.
+            Self::KimiAudio => "kimi-audio",
+            Self::StepAudio2Mini => "step-audio2-mini",
+            Self::BaichuanAudio => "baichuan-audio",
+            Self::Speechtokenizer => "speechtokenizer",
+            Self::Funcodec => "funcodec",
+            Self::XyTokenizer => "xy-tokenizer",
+            Self::Bicodec => "bicodec",
+            Self::Neucodec => "neucodec",
+            Self::EcapaTdnn => "ecapa-tdnn",
+            Self::Wespeaker => "wespeaker",
+            Self::Speaker3d => "speaker-3d",
+            Self::Emotion2vec => "emotion2vec",
         }
     }
 }
@@ -1744,6 +1916,197 @@ pub fn convert_file_licensed(
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             (builder, notes)
+        }
+        // ---- SoTA plan Phase 5 fleet (2026-07-28): 12 file-based BF16 -----
+        // pass-through skeleton wire-ups. Each module exposes only a
+        // `convert_<name>_file(input, output, license)` entry (no
+        // bytes-based `convert()` helper), so we early-return with a
+        // `ConvertSummary` following the DebertaV2 / DebertaV3 / SbV2
+        // dispatch pattern. The outer `bytes = std::fs::read(input)?`
+        // is unused on this path (the file-based converter does its own
+        // I/O) — matches the DebertaV2 arm's cost profile.
+        ModelKind::KimiAudio => {
+            let report = models::kimi_audio::convert_kimi_audio_file(input, output, license)?;
+            let notes = vec![format!(
+                "kimi-audio: {} float weights written verbatim ({} BF16 passthrough — runtime \
+                 widens to f32 exactly at load), {} non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::KimiAudio,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::StepAudio2Mini => {
+            let report =
+                models::step_audio2_mini::convert_step_audio2_mini_file(input, output, license)?;
+            let notes = vec![format!(
+                "step-audio2-mini: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::StepAudio2Mini,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::BaichuanAudio => {
+            let report =
+                models::baichuan_audio::convert_baichuan_audio_file(input, output, license)?;
+            let notes = vec![format!(
+                "baichuan-audio: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::BaichuanAudio,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Speechtokenizer => {
+            let report =
+                models::speechtokenizer::convert_speechtokenizer_file(input, output, license)?;
+            let notes = vec![format!(
+                "speechtokenizer: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Speechtokenizer,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Funcodec => {
+            let report = models::funcodec::convert_funcodec_file(input, output, license)?;
+            let notes = vec![format!(
+                "funcodec: {} float weights written verbatim ({} BF16 passthrough — runtime \
+                 widens to f32 exactly at load), {} non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Funcodec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::XyTokenizer => {
+            let report = models::xy_tokenizer::convert_xy_tokenizer_file(input, output, license)?;
+            let notes = vec![format!(
+                "xy-tokenizer: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::XyTokenizer,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Bicodec => {
+            let report = models::bicodec::convert_bicodec_file(input, output, license)?;
+            let notes = vec![format!(
+                "bicodec: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Bicodec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Neucodec => {
+            let report = models::neucodec::convert_neucodec_file(input, output, license)?;
+            let notes = vec![format!(
+                "neucodec: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Neucodec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::EcapaTdnn => {
+            let report = models::ecapa_tdnn::convert_ecapa_tdnn_file(input, output, license)?;
+            let notes = vec![format!(
+                "ecapa-tdnn: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::EcapaTdnn,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Wespeaker => {
+            let report = models::wespeaker::convert_wespeaker_file(input, output, license)?;
+            let notes = vec![format!(
+                "wespeaker: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Wespeaker,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Speaker3d => {
+            let report = models::speaker_3d::convert_speaker_3d_file(input, output, license)?;
+            let notes = vec![format!(
+                "speaker-3d: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Speaker3d,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::Emotion2vec => {
+            let report = models::emotion2vec::convert_emotion2vec_file(input, output, license)?;
+            let notes = vec![format!(
+                "emotion2vec: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Emotion2vec,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
         }
     };
 

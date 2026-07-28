@@ -612,6 +612,46 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // exact-match arm so an id lookup returns the canonical
         // spellings quickly.
         "omniasr-ctc" | "omniasr-ctc-1b" => LicenseClass::Permissive,
+        // SoTA plan Phase 5 fleet (2026-07-28): 12 BF16 pass-through
+        // skeleton wire-ups. All 12 modules default to Permissive
+        // (MIT or Apache-2.0 per each module's docstring — see
+        // `crates/vokra-convert/src/models/{kimi_audio,step_audio2_mini,
+        // baichuan_audio,speechtokenizer,funcodec,xy_tokenizer,bicodec,
+        // neucodec,ecapa_tdnn,wespeaker,speaker_3d,emotion2vec}.rs`).
+        // For each, the arch tag (underscore, == `vokra.model.arch`),
+        // the CLI slug (hyphen, canonical `--model` spelling), and the
+        // NAME model-card id (== `vokra.provenance.model_id`) are all
+        // registered so an untagged GGUF resolves permissive on the
+        // fallback path regardless of which of the three id forms it
+        // carries. A caller shipping the artifact under a non-permissive
+        // SPDX id overrides at the outer `--license <spdx>` boundary.
+        "kimi-audio" | "kimi_audio" | "kimi-audio-7b-instruct" | "kimi-audio-7b" => {
+            LicenseClass::Permissive
+        }
+        "step-audio2-mini" | "step_audio2_mini" | "step-audio-2-mini" => LicenseClass::Permissive,
+        "baichuan-audio" | "baichuan_audio" => LicenseClass::Permissive,
+        "speechtokenizer" | "speech-tokenizer" | "speech_tokenizer" => LicenseClass::Permissive,
+        "funcodec"
+        | "fun-codec"
+        | "fun_codec"
+        | "funcodec-encodec-zh-en-16k-nq32-ds320"
+        | "funcodec-encodec-zh_en"
+        | "funcodec-encodec-zh-en" => LicenseClass::Permissive,
+        "xy-tokenizer" | "xy_tokenizer" | "xy-tokenizer-ttsd-v0" | "xy_tokenizer_ttsd_v0" => {
+            LicenseClass::Permissive
+        }
+        "bicodec" | "bi-codec" | "bi_codec" | "spark-tts-bicodec" => LicenseClass::Permissive,
+        "neucodec" | "neu-codec" | "neu_codec" => LicenseClass::Permissive,
+        "ecapa-tdnn" | "ecapa_tdnn" | "spkrec-ecapa-voxceleb" => LicenseClass::Permissive,
+        "wespeaker" | "we-speaker" | "we_speaker" | "wespeaker-voxceleb-resnet34-lm" => {
+            LicenseClass::Permissive
+        }
+        "speaker-3d"
+        | "speaker_3d"
+        | "3d-speaker"
+        | "eres2net"
+        | "speech_eres2net_sv_zh-cn_16k-common" => LicenseClass::Permissive,
+        "emotion2vec" | "emotion-2vec" | "emotion2vec-plus-large" => LicenseClass::Permissive,
         // SoTA plan Phase 5 JA-TTS-2 (2026-07-24): ESPnet-family
         // Japanese plain VITS (JSUT / JVS / COEIROINK deployments +
         // any downstream that consumes the shared `vits-ja` arch tag).

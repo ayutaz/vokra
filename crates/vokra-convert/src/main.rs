@@ -1821,6 +1821,54 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  license={license} weight_license={class}"
             );
         }
+        // SoTA plan Phase 5 fleet (2026-07-28): 12 BF16 pass-through
+        // skeleton verify surfaces. Every module writes the same
+        // `vokra.model.{arch,name,category}` + `vokra.provenance.{upstream_hf,
+        // license,weight_license}` chunks — no per-model hparam chunk yet
+        // (the skeletons are pass-through only). Group them into a single
+        // arm to keep the verify surface a shape-lookup, not a per-model
+        // switch we would have to keep in step with 12 real converters.
+        ModelKind::KimiAudio
+        | ModelKind::StepAudio2Mini
+        | ModelKind::BaichuanAudio
+        | ModelKind::Speechtokenizer
+        | ModelKind::Funcodec
+        | ModelKind::XyTokenizer
+        | ModelKind::Bicodec
+        | ModelKind::Neucodec
+        | ModelKind::EcapaTdnn
+        | ModelKind::Wespeaker
+        | ModelKind::Speaker3d
+        | ModelKind::Emotion2vec => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let category = file
+                .get("vokra.model.category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let upstream = file
+                .get("vokra.provenance.upstream_hf")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let license = file
+                .get("vokra.provenance.license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let class = file
+                .get("vokra.provenance.weight_license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} category={category} upstream_hf={upstream} \
+                 license={license} weight_license={class}"
+            );
+        }
     }
     Ok(())
 }
