@@ -39,10 +39,25 @@
 # (the LicenseClass vokra-convert already stamped), not by re-deriving a
 # verdict from a license string by hand.
 #
+# Gate 7 — 8 GiB vast.ai routing
+# -------------------------------
+# 2026-07-28 policy (memory feedback-large-models-on-vast-ai): convert AND
+# upload for a HF weight default to vast.ai; the 16 GB M1 iMac is only used
+# for models that provably fit. Uploading a 48 GB GGUF from local at ~30 Mbps
+# outbound is a multi-hour wall-clock hit, while vast.ai (~2.6 Gbps) finishes
+# the same push in minutes, and if the caller has a >8 GB GGUF on their M1
+# iMac they almost certainly went outside the recommended convert path.
+# Gate 7 refuses fail-closed with two documented escape hatches:
+#   --allow-large             — owner opts in per-invocation
+#   VOKRA_PUBLISH_ON_VAST=1  — implicit bypass, set by
+#                               scripts/publish/vast-ai/provision.sh so
+#                               vast.ai instances never trip the gate.
+# For the pre-convert size check see scripts/publish/check-model-size.sh.
+#
 # Usage:
 #   publish-one.sh --gguf <file> --repo vokra/<name> \
 #     ( --license-url <raw-url> | --license-spdx <spdx> ) \
-#     [--push] [--allow-noncommercial] [--acknowledge-copyleft]
+#     [--push] [--allow-noncommercial] [--acknowledge-copyleft] [--allow-large]
 #   publish-one.sh --self-test
 #
 # HF token: HF_TOKEN or HF in the environment.
@@ -162,6 +177,48 @@ copyleft_bundle_gates() {
   fi
 
   return 0
+}
+
+# Gate 7. Refuse publishing a GGUF >8 GiB from the local M1 iMac unless
+# the caller explicitly opts in per-invocation (--allow-large) or the
+# environment marks us as running on vast.ai (VOKRA_PUBLISH_ON_VAST=1).
+# Pure: only stats the file + reads env — exercised directly from --self-test.
+#   $1 gguf path
+#   $2 allow_large     "true" if --allow-large was passed
+size_gate() {
+  local gguf="$1" allow_large="$2"
+  local threshold=$((8 * 1024 * 1024 * 1024))  # 8 GiB — matches check-model-size.sh LOCAL_OK boundary
+  local size
+  # stat -c on GNU, stat -f%z on BSD/macOS. Try both so this works on both
+  # the M1 iMac (BSD stat) and the vast.ai Ubuntu image (GNU stat).
+  if size="$(stat -c%s "$gguf" 2>/dev/null)"; then
+    :
+  elif size="$(stat -f%z "$gguf" 2>/dev/null)"; then
+    :
+  else
+    echo "publish-one: gate 7 REFUSE — could not stat $gguf to check size" >&2
+    return 1
+  fi
+  if [[ "$size" -le "$threshold" ]]; then
+    return 0
+  fi
+  if [[ "${VOKRA_PUBLISH_ON_VAST:-}" == "1" ]]; then
+    return 0
+  fi
+  if [[ "$allow_large" == "true" ]]; then
+    return 0
+  fi
+  local size_gib
+  size_gib="$(python3 -c "print(f'{$size/1024**3:.2f}')")"
+  echo "publish-one: gate 7 REFUSE — GGUF is ${size_gib} GiB (> 8 GiB threshold)" >&2
+  echo "  2026-07-28 policy defaults large-model publish to vast.ai (memory feedback-large-models-on-vast-ai)." >&2
+  echo "  From local: ~30 Mbps outbound uploads for hours; from vast.ai: ~2.6 Gbps for minutes." >&2
+  echo "  Options:" >&2
+  echo "    (1) Run on vast.ai (recommended, see docs/handoff/vast-ai-large-model-publish.md §2)" >&2
+  echo "        scripts/publish/vast-ai/provision.sh sets VOKRA_PUBLISH_ON_VAST=1 automatically." >&2
+  echo "    (2) Opt in per-invocation with --allow-large if you know your upload budget." >&2
+  echo "    (3) scripts/publish/check-model-size.sh <hf-repo> for the pre-convert verdict." >&2
+  return 1
 }
 
 _selftest_build_gguf() {
@@ -312,6 +369,42 @@ run_self_test() {
   copyleft_bundle_gates "$tmp/mit-empty" "permissive" "MIT" "mit" \
     || { echo "self-test FAIL: gates 6a-6e fired for a permissive (non-copyleft) SKU" >&2; fail=1; }
 
+  # --- gate 7: 8 GiB vast.ai routing ---------------------------------------
+  # Sparse-file trick: `truncate -s 9G` (or dd seek-only fallback) allocates
+  # only a hole on disk, but stat reports the logical size — perfect for
+  # exercising a size threshold without actually writing 9 GiB.
+  : > "$tmp/tiny"
+  cases=$((cases + 1))
+  size_gate "$tmp/tiny" "false" \
+    || { echo "self-test FAIL: gate 7 refused a tiny file with no flags" >&2; fail=1; }
+
+  if command -v truncate >/dev/null 2>&1; then
+    truncate -s 9G "$tmp/big"
+  else
+    # BSD/macOS fallback: dd count=0 + seek creates a sparse hole without
+    # writing bytes. 9663676416 = 9 * 1024^3.
+    dd if=/dev/null of="$tmp/big" bs=1 count=0 seek=9663676416 2>/dev/null
+  fi
+  cases=$((cases + 1))
+  if out="$(unset VOKRA_PUBLISH_ON_VAST; size_gate "$tmp/big" "false" 2>&1)"; then
+    echo "self-test FAIL: gate 7 did not refuse a >8 GiB file by default" >&2; fail=1
+  elif [[ "$out" != *"gate 7"* ]]; then
+    echo "self-test FAIL: gate 7 refusal did not name gate 7: $out" >&2; fail=1
+  elif [[ "$out" != *"vast.ai"* ]]; then
+    echo "self-test FAIL: gate 7 refusal did not point at vast.ai runbook: $out" >&2; fail=1
+  fi
+
+  cases=$((cases + 1))
+  # --allow-large lets it through
+  ( unset VOKRA_PUBLISH_ON_VAST; size_gate "$tmp/big" "true" ) \
+    || { echo "self-test FAIL: gate 7 refused >8 GiB even with --allow-large" >&2; fail=1; }
+
+  cases=$((cases + 1))
+  # VOKRA_PUBLISH_ON_VAST=1 env lets it through (matches what
+  # scripts/publish/vast-ai/provision.sh will set on the vast.ai instance).
+  ( export VOKRA_PUBLISH_ON_VAST=1; size_gate "$tmp/big" "false" ) \
+    || { echo "self-test FAIL: gate 7 refused >8 GiB even with VOKRA_PUBLISH_ON_VAST=1" >&2; fail=1; }
+
   if [[ $fail -eq 0 ]]; then
     echo "publish-one self-test: OK ($cases cases)"
     return 0
@@ -319,7 +412,7 @@ run_self_test() {
   return 1
 }
 
-gguf=""; repo=""; lurl=""; lspdx=""; push=0; nc=0; ack_copyleft=0; self_test=0
+gguf=""; repo=""; lurl=""; lspdx=""; push=0; nc=0; ack_copyleft=0; allow_large=0; self_test=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --gguf) gguf="$2"; shift 2 ;;
@@ -329,6 +422,7 @@ while [[ $# -gt 0 ]]; do
     --push) push=1; shift ;;
     --allow-noncommercial) nc=1; shift ;;
     --acknowledge-copyleft) ack_copyleft=1; shift ;;
+    --allow-large) allow_large=1; shift ;;
     --self-test) self_test=1; shift ;;
     *) echo "publish-one: unexpected arg $1" >&2; exit 2 ;;
   esac
@@ -342,6 +436,11 @@ fi
 [[ -f "$gguf" ]] || { echo "publish-one: --gguf must be an existing file" >&2; exit 2; }
 [[ -n "$repo" ]] || { echo "publish-one: --repo is required" >&2; exit 2; }
 [[ -n "$lurl" || -n "$lspdx" ]] || { echo "publish-one: one of --license-url / --license-spdx is required" >&2; exit 2; }
+
+# Gate 7 — vast.ai routing check, before any side effect (staging, network
+# fetch, etc.) happens on this SKU's behalf. See header comment for policy.
+allow_large_flag="false"; [[ $allow_large -eq 1 ]] && allow_large_flag="true"
+size_gate "$gguf" "$allow_large_flag" || exit 1
 
 model_name="${repo##*/}"
 outdir="$(cd "$(git -C "$here" rev-parse --show-toplevel)" && pwd)/target/publish/$model_name"

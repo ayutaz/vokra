@@ -4,6 +4,37 @@ Tracked / public。**2026-07-28** に本 M1 iMac (16GB RAM) 上で Voxtral-Small
 
 memory [[feedback-large-models-on-vast-ai]] の運用側詳細版。
 
+## 0. TL;DR — 自動化 pipeline (Phase B, 2026-07-28)
+
+**判定**: `scripts/publish/check-model-size.sh <hf-repo>` を local で走らせて `LOCAL_SAFE / LOCAL_OK / LOCAL_BORDERLINE / VAST_AI_REQUIRED` の verdict を確認。
+
+**vast.ai 側で最初の 1 回だけ**:
+```bash
+# SSH 接続後、まず HF token を export (instance destroy で消える)
+export HF_TOKEN='hf_xxxxxx'
+
+# 1 コマンドで Rust + uv + Python 3.12 + hf-transfer + repo + vokra-cli build まで完了
+curl -sSL https://raw.githubusercontent.com/ayutaz/vokra/main/scripts/publish/vast-ai/provision.sh | bash
+source ~/.bashrc  # VOKRA_PUBLISH_ON_VAST=1 marker を pick up
+```
+
+**モデル per に 1 コマンド**:
+```bash
+# 例: Voxtral-Small-24B (48 GB、必ず vast.ai)
+~/vokra/scripts/publish/vast-ai/run-one.sh \
+  --hf-repo mistralai/Voxtral-Small-24B-2507 \
+  --vokra-slug voxtral-small-24b-2507 \
+  --model-kind voxtral \
+  --license-spdx apache-2.0 \
+  --push
+```
+
+`run-one.sh` は `HF snapshot_download (hf-transfer で 40x) → autodetect input → vokra-cli convert → publish-one.sh` を chain。`--push` を外せば dry-run stage のみ。T4 (非商用) は `--allow-noncommercial`、T3 (Copyleft) は `--acknowledge-copyleft`。詳細は `run-one.sh --help`。
+
+**local から誤って大モデルを publish する事故防止**: `publish-one.sh` に **gate 7 (>8 GiB fail-closed)** を追加済 (2026-07-28)。`VOKRA_PUBLISH_ON_VAST=1` 環境変数 (provision.sh が自動 set) がある instance では auto-bypass。owner 明示の `--allow-large` でも bypass 可 (自分の upload 帯域を分かってる時のみ)。
+
+自動化 pipeline が事故ったときの手動 fallback として §2 を残す。
+
 ## 1. どのモデルが vast.ai 必須か
 
 **Absolutely vast.ai (本機不可)**:
@@ -139,6 +170,18 @@ Voxtral-Small-24B は全 tensor が BF16 = strip 不要 (2026-07-28 事前確認
 
 vast.ai へ移送するか本機で処理するかの判定は事前に:
 
+**推奨 (2026-07-28〜)**: `scripts/publish/check-model-size.sh` を使う。HF API を叩いて上表の threshold で機械判定 + rationale + 誘導先を human-readable で出力。exit code は `VAST_AI_REQUIRED` = 1、それ以外 = 0 ゆえ script chain にも使える。
+
+```bash
+# 人間向け表示
+./scripts/publish/check-model-size.sh mistralai/Voxtral-Small-24B-2507
+
+# JSON (jq / 他 script 消費用)
+./scripts/publish/check-model-size.sh --json openai/whisper-base
+```
+
+**手動 fallback** (自動化 script が使えない環境):
+
 ```bash
 # HF API で合計 safetensors サイズ確認
 curl -sL "https://huggingface.co/api/models/<repo>?blobs=true" | python3 -c "
@@ -154,9 +197,12 @@ print(f'TOTAL: {total:,} bytes = {total/1024**3:.2f} GiB')
 "
 ```
 
-- **≤8 GiB total + shards ≤3**: 本機で OK。
-- **8-16 GiB or shards ≥5**: 本機は single-tenant で慎重に (他ビルド/テスト全部止める)。
-- **>16 GiB**: **vast.ai 必須**。M1 iMac (16GB RAM) で mmap すると swap thrash → Mac 強制終了リスク。
+**判定 threshold** (check-model-size.sh と runbook 側で同期):
+
+- **≤4 GiB total**: `LOCAL_SAFE` — 本機で OK。
+- **4-8 GiB total, max shard ≤6 GiB**: `LOCAL_OK` — 本機で single-tenant。
+- **8-16 GiB or shards ≥5**: `LOCAL_BORDERLINE` — 本機は single-tenant で慎重に (他ビルド/テスト全部止める)。可能なら vast.ai。
+- **>16 GiB**: `VAST_AI_REQUIRED` — **vast.ai 必須**。M1 iMac (16GB RAM) で mmap すると swap thrash → Mac 強制終了リスク。
 
 ## 5. Owner action
 
@@ -173,6 +219,19 @@ vast.ai 必須の implementation-pending モデル (§3.1 sign-off + wiring 両�
 - Kimi-Audio-7B (BF16 fleet skeleton、CLI dispatch wiring 要 + §3.1 blank)
 
 owner 判断待ちの vast.ai-scale モデル: なし (§3.1 で fail-closed 済分)。
+
+## 7. Phase B 自動化 script 一覧 (2026-07-28)
+
+| Path | 実行場所 | 役割 |
+|---|---|---|
+| `scripts/publish/check-model-size.sh` | local | HF API で size 判定、`LOCAL_SAFE / LOCAL_OK / LOCAL_BORDERLINE / VAST_AI_REQUIRED` verdict |
+| `scripts/publish/publish-one.sh` (**gate 7 追加**) | どこでも | GGUF publish の 5-gate chain。8 GiB 超で fail-closed、`VOKRA_PUBLISH_ON_VAST=1` or `--allow-large` で bypass |
+| `scripts/publish/vast-ai/provision.sh` | vast.ai | Rust/uv/Python 3.12/hf-transfer/repo/vokra-cli を idempotent に install、shell rc に marker export |
+| `scripts/publish/vast-ai/run-one.sh` | vast.ai | 1 モデル分の DL + convert + publish chain (`--push` で本番) |
+
+各 script は `--self-test` を持つ (pure、network fetch 無し)。CI で回すのは `check-model-size.sh` と `publish-one.sh` の self-test (vast.ai script は vast.ai 前提ゆえ CI 側の自動化対象外)。
+
+**Phase C (将来 candidate)**: local から `vastai` CLI (~/.local/bin/vastai、1.1.3 install 済) 経由で instance lifecycle まで自動化する orchestrator。owner が 1 command で instance rent → provision → run-one → destroy まで完結する形。現時点では owner が instance lifecycle を握る Phase B 止まり。
 
 ## 関連
 
