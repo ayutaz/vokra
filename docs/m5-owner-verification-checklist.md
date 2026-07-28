@@ -231,3 +231,56 @@ VITS-JA weight is `RedistributionForbidden` (JSUT / JVS training data forbid wei
 
 - [ ] Confirm VITS-JA weight remains excluded from `huggingface.co/vokra` regardless of the §6.2 audit outcome.
 - [ ] Verify the `check-catalog-reality.sh` / `LicenseClass::redistributable()` gate rejects any accidental attempt to publish the VITS-JA weight.
+
+### 6.9 Publish sign-off queue (2026-07-28)
+
+Following the 2026-07-28 doc-refresh + investigation of `crates/vokra-convert/src/models/*.rs` vs `huggingface.co/vokra` live listing, the following converters are IMPLEMENTED but publish is BLOCKED because their `docs/license-audit.md` §3.1 sign-off column carries the explicit `本欄の署名・判定は owner 記入、CC は pre-fill しない` per-row directive. This directive supersedes the standing permission "ライセンスに関してはそちらで確認して判断" and requires owner to sign the row before `publish-one.sh` will accept the artifact.
+
+Primary sources have been pre-verified by CC and are ready for owner review. Each entry lists the license class, the upstream primary source, the specific reason CC cannot self-sign, and the HF slug candidate.
+
+**Phase 2 ASR family (5 rows, all license-audit.md §3.1 rows 266-270)**:
+
+- [ ] **kyutai/stt-2.6b-en** (row 266) — CC-BY-4.0. Primary source: HF cardData `license: cc-by-4.0`. Blocker: attribution obligation propagation acceptance required. HF slug candidate: `vokra/kyutai-stt-2.6b-en`. ~5.2 GB BF16. Sign-off decision: attribution obligation acceptable → ☑ Commercial; not acceptable → ☑ Rejected.
+- [ ] **nvidia/parakeet-tdt-0.6b-v3** (row 267) — CC-BY-4.0. Primary source: HF cardData. Blocker: NVIDIA-EULA overlay judgment. HF slug candidate: `vokra/parakeet-tdt-0.6b-v3`. ~1.2 GB. NVIDIA release governance decision required.
+- [ ] **nvidia/parakeet-ctc-1.1b** (row 268) — CC-BY-4.0. Primary source: HF cardData. Blocker: NVIDIA-EULA overlay judgment. HF slug candidate: `vokra/parakeet-ctc-1.1b`. ~2.2 GB.
+- [ ] **nvidia/canary-1b-v2** (row 269) — CC-BY-4.0. Primary source: HF cardData. Blocker: NVIDIA-EULA overlay judgment. HF slug candidate: `vokra/canary-1b-v2`. ~2 GB.
+- [ ] **facebook/omniASR-CTC-1B** (row 270) — Apache-2.0. Primary source: HF API `license: apache-2.0`. Blocker: HONEST DISCREPANCY (SoTA plan task-tracker listed `suno/omniASR-CTC-1B-v1` but that repo is 401; Vokra module docstring + HF one primary source pin `facebook/omniASR-CTC-1B`). Owner ratification of the pin decision required. HF slug candidate: `vokra/omniasr-ctc-1b`. ~2 GB.
+
+**BF16 fleet skeletons (16 rows, PR #20 Wave E landing, license-audit.md §3.1 rows 286-301)**:
+
+*These have `pub fn convert_*_file` entry points but are NOT wired into `ModelKind` / `convert_file` dispatch yet, and every one is a TDD pass-through skeleton pending owner primary-source verification. Publish will additionally require the `ModelKind` wiring after sign-off.*
+
+- [ ] **moonshotai/Kimi-Audio-7B-Instruct** (row 286) — MIT default per module docstring. category=s2s. HF slug candidate: `vokra/kimi-audio-7b-instruct`. ~14 GB BF16.
+- [ ] **stepfun-ai/Step-Audio-2-mini** (row 287) — Apache-2.0 default. category=s2s. HF slug candidate: `vokra/step-audio-2-mini`.
+- [ ] **baichuan-inc/Baichuan-Audio** (row 288) — Apache-2.0 default. category=s2s.
+- [ ] **fnlp/SpeechTokenizer** (row 289) — Apache-2.0 default. category=codec.
+- [ ] **alibaba-damo/audio_codec-encodec-zh_en-…** (FunCodec, row 290) — MIT default. category=codec. **Note**: slug contains "encodec" for legacy reasons but FunCodec ≠ Meta EnCodec (which is CC-BY-NC 4.0, permanently excluded per FR-OP-32). `scripts/compliance/check-encodec-exclusion.sh` `SLUG_ALLOWLIST` already permits this specific entry per prior owner ratification.
+- [ ] **fnlp/XY_Tokenizer_TTSD_V0** (row 291) — Apache-2.0 default. category=codec.
+- [ ] **SparkAudio/Spark-TTS-0.5B** (BiCodec, row 292) — Apache-2.0 default. category=codec. **Note**: Spark-TTS-0.5B parent is CC-BY-NC-SA-4.0 per SoTA plan §3.4 exclusion — owner must verify BiCodec sub-component is separately licensed before publish, else Rejected.
+- [ ] **neuphonic/neucodec** (row 293) — Apache-2.0 default. category=codec.
+- [ ] **myshell-ai/OpenVoiceV2** (row 294) — MIT default. category=vc. **Note**: ELVIS Act / voice-cloning territory — owner must confirm this isn't destined for `vokra-voiceclone-experimental` instead.
+- [ ] **bshall/knn-vc** (row 295) — MIT default. category=vc. Same voice-clone caveat as OpenVoiceV2.
+- [ ] **OlaWod/FreeVC** (row 296) — MIT default. category=vc. Same voice-clone caveat.
+- [ ] **ASLP-lab/MeanVC** (row 297) — Apache-2.0 default. category=vc. Same voice-clone caveat.
+- [ ] **speechbrain/spkrec-ecapa-voxceleb** (ECAPA-TDNN candidate, row 298) — Apache-2.0 default. category=speaker. **Note**: upstream slug carries "verify" annotation — needs primary source resolution first.
+- [ ] **Wespeaker/wespeaker-voxceleb-resnet34-LM** (row 299) — Apache-2.0 default. category=speaker.
+- [ ] **iic/speech_eres2net_sv_zh-cn_16k-common** (3D-Speaker, row 300) — Apache-2.0 default. category=speaker.
+- [ ] **emotion2vec/emotion2vec_plus_large** (row 301) — MIT default. category=emotion.
+
+**Copyleft (1 row)**:
+
+- [ ] **litagin02/style_bert_vits2** (SBV2 v2 multilingual base, license-audit.md §3.1 row 302) — AGPL-3.0. Primary source: upstream repo LICENSE. Blocker: (a) AGPL-3.0 network-use clause acceptance (obligation propagates to downstream users), (b) real checkpoint fixture status per `tests/fixtures/sbv2/README.md` completion. Publish path: `publish-one.sh --license-spdx agpl-3.0 --acknowledge-copyleft --push` (T3 6a-6e gate).
+
+**Non-implementable (signed but converter needed)**:
+
+- [ ] **Suno Bark** (license-audit.md §3.1 row 259) — MIT signed 2026-07-23 yousan. Converter is NOT present in `crates/vokra-convert/src/models/`. Publish path requires implementing the Bark converter first (M5-07 audit scope). Estimated effort: converter + real-weight round-trip.
+- [ ] **Matcha-TTS** (row 261) — MIT signed 2026-07-23 yousan. Converter absent. Design spec at `docs/superpowers/specs/2026-07-28-matcha-tts-design.md`. Estimated effort per spec.
+- [ ] **WavTokenizer** (row 253) — MIT signed 2026-07-23 yousan. Converter absent. Design spec at `docs/superpowers/specs/2026-07-28-wavtokenizer-design.md`. Estimated effort per spec.
+
+**Converter extension required (signed but 2B config incomplete)**:
+
+- [ ] **openbmb/VoxCPM2-2B** (row 280) — Apache-2.0 signed 2026-07-28 yousan. Current `voxcpm2` ModelKind hardcodes VoxCPM-0.5B constants; publishing 2B requires either `--config` side-car per-invocation OR a sibling `voxcpm2_2b.rs` module + runtime `VoxCpm2Config` extension. Design spec at `docs/superpowers/specs/2026-07-28-voxcpm2-2b-design.md`.
+
+**Deferred by disk constraint (implemented + signed, publish infrastructure blocked)**:
+
+- [ ] **Voxtral-Small-24B-2507** (row 251) — Apache-2.0 signed 2026-07-23 yousan. Converter exists (`ModelKind::Voxtral` auto-detects size). ~48 GB BF16 raw upstream → ~48 GB GGUF peak = ~96 GB temp disk required, current M1 iMac has 85 GB free. Publish path: either (a) cleanup disk to 100+ GB free, or (b) run on vast.ai / disk-abundant host. Sibling `vokra/voxtral-mini-3b-2507` is already published (2026-07-23). HF slug candidate: `vokra/voxtral-small-24b-2507`.
