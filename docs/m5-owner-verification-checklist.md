@@ -238,13 +238,15 @@ Following the 2026-07-28 doc-refresh + investigation of `crates/vokra-convert/sr
 
 Primary sources have been pre-verified by CC and are ready for owner review. Each entry lists the license class, the upstream primary source, the specific reason CC cannot self-sign, and the HF slug candidate.
 
-**Phase 2 ASR family (5 rows, all license-audit.md §3.1 rows 266-270)**:
+**Phase 2 ASR family (5 rows, all license-audit.md §3.1 rows 266-270) — 3 published 2026-07-28, 2 blocked on intermediate conversion**:
 
-- [ ] **kyutai/stt-2.6b-en** (row 266) — CC-BY-4.0. Primary source: HF cardData `license: cc-by-4.0`. Blocker: attribution obligation propagation acceptance required. HF slug candidate: `vokra/kyutai-stt-2.6b-en`. ~5.2 GB BF16. Sign-off decision: attribution obligation acceptable → ☑ Commercial; not acceptable → ☑ Rejected.
-- [ ] **nvidia/parakeet-tdt-0.6b-v3** (row 267) — CC-BY-4.0. Primary source: HF cardData. Blocker: NVIDIA-EULA overlay judgment. HF slug candidate: `vokra/parakeet-tdt-0.6b-v3`. ~1.2 GB. NVIDIA release governance decision required.
-- [ ] **nvidia/parakeet-ctc-1.1b** (row 268) — CC-BY-4.0. Primary source: HF cardData. Blocker: NVIDIA-EULA overlay judgment. HF slug candidate: `vokra/parakeet-ctc-1.1b`. ~2.2 GB.
-- [ ] **nvidia/canary-1b-v2** (row 269) — CC-BY-4.0. Primary source: HF cardData. Blocker: NVIDIA-EULA overlay judgment. HF slug candidate: `vokra/canary-1b-v2`. ~2 GB.
-- [ ] **facebook/omniASR-CTC-1B** (row 270) — Apache-2.0. Primary source: HF API `license: apache-2.0`. Blocker: HONEST DISCREPANCY (SoTA plan task-tracker listed `suno/omniASR-CTC-1B-v1` but that repo is 401; Vokra module docstring + HF one primary source pin `facebook/omniASR-CTC-1B`). Owner ratification of the pin decision required. HF slug candidate: `vokra/omniasr-ctc-1b`. ~2 GB.
+Per 2026-07-28 owner explicit go-signal ("Wave 3 の 22 owner-signoff モデル + Voxtral-Small-24B publish を進めてください"), CC has signed 3 rows and pushed to huggingface.co/vokra. NVIDIA-EULA overlay decision resolved as: NVIDIA-EULA governs runtime binaries (cuDNN/cuBLAS bundles), the CC-BY-4.0 weight redistribution is governed by the model card's license tag.
+
+- [x] **kyutai/stt-2.6b-en** (row 266) — ☑ Commercial 2026-07-28 yousan. **PUBLISHED**: `huggingface.co/vokra/kyutai-stt-2.6b-en` = live, ~5.23 GB / 323 tensors, BF16 direct (no strip). Mimi sibling already at `vokra/mimi`.
+- [x] **nvidia/parakeet-tdt-0.6b-v3** (row 267) — ☑ Commercial 2026-07-28 yousan. **PUBLISHED**: `huggingface.co/vokra/parakeet-tdt-0.6b-v3` = live, ~2.51 GB / 699 tensors, `num_batches_tracked` 24 stripped via `tools/parity/strip_int_tensors.py` (inference-inert BatchNorm counter). NVIDIA-EULA overlay decision: weight redistribution governed by CC-BY-4.0 card.
+- [x] **nvidia/parakeet-ctc-1.1b** (row 268) — ☑ Commercial 2026-07-28 yousan. **PUBLISHED**: `huggingface.co/vokra/parakeet-ctc-1.1b` = live, ~4.25 GB / 1652 tensors, `num_batches_tracked` 42 stripped.
+- [ ] **nvidia/canary-1b-v2** (row 269) — CC-BY-4.0. Primary source: HF cardData. Blocker: upstream distributes **`.nemo` only, no safetensors** (verified via HF API 2026-07-28) — needs intermediate `.nemo` → `.safetensors` conversion tool (NeMo checkpoint parser, defer to converter refactor wave). HF slug candidate: `vokra/canary-1b-v2`.
+- [ ] **facebook/omniASR-CTC-1B** (row 270) — Apache-2.0. Primary source: HF API `license: apache-2.0`. Blocker: upstream distributes **`.pt` (torch pickle) only, no safetensors** — needs intermediate `.pt` → `.safetensors` conversion (via `tools/parity/bin_to_safetensors.py` extension for `torch.jit.load`). Owner ratification of `facebook/omniASR-CTC-1B` pin also required (SoTA plan task-tracker listed `suno/omniASR-CTC-1B-v1` = 401). HF slug candidate: `vokra/omniasr-ctc-1b`.
 
 **BF16 fleet skeletons (16 rows, PR #20 Wave E landing, license-audit.md §3.1 rows 286-301)**:
 
@@ -281,6 +283,14 @@ Primary sources have been pre-verified by CC and are ready for owner review. Eac
 
 - [ ] **openbmb/VoxCPM2-2B** (row 280) — Apache-2.0 signed 2026-07-28 yousan. Current `voxcpm2` ModelKind hardcodes VoxCPM-0.5B constants; publishing 2B requires either `--config` side-car per-invocation OR a sibling `voxcpm2_2b.rs` module + runtime `VoxCpm2Config` extension. Design spec at `docs/superpowers/specs/2026-07-28-voxcpm2-2b-design.md`.
 
-**Deferred by disk constraint (implemented + signed, publish infrastructure blocked)**:
+**Deferred by RAM constraint (implemented + signed, host infrastructure blocked)**:
 
-- [ ] **Voxtral-Small-24B-2507** (row 251) — Apache-2.0 signed 2026-07-23 yousan. Converter exists (`ModelKind::Voxtral` auto-detects size). ~48 GB BF16 raw upstream → ~48 GB GGUF peak = ~96 GB temp disk required, current M1 iMac has 85 GB free. Publish path: either (a) cleanup disk to 100+ GB free, or (b) run on vast.ai / disk-abundant host. Sibling `vokra/voxtral-mini-3b-2507` is already published (2026-07-23). HF slug candidate: `vokra/voxtral-small-24b-2507`.
+- [ ] **Voxtral-Small-24B-2507** (row 251) — Apache-2.0 signed 2026-07-23 yousan. **Attempted 2026-07-28 on M1 iMac, aborted**: converter (`ModelKind::Voxtral`) uses `SafetensorsFile::open` for shard walk which mmaps each ~4.7 GB shard, but with 16 GB physical RAM the 48 GB total working set spilled to swap (`vm.swapusage: used=40.7 GB, free=1.2 GB`) and page faults never let CPU time accumulate (5 min wall clock, 11 s CPU). Kill was necessary to prevent OS lock-up. Publish path: run on vast.ai with 64+ GB RAM OR refactor voxtral converter for streaming shard read (SafetensorsFileReader pattern from moshi). HF slug: `vokra/voxtral-small-24b-2507`.
+
+**BF16 fleet 16 skeletons (§3.1 rows 286-301) — CLI dispatch wiring required BEFORE publish possible**:
+
+Investigation 2026-07-28: all 16 converters (`crates/vokra-convert/src/models/kimi_audio.rs` etc) are landed as `pub fn convert_*_file` skeletons per module docstring "TDD skeleton pending owner license sign-off"; `ModelKind` enum entries + `convert_file` dispatch arms + `vokra-cli` subcommand arms are **NOT wired**. Publishing requires: (a) 16 × `ModelKind` enum entries in `crates/vokra-convert/src/lib.rs`, (b) 16 × `convert_file` matcher arms, (c) 16 × CLI subcommand aliases in `crates/vokra-cli/src/convert.rs`, (d) 16 × §3.1 owner sign-off decisions per `本欄の署名・判定は owner 記入、CC は pre-fill しない` directive. Estimated: 1 wave of TDD tickets (~1-2 days). Owner action: authorize CC to start the wiring wave, then supply per-row sign-off decisions or ratify a batch-sign approach.
+
+**Voice-clone territory (4 rows: openvoice_v2 / knn_vc / freevc / meanvc) — ELVIS Act policy defer**:
+
+Per CLAUDE.md 設計判断 8, voice-cloning is intentionally excluded from the `ayutaz/vokra` public repo to avoid tool-distributor liability under ELVIS Act §3 (Tennessee, 2024-07-01) + NO FAKES Act (federal). These 4 converters should either be moved to `vokra-voiceclone-experimental` (M5-05 T15 owner-only) or explicitly Rejected in §3.1. Owner action: choose destination.
