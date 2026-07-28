@@ -34,7 +34,14 @@
 ## Local pre-push: CI-covered heavy tests を除外。
 ##
 ## nextest --filter-expr `not package(...)` は package 名の完全一致で除外。
-default-filter = "not (package(vokra-backend-metal) + package(vokra-backend-cuda) + package(vokra-backend-vulkan) + package(vokra-backend-webgpu) + package(vokra-backend-coreml) + package(vokra-backend-qnn) + package(vokra-wasm-harness) + package(vokra-parity))"
+##
+## 追加除外 (2026-07-28 push #5 実測、Metal 51 skip 後の残主犯):
+##   * vokra-eval — mel_loss / UTMOS metric unit test が個別 78-88s (合計 ~7 min、
+##     Metal test より重い個別 test)。dev-profile link 時間が本体で、実 test body
+##     は ms 単位。CI 側 parity-utmos.yml が同 crate の real-weight leg を担保
+##     (`cargo test --release -p vokra-eval --test parity_utmos`)。unit-level 数式
+##     regression は spec 内部の decision で catch 可能。
+default-filter = "not (package(vokra-backend-metal) + package(vokra-backend-cuda) + package(vokra-backend-vulkan) + package(vokra-backend-webgpu) + package(vokra-backend-coreml) + package(vokra-backend-qnn) + package(vokra-wasm-harness) + package(vokra-parity) + package(vokra-eval))"
 
 ## Fail fast: 1 本失敗したら stop (local iteration では詳細より速報優先)
 fail-fast = true
