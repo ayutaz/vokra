@@ -1,0 +1,589 @@
+# DeBERTa v3 Large real-checkpoint parity CI (SBV2 v2 plan Task 31
+# follow-up, 2026-07-28). Isolates the EN BERT encoder path — a sibling of
+# parity-sbv2-real.yml (which exercises DeBERTa v2/v3 as part of the full
+# multi-checkpoint SBV2 pipeline) that stands alone against the
+# `microsoft/deberta-v3-large` upstream release. Same posture as
+# parity-deepfilternet3-real.yml: two-phase design (Phase A = reproducible
+# conversion; Phase B = numerical parity vs the reference dumper), each
+# behind its own explicit gate, no fabricated pass.
+#
+# The Python reference dumper (`tools/parity/deberta_v3_dump_reference.py`,
+# clean-room per HF transformers Apache-2.0 + arXiv:2111.09543 — no AGPL
+# Style-Bert-VITS2 / Bert-VITS2 code referenced) writes per-layer
+# hidden_states + attention tensors to `reference_dump/*.bin`, which will
+# eventually be consumed by a Rust-side numerical parity harness against
+# `crates/vokra-bert/src/deberta_v3.rs::DebertaV3Encoder::from_gguf` +
+# `.forward(&[u32])`. Today that harness is not landed yet
+# (`crates/vokra-bert/tests/deberta_v3_synthetic.rs` covers only synthetic
+# weights and `crates/vokra-convert/tests/deberta_convert.rs`'s
+# `deberta_v3_convert_smoke` is a structural smoke, not byte-level parity);
+# the dumper leg still runs when force-enabled so the reference tensors are
+# published as an artifact, feeding the future harness — but the Rust
+# `cargo test` parity leg is honestly skipped with a `::notice::`.
+#
+# Distribution shape (verified 2026-07-28 via HF Hub API): the
+# `microsoft/deberta-v3-large` repo ships `pytorch_model.bin` only — no
+# `model.safetensors` — so this workflow additionally runs
+# `tools/parity/bin_to_safetensors.py` (owner Task 3 Wave 2b) between
+# download and convert. `vokra-convert` is safetensors-only by design
+# (NFR-DS-02: no pickle parser in the Rust runtime; `torch.load` +
+# `safetensors.torch.save_file` is the offline sidecar bridge).
+#
+# Design (parity-deepfilternet3-real.yml discipline):
+#
+#   * Trigger: workflow_dispatch (owner-driven initial dispatch) + weekly
+#     cron `0 13 * * 1` (Monday 13:00 UTC — the first free slot after
+#     parity-deepfilternet3-real (12:30) in the staggered weekly parity
+#     roster documented in that workflow's own header) + a NARROW
+#     pull_request paths filter that only fires on deberta-v3-adjacent
+#     code.
+#
+#   * Repository-variable gate `VOKRA_DEBERTA_V3_ENABLE=1` (or a
+#     workflow_dispatch run) is required for the parity job to fire on
+#     schedule / PR. The cron path clean-skips with a `::notice::` when
+#     the variable is not set — fabricated pass 禁止 (FR-EX-08).
+#
+#   * Two-phase design: CONVERSION always runs when gated in (Phase A —
+#     bin → safetensors → GGUF via `vokra-cli convert --model deberta-v3`;
+#     the converter's own DebertaV3Encoder::from_gguf self-check is the
+#     built-in round-trip assertion). DUMPER runs only when
+#     `inputs.run_dumper=true` (workflow_dispatch) OR
+#     `vars.VOKRA_DEBERTA_V3_HARNESS_READY=1` (cron/PR — the flag the
+#     owner flips once the Rust-side numerical parity test lands). NUMERICAL
+#     PARITY is unconditionally skipped today with an explicit
+#     `::notice::` — the Rust harness that would consume the reference
+#     dump does not exist yet in this repo (only the synthetic-weight
+#     structural test and the converter smoke). Skipping honestly rather
+#     than fabricating a pass is the correct posture (FR-EX-08).
+#
+#   * Python venv is installed inline (root Cargo.lock untouched — NFR-DS-02;
+#     the final `git diff --exit-code Cargo.lock` step is the tripwire).
+#     torch CPU + transformers + huggingface_hub + safetensors are needed
+#     to (a) `snapshot_download` the bin, (b) convert bin → safetensors,
+#     (c) optionally run the reference dumper.
+#
+#   * NOT registered as a required check. HF hub flakiness must not block
+#     PRs (same posture as every other parity-*-real workflow). Promotion
+#     to required is an explicit owner decision after weeks of consecutive
+#     greens.
+#
+#   * Initial workflow_dispatch = owner. Fabricated-pass 禁止 — this CI
+#     never fires until the owner explicitly opts in.
+#
+# Handoff (Phase B / harness enablement):
+# docs/handoff/parity-deberta-v3-large-real.md.
+
+name: parity-deberta-v3-large-real
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_dumper:
+        description: >-
+          When "true", run `deberta_v3_dump_reference.py --do-dump` after
+          the conversion succeeds, uploading the reference tensors as an
+          artifact. The Rust-side numerical parity leg is still skipped
+          today (no harness). Default: false (dispatches exercise the
+          conversion path only).
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  schedule:
+    # Weekly Monday 13:00 UTC — the first free slot after
+    # parity-deepfilternet3-real (12:30) in the staggered weekly parity
+    # roster (see parity-deepfilternet3-real.yml header for the full
+    # roster). Check-workflow-hygiene.sh guards against collisions.
+    - cron: "0 13 * * 1"
+  pull_request:
+    # Fires ONLY on deberta-v3-adjacent code. Non-matching PRs run the
+    # unit tests (deberta_v3_synthetic.rs + deberta_convert.rs'
+    # convert_report_fields_exist) via the per-PR required jobs in ci.yml.
+    paths:
+      - ".github/workflows/parity-deberta-v3-large-real.yml"
+      - "crates/vokra-bert/src/deberta_v3.rs"
+      - "crates/vokra-bert/src/deberta_v2.rs"
+      - "crates/vokra-bert/src/lib.rs"
+      - "crates/vokra-convert/src/models/deberta_v3.rs"
+      - "crates/vokra-convert/src/models/deberta_v2.rs"
+      - "crates/vokra-convert/tests/deberta_convert.rs"
+      - "tools/parity/deberta_v3_dump_reference.py"
+      - "tools/parity/bin_to_safetensors.py"
+      # Shared dependencies whose regressions could reach the deberta-v3
+      # convert/load path:
+      - "crates/vokra-core/src/gguf/**"
+      - "crates/vokra-core/src/compliance/**"
+
+concurrency:
+  group: parity-deberta-v3-large-real-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Pinned upstream revision on microsoft/deberta-v3-large. Verified live
+  # via https://huggingface.co/api/models/microsoft/deberta-v3-large
+  # (2026-07-28 primary source — the `sha` field of the model API record).
+  # License MIT (docs/license-audit.md §3.1 sign-off row `deberta-v3-large`
+  # dated 2026-07-27 = ☑ Commercial, primary source github.com/microsoft/
+  # DeBERTa/master/LICENSE).
+  DEBERTA_V3_REPO: microsoft/deberta-v3-large
+  DEBERTA_V3_REVISION: "64a8c8eab3e352a784c658aef62be1662607476f"
+  DEBERTA_V3_LICENSE: MIT
+  # Architecture facts (from raw config.json at the pinned revision, cross-
+  # referenced with `deberta_v3_dump_reference.py`'s own module doc): 1024
+  # hidden / 24 layers / 16 heads / 128100 vocab. Not used programmatically
+  # here (`vokra-cli convert --model deberta-v3` reads them from the
+  # safetensors metadata + checkpoint config.json), but recorded for the
+  # audit trail.
+  PARITY_VENV: /tmp/vokra-deberta-v3-parity
+  CARGO_TERM_COLOR: always
+
+jobs:
+  setup:
+    name: gate (deberta-v3 opt-in)
+    runs-on: ubuntu-latest
+    outputs:
+      run_conversion: ${{ steps.decide.outputs.run_conversion }}
+      run_dumper: ${{ steps.decide.outputs.run_dumper }}
+    steps:
+      - id: decide
+        env:
+          ENABLE_VAR: ${{ vars.VOKRA_DEBERTA_V3_ENABLE }}
+          HARNESS_READY: ${{ vars.VOKRA_DEBERTA_V3_HARNESS_READY }}
+          FORCE_DUMPER: ${{ inputs.run_dumper }}
+        run: |
+          set -euo pipefail
+
+          # workflow_dispatch: the owner opted into conversion; dumper
+          # additionally requires run_dumper=true.
+          # pull_request: paths filter already scoped it; conversion runs,
+          # dumper gated on HARNESS_READY.
+          # schedule: everything gated on ENABLE_VAR=1 to keep cron minutes
+          # tight; dumper additionally requires HARNESS_READY=1.
+          case "${{ github.event_name }}" in
+            workflow_dispatch)
+              echo "run_conversion=true" >> "$GITHUB_OUTPUT"
+              if [ "${FORCE_DUMPER:-false}" = "true" ]; then
+                echo "run_dumper=true" >> "$GITHUB_OUTPUT"
+                echo "workflow_dispatch: dumper ENABLED (run_dumper=true)"
+              else
+                echo "run_dumper=false" >> "$GITHUB_OUTPUT"
+                echo "workflow_dispatch: run_dumper=false — conversion only"
+              fi
+              ;;
+            pull_request)
+              echo "run_conversion=true" >> "$GITHUB_OUTPUT"
+              if [ "${HARNESS_READY}" = "1" ]; then
+                echo "run_dumper=true" >> "$GITHUB_OUTPUT"
+                echo "pull_request: dumper ENABLED (HARNESS_READY=1)"
+              else
+                echo "run_dumper=false" >> "$GITHUB_OUTPUT"
+                echo "::notice title=parity-deberta-v3-large-real dumper skipped::VOKRA_DEBERTA_V3_HARNESS_READY not set — reference dumper leg cannot run without a Rust-side parity consumer. Conversion + GGUF sanity WILL run on this PR. Clean skip, not a pass (fabricated pass 禁止, FR-EX-08). See docs/handoff/parity-deberta-v3-large-real.md for Phase B enablement."
+              fi
+              ;;
+            schedule|*)
+              if [ "${ENABLE_VAR}" = "1" ]; then
+                echo "run_conversion=true" >> "$GITHUB_OUTPUT"
+                if [ "${HARNESS_READY}" = "1" ]; then
+                  echo "run_dumper=true" >> "$GITHUB_OUTPUT"
+                  echo "VOKRA_DEBERTA_V3_ENABLE=1 + HARNESS_READY=1: proceeding with conversion + dumper"
+                else
+                  echo "run_dumper=false" >> "$GITHUB_OUTPUT"
+                  echo "::notice title=parity-deberta-v3-large-real dumper skipped::VOKRA_DEBERTA_V3_ENABLE=1 (conversion runs) but VOKRA_DEBERTA_V3_HARNESS_READY not set — dumper leg cannot run. Clean skip, not a pass."
+                fi
+              else
+                echo "run_conversion=false" >> "$GITHUB_OUTPUT"
+                echo "run_dumper=false" >> "$GITHUB_OUTPUT"
+                echo "::notice title=parity-deberta-v3-large-real clean skip::VOKRA_DEBERTA_V3_ENABLE is not '1' — this family opt-in is off. Set the repository variable VOKRA_DEBERTA_V3_ENABLE=1 (or workflow_dispatch) to enable conversion, and additionally set VOKRA_DEBERTA_V3_HARNESS_READY=1 to enable the reference dumper. Fabricated pass 禁止 (FR-EX-08)."
+              fi
+              ;;
+          esac
+
+  parity:
+    name: parity (deberta-v3-large)
+    needs: setup
+    if: needs.setup.outputs.run_conversion == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      HF_HOME: ${{ github.workspace }}/.deberta-v3-cache
+      HF_HUB_CACHE: ${{ github.workspace }}/.deberta-v3-cache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Free hosted-runner disk (bin + safetensors + venv need headroom)
+        # pytorch_model.bin is ~1.7 GB; safetensors copy is comparable; venv
+        # with torch CPU is ~2 GB. Same trim as parity-tts-continuous-vae.
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache DeBERTa v3 HF checkpoint (per pinned revision)
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.HF_HOME }}
+          # Key on the pinned revision so a Microsoft upstream re-upload
+          # (would change bytes) invalidates the cache automatically.
+          key: deberta-v3-large-hf-${{ env.DEBERTA_V3_REVISION }}-v1
+
+      - name: Provision parity venv (huggingface_hub + torch + transformers + safetensors)
+        # torch CPU stays lean — the reference dumper's forward pass runs on
+        # CPU (no CUDA in the runner). transformers is needed both by the
+        # dumper and by huggingface_hub's tokenizer download helpers.
+        # safetensors is used by `bin_to_safetensors.py` to write the
+        # converted checkpoint. numpy is a transitive dep pinned per the
+        # parity-utmos precedent (defensive belt-and-suspenders).
+        run: |
+          set -euo pipefail
+          python -m venv "${PARITY_VENV}"
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          python -m pip install --upgrade pip
+          # Same pins as parity-sbv2-real.yml (already-vetted CPU torch +
+          # transformers range that keeps AutoModel/AutoTokenizer importable
+          # for DeBERTa v2/v3). safetensors + huggingface_hub match the
+          # parity-tts-continuous-vae precedent.
+          python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            'torch==2.4.*'
+          python -m pip install \
+            'numpy>=2,<3' \
+            'safetensors>=0.4' \
+            'huggingface_hub>=0.24,<1' \
+            'transformers>=4.44,<4.60'
+          python -m pip install 'hf_transfer>=0.1.9' || true
+          python - <<'PY'
+          import torch, numpy, safetensors, huggingface_hub, transformers
+          print(
+              f"deberta-v3 parity venv: "
+              f"torch={torch.__version__} numpy={numpy.__version__} "
+              f"safetensors={safetensors.__version__} "
+              f"huggingface_hub={huggingface_hub.__version__} "
+              f"transformers={transformers.__version__}"
+          )
+          PY
+
+      - name: Download microsoft/deberta-v3-large @ pinned SHA (HF hub)
+        # snapshot_download at the pinned revision. Fetch pytorch_model.bin
+        # + config.json + tokenizer_config.json + spm.model. `.bin` is the
+        # only weights format upstream ships (no safetensors mirror at
+        # source, verified 2026-07-28 via HF Hub API).
+        env:
+          HF_HUB_ENABLE_HF_TRANSFER: "1"
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          # `python -c` (not a heredoc): a heredoc inside $() cannot be
+          # closed from column 0 in a `run: |` block, which
+          # `scripts/check-workflow-hygiene.sh` catches via `bash -n`.
+          # Same pattern as parity-tts-continuous-vae-real.yml.
+          SNAPSHOT_STDOUT="$(python -c "
+          import os
+          from huggingface_hub import snapshot_download
+          repo = os.environ['DEBERTA_V3_REPO']
+          rev = os.environ['DEBERTA_V3_REVISION']
+          local = snapshot_download(
+              repo_id=repo,
+              revision=rev,
+              allow_patterns=[
+                  'pytorch_model.bin',
+                  'config.json',
+                  'tokenizer_config.json',
+                  'spm.model',
+              ],
+          )
+          print(f'snapshot: {local}')
+          ")"
+          echo "${SNAPSHOT_STDOUT}"
+          CKPT_DIR="$(echo "${SNAPSHOT_STDOUT}" | awk -F'snapshot: ' '/^snapshot: /{print $2; exit}')"
+          if [ -z "${CKPT_DIR}" ] || [ ! -d "${CKPT_DIR}" ]; then
+            echo "::error::snapshot_download did not print a resolvable path (got: ${SNAPSHOT_STDOUT})"
+            exit 1
+          fi
+          BIN="${CKPT_DIR}/pytorch_model.bin"
+          if [ ! -f "${BIN}" ]; then
+            echo "::error::expected pytorch_model.bin under ${CKPT_DIR}"
+            ls -la "${CKPT_DIR}"
+            exit 1
+          fi
+          echo "CKPT_DIR=${CKPT_DIR}" >> "$GITHUB_ENV"
+          {
+            echo "### DeBERTa v3 checkpoint"
+            echo ""
+            echo "- Repo: \`${DEBERTA_V3_REPO}\`"
+            echo "- Revision: \`${DEBERTA_V3_REVISION}\`"
+            echo "- Local dir: \`${CKPT_DIR}\`"
+            echo "- License: \`${DEBERTA_V3_LICENSE}\`"
+            echo "- pytorch_model.bin: $(wc -c < "${BIN}" | numfmt --to=iec)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Convert pytorch_model.bin → safetensors (bin_to_safetensors.py)
+        # `vokra-convert` is safetensors-only by design (NFR-DS-02 — no
+        # pickle parser in the Rust runtime, and no arbitrary-code-exec
+        # risk on load). Owner Task 3 Wave 2b landed
+        # `tools/parity/bin_to_safetensors.py` as the offline sidecar
+        # bridge; torch.load(weights_only=True) + safetensors.torch.save_file.
+        id: st_convert
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          ST_DIR="${RUNNER_TEMP}/deberta-v3-large-st"
+          set +e
+          python tools/parity/bin_to_safetensors.py \
+            --hf-repo "${DEBERTA_V3_REPO}" \
+            --output-dir "${ST_DIR}" \
+            2>&1 | tee "${RUNNER_TEMP}/bin2st-log.txt"
+          BIN2ST_EXIT=${PIPESTATUS[0]}
+          set -e
+          if [ "${BIN2ST_EXIT}" -ne 0 ]; then
+            {
+              echo "### bin_to_safetensors: FAILED"
+              echo ""
+              echo '```'
+              tail -c 4096 "${RUNNER_TEMP}/bin2st-log.txt"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit "${BIN2ST_EXIT}"
+          fi
+          # bin_to_safetensors.py writes model.safetensors alongside a
+          # sha256 line into $ST_DIR. Locate the safetensors file, which
+          # the script prints via its own log; be defensive against name
+          # drift (accept model.safetensors or the first *.safetensors).
+          SAFETENSORS="${ST_DIR}/model.safetensors"
+          if [ ! -f "${SAFETENSORS}" ]; then
+            SAFETENSORS="$(find "${ST_DIR}" -maxdepth 2 -name '*.safetensors' | head -1)"
+          fi
+          if [ -z "${SAFETENSORS:-}" ] || [ ! -f "${SAFETENSORS}" ]; then
+            echo "::error::bin_to_safetensors.py did not produce a *.safetensors file under ${ST_DIR}"
+            ls -la "${ST_DIR}"
+            exit 1
+          fi
+          echo "DEBERTA_V3_SAFETENSORS=${SAFETENSORS}" >> "$GITHUB_ENV"
+          {
+            echo "### DeBERTa v3 safetensors"
+            echo ""
+            echo "- Path: \`${SAFETENSORS}\`"
+            echo "- Size: $(wc -c < "${SAFETENSORS}" | numfmt --to=iec)"
+            echo ""
+            echo '```'
+            tail -c 4096 "${RUNNER_TEMP}/bin2st-log.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build vokra-cli (release)
+        run: cargo build --release -p vokra-cli
+
+      - name: Convert safetensors → GGUF (vokra-cli convert --model deberta-v3)
+        # `--model deberta-v3` (canonical `ModelKind::as_arg()` spelling,
+        # per `crates/vokra-cli/src/convert.rs` L1157) reads shapes/config
+        # from the safetensors + config.json. The converter's own
+        # DebertaV3Encoder::from_gguf self-check (see
+        # `crates/vokra-convert/src/models/deberta_v3.rs`) re-parses the
+        # emitted bytes as a built-in round-trip assertion.
+        id: convert
+        run: |
+          set -euo pipefail
+          GGUF="${RUNNER_TEMP}/deberta-v3-large.gguf"
+          set +e
+          ./target/release/vokra-cli convert \
+            --model deberta-v3 \
+            --input "${DEBERTA_V3_SAFETENSORS}" \
+            --output "${GGUF}" \
+            2>&1 | tee "${RUNNER_TEMP}/convert-log.txt"
+          CONVERT_EXIT=${PIPESTATUS[0]}
+          set -e
+          if [ "${CONVERT_EXIT}" -ne 0 ]; then
+            {
+              echo "### deberta-v3: conversion FAILED"
+              echo ""
+              echo '```'
+              tail -c 4096 "${RUNNER_TEMP}/convert-log.txt"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "converted=false" >> "$GITHUB_OUTPUT"
+            exit "${CONVERT_EXIT}"
+          fi
+          echo "DEBERTA_V3_GGUF=${GGUF}" >> "$GITHUB_ENV"
+          echo "converted=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "### deberta-v3: conversion OK"
+            echo ""
+            echo "- GGUF: \`${GGUF}\`"
+            echo "- Size: $(wc -c < "${GGUF}" | numfmt --to=iec)"
+            echo "- Self-check: passed (converter re-loads via \`DebertaV3Encoder::from_gguf\`)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Regenerate reference dump (deberta_v3_dump_reference.py --do-dump)
+        # Runs only when the dumper is enabled (see the gate logic in
+        # `setup`). Produces reference_dump.manifest.json + per-tensor
+        # `.bin` files under $REF_DIR that a future Rust-side numerical
+        # parity harness will consume. The tensors are uploaded as a
+        # parity artifact so the harness author can develop against them
+        # locally without re-running the workflow.
+        id: dump
+        if: needs.setup.outputs.run_dumper == 'true'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "${PARITY_VENV}/bin/activate"
+          REF_DIR="${RUNNER_TEMP}/deberta-v3-refdata"
+          mkdir -p "${REF_DIR}"
+          set +e
+          python tools/parity/deberta_v3_dump_reference.py \
+            --hf-repo "${DEBERTA_V3_REPO}" \
+            --revision "${DEBERTA_V3_REVISION}" \
+            --output-dir "${REF_DIR}" \
+            --do-dump 2>&1 | tee "${RUNNER_TEMP}/dump-log.txt"
+          DUMP_EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "DUMP_EXIT=${DUMP_EXIT}" >> "$GITHUB_ENV"
+          echo "REF_DIR=${REF_DIR}" >> "$GITHUB_ENV"
+          {
+            echo "### deberta-v3: reference dump (exit ${DUMP_EXIT})"
+            echo ""
+            echo '```'
+            tail -c 4096 "${RUNNER_TEMP}/dump-log.txt"
+            echo '```'
+            if [ "${DUMP_EXIT}" = "0" ] && [ -f "${REF_DIR}/reference_dump.manifest.json" ]; then
+              echo ""
+              echo "- Manifest: \`${REF_DIR}/reference_dump.manifest.json\`"
+              echo "- Tensor count: $(ls -1 "${REF_DIR}/reference_dump" 2>/dev/null | wc -l)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Emit Phase B skip notice (numerical parity harness not landed)
+        # Explicit, visible-in-summary notice that the Rust-side numerical
+        # parity leg was intentionally not run. The conversion (Phase A)
+        # is a real pass; the numerical parity vs the reference dumper is
+        # honestly deferred until a consumer harness lands in
+        # `crates/vokra-bert/tests/` or `crates/vokra-models/tests/`.
+        # This mirrors parity-deepfilternet3-real.yml's "Emit Phase B
+        # skip notice" pattern.
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.setup.outputs.run_dumper }}" = "true" ]; then
+            noun="reference dump ran; numerical parity"
+          else
+            noun="reference dump + numerical parity"
+          fi
+          {
+            echo "### deberta-v3: numerical parity leg — SKIPPED (harness not landed)"
+            echo ""
+            echo "The conversion path (upstream pytorch_model.bin @ pinned SHA →"
+            echo "safetensors via \`bin_to_safetensors.py\` → GGUF via"
+            echo "\`vokra-cli convert --model deberta-v3\`) succeeded, and the"
+            echo "converter's own \`DebertaV3Encoder::from_gguf\` self-check"
+            echo "asserts full round-trip loadability."
+            echo ""
+            echo "However, the ${noun} vs the Python reference dumper"
+            echo "(\`tools/parity/deberta_v3_dump_reference.py\`) was not run"
+            echo "because no Rust-side consumer harness exists yet"
+            echo "(\`crates/vokra-bert/tests/deberta_v3_synthetic.rs\` only"
+            echo "covers synthetic weights, and"
+            echo "\`crates/vokra-convert/tests/deberta_convert.rs\`'s"
+            echo "\`deberta_v3_convert_smoke\` is structural, not byte-level)."
+            echo ""
+            echo "To land Phase B: write a"
+            echo "\`crates/vokra-bert/tests/deberta_v3_real.rs\` harness that"
+            echo "reads \`reference_dump.manifest.json\` +"
+            echo "\`reference_dump/*.bin\`, runs"
+            echo "\`DebertaV3Encoder::from_gguf(VOKRA_DEBERTA_V3_GGUF)?.forward(&ids)\`,"
+            echo "and asserts atol/rtol against the dumped per-layer"
+            echo "hidden_states + attention tensors. Set"
+            echo "\`vars.VOKRA_DEBERTA_V3_HARNESS_READY=1\` after the harness"
+            echo "lands, and this workflow's \`cargo test\` leg becomes reachable."
+            echo ""
+            echo "See \`docs/handoff/parity-deberta-v3-large-real.md\` for the"
+            echo "full Phase B enablement flow."
+            echo ""
+            echo "> This is a **clean skip**, not a pass — fabricated pass 禁止 (FR-EX-08)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run deberta_v3_convert_smoke (--ignored) against fresh safetensors
+        # Structural smoke on the converter's public surface. Runs the
+        # `#[ignore]`d `deberta_v3_convert_smoke` test in
+        # `crates/vokra-convert/tests/deberta_convert.rs`, which expects
+        # `tests/fixtures/sbv2/deberta-v3-large.safetensors` at repo root.
+        # We symlink the just-produced safetensors into place so the test
+        # sees the real, freshly-converted checkpoint (never a stale
+        # committed fixture). The symlink is scoped to this job and does
+        # not persist across runs.
+        run: |
+          set -euo pipefail
+          FIX_DIR="tests/fixtures/sbv2"
+          mkdir -p "${FIX_DIR}"
+          FIX_LINK="${FIX_DIR}/deberta-v3-large.safetensors"
+          rm -f "${FIX_LINK}"
+          ln -sf "${DEBERTA_V3_SAFETENSORS}" "${FIX_LINK}"
+          ls -l "${FIX_LINK}"
+          set +e
+          cargo test --release -p vokra-convert \
+            --test deberta_convert \
+            deberta_v3_convert_smoke -- --ignored --nocapture \
+            2>&1 | tee "${RUNNER_TEMP}/smoke-log.txt"
+          SMOKE_EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "SMOKE_EXIT=${SMOKE_EXIT}" >> "$GITHUB_ENV"
+          rm -f "${FIX_LINK}"
+          {
+            echo "### deberta-v3: convert smoke (--ignored) leg"
+            echo ""
+            echo '```'
+            tail -c 4096 "${RUNNER_TEMP}/smoke-log.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${SMOKE_EXIT}" -ne 0 ]; then
+            echo "::error::deberta_v3_convert_smoke failed — see step summary + artifacts"
+            exit "${SMOKE_EXIT}"
+          fi
+
+      - name: Zero-dep tripwire — root Cargo.lock unchanged (NFR-DS-02)
+        # Belt-and-suspenders: pip-installing torch/transformers inside the
+        # parity venv must not have moved the root Rust lockfile.
+        run: git diff --exit-code Cargo.lock
+
+      - name: Upload parity artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: deberta-v3-large-parity-artifacts
+          path: |
+            ${{ runner.temp }}/bin2st-log.txt
+            ${{ runner.temp }}/convert-log.txt
+            ${{ runner.temp }}/dump-log.txt
+            ${{ runner.temp }}/smoke-log.txt
+            ${{ runner.temp }}/deberta-v3-large.gguf
+            ${{ runner.temp }}/deberta-v3-refdata/reference_dump.manifest.json
+            ${{ runner.temp }}/deberta-v3-refdata/reference_dump/**
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Propagate dumper exit code (if dumper was enabled)
+        # Placed after artifact upload (artifacts-first, exit-last — same
+        # ordering DFN3 / SBV2 use) so a failing job still ships the
+        # diagnostic bundle. `DUMP_EXIT` is only set when the dumper step
+        # ran; guard against unset to keep the gate honest.
+        if: needs.setup.outputs.run_dumper == 'true' && env.DUMP_EXIT != '0' && env.DUMP_EXIT != ''
+        run: |
+          echo "::error::deberta_v3_dump_reference.py exited with ${DUMP_EXIT} — see summary + artifacts"
+          exit "${DUMP_EXIT}"
