@@ -59,6 +59,18 @@ fi
 # default incremental behavior — we only override for pre-push.
 export CARGO_INCREMENTAL=0
 
+# sccache daemon self-heal (2026-07-29): even with rustc-wrapper wired,
+# a dead daemon means each cargo invocation spawns a short-lived sccache
+# process that cannot persist cache state across rustc calls reliably —
+# 2026-07-28 background push measured 11 min wall time with `--show-stats`
+# reporting 0 hits, while a warm daemon completes the same workspace check
+# in ~1m48s at 94% hit rate. Starting the server explicitly here means the
+# first cargo invocation (and every subsequent one in the hook) hits a warm
+# cache. Silent on failure so a missing sccache binary never breaks the hook.
+if command -v sccache >/dev/null 2>&1; then
+    sccache --start-server >/dev/null 2>&1 || true
+fi
+
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 

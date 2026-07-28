@@ -70,7 +70,7 @@ run_case() {
     fi
 }
 
-echo "test-pre-push-fastpath: 29 cases"
+echo "test-pre-push-fastpath: 36 cases"
 echo
 
 # --- FAST-PATH cases (all inputs are docs-shape) ---
@@ -133,6 +133,27 @@ run_case "_typos.toml only (CI advisory config)" \
     "fast" \
     "_typos.toml"
 
+# --- FAST-PATH cases for scripts/publish/** (HF publish helpers, Rust deps = 0) ---
+run_case "scripts/publish shell script only" \
+    "fast" \
+    "scripts/publish/publish-one.sh"
+
+run_case "scripts/publish new script + doc together" \
+    "fast" \
+    "$(printf 'scripts/publish/check-model-size.sh\ndocs/handoff/vast-ai-large-model-publish.md\n')"
+
+run_case "scripts/publish/vast-ai subdir" \
+    "fast" \
+    "$(printf 'scripts/publish/vast-ai/provision.sh\nscripts/publish/vast-ai/run-one.sh\n')"
+
+run_case "scripts/publish python helper" \
+    "fast" \
+    "scripts/publish/make_model_card.py"
+
+run_case "scripts/claude-hooks only" \
+    "fast" \
+    "scripts/claude-hooks/on-tool-use.sh"
+
 # --- DEEP-PATH cases (anything Rust-adjacent kills the fast-path) ---
 
 run_case "tools/parity Python + .rs together kills fast-path" \
@@ -163,9 +184,17 @@ run_case "crate Cargo.toml kills fast-path (path pattern *.toml)" \
     "deep" \
     "crates/vokra-core/Cargo.toml"
 
-run_case "scripts/ kills fast-path" \
+run_case "scripts/ (general, non-publish) kills fast-path" \
     "deep" \
     "scripts/check-zero-deps.sh"
+
+run_case "scripts/check-fa-v3-confinement.sh kills fast-path (Rust test dep)" \
+    "deep" \
+    "scripts/check-fa-v3-confinement.sh"
+
+run_case "scripts/publish + generic script kills fast-path" \
+    "deep" \
+    "$(printf 'scripts/publish/publish-one.sh\nscripts/verify.sh\n')"
 
 run_case "tools/ kills fast-path" \
     "deep" \

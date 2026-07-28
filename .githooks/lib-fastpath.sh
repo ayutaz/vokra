@@ -87,6 +87,21 @@ is_docs_only_diff() {
             # deep-path *) trigger below.
             _typos.toml)
                 ;;
+            # HF publish helpers (scripts/publish/**). Callers are:
+            #   * owner shell (upload / stage / check-model-size)
+            #   * scripts/publish/vast-ai/* (in-instance driver)
+            # Rust references are docstring-only (`crates/vokra-convert/src/
+            # models/mimi.rs:368` mentions `make_model_card.py` in a comment).
+            # No `include_str!` / `include_bytes!` / `Command::new` from Rust
+            # code — verified 2026-07-29. Matched BEFORE the generic scripts/*
+            # deep-trigger below so a publish-helper-only touch takes the
+            # fast-path.
+            scripts/publish/*|scripts/publish/*/*|scripts/publish/*/*/*)
+                ;;
+            # Claude Code hook helpers (scripts/claude-hooks/**). Session
+            # tooling, never invoked by Rust code or CI Rust builds.
+            scripts/claude-hooks/*|scripts/claude-hooks/*/*)
+                ;;
             # Scripts / tooling that may be exercised elsewhere in the hook or in tests:
             scripts/*|tools/*|.githooks/*)
                 trigger="$f"; break ;;
@@ -144,6 +159,13 @@ changed_workspace_crates() {
             tools/parity/*.py|tools/parity/pyproject.toml|tools/parity/uv.lock|tools/parity/vendor/*/*.py|tools/parity/vendor/*/*.md|tools/parity/vendor/*/LICENSE)
                 ;;
             tests/fixtures/*/*.sha256)
+                ;;
+            # HF publish helpers + Claude hooks — build-neutral, same rationale
+            # as is_docs_only_diff. Verified 2026-07-29 that Rust code only
+            # references these in comments.
+            scripts/publish/*|scripts/publish/*/*|scripts/publish/*/*/*)
+                ;;
+            scripts/claude-hooks/*|scripts/claude-hooks/*/*)
                 ;;
             # Root-level build config → disqualifies package scoping (must run
             # full workspace):
