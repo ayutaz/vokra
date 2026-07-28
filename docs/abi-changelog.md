@@ -228,6 +228,45 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-07-28 — 1.0.0-rc.1-dev (X-Codec-2 converter + LicenseClass flip — Rust surface only, advisory)
+
+Additive **Rust public API** change plus one observable behaviour change on
+`LicenseClass::from_license_str` / `registry_lookup` (semantics only — no
+signature change). The C ABI (`include/vokra.h`) is **untouched** (33 fn + 11
+typedef baseline unchanged; `scripts/gen-c-abi.sh --check` = no diff). Follows
+the SBV2 precedent above for new `ModelKind` variants: **advisory Rust-surface
+entry**, `scripts/check-abi-changelog.sh` does not gate on it (no C symbol
+changed).
+
+- **vokra-convert::ModelKind**: `XCodec2` variant added (public enum), plus 6
+  aliases routed to it (`xcodec2` / `x-codec-2` / `x_codec_2` / `xcodec-2` /
+  `x-codec2` / `hkustaudio-xcodec2`). New module
+  `crates/vokra-convert/src/models/xcodec2.rs` (`convert_xcodec2_file` +
+  internal `models::xcodec2::convert(bytes)` helper shared with
+  `convert_file_licensed`).
+- **vokra-core::compliance::license_class**: `x-codec-2` / `xcodec2`
+  registry entries move from `LicenseClass::Permissive` → `LicenseClass::NonCommercial`
+  (grouped with `f5-tts` / `encodec`). This is an **observable behaviour
+  change** on the public `registry_lookup` / `from_license_str` predicates
+  — downstream code that matched on the returned `LicenseClass` will now
+  see `NonCommercial` instead of `Permissive`, which flips
+  `requires_research_flag`, `commercial_ok`, and `redistributable` for the
+  two slugs. Rationale: HF `HKUSTAudio/xcodec2` cardData
+  `license: cc-by-nc-4.0` (primary source 2026-07-15 / re-verify 2026-07-28)
+  is the **weight** authoritative source, and the M2-13 runtime gate + M4-04
+  publish gate both classify by weight (§3.1 sign-off row 254 records the
+  Research-only sign-off). Pin tests updated: `dac` / `wavtokenizer` stay
+  `Permissive`; a new `NonCommercial` pin covers `x-codec-2` / `xcodec2`
+  with case-insensitive spellings and asserts every derived predicate.
+- **vokra-cli**: `convert --model xcodec2 --license <spdx>` flag added on
+  the generic fallthrough dispatch (mutually exclusive with `--quantize` /
+  `--policy-preset`; loud rejection if combined — silently ignoring a user
+  flag is FR-EX-08).
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
+baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none. Commit:
+`53fa432` (2026-07-28).
+
 ### 2026-07-26: SBV2 v2 + BERT DeBERTa v2/v3 addition (Rust surface only, advisory)
 
 - **vokra-bert (new crate)**: `SbertTokenizer`, `DebertaV2Encoder`, `DebertaV3Encoder`, `BertEncoder` trait

@@ -7,17 +7,36 @@ for real-checkpoint coverage. This handoff is the single-page entry point
 that names every artifact landed, every artifact deliberately deferred,
 and every action still owed to the owner (yousan).
 
+> **Post-handoff reconciliation (2026-07-28、later same day)**: this
+> handoff was authored at commit `fab32b2` 11:02:17 UTC as a snapshot of
+> the impl wave. Later that day the following additional events landed on
+> the same branch and **override the "deferred" postures below**:
+> (a) **X-Codec-2 publish fired** at commit `98c34cd` 12:29:46 UTC — the
+> T4 first-precedent decision was granted by the owner and the artifact
+> is live at `https://huggingface.co/vokra/xcodec2` (verified HTTP/2 200
+> by the publish tooling); (b) **§3.1 sign-off wave completed** —
+> VoxCPM2-2B ☑ Commercial at `64639b9`, Sesame CSM-1B ☑ Commercial +
+> VibeVoice-Large ☑ Rejected (repo 404) at `a7a23c0`, both `yousan`
+> 2026-07-28; (c) **pre-push optimization landed** (`e1cad37`/`2b21ea8`/
+> `719ae3a`/`f7a247a`, ~40 min → ~1m45s = ~24x dev-machine speed-up, no
+> repo `Cargo.lock` change = NFR-DS-02 preserved). The Executive summary
+> below is retained verbatim as an as-of-handoff-time snapshot; treat it
+> as history and read the post-handoff bullets first.
+
 ## Executive summary
 
 * **2 models converted-and-published in the impl wave** — Fun-CosyVoice3-0.5B-2512
   (Apache-2.0, live on `huggingface.co/vokra/fun-cosyvoice3-0.5b-2512`,
   依頼者 2026-07-28 追認 commit `9c00ffb`) and X-Codec-2 (converter +
   license-class flip landed `53fa432`, publish deliberately deferred to
-  owner as the T4 (Research-only) first-precedent decision).
+  owner as the T4 (Research-only) first-precedent decision — **superseded
+  post-handoff: `98c34cd` fired the publish, live on
+  `huggingface.co/vokra/xcodec2`**).
 * **2 parity-CI legs landed** — `parity-deepfilternet3-real` (commit
   `f23bc73`, cron Mon 12:30 UTC) and `parity-deberta-v3-large-real`
-  (commit `ae8fef9` on worktree, cron Mon 13:00 UTC; controller
-  cherry-pick pending onto `feat/sbv2-v2-plan-and-wave1`).
+  (commit `62a10b7`, cron Mon 13:00 UTC; landed on
+  `feat/sbv2-v2-plan-and-wave1` 2026-07-28 — the earlier worktree SHA
+  `ae8fef9` referenced later in this document is superseded).
 * **3 design specs written** (gitignore-local, `docs/superpowers/specs/`)
   for VoxCPM2-2B, WavTokenizer, and Matcha-TTS — each carries Wave 0-9
   breakdowns + open questions for the owner before implementation
@@ -27,6 +46,9 @@ and every action still owed to the owner (yousan).
   `docs/license-audit.md` §3.1), Sesame CSM-1B (HF-gated ⇒ audit 未判定),
   Suno Bark (§3.1 signed ☑ Commercial but publication still needs owner
   read on the model-card "research purposes only" advisory).
+  **Post-handoff (`a7a23c0`): CSM-1B ☑ Commercial + VibeVoice-Large ☑
+  Rejected (upstream 404, fail-closed) landed 2026-07-28 yousan sign-offs;
+  Bark posture unchanged (M5-07 audit-only, no publish yet).**
 * **Zero-dep NFR-DS-02 preserved throughout** — root `Cargo.lock` is
   `vokra-*` only across every landed commit; Python toolchain adds live
   in `/tmp` parity venvs; every workflow's tail step is a
@@ -35,7 +57,8 @@ and every action still owed to the owner (yousan).
   Rust numerical leg with a `::notice::` because no consumer harness
   exists yet (only synthetic + convert-smoke tests); X-Codec-2's publish
   step was deliberately not executed pending owner sign-off on the T4
-  precedent.
+  precedent (**superseded post-handoff: T4 sign-off granted + publish
+  fired at `98c34cd`, live URL verified HTTP/2 200**).
 
 ## Table of contents
 
@@ -68,9 +91,11 @@ and the resulting triage bucket.
 
 ## 2. Impl wave — landed items
 
-Four items landed in the 2026-07-28 impl wave. Every commit is on this
-branch tip (`feat/sbv2-v2-plan-and-wave1`) except `ae8fef9` which sits on
-worktree `worktree-wf_4b1b056d-625-4` awaiting controller cherry-pick.
+Four items landed in the 2026-07-28 impl wave. Every commit is now on this
+branch tip (`feat/sbv2-v2-plan-and-wave1`). The DeBERTa-v3-large parity-CI
+leg originally landed as `ae8fef9` on worktree
+`worktree-wf_4b1b056d-625-4`; the branch-side commit that superseded it is
+`62a10b7` (2026-07-28) — see §2.4 below for the reconciled reference.
 
 ### 2.1 Fun-CosyVoice3-0.5B-2512 — 追認 commit
 
@@ -103,7 +128,7 @@ worktree `worktree-wf_4b1b056d-625-4` awaiting controller cherry-pick.
 * **Zero-dep** — root `Cargo.lock` unchanged; `curl -sI` on the HF URL
   returned HTTP 200 (recorded in the commit message).
 
-### 2.2 X-Codec-2 — converter + license flip (publish deferred)
+### 2.2 X-Codec-2 — converter + license flip (publish deferred → **later fired** post-handoff at `98c34cd`, see reconciliation note atop the doc)
 
 * **Commit** `53fa432ee3eddece34484480d88eb5e29f718c6e`
   (`feat(sota): X-Codec-2 converter + license_class NonCommercial fix
@@ -175,11 +200,12 @@ worktree `worktree-wf_4b1b056d-625-4` awaiting controller cherry-pick.
 
 ### 2.4 parity-deberta-v3-large-real — CI workflow
 
-* **Commit** `ae8fef9735b354bc9055a821c1481995887c6382` — **on worktree
-  `worktree-wf_4b1b056d-625-4`, based on `feat/sbv2-v2-plan-and-wave1 @
-  9c00ffb`. Controller cherry-pick onto `feat/sbv2-v2-plan-and-wave1`
-  is pending.** (This handoff agent does not cherry-pick — controller
-  handles the merge sequence.)
+* **Commit** `62a10b77a1dec4fa19eb1e18d46c7430397f6533` — **landed on
+  `feat/sbv2-v2-plan-and-wave1` 2026-07-28**, superseding the initial
+  worktree commit `ae8fef9735b354bc9055a821c1481995887c6382` (which was
+  based on `feat/sbv2-v2-plan-and-wave1 @ 9c00ffb` inside
+  `worktree-wf_4b1b056d-625-4`). The earlier "controller cherry-pick
+  pending" note is now resolved.
 * **Workflow YAML** `.github/workflows/parity-deberta-v3-large-real.yml`
   (247 lines).
 * **Handoff runbook** `docs/handoff/parity-deberta-v3-large-real.md`
@@ -322,12 +348,14 @@ are ratified and the implementation lands.
 
 ## 4. Parity-CI coverage — current roster
 
-On branch tip `feat/sbv2-v2-plan-and-wave1 @ 9c00ffb` there are 15
+On branch tip `feat/sbv2-v2-plan-and-wave1` there are 16
 `parity-*-real.yml` (or `parity-*.yml`) workflows in
-`.github/workflows/`. Adding worktree `ae8fef9` after controller
-cherry-pick brings the count to 16.
+`.github/workflows/`. The DeBERTa-v3-large workflow originally sat on
+worktree `ae8fef9` at the time of first drafting; the branch-side
+`62a10b7` (2026-07-28) reconciled it onto this branch, so the "pending
+cherry-pick" §4.2 below is now historical.
 
-### 4.1 Landed on this branch (15 workflows)
+### 4.1 Landed on this branch (16 workflows)
 
 | # | Workflow | Family / model | Enable var | Cron slot |
 |---|----------|----------------|------------|-----------|
@@ -346,12 +374,13 @@ cherry-pick brings the count to 16.
 | 13 | parity-tts-continuous-vae-real.yml | voxcpm2 + vibevoice | `VOKRA_TTS_CONT_VAE_ENABLE` | Mon 11:30 UTC |
 | 14 | parity-tts-japanese-real.yml | irodori + vits_ja | `VOKRA_TTS_JA_ENABLE` | Mon 12:00 UTC |
 | 15 | **parity-deepfilternet3-real.yml (LANDED f23bc73)** | DeepFilterNet3 | `VOKRA_DFN3_ENABLE` | Mon 12:30 UTC |
+| 16 | **parity-deberta-v3-large-real.yml (LANDED 62a10b7)** | microsoft/deberta-v3-large | `VOKRA_DEBERTA_V3_ENABLE` | Mon 13:00 UTC |
 
 ### 4.2 Pending cherry-pick onto this branch
 
-| # | Workflow | Model | Enable var | Cron slot | Commit |
-|---|----------|-------|------------|-----------|--------|
-| 16 | **parity-deberta-v3-large-real.yml** | microsoft/deberta-v3-large | `VOKRA_DEBERTA_V3_ENABLE` | Mon 13:00 UTC | `ae8fef9` (worktree, pending) |
+(Historical — resolved 2026-07-28 by commit `62a10b7`. Left in place so
+the reference chain in §2.4 remains navigable; no workflows are currently
+pending cherry-pick.)
 
 ### 4.3 Multi-model CI cross-check note (important)
 
@@ -387,6 +416,16 @@ of external license text, or (c) needs an initial dispatch on
 GitHub Actions.
 
 ### (a) T4 first-precedent decision — X-Codec-2 publish
+
+> **✅ Resolved post-handoff (commit `98c34cd`, 2026-07-28 12:29:46 UTC)**:
+> owner granted the T4 precedent decision; the artifact is live at
+> `https://huggingface.co/vokra/xcodec2` (curl -sI HTTP/2 200 verified by
+> publish tooling). The workflow — `publish-one.sh --allow-noncommercial`
+> + CC-BY-NC-4.0 canonical LICENSE (`fetch_license.sh --spdx cc-by-nc-4.0`
+> was added in the same commit) + model-card leading NC clause + §3.1
+> ☑ Research-only sign-off (2026-07-23 yousan, row 254) — is now the
+> durable pattern captured in memory `[[project-x-codec2-t4-precedent]]`.
+> The prose below is retained verbatim as the pre-decision framing.
 
 `huggingface.co/vokra/xcodec2` is not yet live because the 16
 already-published models are all T1 Permissive-tier ⇒ T4 Research-only
@@ -588,7 +627,8 @@ Ordered by expected ROI given the owner's critical path in §5.
   branch tip).
 * `docs/handoff/parity-deepfilternet3-real.md` — DFN3 CI runbook.
 * `docs/handoff/parity-deberta-v3-large-real.md` — DeBERTa-v3-large CI
-  runbook (on worktree `ae8fef9`, pending cherry-pick).
+  runbook (landed on branch as `62a10b7`, 2026-07-28; earlier worktree
+  commit `ae8fef9` is superseded).
 * `docs/handoff/parity-ci-flip-switch.md` — flip-the-switch pattern
   for the 8 SoTA family harnesses.
 * `docs/handoff/sota-candidates-2026-07-25.md` — 25-row SoTA candidate
