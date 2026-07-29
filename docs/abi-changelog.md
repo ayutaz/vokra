@@ -228,6 +228,27 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-07-30 — 1.0.0-rc.1-dev (M5 gap CC wave 2 — VoxCPM2-2B config + scaffolds — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the M5 owner-checklist CC-side wave 2
+(A-4/A-5/A-6/B-1/B-2 ultracode workflow, PR #24 commit `b13a3c0`). The C ABI
+(`include/vokra.h`) is **untouched** (33 fn + 11 typedef baseline unchanged;
+`scripts/gen-c-abi.sh --check` = no diff). Follows the X-Codec-2 precedent:
+**advisory Rust-surface entry**, `scripts/check-abi-changelog.sh` does not
+gate on it (no C symbol changed).
+
+- **vokra-ops::vae_continuous**: `voxcpm2_2b()` associated fn added on
+  `ContinuousVaeConfig` (sibling of the existing `voxcpm_0_5b()` factory).
+  Returns the primary-source-anchored 2B config for `openbmb/VoxCPM2`
+  (Apache-2.0). Owner Q1 topology ADR is still Proposed — this only lands
+  the config primitives and the accompanying `voxcpm2_2b_config_matches_primary_source`
+  / `voxcpm2_2b_config_validates` pin tests; the 2B tensor-name mapping in
+  `vokra-convert::models` is deferred until the ADR is Accepted.
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
+baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none. Commit:
+`b13a3c0` (2026-07-30).
+
 ### 2026-07-28 — 1.0.0-rc.1-dev (X-Codec-2 converter + LicenseClass flip — Rust surface only, advisory)
 
 Additive **Rust public API** change plus one observable behaviour change on

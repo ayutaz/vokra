@@ -852,6 +852,7 @@ FN vokra-ops::vae_continuous::new|pub fn new(cfg: ContinuousVaeConfig, weights: 
 FN vokra-ops::vae_continuous::synthesized|pub fn synthesized(config: &ContinuousVaeConfig) -> Result<Self> {
 FN vokra-ops::vae_continuous::tiny_for_tests|pub fn tiny_for_tests() -> Self {
 FN vokra-ops::vae_continuous::validate_for_forward|pub fn validate_for_forward(&self) -> Result<()> {
+FN vokra-ops::vae_continuous::voxcpm2_2b|pub fn voxcpm2_2b() -> Self {
 FN vokra-ops::vae_continuous::voxcpm_0_5b|pub fn voxcpm_0_5b() -> Self {
 FN vokra-ops::waveform_frontend::has_group_norm|pub fn has_group_norm(self, i: usize) -> bool {
 FN vokra-ops::waveform_frontend::has_layer_norm|pub fn has_layer_norm(self, _i: usize) -> bool {

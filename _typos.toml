@@ -157,3 +157,8 @@ dows = "dows"
 # tools/branding/gen_brand.py に頻出。v1.48.0 が "minimum" を提案してくるが、
 # 英語・ラテン語とも実在する顔料名 (https://en.wikipedia.org/wiki/Minium_(pigment))。
 minium = "minium"
+# "bord" = borderline の慣用短縮 (scripts/publish/check-model-size.sh の
+# t_bord threshold identifier)。THRESH_BORDERLINE (16 GiB) と対応する
+# python 側変数名。v1.48.0 が "board" / "bored" / "border" を提案してくるが、
+# LOCAL_BORDERLINE verdict の内部変数名として意図的な略称。
+bord = "bord"
