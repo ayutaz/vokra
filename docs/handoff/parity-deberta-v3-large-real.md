@@ -29,23 +29,25 @@ The workflow is **two-phase**:
   0`, `read == written + skipped_non_float`) is additionally run against
   the freshly-produced safetensors via a scoped fixture symlink.
 
-* **Phase B — Numerical parity (Rust-side harness not landed yet).**
+* **Phase B — Numerical parity (`final_hidden`) — LANDED 2026-07-29.**
   Runs `tools/parity/deberta_v3_dump_reference.py --do-dump` when
   enabled, producing `reference_dump.manifest.json` +
   `reference_dump/<name>.bin` for every per-layer hidden_states +
-  attention tensor. Those tensors are uploaded as a job artifact so a
-  future harness author can develop against them locally. **The Rust-side
-  numerical parity harness that would consume these dumps does not exist
-  yet in this repo**: `crates/vokra-bert/tests/deberta_v3_synthetic.rs`
-  covers only synthetic weights (`DebertaV3Encoder::synthetic_for_test`),
-  and `crates/vokra-convert/tests/deberta_convert.rs`'s smoke is
-  structural, not byte-level. The workflow honestly skips the numerical
-  leg today with an explicit `::notice::` (fabricated pass 禁止,
-  FR-EX-08).
+  attention tensor. Then a Rust-side harness at
+  `crates/vokra-bert/tests/deberta_v3_real.rs`
+  (`deberta_v3_real_weight_final_hidden_parity`) consumes
+  `input_ids.bin` + `final_hidden.bin`, runs
+  `DebertaV3Encoder::from_gguf(...)?.forward(&ids)`, and asserts an
+  architectural-bound atol (see the harness module doc for the
+  1024 * f32::EPSILON × 24 layers × 2x hdrm ≈ 6.0e-3 derivation).
+  Per-layer `layer_NN_output` + `layer_NN_attention` legs remain deferred
+  because the Rust encoder does not expose per-layer taps today —
+  enabling those requires an additive `forward_with_layer_taps()` on
+  `DebertaV3Encoder`, tracked separately.
 
-Absent Phase B provisioning, the workflow ONLY exercises Phase A + the
-reference-dump artifact production (when force-enabled), plus the
-explicit `::notice::` documenting the deferred numerical leg.
+The workflow's "Phase B status" step emits an explicit per-run summary
+(what ran vs why anything skipped), preserving the `NFR-QL-04 / FR-EX-08`
+audit trail every run.
 
 ## Owner action checklist
 
@@ -107,68 +109,60 @@ The dumper's output ships as the `deberta-v3-large-parity-artifacts`
 artifact bundle (`reference_dump.manifest.json` +
 `reference_dump/<name>.bin`).
 
-### Phase B (numerical parity leg — requires landing a harness)
+### Phase B active (final_hidden — 2026-07-29)
 
-Enabling the numerical parity leg is a code change, not a variable flip.
-The steps:
+**Status**: `final_hidden` parity leg LANDED 2026-07-29.
 
-1. **Write the Rust harness.** Recommended location:
-   `crates/vokra-bert/tests/deberta_v3_real.rs` (a sibling of
-   `deberta_v3_synthetic.rs`; naming matches
-   `crates/vokra-models/tests/parity_sbv2_real.rs`). The harness should:
+* **Harness path**: `crates/vokra-bert/tests/deberta_v3_real.rs`
+  (`deberta_v3_real_weight_final_hidden_parity`). Reads
+  `VOKRA_DEBERTA_V3_GGUF` + `VOKRA_DEBERTA_V3_REFDIR` (env-var gates,
+  honest-skip if unset or not resolvable to a file/dir — mirrors
+  `parity_denoise_dfn3.rs`'s `env_paths()` idiom, plus a second
+  is_file / is_dir check so a broken workflow step surfaces loudly
+  rather than silently degrading to a green skip).
+* **Atol calibration record** (module doc): `6.0e-3`, derived from
+  `1024 * f32::EPSILON × 24 layers × 2x cross-machine libm headroom`.
+  Not a CI-green-seeking constant. Update this only alongside a fresh
+  measured run — memory `feedback-honest-parity-atol`.
+* **Workflow step**: "Run deberta_v3 numerical parity harness
+  (final_hidden)", gated on `needs.setup.outputs.run_dumper == 'true'`.
+  Exports `VOKRA_DEBERTA_V3_GGUF` + `VOKRA_DEBERTA_V3_REFDIR` from the
+  already-emitted `env.DEBERTA_V3_GGUF` + `env.REF_DIR` — no additional
+  plumbing needed.
+* **Skipped legs (deferred, honest)**: `layer_NN_output` +
+  `layer_NN_attention` per-layer tensors. `DebertaV3Encoder::forward`
+  returns final hidden only; enabling per-layer comparison requires an
+  additive `forward_with_layer_taps()` on the encoder (mirrors the
+  `parity_denoise_dfn3.rs` `enhance_with_taps()` refactor). Not
+  fabricated as a reachable assertion path — see the harness module
+  doc's Coverage note.
+* **Cron / PR gate posture unchanged**: the two enable variables
+  (`VOKRA_DEBERTA_V3_ENABLE` for conversion; `VOKRA_DEBERTA_V3_HARNESS_READY`
+  for cron/PR dumper trigger) continue to keep HF flakiness from
+  blocking PRs. The harness itself uses env-var gates on its inputs as
+  a second line of defence.
 
-   * Read `VOKRA_DEBERTA_V3_GGUF` (path to the converted GGUF the
-     workflow just produced — the workflow already exports this env var
-     before running any test step, so no extra plumbing is needed).
-   * Read `VOKRA_DEBERTA_V3_REFDIR` (path to `reference_dump/`,
-     populated only when the dumper leg ran — gate the harness on this
-     env var being both present AND a real directory, per the
-     `parity_denoise_dfn3.rs` `env_paths()` idiom, and print a loud
-     `skipping: …` if either is missing).
-   * Parse `reference_dump.manifest.json`, tokenize the same `--text`
-     the manifest records (default `"This is a test."` — see
-     `deberta_v3_dump_reference.py`'s `DEFAULT_TEXT`), read
-     `input_ids.bin` (`int64`), run
-     `DebertaV3Encoder::from_gguf(gguf)?.forward(&ids)`, and compare the
-     per-layer `layer_NN_output.bin` + `final_hidden.bin` tensors with
-     an `atol` / `rtol` bound set by an architectural-floor calculation
-     (see the parity-kokoro-real.yml handover doc for the "atol as
-     architectural bound, not CI green" discipline; DeBERTa v3's 24
-     layers × 16 heads × 1024 hidden makes a fresh calibration
-     necessary — do not copy Kokoro's numbers).
-   * Attention tensors (`layer_NN_attention.bin`) can be a follow-up
-     if `DebertaV3Encoder::forward` does not currently return them
-     (check the API before you write the assertions — do not fabricate
-     an assertion path that cannot be reached).
+### Future — Phase B extension (per-layer taps)
 
-2. **Register the harness in the workflow.** Add a step between "Emit
-   Phase B skip notice" and "Run deberta_v3_convert_smoke" that runs the
-   new test only when both `needs.setup.outputs.run_dumper == 'true'`
-   and the harness landed:
+Follow-up to close the deferred legs above. Not currently prioritized;
+land only when a genuine drift-in-a-layer regression is suspected. The
+work would:
 
-   ```yaml
-   - name: Run deberta_v3 numerical parity harness
-     if: needs.setup.outputs.run_dumper == 'true'
-     env:
-       VOKRA_DEBERTA_V3_GGUF: ${{ env.DEBERTA_V3_GGUF }}
-       VOKRA_DEBERTA_V3_REFDIR: ${{ env.REF_DIR }}/reference_dump
-     run: |
-       cargo test --release -p vokra-bert \
-         --test deberta_v3_real -- --nocapture
-   ```
+1. Add `pub fn forward_with_layer_taps(&self, ids: &[u32]) ->
+   (Vec<f32>, Vec<LayerTap>)` to `DebertaV3Encoder`, where each
+   `LayerTap` holds the layer's post-residual hidden and its
+   post-softmax attention tensor.
+2. Extend the harness to iterate `manifest.tensors[]`, read every
+   `layer_NN_output.bin` + `layer_NN_attention.bin`, and assert per-tap
+   atols (each family gets its own architectural bound — attention
+   noise is different from residual noise; do not reuse the
+   `final_hidden` constant).
+3. Update the workflow's "Phase B status" summary to record per-layer
+   coverage on future runs.
 
-   Remove or downgrade the "Emit Phase B skip notice" step to an
-   informational summary (do not delete it wholesale — the
-   `NFR-QL-04 / FR-EX-08` audit trail benefits from an explicit "this
-   changed on <date>" boundary).
-
-3. **Land docs updates.** Add a "Phase B active" section to this handoff
-   doc noting the harness path, the atol calibration record, and the
-   date the flip happened.
-
-Do NOT downgrade the workflow's cron / PR gates when Phase B lands —
-the same enable-variable gates continue to keep HF flakiness from
-blocking PRs, and the harness itself uses env-var gates on its inputs.
+No workflow-side changes needed for step 3 beyond the summary text
+edit — the existing "Run deberta_v3 numerical parity harness" step will
+run whatever test names the harness gains.
 
 ## Troubleshooting
 

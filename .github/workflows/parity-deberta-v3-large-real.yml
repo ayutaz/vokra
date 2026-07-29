@@ -471,53 +471,70 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Emit Phase B skip notice (numerical parity harness not landed)
-        # Explicit, visible-in-summary notice that the Rust-side numerical
-        # parity leg was intentionally not run. The conversion (Phase A)
-        # is a real pass; the numerical parity vs the reference dumper is
-        # honestly deferred until a consumer harness lands in
-        # `crates/vokra-bert/tests/` or `crates/vokra-models/tests/`.
-        # This mirrors parity-deepfilternet3-real.yml's "Emit Phase B
-        # skip notice" pattern.
+      - name: Phase B status (informational, per-run)
+        # NFR-QL-04 / FR-EX-08 audit trail: on every run, emit an explicit,
+        # visible-in-summary record of which Phase B legs ran vs why they
+        # honestly skipped. Downgraded 2026-07-29 from an unconditional
+        # "SKIPPED (harness not landed)" notice to a status snapshot when
+        # `crates/vokra-bert/tests/deberta_v3_real.rs` landed.
         run: |
           set -euo pipefail
-          if [ "${{ needs.setup.outputs.run_dumper }}" = "true" ]; then
-            noun="reference dump ran; numerical parity"
-          else
-            noun="reference dump + numerical parity"
-          fi
           {
-            echo "### deberta-v3: numerical parity leg — SKIPPED (harness not landed)"
+            echo "### deberta-v3: numerical parity status"
             echo ""
-            echo "The conversion path (upstream pytorch_model.bin @ pinned SHA →"
-            echo "safetensors via \`bin_to_safetensors.py\` → GGUF via"
-            echo "\`vokra-cli convert --model deberta-v3\`) succeeded, and the"
-            echo "converter's own \`DebertaV3Encoder::from_gguf\` self-check"
-            echo "asserts full round-trip loadability."
+            echo "* Rust harness (\`crates/vokra-bert/tests/deberta_v3_real.rs\`): LANDED 2026-07-29."
+            echo "  Compares \`final_hidden\` (\`[1, T, 1024]\`) against the dumper's"
+            echo "  reference bytes at an architectural-floor atol (see harness"
+            echo "  module doc for the derivation)."
+            echo "* Per-layer \`layer_NN_output\` + \`layer_NN_attention\` legs: DEFERRED."
+            echo "  The Rust encoder does not expose per-layer taps today"
+            echo "  (\`DebertaV3Encoder::forward\` returns final hidden only);"
+            echo "  enabling those requires an additive"
+            echo "  \`forward_with_layer_taps()\` API. Not fabricated as a"
+            echo "  reachable assertion path — see harness module doc's Coverage"
+            echo "  note."
+            if [ "${{ needs.setup.outputs.run_dumper }}" = "true" ]; then
+              echo "* This run: reference dump PRODUCED; final_hidden parity leg RUNNING."
+            else
+              echo "* This run: reference dump NOT PRODUCED (\`run_dumper=false\`);"
+              echo "  final_hidden parity leg will honest-skip (env vars absent by design)."
+              echo "  Flip \`vars.VOKRA_DEBERTA_V3_HARNESS_READY=1\` or dispatch with"
+              echo "  \`-f run_dumper=true\` to exercise the numerical leg."
+            fi
             echo ""
-            echo "However, the ${noun} vs the Python reference dumper"
-            echo "(\`tools/parity/deberta_v3_dump_reference.py\`) was not run"
-            echo "because no Rust-side consumer harness exists yet"
-            echo "(\`crates/vokra-bert/tests/deberta_v3_synthetic.rs\` only"
-            echo "covers synthetic weights, and"
-            echo "\`crates/vokra-convert/tests/deberta_convert.rs\`'s"
-            echo "\`deberta_v3_convert_smoke\` is structural, not byte-level)."
-            echo ""
-            echo "To land Phase B: write a"
-            echo "\`crates/vokra-bert/tests/deberta_v3_real.rs\` harness that"
-            echo "reads \`reference_dump.manifest.json\` +"
-            echo "\`reference_dump/*.bin\`, runs"
-            echo "\`DebertaV3Encoder::from_gguf(VOKRA_DEBERTA_V3_GGUF)?.forward(&ids)\`,"
-            echo "and asserts atol/rtol against the dumped per-layer"
-            echo "hidden_states + attention tensors. Set"
-            echo "\`vars.VOKRA_DEBERTA_V3_HARNESS_READY=1\` after the harness"
-            echo "lands, and this workflow's \`cargo test\` leg becomes reachable."
-            echo ""
-            echo "See \`docs/handoff/parity-deberta-v3-large-real.md\` for the"
-            echo "full Phase B enablement flow."
-            echo ""
-            echo "> This is a **clean skip**, not a pass — fabricated pass 禁止 (FR-EX-08)."
+            echo "See \`docs/handoff/parity-deberta-v3-large-real.md\` for the full flow."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run deberta_v3 numerical parity harness (final_hidden)
+        # Landed 2026-07-29 (M5 gap A-1). Gated on run_dumper=true because
+        # the reference dump is a prerequisite input — no dump means no
+        # bytes to compare against; env-var absence makes the harness
+        # honest-skip inside the test itself as a second line of defence.
+        if: needs.setup.outputs.run_dumper == 'true'
+        env:
+          VOKRA_DEBERTA_V3_GGUF: ${{ env.DEBERTA_V3_GGUF }}
+          VOKRA_DEBERTA_V3_REFDIR: ${{ env.REF_DIR }}/reference_dump
+        run: |
+          set -euo pipefail
+          set +e
+          cargo test --release -p vokra-bert \
+            --test deberta_v3_real \
+            deberta_v3_real_weight_final_hidden_parity -- --nocapture \
+            2>&1 | tee "${RUNNER_TEMP}/parity-log.txt"
+          PARITY_EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "PARITY_EXIT=${PARITY_EXIT}" >> "$GITHUB_ENV"
+          {
+            echo "### deberta-v3: numerical parity leg (final_hidden)"
+            echo ""
+            echo '```'
+            tail -c 4096 "${RUNNER_TEMP}/parity-log.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${PARITY_EXIT}" -ne 0 ]; then
+            echo "::error::deberta_v3_real_weight_final_hidden_parity failed — see step summary + artifacts"
+            exit "${PARITY_EXIT}"
+          fi
 
       - name: Run deberta_v3_convert_smoke (--ignored) against fresh safetensors
         # Structural smoke on the converter's public surface. Runs the
@@ -571,6 +588,7 @@ jobs:
             ${{ runner.temp }}/bin2st-log.txt
             ${{ runner.temp }}/convert-log.txt
             ${{ runner.temp }}/dump-log.txt
+            ${{ runner.temp }}/parity-log.txt
             ${{ runner.temp }}/smoke-log.txt
             ${{ runner.temp }}/deberta-v3-large.gguf
             ${{ runner.temp }}/deberta-v3-refdata/reference_dump.manifest.json

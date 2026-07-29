@@ -74,32 +74,35 @@ Enabling Phase B needs a reproducible `prep_noisy.py` (or an equivalent
 pre-baked `.tar.gz` bundle) whose output bit-exactly matches the
 `snr_noisy = 5.002 ± 0.01` bound in the harness. Two paths:
 
-**Path 1 — commit `prep_noisy.py` alongside the existing dumpers.**
-Recommended: land a `tools/parity/dfn3_prep_noisy.py` next to
-`dfn3_prepare_checkpoint.py` / `dfn3_dump_reference.py`, mirroring the
-2026-07-17 M4-20 recipe (documented in
-`docs/bench-baselines/m1-real-weight-eval-2026-07-16/agent-results-campaign2.json`
-under the `dfn3-real` leg). The workflow then invokes:
+**Path 1 — commit `prep_noisy.py` alongside the existing dumpers —
+LANDED 2026-07-29.** `tools/parity/dfn3_prep_noisy.py` now sits next to
+`dfn3_prepare_checkpoint.py` / `dfn3_dump_reference.py`, reproducing the
+2026-07-17 M4-20 recipe bit-for-bit (seed `20260717`, 5.000 dB SNR;
+verified `measured SNR: 5.0000 dB` on the JFK fixture at land time). The
+workflow can now invoke:
 
 ```
 . "${PARITY_VENV}/bin/activate"
-python -m pip install 'soundfile>=0.12' 'deepfilternet==0.5.6'
+python -m pip install 'soundfile>=0.12' 'scipy>=1.11' 'numpy<2'
 python tools/parity/dfn3_prep_noisy.py \
   --clean-source tests/fixtures/audio/jfk-30s.wav \
-  --out "${RUNNER_TEMP}/dfn3-refdata"
+  --out-dir "${RUNNER_TEMP}/dfn3-refdata"
+# --enhance path (needs torch + deepfilternet, ~1.5 GB wheel):
+python -m pip install 'torch==2.1.2' 'torchaudio==2.1.2' 'deepfilternet==0.5.6'
+python tools/parity/dfn3_prep_noisy.py \
+  --clean-source tests/fixtures/audio/jfk-30s.wav \
+  --out-dir "${RUNNER_TEMP}/dfn3-refdata" \
+  --enhance --model-dir "${DFN3_MODEL_DIR}"
 python tools/parity/dfn3_dump_reference.py \
   --model-dir "${DFN3_MODEL_DIR}" \
-  --noisy "${RUNNER_TEMP}/dfn3-refdata/noisy_48k.wav" \
+  --noisy "${RUNNER_TEMP}/dfn3-refdata/noisy_48k.f32" \
   --out "${RUNNER_TEMP}/dfn3-refdata/taps"
-cp "${RUNNER_TEMP}/dfn3-refdata/taps/enhanced.f32" \
-  "${RUNNER_TEMP}/dfn3-refdata/enhanced_upstream.f32"
 ```
 
-The above snippet needs to land as an additional step in the workflow
-between "Convert" and "Run parity_denoise_dfn3 harness". Once
-`prep_noisy.py` is committed, edit `parity-deepfilternet3-real.yml` to
-call it inline (removing the `VOKRA_DFN3_DATA_URL` gate) and the parity
-leg becomes fully reproducible on every dispatch.
+The workflow-side wiring (dropping the `VOKRA_DFN3_DATA_URL` gate and
+calling the two scripts inline) is a follow-up in the same series;
+`prep_noisy.py` on its own already closes Path 1's "recipe lives outside
+the repo" gap.
 
 **Path 2 — host a pre-baked `.tar.gz` at a stable URL.** If committing
 `prep_noisy.py` is deferred, the owner can bake the reference bundle
