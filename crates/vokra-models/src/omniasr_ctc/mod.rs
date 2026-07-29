@@ -287,6 +287,73 @@ impl OmniasrCtcHeadConfig {
     }
 }
 
+/// The omniASR-CTC size variant the loader targets.
+///
+/// The Meta Omnilingual ASR family ships four sizes (300M / 1B / 3B /
+/// 7B) that share the same wav2vec 2.0 topology and Apache-2.0 license
+/// but scale the LM depth / hidden dim differently. This enum
+/// discriminates the loader path so a caller can request the sibling
+/// checkpoint sizes reusing the shared 1B loader — the encoder body,
+/// CTC head, tokenizer contract, and blank-id convention are identical
+/// across sizes, only the fairseq2 arch preset the encoder walks
+/// changes (`base` / `large_lv60k` / scaled derivatives).
+///
+/// SoTA plan reuse bundle (2026-07-30): capacity-factor branch of the
+/// existing 1B loader — new variants are additive against the same
+/// primitives (`vokra_ops::ctc_decode` + the shared wav2vec 2.0
+/// scaffold), so a downstream picks a variant without duplicating
+/// arch code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OmniasrCtcVariant {
+    /// `facebook/omniASR-CTC-300M` — the smallest size (~300M params).
+    /// Encoder walks the fairseq2 wav2vec 2.0 **base** arch preset:
+    /// `model_dim=768`, `num_encoder_layers=12`,
+    /// `num_encoder_attn_heads=12`, `ffn_inner_dim=3072`. Uses the
+    /// **base** feature-extractor axes (`feature_extractor_bias=false`,
+    /// `feature_extractor_layer_norm_convs=false`,
+    /// `layer_norm_features=true` — the outer post-extraction LayerNorm
+    /// is applied since conv layers are not layer-normalised
+    /// individually in the base arch). Same 7-layer Conv1D stem, same
+    /// waveform-in front-end, same target vocab / blank-id convention.
+    M300,
+    /// `facebook/omniASR-CTC-1B` — the anchor size (~1B params).
+    /// Encoder walks the fairseq2 wav2vec 2.0 **large_lv60k** arch:
+    /// `model_dim=1280`, `num_encoder_layers=48`,
+    /// `num_encoder_attn_heads=16`, `ffn_inner_dim=5120`. Uses the
+    /// large_lv60k feature-extractor axes
+    /// (`feature_extractor_bias=true`,
+    /// `feature_extractor_layer_norm_convs=true`,
+    /// `layer_norm_features=false`).
+    B1,
+    /// `facebook/omniASR-CTC-7B` — the largest size (~7B params).
+    /// Encoder walks a scaled derivative of the fairseq2 wav2vec 2.0
+    /// large_lv60k arch preset (Meta's Omnilingual ASR release does
+    /// not publish an authoritative `config.json` for the 7B model on
+    /// HF; the `.pt` checkpoint's tensor shapes are the ultimate
+    /// source of truth). The runtime loader carries **`0`-placeholder
+    /// dims** for the transformer axes (`model_dim`,
+    /// `num_encoder_layers`, `num_encoder_attn_heads`,
+    /// `ffn_inner_dim`) — the shape-validation gate rejects the `0`
+    /// sentinels loudly (FR-EX-08), so a caller cannot silently run a
+    /// hallucinated forward. Real 7B binding fills the placeholder
+    /// dims from the `.pt` checkpoint's tensor shapes (T29-equivalent
+    /// — the same posture as the Canary-Qwen decoder-dim path).
+    B7,
+}
+
+impl OmniasrCtcVariant {
+    /// Canonical model-card slug for this variant (`omniasr-ctc-300m` /
+    /// `omniasr-ctc-1b` / `omniasr-ctc-7b`).
+    #[must_use]
+    pub fn model_id(self) -> &'static str {
+        match self {
+            Self::M300 => "omniasr-ctc-300m",
+            Self::B1 => "omniasr-ctc-1b",
+            Self::B7 => "omniasr-ctc-7b",
+        }
+    }
+}
+
 /// Resolved omniASR-CTC hparam snapshot — every field is transcribed
 /// from the upstream fairseq2 registry (module docstring) or from the
 /// wav2vec 2.0 convention (`sample_rate` — the HF repo carries no
@@ -367,6 +434,210 @@ impl OmniasrCtcConfig {
                 final_dropout_p: 0.0,
             },
             sample_rate: OMNIASR_CTC_SAMPLE_RATE,
+        }
+    }
+
+    /// `facebook/omniASR-CTC-300M` — the smallest omniASR-CTC size
+    /// (~300M params). Encoder walks the fairseq2 wav2vec 2.0 **base**
+    /// arch preset (SoTA plan reuse bundle, 2026-07-30):
+    ///
+    /// - `model_dim = 768` (base arch — Parakeet's Conformer widths are
+    ///   different; this is the plain wav2vec 2.0 base hidden size).
+    /// - `num_encoder_layers = 12`.
+    /// - `num_encoder_attn_heads = 12` (base — head_dim = 64).
+    /// - `ffn_inner_dim = 3072` (base — ~4× model_dim).
+    /// - `feature_dim = 512` (same waveform-extractor output width).
+    /// - Same 7-layer Conv1D stem `[(512,10,5), (512,3,2)×4,
+    ///   (512,2,2)×2]` — 320× total stride (all wav2vec 2.0 variants
+    ///   share this stem).
+    /// - **Base-arch feature-extractor axes**:
+    ///   `feature_extractor_bias = false` (the base wav2vec 2.0 conv
+    ///   stem carries no additive bias), `feature_extractor_layer_norm_convs
+    ///   = false` (the base uses GroupNorm on the stem, not per-layer
+    ///   LayerNorm), `layer_norm_features = true` (the outer
+    ///   post-extraction LayerNorm is present in base — distinct from
+    ///   `large_lv60k` which omits it).
+    /// - Same positional Conv1D encoder (`pos_conv_kernel_size = 128`,
+    ///   `num_pos_conv_groups = 16`, `pos_encoder_depth = 1`).
+    /// - Same CTC head (`target_vocab_size = 9812`, `blank_id = 0` —
+    ///   fairseq2 wav2vec 2.0 convention).
+    ///
+    /// Reuses the shared 1B loader's shape / weight-store machinery
+    /// (`OmniasrCtcWeights::synthesized` + `OmniasrCtcAsr::new`) —
+    /// only the config differs.
+    #[must_use]
+    pub fn omniasr_ctc_300m() -> Self {
+        Self {
+            encoder: OmniasrCtcEncoderConfig {
+                model_dim: 768,
+                num_encoder_layers: 12,
+                num_encoder_attn_heads: 12,
+                ffn_inner_dim: 3072,
+                feature_dim: 512,
+                feature_extractor_layer_descs: [
+                    OmniasrCtcConvLayerDesc {
+                        out_dim: 512,
+                        kernel: 10,
+                        stride: 5,
+                    },
+                    OmniasrCtcConvLayerDesc {
+                        out_dim: 512,
+                        kernel: 3,
+                        stride: 2,
+                    },
+                    OmniasrCtcConvLayerDesc {
+                        out_dim: 512,
+                        kernel: 3,
+                        stride: 2,
+                    },
+                    OmniasrCtcConvLayerDesc {
+                        out_dim: 512,
+                        kernel: 3,
+                        stride: 2,
+                    },
+                    OmniasrCtcConvLayerDesc {
+                        out_dim: 512,
+                        kernel: 3,
+                        stride: 2,
+                    },
+                    OmniasrCtcConvLayerDesc {
+                        out_dim: 512,
+                        kernel: 2,
+                        stride: 2,
+                    },
+                    OmniasrCtcConvLayerDesc {
+                        out_dim: 512,
+                        kernel: 2,
+                        stride: 2,
+                    },
+                ],
+                feature_extractor_bias: false,
+                feature_extractor_layer_norm_convs: false,
+                layer_norm_features: true,
+                pos_conv_kernel_size: 128,
+                num_pos_conv_groups: 16,
+                pos_encoder_depth: 1,
+                use_conformer: false,
+                max_seq_len: 4096,
+            },
+            head: OmniasrCtcHeadConfig {
+                target_vocab_size: 9812,
+                blank_id: 0,
+                final_dropout_p: 0.0,
+            },
+            sample_rate: OMNIASR_CTC_SAMPLE_RATE,
+        }
+    }
+
+    /// `facebook/omniASR-CTC-7B` — the largest omniASR-CTC size
+    /// (~7B params, SoTA plan reuse bundle 2026-07-30).
+    ///
+    /// **Placeholder-dim posture**: Meta's Omnilingual ASR release does
+    /// **not** publish an authoritative `config.json` for the 7B model
+    /// on HF; the `.pt` checkpoint's tensor shapes are the ultimate
+    /// source of truth. The runtime carries `0`-placeholder transformer
+    /// axes (`model_dim`, `num_encoder_layers`,
+    /// `num_encoder_attn_heads`, `ffn_inner_dim`) — the shape
+    /// validation gate rejects the `0` sentinels loudly (FR-EX-08 —
+    /// same posture as the Canary-Qwen decoder-dim path). Real 7B
+    /// binding fills the placeholder dims from the `.pt` checkpoint's
+    /// tensor shapes (T29-equivalent follow-up wave).
+    ///
+    /// Fields that are **not** placeholder:
+    ///
+    /// - `feature_dim = 512` (all wav2vec 2.0 sizes share the same
+    ///   waveform-extractor output width — the 7-layer Conv1D stem is
+    ///   size-invariant).
+    /// - Feature extractor axes = large_lv60k
+    ///   (`feature_extractor_bias = true`,
+    ///   `feature_extractor_layer_norm_convs = true`,
+    ///   `layer_norm_features = false` — the 7B is a scaled derivative
+    ///   of the large_lv60k arch preset, not the base).
+    /// - `pos_conv_kernel_size = 128`, `num_pos_conv_groups = 16`,
+    ///   `pos_encoder_depth = 1` (positional encoder is arch-invariant
+    ///   in wav2vec 2.0).
+    /// - `use_conformer = false` (all omniASR variants use plain
+    ///   Transformer encoders, not Conformer).
+    /// - `max_seq_len = 4096`, `target_vocab_size = 9812`, `blank_id =
+    ///   0`, `final_dropout_p = 0.0` — same head axes as every
+    ///   sibling size (v1 SentencePiece char tokenizer + fairseq2
+    ///   wav2vec 2.0 blank convention are family-wide, not scale-
+    ///   dependent).
+    #[must_use]
+    pub fn omniasr_ctc_7b() -> Self {
+        Self {
+            encoder: OmniasrCtcEncoderConfig {
+                // Placeholder — validate_for_forward rejects 0.
+                model_dim: 0,
+                num_encoder_layers: 0,
+                num_encoder_attn_heads: 0,
+                ffn_inner_dim: 0,
+                feature_dim: 512,
+                feature_extractor_layer_descs: [
+                    OmniasrCtcConvLayerDesc {
+                        out_dim: 512,
+                        kernel: 10,
+                        stride: 5,
+                    },
+                    OmniasrCtcConvLayerDesc {
+                        out_dim: 512,
+                        kernel: 3,
+                        stride: 2,
+                    },
+                    OmniasrCtcConvLayerDesc {
+                        out_dim: 512,
+                        kernel: 3,
+                        stride: 2,
+                    },
+                    OmniasrCtcConvLayerDesc {
+                        out_dim: 512,
+                        kernel: 3,
+                        stride: 2,
+                    },
+                    OmniasrCtcConvLayerDesc {
+                        out_dim: 512,
+                        kernel: 3,
+                        stride: 2,
+                    },
+                    OmniasrCtcConvLayerDesc {
+                        out_dim: 512,
+                        kernel: 2,
+                        stride: 2,
+                    },
+                    OmniasrCtcConvLayerDesc {
+                        out_dim: 512,
+                        kernel: 2,
+                        stride: 2,
+                    },
+                ],
+                feature_extractor_bias: true,
+                feature_extractor_layer_norm_convs: true,
+                layer_norm_features: false,
+                pos_conv_kernel_size: 128,
+                num_pos_conv_groups: 16,
+                pos_encoder_depth: 1,
+                use_conformer: false,
+                max_seq_len: 4096,
+            },
+            head: OmniasrCtcHeadConfig {
+                target_vocab_size: 9812,
+                blank_id: 0,
+                final_dropout_p: 0.0,
+            },
+            sample_rate: OMNIASR_CTC_SAMPLE_RATE,
+        }
+    }
+
+    /// Variant-aware constructor — dispatches to `omniasr_ctc_300m()` /
+    /// `omniasr_ctc_1b()` / `omniasr_ctc_7b()` based on the passed
+    /// [`OmniasrCtcVariant`]. Convenience for callers that already
+    /// carry the variant tag (a converter side-car, a CLI arg).
+    #[must_use]
+    pub fn for_variant(variant: OmniasrCtcVariant) -> Self {
+        match variant {
+            OmniasrCtcVariant::M300 => Self::omniasr_ctc_300m(),
+            OmniasrCtcVariant::B1 => Self::omniasr_ctc_1b(),
+            OmniasrCtcVariant::B7 => Self::omniasr_ctc_7b(),
         }
     }
 
@@ -1781,5 +2052,172 @@ mod tests {
     #[test]
     fn feature_extractor_layer_count_is_pinned() {
         assert_eq!(OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS, 7);
+    }
+
+    // ---- SoTA reuse bundle (2026-07-30): variant enum + 300M / 7B ----
+
+    #[test]
+    fn variant_model_id_slugs_are_stable() {
+        assert_eq!(OmniasrCtcVariant::M300.model_id(), "omniasr-ctc-300m");
+        assert_eq!(OmniasrCtcVariant::B1.model_id(), "omniasr-ctc-1b");
+        assert_eq!(OmniasrCtcVariant::B7.model_id(), "omniasr-ctc-7b");
+    }
+
+    /// omniASR-CTC-300M carries the fairseq2 wav2vec 2.0 **base** arch
+    /// axes (distinct from large_lv60k = 1B).
+    #[test]
+    fn omniasr_ctc_300m_carries_base_arch_axes() {
+        let c = OmniasrCtcConfig::omniasr_ctc_300m();
+        // Transformer axes = base.
+        assert_eq!(c.encoder.model_dim, 768, "base arch: hidden 768");
+        assert_eq!(c.encoder.num_encoder_layers, 12, "base arch: 12 layers");
+        assert_eq!(
+            c.encoder.num_encoder_attn_heads, 12,
+            "base arch: 12 heads (head_dim=64)"
+        );
+        assert_eq!(
+            c.encoder.ffn_inner_dim, 3072,
+            "base arch: FFN 3072 (~4× hidden)"
+        );
+        // Waveform extractor shares the 7-layer stem (size-invariant),
+        // but the base arch axes differ from large_lv60k.
+        assert_eq!(c.encoder.feature_dim, 512);
+        assert_eq!(
+            c.encoder.feature_extractor_layer_descs.len(),
+            OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS
+        );
+        assert_eq!(c.encoder.feature_extractor_total_stride(), 320);
+        assert!(
+            !c.encoder.feature_extractor_bias,
+            "base arch: no per-layer conv bias (distinct from large_lv60k = true)"
+        );
+        assert!(
+            !c.encoder.feature_extractor_layer_norm_convs,
+            "base arch: GroupNorm on stem, not per-layer LayerNorm (distinct from large_lv60k = true)"
+        );
+        assert!(
+            c.encoder.layer_norm_features,
+            "base arch: outer post-extraction LayerNorm present (distinct from large_lv60k = false)"
+        );
+        // Head axes are family-wide (not scale-dependent).
+        assert_eq!(c.head.target_vocab_size, 9812);
+        assert_eq!(c.head.blank_id, 0);
+        assert_eq!(c.sample_rate, 16_000);
+        // Derived axes are well-formed.
+        assert_eq!(c.encoder.head_dim(), 64, "768 / 12 = 64");
+        c.validate_for_forward()
+            .expect("omniasr-ctc-300m is well-formed");
+    }
+
+    /// omniASR-CTC-7B carries `0`-placeholder transformer axes (Meta's
+    /// release does not publish a `config.json`) — the runtime rejects
+    /// the placeholder loudly (FR-EX-08). Non-placeholder axes match
+    /// the large_lv60k arch preset.
+    #[test]
+    fn omniasr_ctc_7b_carries_zero_placeholder_transformer_axes() {
+        let c = OmniasrCtcConfig::omniasr_ctc_7b();
+        // Placeholder — must be 0 to force the validator to reject.
+        assert_eq!(c.encoder.model_dim, 0, "placeholder pending .pt inspect");
+        assert_eq!(
+            c.encoder.num_encoder_layers, 0,
+            "placeholder pending .pt inspect"
+        );
+        assert_eq!(
+            c.encoder.num_encoder_attn_heads, 0,
+            "placeholder pending .pt inspect"
+        );
+        assert_eq!(
+            c.encoder.ffn_inner_dim, 0,
+            "placeholder pending .pt inspect"
+        );
+        // Non-placeholder — large_lv60k axes + family-wide constants.
+        assert_eq!(c.encoder.feature_dim, 512);
+        assert!(c.encoder.feature_extractor_bias);
+        assert!(c.encoder.feature_extractor_layer_norm_convs);
+        assert!(!c.encoder.layer_norm_features);
+        assert_eq!(c.encoder.pos_conv_kernel_size, 128);
+        assert_eq!(c.encoder.max_seq_len, 4096);
+        assert_eq!(c.head.target_vocab_size, 9812);
+        assert_eq!(c.head.blank_id, 0);
+        // Placeholder axes = 0 → validate_for_forward rejects loudly.
+        let err = c
+            .validate_for_forward()
+            .expect_err("0-placeholder transformer axes must reject");
+        match err {
+            VokraError::InvalidArgument(msg) => {
+                assert!(
+                    msg.contains("encoder"),
+                    "message must name encoder blocker: {msg}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// `for_variant()` dispatches correctly to the three config
+    /// methods.
+    #[test]
+    fn for_variant_dispatches_to_matching_config() {
+        assert_eq!(
+            OmniasrCtcConfig::for_variant(OmniasrCtcVariant::M300),
+            OmniasrCtcConfig::omniasr_ctc_300m()
+        );
+        assert_eq!(
+            OmniasrCtcConfig::for_variant(OmniasrCtcVariant::B1),
+            OmniasrCtcConfig::omniasr_ctc_1b()
+        );
+        assert_eq!(
+            OmniasrCtcConfig::for_variant(OmniasrCtcVariant::B7),
+            OmniasrCtcConfig::omniasr_ctc_7b()
+        );
+    }
+
+    /// Synthesized-weight round-trip works for both real variants that
+    /// have non-placeholder transformer axes (300M + 1B). The 7B
+    /// placeholder config cannot synthesize (validator rejects the
+    /// `0`-axes upstream), which is honest partial by design.
+    #[test]
+    fn synthesized_round_trip_covers_300m_and_1b_variants() {
+        for cfg in [
+            OmniasrCtcConfig::omniasr_ctc_300m(),
+            OmniasrCtcConfig::omniasr_ctc_1b(),
+        ] {
+            let w = OmniasrCtcWeights::synthesized(&cfg, 42)
+                .expect("synth must succeed for well-formed variant");
+            let asr = OmniasrCtcAsr::new(cfg.clone(), w).expect("asr must accept matching pair");
+            assert!(asr.is_synthesized());
+        }
+    }
+
+    /// The 7B variant rejects synthesized-weight construction because
+    /// its transformer dims are `0`-placeholders (the validator refuses
+    /// them). This is the FR-EX-08-compliant fail-loud path — a caller
+    /// cannot silently run a hallucinated 7B forward.
+    #[test]
+    fn synthesized_rejects_7b_placeholder_dims() {
+        let cfg = OmniasrCtcConfig::omniasr_ctc_7b();
+        assert!(matches!(
+            OmniasrCtcWeights::synthesized(&cfg, 42),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    /// Variants use distinct transformer widths — a converter that
+    /// picks the wrong variant would silently mis-slot the encoder
+    /// weights.
+    #[test]
+    fn variants_have_distinct_transformer_widths() {
+        let m300 = OmniasrCtcConfig::omniasr_ctc_300m();
+        let b1 = OmniasrCtcConfig::omniasr_ctc_1b();
+        let b7 = OmniasrCtcConfig::omniasr_ctc_7b();
+        assert_ne!(m300.encoder.model_dim, b1.encoder.model_dim);
+        assert_ne!(
+            m300.encoder.num_encoder_layers,
+            b1.encoder.num_encoder_layers
+        );
+        // 7B's dims are `0`-placeholders — distinct from both real
+        // variants by definition.
+        assert_eq!(b7.encoder.model_dim, 0);
+        assert_eq!(b7.encoder.num_encoder_layers, 0);
     }
 }
