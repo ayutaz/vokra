@@ -1064,7 +1064,7 @@ mod tests {
     #[test]
     fn align_emits_monotone_boundaries_end_to_end() {
         let cfg = tiny_for_tests();
-        let w = CharsiuWeights::synthesized(&cfg, 0xC0FF_EE).unwrap();
+        let w = CharsiuWeights::synthesized(&cfg, 0x00C0_FFEE).unwrap();
         let aligner = Charsiu::new(cfg, w).unwrap();
         // Keep the PCM short so the scalar-loop forward stays snappy in
         // debug builds. 1600 samples of 16 kHz mono → after the 7-layer

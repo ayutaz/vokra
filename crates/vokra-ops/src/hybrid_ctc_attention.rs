@@ -788,7 +788,7 @@ mod tests {
         };
         let baseline = hybrid_ctc_attention_decode(&ctc_lp, &attrs_baseline).unwrap();
         assert!(
-            baseline[0].tokens.iter().any(|&t| t == 1),
+            baseline[0].tokens.contains(&1),
             "baseline expected token 1, got {:?}",
             baseline[0].tokens
         );
@@ -811,7 +811,7 @@ mod tests {
         };
         let boosted = hybrid_ctc_attention_decode(&ctc_lp, &attrs_lm).unwrap();
         assert!(
-            boosted[0].tokens.iter().any(|&t| t == 3),
+            boosted[0].tokens.contains(&3),
             "LM boost must rerank toward token 3, got {:?}",
             boosted[0].tokens
         );
@@ -861,7 +861,7 @@ mod tests {
         // CTC-only ranking should push non-peaky tokens (like 3) out of
         // the beam.
         assert!(
-            hyps[0].tokens.iter().any(|&t| t == 1),
+            hyps[0].tokens.contains(&1),
             "CTC-only must surface the peaky token, got {:?}",
             hyps[0].tokens
         );
