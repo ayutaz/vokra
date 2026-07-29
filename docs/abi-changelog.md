@@ -228,6 +228,32 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-07-30 — 1.0.0-rc.1-dev (JA-ASR bundle: E-Branchformer encoder — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the M5 gap JA-ASR-4 primitive
+(E-Branchformer encoder). The C ABI (`include/vokra.h`) is **untouched**
+(33 fn + 11 typedef baseline unchanged; `scripts/gen-c-abi.sh --check` = no
+diff). Follows the X-Codec-2 / VoxCPM2-2B / SBV2 v2 precedent: **advisory
+Rust-surface entry**, `scripts/check-abi-changelog.sh` does not gate on it
+(no C symbol changed).
+
+- **vokra-ops::ebranchformer** (new mod): `EBranchformerEncoder` /
+  `EBranchformerConfig` / `EBranchformerWeights` / `EBranchformerStemWeights` /
+  `EBranchformerLayerWeights` / `CgMlpWeights` / `MergeWeights` plus
+  `pub fn new(cfg, weights) -> Result<Self>` +
+  `pub fn forward(&self, mel, mel_frames) -> Result<(Vec<f32>, usize)>` +
+  accessors (`config`, `head_dim`, `cgmlp_half_dim`).
+
+Parallel two-branch encoder — attention branch + cgMLP branch merged via
+a DepthwiseConv + Linear "Merge" module (Kim et al. 2023,
+[arXiv:2210.00077](https://arxiv.org/abs/2210.00077)). Primary consumer =
+ESPnet OWSM family (`espnet/owsm-ctc-v3.1-1B`, CC-BY-4.0). Reuses the
+Conformer primitive's `FeedForwardWeights` / `MhaWeights` /
+`ConvSubsampleKind` / `PositionEncoding` layouts.
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
+baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none.
+
 ### 2026-07-30 — 1.0.0-rc.1-dev (JA-ASR bundle: Zipformer encoder — Rust surface only, advisory)
 
 Additive **Rust public API** entry for the M5 gap JA-ASR-5 primitive

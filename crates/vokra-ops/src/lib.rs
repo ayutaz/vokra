@@ -240,6 +240,14 @@ pub mod window;
 // re-export block for clean parallel-wave rebases.
 pub mod zipformer;
 // -------------------------------------------------------------------------
+// ---- SoTA plan Phase JA JA-ASR-4 E-Branchformer encoder ----------------
+// E-Branchformer = parallel MHA branch + gated cgMLP branch merged via a
+// DepthwiseConv + Linear "Merge" module (Kim et al. 2023). ESPnet OWSM
+// family reference (CC-BY-4.0). Reuses the Conformer primitive's FF /
+// MHA / stem layouts. Localised re-export block for clean parallel-wave
+// rebases.
+pub mod ebranchformer;
+// -------------------------------------------------------------------------
 
 // ---- M4-03 aec re-exports ------------------------------------------------
 pub use aec::{Aec, AecAttrs, AecStatus};
