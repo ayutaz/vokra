@@ -1839,7 +1839,8 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::EcapaTdnn
         | ModelKind::Wespeaker
         | ModelKind::Speaker3d
-        | ModelKind::Emotion2vec => {
+        | ModelKind::Emotion2vec
+        | ModelKind::Rmvpe => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())

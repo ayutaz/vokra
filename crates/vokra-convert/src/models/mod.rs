@@ -194,6 +194,17 @@ pub(crate) mod qwen3_tts;
 // `vokra-models <-> vokra-convert` dependency cycle the design doc's
 // original task split would have created -- see `sbv2`'s module doc (same
 // rationale as Task 11's `deberta_v2` / `deberta_v3`).
+// F0 pitch-extractor tier (2026-07-30): **RMVPE** (`yxlllc/RMVPE` fork of
+// `Dream-High/RMVPE`, MIT weight + code — Permissive). Safetensors →
+// GGUF with the `vokra.rmvpe.*` hparam chunk group; every F32 / F16 /
+// BF16 tensor passes through verbatim under upstream state_dict names.
+// Distinct arch tag (`rmvpe`) — the first `category = "f0"` binder in
+// the converter tree. Consumed by a native `vokra-models::f0::rmvpe`
+// runtime (U-Net + GRU CNN over a 128-mel spectrogram at 16 kHz →
+// 360-class pitch head → argmax → Hz via a log-cents grid). Sibling
+// pattern of `emotion2vec` (BF16 pass-through, dedicated arch tag,
+// converter-side hparam stamping).
+pub mod rmvpe;
 pub(crate) mod sbv2;
 pub(crate) mod silero;
 pub mod speaker_3d;

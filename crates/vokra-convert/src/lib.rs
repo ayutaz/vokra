@@ -705,6 +705,26 @@ pub enum ModelKind {
     /// redistribution is permitted with the original licence preserved,
     /// never relabelled; design doc §9). Convert with [`convert_sbv2_file`].
     SbV2,
+    /// **RMVPE** (Robust Model for Vocal Pitch Estimation) safetensors
+    /// checkpoint (F0 pitch-extractor tier, 2026-07-30). Neural pitch
+    /// estimator required by RVC v2 and reused by GPT-SoVITS /
+    /// retrieval-based VC pipelines: a U-Net encoder (5 down blocks) +
+    /// intermediate GRU + U-Net decoder (5 up blocks) + 360-pitch-class
+    /// head over a 128-mel spectrogram at 16 kHz PCM in. MIT weight +
+    /// code (upstream `Dream-High/RMVPE` + `yxlllc/RMVPE` LICENSE both
+    /// = MIT, fetched 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」)
+    /// → [`LicenseClass::Permissive`]. Every F32 / F16 / BF16 tensor
+    /// passes through verbatim under upstream state_dict names; the
+    /// `vokra.rmvpe.*` chunk group carries the primary-source hparams
+    /// (hop=160, sr=16000, n_mels=128, win_length=1024, n_fft=2048,
+    /// n_class=360, cents_per_class=20.0, base_hz=32.703). Distinct
+    /// arch tag from every sibling (`ModelKind::Rmvpe` → `rmvpe`) —
+    /// silently sharing would misroute the runtime dispatch (an ASR /
+    /// TTS backbone would try to interpret the 360-class pitch head).
+    /// Convert with [`convert_rmvpe_file`]; no side-car config today
+    /// (every hparam is a fixed compile-time constant transcribed from
+    /// the upstream release).
+    Rmvpe,
     /// HKUSTAudio **X-Codec 2** safetensors checkpoint (SoTA plan Phase 5
     /// codec, 2026-07-28). Neural audio codec paired with the Llasa TTS
     /// family. Distinct arch tag from every sibling codec (Mimi / DAC /
@@ -1091,6 +1111,14 @@ impl ModelKind {
             | "emotion-2vec"
             | "emotion2vec-plus-large"
             | "emotion2vec/emotion2vec_plus_large" => Some(Self::Emotion2vec),
+            // RMVPE (F0 pitch-extractor tier, 2026-07-30). Accept the
+            // arch tag, both underscore / hyphen variants of the
+            // acronym, the two upstream GitHub coordinates, and the
+            // RVC-Boss precursor spelling (the original upstream that
+            // yxlllc / Dream-High forked; some checkpoints in the wild
+            // still ship under it).
+            "rmvpe" | "r-mvpe" | "r_mvpe" | "yxlllc/rmvpe" | "dream-high/rmvpe"
+            | "rvc-boss/rmvpe" => Some(Self::Rmvpe),
             _ => None,
         }
     }
@@ -1149,6 +1177,7 @@ impl ModelKind {
             Self::Wespeaker => "wespeaker",
             Self::Speaker3d => "speaker-3d",
             Self::Emotion2vec => "emotion2vec",
+            Self::Rmvpe => "rmvpe",
         }
     }
 }
@@ -2108,6 +2137,28 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        ModelKind::Rmvpe => {
+            // F0 pitch-extractor tier (2026-07-30): every F32/F16/BF16
+            // tensor passes through verbatim under upstream state_dict
+            // names + the `vokra.rmvpe.*` chunk group carries the
+            // primary-source hparams (hop / sr / n_mels / n_fft /
+            // win_length / n_class / cents_per_class / base_hz).
+            // Provenance = MIT (Permissive — no runtime-side
+            // attribution obligation).
+            let report = models::rmvpe::convert_rmvpe_file(input, output, license)?;
+            let notes = vec![format!(
+                "rmvpe: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::Rmvpe,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
     };
 
     // Override the stamped licence when the caller supplies the distribution
@@ -2844,6 +2895,12 @@ pub use models::sbv2::{ConvertReport as SbV2ConvertReport, convert_sbv2_file};
 // and a caller who calls `convert_xcodec2_file` directly land the same
 // bytes.
 pub use models::xcodec2::{XCodec2Report, convert_xcodec2_file};
+// F0 pitch-extractor tier (2026-07-30): RMVPE — the first
+// `category = "f0"` binder in the converter tree. Standalone file-based
+// entry point (mirror of the emotion2vec re-export pattern; the
+// `models::rmvpe` module is otherwise public so this re-export just
+// preserves the canonical short-name spelling).
+pub use models::rmvpe::{RmvpeReport, convert_rmvpe_file};
 
 /// Voxtral audio-adapter side-car (M3-10 Wave 8). Callers supply this through
 /// [`convert_voxtral_file_with_adapter_config`] (a JSON path) or by
@@ -4244,6 +4301,9 @@ mod modelkind_alias_and_roundtrip_tests {
             DebertaV2,
             DebertaV3,
             SbV2,
+            // F0 pitch-extractor tier (2026-07-30): RMVPE — the first
+            // `category = "f0"` binder in the converter tree.
+            Rmvpe,
         ] {
             let arg = kind.as_arg();
             assert!(
