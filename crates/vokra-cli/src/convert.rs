@@ -56,6 +56,7 @@ USAGE:
     vokra-cli convert --model ecapa-tdnn --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model wespeaker --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model speaker-3d --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model titanet-large --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model emotion2vec --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model rmvpe --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model crepe --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -73,8 +74,8 @@ OPTIONS:
                               kimi-audio | step-audio2-mini | baichuan-audio |
                               speechtokenizer | funcodec | xy-tokenizer |
                               bicodec | neucodec | ecapa-tdnn | wespeaker |
-                              speaker-3d | emotion2vec | rmvpe | crepe |
-                              styletts2
+                              speaker-3d | titanet-large | emotion2vec |
+                              rmvpe | crepe | styletts2
                               (crepe: marl/crepe — a prepared safetensors from
                               tools/parity/keras_h5_to_safetensors.py, needs
                               --config <config.json> with the capacity /
@@ -433,7 +434,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          kimi-audio | step-audio2-mini | baichuan-audio | \
                          speechtokenizer | funcodec | xy-tokenizer | \
                          bicodec | neucodec | ecapa-tdnn | wespeaker | \
-                         speaker-3d | emotion2vec | rmvpe | crepe | styletts2)"
+                         speaker-3d | titanet-large | emotion2vec | \
+                         rmvpe | crepe | styletts2)"
                     )
                 })?);
                 i += 2;
@@ -1256,6 +1258,7 @@ mod tests {
             ("ecapa-tdnn", ModelKind::EcapaTdnn),
             ("wespeaker", ModelKind::Wespeaker),
             ("speaker-3d", ModelKind::Speaker3d),
+            ("titanet-large", ModelKind::TitaNet),
             ("emotion2vec", ModelKind::Emotion2vec),
             // F0 pitch-extractor tier (2026-07-30): RMVPE — the first
             // `category = "f0"` binder in the converter tree.

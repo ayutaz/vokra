@@ -242,6 +242,24 @@ pub(crate) mod silero;
 pub mod speaker_3d;
 pub mod speechtokenizer;
 pub(crate) mod styletts2;
+// SoTA follow-on (2026-07-30): NVIDIA TitaNet-Large speaker verification
+// (`nvidia/speakerverification_en_titanet_large`, CC-BY-4.0 = AttributionRequired
+// — HF cardData primary source verified 2026-07-30). Category = `speaker`.
+// Depth-wise-separable Conv1D speaker-embedding extractor, 16 kHz mono →
+// 192-d embedding, ~23 M params. Every F32 / F16 / BF16 tensor passes
+// through verbatim (mirror of wespeaker / ecapa_tdnn / speaker_3d
+// skeleton pattern) plus the FR-MD-09 attribution chunk (stamp_attribution)
+// for the CC-BY-4.0 display obligation — the sibling mimi / moshi /
+// parakeet / canary / kyutai_stt CC-BY-4.0 posture. The `.nemo` tarball
+// distribution is bridged offline through `tools/parity/nemo_pt_to_safetensors.py`;
+// this converter accepts safetensors only (int-tensor strip like
+// BatchNorm `num_batches_tracked` is done at the bridge script — the
+// safetensors reader admits only F32 / F16 / BF16 so any surviving int
+// would fail parse before reaching us). Runtime port is out-of-scope
+// (M5-residual `titanet_speaker_encode`, FR-OP-80 variant); consumers
+// needing a speaker embedding today should use CAM++ (`vokra-models::speaker_encode`)
+// under Apache-2.0 with no attribution overhead.
+pub mod titanet;
 // SoTA plan Phase 3 (2026-07-25): StepFun **Step-Audio-2-mini**
 // (apache-2.0 end-to-end weight) safetensors → GGUF skeleton. 8B S2S
 // with a dual codebook (semantic 1024 + acoustic 4096) and a

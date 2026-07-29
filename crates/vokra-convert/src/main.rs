@@ -1976,6 +1976,7 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::EcapaTdnn
         | ModelKind::Wespeaker
         | ModelKind::Speaker3d
+        | ModelKind::TitaNet
         | ModelKind::Emotion2vec
         | ModelKind::Rmvpe
         // M5 gap follow-up (2026-07-30): CREPE emits the same

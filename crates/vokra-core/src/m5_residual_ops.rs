@@ -59,7 +59,7 @@
 //! | [`RNNT_DECODE_OP`]               | FR-OP-42 | NeMo-family trigger pending                        |
 //! | [`ECAPA_TDNN_SPEAKER_ENCODE_OP`] | FR-OP-80 | CAM++ already covers speaker embedding             |
 //! | [`WESPEAKER_SPEAKER_ENCODE_OP`]  | FR-OP-80 | CAM++ already covers speaker embedding             |
-//! | [`TITANET_SPEAKER_ENCODE_OP`]    | FR-OP-80 | CAM++ covers it; TitaNet NVIDIA NC unconfirmed     |
+//! | [`TITANET_SPEAKER_ENCODE_OP`]    | FR-OP-80 | CAM++ already covers speaker embedding             |
 //! | [`DIARIZE_OP`]                   | FR-OP-82 | trigger + license (pyannote HF-gated) double blocker |
 
 /// BigVGAN generator op-kind identifier. Re-exported from the M2-08 registry:
@@ -82,8 +82,9 @@ pub const ECAPA_TDNN_SPEAKER_ENCODE_OP: &str = "ecapa_tdnn_speaker_encode";
 /// CAM++). Reserved; unregistered.
 pub const WESPEAKER_SPEAKER_ENCODE_OP: &str = "wespeaker_speaker_encode";
 
-/// TitaNet speaker-encoder op-kind identifier (FR-OP-80 variant; NVIDIA NC
-/// restriction unconfirmed). Reserved; unregistered.
+/// TitaNet speaker-encoder op-kind identifier (FR-OP-80 variant, covered by
+/// CAM++; the converter side landed 2026-07-30 with CC-BY-4.0 sign-off,
+/// the runtime op landing is M5-residual). Reserved; unregistered.
 pub const TITANET_SPEAKER_ENCODE_OP: &str = "titanet_speaker_encode";
 
 /// Diarization op-kind identifier (FR-OP-82; trigger + license double blocker).
@@ -136,7 +137,7 @@ pub fn m5_residual_op_anchors() -> &'static [M5ResidualAnchor] {
         M5ResidualAnchor {
             op_id: TITANET_SPEAKER_ENCODE_OP,
             fr_op: "FR-OP-80",
-            blocker: "CAM++ covers it; TitaNet NVIDIA NC unconfirmed",
+            blocker: "CAM++ already covers speaker embedding",
         },
         M5ResidualAnchor {
             op_id: DIARIZE_OP,

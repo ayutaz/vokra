@@ -311,6 +311,58 @@ stem wiring across ASR encoders.
 All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
 baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none.
 
+### 2026-07-30 — 1.0.0-rc.1-dev (TitaNet-L converter + §3.1 sign-off — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the NVIDIA TitaNet-Large converter
+landing (mirror of the wespeaker / ecapa_tdnn / speaker_3d skeleton
+pattern). The C ABI (`include/vokra.h`) is **untouched** (33 fn + 11
+typedef baseline unchanged; `scripts/gen-c-abi.sh --check` = no diff).
+Follows the X-Codec-2 precedent: **advisory Rust-surface entry**,
+`scripts/check-abi-changelog.sh` does not gate on it (no C symbol
+changed).
+
+- **vokra-convert::ModelKind**: `TitaNet` variant added (public enum),
+  plus 5 aliases routed to it (`titanet-large` / `titanet_large` /
+  `titanet` / `speakerverification_en_titanet_large` /
+  `nvidia/speakerverification_en_titanet_large`). New module
+  `crates/vokra-convert/src/models/titanet.rs`
+  (`convert_titanet_file(input, output, license: Option<&str>) ->
+  Result<TitaNetReport, ConvertError>` + `TitaNetReport` struct + arch /
+  category / attribution constants). Category = `speaker` (mirror of
+  the sibling `wespeaker` / `ecapa_tdnn` / `speaker_3d` GGUF layout).
+  Default provenance stamp = **cc-by-4.0** (`LicenseClass::AttributionRequired`
+  — the converter additionally writes the FR-MD-09
+  `vokra.provenance.attribution` chunk with the NVIDIA credit text;
+  runtime `vokra_core::resolve_attribution` / `vokra_model_attribution`
+  already surface it, no new C ABI needed).
+- **vokra-cli**: `convert --model titanet-large --input <safetensors>
+  --output <gguf> [--license <spdx>]` — the license override at the
+  outer `convert_file --license` boundary flips the class back to
+  Permissive and drops the attribution chunk (silent inheritance of
+  NVIDIA credit into a permissive retrain would misattribute — pinned
+  by `license_override_to_permissive_drops_attribution_chunk` test).
+- **vokra-core::m5_residual_ops**: `TITANET_SPEAKER_ENCODE_OP` blocker
+  text refreshed from "NVIDIA NC unconfirmed" to "already covers
+  speaker embedding" (semantic-only edit; the const value +
+  `M5ResidualAnchor` catalogue entry are unchanged, `MinDtypeRegistry`
+  reservation still holds — `new_anchors_are_reserved_but_unregistered`
+  passes unchanged).
+
+Owner sign-off = ☑ Commercial 2026-07-30 yousan
+(`docs/license-audit.md` §3.1 row 262; primary source = HF
+`nvidia/speakerverification_en_titanet_large` cardData YAML frontmatter
+`license: cc-by-4.0` + card body citation, 2026-07-30 fetch). NOTICE
+§11 records the code-level NVIDIA credit.
+
+Runtime port is **out-of-scope** for the converter landing — the
+`TITANET_SPEAKER_ENCODE_OP` op is M5-residual (CAM++ already covers the
+speaker-embedding surface under Apache-2.0 with no attribution
+overhead); a future M5 landing would be a backward-compatible additive
+per the M4-20 T14 mechanism-anchor discipline.
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
+baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none.
+
 ### 2026-07-30 — 1.0.0-rc.1-dev (M5 gap CC wave 2 — VoxCPM2-2B config + scaffolds — Rust surface only, advisory)
 
 Additive **Rust public API** entry for the M5 owner-checklist CC-side wave 2

@@ -904,6 +904,21 @@ pub enum ModelKind {
     /// through skeleton — every F32 / F16 / BF16 tensor passes
     /// through verbatim. Provenance = **apache-2.0** (Permissive).
     Speaker3d,
+    /// NVIDIA **TitaNet-Large** speaker verification checkpoint (SoTA
+    /// follow-on, 2026-07-30). Category = `speaker`. Depth-wise-
+    /// separable Conv1D speaker-embedding extractor, 16 kHz mono →
+    /// 192-d embedding, ~23 M params. Provenance = **cc-by-4.0**
+    /// (`AttributionRequired` — the converter stamps the FR-MD-09
+    /// attribution text; NOTICE §11 covers the code-level NVIDIA
+    /// credit). Every F32 / F16 / BF16 tensor passes through verbatim
+    /// under its upstream safetensors name (mirror of wespeaker /
+    /// ecapa_tdnn / speaker_3d skeleton). The `.nemo` tarball is
+    /// bridged offline through `tools/parity/nemo_pt_to_safetensors.py`;
+    /// this converter accepts safetensors only. Runtime port is
+    /// out-of-scope (M5-residual `titanet_speaker_encode`, FR-OP-80
+    /// variant); consumers today should use CAM++ (`speaker_encode`)
+    /// under Apache-2.0. Convert with [`convert_titanet_file`].
+    TitaNet,
     /// FunAudioLLM **emotion2vec_plus_large** speech emotion
     /// recognition checkpoint (SoTA plan Phase 5 emotion fleet,
     /// 2026-07-28). Category = `emotion`. Emotion embedding extractor
@@ -1197,6 +1212,16 @@ impl ModelKind {
             | "eres2net"
             | "speech_eres2net_sv_zh-cn_16k-common"
             | "iic/speech_eres2net_sv_zh-cn_16k-common" => Some(Self::Speaker3d),
+            // NVIDIA TitaNet-Large speaker verification (SoTA follow-on,
+            // 2026-07-30). Accept the arch tag underscore + hyphen
+            // variants, the short form (family drops the "-large"
+            // suffix for callers who match on family name), and the
+            // canonical HF release id.
+            "titanet-large"
+            | "titanet_large"
+            | "titanet"
+            | "speakerverification_en_titanet_large"
+            | "nvidia/speakerverification_en_titanet_large" => Some(Self::TitaNet),
             "emotion2vec"
             | "emotion-2vec"
             | "emotion2vec-plus-large"
@@ -1274,6 +1299,7 @@ impl ModelKind {
             Self::EcapaTdnn => "ecapa-tdnn",
             Self::Wespeaker => "wespeaker",
             Self::Speaker3d => "speaker-3d",
+            Self::TitaNet => "titanet-large",
             Self::Emotion2vec => "emotion2vec",
             Self::Rmvpe => "rmvpe",
             Self::Crepe => "crepe",
@@ -2285,6 +2311,21 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        ModelKind::TitaNet => {
+            let report = models::titanet::convert_titanet_file(input, output, license)?;
+            let notes = vec![format!(
+                "titanet-large: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::TitaNet,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
         ModelKind::Emotion2vec => {
             let report = models::emotion2vec::convert_emotion2vec_file(input, output, license)?;
             let notes = vec![format!(
@@ -3079,6 +3120,18 @@ pub use models::knn_vc::{KnnVcReport, convert_knn_vc_file};
 // here makes it reachable from external callers (the `pub fn` in the module
 // alone is dead code because `mod models` itself is private).
 pub use models::speaker_3d::{Speaker3dReport, convert_speaker_3d_file};
+// NVIDIA TitaNet-Large speaker verification (nvidia/speakerverification_en_titanet_large,
+// **cc-by-4.0** = AttributionRequired). File-based converter with per-call
+// license override + FR-MD-09 attribution chunk stamped by default —
+// the model module is `pub mod titanet` in models/mod.rs; re-exporting
+// the surface here makes it reachable from external callers (same
+// rationale as the speaker_3d / wespeaker / ecapa_tdnn re-exports:
+// `pub fn` alone is dead code because `mod models` itself is private).
+// Runtime port is out-of-scope — the M5-residual op
+// `TITANET_SPEAKER_ENCODE_OP` (FR-OP-80 variant) is the anchor for a
+// future landing; consumers today use CAM++ (`speaker_encode`)
+// under Apache-2.0.
+pub use models::titanet::{TitaNetReport, convert_titanet_file};
 // SoTA plan Phase 5 emotion tier (2026-07-25): emotion2vec+ Large — the
 // first `category = "emotion"` model in the converter tree. Standalone
 // file-based entry point (not routed through `ModelKind` dispatch)
