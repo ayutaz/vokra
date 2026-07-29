@@ -426,15 +426,27 @@ fn compare_against_refdir(file: &GgufFile, refdir: &Path, ctx: &str) -> (usize, 
 // Per-model tests — one per FAMILY entry.
 // ---------------------------------------------------------------------------
 
-/// `voxcpm2` — `openbmb/VoxCPM2` (Apache 2.0).
+/// `voxcpm2` — `openbmb/VoxCPM-0.5B` (Apache 2.0) or `openbmb/VoxCPM2` (2B,
+/// Apache 2.0).
 ///
 /// Continuous VAE (`vokra_ops::vae_continuous`) + flow-matching sampler
-/// (`vokra_ops::flow_sampler`); LM is MiniCPM-4 family. Real-weight binding
-/// is a follow-up wave — until then this test proves:
+/// (`vokra_ops::flow_sampler`); LM is MiniCPM-4 family. **Variant-aware
+/// since 2026-07-30** (spec `docs/superpowers/specs/2026-07-28-voxcpm2-2b-
+/// design.md` Option C hybrid): the converter side detects the variant
+/// from the safetensors payload and stamps `vokra.model.name = voxcpm2-0.5b`
+/// or `voxcpm2-2b`; this test dispatches on the name string and pins
+/// every documented hparam against the matching runtime canonical
+/// (`VoxCpm2Config::voxcpm_0_5b` / `VoxCpm2Config::voxcpm2_2b`). A GGUF
+/// carrying the *legacy* `voxcpm-0.5b` name (any pre-rename artefact) is
+/// still accepted and routed to the 0.5B canonical.
+///
+/// Real-weight binding is a follow-up wave — until then this test proves:
 ///
 /// * GGUF opens + `vokra.model.arch = "voxcpm2"`;
 /// * every documented hparam in the `vokra.voxcpm2.*` chunk group agrees
-///   with [`VoxCpm2Config::voxcpm_0_5b`];
+///   with the appropriate `VoxCpm2Config` variant;
+/// * for the 2B variant, `vokra.vae_continuous.sr_bin_boundaries` matches
+///   `ContinuousVaeConfig::voxcpm2_2b().sr_bin_boundaries` element-wise;
 /// * the converter shipped ≥1 float tensor through (no metadata-only GGUF);
 /// * `VoxCpm2Tts::synthesize` refuses loudly (FR-EX-08 pin — synthesize
 ///   MUST NOT return a hallucinated waveform from scaffold weights).
@@ -452,11 +464,29 @@ fn parity_voxcpm2() {
     assert_arch(&file, vokra_models::voxcpm2::EXPECTED_ARCH, "voxcpm2");
     assert_tensor_count_positive(&file, "voxcpm2");
 
-    // Hparam chunk agreement with the canonical release. Every value below is
-    // transcribed verbatim from `huggingface.co/openbmb/VoxCPM-0.5B/config.json`
-    // via `VoxCpm2Config::voxcpm_0_5b`; a converter that stamped different
-    // constants would silently mis-route (FR-EX-08 catch here).
-    let canonical = VoxCpm2Config::voxcpm_0_5b();
+    // Variant dispatch from `vokra.model.name`. The converter stamps
+    // `voxcpm2-0.5b` (renamed 2026-07-30 from the earlier `voxcpm-0.5b`
+    // to align both variants under the arch-family prefix) or
+    // `voxcpm2-2b`. Any pre-rename artefact carrying `voxcpm-0.5b` is
+    // still accepted and routed to the 0.5B canonical. An unknown name
+    // is a loud FAIL — never a silent guess (FR-EX-08).
+    let name = expect_string(&file, chunks::KEY_MODEL_NAME);
+    let (canonical, ctx_label): (VoxCpm2Config, &str) = match name.as_str() {
+        "voxcpm2-0.5b" | "voxcpm-0.5b" => (VoxCpm2Config::voxcpm_0_5b(), "voxcpm2/0.5b"),
+        "voxcpm2-2b" => (VoxCpm2Config::voxcpm2_2b(), "voxcpm2/2b"),
+        other => panic!(
+            "voxcpm2: unrecognised vokra.model.name {other:?} — expected one of \
+             voxcpm2-0.5b / voxcpm2-2b / voxcpm-0.5b (pre-rename backward compat). \
+             This would silently mis-shape parity — refusing (FR-EX-08)."
+        ),
+    };
+    eprintln!("[parity/{ctx_label}] variant dispatched from vokra.model.name = {name:?}");
+    // Hparam chunk agreement with the dispatched canonical release.
+    // Every value below is transcribed verbatim from
+    // `huggingface.co/openbmb/VoxCPM-0.5B/config.json` (0.5B canonical) or
+    // `huggingface.co/openbmb/VoxCPM2/config.json` (2B canonical) via the
+    // corresponding `VoxCpm2Config` factory; a converter that stamped
+    // different constants would silently mis-route (FR-EX-08 catch here).
     // Top-level
     assert_eq!(
         expect_u64(&file, "vokra.voxcpm2.feat_dim"),
@@ -531,6 +561,12 @@ fn parity_voxcpm2() {
         expect_bool(&file, "vokra.voxcpm2.lm.rope_scaling.longrope"),
         lm.rope_scaling_longrope
     );
+    // 2B-added key: LM per-head channel width (0.5B: 64 derived, 2B: 128
+    // explicit in config.json.lm_config.kv_channels).
+    assert_eq!(
+        expect_u64(&file, "vokra.voxcpm2.lm.kv_channels"),
+        u64::from(lm.kv_channels)
+    );
     // Encoder
     let enc = &canonical.encoder;
     assert_eq!(
@@ -540,6 +576,10 @@ fn parity_voxcpm2() {
     assert_eq!(
         expect_u64(&file, "vokra.voxcpm2.encoder.n_layer"),
         u64::from(enc.n_layer)
+    );
+    assert_eq!(
+        expect_u64(&file, "vokra.voxcpm2.encoder.kv_channels"),
+        u64::from(enc.kv_channels)
     );
     // DiT + CFM sampler
     let dit = &canonical.dit;
@@ -551,6 +591,56 @@ fn parity_voxcpm2() {
         expect_u64(&file, "vokra.voxcpm2.dit.n_layer"),
         u64::from(dit.n_layer)
     );
+    assert_eq!(
+        expect_u64(&file, "vokra.voxcpm2.dit.kv_channels"),
+        u64::from(dit.kv_channels)
+    );
+    assert_eq!(
+        expect_bool(&file, "vokra.voxcpm2.dit.mean_mode"),
+        dit.mean_mode
+    );
+    // Residual acoustic LM: depth + 2B RoPE-skipped flag.
+    assert_eq!(
+        expect_u64(&file, "vokra.voxcpm2.residual_lm.no_rope"),
+        u64::from(canonical.residual_lm_no_rope)
+    );
+
+    // 2B-only: bandwidth-adaptive VAE decoder-head boundaries pin. Absent
+    // for the 0.5B variant (single decoder head, key omitted).
+    if matches!(ctx_label, "voxcpm2/2b") {
+        // Compare element-wise against the shared VAE seam
+        // (`ContinuousVaeConfig::voxcpm2_2b`).
+        let vae = vokra_models::voxcpm2::ContinuousVaeConfig::voxcpm2_2b();
+        let expected = vae
+            .sr_bin_boundaries
+            .clone()
+            .expect("2B VAE seam must carry sr_bin_boundaries");
+        let arr = file
+            .get("vokra.vae_continuous.sr_bin_boundaries")
+            .and_then(|v| match v {
+                vokra_core::gguf::GgufMetadataValue::Array(a) => Some(a),
+                _ => None,
+            })
+            .expect("2B GGUF must carry vokra.vae_continuous.sr_bin_boundaries");
+        let got: Vec<u32> = arr
+            .values
+            .iter()
+            .map(|v| match v {
+                vokra_core::gguf::GgufMetadataValue::U32(x) => *x,
+                other => panic!("sr_bin_boundaries: unexpected element {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            got, expected,
+            "2B: sr_bin_boundaries element-wise agreement"
+        );
+    } else {
+        // 0.5B: the key MUST be absent (single-head decoder).
+        assert!(
+            file.get("vokra.vae_continuous.sr_bin_boundaries").is_none(),
+            "0.5B: sr_bin_boundaries key must be absent (single decoder head)"
+        );
+    }
 
     // Sample rate anchor — the VAE consumer's encoder input rate is 16 kHz
     // (upstream `audio_vae_v2.py`); a converter that shipped a different
@@ -560,8 +650,10 @@ fn parity_voxcpm2() {
     // FR-EX-08 pin — the scaffold engine MUST refuse `synthesize` loudly. This
     // assertion goes AWAY the moment a real-weight `from_gguf` walk lands and
     // the engine can bind real weights (at which point this test's synthesize
-    // call would become a real forward + audio-bound sanity check).
-    let cfg = VoxCpm2Config::voxcpm_0_5b();
+    // call would become a real forward + audio-bound sanity check). Cloned
+    // so we do not consume the dispatched `canonical` (still needed for
+    // downstream matches / prints).
+    let cfg = canonical.clone();
     let weights = VoxCpm2Weights::synthesized(&cfg).expect("build voxcpm2 scaffold weights");
     let tts = VoxCpm2Tts::new(cfg, weights).expect("build voxcpm2 scaffold engine");
     let err = tts

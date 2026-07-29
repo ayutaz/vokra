@@ -485,7 +485,16 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // listed here so an id lookup returns quickly without hitting
         // the `voxcpm-` prefix arm below.
         "voxcpm" | "voxcpm2" | "voxcpm-0.5b" | "voxcpm-0_5b" | "voxcpm-0.5b-base"
-        | "voxcpm-0_5b-base" => LicenseClass::Permissive,
+        | "voxcpm-0_5b-base"
+        // 2026-07-30 Option C hybrid rename: `voxcpm2-*` names carry the
+        // arch-family prefix so the parity harness dispatches on a single
+        // string. Both variants ship apache-2.0 end-to-end so the class
+        // is unchanged — the only novelty is the canonical `voxcpm2-2b`
+        // name for `openbmb/VoxCPM2` (2B scale-up). The legacy
+        // `voxcpm-0.5b` string above stays live for backward compat with
+        // any pre-rename GGUF on disk.
+        | "voxcpm2-0.5b" | "voxcpm2-0_5b" | "voxcpm2-2b" | "voxcpm2-2_0b"
+        | "voxcpm2-2b-base" => LicenseClass::Permissive,
         // SoTA plan Phase 4 (2026-07-24): Microsoft VibeVoice-1.5B —
         // long-form multi-speaker end-to-end diffusion-autoregressive
         // TTS. Weight license = **MIT** **end-to-end** — code + weight
@@ -823,14 +832,17 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
             // family would need its own explicit prefix.
             || id.starts_with("qwen3-tts-")
             // OpenBMB VoxCPM first-party family (apache-2.0 end-to-end —
-            // SoTA plan Phase 4, 2026-07-24): specific HF variant ids
-            // like `voxcpm-0.5b` / a future `voxcpm-0.5b-customvoice` /
-            // `voxcpm-1.5b` still resolve permissive. Guarded on the
-            // dash so unrelated ids (`voxcpmsomething`) cannot slip
-            // through. The `voxcpm2` (arch-tag) alias covers only the
-            // arch-tag spelling — a future underscore variant family
-            // would need its own explicit prefix.
+            // SoTA plan Phase 4, 2026-07-24; 2B variant land 2026-07-30):
+            // specific HF variant ids like `voxcpm-0.5b` / a future
+            // `voxcpm-0.5b-customvoice` / `voxcpm-1.5b` still resolve
+            // permissive. Guarded on the dash so unrelated ids
+            // (`voxcpmsomething`) cannot slip through. The `voxcpm2`
+            // (arch-tag) alias covers only the arch-tag spelling; the
+            // `voxcpm2-` prefix covers the 2026-07-30 rename family
+            // (`voxcpm2-2b`, `voxcpm2-0.5b`) plus any future 2B-lineage
+            // variant that keeps the arch-family name.
             || id.starts_with("voxcpm-")
+            || id.starts_with("voxcpm2-")
             // Microsoft VibeVoice first-party family (MIT end-to-end —
             // SoTA plan Phase 4, 2026-07-24): specific HF variant ids
             // like `vibevoice-1.5b` / a future `vibevoice-7b` /
@@ -1535,6 +1547,16 @@ mod tests {
             "VoxCPM-0.5B",
             // Family prefix — a hypothetical future variant.
             "voxcpm-1.5b",
+            // 2026-07-30 Option C hybrid rename: `voxcpm2-*` names.
+            "voxcpm2-0.5b",
+            "voxcpm2-0_5b",
+            "voxcpm2-2b",
+            "voxcpm2-2_0b",
+            "voxcpm2-2b-base",
+            // Case-insensitive on the arch-family form too.
+            "VoxCPM2",
+            // Prefix arm (future 2B-lineage variants).
+            "voxcpm2-2b-customvoice",
         ] {
             assert_eq!(
                 registry_lookup(id),

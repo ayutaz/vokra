@@ -1054,12 +1054,16 @@ impl ModelKind {
             | "qwen3-tts-12hz-0.6b-base"
             | "qwen3-tts-12hz-0_6b-base"
             | "qwen3-tts-12hz-0.6b" => Some(Self::Qwen3Tts),
-            // OpenBMB VoxCPM family — canonical HF release + arch-tag
-            // underscore spelling + common short forms. All spellings
-            // resolve to the same 0.5B release today; a future variant
-            // (0.5B-CustomVoice / 1.5B) would be a distinct `ModelKind`.
+            // OpenBMB VoxCPM family — canonical HF releases + arch-tag
+            // spellings + common short forms. Both `openbmb/VoxCPM-0.5B`
+            // and `openbmb/VoxCPM2` (2B scale-up, land 2026-07-30 —
+            // spec `docs/superpowers/specs/2026-07-28-voxcpm2-2b-design.md`
+            // Option C hybrid) route to the same `ModelKind`; the
+            // converter detects the variant from the safetensors payload
+            // itself (see `models::voxcpm2::detect_variant`).
             "voxcpm" | "voxcpm2" | "voxcpm-0.5b" | "voxcpm-0_5b" | "voxcpm-0.5b-base"
-            | "voxcpm-0_5b-base" => Some(Self::VoxCpm2),
+            | "voxcpm-0_5b-base" | "voxcpm2-0.5b" | "voxcpm2-0_5b" | "voxcpm2-2b"
+            | "voxcpm2-2_0b" | "voxcpm2-2b-base" => Some(Self::VoxCpm2),
             // Microsoft VibeVoice family — canonical HF release + arch-tag
             // spelling + common short forms. Every spelling resolves to the
             // 1.5B release today; a future 7B variant would be a distinct
@@ -1865,24 +1869,37 @@ pub fn convert_file_licensed(
             (builder, notes)
         }
         ModelKind::VoxCpm2 => {
-            // SoTA plan Phase 4 (2026-07-24): pass every F32/F16 tensor
-            // through verbatim and stamp the `vokra.voxcpm2.*` +
+            // SoTA plan Phase 4 (2026-07-24): pass every F32/F16/BF16
+            // tensor through verbatim and stamp the `vokra.voxcpm2.*` +
             // `vokra.vae_continuous.*` chunk groups (MiniCPM-4 LM
-            // backbone + 6-layer residual acoustic LM + 4-layer local
-            // encoder + 4-layer local DiT + UnifiedCFM sampler +
-            // AudioVAE V2 continuous encoder / decoder + inline
-            // scalar-quantization bottleneck) from the transcribed
-            // constants in `models::voxcpm2`. NEW CLASS of TTS vs every
-            // sibling: the terminal decoding hop is a continuous VAE
-            // decoder consuming flow-matching sampler output (not
-            // vocoder-LM HiFTChain, not codec-LM RVQ / FSQ) — silently
-            // sharing an arch tag would mis-route the runtime dispatch.
-            // Provenance = apache-2.0 end-to-end (Permissive — no
-            // runtime-side attribution obligation; code + weight all
+            // backbone + residual acoustic LM + local encoder + local
+            // DiT + UnifiedCFM sampler + AudioVAE V2 continuous encoder /
+            // decoder + inline scalar-quantization bottleneck) from the
+            // transcribed constants in `models::voxcpm2`. NEW CLASS of
+            // TTS vs every sibling: the terminal decoding hop is a
+            // continuous VAE decoder consuming flow-matching sampler
+            // output (not vocoder-LM HiFTChain, not codec-LM RVQ / FSQ)
+            // — silently sharing an arch tag would mis-route the runtime
+            // dispatch. Provenance = apache-2.0 end-to-end (Permissive —
+            // no runtime-side attribution obligation; code + weight all
             // under a single apache-2.0 grant).
+            //
+            // 2026-07-30 variant support (Option C hybrid): the same
+            // ModelKind serves both `openbmb/VoxCPM-0.5B` and
+            // `openbmb/VoxCPM2` (the 2B scale-up). Variant selection
+            // rides on the safetensors payload — see
+            // `models::voxcpm2::detect_variant` — and the detected
+            // variant is surfaced in this WP's notes so an operator
+            // reading the CLI trailer sees which release was converted.
             let (builder, report) = models::voxcpm2::convert(bytes)?;
+            let variant_label = match report.variant {
+                Some(models::voxcpm2::VoxCpm2Variant::HalfB) => "voxcpm2-0.5b",
+                Some(models::voxcpm2::VoxCpm2Variant::TwoB) => "voxcpm2-2b",
+                None => "unknown-variant",
+            };
             let mut notes = vec![format!(
-                "voxcpm2: {} float weights written verbatim, {} non-float skipped",
+                "voxcpm2: variant={variant_label}, {} float weights written verbatim, \
+                 {} non-float skipped",
                 report.written, report.skipped_non_float,
             )];
             notes.extend(report.notes.iter().map(|n| format!("voxcpm2 warning: {n}")));
@@ -4771,7 +4788,7 @@ mod modelkind_alias_and_roundtrip_tests {
                     "qwen3-tts-12hz-0.6b",
                 ],
             ),
-            // Phase 4 — VoxCPM
+            // Phase 4 — VoxCPM (0.5B + 2B — 2026-07-30 Option C hybrid)
             (
                 ModelKind::VoxCpm2,
                 &[
@@ -4781,6 +4798,11 @@ mod modelkind_alias_and_roundtrip_tests {
                     "voxcpm-0_5b",
                     "voxcpm-0.5b-base",
                     "voxcpm-0_5b-base",
+                    "voxcpm2-0.5b",
+                    "voxcpm2-0_5b",
+                    "voxcpm2-2b",
+                    "voxcpm2-2_0b",
+                    "voxcpm2-2b-base",
                 ],
             ),
             // Phase 4 — VibeVoice
