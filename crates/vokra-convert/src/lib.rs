@@ -4554,4 +4554,129 @@ mod modelkind_alias_and_roundtrip_tests {
         assert_eq!(ModelKind::Denoise.as_arg(), "denoise");
         assert_eq!(ModelKind::Utmos.as_arg(), "utmos");
     }
+
+    /// **Task B-1 owner-blocked policy pin** (2026-07-29): the four
+    /// voice-conversion (VC) converter modules
+    /// (`crates/vokra-convert/src/models/openvoice_v2.rs` +
+    /// `knn_vc.rs` + `freevc.rs` + `meanvc.rs`) are landed as
+    /// `pub fn convert_*_file` skeletons but MUST NOT resolve through
+    /// `ModelKind::from_arg` today — the CLI `--model` gate is the
+    /// user-facing entry point and staying fail-closed here honours the
+    /// existing policy chain.
+    ///
+    /// **Policy source 1 — CLAUDE.md 設計判断 8**: voice-cloning is
+    /// intentionally excluded from the `ayutaz/vokra` public repo to
+    /// avoid tool-distributor liability under Tennessee **ELVIS Act §3**
+    /// (2024-07-01) + federal **NO FAKES Act**. The `vc` category is
+    /// routed to a **separate** `vokra-voiceclone-experimental`
+    /// repository per docs/license-audit.md §5.
+    ///
+    /// **Policy source 2 — docs/license-audit.md §3.1 rows 294-297**:
+    /// the sign-off rows for `openvoice_v2` / `knn_vc` / `freevc` /
+    /// `meanvc` are **blank per fail-closed default** (the `本欄の署名・
+    /// 判定は owner 記入、CC は pre-fill しない` directive); no CC-side
+    /// pre-fill is permitted, and `scripts/publish/publish-one.sh`
+    /// refuses to distribute a GGUF whose §3.1 row is blank.
+    ///
+    /// **Policy source 3 — docs/m5-owner-verification-checklist.md §6.2
+    /// (rows 146-149) + §6.4 "Voice-clone territory … ELVIS Act policy
+    /// defer"**: the M5-05 T15 owner action is to choose destination
+    /// among three candidates. Destination one:
+    /// `staging/vokra-voiceclone-experimental` separate repo (existing
+    /// scaffold per commit `6dc9f86`). Destination two: `ayutaz/vokra`
+    /// core WITH the mandatory `--i-understand-risks --research-only`
+    /// consent-machinery + M2-13 research-flag gate + a formal ADR
+    /// overriding 設計判断 8. Destination three: explicit Rejected in
+    /// §3.1.
+    ///
+    /// The module docstrings on `openvoice_v2.rs` (lines 60-75) and
+    /// `freevc.rs` (lines 66-80) already flag their unwired state as
+    /// **intentional** and gate the follow-up wave on the
+    /// voiceclone-experimental hook. This test codifies that gate at
+    /// the CLI boundary so a future change that wires any of the four
+    /// slugs into `ModelKind::from_arg` MUST also delete or update this
+    /// pin — surfacing the policy trade-off in code review rather than
+    /// letting it land silently. A wiring PR that does not touch this
+    /// test will fail here; a wiring PR that does touch this test will
+    /// force the reviewer to acknowledge the ELVIS Act / NO FAKES Act
+    /// consequences of the wiring.
+    ///
+    /// The alias set covers every spelling a caller might plausibly
+    /// try — the upstream HF slug (`myshell-ai/OpenVoiceV2` etc.), the
+    /// module-name `openvoice_v2` (underscore = arch tag = the
+    /// `vokra.model.arch` value the runtime dispatch would look for),
+    /// and the hyphen spelling `openvoice-v2` (the `vokra.model.name`
+    /// value = the conventional CLI form used by sibling wired
+    /// converters). If a future release adds a `v2.1` / `v3` variant,
+    /// its spelling must also stay blocked here until the same owner
+    /// ADR decision is recorded — a follow-up PR that adds the spelling
+    /// belongs in the same wiring wave that lifts the policy defer.
+    ///
+    /// Not fixed by this task (preexisting inconsistency, owner-blocked
+    /// scope):
+    /// `crates/vokra-convert/src/lib.rs:2804`
+    /// (`pub use models::knn_vc::{KnnVcReport, convert_knn_vc_file};`)
+    /// already exposes the `knn_vc` converter fn on the Rust crate
+    /// surface. That is a **preexisting** re-export from the BF16
+    /// pass-through campaign (2026-07-25) and touching it now would
+    /// itself be an owner-ADR-territory change (either it stays
+    /// removed = a compat break for any external Rust caller reaching
+    /// through the API, or it stays present = a partial-wire that
+    /// still needs the M5-05 destination decision). This test pins the
+    /// **CLI-facing** dispatch boundary only, which is the load-bearing
+    /// user-visible gate; the Rust-surface question is deferred to the
+    /// same owner ADR that resolves the four rows in §3.1.
+    #[test]
+    fn voice_clone_vc_slugs_are_owner_blocked_from_modelkind_dispatch() {
+        // Every spelling below MUST return `None` today. The comment
+        // beside each entry names the artefact that spelling corresponds
+        // to inside the module (arch tag / model name / upstream slug)
+        // so a future contributor lifting the policy defer can walk this
+        // list back to the module they need to touch.
+        for slug in [
+            // openvoice_v2 — `pub const ARCH = "openvoice_v2"` /
+            // `NAME = "openvoice-v2"` / upstream `myshell-ai/OpenVoiceV2`.
+            "openvoice_v2",
+            "openvoice-v2",
+            "openvoicev2",
+            "openvoice",
+            "myshell-ai/OpenVoiceV2",
+            // knn_vc — `pub(crate) const ARCH = "knn_vc"` /
+            // `NAME = "knn-vc"` / upstream `bshall/knn-vc`. The `pub use`
+            // at crates/vokra-convert/src/lib.rs:2804 exposes the
+            // converter fn on the Rust surface (preexisting), but the
+            // CLI-facing ModelKind dispatch stays fail-closed until the
+            // owner ADR resolves the destination.
+            "knn_vc",
+            "knn-vc",
+            "knnvc",
+            "bshall/knn-vc",
+            // freevc — `pub const ARCH = "freevc"` /
+            // `NAME = "freevc"` / upstream `OlaWod/FreeVC`.
+            "freevc",
+            "free-vc",
+            "free_vc",
+            "OlaWod/FreeVC",
+            // meanvc — module-scope `ARCH = "meanvc"` /
+            // `NAME = "meanvc"` / upstream `ASLP-lab/MeanVC`.
+            "meanvc",
+            "mean-vc",
+            "mean_vc",
+            "ASLP-lab/MeanVC",
+        ] {
+            assert!(
+                ModelKind::from_arg(slug).is_none(),
+                "{slug:?} MUST NOT resolve to any ModelKind today — the four \
+                 vc-category converters (openvoice_v2 / knn_vc / freevc / meanvc) \
+                 are owner-blocked pending the M5-05 T15 destination decision \
+                 (staging/vokra-voiceclone-experimental separate repo vs \
+                 ayutaz/vokra core + consent machinery vs explicit Rejected in \
+                 docs/license-audit.md §3.1). Wiring this spelling requires \
+                 (a) an ADR overriding CLAUDE.md 設計判断 8 (ELVIS Act §3 + \
+                 NO FAKES Act) AND (b) filling the owner sign-off in \
+                 docs/license-audit.md §3.1 rows 294-297 — see the rustdoc \
+                 above this test."
+            );
+        }
+    }
 }

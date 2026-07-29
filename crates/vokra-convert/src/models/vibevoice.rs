@@ -729,6 +729,11 @@ mod tests {
             decoder_rates: ACOUSTIC_DECODER_RATIOS.to_vec(),
             depthwise: ACOUSTIC_MIXER_LAYER == "depthwise_conv",
             use_noise_block: false,
+            // VibeVoice's mirror-symmetric acoustic VAE has no
+            // bandwidth-adaptive decoder head (that axis is VoxCPM2-2B-only
+            // so far). Keep `None` here to mirror the runtime builder in
+            // `crates/vokra-models/src/vibevoice/mod.rs::acoustic_vae_config`.
+            sr_bin_boundaries: None,
         };
         // The shared VAE seam accepts the transcribed axes without
         // clamping / rejecting anything — that is the numeric
