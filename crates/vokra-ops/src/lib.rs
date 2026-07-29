@@ -248,6 +248,14 @@ pub mod zipformer;
 // rebases.
 pub mod ebranchformer;
 // -------------------------------------------------------------------------
+// ---- SoTA plan Phase JA JA-ASR-3 hybrid CTC/attention decoder ----------
+// ESPnet-style hybrid rescoring: attention beam extends the prefix, CTC
+// gives a prefix score per candidate, LSTM LM optionally shallow-fuses.
+// Runtime function (NOT an OpKind variant, same posture as ctc_decode /
+// beam_search — FR-OP-40 / FR-EX-10). Localised re-export block for clean
+// parallel-wave rebases.
+pub mod hybrid_ctc_attention;
+// -------------------------------------------------------------------------
 
 // ---- M4-03 aec re-exports ------------------------------------------------
 pub use aec::{Aec, AecAttrs, AecStatus};

@@ -228,6 +228,34 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-07-30 — 1.0.0-rc.1-dev (JA-ASR bundle: hybrid CTC/attention decode + LSTM LM shallow fusion — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the M5 gap JA-ASR-3 primitive
+(hybrid CTC/attention decoder + LSTM LM shallow fusion). The C ABI
+(`include/vokra.h`) is **untouched** (33 fn + 11 typedef baseline
+unchanged; `scripts/gen-c-abi.sh --check` = no diff). Follows the
+X-Codec-2 / VoxCPM2-2B / SBV2 v2 precedent: **advisory Rust-surface
+entry**, `scripts/check-abi-changelog.sh` does not gate on it (no C
+symbol changed).
+
+- **vokra-ops::hybrid_ctc_attention** (new mod):
+  `hybrid_ctc_attention_decode` (fn) / `HybridCtcAttentionAttrs` /
+  `HybridHypothesis` / `LstmLmCell` / `LstmLmState` / `AttnNextStepFn`
+  (type alias) / `LmScoreFn` (type alias).
+
+Runtime function (NOT an OpKind variant, same posture as `ctc_decode` /
+`beam_search` — FR-OP-40 / FR-EX-10). Combines the attention beam
+(caller-supplied next-step callback), the CTC prefix score (Watanabe-Hori
+DP over the encoder log-prob matrix), and an optional LSTM LM shallow
+fusion into a joint rank:
+`(1-α) · attn_lp + α · ctc_prefix_lp + lm_weight · lm_lp`. The
+`LstmLmCell` helper exposes a single-layer LSTM (matching PyTorch
+`LSTMCell` gate layout `[i;f;g;o]`) so callers can wire a stateful
+shallow-fusion closure without reimplementing the gate arithmetic.
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
+baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none.
+
 ### 2026-07-30 — 1.0.0-rc.1-dev (JA-ASR bundle: E-Branchformer encoder — Rust surface only, advisory)
 
 Additive **Rust public API** entry for the M5 gap JA-ASR-4 primitive
