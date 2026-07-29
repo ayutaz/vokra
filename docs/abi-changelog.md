@@ -228,6 +228,35 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-07-30 — 1.0.0-rc.1-dev (JA-ASR bundle: Zipformer encoder — Rust surface only, advisory)
+
+Additive **Rust public API** entry for the M5 gap JA-ASR-5 primitive
+(Zipformer encoder). The C ABI (`include/vokra.h`) is **untouched** (33 fn
++ 11 typedef baseline unchanged; `scripts/gen-c-abi.sh --check` = no diff).
+Follows the X-Codec-2 / VoxCPM2-2B / SBV2 v2 precedent: **advisory
+Rust-surface entry**, `scripts/check-abi-changelog.sh` does not gate on it
+(no C symbol changed).
+
+- **vokra-ops::zipformer** (new mod): `ZipformerEncoder` /
+  `ZipformerConfig` / `ZipformerStackDesc` / `ZipformerWeights` /
+  `ZipformerStemWeights` / `ZipformerStackWeights` /
+  `ZipformerLayerWeights` / `SharedMhaQkWeights` plus
+  `pub fn new(cfg, weights) -> Result<Self>` +
+  `pub fn forward(&self, mel, mel_frames) -> Result<(Vec<f32>, usize)>` +
+  accessors (`config`, `head_dim`).
+
+Multi-resolution encoder with attention weight sharing (single `Q` / `K`
+per stack, per-layer `V` + output projection + FF + Conv + LN). Direct
+port of `k2-fsa/icefall/egs/librispeech/ASR/zipformer/zipformer.py`
+(Apache-2.0). Primary consumer = the reazonspeech-k2 CTC family
+(`reazon-research/reazonspeech-k2-v2`, Apache-2.0). Reuses the Conformer
+primitive's `FeedForwardWeights` / `ConformerConvWeights` /
+`ConvSubsampleKind` / `PositionEncoding` layouts so a caller can share
+stem wiring across ASR encoders.
+
+All additions are **Rust surface only** — no new C ABI symbols. v1.0-rc
+baseline (33 fn + 11 typedef) unchanged. gen-c-abi drift = none.
+
 ### 2026-07-30 — 1.0.0-rc.1-dev (M5 gap CC wave 2 — VoxCPM2-2B config + scaffolds — Rust surface only, advisory)
 
 Additive **Rust public API** entry for the M5 owner-checklist CC-side wave 2

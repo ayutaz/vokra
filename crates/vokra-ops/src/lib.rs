@@ -233,6 +233,13 @@ pub mod waveform_frontend;
 pub mod vae_continuous;
 // -------------------------------------------------------------------------
 pub mod window;
+// ---- SoTA plan Phase JA JA-ASR-5 Zipformer encoder (multi-resolution) --
+// Zipformer = down/up-sample pyramid + attention weight sharing (single QK
+// per stack, per-layer V + output projection). k2-fsa/icefall reference
+// (Apache-2.0), consumed by the reazonspeech-k2 CTC family. Localised
+// re-export block for clean parallel-wave rebases.
+pub mod zipformer;
+// -------------------------------------------------------------------------
 
 // ---- M4-03 aec re-exports ------------------------------------------------
 pub use aec::{Aec, AecAttrs, AecStatus};
