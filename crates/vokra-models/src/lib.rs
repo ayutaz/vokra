@@ -60,6 +60,17 @@
 //     tensor-name manifest (T29-equivalent). License = MIT (permissive).
 pub mod align;
 pub mod canary;
+// SoTA plan reuse bundle (2026-07-30): NVIDIA Canary-Qwen-2.5B —
+// FastConformer encoder (reuse `canary::CanaryEncoderConfig` — Canary-1B-v2
+// 32-layer × 1024 dim × 8 head × 128 mel bins, `vokra_ops::conformer` via
+// `Stacking { factor: 8 }`) + Qwen LLM decoder (reuse `voxtral::TextDecoderConfig`
+// — Qwen family GQA 16 Q ÷ 8 KV, `head_dim = 128`, `rope_base = 1_000_000`,
+// RMSNorm ε = 1e-6, SwiGLU). Weight license = CC-BY 4.0 (attribution required
+// via `canary-` prefix walk). Distinct arch tag `"canary-qwen"` from base
+// `"canary"` because the LM head-swap changes the decoder topology from
+// Transformer AED to Qwen LLM soft-prompt prefix (like Voxtral). No new op —
+// both halves reuse existing Vokra primitives.
+pub mod canary_qwen;
 // SoTA plan Phase 3 (2026-07-24): Resemble AI Chatterbox-Multilingual TTS
 // (MIT). T3 = Llama_520M backbone (hidden=1024 / n_layer=30 / MHA n_head=16
 // n_head_kv=16 / head_dim=64 / SwiGLU ffn=4096 / RoPE θ=500000 llama3-scaled)

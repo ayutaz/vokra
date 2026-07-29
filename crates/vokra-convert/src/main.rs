@@ -28,7 +28,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -396,7 +396,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                         "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | \
                          piper-plus | campplus | kokoro | cosyvoice2 | voxtral | mimi | \
                          dac | csm | moshi | denoise | dia | zonos | kyutai-stt | \
-                         parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
+                         parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc | \
                          distil-whisper | kotoba-whisper | vits-ja | styletts2)"
                     )
                 })?);
@@ -1031,6 +1031,73 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  enc_n_head={enc_n_head} in_dim={in_dim} decoder_layers={dec_layers} \
                  dec_d_model={dec_d_model} dec_n_head={dec_n_head} \
                  dec_max_seq={dec_max_seq} vocab={vocab} sample_rate={sr}"
+            );
+        }
+        ModelKind::CanaryQwen => {
+            // SoTA plan reuse bundle (2026-07-30): NVIDIA Canary-Qwen-2.5B —
+            // FastConformer encoder (reused Canary-1B-v2 axes) + Qwen LLM
+            // decoder (canonical Qwen-family axes with `0`-placeholder
+            // dims pending .nemo extraction). Verify the loaded GGUF
+            // carries the key hparam chunk group and the arch tag is
+            // distinct from base Canary.
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let enc_layers = file
+                .get("vokra.canary_qwen.arch.encoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let enc_d_model = file
+                .get("vokra.canary_qwen.arch.encoder.d_model")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let enc_n_head = file
+                .get("vokra.canary_qwen.arch.encoder.n_head")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let in_dim = file
+                .get("vokra.canary_qwen.arch.encoder.in_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_layers = file
+                .get("vokra.canary_qwen.arch.decoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_hidden_dim = file
+                .get("vokra.canary_qwen.arch.decoder.hidden_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_n_head_q = file
+                .get("vokra.canary_qwen.arch.decoder.n_head_q")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_n_head_kv = file
+                .get("vokra.canary_qwen.arch.decoder.n_head_kv")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let dec_head_dim = file
+                .get("vokra.canary_qwen.arch.decoder.head_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let vocab = file
+                .get("vokra.canary_qwen.arch.decoder.vocab_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cross_attn_hidden_dim = file
+                .get("vokra.canary_qwen.arch.cross_attn.hidden_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sr = file
+                .get("vokra.canary_qwen.sample_rate")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} encoder_layers={enc_layers} enc_d_model={enc_d_model} \
+                 enc_n_head={enc_n_head} in_dim={in_dim} decoder_layers={dec_layers} \
+                 dec_hidden_dim={dec_hidden_dim} dec_gqa={dec_n_head_q}q/{dec_n_head_kv}kv \
+                 dec_head_dim={dec_head_dim} vocab={vocab} \
+                 cross_attn_hidden_dim={cross_attn_hidden_dim} sample_rate={sr}"
             );
         }
         ModelKind::OmniasrCtc => {
@@ -2165,6 +2232,7 @@ mod tests {
             ("parakeet-tdt", ModelKind::Parakeet),
             ("parakeet-ctc", ModelKind::ParakeetCtc),
             ("canary", ModelKind::Canary),
+            ("canary-qwen", ModelKind::CanaryQwen),
             ("omniasr-ctc", ModelKind::OmniasrCtc),
             ("distil-whisper", ModelKind::DistilWhisper),
             ("kotoba-whisper", ModelKind::KotobaWhisper),

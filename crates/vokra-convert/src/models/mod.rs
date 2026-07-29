@@ -20,6 +20,18 @@ pub(crate) mod campplus;
 // body via `Stacking { factor: 8 }`) and `vokra_ops::beam_search`
 // (attention-decoder search) primitives — no per-model op duplication.
 pub(crate) mod canary;
+// SoTA plan reuse bundle (2026-07-30): NVIDIA Canary-Qwen-2.5B —
+// multimodal ASR + Qwen LLM head-swap on top of Canary FastConformer
+// encoder. CC-BY 4.0 weight (AttributionRequired via `canary-` prefix
+// walk). Every F32 / F16 / BF16 tensor passes through verbatim; every
+// encoder hparam reuses the primary-source Canary-1B-v2 defaults; every
+// decoder hparam carries canonical Qwen-family constants (GQA 16 Q /
+// 8 KV, head_dim=128, rope=1_000_000, rms_norm_eps=1e-6) with
+// `0`-placeholder dims (n_layer / hidden_dim / ffn_dim / vocab_size /
+// n_ctx) pending `.nemo` extraction — runtime validator rejects `0`
+// loudly (FR-EX-08). Reuses the shared `canary` encoder + Voxtral
+// text-decoder session primitives — no per-model op duplication.
+pub(crate) mod canary_qwen;
 // SoTA plan Phase 3 (2026-07-24): Resemble AI Chatterbox-Multilingual TTS
 // (MIT weight, Permissive) safetensors → GGUF with the `vokra.chatterbox.*`
 // chunk group. Every F32 / F16 tensor passes through verbatim; every hparam

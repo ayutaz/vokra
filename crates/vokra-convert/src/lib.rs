@@ -255,6 +255,30 @@ pub enum ModelKind {
     /// (attention-decoder search — OP-3) primitives — no per-model op
     /// duplication.
     Canary,
+    /// NVIDIA **Canary-Qwen-2.5B** safetensors checkpoint (SoTA plan
+    /// reuse bundle, 2026-07-30). Multimodal ASR + LLM head-swap on top
+    /// of Canary's FastConformer encoder: a `32`-layer FastConformer
+    /// encoder (same axes as Canary-1B-v2 — `d_model=1024`, MHA
+    /// `n_head=8`, `ffn_dim=4096`, `num_mel_bins=128`,
+    /// `subsampling_factor=8`, `conv_kernel_size=9`,
+    /// `max_position_embeddings=5000`, `attention_bias=true`) feeding a
+    /// Qwen LLM decoder (Voxtral-style soft-prompt prefix — GQA
+    /// `n_head_q=16`, `n_head_kv=8`, `head_dim=128`,
+    /// `rope_theta=1_000_000`, `rms_norm_eps=1e-6`, SwiGLU) whose exact
+    /// dims (`n_layer` / `hidden_dim` / `ffn_dim` / `vocab_size` /
+    /// `n_ctx`) ride as `0`-placeholder sentinels pending the `.nemo`
+    /// tarball's `model_config.yaml` extraction. CC-BY 4.0 weight
+    /// (`AttributionRequired` via the `canary-` family prefix walk in
+    /// [`vokra_core::compliance::license_class`]). Every F32 / F16 /
+    /// BF16 tensor passes through verbatim (mirror of the Canary /
+    /// qwen3_tts / vibevoice / voxcpm2 BF16 pass-through pattern).
+    /// Reuses the shared `canary::CanaryEncoderConfig` (FastConformer
+    /// via `vokra_ops::conformer`) and `voxtral::TextDecoderConfig`
+    /// (Qwen LLM primitive) — no per-model op duplication. Distinct
+    /// arch tag `"canary-qwen"` from base `"canary"` because the LM
+    /// head-swap changes the decoder topology from Transformer AED to
+    /// Qwen LLM soft-prompt prefix.
+    CanaryQwen,
     /// HuggingFace **distil-whisper / distil-large-v3.5** safetensors
     /// checkpoint (SoTA plan Phase 2, 2026-07-24). Whisper large-v3
     /// encoder + a 2-layer decoder — same op inventory as vanilla
@@ -946,6 +970,16 @@ impl ModelKind {
                 Some(Self::ParakeetCtc)
             }
             "canary" | "canary-1b-v2" | "canary-1b-v2-en" | "canary-1b_v2" => Some(Self::Canary),
+            // NVIDIA Canary-Qwen family (SoTA plan reuse bundle,
+            // 2026-07-30). Accept the canonical arch spelling, the
+            // underscore variant, and the release id. The `canary-`
+            // prefix walk still catches these for license classification
+            // (attribution-required via CC-BY 4.0), so keeping distinct
+            // ModelKind arms means the converter dispatches to the
+            // Qwen-decoder-flavour arch chunk group rather than the
+            // Transformer-AED-flavour Canary chunk group.
+            "canary-qwen" | "canary_qwen" | "canary-qwen-2.5b" | "canary-qwen-2_5b"
+            | "canary-qwen-2.5B" => Some(Self::CanaryQwen),
             "omniasr-ctc" | "omniasr-ctc-1b" | "omniasr-ctc-1_1b" | "omniasr_ctc"
             | "omniasr_ctc_1b" => Some(Self::OmniasrCtc),
             "distil-whisper"
@@ -1204,6 +1238,7 @@ impl ModelKind {
             Self::Parakeet => "parakeet-tdt",
             Self::ParakeetCtc => "parakeet-ctc",
             Self::Canary => "canary",
+            Self::CanaryQwen => "canary-qwen",
             Self::OmniasrCtc => "omniasr-ctc",
             Self::DistilWhisper => "distil-whisper",
             Self::KotobaWhisper => "kotoba-whisper",
@@ -1627,6 +1662,29 @@ pub fn convert_file_licensed(
                 report.written, report.skipped_non_float,
             )];
             notes.extend(report.notes.iter().map(|n| format!("canary warning: {n}")));
+            (builder, notes)
+        }
+        ModelKind::CanaryQwen => {
+            // SoTA plan reuse bundle (2026-07-30): pass every F32/F16/BF16
+            // tensor through verbatim and stamp the `vokra.canary_qwen.*`
+            // chunk group (FastConformer encoder axes reused from
+            // Canary-1B-v2 + Qwen LLM decoder axes with `0`-placeholder
+            // dims). Provenance = CC-BY 4.0 (AttributionRequired via
+            // `canary-` prefix walk) + FR-MD-09 attribution text.
+            // Distinct arch tag from base Canary so the runtime dispatches
+            // to the Qwen-decoder path.
+            let (builder, report) = models::canary_qwen::convert(bytes)?;
+            let mut notes = vec![format!(
+                "canary-qwen: {} float weights written verbatim, {} non-float skipped, \
+                 {} BF16 pass-through",
+                report.written, report.skipped_non_float, report.bf16_passthrough,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("canary-qwen warning: {n}")),
+            );
             (builder, notes)
         }
         ModelKind::OmniasrCtc => {
@@ -4071,6 +4129,52 @@ pub fn convert_canary_file(input: &Path, output: &Path) -> Result<ConvertSummary
     convert_file(ModelKind::Canary, input, output)
 }
 
+/// Convert an NVIDIA **Canary-Qwen-2.5B** safetensors checkpoint into a
+/// Vokra GGUF (SoTA plan reuse bundle, 2026-07-30).
+///
+/// Functionally identical to `convert_file(ModelKind::CanaryQwen, input,
+/// output)` — Canary-Qwen has no side-car config or tokenizer to embed at
+/// this scaffold stage (encoder hparams reuse the Canary-1B-v2 primary-
+/// source defaults + decoder hparams carry canonical Qwen-family constants
+/// with `0`-placeholder dims pending `.nemo` extraction) — but the named
+/// entry keeps the `convert_*_file` naming symmetry with the other ASR /
+/// TTS models.
+///
+/// # Architecture summary
+///
+/// - **Encoder**: FastConformer, **32 layers** (reused from Canary-1B-v2),
+///   `d_model=1024`, `n_heads=8`, `ffn_dim=4096`, `num_mel_bins=128`,
+///   `subsampling_factor=8`, `conv_kernel_size=9`,
+///   `max_position_embeddings=5000`, `attention_bias=true`.
+/// - **Decoder**: Qwen LLM (Voxtral-style soft-prompt prefix), GQA
+///   `n_head_q=16`, `n_head_kv=8`, `head_dim=128`,
+///   `rope_theta=1_000_000`, `rms_norm_eps=1e-6`, SwiGLU. Exact dims
+///   (`n_layer`, `hidden_dim`, `ffn_dim`, `vocab_size`, `n_ctx`) ride as
+///   `0`-placeholder sentinels — the runtime `CanaryQwenConfig::
+///   validate_for_forward` rejects them loudly (FR-EX-08), so a real
+///   `.nemo` extraction wave fills them.
+/// - **Sample rate**: **16 kHz** (from the Canary FastConformer front-end).
+///
+/// # BF16 posture
+///
+/// The upstream Canary-Qwen-2.5B `.nemo` tarball's PyTorch checkpoint is
+/// typically **BF16**. BF16 tensors pass through **verbatim** as GGUF
+/// type 30 — the runtime widens BF16 → f32 losslessly at load. A
+/// downstream that pre-widens to F16 or F32 offline also lands on the
+/// pass-through arm. Provenance is stamped **CC-BY 4.0**
+/// (`AttributionRequired` via the `canary-` family prefix walk) and the
+/// FR-MD-09 attribution surface activates.
+///
+/// # Errors
+///
+/// As [`convert_file`].
+pub fn convert_canary_qwen_file(
+    input: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::CanaryQwen, input, output)
+}
+
 /// Convert a Meta **omniASR-CTC-1B** safetensors checkpoint into a Vokra
 /// GGUF (SoTA plan Phase 2, 2026-07-24).
 ///
@@ -4461,6 +4565,7 @@ mod modelkind_alias_and_roundtrip_tests {
             Parakeet,
             ParakeetCtc,
             Canary,
+            CanaryQwen,
             OmniasrCtc,
             DistilWhisper,
             KotobaWhisper,
@@ -4569,6 +4674,20 @@ mod modelkind_alias_and_roundtrip_tests {
             (
                 ModelKind::Canary,
                 &["canary", "canary-1b-v2", "canary-1b-v2-en", "canary-1b_v2"],
+            ),
+            // SoTA plan reuse bundle (2026-07-30) — canary-qwen aliases
+            // must dispatch to CanaryQwen, not the base Canary variant
+            // (silent mis-dispatch would run the Transformer-AED chunk
+            // group writer instead of the Qwen-LLM chunk group writer).
+            (
+                ModelKind::CanaryQwen,
+                &[
+                    "canary-qwen",
+                    "canary_qwen",
+                    "canary-qwen-2.5b",
+                    "canary-qwen-2_5b",
+                    "canary-qwen-2.5B",
+                ],
             ),
             (
                 ModelKind::OmniasrCtc,
