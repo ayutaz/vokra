@@ -43,6 +43,15 @@ source ~/.bashrc  # VOKRA_PUBLISH_ON_VAST=1 marker を pick up
 - Voxtral-Mini-3B-2507 は既 published (2026-07-23) だが再変換なら borderline (~9GB BF16 → tight)
 - 将来の 30B+ モデル (Qwen3-Audio-30B、Baichuan-Audio 系)
 
+**Voxtral streaming path (2026-07-29 追加)**: `convert_voxtral_file_streaming`
+API を追加した (M5 gap A-3、crates/vokra-convert/src/lib.rs)。header-only
+mmap per shard + 1-tensor-at-a-time payload streaming で、Voxtral-Small-24B
+(48GB) を M1 iMac (16GB) 上で peak `max(shard_header) + max(tensor_payload)`
+のフットプリントで変換可能。**K-quant はスコープ外** (widen-then-quantize が
+in-memory 必須ゆえ)。owner が local で dry-run するときは `convert_voxtral_file`
+の代わりにこれを使う。vast.ai は引き続き quantize 系や 30B+ の base case として
+必要。
+
 **Borderline (single-tenant なら本機可、他作業と競合させない)**:
 - 5-8GB の safetensors: kyutai-stt (5.23GB BF16、2026-07-28 実績あり)、csm-1b (6.21GB single-file、実績あり)、moshiko-7b (~14GB BF16、既 published)
 - 判定基準: `curl -sL "https://huggingface.co/api/models/<repo>?blobs=true"` で最大 shard サイズ + shards 数から推定。**11 shards × 4GB = mmap 44GB → vast.ai**、単一 shard 6GB → local single-tenant で OK。

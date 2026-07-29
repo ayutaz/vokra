@@ -2859,6 +2859,54 @@ pub fn parse_voxtral_hf_config(bytes: &[u8]) -> Result<VoxtralConfig, ConvertErr
     models::voxtral::parse_hf_config(bytes)
 }
 
+/// Resolves a (possibly sharded) Voxtral safetensors checkpoint to one path
+/// per shard, WITHOUT reading any file bytes.
+///
+/// Same semantics as [`read_voxtral_checkpoint`] but returns paths only, so
+/// callers who go through the streaming reader
+/// ([`models::voxtral::convert_shards_streaming`]) can defer the file open
+/// until after the header parse (and thus never mmap or read the whole
+/// checkpoint at once). See [`convert_voxtral_file_streaming`] for the
+/// user-facing path (M5 gap A-3, 2026-07-29).
+fn resolve_voxtral_shard_paths(input: &Path) -> Result<Vec<std::path::PathBuf>, ConvertError> {
+    use vokra_core::json::JsonValue;
+
+    let file_name = input.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    if !file_name.ends_with(".index.json") {
+        return Ok(vec![input.to_path_buf()]);
+    }
+    let index_bytes = std::fs::read(input)?;
+    let root = vokra_core::json::parse(&index_bytes)
+        .map_err(|e| ConvertError::Parse(format!("voxtral index {}: {e}", input.display())))?;
+    let weight_map = root
+        .get("weight_map")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| {
+            ConvertError::Parse(format!(
+                "voxtral index {}: missing `weight_map` object",
+                input.display()
+            ))
+        })?;
+    let mut shard_names = std::collections::BTreeSet::new();
+    for (tensor, file) in weight_map {
+        let f = file.as_str().ok_or_else(|| {
+            ConvertError::Parse(format!(
+                "voxtral index {}: weight_map[{tensor}] is not a file-name string",
+                input.display()
+            ))
+        })?;
+        shard_names.insert(f.to_owned());
+    }
+    if shard_names.is_empty() {
+        return Err(ConvertError::Parse(format!(
+            "voxtral index {}: empty weight_map — no shards to read",
+            input.display()
+        )));
+    }
+    let dir = input.parent().unwrap_or_else(|| Path::new("."));
+    Ok(shard_names.into_iter().map(|f| dir.join(f)).collect())
+}
+
 /// Reads a (possibly sharded) Voxtral safetensors checkpoint into one buffer
 /// per shard.
 ///
@@ -2929,6 +2977,64 @@ pub fn convert_voxtral_file(
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
     convert_voxtral_file_quantized(input, config, output, None)
+}
+
+/// Streaming counterpart of [`convert_voxtral_file`] (M5 gap A-3, 2026-07-29).
+///
+/// Header-only mmap per shard + one-tensor-at-a-time payload streaming, so a
+/// Voxtral-Small-24B checkpoint (48 GB BF16, 11 shards) converts on a
+/// 16 GB M1 iMac. The in-memory path
+/// ([`convert_voxtral_file`] / [`convert_voxtral_file_quantized`]) is
+/// unchanged and stays the default for callers who already fit — this
+/// function does not change the existing bytes on disk, it just lifts the
+/// mmap-everything memory cap.
+///
+/// The output GGUF is **byte-identical** to what [`convert_voxtral_file`]
+/// would produce over the same checkpoint + config (pinned by a converter
+/// test); the only observable difference is the process's peak RSS.
+///
+/// # Restrictions vs the in-memory path
+///
+/// - **No quantization**. K-quantizing needs `SafetensorsFile::tensor_f32`
+///   to widen BF16 → f32 in memory before quantizing; a streaming
+///   equivalent would need a chunked widen-then-quantize helper. Deferred
+///   until a real need shows up (owner quantizes big models on vast.ai,
+///   which fits the in-memory path).
+/// - Adapter side-car support is a follow-up
+///   ([`convert_voxtral_file_with_adapter_config`] does not have a
+///   streaming variant yet — same in-memory `read_voxtral_checkpoint`
+///   call).
+///
+/// # Errors
+///
+/// As [`convert_voxtral_file`], plus [`ConvertError::Io`] on shard open /
+/// read failure at any point during the streaming pass.
+pub fn convert_voxtral_file_streaming(
+    input: &Path,
+    config: &VoxtralConfig,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let paths = resolve_voxtral_shard_paths(input)?;
+    let (tensor_count, metadata_count, output_bytes, report) =
+        models::voxtral::convert_shards_streaming(&paths, output, Some(config))?;
+
+    let notes = vec![format!(
+        "voxtral (streaming): {} float weights written ({} BF16 passthrough — exact), \
+         {} non-float skipped, name {}, tokenizer embedded: {}",
+        report.written,
+        report.bf16_passthrough,
+        report.skipped_non_float,
+        report.name,
+        report.tokenizer_embedded
+    )];
+
+    Ok(ConvertSummary {
+        model: ModelKind::Voxtral,
+        tensor_count,
+        metadata_count,
+        output_bytes,
+        notes,
+    })
 }
 
 /// [`convert_voxtral_file`] with an optional K-quant target (M5-15-T36,
