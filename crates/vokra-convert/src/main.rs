@@ -1840,7 +1840,12 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::Wespeaker
         | ModelKind::Speaker3d
         | ModelKind::Emotion2vec
-        | ModelKind::Rmvpe => {
+        | ModelKind::Rmvpe
+        // M5 gap follow-up (2026-07-30): CREPE emits the same
+        // `vokra.model.{arch,name,category}` + `vokra.provenance.*`
+        // triple as the Phase 5 fleet + RMVPE sibling; grouped here so
+        // the verify surface stays a shape-lookup.
+        | ModelKind::Crepe => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())

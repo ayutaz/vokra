@@ -60,6 +60,15 @@ pub(crate) mod chatterbox_turbo;
 // no new op or backend kernel is added.
 pub(crate) mod chatterbox_nano;
 pub(crate) mod cosyvoice2;
+// M5 gap follow-up (2026-07-30): marl/crepe (Kim et al. 2018) — a
+// monophonic F0 (fundamental-frequency) extractor. The upstream release
+// ships a Keras / TensorFlow `.h5`, so `tools/parity/keras_h5_to_safetensors.py`
+// bridges the checkpoint into safetensors + a JSON config side-car this
+// converter consumes (the DAC / Kokoro / UTMOS split — zero-dep, no
+// TensorFlow / Keras / torch in the runtime, NFR-DS-02 / FR-LD-05).
+// License = MIT (`marl/crepe/main/LICENSE.txt`, "Copyright (c) 2018 Jong
+// Wook Kim et al.", fetched 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」).
+pub(crate) mod crepe;
 // SoTA plan Phase 3 (2026-07-24): FunAudioLLM Fun-CosyVoice3-0.5B (apache-2.0
 // permissive) — same architecture as CosyVoice2 (Qwen2 LLM backbone +
 // chunk-aware CFM + HiFTNet vocoder). The tensor walk / shape derivation /

@@ -545,6 +545,18 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // now lives on the NonCommercial arm below (with F5-TTS / EnCodec),
         // fail-closed against silent commercial use.
         "dac" | "wavtokenizer" => LicenseClass::Permissive,
+        // M5 gap follow-up (2026-07-30): marl/crepe — a monophonic F0
+        // (fundamental-frequency) extractor. Weight license = **MIT**
+        // (`marl/crepe/main/LICENSE.txt`, "MIT License / Copyright (c)
+        // 2018 Jong Wook Kim et al.", CC-verified 2026-07-30 —
+        // CLAUDE.md「ハルシネーション厳禁」). Every capacity size
+        // (tiny/small/medium/large/full) shares the same MIT LICENSE.
+        // Registered here so a converted GGUF with
+        // `vokra.provenance.model_id = "crepe"` load-gates as commercial
+        // without a caller-side override.
+        "crepe" | "crepe-tiny" | "crepe-small" | "crepe-medium" | "crepe-large" | "crepe-full" => {
+            LicenseClass::Permissive
+        }
         // SoTA plan Phase 1-4 (2026-07-24): nari-labs Dia-1.6B — Apache 2.0
         // code + weight (docs/license-audit.md, model card).
         "dia" | "dia-1.6b" | "dia-1_6b" => LicenseClass::Permissive,

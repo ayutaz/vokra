@@ -853,6 +853,15 @@ pub enum ModelKind {
     /// every F32 / F16 / BF16 tensor passes through verbatim.
     /// Provenance = **MIT** (Permissive).
     Emotion2vec,
+    /// **CREPE** (Kim et al. 2018) — a monophonic F0 (fundamental-
+    /// frequency) extractor. Convert with [`convert_crepe_file`] — it
+    /// needs the `capacity` + `hop` + `fmin` + `fmax` JSON side-car that
+    /// `tools/parity/keras_h5_to_safetensors.py` emits alongside the
+    /// flattened safetensors (the upstream `.h5` release is Keras /
+    /// TensorFlow, which the zero-dep Rust converter deliberately does
+    /// not parse — the same offline-prepare split as DAC / Kokoro /
+    /// UTMOS). Weight license = **MIT**.
+    Crepe,
 }
 
 impl ModelKind {
@@ -1119,6 +1128,12 @@ impl ModelKind {
             // still ship under it).
             "rmvpe" | "r-mvpe" | "r_mvpe" | "yxlllc/rmvpe" | "dream-high/rmvpe"
             | "rvc-boss/rmvpe" => Some(Self::Rmvpe),
+            // CREPE (Kim et al. 2018, F0 pitch-extractor tier, 2026-07-30 —
+            // sibling of RMVPE). Accept the arch tag, each capacity size
+            // (upstream ships tiny/small/medium/large/full as separate
+            // .h5 files), and the upstream GitHub coordinate.
+            "crepe" | "crepe-tiny" | "crepe-small" | "crepe-medium" | "crepe-large"
+            | "crepe-full" | "marl/crepe" => Some(Self::Crepe),
             _ => None,
         }
     }
@@ -1178,6 +1193,7 @@ impl ModelKind {
             Self::Speaker3d => "speaker-3d",
             Self::Emotion2vec => "emotion2vec",
             Self::Rmvpe => "rmvpe",
+            Self::Crepe => "crepe",
         }
     }
 }
@@ -2159,6 +2175,21 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
+        ModelKind::Crepe => {
+            // M5 gap follow-up (2026-07-30): CREPE — a sibling of RMVPE
+            // (F0 pitch-extractor tier) but with a Keras / TensorFlow
+            // upstream that needs the offline
+            // `tools/parity/keras_h5_to_safetensors.py` bridge, which
+            // also emits the JSON side-car this converter requires
+            // (capacity / hop / fmin / fmax). Route to
+            // `convert_crepe_file` instead of the plain path.
+            return Err(ConvertError::Usage(
+                "crepe needs a --config config.json (emitted by \
+                 tools/parity/keras_h5_to_safetensors.py alongside the flattened safetensors); \
+                 use convert_crepe_file"
+                    .to_owned(),
+            ));
+        }
     };
 
     // Override the stamped licence when the caller supplies the distribution
@@ -2505,6 +2536,48 @@ pub fn convert_utmos_file(
 
     Ok(ConvertSummary {
         model: ModelKind::Utmos,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
+}
+
+/// Convert a prepared marl/crepe checkpoint into a Vokra GGUF (M5 gap
+/// follow-up, 2026-07-30).
+///
+/// `input` is the flat safetensors and `config` the JSON side-car that
+/// `tools/parity/keras_h5_to_safetensors.py` writes from the upstream
+/// `.h5` release (Keras / TensorFlow never enters the runtime — zero-dep
+/// NFR-DS-02 / FR-LD-05, the same offline-prepare split as DAC / Kokoro
+/// / UTMOS).
+///
+/// The 38-tensor mapping is total: every declared tensor must exist with
+/// exactly the dims the capacity implies, and any upstream tensor left
+/// over at the end is a hard `ConvertError::Parse` rather than a silent
+/// drop (FR-EX-08 — same posture as `convert_utmos_file`).
+pub fn convert_crepe_file(
+    input: &Path,
+    config: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let config_bytes = std::fs::read(config)?;
+    let cfg = models::crepe::CrepeConvertConfig::parse(&config_bytes)?;
+    let (builder, report) = models::crepe::convert(bytes, &cfg)?;
+
+    let notes = vec![format!(
+        "crepe: {} tensor(s) emitted from {} upstream tensor(s) (all consumed), capacity={}",
+        report.written, report.read, report.capacity,
+    )];
+
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+
+    Ok(ConvertSummary {
+        model: ModelKind::Crepe,
         tensor_count,
         metadata_count,
         output_bytes: out_bytes.len() as u64,

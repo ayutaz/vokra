@@ -13,11 +13,11 @@ use std::process::ExitCode;
 use vokra_convert::{
     ModelKind, PolicyPreset, VoxtralConfig, convert_chatterbox_file, convert_chatterbox_nano_file,
     convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
-    convert_dac_file, convert_file, convert_file_licensed, convert_file_quantized,
-    convert_file_with_policy, convert_irodori_file, convert_kokoro_file, convert_piper_plus_file,
-    convert_qwen3_tts_file, convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
-    convert_voxtral_file_quantized, convert_voxtral_file_with_adapter_config_quantized,
-    parse_voxtral_hf_config,
+    convert_crepe_file, convert_dac_file, convert_file, convert_file_licensed,
+    convert_file_quantized, convert_file_with_policy, convert_irodori_file, convert_kokoro_file,
+    convert_piper_plus_file, convert_qwen3_tts_file, convert_vibevoice_file, convert_vits_ja_file,
+    convert_voxcpm2_file, convert_voxtral_file_quantized,
+    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -57,6 +57,7 @@ USAGE:
     vokra-cli convert --model speaker-3d --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model emotion2vec --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model rmvpe --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model crepe --input <prepared.safetensors> --config <config.json> --output <out.gguf>
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
@@ -70,7 +71,11 @@ OPTIONS:
                               kimi-audio | step-audio2-mini | baichuan-audio |
                               speechtokenizer | funcodec | xy-tokenizer |
                               bicodec | neucodec | ecapa-tdnn | wespeaker |
-                              speaker-3d | emotion2vec | rmvpe
+                              speaker-3d | emotion2vec | rmvpe | crepe
+                              (crepe: marl/crepe — a prepared safetensors from
+                              tools/parity/keras_h5_to_safetensors.py, needs
+                              --config <config.json> with the capacity /
+                              hop / fmin / fmax fields)
                               (denoise: DeepFilterNet3 — a prepared safetensors
                               from tools/parity/dfn3_prepare_checkpoint.py)
                               (csm / moshi: this delegate runs the plain checkpoint
@@ -835,6 +840,27 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             }
             convert_vits_ja_file(&p.input, &p.output)
         }
+        ModelKind::Crepe => {
+            // M5 gap follow-up (2026-07-30): CREPE needs the prepare-script
+            // config side-car (the capacity discriminator is written by the
+            // .h5 → safetensors converter from the source filename;
+            // fmin/fmax are informational Hz bounds). Quantization is
+            // whisper-only. Mirror of the DAC arm above.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            match &p.config {
+                Some(config) => convert_crepe_file(&p.input, config, &p.output),
+                None => {
+                    return Err("--model crepe requires --config <config.json> (from \
+                                tools/parity/keras_h5_to_safetensors.py)"
+                        .to_owned());
+                }
+            }
+        }
         _ => {
             // Ticket precedence: an explicit --policy-preset wins; else the
             // legacy --quantize q4_k alias maps to the whisper_q4_k preset;
@@ -1196,6 +1222,9 @@ mod tests {
             // F0 pitch-extractor tier (2026-07-30): RMVPE — the first
             // `category = "f0"` binder in the converter tree.
             ("rmvpe", ModelKind::Rmvpe),
+            // M5 gap follow-up (2026-07-30): CREPE (Kim et al. 2018) —
+            // monophonic F0 extractor, MIT weight (sibling of RMVPE).
+            ("crepe", ModelKind::Crepe),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
