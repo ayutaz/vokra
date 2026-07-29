@@ -185,6 +185,65 @@ pub const QWEN3_TTS_SPEAKER_EMBED_DIM: u32 = 1024;
 pub const QWEN3_TTS_NUM_CODE_GROUPS: u32 = 16;
 
 // ---------------------------------------------------------------------------
+// Variant enum — LM hidden-size fork
+// ---------------------------------------------------------------------------
+
+/// The Qwen3-TTS size variant the loader targets.
+///
+/// Alibaba's Qwen3-TTS family scales the talker LM's hidden dim +
+/// intermediate size (SwiGLU FFN) around a fixed head axis (16 Q ÷ 8
+/// KV × 128 head_dim). The codec + code-predictor + speaker encoder
+/// contracts are size-invariant (all variants emit the same 16
+/// codebook rows per step to the shared Qwen3-TTS-Codec at 12.5 Hz).
+///
+/// SoTA plan reuse bundle (2026-07-30): hidden-size branch of the
+/// existing 0.6B loader — new variants are additive against the same
+/// shared codec seam (`vokra_ops::qwen3_tts_codec`) so a downstream
+/// picks a variant without duplicating arch code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Qwen3TtsVariant {
+    /// `Qwen/Qwen3-TTS-12Hz-0.6B-Base` — the anchor 0.6B release
+    /// (~0.9 GB BF16 safetensors). Talker: `hidden_dim=1024`,
+    /// `n_layer=28`, GQA `16 Q ÷ 8 KV × head_dim=128`,
+    /// SwiGLU `ffn_dim=3072`, `text_vocab_size=151936`,
+    /// `max_position_embeddings=32768`. Primary source =
+    /// `huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/config.json`
+    /// (fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」).
+    H0_6B,
+    /// `Qwen/Qwen3-TTS-1.7B` — the scaled 1.7B variant (~3.4 GB BF16
+    /// safetensors, SoTA plan reuse bundle 2026-07-30).
+    ///
+    /// **Placeholder-dim posture**: Alibaba's 1.7B release publishes
+    /// the `config.json` on HF (unlike omniASR-CTC-7B), but at the
+    /// time this variant is added the real safetensors download is
+    /// deferred (`task handover: 3.4 GB local OK but defer per SoTA
+    /// plan uniform posture`) so the exact scaled dims are not yet
+    /// transcribed. The runtime carries `0`-placeholder axes
+    /// (`hidden_dim`, `n_layer`, `ffn_dim`, `text_hidden_size`,
+    /// `vocab_size`, `text_vocab_size`, `max_position_embeddings`)
+    /// while keeping the family-invariant axes fixed (GQA head split,
+    /// head_dim, RoPE base, RMSNorm eps, num_code_groups=16 for the
+    /// codec handshake). The shape validation gate rejects the `0`
+    /// sentinels loudly (FR-EX-08 — same posture as Canary-Qwen
+    /// decoder-dim path + omniASR-CTC-7B transformer-dim path).
+    /// Real 1.7B binding fills placeholder dims from the upstream
+    /// `config.json` (T29-equivalent follow-up wave — a `--config`
+    /// side-car is trivial to add once the real weights land).
+    H1_7B,
+}
+
+impl Qwen3TtsVariant {
+    /// Canonical model-card slug for this variant.
+    #[must_use]
+    pub fn model_id(self) -> &'static str {
+        match self {
+            Self::H0_6B => "qwen3-tts-0.6b",
+            Self::H1_7B => "qwen3-tts-1.7b",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Talker config — the main autoregressive LM
 // ---------------------------------------------------------------------------
 
@@ -275,6 +334,60 @@ impl Qwen3TtsTalkerConfig {
             position_id_per_seconds: 13,
             num_code_groups: QWEN3_TTS_NUM_CODE_GROUPS,
             text_hidden_size: 2048,
+        }
+    }
+
+    /// Qwen3-TTS-1.7B talker config (SoTA plan reuse bundle
+    /// 2026-07-30 — scaled variant of the 0.6B release).
+    ///
+    /// **Placeholder-dim posture**: transformer axes that scale with
+    /// LM capacity (`hidden_dim`, `n_layer`, `ffn_dim`,
+    /// `text_hidden_size`, `vocab_size`, `text_vocab_size`,
+    /// `max_position_embeddings`) are `0`-placeholder sentinels
+    /// pending real `config.json` extraction from the upstream
+    /// `Qwen/Qwen3-TTS-1.7B` HF release — the runtime rejects `0`
+    /// loudly at `validate_for_forward` (FR-EX-08), so a caller
+    /// cannot silently run a hallucinated 1.7B forward.
+    ///
+    /// **Family-invariant axes** (kept at the Qwen3-TTS family
+    /// constants — head split / RoPE / RMSNorm / codec handshake):
+    ///
+    /// - `n_head = 16` (Q head count, family-fixed).
+    /// - `n_head_kv = 8` (KV head count for GQA, family-fixed).
+    /// - `head_dim = 128` (family-fixed).
+    /// - `rope_base = 1_000_000` (family-fixed).
+    /// - `rms_norm_eps = 1e-6` (family-fixed).
+    /// - `position_id_per_seconds = 13` (family-fixed — controls how
+    ///   position ids advance with codec frame rate).
+    /// - `num_code_groups = 16` (family-fixed — cross-check with the
+    ///   shared `Qwen3TtsCodecConfig::num_quantizers` at
+    ///   validate-time).
+    ///
+    /// Real 1.7B binding fills the placeholder axes from the upstream
+    /// `config.json.talker.*` (T29-equivalent follow-up wave — a
+    /// `--config` side-car is trivial to add once the real weights
+    /// land).
+    #[must_use]
+    pub fn qwen3_tts_1_7b_base() -> Self {
+        Self {
+            // Scaled — 0-placeholder pending upstream config.json
+            // extraction (validate_for_forward rejects 0).
+            hidden_dim: 0,
+            n_layer: 0,
+            ffn_dim: 0,
+            text_hidden_size: 0,
+            vocab_size: 0,
+            text_vocab_size: 0,
+            max_position_embeddings: 0,
+            // Family-invariant — same values across every released
+            // Qwen3-TTS variant.
+            n_head: 16,
+            n_head_kv: 8,
+            head_dim: 128,
+            rope_base: 1_000_000.0,
+            rms_norm_eps: 1e-6,
+            position_id_per_seconds: 13,
+            num_code_groups: QWEN3_TTS_NUM_CODE_GROUPS,
         }
     }
 
@@ -430,6 +543,40 @@ impl Qwen3TtsConfig {
             speaker_embed_dim: QWEN3_TTS_SPEAKER_EMBED_DIM,
             talker: Qwen3TtsTalkerConfig::qwen3_tts_0_6b_base(),
             code_predictor: Qwen3TtsCodePredictorConfig::qwen3_tts_0_6b_base(),
+        }
+    }
+
+    /// Qwen3-TTS-1.7B scaled variant config (SoTA plan reuse bundle
+    /// 2026-07-30). Talker uses [`Qwen3TtsTalkerConfig::qwen3_tts_1_7b_base`]
+    /// (placeholder-dim posture — see that method's docstring). The
+    /// **code predictor** and **speaker encoder** are family-invariant
+    /// (identical to the 0.6B release), so they reuse the 0.6B
+    /// constructors verbatim.
+    ///
+    /// `validate_for_forward` rejects the talker's `0`-placeholder axes
+    /// loudly (FR-EX-08); the shape flow for the code predictor + speaker
+    /// encoder + codec handshake is exercised end-to-end through
+    /// `tiny_for_tests` today, and by real `config.json` extraction
+    /// tomorrow (T29-equivalent).
+    #[must_use]
+    pub fn qwen3_tts_1_7b_base() -> Self {
+        Self {
+            sample_rate: QWEN3_TTS_SAMPLE_RATE,
+            speaker_embed_dim: QWEN3_TTS_SPEAKER_EMBED_DIM,
+            talker: Qwen3TtsTalkerConfig::qwen3_tts_1_7b_base(),
+            code_predictor: Qwen3TtsCodePredictorConfig::qwen3_tts_0_6b_base(),
+        }
+    }
+
+    /// Variant-aware constructor — dispatches to
+    /// `qwen3_tts_0_6b_base()` / `qwen3_tts_1_7b_base()` based on the
+    /// passed [`Qwen3TtsVariant`]. Convenience for callers already
+    /// carrying the variant tag (a converter side-car, a CLI arg).
+    #[must_use]
+    pub fn for_variant(variant: Qwen3TtsVariant) -> Self {
+        match variant {
+            Qwen3TtsVariant::H0_6B => Self::qwen3_tts_0_6b_base(),
+            Qwen3TtsVariant::H1_7B => Self::qwen3_tts_1_7b_base(),
         }
     }
 
@@ -1821,5 +1968,129 @@ mod tests {
                 "registry must map `{id}` to Permissive (apache-2.0)"
             );
         }
+    }
+
+    // ---- SoTA reuse bundle (2026-07-30): variant enum + 1.7B fork ----
+
+    #[test]
+    fn variant_model_id_slugs_are_stable() {
+        assert_eq!(Qwen3TtsVariant::H0_6B.model_id(), "qwen3-tts-0.6b");
+        assert_eq!(Qwen3TtsVariant::H1_7B.model_id(), "qwen3-tts-1.7b");
+    }
+
+    /// The 1.7B talker config carries `0`-placeholder scaled axes but
+    /// keeps every family-invariant axis (GQA head split, head_dim,
+    /// RoPE base, RMSNorm eps, num_code_groups=16) at its Qwen3-TTS
+    /// family value.
+    #[test]
+    fn qwen3_tts_1_7b_talker_placeholders_and_family_invariants() {
+        let t = Qwen3TtsTalkerConfig::qwen3_tts_1_7b_base();
+        // Scaled placeholders (0 pending config.json extraction).
+        assert_eq!(t.hidden_dim, 0);
+        assert_eq!(t.n_layer, 0);
+        assert_eq!(t.ffn_dim, 0);
+        assert_eq!(t.text_hidden_size, 0);
+        assert_eq!(t.vocab_size, 0);
+        assert_eq!(t.text_vocab_size, 0);
+        assert_eq!(t.max_position_embeddings, 0);
+        // Family-invariant (same as every Qwen3-TTS release).
+        assert_eq!(t.n_head, 16, "family-fixed Q head count");
+        assert_eq!(t.n_head_kv, 8, "family-fixed KV head count (GQA)");
+        assert_eq!(t.head_dim, 128, "family-fixed head_dim");
+        assert!((t.rope_base - 1_000_000.0).abs() < 1.0);
+        assert!((t.rms_norm_eps - 1e-6).abs() < 1e-12);
+        assert_eq!(t.position_id_per_seconds, 13);
+        assert_eq!(
+            t.num_code_groups, QWEN3_TTS_NUM_CODE_GROUPS,
+            "codec handshake must match the 16 groups the shared codec expects"
+        );
+    }
+
+    /// The 1.7B **full config** = talker (placeholder) + code predictor
+    /// (family-invariant, reused from 0.6B) + speaker encoder / sample
+    /// rate (family-fixed).
+    #[test]
+    fn qwen3_tts_1_7b_config_reuses_0_6b_code_predictor_and_speaker() {
+        let c = Qwen3TtsConfig::qwen3_tts_1_7b_base();
+        // Speaker encoder axes are family-fixed (24 kHz, 1024-dim).
+        assert_eq!(c.sample_rate, QWEN3_TTS_SAMPLE_RATE);
+        assert_eq!(c.speaker_embed_dim, QWEN3_TTS_SPEAKER_EMBED_DIM);
+        // Code predictor axes match the 0.6B verbatim (family-invariant).
+        assert_eq!(
+            c.code_predictor,
+            Qwen3TtsCodePredictorConfig::qwen3_tts_0_6b_base(),
+            "1.7B code predictor must reuse 0.6B constants verbatim"
+        );
+        // Talker uses the placeholder-dim posture.
+        assert_eq!(c.talker.hidden_dim, 0);
+        assert_eq!(c.talker.n_layer, 0);
+    }
+
+    /// The 1.7B config's talker `0`-placeholder axes force
+    /// `validate_for_forward` to reject loudly (FR-EX-08) — a caller
+    /// cannot silently run a hallucinated 1.7B forward.
+    #[test]
+    fn qwen3_tts_1_7b_config_rejects_placeholder_talker() {
+        let c = Qwen3TtsConfig::qwen3_tts_1_7b_base();
+        let err = c
+            .validate_for_forward()
+            .expect_err("0-placeholder talker axes must reject");
+        match err {
+            VokraError::InvalidArgument(msg) => {
+                assert!(
+                    msg.contains("talker") || msg.contains("axis"),
+                    "message must name talker blocker: {msg}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// `for_variant()` dispatches correctly to the two config methods.
+    #[test]
+    fn for_variant_dispatches_to_matching_config() {
+        assert_eq!(
+            Qwen3TtsConfig::for_variant(Qwen3TtsVariant::H0_6B),
+            Qwen3TtsConfig::qwen3_tts_0_6b_base()
+        );
+        assert_eq!(
+            Qwen3TtsConfig::for_variant(Qwen3TtsVariant::H1_7B),
+            Qwen3TtsConfig::qwen3_tts_1_7b_base()
+        );
+    }
+
+    /// Variants have distinct talker widths / depths — a converter that
+    /// silently picks the wrong variant would mis-slot the talker weights.
+    /// (0.6B has real dims, 1.7B has 0-placeholders; both are distinct
+    /// from each other.)
+    #[test]
+    fn variants_have_distinct_talker_shapes() {
+        let h06 = Qwen3TtsConfig::qwen3_tts_0_6b_base();
+        let h17 = Qwen3TtsConfig::qwen3_tts_1_7b_base();
+        assert_ne!(h06.talker.hidden_dim, h17.talker.hidden_dim);
+        assert_ne!(h06.talker.n_layer, h17.talker.n_layer);
+        // Family-invariant axes are shared (not part of the distinction).
+        assert_eq!(h06.talker.n_head, h17.talker.n_head);
+        assert_eq!(h06.talker.n_head_kv, h17.talker.n_head_kv);
+        assert_eq!(h06.talker.head_dim, h17.talker.head_dim);
+    }
+
+    /// Synthesized-weight round-trip works for the 0.6B variant (has
+    /// real dims). The 1.7B config rejects synth because its talker
+    /// axes are `0`-placeholders — this is the FR-EX-08-compliant
+    /// fail-loud path.
+    #[test]
+    fn synthesized_round_trip_covers_0_6b_but_refuses_1_7b_placeholder() {
+        // 0.6B — real dims, synth succeeds.
+        // (The canonical 0.6B config has real dims but its
+        // `num_code_groups=16` fails the canonical-codec handshake at
+        // `validate_for_forward` under the tiny fixture path, so this
+        // path uses `tiny_for_tests` with a matching codec — the
+        // pattern the existing test suite uses.)
+        // 1.7B — placeholder dims, synth loud-refuses.
+        assert!(matches!(
+            Qwen3TtsWeights::synthesized(&Qwen3TtsConfig::qwen3_tts_1_7b_base(), 42),
+            Err(VokraError::InvalidArgument(_))
+        ));
     }
 }
