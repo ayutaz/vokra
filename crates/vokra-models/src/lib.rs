@@ -258,6 +258,17 @@ pub mod qwen3_tts;
 pub mod sbv2;
 pub mod silero_vad;
 pub mod speaker;
+// StyleTTS 2 (Li et al. 2023, arXiv:2306.07691). Config-only scaffold —
+// the upstream `yl4579/StyleTTS2` release ships weights under a
+// **voice-consent / disclosure usage agreement** (README §Pre-trained
+// Model), NOT a standard SPDX permissive license, so the runtime is
+// deliberately fail-closed: `StyleTts2Tts::from_gguf` and
+// `StyleTts2Tts::synthesize` return `VokraError::NotImplemented` naming
+// the licensing blocker. Architecture axes are re-implemented from the
+// primary sources (upstream `models.py` + `Modules/*.py` + the paper
+// §3) and are safe to depend on for downstream research callers who
+// hold their own weight under a distinct SPDX id.
+pub mod styletts2;
 pub(crate) mod tls_scratch;
 // SoTA plan Phase 4 (2026-07-24): OpenBMB **VoxCPM-0.5B** end-to-end
 // diffusion-autoregressive TTS (apache-2.0 end-to-end — code + weight

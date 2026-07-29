@@ -215,9 +215,21 @@ pub(crate) mod qwen3_tts;
 // converter-side hparam stamping).
 pub mod rmvpe;
 pub(crate) mod sbv2;
+// StyleTTS 2 (yl4579, Li et al. 2023 arXiv:2306.07691) — config-only
+// scaffold. **Weight license = voice-consent / disclosure usage
+// agreement (NOT standard SPDX permissive)** so provenance stamps
+// [`LicenseClass::Unknown`] (fail-closed under M2-13); the runtime
+// `StyleTts2Tts::from_gguf` is deliberately unwired
+// (`docs/license-audit.md` §3.1 StyleTTS 2 sign-off = ☑ Rejected
+// 2026-07-23 yousan). A user who trained their own StyleTTS 2 on a
+// permissive corpus overrides at the `--license <spdx>` boundary — the
+// same escape hatch vits-ja / kokoro / whisper use. Architecture MIT
+// (upstream repo LICENSE) and always independently implementable
+// (whisper.cpp 型, CLAUDE.md 設計判断 4).
 pub(crate) mod silero;
 pub mod speaker_3d;
 pub mod speechtokenizer;
+pub(crate) mod styletts2;
 // SoTA plan Phase 3 (2026-07-25): StepFun **Step-Audio-2-mini**
 // (apache-2.0 end-to-end weight) safetensors → GGUF skeleton. 8B S2S
 // with a dual codebook (semantic 1024 + acoustic 4096) and a

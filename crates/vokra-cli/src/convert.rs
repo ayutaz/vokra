@@ -15,9 +15,10 @@ use vokra_convert::{
     convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
     convert_crepe_file, convert_dac_file, convert_file, convert_file_licensed,
     convert_file_quantized, convert_file_with_policy, convert_irodori_file, convert_kokoro_file,
-    convert_piper_plus_file, convert_qwen3_tts_file, convert_vibevoice_file, convert_vits_ja_file,
-    convert_voxcpm2_file, convert_voxtral_file_quantized,
-    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
+    convert_piper_plus_file, convert_qwen3_tts_file, convert_styletts2_file,
+    convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
+    convert_voxtral_file_quantized, convert_voxtral_file_with_adapter_config_quantized,
+    parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -58,6 +59,7 @@ USAGE:
     vokra-cli convert --model emotion2vec --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model rmvpe --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model crepe --input <prepared.safetensors> --config <config.json> --output <out.gguf>
+    vokra-cli convert --model styletts2 --input <model.safetensors> --output <out.gguf>
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
@@ -71,7 +73,8 @@ OPTIONS:
                               kimi-audio | step-audio2-mini | baichuan-audio |
                               speechtokenizer | funcodec | xy-tokenizer |
                               bicodec | neucodec | ecapa-tdnn | wespeaker |
-                              speaker-3d | emotion2vec | rmvpe | crepe
+                              speaker-3d | emotion2vec | rmvpe | crepe |
+                              styletts2
                               (crepe: marl/crepe — a prepared safetensors from
                               tools/parity/keras_h5_to_safetensors.py, needs
                               --config <config.json> with the capacity /
@@ -430,7 +433,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          kimi-audio | step-audio2-mini | baichuan-audio | \
                          speechtokenizer | funcodec | xy-tokenizer | \
                          bicodec | neucodec | ecapa-tdnn | wespeaker | \
-                         speaker-3d | emotion2vec | rmvpe)"
+                         speaker-3d | emotion2vec | rmvpe | crepe | styletts2)"
                     )
                 })?);
                 i += 2;
@@ -840,6 +843,39 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             }
             convert_vits_ja_file(&p.input, &p.output)
         }
+        ModelKind::StyleTts2 => {
+            // StyleTTS 2 (yl4579, 2026-07-30) — config-only scaffold.
+            // The upstream release ships PyTorch `.pth` checkpoints; a
+            // caller who legitimately holds a StyleTTS 2 checkpoint
+            // pre-flattens it to safetensors offline
+            // (`tools/parity/pytorch_to_safetensors.py`) the same way
+            // CSM / DAC / VoxCPM / Kokoro do. No --config side-car
+            // today: every architectural axis is fixed for the
+            // LJSpeech / LibriTTS release (24 kHz, hidden_dim=512,
+            // style_dim=128, iSTFTNet decoder) and byte-parallel to
+            // the transcribed constants in
+            // `crates/vokra-convert/src/models/styletts2.rs`; a future
+            // `--config` axis for downstream re-trainings is a
+            // follow-up.
+            //
+            // **⚠️  Weight redistribution default is `Unknown`**: the
+            // yl4579 pretrained models ship under a voice-consent /
+            // disclosure usage agreement — NOT a standard SPDX
+            // permissive license — so the M2-13 runtime gate refuses
+            // to load in commercial mode. `docs/license-audit.md`
+            // §3.1 StyleTTS 2 sign-off is `☑ Rejected 2026-07-23
+            // yousan`. A user who trained on a permissive corpus
+            // overrides via `vokra-convert --license <spdx>` (the
+            // standalone binary) or the shared `convert_file_licensed`
+            // path.
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            convert_styletts2_file(&p.input, &p.output)
+        }
         ModelKind::Crepe => {
             // M5 gap follow-up (2026-07-30): CREPE needs the prepare-script
             // config side-car (the capacity discriminator is written by the
@@ -1199,6 +1235,7 @@ mod tests {
             ("vibevoice", ModelKind::VibeVoice),
             ("irodori", ModelKind::Irodori),
             ("vits-ja", ModelKind::VitsJa),
+            ("styletts2", ModelKind::StyleTts2),
             ("sbv2", ModelKind::SbV2),
             ("deberta-v2", ModelKind::DebertaV2),
             ("deberta-v3", ModelKind::DebertaV3),

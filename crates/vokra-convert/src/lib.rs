@@ -654,6 +654,40 @@ pub enum ModelKind {
     /// / full-band 44 kHz / downstream re-training variants is a
     /// follow-up).
     VitsJa,
+    /// **StyleTTS 2** (yl4579, Li et al. 2023 arXiv:2306.07691)
+    /// safetensors checkpoint — a **config-only scaffold** target.
+    /// Every F32 / F16 / BF16 tensor passes through verbatim under its
+    /// upstream safetensors name; every hparam of the `vokra.styletts2.*`
+    /// chunk group is transcribed **verbatim** from
+    /// `github.com/yl4579/StyleTTS2/blob/main/Models/LJSpeech/config.yml` +
+    /// `Models/LibriTTS/config.yml` (fetched 2026-07-30 — CLAUDE.md
+    /// 「ハルシネーション厳禁」).
+    ///
+    /// **⚠️  Weight distribution is fail-closed by default.** The
+    /// upstream README (`github.com/yl4579/StyleTTS2/blob/main/README.md`
+    /// §Pre-trained Models) conditions weight use on **voice consent /
+    /// disclosure** — a usage agreement, NOT a standard SPDX permissive
+    /// license. The Vokra registry
+    /// (`vokra-core::LicenseClass::from_id("styletts2")` /
+    /// `"styletts-2"`) resolves to [`LicenseClass::Unknown`], which fails
+    /// closed under M2-13. The provenance stamp defaults to `unknown`;
+    /// `docs/license-audit.md` §3.1 StyleTTS 2 sign-off is
+    /// `☑ Rejected 2026-07-23 yousan` (weight redistribution declined).
+    /// A user who trained their own StyleTTS 2 on a permissive corpus
+    /// overrides at the outer `vokra-convert --license <spdx>` boundary
+    /// — the same escape hatch vits-ja / kokoro / whisper use.
+    ///
+    /// The runtime `styletts2::StyleTts2Tts::from_gguf` is **also**
+    /// deliberately unwired (returns `VokraError::NotImplemented`
+    /// naming the licence blocker); a future wave binds real weights
+    /// through it when a permissive-license StyleTTS 2 checkpoint
+    /// arrives. Architecture rides MIT code
+    /// (`github.com/yl4579/StyleTTS2/LICENSE`) and is *always*
+    /// independently implementable (whisper.cpp 型 self re-implementation,
+    /// CLAUDE.md 設計判断 4). See
+    /// `docs/tickets/sota-coverage-plan-2026-07-22.md` §2.4 for the
+    /// "support the architecture, refuse the weights" rationale.
+    StyleTts2,
     /// ku-nlp **DeBERTa v2** Japanese-character BERT checkpoint (SBV2 v2
     /// plan Task 11, 2026-07-26): a Hugging Face `transformers`
     /// `deberta_v2` safetensors checkpoint for Japanese text
@@ -1031,6 +1065,15 @@ impl ModelKind {
             // tensor topology and are follow-up `--config` axes.
             "vits-ja" | "vits_ja" | "vits-jp" | "vits_jp" | "espnet-vits-ja" | "espnet-vits-jp"
             | "espnet-jsut-vits" | "espnet-jvs-vits" | "coeiroink-vits" => Some(Self::VitsJa),
+            // StyleTTS 2 (yl4579, 2026-07-30) — config-only scaffold.
+            // Accept the canonical arch tag, the underscore / space-2
+            // variants, and the upstream GitHub / HF coordinates. The
+            // registry `LicenseClass::from_id` matches the same
+            // `styletts2` / `styletts-2` ids to `LicenseClass::Unknown`
+            // (fail-closed under M2-13).
+            "styletts2" | "styletts-2" | "styletts_2" | "yl4579/styletts2" | "yl4579/StyleTTS2" => {
+                Some(Self::StyleTts2)
+            }
             // DeBERTa family (SBV2 v2 plan Task 11, 2026-07-26; v3 alias
             // corrected 2026-07-27, Task 8). Accept the canonical short
             // arch spelling, the underscore variant, and the real HF
@@ -1172,6 +1215,7 @@ impl ModelKind {
             Self::VibeVoice => "vibevoice",
             Self::Irodori => "irodori",
             Self::VitsJa => "vits-ja",
+            Self::StyleTts2 => "styletts2",
             Self::DebertaV2 => "deberta-v2",
             Self::DebertaV3 => "deberta-v3",
             Self::SbV2 => "sbv2",
@@ -1859,6 +1903,34 @@ pub fn convert_file_licensed(
                 report.written, report.skipped_non_float,
             )];
             notes.extend(report.notes.iter().map(|n| format!("vits-ja warning: {n}")));
+            (builder, notes)
+        }
+        ModelKind::StyleTts2 => {
+            // Config-only scaffold (2026-07-30): pass every F32 / F16 /
+            // BF16 tensor through verbatim and stamp the
+            // `vokra.styletts2.*` chunk group (yl4579/StyleTTS2 config
+            // axes) from the transcribed constants in
+            // `models::styletts2`. **⚠️  Provenance defaults to
+            // `Unknown`**: the yl4579 pretrained release rides a
+            // voice-consent / disclosure usage agreement — NOT a
+            // standard SPDX permissive license — so the M2-13 runtime
+            // gate refuses to load in commercial mode. The runtime
+            // `StyleTts2Tts::from_gguf` itself is deliberately unwired
+            // (returns `NotImplemented` naming the licensing blocker);
+            // a user who trained on a permissive corpus overrides at
+            // the outer `--license <spdx>` boundary below.
+            let (builder, report) = models::styletts2::convert(bytes)?;
+            let mut notes = vec![format!(
+                "styletts2: {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            notes.extend(
+                report
+                    .notes
+                    .iter()
+                    .map(|n| format!("styletts2 warning: {n}")),
+            );
             (builder, notes)
         }
         ModelKind::DebertaV2 => {
@@ -3811,6 +3883,40 @@ pub fn convert_vits_ja_file(input: &Path, output: &Path) -> Result<ConvertSummar
     convert_file(ModelKind::VitsJa, input, output)
 }
 
+/// Convert a **StyleTTS 2** (yl4579) safetensors checkpoint into a
+/// Vokra GGUF (config-only scaffold, 2026-07-30).
+///
+/// This is the named entry point that mirrors `convert_vits_ja_file`
+/// (weight-restricted TTS) — functionally identical to
+/// `convert_file(ModelKind::StyleTts2, input, output)` — kept for
+/// `convert_*_file` naming symmetry with the other TTS models.
+///
+/// # ⚠️  Weight distribution — **fail-closed by default**
+///
+/// The upstream yl4579 release conditions weight use on **voice
+/// consent + disclosure** (README §Pre-trained Models) — a usage
+/// agreement, NOT a standard SPDX permissive license. The provenance
+/// stamp defaults to
+/// [`vokra_core::LicenseClass::Unknown`], which fails closed under
+/// M2-13. The runtime `StyleTts2Tts::from_gguf`
+/// (`crates/vokra-models/src/styletts2/`) is **also** deliberately
+/// unwired (returns `NotImplemented` naming the licence blocker); a
+/// future wave binds real weights through it when a permissive-license
+/// StyleTTS 2 checkpoint arrives. A user who trained their own
+/// StyleTTS 2 on a permissive corpus overrides at the outer `--license
+/// <spdx>` boundary of `convert_file`, which rewrites the provenance
+/// chunk to the correct SPDX id.
+///
+/// Architecture rides MIT code
+/// (`github.com/yl4579/StyleTTS2/LICENSE`) and is *always*
+/// independently implementable (whisper.cpp 型 self re-implementation,
+/// CLAUDE.md 設計判断 4). See
+/// `docs/tickets/sota-coverage-plan-2026-07-22.md` §2.4 for the
+/// "support the architecture, refuse the weights" rationale.
+pub fn convert_styletts2_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
+    convert_file(ModelKind::StyleTts2, input, output)
+}
+
 /// Convert a Zyphra **Zonos-v0.1-transformer** safetensors checkpoint into a
 /// Vokra GGUF (SoTA plan Phase 1-5, 2026-07-24).
 ///
@@ -4374,6 +4480,9 @@ mod modelkind_alias_and_roundtrip_tests {
             DebertaV2,
             DebertaV3,
             SbV2,
+            // StyleTTS 2 (2026-07-30): config-only scaffold with
+            // fail-closed provenance (voice-consent gated weight).
+            StyleTts2,
             // F0 pitch-extractor tier (2026-07-30): RMVPE — the first
             // `category = "f0"` binder in the converter tree.
             Rmvpe,
@@ -4596,6 +4705,22 @@ mod modelkind_alias_and_roundtrip_tests {
                     "espnet-jsut-vits",
                     "espnet-jvs-vits",
                     "coeiroink-vits",
+                ],
+            ),
+            // StyleTTS 2 (2026-07-30) — config-only scaffold. Weight
+            // license is voice-consent gated (LicenseClass::Unknown =
+            // fail-closed under M2-13); the converter still recognises
+            // every alias so a developer who legitimately holds the
+            // weight under a distinct SPDX id can convert via
+            // `--license <spdx>`.
+            (
+                ModelKind::StyleTts2,
+                &[
+                    "styletts2",
+                    "styletts-2",
+                    "styletts_2",
+                    "yl4579/styletts2",
+                    "yl4579/StyleTTS2",
                 ],
             ),
             // Whisper — the historical alias.

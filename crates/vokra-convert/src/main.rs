@@ -28,7 +28,7 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
@@ -112,7 +112,20 @@ OPTIONS:
                        `RedistributionForbidden`**: JSUT / JVS /
                        COEIROINK corpus terms forbid trained-weight
                        redistribution; override with --license <spdx>
-                       if you trained on a permissive corpus).
+                       if you trained on a permissive corpus), or
+                       styletts2 (yl4579 StyleTTS 2 — Li et al. 2023
+                       arXiv:2306.07691 — config-only scaffold. LJSpeech
+                       / LibriTTS release axes are transcribed verbatim;
+                       every F32 / F16 / BF16 tensor passes through
+                       verbatim under its upstream safetensors name.
+                       **⚠️  Weight redistribution default is `Unknown`
+                       (fail-closed)**: the yl4579 pretrained models
+                       ride a voice-consent / disclosure usage agreement
+                       — NOT a standard SPDX permissive license. The
+                       runtime `StyleTts2Tts::from_gguf` returns
+                       NotImplemented naming the licence blocker;
+                       override with --license <spdx> if you trained on
+                       a permissive corpus).
                        `whisper-base` is accepted as a backward-compatible
                        alias for `whisper` (size is still derived from the
                        checkpoint, not the flag).
@@ -384,7 +397,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                          piper-plus | campplus | kokoro | cosyvoice2 | voxtral | mimi | \
                          dac | csm | moshi | denoise | dia | zonos | kyutai-stt | \
                          parakeet-tdt | parakeet-ctc | canary | omniasr-ctc | \
-                         distil-whisper | kotoba-whisper | vits-ja)"
+                         distil-whisper | kotoba-whisper | vits-ja | styletts2)"
                     )
                 })?);
                 i += 2;
@@ -1688,6 +1701,63 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  decoder.initial_channel={dec_init} decoder.kernel_size={dec_kernel}"
             );
         }
+        ModelKind::StyleTts2 => {
+            // StyleTTS 2 (yl4579, 2026-07-30) — config-only scaffold
+            // verify surface. Print arch / name plus the transcribed
+            // LJSpeech / LibriTTS axes (24 kHz, hidden_dim=512,
+            // style_dim=128, iSTFTNet decoder).
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let family = file
+                .get("vokra.styletts2.model_family")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<none>");
+            let sr = file
+                .get("vokra.styletts2.sample_rate_hz")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let style_dim = file
+                .get("vokra.styletts2.style_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let hidden = file
+                .get("vokra.styletts2.hidden_dim")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let n_mels = file
+                .get("vokra.styletts2.n_mels")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let text_layer = file
+                .get("vokra.styletts2.text_encoder.n_layer")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let diffusion_steps = file
+                .get("vokra.styletts2.diffusion.steps")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let uses_diffusion = file
+                .get("vokra.styletts2.diffusion.uses_style_diffusion")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let dec_dim_in = file
+                .get("vokra.styletts2.decoder.dim_in")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "; arch={arch} name={name} family={family} sample_rate={sr} \
+                 style_dim={style_dim} hidden_dim={hidden} n_mels={n_mels} \
+                 text_encoder.n_layer={text_layer} \
+                 diffusion.steps={diffusion_steps} uses_style_diffusion={uses_diffusion} \
+                 decoder.dim_in={dec_dim_in}"
+            );
+        }
         ModelKind::DebertaV2 => {
             // SBV2 v2 plan Task 11 (2026-07-26): DeBERTa v2 BERT encoder
             // verify surface — arch / name / category plus the encoder
@@ -2099,6 +2169,7 @@ mod tests {
             ("distil-whisper", ModelKind::DistilWhisper),
             ("kotoba-whisper", ModelKind::KotobaWhisper),
             ("vits-ja", ModelKind::VitsJa),
+            ("styletts2", ModelKind::StyleTts2),
         ];
         for (name, kind) in kinds {
             let parsed = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))
