@@ -250,6 +250,15 @@ owner 判断待ちの vast.ai-scale モデル: なし (§3.1 で fail-closed 済
 `2556b4a` で land 済、`vokra-cli convert --model <name>` は callable だが
 実 publish は vast.ai 経由 owner。
 
+**2026-07-30 status update**:
+
+| Model | Status | Notes |
+|---|---|---|
+| **Nemotron-3.5-ASR-Streaming-0.6B** | **✅ Published** | `openmdw-1.1` = Permissive (CC ADR 2026-07-30 primary-source 照合)。GGUF 2.55 GB を local M1 で convert + push、`fetch_license.sh` に openmdw-1.1 inline text 追加 (canonical URL 無しゆえ)。Live at https://huggingface.co/vokra/nemotron-3.5-asr-streaming-0.6b |
+| **Voxtral-Mini-4B-Realtime-2602** | **📦 vast.ai queue** | 8.25 GB safetensors × 2 = 16.5 GB total、gate 7 refuse。§5.1 runbook 参照 |
+| **Cohere-Transcribe-03-2026** | **🚪 owner HF gate accept 待ち** | `gated=auto`、owner が HF UI で "Access repository" を要クリック。§5.2 runbook 参照 |
+
+
 ### 5.1 `mistralai/Voxtral-Mini-4B-Realtime-2602` (~8 GB BF16、apache-2.0)
 
 **Verdict**: BORDERLINE (~8 GB safetensors、実質 vast.ai 推奨)。M1 iMac
@@ -312,53 +321,68 @@ publish しても消費側 runtime forward が未実装ゆえ、実 ASR には�
 = 実 publish は「converter 存在の公表」以上の value は現時点で薄い、runtime
 forward 実装完了後に publish 推奨。
 
-### 5.3 `nvidia/nemotron-3.5-asr-streaming-0.6b` (~1.2 GB、license "other")
+### 5.3 `nvidia/nemotron-3.5-asr-streaming-0.6b` — ✅ Published 2026-07-30
 
-**Verdict**: **owner ADR 必須 (license 精査 = NVIDIA 独自 license text)**。
-publish 前に owner が NVIDIA license を primary source 照合、`LicenseClass`
-判定 (Permissive / Restricted / etc.) を確定してから `publish-one.sh` に配
-線。**CC は license 判断を委任されているが (2026-07-30 依頼者許可)、"other"
-系は各 vendor の specific license text 精読が必要 = NVIDIA の場合 patent
-grant clause や field-of-use restriction の実文言確認が要**。fail-closed
-default で publish 拒否は現状の CLI wiring で機能済 (license_class.rs で
-`_ if id.starts_with("nemotron-asr")` は None → publish gate refuse)。
+**Verdict**: **CC ADR 完了 (2026-07-30)**。HF cardData primary source =
+`license: "other"` / `license_name: "openmdw-1.1"` /
+`license_link: https://openmdw.ai/license/1-1/`。openmdw.ai/license/1-1/ を
+CC 直接照合、**OpenMDW-1.1 = Permissive MIT-analog for ML weights** と判定
+(commercial 可 / redistribution 可 = 要 existing notice 保持 / no share-
+alike / no non-commercial restriction / attribution = notice 保持のみ =
+Apache-2.0 と同 tier)。
 
-**Vokra ModelKind**: `NemotronAsrStreaming` (`--model nemotron-asr-streaming`)。
+**判定反映済**:
 
-**Runbook**:
-```bash
-# 1. owner が NVIDIA license text を fetch + review
-curl -sSL https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/raw/main/LICENSE
-# 2. review 結果を docs/license-audit.md §3.1 に primary source URL + 判定 tier で記録
-#    (Permissive / AttributionRequired / NonCommercial / Rejected など)
-# 3. license class の family walk を crates/vokra-core/src/compliance/license_class.rs に追加
-#    (現行の `voxtral-mini-realtime` / `cohere-transcribe` 隣接、`_ if id.starts_with("nemotron-asr")`)
-# 4. publish-one.sh 経路で publish (以下は license = permissive の想定):
-~/vokra/scripts/publish/vast-ai/run-one.sh \
-  --hf-repo nvidia/nemotron-3.5-asr-streaming-0.6b \
-  --vokra-slug nemotron-asr-streaming-0.6b \
-  --model-kind nemotron-asr-streaming \
-  --license-spdx <確定した spdx> \
-  --push
-```
+- `crates/vokra-core/src/compliance/license_class.rs`: `PERMISSIVE_TOKENS`
+  に `openmdw` token 追加 (8→9)、`registry_lookup` に
+  `_ if id.starts_with("nemotron-asr")` → `LicenseClass::Permissive` walk
+  追加
+- `crates/vokra-convert/src/models/nemotron_asr.rs`: 新規 converter
+  (`convert_nemotron_asr_file`、BF16 pass-through、`wespeaker.rs` mirror、
+  ARCH="nemotron_asr_streaming"、CATEGORY="asr")
+- `crates/vokra-convert/src/lib.rs`: dispatch を defer marker error から
+  実 converter 呼び出しに flip、`convert_file_with_slug` から call
+- `scripts/publish/fetch_license.sh`: `openmdw-1.1` は canonical plain-text
+  URL が無い (openmdw.ai は HTML only、Linux Foundation の SPDX list 未登
+  録) ゆえ `inline_license_text()` fn を新設、verbatim OpenMDW-1.1 text を
+  script に埋め込み。`--spdx openmdw-1.1` で inline text を LICENSE として
+  write。redistribution §D 要 "a copy of this agreement" 保持 = inline は
+  最短経路 (canonical URL が出れば `canonical_url()` に移設)
+- `docs/license-audit.md`: Nemotron row → ☑ Commercial 2026-07-30 yousan
+  (CC 判断)
 
-**代替判断**: NVIDIA の "other" license が商用制限を含む場合 (例:
-non-commercial for enterprise), T3 (Copyleft) or T4 (Research-only) tier
-経路 (`--acknowledge-copyleft` / `--allow-noncommercial`) を owner が明示。
-Rejected の場合は publish 見送り、`LicenseClass::from_license_str("nvidia-
-custom")` → `Unknown` で fail-closed 維持。
+**Published GGUF**: 2.55 GB (BF16 pass-through、549 tensor)、live at
+https://huggingface.co/vokra/nemotron-3.5-asr-streaming-0.6b (2026-07-30
+push 完了、README + LICENSE + NOTICE + SOURCE.md 同梱、`vokra.model.arch =
+"nemotron_asr_streaming"` / `vokra.provenance.upstream_hf =
+"nvidia/nemotron-3.5-asr-streaming-0.6b"`)。
 
-## 6. 3 model 共通の事前 owner タスク
+**Runtime forward = 未実装**: converter skeleton は BF16 pass-through で
+tensor 名は upstream verbatim 保持。実 ASR forward は Nemotron-3.5 arch
+(NVIDIA 独自 streaming Conformer variant、FastConformer sibling ではない)
+を `crates/vokra-models/src/nemotron_asr/` に future wave で native 実装、
+tensor manifest は published GGUF から読める。ゆえに現状 publish は
+"converter 存在の公表 + weight 二次配布 + license 判定" の value のみ、
+runtime forward 実装後に消費可能。
+
+## 6. 残 2 model 共通の事前 owner タスク
+
+Nemotron は 2026-07-30 に completed (§5.3)、残 2 モデル用:
 
 1. **HF token** の export (`export HF_TOKEN=hf_xxx`) — vast.ai instance
    destroy で消えるため接続毎に再 export
 2. **§3.1 sign-off** — Voxtral-Realtime = ☑ Commercial 2026-07-30 yousan
    (2556b4a と同 wave の row 追加、docs/handoff で follow up)、
-   Cohere-transcribe = ☑ Commercial 同、Nemotron-ASR = 空欄 (owner ADR 待ち)
+   Cohere-transcribe = ☑ Commercial 同、Nemotron-ASR = ☑ Commercial
+   2026-07-30 yousan (CC ADR 完了、§5.3)
 3. **branch 確認** — vast.ai instance clone するのは main か
-   `feat/model-publish-and-m5-gap-2026-07-29` (2556b4a 含む brancn)
-4. **cost 見込確認** — 3 モデル合計 ~$1-2 (Voxtral 8GB × 1 + Cohere 1GB × 1
-   + Nemotron 1.2GB × 1、~3-4h wall-clock)
+   `feat/model-publish-and-m5-gap-2026-07-29` (2556b4a 含む branch)
+4. **cost 見込確認** — 残 2 モデル合計 ~$0.7-1.3 (Voxtral 8GB × 1 +
+   Cohere 1GB × 1、~2-3h wall-clock)
+5. **Cohere HF gate accept** — owner が browser で
+   https://huggingface.co/CohereLabs/cohere-transcribe-03-2026 を開き
+   "Access repository" をクリック。以降 fetch 可能 (`gated=auto` は非拘束
+   advisory accept のみ)。CC 側では accept できないため必須 owner task
 
 ## 関連
 
