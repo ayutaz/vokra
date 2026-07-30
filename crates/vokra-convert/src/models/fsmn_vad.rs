@@ -63,7 +63,9 @@
 use std::path::Path;
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
 
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
@@ -110,6 +112,12 @@ pub(crate) const KEY_N_MELS: &str = "vokra.fsmn_vad.n_mels";
 pub(crate) const KEY_LFR_M: &str = "vokra.fsmn_vad.lfr_m";
 pub(crate) const KEY_LFR_N: &str = "vokra.fsmn_vad.lfr_n";
 pub(crate) const KEY_SAMPLE_RATE: &str = "vokra.fsmn_vad.sample_rate";
+/// CMVN global mean chunk key — Array<F32> of `input_dim` elements
+/// (mirror of `vokra-models::fsmn_vad::KEY_CMVN_MEAN`).
+pub(crate) const KEY_CMVN_MEAN: &str = "vokra.fsmn_vad.cmvn_mean";
+/// CMVN global variance chunk key — Array<F32> of `input_dim` elements
+/// (mirror of `vokra-models::fsmn_vad::KEY_CMVN_VAR`).
+pub(crate) const KEY_CMVN_VAR: &str = "vokra.fsmn_vad.cmvn_var";
 
 /// Upstream default hparam values (transcribed from the released
 /// FunASR `speech_fsmn_vad_zh-cn-16k-common-pytorch` `config.yaml` —
@@ -150,6 +158,17 @@ pub struct FsmnVadReport {
     /// BF16 tensors that landed on the pass-through arm (subset of
     /// `written`).
     pub bf16_passthrough: usize,
+}
+
+/// Builds an `Array<F32>` metadata chunk from a slice of `f32`s (used
+/// for the `vokra.fsmn_vad.cmvn_mean` / `cmvn_var` chunks). Kept local
+/// because no other converter in the tree needs the same shape today;
+/// promote to `vokra-core::gguf` if a second call site appears.
+fn f32_array_chunk(values: &[f32]) -> GgufMetadataValue {
+    GgufMetadataValue::Array(GgufArray {
+        element_type: GgufValueType::F32,
+        values: values.iter().map(|&v| GgufMetadataValue::F32(v)).collect(),
+    })
 }
 
 /// File-based FSMN-VAD converter
@@ -214,6 +233,21 @@ pub fn convert_fsmn_vad_file(
     b.add_u32(KEY_LFR_M, DEFAULT_LFR_M);
     b.add_u32(KEY_LFR_N, DEFAULT_LFR_N);
     b.add_u32(KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
+
+    // CMVN stats — always written (required at load per FR-EX-08 in the
+    // model-level `FsmnVadV1::from_gguf`). The FunASR release ships the
+    // `am.mvn` transform as a separate small file alongside the `.pt`
+    // state-dict; the `.pt` → safetensors bridge (`tools/parity/
+    // nemo_pt_to_safetensors.py`) does not currently absorb it, so we
+    // emit **identity CMVN** (zero mean / unit variance, per column)
+    // here as a well-formed placeholder. Identity CMVN is a valid — if
+    // unhelpful — transform: `(x - 0) / sqrt(1 + eps) ≈ x`. A future
+    // `--cmvn <path>` axis (owner follow-up when the first real
+    // checkpoint lands) will replace this with the checkpoint's actual
+    // `am.mvn.mean_stats` / `var_stats`.
+    let input_dim = DEFAULT_INPUT_DIM as usize;
+    b.add_metadata(KEY_CMVN_MEAN, f32_array_chunk(&vec![0.0f32; input_dim]));
+    b.add_metadata(KEY_CMVN_VAR, f32_array_chunk(&vec![1.0f32; input_dim]));
 
     let mut report = FsmnVadReport::default();
     for t in st.tensors() {
@@ -419,6 +453,31 @@ mod tests {
             file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
                 .and_then(|v| v.as_str()),
             Some(LicenseClass::Permissive.as_str())
+        );
+
+        // CMVN chunks: identity placeholder (zero mean, unit variance)
+        // of the exact `input_dim` shape the loader expects. A real
+        // conversion overrides these with `am.mvn.mean_stats` /
+        // `var_stats` from the FunASR release.
+        let cmvn_mean = file.get(KEY_CMVN_MEAN).and_then(|v| v.as_array()).unwrap();
+        assert_eq!(cmvn_mean.element_type, GgufValueType::F32);
+        assert_eq!(cmvn_mean.values.len(), DEFAULT_INPUT_DIM as usize);
+        assert!(
+            cmvn_mean
+                .values
+                .iter()
+                .all(|v| matches!(v, GgufMetadataValue::F32(x) if *x == 0.0)),
+            "identity CMVN mean must be all zeros"
+        );
+        let cmvn_var = file.get(KEY_CMVN_VAR).and_then(|v| v.as_array()).unwrap();
+        assert_eq!(cmvn_var.element_type, GgufValueType::F32);
+        assert_eq!(cmvn_var.values.len(), DEFAULT_INPUT_DIM as usize);
+        assert!(
+            cmvn_var
+                .values
+                .iter()
+                .all(|v| matches!(v, GgufMetadataValue::F32(x) if *x == 1.0)),
+            "identity CMVN var must be all ones"
         );
 
         std::fs::remove_file(&input_path).ok();

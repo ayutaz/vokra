@@ -2,9 +2,32 @@
 
 use vokra_core::VokraError;
 use vokra_core::engines::{VadEngine, VadStreamHandle};
-use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufFile, GgufMetadataValue, GgufValueType, chunks,
+};
 
 use super::*;
+
+/// Builds an identity-CMVN metadata chunk (zero mean or unit variance,
+/// depending on the caller's `values`) for the tiny test configs. Kept
+/// local — full-scale conversions go through
+/// `vokra-convert::models::fsmn_vad::convert_fsmn_vad_file`.
+fn f32_array_chunk(values: &[f32]) -> GgufMetadataValue {
+    GgufMetadataValue::Array(GgufArray {
+        element_type: GgufValueType::F32,
+        values: values.iter().map(|&v| GgufMetadataValue::F32(v)).collect(),
+    })
+}
+
+/// Emits identity CMVN chunks for a config with the given `input_dim`
+/// (zero mean, unit variance, `input_dim` elements each). Every tiny
+/// GGUF here uses identity so the `push_features` and `forward` tests
+/// see the raw synthetic-weight forward without the CMVN transform
+/// changing what the encoder sees.
+fn add_identity_cmvn(b: &mut GgufBuilder, input_dim: usize) {
+    b.add_metadata(KEY_CMVN_MEAN, f32_array_chunk(&vec![0.0f32; input_dim]));
+    b.add_metadata(KEY_CMVN_VAR, f32_array_chunk(&vec![1.0f32; input_dim]));
+}
 
 /// Builds a minimal but architecturally-consistent GGUF for the tiny
 /// test config (n_blocks=1, input=6, proj=2, hidden=2, lorder=2,
@@ -34,6 +57,7 @@ fn build_tiny_gguf() -> Vec<u8> {
     b.add_u32(KEY_LFR_M, 2);
     b.add_u32(KEY_LFR_N, 1);
     b.add_u32(KEY_SAMPLE_RATE, 16000);
+    add_identity_cmvn(&mut b, 6);
     // Tensors — zeroed, correctly-shaped F32.
     let zeros = |n: usize| vec![0u8; n * 4];
     let add = |b: &mut GgufBuilder, name: &str, dims: &[u64]| {
@@ -75,6 +99,7 @@ fn build_tiny_gguf_with_out_bias() -> Vec<u8> {
     b.add_u32(KEY_LFR_M, 2);
     b.add_u32(KEY_LFR_N, 1);
     b.add_u32(KEY_SAMPLE_RATE, 16000);
+    add_identity_cmvn(&mut b, 6);
     let zeros = |n: usize| vec![0u8; n * 4];
     let f32_bytes = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
     let add = |b: &mut GgufBuilder, name: &str, dims: &[u64], data: Vec<u8>| {
@@ -239,6 +264,19 @@ fn forward_features_yields_softmax_of_out_bias_when_weights_zero() {
     }
 }
 
+/// Small helper: construct a `FsmnVadStream` directly (bypassing the
+/// `VadEngine::open_stream` boxing) so the tests here can call the
+/// features-in `push_features` entry-point that is intentionally not on
+/// the trait. Mirror of the `silero_vad::VadStream::new` test pattern.
+fn stream_from(m: &FsmnVadV1) -> FsmnVadStream {
+    FsmnVadStream::new(
+        m.config().clone(),
+        Arc::clone(&m.weights),
+        Arc::clone(&m.cmvn_mean),
+        Arc::clone(&m.cmvn_var),
+    )
+}
+
 #[test]
 fn vad_engine_stream_reset_reproduces_initial_output() {
     let bytes = build_tiny_gguf_with_out_bias();
@@ -246,10 +284,7 @@ fn vad_engine_stream_reset_reproduces_initial_output() {
     let m = FsmnVadV1::from_gguf(&gguf).unwrap();
     let features = vec![1.0f32; 4 * m.config().encoder.input_dim];
 
-    // Downcast so the test can call `push_features` (VadStreamHandle
-    // trait only exposes push_pcm today). Mirror of the silero_vad
-    // pattern where the raw-frame path is a test-only entry.
-    let mut stream = FsmnVadStream::new(m.config().clone(), Arc::clone(&m.weights));
+    let mut stream = stream_from(&m);
     let a = stream.push_features(&features).unwrap();
     stream.reset();
     let b = stream.push_features(&features).unwrap();
@@ -257,25 +292,131 @@ fn vad_engine_stream_reset_reproduces_initial_output() {
 }
 
 #[test]
-fn vad_engine_push_pcm_is_loud_error_until_frontend_lands() {
-    // FR-EX-08: push_pcm must NOT silently short-circuit to a features
-    // path. Until the fbank + LFR + CMVN chain is wired, callers must
-    // pre-compute features via a Python bridge.
+fn vad_engine_push_pcm_rejects_sample_rate_mismatch() {
+    // FR-EX-08: pushing PCM at a rate other than the CMVN-fit rate is
+    // a hard error (silent resample would poison the encoder).
     let bytes = build_tiny_gguf();
     let gguf = GgufFile::parse(bytes).unwrap();
     let m = FsmnVadV1::from_gguf(&gguf).unwrap();
     let mut s = m.open_stream();
-    let err = s.push_pcm(&[0.0; 512], 16000).unwrap_err();
+    let err = s.push_pcm(&[0.0; 512], 8000).unwrap_err();
     match err {
-        VokraError::UnsupportedOp(msg) => {
+        VokraError::InvalidArgument(msg) => {
             assert!(
-                msg.contains("push_features") && msg.contains("front-end"),
-                "error should tell the caller to use push_features, got: {msg}"
+                msg.contains("sample rate") && msg.contains("16000"),
+                "error should name the CMVN-fit rate, got: {msg}"
             );
         }
         other => {
-            panic!("push_pcm should return UnsupportedOp (loud FR-EX-08 error), got: {other:?}")
+            panic!("push_pcm should return InvalidArgument on rate mismatch, got: {other:?}")
         }
+    }
+}
+
+#[test]
+fn vad_engine_push_pcm_buffers_when_below_first_frame() {
+    // With `frame_length = 400` samples at 16 kHz, a single 200-sample
+    // push cannot close even one fbank frame — the stream buffers and
+    // returns an empty prob vec, exactly like silero's partial-frame
+    // path (FR-EX-08 — no fake zero prob emitted).
+    let bytes = build_tiny_gguf();
+    let gguf = GgufFile::parse(bytes).unwrap();
+    let m = FsmnVadV1::from_gguf(&gguf).unwrap();
+    let mut s = m.open_stream();
+    let probs = s.push_pcm(&[0.0; 200], 16_000).expect("partial-frame ok");
+    assert!(
+        probs.is_empty(),
+        "sub-frame push must yield no probs, got {} = {probs:?}",
+        probs.len()
+    );
+}
+
+#[test]
+fn vad_engine_push_pcm_end_to_end_with_zero_pcm_emits_speech_col_probs() {
+    // Full front-end wiring: PCM (16 kHz) → kaldi_fbank → LFR (m=2) →
+    // identity-CMVN → FSMN forward → speech-column probs. All-zero
+    // PCM is degenerate but must not panic and must produce the
+    // expected number of probs (one per LFR frame). One second of
+    // audio produces `98` fbank frames (snip-edges: `1 + (16000-400)/
+    // 160`); with `lfr_m=2` / `lfr_n=1` that stacks to `97` LFR
+    // features, so `97` speech-column probs come back.
+    let bytes = build_tiny_gguf_with_out_bias();
+    let gguf = GgufFile::parse(bytes).unwrap();
+    let m = FsmnVadV1::from_gguf(&gguf).unwrap();
+    let mut s = m.open_stream();
+
+    let one_second = vec![0.0f32; 16_000];
+    let probs = s
+        .push_pcm(&one_second, 16_000)
+        .expect("push_pcm must succeed on well-formed input");
+
+    // Snip-edges: `1 + (16000 - 400) / 160 = 98` fbank frames.
+    let n_fbank_frames = 1 + (16_000 - 400) / 160;
+    // LFR with m=2, n=1: `n_fbank_frames - 1` output frames.
+    let expected_probs = n_fbank_frames - (2 - 1);
+    assert_eq!(
+        probs.len(),
+        expected_probs,
+        "expected {expected_probs} speech-col probs from {n_fbank_frames} fbank frames × LFR(m=2,n=1)"
+    );
+    // With all-zero PCM + identity CMVN + all-zero encoder weights,
+    // the FSMN encoder reduces to `logits = out_bias = [0.5, -0.25]`,
+    // so every speech-col prob is `softmax(0.5, -0.25)[1] ≈ 0.32082`.
+    let e0 = 0.5f32.exp();
+    let e1 = (-0.25f32).exp();
+    let want_speech = e1 / (e0 + e1);
+    for (i, &p) in probs.iter().enumerate() {
+        assert!(
+            (p - want_speech).abs() < 1e-4,
+            "speech-col prob at frame {i} = {p}, want {want_speech}",
+        );
+        assert!(p.is_finite(), "prob at frame {i} is non-finite: {p}");
+    }
+}
+
+#[test]
+fn vad_engine_push_pcm_matches_split_call() {
+    // Feature-level chunk invariance: pushing the same PCM in one
+    // shot vs. split across three calls must produce identical
+    // speech-col probs. The front-end streaming buffers
+    // (`pending_pcm`, `pending_frames`) are the load-bearing pieces —
+    // if either drops or duplicates samples across the split, the
+    // two runs diverge.
+    let bytes = build_tiny_gguf_with_out_bias();
+    let gguf = GgufFile::parse(bytes).unwrap();
+    let m = FsmnVadV1::from_gguf(&gguf).unwrap();
+
+    // Deterministic pseudo-speech-like signal so the two paths have
+    // non-trivial content to disagree on.
+    let n_samples = 16_000 + 3_200; // 1.2 seconds
+    let signal: Vec<f32> = (0..n_samples)
+        .map(|k| {
+            let t = k as f32;
+            0.4 * (t * 0.05).sin() + 0.3 * (t * 0.017).sin()
+        })
+        .collect();
+
+    let mut whole = m.open_stream();
+    let probs_whole = whole.push_pcm(&signal, 16_000).unwrap();
+
+    let mut split = m.open_stream();
+    let mut probs_split: Vec<f32> = Vec::new();
+    // Irregular splits so we straddle both the `frame_shift` (160)
+    // boundary and the LFR-stack (`lfr_m * frame_shift = 320`)
+    // boundary in different ways.
+    for chunk in signal.chunks(437) {
+        probs_split.extend(split.push_pcm(chunk, 16_000).unwrap());
+    }
+
+    assert_eq!(probs_whole.len(), probs_split.len(), "prob count differs");
+    for (i, (&w, &s)) in probs_whole.iter().zip(probs_split.iter()).enumerate() {
+        // atol = 1e-5 accommodates SIMD reduction reorderings inside
+        // kaldi_fbank; the streaming contract itself is bit-identical
+        // in structure.
+        assert!(
+            (w - s).abs() < 1e-5,
+            "chunk invariance diverged at frame {i}: whole={w} split={s}",
+        );
     }
 }
 
@@ -296,11 +437,11 @@ fn push_features_carries_state_across_chunks() {
         .collect();
 
     // Path A: one 4-frame call.
-    let mut sa = FsmnVadStream::new(m.config().clone(), Arc::clone(&m.weights));
+    let mut sa = stream_from(&m);
     let all = sa.push_features(&features).unwrap();
 
     // Path B: two 2-frame calls.
-    let mut sb = FsmnVadStream::new(m.config().clone(), Arc::clone(&m.weights));
+    let mut sb = stream_from(&m);
     let mut split: Vec<f32> = Vec::new();
     split.extend(sb.push_features(&features[..2 * input_dim]).unwrap());
     split.extend(sb.push_features(&features[2 * input_dim..]).unwrap());
@@ -314,5 +455,103 @@ fn push_features_carries_state_across_chunks() {
             all[i],
             split[i],
         );
+    }
+}
+
+#[test]
+fn from_gguf_rejects_missing_cmvn_mean() {
+    // Build a full tiny GGUF then reconstruct it without KEY_CMVN_MEAN:
+    // the loader must refuse loudly (FR-EX-08).
+    let mut b = GgufBuilder::new();
+    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    b.add_string(chunks::KEY_MODEL_NAME, DEFAULT_NAME);
+    b.add_u32(KEY_N_BLOCKS, 1);
+    b.add_u32(KEY_INPUT_DIM, 6);
+    b.add_u32(KEY_PROJ_DIM, 2);
+    b.add_u32(KEY_HIDDEN_DIM, 2);
+    b.add_u32(KEY_LORDER, 2);
+    b.add_u32(KEY_RORDER, 0);
+    b.add_u32(KEY_N_CLASS, 2);
+    b.add_u32(KEY_N_MELS, 3);
+    b.add_u32(KEY_LFR_M, 2);
+    b.add_u32(KEY_LFR_N, 1);
+    b.add_u32(KEY_SAMPLE_RATE, 16000);
+    // Only cmvn_var (not cmvn_mean).
+    b.add_metadata(KEY_CMVN_VAR, f32_array_chunk(&[1.0; 6]));
+    let zeros = |n: usize| vec![0u8; n * 4];
+    let add = |b: &mut GgufBuilder, name: &str, dims: &[u64]| {
+        let n: u64 = dims.iter().product();
+        b.add_tensor(name, GgmlType::F32, dims.to_vec(), zeros(n as usize))
+            .expect("add tensor");
+    };
+    add(&mut b, TENSOR_IN_PROJ_WEIGHT, &[2, 6]);
+    add(&mut b, TENSOR_IN_PROJ_BIAS, &[2]);
+    add(&mut b, &tensor_ffn1_weight(0), &[2, 2]);
+    add(&mut b, &tensor_ffn1_bias(0), &[2]);
+    add(&mut b, &tensor_ffn2_weight(0), &[2, 2]);
+    add(&mut b, &tensor_ffn2_bias(0), &[2]);
+    add(&mut b, &tensor_memory_weight(0), &[2, 3]);
+    add(&mut b, &tensor_memory_bias(0), &[2]);
+    add(&mut b, TENSOR_OUT_WEIGHT, &[2, 2]);
+    add(&mut b, TENSOR_OUT_BIAS, &[2]);
+
+    let gguf = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+    let err = FsmnVadV1::from_gguf(&gguf).unwrap_err();
+    match err {
+        VokraError::ModelLoad(m) => {
+            assert!(
+                m.contains(KEY_CMVN_MEAN),
+                "error should name the missing CMVN chunk, got: {m}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+#[test]
+fn from_gguf_rejects_cmvn_wrong_shape() {
+    let mut b = GgufBuilder::new();
+    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    b.add_u32(KEY_N_BLOCKS, 1);
+    b.add_u32(KEY_INPUT_DIM, 6);
+    b.add_u32(KEY_PROJ_DIM, 2);
+    b.add_u32(KEY_HIDDEN_DIM, 2);
+    b.add_u32(KEY_LORDER, 2);
+    b.add_u32(KEY_RORDER, 0);
+    b.add_u32(KEY_N_CLASS, 2);
+    b.add_u32(KEY_N_MELS, 3);
+    b.add_u32(KEY_LFR_M, 2);
+    b.add_u32(KEY_LFR_N, 1);
+    b.add_u32(KEY_SAMPLE_RATE, 16000);
+    // Mean array is 3 elements instead of the expected 6 (= input_dim).
+    b.add_metadata(KEY_CMVN_MEAN, f32_array_chunk(&[0.0; 3]));
+    b.add_metadata(KEY_CMVN_VAR, f32_array_chunk(&[1.0; 6]));
+    let zeros = |n: usize| vec![0u8; n * 4];
+    let add = |b: &mut GgufBuilder, name: &str, dims: &[u64]| {
+        let n: u64 = dims.iter().product();
+        b.add_tensor(name, GgmlType::F32, dims.to_vec(), zeros(n as usize))
+            .expect("add tensor");
+    };
+    add(&mut b, TENSOR_IN_PROJ_WEIGHT, &[2, 6]);
+    add(&mut b, TENSOR_IN_PROJ_BIAS, &[2]);
+    add(&mut b, &tensor_ffn1_weight(0), &[2, 2]);
+    add(&mut b, &tensor_ffn1_bias(0), &[2]);
+    add(&mut b, &tensor_ffn2_weight(0), &[2, 2]);
+    add(&mut b, &tensor_ffn2_bias(0), &[2]);
+    add(&mut b, &tensor_memory_weight(0), &[2, 3]);
+    add(&mut b, &tensor_memory_bias(0), &[2]);
+    add(&mut b, TENSOR_OUT_WEIGHT, &[2, 2]);
+    add(&mut b, TENSOR_OUT_BIAS, &[2]);
+
+    let gguf = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+    let err = FsmnVadV1::from_gguf(&gguf).unwrap_err();
+    match err {
+        VokraError::ModelLoad(m) => {
+            assert!(
+                m.contains(KEY_CMVN_MEAN) && m.contains("elements"),
+                "error should name the misshapen CMVN chunk, got: {m}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
     }
 }

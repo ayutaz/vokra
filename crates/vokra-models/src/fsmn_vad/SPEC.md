@@ -94,6 +94,46 @@ The converter (`vokra-convert::models::fsmn_vad`) writes these keys so
 - `vokra.fsmn_vad.lfr_m` = `5`
 - `vokra.fsmn_vad.lfr_n` = `1`
 - `vokra.fsmn_vad.sample_rate` = `16000`
+- `vokra.fsmn_vad.cmvn_mean` = `Array<F32>` of `input_dim` (=400) elements
+  — the per-column global mean the front-end subtracts before the
+  variance divide (upstream FunASR `am.mvn.mean_stats`).
+- `vokra.fsmn_vad.cmvn_var` = `Array<F32>` of `input_dim` (=400) elements
+  — the per-column global variance the front-end divides by after mean
+  subtraction (upstream FunASR `am.mvn.var_stats`). A small epsilon
+  (`1e-6`) is added to guard against zero-variance dims.
+
+## PCM entry-point (`FsmnVadStream::push_pcm`)
+
+The [`VadStreamHandle::push_pcm`] entry-point runs the full FunASR
+front-end end-to-end so callers can push raw PCM without a Python
+bridge. Every stage buffers its remainder so successive `push_pcm`
+calls produce the same speech-column probs a single whole-utterance
+call would (feature-level chunk invariance):
+
+1. **PCM buffering** — samples accrue in `pending_pcm`; snip-edges
+   framing means the last `frame_length - frame_shift` samples of any
+   pending window stay for the next call.
+2. **Kaldi fbank** — `vokra_ops::kaldi_fbank` with `frame_length =
+   sample_rate * 25 ms`, `frame_shift = sample_rate * 10 ms`,
+   `remove_dc_offset=true`, `preemph_coeff=0.97`, Povey window,
+   snip-edges framing, power spectrum, HTK mel over `20`–Nyquist,
+   log magnitude. **CMN is disabled here** — the checkpoint's global
+   CMVN handles normalisation, and leaving both on would
+   double-subtract and drift the distribution.
+3. **LFR frame stacking** — stack `lfr_m` consecutive `n_mels`-wide
+   fbank rows into one `input_dim`-wide LFR feature, stride `lfr_n`.
+   Row-major layout survives the stack because `pending_frames` is
+   already row-major.
+4. **CMVN** — `(x - mean) / sqrt(var + eps)` per column, using the
+   `[input_dim]` `cmvn_mean` / `cmvn_var` vectors loaded from the
+   `vokra.fsmn_vad.cmvn_*` chunks.
+5. **FSMN forward** — delegates to [`FsmnVadStream::push_features`];
+   the "speech" column of the softmax (index 1) is returned.
+
+Sample-rate mismatch (pushed `sr` ≠ config `sample_rate`) is a hard
+`InvalidArgument` — the CMVN stats were fit against a specific rate
+and re-using them across rates would silently poison the encoder
+(FR-EX-08 — no silent resample).
 
 ## Real-weight parity (deferred — owner sign-off)
 
