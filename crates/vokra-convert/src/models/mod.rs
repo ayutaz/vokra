@@ -395,3 +395,48 @@ pub mod xy_tokenizer;
 // Every float tensor passes through verbatim; every hparam (including the
 // 7 typed prefix conditioners) is transcribed from the upstream config.json.
 pub(crate) mod zonos;
+
+// ---------------------------------------------------------------------------
+// TIER 1+2 audio-gap implementation wave (2026-07-30 ultracode workflow
+// `wf_022575ce-077`, 7 parallel worktree implementers). Each module is a
+// self-contained BF16 pass-through converter mirror of the wespeaker /
+// rmvpe / neucodec pattern. **CLI wiring (ModelKind / from_arg / dispatch
+// arm / as_arg / license class registry) is DEFERRED to a follow-up wave**
+// because integrating 7 worktrees' changes to the 5 shared files
+// (crates/vokra-cli/src/convert.rs, crates/vokra-convert/src/lib.rs,
+// crates/vokra-convert/src/main.rs, crates/vokra-convert/src/models/mod.rs,
+// crates/vokra-core/src/compliance/license_class.rs) hit fundamental
+// 25-commit drift between the WT common base (`d05ab7d`) and the current
+// branch tip (pyannote Wave 3+4). See `docs/handoff/tier1-tier2-audio-
+// impl-2026-07-30.md` for the deferred-wiring detail + per-model
+// primary-source URLs + license sign-off list.
+//
+// Under this partial land the modules exist as library-callable code
+// (`crate::models::qwen3_asr::convert_qwen3_asr_file` etc.); the
+// `vokra-cli convert --model qwen3-asr` CLI dispatch is the follow-up.
+pub mod ast;
+pub mod audiobox_aesthetics;
+pub mod bark;
+pub mod bigvgan;
+pub mod clap;
+pub mod deepfake_detection;
+pub mod firered_vad;
+pub mod focalcodec;
+pub mod fsmn_vad;
+pub mod hifigan_vocoder;
+pub mod kyutai_tts;
+pub mod melotts;
+pub mod metricgan_plus;
+pub mod moss_tts;
+pub mod mp_senet;
+pub mod parler;
+pub mod qwen3_asr;
+pub mod sepformer;
+pub mod smart_turn;
+pub mod speechbrain_lang_id;
+pub mod speecht5;
+pub mod tiger;
+pub mod vieneu;
+pub mod wav2vec2_ctc;
+pub mod xvector;
+// ---------------------------------------------------------------------------

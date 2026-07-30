@@ -987,7 +987,19 @@ impl ModelKind {
             "mimi" => Some(Self::Mimi),
             "dac" => Some(Self::Dac),
             "csm" => Some(Self::Csm),
-            "moshi" => Some(Self::Moshi),
+            // Moshi + Moshika (RAG variant, 2026-07-30 WT7 addition) —
+            // moshika-rag shares arch with moshiko-pytorch-bf16 per the RAG
+            // fine-tune's HF `base_model` metadata. Category = "s2s".
+            "moshi"
+            | "moshika"
+            | "moshiko"
+            | "moshika-rag"
+            | "moshika-rag-pytorch-bf16"
+            | "moshiko-pytorch-bf16"
+            | "moshika-pytorch-bf16"
+            | "kyutai/moshika-rag-pytorch-bf16"
+            | "kyutai/moshika-pytorch-bf16"
+            | "kyutai/moshiko-pytorch-bf16" => Some(Self::Moshi),
             "denoise" => Some(Self::Denoise),
             "dia" | "dia-1.6b" | "dia-1_6b" => Some(Self::Dia),
             "zonos" | "zonos-v0.1" | "zonos-v0_1" | "zonos-v0.1-transformer" => Some(Self::Zonos),
