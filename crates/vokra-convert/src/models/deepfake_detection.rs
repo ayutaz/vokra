@@ -29,8 +29,6 @@
 //! deployment decision (which threshold to trust, whether to expose it
 //! as an end-user warning) is downstream policy, not runtime.
 
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use vokra_core::LicenseClass;

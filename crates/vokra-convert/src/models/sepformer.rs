@@ -56,8 +56,6 @@
 //! SpeechBrain ships PyTorch checkpoints (safetensors); this converter
 //! **never** touches ONNX (FR-LD-05).
 
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use vokra_core::LicenseClass;

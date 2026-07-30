@@ -83,7 +83,6 @@
 // Skeleton-only allowance: the public API surface is exercised by the
 // in-module tests and will be wired to the CLI + `pub use` re-export in
 // the same land — this attribute is removed as soon as that wiring lands.
-#![allow(dead_code)]
 
 use std::path::Path;
 

@@ -106,7 +106,6 @@
 // the same commit — this attribute is a no-op once every symbol is
 // referenced from `lib.rs` and can be removed then. Kept for
 // safety while the `lib.rs` wiring is landing in parallel.
-#![allow(dead_code)]
 
 use std::path::Path;
 

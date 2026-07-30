@@ -61,8 +61,6 @@
 //! loud-partial `VokraError::UnsupportedOp` precedent (see RMVPE /
 //! Charsiu) until a real inference topology transcription lands.
 
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use vokra_core::LicenseClass;

@@ -33,8 +33,6 @@
 //! HTSAT + text encoder forward will land behind
 //! `VokraError::UnsupportedOp`).
 
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use vokra_core::LicenseClass;

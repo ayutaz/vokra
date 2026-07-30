@@ -100,8 +100,6 @@
 //! `crates/vokra-models/src/wav2vec2_ctc/` module (whisper.cpp 型 self
 //! re-implementation, CLAUDE.md 設計判断 4).
 
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use vokra_core::LicenseClass;
@@ -147,6 +145,7 @@ pub(crate) const KEY_CONV_STRIDE: &str = "vokra.wav2vec2_ctc.conv_stride";
 /// large topologies differ; language fine-tunes on top of large-XLSR-53
 /// differ only in `vocab_size`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum Variant {
     /// `facebook/wav2vec2-base-960h`. Base topology: 12 × d=768 × 12h ×
     /// ffn=3072, `feat_extract_norm="group"`, English LibriSpeech 960h

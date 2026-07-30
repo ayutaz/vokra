@@ -242,6 +242,124 @@ owner 判断待ちの vast.ai-scale モデル: なし (§3.1 で fail-closed 済
 
 **Phase C (将来 candidate)**: local から `vastai` CLI (~/.local/bin/vastai、1.1.3 install 済) 経由で instance lifecycle まで自動化する orchestrator。owner が 1 command で instance rent → provision → run-one → destroy まで完結する形。現時点では owner が instance lifecycle を握る Phase B 止まり。
 
+## 5. TIER 1+2 audio-gap defer markers (2026-07-30 追加)
+
+依頼者 2026-07-30 指示「大きいモデルは vast.ai で変換, アップロード」を受
+けた TIER 1+2 impl workflow (`wf_022575ce-077`) で defer marker として
+`ModelKind` に登録した 3 モデルの vast.ai publish runbook。CLI wiring は
+`2556b4a` で land 済、`vokra-cli convert --model <name>` は callable だが
+実 publish は vast.ai 経由 owner。
+
+### 5.1 `mistralai/Voxtral-Mini-4B-Realtime-2602` (~8 GB BF16、apache-2.0)
+
+**Verdict**: BORDERLINE (~8 GB safetensors、実質 vast.ai 推奨)。M1 iMac
+16 GB では tight = swap 危険帯、確実性のため vast.ai。
+
+**Vokra ModelKind**: `VoxtralMiniRealtime` (`--model voxtral-mini-realtime`)。
+converter は既 land、Voxtral (Mistral) 家族と同じ `models::voxtral::convert`
+呼び出し (streaming 経路対応)。
+
+**License**: apache-2.0 (HF cardData primary source 2026-07-30 CC 直接照合)。
+`docs/license-audit.md` §3.1 で 2026-07-30 yousan (依頼者委任 = CC 判断)
+☑ Commercial sign 対象。
+
+**Runbook**:
+```bash
+# vast.ai instance (§2.2 と同じ specs = 64 GB RAM / 200 GB disk 推奨)
+# provision.sh 完了後、以下 1 コマンド:
+~/vokra/scripts/publish/vast-ai/run-one.sh \
+  --hf-repo mistralai/Voxtral-Mini-4B-Realtime-2602 \
+  --vokra-slug voxtral-mini-4b-realtime-2602 \
+  --model-kind voxtral \
+  --license-spdx apache-2.0 \
+  --push
+```
+
+**推定コスト**: ~1-1.5h wall-clock × $0.3-0.5/hr = **$0.3-0.75**。
+
+### 5.2 `CohereLabs/cohere-transcribe-03-2026` (~1 GB but gated=auto、apache-2.0)
+
+**Verdict**: SIZE-safe (~1 GB) だが **HF gate accept 要 (gated=auto)**。owner
+の HF token + repo accept が必須ゆえ CC が local convert しても upload 前に
+publish-one.sh が gate で refuse。vast.ai 経由が polite (owner の HF UI
+accept は 1 回のみ、以降 authenticated fetch 可)。
+
+**Vokra ModelKind**: `CohereTranscribe` (`--model cohere-transcribe` /
+`cohere-transcribe-03-2026`)。
+
+**License**: apache-2.0 (HF cardData primary source 2026-07-30、gated=auto
+は access control のみで追加条項なし)。
+
+**Runbook**:
+```bash
+# 1. owner が HF UI で https://huggingface.co/CohereLabs/cohere-transcribe-03-2026 の
+#    "Access repository" ボタンを一度クリック (非拘束 advisory の accept)
+# 2. HF_TOKEN を export
+export HF_TOKEN='hf_xxxxxx'
+# 3. vast.ai instance (localでも可、~1 GB safe) で:
+~/vokra/scripts/publish/vast-ai/run-one.sh \
+  --hf-repo CohereLabs/cohere-transcribe-03-2026 \
+  --vokra-slug cohere-transcribe-03-2026 \
+  --model-kind cohere-transcribe \
+  --license-spdx apache-2.0 \
+  --push
+```
+
+**注意**: `cohere-transcribe` は新規 ModelKind (2026-07-30 CLI wiring commit
+`2556b4a` で追加)。converter dispatch は library-callable だが実 forward /
+runtime は未実装 (converter skeleton = BF16 pass-through のみ)。**owner が
+publish しても消費側 runtime forward が未実装ゆえ、実 ASR には使えない**
+= 実 publish は「converter 存在の公表」以上の value は現時点で薄い、runtime
+forward 実装完了後に publish 推奨。
+
+### 5.3 `nvidia/nemotron-3.5-asr-streaming-0.6b` (~1.2 GB、license "other")
+
+**Verdict**: **owner ADR 必須 (license 精査 = NVIDIA 独自 license text)**。
+publish 前に owner が NVIDIA license を primary source 照合、`LicenseClass`
+判定 (Permissive / Restricted / etc.) を確定してから `publish-one.sh` に配
+線。**CC は license 判断を委任されているが (2026-07-30 依頼者許可)、"other"
+系は各 vendor の specific license text 精読が必要 = NVIDIA の場合 patent
+grant clause や field-of-use restriction の実文言確認が要**。fail-closed
+default で publish 拒否は現状の CLI wiring で機能済 (license_class.rs で
+`_ if id.starts_with("nemotron-asr")` は None → publish gate refuse)。
+
+**Vokra ModelKind**: `NemotronAsrStreaming` (`--model nemotron-asr-streaming`)。
+
+**Runbook**:
+```bash
+# 1. owner が NVIDIA license text を fetch + review
+curl -sSL https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/raw/main/LICENSE
+# 2. review 結果を docs/license-audit.md §3.1 に primary source URL + 判定 tier で記録
+#    (Permissive / AttributionRequired / NonCommercial / Rejected など)
+# 3. license class の family walk を crates/vokra-core/src/compliance/license_class.rs に追加
+#    (現行の `voxtral-mini-realtime` / `cohere-transcribe` 隣接、`_ if id.starts_with("nemotron-asr")`)
+# 4. publish-one.sh 経路で publish (以下は license = permissive の想定):
+~/vokra/scripts/publish/vast-ai/run-one.sh \
+  --hf-repo nvidia/nemotron-3.5-asr-streaming-0.6b \
+  --vokra-slug nemotron-asr-streaming-0.6b \
+  --model-kind nemotron-asr-streaming \
+  --license-spdx <確定した spdx> \
+  --push
+```
+
+**代替判断**: NVIDIA の "other" license が商用制限を含む場合 (例:
+non-commercial for enterprise), T3 (Copyleft) or T4 (Research-only) tier
+経路 (`--acknowledge-copyleft` / `--allow-noncommercial`) を owner が明示。
+Rejected の場合は publish 見送り、`LicenseClass::from_license_str("nvidia-
+custom")` → `Unknown` で fail-closed 維持。
+
+## 6. 3 model 共通の事前 owner タスク
+
+1. **HF token** の export (`export HF_TOKEN=hf_xxx`) — vast.ai instance
+   destroy で消えるため接続毎に再 export
+2. **§3.1 sign-off** — Voxtral-Realtime = ☑ Commercial 2026-07-30 yousan
+   (2556b4a と同 wave の row 追加、docs/handoff で follow up)、
+   Cohere-transcribe = ☑ Commercial 同、Nemotron-ASR = 空欄 (owner ADR 待ち)
+3. **branch 確認** — vast.ai instance clone するのは main か
+   `feat/model-publish-and-m5-gap-2026-07-29` (2556b4a 含む brancn)
+4. **cost 見込確認** — 3 モデル合計 ~$1-2 (Voxtral 8GB × 1 + Cohere 1GB × 1
+   + Nemotron 1.2GB × 1、~3-4h wall-clock)
+
 ## 関連
 
 - memory [[feedback-large-models-on-vast-ai]] (方針)
@@ -249,3 +367,4 @@ owner 判断待ちの vast.ai-scale モデル: なし (§3.1 で fail-closed 済
 - memory [[project-restamp-provenance]] (低メモリ再刻印は本機で可、convert 本体は別)
 - `docs/m5-owner-verification-checklist.md` §6.9 (Wave 3 publish sign-off queue)
 - `docs/license-audit.md` §3.1 (row-per-model sign-off state)
+- `docs/handoff/tier1-tier2-audio-impl-2026-07-30.md` (TIER 1+2 land、defer markers)

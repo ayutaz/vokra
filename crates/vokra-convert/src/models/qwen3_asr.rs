@@ -99,8 +99,6 @@
 //! re-implemented natively in a future `crates/vokra-models/src/qwen3_asr/`
 //! module (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
 
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use vokra_core::LicenseClass;
@@ -161,6 +159,7 @@ pub(crate) const KEY_AUDIO_TOKEN_ID: &str = "vokra.qwen3_asr.audio_token_id";
 /// share arch, category, provenance stamps, and BF16 pass-through
 /// posture; only the axes captured in the hparam chunk change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum Variant {
     /// `Qwen/Qwen3-ASR-0.6B`. Audio encoder 18 × d=896 × 14h × ffn=3584,
     /// text decoder Qwen3 28 × d=1024 × 16Q ÷ 8KV × head_dim=128 ×

@@ -82,8 +82,6 @@
 //! Real-weight parity vs the upstream Python pipeline is deferred to
 //! owner (`docs/license-audit.md` §3.1 sign-off).
 
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use vokra_core::LicenseClass;

@@ -84,8 +84,6 @@
 //! natively in a future `crates/vokra-models/src/melotts/` module
 //! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
 
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use vokra_core::LicenseClass;

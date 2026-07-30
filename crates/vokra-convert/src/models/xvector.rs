@@ -24,8 +24,6 @@
 //!
 //! Mirror of `wespeaker` / `ecapa_tdnn` / `neucodec`.
 
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use vokra_core::LicenseClass;

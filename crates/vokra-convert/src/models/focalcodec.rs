@@ -58,8 +58,6 @@
 //! natively in `crates/vokra-models/src/focalcodec/` when the codec
 //! lands (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
 
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use vokra_core::LicenseClass;

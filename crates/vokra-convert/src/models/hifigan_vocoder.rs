@@ -76,8 +76,6 @@
 //! FR-EX-08. Today's converter surface is
 //! byte-exact provenance + tensor-name preservation only.
 
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use vokra_core::LicenseClass;

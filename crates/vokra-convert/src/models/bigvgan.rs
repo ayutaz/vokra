@@ -77,8 +77,6 @@
 //! `crates/vokra-models/src/bigvgan/` when the vocoder lands
 //! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
 
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use vokra_core::LicenseClass;
@@ -107,6 +105,7 @@ const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// rate + num_mels + upsample_rates differ, so this tag is what the
 /// runtime checks to pick the shape-checked config bundle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum BigVGanVariant {
     /// `nvidia/bigvgan_v2_22khz_80band_256x` (D2): 22 050 Hz output,
     /// 80-band mel input, 256× total upsample.
