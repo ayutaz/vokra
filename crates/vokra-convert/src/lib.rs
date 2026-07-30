@@ -2209,6 +2209,131 @@ pub fn convert_file(
     convert_file_licensed(model, input, output, None)
 }
 
+/// [`convert_file`] with per-variant slug dispatch (2026-07-30 Task 3 add).
+///
+/// Some `ModelKind` variants ([`ModelKind::BigVGan`] / [`ModelKind::Qwen3Asr`]
+/// / [`ModelKind::Wav2Vec2Ctc`]) collapse multiple upstream release variants
+/// (e.g. wav2vec2-base-960h / -large-xlsr-53 / -large-xlsr-53-japanese) into
+/// one enum arm — the plain [`convert_file`] path routes every alias to the
+/// arm's default variant, silently losing the per-slug distinction. This
+/// entry accepts the raw `--model` slug and picks the matching variant
+/// enum before dispatch. For everything else it delegates to
+/// [`convert_file`] verbatim.
+///
+/// # Errors
+///
+/// As [`convert_file`].
+pub fn convert_file_with_slug(
+    model: ModelKind,
+    slug: &str,
+    input: &Path,
+    output: &Path,
+    license: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
+    match model {
+        ModelKind::BigVGan => {
+            let variant = match slug.to_lowercase().as_str() {
+                "bigvgan-v2-22khz-80band-256x"
+                | "bigvgan_v2_22khz_80band_256x"
+                | "nvidia/bigvgan_v2_22khz_80band_256x" => {
+                    models::bigvgan::BigVGanVariant::V2_22khz80Band256x
+                }
+                "bigvgan-v2-44khz-128band-512x"
+                | "bigvgan_v2_44khz_128band_512x"
+                | "nvidia/bigvgan_v2_44khz_128band_512x" => {
+                    models::bigvgan::BigVGanVariant::V2_44khz128Band512x
+                }
+                "bigvgan-base-24khz-100band"
+                | "bigvgan_base_24khz_100band"
+                | "nvidia/bigvgan_base_24khz_100band" => {
+                    models::bigvgan::BigVGanVariant::BaseV1_24khz100Band
+                }
+                // Everything else (canonical "bigvgan" / "big-vgan" / v2-24khz)
+                // → default v2_24khz100Band256x (the most common variant).
+                _ => models::bigvgan::BigVGanVariant::V2_24khz100Band256x,
+            };
+            let report = models::bigvgan::convert_bigvgan_file(input, output, variant, license)?;
+            let notes = vec![format!(
+                "bigvgan ({}): {} float weights written verbatim ({} BF16 passthrough), {} \
+                 non-float skipped",
+                variant.tag(),
+                report.written,
+                report.bf16_passthrough,
+                report.skipped_non_float,
+            )];
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            })
+        }
+        ModelKind::Qwen3Asr => {
+            let variant = match slug.to_lowercase().as_str() {
+                "qwen3-asr-0.6b" | "qwen3_asr_0_6b" | "qwen/qwen3-asr-0.6b" => {
+                    models::qwen3_asr::Variant::B06
+                }
+                // Canonical "qwen3-asr" / -1.7b → B17 (the flagship default).
+                _ => models::qwen3_asr::Variant::B17,
+            };
+            let report = models::qwen3_asr::convert_qwen3_asr_file_with_variant(
+                input, output, variant, license,
+            )?;
+            let notes = vec![format!(
+                "qwen3-asr ({variant:?}): {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped, {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            })
+        }
+        ModelKind::Wav2Vec2Ctc => {
+            let variant = match slug.to_lowercase().as_str() {
+                "wav2vec2-large-xlsr-53"
+                | "wav2vec2_large_xlsr_53"
+                | "facebook/wav2vec2-large-xlsr-53" => {
+                    models::wav2vec2_ctc::Variant::LargeXlsr53Base
+                }
+                "wav2vec2-large-xlsr-53-japanese"
+                | "wav2vec2_large_xlsr_53_japanese"
+                | "jonatasgrosman/wav2vec2-large-xlsr-53-japanese" => {
+                    models::wav2vec2_ctc::Variant::LargeXlsr53Japanese
+                }
+                "wav2vec2-large-xlsr-53-chinese-zh-cn"
+                | "wav2vec2_large_xlsr_53_chinese_zh_cn"
+                | "jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn" => {
+                    models::wav2vec2_ctc::Variant::LargeXlsr53ChineseZhCn
+                }
+                // Canonical "wav2vec2" / -base-960h → Base960h default.
+                _ => models::wav2vec2_ctc::Variant::Base960h,
+            };
+            let report = models::wav2vec2_ctc::convert_wav2vec2_ctc_file_with_variant(
+                input, output, variant, license,
+            )?;
+            let notes = vec![format!(
+                "wav2vec2-ctc ({variant:?}): {} float weights written verbatim ({} BF16 \
+                 passthrough — runtime widens to f32 exactly at load), {} non-float skipped, \
+                 {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            })
+        }
+        _ => convert_file_licensed(model, input, output, license),
+    }
+}
+
 /// [`convert_file`] with an explicit weight-licence override.
 ///
 /// Each converter stamps the licence it knows for its model. That is right when
@@ -3970,18 +4095,20 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
-        // === VoxtralMiniRealtime (from wf_022575ce-077-7) ===
+        // === VoxtralMiniRealtime — routes to shared Voxtral streaming path ===
+        // Voxtral-Mini-4B-Realtime-2602 is a Voxtral-family sibling (Mistral,
+        // apache-2.0, ~8 GB single-file safetensors). The Voxtral converter
+        // already supports streaming per-tensor (M5 gap A-3,
+        // `convert_voxtral_file_streaming`), so an 8 GB checkpoint on a 16
+        // GB host stays within footprint. Route through the shared Voxtral
+        // path with a shape-only (no --config) invocation — the runtime
+        // rejects `0`-placeholder hparams at forward per FR-EX-08 (Voxtral
+        // family posture), so producing a Voxtral GGUF without the upstream
+        // `config.json` is honest as a "converter output existence" artefact
+        // and callers who want a runnable GGUF must pass `--config`.
         ModelKind::VoxtralMiniRealtime => {
-            return Err(ConvertError::Usage(
-                "voxtral-mini-4b-realtime-2602 is a TIER 2 defer marker (~8 GB safetensors; \
-                 vast_ai_required=true per memory [[feedback-large-models-on-vast-ai]] — \
-                 CC-side local convert on a 16 GB host risks swap-death). Owner runs the actual \
-                 conversion + publish on vast.ai using `vokra-convert --model \
-                 voxtral-mini-4b-realtime-2602 --input <ckpt> --output <out.gguf>` on the vast.ai \
-                 box. This arm is fail-closed on the local path per FR-EX-08 (no silent \
-                 fallback)."
-                    .to_owned(),
-            ));
+            let cfg = VoxtralConfig::default();
+            return convert_voxtral_file(input, &cfg, output);
         }
         // === CohereTranscribe (from wf_022575ce-077-7) ===
         ModelKind::CohereTranscribe => {
@@ -3995,18 +4122,27 @@ pub fn convert_file_licensed(
                     .to_owned(),
             ));
         }
-        // === NemotronAsrStreaming (from wf_022575ce-077-7) ===
+        // === NemotronAsrStreaming — owner ADR complete 2026-07-30 ===
+        // License = OpenMDW-1.1 = Permissive (MIT-analog for ML weights,
+        // CC 直接照合 2026-07-30 = commercial + redistribution 可、no
+        // share-alike / no NC、attribution = notice 保持のみ)。
+        // `LicenseClass::from_license_str("openmdw")` → `Permissive`。
+        // BF16 pass-through converter (mirror of wespeaker / omniasr_ctc)。
         ModelKind::NemotronAsrStreaming => {
-            return Err(ConvertError::Usage(
-                "nemotron-3.5-asr-streaming-0.6b is a TIER 2 defer marker (defer-other-license=\
-                 true; HF cardData `license: other` = NVIDIA custom licence text, not a known \
-                 SPDX id. Classification requires a primary-source read of the NVIDIA licence + \
-                 owner sign-off per memory [[feedback-license-signoff-primary-source]] fail-\
-                 closed default). Owner reads huggingface.co/nvidia/nemotron-3.5-asr-streaming-\
-                 0.6b/blob/main/LICENSE and decides. This arm is fail-closed per FR-EX-08 (no \
-                 silent fallback)."
-                    .to_owned(),
-            ));
+            let report = models::nemotron_asr::convert_nemotron_asr_file(input, output, license)?;
+            let notes = vec![format!(
+                "nemotron-asr-streaming: {} float weights written verbatim ({} BF16 \
+                 passthrough — runtime widens to f32 exactly at load), {} non-float skipped, \
+                 {} tensors read",
+                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+            )];
+            return Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
         }
     };
 

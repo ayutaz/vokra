@@ -429,6 +429,7 @@ pub mod melotts;
 pub mod metricgan_plus;
 pub mod moss_tts;
 pub mod mp_senet;
+pub mod nemotron_asr;
 pub mod parler;
 pub mod qwen3_asr;
 pub mod sepformer;

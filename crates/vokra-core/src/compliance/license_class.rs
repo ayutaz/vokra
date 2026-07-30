@@ -316,7 +316,7 @@ impl LicenseClass {
             return Self::AttributionRequired;
         }
         // Permissive families.
-        const PERMISSIVE_TOKENS: [&str; 8] = [
+        const PERMISSIVE_TOKENS: [&str; 9] = [
             "mit",
             "apache",
             "bsd",
@@ -325,6 +325,12 @@ impl LicenseClass {
             "unlicense",
             "mpl",
             "zlib",
+            // OpenMDW-1.1 (Open Model Derivatives Work 1.1, openmdw.ai/license/1-1/):
+            // permissive MIT-analog for ML weights — commercial+redistribution
+            // allowed, no share-alike / non-commercial / field-of-use
+            // restrictions. NVIDIA Nemotron family uses this (2026-07-30 CC
+            // primary source照合、`docs/license-audit.md` §3.1 row 更新済).
+            "openmdw",
         ];
         if PERMISSIVE_TOKENS.iter().any(|t| norm.contains(t)) {
             return Self::Permissive;
@@ -995,6 +1001,14 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         // returning None here; owner ADR unblocks per model.
         _ if id.starts_with("voxtral-mini-realtime") => LicenseClass::Permissive,
         _ if id.starts_with("cohere-transcribe") => LicenseClass::Permissive,
+        // nvidia/nemotron-3.5-asr-streaming-* family — OpenMDW-1.1
+        // (Open Model Derivatives Work 1.1、openmdw.ai/license/1-1/、
+        // 2026-07-30 CC 直接照合)。permissive MIT-analog for ML weights =
+        // commercial + redistribution 可、no share-alike / no NC / no
+        // field-of-use restriction、attribution = notice 保持のみ
+        // (Apache-2.0 同 tier)。owner ADR 完了 = 暫定から確定 Permissive
+        // へ (`docs/license-audit.md` §3.1 row 更新済)。
+        _ if id.starts_with("nemotron-asr") => LicenseClass::Permissive,
         _ => return None,
     };
     Some(class)

@@ -13,8 +13,8 @@ use std::process::ExitCode;
 use vokra_convert::{
     ModelKind, PolicyPreset, VoxtralConfig, convert_chatterbox_file, convert_chatterbox_nano_file,
     convert_chatterbox_turbo_file, convert_cosyvoice2_file, convert_cosyvoice3_file,
-    convert_crepe_file, convert_dac_file, convert_file, convert_file_licensed,
-    convert_file_quantized, convert_file_with_policy, convert_irodori_file, convert_kokoro_file,
+    convert_crepe_file, convert_dac_file, convert_file, convert_file_quantized,
+    convert_file_with_policy, convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
     convert_piper_plus_file, convert_qwen3_tts_file, convert_styletts2_file,
     convert_vibevoice_file, convert_vits_ja_file, convert_voxcpm2_file,
     convert_voxtral_file_quantized, convert_voxtral_file_with_adapter_config_quantized,
@@ -378,6 +378,13 @@ OPTIONS:
 /// Parsed `convert` arguments.
 struct Parsed {
     model: ModelKind,
+    /// Raw `--model` slug string as the user typed it (2026-07-30 Task 3
+    /// add). Retained so per-variant dispatch (BigVGan / Qwen3Asr /
+    /// Wav2Vec2Ctc の 4/2/4 variants) can pick the right Variant enum
+    /// value from the user's slug. `ModelKind` alone loses the slug
+    /// (many aliases collapse to one variant), so the raw string is
+    /// preserved for downstream variant selection.
+    raw_model_slug: String,
     input: PathBuf,
     config: Option<PathBuf>,
     /// M3-10 Wave 8 — Voxtral only. When present, `convert` routes through
@@ -417,6 +424,7 @@ fn parse_quant(s: &str) -> Option<GgmlType> {
 
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut model: Option<ModelKind> = None;
+    let mut raw_model_slug: String = String::new();
     let mut input: Option<PathBuf> = None;
     let mut config: Option<PathBuf> = None;
     let mut adapter_config: Option<PathBuf> = None;
@@ -431,6 +439,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         match args[i].as_str() {
             "--model" => {
                 let v = args.get(i + 1).ok_or("--model requires a value")?;
+                raw_model_slug = v.clone();
                 model = Some(ModelKind::from_arg(v).ok_or_else(|| {
                     format!(
                         "unknown model `{v}` \
@@ -511,6 +520,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
 
     Ok(Parsed {
         model: model.ok_or("--model is required")?,
+        raw_model_slug,
         input: input.ok_or("--input is required")?,
         config,
         adapter_config,
@@ -947,10 +957,19 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 } else {
                     convert_file_quantized(model, &p.input, &p.output, q)
                 }
-            } else if p.license.is_some() {
-                convert_file_licensed(model, &p.input, &p.output, p.license.as_deref())
             } else {
-                convert_file(model, &p.input, &p.output)
+                // 2026-07-30 Task 3: route through `convert_file_with_slug` so
+                // BigVGan / Qwen3Asr / Wav2Vec2Ctc pick the right Variant from
+                // the raw `--model` slug the user typed. For other models this
+                // delegates verbatim to `convert_file_licensed` (which handles
+                // the `p.license.is_some()` override internally).
+                convert_file_with_slug(
+                    model,
+                    &p.raw_model_slug,
+                    &p.input,
+                    &p.output,
+                    p.license.as_deref(),
+                )
             }
         }
     };
