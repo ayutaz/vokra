@@ -170,3 +170,342 @@ pub fn convert_nemotron_asr_file(
     std::fs::write(output, out_bytes).map_err(ConvertError::Io)?;
     Ok(report)
 }
+
+#[cfg(test)]
+mod tests {
+    //! Sibling-mirror unit tests (ast / clap / funcodec / speechtokenizer
+    //! pattern, FQ-01 coverage close 2026-07-31).
+    //!
+    //! The module IS live at `huggingface.co/vokra/nemotron-3.5-asr-
+    //! streaming-0.6b` — any silent regression in the pass-through loop or
+    //! the provenance / licence-override stamp would ship to production,
+    //! so the tests here pin (a) F32 / F16 / BF16 pass-through round-trip
+    //! via synthetic 2-tensor safetensors bytes, (b) provenance metadata
+    //! (arch / name / category / upstream_hf / weight_license) with the
+    //! default OpenMDW-1.1 → `LicenseClass::Permissive` resolution, (c)
+    //! empty / truncated input → [`ConvertError::Parse`], (d) the
+    //! defensive `skipped_non_float` counter — the underlying safetensors
+    //! reader rejects non-F32/F16/BF16 dtypes at parse time
+    //! (`SafetensorsError::UnsupportedDtype` → [`ConvertError::Parse`]),
+    //! so the reader-side rejection is what pins the counter as
+    //! defensively unreachable through the public entry point today.
+    //!
+    //! No external fixtures: every safetensors buffer is hand-woven so the
+    //! tests run in the standard `cargo test -p vokra-convert --lib`
+    //! matrix without a `VOKRA_*` env gate.
+    use super::*;
+    use std::path::PathBuf;
+    use vokra_core::gguf::GgufFile;
+
+    /// Returns a unique per-test tempfile path. PID + monotonic-nanos
+    /// suffix keeps parallel `cargo test` invocations from clashing.
+    fn scratch_path(tag: &str, ext: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "vokra-nemotron-asr-{tag}-{}-{}.{ext}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        p
+    }
+
+    /// Builds a single-tensor safetensors byte buffer with a caller-
+    /// supplied dtype tag, shape and raw payload. Generalizes the private
+    /// `safetensors_one_bf16` helper in the sibling `ast` / `funcodec` /
+    /// `speechtokenizer` tests across dtypes so this module can pin the
+    /// reader-side non-float rejection too.
+    fn safetensors_one(name: &str, dtype: &str, shape: &[u64], payload: &[u8]) -> Vec<u8> {
+        let shape_str = shape
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let header = format!(
+            r#"{{"{name}":{{"dtype":"{dtype}","shape":[{shape_str}],"data_offsets":[0,{}]}}}}"#,
+            payload.len()
+        );
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// Two-tensor safetensors buffer: F32 then F16, contiguous data
+    /// region. Pins the union `F32 | F16 | BF16` match arm on the F32
+    /// and F16 legs simultaneously so a regression that drops F16 (or
+    /// mis-counts either as BF16) trips loudly.
+    fn safetensors_f32_then_f16() -> Vec<u8> {
+        let f32_bytes: Vec<u8> = [1.0_f32, -2.0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        assert_eq!(f32_bytes.len(), 8);
+        // 1.0, 2.0, 3.0 as IEEE-754 F16 bit patterns.
+        let f16_bytes: Vec<u8> = [0x3C00_u16, 0x4000, 0x4200]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        assert_eq!(f16_bytes.len(), 6);
+        let header = format!(
+            r#"{{"encoder.layers.0.self_attn.q_proj.weight":{{"dtype":"F32","shape":[1,2],"data_offsets":[0,{}]}},"encoder.layers.0.self_attn.k_proj.weight":{{"dtype":"F16","shape":[3],"data_offsets":[{},{}]}}}}"#,
+            f32_bytes.len(),
+            f32_bytes.len(),
+            f32_bytes.len() + f16_bytes.len(),
+        );
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&f32_bytes);
+        out.extend_from_slice(&f16_bytes);
+        out
+    }
+
+    /// Distinctive BF16 bit patterns (top-16 bits of the IEEE-754 f32
+    /// encodings of 1.0, -2.5, 0.15625, 3.5, -0.5, 42.0). A silent
+    /// widen-to-f32 or byte-swap would flip the payload-bytes assertion.
+    fn distinctive_bf16_payload() -> Vec<u8> {
+        [1.0_f32, -2.5, 0.15625, 3.5, -0.5, 42.0]
+            .iter()
+            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
+            .collect()
+    }
+
+    /// (a) + (b): BF16 pass-through round-trip pins the tensor bytes
+    /// byte-identical (no silent widen), the counter subset firing, the
+    /// arch / name / category / upstream_hf provenance stamps, and the
+    /// default OpenMDW-1.1 → `LicenseClass::Permissive` resolution
+    /// (`crates/vokra-core/src/compliance/license_class.rs`
+    /// `PERMISSIVE_TOKENS` — `openmdw` token added 2026-07-30).
+    #[test]
+    fn bf16_tensor_passes_through_verbatim() {
+        let payload = distinctive_bf16_payload();
+        assert_eq!(payload.len(), 12, "6 elements × 2 B BF16 payload");
+        // Realistic Nemotron-ASR-Streaming tensor name.
+        let input_bytes = safetensors_one(
+            "encoder.layers.0.self_attn.out_proj.weight",
+            "BF16",
+            &[2, 3],
+            &payload,
+        );
+
+        let input = scratch_path("bf16-in", "safetensors");
+        let output = scratch_path("bf16-out", "gguf");
+        std::fs::write(&input, &input_bytes).expect("write input safetensors");
+
+        let report =
+            convert_nemotron_asr_file(&input, &output, None).expect("BF16 convert must succeed");
+        assert_eq!(report.read, 1, "one tensor observed on input");
+        assert_eq!(report.written, 1, "BF16 must reach the pass-through arm");
+        assert_eq!(report.skipped_non_float, 0, "BF16 is float — no skip");
+        assert_eq!(report.bf16_passthrough, 1, "BF16 subset counter must fire");
+
+        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
+
+        let info = file
+            .tensor_info("encoder.layers.0.self_attn.out_proj.weight")
+            .expect("emitted GGUF must carry the tensor");
+        assert_eq!(
+            info.dtype,
+            GgmlType::BF16,
+            "no convert-time widening — GGUF dtype must remain BF16 (type 30)"
+        );
+        assert_eq!(info.dimensions, vec![2, 3]);
+        assert_eq!(
+            file.tensor_bytes(info),
+            payload.as_slice(),
+            "BF16 payload must round-trip byte-for-byte (no silent widen)",
+        );
+
+        // Provenance stamps — the arch / name / category / upstream_hf
+        // group is what the M2-13 compliance gate + model-zoo indexer
+        // read.
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            Some(ARCH),
+            "vokra.model.arch = `nemotron_asr_streaming`",
+        );
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some(NAME),
+            "vokra.model.name = canonical release string",
+        );
+        assert_eq!(
+            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
+            Some(MODEL_CATEGORY),
+            "vokra.model.category = `asr`",
+        );
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some(UPSTREAM_HF),
+            "vokra.provenance.upstream_hf = upstream HF path",
+        );
+
+        // License resolution: OpenMDW-1.1 default → Permissive.
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(DEFAULT_LICENSE),
+            "vokra.provenance.license = `openmdw-1.1`",
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::Permissive.as_str()),
+            "openmdw resolves to Permissive (LicenseClass::from_license_str)",
+        );
+    }
+
+    /// (a): the F32 + F16 legs of the union match arm surface too, and
+    /// the BF16 subset counter stays at Default 0 when no BF16 tensor is
+    /// present. Also proves the `read == written + skipped_non_float`
+    /// invariant on a well-formed all-float input.
+    #[test]
+    fn f32_and_f16_tensors_pass_through() {
+        let blob = safetensors_f32_then_f16();
+        let input = scratch_path("f32-f16-in", "safetensors");
+        let output = scratch_path("f32-f16-out", "gguf");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+
+        let report = convert_nemotron_asr_file(&input, &output, None)
+            .expect("F32 + F16 convert must succeed");
+        assert_eq!(report.read, 2, "two tensors observed on input");
+        assert_eq!(report.written, 2, "both F32 and F16 must pass through");
+        assert_eq!(report.skipped_non_float, 0, "no non-float tensors here");
+        assert_eq!(
+            report.bf16_passthrough, 0,
+            "no BF16 tensor — subset counter stays at Default 0",
+        );
+        assert_eq!(
+            report.read,
+            report.written + report.skipped_non_float,
+            "read = written + skipped_non_float invariant",
+        );
+
+        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
+
+        let a = file
+            .tensor_info("encoder.layers.0.self_attn.q_proj.weight")
+            .expect("F32 tensor present");
+        assert_eq!(a.dtype, GgmlType::F32);
+        assert_eq!(a.dimensions, vec![1, 2]);
+        let b = file
+            .tensor_info("encoder.layers.0.self_attn.k_proj.weight")
+            .expect("F16 tensor present");
+        assert_eq!(b.dtype, GgmlType::F16);
+        assert_eq!(b.dimensions, vec![3]);
+    }
+
+    /// (c): empty / truncated input surfaces as [`ConvertError::Parse`]
+    /// (via `SafetensorsError::Truncated` at the reader boundary, mapped
+    /// through the crate-root `From<SafetensorsError>` impl at
+    /// `crates/vokra-convert/src/lib.rs:2213`). Guards the boundary where
+    /// a silent success on empty input would ship a zero-tensor GGUF to
+    /// the publisher.
+    #[test]
+    fn empty_input_returns_parse_error() {
+        let input = scratch_path("empty-in", "safetensors");
+        let output = scratch_path("empty-out", "gguf");
+        // Zero-byte safetensors: reader must reject with Truncated
+        // (< 8 B header prefix).
+        std::fs::write(&input, b"").expect("write empty input");
+
+        let err = convert_nemotron_asr_file(&input, &output, None)
+            .expect_err("empty safetensors must fail — do not ship a zero-tensor GGUF");
+        std::fs::remove_file(&input).ok();
+        // Output must not exist — the converter aborts before writing.
+        assert!(
+            !output.exists(),
+            "empty input must not produce an output GGUF",
+        );
+
+        match err {
+            ConvertError::Parse(_) => {}
+            other => panic!("expected ConvertError::Parse, got {other:?}"),
+        }
+    }
+
+    /// (d): non-F32/F16/BF16 dtypes are rejected at the safetensors
+    /// reader boundary (`SafetensorsError::UnsupportedDtype` →
+    /// [`ConvertError::Parse`]). This is what pins the
+    /// `skipped_non_float` arm as defensive — a caller cannot reach it
+    /// through the public `convert_nemotron_asr_file` entry point today
+    /// because `SafetensorsFile::parse` refuses I8 / I32 / I64 / F64
+    /// before the walk ever begins
+    /// (`crates/vokra-core/src/safetensors.rs:411-418`). A regression
+    /// that widened the reader's dtype whitelist without adding the
+    /// corresponding non-float branch to `convert_nemotron_asr_file`
+    /// would land here.
+    #[test]
+    fn non_float_dtype_rejected_at_parse() {
+        // Two 32-bit little-endian sentinel words. Content is irrelevant
+        // — the reader rejects the dtype token before decoding payload.
+        let payload: Vec<u8> = vec![0, 0, 0, 0, 0, 0, 0, 0];
+        let blob = safetensors_one("dummy.i32", "I32", &[2], &payload);
+        let input = scratch_path("i32-in", "safetensors");
+        let output = scratch_path("i32-out", "gguf");
+        std::fs::write(&input, &blob).expect("write I32 input safetensors");
+
+        let err = convert_nemotron_asr_file(&input, &output, None)
+            .expect_err("I32 tensors must be rejected at the reader boundary");
+        std::fs::remove_file(&input).ok();
+        assert!(
+            !output.exists(),
+            "I32 rejection must abort before any output write",
+        );
+        match err {
+            ConvertError::Parse(_) => {}
+            other => panic!("expected ConvertError::Parse, got {other:?}"),
+        }
+    }
+
+    /// The `license: Option<&str>` boundary rewrites the SPDX + class
+    /// pair in place (mirror of `convert_file_licensed` posture in
+    /// `crates/vokra-convert/src/lib.rs`). Regression guard: a caller
+    /// obtaining the weight under a different distribution licence must
+    /// see their override reflected in both
+    /// `vokra.provenance.license` and `vokra.provenance.weight_license`.
+    #[test]
+    fn license_override_replaces_openmdw_default() {
+        let payload = distinctive_bf16_payload();
+        let blob = safetensors_one("encoder.embed.weight", "BF16", &[2, 3], &payload);
+        let input = scratch_path("license-override-in", "safetensors");
+        let output = scratch_path("license-override-out", "gguf");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+
+        // Override with apache-2.0 (also Permissive but a distinct SPDX
+        // string — asserts the raw string is what's written, not a
+        // silent normalization back to openmdw-1.1).
+        let report = convert_nemotron_asr_file(&input, &output, Some("apache-2.0"))
+            .expect("licensed convert must succeed");
+        assert_eq!(report.written, 1);
+
+        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
+
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some("apache-2.0"),
+            "raw SPDX override must be written verbatim",
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+                .and_then(|v| v.as_str()),
+            Some(LicenseClass::Permissive.as_str()),
+            "apache-2.0 also resolves to Permissive (distinct SPDX, same class)",
+        );
+    }
+}
