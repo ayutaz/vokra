@@ -37,6 +37,14 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 AUDIT = REPO / "docs" / "license-audit.md"
 
+# Shared §3.1 parser + explicit alias maps. Importing (rather than
+# re-implementing the loop below) keeps this report and upload.sh's
+# refusal in agreement — a row that upload.sh treats as blank cannot
+# show up as "publishable today" here, which is exactly the class of
+# drift that caused the original substring bug.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import signoff_match  # noqa: E402
+
 # Catalog name -> converter module stem under crates/vokra-convert/src/models/.
 # Only models with a converter can produce an artifact to publish at all.
 CONVERTERS = {
@@ -82,41 +90,28 @@ def license_class_for(stem):
     return wire, m.group(2)
 
 
-def signoff_rows():
+def signoff_rows(audit_path=None):
     """Parses the §3.1 sign-off table -> {model-name: approved?}.
 
-    Column layout (verified against the live table):
+    Delegated to signoff_match.parse_signoff_rows so this report and
+    upload.sh's refusal read the audit the exact same way — a row that
+    upload.sh treats as blank cannot show up as "publishable today"
+    here, which is exactly the class of drift that caused the original
+    substring bug. Column layout (verified against the live table):
+
         | model | weight licence | audit date | approver | decision | notes |
 
-    A row counts as approved only when the **approver** cell holds a real name
-    (the template writes `______________`) AND the **decision** cell has a
-    ticked box. An unticked `☐ Commercial / ☐ Research-only / ☐ Rejected` is
-    the blank template, not a decision.
+    A row counts as approved only when the **approver** cell holds a real
+    name (the template writes `______________`) AND the **decision** cell
+    has a ticked box. An unticked
+    `☐ Commercial / ☐ Research-only / ☐ Rejected` is the blank template,
+    not a decision.
 
     Erring toward "not approved" is the whole point: reporting a model as
-    publishable when its row is blank would defeat the fail-closed design the
-    blank row exists to implement.
+    publishable when its row is blank would defeat the fail-closed design
+    the blank row exists to implement.
     """
-    if not AUDIT.is_file():
-        return {}
-    rows = {}
-    for line in AUDIT.read_text(encoding="utf-8").splitlines():
-        if not line.startswith("| **"):
-            continue
-        f = line.split("|")
-        # 6 data columns -> 8 fields with the leading/trailing empties.
-        if len(f) < 7:
-            continue
-        approver = f[4].strip()
-        decision = f[5].strip()
-        # A sign-off row is recognisable by its decision-box template.
-        if "Commercial" not in decision or "Rejected" not in decision:
-            continue
-        name = f[1].replace("**", "").strip()
-        named = bool(approver.strip("_").strip())
-        ticked = ("☑" in decision) or ("☒" in decision) or ("[x]" in decision.lower())
-        rows[name] = named and ticked
-    return rows
+    return signoff_match.parse_signoff_rows(Path(audit_path or AUDIT))
 
 
 # Sign-off rows are keyed by release-specific names ("DAC 24khz (Descript)")
@@ -140,10 +135,91 @@ SIGNOFF_ALIASES = {
 }
 
 
+def _self_test():
+    """Hermetic self-test — no network, no real audit read.
+
+    Drives a synthetic §3.1 fixture through the shared parser (via
+    signoff_match) and asserts the three partitions this report emits:
+    ready / blocked_signoff / blocked_license. Also confirms
+    signoff_match's own self-test passes so the shared invariant we
+    depend on is exercised here too.
+    """
+    import subprocess as sp
+    import tempfile
+
+    fixture = (
+        "### Owner sign-off template\n\n"
+        "| Model | Weight License | CC-verified date | Owner sign-off (YYYY-MM-DD) | Approval | Notes |\n"
+        "|---|---|---|---|---|---|\n"
+        "| **APPROVED-Model** | MIT | 2026-01-01 | 2026-01-02 yousan | ☑ Commercial / ☐ Research-only / ☐ Rejected | approved |\n"
+        "| **PENDING-Model** | MIT | 2026-01-01 | ______________ | ☐ Commercial / ☐ Research-only / ☐ Rejected | blank |\n"
+    )
+
+    failures = []
+
+    # 1. Shared parser must agree with the fixture.
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "audit.md"
+        p.write_text(fixture, encoding="utf-8")
+        rows = signoff_rows(p)
+        if rows.get("APPROVED-Model") is not True:
+            failures.append(f"APPROVED-Model should be True, got {rows.get('APPROVED-Model')!r}")
+        if rows.get("PENDING-Model") is not False:
+            failures.append(f"PENDING-Model should be False, got {rows.get('PENDING-Model')!r}")
+
+    # 2. signoff_match's own self-test must pass — the parser we import
+    #    from there is the single source of truth for the audit format.
+    #    Same-interpreter import (already loaded); shell out to preserve
+    #    the same env that CI will use.
+    matcher = Path(__file__).resolve().parent / "signoff_match.py"
+    rc = sp.call(
+        ["python3", str(matcher), "--self-test"],
+        stdout=sp.DEVNULL, stderr=sp.DEVNULL,
+    )
+    if rc != 0:
+        failures.append(f"signoff_match --self-test exited {rc}")
+
+    # 3. license_class_for regex must recognise a synthetic converter
+    #    stamp (this is the piece publishability-report parses itself).
+    with tempfile.TemporaryDirectory() as tmp:
+        # Build a shim converter that stamps the exact form the regex expects.
+        crate_dir = Path(tmp) / "crates" / "vokra-convert" / "src" / "models"
+        crate_dir.mkdir(parents=True)
+        (crate_dir / "shim.rs").write_text(
+            'pub fn f() { stamp_provenance(&mut b, LicenseClass::Permissive, "mit"); }\n',
+            encoding="utf-8",
+        )
+        # Point the module's REPO at the fixture root for this call only.
+        global REPO
+        real_repo = REPO
+        REPO = Path(tmp)
+        try:
+            cls, spdx = license_class_for("shim")
+            if cls != "permissive":
+                failures.append(f"license_class_for('shim').cls = {cls!r}, want 'permissive'")
+            if spdx != "mit":
+                failures.append(f"license_class_for('shim').spdx = {spdx!r}, want 'mit'")
+        finally:
+            REPO = real_repo
+
+    if failures:
+        print("publishability-report self-test: FAIL")
+        for f in failures:
+            print(f"  - {f}")
+        return 1
+    print("publishability-report self-test: OK (3 cases: parser fixture + signoff_match delegated + license_class regex)")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--markdown", action="store_true")
+    ap.add_argument("--self-test", action="store_true",
+                    help="hermetic self-test (no network, no real audit)")
     a = ap.parse_args()
+
+    if a.self_test:
+        return _self_test()
 
     signoffs = signoff_rows()
     ready, blocked_license, blocked_signoff, no_converter = [], [], [], []

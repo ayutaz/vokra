@@ -54,8 +54,12 @@ audit="$repo_root/docs/license-audit.md"
 declare -a EXPECTED_GAPS=(
   "WavTokenizer|op-only (wavtokenizer_vq in vokra-ops/src/fsq_codec.rs); no model binder or converter — model WP not started"
   "openWakeWord|kws (FR-OP-51) is unimplemented; the catalog row precedes the op"
-  "ECAPA-TDNN (SpeechBrain)|speaker_encode variant; anchor-only in m5_residual_ops.rs (CAM++ covers the task)"
-  "WeSpeaker|speaker_encode variant; anchor-only in m5_residual_ops.rs (CAM++ covers the task)"
+  # ECAPA-TDNN and WeSpeaker previously listed here as anchor-only; converter
+  # implementations landed in the SoTA Phase 1-4 wave (commit 7ed0548) at
+  # crates/vokra-convert/src/models/{ecapa_tdnn.rs,wespeaker.rs}. The stale
+  # entries were removed 2026-07-31 as part of the FQ-03 CI promotion — the
+  # production run now runs per-PR, so future stale/undeclared drift is caught
+  # at PR time rather than at owner publish time.
   "RNNoise|denoise alternative candidate; DeepFilterNet3 is the implemented first choice"
   "GTCRN|denoise alternative candidate; DeepFilterNet3 is the implemented first choice"
   "AudioSeal (Meta)|watermark embedding is Deferred (2026-07-04 drop); config surface only"

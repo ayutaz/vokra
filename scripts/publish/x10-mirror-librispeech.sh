@@ -90,8 +90,28 @@ if [[ "$self_test" == "1" ]]; then
   fi
   # (b) The pinned SHA256 must equal the nightly workflow's DEV_CLEAN_SHA256
   # default (they are the same upstream file — drift means one moved).
-  workflow_sha="$(grep -m1 "DEV_CLEAN_SHA256" "$repo_root/.github/workflows/nightly-asr-wer.yml" | grep -oE '[a-f0-9]{64}' | head -1 || true)"
-  if [[ -n "$workflow_sha" && "$workflow_sha" != "$DEFAULT_SHA256" ]]; then
+  #
+  # FR-EX-08 fail-closed: if extraction is empty, that itself is a drift
+  # signal — the env-var line was renamed, the YAML shape changed, or the
+  # workflow moved. The previous implementation used `grep -m1 DEV_CLEAN_SHA256
+  # | grep -oE '[a-f0-9]{64}' | ... || true`, which matched the comment on
+  # nightly-asr-wer.yml:56 first (a comment with no hex) and silently
+  # skipped via `|| true`. A gate that never fires is a fabricated pass
+  # (X-08 red-line). Anchor the regex to the actual `DEV_CLEAN_SHA256:`
+  # assignment line, and assert extraction non-empty — do NOT `|| true`.
+  workflow_sha="$(grep -E "^[[:space:]]*DEV_CLEAN_SHA256:" "$repo_root/.github/workflows/nightly-asr-wer.yml" 2>/dev/null \
+    | grep -oE "'[a-f0-9]{64}'" \
+    | tr -d "'" \
+    | head -1)"
+  if [[ -z "$workflow_sha" ]]; then
+    echo "self-test FAIL: could not extract DEV_CLEAN_SHA256 from" >&2
+    echo "                nightly-asr-wer.yml — cross-reference broken." >&2
+    echo "                Fix the extraction (the env-var assignment line" >&2
+    echo "                moved, was renamed, or its YAML shape changed)." >&2
+    echo "                Do NOT restore '|| true' here — a silent skip is" >&2
+    echo "                a fabricated pass." >&2
+    fail=1
+  elif [[ "$workflow_sha" != "$DEFAULT_SHA256" ]]; then
     echo "self-test FAIL: DEFAULT_SHA256 ($DEFAULT_SHA256) drifted from" >&2
     echo "                nightly-asr-wer.yml ($workflow_sha)" >&2
     fail=1
