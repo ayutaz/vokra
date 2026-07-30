@@ -187,7 +187,18 @@ pub(crate) mod parakeet_ctc;
 // deliberate "may need new op" follow-up).
 pub(crate) mod omniasr_ctc;
 pub mod openvoice_v2;
+// pyannote/segmentation-3.0 (Bredin, CNRS, MIT — 2026-07-30 §3.1 row 263
+// yousan sign-off, DIARIZE_OP blocker text "trigger + license double" →
+// "trigger only" this wave). PyanNet voice-activity-detection /
+// speaker-segmentation backbone (SincNet → BiLSTM x2 → Linear x2 →
+// powerset multiclass classifier). Category = `vad`. BF16 pass-through
+// skeleton + `vokra.pyannote.*` hparam chunk group so the future runtime
+// binder (`crates/vokra-models/src/pyannote/`) can bring the graph up
+// without a side-car config lookup. Runtime forward is Wave 2 loud-partial
+// (SincNet primitive is Vokra-new op, Wave 3 scope) —
+// `docs/handoff/pyannote-implementation-plan-2026-07-30.md`.
 pub(crate) mod piper_plus;
+pub mod pyannote_segmentation;
 // SoTA plan Phase 3 (2026-07-24): Alibaba **Qwen3-TTS-12Hz-0.6B-Base**
 // (apache-2.0 end-to-end weight) safetensors → GGUF with the
 // `vokra.qwen3_tts.*` chunk group. Discrete multi-codebook LM

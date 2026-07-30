@@ -1983,7 +1983,14 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // `vokra.model.{arch,name,category}` + `vokra.provenance.*`
         // triple as the Phase 5 fleet + RMVPE sibling; grouped here so
         // the verify surface stays a shape-lookup.
-        | ModelKind::Crepe => {
+        | ModelKind::Crepe
+        // 2026-07-30 license half unblock: pyannote/segmentation-3.0
+        // (VAD backbone) emits the same `vokra.model.*` +
+        // `vokra.provenance.*` triple + additional `vokra.pyannote.*`
+        // hparam chunk group; grouped with the Phase 5 fleet since the
+        // verify surface is identical (arch / name / category /
+        // upstream / license lookup).
+        | ModelKind::PyannoteSegmentation => {
             let arch = file
                 .get("vokra.model.arch")
                 .and_then(|v| v.as_str())

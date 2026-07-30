@@ -75,7 +75,7 @@ OPTIONS:
                               speechtokenizer | funcodec | xy-tokenizer |
                               bicodec | neucodec | ecapa-tdnn | wespeaker |
                               speaker-3d | titanet-large | emotion2vec |
-                              rmvpe | crepe | styletts2
+                              rmvpe | crepe | styletts2 | pyannote-segmentation
                               (crepe: marl/crepe — a prepared safetensors from
                               tools/parity/keras_h5_to_safetensors.py, needs
                               --config <config.json> with the capacity /
@@ -1266,6 +1266,14 @@ mod tests {
             // M5 gap follow-up (2026-07-30): CREPE (Kim et al. 2018) —
             // monophonic F0 extractor, MIT weight (sibling of RMVPE).
             ("crepe", ModelKind::Crepe),
+            // 2026-07-30 license half unblock: pyannote/segmentation-3.0
+            // (Bredin, CNRS, MIT) — PyanNet VAD / speaker-segmentation
+            // backbone, first `category = "vad"` binder in the converter
+            // tree via SincNet → BiLSTM x2 → Linear x2 → powerset
+            // multiclass (7 classes for 3 speakers × 2 overlap).
+            // `docs/license-audit.md` §3.1 row 263, DIARIZE_OP anchor
+            // blocker text updated same wave.
+            ("pyannote-segmentation", ModelKind::PyannoteSegmentation),
         ];
         for (name, kind) in kinds {
             let p = parse_args(&args(&["--model", name, "--input", "i", "--output", "o"]))

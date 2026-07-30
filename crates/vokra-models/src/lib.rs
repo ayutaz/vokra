@@ -419,6 +419,15 @@ pub mod zonos;
 // follow-up WP. Kept in its own block so `rustfmt`'s alphabetical sort inside
 // consecutive `pub mod` blocks does not hijack the doc-preceded siblings above.
 pub mod f0;
+// pyannote/segmentation-3.0 (Bredin, CNRS, MIT — 2026-07-30 Wave 2
+// runtime scaffold with loud-partial forward). PyanNet VAD /
+// speaker-segmentation backbone (SincNet → BiLSTM x2 → Linear x2 →
+// powerset multiclass classifier). Config + weight-load are real; the
+// inner forward returns `VokraError::UnsupportedOp` until Wave 3
+// lands the SincNet primitive per
+// `docs/handoff/pyannote-implementation-plan-2026-07-30.md`. Same
+// posture as sibling RMVPE (`crate::f0::rmvpe`).
+pub mod pyannote;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 

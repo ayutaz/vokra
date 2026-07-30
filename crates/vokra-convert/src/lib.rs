@@ -935,6 +935,25 @@ pub enum ModelKind {
     /// not parse — the same offline-prepare split as DAC / Kokoro /
     /// UTMOS). Weight license = **MIT**.
     Crepe,
+    /// **pyannote/segmentation-3.0** (Bredin, CNRS — 2026-07-30
+    /// license half unblock, `docs/license-audit.md` §3.1 row 263).
+    /// Category = `vad`. PyanNet voice-activity-detection /
+    /// speaker-segmentation backbone (SincNet → BiLSTM x2 → Linear x2
+    /// → powerset multiclass classifier, 7 classes for 3 speakers ×
+    /// 2 overlap). BF16 pass-through skeleton + `vokra.pyannote.*`
+    /// hparam chunk group (SINCNET_DEFAULTS + LSTM_DEFAULTS +
+    /// LINEAR_DEFAULTS transcribed from PyanNet.py primary source).
+    /// Provenance = **MIT** (Permissive — HF cardData primary source
+    /// verified 2026-07-30, `gated: auto` is access control only, no
+    /// additional obligations). Runtime binder is Wave 2 loud-partial
+    /// (weights bind, forward returns `VokraError::UnsupportedOp`
+    /// until SincNet primitive lands Wave 3) —
+    /// `docs/handoff/pyannote-implementation-plan-2026-07-30.md`. The
+    /// `.bin` (torch pickle) → safetensors bridge lives offline in
+    /// `tools/parity/bin_to_safetensors.py`; this converter accepts
+    /// safetensors only. Convert with
+    /// [`convert_pyannote_segmentation_file`].
+    PyannoteSegmentation,
 }
 
 impl ModelKind {
@@ -1240,6 +1259,18 @@ impl ModelKind {
             // .h5 files), and the upstream GitHub coordinate.
             "crepe" | "crepe-tiny" | "crepe-small" | "crepe-medium" | "crepe-large"
             | "crepe-full" | "marl/crepe" => Some(Self::Crepe),
+            // pyannote/segmentation-3.0 (VAD / speaker-segmentation
+            // backbone, 2026-07-30 license half unblock). Accept the
+            // arch tag underscore + hyphen variants, the short forms
+            // (family drops the "-3.0" suffix for callers who match
+            // on family name), and the canonical HF release id.
+            "pyannote-segmentation"
+            | "pyannote_segmentation"
+            | "pyannote-segmentation-3.0"
+            | "pyannote_segmentation_3_0"
+            | "pyannote-segmentation-3_0"
+            | "pyannote/segmentation-3.0"
+            | "pyannote/segmentation" => Some(Self::PyannoteSegmentation),
             _ => None,
         }
     }
@@ -1303,6 +1334,7 @@ impl ModelKind {
             Self::Emotion2vec => "emotion2vec",
             Self::Rmvpe => "rmvpe",
             Self::Crepe => "crepe",
+            Self::PyannoteSegmentation => "pyannote-segmentation",
         }
     }
 }
@@ -2377,6 +2409,37 @@ pub fn convert_file_licensed(
                  use convert_crepe_file"
                     .to_owned(),
             ));
+        }
+        ModelKind::PyannoteSegmentation => {
+            // 2026-07-30 license half unblock (docs/license-audit.md §3.1
+            // row 263 = 2026-07-30 yousan ☑ Commercial, DIARIZE_OP
+            // blocker text "trigger + license" → "trigger only"): every
+            // F32 / F16 / BF16 tensor passes through verbatim under the
+            // upstream state_dict names + the `vokra.pyannote.*` chunk
+            // group carries the PyanNet primary-source hparams
+            // (sample_rate / sincnet.stride / lstm.hidden_size /
+            // lstm.num_layers / lstm.bidirectional / lstm.monolithic /
+            // linear.hidden_size / linear.num_layers /
+            // num_powerset_classes = 7 for segmentation-3.0).
+            // Provenance = MIT (Permissive — HF cardData primary source
+            // verified 2026-07-30, `gated: auto` is access control only).
+            // Runtime binder is Wave 2 loud-partial per
+            // `docs/handoff/pyannote-implementation-plan-2026-07-30.md`.
+            let report = models::pyannote_segmentation::convert_pyannote_segmentation_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "pyannote-segmentation: {} float weights written verbatim ({} BF16 passthrough), \
+                 {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::PyannoteSegmentation,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
         }
     };
 
